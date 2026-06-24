@@ -6,5 +6,6 @@ license.workspace = true
 description = "Deterministic, no-I/O Sega Genesis / Mega Drive emulation core for the Oracle debugging engine."
 
 [dependencies]
+bincode = { version = "2", features = ["derive"] }
 
 [dev-dependencies]

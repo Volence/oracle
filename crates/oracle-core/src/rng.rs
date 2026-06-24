@@ -5,7 +5,7 @@
 //! power-on RAM/VRAM). Deterministic by construction: the same seed always yields the same stream.
 
 /// A deterministic [SplitMix64](https://prng.di.unimi.it/splitmix64.c) generator — one `u64` of state.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub struct SplitMix64 {
     state: u64,
 }
