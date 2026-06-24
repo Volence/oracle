@@ -3,6 +3,9 @@
 **/target
 **/*.rs.bk
 
+# Vendored test suites (fetched by tools/fetch-tests.sh, pinned + checksummed)
+/vendor
+
 # one-time research/workflow scratch
 .*.workflow.js
 
