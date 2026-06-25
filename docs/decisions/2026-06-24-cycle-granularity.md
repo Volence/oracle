@@ -1,0 +1,94 @@
+# Decision brief: 68000 cycle granularity
+
+**Status: RECOMMENDATION — awaiting ratification.** (The one open Phase-0 decision from
+`docs/foundations.md`.)
+
+## The question
+
+oracle-next wants "every cycle a valid 68k break/snapshot point," but jgenesis's 68k (the architecture
+proof) is *instruction*-stepped. A truly cycle-stepped 68000 is more code and slower; a hybrid
+(instruction fast-path + on-demand FSM-quiesce) adds a two-path correctness surface that must agree.
+The charter said: resolve empirically — prototype one opcode both ways in Phase 0. This brief reports
+that prototype.
+
+## What was built and validated
+
+`ADD.w Dn,(An)` (the recommended prototype opcode: fetch + memory-operand read + ALU + write-back),
+implemented **two ways** over the same FC-aware bus (`crates/oracle-core/src/m68000/prototype.rs`):
+
+- **instruction-stepped** (`step_instruction`) — the whole opcode executes atomically.
+- **cycle-stepped FSM** (`AddWFsm`) — one `tick` = one master cycle; the bus access for each phase
+  fires on the phase's final cycle, so every cycle boundary is coherent. The FSM is
+  bincode-serializable, so the machine can be snapshot/restored *mid-instruction*.
+
+Evidence (all green in CI):
+
+- **Both paths are byte-identical to real hardware traces.** 179 clean `ADD.w Dn,(An)` cases from the
+  pinned SingleStepTests suite pass through *both* paths — final regs/SR/RAM/prefetch, the cycle count,
+  **and** the per-cycle bus-transaction stream (`tests/singlestep_m68000.rs`).
+- **Both paths agree with each other** (same final state + same transaction stream).
+- **The FSM is quiescable at every cycle.** Snapshot → restore at each of the 12 cycle boundaries
+  yields an identical final result (`fsm_is_quiescable_and_serializable_at_every_cycle`).
+
+## Empirical cost (measured, `examples/cycle_granularity_perf.rs`, release build)
+
+| Model | Speed | Code |
+|---|---|---|
+| Instruction-stepped | **2.77 ns/op** (~361 M ops/s) | `step_instruction` body ≈ 17 lines |
+| Cycle-stepped FSM (per-master-clock) | **8.34 ns/op** (~120 M ops/s) | `tick` ≈ 38 lines + struct/`Phase`/drivers |
+| **Ratio** | **≈ 3.0× slower** | **≈ 2.5× more code per opcode** |
+
+(The per-master-clock FSM is the *finest* granularity and thus the worst case; a per-bus-access FSM —
+3 steps instead of 12 — would sit between the two.)
+
+## The three granularities
+
+- **A — instruction-stepped.** Break at instruction boundaries only. Fastest, least code (jgenesis).
+- **B — bus-access (transaction) stepped.** Break between memory accesses. Watchpoint-precise (a
+  watchpoint fires *on* an access; you almost never need to stop *inside* a 4-clock access). Moderate.
+- **C — sub-access (per-master-clock) stepped.** Break at every clock. Needed only for sub-access timing
+  precision (FIFO/DMA dot-accuracy) — which the charter explicitly defers to the Phase-3 accuracy tail
+  ("MVP-debuggable, NOT passes VDPFIFOTesting").
+
+## The key finding
+
+The instruction-stepped path and the FSM in the prototype **share their decode and ALU** (`decode_add_w_dn_an`,
+`add_w_flags`); they differ *only* in the driver loop that sequences the same bus accesses. So the
+feared "two-path correctness surface" collapses if each opcode is written **once** as a *resumable
+sequence of micro-ops* (bus access / internal step), with two drivers over that one definition:
+
+- a **run-to-completion** driver (the instruction-stepped fast path — inlines to near-A speed), and
+- a **step-one-micro-op** driver (the quiescable path — break/snapshot at each micro-op).
+
+One definition ⇒ the two paths *cannot* diverge (no duplicated per-opcode logic to keep in sync), and
+the granularity becomes a *driver choice*, not a reimplementation.
+
+## Recommendation
+
+Adopt the **hybrid via single-definition micro-op sequences**, matching foundations' "68k
+instruction-stepped fast path but quiescable":
+
+1. Write each 68000 opcode **once** as a micro-op sequence (shared decode + ALU + ordered accesses).
+2. Default execution uses the **run-to-completion** driver — keeps ~3× the FSM's throughput, protecting
+   the headless/N-instance perf budget.
+3. On any debugger touch, **quiesce to bus-access (granularity B)** via the step-one-micro-op driver —
+   BlastEm-style sync-on-demand with a catch-up window. This gives break/snapshot/watchpoint precision
+   at every memory access, which covers agent-debugging needs for MVP.
+4. **Reserve per-master-clock (granularity C)** for the VDP (where dot/FIFO timing is the product) and
+   as a *deferred* 68k accuracy option behind the same micro-op framework — not built now.
+
+Rationale: the prototype shows the hybrid is correct (179 cases, byte-identical both ways) and that the
+single-definition structure removes its only real risk (path divergence), while the 3× perf gap makes a
+full always-on cycle-stepped 68k an unjustified tax for MVP-debuggable.
+
+## What ratification decides / next steps
+
+- **If accepted:** the next 68000 push builds the micro-op opcode framework (run-to-completion +
+  step-one-micro-op drivers) and grinds full opcode coverage against the full SingleStepTests suite;
+  the prototype's `step_instruction`/`AddWFsm` are replaced by that framework. The FC-aware `Bus68k` is
+  unified with the generic `crate::bus::Bus` (add FC to `BusEvent`).
+- **Open sub-questions for the owner:** (a) is bus-access (B) the right *default* quiesce granularity, or
+  do you want per-clock (C) available for the 68k from the start? (b) accept the one-definition/two-driver
+  structure, or prefer a single always-cycle-stepped driver (simpler code, ~3× slower)?
+
+**Phase 0 pauses here for ratification before any full opcode coverage** (per the approved scope).
