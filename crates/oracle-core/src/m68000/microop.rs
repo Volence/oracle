@@ -117,6 +117,17 @@ pub enum Operand {
     /// The `d16(An)`/`abs.w` extension word; captured by [`MicroOp::EaCalc`] **before** the refill that
     /// shifts it out of the queue.
     DispWord,
+    /// The address of the extension word: `regs.pc.wrapping_add(2)`. The PC-relative base for `d16(PC)` —
+    /// the displacement is relative to where the extension word lives (one word past the opcode), so the
+    /// [`MicroOp::EaCalc`] must run **before** any `Prefetch` advances `pc`.
+    PcOfExt,
+    /// The high half of an `abs.l` address: `(prefetch[1] as u32) << 16`. Captured from the queue **before**
+    /// the interleaved `Prefetch` that shifts the low word in.
+    ExtWordHi,
+    /// The low half of an `abs.l` address: `prefetch[1] as u32` (zero-extended, unmodified). Read from the
+    /// queue **after** the interleaved `Prefetch` — **never** from that prefetch's bus-return value (which
+    /// would double-count the queue).
+    ExtWordRaw,
 }
 
 /// Where a [`MicroOp::Alu`] result is written.
@@ -231,6 +242,9 @@ impl MicroState {
             Operand::ImmWord => regs.prefetch[1] as u32,
             Operand::Zero => 0,
             Operand::DispWord => sign_extend16(regs.prefetch[1]),
+            Operand::PcOfExt => regs.pc.wrapping_add(2),
+            Operand::ExtWordHi => (regs.prefetch[1] as u32) << 16,
+            Operand::ExtWordRaw => regs.prefetch[1] as u32,
         }
     }
 
@@ -871,6 +885,79 @@ mod tests {
         assert_eq!(
             st.scratch[1], 0x00FF_CC1A,
             "abs.w EA = sign_extend16(0xCC1A) masked to 24 bits"
+        );
+    }
+
+    #[test]
+    fn pc_of_ext_resolves_to_pc_plus_2() {
+        // Operand::PcOfExt = regs.pc.wrapping_add(2) — the PC-relative base is the *extension-word*
+        // address (the word after the opcode), captured by EaCalc BEFORE any Prefetch advances pc.
+        // d16(PC) shape: EaCalc(PcOfExt, ·, DispWord). base = pc+2, disp = sign_extend16(prefetch[1]).
+        let mut regs = regs();
+        regs.pc = 0x0000_0C00;
+        regs.prefetch = [0xD07A, 0xD8E2]; // disp 0xD8E2 → sign-extend → -10014
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::EaCalc {
+            base: Operand::PcOfExt,
+            index: Operand::Zero,
+            disp: Operand::DispWord,
+            dst: 0,
+        }]);
+
+        st.exec_one(&mut regs, &mut bus);
+
+        // (pc+2) + sign_extend16(disp) = 0xC02 + (-10014) = -6940 → 0xFFFF_E4E4 → masked 0xFF_E4E4.
+        assert_eq!(
+            st.scratch[0], 0x00FF_E4E4,
+            "d16(PC) EA = (pc+2) + sign_extend16(disp), masked to 24 bits"
+        );
+    }
+
+    #[test]
+    fn ext_word_hi_resolves_to_prefetch_word_1_shifted_left_16() {
+        // Operand::ExtWordHi = (prefetch[1] as u32) << 16 — the abs.l HIGH word capture, taken from the
+        // queue BEFORE the first interleaved Prefetch shifts the LOW word in.
+        let mut regs = regs();
+        regs.prefetch = [0xD079, 0xD1CC]; // abs.l high word = 0xD1CC
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::EaCalc {
+            base: Operand::Zero,
+            index: Operand::Zero,
+            disp: Operand::ExtWordHi,
+            dst: 0,
+        }]);
+
+        st.exec_one(&mut regs, &mut bus);
+
+        // (0xD1CC << 16) = 0xD1CC_0000 → masked to 24 bits = 0x00CC_0000.
+        assert_eq!(
+            st.scratch[0], 0x00CC_0000,
+            "abs.l HIGH = (prefetch[1] << 16) masked to 24 bits"
+        );
+    }
+
+    #[test]
+    fn ext_word_raw_resolves_to_prefetch_word_1_unmodified() {
+        // Operand::ExtWordRaw = prefetch[1] as u32 — the abs.l LOW word capture, read from the queue
+        // AFTER the interleaved Prefetch (NEVER from that prefetch's bus-return value). Combined with the
+        // already-captured HIGH it forms the full 24-bit address.
+        let mut regs = regs();
+        regs.prefetch = [0x0000, 0x9C2A]; // post-prefetch: prefetch[1] is now the LOW word 0x9C2A
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::EaCalc {
+            base: Operand::Scratch(0), // a prior EaCalc deposited the HIGH word here
+            index: Operand::Zero,
+            disp: Operand::ExtWordRaw,
+            dst: 1,
+        }]);
+        st.scratch[0] = 0x00CC_0000; // HIGH word from the first EaCalc
+
+        st.exec_one(&mut regs, &mut bus);
+
+        // 0x00CC_0000 + 0x9C2A = 0x00CC_9C2A.
+        assert_eq!(
+            st.scratch[1], 0x00CC_9C2A,
+            "abs.l ADDR = HIGH + ExtWordRaw (prefetch[1] low word)"
         );
     }
 

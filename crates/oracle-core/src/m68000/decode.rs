@@ -12,11 +12,12 @@ use super::microop::{AluOp, Cpu68000, Dest, MicroOp, MicroState, Operand, Size};
 use super::registers::Registers;
 
 /// Whether an EA `mode`/`reg` pair is an alterable-memory destination the builder currently covers:
-/// `(An)` (010), `(An)+` (011), `-(An)` (100), `d16(An)` (101), `abs.w` (111/000). The remaining
-/// alterable-memory modes (`d8(An,Xn)`, `abs.l`) land in later commits.
+/// `(An)` (010), `(An)+` (011), `-(An)` (100), `d16(An)` (101), `abs.w` (111/000), `abs.l` (111/001). The
+/// remaining alterable-memory mode (`d8(An,Xn)`) lands in a later commit. (PC-relative and `#imm` are not
+/// alterable, so never destinations.)
 #[inline]
 fn is_dst_mem_mode(mode: u16, reg: u16) -> bool {
-    matches!(mode, 2..=5) || (mode == 7 && reg == 0)
+    matches!(mode, 2..=5) || (mode == 7 && (reg == 0 || reg == 1))
 }
 
 /// Decode the opcode currently in `regs.prefetch[0]` into its micro-op recipe.
@@ -80,9 +81,10 @@ fn arith_w_dn_ea(opcode: u16, op: AluOp) -> MicroState {
 }
 
 /// `<op>.w <ea>,Dn` (`1xx1 ddd 0 01 mmm rrr`, register destination): `Dn = Dn <op> <ea>` — **Dn is the
-/// minuend** (`a`). Covers a no-bus source (`Dn`), a memory source (`(An)`), and an immediate (`#imm`) —
-/// the contrasting EA shapes that prove the abstraction generalizes. Remaining EA modes are out of slice
-/// for this push (decode panics, and the harness xfails them).
+/// minuend** (`a`). The source-EA builder ([`ea_src`]) covers the register-direct (`Dn`/`An`), indirect
+/// (`(An)`/`(An)+`/`-(An)`), displaced (`d16(An)`/`d16(PC)`), absolute (`abs.w`/`abs.l`) and immediate
+/// (`#imm`) modes. The indexed `d8(An,Xn)`/`d8(PC,Xn)` modes are out of slice for this push (decode panics,
+/// and the harness xfails them).
 fn arith_w_ea_dn(opcode: u16, op: AluOp) -> MicroState {
     let dn = ((opcode >> 9) & 7) as u8;
     let mode = (opcode >> 3) & 7;

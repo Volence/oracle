@@ -16,13 +16,18 @@ use super::bus68k::ADDR_MASK;
 use super::microop::{MicroOp, MicroState, Operand, Size, MAX_OPS};
 use super::registers::Registers;
 
-/// The computed effective address of an EaCalc-based memory EA mode (`d16(An)` = 101, `abs.w` = 111/000),
-/// masked to the 24-bit bus — the **single shared** address computation backing BOTH the framework (a
-/// debug-assert in [`MicroOp::EaCalc`]'s exec arm runs the recipe and compares; the per-mode agreement
-/// unit test in this module is the hard gate that the recipe's `EaCalc` deposits exactly this) AND the
-/// SST runner's [`covered`](../../../tests/singlestep_m68000.rs) parity filter (a word access to an odd EA
-/// is an address error — deferred → xfail). Pure: it reads only the address register and the displacement
-/// word in `regs.prefetch[1]` (live at decode time, before any refill shifts it out).
+/// The computed effective address of a **register-file** EaCalc-based memory EA mode (`d16(An)` = 101,
+/// `abs.w` = 111/000, `d16(PC)` = 111/010), masked to the 24-bit bus — the **single shared** address
+/// computation backing BOTH the framework (a debug-assert in [`MicroOp::EaCalc`]'s exec arm runs the recipe
+/// and compares; the per-mode agreement unit test in this module is the hard gate that the recipe's
+/// `EaCalc` deposits exactly this) AND the SST runner's
+/// [`covered`](../../../tests/singlestep_m68000.rs) parity filter (a word access to an odd EA is an address
+/// error — deferred → xfail). Pure: it reads only `pc` / an address register and the displacement word in
+/// `regs.prefetch[1]` (live at decode time, before any refill shifts it out).
+///
+/// `abs.l` (111/001) is deliberately **excluded**: its low address word lives in RAM (at `pc+4`), not the
+/// register file, so it cannot be derived from `regs` alone — both `covered()` and its agreement test
+/// assemble the two extension words directly.
 ///
 /// `size` is accepted for forward-compatibility (byte EAs may be odd and are never odd-filtered; word/long
 /// odd EAs xfail) but does not change the address arithmetic itself. Panics on a non-EaCalc mode — callers
@@ -37,6 +42,11 @@ pub fn compute_ea(opcode: u16, regs: &Registers, size: Size) -> u32 {
         (5, _) => regs.addr_reg(reg),
         // abs.w: sign_extend16(disp) alone (no base register).
         (7, 0) => 0,
+        // d16(PC): (pc+2) + sign_extend16(disp) — the base is the extension-word address. `regs.pc` is the
+        // opcode address (decode time, before any refill advances it), matching the recipe's `PcOfExt`.
+        // (abs.l (7/1) is NOT here: its low word lives in RAM, not the register file — its parity filter
+        // assembles the two words directly. compute_ea covers only the register-file EaCalc modes.)
+        (7, 2) => regs.pc.wrapping_add(2),
         _ => panic!("compute_ea: mode {mode}/{reg} is not an EaCalc-based EA"),
     };
     base.wrapping_add(disp) & ADDR_MASK
@@ -140,6 +150,11 @@ const WORD_STEP: i8 = 2;
 /// the operand-read value and the ALU result; the EA gets its own slot so a read and a write to a
 /// destination EA hit the same materialized address.
 const EA_SLOT: u8 = 2;
+
+/// Scratch slot holding the captured HIGH word of an `abs.l` address (the first of its two extension
+/// words), deposited before the interleaved `Prefetch` shifts the LOW word into the queue. Distinct from
+/// [`EA_SLOT`] so both halves are snapshot-visible mid-assembly.
+const HI_SLOT: u8 = 3;
 
 /// Decode a source EA mode into its [`SrcSeq`]. Covers `Dn` (0), `An` (1, word/long), `(An)` (2),
 /// `(An)+` (3), `-(An)` (4), `#imm` (7/4). Other modes land in later commits.
@@ -246,6 +261,25 @@ fn src_seq(mode: u16, reg: u8) -> SrcSeq {
             operand: Operand::Scratch(0),
             placement: AluPlacement::Last,
         },
+        // d16(PC) — program-counter indirect with displacement: EaCalc((pc+2) + sign_extend(disp)) → EA
+        // scratch BEFORE the first refill (the PC base is the extension-word address `pc+2`, and the disp is
+        // in prefetch[1] now; the refill would advance pc and shift the disp out). Same `[PF, READ, PF]`
+        // 2-word stream and 12 cycles as d16(An) — only the base leg differs (`PcOfExt` not `AddrReg`).
+        // PC-relative is source-only (not alterable); no destination form.
+        (7, 2) => SrcSeq {
+            ea_calc: Some(MicroOp::EaCalc {
+                base: Operand::PcOfExt,
+                index: Operand::Zero,
+                disp: Operand::DispWord,
+                dst: EA_SLOT,
+            }),
+            pre_read: [None, None],
+            read_addr: Some(Operand::Scratch(EA_SLOT)),
+            post_read: None,
+            prefetch: 2,
+            operand: Operand::Scratch(0),
+            placement: AluPlacement::Last,
+        },
         // #imm — the immediate is the queued word; the ALU captures `prefetch[1]` BEFORE the two refills
         // shift it out (placement First), then both refills run (the 2-word instruction's fetch).
         (7, 4) => SrcSeq {
@@ -261,15 +295,54 @@ fn src_seq(mode: u16, reg: u8) -> SrcSeq {
     }
 }
 
+/// Push the `abs.l` two-word address assembly into `buf`, leaving the full 24-bit effective address in
+/// [`EA_SLOT`]. The HIGH word is captured from `prefetch[1]` (via [`Operand::ExtWordHi`]) into [`HI_SLOT`]
+/// **before** the interleaved `Prefetch` shifts the LOW word into the queue; the LOW word is then read from
+/// `prefetch[1]` (via [`Operand::ExtWordRaw`]) **after** that refill — never from the refill's bus-return
+/// value (which would double-count the queue). Emits `[EaCalc(HI), Prefetch, EaCalc(ADDR)]` — the first of
+/// the instruction's three refills (the second and third bracket the operand access, placed by the caller).
+fn push_abs_l_addr(buf: &mut RecipeBuf) {
+    buf.push(MicroOp::EaCalc {
+        base: Operand::Zero,
+        index: Operand::Zero,
+        disp: Operand::ExtWordHi,
+        dst: HI_SLOT,
+    });
+    buf.push(MicroOp::Prefetch);
+    buf.push(MicroOp::EaCalc {
+        base: Operand::Scratch(HI_SLOT),
+        index: Operand::Zero,
+        disp: Operand::ExtWordRaw,
+        dst: EA_SLOT,
+    });
+}
+
 /// Push the source-EA sub-sequence for an `<ea>,Dn`-shaped instruction: the bus steps that fetch the
 /// source operand, interleaved with the prefetch refill(s) and the opcode's ALU. `make_alu` builds the
 /// `MicroOp::Alu` given the operand the ALU combines (a register operand, or `Scratch(0)` for a memory
 /// read) — the op/size/destination are the caller's, only the source operand and its placement are the
 /// EA's concern. The [`AluPlacement`] from [`src_seq`] is the load-bearing pivot the emitter honors.
 ///
-/// Covers source modes `Dn` (0), `An` (1, word/long), `(An)` (2), `#imm` (7/4). Other modes land in later
-/// commits.
+/// Covers source modes `Dn` (0), `An` (1, word/long), `(An)` (2), `(An)+` (3), `-(An)` (4), `d16(An)` (5),
+/// `abs.w` (7/0), `abs.l` (7/1), `d16(PC)` (7/2), `#imm` (7/4). Other modes land in later commits.
 pub fn ea_src(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Operand) -> MicroOp) {
+    // abs.l — a 3-word instruction: assemble the two-word address first (HIGH then, after a refill, LOW),
+    // then the `[READ, Prefetch]` operand access. The two-EaCalc interleave doesn't fit `SrcSeq`'s single
+    // `ea_calc` leg, so it's emitted directly here. Bus: [PF, PF, READ, PF].
+    if (mode, reg) == (7, 1) {
+        let alu = make_alu(Operand::Scratch(0));
+        push_abs_l_addr(buf); // [EaCalc(HI), Prefetch, EaCalc(ADDR)] — the first of three refills
+        buf.push(MicroOp::Prefetch); // the second refill, before the operand read (read = 2nd-to-last bus)
+        buf.push(MicroOp::Read {
+            addr: Operand::Scratch(EA_SLOT),
+            fc: super::microop::Fc::Data,
+            size: super::microop::Size::Word,
+            dst: 0,
+        });
+        buf.push(MicroOp::Prefetch); // the third (final) refill, trailing the operand read
+        buf.push(alu);
+        return;
+    }
     let seq = src_seq(mode, reg);
     let alu = make_alu(seq.operand);
     // The EA computation (if any) runs FIRST so a displacement leg captures `prefetch[1]` before any refill
@@ -326,10 +399,11 @@ pub fn ea_src(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Ope
 /// `MicroOp::Alu` given the memory operand (the minuend) and the scratch destination it writes; the write
 /// then stores that scratch slot at the same address.
 ///
-/// Covers C1's destination mode — `(An)` (2) — plus `(An)+` (3) and `-(An)` (4). Other alterable-memory
-/// modes land in later commits. For `(An)+`/`-(An)` the register side effect is an explicit `AdjustAddr`:
-/// predecrement runs **before** the read (so the read and write both hit the decremented address),
-/// postincrement runs **after** the write (so both hit the un-incremented address).
+/// Covers the alterable-memory destination modes `(An)` (2), `(An)+` (3), `-(An)` (4), `d16(An)` (5),
+/// `abs.w` (7/0) and `abs.l` (7/1); the indexed `d8(An,Xn)` mode lands in a later commit. For `(An)+`/`-(An)`
+/// the register side effect is an explicit `AdjustAddr`: predecrement runs **before** the read (so the read
+/// and write both hit the decremented address), postincrement runs **after** the write (so both hit the
+/// un-incremented address).
 pub fn ea_dst(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Operand) -> MicroOp) {
     // The alterable-memory destination skeleton: read old value → refill → ALU (memory is the minuend) →
     // write the result back, at the same `(An)` address. `(An)+`/`-(An)` wrap this with an `AdjustAddr`.
@@ -414,6 +488,26 @@ pub fn ea_dst(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Ope
             buf.push(MicroOp::Prefetch);
             buf.push(make_alu(Operand::Scratch(0)));
             buf.push(write_ea);
+        }
+        // abs.l: assemble the two-word address (HIGH, refill, LOW) into the EA scratch slot, then the RMW at
+        // that materialized EA. 3-word instruction → 3 Prefetch total; bus `[PF, PF, READ, PF, WRITE]`.
+        (7, 1) => {
+            push_abs_l_addr(buf); // [EaCalc(HI), Prefetch, EaCalc(ADDR)] — the first of three refills
+            buf.push(MicroOp::Prefetch); // the second refill, before the read (read = 2nd-to-last bus)
+            buf.push(MicroOp::Read {
+                addr: Operand::Scratch(EA_SLOT),
+                fc: super::microop::Fc::Data,
+                size: super::microop::Size::Word,
+                dst: 0,
+            });
+            buf.push(MicroOp::Prefetch); // the third (final) refill, trailing the read
+            buf.push(make_alu(Operand::Scratch(0)));
+            buf.push(MicroOp::Write {
+                addr: Operand::Scratch(EA_SLOT),
+                fc: super::microop::Fc::Data,
+                size: super::microop::Size::Word,
+                value: Operand::Scratch(1),
+            });
         }
         _ => todo!("ea_dst mode {mode}/{reg} not yet covered"),
     }
@@ -647,6 +741,106 @@ mod tests {
     }
 
     #[test]
+    fn builder_matches_literal_d16_pc_source() {
+        // <op>.w d16(PC),Dn (mode 7/2) →
+        //   [EaCalc(PcOfExt,·,DispWord)→2, Prefetch, Read(Scratch(2))→0, Prefetch, Alu(b=Scratch(0))].
+        // PC-relative base = pc+2 (the extension-word address), captured by EaCalc BEFORE the first refill;
+        // same `[PF, READ, PF]` 2-word stream as d16(An), only the base differs.
+        let literal = MicroState::from_ops(&[
+            MicroOp::EaCalc {
+                base: Operand::PcOfExt,
+                index: Operand::Zero,
+                disp: Operand::DispWord,
+                dst: 2,
+            },
+            MicroOp::Prefetch,
+            MicroOp::Read {
+                addr: Operand::Scratch(2),
+                fc: Fc::Data,
+                size: Size::Word,
+                dst: 0,
+            },
+            MicroOp::Prefetch,
+            ea_dn_alu(4, Operand::Scratch(0)),
+        ]);
+        assert_eq!(build_src(7, 2, 4), literal);
+    }
+
+    #[test]
+    fn builder_matches_literal_abs_l_source() {
+        // <op>.w (xxx).l,Dn (mode 7/1) — a 3-word instruction (3 Prefetch TOTAL). The address is assembled
+        // from two extension words: HIGH captured from prefetch[1] first, the interleaved Prefetch shifts
+        // the LOW word in, the second EaCalc adds it. The LOW word comes from prefetch[1] AFTER that refill,
+        // NEVER from the refill's bus-return value. Bus: [PF, PF, READ, PF].
+        //   [EaCalc(·,·,ExtWordHi)→3, Prefetch, EaCalc(Scratch(3),·,ExtWordRaw)→2, Prefetch,
+        //    Read(Scratch(2))→0, Prefetch, Alu(b=Scratch(0))].
+        let literal = MicroState::from_ops(&[
+            MicroOp::EaCalc {
+                base: Operand::Zero,
+                index: Operand::Zero,
+                disp: Operand::ExtWordHi,
+                dst: 3,
+            },
+            MicroOp::Prefetch,
+            MicroOp::EaCalc {
+                base: Operand::Scratch(3),
+                index: Operand::Zero,
+                disp: Operand::ExtWordRaw,
+                dst: 2,
+            },
+            MicroOp::Prefetch,
+            MicroOp::Read {
+                addr: Operand::Scratch(2),
+                fc: Fc::Data,
+                size: Size::Word,
+                dst: 0,
+            },
+            MicroOp::Prefetch,
+            ea_dn_alu(5, Operand::Scratch(0)),
+        ]);
+        assert_eq!(build_src(7, 1, 5), literal);
+    }
+
+    #[test]
+    fn builder_matches_literal_abs_l_destination() {
+        // <op>.w Dn,(xxx).l (mode 7/1) → the abs.l two-word EA assembly, then the RMW at the materialized
+        // EA: read old → final refill → ALU → write back. Bus: [PF, PF, READ, PF, WRITE].
+        //   [EaCalc(·,·,ExtWordHi)→3, Prefetch, EaCalc(Scratch(3),·,ExtWordRaw)→2, Prefetch,
+        //    Read(Scratch(2))→0, Prefetch, Alu, Write(Scratch(2))].
+        let literal = MicroState::from_ops(&[
+            MicroOp::EaCalc {
+                base: Operand::Zero,
+                index: Operand::Zero,
+                disp: Operand::ExtWordHi,
+                dst: 3,
+            },
+            MicroOp::Prefetch,
+            MicroOp::EaCalc {
+                base: Operand::Scratch(3),
+                index: Operand::Zero,
+                disp: Operand::ExtWordRaw,
+                dst: 2,
+            },
+            MicroOp::Prefetch,
+            MicroOp::Read {
+                addr: Operand::Scratch(2),
+                fc: Fc::Data,
+                size: Size::Word,
+                dst: 0,
+            },
+            MicroOp::Prefetch,
+            dn_ea_alu(6, Operand::Scratch(0)),
+            MicroOp::Write {
+                addr: Operand::Scratch(2),
+                fc: Fc::Data,
+                size: Size::Word,
+                value: Operand::Scratch(1),
+            },
+        ]);
+        assert_eq!(build_dst(7, 1, 6), literal);
+    }
+
+    #[test]
     fn builder_matches_literal_d16_an_destination() {
         // <op>.w Dn,d16(An) (mode 5) →
         //   [EaCalc(AddrReg,·,DispWord)→2, Prefetch, Read(Scratch(2))→0, Prefetch, Alu, Write(Scratch(2))].
@@ -830,5 +1024,124 @@ mod tests {
         assert_eq!(read, want, "dest read EA agrees with compute_ea");
         assert_eq!(write, want, "dest write EA agrees with compute_ea");
         assert_eq!(read, write, "dest read and write hit the same EA");
+    }
+
+    #[test]
+    fn ea_calc_recipe_agrees_with_compute_ea_d16_pc() {
+        // d16(PC),D4 — opcode 1101 100 0 01 111 010 = 0xD87A. EA = (pc+2) + sign_extend16(disp). The base
+        // is the extension-word address (pc+2), captured by EaCalc BEFORE any refill advances pc.
+        let opcode = 0xD87A;
+        for (disp, pc) in [
+            (0x0010u16, 0x0000_0C00u32), // small positive
+            (0xD8E2, 0x0000_0C00),       // large negative (-10014)
+            (0x7FFE, 0x0000_0040),       // large positive (even EA)
+            (0x8000, 0x0010_0000),       // large negative
+        ] {
+            let regs = Registers {
+                d: [0; 8],
+                a: [0; 7],
+                usp: 0,
+                ssp: 0,
+                pc,
+                sr: SR_SUPERVISOR,
+                prefetch: [opcode, disp],
+            };
+            let mut buf = RecipeBuf::new();
+            ea_src(&mut buf, 7, 2, |b| ea_dn_alu(4, b));
+            let recipe = buf.finish();
+            let got = read_addr_of(&recipe, &regs);
+            let want = compute_ea(opcode, &regs, Size::Word);
+            assert_eq!(got, want, "d16(PC) EaCalc vs compute_ea (disp={disp:#06x})");
+        }
+    }
+
+    #[test]
+    fn abs_l_recipe_addresses_the_two_extension_words() {
+        // (xxx).l,D4 — opcode 1101 100 0 01 111 001 = 0xD879. The address is (HIGH << 16) | LOW, where HIGH
+        // is prefetch[1] (captured first) and LOW is the word at pc+4 (shifted into prefetch[1] by the first
+        // interleaved refill, NOT taken from that refill's bus value). compute_ea cannot reach the LOW word
+        // (it lives in RAM, not the register file), so the expected EA is formed directly here from the two
+        // words and the recipe's operand-READ address is checked against it.
+        for (hi, lo) in [
+            (0x00CCu16, 0x9C2Au16), // 0xCC9C2A
+            (0x0010, 0x0000),       // 0x100000
+            (0x00FF, 0xFFFE),       // 0xFFFFFE (top of bus, even)
+            (0x1234, 0x5678),       // 0x345678 after the 24-bit mask
+        ] {
+            let pc = 0x0000_0C00u32;
+            let regs = Registers {
+                d: [0; 8],
+                a: [0; 7],
+                usp: 0,
+                ssp: 0,
+                pc,
+                sr: SR_SUPERVISOR,
+                prefetch: [0xD879, hi], // prefetch[1] = HIGH word
+            };
+            // The LOW word lives at pc+4 (big-endian); the first refill shifts it into prefetch[1].
+            let mut bus = FlatBus::new();
+            bus.poke(pc + 4, (lo >> 8) as u8);
+            bus.poke(pc + 5, (lo & 0xFF) as u8);
+
+            let mut buf = RecipeBuf::new();
+            ea_src(&mut buf, 7, 1, |b| ea_dn_alu(4, b));
+            let mut st = buf.finish();
+            st.run_to_completion(&mut regs.clone(), &mut bus);
+
+            let want = (((hi as u32) << 16) | lo as u32) & ADDR_MASK;
+            let got = bus
+                .log
+                .iter()
+                .find(|t| t.kind == TxKind::Read && t.fc == 5)
+                .expect("abs.l source makes one data read")
+                .addr;
+            assert_eq!(
+                got, want,
+                "abs.l EA = (HIGH << 16 | LOW) masked (hi={hi:#06x})"
+            );
+        }
+    }
+
+    #[test]
+    fn abs_l_dest_read_and_write_hit_the_same_assembled_ea() {
+        // Dn,(xxx).l — opcode 1101 100 1 01 111 001 = 0xD979. Read and write of the RMW both target the
+        // materialized abs.l EA (HIGH << 16 | LOW).
+        let hi = 0x0036u16;
+        let lo = 0xF50Cu16;
+        let pc = 0x0000_0C00u32;
+        let regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0,
+            ssp: 0,
+            pc,
+            sr: SR_SUPERVISOR,
+            prefetch: [0xD979, hi],
+        };
+        let mut bus = FlatBus::new();
+        bus.poke(pc + 4, (lo >> 8) as u8);
+        bus.poke(pc + 5, (lo & 0xFF) as u8);
+
+        let mut buf = RecipeBuf::new();
+        ea_dst(&mut buf, 7, 1, |a| dn_ea_alu(4, a));
+        let mut st = buf.finish();
+        st.run_to_completion(&mut regs.clone(), &mut bus);
+
+        let want = (((hi as u32) << 16) | lo as u32) & ADDR_MASK;
+        let read = bus
+            .log
+            .iter()
+            .find(|t| t.kind == TxKind::Read && t.fc == 5)
+            .unwrap()
+            .addr;
+        let write = bus
+            .log
+            .iter()
+            .find(|t| t.kind == TxKind::Write && t.fc == 5)
+            .unwrap()
+            .addr;
+        assert_eq!(read, want, "abs.l dest read EA");
+        assert_eq!(write, want, "abs.l dest write EA");
+        assert_eq!(read, write, "dest read and write hit the same abs.l EA");
     }
 }

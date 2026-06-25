@@ -1,11 +1,11 @@
 //! SingleStepTests runner for the 68000 micro-op framework.
 //!
 //! Drives the pinned, vendored SingleStepTests data (`tools/fetch-tests.sh`) for every covered `ADD.w` /
-//! `SUB.w` case — `Dn,<ea>` (alterable-memory destination: (An) / (An)+ / -(An) / d16(An) / abs.w) and
-//! `<ea>,Dn` (register destination) for source modes Dn / An / (An) / (An)+ / -(An) / d16(An) / abs.w /
-//! #imm — and asserts post regs/SR/RAM/prefetch, the cycle count, **and** the per-cycle bus-transaction
-//! stream, through *both* framework drivers (run-to-completion fast path and the step-one-micro-op quiesce
-//! path), which must also agree with each other.
+//! `SUB.w` case — `Dn,<ea>` (alterable-memory destination: (An) / (An)+ / -(An) / d16(An) / abs.w / abs.l)
+//! and `<ea>,Dn` (register destination) for source modes Dn / An / (An) / (An)+ / -(An) / d16(An) / abs.w /
+//! abs.l / d16(PC) / #imm — and asserts post regs/SR/RAM/prefetch, the cycle count, **and** the per-cycle
+//! bus-transaction stream, through *both* framework drivers (run-to-completion fast path and the
+//! step-one-micro-op quiesce path), which must also agree with each other.
 //!
 //! Versioned xfail manifest (slice scope — implemented later): odd-address word accesses (which raise an
 //! address-error exception), the `A7` form of the older `(An)` (mode 2) memory access, and the remaining EA
@@ -145,10 +145,31 @@ fn covered(opcode: u16, ini: &Value) -> bool {
     // for word, so parity is preserved). Filter on the actual accessed address.
     let even = |reg: usize| areg(reg) & 1 == 0;
     let even_predec = |reg: usize| areg(reg).wrapping_sub(2) & 1 == 0;
-    // For the EaCalc-based modes (`d16(An)` = 5, `abs.w` = 111/000) the accessed address is the shared
-    // `compute_ea` (the SAME helper the decoder's recipe is pinned to by the hard-gate agreement test);
-    // a word access to an odd EA is an address error → xfail.
+    // For the register-file EaCalc modes (`d16(An)` = 5, `abs.w` = 111/000, `d16(PC)` = 111/010) the
+    // accessed address is the shared `compute_ea` (the SAME helper the decoder's recipe is pinned to by the
+    // hard-gate agreement test); a word access to an odd EA is an address error → xfail.
     let even_computed = || compute_ea(opcode, &build_regs(ini), Size::Word) & 1 == 0;
+    // abs.l (111/001) assembles its address from TWO extension words: HIGH = prefetch[1], LOW = the word at
+    // pc+4 (which is NOT in the queue — it shifts in via the first refill). `compute_ea` can't reach the LOW
+    // word (it lives in RAM), so the parity filter assembles the full EA directly here from `ini`, exactly
+    // as the recipe's two-EaCalc interleave does. A word access to an odd EA is an address error → xfail.
+    let abs_l_ea = || {
+        let regs = build_regs(ini);
+        let hi = regs.prefetch[1] as u32;
+        let ram = |addr: u32| -> u8 {
+            ini["ram"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p.as_array().unwrap()[0].as_u64().unwrap() as u32 == addr)
+                .map(|p| p.as_array().unwrap()[1].as_u64().unwrap() as u8)
+                .unwrap_or(0)
+        };
+        let pc = regs.pc;
+        let lo = ((ram(pc + 4) as u32) << 8) | ram(pc + 5) as u32;
+        ((hi << 16) | lo) & 0x00FF_FFFF
+    };
+    let even_abs_l = || abs_l_ea() & 1 == 0;
     // <op>.w Dn,<ea> — memory destination (modes (An)=2, (An)+=3, -(An)=4).
     if opcode & 0xF1C0 == 0xD140 || opcode & 0xF1C0 == 0x9140 {
         let mode = (opcode >> 3) & 7;
@@ -164,6 +185,8 @@ fn covered(opcode: u16, ini: &Value) -> bool {
             5 => even_computed(),
             // abs.w (111/000) — computed EA (sign-extended ext word) must be even.
             7 if reg == 0 => even_computed(),
+            // abs.l (111/001) — two-word computed EA must be even.
+            7 if reg == 1 => even_abs_l(),
             // Other alterable-memory dest modes: out of slice this push.
             _ => false,
         };
@@ -185,8 +208,13 @@ fn covered(opcode: u16, ini: &Value) -> bool {
             4 => even_predec(reg),
             // d16(An) — computed EA (An + sign-extended disp) must be even.
             5 => even_computed(),
-            // abs.w (111/000) — computed EA must be even; #imm (111/100).
+            // abs.w (111/000) — computed EA must be even.
             7 if reg == 0 => even_computed(),
+            // abs.l (111/001) — two-word computed EA must be even.
+            7 if reg == 1 => even_abs_l(),
+            // d16(PC) (111/010) — computed EA (pc+2 + sign-extended disp) must be even. Source-only.
+            7 if reg == 2 => even_computed(),
+            // #imm (111/100).
             7 if reg == 4 => true,
             // Other EA modes: out of slice this push.
             _ => false,
@@ -262,8 +290,8 @@ fn add_sub_w_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 4900,
-        "expected ~4920 covered ADD.w + SUB.w cases (Dn,<ea> + <ea>,Dn for Dn/An/(An)/(An)+/-(An)/d16(An)/abs.w/#imm), ran {ran}"
+        ran >= 5040,
+        "expected ~5054 covered ADD.w + SUB.w cases (Dn,<ea> + <ea>,Dn for Dn/An/(An)/(An)+/-(An)/d16(An)/abs.w/abs.l/d16(PC)/#imm), ran {ran}"
     );
     eprintln!("SingleStepTests ADD.w+SUB.w: {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
