@@ -1,15 +1,16 @@
-//! SingleStepTests runner for the 68000 vertical slice.
+//! SingleStepTests runner for the 68000 micro-op framework.
 //!
 //! Drives the pinned, vendored SingleStepTests data (`tools/fetch-tests.sh`) for every clean
 //! `ADD.w Dn,(An)` case and asserts post regs/SR/RAM/prefetch, the cycle count, **and** the per-cycle
-//! bus-transaction stream — for *both* stepping models (instruction-stepped and the cycle-stepped FSM),
-//! which must also agree with each other.
+//! bus-transaction stream — through *both* framework drivers (run-to-completion fast path and the
+//! step-one-micro-op quiesce path), which must also agree with each other.
 //!
 //! Versioned xfail manifest (slice scope — implemented later): the `A7`/SP form (`An == 7`) and
 //! odd-address cases (which raise an address-error exception) are skipped. If the vendor data is
 //! missing, the test skips cleanly (run `tools/fetch-tests.sh`).
 
-use oracle_core::m68000::prototype::{step_instruction, AddWFsm, FlatBus, Transaction, TxKind};
+use oracle_core::m68000::bus68k::{FlatBus, Transaction, TxKind};
+use oracle_core::m68000::microop::{Cpu68000, Step};
 use oracle_core::m68000::registers::Registers;
 use serde_json::Value;
 use std::path::Path;
@@ -134,22 +135,38 @@ fn add_w_dn_an_matches_singlesteptests() {
         let length = t["length"].as_u64().unwrap() as u32;
         let expected = expected_transactions(t);
 
-        // Instruction-stepped path.
-        let mut regs = build_regs(ini);
+        // Driver 1 — run-to-completion (the default fast path).
+        let mut cpu = Cpu68000::new(build_regs(ini));
         let mut bus = build_bus(ini);
-        let cycles = step_instruction(&mut regs, &mut bus);
+        let cycles = cpu.run_instruction(&mut bus);
         assert_eq!(cycles, length, "cycle count [{}]", t["name"]);
-        assert_final(t, &regs, &bus);
+        assert_final(t, &cpu.regs, &bus);
         assert_eq!(bus.log, expected, "transactions [{}]", t["name"]);
 
-        // Cycle-stepped FSM path — must agree with both the suite and the instruction-stepped path.
-        let mut regs_fsm = build_regs(ini);
-        let mut bus_fsm = build_bus(ini);
-        let mut fsm = AddWFsm::new(&regs_fsm);
-        let cycles_fsm = fsm.run_to_completion(&mut regs_fsm, &mut bus_fsm);
-        assert_eq!(cycles_fsm, cycles, "fsm cycle count [{}]", t["name"]);
-        assert_eq!(regs_fsm, regs, "fsm final regs [{}]", t["name"]);
-        assert_eq!(bus_fsm.log, bus.log, "fsm transactions [{}]", t["name"]);
+        // Driver 2 — step-one-micro-op (the quiesce path); must agree with the suite and driver 1.
+        let mut cpu_step = Cpu68000::new(build_regs(ini));
+        let mut bus_step = build_bus(ini);
+        cpu_step.start_instruction();
+        let cycles_step = loop {
+            if let Step::Done(c) = cpu_step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(
+            cycles_step, cycles,
+            "step-driver cycle count [{}]",
+            t["name"]
+        );
+        assert_eq!(
+            cpu_step.regs, cpu.regs,
+            "step-driver final regs [{}]",
+            t["name"]
+        );
+        assert_eq!(
+            bus_step.log, bus.log,
+            "step-driver transactions [{}]",
+            t["name"]
+        );
 
         ran += 1;
     }
@@ -158,5 +175,5 @@ fn add_w_dn_an_matches_singlesteptests() {
         ran >= 150,
         "expected ~179 clean ADD.w Dn,(An) cases, ran {ran}"
     );
-    eprintln!("SingleStepTests ADD.w Dn,(An): {ran} cases passed (instruction-stepped + FSM, regs/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD.w Dn,(An): {ran} cases passed (both framework drivers, regs/RAM/prefetch/cycles/transactions)");
 }

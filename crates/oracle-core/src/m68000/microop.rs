@@ -11,7 +11,30 @@
 //! follow-up (Step 2).
 
 use super::bus68k::Bus68k;
-use super::registers::Registers;
+use super::registers::{Registers, CCR_C, CCR_N, CCR_V, CCR_X, CCR_Z};
+
+/// 16-bit `ADD` (`a + b`) → `(result, new CCR low byte)`. Sets X/N/Z/V/C per the 68000.
+fn add_w(a: u16, b: u16) -> (u16, u16) {
+    let sum = a as u32 + b as u32;
+    let result = sum as u16;
+    let am = a & 0x8000 != 0;
+    let bm = b & 0x8000 != 0;
+    let rm = result & 0x8000 != 0;
+    let mut ccr = 0u16;
+    if rm {
+        ccr |= CCR_N;
+    }
+    if result == 0 {
+        ccr |= CCR_Z;
+    }
+    if (am == bm) && (rm != am) {
+        ccr |= CCR_V;
+    }
+    if sum > 0xFFFF {
+        ccr |= CCR_C | CCR_X;
+    }
+    (result, ccr)
+}
 
 /// Maximum micro-ops in one opcode's recipe. Most opcodes need ≤ a handful; unbounded families
 /// (MOVEM-class) get a generator variant later. Grown as coverage requires.
@@ -32,11 +55,24 @@ pub enum Fc {
 }
 
 /// A value resolved at execution time — an address or an operand. Grows with addressing-mode coverage
-/// (data/address registers, immediates); for now a micro-op only references a scratch slot.
+/// (immediates, indexed modes); a micro-op references registers symbolically so the recipe stays a
+/// `Copy` template independent of live register contents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub enum Operand {
     /// A value computed by an earlier micro-op and stored in a scratch slot.
     Scratch(Slot),
+    /// The low word of data register `Dn`, zero-extended.
+    DataRegLow16(u8),
+    /// Address register `An` (the active A7 when `n == 7`) — used as a bus address.
+    AddrReg(u8),
+}
+
+/// An ALU operation a [`MicroOp::Alu`] performs (computing into scratch and updating the CCR). Grows with
+/// arithmetic/logic coverage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+pub enum AluOp {
+    /// 16-bit add: `dst = a + b`, setting X/N/Z/V/C.
+    AddW,
 }
 
 /// One resumable step. Bus-access steps emit a [`Transaction`](super::bus68k::Transaction) and cost
@@ -46,9 +82,21 @@ pub enum MicroOp {
     /// Read a word at `addr` (data/program per `fc`) into scratch slot `dst`.
     ReadWord { addr: Operand, fc: Fc, dst: Slot },
     /// Write the word `value` at `addr` (data/program per `fc`).
-    WriteWord { addr: Operand, fc: Fc, value: Operand },
+    WriteWord {
+        addr: Operand,
+        fc: Fc,
+        value: Operand,
+    },
     /// Refill the prefetch queue (read at `pc+4`), advance the queue and `pc` by one word.
     Prefetch,
+    /// Compute `op(a, b)` into scratch slot `dst` and update the CCR. An internal (overlapped) step —
+    /// no bus access, 0 standalone cycles.
+    Alu {
+        op: AluOp,
+        a: Operand,
+        b: Operand,
+        dst: Slot,
+    },
     /// Consume `cycles` master cycles with no bus access (compute / idle `n` cycles).
     Internal { cycles: u8 },
 }
@@ -87,9 +135,11 @@ impl MicroState {
     }
 
     /// Resolve an [`Operand`] to its concrete value at execution time.
-    fn resolve(&self, op: Operand) -> u32 {
+    fn resolve(&self, op: Operand, regs: &Registers) -> u32 {
         match op {
             Operand::Scratch(s) => self.scratch[s as usize],
+            Operand::DataRegLow16(n) => regs.d[n as usize] & 0xFFFF,
+            Operand::AddrReg(n) => regs.addr_reg(n as usize),
         }
     }
 
@@ -109,16 +159,26 @@ impl MicroState {
     pub fn exec_one(&mut self, regs: &mut Registers, bus: &mut impl Bus68k) -> u32 {
         let cycles = match self.ops[self.step as usize] {
             MicroOp::ReadWord { addr, fc, dst } => {
-                let address = self.resolve(addr);
+                let address = self.resolve(addr, regs);
                 let value = bus.read16(address, regs.fc(matches!(fc, Fc::Program)));
                 self.scratch[dst as usize] = value as u32;
                 4
             }
             MicroOp::WriteWord { addr, fc, value } => {
-                let address = self.resolve(addr);
-                let word = self.resolve(value) as u16;
+                let address = self.resolve(addr, regs);
+                let word = self.resolve(value, regs) as u16;
                 bus.write16(address, regs.fc(matches!(fc, Fc::Program)), word);
                 4
+            }
+            MicroOp::Alu { op, a, b, dst } => {
+                let lhs = self.resolve(a, regs) as u16;
+                let rhs = self.resolve(b, regs) as u16;
+                let (result, ccr) = match op {
+                    AluOp::AddW => add_w(lhs, rhs),
+                };
+                regs.sr = (regs.sr & 0xFF00) | ccr;
+                self.scratch[dst as usize] = result as u32;
+                0
             }
             MicroOp::Prefetch => {
                 let refill = bus.read16(regs.pc.wrapping_add(4), regs.fc(true));
@@ -311,6 +371,32 @@ mod tests {
             }],
             "prefetch is a supervisor-program (FC 6) word read at pc+4"
         );
+    }
+
+    #[test]
+    fn alu_add_w_computes_result_and_sets_flags() {
+        let mut regs = regs();
+        regs.d[5] = 0x020D_2596; // source Dn; low word 0x2596
+        regs.sr = 0x2717; // CCR dirty + supervisor; this add should clear the CCR
+        let mut bus = FlatBus::new();
+
+        let mut st = MicroState::from_ops(&[MicroOp::Alu {
+            op: AluOp::AddW,
+            a: Operand::DataRegLow16(5),
+            b: Operand::Scratch(0),
+            dst: 1,
+        }]);
+        st.scratch[0] = 0x3FE0; // operand
+
+        let cycles = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(
+            cycles, 0,
+            "ALU is internal/overlapped — 0 standalone cycles"
+        );
+        assert_eq!(st.scratch[1], 0x6576, "0x2596 + 0x3FE0");
+        assert_eq!(regs.sr, 0x2700, "CCR cleared, system byte preserved");
+        assert!(bus.log.is_empty(), "ALU touches no bus");
     }
 
     #[test]
