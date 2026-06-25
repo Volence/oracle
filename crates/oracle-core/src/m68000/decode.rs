@@ -229,6 +229,15 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     if opcode & 0xFFF0 == 0x4E40 {
         return trap_recipe(opcode);
     }
+    // CHK `<ea>,Dn` (`0100 ddd 110 mmm rrr`, opcode & 0xF1C0 == 0x4180) — bounds-check trap. Read the word
+    // bound from the source EA (all 11 legal source modes — An-direct is illegal for CHK and never appears),
+    // then `ChkTrap` signed-compares Dn.w against 0 and the bound, sets the CCR, and on out-of-bounds installs
+    // the standard 6-byte frame to vector 6 (the execution-time Shape-B abort). The opcode space (bits 8-6 =
+    // 110, high nibble 4, ddd any) is disjoint from JMP/JSR/RTS/RTR/RTE/TRAP/TRAPV (all 0x4Exx) and every arm
+    // above. An odd source EA word-faults into the E3 address-error frame (already coverable).
+    if opcode & 0xF1C0 == 0x4180 {
+        return chk_recipe(opcode);
+    }
     todo!("opcode {opcode:#06X} not yet decoded")
 }
 
@@ -1137,6 +1146,61 @@ fn trapv_recipe(regs: &Registers) -> MicroState {
     buf.push(MicroOp::Prefetch);
     push_standard_frame(&mut buf, TRAPV_SAVED_PC_SLOT, TRAPV_SAVE_SR_SLOT);
     vector_fetch_and_reload(&mut buf, 7 * 4);
+    buf.finish()
+}
+
+/// Scratch slot holding `CHK`'s `#imm` bound, captured from `prefetch[1]` BEFORE the two ext-word refills shift
+/// it out, so the `ChkTrap` can run LAST (after both prefetches, with `regs.pc` already at the saved return
+/// PC). Slot 0 — the same slot a memory-source `ea_src` deposits its read bound into; the `ChkTrap` reads it
+/// before any frame install seeds the saved-PC slot.
+const CHK_IMM_BOUND_SLOT: u8 = 0;
+
+/// `CHK <ea>,Dn` (`0100 ddd 110 mmm rrr`, opcode & 0xF1C0 == 0x4180): bounds-check `Dn.w` against `0` and the
+/// word operand at the source EA; on out-of-bounds, trap to vector 6 (the standard 6-byte frame). `Dn` is bits
+/// 11-9; the source EA is the usual `mode/reg` in bits 5-0 (all 11 legal modes — `An`-direct is illegal for
+/// CHK and never appears). Pinned to the vendored `CHK` SST stream (`4190` no-trap len 14; `4d91` Dn<0 trap n6
+/// len 44; `4396` Dn>bound trap n4 len 42; `45bc` `#imm` Dn>bound trap n4 len 42):
+///
+/// The recipe is `<ea_src reads the bound + the refill(s)>, ChkTrap{dn, bound}, Internal(6)`. The trailing
+/// `Internal(6)` is the no-trap tail (the `n6` of the no-trap `4190`/`4dbc` anchors). The `ChkTrap` must run
+/// **LAST** (after every prefetch) so the saved PC it stacks on a trap equals the live `regs.pc` (= pc + the
+/// instruction length). For memory modes (`ea_src` placement `Last`) and `Dn`-direct (`AfterPrefetch`) the
+/// shared `ea_src` already places the make-op last, so it routes through `ea_src` with `bound` = `Scratch(0)` /
+/// `DataRegLow16` respectively. For `#imm` (placement `First`, where `ea_src` would put the op BEFORE the
+/// refills) we emit the sequence directly: capture `prefetch[1]` (the immediate, zero-extended) into a scratch
+/// slot via an `EaCalc` BEFORE the two refills shift it out, run both refills, then `ChkTrap` last. (This is
+/// the one deviation from a literal `bound: ImmWord` — the data's prefetches-before-frame + `saved PC = regs.pc`
+/// require the op to run last, so the immediate is captured first; the bus stream / cycles are identical.)
+fn chk_recipe(opcode: u16) -> MicroState {
+    let dn = ((opcode >> 9) & 7) as u8;
+    let mode = (opcode >> 3) & 7;
+    let reg = (opcode & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    if (mode, reg) == (7, 4) {
+        // #imm: capture the immediate (prefetch[1], zero-extended) into scratch BEFORE the two refills shift it
+        // out, run both refills, then ChkTrap last (regs.pc = pc+4 = the saved return PC the frame stacks).
+        buf.push(MicroOp::EaCalc {
+            base: Operand::ImmWord,
+            index: Operand::Zero,
+            disp: Operand::Zero,
+            dst: CHK_IMM_BOUND_SLOT,
+        });
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::ChkTrap {
+            dn,
+            bound: Operand::Scratch(CHK_IMM_BOUND_SLOT),
+        });
+    } else {
+        // Memory / Dn-direct: ea_src places the make-op last (after the refill(s)), with the bound operand it
+        // resolves (Scratch(0) for memory, DataRegLow16 for Dn-direct).
+        ea_src(&mut buf, mode, reg, Size::Word, |bound| MicroOp::ChkTrap {
+            dn,
+            bound,
+        });
+    }
+    // The no-trap tail (n6) — overwritten in place by the CHK frame recipe if ChkTrap traps.
+    buf.push(MicroOp::Internal { cycles: 6 });
     buf.finish()
 }
 
@@ -6426,5 +6490,492 @@ mod tests {
             [16591, 29864],
             "queue reloaded at the handler"
         );
+    }
+
+    // --- CHK <ea>,Dn (bounds-check trap to vector 6) — the anchors `4190` (no-trap, len 14), `4d91` (Dn<0
+    // trap, n6, len 44), `4396` (Dn>bound trap, n4, len 42) and `45bc` (#imm trap, decode-time bound, n4, len
+    // 42), plus both-drivers agreement and a snapshot/restore anchor ACROSS the memory-source trap. The CHK
+    // trap reuses the Shape-B execution-time abort: ChkTrap rewrites the in-flight MicroState into the standard
+    // 6-byte frame. ---
+
+    /// The clean SST reference case `4190 [CHK (A0),D0] 210` (14 cycles): `D0.w = 0x02B9` (697) is in `[0,
+    /// bound]` (`bound = 0x1F86` = 8070, read from `(A0)`), so NO trap. The recipe is `[Read bound @ (A0) FC5,
+    /// Prefetch, ChkTrap (no-trap), Internal(6)]`: the FC5 bound read, the FC6 queue refill @ pc+4, then the
+    /// `n6` no-trap tail. N preserved (`D0 ≥ 0` and `≤ bound`), Z/V/C cleared, X kept → SR unchanged (0x2700).
+    fn setup_chk_no_trap() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                0x589e_02b9,
+                0x47e8_7091,
+                0xbcc1_8103,
+                0x474b_45ae,
+                0xf8de_da8b,
+                0x5893_2dbb,
+                0xb6b2_90b7,
+                0xd66a_cef7,
+            ],
+            a: [
+                0xd3f2_5326,
+                0x21bc_a45e,
+                0x6cac_d2ce,
+                0xd216_9ae4,
+                0x9c4a_47c7,
+                0xb09e_7856,
+                0x3c68_57cc,
+            ],
+            usp: 0x74de_ed40,
+            ssp: 0x800,
+            pc: 0xc00,
+            sr: 0x2700,
+            prefetch: [0x4190, 0xa880],
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            // The (A0) bound word @ 0xF25326 (A0 masked to 24 bits): 0x1F86 = 8070.
+            (15_880_998u32, 31u8),
+            (15_880_999, 134),
+            // The queue refill word @ pc+4 = 3076: 0x709A = 28826.
+            (3076, 112),
+            (3077, 154),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_chk_no_trap_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 15_880_998,
+                size: Size::Word,
+                value: 8070,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 28826,
+            },
+        ]
+    }
+
+    fn assert_chk_no_trap_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 0xc02, "pc advanced one word (no trap)");
+        assert_eq!(
+            cpu.regs.sr, 0x2700,
+            "SR unchanged: N preserved, Z/V/C clear, X kept"
+        );
+        assert_eq!(cpu.regs.ssp, 0x800, "no frame push (no trap)");
+        assert_eq!(cpu.regs.prefetch, [0xa880, 0x709a], "queue advanced");
+        assert_eq!(bus.log, expected_chk_no_trap_log());
+    }
+
+    /// The clean SST reference case `4d91 [CHK (A1),D6] 39` (44 cycles): `D6.w = 0x9C82` = −25470 < 0, so the
+    /// CHK exception is taken with a leading **n6** (Dn<0 path). `bound = 0xC327` (read from `(A1)`). The frame
+    /// (standard 6-byte, vector 6 @ 0x18) stacks saved PC = pc+2 = 3074 (= live `regs.pc` after the read +
+    /// refill) and SR = 0x2718 (the live SR with CHK's N just set: X kept, N=1, Z/V/C clear) to ssp−6 = 2042
+    /// (PCL @2046, SR @2042, PCH @2044, FC5), reads the vector @24/26 (FC5 → handler 0x2000), and reloads the
+    /// queue at 0x2000 (FC6): 0x817F @8192, 0xD880 @8194.
+    fn setup_chk_trap_low() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                0x502f_b282,
+                0x8018_b802,
+                0xe1c8_728e,
+                0xd600_ce77,
+                0xf788_7051,
+                0xe527_51c9,
+                0xcd3b_9c82,
+                0xba5e_629f,
+            ],
+            a: [
+                0x015b_5e6b,
+                0xf5f4_dfd2,
+                0x9c3b_01b5,
+                0xdfa8_556d,
+                0x7242_3f40,
+                0xb970_4f68,
+                0xb20d_144b,
+            ],
+            usp: 0x94ab_380a,
+            ssp: 0x800,
+            pc: 0xc00,
+            sr: 0x2711, // X=1, C=1 set — X must be KEPT, C cleared by CHK
+            prefetch: [0x4d91, 0x1f7c],
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            // The vector-6 longword @0x18 = 24: 0x00002000 (hi 0x0000 @24, lo 0x2000 = 8192 @26).
+            (24u32, 0u8),
+            (25, 0),
+            (26, 32),
+            (27, 0),
+            // The queue refill word @ pc+4 = 3076: 0xDBA7 = 56231.
+            (3076, 219),
+            (3077, 167),
+            // The handler code @8192: 0x817F, 0xD880.
+            (8192, 129),
+            (8193, 127),
+            (8194, 216),
+            (8195, 128),
+            // The (A1) bound word @ 0xF4DFD2 (A1 masked): 0xC327 = 49959.
+            (16_048_082, 195),
+            (16_048_083, 39),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_chk_trap_low_log() -> Vec<Transaction> {
+        vec![
+            // The FC5 bound read, then the FC6 queue refill.
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 16_048_082,
+                size: Size::Word,
+                value: 49959,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 56231,
+            },
+            // The standard frame, on-bus order PCL @ B+4, SR @ B+0, PCH @ B+2 (FC5).
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2046, // PCL @ ssp−6+4
+                size: Size::Word,
+                value: 3074, // pc + 2 = live regs.pc after the read + refill
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2042, // SR @ ssp−6
+                size: Size::Word,
+                value: 10008, // 0x2718 — the live SR with CHK's N set (X kept, Z/V/C clear)
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2044, // PCH @ ssp−6+2
+                size: Size::Word,
+                value: 0,
+            },
+            // The vector fetch (FC5 supervisor-data) — vector 6 @ 24/26.
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 24,
+                size: Size::Word,
+                value: 0,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 26,
+                size: Size::Word,
+                value: 8192,
+            },
+            // The handler reload (FC6 supervisor-program), with the n2 idle between (not in the stream).
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 8192,
+                size: Size::Word,
+                value: 33151,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 8194,
+                size: Size::Word,
+                value: 55424,
+            },
+        ]
+    }
+
+    fn assert_chk_trap_low_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.ssp, 2042, "SP pushed down by 6 (standard frame)");
+        assert_eq!(cpu.regs.pc, 8192, "pc landed at the vector-6 handler");
+        assert_eq!(
+            cpu.regs.sr, 0x2718,
+            "SR = live SR with CHK's N set (X kept, N=1, Z/V/C clear); S/T no-op on the data"
+        );
+        assert_eq!(cpu.regs.usp, 0x94ab_380a, "usp untouched");
+        assert_eq!(
+            cpu.regs.prefetch,
+            [0x817f, 0xd880],
+            "queue reloaded at the handler"
+        );
+        // The pushed frame on the supervisor stack (big-endian words).
+        assert_eq!(bus.peek(2042), 0x27, "SR hi @ B+0");
+        assert_eq!(bus.peek(2043), 0x18, "SR lo @ B+1 (CCR = X|N)");
+        assert_eq!(bus.peek(2046), 0x0C, "PCL hi @ B+4");
+        assert_eq!(bus.peek(2047), 0x02, "PCL lo @ B+5 (pc+2)");
+        assert_eq!(bus.log, expected_chk_trap_low_log());
+    }
+
+    /// The clean SST reference case `4396 [CHK (A6),D1] 75` (42 cycles): `D1.w = 0x0AF4` = 2804 > `bound`
+    /// (`0xE293` = −7533, read from `(A6)`), so the CHK exception is taken with a leading **n4** (Dn>bound
+    /// path — the two-predicate split: `over` picks n4, and N=0 because `Dn ≥ 0`). SR ends 0x2700 (X was 0).
+    fn setup_chk_trap_high() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                0x8afc_d71e,
+                0x5a62_0af4,
+                0xfe26_361e,
+                0xaaa0_ea31,
+                0x9851_329d,
+                0x9746_b4b2,
+                0xe126_a247,
+                0xd872_7324,
+            ],
+            a: [
+                0xb4fb_8f95,
+                0x3a48_1065,
+                0xd7d4_a0b0,
+                0x38ce_3485,
+                0x448c_8eb8,
+                0x437b_2dbe,
+                0x6455_6e9e,
+            ],
+            usp: 0x08c1_3126,
+            ssp: 0x800,
+            pc: 0xc00,
+            sr: 0x2703, // V=1, C=1 set — both cleared by CHK; X was 0
+            prefetch: [0x4396, 0x56d3],
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            (24u32, 0u8),
+            (25, 0),
+            (26, 32),
+            (27, 0),
+            (3076, 190),
+            (3077, 253),
+            (8192, 72),
+            (8193, 34),
+            (8194, 153),
+            (8195, 159),
+            // The (A6) bound word @ 0x556E9E (A6 masked): 0xE293 = 58003.
+            (5_598_878, 226),
+            (5_598_879, 147),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    /// The clean SST reference case `45bc [CHK #imm,D2] 21` (42 cycles): the bound is the **immediate**
+    /// (`prefetch[1] = 0xC45C` = −15268); `D2.w = 0x53D1` = 21457 > bound, so trap with a leading **n4**
+    /// (Dn>bound). The `#imm` recipe captures the immediate into scratch BEFORE the two refills, runs both
+    /// refills, then `ChkTrap` last — so saved PC = pc+4 = 3076 (= live `regs.pc` after both prefetches), NOT
+    /// pc+2: the decode-time bound still stacks the post-prefetch PC, the load-bearing `saved PC = regs.pc`.
+    fn setup_chk_imm_trap() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                0xddc1_536a,
+                0x44d7_73e9,
+                0x1549_53d1,
+                0xb2d6_01fb,
+                0xa6f9_79ad,
+                0x75fe_970d,
+                0xbb77_1e36,
+                0x1f10_b876,
+            ],
+            a: [
+                0x037a_1d9b,
+                0x448d_ffb3,
+                0x00a3_1a4f,
+                0x52c0_9625,
+                0xf439_8bf5,
+                0x1587_6490,
+                0xc1fa_829d,
+            ],
+            usp: 0x6a95_0b76,
+            ssp: 0x800,
+            pc: 0xc00,
+            sr: 0x2701, // C=1 set — cleared by CHK; X was 0
+            prefetch: [0x45bc, 0xc45c],
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            (24u32, 0u8),
+            (25, 0),
+            (26, 32),
+            (27, 0),
+            // The two queue refill words @ pc+4 = 3076 and @ pc+6 = 3078.
+            (3076, 217),
+            (3077, 223),
+            (3078, 223),
+            (3079, 94),
+            (8192, 175),
+            (8193, 165),
+            (8194, 182),
+            (8195, 94),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    #[test]
+    fn run_instruction_matches_chk_no_trap() {
+        let (mut cpu, mut bus) = setup_chk_no_trap();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(cycles, 14, "CHK no-trap = bound read + refill + n6 = 4+4+6");
+        assert_chk_no_trap_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_chk_no_trap() {
+        let (mut rtc, mut bus_rtc) = setup_chk_no_trap();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_chk_no_trap();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 14);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_chk_no_trap_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn run_instruction_matches_chk_trap_low() {
+        let (mut cpu, mut bus) = setup_chk_trap_low();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 44,
+            "CHK trap (Dn<0) = read + refill + n6 + 3 frame writes + 2 vector reads + 2 reloads + n2 = \
+             4+4+6+12+8+8+2 = 44"
+        );
+        assert_chk_trap_low_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_chk_trap_low() {
+        let (mut rtc, mut bus_rtc) = setup_chk_trap_low();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_chk_trap_low();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 44);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_chk_trap_low_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn run_instruction_matches_chk_trap_high() {
+        let (mut cpu, mut bus) = setup_chk_trap_high();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 42,
+            "CHK trap (Dn>bound) = read + refill + n4 + frame = 44 − 2 (n4 not n6) = 42"
+        );
+        assert_eq!(cpu.regs.ssp, 2042, "SP pushed down by 6");
+        assert_eq!(cpu.regs.pc, 8192, "pc landed at the vector-6 handler");
+        assert_eq!(
+            cpu.regs.sr, 0x2700,
+            "SR: N=0 (Dn>bound, Dn≥0), Z/V/C clear, X kept (was 0)"
+        );
+        assert_eq!(cpu.regs.prefetch, [0x4822, 0x999f], "queue reloaded");
+        assert_eq!(bus.peek(2042), 0x27, "SR hi @ B+0");
+        assert_eq!(bus.peek(2043), 0x00, "SR lo @ B+1 (CCR cleared)");
+        assert_eq!(bus.peek(2046), 0x0C, "PCL hi @ B+4");
+        assert_eq!(bus.peek(2047), 0x02, "PCL lo @ B+5 (pc+2)");
+    }
+
+    #[test]
+    fn run_instruction_matches_chk_imm_trap() {
+        let (mut cpu, mut bus) = setup_chk_imm_trap();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 42,
+            "CHK #imm trap (Dn>bound) = 2 refills + n4 + frame = 8+4+30 = 42"
+        );
+        assert_eq!(cpu.regs.ssp, 2042, "SP pushed down by 6");
+        assert_eq!(cpu.regs.pc, 8192, "pc landed at the vector-6 handler");
+        assert_eq!(cpu.regs.sr, 0x2700, "SR: N=0, Z/V/C clear, X kept (was 0)");
+        assert_eq!(cpu.regs.prefetch, [0xafa5, 0xb65e], "queue reloaded");
+        // saved PC = pc+4 = 3076 (the live regs.pc AFTER both #imm prefetches — the load-bearing
+        // "saved PC = regs.pc" even for the decode-time bound).
+        assert_eq!(bus.peek(2046), 0x0C, "PCL hi @ B+4");
+        assert_eq!(
+            bus.peek(2047),
+            0x04,
+            "PCL lo @ B+5 = pc+4 (after both prefetches)"
+        );
+    }
+
+    #[test]
+    fn both_drivers_match_chk_imm_trap() {
+        let (mut rtc, mut bus_rtc) = setup_chk_imm_trap();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_chk_imm_trap();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 42);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+    }
+
+    #[test]
+    fn chk_trap_quiescable_and_serializable_across_the_trap() {
+        // The snapshot/restore anchor ACROSS a memory-source CHK trap (`4d91`): quiesce at the faulting
+        // ChkTrap AND at every boundary of the installed 6-byte frame, snapshot the WHOLE CPU (the in-flight
+        // cursor — the original CHK recipe before the trap, then the rewritten frame recipe + seeded scratch
+        // after it), restore, resume, and get an identical result. Proves the in-place MicroState rewrite is
+        // serializable across the CHK trap (the Shape-B reuse).
+        let (mut rref, mut bref) = setup_chk_trap_low();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // The recipe before the trap is [Read, Prefetch, ChkTrap] (the ChkTrap aborts, returning Continue),
+        // then the 17-op frame ([Internal, EnterException, AdjustAddr, EaCalc, Write, Write, EaCalc, Write,
+        // LoadImm, Read, EaCalc, Read, Combine32, SetPc, Prefetch, Internal, Prefetch]) → 3 + 17 = 20
+        // step_micro_op calls (19 Continue + 1 Done). Snapshot after 0..=19 Continue boundaries — spanning the
+        // pre-trap reads, the ChkTrap abort itself, and the whole installed frame.
+        for pause_after in 0..=19 {
+            let (mut cpu, mut bus) = setup_chk_trap_low();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
     }
 }

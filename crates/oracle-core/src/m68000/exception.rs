@@ -121,6 +121,45 @@ pub(crate) fn build_address_error_frame(buf: &mut RecipeBuf) {
     vector_fetch_and_reload(buf, 3 * 4);
 }
 
+/// Scratch slot holding the `CHK` exception's stacked return PC (the live `regs.pc`, seeded by
+/// [`install_chk_trap`](super::microop::MicroState)). Slot 0 — the standard-frame saved-PC convention (matches
+/// `TRAP`/`TRAPV`), consumed by the frame's `PCL`/`PCH` writes.
+pub(crate) const CHK_SAVED_PC_SLOT: Slot = 0;
+
+/// Scratch slot holding the `CHK` exception's saved SR (the live SR at the trap — with CHK's just-set N),
+/// captured by the frame's [`MicroOp::EnterException`]. Slot 1 — distinct from the saved-PC slot so both
+/// survive until the push.
+const CHK_SAVE_SR_SLOT: Slot = 1;
+
+/// Build the standard **6-byte `CHK` frame** recipe (vector 6, `0x18`) — the Shape-B tail an out-of-bounds
+/// [`MicroOp::ChkTrap`] installs in place via [`install_chk_trap`](super::microop::MicroState). Pinned to the
+/// vendored `CHK` SST stream (`4d91` Dn<0 → n6 len 44; `4396` Dn>bound → n4 len 42; `45bc` `#imm` Dn>bound →
+/// n4 len 42):
+///
+/// - **Leading idle** of `idle` cycles (`n4` when `Dn>bound`, else `n6`), then the frame's
+///   [`MicroOp::EnterException`] (capture the live SR — already carrying CHK's N — and enter supervisor / clear
+///   T).
+/// - The shared [`push_standard_frame`] (`SSP -= 6`; the on-bus write order `PCL @ B+4`, `SR @ B+0`,
+///   `PCH @ B+2`, FC=5). The stacked PC is the live `regs.pc` (seeded by the install — `ChkTrap` runs after the
+///   source read + prefetch(es), so `regs.pc` already equals the saved return PC).
+/// - The shared [`vector_fetch_and_reload`] at vector `6*4 = 0x18`: two FC=5 vector reads, then the FC=6
+///   handler reload with the `n2` idle between.
+///
+/// Unlike `TRAP`/`TRAPV` (Shape-A, decode-emitted), the saved PC is NOT computed by a leading `TargetCalc` —
+/// it is seeded into [`CHK_SAVED_PC_SLOT`] by the execution-time install, so this builder takes only the idle
+/// width. Total 17 micro-ops (≤ `MAX_OPS`).
+pub(crate) fn build_chk_frame(buf: &mut RecipeBuf, idle: u8) {
+    // The leading idle (n4 if Dn>bound, else n6) — the only per-trap parameter.
+    buf.push(MicroOp::Internal { cycles: idle });
+    // Capture the live SR (with CHK's N) + enter supervisor (set S, clear T).
+    buf.push(MicroOp::EnterException {
+        save_sr: CHK_SAVE_SR_SLOT,
+    });
+    push_standard_frame(buf, CHK_SAVED_PC_SLOT, CHK_SAVE_SR_SLOT);
+    // The standard CHK vector is 6 (address 6*4 = 0x18).
+    vector_fetch_and_reload(buf, 6 * 4);
+}
+
 /// Scratch slot holding a transient standard-frame write address (`B+4` for `PCL`, then reused for `B+2` for
 /// `PCH`). Each address is consumed by its `Write` before the next `EaCalc` overwrites it. Distinct from a
 /// caller's `saved_pc`/`save_sr` slots so the frame values survive until they are pushed.

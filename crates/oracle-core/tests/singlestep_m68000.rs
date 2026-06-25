@@ -61,6 +61,7 @@ const FILES: &[&str] = &[
     "TRAP.json",
     "RTE.json",
     "TRAPV.json",
+    "CHK.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -354,6 +355,24 @@ fn trapv_covered(opcode: u16) -> bool {
     opcode == 0x4E76
 }
 
+/// Whether this opcode is a `CHK <ea>,Dn` the framework covers (`0100 ddd 110 mmm rrr`, opcode & 0xF1C0 ==
+/// 0x4180). The bounds-check reads a word from the source EA, then traps to vector 6 (the standard 6-byte
+/// frame) if `Dn.w < 0` or `Dn.w > bound`. All 11 legal source modes are in scope — `Dn` (0),
+/// `(An)`/`(An)+`/`-(An)`/`d16(An)`/`d8(An,Xn)` (2..=6), `abs.w`/`abs.l`/`d16(PC)`/`d8(PC,Xn)`/`#imm` (7/0..=4);
+/// `An`-direct (mode 1) is illegal for CHK and never appears in `CHK.json`. **No parity filter** — an odd
+/// source-EA word read is an address error the E3/E4 abort covers (the 14-byte vector-3 frame), so odd EAs
+/// PASS unchanged. Unlike the older ADD/SUB/MOVE families CHK has **no `(A7)` mode-2 deferral**: its `(A7)`
+/// plain-indirect bound read is in scope (it is a plain word read like any other — the pre-existing mode-2 A7
+/// convention was never applied to CHK).
+fn chk_covered(opcode: u16) -> bool {
+    if opcode & 0xF1C0 != 0x4180 {
+        return false;
+    }
+    let mode = (opcode >> 3) & 7;
+    let reg = opcode & 7;
+    matches!(mode, 0 | 2 | 3 | 4 | 5 | 6) || (mode == 7 && reg <= 4)
+}
+
 /// Whether the framework covers this case (else it is an xfail for this push). `ADD`/`SUB` in word, byte and
 /// long sizes, each in two forms — `Dn,<ea>` (memory dest; word ADD=0xD140/SUB=0x9140, byte ADD=0xD100/
 /// SUB=0x9100, long ADD=0xD180/SUB=0x9180) and `<ea>,Dn` (register dest; word ADD=0xD040/SUB=0x9040, byte
@@ -428,6 +447,12 @@ fn covered(opcode: u16, _ini: &Value) -> bool {
     // same standard 6-byte frame as TRAP but with a LEADING prefetch, and the S/T/A7 transform is structurally
     // exercised but a no-op on the data (see `trapv_covered`'s caveat).
     if trapv_covered(opcode) {
+        return true;
+    }
+    // CHK `<ea>,Dn` (0100 ddd 110 mmm rrr, opcode & 0xF1C0 == 0x4180) — bounds-check trap to vector 6. Every
+    // case is in scope across all 11 source modes (no-trap, Dn<0 / Dn>bound trap; odd source EAs are address
+    // errors the E3/E4 abort covers). `An`-direct is illegal for CHK (never appears); no `(A7)` mode-2 deferral.
+    if chk_covered(opcode) {
         return true;
     }
     // ADD/SUB. No parity filter (odd word/long EAs are address errors the E4 abort covers); the only
@@ -580,8 +605,8 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 149_248,
-        "expected 149248 covered cases — E4 flipped the odd-address xfails IN: the execution-time \
+        ran >= 157_313,
+        "expected 157313 covered cases — E4 flipped the odd-address xfails IN: the execution-time \
          address-error abort (E3) installs the group-0 14-byte vector-3 frame, so every odd word/long EA, odd \
          branch / jump / return target, and odd popped PC/return-address now PASSES through both drivers \
          unchanged (regs/SR/RAM/prefetch/cycles + the per-cycle transaction stream). The `(An)+`/`-(An)` \
@@ -595,10 +620,12 @@ fn add_sub_match_singlesteptests() {
          + MOVE.b 7796 + MOVE.l 7768 (MOVE 23310) + MOVEA.w 7923 + MOVEA.l 7931 (MOVEA 15854) + Bcc 8065 + \
          BSR 8065 (incl. the 35 `0x61FF` byte-form −1 odd-target cases) + JMP 8065 + JSR 8065 + RTS 8065 + \
          DBcc 8065 + RTR 8065 + RTE 8065 (all 8 fully in scope — every odd target/pop now covered) + TRAP \
-         8065 + TRAPV 8065 (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on \
-         the data — correctness-only). ran {ran}"
+         8065 + TRAPV 8065 + CHK 8065 (CHK = all 11 source modes, no-trap + both trap predicates; an odd \
+         source EA is the E3/E4 address-error frame, and there is no `(A7)` mode-2 deferral) (the \
+         always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
+         correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of

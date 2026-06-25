@@ -510,6 +510,21 @@ pub enum MicroOp {
     /// 0-cycle, non-bus, snapshot-visible internal step. (The `*toSR` write-back shares the same mask via its
     /// own op in a later commit.)
     LoadSr { value: Operand },
+    /// `CHK <ea>,Dn`'s compare-and-maybe-trap. Signed-compares the low word of `Dn` against `0` and against
+    /// `bound` (the resolved EA operand, sign-extended from its low 16). Sets the CCR: **Z=V=C cleared, X
+    /// kept**, and **N = 1 if `Dn.w < 0`, N = 0 if `Dn.w > bound`, else N PRESERVED** (the two predicates do
+    /// NOT coincide — when `bound < Dn.w < 0`, N is set by `Dn<0` while the idle below is chosen by `Dn>bound`;
+    /// confirmed against 547 vendored `neg&&over` cases). If `Dn.w < 0 || Dn.w > bound` the CHK exception is
+    /// taken: this reuses the Shape-B execution-time abort — `install_chk_trap` rewrites the in-flight
+    /// `MicroState` into the standard 6-byte frame to **vector 6** (`0x18`) with a leading idle of
+    /// **n4 if `Dn>bound` else n6**, saved PC =
+    /// the live `regs.pc` (this op runs AFTER `ea_src`'s prefetch(es), so `regs.pc` already equals the saved
+    /// return PC), and pushed SR = the live SR *with the N just set*. On the no-trap path it is a 0-cycle,
+    /// non-bus internal step (the recipe's trailing `Internal(6)` is the no-trap tail). `bound` is the scratch
+    /// slot for a memory operand, [`Operand::DataRegLow16`] for a `Dn`-direct bound, or a scratch slot holding
+    /// the captured immediate for `#imm` (the decode captures `prefetch[1]` before the refills shift it out, so
+    /// this op runs last in every mode). The same op handles every source mode.
+    ChkTrap { dn: u8, bound: Operand },
 }
 
 /// The in-flight micro-op cursor for one instruction: the recipe, how far through it we are, and the
@@ -627,6 +642,30 @@ impl MicroState {
         // (The save-SR slot is filled by the frame's EnterException, capturing the live SR at the fault.)
         let mut buf = RecipeBuf::new();
         build_address_error_frame(&mut buf);
+        let ops = buf.as_ops();
+        self.ops = [MicroOp::Internal { cycles: 0 }; MAX_OPS];
+        self.ops[..ops.len()].copy_from_slice(ops);
+        self.len = ops.len() as u8;
+        self.step = 0;
+        0
+    }
+
+    /// Install the `CHK` exception (vector 6) in place — the Shape-B reuse for a CHK out-of-bounds trap. The
+    /// faulting [`MicroOp::ChkTrap`] (which has already set the CCR — the live SR now carries CHK's N) rewrites
+    /// this in-flight `MicroState` into the standard **6-byte frame** recipe ([`build_chk_frame`]), seeded with
+    /// the live `regs.pc` as the stacked return PC. `idle` is the leading-idle width (`n4` when `Dn>bound`,
+    /// else `n6` — pinned to the vendored `4396`/`4d91` anchors). Like [`Self::install_address_error`] the
+    /// rewrite is a pure data operation (reassign `ops`/`len`, rewind `step`, preserve `cycles`/`opcode`); both
+    /// drivers keep looping over `exec_one` across the new recipe, and the rewritten state stays fixed-size
+    /// bincode (snapshot-safe across the trap). Returns 0 (the `ChkTrap` micro-op itself costs no cycles — the
+    /// leading idle inside the frame counts).
+    fn install_chk_trap(&mut self, regs: &Registers, idle: u8) -> u32 {
+        use super::ea::RecipeBuf;
+        use super::exception::{build_chk_frame, CHK_SAVED_PC_SLOT};
+        self.scratch[CHK_SAVED_PC_SLOT as usize] = regs.pc;
+        // (The save-SR slot is filled by the frame's EnterException, capturing the live SR — with CHK's N.)
+        let mut buf = RecipeBuf::new();
+        build_chk_frame(&mut buf, idle);
         let ops = buf.as_ops();
         self.ops = [MicroOp::Internal { cycles: 0 }; MAX_OPS];
         self.ops[..ops.len()].copy_from_slice(ops);
@@ -877,6 +916,31 @@ impl MicroState {
                 // S (supervisor→user) / T — so the recipe runs the +6 stack pop BEFORE this, and any later
                 // Prefetch reload follows the RESTORED mode's function code. NO bus, 0 cycles.
                 regs.sr = (self.resolve(value, regs) as u16) & SR_IMPLEMENTED;
+                0
+            }
+            MicroOp::ChkTrap { dn, bound } => {
+                // Signed compare Dn.w against 0 and the bound (both sign-extended from their low 16). The bound
+                // is resolved BEFORE any frame install (the install seeds the saved-PC slot, which may alias the
+                // bound slot for a memory/`#imm` operand — read first, write second).
+                let dn_val = (regs.d[dn as usize] & 0xFFFF) as i16 as i32;
+                let bound_val = (self.resolve(bound, regs) & 0xFFFF) as i16 as i32;
+                let neg = dn_val < 0;
+                let over = dn_val > bound_val;
+                // CCR: Z=V=C cleared, X kept; N = 1 if Dn<0, 0 if Dn>bound, else preserved.
+                let n_bit = if neg {
+                    CCR_N
+                } else if over {
+                    0
+                } else {
+                    regs.sr & CCR_N
+                };
+                regs.sr = (regs.sr & 0xFF00) | (regs.sr & CCR_X) | n_bit;
+                if neg || over {
+                    // Out of bounds → take the CHK exception (vector 6). The leading idle is n4 when Dn>bound,
+                    // else n6 (the two predicates differ — `over` picks the idle, `neg` already picked N).
+                    let idle = if over { 4 } else { 6 };
+                    return self.install_chk_trap(regs, idle);
+                }
                 0
             }
         };
