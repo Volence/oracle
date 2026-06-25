@@ -6,6 +6,11 @@
 
 /// SR / CCR bit masks (CCR is the low byte of SR).
 pub const SR_SUPERVISOR: u16 = 0x2000;
+/// The SR trace bit (T). Cleared on exception entry (so the handler does not single-step).
+pub const SR_TRACE: u16 = 0x8000;
+/// The implemented SR bits on the 68000 (T | S | I2-I0 | CCR = `0xA71F`). A full-SR write (`RTE`'s
+/// restore, the `*toSR` ops) masks the written value to these — the unimplemented bits read as 0.
+pub const SR_IMPLEMENTED: u16 = 0xA71F;
 pub const CCR_X: u16 = 0x10;
 pub const CCR_N: u16 = 0x08;
 pub const CCR_Z: u16 = 0x04;

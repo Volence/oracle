@@ -11,7 +11,7 @@
 //! follow-up (Step 2).
 
 use super::bus68k::{Bus68k, ADDR_MASK};
-use super::registers::{Registers, CCR_C, CCR_N, CCR_V, CCR_X, CCR_Z};
+use super::registers::{Registers, CCR_C, CCR_N, CCR_V, CCR_X, CCR_Z, SR_SUPERVISOR, SR_TRACE};
 
 /// Sign-extend a 16-bit value to 32 bits (the displacement / `abs.w` address extension).
 #[inline]
@@ -467,6 +467,18 @@ pub enum MicroOp {
     /// byte carries the saved CCR; only bits 4-0 are programmer-visible (bits 7-5 read as 0), so the mask is
     /// `0x1F` (pinned to the `RTR` data: a popped `0x..F6` lands `0x16`). A 0-cycle, non-bus internal step.
     LoadCcr { value: Operand },
+    /// Enter exception processing: capture the live SR into `scratch[save_sr]` (so the frame push can stack
+    /// the SR that was current *at the fault/trap*), then transform the running SR — **set S** (supervisor)
+    /// and **clear T** (trace): `scratch[save_sr] = sr; sr = (sr | SR_SUPERVISOR) & !SR_TRACE`. Setting S
+    /// routes the subsequent A7 accesses to the supervisor stack via the existing
+    /// [`Registers::addr_reg`](super::registers::Registers::addr_reg) S-bit selection (a user→supervisor
+    /// switch is a no-op on the all-supervisor vendored data, but the path is exercised structurally by every
+    /// frame push). A 0-cycle, non-bus, snapshot-visible internal step.
+    EnterException { save_sr: Slot },
+    /// Materialize a constant into a scratch slot: `scratch[dst] = value`. Used to stage a fixed bus address
+    /// (the exception vector address `(32+n)*4`) into scratch so a plain [`MicroOp::Read`] can fetch the
+    /// handler from it. A 0-cycle, non-bus, snapshot-visible internal step.
+    LoadImm { value: u32, dst: Slot },
 }
 
 /// The in-flight micro-op cursor for one instruction: the recipe, how far through it we are, and the
@@ -480,6 +492,10 @@ pub struct MicroState {
     /// Master cycles consumed by the micro-ops executed so far (the instruction total once done).
     cycles: u32,
     scratch: [u32; SCRATCH_SLOTS],
+    /// The original opcode word this recipe was decoded from (set by [`decode`](super::decode::decode);
+    /// `0` for hand-built recipes). Latched here because the address-error abort (E3) stacks it as the IR
+    /// field and folds it into the SSW — it must survive the prefetch shifts that overwrite `regs.prefetch`.
+    opcode: u16,
 }
 
 impl MicroState {
@@ -494,7 +510,14 @@ impl MicroState {
             step: 0,
             cycles: 0,
             scratch: [0; SCRATCH_SLOTS],
+            opcode: 0,
         }
+    }
+
+    /// Latch the original opcode this recipe was decoded from (see [`MicroState::opcode`]). Called by
+    /// [`decode`](super::decode::decode) right after building the recipe; hand-built recipes leave it `0`.
+    pub fn set_opcode(&mut self, opcode: u16) {
+        self.opcode = opcode;
     }
 
     /// True once every micro-op has executed.
@@ -726,6 +749,18 @@ impl MicroState {
                 // the CCR read as 0 (mask 0x1F, pinned to the RTR data). NO bus, 0 cycles.
                 let v = self.resolve(value, regs) as u16;
                 regs.sr = (regs.sr & 0xFF00) | (v & 0x1F);
+                0
+            }
+            MicroOp::EnterException { save_sr } => {
+                // Capture the live SR for the frame push, then enter supervisor (set S) and clear T. Setting S
+                // routes subsequent A7 accesses to the supervisor stack via `addr_reg`'s S-bit selection.
+                self.scratch[save_sr as usize] = regs.sr as u32;
+                regs.sr = (regs.sr | SR_SUPERVISOR) & !SR_TRACE;
+                0
+            }
+            MicroOp::LoadImm { value, dst } => {
+                // Materialize a constant (the vector address) into scratch so a plain Read can use it.
+                self.scratch[dst as usize] = value;
                 0
             }
         };
@@ -2275,5 +2310,59 @@ mod tests {
             regs.sr, 0x2700,
             "0x80 & 0x1F = 0 → CCR cleared, system byte kept"
         );
+    }
+
+    #[test]
+    fn enter_exception_captures_sr_then_sets_supervisor_clears_trace() {
+        // From a user-mode, trace-on SR (T set, S clear), EnterException stacks the LIVE SR into scratch and
+        // transforms the running SR: S set, T cleared, the rest preserved.
+        let mut regs = regs();
+        regs.sr = 0x8004; // T=1, S=0, Z=1
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::EnterException { save_sr: 1 }]);
+
+        let cycles = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(
+            cycles, 0,
+            "EnterException is an internal transform — 0 cycles"
+        );
+        assert_eq!(
+            st.scratch[1], 0x8004,
+            "the LIVE (pre-entry) SR was captured"
+        );
+        assert_eq!(
+            regs.sr, 0x2004,
+            "S set (0x2000), T cleared (0x8000), the rest preserved"
+        );
+        assert!(bus.log.is_empty(), "EnterException touches no bus");
+    }
+
+    #[test]
+    fn enter_exception_is_a_no_op_transform_when_already_supervisor_trace_off() {
+        // The all-supervisor vendored shape: S already 1, T already 0 → the running SR is unchanged, and the
+        // captured SR equals the original (the value the frame push then stacks).
+        let mut regs = regs();
+        regs.sr = 0x2707; // S=1, T=0 (a real TRAP anchor SR)
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::EnterException { save_sr: 1 }]);
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(st.scratch[1], 0x2707, "captured SR = the original");
+        assert_eq!(regs.sr, 0x2707, "already S=1/T=0 → no change");
+    }
+
+    #[test]
+    fn load_imm_materializes_a_constant_into_scratch() {
+        let mut regs = regs();
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::LoadImm { value: 128, dst: 3 }]);
+
+        let cycles = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(cycles, 0, "LoadImm is an internal compute — 0 cycles");
+        assert_eq!(st.scratch[3], 128, "the constant landed in scratch slot 3");
+        assert!(bus.log.is_empty(), "LoadImm touches no bus");
     }
 }

@@ -8,6 +8,7 @@
 pub mod bus68k;
 pub mod decode;
 pub mod ea;
+pub mod exception;
 pub mod microop;
 pub mod prototype;
 pub mod registers;

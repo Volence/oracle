@@ -8,6 +8,7 @@
 
 use super::bus68k::Bus68k;
 use super::ea::{ea_dst, ea_move, ea_movea, ea_src, RecipeBuf};
+use super::exception::{push_standard_frame, vector_fetch_and_reload};
 use super::microop::{condition_true, AluOp, Cpu68000, Dest, MicroOp, MicroState, Operand, Size};
 use super::registers::Registers;
 
@@ -64,9 +65,19 @@ fn is_movea(opcode: u16) -> bool {
     (opcode >> 14) == 0 && ((opcode >> 6) & 7) == 1 && matches!((opcode >> 12) & 3, 0b11 | 0b10)
 }
 
-/// Decode the opcode currently in `regs.prefetch[0]` into its micro-op recipe.
+/// Decode the opcode currently in `regs.prefetch[0]` into its micro-op recipe, latching the original opcode
+/// into the recipe ([`MicroState::set_opcode`]) so the address-error abort (E3) can stack it as the IR /
+/// SSW fields after the prefetch shifts have overwritten `regs.prefetch`.
 #[inline]
 pub fn decode(regs: &Registers) -> MicroState {
+    let mut state = decode_dispatch(regs);
+    state.set_opcode(regs.prefetch[0]);
+    state
+}
+
+/// The opcode → recipe dispatch (the `decode` body, wrapped by [`decode`] so every recipe is opcode-latched).
+#[inline]
+fn decode_dispatch(regs: &Registers) -> MicroState {
     let opcode = regs.prefetch[0];
     // MOVE.w (`00 11 RRR MMM mmm rrr`, dst_mode != 1) — the EA→EA composition. Decoded before the ADD/SUB
     // arms (the opcode spaces 0x3xxx and 0xD/0x9xxx are disjoint).
@@ -193,6 +204,14 @@ pub fn decode(regs: &Registers) -> MicroState {
     // `SetPc` + two-`Prefetch` reload. The opcode `0x4E77` is a single point in the 0x4Exx space.
     if opcode == 0x4E77 {
         return rtr_recipe();
+    }
+    // TRAP #n (`0100 1110 0100 nnnn`, 0x4E40 | n) — the cleanest standard 6-byte exception frame: an
+    // UNCONDITIONAL trap to vector `32 + n` (address `(32+n)*4`). NO leading prefetch (the queue is NOT
+    // refilled before the push — TRAP's first bus event is the `PCL` write); saved PC = `pc + 2`. The opcode
+    // space 0x4E40..=0x4E4F is a 16-point block disjoint from RTS/RTR (0x4E75/0x4E77), JSR (0x4E80) and JMP
+    // (0x4EC0).
+    if opcode & 0xFFF0 == 0x4E40 {
+        return trap_recipe(opcode);
     }
     todo!("opcode {opcode:#06X} not yet decoded")
 }
@@ -917,6 +936,52 @@ fn rtr_recipe() -> MicroState {
     });
     buf.push(MicroOp::Prefetch);
     buf.push(MicroOp::Prefetch);
+    buf.finish()
+}
+
+/// Scratch slot holding `TRAP`'s saved return PC (`pc + 2`), deposited by the leading [`MicroOp::TargetCalc`]
+/// and consumed by the standard frame's `PCL`/`PCH` writes. Slot 0.
+const TRAP_SAVED_PC_SLOT: u8 = 0;
+
+/// Scratch slot holding the SR captured at entry by [`MicroOp::EnterException`], stacked by the standard
+/// frame's `SR` write. Slot 1 — distinct from the saved-PC slot so both survive until the push.
+const TRAP_SAVE_SR_SLOT: u8 = 1;
+
+/// `TRAP #n` (`0100 1110 0100 nnnn`, 0x4E40 | n): the cleanest standard 6-byte exception entry — an
+/// UNCONDITIONAL trap to vector `32 + n` (address `(32 + n) * 4`). The recipe is the canonical Shape-A
+/// planned entry: capture the saved PC + SR, enter supervisor, push the standard frame, fetch the vector,
+/// reload the queue at the handler. Pinned to the vendored `TRAP` SST stream (`4e40`/`4e41`/`4e47`/`4e4f`,
+/// all **34 cyc**):
+///
+/// - **Saved PC = `pc + 2`**, captured by a leading [`MicroOp::TargetCalc`] (UNMASKED) BEFORE any prefetch.
+/// - **NO leading prefetch** — TRAP's first *bus* event is the `PCL` write; the only leading idle is the
+///   `n4` ([`MicroOp::Internal`]) before the push.
+/// - The standard frame writes in the on-bus order `PCL @ B+4`, `SR @ B+0`, `PCH @ B+2` (the 68000 microcode
+///   order; see [`push_standard_frame`]).
+/// - The vector reads are FC=5 (supervisor-data); the handler reload is two FC=6 prefetches with an `n2`
+///   idle between (see [`vector_fetch_and_reload`]).
+///
+/// All vendored cases start in supervisor mode (S=1, T=0), so the S/T transform of [`MicroOp::EnterException`]
+/// is structurally exercised but a no-op on the data — the caveat the runner documents.
+fn trap_recipe(opcode: u16) -> MicroState {
+    let n = (opcode & 0xF) as u32;
+    let vector_addr = (32 + n) * 4;
+    let mut buf = RecipeBuf::new();
+    // The saved return PC (pc + 2), UNMASKED, captured before any prefetch advances pc.
+    buf.push(MicroOp::TargetCalc {
+        base: Operand::PcPlus(2),
+        index: Operand::Zero,
+        disp: Operand::Zero,
+        dst: TRAP_SAVED_PC_SLOT,
+    });
+    // Capture the live SR + enter supervisor (set S, clear T).
+    buf.push(MicroOp::EnterException {
+        save_sr: TRAP_SAVE_SR_SLOT,
+    });
+    // The leading n4 idle — TRAP refills NO prefetch before the push (its first bus event is the PCL write).
+    buf.push(MicroOp::Internal { cycles: 4 });
+    push_standard_frame(&mut buf, TRAP_SAVED_PC_SLOT, TRAP_SAVE_SR_SLOT);
+    vector_fetch_and_reload(&mut buf, vector_addr);
     buf.finish()
 }
 
@@ -5321,5 +5386,192 @@ mod tests {
             ],
             "fall-through reads at pc+4 / pc+6 (no branch reload)"
         );
+    }
+
+    // --- TRAP (the standard 6-byte exception entry) — the F0 anchor `4e40 [TRAP Q] 7` (vector 32, len 34),
+    // plus both-drivers agreement and a snapshot/restore anchor ACROSS the whole entry. ---
+
+    /// The clean SST reference case `4e40 [TRAP Q] 7` (34 cycles): TRAP #0 → vector 32 (address 128). In
+    /// supervisor mode (S=1, T=0), ssp 2048, pc 3072, sr 9991. The handler vector longword @128 is
+    /// 0x00008800 (= 34816): hi 0x0000 @128, lo 0x8800 @130. The handler code is 0xFBA9 @34816, 0x8AED @34818.
+    /// The entry saves PC = pc+2 = 3074 and SR = 9991 to ssp−6 = 2042 (PCL @2046, SR @2042, PCH @2044), reads
+    /// the vector (FC=5), and reloads the queue at 34816 (FC=6). Final: ssp 2042, pc 34816, sr 9991 (S already
+    /// set / T already clear → the S/T transform is a no-op on the data), prefetch [0xFBA9, 0x8AED].
+    fn setup_trap() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [348_553_026, 50_768_304, 0, 0, 0, 0, 0, 0],
+            a: [488_340_641, 1_309_528_859, 0, 0, 0, 0, 0],
+            usp: 2_525_304_260,
+            ssp: 2048,
+            pc: 3072,
+            sr: 9991,
+            prefetch: [20032, 14968], // prefetch[0] = 0x4E40 (TRAP #0)
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            // The exception vector @128: 0x00008800 (hi 0x0000 @128, lo 0x8800 @130).
+            (128u32, 0u8),
+            (129, 0),
+            (130, 136),
+            (131, 0),
+            // The handler code @34816: 0xFBA9, 0x8AED.
+            (34816, 251),
+            (34817, 169),
+            (34818, 138),
+            (34819, 237),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_trap_log() -> Vec<Transaction> {
+        vec![
+            // The standard frame, on-bus order PCL @ B+4, SR @ B+0, PCH @ B+2 (FC=5).
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2046, // PCL @ ssp−6+4
+                size: Size::Word,
+                value: 3074, // pc + 2
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2042, // SR @ ssp−6
+                size: Size::Word,
+                value: 9991,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2044, // PCH @ ssp−6+2
+                size: Size::Word,
+                value: 0,
+            },
+            // The vector fetch (FC=5 supervisor-data).
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 128, // vector address (32*4)
+                size: Size::Word,
+                value: 0,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 130, // vector address + 2
+                size: Size::Word,
+                value: 34816,
+            },
+            // The handler reload (FC=6 supervisor-program), with the n2 idle between (not in the stream).
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 34816,
+                size: Size::Word,
+                value: 64425, // 0xFBA9
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 34818,
+                size: Size::Word,
+                value: 35565, // 0x8AED
+            },
+        ]
+    }
+
+    fn assert_trap_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(
+            cpu.regs.ssp, 2042,
+            "SP pushed down by 6 (the standard frame)"
+        );
+        assert_eq!(
+            cpu.regs.pc, 34816,
+            "pc landed at the handler (vector target)"
+        );
+        assert_eq!(
+            cpu.regs.sr, 9991,
+            "SR unchanged (already S=1/T=0 — the transform is a no-op on the data)"
+        );
+        assert_eq!(cpu.regs.usp, 2_525_304_260, "usp untouched");
+        assert_eq!(
+            cpu.regs.prefetch,
+            [64425, 35565],
+            "queue reloaded at the handler"
+        );
+        // The pushed frame on the supervisor stack (big-endian words).
+        assert_eq!(bus.peek(2042), 0x27, "SR hi @ B+0");
+        assert_eq!(bus.peek(2043), 0x07, "SR lo @ B+1");
+        assert_eq!(bus.peek(2044), 0x00, "PCH hi @ B+2");
+        assert_eq!(bus.peek(2045), 0x00, "PCH lo @ B+3");
+        assert_eq!(bus.peek(2046), 0x0C, "PCL hi @ B+4");
+        assert_eq!(bus.peek(2047), 0x02, "PCL lo @ B+5");
+        assert_eq!(bus.log, expected_trap_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_trap() {
+        let (mut cpu, mut bus) = setup_trap();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 34,
+            "TRAP = n4 + 3 frame writes + 2 vector reads + 2 handler reloads + n2 = 4+12+8+8+2 = 34"
+        );
+        assert_trap_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_trap() {
+        let (mut rtc, mut bus_rtc) = setup_trap();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_trap();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 34);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_trap_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn trap_quiescable_and_serializable_across_the_entry() {
+        // The snapshot/restore anchor ACROSS a TRAP entry — the supervisor-entry transform, the standard
+        // frame push (AdjustAddr SP−6, the three reordered writes), the FC=5 vector fetch, and the FC=6
+        // handler reload — the whole CPU (incl. the in-flight cursor and its scratch slots: the saved PC/SR,
+        // the frame addresses, the vector address, the assembled handler) round-trips at every micro-op
+        // boundary.
+        let (mut rref, mut bref) = setup_trap();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 18 micro-ops (TargetCalc, EnterException, Internal, AdjustAddr, EaCalc, Write, Write, EaCalc, Write,
+        // LoadImm, Read, EaCalc, Read, Combine32, SetPc, Prefetch, Internal, Prefetch) → 0..=17.
+        for pause_after in 0..=17 {
+            let (mut cpu, mut bus) = setup_trap();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
     }
 }
