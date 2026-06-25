@@ -51,6 +51,7 @@ const FILES: &[&str] = &[
     "MOVEA.w.json",
     "MOVEA.l.json",
     "Bcc.json",
+    "BSR.json",
     "JMP.json",
 ];
 
@@ -444,6 +445,37 @@ fn bcc_in_scope(opcode: u16, ini: &Value) -> bool {
     target & 1 == 0 // even target is in scope; odd target is an address error → xfail
 }
 
+/// Whether this opcode is a `BSR` the framework covers (`0110 0001 dddddddd`, 0x61xx; cc == 1 — the BSR
+/// encoding, decoded as its own arm). `BSR.json` carries `BSR.b`/`BSR.w` (`disp8 != 0xFF`) plus the 35 cases
+/// of the 68020 long-displacement form `0x61FF`, deferred to `bsr_in_scope`.
+fn bsr_covered(opcode: u16) -> bool {
+    opcode & 0xFF00 == 0x6100
+}
+
+/// The `BSR` scope/parity filter (called once `bsr_covered` matches). Clean iff the form is byte/word
+/// (`disp8 != 0xFF`) AND the (always-taken) target is **even**. `disp8 == 0xFF` is the 68020 long-displacement
+/// form — an address-error trap on the 68000 (the documented deferred class, 35 cases) → xfail. An odd target
+/// raises an address error (the deferred odd-address class) → xfail. The target is `pc + 2 + sign_extend(disp)`
+/// (relative to the extension-word address `pc + 2`), where `disp` is the opcode's low byte (byte form,
+/// `disp8 != 0`) or the extension word `prefetch[1]` sign-extended (word form, `disp8 == 0`).
+fn bsr_in_scope(opcode: u16, ini: &Value) -> bool {
+    let disp8 = opcode & 0xFF;
+    if disp8 == 0xFF {
+        return false; // BSR.l long-displacement (0x61FF) — address-error trap → xfail
+    }
+    let pc = u32f(ini, "pc");
+    let disp = if disp8 == 0 {
+        // word form: the 16-bit displacement is the extension word, sign-extended.
+        let ext = ini["prefetch"].as_array().unwrap()[1].as_u64().unwrap() as u16;
+        ext as i16 as i32 as u32
+    } else {
+        // byte form: the opcode's low byte, sign-extended.
+        disp8 as u8 as i8 as i32 as u32
+    };
+    let target = pc.wrapping_add(2).wrapping_add(disp);
+    target & 1 == 0 // even target is in scope; odd target is an address error → xfail
+}
+
 /// Whether this opcode is a `JMP <control ea>` the framework covers (`0100 1110 11 mmm rrr`, 0x4EC0 | ea):
 /// the seven 68000 control addressing modes — `(An)` 010, `(d16,An)` 101, `(d8,An,Xn)` 110, `abs.w` 111/0,
 /// `abs.l` 111/1, `(d16,PC)` 111/2, `(d8,PC,Xn)` 111/3. (`JMP` accepts no data-register / `(An)+` / `-(An)` /
@@ -530,6 +562,11 @@ fn covered(opcode: u16, ini: &Value) -> bool {
     // commit), excluded by `bcc_covered`.
     if bcc_covered(opcode) {
         return bcc_in_scope(opcode, ini);
+    }
+    // BSR (`0110 0001 dddddddd`, 0x61xx; cc == 1) — its own byte/word + even-target parity filter (a taken
+    // odd target is an address error → xfail; the 68020 long-disp form 0x61FF traps on the 68000 → xfail).
+    if bsr_covered(opcode) {
+        return bsr_in_scope(opcode, ini);
     }
     // JMP `<control ea>` (`0100 1110 11 mmm rrr`, 0x4EC0 | ea) — its own target-parity filter (an odd target
     // is an address error → xfail). The seven control addressing modes only.
@@ -796,8 +833,8 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 56371,
-        "expected 56371 covered cases — ADD/SUB (21790: word 5871 + byte 9974 + long 5945) plus \
+        ran >= 60456,
+        "expected 60456 covered cases — ADD/SUB (21790: word 5871 + byte 9974 + long 5945) plus \
          MOVE.w (3154: all 12 source modes × Dn + the alterable-memory dest modes \
          ((An)/(An)+/-(An)/d16(An)/d8(An,Xn)/abs.w/abs.l), even word EAs since an odd word access is an \
          address error, the (A7) mode-2 word form xfail) plus MOVE.b (7796: same modes, byte excludes \
@@ -810,9 +847,12 @@ fn add_sub_match_singlesteptests() {
          access is an address error, the (A7) mode-2 source form xfail; byte MOVEA is illegal (not covered) \
          plus Bcc/BRA (5865: cc != 1 (cc == 1 is BSR, a later commit); not-taken always clean (byte 8 cyc, \
          word 12 cyc), taken even-target in scope (10 cyc both forms), taken odd-target = address error → \
-         xfail) plus JMP (4259: the seven control modes — (An) 8 cyc, (d16,An)/abs.w/(d16,PC) 10 cyc, abs.l \
-         12 cyc, (d8,An,Xn)/(d8,PC,Xn) 14 cyc; even-target in scope (target UNMASKED — abs.l keeps its full \
-         32 bits), odd-target = address error → xfail), ran {ran}"
+         xfail) plus BSR (4085: byte/word form with an even (always-taken) target (18 cyc both forms — push \
+         hi @ SP−4 then lo @ SP−2, then the SetPc reload); odd-target = address error → xfail, and the 68020 \
+         long-disp form 0x61FF (35 cases) traps on the 68000 → xfail) plus JMP (4259: the seven control \
+         modes — (An) 8 cyc, (d16,An)/abs.w/(d16,PC) 10 cyc, abs.l 12 cyc, (d8,An,Xn)/(d8,PC,Xn) 14 cyc; \
+         even-target in scope (target UNMASKED — abs.l keeps its full 32 bits), odd-target = address error → \
+         xfail), ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+JMP (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }

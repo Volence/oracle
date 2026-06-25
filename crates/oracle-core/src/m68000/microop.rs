@@ -299,6 +299,11 @@ pub enum Operand {
     /// comes from the **opcode** word (`prefetch[0]`), NOT `prefetch[1]` (the word-form displacement). Used by
     /// a taken byte-form branch's [`MicroOp::TargetCalc`].
     BranchDisp8,
+    /// `regs.pc.wrapping_add(n)` — the **return-address base** of a `BSR`/`JSR` push (`n` = the instruction's
+    /// byte length: 2 for a byte-form BSR, 4 for a word-form BSR / a one-extension-word JSR, 6 for an `abs.l`
+    /// JSR). The pushed 32-bit return address is `pc + n` (`pc` is the opcode address at decode time — the
+    /// push runs **before** any `Prefetch` advances it), computed UNMASKED via [`MicroOp::TargetCalc`].
+    PcPlus(u8),
 }
 
 /// Where a [`MicroOp::Alu`] result is written.
@@ -520,6 +525,7 @@ impl MicroState {
             }
             Operand::BriefDisp8 => sign_extend8((regs.prefetch[1] & 0xFF) as u8),
             Operand::BranchDisp8 => sign_extend8((regs.prefetch[0] & 0xFF) as u8),
+            Operand::PcPlus(n) => regs.pc.wrapping_add(n as u32),
         }
     }
 
@@ -2102,5 +2108,59 @@ mod tests {
             ],
             "both reloads are supervisor-program (FC 6) word reads at target / target+2"
         );
+    }
+
+    // --- F2: the return-address base operand (PcPlus). ---
+
+    #[test]
+    fn pc_plus_resolves_to_pc_plus_n_unmasked() {
+        // Operand::PcPlus(n) = regs.pc.wrapping_add(n) — the BSR/JSR return-address base, computed UNMASKED
+        // (a pushed return address keeps its full 32 bits). Resolve via a TargetCalc (the unmasked twin of
+        // EaCalc) so the high bits survive. pc near the top of the 32-bit space + n wraps without masking.
+        let mut regs = regs();
+        regs.pc = 0xFFFF_FFFE;
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::TargetCalc {
+            base: Operand::PcPlus(4),
+            index: Operand::Zero,
+            disp: Operand::Zero,
+            dst: 0,
+        }]);
+
+        let cycles = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(cycles, 0, "PcPlus resolves inside a 0-cycle TargetCalc");
+        assert_eq!(
+            st.scratch[0], 0x0000_0002,
+            "0xFFFF_FFFE + 4 wraps to 0x0000_0002 (UNMASKED 32-bit add)"
+        );
+        assert!(bus.log.is_empty(), "TargetCalc touches no bus");
+    }
+
+    #[test]
+    fn pc_plus_2_and_4_select_byte_and_word_return_addresses() {
+        // The byte-form BSR pushes pc+2; the word-form BSR pushes pc+4. PcPlus(2)/PcPlus(4) pin both.
+        let mut regs = regs();
+        regs.pc = 0x0000_0C00;
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[
+            MicroOp::TargetCalc {
+                base: Operand::PcPlus(2),
+                index: Operand::Zero,
+                disp: Operand::Zero,
+                dst: 0,
+            },
+            MicroOp::TargetCalc {
+                base: Operand::PcPlus(4),
+                index: Operand::Zero,
+                disp: Operand::Zero,
+                dst: 1,
+            },
+        ]);
+
+        st.run_to_completion(&mut regs, &mut bus);
+
+        assert_eq!(st.scratch[0], 0x0000_0C02, "byte BSR return = pc + 2");
+        assert_eq!(st.scratch[1], 0x0000_0C04, "word BSR return = pc + 4");
     }
 }

@@ -147,6 +147,14 @@ pub fn decode(regs: &Registers) -> MicroState {
     if opcode >> 12 == 0b0110 && (opcode >> 8) & 0xF != 1 {
         return bcc_recipe(opcode, regs);
     }
+    // BSR (`0110 0001 dddddddd`, 0x61xx) — branch to subroutine: an UNCONDITIONAL PC-relative branch (cc == 1
+    // == the BSR encoding) that first PUSHES the 32-bit return address onto the stack, then branches. byte /
+    // word displacement like Bcc (`disp8 == 0` → word form). `disp8 == 0xFF` is the 68020 long-displacement
+    // form — an address-error trap on the 68000 (xfail), never decoded here. The opcode space 0x61xx is
+    // disjoint from Bcc (which excludes cc == 1) and from every arm above.
+    if opcode & 0xFF00 == 0x6100 {
+        return bsr_recipe(opcode);
+    }
     // JMP `<control ea>` (`0100 1110 11 mmm rrr`, 0x4EC0 | ea) — compute the UNMASKED branch target for the
     // control addressing mode, write the PC, and reload the prefetch queue. No push (that is JSR). Control
     // modes only: `(An)` 010, `(d16,An)` 101, `(d8,An,Xn)` 110, `abs.w` 111/0, `abs.l` 111/1, `(d16,PC)`
@@ -313,6 +321,98 @@ fn bcc_recipe(opcode: u16, regs: &Registers) -> MicroState {
             buf.push(MicroOp::Prefetch);
         }
     }
+    buf.finish()
+}
+
+/// Scratch slot holding a `BSR`'s 32-bit return address (`pc + N`), parked by a [`MicroOp::TargetCalc`] and
+/// consumed by the two return-address `Write`s (hi via [`Operand::ScratchHi16`], lo via [`Operand::Scratch`]).
+/// Slot 0 — the slot a `Bcc`/`JMP` `TargetCalc` also uses, but a BSR's TARGET lives in a separate slot so the
+/// return address survives until both push writes complete.
+const BSR_RETURN_SLOT: u8 = 0;
+
+/// Scratch slot holding a `BSR`'s 32-bit branch target (the `SetPc` source), distinct from
+/// [`BSR_RETURN_SLOT`] so the return address and the target are both snapshot-visible mid-push.
+const BSR_TARGET_SLOT: u8 = 1;
+
+/// Scratch slot holding the **address** of a `BSR` return-address push's LOW half (`SP + 2`), materialized
+/// once by an [`MicroOp::EaCalc`] (masked to the 24-bit bus — a real even bus address, distinct from the
+/// UNMASKED target) so the low-word `Write` hits exactly `SP + 2`. Slot 2 — distinct from the return / target
+/// slots so every value is snapshot-visible mid-push.
+const BSR_LO_ADDR_SLOT: u8 = 2;
+
+/// `BSR` (`0110 0001 dddddddd`, 0x61xx): branch to subroutine — an unconditional PC-relative branch that
+/// first **pushes the 32-bit return address** (`pc + N`, `N` = the instruction's byte length) onto the
+/// supervisor/user stack, then jumps to the target and reloads the prefetch queue. `disp8 = opcode & 0xFF`;
+/// `disp8 == 0` selects the **word** form (the 16-bit displacement is the extension word `prefetch[1]`,
+/// `N = 4`), else the **byte** form (`disp8` itself, `N = 2`). (`disp8 == 0xFF` is the 68020 long-disp form,
+/// an address-error trap on the 68000 — never decoded.) The target is `pc + 2 + sign_extend(disp)` (relative
+/// to the extension-word address `pc + 2`, the `PcOfExt` base), UNMASKED — a backward BSR.w can land `pc`
+/// with high bits set (e.g. `0xFFFF_DB42`), and only the bus reload address masks.
+///
+/// Recipe (pinned to the vendored `BSR` SST stream — `617c` byte / `6100` word, both **18 cyc**):
+/// `[TargetCalc(return = PcPlus(N)), TargetCalc(target = PcOfExt + disp), Internal(2), AdjustAddr(SP, −4),
+/// Write(hi @ SP−4), Write(lo @ SP−2), SetPc(target), Prefetch, Prefetch]`. The two `TargetCalc`s run FIRST
+/// (capturing the original `pc` / `prefetch[1]` before any refill); the push is **hi @ SP−4 then lo @ SP−2**
+/// (the order pinned to the data — the return address is stored big-endian across the two halves); then the
+/// `SetPc` + two `Prefetch`s reload the queue at the target. The `n2` idle is NOT in the asserted transaction
+/// stream (only the two writes + two reads are) — it only contributes to the 18-cycle total.
+fn bsr_recipe(opcode: u16) -> MicroState {
+    let byte_form = (opcode & 0xFF) != 0;
+    // The instruction byte length: a byte-form BSR is 2 bytes (return = pc+2), a word-form BSR is 4 (pc+4).
+    let n: u8 = if byte_form { 2 } else { 4 };
+    // The displacement leg: the opcode's low byte (byte form) or the extension word (word form).
+    let disp = if byte_form {
+        Operand::BranchDisp8
+    } else {
+        Operand::DispWord
+    };
+    let mut buf = RecipeBuf::new();
+    // Compute the return address (pc + N) and the branch target FIRST — both capture the original pc (and the
+    // word-form disp from prefetch[1]) before any Prefetch advances/shifts the queue. UNMASKED (TargetCalc).
+    buf.push(MicroOp::TargetCalc {
+        base: Operand::PcPlus(n),
+        index: Operand::Zero,
+        disp: Operand::Zero,
+        dst: BSR_RETURN_SLOT,
+    });
+    buf.push(MicroOp::TargetCalc {
+        base: Operand::PcOfExt,
+        index: Operand::Zero,
+        disp,
+        dst: BSR_TARGET_SLOT,
+    });
+    // The internal idle (n2; not in the asserted transaction stream — only the total cycle count).
+    buf.push(MicroOp::Internal { cycles: 2 });
+    // Pre-decrement the stack pointer by 4 (the long push). A7 now points at SP−4 (the new stack top).
+    buf.push(MicroOp::AdjustAddr { reg: 7, delta: -4 });
+    // Materialize the LOW half's address (SP−4 + 2 = SP−2) once, masked to the 24-bit bus (a real even bus
+    // address), so the low-word Write hits exactly SP−2.
+    buf.push(MicroOp::EaCalc {
+        base: Operand::AddrReg(7),
+        index: Operand::Zero,
+        disp: Operand::WordStep,
+        dst: BSR_LO_ADDR_SLOT,
+    });
+    // Write the return address as two words — hi @ SP−4 (AddrReg(7), the new SP) FIRST, lo @ SP−2 second
+    // (the order pinned to the data; the return address is stored big-endian across the two halves).
+    buf.push(MicroOp::Write {
+        addr: Operand::AddrReg(7),
+        fc: super::microop::Fc::Data,
+        size: Size::Word,
+        value: Operand::ScratchHi16(BSR_RETURN_SLOT),
+    });
+    buf.push(MicroOp::Write {
+        addr: Operand::Scratch(BSR_LO_ADDR_SLOT),
+        fc: super::microop::Fc::Data,
+        size: Size::Word,
+        value: Operand::Scratch(BSR_RETURN_SLOT),
+    });
+    // SetPc primes the queue reload at the target; the two Prefetch ops read at target / target+2 (FC 6).
+    buf.push(MicroOp::SetPc {
+        value: Operand::Scratch(BSR_TARGET_SLOT),
+    });
+    buf.push(MicroOp::Prefetch);
+    buf.push(MicroOp::Prefetch);
     buf.finish()
 }
 
@@ -3024,6 +3124,297 @@ mod tests {
         // 6 micro-ops (Combine32, Prefetch, Combine32, SetPc, Prefetch, Prefetch) → boundaries after 0..=5.
         for pause_after in 0..=5 {
             let (mut cpu, mut bus) = setup_jmp_absl();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    // --- F2: BSR — the return-address push (hi @ SP−4, lo @ SP−2) + the SetPc reload. Two anchors: a byte
+    // form (617c) and a word form (6100) whose target lands pc with high bits set (proves PC stays unmasked).
+
+    #[test]
+    fn bsr_decode_recognizes_cc1_and_disp_form() {
+        // BSR is the cc == 1 encoding of the branch family: `0110 0001 dddddddd` (0x61xx). `disp8 == 0` selects
+        // the word form (return = pc+4); else the byte form (return = pc+2). 0x61FF is the 68020 long-disp form
+        // (an address-error trap on the 68000) — excluded from the in-scope decode.
+        assert_eq!(0x617cu16 & 0xFF00, 0x6100, "0x617c is a BSR (cc == 1)");
+        assert_eq!(0x617cu16 & 0xFF, 0x7C, "0x617c disp8 = 0x7C (byte form)");
+        assert_eq!(0x6100u16 & 0xFF, 0x00, "0x6100 disp8 = 0 (word form)");
+        assert_eq!((0x6100u16 >> 8) & 0xF, 1, "0x6100 cc = 1 (BSR)");
+        // Bcc excludes cc == 1; BSR is its own arm.
+        assert_eq!((0x617cu16 >> 8) & 0xF, 1, "0x617c cc = 1 (BSR — not Bcc)");
+    }
+
+    /// The clean SST reference case `617c [BSR Q] 2` (byte form, even target, 18 cycles) — the F2 byte BSR
+    /// anchor. opcode 0x617c → byte form, disp8 0x7C = +124; target = pc+2+124 = 3198 (even). The return
+    /// address pushed is pc+2 = 3074. SP (ssp 2048, supervisor) pre-decrements by 4 to 2044; the return
+    /// address is stored big-endian: hi 0x0000 @ 2044, lo 0x0C02 (3074) @ 2046. The queue reloads at 3198/3200.
+    /// Bus: n2 (not in the stream) + [WRITE hi @ SP−4, WRITE lo @ SP−2, READ @ target, READ @ target+2].
+    fn setup_bsr_byte() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 2_254_788_228,
+            ssp: 2048,
+            pc: 3072,
+            sr: 9997,
+            prefetch: [24956, 64240],
+        };
+        let mut bus = FlatBus::new();
+        // The two target words at 3198 (12842 = 0x322A) and 3200 (44646 = 0xAE66).
+        for (a, v) in [(3198u32, 50u8), (3199, 42), (3200, 174), (3201, 102)] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_bsr_byte_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2044, // hi half @ SP−4
+                size: Size::Word,
+                value: 0, // high word of the return address 0x0C02
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2046, // lo half @ SP−2
+                size: Size::Word,
+                value: 3074, // low word of the return address (pc + 2)
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3198, // queue reload at the target
+                size: Size::Word,
+                value: 12842,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3200,
+                size: Size::Word,
+                value: 44646,
+            },
+        ]
+    }
+
+    fn assert_bsr_byte_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3198, "pc landed at the branch target");
+        assert_eq!(
+            cpu.regs.ssp, 2044,
+            "SP pre-decremented by 4 (the long push)"
+        );
+        assert_eq!(cpu.regs.sr, 9997, "SR unchanged (BSR affects no flags)");
+        assert_eq!(
+            cpu.regs.prefetch,
+            [12842, 44646],
+            "queue reloaded at target"
+        );
+        // The return address is stored big-endian across the two stack halves.
+        assert_eq!(bus.peek(2044), 0x00, "return hi byte 0");
+        assert_eq!(bus.peek(2045), 0x00, "return hi byte 1");
+        assert_eq!(bus.peek(2046), 0x0C, "return lo byte 0 (3074 >> 8)");
+        assert_eq!(bus.peek(2047), 0x02, "return lo byte 1 (3074 & 0xFF)");
+        assert_eq!(bus.log, expected_bsr_byte_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_bsr_byte() {
+        let (mut cpu, mut bus) = setup_bsr_byte();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 18,
+            "byte BSR = n2 + [WRITE.hi, WRITE.lo, PF, PF] = 18"
+        );
+        assert_bsr_byte_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_bsr_byte() {
+        let (mut rtc, mut bus_rtc) = setup_bsr_byte();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_bsr_byte();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 18);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_bsr_byte_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn bsr_byte_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The snapshot/restore anchor for the new push shape (the AdjustAddr SP−4, the two long-store writes,
+        // the SetPc + queue-reload tail) — the whole CPU (incl. the in-flight cursor and its scratch slots: the
+        // parked return address, target and lo-half address) round-trips at every micro-op boundary.
+        let (mut rref, mut bref) = setup_bsr_byte();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 10 micro-ops (TargetCalc, TargetCalc, Internal(2), AdjustAddr, EaCalc, Write, Write, SetPc, Prefetch,
+        // Prefetch) → boundaries after 0..=9.
+        for pause_after in 0..=9 {
+            let (mut cpu, mut bus) = setup_bsr_byte();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    /// The clean SST reference case `6100 [BSR #] 378` (word form, even target, 18 cycles) — the F2 word BSR
+    /// anchor, **and the unmasked-PC anchor**: the word displacement (`prefetch[1]` = 53056 → sign_extend16 →
+    /// −12480) sends the branch BACKWARD, landing `pc = 3074 − 12480 = 0xFFFF_DB42` (4294957890) with high bits
+    /// set. The reload reads at the masked bus address `0xFF_DB42` (16767810) while `pc` keeps its full 32 bits
+    /// — proving `SetPc`/`TargetCalc` do NOT mask (only the bus address `read16` masks). The return address is
+    /// pc+4 = 3076 (word form); SP 2048 → 2044, hi 0x0000 @ 2044, lo 0x0C04 (3076) @ 2046.
+    fn setup_bsr_word_unmasked() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 3_365_769_692,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10008,
+            prefetch: [24832, 53056],
+        };
+        let mut bus = FlatBus::new();
+        // The two target words at the MASKED bus address 0xFF_DB42 (16767810) / +2.
+        for (a, v) in [
+            (16_767_810u32, 179u8),
+            (16_767_811, 251),
+            (16_767_812, 65),
+            (16_767_813, 153),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_bsr_word_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2044,
+                size: Size::Word,
+                value: 0, // high word of the return address 0x0C04
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2046,
+                size: Size::Word,
+                value: 3076, // low word of the return address (pc + 4)
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 16_767_810, // the queue reload at the MASKED bus address (pc stays unmasked)
+                size: Size::Word,
+                value: 46075,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 16_767_812,
+                size: Size::Word,
+                value: 16793,
+            },
+        ]
+    }
+
+    fn assert_bsr_word_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(
+            cpu.regs.pc, 4_294_957_890,
+            "pc landed at 0xFFFF_DB42 — UNMASKED (high bits survive a backward BSR.w)"
+        );
+        assert_eq!(cpu.regs.ssp, 2044, "SP pre-decremented by 4");
+        assert_eq!(cpu.regs.sr, 10008, "SR unchanged");
+        assert_eq!(
+            cpu.regs.prefetch,
+            [46075, 16793],
+            "queue reloaded at target"
+        );
+        assert_eq!(bus.peek(2044), 0x00, "return hi byte 0");
+        assert_eq!(bus.peek(2046), 0x0C, "return lo byte 0 (3076 >> 8)");
+        assert_eq!(bus.peek(2047), 0x04, "return lo byte 1 (3076 & 0xFF)");
+        assert_eq!(bus.log, expected_bsr_word_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_bsr_word_unmasked() {
+        let (mut cpu, mut bus) = setup_bsr_word_unmasked();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 18,
+            "word BSR = n2 + [WRITE.hi, WRITE.lo, PF, PF] = 18"
+        );
+        assert_bsr_word_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_bsr_word_unmasked() {
+        let (mut rtc, mut bus_rtc) = setup_bsr_word_unmasked();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_bsr_word_unmasked();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 18);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_bsr_word_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn bsr_word_unmasked_quiescable_and_serializable_at_every_micro_op_boundary() {
+        let (mut rref, mut bref) = setup_bsr_word_unmasked();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        for pause_after in 0..=9 {
+            let (mut cpu, mut bus) = setup_bsr_word_unmasked();
             cpu.start_instruction();
             for _ in 0..pause_after {
                 assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
