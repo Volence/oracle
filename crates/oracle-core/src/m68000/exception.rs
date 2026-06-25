@@ -150,7 +150,9 @@ const CHK_SAVE_SR_SLOT: Slot = 1;
 /// width. Total 17 micro-ops (≤ `MAX_OPS`).
 pub(crate) fn build_chk_frame(buf: &mut RecipeBuf, idle: u8) {
     // The leading idle (n4 if Dn>bound, else n6) — the only per-trap parameter.
-    buf.push(MicroOp::Internal { cycles: idle });
+    buf.push(MicroOp::Internal {
+        cycles: idle as u16,
+    });
     // Capture the live SR (with CHK's N) + enter supervisor (set S, clear T).
     buf.push(MicroOp::EnterException {
         save_sr: CHK_SAVE_SR_SLOT,

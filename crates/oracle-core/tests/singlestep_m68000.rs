@@ -62,6 +62,10 @@ const FILES: &[&str] = &[
     "RTE.json",
     "TRAPV.json",
     "CHK.json",
+    "ANDItoSR.json",
+    "ORItoSR.json",
+    "EORItoSR.json",
+    "RESET.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -373,6 +377,27 @@ fn chk_covered(opcode: u16) -> bool {
     matches!(mode, 0 | 2 | 3 | 4 | 5 | 6) || (mode == 7 && reg <= 4)
 }
 
+/// Whether this opcode is one of the privileged immediate-to-SR logic ops the framework covers — `ANDItoSR`
+/// (`0x027C`), `ORItoSR` (`0x007C`), `EORItoSR` (`0x0A7C`), each the sole encoding in its file. Every vendored
+/// case starts in **supervisor** mode (the legal, SR-modifying path), so all are in scope.
+///
+/// CAVEAT (correctness-only, NOT gate-validated): the user-mode privilege-violation entry is implemented to
+/// spec but never appears in the vendored data (every case is supervisor). What IS gate-exercised — and is the
+/// load-bearing pin — is the **mid-instruction FC switch**: an `AND`/`EOR` that clears S makes the two
+/// re-prefetch reads run under the NEW (user) function code FC=2 instead of FC=6, pinned per case by the
+/// transaction stream.
+fn to_sr_covered(opcode: u16) -> bool {
+    matches!(opcode, 0x027C | 0x007C | 0x0A7C)
+}
+
+/// Whether this opcode is a `RESET` (`0x4E70`, the sole encoding; `RESET.json` carries only `0x4E70`). Every
+/// vendored case is in scope: all supervisor, length 132 (`n4` + `n124` reset-line idle + one queue refill),
+/// no register state change beyond the prefetch queue. The user-mode privilege-violation entry is
+/// correctness-only (not gated).
+fn reset_covered(opcode: u16) -> bool {
+    opcode == 0x4E70
+}
+
 /// Whether the framework covers this case (else it is an xfail for this push). `ADD`/`SUB` in word, byte and
 /// long sizes, each in two forms — `Dn,<ea>` (memory dest; word ADD=0xD140/SUB=0x9140, byte ADD=0xD100/
 /// SUB=0x9100, long ADD=0xD180/SUB=0x9180) and `<ea>,Dn` (register dest; word ADD=0xD040/SUB=0x9040, byte
@@ -453,6 +478,18 @@ fn covered(opcode: u16, _ini: &Value) -> bool {
     // case is in scope across all 11 source modes (no-trap, Dn<0 / Dn>bound trap; odd source EAs are address
     // errors the E3/E4 abort covers). `An`-direct is illegal for CHK (never appears); no `(A7)` mode-2 deferral.
     if chk_covered(opcode) {
+        return true;
+    }
+    // ANDItoSR / ORItoSR / EORItoSR (0x027C / 0x007C / 0x0A7C) — the privileged immediate-to-SR logic ops.
+    // Every vendored case is supervisor (the legal SR-modifying path, all length 20); the mid-instruction FC
+    // switch (S cleared → the two re-prefetch reads run under FC2 instead of FC6) IS gate-exercised, while the
+    // user-mode privilege-violation entry is correctness-only (see `to_sr_covered`'s caveat).
+    if to_sr_covered(opcode) {
+        return true;
+    }
+    // RESET (0x4E70) — assert the reset line for 124 cycles (length 132: n4 + n124 + one queue refill). Every
+    // vendored case is supervisor; the user-mode privilege-violation entry is correctness-only (not gated).
+    if reset_covered(opcode) {
         return true;
     }
     // ADD/SUB. No parity filter (odd word/long EAs are address errors the E4 abort covers); the only
@@ -605,11 +642,12 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 157_313,
-        "expected 157313 covered cases — E4 flipped the odd-address xfails IN: the execution-time \
-         address-error abort (E3) installs the group-0 14-byte vector-3 frame, so every odd word/long EA, odd \
-         branch / jump / return target, and odd popped PC/return-address now PASSES through both drivers \
-         unchanged (regs/SR/RAM/prefetch/cycles + the per-cycle transaction stream). The `(An)+`/`-(An)` \
+        ran >= 189_573,
+        "expected 189573 covered cases — E6 adds the four privileged-op files (ANDItoSR/ORItoSR/EORItoSR/RESET, \
+         8065 each, fully in scope = +32260 over E5's 157313). E4 had flipped the odd-address xfails IN: the \
+         execution-time address-error abort (E3) installs the group-0 14-byte vector-3 frame, so every odd \
+         word/long EA, odd branch / jump / return target, and odd popped PC/return-address PASSES through both \
+         drivers unchanged (regs/SR/RAM/prefetch/cycles + the per-cycle transaction stream). The `(An)+`/`-(An)` \
          auto-(in/de)crement register bump is committed BEFORE the faulting access (matching the data: a \
          read-fault leaves `(An)+` bumped and `-(An)` decremented, while the MOVE.l predecrement-store \
          write-fault leaves `-(An)` decremented by only 2 — the 68000's two-step long store). The only \
@@ -621,11 +659,13 @@ fn add_sub_match_singlesteptests() {
          BSR 8065 (incl. the 35 `0x61FF` byte-form −1 odd-target cases) + JMP 8065 + JSR 8065 + RTS 8065 + \
          DBcc 8065 + RTR 8065 + RTE 8065 (all 8 fully in scope — every odd target/pop now covered) + TRAP \
          8065 + TRAPV 8065 + CHK 8065 (CHK = all 11 source modes, no-trap + both trap predicates; an odd \
-         source EA is the E3/E4 address-error frame, and there is no `(A7)` mode-2 deferral) (the \
-         always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
+         source EA is the E3/E4 address-error frame, and there is no `(A7)` mode-2 deferral) + ANDItoSR 8065 \
+         + ORItoSR 8065 + EORItoSR 8065 (all supervisor — the mid-instruction FC switch S→user IS exercised; \
+         the user-mode privilege-violation entry is correctness-only) + RESET 8065 (n4 + n124 + one queue \
+         refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of

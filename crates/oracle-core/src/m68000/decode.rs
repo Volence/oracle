@@ -9,7 +9,9 @@
 use super::bus68k::Bus68k;
 use super::ea::{ea_dst, ea_move, ea_movea, ea_src, RecipeBuf};
 use super::exception::{push_standard_frame, vector_fetch_and_reload};
-use super::microop::{condition_true, AluOp, Cpu68000, Dest, MicroOp, MicroState, Operand, Size};
+use super::microop::{
+    condition_true, AluOp, Cpu68000, Dest, LogicOp, MicroOp, MicroState, Operand, Size,
+};
 use super::registers::{Registers, CCR_V};
 
 /// Scratch slot holding a `JMP`'s computed 32-bit branch target (the `SetPc` source). Slot 0 — the same
@@ -237,6 +239,28 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     // above. An odd source EA word-faults into the E3 address-error frame (already coverable).
     if opcode & 0xF1C0 == 0x4180 {
         return chk_recipe(opcode);
+    }
+    // ANDItoSR / ORItoSR / EORItoSR (`0x027C` / `0x007C` / `0x0A7C`) — the privileged immediate-to-SR logic
+    // ops (the whole 16-bit SR, masked to 0xA71F). Supervisor-only (every vendored case is supervisor; the
+    // user-mode privilege-violation entry is correctness-only, not gated). A mid-instruction SR change that
+    // clears S makes the instruction's own re-prefetch run under the NEW (user) function code — the FC
+    // sequence is the load-bearing pin. The three opcodes are single points in the 0x0xxx immediate space,
+    // disjoint from every arm above (which never matches the 0x0xxx high nibble).
+    if opcode == 0x027C {
+        return to_sr_recipe(LogicOp::And);
+    }
+    if opcode == 0x007C {
+        return to_sr_recipe(LogicOp::Or);
+    }
+    if opcode == 0x0A7C {
+        return to_sr_recipe(LogicOp::Eor);
+    }
+    // RESET (`0x4E70`) — assert the external reset line for 124 cycles. Privileged (supervisor-only; the
+    // user-mode privilege-violation entry is correctness-only, not gated). No state change beyond the queue
+    // refill: `[Internal(4), Internal(124), Prefetch]` (len 132). The opcode `0x4E70` is a single point in the
+    // 0x4Exx space, disjoint from JMP/JSR/RTS/RTR/RTE/TRAP/TRAPV (all other 0x4Exx) and every arm above.
+    if opcode == 0x4E70 {
+        return reset_recipe();
     }
     todo!("opcode {opcode:#06X} not yet decoded")
 }
@@ -1201,6 +1225,61 @@ fn chk_recipe(opcode: u16) -> MicroState {
     }
     // The no-trap tail (n6) — overwritten in place by the CHK frame recipe if ChkTrap traps.
     buf.push(MicroOp::Internal { cycles: 6 });
+    buf.finish()
+}
+
+/// Scratch slot holding the `*toSR` discard read's value (the word @ pc+4, read under the OLD function code
+/// before the SR write). Slot 0 — the value is never used (the re-prefetch reads it again from the bus), but
+/// a `Read` needs a destination slot.
+const TO_SR_DISCARD_SLOT: u8 = 0;
+
+/// `ANDItoSR` (`0x027C`) / `ORItoSR` (`0x007C`) / `EORItoSR` (`0x0A7C`): the privileged immediate-to-SR logic
+/// ops — `regs.sr = (regs.sr <op> imm) & SR_IMPLEMENTED` (`0xA71F`). Pinned to the vendored `*toSR` SST stream
+/// (`027c`/`007c`/`0a7c`, all **20 cyc**):
+///
+/// - **A leading discard `Read` @ pc+4** (FC=6 supervisor-program — the OLD mode), then `Internal(8)`, then
+///   [`MicroOp::SrLogic`] (which applies the op against `prefetch[1]` and may clear S/T), then **two
+///   `Prefetch`s**. The two re-prefetch reads (also @ pc+4 / pc+6) run under the **NEW** mode's function code:
+///   FC=6 if S stays set, **FC=2 (user-program)** if the SR write cleared S — the load-bearing FC pin.
+/// - The bus stream is `[r@pc+4, r@pc+4, r@pc+6]` (the discard read and the first re-prefetch hit the same
+///   address, with `prefetch` unchanged between them), 3 word reads + the n8 idle = 20 cycles. Final pc =
+///   pc+4, prefetch = `[word@pc+4, word@pc+6]`.
+///
+/// All vendored cases start supervisor (S=1, T=0); the user-mode privilege-violation entry is correctness-only
+/// (not gated). The `SrLogic` runs BEFORE the two re-prefetches so the FC switch is captured — exactly the
+/// inverse-ordered analog of `RTE`'s `LoadSr`-then-reload.
+fn to_sr_recipe(op: LogicOp) -> MicroState {
+    let mut buf = RecipeBuf::new();
+    // The leading discard read @ pc+4 (FC=6, the OLD mode) — its value is re-read by the first re-prefetch.
+    buf.push(MicroOp::Read {
+        addr: Operand::PcPlus(4),
+        fc: super::microop::Fc::Program,
+        size: Size::Word,
+        dst: TO_SR_DISCARD_SLOT,
+    });
+    buf.push(MicroOp::Internal { cycles: 8 });
+    // The SR write (masked 0xA71F) — may clear S/T, switching the function code of the two re-prefetches below.
+    buf.push(MicroOp::SrLogic {
+        op,
+        value: Operand::ImmWord,
+    });
+    // The two re-prefetch reads run under the NEW mode's FC (FC2 user-program if S cleared, else FC6).
+    buf.push(MicroOp::Prefetch);
+    buf.push(MicroOp::Prefetch);
+    buf.finish()
+}
+
+/// `RESET` (`0x4E70`): assert the external reset line for 124 cycles. Privileged (supervisor-only; the
+/// user-mode privilege-violation entry is correctness-only, not gated). Pinned to the vendored `RESET` SST
+/// stream (`4e70`, all **132 cyc**): `[Internal(4), Internal(124), Prefetch]` — an `n4` idle, the `n124`
+/// reset-line idle (the widened `u16` `Internal` cycle field), then one `Prefetch` queue refill (FC=6 @ pc+4,
+/// advancing pc by 2). No register state changes beyond the queue (4 + 124 + 4 = 132 cycles; bus stream a
+/// single FC=6 read @ pc+4).
+fn reset_recipe() -> MicroState {
+    let mut buf = RecipeBuf::new();
+    buf.push(MicroOp::Internal { cycles: 4 });
+    buf.push(MicroOp::Internal { cycles: 124 });
+    buf.push(MicroOp::Prefetch);
     buf.finish()
 }
 
@@ -6957,6 +7036,270 @@ mod tests {
         // pre-trap reads, the ChkTrap abort itself, and the whole installed frame.
         for pause_after in 0..=19 {
             let (mut cpu, mut bus) = setup_chk_trap_low();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    // --- E6: the privileged `*toSR` ops (the mid-instruction FC switch) + RESET (the n124 idle). Pinned to
+    // the vendored anchors `027c [ANDItoSR #] 2` (S→user switch, FC6→FC2) and `4e70 [RESET] 1` (len 132). ---
+
+    /// The SST anchor `027c [ANDItoSR #] 2` (20 cyc): the AND CLEARS S (`sr 0x2717 & imm 0x4CBE = 0x0416`,
+    /// `& 0xA71F = 0x0416`), so the two re-prefetch reads switch from FC=6 (supervisor-program) to **FC=2
+    /// (user-program)** — the load-bearing mid-instruction FC switch. The leading discard read @ pc+4 runs
+    /// under the OLD FC=6; the bus stream is `[r FC6 @3076, r FC2 @3076, r FC2 @3078]` (3 word reads + n8 = 20).
+    /// pc 3072 → 3076, prefetch [0x027C, 0x4CBE] → [word@3076=0x5921, word@3078=0x6FAE].
+    fn setup_andi_to_sr_switch() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                4_271_004_033,
+                939_242_940,
+                2_332_356_921,
+                1_759_078_758,
+                3_632_954_379,
+                1_792_387_683,
+                3_162_307_581,
+                2_565_808_449,
+            ],
+            a: [
+                336_893_371,
+                1_804_575_635,
+                421_147_092,
+                900_207_258,
+                3_509_327_830,
+                1_274_346_764,
+                802_666_739,
+            ],
+            usp: 1_552_985_130,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10007,              // 0x2717 (S=1, T=0)
+            prefetch: [636, 19646], // prefetch[0] = 0x027C (ANDItoSR #), prefetch[1] = imm 0x4CBE
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            (3076u32, 89u8), // word @3076 = 0x5921 (= 22817)
+            (3077, 33),
+            (3078, 111), // word @3078 = 0x6FAE (= 28590)
+            (3079, 174),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_andi_switch_log() -> Vec<Transaction> {
+        vec![
+            // The discard read @ pc+4 under the OLD function code (FC6 supervisor-program).
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 22817,
+            },
+            // The two re-prefetch reads under the NEW mode's FC (FC2 user-program — S was cleared).
+            Transaction {
+                kind: TxKind::Read,
+                fc: 2,
+                addr: 3076,
+                size: Size::Word,
+                value: 22817,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 2,
+                addr: 3078,
+                size: Size::Word,
+                value: 28590,
+            },
+        ]
+    }
+
+    #[test]
+    fn run_instruction_matches_andi_to_sr_switch() {
+        let (mut cpu, mut bus) = setup_andi_to_sr_switch();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 20,
+            "ANDItoSR = discard read + n8 + 2 prefetches = 4 + 8 + 8 = 20"
+        );
+        assert_eq!(
+            cpu.regs.sr, 0x0416,
+            "(0x2717 & 0x4CBE) & 0xA71F = 0x0416 (S cleared)"
+        );
+        assert_eq!(cpu.regs.pc, 3076, "pc advanced by 4 (two prefetches)");
+        assert_eq!(
+            cpu.regs.prefetch,
+            [22817, 28590],
+            "queue reloaded at pc+4 / pc+6"
+        );
+        assert_eq!(
+            bus.log,
+            expected_andi_switch_log(),
+            "the FC6→FC2 switch stream"
+        );
+    }
+
+    #[test]
+    fn both_drivers_match_andi_to_sr_switch() {
+        let (mut rtc, mut bus_rtc) = setup_andi_to_sr_switch();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_andi_to_sr_switch();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 20);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+    }
+
+    #[test]
+    fn andi_to_sr_quiescable_and_serializable_across_the_switch() {
+        // The snapshot/restore anchor ACROSS the `*toSR` mid-instruction FC switch: the whole CPU (incl. the
+        // in-flight cursor) round-trips at every micro-op boundary — crucially across the `SrLogic` step that
+        // clears S, so the two re-prefetches that resume after a restore still run under the NEW (FC2) mode.
+        let (mut rref, mut bref) = setup_andi_to_sr_switch();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 5 micro-ops (Read, Internal, SrLogic, Prefetch, Prefetch) → 0..=4 Continue boundaries.
+        for pause_after in 0..=4 {
+            let (mut cpu, mut bus) = setup_andi_to_sr_switch();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    /// The SST anchor `4e70 [RESET] 1` (132 cyc): assert the reset line for 124 cycles. No register state
+    /// changes beyond the queue refill: `[Internal(4), Internal(124), Prefetch]`. pc 3072 → 3074, sr unchanged
+    /// (0x271B), prefetch [0x4E70, 0xE695] → [0xE695, word@3076=0x457F]. Bus: one FC=6 read @ pc+4.
+    fn setup_reset() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                4_213_175_460,
+                2_412_132_266,
+                3_680_050_421,
+                1_150_690_420,
+                3_629_634_968,
+                2_043_518_162,
+                1_806_498_751,
+                1_673_573_331,
+            ],
+            a: [
+                37_052_095,
+                1_207_300_143,
+                1_911_943_729,
+                647_123_814,
+                1_566_265_857,
+                2_212_948_340,
+                1_330_467_793,
+            ],
+            usp: 3_983_537_698,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10011,                // 0x271B (S=1)
+            prefetch: [20080, 59029], // prefetch[0] = 0x4E70 (RESET)
+        };
+        let mut bus = FlatBus::new();
+        bus.poke(3076, 69); // word @3076 = 0x457F (= 17791)
+        bus.poke(3077, 127);
+        (Cpu68000::new(regs), bus)
+    }
+
+    #[test]
+    fn run_instruction_matches_reset() {
+        let (mut cpu, mut bus) = setup_reset();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 132,
+            "RESET = n4 + n124 + one prefetch = 4 + 124 + 4 = 132"
+        );
+        assert_eq!(cpu.regs.sr, 0x271B, "RESET does not change the SR");
+        assert_eq!(
+            cpu.regs.pc, 3074,
+            "pc advanced by one word (the queue refill)"
+        );
+        assert_eq!(
+            cpu.regs.prefetch,
+            [59029, 17791],
+            "queue shifted + refilled from pc+4"
+        );
+        assert_eq!(
+            bus.log,
+            vec![Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 17791,
+            }],
+            "RESET's only bus event is the FC=6 queue refill @ pc+4"
+        );
+    }
+
+    #[test]
+    fn both_drivers_match_reset() {
+        let (mut rtc, mut bus_rtc) = setup_reset();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_reset();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 132);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+    }
+
+    #[test]
+    fn reset_quiescable_and_serializable_across_the_idle() {
+        // The snapshot/restore anchor ACROSS RESET's long n124 idle: the whole CPU round-trips at every
+        // micro-op boundary, including the gap between the two Internal idles and before the final refill.
+        let (mut rref, mut bref) = setup_reset();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 3 micro-ops (Internal(4), Internal(124), Prefetch) → 0..=2 Continue boundaries.
+        for pause_after in 0..=2 {
+            let (mut cpu, mut bus) = setup_reset();
             cpu.start_instruction();
             for _ in 0..pause_after {
                 assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);

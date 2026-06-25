@@ -361,6 +361,19 @@ pub enum AluOp {
     MoveA,
 }
 
+/// A bitwise logic operation a [`MicroOp::SrLogic`] applies to the status register — the three privileged
+/// `*toSR` ops: `ANDItoSR` (`And`), `ORItoSR` (`Or`), `EORItoSR` (`Eor`). The operand is the immediate word;
+/// the result is masked to the implemented SR bits (`SR_IMPLEMENTED`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+pub enum LogicOp {
+    /// `ANDItoSR`: `sr &= value` — can clear bits, including **S** (switch supervisor→user).
+    And,
+    /// `ORItoSR`: `sr |= value` — can only set bits (never clears S).
+    Or,
+    /// `EORItoSR`: `sr ^= value` — toggles bits (can flip S either way).
+    Eor,
+}
+
 /// The MOVE flag computation at `size`: copy the (size-truncated) value, set N=msb / Z=(value==0), clear
 /// V/C. Returns `(result, ccr_nz)` where `ccr_nz` carries **only** N/Z/V/C (X is preserved by the caller —
 /// MOVE never touches X). The result is zero-extended to 32 bits (the data-register write-back masks per
@@ -430,8 +443,10 @@ pub enum MicroOp {
         b: Operand,
         dst: Dest,
     },
-    /// Consume `cycles` master cycles with no bus access (compute / idle `n` cycles).
-    Internal { cycles: u8 },
+    /// Consume `cycles` master cycles with no bus access (compute / idle `n` cycles). The field is `u16`
+    /// because `RESET` idles the bus-reset line for **124** cycles (`[Internal(4), Internal(124), Prefetch]`,
+    /// len 132) — beyond the `u8` range the shorter idles (`n2`/`n4`/`n6`) used elsewhere fit in.
+    Internal { cycles: u16 },
     /// Apply an address-register side effect: `An += delta` (the `(An)+`/`-(An)` auto-(in/de)crement),
     /// written through [`Registers::addr_reg_set`] so `An == A7` hits the active stack pointer. A 0-cycle,
     /// non-bus one-shot — separate from the operand access so the bump is snapshot-visible and can straddle
@@ -525,6 +540,15 @@ pub enum MicroOp {
     /// the captured immediate for `#imm` (the decode captures `prefetch[1]` before the refills shift it out, so
     /// this op runs last in every mode). The same op handles every source mode.
     ChkTrap { dn: u8, bound: Operand },
+    /// The privileged `*toSR` write-back: `regs.sr = (regs.sr <op> (resolve(value) as u16)) & SR_IMPLEMENTED`
+    /// — the `ANDItoSR`/`ORItoSR`/`EORItoSR` ops. The whole SR (T | S | I2-I0 | CCR) is rewritten, so an
+    /// `And`/`Eor` can clear **S** (switch supervisor→user) or **T**; the recipe runs this op AFTER the
+    /// instruction's leading discard read (under the OLD function code) and BEFORE the two re-prefetch reads
+    /// (which then run under the NEW mode's function code — FC2 user-program if S was cleared, FC6
+    /// supervisor-program otherwise; this mid-instruction FC switch is the load-bearing pin). Shares the
+    /// `SR_IMPLEMENTED` (`0xA71F`) mask with [`MicroOp::LoadSr`] (`RTE`'s restore). A 0-cycle, non-bus,
+    /// snapshot-visible internal step.
+    SrLogic { op: LogicOp, value: Operand },
 }
 
 /// The in-flight micro-op cursor for one instruction: the recipe, how far through it we are, and the
@@ -941,6 +965,19 @@ impl MicroState {
                     let idle = if over { 4 } else { 6 };
                     return self.install_chk_trap(regs, idle);
                 }
+                0
+            }
+            MicroOp::SrLogic { op, value } => {
+                // The privileged `*toSR` write-back: apply the bitwise op against the immediate, then mask to
+                // the implemented SR bits (0xA71F). Can clear S/T (And/Eor) — the recipe runs the two
+                // re-prefetch reads AFTER this, so they follow the NEW mode's function code. NO bus, 0 cycles.
+                let v = self.resolve(value, regs) as u16;
+                let combined = match op {
+                    LogicOp::And => regs.sr & v,
+                    LogicOp::Or => regs.sr | v,
+                    LogicOp::Eor => regs.sr ^ v,
+                };
+                regs.sr = combined & SR_IMPLEMENTED;
                 0
             }
         };
@@ -2612,6 +2649,85 @@ mod tests {
             st.scratch[9], 0xD855,
             "SSW = (opcode & 0xFFE0) | 0x15 (data read)"
         );
+    }
+
+    // --- E6: the privileged SR-logic op (the `*toSR` write-back) + the widened Internal cycle field. ---
+
+    #[test]
+    fn sr_logic_and_masks_to_implemented_bits() {
+        // ANDItoSR: sr = (sr & imm) & SR_IMPLEMENTED. Pinned to the vendored `027c [ANDItoSR #] 1` STAY case:
+        // sr 0x271E & imm 0xFF7D = 0x271C; & 0xA71F = 0x271C (S stays set). A 0-cycle internal step.
+        let mut regs = regs();
+        regs.sr = 0x271E;
+        regs.prefetch = [0x027C, 0xFF7D]; // the immediate is prefetch[1]
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::SrLogic {
+            op: LogicOp::And,
+            value: Operand::ImmWord,
+        }]);
+
+        let cycles = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(cycles, 0, "SrLogic is an internal transform — 0 cycles");
+        assert_eq!(regs.sr, 0x271C, "(0x271E & 0xFF7D) & 0xA71F = 0x271C");
+        assert!(bus.log.is_empty(), "SrLogic touches no bus");
+    }
+
+    #[test]
+    fn sr_logic_and_can_clear_supervisor() {
+        // The SWITCH case `027c [ANDItoSR #] 2`: sr 0x2717 & imm 0x4CBE = 0x0416; & 0xA71F = 0x0416 (S cleared).
+        let mut regs = regs();
+        regs.sr = 0x2717;
+        regs.prefetch = [0x027C, 0x4CBE];
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::SrLogic {
+            op: LogicOp::And,
+            value: Operand::ImmWord,
+        }]);
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(regs.sr, 0x0416, "S cleared by the AND mask");
+        assert_eq!(regs.sr & SR_SUPERVISOR, 0, "supervisor bit cleared");
+    }
+
+    #[test]
+    fn sr_logic_or_and_eor_mask_to_implemented_bits() {
+        // ORItoSR sets bits (never clears S); EORItoSR toggles. Both mask to 0xA71F. Pinned to the formula
+        // verified across all 8065 cases of each file.
+        let mut regs_or = regs();
+        regs_or.sr = 0x2700;
+        regs_or.prefetch = [0x007C, 0xFFFF]; // OR with all-ones → all implemented bits set
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::SrLogic {
+            op: LogicOp::Or,
+            value: Operand::ImmWord,
+        }]);
+        st.exec_one(&mut regs_or, &mut bus);
+        assert_eq!(regs_or.sr, 0xA71F, "(0x2700 | 0xFFFF) & 0xA71F = 0xA71F");
+
+        let mut regs2 = regs();
+        regs2.sr = 0x2707;
+        regs2.prefetch = [0x0A7C, 0xFFFF]; // EOR with all-ones → toggle every implemented bit
+        let mut st2 = MicroState::from_ops(&[MicroOp::SrLogic {
+            op: LogicOp::Eor,
+            value: Operand::ImmWord,
+        }]);
+        st2.exec_one(&mut regs2, &mut bus);
+        assert_eq!(regs2.sr, 0x8018, "(0x2707 ^ 0xFFFF) & 0xA71F = 0x8018");
+    }
+
+    #[test]
+    fn internal_carries_a_wide_cycle_count() {
+        // RESET idles 124 cycles — the widened u16 `Internal` cycle field exceeds the old u8 range.
+        let mut regs = regs();
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::Internal { cycles: 124 }]);
+
+        let cycles = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(cycles, 124, "Internal costs its declared wide cycle count");
+        assert!(bus.log.is_empty(), "Internal touches no bus");
     }
 
     #[test]
