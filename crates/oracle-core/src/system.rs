@@ -94,6 +94,18 @@ impl System {
         *self = Self::new(self.seed);
     }
 
+    /// Serialize the entire machine to a bincode snapshot. O(struct) with no pointer fixup.
+    pub fn snapshot(&self) -> Vec<u8> {
+        bincode::encode_to_vec(self, bincode::config::standard())
+            .expect("System is infallibly encodable")
+    }
+
+    /// Restore a machine from a snapshot produced by [`System::snapshot`].
+    pub fn restore(bytes: &[u8]) -> Result<Self, bincode::error::DecodeError> {
+        let (system, _len) = bincode::decode_from_slice(bytes, bincode::config::standard())?;
+        Ok(system)
+    }
+
     /// The VDP `state_hash`, byte-compatible with Oracle. Note: 68000 RAM is **not** part of this hash
     /// (Oracle hashes VDP memory + registers only); RAM is still part of the bincode snapshot.
     pub fn state_hash(&self) -> StateHash {
@@ -259,11 +271,11 @@ mod tests {
     }
 
     #[test]
-    fn bincode_roundtrip_preserves_state() {
-        let s = System::new(0x5EED);
-        let cfg = bincode::config::standard();
-        let bytes = bincode::encode_to_vec(&s, cfg).unwrap();
-        let (back, _len): (System, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+    fn snapshot_restore_preserves_state() {
+        let mut s = System::new(0x5EED);
+        s.run_frames(2);
+        let snap = s.snapshot();
+        let back = System::restore(&snap).expect("snapshot should decode");
         assert_eq!(s, back);
         assert_eq!(s.state_hash(), back.state_hash());
     }

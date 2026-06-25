@@ -9,3 +9,4 @@ description = "Deterministic, no-I/O Sega Genesis / Mega Drive emulation core fo
 bincode = { version = "2", features = ["derive"] }
 
 [dev-dependencies]
+proptest = "1"
