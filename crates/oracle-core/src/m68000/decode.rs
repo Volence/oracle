@@ -170,6 +170,13 @@ pub fn decode(regs: &Registers) -> MicroState {
     if opcode & 0xFFC0 == 0x4E80 {
         return jsr_recipe(opcode);
     }
+    // RTS (`0x4E75`) — return from subroutine: POP the 32-bit return address off the supervisor/user stack
+    // (hi @ SP, lo @ SP+2, FC=Data) and reload the prefetch queue at it. The inverse of the BSR/JSR push: a
+    // long pop (`AdjustAddr(SP, +4)`) then the universal `SetPc` + two-`Prefetch` queue reload. No flags. The
+    // opcode `0x4E75` is a single point in the 0x4Exx space, disjoint from JMP (0x4EC0) / JSR (0x4E80) above.
+    if opcode == 0x4E75 {
+        return rts_recipe();
+    }
     todo!("opcode {opcode:#06X} not yet decoded")
 }
 
@@ -672,6 +679,77 @@ fn jsr_recipe(opcode: u16) -> MicroState {
         size: Size::Word,
         value: Operand::Scratch(JSR_RETURN_SLOT),
     });
+    buf.push(MicroOp::Prefetch);
+    buf.finish()
+}
+
+/// Scratch slot holding the HIGH word of an `RTS` popped return address (read from `SP`), assembled with the
+/// LOW word by [`MicroOp::Combine32`]. Slot 0 — the conventional read-value slot.
+const RTS_HI_SLOT: u8 = 0;
+
+/// Scratch slot holding the **address** of an `RTS` pop's LOW half (`SP + 2`), materialized once by an
+/// [`MicroOp::EaCalc`] (masked to the 24-bit bus — a real even bus address) so the low-word `Read` hits
+/// exactly `SP + 2`. Slot 2 — distinct from the hi / lo / target slots so every value is snapshot-visible.
+const RTS_LO_ADDR_SLOT: u8 = 2;
+
+/// Scratch slot holding the LOW word of an `RTS` popped return address (read from `SP + 2`). Slot 4 — distinct
+/// from the hi-word / lo-addr / target slots so every half is snapshot-visible mid-pop.
+const RTS_LO_SLOT: u8 = 4;
+
+/// Scratch slot holding the assembled 32-bit `RTS` return address (the `SetPc` source). Slot 1 — distinct from
+/// the hi/lo read slots so the popped target is snapshot-visible while the queue reloads.
+const RTS_TARGET_SLOT: u8 = 1;
+
+/// `RTS` (`0x4E75`): return from subroutine — POP the 32-bit return address off the stack and reload the
+/// prefetch queue at it. The inverse of the `BSR`/`JSR` return-address push, reusing the same long stack
+/// machinery: a long pop is **two word reads** (hi @ `SP`, lo @ `SP + 2`, FC=Data) assembled by
+/// [`MicroOp::Combine32`] into the UNMASKED 32-bit target, the stack pointer post-incremented by 4
+/// ([`MicroOp::AdjustAddr`], A7-aware), then the universal taken-branch tail — [`MicroOp::SetPc`] primes the
+/// queue reload and the two `Prefetch` ops read at `target` / `target + 2` (FC=6 program), leaving
+/// `pc == target`.
+///
+/// Recipe (pinned to the vendored `RTS` SST stream — `4e75`, **16 cyc**): `[Read(hi @ SP), EaCalc(SP+2),
+/// Read(lo @ SP+2), AdjustAddr(SP, +4), Combine32(hi,lo → target), SetPc(target), Prefetch, Prefetch]`. The
+/// popped return address is the FULL 32-bit pc (UNMASKED — a return into high memory keeps its high bits;
+/// `Combine32` does no mask), and only the bus reload address masks. The `SP+2` low-half address is
+/// materialized once (masked, a real even bus address) so the low read hits exactly `SP + 2`. The bus stream
+/// is `[r@SP, r@SP+2, r@target, r@target+2]` (4 word reads = 16 cycles, no idle).
+fn rts_recipe() -> MicroState {
+    let mut buf = RecipeBuf::new();
+    // Pop the return address — HI word @ SP first.
+    buf.push(MicroOp::Read {
+        addr: Operand::AddrReg(7),
+        fc: super::microop::Fc::Data,
+        size: Size::Word,
+        dst: RTS_HI_SLOT,
+    });
+    // Materialize the LOW half's address (SP + 2) once, masked to the 24-bit bus (a real even bus address).
+    buf.push(MicroOp::EaCalc {
+        base: Operand::AddrReg(7),
+        index: Operand::Zero,
+        disp: Operand::WordStep,
+        dst: RTS_LO_ADDR_SLOT,
+    });
+    // LOW word @ SP + 2.
+    buf.push(MicroOp::Read {
+        addr: Operand::Scratch(RTS_LO_ADDR_SLOT),
+        fc: super::microop::Fc::Data,
+        size: Size::Word,
+        dst: RTS_LO_SLOT,
+    });
+    // Post-increment the stack pointer by 4 (the long pop). A7-aware (routes through ssp/usp).
+    buf.push(MicroOp::AdjustAddr { reg: 7, delta: 4 });
+    // Assemble the UNMASKED 32-bit return address (the full PC keeps its high bits; only the bus reload masks).
+    buf.push(MicroOp::Combine32 {
+        hi: RTS_HI_SLOT,
+        lo: Operand::Scratch(RTS_LO_SLOT),
+        dst: RTS_TARGET_SLOT,
+    });
+    // SetPc primes the queue reload at the popped target; the two Prefetch ops read at target / target+2.
+    buf.push(MicroOp::SetPc {
+        value: Operand::Scratch(RTS_TARGET_SLOT),
+    });
+    buf.push(MicroOp::Prefetch);
     buf.push(MicroOp::Prefetch);
     buf.finish()
 }
@@ -4429,6 +4507,154 @@ mod tests {
         // Write, Write, Prefetch) → boundaries after 0..=10.
         for pause_after in 0..=10 {
             let (mut cpu, mut bus) = setup_jsr_absl();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    /// The clean SST reference case `4e75 [RTS] 1` (16 cycles) — the documented F4 anchor. SP (ssp 2048,
+    /// supervisor) holds the 32-bit return address big-endian: hi 0x7576 @ 2048, lo 0xAC32 @ 2050. The recipe
+    /// pops it (r@SP, r@SP+2), post-increments SP by 4 (→ 2052), assembles the UNMASKED target 0x7576AC32
+    /// (= 1970711602), sets pc, and reloads the queue at the target — the bus reload masks to 0x76AC32
+    /// (= 7777330): r@7777330, r@7777332. Bus: [r@SP, r@SP+2, r@target, r@target+2]; final.pc is the full
+    /// unmasked 0x7576AC32. SR is unchanged (RTS affects no flags).
+    fn setup_rts() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 3_185_716_490,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10013,
+            prefetch: [20085, 24192], // prefetch[0] = 0x4E75 (RTS)
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            // The return address on the stack: hi 0x7576 @ SP=2048, lo 0xAC32 @ SP+2=2050.
+            (2048u32, 117u8),
+            (2049, 118),
+            (2050, 172),
+            (2051, 50),
+            // The two target words at 0x76AC32 (7777330) / +2: 0xE2AB = 58027, 0xA564 = 42340.
+            (7_777_330, 226),
+            (7_777_331, 171),
+            (7_777_332, 165),
+            (7_777_333, 100),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_rts_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 2048, // hi word of the return address @ SP
+                size: Size::Word,
+                value: 30070, // 0x7576
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 2050, // lo word @ SP+2
+                size: Size::Word,
+                value: 44082, // 0xAC32
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 7_777_330, // target (masked) — read into prefetch[0]
+                size: Size::Word,
+                value: 58027,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 7_777_332, // target+2 (masked) — read into prefetch[1]
+                size: Size::Word,
+                value: 42340,
+            },
+        ]
+    }
+
+    fn assert_rts_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(
+            cpu.regs.pc, 1_970_711_602,
+            "pc landed at the FULL unmasked popped target 0x7576AC32"
+        );
+        assert_eq!(
+            cpu.regs.ssp, 2052,
+            "SP post-incremented by 4 (the long pop)"
+        );
+        assert_eq!(cpu.regs.sr, 10013, "SR unchanged (RTS affects no flags)");
+        assert_eq!(cpu.regs.usp, 3_185_716_490, "usp untouched");
+        assert_eq!(
+            cpu.regs.prefetch,
+            [58027, 42340],
+            "queue reloaded at the (masked) target"
+        );
+        assert_eq!(bus.log, expected_rts_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_rts() {
+        let (mut cpu, mut bus) = setup_rts();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 16,
+            "RTS = [Read.hi, EaCalc, Read.lo, AdjustAddr, Combine32, SetPc, PF, PF] = 4 word reads = 16"
+        );
+        assert_rts_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_rts() {
+        let (mut rtc, mut bus_rtc) = setup_rts();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_rts();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 16);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_rts_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn rts_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The snapshot/restore anchor for the RTS pop shape — the long pop (two stack reads + Combine32), the
+        // SP post-increment, and the SetPc + two-Prefetch queue reload — the whole CPU (incl. the in-flight
+        // cursor and its scratch slots: the popped hi/lo words, the lo-half address, the assembled target)
+        // round-trips at every micro-op boundary.
+        let (mut rref, mut bref) = setup_rts();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 8 micro-ops (Read, EaCalc, Read, AdjustAddr, Combine32, SetPc, Prefetch, Prefetch) → 0..=7.
+        for pause_after in 0..=7 {
+            let (mut cpu, mut bus) = setup_rts();
             cpu.start_instruction();
             for _ in 0..pause_after {
                 assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);

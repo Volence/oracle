@@ -54,6 +54,7 @@ const FILES: &[&str] = &[
     "BSR.json",
     "JMP.json",
     "JSR.json",
+    "RTS.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -567,6 +568,31 @@ fn jsr_in_scope(opcode: u16, ini: &Value) -> bool {
     jmp_in_scope(jmp_equiv, ini)
 }
 
+/// Whether this opcode is an `RTS` the framework covers (`0x4E75` — the sole RTS encoding; `RTS.json` carries
+/// only `0x4E75`).
+fn rts_covered(opcode: u16) -> bool {
+    opcode == 0x4E75
+}
+
+/// The `RTS` scope/parity filter (called once `rts_covered` matches). Clean iff the **popped 32-bit return
+/// address is even**; an odd popped target raises an address-error exception (the deferred odd-address class —
+/// those cases are length 58 in the data, vs. 16 for the clean pops) → xfail. The target is the long popped
+/// off the stack exactly as the recipe pops it: hi word @ `SP`, lo word @ `SP + 2`, read from `initial.ram`
+/// (`SP` is `ssp` in supervisor mode, `usp` in user mode — the active A7, exactly as the decoder selects it).
+fn rts_in_scope(ini: &Value) -> bool {
+    let supervisor = (u32f(ini, "sr") & 0x2000) != 0;
+    let sp = if supervisor {
+        u32f(ini, "ssp")
+    } else {
+        u32f(ini, "usp")
+    };
+    // hi @ SP, lo @ SP+2 (big-endian) — the popped 32-bit return address.
+    let hi = move_ramw(ini, sp);
+    let lo = move_ramw(ini, sp.wrapping_add(2));
+    let target = (hi << 16) | lo;
+    target & 1 == 0 // even popped target is in scope; odd = address error → xfail
+}
+
 /// Whether the framework currently covers this case (else it is an xfail for this push). `ADD`/`SUB` in
 /// word and byte sizes, each in two forms — `Dn,<ea>` (memory dest; word ADD=0xD140/SUB=0x9140, byte
 /// ADD=0xD100/SUB=0x9100) and `<ea>,Dn` (register dest; word ADD=0xD040/SUB=0x9040, byte
@@ -608,6 +634,11 @@ fn covered(opcode: u16, ini: &Value) -> bool {
     // 32-bit return address (the reload splits around the push), but the target arithmetic is JMP's.
     if jsr_covered(opcode) {
         return jsr_in_scope(opcode, ini);
+    }
+    // RTS (`0x4E75`) — its own popped-target parity filter (an odd popped 32-bit return address is an address
+    // error → xfail; the clean even pops are 16 cyc, the odd ones 58). No EA, no flags.
+    if rts_covered(opcode) {
+        return rts_in_scope(ini);
     }
     // Read the value of address register `reg` exactly as the decoder's `addr_reg` does: A7 is `ssp` in
     // supervisor mode, `usp` in user mode (there is no `a7` field) — needed so `(A7)+`/`-(A7)` parity is
@@ -869,8 +900,8 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 64639,
-        "expected 64639 covered cases — ADD/SUB (21790: word 5871 + byte 9974 + long 5945) plus \
+        ran >= 68647,
+        "expected 68647 covered cases — ADD/SUB (21790: word 5871 + byte 9974 + long 5945) plus \
          MOVE.w (3154: all 12 source modes × Dn + the alterable-memory dest modes \
          ((An)/(An)+/-(An)/d16(An)/d8(An,Xn)/abs.w/abs.l), even word EAs since an odd word access is an \
          address error, the (A7) mode-2 word form xfail) plus MOVE.b (7796: same modes, byte excludes \
@@ -893,7 +924,10 @@ fn add_sub_match_singlesteptests() {
          target+2) — (An) 16 cyc, (d16,An)/abs.w/(d16,PC) 18 cyc, abs.l 20 cyc, (d8,An,Xn)/(d8,PC,Xn) 22 cyc; \
          return = pc+N (N: (An) 2, (d16,An)/abs.w/(d16,PC)/indexed 4, abs.l 6 — VERIFIED against the pushed \
          value in the data, the recon prose said pc+4 for abs.l but the DATA shows pc+6); even-target in scope \
-         (target UNMASKED), odd-target = address error → xfail), ran {ran}"
+         (target UNMASKED), odd-target = address error → xfail) plus RTS (4008: the sole 0x4E75 encoding — pop \
+         the 32-bit return address (hi @ SP, lo @ SP+2, FC=Data), post-increment SP by 4, assemble the UNMASKED \
+         target, SetPc + two-Prefetch queue reload; 16 cyc; even popped-target in scope, odd popped-target = \
+         address error (58 cyc) → xfail), ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
