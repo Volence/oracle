@@ -51,6 +51,7 @@ const FILES: &[&str] = &[
     "MOVEA.w.json",
     "MOVEA.l.json",
     "Bcc.json",
+    "JMP.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -443,6 +444,67 @@ fn bcc_in_scope(opcode: u16, ini: &Value) -> bool {
     target & 1 == 0 // even target is in scope; odd target is an address error → xfail
 }
 
+/// Whether this opcode is a `JMP <control ea>` the framework covers (`0100 1110 11 mmm rrr`, 0x4EC0 | ea):
+/// the seven 68000 control addressing modes — `(An)` 010, `(d16,An)` 101, `(d8,An,Xn)` 110, `abs.w` 111/0,
+/// `abs.l` 111/1, `(d16,PC)` 111/2, `(d8,PC,Xn)` 111/3. (`JMP` accepts no data-register / `(An)+` / `-(An)` /
+/// `#imm` modes — those encodings are illegal and never appear in `JMP.json`.)
+fn jmp_covered(opcode: u16) -> bool {
+    if opcode & 0xFFC0 != 0x4EC0 {
+        return false;
+    }
+    let mode = (opcode >> 3) & 7;
+    let reg = opcode & 7;
+    matches!(mode, 2 | 5 | 6) || (mode == 7 && matches!(reg, 0..=3))
+}
+
+/// The `JMP` scope/parity filter (called once `jmp_covered` matches). Clean iff the computed target is
+/// **even**; an odd target raises an address-error exception (the deferred odd-address class) → xfail. The
+/// target is computed exactly as the decoder's recipe does: `(An)` is the address register itself; the
+/// register-file EaCalc modes (`d16(An)`/`d8(An,Xn)`/`abs.w`/`d16(PC)`/`d8(PC,Xn)`) reuse the shared
+/// `compute_ea` (the SAME helper the recipe's `TargetCalc` is pinned to — parity is preserved under its
+/// 24-bit mask, since bit 0 is never affected); `abs.l` assembles its two extension words directly (HIGH =
+/// `prefetch[1]`, LOW = the word at `pc+4` in RAM, which is not yet in the queue).
+fn jmp_in_scope(opcode: u16, ini: &Value) -> bool {
+    let mode = (opcode >> 3) & 7;
+    let reg = (opcode & 7) as usize;
+    let supervisor = (u32f(ini, "sr") & 0x2000) != 0;
+    let areg = |r: usize| -> u32 {
+        if r == 7 {
+            if supervisor {
+                u32f(ini, "ssp")
+            } else {
+                u32f(ini, "usp")
+            }
+        } else {
+            u32f(ini, &format!("a{r}"))
+        }
+    };
+    let target = match (mode, reg) {
+        // (An) — the target is the address register itself.
+        (2, _) => areg(reg),
+        // abs.l — two extension words: HIGH = prefetch[1], LOW = the word at pc+4 (in RAM, not the queue).
+        (7, 1) => {
+            let regs = build_regs(ini);
+            let hi = regs.prefetch[1] as u32;
+            let ram = |addr: u32| -> u8 {
+                ini["ram"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|p| p.as_array().unwrap()[0].as_u64().unwrap() as u32 == addr)
+                    .map(|p| p.as_array().unwrap()[1].as_u64().unwrap() as u8)
+                    .unwrap_or(0)
+            };
+            let pc = regs.pc;
+            let lo = ((ram(pc + 4) as u32) << 8) | ram(pc + 5) as u32;
+            (hi << 16) | lo
+        }
+        // The register-file EaCalc control modes reuse the shared compute_ea (parity-preserving mask).
+        _ => compute_ea(opcode, &build_regs(ini), Size::Word),
+    };
+    target & 1 == 0
+}
+
 /// Whether the framework currently covers this case (else it is an xfail for this push). `ADD`/`SUB` in
 /// word and byte sizes, each in two forms — `Dn,<ea>` (memory dest; word ADD=0xD140/SUB=0x9140, byte
 /// ADD=0xD100/SUB=0x9100) and `<ea>,Dn` (register dest; word ADD=0xD040/SUB=0x9040, byte
@@ -468,6 +530,11 @@ fn covered(opcode: u16, ini: &Value) -> bool {
     // commit), excluded by `bcc_covered`.
     if bcc_covered(opcode) {
         return bcc_in_scope(opcode, ini);
+    }
+    // JMP `<control ea>` (`0100 1110 11 mmm rrr`, 0x4EC0 | ea) — its own target-parity filter (an odd target
+    // is an address error → xfail). The seven control addressing modes only.
+    if jmp_covered(opcode) {
+        return jmp_in_scope(opcode, ini);
     }
     // Read the value of address register `reg` exactly as the decoder's `addr_reg` does: A7 is `ssp` in
     // supervisor mode, `usp` in user mode (there is no `a7` field) — needed so `(A7)+`/`-(A7)` parity is
@@ -729,8 +796,8 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 52112,
-        "expected 52112 covered cases — ADD/SUB (21790: word 5871 + byte 9974 + long 5945) plus \
+        ran >= 56371,
+        "expected 56371 covered cases — ADD/SUB (21790: word 5871 + byte 9974 + long 5945) plus \
          MOVE.w (3154: all 12 source modes × Dn + the alterable-memory dest modes \
          ((An)/(An)+/-(An)/d16(An)/d8(An,Xn)/abs.w/abs.l), even word EAs since an odd word access is an \
          address error, the (A7) mode-2 word form xfail) plus MOVE.b (7796: same modes, byte excludes \
@@ -743,7 +810,9 @@ fn add_sub_match_singlesteptests() {
          access is an address error, the (A7) mode-2 source form xfail; byte MOVEA is illegal (not covered) \
          plus Bcc/BRA (5865: cc != 1 (cc == 1 is BSR, a later commit); not-taken always clean (byte 8 cyc, \
          word 12 cyc), taken even-target in scope (10 cyc both forms), taken odd-target = address error → \
-         xfail), ran {ran}"
+         xfail) plus JMP (4259: the seven control modes — (An) 8 cyc, (d16,An)/abs.w/(d16,PC) 10 cyc, abs.l \
+         12 cyc, (d8,An,Xn)/(d8,PC,Xn) 14 cyc; even-target in scope (target UNMASKED — abs.l keeps its full \
+         32 bits), odd-target = address error → xfail), ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+JMP (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }

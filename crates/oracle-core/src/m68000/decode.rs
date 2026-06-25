@@ -11,6 +11,15 @@ use super::ea::{ea_dst, ea_move, ea_movea, ea_src, RecipeBuf};
 use super::microop::{condition_true, AluOp, Cpu68000, Dest, MicroOp, MicroState, Operand, Size};
 use super::registers::Registers;
 
+/// Scratch slot holding a `JMP`'s computed 32-bit branch target (the `SetPc` source). Slot 0 — the same
+/// slot a `Bcc`'s `TargetCalc` deposits its target into.
+const JMP_TARGET_SLOT: u8 = 0;
+
+/// Scratch slot parking the HIGH word of a `JMP abs.l` target between the two extension-word captures, so the
+/// LOW-word refill does not clobber it. Slot 3 — matching the EA machinery's `abs.l`-HI convention, distinct
+/// from the target slot 0 so both halves are snapshot-visible mid-assembly.
+const ABS_L_HI_SLOT: u8 = 3;
+
 /// Whether an EA `mode`/`reg` pair is an alterable-memory destination the builder currently covers:
 /// `(An)` (010), `(An)+` (011), `-(An)` (100), `d16(An)` (101), `d8(An,Xn)` (110), `abs.w` (111/000),
 /// `abs.l` (111/001) — all seven alterable-memory modes. (PC-relative and `#imm` are not alterable, so
@@ -137,6 +146,13 @@ pub fn decode(regs: &Registers) -> MicroState {
     // evaluated at DECODE time against the live CCR, emitting the taken or not-taken linear recipe directly.
     if opcode >> 12 == 0b0110 && (opcode >> 8) & 0xF != 1 {
         return bcc_recipe(opcode, regs);
+    }
+    // JMP `<control ea>` (`0100 1110 11 mmm rrr`, 0x4EC0 | ea) — compute the UNMASKED branch target for the
+    // control addressing mode, write the PC, and reload the prefetch queue. No push (that is JSR). Control
+    // modes only: `(An)` 010, `(d16,An)` 101, `(d8,An,Xn)` 110, `abs.w` 111/0, `abs.l` 111/1, `(d16,PC)`
+    // 111/2, `(d8,PC,Xn)` 111/3. The opcode space 0x4EC0..=0x4EFF is disjoint from every arm above.
+    if opcode & 0xFFC0 == 0x4EC0 {
+        return jmp_recipe(opcode);
     }
     todo!("opcode {opcode:#06X} not yet decoded")
 }
@@ -297,6 +313,103 @@ fn bcc_recipe(opcode: u16, regs: &Registers) -> MicroState {
             buf.push(MicroOp::Prefetch);
         }
     }
+    buf.finish()
+}
+
+/// `JMP <control ea>` (`0100 1110 11 mmm rrr`, 0x4EC0 | ea): an unconditional jump — set the PC to the
+/// computed effective address (no return-address push; that is JSR) and reload the prefetch queue at the
+/// target. The seven 68000 control addressing modes:
+///
+/// - **`(An)` 010** — the target is the address register itself: `SetPc(AddrReg(n))` directly (no compute).
+///   **8 cyc**, no idle. Bus: `[r@target, r@target+2]`.
+/// - **`(d16,An)` 101 / `abs.w` 111/0 / `(d16,PC)` 111/2** — `TargetCalc(base, ·, DispWord)` (base `AddrReg`
+///   / `Zero` / `PcOfExt`), then the 2-cyc idle. **10 cyc**. Bus: `[r@target, r@target+2]`.
+/// - **`(d8,An,Xn)` 110 / `(d8,PC,Xn)` 111/3** — `TargetCalc(base, BriefIndex, BriefDisp8)` (base `AddrReg`
+///   / `PcOfExt`), then the 6-cyc index idle. **14 cyc**. Bus: `[r@target, r@target+2]`.
+/// - **`abs.l` 111/1** — assemble the two extension words **UNMASKED** (the target keeps its full 32 bits;
+///   139/140 of the clean SST cases land a target with the upper byte set, which an `EaCalc` mask would
+///   wrongly clear): park the HIGH word (`prefetch[1]`, captured into [`ABS_L_HI_SLOT`] before the refill
+///   shifts it out via the `(0 << 16) | prefetch[1]` `Combine32` idiom), `Prefetch` (reads the LOW word at
+///   `pc+4` into the queue), then `Combine32(HI, ExtWordRaw)` (= `(hi << 16) | lo`, no mask). **12 cyc**, no
+///   extra idle (the LOW-word refill is the 3rd word access). Bus: `[r@pc+4, r@target, r@target+2]`.
+///
+/// Every target is UNMASKED — the PC stays full 32-bit (`SetPc`/`TargetCalc` do no `ADDR_MASK`); only the
+/// bus reload address masks. The two trailing `Prefetch`s reload the queue at `target`/`target+2` (FC 6
+/// program). All cycle counts/orderings are pinned against the vendored `JMP` SST stream.
+fn jmp_recipe(opcode: u16) -> MicroState {
+    let mode = (opcode >> 3) & 7;
+    let reg = (opcode & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    match (mode, reg) {
+        // (An) — the target is An itself; no compute, no idle.
+        (2, _) => {
+            buf.push(MicroOp::SetPc {
+                value: Operand::AddrReg(reg),
+            });
+        }
+        // abs.l — assemble the two extension words into the UNMASKED 32-bit target. The HIGH word
+        // (prefetch[1]) is parked into ABS_L_HI_SLOT via the `(0 << 16) | prefetch[1]` Combine32 (scratch
+        // slot 0 is still 0 in a fresh recipe) BEFORE the refill shifts it out; the refill reads the LOW
+        // word (at pc+4) into prefetch[1]; the second Combine32 assembles `(hi << 16) | lo` (no mask) into
+        // the target slot. The LOW-word refill IS one of the instruction's bus reads, so no extra idle.
+        (7, 1) => {
+            buf.push(MicroOp::Combine32 {
+                hi: JMP_TARGET_SLOT,
+                lo: Operand::ExtWordRaw,
+                dst: ABS_L_HI_SLOT,
+            });
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::Combine32 {
+                hi: ABS_L_HI_SLOT,
+                lo: Operand::ExtWordRaw,
+                dst: JMP_TARGET_SLOT,
+            });
+            buf.push(MicroOp::SetPc {
+                value: Operand::Scratch(JMP_TARGET_SLOT),
+            });
+        }
+        // The TargetCalc register-file modes: compute the UNMASKED target FIRST (capturing the displacement
+        // / brief ext word from prefetch[1] and the original pc via PcOfExt, before any refill), then the
+        // mode's idle, then SetPc.
+        _ => {
+            let (base, index, disp, idle) = match (mode, reg) {
+                // (d16,An) — An + sign_extend16(disp); 2-cyc idle.
+                (5, _) => (Operand::AddrReg(reg), Operand::Zero, Operand::DispWord, 2),
+                // (d8,An,Xn) — An + index(Xn) + sign_extend8(disp8); 6-cyc index idle.
+                (6, _) => (
+                    Operand::AddrReg(reg),
+                    Operand::BriefIndex,
+                    Operand::BriefDisp8,
+                    6,
+                ),
+                // abs.w — sign_extend16(disp) alone; 2-cyc idle.
+                (7, 0) => (Operand::Zero, Operand::Zero, Operand::DispWord, 2),
+                // (d16,PC) — (pc+2) + sign_extend16(disp); 2-cyc idle.
+                (7, 2) => (Operand::PcOfExt, Operand::Zero, Operand::DispWord, 2),
+                // (d8,PC,Xn) — (pc+2) + index(Xn) + sign_extend8(disp8); 6-cyc index idle.
+                (7, 3) => (
+                    Operand::PcOfExt,
+                    Operand::BriefIndex,
+                    Operand::BriefDisp8,
+                    6,
+                ),
+                _ => unreachable!("jmp_recipe: non-control EA mode {mode}/{reg}"),
+            };
+            buf.push(MicroOp::TargetCalc {
+                base,
+                index,
+                disp,
+                dst: JMP_TARGET_SLOT,
+            });
+            buf.push(MicroOp::Internal { cycles: idle });
+            buf.push(MicroOp::SetPc {
+                value: Operand::Scratch(JMP_TARGET_SLOT),
+            });
+        }
+    }
+    // Every JMP ends with the two-word queue reload at target / target+2 (the universal taken-branch tail).
+    buf.push(MicroOp::Prefetch);
+    buf.push(MicroOp::Prefetch);
     buf.finish()
 }
 
@@ -2169,6 +2282,748 @@ mod tests {
         // 3 micro-ops (Internal(4), Prefetch, Prefetch) → boundaries after 0..=2.
         for pause_after in 0..=2 {
             let (mut cpu, mut bus) = setup_bcc_word_not_taken();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    // --- F1: JMP <control ea> — the seven control modes, one clean (even-target) anchor each, plus the
+    // unmasked-target abs.l shape and the SetPc-direct (An) shape (both-drivers + snapshot/restore). ---
+
+    #[test]
+    fn jmp_decode_extracts_control_mode_and_reg() {
+        // JMP layout: `0100 1110 11 mmm rrr` — bits 15-6 == 0b0100_1110_11 (0x4EC0 prefix), mode bits 5-3,
+        // reg bits 2-0. Pin the seven control encodings.
+        assert_eq!(0x4ED6 & 0xFFC0, 0x4EC0, "0x4ED6 is a JMP");
+        assert_eq!((0x4ED6u16 >> 3) & 7, 2, "0x4ED6 = JMP (A6) — mode 2");
+        assert_eq!(0x4ED6u16 & 7, 6, "reg A6");
+        assert_eq!((0x4EEBu16 >> 3) & 7, 5, "0x4EEB = JMP (d16,A3) — mode 5");
+        assert_eq!((0x4EF5u16 >> 3) & 7, 6, "0x4EF5 = JMP (d8,A5,Xn) — mode 6");
+        assert_eq!(((0x4EF8u16 >> 3) & 7, 0x4EF8 & 7), (7, 0), "abs.w 7/0");
+        assert_eq!(((0x4EF9u16 >> 3) & 7, 0x4EF9 & 7), (7, 1), "abs.l 7/1");
+        assert_eq!(((0x4EFAu16 >> 3) & 7, 0x4EFA & 7), (7, 2), "(d16,PC) 7/2");
+        assert_eq!(((0x4EFBu16 >> 3) & 7, 0x4EFB & 7), (7, 3), "(d8,PC,Xn) 7/3");
+    }
+
+    /// The clean SST reference case `4ed6 [JMP (A6)]` (8 cycles) — the F1 `(An)` anchor (the `SetPc(AddrReg)`
+    /// direct shape, no compute, no idle). A6 = 851757616 (even); the recipe is `[SetPc(A6), Prefetch,
+    /// Prefetch]` reloading the queue at the target. Bus: two FC-6 reads at target / target+2.
+    fn setup_jmp_an() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                4_276_774_800,
+                2_448_422_008,
+                3_033_641_426,
+                983_606_231,
+                4_289_959_026,
+                1_085_040_062,
+                1_453_868_004,
+                39_294_032,
+            ],
+            a: [
+                3_476_136_870,
+                1_596_889_548,
+                3_265_597_458,
+                415_831_824,
+                2_947_717_909,
+                4_107_238_674,
+                851_757_616,
+            ],
+            usp: 3_917_039_368,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10000,
+            prefetch: [20182, 52296],
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            (12_896_816u32, 155u8),
+            (12_896_817, 243),
+            (12_896_818, 171),
+            (12_896_819, 24),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_jmp_an_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 12_896_816,
+                size: Size::Word,
+                value: 39923,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 12_896_818,
+                size: Size::Word,
+                value: 43800,
+            },
+        ]
+    }
+
+    fn assert_jmp_an_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 851_757_616, "pc landed at A6 (the target)");
+        assert_eq!(cpu.regs.sr, 10000, "SR unchanged (JMP affects no flags)");
+        assert_eq!(cpu.regs.a[6], 851_757_616, "A6 unchanged");
+        assert_eq!(
+            cpu.regs.prefetch,
+            [39923, 43800],
+            "queue reloaded at target"
+        );
+        assert_eq!(bus.log, expected_jmp_an_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_jmp_an() {
+        let (mut cpu, mut bus) = setup_jmp_an();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(cycles, 8, "(An) = [SetPc, PF, PF] = 8 (no idle)");
+        assert_jmp_an_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_jmp_an() {
+        let (mut rtc, mut bus_rtc) = setup_jmp_an();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_jmp_an();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 8);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_jmp_an_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn jmp_an_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The snapshot/restore anchor for the SetPc-direct (An) jump shape.
+        let (mut rref, mut bref) = setup_jmp_an();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 3 micro-ops (SetPc, Prefetch, Prefetch) → boundaries after 0..=2.
+        for pause_after in 0..=2 {
+            let (mut cpu, mut bus) = setup_jmp_an();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    /// The clean SST reference case `4eeb [JMP (d16,A3)]` (10 cycles) — the F1 `(d16,An)` anchor (the
+    /// `TargetCalc(AddrReg, ·, DispWord)` + 2-cyc idle shape). A3 = 2998333802, disp = sign_extend16(35870)
+    /// → target = 2998304136 (even). Recipe `[TargetCalc, Internal(2), SetPc, PF, PF]`. Bus: n2 (not in the
+    /// stream) + two FC-6 reads at target / target+2.
+    fn setup_jmp_d16an() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                2_440_929_617,
+                3_895_184_752,
+                2_817_252_320,
+                3_435_608_030,
+                3_611_049_164,
+                656_369_884,
+                3_041_650_526,
+                2_428_829_723,
+            ],
+            a: [
+                3_083_582_436,
+                3_906_768_230,
+                3_638_627_363,
+                2_998_333_802,
+                170_266_425,
+                801_912_058,
+                659_845_155,
+            ],
+            usp: 4_225_240_530,
+            ssp: 2048,
+            pc: 3072,
+            sr: 9989,
+            prefetch: [20203, 35870],
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            (11_959_688u32, 29u8),
+            (11_959_689, 93),
+            (11_959_690, 47),
+            (11_959_691, 154),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn assert_jmp_d16an_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(
+            cpu.regs.pc, 2_998_304_136,
+            "pc landed at the computed target"
+        );
+        assert_eq!(cpu.regs.sr, 9989, "SR unchanged");
+        assert_eq!(cpu.regs.prefetch, [7517, 12186], "queue reloaded at target");
+        assert_eq!(
+            bus.log,
+            vec![
+                Transaction {
+                    kind: TxKind::Read,
+                    fc: 6,
+                    addr: 11_959_688,
+                    size: Size::Word,
+                    value: 7517,
+                },
+                Transaction {
+                    kind: TxKind::Read,
+                    fc: 6,
+                    addr: 11_959_690,
+                    size: Size::Word,
+                    value: 12186,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn run_instruction_matches_jmp_d16an() {
+        let (mut cpu, mut bus) = setup_jmp_d16an();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 10,
+            "(d16,An) = [TargetCalc, n2, SetPc, PF, PF] = 10"
+        );
+        assert_jmp_d16an_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_jmp_d16an() {
+        let (mut rtc, mut bus_rtc) = setup_jmp_d16an();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_jmp_d16an();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 10);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_jmp_d16an_final(&step, &bus_step);
+    }
+
+    /// The clean SST reference case `4ef5 [JMP (d8,A5,Xn)]` (14 cycles) — the F1 indexed `(d8,An,Xn)` anchor
+    /// (`TargetCalc(AddrReg, BriefIndex, BriefDisp8)` + 6-cyc index idle). Recipe `[TargetCalc, Internal(6),
+    /// SetPc, PF, PF]`. target = 3685257944 (even).
+    fn setup_jmp_d8anxn() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                2_257_626_441,
+                3_975_271_630,
+                886_624_459,
+                943_922_647,
+                3_001_437_690,
+                2_124_450_771,
+                3_467_541_282,
+                1_346_820_915,
+            ],
+            a: [
+                1_690_064_846,
+                3_210_009_965,
+                3_062_598_033,
+                1_407_409_311,
+                3_742_411_135,
+                1_560_807_147,
+                2_079_579_124,
+            ],
+            usp: 301_484_952,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10004,
+            prefetch: [20213, 23322],
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            (11_047_640u32, 186u8),
+            (11_047_641, 119),
+            (11_047_642, 226),
+            (11_047_643, 65),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn assert_jmp_d8anxn_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(
+            cpu.regs.pc, 3_685_257_944,
+            "pc landed at the indexed target"
+        );
+        assert_eq!(
+            cpu.regs.prefetch,
+            [47735, 57921],
+            "queue reloaded at target"
+        );
+        assert_eq!(
+            bus.log,
+            vec![
+                Transaction {
+                    kind: TxKind::Read,
+                    fc: 6,
+                    addr: 11_047_640,
+                    size: Size::Word,
+                    value: 47735,
+                },
+                Transaction {
+                    kind: TxKind::Read,
+                    fc: 6,
+                    addr: 11_047_642,
+                    size: Size::Word,
+                    value: 57921,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn run_instruction_matches_jmp_d8anxn() {
+        let (mut cpu, mut bus) = setup_jmp_d8anxn();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 14,
+            "(d8,An,Xn) = [TargetCalc, n6, SetPc, PF, PF] = 14"
+        );
+        assert_jmp_d8anxn_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_jmp_d8anxn() {
+        let (mut rtc, mut bus_rtc) = setup_jmp_d8anxn();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_jmp_d8anxn();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 14);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_jmp_d8anxn_final(&step, &bus_step);
+    }
+
+    /// The clean SST reference case `4ef8 [JMP (xxx).w]` (10 cycles) — the F1 `abs.w` anchor
+    /// (`TargetCalc(Zero, Zero, DispWord)` + 2-cyc idle). disp 23940 → target 23940 (even, positive).
+    fn setup_jmp_absw() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 3_574_960_288,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10009,
+            prefetch: [20216, 23940],
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [(23_940u32, 50u8), (23_941, 4), (23_942, 174), (23_943, 133)] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn assert_jmp_absw_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 23940, "pc landed at abs.w target");
+        assert_eq!(
+            cpu.regs.prefetch,
+            [12804, 44677],
+            "queue reloaded at target"
+        );
+        assert_eq!(
+            bus.log,
+            vec![
+                Transaction {
+                    kind: TxKind::Read,
+                    fc: 6,
+                    addr: 23940,
+                    size: Size::Word,
+                    value: 12804,
+                },
+                Transaction {
+                    kind: TxKind::Read,
+                    fc: 6,
+                    addr: 23942,
+                    size: Size::Word,
+                    value: 44677,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn run_instruction_matches_jmp_absw() {
+        let (mut cpu, mut bus) = setup_jmp_absw();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(cycles, 10, "abs.w = [TargetCalc, n2, SetPc, PF, PF] = 10");
+        assert_jmp_absw_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_jmp_absw() {
+        let (mut rtc, mut bus_rtc) = setup_jmp_absw();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_jmp_absw();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 10);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_jmp_absw_final(&step, &bus_step);
+    }
+
+    /// The clean SST reference case `4efa [JMP (d16,PC)]` (10 cycles) — the F1 `(d16,PC)` anchor
+    /// (`TargetCalc(PcOfExt, ·, DispWord)` + 2-cyc idle; the base is the extension-word address pc+2).
+    /// disp = sign_extend16(1432); target = 3072+2+1432 = 4506 (even).
+    fn setup_jmp_d16pc() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 1_864_689_512,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10001,
+            prefetch: [20218, 1432],
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [(4506u32, 98u8), (4507, 208), (4508, 175), (4509, 191)] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn assert_jmp_d16pc_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 4506, "pc landed at the PC-relative target");
+        assert_eq!(
+            cpu.regs.prefetch,
+            [25296, 44991],
+            "queue reloaded at target"
+        );
+        assert_eq!(
+            bus.log,
+            vec![
+                Transaction {
+                    kind: TxKind::Read,
+                    fc: 6,
+                    addr: 4506,
+                    size: Size::Word,
+                    value: 25296,
+                },
+                Transaction {
+                    kind: TxKind::Read,
+                    fc: 6,
+                    addr: 4508,
+                    size: Size::Word,
+                    value: 44991,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn run_instruction_matches_jmp_d16pc() {
+        let (mut cpu, mut bus) = setup_jmp_d16pc();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 10,
+            "(d16,PC) = [TargetCalc, n2, SetPc, PF, PF] = 10"
+        );
+        assert_jmp_d16pc_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_jmp_d16pc() {
+        let (mut rtc, mut bus_rtc) = setup_jmp_d16pc();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_jmp_d16pc();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 10);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_jmp_d16pc_final(&step, &bus_step);
+    }
+
+    /// The clean SST reference case `4efb [JMP (d8,PC,Xn)]` (14 cycles) — the F1 indexed `(d8,PC,Xn)` anchor
+    /// (`TargetCalc(PcOfExt, BriefIndex, BriefDisp8)` + 6-cyc index idle). target = 4294939978 (even — the
+    /// target wraps into the high 32-bit range, which the UNMASKED TargetCalc/SetPc preserves).
+    fn setup_jmp_d8pcxn() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                830_418_064,
+                28_220_045,
+                1_685_006_170,
+                3_829_560_031,
+                4_176_373_181,
+                13_688_736,
+                892_763_506,
+                2_237_689_572,
+            ],
+            a: [
+                4_098_460_053,
+                1_425_630_674,
+                2_796_607_075,
+                764_662_098,
+                1_237_758_787,
+                4_273_256_745,
+                1_735_235_258,
+            ],
+            usp: 1_644_229_776,
+            ssp: 2048,
+            pc: 3072,
+            sr: 9991,
+            prefetch: [20219, 32947],
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            (16_749_898u32, 246u8),
+            (16_749_899, 217),
+            (16_749_900, 146),
+            (16_749_901, 67),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn assert_jmp_d8pcxn_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(
+            cpu.regs.pc, 4_294_939_978,
+            "pc landed at the indexed PC-relative target (high 32-bit, unmasked)"
+        );
+        assert_eq!(
+            cpu.regs.prefetch,
+            [63193, 37443],
+            "queue reloaded at target"
+        );
+        assert_eq!(
+            bus.log,
+            vec![
+                Transaction {
+                    kind: TxKind::Read,
+                    fc: 6,
+                    addr: 16_749_898,
+                    size: Size::Word,
+                    value: 63193,
+                },
+                Transaction {
+                    kind: TxKind::Read,
+                    fc: 6,
+                    addr: 16_749_900,
+                    size: Size::Word,
+                    value: 37443,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn run_instruction_matches_jmp_d8pcxn() {
+        let (mut cpu, mut bus) = setup_jmp_d8pcxn();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 14,
+            "(d8,PC,Xn) = [TargetCalc, n6, SetPc, PF, PF] = 14"
+        );
+        assert_jmp_d8pcxn_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_jmp_d8pcxn() {
+        let (mut rtc, mut bus_rtc) = setup_jmp_d8pcxn();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_jmp_d8pcxn();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 14);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_jmp_d8pcxn_final(&step, &bus_step);
+    }
+
+    /// The clean SST reference case `4ef9 [JMP (xxx).l]` (12 cycles) — the F1 `abs.l` anchor: the two
+    /// extension words are assembled into the **UNMASKED** 32-bit target (HIGH = prefetch[1] = 7970, LOW =
+    /// the word at pc+4 = 47784) → target 522369704 = 0x1F23_BAE8 (the upper byte 0x1F survives — an EaCalc
+    /// mask would wrongly clear it). Recipe `[Combine32(HI), Prefetch (reads pc+4 → the LOW word), Combine32,
+    /// SetPc, Prefetch, Prefetch]` — 3 word reads = 12 cyc, no idle. Bus: [r@pc+4, r@target, r@target+2].
+    fn setup_jmp_absl() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                2_776_511_107,
+                130_207_282,
+                3_884_304_188,
+                2_647_298_550,
+                2_417_870_823,
+                498_709_761,
+                3_578_953_833,
+                2_195_871_101,
+            ],
+            a: [
+                912_905_757,
+                767_577_753,
+                3_763_895_674,
+                1_026_259_002,
+                4_024_688_506,
+                2_575_493_352,
+                1_987_335_656,
+            ],
+            usp: 2_954_385_806,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10006,
+            prefetch: [20217, 7970],
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            (2_276_008u32, 210u8),
+            (2_276_009, 142),
+            (2_276_010, 39),
+            (2_276_011, 182),
+            (3076, 186),
+            (3077, 168),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_jmp_absl_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076, // the LOW abs.l word, refilled from pc+4
+                size: Size::Word,
+                value: 47784,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 2_276_008, // the target (masked bus address of 0x1F23_BAE8)
+                size: Size::Word,
+                value: 53902,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 2_276_010,
+                size: Size::Word,
+                value: 10166,
+            },
+        ]
+    }
+
+    fn assert_jmp_absl_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(
+            cpu.regs.pc, 522_369_704,
+            "pc landed at the UNMASKED abs.l target (0x1F23_BAE8 — upper byte preserved)"
+        );
+        assert_eq!(cpu.regs.sr, 10006, "SR unchanged");
+        assert_eq!(
+            cpu.regs.prefetch,
+            [53902, 10166],
+            "queue reloaded at target"
+        );
+        assert_eq!(bus.log, expected_jmp_absl_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_jmp_absl() {
+        let (mut cpu, mut bus) = setup_jmp_absl();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 12,
+            "abs.l = [Combine32, PF, Combine32, SetPc, PF, PF] = 3 reads = 12 (no idle)"
+        );
+        assert_jmp_absl_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_jmp_absl() {
+        let (mut rtc, mut bus_rtc) = setup_jmp_absl();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_jmp_absl();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 12);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_jmp_absl_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn jmp_absl_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The snapshot/restore anchor for the new abs.l unmasked two-ext-word target shape (the HI park, the
+        // interleaved LOW refill, the unmasked Combine32, the SetPc reload).
+        let (mut rref, mut bref) = setup_jmp_absl();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 6 micro-ops (Combine32, Prefetch, Combine32, SetPc, Prefetch, Prefetch) → boundaries after 0..=5.
+        for pause_after in 0..=5 {
+            let (mut cpu, mut bus) = setup_jmp_absl();
             cpu.start_instruction();
             for _ in 0..pause_after {
                 assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
