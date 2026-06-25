@@ -1,13 +1,14 @@
 //! SingleStepTests runner for the 68000 micro-op framework.
 //!
-//! Drives the pinned, vendored SingleStepTests data (`tools/fetch-tests.sh`) for every clean
-//! `ADD.w Dn,(An)` case and asserts post regs/SR/RAM/prefetch, the cycle count, **and** the per-cycle
-//! bus-transaction stream — through *both* framework drivers (run-to-completion fast path and the
-//! step-one-micro-op quiesce path), which must also agree with each other.
+//! Drives the pinned, vendored SingleStepTests data (`tools/fetch-tests.sh`) for every covered `ADD.w`
+//! case — `Dn,(An)` (memory destination) and `<ea>,Dn` (register destination) for source modes Dn / (An)
+//! / #imm — and asserts post regs/SR/RAM/prefetch, the cycle count, **and** the per-cycle bus-transaction
+//! stream, through *both* framework drivers (run-to-completion fast path and the step-one-micro-op quiesce
+//! path), which must also agree with each other.
 //!
-//! Versioned xfail manifest (slice scope — implemented later): the `A7`/SP form (`An == 7`) and
-//! odd-address cases (which raise an address-error exception) are skipped. If the vendor data is
-//! missing, the test skips cleanly (run `tools/fetch-tests.sh`).
+//! Versioned xfail manifest (slice scope — implemented later): the `A7`/SP forms (`reg == 7`), odd-address
+//! `(An)` cases (which raise an address-error exception), and the remaining EA modes / sizes are skipped
+//! (see [`covered`]). If the vendor data is missing, the test skips cleanly (run `tools/fetch-tests.sh`).
 
 use oracle_core::m68000::bus68k::{FlatBus, Transaction, TxKind};
 use oracle_core::m68000::microop::{Cpu68000, Step};
@@ -108,8 +109,32 @@ fn assert_final(t: &Value, regs: &Registers, bus: &FlatBus) {
     }
 }
 
+/// Whether the framework currently covers this case (else it is an xfail for this push):
+/// `ADD.w Dn,(An)` (memory dest) and `ADD.w <ea>,Dn` (register dest) for source modes Dn / (An) / #imm,
+/// minus the A7/SP forms and odd-address `(An)` cases (which raise an address error — deferred).
+fn covered(opcode: u16, ini: &Value) -> bool {
+    let even = |reg: usize| u32f(ini, &format!("a{reg}")) & 1 == 0;
+    if opcode & 0xF1F8 == 0xD150 {
+        // ADD.w Dn,(An)
+        let an = (opcode & 7) as usize;
+        return an != 7 && even(an);
+    }
+    if opcode & 0xF1C0 == 0xD040 {
+        // ADD.w <ea>,Dn
+        let mode = (opcode >> 3) & 7;
+        let reg = (opcode & 7) as usize;
+        return match mode {
+            0 => true,                  // Dn (register direct)
+            2 => reg != 7 && even(reg), // (An), even address, not A7
+            7 if reg == 4 => true,      // #imm
+            _ => false,                 // other EA modes: out of slice this push
+        };
+    }
+    false // other ADD.w forms (e.g. Dn,(An)+ / byte / long): out of slice this push
+}
+
 #[test]
-fn add_w_dn_an_matches_singlesteptests() {
+fn add_w_matches_singlesteptests() {
     if !Path::new(DATA).exists() {
         eprintln!("SKIP: {DATA} missing — run tools/fetch-tests.sh");
         return;
@@ -121,15 +146,8 @@ fn add_w_dn_an_matches_singlesteptests() {
     for t in &data {
         let ini = &t["initial"];
         let opcode = ini["prefetch"][0].as_u64().unwrap() as u16;
-        if opcode & 0xF1F8 != 0xD150 {
-            continue; // not ADD.w Dn,(An)
-        }
-        let an = (opcode & 7) as usize;
-        if an == 7 {
-            continue; // xfail: A7/SP form (slice scope)
-        }
-        if u32f(ini, &format!("a{an}")) & 1 != 0 {
-            continue; // xfail: odd address -> address-error exception (slice scope)
+        if !covered(opcode, ini) {
+            continue;
         }
 
         let length = t["length"].as_u64().unwrap() as u32;
@@ -172,8 +190,8 @@ fn add_w_dn_an_matches_singlesteptests() {
     }
 
     assert!(
-        ran >= 150,
-        "expected ~179 clean ADD.w Dn,(An) cases, ran {ran}"
+        ran >= 800,
+        "expected ~810 covered ADD.w cases (Dn,(An) + <ea>,Dn for Dn/(An)/#imm), ran {ran}"
     );
-    eprintln!("SingleStepTests ADD.w Dn,(An): {ran} cases passed (both framework drivers, regs/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD.w: {ran} covered cases passed (both framework drivers, regs/RAM/prefetch/cycles/transactions)");
 }

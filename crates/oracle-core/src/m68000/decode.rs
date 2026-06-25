@@ -6,7 +6,7 @@
 //! instruction family) lands with full coverage (Step 3).
 
 use super::bus68k::Bus68k;
-use super::microop::{AluOp, Cpu68000, Fc, MicroOp, MicroState, Operand};
+use super::microop::{AluOp, Cpu68000, Dest, Fc, MicroOp, MicroState, Operand};
 use super::registers::Registers;
 
 /// Decode the opcode currently in `regs.prefetch[0]` into its micro-op recipe.
@@ -14,6 +14,9 @@ pub fn decode(regs: &Registers) -> MicroState {
     let opcode = regs.prefetch[0];
     if opcode & 0xF1F8 == 0xD150 {
         return add_w_dn_an(opcode);
+    }
+    if opcode & 0xF1C0 == 0xD040 {
+        return add_w_ea_dn(opcode);
     }
     todo!("opcode {opcode:#06X} not yet decoded")
 }
@@ -50,7 +53,7 @@ fn add_w_dn_an(opcode: u16) -> MicroState {
             op: AluOp::AddW,
             a: Operand::DataRegLow16(dn),
             b: Operand::Scratch(0),
-            dst: 1,
+            dst: Dest::Scratch(1),
         },
         MicroOp::WriteWord {
             addr: Operand::AddrReg(an),
@@ -58,6 +61,47 @@ fn add_w_dn_an(opcode: u16) -> MicroState {
             value: Operand::Scratch(1),
         },
     ])
+}
+
+/// `ADD.w <ea>,Dn` (`1101 ddd 0 01 mmm rrr`): `Dn += <ea>` (register destination). Covers a no-bus source
+/// (`Dn`), a memory source (`(An)`), and an immediate (`#imm`) — the contrasting EA shapes that prove the
+/// micro-op abstraction generalizes. The result writes back to `Dn`'s low word. Remaining EA modes are
+/// out of slice for this push (decode panics, and the harness xfails them).
+fn add_w_ea_dn(opcode: u16) -> MicroState {
+    let dn = ((opcode >> 9) & 7) as u8;
+    let mode = (opcode >> 3) & 7;
+    let reg = (opcode & 7) as u8;
+    let add = |a, b| MicroOp::Alu {
+        op: AluOp::AddW,
+        a,
+        b,
+        dst: Dest::DataRegLow16(dn),
+    };
+    match (mode, reg) {
+        // Dn (data register direct): no bus operand read; the only access is the prefetch refill.
+        (0, _) => MicroState::from_ops(&[
+            MicroOp::Prefetch,
+            add(Operand::DataRegLow16(dn), Operand::DataRegLow16(reg)),
+        ]),
+        // (An): one data read of the operand, then the prefetch refill.
+        (2, _) => MicroState::from_ops(&[
+            MicroOp::ReadWord {
+                addr: Operand::AddrReg(reg),
+                fc: Fc::Data,
+                dst: 0,
+            },
+            MicroOp::Prefetch,
+            add(Operand::DataRegLow16(dn), Operand::Scratch(0)),
+        ]),
+        // #imm: the immediate is the queued word (prefetch[1]); the ALU captures it before the two
+        // prefetch refills shift the queue (two program reads, the 2-word instruction's fetch).
+        (7, 4) => MicroState::from_ops(&[
+            add(Operand::DataRegLow16(dn), Operand::ImmWord),
+            MicroOp::Prefetch,
+            MicroOp::Prefetch,
+        ]),
+        _ => todo!("ADD.w <ea>,Dn EA mode {mode}/{reg} not yet covered"),
+    }
 }
 
 #[cfg(test)]

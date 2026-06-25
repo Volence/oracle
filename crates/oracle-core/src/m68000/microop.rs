@@ -65,6 +65,17 @@ pub enum Operand {
     DataRegLow16(u8),
     /// Address register `An` (the active A7 when `n == 7`) — used as a bus address.
     AddrReg(u8),
+    /// The immediate word currently in the prefetch queue (`prefetch[1]`, the word after the opcode).
+    ImmWord,
+}
+
+/// Where a [`MicroOp::Alu`] result is written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+pub enum Dest {
+    /// A scratch slot (e.g. an intermediate later written to memory).
+    Scratch(Slot),
+    /// The low word of data register `Dn` (its high word is preserved — a `.w` write-back).
+    DataRegLow16(u8),
 }
 
 /// An ALU operation a [`MicroOp::Alu`] performs (computing into scratch and updating the CCR). Grows with
@@ -89,13 +100,13 @@ pub enum MicroOp {
     },
     /// Refill the prefetch queue (read at `pc+4`), advance the queue and `pc` by one word.
     Prefetch,
-    /// Compute `op(a, b)` into scratch slot `dst` and update the CCR. An internal (overlapped) step —
-    /// no bus access, 0 standalone cycles.
+    /// Compute `op(a, b)` into `dst` and update the CCR. An internal (overlapped) step — no bus access,
+    /// 0 standalone cycles.
     Alu {
         op: AluOp,
         a: Operand,
         b: Operand,
-        dst: Slot,
+        dst: Dest,
     },
     /// Consume `cycles` master cycles with no bus access (compute / idle `n` cycles).
     Internal { cycles: u8 },
@@ -140,6 +151,7 @@ impl MicroState {
             Operand::Scratch(s) => self.scratch[s as usize],
             Operand::DataRegLow16(n) => regs.d[n as usize] & 0xFFFF,
             Operand::AddrReg(n) => regs.addr_reg(n as usize),
+            Operand::ImmWord => regs.prefetch[1] as u32,
         }
     }
 
@@ -177,7 +189,12 @@ impl MicroState {
                     AluOp::AddW => add_w(lhs, rhs),
                 };
                 regs.sr = (regs.sr & 0xFF00) | ccr;
-                self.scratch[dst as usize] = result as u32;
+                match dst {
+                    Dest::Scratch(s) => self.scratch[s as usize] = result as u32,
+                    Dest::DataRegLow16(n) => {
+                        regs.d[n as usize] = (regs.d[n as usize] & 0xFFFF_0000) | result as u32;
+                    }
+                }
                 0
             }
             MicroOp::Prefetch => {
@@ -384,7 +401,7 @@ mod tests {
             op: AluOp::AddW,
             a: Operand::DataRegLow16(5),
             b: Operand::Scratch(0),
-            dst: 1,
+            dst: Dest::Scratch(1),
         }]);
         st.scratch[0] = 0x3FE0; // operand
 
@@ -397,6 +414,48 @@ mod tests {
         assert_eq!(st.scratch[1], 0x6576, "0x2596 + 0x3FE0");
         assert_eq!(regs.sr, 0x2700, "CCR cleared, system byte preserved");
         assert!(bus.log.is_empty(), "ALU touches no bus");
+    }
+
+    #[test]
+    fn alu_writes_result_to_data_register_low_word_preserving_high() {
+        let mut regs = regs();
+        regs.d[6] = 0x47A4_1526; // high word must survive a .w write-back
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::Alu {
+            op: AluOp::AddW,
+            a: Operand::DataRegLow16(6),
+            b: Operand::Scratch(0),
+            dst: Dest::DataRegLow16(6),
+        }]);
+        st.scratch[0] = 0xFC2B;
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(
+            regs.d[6], 0x47A4_1151,
+            "low word = 0x1526 + 0xFC2B; high word preserved"
+        );
+    }
+
+    #[test]
+    fn imm_word_operand_reads_prefetch_word_1() {
+        let mut regs = regs();
+        regs.prefetch = [0xDE7C, 0x8EF1];
+        regs.d[7] = 0x1BC0_F680;
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::Alu {
+            op: AluOp::AddW,
+            a: Operand::DataRegLow16(7),
+            b: Operand::ImmWord,
+            dst: Dest::DataRegLow16(7),
+        }]);
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(
+            regs.d[7], 0x1BC0_8571,
+            "0xF680 + prefetch[1] (0x8EF1) low word"
+        );
     }
 
     #[test]
