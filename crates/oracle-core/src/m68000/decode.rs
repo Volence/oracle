@@ -6320,4 +6320,111 @@ mod tests {
             );
         }
     }
+
+    // --- E3: the execution-time address-error abort + the group-0 14-byte frame (Shape B). The abort is
+    // proven end-to-end on the SST anchors in the runner (`address_error_anchors_match_singlesteptests`);
+    // here we pin the snapshot/restore-ACROSS-the-abort anchor on `d850`. ---
+
+    /// The SST anchor `d850 [ADD.w (A0),D4] 32` (len 50): `A0 = 0x162C374D` is ODD, so the operand-read
+    /// word-faults and the in-flight `MicroState` is rewritten into the group-0 14-byte frame to vector 3
+    /// (@`0x0C`). All supervisor (S=1, T=0): the frame stacks `PC = 3072` (live `regs.pc`, no prefetch ran),
+    /// `SR = 0x2717`, `IR = 0xD850`, `SSW = 0xD855`, and the full 32-bit access address `0x162C374D`. The
+    /// vector @`0x0C` = `0x00001400`; the handler code @5120 = `0x40CF, 0x74A8`.
+    fn setup_addr_error_d850() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                896_942_068,
+                985_548_997,
+                317_845_901,
+                274_804_678,
+                523_604_791,
+                3_609_650,
+                312_302_176,
+                2_521_981_339,
+            ],
+            a: [
+                371_996_493,
+                3_417_051_206,
+                2_743_599_534,
+                2_239_672_972,
+                3_167_642_783,
+                1_494_966_947,
+                378_450_206,
+            ],
+            usp: 2_917_056_052,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10007,
+            prefetch: [55376, 55131], // prefetch[0] = 0xD850 (ADD.w (A0),D4)
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            // The vector-3 longword @0x0C: 0x00001400 (hi 0x0000 @12, lo 0x1400 @14).
+            (12u32, 0u8),
+            (13, 0),
+            (14, 20),
+            (15, 0),
+            // The handler code @5120: 0x40CF, 0x74A8.
+            (5120, 64),
+            (5121, 207),
+            (5122, 116),
+            (5123, 168),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    #[test]
+    fn address_error_quiescable_and_serializable_across_the_abort() {
+        // The snapshot/restore anchor ACROSS the execution-time address-error abort: quiesce at the faulting
+        // micro-op AND at every boundary of the installed 14-byte frame, snapshot the WHOLE CPU (the
+        // in-flight cursor — the original recipe before the fault, then the rewritten frame recipe + seeded
+        // scratch after it), restore, resume, and get an identical result. This proves the in-place
+        // `MicroState` rewrite is serializable across the abort (the one real interpreter change).
+        let (mut rref, mut bref) = setup_addr_error_d850();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // The faulting `Read` (step 0) rewrites the cursor into the 19-op frame in place, so the run is
+        // 1 (the abort, returning Continue) + 19 frame ops = 20 `step_micro_op` calls (19 Continue + 1
+        // Done). Snapshot after 0..=19 Continue boundaries — spanning the pre-fault boundary, the fault
+        // itself, and the whole installed frame.
+        for pause_after in 0..=19 {
+            let (mut cpu, mut bus) = setup_addr_error_d850();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+        // Pin the abort's final state to the SST anchor (the frame was produced end-to-end).
+        assert_eq!(rref.regs.pc, 5120, "pc landed at the vector-3 handler");
+        assert_eq!(
+            rref.regs.ssp, 2034,
+            "SSP pushed down by 14 (the group-0 frame)"
+        );
+        assert_eq!(
+            rref.regs.sr, 10007,
+            "SR unchanged (already S=1/T=0 — the entry transform is a no-op on the data)"
+        );
+        assert_eq!(
+            rref.regs.prefetch,
+            [16591, 29864],
+            "queue reloaded at the handler"
+        );
+    }
 }

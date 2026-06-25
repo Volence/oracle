@@ -1997,16 +1997,36 @@ mod tests {
         regs
     }
 
-    /// The data-space operand-READ address from running a built source recipe — the materialized EA.
+    /// A big-endian word read directly from `bus` memory (not logged) — for recovering a stacked frame field.
+    fn peek_word(bus: &FlatBus, addr: u32) -> u32 {
+        ((bus.peek(addr) as u32) << 8) | bus.peek(addr.wrapping_add(1)) as u32
+    }
+
+    /// The data-space access address from running a built source recipe — the materialized EA, **masked to
+    /// the 24-bit bus** (so it can be compared to the masked [`compute_ea`]). For an EVEN EA this is the
+    /// operand-READ address (FC=5, not a vector-3 fetch). For an ODD EA the recipe takes the E3
+    /// address-error abort, so there is no operand read; the access address is recovered from the 14-byte
+    /// group-0 frame — stacked as `aHi @ B+2`, `aLo @ B+4` with `B` = the final supervisor SP — then masked.
+    /// The parity (bit 0) and the masked value both agree with `compute_ea` by construction (identical
+    /// arithmetic; the 24-bit mask preserves bit 0).
     fn read_addr_of(recipe: &MicroState, regs: &Registers) -> u32 {
         let mut st = recipe.clone();
+        let mut r = regs.clone();
         let mut bus = FlatBus::new();
-        st.run_to_completion(&mut regs.clone(), &mut bus);
-        bus.log
+        st.run_to_completion(&mut r, &mut bus);
+        // Even EA: the operand read is the FC=5 data read that is not the vector-3 fetch (@ 0x0C / 0x0E).
+        if let Some(t) = bus
+            .log
             .iter()
-            .find(|t| t.kind == TxKind::Read && t.fc == 5) // FC 5 = supervisor data = the operand read
-            .expect("a memory-source recipe makes one data read")
-            .addr
+            .find(|t| t.kind == TxKind::Read && t.fc == 5 && t.addr != 0x0C && t.addr != 0x0E)
+        {
+            return t.addr;
+        }
+        // Odd EA: the recipe aborted into the address-error frame; recover the stacked access address.
+        let b = r.ssp;
+        let hi = peek_word(&bus, b.wrapping_add(2));
+        let lo = peek_word(&bus, b.wrapping_add(4));
+        ((hi << 16) | lo) & ADDR_MASK
     }
 
     #[test]

@@ -1104,3 +1104,58 @@ fn add_sub_match_singlesteptests() {
     );
     eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
+
+/// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
+/// NAMED odd anchors WITHOUT flipping `covered()` (the mass flip of every family's odd-address xfails is E4).
+/// Each anchor is a real vendored case (scattered inside the already-vendored ADD/MOVE/Bcc files) whose
+/// word/long bus access — or program fetch — targets an ODD address, so the faulting micro-op rewrites its
+/// `MicroState` into the vector-3 14-byte frame in place. Both framework drivers must reproduce
+/// regs/SR/RAM/prefetch/cycles AND the per-cycle bus-transaction stream (so the abort is identical on the
+/// run-to-completion and quiesce paths). These anchors exercise every shape of the new mechanism:
+/// data-read (An), a multi-word computed EA (SSW high = the ORIGINAL opcode; the access address stacked as a
+/// full 32-bit long), the ADD/SUB RMW (which faults on the READ, low5 = 0x15, never the write), the MOVE
+/// data-WRITE (low5 = 0x05, SR stacked with MOVE's CCR already updated), a taken-branch program fetch to an
+/// odd target (low5 = 0x1E, stacked PC = target − 4), and an `abs.l` odd base (the full 32-bit access
+/// address `(extHi << 16) | extLo`, which the old 24-bit EaCalc mask would have destroyed).
+#[test]
+fn address_error_anchors_match_singlesteptests() {
+    // (file, opcode-hex name prefix, expected length) — the (prefix, length) pair uniquely picks the
+    // address-error case out of the many same-opcode cases (the clean even cases are far shorter).
+    let anchors: &[(&str, &str, u32)] = &[
+        ("ADD.w.json", "d850", 50), // ADD.w (A0),D4 — data-read fault (An), low5=0x15
+        ("ADD.w.json", "d06c", 54), // ADD.w (d16,A4),D0 — multi-word EA, SSW-high = original opcode
+        ("ADD.w.json", "dd56", 50), // ADD.w D6,(A6) — RMW faults on the READ, low5=0x15
+        ("MOVE.w.json", "3c82", 50), // MOVE.w D2,(A6) — data-WRITE fault, low5=0x05, SR pre-updated
+        ("Bcc.json", "6d25", 52),   // Bcc taken odd target — program-read low5=0x1E, stPC=target-4
+        ("ADD.l.json", "d8b9", 58), // ADD.l (abs.l),D4 — odd base, full-32 access-addr
+    ];
+    let mut found = 0usize;
+    for (fname, prefix, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap().starts_with(prefix)
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| {
+                panic!("E3 address-error anchor {prefix} (len {length}) not found in {fname}")
+            });
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(
+        found,
+        anchors.len(),
+        "all E3 address-error anchors exercised"
+    );
+    eprintln!(
+        "E3 address-error anchors: {found} odd cases (group-0 14-byte vector-3 frame) passed both drivers"
+    );
+}

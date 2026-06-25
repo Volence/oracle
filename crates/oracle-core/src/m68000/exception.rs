@@ -18,6 +18,109 @@
 use super::ea::RecipeBuf;
 use super::microop::{Fc, MicroOp, Operand, Size, Slot};
 
+/// Scratch slot holding the **stacked PC** of the address-error frame (the live `regs.pc` at the fault),
+/// seeded by [`install_address_error`](super::microop::MicroState) and stacked as `PCL @ B+12` / `PCH @
+/// B+10`. Slot 0.
+pub(crate) const AERR_STACKED_PC_SLOT: Slot = 0;
+
+/// Scratch slot holding the **SR captured at the fault** by the frame's [`MicroOp::EnterException`], stacked
+/// as `SR @ B+8`. Slot 1 (matches the standard frame's save-SR convention).
+pub(crate) const AERR_SAVE_SR_SLOT: Slot = 1;
+
+/// Scratch slot holding the **full 32-bit faulting access address**, seeded by `install_address_error` and
+/// stacked as `aLo @ B+4` / `aHi @ B+2`. Slot 2.
+pub(crate) const AERR_FAULT_ADDR_SLOT: Slot = 2;
+
+/// Scratch slot holding the **instruction register** (the latched original opcode), stacked as `IR @ B+6`.
+/// Slot 8 — **above** the shared [`vector_fetch_and_reload`] slots 3..=7 so it never aliases the vector
+/// fetch (the IR write precedes the fetch, but a disjoint slot keeps the frame trivially correct).
+pub(crate) const AERR_IR_SLOT: Slot = 8;
+
+/// Scratch slot holding the **special status word** (`(opcode & 0xFFE0) | low5`), stacked as `SSW @ B+0`.
+/// Slot 9 — also disjoint from the vector-fetch slots.
+pub(crate) const AERR_SSW_SLOT: Slot = 9;
+
+/// Build the group-0 **14-byte address-error frame** recipe (vector 3, `0x0C`) — the execution-time abort's
+/// Shape-B tail, installed in place by
+/// [`install_address_error`](super::microop::MicroState). Pinned to the vendored address-error stream
+/// scattered across all 13 families (`d850`/`d06c`/`dd56`/`3c82`/`6d25`/`d8b9`, lengths 50–58):
+///
+/// - **Leading `n4` idle**, then [`MicroOp::EnterException`] (capture the live SR + enter supervisor /
+///   clear T), then `AdjustAddr(SP,−14)` so A7 = `B` (the post-push stack top).
+/// - The **seven frame writes**, in the on-bus order the 68000 microcode uses (NOT the layout order):
+///   `PCL @ B+12`, `SR @ B+8`, `PCH @ B+10`, `IR @ B+6`, `aLo @ B+4`, `SSW @ B+0`, `aHi @ B+2` — each a
+///   single FC=5 word [`MicroOp::Write`] at an [`Operand::SpPlus`] address (no per-write `EaCalc`, keeping
+///   the recipe ≤ `MAX_OPS`). The access address and the PC are stacked as full 32-bit longs (`aHi`/`PCH`
+///   the high word via [`Operand::ScratchHi16`], `aLo`/`PCL` the low word, `Write` truncating to 16).
+/// - The shared [`vector_fetch_and_reload`] at vector `3*4 = 0x0C`: two FC=5 vector reads, then the FC=6
+///   handler reload with the `n2` idle between.
+///
+/// The seeded scratch (`AERR_*` slots) and `EnterException`'s `AERR_SAVE_SR_SLOT` capture are the only
+/// per-fault inputs; the recipe itself is fixed (the abort vector is always 3), so it is rebuilt identically
+/// on every fault — both drivers and the snapshot/restore-across-the-abort path stay bit-identical.
+pub(crate) fn build_address_error_frame(buf: &mut RecipeBuf) {
+    // The leading n4 idle (the abort's only leading cost — the faulting micro-op was free).
+    buf.push(MicroOp::Internal { cycles: 4 });
+    // Capture the live SR + enter supervisor (set S, clear T).
+    buf.push(MicroOp::EnterException {
+        save_sr: AERR_SAVE_SR_SLOT,
+    });
+    // SSP -= 14 — A7 now points at the new stack top B (routed to the supervisor stack via the S bit).
+    buf.push(MicroOp::AdjustAddr { reg: 7, delta: -14 });
+    // The seven frame writes in the 68000 on-bus order.
+    // PCL @ B+12 (written FIRST) — low 16 of the stacked PC.
+    buf.push(MicroOp::Write {
+        addr: Operand::SpPlus(12),
+        fc: Fc::Data,
+        size: Size::Word,
+        value: Operand::Scratch(AERR_STACKED_PC_SLOT),
+    });
+    // SR @ B+8 (SECOND) — the SR captured at the fault.
+    buf.push(MicroOp::Write {
+        addr: Operand::SpPlus(8),
+        fc: Fc::Data,
+        size: Size::Word,
+        value: Operand::Scratch(AERR_SAVE_SR_SLOT),
+    });
+    // PCH @ B+10 (THIRD) — high 16 of the stacked PC.
+    buf.push(MicroOp::Write {
+        addr: Operand::SpPlus(10),
+        fc: Fc::Data,
+        size: Size::Word,
+        value: Operand::ScratchHi16(AERR_STACKED_PC_SLOT),
+    });
+    // IR @ B+6 (FOURTH) — the latched original opcode.
+    buf.push(MicroOp::Write {
+        addr: Operand::SpPlus(6),
+        fc: Fc::Data,
+        size: Size::Word,
+        value: Operand::Scratch(AERR_IR_SLOT),
+    });
+    // aLo @ B+4 (FIFTH) — low 16 of the full 32-bit access address.
+    buf.push(MicroOp::Write {
+        addr: Operand::SpPlus(4),
+        fc: Fc::Data,
+        size: Size::Word,
+        value: Operand::Scratch(AERR_FAULT_ADDR_SLOT),
+    });
+    // SSW @ B+0 (SIXTH) — (opcode & 0xFFE0) | low5.
+    buf.push(MicroOp::Write {
+        addr: Operand::SpPlus(0),
+        fc: Fc::Data,
+        size: Size::Word,
+        value: Operand::Scratch(AERR_SSW_SLOT),
+    });
+    // aHi @ B+2 (SEVENTH) — high 16 of the full 32-bit access address.
+    buf.push(MicroOp::Write {
+        addr: Operand::SpPlus(2),
+        fc: Fc::Data,
+        size: Size::Word,
+        value: Operand::ScratchHi16(AERR_FAULT_ADDR_SLOT),
+    });
+    // The shared vector-3 fetch (FC=5) + handler reload (FC=6, n2 between).
+    vector_fetch_and_reload(buf, 3 * 4);
+}
+
 /// Scratch slot holding a transient standard-frame write address (`B+4` for `PCL`, then reused for `B+2` for
 /// `PCH`). Each address is consumed by its `Write` before the next `EaCalc` overwrites it. Distinct from a
 /// caller's `saved_pc`/`save_sr` slots so the frame values survive until they are pushed.

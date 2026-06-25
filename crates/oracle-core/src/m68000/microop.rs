@@ -10,7 +10,7 @@
 //! This push runs over the word+FC [`Bus68k`]; unifying it with the generic `crate::bus::Bus` is a
 //! follow-up (Step 2).
 
-use super::bus68k::{Bus68k, ADDR_MASK};
+use super::bus68k::Bus68k;
 use super::registers::{
     Registers, CCR_C, CCR_N, CCR_V, CCR_X, CCR_Z, SR_IMPLEMENTED, SR_SUPERVISOR, SR_TRACE,
 };
@@ -211,14 +211,22 @@ fn sub_l(a: u32, b: u32) -> (u32, u16) {
 ///   src: `EaCalc(HI), Prefetch, EaCalc(addr), Prefetch, Read.hi, EaCalc(lo addr), Read.lo, Combine32`  (8)
 ///   alu: `Alu{Move}` (parks the 32-bit copy)                                                            (1)
 ///   dst: `EaCalc(HI), Prefetch, EaCalc(addr), Write.hi, EaCalc(lo addr), Write.lo, Prefetch, Prefetch`  (8)
-/// 20 = 17 + headroom. Public so the EA builder ([`super::ea::RecipeBuf`]) can size its fixed staging
-/// array to the same bound.
+/// 20 = 17 + headroom. The **E3 address-error frame** (`install_address_error` → the 14-byte group-0 frame)
+/// is the new longest recipe at **19** micro-ops: `Internal(n4), EnterException, AdjustAddr(SP,−14)`, the
+/// **7** frame writes (`PCL/SR/PCH/IR/aLo/SSW/aHi`, each a single `Write` at an [`Operand::SpPlus`] address —
+/// no per-write `EaCalc`, which is what keeps it ≤ 20), then the 9-op shared
+/// `vector_fetch_and_reload` (`LoadImm, Read, EaCalc, Read, Combine32, SetPc, Prefetch, Internal(n2),
+/// Prefetch`). 19 ≤ 20, so `MAX_OPS` is unchanged (using `SpPlus` instead of seven `EaCalc`s avoided a bump).
+/// Public so the EA builder ([`super::ea::RecipeBuf`]) can size its fixed staging array to the same bound.
 pub const MAX_OPS: usize = 20;
 
-/// Number of scratch slots carrying values between micro-ops within one instruction. Sized to the M3
-/// worst recipe (`MOVE.l (abs.l),(abs.l)` uses slots 0..=5: read value / parked copy / EA / abs.l-HI /
-/// long-lo-read / long-lo-addr) with headroom.
-const SCRATCH_SLOTS: usize = 8;
+/// Number of scratch slots carrying values between micro-ops within one instruction. Sized to the **E3
+/// address-error frame** — the new worst recipe (`install_address_error`): it carries five live frame-field
+/// values (stacked-PC slot 0, captured-SR slot 1, faulting-addr slot 2, IR slot 8, SSW slot 9) **disjoint**
+/// from the shared `vector_fetch_and_reload` slots 3..=7 (vector addr / handler-hi / vector-lo-addr /
+/// handler-lo / assembled handler), so no field aliases the vector fetch. The prior worst (`MOVE.l
+/// (abs.l),(abs.l)`) used slots 0..=5. Fixed-size for bincode snapshot/restore.
+const SCRATCH_SLOTS: usize = 10;
 
 /// Index into the scratch register file.
 pub type Slot = u8;
@@ -306,6 +314,13 @@ pub enum Operand {
     /// JSR). The pushed 32-bit return address is `pc + n` (`pc` is the opcode address at decode time — the
     /// push runs **before** any `Prefetch` advances it), computed UNMASKED via [`MicroOp::TargetCalc`].
     PcPlus(u8),
+    /// `regs.addr_reg(7).wrapping_add(n)` — the active A7 plus a signed byte offset, used as a frame-write
+    /// **address** without a per-write [`MicroOp::EaCalc`]. The address-error abort's 14-byte group-0 frame
+    /// (E3) pushes seven words at fixed offsets `B+0..B+12` from the post-`AdjustAddr` stack top; `SpPlus`
+    /// addresses each (`B = A7` after `AdjustAddr(SP,−14)`) so the whole frame recipe stays under
+    /// [`MAX_OPS`]. A7 is the supervisor stack here (the abort already set S), routed via
+    /// [`Registers::addr_reg`].
+    SpPlus(i8),
 }
 
 /// Where a [`MicroOp::Alu`] result is written.
@@ -422,11 +437,14 @@ pub enum MicroOp {
     /// non-bus one-shot — separate from the operand access so the bump is snapshot-visible and can straddle
     /// a prefetch.
     AdjustAddr { reg: u8, delta: i8 },
-    /// Compute an effective address `(resolve(base) + resolve(index) + resolve(disp)) & ADDR_MASK` into
-    /// scratch slot `dst`. A **fixed** 3-way `wrapping_add` — there is deliberately **no per-mode match
-    /// inside `exec_one`**; the decode-time builder picks which operands feed each leg (`Zero` for an
-    /// inert one), so every EA mode shares this single hot-path arm. A 0-cycle, non-bus, snapshot-visible
-    /// internal step: the materialized EA is a serializable mid-instruction value.
+    /// Compute an effective address `resolve(base) + resolve(index) + resolve(disp)` (the **full 32-bit**
+    /// internal address — **no** 24-bit mask; the bus masks at access time) into scratch slot `dst`. A
+    /// **fixed** 3-way `wrapping_add` — there is deliberately **no per-mode match inside `exec_one`**; the
+    /// decode-time builder picks which operands feed each leg (`Zero` for an inert one), so every EA mode
+    /// shares this single hot-path arm. A 0-cycle, non-bus, snapshot-visible internal step: the materialized
+    /// EA is a serializable mid-instruction value. The masking lives at the [`Bus68k`] access (the 68000
+    /// address registers are 32-bit; only the external bus drops the top 8 pins), so the address-error abort
+    /// (E3) can stack the full 32-bit faulting EA.
     EaCalc {
         base: Operand,
         index: Operand,
@@ -437,7 +455,7 @@ pub enum MicroOp {
     /// halves of a long operand: `hi` is the high word (already in a scratch slot from the first `Read`),
     /// `lo` resolves the low word (the second `Read`'s scratch slot, or `prefetch[1]` for `#imm.l`). A
     /// 0-cycle, non-bus, snapshot-visible internal step. **No 24-bit mask** — this is an operand VALUE, not
-    /// an address (distinct from [`MicroOp::EaCalc`], which masks to `ADDR_MASK`).
+    /// an address (like [`MicroOp::EaCalc`], which is also unmasked; the bus masks at access time).
     Combine32 { hi: Slot, lo: Operand, dst: Slot },
     /// Set the program counter to a branch destination: `regs.pc = resolve(value).wrapping_sub(4)`. The −4
     /// **primes** the two [`MicroOp::Prefetch`] ops that must follow: each reads at `pc+4` and advances `pc`
@@ -448,9 +466,10 @@ pub enum MicroOp {
     SetPc { value: Operand },
     /// Compute a branch target / pushed return address `scratch[dst] = resolve(base) + resolve(index) +
     /// resolve(disp)` — the **UNMASKED twin** of [`MicroOp::EaCalc`]. A stored PC / pushed return address is
-    /// the full 32-bit value (a backward `Bcc` to `0xFFFF_DB42` must NOT be masked to 24 bits), so unlike
-    /// `EaCalc` this does **NO** `ADDR_MASK`. A fixed 3-way `wrapping_add` (`Zero` for an inert leg); a
-    /// 0-cycle, non-bus, snapshot-visible internal step.
+    /// the full 32-bit value (a backward `Bcc` to `0xFFFF_DB42` must NOT be masked to 24 bits). Like
+    /// `EaCalc` this does **NO** 24-bit mask, but it is kept distinct because a target is never a bus
+    /// address (it feeds `SetPc`/a frame push, never `Read`/`Write`). A fixed 3-way `wrapping_add` (`Zero`
+    /// for an inert leg); a 0-cycle, non-bus, snapshot-visible internal step.
     TargetCalc {
         base: Operand,
         index: Operand,
@@ -573,7 +592,47 @@ impl MicroState {
             Operand::BriefDisp8 => sign_extend8((regs.prefetch[1] & 0xFF) as u8),
             Operand::BranchDisp8 => sign_extend8((regs.prefetch[0] & 0xFF) as u8),
             Operand::PcPlus(n) => regs.pc.wrapping_add(n as u32),
+            Operand::SpPlus(n) => regs.addr_reg(7).wrapping_add(n as i32 as u32),
         }
+    }
+
+    /// Install the execution-time **address-error** abort in place (Shape B — the new E3 mechanism): a
+    /// faulting word/long bus access (or odd program fetch) detected inside [`Self::exec_one`] rewrites this
+    /// in-flight `MicroState` into the group-0 **14-byte exception frame** recipe, seeded from live state.
+    ///
+    /// The rewrite is a pure data operation: reassign `ops`/`len` and rewind `step` to 0, **preserving**
+    /// `cycles` (the faulting micro-op never touched the bus or counted cycles — it returns 0 here; the
+    /// frame's leading `Internal(n4)` counts the idle) and `opcode` (the latched IR the frame stacks). Both
+    /// drivers keep looping over `exec_one` across the new recipe, so the run-to-completion and quiesce
+    /// paths cannot diverge, and the rewritten state is still ordinary fixed-size bincode (snapshot-safe
+    /// across the abort).
+    ///
+    /// `faulting_addr` is the **full 32-bit** access address (the frame stacks it unmasked — see
+    /// [`MicroOp::EaCalc`]); `low5` is the SSW low five bits (`read | program | fc`). The SSW high 11 bits
+    /// come from the latched `opcode` (not the shifted prefetch). The pushed SR is captured by the frame's
+    /// own [`MicroOp::EnterException`] (the LIVE SR at the fault), and the stacked PC is the live `regs.pc`
+    /// — no special-casing (a program fault already ran `SetPc{target}` so `regs.pc == target − 4`; a data
+    /// fault has `regs.pc == instruction_pc + 2×prefetches_done`).
+    fn install_address_error(&mut self, regs: &Registers, faulting_addr: u32, low5: u16) -> u32 {
+        use super::ea::RecipeBuf;
+        use super::exception::{
+            build_address_error_frame, AERR_FAULT_ADDR_SLOT, AERR_IR_SLOT, AERR_SSW_SLOT,
+            AERR_STACKED_PC_SLOT,
+        };
+        let ssw = (self.opcode & 0xFFE0) | low5;
+        self.scratch[AERR_STACKED_PC_SLOT as usize] = regs.pc;
+        self.scratch[AERR_FAULT_ADDR_SLOT as usize] = faulting_addr;
+        self.scratch[AERR_IR_SLOT as usize] = self.opcode as u32;
+        self.scratch[AERR_SSW_SLOT as usize] = ssw as u32;
+        // (The save-SR slot is filled by the frame's EnterException, capturing the live SR at the fault.)
+        let mut buf = RecipeBuf::new();
+        build_address_error_frame(&mut buf);
+        let ops = buf.as_ops();
+        self.ops = [MicroOp::Internal { cycles: 0 }; MAX_OPS];
+        self.ops[..ops.len()].copy_from_slice(ops);
+        self.len = ops.len() as u8;
+        self.step = 0;
+        0
     }
 
     /// **Driver 1 — run-to-completion** (the default fast path): execute every remaining micro-op in
@@ -600,6 +659,18 @@ impl MicroState {
                 dst,
             } => {
                 let address = self.resolve(addr, regs);
+                // Address-error abort (E3): a word/long bus access to an ODD address never reaches the bus —
+                // the 68000 aborts the instruction and installs the group-0 14-byte frame. (A byte access
+                // drives one bus half regardless of parity, so it can never fault.) `address` is the FULL
+                // 32-bit EA (EaCalc no longer masks); the frame stacks it unmasked. low5 for a read =
+                // read(0x10) | program(0x08 only for a program-space read) | fc (5 sv-data / 6 sv-program) —
+                // a data read is 0x15 (incl. the ADD/SUB RMW, which always faults on the read, never the
+                // write).
+                if !matches!(size, Size::Byte) && address & 1 != 0 {
+                    let program = matches!(fc, Fc::Program);
+                    let low5 = 0x10 | (if program { 0x08 } else { 0 }) | regs.fc(program) as u16;
+                    return self.install_address_error(regs, address, low5);
+                }
                 let fc = regs.fc(matches!(fc, Fc::Program));
                 // A byte access uses read8 (the single addressed cell, zero-extended); a word uses read16.
                 // A long is never a single `Read` — it is two word `Read`s assembled by `Combine32`, so the
@@ -619,6 +690,16 @@ impl MicroState {
                 value,
             } => {
                 let address = self.resolve(addr, regs);
+                // Address-error abort (E3): a word/long write to an ODD address never reaches the bus. low5
+                // for a write = 0 (read bit clear) | program(0x08, never set for a data write) | fc — a data
+                // write is 0x05. MOVE's odd-destination is the only write-fault family in the data, and it
+                // stacks the SR with MOVE's CCR already updated (the `EnterException` in the frame captures
+                // the live SR at the fault, after the MOVE's `Alu` ran).
+                if !matches!(size, Size::Byte) && address & 1 != 0 {
+                    let program = matches!(fc, Fc::Program);
+                    let low5 = (if program { 0x08 } else { 0 }) | regs.fc(program) as u16;
+                    return self.install_address_error(regs, address, low5);
+                }
                 let fc = regs.fc(matches!(fc, Fc::Program));
                 let v = self.resolve(value, regs);
                 // A long is never a single `Write` — it is two word `Write`s (the builder feeds the hi word
@@ -697,7 +778,17 @@ impl MicroState {
                 0
             }
             MicroOp::Prefetch => {
-                let refill = bus.read16(regs.pc.wrapping_add(4), regs.fc(true));
+                // Address-error abort (E3): a program fetch of an ODD instruction word (a taken
+                // branch / jump / RTS-RTR-RTE return whose target is odd) never reaches the bus. The
+                // faulting address is `pc + 4` (the queue refill address); after a taken branch's `SetPc`
+                // left `pc = target − 4`, that is exactly the odd `target`, and `regs.pc` (= target − 4) is
+                // the stacked PC. low5 = read(0x10) | program(0x08) | fc6 = 0x1E.
+                let fetch_addr = regs.pc.wrapping_add(4);
+                if fetch_addr & 1 != 0 {
+                    let low5 = 0x10 | 0x08 | regs.fc(true) as u16;
+                    return self.install_address_error(regs, fetch_addr, low5);
+                }
+                let refill = bus.read16(fetch_addr, regs.fc(true));
                 regs.prefetch[0] = regs.prefetch[1];
                 regs.prefetch[1] = refill;
                 regs.pc = regs.pc.wrapping_add(2);
@@ -715,12 +806,18 @@ impl MicroState {
                 disp,
                 dst,
             } => {
-                // FIXED 3-way wrapping_add — no per-mode branch. The builder selects the legs.
+                // FIXED 3-way wrapping_add — no per-mode branch. The builder selects the legs. The EA is the
+                // FULL 32-bit internal address — **NOT** 24-bit-masked here: the 68000 keeps the address
+                // register file at 32 bits and only the external bus drops the top 8 pins, so masking belongs
+                // at the bus access (`Bus68k` masks `read16`/`write16`/`read8`/`write8`), not in the address
+                // arithmetic. Pinned by the address-error abort (E3): the group-0 frame stacks the **full
+                // 32-bit** faulting address (`d06c` stacks `0xAB091E2D`, `d8b9` stacks `0x956FE889`), which the
+                // 24-bit mask would have destroyed. The bus access via this EA still hits the masked cell (the
+                // bus masks), so every prior family's transaction stream is byte-identical.
                 let ea = self
                     .resolve(base, regs)
                     .wrapping_add(self.resolve(index, regs))
-                    .wrapping_add(self.resolve(disp, regs))
-                    & ADDR_MASK;
+                    .wrapping_add(self.resolve(disp, regs));
                 self.scratch[dst as usize] = ea;
                 0
             }
@@ -1262,9 +1359,9 @@ mod tests {
     }
 
     #[test]
-    fn ea_calc_sums_base_index_disp_into_scratch_masked() {
-        // EaCalc is a FIXED 3-way wrapping_add masked to the 24-bit bus — no per-mode match.
-        // base = A1, index = ·(Zero), disp = sign_extend16(prefetch[1]).
+    fn ea_calc_sums_base_index_disp_into_scratch() {
+        // EaCalc is a FIXED 3-way wrapping_add — no per-mode match, NO 24-bit mask (the bus masks at access).
+        // base = A1, index = ·(Zero), disp = sign_extend16(prefetch[1]). This sum stays within 24 bits.
         let mut regs = regs();
         regs.a[1] = 0x00FF_FFF0;
         regs.prefetch = [0xD46D, 0xFFF8]; // disp word = 0xFFF8 → sign-extend → -8
@@ -1284,14 +1381,16 @@ mod tests {
         );
         assert_eq!(
             st.scratch[2], 0x00FF_FFE8,
-            "0xFFFFF0 + (-8) = 0xFFFFE8, masked to 24 bits"
+            "0xFFFFF0 + (-8) = 0xFFFFE8 (within 24 bits; EaCalc does not mask)"
         );
         assert!(bus.log.is_empty(), "EaCalc touches no bus");
     }
 
     #[test]
-    fn ea_calc_wraps_around_the_24bit_bus() {
-        // base near the top of the 24-bit space + a positive disp wraps under ADDR_MASK.
+    fn ea_calc_keeps_the_full_32bit_sum_unmasked() {
+        // EaCalc carries the FULL 32-bit internal address — it does NOT mask to 24 bits (the bus masks at
+        // access time). base near the top of the 24-bit space + a positive disp would, with the old mask,
+        // have wrapped to 0x0E; now the 25th bit survives so the address-error abort can stack it unmasked.
         let mut regs = regs();
         regs.a[3] = 0x00FF_FFFE;
         regs.prefetch = [0x0000, 0x0010]; // disp = +0x10
@@ -1306,17 +1405,17 @@ mod tests {
         st.exec_one(&mut regs, &mut bus);
 
         assert_eq!(
-            st.scratch[0], 0x0000_000E,
-            "0xFFFFFE + 0x10 wraps to 0x0E under the 24-bit mask"
+            st.scratch[0], 0x0100_000E,
+            "0xFFFFFE + 0x10 = 0x0100000E, UNMASKED (the bus masks to 0x0E at access)"
         );
     }
 
     #[test]
     fn disp_word_resolves_sign_extended_prefetch_word_1() {
-        // Operand::DispWord = sign_extend16(prefetch[1]) as u32 — a full 32-bit sign extension before
-        // EaCalc masks it. Resolve it via a Zero+Zero+DispWord EaCalc (the abs.w shape).
+        // Operand::DispWord = sign_extend16(prefetch[1]) as u32 — a full 32-bit sign extension; EaCalc no
+        // longer masks (the bus masks at access). Resolve it via a Zero+Zero+DispWord EaCalc (the abs.w shape).
         let mut regs = regs();
-        regs.prefetch = [0xDA78, 0xCC1A]; // abs.w disp 0xCC1A → sign-extend → 0xFFCC1A
+        regs.prefetch = [0xDA78, 0xCC1A]; // abs.w disp 0xCC1A → sign-extend → 0xFFFFCC1A
         let mut bus = FlatBus::new();
         let mut st = MicroState::from_ops(&[MicroOp::EaCalc {
             base: Operand::Zero,
@@ -1328,8 +1427,8 @@ mod tests {
         st.exec_one(&mut regs, &mut bus);
 
         assert_eq!(
-            st.scratch[1], 0x00FF_CC1A,
-            "abs.w EA = sign_extend16(0xCC1A) masked to 24 bits"
+            st.scratch[1], 0xFFFF_CC1A,
+            "abs.w EA = sign_extend16(0xCC1A), UNMASKED (the bus masks to 0xFFCC1A at access)"
         );
     }
 
@@ -1351,10 +1450,10 @@ mod tests {
 
         st.exec_one(&mut regs, &mut bus);
 
-        // (pc+2) + sign_extend16(disp) = 0xC02 + (-10014) = -6940 → 0xFFFF_E4E4 → masked 0xFF_E4E4.
+        // (pc+2) + sign_extend16(disp) = 0xC02 + (-10014) = -6940 → 0xFFFF_E4E4, UNMASKED (bus masks at access).
         assert_eq!(
-            st.scratch[0], 0x00FF_E4E4,
-            "d16(PC) EA = (pc+2) + sign_extend16(disp), masked to 24 bits"
+            st.scratch[0], 0xFFFF_E4E4,
+            "d16(PC) EA = (pc+2) + sign_extend16(disp), UNMASKED"
         );
     }
 
@@ -1374,10 +1473,10 @@ mod tests {
 
         st.exec_one(&mut regs, &mut bus);
 
-        // (0xD1CC << 16) = 0xD1CC_0000 → masked to 24 bits = 0x00CC_0000.
+        // (0xD1CC << 16) = 0xD1CC_0000, UNMASKED (EaCalc keeps the full 32 bits; the bus masks at access).
         assert_eq!(
-            st.scratch[0], 0x00CC_0000,
-            "abs.l HIGH = (prefetch[1] << 16) masked to 24 bits"
+            st.scratch[0], 0xD1CC_0000,
+            "abs.l HIGH = (prefetch[1] << 16), UNMASKED"
         );
     }
 
@@ -1385,7 +1484,7 @@ mod tests {
     fn ext_word_raw_resolves_to_prefetch_word_1_unmodified() {
         // Operand::ExtWordRaw = prefetch[1] as u32 — the abs.l LOW word capture, read from the queue
         // AFTER the interleaved Prefetch (NEVER from that prefetch's bus-return value). Combined with the
-        // already-captured HIGH it forms the full 24-bit address.
+        // already-captured HIGH it forms the full 32-bit address (the bus masks to 24 bits at access).
         let mut regs = regs();
         regs.prefetch = [0x0000, 0x9C2A]; // post-prefetch: prefetch[1] is now the LOW word 0x9C2A
         let mut bus = FlatBus::new();
@@ -1442,10 +1541,10 @@ mod tests {
 
         st.exec_one(&mut regs, &mut bus);
 
-        // sign_extend8(0xF0) = 0xFFFF_FFF0 → masked to 24 bits = 0x00FF_FFF0.
+        // sign_extend8(0xF0) = 0xFFFF_FFF0, UNMASKED (EaCalc keeps the full 32 bits; the bus masks at access).
         assert_eq!(
-            st.scratch[0], 0x00FF_FFF0,
-            "BriefDisp8 = sign_extend8(prefetch[1] & 0xFF), masked"
+            st.scratch[0], 0xFFFF_FFF0,
+            "BriefDisp8 = sign_extend8(prefetch[1] & 0xFF), UNMASKED"
         );
     }
 
@@ -1465,10 +1564,10 @@ mod tests {
 
         st.exec_one(&mut regs, &mut bus);
 
-        // sign_extend16(0xF008) = 0xFFFF_F008 → masked to 24 bits = 0x00FF_F008.
+        // sign_extend16(0xF008) = 0xFFFF_F008, UNMASKED (EaCalc keeps the full 32 bits; the bus masks).
         assert_eq!(
-            st.scratch[0], 0x00FF_F008,
-            "BriefIndex (D, W) = sign_extend16(Dn low 16)"
+            st.scratch[0], 0xFFFF_F008,
+            "BriefIndex (D, W) = sign_extend16(Dn low 16), UNMASKED"
         );
     }
 
@@ -1511,10 +1610,10 @@ mod tests {
 
         st.exec_one(&mut regs, &mut bus);
 
-        // sign_extend16(0x8001) = 0xFFFF_8001 → masked to 24 bits = 0x00FF_8001.
+        // sign_extend16(0x8001) = 0xFFFF_8001, UNMASKED (EaCalc keeps the full 32 bits; the bus masks).
         assert_eq!(
-            st.scratch[0], 0x00FF_8001,
-            "BriefIndex (A, W) = sign_extend16(An low 16)"
+            st.scratch[0], 0xFFFF_8001,
+            "BriefIndex (A, W) = sign_extend16(An low 16), UNMASKED"
         );
     }
 
@@ -2383,5 +2482,93 @@ mod tests {
         assert_eq!(cycles, 0, "LoadImm is an internal compute — 0 cycles");
         assert_eq!(st.scratch[3], 128, "the constant landed in scratch slot 3");
         assert!(bus.log.is_empty(), "LoadImm touches no bus");
+    }
+
+    // --- E3: the SpPlus frame-write operand + the execution-time address-error abort. ---
+
+    #[test]
+    fn sp_plus_resolves_to_active_a7_plus_signed_offset() {
+        // Operand::SpPlus(n) = regs.addr_reg(7).wrapping_add(n) — the frame-write address (A7 is the
+        // supervisor SP here). Resolve it via a Write so we see the bus address it produced.
+        let mut regs = regs(); // supervisor → A7 == ssp
+        regs.ssp = 0x0000_2000;
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::Write {
+            addr: Operand::SpPlus(12),
+            fc: Fc::Data,
+            size: Size::Word,
+            value: Operand::Scratch(0),
+        }]);
+        st.scratch[0] = 0xBEEF;
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(bus.log[0].addr, 0x0000_200C, "SpPlus(12) = ssp + 12");
+        assert_eq!(bus.peek(0x0000_200C), 0xBE, "the word landed at ssp + 12");
+    }
+
+    #[test]
+    fn odd_word_read_installs_the_address_error_frame_in_place() {
+        // A word Read to an ODD address never touches the bus — it rewrites the MicroState into the 14-byte
+        // group-0 frame IN PLACE: `step` rewinds to 0, `cycles` + `opcode` are preserved, the frame fields
+        // are seeded into scratch, and the first installed micro-op is the leading n4 idle. The full frame
+        // transaction stream is pinned end-to-end by the SST anchor `d850` in the runner; this pins the
+        // in-place install mechanism.
+        let mut regs = regs(); // supervisor (S=1)
+        regs.pc = 0x0000_2222;
+        regs.ssp = 0x0000_3000;
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::Read {
+            addr: Operand::Scratch(0),
+            fc: Fc::Data,
+            size: Size::Word,
+            dst: 1,
+        }]);
+        st.set_opcode(0xD850);
+        st.scratch[0] = 0x0010_0001; // odd address → address error
+        st.cycles = 4; // pretend a leading prefetch already ran
+
+        let cost = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(cost, 0, "the faulting micro-op itself is free");
+        assert_eq!(st.cycles, 4, "accrued cycles preserved across the abort");
+        assert_eq!(st.step, 0, "step rewound to the start of the frame recipe");
+        assert!(bus.log.is_empty(), "the odd access never reached the bus");
+        assert_eq!(
+            st.ops[0],
+            MicroOp::Internal { cycles: 4 },
+            "the frame's leading n4 idle"
+        );
+        assert!(!st.is_done(), "the 14-byte frame recipe is now in flight");
+        // The seeded frame fields (slots per `exception::AERR_*`: pc=0, fault-addr=2, IR=8, SSW=9).
+        assert_eq!(st.scratch[0], 0x0000_2222, "stacked PC = live regs.pc");
+        assert_eq!(st.scratch[2], 0x0010_0001, "faulting address (full 32-bit)");
+        assert_eq!(st.scratch[8], 0xD850, "IR = the latched opcode");
+        assert_eq!(
+            st.scratch[9], 0xD855,
+            "SSW = (opcode & 0xFFE0) | 0x15 (data read)"
+        );
+    }
+
+    #[test]
+    fn odd_byte_read_does_not_fault() {
+        // A BYTE access drives one bus half regardless of parity, so an odd byte address never raises an
+        // address error — it reads normally.
+        let mut regs = regs();
+        let mut bus = FlatBus::new();
+        bus.poke(0x0010_0001, 0x7A);
+        let mut st = MicroState::from_ops(&[MicroOp::Read {
+            addr: Operand::Scratch(0),
+            fc: Fc::Data,
+            size: Size::Byte,
+            dst: 1,
+        }]);
+        st.scratch[0] = 0x0010_0001; // odd, but a byte access is fine
+
+        let cost = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(cost, 4, "an odd byte read is a normal 4-cycle access");
+        assert_eq!(st.scratch[1], 0x7A, "the byte was read");
+        assert!(st.is_done(), "no abort — the single Read completed");
     }
 }
