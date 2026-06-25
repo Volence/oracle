@@ -7,7 +7,7 @@
 //! builder per instruction family) lands with full coverage.
 
 use super::bus68k::Bus68k;
-use super::ea::{ea_dst, ea_src, RecipeBuf};
+use super::ea::{ea_dst, ea_move, ea_src, RecipeBuf};
 use super::microop::{AluOp, Cpu68000, Dest, MicroOp, MicroState, Operand, Size};
 use super::registers::Registers;
 
@@ -20,10 +20,24 @@ fn is_dst_mem_mode(mode: u16, reg: u16) -> bool {
     matches!(mode, 2..=6) || (mode == 7 && (reg == 0 || reg == 1))
 }
 
+/// Whether `opcode` is a `MOVE.w` (NOT `MOVEA`). MOVE layout: `00 SS RRR MMM mmm rrr` — bits 15-14 = 00,
+/// the size field (bits 13-12) is `11` for word, the destination mode (bits 8-6, the SWAPPED field) is the
+/// EA mode. `dst_mode == 1` (`An`) is `MOVEA` (a separate decode arm, M4) and is excluded here. So a word
+/// MOVE has bits 15-12 == `0b0011` and `dst_mode != 1`.
+#[inline]
+fn is_move_word(opcode: u16) -> bool {
+    (opcode >> 12) & 0xF == 0b0011 && ((opcode >> 6) & 7) != 1
+}
+
 /// Decode the opcode currently in `regs.prefetch[0]` into its micro-op recipe.
 #[inline]
 pub fn decode(regs: &Registers) -> MicroState {
     let opcode = regs.prefetch[0];
+    // MOVE.w (`00 11 RRR MMM mmm rrr`, dst_mode != 1) — the EA→EA composition. Decoded before the ADD/SUB
+    // arms (the opcode spaces 0x3xxx and 0xD/0x9xxx are disjoint).
+    if is_move_word(opcode) {
+        return move_w(opcode);
+    }
     // ADD.w and SUB.w share recipe shapes — they differ only in the `AluOp` (operand order is arranged so
     // the destination is the minuend, which matters for the non-commutative SUB).
     // `<op>.w Dn,<ea>` (memory destination, `1xx1 ddd 1 01 mmm rrr`). The destination-EA builder handles
@@ -129,6 +143,21 @@ fn arith_dn_ea(opcode: u16, op: AluOp, size: Size) -> MicroState {
         b: dn_operand(dn, size),
         dst: Dest::Scratch(1),
     });
+    buf.finish()
+}
+
+/// `MOVE.w <ea>,<ea>` (`00 11 RRR MMM mmm rrr`, `dst_mode != 1`): copy the source operand to the
+/// destination, setting N/Z, clearing V/C, preserving X. The destination field is **swapped** — `dst_reg`
+/// is bits 11-9, `dst_mode` is bits 8-6 — and the source is the usual `mode/reg` in bits 5-0. Delegates the
+/// whole EA→EA composition (source read → flag-ALU → destination write, with the MOVE prefetch interleave)
+/// to [`ea_move`].
+fn move_w(opcode: u16) -> MicroState {
+    let dst_reg = ((opcode >> 9) & 7) as u8;
+    let dst_mode = (opcode >> 6) & 7;
+    let src_mode = (opcode >> 3) & 7;
+    let src_reg = (opcode & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    ea_move(&mut buf, dst_mode, dst_reg, src_mode, src_reg);
     buf.finish()
 }
 
@@ -773,6 +802,188 @@ mod tests {
         // 8 micro-ops (EaCalc(lo addr), Read.hi, Read.lo, Combine32, Prefetch, Alu, Write.lo, Write.hi).
         for pause_after in 0..=7 {
             let (mut cpu, mut bus) = setup_addl_dn_an();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    // --- M1: MOVE.w decode quirks (the SWAPPED dest mode/reg field order + the 01/11/10 size bits). These
+    // pin the decode arithmetic before any recipe runs, so a field-order regression fails loudly here. ---
+
+    #[test]
+    fn move_decode_extracts_swapped_dest_mode_and_reg() {
+        // MOVE layout: `00 SS RRR MMM mmm rrr` — dst_reg is bits 11-9, dst_mode is bits 8-6 (SWAPPED vs. the
+        // usual mode-then-reg), src_mode bits 5-3, src_reg bits 2-0. Opcode 0x3490 = MOVE.w (A0),(A2):
+        // 0011 010 010 010 000 → size 11 (word), dst_reg 010 = A2, dst_mode 010 = (An), src_mode 010 = (An),
+        // src_reg 000 = A0.
+        let op: u16 = 0x3490;
+        assert_eq!((op >> 12) & 3, 0b11, "size field 11 = word");
+        assert_eq!((op >> 9) & 7, 2, "dst_reg (bits 11-9) = A2");
+        assert_eq!(
+            (op >> 6) & 7,
+            2,
+            "dst_mode (bits 8-6) = (An) — SWAPPED order"
+        );
+        assert_eq!((op >> 3) & 7, 2, "src_mode (bits 5-3) = (An)");
+        assert_eq!(op & 7, 0, "src_reg (bits 2-0) = A0");
+    }
+
+    #[test]
+    fn move_decode_recognizes_word_size_and_not_movea() {
+        // is_move_word() gates bits15-12 == 0b0011 (00 + size 11) AND dst_mode != 1 (mode 1 == MOVEA, M4).
+        assert!(is_move_word(0x3490), "0x3490 MOVE.w (A0),(A2)");
+        assert!(is_move_word(0x3203), "0x3203 MOVE.w D3,D1");
+        assert!(is_move_word(0x3e84), "0x3e84 MOVE.w D4,(A7)");
+        // dst_mode == 1 (An) is MOVEA — NOT this commit. 0x3040 = 0011 000 001 000 000 → dst_mode 001.
+        assert!(!is_move_word(0x3040), "dst_mode 1 is MOVEA, not MOVE");
+        // size 01 = byte (M2), 10 = long (M3), 00 = not MOVE.
+        assert!(
+            !is_move_word(0x1203),
+            "0x1203 size 01 = MOVE.b — not this commit"
+        );
+        assert!(
+            !is_move_word(0x2203),
+            "0x2203 size 10 = MOVE.l — not this commit"
+        );
+        assert!(!is_move_word(0xD040), "ADD.w — not MOVE");
+    }
+
+    /// The clean SingleStepTests reference case `3490 [MOVE.w (A0),(A2)]` (even EAs, 12 cycles) — the M1
+    /// EA→EA composition anchor. A0 = 0x5462_2D0A (read at 0x69_5D0A), A2 = 0xA340_2DAE (write at 0x41_9F2E).
+    /// Source word 0x9F6D → bit15 set → N; X (set in SR 0x2715) survives the move. Bus: [READ @src, WRITE
+    /// @dest, PF] — the write is the second-to-last bus event (final prefetch trails it).
+    fn setup_move_an_an() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                4_100_208_836,
+                2_877_498_823,
+                227_143_989,
+                3_958_790_289,
+                3_906_341_485,
+                3_329_882_226,
+                916_304_141,
+                1_979_269_223,
+            ],
+            a: [
+                1_416_191_242,
+                1_404_823_035,
+                2_738_982_510,
+                2_348_872_290,
+                1_590_867_478,
+                2_002_883_513,
+                2_299_235_345,
+            ],
+            usp: 2_449_174_748,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10005,
+            prefetch: [13456, 27716],
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            (3077u32, 176u8),
+            (3076, 42),
+            (6_905_099, 109),
+            (6_905_098, 159),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_move_an_an_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 6_905_098,
+                size: Size::Word,
+                value: 40813, // source word 0x9F6D
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 4_296_302,
+                size: Size::Word,
+                value: 40813, // copied unchanged
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 10928,
+            },
+        ]
+    }
+
+    fn assert_move_an_an_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced by one word");
+        assert_eq!(
+            cpu.regs.sr, 10008,
+            "CCR = X|N (X preserved, N set, Z/V/C cleared)"
+        );
+        assert_eq!(cpu.regs.a[0], 1_416_191_242, "src An unchanged");
+        assert_eq!(cpu.regs.a[2], 2_738_982_510, "dst An unchanged");
+        assert_eq!(cpu.regs.prefetch, [27716, 10928], "prefetch advanced");
+        assert_eq!(bus.peek(4_296_302), 0x9F, "dest hi byte = source hi");
+        assert_eq!(bus.peek(4_296_303), 0x6D, "dest lo byte = source lo");
+        assert_eq!(bus.log, expected_move_an_an_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_move_an_an() {
+        let (mut cpu, mut bus) = setup_move_an_an();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(cycles, 12, "MOVE.w (An),(An) = [READ, WRITE, PF] = 12");
+        assert_move_an_an_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_move_an_an() {
+        let (mut rtc, mut bus_rtc) = setup_move_an_an();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_move_an_an();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 12);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_move_an_an_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn move_an_an_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The no-divergence guarantee for the EA→EA composition: snapshot/restore the whole CPU (incl. the
+        // in-flight cursor and its parked value) at every micro-op boundary, resume on the same bus.
+        let (mut rref, mut bref) = setup_move_an_an();
+        rref.run_instruction(&mut bref);
+
+        let cfg = bincode::config::standard();
+        // 4 micro-ops (Read, Alu(Move→park), Write, Prefetch) → boundaries after 0..=3.
+        for pause_after in 0..=3 {
+            let (mut cpu, mut bus) = setup_move_an_an();
             cpu.start_instruction();
             for _ in 0..pause_after {
                 assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);

@@ -280,6 +280,39 @@ pub enum AluOp {
     Add,
     /// Subtract: `dst = a - b` (a is the minuend), setting X/N/Z/V/C (at the operand-size boundary).
     Sub,
+    /// Move: `dst = a` (b is ignored). NOT arithmetic — copies the value and sets **N** (msb at the operand
+    /// size), **Z** (value == 0 at the operand size), clears **V** and **C**, and leaves **X** untouched.
+    /// The flag op of the `MOVE` family (`MOVE`, not `MOVEA` — `MOVEA` sets no flags). The size-truncated
+    /// value is written to `dst` (low8/low16/full32 for byte/word/long).
+    Move,
+}
+
+/// The MOVE flag computation at `size`: copy the (size-truncated) value, set N=msb / Z=(value==0), clear
+/// V/C. Returns `(result, ccr_nz)` where `ccr_nz` carries **only** N/Z/V/C (X is preserved by the caller —
+/// MOVE never touches X). The result is zero-extended to 32 bits (the data-register write-back masks per
+/// size). Distinct from `add_*`/`sub_*` (which compute X and a real V/C from a real operation).
+#[inline]
+fn move_flags(value: u32, size: Size) -> (u32, u16) {
+    let (result, neg) = match size {
+        Size::Byte => {
+            let v = value & 0xFF;
+            (v, v & 0x80 != 0)
+        }
+        Size::Word => {
+            let v = value & 0xFFFF;
+            (v, v & 0x8000 != 0)
+        }
+        Size::Long => (value, value & 0x8000_0000 != 0),
+    };
+    let mut ccr = 0u16;
+    if neg {
+        ccr |= CCR_N;
+    }
+    if result == 0 {
+        ccr |= CCR_Z;
+    }
+    // V and C are always cleared; X is NOT in `ccr` (the caller preserves it).
+    (result, ccr)
 }
 
 /// One resumable step. Bus-access steps emit a [`Transaction`](super::bus68k::Transaction) and cost
@@ -470,26 +503,33 @@ impl MicroState {
             } => {
                 let lhs = self.resolve(a, regs);
                 let rhs = self.resolve(b, regs);
-                // Compute at the operand-size flag boundary; carry the result (zero-extended to 32) + CCR
-                // uniformly.
-                let (result, ccr) = match size {
-                    Size::Word => {
-                        let (r, ccr) = match op {
-                            AluOp::Add => add_w(lhs as u16, rhs as u16),
-                            AluOp::Sub => sub_w(lhs as u16, rhs as u16),
-                        };
-                        (r as u32, ccr)
+                // Compute at the operand-size flag boundary; carry the result (zero-extended to 32) + the new
+                // low-byte CCR uniformly. MOVE is NOT arithmetic — it copies `a` and sets only N/Z (V/C
+                // cleared) while PRESERVING X, so its `ccr` re-injects the live X bit (add/sub recompute X).
+                let (result, ccr) = match op {
+                    AluOp::Move => {
+                        let (r, ccr_nz) = move_flags(lhs, size);
+                        (r, ccr_nz | (regs.sr & CCR_X))
                     }
-                    Size::Byte => {
-                        let (r, ccr) = match op {
-                            AluOp::Add => add_b(lhs as u8, rhs as u8),
-                            AluOp::Sub => sub_b(lhs as u8, rhs as u8),
-                        };
-                        (r as u32, ccr)
-                    }
-                    Size::Long => match op {
-                        AluOp::Add => add_l(lhs, rhs),
-                        AluOp::Sub => sub_l(lhs, rhs),
+                    AluOp::Add | AluOp::Sub => match size {
+                        Size::Word => {
+                            let (r, ccr) = match op {
+                                AluOp::Add => add_w(lhs as u16, rhs as u16),
+                                _ => sub_w(lhs as u16, rhs as u16),
+                            };
+                            (r as u32, ccr)
+                        }
+                        Size::Byte => {
+                            let (r, ccr) = match op {
+                                AluOp::Add => add_b(lhs as u8, rhs as u8),
+                                _ => sub_b(lhs as u8, rhs as u8),
+                            };
+                            (r as u32, ccr)
+                        }
+                        Size::Long => match op {
+                            AluOp::Add => add_l(lhs, rhs),
+                            _ => sub_l(lhs, rhs),
+                        },
                     },
                 };
                 regs.sr = (regs.sr & 0xFF00) | ccr;
@@ -1613,5 +1653,55 @@ mod tests {
                 value: 0xA3,
             }]
         );
+    }
+
+    #[test]
+    fn alu_move_w_sets_n_z_clears_v_c_and_preserves_x() {
+        // MOVE is NOT arithmetic: it copies the value and sets N=bit15, Z=(value==0 at size), V=0, C=0, and
+        // leaves X untouched. Pinned to the real SST `3490 [MOVE.w (A0),(A2)]`: source word 0x9F6D (read into
+        // scratch 0) → bit15 set → N; non-zero → no Z; X was set in SR 0x2715 and must SURVIVE. CCR 0x15
+        // (X|Z|C) → 0x18 (X|N): X preserved, N set, Z/V/C cleared. The value is parked in scratch 1.
+        let mut regs = regs();
+        regs.sr = 0x2715; // CCR = X|Z|C, supervisor
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::Alu {
+            op: AluOp::Move,
+            size: Size::Word,
+            a: Operand::Scratch(0),
+            b: Operand::Zero,
+            dst: Dest::Scratch(1),
+        }]);
+        st.scratch[0] = 0x0000_9F6D;
+
+        let cycles = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(cycles, 0, "Move is an internal/overlapped op — 0 cycles");
+        assert_eq!(
+            st.scratch[1], 0x0000_9F6D,
+            "value copied to scratch, parked"
+        );
+        assert_eq!(regs.sr, 0x2718, "X preserved, N set, Z/V/C cleared");
+        assert!(bus.log.is_empty(), "Move touches no bus");
+    }
+
+    #[test]
+    fn alu_move_w_sets_z_on_zero_value_preserving_x() {
+        // A zero source word → Z set, N clear, V/C clear, X preserved. With X clear in the input CCR.
+        let mut regs = regs();
+        regs.sr = 0x2700; // CCR clear
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::Alu {
+            op: AluOp::Move,
+            size: Size::Word,
+            a: Operand::Scratch(0),
+            b: Operand::Zero,
+            dst: Dest::DataRegLow16(3),
+        }]);
+        st.scratch[0] = 0x0000_0000;
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(regs.sr, 0x2704, "Z set; N/V/C clear; X preserved (was 0)");
+        assert_eq!(regs.d[3] & 0xFFFF, 0, "zero written to Dn low word");
     }
 }
