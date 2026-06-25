@@ -182,14 +182,17 @@ struct SrcSeq {
     /// ([`EA_SLOT`]); the operand READ then targets `Scratch(EA_SLOT)`. Emitted first so a displacement leg
     /// (`Operand::DispWord`) is captured from `prefetch[1]` **before** the first `Prefetch` shifts it out.
     ea_calc: Option<MicroOp>,
-    /// Steps emitted **before** the operand READ, in order — the `-(An)` pre-decrement: the `AdjustAddr`
-    /// (so the read hits the decremented address) followed by its `Internal(2)` idle. Empty for modes with
-    /// no pre-read side effect. At most two slots (the worst in-scope case).
+    /// Steps emitted **before** the operand READ, in order — the auto-(in/de)crement register update: the
+    /// `-(An)` pre-decrement `AdjustAddr` (so the read hits the decremented address) followed by its
+    /// `Internal(2)` idle, or the `(An)+` post-increment `AdjustAddr` (committed before the read so an
+    /// address-error fault on the read still bumps the register, with `ea_calc` capturing the pre-increment
+    /// EA). Empty for modes with no auto-increment side effect. At most two slots (the worst in-scope case).
     pre_read: [Option<MicroOp>; 2],
     /// Address of the operand READ, or `None` for register-direct / immediate modes (no operand read).
     read_addr: Option<Operand>,
-    /// A step emitted **after** the READ but before the refill(s) — the `(An)+` post-increment `AdjustAddr`
-    /// (the read still hits the un-incremented address; the read stays the second-to-last bus event).
+    /// A step emitted **after** the READ but before the refill(s). Currently unused (the `(An)+` increment
+    /// moved to `pre_read` so an odd-address fault commits the bump); retained for a future post-read side
+    /// effect.
     post_read: Option<MicroOp>,
     /// Number of `Prefetch` refills (= instruction word count).
     prefetch: u8,
@@ -276,18 +279,28 @@ fn src_seq(mode: u16, reg: u8, size: Size) -> SrcSeq {
             operand: Operand::Scratch(0),
             placement: AluPlacement::Last,
         },
-        // (An)+ — postincrement: read at An (→ scratch 0), then post-increment An by the word step (a
-        // 0-cycle non-bus `AdjustAddr` after the read so the read still hits the un-incremented address),
-        // refill, then combine. Same `[READ, PF]` bus stream as `(An)` (the bump is invisible to the bus),
-        // and the same 8 cycles.
+        // (An)+ — postincrement: capture the pre-increment EA (An) into the EA scratch slot, post-increment An
+        // by the word step BEFORE the read, then read at the captured EA, refill, combine. The increment is
+        // part of the 68000's effective-address calculation and is committed BEFORE the bus access — so an
+        // odd-address fault on the read still leaves An incremented (the address-error abort stacks the
+        // captured pre-increment EA, the SST data pins An as already bumped). The EaCalc + AdjustAddr are
+        // 0-cycle non-bus steps, so the `[READ, PF]` bus stream and the 8 cycles are unchanged.
         (3, _) => SrcSeq {
-            ea_calc: None,
-            pre_read: [None, None],
-            read_addr: Some(Operand::AddrReg(reg)),
-            post_read: Some(MicroOp::AdjustAddr {
-                reg,
-                delta: step_bytes(size, reg),
+            ea_calc: Some(MicroOp::EaCalc {
+                base: Operand::AddrReg(reg),
+                index: Operand::Zero,
+                disp: Operand::Zero,
+                dst: EA_SLOT,
             }),
+            pre_read: [
+                Some(MicroOp::AdjustAddr {
+                    reg,
+                    delta: step_bytes(size, reg),
+                }),
+                None,
+            ],
+            read_addr: Some(Operand::Scratch(EA_SLOT)),
+            post_read: None,
             prefetch: 1,
             operand: Operand::Scratch(0),
             placement: AluPlacement::Last,
@@ -499,11 +512,20 @@ fn ea_src_long(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Op
             buf.push(make_alu(Operand::Scratch(0)));
             buf.push(MicroOp::Internal { cycles: 2 });
         }
-        // (An)+ — read the long operand at An, post-increment An by 4 (after both reads), refill, combine,
-        // n2. The bump is non-bus; the read pair still precedes the refill.
+        // (An)+ — capture the pre-increment EA (An), post-increment An by 4 BEFORE the read pair, then read
+        // the long operand at the captured EA, refill, combine, n2. The increment is part of EA calculation
+        // (committed before the bus access), so an odd-address fault on the hi-word read still leaves An
+        // bumped — pinned to the SST data. The EaCalc + AdjustAddr are non-bus; the read pair still precedes
+        // the refill.
         (3, _) => {
-            push_long_read_pair(buf, Operand::AddrReg(reg));
+            buf.push(MicroOp::EaCalc {
+                base: Operand::AddrReg(reg),
+                index: Operand::Zero,
+                disp: Operand::Zero,
+                dst: EA_SLOT,
+            });
             buf.push(MicroOp::AdjustAddr { reg, delta: 4 });
+            push_long_read_pair(buf, Operand::Scratch(EA_SLOT));
             buf.push(MicroOp::Prefetch);
             buf.push(make_alu(Operand::Scratch(0)));
             buf.push(MicroOp::Internal { cycles: 2 });
@@ -660,7 +682,7 @@ pub fn ea_src(
         }
         // Memory operand: the verified bus stream is (k−1) refills → operand READ → 1 final refill (the
         // read is always the second-to-last bus event, invariant 3). So emit `prefetch − 1` refills, then
-        // the read (+ its post-read bump), then the final refill, then the ALU on the just-read scratch.
+        // the read (+ any post-read side effect), then the final refill, then the ALU on the just-read scratch.
         AluPlacement::Last => {
             let read = MicroOp::Read {
                 addr: seq.read_addr.expect("memory-source mode must read"),
@@ -672,8 +694,8 @@ pub fn ea_src(
                 buf.push(MicroOp::Prefetch);
             }
             buf.push(read);
-            // The `(An)+` postincrement runs after the read (the read hit the un-incremented address) but
-            // before the final refill; the bump is non-bus, so the stream is unchanged.
+            // Any post-read side effect (currently none — the `(An)+` increment moved to `pre_read` so an
+            // address-error fault on the read still commits the bump); the bump is non-bus.
             if let Some(op) = seq.post_read {
                 buf.push(op);
             }
@@ -739,11 +761,19 @@ fn ea_dst_long(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Op
         (2, _) => {
             push_long_rmw(buf, Operand::AddrReg(reg), make_alu);
         }
-        // (An)+: the long RMW at An, then post-increment An by 4 (after the writes). The reads and writes all
-        // hit the un-incremented base; the bump is non-bus.
+        // (An)+: capture the pre-increment EA (An), post-increment An by 4 BEFORE the RMW, then the long RMW
+        // at the captured EA. The increment is part of EA calculation (committed before the bus access), so an
+        // odd-address fault on the RMW hi-word read still leaves An bumped — pinned to the SST data. The reads
+        // and writes all hit the captured pre-increment base; the EaCalc + AdjustAddr are non-bus.
         (3, _) => {
-            push_long_rmw(buf, Operand::AddrReg(reg), make_alu);
+            buf.push(MicroOp::EaCalc {
+                base: Operand::AddrReg(reg),
+                index: Operand::Zero,
+                disp: Operand::Zero,
+                dst: EA_SLOT,
+            });
             buf.push(MicroOp::AdjustAddr { reg, delta: 4 });
+            push_long_rmw(buf, Operand::Scratch(EA_SLOT), make_alu);
         }
         // -(An): pre-decrement An by 4, the predecrement idle (n2), then the long RMW at An-4. Reads and
         // writes all hit the decremented base.
@@ -798,9 +828,10 @@ fn ea_dst_long(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Op
 ///
 /// Covers the alterable-memory destination modes `(An)` (2), `(An)+` (3), `-(An)` (4), `d16(An)` (5),
 /// `abs.w` (7/0) and `abs.l` (7/1); the indexed `d8(An,Xn)` mode lands in a later commit. For `(An)+`/`-(An)`
-/// the register side effect is an explicit `AdjustAddr`: predecrement runs **before** the read (so the read
-/// and write both hit the decremented address), postincrement runs **after** the write (so both hit the
-/// un-incremented address). `size` sizes the read/write (byte → `read8`/`write8`) and the step.
+/// the register side effect is an explicit `AdjustAddr` committed **before** the read (predecrement so the
+/// read/write hit the decremented address; postincrement after capturing the pre-increment EA, so an
+/// address-error fault on the RMW read still bumps the register — the RMW always faults on the read).
+/// `size` sizes the read/write (byte → `read8`/`write8`) and the step.
 pub fn ea_dst(
     buf: &mut RecipeBuf,
     mode: u16,
@@ -834,16 +865,35 @@ pub fn ea_dst(
             buf.push(make_alu(Operand::Scratch(0)));
             buf.push(write);
         }
-        // (An)+: same RMW at An, then post-increment An (0-cycle, after the write). Read and write both
-        // hit the un-incremented address; the bump is invisible to the bus stream.
+        // (An)+: capture the pre-increment EA (An), post-increment An BEFORE the RMW, then read+write at the
+        // captured EA. The increment is part of EA calculation (committed before the bus access), so an
+        // odd-address fault on the RMW read still leaves An bumped — pinned to the SST data (the RMW always
+        // faults on the read, before the write). Read and write both hit the captured pre-increment address;
+        // the EaCalc + AdjustAddr are invisible to the bus stream.
         (3, _) => {
-            buf.push(read);
-            buf.push(MicroOp::Prefetch);
-            buf.push(make_alu(Operand::Scratch(0)));
-            buf.push(write);
+            buf.push(MicroOp::EaCalc {
+                base: Operand::AddrReg(reg),
+                index: Operand::Zero,
+                disp: Operand::Zero,
+                dst: EA_SLOT,
+            });
             buf.push(MicroOp::AdjustAddr {
                 reg,
                 delta: step_bytes(size, reg),
+            });
+            buf.push(MicroOp::Read {
+                addr: Operand::Scratch(EA_SLOT),
+                fc: super::microop::Fc::Data,
+                size,
+                dst: 0,
+            });
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::Scratch(0)));
+            buf.push(MicroOp::Write {
+                addr: Operand::Scratch(EA_SLOT),
+                fc: super::microop::Fc::Data,
+                size,
+                value: Operand::Scratch(1),
             });
         }
         // -(An): pre-decrement An (then the internal idle), so the read and write both hit An-step.
@@ -1021,13 +1071,22 @@ fn move_emit_source(buf: &mut RecipeBuf, sm: u16, sr: u8, size: Size) -> MoveSrc
                 reads: true,
             }
         }
-        // (An)+ — read at An (sized), then post-increment An by the sized step (non-bus, after the read).
+        // (An)+ — capture the pre-increment EA (An), post-increment An by the sized step BEFORE the read, then
+        // read at the captured EA. The increment is part of EA calculation (committed before the bus access),
+        // so an odd-address fault on the source read still leaves An bumped — pinned to the SST data. The
+        // EaCalc + AdjustAddr are non-bus (the bus stream is unchanged).
         (3, _) => {
-            read_into0(buf, Operand::AddrReg(sr));
+            buf.push(MicroOp::EaCalc {
+                base: Operand::AddrReg(sr),
+                index: Operand::Zero,
+                disp: Operand::Zero,
+                dst: EA_SLOT,
+            });
             buf.push(MicroOp::AdjustAddr {
                 reg: sr,
                 delta: step_bytes(size, sr),
             });
+            read_into0(buf, Operand::Scratch(EA_SLOT));
             MoveSrc {
                 operand: Operand::Scratch(0),
                 reads: true,
@@ -1264,9 +1323,30 @@ fn move_emit_dest(buf: &mut RecipeBuf, dm: u16, dr: u8, src_reads: bool, size: S
                 delta: step_bytes(size, dr),
             });
         }
-        // -(An) — pre-decrement An, the final prefetch, then the write LAST (the MOVE predecrement-dest
-        // reversal: no idle, and the prefetch precedes the write — pinned against the data). For long the
-        // two-word write is itself reversed (lo @addr+2 first, then hi @addr).
+        // -(An) long — the 68000 predecrement long store decrements An by 2 and writes the LOW word, then
+        // decrements again by 2 and writes the HIGH word. The final An is An-4 and the bus order is
+        // lo @ An-2 then hi @ An-4 (identical to a single -4 predecrement on the no-fault path), but an
+        // address-error fault on the (first) low-word write leaves An decremented by only 2 — pinned to the
+        // SST MOVE.l data (e.g. `2506 [MOVE.l D6,-(A2)]`, final An = An-2 on the odd-address write fault).
+        (4, _) if size == Size::Long => {
+            buf.push(MicroOp::AdjustAddr { reg: dr, delta: -2 });
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::Write {
+                addr: Operand::AddrReg(dr),
+                fc: Fc::Data,
+                size: Size::Word,
+                value: Operand::Scratch(MOVE_VALUE_SLOT), // low word @ An-2
+            });
+            buf.push(MicroOp::AdjustAddr { reg: dr, delta: -2 });
+            buf.push(MicroOp::Write {
+                addr: Operand::AddrReg(dr),
+                fc: Fc::Data,
+                size: Size::Word,
+                value: Operand::ScratchHi16(MOVE_VALUE_SLOT), // high word @ An-4
+            });
+        }
+        // -(An) byte/word — pre-decrement An, the final prefetch, then the single write LAST (the MOVE
+        // predecrement-dest reversal: no idle, and the prefetch precedes the write — pinned against the data).
         (4, _) => {
             buf.push(MicroOp::AdjustAddr {
                 reg: dr,
@@ -1357,10 +1437,19 @@ fn ea_movea_long(
             buf.push(MicroOp::Prefetch);
             buf.push(make_alu(Operand::Scratch(0)));
         }
-        // (An)+ — read the long operand at An, post-increment An by 4 (after both reads), refill, combine.
+        // (An)+ — capture the pre-increment EA (An), post-increment An by 4 BEFORE the read pair, then read
+        // the long operand at the captured EA, refill, combine. The increment is part of EA calculation
+        // (committed before the bus access), so an odd-address fault on the hi-word read still leaves An
+        // bumped — pinned to the SST data. The EaCalc + AdjustAddr are non-bus.
         (3, _) => {
-            push_long_read_pair(buf, Operand::AddrReg(reg));
+            buf.push(MicroOp::EaCalc {
+                base: Operand::AddrReg(reg),
+                index: Operand::Zero,
+                disp: Operand::Zero,
+                dst: EA_SLOT,
+            });
             buf.push(MicroOp::AdjustAddr { reg, delta: 4 });
+            push_long_read_pair(buf, Operand::Scratch(EA_SLOT));
             buf.push(MicroOp::Prefetch);
             buf.push(make_alu(Operand::Scratch(0)));
         }
@@ -1552,17 +1641,25 @@ mod tests {
 
     #[test]
     fn builder_matches_literal_an_postinc_source() {
-        // <op>.w (An)+,Dn (mode 3) → [Read(AddrReg), AdjustAddr(+2), Prefetch, Alu(b=Scratch(0))].
-        // The operand is read at An, An is then post-incremented by the word step; the read is still the
-        // second-to-last bus event (invariant 3); the AdjustAddr is a 0-cycle non-bus step.
+        // <op>.w (An)+,Dn (mode 3) → [EaCalc(An→EA_SLOT), AdjustAddr(+2), Read(EA_SLOT), Prefetch,
+        // Alu(b=Scratch(0))]. The pre-increment EA (An) is captured, An is post-incremented BEFORE the read
+        // (so an odd-address fault still commits the bump — pinned to the SST data), then the operand is read
+        // at the captured EA; the read is still the second-to-last bus event (invariant 3); the EaCalc +
+        // AdjustAddr are 0-cycle non-bus steps.
         let literal = MicroState::from_ops(&[
+            MicroOp::EaCalc {
+                base: Operand::AddrReg(2),
+                index: Operand::Zero,
+                disp: Operand::Zero,
+                dst: EA_SLOT,
+            },
+            MicroOp::AdjustAddr { reg: 2, delta: 2 },
             MicroOp::Read {
-                addr: Operand::AddrReg(2),
+                addr: Operand::Scratch(EA_SLOT),
                 fc: Fc::Data,
                 size: Size::Word,
                 dst: 0,
             },
-            MicroOp::AdjustAddr { reg: 2, delta: 2 },
             MicroOp::Prefetch,
             ea_dn_alu(4, Operand::Scratch(0)),
         ]);
@@ -1590,11 +1687,20 @@ mod tests {
 
     #[test]
     fn builder_matches_literal_an_postinc_destination() {
-        // <op>.w Dn,(An)+ (mode 3) → [Read(AddrReg), Prefetch, Alu, Write(AddrReg), AdjustAddr(+2)].
-        // Read and write hit the same (un-incremented) An; An is post-incremented after the write.
+        // <op>.w Dn,(An)+ (mode 3) → [EaCalc(An→EA_SLOT), AdjustAddr(+2), Read(EA_SLOT), Prefetch, Alu,
+        // Write(EA_SLOT)]. The pre-increment EA (An) is captured, An is post-incremented BEFORE the RMW read
+        // (so an odd-address fault on the read still commits the bump — the RMW always faults on the read,
+        // pinned to the SST data); read and write both hit the captured pre-increment address.
         let literal = MicroState::from_ops(&[
+            MicroOp::EaCalc {
+                base: Operand::AddrReg(2),
+                index: Operand::Zero,
+                disp: Operand::Zero,
+                dst: EA_SLOT,
+            },
+            MicroOp::AdjustAddr { reg: 2, delta: 2 },
             MicroOp::Read {
-                addr: Operand::AddrReg(2),
+                addr: Operand::Scratch(EA_SLOT),
                 fc: Fc::Data,
                 size: Size::Word,
                 dst: 0,
@@ -1602,12 +1708,11 @@ mod tests {
             MicroOp::Prefetch,
             dn_ea_alu(3, Operand::Scratch(0)),
             MicroOp::Write {
-                addr: Operand::AddrReg(2),
+                addr: Operand::Scratch(EA_SLOT),
                 fc: Fc::Data,
                 size: Size::Word,
                 value: Operand::Scratch(1),
             },
-            MicroOp::AdjustAddr { reg: 2, delta: 2 },
         ]);
         assert_eq!(build_dst(3, 2, 3), literal);
     }
