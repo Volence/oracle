@@ -2,8 +2,8 @@
 //!
 //! `decode` maps the opcode in the prefetch queue to its [`MicroState`] recipe; the two `Cpu68000`
 //! methods tie decode to the framework's two drivers (run-to-completion fast path / step-one-micro-op
-//! quiesce). Decodes the `ADD`/`SUB` families in word and byte sizes so far (the shared `arith_ea_dn` /
-//! `arith_dn_ea` builders are parameterized by `AluOp` and `Size`); the full 65536-entry dispatch (one
+//! quiesce). Decodes the `ADD`/`SUB` families in word, byte and long sizes so far (the shared `arith_ea_dn`
+//! / `arith_dn_ea` builders are parameterized by `AluOp` and `Size`); the full 65536-entry dispatch (one
 //! builder per instruction family) lands with full coverage.
 
 use super::bus68k::Bus68k;
@@ -55,6 +55,21 @@ pub fn decode(regs: &Registers) -> MicroState {
     if opcode & 0xF1C0 == 0x9000 {
         return arith_ea_dn(opcode, AluOp::Sub, Size::Byte); // SUB.b <ea>,Dn
     }
+    // ADD.l / SUB.l — the size field `10` (`<op>.l`). `<ea>,Dn` (opmode 010): ADD=0xD080, SUB=0x9080.
+    // `Dn,<ea>` (opmode 110, alterable-memory dest): ADD=0xD180, SUB=0x9180. A `.l` operand is two word
+    // bus accesses, threaded through the same `ea_src`/`ea_dst` builders.
+    if opcode & 0xF1C0 == 0xD180 && is_dst_mem_mode((opcode >> 3) & 7, opcode & 7) {
+        return arith_dn_ea(opcode, AluOp::Add, Size::Long); // ADD.l Dn,<ea>
+    }
+    if opcode & 0xF1C0 == 0xD080 {
+        return arith_ea_dn(opcode, AluOp::Add, Size::Long); // ADD.l <ea>,Dn
+    }
+    if opcode & 0xF1C0 == 0x9180 && is_dst_mem_mode((opcode >> 3) & 7, opcode & 7) {
+        return arith_dn_ea(opcode, AluOp::Sub, Size::Long); // SUB.l Dn,<ea>
+    }
+    if opcode & 0xF1C0 == 0x9080 {
+        return arith_ea_dn(opcode, AluOp::Sub, Size::Long); // SUB.l <ea>,Dn
+    }
     todo!("opcode {opcode:#06X} not yet decoded")
 }
 
@@ -78,6 +93,7 @@ impl Cpu68000 {
 #[inline]
 fn dn_operand(dn: u8, size: Size) -> Operand {
     match size {
+        Size::Long => Operand::DataRegFull(dn),
         Size::Word => Operand::DataRegLow16(dn),
         Size::Byte => Operand::DataRegLow8(dn),
     }
@@ -88,6 +104,7 @@ fn dn_operand(dn: u8, size: Size) -> Operand {
 #[inline]
 fn dn_dest(dn: u8, size: Size) -> Dest {
     match size {
+        Size::Long => Dest::DataReg(dn),
         Size::Word => Dest::DataRegLow16(dn),
         Size::Byte => Dest::DataRegLow8(dn),
     }
@@ -483,6 +500,279 @@ mod tests {
         // 3 micro-ops (Read.b, Prefetch, Alu.b) → boundaries after 0..=2.
         for pause_after in 0..=2 {
             let (mut cpu, mut bus) = setup_de11();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    /// The clean SingleStepTests reference case `d491 [ADD.l (A1),D2]` (even EA, 14 cycles) — the M0 anchor
+    /// for a long two-word READ. A1 = 4429638 (even); the long operand is the hi word at A1 and the lo word
+    /// at A1+2 (the read order pinned against the data): 0x2026 << 16 | 0xE993 = 0x2026E993; D2 0x7F165E69 +
+    /// 0x2026E993 = 0x9F3D47FC. Bus: [READ.hi @A1, READ.lo @A1+2, PF, n2] = 14 cycles.
+    fn setup_addl_an_dn() -> (Cpu68000, FlatBus) {
+        let mut regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 1_592_723_716,
+            ssp: 2048,
+            pc: 3072,
+            sr: 9998,
+            prefetch: [54417, 37994],
+        };
+        regs.d[2] = 2_132_402_345;
+        regs.a[1] = 4_014_184_262;
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            (3076u32, 71u8),
+            (3077, 7),
+            (4_429_638, 32),
+            (4_429_639, 38),
+            (4_429_640, 233),
+            (4_429_641, 147),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_addl_an_dn_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 4_429_638,
+                size: Size::Word,
+                value: 8230, // hi word 0x2026
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 4_429_640,
+                size: Size::Word,
+                value: 59795, // lo word 0xE993
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 18183,
+            },
+        ]
+    }
+
+    fn assert_addl_an_dn_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced by one word");
+        assert_eq!(cpu.regs.sr, 9994, "CCR per the long add (N|V)");
+        assert_eq!(
+            cpu.regs.d[2], 2_671_823_420,
+            "D2 = 0x7F165E69 + 0x2026E993 = 0x9F3D47FC (full 32)"
+        );
+        assert_eq!(cpu.regs.a[1], 4_014_184_262, "An unchanged");
+        assert_eq!(cpu.regs.prefetch, [37994, 18183], "prefetch advanced");
+        assert_eq!(bus.log, expected_addl_an_dn_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_addl_an_dn() {
+        let (mut cpu, mut bus) = setup_addl_an_dn();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(cycles, 14, "long (An),Dn = [READ.hi, READ.lo, PF, n2] = 14");
+        assert_addl_an_dn_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_addl_an_dn() {
+        let (mut rtc, mut bus_rtc) = setup_addl_an_dn();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_addl_an_dn();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 14);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_addl_an_dn_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn addl_an_dn_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The no-divergence guarantee for long size: snapshot/restore the whole CPU (incl. the in-flight
+        // cursor and its scratch slots — the two-word read halves mid-assembly) at every micro-op boundary.
+        let (mut rref, mut bref) = setup_addl_an_dn();
+        rref.run_instruction(&mut bref);
+
+        let cfg = bincode::config::standard();
+        // 6 micro-ops (Read.hi, EaCalc(lo addr), Read.lo, Combine32, Prefetch, Alu, Internal) → 7 ops total.
+        for pause_after in 0..=6 {
+            let (mut cpu, mut bus) = setup_addl_an_dn();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    /// The clean SingleStepTests reference case `d192 [ADD.l D0,(A2)]` (even EA, 20 cycles) — the M0 anchor
+    /// for a long two-word WRITE. A2 = 2925174 (even). The long RMW reads the old value (hi @A2, lo @A2+2),
+    /// adds D0, and writes the result back **lo @A2+2 FIRST, then hi @A2** (the reversed long-store order,
+    /// pinned against the data). Bus: [READ.hi, READ.lo, PF, WRITE.lo, WRITE.hi] = 20 cycles, no trailing idle.
+    fn setup_addl_dn_an() -> (Cpu68000, FlatBus) {
+        let mut regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 3_625_797_882,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10008,
+            prefetch: [53650, 55924],
+        };
+        regs.d[0] = 3_813_601_016;
+        regs.a[2] = 3_039_601_270;
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            (3076u32, 202u8),
+            (3077, 33),
+            (2_925_174, 82),
+            (2_925_175, 162),
+            (2_925_176, 241),
+            (2_925_177, 128),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_addl_dn_an_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 2_925_174,
+                size: Size::Word,
+                value: 21154, // old hi word
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 2_925_176,
+                size: Size::Word,
+                value: 61824, // old lo word
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 51745,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2_925_176, // LOW half written FIRST (addr+2)
+                size: Size::Word,
+                value: 57464,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2_925_174, // HIGH half written SECOND (addr)
+                size: Size::Word,
+                value: 13809,
+            },
+        ]
+    }
+
+    fn assert_addl_dn_an_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced by one word");
+        assert_eq!(cpu.regs.sr, 10001, "CCR per the long add");
+        assert_eq!(
+            cpu.regs.d[0], 3_813_601_016,
+            "Dn unchanged (dest is memory)"
+        );
+        assert_eq!(cpu.regs.a[2], 3_039_601_270, "An unchanged");
+        assert_eq!(cpu.regs.prefetch, [55924, 51745], "prefetch advanced");
+        // The 32-bit result is stored big-endian across the two halves.
+        assert_eq!(bus.peek(2_925_174), 53, "result hi byte 0");
+        assert_eq!(bus.peek(2_925_175), 241, "result hi byte 1");
+        assert_eq!(bus.peek(2_925_176), 224, "result lo byte 0");
+        assert_eq!(bus.peek(2_925_177), 120, "result lo byte 1");
+        assert_eq!(bus.log, expected_addl_dn_an_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_addl_dn_an() {
+        let (mut cpu, mut bus) = setup_addl_dn_an();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 20,
+            "long Dn,(An) = [READ.hi, READ.lo, PF, WRITE.lo, WRITE.hi] = 20"
+        );
+        assert_addl_dn_an_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_addl_dn_an() {
+        let (mut rtc, mut bus_rtc) = setup_addl_dn_an();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_addl_dn_an();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 20);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_addl_dn_an_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn addl_dn_an_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The no-divergence guarantee for a long memory WRITE (the reversed two-word store).
+        let (mut rref, mut bref) = setup_addl_dn_an();
+        rref.run_instruction(&mut bref);
+
+        let cfg = bincode::config::standard();
+        // 8 micro-ops (EaCalc(lo addr), Read.hi, Read.lo, Combine32, Prefetch, Alu, Write.lo, Write.hi).
+        for pause_after in 0..=7 {
+            let (mut cpu, mut bus) = setup_addl_dn_an();
             cpu.start_instruction();
             for _ in 0..pause_after {
                 assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);

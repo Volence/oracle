@@ -34,7 +34,8 @@ pub struct Transaction {
 
 /// The FC-aware bus the 68000 prototype/framework talks to. The 68000 data bus is 16 bits, so a word is
 /// one access and a byte drives a single bus half (UDS for an even address → the upper byte, LDS for an
-/// odd address → the lower byte); long is two word accesses (deferred).
+/// odd address → the lower byte); a long is **two** word accesses (the micro-op builder emits the two
+/// `read16`/`write16` halves itself), so the bus exposes no separate long primitive.
 pub trait Bus68k {
     fn read16(&mut self, addr: u32, fc: u8) -> u16;
     fn write16(&mut self, addr: u32, fc: u8, value: u16);

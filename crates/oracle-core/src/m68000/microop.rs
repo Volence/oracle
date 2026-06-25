@@ -121,6 +121,55 @@ fn sub_b(a: u8, b: u8) -> (u8, u16) {
     (result, ccr)
 }
 
+/// 32-bit `ADD` (`a + b`) → `(result, new CCR low byte)`. Same shape as [`add_w`] at the long boundary:
+/// sign bit `0x8000_0000`, carry/extend when the 33-bit sum exceeds `0xFFFF_FFFF`. Sets X/N/Z/V/C.
+#[inline]
+fn add_l(a: u32, b: u32) -> (u32, u16) {
+    let sum = a as u64 + b as u64;
+    let result = sum as u32;
+    let am = a & 0x8000_0000 != 0;
+    let bm = b & 0x8000_0000 != 0;
+    let rm = result & 0x8000_0000 != 0;
+    let mut ccr = 0u16;
+    if rm {
+        ccr |= CCR_N;
+    }
+    if result == 0 {
+        ccr |= CCR_Z;
+    }
+    if (am == bm) && (rm != am) {
+        ccr |= CCR_V;
+    }
+    if sum > 0xFFFF_FFFF {
+        ccr |= CCR_C | CCR_X;
+    }
+    (result, ccr)
+}
+
+/// 32-bit `SUB` (`a - b`, a the minuend) → `(result, new CCR low byte)`. Long boundary (`0x8000_0000`
+/// sign, borrow when `a < b`). Sets X/N/Z/V/C.
+#[inline]
+fn sub_l(a: u32, b: u32) -> (u32, u16) {
+    let result = a.wrapping_sub(b);
+    let am = a & 0x8000_0000 != 0;
+    let bm = b & 0x8000_0000 != 0;
+    let rm = result & 0x8000_0000 != 0;
+    let mut ccr = 0u16;
+    if rm {
+        ccr |= CCR_N;
+    }
+    if result == 0 {
+        ccr |= CCR_Z;
+    }
+    if (am != bm) && (rm != am) {
+        ccr |= CCR_V;
+    }
+    if a < b {
+        ccr |= CCR_C | CCR_X;
+    }
+    (result, ccr)
+}
+
 /// Maximum micro-ops in one opcode's recipe. Most opcodes need ≤ a handful; unbounded families
 /// (MOVEM-class) get a generator variant later. Sized to the worst in-scope EA recipe (a byte
 /// `Dn,(abs.l)` RMW = 8 ops) with headroom. Public so the EA builder ([`super::ea::RecipeBuf`]) can
@@ -142,12 +191,15 @@ pub enum Fc {
     Program,
 }
 
-/// Operand/access size — byte or word. Tags `Read`/`Write` (how wide a bus access is) and `Alu`
-/// (which flag boundaries apply). Long (`.l` = two word accesses) is deferred.
+/// Operand/access size — byte, word, or long. Tags `Read`/`Write` (how wide a bus access is) and `Alu`
+/// (which flag boundaries apply). A `.l` operand is **two** word bus accesses (hi at `addr`, lo at
+/// `addr+2`) assembled via [`MicroOp::Combine32`] — `Read`/`Write` themselves stay word-granular, so
+/// `Size::Long` tags only the [`MicroOp::Alu`] flag boundary (the 32-bit `add_l`/`sub_l`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub enum Size {
     Byte,
     Word,
+    Long,
 }
 
 /// A value resolved at execution time — an address or an operand. Grows with addressing-mode coverage
@@ -157,6 +209,12 @@ pub enum Size {
 pub enum Operand {
     /// A value computed by an earlier micro-op and stored in a scratch slot.
     Scratch(Slot),
+    /// The HIGH word of a scratch slot: `scratch[s] >> 16`. The hi word of a long value parked in scratch —
+    /// fed to the first `Write` of a long memory write (`Write` truncates to the low 16). Distinct from
+    /// [`Operand::Scratch`] (which a long write uses for the lo word).
+    ScratchHi16(Slot),
+    /// The full 32 bits of data register `Dn` — the source value for a long `ADD.l`/`SUB.l`.
+    DataRegFull(u8),
     /// The low word of data register `Dn`, zero-extended.
     DataRegLow16(u8),
     /// The low byte of data register `Dn`, zero-extended — the source value for a byte `ADD.b`/`SUB.b`.
@@ -170,6 +228,10 @@ pub enum Operand {
     ImmWord,
     /// A constant zero — an inert leg of an [`MicroOp::EaCalc`] (e.g. the index/base a mode doesn't use).
     Zero,
+    /// A constant `2` — the word stride between the two halves of a long memory access. The low word of a
+    /// `.l` operand lives at `addr + 2`; an [`MicroOp::EaCalc`] adds this to the materialized base to form
+    /// the low half's address.
+    WordStep,
     /// The displacement word currently in the prefetch queue, sign-extended: `sign_extend16(prefetch[1])`.
     /// The `d16(An)`/`abs.w` extension word; captured by [`MicroOp::EaCalc`] **before** the refill that
     /// shifts it out of the queue.
@@ -202,6 +264,8 @@ pub enum Operand {
 pub enum Dest {
     /// A scratch slot (e.g. an intermediate later written to memory).
     Scratch(Slot),
+    /// The full 32 bits of data register `Dn` — a `.l` write-back (no preserved bits).
+    DataReg(u8),
     /// The low word of data register `Dn` (its high word is preserved — a `.w` write-back).
     DataRegLow16(u8),
     /// The low byte of data register `Dn` (its upper 24 bits are preserved — a `.b` write-back).
@@ -265,6 +329,12 @@ pub enum MicroOp {
         disp: Operand,
         dst: Slot,
     },
+    /// Assemble a 32-bit long value `(scratch[hi] << 16) | resolve(lo)` into scratch slot `dst`. The two
+    /// halves of a long operand: `hi` is the high word (already in a scratch slot from the first `Read`),
+    /// `lo` resolves the low word (the second `Read`'s scratch slot, or `prefetch[1]` for `#imm.l`). A
+    /// 0-cycle, non-bus, snapshot-visible internal step. **No 24-bit mask** — this is an operand VALUE, not
+    /// an address (distinct from [`MicroOp::EaCalc`], which masks to `ADDR_MASK`).
+    Combine32 { hi: Slot, lo: Operand, dst: Slot },
 }
 
 /// The in-flight micro-op cursor for one instruction: the recipe, how far through it we are, and the
@@ -305,12 +375,15 @@ impl MicroState {
     fn resolve(&self, op: Operand, regs: &Registers) -> u32 {
         match op {
             Operand::Scratch(s) => self.scratch[s as usize],
+            Operand::ScratchHi16(s) => self.scratch[s as usize] >> 16,
+            Operand::DataRegFull(n) => regs.d[n as usize],
             Operand::DataRegLow16(n) => regs.d[n as usize] & 0xFFFF,
             Operand::DataRegLow8(n) => regs.d[n as usize] & 0xFF,
             Operand::AddrRegLow16(n) => regs.addr_reg(n as usize) & 0xFFFF,
             Operand::AddrReg(n) => regs.addr_reg(n as usize),
             Operand::ImmWord => regs.prefetch[1] as u32,
             Operand::Zero => 0,
+            Operand::WordStep => 2,
             Operand::DispWord => sign_extend16(regs.prefetch[1]),
             Operand::PcOfExt => regs.pc.wrapping_add(2),
             Operand::ExtWordHi => (regs.prefetch[1] as u32) << 16,
@@ -360,9 +433,12 @@ impl MicroState {
                 let address = self.resolve(addr, regs);
                 let fc = regs.fc(matches!(fc, Fc::Program));
                 // A byte access uses read8 (the single addressed cell, zero-extended); a word uses read16.
+                // A long is never a single `Read` — it is two word `Read`s assembled by `Combine32`, so the
+                // builder only ever emits word `Read`s for a long operand.
                 let value = match size {
                     Size::Byte => bus.read8(address, fc) as u32,
                     Size::Word => bus.read16(address, fc) as u32,
+                    Size::Long => unreachable!("a long Read is two word Reads + Combine32"),
                 };
                 self.scratch[dst as usize] = value;
                 4
@@ -376,9 +452,12 @@ impl MicroState {
                 let address = self.resolve(addr, regs);
                 let fc = regs.fc(matches!(fc, Fc::Program));
                 let v = self.resolve(value, regs);
+                // A long is never a single `Write` — it is two word `Write`s (the builder feeds the hi word
+                // via `Operand::ScratchHi16` and the lo word via `Operand::Scratch`, each truncated to 16).
                 match size {
                     Size::Byte => bus.write8(address, fc, v as u8),
                     Size::Word => bus.write16(address, fc, v as u16),
+                    Size::Long => unreachable!("a long Write is two word Writes"),
                 }
                 4
             }
@@ -391,29 +470,37 @@ impl MicroState {
             } => {
                 let lhs = self.resolve(a, regs);
                 let rhs = self.resolve(b, regs);
-                // Compute at the operand-size flag boundary; carry the result + CCR uniformly.
+                // Compute at the operand-size flag boundary; carry the result (zero-extended to 32) + CCR
+                // uniformly.
                 let (result, ccr) = match size {
-                    Size::Word => match op {
-                        AluOp::Add => add_w(lhs as u16, rhs as u16),
-                        AluOp::Sub => sub_w(lhs as u16, rhs as u16),
-                    },
+                    Size::Word => {
+                        let (r, ccr) = match op {
+                            AluOp::Add => add_w(lhs as u16, rhs as u16),
+                            AluOp::Sub => sub_w(lhs as u16, rhs as u16),
+                        };
+                        (r as u32, ccr)
+                    }
                     Size::Byte => {
                         let (r, ccr) = match op {
                             AluOp::Add => add_b(lhs as u8, rhs as u8),
                             AluOp::Sub => sub_b(lhs as u8, rhs as u8),
                         };
-                        (r as u16, ccr)
+                        (r as u32, ccr)
                     }
+                    Size::Long => match op {
+                        AluOp::Add => add_l(lhs, rhs),
+                        AluOp::Sub => sub_l(lhs, rhs),
+                    },
                 };
                 regs.sr = (regs.sr & 0xFF00) | ccr;
                 match dst {
-                    Dest::Scratch(s) => self.scratch[s as usize] = result as u32,
+                    Dest::Scratch(s) => self.scratch[s as usize] = result,
+                    Dest::DataReg(n) => regs.d[n as usize] = result,
                     Dest::DataRegLow16(n) => {
-                        regs.d[n as usize] = (regs.d[n as usize] & 0xFFFF_0000) | result as u32;
+                        regs.d[n as usize] = (regs.d[n as usize] & 0xFFFF_0000) | (result & 0xFFFF);
                     }
                     Dest::DataRegLow8(n) => {
-                        regs.d[n as usize] =
-                            (regs.d[n as usize] & 0xFFFF_FF00) | (result as u32 & 0xFF);
+                        regs.d[n as usize] = (regs.d[n as usize] & 0xFFFF_FF00) | (result & 0xFF);
                     }
                 }
                 0
@@ -444,6 +531,12 @@ impl MicroState {
                     .wrapping_add(self.resolve(disp, regs))
                     & ADDR_MASK;
                 self.scratch[dst as usize] = ea;
+                0
+            }
+            MicroOp::Combine32 { hi, lo, dst } => {
+                // Assemble the 32-bit long value — NO mask (this is a value, not an address).
+                let value = (self.scratch[hi as usize] << 16) | self.resolve(lo, regs);
+                self.scratch[dst as usize] = value;
                 0
             }
         };
@@ -1341,6 +1434,151 @@ mod tests {
                 value: 0x45,
             }]
         );
+    }
+
+    #[test]
+    fn combine32_assembles_hi_lo_into_long_value_without_masking() {
+        // Combine32: (scratch[hi] << 16) | resolve(lo). NO 24-bit mask — it is an operand VALUE, so a hi
+        // word above the 24-bit address span survives (distinct from EaCalc, which masks to ADDR_MASK).
+        let mut regs = regs();
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::Combine32 {
+            hi: 0,
+            lo: Operand::Scratch(1),
+            dst: 2,
+        }]);
+        st.scratch[0] = 0x0000_FF80; // hi word 0xFF80 — above the 24-bit mask
+        st.scratch[1] = 0x0000_1234; // lo word
+
+        let cycles = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(cycles, 0, "Combine32 is an internal compute — 0 cycles");
+        assert_eq!(
+            st.scratch[2], 0xFF80_1234,
+            "long value assembled hi<<16 | lo, UNMASKED"
+        );
+        assert!(bus.log.is_empty(), "Combine32 touches no bus");
+    }
+
+    #[test]
+    fn scratch_hi16_resolves_to_high_word_of_scratch() {
+        // Operand::ScratchHi16(s) = scratch[s] >> 16 — the hi word fed to the first Write of a long store.
+        let mut regs = regs();
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::Write {
+            addr: Operand::Scratch(0),
+            fc: Fc::Data,
+            size: Size::Word,
+            value: Operand::ScratchHi16(1),
+        }]);
+        st.scratch[0] = 0x2000;
+        st.scratch[1] = 0xABCD_1234; // hi word 0xABCD
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(
+            bus.peek(0x2000),
+            0xAB,
+            "Write stored the hi word's upper byte"
+        );
+        assert_eq!(
+            bus.peek(0x2001),
+            0xCD,
+            "Write stored the hi word's lower byte"
+        );
+    }
+
+    #[test]
+    fn data_reg_full_resolves_to_full_32_and_dest_data_reg_writes_full_32() {
+        // Operand::DataRegFull(n) = regs.d[n] (full 32); Dest::DataReg(n) writes the full 32-bit result.
+        let mut regs = regs();
+        regs.d[4] = 0x1357_9BDF;
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::Alu {
+            op: AluOp::Add,
+            size: Size::Long,
+            a: Operand::DataRegFull(4),
+            b: Operand::Scratch(0),
+            dst: Dest::DataReg(4),
+        }]);
+        st.scratch[0] = 0x0000_0001;
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(
+            regs.d[4], 0x1357_9BE0,
+            "full 32-bit add written to all of D4"
+        );
+    }
+
+    #[test]
+    fn alu_add_l_uses_0x80000000_boundary_and_writes_full_32() {
+        // Pinned to the real SST `d491 [ADD.l (A1),D2]`: D2 0x7F165E69 + operand 0x2026E993 = 0x9F3D47FC.
+        // bit31 set → N; not zero → no Z; two positives summing to a negative → V; no carry out of bit31 → no
+        // C/X. SR 0x270E → 0x270A (N|V).
+        let mut regs = regs();
+        regs.d[2] = 0x7F16_5E69;
+        regs.sr = 0x270E;
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::Alu {
+            op: AluOp::Add,
+            size: Size::Long,
+            a: Operand::DataRegFull(2),
+            b: Operand::Scratch(0),
+            dst: Dest::DataReg(2),
+        }]);
+        st.scratch[0] = 0x2026_E993;
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(regs.d[2], 0x9F3D_47FC, "0x7F165E69 + 0x2026E993");
+        assert_eq!(regs.sr, 0x270A, "N|V (negative result, signed overflow)");
+    }
+
+    #[test]
+    fn alu_add_l_sets_carry_and_extend_on_32bit_overflow() {
+        // 0xFFFF_FFFF + 0x0000_0002 = 0x1_0000_0001 → low 32 = 0x1; carry out of bit31 → C and X; result
+        // bit31 clear → no N; operands differ in sign → no V.
+        let mut regs = regs();
+        regs.d[0] = 0xFFFF_FFFF;
+        regs.sr = 0x2700;
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::Alu {
+            op: AluOp::Add,
+            size: Size::Long,
+            a: Operand::DataRegFull(0),
+            b: Operand::Scratch(0),
+            dst: Dest::DataReg(0),
+        }]);
+        st.scratch[0] = 0x0000_0002;
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(regs.d[0], 0x0000_0001, "wrapped to 0x1");
+        assert_eq!(regs.sr, 0x2711, "X|C set; N/Z/V clear");
+    }
+
+    #[test]
+    fn alu_sub_l_computes_difference_at_long_boundary() {
+        // 0x0000_0001 - 0x0000_0002 = 0xFFFF_FFFF (borrow). Borrow → C and X; result bit31 set → N; same-sign
+        // minuend/subtrahend → no V.
+        let mut regs = regs();
+        regs.d[1] = 0x0000_0001;
+        regs.sr = 0x2700;
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::Alu {
+            op: AluOp::Sub,
+            size: Size::Long,
+            a: Operand::DataRegFull(1),
+            b: Operand::Scratch(0),
+            dst: Dest::DataReg(1),
+        }]);
+        st.scratch[0] = 0x0000_0002;
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(regs.d[1], 0xFFFF_FFFF, "0x1 - 0x2 borrows to 0xFFFF_FFFF");
+        assert_eq!(regs.sr, 0x2719, "X|N|C set (borrow, negative result)");
     }
 
     #[test]

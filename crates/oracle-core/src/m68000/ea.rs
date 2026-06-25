@@ -200,12 +200,13 @@ struct SrcSeq {
 }
 
 /// The auto-(in/de)crement step magnitude (in bytes) for an `(An)+`/`-(An)` access of `size` on register
-/// `reg`. Word is 2; byte is 1 — **except** `(A7)+`/`-(A7)` byte, which steps by 2 so the stack pointer
-/// stays even (the in-scope A7 byte rule). Long (4) is deferred.
+/// `reg`. Word is 2; long is 4; byte is 1 — **except** `(A7)+`/`-(A7)` byte, which steps by 2 so the stack
+/// pointer stays even (the in-scope A7 byte rule).
 #[inline]
 fn step_bytes(size: Size, reg: u8) -> i8 {
     match size {
         Size::Word => 2,
+        Size::Long => 4,
         Size::Byte => {
             if reg == 7 {
                 2
@@ -223,8 +224,18 @@ const EA_SLOT: u8 = 2;
 
 /// Scratch slot holding the captured HIGH word of an `abs.l` address (the first of its two extension
 /// words), deposited before the interleaved `Prefetch` shifts the LOW word into the queue. Distinct from
-/// [`EA_SLOT`] so both halves are snapshot-visible mid-assembly.
+/// [`EA_SLOT`] so both halves are snapshot-visible mid-assembly. Also reused for the captured HIGH word of a
+/// long `#imm.l` operand (same "capture before the refill shifts it out" shape).
 const HI_SLOT: u8 = 3;
+
+/// Scratch slot holding the LOW word of a long operand's two-word READ (the word at `addr+2`), assembled
+/// with the HIGH word (read into slot 0) by a [`MicroOp::Combine32`] back into slot 0. Distinct from the
+/// EA / abs.l-HI slots so every half is snapshot-visible mid-assembly.
+const LONG_LO_SLOT: u8 = 4;
+
+/// Scratch slot holding the **address** of a long memory access's LOW half (`addr + 2`), materialized once
+/// by an [`MicroOp::EaCalc`] so a long RMW's low-word READ and low-word WRITE hit the identical address.
+const LONG_LO_ADDR_SLOT: u8 = 5;
 
 /// Decode a source EA mode into its [`SrcSeq`]. Covers `Dn` (0), `An` (1, word/long), `(An)` (2),
 /// `(An)+` (3), `-(An)` (4), `#imm` (7/4). Other modes land in later commits. `size` selects the
@@ -429,6 +440,161 @@ fn push_abs_l_addr(buf: &mut RecipeBuf) {
     });
 }
 
+/// Push a long operand's two-word READ at the materialized base address `hi_addr` (an `Operand` resolving to
+/// the operand's effective address): the HIGH word at `addr` into scratch 0, the LOW word at `addr+2` into
+/// [`LONG_LO_SLOT`], then a [`MicroOp::Combine32`] assembling `(hi << 16) | lo` back into scratch 0. The
+/// low-half address is `EaCalc(hi_addr + WordStep)` — a 0-cycle compute, masked to the 24-bit bus (so a long
+/// at the top of memory wraps). The two `Read`s are the long operand's two bus accesses (hi at `addr`, lo at
+/// `addr+2` — the order pinned against the SST `ADD.l (An),Dn` anchor).
+fn push_long_read_pair(buf: &mut RecipeBuf, hi_addr: Operand) {
+    buf.push(MicroOp::Read {
+        addr: hi_addr,
+        fc: super::microop::Fc::Data,
+        size: Size::Word,
+        dst: 0,
+    });
+    buf.push(MicroOp::EaCalc {
+        base: hi_addr,
+        index: Operand::Zero,
+        disp: Operand::WordStep,
+        dst: LONG_LO_SLOT,
+    });
+    buf.push(MicroOp::Read {
+        addr: Operand::Scratch(LONG_LO_SLOT),
+        fc: super::microop::Fc::Data,
+        size: Size::Word,
+        dst: LONG_LO_SLOT,
+    });
+    buf.push(MicroOp::Combine32 {
+        hi: 0,
+        lo: Operand::Scratch(LONG_LO_SLOT),
+        dst: 0,
+    });
+}
+
+/// The long source-EA sub-sequence for `ADD.l`/`SUB.l <ea>,Dn`. A `.l` operand is **two word reads** (hi at
+/// `addr`, lo at `addr+2`) assembled by [`MicroOp::Combine32`]; the long ALU then trails an `Internal` idle
+/// (the 68000's long-operand penalty — 4 master cycles for a register/immediate source, 2 for a memory
+/// source). Every ordering here (the read pair, the prefetch placement, the trailing-idle width) is pinned
+/// against the vendored `ADD.l`/`SUB.l` SST stream, NOT asserted from memory.
+fn ea_src_long(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Operand) -> MicroOp) {
+    match (mode, reg) {
+        // Dn / An direct — no operand read: one refill, the ALU on the full 32-bit register, then the
+        // register-source long idle (n4). Bus: [PF].
+        (0, _) | (1, _) => {
+            let operand = if mode == 0 {
+                Operand::DataRegFull(reg)
+            } else {
+                Operand::AddrReg(reg)
+            };
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(operand));
+            buf.push(MicroOp::Internal { cycles: 4 });
+        }
+        // (An) — read the long operand at An, refill, combine, then the memory-source long idle (n2). Bus:
+        // [READ.hi, READ.lo, PF].
+        (2, _) => {
+            push_long_read_pair(buf, Operand::AddrReg(reg));
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::Scratch(0)));
+            buf.push(MicroOp::Internal { cycles: 2 });
+        }
+        // (An)+ — read the long operand at An, post-increment An by 4 (after both reads), refill, combine,
+        // n2. The bump is non-bus; the read pair still precedes the refill.
+        (3, _) => {
+            push_long_read_pair(buf, Operand::AddrReg(reg));
+            buf.push(MicroOp::AdjustAddr { reg, delta: 4 });
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::Scratch(0)));
+            buf.push(MicroOp::Internal { cycles: 2 });
+        }
+        // -(An) — pre-decrement An by 4, the predecrement idle (n2), read the long operand at An-4, refill,
+        // combine, the long idle (n2). Bus: [READ.hi, READ.lo, PF], front+back n2.
+        (4, _) => {
+            buf.push(MicroOp::AdjustAddr { reg, delta: -4 });
+            buf.push(MicroOp::Internal { cycles: 2 });
+            push_long_read_pair(buf, Operand::AddrReg(reg));
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::Scratch(0)));
+            buf.push(MicroOp::Internal { cycles: 2 });
+        }
+        // d16(An) / abs.w / d16(PC) — EaCalc the EA first (the disp is in prefetch[1] now), one refill, the
+        // long read pair, the final refill, combine, n2. Bus: [PF, READ.hi, READ.lo, PF].
+        (5, _) | (7, 0) | (7, 2) => {
+            let base = match (mode, reg) {
+                (5, _) => Operand::AddrReg(reg),
+                (7, 2) => Operand::PcOfExt,
+                _ => Operand::Zero, // abs.w
+            };
+            buf.push(MicroOp::EaCalc {
+                base,
+                index: Operand::Zero,
+                disp: Operand::DispWord,
+                dst: EA_SLOT,
+            });
+            buf.push(MicroOp::Prefetch);
+            push_long_read_pair(buf, Operand::Scratch(EA_SLOT));
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::Scratch(0)));
+            buf.push(MicroOp::Internal { cycles: 2 });
+        }
+        // d8(An,Xn) / d8(PC,Xn) — EaCalc (base + index + disp8) first, the indexed idle (n2), one refill, the
+        // long read pair, the final refill, combine, n2. Bus: [PF, READ.hi, READ.lo, PF].
+        (6, _) | (7, 3) => {
+            let base = if mode == 6 {
+                Operand::AddrReg(reg)
+            } else {
+                Operand::PcOfExt
+            };
+            buf.push(MicroOp::EaCalc {
+                base,
+                index: Operand::BriefIndex,
+                disp: Operand::BriefDisp8,
+                dst: EA_SLOT,
+            });
+            buf.push(MicroOp::Internal { cycles: 2 });
+            buf.push(MicroOp::Prefetch);
+            push_long_read_pair(buf, Operand::Scratch(EA_SLOT));
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::Scratch(0)));
+            buf.push(MicroOp::Internal { cycles: 2 });
+        }
+        // abs.l — assemble the two-word address (HI, refill, LO), one refill, the long read pair, the final
+        // refill, combine, n2. Bus: [PF, PF, READ.hi, READ.lo, PF].
+        (7, 1) => {
+            push_abs_l_addr(buf); // [EaCalc(HI), Prefetch, EaCalc(ADDR)]
+            buf.push(MicroOp::Prefetch);
+            push_long_read_pair(buf, Operand::Scratch(EA_SLOT));
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::Scratch(0)));
+            buf.push(MicroOp::Internal { cycles: 2 });
+        }
+        // #imm.l — the 32-bit immediate is two extension words: HI = prefetch[1] (captured into HI_SLOT
+        // before the refill shifts it out), then a refill shifts the LO word into prefetch[1]; Combine32
+        // assembles them. Two more refills complete the 3-word fetch; then the ALU and the register/immediate
+        // long idle (n4). Bus: [PF, PF, PF]. The HI capture reads slot 0 while it is still zero (the fresh
+        // recipe's scratch), so `(0 << 16) | prefetch[1]` parks the HI word unmasked.
+        (7, 4) => {
+            buf.push(MicroOp::Combine32 {
+                hi: 0,
+                lo: Operand::ImmWord,
+                dst: HI_SLOT,
+            });
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::Combine32 {
+                hi: HI_SLOT,
+                lo: Operand::ImmWord,
+                dst: 0,
+            });
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::Scratch(0)));
+            buf.push(MicroOp::Internal { cycles: 4 });
+        }
+        _ => todo!("ea_src_long mode {mode}/{reg} not yet covered"),
+    }
+}
+
 /// Push the source-EA sub-sequence for an `<ea>,Dn`-shaped instruction: the bus steps that fetch the
 /// source operand, interleaved with the prefetch refill(s) and the opcode's ALU. `make_alu` builds the
 /// `MicroOp::Alu` given the operand the ALU combines (a register operand, or `Scratch(0)` for a memory
@@ -445,6 +611,10 @@ pub fn ea_src(
     size: Size,
     make_alu: impl FnOnce(Operand) -> MicroOp,
 ) {
+    if size == Size::Long {
+        ea_src_long(buf, mode, reg, make_alu);
+        return;
+    }
     // abs.l — a 3-word instruction: assemble the two-word address first (HIGH then, after a refill, LOW),
     // then the `[READ, Prefetch]` operand access. The two-EaCalc interleave doesn't fit `SrcSeq`'s single
     // `ea_calc` leg, so it's emitted directly here. Bus: [PF, PF, READ, PF].
@@ -513,6 +683,114 @@ pub fn ea_src(
     }
 }
 
+/// Push the long memory RMW at the materialized base address `hi_addr`: the old long value's two-word READ
+/// (hi at `addr` → scratch 0, lo at `addr+2` → [`LONG_LO_SLOT`]) assembled by `Combine32`, the prefetch
+/// refill, the ALU (`make_alu`, memory = minuend → scratch 1), then the result's two-word WRITE — **lo at
+/// `addr+2` FIRST, then hi at `addr`** (the long-store word order, reversed vs. the read; pinned against the
+/// SST `ADD.l Dn,(An)` anchor). The low-half address is materialized once into [`LONG_LO_ADDR_SLOT`] so the
+/// low READ and low WRITE hit the identical (24-bit-masked) address.
+fn push_long_rmw(buf: &mut RecipeBuf, hi_addr: Operand, make_alu: impl FnOnce(Operand) -> MicroOp) {
+    buf.push(MicroOp::EaCalc {
+        base: hi_addr,
+        index: Operand::Zero,
+        disp: Operand::WordStep,
+        dst: LONG_LO_ADDR_SLOT,
+    });
+    buf.push(MicroOp::Read {
+        addr: hi_addr,
+        fc: super::microop::Fc::Data,
+        size: Size::Word,
+        dst: 0,
+    });
+    buf.push(MicroOp::Read {
+        addr: Operand::Scratch(LONG_LO_ADDR_SLOT),
+        fc: super::microop::Fc::Data,
+        size: Size::Word,
+        dst: LONG_LO_SLOT,
+    });
+    buf.push(MicroOp::Combine32 {
+        hi: 0,
+        lo: Operand::Scratch(LONG_LO_SLOT),
+        dst: 0,
+    });
+    buf.push(MicroOp::Prefetch);
+    buf.push(make_alu(Operand::Scratch(0)));
+    // Write LOW half first (addr+2), then HIGH half (addr) — the reversed long-store order.
+    buf.push(MicroOp::Write {
+        addr: Operand::Scratch(LONG_LO_ADDR_SLOT),
+        fc: super::microop::Fc::Data,
+        size: Size::Word,
+        value: Operand::Scratch(1),
+    });
+    buf.push(MicroOp::Write {
+        addr: hi_addr,
+        fc: super::microop::Fc::Data,
+        size: Size::Word,
+        value: Operand::ScratchHi16(1),
+    });
+}
+
+/// The long destination-EA sub-sequence for `ADD.l`/`SUB.l Dn,<ea>` (alterable-memory destination). A long
+/// RMW: read the old 32-bit value (two words), refill, combine with `Dn`, write the 32-bit result (two words,
+/// low half first). Orderings pinned against the vendored `ADD.l`/`SUB.l` SST stream.
+fn ea_dst_long(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Operand) -> MicroOp) {
+    match (mode, reg) {
+        // (An): the long RMW at An. Bus: [READ.hi, READ.lo, PF, WRITE.lo, WRITE.hi].
+        (2, _) => {
+            push_long_rmw(buf, Operand::AddrReg(reg), make_alu);
+        }
+        // (An)+: the long RMW at An, then post-increment An by 4 (after the writes). The reads and writes all
+        // hit the un-incremented base; the bump is non-bus.
+        (3, _) => {
+            push_long_rmw(buf, Operand::AddrReg(reg), make_alu);
+            buf.push(MicroOp::AdjustAddr { reg, delta: 4 });
+        }
+        // -(An): pre-decrement An by 4, the predecrement idle (n2), then the long RMW at An-4. Reads and
+        // writes all hit the decremented base.
+        (4, _) => {
+            buf.push(MicroOp::AdjustAddr { reg, delta: -4 });
+            buf.push(MicroOp::Internal { cycles: 2 });
+            push_long_rmw(buf, Operand::AddrReg(reg), make_alu);
+        }
+        // d16(An) / abs.w: EaCalc the EA first (disp in prefetch[1] now), one refill, then the long RMW at the
+        // materialized EA. Bus: [PF, READ.hi, READ.lo, PF, WRITE.lo, WRITE.hi].
+        (5, _) | (7, 0) => {
+            let base = if mode == 5 {
+                Operand::AddrReg(reg)
+            } else {
+                Operand::Zero // abs.w
+            };
+            buf.push(MicroOp::EaCalc {
+                base,
+                index: Operand::Zero,
+                disp: Operand::DispWord,
+                dst: EA_SLOT,
+            });
+            buf.push(MicroOp::Prefetch);
+            push_long_rmw(buf, Operand::Scratch(EA_SLOT), make_alu);
+        }
+        // d8(An,Xn): EaCalc (An + index + disp8) first, the indexed idle (n2), one refill, then the long RMW.
+        (6, _) => {
+            buf.push(MicroOp::EaCalc {
+                base: Operand::AddrReg(reg),
+                index: Operand::BriefIndex,
+                disp: Operand::BriefDisp8,
+                dst: EA_SLOT,
+            });
+            buf.push(MicroOp::Internal { cycles: 2 });
+            buf.push(MicroOp::Prefetch);
+            push_long_rmw(buf, Operand::Scratch(EA_SLOT), make_alu);
+        }
+        // abs.l: assemble the two-word address (HI, refill, LO), one refill, then the long RMW at the EA.
+        (7, 1) => {
+            push_abs_l_addr(buf);
+            buf.push(MicroOp::Prefetch);
+            push_long_rmw(buf, Operand::Scratch(EA_SLOT), make_alu);
+        }
+        _ => todo!("ea_dst_long mode {mode}/{reg} not yet covered"),
+    }
+}
+
 /// Push the destination-EA sub-sequence for a `Dn,<ea>` (memory-destination) read-modify-write: read the
 /// old memory value, refill prefetch, combine via the ALU, write the result back. `make_alu` builds the
 /// `MicroOp::Alu` given the memory operand (the minuend) and the scratch destination it writes; the write
@@ -530,6 +808,10 @@ pub fn ea_dst(
     size: Size,
     make_alu: impl FnOnce(Operand) -> MicroOp,
 ) {
+    if size == Size::Long {
+        ea_dst_long(buf, mode, reg, make_alu);
+        return;
+    }
     // The alterable-memory destination skeleton: read old value → refill → ALU (memory is the minuend) →
     // write the result back, at the same `(An)` address. `(An)+`/`-(An)` wrap this with an `AdjustAddr`.
     let read = MicroOp::Read {

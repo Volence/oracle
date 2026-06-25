@@ -1,12 +1,13 @@
 //! SingleStepTests runner for the 68000 micro-op framework.
 //!
 //! Drives the pinned, vendored SingleStepTests data (`tools/fetch-tests.sh`) for every covered `ADD`/`SUB`
-//! case in **word and byte** sizes — `Dn,<ea>` (alterable-memory destination: (An) / (An)+ / -(An) /
+//! case in **word, byte and long** sizes — `Dn,<ea>` (alterable-memory destination: (An) / (An)+ / -(An) /
 //! d16(An) / d8(An,Xn) / abs.w / abs.l) and `<ea>,Dn` (register destination) for the source modes Dn / An
-//! (word only) / (An) / (An)+ / -(An) / d16(An) / d8(An,Xn) / abs.w / abs.l / d16(PC) / d8(PC,Xn) / #imm —
+//! (word/long) / (An) / (An)+ / -(An) / d16(An) / d8(An,Xn) / abs.w / abs.l / d16(PC) / d8(PC,Xn) / #imm —
 //! and asserts post regs/SR/RAM/prefetch, the cycle count, **and** the per-cycle bus-transaction stream
-//! (byte-granular for `.b`), through *both* framework drivers (run-to-completion fast path and the
-//! step-one-micro-op quiesce path), which must also agree with each other.
+//! (byte-granular for `.b`; two word accesses per `.l` operand, hi then lo for a read, lo then hi for a
+//! write), through *both* framework drivers (run-to-completion fast path and the step-one-micro-op quiesce
+//! path), which must also agree with each other.
 //!
 //! Versioned xfail manifest (slice scope — implemented later): odd-address *word* accesses (which raise an
 //! address-error exception — byte accesses have no such error, so odd byte EAs are in scope), the `A7` form
@@ -29,7 +30,14 @@ const VENDOR_DIR: &str = concat!(
 
 /// Mnemonic files driven by the current decode. Extend as opcode coverage grows (keep in sync with
 /// `tools/fetch-tests.sh`).
-const FILES: &[&str] = &["ADD.w.json", "SUB.w.json", "ADD.b.json", "SUB.b.json"];
+const FILES: &[&str] = &[
+    "ADD.w.json",
+    "SUB.w.json",
+    "ADD.b.json",
+    "SUB.b.json",
+    "ADD.l.json",
+    "SUB.l.json",
+];
 
 fn u32f(v: &Value, key: &str) -> u32 {
     v.get(key)
@@ -158,6 +166,8 @@ fn covered(opcode: u16, ini: &Value) -> bool {
     // for word, so parity is preserved). Filter on the actual accessed address.
     let even = |reg: usize| areg(reg) & 1 == 0;
     let even_predec = |reg: usize| areg(reg).wrapping_sub(2) & 1 == 0;
+    // For a long `-(An)` the access address is `An - 4` (a long predec steps by 4); parity is preserved.
+    let even_predec_long = |reg: usize| areg(reg).wrapping_sub(4) & 1 == 0;
     // For the register-file EaCalc modes (`d16(An)` = 5, `d8(An,Xn)` = 6, `abs.w` = 111/000,
     // `d16(PC)` = 111/010, `d8(PC,Xn)` = 111/011) the accessed address is the shared `compute_ea` (the SAME
     // helper the decoder's recipe is pinned to by the hard-gate agreement test); a word access to an odd EA
@@ -281,7 +291,52 @@ fn covered(opcode: u16, ini: &Value) -> bool {
             _ => false,
         };
     }
-    false // other forms (long / not-yet-implemented modes): out of slice this push
+    // <op>.l Dn,<ea> — long memory destination (ADD=0xD180, SUB=0x9180). A `.l` access is two word bus
+    // accesses; a long access to an ODD computed EA is an address error → xfail (same word-style parity
+    // filter, only the predec step is 4). `An`-direct is not a destination.
+    if opcode & 0xF1C0 == 0xD180 || opcode & 0xF1C0 == 0x9180 {
+        let mode = (opcode >> 3) & 7;
+        let reg = (opcode & 7) as usize;
+        return match mode {
+            // (An) — even access, not A7 (the A7 form lands with its own slice, as in word).
+            2 => reg != 7 && even(reg),
+            // (An)+ — even access; A7/SP in scope (step 4 keeps the SP even).
+            3 => even(reg),
+            // -(An) — even decremented access (An - 4).
+            4 => even_predec_long(reg),
+            // d16(An) / d8(An,Xn) / abs.w — even computed EA.
+            5 | 6 => even_computed(),
+            7 if reg == 0 => even_computed(),
+            // abs.l — even two-word computed EA.
+            7 if reg == 1 => even_abs_l(),
+            _ => false,
+        };
+    }
+    // <op>.l <ea>,Dn — long register destination (ADD=0xD080, SUB=0x9080). Same long parity filter; `An`-
+    // direct (mode 1) is LEGAL for long (`ADD.l An,Dn`) — A7 source is fine (no memory access).
+    if opcode & 0xF1C0 == 0xD080 || opcode & 0xF1C0 == 0x9080 {
+        let mode = (opcode >> 3) & 7;
+        let reg = (opcode & 7) as usize;
+        return match mode {
+            // Dn / An (register direct) — no memory access.
+            0 | 1 => true,
+            // (An) — even source, not A7 (A7 form is a separate slice, as in word).
+            2 => reg != 7 && even(reg),
+            // (An)+ — even source; A7/SP in scope (step 4).
+            3 => even(reg),
+            // -(An) — even decremented source (An - 4).
+            4 => even_predec_long(reg),
+            // d16(An) / d8(An,Xn) / abs.w / d16(PC) / d8(PC,Xn) — even computed EA.
+            5 | 6 => even_computed(),
+            7 if matches!(reg, 0 | 2 | 3) => even_computed(),
+            // abs.l — even two-word computed EA.
+            7 if reg == 1 => even_abs_l(),
+            // #imm.l (111/100) — long immediate.
+            7 if reg == 4 => true,
+            _ => false,
+        };
+    }
+    false // other forms (not-yet-implemented modes): out of slice this push
 }
 
 /// Run one covered case through both drivers, asserting they match the suite and each other.
@@ -351,8 +406,10 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 15800,
-        "expected ~15845 covered ADD/SUB cases — word (~5871: Dn,<ea> + <ea>,Dn for Dn/An/(An)/(An)+/-(An)/d16(An)/d8(An,Xn)/abs.w/abs.l/d16(PC)/d8(PC,Xn)/#imm, even EAs) plus byte (~9974: the same modes minus An-direct, with odd EAs in scope and the A7 byte +2 step), ran {ran}"
+        ran >= 21700,
+        "expected ~21790 covered ADD/SUB cases — word (~5871) + byte (~9974) + long (~5945: Dn,<ea> + \
+         <ea>,Dn for Dn/An/(An)/(An)+/-(An)/d16(An)/d8(An,Xn)/abs.w/abs.l/d16(PC)/d8(PC,Xn)/#imm, even EAs \
+         since a long access to an odd EA is an address error), ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB (.w + .b): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
