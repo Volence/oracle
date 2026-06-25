@@ -186,6 +186,14 @@ pub fn decode(regs: &Registers) -> MicroState {
     if opcode & 0xF0F8 == 0x50C8 {
         return dbcc_recipe(opcode, regs);
     }
+    // RTR (`0x4E77`) — return and restore condition codes: POP the saved CCR word (@ SP) and the 32-bit
+    // return address (hi @ SP+2, lo @ SP+4) off the stack, load the low 5 CCR bits into the SR, then reload
+    // the prefetch queue at the popped target. Like RTS but with a leading CCR pop; the data's read order is
+    // `pc_hi @ SP+2`, `ccr @ SP`, `pc_lo @ SP+4` (reproduced exactly). `AdjustAddr(SP, +6)` then the universal
+    // `SetPc` + two-`Prefetch` reload. The opcode `0x4E77` is a single point in the 0x4Exx space.
+    if opcode == 0x4E77 {
+        return rtr_recipe();
+    }
     todo!("opcode {opcode:#06X} not yet decoded")
 }
 
@@ -827,6 +835,88 @@ fn dbcc_recipe(opcode: u16, regs: &Registers) -> MicroState {
             buf.push(MicroOp::Prefetch);
         }
     }
+    buf.finish()
+}
+
+/// Scratch slot holding the HIGH word of an `RTR` popped return address (read from `SP + 2`). Slot 0.
+const RTR_HI_SLOT: u8 = 0;
+
+/// Scratch slot holding the assembled 32-bit `RTR` return address (the `SetPc` source). Slot 1.
+const RTR_TARGET_SLOT: u8 = 1;
+
+/// Scratch slot holding a materialized `RTR` pop address (`SP + 2` then, reused, `SP + 4`) — masked to the
+/// 24-bit bus (a real even bus address). Slot 2. Transient: each address is consumed by its `Read` before the
+/// next `EaCalc` overwrites it.
+const RTR_ADDR_SLOT: u8 = 2;
+
+/// Scratch slot holding the popped CCR word (read from `SP`), fed to [`MicroOp::LoadCcr`]. Slot 3.
+const RTR_CCR_SLOT: u8 = 3;
+
+/// Scratch slot holding the LOW word of an `RTR` popped return address (read from `SP + 4`). Slot 4.
+const RTR_LO_SLOT: u8 = 4;
+
+/// `RTR` (`0x4E77`): return and restore condition codes — POP the saved CCR word and the 32-bit return
+/// address, load the low 5 CCR bits into the SR, then reload the prefetch queue at the popped target. Like
+/// [`rts_recipe`] but with a leading CCR pop and a `+6` stack adjust. The vendored `RTR` SST stream reads the
+/// three popped words in the order `pc_hi @ SP+2`, `ccr @ SP`, `pc_lo @ SP+4` (reproduced exactly), then the
+/// universal taken-branch tail ([`MicroOp::SetPc`] + two `Prefetch`s read `target` / `target+2`, FC=6).
+///
+/// Recipe (pinned to the vendored `RTR` SST stream — `4e77`, **20 cyc**): `[EaCalc(SP+2), Read(pc_hi @ SP+2),
+/// Read(ccr @ SP), EaCalc(SP+4), Read(pc_lo @ SP+4), LoadCcr(ccr), AdjustAddr(SP, +6), Combine32(hi,lo →
+/// target), SetPc(target), Prefetch, Prefetch]`. The popped return address is the FULL 32-bit pc (UNMASKED —
+/// `Combine32` does no mask); only the bus reload address masks. `LoadCcr` keeps only the low 5 CCR bits
+/// (X/N/Z/V/C); the SR system byte is preserved. The bus stream is `[r@SP+2, r@SP, r@SP+4, r@target,
+/// r@target+2]` (5 word reads = 20 cycles, no idle).
+fn rtr_recipe() -> MicroState {
+    let mut buf = RecipeBuf::new();
+    // HI word of the return address @ SP + 2 (read FIRST, per the data's reordered stream).
+    buf.push(MicroOp::EaCalc {
+        base: Operand::AddrReg(7),
+        index: Operand::Zero,
+        disp: Operand::WordStep,
+        dst: RTR_ADDR_SLOT,
+    });
+    buf.push(MicroOp::Read {
+        addr: Operand::Scratch(RTR_ADDR_SLOT),
+        fc: super::microop::Fc::Data,
+        size: Size::Word,
+        dst: RTR_HI_SLOT,
+    });
+    // The saved CCR word @ SP (read SECOND).
+    buf.push(MicroOp::Read {
+        addr: Operand::AddrReg(7),
+        fc: super::microop::Fc::Data,
+        size: Size::Word,
+        dst: RTR_CCR_SLOT,
+    });
+    // LO word of the return address @ SP + 4 (read THIRD). SP + 4 = base + WordStep + WordStep.
+    buf.push(MicroOp::EaCalc {
+        base: Operand::AddrReg(7),
+        index: Operand::WordStep,
+        disp: Operand::WordStep,
+        dst: RTR_ADDR_SLOT,
+    });
+    buf.push(MicroOp::Read {
+        addr: Operand::Scratch(RTR_ADDR_SLOT),
+        fc: super::microop::Fc::Data,
+        size: Size::Word,
+        dst: RTR_LO_SLOT,
+    });
+    // Restore the condition codes (low 5 bits), then pop (SP += 6) and reload at the UNMASKED target.
+    buf.push(MicroOp::LoadCcr {
+        value: Operand::Scratch(RTR_CCR_SLOT),
+    });
+    buf.push(MicroOp::AdjustAddr { reg: 7, delta: 6 });
+    buf.push(MicroOp::Combine32 {
+        hi: RTR_HI_SLOT,
+        lo: Operand::Scratch(RTR_LO_SLOT),
+        dst: RTR_TARGET_SLOT,
+    });
+    buf.push(MicroOp::SetPc {
+        value: Operand::Scratch(RTR_TARGET_SLOT),
+    });
+    buf.push(MicroOp::Prefetch);
+    buf.push(MicroOp::Prefetch);
     buf.finish()
 }
 
@@ -4731,6 +4821,168 @@ mod tests {
         // 8 micro-ops (Read, EaCalc, Read, AdjustAddr, Combine32, SetPc, Prefetch, Prefetch) → 0..=7.
         for pause_after in 0..=7 {
             let (mut cpu, mut bus) = setup_rts();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    /// The clean SST reference case `4e77 [RTR] 1` (20 cycles) — the F6 anchor. SP (ssp 2048, supervisor)
+    /// holds the saved CCR word 0x6FF6 @ SP=2048 and the 32-bit return address big-endian: hi 0xE9DB @ SP+2,
+    /// lo 0x0CCE @ SP+4. The data's read order is hi @ SP+2, ccr @ SP, lo @ SP+4 (reproduced exactly). The
+    /// recipe restores the low 5 CCR bits (0xF6 → 0x16; SR 0x2715 → 0x2716), post-increments SP by 6 (→ 2054),
+    /// assembles the UNMASKED target 0xE9DB0CCE (= 3923446990), sets pc, and reloads the queue at the target —
+    /// the bus reload masks to 0xDB0CCE (= 14355662): r@14355662, r@14355664. final.pc is the full unmasked
+    /// 0xE9DB0CCE.
+    fn setup_rtr() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 2_639_588_438,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10005,                // 0x2715 — CCR = X|Z|C; supervisor
+            prefetch: [20087, 62665], // prefetch[0] = 0x4E77 (RTR)
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            // CCR word @ SP=2048: 0x6FF6.
+            (2048u32, 111u8),
+            (2049, 246),
+            // return address hi 0xE9DB @ SP+2=2050.
+            (2050, 233),
+            (2051, 219),
+            // return address lo 0x0CCE @ SP+4=2052.
+            (2052, 12),
+            (2053, 206),
+            // the two target words at 0xDB0CCE (14355662) / +2: 0x7DD5 = 32213, 0x8F02 = 36610.
+            (14_355_662, 125),
+            (14_355_663, 213),
+            (14_355_664, 143),
+            (14_355_665, 2),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_rtr_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 2050, // hi word of the return address @ SP+2 (read FIRST)
+                size: Size::Word,
+                value: 59867, // 0xE9DB
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 2048, // the saved CCR word @ SP (read SECOND)
+                size: Size::Word,
+                value: 28662, // 0x6FF6
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 2052, // lo word @ SP+4 (read THIRD)
+                size: Size::Word,
+                value: 3278, // 0x0CCE
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 14_355_662, // target (masked) — read into prefetch[0]
+                size: Size::Word,
+                value: 32213,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 14_355_664, // target+2 (masked) — read into prefetch[1]
+                size: Size::Word,
+                value: 36610,
+            },
+        ]
+    }
+
+    fn assert_rtr_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(
+            cpu.regs.pc, 3_923_446_990,
+            "pc landed at the FULL unmasked popped target 0xE9DB0CCE"
+        );
+        assert_eq!(
+            cpu.regs.ssp, 2054,
+            "SP post-incremented by 6 (CCR + long pop)"
+        );
+        assert_eq!(
+            cpu.regs.sr, 10006,
+            "CCR restored from the popped low 5 bits (0xF6 → 0x16); system byte preserved"
+        );
+        assert_eq!(cpu.regs.usp, 2_639_588_438, "usp untouched");
+        assert_eq!(
+            cpu.regs.prefetch,
+            [32213, 36610],
+            "queue reloaded at the (masked) target"
+        );
+        assert_eq!(bus.log, expected_rtr_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_rtr() {
+        let (mut cpu, mut bus) = setup_rtr();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 20,
+            "RTR = [EaCalc, Read.hi, Read.ccr, EaCalc, Read.lo, LoadCcr, AdjustAddr, Combine32, SetPc, PF, PF] = 5 word reads = 20"
+        );
+        assert_rtr_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_rtr() {
+        let (mut rtc, mut bus_rtc) = setup_rtr();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_rtr();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 20);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_rtr_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn rtr_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The snapshot/restore anchor for the RTR pop shape — the CCR pop + the reordered long pop (three stack
+        // reads + Combine32), the LoadCcr, the SP +6, and the SetPc + two-Prefetch reload — the whole CPU
+        // (incl. the in-flight cursor and its scratch slots) round-trips at every micro-op boundary.
+        let (mut rref, mut bref) = setup_rtr();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 11 micro-ops (EaCalc, Read, Read, EaCalc, Read, LoadCcr, AdjustAddr, Combine32, SetPc, PF, PF) → 0..=10.
+        for pause_after in 0..=10 {
+            let (mut cpu, mut bus) = setup_rtr();
             cpu.start_instruction();
             for _ in 0..pause_after {
                 assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);

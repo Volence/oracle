@@ -462,6 +462,11 @@ pub enum MicroOp {
     /// snapshot-visible internal step. Distinct from [`MicroOp::Alu`] `Sub` (which sets flags and can write a
     /// full-width result) — `DBcc` never touches the CCR.
     DecrementDnWord { reg: u8 },
+    /// Load the condition codes (the low 5 bits, X/N/Z/V/C) of `value` into the CCR, preserving the SR system
+    /// byte: `sr = (sr & 0xFF00) | (resolve(value) & 0x1F)` — the `RTR` CCR pop. The popped stack word's low
+    /// byte carries the saved CCR; only bits 4-0 are programmer-visible (bits 7-5 read as 0), so the mask is
+    /// `0x1F` (pinned to the `RTR` data: a popped `0x..F6` lands `0x16`). A 0-cycle, non-bus internal step.
+    LoadCcr { value: Operand },
 }
 
 /// The in-flight micro-op cursor for one instruction: the recipe, how far through it we are, and the
@@ -714,6 +719,13 @@ impl MicroState {
                 // the high word — the `DBcc` loop counter, decoded at instruction start to pick the branch.
                 let d = regs.d[reg as usize];
                 regs.d[reg as usize] = (d & 0xFFFF_0000) | (d.wrapping_sub(1) & 0xFFFF);
+                0
+            }
+            MicroOp::LoadCcr { value } => {
+                // RTR's CCR pop: low 5 bits (X/N/Z/V/C) into the CCR, SR system byte preserved; bits 7-5 of
+                // the CCR read as 0 (mask 0x1F, pinned to the RTR data). NO bus, 0 cycles.
+                let v = self.resolve(value, regs) as u16;
+                regs.sr = (regs.sr & 0xFF00) | (v & 0x1F);
                 0
             }
         };
@@ -2216,6 +2228,52 @@ mod tests {
         assert_eq!(
             regs.d[3], 0x0003_FFFF,
             "low word 0 → 0xFFFF; the borrow does NOT propagate into the high word"
+        );
+    }
+
+    // --- F6: the RTR CCR pop (LoadCcr). ---
+
+    #[test]
+    fn load_ccr_loads_low_5_bits_into_ccr_preserving_system_byte() {
+        // RTR's CCR pop: low 5 bits (X/N/Z/V/C) into the CCR; bits 7-5 of the popped low byte are dropped
+        // (mask 0x1F), the SR system byte is preserved. Pinned to the real SST `4e77 [RTR] 1`: SR 0x2715,
+        // popped CCR word 0x6FF6 (low byte 0xF6) → final SR 0x2716 (CCR = 0xF6 & 0x1F = 0x16; system byte
+        // 0x27 preserved).
+        let mut regs = regs();
+        regs.sr = 0x2715;
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::LoadCcr {
+            value: Operand::Scratch(0),
+        }]);
+        st.scratch[0] = 0x6FF6; // the popped stack word
+
+        let cycles = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(cycles, 0, "LoadCcr is an internal compute — 0 cycles");
+        assert_eq!(
+            regs.sr, 0x2716,
+            "CCR = popped & 0x1F (0xF6 → 0x16); system byte 0x27 preserved"
+        );
+        assert!(bus.log.is_empty(), "LoadCcr touches no bus");
+    }
+
+    #[test]
+    fn load_ccr_drops_bits_7_5_of_the_popped_byte() {
+        // A popped low byte 0x80 (bit7 set, all CCR bits clear) yields CCR 0x00 — bits 7-5 are not CCR bits.
+        // Pinned to the real SST `4e77 [RTR] 5`: SR 0x2700, popped CCR 0xB780 → final SR 0x2700.
+        let mut regs = regs();
+        regs.sr = 0x2700;
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::LoadCcr {
+            value: Operand::Scratch(0),
+        }]);
+        st.scratch[0] = 0xB780;
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(
+            regs.sr, 0x2700,
+            "0x80 & 0x1F = 0 → CCR cleared, system byte kept"
         );
     }
 }

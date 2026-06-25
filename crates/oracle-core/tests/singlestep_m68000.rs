@@ -56,6 +56,7 @@ const FILES: &[&str] = &[
     "JSR.json",
     "RTS.json",
     "DBcc.json",
+    "RTR.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -629,6 +630,31 @@ fn rts_in_scope(ini: &Value) -> bool {
     target & 1 == 0 // even popped target is in scope; odd = address error → xfail
 }
 
+/// Whether this opcode is an `RTR` the framework covers (`0x4E77` — the sole RTR encoding; `RTR.json` carries
+/// only `0x4E77`).
+fn rtr_covered(opcode: u16) -> bool {
+    opcode == 0x4E77
+}
+
+/// The `RTR` scope/parity filter (called once `rtr_covered` matches). `RTR` pops a saved CCR word (@ `SP`)
+/// and then the 32-bit return address (hi @ `SP + 2`, lo @ `SP + 4`). Clean iff the **popped 32-bit return
+/// address is even**; an odd popped target raises an address-error exception (the deferred odd-address class —
+/// length 62 in the data, vs. 20 for the clean pops) → xfail. The CCR pop never traps; only the return
+/// address is parity-checked. `SP` is `ssp` in supervisor mode, `usp` in user mode (the active A7).
+fn rtr_in_scope(ini: &Value) -> bool {
+    let supervisor = (u32f(ini, "sr") & 0x2000) != 0;
+    let sp = if supervisor {
+        u32f(ini, "ssp")
+    } else {
+        u32f(ini, "usp")
+    };
+    // The CCR word is @ SP; the return address is hi @ SP+2, lo @ SP+4 (big-endian).
+    let hi = move_ramw(ini, sp.wrapping_add(2));
+    let lo = move_ramw(ini, sp.wrapping_add(4));
+    let target = (hi << 16) | lo;
+    target & 1 == 0 // even popped target is in scope; odd = address error → xfail
+}
+
 /// Whether the framework currently covers this case (else it is an xfail for this push). `ADD`/`SUB` in
 /// word and byte sizes, each in two forms — `Dn,<ea>` (memory dest; word ADD=0xD140/SUB=0x9140, byte
 /// ADD=0xD100/SUB=0x9100) and `<ea>,Dn` (register dest; word ADD=0xD040/SUB=0x9040, byte
@@ -682,6 +708,12 @@ fn covered(opcode: u16, ini: &Value) -> bool {
     // error → xfail; the clean even pops are 16 cyc, the odd ones 58). No EA, no flags.
     if rts_covered(opcode) {
         return rts_in_scope(ini);
+    }
+    // RTR (`0x4E77`) — like RTS but pops a saved CCR word first; its own popped-target parity filter (an odd
+    // popped 32-bit return address is an address error → xfail; clean even pops are 20 cyc, odd ones 62). The
+    // CCR pop affects the SR but never traps.
+    if rtr_covered(opcode) {
+        return rtr_in_scope(ini);
     }
     // Read the value of address register `reg` exactly as the decoder's `addr_reg` does: A7 is `ssp` in
     // supervisor mode, `usp` in user mode (there is no `a7` field) — needed so `(A7)+`/`-(A7)` parity is
@@ -943,8 +975,8 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 74748,
-        "expected 74748 covered cases — ADD/SUB (21790: word 5871 + byte 9974 + long 5945) plus \
+        ran >= 78786,
+        "expected 78786 covered cases — ADD/SUB (21790: word 5871 + byte 9974 + long 5945) plus \
          MOVE.w (3154: all 12 source modes × Dn + the alterable-memory dest modes \
          ((An)/(An)+/-(An)/d16(An)/d8(An,Xn)/abs.w/abs.l), even word EAs since an odd word access is an \
          address error, the (A7) mode-2 word form xfail) plus MOVE.b (7796: same modes, byte excludes \
@@ -973,8 +1005,12 @@ fn add_sub_match_singlesteptests() {
          address error (58 cyc) → xfail) plus DBcc (6101: the An-direct 0x50C8 form — cond true → fall-through \
          (12 cyc, NO decrement, 4096 cases), cond false counter live → decrement Dn.w + branch taken (10 cyc, \
          even target, 2005 cases), cond false counter expired (Dn.w == 0) → decrement + fall-through (14 cyc, \
-         correctness-only, ABSENT from the data — 0 cases); taken odd target = address error (52 cyc) → xfail), \
+         correctness-only, ABSENT from the data — 0 cases); taken odd target = address error (52 cyc) → xfail) \
+         plus RTR (4038: the sole 0x4E77 encoding — pop the saved CCR word (@ SP) then the 32-bit return \
+         address (hi @ SP+2, ccr @ SP, lo @ SP+4 — the data's reordered read stream), restore the low 5 CCR \
+         bits, post-increment SP by 6, SetPc + two-Prefetch reload; 20 cyc; even popped-target in scope, odd \
+         popped-target = address error (62 cyc) → xfail), \
          ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
