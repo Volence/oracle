@@ -34,6 +34,12 @@ impl Bus68k for PerfBus {
         self.mem[a] = (value >> 8) as u8;
         self.mem[(a + 1) & ADDR_MASK as usize] = (value & 0xFF) as u8;
     }
+    fn read8(&mut self, addr: u32, _fc: u8) -> u8 {
+        self.mem[(addr & ADDR_MASK) as usize]
+    }
+    fn write8(&mut self, addr: u32, _fc: u8, value: u8) {
+        self.mem[(addr & ADDR_MASK) as usize] = value;
+    }
 }
 
 fn start_regs() -> Registers {

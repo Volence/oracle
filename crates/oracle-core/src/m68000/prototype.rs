@@ -159,6 +159,7 @@ impl AddWFsm {
 
 #[cfg(test)]
 mod tests {
+    use super::super::microop::Size;
     use super::*;
 
     /// The clean SingleStepTests reference case `db50 [ADD.w D5,(A0)]` (even address, 12 cycles).
@@ -192,18 +193,21 @@ mod tests {
                 kind: TxKind::Read,
                 fc: 5,
                 addr: 0x4F_4F46,
+                size: Size::Word,
                 value: 0x3FE0,
             },
             Transaction {
                 kind: TxKind::Read,
                 fc: 6,
                 addr: 0x0C04,
+                size: Size::Word,
                 value: 0x414E,
             },
             Transaction {
                 kind: TxKind::Write,
                 fc: 5,
                 addr: 0x4F_4F46,
+                size: Size::Word,
                 value: 0x6576,
             },
         ]

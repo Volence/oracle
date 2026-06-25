@@ -2,9 +2,9 @@
 //!
 //! `decode` maps the opcode in the prefetch queue to its [`MicroState`] recipe; the two `Cpu68000`
 //! methods tie decode to the framework's two drivers (run-to-completion fast path / step-one-micro-op
-//! quiesce). Decodes the `ADD.w` / `SUB.w` families so far (the shared `arith_w_*` builders are
-//! parameterized by `AluOp`); the full 65536-entry dispatch (one builder per instruction family) lands
-//! with full coverage.
+//! quiesce). Decodes the `ADD`/`SUB` families in word and byte sizes so far (the shared `arith_ea_dn` /
+//! `arith_dn_ea` builders are parameterized by `AluOp` and `Size`); the full 65536-entry dispatch (one
+//! builder per instruction family) lands with full coverage.
 
 use super::bus68k::Bus68k;
 use super::ea::{ea_dst, ea_src, RecipeBuf};
@@ -29,16 +29,31 @@ pub fn decode(regs: &Registers) -> MicroState {
     // `<op>.w Dn,<ea>` (memory destination, `1xx1 ddd 1 01 mmm rrr`). The destination-EA builder handles
     // all seven alterable-memory modes: `(An)`/`(An)+`/`-(An)`/`d16(An)`/`d8(An,Xn)`/`abs.w`/`abs.l`.
     if opcode & 0xF1C0 == 0xD140 && is_dst_mem_mode((opcode >> 3) & 7, opcode & 7) {
-        return arith_w_dn_ea(opcode, AluOp::Add); // ADD.w Dn,<ea>
+        return arith_dn_ea(opcode, AluOp::Add, Size::Word); // ADD.w Dn,<ea>
     }
     if opcode & 0xF1C0 == 0xD040 {
-        return arith_w_ea_dn(opcode, AluOp::Add); // ADD.w <ea>,Dn
+        return arith_ea_dn(opcode, AluOp::Add, Size::Word); // ADD.w <ea>,Dn
     }
     if opcode & 0xF1C0 == 0x9140 && is_dst_mem_mode((opcode >> 3) & 7, opcode & 7) {
-        return arith_w_dn_ea(opcode, AluOp::Sub); // SUB.w Dn,<ea>
+        return arith_dn_ea(opcode, AluOp::Sub, Size::Word); // SUB.w Dn,<ea>
     }
     if opcode & 0xF1C0 == 0x9040 {
-        return arith_w_ea_dn(opcode, AluOp::Sub); // SUB.w <ea>,Dn
+        return arith_ea_dn(opcode, AluOp::Sub, Size::Word); // SUB.w <ea>,Dn
+    }
+    // ADD.b / SUB.b — same opcode shapes, the size field `00` (`<op>.b`). `Dn,<ea>` (memory dest, bit8 = 1)
+    // and `<ea>,Dn` (register dest, bit8 = 0). Byte excludes `An`-direct as a source (`ADD.b An,Dn` is
+    // illegal) — that is handled by the source builder / the `covered()` filter, not here.
+    if opcode & 0xF1C0 == 0xD100 && is_dst_mem_mode((opcode >> 3) & 7, opcode & 7) {
+        return arith_dn_ea(opcode, AluOp::Add, Size::Byte); // ADD.b Dn,<ea>
+    }
+    if opcode & 0xF1C0 == 0xD000 {
+        return arith_ea_dn(opcode, AluOp::Add, Size::Byte); // ADD.b <ea>,Dn
+    }
+    if opcode & 0xF1C0 == 0x9100 && is_dst_mem_mode((opcode >> 3) & 7, opcode & 7) {
+        return arith_dn_ea(opcode, AluOp::Sub, Size::Byte); // SUB.b Dn,<ea>
+    }
+    if opcode & 0xF1C0 == 0x9000 {
+        return arith_ea_dn(opcode, AluOp::Sub, Size::Byte); // SUB.b <ea>,Dn
     }
     todo!("opcode {opcode:#06X} not yet decoded")
 }
@@ -59,44 +74,61 @@ impl Cpu68000 {
     }
 }
 
-/// `<op>.w Dn,<ea>` (`1xx1 ddd 1 01 mmm rrr`, memory destination): read the memory operand at the dest
-/// EA, refill prefetch, combine it with `Dn`, write the result back to the same address. The **memory
-/// operand is the minuend** (`a`) so `SUB` computes `<ea> - Dn`; `ADD` is commutative so the same order is
-/// correct. The ALU is an overlapped internal step; the `(An)+`/`-(An)` register adjust is a 0-cycle
-/// `AdjustAddr`. Expressed through the shared destination-EA builder ([`ea_dst`]) — the read/refill/ALU/
-/// write skeleton (and any auto-(in/de)crement) is the mode's, only the ALU operands are the opcode's.
-fn arith_w_dn_ea(opcode: u16, op: AluOp) -> MicroState {
+/// The `Dn` operand the ALU samples at `size` (the low word for `.w`, the low byte for `.b`).
+#[inline]
+fn dn_operand(dn: u8, size: Size) -> Operand {
+    match size {
+        Size::Word => Operand::DataRegLow16(dn),
+        Size::Byte => Operand::DataRegLow8(dn),
+    }
+}
+
+/// The `Dn` write-back destination at `size` (low word for `.w` preserving the high word; low byte for
+/// `.b` preserving the upper 24 bits).
+#[inline]
+fn dn_dest(dn: u8, size: Size) -> Dest {
+    match size {
+        Size::Word => Dest::DataRegLow16(dn),
+        Size::Byte => Dest::DataRegLow8(dn),
+    }
+}
+
+/// `<op>.{b,w} Dn,<ea>` (`1xx1 ddd s 0 mmm rrr` with `s` the size field, memory destination): read the
+/// memory operand at the dest EA, refill prefetch, combine it with `Dn`, write the result back to the same
+/// address. The **memory operand is the minuend** (`a`) so `SUB` computes `<ea> - Dn`; `ADD` is commutative
+/// so the same order is correct. The ALU is an overlapped internal step; the `(An)+`/`-(An)` register adjust
+/// is a 0-cycle `AdjustAddr` (sized — byte `(A7)`±/`-(A7)` steps by 2 to keep the SP even). Expressed
+/// through the shared destination-EA builder ([`ea_dst`]) — the read/refill/ALU/write skeleton is the
+/// mode's, only the ALU operands and size are the opcode's.
+fn arith_dn_ea(opcode: u16, op: AluOp, size: Size) -> MicroState {
     let dn = ((opcode >> 9) & 7) as u8;
     let mode = (opcode >> 3) & 7;
     let reg = (opcode & 7) as u8;
     let mut buf = RecipeBuf::new();
-    ea_dst(&mut buf, mode, reg, |a| MicroOp::Alu {
+    ea_dst(&mut buf, mode, reg, size, |a| MicroOp::Alu {
         op,
-        size: Size::Word,
+        size,
         a,
-        b: Operand::DataRegLow16(dn),
+        b: dn_operand(dn, size),
         dst: Dest::Scratch(1),
     });
     buf.finish()
 }
 
-/// `<op>.w <ea>,Dn` (`1xx1 ddd 0 01 mmm rrr`, register destination): `Dn = Dn <op> <ea>` — **Dn is the
-/// minuend** (`a`). The source-EA builder ([`ea_src`]) covers all 12 source modes: register-direct
-/// (`Dn`/`An`), indirect (`(An)`/`(An)+`/`-(An)`), displaced (`d16(An)`/`d16(PC)`), indexed
-/// (`d8(An,Xn)`/`d8(PC,Xn)`), absolute (`abs.w`/`abs.l`) and immediate (`#imm`).
-fn arith_w_ea_dn(opcode: u16, op: AluOp) -> MicroState {
+/// `<op>.{b,w} <ea>,Dn` (`1xx1 ddd s 0 mmm rrr`, register destination): `Dn = Dn <op> <ea>` — **Dn is the
+/// minuend** (`a`). The source-EA builder ([`ea_src`]) covers the source modes; the ALU combines `Dn` (the
+/// minuend) with the source operand at `size` and writes back to `Dn`'s low byte/word (upper bits preserved).
+fn arith_ea_dn(opcode: u16, op: AluOp, size: Size) -> MicroState {
     let dn = ((opcode >> 9) & 7) as u8;
     let mode = (opcode >> 3) & 7;
     let reg = (opcode & 7) as u8;
     let mut buf = RecipeBuf::new();
-    // The source-EA builder fetches the operand and places the prefetch(es); the ALU it builds combines
-    // `Dn` (the minuend) with that source operand and writes back to `Dn`.
-    ea_src(&mut buf, mode, reg, |b| MicroOp::Alu {
+    ea_src(&mut buf, mode, reg, size, |b| MicroOp::Alu {
         op,
-        size: Size::Word,
-        a: Operand::DataRegLow16(dn),
+        size,
+        a: dn_operand(dn, size),
         b,
-        dst: Dest::DataRegLow16(dn),
+        dst: dn_dest(dn, size),
     });
     buf.finish()
 }
@@ -138,18 +170,21 @@ mod tests {
                 kind: TxKind::Read,
                 fc: 5,
                 addr: 0x4F_4F46,
+                size: Size::Word,
                 value: 0x3FE0,
             },
             Transaction {
                 kind: TxKind::Read,
                 fc: 6,
                 addr: 0x0C04,
+                size: Size::Word,
                 value: 0x414E,
             },
             Transaction {
                 kind: TxKind::Write,
                 fc: 5,
                 addr: 0x4F_4F46,
+                size: Size::Word,
                 value: 0x6576,
             },
         ]
@@ -263,18 +298,21 @@ mod tests {
                 kind: TxKind::Read,
                 fc: 6,
                 addr: 0x0C04,
+                size: Size::Word,
                 value: 0x61CC,
             },
             Transaction {
                 kind: TxKind::Read,
                 fc: 5,
                 addr: 0x95_8DFC,
+                size: Size::Word,
                 value: 0x3E1B,
             },
             Transaction {
                 kind: TxKind::Read,
                 fc: 6,
                 addr: 0x0C06,
+                size: Size::Word,
                 value: 0x78C0,
             },
         ]
@@ -333,6 +371,118 @@ mod tests {
         // 6 micro-ops (EaCalc, Internal(2), Prefetch, Read, Prefetch, Alu) → boundaries after 0..=5.
         for pause_after in 0..=5 {
             let (mut cpu, mut bus) = setup_d075();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    /// The clean SingleStepTests reference case `de11 [ADD.b (A1),D7]` (even byte address, 8 cycles). The
+    /// real on-bus operand byte is `0x45` at the EVEN address `0x97EA9E` (driven on the UDS half); `D7` low
+    /// byte `0x84` + `0x45` = `0xC9`, written to D7's low byte (upper 24 bits preserved). Bus stream is the
+    /// byte-granular `[READ.b, PF.w]` — exactly the word `(An)` shape, but the operand read is `.b`.
+    fn setup_de11() -> (Cpu68000, FlatBus) {
+        let mut regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0,
+            ssp: 0,
+            pc: 0x0C00,
+            sr: 0x270B,
+            prefetch: [0xDE11, 0xCD4C],
+        };
+        regs.d[7] = 0x18B1_3584;
+        regs.a[1] = 0xBE97_EA9E;
+        let mut bus = FlatBus::new();
+        for (a, v) in [(3076u32, 116u8), (3077, 91), (9_955_998, 69)] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_de11_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 0x97_EA9E,
+                size: Size::Byte,
+                value: 0x45,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 0x0C04,
+                size: Size::Word,
+                value: 0x745B,
+            },
+        ]
+    }
+
+    fn assert_de11_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 0x0C02, "pc advanced by one word");
+        assert_eq!(cpu.regs.sr, 0x2708, "CCR per the byte add");
+        assert_eq!(
+            cpu.regs.d[7], 0x18B1_35C9,
+            "D7 low byte = 0x84 + 0x45 = 0xC9; upper 24 bits preserved"
+        );
+        assert_eq!(cpu.regs.a[1], 0xBE97_EA9E, "An unchanged");
+        assert_eq!(cpu.regs.prefetch, [0xCD4C, 0x745B], "prefetch advanced");
+        assert_eq!(bus.log, expected_de11_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_de11() {
+        let (mut cpu, mut bus) = setup_de11();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(cycles, 8, "byte (An),Dn = [READ.b, PF.w] = 8 cycles");
+        assert_de11_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_de11() {
+        let (mut rtc, mut bus_rtc) = setup_de11();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_de11();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 8);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_de11_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn de11_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The no-divergence guarantee for byte size: snapshot/restore the whole CPU at every micro-op
+        // boundary, resume on the same bus, require an identical final state + byte-granular stream.
+        let (mut rref, mut bref) = setup_de11();
+        rref.run_instruction(&mut bref);
+
+        let cfg = bincode::config::standard();
+        // 3 micro-ops (Read.b, Prefetch, Alu.b) → boundaries after 0..=2.
+        for pause_after in 0..=2 {
+            let (mut cpu, mut bus) = setup_de11();
             cpu.start_instruction();
             for _ in 0..pause_after {
                 assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);

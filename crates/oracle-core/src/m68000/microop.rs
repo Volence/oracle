@@ -72,6 +72,55 @@ fn sub_w(a: u16, b: u16) -> (u16, u16) {
     (result, ccr)
 }
 
+/// 8-bit `ADD` (`a + b`) → `(result, new CCR low byte)`. Same shape as [`add_w`] at the byte boundary:
+/// sign bit `0x80`, carry/extend when the sum exceeds `0xFF` (`0x100`). Sets X/N/Z/V/C.
+#[inline]
+fn add_b(a: u8, b: u8) -> (u8, u16) {
+    let sum = a as u16 + b as u16;
+    let result = sum as u8;
+    let am = a & 0x80 != 0;
+    let bm = b & 0x80 != 0;
+    let rm = result & 0x80 != 0;
+    let mut ccr = 0u16;
+    if rm {
+        ccr |= CCR_N;
+    }
+    if result == 0 {
+        ccr |= CCR_Z;
+    }
+    if (am == bm) && (rm != am) {
+        ccr |= CCR_V;
+    }
+    if sum > 0xFF {
+        ccr |= CCR_C | CCR_X;
+    }
+    (result, ccr)
+}
+
+/// 8-bit `SUB` (`a - b`, a the minuend) → `(result, new CCR low byte)`. Byte boundary (`0x80` sign,
+/// borrow when `a < b`). Sets X/N/Z/V/C.
+#[inline]
+fn sub_b(a: u8, b: u8) -> (u8, u16) {
+    let result = a.wrapping_sub(b);
+    let am = a & 0x80 != 0;
+    let bm = b & 0x80 != 0;
+    let rm = result & 0x80 != 0;
+    let mut ccr = 0u16;
+    if rm {
+        ccr |= CCR_N;
+    }
+    if result == 0 {
+        ccr |= CCR_Z;
+    }
+    if (am != bm) && (rm != am) {
+        ccr |= CCR_V;
+    }
+    if a < b {
+        ccr |= CCR_C | CCR_X;
+    }
+    (result, ccr)
+}
+
 /// Maximum micro-ops in one opcode's recipe. Most opcodes need ≤ a handful; unbounded families
 /// (MOVEM-class) get a generator variant later. Sized to the worst in-scope EA recipe (a byte
 /// `Dn,(abs.l)` RMW = 8 ops) with headroom. Public so the EA builder ([`super::ea::RecipeBuf`]) can
@@ -110,6 +159,8 @@ pub enum Operand {
     Scratch(Slot),
     /// The low word of data register `Dn`, zero-extended.
     DataRegLow16(u8),
+    /// The low byte of data register `Dn`, zero-extended — the source value for a byte `ADD.b`/`SUB.b`.
+    DataRegLow8(u8),
     /// The low word of address register `An` (the active A7 when `n == 7`), zero-extended — the source
     /// value for a legal `<op>.w An,Dn` (the full `An` register, of which only the low word is used).
     AddrRegLow16(u8),
@@ -153,6 +204,8 @@ pub enum Dest {
     Scratch(Slot),
     /// The low word of data register `Dn` (its high word is preserved — a `.w` write-back).
     DataRegLow16(u8),
+    /// The low byte of data register `Dn` (its upper 24 bits are preserved — a `.b` write-back).
+    DataRegLow8(u8),
 }
 
 /// An ALU operation a [`MicroOp::Alu`] performs (computing into scratch and updating the CCR). The
@@ -253,6 +306,7 @@ impl MicroState {
         match op {
             Operand::Scratch(s) => self.scratch[s as usize],
             Operand::DataRegLow16(n) => regs.d[n as usize] & 0xFFFF,
+            Operand::DataRegLow8(n) => regs.d[n as usize] & 0xFF,
             Operand::AddrRegLow16(n) => regs.addr_reg(n as usize) & 0xFFFF,
             Operand::AddrReg(n) => regs.addr_reg(n as usize),
             Operand::ImmWord => regs.prefetch[1] as u32,
@@ -304,10 +358,13 @@ impl MicroState {
                 dst,
             } => {
                 let address = self.resolve(addr, regs);
-                // Byte bus (read8 + UDS/LDS half) lands in C7; word is the only size produced so far.
-                debug_assert!(matches!(size, Size::Word), "byte Read deferred to C7");
-                let value = bus.read16(address, regs.fc(matches!(fc, Fc::Program)));
-                self.scratch[dst as usize] = value as u32;
+                let fc = regs.fc(matches!(fc, Fc::Program));
+                // A byte access uses read8 (the single addressed cell, zero-extended); a word uses read16.
+                let value = match size {
+                    Size::Byte => bus.read8(address, fc) as u32,
+                    Size::Word => bus.read16(address, fc) as u32,
+                };
+                self.scratch[dst as usize] = value;
                 4
             }
             MicroOp::Write {
@@ -317,9 +374,12 @@ impl MicroState {
                 value,
             } => {
                 let address = self.resolve(addr, regs);
-                debug_assert!(matches!(size, Size::Word), "byte Write deferred to C7");
-                let word = self.resolve(value, regs) as u16;
-                bus.write16(address, regs.fc(matches!(fc, Fc::Program)), word);
+                let fc = regs.fc(matches!(fc, Fc::Program));
+                let v = self.resolve(value, regs);
+                match size {
+                    Size::Byte => bus.write8(address, fc, v as u8),
+                    Size::Word => bus.write16(address, fc, v as u16),
+                }
                 4
             }
             MicroOp::Alu {
@@ -329,18 +389,31 @@ impl MicroState {
                 b,
                 dst,
             } => {
-                debug_assert!(matches!(size, Size::Word), "byte Alu deferred to C7");
-                let lhs = self.resolve(a, regs) as u16;
-                let rhs = self.resolve(b, regs) as u16;
-                let (result, ccr) = match op {
-                    AluOp::Add => add_w(lhs, rhs),
-                    AluOp::Sub => sub_w(lhs, rhs),
+                let lhs = self.resolve(a, regs);
+                let rhs = self.resolve(b, regs);
+                // Compute at the operand-size flag boundary; carry the result + CCR uniformly.
+                let (result, ccr) = match size {
+                    Size::Word => match op {
+                        AluOp::Add => add_w(lhs as u16, rhs as u16),
+                        AluOp::Sub => sub_w(lhs as u16, rhs as u16),
+                    },
+                    Size::Byte => {
+                        let (r, ccr) = match op {
+                            AluOp::Add => add_b(lhs as u8, rhs as u8),
+                            AluOp::Sub => sub_b(lhs as u8, rhs as u8),
+                        };
+                        (r as u16, ccr)
+                    }
                 };
                 regs.sr = (regs.sr & 0xFF00) | ccr;
                 match dst {
                     Dest::Scratch(s) => self.scratch[s as usize] = result as u32,
                     Dest::DataRegLow16(n) => {
                         regs.d[n as usize] = (regs.d[n as usize] & 0xFFFF_0000) | result as u32;
+                    }
+                    Dest::DataRegLow8(n) => {
+                        regs.d[n as usize] =
+                            (regs.d[n as usize] & 0xFFFF_FF00) | (result as u32 & 0xFF);
                     }
                 }
                 0
@@ -477,6 +550,7 @@ mod tests {
                 kind: TxKind::Read,
                 fc: 5,
                 addr: 0x1000,
+                size: Size::Word,
                 value: 0xABCD,
             }]
         );
@@ -509,6 +583,7 @@ mod tests {
                 kind: TxKind::Write,
                 fc: 5,
                 addr: 0x2000,
+                size: Size::Word,
                 value: 0x6576,
             }]
         );
@@ -554,6 +629,7 @@ mod tests {
                 kind: TxKind::Read,
                 fc: 6,
                 addr: 0x0C04,
+                size: Size::Word,
                 value: 0x414E,
             }],
             "prefetch is a supervisor-program (FC 6) word read at pc+4"
@@ -809,6 +885,7 @@ mod tests {
                 kind: TxKind::Read,
                 fc: 5,
                 addr: 0x1000,
+                size: Size::Word,
                 value: 0xABCD,
             }]
         );
@@ -1150,6 +1227,153 @@ mod tests {
         assert_eq!(
             bus_step.log, bus_rtc.log,
             "both drivers emit an identical transaction stream"
+        );
+    }
+
+    #[test]
+    fn alu_add_b_uses_0x80_overflow_and_0x100_carry_boundary_and_writes_low8() {
+        // Pinned to the real SST `d604 [ADD.b D4,D3]`: D3 low byte 0x5C + D4 low byte 0x2D = 0x89. Two
+        // positive bytes producing a bit7-set (negative) byte → N and V set; no carry out of bit7 → C/X
+        // clear. The result is written to D3's LOW BYTE only — the upper 24 bits (0xD83A3F) are preserved.
+        let mut regs = regs();
+        regs.d[3] = 0xD83A_3F5C; // dest minuend; low byte 0x5C
+        regs.d[4] = 0x8019_832D; // source; low byte 0x2D
+        regs.sr = 0x2708; // CCR = N (from a prior op); the add recomputes it
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::Alu {
+            op: AluOp::Add,
+            size: Size::Byte,
+            a: Operand::DataRegLow8(3),
+            b: Operand::DataRegLow8(4),
+            dst: Dest::DataRegLow8(3),
+        }]);
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(
+            regs.d[3], 0xD83A_3F89,
+            "low byte = 0x5C + 0x2D = 0x89; upper 24 bits preserved"
+        );
+        assert_eq!(
+            regs.sr, 0x270A,
+            "CCR = N|V (negative byte, signed overflow)"
+        );
+    }
+
+    #[test]
+    fn alu_add_b_sets_carry_and_extend_on_byte_overflow() {
+        // 0xF0 + 0x20 = 0x110 → low byte 0x10, carry out of bit7 → C and X set; result bit7 clear → N clear;
+        // operands have differing signs (0xF0 negative, 0x20 positive) → no V.
+        let mut regs = regs();
+        regs.d[0] = 0x1234_56F0;
+        regs.d[1] = 0x0000_0020;
+        regs.sr = 0x2700;
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::Alu {
+            op: AluOp::Add,
+            size: Size::Byte,
+            a: Operand::DataRegLow8(0),
+            b: Operand::DataRegLow8(1),
+            dst: Dest::DataRegLow8(0),
+        }]);
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(regs.d[0], 0x1234_5610, "low byte wrapped to 0x10");
+        assert_eq!(regs.sr, 0x2711, "X|C set (carry out of bit7); N/Z/V clear");
+    }
+
+    #[test]
+    fn alu_sub_b_uses_byte_boundaries_and_writes_low8() {
+        // 0x10 - 0x20 = -0x10 → 0xF0 (borrow). Byte borrow → C and X set; result bit7 set → N; minuend and
+        // subtrahend differ in sign? 0x10 positive, 0x20 positive → same sign, no overflow → V clear.
+        let mut regs = regs();
+        regs.d[2] = 0xAABB_CC10;
+        regs.d[3] = 0x0000_0020;
+        regs.sr = 0x2700;
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::Alu {
+            op: AluOp::Sub,
+            size: Size::Byte,
+            a: Operand::DataRegLow8(2),
+            b: Operand::DataRegLow8(3),
+            dst: Dest::DataRegLow8(2),
+        }]);
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(
+            regs.d[2], 0xAABB_CCF0,
+            "low byte = 0x10 - 0x20 = 0xF0; upper 24 bits preserved"
+        );
+        assert_eq!(regs.sr, 0x2719, "X|N|C set (borrow, negative byte)");
+    }
+
+    #[test]
+    fn byte_read_zero_extends_into_scratch_and_logs_byte_size() {
+        // A byte `Read` accesses one cell (`read8`) and zero-extends it into the scratch slot. Pinned to the
+        // real SST byte at the even address 0x97EA9E with value 0x45 (the `de11 [ADD.b (A1),D7]` operand).
+        let mut regs = regs();
+        let mut bus = FlatBus::new();
+        bus.poke(0x97_EA9E, 0x45);
+        let mut st = MicroState::from_ops(&[MicroOp::Read {
+            addr: Operand::Scratch(0),
+            fc: Fc::Data,
+            size: Size::Byte,
+            dst: 1,
+        }]);
+        st.scratch[0] = 0x97_EA9E;
+
+        let cycles = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(cycles, 4, "a byte bus access is 4 master cycles");
+        assert_eq!(
+            st.scratch[1], 0x0000_0045,
+            "byte zero-extended into scratch"
+        );
+        assert_eq!(
+            bus.log,
+            vec![Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 0x97_EA9E,
+                size: Size::Byte,
+                value: 0x45,
+            }]
+        );
+    }
+
+    #[test]
+    fn byte_write_stores_low_byte_of_value_and_logs_byte_size() {
+        let mut regs = regs();
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::Write {
+            addr: Operand::Scratch(0),
+            fc: Fc::Data,
+            size: Size::Byte,
+            value: Operand::Scratch(1),
+        }]);
+        st.scratch[0] = 0x2001; // odd address — drives the LDS half
+        st.scratch[1] = 0x0000_12A3; // only the low byte 0xA3 is written
+
+        let cycles = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(cycles, 4);
+        assert_eq!(
+            bus.peek(0x2001),
+            0xA3,
+            "the low byte was written at the address"
+        );
+        assert_eq!(bus.peek(0x2000), 0x00, "the neighbour byte is untouched");
+        assert_eq!(
+            bus.log,
+            vec![Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 0x2001,
+                size: Size::Byte,
+                value: 0xA3,
+            }]
         );
     }
 }

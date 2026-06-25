@@ -199,9 +199,22 @@ struct SrcSeq {
     placement: AluPlacement,
 }
 
-/// The auto-(in/de)crement step for an address register, in bytes. Word is 2 (the only in-scope size this
-/// commit); byte (1, or 2 for A7) lands with byte coverage in C7.
-const WORD_STEP: i8 = 2;
+/// The auto-(in/de)crement step magnitude (in bytes) for an `(An)+`/`-(An)` access of `size` on register
+/// `reg`. Word is 2; byte is 1 — **except** `(A7)+`/`-(A7)` byte, which steps by 2 so the stack pointer
+/// stays even (the in-scope A7 byte rule). Long (4) is deferred.
+#[inline]
+fn step_bytes(size: Size, reg: u8) -> i8 {
+    match size {
+        Size::Word => 2,
+        Size::Byte => {
+            if reg == 7 {
+                2
+            } else {
+                1
+            }
+        }
+    }
+}
 
 /// Scratch slot holding a computed effective address (the [`MicroOp::EaCalc`] destination). Slots 0/1 are
 /// the operand-read value and the ALU result; the EA gets its own slot so a read and a write to a
@@ -214,8 +227,10 @@ const EA_SLOT: u8 = 2;
 const HI_SLOT: u8 = 3;
 
 /// Decode a source EA mode into its [`SrcSeq`]. Covers `Dn` (0), `An` (1, word/long), `(An)` (2),
-/// `(An)+` (3), `-(An)` (4), `#imm` (7/4). Other modes land in later commits.
-fn src_seq(mode: u16, reg: u8) -> SrcSeq {
+/// `(An)+` (3), `-(An)` (4), `#imm` (7/4). Other modes land in later commits. `size` selects the
+/// auto-(in/de)crement step (word 2; byte 1, or 2 for A7 to keep the SP even) for the `(An)+`/`-(An)`
+/// `AdjustAddr`s — the bus shape itself is size-independent.
+fn src_seq(mode: u16, reg: u8, size: Size) -> SrcSeq {
     match (mode, reg) {
         // Dn — data-register direct: no operand read; one refill, then combine the register.
         (0, _) => SrcSeq {
@@ -260,7 +275,7 @@ fn src_seq(mode: u16, reg: u8) -> SrcSeq {
             read_addr: Some(Operand::AddrReg(reg)),
             post_read: Some(MicroOp::AdjustAddr {
                 reg,
-                delta: WORD_STEP,
+                delta: step_bytes(size, reg),
             }),
             prefetch: 1,
             operand: Operand::Scratch(0),
@@ -274,7 +289,7 @@ fn src_seq(mode: u16, reg: u8) -> SrcSeq {
             pre_read: [
                 Some(MicroOp::AdjustAddr {
                     reg,
-                    delta: -WORD_STEP,
+                    delta: -step_bytes(size, reg),
                 }),
                 Some(MicroOp::Internal { cycles: 2 }),
             ],
@@ -421,8 +436,15 @@ fn push_abs_l_addr(buf: &mut RecipeBuf) {
 /// EA's concern. The [`AluPlacement`] from [`src_seq`] is the load-bearing pivot the emitter honors.
 ///
 /// Covers source modes `Dn` (0), `An` (1, word/long), `(An)` (2), `(An)+` (3), `-(An)` (4), `d16(An)` (5),
-/// `abs.w` (7/0), `abs.l` (7/1), `d16(PC)` (7/2), `#imm` (7/4). Other modes land in later commits.
-pub fn ea_src(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Operand) -> MicroOp) {
+/// `abs.w` (7/0), `abs.l` (7/1), `d16(PC)` (7/2), `#imm` (7/4). Other modes land in later commits. `size`
+/// sizes the operand READ (byte → a `read8`, zero-extended into scratch) and the auto-(in/de)crement step.
+pub fn ea_src(
+    buf: &mut RecipeBuf,
+    mode: u16,
+    reg: u8,
+    size: Size,
+    make_alu: impl FnOnce(Operand) -> MicroOp,
+) {
     // abs.l — a 3-word instruction: assemble the two-word address first (HIGH then, after a refill, LOW),
     // then the `[READ, Prefetch]` operand access. The two-EaCalc interleave doesn't fit `SrcSeq`'s single
     // `ea_calc` leg, so it's emitted directly here. Bus: [PF, PF, READ, PF].
@@ -433,14 +455,14 @@ pub fn ea_src(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Ope
         buf.push(MicroOp::Read {
             addr: Operand::Scratch(EA_SLOT),
             fc: super::microop::Fc::Data,
-            size: super::microop::Size::Word,
+            size,
             dst: 0,
         });
         buf.push(MicroOp::Prefetch); // the third (final) refill, trailing the operand read
         buf.push(alu);
         return;
     }
-    let seq = src_seq(mode, reg);
+    let seq = src_seq(mode, reg, size);
     let alu = make_alu(seq.operand);
     // The EA computation (if any) runs FIRST so a displacement leg captures `prefetch[1]` before any refill
     // shifts it out (invariant 2). The operand READ then targets the EA scratch slot it deposited.
@@ -473,7 +495,7 @@ pub fn ea_src(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Ope
             let read = MicroOp::Read {
                 addr: seq.read_addr.expect("memory-source mode must read"),
                 fc: super::microop::Fc::Data,
-                size: super::microop::Size::Word,
+                size,
                 dst: 0,
             };
             for _ in 0..seq.prefetch.saturating_sub(1) {
@@ -500,20 +522,26 @@ pub fn ea_src(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Ope
 /// `abs.w` (7/0) and `abs.l` (7/1); the indexed `d8(An,Xn)` mode lands in a later commit. For `(An)+`/`-(An)`
 /// the register side effect is an explicit `AdjustAddr`: predecrement runs **before** the read (so the read
 /// and write both hit the decremented address), postincrement runs **after** the write (so both hit the
-/// un-incremented address).
-pub fn ea_dst(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Operand) -> MicroOp) {
+/// un-incremented address). `size` sizes the read/write (byte → `read8`/`write8`) and the step.
+pub fn ea_dst(
+    buf: &mut RecipeBuf,
+    mode: u16,
+    reg: u8,
+    size: Size,
+    make_alu: impl FnOnce(Operand) -> MicroOp,
+) {
     // The alterable-memory destination skeleton: read old value → refill → ALU (memory is the minuend) →
     // write the result back, at the same `(An)` address. `(An)+`/`-(An)` wrap this with an `AdjustAddr`.
     let read = MicroOp::Read {
         addr: Operand::AddrReg(reg),
         fc: super::microop::Fc::Data,
-        size: super::microop::Size::Word,
+        size,
         dst: 0,
     };
     let write = MicroOp::Write {
         addr: Operand::AddrReg(reg),
         fc: super::microop::Fc::Data,
-        size: super::microop::Size::Word,
+        size,
         value: Operand::Scratch(1),
     };
     match (mode, reg) {
@@ -533,14 +561,14 @@ pub fn ea_dst(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Ope
             buf.push(write);
             buf.push(MicroOp::AdjustAddr {
                 reg,
-                delta: WORD_STEP,
+                delta: step_bytes(size, reg),
             });
         }
         // -(An): pre-decrement An (then the internal idle), so the read and write both hit An-step.
         (4, _) => {
             buf.push(MicroOp::AdjustAddr {
                 reg,
-                delta: -WORD_STEP,
+                delta: -step_bytes(size, reg),
             });
             buf.push(MicroOp::Internal { cycles: 2 });
             buf.push(read);
@@ -570,13 +598,13 @@ pub fn ea_dst(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Ope
             let read_ea = MicroOp::Read {
                 addr: Operand::Scratch(EA_SLOT),
                 fc: super::microop::Fc::Data,
-                size: super::microop::Size::Word,
+                size,
                 dst: 0,
             };
             let write_ea = MicroOp::Write {
                 addr: Operand::Scratch(EA_SLOT),
                 fc: super::microop::Fc::Data,
-                size: super::microop::Size::Word,
+                size,
                 value: Operand::Scratch(1),
             };
             buf.push(ea_calc);
@@ -602,7 +630,7 @@ pub fn ea_dst(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Ope
             buf.push(MicroOp::Read {
                 addr: Operand::Scratch(EA_SLOT),
                 fc: super::microop::Fc::Data,
-                size: super::microop::Size::Word,
+                size,
                 dst: 0,
             });
             buf.push(MicroOp::Prefetch);
@@ -610,7 +638,7 @@ pub fn ea_dst(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Ope
             buf.push(MicroOp::Write {
                 addr: Operand::Scratch(EA_SLOT),
                 fc: super::microop::Fc::Data,
-                size: super::microop::Size::Word,
+                size,
                 value: Operand::Scratch(1),
             });
         }
@@ -622,7 +650,7 @@ pub fn ea_dst(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Ope
             buf.push(MicroOp::Read {
                 addr: Operand::Scratch(EA_SLOT),
                 fc: super::microop::Fc::Data,
-                size: super::microop::Size::Word,
+                size,
                 dst: 0,
             });
             buf.push(MicroOp::Prefetch); // the third (final) refill, trailing the read
@@ -630,7 +658,7 @@ pub fn ea_dst(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Ope
             buf.push(MicroOp::Write {
                 addr: Operand::Scratch(EA_SLOT),
                 fc: super::microop::Fc::Data,
-                size: super::microop::Size::Word,
+                size,
                 value: Operand::Scratch(1),
             });
         }
@@ -669,13 +697,13 @@ mod tests {
 
     fn build_src(mode: u16, reg: u8, dn: u8) -> MicroState {
         let mut buf = RecipeBuf::new();
-        ea_src(&mut buf, mode, reg, |b| ea_dn_alu(dn, b));
+        ea_src(&mut buf, mode, reg, Size::Word, |b| ea_dn_alu(dn, b));
         buf.finish()
     }
 
     fn build_dst(mode: u16, reg: u8, dn: u8) -> MicroState {
         let mut buf = RecipeBuf::new();
-        ea_dst(&mut buf, mode, reg, |a| dn_ea_alu(dn, a));
+        ea_dst(&mut buf, mode, reg, Size::Word, |a| dn_ea_alu(dn, a));
         buf.finish()
     }
 
@@ -1186,7 +1214,7 @@ mod tests {
         ] {
             let regs = agreement_regs(disp, an);
             let mut buf = RecipeBuf::new();
-            ea_src(&mut buf, 5, 3, |b| ea_dn_alu(4, b));
+            ea_src(&mut buf, 5, 3, Size::Word, |b| ea_dn_alu(4, b));
             let recipe = buf.finish();
             let got = read_addr_of(&recipe, &regs);
             let want = compute_ea(opcode, &regs, Size::Word);
@@ -1201,7 +1229,7 @@ mod tests {
         for disp in [0x2EA4u16, 0xCC1A, 0x0000, 0xFFFF, 0x8000, 0x7FFF] {
             let regs = agreement_regs(disp, 0);
             let mut buf = RecipeBuf::new();
-            ea_src(&mut buf, 7, 0, |b| ea_dn_alu(4, b));
+            ea_src(&mut buf, 7, 0, Size::Word, |b| ea_dn_alu(4, b));
             let recipe = buf.finish();
             let got = read_addr_of(&recipe, &regs);
             let want = compute_ea(opcode, &regs, Size::Word);
@@ -1217,7 +1245,7 @@ mod tests {
         let an = 0x0045_7E36u32;
         let regs = agreement_regs(disp, an);
         let mut buf = RecipeBuf::new();
-        ea_dst(&mut buf, 5, 3, |a| dn_ea_alu(4, a));
+        ea_dst(&mut buf, 5, 3, Size::Word, |a| dn_ea_alu(4, a));
         let recipe = buf.finish();
 
         let mut st = recipe.clone();
@@ -1262,7 +1290,7 @@ mod tests {
                 prefetch: [opcode, disp],
             };
             let mut buf = RecipeBuf::new();
-            ea_src(&mut buf, 7, 2, |b| ea_dn_alu(4, b));
+            ea_src(&mut buf, 7, 2, Size::Word, |b| ea_dn_alu(4, b));
             let recipe = buf.finish();
             let got = read_addr_of(&recipe, &regs);
             let want = compute_ea(opcode, &regs, Size::Word);
@@ -1300,7 +1328,7 @@ mod tests {
             regs.a[4] = 0x0030_F010;
             regs.a[5] = 0x0000_9008;
             let mut buf = RecipeBuf::new();
-            ea_src(&mut buf, 6, 3, |b| ea_dn_alu(4, b));
+            ea_src(&mut buf, 6, 3, Size::Word, |b| ea_dn_alu(4, b));
             let recipe = buf.finish();
             let got = read_addr_of(&recipe, &regs);
             let want = compute_ea(opcode, &regs, Size::Word);
@@ -1325,7 +1353,7 @@ mod tests {
             regs.d[3] = 0x00FF_2002;
             regs.a[5] = 0x0000_9008;
             let mut buf = RecipeBuf::new();
-            ea_src(&mut buf, 7, 3, |b| ea_dn_alu(4, b));
+            ea_src(&mut buf, 7, 3, Size::Word, |b| ea_dn_alu(4, b));
             let recipe = buf.finish();
             let got = read_addr_of(&recipe, &regs);
             let want = compute_ea(opcode, &regs, Size::Word);
@@ -1350,7 +1378,7 @@ mod tests {
         regs.a[6] = 0x0040_0000;
         regs.d[3] = 0x0000_1000;
         let mut buf = RecipeBuf::new();
-        ea_dst(&mut buf, 6, 6, |a| dn_ea_alu(4, a));
+        ea_dst(&mut buf, 6, 6, Size::Word, |a| dn_ea_alu(4, a));
         let recipe = buf.finish();
 
         let mut st = recipe.clone();
@@ -1403,7 +1431,7 @@ mod tests {
             bus.poke(pc + 5, (lo & 0xFF) as u8);
 
             let mut buf = RecipeBuf::new();
-            ea_src(&mut buf, 7, 1, |b| ea_dn_alu(4, b));
+            ea_src(&mut buf, 7, 1, Size::Word, |b| ea_dn_alu(4, b));
             let mut st = buf.finish();
             st.run_to_completion(&mut regs.clone(), &mut bus);
 
@@ -1442,7 +1470,7 @@ mod tests {
         bus.poke(pc + 5, (lo & 0xFF) as u8);
 
         let mut buf = RecipeBuf::new();
-        ea_dst(&mut buf, 7, 1, |a| dn_ea_alu(4, a));
+        ea_dst(&mut buf, 7, 1, Size::Word, |a| dn_ea_alu(4, a));
         let mut st = buf.finish();
         st.run_to_completion(&mut regs.clone(), &mut bus);
 

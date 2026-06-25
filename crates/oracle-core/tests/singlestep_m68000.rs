@@ -1,18 +1,19 @@
 //! SingleStepTests runner for the 68000 micro-op framework.
 //!
-//! Drives the pinned, vendored SingleStepTests data (`tools/fetch-tests.sh`) for every covered `ADD.w` /
-//! `SUB.w` case — `Dn,<ea>` (alterable-memory destination: (An) / (An)+ / -(An) / d16(An) / d8(An,Xn) /
-//! abs.w / abs.l) and `<ea>,Dn` (register destination) for all 12 source modes Dn / An / (An) / (An)+ /
-//! -(An) / d16(An) / d8(An,Xn) / abs.w / abs.l / d16(PC) / d8(PC,Xn) / #imm — and asserts post
-//! regs/SR/RAM/prefetch, the cycle count, **and** the per-cycle
-//! bus-transaction stream, through *both* framework drivers (run-to-completion fast path and the
+//! Drives the pinned, vendored SingleStepTests data (`tools/fetch-tests.sh`) for every covered `ADD`/`SUB`
+//! case in **word and byte** sizes — `Dn,<ea>` (alterable-memory destination: (An) / (An)+ / -(An) /
+//! d16(An) / d8(An,Xn) / abs.w / abs.l) and `<ea>,Dn` (register destination) for the source modes Dn / An
+//! (word only) / (An) / (An)+ / -(An) / d16(An) / d8(An,Xn) / abs.w / abs.l / d16(PC) / d8(PC,Xn) / #imm —
+//! and asserts post regs/SR/RAM/prefetch, the cycle count, **and** the per-cycle bus-transaction stream
+//! (byte-granular for `.b`), through *both* framework drivers (run-to-completion fast path and the
 //! step-one-micro-op quiesce path), which must also agree with each other.
 //!
-//! Versioned xfail manifest (slice scope — implemented later): odd-address word accesses (which raise an
-//! address-error exception), the `A7` form of the older `(An)` (mode 2) memory access, and the remaining EA
-//! modes / sizes are skipped (see [`covered`]). The auto-(in/de)crement `(A7)+`/`-(A7)` *word* forms are in
-//! scope (the step keeps the SP even). If the vendor data is missing, the test skips cleanly (run
-//! `tools/fetch-tests.sh`).
+//! Versioned xfail manifest (slice scope — implemented later): odd-address *word* accesses (which raise an
+//! address-error exception — byte accesses have no such error, so odd byte EAs are in scope), the `A7` form
+//! of the older `(An)` (mode 2) memory access, `An`-direct as a byte source (`ADD.b An,Dn` is illegal), and
+//! the remaining EA modes / sizes are skipped (see [`covered`]). The auto-(in/de)crement `(A7)+`/`-(A7)`
+//! forms are in scope for both sizes (word steps 2; byte steps 2 for A7 to keep the SP even). If the vendor
+//! data is missing, the test skips cleanly (run `tools/fetch-tests.sh`).
 
 use oracle_core::m68000::bus68k::{FlatBus, Transaction, TxKind};
 use oracle_core::m68000::ea::compute_ea;
@@ -28,7 +29,7 @@ const VENDOR_DIR: &str = concat!(
 
 /// Mnemonic files driven by the current decode. Extend as opcode coverage grows (keep in sync with
 /// `tools/fetch-tests.sh`).
-const FILES: &[&str] = &["ADD.w.json", "SUB.w.json"];
+const FILES: &[&str] = &["ADD.w.json", "SUB.w.json", "ADD.b.json", "SUB.b.json"];
 
 fn u32f(v: &Value, key: &str) -> u32 {
     v.get(key)
@@ -78,10 +79,19 @@ fn expected_transactions(t: &Value) -> Vec<Transaction> {
             "w" => TxKind::Write,
             _ => continue, // 'n' idle cycles etc. — not memory transactions
         };
+        // The transaction array is [kind, cycles, fc, addr, size_token, value]; index 4 is the size token
+        // (".w" / ".b"), index 5 the value. A byte access is byte-granular on the bus and records the single
+        // on-bus byte as its value.
+        let size = match arr[4].as_str().unwrap() {
+            ".b" => Size::Byte,
+            ".w" => Size::Word,
+            other => panic!("unexpected size token {other}"),
+        };
         out.push(Transaction {
             kind,
             fc: arr[2].as_u64().unwrap() as u8,
             addr: arr[3].as_u64().unwrap() as u32,
+            size,
             value: arr[5].as_u64().unwrap() as u16,
         });
     }
@@ -118,13 +128,15 @@ fn assert_final(t: &Value, regs: &Registers, bus: &FlatBus) {
     }
 }
 
-/// Whether the framework currently covers this case (else it is an xfail for this push). `ADD.w`/`SUB.w`
-/// in two forms — `Dn,<ea>` (memory dest; ADD=0xD140, SUB=0x9140) and `<ea>,Dn` (register dest; ADD=0xD040,
-/// SUB=0x9040). Source modes Dn / An / (An) / (An)+ / -(An) / #imm; alterable-memory dest modes
-/// (An) / (An)+ / -(An). For the memory modes only even computed EAs are in scope (an odd word access is an
-/// address error — deferred → xfail). For `(An)+`/`-(An)` the A7/SP register *is* in scope for word (the
-/// step is 2, so the SP stays even; the auto-(in/de)crement routes through `ssp`/`usp` by the S-bit) — only
-/// the older `(An)` (mode 2) keeps its A7 exclusion. `An`-direct has no memory access (A7 source legal).
+/// Whether the framework currently covers this case (else it is an xfail for this push). `ADD`/`SUB` in
+/// word and byte sizes, each in two forms — `Dn,<ea>` (memory dest; word ADD=0xD140/SUB=0x9140, byte
+/// ADD=0xD100/SUB=0x9100) and `<ea>,Dn` (register dest; word ADD=0xD040/SUB=0x9040, byte
+/// ADD=0xD000/SUB=0x9000). For **word** memory modes only even computed EAs are in scope (an odd word access
+/// is an address error — deferred → xfail). For **byte** memory modes every EA is in scope (a byte access
+/// has no odd-address error) — no parity filter; `An`-direct is excluded for byte (`ADD.b An,Dn` is
+/// illegal). For `(An)+`/`-(An)` the A7/SP register is in scope for both sizes (the step keeps the SP even:
+/// 2 for word, 2 for byte-on-A7; routed through `ssp`/`usp` by the S-bit) — only the older `(An)` (mode 2)
+/// keeps its A7 exclusion. `An`-direct word source has no memory access (A7 source legal).
 fn covered(opcode: u16, ini: &Value) -> bool {
     // Read the value of address register `reg` exactly as the decoder's `addr_reg` does: A7 is `ssp` in
     // supervisor mode, `usp` in user mode (there is no `a7` field) — needed so `(A7)+`/`-(A7)` parity is
@@ -228,7 +240,48 @@ fn covered(opcode: u16, ini: &Value) -> bool {
             _ => false,
         };
     }
-    false // other forms (byte / long / not-yet-implemented modes): out of slice this push
+    // <op>.b Dn,<ea> — byte memory destination (ADD=0xD100, SUB=0x9100). A byte access has NO odd-address
+    // error (byte EAs may be odd), so there is no word-parity filter — every alterable-memory mode is in
+    // scope. The `(A7)+`/`-(A7)` byte forms step by 2 (the in-scope A7 byte rule, keeping the SP even); the
+    // step routes through `ssp`/`usp` by the S-bit. `An`-direct is not a destination here.
+    if opcode & 0xF1C0 == 0xD100 || opcode & 0xF1C0 == 0x9100 {
+        let mode = (opcode >> 3) & 7;
+        let reg = (opcode & 7) as usize;
+        return match mode {
+            // (An) — byte form, any address (no parity filter). The A7 (`(A7)`) byte case stays xfail with
+            // its older word sibling — its byte +2 step and exception cases are a separate slice.
+            2 => reg != 7,
+            // (An)+ / -(An) — byte step (1, or 2 for A7); any address. A7/SP in scope for byte.
+            3 | 4 => true,
+            // d16(An) / d8(An,Xn) / abs.w / abs.l — any (possibly odd) byte EA.
+            5 | 6 => true,
+            7 if reg == 0 || reg == 1 => true,
+            _ => false,
+        };
+    }
+    // <op>.b <ea>,Dn — byte register destination (ADD=0xD000, SUB=0x9000). Same broad byte coverage; `An`-
+    // direct (mode 1) is EXCLUDED for byte (`ADD.b An,Dn` is illegal).
+    if opcode & 0xF1C0 == 0xD000 || opcode & 0xF1C0 == 0x9000 {
+        let mode = (opcode >> 3) & 7;
+        let reg = (opcode & 7) as usize;
+        return match mode {
+            // Dn (register direct).
+            0 => true,
+            // An-direct is illegal for byte → out of scope (and not produced by the decoder).
+            1 => false,
+            // (An) — byte form, any address; the A7 form stays xfail with its word sibling.
+            2 => reg != 7,
+            // (An)+ / -(An) — byte step (1, or 2 for A7); any address.
+            3 | 4 => true,
+            // d16(An) / d8(An,Xn) / abs.w / abs.l / d16(PC) / d8(PC,Xn) — any (possibly odd) byte EA.
+            5 | 6 => true,
+            7 if matches!(reg, 0..=3) => true,
+            // #imm (111/100) — byte immediate.
+            7 if reg == 4 => true,
+            _ => false,
+        };
+    }
+    false // other forms (long / not-yet-implemented modes): out of slice this push
 }
 
 /// Run one covered case through both drivers, asserting they match the suite and each other.
@@ -272,7 +325,7 @@ fn run_case(t: &Value) {
 }
 
 #[test]
-fn add_sub_w_match_singlesteptests() {
+fn add_sub_match_singlesteptests() {
     let mut ran = 0usize;
     for fname in FILES {
         let path = format!("{VENDOR_DIR}/{fname}");
@@ -298,8 +351,8 @@ fn add_sub_w_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 5860,
-        "expected ~5871 covered ADD.w + SUB.w cases (Dn,<ea> + <ea>,Dn for Dn/An/(An)/(An)+/-(An)/d16(An)/d8(An,Xn)/abs.w/abs.l/d16(PC)/d8(PC,Xn)/#imm), ran {ran}"
+        ran >= 15800,
+        "expected ~15845 covered ADD/SUB cases — word (~5871: Dn,<ea> + <ea>,Dn for Dn/An/(An)/(An)+/-(An)/d16(An)/d8(An,Xn)/abs.w/abs.l/d16(PC)/d8(PC,Xn)/#imm, even EAs) plus byte (~9974: the same modes minus An-direct, with odd EAs in scope and the A7 byte +2 step), ran {ran}"
     );
-    eprintln!("SingleStepTests ADD.w+SUB.w: {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB (.w + .b): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
