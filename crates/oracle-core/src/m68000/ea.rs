@@ -1327,6 +1327,152 @@ fn move_emit_dest(buf: &mut RecipeBuf, dm: u16, dr: u8, src_reads: bool, size: S
     }
 }
 
+/// The long source-EA sub-sequence for `MOVEA.l <ea>,An`. Structurally identical to [`ea_src_long`] (a `.l`
+/// operand is two word reads assembled by [`MicroOp::Combine32`], with the same prefetch interleave per
+/// mode) EXCEPT that MOVEA has **no trailing operand idle** — the SST cycle counts for a clean MOVEA are
+/// exactly the bus-access cost plus the inline predec/indexed idles (e.g. `MOVEA.l Dn,An` is `[PF]` = 4, not
+/// the 8 of `ADD.l Dn,Dn`; `MOVEA.l (An),An` is `[READ.hi, READ.lo, PF]` = 12, not 14). `make_alu` builds
+/// the `Alu{MoveA}` writing the assembled `Scratch(0)` (or the register operand) to `Dest::AddrReg`. Every
+/// ordering is pinned against the vendored `MOVEA.l` SST stream.
+fn ea_movea_long(
+    buf: &mut RecipeBuf,
+    mode: u16,
+    reg: u8,
+    make_alu: impl FnOnce(Operand) -> MicroOp,
+) {
+    match (mode, reg) {
+        // Dn / An direct — no operand read: one refill, then the ALU on the full 32-bit register. Bus: [PF].
+        (0, _) | (1, _) => {
+            let operand = if mode == 0 {
+                Operand::DataRegFull(reg)
+            } else {
+                Operand::AddrReg(reg)
+            };
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(operand));
+        }
+        // (An) — read the long operand at An, refill, combine. Bus: [READ.hi, READ.lo, PF].
+        (2, _) => {
+            push_long_read_pair(buf, Operand::AddrReg(reg));
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::Scratch(0)));
+        }
+        // (An)+ — read the long operand at An, post-increment An by 4 (after both reads), refill, combine.
+        (3, _) => {
+            push_long_read_pair(buf, Operand::AddrReg(reg));
+            buf.push(MicroOp::AdjustAddr { reg, delta: 4 });
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::Scratch(0)));
+        }
+        // -(An) — pre-decrement An by 4, the predecrement idle (n2), read the long operand at An-4, refill,
+        // combine. Bus: [READ.hi, READ.lo, PF], front n2 (NO trailing idle).
+        (4, _) => {
+            buf.push(MicroOp::AdjustAddr { reg, delta: -4 });
+            buf.push(MicroOp::Internal { cycles: 2 });
+            push_long_read_pair(buf, Operand::AddrReg(reg));
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::Scratch(0)));
+        }
+        // d16(An) / abs.w / d16(PC) — EaCalc the EA first (disp in prefetch[1] now), one refill, the long read
+        // pair, the final refill, combine. Bus: [PF, READ.hi, READ.lo, PF].
+        (5, _) | (7, 0) | (7, 2) => {
+            let base = match (mode, reg) {
+                (5, _) => Operand::AddrReg(reg),
+                (7, 2) => Operand::PcOfExt,
+                _ => Operand::Zero, // abs.w
+            };
+            buf.push(MicroOp::EaCalc {
+                base,
+                index: Operand::Zero,
+                disp: Operand::DispWord,
+                dst: EA_SLOT,
+            });
+            buf.push(MicroOp::Prefetch);
+            push_long_read_pair(buf, Operand::Scratch(EA_SLOT));
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::Scratch(0)));
+        }
+        // d8(An,Xn) / d8(PC,Xn) — EaCalc (base + index + disp8) first, the indexed idle (n2), one refill, the
+        // long read pair, the final refill, combine. Bus: [PF, READ.hi, READ.lo, PF].
+        (6, _) | (7, 3) => {
+            let base = if mode == 6 {
+                Operand::AddrReg(reg)
+            } else {
+                Operand::PcOfExt
+            };
+            buf.push(MicroOp::EaCalc {
+                base,
+                index: Operand::BriefIndex,
+                disp: Operand::BriefDisp8,
+                dst: EA_SLOT,
+            });
+            buf.push(MicroOp::Internal { cycles: 2 });
+            buf.push(MicroOp::Prefetch);
+            push_long_read_pair(buf, Operand::Scratch(EA_SLOT));
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::Scratch(0)));
+        }
+        // abs.l — assemble the two-word address (HI, refill, LO), one refill, the long read pair, the final
+        // refill, combine. Bus: [PF, PF, READ.hi, READ.lo, PF].
+        (7, 1) => {
+            push_abs_l_addr(buf); // [EaCalc(HI), Prefetch, EaCalc(ADDR)]
+            buf.push(MicroOp::Prefetch);
+            push_long_read_pair(buf, Operand::Scratch(EA_SLOT));
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::Scratch(0)));
+        }
+        // #imm.l — the 32-bit immediate is two extension words: HI captured into HI_SLOT before the refill
+        // shifts it out, a refill shifts the LO word in, Combine32 assembles them, two more refills complete
+        // the 3-word fetch, then the ALU (NO trailing idle). Bus: [PF, PF, PF].
+        (7, 4) => {
+            buf.push(MicroOp::Combine32 {
+                hi: 0,
+                lo: Operand::ImmWord,
+                dst: HI_SLOT,
+            });
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::Combine32 {
+                hi: HI_SLOT,
+                lo: Operand::ImmWord,
+                dst: 0,
+            });
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::Scratch(0)));
+        }
+        _ => todo!("ea_movea_long mode {mode}/{reg} not yet covered"),
+    }
+}
+
+/// Assemble the full `MOVEA.w`/`MOVEA.l` recipe (`MOVEA.{w,l} <ea>,An`): fetch the source operand (every
+/// source EA mode is legal — `An`-direct included), then copy it to address register `An` via
+/// `Alu{MoveA}` — **no flags**, the `.w` form sign-extending the source word to 32 bits, the `.l` form
+/// writing the full 32. There is **no destination memory access** (An is a register) and **no trailing
+/// operand idle** (a MOVEA's cycle count is the bus cost plus only the inline predec/indexed idles).
+///
+/// The word path reuses the proven [`ea_src`] source machinery verbatim (the MOVEA.w bus stream is exactly
+/// the `<ea>,Dn` source phase). The long path is [`ea_movea_long`] — [`ea_src_long`]'s structure minus the
+/// trailing idle. Byte MOVEA is illegal and never reaches here.
+pub fn ea_movea(buf: &mut RecipeBuf, dst_reg: u8, src_mode: u16, src_reg: u8, size: Size) {
+    // The MoveA flag-ALU writes the operand straight to An (full 32; .w sign-extends inside the op). The
+    // `b`/`dst` legs of the parked-result form are unused (MoveA ignores `b`, and the only dest is AddrReg).
+    let make_alu = |operand: Operand| MicroOp::Alu {
+        op: AluOp::MoveA,
+        size,
+        a: operand,
+        b: Operand::Zero,
+        dst: Dest::AddrReg(dst_reg),
+    };
+    if size == Size::Long {
+        ea_movea_long(buf, src_mode, src_reg, make_alu);
+        return;
+    }
+    // Word MOVEA — the source bus stream is identical to a word `<ea>,Dn`, so reuse `ea_src` directly. Its
+    // `make_alu` receives the source operand; we route it to An (no flags) instead of Dn. No trailing idle is
+    // emitted by the word `ea_src` path, matching the MOVEA.w cycle counts.
+    ea_src(buf, src_mode, src_reg, size, make_alu);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

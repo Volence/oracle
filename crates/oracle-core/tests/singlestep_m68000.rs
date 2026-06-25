@@ -42,6 +42,8 @@ const FILES: &[&str] = &[
     "MOVE.w.json",
     "MOVE.b.json",
     "MOVE.l.json",
+    "MOVEA.w.json",
+    "MOVEA.l.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -353,6 +355,54 @@ fn move_in_scope(opcode: u16, ini: &Value) -> bool {
     true
 }
 
+/// The MOVEA size of this opcode, or `None` if it is not a `MOVEA` the framework covers. Layout
+/// `00 SS RRR 001 mmm rrr`: bits 15-14 = 00, `dst_mode` (bits 8-6) == 1 (An), and the size field (bits
+/// 13-12) is `11` word / `10` long. Byte MOVEA (size `01` with `dst_mode == 1`) is ILLEGAL → `None`.
+fn movea_size(opcode: u16) -> Option<Size> {
+    if (opcode >> 14) != 0 || (opcode >> 6) & 7 != 1 {
+        return None; // not a MOVE-family opcode, or dst_mode != 1 (plain MOVE)
+    }
+    match (opcode >> 12) & 3 {
+        0b11 => Some(Size::Word),
+        0b10 => Some(Size::Long),
+        _ => None, // byte MOVEA is illegal
+    }
+}
+
+/// Whether the framework covers this `MOVEA.w`/`MOVEA.l` case (called once `movea_size` matches), given the
+/// case's `ini`. Source = all 12 EA modes (`An`-direct is a legal MOVEA source); destination is always `An`
+/// (a register write — no memory access, so no destination parity). A word/long memory **source** access to
+/// an odd EA is an address error → xfail; the `(A7)` (mode-2) source form stays xfail (the prior MOVE
+/// convention). There is no flag effect and no destination memory write to filter.
+fn movea_in_scope(opcode: u16, ini: &Value) -> bool {
+    let size = movea_size(opcode).expect("movea_covered gates movea_size");
+    let long = size == Size::Long;
+    let src_mode = (opcode >> 3) & 7;
+    let src_reg = opcode & 7;
+    // Source modes: Dn (0), An (1), (An)/(An)+/-(An)/d16(An)/d8(An,Xn) (2..=6), abs.w/abs.l/d16(PC)/d8(PC,Xn)/
+    // #imm (7/0..=4). All are legal MOVEA sources (An-direct included for both sizes).
+    let src_ok = src_mode == 0
+        || src_mode == 1
+        || (2..=6).contains(&src_mode)
+        || (src_mode == 7 && src_reg <= 4);
+    if !src_ok {
+        return false;
+    }
+    // (A7) mode-2 source stays xfail (prior convention), both sizes.
+    if src_mode == 2 && src_reg == 7 {
+        return false;
+    }
+    // Source parity: a word/long memory access to an odd EA is an address error → xfail. The `-(An)` step is
+    // 4 for long, 2 for word (parity is preserved either way), and `#imm.l` consumes two extension words.
+    let predec = if long { 4 } else { 2 };
+    if let Some(ea) = move_src_ea(ini, src_mode, src_reg, predec) {
+        if ea & 1 != 0 {
+            return false;
+        }
+    }
+    true
+}
+
 /// Whether the framework currently covers this case (else it is an xfail for this push). `ADD`/`SUB` in
 /// word and byte sizes, each in two forms — `Dn,<ea>` (memory dest; word ADD=0xD140/SUB=0x9140, byte
 /// ADD=0xD100/SUB=0x9100) and `<ea>,Dn` (register dest; word ADD=0xD040/SUB=0x9040, byte
@@ -366,6 +416,12 @@ fn covered(opcode: u16, ini: &Value) -> bool {
     // MOVE.w (`00 11 RRR MMM mmm rrr`, dst_mode != 1) — its own EA→EA scope/parity filter.
     if move_covered(opcode) {
         return move_in_scope(opcode, ini);
+    }
+    // MOVEA.w / MOVEA.l (`00 SS RRR 001 mmm rrr`, dst_mode == 1) — its own source-EA scope/parity filter
+    // (destination is always An, a register write — no destination parity). Byte MOVEA is illegal → not
+    // covered.
+    if movea_size(opcode).is_some() {
+        return movea_in_scope(opcode, ini);
     }
     // Read the value of address register `reg` exactly as the decoder's `addr_reg` does: A7 is `ssp` in
     // supervisor mode, `usp` in user mode (there is no `a7` field) — needed so `(A7)+`/`-(A7)` parity is
@@ -627,16 +683,19 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 35800,
-        "expected ~35822 covered cases — ADD/SUB (~21790: word ~5871 + byte ~9974 + long ~5945) plus \
+        ran >= 46200,
+        "expected ~46247 covered cases — ADD/SUB (~21790: word ~5871 + byte ~9974 + long ~5945) plus \
          MOVE.w (3154: all 12 source modes × Dn + the alterable-memory dest modes \
          ((An)/(An)+/-(An)/d16(An)/d8(An,Xn)/abs.w/abs.l), even word EAs since an odd word access is an \
          address error, the (A7) mode-2 word form xfail) plus MOVE.b (7796: same modes, byte excludes \
          An-direct as a source (MOVE.b An,<ea> illegal), NO parity filter since a byte access has no \
          odd-address error, the (A7) mode-2 byte form xfail) plus MOVE.l (3082: same modes — An-direct is a \
          legal long source — the long word-style parity filter (a long access to an odd EA is an address \
-         error → xfail; the -(An) step is 4 and #imm.l is two ext words), the (A7) mode-2 form xfail), \
+         error → xfail; the -(An) step is 4 and #imm.l is two ext words), the (A7) mode-2 form xfail) plus \
+         MOVEA.w (5180) + MOVEA.l (5245): all 12 source modes (An-direct legal both sizes) → An, no flags \
+         (.w sign-extends, .l writes full 32), no destination access; even word/long source EAs since an odd \
+         access is an address error, the (A7) mode-2 source form xfail; byte MOVEA is illegal (not covered), \
          ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }

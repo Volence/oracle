@@ -7,7 +7,7 @@
 //! builder per instruction family) lands with full coverage.
 
 use super::bus68k::Bus68k;
-use super::ea::{ea_dst, ea_move, ea_src, RecipeBuf};
+use super::ea::{ea_dst, ea_move, ea_movea, ea_src, RecipeBuf};
 use super::microop::{AluOp, Cpu68000, Dest, MicroOp, MicroState, Operand, Size};
 use super::registers::Registers;
 
@@ -45,6 +45,16 @@ fn is_move_long(opcode: u16) -> bool {
     (opcode >> 12) & 0xF == 0b0010 && ((opcode >> 6) & 7) != 1
 }
 
+/// Whether `opcode` is a `MOVEA` (MOVE with `dst_mode == 1`, An). MOVEA exists only for **word** (size
+/// field 11) and **long** (size field 10) — byte MOVEA is ILLEGAL (size field 01 with `dst_mode == 1` is
+/// not decoded). So bits 15-14 == 00, `dst_mode` (bits 8-6) == 1, and the size field is 11 or 10. MOVEA
+/// affects no flags (`.w` sign-extends the source word to 32 bits; `.l` writes full 32). The source is any
+/// of the 12 EA modes (An-direct included).
+#[inline]
+fn is_movea(opcode: u16) -> bool {
+    (opcode >> 14) == 0 && ((opcode >> 6) & 7) == 1 && matches!((opcode >> 12) & 3, 0b11 | 0b10)
+}
+
 /// Decode the opcode currently in `regs.prefetch[0]` into its micro-op recipe.
 #[inline]
 pub fn decode(regs: &Registers) -> MicroState {
@@ -64,6 +74,17 @@ pub fn decode(regs: &Registers) -> MicroState {
     // the opcode space 0x2xxx (long, dst_mode != 1) is disjoint from MOVE.w/MOVE.b/ADD/SUB.
     if is_move_long(opcode) {
         return move_recipe(opcode, Size::Long);
+    }
+    // MOVEA.w / MOVEA.l (`00 SS RRR 001 mmm rrr`, dst_mode == 1 == An). No flags; `.w` sign-extends the
+    // source word to 32 bits, `.l` writes full 32. Byte MOVEA is illegal (not matched). The opcode space
+    // (0x3xxx/0x2xxx with dst_mode == 1) is disjoint from plain MOVE (dst_mode != 1) and from ADD/SUB.
+    if is_movea(opcode) {
+        let size = if (opcode >> 12) & 3 == 0b11 {
+            Size::Word
+        } else {
+            Size::Long
+        };
+        return movea_recipe(opcode, size);
     }
     // ADD.w and SUB.w share recipe shapes — they differ only in the `AluOp` (operand order is arranged so
     // the destination is the minuend, which matters for the non-commutative SUB).
@@ -187,6 +208,20 @@ fn move_recipe(opcode: u16, size: Size) -> MicroState {
     let src_reg = (opcode & 7) as u8;
     let mut buf = RecipeBuf::new();
     ea_move(&mut buf, dst_mode, dst_reg, src_mode, src_reg, size);
+    buf.finish()
+}
+
+/// `MOVEA.{w,l} <ea>,An` (`00 SS RRR 001 mmm rrr`, `dst_mode == 1`): copy the source operand into address
+/// register `An`, affecting **no flags**. The `.w` form sign-extends the source word to 32 bits; the `.l`
+/// form writes the full 32. The destination is `An` (bits 11-9, the SWAPPED reg field); the source is the
+/// usual `mode/reg` in bits 5-0 (all 12 modes are legal — An-direct included). There is no destination
+/// memory access (An is a register) and no trailing operand idle. Delegates to [`ea_movea`].
+fn movea_recipe(opcode: u16, size: Size) -> MicroState {
+    let dst_reg = ((opcode >> 9) & 7) as u8;
+    let src_mode = (opcode >> 3) & 7;
+    let src_reg = (opcode & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    ea_movea(&mut buf, dst_reg, src_mode, src_reg, size);
     buf.finish()
 }
 
@@ -1440,5 +1475,220 @@ mod tests {
                 },
             ],
         );
+    }
+
+    // --- M4: MOVEA.w / MOVEA.l decode (dst_mode == 1) + the no-flags / sign-extend anchors. ---
+
+    #[test]
+    fn movea_decode_recognizes_dst_mode_1_word_and_long() {
+        // MOVEA layout: `00 SS RRR 001 mmm rrr` — dst_mode (bits 8-6) == 1 (An). Size 11 = word, 10 = long;
+        // byte MOVEA (size 01) is ILLEGAL (never decoded). `is_movea` gates dst_mode == 1 with a word/long
+        // size; plain MOVE (dst_mode != 1) and byte MOVEA are excluded.
+        assert!(
+            is_movea(0x3856),
+            "0x3856 MOVEA.w (A6),A4 — dst_mode 1, word"
+        );
+        assert!(is_movea(0x2642), "0x2642 MOVEA.l D2,A3 — dst_mode 1, long");
+        assert!(
+            is_movea(0x3a49),
+            "0x3a49 MOVEA.w A1,A5 — An source is legal"
+        );
+        // dst_mode != 1 is plain MOVE, not MOVEA.
+        assert!(!is_movea(0x3490), "0x3490 dst_mode 2 = MOVE.w, not MOVEA");
+        assert!(!is_movea(0x2a93), "0x2a93 dst_mode 2 = MOVE.l, not MOVEA");
+        // Byte MOVEA is illegal: size 01 with dst_mode 1 is NOT a MOVEA. 0x1056 = 0001 000 001 010 110.
+        assert!(
+            !is_movea(0x1056),
+            "byte MOVEA (size 01) is illegal — not MOVEA"
+        );
+        assert!(!is_movea(0xD040), "ADD.w — not MOVEA");
+    }
+
+    #[test]
+    fn movea_decode_extracts_dst_an_and_size() {
+        // 0x3856 = 0011 100 001 010 110 → size 11 (word), dst_reg 100 = A4, dst_mode 001 = An, src_mode 010 =
+        // (An), src_reg 110 = A6.
+        let op: u16 = 0x3856;
+        assert_eq!((op >> 12) & 3, 0b11, "size field 11 = word");
+        assert_eq!((op >> 9) & 7, 4, "dst_reg (bits 11-9) = A4");
+        assert_eq!((op >> 6) & 7, 1, "dst_mode (bits 8-6) = An (MOVEA)");
+        assert_eq!((op >> 3) & 7, 2, "src_mode = (An)");
+        assert_eq!(op & 7, 6, "src_reg = A6");
+    }
+
+    /// The clean SingleStepTests reference case `3856 [MOVEA.w (A6),A4]` (even EA, 8 cycles) — the M4 anchor
+    /// proving MOVEA.w SIGN-EXTENDS the source word and changes NO flags. A6 = 0xB5...88 (read at 0xBEF88,
+    /// even); the source word 0xFC7B has bit15 set → A4 becomes 0xFFFFFC7B (sign-extended full 32). SR
+    /// (0x2701) survives untouched (MOVEA affects no flags). Bus: [READ @src, PF] — no destination access.
+    fn setup_movea_w_an_an() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [0; 8],
+            a: [0, 0, 0, 0, 1_097_016_680, 0, 3_037_458_184],
+            usp: 2_600_751_938,
+            ssp: 2048,
+            pc: 3072,
+            sr: 9985,
+            prefetch: [0x3856, 43341],
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [(3077u32, 229u8), (3076, 63), (782_089, 123), (782_088, 252)] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_movea_w_an_an_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 782_088,
+                size: Size::Word,
+                value: 64635, // source word 0xFC7B (bit15 set)
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 16357,
+            },
+        ]
+    }
+
+    fn assert_movea_w_an_an_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced by one word");
+        assert_eq!(cpu.regs.sr, 9985, "SR UNCHANGED — MOVEA affects no flags");
+        assert_eq!(
+            cpu.regs.a[4], 4_294_966_395,
+            "A4 = sign_extend16(0xFC7B) = 0xFFFFFC7B (full 32)"
+        );
+        assert_eq!(cpu.regs.a[6], 3_037_458_184, "src An unchanged");
+        assert_eq!(cpu.regs.prefetch, [43341, 16357], "prefetch advanced");
+        assert_eq!(bus.log, expected_movea_w_an_an_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_movea_w_an_an() {
+        let (mut cpu, mut bus) = setup_movea_w_an_an();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 8,
+            "MOVEA.w (An),An = [READ, PF] = 8 (no trailing idle)"
+        );
+        assert_movea_w_an_an_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_movea_w_an_an() {
+        let (mut rtc, mut bus_rtc) = setup_movea_w_an_an();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_movea_w_an_an();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 8);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_movea_w_an_an_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn movea_w_an_an_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The no-divergence guarantee for MOVEA: snapshot/restore the whole CPU at every micro-op boundary,
+        // resume on the same bus, require an identical final state + transaction stream.
+        let (mut rref, mut bref) = setup_movea_w_an_an();
+        rref.run_instruction(&mut bref);
+
+        let cfg = bincode::config::standard();
+        // 3 micro-ops (Read, Prefetch, Alu(MoveA→An)) → boundaries after 0..=2.
+        for pause_after in 0..=2 {
+            let (mut cpu, mut bus) = setup_movea_w_an_an();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    /// The clean SingleStepTests reference case `2642 [MOVEA.l D2,A3]` (4 cycles) — the M4 anchor proving
+    /// MOVEA.l writes the FULL 32-bit source to An and changes NO flags, with NO trailing idle (a register
+    /// source MOVEA is just [PF] = 4 cycles, unlike ADD.l Dn,Dn which trails n4). D2 = 2_055_882_111 lands in
+    /// A3 verbatim; SR (10007) is untouched.
+    fn setup_movea_l_dn_an() -> (Cpu68000, FlatBus) {
+        let mut regs = Registers {
+            d: [0; 8],
+            a: [0, 0, 0, 1_288_370_626, 0, 0, 0],
+            usp: 2_279_008_622,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10007,
+            prefetch: [0x2642, 29169],
+        };
+        regs.d[2] = 2_055_882_111;
+        let mut bus = FlatBus::new();
+        for (a, v) in [(3077u32, 141u8), (3076, 124)] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    #[test]
+    fn run_instruction_matches_movea_l_dn_an() {
+        let (mut cpu, mut bus) = setup_movea_l_dn_an();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(cycles, 4, "MOVEA.l Dn,An = [PF] = 4 (no trailing idle)");
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced by one word");
+        assert_eq!(cpu.regs.sr, 10007, "SR UNCHANGED — MOVEA affects no flags");
+        assert_eq!(
+            cpu.regs.a[3], 2_055_882_111,
+            "A3 = full 32-bit D2 (no sign-extension needed for .l)"
+        );
+        assert_eq!(cpu.regs.d[2], 2_055_882_111, "src Dn unchanged");
+        assert_eq!(cpu.regs.prefetch, [29169, 31885], "prefetch advanced");
+        assert_eq!(
+            bus.log,
+            vec![Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 31885,
+            }]
+        );
+    }
+
+    #[test]
+    fn both_drivers_match_movea_l_dn_an() {
+        let (mut rtc, mut bus_rtc) = setup_movea_l_dn_an();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_movea_l_dn_an();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 4);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
     }
 }

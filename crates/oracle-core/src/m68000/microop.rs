@@ -273,6 +273,10 @@ pub enum Dest {
     Scratch(Slot),
     /// The full 32 bits of data register `Dn` — a `.l` write-back (no preserved bits).
     DataReg(u8),
+    /// The full 32 bits of address register `An` (the active A7 when `n == 7`, written through
+    /// [`Registers::addr_reg_set`] so A7 hits the right stack pointer) — the `MOVEA` write-back. An is
+    /// always written full-width (a `.w` MOVEA sign-extends to 32 first), so there is no `.w`/`.b` An dest.
+    AddrReg(u8),
     /// The low word of data register `Dn` (its high word is preserved — a `.w` write-back).
     DataRegLow16(u8),
     /// The low byte of data register `Dn` (its upper 24 bits are preserved — a `.b` write-back).
@@ -292,6 +296,12 @@ pub enum AluOp {
     /// The flag op of the `MOVE` family (`MOVE`, not `MOVEA` — `MOVEA` sets no flags). The size-truncated
     /// value is written to `dst` (low8/low16/full32 for byte/word/long).
     Move,
+    /// MoveA: `dst = a` (b is ignored), affecting **NO flags** (the `MOVEA` family). A `.w` MoveA
+    /// **sign-extends** the source word to 32 bits; a `.l` MoveA writes the full 32 bits unchanged (byte
+    /// MOVEA is illegal and never decoded). The result is always written full-width to an address register
+    /// (`Dest::AddrReg`), so there is no size-masked write-back. Distinct from [`AluOp::Move`] (which sets
+    /// N/Z and writes a size-truncated value).
+    MoveA,
 }
 
 /// The MOVE flag computation at `size`: copy the (size-truncated) value, set N=msb / Z=(value==0), clear
@@ -320,6 +330,18 @@ fn move_flags(value: u32, size: Size) -> (u32, u16) {
     }
     // V and C are always cleared; X is NOT in `ccr` (the caller preserves it).
     (result, ccr)
+}
+
+/// The MOVEA write value at `size`: a `.w` MOVEA **sign-extends** the source word to 32 bits; a `.l`
+/// writes the full 32 bits unchanged (byte MOVEA is illegal and never reaches here). No flags — MOVEA never
+/// touches the CCR (distinct from [`move_flags`], which computes N/Z).
+#[inline]
+fn movea_value(value: u32, size: Size) -> u32 {
+    match size {
+        Size::Word => sign_extend16(value as u16),
+        Size::Long => value,
+        Size::Byte => unreachable!("byte MOVEA is illegal"),
+    }
 }
 
 /// One resumable step. Bus-access steps emit a [`Transaction`](super::bus68k::Transaction) and cost
@@ -510,10 +532,23 @@ impl MicroState {
             } => {
                 let lhs = self.resolve(a, regs);
                 let rhs = self.resolve(b, regs);
+                // MOVEA is NOT arithmetic and affects NO flags: it writes the (word-sign-extended / full-32)
+                // value straight to An, leaving the entire SR untouched (distinct from MOVE, which sets N/Z).
+                // Handled first so it never reaches the flag write-back below.
+                if let AluOp::MoveA = op {
+                    let value = movea_value(lhs, size);
+                    match dst {
+                        Dest::AddrReg(n) => regs.addr_reg_set(n as usize, value),
+                        _ => unreachable!("MoveA writes only Dest::AddrReg"),
+                    }
+                    self.step += 1;
+                    return 0;
+                }
                 // Compute at the operand-size flag boundary; carry the result (zero-extended to 32) + the new
                 // low-byte CCR uniformly. MOVE is NOT arithmetic — it copies `a` and sets only N/Z (V/C
                 // cleared) while PRESERVING X, so its `ccr` re-injects the live X bit (add/sub recompute X).
                 let (result, ccr) = match op {
+                    AluOp::MoveA => unreachable!("MoveA handled above"),
                     AluOp::Move => {
                         let (r, ccr_nz) = move_flags(lhs, size);
                         (r, ccr_nz | (regs.sr & CCR_X))
@@ -549,6 +584,8 @@ impl MicroState {
                     Dest::DataRegLow8(n) => {
                         regs.d[n as usize] = (regs.d[n as usize] & 0xFFFF_FF00) | (result & 0xFF);
                     }
+                    // An is only ever written by MoveA (handled above, no flags), never by Add/Sub/Move.
+                    Dest::AddrReg(_) => unreachable!("AddrReg dest is MoveA-only"),
                 }
                 0
             }
@@ -1710,5 +1747,80 @@ mod tests {
 
         assert_eq!(regs.sr, 0x2704, "Z set; N/V/C clear; X preserved (was 0)");
         assert_eq!(regs.d[3] & 0xFFFF, 0, "zero written to Dn low word");
+    }
+
+    #[test]
+    fn alu_movea_w_sign_extends_word_to_full_32_and_changes_no_flags() {
+        // MOVEA.w writes the full An, SIGN-EXTENDING the source word to 32 bits, and affects NO flags. A
+        // source word with bit15 set (0xCB69) lands as 0xFFFFCB69 in An; the CCR is untouched. Pinned to the
+        // real SST `3856 [MOVEA.w (A6),A4]`: source word 0x... → 0xFFFFxxxx, SR identical before/after.
+        let mut regs = regs();
+        regs.sr = 0x2715; // CCR = X|Z|C, supervisor — must survive UNCHANGED
+        regs.a[4] = 0x1234_5678; // prior An contents — fully overwritten
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::Alu {
+            op: AluOp::MoveA,
+            size: Size::Word,
+            a: Operand::Scratch(0),
+            b: Operand::Zero,
+            dst: Dest::AddrReg(4),
+        }]);
+        st.scratch[0] = 0x0000_CB69; // source word, bit15 set
+
+        let cycles = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(cycles, 0, "MoveA is an internal/overlapped op — 0 cycles");
+        assert_eq!(
+            regs.a[4], 0xFFFF_CB69,
+            "source word sign-extended to the full 32-bit An"
+        );
+        assert_eq!(regs.sr, 0x2715, "no flags affected by MOVEA");
+        assert!(bus.log.is_empty(), "MoveA touches no bus");
+    }
+
+    #[test]
+    fn alu_movea_l_writes_full_32_and_changes_no_flags() {
+        // MOVEA.l writes the full 32-bit source straight to An (no sign-extension needed) and affects NO
+        // flags. Pinned to the real SST `2642 [MOVEA.l D2,A3]`: D2's full 32 bits land in A3.
+        let mut regs = regs();
+        regs.sr = 0x2708; // CCR = N — must survive UNCHANGED
+        regs.a[3] = 0xDEAD_BEEF;
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::Alu {
+            op: AluOp::MoveA,
+            size: Size::Long,
+            a: Operand::Scratch(0),
+            b: Operand::Zero,
+            dst: Dest::AddrReg(3),
+        }]);
+        st.scratch[0] = 0x7A8B_9CFF; // full 32-bit source
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(regs.a[3], 0x7A8B_9CFF, "full 32-bit source written to An");
+        assert_eq!(regs.sr, 0x2708, "no flags affected by MOVEA");
+    }
+
+    #[test]
+    fn alu_movea_dest_routes_a7_through_the_active_stack_pointer() {
+        // Dest::AddrReg(7) must write the active A7 (ssp in supervisor mode) via addr_reg_set, not a[7].
+        let mut regs = regs(); // supervisor
+        regs.ssp = 0x0000_0800;
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::Alu {
+            op: AluOp::MoveA,
+            size: Size::Long,
+            a: Operand::Scratch(0),
+            b: Operand::Zero,
+            dst: Dest::AddrReg(7),
+        }]);
+        st.scratch[0] = 0x0012_3456;
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(
+            regs.ssp, 0x0012_3456,
+            "A7 dest hit the supervisor stack pointer"
+        );
     }
 }

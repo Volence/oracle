@@ -11,7 +11,7 @@ OUT="$HERE/../vendor/ProcessorTests/68000/v1"
 CHECKSUMS="$HERE/singlesteptests.sha256"
 
 # Files needed by the 68000 slice. Extend as opcode coverage grows.
-FILES=(ADD.w SUB.w ADD.b SUB.b ADD.l SUB.l MOVE.w MOVE.b MOVE.l)
+FILES=(ADD.w SUB.w ADD.b SUB.b ADD.l SUB.l MOVE.w MOVE.b MOVE.l MOVEA.w MOVEA.l)
 
 mkdir -p "$OUT"
 for f in "${FILES[@]}"; do
