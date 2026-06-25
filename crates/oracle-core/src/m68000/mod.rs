@@ -6,6 +6,7 @@
 //! the same opcode both instruction-stepped and FSM-quiesced (see [`prototype`]).
 
 pub mod bus68k;
+pub mod microop;
 pub mod prototype;
 pub mod registers;
 
