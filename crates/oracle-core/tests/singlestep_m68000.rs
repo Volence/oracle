@@ -1,10 +1,10 @@
 //! SingleStepTests runner for the 68000 micro-op framework.
 //!
-//! Drives the pinned, vendored SingleStepTests data (`tools/fetch-tests.sh`) for every covered `ADD.w`
-//! case — `Dn,(An)` (memory destination) and `<ea>,Dn` (register destination) for source modes Dn / (An)
-//! / #imm — and asserts post regs/SR/RAM/prefetch, the cycle count, **and** the per-cycle bus-transaction
-//! stream, through *both* framework drivers (run-to-completion fast path and the step-one-micro-op quiesce
-//! path), which must also agree with each other.
+//! Drives the pinned, vendored SingleStepTests data (`tools/fetch-tests.sh`) for every covered `ADD.w` /
+//! `SUB.w` case — `Dn,(An)` (memory destination) and `<ea>,Dn` (register destination) for source modes
+//! Dn / (An) / #imm — and asserts post regs/SR/RAM/prefetch, the cycle count, **and** the per-cycle
+//! bus-transaction stream, through *both* framework drivers (run-to-completion fast path and the
+//! step-one-micro-op quiesce path), which must also agree with each other.
 //!
 //! Versioned xfail manifest (slice scope — implemented later): the `A7`/SP forms (`reg == 7`), odd-address
 //! `(An)` cases (which raise an address-error exception), and the remaining EA modes / sizes are skipped
@@ -16,10 +16,14 @@ use oracle_core::m68000::registers::Registers;
 use serde_json::Value;
 use std::path::Path;
 
-const DATA: &str = concat!(
+const VENDOR_DIR: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../vendor/ProcessorTests/68000/v1/ADD.w.json"
+    "/../../vendor/ProcessorTests/68000/v1"
 );
+
+/// Mnemonic files driven by the current decode. Extend as opcode coverage grows (keep in sync with
+/// `tools/fetch-tests.sh`).
+const FILES: &[&str] = &["ADD.w.json", "SUB.w.json"];
 
 fn u32f(v: &Value, key: &str) -> u32 {
     v.get(key)
@@ -109,18 +113,19 @@ fn assert_final(t: &Value, regs: &Registers, bus: &FlatBus) {
     }
 }
 
-/// Whether the framework currently covers this case (else it is an xfail for this push):
-/// `ADD.w Dn,(An)` (memory dest) and `ADD.w <ea>,Dn` (register dest) for source modes Dn / (An) / #imm,
-/// minus the A7/SP forms and odd-address `(An)` cases (which raise an address error — deferred).
+/// Whether the framework currently covers this case (else it is an xfail for this push). `ADD.w`/`SUB.w`
+/// in two forms — `Dn,(An)` (memory dest; ADD=0xD150, SUB=0x9150) and `<ea>,Dn` (register dest; ADD=0xD040,
+/// SUB=0x9040) for source modes Dn / (An) / #imm — minus the A7/SP forms and odd-address `(An)` cases
+/// (which raise an address error — deferred).
 fn covered(opcode: u16, ini: &Value) -> bool {
     let even = |reg: usize| u32f(ini, &format!("a{reg}")) & 1 == 0;
-    if opcode & 0xF1F8 == 0xD150 {
-        // ADD.w Dn,(An)
+    // <op>.w Dn,(An) — memory destination.
+    if opcode & 0xF1F8 == 0xD150 || opcode & 0xF1F8 == 0x9150 {
         let an = (opcode & 7) as usize;
         return an != 7 && even(an);
     }
-    if opcode & 0xF1C0 == 0xD040 {
-        // ADD.w <ea>,Dn
+    // <op>.w <ea>,Dn — register destination.
+    if opcode & 0xF1C0 == 0xD040 || opcode & 0xF1C0 == 0x9040 {
         let mode = (opcode >> 3) & 7;
         let reg = (opcode & 7) as usize;
         return match mode {
@@ -130,68 +135,78 @@ fn covered(opcode: u16, ini: &Value) -> bool {
             _ => false,                 // other EA modes: out of slice this push
         };
     }
-    false // other ADD.w forms (e.g. Dn,(An)+ / byte / long): out of slice this push
+    false // other forms (e.g. Dn,(An)+ / byte / long): out of slice this push
+}
+
+/// Run one covered case through both drivers, asserting they match the suite and each other.
+fn run_case(t: &Value) {
+    let ini = &t["initial"];
+    let length = t["length"].as_u64().unwrap() as u32;
+    let expected = expected_transactions(t);
+
+    // Driver 1 — run-to-completion (the default fast path).
+    let mut cpu = Cpu68000::new(build_regs(ini));
+    let mut bus = build_bus(ini);
+    let cycles = cpu.run_instruction(&mut bus);
+    assert_eq!(cycles, length, "cycle count [{}]", t["name"]);
+    assert_final(t, &cpu.regs, &bus);
+    assert_eq!(bus.log, expected, "transactions [{}]", t["name"]);
+
+    // Driver 2 — step-one-micro-op (the quiesce path); must agree with the suite and driver 1.
+    let mut cpu_step = Cpu68000::new(build_regs(ini));
+    let mut bus_step = build_bus(ini);
+    cpu_step.start_instruction();
+    let cycles_step = loop {
+        if let Step::Done(c) = cpu_step.step_micro_op(&mut bus_step) {
+            break c;
+        }
+    };
+    assert_eq!(
+        cycles_step, cycles,
+        "step-driver cycle count [{}]",
+        t["name"]
+    );
+    assert_eq!(
+        cpu_step.regs, cpu.regs,
+        "step-driver final regs [{}]",
+        t["name"]
+    );
+    assert_eq!(
+        bus_step.log, bus.log,
+        "step-driver transactions [{}]",
+        t["name"]
+    );
 }
 
 #[test]
-fn add_w_matches_singlesteptests() {
-    if !Path::new(DATA).exists() {
-        eprintln!("SKIP: {DATA} missing — run tools/fetch-tests.sh");
-        return;
-    }
-    let file = std::fs::File::open(DATA).unwrap();
-    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
-
+fn add_sub_w_match_singlesteptests() {
     let mut ran = 0usize;
-    for t in &data {
-        let ini = &t["initial"];
-        let opcode = ini["prefetch"][0].as_u64().unwrap() as u16;
-        if !covered(opcode, ini) {
-            continue;
+    for fname in FILES {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
         }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
 
-        let length = t["length"].as_u64().unwrap() as u32;
-        let expected = expected_transactions(t);
-
-        // Driver 1 — run-to-completion (the default fast path).
-        let mut cpu = Cpu68000::new(build_regs(ini));
-        let mut bus = build_bus(ini);
-        let cycles = cpu.run_instruction(&mut bus);
-        assert_eq!(cycles, length, "cycle count [{}]", t["name"]);
-        assert_final(t, &cpu.regs, &bus);
-        assert_eq!(bus.log, expected, "transactions [{}]", t["name"]);
-
-        // Driver 2 — step-one-micro-op (the quiesce path); must agree with the suite and driver 1.
-        let mut cpu_step = Cpu68000::new(build_regs(ini));
-        let mut bus_step = build_bus(ini);
-        cpu_step.start_instruction();
-        let cycles_step = loop {
-            if let Step::Done(c) = cpu_step.step_micro_op(&mut bus_step) {
-                break c;
+        let mut file_ran = 0usize;
+        for t in &data {
+            let ini = &t["initial"];
+            let opcode = ini["prefetch"][0].as_u64().unwrap() as u16;
+            if !covered(opcode, ini) {
+                continue;
             }
-        };
-        assert_eq!(
-            cycles_step, cycles,
-            "step-driver cycle count [{}]",
-            t["name"]
-        );
-        assert_eq!(
-            cpu_step.regs, cpu.regs,
-            "step-driver final regs [{}]",
-            t["name"]
-        );
-        assert_eq!(
-            bus_step.log, bus.log,
-            "step-driver transactions [{}]",
-            t["name"]
-        );
-
-        ran += 1;
+            run_case(t);
+            file_ran += 1;
+        }
+        eprintln!("  {fname}: {file_ran} covered cases passed");
+        ran += file_ran;
     }
 
     assert!(
-        ran >= 800,
-        "expected ~810 covered ADD.w cases (Dn,(An) + <ea>,Dn for Dn/(An)/#imm), ran {ran}"
+        ran >= 1550,
+        "expected ~1579 covered ADD.w + SUB.w cases (Dn,(An) + <ea>,Dn for Dn/(An)/#imm), ran {ran}"
     );
-    eprintln!("SingleStepTests ADD.w: {ran} covered cases passed (both framework drivers, regs/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD.w+SUB.w: {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }

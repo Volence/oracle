@@ -10,8 +10,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT="$HERE/../vendor/ProcessorTests/68000/v1"
 CHECKSUMS="$HERE/singlesteptests.sha256"
 
-# Files needed by the Phase-0 68000 slice. Extend as opcode coverage grows.
-FILES=(ADD.w)
+# Files needed by the 68000 slice. Extend as opcode coverage grows.
+FILES=(ADD.w SUB.w)
 
 mkdir -p "$OUT"
 for f in "${FILES[@]}"; do

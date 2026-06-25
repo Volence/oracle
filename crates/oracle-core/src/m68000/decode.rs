@@ -2,8 +2,9 @@
 //!
 //! `decode` maps the opcode in the prefetch queue to its [`MicroState`] recipe; the two `Cpu68000`
 //! methods tie decode to the framework's two drivers (run-to-completion fast path / step-one-micro-op
-//! quiesce). This push decodes only the `ADD.w` family; the full 65536-entry dispatch (one builder per
-//! instruction family) lands with full coverage (Step 3).
+//! quiesce). Decodes the `ADD.w` / `SUB.w` families so far (the shared `arith_w_*` builders are
+//! parameterized by `AluOp`); the full 65536-entry dispatch (one builder per instruction family) lands
+//! with full coverage.
 
 use super::bus68k::Bus68k;
 use super::microop::{AluOp, Cpu68000, Dest, Fc, MicroOp, MicroState, Operand};
@@ -13,11 +14,19 @@ use super::registers::Registers;
 #[inline]
 pub fn decode(regs: &Registers) -> MicroState {
     let opcode = regs.prefetch[0];
+    // ADD.w and SUB.w share recipe shapes — they differ only in the `AluOp` (operand order is arranged so
+    // the destination is the minuend, which matters for the non-commutative SUB).
     if opcode & 0xF1F8 == 0xD150 {
-        return add_w_dn_an(opcode);
+        return arith_w_dn_ea(opcode, AluOp::AddW); // ADD.w Dn,(An)
     }
     if opcode & 0xF1C0 == 0xD040 {
-        return add_w_ea_dn(opcode);
+        return arith_w_ea_dn(opcode, AluOp::AddW); // ADD.w <ea>,Dn
+    }
+    if opcode & 0xF1F8 == 0x9150 {
+        return arith_w_dn_ea(opcode, AluOp::SubW); // SUB.w Dn,(An)
+    }
+    if opcode & 0xF1C0 == 0x9040 {
+        return arith_w_ea_dn(opcode, AluOp::SubW); // SUB.w <ea>,Dn
     }
     todo!("opcode {opcode:#06X} not yet decoded")
 }
@@ -38,10 +47,11 @@ impl Cpu68000 {
     }
 }
 
-/// `ADD.w Dn,(An)` (`1101 ddd 1 01 010 rrr`): read the memory operand at `(An)`, refill prefetch, add
-/// `Dn`'s low word, write the result back to `(An)`. Three word accesses (read, prefetch, write) → 12
-/// cycles; the ALU is an overlapped internal step.
-fn add_w_dn_an(opcode: u16) -> MicroState {
+/// `<op>.w Dn,(An)` (`1xx1 ddd 1 01 010 rrr`, memory destination): read the memory operand at `(An)`,
+/// refill prefetch, combine it with `Dn`, write the result back to `(An)`. The **memory operand is the
+/// minuend** (`a`) so `SUB` computes `(An) - Dn`; `ADD` is commutative so the same order is correct. Three
+/// word accesses (read, prefetch, write) → 12 cycles; the ALU is an overlapped internal step.
+fn arith_w_dn_ea(opcode: u16, op: AluOp) -> MicroState {
     let dn = ((opcode >> 9) & 7) as u8;
     let an = (opcode & 7) as u8;
     MicroState::from_ops(&[
@@ -52,9 +62,9 @@ fn add_w_dn_an(opcode: u16) -> MicroState {
         },
         MicroOp::Prefetch,
         MicroOp::Alu {
-            op: AluOp::AddW,
-            a: Operand::DataRegLow16(dn),
-            b: Operand::Scratch(0),
+            op,
+            a: Operand::Scratch(0),
+            b: Operand::DataRegLow16(dn),
             dst: Dest::Scratch(1),
         },
         MicroOp::WriteWord {
@@ -65,26 +75,23 @@ fn add_w_dn_an(opcode: u16) -> MicroState {
     ])
 }
 
-/// `ADD.w <ea>,Dn` (`1101 ddd 0 01 mmm rrr`): `Dn += <ea>` (register destination). Covers a no-bus source
-/// (`Dn`), a memory source (`(An)`), and an immediate (`#imm`) — the contrasting EA shapes that prove the
-/// micro-op abstraction generalizes. The result writes back to `Dn`'s low word. Remaining EA modes are
-/// out of slice for this push (decode panics, and the harness xfails them).
-fn add_w_ea_dn(opcode: u16) -> MicroState {
+/// `<op>.w <ea>,Dn` (`1xx1 ddd 0 01 mmm rrr`, register destination): `Dn = Dn <op> <ea>` — **Dn is the
+/// minuend** (`a`). Covers a no-bus source (`Dn`), a memory source (`(An)`), and an immediate (`#imm`) —
+/// the contrasting EA shapes that prove the abstraction generalizes. Remaining EA modes are out of slice
+/// for this push (decode panics, and the harness xfails them).
+fn arith_w_ea_dn(opcode: u16, op: AluOp) -> MicroState {
     let dn = ((opcode >> 9) & 7) as u8;
     let mode = (opcode >> 3) & 7;
     let reg = (opcode & 7) as u8;
-    let add = |a, b| MicroOp::Alu {
-        op: AluOp::AddW,
-        a,
+    let alu = |b| MicroOp::Alu {
+        op,
+        a: Operand::DataRegLow16(dn),
         b,
         dst: Dest::DataRegLow16(dn),
     };
     match (mode, reg) {
         // Dn (data register direct): no bus operand read; the only access is the prefetch refill.
-        (0, _) => MicroState::from_ops(&[
-            MicroOp::Prefetch,
-            add(Operand::DataRegLow16(dn), Operand::DataRegLow16(reg)),
-        ]),
+        (0, _) => MicroState::from_ops(&[MicroOp::Prefetch, alu(Operand::DataRegLow16(reg))]),
         // (An): one data read of the operand, then the prefetch refill.
         (2, _) => MicroState::from_ops(&[
             MicroOp::ReadWord {
@@ -93,16 +100,14 @@ fn add_w_ea_dn(opcode: u16) -> MicroState {
                 dst: 0,
             },
             MicroOp::Prefetch,
-            add(Operand::DataRegLow16(dn), Operand::Scratch(0)),
+            alu(Operand::Scratch(0)),
         ]),
         // #imm: the immediate is the queued word (prefetch[1]); the ALU captures it before the two
         // prefetch refills shift the queue (two program reads, the 2-word instruction's fetch).
-        (7, 4) => MicroState::from_ops(&[
-            add(Operand::DataRegLow16(dn), Operand::ImmWord),
-            MicroOp::Prefetch,
-            MicroOp::Prefetch,
-        ]),
-        _ => todo!("ADD.w <ea>,Dn EA mode {mode}/{reg} not yet covered"),
+        (7, 4) => {
+            MicroState::from_ops(&[alu(Operand::ImmWord), MicroOp::Prefetch, MicroOp::Prefetch])
+        }
+        _ => todo!("<op>.w <ea>,Dn EA mode {mode}/{reg} not yet covered"),
     }
 }
 

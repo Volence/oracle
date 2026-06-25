@@ -37,6 +37,29 @@ fn add_w(a: u16, b: u16) -> (u16, u16) {
     (result, ccr)
 }
 
+/// 16-bit `SUB` (`a - b`, a the minuend) → `(result, new CCR low byte)`. Sets X/N/Z/V/C per the 68000.
+#[inline]
+fn sub_w(a: u16, b: u16) -> (u16, u16) {
+    let result = a.wrapping_sub(b);
+    let am = a & 0x8000 != 0;
+    let bm = b & 0x8000 != 0;
+    let rm = result & 0x8000 != 0;
+    let mut ccr = 0u16;
+    if rm {
+        ccr |= CCR_N;
+    }
+    if result == 0 {
+        ccr |= CCR_Z;
+    }
+    if (am != bm) && (rm != am) {
+        ccr |= CCR_V;
+    }
+    if (a as u32) < (b as u32) {
+        ccr |= CCR_C | CCR_X;
+    }
+    (result, ccr)
+}
+
 /// Maximum micro-ops in one opcode's recipe. Most opcodes need ≤ a handful; unbounded families
 /// (MOVEM-class) get a generator variant later. Grown as coverage requires.
 const MAX_OPS: usize = 8;
@@ -85,6 +108,8 @@ pub enum Dest {
 pub enum AluOp {
     /// 16-bit add: `dst = a + b`, setting X/N/Z/V/C.
     AddW,
+    /// 16-bit subtract: `dst = a - b` (a is the minuend), setting X/N/Z/V/C.
+    SubW,
 }
 
 /// One resumable step. Bus-access steps emit a [`Transaction`](super::bus68k::Transaction) and cost
@@ -191,6 +216,7 @@ impl MicroState {
                 let rhs = self.resolve(b, regs) as u16;
                 let (result, ccr) = match op {
                     AluOp::AddW => add_w(lhs, rhs),
+                    AluOp::SubW => sub_w(lhs, rhs),
                 };
                 regs.sr = (regs.sr & 0xFF00) | ccr;
                 match dst {
@@ -438,6 +464,29 @@ mod tests {
         assert_eq!(
             regs.d[6], 0x47A4_1151,
             "low word = 0x1526 + 0xFC2B; high word preserved"
+        );
+    }
+
+    #[test]
+    fn alu_sub_w_computes_difference_and_sets_flags() {
+        let mut regs = regs();
+        regs.d[5] = 0x3752_7B7D; // minuend Dn; low 0x7B7D
+        regs.sr = 0x271D;
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::Alu {
+            op: AluOp::SubW,
+            a: Operand::DataRegLow16(5),
+            b: Operand::Scratch(0),
+            dst: Dest::DataRegLow16(5),
+        }]);
+        st.scratch[0] = 0xF2BF; // subtrahend
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(regs.d[5], 0x3752_88BE, "0x7B7D - 0xF2BF (borrow wraps)");
+        assert_eq!(
+            regs.sr, 0x271B,
+            "N|V|C|X: negative result, signed overflow, borrow"
         );
     }
 
