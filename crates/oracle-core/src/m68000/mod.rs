@@ -5,6 +5,7 @@
 //! to (a) gate on real SingleStepTests data and (b) settle the cycle-granularity decision by running
 //! the same opcode both instruction-stepped and FSM-quiesced (see [`prototype`]).
 
+pub mod bus68k;
 pub mod prototype;
 pub mod registers;
 
