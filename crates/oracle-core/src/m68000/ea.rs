@@ -36,20 +36,77 @@ pub fn compute_ea(opcode: u16, regs: &Registers, size: Size) -> u32 {
     let _ = size;
     let mode = (opcode >> 3) & 7;
     let reg = (opcode & 7) as usize;
-    let disp = regs.prefetch[1] as i16 as i32 as u32;
-    let base = match (mode, reg) {
+    match (mode, reg) {
         // d16(An): An + sign_extend16(disp).
-        (5, _) => regs.addr_reg(reg),
+        (5, _) => {
+            regs.addr_reg(reg)
+                .wrapping_add(sign_extend16(regs.prefetch[1]))
+                & ADDR_MASK
+        }
         // abs.w: sign_extend16(disp) alone (no base register).
-        (7, 0) => 0,
+        (7, 0) => sign_extend16(regs.prefetch[1]) & ADDR_MASK,
         // d16(PC): (pc+2) + sign_extend16(disp) — the base is the extension-word address. `regs.pc` is the
         // opcode address (decode time, before any refill advances it), matching the recipe's `PcOfExt`.
+        (7, 2) => {
+            regs.pc
+                .wrapping_add(2)
+                .wrapping_add(sign_extend16(regs.prefetch[1]))
+                & ADDR_MASK
+        }
+        // d8(An,Xn): An + index(Xn) + sign_extend8(disp8) — the brief ext word in prefetch[1] carries both
+        // the index spec and the disp8. The index decode (D/A reg file, W/L size, sign-extension) is the
+        // SAME as the recipe's `Operand::BriefIndex` resolver, replicated here so `covered()` and the
+        // framework compute the identical address (the per-mode agreement test is the hard gate).
+        (6, _) => {
+            regs.addr_reg(reg)
+                .wrapping_add(brief_index(regs))
+                .wrapping_add(brief_disp8(regs))
+                & ADDR_MASK
+        }
+        // d8(PC,Xn): (pc+2) + index(Xn) + sign_extend8(disp8) — same as d8(An,Xn) but PC-relative base.
+        (7, 3) => {
+            regs.pc
+                .wrapping_add(2)
+                .wrapping_add(brief_index(regs))
+                .wrapping_add(brief_disp8(regs))
+                & ADDR_MASK
+        }
         // (abs.l (7/1) is NOT here: its low word lives in RAM, not the register file — its parity filter
         // assembles the two words directly. compute_ea covers only the register-file EaCalc modes.)
-        (7, 2) => regs.pc.wrapping_add(2),
         _ => panic!("compute_ea: mode {mode}/{reg} is not an EaCalc-based EA"),
+    }
+}
+
+/// Sign-extend a 16-bit value to 32 bits — the `d16`/`abs.w` displacement extension.
+#[inline]
+fn sign_extend16(v: u16) -> u32 {
+    v as i16 as i32 as u32
+}
+
+/// The `d8(An,Xn)`/`d8(PC,Xn)` brief-extension **index** value, decoded from `regs.prefetch[1]` exactly as
+/// the framework's `Operand::BriefIndex` resolver does (bit15 = D/A reg file, A7-aware; bits14-12 = reg;
+/// bit11 = W/L size with sign-extension). The shared decode keeps `compute_ea` (the `covered()` parity
+/// filter) bit-identical to the recipe's EaCalc.
+#[inline]
+fn brief_index(regs: &Registers) -> u32 {
+    let ext = regs.prefetch[1];
+    let reg = ((ext >> 12) & 7) as usize;
+    let raw = if ext & 0x8000 != 0 {
+        regs.addr_reg(reg)
+    } else {
+        regs.d[reg]
     };
-    base.wrapping_add(disp) & ADDR_MASK
+    if ext & 0x0800 != 0 {
+        raw
+    } else {
+        sign_extend16(raw as u16)
+    }
+}
+
+/// The `d8(An,Xn)`/`d8(PC,Xn)` brief-extension **disp8**: `sign_extend8(prefetch[1] & 0xFF)`.
+#[inline]
+fn brief_disp8(regs: &Registers) -> u32 {
+    (regs.prefetch[1] & 0xFF) as u8 as i8 as i32 as u32
 }
 
 /// Where an opcode's [`MicroOp::Alu`] sits relative to the prefetch refill(s) the EA emits.
@@ -245,6 +302,27 @@ fn src_seq(mode: u16, reg: u8) -> SrcSeq {
             operand: Operand::Scratch(0),
             placement: AluPlacement::Last,
         },
+        // d8(An,Xn) — register indirect with index + 8-bit displacement: EaCalc(An + index(Xn) +
+        // sign_extend8(disp8)) → EA scratch BEFORE the first refill (the brief ext word is in prefetch[1]
+        // now; it carries BOTH the index spec and the disp8, and the refill would shift it out). Then the
+        // indexed-mode `Internal(2)` idle (non-bus penalty, pinned by the SST `n` cycle), then the 2-word
+        // stream `[PF, READ, PF]` and combine. 14 cycles (3 word accesses + the 2-cycle idle). The brief
+        // ext word's data/addr-index, word/long-size and sign-extension are resolved entirely inside the
+        // `Operand::BriefIndex` resolver — the one isolated runtime branch.
+        (6, _) => SrcSeq {
+            ea_calc: Some(MicroOp::EaCalc {
+                base: Operand::AddrReg(reg),
+                index: Operand::BriefIndex,
+                disp: Operand::BriefDisp8,
+                dst: EA_SLOT,
+            }),
+            pre_read: [Some(MicroOp::Internal { cycles: 2 }), None],
+            read_addr: Some(Operand::Scratch(EA_SLOT)),
+            post_read: None,
+            prefetch: 2,
+            operand: Operand::Scratch(0),
+            placement: AluPlacement::Last,
+        },
         // abs.w — absolute short: the EA is the sign-extended extension word itself (base/index inert).
         // Same `[PF, READ, PF]` 2-word stream and 12 cycles as d16(An).
         (7, 0) => SrcSeq {
@@ -274,6 +352,25 @@ fn src_seq(mode: u16, reg: u8) -> SrcSeq {
                 dst: EA_SLOT,
             }),
             pre_read: [None, None],
+            read_addr: Some(Operand::Scratch(EA_SLOT)),
+            post_read: None,
+            prefetch: 2,
+            operand: Operand::Scratch(0),
+            placement: AluPlacement::Last,
+        },
+        // d8(PC,Xn) — program-counter indirect with index + 8-bit displacement: EaCalc((pc+2) + index(Xn)
+        // + sign_extend8(disp8)) → EA scratch BEFORE the first refill (the PC base is the extension-word
+        // address `pc+2`; the refill would advance pc and shift the brief ext word out). Same shape and 14
+        // cycles as d8(An,Xn) — only the base leg differs (`PcOfExt` not `AddrReg`). Source-only (PC-relative
+        // is not alterable; no destination form).
+        (7, 3) => SrcSeq {
+            ea_calc: Some(MicroOp::EaCalc {
+                base: Operand::PcOfExt,
+                index: Operand::BriefIndex,
+                disp: Operand::BriefDisp8,
+                dst: EA_SLOT,
+            }),
+            pre_read: [Some(MicroOp::Internal { cycles: 2 }), None],
             read_addr: Some(Operand::Scratch(EA_SLOT)),
             post_read: None,
             prefetch: 2,
@@ -488,6 +585,34 @@ pub fn ea_dst(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Ope
             buf.push(MicroOp::Prefetch);
             buf.push(make_alu(Operand::Scratch(0)));
             buf.push(write_ea);
+        }
+        // d8(An,Xn): compute the EA (An + index(Xn) + sign_extend8(disp8)) into the EA scratch slot FIRST
+        // (the brief ext word — index spec + disp8 — is in prefetch[1] now; the refill would shift it out),
+        // then the indexed-mode `Internal(2)` idle, then the 2-word RMW stream `[PF, READ, PF, WRITE]` at the
+        // materialized EA (read and write hit the SAME scratch). 18 cycles (4 word accesses + the idle 2).
+        (6, _) => {
+            buf.push(MicroOp::EaCalc {
+                base: Operand::AddrReg(reg),
+                index: Operand::BriefIndex,
+                disp: Operand::BriefDisp8,
+                dst: EA_SLOT,
+            });
+            buf.push(MicroOp::Internal { cycles: 2 });
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::Read {
+                addr: Operand::Scratch(EA_SLOT),
+                fc: super::microop::Fc::Data,
+                size: super::microop::Size::Word,
+                dst: 0,
+            });
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::Scratch(0)));
+            buf.push(MicroOp::Write {
+                addr: Operand::Scratch(EA_SLOT),
+                fc: super::microop::Fc::Data,
+                size: super::microop::Size::Word,
+                value: Operand::Scratch(1),
+            });
         }
         // abs.l: assemble the two-word address (HIGH, refill, LOW) into the EA scratch slot, then the RMW at
         // that materialized EA. 3-word instruction → 3 Prefetch total; bus `[PF, PF, READ, PF, WRITE]`.
@@ -764,6 +889,96 @@ mod tests {
             ea_dn_alu(4, Operand::Scratch(0)),
         ]);
         assert_eq!(build_src(7, 2, 4), literal);
+    }
+
+    #[test]
+    fn builder_matches_literal_d8_an_xn_source() {
+        // <op>.w d8(An,Xn),Dn (mode 6) →
+        //   [EaCalc(AddrReg,BriefIndex,BriefDisp8)→2, Internal(2), Prefetch, Read(Scratch(2))→0, Prefetch,
+        //    Alu(b=Scratch(0))].
+        // The brief extension word (in prefetch[1]) supplies BOTH the index leg and the disp8 leg; EaCalc
+        // captures them BEFORE the first Prefetch shifts it out. The Internal(2) idle is the indexed-mode
+        // penalty (non-bus); the bus stream is [PF, READ, PF] (read = second-to-last bus event), 14 cycles.
+        let literal = MicroState::from_ops(&[
+            MicroOp::EaCalc {
+                base: Operand::AddrReg(5),
+                index: Operand::BriefIndex,
+                disp: Operand::BriefDisp8,
+                dst: 2,
+            },
+            MicroOp::Internal { cycles: 2 },
+            MicroOp::Prefetch,
+            MicroOp::Read {
+                addr: Operand::Scratch(2),
+                fc: Fc::Data,
+                size: Size::Word,
+                dst: 0,
+            },
+            MicroOp::Prefetch,
+            ea_dn_alu(0, Operand::Scratch(0)),
+        ]);
+        assert_eq!(build_src(6, 5, 0), literal);
+    }
+
+    #[test]
+    fn builder_matches_literal_d8_pc_xn_source() {
+        // <op>.w d8(PC,Xn),Dn (mode 7/3) →
+        //   [EaCalc(PcOfExt,BriefIndex,BriefDisp8)→2, Internal(2), Prefetch, Read(Scratch(2))→0, Prefetch,
+        //    Alu(b=Scratch(0))].
+        // Same shape as d8(An,Xn) but the base is the extension-word address (pc+2), captured BEFORE any
+        // refill advances pc. PC-relative is source-only (not alterable). 14 cycles.
+        let literal = MicroState::from_ops(&[
+            MicroOp::EaCalc {
+                base: Operand::PcOfExt,
+                index: Operand::BriefIndex,
+                disp: Operand::BriefDisp8,
+                dst: 2,
+            },
+            MicroOp::Internal { cycles: 2 },
+            MicroOp::Prefetch,
+            MicroOp::Read {
+                addr: Operand::Scratch(2),
+                fc: Fc::Data,
+                size: Size::Word,
+                dst: 0,
+            },
+            MicroOp::Prefetch,
+            ea_dn_alu(4, Operand::Scratch(0)),
+        ]);
+        assert_eq!(build_src(7, 3, 4), literal);
+    }
+
+    #[test]
+    fn builder_matches_literal_d8_an_xn_destination() {
+        // <op>.w Dn,d8(An,Xn) (mode 6) →
+        //   [EaCalc(AddrReg,BriefIndex,BriefDisp8)→2, Internal(2), Prefetch, Read(Scratch(2))→0, Prefetch,
+        //    Alu, Write(Scratch(2))].
+        // Read and write hit the SAME materialized EA (scratch 2). Bus [PF, READ, PF, WRITE], 18 cycles.
+        let literal = MicroState::from_ops(&[
+            MicroOp::EaCalc {
+                base: Operand::AddrReg(6),
+                index: Operand::BriefIndex,
+                disp: Operand::BriefDisp8,
+                dst: 2,
+            },
+            MicroOp::Internal { cycles: 2 },
+            MicroOp::Prefetch,
+            MicroOp::Read {
+                addr: Operand::Scratch(2),
+                fc: Fc::Data,
+                size: Size::Word,
+                dst: 0,
+            },
+            MicroOp::Prefetch,
+            dn_ea_alu(2, Operand::Scratch(0)),
+            MicroOp::Write {
+                addr: Operand::Scratch(2),
+                fc: Fc::Data,
+                size: Size::Word,
+                value: Operand::Scratch(1),
+            },
+        ]);
+        assert_eq!(build_dst(6, 6, 2), literal);
     }
 
     #[test]
@@ -1053,6 +1268,110 @@ mod tests {
             let want = compute_ea(opcode, &regs, Size::Word);
             assert_eq!(got, want, "d16(PC) EaCalc vs compute_ea (disp={disp:#06x})");
         }
+    }
+
+    #[test]
+    fn ea_calc_recipe_agrees_with_compute_ea_d8_an_xn() {
+        // d8(A3,Xn),D4 — opcode 1101 100 0 01 110 011 = 0xD873. EA = A3 + index(Xn) + sign_extend8(disp8).
+        // The brief ext word (prefetch[1]) carries BOTH the index spec and disp8; cover all four W/L × D/A
+        // corners plus an A7 index. The shared `compute_ea` decodes it identically to the recipe's EaCalc.
+        let opcode = 0xD873;
+        // (ext, index-reg setup applied below). ext bits: 15=D/A, 14-12=reg, 11=W/L, 7-0=disp8.
+        for ext in [
+            0x3010u16, // D3, W, disp +0x10
+            0x3810,    // D3, L, disp +0x10
+            0xD0F0,    // A5, W, disp -16
+            0xF8F0,    // A7, L, disp -16
+            0x2080,    // D2, W, disp -128
+            0xC87F,    // A4, L, disp +127
+        ] {
+            let mut regs = Registers {
+                d: [0; 8],
+                a: [0; 7],
+                usp: 0,
+                ssp: 0x0020_0000,
+                pc: 0x0C00,
+                sr: SR_SUPERVISOR,
+                prefetch: [opcode, ext],
+            };
+            regs.a[3] = 0x0010_0000; // base A3
+            regs.d[2] = 0x0001_8044;
+            regs.d[3] = 0x00FF_2002;
+            regs.a[4] = 0x0030_F010;
+            regs.a[5] = 0x0000_9008;
+            let mut buf = RecipeBuf::new();
+            ea_src(&mut buf, 6, 3, |b| ea_dn_alu(4, b));
+            let recipe = buf.finish();
+            let got = read_addr_of(&recipe, &regs);
+            let want = compute_ea(opcode, &regs, Size::Word);
+            assert_eq!(got, want, "d8(An,Xn) EaCalc vs compute_ea (ext={ext:#06x})");
+        }
+    }
+
+    #[test]
+    fn ea_calc_recipe_agrees_with_compute_ea_d8_pc_xn() {
+        // d8(PC,Xn),D4 — opcode 1101 100 0 01 111 011 = 0xD87B. EA = (pc+2) + index(Xn) + sign_extend8(d8).
+        let opcode = 0xD87B;
+        for ext in [0x3010u16, 0x3810, 0xD0F0, 0xF8F0] {
+            let mut regs = Registers {
+                d: [0; 8],
+                a: [0; 7],
+                usp: 0,
+                ssp: 0x0020_0000,
+                pc: 0x0000_0C00,
+                sr: SR_SUPERVISOR,
+                prefetch: [opcode, ext],
+            };
+            regs.d[3] = 0x00FF_2002;
+            regs.a[5] = 0x0000_9008;
+            let mut buf = RecipeBuf::new();
+            ea_src(&mut buf, 7, 3, |b| ea_dn_alu(4, b));
+            let recipe = buf.finish();
+            let got = read_addr_of(&recipe, &regs);
+            let want = compute_ea(opcode, &regs, Size::Word);
+            assert_eq!(got, want, "d8(PC,Xn) EaCalc vs compute_ea (ext={ext:#06x})");
+        }
+    }
+
+    #[test]
+    fn ea_calc_d8_dest_recipe_agrees_with_compute_ea() {
+        // The d8(An,Xn) destination recipe's read and write hit the SAME materialized EA == compute_ea.
+        let opcode = 0xD976; // ADD.w D4,(d8,A6,Xn) = 1101 100 1 01 110 110
+        let ext = 0x3010u16; // D3, W, disp +0x10
+        let mut regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0,
+            ssp: 0,
+            pc: 0x0C00,
+            sr: SR_SUPERVISOR,
+            prefetch: [opcode, ext],
+        };
+        regs.a[6] = 0x0040_0000;
+        regs.d[3] = 0x0000_1000;
+        let mut buf = RecipeBuf::new();
+        ea_dst(&mut buf, 6, 6, |a| dn_ea_alu(4, a));
+        let recipe = buf.finish();
+
+        let mut st = recipe.clone();
+        let mut bus = FlatBus::new();
+        st.run_to_completion(&mut regs.clone(), &mut bus);
+        let want = compute_ea(opcode, &regs, Size::Word);
+        let read = bus
+            .log
+            .iter()
+            .find(|t| t.kind == TxKind::Read && t.fc == 5)
+            .unwrap()
+            .addr;
+        let write = bus
+            .log
+            .iter()
+            .find(|t| t.kind == TxKind::Write && t.fc == 5)
+            .unwrap()
+            .addr;
+        assert_eq!(read, want, "d8 dest read EA agrees with compute_ea");
+        assert_eq!(write, want, "d8 dest write EA agrees with compute_ea");
+        assert_eq!(read, write, "d8 dest read and write hit the same EA");
     }
 
     #[test]

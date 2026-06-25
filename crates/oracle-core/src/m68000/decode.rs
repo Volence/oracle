@@ -12,12 +12,12 @@ use super::microop::{AluOp, Cpu68000, Dest, MicroOp, MicroState, Operand, Size};
 use super::registers::Registers;
 
 /// Whether an EA `mode`/`reg` pair is an alterable-memory destination the builder currently covers:
-/// `(An)` (010), `(An)+` (011), `-(An)` (100), `d16(An)` (101), `abs.w` (111/000), `abs.l` (111/001). The
-/// remaining alterable-memory mode (`d8(An,Xn)`) lands in a later commit. (PC-relative and `#imm` are not
-/// alterable, so never destinations.)
+/// `(An)` (010), `(An)+` (011), `-(An)` (100), `d16(An)` (101), `d8(An,Xn)` (110), `abs.w` (111/000),
+/// `abs.l` (111/001) — all seven alterable-memory modes. (PC-relative and `#imm` are not alterable, so
+/// never destinations.)
 #[inline]
 fn is_dst_mem_mode(mode: u16, reg: u16) -> bool {
-    matches!(mode, 2..=5) || (mode == 7 && (reg == 0 || reg == 1))
+    matches!(mode, 2..=6) || (mode == 7 && (reg == 0 || reg == 1))
 }
 
 /// Decode the opcode currently in `regs.prefetch[0]` into its micro-op recipe.
@@ -27,7 +27,7 @@ pub fn decode(regs: &Registers) -> MicroState {
     // ADD.w and SUB.w share recipe shapes — they differ only in the `AluOp` (operand order is arranged so
     // the destination is the minuend, which matters for the non-commutative SUB).
     // `<op>.w Dn,<ea>` (memory destination, `1xx1 ddd 1 01 mmm rrr`). The destination-EA builder handles
-    // the covered alterable-memory modes: `(An)` (010), `(An)+` (011), `-(An)` (100).
+    // all seven alterable-memory modes: `(An)`/`(An)+`/`-(An)`/`d16(An)`/`d8(An,Xn)`/`abs.w`/`abs.l`.
     if opcode & 0xF1C0 == 0xD140 && is_dst_mem_mode((opcode >> 3) & 7, opcode & 7) {
         return arith_w_dn_ea(opcode, AluOp::Add); // ADD.w Dn,<ea>
     }
@@ -81,10 +81,9 @@ fn arith_w_dn_ea(opcode: u16, op: AluOp) -> MicroState {
 }
 
 /// `<op>.w <ea>,Dn` (`1xx1 ddd 0 01 mmm rrr`, register destination): `Dn = Dn <op> <ea>` — **Dn is the
-/// minuend** (`a`). The source-EA builder ([`ea_src`]) covers the register-direct (`Dn`/`An`), indirect
-/// (`(An)`/`(An)+`/`-(An)`), displaced (`d16(An)`/`d16(PC)`), absolute (`abs.w`/`abs.l`) and immediate
-/// (`#imm`) modes. The indexed `d8(An,Xn)`/`d8(PC,Xn)` modes are out of slice for this push (decode panics,
-/// and the harness xfails them).
+/// minuend** (`a`). The source-EA builder ([`ea_src`]) covers all 12 source modes: register-direct
+/// (`Dn`/`An`), indirect (`(An)`/`(An)+`/`-(An)`), displaced (`d16(An)`/`d16(PC)`), indexed
+/// (`d8(An,Xn)`/`d8(PC,Xn)`), absolute (`abs.w`/`abs.l`) and immediate (`#imm`).
 fn arith_w_ea_dn(opcode: u16, op: AluOp) -> MicroState {
     let dn = ((opcode >> 9) & 7) as u8;
     let mode = (opcode >> 3) & 7;
@@ -213,6 +212,133 @@ mod tests {
             let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
             let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
             // Resume to completion on the same bus.
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    /// The clean SingleStepTests reference case `d075 [ADD.w (d8,A5,Xn),D0]` (even EA, 14 cycles). Brief
+    /// ext `0xA22E` = index A2, word size, disp8 +46; EA = A5 + sign_extend16(A2 low 16) + 46 = 0x958DFC.
+    fn setup_d075() -> (Cpu68000, FlatBus) {
+        let mut regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0x1933_F716,
+            ssp: 0x0000_0800,
+            pc: 0x0C00,
+            sr: 0x2718,
+            prefetch: [0xD075, 0xA22E],
+        };
+        regs.d[0] = 0x2A4A_F7DE;
+        regs.a[5] = 0xB395_5165;
+        regs.a[2] = 0x02DC_3C69;
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            (3076u32, 97u8),
+            (3077, 204),
+            (3078, 120),
+            (3079, 192),
+            (9_801_212, 62),
+            (9_801_213, 27),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_d075_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 0x0C04,
+                value: 0x61CC,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 0x95_8DFC,
+                value: 0x3E1B,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 0x0C06,
+                value: 0x78C0,
+            },
+        ]
+    }
+
+    fn assert_d075_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 0x0C04, "pc advanced by one word");
+        assert_eq!(cpu.regs.sr, 0x2711, "CCR set per the add");
+        assert_eq!(
+            cpu.regs.d[0], 0x2A4A_35F9,
+            "Dn low word = 0xF7DE + 0x3E1B; high preserved"
+        );
+        assert_eq!(cpu.regs.a[5], 0xB395_5165, "An (base) unchanged");
+        assert_eq!(cpu.regs.a[2], 0x02DC_3C69, "Xn (index) unchanged");
+        assert_eq!(cpu.regs.prefetch, [0x61CC, 0x78C0], "prefetch advanced");
+        assert_eq!(bus.log, expected_d075_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_d075() {
+        let (mut cpu, mut bus) = setup_d075();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 14,
+            "EaCalc/Alu 0-cyc + Internal(2) + 3 word accesses"
+        );
+        assert_d075_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_d075() {
+        let (mut rtc, mut bus_rtc) = setup_d075();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_d075();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 14);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_d075_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn d075_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The no-divergence guarantee for the indexed d8(An,Xn) mode: snapshot/restore the whole CPU (incl.
+        // the in-flight cursor and its scratch slots — the materialized EA) at every micro-op boundary, then
+        // resume on the same bus to an identical final state + transaction stream.
+        let (mut rref, mut bref) = setup_d075();
+        rref.run_instruction(&mut bref);
+
+        let cfg = bincode::config::standard();
+        // 6 micro-ops (EaCalc, Internal(2), Prefetch, Read, Prefetch, Alu) → boundaries after 0..=5.
+        for pause_after in 0..=5 {
+            let (mut cpu, mut bus) = setup_d075();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
             loop {
                 if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
                     break;

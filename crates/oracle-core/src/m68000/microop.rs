@@ -19,6 +19,12 @@ fn sign_extend16(v: u16) -> u32 {
     v as i16 as i32 as u32
 }
 
+/// Sign-extend an 8-bit value to 32 bits (the `d8(An,Xn)` / `d8(PC,Xn)` brief-extension displacement).
+#[inline]
+fn sign_extend8(v: u8) -> u32 {
+    v as i8 as i32 as u32
+}
+
 /// 16-bit `ADD` (`a + b`) → `(result, new CCR low byte)`. Sets X/N/Z/V/C per the 68000.
 #[inline]
 fn add_w(a: u16, b: u16) -> (u16, u16) {
@@ -128,6 +134,16 @@ pub enum Operand {
     /// queue **after** the interleaved `Prefetch` — **never** from that prefetch's bus-return value (which
     /// would double-count the queue).
     ExtWordRaw,
+    /// The sized, sign-extended **index** of a `d8(An,Xn)` / `d8(PC,Xn)` brief extension word
+    /// (`prefetch[1]`): bit15 selects the index register file (`1` = `regs.addr_reg`, A7-aware; `0` =
+    /// `regs.d`), bits14-12 the register number, bit11 the size (`0` = W → sign-extend the low 16 to 32;
+    /// `1` = L → the full 32 bits). This is the one isolated runtime branch in the whole EA machinery —
+    /// kept in this single pure resolver, **not** a per-mode switch in `exec_one`.
+    BriefIndex,
+    /// The sign-extended 8-bit displacement of a `d8(An,Xn)` / `d8(PC,Xn)` brief extension word
+    /// (`prefetch[1]`): `sign_extend8(prefetch[1] & 0xFF)`. The high byte (D/A, index reg, W/L) is the
+    /// [`Operand::BriefIndex`] half, not part of the displacement.
+    BriefDisp8,
 }
 
 /// Where a [`MicroOp::Alu`] result is written.
@@ -245,6 +261,22 @@ impl MicroState {
             Operand::PcOfExt => regs.pc.wrapping_add(2),
             Operand::ExtWordHi => (regs.prefetch[1] as u32) << 16,
             Operand::ExtWordRaw => regs.prefetch[1] as u32,
+            Operand::BriefIndex => {
+                // The single isolated runtime branch: decode the brief extension word's index spec.
+                let ext = regs.prefetch[1];
+                let reg = ((ext >> 12) & 7) as usize;
+                let raw = if ext & 0x8000 != 0 {
+                    regs.addr_reg(reg) // bit15 = 1 → address register (A7-aware)
+                } else {
+                    regs.d[reg] // bit15 = 0 → data register
+                };
+                if ext & 0x0800 != 0 {
+                    raw // bit11 = 1 → long: the full 32 bits
+                } else {
+                    sign_extend16(raw as u16) // bit11 = 0 → word: sign-extend the low 16
+                }
+            }
+            Operand::BriefDisp8 => sign_extend8((regs.prefetch[1] & 0xFF) as u8),
         }
     }
 
@@ -978,6 +1010,121 @@ mod tests {
         st.exec_one(&mut regs, &mut bus);
 
         assert_eq!(st.scratch[0], 0x0012_3456, "base alone; Zero legs inert");
+    }
+
+    #[test]
+    fn brief_disp8_resolves_sign_extended_low_byte_of_ext_word() {
+        // Operand::BriefDisp8 = sign_extend8(prefetch[1] & 0xFF). The brief extension word's low byte is a
+        // signed 8-bit displacement; the upper byte (D/A, index reg, W/L) is NOT part of the disp.
+        let mut regs = regs();
+        regs.prefetch = [0xD075, 0xA2F0]; // brief ext low byte 0xF0 → sign-extend → -16
+        let mut bus = FlatBus::new();
+        // Resolve via an inert-base EaCalc so we can read the resolved value directly.
+        let mut st = MicroState::from_ops(&[MicroOp::EaCalc {
+            base: Operand::Zero,
+            index: Operand::Zero,
+            disp: Operand::BriefDisp8,
+            dst: 0,
+        }]);
+
+        st.exec_one(&mut regs, &mut bus);
+
+        // sign_extend8(0xF0) = 0xFFFF_FFF0 → masked to 24 bits = 0x00FF_FFF0.
+        assert_eq!(
+            st.scratch[0], 0x00FF_FFF0,
+            "BriefDisp8 = sign_extend8(prefetch[1] & 0xFF), masked"
+        );
+    }
+
+    #[test]
+    fn brief_index_data_reg_word_sign_extends_low16() {
+        // bit15 = 0 (D), bits14-12 = 3 (D3), bit11 = 0 (W → sign-extend low 16). Brief ext = 0x3000.
+        let mut regs = regs();
+        regs.d[3] = 0x1234_F008; // low 16 = 0xF008 → sign-extend → 0xFFFF_F008
+        regs.prefetch = [0xD030, 0x3000];
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::EaCalc {
+            base: Operand::Zero,
+            index: Operand::BriefIndex,
+            disp: Operand::Zero,
+            dst: 0,
+        }]);
+
+        st.exec_one(&mut regs, &mut bus);
+
+        // sign_extend16(0xF008) = 0xFFFF_F008 → masked to 24 bits = 0x00FF_F008.
+        assert_eq!(
+            st.scratch[0], 0x00FF_F008,
+            "BriefIndex (D, W) = sign_extend16(Dn low 16)"
+        );
+    }
+
+    #[test]
+    fn brief_index_data_reg_long_uses_full_32() {
+        // bit15 = 0 (D), bits14-12 = 3 (D3), bit11 = 1 (L → full 32). Brief ext = 0x3800.
+        let mut regs = regs();
+        regs.d[3] = 0x0012_F008; // full 32 bits used
+        regs.prefetch = [0xD030, 0x3800];
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::EaCalc {
+            base: Operand::Zero,
+            index: Operand::BriefIndex,
+            disp: Operand::Zero,
+            dst: 0,
+        }]);
+
+        st.exec_one(&mut regs, &mut bus);
+
+        // full 0x0012_F008 → masked to 24 bits = 0x0012_F008.
+        assert_eq!(
+            st.scratch[0], 0x0012_F008,
+            "BriefIndex (D, L) = full 32 bits of Dn"
+        );
+    }
+
+    #[test]
+    fn brief_index_addr_reg_word_sign_extends_low16() {
+        // bit15 = 1 (A), bits14-12 = 5 (A5), bit11 = 0 (W). Brief ext = 0xD000 (1101 0000 0000 0000).
+        let mut regs = regs();
+        regs.a[5] = 0x00AB_8001; // low 16 = 0x8001 → sign-extend → 0xFFFF_8001
+        regs.prefetch = [0xD075, 0xD000];
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::EaCalc {
+            base: Operand::Zero,
+            index: Operand::BriefIndex,
+            disp: Operand::Zero,
+            dst: 0,
+        }]);
+
+        st.exec_one(&mut regs, &mut bus);
+
+        // sign_extend16(0x8001) = 0xFFFF_8001 → masked to 24 bits = 0x00FF_8001.
+        assert_eq!(
+            st.scratch[0], 0x00FF_8001,
+            "BriefIndex (A, W) = sign_extend16(An low 16)"
+        );
+    }
+
+    #[test]
+    fn brief_index_addr_reg_long_uses_full_32_and_a7_aware() {
+        // bit15 = 1 (A), bits14-12 = 7 (A7 → active stack pointer), bit11 = 1 (L). Brief ext = 0xF800.
+        let mut regs = regs(); // supervisor → A7 == ssp
+        regs.ssp = 0x0034_5678;
+        regs.prefetch = [0xD075, 0xF800];
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::EaCalc {
+            base: Operand::Zero,
+            index: Operand::BriefIndex,
+            disp: Operand::Zero,
+            dst: 0,
+        }]);
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(
+            st.scratch[0], 0x0034_5678,
+            "BriefIndex (A7, L) reads the active stack pointer, full 32 bits"
+        );
     }
 
     #[test]
