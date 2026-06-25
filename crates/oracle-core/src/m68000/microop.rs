@@ -25,6 +25,37 @@ fn sign_extend8(v: u8) -> u32 {
     v as i8 as i32 as u32
 }
 
+/// Evaluate one of the 16 68000 branch conditions (`cc` = the `cccc` field of a `Bcc`/`DBcc`/`Scc`) against
+/// the live CCR (the low byte of `sr`: X|N|Z|V|C). A **pure** helper — NOT a micro-op — called by `decode`
+/// to resolve a conditional branch's taken/not-taken path at decode time (so the interpreter stays a flat
+/// linear recipe). `T` (cc 0, the always-taken `BRA`) and `F` (cc 1, the always-false code that is actually
+/// `BSR`, decoded elsewhere) are the two flag-independent conditions.
+#[inline]
+pub fn condition_true(cc: u8, sr: u16) -> bool {
+    let c = sr & CCR_C != 0;
+    let v = sr & CCR_V != 0;
+    let z = sr & CCR_Z != 0;
+    let n = sr & CCR_N != 0;
+    match cc & 0xF {
+        0 => true,            // T  — always (BRA)
+        1 => false,           // F  — never (the BSR encoding; decoded separately)
+        2 => !c && !z,        // HI
+        3 => c || z,          // LS
+        4 => !c,              // CC / HS
+        5 => c,               // CS / LO
+        6 => !z,              // NE
+        7 => z,               // EQ
+        8 => !v,              // VC
+        9 => v,               // VS
+        10 => !n,             // PL
+        11 => n,              // MI
+        12 => n == v,         // GE
+        13 => n != v,         // LT
+        14 => (n == v) && !z, // GT
+        _ => z || (n != v),   // LE (cc 15)
+    }
+}
+
 /// 16-bit `ADD` (`a + b`) → `(result, new CCR low byte)`. Sets X/N/Z/V/C per the 68000.
 #[inline]
 fn add_w(a: u16, b: u16) -> (u16, u16) {
@@ -264,6 +295,10 @@ pub enum Operand {
     /// (`prefetch[1]`): `sign_extend8(prefetch[1] & 0xFF)`. The high byte (D/A, index reg, W/L) is the
     /// [`Operand::BriefIndex`] half, not part of the displacement.
     BriefDisp8,
+    /// The sign-extended 8-bit branch displacement of a `Bcc`/`BSR`: `sign_extend8(prefetch[0] & 0xFF)`. It
+    /// comes from the **opcode** word (`prefetch[0]`), NOT `prefetch[1]` (the word-form displacement). Used by
+    /// a taken byte-form branch's [`MicroOp::TargetCalc`].
+    BranchDisp8,
 }
 
 /// Where a [`MicroOp::Alu`] result is written.
@@ -397,6 +432,24 @@ pub enum MicroOp {
     /// 0-cycle, non-bus, snapshot-visible internal step. **No 24-bit mask** — this is an operand VALUE, not
     /// an address (distinct from [`MicroOp::EaCalc`], which masks to `ADDR_MASK`).
     Combine32 { hi: Slot, lo: Operand, dst: Slot },
+    /// Set the program counter to a branch destination: `regs.pc = resolve(value).wrapping_sub(4)`. The −4
+    /// **primes** the two [`MicroOp::Prefetch`] ops that must follow: each reads at `pc+4` and advances `pc`
+    /// by 2, so after `SetPc{value}` + two `Prefetch`s the queue holds `[word@value, word@value+2]` and
+    /// `pc == value` (the exact analog of why a sequential `Prefetch` reads `pc+4`: the queue is two words
+    /// ahead). **NO 24-bit mask** — the PC stays full 32-bit (a backward branch can land `pc` with high bits
+    /// set; only the bus address `read16` masks). A 0-cycle, non-bus, snapshot-visible internal step.
+    SetPc { value: Operand },
+    /// Compute a branch target / pushed return address `scratch[dst] = resolve(base) + resolve(index) +
+    /// resolve(disp)` — the **UNMASKED twin** of [`MicroOp::EaCalc`]. A stored PC / pushed return address is
+    /// the full 32-bit value (a backward `Bcc` to `0xFFFF_DB42` must NOT be masked to 24 bits), so unlike
+    /// `EaCalc` this does **NO** `ADDR_MASK`. A fixed 3-way `wrapping_add` (`Zero` for an inert leg); a
+    /// 0-cycle, non-bus, snapshot-visible internal step.
+    TargetCalc {
+        base: Operand,
+        index: Operand,
+        disp: Operand,
+        dst: Slot,
+    },
 }
 
 /// The in-flight micro-op cursor for one instruction: the recipe, how far through it we are, and the
@@ -466,6 +519,7 @@ impl MicroState {
                 }
             }
             Operand::BriefDisp8 => sign_extend8((regs.prefetch[1] & 0xFF) as u8),
+            Operand::BranchDisp8 => sign_extend8((regs.prefetch[0] & 0xFF) as u8),
         }
     }
 
@@ -621,6 +675,25 @@ impl MicroState {
                 // Assemble the 32-bit long value — NO mask (this is a value, not an address).
                 let value = (self.scratch[hi as usize] << 16) | self.resolve(lo, regs);
                 self.scratch[dst as usize] = value;
+                0
+            }
+            MicroOp::SetPc { value } => {
+                // pc = target - 4; the two Prefetch ops that follow reload the queue at `target`. NO mask.
+                regs.pc = self.resolve(value, regs).wrapping_sub(4);
+                0
+            }
+            MicroOp::TargetCalc {
+                base,
+                index,
+                disp,
+                dst,
+            } => {
+                // The UNMASKED 3-way add — a branch target / pushed PC is the full 32-bit value (no ADDR_MASK).
+                let target = self
+                    .resolve(base, regs)
+                    .wrapping_add(self.resolve(index, regs))
+                    .wrapping_add(self.resolve(disp, regs));
+                self.scratch[dst as usize] = target;
                 0
             }
         };
@@ -1821,6 +1894,213 @@ mod tests {
         assert_eq!(
             regs.ssp, 0x0012_3456,
             "A7 dest hit the supervisor stack pointer"
+        );
+    }
+
+    // --- F0: the branch primitive (condition_true, SetPc, TargetCalc, BranchDisp8). ---
+
+    #[test]
+    fn condition_true_evaluates_all_16_conditions_against_the_ccr() {
+        // condition_true(cc, sr) reads ONLY the CCR low byte (X|N|Z|V|C). Each condition is pinned to its
+        // 68000 truth table. Build SR values that isolate each flag (system byte 0x2700 supervisor, plus the
+        // CCR bits under test).
+        let sup = 0x2700u16;
+        // T (cc 0, BRA) — always true; F (cc 1, BSR) — always false. Independent of flags.
+        assert!(condition_true(0, sup), "T always true");
+        assert!(
+            condition_true(0, sup | 0x1F),
+            "T always true (all flags set)"
+        );
+        assert!(!condition_true(1, sup), "F always false");
+        assert!(!condition_true(1, sup | 0x1F), "F always false");
+        // HI (cc 2) = !C & !Z.
+        assert!(condition_true(2, sup), "HI: C=0,Z=0");
+        assert!(!condition_true(2, sup | CCR_C), "HI false when C set");
+        assert!(!condition_true(2, sup | CCR_Z), "HI false when Z set");
+        // LS (cc 3) = C | Z.
+        assert!(!condition_true(3, sup), "LS: C=0,Z=0 false");
+        assert!(condition_true(3, sup | CCR_C), "LS true when C set");
+        assert!(condition_true(3, sup | CCR_Z), "LS true when Z set");
+        // CC/HS (cc 4) = !C; CS/LO (cc 5) = C.
+        assert!(condition_true(4, sup), "CC: C=0 true");
+        assert!(!condition_true(4, sup | CCR_C), "CC false when C set");
+        assert!(!condition_true(5, sup), "CS: C=0 false");
+        assert!(condition_true(5, sup | CCR_C), "CS true when C set");
+        // NE (cc 6) = !Z; EQ (cc 7) = Z.
+        assert!(condition_true(6, sup), "NE: Z=0 true");
+        assert!(!condition_true(6, sup | CCR_Z), "NE false when Z set");
+        assert!(!condition_true(7, sup), "EQ: Z=0 false");
+        assert!(condition_true(7, sup | CCR_Z), "EQ true when Z set");
+        // VC (cc 8) = !V; VS (cc 9) = V.
+        assert!(condition_true(8, sup), "VC: V=0 true");
+        assert!(!condition_true(8, sup | CCR_V), "VC false when V set");
+        assert!(!condition_true(9, sup), "VS: V=0 false");
+        assert!(condition_true(9, sup | CCR_V), "VS true when V set");
+        // PL (cc 10) = !N; MI (cc 11) = N.
+        assert!(condition_true(10, sup), "PL: N=0 true");
+        assert!(!condition_true(10, sup | CCR_N), "PL false when N set");
+        assert!(!condition_true(11, sup), "MI: N=0 false");
+        assert!(condition_true(11, sup | CCR_N), "MI true when N set");
+        // GE (cc 12) = N == V; LT (cc 13) = N != V.
+        assert!(condition_true(12, sup), "GE: N=0,V=0 (equal) true");
+        assert!(
+            condition_true(12, sup | CCR_N | CCR_V),
+            "GE: N=1,V=1 (equal) true"
+        );
+        assert!(!condition_true(12, sup | CCR_N), "GE: N=1,V=0 false");
+        assert!(!condition_true(13, sup), "LT: N=0,V=0 (equal) false");
+        assert!(condition_true(13, sup | CCR_N), "LT: N=1,V=0 true");
+        assert!(condition_true(13, sup | CCR_V), "LT: N=0,V=1 true");
+        // GT (cc 14) = (N == V) & !Z; LE (cc 15) = Z | (N != V).
+        assert!(condition_true(14, sup), "GT: N==V, Z=0 true");
+        assert!(!condition_true(14, sup | CCR_Z), "GT false when Z set");
+        assert!(!condition_true(14, sup | CCR_N), "GT false when N!=V");
+        assert!(condition_true(15, sup | CCR_Z), "LE true when Z set");
+        assert!(condition_true(15, sup | CCR_N), "LE true when N!=V");
+        assert!(!condition_true(15, sup), "LE: Z=0, N==V false");
+    }
+
+    #[test]
+    fn branch_disp8_resolves_sign_extended_low_byte_of_opcode() {
+        // Operand::BranchDisp8 = sign_extend8(prefetch[0] & 0xFF) — the byte-branch displacement comes from
+        // the OPCODE word (prefetch[0]), not prefetch[1]. Resolve via an inert-base EaCalc.
+        let mut regs = regs();
+        regs.prefetch = [0x636A, 0xDEAD]; // opcode 0x636A → low byte 0x6A = +106; prefetch[1] must be ignored
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::EaCalc {
+            base: Operand::Zero,
+            index: Operand::Zero,
+            disp: Operand::BranchDisp8,
+            dst: 0,
+        }]);
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(
+            st.scratch[0], 106,
+            "BranchDisp8 = sign_extend8(prefetch[0] & 0xFF) = +106"
+        );
+    }
+
+    #[test]
+    fn branch_disp8_sign_extends_negative_low_byte() {
+        let mut regs = regs();
+        regs.prefetch = [0x62F0, 0x0000]; // low byte 0xF0 → sign-extend → -16 → 0xFFFF_FFF0
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::Combine32 {
+            hi: 7, // scratch[7] is 0 → (0<<16)|disp resolves BranchDisp8 unmasked
+            lo: Operand::BranchDisp8,
+            dst: 0,
+        }]);
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(
+            st.scratch[0], 0xFFFF_FFF0,
+            "BranchDisp8 sign-extends 0xF0 to 0xFFFF_FFF0 (unmasked via Combine32)"
+        );
+    }
+
+    #[test]
+    fn target_calc_sums_three_legs_without_masking() {
+        // TargetCalc is the UNMASKED twin of EaCalc: scratch[dst] = base + index + disp, NO 24-bit mask (a
+        // branch target / pushed PC is the full 32-bit value). Pin a backward branch whose target's high bits
+        // are set: base = pc+2 (0xFFFF_E000+2), disp = -0x100 → 0xFFFF_DF02, which EaCalc would have masked.
+        let mut regs = regs();
+        regs.pc = 0xFFFF_E000;
+        regs.prefetch = [0x6000, 0xFF00]; // word disp 0xFF00 → sign-extend → -256
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::TargetCalc {
+            base: Operand::PcOfExt,
+            index: Operand::Zero,
+            disp: Operand::DispWord,
+            dst: 0,
+        }]);
+
+        let cycles = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(cycles, 0, "TargetCalc is an internal compute — 0 cycles");
+        assert_eq!(
+            st.scratch[0], 0xFFFF_DF02,
+            "(pc+2) + (-256) = 0xFFFF_DF02, UNMASKED (EaCalc would mask to 0x00FF_DF02)"
+        );
+        assert!(bus.log.is_empty(), "TargetCalc touches no bus");
+    }
+
+    #[test]
+    fn set_pc_writes_value_minus_4_unmasked() {
+        // SetPc { value } sets regs.pc = resolve(value) - 4 (the −4 primes the two Prefetch ops that follow
+        // to reload the queue at `value`, leaving pc == value). NO mask — the PC stays full 32-bit. 0 cycles,
+        // no bus.
+        let mut regs = regs();
+        regs.pc = 0x0000_0C00;
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::SetPc {
+            value: Operand::Scratch(0),
+        }]);
+        st.scratch[0] = 0xFFFF_DB42; // a backward branch target with high bits set
+
+        let cycles = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(cycles, 0, "SetPc is an internal compute — 0 cycles");
+        assert_eq!(
+            regs.pc, 0xFFFF_DB3E,
+            "pc = target - 4 (0xFFFF_DB42 - 4), UNMASKED"
+        );
+        assert!(bus.log.is_empty(), "SetPc touches no bus");
+    }
+
+    #[test]
+    fn set_pc_then_two_prefetch_lands_pc_at_target_and_reloads_queue() {
+        // The branch reload invariant: SetPc(target) sets pc = target-4, then the two Prefetch ops read at
+        // target then target+2 (FC=6 program) and leave pc == target with prefetch = [word@target,
+        // word@target+2]. This is the universal taken-branch tail.
+        let mut regs = regs();
+        regs.pc = 0x0000_0C00;
+        regs.prefetch = [0x6000, 0x0000];
+        let mut bus = FlatBus::new();
+        // The two words at the branch target.
+        bus.poke(0x0000_1000, 0x12);
+        bus.poke(0x0000_1001, 0x34);
+        bus.poke(0x0000_1002, 0x56);
+        bus.poke(0x0000_1003, 0x78);
+        let mut st = MicroState::from_ops(&[
+            MicroOp::SetPc {
+                value: Operand::Scratch(0),
+            },
+            MicroOp::Prefetch,
+            MicroOp::Prefetch,
+        ]);
+        st.scratch[0] = 0x0000_1000; // target
+
+        let cycles = st.run_to_completion(&mut regs, &mut bus);
+
+        assert_eq!(cycles, 8, "two word prefetch reads = 8 cycles (SetPc is 0)");
+        assert_eq!(regs.pc, 0x0000_1000, "pc landed exactly at the target");
+        assert_eq!(
+            regs.prefetch,
+            [0x1234, 0x5678],
+            "queue reloaded with the two words at target / target+2"
+        );
+        assert_eq!(
+            bus.log,
+            vec![
+                Transaction {
+                    kind: TxKind::Read,
+                    fc: 6,
+                    addr: 0x0000_1000,
+                    size: Size::Word,
+                    value: 0x1234,
+                },
+                Transaction {
+                    kind: TxKind::Read,
+                    fc: 6,
+                    addr: 0x0000_1002,
+                    size: Size::Word,
+                    value: 0x5678,
+                },
+            ],
+            "both reloads are supervisor-program (FC 6) word reads at target / target+2"
         );
     }
 }

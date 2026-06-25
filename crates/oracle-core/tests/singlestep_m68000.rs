@@ -11,16 +11,22 @@
 //! other `MOVE.l` memory dest writes hi then lo), through *both* framework drivers (run-to-completion fast
 //! path and the step-one-micro-op quiesce path), which must also agree with each other.
 //!
+//! Also drives `Bcc`/`BRA` (the conditional/unconditional PC-relative branch, `0x6xxx`, cc != 1 — cc == 1 is
+//! `BSR`, a later commit): the condition is resolved at decode time, emitting the taken or not-taken linear
+//! recipe, so the variable cycle counts (byte not-taken 8, word not-taken 12, taken 10 both forms) emerge
+//! naturally and both drivers stay in agreement.
+//!
 //! Versioned xfail manifest (slice scope — implemented later): odd-address *word* accesses (which raise an
-//! address-error exception — byte accesses have no such error, so odd byte EAs are in scope), the `A7` form
-//! of the older `(An)` (mode 2) memory access, `An`-direct as a byte source (`ADD.b An,Dn` is illegal), and
-//! the remaining EA modes / sizes are skipped (see [`covered`]). The auto-(in/de)crement `(A7)+`/`-(A7)`
-//! forms are in scope for both sizes (word steps 2; byte steps 2 for A7 to keep the SP even). If the vendor
-//! data is missing, the test skips cleanly (run `tools/fetch-tests.sh`).
+//! address-error exception — byte accesses have no such error, so odd byte EAs are in scope), a taken `Bcc`
+//! to an *odd target* (the same address-error class), the `A7` form of the older `(An)` (mode 2) memory
+//! access, `An`-direct as a byte source (`ADD.b An,Dn` is illegal), and the remaining EA modes / sizes are
+//! skipped (see [`covered`]). The auto-(in/de)crement `(A7)+`/`-(A7)` forms are in scope for both sizes (word
+//! steps 2; byte steps 2 for A7 to keep the SP even). If the vendor data is missing, the test skips cleanly
+//! (run `tools/fetch-tests.sh`).
 
 use oracle_core::m68000::bus68k::{FlatBus, Transaction, TxKind};
 use oracle_core::m68000::ea::compute_ea;
-use oracle_core::m68000::microop::{Cpu68000, Size, Step};
+use oracle_core::m68000::microop::{condition_true, Cpu68000, Size, Step};
 use oracle_core::m68000::registers::Registers;
 use serde_json::Value;
 use std::path::Path;
@@ -44,6 +50,7 @@ const FILES: &[&str] = &[
     "MOVE.l.json",
     "MOVEA.w.json",
     "MOVEA.l.json",
+    "Bcc.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -403,6 +410,39 @@ fn movea_in_scope(opcode: u16, ini: &Value) -> bool {
     true
 }
 
+/// Whether this opcode is a `Bcc`/`BRA` the framework covers (`0110 cccc dddddddd`, 0x6xxx; cc != 1 — cc ==
+/// 1 is `BSR`, a later commit, and is excluded). `Bcc.json` carries `BRA` (0x60xx) + cc 2..=15; the cc == 1
+/// `BSR` cases live in `BSR.json` (not this file).
+fn bcc_covered(opcode: u16) -> bool {
+    opcode >> 12 == 0b0110 && (opcode >> 8) & 0xF != 1
+}
+
+/// The `Bcc`/`BRA` scope/parity filter (called once `bcc_covered` matches). Clean iff the branch is NOT taken
+/// (a fall-through is always clean) OR the taken target is **even**. A taken odd target raises an address
+/// error (the deferred odd-address class) → xfail. The condition is resolved exactly as the decoder does
+/// (`condition_true` against the live CCR); the target is `pc + 2 + sign_extend(disp)` (the displacement is
+/// relative to the extension-word address `pc + 2`), where `disp` is the opcode's low byte (byte form,
+/// `disp8 != 0`) or the extension word `prefetch[1]` sign-extended (word form, `disp8 == 0`).
+fn bcc_in_scope(opcode: u16, ini: &Value) -> bool {
+    let cc = (opcode >> 8) as u8 & 0xF;
+    let sr = u32f(ini, "sr") as u16;
+    if !condition_true(cc, sr) {
+        return true; // not taken — the sequential fall-through is always clean
+    }
+    let pc = u32f(ini, "pc");
+    let disp8 = opcode & 0xFF;
+    let disp = if disp8 == 0 {
+        // word form: the 16-bit displacement is the extension word, sign-extended.
+        let ext = ini["prefetch"].as_array().unwrap()[1].as_u64().unwrap() as u16;
+        ext as i16 as i32 as u32
+    } else {
+        // byte form: the opcode's low byte, sign-extended.
+        disp8 as u8 as i8 as i32 as u32
+    };
+    let target = pc.wrapping_add(2).wrapping_add(disp);
+    target & 1 == 0 // even target is in scope; odd target is an address error → xfail
+}
+
 /// Whether the framework currently covers this case (else it is an xfail for this push). `ADD`/`SUB` in
 /// word and byte sizes, each in two forms — `Dn,<ea>` (memory dest; word ADD=0xD140/SUB=0x9140, byte
 /// ADD=0xD100/SUB=0x9100) and `<ea>,Dn` (register dest; word ADD=0xD040/SUB=0x9040, byte
@@ -422,6 +462,12 @@ fn covered(opcode: u16, ini: &Value) -> bool {
     // covered.
     if movea_size(opcode).is_some() {
         return movea_in_scope(opcode, ini);
+    }
+    // Bcc / BRA (`0110 cccc dddddddd`, 0x6xxx; cc != 1) — its own taken/not-taken parity filter (a taken
+    // odd target is an address error → xfail; a fall-through is always clean). cc == 1 is BSR (a later
+    // commit), excluded by `bcc_covered`.
+    if bcc_covered(opcode) {
+        return bcc_in_scope(opcode, ini);
     }
     // Read the value of address register `reg` exactly as the decoder's `addr_reg` does: A7 is `ssp` in
     // supervisor mode, `usp` in user mode (there is no `a7` field) — needed so `(A7)+`/`-(A7)` parity is
@@ -683,8 +729,8 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 46200,
-        "expected ~46247 covered cases — ADD/SUB (~21790: word ~5871 + byte ~9974 + long ~5945) plus \
+        ran >= 52112,
+        "expected 52112 covered cases — ADD/SUB (21790: word 5871 + byte 9974 + long 5945) plus \
          MOVE.w (3154: all 12 source modes × Dn + the alterable-memory dest modes \
          ((An)/(An)+/-(An)/d16(An)/d8(An,Xn)/abs.w/abs.l), even word EAs since an odd word access is an \
          address error, the (A7) mode-2 word form xfail) plus MOVE.b (7796: same modes, byte excludes \
@@ -694,8 +740,10 @@ fn add_sub_match_singlesteptests() {
          error → xfail; the -(An) step is 4 and #imm.l is two ext words), the (A7) mode-2 form xfail) plus \
          MOVEA.w (5180) + MOVEA.l (5245): all 12 source modes (An-direct legal both sizes) → An, no flags \
          (.w sign-extends, .l writes full 32), no destination access; even word/long source EAs since an odd \
-         access is an address error, the (A7) mode-2 source form xfail; byte MOVEA is illegal (not covered), \
-         ran {ran}"
+         access is an address error, the (A7) mode-2 source form xfail; byte MOVEA is illegal (not covered) \
+         plus Bcc/BRA (5865: cc != 1 (cc == 1 is BSR, a later commit); not-taken always clean (byte 8 cyc, \
+         word 12 cyc), taken even-target in scope (10 cyc both forms), taken odd-target = address error → \
+         xfail), ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }

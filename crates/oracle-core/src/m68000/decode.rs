@@ -8,7 +8,7 @@
 
 use super::bus68k::Bus68k;
 use super::ea::{ea_dst, ea_move, ea_movea, ea_src, RecipeBuf};
-use super::microop::{AluOp, Cpu68000, Dest, MicroOp, MicroState, Operand, Size};
+use super::microop::{condition_true, AluOp, Cpu68000, Dest, MicroOp, MicroState, Operand, Size};
 use super::registers::Registers;
 
 /// Whether an EA `mode`/`reg` pair is an alterable-memory destination the builder currently covers:
@@ -132,6 +132,12 @@ pub fn decode(regs: &Registers) -> MicroState {
     if opcode & 0xF1C0 == 0x9080 {
         return arith_ea_dn(opcode, AluOp::Sub, Size::Long); // SUB.l <ea>,Dn
     }
+    // Bcc / BRA (`0110 cccc dddddddd`, 0x6xxx) — conditional branch. cc = bits 11-8 (cc == 0 is BRA, always
+    // taken); cc == 1 is BSR (a separate decode arm, NOT this commit) and is excluded. The condition is
+    // evaluated at DECODE time against the live CCR, emitting the taken or not-taken linear recipe directly.
+    if opcode >> 12 == 0b0110 && (opcode >> 8) & 0xF != 1 {
+        return bcc_recipe(opcode, regs);
+    }
     todo!("opcode {opcode:#06X} not yet decoded")
 }
 
@@ -240,6 +246,57 @@ fn arith_ea_dn(opcode: u16, op: AluOp, size: Size) -> MicroState {
         b,
         dst: dn_dest(dn, size),
     });
+    buf.finish()
+}
+
+/// `Bcc`/`BRA` (`0110 cccc dddddddd`, 0x6xxx; cc != 1 — cc == 1 is BSR, a separate arm): a conditional
+/// program-counter-relative branch. The condition (cc = bits 11-8) is resolved at **decode time** against the
+/// live CCR via [`condition_true`], so the interpreter stays a flat linear recipe (a different-length recipe
+/// emerges per path, which is how the variable cycle count arises). `disp8 = opcode & 0xFF`; `disp8 == 0`
+/// selects the **word** form (the 16-bit displacement is the extension word `prefetch[1]`), else the **byte**
+/// form (the displacement is `disp8` itself, from the opcode word). The target is `pc + 2 +
+/// sign_extend(disp)` — the displacement is relative to the extension-word address (`pc + 2`), exactly the
+/// `PcOfExt` base. All cycle counts/orderings are pinned against the vendored `Bcc` SST stream.
+///
+/// - **Not taken** — the sequential fall-through: `[Internal(4), Prefetch×k]` (k = 1 word form, 2 word form),
+///   advancing `pc` by `2k` with no `SetPc`. Byte = 8 cyc (`62b6`), word = 12 cyc (`6400`).
+/// - **Taken** — `[TargetCalc(PcOfExt, ·, disp), Internal(2), SetPc(target), Prefetch, Prefetch]`: compute the
+///   full 32-bit (UNMASKED) target FIRST (capturing `prefetch[1]`/the opcode disp before any refill), then
+///   `SetPc` primes the queue reload. 10 cyc both forms (`636a` byte, `6700` word).
+fn bcc_recipe(opcode: u16, regs: &Registers) -> MicroState {
+    let cc = ((opcode >> 8) & 0xF) as u8;
+    let byte_form = (opcode & 0xFF) != 0;
+    let taken = condition_true(cc, regs.sr);
+    let mut buf = RecipeBuf::new();
+    if taken {
+        // The displacement leg: the opcode's low byte (byte form) or the extension word (word form). The
+        // TargetCalc captures it BEFORE any Prefetch shifts/advances, using the original pc (`PcOfExt` = pc+2).
+        let disp = if byte_form {
+            Operand::BranchDisp8
+        } else {
+            Operand::DispWord
+        };
+        buf.push(MicroOp::TargetCalc {
+            base: Operand::PcOfExt,
+            index: Operand::Zero,
+            disp,
+            dst: 0,
+        });
+        buf.push(MicroOp::Internal { cycles: 2 });
+        buf.push(MicroOp::SetPc {
+            value: Operand::Scratch(0),
+        });
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::Prefetch);
+    } else {
+        // Not taken: the leading idle (4) makes the total, then the sequential queue advance — one refill for
+        // the byte form (1-word instruction), two for the word form (the displacement word is skipped).
+        buf.push(MicroOp::Internal { cycles: 4 });
+        buf.push(MicroOp::Prefetch);
+        if !byte_form {
+            buf.push(MicroOp::Prefetch);
+        }
+    }
     buf.finish()
 }
 
@@ -1690,5 +1747,447 @@ mod tests {
         assert_eq!(cycles, 4);
         assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
         assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+    }
+
+    // --- F0: Bcc/BRA decode quirks (the cc field, the byte/word disp8==0 split) + the four anchors. ---
+
+    #[test]
+    fn bcc_decode_extracts_cc_and_disp8() {
+        // Bcc layout: `0110 cccc dddddddd` (0x6xxx). cc = bits 11-8, disp8 = bits 7-0. disp8 == 0 selects the
+        // word form (16-bit displacement in prefetch[1]); else the byte form (disp8 is the displacement).
+        // 0x62b6 → cc 2 (HI), disp8 0xB6 (byte form). 0x6700 → cc 7 (EQ), disp8 0 (word form).
+        assert_eq!((0x62b6u16 >> 8) & 0xF, 2, "0x62b6 cc = 2 (HI)");
+        assert_eq!(0x62b6u16 & 0xFF, 0xB6, "0x62b6 disp8 = 0xB6 (byte form)");
+        assert_eq!((0x6700u16 >> 8) & 0xF, 7, "0x6700 cc = 7 (EQ)");
+        assert_eq!(0x6700u16 & 0xFF, 0x00, "0x6700 disp8 = 0 (word form)");
+        // cc == 0 is BRA (always taken); cc == 1 is BSR (a SEPARATE decode arm, NOT this commit).
+        assert_eq!((0x6000u16 >> 8) & 0xF, 0, "0x6000 cc = 0 (BRA)");
+        assert_eq!((0x6100u16 >> 8) & 0xF, 1, "0x6100 cc = 1 (BSR — excluded)");
+    }
+
+    /// The clean SST reference case `62b6 [Bcc] 1` (byte form, condition false → NOT taken, 8 cycles) — the
+    /// F0 byte not-taken anchor. opcode 0x62b6 → cc 2 (HI = !C & !Z); SR 0x2714 (X|Z set) → Z set → HI false →
+    /// not taken. The recipe is the sequential fall-through `[Internal(4), Prefetch]`: pc advances one word
+    /// (+2) and the queue shifts once. Bus: a single FC-6 program word read at pc+4. NO SetPc (no branch).
+    fn setup_bcc_byte_not_taken() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10004,
+            prefetch: [25270, 48660],
+        };
+        let mut bus = FlatBus::new();
+        // The word at pc+4 (3076) that refills the queue tail = 39526 (0x9A66).
+        bus.poke(3076, 0x9A);
+        bus.poke(3077, 0x66);
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_bcc_byte_not_taken_log() -> Vec<Transaction> {
+        vec![Transaction {
+            kind: TxKind::Read,
+            fc: 6,
+            addr: 3076,
+            size: Size::Word,
+            value: 39526,
+        }]
+    }
+
+    fn assert_bcc_byte_not_taken_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced one word (fall-through)");
+        assert_eq!(cpu.regs.sr, 10004, "SR unchanged (Bcc affects no flags)");
+        assert_eq!(cpu.regs.prefetch, [48660, 39526], "queue shifted once");
+        assert_eq!(bus.log, expected_bcc_byte_not_taken_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_bcc_byte_not_taken() {
+        let (mut cpu, mut bus) = setup_bcc_byte_not_taken();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(cycles, 8, "byte not-taken = [Internal(4), PF] = 8");
+        assert_bcc_byte_not_taken_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_bcc_byte_not_taken() {
+        let (mut rtc, mut bus_rtc) = setup_bcc_byte_not_taken();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_bcc_byte_not_taken();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 8);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_bcc_byte_not_taken_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn bcc_byte_not_taken_quiescable_and_serializable_at_every_micro_op_boundary() {
+        let (mut rref, mut bref) = setup_bcc_byte_not_taken();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 2 micro-ops (Internal(4), Prefetch) → boundaries after 0..=1.
+        for pause_after in 0..=1 {
+            let (mut cpu, mut bus) = setup_bcc_byte_not_taken();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    /// The clean SST reference case `636a [Bcc] 2` (byte form, condition true → TAKEN, 10 cycles) — the F0
+    /// byte taken anchor. opcode 0x636a → cc 3 (LS = C | Z); SR 0x2713 (X|V|C set) → C set → LS true → taken.
+    /// target = pc+2+sign_extend8(0x6a) = 3072+2+106 = 3180. The recipe is `[TargetCalc(BranchDisp8),
+    /// Internal(2), SetPc, Prefetch, Prefetch]`: pc lands at 3180 and the queue reloads at 3180/3182. Bus: n2
+    /// (not in the stream) + two FC-6 reads at the target.
+    fn setup_bcc_byte_taken() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10003,
+            prefetch: [25450, 37941],
+        };
+        let mut bus = FlatBus::new();
+        // The two target words at 3180 (25598 = 0x63FE) and 3182 (15833 = 0x3DD9).
+        bus.poke(3180, 0x63);
+        bus.poke(3181, 0xFE);
+        bus.poke(3182, 0x3D);
+        bus.poke(3183, 0xD9);
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_bcc_byte_taken_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3180,
+                size: Size::Word,
+                value: 25598,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3182,
+                size: Size::Word,
+                value: 15833,
+            },
+        ]
+    }
+
+    fn assert_bcc_byte_taken_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3180, "pc landed at the branch target");
+        assert_eq!(cpu.regs.sr, 10003, "SR unchanged (Bcc affects no flags)");
+        assert_eq!(
+            cpu.regs.prefetch,
+            [25598, 15833],
+            "queue reloaded at target"
+        );
+        assert_eq!(bus.log, expected_bcc_byte_taken_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_bcc_byte_taken() {
+        let (mut cpu, mut bus) = setup_bcc_byte_taken();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 10,
+            "byte taken = [TargetCalc, Internal(2), SetPc, PF, PF] = 10"
+        );
+        assert_bcc_byte_taken_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_bcc_byte_taken() {
+        let (mut rtc, mut bus_rtc) = setup_bcc_byte_taken();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_bcc_byte_taken();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 10);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_bcc_byte_taken_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn bcc_byte_taken_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The snapshot/restore anchor for the new taken-branch shape (the SetPc + queue-reload tail).
+        let (mut rref, mut bref) = setup_bcc_byte_taken();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 5 micro-ops (TargetCalc, Internal(2), SetPc, Prefetch, Prefetch) → boundaries after 0..=4.
+        for pause_after in 0..=4 {
+            let (mut cpu, mut bus) = setup_bcc_byte_taken();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    /// The clean SST reference case `6700 [Bcc] 366` (word form, condition true → TAKEN, 10 cycles) — the F0
+    /// word taken anchor. opcode 0x6700 → cc 7 (EQ = Z), disp8 0 → word form (disp in prefetch[1] = 2718);
+    /// SR 0x2714 (Z set) → taken. target = pc+2+sign_extend16(2718) = 3072+2+2718 = 5792. Recipe
+    /// `[TargetCalc(DispWord), Internal(2), SetPc, Prefetch, Prefetch]`. Bus: two FC-6 reads at 5792/5794.
+    fn setup_bcc_word_taken() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10004,
+            prefetch: [26368, 2718],
+        };
+        let mut bus = FlatBus::new();
+        // Target words at 5792 (45182 = 0xB07E) and 5794 (35558 = 0x8AE6).
+        bus.poke(5792, 0xB0);
+        bus.poke(5793, 0x7E);
+        bus.poke(5794, 0x8A);
+        bus.poke(5795, 0xE6);
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_bcc_word_taken_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 5792,
+                size: Size::Word,
+                value: 45182,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 5794,
+                size: Size::Word,
+                value: 35558,
+            },
+        ]
+    }
+
+    fn assert_bcc_word_taken_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(
+            cpu.regs.pc, 5792,
+            "pc landed at the word-form branch target"
+        );
+        assert_eq!(cpu.regs.sr, 10004, "SR unchanged");
+        assert_eq!(
+            cpu.regs.prefetch,
+            [45182, 35558],
+            "queue reloaded at target"
+        );
+        assert_eq!(bus.log, expected_bcc_word_taken_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_bcc_word_taken() {
+        let (mut cpu, mut bus) = setup_bcc_word_taken();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 10,
+            "word taken = [TargetCalc, Internal(2), SetPc, PF, PF] = 10"
+        );
+        assert_bcc_word_taken_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_bcc_word_taken() {
+        let (mut rtc, mut bus_rtc) = setup_bcc_word_taken();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_bcc_word_taken();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 10);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_bcc_word_taken_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn bcc_word_taken_quiescable_and_serializable_at_every_micro_op_boundary() {
+        let (mut rref, mut bref) = setup_bcc_word_taken();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        for pause_after in 0..=4 {
+            let (mut cpu, mut bus) = setup_bcc_word_taken();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    /// The clean SST reference case `6400 [Bcc] 51` (word form, condition false → NOT taken, 12 cycles) — the
+    /// F0 word not-taken anchor. opcode 0x6400 → cc 4 (CC = !C), disp8 0 → word form; SR 0x271F (C set) → CC
+    /// false → not taken. The fall-through advances pc by TWO words (+4, skipping the displacement word).
+    /// Recipe `[Internal(4), Prefetch, Prefetch]`. Bus: two FC-6 reads at pc+4/pc+6.
+    fn setup_bcc_word_not_taken() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10015,
+            prefetch: [25600, 45236],
+        };
+        let mut bus = FlatBus::new();
+        // pc+4 (3076) = 53674 (0xD1AA), pc+6 (3078) = 22476 (0x57CC).
+        bus.poke(3076, 0xD1);
+        bus.poke(3077, 0xAA);
+        bus.poke(3078, 0x57);
+        bus.poke(3079, 0xCC);
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_bcc_word_not_taken_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 53674,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3078,
+                size: Size::Word,
+                value: 22476,
+            },
+        ]
+    }
+
+    fn assert_bcc_word_not_taken_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(
+            cpu.regs.pc, 3076,
+            "pc advanced two words (skip the disp word)"
+        );
+        assert_eq!(cpu.regs.sr, 10015, "SR unchanged");
+        assert_eq!(cpu.regs.prefetch, [53674, 22476], "queue shifted twice");
+        assert_eq!(bus.log, expected_bcc_word_not_taken_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_bcc_word_not_taken() {
+        let (mut cpu, mut bus) = setup_bcc_word_not_taken();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(cycles, 12, "word not-taken = [Internal(4), PF, PF] = 12");
+        assert_bcc_word_not_taken_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_bcc_word_not_taken() {
+        let (mut rtc, mut bus_rtc) = setup_bcc_word_not_taken();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_bcc_word_not_taken();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 12);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_bcc_word_not_taken_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn bcc_word_not_taken_quiescable_and_serializable_at_every_micro_op_boundary() {
+        let (mut rref, mut bref) = setup_bcc_word_not_taken();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 3 micro-ops (Internal(4), Prefetch, Prefetch) → boundaries after 0..=2.
+        for pause_after in 0..=2 {
+            let (mut cpu, mut bus) = setup_bcc_word_not_taken();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
     }
 }
