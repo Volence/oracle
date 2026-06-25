@@ -8,11 +8,20 @@
 //! the relevant fields per step (split-borrow). Memory regions are owned byte buffers, always allocated
 //! at their fixed hardware sizes by [`System::new`].
 
+use crate::bus::{BusEventSink, SystemBus};
 use crate::scheduler::Scheduler;
 use crate::state_hash::{StateHash, CRAM_SIZE, REG_COUNT, VRAM_SIZE, VSRAM_SIZE};
+use crate::stub_cpu::StubCpu;
 
 /// 68000 work RAM, `$FF0000..=$FFFFFF` (64 KiB).
 pub const RAM_SIZE: usize = 0x10000;
+
+/// Master-clock ticks per NTSC frame (H32: 262 scanlines × 3420 mclk).
+pub const MCLK_PER_FRAME: u64 = 896_040;
+
+/// Phase-0 placeholder workload: stub-chip steps executed per frame. Replaced by real cycle-accurate
+/// CPU stepping when the M68000 lands.
+const STUB_STEPS_PER_FRAME: u32 = 1000;
 
 /// The whole machine. One owner of all state.
 #[derive(Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
@@ -25,6 +34,7 @@ pub struct System {
     cram: Vec<u8>,
     vsram: Vec<u8>,
     vdp_regs: [u8; REG_COUNT],
+    cpu: StubCpu,
 }
 
 impl std::fmt::Debug for System {
@@ -38,6 +48,7 @@ impl std::fmt::Debug for System {
             .field("cram", &format_args!("[{} bytes]", self.cram.len()))
             .field("vsram", &format_args!("[{} bytes]", self.vsram.len()))
             .field("vdp_regs", &self.vdp_regs)
+            .field("cpu", &self.cpu)
             .field(
                 "state_hash.combined",
                 &crate::state_hash::hex(self.state_hash().combined),
@@ -74,6 +85,7 @@ impl System {
             cram: vec![0u8; CRAM_SIZE],
             vsram: vec![0u8; VSRAM_SIZE],
             vdp_regs: [0u8; REG_COUNT],
+            cpu: StubCpu::new(),
         }
     }
 
@@ -112,11 +124,90 @@ impl System {
     pub fn scheduler_mut(&mut self) -> &mut Scheduler {
         &mut self.scheduler
     }
+
+    /// Advance the machine by `frames` rendered frames, deterministically, leaving it paused.
+    pub fn run_frames(&mut self, frames: u64) {
+        for _ in 0..frames {
+            for _ in 0..STUB_STEPS_PER_FRAME {
+                self.step_chip(&mut ());
+            }
+            self.scheduler.advance(MCLK_PER_FRAME);
+        }
+    }
+
+    /// Step the (stub) chip once through a split-borrow [`SystemBus`], draining deferred writes. The
+    /// `sink` consumes the bus event stream (pass `&mut ()` for no instrumentation).
+    ///
+    /// This is the split-borrow proof: `self` is destructured so the chip field and the memory fields
+    /// are borrowed disjointly — the chip holds no bus, and only one `&mut` is live per access.
+    pub fn step_chip<S: BusEventSink>(&mut self, sink: &mut S) {
+        let System { cpu, ram, vram, .. } = self;
+        let mut bus = SystemBus::new(ram, vram, sink);
+        cpu.step(&mut bus);
+        bus.apply_writes();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::{BusEvent, BusOp, RAM_BASE, VRAM_BASE};
+
+    #[test]
+    fn run_frames_is_deterministic() {
+        let mut a = System::new(7);
+        let mut b = System::new(7);
+        a.run_frames(10);
+        b.run_frames(10);
+        assert_eq!(a.state_hash(), b.state_hash());
+    }
+
+    #[test]
+    fn run_frames_evolves_state() {
+        let mut s = System::new(7);
+        let before = s.state_hash();
+        s.run_frames(1);
+        assert_ne!(s.state_hash(), before);
+    }
+
+    #[test]
+    fn run_frames_n_equals_n_times_one() {
+        let mut bulk = System::new(123);
+        let mut stepwise = System::new(123);
+        bulk.run_frames(5);
+        for _ in 0..5 {
+            stepwise.run_frames(1);
+        }
+        assert_eq!(bulk.state_hash(), stepwise.state_hash());
+    }
+
+    #[test]
+    fn run_frames_advances_master_clock() {
+        let mut s = System::new(7);
+        s.run_frames(3);
+        assert_eq!(s.scheduler().now(), 3 * MCLK_PER_FRAME);
+    }
+
+    #[test]
+    fn step_chip_records_events_and_applies_deferred_vram() {
+        let mut s = System::new(0x42);
+        let mut sink: Vec<BusEvent> = Vec::new();
+        s.step_chip(&mut sink);
+        assert!(
+            sink.iter()
+                .any(|e| e.op == BusOp::Read && e.addr == RAM_BASE),
+            "a RAM read should be recorded"
+        );
+        let w = sink
+            .iter()
+            .find(|e| e.op == BusOp::Write && e.addr == VRAM_BASE)
+            .expect("a VRAM write should be recorded");
+        assert_eq!(
+            s.vram()[0] as u32,
+            w.value,
+            "deferred VRAM write should be applied after the step"
+        );
+    }
 
     #[test]
     fn new_is_deterministic_for_same_seed() {

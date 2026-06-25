@@ -9,7 +9,9 @@
 
 #![forbid(unsafe_code)]
 
+pub mod bus;
 pub mod rng;
 pub mod scheduler;
 pub mod state_hash;
+pub mod stub_cpu;
 pub mod system;
