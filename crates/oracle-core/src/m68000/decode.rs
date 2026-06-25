@@ -37,6 +37,14 @@ fn is_move_byte(opcode: u16) -> bool {
     (opcode >> 12) & 0xF == 0b0001 && ((opcode >> 6) & 7) != 1
 }
 
+/// Whether `opcode` is a `MOVE.l` (NOT `MOVEA.l`). Same layout as [`is_move_word`] but the size field
+/// (bits 13-12) is `10` for long, so bits 15-12 == `0b0010`. `dst_mode == 1` (`An`) is `MOVEA.l` (a separate
+/// decode arm, M4) and is excluded here.
+#[inline]
+fn is_move_long(opcode: u16) -> bool {
+    (opcode >> 12) & 0xF == 0b0010 && ((opcode >> 6) & 7) != 1
+}
+
 /// Decode the opcode currently in `regs.prefetch[0]` into its micro-op recipe.
 #[inline]
 pub fn decode(regs: &Registers) -> MicroState {
@@ -50,6 +58,12 @@ pub fn decode(regs: &Registers) -> MicroState {
     // through the size-aware `ea_move`; the opcode space 0x1xxx is disjoint from MOVE.w/ADD/SUB.
     if is_move_byte(opcode) {
         return move_recipe(opcode, Size::Byte);
+    }
+    // MOVE.l (`00 10 RRR MMM mmm rrr`, dst_mode != 1) — the long EA→EA composition (the heaviest recipes:
+    // a long source = two reads + Combine32; a long memory dest = two writes). Same size-aware `ea_move`;
+    // the opcode space 0x2xxx (long, dst_mode != 1) is disjoint from MOVE.w/MOVE.b/ADD/SUB.
+    if is_move_long(opcode) {
+        return move_recipe(opcode, Size::Long);
     }
     // ADD.w and SUB.w share recipe shapes — they differ only in the `AluOp` (operand order is arranged so
     // the destination is the minuend, which matters for the non-commutative SUB).
@@ -1155,5 +1169,276 @@ mod tests {
                 "transaction stream from boundary {pause_after} diverged"
             );
         }
+    }
+
+    // --- M3: MOVE.l decode quirks (the 10 size bits) + the long mem→mem anchor. ---
+
+    #[test]
+    fn move_l_decode_recognizes_long_size_and_not_movea() {
+        // is_move_long() gates bits15-12 == 0b0010 (00 + size 10) AND dst_mode != 1 (mode 1 == MOVEA, M4).
+        assert!(is_move_long(0x2a93), "0x2a93 MOVE.l (A3),(A5)");
+        assert!(is_move_long(0x2203), "0x2203 MOVE.l D3,D1");
+        // size 11 = word, 01 = byte, 00 = not MOVE — none are long.
+        assert!(!is_move_long(0x3203), "0x3203 size 11 = MOVE.w — not long");
+        assert!(!is_move_long(0x1203), "0x1203 size 01 = MOVE.b — not long");
+        assert!(!is_move_long(0xD040), "ADD.w — not MOVE");
+        // dst_mode == 1 (An) is MOVEA.l — NOT this commit; 0x2040 = 0010 000 001 000 000.
+        assert!(!is_move_long(0x2040), "dst_mode 1 is MOVEA.l, not MOVE.l");
+    }
+
+    /// The clean SingleStepTests reference case `2a93 [MOVE.l (A3),(A5)]` (even EAs, 20 cycles) — the M3
+    /// long EA→EA composition anchor. A3 = 0x441E_5150 (long read hi @0x115E50, lo @0x115E52), A5 =
+    /// 0x6092_2ACA (long write hi @0x89FE4A, lo @0x89FE4C). MOVE.l is WRITE-ONLY at the dest (no RMW read);
+    /// the dest long write is HI first @addr then LO @addr+2 (the NON-reversed order — distinct from the
+    /// ADD.l RMW store and from MOVE.l's `-(An)` reversal). Bus: [READ.hi, READ.lo, WRITE.hi, WRITE.lo, PF]
+    /// — the writes precede the final prefetch.
+    fn setup_move_l_an_an() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                2_977_854_374,
+                3_910_370_993,
+                2_252_041_791,
+                1_855_697_001,
+                2_954_101_250,
+                3_188_869_178,
+                2_528_412_717,
+                1_046_525_309,
+            ],
+            a: [
+                658_653_233,
+                2_053_276_061,
+                2_009_026_726,
+                1_141_988_560,
+                3_179_860_166,
+                4_035_575_178,
+                2_744_181_842,
+            ],
+            usp: 466_030_178,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10006,
+            prefetch: [10899, 3607],
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            (3077u32, 162u8),
+            (3076, 148),
+            (1_137_875, 132),
+            (1_137_874, 220),
+            (1_137_873, 242),
+            (1_137_872, 56),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_move_l_an_an_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 1_137_872,
+                size: Size::Word,
+                value: 14578, // source hi word
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 1_137_874,
+                size: Size::Word,
+                value: 56452, // source lo word
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 9_043_338,
+                size: Size::Word,
+                value: 14578, // dest HI half written FIRST (addr)
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 9_043_340,
+                size: Size::Word,
+                value: 56452, // dest LO half written SECOND (addr+2)
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 38050,
+            },
+        ]
+    }
+
+    fn assert_move_l_an_an_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced by one word");
+        assert_eq!(
+            cpu.regs.sr, 10000,
+            "CCR per the long move (N set, V/C clear, X preserved)"
+        );
+        assert_eq!(cpu.regs.a[3], 1_141_988_560, "src An unchanged");
+        assert_eq!(cpu.regs.a[5], 4_035_575_178, "dst An unchanged");
+        assert_eq!(cpu.regs.prefetch, [3607, 38050], "prefetch advanced");
+        // The 32-bit value is copied unchanged, big-endian across the two halves.
+        assert_eq!(bus.peek(9_043_338), 56, "dest hi byte 0");
+        assert_eq!(bus.peek(9_043_339), 242, "dest hi byte 1");
+        assert_eq!(bus.peek(9_043_340), 220, "dest lo byte 0");
+        assert_eq!(bus.peek(9_043_341), 132, "dest lo byte 1");
+        assert_eq!(bus.log, expected_move_l_an_an_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_move_l_an_an() {
+        let (mut cpu, mut bus) = setup_move_l_an_an();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 20,
+            "MOVE.l (An),(An) = [READ.hi, READ.lo, WRITE.hi, WRITE.lo, PF] = 20"
+        );
+        assert_move_l_an_an_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_move_l_an_an() {
+        let (mut rtc, mut bus_rtc) = setup_move_l_an_an();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_move_l_an_an();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 20);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_move_l_an_an_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn move_l_an_an_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The no-divergence guarantee for the long EA→EA composition (the heaviest in-scope dest write):
+        // snapshot/restore the whole CPU (incl. the in-flight cursor and its scratch slots — the two-word
+        // read halves mid-assembly and the parked 32-bit value) at every micro-op boundary, resume on the
+        // same bus, and require an identical final state + transaction stream.
+        let (mut rref, mut bref) = setup_move_l_an_an();
+        rref.run_instruction(&mut bref);
+
+        let cfg = bincode::config::standard();
+        // 9 micro-ops: Read.hi, EaCalc(lo addr), Read.lo, Combine32, Alu(Move→park), EaCalc(dst lo addr),
+        // Write.hi, Write.lo, Prefetch → boundaries after 0..=8.
+        for pause_after in 0..=8 {
+            let (mut cpu, mut bus) = setup_move_l_an_an();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    /// The clean SingleStepTests reference case `2914 [MOVE.l (A4),-(A4)]` (even EAs, 20 cycles) — the M3
+    /// long predecrement-dest anchor, pinning the notorious `-(An)` long-store reversal. A4 = 0xB19C_1F52
+    /// (read at 0x9C1F52); the `-(A4)` dest pre-decrements A4 by 4 (the long step) to 0x9C1F4E and stores
+    /// the result there. Unlike a non-predec dest (HI first @addr), the predec dest writes **LO first @addr+2,
+    /// then HI @addr** (the reversed long-store order), and the prefetch precedes the writes. Bus:
+    /// [READ.hi, READ.lo, PF, WRITE.lo, WRITE.hi] — pinned EXACTLY against the data, not from memory.
+    fn setup_move_l_predec() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [0; 8],
+            a: [0, 0, 0, 0, 2_979_798_866, 0, 0],
+            usp: 0,
+            ssp: 2048,
+            pc: 3072,
+            sr: 9999,
+            prefetch: [0x2914, 0],
+        };
+        let mut bus = FlatBus::new();
+        // The source long at 0x9C1F52 (hi 0xA023=40995, lo 0x2CEB=11499) and the final prefetch at pc+4.
+        for (a, v) in [
+            (10_231_634u32, 0xA0u8),
+            (10_231_635, 0x23),
+            (10_231_636, 0x2C),
+            (10_231_637, 0xEB),
+            (3076, 0xB5),
+            (3077, 0x02),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    #[test]
+    fn move_l_predec_dest_reverses_the_long_store_order() {
+        // The recipe — built straight from the decode — must emit the predecrement reversal: prefetch, then
+        // the LOW half written FIRST (at the higher address, addr+2), then the HIGH half (at addr).
+        let (mut cpu, mut bus) = setup_move_l_predec();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 20,
+            "MOVE.l (An),-(An) = [READ.hi, READ.lo, PF, WRITE.lo, WRITE.hi] = 20"
+        );
+        // A4 ends pre-decremented by 4.
+        assert_eq!(
+            cpu.regs.a[4], 2_979_798_862,
+            "A4 -= 4 (the long predec step)"
+        );
+        assert_eq!(
+            bus.log,
+            vec![
+                Transaction {
+                    kind: TxKind::Read,
+                    fc: 5,
+                    addr: 10_231_634,
+                    size: Size::Word,
+                    value: 0xA023,
+                },
+                Transaction {
+                    kind: TxKind::Read,
+                    fc: 5,
+                    addr: 10_231_636,
+                    size: Size::Word,
+                    value: 0x2CEB,
+                },
+                Transaction {
+                    kind: TxKind::Read,
+                    fc: 6,
+                    addr: 3076,
+                    size: Size::Word,
+                    value: 0xB502,
+                },
+                Transaction {
+                    kind: TxKind::Write,
+                    fc: 5,
+                    addr: 10_231_632, // LOW half written FIRST (addr+2 = (A4-4)+2)
+                    size: Size::Word,
+                    value: 0x2CEB,
+                },
+                Transaction {
+                    kind: TxKind::Write,
+                    fc: 5,
+                    addr: 10_231_630, // HIGH half written SECOND (addr = A4-4)
+                    size: Size::Word,
+                    value: 0xA023,
+                },
+            ],
+        );
     }
 }

@@ -171,14 +171,21 @@ fn sub_l(a: u32, b: u32) -> (u32, u16) {
 }
 
 /// Maximum micro-ops in one opcode's recipe. Most opcodes need ≤ a handful; unbounded families
-/// (MOVEM-class) get a generator variant later. Sized to the worst in-scope EA recipe (a byte
-/// `Dn,(abs.l)` RMW = 8 ops) with headroom. Public so the EA builder ([`super::ea::RecipeBuf`]) can
-/// size its fixed staging array to the same bound.
-pub const MAX_OPS: usize = 12;
+/// (MOVEM-class) get a generator variant later. Sized to the **measured M3 worst recipe**: `MOVE.l
+/// (abs.l),(abs.l)` — a long source from `abs.l` (two-word address assembly + two-word read) and a long
+/// `abs.l` destination (two-word address assembly + two-word write), no destination read (MOVE is
+/// write-only). That recipe is **17 micro-ops**:
+///   src: `EaCalc(HI), Prefetch, EaCalc(addr), Prefetch, Read.hi, EaCalc(lo addr), Read.lo, Combine32`  (8)
+///   alu: `Alu{Move}` (parks the 32-bit copy)                                                            (1)
+///   dst: `EaCalc(HI), Prefetch, EaCalc(addr), Write.hi, EaCalc(lo addr), Write.lo, Prefetch, Prefetch`  (8)
+/// 20 = 17 + headroom. Public so the EA builder ([`super::ea::RecipeBuf`]) can size its fixed staging
+/// array to the same bound.
+pub const MAX_OPS: usize = 20;
 
-/// Number of scratch slots carrying values between micro-ops within one instruction. Sized to the
-/// worst in-scope recipe (≤ 4) with headroom.
-const SCRATCH_SLOTS: usize = 6;
+/// Number of scratch slots carrying values between micro-ops within one instruction. Sized to the M3
+/// worst recipe (`MOVE.l (abs.l),(abs.l)` uses slots 0..=5: read value / parked copy / EA / abs.l-HI /
+/// long-lo-read / long-lo-addr) with headroom.
+const SCRATCH_SLOTS: usize = 8;
 
 /// Index into the scratch register file.
 pub type Slot = u8;

@@ -976,38 +976,46 @@ struct MoveSrc {
 /// against the vendored `MOVE.w`/`MOVE.b` SST streams (the byte stream is the word stream with byte-granular
 /// accesses — same prefetch interleave).
 fn move_emit_source(buf: &mut RecipeBuf, sm: u16, sr: u8, size: Size) -> MoveSrc {
-    // The displacement/indexed EaCalc modes' operand READ targets the materialized EA in EA_SLOT, sized.
-    let read_ea = |buf: &mut RecipeBuf| {
-        buf.push(MicroOp::Read {
-            addr: Operand::Scratch(EA_SLOT),
-            fc: Fc::Data,
-            size,
-            dst: 0,
-        });
-    };
-    match (sm, sr) {
-        // Dn direct — no read, no source prefetch. The operand is the register's low byte/word.
-        (0, _) => MoveSrc {
-            operand: match size {
-                Size::Byte => Operand::DataRegLow8(sr),
-                _ => Operand::DataRegLow16(sr),
-            },
-            reads: false,
-        },
-        // An direct — word only (`MOVE.b An,<ea>` is illegal, never reaches here for byte; the byte decoder
-        // and `move_in_scope` exclude it). The operand is An's low word.
-        (1, _) => MoveSrc {
-            operand: Operand::AddrRegLow16(sr),
-            reads: false,
-        },
-        // (An) — read at An (sized).
-        (2, _) => {
+    // Emit the operand READ at `addr` into scratch 0: a single sized `Read` for byte/word, or the two-word
+    // read pair (hi @addr, lo @addr+2, Combine32 → slot 0) for long. The long pair's word order (hi then lo)
+    // is pinned against the vendored MOVE.l data (e.g. the `2a93 [MOVE.l (A3),(A5)]` anchor).
+    let read_into0 = |buf: &mut RecipeBuf, addr: Operand| {
+        if size == Size::Long {
+            push_long_read_pair(buf, addr);
+        } else {
             buf.push(MicroOp::Read {
-                addr: Operand::AddrReg(sr),
+                addr,
                 fc: Fc::Data,
                 size,
                 dst: 0,
             });
+        }
+    };
+    // The displacement/indexed EaCalc modes' operand READ targets the materialized EA in EA_SLOT, sized.
+    let read_ea = |buf: &mut RecipeBuf| read_into0(buf, Operand::Scratch(EA_SLOT));
+    match (sm, sr) {
+        // Dn direct — no read, no source prefetch. The operand is the register's low byte/word/full long.
+        (0, _) => MoveSrc {
+            operand: match size {
+                Size::Byte => Operand::DataRegLow8(sr),
+                Size::Word => Operand::DataRegLow16(sr),
+                Size::Long => Operand::DataRegFull(sr),
+            },
+            reads: false,
+        },
+        // An direct — word/long only (`MOVE.b An,<ea>` is illegal, never reaches here for byte). The operand
+        // is An's low word (`.w`) or its full 32 bits (`.l`). MOVE reading An as a SOURCE is fine (it is
+        // MOVEA only when An is the DESTINATION).
+        (1, _) => MoveSrc {
+            operand: match size {
+                Size::Long => Operand::AddrReg(sr),
+                _ => Operand::AddrRegLow16(sr),
+            },
+            reads: false,
+        },
+        // (An) — read at An (sized).
+        (2, _) => {
+            read_into0(buf, Operand::AddrReg(sr));
             MoveSrc {
                 operand: Operand::Scratch(0),
                 reads: true,
@@ -1015,12 +1023,7 @@ fn move_emit_source(buf: &mut RecipeBuf, sm: u16, sr: u8, size: Size) -> MoveSrc
         }
         // (An)+ — read at An (sized), then post-increment An by the sized step (non-bus, after the read).
         (3, _) => {
-            buf.push(MicroOp::Read {
-                addr: Operand::AddrReg(sr),
-                fc: Fc::Data,
-                size,
-                dst: 0,
-            });
+            read_into0(buf, Operand::AddrReg(sr));
             buf.push(MicroOp::AdjustAddr {
                 reg: sr,
                 delta: step_bytes(size, sr),
@@ -1037,12 +1040,7 @@ fn move_emit_source(buf: &mut RecipeBuf, sm: u16, sr: u8, size: Size) -> MoveSrc
                 delta: -step_bytes(size, sr),
             });
             buf.push(MicroOp::Internal { cycles: 2 });
-            buf.push(MicroOp::Read {
-                addr: Operand::AddrReg(sr),
-                fc: Fc::Data,
-                size,
-                dst: 0,
-            });
+            read_into0(buf, Operand::AddrReg(sr));
             MoveSrc {
                 operand: Operand::Scratch(0),
                 reads: true,
@@ -1102,14 +1100,37 @@ fn move_emit_source(buf: &mut RecipeBuf, sm: u16, sr: u8, size: Size) -> MoveSrc
                 reads: true,
             }
         }
-        // #imm — the immediate word is captured by the ALU (Operand::ImmWord) BEFORE this prefetch shifts it
-        // out; the single ext-word prefetch is emitted here (no read). The caller emits the ALU FIRST, then
-        // calls this, so the queued immediate is still live when the ALU samples it.
+        // #imm — for byte/word the single immediate word is captured by the ALU (Operand::ImmWord) BEFORE
+        // this prefetch shifts it out (the caller emits the ALU FIRST), so here only the single ext-word
+        // prefetch is emitted (no read). For #imm.l the 32-bit immediate is TWO extension words: the HI word
+        // (in prefetch[1]) is captured into HI_SLOT, a prefetch shifts the LO word into prefetch[1], the
+        // second `Combine32` assembles them into scratch 0, and a second prefetch completes the 2-word
+        // immediate fetch — so the operand is the assembled `Scratch(0)` (the ALU follows the source phase,
+        // not First). Pinned against the vendored `#imm.l` MOVE.l data (the `2e3c`/`26bc` cases).
         (7, 4) => {
-            buf.push(MicroOp::Prefetch);
-            MoveSrc {
-                operand: Operand::ImmWord,
-                reads: false,
+            if size == Size::Long {
+                buf.push(MicroOp::Combine32 {
+                    hi: 0,
+                    lo: Operand::ImmWord,
+                    dst: HI_SLOT,
+                });
+                buf.push(MicroOp::Prefetch);
+                buf.push(MicroOp::Combine32 {
+                    hi: HI_SLOT,
+                    lo: Operand::ImmWord,
+                    dst: 0,
+                });
+                buf.push(MicroOp::Prefetch);
+                MoveSrc {
+                    operand: Operand::Scratch(0),
+                    reads: false,
+                }
+            } else {
+                buf.push(MicroOp::Prefetch);
+                MoveSrc {
+                    operand: Operand::ImmWord,
+                    reads: false,
+                }
             }
         }
         _ => todo!("ea_move source mode {sm}/{sr} not yet covered"),
@@ -1150,20 +1171,24 @@ pub fn ea_move(
         dst: if dst_mode == 0 {
             match size {
                 Size::Byte => Dest::DataRegLow8(dst_reg),
-                _ => Dest::DataRegLow16(dst_reg),
+                Size::Word => Dest::DataRegLow16(dst_reg),
+                Size::Long => Dest::DataReg(dst_reg),
             }
         } else {
             Dest::Scratch(MOVE_VALUE_SLOT)
         },
     };
 
-    if imm_source {
-        // ALU First: capture the immediate before the source prefetch, then the source phase (its lone
-        // prefetch), then the destination phase.
+    if imm_source && size != Size::Long {
+        // Byte/word #imm — ALU First: capture the single immediate word (`Operand::ImmWord`) BEFORE the
+        // source phase's lone prefetch shifts it out, then the source phase (its prefetch), then the dest.
         buf.push(make_alu(Operand::ImmWord));
         let _src = move_emit_source(buf, src_mode, src_reg, size); // emits the single #imm prefetch, no read
         move_emit_dest(buf, dst_mode, dst_reg, false, size);
     } else {
+        // Every other source — including #imm.l, whose two extension words are assembled into scratch 0 by
+        // the source phase's interleaved `Combine32`s (so the ALU samples the assembled value, not a queued
+        // word). The ALU follows the source phase; the dest phase follows the ALU.
         let src = move_emit_source(buf, src_mode, src_reg, size);
         buf.push(make_alu(src.operand));
         move_emit_dest(buf, dst_mode, dst_reg, src.reads, size);
@@ -1178,26 +1203,61 @@ pub fn ea_move(
 /// `Dn` destination performs no memory write (the ALU already wrote the register); it emits only the final
 /// prefetch.
 fn move_emit_dest(buf: &mut RecipeBuf, dm: u16, dr: u8, src_reads: bool, size: Size) {
-    let value = Operand::Scratch(MOVE_VALUE_SLOT);
-    let write_at = |buf: &mut RecipeBuf, addr: Operand| {
-        buf.push(MicroOp::Write {
+    // Write the parked value at `addr`. For byte/word it is a single sized `Write` (a byte write truncates
+    // to the low 8). For long it is TWO word writes of the parked 32-bit copy — hi word
+    // (`ScratchHi16(MOVE_VALUE_SLOT)`) at `addr`, lo word (`Scratch(MOVE_VALUE_SLOT)`, the `Write` truncating
+    // to the low 16) at `addr+2`. The lo-half address is materialized once via `EaCalc(addr + WordStep)` into
+    // `LONG_LO_ADDR_SLOT` (free during the dest phase). The word order is the NON-reversed `[hi @addr, lo
+    // @addr+2]` for every dest mode EXCEPT `-(An)`, which reverses to `[lo @addr+2, hi @addr]` (the long
+    // predecrement-store reversal — `reversed = true`). Both orderings are pinned EXACTLY against the
+    // vendored MOVE.l data (the `2a93` non-reversed anchor and the `2914`/`2d04` `-(An)` reversal).
+    let write_at = |buf: &mut RecipeBuf, addr: Operand, reversed: bool| {
+        if size != Size::Long {
+            buf.push(MicroOp::Write {
+                addr,
+                fc: Fc::Data,
+                size,
+                value: Operand::Scratch(MOVE_VALUE_SLOT),
+            });
+            return;
+        }
+        buf.push(MicroOp::EaCalc {
+            base: addr,
+            index: Operand::Zero,
+            disp: Operand::WordStep,
+            dst: LONG_LO_ADDR_SLOT,
+        });
+        let write_hi = MicroOp::Write {
             addr,
             fc: Fc::Data,
-            size,
-            value,
-        });
+            size: Size::Word,
+            value: Operand::ScratchHi16(MOVE_VALUE_SLOT),
+        };
+        let write_lo = MicroOp::Write {
+            addr: Operand::Scratch(LONG_LO_ADDR_SLOT),
+            fc: Fc::Data,
+            size: Size::Word,
+            value: Operand::Scratch(MOVE_VALUE_SLOT),
+        };
+        if reversed {
+            buf.push(write_lo);
+            buf.push(write_hi);
+        } else {
+            buf.push(write_hi);
+            buf.push(write_lo);
+        }
     };
     match (dm, dr) {
         // Dn — the ALU already wrote Dn; only the final instruction prefetch remains.
         (0, _) => buf.push(MicroOp::Prefetch),
         // (An) — write at An, then the final prefetch (write is second-to-last bus event).
         (2, _) => {
-            write_at(buf, Operand::AddrReg(dr));
+            write_at(buf, Operand::AddrReg(dr), false);
             buf.push(MicroOp::Prefetch);
         }
         // (An)+ — write at An, the final prefetch, then post-increment An (non-bus, after the write).
         (3, _) => {
-            write_at(buf, Operand::AddrReg(dr));
+            write_at(buf, Operand::AddrReg(dr), false);
             buf.push(MicroOp::Prefetch);
             buf.push(MicroOp::AdjustAddr {
                 reg: dr,
@@ -1205,14 +1265,15 @@ fn move_emit_dest(buf: &mut RecipeBuf, dm: u16, dr: u8, src_reads: bool, size: S
             });
         }
         // -(An) — pre-decrement An, the final prefetch, then the write LAST (the MOVE predecrement-dest
-        // reversal: no idle, and the prefetch precedes the write — pinned against the data).
+        // reversal: no idle, and the prefetch precedes the write — pinned against the data). For long the
+        // two-word write is itself reversed (lo @addr+2 first, then hi @addr).
         (4, _) => {
             buf.push(MicroOp::AdjustAddr {
                 reg: dr,
                 delta: -step_bytes(size, dr),
             });
             buf.push(MicroOp::Prefetch);
-            write_at(buf, Operand::AddrReg(dr));
+            write_at(buf, Operand::AddrReg(dr), true);
         }
         // d16(An) / abs.w — EaCalc the dest EA (capturing its disp from prefetch[1], shifted in by the
         // source phase), one prefetch, the write, the final prefetch.
@@ -1229,7 +1290,7 @@ fn move_emit_dest(buf: &mut RecipeBuf, dm: u16, dr: u8, src_reads: bool, size: S
                 dst: EA_SLOT,
             });
             buf.push(MicroOp::Prefetch);
-            write_at(buf, Operand::Scratch(EA_SLOT));
+            write_at(buf, Operand::Scratch(EA_SLOT), false);
             buf.push(MicroOp::Prefetch);
         }
         // d8(An,Xn) — EaCalc (base + index + disp8), the indexed idle (n2), one prefetch, the write, the
@@ -1243,7 +1304,7 @@ fn move_emit_dest(buf: &mut RecipeBuf, dm: u16, dr: u8, src_reads: bool, size: S
             });
             buf.push(MicroOp::Internal { cycles: 2 });
             buf.push(MicroOp::Prefetch);
-            write_at(buf, Operand::Scratch(EA_SLOT));
+            write_at(buf, Operand::Scratch(EA_SLOT), false);
             buf.push(MicroOp::Prefetch);
         }
         // abs.l — assemble the two-word dest address (HI, refill, LO). When the source READ memory the write
@@ -1253,12 +1314,12 @@ fn move_emit_dest(buf: &mut RecipeBuf, dm: u16, dr: u8, src_reads: bool, size: S
         (7, 1) => {
             push_abs_l_addr(buf); // [EaCalc(HI), Prefetch, EaCalc(ADDR)] — one prefetch embedded
             if src_reads {
-                write_at(buf, Operand::Scratch(EA_SLOT));
+                write_at(buf, Operand::Scratch(EA_SLOT), false);
                 buf.push(MicroOp::Prefetch);
                 buf.push(MicroOp::Prefetch);
             } else {
                 buf.push(MicroOp::Prefetch);
-                write_at(buf, Operand::Scratch(EA_SLOT));
+                write_at(buf, Operand::Scratch(EA_SLOT), false);
                 buf.push(MicroOp::Prefetch);
             }
         }
