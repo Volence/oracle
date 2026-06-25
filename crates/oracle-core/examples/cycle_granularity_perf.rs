@@ -1,9 +1,20 @@
-//! Perf measurement for the cycle-granularity decision: instruction-stepped vs cycle-stepped FSM,
-//! executing `ADD.w Dn,(An)` in a tight loop. Run with `cargo run --release --example cycle_granularity_perf`.
+//! Perf measurement for the cycle-granularity decision, executing `ADD.w Dn,(An)` in a tight loop.
+//! Run with `cargo run --release --example cycle_granularity_perf`.
 //!
-//! Uses a non-logging flat bus so the measurement isolates CPU-stepping overhead (not allocation/logging).
+//! Compares four execution models over the same opcode:
+//!   1. instruction-stepped (the prototype's atomic `step_instruction`) — the speed *baseline*;
+//!   2. **framework run-to-completion** (`Cpu68000::run_instruction`) — the new default fast path;
+//!   3. framework step-one-micro-op (`start_instruction` + `step_micro_op` to completion) — the quiesce
+//!      path's cost when driven micro-op by micro-op;
+//!   4. per-master-clock FSM (the prototype's `AddWFsm`) — granularity C, the finest/worst case.
+//!
+//! The decision-relevant number is (2) vs (1): how much the interpreted micro-op recipe costs the default
+//! path relative to a hand-written atomic execute. Uses a non-logging flat bus so the measurement isolates
+//! CPU-stepping overhead (not allocation/logging).
 
-use oracle_core::m68000::prototype::{decode_add_w_dn_an, step_instruction, AddWFsm, Bus68k};
+use oracle_core::m68000::bus68k::Bus68k;
+use oracle_core::m68000::microop::{Cpu68000, Step};
+use oracle_core::m68000::prototype::{step_instruction, AddWFsm};
 use oracle_core::m68000::registers::Registers;
 use std::hint::black_box;
 use std::time::Instant;
@@ -33,11 +44,24 @@ fn start_regs() -> Registers {
         ssp: 0,
         pc: 0x0C00,
         sr: 0x2717,
-        prefetch: [0xDB50, 0x6A3C],
+        prefetch: [0xDB50, 0x6A3C], // ADD.w D5,(A0)
     };
     r.d[5] = 0x020D_2596;
     r.a[0] = 0x0004_4F46; // even, in range
     r
+}
+
+/// Time `n` iterations of `body`, returning ns/op. `body` returns a value folded into an accumulator so
+/// the optimizer cannot elide the work.
+fn bench(n: u64, mut body: impl FnMut() -> u16) -> f64 {
+    let t0 = Instant::now();
+    let mut acc = 0u64;
+    for _ in 0..n {
+        acc = acc.wrapping_add(black_box(body()) as u64);
+    }
+    let dt = t0.elapsed();
+    black_box(acc);
+    dt.as_secs_f64() * 1e9 / n as f64
 }
 
 fn main() {
@@ -50,41 +74,50 @@ fn main() {
         mem: vec![0u8; 0x0100_0000],
     };
     let base = start_regs();
-    let _ = decode_add_w_dn_an(base.prefetch[0]); // sanity
 
-    // Instruction-stepped.
-    let t0 = Instant::now();
-    let mut acc = 0u64;
-    for _ in 0..n {
+    // 1. Instruction-stepped baseline (atomic execute).
+    let instr_ns = bench(n, || {
         let mut r = black_box(base.clone());
         step_instruction(&mut r, black_box(&mut bus));
-        acc = acc.wrapping_add(black_box(r.sr) as u64);
-    }
-    let dt_instr = t0.elapsed();
+        r.sr
+    });
 
-    // Cycle-stepped FSM.
-    let t1 = Instant::now();
-    for _ in 0..n {
+    // 2. Framework run-to-completion (the default fast path).
+    let rtc_ns = bench(n, || {
+        let mut cpu = Cpu68000::new(black_box(base.clone()));
+        cpu.run_instruction(black_box(&mut bus));
+        cpu.regs.sr
+    });
+
+    // 3. Framework step-one-micro-op driven to completion (the quiesce path).
+    let step_ns = bench(n, || {
+        let mut cpu = Cpu68000::new(black_box(base.clone()));
+        cpu.start_instruction();
+        loop {
+            if let Step::Done(_) = cpu.step_micro_op(black_box(&mut bus)) {
+                break;
+            }
+        }
+        cpu.regs.sr
+    });
+
+    // 4. Per-master-clock FSM (granularity C — finest/worst case).
+    let fsm_ns = bench(n, || {
         let mut r = black_box(base.clone());
-        let mut fsm = AddWFsm::new(&r);
-        fsm.run_to_completion(&mut r, black_box(&mut bus));
-        acc = acc.wrapping_add(black_box(r.sr) as u64);
-    }
-    let dt_fsm = t1.elapsed();
+        AddWFsm::new(&r).run_to_completion(&mut r, black_box(&mut bus));
+        r.sr
+    });
 
-    let instr_ns = dt_instr.as_secs_f64() * 1e9 / n as f64;
-    let fsm_ns = dt_fsm.as_secs_f64() * 1e9 / n as f64;
-    println!("iterations:        {n}");
-    println!(
-        "instruction-step:  {:.2} ns/op  ({:.1} M ops/s)",
-        instr_ns,
-        1000.0 / instr_ns
-    );
-    println!(
-        "cycle-step FSM:    {:.2} ns/op  ({:.1} M ops/s)",
-        fsm_ns,
-        1000.0 / fsm_ns
-    );
-    println!("FSM / instr ratio: {:.2}x", fsm_ns / instr_ns);
-    println!("(checksum {acc})");
+    let row = |name: &str, ns: f64| {
+        println!(
+            "  {name:<34} {ns:6.2} ns/op  ({:6.1} M ops/s)  {:.2}x baseline",
+            1000.0 / ns,
+            ns / instr_ns
+        );
+    };
+    println!("iterations: {n}\n");
+    row("1. instruction-stepped (baseline)", instr_ns);
+    row("2. framework run-to-completion", rtc_ns);
+    row("3. framework step-one-micro-op", step_ns);
+    row("4. per-master-clock FSM", fsm_ns);
 }

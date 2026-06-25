@@ -98,3 +98,51 @@ full always-on cycle-stepped 68k an unjustified tax for MVP-debuggable.
 
 **Ratified 2026-06-24** (single-definition hybrid + bus-access default quiesce). Phase 0 ends here; the
 next push builds the micro-op opcode framework and full coverage per this decision.
+
+---
+
+## Post-implementation addendum (2026-06-24, framework push 1)
+
+The micro-op framework was built (`m68000::microop` + `m68000::decode`) and validated: `ADD.w` in two
+forms (`Dn,(An)` memory-dest + `<ea>,Dn` register-dest for Dn / (An) / #imm) passes **810** SingleStepTests
+cases through **both drivers**, which agree on regs/SR/RAM/prefetch/cycles **and** the per-cycle transaction
+stream, with snapshot/restore proven at every bus-access boundary. **Correctness, the single-definition
+no-divergence property, and serializable mid-instruction quiesce all hold as designed.**
+
+**But the perf premise did not.** Re-measuring with the *actual* framework (not the prototype's hand-written
+paths), ratios stable across runs (`examples/cycle_granularity_perf.rs`):
+
+| Model | Speed vs atomic baseline |
+|---|---|
+| 1. instruction-stepped (hand-written atomic `step_instruction`) | **1.0×** (baseline) |
+| 2. **framework run-to-completion** (the intended default fast path) | **≈ 5.4×** slower |
+| 3. framework step-one-micro-op (quiesce path) | ≈ 6× slower |
+| 4. per-master-clock FSM (hand-written `AddWFsm`) | ≈ 3× slower |
+
+The framework's "fast path" (2) is **~1.8× slower than even an always-on hand-written FSM** (4) — the
+opposite of this brief's premise that "run-to-completion inlines to near-[atomic] speed / keeps ~3× the
+FSM's throughput."
+
+**Why the premise was wrong:** the prototype measured a *hand-written atomic* (`step_instruction`, 1×)
+against a *hand-written FSM* (`AddWFsm`, 3×) — **both hard-code their operands**. Neither measured the
+*generic micro-op interpreter*, which is the actual single-definition mechanism. That interpreter resolves
+every operand symbolically at runtime (`match Operand`/`match Dest` per access) — irreducible indirection
+the hand-written paths skip. `#[inline]` fixed cross-CU call overhead (helped the step path) but not this.
+
+**This is not a correctness or design-soundness problem** — it is purely the throughput of the *data-driven
+representation*. In absolute terms the interpreter still does ~45 M ADD.w/s (~60× real-time), fine for
+MVP-debuggable and for differential testing (BlastEm, the accuracy oracle, runs ~50× real-time and is the
+bottleneck). It is **not** best-in-class on the hot loop.
+
+**The fix is the planned escape hatch (C — macro-inlined fast path), and it is already proven to work:**
+`step_instruction` (the 1× baseline) *is* an example of the straight-line, operand-hard-coded code a macro
+would generate per opcode from the same recipe. So a macro that emits an inlined run-to-completion body
+from each recipe — while still emitting the data recipe for the quiesce path — recovers **baseline** RTC
+speed with **zero** change to the recipes (the design's whole point). The interpreter stays as the
+quiesce-path executor.
+
+**Recommendation (owner's call at the push-1 checkpoint):** keep the interpreter (correct, clean, MVP-fast)
+and grind full opcode coverage on it now; add the macro-inlined RTC fast path **later** as a dedicated perf
+pass, once the micro-op vocabulary has stabilized across many opcode families (codegen over a moving target
+is premature). Deferring C costs nothing architecturally. The alternative — build C now, before coverage —
+locks in top-tier hot-loop perf from day one at the cost of carrying macro machinery through the grind.

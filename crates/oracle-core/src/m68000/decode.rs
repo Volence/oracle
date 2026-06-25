@@ -10,6 +10,7 @@ use super::microop::{AluOp, Cpu68000, Dest, Fc, MicroOp, MicroState, Operand};
 use super::registers::Registers;
 
 /// Decode the opcode currently in `regs.prefetch[0]` into its micro-op recipe.
+#[inline]
 pub fn decode(regs: &Registers) -> MicroState {
     let opcode = regs.prefetch[0];
     if opcode & 0xF1F8 == 0xD150 {
@@ -30,6 +31,7 @@ impl Cpu68000 {
     }
 
     /// Decode and run the next instruction to completion — the default fast path. Returns its cycles.
+    #[inline]
     pub fn run_instruction(&mut self, bus: &mut impl Bus68k) -> u32 {
         let mut recipe = decode(&self.regs);
         recipe.run_to_completion(&mut self.regs, bus)

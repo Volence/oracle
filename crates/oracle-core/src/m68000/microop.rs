@@ -14,6 +14,7 @@ use super::bus68k::Bus68k;
 use super::registers::{Registers, CCR_C, CCR_N, CCR_V, CCR_X, CCR_Z};
 
 /// 16-bit `ADD` (`a + b`) → `(result, new CCR low byte)`. Sets X/N/Z/V/C per the 68000.
+#[inline]
 fn add_w(a: u16, b: u16) -> (u16, u16) {
     let sum = a as u32 + b as u32;
     let result = sum as u16;
@@ -146,6 +147,7 @@ impl MicroState {
     }
 
     /// Resolve an [`Operand`] to its concrete value at execution time.
+    #[inline]
     fn resolve(&self, op: Operand, regs: &Registers) -> u32 {
         match op {
             Operand::Scratch(s) => self.scratch[s as usize],
@@ -158,6 +160,7 @@ impl MicroState {
     /// **Driver 1 — run-to-completion** (the default fast path): execute every remaining micro-op in
     /// order, returning the total master cycles. Drives the *same* [`Self::exec_one`] the quiesce path
     /// uses, so the two paths cannot diverge.
+    #[inline]
     pub fn run_to_completion(&mut self, regs: &mut Registers, bus: &mut impl Bus68k) -> u32 {
         let mut total = 0;
         while !self.is_done() {
@@ -168,6 +171,7 @@ impl MicroState {
 
     /// Execute exactly the next micro-op, advancing the cursor; returns the master cycles it cost.
     /// This is the single shared "cook" both drivers call — identical behavior by construction.
+    #[inline]
     pub fn exec_one(&mut self, regs: &mut Registers, bus: &mut impl Bus68k) -> u32 {
         let cycles = match self.ops[self.step as usize] {
             MicroOp::ReadWord { addr, fc, dst } => {
