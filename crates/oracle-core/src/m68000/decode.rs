@@ -7,7 +7,8 @@
 //! with full coverage.
 
 use super::bus68k::Bus68k;
-use super::microop::{AluOp, Cpu68000, Dest, Fc, MicroOp, MicroState, Operand, Size};
+use super::ea::{ea_dst, ea_src, RecipeBuf};
+use super::microop::{AluOp, Cpu68000, Dest, MicroOp, MicroState, Operand, Size};
 use super::registers::Registers;
 
 /// Decode the opcode currently in `regs.prefetch[0]` into its micro-op recipe.
@@ -50,32 +51,22 @@ impl Cpu68000 {
 /// `<op>.w Dn,(An)` (`1xx1 ddd 1 01 010 rrr`, memory destination): read the memory operand at `(An)`,
 /// refill prefetch, combine it with `Dn`, write the result back to `(An)`. The **memory operand is the
 /// minuend** (`a`) so `SUB` computes `(An) - Dn`; `ADD` is commutative so the same order is correct. Three
-/// word accesses (read, prefetch, write) → 12 cycles; the ALU is an overlapped internal step.
+/// word accesses (read, prefetch, write) → 12 cycles; the ALU is an overlapped internal step. Expressed
+/// through the shared destination-EA builder ([`ea_dst`]) — the read/refill/ALU/write skeleton is the
+/// mode's, only the ALU operands are the opcode's.
 fn arith_w_dn_ea(opcode: u16, op: AluOp) -> MicroState {
     let dn = ((opcode >> 9) & 7) as u8;
-    let an = (opcode & 7) as u8;
-    MicroState::from_ops(&[
-        MicroOp::Read {
-            addr: Operand::AddrReg(an),
-            fc: Fc::Data,
-            size: Size::Word,
-            dst: 0,
-        },
-        MicroOp::Prefetch,
-        MicroOp::Alu {
-            op,
-            size: Size::Word,
-            a: Operand::Scratch(0),
-            b: Operand::DataRegLow16(dn),
-            dst: Dest::Scratch(1),
-        },
-        MicroOp::Write {
-            addr: Operand::AddrReg(an),
-            fc: Fc::Data,
-            size: Size::Word,
-            value: Operand::Scratch(1),
-        },
-    ])
+    let mode = (opcode >> 3) & 7;
+    let reg = (opcode & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    ea_dst(&mut buf, mode, reg, |a| MicroOp::Alu {
+        op,
+        size: Size::Word,
+        a,
+        b: Operand::DataRegLow16(dn),
+        dst: Dest::Scratch(1),
+    });
+    buf.finish()
 }
 
 /// `<op>.w <ea>,Dn` (`1xx1 ddd 0 01 mmm rrr`, register destination): `Dn = Dn <op> <ea>` — **Dn is the
@@ -86,34 +77,17 @@ fn arith_w_ea_dn(opcode: u16, op: AluOp) -> MicroState {
     let dn = ((opcode >> 9) & 7) as u8;
     let mode = (opcode >> 3) & 7;
     let reg = (opcode & 7) as u8;
-    let alu = |b| MicroOp::Alu {
+    let mut buf = RecipeBuf::new();
+    // The source-EA builder fetches the operand and places the prefetch(es); the ALU it builds combines
+    // `Dn` (the minuend) with that source operand and writes back to `Dn`.
+    ea_src(&mut buf, mode, reg, |b| MicroOp::Alu {
         op,
         size: Size::Word,
         a: Operand::DataRegLow16(dn),
         b,
         dst: Dest::DataRegLow16(dn),
-    };
-    match (mode, reg) {
-        // Dn (data register direct): no bus operand read; the only access is the prefetch refill.
-        (0, _) => MicroState::from_ops(&[MicroOp::Prefetch, alu(Operand::DataRegLow16(reg))]),
-        // (An): one data read of the operand, then the prefetch refill.
-        (2, _) => MicroState::from_ops(&[
-            MicroOp::Read {
-                addr: Operand::AddrReg(reg),
-                fc: Fc::Data,
-                size: Size::Word,
-                dst: 0,
-            },
-            MicroOp::Prefetch,
-            alu(Operand::Scratch(0)),
-        ]),
-        // #imm: the immediate is the queued word (prefetch[1]); the ALU captures it before the two
-        // prefetch refills shift the queue (two program reads, the 2-word instruction's fetch).
-        (7, 4) => {
-            MicroState::from_ops(&[alu(Operand::ImmWord), MicroOp::Prefetch, MicroOp::Prefetch])
-        }
-        _ => todo!("<op>.w <ea>,Dn EA mode {mode}/{reg} not yet covered"),
-    }
+    });
+    buf.finish()
 }
 
 #[cfg(test)]

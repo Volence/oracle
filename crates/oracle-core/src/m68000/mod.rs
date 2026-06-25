@@ -7,6 +7,7 @@
 
 pub mod bus68k;
 pub mod decode;
+pub mod ea;
 pub mod microop;
 pub mod prototype;
 pub mod registers;

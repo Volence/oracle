@@ -62,8 +62,9 @@ fn sub_w(a: u16, b: u16) -> (u16, u16) {
 
 /// Maximum micro-ops in one opcode's recipe. Most opcodes need ≤ a handful; unbounded families
 /// (MOVEM-class) get a generator variant later. Sized to the worst in-scope EA recipe (a byte
-/// `Dn,(abs.l)` RMW = 8 ops) with headroom.
-const MAX_OPS: usize = 12;
+/// `Dn,(abs.l)` RMW = 8 ops) with headroom. Public so the EA builder ([`super::ea::RecipeBuf`]) can
+/// size its fixed staging array to the same bound.
+pub const MAX_OPS: usize = 12;
 
 /// Number of scratch slots carrying values between micro-ops within one instruction. Sized to the
 /// worst in-scope recipe (≤ 4) with headroom.
