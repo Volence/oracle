@@ -177,6 +177,15 @@ pub fn decode(regs: &Registers) -> MicroState {
     if opcode == 0x4E75 {
         return rts_recipe();
     }
+    // DBcc (`0101 cccc 11001 rrr`, opcode & 0xF0F8 == 0x50C8) — decrement-and-branch loop. This is the
+    // `An`-direct (mode 001) special case of the `Scc` opcode space (`0101 cccc 11 mmm rrr`): only this exact
+    // form is DBcc — every other mode is `Scc` (a conditional byte-set, NOT decoded here). The condition AND
+    // the loop counter are both resolved at DECODE time (against the live CCR / `Dn` low word), emitting the
+    // fall-through or taken linear recipe directly. The opcode space 0x50C8.. (mode 001, size 11) is disjoint
+    // from ADDQ/SUBQ (sizes 00/01/10) and from every arm above.
+    if opcode & 0xF0F8 == 0x50C8 {
+        return dbcc_recipe(opcode, regs);
+    }
     todo!("opcode {opcode:#06X} not yet decoded")
 }
 
@@ -751,6 +760,73 @@ fn rts_recipe() -> MicroState {
     });
     buf.push(MicroOp::Prefetch);
     buf.push(MicroOp::Prefetch);
+    buf.finish()
+}
+
+/// Scratch slot holding a `DBcc`'s computed 32-bit branch target (the `SetPc` source). Slot 0 — the same slot
+/// a `Bcc`'s `TargetCalc` deposits its target into (DBcc reuses the Bcc word-form branch tail).
+const DBCC_TARGET_SLOT: u8 = 0;
+
+/// `DBcc Dn,<label>` (`0101 cccc 11001 rrr`, opcode & 0xF0F8 == 0x50C8): the 68000 decrement-and-branch loop
+/// primitive. `cc` (bits 11-8) is a *termination* condition: if it is **true** the loop ends (fall through, NO
+/// decrement); if it is **false** the counter `Dn.w` is decremented and, while it has not run out, the branch
+/// is taken. The 16-bit signed displacement is always the extension word `prefetch[1]` (DBcc has no byte form —
+/// the opcode's low byte is `0xC8 | reg`, never 0). The target is `pc + 2 + sign_extend16(disp)` (relative to
+/// the extension-word address `pc + 2`, the `PcOfExt` base), UNMASKED.
+///
+/// Both the condition and the counter are resolved at **decode time** (against the live CCR / `Dn` low word),
+/// so the interpreter stays a flat linear recipe (the variable cycle count emerges from the different-length
+/// recipe per path). The three paths, pinned to the vendored `DBcc` SST stream:
+///
+/// - **cond true** → `[Internal(4), Prefetch, Prefetch]`: fall through, advancing `pc` by TWO words (+4,
+///   skipping the displacement word), NO decrement. **12 cyc** (`5dcd`). Identical shape to a `Bcc` word
+///   not-taken.
+/// - **cond false, counter NOT expired** (`Dn.w != 0`) → `[DecrementDnWord(reg), TargetCalc(PcOfExt, ·,
+///   DispWord), Internal(2), SetPc(target), Prefetch, Prefetch]`: decrement `Dn.w`, then take the branch (the
+///   universal `SetPc` + two-`Prefetch` reload). **10 cyc** (`59c8`). Even target in scope; an odd taken
+///   target is an address error (52 cyc) → xfail.
+/// - **cond false, counter EXPIRED** (`Dn.w == 0`, so the decrement makes it `0xFFFF` = −1) → `[DecrementDnWord
+///   (reg), Internal(6), Prefetch, Prefetch]`: decrement, then fall through (+4), **14 cyc**. Implemented for
+///   correctness but **ABSENT from the SST data** — a random 32-bit `Dn` has its low word `== 0` only ≈1/65536
+///   of the time, and the vendored `DBcc` file has only lengths 10/12/52 (no expired bucket), so this path is
+///   not gate-exercised (the runner documents the same caveat).
+fn dbcc_recipe(opcode: u16, regs: &Registers) -> MicroState {
+    let cc = ((opcode >> 8) & 0xF) as u8;
+    let reg = (opcode & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    if condition_true(cc, regs.sr) {
+        // cond true → the loop terminates: fall through two words, NO decrement.
+        buf.push(MicroOp::Internal { cycles: 4 });
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::Prefetch);
+    } else {
+        // cond false → decrement the counter. The expiry check reads the ORIGINAL Dn.w (the 68000 terminates
+        // when the decrement yields −1, i.e. when the counter WAS 0): resolved here at decode time.
+        let expired = regs.d[reg as usize] & 0xFFFF == 0;
+        buf.push(MicroOp::DecrementDnWord { reg });
+        if expired {
+            // Counter ran out → fall through (+4). Correctness-only — ABSENT from the SST data (see the doc
+            // comment); the 14-cyc total (DecrementDnWord 0 + Internal(6) + two Prefetch) follows the 68000.
+            buf.push(MicroOp::Internal { cycles: 6 });
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::Prefetch);
+        } else {
+            // Counter still live → take the branch. Compute the UNMASKED target FIRST (capturing prefetch[1]
+            // and the original pc via PcOfExt, before any refill), then the universal SetPc + reload tail.
+            buf.push(MicroOp::TargetCalc {
+                base: Operand::PcOfExt,
+                index: Operand::Zero,
+                disp: Operand::DispWord,
+                dst: DBCC_TARGET_SLOT,
+            });
+            buf.push(MicroOp::Internal { cycles: 2 });
+            buf.push(MicroOp::SetPc {
+                value: Operand::Scratch(DBCC_TARGET_SLOT),
+            });
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::Prefetch);
+        }
+    }
     buf.finish()
 }
 
@@ -4675,5 +4751,323 @@ mod tests {
                 "transaction stream from boundary {pause_after} diverged"
             );
         }
+    }
+
+    // --- F5: DBcc — decode-time condition + counter resolution. Two anchors: cond-true fall-through (5dcd,
+    // 12 cyc, NO decrement) and cond-false-taken (59c8, 10 cyc, decrement Dn.w + branch). The cond-false
+    // counter-expired path is correctness-only (absent from the SST data) — a focused decode test below. ---
+
+    #[test]
+    fn dbcc_decode_extracts_cc_and_reg() {
+        // DBcc layout: `0101 cccc 11001 rrr` — opcode & 0xF0F8 == 0x50C8 (mode 001, size field 11). cc = bits
+        // 11-8, reg = bits 2-0; the displacement is always the extension word (no byte form — the opcode low
+        // byte is 0xC8 | reg, never 0). 0x59c8 → cc 9 (VS), reg 0. 0x5dcd → cc 13 (LT), reg 5.
+        assert_eq!(0x59c8u16 & 0xF0F8, 0x50C8, "0x59c8 is a DBcc");
+        assert_eq!((0x59c8u16 >> 8) & 0xF, 9, "0x59c8 cc = 9 (VS)");
+        assert_eq!(0x59c8u16 & 7, 0, "0x59c8 reg = 0 (D0)");
+        assert_eq!(0x5dcdu16 & 0xF0F8, 0x50C8, "0x5dcd is a DBcc");
+        assert_eq!((0x5dcdu16 >> 8) & 0xF, 13, "0x5dcd cc = 13 (LT)");
+        assert_eq!(0x5dcdu16 & 7, 5, "0x5dcd reg = 5 (D5)");
+        // A different mode (000, Dn-direct) is Scc, NOT DBcc — its low six bits differ from 11001 rrr.
+        assert_ne!(
+            0x50C0u16 & 0xF0F8,
+            0x50C8,
+            "0x50C0 (Scc, mode 000) is NOT a DBcc"
+        );
+    }
+
+    /// The clean SST reference case `5dcd [DBcc D5, #] 2` (condition true → loop terminates, fall through, 12
+    /// cycles, NO decrement) — the F5 cond-true anchor. opcode 0x5dcd → cc 13 (LT = N != V); SR 0x2716 (V|Z
+    /// set, N clear) → N != V → LT true → terminate. The recipe is `[Internal(4), Prefetch, Prefetch]`: pc
+    /// advances TWO words (+4, skipping the displacement word), D5 is unchanged, the queue reloads at pc+4 /
+    /// pc+6. Bus: n4 (not in the stream) + two FC-6 reads at 3076 / 3078.
+    fn setup_dbcc_cond_true() -> (Cpu68000, FlatBus) {
+        let mut regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10006,               // 0x2716 — V|Z set, N clear → LT true (terminate)
+            prefetch: [24013, 3000], // prefetch[0] = 0x5DCD (DBcc D5)
+        };
+        regs.d[5] = 0x8A57_C8BD; // counter; must be UNCHANGED (cond true → no decrement)
+        let mut bus = FlatBus::new();
+        // The two fall-through words at pc+4 (3076 = 0xCD55 = 52565) / pc+6 (3078 = 0xBA9D = 47773).
+        for (a, v) in [(3076u32, 0xCDu8), (3077, 0x55), (3078, 0xBA), (3079, 0x9D)] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_dbcc_cond_true_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 52565,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3078,
+                size: Size::Word,
+                value: 47773,
+            },
+        ]
+    }
+
+    fn assert_dbcc_cond_true_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3076, "pc advanced two words (fall-through)");
+        assert_eq!(cpu.regs.sr, 10006, "SR unchanged (DBcc affects no flags)");
+        assert_eq!(
+            cpu.regs.d[5], 0x8A57_C8BD,
+            "D5 unchanged — cond true terminates with NO decrement"
+        );
+        assert_eq!(cpu.regs.prefetch, [52565, 47773], "queue shifted twice");
+        assert_eq!(bus.log, expected_dbcc_cond_true_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_dbcc_cond_true() {
+        let (mut cpu, mut bus) = setup_dbcc_cond_true();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(cycles, 12, "cond true = [Internal(4), PF, PF] = 12");
+        assert_dbcc_cond_true_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_dbcc_cond_true() {
+        let (mut rtc, mut bus_rtc) = setup_dbcc_cond_true();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_dbcc_cond_true();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 12);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_dbcc_cond_true_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn dbcc_cond_true_quiescable_and_serializable_at_every_micro_op_boundary() {
+        let (mut rref, mut bref) = setup_dbcc_cond_true();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 3 micro-ops (Internal(4), Prefetch, Prefetch) → boundaries after 0..=2.
+        for pause_after in 0..=2 {
+            let (mut cpu, mut bus) = setup_dbcc_cond_true();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    /// The clean SST reference case `59c8 [DBcc D0, #] 1` (condition false, counter live → decrement + branch
+    /// taken, 10 cycles) — the F5 cond-false-taken anchor. opcode 0x59c8 → cc 9 (VS = V set); SR 0x271C (V
+    /// clear) → VS false → do NOT terminate. D0 0x2602_5C43 (low word 0x5C43 != 0 → counter live): decrement to
+    /// 0x2602_5C42, then branch. target = pc+2+sign_extend16(0xF002) = 3074 + (−4094) = 0xFFFF_FC04 (UNMASKED);
+    /// the bus reload masks to 0xFFFC04 (= 16776196). Recipe `[DecrementDnWord, TargetCalc(DispWord),
+    /// Internal(2), SetPc, Prefetch, Prefetch]`. Bus: n2 (not in the stream) + two FC-6 reads at 16776196 /
+    /// 16776198; final.pc is the full unmasked 0xFFFF_FC04 (the high bits survive — DBcc shares the unmasked
+    /// taken-branch tail).
+    fn setup_dbcc_cond_false_taken() -> (Cpu68000, FlatBus) {
+        let mut regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10012,                // 0x271C — V clear → VS false (do not terminate)
+            prefetch: [22984, 61442], // prefetch[0] = 0x59C8 (DBcc D0); prefetch[1] = 0xF002 (disp)
+        };
+        regs.d[0] = 0x2602_5C43; // counter; low word 0x5C43 != 0 → live, decremented to 0x5C42
+        let mut bus = FlatBus::new();
+        // The two target words at the MASKED target 0xFFFC04 (16776196 = 0x9392 = 37778) / +2 (0xE856 = 59478).
+        for (a, v) in [
+            (16776196u32, 0x93u8),
+            (16776197, 0x92),
+            (16776198, 0xE8),
+            (16776199, 0x56),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_dbcc_cond_false_taken_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 16776196, // target (masked) → prefetch[0]
+                size: Size::Word,
+                value: 37778,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 16776198, // target+2 (masked) → prefetch[1]
+                size: Size::Word,
+                value: 59478,
+            },
+        ]
+    }
+
+    fn assert_dbcc_cond_false_taken_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(
+            cpu.regs.pc, 4294966276,
+            "pc landed at the FULL unmasked target 0xFFFF_FC04"
+        );
+        assert_eq!(cpu.regs.sr, 10012, "SR unchanged (DBcc affects no flags)");
+        assert_eq!(
+            cpu.regs.d[0], 0x2602_5C42,
+            "D0 low word decremented (high word preserved)"
+        );
+        assert_eq!(
+            cpu.regs.prefetch,
+            [37778, 59478],
+            "queue reloaded at the (masked) target"
+        );
+        assert_eq!(bus.log, expected_dbcc_cond_false_taken_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_dbcc_cond_false_taken() {
+        let (mut cpu, mut bus) = setup_dbcc_cond_false_taken();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 10,
+            "cond false taken = [DecrementDnWord, TargetCalc, Internal(2), SetPc, PF, PF] = 10"
+        );
+        assert_dbcc_cond_false_taken_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_dbcc_cond_false_taken() {
+        let (mut rtc, mut bus_rtc) = setup_dbcc_cond_false_taken();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_dbcc_cond_false_taken();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 10);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_dbcc_cond_false_taken_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn dbcc_cond_false_taken_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The snapshot/restore anchor for the DBcc decrement-and-branch shape (the DecrementDnWord counter +
+        // the SetPc + queue-reload tail) — the whole CPU round-trips at every micro-op boundary.
+        let (mut rref, mut bref) = setup_dbcc_cond_false_taken();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 6 micro-ops (DecrementDnWord, TargetCalc, Internal(2), SetPc, Prefetch, Prefetch) → 0..=5.
+        for pause_after in 0..=5 {
+            let (mut cpu, mut bus) = setup_dbcc_cond_false_taken();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    #[test]
+    fn dbcc_cond_false_expired_decrements_then_falls_through() {
+        // The cond-false counter-EXPIRED path (Dn.w == 0): decrement to 0xFFFF (the −1 terminator), then fall
+        // through (+4) — NO branch. This is correctness-only — it is ABSENT from the SST data (a random Dn.w is
+        // 0 only ≈1/65536 of the time, and the vendored DBcc file has no expired bucket), so it is pinned by a
+        // focused synthetic case here, not a vendored anchor. cc 9 (VS); SR 0x2700 (V clear) → not terminate.
+        let regs = Registers {
+            d: [0; 8], // D0 low word == 0 → the decrement expires the loop
+            a: [0; 7],
+            usp: 0,
+            ssp: 2048,
+            pc: 3072,
+            sr: 0x2700,
+            prefetch: [0x59C8, 0x1234], // DBcc D0; disp 0x1234 (the branch is NOT taken, so disp is unused)
+        };
+        let mut bus = FlatBus::new();
+        // The two fall-through words at pc+4 (3076 = 0x1111) / pc+6 (3078 = 0x2222).
+        for (a, v) in [(3076u32, 0x11u8), (3077, 0x11), (3078, 0x22), (3079, 0x22)] {
+            bus.poke(a, v);
+        }
+        let mut cpu = Cpu68000::new(regs);
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 14,
+            "cond false expired = decrement + fall-through (+4) = 14"
+        );
+        assert_eq!(
+            cpu.regs.pc, 3076,
+            "pc advanced two words (fall-through, NO branch)"
+        );
+        assert_eq!(
+            cpu.regs.d[0], 0x0000_FFFF,
+            "D0 low word 0 → 0xFFFF (the −1 terminator); high word preserved"
+        );
+        assert_eq!(cpu.regs.prefetch, [0x1111, 0x2222], "queue shifted twice");
+        assert_eq!(
+            bus.log,
+            vec![
+                Transaction {
+                    kind: TxKind::Read,
+                    fc: 6,
+                    addr: 3076,
+                    size: Size::Word,
+                    value: 0x1111,
+                },
+                Transaction {
+                    kind: TxKind::Read,
+                    fc: 6,
+                    addr: 3078,
+                    size: Size::Word,
+                    value: 0x2222,
+                },
+            ],
+            "fall-through reads at pc+4 / pc+6 (no branch reload)"
+        );
     }
 }

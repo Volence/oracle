@@ -455,6 +455,13 @@ pub enum MicroOp {
         disp: Operand,
         dst: Slot,
     },
+    /// Decrement the LOW word of data register `Dn` by 1, preserving its high word, affecting **NO flags** —
+    /// the `DBcc` loop counter: `d[reg] = (d[reg] & 0xFFFF_0000) | (d[reg].wrapping_sub(1) & 0xFFFF)`. When
+    /// the low word is `0` it wraps to `0xFFFF` (the high word is unchanged — the borrow does not propagate),
+    /// which is the `−1` the `DBcc` decode-time check reads to terminate the loop. A 0-cycle, non-bus,
+    /// snapshot-visible internal step. Distinct from [`MicroOp::Alu`] `Sub` (which sets flags and can write a
+    /// full-width result) — `DBcc` never touches the CCR.
+    DecrementDnWord { reg: u8 },
 }
 
 /// The in-flight micro-op cursor for one instruction: the recipe, how far through it we are, and the
@@ -700,6 +707,13 @@ impl MicroState {
                     .wrapping_add(self.resolve(index, regs))
                     .wrapping_add(self.resolve(disp, regs));
                 self.scratch[dst as usize] = target;
+                0
+            }
+            MicroOp::DecrementDnWord { reg } => {
+                // Dn low word −= 1 (high word preserved, NO flags); 0 wraps to 0xFFFF without a borrow into
+                // the high word — the `DBcc` loop counter, decoded at instruction start to pick the branch.
+                let d = regs.d[reg as usize];
+                regs.d[reg as usize] = (d & 0xFFFF_0000) | (d.wrapping_sub(1) & 0xFFFF);
                 0
             }
         };
@@ -2162,5 +2176,46 @@ mod tests {
 
         assert_eq!(st.scratch[0], 0x0000_0C02, "byte BSR return = pc + 2");
         assert_eq!(st.scratch[1], 0x0000_0C04, "word BSR return = pc + 4");
+    }
+
+    // --- F5: the DBcc loop counter (DecrementDnWord). ---
+
+    #[test]
+    fn decrement_dn_word_subtracts_one_from_low_word_preserving_high_no_flags() {
+        // DecrementDnWord: Dn low word −= 1, high word preserved, NO flags. Pinned to the real SST
+        // `59c8 [DBcc D0, #]`: D0 0x2602_5C43 → 0x2602_5C42 (low word 0x5C43 → 0x5C42; high 0x2602 survives);
+        // the CCR is untouched (a dirty SR must SURVIVE unchanged — DBcc never writes flags).
+        let mut regs = regs();
+        regs.d[0] = 0x2602_5C43;
+        regs.sr = 0x271C; // CCR = X|N|Z, supervisor — must survive UNCHANGED
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::DecrementDnWord { reg: 0 }]);
+
+        let cycles = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(
+            cycles, 0,
+            "DecrementDnWord is an internal compute — 0 cycles"
+        );
+        assert_eq!(regs.d[0], 0x2602_5C42, "low word −1, high word preserved");
+        assert_eq!(regs.sr, 0x271C, "no flags affected by the DBcc decrement");
+        assert!(bus.log.is_empty(), "DecrementDnWord touches no bus");
+    }
+
+    #[test]
+    fn decrement_dn_word_wraps_zero_to_ffff_without_borrowing_into_high_word() {
+        // The counter-expiry case: low word 0 wraps to 0xFFFF (the −1 the DBcc decode reads to terminate the
+        // loop) WITHOUT borrowing into the high word — 0x0003_0000 → 0x0003_FFFF, not 0x0002_FFFF.
+        let mut regs = regs();
+        regs.d[3] = 0x0003_0000;
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::DecrementDnWord { reg: 3 }]);
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(
+            regs.d[3], 0x0003_FFFF,
+            "low word 0 → 0xFFFF; the borrow does NOT propagate into the high word"
+        );
     }
 }

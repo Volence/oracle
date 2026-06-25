@@ -55,6 +55,7 @@ const FILES: &[&str] = &[
     "JMP.json",
     "JSR.json",
     "RTS.json",
+    "DBcc.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -447,6 +448,41 @@ fn bcc_in_scope(opcode: u16, ini: &Value) -> bool {
     target & 1 == 0 // even target is in scope; odd target is an address error → xfail
 }
 
+/// Whether this opcode is a `DBcc` the framework covers (`0101 cccc 11001 rrr`, opcode & 0xF0F8 == 0x50C8 —
+/// the `An`-direct (mode 001) special case of the `Scc` opcode space; only this exact form is DBcc, every
+/// other mode is `Scc`, which is NOT implemented). `DBcc.json` carries the full DBcc family.
+fn dbcc_covered(opcode: u16) -> bool {
+    opcode & 0xF0F8 == 0x50C8
+}
+
+/// The `DBcc` scope/parity filter (called once `dbcc_covered` matches). `cc` is a *termination* condition:
+/// cond **true** → the loop terminates, fall through (NO branch) → always clean. cond **false** → decrement
+/// `Dn.w` and, if the counter is still live (`Dn.w != 0`), take the branch — clean iff the (always word-form)
+/// target is **even**; an odd taken target raises an address error (the deferred odd-address class — those
+/// cases are length 52 in the data, vs. 10 for the clean taken branch) → xfail. If the counter is EXPIRED
+/// (`Dn.w == 0`, so the decrement yields −1) the branch is NOT taken (fall-through) → clean; this expired
+/// bucket is **absent from the vendored data** (a random 32-bit `Dn` has `Dn.w == 0` only ≈1/65536 of the
+/// time, and `DBcc.json` has only lengths 10/12/52 — no expired cases), so the filter handles it for
+/// completeness but it never selects a case here. The target is `pc + 2 + sign_extend16(prefetch[1])`.
+fn dbcc_in_scope(opcode: u16, ini: &Value) -> bool {
+    let cc = (opcode >> 8) as u8 & 0xF;
+    let sr = u32f(ini, "sr") as u16;
+    if condition_true(cc, sr) {
+        return true; // cond true → loop terminates (fall-through), always clean
+    }
+    // cond false → decrement; an expired counter (Dn.w == 0) falls through (clean; absent from the data).
+    let reg = (opcode & 7) as usize;
+    if u32f(ini, &format!("d{reg}")) & 0xFFFF == 0 {
+        return true;
+    }
+    // Counter live → branch taken: clean iff the target is even (odd = address error, 52 cyc → xfail).
+    let pc = u32f(ini, "pc");
+    let ext = ini["prefetch"].as_array().unwrap()[1].as_u64().unwrap() as u16;
+    let disp = ext as i16 as i32 as u32;
+    let target = pc.wrapping_add(2).wrapping_add(disp);
+    target & 1 == 0
+}
+
 /// Whether this opcode is a `BSR` the framework covers (`0110 0001 dddddddd`, 0x61xx; cc == 1 — the BSR
 /// encoding, decoded as its own arm). `BSR.json` carries `BSR.b`/`BSR.w` (`disp8 != 0xFF`) plus the 35 cases
 /// of the 68020 long-displacement form `0x61FF`, deferred to `bsr_in_scope`.
@@ -618,6 +654,13 @@ fn covered(opcode: u16, ini: &Value) -> bool {
     // commit), excluded by `bcc_covered`.
     if bcc_covered(opcode) {
         return bcc_in_scope(opcode, ini);
+    }
+    // DBcc (`0101 cccc 11001 rrr`, opcode & 0xF0F8 == 0x50C8) — its own decode-time condition + counter
+    // filter: cond true → fall-through (always clean); cond false → decrement Dn.w, and (counter live) take
+    // the branch (clean iff the target is even, odd = address error → xfail) or (counter expired) fall through
+    // (clean, but absent from the data). Only the 0x50C8 An-direct form is DBcc (every other mode is Scc).
+    if dbcc_covered(opcode) {
+        return dbcc_in_scope(opcode, ini);
     }
     // BSR (`0110 0001 dddddddd`, 0x61xx; cc == 1) — its own byte/word + even-target parity filter (a taken
     // odd target is an address error → xfail; the 68020 long-disp form 0x61FF traps on the 68000 → xfail).
@@ -900,8 +943,8 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 68647,
-        "expected 68647 covered cases — ADD/SUB (21790: word 5871 + byte 9974 + long 5945) plus \
+        ran >= 74748,
+        "expected 74748 covered cases — ADD/SUB (21790: word 5871 + byte 9974 + long 5945) plus \
          MOVE.w (3154: all 12 source modes × Dn + the alterable-memory dest modes \
          ((An)/(An)+/-(An)/d16(An)/d8(An,Xn)/abs.w/abs.l), even word EAs since an odd word access is an \
          address error, the (A7) mode-2 word form xfail) plus MOVE.b (7796: same modes, byte excludes \
@@ -927,7 +970,11 @@ fn add_sub_match_singlesteptests() {
          (target UNMASKED), odd-target = address error → xfail) plus RTS (4008: the sole 0x4E75 encoding — pop \
          the 32-bit return address (hi @ SP, lo @ SP+2, FC=Data), post-increment SP by 4, assemble the UNMASKED \
          target, SetPc + two-Prefetch queue reload; 16 cyc; even popped-target in scope, odd popped-target = \
-         address error (58 cyc) → xfail), ran {ran}"
+         address error (58 cyc) → xfail) plus DBcc (6101: the An-direct 0x50C8 form — cond true → fall-through \
+         (12 cyc, NO decrement, 4096 cases), cond false counter live → decrement Dn.w + branch taken (10 cyc, \
+         even target, 2005 cases), cond false counter expired (Dn.w == 0) → decrement + fall-through (14 cyc, \
+         correctness-only, ABSENT from the data — 0 cases); taken odd target = address error (52 cyc) → xfail), \
+         ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
