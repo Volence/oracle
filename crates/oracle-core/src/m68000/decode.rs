@@ -29,6 +29,14 @@ fn is_move_word(opcode: u16) -> bool {
     (opcode >> 12) & 0xF == 0b0011 && ((opcode >> 6) & 7) != 1
 }
 
+/// Whether `opcode` is a `MOVE.b` (NOT `MOVEA` — byte MOVEA is illegal). Same layout as [`is_move_word`]
+/// but the size field (bits 13-12) is `01` for byte, so bits 15-12 == `0b0001`. `dst_mode == 1` (`An`) is
+/// excluded (byte MOVEA does not exist).
+#[inline]
+fn is_move_byte(opcode: u16) -> bool {
+    (opcode >> 12) & 0xF == 0b0001 && ((opcode >> 6) & 7) != 1
+}
+
 /// Decode the opcode currently in `regs.prefetch[0]` into its micro-op recipe.
 #[inline]
 pub fn decode(regs: &Registers) -> MicroState {
@@ -36,7 +44,12 @@ pub fn decode(regs: &Registers) -> MicroState {
     // MOVE.w (`00 11 RRR MMM mmm rrr`, dst_mode != 1) — the EA→EA composition. Decoded before the ADD/SUB
     // arms (the opcode spaces 0x3xxx and 0xD/0x9xxx are disjoint).
     if is_move_word(opcode) {
-        return move_w(opcode);
+        return move_recipe(opcode, Size::Word);
+    }
+    // MOVE.b (`00 01 RRR MMM mmm rrr`, dst_mode != 1) — the byte EA→EA composition. Same shape as MOVE.w
+    // through the size-aware `ea_move`; the opcode space 0x1xxx is disjoint from MOVE.w/ADD/SUB.
+    if is_move_byte(opcode) {
+        return move_recipe(opcode, Size::Byte);
     }
     // ADD.w and SUB.w share recipe shapes — they differ only in the `AluOp` (operand order is arranged so
     // the destination is the minuend, which matters for the non-commutative SUB).
@@ -146,18 +159,20 @@ fn arith_dn_ea(opcode: u16, op: AluOp, size: Size) -> MicroState {
     buf.finish()
 }
 
-/// `MOVE.w <ea>,<ea>` (`00 11 RRR MMM mmm rrr`, `dst_mode != 1`): copy the source operand to the
-/// destination, setting N/Z, clearing V/C, preserving X. The destination field is **swapped** — `dst_reg`
-/// is bits 11-9, `dst_mode` is bits 8-6 — and the source is the usual `mode/reg` in bits 5-0. Delegates the
-/// whole EA→EA composition (source read → flag-ALU → destination write, with the MOVE prefetch interleave)
-/// to [`ea_move`].
-fn move_w(opcode: u16) -> MicroState {
+/// `MOVE.{b,w} <ea>,<ea>` (`00 SS RRR MMM mmm rrr`, `dst_mode != 1`): copy the source operand to the
+/// destination at `size`, setting N/Z, clearing V/C, preserving X. The destination field is **swapped** —
+/// `dst_reg` is bits 11-9, `dst_mode` is bits 8-6 — and the source is the usual `mode/reg` in bits 5-0.
+/// Delegates the whole EA→EA composition (source read → flag-ALU → destination write, with the MOVE prefetch
+/// interleave) to the size-aware [`ea_move`]. Byte and word share the recipe shape (the byte path uses
+/// byte-granular `Read`/`Write` and the byte flag/operand widths); the byte size field never selects `An`
+/// (byte MOVEA is illegal).
+fn move_recipe(opcode: u16, size: Size) -> MicroState {
     let dst_reg = ((opcode >> 9) & 7) as u8;
     let dst_mode = (opcode >> 6) & 7;
     let src_mode = (opcode >> 3) & 7;
     let src_reg = (opcode & 7) as u8;
     let mut buf = RecipeBuf::new();
-    ea_move(&mut buf, dst_mode, dst_reg, src_mode, src_reg);
+    ea_move(&mut buf, dst_mode, dst_reg, src_mode, src_reg, size);
     buf.finish()
 }
 
@@ -984,6 +999,142 @@ mod tests {
         // 4 micro-ops (Read, Alu(Move→park), Write, Prefetch) → boundaries after 0..=3.
         for pause_after in 0..=3 {
             let (mut cpu, mut bus) = setup_move_an_an();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    // --- M2: MOVE.b decode quirks (the 01 size bits) + the byte anchor. ---
+
+    #[test]
+    fn move_b_decode_recognizes_byte_size_and_not_movea() {
+        // is_move_byte() gates bits15-12 == 0b0001 (00 + size 01) AND dst_mode != 1 (mode 1 == MOVEA, M4).
+        assert!(is_move_byte(0x1094), "0x1094 MOVE.b (A4),(A0)");
+        assert!(is_move_byte(0x1203), "0x1203 MOVE.b D3,D1");
+        // size 11 = word, 10 = long, 00 = not MOVE — none are byte.
+        assert!(!is_move_byte(0x3203), "0x3203 size 11 = MOVE.w — not byte");
+        assert!(!is_move_byte(0x2203), "0x2203 size 10 = MOVE.l — not byte");
+        assert!(!is_move_byte(0xD040), "ADD.w — not MOVE");
+        // dst_mode == 1 (An) is MOVEA — but byte MOVEA is illegal anyway; 0x1040 = 0001 000 001 000 000.
+        assert!(!is_move_byte(0x1040), "dst_mode 1 is MOVEA, not MOVE.b");
+    }
+
+    /// The clean SingleStepTests reference case `1094 [MOVE.b (A4),(A0)]` (12 cycles) — the M2 byte EA→EA
+    /// anchor. A4 read at 0xF58C90 (source byte 0x44), A0 write at 0xDFA6A (the byte copied unchanged). The
+    /// source byte 0x44 is positive nonzero → N/Z cleared; X (set in SR 0x271D) survives the move. Bus:
+    /// byte-granular [READ.b @src, WRITE.b @dest, PF.w] — the write is the second-to-last bus event.
+    fn setup_move_b_an_an() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [1_329_114_320, 0, 0, 0, 0, 0, 0, 0],
+            a: [1_175_321_194, 0, 0, 0, 2_834_532_752, 0, 0],
+            usp: 3_631_589_744,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10013,
+            prefetch: [4244, 28765],
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [(3077u32, 138u8), (3076, 216), (15_960_464, 68)] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_move_b_an_an_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 15_960_464,
+                size: Size::Byte,
+                value: 68,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 916_074,
+                size: Size::Byte,
+                value: 68,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 55434,
+            },
+        ]
+    }
+
+    fn assert_move_b_an_an_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced by one word");
+        assert_eq!(
+            cpu.regs.sr, 10000,
+            "CCR = X (X preserved, N/Z/V/C cleared for a positive nonzero byte)"
+        );
+        assert_eq!(cpu.regs.a[0], 1_175_321_194, "dst An unchanged");
+        assert_eq!(cpu.regs.a[4], 2_834_532_752, "src An unchanged");
+        assert_eq!(cpu.regs.prefetch, [28765, 55434], "prefetch advanced");
+        assert_eq!(bus.peek(916_074), 68, "dest byte = source byte");
+        assert_eq!(bus.log, expected_move_b_an_an_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_move_b_an_an() {
+        let (mut cpu, mut bus) = setup_move_b_an_an();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 12,
+            "MOVE.b (An),(An) = [READ.b, WRITE.b, PF.w] = 12"
+        );
+        assert_move_b_an_an_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_move_b_an_an() {
+        let (mut rtc, mut bus_rtc) = setup_move_b_an_an();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_move_b_an_an();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 12);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_move_b_an_an_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn move_b_an_an_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The no-divergence guarantee for the byte EA→EA composition: snapshot/restore the whole CPU at
+        // every micro-op boundary, resume on the same bus, require an identical final state + byte stream.
+        let (mut rref, mut bref) = setup_move_b_an_an();
+        rref.run_instruction(&mut bref);
+
+        let cfg = bincode::config::standard();
+        // 4 micro-ops (Read.b, Alu(Move→park), Write.b, Prefetch) → boundaries after 0..=3.
+        for pause_after in 0..=3 {
+            let (mut cpu, mut bus) = setup_move_b_an_an();
             cpu.start_instruction();
             for _ in 0..pause_after {
                 assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);

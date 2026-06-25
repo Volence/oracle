@@ -956,9 +956,10 @@ pub fn ea_dst(
 const MOVE_VALUE_SLOT: u8 = 1;
 
 /// The MOVE source operand `Operand`, plus whether the source performs a memory READ and how many
-/// extension-word `Prefetch` refills the source phase emits. A `.w` MOVE source spans all 12 EA modes; this
-/// row data drives [`ea_move`]'s source phase (the EA materialization + read), keeping the prefetch
-/// interleaving — the load-bearing MOVE ordering — in one place.
+/// extension-word `Prefetch` refills the source phase emits. A `.b`/`.w` MOVE source spans all 12 EA modes
+/// (byte excludes `An`-direct — `MOVE.b An,<ea>` is illegal); this row data drives [`ea_move`]'s source
+/// phase (the EA materialization + read), keeping the prefetch interleaving — the load-bearing MOVE ordering
+/// — in one place.
 struct MoveSrc {
     /// The operand the flag-ALU copies (a register, the immediate word, or the read scratch slot 0).
     operand: Operand,
@@ -966,38 +967,45 @@ struct MoveSrc {
     reads: bool,
 }
 
-/// Emit the source phase of a `.w` MOVE into `buf`, leaving the source operand ready for the flag-ALU. The
-/// source's own extension-word prefetches run here (each shifting the NEXT word — eventually the dest's
-/// extension word — into `prefetch[1]`); a memory source ends with the operand `Read` into scratch 0. The
-/// `#imm` operand is captured by the ALU directly (`Operand::ImmWord`), so its single ext-word prefetch is
-/// emitted here with NO read. Orderings pinned against the vendored `MOVE.w` SST stream.
-fn move_emit_source(buf: &mut RecipeBuf, sm: u16, sr: u8) -> MoveSrc {
-    // The two indexed/displacement EaCalc legs reused across modes. The EA lands in EA_SLOT; the read then
-    // targets `Scratch(EA_SLOT)`.
+/// Emit the source phase of a `.b`/`.w` MOVE into `buf`, leaving the source operand ready for the flag-ALU.
+/// The source's own extension-word prefetches run here (each shifting the NEXT word — eventually the dest's
+/// extension word — into `prefetch[1]`); a memory source ends with the operand `Read` (sized: a byte source
+/// is a `read8`, a word source a `read16`) into scratch 0. The `#imm` operand is captured by the ALU directly
+/// (`Operand::ImmWord`), so its single ext-word prefetch is emitted here with NO read. The `(An)+`/`-(An)`
+/// auto-(in/de)crement step is sized (byte 1, or 2 for A7 to keep the SP even; word 2). Orderings pinned
+/// against the vendored `MOVE.w`/`MOVE.b` SST streams (the byte stream is the word stream with byte-granular
+/// accesses — same prefetch interleave).
+fn move_emit_source(buf: &mut RecipeBuf, sm: u16, sr: u8, size: Size) -> MoveSrc {
+    // The displacement/indexed EaCalc modes' operand READ targets the materialized EA in EA_SLOT, sized.
     let read_ea = |buf: &mut RecipeBuf| {
         buf.push(MicroOp::Read {
             addr: Operand::Scratch(EA_SLOT),
             fc: Fc::Data,
-            size: Size::Word,
+            size,
             dst: 0,
         });
     };
     match (sm, sr) {
-        // Dn / An direct — no read, no source prefetch. The operand is the register's low word.
+        // Dn direct — no read, no source prefetch. The operand is the register's low byte/word.
         (0, _) => MoveSrc {
-            operand: Operand::DataRegLow16(sr),
+            operand: match size {
+                Size::Byte => Operand::DataRegLow8(sr),
+                _ => Operand::DataRegLow16(sr),
+            },
             reads: false,
         },
+        // An direct — word only (`MOVE.b An,<ea>` is illegal, never reaches here for byte; the byte decoder
+        // and `move_in_scope` exclude it). The operand is An's low word.
         (1, _) => MoveSrc {
             operand: Operand::AddrRegLow16(sr),
             reads: false,
         },
-        // (An) — read at An.
+        // (An) — read at An (sized).
         (2, _) => {
             buf.push(MicroOp::Read {
                 addr: Operand::AddrReg(sr),
                 fc: Fc::Data,
-                size: Size::Word,
+                size,
                 dst: 0,
             });
             MoveSrc {
@@ -1005,34 +1013,34 @@ fn move_emit_source(buf: &mut RecipeBuf, sm: u16, sr: u8) -> MoveSrc {
                 reads: true,
             }
         }
-        // (An)+ — read at An, then post-increment An by the word step (non-bus, after the read).
+        // (An)+ — read at An (sized), then post-increment An by the sized step (non-bus, after the read).
         (3, _) => {
             buf.push(MicroOp::Read {
                 addr: Operand::AddrReg(sr),
                 fc: Fc::Data,
-                size: Size::Word,
+                size,
                 dst: 0,
             });
             buf.push(MicroOp::AdjustAddr {
                 reg: sr,
-                delta: step_bytes(Size::Word, sr),
+                delta: step_bytes(size, sr),
             });
             MoveSrc {
                 operand: Operand::Scratch(0),
                 reads: true,
             }
         }
-        // -(An) — pre-decrement An, the predecrement idle (n2), read at An-step.
+        // -(An) — pre-decrement An by the sized step, the predecrement idle (n2), read at An-step (sized).
         (4, _) => {
             buf.push(MicroOp::AdjustAddr {
                 reg: sr,
-                delta: -step_bytes(Size::Word, sr),
+                delta: -step_bytes(size, sr),
             });
             buf.push(MicroOp::Internal { cycles: 2 });
             buf.push(MicroOp::Read {
                 addr: Operand::AddrReg(sr),
                 fc: Fc::Data,
-                size: Size::Word,
+                size,
                 dst: 0,
             });
             MoveSrc {
@@ -1108,30 +1116,42 @@ fn move_emit_source(buf: &mut RecipeBuf, sm: u16, sr: u8) -> MoveSrc {
     }
 }
 
-/// Assemble the full `.w` MOVE recipe (`MOVE.w <ea>,<ea>`) — the EA→EA composition. Reads the source
-/// operand, copies it through the flag-ALU (`AluOp::Move`: sets N/Z, clears V/C, preserves X), and writes
-/// it to the destination (a register write-back for `Dn`, else a memory `Write` at the materialized dest
+/// Assemble the full `.b`/`.w` MOVE recipe (`MOVE.{b,w} <ea>,<ea>`) — the EA→EA composition. Reads the
+/// source operand (sized — byte via `read8`), copies it through the flag-ALU (`AluOp::Move` at `size`: sets
+/// N/Z at the size boundary, clears V/C, preserves X), and writes it to the destination (a register
+/// write-back for `Dn` — low byte/word, preserving the rest — else a memory `Write` at the materialized dest
 /// EA — NO destination read, MOVE is write-only). The destination is `Dn` (mode 0) or an alterable-memory
 /// mode; mode 1 (`An`) is MOVEA (a separate decode arm). Every prefetch/read/write ordering is pinned
-/// against the vendored `MOVE.w` SST stream — the source phase emits its own extension-word prefetches, the
-/// dest phase its extension words plus the final instruction prefetch, with the write placed per the dest
-/// mode (the `-(An)` write-last / abs.l prefetch-reversal quirks come straight from the data).
-pub fn ea_move(buf: &mut RecipeBuf, dst_mode: u16, dst_reg: u8, src_mode: u16, src_reg: u8) {
+/// against the vendored `MOVE.w`/`MOVE.b` SST streams — the byte stream is the word stream with byte-granular
+/// accesses; the source phase emits its own extension-word prefetches, the dest phase its extension words
+/// plus the final instruction prefetch, with the write placed per the dest mode (the `-(An)` write-last /
+/// abs.l prefetch-reversal quirks come straight from the data).
+pub fn ea_move(
+    buf: &mut RecipeBuf,
+    dst_mode: u16,
+    dst_reg: u8,
+    src_mode: u16,
+    src_reg: u8,
+    size: Size,
+) {
     // The `#imm` source captures `prefetch[1]` before its own prefetch shifts it out, so for `#imm` the ALU
     // must be emitted FIRST (before the source phase's single prefetch). For every other source the operand
     // is a register or a value already read, so the ALU follows the source phase.
     let imm_source = (src_mode, src_reg) == (7, 4);
 
-    // The flag-ALU: for a Dn destination it writes the result straight to Dn's low word (and sets flags);
-    // for a memory destination it parks the copy in MOVE_VALUE_SLOT (and sets flags), the `Write` then
-    // stores that slot. Both set N/Z, clear V/C, preserve X.
+    // The flag-ALU: for a Dn destination it writes the sized result straight to Dn (low byte/word, the rest
+    // preserved, and sets flags); for a memory destination it parks the copy in MOVE_VALUE_SLOT (and sets
+    // flags), the `Write` then stores that slot. Both set N/Z, clear V/C, preserve X (at the operand size).
     let make_alu = |operand: Operand| MicroOp::Alu {
         op: AluOp::Move,
-        size: Size::Word,
+        size,
         a: operand,
         b: Operand::Zero,
         dst: if dst_mode == 0 {
-            Dest::DataRegLow16(dst_reg)
+            match size {
+                Size::Byte => Dest::DataRegLow8(dst_reg),
+                _ => Dest::DataRegLow16(dst_reg),
+            }
         } else {
             Dest::Scratch(MOVE_VALUE_SLOT)
         },
@@ -1141,27 +1161,29 @@ pub fn ea_move(buf: &mut RecipeBuf, dst_mode: u16, dst_reg: u8, src_mode: u16, s
         // ALU First: capture the immediate before the source prefetch, then the source phase (its lone
         // prefetch), then the destination phase.
         buf.push(make_alu(Operand::ImmWord));
-        let _src = move_emit_source(buf, src_mode, src_reg); // emits the single #imm prefetch, no read
-        move_emit_dest(buf, dst_mode, dst_reg, false);
+        let _src = move_emit_source(buf, src_mode, src_reg, size); // emits the single #imm prefetch, no read
+        move_emit_dest(buf, dst_mode, dst_reg, false, size);
     } else {
-        let src = move_emit_source(buf, src_mode, src_reg);
+        let src = move_emit_source(buf, src_mode, src_reg, size);
         buf.push(make_alu(src.operand));
-        move_emit_dest(buf, dst_mode, dst_reg, src.reads);
+        move_emit_dest(buf, dst_mode, dst_reg, src.reads, size);
     }
 }
 
-/// Emit the destination phase of a `.w` MOVE into `buf`: materialize the dest EA (if any), `Write` the
-/// parked value (`Scratch(MOVE_VALUE_SLOT)`), and emit the destination's extension-word prefetches plus the
-/// final instruction prefetch. `src_reads` selects the abs.l-destination prefetch order (the only place the
-/// source phase influences the dest ordering — pinned against the data). A `Dn` destination performs no
-/// memory write (the ALU already wrote the register); it emits only the final prefetch.
-fn move_emit_dest(buf: &mut RecipeBuf, dm: u16, dr: u8, src_reads: bool) {
+/// Emit the destination phase of a `.b`/`.w` MOVE into `buf`: materialize the dest EA (if any), `Write` the
+/// parked value (`Scratch(MOVE_VALUE_SLOT)`, sized — a byte write truncates to the low 8), and emit the
+/// destination's extension-word prefetches plus the final instruction prefetch. `src_reads` selects the
+/// abs.l-destination prefetch order (the only place the source phase influences the dest ordering — pinned
+/// against the data). The `(An)+`/`-(An)` step is sized (byte 1, or 2 for A7 to keep the SP even; word 2). A
+/// `Dn` destination performs no memory write (the ALU already wrote the register); it emits only the final
+/// prefetch.
+fn move_emit_dest(buf: &mut RecipeBuf, dm: u16, dr: u8, src_reads: bool, size: Size) {
     let value = Operand::Scratch(MOVE_VALUE_SLOT);
     let write_at = |buf: &mut RecipeBuf, addr: Operand| {
         buf.push(MicroOp::Write {
             addr,
             fc: Fc::Data,
-            size: Size::Word,
+            size,
             value,
         });
     };
@@ -1179,7 +1201,7 @@ fn move_emit_dest(buf: &mut RecipeBuf, dm: u16, dr: u8, src_reads: bool) {
             buf.push(MicroOp::Prefetch);
             buf.push(MicroOp::AdjustAddr {
                 reg: dr,
-                delta: step_bytes(Size::Word, dr),
+                delta: step_bytes(size, dr),
             });
         }
         // -(An) — pre-decrement An, the final prefetch, then the write LAST (the MOVE predecrement-dest
@@ -1187,7 +1209,7 @@ fn move_emit_dest(buf: &mut RecipeBuf, dm: u16, dr: u8, src_reads: bool) {
         (4, _) => {
             buf.push(MicroOp::AdjustAddr {
                 reg: dr,
-                delta: -step_bytes(Size::Word, dr),
+                delta: -step_bytes(size, dr),
             });
             buf.push(MicroOp::Prefetch);
             write_at(buf, Operand::AddrReg(dr));

@@ -38,6 +38,7 @@ const FILES: &[&str] = &[
     "ADD.l.json",
     "SUB.l.json",
     "MOVE.w.json",
+    "MOVE.b.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -259,42 +260,70 @@ fn move_dst_ea(ini: &Value, dm: u16, dr: u16, src_ext: u32) -> Option<u32> {
     Some(ea & 0x00FF_FFFF)
 }
 
-/// Whether the framework covers this `MOVE.w` case. Source = all 12 EA modes; destination = `Dn` plus the
-/// alterable-memory modes (`(An)`/`(An)+`/`-(An)`/`d16(An)`/`d8(An,Xn)`/`abs.w`/`abs.l`); `dst_mode == 1`
-/// (`MOVEA`) is a later commit. A word memory access (source OR destination) to an odd EA raises an address
-/// error → xfail. The `(A7)` (mode 2) word form stays xfail (the prior convention) for both source and dest.
+/// The MOVE size of this opcode, or `None` if it is not a (non-`MOVEA`) `MOVE` the framework covers. Layout
+/// `00 SS RRR MMM mmm rrr`: bits 15-14 = 00, the size field (bits 13-12) is `01` byte / `11` word (`10`
+/// long lands in M3); `dst_mode == 1` (`MOVEA`) is excluded (a later commit, and byte MOVEA is illegal).
+fn move_size(opcode: u16) -> Option<Size> {
+    if (opcode >> 6) & 7 == 1 {
+        return None; // MOVEA — a later commit
+    }
+    match (opcode >> 12) & 0xF {
+        0b0011 => Some(Size::Word),
+        0b0001 => Some(Size::Byte),
+        _ => None,
+    }
+}
+
+/// Whether the framework covers this `MOVE.b`/`MOVE.w` case. Source = all 12 EA modes (byte excludes
+/// `An`-direct — `MOVE.b An,<ea>` is illegal); destination = `Dn` plus the alterable-memory modes
+/// (`(An)`/`(An)+`/`-(An)`/`d16(An)`/`d8(An,Xn)`/`abs.w`/`abs.l`); `dst_mode == 1` (`MOVEA`) is a later
+/// commit. For **word**, a memory access (source OR destination) to an odd EA raises an address error →
+/// xfail; for **byte** there is NO odd-address error (byte EAs may be odd) → no parity filter. The `(A7)`
+/// (mode 2) form stays xfail (the prior convention) for both source and dest, both sizes.
 fn move_covered(opcode: u16) -> bool {
-    (opcode >> 12) & 0xF == 0b0011 && ((opcode >> 6) & 7) != 1
+    move_size(opcode).is_some()
 }
 
 /// The MOVE-specific parity/scope filter (called once `move_covered` matches), given the case's `ini`.
 fn move_in_scope(opcode: u16, ini: &Value) -> bool {
+    let size = move_size(opcode).expect("move_covered gates move_size");
+    let byte = size == Size::Byte;
     let dst_reg = (opcode >> 9) & 7;
     let dst_mode = (opcode >> 6) & 7;
     let src_mode = (opcode >> 3) & 7;
     let src_reg = opcode & 7;
-    // Supported source modes: all 12. Supported dest modes: Dn (0) + alterable memory (2..=6, abs.w/abs.l).
-    let src_ok = src_mode <= 6 || (src_mode == 7 && src_reg <= 4);
+    // Supported source modes: Dn (0, always legal) + (for word only) An-direct (1, illegal `MOVE.b An,<ea>`)
+    // + (An)/(An)+/-(An)/d16(An)/d8(An,Xn) (2..=6) + abs.w/abs.l/d16(PC)/d8(PC,Xn)/#imm (7/0..=4).
+    // Supported dest modes: Dn (0) + alterable memory (2..=6, abs.w/abs.l).
+    let src_ok = src_mode == 0
+        || (src_mode == 1 && !byte)
+        || (2..=6).contains(&src_mode)
+        || (src_mode == 7 && src_reg <= 4);
     let dst_ok = dst_mode == 0
         || (2..=6).contains(&dst_mode)
         || (dst_mode == 7 && (dst_reg == 0 || dst_reg == 1));
     if !src_ok || !dst_ok {
         return false;
     }
-    // (A7) mode-2 word form stays xfail (prior convention) — source and destination.
+    // (A7) mode-2 form stays xfail (prior convention) — source and destination, both sizes.
     if src_mode == 2 && src_reg == 7 {
         return false;
     }
     if dst_mode == 2 && dst_reg == 7 {
         return false;
     }
-    // Source parity: an odd word access is an address error → xfail.
+    // Byte accesses have NO odd-address error (byte EAs may be odd), so there is no word-parity filter — the
+    // byte case is in scope once the mode/reg gates pass.
+    if byte {
+        return true;
+    }
+    // Source parity (word): an odd word access is an address error → xfail.
     if let Some(ea) = move_src_ea(ini, src_mode, src_reg) {
         if ea & 1 != 0 {
             return false;
         }
     }
-    // Destination parity: the dest ext word starts after the source's ext words.
+    // Destination parity (word): the dest ext word starts after the source's ext words.
     let src_ext = move_src_ext(src_mode, src_reg);
     if let Some(ea) = move_dst_ea(ini, dst_mode, dst_reg, src_ext) {
         if ea & 1 != 0 {
@@ -578,11 +607,13 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 24900,
-        "expected ~24944 covered cases — ADD/SUB (~21790: word ~5871 + byte ~9974 + long ~5945) plus \
+        ran >= 32700,
+        "expected ~32740 covered cases — ADD/SUB (~21790: word ~5871 + byte ~9974 + long ~5945) plus \
          MOVE.w (3154: all 12 source modes × Dn + the alterable-memory dest modes \
          ((An)/(An)+/-(An)/d16(An)/d8(An,Xn)/abs.w/abs.l), even word EAs since an odd word access is an \
-         address error, the (A7) mode-2 word form xfail), ran {ran}"
+         address error, the (A7) mode-2 word form xfail) plus MOVE.b (7796: same modes, byte excludes \
+         An-direct as a source (MOVE.b An,<ea> illegal), NO parity filter since a byte access has no \
+         odd-address error, the (A7) mode-2 byte form xfail), ran {ran}"
     );
     eprintln!("SingleStepTests ADD+SUB+MOVE (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
