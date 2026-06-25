@@ -10,8 +10,14 @@
 //! This push runs over the word+FC [`Bus68k`]; unifying it with the generic `crate::bus::Bus` is a
 //! follow-up (Step 2).
 
-use super::bus68k::Bus68k;
+use super::bus68k::{Bus68k, ADDR_MASK};
 use super::registers::{Registers, CCR_C, CCR_N, CCR_V, CCR_X, CCR_Z};
+
+/// Sign-extend a 16-bit value to 32 bits (the displacement / `abs.w` address extension).
+#[inline]
+fn sign_extend16(v: u16) -> u32 {
+    v as i16 as i32 as u32
+}
 
 /// 16-bit `ADD` (`a + b`) → `(result, new CCR low byte)`. Sets X/N/Z/V/C per the 68000.
 #[inline]
@@ -105,6 +111,12 @@ pub enum Operand {
     AddrReg(u8),
     /// The immediate word currently in the prefetch queue (`prefetch[1]`, the word after the opcode).
     ImmWord,
+    /// A constant zero — an inert leg of an [`MicroOp::EaCalc`] (e.g. the index/base a mode doesn't use).
+    Zero,
+    /// The displacement word currently in the prefetch queue, sign-extended: `sign_extend16(prefetch[1])`.
+    /// The `d16(An)`/`abs.w` extension word; captured by [`MicroOp::EaCalc`] **before** the refill that
+    /// shifts it out of the queue.
+    DispWord,
 }
 
 /// Where a [`MicroOp::Alu`] result is written.
@@ -162,6 +174,17 @@ pub enum MicroOp {
     /// non-bus one-shot — separate from the operand access so the bump is snapshot-visible and can straddle
     /// a prefetch.
     AdjustAddr { reg: u8, delta: i8 },
+    /// Compute an effective address `(resolve(base) + resolve(index) + resolve(disp)) & ADDR_MASK` into
+    /// scratch slot `dst`. A **fixed** 3-way `wrapping_add` — there is deliberately **no per-mode match
+    /// inside `exec_one`**; the decode-time builder picks which operands feed each leg (`Zero` for an
+    /// inert one), so every EA mode shares this single hot-path arm. A 0-cycle, non-bus, snapshot-visible
+    /// internal step: the materialized EA is a serializable mid-instruction value.
+    EaCalc {
+        base: Operand,
+        index: Operand,
+        disp: Operand,
+        dst: Slot,
+    },
 }
 
 /// The in-flight micro-op cursor for one instruction: the recipe, how far through it we are, and the
@@ -206,6 +229,8 @@ impl MicroState {
             Operand::AddrRegLow16(n) => regs.addr_reg(n as usize) & 0xFFFF,
             Operand::AddrReg(n) => regs.addr_reg(n as usize),
             Operand::ImmWord => regs.prefetch[1] as u32,
+            Operand::Zero => 0,
+            Operand::DispWord => sign_extend16(regs.prefetch[1]),
         }
     }
 
@@ -285,6 +310,21 @@ impl MicroState {
             MicroOp::AdjustAddr { reg, delta } => {
                 let cur = regs.addr_reg(reg as usize);
                 regs.addr_reg_set(reg as usize, cur.wrapping_add(delta as i32 as u32));
+                0
+            }
+            MicroOp::EaCalc {
+                base,
+                index,
+                disp,
+                dst,
+            } => {
+                // FIXED 3-way wrapping_add — no per-mode branch. The builder selects the legs.
+                let ea = self
+                    .resolve(base, regs)
+                    .wrapping_add(self.resolve(index, regs))
+                    .wrapping_add(self.resolve(disp, regs))
+                    & ADDR_MASK;
+                self.scratch[dst as usize] = ea;
                 0
             }
         };
@@ -760,6 +800,97 @@ mod tests {
         st2.exec_one(&mut regs2, &mut bus);
         assert_eq!(regs2.d[5], 0x3752_88BE, "0x7B7D - 0xF2BF (borrow wraps)");
         assert_eq!(regs2.sr, 0x271B, "N|V|C|X");
+    }
+
+    #[test]
+    fn ea_calc_sums_base_index_disp_into_scratch_masked() {
+        // EaCalc is a FIXED 3-way wrapping_add masked to the 24-bit bus — no per-mode match.
+        // base = A1, index = ·(Zero), disp = sign_extend16(prefetch[1]).
+        let mut regs = regs();
+        regs.a[1] = 0x00FF_FFF0;
+        regs.prefetch = [0xD46D, 0xFFF8]; // disp word = 0xFFF8 → sign-extend → -8
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::EaCalc {
+            base: Operand::AddrReg(1),
+            index: Operand::Zero,
+            disp: Operand::DispWord,
+            dst: 2,
+        }]);
+
+        let cycles = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(
+            cycles, 0,
+            "EaCalc is an internal compute — 0 standalone cycles"
+        );
+        assert_eq!(
+            st.scratch[2], 0x00FF_FFE8,
+            "0xFFFFF0 + (-8) = 0xFFFFE8, masked to 24 bits"
+        );
+        assert!(bus.log.is_empty(), "EaCalc touches no bus");
+    }
+
+    #[test]
+    fn ea_calc_wraps_around_the_24bit_bus() {
+        // base near the top of the 24-bit space + a positive disp wraps under ADDR_MASK.
+        let mut regs = regs();
+        regs.a[3] = 0x00FF_FFFE;
+        regs.prefetch = [0x0000, 0x0010]; // disp = +0x10
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::EaCalc {
+            base: Operand::AddrReg(3),
+            index: Operand::Zero,
+            disp: Operand::DispWord,
+            dst: 0,
+        }]);
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(
+            st.scratch[0], 0x0000_000E,
+            "0xFFFFFE + 0x10 wraps to 0x0E under the 24-bit mask"
+        );
+    }
+
+    #[test]
+    fn disp_word_resolves_sign_extended_prefetch_word_1() {
+        // Operand::DispWord = sign_extend16(prefetch[1]) as u32 — a full 32-bit sign extension before
+        // EaCalc masks it. Resolve it via a Zero+Zero+DispWord EaCalc (the abs.w shape).
+        let mut regs = regs();
+        regs.prefetch = [0xDA78, 0xCC1A]; // abs.w disp 0xCC1A → sign-extend → 0xFFCC1A
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::EaCalc {
+            base: Operand::Zero,
+            index: Operand::Zero,
+            disp: Operand::DispWord,
+            dst: 1,
+        }]);
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(
+            st.scratch[1], 0x00FF_CC1A,
+            "abs.w EA = sign_extend16(0xCC1A) masked to 24 bits"
+        );
+    }
+
+    #[test]
+    fn operand_zero_resolves_to_zero() {
+        // An inert EaCalc leg: Zero contributes nothing to the sum.
+        let mut regs = regs();
+        regs.a[4] = 0x0012_3456;
+        regs.prefetch = [0x0000, 0x0000];
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::EaCalc {
+            base: Operand::AddrReg(4),
+            index: Operand::Zero,
+            disp: Operand::Zero,
+            dst: 0,
+        }]);
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(st.scratch[0], 0x0012_3456, "base alone; Zero legs inert");
     }
 
     #[test]

@@ -1,11 +1,11 @@
 //! SingleStepTests runner for the 68000 micro-op framework.
 //!
 //! Drives the pinned, vendored SingleStepTests data (`tools/fetch-tests.sh`) for every covered `ADD.w` /
-//! `SUB.w` case — `Dn,<ea>` (alterable-memory destination: (An) / (An)+ / -(An)) and `<ea>,Dn` (register
-//! destination) for source modes Dn / An / (An) / (An)+ / -(An) / #imm — and asserts post regs/SR/RAM/
-//! prefetch, the cycle count, **and** the per-cycle bus-transaction stream, through *both* framework
-//! drivers (run-to-completion fast path and the step-one-micro-op quiesce path), which must also agree with
-//! each other.
+//! `SUB.w` case — `Dn,<ea>` (alterable-memory destination: (An) / (An)+ / -(An) / d16(An) / abs.w) and
+//! `<ea>,Dn` (register destination) for source modes Dn / An / (An) / (An)+ / -(An) / d16(An) / abs.w /
+//! #imm — and asserts post regs/SR/RAM/prefetch, the cycle count, **and** the per-cycle bus-transaction
+//! stream, through *both* framework drivers (run-to-completion fast path and the step-one-micro-op quiesce
+//! path), which must also agree with each other.
 //!
 //! Versioned xfail manifest (slice scope — implemented later): odd-address word accesses (which raise an
 //! address-error exception), the `A7` form of the older `(An)` (mode 2) memory access, and the remaining EA
@@ -14,7 +14,8 @@
 //! `tools/fetch-tests.sh`).
 
 use oracle_core::m68000::bus68k::{FlatBus, Transaction, TxKind};
-use oracle_core::m68000::microop::{Cpu68000, Step};
+use oracle_core::m68000::ea::compute_ea;
+use oracle_core::m68000::microop::{Cpu68000, Size, Step};
 use oracle_core::m68000::registers::Registers;
 use serde_json::Value;
 use std::path::Path;
@@ -144,6 +145,10 @@ fn covered(opcode: u16, ini: &Value) -> bool {
     // for word, so parity is preserved). Filter on the actual accessed address.
     let even = |reg: usize| areg(reg) & 1 == 0;
     let even_predec = |reg: usize| areg(reg).wrapping_sub(2) & 1 == 0;
+    // For the EaCalc-based modes (`d16(An)` = 5, `abs.w` = 111/000) the accessed address is the shared
+    // `compute_ea` (the SAME helper the decoder's recipe is pinned to by the hard-gate agreement test);
+    // a word access to an odd EA is an address error → xfail.
+    let even_computed = || compute_ea(opcode, &build_regs(ini), Size::Word) & 1 == 0;
     // <op>.w Dn,<ea> — memory destination (modes (An)=2, (An)+=3, -(An)=4).
     if opcode & 0xF1C0 == 0xD140 || opcode & 0xF1C0 == 0x9140 {
         let mode = (opcode >> 3) & 7;
@@ -155,6 +160,10 @@ fn covered(opcode: u16, ini: &Value) -> bool {
             3 => even(reg),
             // -(An) — even decremented access address; A7/SP in scope for word.
             4 => even_predec(reg),
+            // d16(An) — computed EA must be even (odd → address error → xfail).
+            5 => even_computed(),
+            // abs.w (111/000) — computed EA (sign-extended ext word) must be even.
+            7 if reg == 0 => even_computed(),
             // Other alterable-memory dest modes: out of slice this push.
             _ => false,
         };
@@ -174,7 +183,10 @@ fn covered(opcode: u16, ini: &Value) -> bool {
             3 => even(reg),
             // -(An) — even decremented source address; A7/SP in scope for word.
             4 => even_predec(reg),
-            // #imm.
+            // d16(An) — computed EA (An + sign-extended disp) must be even.
+            5 => even_computed(),
+            // abs.w (111/000) — computed EA must be even; #imm (111/100).
+            7 if reg == 0 => even_computed(),
             7 if reg == 4 => true,
             // Other EA modes: out of slice this push.
             _ => false,
@@ -250,8 +262,8 @@ fn add_sub_w_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 4000,
-        "expected ~4060 covered ADD.w + SUB.w cases (Dn,<ea> + <ea>,Dn for Dn/An/(An)/(An)+/-(An)/#imm), ran {ran}"
+        ran >= 4900,
+        "expected ~4920 covered ADD.w + SUB.w cases (Dn,<ea> + <ea>,Dn for Dn/An/(An)/(An)+/-(An)/d16(An)/abs.w/#imm), ran {ran}"
     );
     eprintln!("SingleStepTests ADD.w+SUB.w: {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }

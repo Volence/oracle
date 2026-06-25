@@ -11,12 +11,12 @@ use super::ea::{ea_dst, ea_src, RecipeBuf};
 use super::microop::{AluOp, Cpu68000, Dest, MicroOp, MicroState, Operand, Size};
 use super::registers::Registers;
 
-/// Whether an EA `mode` field is an alterable-memory destination the builder currently covers:
-/// `(An)` (010), `(An)+` (011), `-(An)` (100). The remaining alterable-memory modes (`d16(An)`,
-/// `d8(An,Xn)`, `abs.w`, `abs.l`) land in later commits.
+/// Whether an EA `mode`/`reg` pair is an alterable-memory destination the builder currently covers:
+/// `(An)` (010), `(An)+` (011), `-(An)` (100), `d16(An)` (101), `abs.w` (111/000). The remaining
+/// alterable-memory modes (`d8(An,Xn)`, `abs.l`) land in later commits.
 #[inline]
-fn is_dst_mem_mode(mode: u16) -> bool {
-    matches!(mode, 2..=4)
+fn is_dst_mem_mode(mode: u16, reg: u16) -> bool {
+    matches!(mode, 2..=5) || (mode == 7 && reg == 0)
 }
 
 /// Decode the opcode currently in `regs.prefetch[0]` into its micro-op recipe.
@@ -27,13 +27,13 @@ pub fn decode(regs: &Registers) -> MicroState {
     // the destination is the minuend, which matters for the non-commutative SUB).
     // `<op>.w Dn,<ea>` (memory destination, `1xx1 ddd 1 01 mmm rrr`). The destination-EA builder handles
     // the covered alterable-memory modes: `(An)` (010), `(An)+` (011), `-(An)` (100).
-    if opcode & 0xF1C0 == 0xD140 && is_dst_mem_mode((opcode >> 3) & 7) {
+    if opcode & 0xF1C0 == 0xD140 && is_dst_mem_mode((opcode >> 3) & 7, opcode & 7) {
         return arith_w_dn_ea(opcode, AluOp::Add); // ADD.w Dn,<ea>
     }
     if opcode & 0xF1C0 == 0xD040 {
         return arith_w_ea_dn(opcode, AluOp::Add); // ADD.w <ea>,Dn
     }
-    if opcode & 0xF1C0 == 0x9140 && is_dst_mem_mode((opcode >> 3) & 7) {
+    if opcode & 0xF1C0 == 0x9140 && is_dst_mem_mode((opcode >> 3) & 7, opcode & 7) {
         return arith_w_dn_ea(opcode, AluOp::Sub); // SUB.w Dn,<ea>
     }
     if opcode & 0xF1C0 == 0x9040 {
