@@ -61,11 +61,13 @@ fn sub_w(a: u16, b: u16) -> (u16, u16) {
 }
 
 /// Maximum micro-ops in one opcode's recipe. Most opcodes need ≤ a handful; unbounded families
-/// (MOVEM-class) get a generator variant later. Grown as coverage requires.
-const MAX_OPS: usize = 8;
+/// (MOVEM-class) get a generator variant later. Sized to the worst in-scope EA recipe (a byte
+/// `Dn,(abs.l)` RMW = 8 ops) with headroom.
+const MAX_OPS: usize = 12;
 
-/// Number of scratch slots carrying values between micro-ops within one instruction.
-const SCRATCH_SLOTS: usize = 4;
+/// Number of scratch slots carrying values between micro-ops within one instruction. Sized to the
+/// worst in-scope recipe (≤ 4) with headroom.
+const SCRATCH_SLOTS: usize = 6;
 
 /// Index into the scratch register file.
 pub type Slot = u8;
@@ -76,6 +78,14 @@ pub type Slot = u8;
 pub enum Fc {
     Data,
     Program,
+}
+
+/// Operand/access size — byte or word. Tags `Read`/`Write` (how wide a bus access is) and `Alu`
+/// (which flag boundaries apply). Long (`.l` = two word accesses) is deferred.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+pub enum Size {
+    Byte,
+    Word,
 }
 
 /// A value resolved at execution time — an address or an operand. Grows with addressing-mode coverage
@@ -102,34 +112,41 @@ pub enum Dest {
     DataRegLow16(u8),
 }
 
-/// An ALU operation a [`MicroOp::Alu`] performs (computing into scratch and updating the CCR). Grows with
-/// arithmetic/logic coverage.
+/// An ALU operation a [`MicroOp::Alu`] performs (computing into scratch and updating the CCR). The
+/// operand width is carried separately by [`MicroOp::Alu`]'s `size`. Grows with arithmetic/logic coverage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub enum AluOp {
-    /// 16-bit add: `dst = a + b`, setting X/N/Z/V/C.
-    AddW,
-    /// 16-bit subtract: `dst = a - b` (a is the minuend), setting X/N/Z/V/C.
-    SubW,
+    /// Add: `dst = a + b`, setting X/N/Z/V/C (at the operand-size boundary).
+    Add,
+    /// Subtract: `dst = a - b` (a is the minuend), setting X/N/Z/V/C (at the operand-size boundary).
+    Sub,
 }
 
 /// One resumable step. Bus-access steps emit a [`Transaction`](super::bus68k::Transaction) and cost
 /// 4 master cycles (one word access); compute/idle steps carry their own cost.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub enum MicroOp {
-    /// Read a word at `addr` (data/program per `fc`) into scratch slot `dst`.
-    ReadWord { addr: Operand, fc: Fc, dst: Slot },
-    /// Write the word `value` at `addr` (data/program per `fc`).
-    WriteWord {
+    /// Read a `size` operand at `addr` (data/program per `fc`) into scratch slot `dst` (zero-extended).
+    Read {
         addr: Operand,
         fc: Fc,
+        size: Size,
+        dst: Slot,
+    },
+    /// Write the low `size` of `value` at `addr` (data/program per `fc`).
+    Write {
+        addr: Operand,
+        fc: Fc,
+        size: Size,
         value: Operand,
     },
     /// Refill the prefetch queue (read at `pc+4`), advance the queue and `pc` by one word.
     Prefetch,
-    /// Compute `op(a, b)` into `dst` and update the CCR. An internal (overlapped) step — no bus access,
-    /// 0 standalone cycles.
+    /// Compute `op(a, b)` at `size` into `dst` and update the CCR. An internal (overlapped) step — no bus
+    /// access, 0 standalone cycles.
     Alu {
         op: AluOp,
+        size: Size,
         a: Operand,
         b: Operand,
         dst: Dest,
@@ -199,24 +216,44 @@ impl MicroState {
     #[inline]
     pub fn exec_one(&mut self, regs: &mut Registers, bus: &mut impl Bus68k) -> u32 {
         let cycles = match self.ops[self.step as usize] {
-            MicroOp::ReadWord { addr, fc, dst } => {
+            MicroOp::Read {
+                addr,
+                fc,
+                size,
+                dst,
+            } => {
                 let address = self.resolve(addr, regs);
+                // Byte bus (read8 + UDS/LDS half) lands in C7; word is the only size produced so far.
+                debug_assert!(matches!(size, Size::Word), "byte Read deferred to C7");
                 let value = bus.read16(address, regs.fc(matches!(fc, Fc::Program)));
                 self.scratch[dst as usize] = value as u32;
                 4
             }
-            MicroOp::WriteWord { addr, fc, value } => {
+            MicroOp::Write {
+                addr,
+                fc,
+                size,
+                value,
+            } => {
                 let address = self.resolve(addr, regs);
+                debug_assert!(matches!(size, Size::Word), "byte Write deferred to C7");
                 let word = self.resolve(value, regs) as u16;
                 bus.write16(address, regs.fc(matches!(fc, Fc::Program)), word);
                 4
             }
-            MicroOp::Alu { op, a, b, dst } => {
+            MicroOp::Alu {
+                op,
+                size,
+                a,
+                b,
+                dst,
+            } => {
+                debug_assert!(matches!(size, Size::Word), "byte Alu deferred to C7");
                 let lhs = self.resolve(a, regs) as u16;
                 let rhs = self.resolve(b, regs) as u16;
                 let (result, ccr) = match op {
-                    AluOp::AddW => add_w(lhs, rhs),
-                    AluOp::SubW => sub_w(lhs, rhs),
+                    AluOp::Add => add_w(lhs, rhs),
+                    AluOp::Sub => sub_w(lhs, rhs),
                 };
                 regs.sr = (regs.sr & 0xFF00) | ccr;
                 match dst {
@@ -319,9 +356,10 @@ mod tests {
         bus.poke(0x1000, 0xAB);
         bus.poke(0x1001, 0xCD);
 
-        let mut st = MicroState::from_ops(&[MicroOp::ReadWord {
+        let mut st = MicroState::from_ops(&[MicroOp::Read {
             addr: Operand::Scratch(0),
             fc: Fc::Data,
+            size: Size::Word,
             dst: 1,
         }]);
         st.scratch[0] = 0x1000;
@@ -348,9 +386,10 @@ mod tests {
         let mut regs = regs();
         let mut bus = FlatBus::new();
 
-        let mut st = MicroState::from_ops(&[MicroOp::WriteWord {
+        let mut st = MicroState::from_ops(&[MicroOp::Write {
             addr: Operand::Scratch(0),
             fc: Fc::Data,
+            size: Size::Word,
             value: Operand::Scratch(1),
         }]);
         st.scratch[0] = 0x2000;
@@ -428,7 +467,8 @@ mod tests {
         let mut bus = FlatBus::new();
 
         let mut st = MicroState::from_ops(&[MicroOp::Alu {
-            op: AluOp::AddW,
+            op: AluOp::Add,
+            size: Size::Word,
             a: Operand::DataRegLow16(5),
             b: Operand::Scratch(0),
             dst: Dest::Scratch(1),
@@ -452,7 +492,8 @@ mod tests {
         regs.d[6] = 0x47A4_1526; // high word must survive a .w write-back
         let mut bus = FlatBus::new();
         let mut st = MicroState::from_ops(&[MicroOp::Alu {
-            op: AluOp::AddW,
+            op: AluOp::Add,
+            size: Size::Word,
             a: Operand::DataRegLow16(6),
             b: Operand::Scratch(0),
             dst: Dest::DataRegLow16(6),
@@ -474,7 +515,8 @@ mod tests {
         regs.sr = 0x271D;
         let mut bus = FlatBus::new();
         let mut st = MicroState::from_ops(&[MicroOp::Alu {
-            op: AluOp::SubW,
+            op: AluOp::Sub,
+            size: Size::Word,
             a: Operand::DataRegLow16(5),
             b: Operand::Scratch(0),
             dst: Dest::DataRegLow16(5),
@@ -497,7 +539,8 @@ mod tests {
         regs.d[7] = 0x1BC0_F680;
         let mut bus = FlatBus::new();
         let mut st = MicroState::from_ops(&[MicroOp::Alu {
-            op: AluOp::AddW,
+            op: AluOp::Add,
+            size: Size::Word,
             a: Operand::DataRegLow16(7),
             b: Operand::ImmWord,
             dst: Dest::DataRegLow16(7),
@@ -519,9 +562,10 @@ mod tests {
         bus.poke(0x1001, 0x34);
 
         let mut st = MicroState::from_ops(&[
-            MicroOp::ReadWord {
+            MicroOp::Read {
                 addr: Operand::Scratch(0),
                 fc: Fc::Data,
+                size: Size::Word,
                 dst: 1,
             },
             MicroOp::Internal { cycles: 2 },
@@ -539,15 +583,17 @@ mod tests {
     /// A 3-micro-op recipe (read → internal → write), pre-seeded so it round-trips a value through scratch.
     fn sample_recipe() -> MicroState {
         let mut st = MicroState::from_ops(&[
-            MicroOp::ReadWord {
+            MicroOp::Read {
                 addr: Operand::Scratch(0),
                 fc: Fc::Data,
+                size: Size::Word,
                 dst: 1,
             },
             MicroOp::Internal { cycles: 4 },
-            MicroOp::WriteWord {
+            MicroOp::Write {
                 addr: Operand::Scratch(2),
                 fc: Fc::Data,
+                size: Size::Word,
                 value: Operand::Scratch(1),
             },
         ]);
@@ -580,6 +626,71 @@ mod tests {
         // The write completes the instruction and reports the total: 4 + 4 + 4 = 12.
         assert_eq!(cpu.step_micro_op(&mut bus), Step::Done(12));
         assert_eq!(bus.log.len(), 2);
+    }
+
+    #[test]
+    fn c0_word_read_carries_size_word_and_is_byte_identical() {
+        // C0 vocabulary: `Read`/`Write` take a `size`, `Alu` takes a `size`, `AluOp` is {Add,Sub}.
+        // The word path must behave exactly as `ReadWord`/`WriteWord`/`AluOp::AddW` did before.
+        let mut regs = regs();
+        let mut bus = FlatBus::new();
+        bus.poke(0x1000, 0xAB);
+        bus.poke(0x1001, 0xCD);
+
+        let mut st = MicroState::from_ops(&[MicroOp::Read {
+            addr: Operand::Scratch(0),
+            fc: Fc::Data,
+            size: Size::Word,
+            dst: 1,
+        }]);
+        st.scratch[0] = 0x1000;
+
+        let cycles = st.exec_one(&mut regs, &mut bus);
+        assert_eq!(cycles, 4, "a word bus access is 4 master cycles");
+        assert_eq!(st.scratch[1], 0xABCD, "operand landed in scratch slot 1");
+        assert_eq!(
+            bus.log,
+            vec![Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 0x1000,
+                value: 0xABCD,
+            }]
+        );
+    }
+
+    #[test]
+    fn c0_alu_add_sub_with_size_word_match_old_behavior() {
+        let mut regs_add = regs();
+        regs_add.d[5] = 0x020D_2596;
+        regs_add.sr = 0x2717;
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::Alu {
+            op: AluOp::Add,
+            size: Size::Word,
+            a: Operand::DataRegLow16(5),
+            b: Operand::Scratch(0),
+            dst: Dest::Scratch(1),
+        }]);
+        st.scratch[0] = 0x3FE0;
+        st.exec_one(&mut regs_add, &mut bus);
+        assert_eq!(st.scratch[1], 0x6576, "0x2596 + 0x3FE0");
+        assert_eq!(regs_add.sr, 0x2700, "CCR cleared, system byte preserved");
+
+        let mut regs2 = regs();
+        regs2.d[5] = 0x3752_7B7D;
+        regs2.sr = 0x271D;
+        let mut st2 = MicroState::from_ops(&[MicroOp::Alu {
+            op: AluOp::Sub,
+            size: Size::Word,
+            a: Operand::DataRegLow16(5),
+            b: Operand::Scratch(0),
+            dst: Dest::DataRegLow16(5),
+        }]);
+        st2.scratch[0] = 0xF2BF;
+        st2.exec_one(&mut regs2, &mut bus);
+        assert_eq!(regs2.d[5], 0x3752_88BE, "0x7B7D - 0xF2BF (borrow wraps)");
+        assert_eq!(regs2.sr, 0x271B, "N|V|C|X");
     }
 
     #[test]

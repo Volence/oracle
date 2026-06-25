@@ -7,7 +7,7 @@
 //! with full coverage.
 
 use super::bus68k::Bus68k;
-use super::microop::{AluOp, Cpu68000, Dest, Fc, MicroOp, MicroState, Operand};
+use super::microop::{AluOp, Cpu68000, Dest, Fc, MicroOp, MicroState, Operand, Size};
 use super::registers::Registers;
 
 /// Decode the opcode currently in `regs.prefetch[0]` into its micro-op recipe.
@@ -17,16 +17,16 @@ pub fn decode(regs: &Registers) -> MicroState {
     // ADD.w and SUB.w share recipe shapes — they differ only in the `AluOp` (operand order is arranged so
     // the destination is the minuend, which matters for the non-commutative SUB).
     if opcode & 0xF1F8 == 0xD150 {
-        return arith_w_dn_ea(opcode, AluOp::AddW); // ADD.w Dn,(An)
+        return arith_w_dn_ea(opcode, AluOp::Add); // ADD.w Dn,(An)
     }
     if opcode & 0xF1C0 == 0xD040 {
-        return arith_w_ea_dn(opcode, AluOp::AddW); // ADD.w <ea>,Dn
+        return arith_w_ea_dn(opcode, AluOp::Add); // ADD.w <ea>,Dn
     }
     if opcode & 0xF1F8 == 0x9150 {
-        return arith_w_dn_ea(opcode, AluOp::SubW); // SUB.w Dn,(An)
+        return arith_w_dn_ea(opcode, AluOp::Sub); // SUB.w Dn,(An)
     }
     if opcode & 0xF1C0 == 0x9040 {
-        return arith_w_ea_dn(opcode, AluOp::SubW); // SUB.w <ea>,Dn
+        return arith_w_ea_dn(opcode, AluOp::Sub); // SUB.w <ea>,Dn
     }
     todo!("opcode {opcode:#06X} not yet decoded")
 }
@@ -55,21 +55,24 @@ fn arith_w_dn_ea(opcode: u16, op: AluOp) -> MicroState {
     let dn = ((opcode >> 9) & 7) as u8;
     let an = (opcode & 7) as u8;
     MicroState::from_ops(&[
-        MicroOp::ReadWord {
+        MicroOp::Read {
             addr: Operand::AddrReg(an),
             fc: Fc::Data,
+            size: Size::Word,
             dst: 0,
         },
         MicroOp::Prefetch,
         MicroOp::Alu {
             op,
+            size: Size::Word,
             a: Operand::Scratch(0),
             b: Operand::DataRegLow16(dn),
             dst: Dest::Scratch(1),
         },
-        MicroOp::WriteWord {
+        MicroOp::Write {
             addr: Operand::AddrReg(an),
             fc: Fc::Data,
+            size: Size::Word,
             value: Operand::Scratch(1),
         },
     ])
@@ -85,6 +88,7 @@ fn arith_w_ea_dn(opcode: u16, op: AluOp) -> MicroState {
     let reg = (opcode & 7) as u8;
     let alu = |b| MicroOp::Alu {
         op,
+        size: Size::Word,
         a: Operand::DataRegLow16(dn),
         b,
         dst: Dest::DataRegLow16(dn),
@@ -94,9 +98,10 @@ fn arith_w_ea_dn(opcode: u16, op: AluOp) -> MicroState {
         (0, _) => MicroState::from_ops(&[MicroOp::Prefetch, alu(Operand::DataRegLow16(reg))]),
         // (An): one data read of the operand, then the prefetch refill.
         (2, _) => MicroState::from_ops(&[
-            MicroOp::ReadWord {
+            MicroOp::Read {
                 addr: Operand::AddrReg(reg),
                 fc: Fc::Data,
+                size: Size::Word,
                 dst: 0,
             },
             MicroOp::Prefetch,
