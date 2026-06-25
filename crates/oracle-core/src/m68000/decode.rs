@@ -10,7 +10,7 @@ use super::bus68k::Bus68k;
 use super::ea::{ea_dst, ea_move, ea_movea, ea_src, RecipeBuf};
 use super::exception::{push_standard_frame, vector_fetch_and_reload};
 use super::microop::{condition_true, AluOp, Cpu68000, Dest, MicroOp, MicroState, Operand, Size};
-use super::registers::Registers;
+use super::registers::{Registers, CCR_V};
 
 /// Scratch slot holding a `JMP`'s computed 32-bit branch target (the `SetPc` source). Slot 0 — the same
 /// slot a `Bcc`'s `TargetCalc` deposits its target into.
@@ -212,6 +212,14 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     // from RTS (0x4E75) / RTR (0x4E77) / JSR (0x4E80) / JMP (0x4EC0) and the TRAP block below.
     if opcode == 0x4E73 {
         return rte_recipe();
+    }
+    // TRAPV (`0x4E76`) — trap on overflow: a conditional trap resolved at DECODE time on the V flag (a direct
+    // `sr & CCR_V` test, like Bcc). V=0 → a single prefetch (no trap, len 4); V=1 → the standard 6-byte
+    // exception frame to vector 7, distinguished from TRAP by a LEADING prefetch (its first bus event is an
+    // FC=6 queue refill @ pc+4, not the PCL write). The opcode `0x4E76` is a single point in the 0x4Exx space,
+    // disjoint from RTS (0x4E75) / RTR (0x4E77) / RTE (0x4E73) and the TRAP block below.
+    if opcode == 0x4E76 {
+        return trapv_recipe(regs);
     }
     // TRAP #n (`0100 1110 0100 nnnn`, 0x4E40 | n) — the cleanest standard 6-byte exception frame: an
     // UNCONDITIONAL trap to vector `32 + n` (address `(32+n)*4`). NO leading prefetch (the queue is NOT
@@ -1081,6 +1089,54 @@ fn trap_recipe(opcode: u16) -> MicroState {
     buf.push(MicroOp::Internal { cycles: 4 });
     push_standard_frame(&mut buf, TRAP_SAVED_PC_SLOT, TRAP_SAVE_SR_SLOT);
     vector_fetch_and_reload(&mut buf, vector_addr);
+    buf.finish()
+}
+
+/// Scratch slot holding `TRAPV`'s saved return PC (`pc + 2`), captured by the leading [`MicroOp::TargetCalc`]
+/// BEFORE the leading prefetch advances `pc`; consumed by the standard frame's `PCL`/`PCH` writes. Slot 0 —
+/// the same slot map as `TRAP` (the shared frame builders use slots 2..=7).
+const TRAPV_SAVED_PC_SLOT: u8 = 0;
+
+/// Scratch slot holding the SR captured at entry by [`MicroOp::EnterException`], stacked by the standard
+/// frame's `SR` write. Slot 1 — distinct from the saved-PC slot so both survive until the push.
+const TRAPV_SAVE_SR_SLOT: u8 = 1;
+
+/// `TRAPV` (`0x4E76`): trap on overflow — a CONDITIONAL trap resolved at DECODE time on the V flag (a direct
+/// `sr & CCR_V` test, the Bcc decode-time-resolution pattern). Pinned to the vendored `TRAPV` SST stream
+/// (`4e76 [TRAPV] 1` V=0, len 4; `4e76 [TRAPV] 3` V=1, len 34):
+///
+/// - **V clear → NO trap:** a single [`MicroOp::Prefetch`] refills the queue (FC=6 @ pc+4) and advances pc by
+///   2 — the ordinary fall-through (len 4), nothing else changes.
+/// - **V set → trap to vector 7** (address `7*4 = 28`): the standard 6-byte exception entry, DISTINGUISHED
+///   FROM TRAP by a **LEADING prefetch** — TRAPV's first bus event is an FC=6 queue refill @ pc+4 (the
+///   `n4` idle that TRAP runs instead). The saved PC = `pc + 2` is captured by a leading
+///   [`MicroOp::TargetCalc`] BEFORE that prefetch advances pc; the rest is the shared frame push + vector
+///   fetch + handler reload ([`push_standard_frame`] / [`vector_fetch_and_reload`]).
+///
+/// All vendored cases start in supervisor mode (S=1, T=0), so the S/T transform of [`MicroOp::EnterException`]
+/// is structurally exercised but a no-op on the data — the caveat the runner documents.
+fn trapv_recipe(regs: &Registers) -> MicroState {
+    let mut buf = RecipeBuf::new();
+    if regs.sr & CCR_V == 0 {
+        // V clear → no trap: just refill the queue (FC=6 @ pc+4) and advance pc by 2. (len 4)
+        buf.push(MicroOp::Prefetch);
+        return buf.finish();
+    }
+    // V set → trap to vector 7. Saved PC = pc + 2, captured BEFORE the leading prefetch advances pc.
+    buf.push(MicroOp::TargetCalc {
+        base: Operand::PcPlus(2),
+        index: Operand::Zero,
+        disp: Operand::Zero,
+        dst: TRAPV_SAVED_PC_SLOT,
+    });
+    // Capture the live SR + enter supervisor (set S, clear T).
+    buf.push(MicroOp::EnterException {
+        save_sr: TRAPV_SAVE_SR_SLOT,
+    });
+    // The LEADING prefetch (FC=6 @ pc+4) — TRAPV's first bus event, distinguishing it from TRAP's `n4` idle.
+    buf.push(MicroOp::Prefetch);
+    push_standard_frame(&mut buf, TRAPV_SAVED_PC_SLOT, TRAPV_SAVE_SR_SLOT);
+    vector_fetch_and_reload(&mut buf, 7 * 4);
     buf.finish()
 }
 
@@ -5945,6 +6001,304 @@ mod tests {
         // Prefetch) → boundaries after 0..=10.
         for pause_after in 0..=10 {
             let (mut cpu, mut bus) = setup_rte_user();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    // --- TRAPV (conditional trap on the V flag, resolved at decode time) — the anchors `4e76 [TRAPV] 1`
+    // (V=0, no trap, len 4) and `4e76 [TRAPV] 3` (V=1, trap to vector 7, len 34), plus both-drivers agreement
+    // and a snapshot/restore anchor ACROSS the trap entry. ---
+
+    /// The clean SST reference case `4e76 [TRAPV] 1` (4 cycles): V clear → NO trap. A single prefetch refills
+    /// the queue (FC=6 @ pc+4 = 3076, value 6464) and advances pc by 2 (3072 → 3074); nothing else changes.
+    fn setup_trapv_no_trap() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                802_263_096,
+                614_018_252,
+                3_770_375_450,
+                2_805_376_503,
+                2_026_424_402,
+                729_447_178,
+                767_710_245,
+                2_715_703_449,
+            ],
+            a: [
+                487_787_210,
+                1_869_842_941,
+                3_804_173_515,
+                448_313_786,
+                1_367_352_243,
+                851_232_805,
+                1_911_140_584,
+            ],
+            usp: 1_536_473_616,
+            ssp: 2048,
+            pc: 3072,
+            sr: 9993,                 // 0x2709 — V clear (no trap), S=1
+            prefetch: [20086, 21430], // prefetch[0] = 0x4E76 (TRAPV)
+        };
+        let mut bus = FlatBus::new();
+        // The refill word @ pc+4 = 3076: 0x1940 = 6464 (hi 25 @3076, lo 64 @3077).
+        for (a, v) in [(3076u32, 25u8), (3077, 64)] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn assert_trapv_no_trap_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced by 2 (no branch)");
+        assert_eq!(cpu.regs.ssp, 2048, "SP untouched (no frame pushed)");
+        assert_eq!(cpu.regs.sr, 9993, "SR unchanged (no trap)");
+        assert_eq!(
+            cpu.regs.prefetch,
+            [21430, 6464],
+            "queue shifted, refilled @ pc+4"
+        );
+        assert_eq!(
+            bus.log,
+            vec![Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 6464,
+            }],
+            "no-trap = a single FC6 refill @ pc+4"
+        );
+    }
+
+    /// The clean SST reference case `4e76 [TRAPV] 3` (34 cycles): V set → trap to vector 7 (address 0x1C = 28).
+    /// In supervisor mode (S=1, T=0), ssp 2048, pc 3072, sr 10014 (0x271E). UNLIKE TRAP, TRAPV's first bus
+    /// event is a LEADING prefetch (FC=6 @ pc+4 = 3076, value 45072 — discarded by the handler reload), not the
+    /// PCL write. The entry then saves PC = pc+2 = 3074 (captured BEFORE the leading prefetch) and SR = 10014 to
+    /// ssp−6 = 2042 (PCL @2046, SR @2042, PCH @2044, FC=5), reads the vector @28/30 (FC=5 → handler 9216), and
+    /// reloads the queue at 9216 (FC=6): 0x0BF6 (3062) @9216, 0xC6F4 (50932) @9218.
+    fn setup_trapv_trap() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                1_546_806_632,
+                3_910_088_832,
+                1_331_578_002,
+                1_456_303_585,
+                3_903_322_788,
+                1_705_068_337,
+                2_151_853_803,
+                414_224_066,
+            ],
+            a: [
+                2_706_381_019,
+                3_545_637_721,
+                4_046_269_578,
+                962_156_790,
+                3_948_413_531,
+                798_812_306,
+                2_612_441_334,
+            ],
+            usp: 2_171_723_396,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10014,                // 0x271E — V set (trap), S=1/T=0
+            prefetch: [20086, 41658], // prefetch[0] = 0x4E76 (TRAPV)
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            // The leading-prefetch word @ pc+4 = 3076: 0xB010 = 45072 (discarded by the handler reload).
+            (3076u32, 176u8),
+            (3077, 16),
+            // The exception vector @28 (vector 7 = 0x1C): 0x00002400 (hi 0x0000 @28, lo 0x2400 = 9216 @30).
+            (28, 0),
+            (29, 0),
+            (30, 36),
+            (31, 0),
+            // The handler code @9216: 0x0BF6 (3062), 0xC6F4 (50932).
+            (9216, 11),
+            (9217, 246),
+            (9218, 198),
+            (9219, 244),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_trapv_trap_log() -> Vec<Transaction> {
+        vec![
+            // The LEADING prefetch (FC=6 supervisor-program @ pc+4) — distinguishes TRAPV from TRAP.
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 45072,
+            },
+            // The standard frame, on-bus order PCL @ B+4, SR @ B+0, PCH @ B+2 (FC=5).
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2046, // PCL @ ssp−6+4
+                size: Size::Word,
+                value: 3074, // pc + 2
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2042, // SR @ ssp−6
+                size: Size::Word,
+                value: 10014,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2044, // PCH @ ssp−6+2
+                size: Size::Word,
+                value: 0,
+            },
+            // The vector fetch (FC=5 supervisor-data) — vector 7 @ 28/30.
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 28,
+                size: Size::Word,
+                value: 0,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 30,
+                size: Size::Word,
+                value: 9216,
+            },
+            // The handler reload (FC=6 supervisor-program), with the n2 idle between (not in the stream).
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 9216,
+                size: Size::Word,
+                value: 3062,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 9218,
+                size: Size::Word,
+                value: 50932,
+            },
+        ]
+    }
+
+    fn assert_trapv_trap_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.ssp, 2042, "SP pushed down by 6 (standard frame)");
+        assert_eq!(
+            cpu.regs.pc, 9216,
+            "pc landed at the handler (vector 7 target)"
+        );
+        assert_eq!(
+            cpu.regs.sr, 10014,
+            "SR unchanged (already S=1/T=0 — the transform is a no-op on the data)"
+        );
+        assert_eq!(cpu.regs.usp, 2_171_723_396, "usp untouched");
+        assert_eq!(
+            cpu.regs.prefetch,
+            [3062, 50932],
+            "queue reloaded at the handler"
+        );
+        // The pushed frame on the supervisor stack (big-endian words).
+        assert_eq!(bus.peek(2042), 0x27, "SR hi @ B+0");
+        assert_eq!(bus.peek(2043), 0x1E, "SR lo @ B+1");
+        assert_eq!(bus.peek(2044), 0x00, "PCH hi @ B+2");
+        assert_eq!(bus.peek(2045), 0x00, "PCH lo @ B+3");
+        assert_eq!(bus.peek(2046), 0x0C, "PCL hi @ B+4");
+        assert_eq!(bus.peek(2047), 0x02, "PCL lo @ B+5");
+        assert_eq!(bus.log, expected_trapv_trap_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_trapv_no_trap() {
+        let (mut cpu, mut bus) = setup_trapv_no_trap();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(cycles, 4, "TRAPV (V=0) = one prefetch = 4 cyc");
+        assert_trapv_no_trap_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_trapv_no_trap() {
+        let (mut rtc, mut bus_rtc) = setup_trapv_no_trap();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_trapv_no_trap();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 4);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_trapv_no_trap_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn run_instruction_matches_trapv_trap() {
+        let (mut cpu, mut bus) = setup_trapv_trap();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 34,
+            "TRAPV (V=1) = leading prefetch + 3 frame writes + 2 vector reads + 2 handler reloads + n2 = \
+             4+12+8+8+2 = 34"
+        );
+        assert_trapv_trap_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_trapv_trap() {
+        let (mut rtc, mut bus_rtc) = setup_trapv_trap();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_trapv_trap();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 34);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_trapv_trap_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn trapv_quiescable_and_serializable_across_the_entry() {
+        // The snapshot/restore anchor ACROSS a TRAPV trap entry — the LEADING prefetch, the supervisor-entry
+        // transform, the standard frame push (the three reordered writes), the FC=5 vector fetch, and the FC=6
+        // handler reload — the whole CPU (incl. the in-flight cursor and its scratch slots: the saved PC/SR,
+        // the frame addresses, the vector address, the assembled handler) round-trips at every micro-op
+        // boundary.
+        let (mut rref, mut bref) = setup_trapv_trap();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 18 micro-ops (TargetCalc, EnterException, Prefetch, AdjustAddr, EaCalc, Write, Write, EaCalc, Write,
+        // LoadImm, Read, EaCalc, Read, Combine32, SetPc, Prefetch, Internal, Prefetch) → 0..=17.
+        for pause_after in 0..=17 {
+            let (mut cpu, mut bus) = setup_trapv_trap();
             cpu.start_instruction();
             for _ in 0..pause_after {
                 assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);

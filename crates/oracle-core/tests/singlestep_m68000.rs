@@ -59,6 +59,7 @@ const FILES: &[&str] = &[
     "RTR.json",
     "TRAP.json",
     "RTE.json",
+    "TRAPV.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -701,6 +702,16 @@ fn trap_covered(opcode: u16) -> bool {
     opcode & 0xFFF0 == 0x4E40
 }
 
+/// Whether this opcode is a `TRAPV` the framework covers (`0x4E76` — the sole TRAPV encoding; `TRAPV.json`
+/// carries only `0x4E76`). Every vendored case is fully in scope: V=0 → no trap (a single prefetch, length 4);
+/// V=1 → the standard 6-byte exception frame to vector 7 with a LEADING prefetch (length 34). All start in
+/// supervisor mode with an even SSP and an even handler address (no address-error sub-cases), so there is no
+/// parity/scope filter to apply. Same correctness-only caveat as TRAP: the S/T/A7 supervisor-entry transform
+/// is structurally exercised on the trap path but a no-op on the (always-supervisor) data.
+fn trapv_covered(opcode: u16) -> bool {
+    opcode == 0x4E76
+}
+
 /// Whether the framework currently covers this case (else it is an xfail for this push). `ADD`/`SUB` in
 /// word and byte sizes, each in two forms — `Dn,<ea>` (memory dest; word ADD=0xD140/SUB=0x9140, byte
 /// ADD=0xD100/SUB=0x9100) and `<ea>,Dn` (register dest; word ADD=0xD040/SUB=0x9040, byte
@@ -772,6 +783,13 @@ fn covered(opcode: u16, ini: &Value) -> bool {
     // is in scope (all supervisor, even SSP/handler, length 34); the S/T/A7 transform is structurally
     // exercised but a no-op on the data (see `trap_covered`'s caveat).
     if trap_covered(opcode) {
+        return true;
+    }
+    // TRAPV (`0x4E76`) — trap on overflow, resolved at decode time on the V flag. Every vendored case is in
+    // scope (V=0 no-trap len 4 / V=1 trap len 34, all supervisor with even SSP/handler); the trap path runs the
+    // same standard 6-byte frame as TRAP but with a LEADING prefetch, and the S/T/A7 transform is structurally
+    // exercised but a no-op on the data (see `trapv_covered`'s caveat).
+    if trapv_covered(opcode) {
         return true;
     }
     // Read the value of address register `reg` exactly as the decoder's `addr_reg` does: A7 is `ssp` in
@@ -1034,8 +1052,8 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 90862,
-        "expected 90862 covered cases — ADD/SUB (21790: word 5871 + byte 9974 + long 5945) plus \
+        ran >= 98927,
+        "expected 98927 covered cases — ADD/SUB (21790: word 5871 + byte 9974 + long 5945) plus \
          MOVE.w (3154: all 12 source modes × Dn + the alterable-memory dest modes \
          ((An)/(An)+/-(An)/d16(An)/d8(An,Xn)/abs.w/abs.l), even word EAs since an odd word access is an \
          address error, the (A7) mode-2 word form xfail) plus MOVE.b (7796: same modes, byte excludes \
@@ -1076,8 +1094,13 @@ fn add_sub_match_singlesteptests() {
          data's read order, FC=5), assemble the UNMASKED return PC, pop SP by 6 while still supervisor, restore \
          the full SR masked 0xA71F (LoadSr — may switch S supervisor→user and T), SetPc + two-Prefetch reload \
          under the RESTORED mode's FC (FC2 user / FC6 supervisor — the split IS gate-validated); 20 cyc; even \
-         popped-PC in scope, odd popped-PC = address error (62 cyc) → xfail (flips in at E4)), \
+         popped-PC in scope, odd popped-PC = address error (62 cyc) → xfail (flips in at E4)) plus \
+         TRAPV (8065: the sole 0x4E76 encoding — a conditional trap resolved at decode time on the V flag; V=0 \
+         → no trap (a single FC6 prefetch refill @ pc+4, 4 cyc, 3970 cases); V=1 → the standard 6-byte frame to \
+         vector 7 (34 cyc, 4095 cases), distinguished from TRAP by a LEADING prefetch (its first bus event is \
+         an FC6 refill @ pc+4, not the PCL write), saved PC = pc+2 captured BEFORE that prefetch; all \
+         supervisor (the S/T/A7 transform is structurally exercised but a no-op on the data — correctness-only)), \
          ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
