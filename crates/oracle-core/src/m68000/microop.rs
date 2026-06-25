@@ -157,6 +157,11 @@ pub enum MicroOp {
     },
     /// Consume `cycles` master cycles with no bus access (compute / idle `n` cycles).
     Internal { cycles: u8 },
+    /// Apply an address-register side effect: `An += delta` (the `(An)+`/`-(An)` auto-(in/de)crement),
+    /// written through [`Registers::addr_reg_set`] so `An == A7` hits the active stack pointer. A 0-cycle,
+    /// non-bus one-shot — separate from the operand access so the bump is snapshot-visible and can straddle
+    /// a prefetch.
+    AdjustAddr { reg: u8, delta: i8 },
 }
 
 /// The in-flight micro-op cursor for one instruction: the recipe, how far through it we are, and the
@@ -277,6 +282,11 @@ impl MicroState {
                 4
             }
             MicroOp::Internal { cycles } => cycles as u32,
+            MicroOp::AdjustAddr { reg, delta } => {
+                let cur = regs.addr_reg(reg as usize);
+                regs.addr_reg_set(reg as usize, cur.wrapping_add(delta as i32 as u32));
+                0
+            }
         };
         self.step += 1;
         self.cycles += cycles;
@@ -556,6 +566,60 @@ mod tests {
         assert_eq!(
             regs.d[7], 0x1BC0_8571,
             "0xF680 + prefetch[1] (0x8EF1) low word"
+        );
+    }
+
+    #[test]
+    fn adjust_addr_postincrements_an_with_zero_cost() {
+        // (An)+ side effect: An += delta, no bus access, 0 cycles.
+        let mut regs = regs();
+        regs.a[2] = 0x0010_0040;
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::AdjustAddr { reg: 2, delta: 2 }]);
+
+        let cycles = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(
+            cycles, 0,
+            "AdjustAddr is a 0-cycle one-shot register side effect"
+        );
+        assert_eq!(
+            regs.a[2], 0x0010_0042,
+            "An post-incremented by the word step"
+        );
+        assert_eq!(st.step, 1);
+        assert!(bus.log.is_empty(), "AdjustAddr touches no bus");
+    }
+
+    #[test]
+    fn adjust_addr_predecrements_an() {
+        // -(An) side effect: An -= step (delta negative).
+        let mut regs = regs();
+        regs.a[5] = 0x0010_0040;
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::AdjustAddr { reg: 5, delta: -2 }]);
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(
+            regs.a[5], 0x0010_003E,
+            "An pre-decremented by the word step"
+        );
+    }
+
+    #[test]
+    fn adjust_addr_routes_a7_through_the_active_stack_pointer() {
+        // A7 is ssp/usp, not a[7]; AdjustAddr must write through addr_reg_set.
+        let mut regs = regs(); // supervisor mode
+        regs.ssp = 0x0010_0000;
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::AdjustAddr { reg: 7, delta: 2 }]);
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(
+            regs.ssp, 0x0010_0002,
+            "A7 adjust hit the supervisor stack pointer"
         );
     }
 

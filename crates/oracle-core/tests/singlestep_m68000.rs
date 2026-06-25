@@ -1,14 +1,17 @@
 //! SingleStepTests runner for the 68000 micro-op framework.
 //!
 //! Drives the pinned, vendored SingleStepTests data (`tools/fetch-tests.sh`) for every covered `ADD.w` /
-//! `SUB.w` case — `Dn,(An)` (memory destination) and `<ea>,Dn` (register destination) for source modes
-//! Dn / An / (An) / #imm — and asserts post regs/SR/RAM/prefetch, the cycle count, **and** the per-cycle
-//! bus-transaction stream, through *both* framework drivers (run-to-completion fast path and the
-//! step-one-micro-op quiesce path), which must also agree with each other.
+//! `SUB.w` case — `Dn,<ea>` (alterable-memory destination: (An) / (An)+ / -(An)) and `<ea>,Dn` (register
+//! destination) for source modes Dn / An / (An) / (An)+ / -(An) / #imm — and asserts post regs/SR/RAM/
+//! prefetch, the cycle count, **and** the per-cycle bus-transaction stream, through *both* framework
+//! drivers (run-to-completion fast path and the step-one-micro-op quiesce path), which must also agree with
+//! each other.
 //!
-//! Versioned xfail manifest (slice scope — implemented later): the `A7`/SP forms (`reg == 7`), odd-address
-//! `(An)` cases (which raise an address-error exception), and the remaining EA modes / sizes are skipped
-//! (see [`covered`]). If the vendor data is missing, the test skips cleanly (run `tools/fetch-tests.sh`).
+//! Versioned xfail manifest (slice scope — implemented later): odd-address word accesses (which raise an
+//! address-error exception), the `A7` form of the older `(An)` (mode 2) memory access, and the remaining EA
+//! modes / sizes are skipped (see [`covered`]). The auto-(in/de)crement `(A7)+`/`-(A7)` *word* forms are in
+//! scope (the step keeps the SP even). If the vendor data is missing, the test skips cleanly (run
+//! `tools/fetch-tests.sh`).
 
 use oracle_core::m68000::bus68k::{FlatBus, Transaction, TxKind};
 use oracle_core::m68000::microop::{Cpu68000, Step};
@@ -114,16 +117,47 @@ fn assert_final(t: &Value, regs: &Registers, bus: &FlatBus) {
 }
 
 /// Whether the framework currently covers this case (else it is an xfail for this push). `ADD.w`/`SUB.w`
-/// in two forms — `Dn,(An)` (memory dest; ADD=0xD150, SUB=0x9150) and `<ea>,Dn` (register dest; ADD=0xD040,
-/// SUB=0x9040) for source modes Dn / An / (An) / #imm — minus the A7/SP forms of the memory modes and
-/// odd-address `(An)` cases (which raise an address error — deferred). `An`-direct has no memory access, so
-/// the A7 source is legal and in scope.
+/// in two forms — `Dn,<ea>` (memory dest; ADD=0xD140, SUB=0x9140) and `<ea>,Dn` (register dest; ADD=0xD040,
+/// SUB=0x9040). Source modes Dn / An / (An) / (An)+ / -(An) / #imm; alterable-memory dest modes
+/// (An) / (An)+ / -(An). For the memory modes only even computed EAs are in scope (an odd word access is an
+/// address error — deferred → xfail). For `(An)+`/`-(An)` the A7/SP register *is* in scope for word (the
+/// step is 2, so the SP stays even; the auto-(in/de)crement routes through `ssp`/`usp` by the S-bit) — only
+/// the older `(An)` (mode 2) keeps its A7 exclusion. `An`-direct has no memory access (A7 source legal).
 fn covered(opcode: u16, ini: &Value) -> bool {
-    let even = |reg: usize| u32f(ini, &format!("a{reg}")) & 1 == 0;
-    // <op>.w Dn,(An) — memory destination.
-    if opcode & 0xF1F8 == 0xD150 || opcode & 0xF1F8 == 0x9150 {
-        let an = (opcode & 7) as usize;
-        return an != 7 && even(an);
+    // Read the value of address register `reg` exactly as the decoder's `addr_reg` does: A7 is `ssp` in
+    // supervisor mode, `usp` in user mode (there is no `a7` field) — needed so `(A7)+`/`-(A7)` parity is
+    // computed correctly.
+    let supervisor = (u32f(ini, "sr") & 0x2000) != 0;
+    let areg = |reg: usize| -> u32 {
+        if reg == 7 {
+            if supervisor {
+                u32f(ini, "ssp")
+            } else {
+                u32f(ini, "usp")
+            }
+        } else {
+            u32f(ini, &format!("a{reg}"))
+        }
+    };
+    // A word memory access to an odd computed EA raises an address error (deferred → xfail). The EA is
+    // computed exactly as the decoder does: `(An)`/`(An)+` access at `An`; `-(An)` at `An - step` (step 2
+    // for word, so parity is preserved). Filter on the actual accessed address.
+    let even = |reg: usize| areg(reg) & 1 == 0;
+    let even_predec = |reg: usize| areg(reg).wrapping_sub(2) & 1 == 0;
+    // <op>.w Dn,<ea> — memory destination (modes (An)=2, (An)+=3, -(An)=4).
+    if opcode & 0xF1C0 == 0xD140 || opcode & 0xF1C0 == 0x9140 {
+        let mode = (opcode >> 3) & 7;
+        let reg = (opcode & 7) as usize;
+        return match mode {
+            // (An) — even access address, not A7 (A7 form lands with its own slice).
+            2 => reg != 7 && even(reg),
+            // (An)+ — even access address; A7/SP in scope for word.
+            3 => even(reg),
+            // -(An) — even decremented access address; A7/SP in scope for word.
+            4 => even_predec(reg),
+            // Other alterable-memory dest modes: out of slice this push.
+            _ => false,
+        };
     }
     // <op>.w <ea>,Dn — register destination.
     if opcode & 0xF1C0 == 0xD040 || opcode & 0xF1C0 == 0x9040 {
@@ -134,15 +168,19 @@ fn covered(opcode: u16, ini: &Value) -> bool {
             0 => true,
             // An (register direct) — legal `ADD.w`/`SUB.w An,Dn`; A7 source is fine (no memory access).
             1 => true,
-            // (An), even address, not A7.
+            // (An) — even source address, not A7 (A7 form lands with its own slice).
             2 => reg != 7 && even(reg),
+            // (An)+ — even source address; A7/SP in scope for word.
+            3 => even(reg),
+            // -(An) — even decremented source address; A7/SP in scope for word.
+            4 => even_predec(reg),
             // #imm.
             7 if reg == 4 => true,
             // Other EA modes: out of slice this push.
             _ => false,
         };
     }
-    false // other forms (e.g. Dn,(An)+ / byte / long): out of slice this push
+    false // other forms (byte / long / not-yet-implemented modes): out of slice this push
 }
 
 /// Run one covered case through both drivers, asserting they match the suite and each other.
@@ -212,8 +250,8 @@ fn add_sub_w_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 2300,
-        "expected ~2340 covered ADD.w + SUB.w cases (Dn,(An) + <ea>,Dn for Dn/An/(An)/#imm), ran {ran}"
+        ran >= 4000,
+        "expected ~4060 covered ADD.w + SUB.w cases (Dn,<ea> + <ea>,Dn for Dn/An/(An)/(An)+/-(An)/#imm), ran {ran}"
     );
     eprintln!("SingleStepTests ADD.w+SUB.w: {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }

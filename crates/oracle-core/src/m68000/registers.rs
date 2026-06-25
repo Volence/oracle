@@ -50,6 +50,22 @@ impl Registers {
         }
     }
 
+    /// Write address register `i` (0–7) — the mirror of [`addr_reg`](Self::addr_reg). Register 7 routes
+    /// to the active A7 (`ssp` in supervisor mode, `usp` in user mode), exactly as the read side selects
+    /// it; A0–A6 write `a[i]`. Used by [`MicroOp::AdjustAddr`](super::microop::MicroOp::AdjustAddr) for
+    /// `(An)+` / `-(An)` register side effects, where A7 must hit the right stack pointer.
+    pub fn addr_reg_set(&mut self, i: usize, v: u32) {
+        if i == 7 {
+            if self.supervisor() {
+                self.ssp = v;
+            } else {
+                self.usp = v;
+            }
+        } else {
+            self.a[i] = v;
+        }
+    }
+
     /// The 68000 function code (FC0–FC2) for an access: supervisor/user × data/program.
     /// Supervisor data = 5, supervisor program = 6, user data = 1, user program = 2.
     pub fn fc(&self, program: bool) -> u8 {
@@ -87,6 +103,34 @@ mod tests {
         r.sr = SR_SUPERVISOR;
         assert_eq!(r.a7(), 0x00BB_BBBB);
         assert_eq!(r.addr_reg(7), 0x00BB_BBBB);
+    }
+
+    #[test]
+    fn addr_reg_set_writes_a0_a6_directly() {
+        let mut r = regs();
+        r.addr_reg_set(3, 0x0012_3456);
+        assert_eq!(r.a[3], 0x0012_3456);
+        assert_eq!(r.addr_reg(3), 0x0012_3456);
+    }
+
+    #[test]
+    fn addr_reg_set_routes_a7_to_ssp_in_supervisor_mode() {
+        let mut r = regs();
+        r.sr = SR_SUPERVISOR;
+        r.addr_reg_set(7, 0x00CC_CCCC);
+        assert_eq!(r.ssp, 0x00CC_CCCC, "A7 write hit ssp in supervisor mode");
+        assert_eq!(r.usp, 0x00AA_AAAA, "usp untouched");
+        assert_eq!(r.addr_reg(7), 0x00CC_CCCC);
+    }
+
+    #[test]
+    fn addr_reg_set_routes_a7_to_usp_in_user_mode() {
+        let mut r = regs();
+        r.sr = 0x0000; // S clear
+        r.addr_reg_set(7, 0x00DD_DDDD);
+        assert_eq!(r.usp, 0x00DD_DDDD, "A7 write hit usp in user mode");
+        assert_eq!(r.ssp, 0x00BB_BBBB, "ssp untouched");
+        assert_eq!(r.addr_reg(7), 0x00DD_DDDD);
     }
 
     #[test]

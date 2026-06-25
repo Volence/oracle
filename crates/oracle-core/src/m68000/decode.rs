@@ -11,20 +11,30 @@ use super::ea::{ea_dst, ea_src, RecipeBuf};
 use super::microop::{AluOp, Cpu68000, Dest, MicroOp, MicroState, Operand, Size};
 use super::registers::Registers;
 
+/// Whether an EA `mode` field is an alterable-memory destination the builder currently covers:
+/// `(An)` (010), `(An)+` (011), `-(An)` (100). The remaining alterable-memory modes (`d16(An)`,
+/// `d8(An,Xn)`, `abs.w`, `abs.l`) land in later commits.
+#[inline]
+fn is_dst_mem_mode(mode: u16) -> bool {
+    matches!(mode, 2..=4)
+}
+
 /// Decode the opcode currently in `regs.prefetch[0]` into its micro-op recipe.
 #[inline]
 pub fn decode(regs: &Registers) -> MicroState {
     let opcode = regs.prefetch[0];
     // ADD.w and SUB.w share recipe shapes — they differ only in the `AluOp` (operand order is arranged so
     // the destination is the minuend, which matters for the non-commutative SUB).
-    if opcode & 0xF1F8 == 0xD150 {
-        return arith_w_dn_ea(opcode, AluOp::Add); // ADD.w Dn,(An)
+    // `<op>.w Dn,<ea>` (memory destination, `1xx1 ddd 1 01 mmm rrr`). The destination-EA builder handles
+    // the covered alterable-memory modes: `(An)` (010), `(An)+` (011), `-(An)` (100).
+    if opcode & 0xF1C0 == 0xD140 && is_dst_mem_mode((opcode >> 3) & 7) {
+        return arith_w_dn_ea(opcode, AluOp::Add); // ADD.w Dn,<ea>
     }
     if opcode & 0xF1C0 == 0xD040 {
         return arith_w_ea_dn(opcode, AluOp::Add); // ADD.w <ea>,Dn
     }
-    if opcode & 0xF1F8 == 0x9150 {
-        return arith_w_dn_ea(opcode, AluOp::Sub); // SUB.w Dn,(An)
+    if opcode & 0xF1C0 == 0x9140 && is_dst_mem_mode((opcode >> 3) & 7) {
+        return arith_w_dn_ea(opcode, AluOp::Sub); // SUB.w Dn,<ea>
     }
     if opcode & 0xF1C0 == 0x9040 {
         return arith_w_ea_dn(opcode, AluOp::Sub); // SUB.w <ea>,Dn
@@ -48,12 +58,12 @@ impl Cpu68000 {
     }
 }
 
-/// `<op>.w Dn,(An)` (`1xx1 ddd 1 01 010 rrr`, memory destination): read the memory operand at `(An)`,
-/// refill prefetch, combine it with `Dn`, write the result back to `(An)`. The **memory operand is the
-/// minuend** (`a`) so `SUB` computes `(An) - Dn`; `ADD` is commutative so the same order is correct. Three
-/// word accesses (read, prefetch, write) → 12 cycles; the ALU is an overlapped internal step. Expressed
-/// through the shared destination-EA builder ([`ea_dst`]) — the read/refill/ALU/write skeleton is the
-/// mode's, only the ALU operands are the opcode's.
+/// `<op>.w Dn,<ea>` (`1xx1 ddd 1 01 mmm rrr`, memory destination): read the memory operand at the dest
+/// EA, refill prefetch, combine it with `Dn`, write the result back to the same address. The **memory
+/// operand is the minuend** (`a`) so `SUB` computes `<ea> - Dn`; `ADD` is commutative so the same order is
+/// correct. The ALU is an overlapped internal step; the `(An)+`/`-(An)` register adjust is a 0-cycle
+/// `AdjustAddr`. Expressed through the shared destination-EA builder ([`ea_dst`]) — the read/refill/ALU/
+/// write skeleton (and any auto-(in/de)crement) is the mode's, only the ALU operands are the opcode's.
 fn arith_w_dn_ea(opcode: u16, op: AluOp) -> MicroState {
     let dn = ((opcode >> 9) & 7) as u8;
     let mode = (opcode >> 3) & 7;

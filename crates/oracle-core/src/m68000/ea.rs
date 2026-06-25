@@ -82,8 +82,15 @@ impl Default for RecipeBuf {
 /// is the per-mode row of the plan's verified source-read table, made data so a single emitter places the
 /// ALU rather than each mode re-implementing the interleave.
 struct SrcSeq {
+    /// Steps emitted **before** the operand READ, in order — the `-(An)` pre-decrement: the `AdjustAddr`
+    /// (so the read hits the decremented address) followed by its `Internal(2)` idle. Empty for modes with
+    /// no pre-read side effect. At most two slots (the worst in-scope case).
+    pre_read: [Option<MicroOp>; 2],
     /// Address of the operand READ, or `None` for register-direct / immediate modes (no operand read).
     read_addr: Option<Operand>,
+    /// A step emitted **after** the READ but before the refill(s) — the `(An)+` post-increment `AdjustAddr`
+    /// (the read still hits the un-incremented address; the read stays the second-to-last bus event).
+    post_read: Option<MicroOp>,
     /// Number of `Prefetch` refills (= instruction word count).
     prefetch: u8,
     /// The operand the ALU combines (the source value).
@@ -92,13 +99,19 @@ struct SrcSeq {
     placement: AluPlacement,
 }
 
+/// The auto-(in/de)crement step for an address register, in bytes. Word is 2 (the only in-scope size this
+/// commit); byte (1, or 2 for A7) lands with byte coverage in C7.
+const WORD_STEP: i8 = 2;
+
 /// Decode a source EA mode into its [`SrcSeq`]. Covers `Dn` (0), `An` (1, word/long), `(An)` (2),
-/// `#imm` (7/4). Other modes land in later commits.
+/// `(An)+` (3), `-(An)` (4), `#imm` (7/4). Other modes land in later commits.
 fn src_seq(mode: u16, reg: u8) -> SrcSeq {
     match (mode, reg) {
         // Dn — data-register direct: no operand read; one refill, then combine the register.
         (0, _) => SrcSeq {
+            pre_read: [None, None],
             read_addr: None,
+            post_read: None,
             prefetch: 1,
             operand: Operand::DataRegLow16(reg),
             placement: AluPlacement::AfterPrefetch,
@@ -108,14 +121,50 @@ fn src_seq(mode: u16, reg: u8) -> SrcSeq {
         // no operand read, one refill, then combine — but the operand is An's low word. A7 source is fine
         // (no memory access, no address error).
         (1, _) => SrcSeq {
+            pre_read: [None, None],
             read_addr: None,
+            post_read: None,
             prefetch: 1,
             operand: Operand::AddrRegLow16(reg),
             placement: AluPlacement::AfterPrefetch,
         },
         // (An) — address-register indirect: read the operand (→ scratch 0), refill, then combine it.
         (2, _) => SrcSeq {
+            pre_read: [None, None],
             read_addr: Some(Operand::AddrReg(reg)),
+            post_read: None,
+            prefetch: 1,
+            operand: Operand::Scratch(0),
+            placement: AluPlacement::Last,
+        },
+        // (An)+ — postincrement: read at An (→ scratch 0), then post-increment An by the word step (a
+        // 0-cycle non-bus `AdjustAddr` after the read so the read still hits the un-incremented address),
+        // refill, then combine. Same `[READ, PF]` bus stream as `(An)` (the bump is invisible to the bus),
+        // and the same 8 cycles.
+        (3, _) => SrcSeq {
+            pre_read: [None, None],
+            read_addr: Some(Operand::AddrReg(reg)),
+            post_read: Some(MicroOp::AdjustAddr {
+                reg,
+                delta: WORD_STEP,
+            }),
+            prefetch: 1,
+            operand: Operand::Scratch(0),
+            placement: AluPlacement::Last,
+        },
+        // -(An) — predecrement: decrement An by the word step FIRST (so the read hits An-step), then an
+        // internal 2-cycle idle (the predecrement penalty; non-bus, pinned by the SST `n` cycle), then read
+        // at the decremented An, refill, combine. `[READ, PF]` bus stream, 10 cycles (8 + the idle 2).
+        (4, _) => SrcSeq {
+            pre_read: [
+                Some(MicroOp::AdjustAddr {
+                    reg,
+                    delta: -WORD_STEP,
+                }),
+                Some(MicroOp::Internal { cycles: 2 }),
+            ],
+            read_addr: Some(Operand::AddrReg(reg)),
+            post_read: None,
             prefetch: 1,
             operand: Operand::Scratch(0),
             placement: AluPlacement::Last,
@@ -123,7 +172,9 @@ fn src_seq(mode: u16, reg: u8) -> SrcSeq {
         // #imm — the immediate is the queued word; the ALU captures `prefetch[1]` BEFORE the two refills
         // shift it out (placement First), then both refills run (the 2-word instruction's fetch).
         (7, 4) => SrcSeq {
+            pre_read: [None, None],
             read_addr: None,
+            post_read: None,
             prefetch: 2,
             operand: Operand::ImmWord,
             placement: AluPlacement::First,
@@ -143,6 +194,11 @@ fn src_seq(mode: u16, reg: u8) -> SrcSeq {
 pub fn ea_src(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Operand) -> MicroOp) {
     let seq = src_seq(mode, reg);
     let alu = make_alu(seq.operand);
+    // Pre-read side effects (the `-(An)` predecrement `AdjustAddr` + its `Internal(2)` idle) run first, so
+    // the read hits the decremented address.
+    for op in seq.pre_read.into_iter().flatten() {
+        buf.push(op);
+    }
     // The operand READ, if any, is the second-to-last bus event (invariant 3) — always before the refills.
     if let Some(addr) = seq.read_addr {
         buf.push(MicroOp::Read {
@@ -151,6 +207,11 @@ pub fn ea_src(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Ope
             size: super::microop::Size::Word,
             dst: 0,
         });
+    }
+    // The post-read side effect (the `(An)+` postincrement `AdjustAddr`) runs after the read but before
+    // the refill(s) — the read already hit the un-incremented address; the bump is non-bus.
+    if let Some(op) = seq.post_read {
+        buf.push(op);
     }
     match seq.placement {
         // ALU first, then every refill (#imm captures prefetch[1] before the refills shift it out).
@@ -181,26 +242,56 @@ pub fn ea_src(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Ope
 /// `MicroOp::Alu` given the memory operand (the minuend) and the scratch destination it writes; the write
 /// then stores that scratch slot at the same address.
 ///
-/// Covers C1's destination mode — `(An)` (2). Other alterable-memory modes land in later commits.
+/// Covers C1's destination mode — `(An)` (2) — plus `(An)+` (3) and `-(An)` (4). Other alterable-memory
+/// modes land in later commits. For `(An)+`/`-(An)` the register side effect is an explicit `AdjustAddr`:
+/// predecrement runs **before** the read (so the read and write both hit the decremented address),
+/// postincrement runs **after** the write (so both hit the un-incremented address).
 pub fn ea_dst(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Operand) -> MicroOp) {
+    // The alterable-memory destination skeleton: read old value → refill → ALU (memory is the minuend) →
+    // write the result back, at the same `(An)` address. `(An)+`/`-(An)` wrap this with an `AdjustAddr`.
+    let read = MicroOp::Read {
+        addr: Operand::AddrReg(reg),
+        fc: super::microop::Fc::Data,
+        size: super::microop::Size::Word,
+        dst: 0,
+    };
+    let write = MicroOp::Write {
+        addr: Operand::AddrReg(reg),
+        fc: super::microop::Fc::Data,
+        size: super::microop::Size::Word,
+        value: Operand::Scratch(1),
+    };
     match (mode, reg) {
-        // (An): read old value into scratch 0, refill, ALU (memory is the minuend) → scratch 1, write
-        // scratch 1 back to (An). Collapses to today's exact `Dn,(An)` recipe — no EaCalc.
+        // (An): read, refill, ALU → scratch 1, write back. Collapses to today's exact `Dn,(An)` recipe.
         (2, _) => {
-            buf.push(MicroOp::Read {
-                addr: Operand::AddrReg(reg),
-                fc: super::microop::Fc::Data,
-                size: super::microop::Size::Word,
-                dst: 0,
-            });
+            buf.push(read);
             buf.push(MicroOp::Prefetch);
             buf.push(make_alu(Operand::Scratch(0)));
-            buf.push(MicroOp::Write {
-                addr: Operand::AddrReg(reg),
-                fc: super::microop::Fc::Data,
-                size: super::microop::Size::Word,
-                value: Operand::Scratch(1),
+            buf.push(write);
+        }
+        // (An)+: same RMW at An, then post-increment An (0-cycle, after the write). Read and write both
+        // hit the un-incremented address; the bump is invisible to the bus stream.
+        (3, _) => {
+            buf.push(read);
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::Scratch(0)));
+            buf.push(write);
+            buf.push(MicroOp::AdjustAddr {
+                reg,
+                delta: WORD_STEP,
             });
+        }
+        // -(An): pre-decrement An (then the internal idle), so the read and write both hit An-step.
+        (4, _) => {
+            buf.push(MicroOp::AdjustAddr {
+                reg,
+                delta: -WORD_STEP,
+            });
+            buf.push(MicroOp::Internal { cycles: 2 });
+            buf.push(read);
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::Scratch(0)));
+            buf.push(write);
         }
         _ => todo!("ea_dst mode {mode}/{reg} not yet covered"),
     }
@@ -281,6 +372,93 @@ mod tests {
             ea_dn_alu(4, Operand::Scratch(0)),
         ]);
         assert_eq!(build_src(2, 2, 4), literal);
+    }
+
+    #[test]
+    fn builder_matches_literal_an_postinc_source() {
+        // <op>.w (An)+,Dn (mode 3) → [Read(AddrReg), AdjustAddr(+2), Prefetch, Alu(b=Scratch(0))].
+        // The operand is read at An, An is then post-incremented by the word step; the read is still the
+        // second-to-last bus event (invariant 3); the AdjustAddr is a 0-cycle non-bus step.
+        let literal = MicroState::from_ops(&[
+            MicroOp::Read {
+                addr: Operand::AddrReg(2),
+                fc: Fc::Data,
+                size: Size::Word,
+                dst: 0,
+            },
+            MicroOp::AdjustAddr { reg: 2, delta: 2 },
+            MicroOp::Prefetch,
+            ea_dn_alu(4, Operand::Scratch(0)),
+        ]);
+        assert_eq!(build_src(3, 2, 4), literal);
+    }
+
+    #[test]
+    fn builder_matches_literal_an_predec_source() {
+        // <op>.w -(An),Dn (mode 4) → [AdjustAddr(-2), Internal(2), Read(AddrReg), Prefetch, Alu].
+        // An is pre-decremented first (so the read hits An-2), an internal 2-cycle idle precedes the read.
+        let literal = MicroState::from_ops(&[
+            MicroOp::AdjustAddr { reg: 5, delta: -2 },
+            MicroOp::Internal { cycles: 2 },
+            MicroOp::Read {
+                addr: Operand::AddrReg(5),
+                fc: Fc::Data,
+                size: Size::Word,
+                dst: 0,
+            },
+            MicroOp::Prefetch,
+            ea_dn_alu(1, Operand::Scratch(0)),
+        ]);
+        assert_eq!(build_src(4, 5, 1), literal);
+    }
+
+    #[test]
+    fn builder_matches_literal_an_postinc_destination() {
+        // <op>.w Dn,(An)+ (mode 3) → [Read(AddrReg), Prefetch, Alu, Write(AddrReg), AdjustAddr(+2)].
+        // Read and write hit the same (un-incremented) An; An is post-incremented after the write.
+        let literal = MicroState::from_ops(&[
+            MicroOp::Read {
+                addr: Operand::AddrReg(2),
+                fc: Fc::Data,
+                size: Size::Word,
+                dst: 0,
+            },
+            MicroOp::Prefetch,
+            dn_ea_alu(3, Operand::Scratch(0)),
+            MicroOp::Write {
+                addr: Operand::AddrReg(2),
+                fc: Fc::Data,
+                size: Size::Word,
+                value: Operand::Scratch(1),
+            },
+            MicroOp::AdjustAddr { reg: 2, delta: 2 },
+        ]);
+        assert_eq!(build_dst(3, 2, 3), literal);
+    }
+
+    #[test]
+    fn builder_matches_literal_an_predec_destination() {
+        // <op>.w Dn,-(An) (mode 4) → [AdjustAddr(-2), Internal(2), Read(AddrReg), Prefetch, Alu,
+        // Write(AddrReg)]. An is pre-decremented before the read so read and write both hit An-2.
+        let literal = MicroState::from_ops(&[
+            MicroOp::AdjustAddr { reg: 1, delta: -2 },
+            MicroOp::Internal { cycles: 2 },
+            MicroOp::Read {
+                addr: Operand::AddrReg(1),
+                fc: Fc::Data,
+                size: Size::Word,
+                dst: 0,
+            },
+            MicroOp::Prefetch,
+            dn_ea_alu(6, Operand::Scratch(0)),
+            MicroOp::Write {
+                addr: Operand::AddrReg(1),
+                fc: Fc::Data,
+                size: Size::Word,
+                value: Operand::Scratch(1),
+            },
+        ]);
+        assert_eq!(build_dst(4, 1, 6), literal);
     }
 
     #[test]
