@@ -2,7 +2,7 @@
 //!
 //! Drives the pinned, vendored SingleStepTests data (`tools/fetch-tests.sh`) for every covered `ADD.w` /
 //! `SUB.w` case — `Dn,(An)` (memory destination) and `<ea>,Dn` (register destination) for source modes
-//! Dn / (An) / #imm — and asserts post regs/SR/RAM/prefetch, the cycle count, **and** the per-cycle
+//! Dn / An / (An) / #imm — and asserts post regs/SR/RAM/prefetch, the cycle count, **and** the per-cycle
 //! bus-transaction stream, through *both* framework drivers (run-to-completion fast path and the
 //! step-one-micro-op quiesce path), which must also agree with each other.
 //!
@@ -115,8 +115,9 @@ fn assert_final(t: &Value, regs: &Registers, bus: &FlatBus) {
 
 /// Whether the framework currently covers this case (else it is an xfail for this push). `ADD.w`/`SUB.w`
 /// in two forms — `Dn,(An)` (memory dest; ADD=0xD150, SUB=0x9150) and `<ea>,Dn` (register dest; ADD=0xD040,
-/// SUB=0x9040) for source modes Dn / (An) / #imm — minus the A7/SP forms and odd-address `(An)` cases
-/// (which raise an address error — deferred).
+/// SUB=0x9040) for source modes Dn / An / (An) / #imm — minus the A7/SP forms of the memory modes and
+/// odd-address `(An)` cases (which raise an address error — deferred). `An`-direct has no memory access, so
+/// the A7 source is legal and in scope.
 fn covered(opcode: u16, ini: &Value) -> bool {
     let even = |reg: usize| u32f(ini, &format!("a{reg}")) & 1 == 0;
     // <op>.w Dn,(An) — memory destination.
@@ -129,10 +130,16 @@ fn covered(opcode: u16, ini: &Value) -> bool {
         let mode = (opcode >> 3) & 7;
         let reg = (opcode & 7) as usize;
         return match mode {
-            0 => true,                  // Dn (register direct)
-            2 => reg != 7 && even(reg), // (An), even address, not A7
-            7 if reg == 4 => true,      // #imm
-            _ => false,                 // other EA modes: out of slice this push
+            // Dn (register direct).
+            0 => true,
+            // An (register direct) — legal `ADD.w`/`SUB.w An,Dn`; A7 source is fine (no memory access).
+            1 => true,
+            // (An), even address, not A7.
+            2 => reg != 7 && even(reg),
+            // #imm.
+            7 if reg == 4 => true,
+            // Other EA modes: out of slice this push.
+            _ => false,
         };
     }
     false // other forms (e.g. Dn,(An)+ / byte / long): out of slice this push
@@ -205,8 +212,8 @@ fn add_sub_w_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 1550,
-        "expected ~1579 covered ADD.w + SUB.w cases (Dn,(An) + <ea>,Dn for Dn/(An)/#imm), ran {ran}"
+        ran >= 2300,
+        "expected ~2340 covered ADD.w + SUB.w cases (Dn,(An) + <ea>,Dn for Dn/An/(An)/#imm), ran {ran}"
     );
     eprintln!("SingleStepTests ADD.w+SUB.w: {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }

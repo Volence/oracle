@@ -92,8 +92,8 @@ struct SrcSeq {
     placement: AluPlacement,
 }
 
-/// Decode a source EA mode into its [`SrcSeq`]. Covers C1's modes — `Dn` (0), `(An)` (2), `#imm` (7/4).
-/// Other modes land in later commits.
+/// Decode a source EA mode into its [`SrcSeq`]. Covers `Dn` (0), `An` (1, word/long), `(An)` (2),
+/// `#imm` (7/4). Other modes land in later commits.
 fn src_seq(mode: u16, reg: u8) -> SrcSeq {
     match (mode, reg) {
         // Dn — data-register direct: no operand read; one refill, then combine the register.
@@ -101,6 +101,16 @@ fn src_seq(mode: u16, reg: u8) -> SrcSeq {
             read_addr: None,
             prefetch: 1,
             operand: Operand::DataRegLow16(reg),
+            placement: AluPlacement::AfterPrefetch,
+        },
+        // An — address-register direct (word/long only; LEGAL `ADD.w`/`SUB.w An,Dn`, NOT `ADDA`; byte is
+        // illegal and never reaches here, and An is not an alterable destination). Same bus shape as Dn —
+        // no operand read, one refill, then combine — but the operand is An's low word. A7 source is fine
+        // (no memory access, no address error).
+        (1, _) => SrcSeq {
+            read_addr: None,
+            prefetch: 1,
+            operand: Operand::AddrRegLow16(reg),
             placement: AluPlacement::AfterPrefetch,
         },
         // (An) — address-register indirect: read the operand (→ scratch 0), refill, then combine it.
@@ -128,7 +138,8 @@ fn src_seq(mode: u16, reg: u8) -> SrcSeq {
 /// read) — the op/size/destination are the caller's, only the source operand and its placement are the
 /// EA's concern. The [`AluPlacement`] from [`src_seq`] is the load-bearing pivot the emitter honors.
 ///
-/// Covers C1's source modes — `Dn` (0), `(An)` (2), `#imm` (7/4). Other modes land in later commits.
+/// Covers source modes `Dn` (0), `An` (1, word/long), `(An)` (2), `#imm` (7/4). Other modes land in later
+/// commits.
 pub fn ea_src(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Operand) -> MicroOp) {
     let seq = src_seq(mode, reg);
     let alu = make_alu(seq.operand);
@@ -245,6 +256,15 @@ mod tests {
         let literal =
             MicroState::from_ops(&[MicroOp::Prefetch, ea_dn_alu(3, Operand::DataRegLow16(5))]);
         assert_eq!(build_src(0, 5, 3), literal);
+    }
+
+    #[test]
+    fn builder_matches_literal_an_direct_source() {
+        // <op>.w An,Dn (mode 1) → [Prefetch, Alu(b=AddrRegLow16(reg))]: same shape as Dn-direct, but the
+        // source operand is An's low word. Word/long only (no byte — ADD.b An,Dn is illegal).
+        let literal =
+            MicroState::from_ops(&[MicroOp::Prefetch, ea_dn_alu(6, Operand::AddrRegLow16(7))]);
+        assert_eq!(build_src(1, 7, 6), literal);
     }
 
     #[test]

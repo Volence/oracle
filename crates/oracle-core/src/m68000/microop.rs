@@ -98,6 +98,9 @@ pub enum Operand {
     Scratch(Slot),
     /// The low word of data register `Dn`, zero-extended.
     DataRegLow16(u8),
+    /// The low word of address register `An` (the active A7 when `n == 7`), zero-extended — the source
+    /// value for a legal `<op>.w An,Dn` (the full `An` register, of which only the low word is used).
+    AddrRegLow16(u8),
     /// Address register `An` (the active A7 when `n == 7`) — used as a bus address.
     AddrReg(u8),
     /// The immediate word currently in the prefetch queue (`prefetch[1]`, the word after the opcode).
@@ -195,6 +198,7 @@ impl MicroState {
         match op {
             Operand::Scratch(s) => self.scratch[s as usize],
             Operand::DataRegLow16(n) => regs.d[n as usize] & 0xFFFF,
+            Operand::AddrRegLow16(n) => regs.addr_reg(n as usize) & 0xFFFF,
             Operand::AddrReg(n) => regs.addr_reg(n as usize),
             Operand::ImmWord => regs.prefetch[1] as u32,
         }
