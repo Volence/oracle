@@ -10,3 +10,4 @@ bincode = { version = "2", features = ["derive"] }
 
 [dev-dependencies]
 proptest = "1"
+serde_json = "1"

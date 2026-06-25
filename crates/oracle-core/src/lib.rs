@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 
 pub mod bus;
+pub mod m68000;
 pub mod rng;
 pub mod scheduler;
 pub mod state_hash;
