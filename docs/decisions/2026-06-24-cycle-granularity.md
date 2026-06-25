@@ -1,7 +1,12 @@
 # Decision brief: 68000 cycle granularity
 
-**Status: RECOMMENDATION — awaiting ratification.** (The one open Phase-0 decision from
-`docs/foundations.md`.)
+**Status: RATIFIED 2026-06-24.** (The one open Phase-0 decision from `docs/foundations.md`.)
+
+Ratified choices:
+1. **Single-definition hybrid** — each opcode written once as a resumable micro-op sequence; a
+   run-to-completion driver is the default fast path, a step-one-micro-op driver provides on-demand quiesce.
+2. **Default quiesce granularity = bus-access (transaction)** for the 68000. Per-master-clock is reserved
+   for the VDP and as a deferred 68k accuracy option behind the same micro-op framework.
 
 ## The question
 
@@ -91,4 +96,5 @@ full always-on cycle-stepped 68k an unjustified tax for MVP-debuggable.
   do you want per-clock (C) available for the 68k from the start? (b) accept the one-definition/two-driver
   structure, or prefer a single always-cycle-stepped driver (simpler code, ~3× slower)?
 
-**Phase 0 pauses here for ratification before any full opcode coverage** (per the approved scope).
+**Ratified 2026-06-24** (single-definition hybrid + bus-access default quiesce). Phase 0 ends here; the
+next push builds the micro-op opcode framework and full coverage per this decision.
