@@ -162,6 +162,14 @@ pub fn decode(regs: &Registers) -> MicroState {
     if opcode & 0xFFC0 == 0x4EC0 {
         return jmp_recipe(opcode);
     }
+    // JSR `<control ea>` (`0100 1110 10 mmm rrr`, 0x4E80 | ea) — jump to subroutine: compute the UNMASKED
+    // branch target for the control addressing mode (the same seven modes as JMP), PUSH the 32-bit return
+    // address, and reload the prefetch queue at the target. The reload **splits around the push** (read
+    // target → push → read target+2). The opcode space 0x4E80..=0x4EBF is disjoint from JMP (0x4EC0) and
+    // every arm above.
+    if opcode & 0xFFC0 == 0x4E80 {
+        return jsr_recipe(opcode);
+    }
     todo!("opcode {opcode:#06X} not yet decoded")
 }
 
@@ -509,6 +517,161 @@ fn jmp_recipe(opcode: u16) -> MicroState {
     }
     // Every JMP ends with the two-word queue reload at target / target+2 (the universal taken-branch tail).
     buf.push(MicroOp::Prefetch);
+    buf.push(MicroOp::Prefetch);
+    buf.finish()
+}
+
+/// Scratch slot holding a `JSR`'s 32-bit branch target (the `SetPc` source). Slot 0 — the same slot a `JMP`'s
+/// target lives in, so the `abs.l` HI-word capture can use the fresh-recipe `(0 << 16) | prefetch[1]` idiom
+/// (slot 0 is still 0 when the HI capture runs, BEFORE the target is assembled into it).
+const JSR_TARGET_SLOT: u8 = 0;
+
+/// Scratch slot holding a `JSR`'s 32-bit return address (`pc + N`), parked by a [`MicroOp::TargetCalc`] and
+/// consumed by the two return-address `Write`s (hi via [`Operand::ScratchHi16`], lo via [`Operand::Scratch`]).
+/// Slot 1 — distinct from the target slot (slot 0) so the return address survives the whole reload-interleave
+/// (it is pushed AFTER the first reload `Prefetch`, while the target is still needed by `SetPc`).
+const JSR_RETURN_SLOT: u8 = 1;
+
+/// Scratch slot holding the **address** of a `JSR` return-address push's LOW half (`SP + 2`), materialized
+/// once by an [`MicroOp::EaCalc`] (masked to the 24-bit bus — a real even bus address) so the low-word `Write`
+/// hits exactly `SP + 2`. Slot 2 — distinct from the target / return slots so every value is snapshot-visible
+/// mid-push.
+const JSR_LO_ADDR_SLOT: u8 = 2;
+
+/// Scratch slot parking the captured HIGH word of a `JSR abs.l` target between the two extension-word captures,
+/// so the LOW-word refill does not clobber it. Slot 3 — matching the EA / `JMP` `abs.l`-HI convention, distinct
+/// from the target / return / lo-addr slots so all are snapshot-visible mid-assembly.
+const JSR_ABS_L_HI_SLOT: u8 = 3;
+
+/// `JSR <control ea>` (`0100 1110 10 mmm rrr`, 0x4E80 | ea): jump to subroutine — compute the UNMASKED branch
+/// target for the control addressing mode (the **same seven modes as JMP**), push the 32-bit return address
+/// (`pc + N`, `N` = the instruction's byte length), and reload the prefetch queue at the target. Unlike `BSR`
+/// (which pushes first, then reloads both queue words), `JSR`'s **reload SPLITS around the push**: the first
+/// reload `Prefetch` reads the target into `prefetch[0]`, then the two push `Write`s run, then the second
+/// reload `Prefetch` reads `target+2` into `prefetch[1]`. (Pinned to the vendored `JSR` SST stream — the bus
+/// order is `[…compute…, r@target, w@SP−4(hi), w@SP−2(lo), r@target+2]`, the `n` idle never in the stream.)
+///
+/// The return address `pc + N` is computed FIRST (capturing the original opcode `pc`, before any `Prefetch`
+/// advances it), UNMASKED. `N` is **VERIFIED against the pushed value in the data** (the data wins): `(An)` 2,
+/// `(d16,An)`/`abs.w`/`(d16,PC)` 4, indexed `(d8,An,Xn)`/`(d8,PC,Xn)` 4, and **`abs.l` 6** (the data shows the
+/// pushed return is `pc + 6` — the recon prose said `pc + 4`; the DATA WINS).
+///
+/// Cycle counts (pinned to the data): `(An)` 16, `(d16,An)`/`abs.w`/`(d16,PC)` 18, `abs.l` 20, indexed
+/// `(d8,An,Xn)`/`(d8,PC,Xn)` 22. The target arithmetic per mode mirrors [`jmp_recipe`] (every target is
+/// UNMASKED — the PC stays full 32-bit; only the bus reload address masks). `abs.l` assembles its two
+/// extension words BEFORE the push (the LOW-word refill `Prefetch` is the `r@pc+4` bus event).
+fn jsr_recipe(opcode: u16) -> MicroState {
+    let mode = (opcode >> 3) & 7;
+    let reg = (opcode & 7) as u8;
+    // The instruction byte length N (the return address is pc + N). VERIFIED against the pushed value in the
+    // data: abs.l is 6 (NOT 4 — the data wins), every other control mode is 2 ((An)) or 4.
+    let n: u8 = match (mode, reg) {
+        (2, _) => 2, // (An) — 1-word instruction
+        (7, 1) => 6, // abs.l — 3-word instruction (DATA: pushed return = pc + 6)
+        _ => 4,      // (d16,An)/abs.w/(d16,PC)/(d8,An,Xn)/(d8,PC,Xn) — 2-word instructions
+    };
+    let mut buf = RecipeBuf::new();
+    // The return address (pc + N) FIRST — captures the original pc before any Prefetch advances it. UNMASKED.
+    buf.push(MicroOp::TargetCalc {
+        base: Operand::PcPlus(n),
+        index: Operand::Zero,
+        disp: Operand::Zero,
+        dst: JSR_RETURN_SLOT,
+    });
+    // Compute the target into JSR_TARGET_SLOT (slot 0) per mode — identical arithmetic to JMP, only the
+    // post-target tail (the push splitting the reload) differs.
+    match (mode, reg) {
+        // (An) — the target is An itself: no compute, no idle.
+        (2, _) => {
+            buf.push(MicroOp::SetPc {
+                value: Operand::AddrReg(reg),
+            });
+        }
+        // abs.l — assemble the two extension words into the UNMASKED 32-bit target. The HIGH word
+        // (prefetch[1]) is parked into JSR_ABS_L_HI_SLOT via the `(0 << 16) | prefetch[1]` Combine32 (slot 0
+        // is still 0 here — the target has not been assembled yet) BEFORE the refill shifts it out; the refill
+        // reads the LOW word (at pc+4) into prefetch[1] (the `r@pc+4` bus event); the second Combine32
+        // assembles `(hi << 16) | lo` (no mask) into the target slot. No idle.
+        (7, 1) => {
+            buf.push(MicroOp::Combine32 {
+                hi: JSR_TARGET_SLOT,
+                lo: Operand::ExtWordRaw,
+                dst: JSR_ABS_L_HI_SLOT,
+            });
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::Combine32 {
+                hi: JSR_ABS_L_HI_SLOT,
+                lo: Operand::ExtWordRaw,
+                dst: JSR_TARGET_SLOT,
+            });
+            buf.push(MicroOp::SetPc {
+                value: Operand::Scratch(JSR_TARGET_SLOT),
+            });
+        }
+        // The TargetCalc register-file modes: compute the UNMASKED target FIRST (capturing the displacement /
+        // brief ext word from prefetch[1] and the original pc via PcOfExt, before any refill), then the mode's
+        // idle (n2 / n6; NOT in the asserted transaction stream — only the total cycle count), then SetPc.
+        _ => {
+            let (base, index, disp, idle) = match (mode, reg) {
+                // (d16,An) — An + sign_extend16(disp); 2-cyc idle.
+                (5, _) => (Operand::AddrReg(reg), Operand::Zero, Operand::DispWord, 2),
+                // (d8,An,Xn) — An + index(Xn) + sign_extend8(disp8); 6-cyc index idle.
+                (6, _) => (
+                    Operand::AddrReg(reg),
+                    Operand::BriefIndex,
+                    Operand::BriefDisp8,
+                    6,
+                ),
+                // abs.w — sign_extend16(disp) alone; 2-cyc idle.
+                (7, 0) => (Operand::Zero, Operand::Zero, Operand::DispWord, 2),
+                // (d16,PC) — (pc+2) + sign_extend16(disp); 2-cyc idle.
+                (7, 2) => (Operand::PcOfExt, Operand::Zero, Operand::DispWord, 2),
+                // (d8,PC,Xn) — (pc+2) + index(Xn) + sign_extend8(disp8); 6-cyc index idle.
+                (7, 3) => (
+                    Operand::PcOfExt,
+                    Operand::BriefIndex,
+                    Operand::BriefDisp8,
+                    6,
+                ),
+                _ => unreachable!("jsr_recipe: non-control EA mode {mode}/{reg}"),
+            };
+            buf.push(MicroOp::TargetCalc {
+                base,
+                index,
+                disp,
+                dst: JSR_TARGET_SLOT,
+            });
+            buf.push(MicroOp::Internal { cycles: idle });
+            buf.push(MicroOp::SetPc {
+                value: Operand::Scratch(JSR_TARGET_SLOT),
+            });
+        }
+    }
+    // The JSR reload-interleave: SetPc has primed pc = target − 4. The FIRST reload Prefetch reads pc+4 =
+    // target into prefetch[0] (and advances pc to target − 2). THEN the return-address push runs: pre-decrement
+    // SP by 4, materialize the LOW-half address (SP−4 + 2 = SP−2), and write hi @ SP−4 then lo @ SP−2 (the
+    // big-endian return address, the same order as BSR). The SECOND reload Prefetch reads (target − 2) + 4 =
+    // target + 2 into prefetch[1] (leaving pc = target). Bus order: [r@target, w@SP−4, w@SP−2, r@target+2].
+    buf.push(MicroOp::Prefetch);
+    buf.push(MicroOp::AdjustAddr { reg: 7, delta: -4 });
+    buf.push(MicroOp::EaCalc {
+        base: Operand::AddrReg(7),
+        index: Operand::Zero,
+        disp: Operand::WordStep,
+        dst: JSR_LO_ADDR_SLOT,
+    });
+    buf.push(MicroOp::Write {
+        addr: Operand::AddrReg(7),
+        fc: super::microop::Fc::Data,
+        size: Size::Word,
+        value: Operand::ScratchHi16(JSR_RETURN_SLOT),
+    });
+    buf.push(MicroOp::Write {
+        addr: Operand::Scratch(JSR_LO_ADDR_SLOT),
+        fc: super::microop::Fc::Data,
+        size: Size::Word,
+        value: Operand::Scratch(JSR_RETURN_SLOT),
+    });
     buf.push(MicroOp::Prefetch);
     buf.finish()
 }
@@ -3415,6 +3578,857 @@ mod tests {
         let cfg = bincode::config::standard();
         for pause_after in 0..=9 {
             let (mut cpu, mut bus) = setup_bsr_word_unmasked();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    // --- F3: JSR <control ea> — the seven control modes, the F1 per-mode target combined with the F2 push,
+    // via the JSR reload-interleave (read target → push hi/lo → read target+2). One clean (even-target)
+    // anchor per mode; the documented (An) anchor (4e90) carries the full both-drivers + snapshot/restore
+    // trio, and abs.l carries an extra snapshot/restore anchor for its split-reload + push shape. ---
+
+    #[test]
+    fn jsr_decode_recognizes_control_mode_and_reg() {
+        // JSR layout: `0100 1110 10 mmm rrr` — bits 15-6 == 0b0100_1110_10 (0x4E80 prefix), mode bits 5-3,
+        // reg bits 2-0. The seven control encodings (the SAME set as JMP, only the prefix differs: JMP is
+        // 0x4EC0). The opcode space 0x4E80..=0x4EBF is disjoint from JMP (0x4EC0..=0x4EFF).
+        assert_eq!(0x4E90u16 & 0xFFC0, 0x4E80, "0x4E90 is a JSR");
+        assert_ne!(0x4E90u16 & 0xFFC0, 0x4EC0, "0x4E90 is NOT a JMP");
+        assert_eq!((0x4E90u16 >> 3) & 7, 2, "0x4E90 = JSR (A0) — mode 2");
+        assert_eq!(0x4E90u16 & 7, 0, "reg A0");
+        assert_eq!((0x4EAAu16 >> 3) & 7, 5, "0x4EAA = JSR (d16,A2) — mode 5");
+        assert_eq!((0x4EB0u16 >> 3) & 7, 6, "0x4EB0 = JSR (d8,A0,Xn) — mode 6");
+        assert_eq!(((0x4EB8u16 >> 3) & 7, 0x4EB8 & 7), (7, 0), "abs.w 7/0");
+        assert_eq!(((0x4EB9u16 >> 3) & 7, 0x4EB9 & 7), (7, 1), "abs.l 7/1");
+        assert_eq!(((0x4EBAu16 >> 3) & 7, 0x4EBA & 7), (7, 2), "(d16,PC) 7/2");
+        assert_eq!(((0x4EBBu16 >> 3) & 7, 0x4EBB & 7), (7, 3), "(d8,PC,Xn) 7/3");
+    }
+
+    /// The clean SST reference case `4e90 [JSR (A0)]` (16 cycles) — the documented F3 `(An)` anchor. A0 =
+    /// 417170032 (even); the recipe computes the return address (pc+2 = 3074), sets pc = A0, reloads the queue
+    /// at the target with the push splitting the two reloads: read @ target → push hi @ SP−4, lo @ SP−2 →
+    /// read @ target+2. SP (ssp 2048, supervisor) pre-decrements by 4 to 2044; the return is stored big-endian
+    /// (hi 0x0000 @ 2044, lo 0x0C02 (3074) @ 2046). Bus: [r@target, w@SP−4, w@SP−2, r@target+2].
+    fn setup_jsr_an() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [0; 8],
+            a: [
+                417_170_032,
+                4_256_867_618,
+                3_445_037_876,
+                920_057_358,
+                771_600_133,
+                2_194_450_307,
+                793_352_992,
+            ],
+            usp: 2_443_315_286,
+            ssp: 2048,
+            pc: 3072,
+            sr: 9988,
+            prefetch: [20112, 43436],
+        };
+        let mut bus = FlatBus::new();
+        // The two target words at A0 (14516848): 0x676E = 26413, 0x7E53 = 32339.
+        for (a, v) in [
+            (14_516_848u32, 103u8),
+            (14_516_849, 45),
+            (14_516_850, 126),
+            (14_516_851, 83),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_jsr_an_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 14_516_848, // the target — read into prefetch[0] (first reload)
+                size: Size::Word,
+                value: 26413,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2044, // hi half @ SP−4
+                size: Size::Word,
+                value: 0,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2046, // lo half @ SP−2
+                size: Size::Word,
+                value: 3074, // return address pc+2
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 14_516_850, // target+2 — read into prefetch[1] (second reload, after the push)
+                size: Size::Word,
+                value: 32339,
+            },
+        ]
+    }
+
+    fn assert_jsr_an_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 417_170_032, "pc landed at A0 (the target)");
+        assert_eq!(
+            cpu.regs.ssp, 2044,
+            "SP pre-decremented by 4 (the long push)"
+        );
+        assert_eq!(cpu.regs.sr, 9988, "SR unchanged (JSR affects no flags)");
+        assert_eq!(cpu.regs.a[0], 417_170_032, "A0 unchanged");
+        assert_eq!(
+            cpu.regs.prefetch,
+            [26413, 32339],
+            "queue reloaded at target"
+        );
+        // The return address is stored big-endian across the two stack halves.
+        assert_eq!(bus.peek(2044), 0x00, "return hi byte 0");
+        assert_eq!(bus.peek(2045), 0x00, "return hi byte 1");
+        assert_eq!(bus.peek(2046), 0x0C, "return lo byte 0 (3074 >> 8)");
+        assert_eq!(bus.peek(2047), 0x02, "return lo byte 1 (3074 & 0xFF)");
+        assert_eq!(bus.log, expected_jsr_an_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_jsr_an() {
+        let (mut cpu, mut bus) = setup_jsr_an();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 16,
+            "(An) = [TargetCalc, SetPc, PF, AdjustAddr, EaCalc, WRITE.hi, WRITE.lo, PF] = 4 word accesses = 16"
+        );
+        assert_jsr_an_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_jsr_an() {
+        let (mut rtc, mut bus_rtc) = setup_jsr_an();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_jsr_an();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 16);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_jsr_an_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn jsr_an_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The snapshot/restore anchor for the new JSR reload-interleave shape (the first reload Prefetch, the
+        // AdjustAddr SP−4, the two long-store push writes, the second reload Prefetch) — the whole CPU (incl.
+        // the in-flight cursor and its scratch slots: the parked return address, target and lo-half address)
+        // round-trips at every micro-op boundary.
+        let (mut rref, mut bref) = setup_jsr_an();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 8 micro-ops (TargetCalc, SetPc, Prefetch, AdjustAddr, EaCalc, Write, Write, Prefetch) → 0..=7.
+        for pause_after in 0..=7 {
+            let (mut cpu, mut bus) = setup_jsr_an();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    /// The clean SST reference case `4eaa [JSR (d16,A2)]` (18 cycles) — the F3 `(d16,An)` anchor. A2 =
+    /// 3964968557, disp = sign_extend16(62609) → target 3964965630 (even). Recipe `[TargetCalc(return),
+    /// TargetCalc(target), Internal(2), SetPc, PF, AdjustAddr, EaCalc, WRITE.hi, WRITE.lo, PF]`. Return = pc+4.
+    fn setup_jsr_d16an() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [0; 8],
+            a: [
+                556_395_796,
+                3_396_999_138,
+                3_964_968_557,
+                1_129_291_849,
+                3_672_584_957,
+                364_710_320,
+                3_874_072_321,
+            ],
+            usp: 195_702_636,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10005,
+            prefetch: [20138, 62609],
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            (5_542_654u32, 58u8),
+            (5_542_655, 156),
+            (5_542_656, 111),
+            (5_542_657, 51),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_jsr_d16an_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 5_542_654,
+                size: Size::Word,
+                value: 15004,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2044,
+                size: Size::Word,
+                value: 0,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2046,
+                size: Size::Word,
+                value: 3076, // return address pc+4
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 5_542_656,
+                size: Size::Word,
+                value: 28467,
+            },
+        ]
+    }
+
+    fn assert_jsr_d16an_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(
+            cpu.regs.pc, 3_964_965_630,
+            "pc landed at the computed target"
+        );
+        assert_eq!(cpu.regs.ssp, 2044, "SP pre-decremented by 4");
+        assert_eq!(
+            cpu.regs.prefetch,
+            [15004, 28467],
+            "queue reloaded at target"
+        );
+        assert_eq!(bus.peek(2046), 0x0C, "return lo byte 0 (3076 >> 8)");
+        assert_eq!(bus.peek(2047), 0x04, "return lo byte 1 (3076 & 0xFF)");
+        assert_eq!(bus.log, expected_jsr_d16an_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_jsr_d16an() {
+        let (mut cpu, mut bus) = setup_jsr_d16an();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(cycles, 18, "(d16,An) = n2 + 4 word accesses = 18");
+        assert_jsr_d16an_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_jsr_d16an() {
+        let (mut rtc, mut bus_rtc) = setup_jsr_d16an();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_jsr_d16an();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 18);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_jsr_d16an_final(&step, &bus_step);
+    }
+
+    /// The clean SST reference case `4eb0 [JSR (d8,A0,Xn)]` (22 cycles) — the F3 indexed `(d8,An,Xn)` anchor
+    /// (`TargetCalc(AddrReg, BriefIndex, BriefDisp8)` + 6-cyc index idle). target = 1431198278 (even). Return =
+    /// pc+4.
+    fn setup_jsr_d8anxn() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                3_681_282_897,
+                4_184_458_319,
+                1_418_104_954,
+                866_354_579,
+                1_123_123_000,
+                13_399_063,
+                3_444_713_621,
+                3_692_249_412,
+            ],
+            a: [
+                1_431_187_841,
+                1_407_832_233,
+                3_838_823_993,
+                1_485_111_627,
+                395_608_082,
+                137_588_292,
+                2_574_677_191,
+            ],
+            usp: 1_776_022_178,
+            ssp: 2048,
+            pc: 3072,
+            sr: 9996,
+            prefetch: [20144, 25648],
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            (5_134_918u32, 101u8),
+            (5_134_919, 125),
+            (5_134_920, 165),
+            (5_134_921, 190),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_jsr_d8anxn_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 5_134_918,
+                size: Size::Word,
+                value: 25981,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2044,
+                size: Size::Word,
+                value: 0,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2046,
+                size: Size::Word,
+                value: 3076,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 5_134_920,
+                size: Size::Word,
+                value: 42430,
+            },
+        ]
+    }
+
+    fn assert_jsr_d8anxn_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(
+            cpu.regs.pc, 1_431_198_278,
+            "pc landed at the indexed target"
+        );
+        assert_eq!(cpu.regs.ssp, 2044, "SP pre-decremented by 4");
+        assert_eq!(
+            cpu.regs.prefetch,
+            [25981, 42430],
+            "queue reloaded at target"
+        );
+        assert_eq!(bus.log, expected_jsr_d8anxn_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_jsr_d8anxn() {
+        let (mut cpu, mut bus) = setup_jsr_d8anxn();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(cycles, 22, "(d8,An,Xn) = n6 + 4 word accesses = 22");
+        assert_jsr_d8anxn_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_jsr_d8anxn() {
+        let (mut rtc, mut bus_rtc) = setup_jsr_d8anxn();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_jsr_d8anxn();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 22);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_jsr_d8anxn_final(&step, &bus_step);
+    }
+
+    /// The clean SST reference case `4eb8 [JSR (xxx).w]` (18 cycles) — the F3 `abs.w` anchor
+    /// (`TargetCalc(Zero, Zero, DispWord)` + 2-cyc idle). disp 62964 → sign_extend16 → target 4294964724
+    /// (even, the high 32-bit range — the UNMASKED target preserves it). Return = pc+4.
+    fn setup_jsr_absw() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 1_730_221_114,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10010,
+            prefetch: [20152, 62964],
+        };
+        let mut bus = FlatBus::new();
+        // The two target words at the MASKED bus address 16774644 / +2.
+        for (a, v) in [
+            (16_774_644u32, 114u8),
+            (16_774_645, 174),
+            (16_774_646, 249),
+            (16_774_647, 162),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_jsr_absw_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 16_774_644,
+                size: Size::Word,
+                value: 29358,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2044,
+                size: Size::Word,
+                value: 0,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2046,
+                size: Size::Word,
+                value: 3076,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 16_774_646,
+                size: Size::Word,
+                value: 63906,
+            },
+        ]
+    }
+
+    fn assert_jsr_absw_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(
+            cpu.regs.pc, 4_294_964_724,
+            "pc landed at the abs.w target (UNMASKED high 32-bit)"
+        );
+        assert_eq!(cpu.regs.ssp, 2044, "SP pre-decremented by 4");
+        assert_eq!(
+            cpu.regs.prefetch,
+            [29358, 63906],
+            "queue reloaded at target"
+        );
+        assert_eq!(bus.log, expected_jsr_absw_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_jsr_absw() {
+        let (mut cpu, mut bus) = setup_jsr_absw();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(cycles, 18, "abs.w = n2 + 4 word accesses = 18");
+        assert_jsr_absw_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_jsr_absw() {
+        let (mut rtc, mut bus_rtc) = setup_jsr_absw();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_jsr_absw();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 18);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_jsr_absw_final(&step, &bus_step);
+    }
+
+    /// The clean SST reference case `4eba [JSR (d16,PC)]` (18 cycles) — the F3 `(d16,PC)` anchor
+    /// (`TargetCalc(PcOfExt, ·, DispWord)` + 2-cyc idle; base = the extension-word address pc+2). disp 41476 →
+    /// sign_extend16 → target 4294946310 (even). Return = pc+4.
+    fn setup_jsr_d16pc() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 3_647_737_790,
+            ssp: 2048,
+            pc: 3072,
+            sr: 9988,
+            prefetch: [20154, 41476],
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            (16_756_230u32, 253u8),
+            (16_756_231, 85),
+            (16_756_232, 176),
+            (16_756_233, 150),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_jsr_d16pc_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 16_756_230,
+                size: Size::Word,
+                value: 64853,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2044,
+                size: Size::Word,
+                value: 0,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2046,
+                size: Size::Word,
+                value: 3076,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 16_756_232,
+                size: Size::Word,
+                value: 45206,
+            },
+        ]
+    }
+
+    fn assert_jsr_d16pc_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(
+            cpu.regs.pc, 4_294_946_310,
+            "pc landed at the PC-relative target (UNMASKED)"
+        );
+        assert_eq!(cpu.regs.ssp, 2044, "SP pre-decremented by 4");
+        assert_eq!(
+            cpu.regs.prefetch,
+            [64853, 45206],
+            "queue reloaded at target"
+        );
+        assert_eq!(bus.log, expected_jsr_d16pc_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_jsr_d16pc() {
+        let (mut cpu, mut bus) = setup_jsr_d16pc();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(cycles, 18, "(d16,PC) = n2 + 4 word accesses = 18");
+        assert_jsr_d16pc_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_jsr_d16pc() {
+        let (mut rtc, mut bus_rtc) = setup_jsr_d16pc();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_jsr_d16pc();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 18);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_jsr_d16pc_final(&step, &bus_step);
+    }
+
+    /// The clean SST reference case `4ebb [JSR (d8,PC,Xn)]` (22 cycles) — the F3 indexed `(d8,PC,Xn)` anchor
+    /// (`TargetCalc(PcOfExt, BriefIndex, BriefDisp8)` + 6-cyc index idle). target = 244402988 (even). Return =
+    /// pc+4.
+    fn setup_jsr_d8pcxn() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                1_628_921_814,
+                3_676_879_806,
+                1_656_373_399,
+                3_319_941_202,
+                1_365_186_904,
+                1_325_478_389,
+                674_272_657,
+                188_275_555,
+            ],
+            a: [
+                1_984_754_996,
+                2_622_389_335,
+                244_399_998,
+                2_066_504_890,
+                2_322_948_911,
+                2_073_098_832,
+                3_259_026_008,
+            ],
+            usp: 700_838_964,
+            ssp: 2048,
+            pc: 3072,
+            sr: 9986,
+            prefetch: [20155, 43692],
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            (9_521_964u32, 164u8),
+            (9_521_965, 72),
+            (9_521_966, 77),
+            (9_521_967, 253),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_jsr_d8pcxn_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 9_521_964,
+                size: Size::Word,
+                value: 42056,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2044,
+                size: Size::Word,
+                value: 0,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2046,
+                size: Size::Word,
+                value: 3076,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 9_521_966,
+                size: Size::Word,
+                value: 19965,
+            },
+        ]
+    }
+
+    fn assert_jsr_d8pcxn_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(
+            cpu.regs.pc, 244_402_988,
+            "pc landed at the indexed PC-relative target"
+        );
+        assert_eq!(cpu.regs.ssp, 2044, "SP pre-decremented by 4");
+        assert_eq!(
+            cpu.regs.prefetch,
+            [42056, 19965],
+            "queue reloaded at target"
+        );
+        assert_eq!(bus.log, expected_jsr_d8pcxn_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_jsr_d8pcxn() {
+        let (mut cpu, mut bus) = setup_jsr_d8pcxn();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(cycles, 22, "(d8,PC,Xn) = n6 + 4 word accesses = 22");
+        assert_jsr_d8pcxn_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_jsr_d8pcxn() {
+        let (mut rtc, mut bus_rtc) = setup_jsr_d8pcxn();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_jsr_d8pcxn();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 22);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_jsr_d8pcxn_final(&step, &bus_step);
+    }
+
+    /// The clean SST reference case `4eb9 [JSR (xxx).l]` (20 cycles) — the F3 `abs.l` anchor: the two
+    /// extension words are assembled into the UNMASKED 32-bit target (HIGH = prefetch[1] = 58874, LOW = the
+    /// word at pc+4 = 39930) → target 3858406394 = 0xE5FB_963A (high byte set — an EaCalc mask would wrongly
+    /// clear it). **Return = pc+6** (VERIFIED against the pushed value 3078 in the data — the recon prose said
+    /// pc+4; the DATA WINS). Recipe `[TargetCalc(return), Combine32(HI), Prefetch (LOW word @pc+4), Combine32,
+    /// SetPc, Prefetch (target), AdjustAddr, EaCalc, WRITE.hi, WRITE.lo, Prefetch (target+2)]`. Bus:
+    /// [r@pc+4, r@target, w@SP−4, w@SP−2, r@target+2] = 5 word accesses = 20 cyc, no idle.
+    fn setup_jsr_absl() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 3_372_930_788,
+            ssp: 2048,
+            pc: 3072,
+            sr: 9987,
+            prefetch: [20153, 58874],
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            (16_423_930u32, 150u8),
+            (16_423_931, 130),
+            (16_423_932, 31),
+            (16_423_933, 171),
+            (3076, 155),
+            (3077, 250),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_jsr_absl_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076, // the LOW abs.l word, refilled from pc+4
+                size: Size::Word,
+                value: 39930,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 16_423_930, // the target (masked bus address of 0xE5FB_963A)
+                size: Size::Word,
+                value: 38530,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2044,
+                size: Size::Word,
+                value: 0, // high word of the return address pc+6 = 3078
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2046,
+                size: Size::Word,
+                value: 3078, // low word of the return address (pc + 6 — abs.l is 3 words)
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 16_423_932,
+                size: Size::Word,
+                value: 8107,
+            },
+        ]
+    }
+
+    fn assert_jsr_absl_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(
+            cpu.regs.pc, 3_858_406_394,
+            "pc landed at the UNMASKED abs.l target (0xE5FB_963A — high byte preserved)"
+        );
+        assert_eq!(cpu.regs.ssp, 2044, "SP pre-decremented by 4");
+        assert_eq!(cpu.regs.sr, 9987, "SR unchanged");
+        assert_eq!(cpu.regs.prefetch, [38530, 8107], "queue reloaded at target");
+        // The return address pc+6 = 3078 is stored big-endian.
+        assert_eq!(bus.peek(2046), 0x0C, "return lo byte 0 (3078 >> 8)");
+        assert_eq!(bus.peek(2047), 0x06, "return lo byte 1 (3078 & 0xFF)");
+        assert_eq!(bus.log, expected_jsr_absl_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_jsr_absl() {
+        let (mut cpu, mut bus) = setup_jsr_absl();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 20,
+            "abs.l = [r@pc+4, r@target, w@SP−4, w@SP−2, r@target+2] = 5 word accesses = 20 (no idle)"
+        );
+        assert_jsr_absl_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_jsr_absl() {
+        let (mut rtc, mut bus_rtc) = setup_jsr_absl();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_jsr_absl();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 20);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_jsr_absl_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn jsr_absl_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The snapshot/restore anchor for the JSR abs.l shape — the two-ext-word UNMASKED target assembly
+        // (HI park, the interleaved LOW refill, the unmasked Combine32) interleaved with the split-reload push
+        // (the first reload Prefetch, the AdjustAddr SP−4, the two push writes, the second reload Prefetch).
+        let (mut rref, mut bref) = setup_jsr_absl();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 11 micro-ops (TargetCalc, Combine32, Prefetch, Combine32, SetPc, Prefetch, AdjustAddr, EaCalc,
+        // Write, Write, Prefetch) → boundaries after 0..=10.
+        for pause_after in 0..=10 {
+            let (mut cpu, mut bus) = setup_jsr_absl();
             cpu.start_instruction();
             for _ in 0..pause_after {
                 assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);

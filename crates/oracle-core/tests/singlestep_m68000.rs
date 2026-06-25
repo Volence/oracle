@@ -53,6 +53,7 @@ const FILES: &[&str] = &[
     "Bcc.json",
     "BSR.json",
     "JMP.json",
+    "JSR.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -537,6 +538,35 @@ fn jmp_in_scope(opcode: u16, ini: &Value) -> bool {
     target & 1 == 0
 }
 
+/// Whether this opcode is a `JSR <control ea>` the framework covers (`0100 1110 10 mmm rrr`, 0x4E80 | ea):
+/// the SAME seven 68000 control addressing modes as `JMP` — `(An)` 010, `(d16,An)` 101, `(d8,An,Xn)` 110,
+/// `abs.w` 111/0, `abs.l` 111/1, `(d16,PC)` 111/2, `(d8,PC,Xn)` 111/3 — only the opcode prefix differs from
+/// `JMP` (0x4EC0). (`JSR` accepts no data-register / `(An)+` / `-(An)` / `#imm` modes — those encodings are
+/// illegal and never appear in `JSR.json`.)
+fn jsr_covered(opcode: u16) -> bool {
+    if opcode & 0xFFC0 != 0x4E80 {
+        return false;
+    }
+    let mode = (opcode >> 3) & 7;
+    let reg = opcode & 7;
+    matches!(mode, 2 | 5 | 6) || (mode == 7 && matches!(reg, 0..=3))
+}
+
+/// The `JSR` scope/parity filter (called once `jsr_covered` matches). Clean iff the computed target is
+/// **even**; an odd target raises an address-error exception (the deferred odd-address class) → xfail. The
+/// target is computed identically to `JMP` (the JSR recipe's per-mode target arithmetic mirrors the JMP
+/// recipe — only the post-target push/reload-interleave differs), so this reuses `jmp_in_scope` directly:
+/// `(An)` is the address register itself; the register-file EaCalc modes reuse the shared `compute_ea`;
+/// `abs.l` assembles its two extension words (HIGH = `prefetch[1]`, LOW = the word at `pc+4` in RAM). The
+/// even-target parity was cross-checked against the `JSR.json` clean/dirty split (the 50/52/54/56-length
+/// odd-target cases are exactly the odd-parity ones).
+fn jsr_in_scope(opcode: u16, ini: &Value) -> bool {
+    // The JSR mode/reg layout is identical to JMP (same `mmm rrr` low six bits), and the target arithmetic is
+    // the same — so map the JSR opcode to the equivalent JMP opcode (0x4EC0 | ea) and reuse jmp_in_scope.
+    let jmp_equiv = 0x4EC0 | (opcode & 0x3F);
+    jmp_in_scope(jmp_equiv, ini)
+}
+
 /// Whether the framework currently covers this case (else it is an xfail for this push). `ADD`/`SUB` in
 /// word and byte sizes, each in two forms — `Dn,<ea>` (memory dest; word ADD=0xD140/SUB=0x9140, byte
 /// ADD=0xD100/SUB=0x9100) and `<ea>,Dn` (register dest; word ADD=0xD040/SUB=0x9040, byte
@@ -572,6 +602,12 @@ fn covered(opcode: u16, ini: &Value) -> bool {
     // is an address error → xfail). The seven control addressing modes only.
     if jmp_covered(opcode) {
         return jmp_in_scope(opcode, ini);
+    }
+    // JSR `<control ea>` (`0100 1110 10 mmm rrr`, 0x4E80 | ea) — the SAME seven control modes as JMP, the
+    // SAME even-target parity filter (an odd target is an address error → xfail). The JSR recipe pushes a
+    // 32-bit return address (the reload splits around the push), but the target arithmetic is JMP's.
+    if jsr_covered(opcode) {
+        return jsr_in_scope(opcode, ini);
     }
     // Read the value of address register `reg` exactly as the decoder's `addr_reg` does: A7 is `ssp` in
     // supervisor mode, `usp` in user mode (there is no `a7` field) — needed so `(A7)+`/`-(A7)` parity is
@@ -833,8 +869,8 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 60456,
-        "expected 60456 covered cases — ADD/SUB (21790: word 5871 + byte 9974 + long 5945) plus \
+        ran >= 64639,
+        "expected 64639 covered cases — ADD/SUB (21790: word 5871 + byte 9974 + long 5945) plus \
          MOVE.w (3154: all 12 source modes × Dn + the alterable-memory dest modes \
          ((An)/(An)+/-(An)/d16(An)/d8(An,Xn)/abs.w/abs.l), even word EAs since an odd word access is an \
          address error, the (A7) mode-2 word form xfail) plus MOVE.b (7796: same modes, byte excludes \
@@ -852,7 +888,12 @@ fn add_sub_match_singlesteptests() {
          long-disp form 0x61FF (35 cases) traps on the 68000 → xfail) plus JMP (4259: the seven control \
          modes — (An) 8 cyc, (d16,An)/abs.w/(d16,PC) 10 cyc, abs.l 12 cyc, (d8,An,Xn)/(d8,PC,Xn) 14 cyc; \
          even-target in scope (target UNMASKED — abs.l keeps its full 32 bits), odd-target = address error → \
-         xfail), ran {ran}"
+         xfail) plus JSR (4183: the SAME seven control modes, the F1 per-mode target combined with the F2 \
+         return-address push via the reload-interleave (read target → push hi @ SP−4, lo @ SP−2 → read \
+         target+2) — (An) 16 cyc, (d16,An)/abs.w/(d16,PC) 18 cyc, abs.l 20 cyc, (d8,An,Xn)/(d8,PC,Xn) 22 cyc; \
+         return = pc+N (N: (An) 2, (d16,An)/abs.w/(d16,PC)/indexed 4, abs.l 6 — VERIFIED against the pushed \
+         value in the data, the recon prose said pc+4 for abs.l but the DATA shows pc+6); even-target in scope \
+         (target UNMASKED), odd-target = address error → xfail), ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
