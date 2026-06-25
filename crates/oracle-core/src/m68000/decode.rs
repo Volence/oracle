@@ -205,6 +205,14 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     if opcode == 0x4E77 {
         return rtr_recipe();
     }
+    // RTE (`0x4E73`) — return from exception: pop the 6-byte frame (SR + 32-bit PC) off the supervisor stack,
+    // restore the FULL SR (masked 0xA71F, which may switch S supervisor→user and T), increment SP by 6 while
+    // still supervisor, then reload the queue at the popped PC (the reload FC follows the RESTORED mode). The
+    // inverse of the standard frame push. The opcode `0x4E73` is a single point in the 0x4Exx space, disjoint
+    // from RTS (0x4E75) / RTR (0x4E77) / JSR (0x4E80) / JMP (0x4EC0) and the TRAP block below.
+    if opcode == 0x4E73 {
+        return rte_recipe();
+    }
     // TRAP #n (`0100 1110 0100 nnnn`, 0x4E40 | n) — the cleanest standard 6-byte exception frame: an
     // UNCONDITIONAL trap to vector `32 + n` (address `(32+n)*4`). NO leading prefetch (the queue is NOT
     // refilled before the push — TRAP's first bus event is the `PCL` write); saved PC = `pc + 2`. The opcode
@@ -933,6 +941,97 @@ fn rtr_recipe() -> MicroState {
     });
     buf.push(MicroOp::SetPc {
         value: Operand::Scratch(RTR_TARGET_SLOT),
+    });
+    buf.push(MicroOp::Prefetch);
+    buf.push(MicroOp::Prefetch);
+    buf.finish()
+}
+
+/// Scratch slot holding the HIGH word of an `RTE` popped return PC (read from `SP + 2`). Slot 0.
+const RTE_HI_SLOT: u8 = 0;
+
+/// Scratch slot holding the assembled 32-bit `RTE` return PC (the `SetPc` source). Slot 1.
+const RTE_TARGET_SLOT: u8 = 1;
+
+/// Scratch slot holding a materialized `RTE` pop address (`SP + 2` then, reused, `SP + 4`) — masked to the
+/// 24-bit bus (a real even bus address). Slot 2. Transient: each address is consumed by its `Read` before the
+/// next `EaCalc` overwrites it.
+const RTE_ADDR_SLOT: u8 = 2;
+
+/// Scratch slot holding the popped SR word (read from `SP`), fed to [`MicroOp::LoadSr`]. Slot 3.
+const RTE_SR_SLOT: u8 = 3;
+
+/// Scratch slot holding the LOW word of an `RTE` popped return PC (read from `SP + 4`). Slot 4.
+const RTE_LO_SLOT: u8 = 4;
+
+/// `RTE` (`0x4E73`): return from exception — the inverse of the standard frame push ([`push_standard_frame`]).
+/// POP the 6-byte frame (the saved SR + the 32-bit return PC) off the supervisor stack, restore the FULL SR
+/// (masked to the implemented bits `0xA71F`, which may switch S supervisor→user and T), increment SP by 6
+/// **while still supervisor**, then reload the prefetch queue at the popped PC — the reload's function code
+/// follows the RESTORED mode (FC2 user-program if S cleared, FC6 supervisor-program otherwise). The vendored
+/// `RTE` stream reads the three popped words in the order `PC-hi @ SP+2`, `SR @ SP`, `PC-lo @ SP+4` (FC=5
+/// supervisor-data, reproduced exactly) — the same word layout as [`rtr_recipe`]'s CCR+PC frame, only the `SP`
+/// word is the full SR not just the CCR (and the restore is [`MicroOp::LoadSr`], not [`MicroOp::LoadCcr`]).
+///
+/// Recipe (pinned to the vendored `RTE` SST stream — `4e73 [RTE] 1` → user (FC2 reload) / `4e73 [RTE] 6` →
+/// supervisor (FC6 reload), both **20 cyc**): `[EaCalc(SP+2), Read(PC-hi @ SP+2), Read(SR @ SP), EaCalc(SP+4),
+/// Read(PC-lo @ SP+4), Combine32(hi,lo → target), AdjustAddr(SP, +6), LoadSr(SR), SetPc(target), Prefetch,
+/// Prefetch]`. The `AdjustAddr(+6)` runs BEFORE `LoadSr` so the pop hits the supervisor stack (`ssp`) while S
+/// is still set; `LoadSr` then restores the mode, and the two `Prefetch`s reload under it (no idle between —
+/// the clean reload is 5 back-to-back word reads). The popped return address is the FULL 32-bit pc (UNMASKED —
+/// `Combine32` does no mask); only the bus reload address masks. The bus stream is `[r@SP+2, r@SP, r@SP+4,
+/// r@target, r@target+2]` (5 word reads = 20 cycles). Only the even-popped-PC path is decoded into scope; an
+/// odd popped PC is an execution-time address error (it flips into scope at E4).
+fn rte_recipe() -> MicroState {
+    let mut buf = RecipeBuf::new();
+    // HI word of the return PC @ SP + 2 (read FIRST, per the data's stream).
+    buf.push(MicroOp::EaCalc {
+        base: Operand::AddrReg(7),
+        index: Operand::Zero,
+        disp: Operand::WordStep,
+        dst: RTE_ADDR_SLOT,
+    });
+    buf.push(MicroOp::Read {
+        addr: Operand::Scratch(RTE_ADDR_SLOT),
+        fc: super::microop::Fc::Data,
+        size: Size::Word,
+        dst: RTE_HI_SLOT,
+    });
+    // The saved SR word @ SP (read SECOND).
+    buf.push(MicroOp::Read {
+        addr: Operand::AddrReg(7),
+        fc: super::microop::Fc::Data,
+        size: Size::Word,
+        dst: RTE_SR_SLOT,
+    });
+    // LO word of the return PC @ SP + 4 (read THIRD). SP + 4 = base + WordStep + WordStep.
+    buf.push(MicroOp::EaCalc {
+        base: Operand::AddrReg(7),
+        index: Operand::WordStep,
+        disp: Operand::WordStep,
+        dst: RTE_ADDR_SLOT,
+    });
+    buf.push(MicroOp::Read {
+        addr: Operand::Scratch(RTE_ADDR_SLOT),
+        fc: super::microop::Fc::Data,
+        size: Size::Word,
+        dst: RTE_LO_SLOT,
+    });
+    // Assemble the UNMASKED 32-bit return PC (the full pc keeps its high bits; only the bus reload masks).
+    buf.push(MicroOp::Combine32 {
+        hi: RTE_HI_SLOT,
+        lo: Operand::Scratch(RTE_LO_SLOT),
+        dst: RTE_TARGET_SLOT,
+    });
+    // Pop the frame (SP += 6) BEFORE restoring the SR, so the +6 hits the supervisor stack while S is set.
+    buf.push(MicroOp::AdjustAddr { reg: 7, delta: 6 });
+    // Restore the full SR (masked 0xA71F) — may switch S supervisor→user and T; the reload below follows it.
+    buf.push(MicroOp::LoadSr {
+        value: Operand::Scratch(RTE_SR_SLOT),
+    });
+    // SetPc primes the queue reload at the popped target; the two Prefetch ops reload under the RESTORED mode.
+    buf.push(MicroOp::SetPc {
+        value: Operand::Scratch(RTE_TARGET_SLOT),
     });
     buf.push(MicroOp::Prefetch);
     buf.push(MicroOp::Prefetch);
@@ -5553,6 +5652,299 @@ mod tests {
         // LoadImm, Read, EaCalc, Read, Combine32, SetPc, Prefetch, Internal, Prefetch) → 0..=17.
         for pause_after in 0..=17 {
             let (mut cpu, mut bus) = setup_trap();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    // --- RTE (return from exception — the inverse of the standard frame push) — the anchors
+    // `4e73 [RTE] 1` (→user, FC2 reload, len 20) and `4e73 [RTE] 6` (→supervisor, FC6 reload, len 20), plus
+    // both-drivers agreement and a snapshot/restore anchor ACROSS the whole return. ---
+
+    /// The clean SST reference case `4e73 [RTE] 1` (20 cycles): the restored SR clears S → **user** mode, so
+    /// the handler reload runs under FC2 (user-program). Supervisor entry state ssp 2048, pc 3072, sr 9989
+    /// (0x2705, S=1/T=0). The 6-byte frame on the stack is SR @ 2048 = 0xD6ED, PC-hi @ 2050 = 0xE694, PC-lo @
+    /// 2052 = 0x8C98 → popped PC 0xE6948C98 (= 3868495000), restored SR 0xD6ED & 0xA71F = 0x860D (= 34317,
+    /// S cleared). The +6 pop hits ssp (2054) while still supervisor; the queue reloads at 0x948C98 (the
+    /// masked handler) under FC2.
+    fn setup_rte_user() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [2_541_146_255, 0, 0, 0, 0, 0, 0, 0],
+            a: [4_062_594_777, 0, 0, 0, 0, 0, 0],
+            usp: 2_828_419_046,
+            ssp: 2048,
+            pc: 3072,
+            sr: 9989,                 // 0x2705, S=1, T=0
+            prefetch: [20083, 39590], // prefetch[0] = 0x4E73 (RTE)
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            // The 6-byte frame: SR @ 2048, PC-hi @ 2050, PC-lo @ 2052 (big-endian words).
+            (2048u32, 214u8), // SR hi (0xD6)
+            (2049, 237),      // SR lo (0xED)
+            (2050, 230),      // PC-hi hi (0xE6)
+            (2051, 148),      // PC-hi lo (0x94)
+            (2052, 140),      // PC-lo hi (0x8C)
+            (2053, 152),      // PC-lo lo (0x98)
+            // The handler code @ 0x948C98 (= 9735320), reloaded under FC2 (restored SR clears S → user).
+            (9_735_320, 66),
+            (9_735_321, 227),
+            (9_735_322, 28),
+            (9_735_323, 16),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_rte_user_log() -> Vec<Transaction> {
+        vec![
+            // The frame pop — the data's read order: PC-hi @ SP+2, SR @ SP, PC-lo @ SP+4 (FC=5).
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 2050,
+                size: Size::Word,
+                value: 59028, // PC-hi (0xE694)
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 2048,
+                size: Size::Word,
+                value: 55021, // SR (0xD6ED)
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 2052,
+                size: Size::Word,
+                value: 35992, // PC-lo (0x8C98)
+            },
+            // The handler reload — FC=2 (user-program) because the restored SR cleared S.
+            Transaction {
+                kind: TxKind::Read,
+                fc: 2,
+                addr: 9_735_320,
+                size: Size::Word,
+                value: 17123,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 2,
+                addr: 9_735_322,
+                size: Size::Word,
+                value: 7184,
+            },
+        ]
+    }
+
+    fn assert_rte_user_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(
+            cpu.regs.ssp, 2054,
+            "SP popped up by 6 (the frame), while still supervisor"
+        );
+        assert_eq!(
+            cpu.regs.pc, 3_868_495_000,
+            "pc landed at the popped return address (0xE6948C98)"
+        );
+        assert_eq!(
+            cpu.regs.sr, 34317,
+            "SR restored, masked 0xA71F (0x860D) — S cleared → user mode"
+        );
+        assert_eq!(
+            cpu.regs.usp, 2_828_419_046,
+            "usp untouched (the +6 hit ssp while still supervisor)"
+        );
+        assert_eq!(cpu.regs.d[0], 2_541_146_255, "d0 untouched");
+        assert_eq!(cpu.regs.a[0], 4_062_594_777, "a0 untouched");
+        assert_eq!(
+            cpu.regs.prefetch,
+            [17123, 7184],
+            "queue reloaded at the handler (FC2 user-program)"
+        );
+        assert_eq!(bus.log, expected_rte_user_log());
+    }
+
+    /// The clean SST reference case `4e73 [RTE] 6` (20 cycles): the restored SR keeps S set → **supervisor**
+    /// mode, so the handler reload runs under FC6 (supervisor-program). Entry ssp 2048, pc 3072, sr 9995. The
+    /// frame: SR @ 2048 = 0x73DA, PC-hi @ 2050 = 0x17AC, PC-lo @ 2052 = 0x1998 → popped PC 0x17AC1998 (=
+    /// 397154712), restored SR 0x73DA & 0xA71F = 0x231A (= 8986, S still set). The queue reloads at 0xAC1998
+    /// (the masked handler) under FC6.
+    fn setup_rte_super() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [1_854_266_780, 0, 0, 0, 0, 0, 0, 0],
+            a: [2_020_886_912, 0, 0, 0, 0, 0, 0],
+            usp: 256_682_410,
+            ssp: 2048,
+            pc: 3072,
+            sr: 9995,                 // 0x270B, S=1, T=0
+            prefetch: [20083, 46782], // prefetch[0] = 0x4E73 (RTE)
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            // The 6-byte frame: SR @ 2048, PC-hi @ 2050, PC-lo @ 2052.
+            (2048u32, 115u8), // SR hi (0x73)
+            (2049, 218),      // SR lo (0xDA)
+            (2050, 23),       // PC-hi hi (0x17)
+            (2051, 172),      // PC-hi lo (0xAC)
+            (2052, 25),       // PC-lo hi (0x19)
+            (2053, 152),      // PC-lo lo (0x98)
+            // The handler code @ 0xAC1998 (= 11278744), reloaded under FC6 (restored SR keeps S → supervisor).
+            (11_278_744, 72),
+            (11_278_745, 220),
+            (11_278_746, 71),
+            (11_278_747, 172),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_rte_super_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 2050,
+                size: Size::Word,
+                value: 6060, // PC-hi (0x17AC)
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 2048,
+                size: Size::Word,
+                value: 29658, // SR (0x73DA)
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 2052,
+                size: Size::Word,
+                value: 6552, // PC-lo (0x1998)
+            },
+            // The handler reload — FC=6 (supervisor-program) because the restored SR keeps S.
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 11_278_744,
+                size: Size::Word,
+                value: 18652,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 11_278_746,
+                size: Size::Word,
+                value: 18348,
+            },
+        ]
+    }
+
+    fn assert_rte_super_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.ssp, 2054, "SP popped up by 6 (the frame)");
+        assert_eq!(
+            cpu.regs.pc, 397_154_712,
+            "pc landed at the popped return address (0x17AC1998)"
+        );
+        assert_eq!(
+            cpu.regs.sr, 8986,
+            "SR restored, masked 0xA71F (0x231A) — S still set → supervisor"
+        );
+        assert_eq!(cpu.regs.usp, 256_682_410, "usp untouched");
+        assert_eq!(
+            cpu.regs.prefetch,
+            [18652, 18348],
+            "queue reloaded at the handler (FC6 supervisor-program)"
+        );
+        assert_eq!(bus.log, expected_rte_super_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_rte_user() {
+        let (mut cpu, mut bus) = setup_rte_user();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 20,
+            "RTE = 3 frame reads + 2 handler reloads = 5 word reads = 20 cyc (no idle)"
+        );
+        assert_rte_user_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn run_instruction_matches_rte_super() {
+        let (mut cpu, mut bus) = setup_rte_super();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(cycles, 20);
+        assert_rte_super_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_rte_user() {
+        let (mut rtc, mut bus_rtc) = setup_rte_user();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_rte_user();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 20);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_rte_user_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn both_drivers_match_rte_super() {
+        let (mut rtc, mut bus_rtc) = setup_rte_super();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_rte_super();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 20);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_rte_super_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn rte_quiescable_and_serializable_across_the_return() {
+        // The snapshot/restore anchor ACROSS an RTE return — the frame pop (the three FC=5 reads in the data's
+        // order), the +6 stack adjust (while still supervisor), the full-SR restore (LoadSr, here SWITCHING to
+        // user mode), and the FC2 handler reload — the whole CPU (incl. the in-flight cursor and its scratch
+        // slots: the popped PC halves, the SR, the transient addresses, the assembled target) round-trips at
+        // every micro-op boundary. The user-mode case is used because the mode switch is the new behaviour.
+        let (mut rref, mut bref) = setup_rte_user();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 11 micro-ops (EaCalc, Read, Read, EaCalc, Read, Combine32, AdjustAddr, LoadSr, SetPc, Prefetch,
+        // Prefetch) → boundaries after 0..=10.
+        for pause_after in 0..=10 {
+            let (mut cpu, mut bus) = setup_rte_user();
             cpu.start_instruction();
             for _ in 0..pause_after {
                 assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);

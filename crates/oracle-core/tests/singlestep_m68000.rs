@@ -58,6 +58,7 @@ const FILES: &[&str] = &[
     "DBcc.json",
     "RTR.json",
     "TRAP.json",
+    "RTE.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -656,6 +657,36 @@ fn rtr_in_scope(ini: &Value) -> bool {
     target & 1 == 0 // even popped target is in scope; odd = address error → xfail
 }
 
+/// Whether this opcode is an `RTE` the framework covers (`0x4E73` — the sole RTE encoding; `RTE.json` carries
+/// only `0x4E73`).
+fn rte_covered(opcode: u16) -> bool {
+    opcode == 0x4E73
+}
+
+/// The `RTE` scope/parity filter (called once `rte_covered` matches). `RTE` pops the 6-byte exception frame —
+/// the saved SR word (@ `SP`) and the 32-bit return PC (hi @ `SP + 2`, lo @ `SP + 4`, the same word layout as
+/// `RTR`'s CCR+PC frame). Clean iff the **popped 32-bit return PC is even**; an odd popped PC raises an
+/// address-error exception (the deferred odd-address class — length 62 in the data, vs. 20 for the clean even
+/// pops) → xfail (it flips into scope at E4). The SR pop never traps; only the return PC is parity-checked.
+/// Every vendored case starts in supervisor mode (S=1); the restored SR may switch to user mode, which changes
+/// only the reload's function code — and THAT is validated by the data (the runner asserts the per-cycle
+/// transaction stream, so the FC2-vs-FC6 reload split is gate-checked, unlike the user→supervisor ENTRY
+/// transform which has no vendored user-mode case). `SP` is `ssp` in supervisor mode (the start mode of every
+/// case), `usp` in user mode (the active A7).
+fn rte_in_scope(ini: &Value) -> bool {
+    let supervisor = (u32f(ini, "sr") & 0x2000) != 0;
+    let sp = if supervisor {
+        u32f(ini, "ssp")
+    } else {
+        u32f(ini, "usp")
+    };
+    // The SR word is @ SP; the return PC is hi @ SP+2, lo @ SP+4 (big-endian).
+    let hi = move_ramw(ini, sp.wrapping_add(2));
+    let lo = move_ramw(ini, sp.wrapping_add(4));
+    let target = (hi << 16) | lo;
+    target & 1 == 0 // even popped PC is in scope; odd = address error → xfail
+}
+
 /// Whether this opcode is a `TRAP #n` the framework covers (`0100 1110 0100 nnnn`, 0x4E40 | n — the 16-point
 /// block 0x4E40..=0x4E4F). `TRAP.json` carries all 16 vectors. Every vendored case is fully in scope: they
 /// all start in supervisor mode (S=1, T=0) with an even SSP and an even handler address (length 34, no
@@ -729,6 +760,13 @@ fn covered(opcode: u16, ini: &Value) -> bool {
     // CCR pop affects the SR but never traps.
     if rtr_covered(opcode) {
         return rtr_in_scope(ini);
+    }
+    // RTE (`0x4E73`) — return from exception: pop the 6-byte frame (SR + 32-bit PC), restore the full SR (may
+    // switch S/T), pop SP by 6 while still supervisor, then reload at the popped PC (the reload FC follows the
+    // RESTORED mode). Its own popped-PC parity filter (an odd popped PC is an address error → xfail; clean
+    // even pops are 20 cyc, odd ones 62). The supervisor→user reload-FC split IS gate-validated by the data.
+    if rte_covered(opcode) {
+        return rte_in_scope(ini);
     }
     // TRAP #n (`0100 1110 0100 nnnn`, 0x4E40 | n) — the standard 6-byte exception entry. Every vendored case
     // is in scope (all supervisor, even SSP/handler, length 34); the S/T/A7 transform is structurally
@@ -996,8 +1034,8 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 86851,
-        "expected 86851 covered cases — ADD/SUB (21790: word 5871 + byte 9974 + long 5945) plus \
+        ran >= 90862,
+        "expected 90862 covered cases — ADD/SUB (21790: word 5871 + byte 9974 + long 5945) plus \
          MOVE.w (3154: all 12 source modes × Dn + the alterable-memory dest modes \
          ((An)/(An)+/-(An)/d16(An)/d8(An,Xn)/abs.w/abs.l), even word EAs since an odd word access is an \
          address error, the (A7) mode-2 word form xfail) plus MOVE.b (7796: same modes, byte excludes \
@@ -1033,8 +1071,13 @@ fn add_sub_match_singlesteptests() {
          popped-target = address error (62 cyc) → xfail) plus TRAP (8065: the standard 6-byte exception entry \
          — TRAP #n → vector 32+n; saved PC = pc+2 (no leading prefetch), frame written PCL @ B+4 / SR @ B+0 / \
          PCH @ B+2 (FC=5), vector fetched FC=5, handler reloaded FC=6 with n2 between; 34 cyc; all supervisor \
-         (the S/T/A7 transform is structurally exercised but a no-op on the data — correctness-only)), \
+         (the S/T/A7 transform is structurally exercised but a no-op on the data — correctness-only)) plus \
+         RTE (4011: the sole 0x4E73 encoding — pop the 6-byte frame (PC-hi @ SP+2, SR @ SP, PC-lo @ SP+4 — the \
+         data's read order, FC=5), assemble the UNMASKED return PC, pop SP by 6 while still supervisor, restore \
+         the full SR masked 0xA71F (LoadSr — may switch S supervisor→user and T), SetPc + two-Prefetch reload \
+         under the RESTORED mode's FC (FC2 user / FC6 supervisor — the split IS gate-validated); 20 cyc; even \
+         popped-PC in scope, odd popped-PC = address error (62 cyc) → xfail (flips in at E4)), \
          ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }

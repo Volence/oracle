@@ -11,7 +11,9 @@
 //! follow-up (Step 2).
 
 use super::bus68k::{Bus68k, ADDR_MASK};
-use super::registers::{Registers, CCR_C, CCR_N, CCR_V, CCR_X, CCR_Z, SR_SUPERVISOR, SR_TRACE};
+use super::registers::{
+    Registers, CCR_C, CCR_N, CCR_V, CCR_X, CCR_Z, SR_IMPLEMENTED, SR_SUPERVISOR, SR_TRACE,
+};
 
 /// Sign-extend a 16-bit value to 32 bits (the displacement / `abs.w` address extension).
 #[inline]
@@ -479,6 +481,16 @@ pub enum MicroOp {
     /// (the exception vector address `(32+n)*4`) into scratch so a plain [`MicroOp::Read`] can fetch the
     /// handler from it. A 0-cycle, non-bus, snapshot-visible internal step.
     LoadImm { value: u32, dst: Slot },
+    /// Restore the FULL status register from a popped value, masked to the implemented bits:
+    /// `regs.sr = (resolve(value) as u16) & SR_IMPLEMENTED` (`0xA71F` — T | S | I2-I0 | CCR; the unimplemented
+    /// bits read as 0). `RTE`'s SR restore — unlike [`MicroOp::LoadCcr`] (which keeps only the low 5 CCR bits
+    /// and preserves the SR system byte), this writes the WHOLE SR, so it can flip **S** (supervisor→user) and
+    /// **T**. The recipe must run any A7-relative stack pop (the `+6` frame pop) BEFORE this op, so the pop hits
+    /// the supervisor stack while S is still set; a later [`MicroOp::Prefetch`] reload then runs under the
+    /// RESTORED mode's function code (FC2 user-program if S cleared, FC6 supervisor-program otherwise). A
+    /// 0-cycle, non-bus, snapshot-visible internal step. (The `*toSR` write-back shares the same mask via its
+    /// own op in a later commit.)
+    LoadSr { value: Operand },
 }
 
 /// The in-flight micro-op cursor for one instruction: the recipe, how far through it we are, and the
@@ -761,6 +773,13 @@ impl MicroState {
             MicroOp::LoadImm { value, dst } => {
                 // Materialize a constant (the vector address) into scratch so a plain Read can use it.
                 self.scratch[dst as usize] = value;
+                0
+            }
+            MicroOp::LoadSr { value } => {
+                // RTE's full-SR restore: the popped value masked to the implemented bits (0xA71F). Can switch
+                // S (supervisor→user) / T — so the recipe runs the +6 stack pop BEFORE this, and any later
+                // Prefetch reload follows the RESTORED mode's function code. NO bus, 0 cycles.
+                regs.sr = (self.resolve(value, regs) as u16) & SR_IMPLEMENTED;
                 0
             }
         };
