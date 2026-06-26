@@ -201,6 +201,20 @@ const FILES: &[&str] = &[
     "NOT.b.json",
     "NOT.w.json",
     "NOT.l.json",
+    // EXT.w / EXT.l (`0100 1000 1S 000 rrr`, 0x4880 .w / 0x48C0 .l, mask `opcode & 0xFFF8`) — sign-extend the
+    // `Dn`-only source whose result WIDTH follows the size: EXT.w sign-extends the low BYTE to 16 bits and writes
+    // the LOW WORD (the high word of Dn is PRESERVED), N = bit15 / Z = (word == 0); EXT.l sign-extends the low
+    // WORD to 32 bits and writes the FULL 32, N = bit31 / Z = (long == 0). Both: V = 0, C = 0, X PRESERVED (LOGIC
+    // flags) via the new unary `AluOp::Ext`. SWAP (`0100 1000 01 000 rrr`, 0x4840, mask `opcode & 0xFFF8`) — swap
+    // the two 16-bit halves of Dn on the FULL 32 bits (size always Long), LOGIC flags on bit31 / zero via the new
+    // unary `AluOp::Swap`. G3 decodes all three with mask `0xFFF8` (mode FIXED 000 = `Dn`; the low 3 bits the
+    // register) — NOT `0xFFC0`, which would swallow the PEA/MOVEM neighbours in 0x48xx (mode ≥ 2, reserved this
+    // push). `Dn`-only — NO memory, NO fault, 4 cyc each (one Prefetch, no idle). `covered()` = `ext_swap_in_scope`
+    // (the `0xFFF8` mask match, NO deferral — every case is `Dn`-direct). Files are 100% pure (no contaminants).
+    // Per-file true counts: EXT.w 8065 + EXT.l 8065 + SWAP 8065 = +24195.
+    "EXT.w.json",
+    "EXT.l.json",
+    "SWAP.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -870,6 +884,15 @@ fn covered(opcode: u16, _ini: &Value) -> bool {
             _ => false,    // An-direct / PC-rel / #imm: absent / not data-alterable
         };
     }
+    // EXT.w / EXT.l (`0100 1000 1S 000 rrr`, 0x4880 .w / 0x48C0 .l) + SWAP (`0100 1000 01 000 rrr`, 0x4840) —
+    // mask `opcode & 0xFFF8` (mode FIXED 000 = `Dn`; the low 3 bits the register). EVERY case is `Dn`-direct, so
+    // there is NO deferral (no memory → no `(A7)` mode-2 form, no odd-EA fault): the whole opcode space of each
+    // file is in scope. The `0xFFF8` mask isolates the `Dn` encodings from the PEA/MOVEM neighbours in 0x48xx
+    // (mode ≥ 2, reserved this push) — `0xFFC0` would wrongly admit them. The files are 100% pure (no
+    // contaminants). Classified by OPCODE (the `0xFFF8` mask match).
+    if matches!(opcode & 0xFFF8, 0x4880 | 0x48C0 | 0x4840) {
+        return true;
+    }
     // ADD/SUB. No parity filter (odd word/long EAs are address errors the E4 abort covers); the only
     // mode-scope deferrals are the `(A7)` (mode 2) plain-indirect form (`reg != 7`) and the illegal `An`-direct
     // byte source (mode 1). `mode` 3/4 are `(An)+`/`-(An)` (the auto-(in/de)crement bump is committed before the
@@ -1082,8 +1105,22 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 454_120,
-        "expected 454120 covered cases — G2 adds NOT.b / NOT.w / NOT.l (their own NOT.b/.w/.l files, 0x4600/4640/ \
+        ran >= 478_315,
+        "expected 478315 covered cases — G3 (the FINAL commit of this push) adds EXT.w / EXT.l + SWAP (their own \
+         EXT.w/EXT.l/SWAP files, 0x4880/0x48C0/0x4840, mask `opcode & 0xFFF8`): EXT.w 8065 + EXT.l 8065 + SWAP \
+         8065 = +24195 over G2's 454120. EXT sign-extends the `Dn`-only source whose result WIDTH follows the \
+         size — EXT.w sign-extends the low BYTE to 16 bits and writes the LOW WORD (the high word of Dn is \
+         PRESERVED), N = bit15 / Z = (word == 0); EXT.l sign-extends the low WORD to 32 bits and writes the FULL \
+         32, N = bit31 / Z = (long == 0) — both with V = 0, C = 0, X PRESERVED (re-injected `ccr_nz | (sr & \
+         CCR_X)`, never computed) via the new unary `AluOp::Ext`. SWAP swaps the two 16-bit halves of Dn on the \
+         FULL 32 bits (`res = (Dn >> 16) | (Dn << 16)`, size always Long), LOGIC flags on bit31 / zero via the \
+         new unary `AluOp::Swap`. All three decode with mask `0xFFF8` (mode FIXED 000 = `Dn`; the low 3 bits the \
+         register) — NOT `0xFFC0`, which would swallow the PEA/MOVEM neighbours in 0x48xx (mode ≥ 2, reserved \
+         this push). `ext_recipe`/`swap_recipe` are `[Prefetch, Alu{{...}}]` (4 cyc, one Prefetch, no idle, no \
+         memory — `Dn`-only, no fault possible). `covered()` = `ext_swap_in_scope` (the `0xFFF8` mask match, NO \
+         deferral — every case is `Dn`-direct, so the whole opcode space of each file is in scope). The \
+         EXT.w/EXT.l/SWAP files are 100% pure (no contaminants). Prior baseline — G2 adds NOT.b / NOT.w / NOT.l \
+         (their own NOT.b/.w/.l files, 0x4600/4640/ \
          4680, SS bits 7-6 = b/w/l): NOT.b 7901 + NOT.w 7894 + NOT.l 7899 = +23694 over G1's 430426. NOT \
          bitwise-complements the data-alterable EA — `res = (~d) & mask` with LOGIC flags (the SAME MOVE flag \
          shape as AND/OR/EOR): N = msb(res), Z = (res == 0), **V = 0, C = 0, X PRESERVED** (re-injected \
@@ -1273,7 +1310,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -2090,5 +2127,71 @@ fn not_anchors_match_singlesteptests() {
     assert_eq!(found, anchors.len(), "all G2 NOT anchors exercised");
     eprintln!(
         "G2 NOT anchors: {found} cases (Dn each size with X-preservation pin X kept + V/C cleared, (An) .w RMW, odd-EA frame) passed both drivers"
+    );
+}
+
+/// G3 — the named `EXT.w` / `EXT.l` / `SWAP` anchors (the FINAL commit of this push), pinning each `Dn`-only
+/// transform against the vendored stream WITHOUT relying on the bulk `covered()` sweep. All three are
+/// **logic-shaped** (N = result-msb, Z = (result == 0), V = 0, C = 0, X PRESERVED — re-injected `ccr_nz | (sr &
+/// CCR_X)`, never computed) via the new unary `AluOp::Ext` / `AluOp::Swap`. The load-bearing pins (each entering
+/// with **X = 1** and at least one of **V/C set** to confirm X is KEPT while V/C are CLEARED and N/Z are
+/// recomputed from the result):
+/// - `4884 [EXT.w D4] 7` — EXT.w D4 with the byte HIGH BIT set: `d = 0xd84abfae`, low byte `0xae` sign-extends
+///   to `0xffae` → result `0xd84affae` (the high word `0xd84a` is PRESERVED). Enters X1 N1 Z1 V1 C0, exits
+///   X1 N1 Z0 V0 C0 (X kept, N from bit15 of the word, V cleared). The width follows the size (LOW WORD write).
+/// - `48c6 [EXT.l D6] 3` — EXT.l D6 with the word HIGH BIT set: `d = 0x2f8d86a1`, low word `0x86a1`
+///   sign-extends to `0xffff86a1` → result `0xffff86a1` (FULL 32). Enters X1 N1 Z1 V0 C1, exits X1 N1 Z0 V0 C0
+///   (X kept, N from bit31, C cleared).
+/// - `4844 [SWAP D4] 5` — SWAP D4 with DISTINCT halves: `d = 0xf93bedf2` → `0xedf2f93b` (the swapped-in low
+///   half `0xedf2` puts bit31 = 1). Enters X1 N0 Z0 V1 C1, exits X1 N1 Z0 V0 C0 (X kept, N from the swapped-in
+///   bit31, V/C cleared).
+///
+/// Each runs both drivers + the per-cycle transaction stream via `run_case`. Every anchor must decode as an
+/// EXT/SWAP opcode (mask 0xFFF8 ∈ {0x4880, 0x48C0, 0x4840}) — never a CMP-class — and is length 4 (one
+/// Prefetch, no idle, no memory; `Dn`-only, no fault possible).
+#[test]
+fn ext_swap_anchors_match_singlesteptests() {
+    // (file, full-name, length). The X-preservation pins use the FULL (unique) name to select the EXACT
+    // d / X_in / V_in / C_in combination the doc-comment describes (each enters with X = 1 and V or C set).
+    let anchors: &[(&str, &str, u32)] = &[
+        ("EXT.w.json", "4884 [EXT.w D4] 7", 4), // byte high-bit → 0xFFxx, high word kept, N1, X1 V1 in → V0
+        ("EXT.l.json", "48c6 [EXT.l D6] 3", 4), // word high-bit → N from bit31, X1 C1 in → C0
+        ("SWAP.json", "4844 [SWAP D4] 5", 4), // distinct halves → N from swapped-in bit31, X1 V1 C1 in → V0 C0
+    ];
+    let mut found = 0usize;
+    for (fname, name, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap() == *name
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| {
+                panic!("G3 EXT/SWAP anchor {name} (len {length}) not found in {fname}")
+            });
+        // Every anchor must be an EXT/SWAP opcode (mask 0xFFF8 ∈ {0x4880, 0x48C0, 0x4840}) — never a CMP-class.
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert!(
+            matches!(opcode & 0xFFF8, 0x4880 | 0x48C0 | 0x4840),
+            "anchor {name} must be an EXT/SWAP opcode"
+        );
+        assert_eq!(
+            cmp_class(opcode),
+            CmpClass::None,
+            "EXT/SWAP is not a CMP-class opcode"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all G3 EXT/SWAP anchors exercised");
+    eprintln!(
+        "G3 EXT/SWAP anchors: {found} cases (EXT.w byte→word high word preserved, EXT.l word→long, SWAP distinct halves; each X-preservation pin X kept + V/C cleared) passed both drivers"
     );
 }

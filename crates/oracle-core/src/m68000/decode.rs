@@ -474,6 +474,28 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         };
         return neg_family_recipe(opcode, AluOp::Not, size);
     }
+    // EXT.w / EXT.l (`0100 1000 1S 000 rrr`, 0x4880 .w / 0x48C0 .l, mask `opcode & 0xFFF8`) — sign-extend the
+    // `Dn`-only source whose result width follows the size: EXT.w sign-extends the low BYTE of Dn to 16 bits
+    // (`res = sign_extend8→16(Dn & 0xFF)`) and writes the LOW WORD (the high word of Dn is preserved), flags on
+    // bit15 / word-zero; EXT.l sign-extends the low WORD to 32 bits (`res = sign_extend16→32(Dn & 0xFFFF)`) and
+    // writes the FULL 32, flags on bit31 / long-zero. LOGIC flags (N = result-msb, Z = (result == 0), V = 0,
+    // C = 0, X PRESERVED) via the new unary `AluOp::Ext`. The mode is FIXED 000 = `Dn` (the low 3 bits are the
+    // register), so the mask is `0xFFF8` — NOT `0xFFC0`, which would swallow the PEA/MOVEM neighbours in 0x48xx
+    // (mode ≥ 2). 4 cyc (one Prefetch, no idle, no memory — `Dn`-only, no fault possible).
+    if opcode & 0xFFF8 == 0x4880 {
+        return ext_recipe(opcode, Size::Word);
+    }
+    if opcode & 0xFFF8 == 0x48C0 {
+        return ext_recipe(opcode, Size::Long);
+    }
+    // SWAP (`0100 1000 01 000 rrr`, 0x4840, mask `opcode & 0xFFF8`) — swap the two 16-bit halves of `Dn`:
+    // `res = (Dn >> 16) | (Dn << 16)` on the FULL 32 bits (size ignored / always Long). LOGIC flags on the
+    // 32-bit result (N = bit31, Z = (result == 0), V = 0, C = 0, X PRESERVED) via the new unary `AluOp::Swap`.
+    // The mode is FIXED 000 = `Dn`, so the mask is `0xFFF8` (isolating the `Dn` encodings from PEA/MOVEM). 4 cyc
+    // (one Prefetch, no idle, no memory — `Dn`-only).
+    if opcode & 0xFFF8 == 0x4840 {
+        return swap_recipe(opcode);
+    }
     // Bcc / BRA (`0110 cccc dddddddd`, 0x6xxx) — conditional branch. cc = bits 11-8 (cc == 0 is BRA, always
     // taken); cc == 1 is BSR (a separate decode arm, NOT this commit) and is excluded. The condition is
     // evaluated at DECODE time against the live CCR, emitting the taken or not-taken linear recipe directly.
@@ -965,6 +987,56 @@ fn neg_family_recipe(opcode: u16, op: AluOp, size: Size) -> MicroState {
             dst: Dest::Scratch(1),
         });
     }
+    buf.finish()
+}
+
+/// `EXT.w` (`0x4880`) / `EXT.l` (`0x48C0`) (`0100 1000 1S 000 rrr`, mask `0xFFF8` — mode FIXED 000 = `Dn`, the
+/// low 3 bits the register): sign-extend `Dn` whose result WIDTH follows the size. **EXT.w** (`size == Word`)
+/// sign-extends the low BYTE to 16 bits and writes the LOW WORD ([`Dest::DataRegLow16`], the high word of `Dn`
+/// preserved), N = bit15 / Z = (word == 0); **EXT.l** (`size == Long`) sign-extends the low WORD to 32 bits
+/// and writes the FULL 32 ([`Dest::DataReg`]), N = bit31 / Z = (long == 0). Both: V = 0, C = 0, X PRESERVED
+/// (the LOGIC flag shape of [`AluOp::Ext`]). The `a` operand is supplied at the **input** size — the low byte
+/// ([`Operand::DataRegLow8`]) for `.w`, the low word ([`Operand::DataRegLow16`]) for `.l`; `b` is ignored
+/// ([`Operand::Zero`]). `Dn`-only — NO memory access: a single `Prefetch` then the `Alu` (4 cyc, no idle, no
+/// fault possible).
+fn ext_recipe(opcode: u16, size: Size) -> MicroState {
+    let reg = (opcode & 7) as u8;
+    // The input is one size SMALLER than the result: EXT.w reads the low BYTE → low word; EXT.l the low WORD
+    // → full 32. `a` follows the input size; `dst` (and the flag width) follow the result size.
+    let (a, dst) = match size {
+        Size::Word => (Operand::DataRegLow8(reg), Dest::DataRegLow16(reg)),
+        Size::Long => (Operand::DataRegLow16(reg), Dest::DataReg(reg)),
+        Size::Byte => unreachable!("EXT is .w/.l only"),
+    };
+    let mut buf = RecipeBuf::new();
+    buf.push(MicroOp::Prefetch);
+    buf.push(MicroOp::Alu {
+        op: AluOp::Ext,
+        size,
+        a,
+        b: Operand::Zero,
+        dst,
+    });
+    buf.finish()
+}
+
+/// `SWAP Dn` (`0x4840`, `0100 1000 01 000 rrr`, mask `0xFFF8` — mode FIXED 000 = `Dn`): swap the two 16-bit
+/// halves of `Dn` on the FULL 32 bits (`res = (Dn >> 16) | (Dn << 16)`; size always Long). LOGIC flags on the
+/// 32-bit result — N = bit31, Z = (result == 0), V = 0, C = 0, X PRESERVED (the [`AluOp::Swap`] shape). `a` is
+/// the full register ([`Operand::DataRegFull`]) and the result is written full-width ([`Dest::DataReg`]); `b`
+/// is ignored ([`Operand::Zero`]). `Dn`-only — NO memory access: a single `Prefetch` then the `Alu` (4 cyc, no
+/// idle).
+fn swap_recipe(opcode: u16) -> MicroState {
+    let reg = (opcode & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    buf.push(MicroOp::Prefetch);
+    buf.push(MicroOp::Alu {
+        op: AluOp::Swap,
+        size: Size::Long,
+        a: Operand::DataRegFull(reg),
+        b: Operand::Zero,
+        dst: Dest::DataReg(reg),
+    });
     buf.finish()
 }
 

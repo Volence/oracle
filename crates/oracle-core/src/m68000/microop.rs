@@ -454,6 +454,26 @@ pub enum AluOp {
     /// passes [`Operand::Zero`]). Distinct from [`AluOp::Neg`]/[`AluOp::Negx`] (which RECOMPUTE X as a borrow)
     /// and [`AluOp::Eor`] (binary `a ^ b` from a real second operand — NOT is the unary complement of `a`).
     Not,
+    /// Ext: **unary** `Dn`-only sign-extend whose width follows `size` — `EXT.w` (`size == Word`) sign-extends
+    /// the low **byte** of `a` to 16 bits (`res = sign_extend8→16(a & 0xFF)`) and writes the **low word** (the
+    /// high word of `Dn` is preserved — the recipe pairs it with [`Dest::DataRegLow16`]); `EXT.l`
+    /// (`size == Long`) sign-extends the low **word** to 32 bits (`res = sign_extend16→32(a & 0xFFFF)`) and
+    /// writes the **full 32** ([`Dest::DataReg`]). It is **logic-shaped** (the same MOVE flag shape as
+    /// [`AluOp::Not`]): **N = msb of the result at `size`** (bit15 for `.w`, bit31 for `.l`), **Z = (result == 0
+    /// at `size`)**, clears **V** and **C**, and **PRESERVES X** (re-injected `ccr_nz | (regs.sr & CCR_X)`,
+    /// never computed). `b` is **ignored** (the recipe passes [`Operand::Zero`]); the recipe supplies `a` at the
+    /// **input** size (the low byte for `.w`, the low word for `.l`). Distinct from [`AluOp::MoveA`] (which also
+    /// word-sign-extends but writes An and sets no flags) and [`AluOp::Swap`] (a halfword swap, not a
+    /// sign-extend). `Dn`-only — never a memory op.
+    Ext,
+    /// Swap: **unary** `Dn`-only 16-bit halfword swap — `res = (a >> 16) | (a << 16)` on the **full 32 bits**
+    /// (`size` is always `Long`). It is **logic-shaped** (the same MOVE flag shape as [`AluOp::Not`]/[`AluOp::Ext`]):
+    /// **N = bit31 of the swapped result**, **Z = (result == 0)**, clears **V** and **C**, and **PRESERVES X**
+    /// (re-injected `ccr_nz | (regs.sr & CCR_X)`, never computed). `b` is **ignored** (the recipe passes
+    /// [`Operand::Zero`]); `a` is the full register ([`Operand::DataRegFull`]) and the result is written full-width
+    /// ([`Dest::DataReg`]). `Dn`-only — never a memory op. Distinct from [`AluOp::Ext`] (a sign-extend) and
+    /// [`AluOp::Not`] (a bitwise complement).
+    Swap,
 }
 
 /// A bitwise logic operation a [`MicroOp::SrLogic`] applies to the status register — the three privileged
@@ -1039,6 +1059,31 @@ impl MicroState {
                             ccr |= CCR_C | CCR_X;
                         }
                         (res, ccr)
+                    }
+                    // EXT is the UNARY `Dn`-only sign-extend whose width follows `size`: EXT.w sign-extends the
+                    // low BYTE of `a` to 16 bits (`res = sign_extend8→16(a & 0xFF)`, written to the low word — the
+                    // high word of Dn is preserved by `Dest::DataRegLow16`); EXT.l sign-extends the low WORD to
+                    // 32 bits (`res = sign_extend16→32(a & 0xFFFF)`, full 32). Logic-shaped (the MOVE flag shape):
+                    // N = msb at `size` (bit15 for .w, bit31 for .l), Z = (result == 0 at size), V/C cleared, X
+                    // PRESERVED (re-inject the live X). `b`/`rhs` is ignored (passed `Operand::Zero` by the recipe).
+                    AluOp::Ext => {
+                        let res = match size {
+                            Size::Word => sign_extend8(lhs as u8) & 0xFFFF,
+                            Size::Long => sign_extend16(lhs as u16),
+                            Size::Byte => unreachable!("EXT is .w/.l only"),
+                        };
+                        let (r, ccr_nz) = move_flags(res, size);
+                        (r, ccr_nz | (regs.sr & CCR_X))
+                    }
+                    // SWAP is the UNARY `Dn`-only 16-bit halfword swap on the FULL 32 bits: `res = (a >> 16) |
+                    // (a << 16)` (`size` is always Long). Logic-shaped (the MOVE flag shape): N = bit31 of the
+                    // swapped result, Z = (result == 0), V/C cleared, X PRESERVED (re-inject the live X). `b`/`rhs`
+                    // is ignored (passed `Operand::Zero` by the recipe).
+                    AluOp::Swap => {
+                        // `(lhs >> 16) | (lhs << 16)` on a 32-bit value is exactly a 16-bit rotate.
+                        let res = lhs.rotate_left(16);
+                        let (r, ccr_nz) = move_flags(res, Size::Long);
+                        (r, ccr_nz | (regs.sr & CCR_X))
                     }
                     AluOp::Add | AluOp::Sub => match size {
                         Size::Word => {
