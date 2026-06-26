@@ -402,6 +402,15 @@ pub enum AluOp {
     /// the same op. Distinct from [`AluOp::Add`] (which recomputes X and sets a real V/C) and [`AluOp::Move`]
     /// (which copies `a`, ignoring `b`).
     And,
+    /// Or: bitwise `result = a | b` at the operand-size boundary — the flag op of the `OR` family. Identical to
+    /// [`AluOp::And`] in every respect except the bit operation (`|` instead of `&`): shares the **MOVE flag
+    /// shape** ([`move_flags`]) — sets **N = msb(result at size)**, **Z = (result == 0 at size)**, clears **V**
+    /// and **C**, and **PRESERVES X** (logic never touches X — the live X is re-injected as
+    /// `ccr_nz | (regs.sr & CCR_X)`). The size-masked result is written back (low8/low16/full32 for a `Dn` dest,
+    /// or parked in [`Dest::Scratch`] for a memory dest the trailing `Write` stores). OR is commutative, so the
+    /// `<ea>,Dn` (`a = Dn`) and `Dn,<ea>` (`a = memory`) directions reuse the same op. Distinct from
+    /// [`AluOp::Add`] (which recomputes X and sets a real V/C) and [`AluOp::And`] (which masks rather than sets).
+    Or,
 }
 
 /// A bitwise logic operation a [`MicroOp::SrLogic`] applies to the status register — the three privileged
@@ -890,6 +899,12 @@ impl MicroState {
                     // write-back value (or the parked memory store).
                     AluOp::And => {
                         let (r, ccr_nz) = move_flags(lhs & rhs, size);
+                        (r, ccr_nz | (regs.sr & CCR_X))
+                    }
+                    // OR is bitwise `a | b` with the same MOVE flag shape as AND (only the bit op differs):
+                    // N = msb / Z = (result == 0) at size, V/C cleared, X PRESERVED (re-inject the live X).
+                    AluOp::Or => {
+                        let (r, ccr_nz) = move_flags(lhs | rhs, size);
                         (r, ccr_nz | (regs.sr & CCR_X))
                     }
                     // CMP is SUB's N/Z/V/C with X PRESERVED (never written) and no write-back. Compute the

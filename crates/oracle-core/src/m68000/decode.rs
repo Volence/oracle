@@ -256,6 +256,41 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     if opcode & 0xF1C0 == 0xC180 && is_dst_mem_mode((opcode >> 3) & 7, opcode & 7) {
         return arith_dn_ea(opcode, AluOp::And, Size::Long); // AND.l Dn,<ea>
     }
+    // OR `<ea>,Dn` (`1000 ddd 0SS mmm rrr`, opmode 0/1/2 = b/w/l = 0x8000/0x8040/0x8080) — bitwise `Dn = Dn |
+    // <ea>` (Dn the minuend `a`; OR is commutative so operand order is inert). Identical to the AND `<ea>,Dn`
+    // arms above with `AluOp::Or` and the base nibble 0x8 instead of 0xC — same `arith_ea_dn` builder VERBATIM
+    // (OR <ea>,Dn = ADD <ea>,Dn = AND <ea>,Dn byte-for-byte), same illegal An-direct (mode 1) source absent
+    // (`covered()` never feeds it mode 1). Sets N = msb / Z = (result == 0), clears V/C, PRESERVES X
+    // (`AluOp::Or` = `move_flags` + X re-injected). The **OR.* files MIX** this genuine register form (nibble
+    // 0x8) with the dedicated ORI immediate opcode (`0x00xx`, high nibble 0) — a DIFFERENT instruction NOT
+    // decoded this push; `covered()` classifies the ORI cases OUT by OPCODE (high nibble 0 != 0x8), so decode
+    // is only ever reached on the genuine 0x8 form. The opcode space (nibble 0x8, opmode 0/1/2) is disjoint
+    // from the ADD/SUB arms (0xD/0x9), the AND arms (0xC) and the CMP arms (0xB). opmode 3/7 (0x80C0/0x81C0)
+    // is DIVU/DIVS — not matched by these masks.
+    if opcode & 0xF1C0 == 0x8000 {
+        return arith_ea_dn(opcode, AluOp::Or, Size::Byte); // OR.b <ea>,Dn
+    }
+    if opcode & 0xF1C0 == 0x8040 {
+        return arith_ea_dn(opcode, AluOp::Or, Size::Word); // OR.w <ea>,Dn
+    }
+    if opcode & 0xF1C0 == 0x8080 {
+        return arith_ea_dn(opcode, AluOp::Or, Size::Long); // OR.l <ea>,Dn
+    }
+    // OR `Dn,<ea>` (`1000 ddd 1SS mmm rrr`, opmode 4/5/6 = b/w/l = 0x8100/0x8140/0x8180) — bitwise `<ea> =
+    // <ea> | Dn` to an alterable-memory destination (modes 2..6, abs.w/abs.l via `is_dst_mem_mode`). Mode
+    // 000/001 = SBCD/PACK (a DIFFERENT instruction) is RESERVED — the `is_dst_mem_mode` guard excludes it (it
+    // admits only alterable memory), so an SBCD/PACK opcode is never decoded as OR. Reuses `arith_dn_ea`
+    // VERBATIM — OR Dn,<ea> = ADD Dn,<ea> = AND Dn,<ea> byte-for-byte (the same `ea_dst`/`ea_dst_long` RMW
+    // skeleton). The memory operand is the minuend (`a`); OR is commutative so the order is correct.
+    if opcode & 0xF1C0 == 0x8100 && is_dst_mem_mode((opcode >> 3) & 7, opcode & 7) {
+        return arith_dn_ea(opcode, AluOp::Or, Size::Byte); // OR.b Dn,<ea>
+    }
+    if opcode & 0xF1C0 == 0x8140 && is_dst_mem_mode((opcode >> 3) & 7, opcode & 7) {
+        return arith_dn_ea(opcode, AluOp::Or, Size::Word); // OR.w Dn,<ea>
+    }
+    if opcode & 0xF1C0 == 0x8180 && is_dst_mem_mode((opcode >> 3) & 7, opcode & 7) {
+        return arith_dn_ea(opcode, AluOp::Or, Size::Long); // OR.l Dn,<ea>
+    }
     // CMP `<ea>,Dn` (`1011 ddd 0SS mmm rrr`, nibble 0xB, opmode 0/1/2 = b/w/l) — the flag-only compare
     // `Dn − <ea>` (Dn the minuend). Classified by OPCODE (the CMP.* files mix CMP/CMPM/CMPI — CMPM/CMPI are
     // N1/N2, and `covered()` admits only the Cmp class this commit, so decode is reached on Cmp cases only).
@@ -11042,6 +11077,310 @@ mod tests {
             0xCF12,    // AND.b D7,(A2)   Dn,<ea>
             0xCF54,    // AND.w D7,(A4)
             0xCB92,    // AND.l D5,(A2)
+        ] {
+            let regs = Registers {
+                d: [0; 8],
+                a: [0; 7],
+                usp: 0,
+                ssp: 2048,
+                pc: 3072,
+                sr: 0x2700,
+                prefetch: [op, 0],
+            };
+            let _ = decode(&regs);
+        }
+    }
+
+    // --- L3: OR.b / OR.w / OR.l, BOTH directions — bitwise `a | b` with the MOVE flag shape (N = msb /
+    // Z = (result == 0), V/C cleared, X PRESERVED), the new `AluOp::Or`. Identical to L2's AND with the bit op
+    // `|` and the base nibble 0x8 instead of 0xC; `<ea>,Dn` reuses `arith_ea_dn`, `Dn,<ea>` reuses `arith_dn_ea`,
+    // both VERBATIM (AluOp-parameterized; OR = AND = ADD byte-for-byte). Anchors pinned to real vendored
+    // OR.l/.w cases (the 0xC->0x8 mirror of L2's ce85/cf54). ---
+
+    /// The clean SST anchor `8e85 [OR.l D5,D7] 1696` (8 cyc): a Dn-source LONG OR — the **X-PRESERVATION + N**
+    /// pin. Initial CCR = X|N|C (0x2719): D7 = 0xDF761620 | D5 = 0xA640EDD4 = 0xFF76FFF4 (msb set → N stays 1),
+    /// Z cleared (result != 0), V/C cleared (C was set → CLEARED), **X PRESERVED** (X=1 in and out) → final CCR =
+    /// X|N (0x2718). The OR.l register source uses `ea_src_long`'s Dn-direct path `[Prefetch, Alu, Internal(4)]`
+    /// (8 cyc, the long register idle = ADD.l/AND.l <ea>,Dn). Bus: one FC-6 refill @3076 (no operand read).
+    fn setup_or_l_8e85() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                0x403B_C910,
+                0x0000_0064,
+                0xEB30_A0C3,
+                0x465F_A886,
+                0xBFBE_7145,
+                0xA640_EDD4,
+                0x6D3D_DBD9,
+                0xDF76_1620,
+            ],
+            a: [
+                0x6470_A010,
+                0x3503_6FD8,
+                0xFD8B_A1F5,
+                0x1EF1_941E,
+                0xB923_7ACA,
+                0xFB69_6664,
+                0xABF0_8AEA,
+            ],
+            usp: 0xCF6B_0994,
+            ssp: 2048,
+            pc: 3072,
+            sr: 0x2719, // CCR = X|N|C
+            prefetch: [0x8E85, 0x093C],
+        };
+        let mut bus = FlatBus::new();
+        bus.poke(3076, 0x31);
+        bus.poke(3077, 0x8B); // 0x318B = 12683 — the refill word
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_or_l_8e85_log() -> Vec<Transaction> {
+        vec![Transaction {
+            kind: TxKind::Read,
+            fc: 6,
+            addr: 3076,
+            size: Size::Word,
+            value: 12683,
+        }]
+    }
+
+    fn assert_or_l_8e85_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced one word");
+        assert_eq!(
+            cpu.regs.d[7], 0xFF76_FFF4,
+            "D7 = 0xDF761620 | 0xA640EDD4 = 0xFF76FFF4 (full 32)"
+        );
+        assert_eq!(cpu.regs.d[5], 0xA640_EDD4, "source D5 unchanged");
+        assert_eq!(
+            cpu.regs.sr, 0x2718,
+            "N stays set (msb), Z/V/C cleared (C was set → cleared), X PRESERVED → CCR = X|N (0x18)"
+        );
+        assert_eq!(cpu.regs.prefetch, [0x093C, 12683], "queue advanced");
+        assert_eq!(bus.log, expected_or_l_8e85_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_or_l_8e85() {
+        let (mut cpu, mut bus) = setup_or_l_8e85();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 8,
+            "OR.l Dn,Dn = [Prefetch, Alu, Internal(4)] = 8 (ADD.l/AND.l <ea>,Dn register idle)"
+        );
+        assert_or_l_8e85_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_or_l_8e85() {
+        let (mut rtc, mut bus_rtc) = setup_or_l_8e85();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_or_l_8e85();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 8);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_or_l_8e85_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn or_l_8e85_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The snapshot/restore anchor for the OR register-source shape (Alu{Or} setting N/Z, clearing V/C,
+        // PRESERVING X). Snapshot the whole CPU at every micro-op boundary, restore, resume, and match.
+        let (mut rref, mut bref) = setup_or_l_8e85();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 3 micro-ops (Prefetch, Alu, Internal(4)) -> boundaries after 0..=2.
+        for pause_after in 0..=2 {
+            let (mut cpu, mut bus) = setup_or_l_8e85();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    /// The clean SST anchor `8f54 [OR.w D7,(A4)] 617` (12 cyc): a MEMORY-DEST word OR — the `Dn,<ea>` RMW path
+    /// (`arith_dn_ea`) + the **V/C-CLEARING** pin. Initial CCR = X|V|C (0x2713): (A4) = 0x8AFA98F0 → masked
+    /// 0xFA98F0 = 16423152, the word there = 0xBDFB; D7 low word = 0xDA74 → 0xBDFB | 0xDA74 = 0xFFFF written
+    /// back. Result msb set → N=1, non-zero → Z=0, **V and C CLEARED** (were set), **X PRESERVED** → final CCR =
+    /// X|N (0x2718). Bus order is the RMW `[r operand @(A4) FC5, r refill @3076 FC6, w result @(A4) FC5]`.
+    fn setup_or_w_8f54() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                0xF866_B18D,
+                0x03F2_9606,
+                0x5F3B_0646,
+                0xEB48_61A6,
+                0xCD70_02B2,
+                0xBCA0_98DC,
+                0x5C24_A364,
+                0x46C7_DA74,
+            ],
+            a: [
+                0x3469_AE7C,
+                0x333D_1875,
+                0xDEF8_BC7E,
+                0xDDE5_96E5,
+                0x8AFA_98F0,
+                0x2A57_0F98,
+                0x1380_56BC,
+            ],
+            usp: 0x164A_DAD8,
+            ssp: 2048,
+            pc: 3072,
+            sr: 0x2713, // CCR = X|V|C
+            prefetch: [0x8F54, 0xD061],
+        };
+        let mut bus = FlatBus::new();
+        bus.poke(16423152, 0xBD);
+        bus.poke(16423153, 0xFB); // (A4) word = 0xBDFB = 48635
+        bus.poke(3076, 0x3D);
+        bus.poke(3077, 0x78); // refill 0x3D78 = 15736
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_or_w_8f54_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 16423152,
+                size: Size::Word,
+                value: 48635,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 15736,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 16423152,
+                size: Size::Word,
+                value: 65535,
+            },
+        ]
+    }
+
+    fn assert_or_w_8f54_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced one word");
+        assert_eq!(cpu.regs.a[4], 0x8AFA_98F0, "dest base A4 unchanged");
+        assert_eq!(cpu.regs.d[7], 0x46C7_DA74, "source D7 unchanged");
+        assert_eq!(
+            cpu.regs.sr, 0x2718,
+            "N=1 (msb), Z=0, V and C CLEARED, X PRESERVED → CCR = X|N (0x18)"
+        );
+        assert_eq!(
+            bus.peek(16423152),
+            0xFF,
+            "(A4) hi byte = 0xFF (0xBDFB | 0xDA74 = 0xFFFF)"
+        );
+        assert_eq!(bus.peek(16423153), 0xFF, "(A4) lo byte = 0xFF");
+        assert_eq!(cpu.regs.prefetch, [0xD061, 15736], "queue advanced");
+        assert_eq!(bus.log, expected_or_w_8f54_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_or_w_8f54() {
+        let (mut cpu, mut bus) = setup_or_w_8f54();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 12,
+            "OR.w Dn,(An) = [Read, Prefetch, Alu, Write] RMW = 12 (ADD.w/AND.w Dn,(An))"
+        );
+        assert_or_w_8f54_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_or_w_8f54() {
+        let (mut rtc, mut bus_rtc) = setup_or_w_8f54();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_or_w_8f54();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 12);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_or_w_8f54_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn or_w_8f54_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The snapshot/restore anchor for the OR memory-dest RMW shape (Alu{Or} parked in Scratch, then written
+        // back) — the interesting mid-bus-access boundary between the operand Read and the result Write.
+        let (mut rref, mut bref) = setup_or_w_8f54();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 4 micro-ops (Read, Prefetch, Alu, Write) -> boundaries after 0..=3.
+        for pause_after in 0..=3 {
+            let (mut cpu, mut bus) = setup_or_w_8f54();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    #[test]
+    fn or_decode_classifies_and_sizes() {
+        // OR `<ea>,Dn` is opmode 0/1/2 (0x8000/0x8040/0x8080) and `Dn,<ea>` is opmode 4/5/6 (0x8100/0x8140/
+        // 0x8180) of the 0x8 nibble — its own decode arms, disjoint from ADD/SUB (0xD/0x9), AND (0xC) and CMP
+        // (0xB). The ORI immediate opcode (0x00xx, high nibble 0) is a DIFFERENT instruction NOT decoded here
+        // (it must never reach decode — `covered()` classifies it out by opcode). Decode of the genuine
+        // register form must produce a recipe (no panic / no todo!()).
+        for op in [
+            0x8801u16, // OR.b D1,D0 <ea>,Dn (Dn source)
+            0x8614,    // OR.b (A4),D3
+            0x803C,    // OR.b #imm,D0
+            0x8440,    // OR.w D0,D2
+            0x8880,    // OR.l D0,D4
+            0x86BC,    // OR.l #imm,D3
+            0x8F12,    // OR.b D7,(A2)   Dn,<ea>
+            0x8F54,    // OR.w D7,(A4)
+            0x8B92,    // OR.l D5,(A2)
         ] {
             let regs = Registers {
                 d: [0; 8],

@@ -130,6 +130,20 @@ const FILES: &[&str] = &[
     "AND.b.json",
     "AND.w.json",
     "AND.l.json",
+    // OR.b / OR.w / OR.l (`1000 ddd 0SS mmm rrr` = 0x8000/40/80 `<ea>,Dn`, `1000 ddd 1SS mmm rrr` =
+    // 0x8100/40/80 `Dn,<ea>`) — bitwise OR in BOTH directions. L3 decodes both: `<ea>,Dn` (Dn = Dn | <ea>,
+    // source = data modes, An-direct mode 1 ILLEGAL/absent) reuses `arith_ea_dn` verbatim; `Dn,<ea>` (<ea> =
+    // <ea> | Dn, alterable-memory dest 2..6/abs.w/abs.l, mode 000/001 = SBCD/PACK reserved) reuses `arith_dn_ea`
+    // verbatim. Identical to AND in every respect except the bit op (`|` vs `&`) and the base nibble (0x8 vs
+    // 0xC): sets N = msb / Z = (result == 0), clears V/C, PRESERVES X (the new `AluOp::Or`). **These files are
+    // CONTAMINATED with ORI** (the `0x00xx` immediate opcode, high nibble 0 — a DIFFERENT instruction NOT
+    // implemented this push): `covered()` classifies by OPCODE (`and_or_in_scope`: high nibble == 0x8),
+    // admitting ONLY the genuine register form so the ORI cases are skipped cleanly (never decoded). All
+    // source/dest modes in scope except the pre-existing `(A7)` (mode 2) plain-indirect deferral; odd word/long
+    // EAs are address errors the E3/E4 abort covers.
+    "OR.b.json",
+    "OR.w.json",
+    "OR.l.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -822,13 +836,14 @@ fn covered(opcode: u16, _ini: &Value) -> bool {
             _ => false,
         };
     }
-    // AND `<ea>,Dn` (0xC000/40/80) + `Dn,<ea>` (0xC100/40/80) — the genuine register form, classified by OPCODE
-    // (high nibble 0xC). The AND.* files MIX this with the ANDI immediate opcode (`0x02xx`, high nibble 0) — a
-    // DIFFERENT instruction NOT decoded this push; `and_or_in_scope` returns false for it (high nibble != 0xC),
-    // so the ANDI cases are skipped cleanly. Source = data modes (An-direct mode 1 ILLEGAL/absent); dest =
-    // alterable memory (mode 000/001 = ABCD/EXG reserved). All in scope except the pre-existing `(A7)` mode-2
-    // plain-indirect deferral; odd word/long EAs are address errors the E3/E4 abort covers. (`and_or_in_scope`
-    // also matches the OR base 0x8 for L3 — those files are not yet in FILES, so this is AND-only here.)
+    // AND `<ea>,Dn` (0xC000/40/80) + `Dn,<ea>` (0xC100/40/80) and OR `<ea>,Dn` (0x8000/40/80) + `Dn,<ea>`
+    // (0x8100/40/80) — the genuine register forms, classified by OPCODE (high nibble 0xC for AND / 0x8 for OR).
+    // The AND.*/OR.* files MIX this with the ANDI/ORI immediate opcode (`0x02xx`/`0x00xx`, high nibble 0) — a
+    // DIFFERENT instruction NOT decoded this push; `and_or_in_scope` returns false for it (high nibble != 0xC
+    // and != 0x8), so the *I cases are skipped cleanly. Source = data modes (An-direct mode 1 ILLEGAL/absent);
+    // dest = alterable memory (mode 000/001 = ABCD/EXG for AND, SBCD/PACK for OR, reserved). All in scope except
+    // the pre-existing `(A7)` mode-2 plain-indirect deferral; odd word/long EAs are address errors the E3/E4
+    // abort covers. The single predicate covers both families (only the base nibble differs).
     if and_or_in_scope(opcode) {
         return true;
     }
@@ -902,8 +917,25 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 339_717,
-        "expected 339717 covered cases — L2 adds AND.b / AND.w / AND.l in BOTH directions (their own AND.b/.w/.l \
+        ran >= 361_971,
+        "expected 361971 covered cases — L3 adds OR.b / OR.w / OR.l in BOTH directions (their own OR.b/.w/.l \
+         files): OR.b 7453 + OR.w 7402 + OR.l 7399 = +22254 over L2's 339717. OR is bitwise `a | b` — IDENTICAL \
+         to AND in every respect except the bit op (`|` vs `&`) and the base nibble (0x8 vs 0xC): the MOVE flag \
+         shape (N = msb(result at size) / Z = (result == 0), V/C cleared, X PRESERVED, re-injected as `ccr_nz | \
+         (sr & CCR_X)`, never computed) via the new `AluOp::Or`; the size-masked result is written back \
+         (low8/low16/full32 for a Dn dest, or parked in Scratch for a memory dest the trailing Write stores). \
+         `<ea>,Dn` (opmode 0/1/2 = 0x8000/40/80, Dn = Dn | <ea>) reuses `arith_ea_dn` VERBATIM — OR <ea>,Dn = AND \
+         <ea>,Dn = ADD <ea>,Dn byte-for-byte, MINUS the illegal An-direct source (mode 1 absent). `Dn,<ea>` \
+         (opmode 4/5/6 = 0x8100/40/80, <ea> = <ea> | Dn, alterable-memory dest 2..6/abs.w/abs.l) reuses \
+         `arith_dn_ea` VERBATIM = AND Dn,<ea> byte-for-byte; mode 000/001 = SBCD/PACK is RESERVED (excluded by \
+         `is_dst_mem_mode`). **CRITICAL *I CONTAMINATION**: the OR.* files MIX the genuine register form (high \
+         nibble 0x8) with the dedicated ORI immediate opcode (`0x00xx`, high nibble 0 — a DIFFERENT instruction \
+         this push does NOT implement, 5xx cases/file). `covered()` classifies by OPCODE (`and_or_in_scope`: high \
+         nibble == 0x8), admitting ONLY the genuine register form so the ORI cases are skipped cleanly (never \
+         decoded — admitting one would panic at `todo!()`). The single `and_or_in_scope` predicate covers both \
+         AND (0xC) and OR (0x8). All source/dest modes in scope except the pre-existing `(A7)` (mode 2) \
+         plain-indirect deferral; odd word/long EAs are address errors the E3/E4 abort covers (no parity filter). \
+         Prior baseline — L2 adds AND.b / AND.w / AND.l in BOTH directions (their own AND.b/.w/.l \
          files): AND.b 7391 + AND.w 7419 + AND.l 7417 = +22227 over L1's 317490. AND is bitwise `a & b` with the \
          MOVE flag shape — N = msb(result at size) / Z = (result == 0), V/C cleared, X PRESERVED (re-injected as \
          `ccr_nz | (sr & CCR_X)`, never computed) — via the new `AluOp::And`; the size-masked result is written \
@@ -1021,7 +1053,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -1488,5 +1520,79 @@ fn and_anchors_match_singlesteptests() {
     assert_eq!(found, anchors.len(), "all L2 AND anchors exercised");
     eprintln!(
         "L2 AND anchors: {found} cases (<ea>,Dn Dn/(An)/#imm + Dn,(An) dest, each size + odd-EA) passed both drivers"
+    );
+}
+
+/// L3 — the named `OR` anchors, pinning each shape of bitwise OR in BOTH directions against the vendored
+/// OR.b/.w/.l stream WITHOUT relying on the bulk `covered()` sweep: `<ea>,Dn` with a **Dn** source, a
+/// **(An)** memory source, and a **#imm** source (each size b/w/l); `Dn,(An)` **memory dest** (each size); and
+/// two **odd-EA** cases (the word/long memory access faults into the group-0 14-byte address-error frame —
+/// byte never faults). Each runs both drivers + the per-cycle transaction stream via `run_case`. The
+/// load-bearing pins: OR sets N = msb / Z = (result == 0), clears V/C, **PRESERVES X** (every case); the
+/// `<ea>,Dn` direction reuses `arith_ea_dn` (= ADD <ea>,Dn timing = AND <ea>,Dn) and `Dn,<ea>` reuses
+/// `arith_dn_ea` (= ADD Dn,<ea> RMW = AND Dn,<ea>). Every anchor must classify **by OPCODE** as the genuine
+/// register form (high nibble 0x8, via `and_or_in_scope`) and NOT as a CMP-class opcode — the *I (ORI)
+/// contaminant (high nibble 0) is never an anchor. The opcodes mirror the L2 AND anchors with 0xC -> 0x8.
+#[test]
+fn or_anchors_match_singlesteptests() {
+    // (file, name-prefix, length) — the (prefix, length) pair picks the clean (even-EA) or odd-EA OR case.
+    let anchors: &[(&str, &str, u32)] = &[
+        // <ea>,Dn — Dn / (An) / #imm sources, each size.
+        ("OR.b.json", "8801", 4), // OR.b D1,D4 — Dn source (.b, 4 cyc, no idle)
+        ("OR.b.json", "8614", 8), // OR.b (A4),D3 — (An) memory source ([Read, PF])
+        ("OR.b.json", "803c", 8), // OR.b #imm,D0 — immediate source
+        ("OR.w.json", "8440", 4), // OR.w D0,D2 — Dn source (.w)
+        ("OR.w.json", "8250", 8), // OR.w (A0),D1 — (An) memory source
+        ("OR.w.json", "807c", 8), // OR.w #imm,D0 — immediate source
+        ("OR.l.json", "8880", 8), // OR.l D0,D4 — Dn source (.l, 8 cyc reg idle)
+        ("OR.l.json", "8294", 14), // OR.l (A4),D1 — (An) memory source (.l, [r.hi, r.lo, PF])
+        ("OR.l.json", "86bc", 16), // OR.l #imm,D3 — immediate.l source (2 imm words)
+        // Dn,<ea> — memory dest, each size (the arith_dn_ea RMW).
+        ("OR.b.json", "8f12", 12), // OR.b D7,(A2) — byte memory dest ([r, PF, w])
+        ("OR.w.json", "8f54", 12), // OR.w D7,(A4) — word memory dest
+        ("OR.l.json", "8b92", 20), // OR.l D5,(A2) — long memory dest (reversed long store)
+        // Odd-EA address-error frames (word/long only — byte never faults).
+        ("OR.w.json", "8f50", 50), // OR.w D7,(A0) odd dest → group-0 14-byte frame (write fault, low5=0x05)
+        ("OR.l.json", "8494", 50), // OR.l (A4),D2 odd source → 14-byte frame (read fault, low5=0x15)
+    ];
+    let mut found = 0usize;
+    for (fname, prefix, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap().starts_with(prefix)
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| panic!("L3 OR anchor {prefix} (len {length}) not found in {fname}"));
+        // Every anchor must be the genuine register-form OR (high nibble 0x8, in scope) classified by OPCODE —
+        // never the ORI immediate contaminant (high nibble 0) and never a CMP-class opcode.
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(
+            opcode >> 12,
+            0x8,
+            "anchor {prefix} must be a genuine OR opcode"
+        );
+        assert!(
+            and_or_in_scope(opcode),
+            "anchor {prefix} must be an in-scope genuine register-form OR"
+        );
+        assert_eq!(
+            cmp_class(opcode),
+            CmpClass::None,
+            "OR is not a CMP-class opcode"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all L3 OR anchors exercised");
+    eprintln!(
+        "L3 OR anchors: {found} cases (<ea>,Dn Dn/(An)/#imm + Dn,(An) dest, each size + odd-EA) passed both drivers"
     );
 }
