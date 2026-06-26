@@ -87,6 +87,14 @@ const FILES: &[&str] = &[
     "TST.b.json",
     "TST.w.json",
     "TST.l.json",
+    // CLR.b / CLR.w / CLR.l (`0100 0010 SS mmm rrr`, 0x4200/4240/4280) — clear the data-alterable EA to 0
+    // (Z=1/N=0/V=0/C=0, X PRESERVED = move_flags(0)). N5 decodes the data-alterable EA set {Dn, (An), (An)+,
+    // -(An), d16(An), d8(An,Xn), abs.w, abs.l}. CLR is a READ-then-WRITE (it reads the EA, discards it, then
+    // writes 0) — it reuses the `ea_dst`/`ea_dst_long` RMW path, so the odd-EA case faults on the READ (low5 =
+    // 0x15), covered by the E3/E4 abort. NO `(A7)` mode-2 deferral parity beyond the pre-existing convention.
+    "CLR.b.json",
+    "CLR.w.json",
+    "CLR.l.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -593,6 +601,24 @@ fn covered(opcode: u16, _ini: &Value) -> bool {
             _ => false, // An-direct / PC-rel / #imm: absent / not data-alterable
         };
     }
+    // CLR `<ea>` (`0100 0010 SS mmm rrr`, 0x4200/4240/4280, SS != 3) — clear the data-alterable EA to 0
+    // (Z=1/N=0/V=0/C=0, X PRESERVED). The data-alterable EA set is in scope: Dn (0), (An) (2), (An)+ (3),
+    // -(An) (4), d16(An) (5), d8(An,Xn) (6), abs.w (7/0), abs.l (7/1). An-direct (1) / PC-relative (7/2, 7/3) /
+    // #imm (7/4) are NOT data-alterable and are absent from the data. CLR is a READ-then-WRITE (it reuses the
+    // `ea_dst`/`ea_dst_long` RMW path), so an odd word/long EA address-errors on the READ (low5 = 0x15), the
+    // E3/E4 abort covers it (no parity filter). NO `(A7)` mode-2 deferral — the plain `(A7)` indirect RMW is
+    // clean (the read/write both hit the active A7). SS == 3 (0x42C0) is illegal on the 68000 (not CLR).
+    if opcode & 0xFF00 == 0x4200 && opcode & 0xC0 != 0xC0 {
+        let mode = (opcode >> 3) & 7;
+        let reg = opcode & 7;
+        return match mode {
+            0 => true,                         // Dn-direct (no memory access)
+            2..=4 => true,                     // (An) / (An)+ / -(An)
+            5 | 6 => true,                     // d16(An) / d8(An,Xn)
+            7 if reg == 0 || reg == 1 => true, // abs.w / abs.l
+            _ => false, // An-direct / PC-rel / #imm: absent / not data-alterable
+        };
+    }
     // ADD/SUB. No parity filter (odd word/long EAs are address errors the E4 abort covers); the only
     // mode-scope deferrals are the `(A7)` (mode 2) plain-indirect form (`reg != 7`) and the illegal `An`-direct
     // byte source (mode 1). `mode` 3/4 are `(An)+`/`-(An)` (the auto-(in/de)crement bump is committed before the
@@ -743,8 +769,22 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 253_455,
-        "expected 253455 covered cases — N4 adds TST `<ea>` (its own TST.b/.w/.l files, 0x4A00/4A40/4A80, SS \
+        ran >= 277_650,
+        "expected 277650 covered cases — N5 adds CLR `<ea>` (its own CLR.b/.w/.l files, 0x4200/4240/4280, SS \
+         bits 7-6 = b/w/l): CLR.b 8065 + CLR.w 8065 + CLR.l 8065 = +24195 over N4's 253455. CLR clears the \
+         data-alterable EA to 0 (Z = 1, N = 0, V = 0, C = 0, X PRESERVED = `move_flags(0)`). CLR is a \
+         READ-then-WRITE: it READS the EA (value DISCARDED), refills, then WRITES 0 — reusing the existing \
+         `ea_dst`/`ea_dst_long` RMW path with `make_alu` building `AluOp::Move` (`a = Operand::Zero`, dst \
+         `Scratch(1)`): the Move sets the flags + parks the 0 the trailing Write stores; the `.l` write order \
+         is the reversed long store, lo @ EA+2 then hi @ EA. `Dn`-direct has no memory access (one Prefetch + \
+         the size-masked \
+         Move-of-zero into Dn); CLR.l Dn = 6 cyc (one trailing `Internal(2)` idle), CLR.b/.w Dn = 4. The \
+         data-alterable EA set is FULLY in scope — Dn (0), (An) (2), (An)+ (3), -(An) (4), d16(An) (5), \
+         d8(An,Xn) (6), abs.w (7/0), abs.l (7/1) (all 8065 per file; NO `(A7)` mode-2 deferral — the plain \
+         `(A7)` indirect RMW is clean); An-direct / PC-relative / #imm are not data-alterable and are absent. \
+         Odd word/long EAs address-error on the READ (low5 = 0x15), the E3/E4 abort covers them (no parity \
+         filter). \
+         Prior baseline — N4 adds TST `<ea>` (its own TST.b/.w/.l files, 0x4A00/4A40/4A80, SS \
          bits 7-6 = b/w/l): TST.b 8065 + TST.w 8065 + TST.l 8065 = +24195 over N3's 229260. TST is the \
          flag-only test `<ea> − 0` (`AluOp::Cmp` with `b = Operand::Zero` + `Dest::None`): N = msb(operand), \
          Z = (operand == 0), V = 0, C = 0, X PRESERVED, NO write-back. The data-alterable EA set is FULLY in \
@@ -800,7 +840,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -1083,5 +1123,64 @@ fn tst_anchors_match_singlesteptests() {
     assert_eq!(found, anchors.len(), "all N4 TST anchors exercised");
     eprintln!(
         "N4 TST anchors: {found} cases (Dn / memory / -(An) / indexed / abs.l sources, each size) passed both drivers"
+    );
+}
+
+/// N5 — the named `CLR <ea>` anchors, pinning each destination-mode shape of the EA-clear against the vendored
+/// CLR.b/.w/.l stream WITHOUT relying on the bulk `covered()` sweep: the **CLR.l Dn** 6-cyc register clear (one
+/// trailing idle — `4282`), the **CLR.b (An)** READ-then-WRITE memory clear (the canonical `[r @ EA, PF, w 0 @
+/// EA]` order — `4216`), the **CLR.w -(A1)** predecrement clear (`[n2, r, PF, w]` at the decremented EA —
+/// `4261`), and the **CLR.l (A3)+** postincrement clear (the long RMW with the reversed long store `[r.hi,
+/// r.lo, PF, w.lo, w.hi]` — `429b`). Each runs both drivers + the per-cycle transaction stream via `run_case`.
+/// The load-bearing pins: the READ precedes the WRITE (CLR is not write-only), 0 is written, the flags are
+/// `move_flags(0)` (Z=1/N=0/V=0/C=0, X PRESERVED), and the `.l` register clear carries its one trailing idle.
+/// Every anchor must decode as a CLR opcode (0x4200/4240/4280, SS != 3 = not the illegal 0x42C0).
+#[test]
+fn clr_anchors_match_singlesteptests() {
+    // (file, name-prefix, length) — the (prefix, length) pair picks the clean (even-EA) CLR case.
+    let anchors: &[(&str, &str, u32)] = &[
+        ("CLR.l.json", "4282", 6), // CLR.l D2 — Dn-direct (6 cyc, one trailing idle)
+        ("CLR.b.json", "4216", 12), // CLR.b (A6) — memory READ-then-WRITE ([r, PF, w])
+        ("CLR.w.json", "4261", 14), // CLR.w -(A1) — predecrement ([n2, r, PF, w])
+        ("CLR.l.json", "429b", 20), // CLR.l (A3)+ — postinc long RMW (reversed long store)
+    ];
+    let mut found = 0usize;
+    for (fname, prefix, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap().starts_with(prefix)
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| {
+                panic!("N5 CLR anchor {prefix} (len {length}) not found in {fname}")
+            });
+        // Every anchor must be a CLR opcode (0x4200/4240/4280, SS != 3 = not the illegal 0x42C0) — never a
+        // CMP-class opcode.
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(
+            opcode & 0xFF00,
+            0x4200,
+            "anchor {prefix} must be a CLR opcode"
+        );
+        assert_ne!(opcode & 0xC0, 0xC0, "anchor {prefix} must not be SS == 3");
+        assert_eq!(
+            cmp_class(opcode),
+            CmpClass::None,
+            "CLR is not a CMP-class opcode"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all N5 CLR anchors exercised");
+    eprintln!(
+        "N5 CLR anchors: {found} cases (Dn / (An) RMW / -(An) / (An)+ long RMW) passed both drivers"
     );
 }

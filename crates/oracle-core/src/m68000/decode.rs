@@ -270,6 +270,23 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         };
         return tst_recipe(opcode, size);
     }
+    // CLR `<ea>` (`0100 0010 SS mmm rrr`, 0x4200/4240/4280, SS bits 7-6 = b/w/l) — clear the data-alterable EA
+    // to 0, setting Z=1/N=0/V=0/C=0 and PRESERVING X (= `move_flags(0)`). CLR is a READ-then-WRITE: it READS
+    // the EA (the value is DISCARDED), refills, then WRITES 0 — so it reuses the existing `ea_dst`/`ea_dst_long`
+    // RMW path with `make_alu = Alu{Move, size, a: Zero, dst: Scratch(1)}` (the Move sets the flags + parks the
+    // 0, which the write then stores). The odd-EA case faults on the READ (low5 = 0x15), covered by the E3/E4
+    // abort. Dn-direct (mode 0) has NO memory access: `Alu{Move, size, a: Zero, dst: dn_dest(Dn,size)}` +
+    // Prefetch (CLR.l Dn = 6 cyc with one trailing idle; CLR.b/.w Dn = 4). SS == 3 (0x42C0) is illegal on the
+    // 68000 (not CLR — never decoded). The opcode space 0x4200..=0x42BF is disjoint from TST (0x4A00) and the
+    // 0x4Exx / 0x4180 arms.
+    if opcode & 0xFF00 == 0x4200 && opcode & 0xC0 != 0xC0 {
+        let size = match (opcode >> 6) & 3 {
+            0 => Size::Byte,
+            1 => Size::Word,
+            _ => Size::Long, // SS = 2
+        };
+        return clr_recipe(opcode, size);
+    }
     // Bcc / BRA (`0110 cccc dddddddd`, 0x6xxx) — conditional branch. cc = bits 11-8 (cc == 0 is BRA, always
     // taken); cc == 1 is BSR (a separate decode arm, NOT this commit) and is excluded. The condition is
     // evaluated at DECODE time against the live CCR, emitting the taken or not-taken linear recipe directly.
@@ -597,6 +614,54 @@ fn tst_recipe(opcode: u16, size: Size) -> MicroState {
     let reg = (opcode & 7) as u8;
     let mut buf = RecipeBuf::new();
     ea_tst(&mut buf, mode, reg, size);
+    buf.finish()
+}
+
+/// `CLR.{b,w,l} <ea>` (`0100 0010 SS mmm rrr`, 0x4200/4240/4280): clear the data-alterable EA to 0, setting
+/// **Z=1, N=0, V=0, C=0** and **PRESERVING X** (exactly `move_flags(0)`), with NO operand value retained.
+///
+/// CLR is a **read-then-write**: the 68000 READS the EA (the value is discarded), refills, then WRITES 0. So a
+/// memory destination reuses the existing RMW path ([`ea_dst`] for `.b`/`.w`, `ea_dst_long` for `.l` — same
+/// read/refill/ALU/write skeleton ADD/SUB use) with `make_alu` building `Alu{Move, size, a: Zero, dst:
+/// Scratch(1)}`: the Move sets the CCR from the zero value and parks the 0 the trailing `Write` stores. The
+/// read can itself address-error on an odd EA (low5 = 0x15) — the same E3/E4 abort path, never modeled as
+/// write-only. The `.l` path inherits the reversed long-store order (write lo @ EA+2, then hi @ EA).
+///
+/// `Dn`-direct (mode 0) has **no memory access**: a single `Prefetch` then `Alu{Move, size, a: Zero, dst:
+/// dn_dest(Dn,size)}` (the size-masked register clear). CLR.b/.w Dn = 4 cyc; **CLR.l Dn = 6 cyc** — a `.l`
+/// register clear carries one trailing `Internal(2)` idle (pinned to the vendored `4282` anchor), unlike the
+/// byte/word forms.
+fn clr_recipe(opcode: u16, size: Size) -> MicroState {
+    let mode = (opcode >> 3) & 7;
+    let reg = (opcode & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    // The flag-only Move-of-zero ALU: `a = Zero` (b ignored). For a memory destination it parks the 0 in
+    // scratch 1 (the slot `ea_dst`'s write stores); for `Dn`-direct it writes the size-masked register.
+    if mode == 0 {
+        // Dn-direct — no memory: one refill, then the Move-of-zero into Dn (size-masked). CLR.l Dn adds one
+        // trailing idle (n2 → 6 cyc); CLR.b/.w Dn are 4 cyc with no idle.
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::Alu {
+            op: AluOp::Move,
+            size,
+            a: Operand::Zero,
+            b: Operand::Zero,
+            dst: dn_dest(reg, size),
+        });
+        if size == Size::Long {
+            buf.push(MicroOp::Internal { cycles: 2 });
+        }
+    } else {
+        // Memory destination — the RMW path: read the EA (discarded), refill, Move-of-zero (sets flags + parks
+        // the 0), write the 0 back at the same address. `.l` uses the reversed long-store via `ea_dst_long`.
+        ea_dst(&mut buf, mode, reg, size, |_discarded| MicroOp::Alu {
+            op: AluOp::Move,
+            size,
+            a: Operand::Zero,
+            b: Operand::Zero,
+            dst: Dest::Scratch(1),
+        });
+    }
     buf.finish()
 }
 
@@ -8791,6 +8856,224 @@ mod tests {
         // TST is 0x4A00/4A40/4A80 (SS bits 7-6 = b/w/l); SS == 3 (0x4AC0) is TAS, not TST. Decode must produce
         // a recipe (no panic) for the data-alterable modes and reject TAS via the SS != 3 guard.
         for (op, _sz) in [(0x4A03u16, "b"), (0x4A56, "w"), (0x4A97, "l")] {
+            let regs = Registers {
+                d: [0; 8],
+                a: [0; 7],
+                usp: 0,
+                ssp: 2048,
+                pc: 3072,
+                sr: 0x2700,
+                prefetch: [op, 0],
+            };
+            // Just exercising the decode arm — it must not panic / hit the todo!() fallthrough.
+            let _ = decode(&regs);
+        }
+    }
+
+    // --- N5: CLR <ea> — clear the data-alterable EA to 0 (Z=1/N=0/V=0/C=0, X PRESERVED = move_flags(0)). CLR
+    // is a READ-then-WRITE (reuses the `ea_dst`/`ea_dst_long` RMW path): read the EA (discarded), refill,
+    // Move-of-zero (sets flags + parks the 0), write 0. Dn-direct has no memory (CLR.l Dn = 6 cyc, one trailing
+    // idle; CLR.b/.w Dn = 4). Anchors pinned to the vendored CLR.{b,w,l} stream. ---
+
+    /// The clean SST anchor `4282 [CLR.l D2]` (6 cyc): a Dn-direct long clear. D2 = 0xBF86_8741 → 0; the flags
+    /// become `move_flags(0)` (Z set, N/V/C cleared) with the initial X (in SR 0x2707) PRESERVED → final SR
+    /// 0x2704 (X clear here, so just Z). Bus: one FC-6 refill at 3076 (no operand access — Dn direct), then the
+    /// CLR.l Dn trailing idle (n2 → 6 cyc, unlike CLR.b/.w Dn = 4). The 6-cyc register-clear anchor.
+    fn setup_clr_l_4282() -> (Cpu68000, FlatBus) {
+        let mut regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0,
+            ssp: 2048,
+            pc: 3072,
+            sr: 0x2707, // low byte 0x07 = C | V | Z set (X clear at bit4) — Z+V+C cleared, X preserved by CLR
+            prefetch: [0x4282, 21847],
+        };
+        regs.d[2] = 0xBF86_8741;
+        let mut bus = FlatBus::new();
+        bus.poke(3076, 0xA0);
+        bus.poke(3077, 0xF8); // 0xA0F8 = 41208 — the refill word
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_clr_l_4282_log() -> Vec<Transaction> {
+        vec![Transaction {
+            kind: TxKind::Read,
+            fc: 6,
+            addr: 3076,
+            size: Size::Word,
+            value: 41208,
+        }]
+    }
+
+    fn assert_clr_l_4282_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced one word");
+        assert_eq!(
+            cpu.regs.sr, 0x2704,
+            "CLR.l set Z, cleared N/V/C, PRESERVED X (= move_flags(0))"
+        );
+        assert_eq!(cpu.regs.d[2], 0, "D2 cleared to 0 (full 32 bits)");
+        assert_eq!(cpu.regs.prefetch, [21847, 41208], "queue advanced");
+        assert_eq!(bus.log, expected_clr_l_4282_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_clr_l_4282() {
+        let (mut cpu, mut bus) = setup_clr_l_4282();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 6,
+            "CLR.l Dn = [Prefetch, Alu, Internal(2)] = 6 (one trailing idle)"
+        );
+        assert_clr_l_4282_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_clr_l_4282() {
+        let (mut rtc, mut bus_rtc) = setup_clr_l_4282();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_clr_l_4282();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 6);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_clr_l_4282_final(&step, &bus_step);
+    }
+
+    /// The clean SST anchor `4216 [CLR.b (A6)]` (12 cyc): the canonical READ-then-WRITE byte clear. READ the old
+    /// byte at `(A6)` (masked 0xCD04BB = 13432315), refill, Move-of-zero (sets the flags), WRITE 0 at the same
+    /// address. The flags become `move_flags(0)` (Z set, N/V cleared) with X PRESERVED (SR 0x271E → 0x2714). The
+    /// load-bearing pin: the read FC-5 PRECEDES the write FC-5 (CLR is not write-only). Bus: `[r @ EA, PF, w 0 @
+    /// EA]`. A6 is UNCHANGED (no auto-(in/de)crement).
+    fn setup_clr_b_4216() -> (Cpu68000, FlatBus) {
+        let mut regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0,
+            ssp: 2048,
+            pc: 3072,
+            sr: 0x271E, // X + N + Z + V set
+            prefetch: [0x4216, 37610],
+        };
+        regs.a[6] = 0xE0CC_F5FB; // A6 (bus masks to 0xCCF5FB = 13432315)
+        let mut bus = FlatBus::new();
+        bus.poke(13432315, 0x96); // old byte 0x96 = 150 (the read value, discarded)
+        bus.poke(3076, 0xDE);
+        bus.poke(3077, 0xD4); // 0xDED4 = 57044 — the refill word
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_clr_b_4216_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 13432315,
+                size: Size::Byte,
+                value: 150,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 57044,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 13432315,
+                size: Size::Byte,
+                value: 0,
+            },
+        ]
+    }
+
+    fn assert_clr_b_4216_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced one word");
+        assert_eq!(
+            cpu.regs.sr, 0x2714,
+            "CLR.b set Z, cleared N/V/C, PRESERVED X (= move_flags(0))"
+        );
+        assert_eq!(
+            cpu.regs.a[6], 0xE0CC_F5FB,
+            "A6 unchanged (no auto-increment)"
+        );
+        assert_eq!(cpu.regs.prefetch, [37610, 57044], "queue advanced");
+        assert_eq!(bus.peek(13432315), 0, "the cleared byte is 0");
+        assert_eq!(bus.log, expected_clr_b_4216_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_clr_b_4216() {
+        let (mut cpu, mut bus) = setup_clr_b_4216();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 12,
+            "CLR.b (An) = [Read, Prefetch, Alu, Write] = 12 (read-then-write)"
+        );
+        assert_clr_b_4216_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_clr_b_4216() {
+        let (mut rtc, mut bus_rtc) = setup_clr_b_4216();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_clr_b_4216();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 12);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_clr_b_4216_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn clr_b_4216_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The snapshot/restore anchor across CLR (An) — the READ-then-WRITE RMW shape (read the discarded EA,
+        // Move-of-zero parks the 0, write it back). Snapshot at every bus-access boundary and resume.
+        let (mut rref, mut bref) = setup_clr_b_4216();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 4 micro-ops (Read, Prefetch, Alu, Write) → boundaries after 0..=3.
+        for pause_after in 0..=3 {
+            let (mut cpu, mut bus) = setup_clr_b_4216();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    #[test]
+    fn clr_decode_recognizes_opcode_and_size() {
+        // CLR is 0x4200/4240/4280 (SS bits 7-6 = b/w/l); SS == 3 (0x42C0) is illegal on the 68000, not CLR.
+        // Decode must produce a recipe (no panic) for the data-alterable modes.
+        for op in [0x4282u16, 0x4216, 0x4261, 0x429B] {
             let regs = Registers {
                 d: [0; 8],
                 a: [0; 7],
