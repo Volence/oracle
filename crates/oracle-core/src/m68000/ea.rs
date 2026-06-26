@@ -1595,6 +1595,39 @@ pub fn ea_cmpa(buf: &mut RecipeBuf, dst_reg: u8, src_mode: u16, src_reg: u8, siz
     buf.push(MicroOp::Internal { cycles: 2 });
 }
 
+/// Assemble the full `TST.{b,w,l} <ea>` recipe (`0100 1010 SS mmm rrr`): fetch the data-alterable EA operand,
+/// then the flag-only test `<ea> − 0` via `Alu{Cmp, a: operand, b: Zero, dst: None}` — set N = msb(operand),
+/// Z = (operand == 0), clear V/C, PRESERVE X, write **nothing** (`AluOp::Cmp` with a zero `b` reuses the CMP
+/// flag path; `a − 0` leaves N/Z reflecting `a`). No write-back (TST only sets flags).
+///
+/// The source bus stream is byte-for-byte the `<ea>,Dn` source phase **with NO trailing idle for any size**
+/// (TST.l Dn = 4 not CMP.l's 6; TST.l (An) = 12 not CMP/ADD.l's 14 — pinned to the vendored TST.* stream).
+/// So byte/word reuse [`ea_src`] directly (which emits no trailing idle), and the long path reuses
+/// [`ea_movea_long`] — the idle-free long source reader (TST.l's cycle counts match MOVEA.l's exactly). TST's
+/// EA is data-alterable, so only modes `Dn`/`(An)`/`(An)+`/`-(An)`/`d16(An)`/`d8(An,Xn)`/`abs.w`/`abs.l`
+/// appear (An-direct / PC-relative / `#imm` are not data-alterable and are absent from the data); the
+/// PC-rel/`#imm` arms of `ea_movea_long` are never reached.
+pub fn ea_tst(buf: &mut RecipeBuf, mode: u16, reg: u8, size: Size) {
+    // The flag-only Cmp-vs-zero ALU: the source operand is the minuend `a`, `b` is a constant zero, nothing is
+    // written back (`Dest::None`). `make_alu` receives the source operand the EA builder fetched.
+    let make_alu = |operand: Operand| MicroOp::Alu {
+        op: AluOp::Cmp,
+        size,
+        a: operand,
+        b: Operand::Zero,
+        dst: Dest::None,
+    };
+    if size == Size::Long {
+        // Long TST — the idle-free long source reader (TST.l = MOVEA.l bus cost, no trailing idle), reused
+        // verbatim. TST's data-alterable modes are a subset of MOVEA's source modes, so this covers them all.
+        ea_movea_long(buf, mode, reg, make_alu);
+    } else {
+        // Byte/word TST — the source bus stream is identical to a byte/word `<ea>,Dn`, and `ea_src` emits no
+        // trailing idle for those sizes (the ALU is the final op), matching the TST.b/.w cycle counts.
+        ea_src(buf, mode, reg, size, make_alu);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

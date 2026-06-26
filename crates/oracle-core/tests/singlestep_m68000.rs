@@ -79,6 +79,14 @@ const FILES: &[&str] = &[
     // All 12 source modes in scope except the pre-existing `(A7)` mode-2 plain-indirect convention.
     "CMPA.w.json",
     "CMPA.l.json",
+    // TST.b / TST.w / TST.l (`0100 1010 SS mmm rrr`, 0x4A00/4A40/4A80) — the flag-only test `<ea> − 0`. N4
+    // decodes the data-alterable EA set {Dn, (An), (An)+, -(An), d16(An), d8(An,Xn), abs.w, abs.l} (An-direct /
+    // PC-relative / #imm are not data-alterable and are absent). Every case in scope (no `(A7)` mode-2 deferral
+    // — TST never writes, so the plain `(A7)` indirect is clean); odd word/long EAs are address errors the
+    // E3/E4 abort covers.
+    "TST.b.json",
+    "TST.w.json",
+    "TST.l.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -569,6 +577,22 @@ fn covered(opcode: u16, _ini: &Value) -> bool {
         let reg = opcode & 7;
         return !(mode == 2 && reg == 7);
     }
+    // TST `<ea>` (`0100 1010 SS mmm rrr`, 0x4A00/4A40/4A80, SS != 3) — the flag-only test `<ea> − 0`. The
+    // data-alterable EA set is in scope: Dn (0), (An) (2), (An)+ (3), -(An) (4), d16(An) (5), d8(An,Xn) (6),
+    // abs.w (7/0), abs.l (7/1). An-direct (1) / PC-relative (7/2, 7/3) / #imm (7/4) are NOT data-alterable and
+    // are absent from the data. NO `(A7)` mode-2 deferral — TST never writes, so the plain `(A7)` indirect read
+    // is clean; odd word/long EAs are address errors the E3/E4 abort covers (no parity filter). SS == 3 is TAS.
+    if opcode & 0xFF00 == 0x4A00 && opcode & 0xC0 != 0xC0 {
+        let mode = (opcode >> 3) & 7;
+        let reg = opcode & 7;
+        return match mode {
+            0 => true,                         // Dn-direct (no memory access)
+            2..=4 => true,                     // (An) / (An)+ / -(An)
+            5 | 6 => true,                     // d16(An) / d8(An,Xn)
+            7 if reg == 0 || reg == 1 => true, // abs.w / abs.l
+            _ => false, // An-direct / PC-rel / #imm: absent / not data-alterable
+        };
+    }
     // ADD/SUB. No parity filter (odd word/long EAs are address errors the E4 abort covers); the only
     // mode-scope deferrals are the `(A7)` (mode 2) plain-indirect form (`reg != 7`) and the illegal `An`-direct
     // byte source (mode 1). `mode` 3/4 are `(An)+`/`-(An)` (the auto-(in/de)crement bump is committed before the
@@ -719,8 +743,18 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 229_260,
-        "expected 229260 covered cases — N3 adds CMPA `<ea>,An` (its own CMPA.w/.l files, opmode 3/7 = .w/.l): \
+        ran >= 253_455,
+        "expected 253455 covered cases — N4 adds TST `<ea>` (its own TST.b/.w/.l files, 0x4A00/4A40/4A80, SS \
+         bits 7-6 = b/w/l): TST.b 8065 + TST.w 8065 + TST.l 8065 = +24195 over N3's 229260. TST is the \
+         flag-only test `<ea> − 0` (`AluOp::Cmp` with `b = Operand::Zero` + `Dest::None`): N = msb(operand), \
+         Z = (operand == 0), V = 0, C = 0, X PRESERVED, NO write-back. The data-alterable EA set is FULLY in \
+         scope — Dn (0), (An) (2), (An)+ (3), -(An) (4), d16(An) (5), d8(An,Xn) (6), abs.w (7/0), abs.l (7/1) \
+         (all 8065 per file; NO `(A7)` mode-2 deferral — TST never writes, so the plain `(A7)` indirect read is \
+         clean); An-direct / PC-relative / #imm are not data-alterable and are absent. UNLIKE CMP/ADD there is \
+         NO trailing idle for any size (TST.l Dn = 4 not 6; TST.l (An) = 12 not 14 — the long source reuses the \
+         idle-free MOVEA.l reader, byte/word reuse `ea_src` directly). Odd word/long EAs are address errors the \
+         E3/E4 abort covers (no parity filter). \
+         Prior baseline — N3 adds CMPA `<ea>,An` (its own CMPA.w/.l files, opmode 3/7 = .w/.l): \
          CMPA.w 7935 + CMPA.l 7921 = +15856 over N2's 213404. CMPA is the flag-only address compare `An − \
          <ea>` (An the minuend, full 32 bits); the `.w` source word is sign-extended to 32 (`AluOp::Cmpa`, \
          mirroring `AluOp::MoveA`) before the long-boundary subtraction setting N/Z/V/C and PRESERVING X, with \
@@ -766,7 +800,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -986,5 +1020,68 @@ fn cmpa_anchors_match_singlesteptests() {
     assert_eq!(found, anchors.len(), "all N3 CMPA anchors exercised");
     eprintln!(
         "N3 CMPA anchors: {found} cases (Dn / An / memory / #imm sources, each size) passed both drivers"
+    );
+}
+
+/// N4 — the named `TST <ea>` anchors, pinning each source-mode shape of the flag-only test `<ea> − 0` against
+/// the vendored TST.b/.w/.l stream WITHOUT relying on the bulk `covered()` sweep: a **Dn** source whose low
+/// byte sets N (the N-set Dn anchor `4a03`), a **memory** source per size (the `.w`/`.b` single `[Read, PF]`
+/// read, the `.l` `[Read.hi, Read.lo, PF]` long read pair — including the plan's `4a56`/`4a97`), a **-(An)**
+/// predecrement source, a long **d8(An,Xn)** indexed source, and a long **abs.l** source. Each runs both
+/// drivers + the per-cycle transaction stream via `run_case`. The load-bearing pins: N = msb / Z =
+/// (operand == 0), V/C cleared, X PRESERVED, nothing written back, and — UNLIKE CMP/ADD — NO trailing idle
+/// for any size. Every anchor must decode as a TST opcode (0x4A00/4A40/4A80, SS != 3 = not TAS).
+#[test]
+fn tst_anchors_match_singlesteptests() {
+    // (file, name-prefix, length) — the (prefix, length) pair picks the clean (even-EA) TST case.
+    let anchors: &[(&str, &str, u32)] = &[
+        ("TST.b.json", "4a03", 4), // TST.b D3 — Dn source, low byte 0xE9 sets N (the N-set anchor)
+        ("TST.b.json", "4a20", 10), // TST.b -(A0) — predecrement source ([n2, Read, PF])
+        ("TST.w.json", "4a56", 8), // TST.w (A6) — memory source (.w, [Read, PF], NO trailing idle)
+        ("TST.l.json", "4a97", 12), // TST.l (A7) — memory source via A7 (.l, [Read.hi, Read.lo, PF])
+        ("TST.l.json", "4ab0", 18), // TST.l (d8,A0,Xn) — indexed long source ([n2, PF, Read.hi, Read.lo, PF])
+        ("TST.l.json", "4ab9", 20), // TST.l abs.l — long abs.l source (the heaviest, 5 reads, no idle)
+    ];
+    let mut found = 0usize;
+    for (fname, prefix, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap().starts_with(prefix)
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| {
+                panic!("N4 TST anchor {prefix} (len {length}) not found in {fname}")
+            });
+        // Every anchor must be a TST opcode (0x4A00/4A40/4A80, SS != 3 = not TAS) — never a CMP-class opcode.
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(
+            opcode & 0xFF00,
+            0x4A00,
+            "anchor {prefix} must be a TST opcode"
+        );
+        assert_ne!(
+            opcode & 0xC0,
+            0xC0,
+            "anchor {prefix} must not be TAS (SS == 3)"
+        );
+        assert_eq!(
+            cmp_class(opcode),
+            CmpClass::None,
+            "TST is not a CMP-class opcode"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all N4 TST anchors exercised");
+    eprintln!(
+        "N4 TST anchors: {found} cases (Dn / memory / -(An) / indexed / abs.l sources, each size) passed both drivers"
     );
 }

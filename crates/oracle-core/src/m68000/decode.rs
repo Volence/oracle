@@ -7,7 +7,7 @@
 //! builder per instruction family) lands with full coverage.
 
 use super::bus68k::Bus68k;
-use super::ea::{ea_cmpa, ea_dst, ea_move, ea_movea, ea_src, RecipeBuf};
+use super::ea::{ea_cmpa, ea_dst, ea_move, ea_movea, ea_src, ea_tst, RecipeBuf};
 use super::exception::{push_standard_frame, vector_fetch_and_reload};
 use super::microop::{
     condition_true, AluOp, Cpu68000, Dest, LogicOp, MicroOp, MicroState, Operand, Size,
@@ -254,6 +254,21 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
             Size::Long // opmode 7
         };
         return cmpa_recipe(opcode, size);
+    }
+    // TST `<ea>` (`0100 1010 SS mmm rrr`, 0x4A00/4A40/4A80, SS bits 7-6 = b/w/l) — the flag-only test
+    // `<ea> − 0`: read the data-alterable EA, set N = msb(operand) / Z = (operand == 0), clear V/C, PRESERVE
+    // X, write NOTHING (`AluOp::Cmp` with `b = Operand::Zero` + `Dest::None`). Same `ea_src` source machinery
+    // as CMP, but UNLIKE CMP/ADD there is NO trailing idle for any size (TST.l Dn = 4 not 6; TST.l (An) = 12
+    // not 14 — pinned to the vendored TST.* stream), so the long source uses a dedicated idle-free
+    // `tst_ea_src_long`. SS == 3 (0x4AC0) is TAS, not TST, and is excluded by the `& 0xC0 != 0xC0` guard. The
+    // opcode space 0x4A00..=0x4ABF is disjoint from JMP/JSR/RTS (all 0x4Exx) and the 0x4180 CHK arm below.
+    if opcode & 0xFF00 == 0x4A00 && opcode & 0xC0 != 0xC0 {
+        let size = match (opcode >> 6) & 3 {
+            0 => Size::Byte,
+            1 => Size::Word,
+            _ => Size::Long, // SS = 2
+        };
+        return tst_recipe(opcode, size);
     }
     // Bcc / BRA (`0110 cccc dddddddd`, 0x6xxx) — conditional branch. cc = bits 11-8 (cc == 0 is BRA, always
     // taken); cc == 1 is BSR (a separate decode arm, NOT this commit) and is excluded. The condition is
@@ -570,6 +585,18 @@ fn cmpa_recipe(opcode: u16, size: Size) -> MicroState {
     let src_reg = (opcode & 7) as u8;
     let mut buf = RecipeBuf::new();
     ea_cmpa(&mut buf, dst_reg, src_mode, src_reg, size);
+    buf.finish()
+}
+
+/// `TST.{b,w,l} <ea>` (`0100 1010 SS mmm rrr`, 0x4A00/4A40/4A80): the flag-only test `<ea> − 0` — set
+/// N = msb(operand) / Z = (operand == 0), clear V/C, PRESERVE X, write NOTHING (`AluOp::Cmp` with `b =
+/// Operand::Zero` + `Dest::None`). The data-alterable EA (`Dn`/`(An)`/`(An)+`/`-(An)`/`d16(An)`/`d8(An,Xn)`/
+/// `abs.w`/`abs.l`) is fetched by [`ea_tst`], which (unlike CMP/ADD) emits NO trailing idle for any size.
+fn tst_recipe(opcode: u16, size: Size) -> MicroState {
+    let mode = (opcode >> 3) & 7;
+    let reg = (opcode & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    ea_tst(&mut buf, mode, reg, size);
     buf.finish()
 }
 
@@ -8475,5 +8502,306 @@ mod tests {
         assert_eq!(cmp_class(0xB1C0), CmpClass::Cmpa); // CMPA.l D0,A0 (opmode 7)
         assert_eq!(cmp_class(0xB8D3), CmpClass::Cmpa); // CMPA.w (A3),A4
         assert_eq!(cmp_class(0xB9FC), CmpClass::Cmpa); // CMPA.l #imm,A4
+    }
+
+    // --- N4: TST <ea> — the flag-only test `<ea> − 0` (AluOp::Cmp with b=Zero + Dest::None). Sets N=msb,
+    // Z=(operand==0), clears V/C, PRESERVES X, no write-back. UNLIKE CMP/ADD there is NO trailing idle for any
+    // size (TST.l Dn = 4 not 6; TST.l (An) = 12 not 14). Anchors pinned to the vendored TST.{b,w,l} stream. ---
+
+    /// The clean SST anchor `4a03 [TST.b D3]` (4 cyc): a Dn-source byte test setting N (the low byte 0xE9 has
+    /// its msb set). D3 = 0x12EE3AE9 → low byte 0xE9 → N=1, Z=0, V=C=0; the initial X (in SR 0x2711) is
+    /// PRESERVED (final SR 0x2718 = X | N, the initial Z cleared). D3 is UNCHANGED (no write-back). Bus: one
+    /// FC-6 refill at 3076 (no operand read — Dn direct, no trailing idle). This is the N-set Dn anchor.
+    fn setup_tst_b_4a03() -> (Cpu68000, FlatBus) {
+        let mut regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0,
+            ssp: 2048,
+            pc: 3072,
+            sr: 0x2711, // X + Z set
+            prefetch: [0x4A03, 0x7237],
+        };
+        regs.d[3] = 0x12EE_3AE9;
+        let mut bus = FlatBus::new();
+        bus.poke(3076, 0xA2);
+        bus.poke(3077, 0x74); // 0xA274 = 41588 — the refill word
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_tst_b_4a03_log() -> Vec<Transaction> {
+        vec![Transaction {
+            kind: TxKind::Read,
+            fc: 6,
+            addr: 3076,
+            size: Size::Word,
+            value: 41588,
+        }]
+    }
+
+    fn assert_tst_b_4a03_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced one word");
+        assert_eq!(
+            cpu.regs.sr, 0x2718,
+            "TST.b set N (msb of low byte), cleared Z/V/C, PRESERVED X"
+        );
+        assert_eq!(
+            cpu.regs.d[3], 0x12EE_3AE9,
+            "Dn unchanged — TST writes nothing"
+        );
+        assert_eq!(cpu.regs.prefetch, [0x7237, 41588], "queue advanced");
+        assert_eq!(bus.log, expected_tst_b_4a03_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_tst_b_4a03() {
+        let (mut cpu, mut bus) = setup_tst_b_4a03();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 4,
+            "Dn-source TST.b = [Prefetch, Alu] = 4 (NO trailing idle)"
+        );
+        assert_tst_b_4a03_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_tst_b_4a03() {
+        let (mut rtc, mut bus_rtc) = setup_tst_b_4a03();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_tst_b_4a03();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 4);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_tst_b_4a03_final(&step, &bus_step);
+    }
+
+    /// The clean SST anchor `4a56 [TST.w (A6)]` (8 cyc): a memory-source word test. Read the source word at
+    /// `(A6)` (masked address 0x223E86 = 2244230), refill, then the flag-only `src − 0`. The source word
+    /// 0x44A2 is positive nonzero → N=0 Z=0 V=0 C=0; A6 is UNCHANGED (TST reads, never writes). Bus: `[r
+    /// 2244230, PF]` (no trailing idle). The `[Read, Prefetch]` memory interleave anchor.
+    fn setup_tst_w_4a56() -> (Cpu68000, FlatBus) {
+        let mut regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0,
+            ssp: 2048,
+            pc: 3072,
+            sr: 0x2706,
+            prefetch: [0x4A56, 0xD4DC],
+        };
+        regs.a[6] = 0x1322_3E86; // A6 (source base; bus masks to 0x223E86 = 2244230)
+        let mut bus = FlatBus::new();
+        bus.poke(2244230, 0x44);
+        bus.poke(2244231, 0xA2); // 0x44A2 = 17570 — the source word
+        bus.poke(3076, 0x9F);
+        bus.poke(3077, 0xBF); // 0x9FBF = 40895 — the refill word
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_tst_w_4a56_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 2244230,
+                size: Size::Word,
+                value: 17570,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 40895,
+            },
+        ]
+    }
+
+    fn assert_tst_w_4a56_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced one word");
+        assert_eq!(
+            cpu.regs.sr, 0x2700,
+            "TST.w cleared N/Z/V/C (positive nonzero), X already clear"
+        );
+        assert_eq!(cpu.regs.a[6], 0x1322_3E86, "source base A6 unchanged");
+        assert_eq!(cpu.regs.prefetch, [0xD4DC, 40895], "queue advanced");
+        assert_eq!(bus.log, expected_tst_w_4a56_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_tst_w_4a56() {
+        let (mut cpu, mut bus) = setup_tst_w_4a56();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 8,
+            "TST.w (An) = [Read, Prefetch, Alu] = 8 (NO trailing idle)"
+        );
+        assert_tst_w_4a56_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_tst_w_4a56() {
+        let (mut rtc, mut bus_rtc) = setup_tst_w_4a56();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_tst_w_4a56();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 8);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_tst_w_4a56_final(&step, &bus_step);
+    }
+
+    /// The clean SST anchor `4a97 [TST.l (A7)]` (12 cyc): a long memory-source test through A7 (= SSP 0x800 =
+    /// 2048, S set). Read the source long (hi @ 2048, lo @ 2050), refill, then the flag-only `src − 0`. The
+    /// long 0x00076777 is positive nonzero → N=0 Z=0 V=0 C=0; the initial X (in SR 0x2712, with V) is PRESERVED
+    /// and V cleared (final SR 0x2710). A7 is UNCHANGED. Bus: `[r 2048, r 2050, PF]` (the long read pair, NO
+    /// trailing idle — TST.l (An) = 12, unlike CMP/ADD.l's 14). The long `[Read.hi, Read.lo, Prefetch]` anchor.
+    fn setup_tst_l_4a97() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0xE452_0D26,
+            ssp: 2048, // A7 (S set → SSP is the active A7)
+            pc: 3072,
+            sr: 0x2712, // X + V set
+            prefetch: [0x4A97, 0xB0EC],
+        };
+        let mut bus = FlatBus::new();
+        bus.poke(2048, 0x07);
+        bus.poke(2049, 0x8E); // hi word 0x078E = 1934
+        bus.poke(2050, 0x67);
+        bus.poke(2051, 0xF7); // lo word 0x67F7 = 26615 → long 0x078E67F7
+        bus.poke(3076, 0x87);
+        bus.poke(3077, 0x29); // 0x8729 = 34601 — the refill word
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_tst_l_4a97_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 2048,
+                size: Size::Word,
+                value: 1934,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 2050,
+                size: Size::Word,
+                value: 26615,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 34601,
+            },
+        ]
+    }
+
+    fn assert_tst_l_4a97_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced one word");
+        assert_eq!(
+            cpu.regs.sr, 0x2710,
+            "TST.l cleared N/Z/V/C (positive nonzero diff), PRESERVED X"
+        );
+        assert_eq!(
+            cpu.regs.ssp, 2048,
+            "A7 (SSP) unchanged — TST writes nothing"
+        );
+        assert_eq!(cpu.regs.prefetch, [0xB0EC, 34601], "queue advanced");
+        assert_eq!(bus.log, expected_tst_l_4a97_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_tst_l_4a97() {
+        let (mut cpu, mut bus) = setup_tst_l_4a97();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 12,
+            "TST.l (An) = [Read.hi, Read.lo, Prefetch, Alu] = 12 (NO trailing idle)"
+        );
+        assert_tst_l_4a97_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_tst_l_4a97() {
+        let (mut rtc, mut bus_rtc) = setup_tst_l_4a97();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_tst_l_4a97();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 12);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_tst_l_4a97_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn tst_l_4a97_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The snapshot/restore anchor for the TST shape (Alu{Cmp, b=Zero} with Dest::None, no trailing idle).
+        let (mut rref, mut bref) = setup_tst_l_4a97();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 6 micro-ops (Read.hi, EaCalc(lo addr), Read.lo, Combine32, Prefetch, Alu) → boundaries after 0..=5.
+        for pause_after in 0..=5 {
+            let (mut cpu, mut bus) = setup_tst_l_4a97();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    #[test]
+    fn tst_decode_recognizes_opcode_and_size() {
+        // TST is 0x4A00/4A40/4A80 (SS bits 7-6 = b/w/l); SS == 3 (0x4AC0) is TAS, not TST. Decode must produce
+        // a recipe (no panic) for the data-alterable modes and reject TAS via the SS != 3 guard.
+        for (op, _sz) in [(0x4A03u16, "b"), (0x4A56, "w"), (0x4A97, "l")] {
+            let regs = Registers {
+                d: [0; 8],
+                a: [0; 7],
+                usp: 0,
+                ssp: 2048,
+                pc: 3072,
+                sr: 0x2700,
+                prefetch: [op, 0],
+            };
+            // Just exercising the decode arm — it must not panic / hit the todo!() fallthrough.
+            let _ = decode(&regs);
+        }
     }
 }
