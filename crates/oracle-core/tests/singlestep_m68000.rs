@@ -109,6 +109,15 @@ const FILES: &[&str] = &[
     // `-(A7)` siblings ARE in scope). Files are 100% pure ADDA (no contaminants).
     "ADDA.w.json",
     "ADDA.l.json",
+    // SUBA.w / SUBA.l (`1001 aaa s11 mmm rrr`, opmode 3 = .w / 7 = .l = 0x90C0 / 0x91C0) — address arithmetic
+    // `An = An − src`, NO flags (SR untouched), a near-exact mirror of ADDA. L1 decodes both sizes: `.w`
+    // sign-extends the source word→long before the subtract (mirroring MOVEA.w / CMPA.w), `.l` subtracts the
+    // full 32. All 12 source modes in scope (An-direct legal — it is address arithmetic; odd word/long source
+    // EAs are address errors the E3/E4 abort covers, no parity filter) except the pre-existing `(A7)` (mode 2)
+    // plain-indirect deferral (its `(A7)+` / `-(A7)` siblings ARE in scope). Files are 100% pure SUBA (no
+    // contaminants).
+    "SUBA.w.json",
+    "SUBA.l.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -737,6 +746,23 @@ fn covered(opcode: u16, _ini: &Value) -> bool {
             _ => false,
         };
     }
+    // SUBA `<ea>,An` (`1001 aaa s11 mmm rrr`, opmode 3 = .w (0x90C0) / 7 = .l (0x91C0)) — `An = An − src`, NO
+    // flags, a near-exact mirror of ADDA. All 12 source modes in scope (An-direct LEGAL — it is address
+    // arithmetic; odd word/long source EAs are address errors the E3/E4 abort covers, no parity filter) except
+    // the pre-existing `(A7)` (mode 2) plain-indirect deferral. The SUBA.w/.l files are 100% pure (no
+    // contaminants). Classified by OPCODE.
+    if opcode & 0xF1C0 == 0x90C0 || opcode & 0xF1C0 == 0x91C0 {
+        let mode = (opcode >> 3) & 7;
+        let reg = opcode & 7;
+        return match mode {
+            0 | 1 => true,         // Dn / An direct (no memory access; An source legal)
+            2 => reg != 7,         // (An) — A7 mode-2 deferred
+            3 | 4 => true,         // (An)+ / -(An)
+            5 | 6 => true,         // d16(An) / d8(An,Xn)
+            7 if reg <= 4 => true, // abs.w / abs.l / d16(PC) / d8(PC,Xn) / #imm
+            _ => false,
+        };
+    }
     false // other forms (not-yet-implemented modes): out of slice this push
 }
 
@@ -807,8 +833,20 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 301_585,
-        "expected 301585 covered cases — L0 adds ADDA.w / ADDA.l (their own ADDA.w/.l files, `1101 aaa s11 mmm \
+        ran >= 317_490,
+        "expected 317490 covered cases — L1 adds SUBA.w / SUBA.l (their own SUBA.w/.l files, `1001 aaa s11 mmm \
+         rrr` = 0x90C0 (.w) / 0x91C0 (.l)): SUBA.w 7934 + SUBA.l 7971 = +15905 over L0's 301585. SUBA is the \
+         no-flag address arithmetic `An = An − src` (SR untouched), a near-exact mirror of ADDA: `.w` \
+         sign-extends the source word→long before the long-boundary SUBTRACT (mirroring MOVEA.w / CMPA.w — \
+         `AluOp::Suba` does this internally), `.l` subtracts the full 32; An is written full-width \
+         (`Dest::AddrReg`). All 12 source modes in scope (An-direct LEGAL — it is address arithmetic; odd \
+         word/long source EAs are address errors the E3/E4 abort covers, no parity filter) except the \
+         pre-existing `(A7)` (mode 2) plain-indirect deferral. The recipe REUSES the AluOp-parameterized \
+         `adda_suba_recipe` built in L0 (`.w` appends a uniform trailing n4 idle = MOVEA.w's source stream + \
+         n4; `.l` appends nothing — `ea_src_long`'s built-in n4/n2 idle already equals ADD.l <ea>,Dn). New \
+         vocabulary: `AluOp::Suba` (the no-flag An-write early-return op, mirroring `AluOp::Adda`). The \
+         SUBA.w/.l files are 100% pure (no contaminants). \
+         Prior baseline — L0 adds ADDA.w / ADDA.l (their own ADDA.w/.l files, `1101 aaa s11 mmm \
          rrr` = 0xD0C0 (.w) / 0xD1C0 (.l)): ADDA.w 7935 + ADDA.l 7935 = +15870 over N6's 285715. ADDA is the \
          no-flag address arithmetic `An = An + src` (SR untouched): `.w` sign-extends the source word→long \
          before the long-boundary add (mirroring MOVEA.w / CMPA.w — `AluOp::Adda` does this internally), `.l` \
@@ -898,7 +936,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of

@@ -209,6 +209,18 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     if opcode & 0xF1C0 == 0xD1C0 {
         return adda_suba_recipe(opcode, AluOp::Adda, Size::Long); // ADDA.l <ea>,An
     }
+    // SUBA `<ea>,An` (`1001 aaa s11 mmm rrr`, opmode 3 = `.w` = 0x90C0 / opmode 7 = `.l` = 0x91C0) — address
+    // arithmetic `An = An − src`, NO flags (SR untouched), a near-exact mirror of ADDA. `.w` sign-extends the
+    // source word→long before the long-boundary subtract (`AluOp::Suba` does this internally, mirroring
+    // `AluOp::MoveA`); `.l` subtracts the full 32. All 12 source modes legal (An-direct included — it is address
+    // arithmetic). The opcode space (nibble 0x9, opmode 3/7) is disjoint from the SUB arms above (opmode
+    // 0/1/2/4/5/6) and the CMP/CMPA arms (nibble 0xB). Reuses the AluOp-parameterized `adda_suba_recipe`.
+    if opcode & 0xF1C0 == 0x90C0 {
+        return adda_suba_recipe(opcode, AluOp::Suba, Size::Word); // SUBA.w <ea>,An
+    }
+    if opcode & 0xF1C0 == 0x91C0 {
+        return adda_suba_recipe(opcode, AluOp::Suba, Size::Long); // SUBA.l <ea>,An
+    }
     // CMP `<ea>,Dn` (`1011 ddd 0SS mmm rrr`, nibble 0xB, opmode 0/1/2 = b/w/l) — the flag-only compare
     // `Dn − <ea>` (Dn the minuend). Classified by OPCODE (the CMP.* files mix CMP/CMPM/CMPI — CMPM/CMPI are
     // N1/N2, and `covered()` admits only the Cmp class this commit, so decode is reached on Cmp cases only).
@@ -9991,6 +10003,708 @@ mod tests {
         // ADDA is opmode 3 (.w = 0xD0C0) / 7 (.l = 0xD1C0) of the 0xD nibble — its own decode arms, disjoint
         // from the ADD arms (opmode 0/1/2/4/5/6). Decode must produce a recipe (no panic / no todo!()).
         for op in [0xDAC2u16, 0xD4CD, 0xD6D1, 0xD7D1, 0xD5FC, 0xD0C0, 0xD1C0] {
+            let regs = Registers {
+                d: [0; 8],
+                a: [0; 7],
+                usp: 0,
+                ssp: 2048,
+                pc: 3072,
+                sr: 0x2700,
+                prefetch: [op, 0],
+            };
+            let _ = decode(&regs);
+        }
+    }
+
+    // --- L1: SUBA.w / SUBA.l — the no-flag address arithmetic `An = An - src` (AluOp::Suba + Dest::AddrReg),
+    // a near-exact mirror of L0's ADDA. SR is UNTOUCHED; `.w` sign-extends the source word->long before the
+    // long-boundary SUBTRACT (mirroring MOVEA.w / CMPA.w), `.l` subtracts the full 32. An is written full-width.
+    // The recipe REUSES the AluOp-parameterized `adda_suba_recipe`: `.w` appends a uniform trailing n4 idle
+    // (SUBA.w = MOVEA.w + 4 for every source mode), `.l` appends nothing (`ea_src_long`'s built-in n4/n2 idle
+    // already equals ADD.l <ea>,Dn). All anchors pinned to the vendored SUBA.w/.l stream. ---
+
+    /// The clean SST anchor `94c4 [SUBA.w D4,A2] 3` (8 cyc): a Dn-source word subtract where the SOURCE WORD's
+    /// high bit is SET — pinning the internal sign-extension of `b`. D4 low word = 0xA67B (bit15 set) -> sext16 =
+    /// 0xFFFFA67B (negative subtrahend); A2 = 0x67BEFCE0 - 0xFFFFA67B = 0x67BF5665 (full 32). NO flags touched (SR stays
+    /// 0x270B). Bus: one FC-6 refill @3076 (Dn direct, no operand read), then the trailing n4 idle. This is the
+    /// sign-extend-correctness-on-An anchor.
+    fn setup_suba_w_94c4() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                0x02D5_038F,
+                0x90B6_491C,
+                0xBBAD_0B0D,
+                0x8068_80C1,
+                0xE217_A67B,
+                0x2E72_743B,
+                0x06A0_B6BF,
+                0x77B8_CF4D,
+            ],
+            a: [
+                0x62D9_83A3,
+                0x97CD_2D03,
+                0x67BE_FCE0,
+                0xF617_2098,
+                0xA43E_2F5C,
+                0xE6F5_BC23,
+                0xE35D_0847,
+            ],
+            usp: 939291368,
+            ssp: 2048,
+            pc: 3072,
+            sr: 0x270B,
+            prefetch: [0x94C4, 0xFF79],
+        };
+        let mut bus = FlatBus::new();
+        bus.poke(3076, 0xA7);
+        bus.poke(3077, 0x06);
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_suba_w_94c4_log() -> Vec<Transaction> {
+        vec![Transaction {
+            kind: TxKind::Read,
+            fc: 6,
+            addr: 3076,
+            size: Size::Word,
+            value: 42758,
+        }]
+    }
+
+    fn assert_suba_w_94c4_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced one word");
+        assert_eq!(cpu.regs.sr, 0x270B, "SUBA touches NO flags — SR unchanged");
+        assert_eq!(
+            cpu.regs.a[2], 0x67BF_5665,
+            "A2 = 0x67BEFCE0 - sext16(0xA67B) = 0x67BF5665 (negative subtrahend, full 32)"
+        );
+        assert_eq!(cpu.regs.d[4], 0xE217_A67B, "source Dn unchanged");
+        assert_eq!(cpu.regs.prefetch, [0xFF79, 42758], "queue advanced");
+        assert_eq!(bus.log, expected_suba_w_94c4_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_suba_w_94c4() {
+        let (mut cpu, mut bus) = setup_suba_w_94c4();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 8,
+            "SUBA.w Dn = [Prefetch, Alu, Internal(4)] = 4+0+4 = 8 (MOVEA.w Dn 4 + n4)"
+        );
+        assert_suba_w_94c4_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_suba_w_94c4() {
+        let (mut rtc, mut bus_rtc) = setup_suba_w_94c4();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_suba_w_94c4();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 8);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_suba_w_94c4_final(&step, &bus_step);
+    }
+
+    /// The clean SST anchor `92c8 [SUBA.w A0,A1] 19` (8 cyc): an An-SOURCE word subtract (An-direct is legal —
+    /// SUBA is address arithmetic). A0 low word = 0xCCEA -> sext16 = 0xFFFFCCEA; A1 = 0x0A763C42 - 0xFFFFCCEA = 0x0A766F58
+    /// (full 32). NO flags. Bus: one FC-6 refill (An direct, no operand read), then the trailing n4 idle.
+    fn setup_suba_w_92c8() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                0xACF8_4322,
+                0xD958_E9CC,
+                0xE4A0_BC26,
+                0x783D_FAC8,
+                0xF9B5_8AFD,
+                0xC72C_F92F,
+                0xEA85_78D3,
+                0xAB5E_4BAE,
+            ],
+            a: [
+                0xC250_CCEA,
+                0x0A76_3C42,
+                0x0E5B_C928,
+                0x4C86_18FB,
+                0xA8F1_E9C3,
+                0x8D9A_5122,
+                0xE883_3BDC,
+            ],
+            usp: 3713776246,
+            ssp: 2048,
+            pc: 3072,
+            sr: 0x2703,
+            prefetch: [0x92C8, 0x9B62],
+        };
+        let mut bus = FlatBus::new();
+        bus.poke(3076, 0x64);
+        bus.poke(3077, 0xDF);
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn assert_suba_w_92c8_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced one word");
+        assert_eq!(cpu.regs.sr, 0x2703, "SUBA touches NO flags — SR unchanged");
+        assert_eq!(
+            cpu.regs.a[1], 0x0A76_6F58,
+            "A1 = 0x0A763C42 - sext16(0xCCEA) = 0x0A766F58 (full 32)"
+        );
+        assert_eq!(cpu.regs.a[0], 0xC250_CCEA, "source An unchanged");
+        assert_eq!(cpu.regs.prefetch, [0x9B62, 25823], "queue advanced");
+        assert_eq!(
+            bus.log,
+            vec![Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 25823,
+            },]
+        );
+    }
+
+    #[test]
+    fn run_instruction_matches_suba_w_92c8() {
+        let (mut cpu, mut bus) = setup_suba_w_92c8();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(cycles, 8, "SUBA.w An = [Prefetch, Alu, Internal(4)] = 8");
+        assert_suba_w_92c8_final(&cpu, &bus);
+    }
+
+    /// The clean SST anchor `94d6 [SUBA.w (A6),A2] 30` (12 cyc): a MEMORY-source word subtract. The source word
+    /// is read at `(A6)` (A6 = 0xFCC9230E, masked to 13181710), refilled, then `A2 - sext16(src)`. Src word = 0xB774 ->
+    /// sext = 0xFFFFB774; A2 = 0x857D2A86 - 0xFFFFB774 = 0x857D7312 (full 32). NO flags. Bus: `[r 13181710, PF, n4]`. This exercises
+    /// the memory-read + Suba/AddrReg + trailing-n4 composition.
+    fn setup_suba_w_94d6() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                0x37C4_C64C,
+                0x8061_628F,
+                0x3A93_E2DB,
+                0x5F70_2312,
+                0x3884_83B7,
+                0xE1DD_2EE9,
+                0xB7B2_7C3D,
+                0xF290_528D,
+            ],
+            a: [
+                0x0E3A_7D42,
+                0x073E_81F3,
+                0x857D_2A86,
+                0x75A5_052E,
+                0xA234_276C,
+                0x5FAB_4020,
+                0xFCC9_230E,
+            ],
+            usp: 3862403486,
+            ssp: 2048,
+            pc: 3072,
+            sr: 0x2717,
+            prefetch: [0x94D6, 0xD5B6],
+        };
+        let mut bus = FlatBus::new();
+        bus.poke(13181710, 0xB7);
+        bus.poke(13181711, 0x74);
+        bus.poke(3076, 0x86);
+        bus.poke(3077, 0xED);
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_suba_w_94d6_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 13181710,
+                size: Size::Word,
+                value: 46964,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 34541,
+            },
+        ]
+    }
+
+    fn assert_suba_w_94d6_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced one word");
+        assert_eq!(cpu.regs.sr, 0x2717, "SUBA touches NO flags — SR unchanged");
+        assert_eq!(
+            cpu.regs.a[2], 0x857D_7312,
+            "A2 = 0x857D2A86 - sext16(0xB774) = 0x857D7312 (full 32)"
+        );
+        assert_eq!(cpu.regs.a[6], 0xFCC9_230E, "source base A6 unchanged");
+        assert_eq!(cpu.regs.prefetch, [0xD5B6, 34541], "queue advanced");
+        assert_eq!(bus.log, expected_suba_w_94d6_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_suba_w_94d6() {
+        let (mut cpu, mut bus) = setup_suba_w_94d6();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 12,
+            "SUBA.w (An) = [Read, Prefetch, Alu, Internal(4)] = 4+4+0+4 = 12"
+        );
+        assert_suba_w_94d6_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_suba_w_94d6() {
+        let (mut rtc, mut bus_rtc) = setup_suba_w_94d6();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_suba_w_94d6();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 12);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_suba_w_94d6_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn suba_w_94d6_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The snapshot/restore anchor for the SUBA shape (Alu{Suba} with Dest::AddrReg, memory source + the
+        // trailing n4 idle). Snapshot the whole CPU at every micro-op boundary, restore, resume, and match.
+        let (mut rref, mut bref) = setup_suba_w_94d6();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 4 micro-ops (Read, Prefetch, Alu, Internal(4)) -> boundaries after 0..=3.
+        for pause_after in 0..=3 {
+            let (mut cpu, mut bus) = setup_suba_w_94d6();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    /// The clean SST anchor `9bd2 [SUBA.l (A2),A5] 43` (14 cyc): a MEMORY-source LONG subtract — proves the
+    /// `.l` path reuses `ea_src_long`'s n2 memory idle (NOT the .w n4). The long operand is read at `(A2)` (A2 =
+    /// 0x501198C6, masked to 1153222): hi @1153222 = 0x9FD0, lo @1153224 = 0xD310 -> 0x9FD0D310; A5 = 0xAD840283 - 0x9FD0D310 = 0x0DB32F73
+    /// (full 32). NO flags. Bus: `[r.hi, r.lo, PF, n2]`.
+    fn setup_suba_l_9bd2() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                0x9E28_14A9,
+                0x2977_EA08,
+                0x18D3_E760,
+                0xB931_3918,
+                0x6D9B_8CF1,
+                0x7676_D59D,
+                0x2058_E4C2,
+                0x21CA_077B,
+            ],
+            a: [
+                0xBC84_10F1,
+                0x222C_701B,
+                0x5011_98C6,
+                0x3297_C8C2,
+                0xBA5D_8EB9,
+                0xAD84_0283,
+                0x4521_8F73,
+            ],
+            usp: 1431626598,
+            ssp: 2048,
+            pc: 3072,
+            sr: 0x2703,
+            prefetch: [0x9BD2, 0x4EB3],
+        };
+        let mut bus = FlatBus::new();
+        bus.poke(1153222, 0x9F);
+        bus.poke(1153223, 0xD0);
+        bus.poke(1153224, 0xD3);
+        bus.poke(1153225, 0x10);
+        bus.poke(3076, 0xF7);
+        bus.poke(3077, 0x32);
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_suba_l_9bd2_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 1153222,
+                size: Size::Word,
+                value: 40912,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 1153224,
+                size: Size::Word,
+                value: 54032,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 63282,
+            },
+        ]
+    }
+
+    fn assert_suba_l_9bd2_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced one word");
+        assert_eq!(cpu.regs.sr, 0x2703, "SUBA touches NO flags — SR unchanged");
+        assert_eq!(
+            cpu.regs.a[5], 0x0DB3_2F73,
+            "A5 = 0xAD840283 - 0x9FD0D310 = 0x0DB32F73 (full 32, no sign-extend for .l)"
+        );
+        assert_eq!(cpu.regs.a[2], 0x5011_98C6, "source base A2 unchanged");
+        assert_eq!(cpu.regs.prefetch, [0x4EB3, 63282], "queue advanced");
+        assert_eq!(bus.log, expected_suba_l_9bd2_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_suba_l_9bd2() {
+        let (mut cpu, mut bus) = setup_suba_l_9bd2();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 14,
+            "SUBA.l (An) = [Read.hi, Read.lo, Prefetch, Alu, Internal(2)] = 4+4+4+0+2 = 14 (n2 memory idle, \
+             NOT the .w n4)"
+        );
+        assert_suba_l_9bd2_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_suba_l_9bd2() {
+        let (mut rtc, mut bus_rtc) = setup_suba_l_9bd2();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_suba_l_9bd2();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 14);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_suba_l_9bd2_final(&step, &bus_step);
+    }
+
+    /// The clean SST anchor `99fc [SUBA.l #,A4] 212` (16 cyc): a `#imm.l` LONG subtract — proves the `.l` `#imm`
+    /// path's trailing n4 idle (the register/immediate long idle, NOT the n2 memory idle). The 32-bit immediate
+    /// is two extension words: HI = prefetch[1] = 0xD54C (captured before the refill shifts it out), LO = the
+    /// first refill word @3076 = 0xCB60 -> imm.l = 0xD54CCB60. A4 = 0x46A731A6 - 0xD54CCB60 = 0x715A6646 (full 32, computed at
+    /// the long boundary). NO flags. Bus: `[PF, PF, PF, n4]` (3 refills complete the 3-word fetch, no operand
+    /// read).
+    fn setup_suba_l_99fc() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                0xF4B3_8C22,
+                0x1DE3_A5AF,
+                0xFCA8_5E7F,
+                0x82A4_54B6,
+                0x9EC3_E429,
+                0x3B29_6A14,
+                0x1CA5_2473,
+                0xB4A5_0B79,
+            ],
+            a: [
+                0x6BE6_3B58,
+                0x0A11_57D4,
+                0x412E_8109,
+                0xC3F5_5157,
+                0x46A7_31A6,
+                0x3FAF_DD03,
+                0xC1C8_326D,
+            ],
+            usp: 3573321902,
+            ssp: 2048,
+            pc: 3072,
+            sr: 0x271B,
+            prefetch: [0x99FC, 0xD54C],
+        };
+        let mut bus = FlatBus::new();
+        bus.poke(3076, 0xCB);
+        bus.poke(3077, 0x60);
+        bus.poke(3078, 0xED);
+        bus.poke(3079, 0xD6);
+        bus.poke(3080, 0x3C);
+        bus.poke(3081, 0x13);
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_suba_l_99fc_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 52064,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3078,
+                size: Size::Word,
+                value: 60886,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3080,
+                size: Size::Word,
+                value: 15379,
+            },
+        ]
+    }
+
+    fn assert_suba_l_99fc_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(
+            cpu.regs.pc, 3078,
+            "pc advanced THREE words (3-word instruction)"
+        );
+        assert_eq!(cpu.regs.sr, 0x271B, "SUBA touches NO flags — SR unchanged");
+        assert_eq!(
+            cpu.regs.a[4], 0x715A_6646,
+            "A4 = 0x46A731A6 - imm.l 0xD54CCB60 = 0x715A6646 (full 32)"
+        );
+        assert_eq!(cpu.regs.prefetch, [0xEDD6, 15379], "queue advanced");
+        assert_eq!(bus.log, expected_suba_l_99fc_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_suba_l_99fc() {
+        let (mut cpu, mut bus) = setup_suba_l_99fc();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 16,
+            "SUBA.l #imm.l = [Combine32, PF, Combine32, PF, PF, Alu, Internal(4)] = 12 + n4 = 16"
+        );
+        assert_suba_l_99fc_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_suba_l_99fc() {
+        let (mut rtc, mut bus_rtc) = setup_suba_l_99fc();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_suba_l_99fc();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 16);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_suba_l_99fc_final(&step, &bus_step);
+    }
+
+    /// The SST anchor `9cd2 [SUBA.w (A2),A6] 24` (50 cyc): an ODD-EA SUBA — A2 = 0xD40B4BC5 is ODD (masked
+    /// 0x0B4BC5), so the word operand read faults and the in-flight `MicroState` is rewritten into the group-0
+    /// 14-byte address-error frame to vector 3 (@0x0C). All supervisor (S=1, T=0, SR 0x2719): the frame stacks
+    /// `PC = 3072` (live regs.pc, no prefetch ran), `SR = 0x2719`, `IR = 0x9CD2`, `SSW = 0x9CD5`, the full
+    /// 32-bit access address 0xD40B4BC5. Vector @0x0C = 0x00001400; handler @5120. This proves an odd SUBA EA is IN scope
+    /// (the E3 abort handles it — no parity filter).
+    fn setup_suba_odd_9cd2() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                0xE8B9_6135,
+                0x1C28_F4E9,
+                0x1EBD_1B1B,
+                0xD68A_9EB6,
+                0xD192_0083,
+                0x3E8E_999C,
+                0xDB96_BA1A,
+                0xB649_E08D,
+            ],
+            a: [
+                0xA547_B83E,
+                0xF05F_4581,
+                0xD40B_4BC5,
+                0xC03D_7EE8,
+                0x8E23_8FF8,
+                0x3C0F_26DF,
+                0x4000_8E36,
+            ],
+            usp: 2694348544,
+            ssp: 2048,
+            pc: 3072,
+            sr: 0x2719,
+            prefetch: [0x9CD2, 0xB33C],
+        };
+        let mut bus = FlatBus::new();
+        bus.poke(12, 0x00);
+        bus.poke(13, 0x00);
+        bus.poke(14, 0x14);
+        bus.poke(15, 0x00);
+        bus.poke(5120, 0x8B);
+        bus.poke(5121, 0x71);
+        bus.poke(5122, 0x96);
+        bus.poke(5123, 0xA3);
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_suba_odd_9cd2_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2046,
+                size: Size::Word,
+                value: 3072,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2042,
+                size: Size::Word,
+                value: 10009,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2044,
+                size: Size::Word,
+                value: 0,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2040,
+                size: Size::Word,
+                value: 40146,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2038,
+                size: Size::Word,
+                value: 19397,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2034,
+                size: Size::Word,
+                value: 40149,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2036,
+                size: Size::Word,
+                value: 54283,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 12,
+                size: Size::Word,
+                value: 0,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 14,
+                size: Size::Word,
+                value: 5120,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 5120,
+                size: Size::Word,
+                value: 35697,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 5122,
+                size: Size::Word,
+                value: 38563,
+            },
+        ]
+    }
+
+    #[test]
+    fn run_instruction_matches_suba_odd_9cd2() {
+        let (mut cpu, mut bus) = setup_suba_odd_9cd2();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 50,
+            "odd-EA SUBA -> group-0 14-byte address-error frame (50 cyc)"
+        );
+        assert_eq!(cpu.regs.pc, 5120, "pc landed at the vector-3 handler");
+        assert_eq!(
+            cpu.regs.ssp, 2034,
+            "SSP pushed down by 14 (the group-0 frame)"
+        );
+        assert_eq!(
+            cpu.regs.a[6], 0x4000_8E36,
+            "An (the dest) unchanged — the subtract never committed"
+        );
+        assert_eq!(
+            cpu.regs.sr, 0x2719,
+            "SR unchanged (already S=1/T=0 — the entry transform is a no-op on the data)"
+        );
+        assert_eq!(
+            cpu.regs.prefetch,
+            [0x8B71, 0x96A3],
+            "queue reloaded at the handler"
+        );
+        assert_eq!(bus.log, expected_suba_odd_9cd2_log());
+    }
+
+    #[test]
+    fn both_drivers_match_suba_odd_9cd2() {
+        let (mut rtc, mut bus_rtc) = setup_suba_odd_9cd2();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_suba_odd_9cd2();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 50);
+        assert_eq!(step.regs, rtc.regs, "drivers agree across the abort");
+        assert_eq!(
+            bus_step.log, bus_rtc.log,
+            "drivers agree on the frame transactions"
+        );
+    }
+
+    #[test]
+    fn suba_decode_classifies_and_sizes() {
+        // SUBA is opmode 3 (.w = 0x90C0) / 7 (.l = 0x91C0) of the 0x9 nibble — its own decode arms, disjoint
+        // from the SUB arms (opmode 0/1/2/4/5/6). Decode must produce a recipe (no panic / no todo!()).
+        for op in [0x94C4u16, 0x92C8, 0x94D6, 0x9BD2, 0x99FC, 0x90C0, 0x91C0] {
             let regs = Registers {
                 d: [0; 8],
                 a: [0; 7],
