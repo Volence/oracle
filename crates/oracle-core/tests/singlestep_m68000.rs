@@ -74,6 +74,11 @@ const FILES: &[&str] = &[
     "CMP.b.json",
     "CMP.w.json",
     "CMP.l.json",
+    // CMPA.w / CMPA.l (`1011 aaa 0 11/111 mmm rrr`, opmode 3/7) — pure CMPA files (not a mix). N3 decodes the
+    // flag-only address compare `An − <ea>` (An the minuend, full 32; `.w` source sign-extended word→long).
+    // All 12 source modes in scope except the pre-existing `(A7)` mode-2 plain-indirect convention.
+    "CMPA.w.json",
+    "CMPA.l.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -555,6 +560,15 @@ fn covered(opcode: u16, _ini: &Value) -> bool {
     ) {
         return cmp_in_scope(opcode);
     }
+    // CMPA `<ea>,An` (`1011 aaa 0 11/111 mmm rrr`, opmode 3/7 = .w/.l) — its own CMPA.w/.l files / decode arm.
+    // All 12 source modes in scope (An-direct legal; odd word/long source EAs are address errors the E3/E4
+    // abort covers — no parity filter) except the pre-existing `(A7)` (mode 2) plain-indirect deferral (its
+    // `(A7)+`/`-(A7)` siblings ARE in scope). Classified by OPCODE via `cmp_class`.
+    if matches!(cmp_class(opcode), CmpClass::Cmpa) {
+        let mode = (opcode >> 3) & 7;
+        let reg = opcode & 7;
+        return !(mode == 2 && reg == 7);
+    }
     // ADD/SUB. No parity filter (odd word/long EAs are address errors the E4 abort covers); the only
     // mode-scope deferrals are the `(A7)` (mode 2) plain-indirect form (`reg != 7`) and the illegal `An`-direct
     // byte source (mode 1). `mode` 3/4 are `(An)+`/`-(An)` (the auto-(in/de)crement bump is committed before the
@@ -705,8 +719,16 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 213_404,
-        "expected 213404 covered cases — N2 adds the CMPI `#imm,<ea>` (Cmpi) class of the 3-way CMP.* mix, so \
+        ran >= 229_260,
+        "expected 229260 covered cases — N3 adds CMPA `<ea>,An` (its own CMPA.w/.l files, opmode 3/7 = .w/.l): \
+         CMPA.w 7935 + CMPA.l 7921 = +15856 over N2's 213404. CMPA is the flag-only address compare `An − \
+         <ea>` (An the minuend, full 32 bits); the `.w` source word is sign-extended to 32 (`AluOp::Cmpa`, \
+         mirroring `AluOp::MoveA`) before the long-boundary subtraction setting N/Z/V/C and PRESERVING X, with \
+         NO write-back (`Dest::None`). Its source bus stream mirrors MOVEA of the same size (every source mode) \
+         plus a uniform trailing `Internal(2)` idle (CMPA = MOVEA + 2 cyc — pinned to the data). All 12 source \
+         modes in scope except the pre-existing `(A7)` mode-2 plain-indirect deferral (its `(A7)+`/`-(A7)` \
+         siblings ARE in scope); odd word/long source EAs are address errors the E3/E4 abort covers. \
+         Prior baseline — N2 adds the CMPI `#imm,<ea>` (Cmpi) class of the 3-way CMP.* mix, so \
          the CMP.* files are now FULLY covered (CMP.b 7939 + CMP.w 7949 + CMP.l 7943 = +2012 over N1's 211392: \
          CMPI in-scope contributes 778 + 603 + 631). CMPI captures the immediate (one ext word for b/w, TWO \
          for `.l`) BEFORE the EA's extension words, then reads the data-alterable EA and DISCARDS it (NO write \
@@ -744,7 +766,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -909,5 +931,60 @@ fn cmpi_anchors_match_singlesteptests() {
     assert_eq!(found, anchors.len(), "all N2 CMPI anchors exercised");
     eprintln!(
         "N2 CMPI anchors: {found} cases (Dn-dest + memory-dest, each size) passed both drivers"
+    );
+}
+
+/// N3 — the named `CMPA <ea>,An` anchors, pinning each source-mode shape of the flag-only address compare `An
+/// − <ea>` against the vendored CMPA.w/.l stream WITHOUT relying on the bulk `covered()` sweep: a **Dn**
+/// source whose source word has the high bit set (the `AluOp::Cmpa` sign-extend word→long test — `b2c3`'s D3
+/// low word is `0xd87d`), an **An** source (the legal register source), a **memory** source per size (`.w`
+/// `[Read, PF, n2]`, `.l` `[Read.hi, Read.lo, PF, n2]` — including the plan's `bdd7 CMPA.l (A7),A6`), and an
+/// **#imm** source per size. Each runs both drivers + the per-cycle transaction stream via `run_case`. The
+/// load-bearing pins: the `.w` source is sign-extended to 32 before the long-boundary subtraction; N/Z/V/C are
+/// set; X is PRESERVED; nothing is written back; and CMPA = MOVEA + a uniform trailing `n2` idle. Every anchor
+/// must classify as the Cmpa class **by OPCODE**.
+#[test]
+fn cmpa_anchors_match_singlesteptests() {
+    // (file, name-prefix, length) — the (prefix, length) pair picks the clean (even-EA) CMPA case.
+    let anchors: &[(&str, &str, u32)] = &[
+        ("CMPA.w.json", "b2c3", 6), // CMPA.w D3,A1 — Dn source, D3 low word 0xd87d (sign-extend test)
+        ("CMPA.w.json", "bccb", 6), // CMPA.w A3,A6 — An source (register source, n2 idle)
+        ("CMPA.w.json", "b8d3", 10), // CMPA.w (A3),A4 — memory source (.w, [Read, PF, n2])
+        ("CMPA.w.json", "bcfc", 10), // CMPA.w #imm,A6 — immediate source (.w)
+        ("CMPA.l.json", "b1d1", 14), // CMPA.l (A1),A0 — memory source (.l, [Read.hi, Read.lo, PF, n2])
+        ("CMPA.l.json", "bdd7", 14), // CMPA.l (A7),A6 — memory source via A7 (the plan's named anchor)
+        ("CMPA.l.json", "b9fc", 14), // CMPA.l #imm,A4 — immediate source (.l, 3 refills)
+    ];
+    let mut found = 0usize;
+    for (fname, prefix, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap().starts_with(prefix)
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| {
+                panic!("N3 CMPA anchor {prefix} (len {length}) not found in {fname}")
+            });
+        // Every anchor must classify as the Cmpa class (by OPCODE, not name).
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(
+            cmp_class(opcode),
+            CmpClass::Cmpa,
+            "anchor {prefix} must be the Cmpa class"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all N3 CMPA anchors exercised");
+    eprintln!(
+        "N3 CMPA anchors: {found} cases (Dn / An / memory / #imm sources, each size) passed both drivers"
     );
 }

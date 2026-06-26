@@ -369,6 +369,14 @@ pub enum AluOp {
     /// with the live X re-injected. `TST <ea>` reuses this with `b = Operand::Zero` (`a - 0`). The flag op of
     /// the compare family; distinct from [`AluOp::Sub`] (which recomputes X and writes a result back).
     Cmp,
+    /// CompareA: `An(full 32) − b` computed at the **long boundary**, where `b` is **sign-extended word→long
+    /// when `size == Word`** (else the full long) — exactly mirroring [`AluOp::MoveA`]'s internal
+    /// sign-extension, but applied to the `b` operand rather than `a`. Sets **N/Z/V/C** (from the long
+    /// subtraction), **PRESERVES X** (CMPA never touches X — like [`AluOp::Cmp`]), and writes **no value**
+    /// (paired with [`Dest::None`]). The minuend `a` is always [`Operand::AddrReg`] (the destination An, full
+    /// 32 bits). The flag op of `CMPA <ea>,An`; distinct from [`AluOp::Cmp`] (which compares at the
+    /// operand-size boundary with no sign-extension) and [`AluOp::MoveA`] (which writes An and sets no flags).
+    Cmpa,
 }
 
 /// A bitwise logic operation a [`MicroOp::SrLogic`] applies to the status register — the three privileged
@@ -828,6 +836,18 @@ impl MicroState {
                             }
                             Size::Long => sub_l(lhs, rhs),
                         };
+                        (r, (sub_ccr & !CCR_X) | (regs.sr & CCR_X))
+                    }
+                    // CMPA is `An − b` at the LONG boundary, `b` sign-extended word→long when size == Word
+                    // (mirroring MoveA's internal sign-extension), else the full long. N/Z/V/C from sub_l, X
+                    // PRESERVED (re-inject the live X), no write-back. `a` (An) is always full 32 bits.
+                    AluOp::Cmpa => {
+                        let b = match size {
+                            Size::Word => sign_extend16(rhs as u16),
+                            Size::Long => rhs,
+                            Size::Byte => unreachable!("byte CMPA is illegal"),
+                        };
+                        let (r, sub_ccr) = sub_l(lhs, b);
                         (r, (sub_ccr & !CCR_X) | (regs.sr & CCR_X))
                     }
                     AluOp::Add | AluOp::Sub => match size {

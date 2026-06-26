@@ -1562,6 +1562,39 @@ pub fn ea_movea(buf: &mut RecipeBuf, dst_reg: u8, src_mode: u16, src_reg: u8, si
     ea_src(buf, src_mode, src_reg, size, make_alu);
 }
 
+/// Assemble the full `CMPA.w`/`CMPA.l` recipe (`CMPA.{w,l} <ea>,An`): fetch the source operand (every source
+/// EA mode is legal — `An`-direct included), then the flag-only address compare `An − <ea>` via
+/// `Alu{Cmpa, a: AddrReg(An), b: source, dst: None}` — **no write-back** (CMPA only sets flags). The
+/// `AluOp::Cmpa` op sign-extends the source word→long when `size == Word` (mirroring `AluOp::MoveA`) and
+/// computes at the long boundary, setting N/Z/V/C and PRESERVING X.
+///
+/// The source bus stream is byte-for-byte the **MOVEA** stream of the same size: the word path reuses
+/// [`ea_src`], the long path reuses [`ea_movea_long`] (both take the same `make_alu` closure). CMPA differs
+/// from MOVEA in exactly two ways — the flag-only ALU (above) and a **uniform trailing `Internal(2)` idle**
+/// (`CMPA = MOVEA + 2 cycles` for every source mode, pinned to the vendored CMPA.w/.l stream). Byte CMPA is
+/// illegal and never reaches here.
+pub fn ea_cmpa(buf: &mut RecipeBuf, dst_reg: u8, src_mode: u16, src_reg: u8, size: Size) {
+    // The flag-only Cmpa ALU: An (the destination address register, full 32 bits) is the minuend `a`, the
+    // source operand is `b`, and nothing is written back (`Dest::None`). `make_alu` receives the source
+    // operand the EA builder fetched.
+    let make_alu = |operand: Operand| MicroOp::Alu {
+        op: AluOp::Cmpa,
+        size,
+        a: Operand::AddrReg(dst_reg),
+        b: operand,
+        dst: Dest::None,
+    };
+    if size == Size::Long {
+        ea_movea_long(buf, src_mode, src_reg, make_alu);
+    } else {
+        // Word CMPA — the source bus stream is identical to a word `<ea>,Dn` / MOVEA.w, so reuse `ea_src`.
+        ea_src(buf, src_mode, src_reg, size, make_alu);
+    }
+    // The uniform CMPA trailing idle (n2) — the one cycle-count difference from MOVEA. Non-bus, so it does
+    // not alter the transaction stream; it lands after the ALU (which is also non-bus) at the recipe tail.
+    buf.push(MicroOp::Internal { cycles: 2 });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -7,7 +7,7 @@
 //! builder per instruction family) lands with full coverage.
 
 use super::bus68k::Bus68k;
-use super::ea::{ea_dst, ea_move, ea_movea, ea_src, RecipeBuf};
+use super::ea::{ea_cmpa, ea_dst, ea_move, ea_movea, ea_src, RecipeBuf};
 use super::exception::{push_standard_frame, vector_fetch_and_reload};
 use super::microop::{
     condition_true, AluOp, Cpu68000, Dest, LogicOp, MicroOp, MicroState, Operand, Size,
@@ -239,6 +239,21 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
             _ => Size::Long, // SS = 2
         };
         return cmpi_recipe(opcode, size);
+    }
+    // CMPA `<ea>,An` (`1011 aaa 0 11/111 mmm rrr`, nibble 0xB, opmode 3 = `.w` / opmode 7 = `.l`) — the
+    // flag-only address compare `An − <ea>` (An the minuend, full 32 bits). All 12 source modes via the MOVEA
+    // source machinery ([`ea_movea`]'s `ea_src`/`ea_movea_long`); the `.w` source word is sign-extended to 32
+    // before the long-boundary subtraction (`AluOp::Cmpa` does this internally, mirroring `AluOp::MoveA`). Sets
+    // N/Z/V/C, PRESERVES X, writes nothing (`Dest::None`). The CMPA cycle count is the MOVEA bus cost plus a
+    // uniform trailing `Internal(2)` idle (CMPA = MOVEA + 2 cyc for every source mode — pinned to the data).
+    // The Cmpa class of the 0xB nibble (its own CMPA.w/.l files), classified by OPCODE.
+    if matches!(cmp_class(opcode), CmpClass::Cmpa) {
+        let size = if (opcode >> 6) & 7 == 3 {
+            Size::Word
+        } else {
+            Size::Long // opmode 7
+        };
+        return cmpa_recipe(opcode, size);
     }
     // Bcc / BRA (`0110 cccc dddddddd`, 0x6xxx) — conditional branch. cc = bits 11-8 (cc == 0 is BRA, always
     // taken); cc == 1 is BSR (a separate decode arm, NOT this commit) and is excluded. The condition is
@@ -541,6 +556,21 @@ fn cmp_ea_src_long(
         // idle), so delegate to the shared `ea_src` builder (which routes long sizes to `ea_src_long`).
         _ => ea_src(buf, mode, reg, Size::Long, make_alu),
     }
+}
+
+/// `CMPA.{w,l} <ea>,An` (`1011 aaa 0 11/111 mmm rrr`, opmode 3 = `.w` / 7 = `.l`): the flag-only address
+/// compare `An − <ea>` (**An is the minuend**, full 32 bits). The destination is `An` (bits 11-9, the SWAPPED
+/// reg field); the source is the usual `mode/reg` in bits 5-0 (all 12 modes legal — An-direct included). The
+/// ALU is [`AluOp::Cmpa`] (sign-extends a `.w` source word→long, computes at the long boundary, sets N/Z/V/C,
+/// PRESERVES X) writing to [`Dest::None`] (no write-back). Delegates to [`ea_cmpa`], whose source bus stream
+/// mirrors MOVEA of the same size plus the uniform trailing `Internal(2)` idle (CMPA = MOVEA + 2 cyc).
+fn cmpa_recipe(opcode: u16, size: Size) -> MicroState {
+    let dst_reg = ((opcode >> 9) & 7) as u8;
+    let src_mode = (opcode >> 3) & 7;
+    let src_reg = (opcode & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    ea_cmpa(&mut buf, dst_reg, src_mode, src_reg, size);
+    buf.finish()
 }
 
 /// The `(An)+` auto-increment step (bytes) for `CMPM`: word 2, long 4, byte 1 — except `(A7)+` byte steps by 2
@@ -8313,5 +8343,137 @@ mod tests {
                 "transaction stream from boundary {pause_after} diverged"
             );
         }
+    }
+
+    // --- N3: CMPA <ea>,An — the flag-only address compare (AluOp::Cmpa + Dest::None). An is the minuend
+    // (full 32 bits); the `.w` source word is sign-extended to 32 before the long-boundary subtraction. Sets
+    // N/Z/V/C, PRESERVES X, no write-back. CMPA = MOVEA's source bus stream + a uniform trailing n2 idle. ---
+
+    /// The clean SST anchor `b8d3 [CMPA.w (A3),A4]` (10 cyc): a memory-source word compare — read the source
+    /// word at `(A3)` (masked address `0xCEAEEE` = 13545198), refill, then the flag-only `A4 − sext16(src)` at
+    /// the long boundary. A4 = 0xCAAE0A36, source word 0x4532 → sext 0x00004532 → 0xCAAE0A36 − 0x00004532 =
+    /// 0xCAADC504 (negative) → N=1, Z=V=C=0; the initial X (set in SR 0x2712) is PRESERVED (final SR 0x2718 =
+    /// X | N). A4 is UNCHANGED (no write-back — CMPA only sets flags). Bus: `[r 13545198, PF, n2]`. This
+    /// exercises the memory-read + Cmpa/Dest::None + trailing-n2 composition.
+    fn setup_cmpa_w_b8d3() -> (Cpu68000, FlatBus) {
+        let mut regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0,
+            ssp: 2048,
+            pc: 3072,
+            sr: 0x2712, // X + V set
+            prefetch: [0xB8D3, 0x1B7C],
+        };
+        regs.a[3] = 0xA8CE_AEEE; // A3 (source base; bus masks to 0xCEAEEE = 13545198)
+        regs.a[4] = 0xCAAE_0A36; // A4 (the minuend)
+        let mut bus = FlatBus::new();
+        bus.poke(13545198, 0x45);
+        bus.poke(13545199, 0x32); // 0x4532 = 17714 — the source word
+        bus.poke(3076, 0xC4);
+        bus.poke(3077, 0xCC); // 0xC4CC = 50380 — the refill word
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_cmpa_w_b8d3_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 13545198,
+                size: Size::Word,
+                value: 17714,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 50380,
+            },
+        ]
+    }
+
+    fn assert_cmpa_w_b8d3_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced one word");
+        assert_eq!(
+            cpu.regs.sr, 0x2718,
+            "CMPA set N (negative diff), cleared Z/V/C, PRESERVED X"
+        );
+        assert_eq!(
+            cpu.regs.a[4], 0xCAAE_0A36,
+            "An (minuend) unchanged — CMPA writes no value"
+        );
+        assert_eq!(cpu.regs.a[3], 0xA8CE_AEEE, "source base A3 unchanged");
+        assert_eq!(cpu.regs.prefetch, [0x1B7C, 50380], "queue advanced");
+        assert_eq!(bus.log, expected_cmpa_w_b8d3_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_cmpa_w_b8d3() {
+        let (mut cpu, mut bus) = setup_cmpa_w_b8d3();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 10,
+            "CMPA.w (An) = [Read, Prefetch, Alu, Internal(2)] = 4+4+0+2 = 10 (MOVEA.w (An) 8 + n2)"
+        );
+        assert_cmpa_w_b8d3_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_cmpa_w_b8d3() {
+        let (mut rtc, mut bus_rtc) = setup_cmpa_w_b8d3();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_cmpa_w_b8d3();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 10);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_cmpa_w_b8d3_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn cmpa_w_b8d3_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The snapshot/restore anchor for the CMPA shape (Alu{Cmpa} with Dest::None, the trailing n2 idle).
+        let (mut rref, mut bref) = setup_cmpa_w_b8d3();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 4 micro-ops (Read, Prefetch, Alu, Internal(2)) → boundaries after 0..=3.
+        for pause_after in 0..=3 {
+            let (mut cpu, mut bus) = setup_cmpa_w_b8d3();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    #[test]
+    fn cmpa_decode_classifies_and_sizes() {
+        // CMPA is opmode 3 (.w) / 7 (.l) of the 0xB nibble — classified by OPCODE, its own decode arm.
+        assert_eq!(cmp_class(0xB0C0), CmpClass::Cmpa); // CMPA.w D0,A0 (opmode 3)
+        assert_eq!(cmp_class(0xB1C0), CmpClass::Cmpa); // CMPA.l D0,A0 (opmode 7)
+        assert_eq!(cmp_class(0xB8D3), CmpClass::Cmpa); // CMPA.w (A3),A4
+        assert_eq!(cmp_class(0xB9FC), CmpClass::Cmpa); // CMPA.l #imm,A4
     }
 }
