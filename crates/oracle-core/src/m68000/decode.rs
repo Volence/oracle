@@ -404,6 +404,29 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         };
         return clr_recipe(opcode, size);
     }
+    // NEG `<ea>` (`0100 0100 SS mmm rrr`, 0x4400/4440/4480, SS bits 7-6 = b/w/l) — negate the data-alterable EA:
+    // `res = (0 − d) & mask` with FULL SUBTRACT flags (NEG is literally `0 − d`): N = msb(res), Z = (res == 0),
+    // V = (d == sign-min) (the 0-minus-itself overflow), C = X = (d != 0) borrow (`AluOp::Neg` ≡ `Sub(0, d)`).
+    // NEG is a READ-then-WRITE for a memory destination — the SAME RMW path as CLR (`ea_dst`/`ea_dst_long`), but
+    // the read operand is the UNARY SOURCE (CLR discards it and writes 0; NEG negates it). The odd-EA case faults
+    // on the READ (low5 = 0x15), covered by the E3/E4 abort. `Dn`-direct (mode 0) has NO memory access:
+    // `Alu{Neg, size, a: <Dn by size>, b: Zero, dst: dn_dest(Dn,size)}` + Prefetch (NEG.l Dn = 6 cyc with one
+    // trailing idle; NEG.b/.w Dn = 4). The destination must be data-alterable (mode 0 OR `is_dst_mem_mode`).
+    // SS == 3 (0x44C0) is MOVE-to-CCR, NOT NEG, excluded by `& 0xC0 != 0xC0`. The opcode space 0x4400..=0x44BF is
+    // disjoint from CLR (0x4200) / TST (0x4A00) and the 0x4Exx / 0x4180 arms.
+    let neg_mode = (opcode >> 3) & 7;
+    let neg_reg = opcode & 7;
+    if opcode & 0xFF00 == 0x4400
+        && opcode & 0xC0 != 0xC0
+        && (neg_mode == 0 || is_dst_mem_mode(neg_mode, neg_reg))
+    {
+        let size = match (opcode >> 6) & 3 {
+            0 => Size::Byte,
+            1 => Size::Word,
+            _ => Size::Long, // SS = 2
+        };
+        return neg_family_recipe(opcode, AluOp::Neg, size);
+    }
     // Bcc / BRA (`0110 cccc dddddddd`, 0x6xxx) — conditional branch. cc = bits 11-8 (cc == 0 is BRA, always
     // taken); cc == 1 is BSR (a separate decode arm, NOT this commit) and is excluded. The condition is
     // evaluated at DECODE time against the live CCR, emitting the taken or not-taken linear recipe directly.
@@ -842,6 +865,55 @@ fn clr_recipe(opcode: u16, size: Size) -> MicroState {
             op: AluOp::Move,
             size,
             a: Operand::Zero,
+            b: Operand::Zero,
+            dst: Dest::Scratch(1),
+        });
+    }
+    buf.finish()
+}
+
+/// `NEG.{b,w,l} <ea>` (`0100 0100 SS mmm rrr`, 0x4400/4440/4480): negate the data-alterable EA — `res = (0 − d)
+/// & mask` with FULL SUBTRACT flags (NEG is literally `0 − d`): N = msb(res), Z = (res == 0), V = (d == sign-min)
+/// (the 0-minus-itself overflow), C = X = (d != 0) borrow (`AluOp::Neg` ≡ `Sub(0, d)`, operand order `lhs = 0,
+/// rhs = d`).
+///
+/// The SHARED single-operand recipe builder (modelled on [`clr_recipe`], parameterized by `AluOp` and `Size` so
+/// `NEGX`/`NOT` reuse it): for a **memory destination** it is byte-for-byte [`clr_recipe`]'s read-then-write RMW
+/// (`ea_dst`/`ea_dst_long`) EXCEPT the `make_alu` closure USES the read `operand` as the unary source `a` (CLR
+/// discards it and writes 0 — NEG transforms it). An odd EA faults on the READ (the E3/E4 abort), exactly like
+/// CLR — there is no write-only path. `.l` routes through `ea_dst_long` automatically (the reversed long store,
+/// lo @ EA+2 then hi @ EA).
+///
+/// `Dn`-direct (mode 0) has **no memory access**: a single `Prefetch` then `Alu{op, size, a: <Dn by size>, b:
+/// Zero, dst: dn_dest(Dn,size)}` (the size-masked register write-back). NEG.b/.w Dn = 4 cyc; **NEG.l Dn = 6 cyc**
+/// — the `.l` register form carries one trailing `Internal(2)` idle (pinned to the vendored `4482` anchor),
+/// unlike the byte/word forms.
+fn neg_family_recipe(opcode: u16, op: AluOp, size: Size) -> MicroState {
+    let mode = (opcode >> 3) & 7;
+    let reg = (opcode & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    if mode == 0 {
+        // Dn-direct — no memory: one refill, then the unary op on Dn (size-masked). NEG.l Dn adds one trailing
+        // idle (n2 → 6 cyc); NEG.b/.w Dn are 4 cyc with no idle.
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::Alu {
+            op,
+            size,
+            a: dn_operand(reg, size),
+            b: Operand::Zero,
+            dst: dn_dest(reg, size),
+        });
+        if size == Size::Long {
+            buf.push(MicroOp::Internal { cycles: 2 });
+        }
+    } else {
+        // Memory destination — the RMW path, IDENTICAL to `clr_recipe`'s EXCEPT the closure USES the read
+        // `operand` as the unary source `a` (CLR discards it and writes 0). `.l` uses the reversed long-store via
+        // `ea_dst_long`.
+        ea_dst(&mut buf, mode, reg, size, |operand| MicroOp::Alu {
+            op,
+            size,
+            a: operand,
             b: Operand::Zero,
             dst: Dest::Scratch(1),
         });

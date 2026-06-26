@@ -159,6 +159,19 @@ const FILES: &[&str] = &[
     "EOR.b.json",
     "EOR.w.json",
     "EOR.l.json",
+    // NEG.b / NEG.w / NEG.l (`0100 0100 SS mmm rrr`, 0x4400/4440/4480, SS bits 7-6 = b/w/l) — negate the
+    // data-alterable EA: `res = (0 − d) & mask` with FULL SUBTRACT flags (NEG ≡ `Sub(0, d)`): N = msb(res),
+    // Z = (res == 0), V = (d == sign-min) overflow, C = X = (d != 0) borrow (`AluOp::Neg`). G0 decodes the
+    // data-alterable EA set {Dn (0), (An) (2), (An)+ (3), -(An) (4), d16(An) (5), d8(An,Xn) (6), abs.w (7/0),
+    // abs.l (7/1)}; An-direct / PC-relative / #imm are not data-alterable and are absent. NEG is a READ-then-WRITE
+    // (it reads the EA, NEGATES it, then writes it back) — it reuses the `ea_dst`/`ea_dst_long` RMW path (the SAME
+    // as CLR, but the read operand is the unary source instead of discarded), so an odd word/long EA address-errors
+    // on the READ (low5 = 0x15), covered by the E3/E4 abort (no parity filter). The only intra-family deferral is
+    // the pre-existing `(A7)` (mode 2) plain-indirect form (its `(A7)+` / `-(A7)` siblings ARE in scope). Files are
+    // 100% pure NEG (no contaminants). Per-file true counts: NEG.b 7915 + NEG.w 7893 + NEG.l 7917 = +23725.
+    "NEG.b.json",
+    "NEG.w.json",
+    "NEG.l.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -767,6 +780,26 @@ fn covered(opcode: u16, _ini: &Value) -> bool {
             _ => false, // An-direct / PC-rel / #imm: absent / not data-alterable
         };
     }
+    // NEG `<ea>` (`0100 0100 SS mmm rrr`, 0x4400/4440/4480, SS != 3) — negate the data-alterable EA (`res =
+    // 0 − d`, full subtract flags). The data-alterable EA set is in scope: Dn (0), (An) (2 — minus the `(A7)`
+    // mode-2 deferral), (An)+ (3), -(An) (4), d16(An) (5), d8(An,Xn) (6), abs.w (7/0), abs.l (7/1). An-direct (1) /
+    // PC-relative (7/2, 7/3) / #imm (7/4) are NOT data-alterable and are absent. NEG is a READ-then-WRITE (it
+    // reuses the `ea_dst`/`ea_dst_long` RMW path), so an odd word/long EA address-errors on the READ (low5 =
+    // 0x15), the E3/E4 abort covers it (no parity filter). The ONE intra-family deferral is the plain `(A7)`
+    // mode-2 indirect (`mode == 2 && reg == 7`), the pre-existing precedent-consistent residual — its `(A7)+` /
+    // `-(A7)` siblings ARE in scope. SS == 3 (0x44C0) is MOVE-to-CCR, not NEG.
+    if opcode & 0xFF00 == 0x4400 && opcode & 0xC0 != 0xC0 {
+        let mode = (opcode >> 3) & 7;
+        let reg = opcode & 7;
+        return match mode {
+            0 => true,                         // Dn-direct (no memory access)
+            2 => reg != 7, // (An) — A7 mode-2 deferred (plain-indirect residual)
+            3 | 4 => true, // (An)+ / -(An)
+            5 | 6 => true, // d16(An) / d8(An,Xn)
+            7 if reg == 0 || reg == 1 => true, // abs.w / abs.l
+            _ => false,    // An-direct / PC-rel / #imm: absent / not data-alterable
+        };
+    }
     // ADD/SUB. No parity filter (odd word/long EAs are address errors the E4 abort covers); the only
     // mode-scope deferrals are the `(A7)` (mode 2) plain-indirect form (`reg != 7`) and the illegal `An`-direct
     // byte source (mode 1). `mode` 3/4 are `(An)+`/`-(An)` (the auto-(in/de)crement bump is committed before the
@@ -979,8 +1012,22 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 383_008,
-        "expected 383008 covered cases — L4 adds EOR.b / EOR.w / EOR.l in the `Dn,<ea>` direction ONLY (their \
+        ran >= 406_733,
+        "expected 406733 covered cases — G0 adds NEG.b / NEG.w / NEG.l (their own NEG.b/.w/.l files, 0x4400/4440/ \
+         4480, SS bits 7-6 = b/w/l): NEG.b 7915 + NEG.w 7893 + NEG.l 7917 = +23725 over L4's 383008. NEG negates \
+         the data-alterable EA — `res = (0 − d) & mask` with FULL SUBTRACT flags (NEG is literally `0 − d`): N = \
+         msb(res), Z = (res == 0), V = (d == sign-min) (the 0-minus-itself overflow), C = X = (d != 0) borrow — \
+         byte-identical to `Sub(0, d)` via the new unary `AluOp::Neg` (the exec arm delegates to the same \
+         `sub_{{b,w,l}}` helpers with `lhs = 0, rhs = the operand`; `b` is ignored, passed `Operand::Zero`). NEG is a \
+         READ-then-WRITE for a memory dest — the SAME `ea_dst`/`ea_dst_long` RMW path as CLR, but the read operand \
+         is the UNARY SOURCE (CLR discards it and writes 0; NEG negates it), built by the shared \
+         `neg_family_recipe` (`Dn`-direct mode 0 has no memory: one Prefetch + the size-masked Neg into Dn — NEG.l \
+         Dn = 6 cyc with a trailing n2, NEG.b/.w Dn = 4). The data-alterable EA set is in scope — Dn (0), (An) (2), \
+         (An)+ (3), -(An) (4), d16(An) (5), d8(An,Xn) (6), abs.w (7/0), abs.l (7/1) — except the pre-existing \
+         `(A7)` (mode 2) plain-indirect deferral (its `(A7)+`/`-(A7)` siblings ARE in scope); An-direct / PC-rel / \
+         #imm are not data-alterable and are absent. Odd word/long EAs address-error on the READ (low5 = 0x15), \
+         the E3/E4 abort covers them (no parity filter). The NEG.* files are 100% pure (no contaminants). \
+         Prior baseline — L4 adds EOR.b / EOR.w / EOR.l in the `Dn,<ea>` direction ONLY (their \
          own EOR.b/.w/.l files): EOR.b 7026 + EOR.w 6999 + EOR.l 7012 = +21037 over L3's 361971. EOR is bitwise \
          `a ^ b` — the SAME MOVE flag shape as AND/OR (N = msb(result at size) / Z = (result == 0), V/C cleared, \
          X PRESERVED, re-injected as `ccr_nz | (sr & CCR_X)`, never computed) via the new `AluOp::Eor`; only the \
@@ -1131,7 +1178,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -1742,5 +1789,70 @@ fn eor_anchors_match_singlesteptests() {
     assert_eq!(found, anchors.len(), "all L4 EOR anchors exercised");
     eprintln!(
         "L4 EOR anchors: {found} cases (Dn,Dn register dest + Dn,(An) memory dest, each size + odd-EA) passed both drivers"
+    );
+}
+
+/// G0 — the named `NEG <ea>` anchors, pinning each shape of the data-alterable negate against the vendored
+/// NEG.b/.w/.l stream WITHOUT relying on the bulk `covered()` sweep. NEG is `res = (0 − d) & mask` with FULL
+/// subtract flags (it is literally `0 − d`): N = msb(res), Z = (res == 0), **V = (d == sign-min)** (the
+/// 0-minus-itself overflow), **C = X = (d != 0)** borrow — byte-identical to `Sub(0, d)` via `AluOp::Neg`. The
+/// load-bearing pins: the **d == sign-min** case (`4405 [NEG.b D5] 359`, d.b = 0x80 → 0x80 with **V = 1**, N =
+/// C = X = 1) and the **d == 0** case (`4401 [NEG.b D1] 1689`, d = 0 → 0 with **Z = 1, C = X = 0**); the `Dn`
+/// register forms across sizes (NEG.l Dn = 6 cyc with the trailing n2, NEG.b/.w Dn = 4); the `(An)` memory
+/// READ-then-WRITE RMW (`.w` = 12 cyc `[r, PF, w]`, `.l` = 20 cyc reversed long store) — the SAME `ea_dst`/
+/// `ea_dst_long` path as CLR, EXCEPT the read operand is the unary source (not discarded); and an **odd-EA**
+/// case (`4459 [NEG.w (A1)+]`, len 50) faulting on the RMW READ into the group-0 14-byte address-error frame.
+/// Each runs both drivers + the per-cycle transaction stream via `run_case`. Every anchor must decode as a NEG
+/// opcode (mask 0xFFC0 ∈ {0x4400, 0x4440, 0x4480}, SS != 3 = not the 0x44C0 MOVE-to-CCR) — never a CMP-class.
+#[test]
+fn neg_anchors_match_singlesteptests() {
+    // (file, name-prefix, length) — the (prefix, length) pair picks the case. The V=1 / Z=1 pins use the FULL
+    // (unique) name to select the exact sign-min / zero operand; the rest use the opcode-hex prefix.
+    let anchors: &[(&str, &str, u32)] = &[
+        ("NEG.b.json", "4401 [NEG.b D1] 1689", 4), // NEG.b D1, d = 0 → Z = 1, C = X = 0
+        ("NEG.b.json", "4405 [NEG.b D5] 359", 4),  // NEG.b D5, d = 0x80 (sign-min) → V = 1 overflow
+        ("NEG.w.json", "4445", 4),                 // NEG.w D5 — register word (4 cyc, no idle)
+        ("NEG.l.json", "4482", 6),                 // NEG.l D2 — register long (6 cyc, trailing n2)
+        ("NEG.w.json", "4456", 12),                // NEG.w (A6) — memory RMW ([r, PF, w])
+        ("NEG.l.json", "4495", 20), // NEG.l (A5) — long memory RMW (reversed long store)
+        ("NEG.w.json", "4459 [NEG.w (A1)+]", 50), // NEG.w (A1)+ odd EA → group-0 14-byte frame (read fault)
+    ];
+    let mut found = 0usize;
+    for (fname, prefix, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap().starts_with(prefix)
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| {
+                panic!("G0 NEG anchor {prefix} (len {length}) not found in {fname}")
+            });
+        // Every anchor must be a NEG opcode (mask 0xFFC0 ∈ {0x4400, 0x4440, 0x4480}, SS != 3) — never a
+        // CMP-class opcode.
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert!(
+            matches!(opcode & 0xFFC0, 0x4400 | 0x4440 | 0x4480),
+            "anchor {prefix} must be a NEG opcode"
+        );
+        assert_ne!(opcode & 0xC0, 0xC0, "anchor {prefix} must not be SS == 3");
+        assert_eq!(
+            cmp_class(opcode),
+            CmpClass::None,
+            "NEG is not a CMP-class opcode"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all G0 NEG anchors exercised");
+    eprintln!(
+        "G0 NEG anchors: {found} cases (Dn each size incl. V=1 sign-min + Z=1 zero, (An) RMW .w/.l, odd-EA frame) passed both drivers"
     );
 }

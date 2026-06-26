@@ -421,6 +421,16 @@ pub enum AluOp {
     /// it is commutative so the operand order is inert. Distinct from [`AluOp::Add`] (which recomputes X and sets
     /// a real V/C) and [`AluOp::And`]/[`AluOp::Or`] (the same flag shape, only the bit op differs).
     Eor,
+    /// Neg: **unary** `result = (0 − a) & mask` at the operand-size boundary — the flag op of the `NEG` family
+    /// (`NEG <ea>` = `dst = 0 − dst`). It is byte-identical to [`AluOp::Sub`] with `a = 0, b = the operand` (NEG
+    /// is literally `0 − d`), so the exec arm delegates to the same `sub_{b,w,l}` helpers with `lhs = 0` and
+    /// `rhs = a` — `b` is **ignored** (the recipe passes [`Operand::Zero`]). Full SUBTRACT flags: **N = msb**,
+    /// **Z = (result == 0)**, **V = (a == sign-min)** (the 0-minus-itself overflow, set only when `a` is the most
+    /// negative value), **C = X = (a != 0)** (the borrow of `0 − a`). The size-masked result is written back
+    /// (low8/low16/full32 for a `Dn` dest, or parked in [`Dest::Scratch`] for a memory dest the trailing `Write`
+    /// stores — the read-then-write RMW). Distinct from [`AluOp::Sub`] (a binary `a − b` from a real second
+    /// operand) and the logic ops (which preserve X); NEG recomputes X exactly as subtraction does.
+    Neg,
 }
 
 /// A bitwise logic operation a [`MicroOp::SrLogic`] applies to the status register — the three privileged
@@ -951,6 +961,21 @@ impl MicroState {
                         let (r, sub_ccr) = sub_l(lhs, b);
                         (r, (sub_ccr & !CCR_X) | (regs.sr & CCR_X))
                     }
+                    // NEG is the UNARY `0 − a` — byte-identical to `Sub(0, a)`, so delegate to the same sub_*
+                    // helpers with `lhs = 0, rhs = a` (the resolved operand `a`; `b`/`rhs` is ignored, passed as
+                    // `Operand::Zero` by the recipe). The operand order is load-bearing: `sub_*(0, a)` makes
+                    // V/C/X come out as the borrow/overflow of `0 − a`. N/Z/V/C + X = C straight from the helper.
+                    AluOp::Neg => match size {
+                        Size::Word => {
+                            let (r, ccr) = sub_w(0, lhs as u16);
+                            (r as u32, ccr)
+                        }
+                        Size::Byte => {
+                            let (r, ccr) = sub_b(0, lhs as u8);
+                            (r as u32, ccr)
+                        }
+                        Size::Long => sub_l(0, lhs),
+                    },
                     AluOp::Add | AluOp::Sub => match size {
                         Size::Word => {
                             let (r, ccr) = match op {
