@@ -415,16 +415,21 @@ fn reset_covered(opcode: u16) -> bool {
 /// (mode-2) plain-indirect source — the pre-existing non-address-error mode-scope convention shared with
 /// ADD/SUB (its `(A7)+`/`-(A7)` siblings ARE in scope).
 fn cmp_in_scope(opcode: u16) -> bool {
-    if cmp_class(opcode) != CmpClass::Cmp {
-        return false; // CMPM/CMPI (this file's other classes) — deferred to N1/N2.
+    match cmp_class(opcode) {
+        // CMP `<ea>,Dn`: all source modes in scope, except the `(A7)` mode-2 plain-indirect (the pre-existing
+        // mode-scope convention shared with ADD/SUB; its `(A7)+`/`-(A7)` siblings ARE in scope).
+        CmpClass::Cmp => {
+            let mode = (opcode >> 3) & 7;
+            let reg = opcode & 7;
+            !(mode == 2 && reg == 7)
+        }
+        // CMPM `(Ay)+,(Ax)+` (N1): both operands are post-increment reads — no `(A7)` mode-2 exclusion applies
+        // (the `(A7)+` form is in scope, A7 steps by 2 for byte); odd word/long EAs are address errors the
+        // E3/E4 abort covers (no parity filter).
+        CmpClass::Cmpm => true,
+        // CMPI (N2), CMPA (its own decode arm), and non-CMP opcodes — not covered by this CMP-file dispatch.
+        _ => false,
     }
-    let mode = (opcode >> 3) & 7;
-    let reg = opcode & 7;
-    // (A7) mode-2 plain-indirect source stays deferred (the pre-existing mode-scope convention).
-    if mode == 2 && reg == 7 {
-        return false;
-    }
-    true
 }
 
 /// Whether the framework covers this case (else it is an xfail for this push). `ADD`/`SUB` in word, byte and
@@ -521,12 +526,10 @@ fn covered(opcode: u16, _ini: &Value) -> bool {
     if reset_covered(opcode) {
         return true;
     }
-    // CMP `<ea>,Dn` (the Cmp class of the 3-way CMP.* mix, classified by OPCODE). N0 admits ONLY the Cmp
-    // class — CMPM/CMPI (the same files' other classes) are deferred to N1/N2 and skip cleanly. All 12 source
-    // modes in scope (An-direct legal for w/l, absent for .b); odd word/long EAs are address errors the
-    // E3/E4 abort covers; only the `(A7)` mode-2 plain-indirect source stays deferred (pre-existing
-    // convention).
-    if matches!(cmp_class(opcode), CmpClass::Cmp) {
+    // CMP `<ea>,Dn` + CMPM `(Ay)+,(Ax)+` (the Cmp/Cmpm classes of the 3-way CMP.* mix, classified by OPCODE).
+    // N0 added Cmp; N1 adds Cmpm — CMPI (the same files' third class) is still deferred to N2 and skips cleanly.
+    // Odd word/long EAs are address errors the E3/E4 abort covers; the per-class scope is in `cmp_in_scope`.
+    if matches!(cmp_class(opcode), CmpClass::Cmp | CmpClass::Cmpm) {
         return cmp_in_scope(opcode);
     }
     // ADD/SUB. No parity filter (odd word/long EAs are address errors the E4 abort covers); the only
@@ -679,14 +682,17 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 208_715,
-        "expected 208715 covered cases — N0 adds the CMP `<ea>,Dn` (Cmp) class of the three 3-way CMP.* mix \
-         files (CMP.b 6250 + CMP.w 6457 + CMP.l 6435 = +19142 over E6's 189573; each CMP.* file holds 8065 \
-         cases, of which only the Cmp class — classified by OPCODE, never the misleading `name` — is in scope, \
-         minus the `(A7)` mode-2 plain-indirect source deferral; CMPM/CMPI in the same files classify as \
-         Cmpm/Cmpi and skip cleanly, deferred to N1/N2). CMP sets N/Z/V/C exactly as SUB but PRESERVES X and \
-         writes nothing (`AluOp::Cmp` + `Dest::None`); odd word/long source EAs are address errors the E3/E4 \
-         abort covers. Prior baseline — E6 adds the four privileged-op files (ANDItoSR/ORItoSR/EORItoSR/RESET, \
+        ran >= 211_392,
+        "expected 211392 covered cases — N1 adds the CMPM `(Ay)+,(Ax)+` (Cmpm) class of the 3-way CMP.* mix \
+         (CMP.b 7161 + CMP.w 7346 + CMP.l 7312 = +2677 over N0's 208715: CMPM contributes 911 + 889 + 877). \
+         CMPM is two post-increment reads (src @ (Ay)+ first, then dst @ (Ax)+) feeding the flag-only \
+         `(Ax) − (Ay)` (`AluOp::Cmp` + `Dest::None`, X preserved, no write); the `(An)+` bump is committed \
+         before the read (odd-EA read-faults still bump, via the E3/E4 abort), so no parity filter — only CMPI \
+         (the files' third class) remains deferred (N2). N0 added the CMP `<ea>,Dn` (Cmp) class (CMP.b 6250 + \
+         CMP.w 6457 + CMP.l 6435 = +19142 over E6's 189573; only the Cmp class in scope, classified by OPCODE \
+         never the misleading `name`, minus the `(A7)` mode-2 plain-indirect source deferral). CMP sets N/Z/V/C \
+         exactly as SUB but PRESERVES X and writes nothing; odd word/long source EAs are address errors the \
+         E3/E4 abort covers. Prior baseline — E6 adds the four privileged-op files (ANDItoSR/ORItoSR/EORItoSR/RESET, \
          8065 each, fully in scope = +32260 over E5's 157313). E4 had flipped the odd-address xfails IN: the \
          execution-time address-error abort (E3) installs the group-0 14-byte vector-3 frame, so every odd \
          word/long EA, odd branch / jump / return target, and odd popped PC/return-address PASSES through both \

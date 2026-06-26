@@ -212,6 +212,18 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         };
         return cmp_ea_dn(opcode, size);
     }
+    // CMPM `(Ay)+,(Ax)+` (`1011 xxx 1SS 001 yyy`, opmode 4/5/6 = b/w/l, EA mode field forced to 001) — compare
+    // memory: two post-increment reads (src @ `(Ay)+` FIRST, then dst @ `(Ax)+`), then the flag-only
+    // `(Ax) − (Ay)` (`AluOp::Cmp` + `Dest::None`). The Cmpm class of the 3-way CMP.* mix (classified by OPCODE).
+    // `xxx` (bits 11-9) = Ax (dest), `yyy` (bits 2-0) = Ay (src).
+    if matches!(cmp_class(opcode), CmpClass::Cmpm) {
+        let size = match (opcode >> 6) & 7 {
+            4 => Size::Byte,
+            5 => Size::Word,
+            _ => Size::Long, // opmode 6
+        };
+        return cmpm_recipe(opcode, size);
+    }
     // Bcc / BRA (`0110 cccc dddddddd`, 0x6xxx) — conditional branch. cc = bits 11-8 (cc == 0 is BRA, always
     // taken); cc == 1 is BSR (a separate decode arm, NOT this commit) and is excluded. The condition is
     // evaluated at DECODE time against the live CCR, emitting the taken or not-taken linear recipe directly.
@@ -513,6 +525,167 @@ fn cmp_ea_src_long(
         // idle), so delegate to the shared `ea_src` builder (which routes long sizes to `ea_src_long`).
         _ => ea_src(buf, mode, reg, Size::Long, make_alu),
     }
+}
+
+/// The `(An)+` auto-increment step (bytes) for `CMPM`: word 2, long 4, byte 1 — except `(A7)+` byte steps by 2
+/// to keep the stack pointer even (the in-scope A7 rule, mirroring `ea.rs`'s `step_bytes`).
+#[inline]
+fn cmpm_step(size: Size, reg: u8) -> i8 {
+    match size {
+        Size::Word => 2,
+        Size::Long => 4,
+        Size::Byte => {
+            if reg == 7 {
+                2
+            } else {
+                1
+            }
+        }
+    }
+}
+
+/// `CMPM (Ay)+,(Ax)+` (`1011 xxx 1SS 001 yyy`, opmode 4/5/6 = b/w/l): compare memory — read the **source** at
+/// `(Ay)+` FIRST, then the **destination** at `(Ax)+`, and set N/Z/V/C for `(Ax) − (Ay)` (X preserved, no
+/// write — `AluOp::Cmp` + `Dest::None`). `xxx` (bits 11-9) = Ax (dest), `yyy` (bits 2-0) = Ay (src). Each
+/// operand is a post-increment access: the pre-increment EA is captured into a scratch slot and the register is
+/// bumped BEFORE the read (the 68000 commits the auto-increment as part of EA calculation), so an odd-address
+/// read-fault still leaves the register incremented — pinned to the SST data, exactly as `ea_src`'s `(An)+`.
+/// Capturing Ax's base AFTER bumping Ay also makes the `Ay == Ax` aliasing case correct (the two reads then hit
+/// `A` and `A+step`). A `.l` operand is two word reads (hi @ base, lo @ base+2) assembled by `Combine32`. Bus:
+/// `[r src, r dst, PF]` (12 cyc for b/w) or `[r src.hi, r src.lo, r dst.hi, r dst.lo, PF]` (20 cyc for `.l`) —
+/// no idle, pinned to the vendored CMPM stream.
+fn cmpm_recipe(opcode: u16, size: Size) -> MicroState {
+    let ax = ((opcode >> 9) & 7) as u8; // destination (Ax)
+    let ay = (opcode & 7) as u8; // source (Ay)
+                                 // Scratch slots (all distinct, so every in-flight value is snapshot-visible): the two long read halves +
+                                 // assembled value per operand, the captured post-increment bases, and the long low-word address.
+    const SRC_HI: u8 = 0;
+    const SRC_LO: u8 = 1;
+    const SRC_VAL: u8 = 2;
+    const DST_HI: u8 = 3;
+    const DST_LO: u8 = 4;
+    const DST_VAL: u8 = 5;
+    const AY_BASE: u8 = 6;
+    const AX_BASE: u8 = 7;
+    const LO_ADDR: u8 = 8;
+    let data = super::microop::Fc::Data;
+    let mut buf = RecipeBuf::new();
+    if size == Size::Long {
+        // src @ (Ay)+ : capture Ay, bump +4, read hi @ base, read lo @ base+2, assemble.
+        buf.push(MicroOp::EaCalc {
+            base: Operand::AddrReg(ay),
+            index: Operand::Zero,
+            disp: Operand::Zero,
+            dst: AY_BASE,
+        });
+        buf.push(MicroOp::AdjustAddr { reg: ay, delta: 4 });
+        buf.push(MicroOp::Read {
+            addr: Operand::Scratch(AY_BASE),
+            fc: data,
+            size: Size::Word,
+            dst: SRC_HI,
+        });
+        buf.push(MicroOp::EaCalc {
+            base: Operand::Scratch(AY_BASE),
+            index: Operand::Zero,
+            disp: Operand::WordStep,
+            dst: LO_ADDR,
+        });
+        buf.push(MicroOp::Read {
+            addr: Operand::Scratch(LO_ADDR),
+            fc: data,
+            size: Size::Word,
+            dst: SRC_LO,
+        });
+        buf.push(MicroOp::Combine32 {
+            hi: SRC_HI,
+            lo: Operand::Scratch(SRC_LO),
+            dst: SRC_VAL,
+        });
+        // dst @ (Ax)+ : capture Ax (AFTER Ay's bump, so Ay == Ax aliases correctly), bump +4, read the pair.
+        buf.push(MicroOp::EaCalc {
+            base: Operand::AddrReg(ax),
+            index: Operand::Zero,
+            disp: Operand::Zero,
+            dst: AX_BASE,
+        });
+        buf.push(MicroOp::AdjustAddr { reg: ax, delta: 4 });
+        buf.push(MicroOp::Read {
+            addr: Operand::Scratch(AX_BASE),
+            fc: data,
+            size: Size::Word,
+            dst: DST_HI,
+        });
+        buf.push(MicroOp::EaCalc {
+            base: Operand::Scratch(AX_BASE),
+            index: Operand::Zero,
+            disp: Operand::WordStep,
+            dst: LO_ADDR,
+        });
+        buf.push(MicroOp::Read {
+            addr: Operand::Scratch(LO_ADDR),
+            fc: data,
+            size: Size::Word,
+            dst: DST_LO,
+        });
+        buf.push(MicroOp::Combine32 {
+            hi: DST_HI,
+            lo: Operand::Scratch(DST_LO),
+            dst: DST_VAL,
+        });
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::Alu {
+            op: AluOp::Cmp,
+            size,
+            a: Operand::Scratch(DST_VAL),
+            b: Operand::Scratch(SRC_VAL),
+            dst: Dest::None,
+        });
+    } else {
+        // src @ (Ay)+ : capture Ay, bump, read.
+        buf.push(MicroOp::EaCalc {
+            base: Operand::AddrReg(ay),
+            index: Operand::Zero,
+            disp: Operand::Zero,
+            dst: AY_BASE,
+        });
+        buf.push(MicroOp::AdjustAddr {
+            reg: ay,
+            delta: cmpm_step(size, ay),
+        });
+        buf.push(MicroOp::Read {
+            addr: Operand::Scratch(AY_BASE),
+            fc: data,
+            size,
+            dst: SRC_HI,
+        });
+        // dst @ (Ax)+ : capture Ax (after Ay's bump), bump, read.
+        buf.push(MicroOp::EaCalc {
+            base: Operand::AddrReg(ax),
+            index: Operand::Zero,
+            disp: Operand::Zero,
+            dst: AX_BASE,
+        });
+        buf.push(MicroOp::AdjustAddr {
+            reg: ax,
+            delta: cmpm_step(size, ax),
+        });
+        buf.push(MicroOp::Read {
+            addr: Operand::Scratch(AX_BASE),
+            fc: data,
+            size,
+            dst: DST_HI,
+        });
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::Alu {
+            op: AluOp::Cmp,
+            size,
+            a: Operand::Scratch(DST_HI),
+            b: Operand::Scratch(SRC_HI),
+            dst: Dest::None,
+        });
+    }
+    buf.finish()
 }
 
 /// `Bcc`/`BRA` (`0110 cccc dddddddd`, 0x6xxx; cc != 1 — cc == 1 is BSR, a separate arm): a conditional
@@ -7586,5 +7759,92 @@ mod tests {
         assert_eq!(cmp_class(0xB0C0), CmpClass::Cmpa); // CMPA.w D0,A0 (opmode 3)
         assert_eq!(cmp_class(0xB1C0), CmpClass::Cmpa); // CMPA.l D0,A0 (opmode 7)
         assert_eq!(cmp_class(0xD040), CmpClass::None); // ADD.w — not a CMP opcode
+    }
+
+    /// The clean SST anchor `b38c [CMPM.l (A4)+,(A1)+]` (20 cyc): a long compare-memory — read the source long
+    /// at `(A4)+` (hi @ A4, lo @ A4+2) FIRST, then the destination long at `(A1)+`, and compare `(A1) − (A4)`
+    /// flag-only. Both registers post-increment by 4. Bus: `[r A4, r A4+2, r A1, r A1+2, PF]`. This exercises
+    /// the two-post-increment-long-read + `Combine32` + `AluOp::Cmp`/`Dest::None` composition.
+    fn setup_cmpm_l_b38c() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                4_051_099_155,
+                3_430_939_128,
+                2_024_841_587,
+                1_388_351_731,
+                653_086_419,
+                2_046_873_409,
+                3_697_922_867,
+                4_130_196_076,
+            ],
+            a: [
+                2_207_835_777,
+                2_214_816_844, // A1 (dest)
+                798_385_746,
+                1_951_553_745,
+                3_110_298_684, // A4 (source)
+                3_309_464_988,
+                4_196_267_377,
+            ],
+            usp: 3_954_082_546,
+            ssp: 2048,
+            pc: 3072,
+            sr: 9995,                 // 0x270B
+            prefetch: [45964, 12117], // prefetch[0] = 0xB38C (CMPM.l)
+        };
+        let mut bus = FlatBus::new();
+        for (addr, val) in [
+            (3076u32, 119u8),
+            (3077, 65),
+            (6_513_724, 161), // (A4) long
+            (6_513_725, 222),
+            (6_513_726, 150),
+            (6_513_727, 145),
+            (224_332, 179), // (A1) long
+            (224_333, 219),
+            (224_334, 180),
+            (224_335, 236),
+        ] {
+            bus.poke(addr, val);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    #[test]
+    fn cmpm_l_quiescable_and_serializable_across_the_two_postinc_reads() {
+        // The snapshot/restore anchor for CMPM's new composition (two (An)+ long reads feeding a flag-only Cmp).
+        // Reference run via the run-to-completion driver, then snapshot/restore at every micro-op boundary.
+        let (mut rref, mut bref) = setup_cmpm_l_b38c();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        for pause_after in 0.. {
+            let (mut cpu, mut bus) = setup_cmpm_l_b38c();
+            cpu.start_instruction();
+            let mut finished = false;
+            for _ in 0..pause_after {
+                if let Step::Done(_) = cpu.step_micro_op(&mut bus) {
+                    finished = true;
+                    break;
+                }
+            }
+            if finished {
+                break; // stepped past the last boundary — all boundaries covered.
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
     }
 }
