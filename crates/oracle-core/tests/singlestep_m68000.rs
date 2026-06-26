@@ -95,6 +95,12 @@ const FILES: &[&str] = &[
     "CLR.b.json",
     "CLR.w.json",
     "CLR.l.json",
+    // MOVE.q (`0111 ddd 0 dddddddd`, 0x7000 | dn<<9 | imm8) — MOVEQ: load a sign-extended 8-bit immediate into
+    // the FULL 32 bits of Dn (N = msb, Z = value == 0, V/C cleared, X PRESERVED). N6 decodes the whole opcode
+    // space (bit 8 = 0 — the only legal form, and every vendored case has bit 8 clear). Every case is in scope:
+    // a single flag-ALU + the trailing FC-6 queue refill (length 4), no operand fetch (the value is the opcode's
+    // own low byte), no EA modes, no odd-address sub-cases.
+    "MOVE.q.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -699,6 +705,14 @@ fn covered(opcode: u16, _ini: &Value) -> bool {
             _ => false,
         };
     }
+    // MOVEQ (`0111 ddd 0 dddddddd`, 0x7000 | dn<<9 | imm8, bit 8 = 0) — load a sign-extended 8-bit immediate
+    // into the FULL 32 bits of Dn (N = msb / Z = value == 0, V/C cleared, X PRESERVED). The whole opcode space
+    // (bit 8 = 0) is in scope: there are no EA modes (the immediate is the opcode's own low byte), no memory
+    // access (a single FC-6 queue refill, length 4), and no odd-address sub-cases. Bit 8 set is illegal on the
+    // 68000 and absent from the data.
+    if opcode & 0xF100 == 0x7000 {
+        return true;
+    }
     false // other forms (not-yet-implemented modes): out of slice this push
 }
 
@@ -769,8 +783,17 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 277_650,
-        "expected 277650 covered cases — N5 adds CLR `<ea>` (its own CLR.b/.w/.l files, 0x4200/4240/4280, SS \
+        ran >= 285_715,
+        "expected 285715 covered cases — N6 adds MOVEQ (its own MOVE.q file, `0111 ddd 0 dddddddd` = 0x7000 | \
+         dn<<9 | imm8, bit 8 = 0): MOVE.q 8065 = +8065 over N5's 277650 (the WHOLE opcode space is in scope — no \
+         EA modes, no memory access, no odd-address sub-cases; every vendored case has bit 8 clear, the only \
+         legal form). MOVEQ loads a sign-extended 8-bit immediate into the FULL 32 bits of Dn (N = msb, Z = \
+         value == 0, V/C cleared, X PRESERVED = the `MOVE` flag op at the long boundary). The immediate is the \
+         opcode's OWN low byte (`Operand::BranchDisp8` = `sign_extend8(prefetch[0] & 0xFF)`), so there is NO \
+         operand fetch: the recipe is a single flag-ALU into Dn (full 32) + the trailing FC-6 queue refill \
+         (`[Alu Move/Long BranchDisp8 -> DataReg(Dn), Prefetch]`, length 4). No new vocabulary (`AluOp::Move` + \
+         `Operand::BranchDisp8` + `Dest::DataReg` all exist). \
+         Prior baseline — N5 adds CLR `<ea>` (its own CLR.b/.w/.l files, 0x4200/4240/4280, SS \
          bits 7-6 = b/w/l): CLR.b 8065 + CLR.w 8065 + CLR.l 8065 = +24195 over N4's 253455. CLR clears the \
          data-alterable EA to 0 (Z = 1, N = 0, V = 0, C = 0, X PRESERVED = `move_flags(0)`). CLR is a \
          READ-then-WRITE: it READS the EA (value DISCARDED), refills, then WRITES 0 — reusing the existing \
@@ -840,7 +863,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -1183,4 +1206,54 @@ fn clr_anchors_match_singlesteptests() {
     eprintln!(
         "N5 CLR anchors: {found} cases (Dn / (An) RMW / -(An) / (An)+ long RMW) passed both drivers"
     );
+}
+
+/// N6 — the named `MOVEQ #imm8,Dn` anchor, pinning the sign-extended quick-load against the vendored MOVE.q
+/// stream WITHOUT relying on the bulk `covered()` sweep: the plan's `7cb5` case (MOVEQ #0xB5,D6) whose immediate
+/// 0xB5 sign-extends to 0xFFFFFFB5, exercising the load-bearing sign-extension into the FULL 32 bits of Dn (the
+/// upper 24 bits are NOT preserved — MOVEQ writes all 32). It runs both drivers + the per-cycle transaction
+/// stream via `run_case`. The load-bearing pins: the value is `sign_extend8(opcode low byte)`, written full-width
+/// to Dn; N = msb / Z = (value == 0), V/C cleared, X PRESERVED; one FC-6 queue refill (length 4), no operand
+/// fetch. The anchor must be a MOVEQ opcode (0x7000 | dn<<9 | imm8, bit 8 = 0) — never a CMP-class opcode.
+#[test]
+fn moveq_anchor_matches_singlesteptests() {
+    // (file, name-prefix, length) — the (prefix, length) pair picks the named MOVEQ case.
+    let anchors: &[(&str, &str, u32)] = &[
+        ("MOVE.q.json", "7cb5", 4), // MOVEQ #0xB5,D6 — sign-extend 0xB5 → 0xFFFFFFB5 (full 32 bits)
+    ];
+    let mut found = 0usize;
+    for (fname, prefix, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap().starts_with(prefix)
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| {
+                panic!("N6 MOVEQ anchor {prefix} (len {length}) not found in {fname}")
+            });
+        // The anchor must be a MOVEQ opcode (0x7000 | dn<<9 | imm8, bit 8 = 0) — never a CMP-class opcode.
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(
+            opcode & 0xF100,
+            0x7000,
+            "anchor {prefix} must be a MOVEQ opcode (bit 8 = 0)"
+        );
+        assert_eq!(
+            cmp_class(opcode),
+            CmpClass::None,
+            "MOVEQ is not a CMP-class opcode"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all N6 MOVEQ anchors exercised");
+    eprintln!("N6 MOVEQ anchors: {found} case (sign-extended quick-load) passed both drivers");
 }

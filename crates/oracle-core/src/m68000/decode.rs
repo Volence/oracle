@@ -395,6 +395,16 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     if opcode == 0x4E70 {
         return reset_recipe();
     }
+    // MOVEQ (`0111 ddd 0 dddddddd`, 0x7000 | dn<<9 | imm8) — load a sign-extended 8-bit immediate into the FULL
+    // 32 bits of Dn, setting N = msb / Z = (value == 0), clearing V/C, PRESERVING X (the `MOVE` flag op at the
+    // long boundary). Bit 8 MUST be 0 — `0111 ddd 1 ...` is illegal on the 68000 and never appears in the data.
+    // The immediate is the opcode's own low byte (`Operand::BranchDisp8`); there is no operand fetch (the value
+    // is already in the prefetched opcode), so the recipe is a single flag-ALU + the trailing queue refill (4
+    // cyc, one FC-6 read). The opcode space 0x7xxx (bit 8 = 0) is disjoint from every arm above (which never
+    // matches the 0x7xxx high nibble).
+    if opcode & 0xF100 == 0x7000 {
+        return moveq_recipe(opcode);
+    }
     todo!("opcode {opcode:#06X} not yet decoded")
 }
 
@@ -485,6 +495,27 @@ fn movea_recipe(opcode: u16, size: Size) -> MicroState {
     let src_reg = (opcode & 7) as u8;
     let mut buf = RecipeBuf::new();
     ea_movea(&mut buf, dst_reg, src_mode, src_reg, size);
+    buf.finish()
+}
+
+/// `MOVEQ #imm8,Dn` (`0111 ddd 0 dddddddd`, 0x7000 | dn<<9 | imm8): load the sign-extended 8-bit immediate into
+/// the FULL 32 bits of `Dn`, setting N = msb / Z = (value == 0), clearing V/C, PRESERVING X — the `MOVE` flag op
+/// ([`AluOp::Move`]) at the **long** boundary. The immediate is the opcode's own low byte
+/// ([`Operand::BranchDisp8`] = `sign_extend8(prefetch[0] & 0xFF)`), so there is NO operand fetch (the value is
+/// already in the prefetched opcode word). The recipe is the single flag-ALU into `Dn` (full 32) followed by the
+/// trailing queue refill — `[Alu{Move,Long,BranchDisp8→DataReg(Dn)}, Prefetch]` (4 cyc, one FC-6 read). No new
+/// vocabulary (`AluOp::Move` + `Operand::BranchDisp8` + `Dest::DataReg` all exist).
+fn moveq_recipe(opcode: u16) -> MicroState {
+    let dn = ((opcode >> 9) & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    buf.push(MicroOp::Alu {
+        op: AluOp::Move,
+        size: Size::Long,
+        a: Operand::BranchDisp8,
+        b: Operand::Zero,
+        dst: Dest::DataReg(dn),
+    });
+    buf.push(MicroOp::Prefetch);
     buf.finish()
 }
 
@@ -9074,6 +9105,133 @@ mod tests {
         // CLR is 0x4200/4240/4280 (SS bits 7-6 = b/w/l); SS == 3 (0x42C0) is illegal on the 68000, not CLR.
         // Decode must produce a recipe (no panic) for the data-alterable modes.
         for op in [0x4282u16, 0x4216, 0x4261, 0x429B] {
+            let regs = Registers {
+                d: [0; 8],
+                a: [0; 7],
+                usp: 0,
+                ssp: 2048,
+                pc: 3072,
+                sr: 0x2700,
+                prefetch: [op, 0],
+            };
+            // Just exercising the decode arm — it must not panic / hit the todo!() fallthrough.
+            let _ = decode(&regs);
+        }
+    }
+
+    // --- N6: MOVEQ (`0111 ddd 0 dddddddd`, 0x7000 | dn<<9 | imm8, bit 8 = 0) — load a sign-extended 8-bit
+    // immediate into the FULL 32 bits of Dn, setting N = msb / Z = (value == 0), clearing V/C, PRESERVING X.
+    // The single-bus-event shape: `Alu{Move, Long, a: BranchDisp8, dst: DataReg(Dn)}` + `Prefetch` (4 cyc, one
+    // FC-6 queue refill). The immediate is the opcode's own low byte (`Operand::BranchDisp8`,
+    // `sign_extend8(prefetch[0] & 0xFF)`). Anchor pinned to the vendored MOVE.q stream. ---
+
+    /// The clean SST anchor `7cb5 [MOVE.q Q, D6]` (4 cyc): MOVEQ #0xB5,D6. imm8 0xB5 sign-extends to
+    /// 0xFFFFFFB5; the full 32 bits land in D6. The msb is set so N=1, the value is nonzero so Z=0, V/C cleared,
+    /// X PRESERVED (SR 0x270E → 0x2708, X clear here). Bus: one FC-6 refill at 3076 (no operand access — the
+    /// immediate is the opcode's own low byte). The sign-extension anchor.
+    fn setup_moveq_7cb5() -> (Cpu68000, FlatBus) {
+        let mut regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0,
+            ssp: 2048,
+            pc: 3072,
+            sr: 0x270E, // low byte 0x0E = N | Z | V set (X clear at bit4) — N kept, Z/V cleared, X preserved
+            prefetch: [0x7CB5, 32174],
+        };
+        regs.d[6] = 0xF075_AFE6; // overwritten in full by MOVEQ
+        let mut bus = FlatBus::new();
+        bus.poke(3076, 0x4B);
+        bus.poke(3077, 0x1D); // 0x4B1D = 19229 — the refill word
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_moveq_7cb5_log() -> Vec<Transaction> {
+        vec![Transaction {
+            kind: TxKind::Read,
+            fc: 6,
+            addr: 3076,
+            size: Size::Word,
+            value: 19229,
+        }]
+    }
+
+    fn assert_moveq_7cb5_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced one word");
+        assert_eq!(
+            cpu.regs.d[6], 0xFFFF_FFB5,
+            "D6 = sign_extend8(0xB5) = 0xFFFFFFB5 (full 32 bits)"
+        );
+        assert_eq!(
+            cpu.regs.sr, 0x2708,
+            "MOVEQ set N (msb), cleared Z/V/C, PRESERVED X"
+        );
+        assert_eq!(cpu.regs.prefetch, [32174, 19229], "queue advanced");
+        assert_eq!(bus.log, expected_moveq_7cb5_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_moveq_7cb5() {
+        let (mut cpu, mut bus) = setup_moveq_7cb5();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(cycles, 4, "MOVEQ = [Alu, Prefetch] = 4 (one FC-6 refill)");
+        assert_moveq_7cb5_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_moveq_7cb5() {
+        let (mut rtc, mut bus_rtc) = setup_moveq_7cb5();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_moveq_7cb5();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 4);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_moveq_7cb5_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn moveq_7cb5_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The snapshot/restore anchor across MOVEQ — the flag-setting register load (Move-of-sign-extended-imm
+        // into Dn, then the queue refill). Snapshot at every bus-access boundary and resume.
+        let (mut rref, mut bref) = setup_moveq_7cb5();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 2 micro-ops (Alu, Prefetch) → boundaries after 0..=1.
+        for pause_after in 0..=1 {
+            let (mut cpu, mut bus) = setup_moveq_7cb5();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    #[test]
+    fn moveq_decode_recognizes_opcode() {
+        // MOVEQ is `0111 ddd 0 dddddddd` (0x7000 | dn<<9 | imm8); bit 8 must be 0. Decode must produce a recipe
+        // (no panic) for representative Dn / immediate combinations.
+        for op in [0x7CB5u16, 0x7004, 0x7AF3, 0x70DE, 0x701E, 0x7E00] {
             let regs = Registers {
                 d: [0; 8],
                 a: [0; 7],
