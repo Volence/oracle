@@ -27,6 +27,7 @@
 //! data is missing, the test skips cleanly (run `tools/fetch-tests.sh`).
 
 use oracle_core::m68000::bus68k::{FlatBus, Transaction, TxKind};
+use oracle_core::m68000::decode::{cmp_class, CmpClass};
 use oracle_core::m68000::microop::{Cpu68000, Size, Step};
 use oracle_core::m68000::registers::Registers;
 use serde_json::Value;
@@ -66,6 +67,12 @@ const FILES: &[&str] = &[
     "ORItoSR.json",
     "EORItoSR.json",
     "RESET.json",
+    // N0: the CMP.* files are 3-WAY MIXES (CMP <ea>,Dn + CMPM (Ay)+,(Ax)+ + CMPI #imm,<ea>), all mislabeled
+    // "CMP.<sz>" in `name` — classified by OPCODE via `cmp_class`. This commit admits ONLY the Cmp class;
+    // CMPM/CMPI in these files are deferred (N1/N2) and skip cleanly (not-covered, never a panic).
+    "CMP.b.json",
+    "CMP.w.json",
+    "CMP.l.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -398,6 +405,28 @@ fn reset_covered(opcode: u16) -> bool {
     opcode == 0x4E70
 }
 
+/// Whether the framework covers this case out of the 3-way `CMP.*` mix — admitting **only the `Cmp` class**
+/// this commit (`CMP <ea>,Dn`, `1011 ddd 0SS mmm rrr`, opmode 0/1/2 = b/w/l). The CMPM and CMPI cases in the
+/// same files are deferred to N1/N2 (they classify as [`CmpClass::Cmpm`]/[`CmpClass::Cmpi`] → not covered →
+/// skipped cleanly, never decoded). Classification is by OPCODE (`cmp_class`), never the misleading `name`.
+///
+/// All 12 source modes are in scope (An-direct is legal for w/l, illegal/absent for `.b`); an odd word/long
+/// source EA is an address error the E3/E4 abort covers (no parity filter). The only deferral is the `(A7)`
+/// (mode-2) plain-indirect source — the pre-existing non-address-error mode-scope convention shared with
+/// ADD/SUB (its `(A7)+`/`-(A7)` siblings ARE in scope).
+fn cmp_in_scope(opcode: u16) -> bool {
+    if cmp_class(opcode) != CmpClass::Cmp {
+        return false; // CMPM/CMPI (this file's other classes) — deferred to N1/N2.
+    }
+    let mode = (opcode >> 3) & 7;
+    let reg = opcode & 7;
+    // (A7) mode-2 plain-indirect source stays deferred (the pre-existing mode-scope convention).
+    if mode == 2 && reg == 7 {
+        return false;
+    }
+    true
+}
+
 /// Whether the framework covers this case (else it is an xfail for this push). `ADD`/`SUB` in word, byte and
 /// long sizes, each in two forms — `Dn,<ea>` (memory dest; word ADD=0xD140/SUB=0x9140, byte ADD=0xD100/
 /// SUB=0x9100, long ADD=0xD180/SUB=0x9180) and `<ea>,Dn` (register dest; word ADD=0xD040/SUB=0x9040, byte
@@ -491,6 +520,14 @@ fn covered(opcode: u16, _ini: &Value) -> bool {
     // vendored case is supervisor; the user-mode privilege-violation entry is correctness-only (not gated).
     if reset_covered(opcode) {
         return true;
+    }
+    // CMP `<ea>,Dn` (the Cmp class of the 3-way CMP.* mix, classified by OPCODE). N0 admits ONLY the Cmp
+    // class — CMPM/CMPI (the same files' other classes) are deferred to N1/N2 and skip cleanly. All 12 source
+    // modes in scope (An-direct legal for w/l, absent for .b); odd word/long EAs are address errors the
+    // E3/E4 abort covers; only the `(A7)` mode-2 plain-indirect source stays deferred (pre-existing
+    // convention).
+    if matches!(cmp_class(opcode), CmpClass::Cmp) {
+        return cmp_in_scope(opcode);
     }
     // ADD/SUB. No parity filter (odd word/long EAs are address errors the E4 abort covers); the only
     // mode-scope deferrals are the `(A7)` (mode 2) plain-indirect form (`reg != 7`) and the illegal `An`-direct
@@ -642,8 +679,14 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 189_573,
-        "expected 189573 covered cases — E6 adds the four privileged-op files (ANDItoSR/ORItoSR/EORItoSR/RESET, \
+        ran >= 208_715,
+        "expected 208715 covered cases — N0 adds the CMP `<ea>,Dn` (Cmp) class of the three 3-way CMP.* mix \
+         files (CMP.b 6250 + CMP.w 6457 + CMP.l 6435 = +19142 over E6's 189573; each CMP.* file holds 8065 \
+         cases, of which only the Cmp class — classified by OPCODE, never the misleading `name` — is in scope, \
+         minus the `(A7)` mode-2 plain-indirect source deferral; CMPM/CMPI in the same files classify as \
+         Cmpm/Cmpi and skip cleanly, deferred to N1/N2). CMP sets N/Z/V/C exactly as SUB but PRESERVES X and \
+         writes nothing (`AluOp::Cmp` + `Dest::None`); odd word/long source EAs are address errors the E3/E4 \
+         abort covers. Prior baseline — E6 adds the four privileged-op files (ANDItoSR/ORItoSR/EORItoSR/RESET, \
          8065 each, fully in scope = +32260 over E5's 157313). E4 had flipped the odd-address xfails IN: the \
          execution-time address-error abort (E3) installs the group-0 14-byte vector-3 frame, so every odd \
          word/long EA, odd branch / jump / return target, and odd popped PC/return-address PASSES through both \
@@ -665,7 +708,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -691,6 +734,7 @@ fn address_error_anchors_match_singlesteptests() {
         ("MOVE.w.json", "3c82", 50), // MOVE.w D2,(A6) — data-WRITE fault, low5=0x05, SR pre-updated
         ("Bcc.json", "6d25", 52),   // Bcc taken odd target — program-read low5=0x1E, stPC=target-4
         ("ADD.l.json", "d8b9", 58), // ADD.l (abs.l),D4 — odd base, full-32 access-addr
+        ("CMP.w.json", "bc51", 50), // CMP.w (A1),D6 — odd source read (An), low5=0x15, flag-only CMP
     ];
     let mut found = 0usize;
     for (fname, prefix, length) in anchors {
@@ -720,5 +764,59 @@ fn address_error_anchors_match_singlesteptests() {
     );
     eprintln!(
         "E3 address-error anchors: {found} odd cases (group-0 14-byte vector-3 frame) passed both drivers"
+    );
+}
+
+/// N0 — the named `CMP <ea>,Dn` source-mode anchors, pinning each shape of the flag-only compare against the
+/// vendored CMP.* stream WITHOUT relying on the bulk `covered()` sweep to have reached them: a **Dn** source
+/// (no read, the n2 register long idle), an **An** source (the legal `.w/.l` register source), and a **memory**
+/// source per size (the `[Read, Prefetch]` / long `[Read.hi, Read.lo, Prefetch]` interleave). Each runs both
+/// drivers + the per-cycle transaction stream via `run_case`. The load-bearing invariant — **CMP sets N/Z/V/C
+/// like SUB but PRESERVES X** — is exercised by every case (and pinned tightly by the `b685` unit test in
+/// `decode.rs`, whose initial SR carries X set and whose positive-diff result keeps X).
+#[test]
+fn cmp_source_mode_anchors_match_singlesteptests() {
+    // (file, name-prefix, length) — uniquely picks the clean (even-EA) anchor out of same-opcode cases.
+    let anchors: &[(&str, &str, u32)] = &[
+        ("CMP.l.json", "b685", 6), // CMP.l D5,D3 — Dn source (n2 register long idle, 6 cyc)
+        ("CMP.l.json", "bc88", 6), // CMP.l A0,D6 — An source (legal .l register source, 6 cyc)
+        ("CMP.w.json", "b650", 8), // CMP.w (A0),D3 — memory source (.w, [Read, PF], 8 cyc)
+        ("CMP.l.json", "b492", 14), // CMP.l (A2),D2 — memory source (.l, [Read.hi, Read.lo, PF], 14 cyc)
+    ];
+    let mut found = 0usize;
+    for (fname, prefix, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap().starts_with(prefix)
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| {
+                panic!("N0 CMP source-mode anchor {prefix} (len {length}) not found in {fname}")
+            });
+        // Every anchor must classify as the Cmp class (by OPCODE, not name).
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(
+            cmp_class(opcode),
+            CmpClass::Cmp,
+            "anchor {prefix} must be the Cmp class"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(
+        found,
+        anchors.len(),
+        "all N0 CMP source-mode anchors exercised"
+    );
+    eprintln!(
+        "N0 CMP source-mode anchors: {found} cases (Dn / An / memory sources) passed both drivers"
     );
 }

@@ -338,6 +338,10 @@ pub enum Dest {
     DataRegLow16(u8),
     /// The low byte of data register `Dn` (its upper 24 bits are preserved — a `.b` write-back).
     DataRegLow8(u8),
+    /// **No write-back** — flag-only. The [`MicroOp::Alu`] sets the CCR and writes nothing (no register, no
+    /// scratch). The compare family (`CMP`/`CMPM`/`CMPI`/`TST` via [`AluOp::Cmp`], and later `CMPA` via
+    /// `Cmpa`) computes a subtraction purely for its flags.
+    None,
 }
 
 /// An ALU operation a [`MicroOp::Alu`] performs (computing into scratch and updating the CCR). The
@@ -359,6 +363,12 @@ pub enum AluOp {
     /// (`Dest::AddrReg`), so there is no size-masked write-back. Distinct from [`AluOp::Move`] (which sets
     /// N/Z and writes a size-truncated value).
     MoveA,
+    /// Compare: `a - b` (a the minuend) at the operand-size boundary, setting **N/Z/V/C exactly as
+    /// [`AluOp::Sub`]** but **PRESERVING X** (CMP/CMPM/CMPI/TST never touch X) and writing **no value** (paired
+    /// with [`Dest::None`]). The CCR is `(sub_ccr & !CCR_X) | (regs.sr & CCR_X)` — the subtraction's N/Z/V/C
+    /// with the live X re-injected. `TST <ea>` reuses this with `b = Operand::Zero` (`a - 0`). The flag op of
+    /// the compare family; distinct from [`AluOp::Sub`] (which recomputes X and writes a result back).
+    Cmp,
 }
 
 /// A bitwise logic operation a [`MicroOp::SrLogic`] applies to the status register — the three privileged
@@ -804,6 +814,22 @@ impl MicroState {
                         let (r, ccr_nz) = move_flags(lhs, size);
                         (r, ccr_nz | (regs.sr & CCR_X))
                     }
+                    // CMP is SUB's N/Z/V/C with X PRESERVED (never written) and no write-back. Compute the
+                    // subtraction's flags exactly as Sub, then strip its X and re-inject the live X.
+                    AluOp::Cmp => {
+                        let (r, sub_ccr) = match size {
+                            Size::Word => {
+                                let (r, ccr) = sub_w(lhs as u16, rhs as u16);
+                                (r as u32, ccr)
+                            }
+                            Size::Byte => {
+                                let (r, ccr) = sub_b(lhs as u8, rhs as u8);
+                                (r as u32, ccr)
+                            }
+                            Size::Long => sub_l(lhs, rhs),
+                        };
+                        (r, (sub_ccr & !CCR_X) | (regs.sr & CCR_X))
+                    }
                     AluOp::Add | AluOp::Sub => match size {
                         Size::Word => {
                             let (r, ccr) = match op {
@@ -837,6 +863,9 @@ impl MicroState {
                     }
                     // An is only ever written by MoveA (handled above, no flags), never by Add/Sub/Move.
                     Dest::AddrReg(_) => unreachable!("AddrReg dest is MoveA-only"),
+                    // Flag-only (CMP family): the CCR is already set above; nothing is written back. The
+                    // `result` is the discarded subtraction value.
+                    Dest::None => {}
                 }
                 0
             }

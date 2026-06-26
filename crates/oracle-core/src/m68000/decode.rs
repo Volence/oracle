@@ -67,6 +67,50 @@ fn is_movea(opcode: u16) -> bool {
     (opcode >> 14) == 0 && ((opcode >> 6) & 7) == 1 && matches!((opcode >> 12) & 3, 0b11 | 0b10)
 }
 
+/// Which member of the `1011`-prefixed compare family an opcode is — the load-bearing classifier shared by
+/// [`decode`] and the SST runner's `covered()` filter. **The `CMP.<sz>.json` vendored files are 3-way
+/// mixes** (CMP `<ea>,Dn` + CMPM `(Ay)+,(Ax)+` + CMPI `#imm,<ea>`), all mislabeled `"CMP.<sz>"` in the
+/// `name` field — so a case MUST be classified by its **opcode**, never by name. Classifying by opcode:
+///
+/// - **CMPI** `0000 1100 SS mmm rrr` (high byte `0x0C`, the `0000`-prefixed immediate space). Tested FIRST
+///   (it is not in the `0xB` nibble at all, but kept here so the one classifier covers every CMP-file class).
+/// - **CMPM** `1011 xxx 1SS 001 yyy` — nibble `0xB` with the opmode bit2 set (opmode 4/5/6 → b/w/l) and the
+///   EA mode field forced to `001` (`(An)+`).
+/// - **CMP** `1011 ddd 0SS mmm rrr` — nibble `0xB`, opmode 0/1/2 (b/w/l), `Dn − <ea>`.
+/// - **CMPA** `1011 aaa 0 11/111 mmm rrr` — nibble `0xB`, opmode 3 (`.w`) or 7 (`.l`).
+/// - **None** for any non-`0xB`, non-CMPI opcode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CmpClass {
+    Cmp,
+    Cmpm,
+    Cmpi,
+    Cmpa,
+    None,
+}
+
+/// Classify an opcode into its [`CmpClass`] — see that type's docs. Shared by [`decode`] (which CMP arm to
+/// build) and the SST runner's `covered()` (which CMP-file cases are in scope this commit). Classifying by
+/// OPCODE — not the misleading `name` field — is the central correctness pin of the CMP family.
+#[inline]
+pub fn cmp_class(opcode: u16) -> CmpClass {
+    // CMPI: `0000 1100 SS mmm rrr` — high byte 0x0C (the 0000-prefixed immediate space).
+    if opcode >> 8 == 0x0C {
+        return CmpClass::Cmpi;
+    }
+    if opcode >> 12 == 0b1011 {
+        return match (opcode >> 6) & 7 {
+            // opmode bit2 set with EA mode field 001 → CMPM (Ay)+,(Ax)+ (opmode 4/5/6 = b/w/l).
+            4..=6 if (opcode >> 3) & 7 == 1 => CmpClass::Cmpm,
+            // opmode 0/1/2 → CMP <ea>,Dn (b/w/l).
+            0..=2 => CmpClass::Cmp,
+            // opmode 3/7 → CMPA <ea>,An (.w/.l).
+            3 | 7 => CmpClass::Cmpa,
+            _ => CmpClass::None,
+        };
+    }
+    CmpClass::None
+}
+
 /// Decode the opcode currently in `regs.prefetch[0]` into its micro-op recipe, latching the original opcode
 /// into the recipe ([`MicroState::set_opcode`]) so the address-error abort (E3) can stack it as the IR /
 /// SSW fields after the prefetch shifts have overwritten `regs.prefetch`.
@@ -153,6 +197,20 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     }
     if opcode & 0xF1C0 == 0x9080 {
         return arith_ea_dn(opcode, AluOp::Sub, Size::Long); // SUB.l <ea>,Dn
+    }
+    // CMP `<ea>,Dn` (`1011 ddd 0SS mmm rrr`, nibble 0xB, opmode 0/1/2 = b/w/l) — the flag-only compare
+    // `Dn − <ea>` (Dn the minuend). Classified by OPCODE (the CMP.* files mix CMP/CMPM/CMPI — CMPM/CMPI are
+    // N1/N2, and `covered()` admits only the Cmp class this commit, so decode is reached on Cmp cases only).
+    // All 12 source modes via `ea_src` (An-direct legal for w/l, illegal/absent for .b). Sets N/Z/V/C as SUB
+    // but PRESERVES X and writes nothing (`AluOp::Cmp` + `Dest::None`). The opcode space is disjoint from the
+    // ADD/SUB arms above (nibble 0x9/0xD) and the immediate-to-SR / 0x4Exx arms below.
+    if matches!(cmp_class(opcode), CmpClass::Cmp) {
+        let size = match (opcode >> 6) & 7 {
+            0 => Size::Byte,
+            1 => Size::Word,
+            _ => Size::Long, // opmode 2
+        };
+        return cmp_ea_dn(opcode, size);
     }
     // Bcc / BRA (`0110 cccc dddddddd`, 0x6xxx) — conditional branch. cc = bits 11-8 (cc == 0 is BRA, always
     // taken); cc == 1 is BSR (a separate decode arm, NOT this commit) and is excluded. The condition is
@@ -371,6 +429,90 @@ fn arith_ea_dn(opcode: u16, op: AluOp, size: Size) -> MicroState {
         dst: dn_dest(dn, size),
     });
     buf.finish()
+}
+
+/// `CMP.{b,w,l} <ea>,Dn` (`1011 ddd 0SS mmm rrr`, opmode 0/1/2): the flag-only compare `Dn − <ea>` (**Dn is
+/// the minuend**, `a`). The ALU is [`AluOp::Cmp`] (SUB's N/Z/V/C with **X preserved**) writing to
+/// [`Dest::None`] (no register/scratch write-back).
+///
+/// For **byte/word** the source-EA skeleton is byte-for-byte the `<ea>,Dn` shape ADD/SUB use — the same
+/// [`ea_src`] builder, the same cycle counts and bus stream (CMP.b/.w match ADD.b/.w exactly in the vendored
+/// data). For **long** CMP differs from ADD.l in ONE place: a **register-direct (Dn/An) or `#imm` long
+/// source's trailing idle is `n2`, not ADD's `n4`** (CMP.l Dn/An/#imm = 6/6/14 cyc vs ADD.l's 8/8/16; every
+/// long MEMORY mode is identical at n2). So long CMP uses a dedicated [`cmp_ea_src_long`] that mirrors
+/// `ea_src_long` but with the n2 register/#imm idle — pinned to the vendored CMP.l stream.
+fn cmp_ea_dn(opcode: u16, size: Size) -> MicroState {
+    let dn = ((opcode >> 9) & 7) as u8;
+    let mode = (opcode >> 3) & 7;
+    let reg = (opcode & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    let make_alu = |b| MicroOp::Alu {
+        op: AluOp::Cmp,
+        size,
+        a: dn_operand(dn, size),
+        b,
+        dst: Dest::None,
+    };
+    if size == Size::Long {
+        cmp_ea_src_long(&mut buf, mode, reg, make_alu);
+    } else {
+        ea_src(&mut buf, mode, reg, size, make_alu);
+    }
+    buf.finish()
+}
+
+/// The long source-EA sub-sequence for `CMP.l <ea>,Dn` — a flag-only twin of [`ea_src_long`](super::ea::ea_src)
+/// that differs ONLY in the **register-direct / `#imm`** trailing idle: CMP.l uses `n2` where ADD.l/SUB.l use
+/// `n4` (CMP.l Dn/An/#imm = 6/6/14 cyc, pinned to the vendored CMP.l stream). Every long **memory** mode is
+/// identical to `ea_src_long` (same n2 memory idle), so those delegate straight to the shared builder via
+/// [`ea_src`] — only the three no-read source modes (Dn 0, An 1, `#imm` 7/4) are re-emitted here with the
+/// correct n2.
+fn cmp_ea_src_long(
+    buf: &mut RecipeBuf,
+    mode: u16,
+    reg: u8,
+    make_alu: impl FnOnce(Operand) -> MicroOp,
+) {
+    match (mode, reg) {
+        // Dn / An direct — no operand read: one refill, the flag-ALU on the full 32-bit register, then the
+        // CMP register-source long idle (n2, NOT ADD's n4). Bus: [PF].
+        (0, _) | (1, _) => {
+            let operand = if mode == 0 {
+                Operand::DataRegFull(reg)
+            } else {
+                Operand::AddrReg(reg)
+            };
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(operand));
+            buf.push(MicroOp::Internal { cycles: 2 });
+        }
+        // #imm.l — the 32-bit immediate is two extension words: HI = prefetch[1] (captured into a scratch slot
+        // before the refill shifts it out), a refill shifts the LO word in, Combine32 assembles them, then two
+        // more refills complete the 3-word fetch; the flag-ALU and the CMP immediate long idle (n2, NOT ADD's
+        // n4). Bus: [PF, PF, PF]. The HI capture reads slot 0 while still zero (fresh recipe), so
+        // `(0 << 16) | prefetch[1]` parks the HI word unmasked — the same idiom `ea_src_long` uses.
+        (7, 4) => {
+            const CMP_IMM_HI_SLOT: u8 = 3;
+            buf.push(MicroOp::Combine32 {
+                hi: 0,
+                lo: Operand::ImmWord,
+                dst: CMP_IMM_HI_SLOT,
+            });
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::Combine32 {
+                hi: CMP_IMM_HI_SLOT,
+                lo: Operand::ImmWord,
+                dst: 0,
+            });
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::Scratch(0)));
+            buf.push(MicroOp::Internal { cycles: 2 });
+        }
+        // Every long MEMORY mode (2/3/4/5/6, 7/0..=3) is byte-for-byte ADD.l's `ea_src_long` (same n2 memory
+        // idle), so delegate to the shared `ea_src` builder (which routes long sizes to `ea_src_long`).
+        _ => ea_src(buf, mode, reg, Size::Long, make_alu),
+    }
 }
 
 /// `Bcc`/`BRA` (`0110 cccc dddddddd`, 0x6xxx; cc != 1 — cc == 1 is BSR, a separate arm): a conditional
@@ -7320,5 +7462,129 @@ mod tests {
                 "transaction stream from boundary {pause_after} diverged"
             );
         }
+    }
+
+    // --- N0: CMP <ea>,Dn — the flag-only compare (AluOp::Cmp + Dest::None). The recipe is `ea_src` driving
+    // a flag-only Alu (Dn the minuend, Dn − <ea>), no write-back. The critical invariant is X PRESERVED (CMP
+    // never sets X like SUB does). Anchors pinned to the vendored CMP.{w,l} SST stream. ---
+
+    /// The clean SST reference case `b685 [CMP.l D5,D3]` (Dn source, 6 cycles). opcode 0xB685: opmode 2
+    /// (`.l`), dst reg D3 (bits 11-9), source mode 0 reg 5 (D5). Computes D3 − D5 = 0x7C30354C − 0x6EAFDC53 =
+    /// 0x0D805 8F9 (positive, nonzero) → N=0 Z=0 V=0 C=0. The X bit (set in the initial SR 0x2714) must be
+    /// PRESERVED (final SR 0x2710 keeps X) — the load-bearing CMP-vs-SUB difference. Bus: one FC-6 refill at
+    /// 3076, then an n2 idle (no operand read — Dn direct).
+    fn setup_cmp_b685() -> (Cpu68000, FlatBus) {
+        let mut regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0,
+            ssp: 2048,
+            pc: 3072,
+            sr: 0x2714, // X + Z set
+            prefetch: [0xB685, 0x0B11],
+        };
+        regs.d[5] = 1_856_844_115; // 0x6EAFDC53
+        regs.d[3] = 2_083_522_828; // 0x7C30354C
+        let mut bus = FlatBus::new();
+        bus.poke(3076, 0xB5);
+        bus.poke(3077, 0x2C); // 0xB52C = 46380 — the refill word
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_cmp_b685_log() -> Vec<Transaction> {
+        vec![Transaction {
+            kind: TxKind::Read,
+            fc: 6,
+            addr: 3076,
+            size: Size::Word,
+            value: 46380,
+        }]
+    }
+
+    fn assert_cmp_b685_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced one word");
+        assert_eq!(
+            cpu.regs.sr, 0x2710,
+            "CMP set N/Z/V/C (all clear: positive nonzero diff) but PRESERVED X"
+        );
+        assert_eq!(
+            cpu.regs.d[3], 2_083_522_828,
+            "Dn (minuend) unchanged — no write-back"
+        );
+        assert_eq!(cpu.regs.d[5], 1_856_844_115, "source D5 unchanged");
+        assert_eq!(cpu.regs.prefetch, [0x0B11, 46380], "queue advanced");
+        assert_eq!(bus.log, expected_cmp_b685_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_cmp_b685() {
+        let (mut cpu, mut bus) = setup_cmp_b685();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 6,
+            "Dn-source CMP.l = [Prefetch, Alu, Internal(4)] = 6"
+        );
+        assert_cmp_b685_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_cmp_b685() {
+        let (mut rtc, mut bus_rtc) = setup_cmp_b685();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_cmp_b685();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 6);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_cmp_b685_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn cmp_b685_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The snapshot/restore anchor for the flag-only compare shape (Alu with Dest::None, no write-back).
+        let (mut rref, mut bref) = setup_cmp_b685();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 3 micro-ops (Prefetch, Alu, Internal(4)) → boundaries after 0..=2.
+        for pause_after in 0..=2 {
+            let (mut cpu, mut bus) = setup_cmp_b685();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    #[test]
+    fn cmp_class_classifies_by_opcode_not_name() {
+        // The load-bearing classifier: CMP.* files mix CMP + CMPM + CMPI; classify by OPCODE.
+        assert_eq!(cmp_class(0xB685), CmpClass::Cmp); // CMP.l D5,D3 (opmode 2)
+        assert_eq!(cmp_class(0xB650), CmpClass::Cmp); // CMP.w (A0),D3 (opmode 1)
+        assert_eq!(cmp_class(0xBC88), CmpClass::Cmp); // CMP.l A0,D6 (opmode 2)
+        assert_eq!(cmp_class(0xB108), CmpClass::Cmpm); // CMPM.b (A0)+,(A0)+ (opmode 4)
+        assert_eq!(cmp_class(0x0C40), CmpClass::Cmpi); // CMPI.w #imm,D0
+        assert_eq!(cmp_class(0xB0C0), CmpClass::Cmpa); // CMPA.w D0,A0 (opmode 3)
+        assert_eq!(cmp_class(0xB1C0), CmpClass::Cmpa); // CMPA.l D0,A0 (opmode 7)
+        assert_eq!(cmp_class(0xD040), CmpClass::None); // ADD.w — not a CMP opcode
     }
 }
