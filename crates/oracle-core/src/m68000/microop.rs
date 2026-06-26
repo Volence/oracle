@@ -444,6 +444,16 @@ pub enum AluOp {
     /// [`Operand::Zero`]). Distinct from [`AluOp::Neg`] (no X-in, plain `Z = result == 0`) and [`AluOp::Sub`]
     /// (binary, no sticky Z).
     Negx,
+    /// Not: **unary** `result = (~a) & mask` at the operand-size boundary — the flag op of the `NOT` family
+    /// (`NOT <ea>` = `dst = ~dst`). It is **logic-shaped**, identical to [`AluOp::Eor`] in every respect except
+    /// the bit operation (`~a` instead of `a ^ b`): it shares the **MOVE flag shape** ([`move_flags`]) — sets
+    /// **N = msb(result at size)**, **Z = (result == 0 at size)**, clears **V** and **C**, and **PRESERVES X**
+    /// (logic never touches X — the live X is re-injected as `ccr_nz | (regs.sr & CCR_X)`, never computed). The
+    /// size-masked result is written back (low8/low16/full32 for a `Dn` dest, or parked in [`Dest::Scratch`] for
+    /// a memory dest the trailing `Write` stores — the read-then-write RMW). `b` is **ignored** (the recipe
+    /// passes [`Operand::Zero`]). Distinct from [`AluOp::Neg`]/[`AluOp::Negx`] (which RECOMPUTE X as a borrow)
+    /// and [`AluOp::Eor`] (binary `a ^ b` from a real second operand — NOT is the unary complement of `a`).
+    Not,
 }
 
 /// A bitwise logic operation a [`MicroOp::SrLogic`] applies to the status register — the three privileged
@@ -944,6 +954,15 @@ impl MicroState {
                     // N = msb / Z = (result == 0) at size, V/C cleared, X PRESERVED (re-inject the live X).
                     AluOp::Eor => {
                         let (r, ccr_nz) = move_flags(lhs ^ rhs, size);
+                        (r, ccr_nz | (regs.sr & CCR_X))
+                    }
+                    // NOT is the UNARY bitwise complement `~a` with the same MOVE flag shape as AND/OR/EOR (only
+                    // the bit op differs — `~lhs` instead of `lhs ^ rhs`, `rhs`/`b` ignored, passed
+                    // `Operand::Zero` by the recipe): N = msb / Z = (result == 0) at size, V/C cleared, X
+                    // PRESERVED (re-inject the live X — logic never touches X). `move_flags` masks `!lhs` to the
+                    // operand size and computes N/Z; the size-masked result is the write-back value.
+                    AluOp::Not => {
+                        let (r, ccr_nz) = move_flags(!lhs, size);
                         (r, ccr_nz | (regs.sr & CCR_X))
                     }
                     // CMP is SUB's N/Z/V/C with X PRESERVED (never written) and no write-back. Compute the

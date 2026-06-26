@@ -187,6 +187,20 @@ const FILES: &[&str] = &[
     "NEGX.b.json",
     "NEGX.w.json",
     "NEGX.l.json",
+    // NOT.b / NOT.w / NOT.l (`0100 0110 SS mmm rrr`, 0x4600/4640/4680, SS bits 7-6 = b/w/l) — bitwise-complement
+    // the data-alterable EA: `res = (~d) & mask` with LOGIC flags (the SAME MOVE flag shape as AND/OR/EOR):
+    // N = msb(res), Z = (res == 0), **V = 0, C = 0, X PRESERVED** (re-injected `ccr_nz | (sr & CCR_X)`, never
+    // computed) via the new `AluOp::Not`. G2 decodes the same data-alterable EA set as NEG/NEGX {Dn (0), (An)
+    // (2), (An)+ (3), -(An) (4), d16(An) (5), d8(An,Xn) (6), abs.w (7/0), abs.l (7/1)} via the SHARED
+    // `neg_family_recipe` (only the `AluOp` exec differs — `~a` instead of a subtraction; the recipe shape is
+    // identical); An-direct / PC-relative / #imm are not data-alterable and are absent. NOT is a READ-then-WRITE
+    // (it reads the EA, complements it, then writes it back), so an odd word/long EA address-errors on the READ
+    // (low5 = 0x15), covered by the E3/E4 abort (no parity filter). The only intra-family deferral is the
+    // pre-existing `(A7)` (mode 2) plain-indirect form (its `(A7)+` / `-(A7)` siblings ARE in scope). Files are
+    // 100% pure NOT (no contaminants). Per-file true counts: NOT.b 7901 + NOT.w 7894 + NOT.l 7899 = +23694.
+    "NOT.b.json",
+    "NOT.w.json",
+    "NOT.l.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -835,6 +849,27 @@ fn covered(opcode: u16, _ini: &Value) -> bool {
             _ => false,    // An-direct / PC-rel / #imm: absent / not data-alterable
         };
     }
+    // NOT `<ea>` (`0100 0110 SS mmm rrr`, 0x4600/4640/4680, SS != 3) — bitwise-complement the data-alterable EA
+    // (`res = ~d`, LOGIC flags: N = msb / Z = (res == 0), V = 0, C = 0, X PRESERVED). IDENTICAL EA scope to
+    // NEG/NEGX (it reuses `neg_family_recipe`): the data-alterable EA set is in scope — Dn (0), (An) (2 — minus
+    // the `(A7)` mode-2 deferral), (An)+ (3), -(An) (4), d16(An) (5), d8(An,Xn) (6), abs.w (7/0), abs.l (7/1).
+    // An-direct (1) / PC-relative (7/2, 7/3) / #imm (7/4) are NOT data-alterable and are absent. NOT is a
+    // READ-then-WRITE, so an odd word/long EA address-errors on the READ (low5 = 0x15), the E3/E4 abort covers it
+    // (no parity filter). The ONE intra-family deferral is the plain `(A7)` mode-2 indirect (`mode == 2 && reg ==
+    // 7`), the pre-existing residual — its `(A7)+` / `-(A7)` siblings ARE in scope. SS == 3 (0x46C0) is
+    // MOVE-to-SR, not NOT.
+    if opcode & 0xFF00 == 0x4600 && opcode & 0xC0 != 0xC0 {
+        let mode = (opcode >> 3) & 7;
+        let reg = opcode & 7;
+        return match mode {
+            0 => true,                         // Dn-direct (no memory access)
+            2 => reg != 7, // (An) — A7 mode-2 deferred (plain-indirect residual)
+            3 | 4 => true, // (An)+ / -(An)
+            5 | 6 => true, // d16(An) / d8(An,Xn)
+            7 if reg == 0 || reg == 1 => true, // abs.w / abs.l
+            _ => false,    // An-direct / PC-rel / #imm: absent / not data-alterable
+        };
+    }
     // ADD/SUB. No parity filter (odd word/long EAs are address errors the E4 abort covers); the only
     // mode-scope deferrals are the `(A7)` (mode 2) plain-indirect form (`reg != 7`) and the illegal `An`-direct
     // byte source (mode 1). `mode` 3/4 are `(An)+`/`-(An)` (the auto-(in/de)crement bump is committed before the
@@ -1047,8 +1082,20 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 430_426,
-        "expected 430426 covered cases — G1 adds NEGX.b / NEGX.w / NEGX.l (their own NEGX.b/.w/.l files, 0x4000/ \
+        ran >= 454_120,
+        "expected 454120 covered cases — G2 adds NOT.b / NOT.w / NOT.l (their own NOT.b/.w/.l files, 0x4600/4640/ \
+         4680, SS bits 7-6 = b/w/l): NOT.b 7901 + NOT.w 7894 + NOT.l 7899 = +23694 over G1's 430426. NOT \
+         bitwise-complements the data-alterable EA — `res = (~d) & mask` with LOGIC flags (the SAME MOVE flag \
+         shape as AND/OR/EOR): N = msb(res), Z = (res == 0), **V = 0, C = 0, X PRESERVED** (re-injected \
+         `ccr_nz | (sr & CCR_X)`, never computed) via the new unary `AluOp::Not` (`~a`, `b` ignored, passed \
+         `Operand::Zero`). NOT REUSES the shared `neg_family_recipe` VERBATIM (the read-then-write RMW shape is \
+         identical to NEG/NEGX/CLR's `ea_dst`/`ea_dst_long`; only the `AluOp` exec differs — `~a` instead of a \
+         subtraction). The data-alterable EA set is in scope — Dn (0), (An) (2), (An)+ (3), -(An) (4), d16(An) \
+         (5), d8(An,Xn) (6), abs.w (7/0), abs.l (7/1) — except the pre-existing `(A7)` (mode 2) plain-indirect \
+         deferral (its `(A7)+`/`-(A7)` siblings ARE in scope); An-direct / PC-rel / #imm are not data-alterable \
+         and are absent. Odd word/long EAs address-error on the READ (low5 = 0x15), the E3/E4 abort covers them \
+         (no parity filter). The NOT.* files are 100% pure (no contaminants). Prior baseline — G1 adds NEGX.b / \
+         NEGX.w / NEGX.l (their own NEGX.b/.w/.l files, 0x4000/ \
          4040/4080, SS bits 7-6 = b/w/l): NEGX.b 7917 + NEGX.w 7893 + NEGX.l 7883 = +23693 over G0's 406733. NEGX \
          negate-with-extends the data-alterable EA — `res = (0 − d − X_in) & mask` with SUBX-style flags: N = \
          msb(res), Z is STICKY (`Z_final = Z_in AND (res == 0)` — NEGX only ever CLEARS Z, never sets it; a plain \
@@ -1226,7 +1273,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -1975,5 +2022,73 @@ fn negx_anchors_match_singlesteptests() {
     assert_eq!(found, anchors.len(), "all G1 NEGX anchors exercised");
     eprintln!(
         "G1 NEGX anchors: {found} cases (sticky-Z: Z→0 / Z-stays-1 / Z-stays-0, X-in borrow C=X, (An) .l RMW, odd-EA frame) passed both drivers"
+    );
+}
+
+/// G2 — the named `NOT <ea>` anchors, pinning each shape of the data-alterable bitwise complement against the
+/// vendored NOT.b/.w/.l stream WITHOUT relying on the bulk `covered()` sweep. NOT is `res = (~d) & mask` with
+/// LOGIC flags (the SAME MOVE flag shape as AND/OR/EOR): N = msb(res), Z = (res == 0), **V = 0, C = 0, X
+/// PRESERVED** (logic never touches X — the live X is re-injected as `ccr_nz | (sr & CCR_X)`, never computed)
+/// via the new `AluOp::Not`. NOT REUSES the shared `neg_family_recipe` VERBATIM (the read-then-write RMW shape
+/// is identical to NEG/NEGX/CLR's `ea_dst`/`ea_dst_long`; only the `AluOp` exec differs — `~a` instead of a
+/// subtraction). The load-bearing pins (each entering with **X = 1** to confirm X is KEPT while V/C are
+/// CLEARED and N/Z recomputed):
+/// - `4600 [NOT.b D0] 25` — `Dn.b` register (4 cyc): enters X1 V1, exits X1 V0 C0 (X kept, V cleared).
+/// - `4640 [NOT.w D0] 14` — `Dn.w` register (4 cyc): enters X1 V1 C1, exits X1 V0 C0 (X kept, V/C cleared).
+/// - `4681 [NOT.l D1] 2` (len 6) — `Dn.l` register (6 cyc, trailing n2): enters X1 N1 Z1 V1 C1, exits
+///   X1 N0 Z0 V0 C0 (X kept, N/Z recomputed from the result, V/C cleared).
+/// - `4653 [NOT.w (A3)] 15` (len 12) — `(An)` memory `.w` READ-then-WRITE RMW (`[r, PF, w]`) — the SAME
+///   `ea_dst` path as NEG/NEGX/CLR (the read operand is the unary source).
+/// - `4652 [NOT.w (A2)] 27` (len 50) — odd-EA → faults on the RMW READ into the group-0 14-byte address-error
+///   frame (in scope, no parity filter).
+///
+/// Each runs both drivers + the per-cycle transaction stream via `run_case`. Every anchor must decode as a NOT
+/// opcode (mask 0xFFC0 ∈ {0x4600, 0x4640, 0x4680}, SS != 3 = not the 0x46C0 form) — never a CMP-class.
+#[test]
+fn not_anchors_match_singlesteptests() {
+    // (file, full-name, length). The X-preservation pins use the FULL (unique) name to select the EXACT
+    // X_in / V_in / C_in combination the doc-comment describes (each enters with X = 1).
+    let anchors: &[(&str, &str, u32)] = &[
+        ("NOT.b.json", "4600 [NOT.b D0] 25", 4), // X1 V1 in → X1 V0 C0 out (X kept, V cleared)
+        ("NOT.w.json", "4640 [NOT.w D0] 14", 4), // X1 V1 C1 in → X1 V0 C0 out (X kept, V/C cleared)
+        ("NOT.l.json", "4681 [NOT.l D1] 2", 6), // X1 N1 Z1 V1 C1 in → X1 N0 Z0 V0 C0 (6 cyc trailing n2)
+        ("NOT.w.json", "4653 [NOT.w (A3)] 15", 12), // (An) memory .w RMW ([r, PF, w])
+        ("NOT.w.json", "4652 [NOT.w (A2)] 27", 50), // odd-EA → group-0 14-byte frame (read fault)
+    ];
+    let mut found = 0usize;
+    for (fname, name, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap() == *name
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| panic!("G2 NOT anchor {name} (len {length}) not found in {fname}"));
+        // Every anchor must be a NOT opcode (mask 0xFFC0 ∈ {0x4600, 0x4640, 0x4680}, SS != 3) — never a
+        // CMP-class opcode.
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert!(
+            matches!(opcode & 0xFFC0, 0x4600 | 0x4640 | 0x4680),
+            "anchor {name} must be a NOT opcode"
+        );
+        assert_ne!(opcode & 0xC0, 0xC0, "anchor {name} must not be SS == 3");
+        assert_eq!(
+            cmp_class(opcode),
+            CmpClass::None,
+            "NOT is not a CMP-class opcode"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all G2 NOT anchors exercised");
+    eprintln!(
+        "G2 NOT anchors: {found} cases (Dn each size with X-preservation pin X kept + V/C cleared, (An) .w RMW, odd-EA frame) passed both drivers"
     );
 }

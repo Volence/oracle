@@ -450,6 +450,30 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         };
         return neg_family_recipe(opcode, AluOp::Negx, size);
     }
+    // NOT `<ea>` (`0100 0110 SS mmm rrr`, 0x4600/4640/4680, SS bits 7-6 = b/w/l) — bitwise-complement the
+    // data-alterable EA: `res = (~d) & mask` with LOGIC flags (the SAME MOVE flag shape as AND/OR/EOR): N =
+    // msb(res), Z = (res == 0), **V = 0, C = 0, X PRESERVED** (re-injected `ccr_nz | (sr & CCR_X)`, never
+    // computed) via the new `AluOp::Not`. NOT is a READ-then-WRITE for a memory dest — it REUSES
+    // `neg_family_recipe` VERBATIM (the recipe shape is identical to NEG/NEGX/CLR's `ea_dst`/`ea_dst_long` RMW;
+    // ONLY the `AluOp::Not` exec differs — `~a` instead of a subtraction). The odd-EA case faults on the READ
+    // (low5 = 0x15), covered by the E3/E4 abort. `Dn`-direct (mode 0) has NO memory access (NOT.l Dn = 6 cyc
+    // with a trailing idle; NOT.b/.w Dn = 4). The destination must be data-alterable (mode 0 OR
+    // `is_dst_mem_mode`). SS == 3 (0x46C0) is MOVE-to-SR (privileged), NOT NOT, excluded by `& 0xC0 != 0xC0`.
+    // The opcode space 0x4600..=0x46BF is disjoint from NOT's NEG (0x4400) / NEGX (0x4000) / CLR (0x4200) /
+    // TST (0x4A00) siblings and the 0x4Exx / 0x4180 arms.
+    let not_mode = (opcode >> 3) & 7;
+    let not_reg = opcode & 7;
+    if opcode & 0xFF00 == 0x4600
+        && opcode & 0xC0 != 0xC0
+        && (not_mode == 0 || is_dst_mem_mode(not_mode, not_reg))
+    {
+        let size = match (opcode >> 6) & 3 {
+            0 => Size::Byte,
+            1 => Size::Word,
+            _ => Size::Long, // SS = 2
+        };
+        return neg_family_recipe(opcode, AluOp::Not, size);
+    }
     // Bcc / BRA (`0110 cccc dddddddd`, 0x6xxx) — conditional branch. cc = bits 11-8 (cc == 0 is BRA, always
     // taken); cc == 1 is BSR (a separate decode arm, NOT this commit) and is excluded. The condition is
     // evaluated at DECODE time against the live CCR, emitting the taken or not-taken linear recipe directly.
