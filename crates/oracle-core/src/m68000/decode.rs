@@ -348,6 +348,30 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         };
         return cmpa_recipe(opcode, size);
     }
+    // EOR `Dn,<ea>` (`1011 ddd 1SS mmm rrr`, nibble 0xB, opmode 4/5/6 = b/w/l = 0xB100/0xB140/0xB180) — bitwise
+    // `<ea> = <ea> ^ Dn`. EOR exists ONLY in this `Dn,<ea>` direction (opmode 0/1/2 of nibble 0xB is CMP, not
+    // `EOR <ea>,Dn`). The destination is either a **data register** (mode 000 = `Dn,Dn`) or **alterable memory**
+    // (modes 2..6, abs.w/abs.l via `is_dst_mem_mode`). **Mode field 001 = CMPM** (`(Ay)+,(Ax)+`) — a DIFFERENT
+    // instruction handled by the `cmp_class` Cmpm arm which runs FIRST in dispatch (above), so by the time we
+    // reach this arm the mode is never 001; the `mode == 0 || is_dst_mem_mode` guard also excludes it (mode 1 is
+    // neither register-direct nor alterable memory). Sets N = msb / Z = (result == 0), clears V/C, PRESERVES X
+    // (`AluOp::Eor` = `move_flags` + X re-injected). The **EOR.* files MIX** this genuine register form (nibble
+    // 0xB) with the dedicated EORI immediate opcode (`0x0Axx`, high nibble 0) — a DIFFERENT instruction NOT
+    // decoded this push; `covered()` classifies the EORI cases OUT by OPCODE (high nibble 0 != 0xB), so decode
+    // is only ever reached on the genuine 0xB form. `eor_recipe` routes the mode-000 register dest through its
+    // own no-memory arm (like `clr_recipe`'s mode-0 path) and the alterable-memory dest through `arith_dn_ea`
+    // VERBATIM (EOR Dn,<ea> = ADD Dn,<ea> byte-for-byte). opmode 3/7 (0xB0C0/0xB1C0) is CMPA — handled above.
+    let eor_mode = (opcode >> 3) & 7;
+    let eor_reg = opcode & 7;
+    if opcode & 0xF1C0 == 0xB100 && (eor_mode == 0 || is_dst_mem_mode(eor_mode, eor_reg)) {
+        return eor_recipe(opcode, Size::Byte); // EOR.b Dn,<ea>
+    }
+    if opcode & 0xF1C0 == 0xB140 && (eor_mode == 0 || is_dst_mem_mode(eor_mode, eor_reg)) {
+        return eor_recipe(opcode, Size::Word); // EOR.w Dn,<ea>
+    }
+    if opcode & 0xF1C0 == 0xB180 && (eor_mode == 0 || is_dst_mem_mode(eor_mode, eor_reg)) {
+        return eor_recipe(opcode, Size::Long); // EOR.l Dn,<ea>
+    }
     // TST `<ea>` (`0100 1010 SS mmm rrr`, 0x4A00/4A40/4A80, SS bits 7-6 = b/w/l) — the flag-only test
     // `<ea> − 0`: read the data-alterable EA, set N = msb(operand) / Z = (operand == 0), clear V/C, PRESERVE
     // X, write NOTHING (`AluOp::Cmp` with `b = Operand::Zero` + `Dest::None`). Same `ea_src` source machinery
@@ -823,6 +847,47 @@ fn clr_recipe(opcode: u16, size: Size) -> MicroState {
         });
     }
     buf.finish()
+}
+
+/// `EOR.{b,w,l} Dn,<ea>` (`1011 ddd 1SS mmm rrr`, opmode 4/5/6): bitwise `<ea> = <ea> ^ Dn` — set N = msb /
+/// Z = (result == 0), clear V/C, PRESERVE X (`AluOp::Eor`). EOR exists ONLY in the `Dn,<ea>` direction; the
+/// destination is either a **data register** (mode 000 = `Dn,Dn`) or **alterable memory** (modes 2..6,
+/// abs.w/abs.l).
+///
+/// **Memory dest** reuses [`arith_dn_ea`] VERBATIM — the `ea_dst`/`ea_dst_long` read/refill/ALU/write RMW
+/// skeleton ADD/AND/OR use (EOR Dn,<ea> = ADD Dn,<ea> byte-for-byte); the memory operand is the EA value `a`
+/// and the source `Dn` is `b` (EOR is commutative, so the order is inert).
+///
+/// **`Dn`-direct (mode 000)** is the register-dest `EOR Dn,Dn`, which has **no memory access** (so it does NOT
+/// route through the memory-only `ea_dst`): a single `Prefetch` then `Alu{Eor, size, a: Dn_dest, b: Dn_src,
+/// dst: dn_dest(Dn_dest,size)}`, where `Dn_dest` is the EA register (bits 2-0) and `Dn_src` is bits 11-9.
+/// `EOR.b`/`.w Dn,Dn` = 4 cyc (no idle); **`EOR.l Dn,Dn` = 8 cyc** — the long register form carries one
+/// trailing `Internal(4)` idle (the register-register long idle, pinned to the vendored `b782` anchor), exactly
+/// like `ADD.l`/`AND.l <ea>,Dn`'s `n4`.
+fn eor_recipe(opcode: u16, size: Size) -> MicroState {
+    let mode = (opcode >> 3) & 7;
+    if mode == 0 {
+        // Dn,Dn register dest — no memory: one refill, then the Eor into the EA register Dn (size-masked).
+        // EOR.l Dn,Dn adds one trailing idle (n4 → 8 cyc); EOR.b/.w Dn,Dn are 4 cyc with no idle.
+        let dst = (opcode & 7) as u8; // EA register (bits 2-0) — the destination Dn
+        let src = ((opcode >> 9) & 7) as u8; // bits 11-9 — the source Dn
+        let mut buf = RecipeBuf::new();
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::Alu {
+            op: AluOp::Eor,
+            size,
+            a: dn_operand(dst, size),
+            b: dn_operand(src, size),
+            dst: dn_dest(dst, size),
+        });
+        if size == Size::Long {
+            buf.push(MicroOp::Internal { cycles: 4 });
+        }
+        buf.finish()
+    } else {
+        // Alterable-memory dest — the RMW path, VERBATIM `arith_dn_ea` (= ADD Dn,<ea> byte-for-byte).
+        arith_dn_ea(opcode, AluOp::Eor, size)
+    }
 }
 
 /// The `(An)+` auto-increment step (bytes) for `CMPM`: word 2, long 4, byte 1 — except `(A7)+` byte steps by 2
@@ -11381,6 +11446,311 @@ mod tests {
             0x8F12,    // OR.b D7,(A2)   Dn,<ea>
             0x8F54,    // OR.w D7,(A4)
             0x8B92,    // OR.l D5,(A2)
+        ] {
+            let regs = Registers {
+                d: [0; 8],
+                a: [0; 7],
+                usp: 0,
+                ssp: 2048,
+                pc: 3072,
+                sr: 0x2700,
+                prefetch: [op, 0],
+            };
+            let _ = decode(&regs);
+        }
+    }
+
+    // --- L4: EOR.b / EOR.w / EOR.l, `Dn,<ea>` ONLY — bitwise `a ^ b` with the MOVE flag shape (N = msb /
+    // Z = (result == 0), V/C cleared, X PRESERVED), the new `AluOp::Eor`. EOR has NO `<ea>,Dn` form (opmode
+    // 0/1/2 in 0xB is CMP); the dest is a data register (mode 000 = `Dn,Dn`, its own no-memory arm) or alterable
+    // memory (modes 2..6/abs, via `arith_dn_ea` VERBATIM = ADD Dn,<ea>). Mode field 001 = CMPM, handled by the
+    // `cmp_class` arm FIRST. Anchors pinned to real vendored EOR.l/.w cases. ---
+
+    /// The clean SST anchor `b782 [EOR.l D3, D2] 1` (8 cyc): a REGISTER-dest LONG EOR — the `Dn,Dn` no-memory
+    /// arm + the **`.l` trailing n4** pin. Initial CCR = X|V (0x12): D2 = 0x62222CB8 ^ D3 = 0x3C1A7F67 =
+    /// 0x5E3853DF (msb clear → N=0), Z cleared (non-zero), V/C cleared (V was set → CLEARED), **X PRESERVED**
+    /// (X=1 in and out) → final CCR = X (0x10). The recipe is `[Prefetch, Alu{Eor}, Internal(4)]` (8 cyc, the
+    /// long register idle = ADD.l/AND.l <ea>,Dn). Bus: one FC-6 refill @3076 (no operand read — register dest).
+    fn setup_eor_l_b782() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                0xE664_9C6E,
+                0x10EB_ACBD,
+                0x6222_2CB8,
+                0x3C1A_7F67,
+                0x1C0F_6D81,
+                0x5451_63D6,
+                0x90B4_2E62,
+                0x0EFA_8DA1,
+            ],
+            a: [
+                0x2521_6622,
+                0x3743_EF7F,
+                0x8B93_EF4C,
+                0x4DE2_59BE,
+                0xD146_FDCC,
+                0x919F_7ED3,
+                0xA29D_3690,
+            ],
+            usp: 0x63CF_C3F8,
+            ssp: 2048,
+            pc: 3072,
+            sr: 0x2712, // CCR = X|V
+            prefetch: [0xB782, 0x5965],
+        };
+        let mut bus = FlatBus::new();
+        bus.poke(3076, 0x8C);
+        bus.poke(3077, 0x78); // 0x8C78 = 35960 — the refill word
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_eor_l_b782_log() -> Vec<Transaction> {
+        vec![Transaction {
+            kind: TxKind::Read,
+            fc: 6,
+            addr: 3076,
+            size: Size::Word,
+            value: 35960,
+        }]
+    }
+
+    fn assert_eor_l_b782_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced one word");
+        assert_eq!(
+            cpu.regs.d[2], 0x5E38_53DF,
+            "D2 = 0x62222CB8 ^ 0x3C1A7F67 = 0x5E3853DF (full 32, register dest)"
+        );
+        assert_eq!(cpu.regs.d[3], 0x3C1A_7F67, "source D3 unchanged");
+        assert_eq!(
+            cpu.regs.sr, 0x2710,
+            "N=0 (msb clear), Z=0, V CLEARED (was set), C=0, X PRESERVED → CCR = X (0x10)"
+        );
+        assert_eq!(cpu.regs.prefetch, [0x5965, 35960], "queue advanced");
+        assert_eq!(bus.log, expected_eor_l_b782_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_eor_l_b782() {
+        let (mut cpu, mut bus) = setup_eor_l_b782();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 8,
+            "EOR.l Dn,Dn = [Prefetch, Alu, Internal(4)] = 8 (register-register long idle)"
+        );
+        assert_eor_l_b782_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_eor_l_b782() {
+        let (mut rtc, mut bus_rtc) = setup_eor_l_b782();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_eor_l_b782();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 8);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_eor_l_b782_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn eor_l_b782_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The snapshot/restore anchor for the EOR register-dest shape (Alu{Eor} into Dn setting N/Z, clearing
+        // V/C, PRESERVING X, then the `.l` n4 idle). Snapshot the whole CPU at every micro-op boundary, restore,
+        // resume, and match.
+        let (mut rref, mut bref) = setup_eor_l_b782();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 3 micro-ops (Prefetch, Alu, Internal(4)) -> boundaries after 0..=2.
+        for pause_after in 0..=2 {
+            let (mut cpu, mut bus) = setup_eor_l_b782();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    /// The clean SST anchor `b153 [EOR.w D0, (A3)] 24` (12 cyc): a MEMORY-DEST word EOR — the `Dn,<ea>` RMW path
+    /// (`arith_dn_ea`) + the **V/C-CLEARING** pin. Initial CCR = X|N|V|C (0x271B): (A3) = 0x3D4F59B0 → masked
+    /// 0x4F59B0 = 5200304, the word there = 0x286B; D0 low word = 0x12E5 → 0x286B ^ 0x12E5 = 0x3A8E written
+    /// back. Result msb clear → N=0, non-zero → Z=0, **V and C CLEARED** (were set), **X PRESERVED** → final CCR
+    /// = X (0x10). Bus order is the RMW `[r operand @(A3) FC5, r refill @3076 FC6, w result @(A3) FC5]`.
+    fn setup_eor_w_b153() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                0x465F_12E5,
+                0x39C5_CB4C,
+                0x5B55_DF80,
+                0x9C3F_AA98,
+                0xE9F4_F17A,
+                0xEDB8_B925,
+                0x977E_AB83,
+                0x0513_0EF8,
+            ],
+            a: [
+                0x169F_6C1B,
+                0x52B2_F8F8,
+                0x6B40_5E4F,
+                0x3D4F_59B0,
+                0x58CE_60DB,
+                0xFCEF_8FEE,
+                0xD573_80E2,
+            ],
+            usp: 0x7C30_1102,
+            ssp: 2048,
+            pc: 3072,
+            sr: 0x271B, // CCR = X|N|V|C
+            prefetch: [0xB153, 0x2901],
+        };
+        let mut bus = FlatBus::new();
+        bus.poke(5200304, 0x28);
+        bus.poke(5200305, 0x6B); // (A3) word = 0x286B = 10347
+        bus.poke(3076, 0x13);
+        bus.poke(3077, 0x8D); // refill 0x138D = 5005
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_eor_w_b153_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 5200304,
+                size: Size::Word,
+                value: 10347,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 5005,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 5200304,
+                size: Size::Word,
+                value: 14990,
+            },
+        ]
+    }
+
+    fn assert_eor_w_b153_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced one word");
+        assert_eq!(cpu.regs.a[3], 0x3D4F_59B0, "dest base A3 unchanged");
+        assert_eq!(cpu.regs.d[0], 0x465F_12E5, "source D0 unchanged");
+        assert_eq!(
+            cpu.regs.sr, 0x2710,
+            "N=0 (msb clear), Z=0, V and C CLEARED, X PRESERVED → CCR = X (0x10)"
+        );
+        assert_eq!(
+            bus.peek(5200304),
+            0x3A,
+            "(A3) hi byte = 0x3A (0x286B ^ 0x12E5 = 0x3A8E)"
+        );
+        assert_eq!(bus.peek(5200305), 0x8E, "(A3) lo byte = 0x8E");
+        assert_eq!(cpu.regs.prefetch, [0x2901, 5005], "queue advanced");
+        assert_eq!(bus.log, expected_eor_w_b153_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_eor_w_b153() {
+        let (mut cpu, mut bus) = setup_eor_w_b153();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 12,
+            "EOR.w Dn,(An) = [Read, Prefetch, Alu, Write] RMW = 12 (ADD.w/AND.w Dn,(An))"
+        );
+        assert_eor_w_b153_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_eor_w_b153() {
+        let (mut rtc, mut bus_rtc) = setup_eor_w_b153();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_eor_w_b153();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 12);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_eor_w_b153_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn eor_w_b153_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The snapshot/restore anchor for the EOR memory-dest RMW shape (Alu{Eor} parked in Scratch, then
+        // written back) — the interesting mid-bus-access boundary between the operand Read and the result Write.
+        let (mut rref, mut bref) = setup_eor_w_b153();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 4 micro-ops (Read, Prefetch, Alu, Write) -> boundaries after 0..=3.
+        for pause_after in 0..=3 {
+            let (mut cpu, mut bus) = setup_eor_w_b153();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    #[test]
+    fn eor_decode_classifies_and_sizes() {
+        // EOR is `Dn,<ea>` ONLY (opmode 4/5/6 = 0xB100/0xB140/0xB180) of the 0xB nibble — its own decode arms.
+        // The dest is a data register (mode 000 = `Dn,Dn`) or alterable memory (2..6/abs). Mode field 001 =
+        // CMPM (handled by the `cmp_class` arm FIRST), and opmode 0/1/2 = CMP / 3/7 = CMPA (also handled first).
+        // The EORI immediate opcode (0x0Axx, high nibble 0) is a DIFFERENT instruction NOT decoded here (it must
+        // never reach decode — `covered()` classifies it out by opcode). Decode of the genuine register form
+        // must produce a recipe (no panic / no todo!()).
+        for op in [
+            0xB504u16, // EOR.b D2,D4   Dn,Dn (register dest)
+            0xB744,    // EOR.w D3,D4   register dest
+            0xB782,    // EOR.l D3,D2   register dest (.l, n4 idle)
+            0xB312,    // EOR.b D1,(A2) memory dest
+            0xB153,    // EOR.w D0,(A3)
+            0xBB91,    // EOR.l D5,(A1) long memory dest
+            0xB59C,    // EOR.l D2,(A4)+
+            0xBBA2,    // EOR.l D5,-(A2)
         ] {
             let regs = Registers {
                 d: [0; 8],

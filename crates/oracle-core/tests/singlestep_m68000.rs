@@ -144,6 +144,21 @@ const FILES: &[&str] = &[
     "OR.b.json",
     "OR.w.json",
     "OR.l.json",
+    // EOR.b / EOR.w / EOR.l (`1011 ddd 1SS mmm rrr` = 0xB100/40/80, opmode 4/5/6 = b/w/l) — bitwise `<ea> =
+    // <ea> ^ Dn`, the `Dn,<ea>` direction ONLY (opmode 0/1/2 of 0xB is CMP, not `EOR <ea>,Dn`). L4 decodes the
+    // data-register dest (mode 000 = `Dn,Dn`, its own no-memory arm — `.l` carries a trailing n4, so `EOR.l
+    // Dn,Dn` = 8 cyc) and the alterable-memory dest (modes 2..6/abs.w/abs.l) via `arith_dn_ea` VERBATIM (EOR
+    // Dn,<ea> = ADD Dn,<ea> byte-for-byte). **Mode field 001 = CMPM** (a DIFFERENT instruction handled by the
+    // `cmp_class` arm FIRST in dispatch — the EOR arm never sees mode 001). Same MOVE flag shape as AND/OR (N =
+    // msb / Z = (result == 0), V/C cleared, X PRESERVED) via the new `AluOp::Eor`. **These files are CONTAMINATED
+    // with EORI** (the `0x0Axx` immediate opcode, high nibble 0 — a DIFFERENT instruction NOT implemented this
+    // push): `covered()` classifies by OPCODE (`eor_in_scope`: high nibble == 0xB), admitting ONLY the genuine
+    // register form so the EORI cases are skipped cleanly (never decoded). All dest modes in scope except the
+    // pre-existing `(A7)` (mode 2) plain-indirect deferral; odd word/long EAs are address errors the E3/E4 abort
+    // covers.
+    "EOR.b.json",
+    "EOR.w.json",
+    "EOR.l.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -568,6 +583,43 @@ fn and_or_in_scope(opcode: u16) -> bool {
     }
 }
 
+/// Whether the framework covers this genuine register-form `EOR` case — the load-bearing classifier for the
+/// **CONTAMINATED** `EOR.*` files (each mixes the genuine register opcode, high nibble `0xB`, with the dedicated
+/// `EORI` immediate opcode in the group-0 space, `0x0Axx`, high nibble 0). Classifying **by OPCODE** (high
+/// nibble `0xB`), this admits ONLY the genuine register form so the `EORI` cases — a DIFFERENT instruction not
+/// implemented this push — are skipped cleanly (never decoded, never reaching the `todo!()`). `false` for any
+/// non-`0xB` opcode (so a group-0 `EORI` falls through to the rest of `covered()`, which also rejects it).
+///
+/// EOR exists ONLY in the `Dn,<ea>` direction (opmode 4/5/6 = b/w/l). The destination is either a **data
+/// register** (mode 000 = `Dn,Dn`) or **alterable memory** (`(An)` 2, `(An)+` 3, `-(An)` 4, `d16(An)` 5,
+/// `d8(An,Xn)` 6, `abs.w` 7/0, `abs.l` 7/1). **Mode field 001 = CMPM** (a DIFFERENT instruction classified out
+/// of EOR — it is a `CmpClass::Cmpm` opcode handled by `cmp_in_scope`, not here) and is excluded. The `(A7)`
+/// (mode 2) plain-indirect dest is the pre-existing mode-scope deferral (its `(A7)+`/`-(A7)` siblings ARE in
+/// scope); odd word/long EAs are address errors the E3/E4 abort covers (no parity filter). opmode 0/1/2 = CMP /
+/// 3/7 = CMPA (not EOR) → not covered.
+fn eor_in_scope(opcode: u16) -> bool {
+    if opcode >> 12 != 0xB {
+        return false; // not the genuine EOR register form (e.g. EORI group-0 immediate opcode)
+    }
+    match (opcode >> 6) & 7 {
+        // Dn,<ea> (opmode 4/5/6 = b/w/l): data-register dest (mode 0) or alterable memory; mode 001 = CMPM.
+        4..=6 => {
+            let mode = (opcode >> 3) & 7;
+            let reg = opcode & 7;
+            match mode {
+                0 => true,                         // Dn-direct register dest (no memory access)
+                2 => reg != 7,                     // (An) — A7 mode-2 deferred
+                3 | 4 => true,                     // (An)+ / -(An)
+                5 | 6 => true,                     // d16(An) / d8(An,Xn)
+                7 if reg == 0 || reg == 1 => true, // abs.w / abs.l
+                _ => false,                        // mode 1 = CMPM; mode 7 reg>=2 not alterable
+            }
+        }
+        // opmode 0/1/2 = CMP, opmode 3/7 = CMPA — not EOR.
+        _ => false,
+    }
+}
+
 /// Whether the framework covers this case (else it is an xfail for this push). `ADD`/`SUB` in word, byte and
 /// long sizes, each in two forms — `Dn,<ea>` (memory dest; word ADD=0xD140/SUB=0x9140, byte ADD=0xD100/
 /// SUB=0x9100, long ADD=0xD180/SUB=0x9180) and `<ea>,Dn` (register dest; word ADD=0xD040/SUB=0x9040, byte
@@ -847,6 +899,16 @@ fn covered(opcode: u16, _ini: &Value) -> bool {
     if and_or_in_scope(opcode) {
         return true;
     }
+    // EOR `Dn,<ea>` (0xB100/40/80, opmode 4/5/6) — the genuine register form, classified by OPCODE (high nibble
+    // 0xB). The EOR.* files MIX this with the EORI immediate opcode (`0x0Axx`, high nibble 0) — a DIFFERENT
+    // instruction NOT decoded this push; `eor_in_scope` returns false for it (high nibble != 0xB), so the EORI
+    // cases are skipped cleanly. Dest = data register (mode 000 = `Dn,Dn`) or alterable memory (2..6/abs.w/abs.l).
+    // Mode field 001 = CMPM (a `CmpClass::Cmpm` opcode handled by the `cmp_class` block above — but the EOR.*
+    // files have NO mode-001 cases). All in scope except the pre-existing `(A7)` mode-2 plain-indirect deferral;
+    // odd word/long EAs are address errors the E3/E4 abort covers. There is NO `EOR <ea>,Dn` (opmode 0/1/2 = CMP).
+    if eor_in_scope(opcode) {
+        return true;
+    }
     false // other forms (not-yet-implemented modes): out of slice this push
 }
 
@@ -917,8 +979,24 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 361_971,
-        "expected 361971 covered cases — L3 adds OR.b / OR.w / OR.l in BOTH directions (their own OR.b/.w/.l \
+        ran >= 383_008,
+        "expected 383008 covered cases — L4 adds EOR.b / EOR.w / EOR.l in the `Dn,<ea>` direction ONLY (their \
+         own EOR.b/.w/.l files): EOR.b 7026 + EOR.w 6999 + EOR.l 7012 = +21037 over L3's 361971. EOR is bitwise \
+         `a ^ b` — the SAME MOVE flag shape as AND/OR (N = msb(result at size) / Z = (result == 0), V/C cleared, \
+         X PRESERVED, re-injected as `ccr_nz | (sr & CCR_X)`, never computed) via the new `AluOp::Eor`; only the \
+         bit op (`^`) differs. EOR exists ONLY in `Dn,<ea>` (opmode 4/5/6 = 0xB100/40/80); opmode 0/1/2 of 0xB is \
+         CMP (there is NO `EOR <ea>,Dn`). The dest is a data register (mode 000 = `Dn,Dn`, its own no-memory arm — \
+         `EOR.l Dn,Dn` carries a trailing n4 = 8 cyc; `.b`/`.w` = 4 cyc) or alterable memory (modes 2..6/abs.w/ \
+         abs.l) via `arith_dn_ea` VERBATIM (EOR Dn,<ea> = ADD Dn,<ea> byte-for-byte). **Mode field 001 = CMPM** (a \
+         DIFFERENT instruction handled by the `cmp_class` arm FIRST in dispatch — the EOR arm never sees mode \
+         001; the EOR.* files have NO mode-001 cases). **CRITICAL *I CONTAMINATION**: the EOR.* files MIX the \
+         genuine register form (high nibble 0xB) with the dedicated EORI immediate opcode (`0x0Axx`, high nibble \
+         0 — a DIFFERENT instruction this push does NOT implement, ~9xx cases/file). `covered()` classifies by \
+         OPCODE (`eor_in_scope`: high nibble == 0xB), admitting ONLY the genuine register form so the EORI cases \
+         are skipped cleanly (never decoded — admitting one would panic at `todo!()`). All dest modes in scope \
+         except the pre-existing `(A7)` (mode 2) plain-indirect deferral; odd word/long EAs are address errors \
+         the E3/E4 abort covers (no parity filter). \
+         Prior baseline — L3 adds OR.b / OR.w / OR.l in BOTH directions (their own OR.b/.w/.l \
          files): OR.b 7453 + OR.w 7402 + OR.l 7399 = +22254 over L2's 339717. OR is bitwise `a | b` — IDENTICAL \
          to AND in every respect except the bit op (`|` vs `&`) and the base nibble (0x8 vs 0xC): the MOVE flag \
          shape (N = msb(result at size) / Z = (result == 0), V/C cleared, X PRESERVED, re-injected as `ccr_nz | \
@@ -1053,7 +1131,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -1594,5 +1672,75 @@ fn or_anchors_match_singlesteptests() {
     assert_eq!(found, anchors.len(), "all L3 OR anchors exercised");
     eprintln!(
         "L3 OR anchors: {found} cases (<ea>,Dn Dn/(An)/#imm + Dn,(An) dest, each size + odd-EA) passed both drivers"
+    );
+}
+
+/// L4 — the named `EOR` anchors, pinning each shape of bitwise EOR (the `Dn,<ea>` direction ONLY) against the
+/// vendored EOR.b/.w/.l stream WITHOUT relying on the bulk `covered()` sweep: `Dn,Dn` **register dest** (each
+/// size b/w/l — including the load-bearing `EOR.l Dn,Dn` 8-cyc / trailing-n4 case); `Dn,(An)` **memory dest**
+/// (each size); and two **odd-EA** cases (the word/long memory access faults into the group-0 14-byte
+/// address-error frame on the RMW READ, low5 = 0x15 — byte never faults). Each runs both drivers + the
+/// per-cycle transaction stream via `run_case`. The load-bearing pins: EOR sets N = msb / Z = (result == 0),
+/// clears V/C, **PRESERVES X** (every case); the register-dest `Dn,Dn` uses its own no-memory arm (`.l` carries
+/// a trailing n4) and the memory-dest `Dn,<ea>` reuses `arith_dn_ea` (= ADD Dn,<ea> RMW). Every anchor must
+/// classify **by OPCODE** as the genuine register form (high nibble 0xB, via `eor_in_scope`) and NOT as a
+/// CMP-class opcode — the *I (EORI) contaminant (high nibble 0) is never an anchor, and EOR has NO `<ea>,Dn`.
+#[test]
+fn eor_anchors_match_singlesteptests() {
+    // (file, name-prefix, length) — the (prefix, length) pair picks the clean (even-EA) or odd-EA EOR case.
+    let anchors: &[(&str, &str, u32)] = &[
+        // Dn,Dn — register dest, each size (the eor_recipe mode-0 no-memory arm).
+        ("EOR.b.json", "b504", 4), // EOR.b D2,D4 — register dest (.b, 4 cyc, no idle)
+        ("EOR.w.json", "b744", 4), // EOR.w D3,D4 — register dest (.w, 4 cyc)
+        ("EOR.l.json", "b782", 8), // EOR.l D3,D2 — register dest (.l, 8 cyc, trailing n4)
+        // Dn,(An) — memory dest, each size (the arith_dn_ea RMW).
+        ("EOR.b.json", "b312", 12), // EOR.b D1,(A2) — byte memory dest ([r, PF, w])
+        ("EOR.w.json", "b153", 12), // EOR.w D0,(A3) — word memory dest
+        ("EOR.l.json", "bb91", 20), // EOR.l D5,(A1) — long memory dest (reversed long store)
+        // Odd-EA address-error frames (word/long only — byte never faults; fault on the RMW READ, low5 = 0x15).
+        ("EOR.w.json", "b154", 50), // EOR.w D0,(A4) odd dest → group-0 14-byte frame (read fault)
+        ("EOR.l.json", "b596", 50), // EOR.l D2,(A6) odd dest → 14-byte frame (read fault)
+    ];
+    let mut found = 0usize;
+    for (fname, prefix, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap().starts_with(prefix)
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| {
+                panic!("L4 EOR anchor {prefix} (len {length}) not found in {fname}")
+            });
+        // Every anchor must be the genuine register-form EOR (high nibble 0xB, in scope) classified by OPCODE —
+        // never the EORI immediate contaminant (high nibble 0) and never a CMP-class opcode.
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(
+            opcode >> 12,
+            0xB,
+            "anchor {prefix} must be a genuine EOR opcode"
+        );
+        assert!(
+            eor_in_scope(opcode),
+            "anchor {prefix} must be an in-scope genuine register-form EOR"
+        );
+        assert_eq!(
+            cmp_class(opcode),
+            CmpClass::None,
+            "EOR is not a CMP-class opcode"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all L4 EOR anchors exercised");
+    eprintln!(
+        "L4 EOR anchors: {found} cases (Dn,Dn register dest + Dn,(An) memory dest, each size + odd-EA) passed both drivers"
     );
 }
