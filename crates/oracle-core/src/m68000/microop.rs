@@ -377,6 +377,14 @@ pub enum AluOp {
     /// 32 bits). The flag op of `CMPA <ea>,An`; distinct from [`AluOp::Cmp`] (which compares at the
     /// operand-size boundary with no sign-extension) and [`AluOp::MoveA`] (which writes An and sets no flags).
     Cmpa,
+    /// AddA: `An = An + b` computed at the **long boundary**, affecting **NO flags** (the `ADDA` family —
+    /// address arithmetic). The addend `b` is **sign-extended word→long when `size == Word`** (else the full
+    /// long; byte ADDA is illegal and never decoded), exactly mirroring [`AluOp::MoveA`]'s internal
+    /// sign-extension. `a` is the destination [`Operand::AddrReg`] (the augend An, full 32 bits) and the result
+    /// is written full-width to that same An ([`Dest::AddrReg`]). Shares the no-flag early-return shape of
+    /// [`AluOp::MoveA`] (writes An, leaves the SR untouched), but `a + b` instead of a copy. Distinct from
+    /// [`AluOp::Add`] (which computes at the operand-size boundary, sets X/N/Z/V/C, and writes a data register).
+    Adda,
 }
 
 /// A bitwise logic operation a [`MicroOp::SrLogic`] applies to the status register — the three privileged
@@ -801,23 +809,44 @@ impl MicroState {
             } => {
                 let lhs = self.resolve(a, regs);
                 let rhs = self.resolve(b, regs);
-                // MOVEA is NOT arithmetic and affects NO flags: it writes the (word-sign-extended / full-32)
-                // value straight to An, leaving the entire SR untouched (distinct from MOVE, which sets N/Z).
-                // Handled first so it never reaches the flag write-back below.
-                if let AluOp::MoveA = op {
-                    let value = movea_value(lhs, size);
-                    match dst {
-                        Dest::AddrReg(n) => regs.addr_reg_set(n as usize, value),
-                        _ => unreachable!("MoveA writes only Dest::AddrReg"),
+                // The no-flag An-write ops (MOVEA / ADDA / SUBA) write the full 32-bit An and leave the entire
+                // SR untouched (distinct from MOVE/ADD/SUB, which set the CCR). Handled first so they never
+                // reach the flag write-back below. MOVEA copies the (word-sign-extended / full-32) source;
+                // ADDA/SUBA add/subtract it to/from An at the LONG boundary, where the addend is sign-extended
+                // word→long when `size == Word` (mirroring MoveA) else the full long (byte ADDA/SUBA is illegal
+                // and never decoded). `a` is the source (MoveA) or the destination An (ADDA/SUBA = the minuend
+                // /augend), `b` is the source (ADDA/SUBA).
+                match op {
+                    AluOp::MoveA => {
+                        let value = movea_value(lhs, size);
+                        match dst {
+                            Dest::AddrReg(n) => regs.addr_reg_set(n as usize, value),
+                            _ => unreachable!("MoveA writes only Dest::AddrReg"),
+                        }
+                        self.step += 1;
+                        return 0;
                     }
-                    self.step += 1;
-                    return 0;
+                    AluOp::Adda => {
+                        let addend = match size {
+                            Size::Word => sign_extend16(rhs as u16),
+                            Size::Long => rhs,
+                            Size::Byte => unreachable!("byte ADDA is illegal"),
+                        };
+                        let value = lhs.wrapping_add(addend);
+                        match dst {
+                            Dest::AddrReg(n) => regs.addr_reg_set(n as usize, value),
+                            _ => unreachable!("Adda writes only Dest::AddrReg"),
+                        }
+                        self.step += 1;
+                        return 0;
+                    }
+                    _ => {}
                 }
                 // Compute at the operand-size flag boundary; carry the result (zero-extended to 32) + the new
                 // low-byte CCR uniformly. MOVE is NOT arithmetic — it copies `a` and sets only N/Z (V/C
                 // cleared) while PRESERVING X, so its `ccr` re-injects the live X bit (add/sub recompute X).
                 let (result, ccr) = match op {
-                    AluOp::MoveA => unreachable!("MoveA handled above"),
+                    AluOp::MoveA | AluOp::Adda => unreachable!("no-flag An-write op handled above"),
                     AluOp::Move => {
                         let (r, ccr_nz) = move_flags(lhs, size);
                         (r, ccr_nz | (regs.sr & CCR_X))
@@ -881,8 +910,9 @@ impl MicroState {
                     Dest::DataRegLow8(n) => {
                         regs.d[n as usize] = (regs.d[n as usize] & 0xFFFF_FF00) | (result & 0xFF);
                     }
-                    // An is only ever written by MoveA (handled above, no flags), never by Add/Sub/Move.
-                    Dest::AddrReg(_) => unreachable!("AddrReg dest is MoveA-only"),
+                    // An is only ever written by the no-flag early-return ops (MoveA / ADDA / SUBA, handled
+                    // above), never by Add/Sub/Move/Cmp/Cmpa (which reach this flag write-back).
+                    Dest::AddrReg(_) => unreachable!("AddrReg dest is MoveA/ADDA/SUBA-only"),
                     // Flag-only (CMP family): the CCR is already set above; nothing is written back. The
                     // `result` is the discarded subtraction value.
                     Dest::None => {}

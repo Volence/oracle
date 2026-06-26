@@ -101,6 +101,14 @@ const FILES: &[&str] = &[
     // a single flag-ALU + the trailing FC-6 queue refill (length 4), no operand fetch (the value is the opcode's
     // own low byte), no EA modes, no odd-address sub-cases.
     "MOVE.q.json",
+    // ADDA.w / ADDA.l (`1101 aaa s11 mmm rrr`, opmode 3 = .w / 7 = .l = 0xD0C0 / 0xD1C0) — address arithmetic
+    // `An = An + src`, NO flags (SR untouched). L0 decodes both sizes: `.w` sign-extends the source word→long
+    // before the add (mirroring MOVEA.w / CMPA.w), `.l` adds the full 32. All 12 source modes in scope
+    // (An-direct legal — it is address arithmetic; odd word/long source EAs are address errors the E3/E4 abort
+    // covers, no parity filter) except the pre-existing `(A7)` (mode 2) plain-indirect deferral (its `(A7)+` /
+    // `-(A7)` siblings ARE in scope). Files are 100% pure ADDA (no contaminants).
+    "ADDA.w.json",
+    "ADDA.l.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -713,6 +721,22 @@ fn covered(opcode: u16, _ini: &Value) -> bool {
     if opcode & 0xF100 == 0x7000 {
         return true;
     }
+    // ADDA `<ea>,An` (`1101 aaa s11 mmm rrr`, opmode 3 = .w (0xD0C0) / 7 = .l (0xD1C0)) — `An = An + src`, NO
+    // flags. All 12 source modes in scope (An-direct LEGAL — it is address arithmetic; odd word/long source EAs
+    // are address errors the E3/E4 abort covers, no parity filter) except the pre-existing `(A7)` (mode 2)
+    // plain-indirect deferral. The ADDA.w/.l files are 100% pure (no contaminants). Classified by OPCODE.
+    if opcode & 0xF1C0 == 0xD0C0 || opcode & 0xF1C0 == 0xD1C0 {
+        let mode = (opcode >> 3) & 7;
+        let reg = opcode & 7;
+        return match mode {
+            0 | 1 => true,         // Dn / An direct (no memory access; An source legal)
+            2 => reg != 7,         // (An) — A7 mode-2 deferred
+            3 | 4 => true,         // (An)+ / -(An)
+            5 | 6 => true,         // d16(An) / d8(An,Xn)
+            7 if reg <= 4 => true, // abs.w / abs.l / d16(PC) / d8(PC,Xn) / #imm
+            _ => false,
+        };
+    }
     false // other forms (not-yet-implemented modes): out of slice this push
 }
 
@@ -783,8 +807,19 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 285_715,
-        "expected 285715 covered cases — N6 adds MOVEQ (its own MOVE.q file, `0111 ddd 0 dddddddd` = 0x7000 | \
+        ran >= 301_585,
+        "expected 301585 covered cases — L0 adds ADDA.w / ADDA.l (their own ADDA.w/.l files, `1101 aaa s11 mmm \
+         rrr` = 0xD0C0 (.w) / 0xD1C0 (.l)): ADDA.w 7935 + ADDA.l 7935 = +15870 over N6's 285715. ADDA is the \
+         no-flag address arithmetic `An = An + src` (SR untouched): `.w` sign-extends the source word→long \
+         before the long-boundary add (mirroring MOVEA.w / CMPA.w — `AluOp::Adda` does this internally), `.l` \
+         adds the full 32; An is written full-width (`Dest::AddrReg`). All 12 source modes in scope (An-direct \
+         LEGAL — it is address arithmetic; odd word/long source EAs are address errors the E3/E4 abort covers, \
+         no parity filter) except the pre-existing `(A7)` (mode 2) plain-indirect deferral. The recipe reuses \
+         `ea_src`: `.w` appends a uniform trailing n4 idle (ADDA.w = MOVEA.w's source stream + n4 for every \
+         source mode), `.l` appends nothing (`ea_src_long`'s built-in n4/n2 idle already equals ADD.l <ea>,Dn). \
+         New vocabulary: `AluOp::Adda` (the no-flag An-write early-return op, mirroring `AluOp::MoveA`). The \
+         ADDA.w/.l files are 100% pure (no contaminants). \
+         Prior baseline — N6 adds MOVEQ (its own MOVE.q file, `0111 ddd 0 dddddddd` = 0x7000 | \
          dn<<9 | imm8, bit 8 = 0): MOVE.q 8065 = +8065 over N5's 277650 (the WHOLE opcode space is in scope — no \
          EA modes, no memory access, no odd-address sub-cases; every vendored case has bit 8 clear, the only \
          legal form). MOVEQ loads a sign-extended 8-bit immediate into the FULL 32 bits of Dn (N = msb, Z = \

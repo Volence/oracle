@@ -198,6 +198,17 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     if opcode & 0xF1C0 == 0x9080 {
         return arith_ea_dn(opcode, AluOp::Sub, Size::Long); // SUB.l <ea>,Dn
     }
+    // ADDA `<ea>,An` (`1101 aaa s11 mmm rrr`, opmode 3 = `.w` = 0xD0C0 / opmode 7 = `.l` = 0xD1C0) — address
+    // arithmetic `An = An + src`, NO flags (SR untouched). `.w` sign-extends the source word→long before the
+    // long-boundary add (`AluOp::Adda` does this internally, mirroring `AluOp::MoveA`); `.l` adds the full 32.
+    // All 12 source modes legal (An-direct included — it is address arithmetic). The opcode space (nibble 0xD,
+    // opmode 3/7) is disjoint from the ADD arms above (opmode 0/1/2/4/5/6) and the CMP/CMPA arms (nibble 0xB).
+    if opcode & 0xF1C0 == 0xD0C0 {
+        return adda_suba_recipe(opcode, AluOp::Adda, Size::Word); // ADDA.w <ea>,An
+    }
+    if opcode & 0xF1C0 == 0xD1C0 {
+        return adda_suba_recipe(opcode, AluOp::Adda, Size::Long); // ADDA.l <ea>,An
+    }
     // CMP `<ea>,Dn` (`1011 ddd 0SS mmm rrr`, nibble 0xB, opmode 0/1/2 = b/w/l) — the flag-only compare
     // `Dn − <ea>` (Dn the minuend). Classified by OPCODE (the CMP.* files mix CMP/CMPM/CMPI — CMPM/CMPI are
     // N1/N2, and `covered()` admits only the Cmp class this commit, so decode is reached on Cmp cases only).
@@ -633,6 +644,42 @@ fn cmpa_recipe(opcode: u16, size: Size) -> MicroState {
     let src_reg = (opcode & 7) as u8;
     let mut buf = RecipeBuf::new();
     ea_cmpa(&mut buf, dst_reg, src_mode, src_reg, size);
+    buf.finish()
+}
+
+/// `ADDA.{w,l} <ea>,An` / `SUBA.{w,l} <ea>,An` (`1101/1001 aaa s11 mmm rrr`, opmode 3 = `.w` / 7 = `.l`): the
+/// no-flag address arithmetic `An = An ± src` (`AluOp::Adda`/`Suba`). The destination/augend `An` is bits 11-9
+/// (full 32 bits, the minuend for SUBA); the source is the usual `mode/reg` in bits 5-0 (all 12 modes legal —
+/// An-direct included). The op sign-extends a `.w` source word→long internally (mirroring `AluOp::MoveA`) and
+/// computes at the long boundary; it writes `An` via [`Dest::AddrReg`] and touches **NO** flags.
+///
+/// Shared by ADDA (L0) and SUBA (L1) — parameterized only by `op`. The source bus stream is fetched by
+/// [`ea_src`]: for **`.w`** a uniform trailing `Internal(4)` idle is appended (`ADDA.w`/`SUBA.w` = the MOVEA.w
+/// source stream + n4 for every source mode, pinned to the vendored data); for **`.l`** NOTHING extra is
+/// appended — `ea_src` routes to `ea_src_long`, whose built-in n4 (register-direct / `#imm`) / n2 (memory)
+/// trailing idle already equals `ADD.l <ea>,Dn` byte-for-byte (and thus `ADDA.l`/`SUBA.l`). Byte ADDA/SUBA is
+/// illegal and never decoded.
+fn adda_suba_recipe(opcode: u16, op: AluOp, size: Size) -> MicroState {
+    let dst_reg = ((opcode >> 9) & 7) as u8;
+    let src_mode = (opcode >> 3) & 7;
+    let src_reg = (opcode & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    // The no-flag An-write ALU: `a` = the destination An (full 32, the augend/minuend), `b` = the source
+    // operand the EA builder fetched, written full-width back to the same An.
+    let make_alu = |operand: Operand| MicroOp::Alu {
+        op,
+        size,
+        a: Operand::AddrReg(dst_reg),
+        b: operand,
+        dst: Dest::AddrReg(dst_reg),
+    };
+    ea_src(&mut buf, src_mode, src_reg, size, make_alu);
+    // ADDA.w/SUBA.w carry a uniform trailing n4 idle (the one cycle-count difference from MOVEA.w, which has no
+    // trailing idle). ADDA.l/SUBA.l append nothing — `ea_src_long`'s built-in n4/n2 trailing idle already
+    // matches ADD.l <ea>,Dn (and thus ADDA.l/SUBA.l) exactly. Non-bus, so it does not alter the bus stream.
+    if size == Size::Word {
+        buf.push(MicroOp::Internal { cycles: 4 });
+    }
     buf.finish()
 }
 
@@ -9242,6 +9289,717 @@ mod tests {
                 prefetch: [op, 0],
             };
             // Just exercising the decode arm — it must not panic / hit the todo!() fallthrough.
+            let _ = decode(&regs);
+        }
+    }
+
+    // --- L0: ADDA.w / ADDA.l — the no-flag address arithmetic `An = An + src` (AluOp::Adda + Dest::AddrReg).
+    // SR is UNTOUCHED; `.w` sign-extends the source word→long before the long-boundary add (mirroring MOVEA.w),
+    // `.l` adds the full 32. An is written full-width. The recipe reuses `ea_src`: `.w` appends a uniform
+    // trailing n4 idle (ADDA.w = MOVEA.w + 4 for every source mode), `.l` appends nothing (`ea_src_long`'s
+    // built-in n4/n2 idle already equals ADD.l <ea>,Dn). All anchors pinned to the vendored ADDA.w/.l stream. ---
+
+    /// The clean SST anchor `dac2 [ADDA.w D2,A5] 31` (8 cyc): a Dn-source word add where the SOURCE WORD's high
+    /// bit is SET — pinning the internal sign-extension of `b`. D2 low word = 0x8269 (bit15 set) → sext16 =
+    /// 0xFFFF8269 (negative addend); A5 = 0x78EB075B + 0xFFFF8269 = 0x78EA89C4 (full 32). NO flags touched (SR
+    /// stays 0x271B). Bus: one FC-6 refill @3076 (Dn direct, no operand read), then the trailing n4 idle. This
+    /// is the sign-extend-correctness-on-An anchor.
+    fn setup_adda_w_dac2() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                0x7235_6A78,
+                0x5274_B5D8,
+                0x6277_8269,
+                0x617C_BE3C,
+                0x0954_B4A5,
+                0x30B5_0681,
+                0xAE3F_71C3,
+                0x3128_AF20,
+            ],
+            a: [
+                0x3C84_A650,
+                0x9205_C601,
+                0x5970_F14C,
+                0x5D26_E858,
+                0x7AF6_F484,
+                0x78EB_075B,
+                0x822F_1093,
+            ],
+            usp: 23_865_738,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10011, // 0x271B
+            prefetch: [0xDAC2, 0x228B],
+        };
+        let mut bus = FlatBus::new();
+        bus.poke(3076, 0x27);
+        bus.poke(3077, 0x60); // 0x2760 = 10080 — the refill word
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_adda_w_dac2_log() -> Vec<Transaction> {
+        vec![Transaction {
+            kind: TxKind::Read,
+            fc: 6,
+            addr: 3076,
+            size: Size::Word,
+            value: 10080,
+        }]
+    }
+
+    fn assert_adda_w_dac2_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced one word");
+        assert_eq!(cpu.regs.sr, 10011, "ADDA touches NO flags — SR unchanged");
+        assert_eq!(
+            cpu.regs.a[5], 0x78EA_89C4,
+            "A5 = 0x78EB075B + sext16(0x8269) = 0x78EA89C4 (negative addend, full 32)"
+        );
+        assert_eq!(cpu.regs.d[2], 0x6277_8269, "source Dn unchanged");
+        assert_eq!(cpu.regs.prefetch, [0x228B, 10080], "queue advanced");
+        assert_eq!(bus.log, expected_adda_w_dac2_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_adda_w_dac2() {
+        let (mut cpu, mut bus) = setup_adda_w_dac2();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 8,
+            "ADDA.w Dn = [Prefetch, Alu, Internal(4)] = 4+0+4 = 8 (MOVEA.w Dn 4 + n4)"
+        );
+        assert_adda_w_dac2_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_adda_w_dac2() {
+        let (mut rtc, mut bus_rtc) = setup_adda_w_dac2();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_adda_w_dac2();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 8);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_adda_w_dac2_final(&step, &bus_step);
+    }
+
+    /// The clean SST anchor `d4cd [ADDA.w A5,A2] 3` (8 cyc): an An-SOURCE word add (An-direct is legal — ADDA
+    /// is address arithmetic). A5 low word = 0x0490 → sext16 = 0x00000490; A2 = 0x906FFB62 + 0x490 = 0x907062F0
+    /// (full 32). NO flags. Bus: one FC-6 refill (An direct, no operand read), then the trailing n4 idle.
+    fn setup_adda_w_d4cd() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                0x83E4_F829,
+                0x2A53_D0F9,
+                0x6439_758C,
+                0x7140_98C5,
+                0x99A3_4C69,
+                0x57DE_0490,
+                0xB0A4_A5AF,
+                0xC8C6_FA98,
+            ],
+            a: [
+                0x18F0_88E5,
+                0x43D7_BF5A,
+                0x906F_FB62,
+                0xECB3_6364,
+                0x6FCC_ABC8,
+                0xA729_678E,
+                0x7099_AFCD,
+            ],
+            usp: 3_711_164_204,
+            ssp: 2048,
+            pc: 3072,
+            sr: 10009, // 0x2719
+            prefetch: [0xD4CD, 0xE207],
+        };
+        let mut bus = FlatBus::new();
+        bus.poke(3076, 0x87);
+        bus.poke(3077, 0xA0); // 0x87A0 = 34720 — the refill word
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn assert_adda_w_d4cd_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced one word");
+        assert_eq!(cpu.regs.sr, 10009, "ADDA touches NO flags — SR unchanged");
+        assert_eq!(
+            cpu.regs.a[2], 0x9070_62F0,
+            "A2 = 0x906FFB62 + sext16(0x0490) = 0x907062F0 (full 32)"
+        );
+        assert_eq!(cpu.regs.a[5], 0xA729_678E, "source An unchanged");
+        assert_eq!(cpu.regs.prefetch, [0xE207, 34720], "queue advanced");
+        assert_eq!(
+            bus.log,
+            vec![Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 34720,
+            }]
+        );
+    }
+
+    #[test]
+    fn run_instruction_matches_adda_w_d4cd() {
+        let (mut cpu, mut bus) = setup_adda_w_d4cd();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(cycles, 8, "ADDA.w An = [Prefetch, Alu, Internal(4)] = 8");
+        assert_adda_w_d4cd_final(&cpu, &bus);
+    }
+
+    /// The clean SST anchor `d6d1 [ADDA.w (A1),A3] 1` (12 cyc): a MEMORY-source word add. The source word is
+    /// read at `(A1)` (A1 = 0xFCB6996E, masked to 0xB6996E = 11966830), refilled, then `A3 + sext16(src)`. Src
+    /// word = 0x9FB1 → sext = 0xFFFF9FB1; A3 = 0x14511DB3 + 0xFFFF9FB1 = 0x1450BD64 (full 32). NO flags. Bus:
+    /// `[r 11966830, PF, n4]`. This exercises the memory-read + Adda/AddrReg + trailing-n4 composition.
+    fn setup_adda_w_d6d1() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                0x08A7_63A9,
+                0x4E1C_13FA,
+                0xB48C_3357,
+                0x59FA_7A6C,
+                0x85FF_470D,
+                0x7003_FD7B,
+                0x9265_DDD3,
+                0x334F_21F8,
+            ],
+            a: [
+                0x25BC_72FB,
+                0xFCB6_996E,
+                0x8B01_9903,
+                0x1451_1DB3,
+                0x301C_3FBB,
+                0x720F_4721,
+                0x1FE9_923E,
+            ],
+            usp: 1_030_979_142,
+            ssp: 2048,
+            pc: 3072,
+            sr: 9998, // 0x270E
+            prefetch: [0xD6D1, 0x82EF],
+        };
+        let mut bus = FlatBus::new();
+        bus.poke(11_966_830, 0x9F);
+        bus.poke(11_966_831, 0xB1); // 0x9FB1 = 40881 — the source word at (A1)
+        bus.poke(3076, 0x68);
+        bus.poke(3077, 0xBA); // 0x68BA = 26810 — the refill word
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_adda_w_d6d1_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 11_966_830,
+                size: Size::Word,
+                value: 40881,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 26810,
+            },
+        ]
+    }
+
+    fn assert_adda_w_d6d1_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced one word");
+        assert_eq!(cpu.regs.sr, 9998, "ADDA touches NO flags — SR unchanged");
+        assert_eq!(
+            cpu.regs.a[3], 0x1450_BD64,
+            "A3 = 0x14511DB3 + sext16(0x9FB1) = 0x1450BD64 (full 32)"
+        );
+        assert_eq!(cpu.regs.a[1], 0xFCB6_996E, "source base A1 unchanged");
+        assert_eq!(cpu.regs.prefetch, [0x82EF, 26810], "queue advanced");
+        assert_eq!(bus.log, expected_adda_w_d6d1_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_adda_w_d6d1() {
+        let (mut cpu, mut bus) = setup_adda_w_d6d1();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 12,
+            "ADDA.w (An) = [Read, Prefetch, Alu, Internal(4)] = 4+4+0+4 = 12"
+        );
+        assert_adda_w_d6d1_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_adda_w_d6d1() {
+        let (mut rtc, mut bus_rtc) = setup_adda_w_d6d1();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_adda_w_d6d1();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 12);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_adda_w_d6d1_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn adda_w_d6d1_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The snapshot/restore anchor for the ADDA shape (Alu{Adda} with Dest::AddrReg, memory source + the
+        // trailing n4 idle). Snapshot the whole CPU at every micro-op boundary, restore, resume, and match.
+        let (mut rref, mut bref) = setup_adda_w_d6d1();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 4 micro-ops (Read, Prefetch, Alu, Internal(4)) → boundaries after 0..=3.
+        for pause_after in 0..=3 {
+            let (mut cpu, mut bus) = setup_adda_w_d6d1();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    /// The clean SST anchor `d7d1 [ADDA.l (A1),A3] 18` (14 cyc): a MEMORY-source LONG add — proves the `.l`
+    /// path reuses `ea_src_long`'s n2 memory idle (NOT the .w n4). The long operand is read at `(A1)` (A1 =
+    /// 0xF5CEE514, masked to 0xCEE514 = 13559060): hi @13559060 = 0x1FA8, lo @13559062 = 0x0685 → 0x1FA80685;
+    /// A3 = 0x021B8735 + 0x1FA80685 = 0x21C38DBA (full 32). NO flags. Bus: `[r.hi, r.lo, PF, n2]`.
+    fn setup_adda_l_d7d1() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                0x3CDC_F03D,
+                0x4D87_B7B9,
+                0x0619_DB27,
+                0xF739_488D,
+                0x02EF_FF76,
+                0x12F7_3F9E,
+                0x5831_42FB,
+                0x9A83_6DD6,
+            ],
+            a: [
+                0x4879_A2C8,
+                0xF5CE_E514,
+                0x035B_70E2,
+                0x021B_8735,
+                0xF543_8C05,
+                0x188E_918A,
+                0xAC1D_912A,
+            ],
+            usp: 402_311_418,
+            ssp: 2048,
+            pc: 3072,
+            sr: 0x2710,
+            prefetch: [0xD7D1, 0xA969],
+        };
+        let mut bus = FlatBus::new();
+        bus.poke(13_559_060, 0x1F);
+        bus.poke(13_559_061, 0xA8); // hi word 0x1FA8 = 8104
+        bus.poke(13_559_062, 0x06);
+        bus.poke(13_559_063, 0x85); // lo word 0x0685 = 1669
+        bus.poke(3076, 0xCC);
+        bus.poke(3077, 0x46); // 0xCC46 = 52294 — the refill word
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_adda_l_d7d1_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 13_559_060,
+                size: Size::Word,
+                value: 8104,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 13_559_062,
+                size: Size::Word,
+                value: 1669,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 52294,
+            },
+        ]
+    }
+
+    fn assert_adda_l_d7d1_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced one word");
+        assert_eq!(cpu.regs.sr, 0x2710, "ADDA touches NO flags — SR unchanged");
+        assert_eq!(
+            cpu.regs.a[3], 0x21C3_8DBA,
+            "A3 = 0x021B8735 + 0x1FA80685 = 0x21C38DBA (full 32, no sign-extend for .l)"
+        );
+        assert_eq!(cpu.regs.a[1], 0xF5CE_E514, "source base A1 unchanged");
+        assert_eq!(cpu.regs.prefetch, [0xA969, 52294], "queue advanced");
+        assert_eq!(bus.log, expected_adda_l_d7d1_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_adda_l_d7d1() {
+        let (mut cpu, mut bus) = setup_adda_l_d7d1();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 14,
+            "ADDA.l (An) = [Read.hi, Read.lo, Prefetch, Alu, Internal(2)] = 4+4+4+0+2 = 14 (n2 memory idle, \
+             NOT the .w n4)"
+        );
+        assert_adda_l_d7d1_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_adda_l_d7d1() {
+        let (mut rtc, mut bus_rtc) = setup_adda_l_d7d1();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_adda_l_d7d1();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 14);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_adda_l_d7d1_final(&step, &bus_step);
+    }
+
+    /// The clean SST anchor `d5fc [ADDA.l #,A2] 35` (16 cyc): a `#imm.l` LONG add — proves the `.l` `#imm`
+    /// path's trailing n4 idle (the register/immediate long idle, NOT the n2 memory idle). The 32-bit immediate
+    /// is two extension words: HI = prefetch[1] = 0xF893 (captured before the refill shifts it out), LO = the
+    /// first refill word @3076 = 0xCE23 → imm.l = 0xF893CE23. A2 = 0xA75C1A2D + 0xF893CE23 = 0x9FEFE850 (full
+    /// 32, computed at the long boundary). NO flags. Bus: `[PF, PF, PF, n4]` (3 refills complete the 3-word
+    /// fetch, no operand read).
+    fn setup_adda_l_d5fc() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                0xDB59_BD87,
+                0xE626_4771,
+                0x65E7_E42A,
+                0x2D15_C933,
+                0x0E0C_CFC9,
+                0x714A_6058,
+                0x790D_5601,
+                0xCDE6_C181,
+            ],
+            a: [
+                0xA0F6_83E4,
+                0x5DF3_49F2,
+                0xA75C_1A2D,
+                0xD475_C53E,
+                0x61CE_9188,
+                0xC3B8_4994,
+                0x6C71_2DC5,
+            ],
+            usp: 778_566_730,
+            ssp: 2048,
+            pc: 3072,
+            sr: 0x2700,
+            prefetch: [0xD5FC, 0xF893],
+        };
+        let mut bus = FlatBus::new();
+        // imm.l = (prefetch[1]=0xF893 << 16) | (first refill @3076 = 0xCE23). The two further refills complete
+        // the 3-word instruction fetch.
+        bus.poke(3076, 0xCE);
+        bus.poke(3077, 0x23); // 0xCE23 = 52771 — imm LO word (the first refill)
+        bus.poke(3078, 0xAC);
+        bus.poke(3079, 0x67); // 0xAC67 = 44135 — the second refill word
+        bus.poke(3080, 0xE9);
+        bus.poke(3081, 0x52); // 0xE952 = 59730 — the third (final) refill word
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_adda_l_d5fc_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 52771,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3078,
+                size: Size::Word,
+                value: 44135,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3080,
+                size: Size::Word,
+                value: 59730,
+            },
+        ]
+    }
+
+    fn assert_adda_l_d5fc_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(
+            cpu.regs.pc, 3078,
+            "pc advanced THREE words (3-word instruction)"
+        );
+        assert_eq!(cpu.regs.sr, 0x2700, "ADDA touches NO flags — SR unchanged");
+        assert_eq!(
+            cpu.regs.a[2], 0x9FEF_E850,
+            "A2 = 0xA75C1A2D + imm.l 0xF893CE23 = 0x9FEFE850 (full 32)"
+        );
+        assert_eq!(cpu.regs.prefetch, [0xAC67, 59730], "queue advanced");
+        assert_eq!(bus.log, expected_adda_l_d5fc_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_adda_l_d5fc() {
+        let (mut cpu, mut bus) = setup_adda_l_d5fc();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 16,
+            "ADDA.l #imm.l = [Combine32, PF, Combine32, PF, PF, Alu, Internal(4)] = 12 + n4 = 16"
+        );
+        assert_adda_l_d5fc_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_adda_l_d5fc() {
+        let (mut rtc, mut bus_rtc) = setup_adda_l_d5fc();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_adda_l_d5fc();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 16);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_adda_l_d5fc_final(&step, &bus_step);
+    }
+
+    /// The SST anchor `d6d0 [ADDA.w (A0),A3] 30` (50 cyc): an ODD-EA ADDA — A0 = 0xDDBBDB63 is ODD (masked
+    /// 0xBBDB63), so the word operand read faults and the in-flight `MicroState` is rewritten into the group-0
+    /// 14-byte address-error frame to vector 3 (@0x0C). All supervisor (S=1, T=0, SR 0x271E): the frame stacks
+    /// `PC = 3072` (live regs.pc, no prefetch ran), `SR = 0x271E`, `IR = 0xD6D0`, `SSW = 0xD6D5`, the full
+    /// 32-bit access address 0xDDBBDB63. Vector @0x0C = 0x00001400; handler @5120. This proves an odd ADDA EA
+    /// is IN scope (the E3 abort handles it — no parity filter).
+    fn setup_adda_odd_d6d0() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                0xC6E5_A13E,
+                0xD515_EFAC,
+                0xF983_3A87,
+                0x87CD_ABAD,
+                0x88CE_16B9,
+                0x7696_28B7,
+                0x48E0_7F6B,
+                0xBF85_B5A5,
+            ],
+            a: [
+                0xDDBB_DB63, // A0 — ODD masked EA (0xBBDB63)
+                0x8893_AA27,
+                0x08C6_BD63,
+                0x2C6F_68E4,
+                0xF8CF_742A,
+                0x78F7_33FB,
+                0x60A8_773F,
+            ],
+            usp: 3_379_605_804,
+            ssp: 2048,
+            pc: 3072,
+            sr: 0x271E, // S=1, T=0 (supervisor)
+            prefetch: [0xD6D0, 0xFEA9],
+        };
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            // The vector-3 longword @0x0C: 0x00001400 (hi 0x0000 @12, lo 0x1400 = 5120 @14).
+            (12u32, 0u8),
+            (13, 0),
+            (14, 20),
+            (15, 0),
+            // The handler code @5120: 0x8E44, 0xA9F6.
+            (5120, 0x8E),
+            (5121, 0x44),
+            (5122, 0xA9),
+            (5123, 0xF6),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_adda_odd_d6d0_log() -> Vec<Transaction> {
+        // The group-0 14-byte frame writes (PCL @2046, SR @2042, PCH @2044, IR @2040, then aLo/SSW/aHi at
+        // 2038/2034/2036 — the on-bus microcode order), the vector-3 fetch @12/14, then the handler reload @5120.
+        vec![
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2046,
+                size: Size::Word,
+                value: 3072,
+            }, // PCL
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2042,
+                size: Size::Word,
+                value: 10014,
+            }, // SR
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2044,
+                size: Size::Word,
+                value: 0,
+            }, // PCH
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2040,
+                size: Size::Word,
+                value: 54992,
+            }, // IR (0xD6D0)
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2038,
+                size: Size::Word,
+                value: 56163,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2034,
+                size: Size::Word,
+                value: 54997,
+            }, // SSW (0xD6D5)
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 2036,
+                size: Size::Word,
+                value: 56763,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 12,
+                size: Size::Word,
+                value: 0,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 14,
+                size: Size::Word,
+                value: 5120,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 5120,
+                size: Size::Word,
+                value: 36420,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 5122,
+                size: Size::Word,
+                value: 43510,
+            },
+        ]
+    }
+
+    #[test]
+    fn run_instruction_matches_adda_odd_d6d0() {
+        let (mut cpu, mut bus) = setup_adda_odd_d6d0();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 50,
+            "odd-EA ADDA → group-0 14-byte address-error frame (50 cyc)"
+        );
+        assert_eq!(cpu.regs.pc, 5120, "pc landed at the vector-3 handler");
+        assert_eq!(
+            cpu.regs.ssp, 2034,
+            "SSP pushed down by 14 (the group-0 frame)"
+        );
+        assert_eq!(
+            cpu.regs.a[3], 0x2C6F_68E4,
+            "An (the dest) unchanged — the add never committed"
+        );
+        assert_eq!(
+            cpu.regs.sr, 0x271E,
+            "SR unchanged (already S=1/T=0 — the entry transform is a no-op on the data)"
+        );
+        assert_eq!(
+            cpu.regs.prefetch,
+            [0x8E44, 0xA9F6],
+            "queue reloaded at the handler"
+        );
+        assert_eq!(bus.log, expected_adda_odd_d6d0_log());
+    }
+
+    #[test]
+    fn both_drivers_match_adda_odd_d6d0() {
+        let (mut rtc, mut bus_rtc) = setup_adda_odd_d6d0();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_adda_odd_d6d0();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 50);
+        assert_eq!(step.regs, rtc.regs, "drivers agree across the abort");
+        assert_eq!(
+            bus_step.log, bus_rtc.log,
+            "drivers agree on the frame transactions"
+        );
+    }
+
+    #[test]
+    fn adda_decode_classifies_and_sizes() {
+        // ADDA is opmode 3 (.w = 0xD0C0) / 7 (.l = 0xD1C0) of the 0xD nibble — its own decode arms, disjoint
+        // from the ADD arms (opmode 0/1/2/4/5/6). Decode must produce a recipe (no panic / no todo!()).
+        for op in [0xDAC2u16, 0xD4CD, 0xD6D1, 0xD7D1, 0xD5FC, 0xD0C0, 0xD1C0] {
+            let regs = Registers {
+                d: [0; 8],
+                a: [0; 7],
+                usp: 0,
+                ssp: 2048,
+                pc: 3072,
+                sr: 0x2700,
+                prefetch: [op, 0],
+            };
             let _ = decode(&regs);
         }
     }
