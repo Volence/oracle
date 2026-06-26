@@ -67,9 +67,10 @@ const FILES: &[&str] = &[
     "ORItoSR.json",
     "EORItoSR.json",
     "RESET.json",
-    // N0: the CMP.* files are 3-WAY MIXES (CMP <ea>,Dn + CMPM (Ay)+,(Ax)+ + CMPI #imm,<ea>), all mislabeled
-    // "CMP.<sz>" in `name` — classified by OPCODE via `cmp_class`. This commit admits ONLY the Cmp class;
-    // CMPM/CMPI in these files are deferred (N1/N2) and skip cleanly (not-covered, never a panic).
+    // The CMP.* files are 3-WAY MIXES (CMP <ea>,Dn + CMPM (Ay)+,(Ax)+ + CMPI #imm,<ea>), all mislabeled
+    // "CMP.<sz>" in `name` — classified by OPCODE via `cmp_class`. N0 added the Cmp class, N1 the Cmpm class,
+    // N2 the Cmpi class — so these files are now FULLY covered (CMPA is its own file). The only intra-class
+    // deferral is the pre-existing `(A7)` mode-2 plain-indirect mode-scope convention.
     "CMP.b.json",
     "CMP.w.json",
     "CMP.l.json",
@@ -427,7 +428,25 @@ fn cmp_in_scope(opcode: u16) -> bool {
         // (the `(A7)+` form is in scope, A7 steps by 2 for byte); odd word/long EAs are address errors the
         // E3/E4 abort covers (no parity filter).
         CmpClass::Cmpm => true,
-        // CMPI (N2), CMPA (its own decode arm), and non-CMP opcodes — not covered by this CMP-file dispatch.
+        // CMPI `#imm,<ea>` (N2): the data-alterable destination EA modes only — `Dn` (0, no memory access),
+        // `(An)` (2), `(An)+` (3), `-(An)` (4), `d16(An)` (5), `d8(An,Xn)` (6), `abs.w` (7/0), `abs.l` (7/1).
+        // `An`-direct (illegal for CMPI), PC-relative and `#imm` are NOT data-alterable and are absent from the
+        // data. The `(A7)` (mode 2) plain-indirect form follows the same pre-existing mode-scope deferral as
+        // Cmp/ADD/SUB (its `(A7)+`/`-(A7)` siblings ARE in scope); odd word/long EAs are address errors the
+        // E3/E4 abort covers (no parity filter).
+        CmpClass::Cmpi => {
+            let mode = (opcode >> 3) & 7;
+            let reg = opcode & 7;
+            match mode {
+                0 => true,                         // Dn-direct (no memory access)
+                2 => reg != 7,                     // (An) — A7 mode-2 deferred
+                3 | 4 => true,                     // (An)+ / -(An)
+                5 | 6 => true,                     // d16(An) / d8(An,Xn)
+                7 if reg == 0 || reg == 1 => true, // abs.w / abs.l
+                _ => false,                        // An-direct / PC-rel / #imm: absent / illegal
+            }
+        }
+        // CMPA (its own decode arm) and non-CMP opcodes — not covered by this CMP-file dispatch.
         _ => false,
     }
 }
@@ -526,10 +545,14 @@ fn covered(opcode: u16, _ini: &Value) -> bool {
     if reset_covered(opcode) {
         return true;
     }
-    // CMP `<ea>,Dn` + CMPM `(Ay)+,(Ax)+` (the Cmp/Cmpm classes of the 3-way CMP.* mix, classified by OPCODE).
-    // N0 added Cmp; N1 adds Cmpm — CMPI (the same files' third class) is still deferred to N2 and skips cleanly.
-    // Odd word/long EAs are address errors the E3/E4 abort covers; the per-class scope is in `cmp_in_scope`.
-    if matches!(cmp_class(opcode), CmpClass::Cmp | CmpClass::Cmpm) {
+    // CMP `<ea>,Dn` + CMPM `(Ay)+,(Ax)+` + CMPI `#imm,<ea>` (the Cmp/Cmpm/Cmpi classes of the 3-way CMP.* mix,
+    // classified by OPCODE). N0 added Cmp, N1 Cmpm, N2 Cmpi — so the CMP.* files are now FULLY covered (CMPA is
+    // its own file/decode arm). Odd word/long EAs are address errors the E3/E4 abort covers; the per-class
+    // scope is in `cmp_in_scope`.
+    if matches!(
+        cmp_class(opcode),
+        CmpClass::Cmp | CmpClass::Cmpm | CmpClass::Cmpi
+    ) {
         return cmp_in_scope(opcode);
     }
     // ADD/SUB. No parity filter (odd word/long EAs are address errors the E4 abort covers); the only
@@ -682,15 +705,22 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 211_392,
-        "expected 211392 covered cases — N1 adds the CMPM `(Ay)+,(Ax)+` (Cmpm) class of the 3-way CMP.* mix \
-         (CMP.b 7161 + CMP.w 7346 + CMP.l 7312 = +2677 over N0's 208715: CMPM contributes 911 + 889 + 877). \
-         CMPM is two post-increment reads (src @ (Ay)+ first, then dst @ (Ax)+) feeding the flag-only \
-         `(Ax) − (Ay)` (`AluOp::Cmp` + `Dest::None`, X preserved, no write); the `(An)+` bump is committed \
-         before the read (odd-EA read-faults still bump, via the E3/E4 abort), so no parity filter — only CMPI \
-         (the files' third class) remains deferred (N2). N0 added the CMP `<ea>,Dn` (Cmp) class (CMP.b 6250 + \
-         CMP.w 6457 + CMP.l 6435 = +19142 over E6's 189573; only the Cmp class in scope, classified by OPCODE \
-         never the misleading `name`, minus the `(A7)` mode-2 plain-indirect source deferral). CMP sets N/Z/V/C \
+        ran >= 213_404,
+        "expected 213404 covered cases — N2 adds the CMPI `#imm,<ea>` (Cmpi) class of the 3-way CMP.* mix, so \
+         the CMP.* files are now FULLY covered (CMP.b 7939 + CMP.w 7949 + CMP.l 7943 = +2012 over N1's 211392: \
+         CMPI in-scope contributes 778 + 603 + 631). CMPI captures the immediate (one ext word for b/w, TWO \
+         for `.l`) BEFORE the EA's extension words, then reads the data-alterable EA and DISCARDS it (NO write \
+         — CMPI is not an RMW), feeding the flag-only `<ea> − #imm` (`AluOp::Cmp` + `Dest::None`, X preserved). \
+         The data-alterable modes in scope: Dn (0, no memory access), (An) (2, minus the `(A7)` mode-2 \
+         deferral), (An)+ (3), -(An) (4), d16(An) (5), d8(An,Xn) (6), abs.w (7/0), abs.l (7/1); An-direct / \
+         PC-rel / #imm are illegal/absent. Odd word/long EAs are address errors the E3/E4 abort covers. N1 had \
+         added the CMPM `(Ay)+,(Ax)+` (Cmpm) class (CMP.b 7161 + CMP.w 7346 + CMP.l 7312 over N0's 208715: \
+         CMPM contributes 911 + 889 + 877). CMPM is two post-increment reads (src @ (Ay)+ first, then dst @ \
+         (Ax)+) feeding the flag-only `(Ax) − (Ay)`; the `(An)+` bump is committed before the read (odd-EA \
+         read-faults still bump, via the E3/E4 abort), so no parity filter. N0 added the CMP `<ea>,Dn` (Cmp) \
+         class (CMP.b 6250 + CMP.w 6457 + CMP.l 6435 = +19142 over E6's 189573; only the Cmp class in scope, \
+         classified by OPCODE never the misleading `name`, minus the `(A7)` mode-2 plain-indirect source \
+         deferral). CMP sets N/Z/V/C \
          exactly as SUB but PRESERVES X and writes nothing; odd word/long source EAs are address errors the \
          E3/E4 abort covers. Prior baseline — E6 adds the four privileged-op files (ANDItoSR/ORItoSR/EORItoSR/RESET, \
          8065 each, fully in scope = +32260 over E5's 157313). E4 had flipped the odd-address xfails IN: the \
@@ -824,5 +854,60 @@ fn cmp_source_mode_anchors_match_singlesteptests() {
     );
     eprintln!(
         "N0 CMP source-mode anchors: {found} cases (Dn / An / memory sources) passed both drivers"
+    );
+}
+
+/// N2 — the named `CMPI #imm,<ea>` anchors, pinning each size's immediate-then-EA prefetch interleave + the
+/// data-alterable EA read (discarded, NO write) against the vendored CMP.* (CMPI) stream WITHOUT relying on the
+/// bulk `covered()` sweep: a **Dn-dest** form per size (no memory access — `#imm` then a register compare) and a
+/// **memory-dest** form per size (the `.b`/`.w` single read, the `.l` long read pair). Each runs both drivers +
+/// the per-cycle transaction stream via `run_case`. The load-bearing pins: the immediate's extension word(s)
+/// precede the EA's extension word(s); the EA is READ-and-DISCARDED (no write-back — CMPI is not an RMW); X is
+/// preserved. Every anchor must classify as the Cmpi class **by OPCODE** (the CMP.* `name` fields lie).
+#[test]
+fn cmpi_anchors_match_singlesteptests() {
+    // (file, name-prefix, length) — the (prefix, length) pair picks the clean (even-EA) CMPI case.
+    let anchors: &[(&str, &str, u32)] = &[
+        ("CMP.b.json", "0c06", 8), // CMPI.b #imm,D6 — Dn-dest (no memory access, 1 imm word, 2 refills)
+        ("CMP.b.json", "0c10", 12), // CMPI.b #imm,(A0) — memory-dest single read, [PF, READ, PF]
+        ("CMP.b.json", "0c39", 20), // CMPI.b #imm,abs.l — abs.l address assembly after the immediate
+        ("CMP.w.json", "0c47", 8),  // CMPI.w #imm,D7 — Dn-dest (no memory access)
+        ("CMP.w.json", "0c55", 12), // CMPI.w #imm,(A5) — memory-dest single read
+        ("CMP.l.json", "0c82", 14), // CMPI.l #imm,D2 — Dn-dest (2 imm words, 3 refills, n2 idle)
+        ("CMP.l.json", "0c93", 20), // CMPI.l #imm,(A3) — memory-dest long read pair, no trailing idle
+        ("CMP.l.json", "0caa", 24), // CMPI.l #imm,d16(A2) — d16 EA after the 2-word immediate
+        ("CMP.l.json", "0cb9", 28), // CMPI.l #imm,abs.l — the heaviest interleave (imm.l then abs.l)
+    ];
+    let mut found = 0usize;
+    for (fname, prefix, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap().starts_with(prefix)
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| {
+                panic!("N2 CMPI anchor {prefix} (len {length}) not found in {fname}")
+            });
+        // Every anchor must classify as the Cmpi class (by OPCODE, not name).
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(
+            cmp_class(opcode),
+            CmpClass::Cmpi,
+            "anchor {prefix} must be the Cmpi class"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all N2 CMPI anchors exercised");
+    eprintln!(
+        "N2 CMPI anchors: {found} cases (Dn-dest + memory-dest, each size) passed both drivers"
     );
 }

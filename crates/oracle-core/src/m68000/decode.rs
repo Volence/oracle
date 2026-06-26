@@ -224,6 +224,22 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         };
         return cmpm_recipe(opcode, size);
     }
+    // CMPI `#imm,<ea>` (`0000 1100 SS mmm rrr`, high byte 0x0C, SS bits 7-6 = b/w/l) — compare the
+    // data-alterable EA against an immediate: capture the immediate (one ext word for b/w, TWO for `.l`)
+    // FIRST, then read the EA (discarded — NO write), then the flag-only `<ea> − #imm` (`AluOp::Cmp` +
+    // `Dest::None`, X preserved). The immediate's ext words always precede the EA's ext words in the prefetch
+    // stream — pinned to the data via the immediate-then-EA interleave in `cmpi_recipe`. The Cmpi class of the
+    // 3-way CMP.* mix (classified by OPCODE). The opcode space 0x0Cxx is disjoint from every arm above (which
+    // never matches the 0x0xxx high nibble except the `*toSR` single points 0x007C/0x027C/0x0A7C, all decoded
+    // below — and a CMPI never has bits 7-6 == 11, so it cannot alias them).
+    if matches!(cmp_class(opcode), CmpClass::Cmpi) {
+        let size = match (opcode >> 6) & 3 {
+            0 => Size::Byte,
+            1 => Size::Word,
+            _ => Size::Long, // SS = 2
+        };
+        return cmpi_recipe(opcode, size);
+    }
     // Bcc / BRA (`0110 cccc dddddddd`, 0x6xxx) — conditional branch. cc = bits 11-8 (cc == 0 is BRA, always
     // taken); cc == 1 is BSR (a separate decode arm, NOT this commit) and is excluded. The condition is
     // evaluated at DECODE time against the live CCR, emitting the taken or not-taken linear recipe directly.
@@ -686,6 +702,238 @@ fn cmpm_recipe(opcode: u16, size: Size) -> MicroState {
         });
     }
     buf.finish()
+}
+
+/// `CMPI #imm,<ea>` (`0000 1100 SS mmm rrr`, SS bits 7-6 = b/w/l): compare the data-alterable EA against an
+/// immediate — the flag-only `<ea> − #imm` (the **EA value is the minuend**, `a`; the immediate is `b`),
+/// setting N/Z/V/C exactly as `SUB` but PRESERVING X and writing **nothing** (`AluOp::Cmp` + `Dest::None`).
+/// The EA is read and DISCARDED; CMPI is **not** a read-modify-write — there is no write-back.
+///
+/// The load-bearing ordering: the immediate's extension word(s) come BEFORE the EA's extension word(s) in the
+/// prefetch stream. For **byte/word** (one immediate word) the immediate is parked into a scratch slot, then a
+/// single refill consumes it from the queue and shifts the EA's first extension word into `prefetch[1]`, then
+/// the proven [`ea_src`] source machinery reads the EA (the source-read bus stream — `[…, READ, PF]` — is
+/// exactly what CMPI's discarded read uses, with NO trailing memory idle, matching the vendored stream). For
+/// **long** (a two-word immediate) the immediate is assembled via the `Combine32` idiom (HI captured before
+/// the refill shifts it out, then the LO word), and the EA is read long ([`cmpi_ea_read_long`]) with the
+/// CMPI-specific prefetch counts and idles — pinned to the vendored CMP.l stream (Dn-dest = n2 trailing idle;
+/// `−(An)`/`d8(An,Xn)` = an n2 leading idle; every other memory mode = no idle).
+fn cmpi_recipe(opcode: u16, size: Size) -> MicroState {
+    let mode = (opcode >> 3) & 7;
+    let reg = (opcode & 7) as u8;
+    // Scratch slots: 6 holds the captured immediate (byte/word) or its HI half (long); 7 holds the assembled
+    // long immediate. Disjoint from `ea_src`'s slots (0 read, 2 EA, 3 abs-HI, 4/5 long lo) so every in-flight
+    // value is snapshot-visible.
+    const IMM_HI_SLOT: u8 = 6;
+    const IMM_SLOT: u8 = 7;
+    let mut buf = RecipeBuf::new();
+    if size == Size::Long {
+        let make_alu = |a| MicroOp::Alu {
+            op: AluOp::Cmp,
+            size,
+            a,
+            b: Operand::Scratch(IMM_SLOT),
+            dst: Dest::None,
+        };
+        // Assemble the 32-bit immediate: HI = prefetch[1] captured BEFORE the refill shifts it out
+        // (`(0 << 16) | prefetch[1]` while slot is still the fresh-recipe zero), a refill shifts the LO word
+        // into prefetch[1], then `(HI << 16) | LO`. The refill here is the instruction's FIRST refill.
+        buf.push(MicroOp::Combine32 {
+            hi: 0,
+            lo: Operand::ImmWord,
+            dst: IMM_HI_SLOT,
+        });
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::Combine32 {
+            hi: IMM_HI_SLOT,
+            lo: Operand::ImmWord,
+            dst: IMM_SLOT,
+        });
+        cmpi_ea_read_long(&mut buf, mode, reg, make_alu);
+    } else {
+        let make_alu = |a| MicroOp::Alu {
+            op: AluOp::Cmp,
+            size,
+            a,
+            b: Operand::Scratch(IMM_SLOT),
+            dst: Dest::None,
+        };
+        // Park the immediate word (its low byte/word is the operand) BEFORE any refill shifts it out, then a
+        // single refill consumes it and brings the EA's first extension word into prefetch[1], then the proven
+        // source-read machinery for the EA (Dn-direct → no read; memory → `[…, READ, PF]`, no trailing idle).
+        buf.push(MicroOp::EaCalc {
+            base: Operand::ImmWord,
+            index: Operand::Zero,
+            disp: Operand::Zero,
+            dst: IMM_SLOT,
+        });
+        buf.push(MicroOp::Prefetch);
+        ea_src(&mut buf, mode, reg, size, make_alu);
+    }
+    buf.finish()
+}
+
+/// The long EA-read sub-sequence for `CMPI.l #imm,<ea>` — read the data-alterable EA as a long (two word reads
+/// assembled by `Combine32`) and DISCARD it, feeding the flag-only `<ea> − #imm` via `make_alu`. Emitted
+/// AFTER the recipe's immediate-capture block (which has already done the instruction's first refill). Every
+/// prefetch count and idle is pinned to the vendored CMP.l (CMPI) stream:
+/// - **Dn-direct** (mode 0): two trailing refills + the register long idle **n2** (NOT ADD.l's n4).
+/// - **`(An)`** (mode 2): one refill, the long read pair, one trailing refill. No idle.
+/// - **`(An)+`** (mode 3): capture An, post-increment +4, then like `(An)`. No idle.
+/// - **`−(An)`** (mode 4): one refill, pre-decrement −4, the predecrement idle **n2**, the long read pair, one
+///   trailing refill.
+/// - **`d16(An)`/`abs.w`** (modes 5, 7/0): one refill (brings the disp word in), `EaCalc`, one refill, the long
+///   read pair, one trailing refill. No idle.
+/// - **`d8(An,Xn)`** (mode 6): one refill (brings the brief word in), `EaCalc`, the indexed idle **n2**, one
+///   refill, the long read pair, one trailing refill.
+/// - **`abs.l`** (mode 7/1): one refill (brings the HI word in), the two-word address assembly, one refill, the
+///   long read pair, one trailing refill. No idle.
+///
+/// CMPI never reads PC-relative or `#imm` EAs (data-alterable only — those modes are absent from the data) or
+/// `An`-direct (illegal); only the eight data-alterable modes above appear. A `.l` read pair is `[READ.hi @
+/// EA, READ.lo @ EA+2, Combine32]` — the discarded operand value in scratch 0.
+fn cmpi_ea_read_long(
+    buf: &mut RecipeBuf,
+    mode: u16,
+    reg: u8,
+    make_alu: impl FnOnce(Operand) -> MicroOp,
+) {
+    // Scratch slots mirroring the EA machinery's conventions (disjoint from the immediate slots 6/7): 0 holds
+    // the read hi word / assembled operand, 2 the computed EA, 3 the abs.l HI word, 4 the long lo word, 5 the
+    // long lo-word address.
+    const EA_SLOT: u8 = 2;
+    const ABS_HI_SLOT: u8 = 3;
+    const LONG_LO_SLOT: u8 = 4;
+    const LONG_LO_ADDR_SLOT: u8 = 5;
+    let data = super::microop::Fc::Data;
+    // The long read pair at a materialized base address: hi @ addr → scratch 0, lo @ addr+2 → LONG_LO_SLOT,
+    // assembled by Combine32 back into scratch 0 (the discarded operand).
+    let read_pair = |buf: &mut RecipeBuf, hi_addr: Operand| {
+        buf.push(MicroOp::Read {
+            addr: hi_addr,
+            fc: data,
+            size: Size::Word,
+            dst: 0,
+        });
+        buf.push(MicroOp::EaCalc {
+            base: hi_addr,
+            index: Operand::Zero,
+            disp: Operand::WordStep,
+            dst: LONG_LO_ADDR_SLOT,
+        });
+        buf.push(MicroOp::Read {
+            addr: Operand::Scratch(LONG_LO_ADDR_SLOT),
+            fc: data,
+            size: Size::Word,
+            dst: LONG_LO_SLOT,
+        });
+        buf.push(MicroOp::Combine32 {
+            hi: 0,
+            lo: Operand::Scratch(LONG_LO_SLOT),
+            dst: 0,
+        });
+    };
+    match (mode, reg) {
+        // Dn-direct — no read: two trailing refills, the flag-ALU on the full register, the register long idle
+        // (n2). Bus: [PF, PF] (plus the immediate block's earlier refill).
+        (0, _) => {
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::DataRegFull(reg)));
+            buf.push(MicroOp::Internal { cycles: 2 });
+        }
+        // (An) — one refill, the long read pair at An, one trailing refill. No idle.
+        (2, _) => {
+            buf.push(MicroOp::Prefetch);
+            read_pair(buf, Operand::AddrReg(reg));
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::Scratch(0)));
+        }
+        // (An)+ — capture the pre-increment EA, post-increment An by 4 (committed before the read, so an
+        // odd-address fault still bumps), then like (An). No idle.
+        (3, _) => {
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::EaCalc {
+                base: Operand::AddrReg(reg),
+                index: Operand::Zero,
+                disp: Operand::Zero,
+                dst: EA_SLOT,
+            });
+            buf.push(MicroOp::AdjustAddr { reg, delta: 4 });
+            read_pair(buf, Operand::Scratch(EA_SLOT));
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::Scratch(0)));
+        }
+        // -(An) — one refill, pre-decrement An by 4, the predecrement idle (n2), the long read pair at An-4,
+        // one trailing refill.
+        (4, _) => {
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::AdjustAddr { reg, delta: -4 });
+            buf.push(MicroOp::Internal { cycles: 2 });
+            read_pair(buf, Operand::AddrReg(reg));
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::Scratch(0)));
+        }
+        // d16(An) / abs.w — one refill (brings the disp word into prefetch[1]), EaCalc the EA, one refill, the
+        // long read pair, one trailing refill. No idle.
+        (5, _) | (7, 0) => {
+            let base = if mode == 5 {
+                Operand::AddrReg(reg)
+            } else {
+                Operand::Zero // abs.w
+            };
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::EaCalc {
+                base,
+                index: Operand::Zero,
+                disp: Operand::DispWord,
+                dst: EA_SLOT,
+            });
+            buf.push(MicroOp::Prefetch);
+            read_pair(buf, Operand::Scratch(EA_SLOT));
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::Scratch(0)));
+        }
+        // d8(An,Xn) — one refill (brings the brief ext word in), EaCalc (An + index + disp8), the indexed idle
+        // (n2), one refill, the long read pair, one trailing refill.
+        (6, _) => {
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::EaCalc {
+                base: Operand::AddrReg(reg),
+                index: Operand::BriefIndex,
+                disp: Operand::BriefDisp8,
+                dst: EA_SLOT,
+            });
+            buf.push(MicroOp::Internal { cycles: 2 });
+            buf.push(MicroOp::Prefetch);
+            read_pair(buf, Operand::Scratch(EA_SLOT));
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::Scratch(0)));
+        }
+        // abs.l — one refill (brings the HI word in), the two-word address assembly (HI captured, refill, LO →
+        // EA), one refill, the long read pair, one trailing refill. No idle.
+        (7, 1) => {
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::EaCalc {
+                base: Operand::Zero,
+                index: Operand::Zero,
+                disp: Operand::ExtWordHi,
+                dst: ABS_HI_SLOT,
+            });
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::EaCalc {
+                base: Operand::Scratch(ABS_HI_SLOT),
+                index: Operand::Zero,
+                disp: Operand::ExtWordRaw,
+                dst: EA_SLOT,
+            });
+            buf.push(MicroOp::Prefetch);
+            read_pair(buf, Operand::Scratch(EA_SLOT));
+            buf.push(MicroOp::Prefetch);
+            buf.push(make_alu(Operand::Scratch(0)));
+        }
+        _ => todo!("cmpi_ea_read_long mode {mode}/{reg} not yet covered"),
+    }
 }
 
 /// `Bcc`/`BRA` (`0110 cccc dddddddd`, 0x6xxx; cc != 1 — cc == 1 is BSR, a separate arm): a conditional
@@ -7819,6 +8067,225 @@ mod tests {
         let cfg = bincode::config::standard();
         for pause_after in 0.. {
             let (mut cpu, mut bus) = setup_cmpm_l_b38c();
+            cpu.start_instruction();
+            let mut finished = false;
+            for _ in 0..pause_after {
+                if let Step::Done(_) = cpu.step_micro_op(&mut bus) {
+                    finished = true;
+                    break;
+                }
+            }
+            if finished {
+                break; // stepped past the last boundary — all boundaries covered.
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    // --- N2: CMPI #imm,<ea> — the flag-only `<ea> − #imm` compare (AluOp::Cmp + Dest::None). The immediate
+    // (one ext word for b/w, two for .l) is captured BEFORE the EA's extension words; the data-alterable EA is
+    // read and DISCARDED (no write). The Dn-dest form has no memory access. X is PRESERVED. ---
+
+    /// The clean SST anchor `0c82 [CMPI.l #imm,D2]` (14 cyc): a long immediate compare against a data register
+    /// — no memory access. The 32-bit immediate is two extension words (captured before the EA is "read"); the
+    /// EA is `D2`-direct, so the recipe is `[Combine(imm.hi), PF, Combine(imm), PF, PF, Alu(D2 − imm), n2]`.
+    /// `D2 − #imm` is computed flag-only (X preserved, no write). Bus: three FC-6 refills + an n2 idle.
+    fn setup_cmpi_l_0c82() -> (Cpu68000, FlatBus) {
+        let mut regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0,
+            ssp: 2048,
+            pc: 3072,
+            sr: 0x2711,                 // X set (0x10) + C set (0x01)
+            prefetch: [0x0C82, 0x7A32], // opcode + imm hi word
+        };
+        regs.d[2] = 0x1234_5678;
+        let mut bus = FlatBus::new();
+        // imm lo word @ 3076, then two trailing refill words @ 3078/3080.
+        for (addr, val) in [
+            (3076u32, 0xF8u8),
+            (3077, 0x93),
+            (3078, 0xDB),
+            (3079, 0x07),
+            (3080, 0xDD),
+            (3081, 0x4F),
+        ] {
+            bus.poke(addr, val);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    #[test]
+    fn cmpi_l_dn_match() {
+        let (mut cpu, mut bus) = setup_cmpi_l_0c82();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(cycles, 14, "Dn-dest CMPI.l = 3 refills + n2 = 14");
+        assert_eq!(cpu.regs.pc, 3078, "pc advanced three words");
+        assert_eq!(
+            cpu.regs.d[2], 0x1234_5678,
+            "EA (Dn) unchanged — no write-back"
+        );
+        // D2 − imm = 0x12345678 − 0x7A32F893 = negative → N=1, borrow → C=1; X preserved (was set).
+        let imm: u32 = 0x7A32_F893;
+        let (_r, want) = {
+            let a = 0x1234_5678u32;
+            let res = a.wrapping_sub(imm);
+            let mut ccr = 0u16;
+            if res & 0x8000_0000 != 0 {
+                ccr |= crate::m68000::registers::CCR_N;
+            }
+            if res == 0 {
+                ccr |= crate::m68000::registers::CCR_Z;
+            }
+            let am = a & 0x8000_0000 != 0;
+            let bm = imm & 0x8000_0000 != 0;
+            let rm = res & 0x8000_0000 != 0;
+            if (am != bm) && (rm != am) {
+                ccr |= crate::m68000::registers::CCR_V;
+            }
+            if a < imm {
+                ccr |= crate::m68000::registers::CCR_C;
+            }
+            (res, ccr)
+        };
+        assert_eq!(
+            cpu.regs.sr & 0x1F,
+            (want | crate::m68000::registers::CCR_X) & 0x1F,
+            "CMPI set N/Z/V/C like SUB but PRESERVED X"
+        );
+    }
+
+    /// The clean SST anchor `0c93 [CMPI.l #imm,(A3)]` (20 cyc): a long immediate compare against a memory
+    /// operand. The 32-bit immediate is captured first; the EA `(A3)` is read as a long (hi @ A3, lo @ A3+2)
+    /// and DISCARDED. Bus: `[PF@3076, PF@3078, READ.hi, READ.lo, PF@3080]`. No write, no trailing idle. This
+    /// exercises the long immediate-then-EA prefetch interleave + the long EA read feeding the flag-only Cmp.
+    fn setup_cmpi_l_0c93() -> (Cpu68000, FlatBus) {
+        let mut regs = Registers {
+            d: [
+                0x5B0B_9B50,
+                0x2EFB_E146,
+                0x5DEE_CDF3,
+                0x7AF3_F41D,
+                0x5CE5_392C,
+                0xF662_F434,
+                0xDC56_287C,
+                0xCCE7_9169,
+            ],
+            a: [
+                0x0EC9_2B3C,
+                0x365C_6C77,
+                0x7423_973D,
+                0x9C0A_8AD8,
+                0x8CA5_3AB4,
+                0x95D1_1DA4,
+                0x2FD9_3C96,
+            ],
+            usp: 0xD5B5_1E46,
+            ssp: 0x800,
+            pc: 0xC00,
+            sr: 0x271E,
+            prefetch: [0x0C93, 0xD618],
+        };
+        let _ = &mut regs;
+        let mut bus = FlatBus::new();
+        for (addr, val) in [
+            (3081u32, 109u8),
+            (3080, 34),
+            (690905, 189),
+            (690904, 75),
+            (3079, 18),
+            (3078, 41),
+            (690907, 76),
+            (3077, 81),
+            (690906, 182),
+            (3076, 75),
+        ] {
+            bus.poke(addr, val);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    #[test]
+    fn cmpi_l_mem_match() {
+        let (mut cpu, mut bus) = setup_cmpi_l_0c93();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 20,
+            "(An)-dest CMPI.l = 3 refills + long read pair = 20"
+        );
+        assert_eq!(cpu.regs.pc, 0xC06, "pc advanced three words");
+        assert_eq!(
+            cpu.regs.sr, 0x2711,
+            "CMPI set N/Z/V/C but PRESERVED X (final SR)"
+        );
+        assert_eq!(
+            cpu.regs.a[3], 0x9C0A_8AD8,
+            "A3 unchanged — plain (An), no auto-increment, no write"
+        );
+        let expected = vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 19281,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3078,
+                size: Size::Word,
+                value: 10514,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 690904,
+                size: Size::Word,
+                value: 19389,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 690906,
+                size: Size::Word,
+                value: 46668,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3080,
+                size: Size::Word,
+                value: 8813,
+            },
+        ];
+        assert_eq!(bus.log, expected, "CMPI.l (An) bus stream");
+    }
+
+    #[test]
+    fn cmpi_l_mem_quiescable_and_serializable_across_imm_and_ea_read() {
+        // The snapshot/restore anchor for CMPI's new immediate-then-EA-read composition. Reference run via the
+        // run-to-completion driver, then snapshot/restore at every micro-op boundary.
+        let (mut rref, mut bref) = setup_cmpi_l_0c93();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        for pause_after in 0.. {
+            let (mut cpu, mut bus) = setup_cmpi_l_0c93();
             cpu.start_instruction();
             let mut finished = false;
             for _ in 0..pause_after {
