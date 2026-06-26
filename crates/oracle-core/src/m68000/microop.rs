@@ -431,6 +431,19 @@ pub enum AluOp {
     /// stores — the read-then-write RMW). Distinct from [`AluOp::Sub`] (a binary `a − b` from a real second
     /// operand) and the logic ops (which preserve X); NEG recomputes X exactly as subtraction does.
     Neg,
+    /// Negx: **unary** `result = (0 − a − X_in) & mask` at the operand-size boundary — the flag op of the `NEGX`
+    /// family (`NEGX <ea>` = `dst = 0 − dst − X`). This op is **dedicated** (NOT a `Sub`/`Cmp` delegation): it is
+    /// the one op with **STICKY Z** and an **incoming X** that participates in BOTH the value and the borrow.
+    /// `X_in = (regs.sr >> 4) & 1`, `Z_in = (regs.sr >> 2) & 1`. Flags: **N = msb(result)**; **Z is STICKY —
+    /// `Z_final = Z_in AND (result == 0)`** (NEGX never SETS Z, only CLEARS it — the multi-precision idiom: a
+    /// non-zero limb clears Z, a zero limb leaves the running Z untouched, so a plain `result == 0` is WRONG on
+    /// the `result == 0 && Z_in == 0` case); **V = `(a & result & signbit) != 0`**; **C = X = NOT(a == 0 AND
+    /// X_in == 0)** (the borrow of `0 − a − X_in` — set unless both `a` and `X_in` are zero). The size-masked
+    /// result is written back (low8/low16/full32 for a `Dn` dest, or parked in [`Dest::Scratch`] for a memory
+    /// dest the trailing `Write` stores — the read-then-write RMW). `b` is **ignored** (the recipe passes
+    /// [`Operand::Zero`]). Distinct from [`AluOp::Neg`] (no X-in, plain `Z = result == 0`) and [`AluOp::Sub`]
+    /// (binary, no sticky Z).
+    Negx,
 }
 
 /// A bitwise logic operation a [`MicroOp::SrLogic`] applies to the status register — the three privileged
@@ -976,6 +989,38 @@ impl MicroState {
                         }
                         Size::Long => sub_l(0, lhs),
                     },
+                    // NEGX is the UNARY `0 − a − X_in` — a DEDICATED op (no Sub/Cmp delegation): it carries the
+                    // STICKY Z and the incoming X that participates in BOTH the value and the borrow. X_in /
+                    // Z_in are the LIVE CCR bits (`sr >> 4 & 1` / `sr >> 2 & 1`). The flag formulas are
+                    // 0-mismatch-verified against the vendored NEGX stream: N = msb(res); Z = STICKY
+                    // (`Z_in AND res == 0` — NEGX only ever CLEARS Z, so a plain `res == 0` is WRONG when
+                    // `res == 0 && Z_in == 0`); V = `(a & res & signbit) != 0`; C = X = NOT(`a == 0 && X_in == 0`)
+                    // (the borrow of `0 − a − X_in`). `b`/`rhs` is ignored (passed `Operand::Zero` by the recipe).
+                    AluOp::Negx => {
+                        let (mask, signbit) = match size {
+                            Size::Byte => (0xFFu32, 0x80u32),
+                            Size::Word => (0xFFFF, 0x8000),
+                            Size::Long => (0xFFFF_FFFF, 0x8000_0000),
+                        };
+                        let d = lhs & mask;
+                        let xin = u32::from(regs.sr & CCR_X != 0);
+                        let res = 0u32.wrapping_sub(d).wrapping_sub(xin) & mask;
+                        let mut ccr = 0u16;
+                        if res & signbit != 0 {
+                            ccr |= CCR_N;
+                        }
+                        // STICKY Z: keep the incoming Z bit only when the result is zero; clear it otherwise.
+                        if res == 0 && regs.sr & CCR_Z != 0 {
+                            ccr |= CCR_Z;
+                        }
+                        if d & res & signbit != 0 {
+                            ccr |= CCR_V;
+                        }
+                        if !(d == 0 && xin == 0) {
+                            ccr |= CCR_C | CCR_X;
+                        }
+                        (res, ccr)
+                    }
                     AluOp::Add | AluOp::Sub => match size {
                         Size::Word => {
                             let (r, ccr) = match op {

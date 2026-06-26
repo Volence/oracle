@@ -172,6 +172,21 @@ const FILES: &[&str] = &[
     "NEG.b.json",
     "NEG.w.json",
     "NEG.l.json",
+    // NEGX.b / NEGX.w / NEGX.l (`0100 0000 SS mmm rrr`, 0x4000/4040/4080, SS bits 7-6 = b/w/l) — negate-with-extend
+    // the data-alterable EA: `res = (0 − d − X_in) & mask` with SUBX-style flags: N = msb(res), **Z is STICKY —
+    // `Z_final = Z_in AND (res == 0)`** (NEGX only ever CLEARS Z, never sets it — the multi-precision idiom),
+    // V = `(d & res & signbit) != 0`, C = X = NOT(d == 0 AND X_in == 0) borrow (`AluOp::Negx`, where
+    // `X_in = (sr >> 4) & 1` and `Z_in = (sr >> 2) & 1` feed BOTH the value and the borrow). G1 decodes the same
+    // data-alterable EA set as NEG {Dn (0), (An) (2), (An)+ (3), -(An) (4), d16(An) (5), d8(An,Xn) (6), abs.w
+    // (7/0), abs.l (7/1)} via the SHARED `neg_family_recipe` (only the `AluOp` exec differs — the recipe shape is
+    // identical); An-direct / PC-relative / #imm are not data-alterable and are absent. NEGX is a READ-then-WRITE
+    // (it reads the EA, transforms it, then writes it back), so an odd word/long EA address-errors on the READ
+    // (low5 = 0x15), covered by the E3/E4 abort (no parity filter). The only intra-family deferral is the
+    // pre-existing `(A7)` (mode 2) plain-indirect form (its `(A7)+` / `-(A7)` siblings ARE in scope). Files are
+    // 100% pure NEGX (no contaminants). Per-file true counts: NEGX.b 7917 + NEGX.w 7893 + NEGX.l 7883 = +23693.
+    "NEGX.b.json",
+    "NEGX.w.json",
+    "NEGX.l.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -800,6 +815,26 @@ fn covered(opcode: u16, _ini: &Value) -> bool {
             _ => false,    // An-direct / PC-rel / #imm: absent / not data-alterable
         };
     }
+    // NEGX `<ea>` (`0100 0000 SS mmm rrr`, 0x4000/4040/4080, SS != 3) — negate-with-extend the data-alterable EA
+    // (`res = 0 − d − X_in`, sticky Z + X-in borrow). IDENTICAL EA scope to NEG (it reuses `neg_family_recipe`):
+    // the data-alterable EA set is in scope — Dn (0), (An) (2 — minus the `(A7)` mode-2 deferral), (An)+ (3),
+    // -(An) (4), d16(An) (5), d8(An,Xn) (6), abs.w (7/0), abs.l (7/1). An-direct (1) / PC-relative (7/2, 7/3) /
+    // #imm (7/4) are NOT data-alterable and are absent. NEGX is a READ-then-WRITE, so an odd word/long EA
+    // address-errors on the READ (low5 = 0x15), the E3/E4 abort covers it (no parity filter). The ONE
+    // intra-family deferral is the plain `(A7)` mode-2 indirect (`mode == 2 && reg == 7`), the pre-existing
+    // residual — its `(A7)+` / `-(A7)` siblings ARE in scope. SS == 3 (0x40C0) is MOVE-from-SR, not NEGX.
+    if opcode & 0xFF00 == 0x4000 && opcode & 0xC0 != 0xC0 {
+        let mode = (opcode >> 3) & 7;
+        let reg = opcode & 7;
+        return match mode {
+            0 => true,                         // Dn-direct (no memory access)
+            2 => reg != 7, // (An) — A7 mode-2 deferred (plain-indirect residual)
+            3 | 4 => true, // (An)+ / -(An)
+            5 | 6 => true, // d16(An) / d8(An,Xn)
+            7 if reg == 0 || reg == 1 => true, // abs.w / abs.l
+            _ => false,    // An-direct / PC-rel / #imm: absent / not data-alterable
+        };
+    }
     // ADD/SUB. No parity filter (odd word/long EAs are address errors the E4 abort covers); the only
     // mode-scope deferrals are the `(A7)` (mode 2) plain-indirect form (`reg != 7`) and the illegal `An`-direct
     // byte source (mode 1). `mode` 3/4 are `(An)+`/`-(An)` (the auto-(in/de)crement bump is committed before the
@@ -1012,8 +1047,21 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 406_733,
-        "expected 406733 covered cases — G0 adds NEG.b / NEG.w / NEG.l (their own NEG.b/.w/.l files, 0x4400/4440/ \
+        ran >= 430_426,
+        "expected 430426 covered cases — G1 adds NEGX.b / NEGX.w / NEGX.l (their own NEGX.b/.w/.l files, 0x4000/ \
+         4040/4080, SS bits 7-6 = b/w/l): NEGX.b 7917 + NEGX.w 7893 + NEGX.l 7883 = +23693 over G0's 406733. NEGX \
+         negate-with-extends the data-alterable EA — `res = (0 − d − X_in) & mask` with SUBX-style flags: N = \
+         msb(res), Z is STICKY (`Z_final = Z_in AND (res == 0)` — NEGX only ever CLEARS Z, never sets it; a plain \
+         `res == 0` is WRONG on the `res == 0 && Z_in == 0` case), V = `(d & res & signbit) != 0`, C = X = NOT(d \
+         == 0 AND X_in == 0) borrow, where `X_in = (sr >> 4) & 1` and `Z_in = (sr >> 2) & 1` feed BOTH the value \
+         and the borrow — via the DEDICATED `AluOp::Negx` (no Sub/Cmp delegation: only NEGX has sticky Z + X-in). \
+         NEGX REUSES the shared `neg_family_recipe` VERBATIM (the read-then-write RMW shape is identical to \
+         NEG/CLR's `ea_dst`/`ea_dst_long`; only the `AluOp` exec differs). The data-alterable EA set is in scope — \
+         Dn (0), (An) (2), (An)+ (3), -(An) (4), d16(An) (5), d8(An,Xn) (6), abs.w (7/0), abs.l (7/1) — except the \
+         pre-existing `(A7)` (mode 2) plain-indirect deferral (its `(A7)+`/`-(A7)` siblings ARE in scope); \
+         An-direct / PC-rel / #imm are not data-alterable and are absent. Odd word/long EAs address-error on the \
+         READ (low5 = 0x15), the E3/E4 abort covers them (no parity filter). The NEGX.* files are 100% pure (no \
+         contaminants). Prior baseline — G0 adds NEG.b / NEG.w / NEG.l (their own NEG.b/.w/.l files, 0x4400/4440/ \
          4480, SS bits 7-6 = b/w/l): NEG.b 7915 + NEG.w 7893 + NEG.l 7917 = +23725 over L4's 383008. NEG negates \
          the data-alterable EA — `res = (0 − d) & mask` with FULL SUBTRACT flags (NEG is literally `0 − d`): N = \
          msb(res), Z = (res == 0), V = (d == sign-min) (the 0-minus-itself overflow), C = X = (d != 0) borrow — \
@@ -1178,7 +1226,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -1854,5 +1902,78 @@ fn neg_anchors_match_singlesteptests() {
     assert_eq!(found, anchors.len(), "all G0 NEG anchors exercised");
     eprintln!(
         "G0 NEG anchors: {found} cases (Dn each size incl. V=1 sign-min + Z=1 zero, (An) RMW .w/.l, odd-EA frame) passed both drivers"
+    );
+}
+
+/// G1 — the named `NEGX <ea>` anchors, pinning the **load-bearing subtlety** of the family (sticky Z + X-in)
+/// against the vendored NEGX.b/.w/.l stream WITHOUT relying on the bulk `covered()` sweep. NEGX is
+/// `res = (0 − d − X_in) & mask` with SUBX-style flags: N = msb(res), **Z is STICKY — `Z_final = Z_in AND
+/// (res == 0)`** (NEGX never SETS Z, only clears it — the multi-precision idiom), V = `(d & res & signbit) != 0`,
+/// **C = X = NOT(d == 0 AND X_in == 0)** (the borrow of `0 − d − X_in`), where `X_in = (sr >> 4) & 1` and
+/// `Z_in = (sr >> 2) & 1` participate in the value AND the borrow (`AluOp::Negx`). The pins, each chosen to break
+/// a *plain* `Z = (res == 0)` implementation and to exercise X-in in both the value and the borrow:
+/// - `4001 [NEGX.b D1] 13` — `X_in = 1, Z_in = 1, d = 0xF3 → res = 0x0C != 0`: **Z goes to 0** (sticky cleared),
+///   N = 0, C = X = 1 (borrow). X-in feeds the value (`0 − 0xF3 − 1 = 0x0C`).
+/// - `4004 [NEGX.b D4] 1630` — `Z_in = 1, d = 0 (X_in = 0) → res = 0`: **Z STAYS 1** (kept from `Z_in`), C = X = 0
+///   (the lone no-borrow case: `d == 0 && X_in == 0`).
+/// - `4000 [NEGX.b D0] 197` — `Z_in = 0, d = 0 (X_in = 0) → res = 0`: **Z STAYS 0** — the case a plain
+///   `Z = (res == 0)` gets WRONG (it would set Z = 1); the sticky `Z_in AND (res == 0)` keeps it 0.
+/// - `4046 [NEGX.w D6] 27` — `X_in = 1, d = 0x3AEE → res = 0xC511 != 0`: word register (4 cyc), C = X = 1 borrow,
+///   N = 1.
+/// - `4092 [NEGX.l (A2)] 17` (len 20) — `(An)` memory `.l` READ-then-WRITE RMW (reversed long store) — the SAME
+///   `ea_dst`/`ea_dst_long` path as NEG/CLR (the read operand is the unary source).
+/// - `405a [NEGX.w (A2)+] 3` (len 50) — odd-EA → faults on the RMW READ into the group-0 14-byte address-error
+///   frame (in scope, no parity filter).
+///
+/// Each runs both drivers + the per-cycle transaction stream via `run_case`. Every anchor must decode as a NEGX
+/// opcode (mask 0xFFC0 ∈ {0x4000, 0x4040, 0x4080}, SS != 3 = not the 0x40C0 MOVE-from-SR) — never a CMP-class.
+#[test]
+fn negx_anchors_match_singlesteptests() {
+    // (file, full-name, length). The sticky-Z / borrow pins use the FULL (unique) name to select the EXACT
+    // X_in / Z_in / operand combination the doc-comment describes; a plain `Z = (res == 0)` mishandles the
+    // `4000 [NEGX.b D0] 197` (Z_in = 0, res == 0 → Z stays 0) anchor.
+    let anchors: &[(&str, &str, u32)] = &[
+        ("NEGX.b.json", "4001 [NEGX.b D1] 13", 4), // X_in=1 Z_in=1 res!=0 → Z→0, C=X=1
+        ("NEGX.b.json", "4004 [NEGX.b D4] 1630", 4), // Z_in=1 res==0 → Z stays 1, C=X=0
+        ("NEGX.b.json", "4000 [NEGX.b D0] 197", 4), // Z_in=0 res==0 → Z stays 0 (breaks plain res==0)
+        ("NEGX.w.json", "4046 [NEGX.w D6] 27", 4),  // X_in=1 d!=0 → word reg, C=X=1 borrow
+        ("NEGX.l.json", "4092 [NEGX.l (A2)] 17", 20), // (An) memory .l RMW (reversed long store)
+        ("NEGX.w.json", "405a [NEGX.w (A2)+] 3", 50), // odd-EA → group-0 14-byte frame (read fault)
+    ];
+    let mut found = 0usize;
+    for (fname, name, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap() == *name
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| panic!("G1 NEGX anchor {name} (len {length}) not found in {fname}"));
+        // Every anchor must be a NEGX opcode (mask 0xFFC0 ∈ {0x4000, 0x4040, 0x4080}, SS != 3) — never a
+        // CMP-class opcode.
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert!(
+            matches!(opcode & 0xFFC0, 0x4000 | 0x4040 | 0x4080),
+            "anchor {name} must be a NEGX opcode"
+        );
+        assert_ne!(opcode & 0xC0, 0xC0, "anchor {name} must not be SS == 3");
+        assert_eq!(
+            cmp_class(opcode),
+            CmpClass::None,
+            "NEGX is not a CMP-class opcode"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all G1 NEGX anchors exercised");
+    eprintln!(
+        "G1 NEGX anchors: {found} cases (sticky-Z: Z→0 / Z-stays-1 / Z-stays-0, X-in borrow C=X, (An) .l RMW, odd-EA frame) passed both drivers"
     );
 }

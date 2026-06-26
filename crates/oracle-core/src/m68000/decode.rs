@@ -427,6 +427,29 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         };
         return neg_family_recipe(opcode, AluOp::Neg, size);
     }
+    // NEGX `<ea>` (`0100 0000 SS mmm rrr`, 0x4000/4040/4080, SS bits 7-6 = b/w/l) — negate-with-extend the
+    // data-alterable EA: `res = (0 − d − X_in) & mask` with SUBX-style flags: N = msb(res), **Z STICKY**
+    // (`Z_final = Z_in AND (res == 0)` — NEGX only ever CLEARS Z), V = `(d & res & signbit) != 0`,
+    // C = X = NOT(d == 0 AND X_in == 0) borrow (`AluOp::Negx`). NEGX is a READ-then-WRITE for a memory dest — it
+    // REUSES `neg_family_recipe` VERBATIM (the recipe shape is identical to NEG/CLR's `ea_dst`/`ea_dst_long` RMW;
+    // ONLY the dedicated `AluOp::Negx` exec differs — sticky Z + X-in). The odd-EA case faults on the READ (low5
+    // = 0x15), covered by the E3/E4 abort. `Dn`-direct (mode 0) has NO memory access (NEGX.l Dn = 6 cyc with a
+    // trailing idle; NEGX.b/.w Dn = 4). The destination must be data-alterable (mode 0 OR `is_dst_mem_mode`).
+    // SS == 3 (0x40C0) is MOVE-from-SR, NOT NEGX, excluded by `& 0xC0 != 0xC0`. The opcode space 0x4000..=0x40BF
+    // is disjoint from NEGX's NEG (0x4400) / CLR (0x4200) / TST (0x4A00) siblings and the 0x4Exx / 0x4180 arms.
+    let negx_mode = (opcode >> 3) & 7;
+    let negx_reg = opcode & 7;
+    if opcode & 0xFF00 == 0x4000
+        && opcode & 0xC0 != 0xC0
+        && (negx_mode == 0 || is_dst_mem_mode(negx_mode, negx_reg))
+    {
+        let size = match (opcode >> 6) & 3 {
+            0 => Size::Byte,
+            1 => Size::Word,
+            _ => Size::Long, // SS = 2
+        };
+        return neg_family_recipe(opcode, AluOp::Negx, size);
+    }
     // Bcc / BRA (`0110 cccc dddddddd`, 0x6xxx) — conditional branch. cc = bits 11-8 (cc == 0 is BRA, always
     // taken); cc == 1 is BSR (a separate decode arm, NOT this commit) and is excluded. The condition is
     // evaluated at DECODE time against the live CCR, emitting the taken or not-taken linear recipe directly.
