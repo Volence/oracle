@@ -393,6 +393,15 @@ pub enum AluOp {
     /// no-flag An-write early-return shape), but `a − b` instead of `a + b`. Distinct from [`AluOp::Sub`] (which
     /// computes at the operand-size boundary, sets X/N/Z/V/C, and writes a data register).
     Suba,
+    /// And: bitwise `result = a & b` at the operand-size boundary — the flag op of the `AND` family. Shares the
+    /// **MOVE flag shape** ([`move_flags`]): sets **N = msb(result at size)**, **Z = (result == 0 at size)**,
+    /// clears **V** and **C**, and **PRESERVES X** (logic never touches X — the live X is re-injected as
+    /// `ccr_nz | (regs.sr & CCR_X)`, exactly as [`AluOp::Move`]). The size-masked result is written back
+    /// (low8/low16/full32 for a `Dn` dest, or parked in [`Dest::Scratch`] for a memory dest the trailing `Write`
+    /// stores). AND is commutative, so the `<ea>,Dn` (`a = Dn`) and `Dn,<ea>` (`a = memory`) directions reuse
+    /// the same op. Distinct from [`AluOp::Add`] (which recomputes X and sets a real V/C) and [`AluOp::Move`]
+    /// (which copies `a`, ignoring `b`).
+    And,
 }
 
 /// A bitwise logic operation a [`MicroOp::SrLogic`] applies to the status register — the three privileged
@@ -873,6 +882,14 @@ impl MicroState {
                     }
                     AluOp::Move => {
                         let (r, ccr_nz) = move_flags(lhs, size);
+                        (r, ccr_nz | (regs.sr & CCR_X))
+                    }
+                    // AND is bitwise `a & b` with the MOVE flag shape: N = msb / Z = (result == 0) at size,
+                    // V/C cleared, X PRESERVED (re-inject the live X — logic never touches X). `move_flags`
+                    // masks `a & b` to the operand size and computes N/Z; the size-masked result is the
+                    // write-back value (or the parked memory store).
+                    AluOp::And => {
+                        let (r, ccr_nz) = move_flags(lhs & rhs, size);
                         (r, ccr_nz | (regs.sr & CCR_X))
                     }
                     // CMP is SUB's N/Z/V/C with X PRESERVED (never written) and no write-back. Compute the

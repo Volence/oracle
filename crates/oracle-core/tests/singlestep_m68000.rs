@@ -118,6 +118,18 @@ const FILES: &[&str] = &[
     // contaminants).
     "SUBA.w.json",
     "SUBA.l.json",
+    // AND.b / AND.w / AND.l (`1100 ddd 0SS mmm rrr` = 0xC000/40/80 `<ea>,Dn`, `1100 ddd 1SS mmm rrr` =
+    // 0xC100/40/80 `Dn,<ea>`) — bitwise AND in BOTH directions. L2 decodes both: `<ea>,Dn` (Dn = Dn & <ea>,
+    // source = data modes, An-direct mode 1 ILLEGAL/absent) reuses `arith_ea_dn` verbatim; `Dn,<ea>` (<ea> =
+    // <ea> & Dn, alterable-memory dest 2..6/abs.w/abs.l, mode 000/001 = ABCD/EXG reserved) reuses `arith_dn_ea`
+    // verbatim. Sets N = msb / Z = (result == 0), clears V/C, PRESERVES X. **These files are CONTAMINATED with
+    // ANDI** (the `0x02xx` immediate opcode, high nibble 0 — a DIFFERENT instruction NOT implemented this push):
+    // `covered()` classifies by OPCODE (high nibble == 0xC), admitting ONLY the genuine register form so the
+    // ANDI cases are skipped cleanly (never decoded). All source/dest modes in scope except the pre-existing
+    // `(A7)` (mode 2) plain-indirect deferral; odd word/long EAs are address errors the E3/E4 abort covers.
+    "AND.b.json",
+    "AND.w.json",
+    "AND.l.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -495,6 +507,53 @@ fn cmp_in_scope(opcode: u16) -> bool {
     }
 }
 
+/// Whether the framework covers this genuine register-form `AND`/`OR` case — the load-bearing classifier for
+/// the **CONTAMINATED** `AND.*`/`OR.*` files (each mixes the genuine register opcode with the dedicated `ANDI`/
+/// `ORI` immediate opcode in the group-0 space, `0x02xx`/`0x00xx`, high nibble 0). Classifying **by OPCODE**
+/// (high nibble `0xC` for AND / `0x8` for OR), this admits ONLY the genuine register form so the `*I` cases —
+/// a DIFFERENT instruction not implemented this push — are skipped cleanly (never decoded, never reaching the
+/// `todo!()`). `false` for any non-`0xC`/`0x8` opcode (so a group-0 `ANDI`/`ORI` falls through to the rest of
+/// `covered()`, which also rejects it).
+///
+/// - **`<ea>,Dn`** (opmode 0/1/2 = b/w/l): source = data modes. **An-direct (mode 1) is ILLEGAL/absent** (the
+///   `AND An,Dn` encoding does not exist — excluded for all sizes, the `arith_ea_dn` decode arm relies on this).
+///   The `(A7)` (mode 2) plain-indirect source is the pre-existing mode-scope deferral (its `(A7)+`/`-(A7)`
+///   siblings ARE in scope); odd word/long EAs are address errors the E3/E4 abort covers (no parity filter).
+/// - **`Dn,<ea>`** (opmode 4/5/6 = b/w/l): alterable-memory dest only (`(An)` 2, `(An)+` 3, `-(An)` 4,
+///   `d16(An)` 5, `d8(An,Xn)` 6, `abs.w` 7/0, `abs.l` 7/1). **Mode 000/001 = ABCD/EXG** (a DIFFERENT
+///   instruction) is reserved/excluded. The `(A7)` (mode 2) plain-indirect dest follows the same deferral.
+/// - **opmode 3/7** = MULU/MULS (not AND/OR) → not covered.
+fn and_or_in_scope(opcode: u16) -> bool {
+    let high = opcode >> 12;
+    if high != 0xC && high != 0x8 {
+        return false; // not the genuine AND/OR register form (e.g. ANDI/ORI group-0 immediate opcode)
+    }
+    let mode = (opcode >> 3) & 7;
+    let reg = opcode & 7;
+    match (opcode >> 6) & 7 {
+        // <ea>,Dn (opmode 0/1/2 = b/w/l): An-direct (mode 1) ILLEGAL; data modes only.
+        0..=2 => match mode {
+            0 => true,     // Dn-direct (no memory access)
+            1 => false,    // An-direct illegal/absent (AND An,Dn does not exist)
+            2 => reg != 7, // (An) — A7 mode-2 deferred
+            3 | 4 => true, // (An)+ / -(An)
+            5 | 6 => true, // d16(An) / d8(An,Xn)
+            7 => reg <= 4, // abs.w / abs.l / d16(PC) / d8(PC,Xn) / #imm
+            _ => false,
+        },
+        // Dn,<ea> (opmode 4/5/6 = b/w/l): alterable-memory dest only; mode 000/001 = ABCD/EXG reserved.
+        4..=6 => match mode {
+            2 => reg != 7,                     // (An) — A7 mode-2 deferred
+            3 | 4 => true,                     // (An)+ / -(An)
+            5 | 6 => true,                     // d16(An) / d8(An,Xn)
+            7 if reg == 0 || reg == 1 => true, // abs.w / abs.l
+            _ => false,                        // mode 0/1 = ABCD/EXG; mode 7 reg>=2 not alterable
+        },
+        // opmode 3/7 = MULU/MULS — a different instruction, not AND/OR.
+        _ => false,
+    }
+}
+
 /// Whether the framework covers this case (else it is an xfail for this push). `ADD`/`SUB` in word, byte and
 /// long sizes, each in two forms — `Dn,<ea>` (memory dest; word ADD=0xD140/SUB=0x9140, byte ADD=0xD100/
 /// SUB=0x9100, long ADD=0xD180/SUB=0x9180) and `<ea>,Dn` (register dest; word ADD=0xD040/SUB=0x9040, byte
@@ -763,6 +822,16 @@ fn covered(opcode: u16, _ini: &Value) -> bool {
             _ => false,
         };
     }
+    // AND `<ea>,Dn` (0xC000/40/80) + `Dn,<ea>` (0xC100/40/80) — the genuine register form, classified by OPCODE
+    // (high nibble 0xC). The AND.* files MIX this with the ANDI immediate opcode (`0x02xx`, high nibble 0) — a
+    // DIFFERENT instruction NOT decoded this push; `and_or_in_scope` returns false for it (high nibble != 0xC),
+    // so the ANDI cases are skipped cleanly. Source = data modes (An-direct mode 1 ILLEGAL/absent); dest =
+    // alterable memory (mode 000/001 = ABCD/EXG reserved). All in scope except the pre-existing `(A7)` mode-2
+    // plain-indirect deferral; odd word/long EAs are address errors the E3/E4 abort covers. (`and_or_in_scope`
+    // also matches the OR base 0x8 for L3 — those files are not yet in FILES, so this is AND-only here.)
+    if and_or_in_scope(opcode) {
+        return true;
+    }
     false // other forms (not-yet-implemented modes): out of slice this push
 }
 
@@ -833,8 +902,24 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 317_490,
-        "expected 317490 covered cases — L1 adds SUBA.w / SUBA.l (their own SUBA.w/.l files, `1001 aaa s11 mmm \
+        ran >= 339_717,
+        "expected 339717 covered cases — L2 adds AND.b / AND.w / AND.l in BOTH directions (their own AND.b/.w/.l \
+         files): AND.b 7391 + AND.w 7419 + AND.l 7417 = +22227 over L1's 317490. AND is bitwise `a & b` with the \
+         MOVE flag shape — N = msb(result at size) / Z = (result == 0), V/C cleared, X PRESERVED (re-injected as \
+         `ccr_nz | (sr & CCR_X)`, never computed) — via the new `AluOp::And`; the size-masked result is written \
+         back (low8/low16/full32 for a Dn dest, or parked in Scratch for a memory dest the trailing Write stores). \
+         `<ea>,Dn` (opmode 0/1/2 = 0xC000/40/80, Dn = Dn & <ea>) reuses `arith_ea_dn` VERBATIM — AND <ea>,Dn = ADD \
+         <ea>,Dn byte-for-byte, MINUS the illegal An-direct source (mode 1 absent). `Dn,<ea>` (opmode 4/5/6 = \
+         0xC100/40/80, <ea> = <ea> & Dn, alterable-memory dest 2..6/abs.w/abs.l) reuses `arith_dn_ea` VERBATIM = \
+         ADD Dn,<ea> byte-for-byte; mode 000/001 = ABCD/EXG is RESERVED (excluded by `is_dst_mem_mode`). **CRITICAL \
+         *I CONTAMINATION**: the AND.* files MIX the genuine register form (high nibble 0xC) with the dedicated \
+         ANDI immediate opcode (`0x02xx`, high nibble 0 — a DIFFERENT instruction this push does NOT implement, \
+         5xx cases/file). `covered()` classifies by OPCODE (`and_or_in_scope`: high nibble == 0xC), admitting ONLY \
+         the genuine register form so the ANDI cases are skipped cleanly (never decoded — admitting one would \
+         panic at `todo!()`). This is exactly parallel to the CMP/CMPM/CMPI 3-way mix. All source/dest modes in \
+         scope except the pre-existing `(A7)` (mode 2) plain-indirect deferral (its `(A7)+`/`-(A7)` siblings ARE in \
+         scope); odd word/long EAs are address errors the E3/E4 abort covers (no parity filter). \
+         Prior baseline — L1 adds SUBA.w / SUBA.l (their own SUBA.w/.l files, `1001 aaa s11 mmm \
          rrr` = 0x90C0 (.w) / 0x91C0 (.l)): SUBA.w 7934 + SUBA.l 7971 = +15905 over L0's 301585. SUBA is the \
          no-flag address arithmetic `An = An − src` (SR untouched), a near-exact mirror of ADDA: `.w` \
          sign-extends the source word→long before the long-boundary SUBTRACT (mirroring MOVEA.w / CMPA.w — \
@@ -936,7 +1021,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -1329,4 +1414,79 @@ fn moveq_anchor_matches_singlesteptests() {
     }
     assert_eq!(found, anchors.len(), "all N6 MOVEQ anchors exercised");
     eprintln!("N6 MOVEQ anchors: {found} case (sign-extended quick-load) passed both drivers");
+}
+
+/// L2 — the named `AND` anchors, pinning each shape of bitwise AND in BOTH directions against the vendored
+/// AND.b/.w/.l stream WITHOUT relying on the bulk `covered()` sweep: `<ea>,Dn` with a **Dn** source, a
+/// **(An)** memory source, and a **#imm** source (each size b/w/l); `Dn,(An)` **memory dest** (each size); and
+/// two **odd-EA** cases (the word/long memory access faults into the group-0 14-byte address-error frame —
+/// byte never faults). Each runs both drivers + the per-cycle transaction stream via `run_case`. The
+/// load-bearing pins: AND sets N = msb / Z = (result == 0), clears V/C, **PRESERVES X** (every case); the
+/// `<ea>,Dn` direction reuses `arith_ea_dn` (= ADD <ea>,Dn timing) and `Dn,<ea>` reuses `arith_dn_ea` (= ADD
+/// Dn,<ea> RMW). Every anchor must classify **by OPCODE** as the genuine register form (high nibble 0xC, via
+/// `and_or_in_scope`) and NOT as a CMP-class opcode — the *I (ANDI) contaminant is never an anchor.
+#[test]
+fn and_anchors_match_singlesteptests() {
+    // (file, name-prefix, length) — the (prefix, length) pair picks the clean (even-EA) or odd-EA AND case.
+    let anchors: &[(&str, &str, u32)] = &[
+        // <ea>,Dn — Dn / (An) / #imm sources, each size.
+        ("AND.b.json", "c801", 4), // AND.b D1,D4 — Dn source (.b, 4 cyc, no idle)
+        ("AND.b.json", "c614", 8), // AND.b (A4),D3 — (An) memory source ([Read, PF])
+        ("AND.b.json", "c03c", 8), // AND.b #imm,D0 — immediate source
+        ("AND.w.json", "c440", 4), // AND.w D0,D2 — Dn source (.w)
+        ("AND.w.json", "c250", 8), // AND.w (A0),D1 — (An) memory source
+        ("AND.w.json", "c07c", 8), // AND.w #imm,D0 — immediate source
+        ("AND.l.json", "c880", 8), // AND.l D0,D4 — Dn source (.l, 8 cyc reg idle)
+        ("AND.l.json", "c294", 14), // AND.l (A4),D1 — (An) memory source (.l, [r.hi, r.lo, PF])
+        ("AND.l.json", "c6bc", 16), // AND.l #imm,D3 — immediate.l source (2 imm words)
+        // Dn,<ea> — memory dest, each size (the arith_dn_ea RMW).
+        ("AND.b.json", "cf12", 12), // AND.b D7,(A2) — byte memory dest ([r, PF, w])
+        ("AND.w.json", "cf54", 12), // AND.w D7,(A4) — word memory dest
+        ("AND.l.json", "cb92", 20), // AND.l D5,(A2) — long memory dest (reversed long store)
+        // Odd-EA address-error frames (word/long only — byte never faults).
+        ("AND.w.json", "cf50", 50), // AND.w D7,(A0) odd dest → group-0 14-byte frame (write fault, low5=0x05)
+        ("AND.l.json", "c494", 50), // AND.l (A4),D2 odd source → 14-byte frame (read fault, low5=0x15)
+    ];
+    let mut found = 0usize;
+    for (fname, prefix, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap().starts_with(prefix)
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| {
+                panic!("L2 AND anchor {prefix} (len {length}) not found in {fname}")
+            });
+        // Every anchor must be the genuine register-form AND (high nibble 0xC, in scope) classified by OPCODE —
+        // never the ANDI immediate contaminant (high nibble 0) and never a CMP-class opcode.
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(
+            opcode >> 12,
+            0xC,
+            "anchor {prefix} must be a genuine AND opcode"
+        );
+        assert!(
+            and_or_in_scope(opcode),
+            "anchor {prefix} must be an in-scope genuine register-form AND"
+        );
+        assert_eq!(
+            cmp_class(opcode),
+            CmpClass::None,
+            "AND is not a CMP-class opcode"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all L2 AND anchors exercised");
+    eprintln!(
+        "L2 AND anchors: {found} cases (<ea>,Dn Dn/(An)/#imm + Dn,(An) dest, each size + odd-EA) passed both drivers"
+    );
 }

@@ -221,6 +221,41 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     if opcode & 0xF1C0 == 0x91C0 {
         return adda_suba_recipe(opcode, AluOp::Suba, Size::Long); // SUBA.l <ea>,An
     }
+    // AND `<ea>,Dn` (`1100 ddd 0SS mmm rrr`, opmode 0/1/2 = b/w/l = 0xC000/0xC040/0xC080) — bitwise `Dn = Dn &
+    // <ea>` (Dn the minuend `a`; AND is commutative so operand order is inert). Source = data modes; An-direct
+    // (mode 1) is ILLEGAL/absent (the `arith_ea_dn` arm relies on `covered()` never feeding it mode 1, exactly
+    // like the ADD.b precedent). Sets N = msb / Z = (result == 0), clears V/C, PRESERVES X (`AluOp::And` =
+    // `move_flags` + X re-injected). Reuses the AluOp-parameterized `arith_ea_dn` VERBATIM — AND <ea>,Dn = ADD
+    // <ea>,Dn byte-for-byte (same `ea_src` skeleton, same cycle counts), minus the illegal An source. The
+    // **AND.* files MIX** this genuine register form (nibble 0xC) with the dedicated ANDI immediate opcode
+    // (`0x02xx`, high nibble 0) — a DIFFERENT instruction NOT decoded this push; `covered()` classifies the
+    // ANDI cases OUT by OPCODE (high nibble 0 != 0xC), so decode is only ever reached on the genuine 0xC form.
+    // The opcode space (nibble 0xC, opmode 0/1/2) is disjoint from the ADD/SUB arms (nibble 0xD/0x9) and the
+    // CMP arms (nibble 0xB). opmode 3/7 (0xC0C0/0xC1C0) is MULU/MULS — not matched by these masks.
+    if opcode & 0xF1C0 == 0xC000 {
+        return arith_ea_dn(opcode, AluOp::And, Size::Byte); // AND.b <ea>,Dn
+    }
+    if opcode & 0xF1C0 == 0xC040 {
+        return arith_ea_dn(opcode, AluOp::And, Size::Word); // AND.w <ea>,Dn
+    }
+    if opcode & 0xF1C0 == 0xC080 {
+        return arith_ea_dn(opcode, AluOp::And, Size::Long); // AND.l <ea>,Dn
+    }
+    // AND `Dn,<ea>` (`1100 ddd 1SS mmm rrr`, opmode 4/5/6 = b/w/l = 0xC100/0xC140/0xC180) — bitwise `<ea> =
+    // <ea> & Dn` to an alterable-memory destination (modes 2..6, abs.w/abs.l via `is_dst_mem_mode`). Mode
+    // 000/001 = ABCD/EXG (a DIFFERENT instruction) is RESERVED — the `is_dst_mem_mode` guard excludes it (it
+    // admits only alterable memory), so an ABCD/EXG opcode is never decoded as AND. Reuses `arith_dn_ea`
+    // VERBATIM — AND Dn,<ea> = ADD Dn,<ea> byte-for-byte (the same `ea_dst`/`ea_dst_long` RMW skeleton). The
+    // memory operand is the minuend (`a`); AND is commutative so the order is correct.
+    if opcode & 0xF1C0 == 0xC100 && is_dst_mem_mode((opcode >> 3) & 7, opcode & 7) {
+        return arith_dn_ea(opcode, AluOp::And, Size::Byte); // AND.b Dn,<ea>
+    }
+    if opcode & 0xF1C0 == 0xC140 && is_dst_mem_mode((opcode >> 3) & 7, opcode & 7) {
+        return arith_dn_ea(opcode, AluOp::And, Size::Word); // AND.w Dn,<ea>
+    }
+    if opcode & 0xF1C0 == 0xC180 && is_dst_mem_mode((opcode >> 3) & 7, opcode & 7) {
+        return arith_dn_ea(opcode, AluOp::And, Size::Long); // AND.l Dn,<ea>
+    }
     // CMP `<ea>,Dn` (`1011 ddd 0SS mmm rrr`, nibble 0xB, opmode 0/1/2 = b/w/l) — the flag-only compare
     // `Dn − <ea>` (Dn the minuend). Classified by OPCODE (the CMP.* files mix CMP/CMPM/CMPI — CMPM/CMPI are
     // N1/N2, and `covered()` admits only the Cmp class this commit, so decode is reached on Cmp cases only).
@@ -10705,6 +10740,309 @@ mod tests {
         // SUBA is opmode 3 (.w = 0x90C0) / 7 (.l = 0x91C0) of the 0x9 nibble — its own decode arms, disjoint
         // from the SUB arms (opmode 0/1/2/4/5/6). Decode must produce a recipe (no panic / no todo!()).
         for op in [0x94C4u16, 0x92C8, 0x94D6, 0x9BD2, 0x99FC, 0x90C0, 0x91C0] {
+            let regs = Registers {
+                d: [0; 8],
+                a: [0; 7],
+                usp: 0,
+                ssp: 2048,
+                pc: 3072,
+                sr: 0x2700,
+                prefetch: [op, 0],
+            };
+            let _ = decode(&regs);
+        }
+    }
+
+    // --- L2: AND.b / AND.w / AND.l, BOTH directions — bitwise `a & b` with the MOVE flag shape (N = msb /
+    // Z = (result == 0), V/C cleared, X PRESERVED), the new `AluOp::And`. `<ea>,Dn` reuses `arith_ea_dn`, `Dn,<ea>`
+    // reuses `arith_dn_ea`, both VERBATIM (AluOp-parameterized; AND = ADD byte-for-byte minus the illegal An
+    // source). Anchors pinned to real vendored AND.l/.w cases. ---
+
+    /// The clean SST anchor `ce85 [AND.l D5,D7] 108` (8 cyc): a Dn-source LONG AND — the **X-PRESERVATION + N**
+    /// pin. Initial CCR = X|N|Z (0x271c): D7 = 0xE29237B7 & D5 = 0xDFA6D51D = 0xC2821515 (msb set → N stays 1),
+    /// Z cleared (result != 0), V/C cleared, **X PRESERVED** (X=1 in and out) → final CCR = X|N (0x2718). The
+    /// AND.l register source uses `ea_src_long`'s Dn-direct path `[Prefetch, Alu, Internal(4)]` (8 cyc, the long
+    /// register idle = ADD.l <ea>,Dn). Bus: one FC-6 refill @3076 (no operand read).
+    fn setup_and_l_ce85() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                0x6B33_9A0C,
+                0x1A77_2E51,
+                0x90D4_B6A2,
+                0x4C81_77E9,
+                0x2F5A_C3B8,
+                0xDFA6_D51D,
+                0x71C8_4E0A,
+                0xE292_37B7,
+            ],
+            a: [
+                0x4821_5C3D,
+                0x39B7_0C42,
+                0x5D0E_91A6,
+                0x6F22_88B4,
+                0x1A4C_77E0,
+                0x82E0_65DB,
+                0x2783_E0EF,
+            ],
+            usp: 0x1049_922A,
+            ssp: 2048,
+            pc: 3072,
+            sr: 0x271C, // CCR = X|N|Z
+            prefetch: [0xCE85, 0x91D9],
+        };
+        let mut bus = FlatBus::new();
+        bus.poke(3076, 0x7F);
+        bus.poke(3077, 0xAA); // 0x7FAA = 32682 — the refill word
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_and_l_ce85_log() -> Vec<Transaction> {
+        vec![Transaction {
+            kind: TxKind::Read,
+            fc: 6,
+            addr: 3076,
+            size: Size::Word,
+            value: 32682,
+        }]
+    }
+
+    fn assert_and_l_ce85_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced one word");
+        assert_eq!(
+            cpu.regs.d[7], 0xC282_1515,
+            "D7 = 0xE29237B7 & 0xDFA6D51D = 0xC2821515 (full 32)"
+        );
+        assert_eq!(cpu.regs.d[5], 0xDFA6_D51D, "source D5 unchanged");
+        assert_eq!(
+            cpu.regs.sr, 0x2718,
+            "N stays set (msb), Z/V/C cleared, X PRESERVED → CCR = X|N (0x18)"
+        );
+        assert_eq!(cpu.regs.prefetch, [0x91D9, 32682], "queue advanced");
+        assert_eq!(bus.log, expected_and_l_ce85_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_and_l_ce85() {
+        let (mut cpu, mut bus) = setup_and_l_ce85();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 8,
+            "AND.l Dn,Dn = [Prefetch, Alu, Internal(4)] = 8 (ADD.l <ea>,Dn register idle)"
+        );
+        assert_and_l_ce85_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_and_l_ce85() {
+        let (mut rtc, mut bus_rtc) = setup_and_l_ce85();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_and_l_ce85();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 8);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_and_l_ce85_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn and_l_ce85_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The snapshot/restore anchor for the AND register-source shape (Alu{And} setting N/Z, clearing V/C,
+        // PRESERVING X). Snapshot the whole CPU at every micro-op boundary, restore, resume, and match.
+        let (mut rref, mut bref) = setup_and_l_ce85();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 3 micro-ops (Prefetch, Alu, Internal(4)) -> boundaries after 0..=2.
+        for pause_after in 0..=2 {
+            let (mut cpu, mut bus) = setup_and_l_ce85();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    /// The clean SST anchor `cf54 [AND.w D7,(A4)] 65` (12 cyc): a MEMORY-DEST word AND — the `Dn,<ea>` RMW path
+    /// (`arith_dn_ea`) + the **V/C-CLEARING** pin. Initial CCR = X|V|C (0x2713): (A4) = 0xE9067256 → masked
+    /// 0x067256 = 422486, the word there = 0x29D4; D7 low word = 0x620F → 0x29D4 & 0x620F = 0x2004 written back.
+    /// Result msb clear → N=0, non-zero → Z=0, **V and C CLEARED** (were set), **X PRESERVED** → final CCR = X
+    /// (0x2710). Bus order is the RMW `[r operand @(A4) FC5, r refill @3076 FC6, w result @(A4) FC5]`.
+    fn setup_and_w_cf54() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [
+                0x490F_1780,
+                0xB82F_764F,
+                0x1D41_0A1C,
+                0xD1C4_5558,
+                0x3CB6_0C42,
+                0xFB74_9672,
+                0xB2A9_FA73,
+                0xC820_620F,
+            ],
+            a: [
+                0xCC8D_316A,
+                0x3044_2DFD,
+                0x3179_3B70,
+                0xFE47_092D,
+                0xE906_7256,
+                0x82E0_65DB,
+                0xC96A_9590,
+            ],
+            usp: 0x1049_922A,
+            ssp: 2048,
+            pc: 3072,
+            sr: 0x2713, // CCR = X|V|C
+            prefetch: [0xCF54, 0x49D5],
+        };
+        let mut bus = FlatBus::new();
+        bus.poke(422486, 0x29);
+        bus.poke(422487, 0xD4); // (A4) word = 0x29D4 = 10708
+        bus.poke(3076, 0x76);
+        bus.poke(3077, 0x63); // refill 0x7663 = 30307
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_and_w_cf54_log() -> Vec<Transaction> {
+        vec![
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 422486,
+                size: Size::Word,
+                value: 10708,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 3076,
+                size: Size::Word,
+                value: 30307,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 422486,
+                size: Size::Word,
+                value: 8196,
+            },
+        ]
+    }
+
+    fn assert_and_w_cf54_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 3074, "pc advanced one word");
+        assert_eq!(cpu.regs.a[4], 0xE906_7256, "dest base A4 unchanged");
+        assert_eq!(cpu.regs.d[7], 0xC820_620F, "source D7 unchanged");
+        assert_eq!(
+            cpu.regs.sr, 0x2710,
+            "N=0/Z=0, V and C CLEARED, X PRESERVED → CCR = X (0x10)"
+        );
+        assert_eq!(
+            bus.peek(422486),
+            0x20,
+            "(A4) hi byte = 0x20 (0x29D4 & 0x620F = 0x2004)"
+        );
+        assert_eq!(bus.peek(422487), 0x04, "(A4) lo byte = 0x04");
+        assert_eq!(cpu.regs.prefetch, [0x49D5, 30307], "queue advanced");
+        assert_eq!(bus.log, expected_and_w_cf54_log());
+    }
+
+    #[test]
+    fn run_instruction_matches_and_w_cf54() {
+        let (mut cpu, mut bus) = setup_and_w_cf54();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(
+            cycles, 12,
+            "AND.w Dn,(An) = [Read, Prefetch, Alu, Write] RMW = 12 (ADD.w Dn,(An))"
+        );
+        assert_and_w_cf54_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_and_w_cf54() {
+        let (mut rtc, mut bus_rtc) = setup_and_w_cf54();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_and_w_cf54();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 12);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_and_w_cf54_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn and_w_cf54_quiescable_and_serializable_at_every_micro_op_boundary() {
+        // The snapshot/restore anchor for the AND memory-dest RMW shape (Alu{And} parked in Scratch, then
+        // written back) — the interesting mid-bus-access boundary between the operand Read and the result Write.
+        let (mut rref, mut bref) = setup_and_w_cf54();
+        rref.run_instruction(&mut bref);
+        let cfg = bincode::config::standard();
+        // 4 micro-ops (Read, Prefetch, Alu, Write) -> boundaries after 0..=3.
+        for pause_after in 0..=3 {
+            let (mut cpu, mut bus) = setup_and_w_cf54();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    #[test]
+    fn and_decode_classifies_and_sizes() {
+        // AND `<ea>,Dn` is opmode 0/1/2 (0xC000/0xC040/0xC080) and `Dn,<ea>` is opmode 4/5/6 (0xC100/0xC140/
+        // 0xC180) of the 0xC nibble — its own decode arms, disjoint from ADD/SUB (0xD/0x9) and CMP (0xB). The
+        // ANDI immediate opcode (0x02xx, high nibble 0) is a DIFFERENT instruction NOT decoded here (it must
+        // never reach decode — `covered()` classifies it out by opcode). Decode of the genuine register form
+        // must produce a recipe (no panic / no todo!()).
+        for op in [
+            0xC801u16, // AND.b D1,D0 <ea>,Dn (Dn source)
+            0xC614,    // AND.b (A4),D3
+            0xC03C,    // AND.b #imm,D0
+            0xC440,    // AND.w D0,D2
+            0xC880,    // AND.l D0,D4
+            0xC6BC,    // AND.l #imm,D3
+            0xCF12,    // AND.b D7,(A2)   Dn,<ea>
+            0xCF54,    // AND.w D7,(A4)
+            0xCB92,    // AND.l D5,(A2)
+        ] {
             let regs = Registers {
                 d: [0; 8],
                 a: [0; 7],
