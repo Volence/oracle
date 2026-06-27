@@ -761,6 +761,19 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         if is_lsl {
             return shift_recipe(opcode, AluOp::Lsl, regs);
         }
+        // LSR (S3) — LS/RIGHT: direction bit 8 == 0, type LS (register bits 4-3 == 1 / memory bits 10-9 == 1).
+        // The shared `shift_recipe`/`Operand::ShiftCount`/`dn_*` machinery is reused VERBATIM; only the AluOp +
+        // the `(type, dir)` classification differ from ASL/ASR/LSL. LSR is the ZERO-FILL right shift (contrast
+        // ASR's sign-extend). Only ASL/ASR/LSL/LSR files are loaded this commit, so no other `0xE` op reaches
+        // decode; the guard keeps the arm precise regardless.
+        let is_lsr = if (opcode >> 6) & 3 == 3 {
+            (opcode >> 8) & 1 == 0 && (opcode >> 9) & 3 == 1 // memory: dir RIGHT, type LS (bits 10-9)
+        } else {
+            (opcode >> 8) & 1 == 0 && (opcode >> 3) & 3 == 1 // register: dir RIGHT, type LS (bits 4-3)
+        };
+        if is_lsr {
+            return shift_recipe(opcode, AluOp::Lsr, regs);
+        }
     }
     todo!("opcode {opcode:#06X} not yet decoded")
 }
