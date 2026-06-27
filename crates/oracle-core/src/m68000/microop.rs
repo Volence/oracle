@@ -630,6 +630,24 @@ pub enum AluOp {
     /// `Dn` dest via `dn_dest`, or [`Dest::Scratch`] for the word memory rotate-by-1). Every Rust shift is
     /// guarded (the `x << (n - r)` term runs only for `r != 0`, keeping `n - r ∈ 1..n-1`, never `>= 32`).
     Ror,
+    /// Roxl: **rotate LEFT THROUGH X** by `cnt = b & 63` — the FIRST X-threading rotate. Unlike [`AluOp::Rol`]/
+    /// [`AluOp::Ror`] (which leave X untouched) and [`AluOp::Asl`]/[`AluOp::Asr`]/[`AluOp::Lsl`]/[`AluOp::Lsr`]
+    /// (which set X = C from the value), ROXL treats the `X:operand` pair as an `(n+1)`-bit register — X sits
+    /// ABOVE the msb — and rotates it LEFT by `cnt % (n+1)`; the final bit ejected into X is BOTH the new X and C,
+    /// so the result DEPENDS ON THE INCOMING X. Reuses the shared [`shift_recipe`]/[`Operand::ShiftCount`]/`dn_*`
+    /// machinery VERBATIM (only the `AluOp` + the ROX/left decode arm differ). `a` is the operand (size-masked to
+    /// `x`), `b` the count source ([`Operand::ShiftCount`] for the immediate/memory forms /
+    /// [`Operand::DataRegFull`] for the dynamic `Dn`-count form — the exec masks `& 63`); `size` → `n = 8/16/32`,
+    /// `mask = (1<<n)-1`, `signbit = 1<<(n-1)`, `xin = (sr >> 4) & 1`. Value: `per = n + 1`, `eff = cnt % per`;
+    /// `comb = ((xin << n) | x)` in `per` bits (a `u64` so the `.l` 33-bit case does not overflow `u32`), rotated
+    /// LEFT by `eff` (`comb = ((comb << eff) | (comb >> (per - eff))) & ((1<<per)-1)` for `eff != 0`, else
+    /// unchanged — guard `per - eff` when `eff == 0`), `res = (comb & mask) as u32`. **C = X = (comb >> n) & 1**
+    /// (the bit ejected into X). **V = 0** always. **N** = msb(res), **Z** = (res == 0). **ZERO COUNT** (`cnt ==
+    /// 0`, possible only via the dynamic `Dn` form): the value is UNCHANGED, **C = X (the INCOMING X — NOT 0), X
+    /// UNCHANGED**, V = 0, N/Z from the unchanged operand. A cnt that WRAPS the `(n+1)` PERIOD (`eff == 0` with
+    /// `cnt != 0`, e.g. ROXL.b #9) returns the value to its start. The size-masked result is written back
+    /// (low8/low16/full32 for a `Dn` dest via `dn_dest`, or [`Dest::Scratch`] for the word memory rotate-by-1).
+    Roxl,
 }
 
 /// A bitwise logic operation a [`MicroOp::SrLogic`] applies to the status register — the three privileged
@@ -1593,6 +1611,57 @@ impl MicroState {
                         }
                         // X is PRESERVED (ROL/ROR never touch X — re-inject the live X, NEVER set X = C).
                         ccr |= regs.sr & CCR_X;
+                        (res, ccr)
+                    }
+                    // ROXL — rotate LEFT THROUGH X by `cnt = b & 63` (the resolved count). The FIRST X-threading
+                    // rotate: treat the `X:operand` pair as an `(n+1)`-bit register (X above the msb) and rotate
+                    // it LEFT by `cnt % (n+1)`; the bit ejected into X is BOTH the new X and C, so the result
+                    // depends on the INCOMING X (unlike ROL/ROR, which leave X untouched, or ASL/ASR/LSL/LSR,
+                    // which set X = C from the value). `x` = the size-masked operand `a`; `n` = 8/16/32; `xin =
+                    // (sr >> 4) & 1`. ZERO COUNT (cnt == 0): value unchanged, C = X = xin (the INCOMING X — NOT
+                    // 0), X UNCHANGED. Else: `per = n + 1`, `eff = cnt % per`; `comb = (xin << n) | x` in `per`
+                    // bits (a `u64` so the `.l` 33-bit case does not overflow `u32`), rotated left by `eff`
+                    // (guarded — `comb >> (per - eff)` is computed only for `eff != 0`, so `per - eff ∈ 1..per`);
+                    // `res = (comb & mask) as u32`; C = X = `(comb >> n) & 1`. V = 0 always. N = msb(res), Z =
+                    // (res == 0).
+                    AluOp::Roxl => {
+                        let (mask, signbit, n) = match size {
+                            Size::Byte => (0xFFu32, 0x80u32, 8u32),
+                            Size::Word => (0xFFFF, 0x8000, 16),
+                            Size::Long => (0xFFFF_FFFF, 0x8000_0000, 32),
+                        };
+                        let x = lhs & mask;
+                        let cnt = rhs & 63;
+                        let xin = (u32::from(regs.sr) >> 4) & 1;
+                        let (res, c) = if cnt == 0 {
+                            // Zero count: value unchanged, C = X (the incoming X), X unchanged.
+                            (x, xin)
+                        } else {
+                            let per = n + 1;
+                            let eff = cnt % per;
+                            // The (n+1)-bit register: X above the msb. Use u64 so the .l (33-bit) case fits.
+                            let combined = (u64::from(xin) << n) | u64::from(x);
+                            let permask = (1u64 << per) - 1;
+                            let rotated = if eff == 0 {
+                                combined
+                            } else {
+                                ((combined << eff) | (combined >> (per - eff))) & permask
+                            };
+                            let res = (rotated & u64::from(mask)) as u32;
+                            let c = ((rotated >> n) & 1) as u32;
+                            (res, c)
+                        };
+                        let mut ccr = 0u16;
+                        if res & signbit != 0 {
+                            ccr |= CCR_N;
+                        }
+                        if res == 0 {
+                            ccr |= CCR_Z;
+                        }
+                        // X = C (the bit ejected into X) — both set together. V = 0.
+                        if c != 0 {
+                            ccr |= CCR_C | CCR_X;
+                        }
                         (res, ccr)
                     }
                     AluOp::Add | AluOp::Sub => match size {

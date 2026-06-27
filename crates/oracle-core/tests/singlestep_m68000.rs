@@ -406,6 +406,28 @@ const FILES: &[&str] = &[
     "ROR.b.json",
     "ROR.w.json",
     "ROR.l.json",
+    // ROXL.b / ROXL.w / ROXL.l (`0xExxx`, ROX/left) — rotate LEFT THROUGH X (S6): the FIRST X-threading rotate.
+    // Unlike ROL/ROR (which leave X untouched) and ASL/ASR/LSL/LSR (which set X = C from the value), ROXL treats
+    // `{X:operand}` as an `(n+1)`-bit register — X sits ABOVE the msb — and rotates it left by `cnt % (n+1)`; the
+    // final bit ejected into X is BOTH the new X and C, so the result depends on the INCOMING X. Same three forms
+    // / classification / `shift_recipe` as ASL/ASR/LSL/LSR/ROL/ROR (only the AluOp + the ROX/left decode arm
+    // differ — direction bit 8 == 1, type ROX bits 4-3 (register) / 10-9 (memory) == 2). Value: `per = n + 1`,
+    // `eff = cnt % per`; `comb = ((xin << n) | x)` in `per` bits, rotated left by `eff` (the wider `u64` so the
+    // `.l` 33-bit case does not overflow), `res = comb & mask`. **C = X = (comb >> n) & 1** (the bit ejected into
+    // X). **V = 0** always. **N** = msb(res), **Z** = (res == 0). ZERO COUNT (`cnt == 0`, only the `Dn` form):
+    // value UNCHANGED, **C = X (the incoming X — NOT 0), X UNCHANGED**, V = 0, N/Z from the unchanged operand. A
+    // cnt that wraps the `(n+1)` PERIOD (e.g. cnt = 9 for `.b` → eff = 9 % 9 = 0) returns the value to its start.
+    // Reuses `Operand::ShiftCount` + the shared `shift_recipe` VERBATIM (register `[Prefetch, Alu,
+    // Internal{(base-4)+2*cnt}]`, base 6 `.b`/`.w` / 8 `.l`; memory the CLR.w/NEG.w word `ea_dst` RMW). Timing
+    // identical to every shift/rotate: register `.b`/`.w` = 6 + 2*cnt, `.l` = 8 + 2*cnt; memory shift-by-1
+    // (word): (An)/(An)+ 12, -(An) 14, d16(An) 16, d8(An,Xn) 18, abs.w 16, abs.l 20; an odd EA address-errors on
+    // the READ (low5 = 0x15, the E3/E4 abort). The FULL in-scope EA set is covered (every register shift + the
+    // `.w` data-alterable memory set INCL the clean `(A7)` mode-2 indirect, NO deferral / NO parity filter). NO
+    // corrupt entries (only ASL.b has the 2 self-contradictory cases). Per-file true counts: ROXL.b 8065 +
+    // ROXL.w 8065 + ROXL.l 8065 = +24195. All three files are 100% PURE.
+    "ROXL.b.json",
+    "ROXL.w.json",
+    "ROXL.l.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -1475,9 +1497,27 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 671_873,
-        "expected 671873 covered cases — S5 adds ROR.b / ROR.w / ROR.l (`0xExxx`, RO/right): ROR.b 8065 + \
-         ROR.w 8065 + ROR.l 8065 = +24195 over S4's 647678 (NO corrupt entries — only ASL.b has the 2). ROR \
+        ran >= 696_068,
+        "expected 696068 covered cases — S6 adds ROXL.b / ROXL.w / ROXL.l (`0xExxx`, ROX/left): ROXL.b 8065 + \
+         ROXL.w 8065 + ROXL.l 8065 = +24195 over S5's 671873 (NO corrupt entries — only ASL.b has the 2). \
+         ROXL is rotate LEFT THROUGH X — the FIRST X-threading rotate. It treats the X:operand pair as an \
+         `(n+1)`-bit register (X above the msb) and rotates it left by `cnt % (n+1)`; the final bit ejected \
+         into X is BOTH \
+         the new X and C, so the result depends on the INCOMING X (unlike ROL/ROR, which leave X untouched, or \
+         ASL/ASR/LSL/LSR, which set X = C from the value). It reuses `Operand::ShiftCount` + the shared \
+         `shift_recipe` + `dn_*` VERBATIM (only the AluOp + the ROX/left decode arm differ — direction bit 8 == \
+         1, type ROX bits 4-3 (register) / 10-9 (memory) == 2). Value: `per = n + 1`, `eff = cnt % per`; `comb = \
+         ((xin << n) | x)` in `per` bits, rotated left by `eff` (a wider `u64` so the `.l` 33-bit case does not \
+         overflow `u32`), `res = comb & mask`. C = X = `(comb >> n) & 1` (the bit ejected into X); V = 0 always; \
+         N = msb(res), Z = (res == 0). ZERO COUNT (`cnt == 0`, only the `Dn` form): value UNCHANGED, C = X (the \
+         INCOMING X — NOT 0), X UNCHANGED, V = 0, N/Z from the unchanged operand. A cnt that wraps the `(n+1)` \
+         PERIOD (e.g. cnt = 9 for `.b` → eff = 9 % 9 = 0) returns the value to its start. Timing identical to \
+         every shift/rotate: register `.b`/`.w` = 6 + 2*cnt, `.l` = 8 + 2*cnt; memory rotate-by-1 (word): \
+         (An)/(An)+ 12, -(An) 14, d16(An) 16, d8(An,Xn) 18, abs.w 16, abs.l 20; an odd EA address-errors on the \
+         READ (the E3/E4 abort). The FULL in-scope EA set is covered (`shift_covered`): every register shift + \
+         the `.w` data-alterable memory set INCL the clean `(A7)` mode-2 indirect (NO deferral, NO parity \
+         filter). All three ROXL files are 100% PURE for their op+size (only ROX/left decodes the ROXL opcodes — \
+         ROXR lands S7). Prior baseline — S5 adds ROR.b / ROR.w / ROR.l (`0xExxx`, RO/right): ROR.b 8065 + \
          is rotate RIGHT — ROL's right-direction twin, a plain bit-rotate that does NOT pass through X \
          (contrast ROXR, which threads X — S7). It reuses `Operand::ShiftCount` + the shared `shift_recipe` + \
          `dn_*` VERBATIM (only the AluOp + the RO/right decode arm differ — direction bit 8 == 0, type RO bits \
@@ -1947,7 +1987,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -4978,5 +5018,224 @@ fn ror_w_mem_quiescable_and_serializable_at_every_micro_op_boundary() {
     }
     eprintln!(
         "S5 ROR snapshot/restore: ROR.w (A5) word rotate-by-1 RMW resumed identically at every micro-op boundary"
+    );
+}
+
+/// S6 — the named ROXL anchors, pinning rotate LEFT THROUGH X against the vendored ROXL.b/.w/.l stream WITHOUT
+/// relying on the bulk `covered()` sweep. ROXL is the FIRST X-threading rotate — it treats `{X:operand}` as an
+/// `(n+1)`-bit register (X above the msb) and rotates it left by `cnt % (n+1)`; the bit ejected into X is BOTH
+/// the new X and C, so the result depends on the INCOMING X (unlike ROL/ROR, which leave X untouched, or
+/// ASL/ASR/LSL/LSR, which set X = C from the value). It reuses S0's `shift_recipe`/`Operand::ShiftCount`/`dn_*`
+/// VERBATIM (only the AluOp + the ROX/left decode arm differ). Each anchor is a real vendored case run through
+/// both drivers + the per-cycle transaction stream via `run_case`; the load-bearing pins:
+///
+/// - `e314 [ROXL.b Q, D4] 59` (len 8) — REGISTER **immediate** `.b`, cnt 1, **incoming X = 0**: the X threads
+///   into the new low bit → final byte `0x5a`. Timing `6 + 2*1`.
+/// - `e314 [ROXL.b Q, D4] 3084` (len 8) — the SAME opcode/operand byte but **incoming X = 1**: the X-1 threads
+///   into the new low bit → final byte `0x5b` (DIFFERENT from the X=0 case — the X-THREADING pin). C = X =
+///   ejected bit.
+/// - `e755 [ROXL.w Q, D5] 3` (len 12) — REGISTER immediate `.w`, cnt 3 → `6 + 2*3`.
+/// - `e394 [ROXL.l Q, D4] 1` (len 10) — REGISTER immediate `.l`, cnt 1 → the `.l` base `8 + 2*1`.
+/// - `e535 [ROXL.b D2, D5] 37` (len 6) — REGISTER **`Dn`-count `cnt == 0`** (the ZERO-COUNT case): value
+///   UNCHANGED, **C = X (the INCOMING X — NOT 0), X UNCHANGED**, V = 0, timing `6`. The case enters with X = 1
+///   so the final C must be 1 (= X) — the defining ROXL zero-count behaviour vs AS/LS/RO's C = 0.
+/// - `e932 [ROXL.b D4, D2] 229` (len 24) — REGISTER `Dn`-count `cnt == 9` for `.b`: cnt WRAPS the `(n+1) = 9`
+///   PERIOD (`eff = 9 % 9 = 0`) → the value returns to its start (byte UNCHANGED), timing `6 + 2*9`.
+/// - `e5d5 [ROXL.w (A5)] 157` (len 12) — `.w` **memory** rotate-by-1 `(An)`: the word `ea_dst` RMW.
+/// - `e5d7 [ROXL.w (A7)] 58` (len 12) — the plain `(A7)` mode-2 indirect (`mode == 2 && reg == 7`), COVERED
+///   (NOT deferred), a clean word RMW at the active A7.
+/// - `e5d5 [ROXL.w (A5)] 136` (len 50) — an **odd-EA** `.w` memory address error (the E3/E4 abort installs the
+///   group-0 14-byte vector-3 frame), which must PASS unchanged.
+///
+/// Every anchor must decode as a ROXL opcode (`0xExxx`, type ROX / direction LEFT) — never any other family.
+#[test]
+fn roxl_anchors_match_singlesteptests() {
+    let anchors: &[(&str, &str, u32)] = &[
+        ("ROXL.b.json", "e314 [ROXL.b Q, D4] 59", 8), // imm .b cnt1, X=0 in → byte 0x5a, 6+2
+        ("ROXL.b.json", "e314 [ROXL.b Q, D4] 3084", 8), // SAME op, X=1 in → byte 0x5b (X-threading)
+        ("ROXL.w.json", "e755 [ROXL.w Q, D5] 3", 12), // imm .w cnt3 → 6+6
+        ("ROXL.l.json", "e394 [ROXL.l Q, D4] 1", 10), // imm .l cnt1 → 8+2
+        ("ROXL.b.json", "e535 [ROXL.b D2, D5] 37", 6), // Dn cnt0 zero-count: C=X(=1), X kept, value unchanged
+        ("ROXL.b.json", "e932 [ROXL.b D4, D2] 229", 24), // Dn cnt9 wraps the (n+1)=9 period: value unchanged
+        ("ROXL.w.json", "e5d5 [ROXL.w (A5)] 157", 12),   // memory (An) rotate-by-1
+        ("ROXL.w.json", "e5d7 [ROXL.w (A7)] 58", 12),    // (A7) mode-2 indirect — COVERED
+        ("ROXL.w.json", "e5d5 [ROXL.w (A5)] 136", 50),   // odd-EA memory address error
+    ];
+    let mut found = 0usize;
+    for (fname, name, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap() == *name
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| panic!("S6 ROXL anchor {name} (len {length}) not found in {fname}"));
+        // Every anchor must be a ROXL opcode: 0xExxx, type ROX (register bits 4-3 == 2 / memory bits 10-9 ==
+        // 2), direction LEFT (bit 8 == 1).
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(
+            opcode >> 12,
+            0xE,
+            "anchor {name} must be a 0xExxx shift opcode"
+        );
+        let is_roxl = if (opcode >> 6) & 3 == 3 {
+            (opcode >> 8) & 1 == 1 && (opcode >> 9) & 3 == 2
+        } else {
+            (opcode >> 8) & 1 == 1 && (opcode >> 3) & 3 == 2
+        };
+        assert!(
+            is_roxl,
+            "anchor {name} must be ROXL (type ROX, direction LEFT)"
+        );
+        // Load-bearing flag/scope pins (run_case verifies the FULL final state against the data either way).
+        let ini_sr = case["initial"]["sr"].as_u64().unwrap() as u16;
+        let fin_sr = case["final"]["sr"].as_u64().unwrap() as u16;
+        match *name {
+            "e314 [ROXL.b Q, D4] 59" => {
+                // X = 0 incoming: the threaded bit is 0 → final low bit is 0; final byte 0x5a. V = 0.
+                assert_eq!(ini_sr & 0x10, 0, "the X=0 anchor must enter with X = 0");
+                assert_eq!(
+                    case["final"]["d4"].as_u64().unwrap() as u32 & 0xFF,
+                    0x5a,
+                    "X=0 ROXL.b #1 must thread a 0 into the low bit → 0x5a"
+                );
+                assert_eq!(fin_sr & 0x02, 0, "ROXL must always clear V");
+            }
+            "e314 [ROXL.b Q, D4] 3084" => {
+                // SAME opcode/operand byte but X = 1 incoming → the threaded bit is 1 → final low bit is 1;
+                // final byte 0x5b — DIFFERENT from the X=0 case. This is the X-THREADING pin (the result
+                // depends on the incoming X). C = X = the ejected bit (here the operand's old msb).
+                assert_ne!(ini_sr & 0x10, 0, "the X=1 anchor must enter with X = 1");
+                assert_eq!(
+                    case["final"]["d4"].as_u64().unwrap() as u32 & 0xFF,
+                    0x5b,
+                    "X=1 ROXL.b #1 must thread a 1 into the low bit → 0x5b (DIFFERENT from the X=0 0x5a)"
+                );
+                assert_eq!(fin_sr & 0x02, 0, "ROXL must always clear V");
+                // C = X (the two are always equal for ROXL).
+                assert_eq!(
+                    (fin_sr >> 4) & 1,
+                    fin_sr & 1,
+                    "ROXL must set X = C (the bit ejected into X)"
+                );
+            }
+            "e535 [ROXL.b D2, D5] 37" => {
+                // Zero-count (Dn count = 0): value UNCHANGED, V = 0, X UNCHANGED, and C = X (the INCOMING X —
+                // NOT 0; this is ROXL's defining difference from AS/LS/RO, which clear C on a zero count). The
+                // case enters with X = 1, so the final C must be 1.
+                assert_ne!(
+                    ini_sr & 0x10,
+                    0,
+                    "zero-count anchor must enter with X = 1 (pins C = X, not 0)"
+                );
+                assert_eq!(
+                    ini_sr & 0x10,
+                    fin_sr & 0x10,
+                    "zero-count must leave X UNCHANGED"
+                );
+                assert_ne!(
+                    fin_sr & 1,
+                    0,
+                    "zero-count must set C = X (= 1 here) — NOT clear C like AS/LS/RO"
+                );
+                assert_eq!(fin_sr & 0x02, 0, "zero-count must clear V");
+                assert_eq!(
+                    case["initial"]["d5"], case["final"]["d5"],
+                    "zero-count must leave the operand unchanged"
+                );
+            }
+            "e932 [ROXL.b D4, D2] 229" => {
+                // cnt = 9 for .b WRAPS the (n+1) = 9 period (eff = 9 % 9 = 0) → the value returns to its start
+                // (the rotated byte is UNCHANGED). V = 0.
+                assert_eq!(
+                    case["initial"]["d2"].as_u64().unwrap() as u32 & 0xFF,
+                    case["final"]["d2"].as_u64().unwrap() as u32 & 0xFF,
+                    "cnt = 9 (= n+1 for .b) must wrap the period → the rotated byte is unchanged"
+                );
+                assert_eq!(fin_sr & 0x02, 0, "ROXL must always clear V");
+            }
+            "e5d7 [ROXL.w (A7)] 58" => {
+                assert_eq!((opcode >> 3) & 7, 2, "(A7) anchor must be mode 2");
+                assert_eq!(opcode & 7, 7, "(A7) anchor must be reg 7 (the A7 indirect)");
+            }
+            "e5d5 [ROXL.w (A5)] 136" => {
+                // Odd-EA address error: the group-0 frame pushes the SSP down (the standard 14-byte frame).
+                assert!(
+                    case["final"]["ssp"].as_u64().unwrap()
+                        < case["initial"]["ssp"].as_u64().unwrap(),
+                    "odd-EA anchor must install the address-error frame (SSP pushed down)"
+                );
+            }
+            _ => {}
+        }
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all S6 ROXL anchors exercised");
+    eprintln!(
+        "S6 ROXL anchors: {found} cases (imm .b/.w/.l 6+2cnt / 8+2cnt, X-threading pins (X=0 → 0x5a vs X=1 → 0x5b, same opcode/operand), Dn cnt0 zero-count C=X/X-kept/value-kept, cnt9 (n+1)-period wrap value-kept, (An)/(A7) memory rotate-by-1, odd-EA address-error) passed both drivers"
+    );
+}
+
+/// S6 — the snapshot/restore anchor for the ROXL.w memory rotate-by-1 (the shared `shift_recipe` word `ea_dst`
+/// RMW: `[Read, Prefetch, Alu, Write]`). Drives a real vendored `ROXL.w (A5)` case through the quiesce driver,
+/// snapshotting + restoring the WHOLE `Cpu68000` (incl. the in-flight cursor) at every micro-op boundary —
+/// including the mid-bus-access boundary between the operand Read and the result Write — and proves the
+/// resumed run reproduces the run-to-completion final state + transaction stream bit-for-bit. This pins that
+/// `AluOp::Roxl` keeps `MicroState` fixed-size bincode (it stays `Copy`).
+#[test]
+fn roxl_w_mem_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/ROXL.w.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "e5d5 [ROXL.w (A5)] 157")
+        .expect("ROXL.w (A5) snapshot anchor present");
+    let ini = &case["initial"];
+
+    // Run-to-completion reference.
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    // 4 micro-ops (Read, Prefetch, Alu, Write) → in-flight boundaries after 0..=3 of them.
+    for pause_after in 0..=3 {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        for _ in 0..pause_after {
+            assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+        }
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+    }
+    eprintln!(
+        "S6 ROXL snapshot/restore: ROXL.w (A5) word rotate-by-1 RMW resumed identically at every micro-op boundary"
     );
 }
