@@ -630,6 +630,14 @@ pub enum MicroOp {
     /// (the exception vector address `(32+n)*4`) into scratch so a plain [`MicroOp::Read`] can fetch the
     /// handler from it. A 0-cycle, non-bus, snapshot-visible internal step.
     LoadImm { value: u32, dst: Slot },
+    /// Write a constant byte `value` to a byte destination, affecting **NO flags** — the no-flag analog of
+    /// [`MicroOp::LoadImm`] (which targets a [`Slot`]), generalized to a [`Dest`]. The conditional byte write
+    /// of `Scc <ea>` (`0xFF` if the condition is true else `0x00`, resolved at decode time): into
+    /// [`Dest::DataRegLow8`] it writes the low byte and **preserves the upper 24 bits**, into
+    /// [`Dest::Scratch`] it parks the byte (zero-extended) for the trailing memory `Write` to store. Unlike
+    /// [`AluOp::Move`] (which CLR uses and which SETS N/Z) this touches no CCR bit. A 0-cycle, non-bus,
+    /// snapshot-visible internal step.
+    SetByte { value: u8, dst: Dest },
     /// Restore the FULL status register from a popped value, masked to the implemented bits:
     /// `regs.sr = (resolve(value) as u16) & SR_IMPLEMENTED` (`0xA71F` — T | S | I2-I0 | CCR; the unimplemented
     /// bits read as 0). `RTE`'s SR restore — unlike [`MicroOp::LoadCcr`] (which keeps only the low 5 CCR bits
@@ -1218,6 +1226,18 @@ impl MicroState {
             MicroOp::LoadImm { value, dst } => {
                 // Materialize a constant (the vector address) into scratch so a plain Read can use it.
                 self.scratch[dst as usize] = value;
+                0
+            }
+            MicroOp::SetByte { value, dst } => {
+                // The no-flag conditional byte write (Scc). Into Dn's low byte preserve the upper 24 bits;
+                // into a scratch slot park the byte (zero-extended) for the trailing memory Write. NO flags.
+                match dst {
+                    Dest::DataRegLow8(n) => {
+                        regs.d[n as usize] = (regs.d[n as usize] & 0xFFFF_FF00) | (value as u32);
+                    }
+                    Dest::Scratch(s) => self.scratch[s as usize] = value as u32,
+                    _ => unreachable!("SetByte writes only DataRegLow8 / Scratch"),
+                }
                 0
             }
             MicroOp::LoadSr { value } => {
@@ -2868,6 +2888,51 @@ mod tests {
         assert_eq!(cycles, 0, "LoadImm is an internal compute — 0 cycles");
         assert_eq!(st.scratch[3], 128, "the constant landed in scratch slot 3");
         assert!(bus.log.is_empty(), "LoadImm touches no bus");
+    }
+
+    #[test]
+    fn set_byte_writes_low_byte_preserving_upper_24_with_no_flags() {
+        // SetByte is the no-flag byte constant write (Scc's conditional 0xFF/0x00). Into Dn's low byte it
+        // preserves the upper 24 bits and touches NO flags (the whole SR is unchanged).
+        let mut regs = regs();
+        regs.d[4] = 0x2CC2_60E3; // upper 24 = 0x2CC260
+        let sr_before = regs.sr;
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::SetByte {
+            value: 0xFF,
+            dst: Dest::DataRegLow8(4),
+        }]);
+
+        let cycles = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(cycles, 0, "SetByte is an internal compute — 0 cycles");
+        assert_eq!(
+            regs.d[4], 0x2CC2_60FF,
+            "0xFF written to the low byte, upper 24 bits preserved"
+        );
+        assert_eq!(
+            regs.sr, sr_before,
+            "SetByte touches NO flags (SR unchanged)"
+        );
+        assert!(bus.log.is_empty(), "SetByte touches no bus");
+    }
+
+    #[test]
+    fn set_byte_writes_scratch_slot_zero_extended() {
+        // The memory-destination form parks the byte in a scratch slot (the trailing Write stores it).
+        let mut regs = regs();
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::SetByte {
+            value: 0x00,
+            dst: Dest::Scratch(1),
+        }]);
+        st.scratch[1] = 0xDEAD_BEEF; // proves the whole slot is overwritten (zero-extended)
+
+        let cycles = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(cycles, 0);
+        assert_eq!(st.scratch[1], 0x0000_0000, "0x00 parked in scratch slot 1");
+        assert!(bus.log.is_empty());
     }
 
     // --- E3: the SpPlus frame-write operand + the execution-time address-error abort. ---

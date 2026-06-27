@@ -541,6 +541,17 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     if opcode & 0xF0F8 == 0x50C8 {
         return dbcc_recipe(opcode, regs);
     }
+    // Scc `<ea>` (`0101 cccc 11 mmm rrr`, opcode & 0xF0C0 == 0x50C0) — the conditional byte set: write `0xFF`
+    // if the condition `cc` (bits 11-8) is TRUE else `0x00`, with NO flags. The condition is resolved at
+    // DECODE time (like Bcc/DBcc/TRAPV) against the LIVE CCR via `condition_true`. **Placed AFTER the DBcc
+    // arm** (`0x50C8`, mode 001) so DBcc is consumed first; the data-alterable guard (`mode == 0 ||
+    // is_dst_mem_mode`) then excludes mode 1 (An / DBcc). cc 0 = `T` (always 0xFF) and cc 1 = `F` (always
+    // 0x00) are BOTH legal for Scc (unlike Bcc/BSR). Byte-only. The opcode space (bits 7-6 = 11) is disjoint
+    // from ADDQ/SUBQ (sizes 00/01/10) and from every arm above.
+    let scc_mode = (opcode >> 3) & 7;
+    if opcode & 0xF0C0 == 0x50C0 && (scc_mode == 0 || is_dst_mem_mode(scc_mode, opcode & 7)) {
+        return scc_recipe(opcode, regs);
+    }
     // RTR (`0x4E77`) — return and restore condition codes: POP the saved CCR word (@ SP) and the 32-bit
     // return address (hi @ SP+2, lo @ SP+4) off the stack, load the low 5 CCR bits into the SR, then reload
     // the prefetch queue at the popped target. Like RTS but with a leading CCR pop; the data's read order is
@@ -936,6 +947,55 @@ fn clr_recipe(opcode: u16, size: Size) -> MicroState {
             a: Operand::Zero,
             b: Operand::Zero,
             dst: Dest::Scratch(1),
+        });
+    }
+    buf.finish()
+}
+
+/// `Scc.b <ea>` (`0101 cccc 11 mmm rrr`, opcode & 0xF0C0 == 0x50C0): the conditional byte set — write `0xFF`
+/// if the condition `cc` (bits 11-8) is TRUE else `0x00`, with **NO flags** (`final.sr == initial.sr`). The
+/// condition is resolved **at decode time** (like Bcc/DBcc/TRAPV) against the LIVE CCR via [`condition_true`],
+/// so the recipe stays a flat linear sequence; the resulting constant `v` is baked into the
+/// [`MicroOp::SetByte`] (the no-flag byte write — NOT [`AluOp::Move`], which CLR uses because CLR DOES set
+/// flags). cc 0 = `T` (always 0xFF) and cc 1 = `F` (always 0x00) are BOTH legal for Scc. Byte-only.
+///
+/// `Dn`-direct (mode 0) has **no memory access**: a single `Prefetch` then the `SetByte` into `Dn`'s low byte
+/// (the upper 24 bits preserved). When the condition is TRUE the 68000 spends one extra `Internal(2)` idle —
+/// the ONLY true/false timing difference: **FALSE = 4 cyc, TRUE = 6 cyc** (pinned to the vendored `50c4`/`51c5`
+/// anchors).
+///
+/// A **memory destination** is byte-for-byte [`clr_recipe`]'s read-then-write RMW ([`ea_dst`] with `Size::Byte`)
+/// EXCEPT the `make_alu` closure emits a `SetByte { value: v, dst: Scratch(1) }` (the trailing `Write` stores
+/// `Scratch(1)`'s low byte) — it READS the EA byte (discarded), refills, then WRITES `v` with NO flags. The
+/// memory cost is condition-independent (the byte write happens either way) and byte-IDENTICAL to CLR:
+/// `(An)`/`(An)+` 12, `−(An)` 14, `d16(An)` 16, `d8(An,Xn)` 18, `abs.w` 16, `abs.l` 20. Byte-only → NO odd-EA
+/// address-error faults.
+fn scc_recipe(opcode: u16, regs: &Registers) -> MicroState {
+    let mode = (opcode >> 3) & 7;
+    let reg = (opcode & 7) as u8;
+    let cond = condition_true(((opcode >> 8) & 0xF) as u8, regs.sr);
+    let v: u8 = if cond { 0xFF } else { 0x00 };
+    let mut buf = RecipeBuf::new();
+    if mode == 0 {
+        // Dn-direct — no memory: one refill, then the no-flag byte set into Dn's low byte. The TAKEN
+        // condition adds one trailing Internal(2) idle (6 cyc vs the 4 of the not-taken form).
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::SetByte {
+            value: v,
+            dst: Dest::DataRegLow8(reg),
+        });
+        if cond {
+            buf.push(MicroOp::Internal { cycles: 2 });
+        }
+    } else {
+        // Memory destination — the RMW path, byte-for-byte `clr_recipe`'s EXCEPT the closure writes the
+        // conditional constant `v` with NO flags (CLR uses `AluOp::Move`, which SETS flags; Scc must not).
+        // Byte-only (no `ea_dst_long`).
+        ea_dst(&mut buf, mode, reg, Size::Byte, |_discarded| {
+            MicroOp::SetByte {
+                value: v,
+                dst: Dest::Scratch(1),
+            }
         });
     }
     buf.finish()

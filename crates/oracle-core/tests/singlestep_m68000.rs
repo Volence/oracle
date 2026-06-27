@@ -215,6 +215,19 @@ const FILES: &[&str] = &[
     "EXT.w.json",
     "EXT.l.json",
     "SWAP.json",
+    // Scc `<ea>` (`0101 cccc 11 mmm rrr`, opcode & 0xF0C0 == 0x50C0 — EXCL the 0x50C8 DBcc mode-001 form) —
+    // the conditional byte set: write 0xFF if the condition `cc` (bits 11-8) is TRUE else 0x00, with NO flags
+    // (`final.sr == initial.sr`). The condition is resolved at DECODE time (like Bcc/DBcc/TRAPV) via
+    // `condition_true(cc, sr)`; cc 0 = T (always 0xFF) / cc 1 = F (always 0x00) are BOTH legal. C0 decodes the
+    // full data-alterable EA set {Dn (0), (An) (2 — incl the clean `(A7)` mode-2 indirect), (An)+ (3), -(An)
+    // (4), d16(An) (5), d8(An,Xn) (6), abs.w (7/0), abs.l (7/1)} via the new no-flag `MicroOp::SetByte` — the
+    // `Dn` arm is `[Prefetch, SetByte (+ Internal(2) ONLY when the condition is true)]` (FALSE = 4 cyc, TRUE =
+    // 6), the memory arm is byte-for-byte CLR's read-then-write RMW (`ea_dst` with `Size::Byte`) but writing
+    // the conditional constant with NO flags. Byte-only → NO odd-EA faults, NO `(A7)` mode-2 deferral (Scc =
+    // CLR's exact byte RMW; CLR covers `(A7)` m2 and passes). The Scc.json file is 100% PURE (one opcode, no
+    // contaminant). Per-mode true counts: 1280 / 1253 / 1303 / 1302 / 1320 / 1295 / 159 / 153 = 8065 (the WHOLE
+    // file in scope — no deferral).
+    "Scc.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -893,6 +906,25 @@ fn covered(opcode: u16, _ini: &Value) -> bool {
     if matches!(opcode & 0xFFF8, 0x4880 | 0x48C0 | 0x4840) {
         return true;
     }
+    // Scc `<ea>` (`0101 cccc 11 mmm rrr`, opcode & 0xF0C0 == 0x50C0) — the conditional byte set (0xFF if cc
+    // TRUE else 0x00, NO flags). Classified by OPCODE. The 0x50C8 mode-001 DBcc form is consumed by
+    // `dbcc_covered` ABOVE (which returns true and so never reaches here); the data-alterable match below also
+    // excludes mode 1. The data-alterable EA set is FULLY in scope: Dn (0), (An) (2 — incl the clean `(A7)`
+    // mode-2 indirect, NO deferral: Scc = CLR's exact byte RMW), (An)+ (3), -(An) (4), d16(An) (5), d8(An,Xn)
+    // (6), abs.w (7/0), abs.l (7/1). An-direct (1) is DBcc / not data-alterable; PC-relative (7/2, 7/3) / #imm
+    // (7/4) are not data-alterable and are absent. Byte-only → NO odd-EA address-error faults (no parity
+    // filter). The Scc.json file is 100% PURE (one opcode, no contaminant).
+    if opcode & 0xF0C0 == 0x50C0 {
+        let mode = (opcode >> 3) & 7;
+        let reg = opcode & 7;
+        return match mode {
+            0 => true,                         // Dn-direct (no memory access)
+            2..=4 => true,                     // (An) [incl (A7) m2] / (An)+ / -(An)
+            5 | 6 => true,                     // d16(An) / d8(An,Xn)
+            7 if reg == 0 || reg == 1 => true, // abs.w / abs.l
+            _ => false, // An-direct (DBcc, handled above) / PC-rel / #imm: absent / not data-alterable
+        };
+    }
     // ADD/SUB. No parity filter (odd word/long EAs are address errors the E4 abort covers); the only
     // mode-scope deferrals are the `(A7)` (mode 2) plain-indirect form (`reg != 7`) and the illegal `An`-direct
     // byte source (mode 1). `mode` 3/4 are `(An)+`/`-(An)` (the auto-(in/de)crement bump is committed before the
@@ -1105,8 +1137,28 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 478_315,
-        "expected 478315 covered cases — G3 (the FINAL commit of this push) adds EXT.w / EXT.l + SWAP (their own \
+        ran >= 486_380,
+        "expected 486380 covered cases — C0 adds Scc `<ea>` (its own Scc.json file, `0101 cccc 11 mmm rrr` = \
+         opcode & 0xF0C0 == 0x50C0, EXCL the 0x50C8 DBcc mode-001 form): Scc 8065 = +8065 over the prior 478315 \
+         (the WHOLE file in scope — no contaminant, no deferral). Scc writes 0xFF if the condition `cc` (bits \
+         11-8) is TRUE else 0x00, with NO flags (`final.sr == initial.sr`); the condition is resolved at DECODE \
+         time (like Bcc/DBcc/TRAPV) via `condition_true(cc, sr)`, and cc 0 = T (always 0xFF) / cc 1 = F (always \
+         0x00) are BOTH legal. New vocabulary: the no-flag byte constant write `MicroOp::SetByte {{ value: u8, \
+         dst: Dest }}` (the analog of `LoadImm`, generalized to a `Dest` — into `Dest::DataRegLow8` it preserves \
+         the upper 24 bits, into `Dest::Scratch` it parks the byte for the trailing memory Write; it touches NO \
+         CCR bit, unlike `AluOp::Move` which CLR uses because CLR DOES set flags). `scc_recipe` resolves the \
+         condition at decode and bakes the constant into `SetByte`: the `Dn`-direct arm is `[Prefetch, SetByte \
+         (+ Internal(2) ONLY when the condition is TRUE)]` (FALSE = 4 cyc, TRUE = 6 — the ONLY true/false timing \
+         difference, `Dn`-only), the memory arm is byte-for-byte `clr_recipe`'s read-then-write RMW (`ea_dst` \
+         with `Size::Byte`) but writing the conditional constant with NO flags — condition-independent and \
+         byte-IDENTICAL to CLR ((An)/(An)+ 12, -(An) 14, d16(An) 16, d8(An,Xn) 18, abs.w 16, abs.l 20). The \
+         data-alterable EA set is FULLY in scope — Dn (0), (An) (2 — incl the clean `(A7)` mode-2 indirect, NO \
+         deferral: Scc = CLR's exact byte RMW, which covers `(A7)` m2 and passes), (An)+ (3), -(An) (4), d16(An) \
+         (5), d8(An,Xn) (6), abs.w (7/0), abs.l (7/1) — per-mode true counts 1280 / 1253 / 1303 / 1302 / 1320 / \
+         1295 / 159 / 153 = 8065; An-direct (1) is DBcc (handled by `dbcc_covered` above) / not data-alterable, \
+         PC-rel / #imm are not data-alterable and absent. Byte-only → NO odd-EA address-error faults (no parity \
+         filter). The Scc.json file is 100% PURE (one opcode, no contaminant). \
+         Prior baseline — G3 (the prior FINAL commit of that push) adds EXT.w / EXT.l + SWAP (their own \
          EXT.w/EXT.l/SWAP files, 0x4880/0x48C0/0x4840, mask `opcode & 0xFFF8`): EXT.w 8065 + EXT.l 8065 + SWAP \
          8065 = +24195 over G2's 454120. EXT sign-extends the `Dn`-only source whose result WIDTH follows the \
          size — EXT.w sign-extends the low BYTE to 16 bits and writes the LOW WORD (the high word of Dn is \
@@ -1310,7 +1362,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -2193,5 +2245,140 @@ fn ext_swap_anchors_match_singlesteptests() {
     assert_eq!(found, anchors.len(), "all G3 EXT/SWAP anchors exercised");
     eprintln!(
         "G3 EXT/SWAP anchors: {found} cases (EXT.w byte→word high word preserved, EXT.l word→long, SWAP distinct halves; each X-preservation pin X kept + V/C cleared) passed both drivers"
+    );
+}
+
+/// C0 — the named `Scc <ea>` anchors, pinning each shape of the conditional byte set against the vendored Scc
+/// stream WITHOUT relying on the bulk `covered()` sweep. The condition-determined value is pinned with the two
+/// flag-INDEPENDENT encodings — `ST` (cc 0 = T, ALWAYS 0xFF) and `SF` (cc 1 = F, ALWAYS 0x00) — so the written
+/// byte is fixed by the OPCODE alone (not by the case's flags):
+/// - `50c4 [Scc D4] 858` — **ST D4**, condition TRUE: `d4 = 0x2CC260E3` → `0x2CC260FF` (the upper 24 bits are
+///   PRESERVED), length **6** (the taken `Internal(2)` idle). The load-bearing true/false timing difference.
+/// - `51c5 [Scc D5] 680` — **SF D5**, condition FALSE: `d5 = 0x30E9E7D6` → `0x30E9E700` (0x00, upper 24 kept),
+///   length **4** (no trailing idle).
+/// - `50d3 [Scc (A3)] 63` — **ST (A3)** memory: read the EA byte (discarded), refill, write **0xFF** —
+///   `[r .b @EA, r .w refill, w .b 0xFF @EA]`, length 12 (CLR's exact byte RMW timing).
+/// - `51d3 [Scc (A3)] 1265` — **SF (A3)** memory: same RMW writing **0x00**.
+/// - `50d7 [Scc (A7)] 312` — **ST (A7)** the plain `(A7)` mode-2 indirect (`mode == 2 && reg == 7`), COVERED
+///   (NOT deferred): the byte RMW at the active A7, writing 0xFF.
+///
+/// Each runs both drivers + the per-cycle transaction stream via `run_case`. The load-bearing pins: Scc sets
+/// **NO flags** (`final.sr == initial.sr`, verified by `run_case` against the data on every case), the Dn TRUE
+/// form is 6 cyc / FALSE is 4 cyc, the memory form READS before it WRITES (it is not write-only) and the byte
+/// write is condition-independent. Every anchor must decode as a Scc opcode (0xF0C0 == 0x50C0, NOT the 0x50C8
+/// DBcc form) and never a CMP-class opcode.
+#[test]
+fn scc_anchors_match_singlesteptests() {
+    // (file, full-name, length). The ST (cc 0) / SF (cc 1) encodings fix the written byte by opcode alone; the
+    // Dn anchors' lengths (6 vs 4) pin the only true/false timing difference. Full names select the EXACT case
+    // (the Dn TRUE case has the upper-24-nonzero `d4` the comment describes).
+    let anchors: &[(&str, &str, u32)] = &[
+        ("Scc.json", "50c4 [Scc D4] 858", 6), // ST D4 TRUE → 0xFF, upper 24 preserved, len 6 (taken idle)
+        ("Scc.json", "51c5 [Scc D5] 680", 4), // SF D5 FALSE → 0x00, len 4 (no idle)
+        ("Scc.json", "50d3 [Scc (A3)] 63", 12), // ST (A3) memory RMW → 0xFF
+        ("Scc.json", "51d3 [Scc (A3)] 1265", 12), // SF (A3) memory RMW → 0x00
+        ("Scc.json", "50d7 [Scc (A7)] 312", 12), // ST (A7) mode-2 indirect (COVERED, not deferred) → 0xFF
+    ];
+    let mut found = 0usize;
+    for (fname, name, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap() == *name
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| panic!("C0 Scc anchor {name} (len {length}) not found in {fname}"));
+        // Every anchor must be a Scc opcode (0xF0C0 == 0x50C0) and NOT the 0x50C8 DBcc mode-001 form, never a
+        // CMP-class opcode. Also pin that the SR is unchanged (Scc sets NO flags).
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(
+            opcode & 0xF0C0,
+            0x50C0,
+            "anchor {name} must be a Scc opcode"
+        );
+        assert_ne!(
+            opcode & 0xF0F8,
+            0x50C8,
+            "anchor {name} must NOT be the DBcc mode-001 form"
+        );
+        assert_eq!(
+            cmp_class(opcode),
+            CmpClass::None,
+            "Scc is not a CMP-class opcode"
+        );
+        assert_eq!(
+            case["initial"]["sr"], case["final"]["sr"],
+            "Scc sets NO flags — SR unchanged [{name}]"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all C0 Scc anchors exercised");
+    eprintln!(
+        "C0 Scc anchors: {found} cases (Dn TRUE 0xFF len6 / Dn FALSE 0x00 len4, (An) RMW 0xFF & 0x00, (A7) mode-2 indirect; SR unchanged on every case) passed both drivers"
+    );
+}
+
+/// C0 — the snapshot/restore anchor for the Scc memory-dest byte RMW (the new `SetByte` parked in `Scratch`,
+/// then written back). Drives a real vendored `Scc (A3)` case (`[Read, Prefetch, SetByte, Write]`, 4 micro-ops)
+/// through the quiesce driver, snapshotting + restoring the WHOLE `Cpu68000` (incl. the in-flight cursor) at
+/// every micro-op boundary — including the interesting mid-bus-access boundary between the operand Read and the
+/// result Write — and proves the resumed run reproduces the run-to-completion final state + transaction stream
+/// bit-for-bit. This pins that `MicroOp::SetByte` keeps `MicroState` fixed-size bincode (it is `Copy`).
+#[test]
+fn scc_an_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/Scc.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "50d3 [Scc (A3)] 63")
+        .expect("Scc (A3) snapshot anchor present");
+    let ini = &case["initial"];
+
+    // Run-to-completion reference.
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    // 4 micro-ops (Read, Prefetch, SetByte, Write) → in-flight boundaries after 0..=3 of them.
+    for pause_after in 0..=3 {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        for _ in 0..pause_after {
+            assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+        }
+        // Snapshot + restore the whole CPU (incl. the in-flight cursor) mid-instruction.
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+    }
+    eprintln!(
+        "C0 Scc snapshot/restore: Scc (A3) byte RMW resumed identically at every micro-op boundary"
     );
 }
