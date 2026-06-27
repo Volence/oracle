@@ -787,6 +787,20 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         if is_rol {
             return shift_recipe(opcode, AluOp::Rol, regs);
         }
+        // ROR (S5) — RO/RIGHT: direction bit 8 == 0, type RO (register bits 4-3 == 3 / memory bits 10-9 == 3).
+        // The shared `shift_recipe`/`Operand::ShiftCount`/`dn_*` machinery is reused VERBATIM; only the AluOp +
+        // the `(type, dir)` classification differ from ASL/ASR/LSL/LSR/ROL. ROR is ROL's right-direction twin —
+        // a plain bit-rotate that does NOT pass through X (contrast ROXR, which threads X — S7). Only
+        // ASL/ASR/LSL/LSR/ROL/ROR files are loaded this commit, so no other `0xE` op reaches decode; the guard
+        // keeps the arm precise regardless.
+        let is_ror = if (opcode >> 6) & 3 == 3 {
+            (opcode >> 8) & 1 == 0 && (opcode >> 9) & 3 == 3 // memory: dir RIGHT, type RO (bits 10-9)
+        } else {
+            (opcode >> 8) & 1 == 0 && (opcode >> 3) & 3 == 3 // register: dir RIGHT, type RO (bits 4-3)
+        };
+        if is_ror {
+            return shift_recipe(opcode, AluOp::Ror, regs);
+        }
     }
     todo!("opcode {opcode:#06X} not yet decoded")
 }

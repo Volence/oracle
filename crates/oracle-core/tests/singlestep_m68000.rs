@@ -385,6 +385,27 @@ const FILES: &[&str] = &[
     "ROL.b.json",
     "ROL.w.json",
     "ROL.l.json",
+    // ROR.b / ROR.w / ROR.l (`0xExxx`, RO/right) — rotate RIGHT (S5): ROL's right-direction twin, a plain
+    // bit-rotate that does NOT pass through X — contrast ROXR, which threads X through an (n+1)-bit rotate (S7).
+    // Same three forms / classification / `shift_recipe` as ASL/ASR/LSL/LSR/ROL (only the AluOp + the RO/right
+    // decode arm differ — direction bit 8 == 0, type RO bits 4-3 (register) / 10-9 (memory) == 3). Value: `r =
+    // cnt % n`; `res = x` when `cnt == 0 || r == 0` (a whole-register rotation leaves the value unchanged), else
+    // `((x >> r) | (x << (n - r))) & mask`. C = the last bit rotated out — `(x >> ((cnt - 1) % n)) & 1` for
+    // `cnt != 0`, else 0 (a zero count clears C). **X is PRESERVED** (ROL/ROR never touch X — re-inject the live
+    // X), NOT set to C. **V = 0** always. **N** = msb(res), **Z** = (res == 0). ZERO COUNT (`cnt == 0`, only the
+    // `Dn` form): value unchanged, V = 0, C = 0, **X PRESERVED**, N/Z from the unchanged operand. cnt a NONZERO
+    // multiple of n (`r == 0`, e.g. ROR.b #8): value unchanged but C comes from the formula (= the operand's
+    // high bit region). Reuses `Operand::ShiftCount` + the shared `shift_recipe` VERBATIM (register `[Prefetch,
+    // Alu, Internal{(base-4)+2*cnt}]`, base 6 `.b`/`.w` / 8 `.l`; memory the CLR.w/NEG.w word `ea_dst` RMW).
+    // Timing identical to ASL/ASR/LSL/LSR/ROL: register `.b`/`.w` = 6 + 2*cnt, `.l` = 8 + 2*cnt; memory
+    // shift-by-1 (word): (An)/(An)+ 12, -(An) 14, d16(An) 16, d8(An,Xn) 18, abs.w 16, abs.l 20; an odd EA
+    // address-errors on the READ (low5 = 0x15, the E3/E4 abort). The FULL in-scope EA set is covered (every
+    // register shift + the `.w` data-alterable memory set INCL the clean `(A7)` mode-2 indirect, NO deferral /
+    // NO parity filter). NO corrupt entries (only ASL.b has the 2 self-contradictory cases). Per-file true
+    // counts: ROR.b 8065 + ROR.w 8065 + ROR.l 8065 = +24195. All three files are 100% PURE.
+    "ROR.b.json",
+    "ROR.w.json",
+    "ROR.l.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -1454,8 +1475,25 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 647_678,
-        "expected 647678 covered cases — S4 adds ROL.b / ROL.w / ROL.l (`0xExxx`, RO/left): ROL.b 8065 + \
+        ran >= 671_873,
+        "expected 671873 covered cases — S5 adds ROR.b / ROR.w / ROR.l (`0xExxx`, RO/right): ROR.b 8065 + \
+         ROR.w 8065 + ROR.l 8065 = +24195 over S4's 647678 (NO corrupt entries — only ASL.b has the 2). ROR \
+         is rotate RIGHT — ROL's right-direction twin, a plain bit-rotate that does NOT pass through X \
+         (contrast ROXR, which threads X — S7). It reuses `Operand::ShiftCount` + the shared `shift_recipe` + \
+         `dn_*` VERBATIM (only the AluOp + the RO/right decode arm differ — direction bit 8 == 0, type RO bits \
+         4-3 (register) / 10-9 (memory) == 3). Value: `r = cnt % n`; `res = x` when `cnt == 0 || r == 0` (a \
+         whole-register rotation leaves the value unchanged), else `((x >> r) | (x << (n - r))) & mask`. C = \
+         the last bit rotated out — `(x >> ((cnt - 1) % n)) & 1` for `cnt != 0`, else 0 (a zero count is the \
+         ONLY way ROR clears C — a nonzero multiple of n with `r == 0` still takes C from the formula); X is \
+         PRESERVED (ROL/ROR never touch X — re-inject the live X, NEVER set X = C); V = 0 always; N = \
+         msb(res), Z = (res == 0). ZERO COUNT (`cnt == 0`, only the `Dn` form): value unchanged, V = 0, C = \
+         0, X PRESERVED, N/Z from the unchanged operand. Timing identical to ASL/ASR/LSL/LSR/ROL: register \
+         `.b`/`.w` = 6 + 2*cnt, `.l` = 8 + 2*cnt; memory rotate-by-1 (word): (An)/(An)+ 12, -(An) 14, \
+         d16(An) 16, d8(An,Xn) 18, abs.w 16, abs.l 20; an odd EA address-errors on the READ (the E3/E4 \
+         abort). The FULL in-scope EA set is covered (`shift_covered`): every register shift + the `.w` \
+         data-alterable memory set INCL the clean `(A7)` mode-2 indirect (NO deferral, NO parity filter). All \
+         three ROR files are 100% PURE for their op+size (only RO/right decodes the ROR opcodes — ROXL/ROXR \
+         land S6-S7). Prior baseline — S4 adds ROL.b / ROL.w / ROL.l (`0xExxx`, RO/left): ROL.b 8065 + \
          ROL.w 8065 + ROL.l 8065 = +24195 over S3's 623483 (NO corrupt entries — only ASL.b has the 2). ROL \
          is rotate LEFT — a plain bit-rotate that does NOT pass through X (contrast ROXL, which threads X — \
          S6). It reuses `Operand::ShiftCount` + the shared `shift_recipe` + `dn_*` VERBATIM (only the AluOp + \
@@ -1909,7 +1947,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -4728,5 +4766,217 @@ fn rol_w_mem_quiescable_and_serializable_at_every_micro_op_boundary() {
     }
     eprintln!(
         "S4 ROL snapshot/restore: ROL.w (A1) word rotate-by-1 RMW resumed identically at every micro-op boundary"
+    );
+}
+
+/// S5 — the named ROR anchors, pinning rotate RIGHT against the vendored ROR.b/.w/.l stream WITHOUT relying on
+/// the bulk `covered()` sweep. ROR is ROL's right-direction twin — a plain bit-rotate that does NOT pass
+/// through X (contrast ROXR, which threads X — S7); it reuses S0's `shift_recipe`/`Operand::ShiftCount`/`dn_*`
+/// VERBATIM (only the AluOp + the RO/right decode arm differ). Each anchor is a real vendored case run through
+/// both drivers + the per-cycle transaction stream via `run_case`; the load-bearing pins:
+///
+/// - `e219 [ROR.b Q, D1] 5` (len 8) — REGISTER **immediate** `.b`, cnt 1 → timing `6 + 2*1` → a genuine
+///   `cnt % n != 0` rotate. **X PRESERVE PIN**: the case enters with X = 1; ROR does NOT touch X → final X = 1
+///   (an ASL/ASR/LSL/LSR/ROXR would have set X = C here).
+/// - `e01b [ROR.b Q, D3] 9` (len 22) — REGISTER immediate `.b`, `ccc == 0` → cnt **8** → `6 + 2*8`. **`cnt %
+///   n == 0` with `cnt != 0`**: the WHOLE byte rotates back to itself → value UNCHANGED, yet **C comes from
+///   the formula** `(x >> ((cnt - 1) % n)) & 1 = (x >> 7) & 1` (the MSB — NOT 0, only `cnt == 0` clears C; and
+///   NOT `x & 1`, which is ROL's left-direction low bit).
+/// - `e65e [ROR.w Q, D6] 2` (len 12) — REGISTER immediate `.w`, cnt 3 → `6 + 2*3`.
+/// - `e29f [ROR.l Q, D7] 3` (len 10) — REGISTER immediate `.l`, cnt 1 → the `.l` base `8 + 2*1`.
+/// - `e81b [ROR.b Q, D3] 17` (len 14) — REGISTER immediate `.b`, cnt 4, **incoming X = 1** confirmed to STAY 1
+///   through an actual rotate (a second X-untouched pin, this time with `cnt % n != 0`).
+/// - `e27a [ROR.w D1, D2] 460` (len 6) — REGISTER **`Dn`-count `cnt == 0`** (the ZERO-COUNT case): value
+///   UNCHANGED, **C = 0** (a zero count clears C — the sole way ROR clears C), **X PRESERVED** (X1 in → X1
+///   out), V = 0, timing `6` (`6 + 2*0`).
+/// - `e6d5 [ROR.w (A5)] 44` (len 12) — `.w` **memory** rotate-by-1 `(An)`: the word `ea_dst` RMW.
+/// - `e6d7 [ROR.w (A7)] 19` (len 12) — the plain `(A7)` mode-2 indirect (`mode == 2 && reg == 7`), COVERED
+///   (NOT deferred), a clean word RMW at the active A7.
+/// - `e6d5 [ROR.w (A5)] 15` (len 50) — an **odd-EA** `.w` memory address error (the E3/E4 abort installs the
+///   group-0 14-byte vector-3 frame), which must PASS unchanged.
+///
+/// Every anchor must decode as a ROR opcode (`0xExxx`, type RO / direction RIGHT) — never any other family.
+#[test]
+fn ror_anchors_match_singlesteptests() {
+    let anchors: &[(&str, &str, u32)] = &[
+        ("ROR.b.json", "e219 [ROR.b Q, D1] 5", 8), // imm .b cnt1 → 6+2, cnt%n!=0, X=1 preserved
+        ("ROR.b.json", "e01b [ROR.b Q, D3] 9", 22), // imm .b ccc=0 → cnt8, cnt%n==0: value kept, C=(x>>7)&1
+        ("ROR.w.json", "e65e [ROR.w Q, D6] 2", 12), // imm .w cnt3 → 6+6
+        ("ROR.l.json", "e29f [ROR.l Q, D7] 3", 10), // imm .l cnt1 → 8+2
+        ("ROR.b.json", "e81b [ROR.b Q, D3] 17", 14), // imm .b cnt4, X=1 in stays 1 (rotate)
+        ("ROR.w.json", "e27a [ROR.w D1, D2] 460", 6), // Dn cnt0 (zero-count): C=0, X kept, value unchanged
+        ("ROR.w.json", "e6d5 [ROR.w (A5)] 44", 12),   // memory (An) rotate-by-1
+        ("ROR.w.json", "e6d7 [ROR.w (A7)] 19", 12),   // (A7) mode-2 indirect — COVERED
+        ("ROR.w.json", "e6d5 [ROR.w (A5)] 15", 50),   // odd-EA memory address error
+    ];
+    let mut found = 0usize;
+    for (fname, name, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap() == *name
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| panic!("S5 ROR anchor {name} (len {length}) not found in {fname}"));
+        // Every anchor must be a ROR opcode: 0xExxx, type RO (register bits 4-3 == 3 / memory bits 10-9 ==
+        // 3), direction RIGHT (bit 8 == 0).
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(
+            opcode >> 12,
+            0xE,
+            "anchor {name} must be a 0xExxx shift opcode"
+        );
+        let is_ror = if (opcode >> 6) & 3 == 3 {
+            (opcode >> 8) & 1 == 0 && (opcode >> 9) & 3 == 3
+        } else {
+            (opcode >> 8) & 1 == 0 && (opcode >> 3) & 3 == 3
+        };
+        assert!(
+            is_ror,
+            "anchor {name} must be ROR (type RO, direction RIGHT)"
+        );
+        // Load-bearing flag/scope pins (run_case verifies the FULL final state against the data either way).
+        let ini_sr = case["initial"]["sr"].as_u64().unwrap() as u16;
+        let fin_sr = case["final"]["sr"].as_u64().unwrap() as u16;
+        match *name {
+            "e219 [ROR.b Q, D1] 5" => {
+                // THE X-PRESERVE PIN: a genuine cnt%n != 0 rotate. ROR does NOT touch X, so an incoming X = 1
+                // MUST stay X = 1 in the final SR (an arithmetic/logical shift or ROXR would set X = C). V = 0.
+                assert_ne!(
+                    ini_sr & 0x10,
+                    0,
+                    "the X-preserve anchor must enter with X = 1 (pins ROR leaving X untouched)"
+                );
+                assert_ne!(
+                    fin_sr & 0x10,
+                    0,
+                    "ROR must PRESERVE X — incoming X = 1 stays 1 (X is NOT set to C)"
+                );
+                assert_eq!(fin_sr & 0x02, 0, "ROR must always clear V");
+            }
+            "e01b [ROR.b Q, D3] 9" => {
+                // cnt = 8 == n: a WHOLE-byte rotation leaves the value unchanged (r == 0), but C still comes
+                // from the formula `(x >> ((cnt - 1) % n)) & 1` = `(x >> 7) & 1` (the MSB — NOT 0, only
+                // cnt == 0 clears C; and NOT `x & 1`, which is ROL's left low bit).
+                let rrr = (opcode & 7) as usize;
+                let operand = case["initial"][format!("d{rrr}")].as_u64().unwrap() as u32;
+                assert_eq!(
+                    operand & 0xFF,
+                    case["final"][format!("d{rrr}")].as_u64().unwrap() as u32 & 0xFF,
+                    "cnt%n==0 (cnt!=0) must leave the rotated byte unchanged (r == 0)"
+                );
+                assert_eq!(
+                    fin_sr & 0x01,
+                    ((operand >> 7) & 1) as u16,
+                    "cnt%n==0 (cnt!=0) C must come from the formula (= (x >> 7) & 1, the MSB), NOT be cleared \
+                     and NOT x & 1"
+                );
+                assert_eq!(fin_sr & 0x02, 0, "ROR must always clear V");
+            }
+            "e81b [ROR.b Q, D3] 17" => {
+                // A second X-untouched pin: incoming X = 1, an actual rotate (cnt = 4, cnt%n != 0), X stays 1.
+                assert_ne!(ini_sr & 0x10, 0, "anchor must enter with X = 1");
+                assert_ne!(fin_sr & 0x10, 0, "ROR must leave X untouched (1 → 1)");
+                assert_eq!(fin_sr & 0x02, 0, "ROR must always clear V");
+            }
+            "e27a [ROR.w D1, D2] 460" => {
+                // Zero-count (Dn count = 0): value unchanged, X PRESERVED (not set to C), V = 0, and C = 0 (a
+                // zero count is the ONLY way ROR clears C). The case enters with X = 1, pinning preservation.
+                assert_eq!(ini_sr & 0x10, fin_sr & 0x10, "zero-count must PRESERVE X");
+                assert_ne!(
+                    ini_sr & 0x10,
+                    0,
+                    "zero-count anchor must enter with X = 1 (pins preservation)"
+                );
+                assert_eq!(fin_sr & 0x01, 0, "zero-count must clear C");
+                assert_eq!(fin_sr & 0x02, 0, "zero-count must clear V");
+                assert_eq!(
+                    case["initial"]["d2"], case["final"]["d2"],
+                    "zero-count must leave the operand unchanged"
+                );
+            }
+            "e6d7 [ROR.w (A7)] 19" => {
+                assert_eq!((opcode >> 3) & 7, 2, "(A7) anchor must be mode 2");
+                assert_eq!(opcode & 7, 7, "(A7) anchor must be reg 7 (the A7 indirect)");
+            }
+            "e6d5 [ROR.w (A5)] 15" => {
+                // Odd-EA address error: the group-0 frame pushes the SSP down (the standard 14-byte frame).
+                assert!(
+                    case["final"]["ssp"].as_u64().unwrap()
+                        < case["initial"]["ssp"].as_u64().unwrap(),
+                    "odd-EA anchor must install the address-error frame (SSP pushed down)"
+                );
+            }
+            _ => {}
+        }
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all S5 ROR anchors exercised");
+    eprintln!(
+        "S5 ROR anchors: {found} cases (imm .b/.w/.l 6+2cnt / 8+2cnt, X-preserve pins (incoming X=1 stays 1), cnt%n==0 value-kept/C-from-formula (MSB), Dn cnt0 zero-count C=0/X-kept, (An)/(A7) memory rotate-by-1, odd-EA address-error) passed both drivers"
+    );
+}
+
+/// S5 — the snapshot/restore anchor for the ROR.w memory rotate-by-1 (the shared `shift_recipe` word `ea_dst`
+/// RMW: `[Read, Prefetch, Alu, Write]`). Drives a real vendored `ROR.w (A5)` case through the quiesce driver,
+/// snapshotting + restoring the WHOLE `Cpu68000` (incl. the in-flight cursor) at every micro-op boundary —
+/// including the mid-bus-access boundary between the operand Read and the result Write — and proves the
+/// resumed run reproduces the run-to-completion final state + transaction stream bit-for-bit. This pins that
+/// `AluOp::Ror` keeps `MicroState` fixed-size bincode (it stays `Copy`).
+#[test]
+fn ror_w_mem_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/ROR.w.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "e6d5 [ROR.w (A5)] 44")
+        .expect("ROR.w (A5) snapshot anchor present");
+    let ini = &case["initial"];
+
+    // Run-to-completion reference.
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    // 4 micro-ops (Read, Prefetch, Alu, Write) → in-flight boundaries after 0..=3 of them.
+    for pause_after in 0..=3 {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        for _ in 0..pause_after {
+            assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+        }
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+    }
+    eprintln!(
+        "S5 ROR snapshot/restore: ROR.w (A5) word rotate-by-1 RMW resumed identically at every micro-op boundary"
     );
 }
