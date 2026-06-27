@@ -228,6 +228,16 @@ const FILES: &[&str] = &[
     // contaminant). Per-mode true counts: 1280 / 1253 / 1303 / 1302 / 1320 / 1295 / 159 / 153 = 8065 (the WHOLE
     // file in scope — no deferral).
     "Scc.json",
+    // TAS `Dn` (`0100 1010 11 mmm rrr`, opcode & 0xFFC0 == 0x4AC0) — the indivisible test-and-set, REGISTER
+    // form this commit (`mode == 0` only; the memory modes are the atomic RMW, a later commit). Read the byte
+    // → set N = bit7 / Z = (byte == 0), clear V/C, PRESERVE X → write `byte | 0x80` (the flags are on the READ
+    // byte, the written value is `read | 0x80` — DISTINCT). The 0x4AC0 space is the SS == 3 (`& 0xC0 == 0xC0`)
+    // sub-case of the 0x4A00 TST space, excluded from the TST arm via `& 0xC0 != 0xC0` — no conflict. New
+    // vocabulary: the unary `AluOp::Tas` (flags via `move_flags` over the INPUT byte + X-reinject, write
+    // `a | 0x80`); the `tas_recipe` Dn arm is `[Prefetch, Alu]` (4 cyc, no memory). `covered()` admits TAS
+    // mode 0 ONLY this commit (the not-yet-decoded memory cases are SKIPPED before decode). The TAS.json file
+    // is 100% PURE (one opcode); TAS mode 0 (Dn) = 1237 (TAS memory = 6828 is a later commit).
+    "TAS.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -925,6 +935,15 @@ fn covered(opcode: u16, _ini: &Value) -> bool {
             _ => false, // An-direct (DBcc, handled above) / PC-rel / #imm: absent / not data-alterable
         };
     }
+    // TAS `Dn` (`0100 1010 11 mmm rrr`, opcode & 0xFFC0 == 0x4AC0) — the indivisible test-and-set. REGISTER
+    // form ONLY this commit: admit `mode == 0` (Dn) and SKIP the memory modes (the atomic RMW is a later
+    // commit — keeping `covered()` a SUBSET of decodable so the not-yet-covered memory cases never reach a
+    // decode `todo!`). Classified by OPCODE. The 0x4AC0 space is the SS == 3 (`& 0xC0 == 0xC0`) sub-case of
+    // the 0x4A00 TST space (excluded from the TST arm above via `& 0xC0 != 0xC0`). Byte-only → NO odd-EA
+    // faults. The TAS.json file is 100% PURE (one opcode): mode 0 (Dn) = 1237 (memory = 6828, later commit).
+    if opcode & 0xFFC0 == 0x4AC0 {
+        return (opcode >> 3) & 7 == 0; // Dn only this commit; memory modes deferred (atomic RMW)
+    }
     // ADD/SUB. No parity filter (odd word/long EAs are address errors the E4 abort covers); the only
     // mode-scope deferrals are the `(A7)` (mode 2) plain-indirect form (`reg != 7`) and the illegal `An`-direct
     // byte source (mode 1). `mode` 3/4 are `(An)+`/`-(An)` (the auto-(in/de)crement bump is committed before the
@@ -1137,8 +1156,21 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 486_380,
-        "expected 486380 covered cases — C0 adds Scc `<ea>` (its own Scc.json file, `0101 cccc 11 mmm rrr` = \
+        ran >= 487_617,
+        "expected 487617 covered cases — C1 adds TAS `Dn` (its own TAS.json file, `0100 1010 11 mmm rrr` = \
+         opcode & 0xFFC0 == 0x4AC0, the REGISTER form ONLY — `mode == 0`): TAS mode 0 (Dn) = 1237 = +1237 over \
+         C0's 486380 (the memory modes = 6828 are a later commit, SKIPPED before decode so they never reach a \
+         `todo!`). TAS reads the byte → sets N = bit7 / Z = (byte == 0), clears V/C, PRESERVES X → writes \
+         `byte | 0x80`; the flags are on the READ byte but the written value is `read | 0x80` (DISTINCT — unlike \
+         NOT, whose flags are on the result `~a`). New vocabulary: the unary `AluOp::Tas` — \
+         `let (_orig, ccr_nz) = move_flags(a, Size::Byte); let res = (a & 0xFF) | 0x80;` returns \
+         `(res, ccr_nz | (sr & CCR_X))` (X PRESERVED, V/C cleared, flags on the input `a`, write `a|0x80`); `b` \
+         is ignored (`Operand::Zero`). `tas_recipe` Dn arm is `[Prefetch, Alu]` = 4 cyc (one Prefetch, the Alu a \
+         0-cycle internal compute, no other bus access). The 0x4AC0 space is the SS == 3 (`& 0xC0 == 0xC0`) \
+         sub-case of the 0x4A00 TST space — the TST arm excludes it via `& 0xC0 != 0xC0`, no conflict. Byte-only \
+         → NO odd-EA address-error faults. `covered()` admits TAS mode 0 ONLY this commit (a SUBSET of \
+         decodable — the memory cases are skipped before decode). The TAS.json file is 100% PURE (one opcode). \
+         Prior baseline — C0 adds Scc `<ea>` (its own Scc.json file, `0101 cccc 11 mmm rrr` = \
          opcode & 0xF0C0 == 0x50C0, EXCL the 0x50C8 DBcc mode-001 form): Scc 8065 = +8065 over the prior 478315 \
          (the WHOLE file in scope — no contaminant, no deferral). Scc writes 0xFF if the condition `cc` (bits \
          11-8) is TRUE else 0x00, with NO flags (`final.sr == initial.sr`); the condition is resolved at DECODE \
@@ -1362,7 +1394,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -2381,4 +2413,125 @@ fn scc_an_quiescable_and_serializable_at_every_micro_op_boundary() {
     eprintln!(
         "C0 Scc snapshot/restore: Scc (A3) byte RMW resumed identically at every micro-op boundary"
     );
+}
+
+/// C1 — the named `TAS Dn` anchors, pinning the register form of the indivisible test-and-set against the
+/// vendored TAS stream WITHOUT relying on the bulk `covered()` sweep. The load-bearing subtlety: the flags are
+/// computed on the byte READ (the INPUT), but the WRITTEN value is `input | 0x80` (bit 7 ALWAYS set) — DISTINCT
+/// (unlike NOT, whose flags are on the result `~a`). X is PRESERVED, V/C cleared. Every TAS Dn is **4 cyc** (a
+/// single Prefetch refill; the Alu is a 0-cycle internal compute, no bus access).
+/// - `4ac5 [TAS D5] 54` — bit7 ALREADY set + X PRESERVATION: `d5 = 0xeaab87c0`, low byte `0xc0` → `0xc0 | 0x80
+///   == 0xc0` (the low byte is UNCHANGED, the upper 24 `0xeaab87` PRESERVED). Enters X1 N0 Z1 V1 C1, exits X1
+///   N1 Z0 V0 C0 (X kept, N = bit7(input) = 1, V/C cleared).
+/// - `4ac2 [TAS D2] 3359` — low byte == 0: `d2 = 0xb3cb1000`, `0x00 | 0x80 == 0x80` written (the flag input
+///   0x00 DIFFERS from the written 0x80), Z = 1, N = 0, upper 24 `0xb3cb10` PRESERVED.
+/// - `4ac1 [TAS D1] 36` — X PRESERVATION pin entering with EVERY CCR bit set: `d1 = 0x16b7ad4a`, low byte
+///   `0x4a` → `0x4a | 0x80 == 0xca`. Enters X1 N1 Z1 V1 C1, exits X1 (only) — X kept while N/Z are recomputed
+///   from the input byte (N = 0, Z = 0) and V/C cleared.
+///
+/// Each runs both drivers + the per-cycle transaction stream via `run_case`. Every anchor must decode as a TAS
+/// opcode (0xFFC0 == 0x4AC0, mode 000) — never a CMP-class — and is length 4.
+#[test]
+fn tas_dn_anchors_match_singlesteptests() {
+    // (file, full-name, length). The full names select the EXACT case (the specific d / X_in / V_in / C_in the
+    // doc-comment describes). All TAS Dn are length 4 (one Prefetch, the Alu a 0-cycle compute, no memory).
+    let anchors: &[(&str, &str, u32)] = &[
+        ("TAS.json", "4ac5 [TAS D5] 54", 4), // bit7 set → N1, write keeps bit7 (df==di), X1 kept, V1C1 → V0C0
+        ("TAS.json", "4ac2 [TAS D2] 3359", 4), // low byte 0 → Z1, write 0x80, upper 24 preserved
+        ("TAS.json", "4ac1 [TAS D1] 36", 4), // X-preservation: X1 N1 Z1 V1 C1 in → X1 only (V/C cleared)
+    ];
+    let mut found = 0usize;
+    for (fname, name, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap() == *name
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| panic!("C1 TAS anchor {name} (len {length}) not found in {fname}"));
+        // Every anchor must be a TAS opcode (0xFFC0 == 0x4AC0), mode 000 (Dn), and never a CMP-class opcode.
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(
+            opcode & 0xFFC0,
+            0x4AC0,
+            "anchor {name} must be a TAS opcode"
+        );
+        assert_eq!(
+            (opcode >> 3) & 7,
+            0,
+            "anchor {name} must be the Dn (mode 000) form"
+        );
+        assert_eq!(
+            cmp_class(opcode),
+            CmpClass::None,
+            "TAS is not a CMP-class opcode"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all C1 TAS anchors exercised");
+    eprintln!(
+        "C1 TAS anchors: {found} cases (bit7-set → N1 / write keeps bit7, byte==0 → Z1 / write 0x80, X-preservation X kept + V/C cleared; flags on the READ byte, write input|0x80) passed both drivers"
+    );
+}
+
+/// C1 — the snapshot/restore anchor for the `TAS Dn` register form (the new `AluOp::Tas`). Drives a real
+/// vendored `TAS D5` case (`[Prefetch, Alu]`, 2 micro-ops) through the quiesce driver, snapshotting + restoring
+/// the WHOLE `Cpu68000` (incl. the in-flight cursor) at every micro-op boundary and proving the resumed run
+/// reproduces the run-to-completion final state + transaction stream bit-for-bit. This pins that `AluOp::Tas`
+/// keeps `MicroState` fixed-size bincode.
+#[test]
+fn tas_dn_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/TAS.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "4ac5 [TAS D5] 54")
+        .expect("TAS D5 snapshot anchor present");
+    let ini = &case["initial"];
+
+    // Run-to-completion reference.
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    // 2 micro-ops (Prefetch, Alu) → in-flight boundaries after 0..=1 of them.
+    for pause_after in 0..=1 {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        for _ in 0..pause_after {
+            assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+        }
+        // Snapshot + restore the whole CPU (incl. the in-flight cursor) mid-instruction.
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+    }
+    eprintln!("C1 TAS snapshot/restore: TAS D5 resumed identically at every micro-op boundary");
 }

@@ -474,6 +474,17 @@ pub enum AluOp {
     /// ([`Dest::DataReg`]). `Dn`-only — never a memory op. Distinct from [`AluOp::Ext`] (a sign-extend) and
     /// [`AluOp::Not`] (a bitwise complement).
     Swap,
+    /// Tas: **unary** test-and-set's flag+value compute for the `TAS Dn` register form — the flags come from
+    /// the byte READ (the INPUT `a`), the written value is `(a & 0xFF) | 0x80` (bit 7 ALWAYS set). It is
+    /// **logic-shaped** ([`move_flags`] over the input byte): **N = bit7(`a` & 0xFF)**, **Z = (`a` & 0xFF ==
+    /// 0)**, clears **V** and **C**, and **PRESERVES X** (re-injected `ccr_nz | (regs.sr & CCR_X)`, never
+    /// computed). The KEY subtlety vs [`AluOp::Not`]: the flag INPUT (`a`) DIFFERS from the WRITE value
+    /// (`a | 0x80`) — NOT computes its flags on the result `~a`, whereas TAS computes on the unmodified input
+    /// then writes `a | 0x80`. `b` is **ignored** (the recipe passes [`Operand::Zero`]); `a` is the low byte
+    /// ([`Operand::DataRegLow8`]) and the result is written to the low byte ([`Dest::DataRegLow8`], the upper
+    /// 24 bits preserved). `Dn`-only this form (memory TAS is the atomic RMW micro-op, not this Alu op). Always
+    /// `Size::Byte`.
+    Tas,
 }
 
 /// A bitwise logic operation a [`MicroOp::SrLogic`] applies to the status register — the three privileged
@@ -1092,6 +1103,16 @@ impl MicroState {
                         let res = lhs.rotate_left(16);
                         let (r, ccr_nz) = move_flags(res, Size::Long);
                         (r, ccr_nz | (regs.sr & CCR_X))
+                    }
+                    // TAS (Dn register form): the flags are computed on the INPUT byte `a` — N = bit7(a&0xFF) /
+                    // Z = (a&0xFF == 0), V/C cleared, X PRESERVED (re-inject the live X) — while the WRITTEN
+                    // value is `(a & 0xFF) | 0x80` (bit 7 always set). The KEY subtlety vs NOT: the flag input
+                    // (`a`) DIFFERS from the write value (`a|0x80`); NOT flags on the result `~a`, TAS flags on
+                    // the unmodified input. `b`/`rhs` is ignored (passed `Operand::Zero` by the recipe).
+                    AluOp::Tas => {
+                        let (_orig, ccr_nz) = move_flags(lhs, Size::Byte);
+                        let res = (lhs & 0xFF) | 0x80;
+                        (res, ccr_nz | (regs.sr & CCR_X))
                     }
                     AluOp::Add | AluOp::Sub => match size {
                         Size::Word => {
@@ -2933,6 +2954,67 @@ mod tests {
         assert_eq!(cycles, 0);
         assert_eq!(st.scratch[1], 0x0000_0000, "0x00 parked in scratch slot 1");
         assert!(bus.log.is_empty());
+    }
+
+    #[test]
+    fn tas_flags_on_input_byte_writes_or_0x80_preserving_x() {
+        // TAS Dn: the flags come from the READ (input) byte — N = bit7(byte), Z = (byte == 0), V/C cleared,
+        // X PRESERVED — while the WRITTEN value is `byte | 0x80` (bit 7 ALWAYS set), DISTINCT from the flag
+        // input (unlike NOT, whose flags are on the result `~a`). bit7 ALREADY set: N = 1, the write keeps
+        // bit7 (the low byte is unchanged); the upper 24 bits are preserved; enter X1 V1 C1 → X kept, V/C
+        // cleared.
+        let mut regs = regs();
+        regs.d[3] = 0x9FCE_9483; // low byte 0x83 (bit7 set), upper 24 = 0x9FCE94
+        regs.sr |= CCR_X | CCR_V | CCR_C; // X = 1 (must be kept), V/C set (must be cleared)
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::Alu {
+            op: AluOp::Tas,
+            size: Size::Byte,
+            a: Operand::DataRegLow8(3),
+            b: Operand::Zero,
+            dst: Dest::DataRegLow8(3),
+        }]);
+
+        let cycles = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(cycles, 0, "the Tas Alu is a 0-cycle internal compute");
+        assert_eq!(
+            regs.d[3], 0x9FCE_9483,
+            "0x83 | 0x80 == 0x83 — low byte unchanged, upper 24 preserved"
+        );
+        assert_ne!(regs.sr & CCR_N, 0, "N = bit7(input byte) = 1");
+        assert_eq!(regs.sr & CCR_Z, 0, "Z = (input byte == 0) = 0");
+        assert_eq!(regs.sr & CCR_V, 0, "V cleared");
+        assert_eq!(regs.sr & CCR_C, 0, "C cleared");
+        assert_ne!(regs.sr & CCR_X, 0, "X PRESERVED");
+        assert!(bus.log.is_empty(), "the Tas Alu touches no bus");
+    }
+
+    #[test]
+    fn tas_zero_byte_sets_z_and_writes_0x80() {
+        // byte == 0 → Z = 1, the written value is `0x00 | 0x80 == 0x80` (the flag input 0x00 DIFFERS from the
+        // written 0x80); N = bit7(0x00) = 0; the upper 24 bits are preserved.
+        let mut regs = regs();
+        regs.d[2] = 0xB3CB_1000; // low byte 0x00, upper 24 = 0xB3CB10
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::Alu {
+            op: AluOp::Tas,
+            size: Size::Byte,
+            a: Operand::DataRegLow8(2),
+            b: Operand::Zero,
+            dst: Dest::DataRegLow8(2),
+        }]);
+
+        st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(
+            regs.d[2], 0xB3CB_1080,
+            "0x00 | 0x80 == 0x80 written, upper 24 preserved"
+        );
+        assert_ne!(regs.sr & CCR_Z, 0, "Z = (input byte == 0) = 1");
+        assert_eq!(regs.sr & CCR_N, 0, "N = bit7(0x00) = 0");
+        assert_eq!(regs.sr & CCR_V, 0, "V cleared");
+        assert_eq!(regs.sr & CCR_C, 0, "C cleared");
     }
 
     // --- E3: the SpPlus frame-write operand + the execution-time address-error abort. ---

@@ -387,6 +387,16 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         };
         return tst_recipe(opcode, size);
     }
+    // TAS `Dn` (`0100 1010 11 mmm rrr`, opcode & 0xFFC0 == 0x4AC0) — the indivisible test-and-set, REGISTER
+    // form this commit (memory modes are the atomic RMW, deferred). This is the `SS == 3` (`& 0xC0 == 0xC0`)
+    // sub-case of the 0x4A00 TST space — the TST arm ABOVE excludes it via `& 0xC0 != 0xC0`, so there is no
+    // conflict. Read the byte → set N = bit7 / Z = (byte == 0), clear V/C, PRESERVE X → write `byte | 0x80`
+    // (the flags are on the READ byte, the written value is `read | 0x80` — DISTINCT). Guarded `mode == 0`
+    // THIS commit; the memory modes are decoded by a later commit. 4 cyc (one Prefetch, no memory — the Alu
+    // is a 0-cycle internal compute).
+    if opcode & 0xFFC0 == 0x4AC0 && (opcode >> 3) & 7 == 0 {
+        return tas_recipe(opcode);
+    }
     // CLR `<ea>` (`0100 0010 SS mmm rrr`, 0x4200/4240/4280, SS bits 7-6 = b/w/l) — clear the data-alterable EA
     // to 0, setting Z=1/N=0/V=0/C=0 and PRESERVING X (= `move_flags(0)`). CLR is a READ-then-WRITE: it READS
     // the EA (the value is DISCARDED), refills, then WRITES 0 — so it reuses the existing `ea_dst`/`ea_dst_long`
@@ -1096,6 +1106,28 @@ fn swap_recipe(opcode: u16) -> MicroState {
         a: Operand::DataRegFull(reg),
         b: Operand::Zero,
         dst: Dest::DataReg(reg),
+    });
+    buf.finish()
+}
+
+/// `TAS Dn` (`0x4AC0 | reg`, `0100 1010 11 000 rrr`, opcode & 0xFFC0 == 0x4AC0, mode 000 = `Dn`): the
+/// indivisible test-and-set's REGISTER form — read the byte, set the LOGIC flags from the READ byte (N =
+/// bit7(`Dn` & 0xFF), Z = (`Dn` & 0xFF == 0), V = 0, C = 0, X PRESERVED) via the unary [`AluOp::Tas`], then
+/// write `(Dn & 0xFF) | 0x80` to `Dn`'s low byte ([`Dest::DataRegLow8`], the upper 24 bits preserved). The
+/// KEY subtlety: the flag input (`Dn`'s read byte) DIFFERS from the written value (`read | 0x80`) — unlike
+/// `NOT`, whose flags are on the result. `b` is ignored ([`Operand::Zero`]). `Dn`-only — NO memory access: a
+/// single `Prefetch` then the `Alu` (4 cyc, no idle, no fault possible). The memory TAS modes (the atomic
+/// RMW) are a separate commit; this recipe is the register form only.
+fn tas_recipe(opcode: u16) -> MicroState {
+    let reg = (opcode & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    buf.push(MicroOp::Prefetch);
+    buf.push(MicroOp::Alu {
+        op: AluOp::Tas,
+        size: Size::Byte,
+        a: Operand::DataRegLow8(reg),
+        b: Operand::Zero,
+        dst: Dest::DataRegLow8(reg),
     });
     buf.finish()
 }
