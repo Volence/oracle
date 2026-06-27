@@ -375,6 +375,25 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     {
         return bit_recipe(opcode, AluOp::Bchg, 2, regs);
     }
+    // BCLR `<ea>` — test then CLEAR a single bit (`operand &= !(1<<pos)`), setting ONLY Z = NOT(the PRE-clear
+    // bit); X/N/V/C + the SR system byte preserved. A read-modify-WRITE to a data-alterable destination only:
+    // `Dn` (0) = 32-bit (mod 32, `Size::Long`, FULL-32 write) / memory (2-6, 7/0, 7/1) = 8-bit (mod 8,
+    // `Size::Byte`, byte RMW). Two forms, classified by OPCODE (`tt` bits 7-6 == 10):
+    //   - **DYNAMIC** `0000 ddd 1 10 mmm rrr` (mask `0xF1C0 == 0x0180`) — the bit number is `D[(opcode>>9)&7]`.
+    //   - **STATIC** `0000 1000 10 mmm rrr` (mask `0xFF00 == 0x0800`, `tt` == 10) — the bit number is `prefetch[1]`.
+    // Reuses the shared `bit_recipe` VERBATIM, identical to BCHG EXCEPT the register base idle is `n4` (BCLR is
+    // 8/10 cyc, 2 slower than BCHG/BSET's 6/8) — `reg_base = 4`. The DECODE-TIME `pos >= 16` register `+2` (read
+    // here from the live `Dn` / the captured ext word) still applies; memory timing is identical to BCHG (fixed
+    // byte RMW per mode). The data-alterable guard excludes `An`-direct (mode 1 = MOVEP, absent) / PC-rel / #imm.
+    if opcode & 0xF1C0 == 0x0180 && (bit_mode == 0 || is_dst_mem_mode(bit_mode, bit_reg)) {
+        return bit_recipe(opcode, AluOp::Bclr, 4, regs);
+    }
+    if opcode & 0xFF00 == 0x0800
+        && (opcode >> 6) & 3 == 2
+        && (bit_mode == 0 || is_dst_mem_mode(bit_mode, bit_reg))
+    {
+        return bit_recipe(opcode, AluOp::Bclr, 4, regs);
+    }
     // CMPA `<ea>,An` (`1011 aaa 0 11/111 mmm rrr`, nibble 0xB, opmode 3 = `.w` / opmode 7 = `.l`) — the
     // flag-only address compare `An − <ea>` (An the minuend, full 32 bits). All 12 source modes via the MOVEA
     // source machinery ([`ea_movea`]'s `ea_src`/`ea_movea_long`); the `.w` source word is sign-extended to 32
