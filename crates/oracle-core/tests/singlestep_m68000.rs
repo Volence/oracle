@@ -464,6 +464,22 @@ const FILES: &[&str] = &[
     // scope: 8065 cases (all 11 source modes incl PC-rel + #imm + the clean `(A7)` mode-2 source; the odd-EA
     // address errors are IN scope via E3/E4). NO deferral, NO parity filter, NO corrupt entries.
     "MULU.json",
+    // MULS `<ea>,Dn` (`1100 ddd 111 mmm rrr`, opcode & 0xF1C0 == 0xC1C0, opmode 7 in the 0xC space — disjoint
+    // from AND's opmode 0/1/2/4/5/6 AND from MULU's opmode 3) — the 16×16→32 SIGNED multiply: `Dn = sx16(Dn) *
+    // sx16(src)` (the FULL 32-bit two's-complement product; BOTH operands sign-extended 16→32 before the
+    // multiply). M1 REUSES `mul_recipe` VERBATIM (just `AluOp::Muls`): the same `ea_src(Size::Word)` machinery
+    // covering the FULL 11 source modes — Dn (0), (An)/(An)+/-(An)/d16(An)/d8(An,Xn) (2-6),
+    // abs.w/abs.l/d16(PC)/d8(PC,Xn)/#imm (7/0..7/4); An-direct (mode 1) illegal/absent. Flags IDENTICAL to MULU:
+    // N = bit31(product), Z = (product == 0), V = 0, C = 0, X PRESERVED. TIMING IS DATA-DEPENDENT ON THE SOURCE
+    // but DIFFERS from MULU: length = 38 + 2*booth(src16) + ea_cost — the `AluOp::Muls` exec arm RETURNS `34 +
+    // 2*booth(b16)` where `booth` is the Booth-recoding TRANSITION count of `src<<1` (the number of 01/10
+    // bit-pair transitions), NOT MULU's popcount (e.g. src 0xFFFF → popcount 16 but booth 1; src 0x5555 →
+    // popcount 8 but booth 16). So MULS timing differs from MULU even for the same source. Odd word EAs are
+    // address errors the E3/E4 abort covers (NO parity filter), exactly like CHK. The file is 100% PURE (one
+    // opcode, classified by OPCODE) and 100% in scope: 8065 cases (all 11 source modes incl PC-rel + #imm + the
+    // clean `(A7)` mode-2 source; the odd-EA address errors are IN scope via E3/E4). NO deferral, NO parity
+    // filter, NO corrupt entries.
+    "MULS.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -776,15 +792,18 @@ fn chk_covered(opcode: u16) -> bool {
     matches!(mode, 0 | 2 | 3 | 4 | 5 | 6) || (mode == 7 && reg <= 4)
 }
 
-/// Whether the framework covers this `MULU <ea>,Dn` case (`opcode & 0xF1C0 == 0xC0C0`, opmode 3 in the 0xC
-/// space — disjoint from AND's opmode 0/1/2/4/5/6, so `and_or_in_scope` never matches it). A `chk_covered` twin:
-/// the MULU.json file is 100% PURE (one opcode, classified by OPCODE) and 100% in scope across the FULL 11
-/// source modes — `Dn` (0), `(An)`/`(An)+`/`-(An)`/`d16(An)`/`d8(An,Xn)` (2-6), `abs.w`/`abs.l`/`d16(PC)`/
-/// `d8(PC,Xn)`/`#imm` (7/0..7/4). An-direct (mode 1) is illegal/absent (MUL has no `An` source). **NO deferral,
-/// NO parity filter** — the `(A7)` mode-2 source is COVERED (NOT deferred), and odd word EAs are address errors
-/// the E3/E4 abort covers (exactly like CHK; `ea_src` faults on the odd word read). All 8065 cases in scope.
+/// Whether the framework covers this `MUL <ea>,Dn` case — BOTH `MULU` (`opcode & 0xF1C0 == 0xC0C0`, opmode 3)
+/// and `MULS` (`opcode & 0xF1C0 == 0xC1C0`, opmode 7) in the 0xC space — disjoint from AND's opmode 0/1/2/4/5/6
+/// (so `and_or_in_scope` never matches), and the two MUL opmodes disjoint from each other. A `chk_covered` twin:
+/// both the MULU.json and MULS.json files are 100% PURE (one opcode each, classified by OPCODE) and 100% in
+/// scope across the FULL 11 source modes — `Dn` (0), `(An)`/`(An)+`/`-(An)`/`d16(An)`/`d8(An,Xn)` (2-6),
+/// `abs.w`/`abs.l`/`d16(PC)`/`d8(PC,Xn)`/`#imm` (7/0..7/4). An-direct (mode 1) is illegal/absent (MUL has no `An`
+/// source). **NO deferral, NO parity filter** — the `(A7)` mode-2 source is COVERED (NOT deferred), and odd word
+/// EAs are address errors the E3/E4 abort covers (exactly like CHK; `ea_src` faults on the odd word read). All
+/// 8065 cases per file (16130 total) in scope.
 fn mul_covered(opcode: u16) -> bool {
-    if opcode & 0xF1C0 != 0xC0C0 {
+    let masked = opcode & 0xF1C0;
+    if masked != 0xC0C0 && masked != 0xC1C0 {
         return false;
     }
     let mode = (opcode >> 3) & 7;
@@ -1044,11 +1063,13 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     if chk_covered(opcode) {
         return true;
     }
-    // MULU `<ea>,Dn` (1100 ddd 011 mmm rrr, opcode & 0xF1C0 == 0xC0C0, opmode 3) — the 16×16→32 UNSIGNED
-    // multiply `Dn = (Dn & 0xFFFF) * (src & 0xFFFF)` (full-32 product). 100% PURE / 100% in scope across the FULL
+    // MUL `<ea>,Dn` — BOTH MULU (1100 ddd 011 mmm rrr, opcode & 0xF1C0 == 0xC0C0, opmode 3) and MULS (1100 ddd
+    // 111 mmm rrr, opcode & 0xF1C0 == 0xC1C0, opmode 7): the 16×16→32 multiply (MULU unsigned, MULS signed
+    // two's-complement) writing the full-32 product to Dn. Both files 100% PURE / 100% in scope across the FULL
     // 11 source modes (incl PC-rel + #imm + the clean `(A7)` mode-2 source; odd word EAs are address errors the
     // E3/E4 abort covers, no parity filter). An-direct (mode 1) is illegal/absent. Timing is data-dependent on
-    // the source (length = 38 + 2*popcount(src16) + ea_cost — the Alu returns the count-dependent idle).
+    // the source: length = 38 + 2*count + ea_cost — the Alu returns the count-dependent idle (MULU count =
+    // popcount(src16); MULS count = booth(src16) = the 01/10 transitions of src<<1, which DIFFERS from popcount).
     if mul_covered(opcode) {
         return true;
     }
@@ -1557,8 +1578,24 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 728_328,
-        "expected 728328 covered cases — M0 adds MULU (its own MULU.json file, `1100 ddd 011 mmm rrr` = \
+        ran >= 736_393,
+        "expected 736393 covered cases — M1 adds MULS (its own MULS.json file, `1100 ddd 111 mmm rrr` = \
+         opcode & 0xF1C0 == 0xC1C0, opmode 7 in the 0xC space — DISJOINT from AND's opmode 0/1/2/4/5/6 AND from \
+         MULU's opmode 3): MULS 8065 = +8065 over M0's 728328 → 736393 (the WHOLE file in scope — 100% PURE, \
+         classified by OPCODE, no contaminant, no deferral). This is the FINAL MUL commit (both MULU + MULS \
+         loaded). MULS is the 16×16→32 SIGNED multiply `Dn = sx16(Dn) * sx16(src)` (the FULL 32-bit \
+         two's-complement product — BOTH operands sign-extended 16→32 before the multiply). It REUSES \
+         `mul_recipe` VERBATIM (just `AluOp::Muls`) — the same `ea_src(Size::Word)` machinery + the \
+         ALU-RETURNS-CYCLES timing mechanism. Flags IDENTICAL to MULU: N = bit31(product), Z = (product == 0), \
+         V = 0, C = 0, X PRESERVED (only N/Z/V/C change). THE TIMING IS DATA-DEPENDENT ON THE SOURCE but DIFFERS \
+         from MULU: length = 38 + 2*booth(src16) + ea_cost — the `AluOp::Muls` exec arm RETURNS `34 + \
+         2*booth(b16)` where `booth` is the Booth-recoding TRANSITION count of the source: the number of 01/10 \
+         bit-pair transitions in `(src16 << 1)` (a 17-bit value, 0 appended at LSB), NOT MULU's 1-bit popcount. \
+         E.g. src 0xFFFF → popcount 16 but booth 1; src 0x5555 → popcount 8 but booth 16 — so MULS timing \
+         differs from MULU even for the same source. The `(A7)` mode-2 source is COVERED (NOT deferred); odd \
+         word EAs are address errors the E3/E4 abort covers (NO parity filter, exactly like CHK). Classified by \
+         OPCODE (`mul_covered`: opcode & 0xF1C0 == 0xC0C0 || 0xC1C0). \
+         Prior baseline — M0 adds MULU (its own MULU.json file, `1100 ddd 011 mmm rrr` = \
          opcode & 0xF1C0 == 0xC0C0, opmode 3 in the 0xC space — DISJOINT from AND's opmode 0/1/2/4/5/6): MULU \
          8065 = +8065 over the bit-op baseline's 720263 → 728328 (the WHOLE file in scope — 100% PURE, \
          classified by OPCODE, no contaminant, no deferral). \
@@ -2081,7 +2118,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -5674,5 +5711,141 @@ fn mulu_mem_quiescable_and_serializable_at_every_micro_op_boundary() {
     }
     eprintln!(
         "M0 MULU snapshot/restore: MULU (A3),D2 memory-source multiply resumed identically at every micro-op boundary (incl the data-dependent cycle count)"
+    );
+}
+
+/// M1 — the named `MULS <ea>,Dn` anchors, pinning the new `AluOp::Muls` (+ its Booth-transition cycle count) +
+/// the REUSE of `mul_recipe` (just `AluOp::Muls`) + the ALU-RETURNS-CYCLES timing mechanism against the vendored
+/// MULS stream WITHOUT relying on the bulk `covered()` sweep. The load-bearing facts:
+/// - **Value:** `Dn = sx16(Dn) * sx16(src)` — the FULL 32-bit two's-complement product written to `Dn` (BOTH
+///   operands sign-extended 16→32 before the multiply; the low 32 bits is the result).
+/// - **Flags:** N = bit31(product), Z = (product == 0), V = 0, C = 0, X PRESERVED (only N/Z/V/C change) —
+///   IDENTICAL to MULU.
+/// - **Timing is DATA-DEPENDENT ON THE SOURCE but DIFFERS from MULU:** length = 38 + 2*booth(src16) + ea_cost.
+///   The `AluOp::Muls` exec arm RETURNS `34 + 2*booth(b16)` where `booth` is the Booth-recoding TRANSITION count
+///   of `src<<1` (the number of 01/10 bit-pair transitions), NOT MULU's popcount. The mode-0 anchor src 0xff7e
+///   has popcount 14 (which under MULU would be len 66) but Booth 3, so its MULS length is 44 — PROVING the
+///   MULS-specific timing. This is the RISK the plan flags: MULS Booth count != MULU popcount.
+/// - **Signed product:** a negative source AND a negative multiplicand (`cbc6`: a=0xbe0e, src=0xf781, both
+///   negative) yields a POSITIVE product `0x0230470e` (two's-complement) with N=0; a negative * positive
+///   (`c3c4`: a=0xec7c neg, src=0x2141 pos) yields a NEGATIVE product `0xfd77077c` with N=1 (bit31).
+/// - **Bus stream:** mode-0 `[Prefetch, idle@(34+2*booth)]`; (An) `[src-read, Prefetch, idle]` (+4 ea); d16(PC)
+///   `[Prefetch, src-read, Prefetch, idle]` (+8 ea); #imm `[Prefetch, Prefetch, idle]` (+4 ea, the idle LAST —
+///   the immediate is captured BEFORE the two refills shift it out, then the idle Alu runs last); `(A7)`
+///   mode-2 source is COVERED (NOT deferred); an odd `(An)` word EA is an address error the E3/E4 abort covers.
+#[test]
+fn muls_anchors_match_singlesteptests() {
+    // (file, full-name, length). The full names select the EXACT case the doc-comment describes.
+    let anchors: &[(&str, &str, u32)] = &[
+        // mode-0 Dn, src 0xff7e: popcount 14 (MULU would be len 66) but Booth 3 → 38+2*3 = 44. The DEFINING
+        // MULS-vs-MULU timing anchor (Booth transition count, NOT popcount).
+        ("MULS.json", "c1c3 [MULS D3, D0] 766", 44),
+        // mode-0 Dn, negative * negative → POSITIVE product 0x0230470e (two's-complement, N=0), Booth 5 → len 48.
+        ("MULS.json", "cbc6 [MULS D6, D5] 4", 48),
+        // mode-0 Dn, negative * positive → NEGATIVE product 0xfd77077c (N=1, bit31), Booth 8 → len 54.
+        ("MULS.json", "c3c4 [MULS D4, D1] 2", 54),
+        // (An) memory source (+4 ea): r.w (src), r.w (prefetch), n. Booth 7 → 38+2*7+4 = 56.
+        ("MULS.json", "c9d2 [MULS (A2), D4] 21", 56),
+        // d16(PC) source (+8 ea): r.w, r.w, r.w, n. Booth 5 → 38+2*5+8 = 56.
+        ("MULS.json", "cbfa [MULS (d16, PC), D5] 120", 56),
+        // #imm source (+4 ea): r.w, r.w, n (idle LAST). Booth 6 → 38+2*6+4 = 54.
+        ("MULS.json", "cdfc [MULS #, D6] 7", 54),
+        // (A7) mode-2 source (COVERED, NOT deferred). Booth 6 → 38+2*6+4 = 54.
+        ("MULS.json", "cfd7 [MULS (A7), D7] 204", 54),
+        // odd (A6) word EA → address error (E3/E4, must PASS). A6 = 0xffbd9773 (odd).
+        ("MULS.json", "c5d6 [MULS (A6), D2] 41", 50),
+    ];
+    let mut found = 0usize;
+    for (fname, name, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap() == *name
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| panic!("M1 MULS anchor {name} (len {length}) not found in {fname}"));
+        // Every anchor must be a MULS opcode (opcode & 0xF1C0 == 0xC1C0, opmode 7 in the 0xC space), never an
+        // AND-class opcode (and_or_in_scope rejects opmode 7) and never a MULU opcode (opmode 3).
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(
+            opcode & 0xF1C0,
+            0xC1C0,
+            "anchor {name} must be a MULS opcode (opcode & 0xF1C0 == 0xC1C0, opmode 7)"
+        );
+        assert!(
+            !and_or_in_scope(opcode),
+            "MULS (opmode 7) is not an AND/OR register-form opcode"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all M1 MULS anchors exercised");
+    eprintln!(
+        "M1 MULS anchors: {found} cases (mode-0 Booth-3 timing where popcount is 14 — MULS != MULU / neg*neg positive product / neg*pos N=1 / (An) / d16(PC) / #imm / (A7) m2 / odd-EA address error; full-32 signed two's-complement product, only N/Z change, X preserved, length 38+2*booth+ea via the ALU-returns-cycles mechanism) passed both drivers"
+    );
+}
+
+/// M1 — the snapshot/restore anchor for the MULS memory-source path (the new `AluOp::Muls` + its Booth-transition
+/// ALU-returns-cycles timing). Drives a real vendored `MULS (A2),D4` case (`[Read, Prefetch, Alu]`, 3 micro-ops)
+/// through the quiesce driver, snapshotting + restoring the WHOLE `Cpu68000` (incl. the in-flight cursor) at
+/// EVERY micro-op boundary — including the mid-bus-access boundary around the operand Read — and proving the
+/// resumed run reproduces the run-to-completion final state + transaction stream bit-for-bit. Pins that the
+/// data-dependent (Booth-count) cycle count, resolved from the snapshot-captured signed source, keeps
+/// `MicroState` fixed-size bincode.
+#[test]
+fn muls_mem_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/MULS.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "c9d2 [MULS (A2), D4] 21")
+        .expect("MULS (A2) snapshot anchor present");
+    let ini = &case["initial"];
+
+    // Run-to-completion reference.
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    // 3 micro-ops (Read, Prefetch, Alu) → in-flight boundaries after 0..=2 of them.
+    for pause_after in 0..=2 {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        for _ in 0..pause_after {
+            assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+        }
+        // Snapshot + restore the whole CPU (incl. the in-flight cursor) mid-instruction.
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+    }
+    eprintln!(
+        "M1 MULS snapshot/restore: MULS (A2),D4 memory-source signed multiply resumed identically at every micro-op boundary (incl the data-dependent Booth-count cycle count)"
     );
 }

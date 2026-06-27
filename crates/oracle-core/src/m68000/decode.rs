@@ -265,6 +265,16 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     if opcode & 0xF1C0 == 0xC0C0 {
         return mul_recipe(opcode, AluOp::Mulu);
     }
+    // MULS `<ea>,Dn` (`1100 ddd 111 mmm rrr`, opcode & 0xF1C0 == 0xC1C0, opmode 7 in the 0xC space) — the
+    // 16×16→32 SIGNED multiply `Dn = sx16(Dn) * sx16(src)` (the full 32-bit two's-complement product). opmode 7
+    // is DISJOINT from AND's opmode 0/1/2/4/5/6 AND from MULU's opmode 3 above, so this arm is reached only on
+    // the genuine MULS encoding. REUSES `mul_recipe` VERBATIM (just passing `AluOp::Muls`): the same
+    // `ea_src(Size::Word)` machinery CHK uses, all 11 source modes incl PC-relative/#imm + the odd-EA address
+    // error. The `AluOp::Muls` exec arm RETURNS its data-dependent cycle cost (`34 + 2*booth(src16)` — the Booth
+    // TRANSITION count of `src << 1`, NOT MULU's popcount), resolved from the multiplier at exec.
+    if opcode & 0xF1C0 == 0xC1C0 {
+        return mul_recipe(opcode, AluOp::Muls);
+    }
     // OR `<ea>,Dn` (`1000 ddd 0SS mmm rrr`, opmode 0/1/2 = b/w/l = 0x8000/0x8040/0x8080) — bitwise `Dn = Dn |
     // <ea>` (Dn the minuend `a`; OR is commutative so operand order is inert). Identical to the AND `<ea>,Dn`
     // arms above with `AluOp::Or` and the base nibble 0x8 instead of 0xC — same `arith_ea_dn` builder VERBATIM
@@ -2850,22 +2860,26 @@ fn trapv_recipe(regs: &Registers) -> MicroState {
 /// its read into; the `Alu` reads it as `b` before any other op touches it.
 const MUL_IMM_SRC_SLOT: u8 = 0;
 
-/// `MULU <ea>,Dn` (`1100 ddd 011 mmm rrr`, opcode & 0xF1C0 == 0xC0C0, opmode 3 in the 0xC space — disjoint from
-/// AND's opmode 0/1/2/4/5/6) — the 16×16→32 UNSIGNED multiply `Dn = (Dn & 0xFFFF) * (src & 0xFFFF)` (the full
-/// 32-bit product). `Dn` is bits 11-9; the source EA is the usual `mode/reg` in bits 5-0 (all 11 legal source
-/// modes — An-direct is illegal for MUL and never appears). Reuses `ea_src(Size::Word)` VERBATIM — the same
-/// machinery CHK uses (`chk_recipe`): it emits the operand read → prefetch refill → the closure op in the order
-/// the MUL stream needs, and covers every source mode incl PC-relative + the odd-EA address error (an odd word
-/// EA faults on the `ea_src` read, like CHK — NO parity filter). The `Alu{Mulu}` exec arm computes the product,
-/// sets N=bit31 / Z=zero / V=0 / C=0 / X-preserved, and RETURNS its data-dependent cycle cost `34 +
-/// 2*popcount(src16)` (the count comes from the resolved multiplier — exec-time, since a memory source is not
-/// known at decode). The full length is `38 + 2*popcount + ea_cost`.
+/// `MUL <ea>,Dn` — the shared recipe for BOTH `MULU` (`opcode & 0xF1C0 == 0xC0C0`, opmode 3, [`AluOp::Mulu`])
+/// and `MULS` (`opcode & 0xF1C0 == 0xC1C0`, opmode 7, [`AluOp::Muls`]) in the 0xC space (both DISJOINT from
+/// AND's opmode 0/1/2/4/5/6). The two ops share IDENTICAL bus/recipe shape and flag shape (N=bit31 / Z=zero /
+/// V=0 / C=0 / X-preserved on the FULL 32-bit product); they differ ONLY in the `op` passed here (which selects
+/// unsigned vs signed value AND the cycle-count formula in the exec arm). The 16×16→32 multiply writes the full
+/// product to `Dn` (bits 11-9); the source EA is the usual `mode/reg` in bits 5-0 (all 11 legal source modes —
+/// An-direct is illegal for MUL and never appears). Reuses `ea_src(Size::Word)` VERBATIM — the same machinery
+/// CHK uses (`chk_recipe`): it emits the operand read → prefetch refill → the closure op in the order the MUL
+/// stream needs, and covers every source mode incl PC-relative + the odd-EA address error (an odd word EA faults
+/// on the `ea_src` read, like CHK — NO parity filter). The `Alu{Mulu/Muls}` exec arm computes the product, sets
+/// the flags above, and RETURNS its data-dependent cycle cost — `34 + 2*popcount(src16)` for MULU, `34 +
+/// 2*booth(src16)` for MULS (the Booth TRANSITION count of `src<<1`, NOT popcount) — the count coming from the
+/// resolved multiplier at exec-time (a memory source is not known at decode). The full length is `38 + 2*count +
+/// ea_cost` (the MULS count, hence its length, DIFFERS from MULU even for the same source).
 ///
 /// The ONE deviation from a literal `ea_src` reuse is the `#imm` mode (`7/4`): `ea_src`'s `#imm` path places the
 /// `Alu` FIRST (it must sample `prefetch[1]` before the two refills shift the immediate out), which would put
 /// the count-dependent idle BEFORE the prefetches — but the vendored `#imm` stream is `[Prefetch, Prefetch,
 /// idle]` (idle LAST). So, exactly like `chk_recipe`'s `#imm` arm, the immediate is captured into a scratch slot
-/// via `EaCalc{base: ImmWord}` BEFORE the two refills, both refills run, then the `Alu{Mulu, b: Scratch}` runs
+/// via `EaCalc{base: ImmWord}` BEFORE the two refills, both refills run, then the `Alu{op, b: Scratch}` runs
 /// last (the bus stream / cycles are identical — only the value is captured first).
 fn mul_recipe(opcode: u16, op: AluOp) -> MicroState {
     let dn = ((opcode >> 9) & 7) as u8;

@@ -681,6 +681,23 @@ pub enum AluOp {
     /// write-back. Distinct from [`AluOp::Suba`] (an An-write no-flag op) and [`AluOp::And`] (a 0-cycle
     /// fixed-flag logic op).
     Mulu,
+    /// Muls: **signed** 16×16→32 multiply — `Dn = sx16(a) * sx16(b)` written FULL-32 to `Dn`
+    /// ([`Dest::DataReg`]), where `a` = the low word of `Dn` (the multiplicand, [`Operand::DataRegLow16`]) and
+    /// `b` = the source word (the multiplier, resolved by `ea_src(Size::Word)` — a register / scratch / the
+    /// immediate). BOTH operands are SIGN-EXTENDED from 16 to 32 bits (two's complement) BEFORE the multiply;
+    /// the low 32 bits of the signed product is the result. Flags are the MOVE/logic shape on the FULL 32-bit
+    /// product: **N = bit31(product)**, **Z = (product == 0)**, clears **V** and **C**, **PRESERVES X**
+    /// (re-injected `ccr_nz | (regs.sr & CCR_X)` — only N/Z/V/C change), IDENTICAL to [`AluOp::Mulu`]. THE
+    /// TIMING IS DATA-DEPENDENT ON THE SOURCE, but DIFFERS from MULU: the Muls exec arm RETURNS its own step
+    /// cycle cost = **`34 + 2 * booth(b & 0xFFFF)`** where `booth` is the Booth-recoding TRANSITION count of the
+    /// source — the number of `01`/`10` bit-pair transitions in `(b & 0xFFFF) << 1` (a 17-bit value with a 0
+    /// appended at the LSB), i.e. `sum over i in 0..15 of (bit(i) != bit(i+1))` of `(b << 1)`. This is NOT the
+    /// 1-bit popcount MULU uses (e.g. `0xFFFF` → popcount 16 but Booth 1; `0x5555` → popcount 8 but Booth 16),
+    /// so MULS timing differs from MULU even for the same source. The full instruction length is `38 +
+    /// 2*booth + ea_cost`, emerging as the operand read + the prefetch refill + this count-dependent idle. An
+    /// early-return op (like MoveA/Adda/Suba/Mulu) — it does its own SR + Dn write and bumps `self.step`, never
+    /// reaching the shared write-back.
+    Muls,
 }
 
 /// A bitwise logic operation a [`MicroOp::SrLogic`] applies to the status register — the three privileged
@@ -694,6 +711,30 @@ pub enum LogicOp {
     Or,
     /// `EORItoSR`: `sr ^= value` — toggles bits (can flip S either way).
     Eor,
+}
+
+/// MULS Booth-recoding TRANSITION count of a 16-bit source — the data-dependent cycle driver for
+/// [`AluOp::Muls`]. The 68000's MULS uses Booth recoding: the multiplier is scanned in overlapping bit pairs
+/// of `(src << 1)` (a 17-bit value with a 0 appended at the LSB), and each `01`/`10` transition costs 2
+/// cycles. So `booth_transitions(src) = sum over i in 0..15 of (bit(i) != bit(i+1))` of `(src << 1)` —
+/// equivalently the popcount of the XOR of adjacent bits over that 17-bit window. This is NOT the 1-bit
+/// popcount MULU uses: e.g. `0xFFFF` → popcount 16 but Booth 1 (one solid run, `(0x1FFFE)` has a single
+/// 0→1 then a single 1→0 outside the window, so 1 transition in bits 0..15); `0x5555` → popcount 8 but Booth
+/// 16 (fully alternating). The exec arm returns `34 + 2 * booth_transitions(src)` cycles.
+#[inline]
+fn booth_transitions(src16: u32) -> u32 {
+    // `shifted` is the 17-bit value with the LSB forced to 0. Count, over i in 0..15, the positions where bit i
+    // differs from bit i+1 of `shifted` (each is one Booth 01/10 transition).
+    let shifted = (src16 & 0xFFFF) << 1;
+    let mut count = 0u32;
+    for i in 0..16 {
+        let bit_i = (shifted >> i) & 1;
+        let bit_i1 = (shifted >> (i + 1)) & 1;
+        if bit_i != bit_i1 {
+            count += 1;
+        }
+    }
+    count
 }
 
 /// The MOVE flag computation at `size`: copy the (size-truncated) value, set N=msb / Z=(value==0), clear
@@ -1196,14 +1237,51 @@ impl MicroState {
                         self.cycles += cycles;
                         return cycles;
                     }
+                    // MULS — the SIGNED 16×16→32 multiply. Like MULU, an early-return op whose TIMING IS
+                    // DATA-DEPENDENT ON THE SOURCE, but the count is the Booth-recoding TRANSITION count (NOT the
+                    // popcount): `34 + 2*booth(b16)` where booth = the number of `01`/`10` bit-pair transitions in
+                    // `(b16 << 1)` (a 17-bit value, a 0 appended at the LSB) — `sum over i in 0..15 of (bit(i) !=
+                    // bit(i+1))` of `(b16 << 1)`. BOTH operands are SIGN-EXTENDED 16→32 (two's complement) before
+                    // the multiply; the low 32 bits of the signed product is written FULL-32 to Dn. Flags identical
+                    // to MULU: N = bit31(product), Z = (product == 0), V = 0, C = 0, X PRESERVED. The full
+                    // instruction length is `38 + 2*booth + ea_cost`.
+                    AluOp::Muls => {
+                        let a16 = lhs & 0xFFFF;
+                        let b16 = rhs & 0xFFFF;
+                        // Sign-extend both 16-bit operands to 32 bits (two's complement), multiply as i32, keep the
+                        // low 32 bits of the signed product.
+                        let sa = (a16 as u16) as i16 as i32;
+                        let sb = (b16 as u16) as i16 as i32;
+                        let product = (sa.wrapping_mul(sb)) as u32;
+                        let (_r, ccr_nz) = move_flags(product, Size::Long);
+                        regs.sr = (regs.sr & 0xFF00) | ccr_nz | (regs.sr & CCR_X);
+                        match dst {
+                            Dest::DataReg(n) => regs.d[n as usize] = product,
+                            _ => {
+                                unreachable!("MULS writes only Dest::DataReg (the full-32 product)")
+                            }
+                        }
+                        // Booth-recoding transition count of `(b16 << 1)`: the number of `01`/`10` bit-pair
+                        // transitions in the 17-bit LSB-extended source — `sum over i in 0..15 of (bit(i) !=
+                        // bit(i+1))` of `(b16 << 1)`.
+                        let booth = booth_transitions(b16);
+                        // Early-return op (like MULU): advance the cursor AND book the cycles here, since the shared
+                        // tail is bypassed by this `return`. The data-dependent cost is `34 + 2*booth(src16)`.
+                        let cycles = 34 + 2 * booth;
+                        self.step += 1;
+                        self.cycles += cycles;
+                        return cycles;
+                    }
                     _ => {}
                 }
                 // Compute at the operand-size flag boundary; carry the result (zero-extended to 32) + the new
                 // low-byte CCR uniformly. MOVE is NOT arithmetic — it copies `a` and sets only N/Z (V/C
                 // cleared) while PRESERVING X, so its `ccr` re-injects the live X bit (add/sub recompute X).
                 let (result, ccr) = match op {
-                    AluOp::MoveA | AluOp::Adda | AluOp::Suba | AluOp::Mulu => {
-                        unreachable!("early-return op (no-flag An-write / data-dependent-cycle MULU) handled above")
+                    AluOp::MoveA | AluOp::Adda | AluOp::Suba | AluOp::Mulu | AluOp::Muls => {
+                        unreachable!(
+                            "early-return op (no-flag An-write / data-dependent-cycle MULU/MULS) handled above"
+                        )
                     }
                     AluOp::Move => {
                         let (r, ccr_nz) = move_flags(lhs, size);
