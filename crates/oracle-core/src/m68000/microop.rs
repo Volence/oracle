@@ -280,6 +280,12 @@ pub enum Operand {
     /// `.l` operand lives at `addr + 2`; an [`MicroOp::EaCalc`] adds this to the materialized base to form
     /// the low half's address.
     WordStep,
+    /// A decode-time **shift count** baked into the recipe as a literal value (the immediate count 1-8 of a
+    /// register shift's `ccc != 0 ? ccc : 8`, or the constant `1` of a memory shift-by-1). Resolved as the
+    /// literal `u8` (the exec masks it `& 63`). Mirrors the constant operands [`Operand::Zero`]/
+    /// [`Operand::WordStep`]; distinct from [`Operand::DataRegFull`] (the dynamic `Dn`-count form, which the
+    /// recipe passes directly and the exec masks `& 63` at run time).
+    ShiftCount(u8),
     /// The displacement word currently in the prefetch queue, sign-extended: `sign_extend16(prefetch[1])`.
     /// The `d16(An)`/`abs.w` extension word; captured by [`MicroOp::EaCalc`] **before** the refill that
     /// shifts it out of the queue.
@@ -527,6 +533,21 @@ pub enum AluOp {
     /// (memory, the `ea_dst` write source). BSET's REGISTER form uses the SAME base idle as BCHG (`n2`, NOT
     /// BCLR's `n4`) — carried by `bit_recipe`'s `reg_base` parameter.
     Bset,
+    /// Asl: **arithmetic shift LEFT** by `cnt = b & 63` — the foundational op of the shift/rotate family and
+    /// the ONLY one that owns **V** (the sign bit changed at ANY point during the shift). `a` is the operand
+    /// (size-masked to `x`), `b` the count source ([`Operand::ShiftCount`] for the immediate/memory forms /
+    /// [`Operand::DataRegFull`] for the dynamic `Dn`-count form — the exec masks `& 63`); `size` → `n =
+    /// 8/16/32`, `mask = (1<<n)-1`, `signbit = 1<<(n-1)`. Value: `res = (x << cnt) & mask` when `cnt < n`,
+    /// else `0`. **C** = the last bit shifted out of the operand — `bit(n-cnt)` when `1 <= cnt <= n`, else `0`;
+    /// **X = C**. **V** (closed form, 0-mismatch verified vs the vendored stream): for `cnt >= n`, `V = (x !=
+    /// 0)` (`x == mask` shifts a 0 into the sign, so the sign DOES change → V=1, NOT `x != 0 && x != mask`);
+    /// for `cnt < n`, `V` = (the top `cnt+1` bits of the n-bit field are not all-equal). **N** = msb(res),
+    /// **Z** = (res == 0). **ZERO COUNT** (`cnt == 0`, possible only via the dynamic `Dn` form): the value is
+    /// unchanged, **V = 0, C = 0, X PRESERVED** (re-injected — the shift never ran), N/Z from the unchanged
+    /// operand. The size-masked result is written back (low8/low16/full32 for a `Dn` dest via the recipe's
+    /// `dn_dest`, or parked in [`Dest::Scratch`] for the word memory shift-by-1 the trailing `Write` stores).
+    /// Every Rust shift is guarded (the `cnt >= n` branch; the V top-mask shifts by `n-1-cnt ∈ 0..n-1`).
+    Asl,
 }
 
 /// A bitwise logic operation a [`MicroOp::SrLogic`] applies to the status register — the three privileged
@@ -794,6 +815,7 @@ impl MicroState {
             Operand::ImmWord => regs.prefetch[1] as u32,
             Operand::Zero => 0,
             Operand::WordStep => 2,
+            Operand::ShiftCount(c) => c as u32,
             Operand::DispWord => sign_extend16(regs.prefetch[1]),
             Operand::PcOfExt => regs.pc.wrapping_add(2),
             Operand::ExtWordHi => (regs.prefetch[1] as u32) << 16,
@@ -1219,6 +1241,57 @@ impl MicroState {
                         let z = if bit == 0 { CCR_Z } else { 0 };
                         let preserved = regs.sr & (CCR_X | CCR_N | CCR_V | CCR_C);
                         (lhs | (1 << pos), preserved | z)
+                    }
+                    // ASL — arithmetic shift LEFT by `cnt = b & 63` (the resolved count). `x` = the size-masked
+                    // operand `a`; `n` = 8/16/32. ASL is the ONE shift that owns V (the sign bit changed at ANY
+                    // point during the shift). Value `res = (x << cnt) & mask` when `cnt < n`, else 0. C = the
+                    // last bit shifted out of the operand (`bit(n-cnt)` for `1 <= cnt <= n`, else 0); X = C. V
+                    // (closed form): `cnt >= n` → `V = (x != 0)` (`x == mask` shifts a 0 into the sign, so it
+                    // DOES change → V=1); `cnt < n` → the top `cnt+1` bits are not all-equal. ZERO COUNT
+                    // (`cnt == 0`, only the dynamic `Dn` form): value unchanged, V=0, C=0, **X PRESERVED**
+                    // (re-inject the live X — the shift never ran), N/Z from the unchanged operand. All Rust
+                    // shifts are guarded: `res` uses `cnt < n`; the V top-mask shifts by `n-1-cnt ∈ 0..n-1`
+                    // (only in the `cnt < n` branch); `x >> (n-cnt)` runs only for `1 <= cnt <= n`.
+                    AluOp::Asl => {
+                        let (mask, signbit, n) = match size {
+                            Size::Byte => (0xFFu32, 0x80u32, 8u32),
+                            Size::Word => (0xFFFF, 0x8000, 16),
+                            Size::Long => (0xFFFF_FFFF, 0x8000_0000, 32),
+                        };
+                        let x = lhs & mask;
+                        let cnt = rhs & 63;
+                        let res = if cnt < n { (x << cnt) & mask } else { 0 };
+                        let mut ccr = 0u16;
+                        if res & signbit != 0 {
+                            ccr |= CCR_N;
+                        }
+                        if res == 0 {
+                            ccr |= CCR_Z;
+                        }
+                        if cnt == 0 {
+                            // Zero count: V=0, C=0, X PRESERVED (the shift never ran — re-inject the live X).
+                            ccr |= regs.sr & CCR_X;
+                        } else {
+                            // C = the last bit shifted out of the operand (0 once `cnt > n`); X = C.
+                            let c = if cnt <= n { (x >> (n - cnt)) & 1 } else { 0 };
+                            if c != 0 {
+                                ccr |= CCR_C | CCR_X;
+                            }
+                            // V = the sign bit changed at any point during the shift.
+                            let v = if cnt >= n {
+                                x != 0
+                            } else {
+                                // The top `cnt+1` bits of the n-bit field (positions n-1-cnt..=n-1): the sign
+                                // flipped iff they are not all-equal (both a 0 and a 1 present).
+                                let top_mask = mask & !((1u32 << (n - 1 - cnt)) - 1);
+                                let top = x & top_mask;
+                                top != 0 && top != top_mask
+                            };
+                            if v {
+                                ccr |= CCR_V;
+                            }
+                        }
+                        (res, ccr)
                     }
                     AluOp::Add | AluOp::Sub => match size {
                         Size::Word => {

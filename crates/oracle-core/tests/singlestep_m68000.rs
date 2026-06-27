@@ -284,6 +284,30 @@ const FILES: &[&str] = &[
     // The plain `(A7)` mode-2 indirect is COVERED (a clean byte RMW, like CLR/TST — NO deferral). Byte memory →
     // NO odd-EA faults (no parity filter). The BSET.json file is 100% PURE: dynamic 7099 + static 966 = 8065.
     "BSET.json",
+    // ASL.b / ASL.w / ASL.l (`0xExxx`, AS/left) — the FOUNDATIONAL shift/rotate op (S0): arithmetic shift
+    // LEFT. Three forms, classified by OPCODE: REGISTER immediate-count (`1110 ccc d ss 0 00 rrr`, bit 5 = 0,
+    // count `ccc != 0 ? ccc : 8` = 1-8), REGISTER `Dn`-count (`… 1 00 rrr`, bit 5 = 1, count `D[ccc] & 63` =
+    // 0-63, read LIVE at decode), MEMORY shift-by-1 (`1110 0 00 1 11 mmm rrr`, bits 7-6 == 11, WORD only — the
+    // `.b`/`.l` files have NO memory form). ASL owns the **V** flag (the sign bit changed at ANY point during
+    // the shift); C = the last bit shifted out (`bit(n-cnt)`, 0 once `cnt > n`), **X = C**, **N** = msb / **Z**
+    // = (res == 0). ZERO COUNT (`cnt == 0`, only the `Dn` form): value unchanged, V = 0, C = 0, **X PRESERVED**.
+    // New vocabulary: `Operand::ShiftCount(u8)` (the decode-time literal count, mirroring `Operand::Zero`/
+    // `WordStep`) + `AluOp::Asl` + the shared `shift_recipe` (register `[Prefetch, Alu, Internal{(base-4)+
+    // 2*cnt}]`, base 6 `.b`/`.w` / 8 `.l` → `6+2*cnt` / `8+2*cnt`; memory the CLR.w/NEG.w word `ea_dst` RMW).
+    // Register timing is DECODE-TIME data-dependent (the idle `2*cnt` reads the live `Dn`, up to 63 → 126 idle).
+    // Memory shift-by-1 (word): (An)/(An)+ 12, -(An) 14, d16(An) 16, d8(An,Xn) 18, abs.w 16, abs.l 20; an odd EA
+    // address-errors on the READ (low5 = 0x15, the E3/E4 abort), exactly like CLR.w/NEG.w. The FULL in-scope EA
+    // set is covered: every register shift (no memory → no fault) + (for `.w`) the data-alterable memory set
+    // (2-6, 7/0, 7/1) INCLUDING the clean `(A7)` mode-2 indirect (NO deferral, NO parity filter). The ONLY
+    // exclusion anywhere in the family is `ASL.b`'s 2 PROVABLY-CORRUPT, self-contradictory entries (opcode
+    // 0xE502 — a register-only `ASL.b #2,D2` with NO memory access, yet final.d2 is full-register garbage no
+    // shift can produce; a correct CPU gives cdfb7ff8 / 417c7ef4). Keyed precisely on opcode 0xE502 + the
+    // corrupt INITIAL d2 AND the corrupt FINAL d2 (the same initial d2 ALSO appears in 2 LEGIT cases a correct
+    // CPU matches — so the final-d2 leg is REQUIRED to isolate EXACTLY the 2 corrupt). Per-file true counts:
+    // ASL.b 8063 (8065 - 2 corrupt) + ASL.w 8065 + ASL.l 8065 = +24193. ASL.b is the ONLY file not 8065.
+    "ASL.b.json",
+    "ASL.w.json",
+    "ASL.l.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -755,7 +779,27 @@ fn eor_in_scope(opcode: u16) -> bool {
 /// pinned to the data). The only remaining deferrals are mode-scope: `An`-direct as a byte source/dest
 /// (`ADD.b An,Dn` is illegal), the older `(An)` (mode 2) `A7` form (a pre-existing non-address-error
 /// mode-scope convention — its `(A7)+`/`-(A7)` siblings ARE in scope), and not-yet-implemented EA modes.
-fn covered(opcode: u16, _ini: &Value) -> bool {
+/// Whether the framework covers this `0xExxx` shift/rotate case (the EA-scope half — the 2 corrupt ASL.b
+/// entries are handled separately in [`covered`], which has the final state). Classified by OPCODE:
+///
+/// - **Register** (bits 7-6 != 11): EVERY register shift is in scope — the operand is always `Dn` (bits 2-0),
+///   the count an immediate (1-8) or a live `Dn` (mod 64), all sizes. No memory access → no faults, no
+///   deferral.
+/// - **Memory shift-by-1** (bits 7-6 == 11, `.w` only): the data-alterable set `(An)` (2), `(An)+` (3),
+///   `-(An)` (4), `d16(An)` (5), `d8(An,Xn)` (6), `abs.w` (7/0), `abs.l` (7/1) — INCLUDING the clean `(A7)`
+///   mode-2 indirect (`mode == 2 && reg == 7`, NO deferral, like CLR.w/NEG.w). Odd EAs are address errors the
+///   E3/E4 abort covers (NO parity filter). `An`-direct / PC-relative / `#imm` are not data-alterable and are
+///   absent.
+fn shift_covered(opcode: u16) -> bool {
+    if (opcode >> 6) & 3 != 3 {
+        return true; // register shift — always in scope (Dn operand, imm or Dn count, all sizes)
+    }
+    let mode = (opcode >> 3) & 7;
+    let reg = opcode & 7;
+    matches!(mode, 2..=6) || (mode == 7 && (reg == 0 || reg == 1))
+}
+
+fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // MOVE (`00 SS RRR MMM mmm rrr`, dst_mode != 1) — its own EA→EA mode-scope filter (no parity).
     if move_covered(opcode) {
         return move_in_scope(opcode);
@@ -1219,6 +1263,26 @@ fn covered(opcode: u16, _ini: &Value) -> bool {
     if eor_in_scope(opcode) {
         return true;
     }
+    // ASL `<ea>` (`0xExxx`, AS/left) — the foundational shift/rotate op (S0). `shift_covered` admits every
+    // register shift and the data-alterable memory set (`.w` shift-by-1, INCL the clean `(A7)` mode-2
+    // indirect — NO deferral; odd EAs are address errors the E3/E4 abort covers). The ONLY exclusion in the
+    // whole shift/rotate family: `ASL.b`'s 2 PROVABLY-CORRUPT, self-contradictory entries. The opcode is a
+    // register-only `ASL.b #2,D2` (0xE502, NO memory access) that CANNOT change D2's upper 24 bits, yet
+    // final.d2 is full-register garbage no shift/rotate/unary/binary transform produces (a baked-in SST
+    // generator bug, identical in the repo's HEAD; a correct CPU gives cdfb7ff8 / 417c7ef4). The key needs
+    // BOTH the corrupt INITIAL d2 AND the corrupt FINAL d2: the same initial d2 (cdfb7fbe / 417c7e7d) ALSO
+    // appears in 2 LEGIT cases whose final.d2 IS cdfb7ff8 / 417c7ef4 (a correct CPU matches them — they MUST
+    // run), so keying on the initial d2 alone would wrongly skip 2 passing cases (ASL.b 8061, not 8063).
+    // The final-d2 leg isolates EXACTLY the 2 corrupt → ASL.b in scope = 8063 (the only file not 8065).
+    if opcode >> 12 == 0xE {
+        if opcode == 0xE502
+            && matches!(u32f(ini, "d2"), 0xcdfb_7fbe | 0x417c_7e7d)
+            && matches!(u32f(fin, "d2"), 0x2e5e_4304 | 0x6461_d390)
+        {
+            return false;
+        }
+        return shift_covered(opcode);
+    }
     false // other forms (not-yet-implemented modes): out of slice this push
 }
 
@@ -1278,19 +1342,84 @@ fn add_sub_match_singlesteptests() {
         for t in &data {
             let ini = &t["initial"];
             let opcode = ini["prefetch"][0].as_u64().unwrap() as u16;
-            if !covered(opcode, ini) {
+            if !covered(opcode, ini, &t["final"]) {
                 continue;
             }
             run_case(t);
             file_ran += 1;
+        }
+        // S0 — the ONLY documented exclusion in the whole shift/rotate family: `ASL.b`'s 2 PROVABLY-CORRUPT,
+        // self-contradictory entries (opcode 0xE502, a register-only `ASL.b #2,D2` with full-register-garbage
+        // final.d2 no shift can produce). Independently re-count the corrupt pair (the same precise key
+        // `covered()` uses — opcode + the corrupt INITIAL d2 + the corrupt FINAL d2) and ASSERT the exclusion
+        // removes EXACTLY 2 (the initial-d2-only key would wrongly catch 2 LEGIT cases sharing that initial
+        // d2) and that `ASL.b` runs EXACTLY 8063 (8065 − 2). NO broadening — exactly 2, the only carve-out.
+        if *fname == "ASL.b.json" {
+            let corrupt = data
+                .iter()
+                .filter(|t| {
+                    t["initial"]["prefetch"][0].as_u64().unwrap() as u16 == 0xE502
+                        && matches!(u32f(&t["initial"], "d2"), 0xcdfb_7fbe | 0x417c_7e7d)
+                        && matches!(u32f(&t["final"], "d2"), 0x2e5e_4304 | 0x6461_d390)
+                })
+                .count();
+            assert_eq!(
+                corrupt, 2,
+                "ASL.b corrupt exclusion must isolate EXACTLY 2 self-contradictory entries (no broadening)"
+            );
+            assert_eq!(
+                file_ran, 8063,
+                "ASL.b must run EXACTLY 8063 covered cases (8065 - 2 corrupt)"
+            );
         }
         eprintln!("  {fname}: {file_ran} covered cases passed");
         ran += file_ran;
     }
 
     assert!(
-        ran >= 526_705,
-        "expected 526705 covered cases — B3 (the FINAL bit-op) adds BSET `<ea>` (its own BSET.json file, \
+        ran >= 550_898,
+        "expected 550898 covered cases — S0 (the FOUNDATIONAL shift/rotate commit) adds ASL.b / ASL.w / ASL.l \
+         (`0xExxx`, AS/left): ASL.b 8063 + ASL.w 8065 + ASL.l 8065 = +24193 over B3's 526705 (ASL.b is the \
+         ONLY file not 8065 — it has 2 PROVABLY-CORRUPT entries excluded). ASL is arithmetic shift LEFT, the \
+         one shift that owns the **V** flag (the sign bit changed at ANY point during the shift). Three forms, \
+         classified by OPCODE: REGISTER immediate-count (`1110 ccc d ss 0 00 rrr`, bit 5 = 0, count `ccc != 0 \
+         ? ccc : 8` = 1-8), REGISTER `Dn`-count (`… 1 00 rrr`, bit 5 = 1, count `D[ccc] & 63` = 0-63 read LIVE \
+         at decode — `ccc == rrr` legal), MEMORY shift-by-1 (`1110 0 00 1 11 mmm rrr`, bits 7-6 == 11, WORD \
+         only — the `.b`/`.l` files have NO memory form). Value `res = (x << cnt) & mask` when `cnt < n` (n = \
+         8/16/32) else 0; C = the last bit shifted out (`bit(n-cnt)` for `1 <= cnt <= n`, else 0 — `cnt > n` → \
+         C = 0), **X = C**; **V** (closed form, 0-mismatch verified): `cnt >= n` → `V = (x != 0)` (`x == mask` \
+         shifts a 0 into the sign, so it DOES change → V=1, NOT `x != 0 && x != mask`), `cnt < n` → the top \
+         `cnt+1` bits are not all-equal; **N** = msb(res), **Z** = (res == 0). ZERO COUNT (`cnt == 0`, only the \
+         `Dn` form): value unchanged, V = 0, C = 0, **X PRESERVED** (the shift never ran — re-inject the live \
+         X), N/Z from the unchanged operand. New vocabulary: `Operand::ShiftCount(u8)` (the decode-time literal \
+         count, mirroring `Operand::Zero`/`WordStep`) + `AluOp::Asl` + the shared `shift_recipe` (modelled on \
+         `bit_recipe`): the register arm is `[Prefetch, Alu {{ op, size, a: dn_src(rrr,size), b, dst: \
+         dn_dest(rrr,size) }}, Internal {{ (base-4) + 2*cnt }}]` with base = 6 (`.b`/`.w`) / 8 (`.l`) → total \
+         `6 + 2*cnt` / `8 + 2*cnt` (the leading Prefetch refill is the 4; the idle's `2*cnt` is the DECODE-TIME \
+         count — the immediate literal, or the LIVE `D[ccc] & 63`, so the register recipe length depends on \
+         `regs`, exactly like Scc's true/false n2, DBcc's counter and the bit-ops' `pos >= 16`). The count \
+         operand `b` = `Operand::ShiftCount` (imm / memory literal) / `Operand::DataRegFull(ccc)` (the dynamic \
+         `Dn`-count, the exec masks `& 63`). The memory arm is byte-for-byte CLR.w/NEG.w's WORD `ea_dst` RMW \
+         (read the word → shift-by-1 → write the word, `b = ShiftCount(1)`, `Dest::Scratch(1)`); an odd EA \
+         address-errors on the READ (low5 = 0x15, the E3/E4 abort), exactly like NEG.w/CLR.w. Register timing \
+         (imm AND Dn, identical base): `.b`/`.w` = 6 + 2*cnt, `.l` = 8 + 2*cnt (up to 8 + 2*63 = 134). Memory \
+         shift-by-1 (word): (An)/(An)+ 12, -(An) 14, d16(An) 16, d8(An,Xn) 18, abs.w 16, abs.l 20. The FULL \
+         in-scope EA set is covered (`shift_covered`): every register shift (no memory → no fault, no deferral) \
+         + (for `.w`) the data-alterable memory set Dn-absent — (An) (2, INCL the clean `(A7)` mode-2 indirect, \
+         NO deferral, like CLR.w/NEG.w), (An)+ (3), -(An) (4), d16(An) (5), d8(An,Xn) (6), abs.w (7/0), abs.l \
+         (7/1); An-direct / PC-rel / #imm are not data-alterable and are absent. Odd word EAs are address \
+         errors the E3/E4 abort covers (NO parity filter). The ONLY exclusion in the whole shift/rotate family \
+         is `ASL.b`'s 2 PROVABLY-CORRUPT, self-contradictory entries: opcode 0xE502 (a register-only `ASL.b \
+         #2,D2` with NO memory access, so it CANNOT change D2's upper 24 bits) whose final.d2 is full-register \
+         garbage no shift/rotate/unary/binary transform produces (a baked-in SST generator bug, identical in \
+         the repo's HEAD; a correct CPU gives cdfb7ff8 / 417c7ef4). Keyed PRECISELY on opcode 0xE502 + the \
+         corrupt INITIAL d2 (cdfb7fbe / 417c7e7d) AND the corrupt FINAL d2 (2e5e4304 / 6461d390) — the same \
+         initial d2 ALSO appears in 2 LEGIT cases whose final.d2 IS cdfb7ff8 / 417c7ef4 (a correct CPU matches \
+         them, they MUST run), so the final-d2 leg is REQUIRED to isolate EXACTLY the 2 corrupt (initial d2 \
+         alone would wrongly skip 2 passing cases → 8061). The runner asserts the exclusion removes EXACTLY 2 \
+         and ASL.b runs EXACTLY 8063 (8065 − 2). The ASL.* files are 100% PURE for their op+size (`0xExxx` is a \
+         dedicated opcode space; only AS/left decodes this commit — ASR/LSL/LSR/ROL/ROR/ROXL/ROXR land S1-S7). \
+         Prior baseline — B3 (the FINAL bit-op) adds BSET `<ea>` (its own BSET.json file, \
          dynamic `0000 ddd 1 11 mmm rrr` = opcode & 0xF1C0 == 0x01C0 / static `0000 1000 11 mmm rrr` = \
          opcode & 0xFF00 == 0x0800 with tt bits 7-6 == 11): BSET 8065 = +8065 over B2's 518640 (the WHOLE \
          file in scope — no contaminant, no deferral). BSET tests then SETS a single bit (`operand |= \
@@ -1638,7 +1767,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -3445,5 +3574,190 @@ fn bset_static_mem_quiescable_and_serializable_at_every_micro_op_boundary() {
     }
     eprintln!(
         "B3 BSET snapshot/restore: BSET static (A0) resumed identically at every micro-op boundary (incl the bitnum-capture interleave + the byte read→set→write RMW)"
+    );
+}
+
+/// S0 — the named ASL anchors, pinning the foundational shift/rotate op against the vendored ASL.b/.w/.l
+/// stream WITHOUT relying on the bulk `covered()` sweep. ASL is arithmetic shift LEFT, the ONE shift that
+/// owns the **V** flag (the sign bit changed at ANY point during the shift). Each anchor is a real vendored
+/// case run through both drivers + the per-cycle transaction stream via `run_case`; the load-bearing pins:
+///
+/// - `e302 [ASL.b Q, D2] 1` (len 8) — REGISTER **immediate** `.b`, cnt 1 → timing `6 + 2*1`.
+/// - `e103 [ASL.b Q, D3] 16` (len 22) — REGISTER immediate `.b`, `ccc == 0` → cnt **8** → `6 + 2*8`.
+/// - `e741 [ASL.w Q, D1] 59` (len 12) — REGISTER immediate `.w`, cnt 3 → `6 + 2*3`.
+/// - `e386 [ASL.l Q, D6] 3` (len 10) — REGISTER immediate `.l`, cnt 1 → the `.l` base `8 + 2*1`.
+/// - `ed66 [ASL.w D6, D6] 603` (len 6) — REGISTER **`Dn`-count `cnt == 0`** (the ZERO-COUNT special case),
+///   AND `ccc == rrr` (count reg == operand reg, legal): value UNCHANGED, **X PRESERVED** (X1 in → X1 out),
+///   V = 0, C = 0, timing `6` (`6 + 2*0`).
+/// - `e9a1 [ASL.l D4, D1] 173` (len 8) — `Dn`-count `cnt == 0` `.l`, the `8`-cyc zero-count register form.
+/// - `e564 [ASL.w D2, D4] 347` (len 86) — **large `Dn`-count** cnt 40 → `6 + 2*40` (the DECODE-TIME live
+///   `Dn & 63` driving the idle).
+/// - `efa3 [ASL.l D7, D3] 252` (len 88) — large `Dn`-count cnt 40 `.l` → `8 + 2*40`.
+/// - `eb46 [ASL.w Q, D6] 3` (len 16) — an ASL.w that **SETS V** (the sign bit changed during the shift).
+/// - `e542 [ASL.w Q, D2] 4` (len 10) — an ASL.w that **CLEARS V** (the sign did not change).
+/// - `e1d5 [ASL.w (A5)] 103` (len 12) — `.w` **memory** shift-by-1 `(An)`: the word `ea_dst` RMW.
+/// - `e1f9 [ASL.w (xxx).l] 199` (len 20) — `.w` memory shift-by-1 **abs.l** (the heaviest RMW).
+/// - `e1d7 [ASL.w (A7)] 464` (len 12) — the plain `(A7)` mode-2 indirect (`mode == 2 && reg == 7`), COVERED
+///   (NOT deferred), a clean word RMW at the active A7.
+/// - `e1d6 [ASL.w (A6)] 41` (len 50) — an **odd-EA** `.w` memory address error (the E3/E4 abort installs the
+///   group-0 14-byte vector-3 frame), which must PASS unchanged.
+///
+/// Every anchor must decode as an ASL opcode (`0xExxx`, type AS / direction LEFT) — never any other family.
+#[test]
+fn asl_anchors_match_singlesteptests() {
+    let anchors: &[(&str, &str, u32)] = &[
+        ("ASL.b.json", "e302 [ASL.b Q, D2] 1", 8), // imm .b cnt1 → 6+2
+        ("ASL.b.json", "e103 [ASL.b Q, D3] 16", 22), // imm .b ccc=0 → cnt8 → 6+16
+        ("ASL.w.json", "e741 [ASL.w Q, D1] 59", 12), // imm .w cnt3 → 6+6
+        ("ASL.l.json", "e386 [ASL.l Q, D6] 3", 10), // imm .l cnt1 → 8+2
+        ("ASL.w.json", "ed66 [ASL.w D6, D6] 603", 6), // Dn cnt0 (zero-count) + ccc==rrr, X kept
+        ("ASL.l.json", "e9a1 [ASL.l D4, D1] 173", 8), // Dn cnt0 .l → 8
+        ("ASL.w.json", "e564 [ASL.w D2, D4] 347", 86), // Dn cnt40 → 6+80
+        ("ASL.l.json", "efa3 [ASL.l D7, D3] 252", 88), // Dn cnt40 .l → 8+80
+        ("ASL.w.json", "eb46 [ASL.w Q, D6] 3", 16), // V SET (sign changed)
+        ("ASL.w.json", "e542 [ASL.w Q, D2] 4", 10), // V CLEAR
+        ("ASL.w.json", "e1d5 [ASL.w (A5)] 103", 12), // memory (An) shift-by-1
+        ("ASL.w.json", "e1f9 [ASL.w (xxx).l] 199", 20), // memory abs.l shift-by-1
+        ("ASL.w.json", "e1d7 [ASL.w (A7)] 464", 12), // (A7) mode-2 indirect — COVERED
+        ("ASL.w.json", "e1d6 [ASL.w (A6)] 41", 50), // odd-EA memory address error
+    ];
+    let mut found = 0usize;
+    for (fname, name, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap() == *name
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| panic!("S0 ASL anchor {name} (len {length}) not found in {fname}"));
+        // Every anchor must be an ASL opcode: 0xExxx, type AS (register bits 4-3 == 0 / memory bits 10-9 ==
+        // 0), direction LEFT (bit 8 == 1).
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(
+            opcode >> 12,
+            0xE,
+            "anchor {name} must be a 0xExxx shift opcode"
+        );
+        let is_asl = if (opcode >> 6) & 3 == 3 {
+            (opcode >> 8) & 1 == 1 && (opcode >> 9) & 3 == 0
+        } else {
+            (opcode >> 8) & 1 == 1 && (opcode >> 3) & 3 == 0
+        };
+        assert!(
+            is_asl,
+            "anchor {name} must be ASL (type AS, direction LEFT)"
+        );
+        // Load-bearing flag/scope pins (run_case verifies the FULL final state against the data either way).
+        let ini_sr = case["initial"]["sr"].as_u64().unwrap() as u16;
+        let fin_sr = case["final"]["sr"].as_u64().unwrap() as u16;
+        match *name {
+            "eb46 [ASL.w Q, D6] 3" => {
+                assert_ne!(
+                    fin_sr & 0x02,
+                    0,
+                    "ASL V-set anchor must set V (sign changed)"
+                )
+            }
+            "e542 [ASL.w Q, D2] 4" => {
+                assert_eq!(fin_sr & 0x02, 0, "ASL V-clear anchor must clear V")
+            }
+            "ed66 [ASL.w D6, D6] 603" => {
+                // Zero-count: X PRESERVED (not set to C), V and C cleared, value unchanged.
+                assert_eq!(ini_sr & 0x10, fin_sr & 0x10, "zero-count must PRESERVE X");
+                assert_ne!(
+                    ini_sr & 0x10,
+                    0,
+                    "zero-count anchor must enter with X=1 (pins preservation)"
+                );
+                assert_eq!(fin_sr & 0x02, 0, "zero-count must clear V");
+                assert_eq!(fin_sr & 0x01, 0, "zero-count must clear C");
+                assert_eq!(
+                    case["initial"]["d6"], case["final"]["d6"],
+                    "zero-count must leave the operand unchanged"
+                );
+            }
+            "e1d7 [ASL.w (A7)] 464" => {
+                assert_eq!((opcode >> 3) & 7, 2, "(A7) anchor must be mode 2");
+                assert_eq!(opcode & 7, 7, "(A7) anchor must be reg 7 (the A7 indirect)");
+            }
+            "e1d6 [ASL.w (A6)] 41" => {
+                // Odd-EA address error: the group-0 frame pushes the SSP down (the standard 14-byte frame).
+                assert!(
+                    case["final"]["ssp"].as_u64().unwrap()
+                        < case["initial"]["ssp"].as_u64().unwrap(),
+                    "odd-EA anchor must install the address-error frame (SSP pushed down)"
+                );
+            }
+            _ => {}
+        }
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all S0 ASL anchors exercised");
+    eprintln!(
+        "S0 ASL anchors: {found} cases (imm .b/.w/.l 6+2cnt / 8+2cnt, Dn cnt0 zero-count X-preserved + ccc==rrr, large Dn cnt40, V-set & V-clear, (An)/abs.l/(A7) memory shift-by-1, odd-EA address-error) passed both drivers"
+    );
+}
+
+/// S0 — the snapshot/restore anchor for the ASL.w memory shift-by-1 (the new `shift_recipe` word `ea_dst`
+/// RMW: `[Read, Prefetch, Alu, Write]`). Drives a real vendored `ASL.w (A5)` case through the quiesce driver,
+/// snapshotting + restoring the WHOLE `Cpu68000` (incl. the in-flight cursor) at every micro-op boundary —
+/// including the mid-bus-access boundary between the operand Read and the result Write — and proves the
+/// resumed run reproduces the run-to-completion final state + transaction stream bit-for-bit. This pins that
+/// `Operand::ShiftCount` + `AluOp::Asl` keep `MicroState` fixed-size bincode (it stays `Copy`).
+#[test]
+fn asl_w_mem_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/ASL.w.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "e1d5 [ASL.w (A5)] 103")
+        .expect("ASL.w (A5) snapshot anchor present");
+    let ini = &case["initial"];
+
+    // Run-to-completion reference.
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    // 4 micro-ops (Read, Prefetch, Alu, Write) → in-flight boundaries after 0..=3 of them.
+    for pause_after in 0..=3 {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        for _ in 0..pause_after {
+            assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+        }
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+    }
+    eprintln!(
+        "S0 ASL snapshot/restore: ASL.w (A5) word shift-by-1 RMW resumed identically at every micro-op boundary"
     );
 }

@@ -718,6 +718,25 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     if opcode & 0xF100 == 0x7000 {
         return moveq_recipe(opcode);
     }
+    // ASL `<ea>` (`0xExxx`, AS/left — the foundational shift) — `1110 ccc d ss ir tt rrr` register / `1110
+    // 0TTd 11 mmm rrr` memory. The whole `0xExxx` nibble is a dedicated, otherwise-unused opcode space (no
+    // other arm matches it). This commit decodes ONLY ASL (type AS, direction LEFT); ASR/LSL/LSR/ROL/ROR/
+    // ROXL/ROXR land in S1-S7. The op identity is `(type, dir)`: REGISTER (bits 7-6 != 11) → bit 8 == 1
+    // (left) AND bits 4-3 == 00 (AS); MEMORY (bits 7-6 == 11) → bit 8 == 1 AND bits 10-9 == 00 (AS). Only
+    // ASL files are loaded this commit, so a non-ASL `0xE` opcode never reaches decode; the guard keeps the
+    // arm precise regardless. The shared `shift_recipe` builds the register `[Prefetch, Alu, Internal{idle}]`
+    // (the idle's `2*cnt` is the DECODE-TIME count — imm `ccc!=0?ccc:8` / live `D[ccc]&63`) or the word
+    // memory shift-by-1 RMW (CLR.w/NEG.w's `ea_dst` path; an odd EA address-errors on the READ via E3/E4).
+    if opcode >> 12 == 0xE {
+        let is_asl = if (opcode >> 6) & 3 == 3 {
+            (opcode >> 8) & 1 == 1 && (opcode >> 9) & 3 == 0 // memory: dir LEFT, type AS (bits 10-9)
+        } else {
+            (opcode >> 8) & 1 == 1 && (opcode >> 3) & 3 == 0 // register: dir LEFT, type AS (bits 4-3)
+        };
+        if is_asl {
+            return shift_recipe(opcode, AluOp::Asl, regs);
+        }
+    }
     todo!("opcode {opcode:#06X} not yet decoded")
 }
 
@@ -1170,6 +1189,74 @@ fn bit_recipe(opcode: u16, op: AluOp, reg_base: u16, regs: &Registers) -> MicroS
             a: operand,
             b: bitnum,
             dst: Dest::Scratch(1),
+        });
+    }
+    buf.finish()
+}
+
+/// The SHARED shift/rotate recipe builder (modelled on [`bit_recipe`]) — used VERBATIM by ASL (this commit)
+/// and ASR/LSL/LSR/ROL/ROR/ROXL/ROXR (S1-S7); only the `op` (and the decode `(type, dir)` arm) differ. Two
+/// forms, classified by OPCODE (bits 7-6):
+///
+/// - **Register** (`1110 ccc d ss ir tt rrr`, bits 7-6 != 11): shift `Dn` (bits 2-0) at `size` (bits 7-6 =
+///   00/01/10 → b/w/l). The count is **decode-time** (the load-bearing data dependency): the **immediate**
+///   form (bit 5 = 0) is `ccc != 0 ? ccc : 8` (1-8); the **`Dn`-count** form (bit 5 = 1) is the LIVE
+///   `regs.d[ccc] & 63` (0-63, mod 64 — read HERE at decode, exactly like Scc's `n2` / DBcc's counter /
+///   `bit_recipe`'s `pos >= 16`; `ccc == rrr` is legal — count reg == operand reg). The recipe is
+///   `[Prefetch, Alu { op, size, a: dn_src(rrr,size), b, dst: dn_dest(rrr,size) }, Internal { (base-4) +
+///   2*cnt }]` where `base` = 6 (`.b`/`.w`) / 8 (`.l`) → total `6 + 2*cnt` / `8 + 2*cnt` (the `Prefetch`
+///   refill is the leading 4). The count **operand** `b` = [`Operand::ShiftCount`] (imm, the literal 1-8) /
+///   [`Operand::DataRegFull`] (`Dn`-count, the exec masks `& 63`).
+/// - **Memory shift-by-1** (`1110 0TTd 11 mmm rrr`, bits 7-6 == 11, **`.w` only**, count always 1): the WORD
+///   `ea_dst` read-modify-WRITE (read the word → shift-by-1 → write the word), byte-for-byte CLR.w/NEG.w's
+///   memory path, with `b = Operand::ShiftCount(1)`. An odd EA address-errors on the READ (SSW low5 = 0x15,
+///   the E3/E4 abort), exactly like NEG.w/CLR.w. No register `+2` (memory timing is fixed per EA mode).
+fn shift_recipe(opcode: u16, op: AluOp, regs: &Registers) -> MicroState {
+    let mode = (opcode >> 3) & 7;
+    let reg = (opcode & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    if (opcode >> 6) & 3 == 3 {
+        // Memory shift-by-1 (word only): the CLR.w/NEG.w word RMW — read word → shift1 → write word back.
+        // An odd EA faults on the READ (E3/E4 abort), exactly like NEG.w/CLR.w. `b` is the constant 1.
+        ea_dst(&mut buf, mode, reg, Size::Word, |operand| MicroOp::Alu {
+            op,
+            size: Size::Word,
+            a: operand,
+            b: Operand::ShiftCount(1),
+            dst: Dest::Scratch(1),
+        });
+    } else {
+        // Register form: shift `Dn` (bits 2-0) by the DECODE-TIME count. `size` from bits 7-6.
+        let size = match (opcode >> 6) & 3 {
+            0 => Size::Byte,
+            1 => Size::Word,
+            _ => Size::Long, // 10
+        };
+        let ccc = ((opcode >> 9) & 7) as u8;
+        // The count + its operand: immediate (bit 5 = 0) is `ccc != 0 ? ccc : 8` baked as a `ShiftCount`;
+        // the `Dn`-count (bit 5 = 1) is the LIVE `regs.d[ccc] & 63` read here, passed as `DataRegFull(ccc)`
+        // (the exec masks `& 63` at run time). The decoded `cnt` value drives the idle ONLY (it is the same
+        // count the exec computes), so the recipe length depends on `regs` for the `Dn` form.
+        let (cnt, b): (u16, Operand) = if (opcode >> 5) & 1 == 0 {
+            let c = if ccc != 0 { ccc } else { 8 };
+            (c as u16, Operand::ShiftCount(c))
+        } else {
+            (
+                (regs.d[ccc as usize] & 63) as u16,
+                Operand::DataRegFull(ccc),
+            )
+        };
+        let base: u16 = if size == Size::Long { 8 } else { 6 };
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::Alu {
+            op,
+            size,
+            a: dn_operand(reg, size),
+            b,
+            dst: dn_dest(reg, size),
+        });
+        buf.push(MicroOp::Internal {
+            cycles: (base - 4) + 2 * cnt,
         });
     }
     buf.finish()
