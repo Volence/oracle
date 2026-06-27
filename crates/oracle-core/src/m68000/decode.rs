@@ -816,6 +816,20 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         if is_roxl {
             return shift_recipe(opcode, AluOp::Roxl, regs);
         }
+        // ROXR (S7, FINAL) — ROX/RIGHT: direction bit 8 == 0, type ROX (register bits 4-3 == 2 / memory bits
+        // 10-9 == 2). The shared `shift_recipe`/`Operand::ShiftCount`/`dn_*` machinery is reused VERBATIM; only
+        // the AluOp + the `(type, dir)` classification differ from ASL/ASR/LSL/LSR/ROL/ROR/ROXL. ROXR is ROXL's
+        // right-direction twin — it threads X through an (n+1)-bit rotate (contrast ROL/ROR, which leave X
+        // untouched — and the value shifts AS/LS, which set X = C from the value). All eight shift/rotate ops are
+        // now loaded; the guard keeps the arm precise regardless.
+        let is_roxr = if (opcode >> 6) & 3 == 3 {
+            (opcode >> 8) & 1 == 0 && (opcode >> 9) & 3 == 2 // memory: dir RIGHT, type ROX (bits 10-9)
+        } else {
+            (opcode >> 8) & 1 == 0 && (opcode >> 3) & 3 == 2 // register: dir RIGHT, type ROX (bits 4-3)
+        };
+        if is_roxr {
+            return shift_recipe(opcode, AluOp::Roxr, regs);
+        }
     }
     todo!("opcode {opcode:#06X} not yet decoded")
 }
