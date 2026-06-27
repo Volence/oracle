@@ -667,6 +667,20 @@ pub enum AluOp {
     /// start. The size-masked result is written back (low8/low16/full32 for a `Dn` dest via `dn_dest`, or
     /// [`Dest::Scratch`] for the word memory rotate-by-1).
     Roxr,
+    /// Mulu: **unsigned** 16×16→32 multiply — `Dn = (a & 0xFFFF) * (b & 0xFFFF)` written FULL-32 to `Dn`
+    /// ([`Dest::DataReg`]), where `a` = the low word of `Dn` (the multiplicand, [`Operand::DataRegLow16`]) and
+    /// `b` = the source word (the multiplier, resolved by `ea_src(Size::Word)` — a register / scratch / the
+    /// immediate). Flags are the MOVE/logic shape on the FULL 32-bit product: **N = bit31(product)**, **Z =
+    /// (product == 0)**, clears **V** and **C**, **PRESERVES X** (re-injected `ccr_nz | (regs.sr & CCR_X)` —
+    /// only N/Z/V/C change). THE TIMING IS DATA-DEPENDENT ON THE SOURCE: unlike every other Alu op (which
+    /// returns 0 cycles and lets the recipe's idle ops own the cost), the Mulu exec arm RETURNS its own step
+    /// cycle cost = **`34 + 2 * popcount(b & 0xFFFF)`** (the count comes from the resolved multiplier `b`, not
+    /// knowable at decode for a memory source). The full instruction length is `38 + 2*popcount + ea_cost`,
+    /// emerging as the operand read + the prefetch refill + this count-dependent idle. An early-return op (like
+    /// MoveA/Adda/Suba) — it does its own SR + Dn write and bumps `self.step`, never reaching the shared
+    /// write-back. Distinct from [`AluOp::Suba`] (an An-write no-flag op) and [`AluOp::And`] (a 0-cycle
+    /// fixed-flag logic op).
+    Mulu,
 }
 
 /// A bitwise logic operation a [`MicroOp::SrLogic`] applies to the status register — the three privileged
@@ -1154,14 +1168,42 @@ impl MicroState {
                         self.step += 1;
                         return 0;
                     }
+                    // MULU — the UNSIGNED 16×16→32 multiply. An early-return op (like MoveA/ADDA/SUBA) because
+                    // the TIMING IS DATA-DEPENDENT ON THE SOURCE: the step's cycle cost is `34 + 2*popcount(b16)`
+                    // (the multiplier `b`, resolved here at exec — for a memory source `b` is read mid-instruction
+                    // and is not knowable at decode), not the usual 0. `a` = the low word of Dn (multiplicand),
+                    // `b` = the source word; the product is `(a&0xFFFF) * (b&0xFFFF)` written FULL-32 to Dn. Flags:
+                    // N = bit31(product), Z = (product == 0), V = 0, C = 0, X PRESERVED (move_flags(product, Long)
+                    // then re-inject the live X). The full instruction length is `38 + 2*popcount + ea_cost`, this
+                    // count-dependent idle being the count's contribution (the operand read + the prefetch refill
+                    // are the recipe's other steps).
+                    AluOp::Mulu => {
+                        let b16 = rhs & 0xFFFF;
+                        let product = (lhs & 0xFFFF).wrapping_mul(b16);
+                        let (_r, ccr_nz) = move_flags(product, Size::Long);
+                        regs.sr = (regs.sr & 0xFF00) | ccr_nz | (regs.sr & CCR_X);
+                        match dst {
+                            Dest::DataReg(n) => regs.d[n as usize] = product,
+                            _ => {
+                                unreachable!("MULU writes only Dest::DataReg (the full-32 product)")
+                            }
+                        }
+                        // Early-return op (like MoveA/ADDA/SUBA): advance the cursor AND book the cycles here,
+                        // since the shared `self.step += 1; self.cycles += cycles` tail (the end of `exec_one`)
+                        // is bypassed by this `return`. The data-dependent cost is `34 + 2*popcount(src16)`.
+                        let cycles = 34 + 2 * b16.count_ones();
+                        self.step += 1;
+                        self.cycles += cycles;
+                        return cycles;
+                    }
                     _ => {}
                 }
                 // Compute at the operand-size flag boundary; carry the result (zero-extended to 32) + the new
                 // low-byte CCR uniformly. MOVE is NOT arithmetic — it copies `a` and sets only N/Z (V/C
                 // cleared) while PRESERVING X, so its `ccr` re-injects the live X bit (add/sub recompute X).
                 let (result, ccr) = match op {
-                    AluOp::MoveA | AluOp::Adda | AluOp::Suba => {
-                        unreachable!("no-flag An-write op handled above")
+                    AluOp::MoveA | AluOp::Adda | AluOp::Suba | AluOp::Mulu => {
+                        unreachable!("early-return op (no-flag An-write / data-dependent-cycle MULU) handled above")
                     }
                     AluOp::Move => {
                         let (r, ccr_nz) = move_flags(lhs, size);

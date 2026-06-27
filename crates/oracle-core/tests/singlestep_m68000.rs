@@ -450,6 +450,20 @@ const FILES: &[&str] = &[
     "ROXR.b.json",
     "ROXR.w.json",
     "ROXR.l.json",
+    // MULU `<ea>,Dn` (`1100 ddd 011 mmm rrr`, opcode & 0xF1C0 == 0xC0C0, opmode 3 in the 0xC space — disjoint
+    // from AND's opmode 0/1/2/4/5/6) — the 16×16→32 UNSIGNED multiply: `Dn = (Dn & 0xFFFF) * (src & 0xFFFF)`
+    // (the FULL 32-bit product). M0 decodes the FULL 11 source modes via `ea_src(Size::Word)` VERBATIM (the same
+    // machinery CHK uses): Dn (0), (An)/(An)+/-(An)/d16(An)/d8(An,Xn) (2-6), abs.w/abs.l/d16(PC)/d8(PC,Xn)/#imm
+    // (7/0..7/4); An-direct (mode 1) is illegal/absent. Flags: N = bit31(product), Z = (product == 0), V = 0,
+    // C = 0, X PRESERVED (`move_flags(product, Long) | (sr & CCR_X)`). TIMING IS DATA-DEPENDENT ON THE SOURCE:
+    // length = 38 + 2*popcount(src16) + ea_cost — the `AluOp::Mulu` exec arm RETURNS `34 + 2*popcount(b16)` as
+    // its step cycle cost (the count comes from the resolved multiplier `b`, unknown at decode for a memory
+    // source). Bus stream: mode-0 `[Prefetch, idle@(34+2*count)]`; a memory source `[src-read, Prefetch,
+    // idle@(34+2*count)]` + the EA's ext-word/idle costs. Odd word EAs are address errors the E3/E4 abort covers
+    // (NO parity filter), exactly like CHK. The file is 100% PURE (one opcode, classified by OPCODE) and 100% in
+    // scope: 8065 cases (all 11 source modes incl PC-rel + #imm + the clean `(A7)` mode-2 source; the odd-EA
+    // address errors are IN scope via E3/E4). NO deferral, NO parity filter, NO corrupt entries.
+    "MULU.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -762,6 +776,22 @@ fn chk_covered(opcode: u16) -> bool {
     matches!(mode, 0 | 2 | 3 | 4 | 5 | 6) || (mode == 7 && reg <= 4)
 }
 
+/// Whether the framework covers this `MULU <ea>,Dn` case (`opcode & 0xF1C0 == 0xC0C0`, opmode 3 in the 0xC
+/// space — disjoint from AND's opmode 0/1/2/4/5/6, so `and_or_in_scope` never matches it). A `chk_covered` twin:
+/// the MULU.json file is 100% PURE (one opcode, classified by OPCODE) and 100% in scope across the FULL 11
+/// source modes — `Dn` (0), `(An)`/`(An)+`/`-(An)`/`d16(An)`/`d8(An,Xn)` (2-6), `abs.w`/`abs.l`/`d16(PC)`/
+/// `d8(PC,Xn)`/`#imm` (7/0..7/4). An-direct (mode 1) is illegal/absent (MUL has no `An` source). **NO deferral,
+/// NO parity filter** — the `(A7)` mode-2 source is COVERED (NOT deferred), and odd word EAs are address errors
+/// the E3/E4 abort covers (exactly like CHK; `ea_src` faults on the odd word read). All 8065 cases in scope.
+fn mul_covered(opcode: u16) -> bool {
+    if opcode & 0xF1C0 != 0xC0C0 {
+        return false;
+    }
+    let mode = (opcode >> 3) & 7;
+    let reg = opcode & 7;
+    matches!(mode, 0 | 2 | 3 | 4 | 5 | 6) || (mode == 7 && reg <= 4)
+}
+
 /// Whether this opcode is one of the privileged immediate-to-SR logic ops the framework covers — `ANDItoSR`
 /// (`0x027C`), `ORItoSR` (`0x007C`), `EORItoSR` (`0x0A7C`), each the sole encoding in its file. Every vendored
 /// case starts in **supervisor** mode (the legal, SR-modifying path), so all are in scope.
@@ -1012,6 +1042,14 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // case is in scope across all 11 source modes (no-trap, Dn<0 / Dn>bound trap; odd source EAs are address
     // errors the E3/E4 abort covers). `An`-direct is illegal for CHK (never appears); no `(A7)` mode-2 deferral.
     if chk_covered(opcode) {
+        return true;
+    }
+    // MULU `<ea>,Dn` (1100 ddd 011 mmm rrr, opcode & 0xF1C0 == 0xC0C0, opmode 3) — the 16×16→32 UNSIGNED
+    // multiply `Dn = (Dn & 0xFFFF) * (src & 0xFFFF)` (full-32 product). 100% PURE / 100% in scope across the FULL
+    // 11 source modes (incl PC-rel + #imm + the clean `(A7)` mode-2 source; odd word EAs are address errors the
+    // E3/E4 abort covers, no parity filter). An-direct (mode 1) is illegal/absent. Timing is data-dependent on
+    // the source (length = 38 + 2*popcount(src16) + ea_cost — the Alu returns the count-dependent idle).
+    if mul_covered(opcode) {
         return true;
     }
     // ANDItoSR / ORItoSR / EORItoSR (0x027C / 0x007C / 0x0A7C) — the privileged immediate-to-SR logic ops.
@@ -1519,8 +1557,27 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 720_263,
-        "expected 720263 covered cases — S7 adds ROXR.b / ROXR.w / ROXR.l (`0xExxx`, ROX/right): ROXR.b 8065 + \
+        ran >= 728_328,
+        "expected 728328 covered cases — M0 adds MULU (its own MULU.json file, `1100 ddd 011 mmm rrr` = \
+         opcode & 0xF1C0 == 0xC0C0, opmode 3 in the 0xC space — DISJOINT from AND's opmode 0/1/2/4/5/6): MULU \
+         8065 = +8065 over the bit-op baseline's 720263 → 728328 (the WHOLE file in scope — 100% PURE, \
+         classified by OPCODE, no contaminant, no deferral). \
+         MULU is the 16×16→32 UNSIGNED multiply `Dn = (Dn & 0xFFFF) * (src & 0xFFFF)` (the FULL 32-bit product \
+         written to Dn). New vocabulary: `AluOp::Mulu` + `mul_recipe` (reuse of `ea_src(Size::Word)` — the same \
+         machinery CHK uses) + the ALU-RETURNS-CYCLES timing mechanism (the FIRST data-dependent cycle count \
+         from a value not knowable at decode — the memory-source multiplier). Flags: N = bit31(product), Z = \
+         (product == 0), V = 0, C = 0, X PRESERVED (only N/Z/V/C change). THE TIMING IS DATA-DEPENDENT ON THE \
+         SOURCE: length = 38 + 2*popcount(src16) + ea_cost — the `AluOp::Mulu` exec arm RETURNS `34 + \
+         2*popcount(b16)` as its step cycle cost (the multiplier `b` is resolved at exec, since a memory source \
+         is read mid-instruction and is unknown at decode), instead of the usual 0. Bus stream: mode-0 \
+         `[Prefetch, idle@(34+2*pc)]`; a memory source `[src-read, Prefetch, idle]` (+ the EA's ext-word/idle \
+         costs); #imm `[Prefetch, Prefetch, idle]` (the idle LAST — the immediate is captured BEFORE the two \
+         refills shift it out, then the idle Alu runs last, exactly like CHK's #imm arm). The FULL 11 source \
+         modes are in scope — Dn (0), (An)/(An)+/-(An)/d16(An)/d8(An,Xn) (2-6), abs.w/abs.l/d16(PC)/d8(PC,Xn)/ \
+         #imm (7/0..7/4); An-direct (mode 1) is illegal/absent. The `(A7)` mode-2 source is COVERED (NOT \
+         deferred); odd word EAs are address errors the E3/E4 abort covers (NO parity filter, exactly like CHK; \
+         `ea_src` faults on the odd word read). Classified by OPCODE (`mul_covered`: opcode & 0xF1C0 == 0xC0C0). \
+         Prior baseline — S7 adds ROXR.b / ROXR.w / ROXR.l (`0xExxx`, ROX/right): ROXR.b 8065 + \
          ROXR.w 8065 + ROXR.l 8065 = +24195 over S6's 696068 (NO corrupt entries — only ASL.b has the 2). This \
          is the FINAL shift/rotate commit (all eight ASL/ASR/LSL/LSR/ROL/ROR/ROXL/ROXR ops now loaded). \
          ROXR is rotate RIGHT THROUGH X — ROXL's right-direction twin. It treats the X:operand pair as an \
@@ -2024,7 +2081,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -5494,5 +5551,128 @@ fn roxr_w_mem_quiescable_and_serializable_at_every_micro_op_boundary() {
     }
     eprintln!(
         "S7 ROXR snapshot/restore: ROXR.w (A3) word rotate-by-1 RMW resumed identically at every micro-op boundary"
+    );
+}
+
+/// M0 — the named `MULU <ea>,Dn` anchors, pinning the new `AluOp::Mulu` + the `mul_recipe` (reuse of
+/// `ea_src(Size::Word)`) + the ALU-RETURNS-CYCLES timing mechanism against the vendored MULU stream WITHOUT
+/// relying on the bulk `covered()` sweep. The load-bearing facts:
+/// - **Value:** `Dn = (Dn & 0xFFFF) * (src & 0xFFFF)` — the FULL 32-bit unsigned product written to `Dn`.
+/// - **Flags:** N = bit31(product), Z = (product == 0), V = 0, C = 0, X PRESERVED (only N/Z/V/C change).
+/// - **Timing is DATA-DEPENDENT ON THE SOURCE:** length = 38 + 2*popcount(src16) + ea_cost. The
+///   `AluOp::Mulu` exec arm RETURNS `34 + 2*popcount(b16)` as the step's cycle cost (the count comes from the
+///   resolved multiplier `b`, not knowable at decode for a memory source). The two mode-0 anchors
+///   (popcount 1 → len 40, popcount 14 → len 66) differ by exactly `2 * 13 = 26` cycles — the timing IS the
+///   source popcount.
+/// - **Bus stream:** mode-0 `[Prefetch, idle@(34+2*pc)]`; (An) `[src-read, Prefetch, idle]` (+4 ea); d16(PC)
+///   `[Prefetch, src-read, Prefetch, idle]` (+8 ea); #imm `[Prefetch, Prefetch, idle]` (+4 ea, the idle LAST —
+///   the immediate is captured BEFORE the two refills shift it out, then the idle Alu runs last); `(A7)`
+///   mode-2 source is COVERED (NOT deferred); an odd `(An)` word EA is an address error the E3/E4 abort covers.
+/// - **N=1 / Z=1** cases pin bit31(product) and product==0.
+#[test]
+fn mulu_anchors_match_singlesteptests() {
+    // (file, full-name, length). The full names select the EXACT case the doc-comment describes.
+    let anchors: &[(&str, &str, u32)] = &[
+        ("MULU.json", "c4c0 [MULU D0, D2] 3516", 40), // mode-0 Dn, src popcount 1 → 38+2*1
+        ("MULU.json", "c0c6 [MULU D6, D0] 2556", 66), // mode-0 Dn, src popcount 14 → 38+2*14 (timing differs)
+        ("MULU.json", "c4d3 [MULU (A3), D2] 6", 62),  // (An) memory source (+4 ea): r.w, r.w, n
+        ("MULU.json", "ccfa [MULU (d16, PC), D6] 112", 62), // d16(PC) source (+8 ea): r.w, r.w, r.w, n
+        ("MULU.json", "c2fc [MULU #, D1] 34", 56), // #imm source (+4 ea): r.w, r.w, n (idle LAST)
+        ("MULU.json", "c0d7 [MULU (A7), D0] 54", 62), // (A7) mode-2 source (COVERED, NOT deferred)
+        ("MULU.json", "c0d1 [MULU (A1), D0] 1", 50), // odd (A1) word EA → address error (E3/E4, must PASS)
+        ("MULU.json", "c0c6 [MULU D6, D0] 3", 54),   // N=1: product bit31 set
+        ("MULU.json", "c2f8 [MULU (xxx).w, D1] 5947", 46), // Z=1: product == 0 (abs.w source)
+    ];
+    let mut found = 0usize;
+    for (fname, name, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap() == *name
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| panic!("M0 MULU anchor {name} (len {length}) not found in {fname}"));
+        // Every anchor must be a MULU opcode (opcode & 0xF1C0 == 0xC0C0, opmode 3 in the 0xC space), never an
+        // AND-class opcode (and_or_in_scope rejects opmode 3).
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(
+            opcode & 0xF1C0,
+            0xC0C0,
+            "anchor {name} must be a MULU opcode (opcode & 0xF1C0 == 0xC0C0, opmode 3)"
+        );
+        assert!(
+            !and_or_in_scope(opcode),
+            "MULU (opmode 3) is not an AND/OR register-form opcode"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all M0 MULU anchors exercised");
+    eprintln!(
+        "M0 MULU anchors: {found} cases (mode-0 popcount 1 vs 14 timing / (An) / d16(PC) / #imm / (A7) m2 / odd-EA address error / N=1 / Z=1; full-32 unsigned product, only N/Z change, X preserved, length 38+2*popcount+ea via the ALU-returns-cycles mechanism) passed both drivers"
+    );
+}
+
+/// M0 — the snapshot/restore anchor for the MULU memory-source path (the new `AluOp::Mulu` + the ALU-returns-
+/// cycles timing). Drives a real vendored `MULU (A3),D2` case (`[Read, Prefetch, Alu]`, 3 micro-ops) through the
+/// quiesce driver, snapshotting + restoring the WHOLE `Cpu68000` (incl. the in-flight cursor) at EVERY micro-op
+/// boundary — including the mid-bus-access boundary around the operand Read — and proving the resumed run
+/// reproduces the run-to-completion final state + transaction stream bit-for-bit. Pins that the data-dependent
+/// cycle count (resolved from the snapshot-captured source) keeps `MicroState` fixed-size bincode.
+#[test]
+fn mulu_mem_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/MULU.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "c4d3 [MULU (A3), D2] 6")
+        .expect("MULU (A3) snapshot anchor present");
+    let ini = &case["initial"];
+
+    // Run-to-completion reference.
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    // 3 micro-ops (Read, Prefetch, Alu) → in-flight boundaries after 0..=2 of them.
+    for pause_after in 0..=2 {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        for _ in 0..pause_after {
+            assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+        }
+        // Snapshot + restore the whole CPU (incl. the in-flight cursor) mid-instruction.
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+    }
+    eprintln!(
+        "M0 MULU snapshot/restore: MULU (A3),D2 memory-source multiply resumed identically at every micro-op boundary (incl the data-dependent cycle count)"
     );
 }

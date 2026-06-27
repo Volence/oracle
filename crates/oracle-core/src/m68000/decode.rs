@@ -256,6 +256,15 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     if opcode & 0xF1C0 == 0xC180 && is_dst_mem_mode((opcode >> 3) & 7, opcode & 7) {
         return arith_dn_ea(opcode, AluOp::And, Size::Long); // AND.l Dn,<ea>
     }
+    // MULU `<ea>,Dn` (`1100 ddd 011 mmm rrr`, opcode & 0xF1C0 == 0xC0C0, opmode 3 in the 0xC space) — the
+    // 16×16→32 UNSIGNED multiply `Dn = (Dn & 0xFFFF) * (src & 0xFFFF)` (the full 32-bit product). opmode 3 is
+    // DISJOINT from AND's opmode 0/1/2 (`<ea>,Dn`) and 4/5/6 (`Dn,<ea>`) above, so this arm is reached only on
+    // the genuine MULU encoding. Reuses `ea_src(Size::Word)` (the CHK machinery, all 11 source modes incl
+    // PC-relative/#imm + the odd-EA address error). The `AluOp::Mulu` exec arm RETURNS its data-dependent cycle
+    // cost (`34 + 2*popcount(src16)`) — the count comes from the resolved multiplier (exec-time, not decode).
+    if opcode & 0xF1C0 == 0xC0C0 {
+        return mul_recipe(opcode, AluOp::Mulu);
+    }
     // OR `<ea>,Dn` (`1000 ddd 0SS mmm rrr`, opmode 0/1/2 = b/w/l = 0x8000/0x8040/0x8080) — bitwise `Dn = Dn |
     // <ea>` (Dn the minuend `a`; OR is commutative so operand order is inert). Identical to the AND `<ea>,Dn`
     // arms above with `AluOp::Or` and the base nibble 0x8 instead of 0xC — same `arith_ea_dn` builder VERBATIM
@@ -2832,6 +2841,66 @@ fn trapv_recipe(regs: &Registers) -> MicroState {
     buf.push(MicroOp::Prefetch);
     push_standard_frame(&mut buf, TRAPV_SAVED_PC_SLOT, TRAPV_SAVE_SR_SLOT);
     vector_fetch_and_reload(&mut buf, 7 * 4);
+    buf.finish()
+}
+
+/// Scratch slot holding a MULU `#imm` source word, captured from `prefetch[1]` BEFORE the two refills shift it
+/// out, so the count-dependent idle `Alu` can run LAST (after both prefetches — the vendored `#imm` stream is
+/// `[Prefetch, Prefetch, idle]`, the idle trailing). Slot 0 — the same slot a memory-source `ea_src` deposits
+/// its read into; the `Alu` reads it as `b` before any other op touches it.
+const MUL_IMM_SRC_SLOT: u8 = 0;
+
+/// `MULU <ea>,Dn` (`1100 ddd 011 mmm rrr`, opcode & 0xF1C0 == 0xC0C0, opmode 3 in the 0xC space — disjoint from
+/// AND's opmode 0/1/2/4/5/6) — the 16×16→32 UNSIGNED multiply `Dn = (Dn & 0xFFFF) * (src & 0xFFFF)` (the full
+/// 32-bit product). `Dn` is bits 11-9; the source EA is the usual `mode/reg` in bits 5-0 (all 11 legal source
+/// modes — An-direct is illegal for MUL and never appears). Reuses `ea_src(Size::Word)` VERBATIM — the same
+/// machinery CHK uses (`chk_recipe`): it emits the operand read → prefetch refill → the closure op in the order
+/// the MUL stream needs, and covers every source mode incl PC-relative + the odd-EA address error (an odd word
+/// EA faults on the `ea_src` read, like CHK — NO parity filter). The `Alu{Mulu}` exec arm computes the product,
+/// sets N=bit31 / Z=zero / V=0 / C=0 / X-preserved, and RETURNS its data-dependent cycle cost `34 +
+/// 2*popcount(src16)` (the count comes from the resolved multiplier — exec-time, since a memory source is not
+/// known at decode). The full length is `38 + 2*popcount + ea_cost`.
+///
+/// The ONE deviation from a literal `ea_src` reuse is the `#imm` mode (`7/4`): `ea_src`'s `#imm` path places the
+/// `Alu` FIRST (it must sample `prefetch[1]` before the two refills shift the immediate out), which would put
+/// the count-dependent idle BEFORE the prefetches — but the vendored `#imm` stream is `[Prefetch, Prefetch,
+/// idle]` (idle LAST). So, exactly like `chk_recipe`'s `#imm` arm, the immediate is captured into a scratch slot
+/// via `EaCalc{base: ImmWord}` BEFORE the two refills, both refills run, then the `Alu{Mulu, b: Scratch}` runs
+/// last (the bus stream / cycles are identical — only the value is captured first).
+fn mul_recipe(opcode: u16, op: AluOp) -> MicroState {
+    let dn = ((opcode >> 9) & 7) as u8;
+    let mode = (opcode >> 3) & 7;
+    let reg = (opcode & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    if (mode, reg) == (7, 4) {
+        // #imm: capture the immediate (prefetch[1], zero-extended) into scratch BEFORE the two refills shift it
+        // out, run both refills, then the Mulu Alu last (so the count-dependent idle trails the prefetches).
+        buf.push(MicroOp::EaCalc {
+            base: Operand::ImmWord,
+            index: Operand::Zero,
+            disp: Operand::Zero,
+            dst: MUL_IMM_SRC_SLOT,
+        });
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::Alu {
+            op,
+            size: Size::Word,
+            a: Operand::DataRegLow16(dn),
+            b: Operand::Scratch(MUL_IMM_SRC_SLOT),
+            dst: Dest::DataReg(dn),
+        });
+    } else {
+        // Memory / Dn-direct: ea_src places the make-op last (after the refill(s)), with the source operand it
+        // resolves (Scratch(0) for memory, DataRegLow16 for Dn-direct). The Alu returns the data-dependent idle.
+        ea_src(&mut buf, mode, reg, Size::Word, |src| MicroOp::Alu {
+            op,
+            size: Size::Word,
+            a: Operand::DataRegLow16(dn),
+            b: src,
+            dst: Dest::DataReg(dn),
+        });
+    }
     buf.finish()
 }
 
