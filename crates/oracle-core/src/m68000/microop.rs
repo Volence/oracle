@@ -548,6 +548,24 @@ pub enum AluOp {
     /// `dn_dest`, or parked in [`Dest::Scratch`] for the word memory shift-by-1 the trailing `Write` stores).
     /// Every Rust shift is guarded (the `cnt >= n` branch; the V top-mask shifts by `n-1-cnt ∈ 0..n-1`).
     Asl,
+    /// Asr: **arithmetic shift RIGHT** by `cnt = b & 63` — the sign-EXTENDING right shift (`Dn`'s msb is
+    /// replicated into the vacated top bits). Reuses the shared [`shift_recipe`]/[`Operand::ShiftCount`]/`dn_*`
+    /// machinery VERBATIM (only the `AluOp` + the AS/right decode arm differ from ASL). `a` is the operand
+    /// (size-masked to `x`), `b` the count source ([`Operand::ShiftCount`] for the immediate/memory forms /
+    /// [`Operand::DataRegFull`] for the dynamic `Dn`-count form — the exec masks `& 63`); `size` → `n =
+    /// 8/16/32`, `mask = (1<<n)-1`, `signbit = 1<<(n-1)`. Value (sign-extending): for `cnt >= n` the result is
+    /// all-sign-bits (`mask` if the operand is negative, else `0`); for `0 < cnt < n` it is `(x >> cnt)` with
+    /// the top `cnt` bits filled by the sign (`(mask << (n-cnt)) & mask` when negative). **C** = the last bit
+    /// shifted out of the OPERAND — `bit(cnt-1)` when `1 <= cnt <= n`, else **0** (THE ASR CARRY QUIRK: for
+    /// `cnt > n`, C = 0, **NOT** the sign bit — even though the *value* still sign-extends to all-sign-bits; a
+    /// naive "last bit out = sign for over-shift" mismatches 1642 ASR.b cases); **X = C**. **V = 0** always
+    /// (ASR never sets V — only ASL owns V). **N** = msb(res), **Z** = (res == 0). **ZERO COUNT** (`cnt == 0`,
+    /// possible only via the dynamic `Dn` form): the value is unchanged, **V = 0, C = 0, X PRESERVED** (the
+    /// shift never ran — re-inject the live X), N/Z from the unchanged operand. The size-masked result is
+    /// written back (low8/low16/full32 for a `Dn` dest via `dn_dest`, or [`Dest::Scratch`] for the word memory
+    /// shift-by-1). Every Rust shift is guarded (the `cnt == 0` and `cnt >= n` branches keep `n - cnt ∈
+    /// 1..n-1` and `cnt - 1 ∈ 0..n-1`, never `>= 32`).
+    Asr,
 }
 
 /// A bitwise logic operation a [`MicroOp::SrLogic`] applies to the status register — the three privileged
@@ -1289,6 +1307,58 @@ impl MicroState {
                             };
                             if v {
                                 ccr |= CCR_V;
+                            }
+                        }
+                        (res, ccr)
+                    }
+                    // ASR — arithmetic shift RIGHT by `cnt = b & 63` (the resolved count). `x` = the size-masked
+                    // operand `a`; `n` = 8/16/32. Sign-EXTENDING: the vacated top bits are filled with the
+                    // operand's sign bit. Value: `cnt == 0` → x unchanged; `cnt >= n` → all-sign-bits (`mask` if
+                    // negative, else 0); `0 < cnt < n` → `(x >> cnt)` OR the top `cnt` sign-fill bits. C = the
+                    // last bit shifted out of the OPERAND — `bit(cnt-1)` for `1 <= cnt <= n`, else 0 (THE QUIRK:
+                    // `cnt > n` → C = 0, NOT the sign bit — even though the value still sign-extends); X = C.
+                    // V = 0 always. ZERO COUNT (`cnt == 0`, only the dynamic `Dn` form): value unchanged, V=0,
+                    // C=0, **X PRESERVED** (re-inject the live X — the shift never ran), N/Z from the unchanged
+                    // operand. All Rust shifts are guarded: the `cnt == 0` branch keeps `res = x` (avoids the
+                    // `mask << (n-cnt)` shift-by-`n`); the sign-fill runs only for `0 < cnt < n` (`n - cnt ∈
+                    // 1..n-1`); `x >> cnt` runs only for `0 < cnt < n`; `x >> (cnt-1)` runs only for `1 <= cnt
+                    // <= n` (`cnt - 1 ∈ 0..n-1`).
+                    AluOp::Asr => {
+                        let (mask, signbit, n) = match size {
+                            Size::Byte => (0xFFu32, 0x80u32, 8u32),
+                            Size::Word => (0xFFFF, 0x8000, 16),
+                            Size::Long => (0xFFFF_FFFF, 0x8000_0000, 32),
+                        };
+                        let x = lhs & mask;
+                        let cnt = rhs & 63;
+                        let neg = x & signbit != 0;
+                        let res = if cnt == 0 {
+                            x
+                        } else if cnt >= n {
+                            if neg {
+                                mask
+                            } else {
+                                0
+                            }
+                        } else {
+                            (x >> cnt) | (if neg { (mask << (n - cnt)) & mask } else { 0 })
+                        };
+                        let mut ccr = 0u16;
+                        if res & signbit != 0 {
+                            ccr |= CCR_N;
+                        }
+                        if res == 0 {
+                            ccr |= CCR_Z;
+                        }
+                        if cnt == 0 {
+                            // Zero count: V=0, C=0, X PRESERVED (the shift never ran — re-inject the live X).
+                            ccr |= regs.sr & CCR_X;
+                        } else {
+                            // C = the last bit shifted out of the operand — bit(cnt-1) for 1<=cnt<=n, else 0
+                            // (THE QUIRK: cnt>n → C=0, NOT the sign bit). X = C. V = 0 always (never set).
+                            let c = if cnt <= n { (x >> (cnt - 1)) & 1 } else { 0 };
+                            if c != 0 {
+                                ccr |= CCR_C | CCR_X;
                             }
                         }
                         (res, ccr)

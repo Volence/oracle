@@ -308,6 +308,25 @@ const FILES: &[&str] = &[
     "ASL.b.json",
     "ASL.w.json",
     "ASL.l.json",
+    // ASR.b / ASR.w / ASR.l (`0xExxx`, AS/right) — arithmetic shift RIGHT (S1): the sign-EXTENDING right
+    // shift. Same three forms / classification / `shift_recipe` as ASL (only the AluOp + the AS/right decode
+    // arm differ — direction bit 8 == 0, type AS bits 4-3 (register) / 10-9 (memory) == 0). Value: the vacated
+    // top bits are filled with the operand's sign bit (`cnt >= n` → all-sign-bits). C = the last bit shifted
+    // out of the OPERAND — `bit(cnt-1)` for `1 <= cnt <= n`, else **0** (THE ASR CARRY QUIRK: `cnt > n` → C=0,
+    // NOT the sign bit, even though the value still sign-extends — a naive "last bit out = sign for over-shift"
+    // mismatches 1642 ASR.b cases); **X = C**; **V = 0** always (ASR never sets V — only ASL owns V); **N** =
+    // msb / **Z** = (res == 0). ZERO COUNT (`cnt == 0`, only the `Dn` form): value unchanged, V = 0, C = 0,
+    // **X PRESERVED**. Reuses `Operand::ShiftCount` + the shared `shift_recipe` VERBATIM (register `[Prefetch,
+    // Alu, Internal{(base-4)+2*cnt}]`, base 6 `.b`/`.w` / 8 `.l`; memory the CLR.w/NEG.w word `ea_dst` RMW).
+    // Timing identical to ASL: register `.b`/`.w` = 6 + 2*cnt, `.l` = 8 + 2*cnt; memory shift-by-1 (word):
+    // (An)/(An)+ 12, -(An) 14, d16(An) 16, d8(An,Xn) 18, abs.w 16, abs.l 20; an odd EA address-errors on the
+    // READ (low5 = 0x15, the E3/E4 abort). The FULL in-scope EA set is covered (every register shift + the
+    // `.w` data-alterable memory set INCL the clean `(A7)` mode-2 indirect, NO deferral / NO parity filter).
+    // NO corrupt entries (only ASL.b has the 2 self-contradictory cases). Per-file true counts: ASR.b 8065 +
+    // ASR.w 8065 + ASR.l 8065 = +24195. All three files are 100% PURE for their op+size.
+    "ASR.b.json",
+    "ASR.w.json",
+    "ASR.l.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -1377,8 +1396,25 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 550_898,
-        "expected 550898 covered cases — S0 (the FOUNDATIONAL shift/rotate commit) adds ASL.b / ASL.w / ASL.l \
+        ran >= 575_093,
+        "expected 575093 covered cases — S1 adds ASR.b / ASR.w / ASR.l (`0xExxx`, AS/right): ASR.b 8065 + \
+         ASR.w 8065 + ASR.l 8065 = +24195 over S0's 550898 (NO corrupt entries — only ASL.b has the 2). ASR \
+         is arithmetic shift RIGHT, the sign-EXTENDING right shift; it reuses `Operand::ShiftCount` + the \
+         shared `shift_recipe` + `dn_*` VERBATIM (only the AluOp + the AS/right decode arm differ — direction \
+         bit 8 == 0, type AS bits 4-3 (register) / 10-9 (memory) == 0). Value: the vacated top bits are filled \
+         with the operand's sign bit (`cnt >= n` → all-sign-bits: `mask` if negative else 0; `0 < cnt < n` → \
+         `(x >> cnt)` OR the top `cnt` sign-fill bits). C = the last bit shifted out of the OPERAND — \
+         `bit(cnt-1)` for `1 <= cnt <= n`, else 0 (THE ASR CARRY QUIRK: `cnt > n` → C = 0, NOT the sign bit — \
+         even though the value still sign-extends to all-sign-bits; a naive 'last bit out = sign for \
+         over-shift' rule mismatches 1642 ASR.b cases); X = C; V = 0 ALWAYS (ASR never sets V — only ASL owns \
+         V); N = msb(res), Z = (res == 0). ZERO COUNT (`cnt == 0`, only the `Dn` form): value unchanged, V = \
+         0, C = 0, X PRESERVED (the shift never ran). Timing identical to ASL: register `.b`/`.w` = 6 + 2*cnt, \
+         `.l` = 8 + 2*cnt; memory shift-by-1 (word): (An)/(An)+ 12, -(An) 14, d16(An) 16, d8(An,Xn) 18, abs.w \
+         16, abs.l 20; an odd EA address-errors on the READ (the E3/E4 abort). The FULL in-scope EA set is \
+         covered (`shift_covered`): every register shift + the `.w` data-alterable memory set INCL the clean \
+         `(A7)` mode-2 indirect (NO deferral, NO parity filter). All three ASR files are 100% PURE for their \
+         op+size (only AS/right decodes the ASR opcodes — LSL/LSR/ROL/ROR/ROXL/ROXR land S2-S7). \
+         Prior baseline — S0 (the FOUNDATIONAL shift/rotate commit) adds ASL.b / ASL.w / ASL.l \
          (`0xExxx`, AS/left): ASL.b 8063 + ASL.w 8065 + ASL.l 8065 = +24193 over B3's 526705 (ASL.b is the \
          ONLY file not 8065 — it has 2 PROVABLY-CORRUPT entries excluded). ASL is arithmetic shift LEFT, the \
          one shift that owns the **V** flag (the sign bit changed at ANY point during the shift). Three forms, \
@@ -1767,7 +1803,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -3759,5 +3795,205 @@ fn asl_w_mem_quiescable_and_serializable_at_every_micro_op_boundary() {
     }
     eprintln!(
         "S0 ASL snapshot/restore: ASL.w (A5) word shift-by-1 RMW resumed identically at every micro-op boundary"
+    );
+}
+
+/// S1 — the named ASR anchors, pinning arithmetic shift RIGHT against the vendored ASR.b/.w/.l stream WITHOUT
+/// relying on the bulk `covered()` sweep. ASR is the sign-EXTENDING right shift; it reuses S0's `shift_recipe`/
+/// `Operand::ShiftCount`/`dn_*` VERBATIM (only the AluOp + the AS/right decode arm differ). Each anchor is a
+/// real vendored case run through both drivers + the per-cycle transaction stream via `run_case`; the
+/// load-bearing pins:
+///
+/// - `e202 [ASR.b Q, D2] 9` (len 8) — REGISTER **immediate** `.b`, cnt 1 → timing `6 + 2*1`.
+/// - `e005 [ASR.b Q, D5] 20` (len 22) — REGISTER immediate `.b`, `ccc == 0` → cnt **8** → `6 + 2*8`.
+/// - `e605 [ASR.b Q, D5] 4` (len 12) — REGISTER immediate `.b`, cnt 3, **NEGATIVE operand `cnt <= n`**: the
+///   value sign-extends (N set) AND **C = bit(cnt-1) = 1** (the in-range carry; `6 + 2*3`).
+/// - `e645 [ASR.w Q, D5] 1` (len 12) — REGISTER immediate `.w`, cnt 3 → `6 + 2*3`.
+/// - `e282 [ASR.l Q, D2] 1` (len 10) — REGISTER immediate `.l`, cnt 1 → the `.l` base `8 + 2*1`.
+/// - `ea23 [ASR.b D5, D3] 8` (len 30) — **THE ASR CARRY QUIRK**: a `Dn`-count `cnt = 12 > n = 8` over-shift of
+///   a NEGATIVE operand — the value sign-extends to all-ones (N set) but **C = 0** (NOT the sign bit; the naive
+///   "last bit out = sign for over-shift" rule would wrongly set C = 1). V = 0. Timing `6 + 2*12` (the live
+///   `Dn & 63` driving the idle).
+/// - `e867 [ASR.w D4, D7] 17` (len 6) — REGISTER **`Dn`-count `cnt == 0`** (the ZERO-COUNT special case): value
+///   UNCHANGED, **X PRESERVED** (X1 in → X1 out), V = 0, C = 0, timing `6` (`6 + 2*0`).
+/// - `e6a1 [ASR.l D3, D1] 89` (len 8) — `Dn`-count `cnt == 0` `.l`, the `8`-cyc zero-count register form.
+/// - `e0d5 [ASR.w (A5)] 26` (len 12) — `.w` **memory** shift-by-1 `(An)`: the word `ea_dst` RMW.
+/// - `e0e3 [ASR.w -(A3)] 22` (len 14) — `.w` memory shift-by-1 `-(An)` (the `14`-cyc predecrement RMW).
+/// - `e0d7 [ASR.w (A7)] 401` (len 12) — the plain `(A7)` mode-2 indirect (`mode == 2 && reg == 7`), COVERED
+///   (NOT deferred), a clean word RMW at the active A7.
+/// - `e0d6 [ASR.w (A6)] 76` (len 50) — an **odd-EA** `.w` memory address error (the E3/E4 abort installs the
+///   group-0 14-byte vector-3 frame), which must PASS unchanged.
+///
+/// Every anchor must decode as an ASR opcode (`0xExxx`, type AS / direction RIGHT) — never any other family.
+#[test]
+fn asr_anchors_match_singlesteptests() {
+    let anchors: &[(&str, &str, u32)] = &[
+        ("ASR.b.json", "e202 [ASR.b Q, D2] 9", 8), // imm .b cnt1 → 6+2
+        ("ASR.b.json", "e005 [ASR.b Q, D5] 20", 22), // imm .b ccc=0 → cnt8 → 6+16
+        ("ASR.b.json", "e605 [ASR.b Q, D5] 4", 12), // imm .b cnt3 NEGATIVE, cnt<=n, C=bit(cnt-1)=1
+        ("ASR.w.json", "e645 [ASR.w Q, D5] 1", 12), // imm .w cnt3 → 6+6
+        ("ASR.l.json", "e282 [ASR.l Q, D2] 1", 10), // imm .l cnt1 → 8+2
+        ("ASR.b.json", "ea23 [ASR.b D5, D3] 8", 30), // QUIRK: Dn cnt12 > n=8 negative → C=0 (not sign), 6+24
+        ("ASR.w.json", "e867 [ASR.w D4, D7] 17", 6), // Dn cnt0 (zero-count), X kept
+        ("ASR.l.json", "e6a1 [ASR.l D3, D1] 89", 8), // Dn cnt0 .l → 8
+        ("ASR.w.json", "e0d5 [ASR.w (A5)] 26", 12),  // memory (An) shift-by-1
+        ("ASR.w.json", "e0e3 [ASR.w -(A3)] 22", 14), // memory -(An) shift-by-1
+        ("ASR.w.json", "e0d7 [ASR.w (A7)] 401", 12), // (A7) mode-2 indirect — COVERED
+        ("ASR.w.json", "e0d6 [ASR.w (A6)] 76", 50),  // odd-EA memory address error
+    ];
+    let mut found = 0usize;
+    for (fname, name, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap() == *name
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| panic!("S1 ASR anchor {name} (len {length}) not found in {fname}"));
+        // Every anchor must be an ASR opcode: 0xExxx, type AS (register bits 4-3 == 0 / memory bits 10-9 ==
+        // 0), direction RIGHT (bit 8 == 0).
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(
+            opcode >> 12,
+            0xE,
+            "anchor {name} must be a 0xExxx shift opcode"
+        );
+        let is_asr = if (opcode >> 6) & 3 == 3 {
+            (opcode >> 8) & 1 == 0 && (opcode >> 9) & 3 == 0
+        } else {
+            (opcode >> 8) & 1 == 0 && (opcode >> 3) & 3 == 0
+        };
+        assert!(
+            is_asr,
+            "anchor {name} must be ASR (type AS, direction RIGHT)"
+        );
+        // Load-bearing flag/scope pins (run_case verifies the FULL final state against the data either way).
+        let ini_sr = case["initial"]["sr"].as_u64().unwrap() as u16;
+        let fin_sr = case["final"]["sr"].as_u64().unwrap() as u16;
+        match *name {
+            "e605 [ASR.b Q, D5] 4" => {
+                // cnt <= n, NEGATIVE operand: the value sign-extends (N set) AND C = bit(cnt-1) = 1 (the
+                // in-range carry — distinct from the cnt>n quirk), V cleared.
+                assert_ne!(
+                    fin_sr & 0x08,
+                    0,
+                    "cnt<=n negative ASR must set N (sign-extended)"
+                );
+                assert_ne!(fin_sr & 0x01, 0, "cnt<=n ASR must set C = bit(cnt-1) = 1");
+                assert_eq!(fin_sr & 0x02, 0, "ASR must always clear V");
+            }
+            "ea23 [ASR.b D5, D3] 8" => {
+                // THE QUIRK: cnt=12 > n=8 over-shift of a negative operand. The value is all-sign-bits
+                // (N set) yet C MUST be 0 (NOT the sign — the naive over-shift rule would set C=1). V = 0.
+                assert_ne!(
+                    fin_sr & 0x08,
+                    0,
+                    "over-shift ASR of a negative operand must set N (all-sign-bits)"
+                );
+                assert_eq!(
+                    fin_sr & 0x01,
+                    0,
+                    "ASR carry quirk: cnt>n must clear C (NOT the sign bit)"
+                );
+                assert_eq!(fin_sr & 0x02, 0, "ASR must always clear V");
+            }
+            "e867 [ASR.w D4, D7] 17" => {
+                // Zero-count: X PRESERVED (not set to C), V and C cleared, value unchanged.
+                assert_eq!(ini_sr & 0x10, fin_sr & 0x10, "zero-count must PRESERVE X");
+                assert_ne!(
+                    ini_sr & 0x10,
+                    0,
+                    "zero-count anchor must enter with X=1 (pins preservation)"
+                );
+                assert_eq!(fin_sr & 0x02, 0, "zero-count must clear V");
+                assert_eq!(fin_sr & 0x01, 0, "zero-count must clear C");
+                assert_eq!(
+                    case["initial"]["d7"], case["final"]["d7"],
+                    "zero-count must leave the operand unchanged"
+                );
+            }
+            "e0d7 [ASR.w (A7)] 401" => {
+                assert_eq!((opcode >> 3) & 7, 2, "(A7) anchor must be mode 2");
+                assert_eq!(opcode & 7, 7, "(A7) anchor must be reg 7 (the A7 indirect)");
+            }
+            "e0d6 [ASR.w (A6)] 76" => {
+                // Odd-EA address error: the group-0 frame pushes the SSP down (the standard 14-byte frame).
+                assert!(
+                    case["final"]["ssp"].as_u64().unwrap()
+                        < case["initial"]["ssp"].as_u64().unwrap(),
+                    "odd-EA anchor must install the address-error frame (SSP pushed down)"
+                );
+            }
+            _ => {}
+        }
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all S1 ASR anchors exercised");
+    eprintln!(
+        "S1 ASR anchors: {found} cases (imm .b/.w/.l 6+2cnt / 8+2cnt, cnt<=n negative C=bit(cnt-1), the cnt>n CARRY QUIRK C=0 on a negative operand, Dn cnt0 zero-count X-preserved, (An)/-(An)/(A7) memory shift-by-1, odd-EA address-error) passed both drivers"
+    );
+}
+
+/// S1 — the snapshot/restore anchor for the ASR.w memory shift-by-1 (the shared `shift_recipe` word `ea_dst`
+/// RMW: `[Read, Prefetch, Alu, Write]`). Drives a real vendored `ASR.w (A5)` case through the quiesce driver,
+/// snapshotting + restoring the WHOLE `Cpu68000` (incl. the in-flight cursor) at every micro-op boundary —
+/// including the mid-bus-access boundary between the operand Read and the result Write — and proves the
+/// resumed run reproduces the run-to-completion final state + transaction stream bit-for-bit. This pins that
+/// `AluOp::Asr` keeps `MicroState` fixed-size bincode (it stays `Copy`).
+#[test]
+fn asr_w_mem_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/ASR.w.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "e0d5 [ASR.w (A5)] 26")
+        .expect("ASR.w (A5) snapshot anchor present");
+    let ini = &case["initial"];
+
+    // Run-to-completion reference.
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    // 4 micro-ops (Read, Prefetch, Alu, Write) → in-flight boundaries after 0..=3 of them.
+    for pause_after in 0..=3 {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        for _ in 0..pause_after {
+            assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+        }
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+    }
+    eprintln!(
+        "S1 ASR snapshot/restore: ASR.w (A5) word shift-by-1 RMW resumed identically at every micro-op boundary"
     );
 }

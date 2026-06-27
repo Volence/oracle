@@ -736,6 +736,18 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         if is_asl {
             return shift_recipe(opcode, AluOp::Asl, regs);
         }
+        // ASR (S1) — AS/RIGHT: direction bit 8 == 0, type AS (register bits 4-3 == 0 / memory bits 10-9 == 0).
+        // The shared `shift_recipe`/`Operand::ShiftCount`/`dn_*` machinery is reused VERBATIM; only the AluOp +
+        // the `(type, dir)` classification differ from ASL. Only ASR files are loaded this commit (alongside
+        // ASL's), so no other `0xE` op reaches decode; the guard keeps the arm precise regardless.
+        let is_asr = if (opcode >> 6) & 3 == 3 {
+            (opcode >> 8) & 1 == 0 && (opcode >> 9) & 3 == 0 // memory: dir RIGHT, type AS (bits 10-9)
+        } else {
+            (opcode >> 8) & 1 == 0 && (opcode >> 3) & 3 == 0 // register: dir RIGHT, type AS (bits 4-3)
+        };
+        if is_asr {
+            return shift_recipe(opcode, AluOp::Asr, regs);
+        }
     }
     todo!("opcode {opcode:#06X} not yet decoded")
 }
