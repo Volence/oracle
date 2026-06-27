@@ -238,6 +238,17 @@ const FILES: &[&str] = &[
     // mode 0 ONLY this commit (the not-yet-decoded memory cases are SKIPPED before decode). The TAS.json file
     // is 100% PURE (one opcode); TAS mode 0 (Dn) = 1237 (TAS memory = 6828 is a later commit).
     "TAS.json",
+    // BTST `<ea>` (dynamic `0000 ddd 1 00 mmm rrr` = 0x01xx / static `0000 1000 00 mmm rrr` = 0x08xx) — test a
+    // single bit, setting ONLY Z = NOT(bit); X/N/V/C + the SR system byte all PRESERVED. READ-ONLY (no write).
+    // B0 decodes BOTH forms via the new `AluOp::Btst` + the bit-number operand (dynamic = `D[(opcode>>9)&7]` /
+    // static = the captured `prefetch[1]` ext word, cmpi-style). The bit width follows the operand: a `Dn`
+    // operand is 32-bit (mod 32, `Size::Long`), a memory/`#imm`/PC-relative operand is 8-bit (mod 8,
+    // `Size::Byte`). The FULL read-only source set is in scope (no deferral): dynamic Dn (0) + (An)/(An)+/-(An)/
+    // d16(An)/d8(An,Xn) (2-6) + abs.w/abs.l/d16(PC)/d8(PC,Xn)/#imm (7/0..7/4); static the same MINUS #imm
+    // (7/0..7/3). An-direct (mode 1 = MOVEP) is absent. The plain `(A7)` mode-2 indirect is COVERED (a clean
+    // byte read, like CLR/TST — NO deferral). Byte memory → NO odd-EA faults (no parity filter). The BTST.json
+    // file is 100% PURE (one op-type): dynamic 7185 + static 880 = 8065 (the WHOLE file in scope).
+    "BTST.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -955,6 +966,26 @@ fn covered(opcode: u16, _ini: &Value) -> bool {
             _ => false, // An-direct / PC-rel / #imm: absent / not data-alterable
         };
     }
+    // BTST `<ea>` — test a single bit, Z = NOT(bit), READ-ONLY (X/N/V/C + the SR system byte preserved).
+    // Classified by OPCODE: the DYNAMIC form (`0000 ddd 1 00 mmm rrr`, mask `0xF1C0 == 0x0100`, tt bits 7-6 ==
+    // 00) admits the FULL read-only source set — Dn (0), (An)/(An)+/-(An)/d16(An)/d8(An,Xn) (2-6), abs.w/abs.l/
+    // d16(PC)/d8(PC,Xn)/#imm (7/0..7/4); the STATIC form (`0000 1000 00 mmm rrr`, mask `0xFF00 == 0x0800`, tt ==
+    // 00) admits the same set MINUS #imm (7/0..7/3 — #imm is not a static operand and is absent). An-direct
+    // (mode 1 = MOVEP) is absent. The plain `(A7)` mode-2 indirect is COVERED (a clean byte read, like CLR/TST —
+    // NO deferral, NO `reg != 7` carve-out). Byte memory → NO odd-EA address-error faults (no parity filter).
+    // The opcode spaces 0x01xx (dynamic, bit 8 set) and 0x08xx (static) are disjoint from CMPI (0x0Cxx, bit 8
+    // clear) and the `*toSR` single points (bit 8 clear). The BTST.json file is 100% PURE (one op-type): dynamic
+    // 7185 + static 880 = 8065 (the WHOLE file in scope).
+    if opcode & 0xF1C0 == 0x0100 {
+        let mode = (opcode >> 3) & 7;
+        let reg = opcode & 7;
+        return mode == 0 || (2..=6).contains(&mode) || (mode == 7 && reg <= 4);
+    }
+    if opcode & 0xFF00 == 0x0800 && (opcode >> 6) & 3 == 0 {
+        let mode = (opcode >> 3) & 7;
+        let reg = opcode & 7;
+        return mode == 0 || (2..=6).contains(&mode) || (mode == 7 && reg <= 3);
+    }
     // ADD/SUB. No parity filter (odd word/long EAs are address errors the E4 abort covers); the only
     // mode-scope deferrals are the `(A7)` (mode 2) plain-indirect form (`reg != 7`) and the illegal `An`-direct
     // byte source (mode 1). `mode` 3/4 are `(An)+`/`-(An)` (the auto-(in/de)crement bump is committed before the
@@ -1167,8 +1198,37 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 494_445,
-        "expected 494445 covered cases — C2 adds TAS `<ea>` MEMORY (its own TAS.json file, \
+        ran >= 502_510,
+        "expected 502510 covered cases — B0 adds BTST `<ea>` (its own BTST.json file, dynamic \
+         `0000 ddd 1 00 mmm rrr` = opcode & 0xF1C0 == 0x0100 / static `0000 1000 00 mmm rrr` = \
+         opcode & 0xFF00 == 0x0800 with tt bits 7-6 == 00): BTST 8065 = +8065 over C2's 494445 (the WHOLE \
+         file in scope — no contaminant, no deferral). BTST tests a single bit, setting ONLY Z = NOT(bit); \
+         X/N/V/C AND the SR system byte are ALL PRESERVED (`ccr = (sr & (X|N|V|C)) | (Z if bit==0)`). It is \
+         READ-ONLY (`Dest::None`, no write — BCHG/BCLR/BSET add the write in later commits). The bit width \
+         follows the operand: a `Dn` operand is 32-bit (`pos = b mod 32`, `Size::Long`), a memory/`#imm`/\
+         PC-relative operand is 8-bit (`pos = b mod 8`, `Size::Byte`) — the `Alu` size field carries this. The \
+         bit number `b`: DYNAMIC = `D[(opcode>>9)&7]` (`Operand::DataRegFull`, always live, no capture); STATIC \
+         = the `prefetch[1]` ext word, captured into a scratch slot BEFORE the refill shifts it out (the \
+         cmpi-style interleave) and fed as `Operand::Scratch`. New vocabulary: `AluOp::Btst` (the bit-test \
+         flag-only op) + the bit-number operand. The `btst_recipe` has three operand shapes (timing pinned to \
+         the vendored BTST stream; static = dynamic + 4): `Dn` (mode 0, `Size::Long`, trailing `Internal(2)` \
+         bit-test idle) — dynamic `[Prefetch, Alu, Internal(2)]` = 6 cyc FIXED (NO `pos>=16` +2 — that variance \
+         is ONLY the RMW trio; BTST is read-only) / static 10; `#imm` (7/4, dynamic only, `Size::Byte`, the \
+         immediate read BEFORE the refills then the trailing idle) `[Alu(a=ImmWord), Prefetch, Prefetch, \
+         Internal(2)]` = 10; memory/PC-relative (2-6, 7/0..7/3, `Size::Byte`, NO trailing idle) via `ea_src` \
+         byte read → `Alu` on the just-read scratch (reuses `ea_src` verbatim — it already covers d16(PC)/\
+         d8(PC,Xn)/#imm). The static form prepends `[EaCalc(ImmWord → scratch), Prefetch]` (capture the bitnum, \
+         then the refill that consumes it) and routes the EA's own ext words AFTER (mirrors `cmpi_recipe`). \
+         Memory cost (dynamic): (An)/(An)+ 8, -(An) 10, d16(An) 12, d8(An,Xn) 14, abs.w 12, abs.l 16, d16(PC) \
+         12, d8(PC,Xn) 14, #imm 10; static = dynamic + 4. The FULL read-only source set is in scope — dynamic \
+         Dn (0) + (An)/(An)+/-(An)/d16(An)/d8(An,Xn) (2-6) + abs.w/abs.l/d16(PC)/d8(PC,Xn)/#imm (7/0..7/4); \
+         static the same MINUS #imm (7/0..7/3). An-direct (mode 1 = MOVEP) is absent. The plain `(A7)` mode-2 \
+         indirect is COVERED (a clean byte read, like CLR/TST — NO deferral, NO `reg != 7` carve-out). Byte \
+         memory → NO odd-EA address-error faults (no parity filter). Classified by OPCODE (the masks above; the \
+         0x01xx/0x08xx spaces are disjoint from CMPI 0x0Cxx and the `*toSR` points, all bit-8-clear). Per-form \
+         true counts: dynamic 7185 + static 880 = 8065 (the WHOLE file in scope). The BTST.json file is 100% \
+         PURE (one op-type, no contaminant). \
+         Prior baseline — C2 adds TAS `<ea>` MEMORY (its own TAS.json file, \
          `0100 1010 11 mmm rrr` = opcode & 0xFFC0 == 0x4AC0): the atomic-RMW memory forms = 6828 = +6828 over \
          C1's 487617 (which covered TAS `Dn` mode 0 = 1237; the WHOLE 8065-case file is now in scope — Dn 1237 \
          + memory 6828, no deferral). TAS memory is the INDIVISIBLE read-modify-write the SST stream models as \
@@ -1410,7 +1470,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -2689,5 +2749,133 @@ fn tas_memory_quiescable_and_serializable_at_every_micro_op_boundary() {
     }
     eprintln!(
         "C2 TAS snapshot/restore: TAS abs.l resumed identically at every micro-op boundary (incl the atomic-RMW boundary)"
+    );
+}
+
+/// B0 — the named `BTST` anchors, pinning the bit test (Z = NOT(bit), READ-ONLY, X/N/V/C + the SR system byte
+/// PRESERVED) against the vendored BTST stream WITHOUT relying on the bulk `covered()` sweep. The load-bearing
+/// facts: ONLY Z changes; a `Dn` operand is 32-bit (mod 32), a memory/`#imm`/PC-relative operand is 8-bit
+/// (mod 8); BTST register timing is FIXED (NO `pos>=16` +2 — that variance is only for the RMW trio); static =
+/// dynamic + 4 (the extra bitnum ext word). The four `Dn`-dynamic anchors span the 2×2 of {pos<16, pos>=16} ×
+/// {bit=1→Z=0, bit=0→Z=1}, ALL 6 cyc (confirming no register-timing variance):
+/// - `0901 [BTST D4, D1] 44` — Dn dynamic, pos 2 (<16), bit 1 → Z 1→0, len 6.
+/// - `0107 [BTST D0, D7] 125` — Dn dynamic, pos 25 (>=16), bit 0 → Z 0→1, len 6 (HIGH bit, still 6 — no +2).
+/// - `0d00 [BTST D6, D0] 62` — Dn dynamic, pos 9 (<16), bit 0 → Z 0→1, len 6.
+/// - `0d02 [BTST D6, D2] 2` — Dn dynamic, pos 24 (>=16), bit 1 → Z 1→0, len 6 (HIGH bit, still 6 — no +2).
+/// - `0807 [BTST #, D7] 87` — Dn STATIC, len 10 (dynamic 6 + 4 for the bitnum ext word).
+/// - `0115 [BTST D0, (A5)] 4` — `(An)` memory source: bus `r.b, r.w`, len 8 (byte read, mod 8).
+/// - `0d3a [BTST D6, (d16, PC)] 16` — `d16(PC)` source: bus `r.w, r.b, r.w`, len 12 (PC-relative byte source).
+/// - `073c [BTST D3, #] 91` — `#imm` source: bus `r.w, r.w, n2`, len 10 (the immediate operand, mod 8).
+/// - `0f17 [BTST D7, (A7)] 40` — `(A7)` mode-2 indirect (COVERED, NOT deferred): bus `r.b@A7, r.w`, len 8.
+///
+/// Each runs both drivers + the per-cycle transaction stream via `run_case`. Every anchor must decode as a BTST
+/// opcode (dynamic `0xF1C0 == 0x0100` or static `0xFF00 == 0x0800` with tt bits 7-6 == 00) — never a CMP-class.
+#[test]
+fn btst_anchors_match_singlesteptests() {
+    // (file, full-name, length). The full names select the EXACT case the doc-comment describes.
+    let anchors: &[(&str, &str, u32)] = &[
+        ("BTST.json", "0901 [BTST D4, D1] 44", 6), // Dn dyn pos<16 bit1 → Z 1→0, FIXED 6
+        ("BTST.json", "0107 [BTST D0, D7] 125", 6), // Dn dyn pos>=16 bit0 → Z 0→1, FIXED 6 (no +2)
+        ("BTST.json", "0d00 [BTST D6, D0] 62", 6), // Dn dyn pos<16 bit0 → Z 0→1, FIXED 6
+        ("BTST.json", "0d02 [BTST D6, D2] 2", 6),  // Dn dyn pos>=16 bit1 → Z 1→0, FIXED 6 (no +2)
+        ("BTST.json", "0807 [BTST #, D7] 87", 10), // Dn STATIC, 10 = dynamic 6 + 4
+        ("BTST.json", "0115 [BTST D0, (A5)] 4", 8), // (An) byte source: r.b, r.w
+        ("BTST.json", "0d3a [BTST D6, (d16, PC)] 16", 12), // d16(PC) byte source: r.w, r.b, r.w
+        ("BTST.json", "073c [BTST D3, #] 91", 10), // #imm byte operand: r.w, r.w, n2
+        ("BTST.json", "0f17 [BTST D7, (A7)] 40", 8), // (A7) m2 indirect (covered): r.b@A7, r.w
+    ];
+    let mut found = 0usize;
+    for (fname, name, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap() == *name
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| panic!("B0 BTST anchor {name} (len {length}) not found in {fname}"));
+        // Every anchor must be a BTST opcode (dynamic 0xF1C0 == 0x0100 OR static 0xFF00 == 0x0800, tt == 00),
+        // never a CMP-class opcode.
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        let is_dyn = opcode & 0xF1C0 == 0x0100;
+        let is_static = opcode & 0xFF00 == 0x0800 && (opcode >> 6) & 3 == 0;
+        assert!(
+            is_dyn || is_static,
+            "anchor {name} must be a BTST opcode (dynamic 0x0100 / static 0x0800, tt == 00)"
+        );
+        assert_eq!(
+            cmp_class(opcode),
+            CmpClass::None,
+            "BTST is not a CMP-class opcode"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all B0 BTST anchors exercised");
+    eprintln!(
+        "B0 BTST anchors: {found} cases (Dn dyn 2×2 bit×pos all 6 cyc / Dn static 10 / (An) / d16(PC) / #imm / (A7) m2; only Z changes, X/N/V/C preserved) passed both drivers"
+    );
+}
+
+/// B0 — the snapshot/restore anchor for the BTST STATIC memory form (the new `AluOp::Btst` + the cmpi-style
+/// bitnum-capture interleave). Drives a real vendored `BTST #, (A0)` case (`[EaCalc(capture), Prefetch, Read,
+/// Prefetch, Alu]`, 5 micro-ops) through the quiesce driver, snapshotting + restoring the WHOLE `Cpu68000`
+/// (incl. the in-flight cursor) at every micro-op boundary — including the mid-bus-access boundary around the
+/// operand Read — and proving the resumed run reproduces the run-to-completion final state + transaction stream
+/// bit-for-bit. Pins that `AluOp::Btst` + the captured bit number keep `MicroState` fixed-size bincode.
+#[test]
+fn btst_static_mem_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/BTST.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "0810 [BTST #, (A0)] 105")
+        .expect("BTST static (A0) snapshot anchor present");
+    let ini = &case["initial"];
+
+    // Run-to-completion reference.
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    // 5 micro-ops (EaCalc(capture), Prefetch, Read, Prefetch, Alu) → in-flight boundaries after 0..=4 of them.
+    for pause_after in 0..=4 {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        for _ in 0..pause_after {
+            assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+        }
+        // Snapshot + restore the whole CPU (incl. the in-flight cursor) mid-instruction.
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+    }
+    eprintln!(
+        "B0 BTST snapshot/restore: BTST static (A0) resumed identically at every micro-op boundary (incl the bitnum-capture interleave)"
     );
 }

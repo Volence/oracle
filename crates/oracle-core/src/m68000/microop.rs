@@ -485,6 +485,17 @@ pub enum AluOp {
     /// 24 bits preserved). `Dn`-only this form (memory TAS is the atomic RMW micro-op, not this Alu op). Always
     /// `Size::Byte`.
     Tas,
+    /// Btst: the **bit test** of `BTST` — test the single bit of operand `a` selected by bit number `b`,
+    /// setting **only Z** (`Z = NOT(the tested bit)`). The bit width follows `size`: **`Size::Long` for a `Dn`
+    /// operand** (32 bits, `pos = b mod 32`), **`Size::Byte` for a memory / `#imm` / PC-relative operand** (8
+    /// bits, `pos = b mod 8`). The whole flag formula is `pos = b mod bits`; `bit = (a >> pos) & 1`;
+    /// `ccr = (regs.sr & (X|N|V|C)) | (Z if bit == 0)` — **X, N, V, C are ALL PRESERVED** (only Z is touched;
+    /// the SR system byte is preserved by the shared write-back mask). BTST writes **no value** (paired with
+    /// [`Dest::None`]) — it is read-only (`BCHG`/`BCLR`/`BSET` add a write in later commits). `a` is the operand
+    /// (the value tested), `b` is the bit number ([`Operand::DataRegFull`] for the dynamic form / a scratch slot
+    /// holding the captured `prefetch[1]` ext word for the static form). Distinct from the logic ops (which set
+    /// N/Z and clear V/C) and the compare ops (which set N/Z/V/C): BTST touches Z and Z ALONE.
+    Btst,
 }
 
 /// A bitwise logic operation a [`MicroOp::SrLogic`] applies to the status register — the three privileged
@@ -1122,6 +1133,19 @@ impl MicroState {
                         let (_orig, ccr_nz) = move_flags(lhs, Size::Byte);
                         let res = (lhs & 0xFF) | 0x80;
                         (res, ccr_nz | (regs.sr & CCR_X))
+                    }
+                    // BTST tests one bit of `a` (the operand) selected by `b` (the bit number), setting ONLY Z =
+                    // NOT(bit). The bit width follows `size`: Long → 32 (`Dn` operand, mod 32), else 8 (memory /
+                    // imm / PC-rel operand, mod 8). X/N/V/C are ALL preserved — `ccr = (sr & (X|N|V|C)) | Z`; the
+                    // SR system byte is preserved by the shared `(sr & 0xFF00) | ccr` write-back below. The
+                    // returned value is inert (the recipe pairs BTST with `Dest::None`, so nothing is written).
+                    AluOp::Btst => {
+                        let bits: u32 = if size == Size::Long { 32 } else { 8 };
+                        let pos = rhs % bits;
+                        let bit = (lhs >> pos) & 1;
+                        let z = if bit == 0 { CCR_Z } else { 0 };
+                        let preserved = regs.sr & (CCR_X | CCR_N | CCR_V | CCR_C);
+                        (lhs, preserved | z)
                     }
                     AluOp::Add | AluOp::Sub => match size {
                         Size::Word => {

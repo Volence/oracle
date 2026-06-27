@@ -333,6 +333,28 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         };
         return cmpi_recipe(opcode, size);
     }
+    // BTST `<ea>` — test a single bit, setting ONLY Z = NOT(bit); X/N/V/C + the SR system byte preserved.
+    // READ-ONLY (no write). The bit width follows the operand: a `Dn` operand is 32-bit (mod 32, `Size::Long`),
+    // a memory / `#imm` / PC-relative operand is 8-bit (mod 8, `Size::Byte`). Two forms, classified by OPCODE:
+    //   - **DYNAMIC** `0000 ddd 1 00 mmm rrr` (mask `0xF1C0 == 0x0100`, `tt` bits 7-6 == 00) — the bit number is
+    //     `D[(opcode>>9)&7]`; the FULL source set: `Dn` (0), `(An)`/`(An)+`/`-(An)`/`d16(An)`/`d8(An,Xn)` (2-6),
+    //     `abs.w`/`abs.l`/`d16(PC)`/`d8(PC,Xn)`/`#imm` (7/0..7/4). Mode 001 = MOVEP (absent / not decoded), so
+    //     the guard excludes `An`-direct.
+    //   - **STATIC** `0000 1000 00 mmm rrr` (mask `0xFF00 == 0x0800`, `tt` == 00) — the bit number is the
+    //     `prefetch[1]` ext word; the same source set MINUS `#imm` (7/4 absent — `#imm` is not a static operand).
+    // The opcode spaces 0x01xx (dynamic, bit 8 set) and 0x08xx (static) are disjoint from CMPI (0x0Cxx, bit 8
+    // clear) and the `*toSR` single points (0x007C/0x027C/0x0A7C, bit 8 clear) decoded below.
+    let bit_mode = (opcode >> 3) & 7;
+    let bit_reg = opcode & 7;
+    if opcode & 0xF1C0 == 0x0100 && btst_dyn_src_in_scope(bit_mode, bit_reg) {
+        return btst_recipe(opcode);
+    }
+    if opcode & 0xFF00 == 0x0800
+        && (opcode >> 6) & 3 == 0
+        && btst_static_src_in_scope(bit_mode, bit_reg)
+    {
+        return btst_recipe(opcode);
+    }
     // CMPA `<ea>,An` (`1011 aaa 0 11/111 mmm rrr`, nibble 0xB, opmode 3 = `.w` / opmode 7 = `.l`) — the
     // flag-only address compare `An − <ea>` (An the minuend, full 32 bits). All 12 source modes via the MOVEA
     // source machinery ([`ea_movea`]'s `ea_src`/`ea_movea_long`); the `.w` source word is sign-extended to 32
@@ -900,6 +922,115 @@ fn adda_suba_recipe(opcode: u16, op: AluOp, size: Size) -> MicroState {
     // matches ADD.l <ea>,Dn (and thus ADDA.l/SUBA.l) exactly. Non-bus, so it does not alter the bus stream.
     if size == Size::Word {
         buf.push(MicroOp::Internal { cycles: 4 });
+    }
+    buf.finish()
+}
+
+/// Whether a DYNAMIC `BTST <ea>` (`0000 ddd 1 00 mmm rrr`) operand `mode`/`reg` is in scope — the FULL
+/// read-only source set: `Dn` (0), `(An)`/`(An)+`/`-(An)`/`d16(An)`/`d8(An,Xn)` (2-6), `abs.w`/`abs.l`/
+/// `d16(PC)`/`d8(PC,Xn)`/`#imm` (7/0..7/4). Mode 001 = MOVEP (the dynamic mode-001 sibling, absent / not
+/// decoded) and the illegal `7/5..7/7` are excluded.
+#[inline]
+fn btst_dyn_src_in_scope(mode: u16, reg: u16) -> bool {
+    mode == 0 || (2..=6).contains(&mode) || (mode == 7 && reg <= 4)
+}
+
+/// Whether a STATIC `BTST #,<ea>` (`0000 1000 00 mmm rrr`) operand `mode`/`reg` is in scope — the same
+/// read-only source set as the dynamic form **MINUS `#imm`** (7/4 is not a static operand and is absent from
+/// the data): `Dn` (0), `(An)`/`(An)+`/`-(An)`/`d16(An)`/`d8(An,Xn)` (2-6), `abs.w`/`abs.l`/`d16(PC)`/
+/// `d8(PC,Xn)` (7/0..7/3).
+#[inline]
+fn btst_static_src_in_scope(mode: u16, reg: u16) -> bool {
+    mode == 0 || (2..=6).contains(&mode) || (mode == 7 && reg <= 3)
+}
+
+/// `BTST <ea>` (dynamic `0000 ddd 1 00 mmm rrr` = 0x01xx / static `0000 1000 00 mmm rrr` = 0x08xx): test the
+/// single bit of the operand selected by the bit number, setting **only Z** (`Z = NOT(bit)`) — X/N/V/C and the
+/// SR system byte are all PRESERVED. READ-ONLY (`Dest::None`, no write). The bit width follows the operand: a
+/// `Dn` operand is **32-bit** (`pos = b mod 32`, `Size::Long`), a memory / `#imm` / PC-relative operand is
+/// **8-bit** (`pos = b mod 8`, `Size::Byte`) — the `Alu` `size` field carries this. The bit number `b`:
+/// **dynamic** = `D[(opcode>>9)&7]` ([`Operand::DataRegFull`], always live, no capture); **static** = the
+/// `prefetch[1]` ext word, captured into a scratch slot BEFORE the refill shifts it out (the `cmpi_recipe`
+/// interleave) and fed as [`Operand::Scratch`].
+///
+/// Three operand shapes (timing pinned to the vendored BTST stream; static = dynamic + 4 for the extra bitnum
+/// ext word):
+/// - **`Dn`** (mode 0): `Size::Long`, a trailing `Internal(2)` bit-test idle. Dynamic `[Prefetch, Alu,
+///   Internal(2)]` = **6 cyc FIXED** (NO `pos>=16` variance — BTST is read-only); static (after the leading
+///   capture + refill) `[Prefetch, Alu, Internal(2)]` = **10 cyc**.
+/// - **`#imm`** (7/4, dynamic only): `Size::Byte`, the operand is the queued immediate read BEFORE the refills
+///   (placement `First`), then the same trailing `Internal(2)`: `[Alu(a=ImmWord), Prefetch, Prefetch,
+///   Internal(2)]` = **10 cyc**.
+/// - **memory / PC-relative** (2-6, 7/0..7/3): `Size::Byte`, the proven `ea_src` byte read → `Alu` on the
+///   just-read scratch, **NO trailing idle** (the read replaces it). Reuses `ea_src` verbatim (it already
+///   covers `d16(PC)`/`d8(PC,Xn)`). Byte → NO odd-EA faults.
+///
+/// The static form prepends `[EaCalc(ImmWord → BITNUM_SLOT), Prefetch]` (capture the bitnum, then the refill
+/// that consumes it) and routes the EA's own ext words AFTER, so the `ea_src` `DispWord`/brief-ext captures
+/// see the EA's words (mirrors `cmpi_recipe`'s immediate-then-EA interleave).
+fn btst_recipe(opcode: u16) -> MicroState {
+    // Scratch slot holding the captured static bit-number ext word (`prefetch[1]`). Disjoint from `ea_src`'s
+    // slots (0 read value, 2 EA, 3 abs.l-HI, 4/5 long halves — BTST byte never uses the long slots), matching
+    // `cmpi_recipe`'s convention, so every in-flight value is snapshot-visible.
+    const BITNUM_SLOT: u8 = 6;
+    let mode = (opcode >> 3) & 7;
+    let reg = (opcode & 7) as u8;
+    let static_form = opcode & 0xFF00 == 0x0800;
+    // The bit number operand: dynamic = the live `Dn` (full 32 bits, modulo applied in the exec); static =
+    // the captured ext word in BITNUM_SLOT.
+    let bitnum = if static_form {
+        Operand::Scratch(BITNUM_SLOT)
+    } else {
+        Operand::DataRegFull(((opcode >> 9) & 7) as u8)
+    };
+    let mut buf = RecipeBuf::new();
+    if static_form {
+        // Capture `prefetch[1]` (the bit number) into BITNUM_SLOT BEFORE the first refill shifts it out, then
+        // that refill (consuming the bitnum word, bringing the EA's first ext word — if any — into prefetch[1]).
+        buf.push(MicroOp::EaCalc {
+            base: Operand::ImmWord,
+            index: Operand::Zero,
+            disp: Operand::Zero,
+            dst: BITNUM_SLOT,
+        });
+        buf.push(MicroOp::Prefetch);
+    }
+    if mode == 0 {
+        // Dn operand — Long (mod 32), no memory: one refill, the bit-test Alu on the full register, the
+        // trailing bit-test idle (n2). Dynamic = 6 cyc; static = 10 (the leading capture + refill above).
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::Alu {
+            op: AluOp::Btst,
+            size: Size::Long,
+            a: Operand::DataRegFull(reg),
+            b: bitnum,
+            dst: Dest::None,
+        });
+        buf.push(MicroOp::Internal { cycles: 2 });
+    } else if mode == 7 && reg == 4 {
+        // #imm operand (dynamic only) — Byte (mod 8): the Alu reads the immediate from `prefetch[1]` BEFORE
+        // the two refills shift it out (placement First), then the refills, then the trailing bit-test idle
+        // (n2). Bus [r, r, n2] = 10 cyc.
+        buf.push(MicroOp::Alu {
+            op: AluOp::Btst,
+            size: Size::Byte,
+            a: Operand::ImmWord,
+            b: bitnum,
+            dst: Dest::None,
+        });
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::Internal { cycles: 2 });
+    } else {
+        // Memory / PC-relative operand — Byte (mod 8), NO trailing idle: the proven `ea_src` byte read feeds
+        // the bit-test Alu on the just-read scratch (no write). `ea_src` already covers d16(PC)/d8(PC,Xn).
+        ea_src(&mut buf, mode, reg, Size::Byte, |operand| MicroOp::Alu {
+            op: AluOp::Btst,
+            size: Size::Byte,
+            a: operand,
+            b: bitnum,
+            dst: Dest::None,
+        });
     }
     buf.finish()
 }
