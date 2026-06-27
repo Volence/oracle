@@ -249,6 +249,17 @@ const FILES: &[&str] = &[
     // byte read, like CLR/TST — NO deferral). Byte memory → NO odd-EA faults (no parity filter). The BTST.json
     // file is 100% PURE (one op-type): dynamic 7185 + static 880 = 8065 (the WHOLE file in scope).
     "BTST.json",
+    // BCHG `<ea>` (dynamic `0000 ddd 1 01 mmm rrr` = 0x01xx / static `0000 1000 01 mmm rrr` = 0x08xx, tt bits
+    // 7-6 == 01) — test then TOGGLE a single bit (`operand ^= 1<<pos`), setting ONLY Z = NOT(the PRE-modify
+    // bit); X/N/V/C + the SR system byte all PRESERVED. A read-modify-WRITE to a data-alterable destination. B1
+    // decodes BOTH forms via the new `AluOp::Bchg` (Btst + toggle) + the shared `bit_recipe`. The bit width
+    // follows the dest: a `Dn` dest is 32-bit (mod 32, `Size::Long`, FULL-32 write with one bit flipped), a
+    // memory dest is 8-bit (mod 8, `Size::Byte`, byte RMW). The register `+2` is a DECODE-TIME `pos >= 16`
+    // decision (the dynamic bit number is a live `Dn`); memory has NO `+2`. The FULL in-scope EA set per op is
+    // covered (no deferral): Dn (0) + data-alterable memory (2-6, 7/0, 7/1). The plain `(A7)` mode-2 indirect is
+    // COVERED (a clean byte RMW, like CLR/TST — NO deferral). Byte memory → NO odd-EA faults (no parity filter).
+    // The BCHG.json file is 100% PURE (one op-type): dynamic 7173 + static 892 = 8065 (the WHOLE file in scope).
+    "BCHG.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -986,6 +997,24 @@ fn covered(opcode: u16, _ini: &Value) -> bool {
         let reg = opcode & 7;
         return mode == 0 || (2..=6).contains(&mode) || (mode == 7 && reg <= 3);
     }
+    // BCHG `<ea>` — test then TOGGLE a single bit, Z = NOT(the PRE-modify bit), a read-modify-WRITE (X/N/V/C +
+    // the SR system byte preserved). Classified by OPCODE (`tt` bits 7-6 == 01): the DYNAMIC form (mask
+    // `0xF1C0 == 0x0140`) and the STATIC form (mask `0xFF00 == 0x0800`, tt == 01) BOTH admit the FULL in-scope
+    // EA set — Dn (0) + data-alterable memory (An)/(An)+/-(An)/d16(An)/d8(An,Xn) (2-6), abs.w/abs.l (7/0, 7/1).
+    // `An`-direct (mode 1 = MOVEP) / PC-relative / `#imm` are NOT alterable and absent. The plain `(A7)` mode-2
+    // indirect is COVERED (a clean byte RMW, like CLR/TST — NO deferral, NO `reg != 7` carve-out). Byte memory
+    // → NO odd-EA address-error faults (no parity filter). The 0x01xx/0x08xx spaces are disjoint from CMPI
+    // (0x0Cxx) and the BTST forms (tt == 00). The BCHG.json file is 100% PURE: dynamic 7173 + static 892 = 8065.
+    if opcode & 0xF1C0 == 0x0140 {
+        let mode = (opcode >> 3) & 7;
+        let reg = opcode & 7;
+        return mode == 0 || (2..=6).contains(&mode) || (mode == 7 && (reg == 0 || reg == 1));
+    }
+    if opcode & 0xFF00 == 0x0800 && (opcode >> 6) & 3 == 1 {
+        let mode = (opcode >> 3) & 7;
+        let reg = opcode & 7;
+        return mode == 0 || (2..=6).contains(&mode) || (mode == 7 && (reg == 0 || reg == 1));
+    }
     // ADD/SUB. No parity filter (odd word/long EAs are address errors the E4 abort covers); the only
     // mode-scope deferrals are the `(A7)` (mode 2) plain-indirect form (`reg != 7`) and the illegal `An`-direct
     // byte source (mode 1). `mode` 3/4 are `(An)+`/`-(An)` (the auto-(in/de)crement bump is committed before the
@@ -1198,8 +1227,33 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 502_510,
-        "expected 502510 covered cases — B0 adds BTST `<ea>` (its own BTST.json file, dynamic \
+        ran >= 510_575,
+        "expected 510575 covered cases — B1 adds BCHG `<ea>` (its own BCHG.json file, dynamic \
+         `0000 ddd 1 01 mmm rrr` = opcode & 0xF1C0 == 0x0140 / static `0000 1000 01 mmm rrr` = \
+         opcode & 0xFF00 == 0x0800 with tt bits 7-6 == 01): BCHG 8065 = +8065 over B0's 502510 (the WHOLE \
+         file in scope — no contaminant, no deferral). BCHG tests then TOGGLES a single bit (`operand ^= \
+         1<<pos`), setting ONLY Z = NOT(the PRE-modify bit); X/N/V/C AND the SR system byte are ALL PRESERVED. \
+         Z is from the bit BEFORE the toggle (the read value), not after. The bit width follows the DEST: a \
+         `Dn` dest is 32-bit (`pos = b mod 32`, `Size::Long`, the FULL 32-bit register written with one bit \
+         flipped), a memory dest is 8-bit (`pos = b mod 8`, `Size::Byte`, the byte RMW with one bit flipped). \
+         New vocabulary: `AluOp::Bchg` (Btst + the toggle write `a ^ (1<<pos)`). The shared `bit_recipe` (which \
+         BCLR/BSET reuse) has two dest shapes: `Dn` (mode 0, `Size::Long`) `[Prefetch, Alu, Internal(base), \
+         (+Internal(2) iff DECODE-TIME pos>=16)]` — base = `n2` for BCHG; the `pos>=16` `+2` is the LOAD-BEARING \
+         subtlety (the bit number is read at decode — the live `Dn` for dynamic / the captured `prefetch[1]` \
+         for static — so the REGISTER recipe length depends on `regs`, exactly like Scc's true/false n2 and \
+         DBcc's counter). Dynamic BCHG Dn = 6 (pos<16) / 8 (pos>=16); static = 10 / 12. Memory (2-6, 7/0, 7/1, \
+         `Size::Byte`) is the NEG-family read→modify→write RMW via `ea_dst` byte (read the byte, refill, the \
+         bit-toggle `Alu` into `Scratch(1)`, write back) — NO register `+2` (byte/mod-8 timing is FIXED per \
+         mode): (An)/(An)+ 12, -(An) 14, d16(An) 16, d8(An,Xn) 18, abs.w 16, abs.l 20 (dynamic); static = +4. \
+         The static form prepends `[EaCalc(ImmWord → scratch), Prefetch]` (capture the bitnum, then the refill) \
+         and routes the EA's own ext words AFTER (mirrors `cmpi_recipe`). The FULL in-scope EA set is covered — \
+         Dn (0) + data-alterable memory (2-6, 7/0, 7/1); An-direct (mode 1 = MOVEP) / PC-rel / #imm are not \
+         alterable and absent. The plain `(A7)` mode-2 indirect is COVERED (a clean byte RMW, like CLR/TST — NO \
+         deferral, NO `reg != 7` carve-out). Byte memory → NO odd-EA address-error faults (no parity filter). \
+         Classified by OPCODE (the masks above; the 0x01xx/0x08xx spaces are disjoint from CMPI 0x0Cxx and the \
+         BTST forms tt == 00). Per-form true counts: dynamic 7173 + static 892 = 8065 (the WHOLE file in \
+         scope). The BCHG.json file is 100% PURE (one op-type, no contaminant). \
+         Prior baseline — B0 adds BTST `<ea>` (its own BTST.json file, dynamic \
          `0000 ddd 1 00 mmm rrr` = opcode & 0xF1C0 == 0x0100 / static `0000 1000 00 mmm rrr` = \
          opcode & 0xFF00 == 0x0800 with tt bits 7-6 == 00): BTST 8065 = +8065 over C2's 494445 (the WHOLE \
          file in scope — no contaminant, no deferral). BTST tests a single bit, setting ONLY Z = NOT(bit); \
@@ -1470,7 +1524,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -2877,5 +2931,137 @@ fn btst_static_mem_quiescable_and_serializable_at_every_micro_op_boundary() {
     }
     eprintln!(
         "B0 BTST snapshot/restore: BTST static (A0) resumed identically at every micro-op boundary (incl the bitnum-capture interleave)"
+    );
+}
+
+/// B1 — the named `BCHG` anchors, pinning the bit test-and-TOGGLE (Z = NOT(the PRE-modify bit), then write
+/// `operand ^ (1<<pos)`; X/N/V/C + the SR system byte PRESERVED) against the vendored BCHG stream WITHOUT
+/// relying on the bulk `covered()` sweep. The load-bearing facts: ONLY Z changes; Z is from the bit BEFORE the
+/// toggle (the read value); a `Dn` dest is 32-bit (mod 32, FULL-32 write with one bit flipped), a memory dest
+/// is 8-bit (mod 8, byte RMW); the register `+2` is a DECODE-TIME `pos >= 16` decision (the dynamic bit number
+/// is a LIVE `Dn` / the static one is the captured `prefetch[1]`); memory has NO `+2`; static = dynamic + 4
+/// (the extra bitnum ext word). The four `Dn`-dynamic anchors span the 2×2 of {pos<16 → 6 cyc, pos>=16 → 8 cyc
+/// (the decode-time +2)} × {bit=1→Z 1→0, bit=0→Z 0→1}, each showing the full-32 register write with one bit
+/// flipped:
+/// - `0540 [BCHG D2, D0] 50` — Dn dyn, pos 0 (<16), bit 1 → Z 1→0, len 6; D0 `…25`→`…24` (bit0 toggled 1→0).
+/// - `0d42 [BCHG D6, D2] 135` — Dn dyn, pos 4 (<16), bit 0 → Z 0→1, len 6; D2 `…23`→`…33` (bit4 toggled 0→1).
+/// - `0344 [BCHG D1, D4] 47` — Dn dyn, pos 25 (>=16), bit 1 → Z 1→0, len 8 (the decode-time +2); bit25 toggled.
+/// - `0541 [BCHG D2, D1] 31` — Dn dyn, pos 28 (>=16), bit 0 → Z 0→1, len 8 (the decode-time +2); bit28 toggled.
+/// - `0845 [BCHG #, D5] 195` — Dn STATIC, pos 9 (<16), len 10 (dynamic 6 + 4 for the bitnum ext word).
+/// - `0843 [BCHG #, D3] 23` — Dn STATIC, pos 22 (>=16), len 12 (static +4 AND the decode-time +2 — both apply).
+/// - `0552 [BCHG D2, (A2)] 9` — `(An)` byte RMW: bus `r.b, r.w, w.b`, len 12, Z from the pre-modify byte bit.
+/// - `0979 [BCHG D4, (xxx).l] 34` — `abs.l` byte RMW: bus `r, r, r, r, w`, len 20 (no register +2 for memory).
+/// - `0557 [BCHG D2, (A7)] 48` — `(A7)` mode-2 indirect (COVERED, NOT deferred): bus `r.b@A7, r.w, w.b`, len 12.
+///
+/// Each runs both drivers + the per-cycle transaction stream via `run_case`. Every anchor must decode as a BCHG
+/// opcode (dynamic `0xF1C0 == 0x0140` or static `0xFF00 == 0x0800` with tt bits 7-6 == 01) — never a CMP-class.
+#[test]
+fn bchg_anchors_match_singlesteptests() {
+    // (file, full-name, length). The full names select the EXACT case the doc-comment describes.
+    let anchors: &[(&str, &str, u32)] = &[
+        ("BCHG.json", "0540 [BCHG D2, D0] 50", 6), // Dn dyn pos<16 bit1 → Z 1→0, 6 cyc; bit0 toggled
+        ("BCHG.json", "0d42 [BCHG D6, D2] 135", 6), // Dn dyn pos<16 bit0 → Z 0→1, 6 cyc; bit4 toggled
+        ("BCHG.json", "0344 [BCHG D1, D4] 47", 8), // Dn dyn pos>=16 bit1 → Z 1→0, 8 cyc (decode-time +2)
+        ("BCHG.json", "0541 [BCHG D2, D1] 31", 8), // Dn dyn pos>=16 bit0 → Z 0→1, 8 cyc (decode-time +2)
+        ("BCHG.json", "0845 [BCHG #, D5] 195", 10), // Dn STATIC pos<16, 10 = dynamic 6 + 4
+        ("BCHG.json", "0843 [BCHG #, D3] 23", 12), // Dn STATIC pos>=16, 12 (static +4 AND decode-time +2)
+        ("BCHG.json", "0552 [BCHG D2, (A2)] 9", 12), // (An) byte RMW: r.b, r.w, w.b — Z from pre-modify bit
+        ("BCHG.json", "0979 [BCHG D4, (xxx).l] 34", 20), // abs.l byte RMW: r, r, r, r, w
+        ("BCHG.json", "0557 [BCHG D2, (A7)] 48", 12), // (A7) m2 indirect (covered): r.b@A7, r.w, w.b
+    ];
+    let mut found = 0usize;
+    for (fname, name, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap() == *name
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| panic!("B1 BCHG anchor {name} (len {length}) not found in {fname}"));
+        // Every anchor must be a BCHG opcode (dynamic 0xF1C0 == 0x0140 OR static 0xFF00 == 0x0800, tt == 01),
+        // never a CMP-class opcode.
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        let is_dyn = opcode & 0xF1C0 == 0x0140;
+        let is_static = opcode & 0xFF00 == 0x0800 && (opcode >> 6) & 3 == 1;
+        assert!(
+            is_dyn || is_static,
+            "anchor {name} must be a BCHG opcode (dynamic 0x0140 / static 0x0840, tt == 01)"
+        );
+        assert_eq!(
+            cmp_class(opcode),
+            CmpClass::None,
+            "BCHG is not a CMP-class opcode"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all B1 BCHG anchors exercised");
+    eprintln!(
+        "B1 BCHG anchors: {found} cases (Dn dyn 2×2 bit×pos — pos<16 6 cyc / pos>=16 8 cyc the decode-time +2 / Dn static 10 & 12 / (An) / abs.l / (A7) m2 byte RMW; only Z changes from the pre-toggle bit, X/N/V/C preserved) passed both drivers"
+    );
+}
+
+/// B1 — the snapshot/restore anchor for the BCHG STATIC memory form (the new `AluOp::Bchg` + the cmpi-style
+/// bitnum-capture interleave + the byte read→toggle→write RMW). Drives a real vendored `BCHG #, (A0)` case
+/// (`[EaCalc(capture), Prefetch, Read, Prefetch, Alu, Write]`, 6 micro-ops) through the quiesce driver,
+/// snapshotting + restoring the WHOLE `Cpu68000` (incl. the in-flight cursor) at every micro-op boundary —
+/// including the mid-bus-access boundaries around the operand Read and the write-back — and proving the resumed
+/// run reproduces the run-to-completion final state + transaction stream bit-for-bit. Pins that `AluOp::Bchg` +
+/// the captured bit number keep `MicroState` fixed-size bincode.
+#[test]
+fn bchg_static_mem_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/BCHG.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "0850 [BCHG #, (A0)] 44")
+        .expect("BCHG static (A0) snapshot anchor present");
+    let ini = &case["initial"];
+
+    // Run-to-completion reference.
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    // 6 micro-ops (EaCalc(capture), Prefetch, Read, Prefetch, Alu, Write) → boundaries after 0..=5 of them.
+    for pause_after in 0..=5 {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        for _ in 0..pause_after {
+            assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+        }
+        // Snapshot + restore the whole CPU (incl. the in-flight cursor) mid-instruction.
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+    }
+    eprintln!(
+        "B1 BCHG snapshot/restore: BCHG static (A0) resumed identically at every micro-op boundary (incl the bitnum-capture interleave + the byte read→toggle→write RMW)"
     );
 }

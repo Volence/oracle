@@ -496,6 +496,15 @@ pub enum AluOp {
     /// holding the captured `prefetch[1]` ext word for the static form). Distinct from the logic ops (which set
     /// N/Z and clear V/C) and the compare ops (which set N/Z/V/C): BTST touches Z and Z ALONE.
     Btst,
+    /// Bchg: the **bit test-and-toggle** of `BCHG` — `Btst` (`Z = NOT(the PRE-modify bit)`, X/N/V/C + the SR
+    /// system byte all PRESERVED) PLUS the write of `a ^ (1 << pos)` (toggle the tested bit). The Z flag is from
+    /// the bit BEFORE the toggle (the read value), NOT after. The bit width follows `size` exactly as `Btst`:
+    /// **`Size::Long` for a `Dn` dest** (32 bits, `pos = b mod 32`, the FULL 32-bit register written with one
+    /// bit flipped) / **`Size::Byte` for a memory dest** (8 bits, `pos = b mod 8`, the byte written with one
+    /// bit flipped). `a` is the operand, `b` the bit number ([`Operand::DataRegFull`] dynamic / a scratch slot
+    /// holding the captured `prefetch[1]` static); the recipe pairs it with [`Dest::DataReg`] (`Dn`) or
+    /// [`Dest::Scratch`] (memory, the `ea_dst` write source).
+    Bchg,
 }
 
 /// A bitwise logic operation a [`MicroOp::SrLogic`] applies to the status register — the three privileged
@@ -1146,6 +1155,20 @@ impl MicroState {
                         let z = if bit == 0 { CCR_Z } else { 0 };
                         let preserved = regs.sr & (CCR_X | CCR_N | CCR_V | CCR_C);
                         (lhs, preserved | z)
+                    }
+                    // BCHG is BTST + TOGGLE: identical Z = NOT(the PRE-modify bit) (X/N/V/C preserved, only Z
+                    // changes), then the written value is `a ^ (1 << pos)` (flip the tested bit). The Z flag is
+                    // from the bit BEFORE the toggle (`lhs`), NOT the result. The bit width follows `size`: Long
+                    // → 32 (`Dn` dest, mod 32, FULL-32 write with one bit flipped), else 8 (memory dest, mod 8,
+                    // byte with one bit flipped). The recipe pairs this with `Dest::DataReg` (Dn) / `Dest::Scratch`
+                    // (the `ea_dst` byte write source).
+                    AluOp::Bchg => {
+                        let bits: u32 = if size == Size::Long { 32 } else { 8 };
+                        let pos = rhs % bits;
+                        let bit = (lhs >> pos) & 1;
+                        let z = if bit == 0 { CCR_Z } else { 0 };
+                        let preserved = regs.sr & (CCR_X | CCR_N | CCR_V | CCR_C);
+                        (lhs ^ (1 << pos), preserved | z)
                     }
                     AluOp::Add | AluOp::Sub => match size {
                         Size::Word => {

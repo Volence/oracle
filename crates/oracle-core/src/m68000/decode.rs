@@ -355,6 +355,26 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     {
         return btst_recipe(opcode);
     }
+    // BCHG `<ea>` — test then TOGGLE a single bit (`operand ^= 1<<pos`), setting ONLY Z = NOT(the PRE-modify
+    // bit); X/N/V/C + the SR system byte preserved. A read-modify-WRITE to a data-alterable destination only:
+    // `Dn` (0) = 32-bit (mod 32, `Size::Long`, FULL-32 write) / memory (2-6, 7/0, 7/1) = 8-bit (mod 8,
+    // `Size::Byte`, byte RMW). Two forms, classified by OPCODE (`tt` bits 7-6 == 01):
+    //   - **DYNAMIC** `0000 ddd 1 01 mmm rrr` (mask `0xF1C0 == 0x0140`) — the bit number is `D[(opcode>>9)&7]`.
+    //   - **STATIC** `0000 1000 01 mmm rrr` (mask `0xFF00 == 0x0800`, `tt` == 01) — the bit number is `prefetch[1]`.
+    // The data-alterable guard (`mode == 0 || is_dst_mem_mode`) excludes `An`-direct (mode 1 = MOVEP, absent) /
+    // PC-relative / `#imm` (none of which are alterable). The shared `bit_recipe` carries the DECODE-TIME
+    // `pos >= 16` register `+2` (the bit number is read here, from the live `Dn` / the captured ext word) — a
+    // REGISTER-ONLY variance; memory timing is fixed per mode. Register base idle = `n2` for BCHG (BSET shares
+    // it; BCLR uses `n4`).
+    if opcode & 0xF1C0 == 0x0140 && (bit_mode == 0 || is_dst_mem_mode(bit_mode, bit_reg)) {
+        return bit_recipe(opcode, AluOp::Bchg, 2, regs);
+    }
+    if opcode & 0xFF00 == 0x0800
+        && (opcode >> 6) & 3 == 1
+        && (bit_mode == 0 || is_dst_mem_mode(bit_mode, bit_reg))
+    {
+        return bit_recipe(opcode, AluOp::Bchg, 2, regs);
+    }
     // CMPA `<ea>,An` (`1011 aaa 0 11/111 mmm rrr`, nibble 0xB, opmode 3 = `.w` / opmode 7 = `.l`) — the
     // flag-only address compare `An − <ea>` (An the minuend, full 32 bits). All 12 source modes via the MOVEA
     // source machinery ([`ea_movea`]'s `ea_src`/`ea_movea_long`); the `.w` source word is sign-extended to 32
@@ -1030,6 +1050,87 @@ fn btst_recipe(opcode: u16) -> MicroState {
             a: operand,
             b: bitnum,
             dst: Dest::None,
+        });
+    }
+    buf.finish()
+}
+
+/// The SHARED read-modify-WRITE bit op recipe builder for `BCHG`/`BCLR`/`BSET` (dynamic `0000 ddd 1 tt mmm rrr`
+/// = 0x01xx / static `0000 1000 tt mmm rrr` = 0x08xx, `tt` = 01 BCHG / 10 BCLR / 11 BSET): `BTST` (test the
+/// bit, set ONLY Z = NOT(the PRE-modify bit), X/N/V/C + the SR system byte PRESERVED) PLUS a write of the
+/// modified operand (the `op` exec applies the toggle/clear/set). The Z flag is from the bit BEFORE the modify
+/// (the read value), not after. Parameterized by the `AluOp` (`Bchg`/`Bclr`/`Bset`) and `reg_base` (the
+/// register-form base idle: `2` = `n2` for BCHG/BSET, `4` = `n4` for BCLR) so the trio share one builder.
+///
+/// The bit number `b`: **dynamic** = `D[(opcode>>9)&7]` ([`Operand::DataRegFull`], always live, no capture);
+/// **static** = the `prefetch[1]` ext word, captured into a scratch slot BEFORE the refill shifts it out (the
+/// `cmpi_recipe` interleave) and fed as [`Operand::Scratch`]. The static form prepends `[EaCalc(ImmWord →
+/// BITNUM_SLOT), Prefetch]` and routes the EA's own ext words AFTER (static = dynamic + 4 everywhere).
+///
+/// Two dest shapes:
+/// - **`Dn`** (mode 0): `Size::Long` (mod 32), a FULL-32 register write with one bit flipped ([`Dest::DataReg`]).
+///   `[Prefetch, Alu, Internal(reg_base), (+Internal(2) iff the DECODE-TIME `pos >= 16`)]`. The `pos >= 16` `+2`
+///   is the LOAD-BEARING subtlety: the bit number is read HERE at decode (the live `Dn` for dynamic / the
+///   captured `prefetch[1]` for static), so the register recipe length depends on `regs`. Dynamic BCHG = 6 cyc
+///   (pos<16) / 8 (pos>=16); static = 10 / 12.
+/// - **memory** (2-6, 7/0, 7/1): `Size::Byte` (mod 8), the NEG-family read→modify→write RMW via [`ea_dst`] (read
+///   the byte, refill, the bit-modify `Alu` into `Scratch(1)`, write it back). NO register `+2` (byte/mod-8
+///   timing is fixed per mode). Byte → NO odd-EA address-error faults. Dynamic cost `(An)`/`(An)+` 12, `−(An)`
+///   14, `d16(An)` 16, `d8(An,Xn)` 18, `abs.w` 16, `abs.l` 20; static = +4.
+fn bit_recipe(opcode: u16, op: AluOp, reg_base: u16, regs: &Registers) -> MicroState {
+    // Scratch slot holding the captured static bit-number ext word (`prefetch[1]`). Disjoint from `ea_dst`'s
+    // slots (0 read value, 1 write result, 2 EA, 3 abs.l-HI — byte memory never uses the long slots), matching
+    // `btst_recipe`/`cmpi_recipe`'s convention, so every in-flight value is snapshot-visible.
+    const BITNUM_SLOT: u8 = 6;
+    let mode = (opcode >> 3) & 7;
+    let reg = (opcode & 7) as u8;
+    let static_form = opcode & 0xFF00 == 0x0800;
+    // The bit number operand + its DECODE-TIME value (the live `Dn` for dynamic / the captured `prefetch[1]`
+    // for static). `pos = bitnum % 32` selects the REGISTER-only `pos >= 16` `+2` (memory is fixed per mode).
+    let (bitnum, bitnum_val) = if static_form {
+        (Operand::Scratch(BITNUM_SLOT), regs.prefetch[1] as u32)
+    } else {
+        let n = ((opcode >> 9) & 7) as u8;
+        (Operand::DataRegFull(n), regs.d[n as usize])
+    };
+    let mut buf = RecipeBuf::new();
+    if static_form {
+        // Capture `prefetch[1]` (the bit number) into BITNUM_SLOT BEFORE the first refill shifts it out, then
+        // that refill (consuming the bitnum word, bringing the EA's first ext word — if any — into prefetch[1]).
+        buf.push(MicroOp::EaCalc {
+            base: Operand::ImmWord,
+            index: Operand::Zero,
+            disp: Operand::Zero,
+            dst: BITNUM_SLOT,
+        });
+        buf.push(MicroOp::Prefetch);
+    }
+    if mode == 0 {
+        // Dn dest — Long (mod 32), the FULL-32 register write with one bit flipped. One refill, the bit-modify
+        // Alu, the register base idle, and the DECODE-TIME `pos >= 16` `+2` (register-only). Dynamic BCHG = 6
+        // (pos<16) / 8 (pos>=16); static (after the leading capture + refill) = 10 / 12.
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::Alu {
+            op,
+            size: Size::Long,
+            a: Operand::DataRegFull(reg),
+            b: bitnum,
+            dst: Dest::DataReg(reg),
+        });
+        buf.push(MicroOp::Internal { cycles: reg_base });
+        if bitnum_val % 32 >= 16 {
+            buf.push(MicroOp::Internal { cycles: 2 });
+        }
+    } else {
+        // Memory dest — Byte (mod 8), the NEG-family read→modify→write RMW (`ea_dst` byte): read the old byte,
+        // refill, the bit-modify Alu into `Scratch(1)` (Z from the PRE-modify bit), write it back. NO register
+        // `+2` (byte/mod-8 timing is fixed per mode). Byte → NO odd-EA faults.
+        ea_dst(&mut buf, mode, reg, Size::Byte, |operand| MicroOp::Alu {
+            op,
+            size: Size::Byte,
+            a: operand,
+            b: bitnum,
+            dst: Dest::Scratch(1),
         });
     }
     buf.finish()
