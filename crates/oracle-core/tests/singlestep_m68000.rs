@@ -327,6 +327,24 @@ const FILES: &[&str] = &[
     "ASR.b.json",
     "ASR.w.json",
     "ASR.l.json",
+    // LSL.b / LSL.w / LSL.l (`0xExxx`, LS/left) — logical shift LEFT (S2): IDENTICAL to ASL's value and carry,
+    // with the SOLE difference that **V is FORCED to 0** (a logical shift never tracks the sign change — only
+    // ASL owns V). Same three forms / classification / `shift_recipe` as ASL/ASR (only the AluOp + the LS/left
+    // decode arm differ — direction bit 8 == 1, type LS bits 4-3 (register) / 10-9 (memory) == 1). Value:
+    // `res = (x << cnt) & mask` when `cnt < n`, else 0 (an over-shift clears the register). C = the last bit
+    // shifted out of the OPERAND — `bit(n-cnt)` for `1 <= cnt <= n`, else 0; **X = C**; **V = 0** ALWAYS (the
+    // only difference from ASL); **N** = msb / **Z** = (res == 0). ZERO COUNT (`cnt == 0`, only the `Dn` form):
+    // value unchanged, V = 0, C = 0, **X PRESERVED**. Reuses `Operand::ShiftCount` + the shared `shift_recipe`
+    // VERBATIM (register `[Prefetch, Alu, Internal{(base-4)+2*cnt}]`, base 6 `.b`/`.w` / 8 `.l`; memory the
+    // CLR.w/NEG.w word `ea_dst` RMW). Timing identical to ASL/ASR: register `.b`/`.w` = 6 + 2*cnt, `.l` = 8 +
+    // 2*cnt; memory shift-by-1 (word): (An)/(An)+ 12, -(An) 14, d16(An) 16, d8(An,Xn) 18, abs.w 16, abs.l 20;
+    // an odd EA address-errors on the READ (low5 = 0x15, the E3/E4 abort). The FULL in-scope EA set is covered
+    // (every register shift + the `.w` data-alterable memory set INCL the clean `(A7)` mode-2 indirect, NO
+    // deferral / NO parity filter). NO corrupt entries (only ASL.b has the 2 self-contradictory cases).
+    // Per-file true counts: LSL.b 8065 + LSL.w 8065 + LSL.l 8065 = +24195. All three files are 100% PURE.
+    "LSL.b.json",
+    "LSL.w.json",
+    "LSL.l.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -1396,8 +1414,23 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 575_093,
-        "expected 575093 covered cases — S1 adds ASR.b / ASR.w / ASR.l (`0xExxx`, AS/right): ASR.b 8065 + \
+        ran >= 599_288,
+        "expected 599288 covered cases — S2 adds LSL.b / LSL.w / LSL.l (`0xExxx`, LS/left): LSL.b 8065 + \
+         LSL.w 8065 + LSL.l 8065 = +24195 over S1's 575093 (NO corrupt entries — only ASL.b has the 2). LSL \
+         is logical shift LEFT — IDENTICAL to ASL's value and carry with V FORCED to 0 (a logical shift never \
+         tracks the sign change; only ASL owns V). It reuses `Operand::ShiftCount` + the shared `shift_recipe` \
+         + `dn_*` VERBATIM (only the AluOp + the LS/left decode arm differ — direction bit 8 == 1, type LS \
+         bits 4-3 (register) / 10-9 (memory) == 1). Value: `res = (x << cnt) & mask` when `cnt < n`, else 0 \
+         (an over-shift clears the register). C = the last bit shifted out of the OPERAND — `bit(n-cnt)` for \
+         `1 <= cnt <= n`, else 0; X = C; V = 0 ALWAYS (the ONLY difference from ASL — LSL does NOT compute the \
+         sign-changed V); N = msb(res), Z = (res == 0). ZERO COUNT (`cnt == 0`, only the `Dn` form): value \
+         unchanged, V = 0, C = 0, X PRESERVED (the shift never ran). Timing identical to ASL/ASR: register \
+         `.b`/`.w` = 6 + 2*cnt, `.l` = 8 + 2*cnt; memory shift-by-1 (word): (An)/(An)+ 12, -(An) 14, d16(An) \
+         16, d8(An,Xn) 18, abs.w 16, abs.l 20; an odd EA address-errors on the READ (the E3/E4 abort). The \
+         FULL in-scope EA set is covered (`shift_covered`): every register shift + the `.w` data-alterable \
+         memory set INCL the clean `(A7)` mode-2 indirect (NO deferral, NO parity filter). All three LSL files \
+         are 100% PURE for their op+size (only LS/left decodes the LSL opcodes — LSR/ROL/ROR/ROXL/ROXR land \
+         S3-S7). Prior baseline — S1 adds ASR.b / ASR.w / ASR.l (`0xExxx`, AS/right): ASR.b 8065 + \
          ASR.w 8065 + ASR.l 8065 = +24195 over S0's 550898 (NO corrupt entries — only ASL.b has the 2). ASR \
          is arithmetic shift RIGHT, the sign-EXTENDING right shift; it reuses `Operand::ShiftCount` + the \
          shared `shift_recipe` + `dn_*` VERBATIM (only the AluOp + the AS/right decode arm differ — direction \
@@ -1803,7 +1836,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -3995,5 +4028,208 @@ fn asr_w_mem_quiescable_and_serializable_at_every_micro_op_boundary() {
     }
     eprintln!(
         "S1 ASR snapshot/restore: ASR.w (A5) word shift-by-1 RMW resumed identically at every micro-op boundary"
+    );
+}
+
+/// S2 — the named LSL anchors, pinning logical shift LEFT against the vendored LSL.b/.w/.l stream WITHOUT
+/// relying on the bulk `covered()` sweep. LSL is IDENTICAL to ASL's value and carry, with V FORCED to 0 (a
+/// logical shift never tracks the sign change — only ASL owns V); it reuses S0's `shift_recipe`/
+/// `Operand::ShiftCount`/`dn_*` VERBATIM (only the AluOp + the LS/left decode arm differ). Each anchor is a
+/// real vendored case run through both drivers + the per-cycle transaction stream via `run_case`; the
+/// load-bearing pins:
+///
+/// - `e30a [LSL.b Q, D2] 4` (len 8) — REGISTER **immediate** `.b`, cnt 1 → timing `6 + 2*1`.
+/// - `e10f [LSL.b Q, D7] 3` (len 22) — REGISTER immediate `.b`, `ccc == 0` → cnt **8** → `6 + 2*8`.
+/// - `e74b [LSL.w Q, D3] 6` (len 12) — REGISTER immediate `.w`, cnt 3, **THE V-SUPPRESSION PIN**: the operand
+///   is one an ASL would mark `V = 1` (the sign bit changes during the shift) — LSL MUST keep `V = 0` (its
+///   sole difference from ASL). Timing `6 + 2*3`.
+/// - `e38d [LSL.l Q, D5] 21` (len 10) — REGISTER immediate `.l`, cnt 1 → the `.l` base `8 + 2*1`.
+/// - `e529 [LSL.b D2, D1] 28` (len 40) — **`cnt >= n` over-shift**: a `Dn`-count `cnt = 17 > n = 8` → the
+///   register is CLEARED (`res = 0`, Z set, N = 0) and **C = 0** (`cnt > n` shifts nothing meaningful out),
+///   X = C = 0, V = 0. Timing `6 + 2*17` (the live `Dn & 63` driving the idle).
+/// - `e36b [LSL.w D1, D3] 271` (len 6) — REGISTER **`Dn`-count `cnt == 0`** (the ZERO-COUNT special case):
+///   value UNCHANGED, **X PRESERVED** (X1 in → X1 out), V = 0, C = 0, timing `6` (`6 + 2*0`).
+/// - `e3d5 [LSL.w (A5)] 91` (len 12) — `.w` **memory** shift-by-1 `(An)`: the word `ea_dst` RMW.
+/// - `e3d7 [LSL.w (A7)] 159` (len 12) — the plain `(A7)` mode-2 indirect (`mode == 2 && reg == 7`), COVERED
+///   (NOT deferred), a clean word RMW at the active A7.
+/// - `e3de [LSL.w (A6)+] 1` (len 50) — an **odd-EA** `.w` memory address error (the E3/E4 abort installs the
+///   group-0 14-byte vector-3 frame), which must PASS unchanged.
+///
+/// Every anchor must decode as an LSL opcode (`0xExxx`, type LS / direction LEFT) — never any other family.
+#[test]
+fn lsl_anchors_match_singlesteptests() {
+    let anchors: &[(&str, &str, u32)] = &[
+        ("LSL.b.json", "e30a [LSL.b Q, D2] 4", 8), // imm .b cnt1 → 6+2
+        ("LSL.b.json", "e10f [LSL.b Q, D7] 3", 22), // imm .b ccc=0 → cnt8 → 6+16
+        ("LSL.w.json", "e74b [LSL.w Q, D3] 6", 12), // imm .w cnt3, V-SUPPRESSION (ASL would set V → LSL V=0)
+        ("LSL.l.json", "e38d [LSL.l Q, D5] 21", 10), // imm .l cnt1 → 8+2
+        ("LSL.b.json", "e529 [LSL.b D2, D1] 28", 40), // Dn cnt17 > n=8 → res=0, C=0, V=0, 6+34
+        ("LSL.w.json", "e36b [LSL.w D1, D3] 271", 6), // Dn cnt0 (zero-count), X kept
+        ("LSL.w.json", "e3d5 [LSL.w (A5)] 91", 12), // memory (An) shift-by-1
+        ("LSL.w.json", "e3d7 [LSL.w (A7)] 159", 12), // (A7) mode-2 indirect — COVERED
+        ("LSL.w.json", "e3de [LSL.w (A6)+] 1", 50), // odd-EA memory address error
+    ];
+    let mut found = 0usize;
+    for (fname, name, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap() == *name
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| panic!("S2 LSL anchor {name} (len {length}) not found in {fname}"));
+        // Every anchor must be an LSL opcode: 0xExxx, type LS (register bits 4-3 == 1 / memory bits 10-9 ==
+        // 1), direction LEFT (bit 8 == 1).
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(
+            opcode >> 12,
+            0xE,
+            "anchor {name} must be a 0xExxx shift opcode"
+        );
+        let is_lsl = if (opcode >> 6) & 3 == 3 {
+            (opcode >> 8) & 1 == 1 && (opcode >> 9) & 3 == 1
+        } else {
+            (opcode >> 8) & 1 == 1 && (opcode >> 3) & 3 == 1
+        };
+        assert!(
+            is_lsl,
+            "anchor {name} must be LSL (type LS, direction LEFT)"
+        );
+        // Load-bearing flag/scope pins (run_case verifies the FULL final state against the data either way).
+        let ini_sr = case["initial"]["sr"].as_u64().unwrap() as u16;
+        let fin_sr = case["final"]["sr"].as_u64().unwrap() as u16;
+        match *name {
+            "e74b [LSL.w Q, D3] 6" => {
+                // THE V-SUPPRESSION PIN: this exact operand/count is one an ASL would mark V=1 (the sign bit
+                // changes during the shift). LSL MUST keep V=0 — its ONLY difference from ASL. Recompute ASL's
+                // closed-form V here to prove the case really would set V under ASL, then assert LSL's final
+                // V is cleared.
+                let cnt = ((opcode >> 9) & 7) as u32; // imm: ccc != 0 → 3 (this anchor)
+                let x = (case["initial"]["d3"].as_u64().unwrap() as u32) & 0xFFFF;
+                let (n, mask) = (16u32, 0xFFFFu32);
+                let top_mask = mask & !((1u32 << (n - 1 - cnt)) - 1);
+                let top = x & top_mask;
+                let asl_would_set_v = top != 0 && top != top_mask;
+                assert!(
+                    asl_would_set_v,
+                    "the V-suppression anchor must be a case ASL would mark V=1"
+                );
+                assert_eq!(
+                    fin_sr & 0x02,
+                    0,
+                    "LSL must FORCE V=0 even where ASL would set it (the sole LSL/ASL difference)"
+                );
+            }
+            "e529 [LSL.b D2, D1] 28" => {
+                // cnt = 17 > n = 8 over-shift: the register is CLEARED (res = 0 → Z set, N = 0) and C = 0
+                // (X = C = 0), V = 0.
+                assert_ne!(fin_sr & 0x04, 0, "cnt>=n over-shift must set Z (res = 0)");
+                assert_eq!(fin_sr & 0x08, 0, "cnt>=n over-shift must clear N (res = 0)");
+                assert_eq!(fin_sr & 0x01, 0, "cnt>n over-shift must clear C");
+                assert_eq!(
+                    fin_sr & 0x10,
+                    0,
+                    "cnt>n over-shift must clear X (X = C = 0)"
+                );
+                assert_eq!(fin_sr & 0x02, 0, "LSL must always clear V");
+            }
+            "e36b [LSL.w D1, D3] 271" => {
+                // Zero-count: X PRESERVED (not set to C), V and C cleared, value unchanged.
+                assert_eq!(ini_sr & 0x10, fin_sr & 0x10, "zero-count must PRESERVE X");
+                assert_ne!(
+                    ini_sr & 0x10,
+                    0,
+                    "zero-count anchor must enter with X=1 (pins preservation)"
+                );
+                assert_eq!(fin_sr & 0x02, 0, "zero-count must clear V");
+                assert_eq!(fin_sr & 0x01, 0, "zero-count must clear C");
+                assert_eq!(
+                    case["initial"]["d3"], case["final"]["d3"],
+                    "zero-count must leave the operand unchanged"
+                );
+            }
+            "e3d7 [LSL.w (A7)] 159" => {
+                assert_eq!((opcode >> 3) & 7, 2, "(A7) anchor must be mode 2");
+                assert_eq!(opcode & 7, 7, "(A7) anchor must be reg 7 (the A7 indirect)");
+            }
+            "e3de [LSL.w (A6)+] 1" => {
+                // Odd-EA address error: the group-0 frame pushes the SSP down (the standard 14-byte frame).
+                assert!(
+                    case["final"]["ssp"].as_u64().unwrap()
+                        < case["initial"]["ssp"].as_u64().unwrap(),
+                    "odd-EA anchor must install the address-error frame (SSP pushed down)"
+                );
+            }
+            _ => {}
+        }
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all S2 LSL anchors exercised");
+    eprintln!(
+        "S2 LSL anchors: {found} cases (imm .b/.w/.l 6+2cnt / 8+2cnt, the V-SUPPRESSION pin (ASL would set V → LSL keeps V=0), cnt>n over-shift res=0/C=0, Dn cnt0 zero-count X-preserved, (An)/(A7) memory shift-by-1, odd-EA address-error) passed both drivers"
+    );
+}
+
+/// S2 — the snapshot/restore anchor for the LSL.w memory shift-by-1 (the shared `shift_recipe` word `ea_dst`
+/// RMW: `[Read, Prefetch, Alu, Write]`). Drives a real vendored `LSL.w (A5)` case through the quiesce driver,
+/// snapshotting + restoring the WHOLE `Cpu68000` (incl. the in-flight cursor) at every micro-op boundary —
+/// including the mid-bus-access boundary between the operand Read and the result Write — and proves the
+/// resumed run reproduces the run-to-completion final state + transaction stream bit-for-bit. This pins that
+/// `AluOp::Lsl` keeps `MicroState` fixed-size bincode (it stays `Copy`).
+#[test]
+fn lsl_w_mem_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/LSL.w.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "e3d5 [LSL.w (A5)] 91")
+        .expect("LSL.w (A5) snapshot anchor present");
+    let ini = &case["initial"];
+
+    // Run-to-completion reference.
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    // 4 micro-ops (Read, Prefetch, Alu, Write) → in-flight boundaries after 0..=3 of them.
+    for pause_after in 0..=3 {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        for _ in 0..pause_after {
+            assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+        }
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+    }
+    eprintln!(
+        "S2 LSL snapshot/restore: LSL.w (A5) word shift-by-1 RMW resumed identically at every micro-op boundary"
     );
 }
