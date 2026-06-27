@@ -596,6 +596,23 @@ pub enum AluOp {
     /// via `dn_dest`, or [`Dest::Scratch`] for the word memory shift-by-1). Every Rust shift is guarded (the
     /// `cnt == 0` and `cnt >= n` branches keep `cnt - 1 ∈ 0..n-1`, never `>= 32`).
     Lsr,
+    /// Rol: **rotate LEFT** by `cnt = b & 63` — a plain bit-rotate that does NOT pass through X (contrast
+    /// [`AluOp::Roxl`], which threads X through an `(n+1)`-bit rotate). Reuses the shared
+    /// [`shift_recipe`]/[`Operand::ShiftCount`]/`dn_*` machinery VERBATIM (only the `AluOp` + the RO/left
+    /// decode arm differ). `a` is the operand (size-masked to `x`), `b` the count source
+    /// ([`Operand::ShiftCount`] for the immediate/memory forms / [`Operand::DataRegFull`] for the dynamic
+    /// `Dn`-count form — the exec masks `& 63`); `size` → `n = 8/16/32`, `mask = (1<<n)-1`, `signbit =
+    /// 1<<(n-1)`. Value: `r = cnt % n`; `res = x` when `cnt == 0 || r == 0` (a whole-register rotation leaves
+    /// the value unchanged), else `((x << r) | (x >> (n - r))) & mask`. **C** = the last bit rotated out —
+    /// `(x >> ((n - (cnt % n)) % n)) & 1` for `cnt != 0`, else `0` (a zero count is the ONLY way ROL clears C).
+    /// **X is PRESERVED** (ROL/ROR never touch X — re-inject the live X, NEVER set X = C). **V = 0** always.
+    /// **N** = msb(res), **Z** = (res == 0). **ZERO COUNT** (`cnt == 0`, possible only via the dynamic `Dn`
+    /// form): the value is unchanged, **V = 0, C = 0, X PRESERVED**, N/Z from the unchanged operand. A NONZERO
+    /// multiple of `n` (`r == 0`, e.g. ROL.b #8): the value is unchanged but C still comes from the formula
+    /// (= the operand's low-bit region), NOT 0. The size-masked result is written back (low8/low16/full32 for a
+    /// `Dn` dest via `dn_dest`, or [`Dest::Scratch`] for the word memory rotate-by-1). Every Rust shift is
+    /// guarded (the `x >> (n - r)` term runs only for `r != 0`, keeping `n - r ∈ 1..n-1`, never `>= 32`).
+    Rol,
 }
 
 /// A bitwise logic operation a [`MicroOp::SrLogic`] applies to the status register — the three privileged
@@ -1468,6 +1485,51 @@ impl MicroState {
                                 ccr |= CCR_C | CCR_X;
                             }
                         }
+                        (res, ccr)
+                    }
+                    // ROL — rotate LEFT by `cnt = b & 63` (the resolved count). `x` = the size-masked operand
+                    // `a`; `n` = 8/16/32. A plain bit-rotate that does NOT pass through X (contrast ROXL, which
+                    // threads X). `r = cnt % n`; value `res = x` when `cnt == 0 || r == 0` (a whole-register
+                    // rotation leaves the value unchanged), else `((x << r) | (x >> (n - r))) & mask`. C = the
+                    // last bit rotated out — `(x >> ((n - (cnt % n)) % n)) & 1` for `cnt != 0`, else 0 (a zero
+                    // count is the ONLY way ROL clears C — a nonzero multiple of n with `r == 0` still takes C
+                    // from the formula). **X is PRESERVED** (ROL/ROR never touch X — re-inject the live X,
+                    // NEVER set X = C). V = 0 always. N = msb(res), Z = (res == 0). Every Rust shift is guarded:
+                    // the `x >> (n - r)` term runs only for `r != 0` (so `n - r ∈ 1..n-1`); the C-shift exponent
+                    // `(n - (cnt % n)) % n` is in `0..n-1`.
+                    AluOp::Rol => {
+                        let (mask, signbit, n) = match size {
+                            Size::Byte => (0xFFu32, 0x80u32, 8u32),
+                            Size::Word => (0xFFFF, 0x8000, 16),
+                            Size::Long => (0xFFFF_FFFF, 0x8000_0000, 32),
+                        };
+                        let x = lhs & mask;
+                        let cnt = rhs & 63;
+                        let r = cnt % n;
+                        let res = if cnt == 0 || r == 0 {
+                            x
+                        } else {
+                            ((x << r) | (x >> (n - r))) & mask
+                        };
+                        let mut ccr = 0u16;
+                        if res & signbit != 0 {
+                            ccr |= CCR_N;
+                        }
+                        if res == 0 {
+                            ccr |= CCR_Z;
+                        }
+                        // C: the last bit rotated out — bit `(n - (cnt % n)) % n` of the operand — for any
+                        // nonzero count (incl. a nonzero multiple of n); a zero count clears C. V = 0.
+                        let c = if cnt == 0 {
+                            0
+                        } else {
+                            (x >> ((n - (cnt % n)) % n)) & 1
+                        };
+                        if c != 0 {
+                            ccr |= CCR_C;
+                        }
+                        // X is PRESERVED (ROL/ROR never touch X — re-inject the live X, NEVER set X = C).
+                        ccr |= regs.sr & CCR_X;
                         (res, ccr)
                     }
                     AluOp::Add | AluOp::Sub => match size {
