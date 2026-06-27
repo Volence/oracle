@@ -40,6 +40,13 @@ impl Bus68k for PerfBus {
     fn write8(&mut self, addr: u32, _fc: u8, value: u8) {
         self.mem[(addr & ADDR_MASK) as usize] = value;
     }
+    fn tas(&mut self, addr: u32, _fc: u8) -> u8 {
+        // The atomic TAS RMW (non-logging): read orig, write orig | 0x80, return orig.
+        let a = (addr & ADDR_MASK) as usize;
+        let orig = self.mem[a];
+        self.mem[a] = orig | 0x80;
+        orig
+    }
 }
 
 fn start_regs() -> Registers {

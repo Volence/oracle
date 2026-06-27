@@ -7,7 +7,7 @@
 //! builder per instruction family) lands with full coverage.
 
 use super::bus68k::Bus68k;
-use super::ea::{ea_cmpa, ea_dst, ea_move, ea_movea, ea_src, ea_tst, RecipeBuf};
+use super::ea::{ea_cmpa, ea_dst, ea_move, ea_movea, ea_src, ea_tas, ea_tst, RecipeBuf};
 use super::exception::{push_standard_frame, vector_fetch_and_reload};
 use super::microop::{
     condition_true, AluOp, Cpu68000, Dest, LogicOp, MicroOp, MicroState, Operand, Size,
@@ -387,14 +387,16 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         };
         return tst_recipe(opcode, size);
     }
-    // TAS `Dn` (`0100 1010 11 mmm rrr`, opcode & 0xFFC0 == 0x4AC0) — the indivisible test-and-set, REGISTER
-    // form this commit (memory modes are the atomic RMW, deferred). This is the `SS == 3` (`& 0xC0 == 0xC0`)
-    // sub-case of the 0x4A00 TST space — the TST arm ABOVE excludes it via `& 0xC0 != 0xC0`, so there is no
-    // conflict. Read the byte → set N = bit7 / Z = (byte == 0), clear V/C, PRESERVE X → write `byte | 0x80`
-    // (the flags are on the READ byte, the written value is `read | 0x80` — DISTINCT). Guarded `mode == 0`
-    // THIS commit; the memory modes are decoded by a later commit. 4 cyc (one Prefetch, no memory — the Alu
-    // is a 0-cycle internal compute).
-    if opcode & 0xFFC0 == 0x4AC0 && (opcode >> 3) & 7 == 0 {
+    // TAS `<ea>` (`0100 1010 11 mmm rrr`, opcode & 0xFFC0 == 0x4AC0) — the indivisible test-and-set, BOTH the
+    // REGISTER and the data-alterable MEMORY forms. This is the `SS == 3` (`& 0xC0 == 0xC0`) sub-case of the
+    // 0x4A00 TST space — the TST arm ABOVE excludes it via `& 0xC0 != 0xC0`, so there is no conflict. Read
+    // the byte → set N = bit7 / Z = (byte == 0), clear V/C, PRESERVE X → write `byte | 0x80` (the flags are
+    // on the READ byte, the written value is `read | 0x80` — DISTINCT). `Dn` (mode 0) is the 4-cyc Alu form;
+    // memory is the ATOMIC indivisible RMW (ONE `'t'` bus cycle, via `ea_tas` — NOT the read-then-write
+    // `ea_dst` path). The data-alterable guard (`mode == 0 || is_dst_mem_mode`) excludes `An` / PC-rel /
+    // `#imm` (none are alterable). Byte-only → NO odd-EA faults.
+    let tas_mode = (opcode >> 3) & 7;
+    if opcode & 0xFFC0 == 0x4AC0 && (tas_mode == 0 || is_dst_mem_mode(tas_mode, opcode & 7)) {
         return tas_recipe(opcode);
     }
     // CLR `<ea>` (`0100 0010 SS mmm rrr`, 0x4200/4240/4280, SS bits 7-6 = b/w/l) — clear the data-alterable EA
@@ -1110,25 +1112,40 @@ fn swap_recipe(opcode: u16) -> MicroState {
     buf.finish()
 }
 
-/// `TAS Dn` (`0x4AC0 | reg`, `0100 1010 11 000 rrr`, opcode & 0xFFC0 == 0x4AC0, mode 000 = `Dn`): the
-/// indivisible test-and-set's REGISTER form — read the byte, set the LOGIC flags from the READ byte (N =
-/// bit7(`Dn` & 0xFF), Z = (`Dn` & 0xFF == 0), V = 0, C = 0, X PRESERVED) via the unary [`AluOp::Tas`], then
-/// write `(Dn & 0xFF) | 0x80` to `Dn`'s low byte ([`Dest::DataRegLow8`], the upper 24 bits preserved). The
-/// KEY subtlety: the flag input (`Dn`'s read byte) DIFFERS from the written value (`read | 0x80`) — unlike
-/// `NOT`, whose flags are on the result. `b` is ignored ([`Operand::Zero`]). `Dn`-only — NO memory access: a
-/// single `Prefetch` then the `Alu` (4 cyc, no idle, no fault possible). The memory TAS modes (the atomic
-/// RMW) are a separate commit; this recipe is the register form only.
+/// `TAS <ea>` (`0x4AC0 | ea`, `0100 1010 11 mmm rrr`, opcode & 0xFFC0 == 0x4AC0): the indivisible
+/// test-and-set — read the byte, set the LOGIC flags from the READ byte (N = bit7(byte), Z = (byte == 0),
+/// V = 0, C = 0, X PRESERVED), then write `byte | 0x80`. The KEY subtlety: the flag input (the read byte)
+/// DIFFERS from the written value (`read | 0x80`) — unlike `NOT`, whose flags are on the result.
+///
+/// `Dn`-direct (mode 0) is the REGISTER form: a single `Prefetch` then the unary [`AluOp::Tas`] writing
+/// `(Dn & 0xFF) | 0x80` to `Dn`'s low byte ([`Dest::DataRegLow8`], the upper 24 bits preserved), `b` ignored
+/// ([`Operand::Zero`]) — 4 cyc, NO memory, no fault possible.
+///
+/// A **memory destination** is the ATOMIC indivisible RMW — ONE locked `'t'` bus cycle ([`MicroOp::TasRmw`]
+/// via [`ea_tas`], 10 cyc), NOT the read-then-write `ea_dst` path (which would emit a separate `'r'`+`'w'`
+/// and fail the per-cycle transaction gate). `ea_tas` emits the EA prep (the same `EaCalc`/`AdjustAddr`/
+/// prefetch machinery as `ea_dst`) + the single `TasRmw` + the trailing refill. Memory cost = CLR + 2 cyc
+/// everywhere: `(An)`/`(An)+` 14, `−(An)` 16, `d16(An)` 18, `d8(An,Xn)` 20, `abs.w` 18, `abs.l` 22. Byte-only
+/// → NO odd-EA address-error faults.
 fn tas_recipe(opcode: u16) -> MicroState {
+    let mode = (opcode >> 3) & 7;
     let reg = (opcode & 7) as u8;
     let mut buf = RecipeBuf::new();
-    buf.push(MicroOp::Prefetch);
-    buf.push(MicroOp::Alu {
-        op: AluOp::Tas,
-        size: Size::Byte,
-        a: Operand::DataRegLow8(reg),
-        b: Operand::Zero,
-        dst: Dest::DataRegLow8(reg),
-    });
+    if mode == 0 {
+        // Dn-direct — no memory: one refill, then the unary Tas Alu (4 cyc, the Alu a 0-cycle compute).
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::Alu {
+            op: AluOp::Tas,
+            size: Size::Byte,
+            a: Operand::DataRegLow8(reg),
+            b: Operand::Zero,
+            dst: Dest::DataRegLow8(reg),
+        });
+    } else {
+        // Memory destination — the ATOMIC indivisible RMW (ONE `'t'` transaction), NOT a read+write pair.
+        // `ea_tas` emits the EA prep + ONE `MicroOp::TasRmw` (flags from the read byte) + the trailing refill.
+        ea_tas(&mut buf, mode, reg);
+    }
     buf.finish()
 }
 

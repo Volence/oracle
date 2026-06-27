@@ -286,7 +286,8 @@ fn expected_transactions(t: &Value) -> Vec<Transaction> {
         let kind = match arr[0].as_str().unwrap() {
             "r" => TxKind::Read,
             "w" => TxKind::Write,
-            _ => continue, // 'n' idle cycles etc. — not memory transactions
+            "t" => TxKind::Tas, // the atomic TAS read-modify-write (ONE locked bus cycle; value = the written byte)
+            _ => continue,      // 'n' idle cycles etc. — not memory transactions
         };
         // The transaction array is [kind, cycles, fc, addr, size_token, value]; index 4 is the size token
         // (".w" / ".b"), index 5 the value. A byte access is byte-granular on the bus and records the single
@@ -935,14 +936,24 @@ fn covered(opcode: u16, _ini: &Value) -> bool {
             _ => false, // An-direct (DBcc, handled above) / PC-rel / #imm: absent / not data-alterable
         };
     }
-    // TAS `Dn` (`0100 1010 11 mmm rrr`, opcode & 0xFFC0 == 0x4AC0) — the indivisible test-and-set. REGISTER
-    // form ONLY this commit: admit `mode == 0` (Dn) and SKIP the memory modes (the atomic RMW is a later
-    // commit — keeping `covered()` a SUBSET of decodable so the not-yet-covered memory cases never reach a
-    // decode `todo!`). Classified by OPCODE. The 0x4AC0 space is the SS == 3 (`& 0xC0 == 0xC0`) sub-case of
-    // the 0x4A00 TST space (excluded from the TST arm above via `& 0xC0 != 0xC0`). Byte-only → NO odd-EA
-    // faults. The TAS.json file is 100% PURE (one opcode): mode 0 (Dn) = 1237 (memory = 6828, later commit).
+    // TAS `<ea>` (`0100 1010 11 mmm rrr`, opcode & 0xFFC0 == 0x4AC0) — the indivisible test-and-set. The
+    // FULL data-alterable EA set is in scope (BOTH the `Dn` register form AND the atomic-RMW memory forms):
+    // Dn (0), (An) (2 — INCL the clean `(A7)` mode-2 indirect, NO deferral: the atomic `[t@A7, prefetch]`),
+    // (An)+ (3), -(An) (4), d16(An) (5), d8(An,Xn) (6), abs.w (7/0), abs.l (7/1). An-direct (1) / PC-rel
+    // (7/2, 7/3) / #imm (7/4) are not data-alterable and are absent. Classified by OPCODE. The 0x4AC0 space
+    // is the SS == 3 (`& 0xC0 == 0xC0`) sub-case of the 0x4A00 TST space (excluded from the TST arm above via
+    // `& 0xC0 != 0xC0`). Byte-only → NO odd-EA faults (no parity filter). The TAS.json file is 100% PURE (one
+    // opcode): Dn (mode 0) = 1237 + memory = 6828 = 8065 (the WHOLE file in scope — no deferral).
     if opcode & 0xFFC0 == 0x4AC0 {
-        return (opcode >> 3) & 7 == 0; // Dn only this commit; memory modes deferred (atomic RMW)
+        let mode = (opcode >> 3) & 7;
+        let reg = opcode & 7;
+        return match mode {
+            0 => true,                         // Dn-direct (no memory access)
+            2..=4 => true,                     // (An) [incl (A7) m2] / (An)+ / -(An)
+            5 | 6 => true,                     // d16(An) / d8(An,Xn)
+            7 if reg == 0 || reg == 1 => true, // abs.w / abs.l
+            _ => false, // An-direct / PC-rel / #imm: absent / not data-alterable
+        };
     }
     // ADD/SUB. No parity filter (odd word/long EAs are address errors the E4 abort covers); the only
     // mode-scope deferrals are the `(A7)` (mode 2) plain-indirect form (`reg != 7`) and the illegal `An`-direct
@@ -1156,20 +1167,25 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 487_617,
-        "expected 487617 covered cases — C1 adds TAS `Dn` (its own TAS.json file, `0100 1010 11 mmm rrr` = \
-         opcode & 0xFFC0 == 0x4AC0, the REGISTER form ONLY — `mode == 0`): TAS mode 0 (Dn) = 1237 = +1237 over \
-         C0's 486380 (the memory modes = 6828 are a later commit, SKIPPED before decode so they never reach a \
-         `todo!`). TAS reads the byte → sets N = bit7 / Z = (byte == 0), clears V/C, PRESERVES X → writes \
-         `byte | 0x80`; the flags are on the READ byte but the written value is `read | 0x80` (DISTINCT — unlike \
-         NOT, whose flags are on the result `~a`). New vocabulary: the unary `AluOp::Tas` — \
-         `let (_orig, ccr_nz) = move_flags(a, Size::Byte); let res = (a & 0xFF) | 0x80;` returns \
-         `(res, ccr_nz | (sr & CCR_X))` (X PRESERVED, V/C cleared, flags on the input `a`, write `a|0x80`); `b` \
-         is ignored (`Operand::Zero`). `tas_recipe` Dn arm is `[Prefetch, Alu]` = 4 cyc (one Prefetch, the Alu a \
-         0-cycle internal compute, no other bus access). The 0x4AC0 space is the SS == 3 (`& 0xC0 == 0xC0`) \
-         sub-case of the 0x4A00 TST space — the TST arm excludes it via `& 0xC0 != 0xC0`, no conflict. Byte-only \
-         → NO odd-EA address-error faults. `covered()` admits TAS mode 0 ONLY this commit (a SUBSET of \
-         decodable — the memory cases are skipped before decode). The TAS.json file is 100% PURE (one opcode). \
+        ran >= 494_445,
+        "expected 494445 covered cases — C2 adds TAS `<ea>` MEMORY (its own TAS.json file, \
+         `0100 1010 11 mmm rrr` = opcode & 0xFFC0 == 0x4AC0): the atomic-RMW memory forms = 6828 = +6828 over \
+         C1's 487617 (which covered TAS `Dn` mode 0 = 1237; the WHOLE 8065-case file is now in scope — Dn 1237 \
+         + memory 6828, no deferral). TAS memory is the INDIVISIBLE read-modify-write the SST stream models as \
+         ONE `'t'` transaction (NOT a separate `'r'`+`'w'` pair): a single locked bus cycle (10 cyc = read 4 + \
+         the indivisible modify 2 + write 4) reads the byte → sets N = bit7 / Z = (byte == 0), clears V/C, \
+         PRESERVES X → writes `byte | 0x80` (the flags are on the READ byte, the written value `read | 0x80` is \
+         DISTINCT). New vocabulary: `TxKind::Tas` (the `'t'` bus token, value = the WRITTEN byte) + \
+         `Bus68k::tas(addr, fc) -> u8` (read `orig`, write `orig | 0x80`, log ONE `Tas` transaction, return \
+         `orig`) + `MicroOp::TasRmw {{ addr }}` (the atomic 10-cyc RMW micro-op, one bus access = one quiesce \
+         boundary) + the `ea_tas` builder (mirrors `ea_dst`'s seven EA arms but emits ONE `TasRmw` in place of \
+         `Read, Prefetch, Alu, Write`, the trailing `Prefetch` AFTER it). Memory cost = CLR + 2 cyc everywhere: \
+         (An)/(An)+ 14, -(An) 16, d16(An) 18, d8(An,Xn) 20, abs.w 18, abs.l 22. The data-alterable EA set is \
+         FULLY in scope — Dn (0), (An) (2 — INCL the clean `(A7)` mode-2 indirect, NO deferral: the atomic \
+         `[t@A7, prefetch]`), (An)+ (3), -(An) (4), d16(An) (5), d8(An,Xn) (6), abs.w (7/0), abs.l (7/1) — \
+         per-mode true counts 1237 / 1280 / 1382 / 1259 / 1340 / 1248 / 147 / 172 = 8065; An-direct (1) / \
+         PC-rel / #imm are not data-alterable and absent. Byte-only → NO odd-EA address-error faults (no parity \
+         filter). The TAS.json file is 100% PURE (one opcode, no contaminant). \
          Prior baseline — C0 adds Scc `<ea>` (its own Scc.json file, `0101 cccc 11 mmm rrr` = \
          opcode & 0xF0C0 == 0x50C0, EXCL the 0x50C8 DBcc mode-001 form): Scc 8065 = +8065 over the prior 478315 \
          (the WHOLE file in scope — no contaminant, no deferral). Scc writes 0xFF if the condition `cc` (bits \
@@ -2534,4 +2550,144 @@ fn tas_dn_quiescable_and_serializable_at_every_micro_op_boundary() {
         );
     }
     eprintln!("C1 TAS snapshot/restore: TAS D5 resumed identically at every micro-op boundary");
+}
+
+/// C2 — the named `TAS <ea>` MEMORY anchors, pinning the atomic indivisible read-modify-write against the
+/// vendored TAS stream WITHOUT relying on the bulk `covered()` sweep. The load-bearing facts: TAS memory is
+/// ONE atomic `'t'` transaction (10 cyc, value = the WRITTEN byte `orig | 0x80`), NOT a separate `'r'`+`'w'`
+/// pair; the flags come from the READ byte (`orig`) — N = bit7(orig) / Z = (orig == 0), V/C cleared, X
+/// PRESERVED. Each anchor pins the EXACT per-cycle bus stream + cycle count (= CLR + 2 everywhere):
+/// - `4ad2 [TAS (A2)] 1` — `(An)`: bus `t, r`, len 14. orig 0x35 → written 0xB5 (`'t'` value 181), N0 Z0.
+/// - `4ad7 [TAS (A7)] 23` — `(A7)` mode-2 indirect (COVERED, NOT deferred): bus `t@A7, r`, len 14 — the
+///   atomic `[t@A7, prefetch]`, no increment.
+/// - `4ae2 [TAS -(A2)] 8` — `-(An)`: bus `n, t, r`, len 16 (the predecrement idle, then the atomic RMW).
+/// - `4aea [TAS (d16, A2)] 2` — `d16(An)`: bus `r, t, r`, len 18.
+/// - `4af9 [TAS (xxx).l] 51` — `abs.l`: bus `r, r, t, r`, len 22 (the two-word address assembly, then the
+///   atomic RMW, then the final refill).
+///
+/// Each runs both drivers + the per-cycle transaction stream via `run_case` (the `'t'` token maps to
+/// `TxKind::Tas`). Every anchor must decode as a TAS opcode (0xFFC0 == 0x4AC0), a MEMORY mode (mode != 0),
+/// never a CMP-class.
+#[test]
+fn tas_memory_anchors_match_singlesteptests() {
+    // (file, full-name, length, expected mode). All TAS memory bus streams contain EXACTLY one `'t'`.
+    let anchors: &[(&str, &str, u32, u16)] = &[
+        ("TAS.json", "4ad2 [TAS (A2)] 1", 14, 2),      // (An): t, r
+        ("TAS.json", "4ad7 [TAS (A7)] 23", 14, 2),     // (A7) m2 indirect (covered): t@A7, r
+        ("TAS.json", "4ae2 [TAS -(A2)] 8", 16, 4),     // -(An): n, t, r
+        ("TAS.json", "4aea [TAS (d16, A2)] 2", 18, 5), // d16(An): r, t, r
+        ("TAS.json", "4af9 [TAS (xxx).l] 51", 22, 7),  // abs.l: r, r, t, r
+    ];
+    let mut found = 0usize;
+    for (fname, name, length, want_mode) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap() == *name
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| {
+                panic!("C2 TAS memory anchor {name} (len {length}) not found in {fname}")
+            });
+        // Every anchor must be a TAS opcode (0xFFC0 == 0x4AC0), the expected MEMORY mode, never CMP-class.
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(
+            opcode & 0xFFC0,
+            0x4AC0,
+            "anchor {name} must be a TAS opcode"
+        );
+        assert_eq!((opcode >> 3) & 7, *want_mode, "anchor {name} EA mode");
+        assert_ne!(
+            (opcode >> 3) & 7,
+            0,
+            "anchor {name} must be a MEMORY form (mode != 0)"
+        );
+        assert_eq!(
+            cmp_class(opcode),
+            CmpClass::None,
+            "TAS is not a CMP-class opcode"
+        );
+        // The vendored stream must contain EXACTLY ONE `'t'` (the atomic RMW), never an `'r'`+`'w'` pair.
+        let t_count = case["transactions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|tr| tr.as_array().unwrap()[0].as_str().unwrap() == "t")
+            .count();
+        assert_eq!(
+            t_count, 1,
+            "anchor {name} has exactly one atomic `'t'` transaction"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all C2 TAS memory anchors exercised");
+    eprintln!(
+        "C2 TAS memory anchors: {found} cases ((An) t,r 14 / (A7) m2 t@A7 14 / -(An) n,t,r 16 / d16(An) r,t,r 18 / abs.l r,r,t,r 22; ONE atomic Tas txn value=orig|0x80, flags from the read byte) passed both drivers"
+    );
+}
+
+/// C2 — the snapshot/restore anchor at the atomic-RMW boundary for TAS MEMORY (the new `TxKind::Tas` /
+/// `Bus68k::tas` / `MicroOp::TasRmw` / `ea_tas`). Drives the real vendored `4af9 [TAS (xxx).l]` case (`abs.l`,
+/// 6 micro-ops `[EaCalc(HI), Prefetch, EaCalc(ADDR), Prefetch, TasRmw, Prefetch]`) through the quiesce
+/// driver, snapshotting + restoring the WHOLE `Cpu68000` (incl. the in-flight cursor) at EVERY micro-op
+/// boundary — INCLUDING the atomic-RMW boundary (the single locked `Tas` bus access is one quiesce point) —
+/// and proving the resumed run reproduces the run-to-completion final state + transaction stream bit-for-bit.
+/// Pins that `MicroOp::TasRmw` keeps `MicroState` fixed-size bincode.
+#[test]
+fn tas_memory_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/TAS.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "4af9 [TAS (xxx).l] 51")
+        .expect("TAS abs.l snapshot anchor present");
+    let ini = &case["initial"];
+
+    // Run-to-completion reference.
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    // 6 micro-ops (EaCalc(HI), Prefetch, EaCalc(ADDR), Prefetch, TasRmw, Prefetch) → boundaries after 0..=5.
+    for pause_after in 0..=5 {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        for _ in 0..pause_after {
+            assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+        }
+        // Snapshot + restore the whole CPU (incl. the in-flight cursor) mid-instruction.
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+    }
+    eprintln!(
+        "C2 TAS snapshot/restore: TAS abs.l resumed identically at every micro-op boundary (incl the atomic-RMW boundary)"
+    );
 }

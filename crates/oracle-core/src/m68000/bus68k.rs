@@ -12,11 +12,15 @@ use super::microop::Size;
 /// 68000 address bus width (24 bits). Every access is masked to this.
 pub const ADDR_MASK: u32 = 0x00FF_FFFF;
 
-/// Read or write.
+/// Read or write — plus [`TxKind::Tas`], the indivisible test-and-set read-modify-write the 68000 performs
+/// as ONE locked bus cycle (the SST stream's `'t'` token), distinct from a separate `Read`+`Write` pair.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TxKind {
     Read,
     Write,
+    /// The atomic `TAS` read-modify-write: a single indivisible bus cycle that reads the byte and writes it
+    /// back with bit 7 set. Logged as ONE transaction whose `value` is the WRITTEN byte (`orig | 0x80`).
+    Tas,
 }
 
 /// One bus transaction, in the order it happened. `fc` is the 68000 function code (5 = supervisor
@@ -44,6 +48,11 @@ pub trait Bus68k {
     fn read8(&mut self, addr: u32, fc: u8) -> u8;
     /// Write `value` to the byte at `addr`.
     fn write8(&mut self, addr: u32, fc: u8, value: u8);
+    /// The indivisible `TAS` read-modify-write: atomically read the byte `orig` at `addr`, write
+    /// `orig | 0x80` back, and return `orig`. ONE locked bus cycle — the SST stream's single `'t'`
+    /// transaction (logged with `value = orig | 0x80`, the WRITTEN byte), NOT a separate read+write pair.
+    /// Byte-only → never faults on parity.
+    fn tas(&mut self, addr: u32, fc: u8) -> u8;
 }
 
 /// A flat 16 MiB recording bus for tests/diagnostics: big-endian word access over the 24-bit space,
@@ -135,6 +144,23 @@ impl Bus68k for FlatBus {
             value: value as u16,
         });
     }
+
+    fn tas(&mut self, addr: u32, fc: u8) -> u8 {
+        // The indivisible test-and-set: read `orig`, write `orig | 0x80`, log ONE Tas transaction whose
+        // value is the WRITTEN byte, return `orig`. A single locked RMW bus cycle (the SST `'t'` token) —
+        // never a separate read+write pair. Byte-granular (`Size::Byte`).
+        let a = (addr & ADDR_MASK) as usize;
+        let orig = self.mem[a];
+        self.mem[a] = orig | 0x80;
+        self.log.push(Transaction {
+            kind: TxKind::Tas,
+            fc,
+            addr: addr & ADDR_MASK,
+            size: Size::Byte,
+            value: (orig | 0x80) as u16,
+        });
+        orig
+    }
 }
 
 #[cfg(test)]
@@ -186,6 +212,37 @@ mod tests {
                 size: Size::Byte,
                 value: 0xE4,
             }]
+        );
+    }
+
+    /// `tas` is the indivisible test-and-set bus cycle: atomically READ `orig`, WRITE `orig | 0x80`, and
+    /// return `orig`, logging ONE `Tas` transaction whose value is the WRITTEN byte (`orig | 0x80`). Pinned
+    /// to the real SST `4ad2 [TAS (A2)]` anchor's `'t'` transaction `['t', 10, 5, 2840449, '.b', 181]`: at
+    /// `addr = 2840449` (fc 5), the written byte is `181 = 0xB5`, so `orig = 0x35` and `mem` ends `0xB5`.
+    #[test]
+    fn tas_reads_orig_writes_or_0x80_and_logs_one_tas_transaction() {
+        let mut bus = FlatBus::new();
+        bus.poke(2_840_449, 0x35);
+        let orig = bus.tas(2_840_449, 5);
+        assert_eq!(
+            orig, 0x35,
+            "tas returns the pre-modify byte (the READ value)"
+        );
+        assert_eq!(
+            bus.peek(2_840_449),
+            0xB5,
+            "tas writes orig | 0x80 (0x35 | 0x80 == 0xB5)"
+        );
+        assert_eq!(
+            bus.log,
+            vec![Transaction {
+                kind: TxKind::Tas,
+                fc: 5,
+                addr: 2_840_449,
+                size: Size::Byte,
+                value: 0xB5, // the WRITTEN byte (orig | 0x80) — pinned to the anchor's `'t'` value 181
+            }],
+            "tas logs exactly ONE Tas transaction (value = the written byte)"
         );
     }
 

@@ -998,6 +998,110 @@ pub fn ea_dst(
     }
 }
 
+/// Push the destination-EA sub-sequence for `TAS <ea>` (the atomic memory test-and-set). UNLIKE the
+/// read-then-write [`ea_dst`] RMW, TAS memory is ONE indivisible locked bus cycle — a single
+/// [`MicroOp::TasRmw`] (the SST `'t'` transaction, 10 cyc: read 4 + the indivisible modify 2 + write 4) —
+/// so this MIRRORS `ea_dst`'s seven arms (the SAME `EaCalc`/`AdjustAddr`/[`step_bytes`]/[`push_abs_l_addr`]
+/// EA prep and the prefetch(es) BEFORE the operand access) but emits **one `TasRmw { addr }`** in place of
+/// `ea_dst`'s `Read, Prefetch, Alu, Write` quad, with the trailing `Prefetch` AFTER the `TasRmw`. `addr` is
+/// [`Operand::AddrReg`]`(reg)` for `(An)`/`-(An)` (the live address register), else
+/// [`Operand::Scratch`]`(EA_SLOT)` (the materialized EA). Byte-only → NEVER faults. The `(An)+`/`-(An)`
+/// step is byte-sized via [`step_bytes`] (2 for A7 to keep the SP even). Per-mode bus stream + cycles,
+/// pinned to the vendored TAS stream: `(An)`/`(An)+` `t, r` 14; `-(An)` `n, t, r` 16; `d16(An)`/`abs.w`
+/// `r, t, r` 18; `d8(An,Xn)` `n, r, t, r` 20; `abs.l` `r, r, t, r` 22 (= CLR + 2 everywhere).
+pub fn ea_tas(buf: &mut RecipeBuf, mode: u16, reg: u8) {
+    match (mode, reg) {
+        // (An): the atomic RMW at An, then the refill. Bus: [t, r], 14 cyc.
+        (2, _) => {
+            buf.push(MicroOp::TasRmw {
+                addr: Operand::AddrReg(reg),
+            });
+            buf.push(MicroOp::Prefetch);
+        }
+        // (An)+: capture the pre-increment EA (An) into the EA scratch slot, post-increment An by the byte
+        // step (2 for A7 to keep the SP even, else 1) BEFORE the atomic RMW, then the RMW at the captured EA,
+        // then the refill. The EaCalc + AdjustAddr are non-bus. Bus: [t, r], 14 cyc.
+        (3, _) => {
+            buf.push(MicroOp::EaCalc {
+                base: Operand::AddrReg(reg),
+                index: Operand::Zero,
+                disp: Operand::Zero,
+                dst: EA_SLOT,
+            });
+            buf.push(MicroOp::AdjustAddr {
+                reg,
+                delta: step_bytes(Size::Byte, reg),
+            });
+            buf.push(MicroOp::TasRmw {
+                addr: Operand::Scratch(EA_SLOT),
+            });
+            buf.push(MicroOp::Prefetch);
+        }
+        // -(An): pre-decrement An by the byte step, the predecrement idle (n2), then the atomic RMW at
+        // An-step, then the refill. Bus: [n, t, r], 16 cyc.
+        (4, _) => {
+            buf.push(MicroOp::AdjustAddr {
+                reg,
+                delta: -step_bytes(Size::Byte, reg),
+            });
+            buf.push(MicroOp::Internal { cycles: 2 });
+            buf.push(MicroOp::TasRmw {
+                addr: Operand::AddrReg(reg),
+            });
+            buf.push(MicroOp::Prefetch);
+        }
+        // d16(An) / abs.w: compute the EA into the EA scratch slot FIRST (the disp is in prefetch[1] now; the
+        // refill would shift it out), one refill, the atomic RMW at the materialized EA, the final refill.
+        // Bus: [r, t, r], 18 cyc.
+        (5, _) | (7, 0) => {
+            let base = if mode == 5 {
+                Operand::AddrReg(reg)
+            } else {
+                Operand::Zero // abs.w
+            };
+            buf.push(MicroOp::EaCalc {
+                base,
+                index: Operand::Zero,
+                disp: Operand::DispWord,
+                dst: EA_SLOT,
+            });
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::TasRmw {
+                addr: Operand::Scratch(EA_SLOT),
+            });
+            buf.push(MicroOp::Prefetch);
+        }
+        // d8(An,Xn): compute the EA (An + index(Xn) + sign_extend8(disp8)) into the EA scratch slot FIRST,
+        // the indexed-mode idle (n2), one refill, the atomic RMW at the materialized EA, the final refill.
+        // Bus: [n, r, t, r], 20 cyc.
+        (6, _) => {
+            buf.push(MicroOp::EaCalc {
+                base: Operand::AddrReg(reg),
+                index: Operand::BriefIndex,
+                disp: Operand::BriefDisp8,
+                dst: EA_SLOT,
+            });
+            buf.push(MicroOp::Internal { cycles: 2 });
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::TasRmw {
+                addr: Operand::Scratch(EA_SLOT),
+            });
+            buf.push(MicroOp::Prefetch);
+        }
+        // abs.l: assemble the two-word address (HIGH, refill, LOW) into the EA scratch slot, one refill, the
+        // atomic RMW at the materialized EA, the final refill. Bus: [r, r, t, r], 22 cyc.
+        (7, 1) => {
+            push_abs_l_addr(buf); // [EaCalc(HI), Prefetch, EaCalc(ADDR)]
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::TasRmw {
+                addr: Operand::Scratch(EA_SLOT),
+            });
+            buf.push(MicroOp::Prefetch);
+        }
+        _ => todo!("ea_tas mode {mode}/{reg} not yet covered"),
+    }
+}
+
 /// Scratch slot parking the moved value between the flag-ALU (which copies the source operand and sets
 /// N/Z) and the destination `Write`, for a memory-destination MOVE. Slot 1 is the conventional "ALU
 /// result" slot (the same slot a `Dn,<ea>` RMW writes its result to); MOVE reuses it for the parked copy.

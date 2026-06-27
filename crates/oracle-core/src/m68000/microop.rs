@@ -649,6 +649,15 @@ pub enum MicroOp {
     /// [`AluOp::Move`] (which CLR uses and which SETS N/Z) this touches no CCR bit. A 0-cycle, non-bus,
     /// snapshot-visible internal step.
     SetByte { value: u8, dst: Dest },
+    /// The atomic indivisible **TAS memory** read-modify-write: ONE locked bus cycle (the SST `'t'`
+    /// transaction, 10 cyc = read 4 + indivisible modify 2 + write 4) at `resolve(addr)`. Via
+    /// [`Bus68k::tas`](super::bus68k::Bus68k::tas) it reads `orig`, writes `orig | 0x80`, and logs ONE `Tas`
+    /// transaction (value = the WRITTEN byte). The flags come from the byte READ (`orig`) — N = bit7(orig) /
+    /// Z = (orig == 0), V/C cleared, X PRESERVED — while the written value is `orig | 0x80` (DISTINCT, the
+    /// same flag/value split as [`AluOp::Tas`]). Always Data FC, byte-only → NEVER faults (a byte access
+    /// drives one bus half regardless of parity). It is a SINGLE bus access = ONE quiesce boundary
+    /// (indivisible); the recipe must NOT split it into a `Read`+`Write` pair (which would emit `'r'`+`'w'`).
+    TasRmw { addr: Operand },
     /// Restore the FULL status register from a popped value, masked to the implemented bits:
     /// `regs.sr = (resolve(value) as u16) & SR_IMPLEMENTED` (`0xA71F` — T | S | I2-I0 | CCR; the unimplemented
     /// bits read as 0). `RTE`'s SR restore — unlike [`MicroOp::LoadCcr`] (which keeps only the low 5 CCR bits
@@ -1260,6 +1269,18 @@ impl MicroState {
                     _ => unreachable!("SetByte writes only DataRegLow8 / Scratch"),
                 }
                 0
+            }
+            MicroOp::TasRmw { addr } => {
+                // The atomic indivisible TAS memory RMW (ONE locked `Tas` bus cycle): read `orig`, write
+                // `orig | 0x80`, log ONE Tas transaction (value = the WRITTEN byte). The flags come from the
+                // READ byte `orig` — N = bit7(orig) / Z = (orig == 0), V/C cleared, X PRESERVED — while the
+                // written value is `orig | 0x80` (DISTINCT). Data FC. Byte-only → never faults (one bus
+                // access = one quiesce boundary). 10 cyc (read 4 + indivisible modify 2 + write 4).
+                let address = self.resolve(addr, regs);
+                let orig = bus.tas(address, regs.fc(false));
+                let (_r, ccr_nz) = move_flags(orig as u32, Size::Byte);
+                regs.sr = (regs.sr & 0xFF00) | ccr_nz | (regs.sr & CCR_X);
+                10
             }
             MicroOp::LoadSr { value } => {
                 // RTE's full-SR restore: the popped value masked to the implemented bits (0xA71F). Can switch
@@ -3015,6 +3036,84 @@ mod tests {
         assert_eq!(regs.sr & CCR_N, 0, "N = bit7(0x00) = 0");
         assert_eq!(regs.sr & CCR_V, 0, "V cleared");
         assert_eq!(regs.sr & CCR_C, 0, "C cleared");
+    }
+
+    #[test]
+    fn tas_rmw_atomic_read_modify_write_one_tas_transaction_flags_from_read_byte() {
+        // MicroOp::TasRmw is the ATOMIC indivisible memory RMW: ONE `Tas` bus cycle (10 cyc) reads `orig`,
+        // writes `orig | 0x80`, and logs ONE transaction (value = the WRITTEN byte). The flags come from the
+        // READ byte `orig` — N = bit7(orig) / Z = (orig == 0), V/C cleared, X PRESERVED — while the written
+        // value is `orig | 0x80` (DISTINCT). Pinned to the `4ad2 [TAS (A2)]` anchor's `'t'` transaction
+        // `['t', 10, 5, 2840449, '.b', 181]`: orig 0x35 → written 0xB5 (181), N = 0 / Z = 0, X kept.
+        let mut regs = regs(); // supervisor → data FC 5
+        regs.sr |= CCR_X | CCR_V | CCR_C; // X = 1 (must be kept), V/C set (must be cleared)
+        regs.a[2] = 2_840_449; // A2 (addr_reg(2) == a[2]) holds the anchor's EA
+        let mut bus = FlatBus::new();
+        bus.poke(2_840_449, 0x35); // orig — bit7 clear (N = 0), non-zero (Z = 0)
+
+        let mut st = MicroState::from_ops(&[MicroOp::TasRmw {
+            addr: Operand::AddrReg(2),
+        }]);
+        let cycles = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(
+            cycles, 10,
+            "the atomic TAS RMW is 10 cyc (read 4 + modify 2 + write 4)"
+        );
+        assert_eq!(
+            bus.peek(2_840_449),
+            0xB5,
+            "wrote orig | 0x80 (0x35 | 0x80 == 0xB5)"
+        );
+        assert_eq!(
+            bus.log,
+            vec![Transaction {
+                kind: TxKind::Tas,
+                fc: 5,
+                addr: 2_840_449,
+                size: Size::Byte,
+                value: 0xB5, // ONE Tas transaction, value = the WRITTEN byte (pinned to anchor value 181)
+            }],
+            "exactly ONE atomic Tas transaction"
+        );
+        assert_eq!(regs.sr & CCR_N, 0, "N = bit7(read byte 0x35) = 0");
+        assert_eq!(regs.sr & CCR_Z, 0, "Z = (read byte == 0) = 0");
+        assert_eq!(regs.sr & CCR_V, 0, "V cleared");
+        assert_eq!(regs.sr & CCR_C, 0, "C cleared");
+        assert_ne!(regs.sr & CCR_X, 0, "X PRESERVED");
+    }
+
+    #[test]
+    fn tas_rmw_sets_n_from_read_bit7_and_z_on_zero_byte() {
+        // Two more TasRmw flag pins: bit7-set read byte → N = 1 (the write keeps bit7), and a zero read byte
+        // → Z = 1 with the written value 0x80 (flag input 0x00 DIFFERS from the written 0x80).
+        let mut regs_a = regs();
+        let mut regs_b = regs();
+        regs_a.a[1] = 0x0000_3000; // A1 (addr_reg(1) == a[1])
+        let mut bus = FlatBus::new();
+        bus.poke(0x3000, 0xC3); // bit7 set → N = 1
+        let mut st = MicroState::from_ops(&[MicroOp::TasRmw {
+            addr: Operand::AddrReg(1),
+        }]);
+        st.exec_one(&mut regs_a, &mut bus);
+        assert_eq!(
+            bus.peek(0x3000),
+            0xC3,
+            "0xC3 | 0x80 == 0xC3 (bit7 already set)"
+        );
+        assert_ne!(regs_a.sr & CCR_N, 0, "N = bit7(0xC3) = 1");
+        assert_eq!(regs_a.sr & CCR_Z, 0, "Z = 0 (0xC3 != 0)");
+
+        regs_b.a[1] = 0x0000_3100;
+        let mut bus2 = FlatBus::new();
+        bus2.poke(0x3100, 0x00); // zero read byte → Z = 1, written 0x80
+        let mut st2 = MicroState::from_ops(&[MicroOp::TasRmw {
+            addr: Operand::AddrReg(1),
+        }]);
+        st2.exec_one(&mut regs_b, &mut bus2);
+        assert_eq!(bus2.peek(0x3100), 0x80, "0x00 | 0x80 == 0x80 written");
+        assert_ne!(regs_b.sr & CCR_Z, 0, "Z = (read byte == 0) = 1");
+        assert_eq!(regs_b.sr & CCR_N, 0, "N = bit7(0x00) = 0");
     }
 
     // --- E3: the SpPlus frame-write operand + the execution-time address-error abort. ---
