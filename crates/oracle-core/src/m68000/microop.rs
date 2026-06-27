@@ -516,6 +516,17 @@ pub enum AluOp {
     /// (memory, the `ea_dst` write source). BCLR's REGISTER form is 2 cycles SLOWER than BCHG/BSET (base idle
     /// `n4`, not `n2`) — carried by `bit_recipe`'s `reg_base` parameter.
     Bclr,
+    /// Bset: the **bit test-and-set** of `BSET` — `Btst` (`Z = NOT(the PRE-set bit)`, X/N/V/C + the SR system
+    /// byte all PRESERVED) PLUS the write of `a | (1 << pos)` (set the tested bit). The Z flag is from the bit
+    /// BEFORE the set (the read value), NOT after — identical Z shape to `Bchg`/`Bclr`, only the written value
+    /// differs (set vs toggle/clear). The bit width follows `size` exactly as `Btst`/`Bchg`/`Bclr`:
+    /// **`Size::Long` for a `Dn` dest** (32 bits, `pos = b mod 32`, the FULL 32-bit register written with one
+    /// bit set) / **`Size::Byte` for a memory dest** (8 bits, `pos = b mod 8`, the byte written with one bit
+    /// set). `a` is the operand, `b` the bit number ([`Operand::DataRegFull`] dynamic / a scratch slot holding
+    /// the captured `prefetch[1]` static); the recipe pairs it with [`Dest::DataReg`] (`Dn`) or [`Dest::Scratch`]
+    /// (memory, the `ea_dst` write source). BSET's REGISTER form uses the SAME base idle as BCHG (`n2`, NOT
+    /// BCLR's `n4`) — carried by `bit_recipe`'s `reg_base` parameter.
+    Bset,
 }
 
 /// A bitwise logic operation a [`MicroOp::SrLogic`] applies to the status register — the three privileged
@@ -1194,6 +1205,20 @@ impl MicroState {
                         let z = if bit == 0 { CCR_Z } else { 0 };
                         let preserved = regs.sr & (CCR_X | CCR_N | CCR_V | CCR_C);
                         (lhs & !(1 << pos), preserved | z)
+                    }
+                    // BSET is BTST + SET: identical Z = NOT(the PRE-set bit) (X/N/V/C preserved, only Z changes),
+                    // then the written value is `a | (1 << pos)` (set the tested bit). The Z flag is from the bit
+                    // BEFORE the set (`lhs`), NOT the result. Same bit-width-follows-`size` rule as BCHG/BCLR:
+                    // Long → 32 (`Dn` dest, mod 32, FULL-32 write with one bit set), else 8 (memory dest, mod 8,
+                    // byte with one bit set). The recipe pairs this with `Dest::DataReg` (Dn) / `Dest::Scratch`
+                    // (the `ea_dst` byte write source).
+                    AluOp::Bset => {
+                        let bits: u32 = if size == Size::Long { 32 } else { 8 };
+                        let pos = rhs % bits;
+                        let bit = (lhs >> pos) & 1;
+                        let z = if bit == 0 { CCR_Z } else { 0 };
+                        let preserved = regs.sr & (CCR_X | CCR_N | CCR_V | CCR_C);
+                        (lhs | (1 << pos), preserved | z)
                     }
                     AluOp::Add | AluOp::Sub => match size {
                         Size::Word => {
