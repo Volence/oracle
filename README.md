@@ -15,35 +15,78 @@ the bus connector between tools, a separate thing.)
 ## Read first (in order)
 
 1. **`CHARTER.md`** — vision, the decision (fresh agent-first core, not Ares/not a fork),
-   the four non-negotiables, the bootstrapped approach, the staged path, honest
-   effort/risk, and the relationship to Oracle.
+   the four non-negotiables, the staged path, honest effort/risk, the relationship to Oracle.
 2. **`docs/foundations.md`** — the settled language (**Rust**) + core architecture + the
-   MCP/bus integration + the validation ladder + the one open call (**cycle granularity**)
-   + the ordered first build steps.
-3. **`docs/research-digest.md`** — the evidence base (emulator landscape, Exodus
-   separability, BlastEm + Ares spikes, the from-scratch synthesis, license-tiered reuse).
+   MCP/bus integration + the validation ladder + the ordered build steps.
+3. **`docs/decisions/`** + **`docs/plans/`** — the resolved cycle-granularity call, and one
+   data-grounded plan per instruction-family push (the running build record).
+4. **`docs/research-digest.md`** — the evidence base (emulator landscape, the from-scratch
+   synthesis, license-tiered reuse).
 
-## Status (2026-06-24)
+## Status (2026-06-28) — Phase 0, deep into the 68000 core
 
-Research + foundations **decided**. Language = Rust (earned against Zig/C++/C; jgenesis is
-the architectural proof). **Ready to start Phase 0 (build).**
+The foundation is built and the **68000 CPU core is most of the way through its grind**;
+the rest of the machine (VDP, Z80, audio, MCP wiring) is not started yet.
 
-## Immediate next step — Phase 0 (test-first)
+**Done & gate-green:**
+- **Core skeleton** — `Scheduler` (the sole master clock + one seeded RNG + an event heap),
+  `System` (owns RAM/VRAM/CRAM/VSRAM/VDP-regs + the scheduler; `Clone` + bincode
+  `snapshot`/`restore`), a typed `Bus` + `BusEvent` stream via a split-borrow `SystemBus`,
+  and an FNV-1a `state_hash` **byte-compatible with Oracle's `ControlSocket.cpp`**.
+- **Determinism gate** (the gating CI job) + property tests: `run_frames(N) ==
+  N×run_frames(1)`, and snapshot/restore == identical hash.
+- **Cycle-granularity call resolved** (`docs/decisions/2026-06-24-cycle-granularity.md`):
+  the single-definition hybrid — each opcode is one resumable micro-op sequence with a
+  run-to-completion fast path and a step-one-micro-op quiesce; default quiesce granularity
+  = bus access.
+- **68000 micro-op core** — the framework (`m68000::{microop, ea, decode, bus68k,
+  exception}`) is proven. The arithmetic, logic, shift/rotate, bit, **multiply/divide**,
+  compare/move, flow-control, and exception instruction families are implemented and
+  validated against the pinned **SingleStepTests/680x0** suite: **752,523 covered test
+  cases**, each run through **both drivers** (run-to-completion *and* cycle-stepped),
+  checked on registers/SR/RAM/prefetch/cycles **and** the per-cycle bus-transaction stream,
+  with snapshot/restore exercised at every bus boundary.
 
-1. Cargo workspace + **`oracle-core`** skeleton: Scheduler (master-clock min-heap + one
-   seeded RNG), the `System` struct owning RAM/VRAM/CRAM/VSRAM, a `Bus` trait emitting a
-   typed `BusEvent` via a split-borrow `SystemBus`; derive `Clone` + bincode + an FNV-1a
-   `state_hash` **byte-compatible with Oracle's `ControlSocket.cpp`** (vram/cram/vsram/
-   regs/combined).
-2. **Determinism gate before any real chip** — port `determinism_gate.py` + proptests
-   (`run_frames(N) == N×run_frames(1)`, `snapshot/restore == identical hash`) as the first
-   CI job.
-3. 68000 instruction-stepped, generic over `Bus`, gated on pinned SingleStepTests/680x0 —
-   **prototype one opcode both instruction-stepped and FSM-quiesced** to settle cycle
-   granularity empirically.
+**Not yet:**
+- The real `Cpu68000` isn't wired into `System` yet (still a `StubCpu` placeholder) — that
+  integration is the next inflection after the remaining 68000 families.
+- VDP, Z80, audio, and the Oracle MCP/bus wiring are unstarted.
 
-(Then: Z80 + VDP cycle-stepped → `oracle-bus` so `oracle_mcp.py` drives oracle-next unchanged →
-differential harness vs BlastEm/Exodus. Full ordering in `docs/foundations.md`.)
+## Build & test
+
+```sh
+# Build
+cargo build
+
+# Fetch the pinned SingleStepTests vectors (gitignored; pinned to commit e0d5ece, sha256-verified).
+# Needed for the 68000 SST integration tests; the runner skips cleanly if they are absent.
+tools/fetch-tests.sh
+
+# The determinism gate (the most-guarded job) + property tests
+cargo test -p oracle-core --test determinism_gate --test proptests
+
+# Lint + format (CI runs these with -D warnings)
+cargo clippy --all-targets -- -D warnings
+cargo fmt --all -- --check
+
+# Full gate — includes the SingleStepTests sweep through both drivers (~500s; be patient, it is not hung)
+cargo test --workspace
+```
+
+## What's next
+
+1. **Finish the 68000 instruction set** — the load/store/misc cluster (MOVEM, LEA/PEA,
+   LINK/UNLK/EXG/NOP), the privileged moves, ABCD/SBCD/NBCD, ADDX/SUBX, MOVEP; the remaining
+   exceptions (illegal/line-A/line-F, trace) and async-interrupt delivery. Same proven
+   cadence each push: data-grounded recon → plan → gated build (impl agent → adversarial
+   verifier per commit) → self-verified full gate.
+2. **Integration pivot** — retire `StubCpu`, wire `Cpu68000` into `System` (reset + a memory
+   map + graceful illegal-instruction handling). This is the step that lets the core execute
+   a real ROM.
+3. **Z80 + VDP** — a tick-stepped Z80, then a scanline-first VDP (planes, scroll, sprites
+   with dual per-line limits, priority, H/V interrupts, DMA) toward the **Phase-1 MVP**:
+   boots and renders the Sonic-4 hack, fully introspectable. The VDP timing model is the long
+   pole and the #1 schedule risk (see `CHARTER.md`).
 
 ## Key references
 
