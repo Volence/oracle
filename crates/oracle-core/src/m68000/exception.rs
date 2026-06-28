@@ -162,6 +162,48 @@ pub(crate) fn build_chk_frame(buf: &mut RecipeBuf, idle: u8) {
     vector_fetch_and_reload(buf, 6 * 4);
 }
 
+/// Scratch slot holding the DIVU/DIVS divide-by-zero exception's stacked return PC (the live `regs.pc`, seeded
+/// by [`install_div0_trap`](super::microop::MicroState)). Slot 0 — the standard-frame saved-PC convention
+/// (same as CHK/TRAP), consumed by the frame's `PCL`/`PCH` writes. For a memory divisor this aliases the
+/// operand-read slot, but the [`AluOp::Divu`](super::microop::AluOp::Divu) arm resolves the divisor BEFORE the
+/// install seeds this, so the value is read first, written second.
+pub(crate) const DIV0_SAVED_PC_SLOT: Slot = 0;
+
+/// Scratch slot holding the div0 exception's saved SR (the live SR at the trap — with the div0 CCR already set
+/// by the `Divu` arm), captured by the frame's [`MicroOp::EnterException`]. Slot 1 — distinct from the saved-PC
+/// slot so both survive until the push (the same convention as CHK).
+const DIV0_SAVE_SR_SLOT: Slot = 1;
+
+/// Build the standard **6-byte divide-by-zero frame** recipe (vector 5, `0x14`) — the Shape-B tail a
+/// divide-by-zero [`AluOp::Divu`](super::microop::AluOp::Divu) installs in place via
+/// [`install_div0_trap`](super::microop::MicroState). The vector-5 twin of [`build_chk_frame`] (vector 6),
+/// pinned to the sole vendored `op=0x80ef` div0 sample (mode 5 `d16(A7)`, leading idle `n8`, pushed CCR
+/// `0b10000`, saved PC `0xc00`, len 46):
+///
+/// - **Leading idle** of `idle` cycles (`n8` for the vendored sample), then the frame's
+///   [`MicroOp::EnterException`] (capture the live SR — already carrying the div0 CCR N=Z=V=C=0/X-kept — and
+///   enter supervisor / clear T).
+/// - The shared [`push_standard_frame`] (`SSP -= 6`; the on-bus write order `PCL @ B+4`, `SR @ B+0`,
+///   `PCH @ B+2`, FC=5). The stacked PC is the live `regs.pc` (seeded by the install — the `Divu` Alu runs
+///   after the source read + prefetch(es), so `regs.pc` already equals the saved return PC).
+/// - The shared [`vector_fetch_and_reload`] at vector `5*4 = 0x14`: two FC=5 vector reads, then the FC=6
+///   handler reload with the `n2` idle between.
+///
+/// Total 17 micro-ops (≤ `MAX_OPS`), identical in shape to the CHK frame — only the vector differs.
+pub(crate) fn build_div0_frame(buf: &mut RecipeBuf, idle: u8) {
+    // The leading idle (the divide-by-zero detection cost; n8 for the vendored sample).
+    buf.push(MicroOp::Internal {
+        cycles: idle as u16,
+    });
+    // Capture the live SR (with the div0 CCR) + enter supervisor (set S, clear T).
+    buf.push(MicroOp::EnterException {
+        save_sr: DIV0_SAVE_SR_SLOT,
+    });
+    push_standard_frame(buf, DIV0_SAVED_PC_SLOT, DIV0_SAVE_SR_SLOT);
+    // The divide-by-zero vector is 5 (address 5*4 = 0x14).
+    vector_fetch_and_reload(buf, 5 * 4);
+}
+
 /// Scratch slot holding a transient standard-frame write address (`B+4` for `PCL`, then reused for `B+2` for
 /// `PCH`). Each address is consumed by its `Write` before the next `EaCalc` overwrites it. Distinct from a
 /// caller's `saved_pc`/`save_sr` slots so the frame values survive until they are pushed.

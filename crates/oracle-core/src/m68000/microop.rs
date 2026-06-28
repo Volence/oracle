@@ -698,6 +698,27 @@ pub enum AluOp {
     /// early-return op (like MoveA/Adda/Suba/Mulu) — it does its own SR + Dn write and bumps `self.step`, never
     /// reaching the shared write-back.
     Muls,
+    /// Divu: **unsigned** 16-bit divide — the full 32-bit `Dn` (`a` = [`Operand::DataRegFull`], the dividend) is
+    /// divided by the resolved word source (`b & 0xFFFF`, the divisor). On success `q = dividend / divisor`,
+    /// `r = dividend % divisor`, and `Dn = ((r & 0xFFFF) << 16) | (q & 0xFFFF)` (quotient low 16, remainder high
+    /// 16, [`Dest::DataReg`]). THREE outcomes:
+    /// - **div0** (`divisor == 0`): take the DIVIDE-BY-ZERO trap (vector 5, the standard 6-byte frame). The CCR
+    ///   is set to **N=0, Z=0, V=0, C=0, X PRESERVED** BEFORE the frame captures the SR, then the in-flight
+    ///   `MicroState` is rewritten into the vector-5 frame ([`install_div0_trap`](MicroState), mirroring CHK's
+    ///   vector-6 install). `Dn` UNCHANGED; saved PC = the live `regs.pc`. Returns 0 (the frame's leading idle +
+    ///   bus ops count the cycles).
+    /// - **overflow** (`q > 0xFFFF`, equiv `(dividend >> 16) >= divisor`): `Dn` UNCHANGED. CCR **V=1, C=0, N/Z/X
+    ///   PRESERVED** (only V set, C cleared — NOT a partial-state N/Z). Returns the flat overflow idle.
+    /// - **normal**: write `Dn`; CCR **N = bit15(q), Z = (q & 0xFFFF == 0), V=0, C=0, X PRESERVED** (only N/Z
+    ///   change). Returns the variable bit-serial division idle.
+    ///
+    /// Like MULU/MULS this is an early-return op whose TIMING IS DATA-DEPENDENT ON THE SOURCE — the exec arm
+    /// RETURNS its own step cycle cost and self-books `self.cycles`. The documented mode-0 division cost is
+    /// `76 + 2*n_keep + 4*n_restore` (normal) / `10` (overflow). UNLIKE MULU/MULS, the recipe places the final
+    /// `Prefetch` AFTER this Alu (the `[idle, prefetch]` order the data pins, not MUL's `[prefetch, idle]`), so
+    /// the Alu returns the documented cost **minus 4** (the trailing `Prefetch` books that 4); the mode-0
+    /// instruction total is the documented cost, and a memory source adds its EA bus cost on top.
+    Divu,
 }
 
 /// A bitwise logic operation a [`MicroOp::SrLogic`] applies to the status register — the three privileged
@@ -736,6 +757,44 @@ fn booth_transitions(src16: u32) -> u32 {
     }
     count
 }
+
+/// DIVU's documented mode-0 division cost — the data-dependent cycle driver for the normal (non-overflow,
+/// non-div0) [`AluOp::Divu`] path. A faithful port of the 68000's 16-step bit-serial restoring-division
+/// microcode (each microword = 2 cycles), reduced to a closed form (0-mismatch verified against the vendored
+/// DIVU stream): align the divisor into the high word, then shift the dividend through, counting `n_keep`
+/// (a quotient-bit-1 with no mandatory subtract) and `n_restore` (a quotient-bit-0) over the **first 15**
+/// iterations only — the 16th iteration's shift folds into a fixed finalization (no keep/restore microword),
+/// so the `i < 15` guard is LOAD-BEARING (counting all 16 over-counts by 2–4). Returns `76 + 2*n_keep +
+/// 4*n_restore` (range 88..130). NOTE the caller is responsible for `(dividend >> 16) >= divisor` overflow
+/// detection (the flat-10 early-out) and `divisor != 0` BEFORE calling this; here `divisor` is always nonzero.
+#[inline]
+fn divu_cycles(dividend: u32, divisor: u32) -> u32 {
+    let aligned = (divisor & 0xFFFF) << 16;
+    let mut work = dividend;
+    let (mut n_keep, mut n_restore) = (0u32, 0u32);
+    for i in 0..16 {
+        let msb = work >> 31;
+        work <<= 1; // a u32 shift already drops the bit above 32 (the `& 0xFFFF_FFFF` is implicit)
+        if msb != 0 {
+            work = work.wrapping_sub(aligned); // mandatory subtract (no keep/restore microword)
+        } else if work >= aligned {
+            work = work.wrapping_sub(aligned);
+            if i < 15 {
+                n_keep += 1;
+            }
+        } else if i < 15 {
+            n_restore += 1; // restore (quotient bit 0)
+        }
+    }
+    76 + 2 * n_keep + 4 * n_restore
+}
+
+/// The leading-idle width of the DIVU/DIVS divide-by-zero (vector-5) frame — the cycles between the divisor
+/// read and the frame push. Pinned to the SOLE vendored div0 sample (`op=0x80ef`, mode 5 `d16(A7)`, len 46):
+/// prefix `[Prefetch, Read]` = 8, then this `n8` + the 6-byte frame (writes 12 + vector 8 + reload 10 = 30) =
+/// 38, total 46. The detection idle is independent of the EA, so it is fixed (single-sample caveat documented
+/// in the runner, like the DBcc-expired path; DIVS has no div0 sample).
+const DIV0_TRAP_IDLE: u8 = 8;
 
 /// The MOVE flag computation at `size`: copy the (size-truncated) value, set N=msb / Z=(value==0), clear
 /// V/C. Returns `(result, ccr_nz)` where `ccr_nz` carries **only** N/Z/V/C (X is preserved by the caller —
@@ -1079,6 +1138,37 @@ impl MicroState {
         0
     }
 
+    /// Install the **divide-by-zero** exception (vector 5) in place — the Shape-B reuse for a DIVU/DIVS div0
+    /// trap, the twin of [`Self::install_chk_trap`] (which is vector 6). The faulting [`AluOp::Divu`] arm
+    /// (which has already set the CCR — N=0/Z=0/V=0/C=0, X preserved — so the live SR the frame captures
+    /// carries the div0 CCR) rewrites this in-flight `MicroState` into the standard **6-byte frame** recipe
+    /// ([`build_div0_frame`]), seeded with `saved_pc` as the stacked return PC. `idle` is the leading-idle
+    /// width — pinned to the sole vendored `op=0x80ef` div0 sample (`idle = 8`, len 46). Like the CHK install
+    /// the rewrite is a pure data operation (reassign `ops`/`len`, rewind `step`, preserve `cycles`/`opcode`);
+    /// both drivers keep looping over `exec_one` across the new recipe, and the rewritten state stays
+    /// fixed-size bincode (snapshot-safe across the trap). Returns 0 (the Alu micro-op costs no cycles — the
+    /// frame's leading idle + bus ops count).
+    ///
+    /// `saved_pc` is the stacked return PC — the **faulting instruction's own address** (the DIVU opcode), NOT
+    /// `regs.pc` (the leading prefetch(es) have already advanced it past the ext word(s)). The `Divu` arm
+    /// computes it by undoing those advances (`regs.pc - 2*prefetches_before_the_Alu`), pinned to the sole
+    /// div0 sample (saved PC `0xc00` = the instruction start). This DIFFERS from CHK (which runs its trap LAST,
+    /// after every prefetch, so its saved PC is the next-instruction `= regs.pc`).
+    fn install_div0_trap(&mut self, saved_pc: u32, idle: u8) -> u32 {
+        use super::ea::RecipeBuf;
+        use super::exception::{build_div0_frame, DIV0_SAVED_PC_SLOT};
+        self.scratch[DIV0_SAVED_PC_SLOT as usize] = saved_pc;
+        // (The save-SR slot is filled by the frame's EnterException, capturing the live SR — with the div0 CCR.)
+        let mut buf = RecipeBuf::new();
+        build_div0_frame(&mut buf, idle);
+        let ops = buf.as_ops();
+        self.ops = [MicroOp::Internal { cycles: 0 }; MAX_OPS];
+        self.ops[..ops.len()].copy_from_slice(ops);
+        self.len = ops.len() as u8;
+        self.step = 0;
+        0
+    }
+
     /// **Driver 1 — run-to-completion** (the default fast path): execute every remaining micro-op in
     /// order, returning the total master cycles. Drives the *same* [`Self::exec_one`] the quiesce path
     /// uses, so the two paths cannot diverge.
@@ -1272,15 +1362,77 @@ impl MicroState {
                         self.cycles += cycles;
                         return cycles;
                     }
+                    // DIVU — the UNSIGNED 16-bit divide. An early-return op (like MULU/MULS) whose TIMING IS
+                    // DATA-DEPENDENT ON THE SOURCE; it self-books `self.cycles` and returns its step cost. `a` =
+                    // the FULL 32-bit dividend (DataRegFull), `b` = the resolved word source (`b & 0xFFFF` = the
+                    // divisor). THREE outcomes — div0 (rewrite-MicroState into the vector-5 trap), overflow
+                    // (Dn unchanged, only V/C change), normal (write Dn, only N/Z change). UNLIKE MULU/MULS the
+                    // final `Prefetch` trails this Alu (the `[idle, prefetch]` order the data pins), so the Alu
+                    // returns the documented division cost MINUS 4 — the trailing `Prefetch` books that 4, so the
+                    // mode-0 instruction total is the documented cost and a memory source adds its EA cost on top.
+                    AluOp::Divu => {
+                        let dividend = lhs; // a = DataRegFull(dn): the full 32-bit dividend
+                        let divisor = rhs & 0xFFFF; // the resolved word source
+                        if divisor == 0 {
+                            // DIVIDE-BY-ZERO trap (vector 5). Set the CCR (N=0,Z=0,V=0,C=0, X preserved) BEFORE
+                            // the frame's EnterException captures the live SR, then rewrite the in-flight
+                            // MicroState into the vector-5 6-byte frame. Dn UNCHANGED. The stacked PC is the
+                            // FAULTING instruction's own address — undo the leading prefetch(es)' pc advance
+                            // (`regs.pc - 2*prefetches_done`), since the div0 trap saves the instruction start,
+                            // unlike CHK (which runs last and saves the next-instruction pc).
+                            regs.sr = (regs.sr & 0xFF00) | (regs.sr & CCR_X);
+                            let prefetches_done = self.ops[..self.step as usize]
+                                .iter()
+                                .filter(|o| matches!(o, MicroOp::Prefetch))
+                                .count() as u32;
+                            let saved_pc = regs.pc.wrapping_sub(2 * prefetches_done);
+                            return self.install_div0_trap(saved_pc, DIV0_TRAP_IDLE);
+                        }
+                        if (dividend >> 16) >= divisor {
+                            // OVERFLOW (quotient > 0xFFFF): Dn UNCHANGED. CCR V=1, C=0, N/Z/X PRESERVED — only V
+                            // set and C cleared (NOT a partial-state N/Z). Flat division cost 10 (idle = 10 - 4).
+                            regs.sr =
+                                (regs.sr & 0xFF00) | (regs.sr & (CCR_X | CCR_N | CCR_Z)) | CCR_V;
+                            let idle = 10 - 4;
+                            self.step += 1;
+                            self.cycles += idle;
+                            return idle;
+                        }
+                        // NORMAL: q = dividend / divisor, r = dividend % divisor; Dn = (rem << 16) | quot.
+                        let q = dividend / divisor;
+                        let r = dividend % divisor;
+                        let value = ((r & 0xFFFF) << 16) | (q & 0xFFFF);
+                        // CCR: N = bit15(q), Z = (q & 0xFFFF == 0), V=0, C=0, X PRESERVED (only N/Z change).
+                        let n = if (q >> 15) & 1 != 0 { CCR_N } else { 0 };
+                        let z = if (q & 0xFFFF) == 0 { CCR_Z } else { 0 };
+                        regs.sr = (regs.sr & 0xFF00) | (regs.sr & CCR_X) | n | z;
+                        match dst {
+                            Dest::DataReg(dn) => regs.d[dn as usize] = value,
+                            _ => unreachable!(
+                                "DIVU writes only Dest::DataReg (quotient low / remainder high)"
+                            ),
+                        }
+                        // The variable bit-serial division cost (76 + 2*n_keep + 4*n_restore); the Alu returns it
+                        // MINUS 4 (the trailing Prefetch books that 4 — see the `[idle, prefetch]` order above).
+                        let idle = divu_cycles(dividend, divisor) - 4;
+                        self.step += 1;
+                        self.cycles += idle;
+                        return idle;
+                    }
                     _ => {}
                 }
                 // Compute at the operand-size flag boundary; carry the result (zero-extended to 32) + the new
                 // low-byte CCR uniformly. MOVE is NOT arithmetic — it copies `a` and sets only N/Z (V/C
                 // cleared) while PRESERVING X, so its `ccr` re-injects the live X bit (add/sub recompute X).
                 let (result, ccr) = match op {
-                    AluOp::MoveA | AluOp::Adda | AluOp::Suba | AluOp::Mulu | AluOp::Muls => {
+                    AluOp::MoveA
+                    | AluOp::Adda
+                    | AluOp::Suba
+                    | AluOp::Mulu
+                    | AluOp::Muls
+                    | AluOp::Divu => {
                         unreachable!(
-                            "early-return op (no-flag An-write / data-dependent-cycle MULU/MULS) handled above"
+                            "early-return op (no-flag An-write / data-dependent-cycle MULU/MULS/DIVU) handled above"
                         )
                     }
                     AluOp::Move => {

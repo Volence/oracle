@@ -480,6 +480,21 @@ const FILES: &[&str] = &[
     // clean `(A7)` mode-2 source; the odd-EA address errors are IN scope via E3/E4). NO deferral, NO parity
     // filter, NO corrupt entries.
     "MULS.json",
+    // DIVU `<ea>,Dn` (`1000 ddd 011 mmm rrr`, opcode & 0xF1C0 == 0x80C0, opmode 3 in the 0x8 space — disjoint
+    // from OR's opmode 0/1/2/4/5/6) — the UNSIGNED 16-bit divide: the FULL 32-bit Dn (the dividend) divided by
+    // the word source (the divisor), writing quotient → low 16 of Dn, remainder → high 16. D0 adds `AluOp::Divu`
+    // + `div_recipe` (reuse of `ea_src(Size::Word)` with the trailing `[Prefetch, Alu]` SWAPPED to `[Alu,
+    // Prefetch]` — DIVU pins the `[idle, prefetch]` order, opposite MUL) + the vector-5 divide-by-zero trap. The
+    // FULL 11 source modes are in scope — Dn (0), (An)/(An)+/-(An)/d16(An)/d8(An,Xn) (2-6),
+    // abs.w/abs.l/d16(PC)/d8(PC,Xn)/#imm (7/0..7/4); An-direct (mode 1) illegal/absent. THREE outcomes: normal
+    // (Dn = (rem<<16)|quot; N=bit15(q)/Z=(q==0)/V=0/C=0/X kept; length 76+2*n_keep+4*n_restore+ea), overflow
+    // (q>0xFFFF → Dn UNCHANGED, V=1/C=0/N,Z,X PRESERVED, flat 10+ea), div0 (vector-5 6-byte frame, pushed CCR
+    // N=Z=V=C=0/X-kept, saved PC = live pc). The timing is data-dependent (the bit-serial division step counts)
+    // — the `AluOp::Divu` arm RETURNS the documented division cost minus 4 (the trailing refill books the 4).
+    // Odd word EAs are address errors the E3/E4 abort covers (NO parity filter); the `(A7)` mode-2 source is
+    // COVERED (NOT deferred). The file is 100% PURE (one opcode, classified by OPCODE) and 100% in scope: 8065
+    // cases (incl the 1 div0 case). NO deferral, NO parity filter, NO corrupt entries.
+    "DIVU.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -811,6 +826,23 @@ fn mul_covered(opcode: u16) -> bool {
     matches!(mode, 0 | 2 | 3 | 4 | 5 | 6) || (mode == 7 && reg <= 4)
 }
 
+/// Whether the framework covers this `DIVU <ea>,Dn` case (`opcode & 0xF1C0 == 0x80C0`, opmode 3 in the 0x8
+/// space — disjoint from OR's opmode 0/1/2/4/5/6). A `mul_covered` twin: the DIVU.json file is 100% PURE (one
+/// opcode, classified by OPCODE) and 100% in scope across the FULL 11 source modes — `Dn` (0),
+/// `(An)`/`(An)+`/`-(An)`/`d16(An)`/`d8(An,Xn)` (2-6), `abs.w`/`abs.l`/`d16(PC)`/`d8(PC,Xn)`/`#imm` (7/0..7/4).
+/// An-direct (mode 1) is illegal/absent (DIVU has no `An` source). **NO deferral, NO parity filter** — the
+/// `(A7)` mode-2 source is COVERED (NOT deferred), odd word EAs are address errors the E3/E4 abort covers
+/// (`ea_src` faults on the odd word read), and the overflow + the 1 div0 (vector-5 trap) cases are IN scope.
+/// All 8065 cases in scope. (DIVS — `0x81C0`, opmode 7 — lands in a later commit; classify by OPCODE.)
+fn div_covered(opcode: u16) -> bool {
+    if opcode & 0xF1C0 != 0x80C0 {
+        return false;
+    }
+    let mode = (opcode >> 3) & 7;
+    let reg = opcode & 7;
+    matches!(mode, 0 | 2 | 3 | 4 | 5 | 6) || (mode == 7 && reg <= 4)
+}
+
 /// Whether this opcode is one of the privileged immediate-to-SR logic ops the framework covers — `ANDItoSR`
 /// (`0x027C`), `ORItoSR` (`0x007C`), `EORItoSR` (`0x0A7C`), each the sole encoding in its file. Every vendored
 /// case starts in **supervisor** mode (the legal, SR-modifying path), so all are in scope.
@@ -1071,6 +1103,15 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // the source: length = 38 + 2*count + ea_cost — the Alu returns the count-dependent idle (MULU count =
     // popcount(src16); MULS count = booth(src16) = the 01/10 transitions of src<<1, which DIFFERS from popcount).
     if mul_covered(opcode) {
+        return true;
+    }
+    // DIVU `<ea>,Dn` (1000 ddd 011 mmm rrr, opcode & 0xF1C0 == 0x80C0, opmode 3 in the 0x8 space — disjoint from
+    // OR's opmode 0/1/2/4/5/6): the UNSIGNED 16-bit divide writing quotient → low 16 of Dn, remainder → high 16.
+    // The DIVU.json file is 100% PURE / 100% in scope across the FULL 11 source modes (incl PC-rel + #imm + the
+    // clean `(A7)` mode-2 source; odd word EAs are address errors the E3/E4 abort covers, no parity filter).
+    // An-direct (mode 1) is illegal/absent. Three outcomes: normal (variable bit-serial timing), overflow (Dn
+    // unchanged, only V/C change, flat 10), div0 (the 1 case — vector-5 6-byte frame). Classified by OPCODE.
+    if div_covered(opcode) {
         return true;
     }
     // ANDItoSR / ORItoSR / EORItoSR (0x027C / 0x007C / 0x0A7C) — the privileged immediate-to-SR logic ops.
@@ -1578,8 +1619,39 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 736_393,
-        "expected 736393 covered cases — M1 adds MULS (its own MULS.json file, `1100 ddd 111 mmm rrr` = \
+        ran >= 744_458,
+        "expected 744458 covered cases — D0 adds DIVU (its own DIVU.json file, `1000 ddd 011 mmm rrr` = \
+         opcode & 0xF1C0 == 0x80C0, opmode 3 in the 0x8 space — DISJOINT from OR's opmode 0/1/2/4/5/6): DIVU \
+         8065 = +8065 over M1's 736393 → 744458 (the WHOLE file in scope — 100% PURE, classified by OPCODE, no \
+         contaminant, no deferral, no parity filter). DIVU is the UNSIGNED 16-bit divide: the FULL 32-bit Dn \
+         (the dividend, `a = DataRegFull(dn)` — NOT MUL's low-16 multiplicand) divided by the word source (the \
+         divisor), writing quotient → low 16 of Dn, remainder → high 16 (`Dn = ((r & 0xFFFF) << 16) | (q & \
+         0xFFFF)`). New vocabulary: `AluOp::Divu` + `div_recipe` (reuse of `ea_src(Size::Word)` with the \
+         trailing `[Prefetch, Alu]` SWAPPED to `[Alu, Prefetch]` via `RecipeBuf::swap_last_two`) + the vector-5 \
+         divide-by-zero frame install (`install_div0_trap` / `build_div0_frame`, the vector-5 twin of CHK's \
+         vector-6 trap). THREE outcomes: (1) normal — write Dn, CCR N = bit15(q) / Z = (q & 0xFFFF == 0) / V=0 \
+         / C=0 / X PRESERVED (only N/Z change); (2) overflow (q > 0xFFFF, equiv (dividend >> 16) >= divisor) — \
+         Dn UNCHANGED, CCR V=1 / C=0 / N,Z,X PRESERVED (only V set + C cleared, NOT a partial-state N/Z — the \
+         KEY finding); (3) div0 (divisor == 0) — the DIVIDE-BY-ZERO trap to vector 5 (the standard 6-byte \
+         frame), CCR N=Z=V=C=0 / X kept, Dn UNCHANGED, saved PC = the live regs.pc. THE TIMING IS \
+         DATA-DEPENDENT ON THE SOURCE: the normal division cost is the bit-serial restoring-division closed \
+         form `76 + 2*n_keep + 4*n_restore` (n_keep/n_restore counted over the FIRST 15 of the 16 iterations — \
+         the `i < 15` guard is LOAD-BEARING, the 16th folds into a fixed finalization), range 88..130; overflow \
+         is a flat 10. UNLIKE MUL (which puts the idle LAST, `[prefetch, idle]`), DIVU puts the idle BEFORE the \
+         instruction-completing refill (`[idle, prefetch]`) — so `div_recipe` swaps the trailing two ops and \
+         the `AluOp::Divu` arm returns the documented division cost MINUS 4 (the trailing `Prefetch` books that \
+         4); the mode-0 total is the documented cost, and a memory source adds its EA bus cost on top (Dn 0, \
+         (An) 4, (An)+ 4, -(An) 6, d16(An) 8, d8(An,Xn) 10, abs.w 8, abs.l 12, d16(PC) 8, d8(PC,Xn) 10, #imm \
+         4). The div0 trap reuses the existing exception substructure (`EnterException` + `push_standard_frame` \
+         + `vector_fetch_and_reload(5*4)`); the CCR is set BEFORE EnterException captures the SR; the leading \
+         idle is n8 (pinned to the SOLE vendored div0 sample op=0x80ef, mode 5 d16(A7): pushed CCR 0b10000, \
+         saved PC 0xc00, len 46 — single-sample caveat, like the DBcc-expired path; DIVS has no div0 sample). \
+         The FULL 11 source modes are in scope — Dn (0), (An)/(An)+/-(An)/d16(An)/d8(An,Xn) (2-6), \
+         abs.w/abs.l/d16(PC)/d8(PC,Xn)/#imm (7/0..7/4); An-direct (mode 1) is illegal/absent. The `(A7)` mode-2 \
+         source is COVERED (NOT deferred); odd word EAs are address errors the E3/E4 abort covers (NO parity \
+         filter — `ea_src` faults on the odd word read, which now precedes the swapped-later final refill). \
+         Classified by OPCODE (`div_covered`: opcode & 0xF1C0 == 0x80C0). \
+         Prior baseline — M1 adds MULS (its own MULS.json file, `1100 ddd 111 mmm rrr` = \
          opcode & 0xF1C0 == 0xC1C0, opmode 7 in the 0xC space — DISJOINT from AND's opmode 0/1/2/4/5/6 AND from \
          MULU's opmode 3): MULS 8065 = +8065 over M0's 728328 → 736393 (the WHOLE file in scope — 100% PURE, \
          classified by OPCODE, no contaminant, no deferral). This is the FINAL MUL commit (both MULU + MULS \
@@ -2118,7 +2190,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -5847,5 +5919,169 @@ fn muls_mem_quiescable_and_serializable_at_every_micro_op_boundary() {
     }
     eprintln!(
         "M1 MULS snapshot/restore: MULS (A2),D4 memory-source signed multiply resumed identically at every micro-op boundary (incl the data-dependent Booth-count cycle count)"
+    );
+}
+
+/// D0 — the named `DIVU <ea>,Dn` anchors, pinning the new `AluOp::Divu` + the `div_recipe` (reuse of
+/// `ea_src(Size::Word)` with the trailing `[Prefetch, Alu]` SWAPPED to `[Alu, Prefetch]`) + the
+/// ALU-RETURNS-CYCLES timing mechanism + the vector-5 divide-by-zero trap against the vendored DIVU stream
+/// WITHOUT relying on the bulk `covered()` sweep. The load-bearing facts:
+/// - **Value:** `Dn = ((r & 0xFFFF) << 16) | (q & 0xFFFF)` — quotient low 16, remainder high 16 (the FULL
+///   32-bit `Dn` is the dividend, the word source the divisor).
+/// - **Flags (normal):** N = bit15(q), Z = (q & 0xFFFF == 0), V = 0, C = 0, X PRESERVED (only N/Z change).
+/// - **Overflow** (`q > 0xFFFF`): `Dn` UNCHANGED, **V=1, C=0, N/Z/X PRESERVED** — the KEY finding (NOT a
+///   partial-state N/Z). The `82c6` anchor enters with initial N=1 AND Z=1 and confirms they carry through to
+///   the final (V=1/C=0/N=1/Z=1), with `Dn` unchanged and len 10.
+/// - **Timing is DATA-DEPENDENT ON THE SOURCE:** the normal mode-0 cost is `76 + 2*n_keep + 4*n_restore`
+///   (range 88..130 — the `8ac2` low-cycle len 88 vs the `86c4` high-cycle len 130 differ by the bit-serial
+///   step counts), overflow is a flat 10. UNLIKE MUL, the division idle runs BEFORE the instruction-completing
+///   refill (`[idle, prefetch]`), so the Alu returns the documented cost minus 4 and a memory source adds its
+///   EA bus cost on top.
+/// - **div0** (`80ef`, the SOLE vendored sample, mode 5 `d16(A7)`, len 46): the vector-5 6-byte frame, pushed
+///   CCR `0b10000` (N=Z=V=C=0, X kept), saved PC `0xc00` (the live pc), `Dn` UNCHANGED.
+/// - **`(A7)` mode-2 source is COVERED** (NOT deferred); an odd `(An)` word EA is an address error the E3/E4
+///   abort covers (the `8ad0` anchor — must PASS via the 14-byte vector-3 frame).
+#[test]
+fn divu_anchors_match_singlesteptests() {
+    // (file, full-name, length). The full names select the EXACT case the doc-comment describes.
+    let anchors: &[(&str, &str, u32)] = &[
+        ("DIVU.json", "80c0 [DIVU D0, D0] 37", 120), // mode-0 Dn normal, N=1 (q bit15 set)
+        ("DIVU.json", "8ac2 [DIVU D2, D5] 1220", 88), // mode-0 Dn normal, LOW-cycle (76+2nk+4nr min)
+        ("DIVU.json", "86c4 [DIVU D4, D3] 6325", 130), // mode-0 Dn normal, HIGH-cycle (timing differs)
+        ("DIVU.json", "82c6 [DIVU D6, D1] 28", 10), // mode-0 OVERFLOW, init N=1/Z=1 → V=1/C=0/N=1/Z=1, Dn unchanged
+        ("DIVU.json", "86d1 [DIVU (A1), D3] 106", 128), // (An) memory source (+4 ea)
+        ("DIVU.json", "8cd7 [DIVU (A7), D6] 81", 120), // (A7) mode-2 source (COVERED, NOT deferred)
+        ("DIVU.json", "8cfa [DIVU (d16, PC), D6] 340", 128), // d16(PC) source (+8 ea)
+        ("DIVU.json", "8efc [DIVU #, D7] 6", 122), // #imm source (+4 ea, the idle BETWEEN the two refills)
+        ("DIVU.json", "8ad0 [DIVU (A0), D5] 45", 50), // odd (A0) word EA → address error (E3/E4, must PASS)
+        ("DIVU.json", "80ef [DIVU (d16, A7), D0] 5745", 46), // div0 (vector-5 frame, pushed CCR 0b10000, pc 0xc00)
+    ];
+    let mut found = 0usize;
+    for (fname, name, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap() == *name
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| panic!("D0 DIVU anchor {name} (len {length}) not found in {fname}"));
+        // Every anchor must be a DIVU opcode (opcode & 0xF1C0 == 0x80C0, opmode 3 in the 0x8 space), never an
+        // OR-class register-form opcode (and_or_in_scope rejects opmode 3).
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(
+            opcode & 0xF1C0,
+            0x80C0,
+            "anchor {name} must be a DIVU opcode (opcode & 0xF1C0 == 0x80C0, opmode 3)"
+        );
+        assert!(
+            !and_or_in_scope(opcode),
+            "DIVU (opmode 3) is not an OR register-form opcode"
+        );
+        assert!(div_covered(opcode), "anchor {name} must be covered DIVU");
+        // The OVERFLOW anchor pins the KEY finding: enter with initial N=1 AND Z=1; confirm V=1/C=0/N/Z/X
+        // PRESERVED (only V set, C cleared) and Dn UNCHANGED. (run_case also verifies the full final state.)
+        if *name == "82c6 [DIVU D6, D1] 28" {
+            let dn = ((opcode >> 9) & 7) as usize;
+            let ini_sr = case["initial"]["sr"].as_u64().unwrap() as u16;
+            let fin_sr = case["final"]["sr"].as_u64().unwrap() as u16;
+            assert_eq!(
+                ini_sr & 0x0C,
+                0x0C,
+                "overflow anchor enters with N=1 AND Z=1"
+            );
+            assert_eq!(
+                fin_sr & 0x1F,
+                0x0E,
+                "overflow leaves N=1/Z=1/X=0 (preserved) + V=1 + C=0 — only V set, C cleared"
+            );
+            assert_eq!(
+                case["final"][format!("d{dn}")],
+                case["initial"][format!("d{dn}")],
+                "overflow leaves Dn UNCHANGED"
+            );
+        }
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all D0 DIVU anchors exercised");
+    eprintln!(
+        "D0 DIVU anchors: {found} cases (mode-0 N=1 / low-vs-high-cycle timing / overflow N,Z,X-preserved+Dn-unchanged / (An) / (A7) m2 / d16(PC) / #imm / odd-EA address error / div0 vector-5 frame; quotient-low/remainder-high, only N/Z change normal, X preserved, length 76+2nk+4nr+ea via the swapped ALU-returns-cycles mechanism) passed both drivers"
+    );
+}
+
+/// D0 — the snapshot/restore anchor for the DIVU divide-by-zero (vector-5) frame: the new `install_div0_trap`
+/// rewrites the in-flight `MicroState` mid-instruction, so this drives the SOLE vendored `op=0x80ef` div0 case
+/// through the quiesce driver, snapshotting + restoring the WHOLE `Cpu68000` (incl. the in-flight cursor) at
+/// EVERY micro-op boundary — including across the Alu's recipe-rewrite into the 6-byte frame and the frame's
+/// own bus writes/reads — and proving the resumed run reproduces the run-to-completion final state +
+/// transaction stream bit-for-bit. The boundary count is determined dynamically (the recipe length changes when
+/// the Alu installs the frame), pinning that the rewrite keeps `MicroState` fixed-size bincode.
+#[test]
+fn divu_div0_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/DIVU.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "80ef [DIVU (d16, A7), D0] 5745")
+        .expect("DIVU div0 snapshot anchor present");
+    let ini = &case["initial"];
+
+    // Run-to-completion reference.
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    // Count the number of Continue boundaries (the recipe rewrites mid-flight when the Alu installs the frame).
+    let boundaries = {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        let mut n = 0usize;
+        while let Step::Continue = cpu.step_micro_op(&mut bus) {
+            n += 1;
+        }
+        n
+    };
+
+    let cfg = bincode::config::standard();
+    for pause_after in 0..=boundaries {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        for _ in 0..pause_after {
+            assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+        }
+        // Snapshot + restore the whole CPU (incl. the in-flight cursor) mid-instruction — incl. across the
+        // Alu's recipe-rewrite into the div0 frame.
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+    }
+    eprintln!(
+        "D0 DIVU snapshot/restore: the op=0x80ef divide-by-zero (vector-5 frame) resumed identically at every micro-op boundary (incl across the Alu's MicroState-rewrite into the 6-byte frame)"
     );
 }

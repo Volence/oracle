@@ -275,6 +275,17 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     if opcode & 0xF1C0 == 0xC1C0 {
         return mul_recipe(opcode, AluOp::Muls);
     }
+    // DIVU `<ea>,Dn` (`1000 ddd 011 mmm rrr`, opcode & 0xF1C0 == 0x80C0, opmode 3 in the 0x8 space) — the
+    // UNSIGNED 16-bit divide: the FULL 32-bit Dn (the dividend) is divided by the word source (the divisor),
+    // writing quotient → low 16 of Dn, remainder → high 16. opmode 3 is DISJOINT from OR's opmode 0/1/2
+    // (`<ea>,Dn`) and 4/5/6 (`Dn,<ea>`) below, so this arm is reached only on the genuine DIVU encoding (placed
+    // BEFORE the OR arms so OR never swallows it). Reuses `ea_src(Size::Word)` (the CHK/MUL machinery, all 11
+    // source modes incl PC-relative/#imm + the odd-EA address error). The `AluOp::Divu` exec arm RETURNS its
+    // data-dependent division cost (normal `76 + 2*n_keep + 4*n_restore` / overflow `10`, minus the trailing
+    // refill), or on a zero divisor rewrites the in-flight MicroState into the vector-5 divide-by-zero frame.
+    if opcode & 0xF1C0 == 0x80C0 {
+        return div_recipe(opcode, AluOp::Divu);
+    }
     // OR `<ea>,Dn` (`1000 ddd 0SS mmm rrr`, opmode 0/1/2 = b/w/l = 0x8000/0x8040/0x8080) — bitwise `Dn = Dn |
     // <ea>` (Dn the minuend `a`; OR is commutative so operand order is inert). Identical to the AND `<ea>,Dn`
     // arms above with `AluOp::Or` and the base nibble 0x8 instead of 0xC — same `arith_ea_dn` builder VERBATIM
@@ -2915,6 +2926,64 @@ fn mul_recipe(opcode: u16, op: AluOp) -> MicroState {
             dst: Dest::DataReg(dn),
         });
     }
+    buf.finish()
+}
+
+/// Scratch slot holding a `DIV`-source `#imm` divisor, captured from `prefetch[1]` BEFORE the two ext-word
+/// refills shift it out (the same capture-then-idle ordering `chk_recipe`/`mul_recipe` use for `#imm`). Slot 0
+/// — the same slot a memory-source `ea_src` deposits its read divisor into.
+const DIV_IMM_SRC_SLOT: u8 = 0;
+
+/// `DIV <ea>,Dn` — the shared recipe for `DIVU` (`opcode & 0xF1C0 == 0x80C0`, opmode 3, [`AluOp::Divu`]) and
+/// (in a later commit) `DIVS` (`0x81C0`, opmode 7) in the 0x8 space (both DISJOINT from OR's opmode
+/// 0/1/2/4/5/6). The full 32-bit `Dn` (bits 11-9) is the dividend (`a` = [`Operand::DataRegFull`] — NOT MUL's
+/// low-16 multiplicand); the source EA (`mode/reg` in bits 5-0, all 11 legal source modes — An-direct is
+/// illegal/absent) supplies the word divisor. The `AluOp::Divu` exec arm computes value+flags and RETURNS its
+/// data-dependent cycle cost (or, on a zero divisor, rewrites the in-flight `MicroState` into the vector-5
+/// div0 frame), exactly the MUL Alu-returns-cycles mechanism.
+///
+/// The recipe is `mul_recipe`'s shape (reuse `ea_src(Size::Word)` for memory/`Dn`, and `chk_recipe`'s `#imm`
+/// capture-then-idle ordering for `(7,4)`) with ONE deviation: [`RecipeBuf::swap_last_two`] swaps the trailing
+/// `[Prefetch, Alu]` into `[Alu, Prefetch]`. DIVU pins the `[idle, prefetch]` transaction order (the division
+/// idle runs BEFORE the instruction-completing refill) — the OPPOSITE of MUL's `[prefetch, idle]`. The Alu
+/// therefore returns the documented division cost minus 4, the trailing `Prefetch` books that 4, and the
+/// odd-EA divisor read still faults on the (now-earlier-than-the-final-refill) `Read`, installing the E3/E4
+/// 14-byte frame — all 11 modes incl PC-relative/#imm + the odd-EA word-read address error stay in scope.
+fn div_recipe(opcode: u16, op: AluOp) -> MicroState {
+    let dn = ((opcode >> 9) & 7) as u8;
+    let mode = (opcode >> 3) & 7;
+    let reg = (opcode & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    if (mode, reg) == (7, 4) {
+        // #imm: capture the immediate (prefetch[1], zero-extended) into scratch BEFORE the two refills shift it
+        // out, run both refills, then the Divu Alu (the capture-then-idle ordering chk_recipe/mul_recipe use).
+        buf.push(MicroOp::EaCalc {
+            base: Operand::ImmWord,
+            index: Operand::Zero,
+            disp: Operand::Zero,
+            dst: DIV_IMM_SRC_SLOT,
+        });
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::Alu {
+            op,
+            size: Size::Word,
+            a: Operand::DataRegFull(dn), // the FULL 32-bit dividend (NOT MUL's DataRegLow16)
+            b: Operand::Scratch(DIV_IMM_SRC_SLOT),
+            dst: Dest::DataReg(dn),
+        });
+    } else {
+        ea_src(&mut buf, mode, reg, Size::Word, |src| MicroOp::Alu {
+            op,
+            size: Size::Word,
+            a: Operand::DataRegFull(dn),
+            b: src,
+            dst: Dest::DataReg(dn),
+        });
+    }
+    // DIVU/DIVS order pin: swap the trailing `[Prefetch, Alu]` into `[Alu, Prefetch]` so the division idle runs
+    // before the instruction-completing refill (the `[idle, prefetch]` order the data shows).
+    buf.swap_last_two();
     buf.finish()
 }
 

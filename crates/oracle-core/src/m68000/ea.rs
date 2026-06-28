@@ -159,6 +159,16 @@ impl RecipeBuf {
         &self.ops[..self.len]
     }
 
+    /// Swap the last two pushed micro-ops. Used by `div_recipe`: an `<ea>,Dn`-shaped recipe always ends
+    /// `[.., Prefetch, Alu]` (the operand-completing refill, then the ALU), but DIVU/DIVS pins the
+    /// `[.., Alu, Prefetch]` order — the bit-serial division idle runs BEFORE the instruction-completing
+    /// refill (the `[idle, prefetch]` transaction order the data shows, opposite MUL's `[prefetch, idle]`).
+    /// Panics if fewer than two ops are present.
+    pub fn swap_last_two(&mut self) {
+        assert!(self.len >= 2, "swap_last_two needs at least two ops");
+        self.ops.swap(self.len - 1, self.len - 2);
+    }
+
     /// Finalize into the resumable [`MicroState`] the drivers execute.
     pub fn finish(&self) -> MicroState {
         MicroState::from_ops(self.as_ops())
