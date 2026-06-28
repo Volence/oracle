@@ -719,6 +719,29 @@ pub enum AluOp {
     /// the Alu returns the documented cost **minus 4** (the trailing `Prefetch` books that 4); the mode-0
     /// instruction total is the documented cost, and a memory source adds its EA bus cost on top.
     Divu,
+    /// Divs: **signed** 16-bit divide — the SIGNED twin of [`AluOp::Divu`]. The full 32-bit `Dn`
+    /// (`a` = [`Operand::DataRegFull`]) is the dividend `sdd = sx32(Dn)` (an `i32`); the resolved word source is
+    /// the divisor `sds = sx16(b)` (an `i16`). On success `q = sdd / sds` with **C-style truncation toward
+    /// zero** (computed in `i64` so the `i32::MIN / -1` overflow case can be detected, not panic), `r = sdd −
+    /// q·sds` (so the **remainder takes the DIVIDEND's sign**), and `Dn = ((r & 0xFFFF) << 16) | (q & 0xFFFF)`
+    /// (quotient low 16, remainder high 16, [`Dest::DataReg`]). THREE outcomes, identical in shape to DIVU:
+    /// - **div0** (`divisor == 0`): the SAME vector-5 divide-by-zero trap as DIVU (CCR N=Z=V=C=0/X kept set
+    ///   BEFORE the frame captures the SR, then [`install_div0_trap`](MicroState)). `Dn` UNCHANGED. (DIVS has NO
+    ///   div0 sample in the vendored data — implemented for correctness only, like the DBcc-expired path.)
+    /// - **overflow** (`q` out of the signed-16 range — `q > 0x7FFF || q < -0x8000`, INCLUDING the
+    ///   `0x8000_0000 / -1` case where `q = +0x8000_0000`): `Dn` UNCHANGED. CCR **V=1, C=0, N/Z/X PRESERVED**
+    ///   (identical to DIVU's overflow rule — only V set, NOT a partial-state N/Z). Returns the flat overflow
+    ///   cost `16` (`dividend ≥ 0`) / `18` (`dividend < 0`) — the `+2` is the negate-dividend prologue (NOT the
+    ///   normal-loop length; there are ZERO late-overflow cases).
+    /// - **normal**: write `Dn`; CCR **N = bit15(q) (`(q>>15)&1`), Z = (q & 0xFFFF == 0), V=0, C=0, X
+    ///   PRESERVED** (only N/Z change). Returns the variable abs-value restoring-division cost (`110 +
+    ///   2*n_restore + sign terms`, see [`divs_cycles`]).
+    ///
+    /// Like DIVU this is an early-return op whose TIMING IS DATA-DEPENDENT ON THE SOURCE — the exec arm RETURNS
+    /// its own step cost (the documented cost minus 4, the trailing `Prefetch` booking the 4) and self-books
+    /// `self.cycles`. Reuses `div_recipe` + the vector-5 div0 frame VERBATIM (only the value/flag/timing math
+    /// differs from DIVU).
+    Divs,
 }
 
 /// A bitwise logic operation a [`MicroOp::SrLogic`] applies to the status register — the three privileged
@@ -787,6 +810,43 @@ fn divu_cycles(dividend: u32, divisor: u32) -> u32 {
         }
     }
     76 + 2 * n_keep + 4 * n_restore
+}
+
+/// DIVS's documented mode-0 division cost — the data-dependent cycle driver for the normal (non-overflow,
+/// non-div0) [`AluOp::Divs`] path. The signed twin of [`divu_cycles`]: a faithful port of the 68000's
+/// abs-value restoring-division microcode (0-mismatch verified against the vendored DIVS stream). The DIVS main
+/// loop is the SIMPLER restoring division (no mandatory-subtract shortcut — `n_restore` is the only varying
+/// loop term): take `|dividend|`/`|divisor|`, align the divisor into the high word, shift the abs-dividend
+/// through, counting `n_restore` (a quotient-bit-0) over the **first 15** iterations only (the `i < 15` guard
+/// is LOAD-BEARING — the 16th iteration is the fixed finalization). The base is `110 + 2*n_restore`, plus the
+/// negate-dividend prologue (`+2` if `dividend < 0`) and the 3-way sign-correction term (`+12` if
+/// `divisor < 0`, else `+14` if `dividend < 0`, else `+10`). Returns the full cost (range 126..152). The
+/// caller is responsible for the overflow early-out (flat 16/18) and `divisor != 0` BEFORE calling this.
+#[inline]
+fn divs_cycles(dividend: u32, divisor: u32) -> u32 {
+    let add = (dividend as i32).unsigned_abs();
+    let az = (divisor as i16).unsigned_abs() as u32;
+    let aligned = az << 16;
+    let mut work = add;
+    let mut n_restore = 0u32;
+    for i in 0..16 {
+        work <<= 1; // a u32 shift already drops the bit above 32 (the `& 0xFFFF_FFFF` is implicit)
+        if work >= aligned {
+            work = work.wrapping_sub(aligned);
+        } else if i < 15 {
+            n_restore += 1; // restore (quotient bit 0)
+        }
+    }
+    let mut base = 110 + 2 * n_restore;
+    base += if (dividend as i32) < 0 { 2 } else { 0 }; // negate-dividend prologue
+    base += if (divisor as i16) < 0 {
+        12
+    } else if (dividend as i32) < 0 {
+        14
+    } else {
+        10
+    };
+    base
 }
 
 /// The leading-idle width of the DIVU/DIVS divide-by-zero (vector-5) frame — the cycles between the divisor
@@ -1419,6 +1479,69 @@ impl MicroState {
                         self.cycles += idle;
                         return idle;
                     }
+                    // DIVS — the SIGNED 16-bit divide, the signed twin of DIVU (same three-outcome shape, the
+                    // same vector-5 div0 frame, the same Alu-returns-cycles minus-4 mechanism). `a` = the FULL
+                    // 32-bit dividend `sdd = sx32(Dn)` (an i32); `b & 0xFFFF` sign-extended is the divisor `sds =
+                    // sx16(b)` (an i16). The quotient TRUNCATES TOWARD ZERO (computed in i64 so the i32::MIN/-1
+                    // overflow case is DETECTED, not a panic), and the remainder TAKES THE DIVIDEND'S SIGN
+                    // (`r = sdd - q*sds`).
+                    AluOp::Divs => {
+                        let dividend = lhs; // a = DataRegFull(dn): the full 32-bit dividend
+                        let divisor = rhs & 0xFFFF; // the resolved word source
+                        if divisor == 0 {
+                            // DIVIDE-BY-ZERO trap (vector 5) — IDENTICAL to DIVU. CCR N=0,Z=0,V=0,C=0, X
+                            // preserved BEFORE the frame captures the live SR, then rewrite into the vector-5
+                            // 6-byte frame. Dn UNCHANGED. Saved PC = the faulting instruction's own address
+                            // (undo the leading prefetch(es)' pc advance). (DIVS has NO div0 vendored sample —
+                            // implemented for correctness only.)
+                            regs.sr = (regs.sr & 0xFF00) | (regs.sr & CCR_X);
+                            let prefetches_done = self.ops[..self.step as usize]
+                                .iter()
+                                .filter(|o| matches!(o, MicroOp::Prefetch))
+                                .count() as u32;
+                            let saved_pc = regs.pc.wrapping_sub(2 * prefetches_done);
+                            return self.install_div0_trap(saved_pc, DIV0_TRAP_IDLE);
+                        }
+                        let sdd = dividend as i32;
+                        let sds = (divisor as u16) as i16;
+                        // Truncating division in i64 — q can be +0x8000_0000 (the i32::MIN/-1 case), which an i32
+                        // divide would PANIC on; here it is detected as overflow below.
+                        let q64 = (sdd as i64) / (sds as i64);
+                        if !(-0x8000..=0x7FFF).contains(&q64) {
+                            // OVERFLOW (q out of [-0x8000, 0x7FFF]): Dn UNCHANGED. CCR V=1, C=0, N/Z/X PRESERVED
+                            // (identical to DIVU). Flat division cost 16 (dividend >= 0) / 18 (dividend < 0) — the
+                            // +2 is the negate-dividend prologue; the Alu returns that MINUS 4.
+                            regs.sr =
+                                (regs.sr & 0xFF00) | (regs.sr & (CCR_X | CCR_N | CCR_Z)) | CCR_V;
+                            let total = if sdd >= 0 { 16 } else { 18 };
+                            let idle = total - 4;
+                            self.step += 1;
+                            self.cycles += idle;
+                            return idle;
+                        }
+                        // NORMAL: q truncates toward zero, r = sdd - q*sds (remainder takes the dividend's sign);
+                        // Dn = ((r & 0xFFFF) << 16) | (q & 0xFFFF).
+                        let q = q64 as i32;
+                        let r = sdd.wrapping_sub(q.wrapping_mul(sds as i32));
+                        let value = (((r as u32) & 0xFFFF) << 16) | ((q as u32) & 0xFFFF);
+                        // CCR: N = bit15(q) ((q>>15)&1), Z = (q & 0xFFFF == 0), V=0, C=0, X PRESERVED.
+                        let qm = (q as u32) & 0xFFFF;
+                        let n = if (qm >> 15) & 1 != 0 { CCR_N } else { 0 };
+                        let z = if qm == 0 { CCR_Z } else { 0 };
+                        regs.sr = (regs.sr & 0xFF00) | (regs.sr & CCR_X) | n | z;
+                        match dst {
+                            Dest::DataReg(dn) => regs.d[dn as usize] = value,
+                            _ => unreachable!(
+                                "DIVS writes only Dest::DataReg (quotient low / remainder high)"
+                            ),
+                        }
+                        // The variable abs-value restoring-division cost (110 + 2*n_restore + sign terms); the
+                        // Alu returns it MINUS 4 (the trailing Prefetch books that 4).
+                        let idle = divs_cycles(dividend, divisor) - 4;
+                        self.step += 1;
+                        self.cycles += idle;
+                        return idle;
+                    }
                     _ => {}
                 }
                 // Compute at the operand-size flag boundary; carry the result (zero-extended to 32) + the new
@@ -1430,9 +1553,10 @@ impl MicroState {
                     | AluOp::Suba
                     | AluOp::Mulu
                     | AluOp::Muls
-                    | AluOp::Divu => {
+                    | AluOp::Divu
+                    | AluOp::Divs => {
                         unreachable!(
-                            "early-return op (no-flag An-write / data-dependent-cycle MULU/MULS/DIVU) handled above"
+                            "early-return op (no-flag An-write / data-dependent-cycle MULU/MULS/DIVU/DIVS) handled above"
                         )
                     }
                     AluOp::Move => {

@@ -495,6 +495,22 @@ const FILES: &[&str] = &[
     // COVERED (NOT deferred). The file is 100% PURE (one opcode, classified by OPCODE) and 100% in scope: 8065
     // cases (incl the 1 div0 case). NO deferral, NO parity filter, NO corrupt entries.
     "DIVU.json",
+    // DIVS `<ea>,Dn` (`1000 ddd 111 mmm rrr`, opcode & 0xF1C0 == 0x81C0, opmode 7 in the 0x8 space — disjoint
+    // from OR's opmode 0/1/2/4/5/6 AND from DIVU's opmode 3) — the SIGNED 16-bit divide, the signed twin of
+    // DIVU: the FULL 32-bit Dn (the dividend, sx32) divided by the sign-extended word source (the divisor,
+    // sx16), TRUNCATING TOWARD ZERO (remainder takes the dividend's sign), writing quotient → low 16 of Dn,
+    // remainder → high 16. D1 adds `AluOp::Divs` and REUSES `div_recipe` + the vector-5 div0 frame + the
+    // Alu-returns-cycles minus-4 mechanism VERBATIM. The FULL 11 source modes are in scope — Dn (0),
+    // (An)/(An)+/-(An)/d16(An)/d8(An,Xn) (2-6), abs.w/abs.l/d16(PC)/d8(PC,Xn)/#imm (7/0..7/4); An-direct (mode
+    // 1) illegal/absent. THREE outcomes: normal (Dn = (rem<<16)|quot; N=bit15(q)/Z=(q&0xFFFF==0)/V=0/C=0/X kept;
+    // length 110+2*n_restore+sign-terms+ea), overflow (q∉[-0x8000,0x7FFF], incl 0x8000_0000/-1 → Dn UNCHANGED,
+    // V=1/C=0/N,Z,X PRESERVED, flat 16 (dividend≥0) / 18 (dividend<0) +ea), div0 (vector-5 6-byte frame — DIVS
+    // has NO div0 sample, implemented for correctness only). The timing is data-dependent (the abs-value
+    // restoring-division step counts) — the `AluOp::Divs` arm RETURNS the documented division cost minus 4 (the
+    // trailing refill books the 4). Odd word EAs are address errors the E3/E4 abort covers (NO parity filter);
+    // the `(A7)` mode-2 source is COVERED (NOT deferred). The file is 100% PURE (one opcode, classified by
+    // OPCODE) and 100% in scope: 8065 cases. NO deferral, NO parity filter, NO corrupt entries.
+    "DIVS.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -833,9 +849,13 @@ fn mul_covered(opcode: u16) -> bool {
 /// An-direct (mode 1) is illegal/absent (DIVU has no `An` source). **NO deferral, NO parity filter** — the
 /// `(A7)` mode-2 source is COVERED (NOT deferred), odd word EAs are address errors the E3/E4 abort covers
 /// (`ea_src` faults on the odd word read), and the overflow + the 1 div0 (vector-5 trap) cases are IN scope.
-/// All 8065 cases in scope. (DIVS — `0x81C0`, opmode 7 — lands in a later commit; classify by OPCODE.)
+/// All 8065 cases per file in scope. Both DIVU (`0x80C0`, opmode 3) and DIVS (`0x81C0`, opmode 7) — classified
+/// by OPCODE — are admitted; the two files are disjoint and each 100% PURE / in scope (8065 each, 16130 total).
+/// (DIVS truncates toward zero with the remainder taking the dividend's sign and has NO div0 sample, but the
+/// COVERAGE predicate is identical — same 11 modes, same overflow/address-error in-scope rules.)
 fn div_covered(opcode: u16) -> bool {
-    if opcode & 0xF1C0 != 0x80C0 {
+    let masked = opcode & 0xF1C0;
+    if masked != 0x80C0 && masked != 0x81C0 {
         return false;
     }
     let mode = (opcode >> 3) & 7;
@@ -1105,12 +1125,15 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     if mul_covered(opcode) {
         return true;
     }
-    // DIVU `<ea>,Dn` (1000 ddd 011 mmm rrr, opcode & 0xF1C0 == 0x80C0, opmode 3 in the 0x8 space — disjoint from
-    // OR's opmode 0/1/2/4/5/6): the UNSIGNED 16-bit divide writing quotient → low 16 of Dn, remainder → high 16.
-    // The DIVU.json file is 100% PURE / 100% in scope across the FULL 11 source modes (incl PC-rel + #imm + the
-    // clean `(A7)` mode-2 source; odd word EAs are address errors the E3/E4 abort covers, no parity filter).
-    // An-direct (mode 1) is illegal/absent. Three outcomes: normal (variable bit-serial timing), overflow (Dn
-    // unchanged, only V/C change, flat 10), div0 (the 1 case — vector-5 6-byte frame). Classified by OPCODE.
+    // DIV `<ea>,Dn` — BOTH DIVU (1000 ddd 011 mmm rrr, opcode & 0xF1C0 == 0x80C0, opmode 3) and DIVS (1000 ddd
+    // 111 mmm rrr, opcode & 0xF1C0 == 0x81C0, opmode 7) in the 0x8 space — disjoint from OR's opmode 0/1/2/4/5/6
+    // AND from each other: the 16-bit divide writing quotient → low 16 of Dn, remainder → high 16 (DIVU
+    // unsigned; DIVS signed, truncating toward zero, remainder takes the dividend's sign). Both files 100% PURE
+    // / 100% in scope across the FULL 11 source modes (incl PC-rel + #imm + the clean `(A7)` mode-2 source; odd
+    // word EAs are address errors the E3/E4 abort covers, no parity filter). An-direct (mode 1) is
+    // illegal/absent. Three outcomes: normal (variable bit-serial timing), overflow (Dn unchanged, only V/C
+    // change — DIVU flat 10, DIVS flat 16|18), div0 (DIVU's 1 case — vector-5 6-byte frame; DIVS has none).
+    // Classified by OPCODE.
     if div_covered(opcode) {
         return true;
     }
@@ -1619,8 +1642,33 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 744_458,
-        "expected 744458 covered cases — D0 adds DIVU (its own DIVU.json file, `1000 ddd 011 mmm rrr` = \
+        ran >= 752_523,
+        "expected 752523 covered cases — D1 adds DIVS (its own DIVS.json file, `1000 ddd 111 mmm rrr` = \
+         opcode & 0xF1C0 == 0x81C0, opmode 7 in the 0x8 space — DISJOINT from OR's opmode 0/1/2/4/5/6 AND from \
+         DIVU's opmode 3): DIVS 8065 = +8065 over D0's 744458 → 752523 (the WHOLE file in scope — 100% PURE, \
+         classified by OPCODE, no contaminant, no deferral, no parity filter). This is the FINAL DIV commit \
+         (both DIVU + DIVS loaded). DIVS is the SIGNED 16-bit divide: the FULL 32-bit Dn (the dividend, sx32) \
+         divided by the sign-extended word source (the divisor, sx16), TRUNCATING TOWARD ZERO with the \
+         REMAINDER TAKING THE DIVIDEND'S SIGN (`r = sdd - q*sds`), writing quotient → low 16 of Dn, remainder → \
+         high 16. It REUSES `div_recipe` + the vector-5 div0 frame + the Alu-returns-cycles minus-4 mechanism \
+         VERBATIM (just `AluOp::Divs`). THREE outcomes: (1) normal — write Dn, CCR N = bit15(q) ((q>>15)&1) / Z \
+         = (q & 0xFFFF == 0) / V=0 / C=0 / X PRESERVED (only N/Z change); (2) overflow (q ∉ [-0x8000, 0x7FFF], \
+         INCLUDING the 0x8000_0000/-1 case where q = +0x8000_0000 — computed in i64 so it is DETECTED, not a \
+         panic) — Dn UNCHANGED, CCR V=1 / C=0 / N,Z,X PRESERVED (identical to DIVU, only V set + C cleared); (3) \
+         div0 (divisor == 0) — the SAME vector-5 div0 trap as DIVU (DIVS has NO div0 sample — implemented for \
+         correctness only, like the DBcc-expired path). THE TIMING IS DATA-DEPENDENT ON THE SOURCE: the normal \
+         division cost is the abs-value restoring-division closed form `110 + 2*n_restore` (n_restore counted \
+         over the FIRST 15 of the 16 iterations — the `i < 15` guard is LOAD-BEARING) plus the negate-dividend \
+         prologue (+2 if dividend < 0) and the 3-way sign-correction term (+12 if divisor < 0, else +14 if \
+         dividend < 0, else +10), range 126..152; overflow is a flat 16 (dividend ≥ 0) / 18 (dividend < 0) \
+         early-out (the +2 is the negate-dividend prologue — NOT the normal-loop length; ZERO late-overflow \
+         cases). Like DIVU the `AluOp::Divs` arm returns the documented division cost MINUS 4 (the trailing \
+         `Prefetch` books that 4); a memory source adds its EA bus cost on top. The FULL 11 source modes are in \
+         scope — Dn (0), (An)/(An)+/-(An)/d16(An)/d8(An,Xn) (2-6), abs.w/abs.l/d16(PC)/d8(PC,Xn)/#imm (7/0..7/4); \
+         An-direct (mode 1) is illegal/absent. The `(A7)` mode-2 source is COVERED (NOT deferred); odd word EAs \
+         are address errors the E3/E4 abort covers (NO parity filter). Classified by OPCODE (`div_covered`: \
+         opcode & 0xF1C0 == 0x80C0 || 0x81C0). \
+         Prior baseline — D0 adds DIVU (its own DIVU.json file, `1000 ddd 011 mmm rrr` = \
          opcode & 0xF1C0 == 0x80C0, opmode 3 in the 0x8 space — DISJOINT from OR's opmode 0/1/2/4/5/6): DIVU \
          8065 = +8065 over M1's 736393 → 744458 (the WHOLE file in scope — 100% PURE, classified by OPCODE, no \
          contaminant, no deferral, no parity filter). DIVU is the UNSIGNED 16-bit divide: the FULL 32-bit Dn \
@@ -2190,7 +2238,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -6083,5 +6131,178 @@ fn divu_div0_quiescable_and_serializable_at_every_micro_op_boundary() {
     }
     eprintln!(
         "D0 DIVU snapshot/restore: the op=0x80ef divide-by-zero (vector-5 frame) resumed identically at every micro-op boundary (incl across the Alu's MicroState-rewrite into the 6-byte frame)"
+    );
+}
+
+/// D1 — the named `DIVS <ea>,Dn` anchors, pinning the new `AluOp::Divs` (the SIGNED divide) against the vendored
+/// DIVS stream WITHOUT relying on the bulk `covered()` sweep. DIVS REUSES `div_recipe` + the vector-5 div0 frame
+/// + the Alu-returns-cycles minus-4 mechanism VERBATIM; only the value/flag/timing math differs. Load-bearing:
+/// - **Value (signed):** `q = sx32(Dn) / sx16(src)` TRUNCATED TOWARD ZERO (i64-computed so the 0x8000_0000/-1
+///   case is detected, not a panic), `r = sx32(Dn) − q·sx16(src)` (the REMAINDER TAKES THE DIVIDEND'S SIGN),
+///   `Dn = ((r & 0xFFFF) << 16) | (q & 0xFFFF)` (quotient low 16, remainder high 16).
+/// - **Flags (normal):** N = bit15(q) (`(q>>15)&1`), Z = (q & 0xFFFF == 0), V = 0, C = 0, X PRESERVED (only N/Z
+///   change). The `89c3`/`81c2` anchors have a NEGATIVE quotient (N=1, the q low word's bit15).
+/// - **Overflow** (`q ∉ [-0x8000, 0x7FFF]`): `Dn` UNCHANGED, **V=1, C=0, N/Z/X PRESERVED** (identical to DIVU).
+///   The two overflow anchors enter with initial N=1 AND Z=1 and confirm they carry through (final V=1/C=0,
+///   N/Z/X preserved), with `Dn` unchanged — `89c0…195` is len 16 (dividend ≥ 0), `81c5…41` is len 18
+///   (dividend < 0). (There is NO 0x8000_0000/-1 case in the vendored data — see the snapshot test's note.)
+/// - **Timing is DATA-DEPENDENT ON THE SOURCE:** the normal cost is `110 + 2*n_restore` + a `+2` negate-dividend
+///   prologue (dividend < 0) + a 3-way sign-correction term (`+12` divisor < 0 / `+14` dividend < 0 / `+10`
+///   else), range 126..152 — the four sign-combo anchors (pos/pos len 138, neg-dividend len 140, neg-divisor
+///   len 138, neg/neg len 142) pin the sign terms; overflow is a flat 16/18. Like DIVU the Alu returns the
+///   documented cost minus 4 and a memory source adds its EA bus cost on top.
+/// - **`(A7)` mode-2 source is COVERED** (NOT deferred); an odd `(An)` word EA is an address error the E3/E4
+///   abort covers (the `8fd3` anchor — must PASS via the 14-byte vector-3 frame).
+#[test]
+fn divs_anchors_match_singlesteptests() {
+    // (file, full-name, length). The full names select the EXACT case the doc-comment describes.
+    let anchors: &[(&str, &str, u32)] = &[
+        ("DIVS.json", "89c0 [DIVS D0, D4] 94", 138), // mode-0 pos/pos normal, q positive (N=0)
+        ("DIVS.json", "89c3 [DIVS D3, D4] 92", 140), // NEG dividend (+2 prologue), q neg (N=1, remainder takes dividend sign)
+        ("DIVS.json", "81c2 [DIVS D2, D0] 44", 138), // NEG divisor (+12 sign-correction), q neg (N=1)
+        ("DIVS.json", "89c6 [DIVS D6, D4] 131", 142), // neg/neg, q positive (+2 + +12)
+        ("DIVS.json", "89c0 [DIVS D0, D4] 195", 16), // OVERFLOW len 16 (dividend>=0), init N=1/Z=1, Dn unchanged
+        ("DIVS.json", "81c5 [DIVS D5, D0] 41", 18), // OVERFLOW len 18 (dividend<0), init N=1/Z=1, Dn unchanged
+        ("DIVS.json", "89d1 [DIVS (A1), D4] 19", 138), // (An) memory source (+4 ea)
+        ("DIVS.json", "87d7 [DIVS (A7), D3] 589", 134), // (A7) mode-2 source (COVERED, NOT deferred)
+        ("DIVS.json", "8fd3 [DIVS (A3), D7] 5", 50), // odd (A3) word EA → address error (E3/E4, must PASS)
+    ];
+    let mut found = 0usize;
+    for (fname, name, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap() == *name
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| panic!("D1 DIVS anchor {name} (len {length}) not found in {fname}"));
+        // Every anchor must be a DIVS opcode (opcode & 0xF1C0 == 0x81C0, opmode 7 in the 0x8 space), never an
+        // OR-class register-form opcode (and_or_in_scope rejects opmode 7).
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(
+            opcode & 0xF1C0,
+            0x81C0,
+            "anchor {name} must be a DIVS opcode (opcode & 0xF1C0 == 0x81C0, opmode 7)"
+        );
+        assert!(
+            !and_or_in_scope(opcode),
+            "DIVS (opmode 7) is not an OR register-form opcode"
+        );
+        assert!(div_covered(opcode), "anchor {name} must be covered DIVS");
+        // The two OVERFLOW anchors pin the KEY finding (identical to DIVU): enter with initial N=1 AND Z=1;
+        // confirm V=1/C=0/N/Z/X PRESERVED (only V set, C cleared) and Dn UNCHANGED. (run_case also verifies the
+        // full final state + cycles.)
+        if *name == "89c0 [DIVS D0, D4] 195" || *name == "81c5 [DIVS D5, D0] 41" {
+            let dn = ((opcode >> 9) & 7) as usize;
+            let ini_sr = case["initial"]["sr"].as_u64().unwrap() as u16;
+            let fin_sr = case["final"]["sr"].as_u64().unwrap() as u16;
+            assert_eq!(
+                ini_sr & 0x0C,
+                0x0C,
+                "overflow anchor enters with N=1 AND Z=1"
+            );
+            assert_eq!(
+                fin_sr & 0x1F,
+                0x0E,
+                "overflow leaves N=1/Z=1/X=0 (preserved) + V=1 + C=0 — only V set, C cleared"
+            );
+            assert_eq!(
+                case["final"][format!("d{dn}")],
+                case["initial"][format!("d{dn}")],
+                "overflow leaves Dn UNCHANGED"
+            );
+        }
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all D1 DIVS anchors exercised");
+    eprintln!(
+        "D1 DIVS anchors: {found} cases (pos/pos / neg-dividend (remainder takes dividend sign, +2 prologue, N=1) / neg-divisor (+12) / neg/neg / two overflows N,Z,X-preserved+Dn-unchanged (len 16 & 18) / (An) / (A7) m2 / odd-EA address error; signed trunc-toward-zero, quotient-low/remainder-high, only N/Z change normal, X preserved, length 110+2*n_restore+sign-terms+ea via the ALU-returns-cycles mechanism) passed both drivers"
+    );
+}
+
+/// D1 — the snapshot/restore anchor for the DIVS memory-source path (the new `AluOp::Divs` + its abs-value
+/// restoring-division ALU-returns-cycles timing). Drives a real vendored `DIVS (A1),D4` case through the quiesce
+/// driver, snapshotting + restoring the WHOLE `Cpu68000` (incl. the in-flight cursor) at EVERY micro-op boundary
+/// — including the mid-bus-access boundary around the divisor Read and across the swapped `[Alu, Prefetch]`
+/// trailing pair — and proving the resumed run reproduces the run-to-completion final state + transaction stream
+/// bit-for-bit. Pins that the data-dependent (restore-count + sign-term) cycle count, resolved from the
+/// snapshot-captured signed source, keeps `MicroState` fixed-size bincode.
+///
+/// NOTE: DIVS has NO divide-by-zero sample in the vendored data (DIVU has the SOLE div0 case), and NO
+/// 0x8000_0000/-1 overflow case (no dividend register holds 0x8000_0000, and no divisor resolves to -1 in any
+/// overflow case) — both paths are implemented for correctness (the div0 frame reused verbatim from DIVU; the
+/// i64-computed quotient detects the i32::MIN/-1 overflow without panicking) but cannot be pinned to a vendored
+/// case, like the DBcc-expired path's single-sample caveat.
+#[test]
+fn divs_mem_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/DIVS.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| {
+            t["name"].as_str().unwrap() == "89d1 [DIVS (A1), D4] 19"
+                && t["length"].as_u64().unwrap() as u32 == 138
+        })
+        .expect("DIVS (A1) snapshot anchor present");
+    let ini = &case["initial"];
+
+    // Run-to-completion reference.
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    // Count the Continue boundaries dynamically (the memory recipe's micro-op count is fixed, but counting it
+    // here keeps the test robust to the recipe shape).
+    let boundaries = {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        let mut n = 0usize;
+        while let Step::Continue = cpu.step_micro_op(&mut bus) {
+            n += 1;
+        }
+        n
+    };
+
+    let cfg = bincode::config::standard();
+    for pause_after in 0..=boundaries {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        for _ in 0..pause_after {
+            assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+        }
+        // Snapshot + restore the whole CPU (incl. the in-flight cursor) mid-instruction.
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+    }
+    eprintln!(
+        "D1 DIVS snapshot/restore: DIVS (A1),D4 memory-source signed divide resumed identically at every micro-op boundary (incl the data-dependent restore-count + sign-term cycle count)"
     );
 }

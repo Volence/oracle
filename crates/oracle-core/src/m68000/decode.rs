@@ -286,6 +286,18 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     if opcode & 0xF1C0 == 0x80C0 {
         return div_recipe(opcode, AluOp::Divu);
     }
+    // DIVS `<ea>,Dn` (`1000 ddd 111 mmm rrr`, opcode & 0xF1C0 == 0x81C0, opmode 7 in the 0x8 space) — the SIGNED
+    // 16-bit divide, the signed twin of DIVU: the FULL 32-bit Dn (the dividend, `sx32`) is divided by the
+    // sign-extended word source (the divisor, `sx16`), truncating toward zero (remainder takes the dividend's
+    // sign), writing quotient → low 16 of Dn, remainder → high 16. opmode 7 is DISJOINT from OR's opmode 0/1/2
+    // and 4/5/6 AND from DIVU's opmode 3 above, so this arm is reached only on the genuine DIVS encoding (placed
+    // BEFORE the OR arms so OR never swallows it). REUSES `div_recipe` VERBATIM (just passing `AluOp::Divs`) —
+    // the same `ea_src(Size::Word)` machinery + the `[Alu, Prefetch]` swap + the vector-5 div0 frame. The
+    // `AluOp::Divs` exec arm RETURNS its data-dependent division cost (normal `110 + 2*n_restore + sign terms` /
+    // overflow `16|18`, minus the trailing refill), or on a zero divisor installs the vector-5 div0 frame.
+    if opcode & 0xF1C0 == 0x81C0 {
+        return div_recipe(opcode, AluOp::Divs);
+    }
     // OR `<ea>,Dn` (`1000 ddd 0SS mmm rrr`, opmode 0/1/2 = b/w/l = 0x8000/0x8040/0x8080) — bitwise `Dn = Dn |
     // <ea>` (Dn the minuend `a`; OR is commutative so operand order is inert). Identical to the AND `<ea>,Dn`
     // arms above with `AluOp::Or` and the base nibble 0x8 instead of 0xC — same `arith_ea_dn` builder VERBATIM
