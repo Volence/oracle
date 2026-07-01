@@ -1,6 +1,7 @@
 # VDP design brief — scanline-first model + the render-decode introspection API
 
-**Status: PROPOSED 2026-07-01 (Fable), for owner ratification before any VDP code.**
+**Status: RATIFIED 2026-07-01 (owner).** Settled ground for the VDP work; the
+**[recon]**-tagged details below may still be amended with evidence by the recon push.
 Closes finding 1 of `docs/2026-07-01-plan-audit.md`: the VDP is the declared #1 schedule
 risk and the render-decode introspection API is the product differentiator — both need
 foundations-grade design *before* the scanline renderer exists, because Phase 3 promises

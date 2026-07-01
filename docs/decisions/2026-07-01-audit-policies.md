@@ -1,6 +1,6 @@
 # Decision brief: standing policies from the 2026-07-01 plan audit
 
-**Status: PROPOSED 2026-07-01 (Fable), for owner ratification.** Small, cheap-to-adopt
+**Status: RATIFIED 2026-07-01 (owner).** Small, cheap-to-adopt
 policies that close findings 2, 4, 6, and 7 of `docs/2026-07-01-plan-audit.md`. None
 changes the charter or architecture; each pre-decides a call that would otherwise be
 made ad-hoc mid-build.

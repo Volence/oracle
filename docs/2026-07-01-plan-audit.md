@@ -167,10 +167,10 @@ sequencing the remaining risk, not re-deciding the foundations.
 
 The owner asked Fable to fix up what could be fixed before handoff. Artifacts:
 
-- **Finding 1 → `docs/2026-07-01-vdp-design.md`** (PROPOSED, for ratification): the
+- **Finding 1 → `docs/2026-07-01-vdp-design.md`** (RATIFIED same day): the
   scanline model, latch semantics, the render-decode introspection API + its stability
   contract, the VDP validation rungs, and the VDP build order (recon push first).
-- **Findings 2, 4, 6, 7 → `docs/decisions/2026-07-01-audit-policies.md`** (PROPOSED):
+- **Findings 2, 4, 6, 7 → `docs/decisions/2026-07-01-audit-policies.md`** (RATIFIED same day):
   SST-as-tiebreak, `export_state` freeze at the pivot, the agent clean-room rule, PAL
   non-goal, snapshot version-locking, the wasm32 CI tripwire, the perf-pass trigger.
 - **Finding 4 (ledger) → `docs/m68000-vocabulary-ledger.md`**: the mechanism inventory
