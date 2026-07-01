@@ -18,9 +18,14 @@ the bus connector between tools, a separate thing.)
    the four non-negotiables, the staged path, honest effort/risk, the relationship to Oracle.
 2. **`docs/foundations.md`** — the settled language (**Rust**) + core architecture + the
    MCP/bus integration + the validation ladder + the ordered build steps.
-3. **`docs/decisions/`** + **`docs/plans/`** — the resolved cycle-granularity call, and one
+3. **`docs/2026-07-01-plan-audit.md`** — the full plan audit (Fable, pre-Opus handoff):
+   verdict + 8 findings + the recommended build sequence. Its fixups:
+   **`docs/2026-07-01-vdp-design.md`** (the VDP model + the frozen render-decode
+   introspection API) and **`docs/decisions/2026-07-01-audit-policies.md`** (standing
+   policies incl. the agent clean-room rule).
+4. **`docs/decisions/`** + **`docs/plans/`** — the resolved cycle-granularity call, and one
    data-grounded plan per instruction-family push (the running build record).
-4. **`docs/research-digest.md`** — the evidence base (emulator landscape, the from-scratch
+5. **`docs/research-digest.md`** — the evidence base (emulator landscape, the from-scratch
    synthesis, license-tiered reuse).
 
 ## Status (2026-06-28) — Phase 0, deep into the 68000 core
