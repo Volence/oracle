@@ -537,6 +537,11 @@ const FILES: &[&str] = &[
     // PURE (one instruction, classified by OPCODE + the control-mode guard) — 8065 cases. NO deferral, NO
     // parity filter, NO corrupt entries.
     "LEA.json",
+    // PEA `<control ea>` (`0100 1000 01 mmm rrr`, opcode & 0xFFC0 == 0x4840, mode >= 2 — the control modes) —
+    // compute the control-mode EA (exactly LEA's machinery) and PUSH it as a LONG to -(SP). 100% PURE (one
+    // instruction, classified by OPCODE + the mode-guard off SWAP's mode-000 form) — 8065 cases. NO deferral,
+    // NO parity filter, NO corrupt entries.
+    "PEA.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -1093,6 +1098,20 @@ fn lea_covered(opcode: u16) -> bool {
     opcode & 0xF1C0 == 0x41C0 && (matches!(mode, 2 | 5 | 6) || (mode == 7 && matches!(reg, 0..=3)))
 }
 
+/// PEA `<control ea>` (`opcode & 0xFFC0 == 0x4840`, mode >= 2) — the CONTROL addressing modes ONLY: `(An)` 010,
+/// `(d16,An)` 101, `(d8,An,Xn)` 110, `abs.w` 111/0, `abs.l` 111/1, `(d16,PC)` 111/2, `(d8,PC,Xn)` 111/3 (the
+/// SAME seven modes as LEA). The `mode >= 2` guard is LOAD-BEARING: `0x4840` with mode 000 (Dn) is SWAP (a
+/// DIFFERENT, already-decoded instruction) — PEA must never swallow it, and the control-mode guard also
+/// excludes the illegal modes 001/011/100 and 111/4. Every legal case is in scope: PEA computes the EA (it is
+/// never dereferenced — the address is the value) and pushes it LONG to -(SP); the only fault surface is an odd
+/// SP on the push write, an address error the E3/E4 abort covers (the vendored file has none — all SP even).
+/// Classified strictly by OPCODE + the control-mode guard.
+fn pea_covered(opcode: u16) -> bool {
+    let mode = (opcode >> 3) & 7;
+    let reg = opcode & 7;
+    opcode & 0xFFC0 == 0x4840 && (matches!(mode, 2 | 5 | 6) || (mode == 7 && matches!(reg, 0..=3)))
+}
+
 fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // MOVE (`00 SS RRR MMM mmm rrr`, dst_mode != 1) — its own EA→EA mode-scope filter (no parity).
     if move_covered(opcode) {
@@ -1217,6 +1236,14 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // accesses the EA (the address is the result), so no `(A7)` deferral and no odd-EA parity filter.
     // Classified by OPCODE + the control-mode guard.
     if lea_covered(opcode) {
+        return true;
+    }
+    // PEA `<control ea>` (0x4840 | ea, the seven control modes, mode >= 2 so SWAP's mode-000 form never
+    // collides) — compute the COMPUTED effective address (exactly LEA's EA) and PUSH it LONG to -(SP), NO
+    // operand read, NO flags. Every legal case in scope: the EA is never dereferenced (the address is the
+    // pushed value), so no odd-EA parity filter; the only fault surface is an odd SP on the push write (an
+    // address error the E3/E4 abort covers — the vendored file has none). Classified by OPCODE + the mode guard.
+    if pea_covered(opcode) {
         return true;
     }
     // CMP `<ea>,Dn` + CMPM `(Ay)+,(Ax)+` + CMPI `#imm,<ea>` (the Cmp/Cmpm/Cmpi classes of the 3-way CMP.* mix,
@@ -1712,8 +1739,26 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 776_718,
-        "expected 776718 covered cases — C1 adds LEA (its own LEA.json file, `0100 aaa 111 mmm rrr` = \
+        ran >= 784_783,
+        "expected 784783 covered cases — C2 adds PEA (its own PEA.json file, `0100 1000 01 mmm rrr` = \
+         opcode & 0xFFC0 == 0x4840, mode >= 2): PEA 8065 = +8065 over C1's 776718 → 784783 (the WHOLE file in \
+         scope — 100% PURE, classified by OPCODE + the control-mode guard, no contaminant, no deferral, no \
+         parity filter). PEA computes the CONTROL-mode effective address (EXACTLY LEA's EA — the address itself, \
+         full 32-bit UNMASKED, NO operand read: the address IS the value) and PUSHES it as a LONG to `-(SP)`: \
+         `SP -= 4`, hi word @ SP−4, lo word @ SP−2 (the BSR/JSR long-push order, pinned to the data), NO flags \
+         (SR untouched). The recipe is the LEA `EaCalc` (unmasked) → the long push (`AdjustAddr(SP,−4)`, a \
+         low-address `EaCalc`, then two `Write`s: `ScratchHi16(EA)` @ SP−4 then `Scratch(EA)` @ SP−2), one per \
+         the seven CONTROL addressing modes with the LEA timing + 8 (the two word pushes): `(An)` 010 (len 12), \
+         `d16(An)` 101 (16), `d8(An,Xn)` 110 (20 — indexed idle), `abs.w` 111/0 (16), `abs.l` 111/1 (20 — the \
+         three-refill two-ext-word interleave), `d16(PC)` 111/2 (16 — base pc+2, the ext-word address via \
+         PcOfExt, pushing the full-32 UNMASKED EA e.g. 0xFFFF_B792), `d8(PC,Xn)` 111/3 (20 — same pc+2 base). \
+         The `mode >= 2` guard is LOAD-BEARING: `0x4840` mode 000 (Dn) is SWAP (already decoded) — PEA must \
+         never swallow SWAP and SWAP never swallows PEA; the control-mode guard also excludes the illegal modes \
+         001/011/100 and 111/4. PEA never dereferences the EA, so NO odd-EA parity filter; the only fault \
+         surface is an odd SP on the push write (an address error the E3/E4 abort covers — the vendored file has \
+         none, all SP even). The decode arm (`opcode & 0xFFC0 == 0x4840 && mode >= 2 && is_control_mode`) sits \
+         right after SWAP (`0x4840` mask `0xFFF8`, mode 000), disjoint from it and from EXT (0x4880/0x48C0). \
+         Prior baseline — C1 adds LEA (its own LEA.json file, `0100 aaa 111 mmm rrr` = \
          opcode & 0xF1C0 == 0x41C0): LEA 8065 = +8065 over C0's 768653 → 776718 (the WHOLE file in scope — \
          100% PURE, classified by OPCODE + the control-mode guard, no contaminant, no deferral, no parity \
          filter). LEA loads the COMPUTED effective address (the address itself, full 32-bit UNMASKED — pinned \
@@ -2338,7 +2383,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -3544,6 +3589,183 @@ fn lea_quiescable_and_serializable_at_every_micro_op_boundary() {
         pause_after += 1;
     }
     eprintln!("C1 LEA snapshot/restore: LEA (xxx).l,A2 (abs.l) resumed identically at every micro-op boundary");
+}
+
+/// C2 — the named `PEA <control ea>` anchors, pinning each control mode's push against the vendored PEA stream
+/// WITHOUT relying on the bulk `covered()` sweep. PEA computes the COMPUTED effective address (exactly LEA's
+/// EA — the address IS the value, never dereferenced) and PUSHES it as a LONG to `-(SP)`: `SP -= 4`, hi word @
+/// SP−4, lo word @ SP−2. NO flags. One anchor per control mode (the timing = LEA + 8, the two word pushes):
+/// - `4850 [PEA (A0)] 5` — **(An)** len 12: EA = A0.
+/// - `4868 [PEA (d16, A0)] 3` — **d16(An)** len 16: EA = A0 + s16(disp).
+/// - `4870 [PEA (d8, A0, Xn)] 2` — **d8(An,Xn)** len 20: EA = A0 + index + s8(disp8) (indexed idle).
+/// - `4878 [PEA (xxx).w] 13` — **abs.w** len 16: EA = s16(ext).
+/// - `4879 [PEA (xxx).l] 30` — **abs.l** len 20: EA = the two ext words (unmasked).
+/// - `487a [PEA (d16, PC)] 38` — **d16(PC)** len 16: EA = (pc+2) + s16(disp), an UNMASKED value with high bits
+///   set (0xFFFF_B792 — the base pc+2 pin, exercising the full-32 push).
+/// - `487b [PEA (d8, PC, Xn)] 1` — **d8(PC,Xn)** len 20: EA = (pc+2) + index + s8(disp8).
+///
+/// Each runs both drivers + the per-cycle transaction stream via `run_case` (which pins SP=SP−4, the two writes
+/// hi@SP−4 / lo@SP−2 equal to the computed EA, and the whole final register/RAM/prefetch state against the
+/// data). The load-bearing pins here: PEA sets **NO flags** (`final.sr == initial.sr`), pushes the ADDRESS (not
+/// a fetched value — no operand `r` transaction, only queue refills + the two push writes), the pushed long ==
+/// the computed EA, SP = SP−4, and the PC-relative base is pc+2. Every anchor must decode as a PEA opcode
+/// (0xFFC0 == 0x4840, mode >= 2) — never SWAP (0x4840 mode 000), never a CMP-class opcode.
+#[test]
+fn pea_anchors_match_singlesteptests() {
+    let path = format!("{VENDOR_DIR}/PEA.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: PEA.json missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    // (full-name, length) — one per control mode.
+    let anchors: &[(&str, u32)] = &[
+        ("4850 [PEA (A0)] 5", 12),         // (An)
+        ("4868 [PEA (d16, A0)] 3", 16),    // d16(An)
+        ("4870 [PEA (d8, A0, Xn)] 2", 20), // d8(An,Xn)
+        ("4878 [PEA (xxx).w] 13", 16),     // abs.w
+        ("4879 [PEA (xxx).l] 30", 20),     // abs.l (two ext words)
+        ("487a [PEA (d16, PC)] 38", 16),   // d16(PC) — base pc+2, unmasked value
+        ("487b [PEA (d8, PC, Xn)] 1", 20), // d8(PC,Xn) — base pc+2
+    ];
+    // Active stack pointer of a state (ssp when supervisor S==0x2000, else usp).
+    let active_sp = |st: &Value| -> u32 {
+        if u32f(st, "sr") & 0x2000 != 0 {
+            u32f(st, "ssp")
+        } else {
+            u32f(st, "usp")
+        }
+    };
+    let mut found = 0usize;
+    for (name, length) in anchors {
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap() == *name
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| panic!("C2 PEA anchor {name} (len {length}) not found"));
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        // Must be a PEA opcode (0xFFC0 == 0x4840, mode >= 2 — NEVER SWAP's mode-000 form), never a CMP-class
+        // opcode.
+        assert_eq!(
+            opcode & 0xFFC0,
+            0x4840,
+            "anchor {name} must be a PEA opcode"
+        );
+        assert!(
+            (opcode >> 3) & 7 >= 2,
+            "PEA is mode >= 2 (mode 000 is SWAP) [{name}]"
+        );
+        assert_eq!(
+            cmp_class(opcode),
+            CmpClass::None,
+            "PEA is not a CMP-class opcode [{name}]"
+        );
+        // NO flags — SR byte-identical.
+        assert_eq!(
+            case["initial"]["sr"], case["final"]["sr"],
+            "PEA sets NO flags — SR unchanged [{name}]"
+        );
+        // SP = SP − 4 (the long push predecrement).
+        let sp0 = active_sp(&case["initial"]);
+        let sp1 = active_sp(&case["final"]);
+        assert_eq!(
+            sp1,
+            sp0.wrapping_sub(4),
+            "PEA pushes a long: SP = SP − 4 [{name}]"
+        );
+        // The two push writes (hi @ SP−4, lo @ SP−2) reassemble to the pushed long; pin the addresses + that the
+        // reassembled value is the FULL 32-bit UNMASKED EA (the run_case sweep pins it equals the computed EA).
+        let txs: Vec<&Value> = case["transactions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|tx| tx[0].as_str() == Some("w"))
+            .collect();
+        assert_eq!(txs.len(), 2, "PEA has exactly two push writes [{name}]");
+        assert_eq!(
+            txs[0][3].as_u64().unwrap() as u32,
+            sp1,
+            "hi word pushed @ SP−4 [{name}]"
+        );
+        assert_eq!(
+            txs[1][3].as_u64().unwrap() as u32,
+            sp1.wrapping_add(2),
+            "lo word pushed @ SP−2 [{name}]"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all C2 PEA anchors exercised");
+    eprintln!(
+        "C2 PEA anchors: {found} cases ((An) / d16(An) / d8(An,Xn) / abs.w / abs.l / d16(PC) base+2 unmasked / d8(PC,Xn)) passed both drivers; SR unchanged, SP=SP−4, pushed long = computed EA, no operand read"
+    );
+}
+
+/// C2 — the snapshot/restore anchor for `PEA <control ea>`. Drives a real vendored `PEA (xxx).l` case (`abs.l` —
+/// the longest PEA recipe: three refills bracketing the two extension-word captures, then the two push writes)
+/// through the quiesce driver, snapshotting + restoring the WHOLE `Cpu68000` (incl. the in-flight cursor) at
+/// every micro-op boundary and proving the resumed run reproduces the run-to-completion final state +
+/// transaction stream bit-for-bit. This pins that the `EaCalc → long push` PEA recipe keeps `MicroState`
+/// fixed-size bincode (`Copy`) across the two push writes.
+#[test]
+fn pea_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/PEA.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "4879 [PEA (xxx).l] 30")
+        .expect("PEA abs.l snapshot anchor present");
+    let ini = &case["initial"];
+
+    // Run-to-completion reference.
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    // Snapshot at every in-flight micro-op boundary (drain until Done, snapshotting before each step).
+    let mut pause_after = 0usize;
+    loop {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        let mut reached_end = false;
+        for _ in 0..pause_after {
+            if let Step::Done(_) = cpu.step_micro_op(&mut bus) {
+                reached_end = true;
+                break;
+            }
+        }
+        if reached_end {
+            break;
+        }
+        // Snapshot + restore the whole CPU (incl. the in-flight cursor) mid-instruction.
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+        pause_after += 1;
+    }
+    eprintln!("C2 PEA snapshot/restore: PEA (xxx).l (abs.l) resumed identically at every micro-op boundary");
 }
 
 /// C0 — the named `Scc <ea>` anchors, pinning each shape of the conditional byte set against the vendored Scc

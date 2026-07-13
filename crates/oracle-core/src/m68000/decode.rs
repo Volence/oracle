@@ -650,6 +650,14 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     if opcode & 0xFFF8 == 0x4840 {
         return swap_recipe(opcode);
     }
+    // PEA `<control ea>` (`0100 1000 01 mmm rrr`, opcode & 0xFFC0 == 0x4840, mode >= 2) — compute the
+    // CONTROL-mode effective address (EXACTLY LEA's EA — the address itself, no operand read) and PUSH it as a
+    // LONG to `-(SP)`. The `mode >= 2` guard is LOAD-BEARING: `0x4840` mode 000 (Dn) is SWAP (decoded above,
+    // mask `0xFFF8`), so PEA never swallows SWAP and SWAP never swallows PEA; the control-mode guard also
+    // excludes the illegal modes 001/011/100 and 111/4. Timing = LEA + 8 (the two word pushes). NO flags.
+    if opcode & 0xFFC0 == 0x4840 && is_control_mode((opcode >> 3) & 7, opcode & 7) {
+        return pea_recipe(opcode);
+    }
     // Bcc / BRA (`0110 cccc dddddddd`, 0x6xxx) — conditional branch. cc = bits 11-8 (cc == 0 is BRA, always
     // taken); cc == 1 is BSR (a separate decode arm, NOT this commit) and is excluded. The condition is
     // evaluated at DECODE time against the live CCR, emitting the taken or not-taken linear recipe directly.
@@ -3230,6 +3238,155 @@ fn lea_recipe(opcode: u16) -> MicroState {
 /// the LOW-word refill does not clobber it. Slot 1 — distinct from [`LEA_EA_SLOT`] (slot 0) so both halves are
 /// snapshot-visible mid-assembly.
 const LEA_ABS_L_HI_SLOT: u8 = 1;
+
+/// Scratch slot holding a `PEA`'s computed effective address (the value pushed as a long) — shared with
+/// [`LEA_EA_SLOT`] (slot 0) since PEA reuses LEA's EaCalc machinery to materialize the UNMASKED 32-bit EA.
+const PEA_EA_SLOT: u8 = 0;
+
+/// Scratch slot parking the captured HIGH word of a `PEA abs.l` EA between the two extension-word captures (the
+/// LEA `abs.l` HI slot, slot 1) — distinct from [`PEA_EA_SLOT`] (slot 0) and [`PEA_LO_ADDR_SLOT`] (slot 2).
+const PEA_ABS_L_HI_SLOT: u8 = 1;
+
+/// Scratch slot holding the **address** of a `PEA` push's LOW half (`SP + 2`), materialized once by an
+/// [`MicroOp::EaCalc`] (masked to the 24-bit bus — a real even bus address) so the low-word `Write` hits exactly
+/// `SP + 2`. Slot 2 — distinct from the EA / abs.l-HI slots (0 / 1) so every value is snapshot-visible mid-push.
+const PEA_LO_ADDR_SLOT: u8 = 2;
+
+/// `PEA <control ea>` (`0100 1000 01 mmm rrr`, opcode & 0xFFC0 == 0x4840, mode >= 2): compute the COMPUTED
+/// effective address (the address itself — NOT a fetched value; there is NO operand read, exactly like LEA) and
+/// PUSH it as a LONG to `-(SP)`: `SP -= 4`, hi word @ SP−4, lo word @ SP−2 (the BSR/JSR long-push order, pinned
+/// to the data). Affects **NO flags** (SR untouched). The pushed value is the FULL 32-bit UNMASKED
+/// `base + index + disp` (e.g. a `d16(PC)` EA with the upper bits set — pinned against the data), built by
+/// [`MicroOp::EaCalc`] (unmasked) into [`PEA_EA_SLOT`].
+///
+/// Control addressing modes ONLY (the SAME seven as LEA; the `mode >= 2` guard keeps SWAP's mode-000 form —
+/// `0x4840` mask `0xFFF8` — from ever colliding). **Timing = LEA + 8** (the two word pushes). The r/w bus ORDER
+/// per mode is pinned to the vendored `PEA` stream (idles are non-bus, so they only pin the cycle total):
+/// - `(An)` 010: EA = An (an `EaCalc(An)` into the EA slot), ONE refill, then the push. **12 cyc**, bus
+///   `[r, w, w]`.
+/// - `(d16,An)` 101 / `(d16,PC)` 111/2: `EaCalc(base + s16(disp))` first, TWO refills, then the push. **16
+///   cyc**, bus `[r, r, w, w]`. `(d16,PC)`'s base is `pc+2` (via [`Operand::PcOfExt`]).
+/// - `abs.w` 111/0: `EaCalc(s16(ext))` first, ONE refill, the push, then a SECOND refill LAST (the load-bearing
+///   ordering difference from `d16` — same cycle total, different r/w order). **16 cyc**, bus `[r, w, w, r]`.
+/// - `(d8,An,Xn)` 110 / `(d8,PC,Xn)` 111/3: `EaCalc(base + index(Xn) + s8(disp8))` first, the indexed idle
+///   (n4), TWO refills, then the push. **20 cyc**, bus `[r, r, w, w]`. Same `pc+2` base for the PC-relative form.
+/// - `abs.l` 111/1: assemble the two extension words (HI captured, refill shifts the LO in, `EaCalc` combines),
+///   the push splitting the tail (`[r@c04, r@c06, w, w, r@c08]`). **20 cyc**, bus `[r, r, w, w, r]`.
+fn pea_recipe(opcode: u16) -> MicroState {
+    let mode = (opcode >> 3) & 7;
+    let reg = (opcode & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    // The long push of the computed EA (in PEA_EA_SLOT) to -(SP): predecrement SP by 4, materialize the LOW
+    // half's address (SP−4 + 2), then write hi @ SP−4 (the new SP) then lo @ SP−2 — the BSR/JSR push order.
+    let push_ea = |buf: &mut RecipeBuf| {
+        buf.push(MicroOp::AdjustAddr { reg: 7, delta: -4 });
+        buf.push(MicroOp::EaCalc {
+            base: Operand::AddrReg(7),
+            index: Operand::Zero,
+            disp: Operand::WordStep,
+            dst: PEA_LO_ADDR_SLOT,
+        });
+        buf.push(MicroOp::Write {
+            addr: Operand::AddrReg(7),
+            fc: super::microop::Fc::Data,
+            size: Size::Word,
+            value: Operand::ScratchHi16(PEA_EA_SLOT),
+        });
+        buf.push(MicroOp::Write {
+            addr: Operand::Scratch(PEA_LO_ADDR_SLOT),
+            fc: super::microop::Fc::Data,
+            size: Size::Word,
+            value: Operand::Scratch(PEA_EA_SLOT),
+        });
+    };
+    match (mode, reg) {
+        // (An) — the EA is An itself: EaCalc(An) into the EA slot (unmasked value), ONE refill, then the push.
+        (2, _) => {
+            buf.push(MicroOp::EaCalc {
+                base: Operand::AddrReg(reg),
+                index: Operand::Zero,
+                disp: Operand::Zero,
+                dst: PEA_EA_SLOT,
+            });
+            buf.push(MicroOp::Prefetch);
+            push_ea(&mut buf);
+        }
+        // d16(An) / d16(PC) — EaCalc(base + s16(disp)) FIRST (the disp is in prefetch[1] now), TWO refills, then
+        // the push. base = An / PcOfExt (pc+2 for d16(PC)).
+        (5, _) | (7, 2) => {
+            let base = if mode == 5 {
+                Operand::AddrReg(reg)
+            } else {
+                Operand::PcOfExt
+            };
+            buf.push(MicroOp::EaCalc {
+                base,
+                index: Operand::Zero,
+                disp: Operand::DispWord,
+                dst: PEA_EA_SLOT,
+            });
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::Prefetch);
+            push_ea(&mut buf);
+        }
+        // abs.w — EaCalc(s16(ext)) FIRST, ONE refill, the push, then a SECOND refill LAST. The push splits the
+        // two refills (the load-bearing r/w order `[r, w, w, r]`, distinct from d16's `[r, r, w, w]`).
+        (7, 0) => {
+            buf.push(MicroOp::EaCalc {
+                base: Operand::Zero,
+                index: Operand::Zero,
+                disp: Operand::DispWord,
+                dst: PEA_EA_SLOT,
+            });
+            buf.push(MicroOp::Prefetch);
+            push_ea(&mut buf);
+            buf.push(MicroOp::Prefetch);
+        }
+        // d8(An,Xn) / d8(PC,Xn) — EaCalc(base + index(Xn) + s8(disp8)) FIRST, the indexed idle (n4), TWO
+        // refills, then the push. 20 cyc. base = An / PcOfExt (pc+2).
+        (6, _) | (7, 3) => {
+            let base = if mode == 6 {
+                Operand::AddrReg(reg)
+            } else {
+                Operand::PcOfExt
+            };
+            buf.push(MicroOp::EaCalc {
+                base,
+                index: Operand::BriefIndex,
+                disp: Operand::BriefDisp8,
+                dst: PEA_EA_SLOT,
+            });
+            buf.push(MicroOp::Internal { cycles: 4 });
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::Prefetch);
+            push_ea(&mut buf);
+        }
+        // abs.l — assemble the two extension words into the UNMASKED 32-bit EA (the HI word parked into
+        // PEA_ABS_L_HI_SLOT via `(0 << 16) | prefetch[1]` before the refill shifts it out; the refill reads the
+        // LO word; the second EaCalc combines `(hi << 16) | lo`). The push SPLITS the tail: after the combine,
+        // ONE refill (r@c06), the push (w, w), then a FINAL refill (r@c08). Bus `[r@c04, r@c06, w, w, r@c08]`.
+        (7, 1) => {
+            buf.push(MicroOp::EaCalc {
+                base: Operand::Scratch(PEA_EA_SLOT), // still 0 — parks the HI word unmasked
+                index: Operand::Zero,
+                disp: Operand::ExtWordHi,
+                dst: PEA_ABS_L_HI_SLOT,
+            });
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::EaCalc {
+                base: Operand::Scratch(PEA_ABS_L_HI_SLOT),
+                index: Operand::Zero,
+                disp: Operand::ExtWordRaw,
+                dst: PEA_EA_SLOT,
+            });
+            buf.push(MicroOp::Prefetch);
+            push_ea(&mut buf);
+            buf.push(MicroOp::Prefetch);
+        }
+        _ => unreachable!("pea_recipe: non-control EA mode {mode}/{reg}"),
+    }
+    buf.finish()
+}
 
 /// Scratch slot holding the `*toSR` discard read's value (the word @ pc+4, read under the OLD function code
 /// before the SR write). Slot 0 — the value is never used (the re-prefetch reads it again from the bus), but
