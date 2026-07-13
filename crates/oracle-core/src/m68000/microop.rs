@@ -216,9 +216,18 @@ fn sub_l(a: u32, b: u32) -> (u32, u16) {
 /// **7** frame writes (`PCL/SR/PCH/IR/aLo/SSW/aHi`, each a single `Write` at an [`Operand::SpPlus`] address —
 /// no per-write `EaCalc`, which is what keeps it ≤ 20), then the 9-op shared
 /// `vector_fetch_and_reload` (`LoadImm, Read, EaCalc, Read, Combine32, SetPc, Prefetch, Internal(n2),
-/// Prefetch`). 19 ≤ 20, so `MAX_OPS` is unchanged (using `SpPlus` instead of seven `EaCalc`s avoided a bump).
-/// Public so the EA builder ([`super::ea::RecipeBuf`]) can size its fixed staging array to the same bound.
-pub const MAX_OPS: usize = 20;
+/// Prefetch`). 19 ≤ 20 was the prior bound.
+///
+/// **Bumped to 40 in C4 (`MOVEM`) — the one structural change.** `MOVEM` expands its register-list mask into
+/// a per-register linear recipe (one [`MicroOp::MovemStore`]/[`MicroOp::MovemLoad`] per set register, each
+/// doing its own bus access(es) internally), so the worst recipe is `MOVEM.l (xxx).l,<16 regs>` mem→reg:
+/// three leading `Prefetch`s + two `EaCalc`s (the two-ext-word `abs.l` assembly) + 16 `MovemLoad`s + the
+/// phantom `Read` + one trailing `Prefetch` = 23 ops. 40 = comfortable headroom for both the per-register
+/// representation and the C5 `.l` extension (each register stays ONE op doing two internal word accesses, so
+/// the op count does not grow with size). [`MicroState`] stays a FIXED `[MicroOp; MAX_OPS]` array (bincode /
+/// `Copy` invariant — NOT a `Vec`); the bump only widens the fixed array. Public so the EA builder
+/// ([`super::ea::RecipeBuf`]) can size its fixed staging array to the same bound.
+pub const MAX_OPS: usize = 40;
 
 /// Number of scratch slots carrying values between micro-ops within one instruction. Sized to the **E3
 /// address-error frame** — the new worst recipe (`install_address_error`): it carries five live frame-field
@@ -1058,6 +1067,49 @@ pub enum MicroOp {
     /// internal step — the recipe's trailing `Internal(2)` idle books the len-6 cost. Distinct from every
     /// `Alu` op (no CCR touch, no size mask) and from [`MicroOp::AdjustAddr`] (a one-sided register bump).
     ExgRegs { opmode: u8, rx: u8, ry: u8 },
+    /// `MOVEM` **register→memory** per-register store — one register's word(s) written to the running
+    /// transfer address, affecting **NO flags**. The register-list mask is expanded at DECODE time into one
+    /// of these per set register (ascending bit order for control modes, REVERSED for `-(An)`), so the recipe
+    /// stays a flat linear list (both drivers + snapshot/restore keep working, like the Bcc/DBcc decode-time
+    /// expansion). The running address lives in `scratch[addr_slot]` (**never** An — so an `An`-in-list
+    /// `-(An)` store writes the INITIAL An, the 68000 behaviour; the recipe's trailing `MoveA` writes the
+    /// final address to An).
+    ///
+    /// `predec` selects the address discipline: `false` (control-alterable, forward) writes at
+    /// `scratch[addr_slot]` then advances it `+= size`; `true` (`-(An)`) DECREMENTS `scratch[addr_slot] -=
+    /// size` FIRST, then writes at the decremented address (the predecrement-before-store order, iterated over
+    /// the reversed list). The write is `size`-wide: a word writes the low 16 of the register; a long writes
+    /// the hi word then the lo word (two accesses, `+2` between — the reg→mem long store order). A7 is read
+    /// via [`Registers::addr_reg`] (A7-aware) when `reg == 15` (the `A7` list bit). Each word access logs its
+    /// own bus transaction and costs 4 cycles; an ODD write address raises the group-0 address error (E3) via
+    /// [`Self::install_address_error`] (low5 = `0x05`, a data write) — since the running address is a scratch
+    /// slot the register file is unchanged on the abort (An is written only by the recipe's trailing step).
+    MovemStore {
+        reg: u8,
+        size: Size,
+        addr_slot: Slot,
+        predec: bool,
+    },
+    /// `MOVEM` **memory→register** per-register load — one register loaded from the running transfer address,
+    /// affecting **NO flags**. The decode-time mask expansion emits one per set register (ascending bit
+    /// order). The FULL 32-bit register is written (data via `regs.d`, address via [`Registers::addr_reg_set`],
+    /// A7-aware when `reg == 15`); a **word** load **SIGN-EXTENDS** to 32 bits (bit15-set word → `0xFFFF….`),
+    /// a **long** load (C5) reads two words and writes the combined 32.
+    ///
+    /// The running address ALWAYS lives in `scratch[addr_slot]` (advanced `+= size` after each load) — even
+    /// for `(An)+`, so an `An`-in-list load does NOT corrupt the pointer (the 68000 postincrement wins: An
+    /// ends `base + n·size`, ignoring any value loaded into An). The `(An)+` pointer setup, the abort-commit
+    /// `An += size` (a leading [`MicroOp::AdjustAddr`], so a faulting first read leaves `An = base + 2`, one
+    /// WORD, even for a long — mirroring the E4 "(An)+ commits before the faulting read" ordering), and the
+    /// final `An = base + n·size` write (a trailing [`AluOp::MoveA`]) are all supplied by the recipe, NOT this
+    /// op. The trailing phantom `Read` uses the final `scratch[addr_slot]` and does NOT advance it. Each word
+    /// access logs its own bus transaction and costs 4 cycles; an ODD read address raises the group-0 address
+    /// error (E3) via [`Self::install_address_error`] (low5 = `0x15`, a data read).
+    MovemLoad {
+        reg: u8,
+        size: Size,
+        addr_slot: Slot,
+    },
 }
 
 /// The in-flight micro-op cursor for one instruction: the recipe, how far through it we are, and the
@@ -2370,6 +2422,116 @@ impl MicroState {
                     }
                 }
                 0
+            }
+            MicroOp::MovemStore {
+                reg,
+                size,
+                addr_slot,
+                predec,
+            } => {
+                // MOVEM register→memory per-register store. The register value (word: low 16; long: hi then lo
+                // word) is written at the running address in `scratch[addr_slot]` — NEVER at An, so an
+                // An-in-list `-(An)` store writes the INITIAL An (An is set by the recipe's trailing MoveA).
+                // `predec` selects the address discipline: forward (control) writes then advances; `-(An)`
+                // decrements FIRST then writes (the predecrement-before-store order, over the reversed list).
+                let step = match size {
+                    Size::Word => 2u32,
+                    Size::Long => 4,
+                    Size::Byte => unreachable!("MOVEM is word/long only"),
+                };
+                // The full 32-bit register value (data via regs.d; address via addr_reg, A7-aware for reg 15).
+                let value = if reg < 8 {
+                    regs.d[reg as usize]
+                } else {
+                    regs.addr_reg((reg - 8) as usize)
+                };
+                let fc = regs.fc(false); // MOVEM is always Data space
+                if predec {
+                    // -(An): decrement the running address by `size` FIRST, then write at it.
+                    let addr = self.scratch[addr_slot as usize].wrapping_sub(step);
+                    self.scratch[addr_slot as usize] = addr;
+                    // Odd write address → group-0 address error (E3), low5 = 0x05 (data write). The running
+                    // address is a scratch slot, so the register file is unchanged on the abort.
+                    if addr & 1 != 0 {
+                        return self.install_address_error(regs, addr, 0x05);
+                    }
+                    match size {
+                        Size::Word => bus.write16(addr, fc, value as u16),
+                        Size::Long => {
+                            // Long store order (like the reg→mem long store): hi word at `addr`, lo at `addr+2`.
+                            bus.write16(addr, fc, (value >> 16) as u16);
+                            bus.write16(addr.wrapping_add(2), fc, value as u16);
+                        }
+                        Size::Byte => unreachable!(),
+                    }
+                } else {
+                    // Forward (control): write at the running address, then advance it.
+                    let addr = self.scratch[addr_slot as usize];
+                    if addr & 1 != 0 {
+                        return self.install_address_error(regs, addr, 0x05);
+                    }
+                    match size {
+                        Size::Word => bus.write16(addr, fc, value as u16),
+                        Size::Long => {
+                            bus.write16(addr, fc, (value >> 16) as u16);
+                            bus.write16(addr.wrapping_add(2), fc, value as u16);
+                        }
+                        Size::Byte => unreachable!(),
+                    }
+                    self.scratch[addr_slot as usize] = addr.wrapping_add(step);
+                }
+                // 4 cycles per word access (word = 1, long = 2).
+                match size {
+                    Size::Word => 4,
+                    Size::Long => 8,
+                    Size::Byte => unreachable!(),
+                }
+            }
+            MicroOp::MovemLoad {
+                reg,
+                size,
+                addr_slot,
+            } => {
+                // MOVEM memory→register per-register load. Reads the register's word(s) from the running
+                // address in `scratch[addr_slot]` and writes the FULL 32-bit register (a WORD load SIGN-EXTENDS
+                // to 32 bits), then advances the running address. The running address is ALWAYS the scratch slot
+                // (never An) — so an An-in-list `(An)+` load does not corrupt the pointer; the recipe's trailing
+                // MoveA writes the final An = base + n·size.
+                let step = match size {
+                    Size::Word => 2u32,
+                    Size::Long => 4,
+                    Size::Byte => unreachable!("MOVEM is word/long only"),
+                };
+                let fc = regs.fc(false); // Data space
+                let addr = self.scratch[addr_slot as usize];
+                if addr & 1 != 0 {
+                    // Odd read address → group-0 address error (E3), low5 = 0x15 (data read). For (An)+ the
+                    // abort-commit AdjustAddr already bumped An (one WORD), so the aborted (An)+ leaves An += 2.
+                    return self.install_address_error(regs, addr, 0x15);
+                }
+                let value = match size {
+                    Size::Word => {
+                        // Sign-extend the loaded word to 32 bits.
+                        sign_extend16(bus.read16(addr, fc))
+                    }
+                    Size::Long => {
+                        let hi = bus.read16(addr, fc) as u32;
+                        let lo = bus.read16(addr.wrapping_add(2), fc) as u32;
+                        (hi << 16) | lo
+                    }
+                    Size::Byte => unreachable!(),
+                };
+                if reg < 8 {
+                    regs.d[reg as usize] = value;
+                } else {
+                    regs.addr_reg_set((reg - 8) as usize, value);
+                }
+                self.scratch[addr_slot as usize] = addr.wrapping_add(step);
+                match size {
+                    Size::Word => 4,
+                    Size::Long => 8,
+                    Size::Byte => unreachable!(),
+                }
             }
         };
         self.step += 1;

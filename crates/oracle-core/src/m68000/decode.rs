@@ -41,6 +41,22 @@ fn is_control_mode(mode: u16, reg: u16) -> bool {
     matches!(mode, 2 | 5 | 6) || (mode == 7 && matches!(reg, 0..=3))
 }
 
+/// Whether an EA `mode`/`reg` pair is a valid `MOVEM` addressing mode for direction `dir` (0 = reg→mem,
+/// 1 = mem→reg). reg→mem = control-alterable + predecrement: `(An)` (2), `-(An)` (4), `d16(An)` (5),
+/// `d8(An,Xn)` (6), `abs.w` (7/0), `abs.l` (7/1) — NO PC-relative, NO `(An)+`. mem→reg = control +
+/// postincrement + PC-relative: `(An)` (2), `(An)+` (3), `d16(An)` (5), `d8(An,Xn)` (6), `abs.w` (7/0),
+/// `abs.l` (7/1), `d16(PC)` (7/2), `d8(PC,Xn)` (7/3) — NO `-(An)`.
+#[inline]
+fn movem_mode_ok(dir: u16, mode: u16, reg: u16) -> bool {
+    if dir == 0 {
+        // reg→mem: control-alterable + predecrement (no PC, no (An)+).
+        matches!(mode, 2 | 4 | 5 | 6) || (mode == 7 && (reg == 0 || reg == 1))
+    } else {
+        // mem→reg: control + postincrement + PC-relative (no -(An)).
+        matches!(mode, 2 | 3 | 5 | 6) || (mode == 7 && matches!(reg, 0..=3))
+    }
+}
+
 /// Whether `opcode` is a `MOVE.w` (NOT `MOVEA`). MOVE layout: `00 SS RRR MMM mmm rrr` — bits 15-14 = 00,
 /// the size field (bits 13-12) is `11` for word, the destination mode (bits 8-6, the SWAPPED field) is the
 /// EA mode. `dst_mode == 1` (`An`) is `MOVEA` (a separate decode arm, M4) and is excluded here. So a word
@@ -641,6 +657,21 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     }
     if opcode & 0xFFF8 == 0x48C0 {
         return ext_recipe(opcode, Size::Long);
+    }
+    // MOVEM.w (`0100 1D00 10 mmm rrr`, opcode & 0xFB80 == 0x4880 with bit6 == 0) — move a register list ↔
+    // memory, WORD size, NO flags. Direction = bit 10 (0x0400): reg→mem (0x4880) / mem→reg (0x4C80). The
+    // register mask is the extension word `prefetch[1]` (AVAILABLE AT DECODE TIME, like the Bcc/DBcc live
+    // reads), so `movem_recipe` expands it into an exact-length linear transfer recipe. The mode guard is
+    // LOAD-BEARING: EXT.w (0x4880 mode 000) is decoded ABOVE (mask 0xFFF8), and MOVEM requires a valid MOVEM
+    // mode (reg→mem = control-alterable + predecrement; mem→reg = control + postincrement + PC-relative), so
+    // EXT/SWAP (mode 0) never collide. Placed before PEA (0x4840) — disjoint opcode blocks.
+    if opcode & 0xFB80 == 0x4880 && (opcode >> 6) & 1 == 0 {
+        let dir = (opcode >> 10) & 1;
+        let mode = (opcode >> 3) & 7;
+        let reg = opcode & 7;
+        if movem_mode_ok(dir, mode, reg) {
+            return movem_recipe(opcode, Size::Word, regs);
+        }
     }
     // SWAP (`0100 1000 01 000 rrr`, 0x4840, mask `opcode & 0xFFF8`) — swap the two 16-bit halves of `Dn`:
     // `res = (Dn >> 16) | (Dn << 16)` on the FULL 32 bits (size ignored / always Long). LOGIC flags on the
@@ -3590,6 +3621,215 @@ fn unlink_recipe(opcode: u16) -> MicroState {
         dst: Dest::AddrReg(an),
     });
     // The trailing queue refill (r@pc+4).
+    buf.push(MicroOp::Prefetch);
+    buf.finish()
+}
+
+/// Scratch slot carrying a `MOVEM` transfer's running address (the store/load pointer): the base EA for
+/// control modes (advanced per register by the transfer op), or the `-(An)` running address (decremented per
+/// register). Slot 0. NEVER `An` itself — so an `An`-in-list `-(An)` store writes the INITIAL An (the recipe's
+/// trailing `MoveA` writes the final address to An); a `(An)+` load uses `An` directly (the transfer op's
+/// postincrement), so this slot is unused for that one mode.
+const MOVEM_ADDR_SLOT: u8 = 0;
+
+/// Scratch slot parking the captured HIGH word of a `MOVEM abs.l` EA between the two extension-word captures
+/// (the same "capture before the refill shifts it out" shape as `LEA`/`PEA` `abs.l`). Slot 1 — distinct from
+/// [`MOVEM_ADDR_SLOT`] so both halves are snapshot-visible mid-assembly.
+const MOVEM_HI_SLOT: u8 = 1;
+
+/// Scratch slot the `MOVEM` mem→reg **phantom read** targets (its value is DISCARDED). A single trailing WORD
+/// read one word past the last transferred word — a REAL bus transaction (the +4 in every mem→reg base
+/// timing) that does NOT advance the running pointer. Slot 2 — distinct from the address / hi slots.
+const MOVEM_PHANTOM_SLOT: u8 = 2;
+
+/// `MOVEM.w`/`MOVEM.l` (`0100 1D00 1S mmm rrr`, opcode & 0xFB80 == 0x4880) — move a register list ↔ memory,
+/// NO flags. Direction = bit 10 (0x0400): reg→mem (0x4880/0x48C0) / mem→reg (0x4C80/0x4CC0). The register-list
+/// mask is the extension word `prefetch[1]` — AVAILABLE AT DECODE TIME (like the Bcc/DBcc live reads), so this
+/// expands it into an exact-length linear transfer recipe (one [`MicroOp::MovemStore`]/[`MicroOp::MovemLoad`]
+/// per set register). Because the recipe stays a flat linear list, both drivers + mid-instruction
+/// snapshot/restore keep working (exactly like the Bcc/DBcc decode-time expansion).
+///
+/// **Register ↔ bit mapping:** NORMAL (`bit0=D0 … bit7=D7, bit8=A0 … bit15=A7`) for EVERY case EXCEPT reg→mem
+/// `-(An)` predecrement, where the mask is interpreted REVERSED (`bit0=A7 … bit7=A0, bit8=D7 … bit15=D0`).
+/// A register index `< 8` is `Dn`; `>= 8` is `A(reg-8)` (`reg == 15` = the active A7).
+///
+/// **Recipe shape** (per the 0-mismatch verified transaction interleave): `n` leading `Prefetch`s bracketing
+/// the EA-extension-word captures (1 for `(An)`/`(An)+`/`-(An)`, 2 for `d16`/`abs.w`/PC-rel, 2 + an
+/// `Internal(2)` indexed idle for `d8(An,Xn)`/`d8(PC,Xn)`, 3 for `abs.l`) → the per-register transfers (in
+/// ascending bit order, REVERSED for `-(An)`) → the mem→reg PHANTOM word read → one trailing `Prefetch`.
+/// `length = base + per·n` (per = 4 `.w` / 8 `.l`); the base falls out of the prefetch/idle/phantom cycles.
+/// - **reg→mem control (fwd):** EA computed once into [`MOVEM_ADDR_SLOT`]; store the set registers at
+///   increasing addresses (the transfer op advances the slot `+= size` after each store).
+/// - **reg→mem `-(An)`:** the running address starts at `An` (into [`MOVEM_ADDR_SLOT`]); each store DECREMENTS
+///   it by `size` FIRST (the `predec` op), iterating the REVERSED list; the trailing `MoveA` writes the final
+///   decremented address to `An`. An `An`-in-list store writes the INITIAL An (the slot is not `An`).
+/// - **mem→reg:** load forward from increasing addresses; a WORD load SIGN-EXTENDS to 32 bits. `(An)+` uses
+///   `An` directly (the transfer op's postincrement — `An` ends `base + n·size`); the trailing phantom word
+///   read hits the final address and does NOT advance it.
+fn movem_recipe(opcode: u16, size: Size, regs: &Registers) -> MicroState {
+    let dir = (opcode >> 10) & 1; // 0 = reg→mem, 1 = mem→reg
+    let mode = (opcode >> 3) & 7;
+    let reg = (opcode & 7) as u8;
+    let mask = regs.prefetch[1];
+    let mut buf = RecipeBuf::new();
+
+    let predec = dir == 0 && mode == 4; // reg→mem -(An)
+    let postinc = dir == 1 && mode == 3; // mem→reg (An)+
+
+    // The ordered register-list indices (0..=15 = D0..D7, A0..A7). REVERSED bit order for -(An) predecrement,
+    // NORMAL (ascending) otherwise.
+    let mut list: [u8; 16] = [0; 16];
+    let mut n = 0usize;
+    if predec {
+        // Reversed: bit0 = A7 (index 15), bit1 = A6 … bit8 = D7 … bit15 = D0. So a set bit `b` maps to
+        // register index `15 - b`.
+        for b in 0..16u8 {
+            if mask & (1 << b) != 0 {
+                list[n] = 15 - b;
+                n += 1;
+            }
+        }
+    } else {
+        // Normal: bit0 = D0 … bit7 = D7, bit8 = A0 … bit15 = A7 → register index == bit position.
+        for b in 0..16u8 {
+            if mask & (1 << b) != 0 {
+                list[n] = b;
+                n += 1;
+            }
+        }
+    }
+
+    // --- Leading prefetch(es) + EA-base computation into MOVEM_ADDR_SLOT (except (An)+, which uses An). ---
+    // The first Prefetch always runs first (it fetches the word after the mask into the queue). For a
+    // multi-word EA the extension word(s) are captured from prefetch[1] right after the Prefetch that fetches
+    // them, BEFORE the next Prefetch shifts them out (the standard capture-before-refill discipline).
+    match (mode, reg) {
+        // (An) / (An)+ / -(An) — no extension word: one leading Prefetch, running address = An (into the
+        // scratch slot; the transfer op advances/decrements it per register). For (An)+ an extra
+        // `AdjustAddr(An, +size)` commits the first-word postincrement BEFORE the first load, so a faulting
+        // odd-base (An)+ leaves `An = base + 2` (one WORD) — the abort-commit ordering; the recipe's trailing
+        // MoveA then writes the final `An = base + n·size`.
+        (2, _) | (3, _) | (4, _) => {
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::EaCalc {
+                base: Operand::AddrReg(reg),
+                index: Operand::Zero,
+                disp: Operand::Zero,
+                dst: MOVEM_ADDR_SLOT,
+            });
+            if postinc {
+                buf.push(MicroOp::AdjustAddr {
+                    reg,
+                    delta: match size {
+                        Size::Word => 2,
+                        Size::Long => 4,
+                        Size::Byte => unreachable!("MOVEM is word/long only"),
+                    },
+                });
+            }
+        }
+        // d16(An) / abs.w / d16(PC) — one displacement extension word: Prefetch (fetch disp), EaCalc(disp),
+        // Prefetch. base = An / Zero (abs.w) / pc+2 (d16(PC), the ext-word address == pc+4 since the first
+        // Prefetch advanced pc to pc+2).
+        (5, _) | (7, 0) | (7, 2) => {
+            let base = match (mode, reg) {
+                (5, _) => Operand::AddrReg(reg),
+                (7, 2) => Operand::PcOfExt,
+                _ => Operand::Zero, // abs.w
+            };
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::EaCalc {
+                base,
+                index: Operand::Zero,
+                disp: Operand::DispWord,
+                dst: MOVEM_ADDR_SLOT,
+            });
+            buf.push(MicroOp::Prefetch);
+        }
+        // d8(An,Xn) / d8(PC,Xn) — one brief extension word (index + disp8): Prefetch (fetch brief),
+        // EaCalc(brief), the indexed idle (n2, between the two prefetches), Prefetch. base = An / pc+2.
+        (6, _) | (7, 3) => {
+            let base = if mode == 6 {
+                Operand::AddrReg(reg)
+            } else {
+                Operand::PcOfExt
+            };
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::EaCalc {
+                base,
+                index: Operand::BriefIndex,
+                disp: Operand::BriefDisp8,
+                dst: MOVEM_ADDR_SLOT,
+            });
+            buf.push(MicroOp::Internal { cycles: 2 });
+            buf.push(MicroOp::Prefetch);
+        }
+        // abs.l — two extension words: Prefetch (fetch hi), EaCalc parks (hi << 16) into MOVEM_HI_SLOT,
+        // Prefetch (fetch lo), EaCalc combines (hi << 16) | lo into MOVEM_ADDR_SLOT, Prefetch.
+        (7, 1) => {
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::EaCalc {
+                base: Operand::Zero,
+                index: Operand::Zero,
+                disp: Operand::ExtWordHi,
+                dst: MOVEM_HI_SLOT,
+            });
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::EaCalc {
+                base: Operand::Scratch(MOVEM_HI_SLOT),
+                index: Operand::Zero,
+                disp: Operand::ExtWordRaw,
+                dst: MOVEM_ADDR_SLOT,
+            });
+            buf.push(MicroOp::Prefetch);
+        }
+        _ => unreachable!("movem_recipe: invalid MOVEM mode {mode}/{reg}"),
+    }
+
+    // --- The per-register transfers (in list order; reversed for -(An)). ---
+    for &r in &list[..n] {
+        if dir == 0 {
+            buf.push(MicroOp::MovemStore {
+                reg: r,
+                size,
+                addr_slot: MOVEM_ADDR_SLOT,
+                predec,
+            });
+        } else {
+            buf.push(MicroOp::MovemLoad {
+                reg: r,
+                size,
+                addr_slot: MOVEM_ADDR_SLOT,
+            });
+        }
+    }
+
+    // --- mem→reg: the trailing PHANTOM word read (a real bus transaction, value discarded, no advance). ---
+    // Always at the final running address (base + n·size), which is in the scratch slot for every mem→reg mode
+    // (including (An)+ — the scratch pointer, not An, since An may have been overwritten by an An-in-list load).
+    if dir == 1 {
+        buf.push(MicroOp::Read {
+            addr: Operand::Scratch(MOVEM_ADDR_SLOT),
+            fc: super::microop::Fc::Data,
+            size: Size::Word,
+            dst: MOVEM_PHANTOM_SLOT,
+        });
+    }
+
+    // --- reg→mem -(An): write the final DECREMENTED address to An (a no-flag full-32 MoveA). ---
+    // --- mem→reg (An)+: write the final POSTINCREMENTED address to An (base + n·size — the postincrement wins
+    //     over any value an An-in-list load wrote into An). Both use the running scratch slot's final value. ---
+    if predec || postinc {
+        buf.push(MicroOp::Alu {
+            op: AluOp::MoveA,
+            size: Size::Long,
+            a: Operand::Scratch(MOVEM_ADDR_SLOT),
+            b: Operand::Zero,
+            dst: Dest::AddrReg(reg),
+        });
+    }
+
+    // --- The trailing queue refill (the last Prefetch of every MOVEM). ---
     buf.push(MicroOp::Prefetch);
     buf.finish()
 }
