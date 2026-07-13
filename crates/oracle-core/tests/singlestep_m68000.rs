@@ -542,6 +542,15 @@ const FILES: &[&str] = &[
     // instruction, classified by OPCODE + the mode-guard off SWAP's mode-000 form) — 8065 cases. NO deferral,
     // NO parity filter, NO corrupt entries.
     "PEA.json",
+    // LINK `An,#disp` (`0100 1110 0101 0 rrr`, opcode & 0xFFF8 == 0x4E50) — allocate a stack frame: `SP -= 4;
+    // [SP] = An (long push); An = SP; SP += sign_extend16(disp)`, NO flags. Flat 16 cyc. 100% PURE (one
+    // instruction, classified by OPCODE incl the A7 quirk LINK A7 = 0x4E57) — 8065 cases. NO deferral, NO
+    // parity filter, NO corrupt entries.
+    "LINK.json",
+    // UNLINK `An` (`0100 1110 0101 1 rrr`, opcode & 0xFFF8 == 0x4E58) — deallocate a stack frame: `SP = An;
+    // An = [SP] (long pop); SP = An_old + 4`, NO flags. Flat 12 cyc. 100% PURE (one instruction, classified by
+    // OPCODE incl UNLK A7 = 0x4E5F) — 8065 cases. NO deferral, NO parity filter, NO corrupt entries.
+    "UNLINK.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -1112,6 +1121,24 @@ fn pea_covered(opcode: u16) -> bool {
     opcode & 0xFFC0 == 0x4840 && (matches!(mode, 2 | 5 | 6) || (mode == 7 && matches!(reg, 0..=3)))
 }
 
+/// LINK `An,#disp` (`opcode & 0xFFF8 == 0x4E50`, `0100 1110 0101 0 rrr`) — allocate a stack frame: `SP -= 4;
+/// [SP] = An (long push); An = SP; SP += sign_extend16(disp)`. NO flags. Every case is in scope (all 8 register
+/// forms incl the A7 quirk `LINK A7` = 0x4E57, where the predecrement-first store pushes SP−4; the disp word is
+/// the extension word, all SP even so no push address error in the vendored file). The 8-point block
+/// 0x4E50..=0x4E57 is disjoint from RTS (0x4E75) / UNLINK (0x4E58). Classified strictly by OPCODE.
+fn link_covered(opcode: u16) -> bool {
+    opcode & 0xFFF8 == 0x4E50
+}
+
+/// UNLINK `An` (`opcode & 0xFFF8 == 0x4E58`, `0100 1110 0101 1 rrr`) — deallocate a stack frame: `SP = An;
+/// An = [SP] (long pop); SP = An_old + 4`. NO flags. Every case is in scope (all 8 register forms incl `UNLK A7`
+/// = 0x4E5F, where the pop into A7 wins over the SP=An_old+4 write; all An even in the vendored file so no pop
+/// address error). The 8-point block 0x4E58..=0x4E5F is disjoint from RTS (0x4E75) / LINK (0x4E50). Classified
+/// strictly by OPCODE.
+fn unlink_covered(opcode: u16) -> bool {
+    opcode & 0xFFF8 == 0x4E58
+}
+
 fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // MOVE (`00 SS RRR MMM mmm rrr`, dst_mode != 1) — its own EA→EA mode-scope filter (no parity).
     if move_covered(opcode) {
@@ -1244,6 +1271,19 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // pushed value), so no odd-EA parity filter; the only fault surface is an odd SP on the push write (an
     // address error the E3/E4 abort covers — the vendored file has none). Classified by OPCODE + the mode guard.
     if pea_covered(opcode) {
+        return true;
+    }
+    // LINK `An,#disp` (0x4E50 | reg, the 8-point block 0x4E50..=0x4E57) — allocate a stack frame: `SP -= 4;
+    // [SP] = An (long push); An = SP; SP += sign_extend16(disp)`, NO flags. Every case in scope incl the A7
+    // quirk (LINK A7 = 0x4E57 pushes SP−4 — the predecrement-first store); all SP even (no push address error).
+    // Classified by OPCODE.
+    if link_covered(opcode) {
+        return true;
+    }
+    // UNLINK `An` (0x4E58 | reg, the 8-point block 0x4E58..=0x4E5F) — deallocate a stack frame: `SP = An;
+    // An = [SP] (long pop); SP = An_old + 4`, NO flags. Every case in scope incl UNLK A7 (0x4E5F, where the pop
+    // into A7 wins over the SP=An_old+4 write); all An even (no pop address error). Classified by OPCODE.
+    if unlink_covered(opcode) {
         return true;
     }
     // CMP `<ea>,Dn` + CMPM `(Ay)+,(Ax)+` + CMPI `#imm,<ea>` (the Cmp/Cmpm/Cmpi classes of the 3-way CMP.* mix,
@@ -1739,8 +1779,31 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 784_783,
-        "expected 784783 covered cases — C2 adds PEA (its own PEA.json file, `0100 1000 01 mmm rrr` = \
+        ran >= 800_913,
+        "expected 800913 covered cases — C3 adds LINK + UNLINK (their own LINK.json + UNLINK.json files, 8065 \
+         each = +16130 over C2's 784783 → 800913). Both are flag-free stack-frame ops classified STRICTLY by \
+         OPCODE (100% PURE, no contaminant, no deferral, no parity filter, no corrupt entries). \
+         LINK `An,#disp` (`0100 1110 0101 0 rrr` = opcode & 0xFFF8 == 0x4E50) allocates a frame: `SP -= 4; \
+         [SP] = An (long push); An = SP; SP += sign_extend16(disp)`, NO flags, flat 16 cyc, bus \
+         `[r@pc+4, w@SP−4 (hi), w@SP−2 (lo), r@pc+6]` (the JSR reload interleave — the first queue refill \
+         precedes the push, the second follows it). The A7 QUIRK (LINK A7 = 0x4E57, 1005 cases, LOAD-BEARING): \
+         the `SP -= 4` predecrement runs FIRST, so with `An ≡ SP` the value pushed is the ALREADY-DECREMENTED SP \
+         (= SP−4), NOT the old A7 — it falls out for free by materializing the push value from AddrReg(an) AFTER \
+         the `AdjustAddr(7,−4)`. The recipe: capture the disp (before the first Prefetch shifts it out), the \
+         first refill, `AdjustAddr(7,−4)`, materialize the push value + the SP−2 address, the two push Writes \
+         (hi@SP−4 / lo@SP−2), `MoveA(An ← AddrReg(7))` (An=SP, a no-op for A7), `Adda(AddrReg(7) += disp)` \
+         (SP+=disp, ALWAYS on A7 never An — so a negative disp lands on the stack pointer), the second refill. \
+         UNLINK `An` (`0100 1110 0101 1 rrr` = opcode & 0xFFF8 == 0x4E58) deallocates a frame: `SP = An; \
+         An = [SP] (long pop); SP = An_old + 4`, NO flags, flat 12 cyc, bus `[r@An (hi), r@An+2 (lo), r@pc+4]` \
+         (two word reads + one refill). The pop reads at An (SP=An folded into the read address); the final \
+         register updates are ordered `SP = An_old+4` THEN `An = popped` so the pop write is LAST — for UNLK A7 \
+         (0x4E5F) the SP=An_old+4 write is CLOBBERED by the pop into A7, leaving A7 = the popped long (the \
+         documented net effect). `An_old+4` is pre-computed via `EaCalc(An + 2 + 2)` while AddrReg(an) still \
+         holds the original An. Both recipes reuse the BSR/JSR long-push + RTS long-pop machinery + the A7-aware \
+         addr_reg get/set; no new vocabulary. The decode arms (opcode & 0xFFF8 == 0x4E50 / 0x4E58) sit right \
+         after RTS (0x4E75), the 8-point blocks 0x4E50..=0x4E57 / 0x4E58..=0x4E5F disjoint from RTS / JSR \
+         (0x4E80) / every 0x4Exx arm above. All SP/An even in the vendored files (no push/pop address error). \
+         Prior baseline — C2 adds PEA (its own PEA.json file, `0100 1000 01 mmm rrr` = \
          opcode & 0xFFC0 == 0x4840, mode >= 2): PEA 8065 = +8065 over C1's 776718 → 784783 (the WHOLE file in \
          scope — 100% PURE, classified by OPCODE + the control-mode guard, no contaminant, no deferral, no \
          parity filter). PEA computes the CONTROL-mode effective address (EXACTLY LEA's EA — the address itself, \
@@ -2383,7 +2446,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -3766,6 +3829,350 @@ fn pea_quiescable_and_serializable_at_every_micro_op_boundary() {
         pause_after += 1;
     }
     eprintln!("C2 PEA snapshot/restore: PEA (xxx).l (abs.l) resumed identically at every micro-op boundary");
+}
+
+/// C3 — the named `LINK An,#disp` anchors, pinning the stack-frame allocation against the vendored LINK stream
+/// WITHOUT relying on the bulk `covered()` sweep. LINK does `SP -= 4; [SP] = An (long push); An = SP;
+/// SP += sign_extend16(disp)`, NO flags, flat 16 cyc, bus `[r@pc+4, w@SP−4 (hi), w@SP−2 (lo), r@pc+6]`:
+/// - `4e53 [LINK A3, #] 3` — **non-A7, POSITIVE disp** (+15168): A3 pushed as a long, A3 = SP−4, SP = SP−4+disp.
+/// - `4e56 [LINK A6, #] 1` — **non-A7, NEGATIVE disp** (−31367, the common `SP += negative`): A6 pushed, A6 =
+///   SP−4, SP = SP−4−31367 (the disp add always lands on A7, never An).
+/// - `4e57 [LINK A7, #] 2` — **the A7 QUIRK** (`An ≡ SP`): the predecrement runs FIRST so the value pushed is
+///   the ALREADY-DECREMENTED SP (= SP−4), NOT the old A7; then A7 = SP−4, then A7 = SP−4+disp.
+///
+/// Each runs both drivers + the per-cycle transaction stream via `run_case` (which pins the whole final
+/// register/RAM/prefetch state + the exact bus order). The load-bearing pins: LINK sets **NO flags**
+/// (`final.sr == initial.sr`), the two push writes land @ SP−4 (hi) / SP−2 (lo), and — the A7 quirk — for
+/// `LINK A7` the pushed long reassembles to `initial.SP − 4` (not the old A7). Every anchor must decode as a
+/// LINK opcode (0xFFF8 == 0x4E50), never a CMP-class opcode.
+#[test]
+fn link_anchors_match_singlesteptests() {
+    let path = format!("{VENDOR_DIR}/LINK.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: LINK.json missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    // Active stack pointer of a state (ssp when supervisor S==0x2000, else usp).
+    let active_sp = |st: &Value| -> u32 {
+        if u32f(st, "sr") & 0x2000 != 0 {
+            u32f(st, "ssp")
+        } else {
+            u32f(st, "usp")
+        }
+    };
+    let anchors: &[&str] = &[
+        "4e53 [LINK A3, #] 3", // non-A7, positive disp
+        "4e56 [LINK A6, #] 1", // non-A7, negative disp
+        "4e57 [LINK A7, #] 2", // the A7 quirk (pushes SP−4)
+    ];
+    let mut found = 0usize;
+    for name in anchors {
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap() == *name && t["length"].as_u64().unwrap() as u32 == 16
+            })
+            .unwrap_or_else(|| panic!("C3 LINK anchor {name} (len 16) not found"));
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        // Must be a LINK opcode (0xFFF8 == 0x4E50), never a CMP-class opcode.
+        assert_eq!(
+            opcode & 0xFFF8,
+            0x4E50,
+            "anchor {name} must be a LINK opcode"
+        );
+        assert_eq!(
+            cmp_class(opcode),
+            CmpClass::None,
+            "LINK is not a CMP-class opcode [{name}]"
+        );
+        // NO flags — SR byte-identical.
+        assert_eq!(
+            case["initial"]["sr"], case["final"]["sr"],
+            "LINK sets NO flags — SR unchanged [{name}]"
+        );
+        // The two push writes (hi @ SP−4, lo @ SP−2) reassemble to the pushed long. hi @ initial.SP − 4.
+        let sp0 = active_sp(&case["initial"]);
+        let txs: Vec<&Value> = case["transactions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|tx| tx[0].as_str() == Some("w"))
+            .collect();
+        assert_eq!(txs.len(), 2, "LINK has exactly two push writes [{name}]");
+        assert_eq!(
+            txs[0][3].as_u64().unwrap() as u32,
+            sp0.wrapping_sub(4),
+            "hi word pushed @ SP−4 [{name}]"
+        );
+        assert_eq!(
+            txs[1][3].as_u64().unwrap() as u32,
+            sp0.wrapping_sub(2),
+            "lo word pushed @ SP−2 [{name}]"
+        );
+        let pushed =
+            ((txs[0][5].as_u64().unwrap() as u32) << 16) | (txs[1][5].as_u64().unwrap() as u32);
+        if opcode == 0x4E57 {
+            // The A7 QUIRK: LINK A7 pushes the ALREADY-DECREMENTED SP (= initial.SP − 4), NOT the old A7.
+            assert_eq!(
+                pushed,
+                sp0.wrapping_sub(4),
+                "LINK A7 pushes SP−4 (predecrement-first quirk), not the old A7"
+            );
+        } else {
+            // Non-A7: the pushed long is the (unchanged) original An.
+            let an = (opcode & 7) as usize;
+            assert_eq!(
+                pushed,
+                u32f(&case["initial"], &format!("a{an}")),
+                "LINK An pushes the original An [{name}]"
+            );
+        }
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all C3 LINK anchors exercised");
+    eprintln!(
+        "C3 LINK anchors: {found} cases (non-A7 +disp / non-A7 −disp / A7 quirk pushes SP−4) passed both drivers; SR unchanged, len 16, An pushed long @ SP−4/SP−2"
+    );
+}
+
+/// C3 — the named `UNLINK An` anchors, pinning the stack-frame deallocation against the vendored UNLINK stream
+/// WITHOUT relying on the bulk `covered()` sweep. UNLINK does `SP = An; An = [SP] (long pop); SP = An_old + 4`,
+/// NO flags, flat 12 cyc, bus `[r@An (hi), r@An+2 (lo), r@pc+4]`:
+/// - `4e58 [UNLINK A0] 1` — **non-A7**: An = the popped long [A0], SP (A7) = A0_old + 4.
+/// - `4e5f [UNLINK A7] 5` — **UNLK A7** (`An ≡ SP`): SP=A7 (no-op), then the pop into A7 wins over SP=A7_old+4,
+///   leaving A7 = the popped long.
+///
+/// Each runs both drivers + the per-cycle transaction stream via `run_case`. The load-bearing pins: UNLINK sets
+/// **NO flags** (`final.sr == initial.sr`), the two pop reads land @ An (hi) / An+2 (lo) and reassemble to the
+/// final An, and — for UNLK A7 — the final A7 equals the popped long (the pop wins over the SP=An_old+4 write).
+/// Every anchor must decode as an UNLINK opcode (0xFFF8 == 0x4E58), never a CMP-class opcode.
+#[test]
+fn unlink_anchors_match_singlesteptests() {
+    let path = format!("{VENDOR_DIR}/UNLINK.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: UNLINK.json missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let active_sp = |st: &Value| -> u32 {
+        if u32f(st, "sr") & 0x2000 != 0 {
+            u32f(st, "ssp")
+        } else {
+            u32f(st, "usp")
+        }
+    };
+    let anchors: &[&str] = &[
+        "4e58 [UNLINK A0] 1", // non-A7
+        "4e5f [UNLINK A7] 5", // UNLK A7 (pop wins over SP=An_old+4)
+    ];
+    let mut found = 0usize;
+    for name in anchors {
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap() == *name && t["length"].as_u64().unwrap() as u32 == 12
+            })
+            .unwrap_or_else(|| panic!("C3 UNLINK anchor {name} (len 12) not found"));
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        // Must be an UNLINK opcode (0xFFF8 == 0x4E58), never a CMP-class opcode.
+        assert_eq!(
+            opcode & 0xFFF8,
+            0x4E58,
+            "anchor {name} must be an UNLINK opcode"
+        );
+        assert_eq!(
+            cmp_class(opcode),
+            CmpClass::None,
+            "UNLINK is not a CMP-class opcode [{name}]"
+        );
+        // NO flags — SR byte-identical.
+        assert_eq!(
+            case["initial"]["sr"], case["final"]["sr"],
+            "UNLINK sets NO flags — SR unchanged [{name}]"
+        );
+        // The two pop reads (hi @ An, lo @ An+2) reassemble to the final An (the popped long). An_old is the
+        // active A7 for `An == 7` (there is no `a7` JSON field — A7 is ssp/usp per S), else the `a{n}` field.
+        let an = (opcode & 7) as usize;
+        let an_old = if an == 7 {
+            active_sp(&case["initial"])
+        } else {
+            u32f(&case["initial"], &format!("a{an}"))
+        };
+        let reads: Vec<&Value> = case["transactions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|tx| tx[0].as_str() == Some("r"))
+            .collect();
+        // hi @ An, lo @ An+2 (masked to the 24-bit bus).
+        assert_eq!(
+            reads[0][3].as_u64().unwrap() as u32,
+            an_old & 0x00FF_FFFF,
+            "hi word popped @ An [{name}]"
+        );
+        assert_eq!(
+            reads[1][3].as_u64().unwrap() as u32,
+            an_old.wrapping_add(2) & 0x00FF_FFFF,
+            "lo word popped @ An+2 [{name}]"
+        );
+        let popped =
+            ((reads[0][5].as_u64().unwrap() as u32) << 16) | (reads[1][5].as_u64().unwrap() as u32);
+        // The final value of An (the popped long). For `An == 7` (UNLK A7) An IS the active A7 (no `a7` field).
+        let final_an = if an == 7 {
+            active_sp(&case["final"])
+        } else {
+            u32f(&case["final"], &format!("a{an}"))
+        };
+        assert_eq!(final_an, popped, "UNLINK An = the popped long [{name}]");
+        if opcode == 0x4E5F {
+            // UNLK A7: the final SP (A7) IS the popped long (the pop write clobbers SP=An_old+4).
+            assert_eq!(
+                active_sp(&case["final"]),
+                popped,
+                "UNLK A7: final A7 = the popped long (pop wins over SP=An_old+4)"
+            );
+        } else {
+            // Non-A7: the final SP (A7) = An_old + 4.
+            assert_eq!(
+                active_sp(&case["final"]),
+                an_old.wrapping_add(4),
+                "UNLINK An: final SP = An_old + 4 [{name}]"
+            );
+        }
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all C3 UNLINK anchors exercised");
+    eprintln!(
+        "C3 UNLINK anchors: {found} cases (non-A7 SP=An_old+4 / UNLK A7 pop wins) passed both drivers; SR unchanged, len 12, An = popped long @ An/An+2"
+    );
+}
+
+/// C3 — the snapshot/restore anchor for `LINK An,#disp`. Drives a real vendored `LINK A7` case (the A7 quirk —
+/// the predecrement-first push of SP−4) through the quiesce driver, snapshotting + restoring the WHOLE
+/// `Cpu68000` (incl. the in-flight cursor) at every micro-op boundary and proving the resumed run reproduces the
+/// run-to-completion final state + transaction stream bit-for-bit. This pins that the `capture disp → refill →
+/// long push → An=SP → SP+=disp → refill` LINK recipe keeps `MicroState` fixed-size bincode (`Copy`) across the
+/// two push writes and the register updates.
+#[test]
+fn link_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/LINK.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "4e57 [LINK A7, #] 2")
+        .expect("LINK A7 snapshot anchor present");
+    let ini = &case["initial"];
+
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    let mut pause_after = 0usize;
+    loop {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        let mut reached_end = false;
+        for _ in 0..pause_after {
+            if let Step::Done(_) = cpu.step_micro_op(&mut bus) {
+                reached_end = true;
+                break;
+            }
+        }
+        if reached_end {
+            break;
+        }
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+        pause_after += 1;
+    }
+    eprintln!("C3 LINK snapshot/restore: LINK A7 (the A7 quirk) resumed identically at every micro-op boundary");
+}
+
+/// C3 — the snapshot/restore anchor for `UNLINK An`. Drives a real vendored `UNLK A7` case (the pop-wins quirk)
+/// through the quiesce driver, snapshotting + restoring the WHOLE `Cpu68000` (incl. the in-flight cursor) at
+/// every micro-op boundary and proving the resumed run reproduces the run-to-completion final state +
+/// transaction stream bit-for-bit. This pins that the `long pop → SP=An_old+4 → An=popped → refill` UNLINK recipe
+/// keeps `MicroState` fixed-size bincode (`Copy`) across the two pop reads and the register updates.
+#[test]
+fn unlink_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/UNLINK.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "4e5f [UNLINK A7] 5")
+        .expect("UNLK A7 snapshot anchor present");
+    let ini = &case["initial"];
+
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    let mut pause_after = 0usize;
+    loop {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        let mut reached_end = false;
+        for _ in 0..pause_after {
+            if let Step::Done(_) = cpu.step_micro_op(&mut bus) {
+                reached_end = true;
+                break;
+            }
+        }
+        if reached_end {
+            break;
+        }
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+        pause_after += 1;
+    }
+    eprintln!(
+        "C3 UNLINK snapshot/restore: UNLK A7 (the pop-wins quirk) resumed identically at every micro-op boundary"
+    );
 }
 
 /// C0 — the named `Scc <ea>` anchors, pinning each shape of the conditional byte set against the vendored Scc

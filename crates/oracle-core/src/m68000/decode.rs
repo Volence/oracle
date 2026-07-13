@@ -694,6 +694,21 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     if opcode == 0x4E75 {
         return rts_recipe();
     }
+    // LINK An,#disp (`0100 1110 0101 0 rrr`, opcode & 0xFFF8 == 0x4E50) — allocate a stack frame: `SP -= 4;
+    // [SP] = An (long push); An = SP; SP += sign_extend16(disp)`. No flags. Flat 16 cyc, bus `[r@pc+4, w@SP−4,
+    // w@SP−2, r@pc+6]` (the JSR reload interleave). The A7 quirk (LINK A7, 0x4E57): the predecrement runs first,
+    // so `An ≡ SP` pushes SP−4, not the old A7. The opcode space 0x4E50..=0x4E57 is a single 8-point block
+    // disjoint from RTS (0x4E75) / UNLINK (0x4E58) / every 0x4Exx arm above.
+    if opcode & 0xFFF8 == 0x4E50 {
+        return link_recipe(opcode);
+    }
+    // UNLINK An (`0100 1110 0101 1 rrr`, opcode & 0xFFF8 == 0x4E58) — deallocate a stack frame: `SP = An;
+    // An = [SP] (long pop); SP = An_old + 4`. No flags. Flat 12 cyc, bus `[r@An, r@An+2, r@pc+4]`. For UNLK A7
+    // (0x4E5F) the SP=An_old+4 write is clobbered by the pop into A7, leaving A7 = the popped long. The opcode
+    // space 0x4E58..=0x4E5F is a single 8-point block disjoint from RTS (0x4E75) / LINK (0x4E50) / every arm above.
+    if opcode & 0xFFF8 == 0x4E58 {
+        return unlink_recipe(opcode);
+    }
     // DBcc (`0101 cccc 11001 rrr`, opcode & 0xF0F8 == 0x50C8) — decrement-and-branch loop. This is the
     // `An`-direct (mode 001) special case of the `Scc` opcode space (`0101 cccc 11 mmm rrr`): only this exact
     // form is DBcc — every other mode is `Scc` (a conditional byte-set, NOT decoded here). The condition AND
@@ -3385,6 +3400,197 @@ fn pea_recipe(opcode: u16) -> MicroState {
         }
         _ => unreachable!("pea_recipe: non-control EA mode {mode}/{reg}"),
     }
+    buf.finish()
+}
+
+/// Scratch slot holding a `LINK`'s sign-extended displacement (`sign_extend16(prefetch[1])`), captured by an
+/// [`MicroOp::EaCalc`] BEFORE the first `Prefetch` shifts the displacement word out of the queue. Consumed by
+/// the trailing `Adda` that computes the final `SP = (SP−4) + disp`. Slot 0.
+const LINK_DISP_SLOT: u8 = 0;
+
+/// Scratch slot holding the 32-bit value `LINK` pushes as a long — materialized by an [`MicroOp::EaCalc`] from
+/// `AddrReg(an)` AFTER the `SP −= 4` predecrement. For `An != 7` this is the (unchanged) original `An`; for the
+/// **A7 quirk** (`LINK A7`, `An ≡ SP`) it is the already-decremented `SP` (= `SP − 4`), which is exactly the
+/// value the 68000 stores — the predecrement-first quirk falls out for free. Consumed by the two push `Write`s
+/// (`ScratchHi16` @ SP−4, `Scratch` @ SP−2). Slot 1 — distinct from the disp slot so both survive the push.
+const LINK_PUSH_SLOT: u8 = 1;
+
+/// Scratch slot holding the **address** of a `LINK` push's LOW half (`SP−4 + 2 = SP−2`), materialized once by an
+/// [`MicroOp::EaCalc`] (masked to the 24-bit bus — a real even bus address) so the low-word `Write` hits exactly
+/// `SP−2`. Slot 2 — distinct from the disp / push slots so every value is snapshot-visible mid-push.
+const LINK_LO_ADDR_SLOT: u8 = 2;
+
+/// `LINK An,#disp` (`0100 1110 0101 0 rrr`, opcode & 0xFFF8 == 0x4E50): allocate a stack frame — `SP −= 4;
+/// [SP] = An (long push); An = SP; SP += sign_extend16(disp)`. The displacement is the extension word
+/// `prefetch[1]`. Affects **NO flags** (SR untouched). Flat **16 cyc**; the bus stream is `[r@pc+4, w@SP−4 (hi),
+/// w@SP−2 (lo), r@pc+6]` — the JSR-style reload interleave (the first queue refill precedes the push, the second
+/// follows it), pinned to the vendored `LINK` SST stream.
+///
+/// **The A7 quirk (`LINK A7`, `An ≡ SP`, `0x4E57`, 1005 cases — LOAD-BEARING):** the `SP −= 4` predecrement runs
+/// FIRST, and since `An` IS `SP`, the value pushed is the ALREADY-DECREMENTED `SP` (= `SP − 4`), NOT the original
+/// A7. This falls out for free: [`LINK_PUSH_SLOT`] is materialized from `AddrReg(an)` AFTER the `AdjustAddr(7,−4)`,
+/// so for `an == 7` it reads `SP − 4`. Then `An = SP` (a no-op for A7 — A7 already holds `SP − 4`), then
+/// `SP += disp` gives `A7 = (SP − 4) + disp`. For `An != 7`: pushed = the original `An` (unaffected by the SP
+/// decrement), `An = SP − 4`, `SP = (SP − 4) + disp`.
+///
+/// The `An = SP` write ([`AluOp::MoveA`] copying `AddrReg(7)`) runs BEFORE the `SP += disp` add ([`AluOp::Adda`]
+/// on `AddrReg(7)`), so a non-A7 `An` captures `SP − 4` (the decremented SP) before disp is folded in; the disp
+/// add always targets `AddrReg(7)` (never `An`) so a negative disp (`SP += negative`, common) lands on the stack
+/// pointer regardless of which `An` was linked.
+fn link_recipe(opcode: u16) -> MicroState {
+    let an = (opcode & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    // Capture the sign-extended displacement into a scratch slot NOW — the first Prefetch below shifts the disp
+    // word out of prefetch[1], so it must be read before then. (0 + 0 + sign_extend16(prefetch[1]).)
+    buf.push(MicroOp::EaCalc {
+        base: Operand::Zero,
+        index: Operand::Zero,
+        disp: Operand::DispWord,
+        dst: LINK_DISP_SLOT,
+    });
+    // The FIRST queue refill (r@pc+4) precedes the push — the JSR reload interleave.
+    buf.push(MicroOp::Prefetch);
+    // Pre-decrement the stack pointer by 4 (the long push). A7 now points at SP−4.
+    buf.push(MicroOp::AdjustAddr { reg: 7, delta: -4 });
+    // Materialize the value to push from An AFTER the decrement: original An (An != 7) or SP−4 (the A7 quirk).
+    buf.push(MicroOp::EaCalc {
+        base: Operand::AddrReg(an),
+        index: Operand::Zero,
+        disp: Operand::Zero,
+        dst: LINK_PUSH_SLOT,
+    });
+    // Materialize the LOW half's address (SP−4 + 2 = SP−2), masked to the 24-bit bus.
+    buf.push(MicroOp::EaCalc {
+        base: Operand::AddrReg(7),
+        index: Operand::Zero,
+        disp: Operand::WordStep,
+        dst: LINK_LO_ADDR_SLOT,
+    });
+    // Push the long — hi @ SP−4 (AddrReg(7), the new SP) FIRST, lo @ SP−2 (big-endian, the BSR/JSR push order).
+    buf.push(MicroOp::Write {
+        addr: Operand::AddrReg(7),
+        fc: super::microop::Fc::Data,
+        size: Size::Word,
+        value: Operand::ScratchHi16(LINK_PUSH_SLOT),
+    });
+    buf.push(MicroOp::Write {
+        addr: Operand::Scratch(LINK_LO_ADDR_SLOT),
+        fc: super::microop::Fc::Data,
+        size: Size::Word,
+        value: Operand::Scratch(LINK_PUSH_SLOT),
+    });
+    // An = SP (a no-flag full-32 copy). For An != 7 this captures the DECREMENTED SP (SP−4) before disp is
+    // folded in; for An == 7 it is a no-op (A7 already holds SP−4). Runs BEFORE the disp add.
+    buf.push(MicroOp::Alu {
+        op: AluOp::MoveA,
+        size: Size::Long,
+        a: Operand::AddrReg(7),
+        b: Operand::Zero,
+        dst: Dest::AddrReg(an),
+    });
+    // SP += sign_extend16(disp) — ALWAYS on AddrReg(7) (the stack pointer), never An. The captured disp slot
+    // already holds the full 32-bit sign extension, so Adda at the long boundary adds it verbatim.
+    buf.push(MicroOp::Alu {
+        op: AluOp::Adda,
+        size: Size::Long,
+        a: Operand::AddrReg(7),
+        b: Operand::Scratch(LINK_DISP_SLOT),
+        dst: Dest::AddrReg(7),
+    });
+    // The SECOND queue refill (r@pc+6) follows the push — completing the reload interleave.
+    buf.push(MicroOp::Prefetch);
+    buf.finish()
+}
+
+/// Scratch slot holding the HIGH word of an `UNLINK` popped long (read @ `An`), assembled with the LOW word by
+/// [`MicroOp::Combine32`]. Slot 0 — the conventional read-value slot.
+const UNLINK_HI_SLOT: u8 = 0;
+
+/// Scratch slot holding the LOW word of an `UNLINK` popped long (read @ `An + 2`). Slot 4 — distinct from the
+/// hi-word / lo-addr / sp / pop slots so every half is snapshot-visible mid-pop.
+const UNLINK_LO_SLOT: u8 = 4;
+
+/// Scratch slot holding the **address** of an `UNLINK` pop's LOW half (`An + 2`), materialized once by an
+/// [`MicroOp::EaCalc`] (masked to the 24-bit bus — a real even bus address). Slot 2.
+const UNLINK_LO_ADDR_SLOT: u8 = 2;
+
+/// Scratch slot holding the pre-computed `An_old + 4` — the stack pointer's post-pop value, materialized by an
+/// [`MicroOp::EaCalc`] (`An + 2 + 2`) while `AddrReg(an)` still holds the original `An`. Slot 3.
+const UNLINK_SP_SLOT: u8 = 3;
+
+/// Scratch slot holding the assembled 32-bit `UNLINK` popped long (the frame's saved `An`). Slot 5 — distinct
+/// from the read/addr/sp slots so the popped value survives until the final `An` write. Slot 5.
+const UNLINK_POP_SLOT: u8 = 5;
+
+/// `UNLINK An` / `UNLK An` (`0100 1110 0101 1 rrr`, opcode & 0xFFF8 == 0x4E58): deallocate a stack frame —
+/// `SP = An; An = [SP] (long pop); SP = An_old + 4`. Affects **NO flags** (SR untouched). Flat **12 cyc**; the
+/// bus stream is `[r@An (hi), r@An+2 (lo), r@pc+4]` — two word reads (the popped long) + one queue refill,
+/// pinned to the vendored `UNLINK` SST stream.
+///
+/// The pop reads at `An` (the `SP = An` step is unobservable except through this read address, so it is folded
+/// into addressing `AddrReg(an)` directly — no explicit SP=An write). The final register updates are ordered
+/// **`SP = An_old + 4` THEN `An = popped`** so the pop write is LAST: for `An != 7` both stick (distinct regs);
+/// for **`UNLK A7`** (`An ≡ SP`, `0x4E5F`) the `SP = An_old + 4` write is CLOBBERED by the pop write, leaving
+/// `A7 = the popped long` (the documented net effect — the pop wins). `An_old + 4` is pre-computed into
+/// [`UNLINK_SP_SLOT`] via an `EaCalc(An + 2 + 2)` while `AddrReg(an)` still holds the original `An` (it is only
+/// rewritten by the final pop `MoveA`).
+fn unlink_recipe(opcode: u16) -> MicroState {
+    let an = (opcode & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    // Pop the saved An — HI word @ An first (SP=An folded into the read address).
+    buf.push(MicroOp::Read {
+        addr: Operand::AddrReg(an),
+        fc: super::microop::Fc::Data,
+        size: Size::Word,
+        dst: UNLINK_HI_SLOT,
+    });
+    // Materialize the LOW half's address (An + 2), masked to the 24-bit bus.
+    buf.push(MicroOp::EaCalc {
+        base: Operand::AddrReg(an),
+        index: Operand::Zero,
+        disp: Operand::WordStep,
+        dst: UNLINK_LO_ADDR_SLOT,
+    });
+    // LOW word @ An + 2.
+    buf.push(MicroOp::Read {
+        addr: Operand::Scratch(UNLINK_LO_ADDR_SLOT),
+        fc: super::microop::Fc::Data,
+        size: Size::Word,
+        dst: UNLINK_LO_SLOT,
+    });
+    // Pre-compute the post-pop stack pointer An_old + 4 (= An + 2 + 2) while AddrReg(an) still holds the original
+    // An (only the final pop MoveA rewrites it).
+    buf.push(MicroOp::EaCalc {
+        base: Operand::AddrReg(an),
+        index: Operand::WordStep,
+        disp: Operand::WordStep,
+        dst: UNLINK_SP_SLOT,
+    });
+    // Assemble the UNMASKED 32-bit popped long (the saved An).
+    buf.push(MicroOp::Combine32 {
+        hi: UNLINK_HI_SLOT,
+        lo: Operand::Scratch(UNLINK_LO_SLOT),
+        dst: UNLINK_POP_SLOT,
+    });
+    // SP = An_old + 4 (a no-flag full-32 copy to AddrReg(7)). Runs BEFORE the An write so that for UNLK A7 the
+    // pop write below clobbers it (net A7 = the popped long).
+    buf.push(MicroOp::Alu {
+        op: AluOp::MoveA,
+        size: Size::Long,
+        a: Operand::Scratch(UNLINK_SP_SLOT),
+        b: Operand::Zero,
+        dst: Dest::AddrReg(7),
+    });
+    // An = the popped long (LAST — for An == 7 this wins over the SP write above).
+    buf.push(MicroOp::Alu {
+        op: AluOp::MoveA,
+        size: Size::Long,
+        a: Operand::Scratch(UNLINK_POP_SLOT),
+        b: Operand::Zero,
+        dst: Dest::AddrReg(an),
+    });
+    // The trailing queue refill (r@pc+4).
+    buf.push(MicroOp::Prefetch);
     buf.finish()
 }
 
