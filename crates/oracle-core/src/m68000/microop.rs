@@ -1048,6 +1048,16 @@ pub enum MicroOp {
     /// `SR_IMPLEMENTED` (`0xA71F`) mask with [`MicroOp::LoadSr`] (`RTE`'s restore). A 0-cycle, non-bus,
     /// snapshot-visible internal step.
     SrLogic { op: LogicOp, value: Operand },
+    /// `EXG`'s register exchange — swap the two registers named by the opmode form, affecting **NO flags**
+    /// (the SR is untouched). `opmode` (the `(opcode >> 3) & 0x1F` field) selects the form: `0x08` = `EXG
+    /// Dx,Dy` (swap the two DATA registers `d[rx]` / `d[ry]`); `0x09` = `EXG Ax,Ay` (swap the two ADDRESS
+    /// registers via [`Registers::addr_reg`]/[`Registers::addr_reg_set`], so a reg-7 leg hits the ACTIVE A7
+    /// = `ssp`/`usp` per the S bit); `0x11` = `EXG Dx,Ay` (swap the DATA register `d[rx]` with the ADDRESS
+    /// register `addr_reg(ry)`, again A7-aware). `rx = (opcode >> 9) & 7`, `ry = opcode & 7`. The whole
+    /// 32-bit register contents trade places (EXG is long-only). A 0-cycle, non-bus, snapshot-visible
+    /// internal step — the recipe's trailing `Internal(2)` idle books the len-6 cost. Distinct from every
+    /// `Alu` op (no CCR touch, no size mask) and from [`MicroOp::AdjustAddr`] (a one-sided register bump).
+    ExgRegs { opmode: u8, rx: u8, ry: u8 },
 }
 
 /// The in-flight micro-op cursor for one instruction: the recipe, how far through it we are, and the
@@ -2332,6 +2342,33 @@ impl MicroState {
                     LogicOp::Eor => regs.sr ^ v,
                 };
                 regs.sr = combined & SR_IMPLEMENTED;
+                0
+            }
+            MicroOp::ExgRegs { opmode, rx, ry } => {
+                // EXG's register exchange — swap the two whole 32-bit registers per the opmode form, NO flags
+                // (SR untouched). A7-aware via `addr_reg`/`addr_reg_set` so a reg-7 address leg hits the active
+                // stack pointer (ssp/usp per S). NO bus, 0 cycles (the trailing Internal(2) books the len-6 cost).
+                let (rx, ry) = (rx as usize, ry as usize);
+                match opmode {
+                    0x08 => {
+                        // EXG Dx,Dy — swap two data registers.
+                        regs.d.swap(rx, ry);
+                    }
+                    0x09 => {
+                        // EXG Ax,Ay — swap two address registers (A7-aware).
+                        let ax = regs.addr_reg(rx);
+                        let ay = regs.addr_reg(ry);
+                        regs.addr_reg_set(rx, ay);
+                        regs.addr_reg_set(ry, ax);
+                    }
+                    _ => {
+                        // EXG Dx,Ay (opmode 0x11) — swap a data register with an address register (A7-aware).
+                        let dx = regs.d[rx];
+                        let ay = regs.addr_reg(ry);
+                        regs.d[rx] = ay;
+                        regs.addr_reg_set(ry, dx);
+                    }
+                }
                 0
             }
         };

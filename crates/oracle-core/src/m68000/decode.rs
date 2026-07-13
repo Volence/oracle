@@ -221,6 +221,16 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     if opcode & 0xF1C0 == 0x91C0 {
         return adda_suba_recipe(opcode, AluOp::Suba, Size::Long); // SUBA.l <ea>,An
     }
+    // EXG (`1100 rrr 1 ppppp rrr`, `opcode & 0xF100 == 0xC100`) — exchange two whole 32-bit registers, NO
+    // flags. The opmode field `(opcode >> 3) & 0x1F` selects the form: 0x08 = Dx,Dy / 0x09 = Ax,Ay / 0x11 =
+    // Dx,Ay. This arm is placed BEFORE the broad 0xCxxx AND/MUL arms below because the 0xCxxx space is SHARED
+    // with ABCD (opmode 0x00/0x01) and `AND Dn,<ea>`: the opmode guard {0x08, 0x09, 0x11} is LOAD-BEARING — it
+    // classifies STRICTLY by the three EXG opmodes so no ABCD/AND opcode reaches the EXG arm (ABCD is not
+    // implemented) and no EXG opcode reaches the AND arm's `todo!()`. `rx = (op>>9)&7`, `ry = op&7`; A7 legs
+    // hit the active `addr_reg(7)` (ssp/usp per S). Recipe `[Prefetch, Internal(2), ExgRegs]`, length 6.
+    if opcode & 0xF100 == 0xC100 && matches!((opcode >> 3) & 0x1F, 0x08 | 0x09 | 0x11) {
+        return exg_recipe(opcode);
+    }
     // AND `<ea>,Dn` (`1100 ddd 0SS mmm rrr`, opmode 0/1/2 = b/w/l = 0xC000/0xC040/0xC080) — bitwise `Dn = Dn &
     // <ea>` (Dn the minuend `a`; AND is commutative so operand order is inert). Source = data modes; An-direct
     // (mode 1) is ILLEGAL/absent (the `arith_ea_dn` arm relies on `covered()` never feeding it mode 1, exactly
@@ -742,6 +752,12 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     }
     if opcode == 0x0A7C {
         return to_sr_recipe(LogicOp::Eor);
+    }
+    // NOP (`0x4E71`, exact) — no operation: advance `pc` by 2 and shift the prefetch queue, nothing else (all
+    // D/A/SP/SR byte-identical). A lone `[Prefetch]` (length 4). The opcode `0x4E71` is a single point in the
+    // 0x4Exx space, disjoint from RESET (0x4E70) / JMP/JSR/RTS/RTR/RTE/TRAP/TRAPV and every arm above.
+    if opcode == 0x4E71 {
+        return nop_recipe();
     }
     // RESET (`0x4E70`) — assert the external reset line for 124 cycles. Privileged (supervisor-only; the
     // user-mode privilege-violation entry is correctness-only, not gated). No state change beyond the queue
@@ -1603,6 +1619,35 @@ fn swap_recipe(opcode: u16) -> MicroState {
         b: Operand::Zero,
         dst: Dest::DataReg(reg),
     });
+    buf.finish()
+}
+
+/// `NOP` (`0x4E71`, exact): no operation — advance `pc` by 2 and shift the prefetch queue, nothing else. The
+/// whole register file (D/A/SP/SR) is byte-identical afterwards; the ONLY effect is the single queue refill.
+/// The recipe is a lone [`MicroOp::Prefetch`] (length 4, one FC-6 program read at `pc+4`), the same trailing
+/// refill every instruction ends with.
+fn nop_recipe() -> MicroState {
+    let mut buf = RecipeBuf::new();
+    buf.push(MicroOp::Prefetch);
+    buf.finish()
+}
+
+/// `EXG` (`1100 rrr 1 ppppp rrr`, `opcode & 0xF100 == 0xC100` with the opmode field `(opcode >> 3) & 0x1F` ∈
+/// {`0x08` Dx,Dy / `0x09` Ax,Ay / `0x11` Dx,Ay}): exchange two whole 32-bit registers, affecting **NO flags**.
+/// `rx = (opcode >> 9) & 7`, `ry = opcode & 7`. The recipe is `[Prefetch, Internal(2), ExgRegs]` — length **6**
+/// for ALL three forms (one FC-6 refill then the 2-cycle internal idle; the [`MicroOp::ExgRegs`] swap is a
+/// 0-cycle non-bus step). A7 legs (opmode `0x09`, or `0x11` with `ry == 7`, or `0x09` with `rx == 7`) exchange
+/// the ACTIVE `addr_reg(7)` (ssp/usp per the S bit) via the A7-aware register helpers. The opmode guard is
+/// LOAD-BEARING: ABCD (opmode `0x00`/`0x01`) and `AND Dn,<ea>` share the 0xCxxx space and are NOT EXG — only
+/// the three EXG opmodes reach this arm (see the decode-dispatch placement, BEFORE any broad 0xCxxx arm).
+fn exg_recipe(opcode: u16) -> MicroState {
+    let opmode = ((opcode >> 3) & 0x1F) as u8;
+    let rx = ((opcode >> 9) & 7) as u8;
+    let ry = (opcode & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    buf.push(MicroOp::Prefetch);
+    buf.push(MicroOp::Internal { cycles: 2 });
+    buf.push(MicroOp::ExgRegs { opmode, rx, ry });
     buf.finish()
 }
 

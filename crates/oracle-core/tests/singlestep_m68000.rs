@@ -511,6 +511,21 @@ const FILES: &[&str] = &[
     // the `(A7)` mode-2 source is COVERED (NOT deferred). The file is 100% PURE (one opcode, classified by
     // OPCODE) and 100% in scope: 8065 cases. NO deferral, NO parity filter, NO corrupt entries.
     "DIVS.json",
+    // NOP (`0x4E71`, exact) — no operation: advance `pc` by 2 and shift the prefetch queue, nothing else (all
+    // D/A/SP/SR byte-identical). C0 decodes it as a lone `[Prefetch]` (length 4, one FC-6 program read at
+    // pc+4). No EA, no flags, no memory beyond the queue refill; every case is in scope. The file is 100% PURE
+    // (one opcode, classified by OPCODE) — 8065 cases. NO deferral, NO parity filter, NO corrupt entries.
+    "NOP.json",
+    // EXG (`1100 rrr 1 ppppp rrr`, `opcode & 0xF100 == 0xC100` with the opmode field `(opcode >> 3) & 0x1F` ∈
+    // {0x08 Dx,Dy / 0x09 Ax,Ay / 0x11 Dx,Ay}) — exchange two whole 32-bit registers, NO flags. C0 decodes it
+    // via the new `MicroOp::ExgRegs` swap: recipe `[Prefetch, Internal(2), ExgRegs]`, length 6 for ALL three
+    // forms. `rx = (op>>9)&7`, `ry = op&7`; A7 legs (opmode 0x09, or 0x11 with ry==7, or 0x09 with rx==7)
+    // exchange the ACTIVE addr_reg(7) (ssp/usp per the S bit). The opmode guard {0x08, 0x09, 0x11} is
+    // LOAD-BEARING: ABCD (opmode 0x00/0x01) and `AND Dn,<ea>` share the 0xCxxx space and are NOT EXG — the EXG
+    // decode arm is placed BEFORE the broad 0xCxxx AND/MUL arms and classifies STRICTLY by the three opmodes.
+    // The file is 100% PURE (one instruction, classified by OPCODE) — 8065 cases. NO deferral, NO parity
+    // filter, NO corrupt entries. No memory, no variable timing (flat 6).
+    "EXG.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -1042,6 +1057,19 @@ fn shift_covered(opcode: u16) -> bool {
     matches!(mode, 2..=6) || (mode == 7 && (reg == 0 || reg == 1))
 }
 
+/// NOP (`0x4E71`, exact). The whole file is this one opcode.
+fn nop_covered(opcode: u16) -> bool {
+    opcode == 0x4E71
+}
+
+/// EXG (`opcode & 0xF100 == 0xC100`) with the opmode field `(opcode >> 3) & 0x1F` ∈ {0x08 Dx,Dy / 0x09 Ax,Ay /
+/// 0x11 Dx,Ay}. The opmode guard is LOAD-BEARING — it excludes ABCD (opmode 0x00/0x01) and `AND Dn,<ea>` which
+/// share the 0xCxxx space and are NOT EXG. Every EXG case is in scope (all three forms, all register pairs incl
+/// A7 legs). Classified strictly by OPCODE.
+fn exg_covered(opcode: u16) -> bool {
+    opcode & 0xF100 == 0xC100 && matches!((opcode >> 3) & 0x1F, 0x08 | 0x09 | 0x11)
+}
+
 fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // MOVE (`00 SS RRR MMM mmm rrr`, dst_mode != 1) — its own EA→EA mode-scope filter (no parity).
     if move_covered(opcode) {
@@ -1147,6 +1175,18 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // RESET (0x4E70) — assert the reset line for 124 cycles (length 132: n4 + n124 + one queue refill). Every
     // vendored case is supervisor; the user-mode privilege-violation entry is correctness-only (not gated).
     if reset_covered(opcode) {
+        return true;
+    }
+    // NOP (0x4E71, exact) — no operation: pc += 2 + a single queue refill, all D/A/SP/SR byte-identical. Every
+    // case in scope (one opcode, no EA, no flags). Classified by OPCODE.
+    if nop_covered(opcode) {
+        return true;
+    }
+    // EXG (0xC100 | opmode | rx<<9 | ry, opmode ∈ {0x08 Dx,Dy / 0x09 Ax,Ay / 0x11 Dx,Ay}) — exchange two whole
+    // 32-bit registers, NO flags. Every case in scope (all three forms, all register pairs incl A7 legs — the
+    // active addr_reg(7) via ssp/usp per S). The opmode guard excludes ABCD (opmode 0x00/0x01) and `AND Dn,<ea>`
+    // in the shared 0xCxxx space. Classified by OPCODE.
+    if exg_covered(opcode) {
         return true;
     }
     // CMP `<ea>,Dn` + CMPM `(Ay)+,(Ax)+` + CMPI `#imm,<ea>` (the Cmp/Cmpm/Cmpi classes of the 3-way CMP.* mix,
@@ -1642,8 +1682,22 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 752_523,
-        "expected 752523 covered cases — D1 adds DIVS (its own DIVS.json file, `1000 ddd 111 mmm rrr` = \
+        ran >= 768_653,
+        "expected 768653 covered cases — C0 adds NOP + EXG (two flag-free ops, their own NOP.json + EXG.json \
+         files, 8065 each = +16130 over D1's 752523 → 768653). NOP (0x4E71, exact) is a lone `[Prefetch]` \
+         (length 4, one FC-6 queue refill at pc+4) — pc += 2, all D/A/SP/SR byte-identical, NO flags, NO EA. \
+         EXG (`1100 rrr 1 ppppp rrr`, `opcode & 0xF100 == 0xC100`, opmode `(op>>3)&0x1F` in \
+         {{0x08 Dx,Dy / 0x09 Ax,Ay / 0x11 Dx,Ay}}) exchanges two whole 32-bit registers via the new \
+         `MicroOp::ExgRegs` swap — recipe `[Prefetch, Internal(2), ExgRegs]`, length 6 for ALL three forms \
+         (flat, no memory, no variable timing), NO flags. `rx = (op>>9)&7`, `ry = op&7`; A7 legs (opmode 0x09, \
+         or 0x11 with ry==7, or 0x09 with rx==7) exchange the ACTIVE addr_reg(7) (ssp/usp per the S bit) via \
+         `Registers::addr_reg`/`addr_reg_set`. The \
+         opmode guard {{0x08, 0x09, 0x11}} is LOAD-BEARING: ABCD (opmode 0x00/0x01) and `AND Dn,<ea>` share the \
+         0xCxxx space and are NOT EXG — the EXG decode arm is placed BEFORE the broad 0xCxxx AND/MUL arms and \
+         classifies STRICTLY by the three opmodes, so no ABCD/AND opcode reaches EXG and no EXG opcode reaches a \
+         todo!(). Both files 100% PURE / 100% in scope (8065 each), classified by OPCODE — NO deferral, NO \
+         parity filter, NO corrupt entries. \
+         Prior baseline — D1 adds DIVS (its own DIVS.json file, `1000 ddd 111 mmm rrr` = \
          opcode & 0xF1C0 == 0x81C0, opmode 7 in the 0x8 space — DISJOINT from OR's opmode 0/1/2/4/5/6 AND from \
          DIVU's opmode 3): DIVS 8065 = +8065 over D0's 744458 → 752523 (the WHOLE file in scope — 100% PURE, \
          classified by OPCODE, no contaminant, no deferral, no parity filter). This is the FINAL DIV commit \
@@ -3122,6 +3176,182 @@ fn ext_swap_anchors_match_singlesteptests() {
     eprintln!(
         "G3 EXT/SWAP anchors: {found} cases (EXT.w byte→word high word preserved, EXT.l word→long, SWAP distinct halves; each X-preservation pin X kept + V/C cleared) passed both drivers"
     );
+}
+
+/// C0 — the named NOP + EXG anchors, pinning both flag-free ops against the vendored streams WITHOUT relying on
+/// the bulk `covered()` sweep. The load-bearing facts:
+/// - **NOP** (`4e71 [NOP] 1`): a lone `[Prefetch]`, length **4** (one FC-6 program read at pc+4). pc += 2,
+///   ALL D/A/SP/SR byte-identical (`run_case` verifies the whole register file + SR against the data), the ONLY
+///   effect the queue refill.
+/// - **EXG Dx,Dy** (`c543 [EXG D2, D3] 2`, opmode 0x08): swap two DATA registers, length **6**, SR unchanged.
+/// - **EXG Ax,Ay** (`c548 [EXG A2, A0] 12`, opmode 0x09): swap two ADDRESS registers, length 6, SR unchanged.
+/// - **EXG Ax,A7** (`c34f [EXG A1, A7] 10`, opmode 0x09, ry == 7): the A7 leg — the ACTIVE addr_reg(7) (ssp in
+///   these supervisor cases) is swapped, NOT a raw a[7]. Length 6.
+/// - **EXG Dx,Ay** (`cd8b [EXG D6, A3] 3`, opmode 0x11): swap a DATA and an ADDRESS register, length 6.
+/// - **EXG D0,A7** (`c18f [EXG D0, A7] 1`, opmode 0x11, ry == 7): the A7 leg for the Dx,Ay form — D0 trades with
+///   the ACTIVE addr_reg(7). Length 6. This is the ssp/usp-active reg swap the plan pins.
+///
+/// Each runs both drivers + the per-cycle transaction stream via `run_case`. Every EXG anchor must decode as an
+/// EXG opcode (`0xF100 == 0xC100`, opmode ∈ {0x08, 0x09, 0x11}) and never a CMP-class; the SR is unchanged on
+/// every case (both NOP and EXG set NO flags).
+#[test]
+fn nop_exg_anchors_match_singlesteptests() {
+    // NOP first — its own file, a lone Prefetch, all regs unchanged except pc+2.
+    let nop_path = format!("{VENDOR_DIR}/NOP.json");
+    let exg_path = format!("{VENDOR_DIR}/EXG.json");
+    if !Path::new(&nop_path).exists() || !Path::new(&exg_path).exists() {
+        eprintln!("SKIP: NOP.json / EXG.json missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let nop_file = std::fs::File::open(&nop_path).unwrap();
+    let nop_data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(nop_file)).unwrap();
+    let nop_case = nop_data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "4e71 [NOP] 1")
+        .expect("NOP anchor present");
+    let op = nop_case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+    assert_eq!(op, 0x4E71, "NOP anchor must be opcode 0x4E71");
+    assert_eq!(
+        nop_case["length"].as_u64().unwrap() as u32,
+        4,
+        "NOP is length 4"
+    );
+    // pc += 2 and NOTHING else changes (every D/A/SP/SR byte-identical) — pin the byte-identical register file.
+    let ini = &nop_case["initial"];
+    let fin = &nop_case["final"];
+    for i in 0..8 {
+        assert_eq!(
+            u32f(ini, &format!("d{i}")),
+            u32f(fin, &format!("d{i}")),
+            "NOP leaves d{i} unchanged"
+        );
+    }
+    for i in 0..7 {
+        assert_eq!(
+            u32f(ini, &format!("a{i}")),
+            u32f(fin, &format!("a{i}")),
+            "NOP leaves a{i} unchanged"
+        );
+    }
+    assert_eq!(
+        u32f(ini, "usp"),
+        u32f(fin, "usp"),
+        "NOP leaves usp unchanged"
+    );
+    assert_eq!(
+        u32f(ini, "ssp"),
+        u32f(fin, "ssp"),
+        "NOP leaves ssp unchanged"
+    );
+    assert_eq!(ini["sr"], fin["sr"], "NOP sets NO flags — SR unchanged");
+    assert_eq!(
+        u32f(ini, "pc") + 2,
+        u32f(fin, "pc"),
+        "NOP advances pc by exactly 2"
+    );
+    run_case(nop_case);
+
+    // EXG anchors — every form incl the A7 legs; SR unchanged, length 6.
+    let exg_file = std::fs::File::open(&exg_path).unwrap();
+    let exg_data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(exg_file)).unwrap();
+    // (full-name, opmode, ry (== 7 marks an A7 leg)).
+    let anchors: &[(&str, u16)] = &[
+        ("c543 [EXG D2, D3] 2", 0x08),  // Dx,Dy — swap two data regs
+        ("c548 [EXG A2, A0] 12", 0x09), // Ax,Ay — swap two address regs (non-A7)
+        ("c34f [EXG A1, A7] 10", 0x09), // Ax,A7 — the A7 leg (active addr_reg(7) swapped)
+        ("cd8b [EXG D6, A3] 3", 0x11),  // Dx,Ay — swap a data + an address reg (non-A7)
+        ("c18f [EXG D0, A7] 1", 0x11),  // D0,A7 — the A7 leg (ssp/usp-active reg swapped)
+    ];
+    let mut found = 0usize;
+    for (name, want_opmode) in anchors {
+        let case = exg_data
+            .iter()
+            .find(|t| t["name"].as_str().unwrap() == *name)
+            .unwrap_or_else(|| panic!("C0 EXG anchor {name} not found"));
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        // Must be an EXG opcode (0xF100 == 0xC100), the expected opmode, never CMP-class.
+        assert_eq!(
+            opcode & 0xF100,
+            0xC100,
+            "anchor {name} must be an EXG opcode"
+        );
+        assert_eq!((opcode >> 3) & 0x1F, *want_opmode, "anchor {name} opmode");
+        assert_eq!(
+            cmp_class(opcode),
+            CmpClass::None,
+            "EXG is not a CMP-class opcode"
+        );
+        assert_eq!(
+            case["length"].as_u64().unwrap() as u32,
+            6,
+            "EXG is length 6"
+        );
+        assert_eq!(
+            case["initial"]["sr"], case["final"]["sr"],
+            "EXG sets NO flags — SR unchanged [{name}]"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all C0 EXG anchors exercised");
+    eprintln!(
+        "C0 NOP + EXG anchors: NOP (len 4, all regs unchanged except pc+2) + {found} EXG cases (Dx,Dy / Ax,Ay / Ax,A7 A7-leg / Dx,Ay / D0,A7 A7-leg; each len 6, SR unchanged) passed both drivers"
+    );
+}
+
+/// C0 — the snapshot/restore anchor for the EXG register swap (the new `MicroOp::ExgRegs`). Drives a real
+/// vendored `EXG D0,A7` case (`[Prefetch, Internal(2), ExgRegs]`, 3 micro-ops — the A7 leg exercising the
+/// A7-aware addr_reg swap) through the quiesce driver, snapshotting + restoring the WHOLE `Cpu68000` (incl. the
+/// in-flight cursor) at every micro-op boundary and proving the resumed run reproduces the run-to-completion
+/// final state + transaction stream bit-for-bit. This pins that `MicroOp::ExgRegs` keeps `MicroState`
+/// fixed-size bincode (it is `Copy`).
+#[test]
+fn exg_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/EXG.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "c18f [EXG D0, A7] 1")
+        .expect("EXG D0,A7 snapshot anchor present");
+    let ini = &case["initial"];
+
+    // Run-to-completion reference.
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    // 3 micro-ops (Prefetch, Internal, ExgRegs) → in-flight boundaries after 0..=2 of them.
+    for pause_after in 0..=2 {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        for _ in 0..pause_after {
+            assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+        }
+        // Snapshot + restore the whole CPU (incl. the in-flight cursor) mid-instruction.
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+    }
+    eprintln!("C0 EXG snapshot/restore: EXG D0,A7 (A7-leg swap) resumed identically at every micro-op boundary");
 }
 
 /// C0 — the named `Scc <ea>` anchors, pinning each shape of the conditional byte set against the vendored Scc
