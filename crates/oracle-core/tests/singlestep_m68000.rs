@@ -526,6 +526,17 @@ const FILES: &[&str] = &[
     // The file is 100% PURE (one instruction, classified by OPCODE) — 8065 cases. NO deferral, NO parity
     // filter, NO corrupt entries. No memory, no variable timing (flat 6).
     "EXG.json",
+    // LEA `<control ea>,An` (`0100 aaa 111 mmm rrr`, opcode & 0xF1C0 == 0x41C0) — load the COMPUTED effective
+    // address (the address itself, full 32-bit UNMASKED — verified against the data: every case's An = the raw
+    // base+disp+index, never 24-bit-masked) into `An = (op>>9)&7`, with NO operand read (the address is the
+    // result) and NO flags. C1 decodes the seven CONTROL addressing modes ONLY: `(An)` 010 (len 4), `(d16,An)`
+    // 101 (8), `(d8,An,Xn)` 110 (12), `abs.w` 111/0 (8), `abs.l` 111/1 (12), `(d16,PC)` 111/2 (8 — base pc+2),
+    // `(d8,PC,Xn)` 111/3 (12) — via an `EaCalc` (unmasked) → `AluOp::MoveA` (Size::Long, the no-flag full-32 An
+    // write). Modes 000/001/011/100 and 111/4 are illegal/absent. Every legal case is in scope: LEA never
+    // accesses the EA (no fault possible), so NO `(A7)` deferral, NO odd-EA parity filter. The file is 100%
+    // PURE (one instruction, classified by OPCODE + the control-mode guard) — 8065 cases. NO deferral, NO
+    // parity filter, NO corrupt entries.
+    "LEA.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -1070,6 +1081,18 @@ fn exg_covered(opcode: u16) -> bool {
     opcode & 0xF100 == 0xC100 && matches!((opcode >> 3) & 0x1F, 0x08 | 0x09 | 0x11)
 }
 
+/// LEA `<control ea>,An` (`opcode & 0xF1C0 == 0x41C0`) — the CONTROL addressing modes ONLY: `(An)` 010,
+/// `(d16,An)` 101, `(d8,An,Xn)` 110, `abs.w` 111/0, `abs.l` 111/1, `(d16,PC)` 111/2, `(d8,PC,Xn)` 111/3. Modes
+/// 000/001/011/100 and 111/4 are illegal/absent (LEA loads an address — direct/auto-increment/#imm are not
+/// addressable memory locations). Every legal case is in scope: LEA never accesses the EA (no operand read, no
+/// fault possible — the computed address IS the result), so there is no `(A7)` deferral and no odd-EA parity
+/// filter. Classified strictly by OPCODE + the control-mode guard.
+fn lea_covered(opcode: u16) -> bool {
+    let mode = (opcode >> 3) & 7;
+    let reg = opcode & 7;
+    opcode & 0xF1C0 == 0x41C0 && (matches!(mode, 2 | 5 | 6) || (mode == 7 && matches!(reg, 0..=3)))
+}
+
 fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // MOVE (`00 SS RRR MMM mmm rrr`, dst_mode != 1) — its own EA→EA mode-scope filter (no parity).
     if move_covered(opcode) {
@@ -1187,6 +1210,13 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // active addr_reg(7) via ssp/usp per S). The opmode guard excludes ABCD (opmode 0x00/0x01) and `AND Dn,<ea>`
     // in the shared 0xCxxx space. Classified by OPCODE.
     if exg_covered(opcode) {
+        return true;
+    }
+    // LEA `<control ea>,An` (0x41C0 | an<<9 | ea, the seven control modes) — load the COMPUTED effective
+    // address (full 32-bit UNMASKED) into An, NO operand read, NO flags. Every legal case in scope: LEA never
+    // accesses the EA (the address is the result), so no `(A7)` deferral and no odd-EA parity filter.
+    // Classified by OPCODE + the control-mode guard.
+    if lea_covered(opcode) {
         return true;
     }
     // CMP `<ea>,Dn` + CMPM `(Ay)+,(Ax)+` + CMPI `#imm,<ea>` (the Cmp/Cmpm/Cmpi classes of the 3-way CMP.* mix,
@@ -1682,8 +1712,24 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 768_653,
-        "expected 768653 covered cases — C0 adds NOP + EXG (two flag-free ops, their own NOP.json + EXG.json \
+        ran >= 776_718,
+        "expected 776718 covered cases — C1 adds LEA (its own LEA.json file, `0100 aaa 111 mmm rrr` = \
+         opcode & 0xF1C0 == 0x41C0): LEA 8065 = +8065 over C0's 768653 → 776718 (the WHOLE file in scope — \
+         100% PURE, classified by OPCODE + the control-mode guard, no contaminant, no deferral, no parity \
+         filter). LEA loads the COMPUTED effective address (the address itself, full 32-bit UNMASKED — pinned \
+         to the data: every case's An = the raw base+disp+index, never 24-bit-masked) into `An = (op>>9)&7`, \
+         with NO operand read (the address is the result) and NO flags (SR untouched). The recipe is an \
+         `EaCalc` (unmasked) → `AluOp::MoveA` (Size::Long, the no-flag full-32 An write MOVEA.l uses), one per \
+         the seven CONTROL addressing modes: `(An)` 010 (len 4), `(d16,An)` 101 (8), `(d8,An,Xn)` 110 (12), \
+         `abs.w` 111/0 (8), `abs.l` 111/1 (12 — three-refill two-ext-word interleave), `(d16,PC)` 111/2 \
+         (8 — base pc+2, the ext-word address via PcOfExt), `(d8,PC,Xn)` 111/3 (12 — same pc+2 base). The idle \
+         profile per mode is verified 0-mismatch (all `n` idles absent from the asserted transaction stream; \
+         only the queue refills are `r` bus events, the total cycle count pins the idles). Modes 000/001/011/ \
+         100 and 111/4 are illegal/absent (the `is_control_mode` guard). LEA never accesses the EA (no fault \
+         possible), so NO `(A7)` deferral, NO odd-EA parity filter — every legal case is in scope. The decode \
+         arm (`opcode & 0xF1C0 == 0x41C0` + `is_control_mode`) sits right after CHK (0x4180, bits 8-6 = 110), \
+         disjoint from it (LEA bits 8-6 = 111) and from JMP/JSR/RTS/RTR/RTE/TRAP/TRAPV (all 0x4Exx). \
+         Prior baseline — C0 adds NOP + EXG (two flag-free ops, their own NOP.json + EXG.json \
          files, 8065 each = +16130 over D1's 752523 → 768653). NOP (0x4E71, exact) is a lone `[Prefetch]` \
          (length 4, one FC-6 queue refill at pc+4) — pc += 2, all D/A/SP/SR byte-identical, NO flags, NO EA. \
          EXG (`1100 rrr 1 ppppp rrr`, `opcode & 0xF100 == 0xC100`, opmode `(op>>3)&0x1F` in \
@@ -2292,7 +2338,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -3352,6 +3398,152 @@ fn exg_quiescable_and_serializable_at_every_micro_op_boundary() {
         );
     }
     eprintln!("C0 EXG snapshot/restore: EXG D0,A7 (A7-leg swap) resumed identically at every micro-op boundary");
+}
+
+/// C1 — the named `LEA <control ea>,An` anchors, pinning each control addressing mode against the vendored LEA
+/// stream WITHOUT relying on the bulk `covered()` sweep. LEA loads the COMPUTED effective address (the address
+/// itself, full 32-bit UNMASKED — verified against the data: every case's An = the raw base+disp+index, never
+/// 24-bit-masked) into `An = (op>>9)&7`; there is NO operand read (the address is the result) and NO flags.
+/// One anchor per control mode, timing pinned by mode:
+/// - `47d4 [LEA (A4), A3] 1` — **(An)** len 4: A3 = A4 (a bare register copy; one queue refill).
+/// - `49d7 [LEA (A7), A4] 5` — **(A7)** len 4: A4 = the active A7 (the A7-as-source leg, ssp/usp per S).
+/// - `43e9 [LEA (d16, A1), A1] 2` — **d16(An)** len 8: A1 = A1 + s16(disp) (An == dst, the legal self-write).
+/// - `45f2 [LEA (d8, A2, Xn), A2] 65` — **d8(An,Xn)** len 12: DATA-register index, WORD size bit (ext bit11=0,
+///   sign-extended word index) — A2 = A2 + s16(Dn.w) + s8(disp8).
+/// - `41f0 [LEA (d8, A0, Xn), A0] 13` — **d8(An,Xn)** len 12: ADDRESS-register index, LONG size bit (ext
+///   bit11=1, full-32 index) — A0 = A0 + An_idx + s8(disp8).
+/// - `47f8 [LEA (xxx).w, A3] 20` — **abs.w** len 8: A3 = s16(ext).
+/// - `45f9 [LEA (xxx).l, A2] 4` — **abs.l** len 12: A2 = (ext_hi << 16) | ext_lo (two extension words, the
+///   three-refill interleave).
+/// - `41fa [LEA (d16, PC), A0] 59` — **d16(PC)** len 8: A0 = (pc+2) + s16(disp) (the base is the ext-word
+///   address pc+2, NOT pc).
+/// - `4dfb [LEA (d8, PC, Xn), A6] 14` — **d8(PC,Xn)** len 12: A6 = (pc+2) + index + s8(disp8).
+/// - `4ff8 [LEA (xxx).w, A7] 91` — **abs.w → A7** len 8: the A7-as-DEST leg (the active addr_reg(7) written).
+///
+/// Each runs both drivers + the per-cycle transaction stream via `run_case`. The load-bearing pins: LEA sets
+/// **NO flags** (`final.sr == initial.sr`, verified by `run_case`), writes the ADDRESS (not a fetched value —
+/// no operand `r` transaction, only queue refills), and the PC-relative base is pc+2. Every anchor must decode
+/// as an LEA opcode (0xF1C0 == 0x41C0) and never a CMP-class opcode.
+#[test]
+fn lea_anchors_match_singlesteptests() {
+    let path = format!("{VENDOR_DIR}/LEA.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: LEA.json missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    // (full-name, length) — one per control mode (plus the A7 source/dest legs).
+    let anchors: &[(&str, u32)] = &[
+        ("47d4 [LEA (A4), A3] 1", 4),           // (An)
+        ("49d7 [LEA (A7), A4] 5", 4),           // (A7) — A7 source
+        ("43e9 [LEA (d16, A1), A1] 2", 8),      // d16(An) — An == dst (self-write)
+        ("45f2 [LEA (d8, A2, Xn), A2] 65", 12), // d8(An,Xn) — Dn index, W size
+        ("41f0 [LEA (d8, A0, Xn), A0] 13", 12), // d8(An,Xn) — An index, L size
+        ("47f8 [LEA (xxx).w, A3] 20", 8),       // abs.w
+        ("45f9 [LEA (xxx).l, A2] 4", 12),       // abs.l (two ext words)
+        ("41fa [LEA (d16, PC), A0] 59", 8),     // d16(PC) — base pc+2
+        ("4dfb [LEA (d8, PC, Xn), A6] 14", 12), // d8(PC,Xn) — base pc+2
+        ("4ff8 [LEA (xxx).w, A7] 91", 8),       // abs.w → A7 (A7 dest)
+    ];
+    let mut found = 0usize;
+    for (name, length) in anchors {
+        let case = data
+            .iter()
+            .find(|t| {
+                t["name"].as_str().unwrap() == *name
+                    && t["length"].as_u64().unwrap() as u32 == *length
+            })
+            .unwrap_or_else(|| panic!("C1 LEA anchor {name} (len {length}) not found"));
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        // Must be an LEA opcode (0xF1C0 == 0x41C0), never a CMP-class opcode.
+        assert_eq!(
+            opcode & 0xF1C0,
+            0x41C0,
+            "anchor {name} must be an LEA opcode"
+        );
+        assert_eq!(
+            cmp_class(opcode),
+            CmpClass::None,
+            "LEA is not a CMP-class opcode [{name}]"
+        );
+        // NO flags — SR byte-identical.
+        assert_eq!(
+            case["initial"]["sr"], case["final"]["sr"],
+            "LEA sets NO flags — SR unchanged [{name}]"
+        );
+        // An = (op>>9)&7 receives the FULL 32-bit computed EA; the SST bus stream has NO operand read (every
+        // transaction is a queue refill), which `run_case` pins per-cycle.
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all C1 LEA anchors exercised");
+    eprintln!(
+        "C1 LEA anchors: {found} cases ((An) / (A7) src / d16(An) self-write / d8(An,Xn) Dn-idx.W / d8(An,Xn) An-idx.L / abs.w / abs.l / d16(PC) base+2 / d8(PC,Xn) / abs.w→A7) passed both drivers; SR unchanged, no operand read"
+    );
+}
+
+/// C1 — the snapshot/restore anchor for `LEA <control ea>,An`. Drives a real vendored `LEA (xxx).l, A2` case
+/// (`abs.l` — the longest LEA recipe, three refills bracketing the two extension-word captures) through the
+/// quiesce driver, snapshotting + restoring the WHOLE `Cpu68000` (incl. the in-flight cursor) at every micro-op
+/// boundary and proving the resumed run reproduces the run-to-completion final state + transaction stream
+/// bit-for-bit. This pins that the `EaCalc → MoveA` LEA recipe keeps `MicroState` fixed-size bincode (`Copy`).
+#[test]
+fn lea_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/LEA.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "45f9 [LEA (xxx).l, A2] 4")
+        .expect("LEA abs.l snapshot anchor present");
+    let ini = &case["initial"];
+
+    // Run-to-completion reference.
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    // Snapshot at every in-flight micro-op boundary (drain until Done, snapshotting before each step).
+    let mut pause_after = 0usize;
+    loop {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        let mut reached_end = false;
+        for _ in 0..pause_after {
+            if let Step::Done(_) = cpu.step_micro_op(&mut bus) {
+                reached_end = true;
+                break;
+            }
+        }
+        if reached_end {
+            break;
+        }
+        // Snapshot + restore the whole CPU (incl. the in-flight cursor) mid-instruction.
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+        pause_after += 1;
+    }
+    eprintln!("C1 LEA snapshot/restore: LEA (xxx).l,A2 (abs.l) resumed identically at every micro-op boundary");
 }
 
 /// C0 — the named `Scc <ea>` anchors, pinning each shape of the conditional byte set against the vendored Scc
