@@ -1079,7 +1079,10 @@ pub enum MicroOp {
     /// `scratch[addr_slot]` then advances it `+= size`; `true` (`-(An)`) DECREMENTS `scratch[addr_slot] -=
     /// size` FIRST, then writes at the decremented address (the predecrement-before-store order, iterated over
     /// the reversed list). The write is `size`-wide: a word writes the low 16 of the register; a long writes
-    /// the hi word then the lo word (two accesses, `+2` between — the reg→mem long store order). A7 is read
+    /// both words big-endian (hi @ `addr`, lo @ `addr+2`) — the FORWARD (control) long store writes hi FIRST
+    /// then lo, but the `-(An)` predecrement long store REVERSES the bus ACCESS order (lo @ `addr+2` first, then
+    /// hi @ `addr` — the MOVE.l `-(An)` "low half first" precedent), pinned against the vendored MOVEM.l stream.
+    /// A7 is read
     /// via [`Registers::addr_reg`] (A7-aware) when `reg == 15` (the `A7` list bit). Each word access logs its
     /// own bus transaction and costs 4 cycles; an ODD write address raises the group-0 address error (E3) via
     /// [`Self::install_address_error`] (low5 = `0x05`, a data write) — since the running address is a scratch
@@ -2450,17 +2453,28 @@ impl MicroState {
                     // -(An): decrement the running address by `size` FIRST, then write at it.
                     let addr = self.scratch[addr_slot as usize].wrapping_sub(step);
                     self.scratch[addr_slot as usize] = addr;
-                    // Odd write address → group-0 address error (E3), low5 = 0x05 (data write). The running
-                    // address is a scratch slot, so the register file is unchanged on the abort.
-                    if addr & 1 != 0 {
-                        return self.install_address_error(regs, addr, 0x05);
-                    }
                     match size {
-                        Size::Word => bus.write16(addr, fc, value as u16),
+                        Size::Word => {
+                            // Odd write address → group-0 address error (E3), low5 = 0x05 (data write).
+                            if addr & 1 != 0 {
+                                return self.install_address_error(regs, addr, 0x05);
+                            }
+                            bus.write16(addr, fc, value as u16);
+                        }
                         Size::Long => {
-                            // Long store order (like the reg→mem long store): hi word at `addr`, lo at `addr+2`.
+                            // -(An) LONG store word order (REVERSED, like the MOVE.l `-(An)` "low half first"
+                            // precedent): the LOW word is written FIRST at `addr+2`, then the HIGH word at
+                            // `addr`. Both still land big-endian (hi @ addr, lo @ addr+2) — only the bus ACCESS
+                            // ORDER is reversed. Pinned against the vendored MOVEM.l `-(An)` stream. Since the
+                            // FIRST bus access is at `addr+2`, an odd base faults THERE (the reported access
+                            // address = `addr+2 = An−2`, one word above the decremented base) — the running
+                            // address is a scratch slot, so the register file is unchanged on the abort.
+                            let lo_addr = addr.wrapping_add(2);
+                            if lo_addr & 1 != 0 {
+                                return self.install_address_error(regs, lo_addr, 0x05);
+                            }
+                            bus.write16(lo_addr, fc, value as u16);
                             bus.write16(addr, fc, (value >> 16) as u16);
-                            bus.write16(addr.wrapping_add(2), fc, value as u16);
                         }
                         Size::Byte => unreachable!(),
                     }

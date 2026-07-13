@@ -567,6 +567,17 @@ const FILES: &[&str] = &[
     // commits An += 2 (one WORD) before the abort. The file is 100% PURE (one instruction, classified by OPCODE +
     // the direction/mode guard) — 8065 cases. NO deferral, NO parity filter, NO corrupt entries.
     "MOVEM.w.json",
+    // MOVEM.l (`0100 1D00 11 mmm rrr`, opcode & 0xFB80 == 0x4880 with bit6 == 1) — the LONG twin of MOVEM.w,
+    // reusing every MOVEM.w recipe/quirk. Same direction/mode sets (reg→mem = control-alterable + predecrement
+    // {2, 4, 5, 6, 7/0, 7/1}; mem→reg = control + postincrement + PC-relative {2, 3, 5, 6, 7/0, 7/1, 7/2, 7/3}).
+    // Each register transfer is a LONG = TWO word bus accesses (hi then lo); the running address steps by 4 per
+    // register; a mem→reg LONG load reads two words and combines to the full 32-bit register — NO
+    // sign-extension (it is already 32 bits). The phantom read stays a SINGLE WORD (not a long). length =
+    // base + 8·n (per = 8, vs 4 for `.w`). Odd-base → group-0 address error (IN scope via E3/E4): faults on the
+    // FIRST word access (nothing transferred, regs unchanged) EXCEPT `(An)+` commits An += 2 (ONE WORD, NOT 4 —
+    // the long access is word-at-a-time; the pointer advances one word, then the odd-address fault). 100% PURE
+    // — 8065 cases. NO deferral, NO parity filter, NO corrupt entries.
+    "MOVEM.l.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -1155,15 +1166,16 @@ fn unlink_covered(opcode: u16) -> bool {
     opcode & 0xFFF8 == 0x4E58
 }
 
-/// MOVEM.w (`opcode & 0xFB80 == 0x4880` with bit6 == 0) — move a register list ↔ memory, WORD size, NO flags.
-/// Direction = bit 10 (0x0400): reg→mem (0x4880) / mem→reg (0x4C80). The direction-specific mode set is
-/// LOAD-BEARING (and excludes EXT.w's 0x4880 mode-000 form — MOVEM requires a valid MOVEM mode, so EXT/SWAP
-/// mode 0 never match): reg→mem = control-alterable + predecrement {2, 4, 5, 6, 7/0, 7/1}; mem→reg = control +
-/// postincrement + PC-relative {2, 3, 5, 6, 7/0, 7/1, 7/2, 7/3}. Every case is in scope (no `(A7)` deferral,
-/// no parity filter): an odd base is a group-0 address error the E3/E4 abort covers. Classified strictly by
-/// OPCODE + the direction/mode guard.
+/// MOVEM.w / MOVEM.l (`opcode & 0xFB80 == 0x4880`) — move a register list ↔ memory, NO flags. Size = bit 6
+/// (0x0040): `.w` (0x4880/0x4C80) / `.l` (0x48C0/0x4CC0). Direction = bit 10 (0x0400): reg→mem (0x4880/0x48C0)
+/// / mem→reg (0x4C80/0x4CC0). The direction-specific mode set is LOAD-BEARING (and excludes EXT's 0x4880 /
+/// 0x48C0 mode-000 forms — MOVEM requires a valid MOVEM mode, so EXT/SWAP mode 0 never match): reg→mem =
+/// control-alterable + predecrement {2, 4, 5, 6, 7/0, 7/1}; mem→reg = control + postincrement + PC-relative
+/// {2, 3, 5, 6, 7/0, 7/1, 7/2, 7/3}. Both sizes share the identical direction/mode sets. Every case is in scope
+/// (no `(A7)` deferral, no parity filter): an odd base is a group-0 address error the E3/E4 abort covers.
+/// Classified strictly by OPCODE + the direction/mode guard.
 fn movem_covered(opcode: u16) -> bool {
-    if opcode & 0xFB80 != 0x4880 || (opcode >> 6) & 1 != 0 {
+    if opcode & 0xFB80 != 0x4880 {
         return false;
     }
     let dir = (opcode >> 10) & 1;
@@ -1323,13 +1335,14 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     if unlink_covered(opcode) {
         return true;
     }
-    // MOVEM.w (0x4880 | ea reg→mem / 0x4C80 | ea mem→reg, bit6 == 0) — move a register list ↔ memory, WORD
-    // size, NO flags. Every case in scope: reg→mem modes {2, 4, 5, 6, 7/0, 7/1}, mem→reg modes {2, 3, 5, 6,
-    // 7/0, 7/1, 7/2, 7/3}. The mask expands (at decode) into a per-register linear transfer recipe; the
-    // reg→mem `-(An)` reversed mask + An-in-list-stores-INITIAL-An, the mem→reg word sign-extension, the
-    // trailing phantom read, and the `(An)+` final An = base + n·2 are all baked into the emitted sequence. An
-    // odd base is a group-0 address error the E3/E4 abort covers (IN scope, NO parity filter — the `(An)+`
-    // fault leaves An += 2). Classified by OPCODE + the direction/mode guard (off the EXT/SWAP mode-0 forms).
+    // MOVEM.w / MOVEM.l (0x4880/0x48C0 reg→mem / 0x4C80/0x4CC0 mem→reg; size = bit 6) — move a register list ↔
+    // memory, NO flags. Every case in scope: reg→mem modes {2, 4, 5, 6, 7/0, 7/1}, mem→reg modes {2, 3, 5, 6,
+    // 7/0, 7/1, 7/2, 7/3} (identical for both sizes). The mask expands (at decode) into a per-register linear
+    // transfer recipe; the reg→mem `-(An)` reversed mask + An-in-list-stores-INITIAL-An, the mem→reg word
+    // sign-extension (`.w` only — `.l` loads a full 32 bits), the trailing single-word phantom read, and the
+    // `(An)+` final An = base + n·size are all baked into the emitted sequence. An odd base is a group-0 address
+    // error the E3/E4 abort covers (IN scope, NO parity filter — the `(An)+` fault leaves An += 2, ONE WORD).
+    // Classified by OPCODE + the direction/mode guard (off the EXT/SWAP mode-0 forms).
     if movem_covered(opcode) {
         return true;
     }
@@ -1826,8 +1839,24 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 808_978,
-        "expected 808978 covered cases — C4 adds MOVEM.w (its own MOVEM.w.json file, 8065 cases = +8065 over \
+        ran >= 817_043,
+        "expected 817043 covered cases — C5 adds MOVEM.l (its own MOVEM.l.json file, 8065 cases = +8065 over \
+         C4's 808978 → 817043), the LONG twin of MOVEM.w reusing every recipe/quirk via the shared \
+         `movem_recipe`/`MovemStore`/`MovemLoad` (which already take a `Size`). Size = bit 6 (0x0040): `.w` \
+         (0x4880/0x4C80) / `.l` (0x48C0/0x4CC0); both sizes share the identical direction/mode sets. For `.l` \
+         each register transfer is a LONG = TWO WORD bus accesses (hi then lo for a store; two reads combined \
+         for a load — NO sign-extension, it is already 32 bits); the running address steps by 4 per register; \
+         `length = base + 8·n` (per = 8, vs 4 for `.w`; reg→mem base (An)/-(An)=8, mem→reg base (An)/(An)+=12 — \
+         same base-by-mode table as MOVEM.w). The phantom read stays a SINGLE WORD (not a long). The reg→mem \
+         `-(An)` LONG store word order + the mem→reg `(An)+` LONG load word order are gate-pinned against the \
+         data. An ODD base → group-0 address error (IN scope via E3/E4): faults on the FIRST word access \
+         (nothing transferred, regs unchanged) EXCEPT `(An)+` commits An += 2 (ONE WORD, NOT 4 — the long \
+         access is word-at-a-time; the pointer advances one word, then the odd-address fault). The file is \
+         100% PURE — 8065 cases. NO deferral, NO parity filter, NO corrupt entries. \
+         The reg→mem `-(An)` LONG store is a REVERSED bus access (lo word @ addr+2 FIRST, then hi word @ addr — \
+         the MOVE.l `-(An)` low-half-first precedent); an ODD-base `-(An)` therefore faults at addr+2 = An−2 \
+         (the first-accessed word), NOT the decremented base An−4. \
+         Prior baseline — C4 adds MOVEM.w (its own MOVEM.w.json file, 8065 cases = +8065 over \
          C3's 800913 → 808978). MOVEM.w is the ONE STRUCTURAL op: the register-list mask (the extension word \
          `prefetch[1]`, AVAILABLE AT DECODE TIME like the Bcc/DBcc live reads) is expanded at DECODE into a \
          per-register linear transfer recipe (one `MicroOp::MovemStore`/`MovemLoad` per set register, each \
@@ -2518,7 +2547,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -7591,4 +7620,167 @@ fn movem_w_quiescable_and_serializable_at_every_micro_op_boundary() {
         pause_after += 1;
     }
     eprintln!("C4 MOVEM.w snapshot/restore: MOVEM.w (A3)+,# (multi-register load + phantom + final MoveA) resumed identically at every micro-op boundary");
+}
+
+/// MOVEM.l (`opcode & 0xFB80 == 0x4880`, bit6 == 1) — move a register list ↔ memory, LONG size, NO flags.
+/// C5 named anchors, pinning the LONG twin's every quirk against the vendored MOVEM.l stream WITHOUT relying on
+/// the bulk `covered()` sweep. Each register transfer is a LONG (two WORD bus accesses: hi then lo for a store;
+/// two reads combined for a load — NO sign-extension, it is already 32 bits); the running address steps by 4;
+/// per = 8 (length = base + 8·n); the phantom read stays a SINGLE WORD. Each is a real vendored case exercised
+/// via `run_case` (both drivers + the exact per-cycle transaction stream + post regs/SR/RAM/prefetch/cycles):
+/// - `48d0 [MOVEM.l #, (A0)]` — reg→mem **(An)** forward: EA computed once; the set registers are stored
+///   ascending (hi then lo per register) at increasing addresses (base + 0, +4, …). len = 8 + 8·n.
+/// - `48e3 [MOVEM.l #, -(A3)]` — reg→mem **-(An)** predecrement: the mask is REVERSED, the running address
+///   decrements by 4 BEFORE each store (the LONG store word order pinned against the data), `A3` ends = the
+///   final decremented address, `A3`-in-list stores the **INITIAL A3** (the 68000 behaviour). len = 8 + 8·n.
+/// - `4cd2 [MOVEM.l (A2), #]` — mem→reg **(An)**: each register loads a full 32 bits (two words combined, NO
+///   sign-extension); a trailing PHANTOM **word** read (not a long) follows the loads. len = 12 + 8·n.
+/// - `4cdb [MOVEM.l (A3)+, #]` — mem→reg **(An)+**: `A3` ends = base + n·4 (the postincrement), with the
+///   phantom word read present in the transaction stream. len = 12 + 8·n.
+/// - `48f9 [MOVEM.l #, (xxx).l]` — reg→mem **abs.l** (two extension words). len = 16 + 8·n.
+/// - `48d4 [MOVEM.l #, (A4)]` (odd A4) — reg→mem **ODD-BASE (An) address error** (E3): faults on the FIRST
+///   word store, nothing transferred (A4 unchanged), SSP −= 14, pc → the vector-3 handler. Must PASS via E3/E4.
+/// - `48e5 [MOVEM.l #, -(A5)]` (odd A5) — reg→mem **ODD-BASE -(An) address error**: the reported access address
+///   is `An − 2` (the FIRST reversed-order long-store word access is at `addr+2 = An−2`, NOT the decremented
+///   base `An−4`) — the LONG-specific predecrement fault subtlety. A5 unchanged, SSP −= 14.
+/// - `4cde [MOVEM.l (A6)+, #]` (odd A6) — mem→reg **ODD-BASE (An)+ address error**: `A6 += 2` (ONE WORD, NOT
+///   4 — the long access is word-at-a-time; the pointer advances one word, then the odd-address fault). THE
+///   load-bearing subtlety of the LONG path.
+///
+/// Every anchor must decode as a MOVEM opcode (`0xFB80 == 0x4880`, bit6 == 1), never a CMP-class, and set NO
+/// flags on the clean cases (`final.sr == initial.sr`). `run_case` pins the whole transaction stream (incl the
+/// single-word phantom read + the group-0 frame on the odd cases).
+#[test]
+fn movem_l_anchors_match_singlesteptests() {
+    let path = format!("{VENDOR_DIR}/MOVEM.l.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: MOVEM.l.json missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    // (full-name, is_clean) — is_clean asserts SR unchanged (odd-base cases enter the exception; their post SR
+    // is the frame-entry SR, which may or may not equal the initial SR — so only ssp delta is asserted there).
+    let anchors: &[(&str, bool)] = &[
+        ("48d0 [MOVEM.l #, (A0)] 8", true),     // reg→mem (An) fwd
+        ("48e3 [MOVEM.l #, -(A3)] 229", true), // reg→mem -(An) reversed, long store order, An-in-list INITIAL An
+        ("4cd2 [MOVEM.l (A2), #] 253", true), // mem→reg (An) — full 32-bit load (no sign-extend), phantom word
+        ("4cdb [MOVEM.l (A3)+, #] 137", true), // mem→reg (An)+ — An = base + n·4
+        ("48f9 [MOVEM.l #, (xxx).l] 76", true), // reg→mem abs.l (two ext words)
+        ("48d4 [MOVEM.l #, (A4)] 185", false), // ODD reg→mem (An) — address error
+        ("48e5 [MOVEM.l #, -(A5)] 21", false), // ODD reg→mem -(An) — faults at An−2 (the FIRST reversed-order
+        // long-store word access is at addr+2 = An−2, NOT the decremented base An−4)
+        ("4cde [MOVEM.l (A6)+, #] 77", false), // ODD (An)+ — An += 2 (ONE WORD, NOT 4) on the abort
+    ];
+    let mut found = 0usize;
+    for (name, clean) in anchors {
+        let case = data
+            .iter()
+            .find(|t| t["name"].as_str().unwrap() == *name)
+            .unwrap_or_else(|| panic!("C5 MOVEM.l anchor {name} not found"));
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        // Must be a MOVEM opcode (0xFB80 == 0x4880, bit6 == 1), never a CMP-class opcode.
+        assert_eq!(
+            opcode & 0xFB80,
+            0x4880,
+            "anchor {name} must be a MOVEM opcode"
+        );
+        assert_eq!(
+            (opcode >> 6) & 1,
+            1,
+            "anchor {name} must be MOVEM.l (bit6 == 1)"
+        );
+        assert_eq!(
+            cmp_class(opcode),
+            CmpClass::None,
+            "MOVEM is not a CMP-class opcode [{name}]"
+        );
+        if *clean {
+            // Clean path: NO flags — SR byte-identical.
+            assert_eq!(
+                case["initial"]["sr"], case["final"]["sr"],
+                "MOVEM sets NO flags — SR unchanged [{name}]"
+            );
+        } else {
+            // ODD-base address error: SSP −= 14 (the group-0 14-byte frame), pc → the handler.
+            let ssp_ini = u32f(&case["initial"], "ssp");
+            let ssp_fin = u32f(&case["final"], "ssp");
+            assert_eq!(
+                ssp_ini.wrapping_sub(ssp_fin),
+                14,
+                "odd MOVEM stacks a 14-byte group-0 frame [{name}]"
+            );
+        }
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all C5 MOVEM.l anchors exercised");
+    eprintln!(
+        "C5 MOVEM.l anchors: {found} cases (reg→mem (An) fwd / -(An) reversed+long-store-order+An-in-list-initial / mem→reg (An) full-32-load+phantom-word / (An)+ base+n·4 / abs.l / ODD reg→mem (An) AE / ODD -(An) faults-at-An−2 / ODD (An)+ An+=2-one-word) passed both drivers"
+    );
+}
+
+/// C5 — the snapshot/restore anchor for the LONG `MOVEM.l` recipe (the `MicroOp::MovemStore`/`MovemLoad` LONG
+/// path — two word accesses per register + the step-by-4). Drives a real vendored mem→reg `(A3)+` LONG case (a
+/// multi-register linear long transfer + the single-word phantom read + the trailing MoveA) through the quiesce
+/// driver, snapshotting + restoring the WHOLE `Cpu68000` (incl. the in-flight cursor) at every micro-op
+/// boundary and proving the resumed run reproduces the run-to-completion final state + transaction stream
+/// bit-for-bit. This pins that the LONG expansion keeps `MicroState` a fixed-size bincode `[MicroOp; MAX_OPS]`
+/// array (`Copy`).
+#[test]
+fn movem_l_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/MOVEM.l.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: MOVEM.l.json missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "4cdb [MOVEM.l (A3)+, #] 137")
+        .expect("MOVEM.l (A3)+ snapshot anchor present");
+    let ini = &case["initial"];
+
+    // Run-to-completion reference.
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    // Snapshot at every in-flight micro-op boundary (drain until Done, snapshotting before each step).
+    let mut pause_after = 0usize;
+    loop {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        let mut reached_end = false;
+        for _ in 0..pause_after {
+            if let Step::Done(_) = cpu.step_micro_op(&mut bus) {
+                reached_end = true;
+                break;
+            }
+        }
+        if reached_end {
+            break;
+        }
+        // Snapshot + restore the whole CPU (incl. the in-flight cursor) mid-instruction.
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+        pause_after += 1;
+    }
+    eprintln!("C5 MOVEM.l snapshot/restore: MOVEM.l (A3)+,# (multi-register LONG load + word phantom + final MoveA) resumed identically at every micro-op boundary");
 }

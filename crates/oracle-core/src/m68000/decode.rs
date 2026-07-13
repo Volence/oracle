@@ -658,19 +658,27 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     if opcode & 0xFFF8 == 0x48C0 {
         return ext_recipe(opcode, Size::Long);
     }
-    // MOVEM.w (`0100 1D00 10 mmm rrr`, opcode & 0xFB80 == 0x4880 with bit6 == 0) — move a register list ↔
-    // memory, WORD size, NO flags. Direction = bit 10 (0x0400): reg→mem (0x4880) / mem→reg (0x4C80). The
-    // register mask is the extension word `prefetch[1]` (AVAILABLE AT DECODE TIME, like the Bcc/DBcc live
-    // reads), so `movem_recipe` expands it into an exact-length linear transfer recipe. The mode guard is
-    // LOAD-BEARING: EXT.w (0x4880 mode 000) is decoded ABOVE (mask 0xFFF8), and MOVEM requires a valid MOVEM
-    // mode (reg→mem = control-alterable + predecrement; mem→reg = control + postincrement + PC-relative), so
-    // EXT/SWAP (mode 0) never collide. Placed before PEA (0x4840) — disjoint opcode blocks.
-    if opcode & 0xFB80 == 0x4880 && (opcode >> 6) & 1 == 0 {
+    // MOVEM.w / MOVEM.l (`0100 1D00 1S mmm rrr`, opcode & 0xFB80 == 0x4880) — move a register list ↔ memory,
+    // NO flags. Size = bit 6 (0x0040): `.w` (0x4880/0x4C80) / `.l` (0x48C0/0x4CC0). Direction = bit 10
+    // (0x0400): reg→mem (0x4880/0x48C0) / mem→reg (0x4C80/0x4CC0). The register mask is the extension word
+    // `prefetch[1]` (AVAILABLE AT DECODE TIME, like the Bcc/DBcc live reads), so `movem_recipe` expands it into
+    // an exact-length linear transfer recipe. The mode guard is LOAD-BEARING: EXT.w (0x4880 mode 000) / EXT.l
+    // (0x48C0 mode 000) are decoded ABOVE (mask 0xFFF8), and MOVEM requires a valid MOVEM mode (reg→mem =
+    // control-alterable + predecrement; mem→reg = control + postincrement + PC-relative), so EXT/SWAP (mode 0)
+    // never collide. Placed before PEA (0x4840) — disjoint opcode blocks. For `.l` each register transfer is a
+    // LONG (two word bus accesses; the running address steps by 4; NO sign-extension on load — it is already a
+    // full 32 bits); `length = base + 8·n` (per = 8, vs 4 for `.w`).
+    if opcode & 0xFB80 == 0x4880 {
         let dir = (opcode >> 10) & 1;
         let mode = (opcode >> 3) & 7;
         let reg = opcode & 7;
         if movem_mode_ok(dir, mode, reg) {
-            return movem_recipe(opcode, Size::Word, regs);
+            let size = if (opcode >> 6) & 1 == 0 {
+                Size::Word
+            } else {
+                Size::Long
+            };
+            return movem_recipe(opcode, size, regs);
         }
     }
     // SWAP (`0100 1000 01 000 rrr`, 0x4840, mask `opcode & 0xFFF8`) — swap the two 16-bit halves of `Dn`:
@@ -3706,9 +3714,10 @@ fn movem_recipe(opcode: u16, size: Size, regs: &Registers) -> MicroState {
     match (mode, reg) {
         // (An) / (An)+ / -(An) — no extension word: one leading Prefetch, running address = An (into the
         // scratch slot; the transfer op advances/decrements it per register). For (An)+ an extra
-        // `AdjustAddr(An, +size)` commits the first-word postincrement BEFORE the first load, so a faulting
-        // odd-base (An)+ leaves `An = base + 2` (one WORD) — the abort-commit ordering; the recipe's trailing
-        // MoveA then writes the final `An = base + n·size`.
+        // `AdjustAddr(An, +2)` commits the FIRST-WORD postincrement BEFORE the first load, so a faulting
+        // odd-base (An)+ leaves `An = base + 2` — ONE WORD, for BOTH `.w` and `.l` (the long access is
+        // word-at-a-time; the pointer advances one word, then the odd-address fault). The abort-commit is
+        // ALWAYS a single word; on the clean path the recipe's trailing MoveA overwrites An = base + n·size.
         (2, _) | (3, _) | (4, _) => {
             buf.push(MicroOp::Prefetch);
             buf.push(MicroOp::EaCalc {
@@ -3718,14 +3727,7 @@ fn movem_recipe(opcode: u16, size: Size, regs: &Registers) -> MicroState {
                 dst: MOVEM_ADDR_SLOT,
             });
             if postinc {
-                buf.push(MicroOp::AdjustAddr {
-                    reg,
-                    delta: match size {
-                        Size::Word => 2,
-                        Size::Long => 4,
-                        Size::Byte => unreachable!("MOVEM is word/long only"),
-                    },
-                });
+                buf.push(MicroOp::AdjustAddr { reg, delta: 2 });
             }
         }
         // d16(An) / abs.w / d16(PC) — one displacement extension word: Prefetch (fetch disp), EaCalc(disp),
