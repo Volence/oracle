@@ -72,6 +72,11 @@ const FILES: &[&str] = &[
     // `movefrom_usp_covered` / `moveto_usp_covered`.
     "MOVEfromUSP.json",
     "MOVEtoUSP.json",
+    // MOVEfromSR (`0x40C0 | ea`, data-alterable) — move the FULL 16-bit SR (incl the system byte) to the EA, NOT
+    // privileged on the 68000, NO flags (SR byte-identical initial→final). Register `Dn.w = SR` (high word
+    // preserved), 6 cyc; memory is CLR.w's read-before-write RMW (dummy read then the SR write), so an odd EA is
+    // a READ address error the E3/E4 abort covers. 100% PURE / in scope (8065), classified by `movefrom_sr_covered`.
+    "MOVEfromSR.json",
     // The CMP.* files are 3-WAY MIXES (CMP <ea>,Dn + CMPM (Ay)+,(Ax)+ + CMPI #imm,<ea>), all mislabeled
     // "CMP.<sz>" in `name` — classified by OPCODE via `cmp_class`. N0 added the Cmp class, N1 the Cmpm class,
     // N2 the Cmpi class — so these files are now FULLY covered (CMPA is its own file). The only intra-class
@@ -1314,6 +1319,23 @@ fn moveto_usp_covered(opcode: u16) -> bool {
     opcode & 0xFFF8 == 0x4E60
 }
 
+/// MOVEfromSR (`opcode & 0xFFC0 == 0x40C0`, data-alterable modes) — move the FULL 16-bit SR (incl the system
+/// byte) to the EA, NOT privileged on the 68000, NO flags (SR byte-identical initial→final). The `0xFFC0` mask
+/// fixes bits 15-6 = `0100 0000 11` (SS == 3, distinct from NEGX's SS 0/1/2 at 0x4000), leaving the 6-bit EA
+/// field. In scope: the data-alterable EA set Dn (0), (An) (2), (An)+ (3), -(An) (4), d16(An) (5), d8(An,Xn) (6),
+/// abs.w (7/0), abs.l (7/1). An-direct (1) / PC-relative (7/2, 7/3) / #imm (7/4) are NOT data-alterable and are
+/// absent. Odd word EAs are READ address errors the E3/E4 abort covers (IN scope — the dummy read faults first);
+/// (A7)/(A7)+/-(A7) are all clean and in scope. NO deferral, NO parity filter, NO (A7) carve-out. 100% PURE
+/// (8065). Classified strictly by OPCODE + mode.
+fn movefrom_sr_covered(opcode: u16) -> bool {
+    if opcode & 0xFFC0 != 0x40C0 {
+        return false;
+    }
+    let mode = (opcode >> 3) & 7;
+    let reg = opcode & 7;
+    matches!(mode, 0 | 2..=6) || (mode == 7 && (reg == 0 || reg == 1))
+}
+
 fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // MOVE (`00 SS RRR MMM mmm rrr`, dst_mode != 1) — its own EA→EA mode-scope filter (no parity).
     if move_covered(opcode) {
@@ -1522,6 +1544,15 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // case is supervisor, so the privilege-violation trap is unexercised (correctness-only, like the T-bit).
     // Classified strictly by OPCODE + the bit-3 direction guard.
     if movefrom_usp_covered(opcode) || moveto_usp_covered(opcode) {
+        return true;
+    }
+    // MOVEfromSR (`0xFFC0==0x40C0`, data-alterable modes) — move the FULL 16-bit SR (incl the system byte) to the
+    // EA, NOT privileged on the 68000, NO flags (SR byte-identical initial→final). Register `Dn.w = SR` (high
+    // word preserved), 6 cyc; memory is CLR.w's read-before-write RMW (dummy word read DISCARDED, then the SR
+    // write) so an odd EA is a READ address error the E3/E4 abort covers (IN scope). (A7)/(A7)+/-(A7) are all
+    // clean and in scope. 100% PURE (8065) — NO deferral, NO parity filter, NO (A7) carve-out. Classified by
+    // OPCODE + the data-alterable mode guard (off the NEGX SS 0/1/2 forms at 0x4000).
+    if movefrom_sr_covered(opcode) {
         return true;
     }
     // CMP `<ea>,Dn` + CMPM `(Ay)+,(Ax)+` + CMPI `#imm,<ea>` (the Cmp/Cmpm/Cmpi classes of the 3-way CMP.* mix,
@@ -2017,8 +2048,24 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 905_758,
-        "expected 905758 covered cases — S0 adds MOVEfromUSP + MOVEtoUSP (their own MOVEfromUSP.json / \
+        ran >= 913_823,
+        "expected 913823 covered cases — S1 adds MOVEfromSR (its own MOVEfromSR.json file, 8065 cases = +8065 \
+         over the 905758 S0 baseline → 913823). MOVEfromSR (0xFFC0==0x40C0, data-alterable modes) moves the FULL \
+         16-bit SR (incl the system byte S/T/I) to a data-alterable EA — NOT privileged on the 68000, sets NO \
+         flags (SR byte-identical initial→final, the load-bearing no-flag invariant: it WRITES the SR value but \
+         does NOT modify SR). New vocab: `Operand::Sr` (resolves to `regs.sr as u32`) + `MicroOp::SetWord {{ \
+         value, dst }}` — the no-flag WORD analog of `SetByte` (into Dn.w preserving the high 16 / into Scratch \
+         for the trailing memory write). Register (Dn) `Dn.w = SR` (high word preserved), 6 cyc (`[SetWord, \
+         Prefetch, Internal(2)]`, bus `r` then `n2`); memory is CLR.w's read-before-write RMW (`ea_dst` at \
+         Size::Word: dummy word READ DISCARDED, refill, SR write) so an odd EA is a READ address error the E3/E4 \
+         abort covers (low5=0x15) — reusing `ea_dst` gives this for free, but the written value is SR with NO \
+         flags (unlike CLR's Move-of-zero, which SETS Z=1). Per-mode word RMW `8 + ea`: (An)/(An)+ 12, -(An) 14, \
+         d16(An) 16, d8(An,Xn) 18, abs.w 16, abs.l 20. In scope: Dn (0), (An) (2), (An)+ (3), -(An) (4), d16(An) \
+         (5), d8(An,Xn) (6), abs.w (7/0), abs.l (7/1) — An-direct (1) / PC-rel (7/2, 7/3) / #imm (7/4) are NOT \
+         data-alterable and absent. Every case in scope — NO deferral, NO parity filter, NO (A7) carve-out \
+         ((A7)/(A7)+/-(A7) all clean and in scope). 100% PURE (8065). Classified by OPCODE + the data-alterable \
+         mode guard (off the NEGX SS 0/1/2 forms at 0x4000). \
+         Prior baseline — S0 adds MOVEfromUSP + MOVEtoUSP (their own MOVEfromUSP.json / \
          MOVEtoUSP.json files, 8065 cases each = +16130 over the 889628 NBCD baseline → 905758). These are the \
          trivial register↔USP moves (full 32 bits, NO flags, SR unchanged): MOVEfromUSP (0xFFF8==0x4E68) sets \
          `An = USP`, MOVEtoUSP (0xFFF8==0x4E60) sets `USP = An`. The new `MicroOp::MoveUsp {{ to_usp, an }}` is a \
@@ -2790,7 +2837,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX+ABCD+SBCD+NBCD+MOVEfromUSP+MOVEtoUSP (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX+ABCD+SBCD+NBCD+MOVEfromUSP+MOVEtoUSP+MOVEfromSR (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -4628,6 +4675,221 @@ fn nbcd_rmw_quiescable_and_serializable_at_every_micro_op_boundary() {
     }
     eprintln!(
         "C3 NBCD snapshot/restore: NBCD (xxx).l resumed identically at every micro-op boundary"
+    );
+}
+
+/// S1 — the named `MOVEfromSR <ea>` anchors, pinning the FULL-16-bit SR → EA move (`Operand::Sr` + the no-flag
+/// `MicroOp::SetWord`) against the vendored MOVEfromSR stream WITHOUT the bulk `covered()` sweep. NOT privileged
+/// on the 68000, sets **NO flags** (SR byte-identical initial→final — the load-bearing no-flag invariant, asserted
+/// on every clean anchor below). Register `Dn.w = SR` (high word preserved); memory is CLR.w's read-before-write
+/// RMW (dummy word read discarded, then the SR write), so an odd EA faults on the READ. Every mode + load-bearing
+/// fact, each a real vendored case pinned to its exact length + per-cycle transaction stream:
+/// - **`40c6 [MOVEfromSR D6] 1`** — **Dn**, len **6** (`[SetWord, Prefetch, Internal(2)]`, bus `r` then `n2`);
+///   `Dn.w = SR` (0x270B) with the **high word preserved** (0x1b91a995 → 0x1b91270b).
+/// - **`40d4 [MOVEfromSR (A4)] 28`** — **(An)**, len **12** (word RMW: dummy read discarded, refill, SR write).
+/// - **`40da [MOVEfromSR (A2)+] 2`** — **(An)+**, len **12**, A2 advances by 2 (post-increment, word).
+/// - **`40e3 [MOVEfromSR -(A3)] 9`** — **-(An)**, len **14** (pre-decrement idle + word RMW).
+/// - **`40eb [MOVEfromSR (d16, A3)] 24`** — **d16(An)**, len **16**.
+/// - **`40f6 [MOVEfromSR (d8, A6, Xn)] 36`** — **d8(An,Xn)**, len **18** (the indexed-mode idle).
+/// - **`40f8 [MOVEfromSR (xxx).w] 184`** — **abs.w**, len **16**.
+/// - **`40f9 [MOVEfromSR (xxx).l] 14`** — **abs.l**, len **20** (TWO extension words — the three-refill interleave).
+/// - **`40d7 [MOVEfromSR (A7)] 115`** — an **(A7) mode-2** case (clean, len **12** — the SP-as-base leg).
+/// - **`40e7 [MOVEfromSR -(A7)] 191`** — a **-(A7)** case (clean, len **14**, A7 predecs by 2).
+///
+/// Plus the **odd-EA READ fault** (its own test below). Each runs both drivers + the per-cycle transaction stream
+/// via `run_case`. Every anchor must decode as a MOVEfromSR opcode (`& 0xFFC0 == 0x40C0`), be `movefrom_sr_covered`,
+/// pin its length, AND leave the SR byte-identical (final.sr == initial.sr).
+#[test]
+fn movefrom_sr_anchor_cases_pass_both_drivers() {
+    let variants: &[(&str, u32)] = &[
+        ("40c6 [MOVEfromSR D6] 1", 6),
+        ("40d4 [MOVEfromSR (A4)] 28", 12),
+        ("40da [MOVEfromSR (A2)+] 2", 12),
+        ("40e3 [MOVEfromSR -(A3)] 9", 14),
+        ("40eb [MOVEfromSR (d16, A3)] 24", 16),
+        ("40f6 [MOVEfromSR (d8, A6, Xn)] 36", 18),
+        ("40f8 [MOVEfromSR (xxx).w] 184", 16),
+        ("40f9 [MOVEfromSR (xxx).l] 14", 20),
+        ("40d7 [MOVEfromSR (A7)] 115", 12),
+        ("40e7 [MOVEfromSR -(A7)] 191", 14),
+    ];
+    let path = format!("{VENDOR_DIR}/MOVEfromSR.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let mut found = 0usize;
+    for (name, length) in variants {
+        let case = data
+            .iter()
+            .find(|t| t["name"].as_str().unwrap() == *name)
+            .unwrap_or_else(|| panic!("S1 anchor {name} not found in MOVEfromSR.json"));
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(
+            opcode & 0xFFC0,
+            0x40C0,
+            "anchor {name} must be a MOVEfromSR opcode"
+        );
+        assert!(
+            movefrom_sr_covered(opcode),
+            "anchor {name} must be movefrom_sr_covered"
+        );
+        assert_eq!(
+            case["length"].as_u64().unwrap() as u32,
+            *length,
+            "MOVEfromSR anchor {name} length"
+        );
+        // The no-flag invariant: SR is byte-identical initial→final on every clean case (MOVEfromSR WRITES the
+        // SR value but does NOT modify SR — a CLR-style Move that sets Z=1/N=0 would be WRONG here).
+        assert_eq!(
+            case["final"]["sr"].as_u64().unwrap(),
+            case["initial"]["sr"].as_u64().unwrap(),
+            "MOVEfromSR anchor {name} leaves SR byte-identical (NO flags)"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, 10, "all S1 MOVEfromSR anchors exercised");
+    eprintln!(
+        "S1 MOVEfromSR anchors: {found} cases (Dn len 6 high-word-preserved / (An) 12 dummy-read-then-SR-write / (An)+ 12 advances / -(An) 14 / d16(An) 16 / d8(An,Xn) 18 / abs.w 16 / abs.l 20 two-ext / (A7) 12 / -(A7) 14) passed both drivers, SR byte-identical (NO flags)"
+    );
+}
+
+/// S1 — the `MOVEfromSR` **odd-EA READ address-error** anchor. MOVEfromSR is a WRITE instruction but faults on
+/// the DUMMY READ first (the 68000 read-before-write quirk), so an odd EA is a READ address error: SSW low5 =
+/// 0x15 (read | data | fc5), IR = the opcode, faulting addr = the full-32 EA, stacked PC = the live `regs.pc`.
+/// Reusing CLR.w's `ea_dst` RMW (the read faults before the write) gives this for free via the E3/E4 abort — the
+/// same group-0 14-byte vector-3 frame — so this case must PASS unchanged. The vendored `40de [MOVEfromSR (A6)+]`
+/// case has an ODD A6 (0xf111718b): the (An)+ post-increment commits BEFORE the fault (A6 → 0xf111718d), then the
+/// dummy read faults, SSP -= 14, pc → the vector-3 handler.
+#[test]
+fn movefrom_sr_odd_ea_read_fault_passes_both_drivers() {
+    let path = format!("{VENDOR_DIR}/MOVEfromSR.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "40de [MOVEfromSR (A6)+] 4")
+        .expect("MOVEfromSR odd-EA fault anchor present");
+    let ini = &case["initial"];
+    let fin = &case["final"];
+    let op = ini["prefetch"][0].as_u64().unwrap() as u16;
+    assert_eq!(
+        op & 0xFFC0,
+        0x40C0,
+        "odd-EA anchor must be a MOVEfromSR opcode"
+    );
+    assert!(movefrom_sr_covered(op), "odd-EA anchor must be covered");
+    // The read-before-write quirk: the (An)+ increment commits before the fault (A6 odd → A6 += 2), and the
+    // frame pushes SSP -= 14 (a group-0 14-byte vector-3 frame).
+    assert_eq!(
+        u32f(fin, "a6"),
+        u32f(ini, "a6").wrapping_add(2),
+        "(A6)+ increment commits before the fault (word step 2)"
+    );
+    assert_eq!(
+        u32f(fin, "ssp"),
+        u32f(ini, "ssp").wrapping_sub(14),
+        "the address-error frame pushes SSP -= 14"
+    );
+    // SSW = (opcode & 0xFFE0) | 0x15 (read | data | fc5) — pin it in the stacked frame.
+    let expected_ssw = (op & 0xFFE0) | 0x15;
+    let saved_ssp = u32f(fin, "ssp");
+    let ssw_addr = saved_ssp; // the SSW is the first (top) word of the group-0 frame at the saved SP
+    let ssw_pair = fin["ram"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| {
+            let p = p.as_array().unwrap();
+            let a = p[0].as_u64().unwrap() as u32;
+            (a == ssw_addr || a == ssw_addr + 1).then(|| (a, p[1].as_u64().unwrap() as u8))
+        })
+        .collect::<Vec<_>>();
+    let mut ssw = 0u16;
+    for (a, v) in &ssw_pair {
+        if *a == ssw_addr {
+            ssw |= (*v as u16) << 8;
+        } else {
+            ssw |= *v as u16;
+        }
+    }
+    assert_eq!(
+        ssw, expected_ssw,
+        "stacked SSW = (op & 0xFFE0) | 0x15 (read|data|fc5)"
+    );
+    run_case(case);
+    eprintln!(
+        "S1 MOVEfromSR odd-EA READ fault: (A6)+ odd → A6 += 2 (increment before fault), dummy read faults, SSW={expected_ssw:#06x} (read|data|fc5), SSP -= 14, group-0 vector-3 frame passed both drivers"
+    );
+}
+
+/// S1 — the snapshot/restore anchor for the MOVEfromSR word data-alterable EA read-modify-write (CLR.w's byte-
+/// for-byte RMW with the no-flag `MicroOp::SetWord`). Drives a real vendored `MOVEfromSR abs.l` case (the deepest
+/// EA — two extension words, three refills) through the quiesce driver, snapshotting + restoring the WHOLE
+/// `Cpu68000` at every micro-op boundary and proving the resumed run reproduces the run-to-completion final state
+/// + transaction stream bit-for-bit. Pins that the MOVEfromSR RMW recipe keeps `MicroState` fixed-size bincode.
+#[test]
+fn movefrom_sr_rmw_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/MOVEfromSR.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "40f9 [MOVEfromSR (xxx).l] 14")
+        .expect("MOVEfromSR abs.l snapshot anchor present");
+    let ini = &case["initial"];
+
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    let boundaries = {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        let mut n = 0usize;
+        while cpu.step_micro_op(&mut bus) == Step::Continue {
+            n += 1;
+        }
+        n
+    };
+    for pause_after in 0..=boundaries {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        for _ in 0..pause_after {
+            assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+        }
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+    }
+    eprintln!(
+        "S1 MOVEfromSR snapshot/restore: MOVEfromSR (xxx).l resumed identically at every micro-op boundary"
     );
 }
 

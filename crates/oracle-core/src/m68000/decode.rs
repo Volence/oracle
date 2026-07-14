@@ -654,6 +654,21 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         };
         return neg_family_recipe(opcode, AluOp::Neg, size);
     }
+    // MOVEfromSR `<ea>` (`0100 0000 11 mmm rrr`, opcode & 0xFFC0 == 0x40C0) — move the FULL 16-bit SR (incl the
+    // system byte) to a data-alterable EA. SS == 3 (bits 7-6 = 0b11) distinguishes it from NEGX (0x4000, SS
+    // 0/1/2); the NEGX arm below excludes `& 0xC0 == 0xC0`, so 0x40C0 reaches THIS arm cleanly. NOT privileged
+    // on the 68000, sets **NO flags** (SR byte-identical initial→final). Register (Dn) `Dn.w = SR` (high word
+    // preserved), 6 cyc; memory is CLR.w's read-before-write RMW (dummy word READ discarded, then the word SR
+    // write) so an odd EA is a READ address error (the E3/E4 abort) — but the WRITTEN value is SR with NO flags
+    // (unlike CLR's Move-of-zero, which SETS Z=1). The destination must be data-alterable (mode 0 OR
+    // `is_dst_mem_mode`) — the guard excludes An-direct (mode 1), PC-relative (7/2, 7/3), and `#imm` (7/4).
+    let movefrom_sr_mode = (opcode >> 3) & 7;
+    let movefrom_sr_reg = opcode & 7;
+    if opcode & 0xFFC0 == 0x40C0
+        && (movefrom_sr_mode == 0 || is_dst_mem_mode(movefrom_sr_mode, movefrom_sr_reg))
+    {
+        return movefrom_sr_recipe(opcode);
+    }
     // NEGX `<ea>` (`0100 0000 SS mmm rrr`, 0x4000/4040/4080, SS bits 7-6 = b/w/l) — negate-with-extend the
     // data-alterable EA: `res = (0 − d − X_in) & mask` with SUBX-style flags: N = msb(res), **Z STICKY**
     // (`Z_final = Z_in AND (res == 0)` — NEGX only ever CLEARS Z), V = `(d & res & signbit) != 0`,
@@ -1637,6 +1652,47 @@ fn clr_recipe(opcode: u16, size: Size) -> MicroState {
             a: Operand::Zero,
             b: Operand::Zero,
             dst: Dest::Scratch(1),
+        });
+    }
+    buf.finish()
+}
+
+/// `MOVEfromSR <ea>` (`0100 0000 11 mmm rrr`, opcode & 0xFFC0 == 0x40C0): move the FULL 16-bit status register
+/// (incl the system byte S/T/I) to a data-alterable EA. NOT privileged on the 68000, sets **NO flags** — the SR
+/// is byte-identical before/after (it WRITES the SR value but does not modify it, so a CLR-style `AluOp::Move`,
+/// which SETS Z=1/N=0, is WRONG; this uses the no-flag [`MicroOp::SetWord`] with [`Operand::Sr`]).
+///
+/// `MOVEfromSR` is CLR.w's **twin** with value = SR and no flags. A **memory destination** is byte-for-byte
+/// [`clr_recipe`]'s word read-then-write RMW ([`ea_dst`] with `Size::Word`): it READS the EA word (the value is
+/// DISCARDED — the 68000 read-before-write quirk), refills, then WRITES SR back at the same address. So an odd EA
+/// faults on the dummy READ first (low5 = 0x15, a READ address error the E3/E4 abort covers) — reusing `ea_dst`
+/// gives this for free (no write-only path). Per-mode cyc = word RMW `8 + ea`: `(An)`/`(An)+` 12, `-(An)` 14,
+/// `d16(An)` 16, `d8(An,Xn)` 18, `abs.w` 16, `abs.l` 20. `(A7)`/`(A7)+`/`-(A7)` are all clean and in scope.
+///
+/// `Dn`-direct (mode 0) has **no memory access**: a 0-cycle `SetWord { Sr → Dn.w }` (the low word = SR, the
+/// **high word preserved**) then a `Prefetch` + trailing `Internal(2)` — ordered so the bus stream is `r` (the
+/// FC6 prefetch @ pc+4) then `n2`, giving **6 cyc** (pinned to the vendored `40c6` anchor).
+fn movefrom_sr_recipe(opcode: u16) -> MicroState {
+    let mode = (opcode >> 3) & 7;
+    let reg = (opcode & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    if mode == 0 {
+        // Dn-direct — no memory: write SR into Dn's low word (high word preserved), then one refill + a trailing
+        // idle (n2 → 6 cyc, bus stream `r` then `n2`).
+        buf.push(MicroOp::SetWord {
+            value: Operand::Sr,
+            dst: Dest::DataRegLow16(reg),
+        });
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::Internal { cycles: 2 });
+    } else {
+        // Memory destination — CLR.w's read-then-write RMW, byte-for-byte EXCEPT the closure writes SR with NO
+        // flags (CLR uses `AluOp::Move`, which SETS Z=1). The dummy READ (discarded) faults first on an odd EA.
+        ea_dst(&mut buf, mode, reg, Size::Word, |_discarded| {
+            MicroOp::SetWord {
+                value: Operand::Sr,
+                dst: Dest::Scratch(1),
+            }
         });
     }
     buf.finish()

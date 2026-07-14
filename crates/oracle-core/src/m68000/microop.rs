@@ -283,6 +283,10 @@ pub enum Operand {
     AddrReg(u8),
     /// The immediate word currently in the prefetch queue (`prefetch[1]`, the word after the opcode).
     ImmWord,
+    /// The full 16-bit status register, zero-extended: `regs.sr as u32` (T | S | I2-I0 | X/N/Z/V/C — the WHOLE
+    /// SR incl the system byte, NOT just the CCR). The write value of `MOVEfromSR` (`EA/Dn.w = SR`), fed to a
+    /// no-flag word write ([`MicroOp::SetWord`]) so the store leaves the SR itself byte-identical.
+    Sr,
     /// A constant zero — an inert leg of an [`MicroOp::EaCalc`] (e.g. the index/base a mode doesn't use).
     Zero,
     /// A constant `2` — the word stride between the two halves of a long memory access. The low word of a
@@ -1109,6 +1113,15 @@ pub enum MicroOp {
     /// [`AluOp::Move`] (which CLR uses and which SETS N/Z) this touches no CCR bit. A 0-cycle, non-bus,
     /// snapshot-visible internal step.
     SetByte { value: u8, dst: Dest },
+    /// Write a resolved WORD `value` to a word destination, affecting **NO flags** — the word analog of
+    /// [`MicroOp::SetByte`]. The store value of `MOVEfromSR` (`EA/Dn.w = SR`, via [`Operand::Sr`]): into
+    /// [`Dest::DataRegLow16`] it writes the low word and **preserves the upper 16 bits** (the `Dn` register
+    /// form — `Dn.w = SR`, high word kept), into [`Dest::Scratch`] it parks the word (zero-extended) for the
+    /// trailing memory `Write` to store (the data-alterable RMW form). Unlike [`AluOp::Move`] (which CLR uses
+    /// and which SETS N/Z) this touches no CCR bit, so the SR is byte-identical before/after — the load-bearing
+    /// no-flag invariant of MOVEfromSR (an instruction that WRITES the SR value but does NOT modify the SR). A
+    /// 0-cycle, non-bus, snapshot-visible internal step.
+    SetWord { value: Operand, dst: Dest },
     /// The atomic indivisible **TAS memory** read-modify-write: ONE locked bus cycle (the SST `'t'`
     /// transaction, 10 cyc = read 4 + indivisible modify 2 + write 4) at `resolve(addr)`. Via
     /// [`Bus68k::tas`](super::bus68k::Bus68k::tas) it reads `orig`, writes `orig | 0x80`, and logs ONE `Tas`
@@ -1277,6 +1290,7 @@ impl MicroState {
             Operand::AddrRegLow16(n) => regs.addr_reg(n as usize) & 0xFFFF,
             Operand::AddrReg(n) => regs.addr_reg(n as usize),
             Operand::ImmWord => regs.prefetch[1] as u32,
+            Operand::Sr => regs.sr as u32,
             Operand::Zero => 0,
             Operand::WordStep => 2,
             Operand::ShiftCount(c) => c as u32,
@@ -2588,6 +2602,21 @@ impl MicroState {
                     }
                     Dest::Scratch(s) => self.scratch[s as usize] = value as u32,
                     _ => unreachable!("SetByte writes only DataRegLow8 / Scratch"),
+                }
+                0
+            }
+            MicroOp::SetWord { value, dst } => {
+                // The no-flag WORD write (MOVEfromSR's `EA/Dn.w = SR`). Into Dn's low word preserve the upper
+                // 16 bits; into a scratch slot park the word (zero-extended) for the trailing memory Write. NO
+                // flags — the SR is byte-identical before/after (the value it WRITES is SR, but it does not
+                // modify SR).
+                let v = self.resolve(value, regs) & 0xFFFF;
+                match dst {
+                    Dest::DataRegLow16(n) => {
+                        regs.d[n as usize] = (regs.d[n as usize] & 0xFFFF_0000) | v;
+                    }
+                    Dest::Scratch(s) => self.scratch[s as usize] = v,
+                    _ => unreachable!("SetWord writes only DataRegLow16 / Scratch"),
                 }
                 0
             }
@@ -4455,6 +4484,57 @@ mod tests {
 
         assert_eq!(cycles, 0);
         assert_eq!(st.scratch[1], 0x0000_0000, "0x00 parked in scratch slot 1");
+        assert!(bus.log.is_empty());
+    }
+
+    #[test]
+    fn set_word_writes_sr_to_low_word_preserving_upper_16_with_no_flags() {
+        // SetWord is the no-flag word write (MOVEfromSR's `Dn.w = SR`). Into Dn's low word it preserves the
+        // upper 16 bits and touches NO flags — the SR value is WRITTEN but the SR itself is byte-identical.
+        let mut regs = regs();
+        regs.d[6] = 0x1B91_A995; // upper 16 = 0x1B91
+        regs.sr = 0x270B; // the full 16-bit SR (system byte + CCR)
+        let sr_before = regs.sr;
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::SetWord {
+            value: Operand::Sr,
+            dst: Dest::DataRegLow16(6),
+        }]);
+
+        let cycles = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(cycles, 0, "SetWord is an internal compute — 0 cycles");
+        assert_eq!(
+            regs.d[6], 0x1B91_270B,
+            "SR (0x270B) written to the low word, upper 16 bits preserved"
+        );
+        assert_eq!(
+            regs.sr, sr_before,
+            "SetWord touches NO flags (SR byte-identical — the no-flag invariant)"
+        );
+        assert!(bus.log.is_empty(), "SetWord touches no bus");
+    }
+
+    #[test]
+    fn set_word_parks_sr_in_scratch_zero_extended() {
+        // The memory-destination form parks the word in a scratch slot (the trailing Write stores it),
+        // zero-extended over the whole slot.
+        let mut regs = regs();
+        regs.sr = 0x2714;
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::SetWord {
+            value: Operand::Sr,
+            dst: Dest::Scratch(1),
+        }]);
+        st.scratch[1] = 0xDEAD_BEEF; // proves the whole slot is overwritten (zero-extended)
+
+        let cycles = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(cycles, 0);
+        assert_eq!(
+            st.scratch[1], 0x0000_2714,
+            "SR parked in scratch slot 1 (zero-extended)"
+        );
         assert!(bus.log.is_empty());
     }
 
