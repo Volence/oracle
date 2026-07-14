@@ -610,6 +610,18 @@ const FILES: &[&str] = &[
     // (`an == 7`) fully covered (`d16(An)` never mutates the SSP). 100% PURE / 100% in scope (8065) — NO
     // deferral, NO parity filter, NO (A7) carve-out. Classified by OPCODE via `movep_covered`.
     "MOVEP.w.json",
+    // MOVEP.l (`0000 rrr 1 oo 001 aaa`, opcode & 0xF138 == 0x0108, opmode 5 mem→reg / 7 reg→mem) — the LONG twin
+    // of MOVEP.w: move the FOUR bytes of a DATA register `Dn` ↔ the ALTERNATING (even/odd) memory addresses
+    // `EA, EA+2, EA+4, EA+6` where `EA = An + sx16(prefetch[1])` (the ONLY addressing mode is `d16(An)`). NO flags
+    // (SR byte-identical). reg→mem writes `(Dn>>24)&0xFF`@EA, `(Dn>>16)&0xFF`@EA+2, `(Dn>>8)&0xFF`@EA+4,
+    // `Dn&0xFF`@EA+6; mem→reg loads `Dn = (mem[EA]<<24) | (mem[EA+2]<<16) | (mem[EA+4]<<8) | mem[EA+6]` — the
+    // FULL 32 bits of Dn are OVERWRITTEN (the four merges at shifts 24/16/8/0 cover every byte). One file
+    // contains BOTH directions. Uniform 24 cyc; bus `[r pc+4 .w, byte@EA .b, byte@EA+2 .b, byte@EA+4 .b,
+    // byte@EA+6 .b, r pc+6 .w]` (the refill prefetch FIRST, the four byte accesses, the final prefetch LAST).
+    // Byte-addressed → NO odd-EA fault is possible; A7 (`an == 7`) fully covered (`d16(An)` never mutates the
+    // SSP). 100% PURE / 100% in scope (8065) — NO deferral, NO parity filter, NO (A7) carve-out. Classified by
+    // OPCODE via `movep_covered` (the SAME predicate as MOVEP.w — one predicate admits both sizes).
+    "MOVEP.l.json",
     // ADDX.b / ADDX.w / ADDX.l (`1101 xxx 1 SS 00 M yyy`, opcode & 0xF130 == 0xD100, SS != 3) — the EXTENDED
     // (multi-precision) add. M = bit 3 selects the form: M=0 → `ADDX Dy,Dx` (register-direct); M=1 → `ADDX
     // -(Ay),-(Ax)` (two-operand predecrement RMW). `AluOp::Addx` is DEDICATED (like NEGX): the incoming X
@@ -2143,8 +2155,24 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 938_018,
-        "expected 938018 covered cases — P0 adds MOVEP.w (its own MOVEP.w.json file, 8065 cases = +8065 over \
+        ran >= 946_083,
+        "expected 946083 covered cases — P1 adds MOVEP.l (its own MOVEP.l.json file, 8065 cases = +8065 over \
+         the 938018 MOVEP.w baseline → 946083, the FINAL MOVEP threshold). MOVEP.l (0xF138==0x0108, opmode 5 \
+         mem→reg / 7 reg→mem — ONE file, BOTH directions) is the LONG twin: it moves the FOUR bytes of a DATA \
+         register `Dn` ↔ the ALTERNATING (even/odd) memory addresses `EA, EA+2, EA+4, EA+6` where `EA = An + \
+         sx16(prefetch[1])`. NO flags (SR byte-identical). reg→mem writes `(Dn>>24)&0xFF`@EA, `(Dn>>16)&0xFF`@EA+2, \
+         `(Dn>>8)&0xFF`@EA+4, `Dn&0xFF`@EA+6; mem→reg loads `Dn = (mem[EA]<<24) | (mem[EA+2]<<16) | (mem[EA+4]<<8) \
+         | mem[EA+6]` — the FULL 32 bits of Dn are OVERWRITTEN (the four merges at shifts 24/16/8/0 cover every \
+         byte; no high bits survive). It REUSES the shared `MicroOp::MovepStore`/`MovepLoad` + `movep_recipe` \
+         verbatim — the ONLY delta vs MOVEP.w is `nbytes = 4` (driven off opmode bit6): `[EaCalc(EA into slot 0, \
+         BEFORE the refill), Prefetch (refill @ pc+4, FIRST), 4 × MovepStore/MovepLoad (shifts big-endian \
+         [24,16,8,0]), Prefetch (final @ pc+6, LAST)]`. Uniform 24 cyc; bus `[r pc+4 .w (fc6), byte@EA .b (fc5), \
+         byte@EA+2 .b (fc5), byte@EA+4 .b (fc5), byte@EA+6 .b (fc5), r pc+6 .w (fc6)]` (the refill prefetch FIRST, \
+         the four byte accesses, the final prefetch LAST — the load-bearing order). Byte-addressed → NO odd-EA \
+         fault is possible; A7 (`an == 7`) fully covered. Every case in scope — NO deferral, NO parity filter, NO \
+         (A7) carve-out. 100% PURE (8065). Classified by OPCODE via `movep_covered` (`0xF138==0x0108`, the SAME \
+         predicate as MOVEP.w). \
+         Prior baseline — P0 adds MOVEP.w (its own MOVEP.w.json file, 8065 cases = +8065 over \
          the 929953 status-register-moves baseline → 938018). MOVEP.w (0xF138==0x0108, opmode 4 mem→reg / 6 \
          reg→mem — ONE file, BOTH directions) moves the two bytes of a DATA register `Dn` ↔ the ALTERNATING \
          (even/odd) memory addresses `EA, EA+2` where `EA = An + sx16(prefetch[1])` (the historical \
@@ -2990,7 +3018,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX+ABCD+SBCD+NBCD+MOVEfromUSP+MOVEtoUSP+MOVEfromSR+MOVEtoCCR+MOVEtoSR+MOVEP.w (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX+ABCD+SBCD+NBCD+MOVEfromUSP+MOVEtoUSP+MOVEfromSR+MOVEtoCCR+MOVEtoSR+MOVEP.w+MOVEP.l (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -9883,4 +9911,141 @@ fn movep_w_quiescable_and_serializable_at_every_micro_op_boundary() {
         pause_after += 1;
     }
     eprintln!("P0 MOVEP.w snapshot/restore: MOVEP.w D4,(d16,A0) (two-byte scatter + framing prefetches) resumed identically at every micro-op boundary");
+}
+
+/// MOVEP.l (`opcode & 0xF138 == 0x0108`, opmode 5 mem→reg / 7 reg→mem) — move the FOUR bytes of a DATA register
+/// `Dn` ↔ the ALTERNATING (even/odd) memory addresses `EA, EA+2, EA+4, EA+6` where `EA = An + sx16(d16)`, NO
+/// flags. P1 named anchors, pinning the LONG byte-scatter shape against the vendored MOVEP.l stream WITHOUT
+/// relying on the bulk `covered()` sweep. Each is a real vendored case exercised via `run_case` (both drivers +
+/// the exact per-cycle 6-transaction stream `[r pc+4 .w, byte@EA .b, byte@EA+2 .b, byte@EA+4 .b, byte@EA+6 .b,
+/// r pc+6 .w]` + post regs/SR/RAM/prefetch/cycles):
+/// - `054e [MOVEP.l (d16, A6), D2]` — mem→reg (opmode 5): `D2 = (mem[EA]<<24) | (mem[EA+2]<<16) | (mem[EA+4]<<8)
+///   | mem[EA+6]` — the FULL 32 bits of D2 OVERWRITTEN (the four merges at shifts 24/16/8/0 cover every byte, so
+///   NO high bits survive). ALSO a NEGATIVE displacement (d16 = 0xa15b → −24229 — exercises `DispWord` sx16 on
+///   the long form). len 24.
+/// - `0dcc [MOVEP.l D6, (d16, A4)]` — reg→mem (opmode 7): the four scattered bytes `(D6>>24)&0xFF`@EA,
+///   `(D6>>16)&0xFF`@EA+2, `(D6>>8)&0xFF`@EA+4, `D6&0xFF`@EA+6 land in RAM. len 24.
+/// - `054f [MOVEP.l (d16, A7), D2]` — the A7 case (`an == 7`, EA based on the SSP). mem→reg long, D2 fully
+///   overwritten. len 24.
+///
+/// Every anchor must decode as a MOVEP opcode (`0xF138 == 0x0108`) and be `movep_covered`, be LONG (opmode bit6
+/// set), set NO flags (`final.sr == initial.sr`), and take exactly 24 cycles. `run_case` pins the whole 6-txn
+/// stream + both drivers + snapshot/restore at every bus boundary.
+#[test]
+fn movep_l_anchors_match_singlesteptests() {
+    let path = format!("{VENDOR_DIR}/MOVEP.l.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: MOVEP.l.json missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let anchors: &[&str] = &[
+        "054e [MOVEP.l (d16, A6), D2] 1", // mem→reg (opmode 5), full-32 D2 overwrite + negative disp
+        "0dcc [MOVEP.l D6, (d16, A4)] 4", // reg→mem (opmode 7), four scattered bytes
+        "054f [MOVEP.l (d16, A7), D2] 7", // A7 (an==7, EA from SSP), mem→reg long
+    ];
+    let mut found = 0usize;
+    for name in anchors {
+        let case = data
+            .iter()
+            .find(|t| t["name"].as_str().unwrap() == *name)
+            .unwrap_or_else(|| panic!("P1 MOVEP.l anchor {name} not found"));
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        // Must be a MOVEP opcode (0xF138 == 0x0108) and covered.
+        assert_eq!(
+            opcode & 0xF138,
+            0x0108,
+            "anchor {name} must be a MOVEP opcode"
+        );
+        assert!(movep_covered(opcode), "anchor {name} must be movep_covered");
+        // Long MOVEP → bit6 == 1 (opmode 5 or 7).
+        assert_eq!(
+            (opcode >> 6) & 1,
+            1,
+            "anchor {name} must be MOVEP.l (bit6 == 1)"
+        );
+        // NO flags — SR byte-identical.
+        assert_eq!(
+            case["initial"]["sr"], case["final"]["sr"],
+            "MOVEP sets NO flags — SR unchanged [{name}]"
+        );
+        // Uniform 24 cycles.
+        assert_eq!(
+            case["length"].as_u64().unwrap(),
+            24,
+            "MOVEP.l is uniform 24 cyc [{name}]"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all P1 MOVEP.l anchors exercised");
+    eprintln!(
+        "P1 MOVEP.l anchors: {found} cases (mem→reg full-32 overwrite+negdisp / reg→mem four-byte scatter / A7 EA-from-SSP) passed both drivers"
+    );
+}
+
+/// P1 — the snapshot/restore anchor for the LONG byte-scatter `MOVEP.l` recipe (the shared `MicroOp::MovepStore`/
+/// `MovepLoad` + `movep_recipe`, now emitting FOUR byte accesses). Drives a real vendored reg→mem long case (the
+/// four-byte scatter + the framing prefetches) through the quiesce driver, snapshotting + restoring the WHOLE
+/// `Cpu68000` (incl. the in-flight cursor) at every micro-op boundary and proving the resumed run reproduces the
+/// run-to-completion final state + transaction stream bit-for-bit. This pins that each of the four byte accesses
+/// is its OWN bus-access quiesce boundary and that `MicroState` stays a fixed-size bincode `[MicroOp; MAX_OPS]`
+/// array (`Copy`) with the longer op count (7 ≤ MAX_OPS).
+#[test]
+fn movep_l_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/MOVEP.l.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: MOVEP.l.json missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "0dcc [MOVEP.l D6, (d16, A4)] 4")
+        .expect("MOVEP.l reg→mem snapshot anchor present");
+    let ini = &case["initial"];
+
+    // Run-to-completion reference.
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    // Snapshot at every in-flight micro-op boundary (drain until Done, snapshotting before each step).
+    let mut pause_after = 0usize;
+    loop {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        let mut reached_end = false;
+        for _ in 0..pause_after {
+            if let Step::Done(_) = cpu.step_micro_op(&mut bus) {
+                reached_end = true;
+                break;
+            }
+        }
+        if reached_end {
+            break;
+        }
+        // Snapshot + restore the whole CPU (incl. the in-flight cursor) mid-instruction.
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+        pause_after += 1;
+    }
+    eprintln!("P1 MOVEP.l snapshot/restore: MOVEP.l D6,(d16,A4) (four-byte scatter + framing prefetches) resumed identically at every micro-op boundary");
 }
