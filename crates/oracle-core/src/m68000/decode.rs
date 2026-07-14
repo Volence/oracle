@@ -289,6 +289,17 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     if opcode & 0xF100 == 0xC100 && matches!((opcode >> 3) & 0x1F, 0x08 | 0x09 | 0x11) {
         return exg_recipe(opcode);
     }
+    // ABCD (`1100 xxx 1 0000 M yyy`, `opcode & 0xF1F0 == 0xC100`) — the packed-decimal add `Dx = Dx +₁₀ Dy + X`
+    // (M = bit3 = 0, register-direct) / `-(Ax) = -(Ax) +₁₀ -(Ay) + X` (M = 1, two-operand predecrement),
+    // byte-only. The `0xF1F0` mask fixes bits 15-12 = 1100, bit 8 = 1, bits 7-4 = 0000 (byte size + bits 5-4 =
+    // 00, ea-mode field 000/001) — leaving M (3), Rx = (op>>9)&7 (dst), Ry = op&7 (src). DISJOINT from EXG
+    // (opmode {0x08,0x09,0x11}, handled above) and from real `AND.b Dn,<ea>` (ea modes 2-7 give bits 5-4 != 00,
+    // caught by the `is_dst_mem_mode` guard below). Reuses `xarith_recipe` with the dedicated `AluOp::Abcd` (X
+    // into the value AND the carry, sticky Z, the decimal correction). Register-direct = 6 cyc, -(Ay),-(Ax) =
+    // 18; byte-only so NO alignment fault path.
+    if opcode & 0xF1F0 == 0xC100 {
+        return xarith_recipe(opcode, AluOp::Abcd, Size::Byte);
+    }
     // AND `<ea>,Dn` (`1100 ddd 0SS mmm rrr`, opmode 0/1/2 = b/w/l = 0xC000/0xC040/0xC080) — bitwise `Dn = Dn &
     // <ea>` (Dn the minuend `a`; AND is commutative so operand order is inert). Source = data modes; An-direct
     // (mode 1) is ILLEGAL/absent (the `arith_ea_dn` arm relies on `covered()` never feeding it mode 1, exactly
@@ -365,6 +376,19 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     // overflow `16|18`, minus the trailing refill), or on a zero divisor installs the vector-5 div0 frame.
     if opcode & 0xF1C0 == 0x81C0 {
         return div_recipe(opcode, AluOp::Divs);
+    }
+    // SBCD (`1000 xxx 1 0000 M yyy`, `opcode & 0xF1F0 == 0x8100`) — the packed-decimal subtract `Dx = Dx −₁₀ Dy
+    // − X` (M = bit3 = 0, register-direct) / `-(Ax) = -(Ax) −₁₀ -(Ay) − X` (M = 1, two-operand predecrement),
+    // byte-only. The `0x8` (OR) space twin of ABCD with the identical bit layout: the `0xF1F0` mask fixes bits
+    // 15-12 = 1000, bit 8 = 1, bits 7-4 = 0000 (byte size + bits 5-4 = 00, ea-mode field 000/001) — leaving M
+    // (3), Rx = (op>>9)&7 (dst), Ry = op&7 (src). Placed BEFORE the OR arms below: real `OR.b Dn,<ea>` (opmode
+    // 4, 0x8100) is guarded by `is_dst_mem_mode` (alterable memory, modes 2-7 → bits 5-4 != 00), which already
+    // excludes SBCD's modes 000/001 — classifying SBCD first keeps the intent explicit and DISJOINT from
+    // DIVU/DIVS (opmode 3/7, matched above). Reuses `xarith_recipe` with the dedicated `AluOp::Sbcd` (X into the
+    // value AND the borrow, sticky Z, the decimal correction with the carry/result asymmetry). Register-direct =
+    // 6 cyc, -(Ay),-(Ax) = 18; byte-only so NO alignment fault path.
+    if opcode & 0xF1F0 == 0x8100 {
+        return xarith_recipe(opcode, AluOp::Sbcd, Size::Byte);
     }
     // OR `<ea>,Dn` (`1000 ddd 0SS mmm rrr`, opmode 0/1/2 = b/w/l = 0x8000/0x8040/0x8080) — bitwise `Dn = Dn |
     // <ea>` (Dn the minuend `a`; OR is commutative so operand order is inert). Identical to the AND `<ea>,Dn`
@@ -1737,8 +1761,13 @@ fn xarith_recipe(opcode: u16, op: AluOp, size: Size) -> MicroState {
             b: dn_operand(ry, size),
             dst: dn_dest(rx, size),
         });
-        if size == Size::Long {
-            buf.push(MicroOp::Internal { cycles: 4 });
+        // The register-direct idle that sets the length: ADDX/SUBX `.l` = 8 (a trailing `Internal(4)`);
+        // ABCD/SBCD (byte-only) = 6 (a trailing `Internal(2)` — the decimal ops carry one extra internal cycle
+        // vs a plain `ADDX.b Dn,Dn` = 4). ADDX/SUBX `.b`/`.w` = 4 (no idle).
+        match op {
+            AluOp::Abcd | AluOp::Sbcd => buf.push(MicroOp::Internal { cycles: 2 }),
+            _ if size == Size::Long => buf.push(MicroOp::Internal { cycles: 4 }),
+            _ => {}
         }
         return buf.finish();
     }

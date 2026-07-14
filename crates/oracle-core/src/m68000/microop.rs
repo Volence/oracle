@@ -484,6 +484,30 @@ pub enum AluOp {
     /// [`Dest::Scratch`] for the `-(Ax)` memory dest the trailing `Write` stores). Distinct from
     /// [`AluOp::Sub`] (no X-in, plain `Z = result == 0`) and [`AluOp::Addx`] (extended add).
     Subx,
+    /// Abcd: **binary BCD** `result = dst +₁₀ src + X_in` (byte-only) — the flag op of the `ABCD` family
+    /// (`ABCD Dy,Dx` / `ABCD -(Ay),-(Ax)`, the packed-decimal add). Like [`AluOp::Addx`]/[`AluOp::Negx`] this
+    /// op is **dedicated** (NOT an `Add` delegation): the incoming X (`X_in = (regs.sr >> 4) & 1`) participates
+    /// in BOTH the value and the carry, and **Z is STICKY** (`Z_final = Z_in AND (result == 0)` — never SET,
+    /// only cleared). `a` is the destination (`Dx` / dst `-(Ax)`), `b` the source (`Dy` / src `-(Ay)`). The
+    /// decimal correction (0-mismatch-verified against the vendored `ABCD` stream): `binary = dst + src + X_in`;
+    /// `lowc = 6 if (dst&0xf) + (src&0xf) + X_in > 9 else 0`; **C = X = (binary > 0x99)** (the high carry —
+    /// **without** `lowc` folded in); `res = (binary + lowc + (0x60 if C else 0)) & 0xff`; **N = msb(res)**;
+    /// **V = msb(res & ~binary)** (the undefined-but-deterministic overflow the 68000 actually produces).
+    /// Distinct from [`AluOp::Add`]/[`AluOp::Addx`] (binary, non-decimal) and [`AluOp::Sbcd`] (the decimal
+    /// SUBTRACT with its carry/result asymmetry).
+    Abcd,
+    /// Sbcd: **binary BCD** `result = dst −₁₀ src − X_in` (byte-only) — the flag op of the `SBCD` family
+    /// (`SBCD Dy,Dx` / `SBCD -(Ay),-(Ax)`, the packed-decimal subtract). Like [`AluOp::Abcd`] this op is
+    /// **dedicated** (X into value and borrow, sticky Z). It carries a **REAL carry/result ASYMMETRY**
+    /// (load-bearing — 28 divergent cases): `binary = dst − src − X_in` (signed); `lowc = 6 if
+    /// (dst&0xf) − (src&0xf) − X_in < 0 else 0`; **C = X = ((binary − lowc) < 0)** — the borrow keys on
+    /// `binary − lowc`; **`highc = 0x60 if binary < 0 else 0`** — the RESULT's high correction keys on `binary`
+    /// **(NOT `binary − lowc`)**; `res = (binary − lowc − highc) & 0xff`; **N = msb(res)**; **V = msb(~res &
+    /// binary)**. The two conditions differ for small-positive `binary` with a strongly-negative low nibble
+    /// (C=1 but no 0x60 result correction) — a single shared condition is WRONG; they MUST be computed
+    /// separately. 0-mismatch-verified against the vendored `SBCD` stream. Distinct from [`AluOp::Sub`]/
+    /// [`AluOp::Subx`] (binary, non-decimal) and [`AluOp::Abcd`] (the decimal ADD).
+    Sbcd,
     /// Not: **unary** `result = (~a) & mask` at the operand-size boundary — the flag op of the `NOT` family
     /// (`NOT <ea>` = `dst = ~dst`). It is **logic-shaped**, identical to [`AluOp::Eor`] in every respect except
     /// the bit operation (`~a` instead of `a ^ b`): it shares the **MOVE flag shape** ([`move_flags`]) — sets
@@ -1823,6 +1847,84 @@ impl MicroState {
                             ccr |= CCR_V;
                         }
                         if raw < 0 {
+                            ccr |= CCR_C | CCR_X;
+                        }
+                        (res, ccr)
+                    }
+                    // ABCD is the BINARY BCD `dst +₁₀ src + X_in` (byte-only) — a DEDICATED op (no Add
+                    // delegation): the incoming X participates in BOTH the value and the carry, and Z is STICKY.
+                    // 0-mismatch-verified against the vendored ABCD stream: `binary = dst + src + X_in`;
+                    // `lowc = 6 if (dst&0xf)+(src&0xf)+X_in > 9 else 0`; C = X = (binary > 0x99) (the HIGH carry —
+                    // NOT the low correction); `res = (binary + lowc + (0x60 if C else 0)) & 0xff`; N = msb(res);
+                    // V = msb(res & ~binary) (the undefined-but-deterministic overflow the real chip produces);
+                    // Z = STICKY (`Z_in AND res == 0`). `a`/lhs = dst, `b`/rhs = src.
+                    AluOp::Abcd => {
+                        let dst = (lhs & 0xFF) as i32;
+                        let src = (rhs & 0xFF) as i32;
+                        let xin = i32::from(regs.sr & CCR_X != 0);
+                        let binary = dst + src + xin;
+                        let lowc = if (dst & 0xF) + (src & 0xF) + xin > 9 {
+                            6
+                        } else {
+                            0
+                        };
+                        let carry = binary > 0x99;
+                        let highc = if carry { 0x60 } else { 0 };
+                        let res = ((binary + lowc + highc) & 0xFF) as u32;
+                        let mut ccr = 0u16;
+                        if res & 0x80 != 0 {
+                            ccr |= CCR_N;
+                        }
+                        // STICKY Z: keep the incoming Z bit only when the result is zero; clear it otherwise.
+                        if res == 0 && regs.sr & CCR_Z != 0 {
+                            ccr |= CCR_Z;
+                        }
+                        // V = msb(res & ~binary) — the fitted, 0-mismatch overflow rule (bit 7 of the AND).
+                        if (res as i32 & !binary) & 0x80 != 0 {
+                            ccr |= CCR_V;
+                        }
+                        if carry {
+                            ccr |= CCR_C | CCR_X;
+                        }
+                        (res, ccr)
+                    }
+                    // SBCD is the BINARY BCD `dst −₁₀ src − X_in` (byte-only) — a DEDICATED op (no Sub delegation):
+                    // the incoming X participates in BOTH the value and the borrow, and Z is STICKY. It carries a
+                    // REAL carry/result ASYMMETRY (0-mismatch-verified against the vendored SBCD stream — 28
+                    // divergent cases): `binary = dst − src − X_in` (signed); `lowc = 6 if (dst&0xf)−(src&0xf)−X_in
+                    // < 0 else 0`; C = X = ((binary − lowc) < 0) — the borrow keys on `binary − lowc`; highc =
+                    // 0x60 if binary < 0 (the RESULT's high correction keys on `binary`, NOT `binary − lowc`);
+                    // `res = (binary − lowc − highc) & 0xff`; N = msb(res); V = msb(~res & binary); Z = STICKY.
+                    // The carry and highc conditions DIFFER (small-positive binary + strongly-negative low nibble)
+                    // — computed SEPARATELY; a single shared condition is WRONG. `a`/lhs = dst, `b`/rhs = src.
+                    AluOp::Sbcd => {
+                        let dst = (lhs & 0xFF) as i32;
+                        let src = (rhs & 0xFF) as i32;
+                        let xin = i32::from(regs.sr & CCR_X != 0);
+                        let binary = dst - src - xin;
+                        let lowc = if (dst & 0xF) - (src & 0xF) - xin < 0 {
+                            6
+                        } else {
+                            0
+                        };
+                        // The borrow keys on `binary − lowc`; the 0x60 result correction keys on `binary` — they
+                        // DIVERGE (compute separately). X = C on every op.
+                        let carry = (binary - lowc) < 0;
+                        let highc = if binary < 0 { 0x60 } else { 0 };
+                        let res = ((binary - lowc - highc) & 0xFF) as u32;
+                        let mut ccr = 0u16;
+                        if res & 0x80 != 0 {
+                            ccr |= CCR_N;
+                        }
+                        // STICKY Z: keep the incoming Z bit only when the result is zero; clear it otherwise.
+                        if res == 0 && regs.sr & CCR_Z != 0 {
+                            ccr |= CCR_Z;
+                        }
+                        // V = msb(~res & binary) — the fitted, 0-mismatch overflow rule (bit 7 of the AND).
+                        if (!(res as i32) & binary) & 0x80 != 0 {
+                            ccr |= CCR_V;
+                        }
+                        if carry {
                             ccr |= CCR_C | CCR_X;
                         }
                         (res, ccr)

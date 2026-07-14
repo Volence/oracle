@@ -598,6 +598,24 @@ const FILES: &[&str] = &[
     "SUBX.b.json",
     "SUBX.w.json",
     "SUBX.l.json",
+    // ABCD (`1100 xxx 1 0000 M yyy`, opcode & 0xF1F0 == 0xC100) — the packed-decimal add `Dx = Dx +₁₀ Dy + X`,
+    // byte-only. M = bit 3 selects the form: M=0 → `ABCD Dy,Dx` (register-direct, 6 cyc); M=1 → `ABCD
+    // -(Ay),-(Ax)` (two-operand predecrement RMW, 18 cyc). `AluOp::Abcd` is DEDICATED (like ADDX/NEGX): the
+    // incoming X (`sr>>4 & 1`) folds into BOTH the value and the carry, Z is STICKY (`Z_in AND res==0`),
+    // X_out = C_out. The decimal correction (0-mismatch): `binary = dst+src+X`; `lowc = 6 if
+    // (dst&0xf)+(src&0xf)+X > 9`; C = X = (binary > 0x99); res = (binary + lowc + (0x60 if C)) & 0xff;
+    // V = msb(res & ~binary). Byte-only → NO alignment fault. Every case in scope (both forms, incl `-(A7)`) —
+    // NO deferral, NO parity filter. 100% PURE — 8065 cases. Classified strictly by OPCODE.
+    "ABCD.json",
+    // SBCD (`1000 xxx 1 0000 M yyy`, opcode & 0xF1F0 == 0x8100) — the packed-decimal subtract `Dx = Dx −₁₀ Dy −
+    // X`, byte-only, the `0x8` (OR) space twin of ABCD. M = bit 3 (0 = `Dy,Dx` register-direct, 6 cyc; 1 =
+    // `-(Ay),-(Ax)` predecrement RMW, 18 cyc). `AluOp::Sbcd` is DEDICATED: X folds into BOTH the value and the
+    // borrow, Z is STICKY, X_out = C_out. It carries a REAL carry/result ASYMMETRY (28 divergent cases):
+    // `binary = dst−src−X`; `lowc = 6 if (dst&0xf)−(src&0xf)−X < 0`; C = X = ((binary−lowc) < 0) — the borrow
+    // keys on `binary−lowc`; highc = 0x60 if binary < 0 — the RESULT correction keys on `binary`; res =
+    // (binary − lowc − highc) & 0xff; V = msb(~res & binary). Byte-only → NO alignment fault. Every case in
+    // scope (both forms, incl `-(A7)`) — NO deferral, NO parity filter. 100% PURE — 8065 cases. By OPCODE.
+    "SBCD.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -1229,6 +1247,24 @@ fn subx_covered(opcode: u16) -> bool {
     opcode & 0xF130 == 0x9100 && (opcode >> 6) & 3 != 3
 }
 
+/// ABCD (`opcode & 0xF1F0 == 0xC100`) — the packed-decimal add, byte-only. The `0xF1F0` mask fixes bits 15-12
+/// = 1100, bit 8 = 1, bits 7-4 = 0000 (byte size + ea-mode field 000/001) — leaving M (3), Rx, Ry. DISJOINT
+/// from EXG (opmode {0x08,0x09,0x11}) and real `AND.b Dn,<ea>` (ea modes 2-7). Every case is in scope: both
+/// forms (M=0 register, M=1 `-(Ay),-(Ax)` predecrement), incl the `(A7)` byte step-2. Byte-only → NO
+/// alignment fault. NO deferral, NO parity filter. Classified strictly by OPCODE.
+fn abcd_covered(opcode: u16) -> bool {
+    opcode & 0xF1F0 == 0xC100
+}
+
+/// SBCD (`opcode & 0xF1F0 == 0x8100`) — the packed-decimal subtract, byte-only, the `0x8` (OR) space twin of
+/// ABCD. The `0xF1F0` mask fixes bits 15-12 = 1000, bit 8 = 1, bits 7-4 = 0000 (byte size + ea-mode field
+/// 000/001) — leaving M (3), Rx, Ry. DISJOINT from DIVU/DIVS (opmode 3/7) and real `OR.b Dn,<ea>` (ea modes
+/// 2-7). Every case is in scope: both forms (M=0 register, M=1 `-(Ay),-(Ax)` predecrement), incl the `(A7)`
+/// byte step-2. Byte-only → NO alignment fault. NO deferral, NO parity filter. Classified strictly by OPCODE.
+fn sbcd_covered(opcode: u16) -> bool {
+    opcode & 0xF1F0 == 0x8100
+}
+
 fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // MOVE (`00 SS RRR MMM mmm rrr`, dst_mode != 1) — its own EA→EA mode-scope filter (no parity).
     if move_covered(opcode) {
@@ -1402,6 +1438,23 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // committed; dst-odd → both). `-(A7).b` steps by 2. 100% PURE (8065 each) — NO deferral, NO parity
     // filter. Classified by OPCODE + the size guard.
     if subx_covered(opcode) {
+        return true;
+    }
+    // ABCD (`opcode & 0xF1F0 == 0xC100`) — the packed-decimal add, byte-only. M = bit 3 (0 = `Dy,Dx`
+    // register-direct, 6 cyc / 1 = `-(Ay),-(Ax)` predecrement RMW, 18 cyc). `AluOp::Abcd` is DEDICATED (X into
+    // the value AND the carry, sticky Z, X_out = C_out; the decimal correction with V = msb(res & ~binary)).
+    // Byte-only → NO alignment fault (mem mode NEVER faults). 100% PURE (8065) — NO deferral, NO parity
+    // filter. DISJOINT from EXG / real AND.b. Classified by OPCODE.
+    if abcd_covered(opcode) {
+        return true;
+    }
+    // SBCD (`opcode & 0xF1F0 == 0x8100`) — the packed-decimal subtract, byte-only, the `0x8` (OR) space twin of
+    // ABCD. M = bit 3 (0 = `Dy,Dx` register-direct, 6 cyc / 1 = `-(Ay),-(Ax)` predecrement RMW, 18 cyc).
+    // `AluOp::Sbcd` is DEDICATED with the carry/result ASYMMETRY (C keys on `(binary−lowc) < 0`, the 0x60
+    // result correction keys on `binary < 0` — they diverge in 28 cases); V = msb(~res & binary), sticky Z,
+    // X_out = C_out. Byte-only → NO alignment fault (mem mode NEVER faults). 100% PURE (8065) — NO deferral, NO
+    // parity filter. DISJOINT from DIVU/DIVS / real OR.b. Classified by OPCODE.
+    if sbcd_covered(opcode) {
         return true;
     }
     // CMP `<ea>,Dn` + CMPM `(Ay)+,(Ax)+` + CMPI `#imm,<ea>` (the Cmp/Cmpm/Cmpi classes of the 3-way CMP.* mix,
@@ -1897,8 +1950,23 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 865_433,
-        "expected 865433 covered cases — C1 adds SUBX.b/.w/.l (their own SUBX.{{b,w,l}}.json files, 8065 cases \
+        ran >= 881_563,
+        "expected 881563 covered cases — C2 adds ABCD + SBCD (their own ABCD.json / SBCD.json files, 8065 cases \
+         each = +16130 over the 865433 SUBX baseline → 881563). These are the packed-DECIMAL add/subtract, \
+         byte-only, DEDICATED Alus (like ADDX/SUBX/NEGX): the incoming X (`sr>>4 & 1`) folds into BOTH the value \
+         and the carry/borrow, Z is STICKY (`Z_in AND res==0`, never set), X_out = C_out. ABCD (0xF1F0==0xC100, \
+         the 0xC/AND space): `binary = dst+src+X`; `lowc = 6 if (dst&0xf)+(src&0xf)+X > 9`; C = X = \
+         (binary > 0x99) (the HIGH carry, WITHOUT lowc folded in); res = (binary + lowc + (0x60 if C)) & 0xff; \
+         V = msb(res & ~binary); N = msb(res). SBCD (0xF1F0==0x8100, the 0x8/OR space) carries a REAL \
+         carry/result ASYMMETRY (28 divergent cases): `binary = dst−src−X`; `lowc = 6 if (dst&0xf)−(src&0xf)−X \
+         < 0`; C = X = ((binary−lowc) < 0) — the borrow keys on `binary−lowc`; highc = 0x60 if binary < 0 — the \
+         RESULT correction keys on `binary` (NOT binary−lowc); res = (binary − lowc − highc) & 0xff; V = \
+         msb(~res & binary). A single shared condition for C and highc is WRONG. Both reuse ADDX/SUBX's \
+         `xarith_recipe` — M = bit 3 picks the form (M=0 = `Dy,Dx` register-direct, len 6 via a trailing \
+         Internal(2); M=1 = `-(Ay),-(Ax)` two-operand predecrement RMW, len 18). Byte-only → NO alignment fault \
+         (mem mode NEVER faults; `-(A7).b` steps by 2). The files are 100% PURE (8065 each). NO deferral, NO \
+         parity filter, NO corrupt entries. \
+         Prior baseline — C1 adds SUBX.b/.w/.l (their own SUBX.{{b,w,l}}.json files, 8065 cases \
          each = +24195 over the 841238 ADDX baseline → 865433). SUBX is the EXTENDED (multi-precision) \
          subtract, the `0x9` (SUB) space twin of ADDX with the identical bit layout: `AluOp::Subx` is a \
          DEDICATED Alu (like ADDX/NEGX) — the incoming X (`sr>>4 & 1`) folds into BOTH the value (`raw = dst \
@@ -2630,7 +2698,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX+ABCD+SBCD (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -4004,6 +4072,159 @@ fn subx_predecrement_quiescable_and_serializable_at_every_micro_op_boundary() {
         );
     }
     eprintln!("C1 SUBX snapshot/restore: SUBX.w -(A4),-(A3) resumed identically at every micro-op boundary");
+}
+
+/// C2 — the named `ABCD`/`SBCD` anchors, pinning the packed-DECIMAL add/subtract's dedicated Alus (the new
+/// decimal-correction `AluOp::Abcd`/`AluOp::Sbcd`, reusing ADDX/SUBX's `xarith_recipe`) against the vendored
+/// ABCD/SBCD streams WITHOUT relying on the bulk `covered()` sweep. Byte-only → NO alignment fault (mem mode
+/// NEVER faults). Every load-bearing fact:
+/// - **`c902 [ABCD D2, D4]`** — register-direct, len **6** (`[Prefetch, Alu, Internal(2)]`); a case needing the
+///   **+0x06 low correction** (`lowc=6`, no high correction).
+/// - **`cf00 [ABCD D0, D7]`** — a case needing **+0x60 with C=1** (the high carry `binary > 0x99`, X=C=1).
+/// - **`c705 [ABCD D5, D3]`** — a **V-flag** case pinning `V = msb(res & ~binary)` (V=1).
+/// - **`c506 [ABCD D6, D2]`** — an **X_in=1** carry-participation case.
+/// - **`c706 [ABCD D6, D3] 635`** — **sticky Z stays SET**: entered with Z_in=1, res==0 → Z STAYS 1.
+/// - **`cd0d [ABCD -(A5), -(A6)]`** — two-operand predecrement, len **18** (predec Ay+Ax, read src @ Ay, read
+///   dst @ Ax, write result @ Ax). Byte mem never faults.
+/// - **`8701 [SBCD D1, D3] 714`** — **THE SBCD ASYMMETRY ANCHOR**: dst=0xf1, src=0xec, X=0 → res=0xff, C=X=1,
+///   V=0, N=1 — the result has NO 0x60 correction (`binary >= 0`) yet C=1 (`binary − lowc < 0`). The two
+///   conditions DIVERGE; a single shared condition would be WRONG.
+/// - **`8501 [SBCD D1, D2] 51`** — a **normal SBCD borrow** with the real 0x60 result correction (C=1, N=1).
+/// - **`8f06 [SBCD D6, D7] 64`** — a **V-flag** case pinning `V = msb(~res & binary)` (V=1).
+/// - **`8500 [SBCD D0, D2] 16`** — an **X_in=1** borrow-participation case.
+/// - **`8702 [SBCD D2, D3] 1371`** — **sticky Z stays SET**: Z_in=1, res==0 → Z STAYS 1.
+/// - **`890e [SBCD -(A6), -(A4)]`** — two-operand predecrement, len **18**. Byte mem never faults.
+///
+/// Each runs both drivers + the per-cycle transaction stream via `run_case`. Every anchor must decode as its
+/// ABCD/SBCD opcode (`& 0xF1F0 == 0xC100`/`0x8100`) and be `abcd_covered`/`sbcd_covered`; each pins its length.
+#[test]
+fn abcd_sbcd_anchor_cases_pass_both_drivers() {
+    let abcd_variants: &[(&str, u32)] = &[
+        ("c902 [ABCD D2, D4] 7", 6),
+        ("cf00 [ABCD D0, D7] 5", 6),
+        ("c705 [ABCD D5, D3] 12", 6),
+        ("c506 [ABCD D6, D2] 8", 6),
+        ("c706 [ABCD D6, D3] 635", 6),
+        ("cd0d [ABCD -(A5), -(A6)] 1", 18),
+    ];
+    let sbcd_variants: &[(&str, u32)] = &[
+        ("8701 [SBCD D1, D3] 714", 6),
+        ("8501 [SBCD D1, D2] 51", 6),
+        ("8f06 [SBCD D6, D7] 64", 6),
+        ("8500 [SBCD D0, D2] 16", 6),
+        ("8702 [SBCD D2, D3] 1371", 6),
+        ("890e [SBCD -(A6), -(A4)] 1", 18),
+    ];
+    let mut found = 0usize;
+    for (fname, anchors, base) in [
+        ("ABCD.json", abcd_variants, 0xC100u16),
+        ("SBCD.json", sbcd_variants, 0x8100u16),
+    ] {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        for (name, length) in anchors {
+            let case = data
+                .iter()
+                .find(|t| t["name"].as_str().unwrap() == *name)
+                .unwrap_or_else(|| panic!("C2 anchor {name} not found in {fname}"));
+            let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+            assert_eq!(
+                opcode & 0xF1F0,
+                base,
+                "anchor {name} must be an ABCD/SBCD opcode"
+            );
+            if base == 0xC100 {
+                assert!(abcd_covered(opcode), "anchor {name} must be abcd_covered");
+            } else {
+                assert!(sbcd_covered(opcode), "anchor {name} must be sbcd_covered");
+            }
+            assert_eq!(
+                cmp_class(opcode),
+                CmpClass::None,
+                "ABCD/SBCD is not a CMP-class opcode"
+            );
+            assert_eq!(
+                case["length"].as_u64().unwrap() as u32,
+                *length,
+                "ABCD/SBCD anchor {name} length"
+            );
+            run_case(case);
+            found += 1;
+        }
+    }
+    assert_eq!(found, 12, "all C2 ABCD/SBCD anchors exercised");
+    eprintln!(
+        "C2 ABCD/SBCD anchors: {found} cases (ABCD +0x06 low / +0x60 C=1 / V=msb(res&~binary) / X_in=1 / sticky-Z stays-set / -(Ay),-(Ax) len 18; SBCD asymmetry (C=1 no-0x60) / normal borrow / V=msb(~res&binary) / X_in=1 / sticky-Z / -(Ay),-(Ax)) passed both drivers"
+    );
+}
+
+/// C2 — the snapshot/restore anchor for the ABCD two-operand predecrement RMW (reusing ADDX's `xarith_recipe`
+/// predecrement shape with the new decimal `AluOp::Abcd`). Drives a real vendored `ABCD -(A5),-(A6)` case
+/// through the quiesce driver, snapshotting + restoring the WHOLE `Cpu68000` (incl. the in-flight cursor + all
+/// scratch slots) at every micro-op boundary and proving the resumed run reproduces the run-to-completion final
+/// state + transaction stream bit-for-bit. Pins that the decimal predecrement recipe keeps `MicroState`
+/// fixed-size bincode.
+#[test]
+fn abcd_predecrement_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/ABCD.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "cd0d [ABCD -(A5), -(A6)] 1")
+        .expect("ABCD -(A5),-(A6) snapshot anchor present");
+    let ini = &case["initial"];
+
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    let boundaries = {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        let mut n = 0usize;
+        while cpu.step_micro_op(&mut bus) == Step::Continue {
+            n += 1;
+        }
+        n
+    };
+    for pause_after in 0..=boundaries {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        for _ in 0..pause_after {
+            assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+        }
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+    }
+    eprintln!(
+        "C2 ABCD snapshot/restore: ABCD -(A5),-(A6) resumed identically at every micro-op boundary"
+    );
 }
 
 /// C1 — the named `LEA <control ea>,An` anchors, pinning each control addressing mode against the vendored LEA
