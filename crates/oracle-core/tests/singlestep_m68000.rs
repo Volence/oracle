@@ -600,6 +600,16 @@ const FILES: &[&str] = &[
     // the long access is word-at-a-time; the pointer advances one word, then the odd-address fault). 100% PURE
     // — 8065 cases. NO deferral, NO parity filter, NO corrupt entries.
     "MOVEM.l.json",
+    // MOVEP.w (`0000 rrr 1 oo 001 aaa`, opcode & 0xF138 == 0x0108, opmode 4 mem→reg / 6 reg→mem) — move the two
+    // bytes of a DATA register `Dn` ↔ the ALTERNATING (even/odd) memory addresses `EA, EA+2` where `EA = An +
+    // sx16(prefetch[1])` (the historical 8-bit-peripheral mode; the ONLY addressing mode is `d16(An)`). NO flags
+    // (SR byte-identical). reg→mem writes `(Dn>>8)&0xFF`@EA then `Dn&0xFF`@EA+2; mem→reg loads `Dn = (Dn &
+    // 0xFFFF_0000) | (mem[EA]<<8) | mem[EA+2]` — the HIGH WORD of Dn is PRESERVED. One file contains BOTH
+    // directions. Uniform 16 cyc; bus `[r pc+4 .w, byte@EA .b, byte@EA+2 .b, r pc+6 .w]` (the refill prefetch
+    // FIRST, the byte accesses, the final prefetch LAST). Byte-addressed → NO odd-EA fault is possible; A7
+    // (`an == 7`) fully covered (`d16(An)` never mutates the SSP). 100% PURE / 100% in scope (8065) — NO
+    // deferral, NO parity filter, NO (A7) carve-out. Classified by OPCODE via `movep_covered`.
+    "MOVEP.w.json",
     // ADDX.b / ADDX.w / ADDX.l (`1101 xxx 1 SS 00 M yyy`, opcode & 0xF130 == 0xD100, SS != 3) — the EXTENDED
     // (multi-precision) add. M = bit 3 selects the form: M=0 → `ADDX Dy,Dx` (register-direct); M=1 → `ADDX
     // -(Ay),-(Ax)` (two-operand predecrement RMW). `AluOp::Addx` is DEDICATED (like NEGX): the incoming X
@@ -1313,6 +1323,17 @@ fn nbcd_covered(opcode: u16) -> bool {
     matches!(mode, 0 | 2..=6) || (mode == 7 && (reg == 0 || reg == 1))
 }
 
+/// MOVEP.w / MOVEP.l (`opcode & 0xF138 == 0x0108`, `0000 rrr 1 oo 001 aaa`) — move a DATA register `Dn` ↔ the
+/// ALTERNATING (even/odd) memory addresses. The `0xF138` mask fixes bits 15-12 = 0000, bit 8 = 1, bits 5-3 = 001
+/// (the An-direct EA field — MOVEP's signature), leaving `Dn` (11-9), opmode (8-6), `An` (2-0). This is DISJOINT
+/// from the dynamic BTST/BCHG/BCLR/BSET (which share `0000 rrr 1 tt <ea>` but require an EA mode != 001 — the
+/// bit-op decode already carves out mode 001 as "MOVEP absent"). EVERY MOVEP opcode is in scope: both directions
+/// (opmode 4/5 mem→reg, 6/7 reg→mem), both sizes, all 8 An INCLUDING the plain `(A7)`. Byte-addressed → NO odd-EA
+/// alignment fault is possible. NO deferral, NO parity filter, NO `(A7)` carve-out. Classified strictly by OPCODE.
+fn movep_covered(opcode: u16) -> bool {
+    opcode & 0xF138 == 0x0108
+}
+
 /// MOVEfromUSP (`opcode & 0xFFF8 == 0x4E68`, `0100 1110 0110 1 rrr`) — `An = USP` (full 32 bits), NO flags.
 /// The `0xFFF8` mask fixes bits 15-3 = `0100 1110 0110 1`, leaving the 3-bit An field (0-7, all in scope). A
 /// reg-direct-only op → NO EA, NO exceptions, NO deferral, NO parity filter. Every case is in scope (100% PURE,
@@ -1618,6 +1639,15 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // (IN scope). (A7)/(A7)+/-(A7) all in scope. 100% PURE (8065) — NO deferral, NO parity filter, NO (A7)
     // carve-out. Classified by OPCODE + mode.
     if moveto_sr_covered(opcode) {
+        return true;
+    }
+    // MOVEP.w / MOVEP.l (`0xF138==0x0108`, opmode 4/5 mem→reg, 6/7 reg→mem) — move a DATA register `Dn` ↔ the
+    // ALTERNATING (even/odd) memory addresses `EA, EA+2, …` where `EA = An + sx16(d16)` (`d16(An)` only). NO
+    // flags (SR byte-identical). mem→reg word PRESERVES Dn's high word / long overwrites all 32; reg→mem scatters
+    // the register bytes big-endian. Byte-addressed → NO odd-EA fault is possible; A7 (`an == 7`) fully covered
+    // (`d16(An)` never mutates the SSP). Every case in scope — NO deferral, NO parity filter, NO (A7) carve-out.
+    // 100% PURE (8065 each file). Classified strictly by OPCODE.
+    if movep_covered(opcode) {
         return true;
     }
     // CMP `<ea>,Dn` + CMPM `(Ay)+,(Ax)+` + CMPI `#imm,<ea>` (the Cmp/Cmpm/Cmpi classes of the 3-way CMP.* mix,
@@ -2113,8 +2143,27 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 929_953,
-        "expected 929953 covered cases — S3 adds MOVEtoSR (its own MOVEtoSR.json file, 8065 cases = +8065 over \
+        ran >= 938_018,
+        "expected 938018 covered cases — P0 adds MOVEP.w (its own MOVEP.w.json file, 8065 cases = +8065 over \
+         the 929953 status-register-moves baseline → 938018). MOVEP.w (0xF138==0x0108, opmode 4 mem→reg / 6 \
+         reg→mem — ONE file, BOTH directions) moves the two bytes of a DATA register `Dn` ↔ the ALTERNATING \
+         (even/odd) memory addresses `EA, EA+2` where `EA = An + sx16(prefetch[1])` (the historical \
+         8-bit-peripheral mode; the ONLY addressing mode is `d16(An)`, reusing the mode-5 EaCalc shape). NO flags \
+         (SR byte-identical initial→final). reg→mem writes `(Dn>>8)&0xFF`@EA then `Dn&0xFF`@EA+2; mem→reg loads \
+         `Dn = (Dn & 0xFFFF_0000) | (mem[EA]<<8) | mem[EA+2]` — the HIGH WORD of Dn is PRESERVED (the \
+         mask-then-or merge). New vocab: `MicroOp::MovepStore`/`MovepLoad` — the byte-sized `+2`-stride cousins \
+         of `MovemStore`/`MovemLoad` (each writes/reads ONE byte at `scratch[addr_slot]`, `Fc::Data`, then \
+         `+= 2`; each is its OWN bus-access quiesce boundary, like MOVEM's one-op-per-register — NEVER \
+         collapsed). The shared `movep_recipe` is size-parameterized (`nbytes = 2` word / 4 long): `[EaCalc(EA \
+         into slot 0, BEFORE the refill — d16 lives in prefetch[1]), Prefetch (refill @ pc+4, FIRST), N × \
+         MovepStore/MovepLoad (shifts big-endian [8,0]), Prefetch (final @ pc+6, LAST)]`. Uniform 16 cyc; bus \
+         `[r pc+4 .w (fc6), byte@EA .b (fc5), byte@EA+2 .b (fc5), r pc+6 .w (fc6)]` (the refill prefetch FIRST, \
+         the byte accesses, the final prefetch LAST — the load-bearing order). Byte-addressed → NO odd-EA fault \
+         is possible; A7 (`an == 7`) fully covered (`d16(An)` never mutates the SSP). Every case in scope — NO \
+         deferral, NO parity filter, NO (A7) carve-out. 100% PURE (8065). Classified by OPCODE via \
+         `movep_covered` (`0xF138==0x0108`), DISJOINT from the dynamic BTST/BCHG/BCLR/BSET (which require an EA \
+         mode != 001 — the bit-op decode already carves out mode 001 as \"MOVEP absent\"). \
+         Prior baseline — S3 adds MOVEtoSR (its own MOVEtoSR.json file, 8065 cases = +8065 over \
          the 921888 S2 baseline → 929953, the FINAL threshold of the status-register moves push). MOVEtoSR \
          (0xFFC0==0x46C0, data + PC-rel + #imm source modes) moves a word into the SR: `SR = src.w & 0xA71F` \
          (the FULL status register incl the system byte S/T/I). Privileged (UNEXERCISED — every case starts \
@@ -2941,7 +2990,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX+ABCD+SBCD+NBCD+MOVEfromUSP+MOVEtoUSP+MOVEfromSR+MOVEtoCCR+MOVEtoSR (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX+ABCD+SBCD+NBCD+MOVEfromUSP+MOVEtoUSP+MOVEfromSR+MOVEtoCCR+MOVEtoSR+MOVEP.w (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -9698,4 +9747,140 @@ fn movem_l_quiescable_and_serializable_at_every_micro_op_boundary() {
         pause_after += 1;
     }
     eprintln!("C5 MOVEM.l snapshot/restore: MOVEM.l (A3)+,# (multi-register LONG load + word phantom + final MoveA) resumed identically at every micro-op boundary");
+}
+
+/// MOVEP.w (`opcode & 0xF138 == 0x0108`, opmode 4 mem→reg / 6 reg→mem) — move the two bytes of a DATA register
+/// `Dn` ↔ the ALTERNATING (even/odd) memory addresses `EA, EA+2` where `EA = An + sx16(d16)`, NO flags. P0
+/// named anchors, pinning the byte-scatter shape against the vendored MOVEP.w stream WITHOUT relying on the bulk
+/// `covered()` sweep. Each is a real vendored case exercised via `run_case` (both drivers + the exact per-cycle
+/// 4-transaction stream `[r pc+4 .w, byte@EA .b, byte@EA+2 .b, r pc+6 .w]` + post regs/SR/RAM/prefetch/cycles):
+/// - `030b [MOVEP.w (d16, A3), D1]` — mem→reg (opmode 4): `D1 = (D1 & 0xFFFF_0000) | (mem[EA]<<8) | mem[EA+2]`,
+///   the HIGH WORD of D1 PRESERVED (the two `MovepLoad` merges leave bits 16-31 untouched). len 16.
+/// - `0988 [MOVEP.w D4, (d16, A0)]` — reg→mem (opmode 6): the two scattered bytes `(D4>>8)&0xFF`@EA,
+///   `D4&0xFF`@EA+2 land in RAM. len 16.
+/// - `050f [MOVEP.w (d16, A7), D2]` — the A7 case (`an == 7`, EA based on the SSP; also a NEGATIVE displacement,
+///   d16 = 0xdb01 → sx16). mem→reg, D2 high word preserved. len 16.
+/// - `0b8b [MOVEP.w D5, (d16, A3)]` — a NEGATIVE-displacement reg→mem case (d16 = 0xedf5 → sx16 exercises the
+///   `DispWord` sign-extend). len 16.
+///
+/// Every anchor must decode as a MOVEP opcode (`0xF138 == 0x0108`) and be `movep_covered`, set NO flags
+/// (`final.sr == initial.sr`), and take exactly 16 cycles. `run_case` pins the whole 4-txn stream + both drivers
+/// + snapshot/restore at every bus boundary.
+#[test]
+fn movep_w_anchors_match_singlesteptests() {
+    let path = format!("{VENDOR_DIR}/MOVEP.w.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: MOVEP.w.json missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let anchors: &[&str] = &[
+        "030b [MOVEP.w (d16, A3), D1] 4", // mem→reg (opmode 4), D1 high word preserved
+        "0988 [MOVEP.w D4, (d16, A0)] 1", // reg→mem (opmode 6), two scattered bytes
+        "050f [MOVEP.w (d16, A7), D2] 6", // A7 (an==7, EA from SSP) + negative disp
+        "0b8b [MOVEP.w D5, (d16, A3)] 3", // negative-displacement reg→mem (d16 bit15 set)
+    ];
+    let mut found = 0usize;
+    for name in anchors {
+        let case = data
+            .iter()
+            .find(|t| t["name"].as_str().unwrap() == *name)
+            .unwrap_or_else(|| panic!("P0 MOVEP.w anchor {name} not found"));
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        // Must be a MOVEP opcode (0xF138 == 0x0108) and covered.
+        assert_eq!(
+            opcode & 0xF138,
+            0x0108,
+            "anchor {name} must be a MOVEP opcode"
+        );
+        assert!(movep_covered(opcode), "anchor {name} must be movep_covered");
+        // Word MOVEP → bit6 == 0 (opmode 4 or 6).
+        assert_eq!(
+            (opcode >> 6) & 1,
+            0,
+            "anchor {name} must be MOVEP.w (bit6 == 0)"
+        );
+        // NO flags — SR byte-identical.
+        assert_eq!(
+            case["initial"]["sr"], case["final"]["sr"],
+            "MOVEP sets NO flags — SR unchanged [{name}]"
+        );
+        // Uniform 16 cycles.
+        assert_eq!(
+            case["length"].as_u64().unwrap(),
+            16,
+            "MOVEP.w is uniform 16 cyc [{name}]"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all P0 MOVEP.w anchors exercised");
+    eprintln!(
+        "P0 MOVEP.w anchors: {found} cases (mem→reg high-word-preserve / reg→mem byte-scatter / A7 EA-from-SSP+negdisp / negative-displacement reg→mem) passed both drivers"
+    );
+}
+
+/// P0 — the snapshot/restore anchor for the byte-scatter `MOVEP.w` recipe (the new `MicroOp::MovepStore`/
+/// `MovepLoad` + the shared `movep_recipe`). Drives a real vendored reg→mem word case (the two-byte scatter +
+/// the framing prefetches) through the quiesce driver, snapshotting + restoring the WHOLE `Cpu68000` (incl. the
+/// in-flight cursor) at every micro-op boundary and proving the resumed run reproduces the run-to-completion
+/// final state + transaction stream bit-for-bit. This pins that each byte access is its OWN bus-access quiesce
+/// boundary and that `MicroState` stays a fixed-size bincode `[MicroOp; MAX_OPS]` array (`Copy`).
+#[test]
+fn movep_w_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/MOVEP.w.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: MOVEP.w.json missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "0988 [MOVEP.w D4, (d16, A0)] 1")
+        .expect("MOVEP.w reg→mem snapshot anchor present");
+    let ini = &case["initial"];
+
+    // Run-to-completion reference.
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    // Snapshot at every in-flight micro-op boundary (drain until Done, snapshotting before each step).
+    let mut pause_after = 0usize;
+    loop {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        let mut reached_end = false;
+        for _ in 0..pause_after {
+            if let Step::Done(_) = cpu.step_micro_op(&mut bus) {
+                reached_end = true;
+                break;
+            }
+        }
+        if reached_end {
+            break;
+        }
+        // Snapshot + restore the whole CPU (incl. the in-flight cursor) mid-instruction.
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+        pause_after += 1;
+    }
+    eprintln!("P0 MOVEP.w snapshot/restore: MOVEP.w D4,(d16,A0) (two-byte scatter + framing prefetches) resumed identically at every micro-op boundary");
 }

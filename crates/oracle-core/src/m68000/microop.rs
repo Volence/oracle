@@ -1232,6 +1232,24 @@ pub enum MicroOp {
         size: Size,
         addr_slot: Slot,
     },
+    /// `MOVEP` **register→memory** per-byte store — one byte of a DATA register `Dn` scattered to the running
+    /// ALTERNATING address, affecting **NO flags**. The byte-sized `+2`-stride cousin of [`MicroOp::MovemStore`]:
+    /// writes `((regs.d[dn] >> shift) & 0xFF)` as a **byte** at `scratch[addr_slot]` (`Fc::Data`), then advances
+    /// the running address `scratch[addr_slot] += 2` (the historical 8-bit-peripheral even/odd interleave). The
+    /// recipe emits one per transferred byte, big-endian: word `shift ∈ [8, 0]`, long `[24, 16, 8, 0]`. The
+    /// register operand is ALWAYS a plain data register `regs.d[dn]` — never A7 (MOVEP's register is a DATA
+    /// register). Byte-addressed → NO alignment fault is EVER possible. Costs 4 cycles, logs one `w .b`
+    /// transaction (mirroring `MovemStore`'s per-word access + cycle booking).
+    MovepStore { dn: u8, shift: u8, addr_slot: Slot },
+    /// `MOVEP` **memory→register** per-byte load — one byte read from the running ALTERNATING address and merged
+    /// into a DATA register `Dn`, affecting **NO flags**. The byte-sized `+2`-stride cousin of
+    /// [`MicroOp::MovemLoad`]: reads a **byte** at `scratch[addr_slot]` (`Fc::Data`), then MERGES
+    /// `regs.d[dn] = (regs.d[dn] & !(0xFFu32 << shift)) | ((byte as u32) << shift)` and advances
+    /// `scratch[addr_slot] += 2`. The mask-then-or merge makes the word high-word-PRESERVE (shifts `[8, 0]` leave
+    /// bits 16-31 untouched) and the long full-32 overwrite (shifts `[24, 16, 8, 0]` cover every byte) fall out
+    /// for free — do NOT zero `Dn` first. The register operand is ALWAYS a plain data register `regs.d[dn]` —
+    /// never A7. Byte-addressed → NO alignment fault. Costs 4 cycles, logs one `r .b` transaction.
+    MovepLoad { dn: u8, shift: u8, addr_slot: Slot },
 }
 
 /// The in-flight micro-op cursor for one instruction: the recipe, how far through it we are, and the
@@ -2836,6 +2854,35 @@ impl MicroState {
                     Size::Long => 8,
                     Size::Byte => unreachable!(),
                 }
+            }
+            MicroOp::MovepStore {
+                dn,
+                shift,
+                addr_slot,
+            } => {
+                // MOVEP register→memory per-byte store. Write one byte of the DATA register Dn at the running
+                // alternating address, then step the address by 2. Byte access → NEVER an alignment fault.
+                let addr = self.scratch[addr_slot as usize];
+                let fc = regs.fc(false); // MOVEP is always Data space
+                let byte = ((regs.d[dn as usize] >> shift) & 0xFF) as u8;
+                bus.write8(addr, fc, byte);
+                self.scratch[addr_slot as usize] = addr.wrapping_add(2);
+                4
+            }
+            MicroOp::MovepLoad {
+                dn,
+                shift,
+                addr_slot,
+            } => {
+                // MOVEP memory→register per-byte load. Read one byte at the running alternating address and merge
+                // it into Dn (mask-then-or → the word high-word-preserve / long full-32 overwrite fall out), then
+                // step the address by 2. Byte access → NEVER an alignment fault.
+                let addr = self.scratch[addr_slot as usize];
+                let fc = regs.fc(false); // Data space
+                let byte = bus.read8(addr, fc) as u32;
+                regs.d[dn as usize] = (regs.d[dn as usize] & !(0xFFu32 << shift)) | (byte << shift);
+                self.scratch[addr_slot as usize] = addr.wrapping_add(2);
+                4
             }
         };
         self.step += 1;

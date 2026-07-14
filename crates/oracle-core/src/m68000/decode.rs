@@ -482,6 +482,16 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     // clear) and the `*toSR` single points (0x007C/0x027C/0x0A7C, bit 8 clear) decoded below.
     let bit_mode = (opcode >> 3) & 7;
     let bit_reg = opcode & 7;
+    // MOVEP.w / MOVEP.l (`0000 rrr 1 oo 001 aaa`, `opcode & 0xF138 == 0x0108`) — move a data register ↔ the
+    // ALTERNATING (even/odd) memory addresses `EA, EA+2, …` (the historical 8-bit-peripheral mode). One
+    // addressing mode only: `d16(An)` (EA = `An + sx16(prefetch[1])`). Opmode bit7 = direction (0 = mem→reg
+    // READ / 1 = reg→mem WRITE), bit6 = size (0 = word / 1 = long). NO flags. This fills EXACTLY the "mode 001 =
+    // MOVEP (absent)" slot the dynamic BTST/BCHG/BCLR/BSET carve out below — the mask fixes bits5-3 = 001, so it
+    // is DISJOINT from every bit-op (which require a non-001 EA mode). Order is not load-bearing (disjoint by the
+    // mode field), but placed adjacent to the bit-ops it complements.
+    if opcode & 0xF138 == 0x0108 {
+        return movep_recipe(opcode, regs);
+    }
     if opcode & 0xF1C0 == 0x0100 && btst_dyn_src_in_scope(bit_mode, bit_reg) {
         return btst_recipe(opcode);
     }
@@ -4114,6 +4124,65 @@ fn unlink_recipe(opcode: u16) -> MicroState {
         dst: Dest::AddrReg(an),
     });
     // The trailing queue refill (r@pc+4).
+    buf.push(MicroOp::Prefetch);
+    buf.finish()
+}
+
+/// Scratch slot carrying a `MOVEP` transfer's running / EA pointer (`EA = An + sx16(d16)`, then advanced `+= 2`
+/// per byte by [`MicroOp::MovepStore`]/[`MicroOp::MovepLoad`]). Slot 0 — reused as BOTH the initial EA and the
+/// running alternating-address pointer. NEVER `An` itself (MOVEP never mutates the address register).
+const MOVEP_ADDR_SLOT: u8 = 0;
+
+/// `MOVEP.w`/`MOVEP.l` (`0000 rrr 1 oo 001 aaa`, opcode & 0xF138 == 0x0108) — move a DATA register `Dn` ↔ the
+/// ALTERNATING (even/odd) memory addresses `EA, EA+2, …` where `EA = An + sx16(d16)` (`d16` = the extension word
+/// = `prefetch[1]`, IDENTICAL to the `d16(An)` addressing mode). Opmode bit7 = DIRECTION (0 = mem→reg READ / 1 =
+/// reg→mem WRITE), bit6 = SIZE (0 = word `nbytes = 2` / 1 = long `nbytes = 4`). NO flags (SR byte-identical).
+/// Size-parameterized so the LONG twin (opmodes 5/7) reuses this verbatim.
+///
+/// The bus stream is a byte-scatter framed by two prefetches (pinned 0-mismatch against the vendored stream):
+/// `[r pc+4 .w (refill), <N byte accesses at EA, EA+2, …> (fc5 .b), r pc+6 .w (final)]`. The **refill Prefetch
+/// runs FIRST** (before the byte accesses); the **final Prefetch LAST** — LOAD-BEARING (the per-cycle
+/// transaction gate is order-sensitive). The `EaCalc` MUST precede the refill Prefetch: `d16` lives in
+/// `prefetch[1]` and the refill shifts it out (the mode-5 `d16(An)` EA leg already respects this). Each byte
+/// access is its OWN [`MicroOp::MovepStore`]/[`MicroOp::MovepLoad`] (a per-byte bus-access quiesce boundary,
+/// like MOVEM's one-op-per-register) — NEVER collapsed. Uniform timing: word `4 + 2·4 + 4 = 16`, long
+/// `4 + 4·4 + 4 = 24`. Op count: word 5, long 7 (≤ [`MAX_OPS`]).
+fn movep_recipe(opcode: u16, _regs: &Registers) -> MicroState {
+    let dn = ((opcode >> 9) & 7) as u8;
+    let an = (opcode & 7) as u8;
+    let opmode = (opcode >> 6) & 7;
+    let mem2reg = (opmode & 0x2) == 0; // bit7 == 0
+    let nbytes = if (opmode & 0x1) == 0 { 2u8 } else { 4 }; // bit6: word / long
+    let mut buf = RecipeBuf::new();
+
+    // Materialize EA = An + sx16(d16) into the running-pointer slot BEFORE the refill (d16 is in prefetch[1] now;
+    // the refill would shift it out). Verbatim the `d16(An)` (mode 5) EaCalc shape.
+    buf.push(MicroOp::EaCalc {
+        base: Operand::AddrReg(an),
+        index: Operand::Zero,
+        disp: Operand::DispWord,
+        dst: MOVEP_ADDR_SLOT,
+    });
+    // Refill @ pc+4 (FIRST — precedes the byte accesses).
+    buf.push(MicroOp::Prefetch);
+    // The per-byte scatter, big-endian over the alternating addresses: word shifts [8, 0]; long [24, 16, 8, 0].
+    for k in 0..nbytes {
+        let shift = 8 * (nbytes - 1 - k);
+        if mem2reg {
+            buf.push(MicroOp::MovepLoad {
+                dn,
+                shift,
+                addr_slot: MOVEP_ADDR_SLOT,
+            });
+        } else {
+            buf.push(MicroOp::MovepStore {
+                dn,
+                shift,
+                addr_slot: MOVEP_ADDR_SLOT,
+            });
+        }
+    }
+    // Final refill @ pc+6 (LAST).
     buf.push(MicroOp::Prefetch);
     buf.finish()
 }
