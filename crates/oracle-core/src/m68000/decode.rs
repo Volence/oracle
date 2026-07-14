@@ -667,6 +667,21 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     if opcode & 0xFFC0 == 0x44C0 {
         return move_to_sr_ccr_recipe(opcode, false);
     }
+    // MOVEtoSR `<ea>` (`0100 0110 11 mmm rrr`, opcode & 0xFFC0 == 0x46C0) — move a word from a data source EA
+    // into the SR: `SR = src.w & 0xA71F` (the FULL status register incl the system byte S/T/I). PRIVILEGED, but
+    // UNEXERCISED (every vendored case is supervisor, T=0 at entry) — so NO privilege trap and NO trace trap are
+    // gated (correctness-only; do not add untested trap code). SS == 3 (bits 7-6 = 0b11) distinguishes it from
+    // NOT (0x4600, SS 0/1/2); the NOT arm below excludes `& 0xC0 == 0xC0`, so 0x46C0 reaches THIS arm cleanly.
+    // The source is the full data + PC-relative + `#imm` set (modes 0, 2-6, 7/0-7/4) — NOT An-direct (mode 1).
+    // Odd word EAs are READ address errors (the operand read faults via the E3/E4 abort). Reuses the SHARED
+    // `move_to_sr_ccr_recipe` VERBATIM with `to_sr = true` → `MicroOp::LoadSr` (mask 0xA71F). The load-bearing
+    // difference vs MOVEtoCCR: `LoadSr` runs BEFORE the flush-read + prefetch, so when the new SR CLEARS S the
+    // two trailing reads run under the NEW mode's function code (FC2 user-program instead of FC6) — the
+    // mid-instruction FC switch (`regs.fc` computes each read's FC at execution time). The opcode space
+    // 0x46C0..=0x46FF is disjoint from NOT (0x4600..=0x46BF) and the 0x4Exx / 0x4180 arms.
+    if opcode & 0xFFC0 == 0x46C0 {
+        return move_to_sr_ccr_recipe(opcode, true);
+    }
     // MOVEfromSR `<ea>` (`0100 0000 11 mmm rrr`, opcode & 0xFFC0 == 0x40C0) — move the FULL 16-bit SR (incl the
     // system byte) to a data-alterable EA. SS == 3 (bits 7-6 = 0b11) distinguishes it from NEGX (0x4000, SS
     // 0/1/2); the NEGX arm below excludes `& 0xC0 == 0xC0`, so 0x40C0 reaches THIS arm cleanly. NOT privileged
