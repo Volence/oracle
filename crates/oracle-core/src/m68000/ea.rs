@@ -1742,6 +1742,57 @@ pub fn ea_tst(buf: &mut RecipeBuf, mode: u16, reg: u8, size: Size) {
     }
 }
 
+/// Push the WORD operand-read leg for `MOVEtoCCR`/`MOVEtoSR` — the pipe-flush recipe's leading fetch. UNLIKE
+/// [`ea_src`] (which trails the operand read with the instruction-completing `Prefetch`, then the ALU), this
+/// leaves the read operand in scratch 0 and emits ONLY the `(word_count − 1)` extension refills that precede
+/// the read — the shared `move_to_sr_ccr_recipe` supplies the trailing `Internal(4) → LoadCcr/LoadSr → flush
+/// Read → Prefetch` itself (the trailing Prefetch is the instruction's ONE completing refill; the flush Read
+/// is the extra pipe-flush re-read). Mirrors `ea_src`'s `AluPlacement::Last` legs (the per-mode EaCalc /
+/// predecrement / postincrement / extension refills), byte-for-byte MINUS the final Prefetch + ALU. `#imm`
+/// (7/4) is NOT handled here (its operand is the queued word — the caller uses the `to_sr_recipe` shape). An
+/// odd EA faults on this operand READ (a data read, low5 = 0x15) via the E3/E4 abort — IN scope.
+pub fn ea_read_word_operand(buf: &mut RecipeBuf, mode: u16, reg: u8) {
+    // abs.l (7/1) — a 3-word instruction: assemble the two-word address (HIGH, refill, LOW) first, then one
+    // more refill, then the operand read. Two refills precede the read (the third refill is the caller's
+    // trailing completing Prefetch). Bus (before the trailing legs): [PF, PF, READ].
+    if (mode, reg) == (7, 1) {
+        push_abs_l_addr(buf); // [EaCalc(HI), Prefetch, EaCalc(ADDR)] — the first of three refills
+        buf.push(MicroOp::Prefetch); // the second refill, before the operand read
+        buf.push(MicroOp::Read {
+            addr: Operand::Scratch(EA_SLOT),
+            fc: Fc::Data,
+            size: Size::Word,
+            dst: 0,
+        });
+        return;
+    }
+    let seq = src_seq(mode, reg, Size::Word);
+    debug_assert!(
+        matches!(seq.placement, AluPlacement::Last),
+        "ea_read_word_operand handles only memory-source modes (Dn/An/#imm never reach here)"
+    );
+    // The EA computation (if any) runs FIRST so a displacement leg captures prefetch[1] before any refill
+    // shifts it out; then the pre-read side effects (the -(An) predecrement + idle, or the (An)+ postincrement
+    // committed before the read so an odd-address fault still bumps the register).
+    if let Some(ea_calc) = seq.ea_calc {
+        buf.push(ea_calc);
+    }
+    for op in seq.pre_read.into_iter().flatten() {
+        buf.push(op);
+    }
+    // Emit the (word_count − 1) refills that PRECEDE the read (the read is the last bus event of this leg —
+    // the caller supplies the trailing completing Prefetch after the LoadCcr/LoadSr), then the operand read.
+    for _ in 0..seq.prefetch.saturating_sub(1) {
+        buf.push(MicroOp::Prefetch);
+    }
+    buf.push(MicroOp::Read {
+        addr: seq.read_addr.expect("memory-source mode must read"),
+        fc: Fc::Data,
+        size: Size::Word,
+        dst: 0,
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

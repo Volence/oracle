@@ -7,7 +7,9 @@
 //! builder per instruction family) lands with full coverage.
 
 use super::bus68k::Bus68k;
-use super::ea::{ea_cmpa, ea_dst, ea_move, ea_movea, ea_src, ea_tas, ea_tst, RecipeBuf};
+use super::ea::{
+    ea_cmpa, ea_dst, ea_move, ea_movea, ea_read_word_operand, ea_src, ea_tas, ea_tst, RecipeBuf,
+};
 use super::exception::{push_standard_frame, vector_fetch_and_reload};
 use super::microop::{
     condition_true, AluOp, Cpu68000, Dest, LogicOp, MicroOp, MicroState, Operand, Size,
@@ -653,6 +655,17 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
             _ => Size::Long, // SS = 2
         };
         return neg_family_recipe(opcode, AluOp::Neg, size);
+    }
+    // MOVEtoCCR `<ea>` (`0100 0100 11 mmm rrr`, opcode & 0xFFC0 == 0x44C0) — move a word from a data source EA
+    // into the CCR: `CCR = (SR & 0xFF00) | (src.w & 0x1F)` (the SR SYSTEM byte is PRESERVED; CCR bits 5-7 force
+    // to 0 — only X/N/Z/V/C load). NOT privileged; S never changes. SS == 3 (bits 7-6 = 0b11) distinguishes it
+    // from NEG (0x4400, SS 0/1/2); the NEG arm above excludes `& 0xC0 == 0xC0`, so 0x44C0 reaches THIS arm
+    // cleanly. The source is the full data + PC-relative + `#imm` set (modes 0, 2-6, 7/0-7/4) — NOT An-direct
+    // (mode 1). Odd word EAs are READ address errors (the operand read faults via the E3/E4 abort). Reuses the
+    // shared `move_to_sr_ccr_recipe` (the novel pipe-flush bus shape) with `to_sr = false` → `MicroOp::LoadCcr`.
+    // The opcode space 0x44C0..=0x44FF is disjoint from NEG (0x4400..=0x44BF) and the 0x4Exx / 0x4180 arms.
+    if opcode & 0xFFC0 == 0x44C0 {
+        return move_to_sr_ccr_recipe(opcode, false);
     }
     // MOVEfromSR `<ea>` (`0100 0000 11 mmm rrr`, opcode & 0xFFC0 == 0x40C0) — move the FULL 16-bit SR (incl the
     // system byte) to a data-alterable EA. SS == 3 (bits 7-6 = 0b11) distinguishes it from NEGX (0x4000, SS
@@ -1695,6 +1708,84 @@ fn movefrom_sr_recipe(opcode: u16) -> MicroState {
             }
         });
     }
+    buf.finish()
+}
+
+/// `MOVEtoCCR <ea>` (`0x44C0 | ea`, `to_sr = false`) / `MOVEtoSR <ea>` (`0x46C0 | ea`, `to_sr = true`): move a
+/// WORD from a data source EA into the CCR / SR. `to_sr = false` → `CCR = (SR & 0xFF00) | (src.w & 0x1F)` (the
+/// SR SYSTEM byte preserved, CCR bits 5-7 forced 0, S never changes) via [`MicroOp::LoadCcr`]; `to_sr = true`
+/// → `SR = src.w & 0xA71F` via [`MicroOp::LoadSr`] (a later commit — which CAN clear S, switching the trailing
+/// reads' function code). Reuses the immediate [`to_sr_recipe`] shape generalized to the full data-source EA
+/// set.
+///
+/// The ONE novel bus shape (verified 0-mismatch over every mode): the operand read (with its extension-word
+/// refills) → `Internal(4)` (the `n4` idle) → `LoadCcr`/`LoadSr` → a DISCARD flush `Read` @ `pc+2` (the
+/// pipe-flush re-read of the word already in the queue head, at the final PC) → one `Prefetch` (the
+/// instruction-completing refill). The two trailing reads reload the queue at `[finalPC, finalPC+2]`; the
+/// flush re-read is the extra bus access vs a normal op's single final prefetch. The `LoadCcr`/`LoadSr` runs
+/// BEFORE the flush-read + prefetch — the hinge where MOVEtoSR's FC switch applies to BOTH trailing reads (for
+/// CCR, S never changes so both stay FC6). TIMING is uniform: `cycles = ea_word_read_cost + 12` (reg 12,
+/// (An)/(An)+ 16, -(An) 18, d16(An)/abs.w/d16(PC) 20, d8(An,Xn)/d8(PC,Xn) 22, abs.l 24, #imm 16).
+///
+/// `Dn`-direct (mode 0) has NO operand read: `[Internal(4), LoadX(DataRegLow16), Read @ pc+2 (flush),
+/// Prefetch]`, bus `n4, r@pc+2, r@pc+4`, 12 cyc. `#imm` (7/4) reduces to the exact [`to_sr_recipe`] shape (the
+/// leading discard `Read @ pc+4` + `LoadX(ImmWord)` + two `Prefetch`, but `Internal(4)` not ANDItoSR's
+/// `Internal(8)` — there is NO separate operand read, the immediate is `prefetch[1]`). Every memory mode goes
+/// through [`ea_read_word_operand`] (the operand → scratch 0, then the trailing legs here).
+fn move_to_sr_ccr_recipe(opcode: u16, to_sr: bool) -> MicroState {
+    let mode = (opcode >> 3) & 7;
+    let reg = (opcode & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    // The write-back micro-op, given the operand it loads (scratch 0 for a memory read, or the direct
+    // register / immediate). LoadSr masks to 0xA71F (full SR); LoadCcr keeps only the low 5 CCR bits and
+    // preserves the SR system byte.
+    let load = |value: Operand| {
+        if to_sr {
+            MicroOp::LoadSr { value }
+        } else {
+            MicroOp::LoadCcr { value }
+        }
+    };
+    if mode == 7 && reg == 4 {
+        // #imm — the to_sr_recipe shape: the immediate is prefetch[1] (no separate operand read). The leading
+        // discard Read @ pc+4 (FC=6) is re-read by the first re-prefetch; Internal(4) (the n4 idle, NOT
+        // ANDItoSR's n8); the write-back from ImmWord; then the two completing refills. Bus: r@pc+4, n4,
+        // r@pc+4, r@pc+6, 16 cyc.
+        buf.push(MicroOp::Read {
+            addr: Operand::PcPlus(4),
+            fc: super::microop::Fc::Program,
+            size: Size::Word,
+            dst: 0,
+        });
+        buf.push(MicroOp::Internal { cycles: 4 });
+        buf.push(load(Operand::ImmWord));
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::Prefetch);
+        return buf.finish();
+    }
+    if mode == 0 {
+        // Dn-direct — no operand read: n4, the write-back from Dn's low word, the flush re-read @ pc+2, the
+        // completing refill @ pc+4. Bus: n4, r@pc+2, r@pc+4, 12 cyc.
+        buf.push(MicroOp::Internal { cycles: 4 });
+        buf.push(load(Operand::DataRegLow16(reg)));
+    } else {
+        // Every memory / PC-relative mode: the operand read leg (→ scratch 0, with its (word_count − 1)
+        // preceding refills), then n4, then the write-back from the read operand. The flush re-read + refill
+        // follow below (uniform for all modes). An odd EA faults on the operand read (the E3/E4 abort).
+        ea_read_word_operand(&mut buf, mode, reg);
+        buf.push(MicroOp::Internal { cycles: 4 });
+        buf.push(load(Operand::Scratch(0)));
+    }
+    // The pipe-flush re-read of the word already in the queue head (at the final PC = pc+2, a program-space
+    // read) THEN the instruction-completing refill. For CCR S never changes so both stay FC6; for MOVEtoSR the
+    // preceding LoadSr may have cleared S, and `regs.fc` computes each read's FC at execution time.
+    buf.push(MicroOp::Read {
+        addr: Operand::PcPlus(2),
+        fc: super::microop::Fc::Program,
+        size: Size::Word,
+        dst: 0,
+    });
+    buf.push(MicroOp::Prefetch);
     buf.finish()
 }
 

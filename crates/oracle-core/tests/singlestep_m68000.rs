@@ -77,6 +77,11 @@ const FILES: &[&str] = &[
     // preserved), 6 cyc; memory is CLR.w's read-before-write RMW (dummy read then the SR write), so an odd EA is
     // a READ address error the E3/E4 abort covers. 100% PURE / in scope (8065), classified by `movefrom_sr_covered`.
     "MOVEfromSR.json",
+    // MOVEtoCCR (`0x44C0 | ea`, data + PC-rel + #imm) — move a word into the CCR: `CCR = (SR & 0xFF00) |
+    // (src.w & 0x1F)` (the SR system byte PRESERVED, CCR bits 5-7 forced 0), NOT privileged, S never changes.
+    // The novel pipe-flush bus shape (operand read → n4 → LoadCcr → flush re-read → refill); odd word EAs are
+    // READ address errors the E3/E4 abort covers. 100% PURE / in scope (8065), classified by `moveto_ccr_covered`.
+    "MOVEtoCCR.json",
     // The CMP.* files are 3-WAY MIXES (CMP <ea>,Dn + CMPM (Ay)+,(Ax)+ + CMPI #imm,<ea>), all mislabeled
     // "CMP.<sz>" in `name` — classified by OPCODE via `cmp_class`. N0 added the Cmp class, N1 the Cmpm class,
     // N2 the Cmpi class — so these files are now FULLY covered (CMPA is its own file). The only intra-class
@@ -1336,6 +1341,23 @@ fn movefrom_sr_covered(opcode: u16) -> bool {
     matches!(mode, 0 | 2..=6) || (mode == 7 && (reg == 0 || reg == 1))
 }
 
+/// MOVEtoCCR (`opcode & 0xFFC0 == 0x44C0`, data + PC-relative + `#imm` source modes) — move a word into the
+/// CCR: `CCR = (SR & 0xFF00) | (src.w & 0x1F)` (the SR system byte PRESERVED, CCR bits 5-7 forced 0). NOT
+/// privileged; S never changes. The `0xFFC0` mask fixes bits 15-6 = `0100 0100 11` (SS == 3, distinct from
+/// NEG's SS 0/1/2 at 0x4400), leaving the 6-bit EA field. In scope: the DATA source set Dn (0), (An) (2),
+/// (An)+ (3), -(An) (4), d16(An) (5), d8(An,Xn) (6), abs.w (7/0), abs.l (7/1), d16(PC) (7/2), d8(PC,Xn) (7/3),
+/// #imm (7/4). An-direct (mode 1) is NOT a data source and is absent. Odd word EAs are READ address errors the
+/// E3/E4 abort covers (IN scope — the operand read faults); (A7)/(A7)+/-(A7) are all in scope. NO deferral, NO
+/// parity filter, NO (A7) carve-out. 100% PURE (8065). Classified strictly by OPCODE + mode.
+fn moveto_ccr_covered(opcode: u16) -> bool {
+    if opcode & 0xFFC0 != 0x44C0 {
+        return false;
+    }
+    let mode = (opcode >> 3) & 7;
+    let reg = opcode & 7;
+    matches!(mode, 0 | 2..=6) || (mode == 7 && matches!(reg, 0..=4))
+}
+
 fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // MOVE (`00 SS RRR MMM mmm rrr`, dst_mode != 1) — its own EA→EA mode-scope filter (no parity).
     if move_covered(opcode) {
@@ -1553,6 +1575,14 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // clean and in scope. 100% PURE (8065) — NO deferral, NO parity filter, NO (A7) carve-out. Classified by
     // OPCODE + the data-alterable mode guard (off the NEGX SS 0/1/2 forms at 0x4000).
     if movefrom_sr_covered(opcode) {
+        return true;
+    }
+    // MOVEtoCCR (`0xFFC0==0x44C0`, data + PC-rel + #imm) — move a word into the CCR: `CCR = (SR & 0xFF00) |
+    // (src.w & 0x1F)` (the SR system byte PRESERVED, CCR bits 5-7 forced 0), NOT privileged, S never changes.
+    // The novel pipe-flush bus shape (operand read → n4 → LoadCcr → flush re-read @ pc+2 → completing refill);
+    // odd word EAs are READ address errors the E3/E4 abort covers (IN scope). (A7)/(A7)+/-(A7) all in scope.
+    // 100% PURE (8065) — NO deferral, NO parity filter, NO (A7) carve-out. Classified by OPCODE + mode.
+    if moveto_ccr_covered(opcode) {
         return true;
     }
     // CMP `<ea>,Dn` + CMPM `(Ay)+,(Ax)+` + CMPI `#imm,<ea>` (the Cmp/Cmpm/Cmpi classes of the 3-way CMP.* mix,
@@ -2048,8 +2078,28 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 913_823,
-        "expected 913823 covered cases — S1 adds MOVEfromSR (its own MOVEfromSR.json file, 8065 cases = +8065 \
+        ran >= 921_888,
+        "expected 921888 covered cases — S2 adds MOVEtoCCR (its own MOVEtoCCR.json file, 8065 cases = +8065 \
+         over the 913823 S1 baseline → 921888). MOVEtoCCR (0xFFC0==0x44C0, data + PC-rel + #imm source modes) \
+         moves a word into the CCR: `CCR = (SR & 0xFF00) | (src.w & 0x1F)` — the SR SYSTEM byte (bits 8-15) is \
+         PRESERVED, CCR bits 5-7 force to 0 (only X/N/Z/V/C load), S never changes. NOT privileged. Reuses \
+         `MicroOp::LoadCcr` (RTR's CCR pop, mask 0x1F) with the operand = the word source. The ONE novel bus \
+         shape (the shared `move_to_sr_ccr_recipe`, which MOVEtoSR reuses): the operand read (with its \
+         extension-word refills) → Internal(4) (the n4 idle) → LoadCcr → a DISCARD flush Read @ pc+2 (the \
+         pipe-flush re-read of the word already in the queue head, at the final PC) → one Prefetch (the \
+         instruction-completing refill). The LoadCcr runs BEFORE the two trailing reads; for CCR S never changes \
+         so both stay FC6 (the hinge where MOVEtoSR's FC switch will apply). Uniform timing `= ea_word_read + \
+         12`: reg 12, (An)/(An)+ 16, -(An) 18, d16(An)/abs.w/d16(PC) 20, d8(An,Xn)/d8(PC,Xn) 22, abs.l 24, #imm \
+         16. The #imm mode reduces to the existing `to_sr_recipe` shape (leading discard Read @ pc+4 + \
+         LoadCcr(ImmWord) + two Prefetch, but Internal(4) not ANDItoSR's Internal(8) — no separate operand \
+         read). Memory modes go through the new `ea_read_word_operand` (the operand → scratch 0 with its \
+         (word_count − 1) preceding refills). Odd word EAs are READ address errors the E3/E4 abort covers \
+         (low5=0x15, IN scope — the operand read faults). In scope: Dn (0), (An) (2), (An)+ (3), -(An) (4), \
+         d16(An) (5), d8(An,Xn) (6), abs.w (7/0), abs.l (7/1), d16(PC) (7/2), d8(PC,Xn) (7/3), #imm (7/4) — \
+         An-direct (1) is NOT a data source and absent. Every case in scope — NO deferral, NO parity filter, NO \
+         (A7) carve-out ((A7)/(A7)+/-(A7) all in scope). 100% PURE (8065). Classified by OPCODE + the \
+         data-source mode guard (off the NEG SS 0/1/2 forms at 0x4400). \
+         Prior baseline — S1 adds MOVEfromSR (its own MOVEfromSR.json file, 8065 cases = +8065 \
          over the 905758 S0 baseline → 913823). MOVEfromSR (0xFFC0==0x40C0, data-alterable modes) moves the FULL \
          16-bit SR (incl the system byte S/T/I) to a data-alterable EA — NOT privileged on the 68000, sets NO \
          flags (SR byte-identical initial→final, the load-bearing no-flag invariant: it WRITES the SR value but \
@@ -2837,7 +2887,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX+ABCD+SBCD+NBCD+MOVEfromUSP+MOVEtoUSP+MOVEfromSR (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX+ABCD+SBCD+NBCD+MOVEfromUSP+MOVEtoUSP+MOVEfromSR+MOVEtoCCR (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -4890,6 +4940,233 @@ fn movefrom_sr_rmw_quiescable_and_serializable_at_every_micro_op_boundary() {
     }
     eprintln!(
         "S1 MOVEfromSR snapshot/restore: MOVEfromSR (xxx).l resumed identically at every micro-op boundary"
+    );
+}
+
+/// S2 — the named `MOVEtoCCR <ea>` anchors, pinning each source-mode shape of the novel pipe-flush recipe
+/// against the vendored MOVEtoCCR stream WITHOUT relying on the bulk `covered()` sweep. `CCR = (SR & 0xFF00) |
+/// (src.w & 0x1F)` — the SR system byte PRESERVED, CCR bits 5-7 forced 0, S never changes. The bus shape is
+/// `[operand read + ext refills] → n4 → LoadCcr → flush re-read @ pc+2 → completing refill` (the two trailing
+/// reads reload the queue; the flush re-read is the extra bus access). One anchor per mode, timing = ea_word_read
+/// + 12:
+/// - **`44c3 [MOVEtoCCR D3] 4`** — **Dn** len **12**, bus `n4, r@pc+2, r@pc+4`. This case's D3 (0xf9d5ff26) has
+///   CCR bits 5-7 SET in the source low byte (0x26 → bit 5) — the final CCR forces them to 0 (low5 = 0x06), so
+///   it doubles as the bits-5-7-drop anchor.
+/// - **`44d5 [MOVEtoCCR (A5)] 2`** — **(An)** len **16**, bus `r@EA, n4, r@pc+2, r@pc+4`.
+/// - **`44de [MOVEtoCCR (A6)+] 14`** — **(An)+** len **16** (post-increment).
+/// - **`44e3 [MOVEtoCCR -(A3)] 6`** — **-(An)** len **18** (the predecrement idle, `n2, r@EA, n4, ...`).
+/// - **`44ec [MOVEtoCCR (d16, A4)] 7`** — **d16(An)** len **20** (2-word, trailing pc+4/pc+6).
+/// - **`44f3 [MOVEtoCCR (d8, A3, Xn)] 22`** — **d8(An,Xn)** len **22** (the indexed-mode idle).
+/// - **`44f8 [MOVEtoCCR (xxx).w] 68`** — **abs.w** len **20**.
+/// - **`44f9 [MOVEtoCCR (xxx).l] 34`** — **abs.l** len **24** (three-word, trailing pc+6/pc+8).
+/// - **`44fa [MOVEtoCCR (d16, PC)] 59`** — **d16(PC)** len **20** (PC-relative source).
+/// - **`44fb [MOVEtoCCR (d8, PC, Xn)] 523`** — **d8(PC,Xn)** len **22** (PC-relative indexed source).
+/// - **`44fc [MOVEtoCCR #] 33`** — **#imm** len **16** (the `to_sr_recipe` shape: `r@pc+4, n4, r@pc+4, r@pc+6`,
+///   NO separate operand read — the immediate is prefetch[1]).
+///
+/// Plus the **odd-EA READ fault** (its own test below). Each runs both drivers + the per-cycle transaction stream
+/// via `run_case`. Every anchor must decode as a MOVEtoCCR opcode (`& 0xFFC0 == 0x44C0`), be `moveto_ccr_covered`,
+/// pin its length, AND leave the SR SYSTEM byte (bits 8-15) unchanged with CCR bits 5-7 forced to 0.
+#[test]
+fn moveto_ccr_anchor_cases_pass_both_drivers() {
+    let variants: &[(&str, u32)] = &[
+        ("44c3 [MOVEtoCCR D3] 4", 12),
+        ("44d5 [MOVEtoCCR (A5)] 2", 16),
+        ("44de [MOVEtoCCR (A6)+] 14", 16),
+        ("44e3 [MOVEtoCCR -(A3)] 6", 18),
+        ("44ec [MOVEtoCCR (d16, A4)] 7", 20),
+        ("44f3 [MOVEtoCCR (d8, A3, Xn)] 22", 22),
+        ("44f8 [MOVEtoCCR (xxx).w] 68", 20),
+        ("44f9 [MOVEtoCCR (xxx).l] 34", 24),
+        ("44fa [MOVEtoCCR (d16, PC)] 59", 20),
+        ("44fb [MOVEtoCCR (d8, PC, Xn)] 523", 22),
+        ("44fc [MOVEtoCCR #] 33", 16),
+    ];
+    let path = format!("{VENDOR_DIR}/MOVEtoCCR.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let mut found = 0usize;
+    for (name, length) in variants {
+        let case = data
+            .iter()
+            .find(|t| t["name"].as_str().unwrap() == *name)
+            .unwrap_or_else(|| panic!("S2 anchor {name} not found in MOVEtoCCR.json"));
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(
+            opcode & 0xFFC0,
+            0x44C0,
+            "anchor {name} must be a MOVEtoCCR opcode"
+        );
+        assert!(
+            moveto_ccr_covered(opcode),
+            "anchor {name} must be moveto_ccr_covered"
+        );
+        assert_eq!(
+            case["length"].as_u64().unwrap() as u32,
+            *length,
+            "MOVEtoCCR anchor {name} length"
+        );
+        let isr = case["initial"]["sr"].as_u64().unwrap() as u16;
+        let fsr = case["final"]["sr"].as_u64().unwrap() as u16;
+        // The SR SYSTEM byte (bits 8-15) is PRESERVED — S/T/I never change (MOVEtoCCR touches only the CCR).
+        assert_eq!(
+            fsr & 0xFF00,
+            isr & 0xFF00,
+            "MOVEtoCCR anchor {name} preserves the SR system byte (S never changes)"
+        );
+        // CCR bits 5-7 read as 0 — only X/N/Z/V/C (the low 5) load.
+        assert_eq!(
+            fsr & 0x00E0,
+            0,
+            "MOVEtoCCR anchor {name} forces CCR bits 5-7 to 0"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, variants.len(), "all S2 MOVEtoCCR anchors exercised");
+    // The Dn anchor doubles as the bits-5-7-drop pin: its source low byte has bit 5 set, forced to 0 in the CCR.
+    let dn = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "44c3 [MOVEtoCCR D3] 4")
+        .unwrap();
+    let src = dn["initial"]["d3"].as_u64().unwrap() as u32;
+    assert_ne!(
+        src & 0x00E0,
+        0,
+        "the Dn anchor's source has CCR bits 5-7 set (so the drop is meaningfully tested)"
+    );
+    assert_eq!(
+        dn["final"]["sr"].as_u64().unwrap() as u16 & 0x1F,
+        (src & 0x1F) as u16,
+        "the CCR loads exactly the source's low 5 bits (X/N/Z/V/C)"
+    );
+    eprintln!(
+        "S2 MOVEtoCCR anchors: {found} cases (Dn 12 / (An) 16 / (An)+ 16 / -(An) 18 / d16(An) 20 / d8(An,Xn) 22 / abs.w 20 / abs.l 24 three-ext / d16(PC) 20 / d8(PC,Xn) 22 / #imm 16 to_sr_recipe-shape) passed both drivers, SR system byte preserved + CCR bits 5-7 forced 0"
+    );
+}
+
+/// S2 — the `MOVEtoCCR` **odd-EA READ address-error** anchor. The operand read faults on an odd word EA (a data
+/// read, low5 = 0x15 = read | data | fc5), IR = the opcode, faulting addr = the full-32 EA, stacked PC = the live
+/// `regs.pc`. The E3/E4 abort produces the group-0 14-byte vector-3 frame for free — so this case must PASS
+/// unchanged. The vendored `44d5 [MOVEtoCCR (A5)] 52` case has an ODD A5: the operand read faults, SSP -= 14, pc →
+/// the vector-3 handler.
+#[test]
+fn moveto_ccr_odd_ea_read_fault_passes_both_drivers() {
+    let path = format!("{VENDOR_DIR}/MOVEtoCCR.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "44d5 [MOVEtoCCR (A5)] 52")
+        .expect("MOVEtoCCR odd-EA fault anchor present");
+    let ini = &case["initial"];
+    let fin = &case["final"];
+    let op = ini["prefetch"][0].as_u64().unwrap() as u16;
+    assert_eq!(
+        op & 0xFFC0,
+        0x44C0,
+        "odd-EA anchor must be a MOVEtoCCR opcode"
+    );
+    assert!(moveto_ccr_covered(op), "odd-EA anchor must be covered");
+    // The operand READ faults on the odd (A5) EA — a group-0 14-byte vector-3 frame (SSP -= 14).
+    assert_eq!(
+        u32f(fin, "ssp"),
+        u32f(ini, "ssp").wrapping_sub(14),
+        "the address-error frame pushes SSP -= 14"
+    );
+    // SSW = (opcode & 0xFFE0) | 0x15 (read | data | fc5) — pin it in the stacked frame.
+    let expected_ssw = (op & 0xFFE0) | 0x15;
+    let saved_ssp = u32f(fin, "ssp");
+    let ssw_addr = saved_ssp; // the SSW is the top word of the group-0 frame at the saved SP
+    let mut ssw = 0u16;
+    for p in fin["ram"].as_array().unwrap() {
+        let p = p.as_array().unwrap();
+        let a = p[0].as_u64().unwrap() as u32;
+        let v = p[1].as_u64().unwrap() as u8;
+        if a == ssw_addr {
+            ssw |= (v as u16) << 8;
+        } else if a == ssw_addr + 1 {
+            ssw |= v as u16;
+        }
+    }
+    assert_eq!(
+        ssw, expected_ssw,
+        "stacked SSW = (op & 0xFFE0) | 0x15 (read|data|fc5)"
+    );
+    run_case(case);
+    eprintln!(
+        "S2 MOVEtoCCR odd-EA READ fault: (A5) odd → operand read faults, SSW={expected_ssw:#06x} (read|data|fc5), SSP -= 14, group-0 vector-3 frame passed both drivers"
+    );
+}
+
+/// S2 — the snapshot/restore anchor for the MOVEtoCCR pipe-flush recipe. Drives a real vendored `MOVEtoCCR abs.l`
+/// case (the deepest EA — two extension words, three refills, then the flush re-read + completing refill) through
+/// the quiesce driver, snapshotting + restoring the WHOLE `Cpu68000` at every micro-op boundary and proving the
+/// resumed run reproduces the run-to-completion final state + transaction stream bit-for-bit. Pins that the novel
+/// recipe keeps `MicroState` fixed-size bincode.
+#[test]
+fn moveto_ccr_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/MOVEtoCCR.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "44f9 [MOVEtoCCR (xxx).l] 34")
+        .expect("MOVEtoCCR abs.l snapshot anchor present");
+    let ini = &case["initial"];
+
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    let boundaries = {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        let mut n = 0usize;
+        while cpu.step_micro_op(&mut bus) == Step::Continue {
+            n += 1;
+        }
+        n
+    };
+    for pause_after in 0..=boundaries {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        for _ in 0..pause_after {
+            assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+        }
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+    }
+    eprintln!(
+        "S2 MOVEtoCCR snapshot/restore: MOVEtoCCR (xxx).l resumed identically at every micro-op boundary"
     );
 }
 
