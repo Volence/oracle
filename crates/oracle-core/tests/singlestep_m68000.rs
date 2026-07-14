@@ -616,6 +616,17 @@ const FILES: &[&str] = &[
     // (binary − lowc − highc) & 0xff; V = msb(~res & binary). Byte-only → NO alignment fault. Every case in
     // scope (both forms, incl `-(A7)`) — NO deferral, NO parity filter. 100% PURE — 8065 cases. By OPCODE.
     "SBCD.json",
+    // NBCD (`0100 1000 00 mmm rrr`, opcode & 0xFFC0 == 0x4800, data-alterable modes) — the packed-DECIMAL negate
+    // `<ea> = 0 −₁₀ <ea> − X`, BYTE-ONLY, over the single data-alterable EA. The FINAL op of the X-flag
+    // arithmetic cluster. `AluOp::Nbcd` is EXACTLY the SBCD core with `dst = 0`, `src = operand` (the SAME
+    // carry/result asymmetry, sticky Z, X_out = C_out): `binary = 0 − operand − X`; `lowc = 6 if
+    // (operand&0xf)+X > 0`; C = X = ((binary − lowc) < 0); highc = 0x60 if binary < 0; res =
+    // (binary − lowc − highc) & 0xff; N = msb(res); V = msb(~res & binary). The single data-alterable EA
+    // read-modify-write is the SAME shape as NEG/NOT/NEGX (`<ea>` read → Alu → write back); Dn = 6, `(An)` = 12,
+    // `(An)+` = 12, `-(An)` = 14, `d16(An)` = 16, `d8(An,Xn)` = 18, `abs.w` = 16, `abs.l` = 20. Byte-only → NO
+    // alignment fault (`-(A7).b` steps by 2). Every case in scope — NO deferral, NO parity filter. 100% PURE —
+    // 8065 cases. Classified strictly by OPCODE + the data-alterable mode guard (excludes An-direct/PC-rel/imm).
+    "NBCD.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -1265,6 +1276,21 @@ fn sbcd_covered(opcode: u16) -> bool {
     opcode & 0xF1F0 == 0x8100
 }
 
+/// NBCD (`opcode & 0xFFC0 == 0x4800`, data-alterable modes) — the packed-DECIMAL negate `<ea> = 0 −₁₀ <ea> − X`,
+/// BYTE-ONLY. The `0xFFC0` mask fixes bits 15-6 = `0100 1000 00`, leaving the 6-bit EA field. In scope: the
+/// data-alterable EA set Dn (0), (An) (2), (An)+ (3), -(An) (4), d16(An) (5), d8(An,Xn) (6), abs.w (7/0),
+/// abs.l (7/1). An-direct (1) / PC-relative (7/2, 7/3) / #imm (7/4) are NOT data-alterable and are absent.
+/// Byte-only → the RMW NEVER address-errors (`-(A7).b` steps by 2). NO deferral — UNLIKE NEG, the plain `(A7)`
+/// mode-2 indirect IS in scope (byte, always clean). NO parity filter. Classified strictly by OPCODE + mode.
+fn nbcd_covered(opcode: u16) -> bool {
+    if opcode & 0xFFC0 != 0x4800 {
+        return false;
+    }
+    let mode = (opcode >> 3) & 7;
+    let reg = opcode & 7;
+    matches!(mode, 0 | 2..=6) || (mode == 7 && (reg == 0 || reg == 1))
+}
+
 fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // MOVE (`00 SS RRR MMM mmm rrr`, dst_mode != 1) — its own EA→EA mode-scope filter (no parity).
     if move_covered(opcode) {
@@ -1455,6 +1481,16 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // X_out = C_out. Byte-only → NO alignment fault (mem mode NEVER faults). 100% PURE (8065) — NO deferral, NO
     // parity filter. DISJOINT from DIVU/DIVS / real OR.b. Classified by OPCODE.
     if sbcd_covered(opcode) {
+        return true;
+    }
+    // NBCD (`opcode & 0xFFC0 == 0x4800`, data-alterable modes) — the packed-DECIMAL negate `<ea> = 0 −₁₀ <ea> −
+    // X`, BYTE-ONLY, over the single data-alterable EA (the FINAL op of the X-flag cluster). `AluOp::Nbcd` is
+    // EXACTLY the SBCD core with `dst = 0`, `src = operand` (the SAME carry/result asymmetry, V = msb(~res &
+    // binary), sticky Z, X_out = C_out). The single-EA RMW is the SAME shape as NEG/NOT/NEGX. In scope: Dn (0),
+    // (An) (2), (An)+ (3), -(An) (4), d16(An) (5), d8(An,Xn) (6), abs.w (7/0), abs.l (7/1). Byte-only → the RMW
+    // NEVER address-errors (`-(A7).b` steps by 2). NO deferral (UNLIKE NEG, plain `(A7)` mode-2 IS in scope), NO
+    // parity filter. 100% PURE (8065). DISJOINT from its 0x4x00 unary siblings + SWAP/PEA/EXT/MOVEM. By OPCODE.
+    if nbcd_covered(opcode) {
         return true;
     }
     // CMP `<ea>,Dn` + CMPM `(Ay)+,(Ax)+` + CMPI `#imm,<ea>` (the Cmp/Cmpm/Cmpi classes of the 3-way CMP.* mix,
@@ -1950,8 +1986,20 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 881_563,
-        "expected 881563 covered cases — C2 adds ABCD + SBCD (their own ABCD.json / SBCD.json files, 8065 cases \
+        ran >= 889_628,
+        "expected 889628 covered cases — C3 adds NBCD (its own NBCD.json file, 8065 cases = +8065 over the \
+         881563 ABCD/SBCD baseline → 889628, the FINAL op of the X-flag arithmetic cluster). NBCD \
+         (0xFFC0==0x4800, data-alterable modes) is the packed-DECIMAL negate `<ea> = 0 −₁₀ <ea> − X`, BYTE-ONLY, \
+         over the single data-alterable EA. `AluOp::Nbcd` is EXACTLY the SBCD core with `dst = 0`, `src = \
+         operand` (delegated to the shared `sbcd_core`): the SAME carry/result asymmetry (`binary = 0 − operand \
+         − X`; `lowc = 6 if (operand&0xf)+X > 0`; C = X = ((binary − lowc) < 0); highc = 0x60 if binary < 0; res \
+         = (binary − lowc − highc) & 0xff; V = msb(~res & binary); N = msb(res)), sticky Z (`Z_in AND res==0`, \
+         never set), X_out = C_out. The single-EA read-modify-write is the SAME shape as NEG/NOT/NEGX (`<ea>` \
+         read → Alu → write back); Dn = 6 (a trailing Internal(2)), `(An)` = 12, `(An)+` = 12, `-(An)` = 14, \
+         `d16(An)` = 16, `d8(An,Xn)` = 18, `abs.w` = 16, `abs.l` = 20. Byte-only → the RMW NEVER address-errors \
+         (`-(A7).b` steps by 2). Every case in scope — NO deferral, NO parity filter, NO corrupt entries. 100% \
+         PURE (8065). \
+         Prior baseline — C2 adds ABCD + SBCD (their own ABCD.json / SBCD.json files, 8065 cases \
          each = +16130 over the 865433 SUBX baseline → 881563). These are the packed-DECIMAL add/subtract, \
          byte-only, DEDICATED Alus (like ADDX/SUBX/NEGX): the incoming X (`sr>>4 & 1`) folds into BOTH the value \
          and the carry/borrow, Z is STICKY (`Z_in AND res==0`, never set), X_out = C_out. ABCD (0xF1F0==0xC100, \
@@ -2698,7 +2746,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX+ABCD+SBCD (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX+ABCD+SBCD+NBCD (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -4224,6 +4272,143 @@ fn abcd_predecrement_quiescable_and_serializable_at_every_micro_op_boundary() {
     }
     eprintln!(
         "C2 ABCD snapshot/restore: ABCD -(A5),-(A6) resumed identically at every micro-op boundary"
+    );
+}
+
+/// C3 — the named `NBCD <ea>` anchors, pinning the packed-DECIMAL negate `<ea> = 0 −₁₀ <ea> − X` (the new
+/// `AluOp::Nbcd`, EXACTLY the SBCD core with `dst = 0`, `src = operand`, delegated to the shared `sbcd_core`)
+/// against the vendored NBCD stream WITHOUT relying on the bulk `covered()` sweep. The single data-alterable EA
+/// read-modify-write is the SAME shape as NEG/NOT/NEGX; byte-only → the RMW NEVER address-errors. Every mode +
+/// load-bearing fact, each a real vendored case pinned to its exact length + per-cycle transaction stream:
+/// - **`4807 [NBCD D7] 11`** — **Dn**, len **6** (`[Prefetch, Alu, Internal(2)]`); an **X_in=1** case (X folds
+///   into BOTH the value and the borrow).
+/// - **`4816 [NBCD (A6)] 1`** — **(An)**, len **12** (byte RMW: read, refill, write back).
+/// - **`481c [NBCD (A4)+] 2`** — **(An)+**, len **12**, A4 advances by 1 (post-increment, byte).
+/// - **`4823 [NBCD -(A3)] 4`** — **-(An)**, len **14** (pre-decrement idle + byte RMW).
+/// - **`482e [NBCD (d16, A6)] 13`** — **d16(An)**, len **16**.
+/// - **`4836 [NBCD (d8, A6, Xn)] 19`** — **d8(An,Xn)**, len **18** (the indexed-mode idle).
+/// - **`4838 [NBCD (xxx).w] 39`** — **abs.w**, len **16**.
+/// - **`4839 [NBCD (xxx).l] 43`** — **abs.l**, len **20** (TWO extension words — the three-refill interleave).
+/// - **`4801 [NBCD D1] 6365`** — a **0x00-operand / X=0** case: res == 0 but **Z_in == 0** → Z STAYS 0 (proving
+///   sticky Z is `Z_in AND res==0`, NOT a plain `res==0` that would SET Z).
+/// - **`4827 [NBCD -(A7)] 53`** — a **-(A7) byte** case: A7 steps by **2** (keep the SP even), len **14**.
+///
+/// Each runs both drivers + the per-cycle transaction stream via `run_case`. Every anchor must decode as an
+/// NBCD opcode (`& 0xFFC0 == 0x4800`) and be `nbcd_covered`; each pins its length.
+#[test]
+fn nbcd_anchor_cases_pass_both_drivers() {
+    let variants: &[(&str, u32)] = &[
+        ("4807 [NBCD D7] 11", 6),
+        ("4816 [NBCD (A6)] 1", 12),
+        ("481c [NBCD (A4)+] 2", 12),
+        ("4823 [NBCD -(A3)] 4", 14),
+        ("482e [NBCD (d16, A6)] 13", 16),
+        ("4836 [NBCD (d8, A6, Xn)] 19", 18),
+        ("4838 [NBCD (xxx).w] 39", 16),
+        ("4839 [NBCD (xxx).l] 43", 20),
+        ("4801 [NBCD D1] 6365", 6),
+        ("4827 [NBCD -(A7)] 53", 14),
+    ];
+    let path = format!("{VENDOR_DIR}/NBCD.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let mut found = 0usize;
+    for (name, length) in variants {
+        let case = data
+            .iter()
+            .find(|t| t["name"].as_str().unwrap() == *name)
+            .unwrap_or_else(|| panic!("C3 anchor {name} not found in NBCD.json"));
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(
+            opcode & 0xFFC0,
+            0x4800,
+            "anchor {name} must be an NBCD opcode"
+        );
+        assert!(nbcd_covered(opcode), "anchor {name} must be nbcd_covered");
+        assert_eq!(
+            cmp_class(opcode),
+            CmpClass::None,
+            "NBCD is not a CMP-class opcode"
+        );
+        assert_eq!(
+            case["length"].as_u64().unwrap() as u32,
+            *length,
+            "NBCD anchor {name} length"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, 10, "all C3 NBCD anchors exercised");
+    eprintln!(
+        "C3 NBCD anchors: {found} cases (Dn len 6 X_in=1 / (An) 12 / (An)+ 12 advances / -(An) 14 / d16(An) 16 / d8(An,Xn) 18 / abs.w 16 / abs.l 20 two-ext / 0x00-op X=0 sticky-Z stays 0 / -(A7) byte step-2 14) passed both drivers"
+    );
+}
+
+/// C3 — the snapshot/restore anchor for the NBCD single data-alterable EA read-modify-write (the byte `ea_dst`
+/// RMW with the new decimal `AluOp::Nbcd`). Drives a real vendored `NBCD abs.l` case (the deepest EA — two
+/// extension words, three refills) through the quiesce driver, snapshotting + restoring the WHOLE `Cpu68000`
+/// (incl. the in-flight cursor + all scratch slots) at every micro-op boundary and proving the resumed run
+/// reproduces the run-to-completion final state + transaction stream bit-for-bit. Pins that the NBCD RMW recipe
+/// keeps `MicroState` fixed-size bincode.
+#[test]
+fn nbcd_rmw_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/NBCD.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "4839 [NBCD (xxx).l] 43")
+        .expect("NBCD abs.l snapshot anchor present");
+    let ini = &case["initial"];
+
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    let boundaries = {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        let mut n = 0usize;
+        while cpu.step_micro_op(&mut bus) == Step::Continue {
+            n += 1;
+        }
+        n
+    };
+    for pause_after in 0..=boundaries {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        for _ in 0..pause_after {
+            assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+        }
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+    }
+    eprintln!(
+        "C3 NBCD snapshot/restore: NBCD (xxx).l resumed identically at every micro-op boundary"
     );
 }
 

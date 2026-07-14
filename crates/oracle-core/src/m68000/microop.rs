@@ -508,6 +508,15 @@ pub enum AluOp {
     /// separately. 0-mismatch-verified against the vendored `SBCD` stream. Distinct from [`AluOp::Sub`]/
     /// [`AluOp::Subx`] (binary, non-decimal) and [`AluOp::Abcd`] (the decimal ADD).
     Sbcd,
+    /// Nbcd: **binary BCD** `result = 0 −₁₀ operand − X_in` (byte-only) — the flag op of the `NBCD` family
+    /// (`NBCD <ea>`, the packed-decimal *negate* over the single data-alterable EA). It is EXACTLY the
+    /// [`AluOp::Sbcd`] core with `dst = 0` and `src = operand`: the recipe reads the EA into `a`/lhs (so
+    /// `src = lhs & 0xFF`, `dst = 0`, `b`/rhs ignored), and the value + N/V/C/X flags are computed by the
+    /// shared `sbcd_core` (the SAME carry/result asymmetry: **C = X = ((binary − lowc) < 0)**, `highc = 0x60
+    /// if binary < 0`, **V = msb(~res & binary)**, **N = msb(res)**). Like SBCD it is DEDICATED (X into the
+    /// value AND the borrow) with a **STICKY Z** (`Z_in AND res==0`, never set). 0-mismatch-verified against
+    /// the vendored `NBCD` stream. Distinct from [`AluOp::Neg`]/[`AluOp::Negx`] (binary, non-decimal negate).
+    Nbcd,
     /// Not: **unary** `result = (~a) & mask` at the operand-size boundary — the flag op of the `NOT` family
     /// (`NOT <ea>` = `dst = ~dst`). It is **logic-shaped**, identical to [`AluOp::Eor`] in every respect except
     /// the bit operation (`~a` instead of `a ^ b`): it shares the **MOVE flag shape** ([`move_flags`]) — sets
@@ -952,6 +961,43 @@ fn movea_value(value: u32, size: Size) -> u32 {
         Size::Long => value,
         Size::Byte => unreachable!("byte MOVEA is illegal"),
     }
+}
+
+/// The shared **binary-BCD subtract** core (byte-only) computing `dst −₁₀ src − X_in` and its CCR. Used by
+/// BOTH [`AluOp::Sbcd`] (`dst`/`src` from the two operands) and [`AluOp::Nbcd`] (the BCD *negate*, which is
+/// EXACTLY `sbcd_core(0, operand, X_in)` — `0 −₁₀ operand − X`). It carries the **REAL carry/result
+/// ASYMMETRY** (0-mismatch-verified against the vendored `SBCD`/`NBCD` streams — 28 divergent SBCD cases):
+/// `binary = dst − src − X_in` (signed); `lowc = 6 if (dst&0xf) − (src&0xf) − X_in < 0 else 0`;
+/// **C = X = ((binary − lowc) < 0)** — the borrow keys on `binary − lowc`; **`highc = 0x60 if binary < 0
+/// else 0`** — the RESULT's high correction keys on `binary` **(NOT `binary − lowc`)**; the two conditions
+/// are computed SEPARATELY (a single shared condition is WRONG); `res = (binary − lowc − highc) & 0xff`;
+/// **N = msb(res)**; **V = msb(~res & binary)**. Returns `(res, ccr)` with the N/V/C/X bits set; Z is STICKY
+/// and applied by the CALLER (it needs the incoming SR). `xin` is the incoming X flag (0 or 1).
+#[inline]
+fn sbcd_core(dst: i32, src: i32, xin: i32) -> (u32, u16) {
+    let binary = dst - src - xin;
+    let lowc = if (dst & 0xF) - (src & 0xF) - xin < 0 {
+        6
+    } else {
+        0
+    };
+    // The borrow keys on `binary − lowc`; the 0x60 result correction keys on `binary` — they DIVERGE
+    // (compute separately). X = C on every op.
+    let carry = (binary - lowc) < 0;
+    let highc = if binary < 0 { 0x60 } else { 0 };
+    let res = ((binary - lowc - highc) & 0xFF) as u32;
+    let mut ccr = 0u16;
+    if res & 0x80 != 0 {
+        ccr |= CCR_N;
+    }
+    // V = msb(~res & binary) — the fitted, 0-mismatch overflow rule (bit 7 of the AND).
+    if (!(res as i32) & binary) & 0x80 != 0 {
+        ccr |= CCR_V;
+    }
+    if carry {
+        ccr |= CCR_C | CCR_X;
+    }
+    (res, ccr)
 }
 
 /// One resumable step. Bus-access steps emit a [`Transaction`](super::bus68k::Transaction) and cost
@@ -1901,31 +1947,26 @@ impl MicroState {
                         let dst = (lhs & 0xFF) as i32;
                         let src = (rhs & 0xFF) as i32;
                         let xin = i32::from(regs.sr & CCR_X != 0);
-                        let binary = dst - src - xin;
-                        let lowc = if (dst & 0xF) - (src & 0xF) - xin < 0 {
-                            6
-                        } else {
-                            0
-                        };
-                        // The borrow keys on `binary − lowc`; the 0x60 result correction keys on `binary` — they
-                        // DIVERGE (compute separately). X = C on every op.
-                        let carry = (binary - lowc) < 0;
-                        let highc = if binary < 0 { 0x60 } else { 0 };
-                        let res = ((binary - lowc - highc) & 0xFF) as u32;
-                        let mut ccr = 0u16;
-                        if res & 0x80 != 0 {
-                            ccr |= CCR_N;
-                        }
+                        let (res, mut ccr) = sbcd_core(dst, src, xin);
                         // STICKY Z: keep the incoming Z bit only when the result is zero; clear it otherwise.
                         if res == 0 && regs.sr & CCR_Z != 0 {
                             ccr |= CCR_Z;
                         }
-                        // V = msb(~res & binary) — the fitted, 0-mismatch overflow rule (bit 7 of the AND).
-                        if (!(res as i32) & binary) & 0x80 != 0 {
-                            ccr |= CCR_V;
-                        }
-                        if carry {
-                            ccr |= CCR_C | CCR_X;
+                        (res, ccr)
+                    }
+                    // NBCD is the BCD NEGATE `0 −₁₀ operand − X_in` (byte-only) — EXACTLY the SBCD core with
+                    // `dst = 0` and `src = operand` (0-mismatch-verified against the vendored NBCD stream). Like
+                    // SBCD it is a DEDICATED op (no Sub delegation): the incoming X folds into BOTH the value and
+                    // the borrow, and Z is STICKY. The recipe reads the single data-alterable EA into `a`/lhs, so
+                    // `src = (lhs & 0xFF)` and `dst = 0`; the SAME carry/result asymmetry, N, and V = msb(~res &
+                    // binary) rules apply (delegated to `sbcd_core`). `b`/rhs is ignored (recipe passes Zero).
+                    AluOp::Nbcd => {
+                        let src = (lhs & 0xFF) as i32;
+                        let xin = i32::from(regs.sr & CCR_X != 0);
+                        let (res, mut ccr) = sbcd_core(0, src, xin);
+                        // STICKY Z: keep the incoming Z bit only when the result is zero; clear it otherwise.
+                        if res == 0 && regs.sr & CCR_Z != 0 {
+                            ccr |= CCR_Z;
                         }
                         (res, ccr)
                     }

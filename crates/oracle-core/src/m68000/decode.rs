@@ -701,6 +701,23 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         };
         return neg_family_recipe(opcode, AluOp::Not, size);
     }
+    // NBCD `<ea>` (`0100 1000 00 mmm rrr`, opcode & 0xFFC0 == 0x4800, data-alterable modes) — the packed-DECIMAL
+    // negate `<ea> = 0 −₁₀ <ea> − X`, BYTE-ONLY, over the single data-alterable EA. It is the FINAL op of the
+    // X-flag arithmetic cluster: `AluOp::Nbcd` is EXACTLY `sbcd_core(dst=0, src=operand, X_in)` (the SBCD core
+    // with the operand as the src and 0 as the dst) — the SAME carry/result asymmetry, sticky Z, X_out = C_out.
+    // The single-EA read-modify-write shape is IDENTICAL to NEG/NOT/NEGX (via `nbcd_recipe`, itself modelled on
+    // `neg_family_recipe`): `<ea>` operand read → Alu → write back, with the NBCD idle profile (Dn = 6 via a
+    // trailing Internal(2); `(An)` = 12, `(An)+` = 12, `-(An)` = 14, `d16(An)` = 16, `d8(An,Xn)` = 18, `abs.w` =
+    // 16, `abs.l` = 20). The destination must be data-alterable (mode 0 OR `is_dst_mem_mode`) — the mode guard is
+    // LOAD-BEARING: it excludes An-direct (mode 1), PC-relative (7/2, 7/3), and `#imm` (7/4). Byte-only → NO
+    // alignment fault path (`-(A7).b` steps by 2). The opcode space 0x4800..=0x483F is disjoint from its 0x4x00
+    // unary siblings (NEGX 0x4000 / CLR 0x4200 / NEG 0x4400 / NOT 0x4600 / TAS 0x4AC0) and from the 0x4840 SWAP/
+    // PEA and 0x4880+ EXT/MOVEM neighbours above/below.
+    let nbcd_mode = (opcode >> 3) & 7;
+    let nbcd_reg = opcode & 7;
+    if opcode & 0xFFC0 == 0x4800 && (nbcd_mode == 0 || is_dst_mem_mode(nbcd_mode, nbcd_reg)) {
+        return nbcd_recipe(opcode);
+    }
     // EXT.w / EXT.l (`0100 1000 1S 000 rrr`, 0x4880 .w / 0x48C0 .l, mask `opcode & 0xFFF8`) — sign-extend the
     // `Dn`-only source whose result width follows the size: EXT.w sign-extends the low BYTE of Dn to 16 bits
     // (`res = sign_extend8→16(Dn & 0xFF)`) and writes the LOW WORD (the high word of Dn is preserved), flags on
@@ -1702,6 +1719,45 @@ fn neg_family_recipe(opcode: u16, op: AluOp, size: Size) -> MicroState {
         ea_dst(&mut buf, mode, reg, size, |operand| MicroOp::Alu {
             op,
             size,
+            a: operand,
+            b: Operand::Zero,
+            dst: Dest::Scratch(1),
+        });
+    }
+    buf.finish()
+}
+
+/// `NBCD <ea>` (`0100 1000 00 mmm rrr`, opcode & 0xFFC0 == 0x4800, data-alterable modes): the packed-DECIMAL
+/// negate `<ea> = 0 −₁₀ <ea> − X`, BYTE-ONLY. Structurally IDENTICAL to [`neg_family_recipe`] (the single
+/// data-alterable EA read-modify-write: `Dn`-direct with no memory access; else the [`ea_dst`] RMW at
+/// `Size::Byte`) — the ONLY differences are the dedicated `AluOp::Nbcd` (= the SBCD core with `dst = 0`,
+/// `src = operand`; sticky Z; X_out = C_out) and the register-form idle: **NBCD `Dn` = 6 cyc** (a trailing
+/// `Internal(2)`, unlike NEG.b/.w `Dn` = 4). Byte-only → NO alignment fault (`-(A7).b` steps by 2 inside
+/// `ea_dst`). The memory-mode timings fall straight out of the byte `ea_dst` stream: `(An)` = 12, `(An)+` =
+/// 12, `-(An)` = 14, `d16(An)` = 16, `d8(An,Xn)` = 18, `abs.w` = 16, `abs.l` = 20.
+fn nbcd_recipe(opcode: u16) -> MicroState {
+    let mode = (opcode >> 3) & 7;
+    let reg = (opcode & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    if mode == 0 {
+        // Dn-direct — no memory: one refill, then the BCD negate on Dn (byte, `a` = Dn = the operand, `b`
+        // ignored/Zero), then a trailing `Internal(2)` idle (NBCD Dn = 6 cyc).
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::Alu {
+            op: AluOp::Nbcd,
+            size: Size::Byte,
+            a: dn_operand(reg, Size::Byte),
+            b: Operand::Zero,
+            dst: dn_dest(reg, Size::Byte),
+        });
+        buf.push(MicroOp::Internal { cycles: 2 });
+    } else {
+        // Memory destination — the byte RMW path, IDENTICAL to NEG/NOT's `ea_dst` (byte-only → no `ea_dst_long`
+        // path, so `-(A7)` steps by 2 and no operand ever faults on alignment). The read operand is `a`; `b` is
+        // ignored (Zero), the SBCD core hardcodes `dst = 0`.
+        ea_dst(&mut buf, mode, reg, Size::Byte, |operand| MicroOp::Alu {
+            op: AluOp::Nbcd,
+            size: Size::Byte,
             a: operand,
             b: Operand::Zero,
             dst: Dest::Scratch(1),
