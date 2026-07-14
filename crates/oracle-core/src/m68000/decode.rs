@@ -193,6 +193,22 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     if opcode & 0xF1C0 == 0x9040 {
         return arith_ea_dn(opcode, AluOp::Sub, Size::Word); // SUB.w <ea>,Dn
     }
+    // ADDX.b/.w/.l (`1101 xxx 1 SS 00 M yyy`, `opcode & 0xF130 == 0xD100`, size = bits 7-6 != 3) — the
+    // EXTENDED (multi-precision) add `Dx = Dx + Dy + X` (M = bit3 = 0, register-direct) / `-(Ax) = -(Ax) +
+    // -(Ay) + X` (M = 1, two-operand predecrement). The mask fixes bits 15-12 = 1101, bit 8 = 1, bits 5-4 = 00
+    // (ea-mode field 000/001) — the ADD `Dn,<ea>` direction's ea-modes 000/001 are illegal as a real dest, so
+    // the ISA repurposes this slot as ADDX. Placed BEFORE the ADD.b arm: the ADD.b `Dn,<ea>` arm below is
+    // guarded by `is_dst_mem_mode` (alterable memory only, modes 2-6/7-0/7-1), so it can never swallow the
+    // ADDX modes 000/001 anyway, but classifying ADDX first keeps the intent explicit. size = bits 7-6 (3 =
+    // `ADDA`, excluded). `Rx = (op>>9)&7` (dst), `Ry = op&7` (src), `M = bit3`.
+    if opcode & 0xF130 == 0xD100 && (opcode >> 6) & 3 != 3 {
+        let size = match (opcode >> 6) & 3 {
+            0 => Size::Byte,
+            1 => Size::Word,
+            _ => Size::Long, // 2
+        };
+        return xarith_recipe(opcode, AluOp::Addx, size);
+    }
     // ADD.b / SUB.b — same opcode shapes, the size field `00` (`<op>.b`). `Dn,<ea>` (memory dest, bit8 = 1)
     // and `<ea>,Dn` (register dest, bit8 = 0). Byte excludes `An`-direct as a source (`ADD.b An,Dn` is
     // illegal) — that is handled by the source builder / the `covered()` filter, not here.
@@ -1650,6 +1666,183 @@ fn neg_family_recipe(opcode: u16, op: AluOp, size: Size) -> MicroState {
             dst: Dest::Scratch(1),
         });
     }
+    buf.finish()
+}
+
+/// The `-(An)` byte step for the X-arith predecrement forms: 2 for `A7` (keep the SP even), else the size's
+/// step (word 2, long 4, byte 1). Mirrors [`super::ea::step_bytes`] (a private helper there) for the ADDX /
+/// SUBX / ABCD / SBCD two-operand predecrement.
+#[inline]
+fn xarith_step(size: Size, reg: u8) -> i8 {
+    match size {
+        Size::Word => 2,
+        Size::Long => 4,
+        Size::Byte => {
+            if reg == 7 {
+                2
+            } else {
+                1
+            }
+        }
+    }
+}
+
+/// `ADDX`/`SUBX`/`ABCD`/`SBCD` — the X-flag arithmetic cluster's TWO recipe shapes, selected by `M = bit 3`.
+///
+/// **M = 0 — register-direct** (`<op> Dy,Dx`): read `Dy` (src) and `Dx` (dst) at `size`, run the dedicated
+/// `AluOp` (carrying the incoming X into the value and the carry, sticky Z), write `Dx`. Bus: `[Prefetch]`
+/// (the queue refill). Length 4 (`.b`/`.w`) / 8 (`.l`, a trailing `Internal(4)` idle) for ADDX/SUBX.
+///
+/// **M = 1 — two-operand predecrement RMW** (`<op> -(Ay),-(Ax)`): the leading predecrement idle (`n2`), then
+/// **predecrement `Ay` and read the src, predecrement `Ax` and read the dst, run the Alu, refill, write the
+/// result @ `Ax`**. The predecrement is a running-register decrement (an `AdjustAddr` committed BEFORE the
+/// read), so the same-register (`rx == ry`) case decrements the ALREADY-decremented value in sequence: src @
+/// `A − step`, dst @ `A − 2·step`, final reg = `A − 2·step`. `-(A7).b` steps by 2 (keep the SP even). For a
+/// long operand each access is a REVERSED word pair (low word @ base+2 first, then high word @ base — the
+/// MOVE.l `-(An)` low-word-first precedent), modeled as two sequential `−2` decrements so an odd-address
+/// fault leaves the register decremented by only 2. An odd predecremented address is a group-0 address error
+/// the EXISTING E3/E4 abort covers on the FIRST odd word access: byte NEVER faults; word/long fault iff a
+/// predecremented address is odd — src-odd → only `Ay` committed (the abort fires on the src read before
+/// `Ax` is touched); dst-odd → both committed. Bus (`.b`/`.w`): `[n2, r src, r dst, PF, w dst]`, length 18.
+fn xarith_recipe(opcode: u16, op: AluOp, size: Size) -> MicroState {
+    let rx = ((opcode >> 9) & 7) as u8; // destination (Dx / Ax)
+    let ry = (opcode & 7) as u8; // source (Dy / Ay)
+    let mem = (opcode >> 3) & 1 == 1; // M = bit 3
+    let data = super::microop::Fc::Data;
+    let mut buf = RecipeBuf::new();
+    if !mem {
+        // Register-direct: the queue refill, then the dedicated Alu on Dx (dst = `a`) + Dy (src = `b`).
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::Alu {
+            op,
+            size,
+            a: dn_operand(rx, size),
+            b: dn_operand(ry, size),
+            dst: dn_dest(rx, size),
+        });
+        if size == Size::Long {
+            buf.push(MicroOp::Internal { cycles: 4 });
+        }
+        return buf.finish();
+    }
+    // Two-operand predecrement RMW. Scratch slots (all distinct so every in-flight value is snapshot-visible):
+    const SRC_VAL: u8 = 0; // the assembled source operand
+    const DST_VAL: u8 = 1; // the assembled destination operand
+    const RES: u8 = 2; // the ALU result (parked for the write-back)
+    const LONG_LO: u8 = 3; // the low word of a long operand (before Combine32)
+    const DST_LO_ADDR: u8 = 4; // the long dst low-word address (Ax base + 2)
+
+    // The leading predecrement idle (n2).
+    buf.push(MicroOp::Internal { cycles: 2 });
+    if size == Size::Long {
+        // Long: each operand is a REVERSED word pair. Model the predecrement as two sequential −2 steps
+        // (low word @ the first −2, high word @ the second −2) so a mid-read odd fault commits −2 only.
+        // src @ (Ay): −2, read lo @ Ay; −2, read hi @ Ay; combine (hi << 16 | lo).
+        buf.push(MicroOp::AdjustAddr { reg: ry, delta: -2 });
+        buf.push(MicroOp::Read {
+            addr: Operand::AddrReg(ry),
+            fc: data,
+            size: Size::Word,
+            dst: LONG_LO,
+        });
+        buf.push(MicroOp::AdjustAddr { reg: ry, delta: -2 });
+        buf.push(MicroOp::Read {
+            addr: Operand::AddrReg(ry),
+            fc: data,
+            size: Size::Word,
+            dst: SRC_VAL,
+        });
+        buf.push(MicroOp::Combine32 {
+            hi: SRC_VAL,
+            lo: Operand::Scratch(LONG_LO),
+            dst: SRC_VAL,
+        });
+        // dst @ (Ax): −2, read lo @ Ax; −2, read hi @ Ax; combine. (Ax read AFTER Ay's decrements, so the
+        // same-register case aliases correctly — the running register is already Ay's decremented value.)
+        buf.push(MicroOp::AdjustAddr { reg: rx, delta: -2 });
+        buf.push(MicroOp::EaCalc {
+            base: Operand::AddrReg(rx),
+            index: Operand::Zero,
+            disp: Operand::Zero,
+            dst: DST_LO_ADDR,
+        });
+        buf.push(MicroOp::Read {
+            addr: Operand::AddrReg(rx),
+            fc: data,
+            size: Size::Word,
+            dst: LONG_LO,
+        });
+        buf.push(MicroOp::AdjustAddr { reg: rx, delta: -2 });
+        buf.push(MicroOp::Read {
+            addr: Operand::AddrReg(rx),
+            fc: data,
+            size: Size::Word,
+            dst: DST_VAL,
+        });
+        buf.push(MicroOp::Combine32 {
+            hi: DST_VAL,
+            lo: Operand::Scratch(LONG_LO),
+            dst: DST_VAL,
+        });
+        // Alu, then the reversed long write (low word @ Ax+2 FIRST, then the refill, then high word @ Ax).
+        buf.push(MicroOp::Alu {
+            op,
+            size,
+            a: Operand::Scratch(DST_VAL),
+            b: Operand::Scratch(SRC_VAL),
+            dst: Dest::Scratch(RES),
+        });
+        buf.push(MicroOp::Write {
+            addr: Operand::Scratch(DST_LO_ADDR),
+            fc: data,
+            size: Size::Word,
+            value: Operand::Scratch(RES),
+        });
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::Write {
+            addr: Operand::AddrReg(rx),
+            fc: data,
+            size: Size::Word,
+            value: Operand::ScratchHi16(RES),
+        });
+        return buf.finish();
+    }
+    // Byte / word: a single sized access per operand. predec Ay → read src; predec Ax → read dst; Alu;
+    // refill; write @ Ax. `-(A7).b` steps by 2.
+    buf.push(MicroOp::AdjustAddr {
+        reg: ry,
+        delta: -xarith_step(size, ry),
+    });
+    buf.push(MicroOp::Read {
+        addr: Operand::AddrReg(ry),
+        fc: data,
+        size,
+        dst: SRC_VAL,
+    });
+    buf.push(MicroOp::AdjustAddr {
+        reg: rx,
+        delta: -xarith_step(size, rx),
+    });
+    buf.push(MicroOp::Read {
+        addr: Operand::AddrReg(rx),
+        fc: data,
+        size,
+        dst: DST_VAL,
+    });
+    buf.push(MicroOp::Prefetch);
+    buf.push(MicroOp::Alu {
+        op,
+        size,
+        a: Operand::Scratch(DST_VAL),
+        b: Operand::Scratch(SRC_VAL),
+        dst: Dest::Scratch(RES),
+    });
+    buf.push(MicroOp::Write {
+        addr: Operand::AddrReg(rx),
+        fc: data,
+        size,
+        value: Operand::Scratch(RES),
+    });
     buf.finish()
 }
 

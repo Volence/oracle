@@ -578,6 +578,16 @@ const FILES: &[&str] = &[
     // the long access is word-at-a-time; the pointer advances one word, then the odd-address fault). 100% PURE
     // — 8065 cases. NO deferral, NO parity filter, NO corrupt entries.
     "MOVEM.l.json",
+    // ADDX.b / ADDX.w / ADDX.l (`1101 xxx 1 SS 00 M yyy`, opcode & 0xF130 == 0xD100, SS != 3) — the EXTENDED
+    // (multi-precision) add. M = bit 3 selects the form: M=0 → `ADDX Dy,Dx` (register-direct); M=1 → `ADDX
+    // -(Ay),-(Ax)` (two-operand predecrement RMW). `AluOp::Addx` is DEDICATED (like NEGX): the incoming X
+    // (`sr>>4 & 1`) folds into BOTH the value and the carry, Z is STICKY (`Z_in AND res==0`), X_out = C_out.
+    // Every case in scope (all three sizes, both forms, incl the `-(A7)` byte step-2 and the odd-address
+    // `-(An)` word/long group-0 faults the E3/E4 abort covers — NO deferral, NO parity filter). 100% PURE —
+    // 8065 cases each. Classified strictly by OPCODE + the size guard.
+    "ADDX.b.json",
+    "ADDX.w.json",
+    "ADDX.l.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -1188,6 +1198,16 @@ fn movem_covered(opcode: u16) -> bool {
     }
 }
 
+/// ADDX.b/.w/.l (`opcode & 0xF130 == 0xD100` with `(opcode >> 6) & 3 != 3`, size 3 = ADDA excluded) — the
+/// EXTENDED add. The mask fixes bits 15-12 = 1101, bit 8 = 1, bits 5-4 = 00 (ea-mode field 000/001, the
+/// ADD-`Dn,<ea>` illegal slots repurposed as ADDX) — leaving size (7-6), M (3), Rx, Ry. Every case is in
+/// scope: both forms (M=0 register, M=1 `-(Ay),-(Ax)` predecrement), all three sizes, incl the `(A7)` byte
+/// step-2 and the odd-address `-(An)` word/long group-0 faults (E3/E4). NO deferral, NO parity filter.
+/// Classified strictly by OPCODE + the size guard.
+fn addx_covered(opcode: u16) -> bool {
+    opcode & 0xF130 == 0xD100 && (opcode >> 6) & 3 != 3
+}
+
 fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // MOVE (`00 SS RRR MMM mmm rrr`, dst_mode != 1) — its own EA→EA mode-scope filter (no parity).
     if move_covered(opcode) {
@@ -1344,6 +1364,14 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // error the E3/E4 abort covers (IN scope, NO parity filter — the `(An)+` fault leaves An += 2, ONE WORD).
     // Classified by OPCODE + the direction/mode guard (off the EXT/SWAP mode-0 forms).
     if movem_covered(opcode) {
+        return true;
+    }
+    // ADDX.b/.w/.l (`opcode & 0xF130 == 0xD100`, size != 3) — the EXTENDED add. M = bit 3 (0 = `Dy,Dx`
+    // register-direct / 1 = `-(Ay),-(Ax)` two-operand predecrement). `AluOp::Addx` is DEDICATED (X into the
+    // value AND the carry, sticky Z, X_out = C_out). Odd predecremented word/long addresses are group-0
+    // address errors the E3/E4 abort covers (src-odd → only Ay committed; dst-odd → both). `-(A7).b` steps by
+    // 2. 100% PURE (8065 each) — NO deferral, NO parity filter. Classified by OPCODE + the size guard.
+    if addx_covered(opcode) {
         return true;
     }
     // CMP `<ea>,Dn` + CMPM `(Ay)+,(Ax)+` + CMPI `#imm,<ea>` (the Cmp/Cmpm/Cmpi classes of the 3-way CMP.* mix,
@@ -1839,8 +1867,23 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 817_043,
-        "expected 817043 covered cases — C5 adds MOVEM.l (its own MOVEM.l.json file, 8065 cases = +8065 over \
+        ran >= 841_238,
+        "expected 841238 covered cases — C0 adds ADDX.b/.w/.l (their own ADDX.{{b,w,l}}.json files, 8065 cases \
+         each = +24195 over the 817043 MOVEM.l baseline → 841238). ADDX is the EXTENDED (multi-precision) add: \
+         `AluOp::Addx` is a DEDICATED Alu (like NEGX) — the incoming X (`sr>>4 & 1`) folds into BOTH the value \
+         (`raw = dst + src + X_in`) and the carry (C = X = raw > mask), Z is STICKY (`Z_in AND res==0`, never \
+         set), V = standard add overflow, N = msb(res). M = bit 3 picks the recipe: M=0 = `Dy,Dx` \
+         register-direct (`[Prefetch, Alu]`, +Internal(4) for `.l`; len 4/4/8); M=1 = `-(Ay),-(Ax)` \
+         two-operand predecrement RMW (predec Ay → read src → predec Ax → read dst → Alu → refill → write @ \
+         Ax; len 18/18/30). The predecrement is a running-register `AdjustAddr` committed BEFORE the read, so \
+         the same-register `rx==ry` case decrements in sequence (src @ A−step, dst @ A−2·step, final = \
+         A−2·step). `-(A7).b` steps by 2 (keep the SP even). A `.l` operand is a REVERSED word pair (low @ \
+         base+2 first, then high @ base — the MOVE.l `-(An)` precedent), modeled as two sequential −2 \
+         decrements. An ODD predecremented word/long address is a group-0 address error the EXISTING E3/E4 \
+         abort covers on the FIRST odd word access: byte NEVER faults; src-odd → only Ay committed (len 52), \
+         dst-odd → both Ay+Ax committed (len 56 `.w` / 60 `.l`). The files are 100% PURE (8065 each). NO \
+         deferral, NO parity filter, NO corrupt entries. \
+         Prior baseline — C5 adds MOVEM.l (its own MOVEM.l.json file, 8065 cases = +8065 over \
          C4's 808978 → 817043), the LONG twin of MOVEM.w reusing every recipe/quirk via the shared \
          `movem_recipe`/`MovemStore`/`MovemLoad` (which already take a `Size`). Size = bit 6 (0x0040): `.w` \
          (0x4880/0x4C80) / `.l` (0x48C0/0x4CC0); both sizes share the identical direction/mode sets. For `.l` \
@@ -3607,6 +3650,163 @@ fn exg_quiescable_and_serializable_at_every_micro_op_boundary() {
         );
     }
     eprintln!("C0 EXG snapshot/restore: EXG D0,A7 (A7-leg swap) resumed identically at every micro-op boundary");
+}
+
+/// C0 — the named `ADDX` anchors, pinning the EXTENDED add's dedicated Alu + both recipe shapes against the
+/// vendored ADDX.{b,w,l} streams WITHOUT relying on the bulk `covered()` sweep. Every load-bearing fact:
+/// - **`db02 [ADDX.b D2, D5]`** — register-direct `.b`, len **4** (`[Prefetch, Alu]`): `Dx = Dx + Dy + X`.
+/// - **`d103 [ADDX.b D3, D0]`** — the **X_in=1 carry-chain** case: `0x19 + 0xc1 + 1 = 0xdb` (the result
+///   DEPENDS on the incoming X — `0x19 + 0xc1 = 0xda` without it), proving X folds into the VALUE.
+/// - **`dd80 [ADDX.l D0, D6]`** — register-direct `.l`, len **8** (`[Prefetch, Alu, Internal(4)]`).
+/// - **`d900 [ADDX.b D0, D4] 525`** — **sticky Z stays SET**: entered with Z_in=1, res==0 → Z STAYS 1 (a
+///   plain `res==0` would set it, but this pins the "Z_in AND res==0" path where the incoming Z is kept).
+/// - **`d301 [ADDX.b D1, D1] 6`** — **sticky Z CLEARS**: entered with Z_in=1, res != 0 → Z → 0.
+/// - **`d54b [ADDX.w -(A3), -(A2)] 3`** — two-operand predecrement `.w`, len **18**: predec Ay+Ax, read src @
+///   Ay, read dst @ Ax, write result @ Ax. Distinct registers.
+/// - **`db4d [ADDX.w -(A5), -(A5)] 13`** — the **same-register** `-(A5),-(A5)`: SEQUENTIAL predecrement — src
+///   @ A5−2, dst @ A5−4, final A5 = A5−4 (computing both from the initial A5 would be WRONG).
+/// - **`d30f [ADDX.b -(A7), -(A1)] 3`** — the **`-(A7).b` step-2** case (byte predecrement of A7 steps by 2 to
+///   keep the SP even).
+/// - **`dd4a [ADDX.w -(A2), -(A6)] 1`** — the **odd-src-address `.w` fault**, len **52**: the abort fires on
+///   the src read (odd Ay after predec) → ONLY Ay committed (−2), Ax UNTOUCHED, standard group-0 frame.
+/// - **`d34f [ADDX.w -(A7), -(A1)] 7`** — the **odd-dst-address `.w` fault**, len **56**: src read succeeds,
+///   the abort fires on the dst read (odd Ax) → BOTH Ay and Ax committed.
+/// - **`dd8c [ADDX.l -(A4), -(A6)] 15`** — the **odd `.l` fault**, len **60** (dst-odd, both committed).
+///
+/// Each runs both drivers + the per-cycle transaction stream via `run_case`. Every anchor must decode as an
+/// ADDX opcode (`opcode & 0xF130 == 0xD100`, size != 3) and never a CMP-class; each pins its exact length.
+#[test]
+fn addx_anchor_cases_pass_both_drivers() {
+    let variants: &[(&str, &[(&str, u32)])] = &[
+        (
+            "ADDX.b.json",
+            &[
+                ("db02 [ADDX.b D2, D5] 4", 4),
+                ("d103 [ADDX.b D3, D0] 7", 4),
+                ("d900 [ADDX.b D0, D4] 525", 4),
+                ("d301 [ADDX.b D1, D1] 6", 4),
+                ("d30f [ADDX.b -(A7), -(A1)] 3", 18),
+            ],
+        ),
+        (
+            "ADDX.w.json",
+            &[
+                ("d54b [ADDX.w -(A3), -(A2)] 3", 18),
+                ("db4d [ADDX.w -(A5), -(A5)] 13", 18),
+                ("dd4a [ADDX.w -(A2), -(A6)] 1", 52),
+                ("d34f [ADDX.w -(A7), -(A1)] 7", 56),
+            ],
+        ),
+        (
+            "ADDX.l.json",
+            &[
+                ("dd80 [ADDX.l D0, D6] 2", 8),
+                ("dd8c [ADDX.l -(A4), -(A6)] 15", 60),
+            ],
+        ),
+    ];
+    let mut found = 0usize;
+    for (fname, anchors) in variants {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        for (name, length) in *anchors {
+            let case = data
+                .iter()
+                .find(|t| t["name"].as_str().unwrap() == *name)
+                .unwrap_or_else(|| panic!("C0 ADDX anchor {name} not found in {fname}"));
+            let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+            assert_eq!(
+                opcode & 0xF130,
+                0xD100,
+                "anchor {name} must be an ADDX opcode"
+            );
+            assert_ne!((opcode >> 6) & 3, 3, "anchor {name} size != 3 (not ADDA)");
+            assert!(addx_covered(opcode), "anchor {name} must be addx_covered");
+            assert_eq!(
+                cmp_class(opcode),
+                CmpClass::None,
+                "ADDX is not a CMP-class opcode"
+            );
+            assert_eq!(
+                case["length"].as_u64().unwrap() as u32,
+                *length,
+                "ADDX anchor {name} length"
+            );
+            run_case(case);
+            found += 1;
+        }
+    }
+    assert_eq!(found, 11, "all C0 ADDX anchors exercised");
+    eprintln!(
+        "C0 ADDX anchors: {found} cases (register .b/.l incl X_in=1 carry-chain + sticky-Z stays-set / clears; predecrement .w distinct + same-register sequential + -(A7).b step-2; odd-src .w fault len 52 (Ay only) / odd-dst .w fault len 56 (both) / odd .l fault len 60) passed both drivers"
+    );
+}
+
+/// C0 — the snapshot/restore anchor for the ADDX two-operand predecrement RMW (the new `xarith_recipe`
+/// predecrement shape). Drives a real vendored `ADDX.w -(A3),-(A2)` case through the quiesce driver,
+/// snapshotting + restoring the WHOLE `Cpu68000` (incl. the in-flight cursor + all scratch slots) at every
+/// micro-op boundary and proving the resumed run reproduces the run-to-completion final state + transaction
+/// stream bit-for-bit. Pins that the predecrement recipe keeps `MicroState` fixed-size bincode (it is `Copy`).
+#[test]
+fn addx_predecrement_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/ADDX.w.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "d54b [ADDX.w -(A3), -(A2)] 3")
+        .expect("ADDX.w -(A3),-(A2) snapshot anchor present");
+    let ini = &case["initial"];
+
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    // Step until Done, snapshotting/restoring after each in-flight boundary.
+    let boundaries = {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        let mut n = 0usize;
+        while cpu.step_micro_op(&mut bus) == Step::Continue {
+            n += 1;
+        }
+        n
+    };
+    for pause_after in 0..=boundaries {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        for _ in 0..pause_after {
+            assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+        }
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+    }
+    eprintln!("C0 ADDX snapshot/restore: ADDX.w -(A3),-(A2) resumed identically at every micro-op boundary");
 }
 
 /// C1 — the named `LEA <control ea>,An` anchors, pinning each control addressing mode against the vendored LEA

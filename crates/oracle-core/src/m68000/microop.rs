@@ -459,6 +459,18 @@ pub enum AluOp {
     /// [`Operand::Zero`]). Distinct from [`AluOp::Neg`] (no X-in, plain `Z = result == 0`) and [`AluOp::Sub`]
     /// (binary, no sticky Z).
     Negx,
+    /// Addx: **binary** `result = (a + b + X_in) & mask` at the operand-size boundary — the flag op of the
+    /// `ADDX` family (`ADDX Dy,Dx` / `ADDX -(Ay),-(Ax)`, the EXTENDED/multi-precision add). Like [`AluOp::Negx`]
+    /// this op is **dedicated** (NOT an `Add` delegation): the incoming X (`X_in = (regs.sr >> 4) & 1`)
+    /// participates in BOTH the value and the carry, and **Z is STICKY** (`Z_final = Z_in AND (result == 0)` —
+    /// never SET, only cleared; a plain `result == 0` is WRONG when `Z_in == 0 && result == 0`). `a` is the
+    /// destination operand (`Dx` / dst `-(Ax)`), `b` the source (`Dy` / src `-(Ay)`). Flags: **C = X =
+    /// (raw > mask)** (the carry-out of the extended sum); **V = msb(~(a ^ b) & (a ^ result))** (standard binary
+    /// add overflow — both operands same sign, result the other); **N = msb(result)**. `raw = (a + b + X_in)`
+    /// computed wide; `result = raw & mask` written back (low8/low16/full32 for a `Dn` dest, or parked in
+    /// [`Dest::Scratch`] for the `-(Ax)` memory dest the trailing `Write` stores). Distinct from [`AluOp::Add`]
+    /// (no X-in, plain `Z = result == 0`) and [`AluOp::Negx`] (unary `0 − a − X`).
+    Addx,
     /// Not: **unary** `result = (~a) & mask` at the operand-size boundary — the flag op of the `NOT` family
     /// (`NOT <ea>` = `dst = ~dst`). It is **logic-shaped**, identical to [`AluOp::Eor`] in every respect except
     /// the bit operation (`~a` instead of `a ^ b`): it shares the **MOVE flag shape** ([`move_flags`]) — sets
@@ -1728,6 +1740,41 @@ impl MicroState {
                             ccr |= CCR_V;
                         }
                         if !(d == 0 && xin == 0) {
+                            ccr |= CCR_C | CCR_X;
+                        }
+                        (res, ccr)
+                    }
+                    // ADDX is the BINARY `a + b + X_in` — a DEDICATED op (no Add delegation): the incoming X
+                    // participates in BOTH the value and the carry, and Z is STICKY. X_in / Z_in are the LIVE
+                    // CCR bits (`sr >> 4 & 1` / `sr >> 2 & 1`). 0-mismatch-verified against the vendored ADDX
+                    // stream: `raw = a + b + X_in` (wide); `res = raw & mask`; C = X = (raw > mask) (carry-out);
+                    // V = msb(~(a^b) & (a^res)) (standard add overflow — both operands one sign, result the
+                    // other); N = msb(res); Z = STICKY (`Z_in AND res == 0` — a non-zero limb clears Z, a zero
+                    // limb leaves the running Z untouched, so a plain `res == 0` is WRONG on `res == 0 &&
+                    // Z_in == 0`).
+                    AluOp::Addx => {
+                        let (mask, signbit) = match size {
+                            Size::Byte => (0xFFu32, 0x80u32),
+                            Size::Word => (0xFFFF, 0x8000),
+                            Size::Long => (0xFFFF_FFFF, 0x8000_0000),
+                        };
+                        let dst = lhs & mask;
+                        let src = rhs & mask;
+                        let xin = u32::from(regs.sr & CCR_X != 0);
+                        let raw = u64::from(dst) + u64::from(src) + u64::from(xin);
+                        let res = (raw as u32) & mask;
+                        let mut ccr = 0u16;
+                        if res & signbit != 0 {
+                            ccr |= CCR_N;
+                        }
+                        // STICKY Z: keep the incoming Z bit only when the result is zero; clear it otherwise.
+                        if res == 0 && regs.sr & CCR_Z != 0 {
+                            ccr |= CCR_Z;
+                        }
+                        if (!(dst ^ src)) & (dst ^ res) & signbit != 0 {
+                            ccr |= CCR_V;
+                        }
+                        if raw > u64::from(mask) {
                             ccr |= CCR_C | CCR_X;
                         }
                         (res, ccr)
