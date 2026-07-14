@@ -921,6 +921,19 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     if opcode == 0x4E70 {
         return reset_recipe();
     }
+    // MOVEfromUSP (`0100 1110 0110 1 rrr`, 0x4E68 | An) — `An = USP` (full 32 bits), NO flags, SR unchanged.
+    // MOVEtoUSP   (`0100 1110 0110 0 rrr`, 0x4E60 | An) — `USP = An` (full 32 bits), NO flags, SR unchanged.
+    // Both privileged on the 68000 but every vendored case is supervisor, so the privilege-violation trap is
+    // UNEXERCISED and NOT gated (correctness-only, like the T-bit). They share base 0x4E40 (with TRAP) and each
+    // other's base 0x4E60 — distinguished by bit 3 (0x4E68 from / 0x4E60 to). The two 8-point blocks
+    // 0x4E68..=0x4E6F / 0x4E60..=0x4E67 are disjoint from TRAP (0x4E40..=0x4E4F), RTS/RTE/RTR/TRAPV/NOP/RESET and
+    // every 0x4Exx arm above. Reg-direct only (An 0-7) → NO EA, NO exceptions.
+    if opcode & 0xFFF8 == 0x4E68 {
+        return usp_recipe(false, (opcode & 7) as u8);
+    }
+    if opcode & 0xFFF8 == 0x4E60 {
+        return usp_recipe(true, (opcode & 7) as u8);
+    }
     // MOVEQ (`0111 ddd 0 dddddddd`, 0x7000 | dn<<9 | imm8) — load a sign-extended 8-bit immediate into the FULL
     // 32 bits of Dn, setting N = msb / Z = (value == 0), clearing V/C, PRESERVING X (the `MOVE` flag op at the
     // long boundary). Bit 8 MUST be 0 — `0111 ddd 1 ...` is illegal on the 68000 and never appears in the data.
@@ -2024,6 +2037,21 @@ fn exg_recipe(opcode: u16) -> MicroState {
     buf.push(MicroOp::Prefetch);
     buf.push(MicroOp::Internal { cycles: 2 });
     buf.push(MicroOp::ExgRegs { opmode, rx, ry });
+    buf.finish()
+}
+
+/// `MOVEfromUSP` (`0x4E68 | An`) / `MOVEtoUSP` (`0x4E60 | An`): the trivial register↔USP transfers, affecting
+/// **NO flags** (SR unchanged). `to_usp` = `true` for `MOVEtoUSP` (`USP = An`), `false` for `MOVEfromUSP`
+/// (`An = USP`); both move the FULL 32 bits. The recipe is `[MoveUsp, Prefetch]` — length **4** (the 0-cycle
+/// non-bus [`MicroOp::MoveUsp`] register swap, then the single FC-6 queue refill at `pc+4` that books the whole
+/// cost). `an == 7` routes through [`Registers::addr_reg`]/[`Registers::addr_reg_set`] (A7-aware, so the
+/// supervisor A7 = `ssp`): `MOVEfromUSP A7` sets `ssp = usp`, `MOVEtoUSP A7` sets `usp = ssp`. Both are
+/// privileged on the 68000, but every vendored case runs in supervisor mode, so the privilege-violation trap
+/// is UNEXERCISED and NOT implemented (correctness-only, like the T-bit trace).
+fn usp_recipe(to_usp: bool, an: u8) -> MicroState {
+    let mut buf = RecipeBuf::new();
+    buf.push(MicroOp::MoveUsp { to_usp, an });
+    buf.push(MicroOp::Prefetch);
     buf.finish()
 }
 

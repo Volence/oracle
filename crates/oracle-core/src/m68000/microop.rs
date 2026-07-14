@@ -1162,6 +1162,17 @@ pub enum MicroOp {
     /// internal step — the recipe's trailing `Internal(2)` idle books the len-6 cost. Distinct from every
     /// `Alu` op (no CCR touch, no size mask) and from [`MicroOp::AdjustAddr`] (a one-sided register bump).
     ExgRegs { opmode: u8, rx: u8, ry: u8 },
+    /// `MOVEfromUSP` / `MOVEtoUSP`'s register↔USP transfer, affecting **NO flags** (the SR is untouched — no
+    /// CCR change, no privilege gate). `to_usp` selects the direction: `false` = `MOVEfromUSP` (`An = usp`,
+    /// full 32 bits) / `true` = `MOVEtoUSP` (`usp = An`, full 32 bits). `an` is the address register number
+    /// (`opcode & 7`). A7-aware via [`Registers::addr_reg`]/[`Registers::addr_reg_set`], so `an == 7` reads /
+    /// writes the ACTIVE A7 (`ssp` in supervisor mode) — `MOVEfromUSP A7` sets `ssp = usp`, `MOVEtoUSP A7`
+    /// sets `usp = ssp` (never a raw `a[7]`, which does not exist — A7 lives in `ssp`/`usp`). A 0-cycle,
+    /// non-bus, snapshot-visible internal step — the recipe's trailing `Prefetch` books the len-4 cost.
+    /// Mirrors [`MicroOp::ExgRegs`] (the other flag-free A7-aware register op). BOTH ops are privileged on the
+    /// 68000, but every vendored case runs in supervisor mode, so the privilege-violation trap is UNEXERCISED
+    /// and NOT implemented — correctness-only, like the T-bit trace.
+    MoveUsp { to_usp: bool, an: u8 },
     /// `MOVEM` **register→memory** per-register store — one register's word(s) written to the running
     /// transfer address, affecting **NO flags**. The register-list mask is expanded at DECODE time into one
     /// of these per set register (ascending bit order for control modes, REVERSED for `-(An)`), so the recipe
@@ -2661,6 +2672,18 @@ impl MicroState {
                         regs.d[rx] = ay;
                         regs.addr_reg_set(ry, dx);
                     }
+                }
+                0
+            }
+            MicroOp::MoveUsp { to_usp, an } => {
+                // MOVEfromUSP / MOVEtoUSP — the flag-free register↔USP transfer, NO SR change. A7-aware via
+                // addr_reg/addr_reg_set so `an == 7` hits the active A7 (ssp in supervisor): from-USP A7 sets
+                // ssp = usp, to-USP A7 sets usp = ssp. NO bus, 0 cycles (the trailing Prefetch books the len-4).
+                let an = an as usize;
+                if to_usp {
+                    regs.usp = regs.addr_reg(an);
+                } else {
+                    regs.addr_reg_set(an, regs.usp);
                 }
                 0
             }

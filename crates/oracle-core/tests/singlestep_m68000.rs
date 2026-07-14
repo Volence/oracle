@@ -67,6 +67,11 @@ const FILES: &[&str] = &[
     "ORItoSR.json",
     "EORItoSR.json",
     "RESET.json",
+    // MOVEfromUSP / MOVEtoUSP (`0x4E68 | An` / `0x4E60 | An`) — the trivial register↔USP moves (full 32 bits,
+    // NO flags, SR unchanged). Reg-direct only, 100% PURE / in scope (8065 each). Classified by OPCODE via
+    // `movefrom_usp_covered` / `moveto_usp_covered`.
+    "MOVEfromUSP.json",
+    "MOVEtoUSP.json",
     // The CMP.* files are 3-WAY MIXES (CMP <ea>,Dn + CMPM (Ay)+,(Ax)+ + CMPI #imm,<ea>), all mislabeled
     // "CMP.<sz>" in `name` — classified by OPCODE via `cmp_class`. N0 added the Cmp class, N1 the Cmpm class,
     // N2 the Cmpi class — so these files are now FULLY covered (CMPA is its own file). The only intra-class
@@ -1291,6 +1296,24 @@ fn nbcd_covered(opcode: u16) -> bool {
     matches!(mode, 0 | 2..=6) || (mode == 7 && (reg == 0 || reg == 1))
 }
 
+/// MOVEfromUSP (`opcode & 0xFFF8 == 0x4E68`, `0100 1110 0110 1 rrr`) — `An = USP` (full 32 bits), NO flags.
+/// The `0xFFF8` mask fixes bits 15-3 = `0100 1110 0110 1`, leaving the 3-bit An field (0-7, all in scope). A
+/// reg-direct-only op → NO EA, NO exceptions, NO deferral, NO parity filter. Every case is in scope (100% PURE,
+/// 8065). DISJOINT from MOVEtoUSP (0x4E60, bit 3 = 0), TRAP (0x4E40..=0x4E4F), and every 0x4Exx sibling.
+/// Classified strictly by OPCODE.
+fn movefrom_usp_covered(opcode: u16) -> bool {
+    opcode & 0xFFF8 == 0x4E68
+}
+
+/// MOVEtoUSP (`opcode & 0xFFF8 == 0x4E60`, `0100 1110 0110 0 rrr`) — `USP = An` (full 32 bits), NO flags. The
+/// `0xFFF8` mask fixes bits 15-3 = `0100 1110 0110 0`, leaving the 3-bit An field (0-7, all in scope). A
+/// reg-direct-only op → NO EA, NO exceptions, NO deferral, NO parity filter. Every case is in scope (100% PURE,
+/// 8065). DISJOINT from MOVEfromUSP (0x4E68, bit 3 = 1), TRAP (0x4E40..=0x4E4F), and every 0x4Exx sibling.
+/// Classified strictly by OPCODE.
+fn moveto_usp_covered(opcode: u16) -> bool {
+    opcode & 0xFFF8 == 0x4E60
+}
+
 fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // MOVE (`00 SS RRR MMM mmm rrr`, dst_mode != 1) — its own EA→EA mode-scope filter (no parity).
     if move_covered(opcode) {
@@ -1491,6 +1514,14 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // NEVER address-errors (`-(A7).b` steps by 2). NO deferral (UNLIKE NEG, plain `(A7)` mode-2 IS in scope), NO
     // parity filter. 100% PURE (8065). DISJOINT from its 0x4x00 unary siblings + SWAP/PEA/EXT/MOVEM. By OPCODE.
     if nbcd_covered(opcode) {
+        return true;
+    }
+    // MOVEfromUSP (`0xFFF8==0x4E68`) `An = USP` / MOVEtoUSP (`0xFFF8==0x4E60`) `USP = An` — the trivial
+    // register↔USP moves (full 32 bits, NO flags, SR unchanged). Reg-direct only → NO EA, NO exceptions, NO
+    // deferral, NO parity filter. Both 100% PURE / 100% in scope (8065 each, all 8 An). Privileged but every
+    // case is supervisor, so the privilege-violation trap is unexercised (correctness-only, like the T-bit).
+    // Classified strictly by OPCODE + the bit-3 direction guard.
+    if movefrom_usp_covered(opcode) || moveto_usp_covered(opcode) {
         return true;
     }
     // CMP `<ea>,Dn` + CMPM `(Ay)+,(Ax)+` + CMPI `#imm,<ea>` (the Cmp/Cmpm/Cmpi classes of the 3-way CMP.* mix,
@@ -1986,8 +2017,21 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 889_628,
-        "expected 889628 covered cases — C3 adds NBCD (its own NBCD.json file, 8065 cases = +8065 over the \
+        ran >= 905_758,
+        "expected 905758 covered cases — S0 adds MOVEfromUSP + MOVEtoUSP (their own MOVEfromUSP.json / \
+         MOVEtoUSP.json files, 8065 cases each = +16130 over the 889628 NBCD baseline → 905758). These are the \
+         trivial register↔USP moves (full 32 bits, NO flags, SR unchanged): MOVEfromUSP (0xFFF8==0x4E68) sets \
+         `An = USP`, MOVEtoUSP (0xFFF8==0x4E60) sets `USP = An`. The new `MicroOp::MoveUsp {{ to_usp, an }}` is a \
+         0-cycle non-bus A7-aware register transfer (mirroring `ExgRegs`): `to_usp ? usp = addr_reg(an) : \
+         addr_reg_set(an, usp)` — so `an == 7` routes through addr_reg/addr_reg_set (the supervisor A7 = ssp), \
+         MOVEfromUSP A7 setting ssp = usp, MOVEtoUSP A7 setting usp = ssp (never a raw a[7]). The recipe is \
+         `[MoveUsp, Prefetch]`, length 4, exactly ONE transaction (the FC-6 queue refill @ pc+4). Reg-direct only \
+         → NO EA, NO exceptions, NO deferral, NO parity filter — both files 100% PURE / in scope (8065 each), \
+         classified by OPCODE + the bit-3 direction guard (0x4E68 from / 0x4E60 to, disjoint from TRAP \
+         0x4E40..=0x4E4F and every 0x4Exx sibling). Both ops are privileged on the 68000, but every vendored case \
+         runs in supervisor mode, so the privilege-violation trap is UNEXERCISED and NOT implemented \
+         (correctness-only, like the T-bit trace). \
+         Prior baseline — C3 adds NBCD (its own NBCD.json file, 8065 cases = +8065 over the \
          881563 ABCD/SBCD baseline → 889628, the FINAL op of the X-flag arithmetic cluster). NBCD \
          (0xFFC0==0x4800, data-alterable modes) is the packed-DECIMAL negate `<ea> = 0 −₁₀ <ea> − X`, BYTE-ONLY, \
          over the single data-alterable EA. `AluOp::Nbcd` is EXACTLY the SBCD core with `dst = 0`, `src = \
@@ -2746,7 +2790,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX+ABCD+SBCD+NBCD (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX+ABCD+SBCD+NBCD+MOVEfromUSP+MOVEtoUSP (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -3806,6 +3850,181 @@ fn exg_quiescable_and_serializable_at_every_micro_op_boundary() {
         );
     }
     eprintln!("C0 EXG snapshot/restore: EXG D0,A7 (A7-leg swap) resumed identically at every micro-op boundary");
+}
+
+/// S0 — the named `MOVEfromUSP` / `MOVEtoUSP` anchors, pinning the trivial register↔USP moves (`[MoveUsp,
+/// Prefetch]`, len 4, one FC-6 prefetch, NO flags) against the vendored streams WITHOUT relying on the bulk
+/// `covered()` sweep. Every load-bearing fact:
+/// - **`4e6e [MOVEfromUSP A6]`** — `A6 = USP` (full 32 bits); SR + USP + every other reg unchanged; len 4.
+/// - **`4e63 [MOVEtoUSP A3]`** — `USP = A3` (full 32 bits); SR + A3 unchanged; len 4.
+/// - **`4e6f [MOVEfromUSP A7]`** — the supervisor-A7 route: `SSP = USP` (A7 == 7 hits `ssp`, NOT a raw a[7]);
+///   `usp` is UNCHANGED (the source), only `ssp` takes the USP value.
+/// - **`4e67 [MOVEtoUSP A7]`** — the supervisor-A7 route: `USP = SSP` (A7 == 7 reads `ssp`); `ssp` UNCHANGED.
+///
+/// Each runs both drivers via `run_case` (which pins the exact final regs incl. usp/ssp AND the single-txn
+/// stream). Both ops are privileged but every case is supervisor, so the privilege trap stays unexercised.
+#[test]
+fn movefrom_moveto_usp_anchor_cases_pass_both_drivers() {
+    let from_path = format!("{VENDOR_DIR}/MOVEfromUSP.json");
+    let to_path = format!("{VENDOR_DIR}/MOVEtoUSP.json");
+    if !Path::new(&from_path).exists() || !Path::new(&to_path).exists() {
+        eprintln!("SKIP: MOVEfromUSP/MOVEtoUSP json missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let from_file = std::fs::File::open(&from_path).unwrap();
+    let from_data: Vec<Value> =
+        serde_json::from_reader(std::io::BufReader::new(from_file)).unwrap();
+    let to_file = std::fs::File::open(&to_path).unwrap();
+    let to_data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(to_file)).unwrap();
+
+    // MOVEfromUSP A6 — An = USP, SR + all other regs unchanged.
+    let from_a6 = from_data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "4e6e [MOVEfromUSP A6] 1")
+        .expect("MOVEfromUSP A6 anchor present");
+    let op = from_a6["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+    assert_eq!(op & 0xFFF8, 0x4E68, "MOVEfromUSP anchor opcode");
+    assert_eq!(op & 7, 6, "MOVEfromUSP A6 targets An = A6");
+    assert_eq!(
+        from_a6["length"].as_u64().unwrap() as u32,
+        4,
+        "MOVEfromUSP is length 4"
+    );
+    assert_eq!(
+        from_a6["initial"]["sr"], from_a6["final"]["sr"],
+        "MOVEfromUSP sets NO flags — SR unchanged"
+    );
+    assert_eq!(
+        u32f(&from_a6["final"], "a6"),
+        u32f(&from_a6["initial"], "usp"),
+        "MOVEfromUSP A6: A6 = USP"
+    );
+    assert_eq!(
+        u32f(&from_a6["initial"], "usp"),
+        u32f(&from_a6["final"], "usp"),
+        "MOVEfromUSP A6 leaves USP unchanged"
+    );
+    run_case(from_a6);
+
+    // MOVEtoUSP A3 — USP = An.
+    let to_a3 = to_data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "4e63 [MOVEtoUSP A3] 5")
+        .expect("MOVEtoUSP A3 anchor present");
+    let op = to_a3["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+    assert_eq!(op & 0xFFF8, 0x4E60, "MOVEtoUSP anchor opcode");
+    assert_eq!(op & 7, 3, "MOVEtoUSP A3 sources An = A3");
+    assert_eq!(
+        to_a3["length"].as_u64().unwrap() as u32,
+        4,
+        "MOVEtoUSP is length 4"
+    );
+    assert_eq!(
+        to_a3["initial"]["sr"], to_a3["final"]["sr"],
+        "MOVEtoUSP sets NO flags — SR unchanged"
+    );
+    assert_eq!(
+        u32f(&to_a3["final"], "usp"),
+        u32f(&to_a3["initial"], "a3"),
+        "MOVEtoUSP A3: USP = A3"
+    );
+    run_case(to_a3);
+
+    // MOVEfromUSP A7 — the supervisor-A7 route: SSP = USP, usp unchanged.
+    let from_a7 = from_data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "4e6f [MOVEfromUSP A7] 10")
+        .expect("MOVEfromUSP A7 anchor present");
+    let op = from_a7["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+    assert_eq!(op & 7, 7, "MOVEfromUSP A7 targets A7 (= ssp in supervisor)");
+    assert_eq!(
+        u32f(&from_a7["final"], "ssp"),
+        u32f(&from_a7["initial"], "usp"),
+        "MOVEfromUSP A7: SSP = USP (the supervisor-A7 route)"
+    );
+    assert_eq!(
+        u32f(&from_a7["initial"], "usp"),
+        u32f(&from_a7["final"], "usp"),
+        "MOVEfromUSP A7 leaves USP (the source) unchanged"
+    );
+    run_case(from_a7);
+
+    // MOVEtoUSP A7 — the supervisor-A7 route: USP = SSP, ssp unchanged.
+    let to_a7 = to_data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "4e67 [MOVEtoUSP A7] 1")
+        .expect("MOVEtoUSP A7 anchor present");
+    let op = to_a7["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+    assert_eq!(op & 7, 7, "MOVEtoUSP A7 sources A7 (= ssp in supervisor)");
+    assert_eq!(
+        u32f(&to_a7["final"], "usp"),
+        u32f(&to_a7["initial"], "ssp"),
+        "MOVEtoUSP A7: USP = SSP (the supervisor-A7 route)"
+    );
+    assert_eq!(
+        u32f(&to_a7["initial"], "ssp"),
+        u32f(&to_a7["final"], "ssp"),
+        "MOVEtoUSP A7 leaves SSP (the source) unchanged"
+    );
+    run_case(to_a7);
+
+    eprintln!(
+        "S0 MOVEfromUSP + MOVEtoUSP anchors: A6=USP / USP=A3 / A7-route SSP=USP + USP=SSP (each len 4, one FC-6 prefetch, SR unchanged) passed both drivers"
+    );
+}
+
+/// S0 — the snapshot/restore anchor for the register↔USP move (the new `MicroOp::MoveUsp`). Drives a real
+/// vendored `MOVEfromUSP A7` case (`[MoveUsp, Prefetch]`, 2 micro-ops — the supervisor-A7 leg exercising the
+/// A7-aware addr_reg routing) through the quiesce driver, snapshotting + restoring the WHOLE `Cpu68000` (incl.
+/// the in-flight cursor) at every micro-op boundary and proving the resumed run reproduces the
+/// run-to-completion final state + transaction stream bit-for-bit. Pins that `MicroOp::MoveUsp` keeps
+/// `MicroState` fixed-size bincode (it is `Copy`).
+#[test]
+fn moveusp_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/MOVEfromUSP.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "4e6f [MOVEfromUSP A7] 10")
+        .expect("MOVEfromUSP A7 snapshot anchor present");
+    let ini = &case["initial"];
+
+    // Run-to-completion reference.
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    // 2 micro-ops (MoveUsp, Prefetch) → in-flight boundaries after 0..=1 of them.
+    for pause_after in 0..=1 {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        for _ in 0..pause_after {
+            assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+        }
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+    }
+    eprintln!("S0 MOVEfromUSP snapshot/restore: MOVEfromUSP A7 (SSP=USP A7-leg) resumed identically at every micro-op boundary");
 }
 
 /// C0 — the named `ADDX` anchors, pinning the EXTENDED add's dedicated Alu + both recipe shapes against the
