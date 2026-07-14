@@ -471,6 +471,19 @@ pub enum AluOp {
     /// [`Dest::Scratch`] for the `-(Ax)` memory dest the trailing `Write` stores). Distinct from [`AluOp::Add`]
     /// (no X-in, plain `Z = result == 0`) and [`AluOp::Negx`] (unary `0 − a − X`).
     Addx,
+    /// Subx: **binary** `result = (a − b − X_in) & mask` at the operand-size boundary — the flag op of the
+    /// `SUBX` family (`SUBX Dy,Dx` / `SUBX -(Ay),-(Ax)`, the EXTENDED/multi-precision subtract). Like
+    /// [`AluOp::Addx`]/[`AluOp::Negx`] this op is **dedicated** (NOT a `Sub` delegation): the incoming X
+    /// (`X_in = (regs.sr >> 4) & 1`) participates in BOTH the value and the borrow, and **Z is STICKY**
+    /// (`Z_final = Z_in AND (result == 0)` — never SET, only cleared; a plain `result == 0` is WRONG when
+    /// `Z_in == 0 && result == 0`). `a` is the destination operand (`Dx` / dst `-(Ax)`), `b` the source
+    /// (`Dy` / src `-(Ay)`). Flags: **C = X = (raw < 0)** (the borrow-out of the extended difference);
+    /// **V = msb((a ^ b) & (a ^ result))** (standard binary subtract overflow — operands opposite sign,
+    /// result differs from the minuend); **N = msb(result)**. `raw = (a − b − X_in)` computed as a signed
+    /// wide value; `result = raw & mask` written back (low8/low16/full32 for a `Dn` dest, or parked in
+    /// [`Dest::Scratch`] for the `-(Ax)` memory dest the trailing `Write` stores). Distinct from
+    /// [`AluOp::Sub`] (no X-in, plain `Z = result == 0`) and [`AluOp::Addx`] (extended add).
+    Subx,
     /// Not: **unary** `result = (~a) & mask` at the operand-size boundary — the flag op of the `NOT` family
     /// (`NOT <ea>` = `dst = ~dst`). It is **logic-shaped**, identical to [`AluOp::Eor`] in every respect except
     /// the bit operation (`~a` instead of `a ^ b`): it shares the **MOVE flag shape** ([`move_flags`]) — sets
@@ -1775,6 +1788,41 @@ impl MicroState {
                             ccr |= CCR_V;
                         }
                         if raw > u64::from(mask) {
+                            ccr |= CCR_C | CCR_X;
+                        }
+                        (res, ccr)
+                    }
+                    // SUBX is the BINARY `a − b − X_in` — a DEDICATED op (no Sub delegation): the incoming X
+                    // participates in BOTH the value and the borrow, and Z is STICKY. X_in / Z_in are the LIVE
+                    // CCR bits (`sr >> 4 & 1` / `sr >> 2 & 1`). 0-mismatch-verified against the vendored SUBX
+                    // stream: `raw = dst − src − X_in` (signed wide); `res = raw & mask`; C = X = (raw < 0)
+                    // (borrow-out); V = msb((dst^src) & (dst^res)) (standard sub overflow — minuend and
+                    // subtrahend opposite sign, result differs from the minuend); N = msb(res); Z = STICKY
+                    // (`Z_in AND res == 0` — a non-zero limb clears Z, a zero limb leaves the running Z
+                    // untouched, so a plain `res == 0` is WRONG on `res == 0 && Z_in == 0`).
+                    AluOp::Subx => {
+                        let (mask, signbit) = match size {
+                            Size::Byte => (0xFFu32, 0x80u32),
+                            Size::Word => (0xFFFF, 0x8000),
+                            Size::Long => (0xFFFF_FFFF, 0x8000_0000),
+                        };
+                        let dst = lhs & mask;
+                        let src = rhs & mask;
+                        let xin = i64::from(regs.sr & CCR_X != 0);
+                        let raw = i64::from(dst) - i64::from(src) - xin;
+                        let res = (raw as u32) & mask;
+                        let mut ccr = 0u16;
+                        if res & signbit != 0 {
+                            ccr |= CCR_N;
+                        }
+                        // STICKY Z: keep the incoming Z bit only when the result is zero; clear it otherwise.
+                        if res == 0 && regs.sr & CCR_Z != 0 {
+                            ccr |= CCR_Z;
+                        }
+                        if (dst ^ src) & (dst ^ res) & signbit != 0 {
+                            ccr |= CCR_V;
+                        }
+                        if raw < 0 {
                             ccr |= CCR_C | CCR_X;
                         }
                         (res, ccr)

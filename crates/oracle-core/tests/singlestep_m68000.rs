@@ -588,6 +588,16 @@ const FILES: &[&str] = &[
     "ADDX.b.json",
     "ADDX.w.json",
     "ADDX.l.json",
+    // SUBX.b / SUBX.w / SUBX.l (`1001 xxx 1 SS 00 M yyy`, opcode & 0xF130 == 0x9100, SS != 3) — the EXTENDED
+    // (multi-precision) subtract, the `0x9` (SUB) space twin of ADDX. M = bit 3 selects the form: M=0 → `SUBX
+    // Dy,Dx` (register-direct); M=1 → `SUBX -(Ay),-(Ax)` (two-operand predecrement RMW). `AluOp::Subx` is
+    // DEDICATED (like ADDX/NEGX): the incoming X (`sr>>4 & 1`) folds into BOTH the value and the borrow, Z is
+    // STICKY (`Z_in AND res==0`), X_out = C_out. Every case in scope (all three sizes, both forms, incl the
+    // `-(A7)` byte step-2 and the odd-address `-(An)` word/long group-0 faults the E3/E4 abort covers — NO
+    // deferral, NO parity filter). 100% PURE — 8065 cases each. Classified strictly by OPCODE + the size guard.
+    "SUBX.b.json",
+    "SUBX.w.json",
+    "SUBX.l.json",
 ];
 
 fn u32f(v: &Value, key: &str) -> u32 {
@@ -1208,6 +1218,17 @@ fn addx_covered(opcode: u16) -> bool {
     opcode & 0xF130 == 0xD100 && (opcode >> 6) & 3 != 3
 }
 
+/// SUBX.b/.w/.l (`opcode & 0xF130 == 0x9100` with `(opcode >> 6) & 3 != 3`, size 3 = SUBA excluded) — the
+/// EXTENDED subtract, the `0x9` (SUB) space twin of ADDX with the identical bit layout. The mask fixes bits
+/// 15-12 = 1001, bit 8 = 1, bits 5-4 = 00 (ea-mode field 000/001, the SUB-`Dn,<ea>` illegal slots repurposed
+/// as SUBX) — leaving size (7-6), M (3), Rx, Ry. Every case is in scope: both forms (M=0 register, M=1
+/// `-(Ay),-(Ax)` predecrement), all three sizes, incl the `(A7)` byte step-2 and the odd-address `-(An)`
+/// word/long group-0 faults (E3/E4). NO deferral, NO parity filter. Classified strictly by OPCODE + the size
+/// guard.
+fn subx_covered(opcode: u16) -> bool {
+    opcode & 0xF130 == 0x9100 && (opcode >> 6) & 3 != 3
+}
+
 fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // MOVE (`00 SS RRR MMM mmm rrr`, dst_mode != 1) — its own EA→EA mode-scope filter (no parity).
     if move_covered(opcode) {
@@ -1372,6 +1393,15 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // address errors the E3/E4 abort covers (src-odd → only Ay committed; dst-odd → both). `-(A7).b` steps by
     // 2. 100% PURE (8065 each) — NO deferral, NO parity filter. Classified by OPCODE + the size guard.
     if addx_covered(opcode) {
+        return true;
+    }
+    // SUBX.b/.w/.l (`opcode & 0xF130 == 0x9100`, size != 3) — the EXTENDED subtract, the `0x9` (SUB) space
+    // twin of ADDX. M = bit 3 (0 = `Dy,Dx` register-direct / 1 = `-(Ay),-(Ax)` two-operand predecrement).
+    // `AluOp::Subx` is DEDICATED (X into the value AND the borrow, sticky Z, X_out = C_out). Odd
+    // predecremented word/long addresses are group-0 address errors the E3/E4 abort covers (src-odd → only Ay
+    // committed; dst-odd → both). `-(A7).b` steps by 2. 100% PURE (8065 each) — NO deferral, NO parity
+    // filter. Classified by OPCODE + the size guard.
+    if subx_covered(opcode) {
         return true;
     }
     // CMP `<ea>,Dn` + CMPM `(Ay)+,(Ax)+` + CMPI `#imm,<ea>` (the Cmp/Cmpm/Cmpi classes of the 3-way CMP.* mix,
@@ -1867,8 +1897,18 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 841_238,
-        "expected 841238 covered cases — C0 adds ADDX.b/.w/.l (their own ADDX.{{b,w,l}}.json files, 8065 cases \
+        ran >= 865_433,
+        "expected 865433 covered cases — C1 adds SUBX.b/.w/.l (their own SUBX.{{b,w,l}}.json files, 8065 cases \
+         each = +24195 over the 841238 ADDX baseline → 865433). SUBX is the EXTENDED (multi-precision) \
+         subtract, the `0x9` (SUB) space twin of ADDX with the identical bit layout: `AluOp::Subx` is a \
+         DEDICATED Alu (like ADDX/NEGX) — the incoming X (`sr>>4 & 1`) folds into BOTH the value (`raw = dst \
+         − src − X_in`) and the borrow (C = X = raw < 0), Z is STICKY (`Z_in AND res==0`, never set), V = \
+         standard sub overflow (`msb((dst^src) & (dst^res))`), N = msb(res). It reuses ADDX's `xarith_recipe` \
+         verbatim — M = bit 3 picks the recipe (M=0 = `Dy,Dx` register-direct len 4/4/8; M=1 = `-(Ay),-(Ax)` \
+         two-operand predecrement RMW len 18/18/30) — and the identical E3/E4 odd-address fault path (byte \
+         never faults; src-odd → only Ay committed len 52; dst-odd → both len 56 `.w` / 60 `.l`). The files \
+         are 100% PURE (8065 each). NO deferral, NO parity filter, NO corrupt entries. \
+         Prior baseline — C0 adds ADDX.b/.w/.l (their own ADDX.{{b,w,l}}.json files, 8065 cases \
          each = +24195 over the 817043 MOVEM.l baseline → 841238). ADDX is the EXTENDED (multi-precision) add: \
          `AluOp::Addx` is a DEDICATED Alu (like NEGX) — the incoming X (`sr>>4 & 1`) folds into BOTH the value \
          (`raw = dst + src + X_in`) and the carry (C = X = raw > mask), Z is STICKY (`Z_in AND res==0`, never \
@@ -2590,7 +2630,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -3807,6 +3847,163 @@ fn addx_predecrement_quiescable_and_serializable_at_every_micro_op_boundary() {
         );
     }
     eprintln!("C0 ADDX snapshot/restore: ADDX.w -(A3),-(A2) resumed identically at every micro-op boundary");
+}
+
+/// C1 — the named `SUBX` anchors, pinning the EXTENDED subtract's dedicated Alu (`AluOp::Subx`, reusing ADDX's
+/// `xarith_recipe` verbatim) against the vendored SUBX.{b,w,l} streams WITHOUT relying on the bulk `covered()`
+/// sweep. Every load-bearing fact:
+/// - **`9f00 [SUBX.b D0, D7]`** — register-direct `.b`, len **4**, entered with **X_in=1** and producing a
+///   **borrow** (`Dx = Dx − Dy − X`, C=X=1): X folds into BOTH the value and the borrow.
+/// - **`9d83 [SUBX.l D3, D6]`** — register-direct `.l`, len **8** (`[Prefetch, Alu, Internal(4)]`).
+/// - **`9944 [SUBX.w D4, D4]`** — the **underflow → 0xFFFF** case (D4 − D4 − X with X_in=1 = −1 = 0xFFFF):
+///   V=0, C=X=1, N=1 pinned — the borrow-produces-all-ones sign case.
+/// - **`9743 [SUBX.w D3, D3] 43`** — **sticky Z stays SET**: entered with Z_in=1, res==0 → Z STAYS 1 (a plain
+///   `res==0` would set it too, but this pins the "Z_in AND res==0" keep-path).
+/// - **`974c [SUBX.w -(A4), -(A3)]`** — two-operand predecrement `.w`, len **18**: predec Ay+Ax, read src @
+///   Ay, read dst @ Ax, write result @ Ax. Distinct registers.
+/// - **`9349 [SUBX.w -(A1), -(A1)] 294`** — the **same-register** `-(A1),-(A1)`: SEQUENTIAL predecrement — src
+///   @ A1−2, dst @ A1−4, final A1 = A1−4 (computing both from the initial A1 would be WRONG).
+/// - **`9b0f [SUBX.b -(A7), -(A5)] 1`** — the **`-(A7).b` step-2** case (byte predecrement of A7 steps by 2 to
+///   keep the SP even).
+/// - **`954b [SUBX.w -(A3), -(A2)] 3`** — the **odd-src-address `.w` fault**, len **52**: the abort fires on
+///   the src read (odd Ay after predec) → ONLY Ay committed (−2), Ax UNTOUCHED, standard group-0 frame.
+/// - **`954d [SUBX.w -(A5), -(A2)] 12`** — the **odd-dst-address `.w` fault**, len **56**: src read succeeds,
+///   the abort fires on the dst read (odd Ax) → BOTH Ay and Ax committed.
+/// - **`938f [SUBX.l -(A7), -(A1)] 8`** — the **odd `.l` fault**, len **60**.
+///
+/// Each runs both drivers + the per-cycle transaction stream via `run_case`. Every anchor must decode as a
+/// SUBX opcode (`opcode & 0xF130 == 0x9100`, size != 3) and never a CMP-class; each pins its exact length.
+#[test]
+fn subx_anchor_cases_pass_both_drivers() {
+    let variants: &[(&str, &[(&str, u32)])] = &[
+        (
+            "SUBX.b.json",
+            &[
+                ("9f00 [SUBX.b D0, D7] 4", 4),
+                ("9b0f [SUBX.b -(A7), -(A5)] 1", 18),
+            ],
+        ),
+        (
+            "SUBX.w.json",
+            &[
+                ("9944 [SUBX.w D4, D4] 11", 4),
+                ("9743 [SUBX.w D3, D3] 43", 4),
+                ("974c [SUBX.w -(A4), -(A3)] 7", 18),
+                ("9349 [SUBX.w -(A1), -(A1)] 294", 18),
+                ("954b [SUBX.w -(A3), -(A2)] 3", 52),
+                ("954d [SUBX.w -(A5), -(A2)] 12", 56),
+            ],
+        ),
+        (
+            "SUBX.l.json",
+            &[
+                ("9d83 [SUBX.l D3, D6] 1", 8),
+                ("938f [SUBX.l -(A7), -(A1)] 8", 60),
+            ],
+        ),
+    ];
+    let mut found = 0usize;
+    for (fname, anchors) in variants {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        for (name, length) in *anchors {
+            let case = data
+                .iter()
+                .find(|t| t["name"].as_str().unwrap() == *name)
+                .unwrap_or_else(|| panic!("C1 SUBX anchor {name} not found in {fname}"));
+            let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+            assert_eq!(
+                opcode & 0xF130,
+                0x9100,
+                "anchor {name} must be a SUBX opcode"
+            );
+            assert_ne!((opcode >> 6) & 3, 3, "anchor {name} size != 3 (not SUBA)");
+            assert!(subx_covered(opcode), "anchor {name} must be subx_covered");
+            assert_eq!(
+                cmp_class(opcode),
+                CmpClass::None,
+                "SUBX is not a CMP-class opcode"
+            );
+            assert_eq!(
+                case["length"].as_u64().unwrap() as u32,
+                *length,
+                "SUBX anchor {name} length"
+            );
+            run_case(case);
+            found += 1;
+        }
+    }
+    assert_eq!(found, 10, "all C1 SUBX anchors exercised");
+    eprintln!(
+        "C1 SUBX anchors: {found} cases (register .b/.l/.w incl X_in=1 borrow + underflow->0xFFFF + sticky-Z stays-set; predecrement .w distinct + same-register sequential + -(A7).b step-2; odd-src .w fault len 52 (Ay only) / odd-dst .w fault len 56 (both) / odd .l fault len 60) passed both drivers"
+    );
+}
+
+/// C1 — the snapshot/restore anchor for the SUBX two-operand predecrement RMW (reusing ADDX's `xarith_recipe`
+/// predecrement shape with `AluOp::Subx`). Drives a real vendored `SUBX.w -(A4),-(A3)` case through the
+/// quiesce driver, snapshotting + restoring the WHOLE `Cpu68000` (incl. the in-flight cursor + all scratch
+/// slots) at every micro-op boundary and proving the resumed run reproduces the run-to-completion final state
+/// + transaction stream bit-for-bit. Pins that the predecrement recipe keeps `MicroState` fixed-size bincode.
+#[test]
+fn subx_predecrement_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/SUBX.w.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "974c [SUBX.w -(A4), -(A3)] 7")
+        .expect("SUBX.w -(A4),-(A3) snapshot anchor present");
+    let ini = &case["initial"];
+
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    // Step until Done, snapshotting/restoring after each in-flight boundary.
+    let boundaries = {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        let mut n = 0usize;
+        while cpu.step_micro_op(&mut bus) == Step::Continue {
+            n += 1;
+        }
+        n
+    };
+    for pause_after in 0..=boundaries {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        for _ in 0..pause_after {
+            assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+        }
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+    }
+    eprintln!("C1 SUBX snapshot/restore: SUBX.w -(A4),-(A3) resumed identically at every micro-op boundary");
 }
 
 /// C1 — the named `LEA <control ea>,An` anchors, pinning each control addressing mode against the vendored LEA

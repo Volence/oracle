@@ -209,6 +209,23 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         };
         return xarith_recipe(opcode, AluOp::Addx, size);
     }
+    // SUBX.b/.w/.l (`1001 xxx 1 SS 00 M yyy`, `opcode & 0xF130 == 0x9100`, size = bits 7-6 != 3) — the
+    // EXTENDED (multi-precision) subtract `Dx = Dx − Dy − X` (M = bit3 = 0, register-direct) / `-(Ax) =
+    // -(Ax) − -(Ay) − X` (M = 1, two-operand predecrement). The `0x9` (SUB) space twin of ADDX with the
+    // identical bit layout: the mask fixes bits 15-12 = 1001, bit 8 = 1, bits 5-4 = 00 (ea-mode field
+    // 000/001) — the SUB `Dn,<ea>` direction's ea-modes 000/001 are illegal as a real dest, so the ISA
+    // repurposes this slot as SUBX. Placed BEFORE the SUB.b arm below (guarded by `is_dst_mem_mode`, which
+    // already excludes modes 000/001 — classifying SUBX first keeps the intent explicit). size = bits 7-6
+    // (3 = `SUBA`, excluded). Reuses `xarith_recipe` with the dedicated `AluOp::Subx` (X into the value AND
+    // the borrow, sticky Z). `Rx = (op>>9)&7` (dst), `Ry = op&7` (src), `M = bit3`.
+    if opcode & 0xF130 == 0x9100 && (opcode >> 6) & 3 != 3 {
+        let size = match (opcode >> 6) & 3 {
+            0 => Size::Byte,
+            1 => Size::Word,
+            _ => Size::Long, // 2
+        };
+        return xarith_recipe(opcode, AluOp::Subx, size);
+    }
     // ADD.b / SUB.b — same opcode shapes, the size field `00` (`<op>.b`). `Dn,<ea>` (memory dest, bit8 = 1)
     // and `<ea>,Dn` (register dest, bit8 = 0). Byte excludes `An`-direct as a source (`ADD.b An,Dn` is
     // illegal) — that is handled by the source builder / the `covered()` filter, not here.
