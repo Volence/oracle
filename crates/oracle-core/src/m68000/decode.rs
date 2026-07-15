@@ -1413,6 +1413,7 @@ fn cmp_ea_dn(opcode: u16, size: Size) -> MicroState {
 /// identical to `ea_src_long` (same n2 memory idle), so those delegate straight to the shared builder via
 /// [`ea_src`] — only the three no-read source modes (Dn 0, An 1, `#imm` 7/4) are re-emitted here with the
 /// correct n2.
+#[must_use]
 fn cmp_ea_src_long(
     buf: &mut RecipeBuf,
     mode: u16,
@@ -2787,6 +2788,7 @@ fn cmpi_recipe(opcode: u16, size: Size) -> MicroState {
 /// CMPI never reads PC-relative or `#imm` EAs (data-alterable only — those modes are absent from the data) or
 /// `An`-direct (illegal); only the eight data-alterable modes above appear. A `.l` read pair is `[READ.hi @
 /// EA, READ.lo @ EA+2, Combine32]` — the discarded operand value in scratch 0.
+#[must_use]
 fn cmpi_ea_read_long(
     buf: &mut RecipeBuf,
     mode: u16,

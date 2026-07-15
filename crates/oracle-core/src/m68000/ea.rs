@@ -501,6 +501,7 @@ fn push_long_read_pair(buf: &mut RecipeBuf, hi_addr: Operand) {
 /// (the 68000's long-operand penalty — 4 master cycles for a register/immediate source, 2 for a memory
 /// source). Every ordering here (the read pair, the prefetch placement, the trailing-idle width) is pinned
 /// against the vendored `ADD.l`/`SUB.l` SST stream, NOT asserted from memory.
+#[must_use]
 fn ea_src_long(
     buf: &mut RecipeBuf,
     mode: u16,
@@ -644,6 +645,7 @@ fn ea_src_long(
 /// Covers source modes `Dn` (0), `An` (1, word/long), `(An)` (2), `(An)+` (3), `-(An)` (4), `d16(An)` (5),
 /// `abs.w` (7/0), `abs.l` (7/1), `d16(PC)` (7/2), `#imm` (7/4). Other modes land in later commits. `size`
 /// sizes the operand READ (byte → a `read8`, zero-extended into scratch) and the auto-(in/de)crement step.
+#[must_use]
 pub fn ea_src(
     buf: &mut RecipeBuf,
     mode: u16,
@@ -776,6 +778,7 @@ fn push_long_rmw(buf: &mut RecipeBuf, hi_addr: Operand, make_alu: impl FnOnce(Op
 /// The long destination-EA sub-sequence for `ADD.l`/`SUB.l Dn,<ea>` (alterable-memory destination). A long
 /// RMW: read the old 32-bit value (two words), refill, combine with `Dn`, write the 32-bit result (two words,
 /// low half first). Orderings pinned against the vendored `ADD.l`/`SUB.l` SST stream.
+#[must_use]
 fn ea_dst_long(
     buf: &mut RecipeBuf,
     mode: u16,
@@ -860,6 +863,7 @@ fn ea_dst_long(
 /// read/write hit the decremented address; postincrement after capturing the pre-increment EA, so an
 /// address-error fault on the RMW read still bumps the register — the RMW always faults on the read).
 /// `size` sizes the read/write (byte → `read8`/`write8`) and the step.
+#[must_use]
 pub fn ea_dst(
     buf: &mut RecipeBuf,
     mode: u16,
@@ -1343,6 +1347,7 @@ fn move_emit_source(buf: &mut RecipeBuf, sm: u16, sr: u8, size: Size) -> Option<
 /// accesses; the source phase emits its own extension-word prefetches, the dest phase its extension words
 /// plus the final instruction prefetch, with the write placed per the dest mode (the `-(An)` write-last /
 /// abs.l prefetch-reversal quirks come straight from the data).
+#[must_use]
 pub fn ea_move(
     buf: &mut RecipeBuf,
     dst_mode: u16,
@@ -1402,6 +1407,7 @@ pub fn ea_move(
 /// against the data). The `(An)+`/`-(An)` step is sized (byte 1, or 2 for A7 to keep the SP even; word 2). A
 /// `Dn` destination performs no memory write (the ALU already wrote the register); it emits only the final
 /// prefetch.
+#[must_use]
 fn move_emit_dest(buf: &mut RecipeBuf, dm: u16, dr: u8, src_reads: bool, size: Size) -> bool {
     // Write the parked value at `addr`. For byte/word it is a single sized `Write` (a byte write truncates
     // to the low 8). For long it is TWO word writes of the parked 32-bit copy — hi word
@@ -1557,6 +1563,7 @@ fn move_emit_dest(buf: &mut RecipeBuf, dm: u16, dr: u8, src_reads: bool, size: S
 /// the 8 of `ADD.l Dn,Dn`; `MOVEA.l (An),An` is `[READ.hi, READ.lo, PF]` = 12, not 14). `make_alu` builds
 /// the `Alu{MoveA}` writing the assembled `Scratch(0)` (or the register operand) to `Dest::AddrReg`. Every
 /// ordering is pinned against the vendored `MOVEA.l` SST stream.
+#[must_use]
 fn ea_movea_long(
     buf: &mut RecipeBuf,
     mode: u16,
@@ -1687,6 +1694,7 @@ fn ea_movea_long(
 /// The word path reuses the proven [`ea_src`] source machinery verbatim (the MOVEA.w bus stream is exactly
 /// the `<ea>,Dn` source phase). The long path is [`ea_movea_long`] — [`ea_src_long`]'s structure minus the
 /// trailing idle. Byte MOVEA is illegal and never reaches here.
+#[must_use]
 pub fn ea_movea(buf: &mut RecipeBuf, dst_reg: u8, src_mode: u16, src_reg: u8, size: Size) -> bool {
     // The MoveA flag-ALU writes the operand straight to An (full 32; .w sign-extends inside the op). The
     // `b`/`dst` legs of the parked-result form are unused (MoveA ignores `b`, and the only dest is AddrReg).
@@ -1717,6 +1725,7 @@ pub fn ea_movea(buf: &mut RecipeBuf, dst_reg: u8, src_mode: u16, src_reg: u8, si
 /// from MOVEA in exactly two ways — the flag-only ALU (above) and a **uniform trailing `Internal(2)` idle**
 /// (`CMPA = MOVEA + 2 cycles` for every source mode, pinned to the vendored CMPA.w/.l stream). Byte CMPA is
 /// illegal and never reaches here.
+#[must_use]
 pub fn ea_cmpa(buf: &mut RecipeBuf, dst_reg: u8, src_mode: u16, src_reg: u8, size: Size) -> bool {
     // The flag-only Cmpa ALU: An (the destination address register, full 32 bits) is the minuend `a`, the
     // source operand is `b`, and nothing is written back (`Dest::None`). `make_alu` receives the source
@@ -1755,6 +1764,7 @@ pub fn ea_cmpa(buf: &mut RecipeBuf, dst_reg: u8, src_mode: u16, src_reg: u8, siz
 /// EA is data-alterable, so only modes `Dn`/`(An)`/`(An)+`/`-(An)`/`d16(An)`/`d8(An,Xn)`/`abs.w`/`abs.l`
 /// appear (An-direct / PC-relative / `#imm` are not data-alterable and are absent from the data); the
 /// PC-rel/`#imm` arms of `ea_movea_long` are never reached.
+#[must_use]
 pub fn ea_tst(buf: &mut RecipeBuf, mode: u16, reg: u8, size: Size) -> bool {
     // The flag-only Cmp-vs-zero ALU: the source operand is the minuend `a`, `b` is a constant zero, nothing is
     // written back (`Dest::None`). `make_alu` receives the source operand the EA builder fetched.
@@ -1785,6 +1795,7 @@ pub fn ea_tst(buf: &mut RecipeBuf, mode: u16, reg: u8, size: Size) -> bool {
 /// predecrement / postincrement / extension refills), byte-for-byte MINUS the final Prefetch + ALU. `#imm`
 /// (7/4) is NOT handled here (its operand is the queued word — the caller uses the `to_sr_recipe` shape). An
 /// odd EA faults on this operand READ (a data read, low5 = 0x15) via the E3/E4 abort — IN scope.
+#[must_use]
 pub fn ea_read_word_operand(buf: &mut RecipeBuf, mode: u16, reg: u8) -> bool {
     // abs.l (7/1) — a 3-word instruction: assemble the two-word address (HIGH, refill, LOW) first, then one
     // more refill, then the operand read. Two refills precede the read (the third refill is the caller's
@@ -1861,13 +1872,13 @@ mod tests {
 
     fn build_src(mode: u16, reg: u8, dn: u8) -> MicroState {
         let mut buf = RecipeBuf::new();
-        ea_src(&mut buf, mode, reg, Size::Word, |b| ea_dn_alu(dn, b));
+        let _ = ea_src(&mut buf, mode, reg, Size::Word, |b| ea_dn_alu(dn, b));
         buf.finish()
     }
 
     fn build_dst(mode: u16, reg: u8, dn: u8) -> MicroState {
         let mut buf = RecipeBuf::new();
-        ea_dst(&mut buf, mode, reg, Size::Word, |a| dn_ea_alu(dn, a));
+        let _ = ea_dst(&mut buf, mode, reg, Size::Word, |a| dn_ea_alu(dn, a));
         buf.finish()
     }
 
@@ -2414,7 +2425,7 @@ mod tests {
         ] {
             let regs = agreement_regs(disp, an);
             let mut buf = RecipeBuf::new();
-            ea_src(&mut buf, 5, 3, Size::Word, |b| ea_dn_alu(4, b));
+            let _ = ea_src(&mut buf, 5, 3, Size::Word, |b| ea_dn_alu(4, b));
             let recipe = buf.finish();
             let got = read_addr_of(&recipe, &regs);
             let want = compute_ea(opcode, &regs, Size::Word);
@@ -2429,7 +2440,7 @@ mod tests {
         for disp in [0x2EA4u16, 0xCC1A, 0x0000, 0xFFFF, 0x8000, 0x7FFF] {
             let regs = agreement_regs(disp, 0);
             let mut buf = RecipeBuf::new();
-            ea_src(&mut buf, 7, 0, Size::Word, |b| ea_dn_alu(4, b));
+            let _ = ea_src(&mut buf, 7, 0, Size::Word, |b| ea_dn_alu(4, b));
             let recipe = buf.finish();
             let got = read_addr_of(&recipe, &regs);
             let want = compute_ea(opcode, &regs, Size::Word);
@@ -2445,7 +2456,7 @@ mod tests {
         let an = 0x0045_7E36u32;
         let regs = agreement_regs(disp, an);
         let mut buf = RecipeBuf::new();
-        ea_dst(&mut buf, 5, 3, Size::Word, |a| dn_ea_alu(4, a));
+        let _ = ea_dst(&mut buf, 5, 3, Size::Word, |a| dn_ea_alu(4, a));
         let recipe = buf.finish();
 
         let mut st = recipe.clone();
@@ -2490,7 +2501,7 @@ mod tests {
                 prefetch: [opcode, disp],
             };
             let mut buf = RecipeBuf::new();
-            ea_src(&mut buf, 7, 2, Size::Word, |b| ea_dn_alu(4, b));
+            let _ = ea_src(&mut buf, 7, 2, Size::Word, |b| ea_dn_alu(4, b));
             let recipe = buf.finish();
             let got = read_addr_of(&recipe, &regs);
             let want = compute_ea(opcode, &regs, Size::Word);
@@ -2528,7 +2539,7 @@ mod tests {
             regs.a[4] = 0x0030_F010;
             regs.a[5] = 0x0000_9008;
             let mut buf = RecipeBuf::new();
-            ea_src(&mut buf, 6, 3, Size::Word, |b| ea_dn_alu(4, b));
+            let _ = ea_src(&mut buf, 6, 3, Size::Word, |b| ea_dn_alu(4, b));
             let recipe = buf.finish();
             let got = read_addr_of(&recipe, &regs);
             let want = compute_ea(opcode, &regs, Size::Word);
@@ -2553,7 +2564,7 @@ mod tests {
             regs.d[3] = 0x00FF_2002;
             regs.a[5] = 0x0000_9008;
             let mut buf = RecipeBuf::new();
-            ea_src(&mut buf, 7, 3, Size::Word, |b| ea_dn_alu(4, b));
+            let _ = ea_src(&mut buf, 7, 3, Size::Word, |b| ea_dn_alu(4, b));
             let recipe = buf.finish();
             let got = read_addr_of(&recipe, &regs);
             let want = compute_ea(opcode, &regs, Size::Word);
@@ -2578,7 +2589,7 @@ mod tests {
         regs.a[6] = 0x0040_0000;
         regs.d[3] = 0x0000_1000;
         let mut buf = RecipeBuf::new();
-        ea_dst(&mut buf, 6, 6, Size::Word, |a| dn_ea_alu(4, a));
+        let _ = ea_dst(&mut buf, 6, 6, Size::Word, |a| dn_ea_alu(4, a));
         let recipe = buf.finish();
 
         let mut st = recipe.clone();
@@ -2631,7 +2642,7 @@ mod tests {
             bus.poke(pc + 5, (lo & 0xFF) as u8);
 
             let mut buf = RecipeBuf::new();
-            ea_src(&mut buf, 7, 1, Size::Word, |b| ea_dn_alu(4, b));
+            let _ = ea_src(&mut buf, 7, 1, Size::Word, |b| ea_dn_alu(4, b));
             let mut st = buf.finish();
             st.run_to_completion(&mut regs.clone(), &mut bus);
 
@@ -2670,7 +2681,7 @@ mod tests {
         bus.poke(pc + 5, (lo & 0xFF) as u8);
 
         let mut buf = RecipeBuf::new();
-        ea_dst(&mut buf, 7, 1, Size::Word, |a| dn_ea_alu(4, a));
+        let _ = ea_dst(&mut buf, 7, 1, Size::Word, |a| dn_ea_alu(4, a));
         let mut st = buf.finish();
         st.run_to_completion(&mut regs.clone(), &mut bus);
 
