@@ -188,6 +188,13 @@ pub fn decode(regs: &Registers) -> MicroState {
 #[inline]
 fn decode_dispatch(regs: &Registers) -> MicroState {
     let opcode = regs.prefetch[0];
+    // Privilege gate (M68000UM §6.3.7): a privileged instruction attempted in user mode traps to the
+    // privilege-violation vector (8) BEFORE any execution — the check is at decode time (registers are
+    // available). Every vendored SST case is supervisor, so this never fires on the gate-keeping suite;
+    // it is exercised only by the hand-authored A1 vectors. Placed first so no privileged arm below runs.
+    if !regs.supervisor() && is_privileged_opcode(opcode) {
+        return privilege_violation_recipe();
+    }
     // MOVE.w (`00 11 RRR MMM mmm rrr`, dst_mode != 1) — the EA→EA composition. Decoded before the ADD/SUB
     // arms (the opcode spaces 0x3xxx and 0xD/0x9xxx are disjoint).
     if is_move_word(opcode) {
@@ -1220,6 +1227,17 @@ impl Cpu68000 {
     pub fn run_instruction(&mut self, bus: &mut impl Bus68k) -> u32 {
         let mut recipe = decode(&self.regs);
         recipe.run_to_completion(&mut self.regs, bus)
+    }
+
+    /// **The orchestrator fast path** (D1): decide the next unit of work, then run it to completion.
+    /// Returns the CPU cycles consumed. A thin superset of [`run_instruction`] — the SST harness keeps
+    /// calling `run_instruction`/`step_micro_op` directly, so this path grows without touching the gate.
+    ///
+    /// For now (A1 skeleton) the only work is "decode prefetch[0] and run it"; async events (trace,
+    /// interrupt, STOP wake) and mid-instruction resume slot into [`Cpu68000::begin_next`] as their
+    /// slices land.
+    pub fn step(&mut self, bus: &mut impl Bus68k) -> u32 {
+        self.run_instruction(bus)
     }
 }
 
@@ -3669,6 +3687,58 @@ fn rte_recipe() -> MicroState {
     buf.finish()
 }
 
+/// The privileged instructions on the **MC68000** (M68000UM §6.3.7): the immediate-to-SR logic ops,
+/// `MOVE to SR`, `MOVE USP` (both directions), `RESET`, `STOP`, `RTE`. **`MOVE from SR` is deliberately
+/// absent** — it is unprivileged on the 68000 (privileged only from the 68010). Attempting any of these
+/// in user mode is a privilege violation (vector 8); the gate in [`decode_dispatch`] consults this.
+fn is_privileged_opcode(opcode: u16) -> bool {
+    match opcode {
+        0x027C | 0x007C | 0x0A7C => true, // ANDI/ORI/EORI #imm,SR
+        0x4E70 => true,                   // RESET
+        0x4E72 => true,                   // STOP #imm
+        0x4E73 => true,                   // RTE
+        _ => {
+            opcode & 0xFFC0 == 0x46C0     // MOVE <ea>,SR
+                || opcode & 0xFFF0 == 0x4E60 // MOVE USP (0x4E60..=0x4E6F, both to/from)
+        }
+    }
+}
+
+/// Scratch slot holding the privilege-violation frame's saved PC (`pc + 0` — the address of the first
+/// word of the offending instruction, M68000UM §6.3.7). Slot 0, the standard-frame saved-PC convention.
+const PRIV_SAVED_PC_SLOT: u8 = 0;
+
+/// Scratch slot holding the privilege-violation frame's saved SR (captured by [`MicroOp::EnterException`]
+/// before S is set / T cleared). Slot 1 — distinct from the saved-PC slot (the CHK/TRAP convention).
+const PRIV_SAVE_SR_SLOT: u8 = 1;
+
+/// Build the **privilege-violation frame** (vector 8, `0x020`) — the decode-time entry when a user-mode
+/// program attempts a privileged instruction ([`is_privileged_opcode`]). Byte-identical in shape and
+/// timing to [`trap_recipe`] (M68000UM §6.3.7: "nearly identical to illegal"; Yacht L1550: `34(4/3)`,
+/// stream `nn ns ns nS nV nv np n np`), differing only in the vector (8) and the saved PC — which is
+/// `pc + 0`, the first word of the offending instruction, NOT the next one (§6.3.7). No SST data covers
+/// this (audit finding 3); pinned to the reference and driven by hand-authored vectors.
+fn privilege_violation_recipe() -> MicroState {
+    let mut buf = RecipeBuf::new();
+    // Saved PC = pc + 0 (the offending instruction's first word), UNMASKED, before any prefetch.
+    buf.push(MicroOp::TargetCalc {
+        base: Operand::PcPlus(0),
+        index: Operand::Zero,
+        disp: Operand::Zero,
+        dst: PRIV_SAVED_PC_SLOT,
+    });
+    // Capture the live (user) SR + enter supervisor (set S, clear T).
+    buf.push(MicroOp::EnterException {
+        save_sr: PRIV_SAVE_SR_SLOT,
+    });
+    // The leading nn idle (= Internal{4}) — the TRAP-shape entry refills no prefetch before the push.
+    buf.push(MicroOp::Internal { cycles: 4 });
+    push_standard_frame(&mut buf, PRIV_SAVED_PC_SLOT, PRIV_SAVE_SR_SLOT);
+    // The privilege-violation vector is 8 (address 8*4 = 0x20).
+    vector_fetch_and_reload(&mut buf, 8 * 4);
+    buf.finish()
+}
+
 /// Scratch slot holding `TRAP`'s saved return PC (`pc + 2`), deposited by the leading [`MicroOp::TargetCalc`]
 /// and consumed by the standard frame's `PCL`/`PCH` writes. Slot 0.
 const TRAP_SAVED_PC_SLOT: u8 = 0;
@@ -4822,6 +4892,17 @@ mod tests {
     }
 
     #[test]
+    fn step_on_normal_cpu_matches_run_instruction() {
+        // The orchestrator's fast path: `step()` on a Normal CPU with nothing in flight is a superset
+        // of `run_instruction` — decode prefetch[0], run to completion, return CPU cycles. The public
+        // contract is byte-identical to `run_instruction` (the SST harness's untouched entry).
+        let (mut cpu, mut bus) = setup_db50();
+        let cycles = cpu.step(&mut bus);
+        assert_eq!(cycles, 12, "step returns the instruction's CPU cycles");
+        assert_db50_final(&cpu, &bus);
+    }
+
+    #[test]
     fn both_drivers_match_db50() {
         // Driver 1.
         let (mut rtc, mut bus_rtc) = setup_db50();
@@ -4859,6 +4940,179 @@ mod tests {
             let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
             let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
             // Resume to completion on the same bus.
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    // --- Push A / A1: privilege violation (vector 8) ---------------------------------------------
+    // Hand-authored (no SST data for this cluster). Pinned to M68000UM §6.3.7 (stacked PC = address
+    // of the first word of the offending instruction) + Table 6-2 (vector 8) + Yacht L1550 (34(4/3),
+    // stream `nn ns ns nS nV nv np n np`, byte-identical to TRAP). A user-mode ANDItoSR (0x027C, a
+    // privileged op per §6.3.7) traps instead of writing SR.
+    fn setup_privilege_anditosr_user() -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0x0000_3000, // user A7 — untouched (the frame goes to the SUPERVISOR stack)
+            ssp: 0x0000_1000, // supervisor A7 — where the frame is pushed
+            pc: 0x0C00,       // address of the offending ANDItoSR word
+            sr: 0x0004,       // USER mode (S=0), Z set — captured as the stacked SR
+            prefetch: [0x027C, 0xF71F], // ANDItoSR #imm; the imm word is never consumed (trap preempts)
+        };
+        let mut bus = FlatBus::new();
+        // Vector 8 @ 0x20 → handler 0x0000_2000.
+        for (a, v) in [
+            (0x20u32, 0x00u8),
+            (0x21, 0x00),
+            (0x22, 0x20),
+            (0x23, 0x00),
+            // Handler code words (two NOPs) so the prefetch reload has something to read.
+            (0x2000, 0x4E),
+            (0x2001, 0x71),
+            (0x2002, 0x4E),
+            (0x2003, 0x71),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    fn expected_privilege_log() -> Vec<Transaction> {
+        vec![
+            // push_standard_frame on-bus order: PCL @ B+4, SR @ B+0, PCH @ B+2 (B = ssp-6 = 0xFFA).
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 0x0FFE,
+                size: Size::Word,
+                value: 0x0C00,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 0x0FFA,
+                size: Size::Word,
+                value: 0x0004,
+            },
+            Transaction {
+                kind: TxKind::Write,
+                fc: 5,
+                addr: 0x0FFC,
+                size: Size::Word,
+                value: 0x0000,
+            },
+            // Vector fetch (FC=5) then handler reload (FC=6).
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 0x0020,
+                size: Size::Word,
+                value: 0x0000,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 5,
+                addr: 0x0022,
+                size: Size::Word,
+                value: 0x2000,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 0x2000,
+                size: Size::Word,
+                value: 0x4E71,
+            },
+            Transaction {
+                kind: TxKind::Read,
+                fc: 6,
+                addr: 0x2002,
+                size: Size::Word,
+                value: 0x4E71,
+            },
+        ]
+    }
+
+    fn assert_privilege_final(cpu: &Cpu68000, bus: &FlatBus) {
+        assert_eq!(cpu.regs.pc, 0x2000, "pc reloaded at the handler");
+        assert_eq!(
+            cpu.regs.sr, 0x2004,
+            "S set, T clear, CCR preserved (0x0004)"
+        );
+        assert_eq!(cpu.regs.ssp, 0x0FFA, "SSP pushed down by the 6-byte frame");
+        assert_eq!(cpu.regs.usp, 0x0000_3000, "USP untouched");
+        assert_eq!(
+            cpu.regs.prefetch,
+            [0x4E71, 0x4E71],
+            "queue reloaded at the handler"
+        );
+        assert_eq!(bus.peek(0x0FFA), 0x00, "stacked SR high");
+        assert_eq!(bus.peek(0x0FFB), 0x04, "stacked SR low = 0x0004");
+        assert_eq!(bus.peek(0x0FFC), 0x00, "stacked PC high");
+        assert_eq!(
+            bus.peek(0x0FFE),
+            0x0C,
+            "stacked PC = 0x0C00 (the offending instruction)"
+        );
+        assert_eq!(bus.peek(0x0FFF), 0x00);
+        assert_eq!(bus.log, expected_privilege_log());
+    }
+
+    #[test]
+    fn privilege_violation_traps_user_mode_anditosr() {
+        let (mut cpu, mut bus) = setup_privilege_anditosr_user();
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(cycles, 34, "privilege violation = 34(4/3), the TRAP shape");
+        assert_privilege_final(&cpu, &bus);
+    }
+
+    #[test]
+    fn both_drivers_match_privilege_violation() {
+        let (mut rtc, mut bus_rtc) = setup_privilege_anditosr_user();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = setup_privilege_anditosr_user();
+        step.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = step.step_micro_op(&mut bus_step) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 34);
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_privilege_final(&step, &bus_step);
+    }
+
+    #[test]
+    fn privilege_violation_quiescable_at_every_boundary() {
+        // Reference final state from an uninterrupted run.
+        let (mut rref, mut bref) = setup_privilege_anditosr_user();
+        rref.run_instruction(&mut bref);
+
+        let cfg = bincode::config::standard();
+        // 18 micro-ops (TargetCalc, EnterException, Internal, 6× frame push, 9× vector fetch/reload) →
+        // in-flight boundaries after 0..=17 of them. Snapshot/restore the whole CPU at each, resume on
+        // the same bus, and require an identical final state + transaction stream.
+        for pause_after in 0..=17 {
+            let (mut cpu, mut bus) = setup_privilege_anditosr_user();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
             loop {
                 if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
                     break;
