@@ -19,12 +19,13 @@
 //! Versioned scope manifest: **odd-address word/long accesses are now IN scope** (E4 — the execution-time
 //! address-error abort installs the group-0 14-byte vector-3 frame, so an odd word/long EA, an odd branch /
 //! jump / return target, and an odd popped PC/return-address all PASS unchanged; byte accesses never fault).
-//! Still deferred (genuinely-unimplemented / non-address-error mode-scope decisions, NOT odd-address cases):
-//! the `A7` form of the older `(An)` (mode 2) memory access (a pre-existing mode-scope deferral — its `(A7)+`/
-//! `-(A7)` siblings and every other A7 form ARE in scope), `An`-direct as a byte source (`ADD.b An,Dn` is
-//! illegal), and the remaining EA modes / sizes (see [`covered`]). The auto-(in/de)crement `(A7)+`/`-(A7)`
-//! forms are in scope for both sizes (word steps 2; byte steps 2 for A7 to keep the SP even). If the vendor
-//! data is missing, the test skips cleanly (run `tools/fetch-tests.sh`).
+//! Plain `(A7)` (mode 2) indirect is now IN scope on every family (the 2026-07-15 un-defer flipped the last
+//! residual carve-out on the older ADD/SUB/MOVE(A)/CMP(I/A)/AND/OR/EOR/NEG/NEGX/NOT/ADDA/SUBA families — decode
+//! resolves A7 through `addr_reg` like any An). Still deferred (genuinely-unimplemented / non-address-error
+//! mode-scope decisions, NOT odd-address cases): `An`-direct as a byte source (`ADD.b An,Dn` is illegal) and
+//! the remaining EA modes / sizes (see [`covered`]). The auto-(in/de)crement `(A7)+`/`-(A7)` forms are in scope
+//! for both sizes (word steps 2; byte steps 2 for A7 to keep the SP even). If the vendor data is missing, the
+//! test skips cleanly (run `tools/fetch-tests.sh`).
 
 use oracle_core::m68000::bus68k::{FlatBus, Transaction, TxKind};
 use oracle_core::m68000::decode::{cmp_class, CmpClass};
@@ -110,14 +111,14 @@ const FILES: &[&str] = &[
     "MOVEtoSR.json",
     // The CMP.* files are 3-WAY MIXES (CMP <ea>,Dn + CMPM (Ay)+,(Ax)+ + CMPI #imm,<ea>), all mislabeled
     // "CMP.<sz>" in `name` — classified by OPCODE via `cmp_class`. N0 added the Cmp class, N1 the Cmpm class,
-    // N2 the Cmpi class — so these files are now FULLY covered (CMPA is its own file). The only intra-class
-    // deferral is the pre-existing `(A7)` mode-2 plain-indirect mode-scope convention.
+    // N2 the Cmpi class — so these files are now FULLY covered (CMPA is its own file), including plain `(A7)`
+    // mode-2 (the 2026-07-15 un-defer flipped the last carve-out). No intra-class deferral remains.
     "CMP.b.json",
     "CMP.w.json",
     "CMP.l.json",
     // CMPA.w / CMPA.l (`1011 aaa 0 11/111 mmm rrr`, opmode 3/7) — pure CMPA files (not a mix). N3 decodes the
     // flag-only address compare `An − <ea>` (An the minuend, full 32; `.w` source sign-extended word→long).
-    // All 12 source modes in scope except the pre-existing `(A7)` mode-2 plain-indirect convention.
+    // All 12 source modes in scope including plain `(A7)` mode-2 (un-deferred 2026-07-15).
     "CMPA.w.json",
     "CMPA.l.json",
     // TST.b / TST.w / TST.l (`0100 1010 SS mmm rrr`, 0x4A00/4A40/4A80) — the flag-only test `<ea> − 0`. N4
@@ -145,18 +146,17 @@ const FILES: &[&str] = &[
     // ADDA.w / ADDA.l (`1101 aaa s11 mmm rrr`, opmode 3 = .w / 7 = .l = 0xD0C0 / 0xD1C0) — address arithmetic
     // `An = An + src`, NO flags (SR untouched). L0 decodes both sizes: `.w` sign-extends the source word→long
     // before the add (mirroring MOVEA.w / CMPA.w), `.l` adds the full 32. All 12 source modes in scope
-    // (An-direct legal — it is address arithmetic; odd word/long source EAs are address errors the E3/E4 abort
-    // covers, no parity filter) except the pre-existing `(A7)` (mode 2) plain-indirect deferral (its `(A7)+` /
-    // `-(A7)` siblings ARE in scope). Files are 100% pure ADDA (no contaminants).
+    // (An-direct legal — it is address arithmetic; plain `(A7)` mode-2 covered (un-deferred 2026-07-15); odd
+    // word/long source EAs are address errors the E3/E4 abort covers, no parity filter). Files are 100% pure
+    // ADDA (no contaminants).
     "ADDA.w.json",
     "ADDA.l.json",
     // SUBA.w / SUBA.l (`1001 aaa s11 mmm rrr`, opmode 3 = .w / 7 = .l = 0x90C0 / 0x91C0) — address arithmetic
     // `An = An − src`, NO flags (SR untouched), a near-exact mirror of ADDA. L1 decodes both sizes: `.w`
     // sign-extends the source word→long before the subtract (mirroring MOVEA.w / CMPA.w), `.l` subtracts the
-    // full 32. All 12 source modes in scope (An-direct legal — it is address arithmetic; odd word/long source
-    // EAs are address errors the E3/E4 abort covers, no parity filter) except the pre-existing `(A7)` (mode 2)
-    // plain-indirect deferral (its `(A7)+` / `-(A7)` siblings ARE in scope). Files are 100% pure SUBA (no
-    // contaminants).
+    // full 32. All 12 source modes in scope (An-direct legal — it is address arithmetic; plain `(A7)` mode-2
+    // covered (un-deferred 2026-07-15); odd word/long source EAs are address errors the E3/E4 abort covers, no
+    // parity filter). Files are 100% pure SUBA (no contaminants).
     "SUBA.w.json",
     "SUBA.l.json",
     // AND.b / AND.w / AND.l (`1100 ddd 0SS mmm rrr` = 0xC000/40/80 `<ea>,Dn`, `1100 ddd 1SS mmm rrr` =
@@ -166,8 +166,8 @@ const FILES: &[&str] = &[
     // verbatim. Sets N = msb / Z = (result == 0), clears V/C, PRESERVES X. **These files are CONTAMINATED with
     // ANDI** (the `0x02xx` immediate opcode, high nibble 0 — a DIFFERENT instruction NOT implemented this push):
     // `covered()` classifies by OPCODE (high nibble == 0xC), admitting ONLY the genuine register form so the
-    // ANDI cases are skipped cleanly (never decoded). All source/dest modes in scope except the pre-existing
-    // `(A7)` (mode 2) plain-indirect deferral; odd word/long EAs are address errors the E3/E4 abort covers.
+    // ANDI cases are skipped cleanly (never decoded). All source/dest modes in scope including plain `(A7)`
+    // mode-2 (un-deferred 2026-07-15); odd word/long EAs are address errors the E3/E4 abort covers.
     "AND.b.json",
     "AND.w.json",
     "AND.l.json",
@@ -180,7 +180,7 @@ const FILES: &[&str] = &[
     // CONTAMINATED with ORI** (the `0x00xx` immediate opcode, high nibble 0 — a DIFFERENT instruction NOT
     // implemented this push): `covered()` classifies by OPCODE (`and_or_in_scope`: high nibble == 0x8),
     // admitting ONLY the genuine register form so the ORI cases are skipped cleanly (never decoded). All
-    // source/dest modes in scope except the pre-existing `(A7)` (mode 2) plain-indirect deferral; odd word/long
+    // source/dest modes in scope including plain `(A7)` mode-2 (un-deferred 2026-07-15); odd word/long
     // EAs are address errors the E3/E4 abort covers.
     "OR.b.json",
     "OR.w.json",
@@ -194,8 +194,8 @@ const FILES: &[&str] = &[
     // msb / Z = (result == 0), V/C cleared, X PRESERVED) via the new `AluOp::Eor`. **These files are CONTAMINATED
     // with EORI** (the `0x0Axx` immediate opcode, high nibble 0 — a DIFFERENT instruction NOT implemented this
     // push): `covered()` classifies by OPCODE (`eor_in_scope`: high nibble == 0xB), admitting ONLY the genuine
-    // register form so the EORI cases are skipped cleanly (never decoded). All dest modes in scope except the
-    // pre-existing `(A7)` (mode 2) plain-indirect deferral; odd word/long EAs are address errors the E3/E4 abort
+    // register form so the EORI cases are skipped cleanly (never decoded). All dest modes in scope including
+    // plain `(A7)` mode-2 (un-deferred 2026-07-15); odd word/long EAs are address errors the E3/E4 abort
     // covers.
     "EOR.b.json",
     "EOR.w.json",
@@ -207,9 +207,9 @@ const FILES: &[&str] = &[
     // abs.l (7/1)}; An-direct / PC-relative / #imm are not data-alterable and are absent. NEG is a READ-then-WRITE
     // (it reads the EA, NEGATES it, then writes it back) — it reuses the `ea_dst`/`ea_dst_long` RMW path (the SAME
     // as CLR, but the read operand is the unary source instead of discarded), so an odd word/long EA address-errors
-    // on the READ (low5 = 0x15), covered by the E3/E4 abort (no parity filter). The only intra-family deferral is
-    // the pre-existing `(A7)` (mode 2) plain-indirect form (its `(A7)+` / `-(A7)` siblings ARE in scope). Files are
-    // 100% pure NEG (no contaminants). Per-file true counts: NEG.b 7915 + NEG.w 7893 + NEG.l 7917 = +23725.
+    // on the READ (low5 = 0x15), covered by the E3/E4 abort (no parity filter). Plain `(A7)` mode-2 is covered
+    // (un-deferred 2026-07-15); no intra-family deferral remains. Files are 100% pure NEG (no contaminants).
+    // Per-file true counts (pre-un-defer): NEG.b 7915 + NEG.w 7893 + NEG.l 7917 = +23725.
     "NEG.b.json",
     "NEG.w.json",
     "NEG.l.json",
@@ -222,8 +222,8 @@ const FILES: &[&str] = &[
     // (7/0), abs.l (7/1)} via the SHARED `neg_family_recipe` (only the `AluOp` exec differs — the recipe shape is
     // identical); An-direct / PC-relative / #imm are not data-alterable and are absent. NEGX is a READ-then-WRITE
     // (it reads the EA, transforms it, then writes it back), so an odd word/long EA address-errors on the READ
-    // (low5 = 0x15), covered by the E3/E4 abort (no parity filter). The only intra-family deferral is the
-    // pre-existing `(A7)` (mode 2) plain-indirect form (its `(A7)+` / `-(A7)` siblings ARE in scope). Files are
+    // (low5 = 0x15), covered by the E3/E4 abort (no parity filter). Plain `(A7)` mode-2 is covered (un-deferred
+    // 2026-07-15); no intra-family deferral remains. Files are
     // 100% pure NEGX (no contaminants). Per-file true counts: NEGX.b 7917 + NEGX.w 7893 + NEGX.l 7883 = +23693.
     "NEGX.b.json",
     "NEGX.w.json",
@@ -236,8 +236,8 @@ const FILES: &[&str] = &[
     // `neg_family_recipe` (only the `AluOp` exec differs — `~a` instead of a subtraction; the recipe shape is
     // identical); An-direct / PC-relative / #imm are not data-alterable and are absent. NOT is a READ-then-WRITE
     // (it reads the EA, complements it, then writes it back), so an odd word/long EA address-errors on the READ
-    // (low5 = 0x15), covered by the E3/E4 abort (no parity filter). The only intra-family deferral is the
-    // pre-existing `(A7)` (mode 2) plain-indirect form (its `(A7)+` / `-(A7)` siblings ARE in scope). Files are
+    // (low5 = 0x15), covered by the E3/E4 abort (no parity filter). Plain `(A7)` mode-2 is covered (un-deferred
+    // 2026-07-15); no intra-family deferral remains. Files are
     // 100% pure NOT (no contaminants). Per-file true counts: NOT.b 7901 + NOT.w 7894 + NOT.l 7899 = +23694.
     "NOT.b.json",
     "NOT.w.json",
@@ -819,9 +819,9 @@ fn move_covered(opcode: u16) -> bool {
 /// The MOVE-specific mode-scope filter (called once `move_covered` matches). **No parity filter** — E4 made
 /// odd word/long EAs (source OR destination) coverable: the execution-time address-error abort installs the
 /// group-0 14-byte frame, so an odd MOVE access PASSES unchanged. The only remaining deferrals are
-/// mode-scope: the supported source / destination modes, the illegal `MOVE.b An,<ea>` byte-source, and the
-/// `(A7)` (mode-2) plain-indirect form (a pre-existing non-address-error mode-scope deferral — its `(A7)+`/
-/// `-(A7)` siblings ARE in scope).
+/// mode-scope: the supported source / destination modes and the illegal `MOVE.b An,<ea>` byte-source. Plain
+/// `(A7)` (mode-2) indirect is COVERED (source and destination, both sizes) — like its `(A7)+`/`-(A7)`
+/// siblings, decode resolves A7 through `addr_reg` with no special case.
 fn move_in_scope(opcode: u16) -> bool {
     let byte = move_size(opcode).expect("move_covered gates move_size") == Size::Byte;
     let dst_reg = (opcode >> 9) & 7;
@@ -841,14 +841,8 @@ fn move_in_scope(opcode: u16) -> bool {
     if !src_ok || !dst_ok {
         return false;
     }
-    // (A7) mode-2 plain-indirect form stays deferred (pre-existing mode-scope convention, NOT an odd-address
-    // case) — source and destination, both sizes.
-    if src_mode == 2 && src_reg == 7 {
-        return false;
-    }
-    if dst_mode == 2 && dst_reg == 7 {
-        return false;
-    }
+    // Plain (A7) mode-2 indirect (source or destination) is COVERED — decode resolves A7 via addr_reg exactly
+    // like any An (no auto-(in/de)crement, so simpler than the in-scope (A7)+/-(A7) siblings). No carve-out.
     true
 }
 
@@ -870,8 +864,8 @@ fn movea_size(opcode: u16) -> Option<Size> {
 /// all 12 EA modes (`An`-direct is a legal MOVEA source); destination is always `An` (a register write — no
 /// memory access). **No parity filter** — E4 made an odd word/long memory source coverable (the address-error
 /// abort installs the 14-byte frame; the auto-increment register bump is committed before the faulting read,
-/// pinned to the data). The only remaining deferral is the `(A7)` (mode-2) plain-indirect source (a
-/// pre-existing non-address-error mode-scope convention).
+/// pinned to the data). Plain `(A7)` (mode-2) indirect source is COVERED — decode resolves A7 through
+/// `addr_reg` like any An. No mode carve-out remains.
 fn movea_in_scope(opcode: u16) -> bool {
     let src_mode = (opcode >> 3) & 7;
     let src_reg = opcode & 7;
@@ -881,14 +875,8 @@ fn movea_in_scope(opcode: u16) -> bool {
         || src_mode == 1
         || (2..=6).contains(&src_mode)
         || (src_mode == 7 && src_reg <= 4);
-    if !src_ok {
-        return false;
-    }
-    // (A7) mode-2 plain-indirect source stays deferred (pre-existing mode-scope convention, NOT odd-address).
-    if src_mode == 2 && src_reg == 7 {
-        return false;
-    }
-    true
+    // Plain (A7) mode-2 indirect source is COVERED (decode resolves A7 via addr_reg like any An). No carve-out.
+    src_ok
 }
 
 /// Whether this opcode is a `Bcc`/`BRA` the framework covers (`0110 cccc dddddddd`, 0x6xxx; cc != 1 — cc ==
@@ -990,9 +978,9 @@ fn trapv_covered(opcode: u16) -> bool {
 /// `(An)`/`(An)+`/`-(An)`/`d16(An)`/`d8(An,Xn)` (2..=6), `abs.w`/`abs.l`/`d16(PC)`/`d8(PC,Xn)`/`#imm` (7/0..=4);
 /// `An`-direct (mode 1) is illegal for CHK and never appears in `CHK.json`. **No parity filter** — an odd
 /// source-EA word read is an address error the E3/E4 abort covers (the 14-byte vector-3 frame), so odd EAs
-/// PASS unchanged. Unlike the older ADD/SUB/MOVE families CHK has **no `(A7)` mode-2 deferral**: its `(A7)`
-/// plain-indirect bound read is in scope (it is a plain word read like any other — the pre-existing mode-2 A7
-/// convention was never applied to CHK).
+/// PASS unchanged. CHK has **no `(A7)` mode-2 deferral**: its `(A7)` plain-indirect bound read is in scope (a
+/// plain word read like any other). The older ADD/SUB/MOVE families that once deferred plain `(A7)` were
+/// un-deferred 2026-07-15, so no family carves it out now.
 fn chk_covered(opcode: u16) -> bool {
     if opcode & 0xF1C0 != 0x4180 {
         return false;
@@ -1087,13 +1075,9 @@ fn reset_covered(opcode: u16) -> bool {
 /// ADD/SUB (its `(A7)+`/`-(A7)` siblings ARE in scope).
 fn cmp_in_scope(opcode: u16) -> bool {
     match cmp_class(opcode) {
-        // CMP `<ea>,Dn`: all source modes in scope, except the `(A7)` mode-2 plain-indirect (the pre-existing
-        // mode-scope convention shared with ADD/SUB; its `(A7)+`/`-(A7)` siblings ARE in scope).
-        CmpClass::Cmp => {
-            let mode = (opcode >> 3) & 7;
-            let reg = opcode & 7;
-            !(mode == 2 && reg == 7)
-        }
+        // CMP `<ea>,Dn`: ALL source modes in scope, including plain `(A7)` mode-2 (decode resolves A7 via
+        // addr_reg like any An); odd word/long source EAs are address errors the E3/E4 abort covers.
+        CmpClass::Cmp => true,
         // CMPM `(Ay)+,(Ax)+` (N1): both operands are post-increment reads — no `(A7)` mode-2 exclusion applies
         // (the `(A7)+` form is in scope, A7 steps by 2 for byte); odd word/long EAs are address errors the
         // E3/E4 abort covers (no parity filter).
@@ -1101,19 +1085,16 @@ fn cmp_in_scope(opcode: u16) -> bool {
         // CMPI `#imm,<ea>` (N2): the data-alterable destination EA modes only — `Dn` (0, no memory access),
         // `(An)` (2), `(An)+` (3), `-(An)` (4), `d16(An)` (5), `d8(An,Xn)` (6), `abs.w` (7/0), `abs.l` (7/1).
         // `An`-direct (illegal for CMPI), PC-relative and `#imm` are NOT data-alterable and are absent from the
-        // data. The `(A7)` (mode 2) plain-indirect form follows the same pre-existing mode-scope deferral as
-        // Cmp/ADD/SUB (its `(A7)+`/`-(A7)` siblings ARE in scope); odd word/long EAs are address errors the
-        // E3/E4 abort covers (no parity filter).
+        // data. Plain `(A7)` (mode 2) indirect is covered (un-deferred 2026-07-15); odd word/long EAs are
+        // address errors the E3/E4 abort covers (no parity filter).
         CmpClass::Cmpi => {
             let mode = (opcode >> 3) & 7;
             let reg = opcode & 7;
             match mode {
                 0 => true,                         // Dn-direct (no memory access)
-                2 => reg != 7,                     // (An) — A7 mode-2 deferred
-                3 | 4 => true,                     // (An)+ / -(An)
-                5 | 6 => true,                     // d16(An) / d8(An,Xn)
+                2..=6 => true, // (An) [incl (A7)] / (An)+ / -(An) / d16(An) / d8(An,Xn)
                 7 if reg == 0 || reg == 1 => true, // abs.w / abs.l
-                _ => false,                        // An-direct / PC-rel / #imm: absent / illegal
+                _ => false,    // An-direct / PC-rel / #imm: absent / illegal
             }
         }
         // CMPA (its own decode arm) and non-CMP opcodes — not covered by this CMP-file dispatch.
@@ -1131,11 +1112,11 @@ fn cmp_in_scope(opcode: u16) -> bool {
 ///
 /// - **`<ea>,Dn`** (opmode 0/1/2 = b/w/l): source = data modes. **An-direct (mode 1) is ILLEGAL/absent** (the
 ///   `AND An,Dn` encoding does not exist — excluded for all sizes, the `arith_ea_dn` decode arm relies on this).
-///   The `(A7)` (mode 2) plain-indirect source is the pre-existing mode-scope deferral (its `(A7)+`/`-(A7)`
-///   siblings ARE in scope); odd word/long EAs are address errors the E3/E4 abort covers (no parity filter).
+///   Plain `(A7)` (mode 2) indirect source is covered (un-deferred 2026-07-15); odd word/long EAs are address
+///   errors the E3/E4 abort covers (no parity filter).
 /// - **`Dn,<ea>`** (opmode 4/5/6 = b/w/l): alterable-memory dest only (`(An)` 2, `(An)+` 3, `-(An)` 4,
 ///   `d16(An)` 5, `d8(An,Xn)` 6, `abs.w` 7/0, `abs.l` 7/1). **Mode 000/001 = ABCD/EXG** (a DIFFERENT
-///   instruction) is reserved/excluded. The `(A7)` (mode 2) plain-indirect dest follows the same deferral.
+///   instruction) is reserved/excluded. Plain `(A7)` (mode 2) indirect dest is likewise covered.
 /// - **opmode 3/7** = MULU/MULS (not AND/OR) → not covered.
 fn and_or_in_scope(opcode: u16) -> bool {
     let high = opcode >> 12;
@@ -1149,19 +1130,15 @@ fn and_or_in_scope(opcode: u16) -> bool {
         0..=2 => match mode {
             0 => true,     // Dn-direct (no memory access)
             1 => false,    // An-direct illegal/absent (AND An,Dn does not exist)
-            2 => reg != 7, // (An) — A7 mode-2 deferred
-            3 | 4 => true, // (An)+ / -(An)
-            5 | 6 => true, // d16(An) / d8(An,Xn)
+            2..=6 => true, // (An) [incl (A7)] / (An)+ / -(An) / d16(An) / d8(An,Xn)
             7 => reg <= 4, // abs.w / abs.l / d16(PC) / d8(PC,Xn) / #imm
             _ => false,
         },
         // Dn,<ea> (opmode 4/5/6 = b/w/l): alterable-memory dest only; mode 000/001 = ABCD/EXG reserved.
         4..=6 => match mode {
-            2 => reg != 7,                     // (An) — A7 mode-2 deferred
-            3 | 4 => true,                     // (An)+ / -(An)
-            5 | 6 => true,                     // d16(An) / d8(An,Xn)
+            2..=6 => true, // (An) [incl (A7)] / (An)+ / -(An) / d16(An) / d8(An,Xn)
             7 if reg == 0 || reg == 1 => true, // abs.w / abs.l
-            _ => false,                        // mode 0/1 = ABCD/EXG; mode 7 reg>=2 not alterable
+            _ => false,    // mode 0/1 = ABCD/EXG; mode 7 reg>=2 not alterable
         },
         // opmode 3/7 = MULU/MULS — a different instruction, not AND/OR.
         _ => false,
@@ -1178,10 +1155,9 @@ fn and_or_in_scope(opcode: u16) -> bool {
 /// EOR exists ONLY in the `Dn,<ea>` direction (opmode 4/5/6 = b/w/l). The destination is either a **data
 /// register** (mode 000 = `Dn,Dn`) or **alterable memory** (`(An)` 2, `(An)+` 3, `-(An)` 4, `d16(An)` 5,
 /// `d8(An,Xn)` 6, `abs.w` 7/0, `abs.l` 7/1). **Mode field 001 = CMPM** (a DIFFERENT instruction classified out
-/// of EOR — it is a `CmpClass::Cmpm` opcode handled by `cmp_in_scope`, not here) and is excluded. The `(A7)`
-/// (mode 2) plain-indirect dest is the pre-existing mode-scope deferral (its `(A7)+`/`-(A7)` siblings ARE in
-/// scope); odd word/long EAs are address errors the E3/E4 abort covers (no parity filter). opmode 0/1/2 = CMP /
-/// 3/7 = CMPA (not EOR) → not covered.
+/// of EOR — it is a `CmpClass::Cmpm` opcode handled by `cmp_in_scope`, not here) and is excluded. Plain `(A7)`
+/// (mode 2) indirect dest is covered (un-deferred 2026-07-15); odd word/long EAs are address errors the E3/E4
+/// abort covers (no parity filter). opmode 0/1/2 = CMP / 3/7 = CMPA (not EOR) → not covered.
 fn eor_in_scope(opcode: u16) -> bool {
     if opcode >> 12 != 0xB {
         return false; // not the genuine EOR register form (e.g. EORI group-0 immediate opcode)
@@ -1193,11 +1169,9 @@ fn eor_in_scope(opcode: u16) -> bool {
             let reg = opcode & 7;
             match mode {
                 0 => true,                         // Dn-direct register dest (no memory access)
-                2 => reg != 7,                     // (An) — A7 mode-2 deferred
-                3 | 4 => true,                     // (An)+ / -(An)
-                5 | 6 => true,                     // d16(An) / d8(An,Xn)
+                2..=6 => true, // (An) [incl (A7)] / (An)+ / -(An) / d16(An) / d8(An,Xn)
                 7 if reg == 0 || reg == 1 => true, // abs.w / abs.l
-                _ => false,                        // mode 1 = CMPM; mode 7 reg>=2 not alterable
+                _ => false,    // mode 1 = CMPM; mode 7 reg>=2 not alterable
             }
         }
         // opmode 0/1/2 = CMP, opmode 3/7 = CMPA — not EOR.
@@ -1212,8 +1186,8 @@ fn eor_in_scope(opcode: u16) -> bool {
 /// coverable (the execution-time address-error abort installs the group-0 14-byte vector-3 frame, so an odd
 /// access PASSES unchanged; the auto-(in/de)crement register bump is committed before the faulting read,
 /// pinned to the data). The only remaining deferrals are mode-scope: `An`-direct as a byte source/dest
-/// (`ADD.b An,Dn` is illegal), the older `(An)` (mode 2) `A7` form (a pre-existing non-address-error
-/// mode-scope convention — its `(A7)+`/`-(A7)` siblings ARE in scope), and not-yet-implemented EA modes.
+/// (`ADD.b An,Dn` is illegal) and not-yet-implemented EA modes. Plain `(A7)` (mode 2) indirect is covered
+/// (un-deferred 2026-07-15) — decode resolves A7 through `addr_reg` like any An.
 /// Whether the framework covers this `0xExxx` shift/rotate case (the EA-scope half — the 2 corrupt ASL.b
 /// entries are handled separately in [`covered`], which has the final state). Classified by OPCODE:
 ///
@@ -1713,13 +1687,11 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
         return cmp_in_scope(opcode);
     }
     // CMPA `<ea>,An` (`1011 aaa 0 11/111 mmm rrr`, opmode 3/7 = .w/.l) — its own CMPA.w/.l files / decode arm.
-    // All 12 source modes in scope (An-direct legal; odd word/long source EAs are address errors the E3/E4
-    // abort covers — no parity filter) except the pre-existing `(A7)` (mode 2) plain-indirect deferral (its
-    // `(A7)+`/`-(A7)` siblings ARE in scope). Classified by OPCODE via `cmp_class`.
+    // ALL 12 source modes in scope (An-direct legal; plain `(A7)` mode-2 covered — decode resolves A7 via
+    // addr_reg like any An; odd word/long source EAs are address errors the E3/E4 abort covers — no parity
+    // filter). Classified by OPCODE via `cmp_class`.
     if matches!(cmp_class(opcode), CmpClass::Cmpa) {
-        let mode = (opcode >> 3) & 7;
-        let reg = opcode & 7;
-        return !(mode == 2 && reg == 7);
+        return true;
     }
     // TST `<ea>` (`0100 1010 SS mmm rrr`, 0x4A00/4A40/4A80, SS != 3) — the flag-only test `<ea> − 0`. The
     // data-alterable EA set is in scope: Dn (0), (An) (2), (An)+ (3), -(An) (4), d16(An) (5), d8(An,Xn) (6),
@@ -1756,62 +1728,54 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
         };
     }
     // NEG `<ea>` (`0100 0100 SS mmm rrr`, 0x4400/4440/4480, SS != 3) — negate the data-alterable EA (`res =
-    // 0 − d`, full subtract flags). The data-alterable EA set is in scope: Dn (0), (An) (2 — minus the `(A7)`
-    // mode-2 deferral), (An)+ (3), -(An) (4), d16(An) (5), d8(An,Xn) (6), abs.w (7/0), abs.l (7/1). An-direct (1) /
+    // 0 − d`, full subtract flags). The data-alterable EA set is in scope: Dn (0), (An) (2, incl plain (A7)),
+    // (An)+ (3), -(An) (4), d16(An) (5), d8(An,Xn) (6), abs.w (7/0), abs.l (7/1). An-direct (1) /
     // PC-relative (7/2, 7/3) / #imm (7/4) are NOT data-alterable and are absent. NEG is a READ-then-WRITE (it
     // reuses the `ea_dst`/`ea_dst_long` RMW path), so an odd word/long EA address-errors on the READ (low5 =
-    // 0x15), the E3/E4 abort covers it (no parity filter). The ONE intra-family deferral is the plain `(A7)`
-    // mode-2 indirect (`mode == 2 && reg == 7`), the pre-existing precedent-consistent residual — its `(A7)+` /
-    // `-(A7)` siblings ARE in scope. SS == 3 (0x44C0) is MOVE-to-CCR, not NEG.
+    // 0x15), the E3/E4 abort covers it (no parity filter). Plain `(A7)` mode-2 is covered (un-deferred
+    // 2026-07-15); no intra-family deferral remains. SS == 3 (0x44C0) is MOVE-to-CCR, not NEG.
     if opcode & 0xFF00 == 0x4400 && opcode & 0xC0 != 0xC0 {
         let mode = (opcode >> 3) & 7;
         let reg = opcode & 7;
         return match mode {
             0 => true,                         // Dn-direct (no memory access)
-            2 => reg != 7, // (An) — A7 mode-2 deferred (plain-indirect residual)
-            3 | 4 => true, // (An)+ / -(An)
-            5 | 6 => true, // d16(An) / d8(An,Xn)
+            2..=6 => true, // (An) [incl (A7)] / (An)+ / -(An) / d16(An) / d8(An,Xn)
             7 if reg == 0 || reg == 1 => true, // abs.w / abs.l
             _ => false,    // An-direct / PC-rel / #imm: absent / not data-alterable
         };
     }
     // NEGX `<ea>` (`0100 0000 SS mmm rrr`, 0x4000/4040/4080, SS != 3) — negate-with-extend the data-alterable EA
     // (`res = 0 − d − X_in`, sticky Z + X-in borrow). IDENTICAL EA scope to NEG (it reuses `neg_family_recipe`):
-    // the data-alterable EA set is in scope — Dn (0), (An) (2 — minus the `(A7)` mode-2 deferral), (An)+ (3),
+    // the data-alterable EA set is in scope — Dn (0), (An) (2, incl plain (A7)), (An)+ (3),
     // -(An) (4), d16(An) (5), d8(An,Xn) (6), abs.w (7/0), abs.l (7/1). An-direct (1) / PC-relative (7/2, 7/3) /
     // #imm (7/4) are NOT data-alterable and are absent. NEGX is a READ-then-WRITE, so an odd word/long EA
-    // address-errors on the READ (low5 = 0x15), the E3/E4 abort covers it (no parity filter). The ONE
-    // intra-family deferral is the plain `(A7)` mode-2 indirect (`mode == 2 && reg == 7`), the pre-existing
-    // residual — its `(A7)+` / `-(A7)` siblings ARE in scope. SS == 3 (0x40C0) is MOVE-from-SR, not NEGX.
+    // address-errors on the READ (low5 = 0x15), the E3/E4 abort covers it (no parity filter). Plain `(A7)`
+    // mode-2 is covered (un-deferred 2026-07-15); no intra-family deferral remains. SS == 3 (0x40C0) is
+    // MOVE-from-SR, not NEGX.
     if opcode & 0xFF00 == 0x4000 && opcode & 0xC0 != 0xC0 {
         let mode = (opcode >> 3) & 7;
         let reg = opcode & 7;
         return match mode {
             0 => true,                         // Dn-direct (no memory access)
-            2 => reg != 7, // (An) — A7 mode-2 deferred (plain-indirect residual)
-            3 | 4 => true, // (An)+ / -(An)
-            5 | 6 => true, // d16(An) / d8(An,Xn)
+            2..=6 => true, // (An) [incl (A7)] / (An)+ / -(An) / d16(An) / d8(An,Xn)
             7 if reg == 0 || reg == 1 => true, // abs.w / abs.l
             _ => false,    // An-direct / PC-rel / #imm: absent / not data-alterable
         };
     }
     // NOT `<ea>` (`0100 0110 SS mmm rrr`, 0x4600/4640/4680, SS != 3) — bitwise-complement the data-alterable EA
     // (`res = ~d`, LOGIC flags: N = msb / Z = (res == 0), V = 0, C = 0, X PRESERVED). IDENTICAL EA scope to
-    // NEG/NEGX (it reuses `neg_family_recipe`): the data-alterable EA set is in scope — Dn (0), (An) (2 — minus
-    // the `(A7)` mode-2 deferral), (An)+ (3), -(An) (4), d16(An) (5), d8(An,Xn) (6), abs.w (7/0), abs.l (7/1).
+    // NEG/NEGX (it reuses `neg_family_recipe`): the data-alterable EA set is in scope — Dn (0), (An) (2, incl
+    // plain (A7)), (An)+ (3), -(An) (4), d16(An) (5), d8(An,Xn) (6), abs.w (7/0), abs.l (7/1).
     // An-direct (1) / PC-relative (7/2, 7/3) / #imm (7/4) are NOT data-alterable and are absent. NOT is a
     // READ-then-WRITE, so an odd word/long EA address-errors on the READ (low5 = 0x15), the E3/E4 abort covers it
-    // (no parity filter). The ONE intra-family deferral is the plain `(A7)` mode-2 indirect (`mode == 2 && reg ==
-    // 7`), the pre-existing residual — its `(A7)+` / `-(A7)` siblings ARE in scope. SS == 3 (0x46C0) is
-    // MOVE-to-SR, not NOT.
+    // (no parity filter). Plain `(A7)` mode-2 is covered (un-deferred 2026-07-15); no intra-family deferral
+    // remains. SS == 3 (0x46C0) is MOVE-to-SR, not NOT.
     if opcode & 0xFF00 == 0x4600 && opcode & 0xC0 != 0xC0 {
         let mode = (opcode >> 3) & 7;
         let reg = opcode & 7;
         return match mode {
             0 => true,                         // Dn-direct (no memory access)
-            2 => reg != 7, // (An) — A7 mode-2 deferred (plain-indirect residual)
-            3 | 4 => true, // (An)+ / -(An)
-            5 | 6 => true, // d16(An) / d8(An,Xn)
+            2..=6 => true, // (An) [incl (A7)] / (An)+ / -(An) / d16(An) / d8(An,Xn)
             7 if reg == 0 || reg == 1 => true, // abs.w / abs.l
             _ => false,    // An-direct / PC-rel / #imm: absent / not data-alterable
         };
@@ -1939,20 +1903,18 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
         let reg = opcode & 7;
         return mode == 0 || (2..=6).contains(&mode) || (mode == 7 && (reg == 0 || reg == 1));
     }
-    // ADD/SUB. No parity filter (odd word/long EAs are address errors the E4 abort covers); the only
-    // mode-scope deferrals are the `(A7)` (mode 2) plain-indirect form (`reg != 7`) and the illegal `An`-direct
-    // byte source (mode 1). `mode` 3/4 are `(An)+`/`-(An)` (the auto-(in/de)crement bump is committed before the
+    // ADD/SUB. No parity filter (odd word/long EAs are address errors the E4 abort covers); plain `(A7)` mode-2
+    // is covered (un-deferred 2026-07-15), so the only mode-scope deferral is the illegal `An`-direct byte
+    // source (mode 1). `mode` 3/4 are `(An)+`/`-(An)` (the auto-(in/de)crement bump is committed before the
     // faulting access, matching the data); 5/6 are `d16(An)`/`d8(An,Xn)`; 7/reg the abs / PC-relative / #imm.
     // <op>.w Dn,<ea> — word memory destination.
     if opcode & 0xF1C0 == 0xD140 || opcode & 0xF1C0 == 0x9140 {
         let mode = (opcode >> 3) & 7;
         let reg = (opcode & 7) as usize;
         return match mode {
-            2 => reg != 7,                     // (An) — A7 mode-2 deferred
-            3 | 4 => true,                     // (An)+ / -(An)
-            5 | 6 => true,                     // d16(An) / d8(An,Xn)
+            2..=6 => true, // (An) [incl (A7)] / (An)+ / -(An) / d16(An) / d8(An,Xn)
             7 if reg == 0 || reg == 1 => true, // abs.w / abs.l
-            _ => false,                        // other alterable-memory dest modes: out of slice
+            _ => false,    // other alterable-memory dest modes: out of slice
         };
     }
     // <op>.w <ea>,Dn — word register destination.
@@ -1961,9 +1923,7 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
         let reg = (opcode & 7) as usize;
         return match mode {
             0 | 1 => true,         // Dn / An direct (no memory access; A7 source legal)
-            2 => reg != 7,         // (An) — A7 mode-2 deferred
-            3 | 4 => true,         // (An)+ / -(An)
-            5 | 6 => true,         // d16(An) / d8(An,Xn)
+            2..=6 => true,         // (An) [incl (A7)] / (An)+ / -(An) / d16(An) / d8(An,Xn)
             7 if reg <= 4 => true, // abs.w / abs.l / d16(PC) / d8(PC,Xn) / #imm
             _ => false,
         };
@@ -1973,9 +1933,7 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
         let mode = (opcode >> 3) & 7;
         let reg = (opcode & 7) as usize;
         return match mode {
-            2 => reg != 7,                     // (An) — A7 mode-2 deferred
-            3 | 4 => true,                     // (An)+ / -(An) (byte step 1, or 2 for A7)
-            5 | 6 => true,                     // d16(An) / d8(An,Xn)
+            2..=6 => true, // (An) [incl (A7)] / (An)+ / -(An) (byte step 1, 2 for A7) / d16 / d8
             7 if reg == 0 || reg == 1 => true, // abs.w / abs.l
             _ => false,
         };
@@ -1987,9 +1945,7 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
         return match mode {
             0 => true,             // Dn direct
             1 => false,            // An-direct illegal for byte
-            2 => reg != 7,         // (An) — A7 mode-2 deferred
-            3 | 4 => true,         // (An)+ / -(An)
-            5 | 6 => true,         // d16(An) / d8(An,Xn)
+            2..=6 => true,         // (An) [incl (A7)] / (An)+ / -(An) / d16(An) / d8(An,Xn)
             7 if reg <= 4 => true, // abs.w / abs.l / d16(PC) / d8(PC,Xn) / #imm
             _ => false,
         };
@@ -1999,9 +1955,7 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
         let mode = (opcode >> 3) & 7;
         let reg = (opcode & 7) as usize;
         return match mode {
-            2 => reg != 7,                     // (An) — A7 mode-2 deferred
-            3 | 4 => true,                     // (An)+ / -(An)
-            5 | 6 => true,                     // d16(An) / d8(An,Xn)
+            2..=6 => true, // (An) [incl (A7)] / (An)+ / -(An) / d16(An) / d8(An,Xn)
             7 if reg == 0 || reg == 1 => true, // abs.w / abs.l
             _ => false,
         };
@@ -2012,9 +1966,7 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
         let reg = (opcode & 7) as usize;
         return match mode {
             0 | 1 => true,         // Dn / An direct (no memory access)
-            2 => reg != 7,         // (An) — A7 mode-2 deferred
-            3 | 4 => true,         // (An)+ / -(An)
-            5 | 6 => true,         // d16(An) / d8(An,Xn)
+            2..=6 => true,         // (An) [incl (A7)] / (An)+ / -(An) / d16(An) / d8(An,Xn)
             7 if reg <= 4 => true, // abs.w / abs.l / d16(PC) / d8(PC,Xn) / #imm.l
             _ => false,
         };
@@ -2028,34 +1980,30 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
         return true;
     }
     // ADDA `<ea>,An` (`1101 aaa s11 mmm rrr`, opmode 3 = .w (0xD0C0) / 7 = .l (0xD1C0)) — `An = An + src`, NO
-    // flags. All 12 source modes in scope (An-direct LEGAL — it is address arithmetic; odd word/long source EAs
-    // are address errors the E3/E4 abort covers, no parity filter) except the pre-existing `(A7)` (mode 2)
-    // plain-indirect deferral. The ADDA.w/.l files are 100% pure (no contaminants). Classified by OPCODE.
+    // flags. All 12 source modes in scope (An-direct LEGAL — it is address arithmetic; plain `(A7)` mode-2
+    // covered (un-deferred 2026-07-15); odd word/long source EAs are address errors the E3/E4 abort covers, no
+    // parity filter). The ADDA.w/.l files are 100% pure (no contaminants). Classified by OPCODE.
     if opcode & 0xF1C0 == 0xD0C0 || opcode & 0xF1C0 == 0xD1C0 {
         let mode = (opcode >> 3) & 7;
         let reg = opcode & 7;
         return match mode {
             0 | 1 => true,         // Dn / An direct (no memory access; An source legal)
-            2 => reg != 7,         // (An) — A7 mode-2 deferred
-            3 | 4 => true,         // (An)+ / -(An)
-            5 | 6 => true,         // d16(An) / d8(An,Xn)
+            2..=6 => true,         // (An) [incl (A7)] / (An)+ / -(An) / d16(An) / d8(An,Xn)
             7 if reg <= 4 => true, // abs.w / abs.l / d16(PC) / d8(PC,Xn) / #imm
             _ => false,
         };
     }
     // SUBA `<ea>,An` (`1001 aaa s11 mmm rrr`, opmode 3 = .w (0x90C0) / 7 = .l (0x91C0)) — `An = An − src`, NO
     // flags, a near-exact mirror of ADDA. All 12 source modes in scope (An-direct LEGAL — it is address
-    // arithmetic; odd word/long source EAs are address errors the E3/E4 abort covers, no parity filter) except
-    // the pre-existing `(A7)` (mode 2) plain-indirect deferral. The SUBA.w/.l files are 100% pure (no
-    // contaminants). Classified by OPCODE.
+    // arithmetic; plain `(A7)` mode-2 covered (un-deferred 2026-07-15); odd word/long source EAs are address
+    // errors the E3/E4 abort covers, no parity filter). The SUBA.w/.l files are 100% pure (no contaminants).
+    // Classified by OPCODE.
     if opcode & 0xF1C0 == 0x90C0 || opcode & 0xF1C0 == 0x91C0 {
         let mode = (opcode >> 3) & 7;
         let reg = opcode & 7;
         return match mode {
             0 | 1 => true,         // Dn / An direct (no memory access; An source legal)
-            2 => reg != 7,         // (An) — A7 mode-2 deferred
-            3 | 4 => true,         // (An)+ / -(An)
-            5 | 6 => true,         // d16(An) / d8(An,Xn)
+            2..=6 => true,         // (An) [incl (A7)] / (An)+ / -(An) / d16(An) / d8(An,Xn)
             7 if reg <= 4 => true, // abs.w / abs.l / d16(PC) / d8(PC,Xn) / #imm
             _ => false,
         };
@@ -2065,9 +2013,9 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // The AND.*/OR.* files MIX this with the ANDI/ORI immediate opcode (`0x02xx`/`0x00xx`, high nibble 0) — a
     // DIFFERENT instruction NOT decoded this push; `and_or_in_scope` returns false for it (high nibble != 0xC
     // and != 0x8), so the *I cases are skipped cleanly. Source = data modes (An-direct mode 1 ILLEGAL/absent);
-    // dest = alterable memory (mode 000/001 = ABCD/EXG for AND, SBCD/PACK for OR, reserved). All in scope except
-    // the pre-existing `(A7)` mode-2 plain-indirect deferral; odd word/long EAs are address errors the E3/E4
-    // abort covers. The single predicate covers both families (only the base nibble differs).
+    // dest = alterable memory (mode 000/001 = ABCD/EXG for AND, SBCD/PACK for OR, reserved). All in scope incl
+    // plain `(A7)` mode-2 (un-deferred 2026-07-15); odd word/long EAs are address errors the E3/E4 abort
+    // covers. The single predicate covers both families (only the base nibble differs).
     if and_or_in_scope(opcode) {
         return true;
     }
@@ -2076,8 +2024,8 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // instruction NOT decoded this push; `eor_in_scope` returns false for it (high nibble != 0xB), so the EORI
     // cases are skipped cleanly. Dest = data register (mode 000 = `Dn,Dn`) or alterable memory (2..6/abs.w/abs.l).
     // Mode field 001 = CMPM (a `CmpClass::Cmpm` opcode handled by the `cmp_class` block above — but the EOR.*
-    // files have NO mode-001 cases). All in scope except the pre-existing `(A7)` mode-2 plain-indirect deferral;
-    // odd word/long EAs are address errors the E3/E4 abort covers. There is NO `EOR <ea>,Dn` (opmode 0/1/2 = CMP).
+    // files have NO mode-001 cases). All in scope incl plain `(A7)` mode-2 (un-deferred 2026-07-15); odd
+    // word/long EAs are address errors the E3/E4 abort covers. There is NO `EOR <ea>,Dn` (opmode 0/1/2 = CMP).
     if eor_in_scope(opcode) {
         return true;
     }
@@ -2195,8 +2143,15 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 970_278,
-        "expected 970278 covered cases — A2 adds EORItoCCR (its own EORItoCCR.json file, 8065 cases = +8065 \
+        ran >= 976_047,
+        "expected 976047 covered cases — the 2026-07-15 `(A7)` mode-2 un-defer flipped plain `(A7)` indirect \
+         (`mode == 2 && reg == 7`) from deferred to covered across the older ADD/SUB/MOVE(A)/CMP(I/A)/AND/OR/EOR/ \
+         NEG/NEGX/NOT/ADDA/SUBA families (+5769 cases over the 970278 ItoCCR baseline). Decode ALWAYS resolved A7 \
+         via `addr_reg` like any An (no A7 guard) — the deferral lived only in `covered()`, so this is a pure \
+         test-scope flip: no recipe/vocab/data change. The `(A7)+`/`-(A7)` siblings + odd-A7 address errors were \
+         already in scope, and CLR/TST/Scc/TAS/bit-ops/shifts already covered plain `(A7)`, so all 5769 newly- \
+         admitted cases pass. \
+         Prior baseline (970278) — A2 adds EORItoCCR (its own EORItoCCR.json file, 8065 cases = +8065 \
          over the 962213 ORItoCCR baseline → 970278, the FINAL immediate-to-CCR threshold and the LAST uncovered \
          SST file). EORItoCCR (0x0A3C, the sole encoding in its file) is the byte/CCR-form TWIN of EORItoSR: \
          `CCR ^= imm` TOGGLES ONLY the low-5 CCR bits, the SR SYSTEM byte (bits 8-15: T | S | I) PRESERVED → \

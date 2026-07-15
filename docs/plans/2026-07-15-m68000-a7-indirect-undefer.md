@@ -69,10 +69,12 @@ Only `mode == 2 && reg == 7` flips. Odd-EA address errors remain in scope via E3
 ## Commit plan
 
 One commit (a pure coverage flip, no recipe work):
-- [ ] **Un-defer plain `(A7)` mode-2 across MOVE/MOVEA/CMP/CMPI/CMPA/AND/OR/EOR/NEG/NEGX/NOT/ADD/SUB/ADDA/SUBA.**
-  Flip the predicates + comments; raise `ran >=` to the measured count (was 970278); update the threshold
-  comment with the delta. Optionally add one or two anchor assertions on a flipped `(A7)` case (e.g. an `ADD.w
-  (A7),Dn` and a `NEG.w (A7)`) — nice-to-have; the existing `(An)` anchors already prove the shape.
+- [x] **Un-defer plain `(A7)` mode-2 across MOVE/MOVEA/CMP/CMPI/CMPA/AND/OR/EOR/NEG/NEGX/NOT/ADD/SUB/ADDA/SUBA.**
+  Flipped the 15 `2 => reg != 7` arms + the 2 `!(mode==2&&reg==7)` return-sites + the MOVE/MOVEA `(A7)` guards;
+  merged to `2..=6 => true` where clean; swept the stale "deferred" prose. **Measured: `ran` 970278 → 976047
+  (+5769)** — the SST sweep passed (all newly-admitted `(A7)` cases pass; no `run_case` panic), confirming decode
+  handled plain `(A7)` correctly all along. Threshold raised to `ran >= 976_047`. No anchor added — the existing
+  `(An)` anchors already exercise the shape (A7 is just `addr_reg(7)`).
 
 ## Risks (very low)
 - **Clippy arm-merge:** folding `2 => reg != 7` into `2..=6 => true` may let clippy suggest further merges — keep
