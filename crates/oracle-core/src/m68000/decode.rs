@@ -193,7 +193,7 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     // available). Every vendored SST case is supervisor, so this never fires on the gate-keeping suite;
     // it is exercised only by the hand-authored A1 vectors. Placed first so no privileged arm below runs.
     if !regs.supervisor() && is_privileged_opcode(opcode) {
-        return privilege_violation_recipe();
+        return decode_time_exception_recipe(8); // privilege violation
     }
     // MOVE.w (`00 11 RRR MMM mmm rrr`, dst_mode != 1) — the EA→EA composition. Decoded before the ADD/SUB
     // arms (the opcode spaces 0x3xxx and 0xD/0x9xxx are disjoint).
@@ -1219,7 +1219,18 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
             return shift_recipe(opcode, AluOp::Roxr, regs);
         }
     }
-    todo!("opcode {opcode:#06X} not yet decoded")
+    // Nothing above matched — the opcode is illegal or unimplemented (M68000UM §6.3.6, Table 6-2). Line-A
+    // (`0xAxxx`) and line-F (`0xFxxx`) are exact top-nibble emulator traps with their own vectors; every
+    // other unassigned encoding (incl. the official ILLEGAL `0x4AFC`) is the vector-4 illegal-instruction
+    // trap. This makes `decode` TOTAL over the fall-through space — no reachable `todo!()` here (the
+    // illegal-EA gates for otherwise-legal arms land in A2b).
+    if opcode & 0xF000 == 0xA000 {
+        return decode_time_exception_recipe(10); // line-A (unimplemented instruction)
+    }
+    if opcode & 0xF000 == 0xF000 {
+        return decode_time_exception_recipe(11); // line-F (unimplemented instruction)
+    }
+    decode_time_exception_recipe(4) // ILLEGAL — all other unassigned encodings
 }
 
 impl Cpu68000 {
@@ -3701,38 +3712,38 @@ fn is_privileged_opcode(opcode: u16) -> bool {
     }
 }
 
-/// Scratch slot holding the privilege-violation frame's saved PC (`pc + 0` — the address of the first
-/// word of the offending instruction, M68000UM §6.3.7). Slot 0, the standard-frame saved-PC convention.
-const PRIV_SAVED_PC_SLOT: u8 = 0;
+/// Scratch slot holding a decode-time exception frame's saved PC (`pc + 0` — the address of the first word
+/// of the offending instruction, M68000UM §6.2.5/§6.3.7). Slot 0, the standard-frame saved-PC convention.
+const EXC_SAVED_PC_SLOT: u8 = 0;
 
-/// Scratch slot holding the privilege-violation frame's saved SR (captured by [`MicroOp::EnterException`]
+/// Scratch slot holding a decode-time exception frame's saved SR (captured by [`MicroOp::EnterException`]
 /// before S is set / T cleared). Slot 1 — distinct from the saved-PC slot (the CHK/TRAP convention).
-const PRIV_SAVE_SR_SLOT: u8 = 1;
+const EXC_SAVE_SR_SLOT: u8 = 1;
 
-/// Build the **privilege-violation frame** (vector 8, `0x020`) — the decode-time entry when a user-mode
-/// program attempts a privileged instruction ([`is_privileged_opcode`]). Byte-identical in shape and
-/// timing to [`trap_recipe`] (M68000UM §6.3.7: "nearly identical to illegal"; Yacht L1550: `34(4/3)`,
-/// stream `nn ns ns nS nV nv np n np`), differing only in the vector (8) and the saved PC — which is
-/// `pc + 0`, the first word of the offending instruction, NOT the next one (§6.3.7). No SST data covers
-/// this (audit finding 3); pinned to the reference and driven by hand-authored vectors.
-fn privilege_violation_recipe() -> MicroState {
+/// Build a **decode-time group-1 exception frame** for `vector`. Shared by the exceptions whose stacked PC
+/// is the OFFENDING instruction (`pc + 0`, M68000UM §6.2.5): **privilege violation** (v8, §6.3.7),
+/// **ILLEGAL** (v4, §6.3.6), **line-A** (v10) and **line-F** (v11) unimplemented-instruction traps. All are
+/// byte-identical in shape and timing to [`trap_recipe`] (Yacht L1550/1551: `34(4/3)`, stream
+/// `nn ns ns nS nV nv np n np`), differing ONLY in the vector. None are vendored in SST (audit finding 3);
+/// pinned to the reference and driven by hand-authored vectors. (Trace, whose stacked PC is the NEXT
+/// instruction and whose write order differs, is a separate builder in A3.)
+fn decode_time_exception_recipe(vector: u32) -> MicroState {
     let mut buf = RecipeBuf::new();
     // Saved PC = pc + 0 (the offending instruction's first word), UNMASKED, before any prefetch.
     buf.push(MicroOp::TargetCalc {
         base: Operand::PcPlus(0),
         index: Operand::Zero,
         disp: Operand::Zero,
-        dst: PRIV_SAVED_PC_SLOT,
+        dst: EXC_SAVED_PC_SLOT,
     });
-    // Capture the live (user) SR + enter supervisor (set S, clear T).
+    // Capture the live SR + enter supervisor (set S, clear T).
     buf.push(MicroOp::EnterException {
-        save_sr: PRIV_SAVE_SR_SLOT,
+        save_sr: EXC_SAVE_SR_SLOT,
     });
     // The leading nn idle (= Internal{4}) — the TRAP-shape entry refills no prefetch before the push.
     buf.push(MicroOp::Internal { cycles: 4 });
-    push_standard_frame(&mut buf, PRIV_SAVED_PC_SLOT, PRIV_SAVE_SR_SLOT);
-    // The privilege-violation vector is 8 (address 8*4 = 0x20).
-    vector_fetch_and_reload(&mut buf, 8 * 4);
+    push_standard_frame(&mut buf, EXC_SAVED_PC_SLOT, EXC_SAVE_SR_SLOT);
+    vector_fetch_and_reload(&mut buf, vector * 4);
     buf.finish()
 }
 
@@ -5147,6 +5158,43 @@ mod tests {
     }
 
     #[test]
+    fn illegal_frame_agrees_across_both_drivers() {
+        // The illegal/line-A/line-F recipe is the shared decode_time_exception_recipe (same as privilege,
+        // only the vector differs), so the frame machinery is snapshot-tested via the privilege triplet.
+        // This pins that decode-emitted ILLEGAL also runs bit-identically on both drivers.
+        let mk = || {
+            let regs = Registers {
+                d: [0; 8],
+                a: [0; 7],
+                usp: 0x0000_3000,
+                ssp: 0x0000_1000,
+                pc: 0x0C00,
+                sr: 0x2704,
+                prefetch: [0x4AFC, 0x0000], // official ILLEGAL
+            };
+            let mut bus = FlatBus::new();
+            bus.poke(0x12, 0x20); // vector 4 @ 0x10 → handler 0x2000
+            for (a, v) in [
+                (0x2000u32, 0x4Eu8),
+                (0x2001, 0x71),
+                (0x2002, 0x4E),
+                (0x2003, 0x71),
+            ] {
+                bus.poke(a, v);
+            }
+            (Cpu68000::new(regs), bus)
+        };
+        let (mut rtc, mut bus_rtc) = mk();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = mk();
+        step.start_instruction();
+        while step.step_micro_op(&mut bus_step) == Step::Continue {}
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_exception_frame(&step, &bus_step, 4);
+    }
+
+    #[test]
     fn is_privileged_opcode_classifies_the_mc68000_set() {
         // Positives — the full MC68000 privileged set (M68000UM §6.3.7).
         for op in [
@@ -5180,6 +5228,72 @@ mod tests {
                 "{op:#06X} must NOT be privileged on the 68000"
             );
         }
+    }
+
+    // --- Push A / A2: decode totality — ILLEGAL (v4) / line-A (v10) / line-F (v11) -----------------
+    // Hand-authored (no SST data). Pinned to M68000UM Table 6-2 (vectors) + §6.3.6 (illegal/unimplemented)
+    // + Yacht L1551 (34(4/3), the TRAP-shape frame). Saved PC = pc+0 (the offending instruction, §6.2.5).
+    fn run_decode_exception(opcode: u16) -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0x0000_3000,
+            ssp: 0x0000_1000,
+            pc: 0x0C00,
+            sr: 0x2704, // supervisor (S=1, T=0), Z set — the distinctive captured SR
+            prefetch: [opcode, 0x0000],
+        };
+        let mut bus = FlatBus::new();
+        // Vector tables for 4 (0x10), 10 (0x28), 11 (0x2C) → all point at handler 0x0000_2000.
+        for base in [0x10u32, 0x28, 0x2C] {
+            bus.poke(base + 2, 0x20); // low word = 0x2000; high word stays 0
+        }
+        for (a, v) in [
+            (0x2000u32, 0x4Eu8),
+            (0x2001, 0x71),
+            (0x2002, 0x4E),
+            (0x2003, 0x71),
+        ] {
+            bus.poke(a, v);
+        }
+        let mut cpu = Cpu68000::new(regs);
+        cpu.run_instruction(&mut bus);
+        (cpu, bus)
+    }
+
+    fn assert_exception_frame(cpu: &Cpu68000, bus: &FlatBus, vector: u32) {
+        assert_eq!(cpu.regs.pc, 0x2000, "reloaded at the handler");
+        assert_eq!(
+            cpu.regs.sr, 0x2704,
+            "S set / T clear preserved (supervisor case)"
+        );
+        assert_eq!(cpu.regs.ssp, 0x0FFA, "6-byte frame pushed");
+        assert_eq!(bus.peek(0x0FFA), 0x27, "stacked SR high");
+        assert_eq!(bus.peek(0x0FFB), 0x04, "stacked SR low");
+        assert_eq!(bus.peek(0x0FFC), 0x00, "stacked PC high");
+        assert_eq!(
+            bus.peek(0x0FFE),
+            0x0C,
+            "stacked PC = 0x0C00 (the offending instruction)"
+        );
+        assert_eq!(bus.peek(0x0FFF), 0x00);
+        let vaddr = vector * 4;
+        assert!(
+            bus.log
+                .iter()
+                .any(|t| t.kind == TxKind::Read && t.addr == vaddr && t.fc == 5),
+            "vector {vector} fetched at {vaddr:#06X}"
+        );
+    }
+
+    #[test]
+    fn illegal_line_a_line_f_decode_to_their_vectors() {
+        let (cpu, bus) = run_decode_exception(0x4AFC); // the official ILLEGAL opcode
+        assert_exception_frame(&cpu, &bus, 4);
+        let (cpu, bus) = run_decode_exception(0xA000); // line-A (unimplemented, vector 10)
+        assert_exception_frame(&cpu, &bus, 10);
+        let (cpu, bus) = run_decode_exception(0xF000); // line-F (unimplemented, vector 11)
+        assert_exception_frame(&cpu, &bus, 11);
     }
 
     /// The clean SingleStepTests reference case `d075 [ADD.w (d8,A5,Xn),D0]` (even EA, 14 cycles). Brief
