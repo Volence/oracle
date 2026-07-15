@@ -78,6 +78,13 @@ const FILES: &[&str] = &[
     // is the mask (no FC switch — S never changes). Reuses `MicroOp::CcrLogic` + `to_ccr_recipe(Or)` (both from
     // A0). 100% PURE / in scope (8065), NO memory operand → NO odd-EA fault, NO exceptions. By OPCODE via `to_ccr_covered`.
     "ORItoCCR.json",
+    // EORItoCCR (`0x0A3C`) — the byte/CCR-form twin of EORItoSR: `CCR ^= imm` TOGGLES ONLY the low-5 CCR bits,
+    // the SR system byte (T/S/I) PRESERVED (`new_sr = (sr & 0xFF00) | ((sr ^ imm) & 0x1F)`). NOT privileged
+    // (legal in user mode), all cases supervisor. Byte-identical bus stream + timing to *toSR (20 cyc), the ONLY
+    // delta is the mask (no FC switch — S never changes; EOR here toggles ONLY the CCR byte, never the system
+    // byte). Reuses `MicroOp::CcrLogic` + `to_ccr_recipe(Eor)` (both from A0). 100% PURE / in scope (8065), NO
+    // memory operand → NO odd-EA fault, NO exceptions. The LAST uncovered SST file. By OPCODE via `to_ccr_covered`.
+    "EORItoCCR.json",
     "RESET.json",
     // MOVEfromUSP / MOVEtoUSP (`0x4E68 | An` / `0x4E60 | An`) — the trivial register↔USP moves (full 32 bits,
     // NO flags, SR unchanged). Reg-direct only, 100% PURE / in scope (8065 each). Classified by OPCODE via
@@ -2188,23 +2195,26 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 962_213,
-        "expected 962213 covered cases — A1 adds ORItoCCR (its own ORItoCCR.json file, 8065 cases = +8065 \
-         over the 954148 ANDItoCCR baseline → 962213). ORItoCCR (0x003C, the sole encoding in its file) is the \
-         byte/CCR-form TWIN of ORItoSR: `CCR |= imm` SETS ONLY the low-5 CCR bits, the SR SYSTEM byte (bits 8-15: \
-         T | S | I) PRESERVED → `new_sr = (sr & 0xFF00) | ((sr | imm) & 0x1F)` (OR SETS bits, not AND). NOT \
-         privileged (the CCR form is legal in user mode), though every vendored case starts supervisor. \
-         Byte-identical bus stream + timing to ORItoSR (flat 20 cyc, `[r@pc+4, n8, r@pc+4, r@pc+6]` all FC6 word, \
-         pc += 4) — the ONLY delta is the write mask (the SR system byte is untouched, so S/T/I never change → NO \
-         mid-instruction FC switch; both re-prefetches stay FC6, unlike *toSR where an AND/EOR clearing S flips \
-         them to FC2). REUSES A0's `MicroOp::CcrLogic {{ op, value }}` (the CCR-masking twin of `SrLogic` — \
-         `regs.sr = (regs.sr & 0xFF00) | (((regs.sr <op> imm) & 0x1F))`, 0-cycle non-bus, `LogicOp::Or`) + \
-         `to_ccr_recipe(Or)` (`to_sr_recipe` VERBATIM but pushing CcrLogic: `[Read@pc+4 FC=Program .w → \
-         TO_SR_DISCARD_SLOT, Internal(8), CcrLogic{{Or, ImmWord}}, Prefetch, Prefetch]`); the 0x003C decode arm \
-         was added in A0, so this commit only vendors + registers the file. NO memory operand → NO odd-EA fault, \
-         NO exceptions, NO deferral, NO parity filter, NO (A7) carve-out. 100% PURE (8065). Classified by OPCODE \
-         via `to_ccr_covered` (`matches!(0x023C | 0x003C | 0x0A3C)` — all three defined in A0; A2's EORItoCCR \
-         file simply is not yet loaded, matching the `to_sr_covered` precedent). \
+        ran >= 970_278,
+        "expected 970278 covered cases — A2 adds EORItoCCR (its own EORItoCCR.json file, 8065 cases = +8065 \
+         over the 962213 ORItoCCR baseline → 970278, the FINAL immediate-to-CCR threshold and the LAST uncovered \
+         SST file). EORItoCCR (0x0A3C, the sole encoding in its file) is the byte/CCR-form TWIN of EORItoSR: \
+         `CCR ^= imm` TOGGLES ONLY the low-5 CCR bits, the SR SYSTEM byte (bits 8-15: T | S | I) PRESERVED → \
+         `new_sr = (sr & 0xFF00) | ((sr ^ imm) & 0x1F)` (EOR TOGGLES bits — the XOR mirror of ANDItoCCR's AND / \
+         ORItoCCR's OR). NOT privileged (the CCR form is legal in user mode), though every vendored case starts \
+         supervisor. Byte-identical bus stream + timing to EORItoSR (flat 20 cyc, `[r@pc+4, n8, r@pc+4, r@pc+6]` \
+         all FC6 word, pc += 4) — the ONLY delta is the write mask (the SR system byte is untouched, so S/T/I \
+         never change → NO mid-instruction FC switch; both re-prefetches stay FC6, unlike *toSR where an AND/EOR \
+         clearing S flips them to FC2). REUSES A0's `MicroOp::CcrLogic {{ op, value }}` (the CCR-masking twin of \
+         `SrLogic` — `regs.sr = (regs.sr & 0xFF00) | (((regs.sr <op> imm) & 0x1F))`, 0-cycle non-bus, \
+         `LogicOp::Eor`) + `to_ccr_recipe(Eor)` (`to_sr_recipe` VERBATIM but pushing CcrLogic: `[Read@pc+4 \
+         FC=Program .w → TO_SR_DISCARD_SLOT, Internal(8), CcrLogic{{Eor, ImmWord}}, Prefetch, Prefetch]`); the \
+         0x0A3C decode arm was added in A0, so this commit only vendors + registers the file. NO memory operand \
+         → NO odd-EA fault, NO exceptions, NO deferral, NO parity filter, NO (A7) carve-out. 100% PURE (8065). \
+         Classified by OPCODE via `to_ccr_covered` (`matches!(0x023C | 0x003C | 0x0A3C)` — all three now loaded). \
+         Prior baseline — A1 adds ORItoCCR (its own ORItoCCR.json file, 8065 cases = +8065 over the 954148 \
+         ANDItoCCR baseline → 962213); `new_sr = (sr & 0xFF00) | ((sr | imm) & 0x1F)` (OR SETS bits), same \
+         20-cyc stream, reusing A0's `MicroOp::CcrLogic` + `to_ccr_recipe`. \
          Prior baseline — A0 adds ANDItoCCR (its own ANDItoCCR.json file, 8065 cases = +8065 over the 946083 \
          MOVEP.l baseline → 954148); `new_sr = (sr & 0xFF00) | ((sr & imm) & 0x1F)` (AND CLEARS bits), same \
          20-cyc stream, new `MicroOp::CcrLogic` + `to_ccr_recipe`. \
@@ -3070,7 +3080,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+ANDItoCCR+ORItoCCR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX+ABCD+SBCD+NBCD+MOVEfromUSP+MOVEtoUSP+MOVEfromSR+MOVEtoCCR+MOVEtoSR+MOVEP.w+MOVEP.l (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+ANDItoCCR+ORItoCCR+EORItoCCR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX+ABCD+SBCD+NBCD+MOVEfromUSP+MOVEtoUSP+MOVEfromSR+MOVEtoCCR+MOVEtoSR+MOVEP.w+MOVEP.l (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -10384,4 +10394,147 @@ fn ori_to_ccr_quiescable_and_serializable_at_every_micro_op_boundary() {
         pause_after += 1;
     }
     eprintln!("A1 ORItoCCR snapshot/restore: ORItoCCR # (discard read + CcrLogic{{Or}} + two re-prefetches, system byte preserved) resumed identically at every micro-op boundary");
+}
+
+/// A2 — named anchors pinning the immediate-to-CCR `EORItoCCR` recipe (reusing A0's `MicroOp::CcrLogic` +
+/// `to_ccr_recipe(Eor)`) against the vendored EORItoCCR stream WITHOUT relying on the bulk `covered()` sweep.
+/// `new_sr = (sr & 0xFF00) | ((sr ^ imm) & 0x1F)` — EOR **TOGGLES** the low-5 CCR bits (the XOR mirror of
+/// ANDItoCCR's AND / ORItoCCR's OR), and the SR **system byte (bits 8-15: T/S/I) is PRESERVED**. Flat **20
+/// cyc**, bus `[r@pc+4, n8, r@pc+4, r@pc+6]` all FC6 word, pc += 4:
+/// - **`0a3c [EORItoCCR #] 2`** — TOGGLES CCR bits: `sr 0x2703 ^ imm 0xae6c → 0x270f` (system byte 0x2700
+///   preserved). The immediate's high byte (0xae) is SET yet the SR system byte is untouched — proving the
+///   `& 0xFF00` mask (a whole-SR rewrite via XOR would have corrupted the system byte).
+/// - **`0a3c [EORItoCCR #] 6`** — TOGGLES CCR bits: `sr 0x2719 ^ imm 0x3a95 → 0x270c` (system byte 0x2700
+///   preserved; the immediate's high byte 0x3a is again don't-care).
+///
+/// Both drivers + the per-cycle transaction stream (incl. the FC of every read — all FC6, NO switch) run via
+/// `run_case`. The system-byte-preservation invariant is asserted on every anchor: `final.sr & 0xFF00 ==
+/// initial.sr & 0xFF00` (S/T/I never change).
+#[test]
+fn eor_to_ccr_anchor_cases_pass_both_drivers() {
+    let names: &[&str] = &["0a3c [EORItoCCR #] 2", "0a3c [EORItoCCR #] 6"];
+    let path = format!("{VENDOR_DIR}/EORItoCCR.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let mut found = 0usize;
+    for name in names {
+        let case = data
+            .iter()
+            .find(|t| t["name"].as_str().unwrap() == *name)
+            .unwrap_or_else(|| panic!("A2 anchor {name} not found in EORItoCCR.json"));
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(opcode, 0x0A3C, "anchor {name} must be the EORItoCCR opcode");
+        assert!(
+            to_ccr_covered(opcode),
+            "anchor {name} must be to_ccr_covered"
+        );
+        assert_eq!(
+            case["length"].as_u64().unwrap() as u32,
+            20,
+            "EORItoCCR anchor {name} is flat 20 cyc"
+        );
+        let isr = case["initial"]["sr"].as_u64().unwrap() as u16;
+        let imm = case["initial"]["prefetch"][1].as_u64().unwrap() as u16;
+        let fsr = case["final"]["sr"].as_u64().unwrap() as u16;
+        // The SR system byte (bits 8-15: T/S/I) is PRESERVED — only the low-5 CCR bits change.
+        assert_eq!(
+            fsr & 0xFF00,
+            isr & 0xFF00,
+            "EORItoCCR anchor {name} preserves the SR system byte (S/T/I never change)"
+        );
+        // The formula: new_sr = (sr & 0xFF00) | ((sr ^ imm) & 0x1F) — EOR TOGGLES bits (XOR).
+        assert_eq!(
+            fsr,
+            (isr & 0xFF00) | ((isr ^ imm) & 0x1F),
+            "EORItoCCR anchor {name} = (sr & 0xFF00) | ((sr ^ imm) & 0x1F)"
+        );
+        run_case(case);
+        found += 1;
+    }
+    // The [2] anchor pins the exact toggle case with a system-byte-set immediate.
+    let a2 = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "0a3c [EORItoCCR #] 2")
+        .unwrap();
+    assert_eq!(a2["initial"]["sr"].as_u64().unwrap() as u16, 0x2703);
+    assert_eq!(
+        a2["initial"]["prefetch"][1].as_u64().unwrap() as u16,
+        0xAE6C
+    );
+    assert_eq!(
+        a2["final"]["sr"].as_u64().unwrap() as u16,
+        0x270F,
+        "sr 0x2703 ^ imm 0xAE6C → 0x270F (CCR bits toggled, system byte 0x2700 preserved)"
+    );
+    assert_eq!(found, names.len(), "all A2 EORItoCCR anchors exercised");
+    eprintln!(
+        "A2 EORItoCCR anchors: {found} cases (toggle CCR bits, immediate system-byte bits set yet the SR system byte PRESERVED) passed both drivers, 20 cyc, bus [r@pc+4, n8, r@pc+4, r@pc+6] all FC6, no FC switch"
+    );
+}
+
+/// A2 — the snapshot/restore anchor for the immediate-to-CCR `to_ccr_recipe(Eor)` (reusing A0's
+/// `MicroOp::CcrLogic`). Drives a real vendored EORItoCCR case (leading discard read + n8 + CcrLogic + two
+/// re-prefetches) through the quiesce driver, snapshotting + restoring the WHOLE `Cpu68000` (incl. the
+/// in-flight cursor) at every micro-op boundary and proving the resumed run reproduces the run-to-completion
+/// final state + transaction stream bit-for-bit. Pins that `MicroState` stays a fixed-size bincode
+/// `[MicroOp; MAX_OPS]` array (`Copy`).
+#[test]
+fn eor_to_ccr_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/EORItoCCR.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: EORItoCCR.json missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "0a3c [EORItoCCR #] 2")
+        .expect("EORItoCCR snapshot anchor present");
+    let ini = &case["initial"];
+
+    // Run-to-completion reference.
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    let mut pause_after = 0usize;
+    loop {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        let mut reached_end = false;
+        for _ in 0..pause_after {
+            if let Step::Done(_) = cpu.step_micro_op(&mut bus) {
+                reached_end = true;
+                break;
+            }
+        }
+        if reached_end {
+            break;
+        }
+        // Snapshot + restore the whole CPU (incl. the in-flight cursor) mid-instruction.
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+        pause_after += 1;
+    }
+    eprintln!("A2 EORItoCCR snapshot/restore: EORItoCCR # (discard read + CcrLogic{{Eor}} + two re-prefetches, system byte preserved) resumed identically at every micro-op boundary");
 }
