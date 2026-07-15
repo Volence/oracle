@@ -145,13 +145,13 @@ pub fn cmp_class(opcode: u16) -> CmpClass {
 /// agreement (the `cmp_class` pattern).
 ///
 /// The high byte selects the op: `0x06 → Add` (ADDI), `0x04 → Sub` (SUBI), `0x02 → And` (ANDI), `0x00 → Or`
-/// (ORI). (The last commit extends this by one high byte — `0x0A → Eor` EORI.) The size field `ss = (opcode >>
+/// (ORI), `0x0A → Eor` (EORI). All five `*I` forms are now classified. The size field `ss = (opcode >>
 /// 6) & 3` gives `0 → Byte`, `1 → Word`, `2 → Long`; `ss == 3` (a `.l`-space CMPI-style code) is NOT an `*I`
 /// form and returns `None`. This classifier does NOT filter the destination EA mode — the caller pairs it with
 /// a data-alterable guard (`mode == 0 || is_dst_mem_mode`), which excludes the `*toSR`/`*toCCR` mode-7/4 `#imm`
-/// single points (0x023C ANDItoCCR / 0x027C ANDItoSR and 0x003C ORItoCCR / 0x007C ORItoSR are mode 7/4 `#imm`,
-/// excluded by the guard and living in their own files; 0x06/0x04 have none, but the guard is uniform across
-/// the family).
+/// single points (0x023C ANDItoCCR / 0x027C ANDItoSR, 0x003C ORItoCCR / 0x007C ORItoSR, and 0x0A3C EORItoCCR /
+/// 0x0A7C EORItoSR are mode 7/4 `#imm`, excluded by the guard and living in their own files; 0x06/0x04 have
+/// none, but the guard is uniform across the family).
 #[inline]
 pub fn imm_class(opcode: u16) -> Option<(AluOp, Size)> {
     let ss = (opcode >> 6) & 3;
@@ -163,6 +163,7 @@ pub fn imm_class(opcode: u16) -> Option<(AluOp, Size)> {
         0x04 => AluOp::Sub, // SUBI (EA/Dn is the minuend `a`, the immediate the subtrahend `b`)
         0x02 => AluOp::And, // ANDI (logic flags: N/Z set, V = C = 0, X preserved)
         0x00 => AluOp::Or,  // ORI (logic flags: N/Z set, V = C = 0, X preserved)
+        0x0A => AluOp::Eor, // EORI (logic flags: N/Z set, V = C = 0, X preserved)
         _ => return None,
     };
     let size = match ss {
@@ -598,8 +599,8 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     // ADDI/SUBI/ANDI/ORI/EORI `#imm,<ea>` (`0000 hhhh ss mmm rrr`, group-0 high byte in {0x06 ADDI, 0x04 SUBI,
     // 0x02 ANDI, 0x00 ORI, 0x0A EORI}, `ss` = 00/01/10) — the immediate-to-EA read-modify-write built by
     // [`imm_rmw_recipe`] (the CMPI immediate-capture idiom + the `ea_dst` RMW writeback). Classified by high
-    // byte via [`imm_class`]; ADDI (0x06), SUBI (0x04), ANDI (0x02) and ORI (0x00) are admitted this commit (the
-    // classifier returns `None` for the remaining high byte until the last commit). The destination is data-alterable only (`Dn` (0) or the seven
+    // byte via [`imm_class`]; ADDI (0x06), SUBI (0x04), ANDI (0x02), ORI (0x00) and EORI (0x0A) are all admitted
+    // (the classifier now returns `Some` for every `*I` high byte). The destination is data-alterable only (`Dn` (0) or the seven
     // alterable-memory modes). DISJOINT from CMPI (0x0C, decoded above), the bit-static form (0x08), the
     // dynamic BTST/BCHG/BCLR/BSET (0x01xx, bit 8 set — all decoded above), MOVEP (bit 8 set), and the
     // `*toSR`/`*toCCR` single points (mode 7/4 `#imm`, excluded by the data-alterable dest guard). Odd word/
