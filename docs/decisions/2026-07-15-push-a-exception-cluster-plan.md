@@ -1,9 +1,22 @@
 # Push A plan: the exception/async cluster (D1–D4)
 
-**Status: IN PROGRESS 2026-07-15. A1 SHIPPED** (`0c1fb7c` privilege + `6988bcb` STOP/CpuState, on
-docs `679a55e`; each fmt-clean, full triplet, SST 1,000,058 green). `Cpu68000::step()` (orchestrator
-fast path), the vector-8 privilege-violation gate, and STOP + `CpuState{Normal,Stopped,Halted}` are
-done. NEXT = A2 (decode totality); the real `begin_next` priority dispatch lands with A3 (trace).
+**Status: IN PROGRESS 2026-07-15. A1 SHIPPED** (`0c1fb7c` privilege + `6988bcb` STOP/CpuState).
+`Cpu68000::step()`, the vector-8 privilege gate, and STOP + `CpuState{Normal,Stopped,Halted}` are done.
+
+**A2 SPLIT** (after measuring 17,984 decode panics over 65536):
+- **A2a SHIPPED** (`04ae2e6`): the fall-through classifier — line-A (v10) / line-F (v11) / ILLEGAL (v4,
+  incl. `0x4AFC`) via the shared `decode_time_exception_recipe(vector)` (privilege refactored into it).
+  Kills the fall-through panic class: **17,984 → 2,805 panics**. SST 1,000,058 green.
+- **A2b NEXT** (the residual **2,805** panics = EA-builder `todo!`s in legal arms handed an illegal
+  `(mode,reg)`). Design: the EA builders (`ea_src`/`ea_src_long`/`ea_dst`/`ea_dst_long`/`ea_tas`/
+  `ea_move` src+dst/`ea_movea_long`/`cmpi_ea_read_long`) are the ground-truth arbiters of legal EAs
+  (their `_ => todo!()` = "illegal for this instruction"). Change each to **signal illegality** (return
+  `bool`; `_ => return false`) and each arm routes `false → decode_time_exception_recipe(4)`. Then the
+  **full 65536 no-panic classifier-fingerprint sweep**: assert line-A = line-F = **4096** literal, plus
+  implemented/illegal counts (so any future mask typo that flips an opcode between classes fails with a
+  visible diff, per the owner's design note). Residual distribution (nibble): 0x1/2/3xxx MOVE ≈ 1,650;
+  0x8/9/B/C/Dxxx ≈ 600; 0xExxx shifts 352; 0x4xxx 169; 0x0xxx 34.
+- The real `begin_next` priority dispatch lands with A3 (trace) — nothing to order against until then.
 
 Implements Push A of the integration-pivot design
 (`2026-07-15-integration-pivot-design.md`, sections D1–D4): the asynchronous exception
