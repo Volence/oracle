@@ -66,6 +66,12 @@ const FILES: &[&str] = &[
     "ANDItoSR.json",
     "ORItoSR.json",
     "EORItoSR.json",
+    // ANDItoCCR (`0x023C`) — the byte/CCR-form twin of ANDItoSR: `CCR &= imm` on ONLY the low-5 CCR bits, the
+    // SR system byte (T/S/I) PRESERVED (`new_sr = (sr & 0xFF00) | ((sr & imm) & 0x1F)`). NOT privileged (legal
+    // in user mode), all cases supervisor. Byte-identical bus stream + timing to *toSR (20 cyc), the ONLY delta
+    // is the mask (no FC switch — S never changes). New `MicroOp::CcrLogic` + `to_ccr_recipe`. 100% PURE / in
+    // scope (8065), NO memory operand → NO odd-EA fault, NO exceptions. Classified by OPCODE via `to_ccr_covered`.
+    "ANDItoCCR.json",
     "RESET.json",
     // MOVEfromUSP / MOVEtoUSP (`0x4E68 | An` / `0x4E60 | An`) — the trivial register↔USP moves (full 32 bits,
     // NO flags, SR unchanged). Reg-direct only, 100% PURE / in scope (8065 each). Classified by OPCODE via
@@ -1036,6 +1042,19 @@ fn to_sr_covered(opcode: u16) -> bool {
     matches!(opcode, 0x027C | 0x007C | 0x0A7C)
 }
 
+/// Whether this opcode is one of the immediate-to-CCR logic ops the framework covers — `ANDItoCCR` (`0x023C`) /
+/// `ORItoCCR` (`0x003C`) / `EORItoCCR` (`0x0A3C`), the byte/CCR-form twins of the `*toSR` trio. Each is the sole
+/// encoding in its file, 8065 cases, 100% PURE / 100% in scope: NO memory operand → NO odd-EA fault, NO
+/// exceptions, NO deferral, NO parity filter, NO `(A7)` carve-out. Classified by OPCODE (full 16-bit match), not
+/// the `name` field. `new_sr = (sr & 0xFF00) | ((sr <op> imm) & 0x1F)` — the SR system byte is PRESERVED, only
+/// the low-5 CCR bits change. NOT privileged (the CCR form is legal in user mode), though every vendored case
+/// starts supervisor; S/T/I never change → no mid-instruction FC switch (both trailing prefetches stay FC6).
+/// (All three opcodes are matched now even though A1/A2's files are not yet loaded — matching the `to_sr_covered`
+/// precedent; the unloaded files simply are not iterated.)
+fn to_ccr_covered(opcode: u16) -> bool {
+    matches!(opcode, 0x023C | 0x003C | 0x0A3C)
+}
+
 /// Whether this opcode is a `RESET` (`0x4E70`, the sole encoding; `RESET.json` carries only `0x4E70`). Every
 /// vendored case is in scope: all supervisor, length 132 (`n4` + `n124` reset-line idle + one queue refill),
 /// no register state change beyond the prefetch queue. The user-mode privilege-violation entry is
@@ -1516,6 +1535,14 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // switch (S cleared → the two re-prefetch reads run under FC2 instead of FC6) IS gate-exercised, while the
     // user-mode privilege-violation entry is correctness-only (see `to_sr_covered`'s caveat).
     if to_sr_covered(opcode) {
+        return true;
+    }
+    // ANDItoCCR / ORItoCCR / EORItoCCR (0x023C / 0x003C / 0x0A3C) — the byte/CCR-form twins of the *toSR trio.
+    // `new_sr = (sr & 0xFF00) | ((sr <op> imm) & 0x1F)` — the SR system byte (T/S/I) is PRESERVED, only the
+    // low-5 CCR bits change. NOT privileged (legal in user mode); every vendored case is supervisor. S/T/I never
+    // change → NO FC switch (both trailing prefetches stay FC6, unlike *toSR). 100% PURE / in scope (8065 each),
+    // NO memory operand → NO odd-EA fault, NO exceptions, NO deferral. Classified by OPCODE.
+    if to_ccr_covered(opcode) {
         return true;
     }
     // RESET (0x4E70) — assert the reset line for 124 cycles (length 132: n4 + n124 + one queue refill). Every
@@ -2155,8 +2182,23 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 946_083,
-        "expected 946083 covered cases — P1 adds MOVEP.l (its own MOVEP.l.json file, 8065 cases = +8065 over \
+        ran >= 954_148,
+        "expected 954148 covered cases — A0 adds ANDItoCCR (its own ANDItoCCR.json file, 8065 cases = +8065 \
+         over the 946083 MOVEP.l baseline → 954148). ANDItoCCR (0x023C, the sole encoding in its file) is the \
+         byte/CCR-form TWIN of ANDItoSR: `CCR &= imm` on ONLY the low-5 CCR bits, the SR SYSTEM byte (bits 8-15: \
+         T | S | I) PRESERVED → `new_sr = (sr & 0xFF00) | ((sr & imm) & 0x1F)`. NOT privileged (the CCR form is \
+         legal in user mode), though every vendored case starts supervisor. Byte-identical bus stream + timing to \
+         ANDItoSR (flat 20 cyc, `[r@pc+4, n8, r@pc+4, r@pc+6]` all FC6 word, pc += 4) — the ONLY delta is the \
+         write mask (the SR system byte is untouched, so S/T/I never change → NO mid-instruction FC switch; both \
+         re-prefetches stay FC6, unlike *toSR where an AND/EOR clearing S flips them to FC2). New vocab: \
+         `MicroOp::CcrLogic {{ op, value }}` (the CCR-masking twin of `SrLogic` — `regs.sr = (regs.sr & 0xFF00) | \
+         (((regs.sr <op> imm) & 0x1F))`, 0-cycle non-bus, reusing `LogicOp::{{And,Or,Eor}}`) + `to_ccr_recipe(op)` \
+         (`to_sr_recipe` VERBATIM but pushing CcrLogic: `[Read@pc+4 FC=Program .w → TO_SR_DISCARD_SLOT, \
+         Internal(8), CcrLogic{{op, ImmWord}}, Prefetch, Prefetch]`). NO memory operand → NO odd-EA fault, NO \
+         exceptions, NO deferral, NO parity filter, NO (A7) carve-out. 100% PURE (8065). Classified by OPCODE via \
+         `to_ccr_covered` (`matches!(0x023C | 0x003C | 0x0A3C)` — all three defined now; A1/A2's ORItoCCR/EORItoCCR \
+         files simply are not yet loaded, matching the `to_sr_covered` precedent). \
+         Prior baseline — P1 adds MOVEP.l (its own MOVEP.l.json file, 8065 cases = +8065 over \
          the 938018 MOVEP.w baseline → 946083, the FINAL MOVEP threshold). MOVEP.l (0xF138==0x0108, opmode 5 \
          mem→reg / 7 reg→mem — ONE file, BOTH directions) is the LONG twin: it moves the FOUR bytes of a DATA \
          register `Dn` ↔ the ALTERNATING (even/odd) memory addresses `EA, EA+2, EA+4, EA+6` where `EA = An + \
@@ -3018,7 +3060,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX+ABCD+SBCD+NBCD+MOVEfromUSP+MOVEtoUSP+MOVEfromSR+MOVEtoCCR+MOVEtoSR+MOVEP.w+MOVEP.l (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+ANDItoCCR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX+ABCD+SBCD+NBCD+MOVEfromUSP+MOVEtoUSP+MOVEfromSR+MOVEtoCCR+MOVEtoSR+MOVEP.w+MOVEP.l (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -10048,4 +10090,145 @@ fn movep_l_quiescable_and_serializable_at_every_micro_op_boundary() {
         pause_after += 1;
     }
     eprintln!("P1 MOVEP.l snapshot/restore: MOVEP.l D6,(d16,A4) (four-byte scatter + framing prefetches) resumed identically at every micro-op boundary");
+}
+
+/// A0 — named anchors pinning the immediate-to-CCR `ANDItoCCR` recipe (the new `MicroOp::CcrLogic` + the shared
+/// `to_ccr_recipe`) against the vendored ANDItoCCR stream WITHOUT relying on the bulk `covered()` sweep.
+/// `new_sr = (sr & 0xFF00) | ((sr & imm) & 0x1F)` — the SR **system byte (bits 8-15: T/S/I) is PRESERVED**, only
+/// the low-5 CCR bits change. Flat **20 cyc**, bus `[r@pc+4, n8, r@pc+4, r@pc+6]` all FC6 word, pc += 4:
+/// - **`023c [ANDItoCCR #] 1`** — clears a CCR bit: `sr 0x2709 & imm 0xD39A → 0x2708` (system byte 0x2700
+///   preserved). The immediate's high byte (0xD3) is SET yet the SR system byte is untouched — proving the
+///   `& 0xFF00` mask (a whole-SR rewrite would have corrupted the system byte).
+/// - **`023c [ANDItoCCR #] 5`** — clears multiple CCR bits: `sr 0x270F & imm 0x092B → 0x270B` (system byte
+///   0x2700 preserved; the immediate's high byte 0x09 is again don't-care).
+///
+/// Both drivers + the per-cycle transaction stream (incl. the FC of every read — all FC6, NO switch) run via
+/// `run_case`. The system-byte-preservation invariant is asserted on every anchor: `final.sr & 0xFF00 ==
+/// initial.sr & 0xFF00` (S/T/I never change).
+#[test]
+fn andi_to_ccr_anchor_cases_pass_both_drivers() {
+    let names: &[&str] = &["023c [ANDItoCCR #] 1", "023c [ANDItoCCR #] 5"];
+    let path = format!("{VENDOR_DIR}/ANDItoCCR.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let mut found = 0usize;
+    for name in names {
+        let case = data
+            .iter()
+            .find(|t| t["name"].as_str().unwrap() == *name)
+            .unwrap_or_else(|| panic!("A0 anchor {name} not found in ANDItoCCR.json"));
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert_eq!(opcode, 0x023C, "anchor {name} must be the ANDItoCCR opcode");
+        assert!(
+            to_ccr_covered(opcode),
+            "anchor {name} must be to_ccr_covered"
+        );
+        assert_eq!(
+            case["length"].as_u64().unwrap() as u32,
+            20,
+            "ANDItoCCR anchor {name} is flat 20 cyc"
+        );
+        let isr = case["initial"]["sr"].as_u64().unwrap() as u16;
+        let imm = case["initial"]["prefetch"][1].as_u64().unwrap() as u16;
+        let fsr = case["final"]["sr"].as_u64().unwrap() as u16;
+        // The SR system byte (bits 8-15: T/S/I) is PRESERVED — only the low-5 CCR bits change.
+        assert_eq!(
+            fsr & 0xFF00,
+            isr & 0xFF00,
+            "ANDItoCCR anchor {name} preserves the SR system byte (S/T/I never change)"
+        );
+        // The formula: new_sr = (sr & 0xFF00) | ((sr & imm) & 0x1F).
+        assert_eq!(
+            fsr,
+            (isr & 0xFF00) | ((isr & imm) & 0x1F),
+            "ANDItoCCR anchor {name} = (sr & 0xFF00) | ((sr & imm) & 0x1F)"
+        );
+        run_case(case);
+        found += 1;
+    }
+    // The [1] anchor pins the plan's exact clear-a-CCR-bit case with a system-byte-set immediate.
+    let a1 = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "023c [ANDItoCCR #] 1")
+        .unwrap();
+    assert_eq!(a1["initial"]["sr"].as_u64().unwrap() as u16, 0x2709);
+    assert_eq!(
+        a1["initial"]["prefetch"][1].as_u64().unwrap() as u16,
+        0xD39A
+    );
+    assert_eq!(
+        a1["final"]["sr"].as_u64().unwrap() as u16,
+        0x2708,
+        "sr 0x2709 & imm 0xD39A → 0x2708 (CCR bit cleared, system byte 0x2700 preserved)"
+    );
+    assert_eq!(found, names.len(), "all A0 ANDItoCCR anchors exercised");
+    eprintln!(
+        "A0 ANDItoCCR anchors: {found} cases (clear-a-CCR-bit / clear-multiple, immediate system-byte bits set yet the SR system byte PRESERVED) passed both drivers, 20 cyc, bus [r@pc+4, n8, r@pc+4, r@pc+6] all FC6, no FC switch"
+    );
+}
+
+/// A0 — the snapshot/restore anchor for the immediate-to-CCR `to_ccr_recipe` (the new `MicroOp::CcrLogic`).
+/// Drives a real vendored ANDItoCCR case (leading discard read + n8 + CcrLogic + two re-prefetches) through the
+/// quiesce driver, snapshotting + restoring the WHOLE `Cpu68000` (incl. the in-flight cursor) at every micro-op
+/// boundary and proving the resumed run reproduces the run-to-completion final state + transaction stream
+/// bit-for-bit. Pins that `MicroState` stays a fixed-size bincode `[MicroOp; MAX_OPS]` array (`Copy`).
+#[test]
+fn andi_to_ccr_quiescable_and_serializable_at_every_micro_op_boundary() {
+    let path = format!("{VENDOR_DIR}/ANDItoCCR.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: ANDItoCCR.json missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "023c [ANDItoCCR #] 1")
+        .expect("ANDItoCCR snapshot anchor present");
+    let ini = &case["initial"];
+
+    // Run-to-completion reference.
+    let mut rref = Cpu68000::new(build_regs(ini));
+    let mut bref = build_bus(ini);
+    rref.run_instruction(&mut bref);
+
+    let cfg = bincode::config::standard();
+    let mut pause_after = 0usize;
+    loop {
+        let mut cpu = Cpu68000::new(build_regs(ini));
+        let mut bus = build_bus(ini);
+        cpu.start_instruction();
+        let mut reached_end = false;
+        for _ in 0..pause_after {
+            if let Step::Done(_) = cpu.step_micro_op(&mut bus) {
+                reached_end = true;
+                break;
+            }
+        }
+        if reached_end {
+            break;
+        }
+        // Snapshot + restore the whole CPU (incl. the in-flight cursor) mid-instruction.
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        loop {
+            if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(
+            cpu2.regs, rref.regs,
+            "resume from boundary {pause_after} diverged"
+        );
+        assert_eq!(
+            bus.log, bref.log,
+            "transaction stream from boundary {pause_after} diverged"
+        );
+        pause_after += 1;
+    }
+    eprintln!("A0 ANDItoCCR snapshot/restore: ANDItoCCR # (discard read + CcrLogic + two re-prefetches, system byte preserved) resumed identically at every micro-op boundary");
 }

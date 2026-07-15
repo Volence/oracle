@@ -1165,6 +1165,14 @@ pub enum MicroOp {
     /// `SR_IMPLEMENTED` (`0xA71F`) mask with [`MicroOp::LoadSr`] (`RTE`'s restore). A 0-cycle, non-bus,
     /// snapshot-visible internal step.
     SrLogic { op: LogicOp, value: Operand },
+    /// The `*toCCR` write-back: `regs.sr = (regs.sr & 0xFF00) | (((regs.sr <op> (resolve(value) as u16)) &
+    /// 0x1F))` — the `ANDItoCCR`/`ORItoCCR`/`EORItoCCR` ops. The CCR-masking twin of [`MicroOp::SrLogic`]:
+    /// where `SrLogic` rewrites the WHOLE SR (masked to `SR_IMPLEMENTED` `0xA71F`, so an `And`/`Eor` can clear
+    /// S/T), `CcrLogic` touches ONLY the CCR byte — the SR **system byte (bits 8-15: T | S | I2-I0) is
+    /// PRESERVED** (`sr & 0xFF00`) and only the low-5 CCR bits (X/N/Z/V/C) change; **S/T/I can NEVER change**,
+    /// so there is no mid-instruction FC switch (both trailing prefetches stay under the live mode's FC).
+    /// Shares [`LogicOp`] with `SrLogic`. A 0-cycle, non-bus, snapshot-visible internal step.
+    CcrLogic { op: LogicOp, value: Operand },
     /// `EXG`'s register exchange — swap the two registers named by the opmode form, affecting **NO flags**
     /// (the SR is untouched). `opmode` (the `(opcode >> 3) & 0x1F` field) selects the form: `0x08` = `EXG
     /// Dx,Dy` (swap the two DATA registers `d[rx]` / `d[ry]`); `0x09` = `EXG Ax,Ay` (swap the two ADDRESS
@@ -2693,6 +2701,19 @@ impl MicroState {
                     LogicOp::Eor => regs.sr ^ v,
                 };
                 regs.sr = combined & SR_IMPLEMENTED;
+                0
+            }
+            MicroOp::CcrLogic { op, value } => {
+                // The `*toCCR` write-back: apply the bitwise op against the immediate, then keep ONLY the CCR
+                // low-5 bits — the SR system byte (0xFF00: T | S | I) is PRESERVED, so S/T/I never change and
+                // there is no FC switch. NO bus, 0 cycles.
+                let v = self.resolve(value, regs) as u16;
+                let combined = match op {
+                    LogicOp::And => regs.sr & v,
+                    LogicOp::Or => regs.sr | v,
+                    LogicOp::Eor => regs.sr ^ v,
+                };
+                regs.sr = (regs.sr & 0xFF00) | (combined & 0x1F);
                 0
             }
             MicroOp::ExgRegs { opmode, rx, ry } => {
@@ -4854,6 +4875,69 @@ mod tests {
         }]);
         st2.exec_one(&mut regs2, &mut bus);
         assert_eq!(regs2.sr, 0x8018, "(0x2707 ^ 0xFFFF) & 0xA71F = 0x8018");
+    }
+
+    // --- A0: the `*toCCR` write-back — the CCR-masking twin of SrLogic (system byte PRESERVED). ---
+
+    #[test]
+    fn ccr_logic_and_preserves_system_byte() {
+        // ANDItoCCR: sr = (sr & 0xFF00) | ((sr & imm) & 0x1F). Pinned to the vendored `023c [ANDItoCCR #] 1`
+        // case: sr 0x2709 & imm 0xD39A → (0x2709 & 0xD39A) & 0x1F = 0x08; system byte 0x2700 preserved → 0x2708.
+        // The immediate's high byte (0xD3) is DON'T-CARE — it never touches the SR system byte. A 0-cycle step.
+        let mut regs = regs();
+        regs.sr = 0x2709;
+        regs.prefetch = [0x023C, 0xD39A]; // the immediate is prefetch[1]
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::CcrLogic {
+            op: LogicOp::And,
+            value: Operand::ImmWord,
+        }]);
+
+        let cycles = st.exec_one(&mut regs, &mut bus);
+
+        assert_eq!(cycles, 0, "CcrLogic is an internal transform — 0 cycles");
+        assert_eq!(
+            regs.sr, 0x2708,
+            "(0x2709 & 0xD39A) & 0x1F = 0x08; system byte 0x2700 preserved"
+        );
+        assert_eq!(
+            regs.sr & 0xFF00,
+            0x2700,
+            "the SR system byte (T/S/I) is PRESERVED — S never clears"
+        );
+        assert!(bus.log.is_empty(), "CcrLogic touches no bus");
+    }
+
+    #[test]
+    fn ccr_logic_or_and_eor_preserve_system_byte() {
+        // ORItoCCR sets CCR bits (never touches S); EORItoCCR toggles CCR bits. Both keep the system byte and
+        // force CCR bits 5-7 to 0 (only the low-5 X/N/Z/V/C change). The immediate high byte is don't-care.
+        let mut regs_or = regs();
+        regs_or.sr = 0x2700; // system byte set, CCR clear
+        regs_or.prefetch = [0x003C, 0xFFFF]; // OR with all-ones → all CCR bits set, system byte untouched
+        let mut bus = FlatBus::new();
+        let mut st = MicroState::from_ops(&[MicroOp::CcrLogic {
+            op: LogicOp::Or,
+            value: Operand::ImmWord,
+        }]);
+        st.exec_one(&mut regs_or, &mut bus);
+        assert_eq!(
+            regs_or.sr, 0x271F,
+            "(0x2700 | 0xFFFF) → CCR low-5 all set (0x1F), system byte 0x2700 PRESERVED"
+        );
+
+        let mut regs2 = regs();
+        regs2.sr = 0x2707; // system byte set + some CCR bits
+        regs2.prefetch = [0x0A3C, 0xFFFF]; // EOR with all-ones → toggle every CCR bit
+        let mut st2 = MicroState::from_ops(&[MicroOp::CcrLogic {
+            op: LogicOp::Eor,
+            value: Operand::ImmWord,
+        }]);
+        st2.exec_one(&mut regs2, &mut bus);
+        assert_eq!(
+            regs2.sr, 0x2718,
+            "(0x2707 ^ 0xFFFF) & 0x1F = 0x18; system byte 0x2700 PRESERVED"
+        );
     }
 
     #[test]

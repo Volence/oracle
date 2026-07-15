@@ -961,6 +961,20 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     if opcode == 0x0A7C {
         return to_sr_recipe(LogicOp::Eor);
     }
+    // ANDItoCCR / ORItoCCR / EORItoCCR (`0x023C` / `0x003C` / `0x0A3C`) — the byte/CCR-form twins of the *toSR
+    // trio: byte-identical bus stream + timing (20 cyc), but the write mask preserves the SR system byte (only
+    // the low-5 CCR bits change; S/T/I never change → no FC switch). NOT privileged (legal in user mode), all
+    // vendored cases supervisor. The three opcodes are single points in the 0x0xxx immediate space (low byte
+    // 0x3C = mode 7 / reg 4 = `#imm`-to-CCR), disjoint from the 0x?7C *toSR twins and every arm above.
+    if opcode == 0x023C {
+        return to_ccr_recipe(LogicOp::And);
+    }
+    if opcode == 0x003C {
+        return to_ccr_recipe(LogicOp::Or);
+    }
+    if opcode == 0x0A3C {
+        return to_ccr_recipe(LogicOp::Eor);
+    }
     // NOP (`0x4E71`, exact) — no operation: advance `pc` by 2 and shift the prefetch queue, nothing else (all
     // D/A/SP/SR byte-identical). A lone `[Prefetch]` (length 4). The opcode `0x4E71` is a single point in the
     // 0x4Exx space, disjoint from RESET (0x4E70) / JMP/JSR/RTS/RTR/RTE/TRAP/TRAPV and every arm above.
@@ -4426,6 +4440,41 @@ fn to_sr_recipe(op: LogicOp) -> MicroState {
         value: Operand::ImmWord,
     });
     // The two re-prefetch reads run under the NEW mode's FC (FC2 user-program if S cleared, else FC6).
+    buf.push(MicroOp::Prefetch);
+    buf.push(MicroOp::Prefetch);
+    buf.finish()
+}
+
+/// `ANDItoCCR` (`0x023C`) / `ORItoCCR` (`0x003C`) / `EORItoCCR` (`0x0A3C`): the immediate-to-CCR logic ops —
+/// `regs.sr = (regs.sr & 0xFF00) | (((regs.sr <op> imm) & 0x1F))`. The **byte/CCR-form twins** of the `*toSR`
+/// trio: byte-identical in bus stream and timing (all **20 cyc**), the ONLY difference is the write mask — the
+/// SR **system byte (bits 8-15: T | S | I) is PRESERVED**, only the low-5 CCR bits change. NOT privileged (the
+/// CCR form is legal in user mode), though every vendored case starts supervisor.
+///
+/// Structurally identical to [`to_sr_recipe`] but pushing [`MicroOp::CcrLogic`] instead of `SrLogic`:
+/// - **A leading discard `Read` @ pc+4** (FC=6 — the immediate word re-read by the first re-prefetch), then
+///   `Internal(8)`, then `CcrLogic` (which applies the op against `prefetch[1]` on ONLY the CCR bits), then
+///   **two `Prefetch`s**. Because `CcrLogic` NEVER changes S, both re-prefetches stay FC=6 (no FC switch — the
+///   one way these differ structurally from `*toSR`, where an AND/EOR clearing S flips the re-prefetches to
+///   FC2). Reuses [`TO_SR_DISCARD_SLOT`] (the leading discard read is identical to `*toSR`).
+/// - Bus stream `[r@pc+4, r@pc+4, r@pc+6]` all FC6 word + the n8 idle = 20 cycles. Final pc = pc+4, prefetch =
+///   `[word@pc+4, word@pc+6]`.
+fn to_ccr_recipe(op: LogicOp) -> MicroState {
+    let mut buf = RecipeBuf::new();
+    // The leading discard read @ pc+4 (FC=6) — its value is re-read by the first re-prefetch.
+    buf.push(MicroOp::Read {
+        addr: Operand::PcPlus(4),
+        fc: super::microop::Fc::Program,
+        size: Size::Word,
+        dst: TO_SR_DISCARD_SLOT,
+    });
+    buf.push(MicroOp::Internal { cycles: 8 });
+    // The CCR write (system byte 0xFF00 PRESERVED, only the low-5 CCR bits change) — S never changes, so the
+    // two re-prefetches below stay under the live supervisor mode's FC6 (no FC switch, unlike `*toSR`).
+    buf.push(MicroOp::CcrLogic {
+        op,
+        value: Operand::ImmWord,
+    });
     buf.push(MicroOp::Prefetch);
     buf.push(MicroOp::Prefetch);
     buf.finish()
