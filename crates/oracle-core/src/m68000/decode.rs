@@ -898,16 +898,19 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     // JMP `<control ea>` (`0100 1110 11 mmm rrr`, 0x4EC0 | ea) — compute the UNMASKED branch target for the
     // control addressing mode, write the PC, and reload the prefetch queue. No push (that is JSR). Control
     // modes only: `(An)` 010, `(d16,An)` 101, `(d8,An,Xn)` 110, `abs.w` 111/0, `abs.l` 111/1, `(d16,PC)`
-    // 111/2, `(d8,PC,Xn)` 111/3. The opcode space 0x4EC0..=0x4EFF is disjoint from every arm above.
-    if opcode & 0xFFC0 == 0x4EC0 {
+    // 111/2, `(d8,PC,Xn)` 111/3. The opcode space 0x4EC0..=0x4EFF is disjoint from every arm above. The
+    // `is_control_mode` guard is LOAD-BEARING (mirrors PEA/LEA): a non-control EA (Dn/An/(An)+/-(An)/#imm)
+    // is an illegal JMP and must fall through to the ILLEGAL classifier, not reach `jmp_recipe`.
+    if opcode & 0xFFC0 == 0x4EC0 && is_control_mode((opcode >> 3) & 7, opcode & 7) {
         return jmp_recipe(opcode);
     }
     // JSR `<control ea>` (`0100 1110 10 mmm rrr`, 0x4E80 | ea) — jump to subroutine: compute the UNMASKED
     // branch target for the control addressing mode (the same seven modes as JMP), PUSH the 32-bit return
     // address, and reload the prefetch queue at the target. The reload **splits around the push** (read
     // target → push → read target+2). The opcode space 0x4E80..=0x4EBF is disjoint from JMP (0x4EC0) and
-    // every arm above.
-    if opcode & 0xFFC0 == 0x4E80 {
+    // every arm above. The `is_control_mode` guard is LOAD-BEARING (mirrors PEA/LEA): a non-control EA is an
+    // illegal JSR and must fall through to the ILLEGAL classifier, not reach `jsr_recipe`.
+    if opcode & 0xFFC0 == 0x4E80 && is_control_mode((opcode >> 3) & 7, opcode & 7) {
         return jsr_recipe(opcode);
     }
     // RTS (`0x4E75`) — return from subroutine: POP the 32-bit return address off the supervisor/user stack
@@ -1282,13 +1285,15 @@ fn arith_dn_ea(opcode: u16, op: AluOp, size: Size) -> MicroState {
     let mode = (opcode >> 3) & 7;
     let reg = (opcode & 7) as u8;
     let mut buf = RecipeBuf::new();
-    ea_dst(&mut buf, mode, reg, size, |a| MicroOp::Alu {
+    if !ea_dst(&mut buf, mode, reg, size, |a| MicroOp::Alu {
         op,
         size,
         a,
         b: dn_operand(dn, size),
         dst: Dest::Scratch(1),
-    });
+    }) {
+        return decode_time_exception_recipe(4);
+    }
     buf.finish()
 }
 
@@ -1305,7 +1310,9 @@ fn move_recipe(opcode: u16, size: Size) -> MicroState {
     let src_mode = (opcode >> 3) & 7;
     let src_reg = (opcode & 7) as u8;
     let mut buf = RecipeBuf::new();
-    ea_move(&mut buf, dst_mode, dst_reg, src_mode, src_reg, size);
+    if !ea_move(&mut buf, dst_mode, dst_reg, src_mode, src_reg, size) {
+        return decode_time_exception_recipe(4);
+    }
     buf.finish()
 }
 
@@ -1319,7 +1326,9 @@ fn movea_recipe(opcode: u16, size: Size) -> MicroState {
     let src_mode = (opcode >> 3) & 7;
     let src_reg = (opcode & 7) as u8;
     let mut buf = RecipeBuf::new();
-    ea_movea(&mut buf, dst_reg, src_mode, src_reg, size);
+    if !ea_movea(&mut buf, dst_reg, src_mode, src_reg, size) {
+        return decode_time_exception_recipe(4);
+    }
     buf.finish()
 }
 
@@ -1352,13 +1361,15 @@ fn arith_ea_dn(opcode: u16, op: AluOp, size: Size) -> MicroState {
     let mode = (opcode >> 3) & 7;
     let reg = (opcode & 7) as u8;
     let mut buf = RecipeBuf::new();
-    ea_src(&mut buf, mode, reg, size, |b| MicroOp::Alu {
+    if !ea_src(&mut buf, mode, reg, size, |b| MicroOp::Alu {
         op,
         size,
         a: dn_operand(dn, size),
         b,
         dst: dn_dest(dn, size),
-    });
+    }) {
+        return decode_time_exception_recipe(4);
+    }
     buf.finish()
 }
 
@@ -1385,9 +1396,13 @@ fn cmp_ea_dn(opcode: u16, size: Size) -> MicroState {
         dst: Dest::None,
     };
     if size == Size::Long {
-        cmp_ea_src_long(&mut buf, mode, reg, make_alu);
+        if !cmp_ea_src_long(&mut buf, mode, reg, make_alu) {
+            return decode_time_exception_recipe(4);
+        }
     } else {
-        ea_src(&mut buf, mode, reg, size, make_alu);
+        if !ea_src(&mut buf, mode, reg, size, make_alu) {
+            return decode_time_exception_recipe(4);
+        }
     }
     buf.finish()
 }
@@ -1403,7 +1418,7 @@ fn cmp_ea_src_long(
     mode: u16,
     reg: u8,
     make_alu: impl FnOnce(Operand) -> MicroOp,
-) {
+) -> bool {
     match (mode, reg) {
         // Dn / An direct — no operand read: one refill, the flag-ALU on the full 32-bit register, then the
         // CMP register-source long idle (n2, NOT ADD's n4). Bus: [PF].
@@ -1441,9 +1456,11 @@ fn cmp_ea_src_long(
             buf.push(MicroOp::Internal { cycles: 2 });
         }
         // Every long MEMORY mode (2/3/4/5/6, 7/0..=3) is byte-for-byte ADD.l's `ea_src_long` (same n2 memory
-        // idle), so delegate to the shared `ea_src` builder (which routes long sizes to `ea_src_long`).
-        _ => ea_src(buf, mode, reg, Size::Long, make_alu),
+        // idle), so delegate to the shared `ea_src` builder (which routes long sizes to `ea_src_long`). An
+        // illegal long source mode there returns `false` — propagate it so the caller raises ILLEGAL.
+        _ => return ea_src(buf, mode, reg, Size::Long, make_alu),
     }
+    true
 }
 
 /// `CMPA.{w,l} <ea>,An` (`1011 aaa 0 11/111 mmm rrr`, opmode 3 = `.w` / 7 = `.l`): the flag-only address
@@ -1457,7 +1474,9 @@ fn cmpa_recipe(opcode: u16, size: Size) -> MicroState {
     let src_mode = (opcode >> 3) & 7;
     let src_reg = (opcode & 7) as u8;
     let mut buf = RecipeBuf::new();
-    ea_cmpa(&mut buf, dst_reg, src_mode, src_reg, size);
+    if !ea_cmpa(&mut buf, dst_reg, src_mode, src_reg, size) {
+        return decode_time_exception_recipe(4);
+    }
     buf.finish()
 }
 
@@ -1487,7 +1506,9 @@ fn adda_suba_recipe(opcode: u16, op: AluOp, size: Size) -> MicroState {
         b: operand,
         dst: Dest::AddrReg(dst_reg),
     };
-    ea_src(&mut buf, src_mode, src_reg, size, make_alu);
+    if !ea_src(&mut buf, src_mode, src_reg, size, make_alu) {
+        return decode_time_exception_recipe(4);
+    }
     // ADDA.w/SUBA.w carry a uniform trailing n4 idle (the one cycle-count difference from MOVEA.w, which has no
     // trailing idle). ADDA.l/SUBA.l append nothing — `ea_src_long`'s built-in n4/n2 trailing idle already
     // matches ADD.l <ea>,Dn (and thus ADDA.l/SUBA.l) exactly. Non-bus, so it does not alter the bus stream.
@@ -1551,13 +1572,15 @@ fn addq_recipe(opcode: u16, op: AluOp, addr_op: AluOp, size: Size) -> MicroState
         }
         // memory: the alterable-memory RMW skeleton (identical to `arith_dn_ea`, addend = Quick).
         _ => {
-            ea_dst(&mut buf, mode, reg, size, |a| MicroOp::Alu {
+            if !ea_dst(&mut buf, mode, reg, size, |a| MicroOp::Alu {
                 op,
                 size,
                 a,
                 b: Operand::Quick(data),
                 dst: Dest::Scratch(1),
-            });
+            }) {
+                return decode_time_exception_recipe(4);
+            }
         }
     }
     buf.finish()
@@ -1661,13 +1684,15 @@ fn btst_recipe(opcode: u16) -> MicroState {
     } else {
         // Memory / PC-relative operand — Byte (mod 8), NO trailing idle: the proven `ea_src` byte read feeds
         // the bit-test Alu on the just-read scratch (no write). `ea_src` already covers d16(PC)/d8(PC,Xn).
-        ea_src(&mut buf, mode, reg, Size::Byte, |operand| MicroOp::Alu {
+        if !ea_src(&mut buf, mode, reg, Size::Byte, |operand| MicroOp::Alu {
             op: AluOp::Btst,
             size: Size::Byte,
             a: operand,
             b: bitnum,
             dst: Dest::None,
-        });
+        }) {
+            return decode_time_exception_recipe(4);
+        }
     }
     buf.finish()
 }
@@ -1742,13 +1767,15 @@ fn bit_recipe(opcode: u16, op: AluOp, reg_base: u16, regs: &Registers) -> MicroS
         // Memory dest — Byte (mod 8), the NEG-family read→modify→write RMW (`ea_dst` byte): read the old byte,
         // refill, the bit-modify Alu into `Scratch(1)` (Z from the PRE-modify bit), write it back. NO register
         // `+2` (byte/mod-8 timing is fixed per mode). Byte → NO odd-EA faults.
-        ea_dst(&mut buf, mode, reg, Size::Byte, |operand| MicroOp::Alu {
+        if !ea_dst(&mut buf, mode, reg, Size::Byte, |operand| MicroOp::Alu {
             op,
             size: Size::Byte,
             a: operand,
             b: bitnum,
             dst: Dest::Scratch(1),
-        });
+        }) {
+            return decode_time_exception_recipe(4);
+        }
     }
     buf.finish()
 }
@@ -1777,13 +1804,15 @@ fn shift_recipe(opcode: u16, op: AluOp, regs: &Registers) -> MicroState {
     if (opcode >> 6) & 3 == 3 {
         // Memory shift-by-1 (word only): the CLR.w/NEG.w word RMW — read word → shift1 → write word back.
         // An odd EA faults on the READ (E3/E4 abort), exactly like NEG.w/CLR.w. `b` is the constant 1.
-        ea_dst(&mut buf, mode, reg, Size::Word, |operand| MicroOp::Alu {
+        if !ea_dst(&mut buf, mode, reg, Size::Word, |operand| MicroOp::Alu {
             op,
             size: Size::Word,
             a: operand,
             b: Operand::ShiftCount(1),
             dst: Dest::Scratch(1),
-        });
+        }) {
+            return decode_time_exception_recipe(4);
+        }
     } else {
         // Register form: shift `Dn` (bits 2-0) by the DECODE-TIME count. `size` from bits 7-6.
         let size = match (opcode >> 6) & 3 {
@@ -1829,7 +1858,9 @@ fn tst_recipe(opcode: u16, size: Size) -> MicroState {
     let mode = (opcode >> 3) & 7;
     let reg = (opcode & 7) as u8;
     let mut buf = RecipeBuf::new();
-    ea_tst(&mut buf, mode, reg, size);
+    if !ea_tst(&mut buf, mode, reg, size) {
+        return decode_time_exception_recipe(4);
+    }
     buf.finish()
 }
 
@@ -1870,13 +1901,15 @@ fn clr_recipe(opcode: u16, size: Size) -> MicroState {
     } else {
         // Memory destination — the RMW path: read the EA (discarded), refill, Move-of-zero (sets flags + parks
         // the 0), write the 0 back at the same address. `.l` uses the reversed long-store via `ea_dst_long`.
-        ea_dst(&mut buf, mode, reg, size, |_discarded| MicroOp::Alu {
+        if !ea_dst(&mut buf, mode, reg, size, |_discarded| MicroOp::Alu {
             op: AluOp::Move,
             size,
             a: Operand::Zero,
             b: Operand::Zero,
             dst: Dest::Scratch(1),
-        });
+        }) {
+            return decode_time_exception_recipe(4);
+        }
     }
     buf.finish()
 }
@@ -1912,12 +1945,14 @@ fn movefrom_sr_recipe(opcode: u16) -> MicroState {
     } else {
         // Memory destination — CLR.w's read-then-write RMW, byte-for-byte EXCEPT the closure writes SR with NO
         // flags (CLR uses `AluOp::Move`, which SETS Z=1). The dummy READ (discarded) faults first on an odd EA.
-        ea_dst(&mut buf, mode, reg, Size::Word, |_discarded| {
+        if !ea_dst(&mut buf, mode, reg, Size::Word, |_discarded| {
             MicroOp::SetWord {
                 value: Operand::Sr,
                 dst: Dest::Scratch(1),
             }
-        });
+        }) {
+            return decode_time_exception_recipe(4);
+        }
     }
     buf.finish()
 }
@@ -1983,7 +2018,9 @@ fn move_to_sr_ccr_recipe(opcode: u16, to_sr: bool) -> MicroState {
         // Every memory / PC-relative mode: the operand read leg (→ scratch 0, with its (word_count − 1)
         // preceding refills), then n4, then the write-back from the read operand. The flush re-read + refill
         // follow below (uniform for all modes). An odd EA faults on the operand read (the E3/E4 abort).
-        ea_read_word_operand(&mut buf, mode, reg);
+        if !ea_read_word_operand(&mut buf, mode, reg) {
+            return decode_time_exception_recipe(4);
+        }
         buf.push(MicroOp::Internal { cycles: 4 });
         buf.push(load(Operand::Scratch(0)));
     }
@@ -2039,12 +2076,14 @@ fn scc_recipe(opcode: u16, regs: &Registers) -> MicroState {
         // Memory destination — the RMW path, byte-for-byte `clr_recipe`'s EXCEPT the closure writes the
         // conditional constant `v` with NO flags (CLR uses `AluOp::Move`, which SETS flags; Scc must not).
         // Byte-only (no `ea_dst_long`).
-        ea_dst(&mut buf, mode, reg, Size::Byte, |_discarded| {
+        if !ea_dst(&mut buf, mode, reg, Size::Byte, |_discarded| {
             MicroOp::SetByte {
                 value: v,
                 dst: Dest::Scratch(1),
             }
-        });
+        }) {
+            return decode_time_exception_recipe(4);
+        }
     }
     buf.finish()
 }
@@ -2087,13 +2126,15 @@ fn neg_family_recipe(opcode: u16, op: AluOp, size: Size) -> MicroState {
         // Memory destination — the RMW path, IDENTICAL to `clr_recipe`'s EXCEPT the closure USES the read
         // `operand` as the unary source `a` (CLR discards it and writes 0). `.l` uses the reversed long-store via
         // `ea_dst_long`.
-        ea_dst(&mut buf, mode, reg, size, |operand| MicroOp::Alu {
+        if !ea_dst(&mut buf, mode, reg, size, |operand| MicroOp::Alu {
             op,
             size,
             a: operand,
             b: Operand::Zero,
             dst: Dest::Scratch(1),
-        });
+        }) {
+            return decode_time_exception_recipe(4);
+        }
     }
     buf.finish()
 }
@@ -2126,13 +2167,15 @@ fn nbcd_recipe(opcode: u16) -> MicroState {
         // Memory destination — the byte RMW path, IDENTICAL to NEG/NOT's `ea_dst` (byte-only → no `ea_dst_long`
         // path, so `-(A7)` steps by 2 and no operand ever faults on alignment). The read operand is `a`; `b` is
         // ignored (Zero), the SBCD core hardcodes `dst = 0`.
-        ea_dst(&mut buf, mode, reg, Size::Byte, |operand| MicroOp::Alu {
+        if !ea_dst(&mut buf, mode, reg, Size::Byte, |operand| MicroOp::Alu {
             op: AluOp::Nbcd,
             size: Size::Byte,
             a: operand,
             b: Operand::Zero,
             dst: Dest::Scratch(1),
-        });
+        }) {
+            return decode_time_exception_recipe(4);
+        }
     }
     buf.finish()
 }
@@ -2697,7 +2740,9 @@ fn cmpi_recipe(opcode: u16, size: Size) -> MicroState {
             lo: Operand::ImmWord,
             dst: IMM_SLOT,
         });
-        cmpi_ea_read_long(&mut buf, mode, reg, make_alu);
+        if !cmpi_ea_read_long(&mut buf, mode, reg, make_alu) {
+            return decode_time_exception_recipe(4);
+        }
     } else {
         let make_alu = |a| MicroOp::Alu {
             op: AluOp::Cmp,
@@ -2716,7 +2761,9 @@ fn cmpi_recipe(opcode: u16, size: Size) -> MicroState {
             dst: IMM_SLOT,
         });
         buf.push(MicroOp::Prefetch);
-        ea_src(&mut buf, mode, reg, size, make_alu);
+        if !ea_src(&mut buf, mode, reg, size, make_alu) {
+            return decode_time_exception_recipe(4);
+        }
     }
     buf.finish()
 }
@@ -2745,7 +2792,7 @@ fn cmpi_ea_read_long(
     mode: u16,
     reg: u8,
     make_alu: impl FnOnce(Operand) -> MicroOp,
-) {
+) -> bool {
     // Scratch slots mirroring the EA machinery's conventions (disjoint from the immediate slots 6/7): 0 holds
     // the read hi word / assembled operand, 2 the computed EA, 3 the abs.l HI word, 4 the long lo word, 5 the
     // long lo-word address.
@@ -2880,8 +2927,10 @@ fn cmpi_ea_read_long(
             buf.push(MicroOp::Prefetch);
             buf.push(make_alu(Operand::Scratch(0)));
         }
-        _ => todo!("cmpi_ea_read_long mode {mode}/{reg} not yet covered"),
+        // Illegal long CMPI destination mode — signal ILLEGAL (vector 4).
+        _ => return false,
     }
+    true
 }
 
 /// `ADDI`/`SUBI`/`ANDI`/`ORI`/`EORI #imm,<ea>` (`0000 hhhh ss mmm rrr`) — the shared immediate-to-EA
@@ -2978,13 +3027,15 @@ fn imm_rmw_recipe(opcode: u16, op: AluOp, size: Size) -> MicroState {
         if size == Size::Long {
             buf.push(MicroOp::Prefetch);
         }
-        ea_dst(&mut buf, mode, reg, size, |a| MicroOp::Alu {
+        if !ea_dst(&mut buf, mode, reg, size, |a| MicroOp::Alu {
             op,
             size,
             a,
             b: Operand::Scratch(IMM_SLOT),
             dst: Dest::Scratch(1),
-        });
+        }) {
+            return decode_time_exception_recipe(4);
+        }
     }
     buf.finish()
 }
@@ -3894,13 +3945,15 @@ fn mul_recipe(opcode: u16, op: AluOp) -> MicroState {
     } else {
         // Memory / Dn-direct: ea_src places the make-op last (after the refill(s)), with the source operand it
         // resolves (Scratch(0) for memory, DataRegLow16 for Dn-direct). The Alu returns the data-dependent idle.
-        ea_src(&mut buf, mode, reg, Size::Word, |src| MicroOp::Alu {
+        if !ea_src(&mut buf, mode, reg, Size::Word, |src| MicroOp::Alu {
             op,
             size: Size::Word,
             a: Operand::DataRegLow16(dn),
             b: src,
             dst: Dest::DataReg(dn),
-        });
+        }) {
+            return decode_time_exception_recipe(4);
+        }
     }
     buf.finish()
 }
@@ -3949,13 +4002,15 @@ fn div_recipe(opcode: u16, op: AluOp) -> MicroState {
             dst: Dest::DataReg(dn),
         });
     } else {
-        ea_src(&mut buf, mode, reg, Size::Word, |src| MicroOp::Alu {
+        if !ea_src(&mut buf, mode, reg, Size::Word, |src| MicroOp::Alu {
             op,
             size: Size::Word,
             a: Operand::DataRegFull(dn),
             b: src,
             dst: Dest::DataReg(dn),
-        });
+        }) {
+            return decode_time_exception_recipe(4);
+        }
     }
     // DIVU/DIVS order pin: swap the trailing `[Prefetch, Alu]` into `[Alu, Prefetch]` so the division idle runs
     // before the instruction-completing refill (the `[idle, prefetch]` order the data shows).
@@ -4008,10 +4063,12 @@ fn chk_recipe(opcode: u16) -> MicroState {
     } else {
         // Memory / Dn-direct: ea_src places the make-op last (after the refill(s)), with the bound operand it
         // resolves (Scratch(0) for memory, DataRegLow16 for Dn-direct).
-        ea_src(&mut buf, mode, reg, Size::Word, |bound| MicroOp::ChkTrap {
+        if !ea_src(&mut buf, mode, reg, Size::Word, |bound| MicroOp::ChkTrap {
             dn,
             bound,
-        });
+        }) {
+            return decode_time_exception_recipe(4);
+        }
     }
     // The no-trap tail (n6) — overwritten in place by the CHK frame recipe if ChkTrap traps.
     buf.push(MicroOp::Internal { cycles: 6 });
@@ -5294,6 +5351,81 @@ mod tests {
         assert_exception_frame(&cpu, &bus, 10);
         let (cpu, bus) = run_decode_exception(0xF000); // line-F (unimplemented, vector 11)
         assert_exception_frame(&cpu, &bus, 11);
+    }
+
+    // --- Push A / A2b: illegal-EA gates — an otherwise-legal instruction handed an EA its addressing-mode
+    // set forbids is an ILLEGAL-instruction exception (vector 4), NOT a decode panic. Hand-authored (no SST
+    // data, audit finding 3). Each opcode reaches a DISTINCT illegality signal (an EA-builder `bool` false,
+    // or the JMP/JSR control-mode gate); all must produce the shared decode_time_exception_recipe(4). -----
+    #[test]
+    fn illegal_ea_routes_to_the_illegal_vector() {
+        let illegal = decode_time_exception_recipe(4);
+        for op in [
+            0x0C3Du16, // CMPI.b (7/5) — invalid mode-7 source           -> ea_src (src_seq)
+            0x80BD,    // OR.l   (7/5),D0 — invalid mode-7 long source    -> ea_src_long
+            0x4208,    // CLR.b  A0 — An is not data-alterable            -> ea_dst
+            0x4288,    // CLR.l  A0 — An is not data-alterable (long)     -> ea_dst_long
+            0x103D,    // MOVE.b (7/5),D0 — invalid mode-7 source         -> ea_move source
+            0x15C0,    // MOVE.b D0,(d16,PC) — PC-rel is not alterable    -> ea_move dest
+            0x207D,    // MOVEA.l (7/5),A0 — invalid mode-7 long source   -> ea_movea_long
+            0x0C88,    // CMPI.l A0 — An is not a valid CMPI dest (long)  -> cmpi_ea_read_long
+            0x44C8,    // MOVE   A0,CCR — An is not a word-operand source -> ea_read_word_operand
+            0x4EC0,    // JMP    D0 — Dn is not a control mode            -> jmp control-mode gate
+            0x4E80,    // JSR    D0 — Dn is not a control mode            -> jsr control-mode gate
+        ] {
+            let regs = Registers {
+                d: [0; 8],
+                a: [0; 7],
+                usp: 0,
+                ssp: 0x2000,
+                pc: 0x0C00,
+                sr: 0x2700, // supervisor — the privilege gate must not pre-empt the illegal classification
+                prefetch: [op, 0],
+            };
+            assert_eq!(
+                decode_dispatch(&regs),
+                illegal,
+                "opcode {op:#06X} must decode to the vector-4 ILLEGAL frame"
+            );
+        }
+    }
+
+    #[test]
+    fn illegal_ea_frame_runs_on_both_drivers() {
+        // An EA-illegal opcode (CLR.b A0 — An is not data-alterable) must execute the SAME vector-4 frame on
+        // both drivers (run_to_completion + step_micro_op), bit-identical registers and bus transactions.
+        let (cpu, bus) = run_decode_exception(0x4208);
+        assert_exception_frame(&cpu, &bus, 4);
+        let mk = || {
+            let regs = Registers {
+                d: [0; 8],
+                a: [0; 7],
+                usp: 0x0000_3000,
+                ssp: 0x0000_1000,
+                pc: 0x0C00,
+                sr: 0x2704,
+                prefetch: [0x4208, 0x0000], // CLR.b A0 (illegal EA)
+            };
+            let mut bus = FlatBus::new();
+            bus.poke(0x12, 0x20); // vector 4 @ 0x10 → handler 0x2000
+            for (a, v) in [
+                (0x2000u32, 0x4Eu8),
+                (0x2001, 0x71),
+                (0x2002, 0x4E),
+                (0x2003, 0x71),
+            ] {
+                bus.poke(a, v);
+            }
+            (Cpu68000::new(regs), bus)
+        };
+        let (mut rtc, mut bus_rtc) = mk();
+        rtc.run_instruction(&mut bus_rtc);
+        let (mut step, mut bus_step) = mk();
+        step.start_instruction();
+        while step.step_micro_op(&mut bus_step) == Step::Continue {}
+        assert_eq!(step.regs, rtc.regs, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
+        assert_exception_frame(&step, &bus_step, 4);
     }
 
     /// The clean SingleStepTests reference case `d075 [ADD.w (d8,A5,Xn),D0]` (even EA, 14 cycles). Brief

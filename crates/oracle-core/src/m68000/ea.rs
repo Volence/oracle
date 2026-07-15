@@ -254,8 +254,8 @@ const LONG_LO_ADDR_SLOT: u8 = 5;
 /// `(An)+` (3), `-(An)` (4), `#imm` (7/4). Other modes land in later commits. `size` selects the
 /// auto-(in/de)crement step (word 2; byte 1, or 2 for A7 to keep the SP even) for the `(An)+`/`-(An)`
 /// `AdjustAddr`s — the bus shape itself is size-independent.
-fn src_seq(mode: u16, reg: u8, size: Size) -> SrcSeq {
-    match (mode, reg) {
+fn src_seq(mode: u16, reg: u8, size: Size) -> Option<SrcSeq> {
+    Some(match (mode, reg) {
         // Dn — data-register direct: no operand read; one refill, then combine the register.
         (0, _) => SrcSeq {
             ea_calc: None,
@@ -437,8 +437,9 @@ fn src_seq(mode: u16, reg: u8, size: Size) -> SrcSeq {
             operand: Operand::ImmWord,
             placement: AluPlacement::First,
         },
-        _ => todo!("ea_src mode {mode}/{reg} not yet covered"),
-    }
+        // Illegal source mode for this instruction — signal the caller to raise ILLEGAL (vector 4).
+        _ => return None,
+    })
 }
 
 /// Push the `abs.l` two-word address assembly into `buf`, leaving the full 24-bit effective address in
@@ -500,7 +501,12 @@ fn push_long_read_pair(buf: &mut RecipeBuf, hi_addr: Operand) {
 /// (the 68000's long-operand penalty — 4 master cycles for a register/immediate source, 2 for a memory
 /// source). Every ordering here (the read pair, the prefetch placement, the trailing-idle width) is pinned
 /// against the vendored `ADD.l`/`SUB.l` SST stream, NOT asserted from memory.
-fn ea_src_long(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Operand) -> MicroOp) {
+fn ea_src_long(
+    buf: &mut RecipeBuf,
+    mode: u16,
+    reg: u8,
+    make_alu: impl FnOnce(Operand) -> MicroOp,
+) -> bool {
     match (mode, reg) {
         // Dn / An direct — no operand read: one refill, the ALU on the full 32-bit register, then the
         // register-source long idle (n4). Bus: [PF].
@@ -623,8 +629,10 @@ fn ea_src_long(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Op
             buf.push(make_alu(Operand::Scratch(0)));
             buf.push(MicroOp::Internal { cycles: 4 });
         }
-        _ => todo!("ea_src_long mode {mode}/{reg} not yet covered"),
+        // Illegal long source mode — signal ILLEGAL (vector 4).
+        _ => return false,
     }
+    true
 }
 
 /// Push the source-EA sub-sequence for an `<ea>,Dn`-shaped instruction: the bus steps that fetch the
@@ -642,10 +650,9 @@ pub fn ea_src(
     reg: u8,
     size: Size,
     make_alu: impl FnOnce(Operand) -> MicroOp,
-) {
+) -> bool {
     if size == Size::Long {
-        ea_src_long(buf, mode, reg, make_alu);
-        return;
+        return ea_src_long(buf, mode, reg, make_alu);
     }
     // abs.l — a 3-word instruction: assemble the two-word address first (HIGH then, after a refill, LOW),
     // then the `[READ, Prefetch]` operand access. The two-EaCalc interleave doesn't fit `SrcSeq`'s single
@@ -662,9 +669,12 @@ pub fn ea_src(
         });
         buf.push(MicroOp::Prefetch); // the third (final) refill, trailing the operand read
         buf.push(alu);
-        return;
+        return true;
     }
-    let seq = src_seq(mode, reg, size);
+    let seq = match src_seq(mode, reg, size) {
+        Some(seq) => seq,
+        None => return false, // illegal source mode for this instruction → ILLEGAL (vector 4)
+    };
     let alu = make_alu(seq.operand);
     // The EA computation (if any) runs FIRST so a displacement leg captures `prefetch[1]` before any refill
     // shifts it out (invariant 2). The operand READ then targets the EA scratch slot it deposited.
@@ -713,6 +723,7 @@ pub fn ea_src(
             buf.push(alu);
         }
     }
+    true
 }
 
 /// Push the long memory RMW at the materialized base address `hi_addr`: the old long value's two-word READ
@@ -765,7 +776,12 @@ fn push_long_rmw(buf: &mut RecipeBuf, hi_addr: Operand, make_alu: impl FnOnce(Op
 /// The long destination-EA sub-sequence for `ADD.l`/`SUB.l Dn,<ea>` (alterable-memory destination). A long
 /// RMW: read the old 32-bit value (two words), refill, combine with `Dn`, write the 32-bit result (two words,
 /// low half first). Orderings pinned against the vendored `ADD.l`/`SUB.l` SST stream.
-fn ea_dst_long(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Operand) -> MicroOp) {
+fn ea_dst_long(
+    buf: &mut RecipeBuf,
+    mode: u16,
+    reg: u8,
+    make_alu: impl FnOnce(Operand) -> MicroOp,
+) -> bool {
     match (mode, reg) {
         // (An): the long RMW at An. Bus: [READ.hi, READ.lo, PF, WRITE.lo, WRITE.hi].
         (2, _) => {
@@ -827,8 +843,10 @@ fn ea_dst_long(buf: &mut RecipeBuf, mode: u16, reg: u8, make_alu: impl FnOnce(Op
             buf.push(MicroOp::Prefetch);
             push_long_rmw(buf, Operand::Scratch(EA_SLOT), make_alu);
         }
-        _ => todo!("ea_dst_long mode {mode}/{reg} not yet covered"),
+        // Illegal long destination mode — signal ILLEGAL (vector 4).
+        _ => return false,
     }
+    true
 }
 
 /// Push the destination-EA sub-sequence for a `Dn,<ea>` (memory-destination) read-modify-write: read the
@@ -848,10 +866,9 @@ pub fn ea_dst(
     reg: u8,
     size: Size,
     make_alu: impl FnOnce(Operand) -> MicroOp,
-) {
+) -> bool {
     if size == Size::Long {
-        ea_dst_long(buf, mode, reg, make_alu);
-        return;
+        return ea_dst_long(buf, mode, reg, make_alu);
     }
     // The alterable-memory destination skeleton: read old value → refill → ALU (memory is the minuend) →
     // write the result back, at the same `(An)` address. `(An)+`/`-(An)` wrap this with an `AdjustAddr`.
@@ -1004,8 +1021,10 @@ pub fn ea_dst(
                 value: Operand::Scratch(1),
             });
         }
-        _ => todo!("ea_dst mode {mode}/{reg} not yet covered"),
+        // Illegal destination mode — signal ILLEGAL (vector 4).
+        _ => return false,
     }
+    true
 }
 
 /// Push the destination-EA sub-sequence for `TAS <ea>` (the atomic memory test-and-set). UNLIKE the
@@ -1108,7 +1127,10 @@ pub fn ea_tas(buf: &mut RecipeBuf, mode: u16, reg: u8) {
             });
             buf.push(MicroOp::Prefetch);
         }
-        _ => todo!("ea_tas mode {mode}/{reg} not yet covered"),
+        // Unreachable: the TAS decode arm gates the EA with `is_dst_mem_mode` (the exact set handled above),
+        // so an illegal TAS EA falls through to the ILLEGAL classifier and never reaches this builder — the
+        // PEA/LEA/JMP/JSR precedent for a mode-gated recipe.
+        _ => unreachable!("ea_tas mode {mode}/{reg}: TAS EA is gated by is_dst_mem_mode"),
     }
 }
 
@@ -1139,7 +1161,7 @@ struct MoveSrc {
 /// auto-(in/de)crement step is sized (byte 1, or 2 for A7 to keep the SP even; word 2). Orderings pinned
 /// against the vendored `MOVE.w`/`MOVE.b` SST streams (the byte stream is the word stream with byte-granular
 /// accesses — same prefetch interleave).
-fn move_emit_source(buf: &mut RecipeBuf, sm: u16, sr: u8, size: Size) -> MoveSrc {
+fn move_emit_source(buf: &mut RecipeBuf, sm: u16, sr: u8, size: Size) -> Option<MoveSrc> {
     // Emit the operand READ at `addr` into scratch 0: a single sized `Read` for byte/word, or the two-word
     // read pair (hi @addr, lo @addr+2, Combine32 → slot 0) for long. The long pair's word order (hi then lo)
     // is pinned against the vendored MOVE.l data (e.g. the `2a93 [MOVE.l (A3),(A5)]` anchor).
@@ -1157,7 +1179,7 @@ fn move_emit_source(buf: &mut RecipeBuf, sm: u16, sr: u8, size: Size) -> MoveSrc
     };
     // The displacement/indexed EaCalc modes' operand READ targets the materialized EA in EA_SLOT, sized.
     let read_ea = |buf: &mut RecipeBuf| read_into0(buf, Operand::Scratch(EA_SLOT));
-    match (sm, sr) {
+    Some(match (sm, sr) {
         // Dn direct — no read, no source prefetch. The operand is the register's low byte/word/full long.
         (0, _) => MoveSrc {
             operand: match size {
@@ -1306,8 +1328,9 @@ fn move_emit_source(buf: &mut RecipeBuf, sm: u16, sr: u8, size: Size) -> MoveSrc
                 }
             }
         }
-        _ => todo!("ea_move source mode {sm}/{sr} not yet covered"),
-    }
+        // Illegal MOVE source mode — signal ILLEGAL (vector 4).
+        _ => return None,
+    })
 }
 
 /// Assemble the full `.b`/`.w` MOVE recipe (`MOVE.{b,w} <ea>,<ea>`) — the EA→EA composition. Reads the
@@ -1327,7 +1350,7 @@ pub fn ea_move(
     src_mode: u16,
     src_reg: u8,
     size: Size,
-) {
+) -> bool {
     // The `#imm` source captures `prefetch[1]` before its own prefetch shifts it out, so for `#imm` the ALU
     // must be emitted FIRST (before the source phase's single prefetch). For every other source the operand
     // is a register or a value already read, so the ALU follows the source phase.
@@ -1355,16 +1378,20 @@ pub fn ea_move(
     if imm_source && size != Size::Long {
         // Byte/word #imm — ALU First: capture the single immediate word (`Operand::ImmWord`) BEFORE the
         // source phase's lone prefetch shifts it out, then the source phase (its prefetch), then the dest.
+        // The `#imm` (7/4) source is always legal, so only the destination can raise ILLEGAL.
         buf.push(make_alu(Operand::ImmWord));
-        let _src = move_emit_source(buf, src_mode, src_reg, size); // emits the single #imm prefetch, no read
-        move_emit_dest(buf, dst_mode, dst_reg, false, size);
+        let _ = move_emit_source(buf, src_mode, src_reg, size); // emits the single #imm prefetch, no read
+        move_emit_dest(buf, dst_mode, dst_reg, false, size)
     } else {
         // Every other source — including #imm.l, whose two extension words are assembled into scratch 0 by
         // the source phase's interleaved `Combine32`s (so the ALU samples the assembled value, not a queued
         // word). The ALU follows the source phase; the dest phase follows the ALU.
-        let src = move_emit_source(buf, src_mode, src_reg, size);
+        let src = match move_emit_source(buf, src_mode, src_reg, size) {
+            Some(src) => src,
+            None => return false, // illegal MOVE source mode → ILLEGAL (vector 4)
+        };
         buf.push(make_alu(src.operand));
-        move_emit_dest(buf, dst_mode, dst_reg, src.reads, size);
+        move_emit_dest(buf, dst_mode, dst_reg, src.reads, size)
     }
 }
 
@@ -1375,7 +1402,7 @@ pub fn ea_move(
 /// against the data). The `(An)+`/`-(An)` step is sized (byte 1, or 2 for A7 to keep the SP even; word 2). A
 /// `Dn` destination performs no memory write (the ALU already wrote the register); it emits only the final
 /// prefetch.
-fn move_emit_dest(buf: &mut RecipeBuf, dm: u16, dr: u8, src_reads: bool, size: Size) {
+fn move_emit_dest(buf: &mut RecipeBuf, dm: u16, dr: u8, src_reads: bool, size: Size) -> bool {
     // Write the parked value at `addr`. For byte/word it is a single sized `Write` (a byte write truncates
     // to the low 8). For long it is TWO word writes of the parked 32-bit copy — hi word
     // (`ScratchHi16(MOVE_VALUE_SLOT)`) at `addr`, lo word (`Scratch(MOVE_VALUE_SLOT)`, the `Write` truncating
@@ -1517,8 +1544,10 @@ fn move_emit_dest(buf: &mut RecipeBuf, dm: u16, dr: u8, src_reads: bool, size: S
                 buf.push(MicroOp::Prefetch);
             }
         }
-        _ => todo!("ea_move dest mode {dm}/{dr} not yet covered"),
+        // Illegal MOVE destination mode — signal ILLEGAL (vector 4).
+        _ => return false,
     }
+    true
 }
 
 /// The long source-EA sub-sequence for `MOVEA.l <ea>,An`. Structurally identical to [`ea_src_long`] (a `.l`
@@ -1533,7 +1562,7 @@ fn ea_movea_long(
     mode: u16,
     reg: u8,
     make_alu: impl FnOnce(Operand) -> MicroOp,
-) {
+) -> bool {
     match (mode, reg) {
         // Dn / An direct — no operand read: one refill, then the ALU on the full 32-bit register. Bus: [PF].
         (0, _) | (1, _) => {
@@ -1643,8 +1672,10 @@ fn ea_movea_long(
             buf.push(MicroOp::Prefetch);
             buf.push(make_alu(Operand::Scratch(0)));
         }
-        _ => todo!("ea_movea_long mode {mode}/{reg} not yet covered"),
+        // Illegal long source mode — signal ILLEGAL (vector 4).
+        _ => return false,
     }
+    true
 }
 
 /// Assemble the full `MOVEA.w`/`MOVEA.l` recipe (`MOVEA.{w,l} <ea>,An`): fetch the source operand (every
@@ -1656,7 +1687,7 @@ fn ea_movea_long(
 /// The word path reuses the proven [`ea_src`] source machinery verbatim (the MOVEA.w bus stream is exactly
 /// the `<ea>,Dn` source phase). The long path is [`ea_movea_long`] — [`ea_src_long`]'s structure minus the
 /// trailing idle. Byte MOVEA is illegal and never reaches here.
-pub fn ea_movea(buf: &mut RecipeBuf, dst_reg: u8, src_mode: u16, src_reg: u8, size: Size) {
+pub fn ea_movea(buf: &mut RecipeBuf, dst_reg: u8, src_mode: u16, src_reg: u8, size: Size) -> bool {
     // The MoveA flag-ALU writes the operand straight to An (full 32; .w sign-extends inside the op). The
     // `b`/`dst` legs of the parked-result form are unused (MoveA ignores `b`, and the only dest is AddrReg).
     let make_alu = |operand: Operand| MicroOp::Alu {
@@ -1667,13 +1698,12 @@ pub fn ea_movea(buf: &mut RecipeBuf, dst_reg: u8, src_mode: u16, src_reg: u8, si
         dst: Dest::AddrReg(dst_reg),
     };
     if size == Size::Long {
-        ea_movea_long(buf, src_mode, src_reg, make_alu);
-        return;
+        return ea_movea_long(buf, src_mode, src_reg, make_alu);
     }
     // Word MOVEA — the source bus stream is identical to a word `<ea>,Dn`, so reuse `ea_src` directly. Its
     // `make_alu` receives the source operand; we route it to An (no flags) instead of Dn. No trailing idle is
     // emitted by the word `ea_src` path, matching the MOVEA.w cycle counts.
-    ea_src(buf, src_mode, src_reg, size, make_alu);
+    ea_src(buf, src_mode, src_reg, size, make_alu)
 }
 
 /// Assemble the full `CMPA.w`/`CMPA.l` recipe (`CMPA.{w,l} <ea>,An`): fetch the source operand (every source
@@ -1687,7 +1717,7 @@ pub fn ea_movea(buf: &mut RecipeBuf, dst_reg: u8, src_mode: u16, src_reg: u8, si
 /// from MOVEA in exactly two ways — the flag-only ALU (above) and a **uniform trailing `Internal(2)` idle**
 /// (`CMPA = MOVEA + 2 cycles` for every source mode, pinned to the vendored CMPA.w/.l stream). Byte CMPA is
 /// illegal and never reaches here.
-pub fn ea_cmpa(buf: &mut RecipeBuf, dst_reg: u8, src_mode: u16, src_reg: u8, size: Size) {
+pub fn ea_cmpa(buf: &mut RecipeBuf, dst_reg: u8, src_mode: u16, src_reg: u8, size: Size) -> bool {
     // The flag-only Cmpa ALU: An (the destination address register, full 32 bits) is the minuend `a`, the
     // source operand is `b`, and nothing is written back (`Dest::None`). `make_alu` receives the source
     // operand the EA builder fetched.
@@ -1698,15 +1728,19 @@ pub fn ea_cmpa(buf: &mut RecipeBuf, dst_reg: u8, src_mode: u16, src_reg: u8, siz
         b: operand,
         dst: Dest::None,
     };
-    if size == Size::Long {
-        ea_movea_long(buf, src_mode, src_reg, make_alu);
+    let ok = if size == Size::Long {
+        ea_movea_long(buf, src_mode, src_reg, make_alu)
     } else {
         // Word CMPA — the source bus stream is identical to a word `<ea>,Dn` / MOVEA.w, so reuse `ea_src`.
-        ea_src(buf, src_mode, src_reg, size, make_alu);
+        ea_src(buf, src_mode, src_reg, size, make_alu)
+    };
+    if !ok {
+        return false; // illegal CMPA source mode → ILLEGAL (vector 4)
     }
     // The uniform CMPA trailing idle (n2) — the one cycle-count difference from MOVEA. Non-bus, so it does
     // not alter the transaction stream; it lands after the ALU (which is also non-bus) at the recipe tail.
     buf.push(MicroOp::Internal { cycles: 2 });
+    true
 }
 
 /// Assemble the full `TST.{b,w,l} <ea>` recipe (`0100 1010 SS mmm rrr`): fetch the data-alterable EA operand,
@@ -1721,7 +1755,7 @@ pub fn ea_cmpa(buf: &mut RecipeBuf, dst_reg: u8, src_mode: u16, src_reg: u8, siz
 /// EA is data-alterable, so only modes `Dn`/`(An)`/`(An)+`/`-(An)`/`d16(An)`/`d8(An,Xn)`/`abs.w`/`abs.l`
 /// appear (An-direct / PC-relative / `#imm` are not data-alterable and are absent from the data); the
 /// PC-rel/`#imm` arms of `ea_movea_long` are never reached.
-pub fn ea_tst(buf: &mut RecipeBuf, mode: u16, reg: u8, size: Size) {
+pub fn ea_tst(buf: &mut RecipeBuf, mode: u16, reg: u8, size: Size) -> bool {
     // The flag-only Cmp-vs-zero ALU: the source operand is the minuend `a`, `b` is a constant zero, nothing is
     // written back (`Dest::None`). `make_alu` receives the source operand the EA builder fetched.
     let make_alu = |operand: Operand| MicroOp::Alu {
@@ -1734,11 +1768,11 @@ pub fn ea_tst(buf: &mut RecipeBuf, mode: u16, reg: u8, size: Size) {
     if size == Size::Long {
         // Long TST — the idle-free long source reader (TST.l = MOVEA.l bus cost, no trailing idle), reused
         // verbatim. TST's data-alterable modes are a subset of MOVEA's source modes, so this covers them all.
-        ea_movea_long(buf, mode, reg, make_alu);
+        ea_movea_long(buf, mode, reg, make_alu)
     } else {
         // Byte/word TST — the source bus stream is identical to a byte/word `<ea>,Dn`, and `ea_src` emits no
         // trailing idle for those sizes (the ALU is the final op), matching the TST.b/.w cycle counts.
-        ea_src(buf, mode, reg, size, make_alu);
+        ea_src(buf, mode, reg, size, make_alu)
     }
 }
 
@@ -1751,7 +1785,7 @@ pub fn ea_tst(buf: &mut RecipeBuf, mode: u16, reg: u8, size: Size) {
 /// predecrement / postincrement / extension refills), byte-for-byte MINUS the final Prefetch + ALU. `#imm`
 /// (7/4) is NOT handled here (its operand is the queued word — the caller uses the `to_sr_recipe` shape). An
 /// odd EA faults on this operand READ (a data read, low5 = 0x15) via the E3/E4 abort — IN scope.
-pub fn ea_read_word_operand(buf: &mut RecipeBuf, mode: u16, reg: u8) {
+pub fn ea_read_word_operand(buf: &mut RecipeBuf, mode: u16, reg: u8) -> bool {
     // abs.l (7/1) — a 3-word instruction: assemble the two-word address (HIGH, refill, LOW) first, then one
     // more refill, then the operand read. Two refills precede the read (the third refill is the caller's
     // trailing completing Prefetch). Bus (before the trailing legs): [PF, PF, READ].
@@ -1764,13 +1798,15 @@ pub fn ea_read_word_operand(buf: &mut RecipeBuf, mode: u16, reg: u8) {
             size: Size::Word,
             dst: 0,
         });
-        return;
+        return true;
     }
-    let seq = src_seq(mode, reg, Size::Word);
-    debug_assert!(
-        matches!(seq.placement, AluPlacement::Last),
-        "ea_read_word_operand handles only memory-source modes (Dn/An/#imm never reach here)"
-    );
+    // Only memory-source modes are legal here — `Dn`/`An`/`#imm` (non-`Last` placement) and invalid modes
+    // are illegal EAs for `MOVEtoCCR`/`MOVEtoSR` and signal ILLEGAL (vector 4). (`#imm` is handled by the
+    // caller's `to_sr_recipe` shape and never reaches here on the legal path.)
+    let seq = match src_seq(mode, reg, Size::Word) {
+        Some(seq) if matches!(seq.placement, AluPlacement::Last) => seq,
+        _ => return false,
+    };
     // The EA computation (if any) runs FIRST so a displacement leg captures prefetch[1] before any refill
     // shifts it out; then the pre-read side effects (the -(An) predecrement + idle, or the (An)+ postincrement
     // committed before the read so an odd-address fault still bumps the register).
@@ -1791,6 +1827,7 @@ pub fn ea_read_word_operand(buf: &mut RecipeBuf, mode: u16, reg: u8) {
         size: Size::Word,
         dst: 0,
     });
+    true
 }
 
 #[cfg(test)]
