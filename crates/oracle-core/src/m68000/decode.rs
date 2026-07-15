@@ -5428,6 +5428,57 @@ mod tests {
         assert_exception_frame(&step, &bus_step, 4);
     }
 
+    #[test]
+    fn decode_is_total_over_the_whole_opcode_space() {
+        // Push A / A2b: the decode-totality fingerprint. Every one of the 65536 opcodes must yield a recipe
+        // (NO reachable `todo!()`/`unreachable!()` — a raw panic here fails the sweep). Each recipe is
+        // classified by comparing against the shared decode-time exception recipes; the class counts are
+        // FROZEN so a future mask typo that flips an opcode between classes fails with a visible diff
+        // (owner's fingerprint note). Supervisor SR so the privilege gate does not pre-empt the classification
+        // (privileged opcodes decode to their real recipe = implemented). No SST data covers this cluster
+        // (audit finding 3); the counts were measured on the SST-green tree that introduced the illegal-EA
+        // gates. The 2×4096 line-A/line-F counts are a priori (the exact `0xAxxx`/`0xFxxx` nibbles); the
+        // 9792 ILLEGAL is the 6987 fall-through unassigned encodings + the 2805 EA-illegal gates (the
+        // measured residual-panic count before this push), a direct check on the CAUTION guardrail.
+        let illegal = decode_time_exception_recipe(4);
+        let line_a = decode_time_exception_recipe(10);
+        let line_f = decode_time_exception_recipe(11);
+        let (mut n_impl, mut n_illegal, mut n_line_a, mut n_line_f) = (0u32, 0u32, 0u32, 0u32);
+        for op in 0u32..=0xFFFF {
+            let regs = Registers {
+                d: [0; 8],
+                a: [0; 7],
+                usp: 0,
+                ssp: 0x2000,
+                pc: 0x0C00,
+                sr: 0x2700, // supervisor
+                prefetch: [op as u16, 0],
+            };
+            let st = decode_dispatch(&regs); // must not panic for any opcode
+            if st == illegal {
+                n_illegal += 1;
+            } else if st == line_a {
+                n_line_a += 1;
+            } else if st == line_f {
+                n_line_f += 1;
+            } else {
+                n_impl += 1;
+            }
+        }
+        assert_eq!(n_line_a, 4096, "line-A = the 0xAxxx nibble (a priori)");
+        assert_eq!(n_line_f, 4096, "line-F = the 0xFxxx nibble (a priori)");
+        assert_eq!(
+            n_illegal, 9792,
+            "ILLEGAL = 6987 fall-through + 2805 EA-illegal gates (CAUTION guardrail)"
+        );
+        assert_eq!(n_impl, 47552, "implemented encodings");
+        assert_eq!(
+            n_impl + n_illegal + n_line_a + n_line_f,
+            65536,
+            "the four classes partition the whole opcode space"
+        );
+    }
+
     /// The clean SingleStepTests reference case `d075 [ADD.w (d8,A5,Xn),D0]` (even EA, 14 cycles). Brief
     /// ext `0xA22E` = index A2, word size, disp8 +46; EA = A5 + sign_extend16(A2 low 16) + 46 = 0x958DFC.
     fn setup_d075() -> (Cpu68000, FlatBus) {
