@@ -28,7 +28,7 @@
 //! test skips cleanly (run `tools/fetch-tests.sh`).
 
 use oracle_core::m68000::bus68k::{FlatBus, Transaction, TxKind};
-use oracle_core::m68000::decode::{cmp_class, CmpClass};
+use oracle_core::m68000::decode::{cmp_class, imm_class, CmpClass};
 use oracle_core::m68000::microop::{Cpu68000, Size, Step};
 use oracle_core::m68000::registers::Registers;
 use serde_json::Value;
@@ -1207,6 +1207,25 @@ fn addq_covered(opcode: u16) -> bool {
         || (mode == 7 && (reg == 0 || reg == 1))
 }
 
+/// Whether the framework covers this genuine `ADDI`/`SUBI`/`ANDI`/`ORI`/`EORI #imm,<ea>` case — the
+/// load-bearing classifier for the **CONTAMINATED** ADD/SUB/AND/OR/EOR files (each mixes the genuine register
+/// form, high nibble `0xD`/`0x9`/`0xC`/`0x8`/`0xB`, with the dedicated group-0 immediate-to-EA opcode
+/// `0000 hhhh ss mmm rrr`). Classifying **by OPCODE** via [`imm_class`] (which admits ONLY ADDI = high byte
+/// `0x06` this commit), the case is in scope iff the destination is data-alterable — `Dn` (0) or an
+/// alterable-memory mode (2-6, 7/0, 7/1). PC-relative (7/2, 7/3) / `#imm` (7/4) are not alterable and absent;
+/// the `*toSR`/`*toCCR` mode-7/4 `#imm` single points (which live in their own files) are excluded by the same
+/// guard. Odd word/long EAs are address errors the E3/E4 abort covers (NO parity filter); plain `(A7)` mode-2
+/// is clean and in scope.
+fn imm_covered(opcode: u16) -> bool {
+    if imm_class(opcode).is_none() {
+        return false; // not an in-scope `*I` opcode (only ADDI = 0x06 admitted this commit)
+    }
+    let mode = (opcode >> 3) & 7;
+    let reg = opcode & 7;
+    // Data-alterable dest: Dn (0) or the seven alterable-memory modes.
+    mode == 0 || (2..=6).contains(&mode) || (mode == 7 && (reg == 0 || reg == 1))
+}
+
 /// Whether the framework covers this case (else it is an xfail for this push). `ADD`/`SUB` in word, byte and
 /// long sizes, each in two forms — `Dn,<ea>` (memory dest; word ADD=0xD140/SUB=0x9140, byte ADD=0xD100/
 /// SUB=0x9100, long ADD=0xD180/SUB=0x9180) and `<ea>,Dn` (register dest; word ADD=0xD040/SUB=0x9040, byte
@@ -1215,7 +1234,10 @@ fn addq_covered(opcode: u16) -> bool {
 /// access PASSES unchanged; the auto-(in/de)crement register bump is committed before the faulting read,
 /// pinned to the data). The only remaining deferrals are mode-scope: `An`-direct as a byte source/dest
 /// (`ADD.b An,Dn` is illegal) and not-yet-implemented EA modes. Plain `(A7)` (mode 2) indirect is covered
-/// (un-deferred 2026-07-15) — decode resolves A7 through `addr_reg` like any An.
+/// (un-deferred 2026-07-15) — decode resolves A7 through `addr_reg` like any An. The ADD.b/w/l files ALSO mix
+/// two dedicated non-register opcodes NOW DECODED and in scope (classified OUT of this predicate by OPCODE, in
+/// via their own arms): ADDQ (`0x5xxx`, `addq_covered`) and ADDI (`0x06xx`, `imm_covered`) — so the ADD.*
+/// files are 100% covered.
 /// Whether the framework covers this `0xExxx` shift/rotate case (the EA-scope half — the 2 corrupt ASL.b
 /// entries are handled separately in [`covered`], which has the final state). Classified by OPCODE:
 ///
@@ -1828,6 +1850,17 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     if addq_covered(opcode) {
         return true;
     }
+    // ADDI/SUBI/ANDI/ORI/EORI `#imm,<ea>` (`0000 hhhh ss mmm rrr`, group-0) — the immediate-to-EA
+    // read-modify-write. NOW DECODED and in scope (the ADD/SUB/AND/OR/EOR files MIX the genuine register form,
+    // high nibble 0xD/0x9/0xC/0x8/0xB, with this dedicated group-0 opcode). Classified by OPCODE via
+    // `imm_covered` → `imm_class`, which admits ONLY ADDI (high byte 0x06 → `AluOp::Add`) this commit (the
+    // classifier returns None for SUBI/ANDI/ORI/EORI until later commits, so those cases stay skipped cleanly).
+    // Full data-alterable dest set incl the clean `(A7)` mode-2 indirect; odd word/long EAs are address errors
+    // the E3/E4 abort covers (no parity filter, no `(A7)` carve-out). This arm is DISJOINT from CMPI (0x0C),
+    // the bit-ops (0x08 / 0x01xx), and MOVEP (all decoded/covered above by their own predicates).
+    if imm_covered(opcode) {
+        return true;
+    }
     // Scc `<ea>` (`0101 cccc 11 mmm rrr`, opcode & 0xF0C0 == 0x50C0) — the conditional byte set (0xFF if cc
     // TRUE else 0x00, NO flags). Classified by OPCODE. The 0x50C8 mode-001 DBcc form is consumed by
     // `dbcc_covered` ABOVE (which returns true and so never reaches here); the data-alterable match below also
@@ -2182,8 +2215,22 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 992_576,
-        "expected 992576 covered cases — C1 un-skips SUBQ (`0x5xxx`, bit 8 = 1, ss != 3), the quick-immediate \
+        ran >= 993_486,
+        "expected 993486 covered cases — C2 un-skips ADDI (`0000 0110 ss mmm rrr` = 0x06xx, ss != 3), the \
+         immediate-to-EA add hiding as a contaminant in the ADD.b/w/l files, admitting +910 cases over C1's \
+         992576 (ADD.b 323 + ADD.w 292 + ADD.l 295). ADDI introduces the SHARED `imm_rmw_recipe` the whole \
+         `*I` family reuses (C3-C6): the CMPI immediate-capture idiom (byte/word = one ext word via \
+         `EaCalc{{ImmWord}}`, long = TWO ext words via the `Combine32` HI/LO idiom) then the `ea_dst`/ \
+         `ea_dst_long` RMW writeback with the captured immediate as the addend `b` (the memory/`Dn` value is \
+         the minuend `a`, correct for the non-commutative SUBI later). Value/flags reuse the proven \
+         `AluOp::Add` VERBATIM. The long memory path prepends ONE refill before `ea_dst_long` so the two-word \
+         immediate + the EA's ext words align — byte-for-byte the CMPI long read structure, only writing back \
+         instead of discarding (e.g. `(An).l` = `[r@pc+4, r@pc+6, READ.hi, READ.lo, r@pc+8, WRITE.lo, \
+         WRITE.hi]` = 28 cyc). Only ADDI (high byte 0x06) is admitted this commit via `imm_class`; SUBI/ANDI/ \
+         ORI/EORI decode-classify to None until later commits. Full data-alterable dest set incl the clean \
+         `(A7)` mode-2 indirect; odd word/long EAs are address errors the E3/E4 abort covers (no parity \
+         filter). \
+         C1 baseline (992576) un-skipped SUBQ (`0x5xxx`, bit 8 = 1, ss != 3), the quick-immediate \
          subtract hiding as a contaminant in the SUB.b/w/l files, admitting +8264 cases over C0's 984312 \
          (SUB.b 2655 + SUB.w 2822 + SUB.l 2787). SUBQ REUSES `addq_recipe` VERBATIM — the ADDQ decode arm \
          already routed bit 8 = 1 to `AluOp::Sub`/`Suba` (the register/memory is the MINUEND, Quick the \
@@ -3088,7 +3135,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+ADDQ+SUBQ+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+ANDItoCCR+ORItoCCR+EORItoCCR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX+ABCD+SBCD+NBCD+MOVEfromUSP+MOVEtoUSP+MOVEfromSR+MOVEtoCCR+MOVEtoSR+MOVEP.w+MOVEP.l (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+ADDQ+SUBQ+ADDI+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+ANDItoCCR+ORItoCCR+EORItoCCR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX+ABCD+SBCD+NBCD+MOVEfromUSP+MOVEtoUSP+MOVEfromSR+MOVEtoCCR+MOVEtoSR+MOVEP.w+MOVEP.l (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -10845,4 +10892,134 @@ fn subq_quiescable_and_serializable_at_every_micro_op_boundary() {
         }
     }
     eprintln!("C1 SUBQ snapshot/restore: SUBQ.l→An (bespoke idle) + SUBQ.l -(A2) memory RMW resumed identically at every micro-op boundary");
+}
+
+/// C2 — named anchors pinning the new `ADDI #imm,<ea>` recipe (the shared `imm_rmw_recipe` = the CMPI
+/// immediate-capture idiom + the `ea_dst` RMW writeback) against the vendored stream WITHOUT relying on the bulk
+/// `covered()` sweep. Each anchor is a real vendored case (hiding inside the ADD.b/w/l files) exercising a
+/// distinct ADDI shape: a `Dn` byte/word (len 8 — one imm word + a trailing refill) and `Dn.l` (len 16 — the
+/// two-word immediate + two refills + the register n4 idle); an `(An)` byte memory RMW (len 16) and an `(An).l`
+/// (len 28 — the genuinely-new capture↔RMW seam: `[r@pc+4, r@pc+6, READ.hi, READ.lo, r@pc+8, WRITE.lo,
+/// WRITE.hi]`); a `-(An).w` predecrement (len 18); an `abs.w.l` (len 32); a `d16(An).l` (len 32); an ODD
+/// `(An).w` EA that PASSES via the E3/E4 address-error abort (len 54); and a plain `(A7)` mode-2 case (clean, in
+/// scope). Each anchor must decode as an in-scope ADDI opcode (`imm_covered` — high byte 0x06) and pass both
+/// framework drivers via `run_case` (regs/SR/RAM/prefetch/cycles + the per-cycle transaction stream).
+#[test]
+fn addi_anchor_cases_pass_both_drivers() {
+    // (file, case-name, expected-length) — one real vendored case per ADDI shape.
+    let anchors: &[(&str, &str, u32)] = &[
+        ("ADD.b.json", "0602 [ADD.b #, D2] 436", 8), // Dn.b (1 imm word + trailing refill = 8)
+        ("ADD.w.json", "0640 [ADD.w #, D0] 18", 8),  // Dn.w (8)
+        ("ADD.l.json", "0680 [ADD.l #, D0] 153", 16), // Dn.l (2 imm words + 2 refills + n4 = 16)
+        ("ADD.b.json", "0613 [ADD.b #, (A3)] 5", 16), // (An).b memory RMW = 16
+        ("ADD.l.json", "0692 [ADD.l #, (A2)] 33", 28), // (An).l RMW = 28 (the capture↔RMW seam)
+        ("ADD.w.json", "0667 [ADD.w #, -(A7)] 226", 18), // -(An).w predecrement (also -(A7)) = 18
+        ("ADD.l.json", "06b8 [ADD.l #, (xxx).w] 5502", 32), // abs.w.l = 32
+        ("ADD.l.json", "06af [ADD.l #, (d16, A7)] 133", 32), // d16(An).l = 32
+        ("ADD.w.json", "0652 [ADD.w #, (A2)] 262", 54), // ODD (An).w EA → E3/E4 address error, len 54
+        ("ADD.b.json", "0617 [ADD.b #, (A7)] 503", 16), // plain (A7) mode-2 (clean, in scope)
+    ];
+    let mut found = 0usize;
+    for (fname, name, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| t["name"].as_str().unwrap() == *name)
+            .unwrap_or_else(|| panic!("C2 ADDI anchor {name} not found in {fname}"));
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert!(
+            imm_covered(opcode),
+            "anchor {name} must be imm_covered (opcode {opcode:#06x})"
+        );
+        assert_eq!(
+            (opcode >> 8) & 0xFF,
+            0x06,
+            "anchor {name} must be an ADDI opcode (high byte 0x06, {opcode:#06x})"
+        );
+        assert_eq!(
+            case["length"].as_u64().unwrap() as u32,
+            *length,
+            "ADDI anchor {name} cycle length"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all C2 ADDI anchors exercised");
+    eprintln!("C2 ADDI anchors: {found} cases (Dn.b/.w/.l, (An).b/.l RMW [the capture↔RMW seam], -(An).w, abs.w.l, d16(An).l, odd-EA E3/E4, plain (A7)) passed both drivers");
+}
+
+/// C2 — the snapshot/restore anchor for the new `ADDI` recipe, driven across BOTH genuinely-new shapes: a
+/// memory read-modify-write and the long-immediate `Combine32` capture. Drives a real vendored `ADDI.l (A2)`
+/// long RMW (which exercises the two-word immediate capture THEN the long memory RMW writeback — the whole
+/// capture↔RMW seam) through the quiesce driver, snapshotting + restoring the WHOLE `Cpu68000` (incl. the
+/// in-flight cursor + all scratch slots, notably the immediate slots 6/7 disjoint from the RMW's 0/1/2) at
+/// every micro-op boundary and proving the resumed run reproduces the run-to-completion final state +
+/// transaction stream bit-for-bit. Pins that `imm_rmw_recipe` keeps `MicroState` fixed-size bincode.
+#[test]
+fn addi_quiescable_and_serializable_at_every_micro_op_boundary() {
+    // Two shapes: a byte (An) RMW (the short capture + write) and a long (A2) RMW (the two-word capture seam).
+    let shapes: &[(&str, &str)] = &[
+        ("ADD.b.json", "0613 [ADD.b #, (A3)] 5"), // (An).b RMW (byte capture + write)
+        ("ADD.l.json", "0692 [ADD.l #, (A2)] 33"), // (An).l RMW (the two-word immediate capture↔RMW seam)
+    ];
+    for (fname, name) in shapes {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| t["name"].as_str().unwrap() == *name)
+            .unwrap_or_else(|| panic!("C2 ADDI snapshot anchor {name} not found in {fname}"));
+        let ini = &case["initial"];
+
+        let mut rref = Cpu68000::new(build_regs(ini));
+        let mut bref = build_bus(ini);
+        rref.run_instruction(&mut bref);
+
+        let cfg = bincode::config::standard();
+        let boundaries = {
+            let mut cpu = Cpu68000::new(build_regs(ini));
+            let mut bus = build_bus(ini);
+            cpu.start_instruction();
+            let mut n = 0usize;
+            while cpu.step_micro_op(&mut bus) == Step::Continue {
+                n += 1;
+            }
+            n
+        };
+        for pause_after in 0..=boundaries {
+            let mut cpu = Cpu68000::new(build_regs(ini));
+            let mut bus = build_bus(ini);
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "{name}: resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "{name}: transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+    eprintln!("C2 ADDI snapshot/restore: ADDI.b (A3) + ADDI.l (A2) (the two-word immediate capture↔RMW seam) resumed identically at every micro-op boundary");
 }

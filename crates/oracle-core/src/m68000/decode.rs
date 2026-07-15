@@ -138,6 +138,36 @@ pub fn cmp_class(opcode: u16) -> CmpClass {
     CmpClass::None
 }
 
+/// Classify a group-0 immediate-to-EA opcode (`0000 hhhh ss mmm rrr`) into its ALU op + operand size, or
+/// `None` if it is not an in-scope `*I` instruction. The shared classifier for the `imm_rmw_recipe` family —
+/// `ADDI`/`SUBI`/`ANDI`/`ORI`/`EORI`, each hiding as a contaminant inside an already-vendored register-form
+/// file (ADD/SUB/AND/OR/EOR). Classifying by OPCODE keeps [`decode`] and the SST runner's `covered()` in
+/// agreement (the `cmp_class` pattern).
+///
+/// The high byte selects the op: `0x06 → Add` (ADDI). (Later commits extend this by one high byte each —
+/// `0x04 → Sub` SUBI, `0x02 → And` ANDI, `0x00 → Or` ORI, `0x0A → Eor` EORI.) The size field `ss = (opcode >>
+/// 6) & 3` gives `0 → Byte`, `1 → Word`, `2 → Long`; `ss == 3` (a `.l`-space CMPI-style code) is NOT an `*I`
+/// form and returns `None`. This classifier does NOT filter the destination EA mode — the caller pairs it with
+/// a data-alterable guard (`mode == 0 || is_dst_mem_mode`), which excludes the `*toSR`/`*toCCR` mode-7/4 `#imm`
+/// single points (0x06 has none, but the guard is uniform across the family).
+#[inline]
+pub fn imm_class(opcode: u16) -> Option<(AluOp, Size)> {
+    let ss = (opcode >> 6) & 3;
+    if ss == 3 {
+        return None;
+    }
+    let op = match (opcode >> 8) & 0xFF {
+        0x06 => AluOp::Add, // ADDI
+        _ => return None,
+    };
+    let size = match ss {
+        0 => Size::Byte,
+        1 => Size::Word,
+        _ => Size::Long,
+    };
+    Some((op, size))
+}
+
 /// Decode the opcode currently in `regs.prefetch[0]` into its micro-op recipe, latching the original opcode
 /// into the recipe ([`MicroState::set_opcode`]) so the address-error abort (E3) can stack it as the IR /
 /// SSW fields after the prefetch shifts have overwritten `regs.prefetch`.
@@ -559,6 +589,20 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         && (bit_mode == 0 || is_dst_mem_mode(bit_mode, bit_reg))
     {
         return bit_recipe(opcode, AluOp::Bset, 2, regs);
+    }
+    // ADDI/SUBI/ANDI/ORI/EORI `#imm,<ea>` (`0000 hhhh ss mmm rrr`, group-0 high byte in {0x06 ADDI, 0x04 SUBI,
+    // 0x02 ANDI, 0x00 ORI, 0x0A EORI}, `ss` = 00/01/10) — the immediate-to-EA read-modify-write built by
+    // [`imm_rmw_recipe`] (the CMPI immediate-capture idiom + the `ea_dst` RMW writeback). Classified by high
+    // byte via [`imm_class`]; only ADDI (0x06) is admitted this commit (the classifier returns `None` for the
+    // other high bytes until later commits). The destination is data-alterable only (`Dn` (0) or the seven
+    // alterable-memory modes). DISJOINT from CMPI (0x0C, decoded above), the bit-static form (0x08), the
+    // dynamic BTST/BCHG/BCLR/BSET (0x01xx, bit 8 set — all decoded above), MOVEP (bit 8 set), and the
+    // `*toSR`/`*toCCR` single points (mode 7/4 `#imm`, excluded by the data-alterable dest guard). Odd word/
+    // long EAs fault on the RMW read via the E3/E4 address-error abort (in scope).
+    if bit_mode == 0 || is_dst_mem_mode(bit_mode, bit_reg) {
+        if let Some((op, size)) = imm_class(opcode) {
+            return imm_rmw_recipe(opcode, op, size);
+        }
     }
     // CMPA `<ea>,An` (`1011 aaa 0 11/111 mmm rrr`, nibble 0xB, opmode 3 = `.w` / opmode 7 = `.l`) — the
     // flag-only address compare `An − <ea>` (An the minuend, full 32 bits). All 12 source modes via the MOVEA
@@ -2806,6 +2850,111 @@ fn cmpi_ea_read_long(
         }
         _ => todo!("cmpi_ea_read_long mode {mode}/{reg} not yet covered"),
     }
+}
+
+/// `ADDI`/`SUBI`/`ANDI`/`ORI`/`EORI #imm,<ea>` (`0000 hhhh ss mmm rrr`) — the shared immediate-to-EA
+/// read-modify-write builder for the whole `*I` family. Composes the CMPI immediate-capture idiom
+/// ([`cmpi_recipe`]'s capture block, VERBATIM) with the `ea_dst`/`ea_dst_long` RMW writeback — the memory (or
+/// `Dn`) value is the minuend `a`, the captured immediate the addend/subtrahend `b`. `op` selects the ALU
+/// operation (from [`imm_class`]); flags follow it (Add/Sub = full add/sub with X = C; And/Or/Eor = logic N/Z,
+/// V = C = 0, X preserved — all proven, reused, NOT reinvented).
+///
+/// Immediate encoding (identical to `cmpi_recipe`): **byte/word** = ONE extension word captured via
+/// `EaCalc{base = ImmWord}` into `IMM_SLOT` BEFORE the refill shifts it out; **long** = TWO extension words
+/// assembled by the `Combine32` HI/LO idiom (HI captured before the refill, LO after). Scratch slots 6 (the
+/// byte/word immediate or the long HI half) and 7 (the assembled immediate) mirror `cmpi_recipe`'s convention —
+/// DISJOINT from `ea_dst`'s slots (0 read value, 1 result, 2 EA, 3 abs-HI, 4/5 long lo) so every in-flight
+/// value stays snapshot-visible.
+///
+/// Two destination shapes by `mode = (opcode>>3)&7`:
+/// - **`Dn` (mode 0):** the register form — no memory access. After the capture: `[Alu{op, size, a =
+///   dn_operand(reg, size), b = Scratch(IMM_SLOT), dst = dn_dest(reg, size)}, Prefetch]`. Byte/word = 8 cyc
+///   (the capture's one refill + this trailing refill), long = 16 cyc (the capture's two-word fetch + the
+///   trailing refills). The `Dn` value is the minuend (correct for the non-commutative SUBI later).
+/// - **memory (2-7):** the alterable-memory RMW via `ea_dst`/`ea_dst_long`, `b = Scratch(IMM_SLOT)`, `dst =
+///   Scratch(1)` — identical to [`arith_dn_ea`] but the addend is the captured immediate. Odd word/long EAs
+///   fault on the RMW read via the E3/E4 address-error abort (in scope).
+fn imm_rmw_recipe(opcode: u16, op: AluOp, size: Size) -> MicroState {
+    let mode = (opcode >> 3) & 7;
+    let reg = (opcode & 7) as u8;
+    // Scratch slots: 6 holds the captured immediate (byte/word) or its HI half (long); 7 holds the assembled
+    // long immediate. Disjoint from `ea_dst`'s slots (0 read, 1 result, 2 EA, 3 abs-HI, 4/5 long lo) so every
+    // in-flight value is snapshot-visible.
+    const IMM_HI_SLOT: u8 = 6;
+    const IMM_SLOT: u8 = 7;
+    let mut buf = RecipeBuf::new();
+    // Capture the immediate FIRST (before the EA's extension words / the refill), exactly as `cmpi_recipe`.
+    if size == Size::Long {
+        // Assemble the 32-bit immediate: HI = prefetch[1] captured BEFORE the refill shifts it out
+        // (`(0 << 16) | prefetch[1]` while the slot is still the fresh-recipe zero), a refill shifts the LO
+        // word into prefetch[1], then `(HI << 16) | LO`. This refill is the instruction's FIRST refill.
+        buf.push(MicroOp::Combine32 {
+            hi: 0,
+            lo: Operand::ImmWord,
+            dst: IMM_HI_SLOT,
+        });
+        buf.push(MicroOp::Prefetch);
+        buf.push(MicroOp::Combine32 {
+            hi: IMM_HI_SLOT,
+            lo: Operand::ImmWord,
+            dst: IMM_SLOT,
+        });
+    } else {
+        // Park the immediate word (its low byte/word is the operand) BEFORE any refill shifts it out, then a
+        // single refill consumes it and brings the EA's first extension word into prefetch[1].
+        buf.push(MicroOp::EaCalc {
+            base: Operand::ImmWord,
+            index: Operand::Zero,
+            disp: Operand::Zero,
+            dst: IMM_SLOT,
+        });
+        buf.push(MicroOp::Prefetch);
+    }
+    // Then the RMW writeback: the memory/register value is the minuend `a`, the captured immediate the addend.
+    if mode == 0 {
+        // Dn (mode 0) register form — no memory access. The register value is the minuend (correct for SUBI's
+        // non-commutativity). Byte/word = 8 cyc: the capture's one refill (r@pc+4) + this arm's ONE trailing
+        // refill (r@pc+6), no idle. Long = 16 cyc: the capture's two-word fetch (HI in prefetch[1] + LO refill
+        // r@pc+4) + TWO trailing refills (r@pc+6, r@pc+8) + the register long idle n4 — pinned to the vendored
+        // `[r@pc+4, r@pc+6, r@pc+8, n4]` ADDI.l Dn stream.
+        buf.push(MicroOp::Alu {
+            op,
+            size,
+            a: dn_operand(reg, size),
+            b: Operand::Scratch(IMM_SLOT),
+            dst: dn_dest(reg, size),
+        });
+        buf.push(MicroOp::Prefetch);
+        if size == Size::Long {
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::Internal { cycles: 4 });
+        }
+    } else {
+        // Memory (2-7): the alterable-memory RMW skeleton (identical to `arith_dn_ea`, addend = the immediate).
+        //
+        // For **byte/word** the capture's single refill already shifted the EA's first extension word into
+        // prefetch[1], so `ea_dst`'s per-mode EaCalc/read stream aligns directly (bus = `[r@pc+4, <ea_dst>]`,
+        // e.g. `(An).b` = `[r@pc+4, READ.b, r@pc+6, WRITE.b]` = 16 cyc).
+        //
+        // For **long** the immediate is TWO words, so after the `Combine32` capture prefetch[1] still holds the
+        // LO immediate word — the EA's extension words have NOT been shifted in yet. ONE extra leading refill
+        // brings the EA's first ext word into prefetch[1] AND supplies the extra bus cycle, after which
+        // `ea_dst_long`'s per-mode stream aligns exactly (this prepended-refill + `ea_dst_long` composition is
+        // byte-for-byte the CMPI long read structure `cmpi_ea_read_long` uses, only writing back instead of
+        // discarding — e.g. `(An).l` = `[r@pc+4, r@pc+6, READ.hi, READ.lo, r@pc+8, WRITE.lo, WRITE.hi]` = 28
+        // cyc). Odd word/long EAs fault on the RMW read via the E3/E4 address-error abort (in scope).
+        if size == Size::Long {
+            buf.push(MicroOp::Prefetch);
+        }
+        ea_dst(&mut buf, mode, reg, size, |a| MicroOp::Alu {
+            op,
+            size,
+            a,
+            b: Operand::Scratch(IMM_SLOT),
+            dst: Dest::Scratch(1),
+        });
+    }
+    buf.finish()
 }
 
 /// `Bcc`/`BRA` (`0110 cccc dddddddd`, 0x6xxx; cc != 1 — cc == 1 is BSR, a separate arm): a conditional
