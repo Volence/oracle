@@ -36,5 +36,10 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy (deny warnings)
         run: cargo clippy --all-targets -- -D warnings
+      # Fetch the pinned SingleStepTests vendor data so the SST suite actually runs (a missing dir
+      # would make every per-file test skip and the suite pass vacuously — the `vendor_data_present_
+      # when_running_in_ci` guard test turns that into a hard failure under CI).
+      - name: Fetch SingleStepTests vendor data
+        run: ./tools/fetch-tests.sh
       - name: Test
         run: cargo test --workspace

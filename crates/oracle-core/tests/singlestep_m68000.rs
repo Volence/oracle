@@ -39,6 +39,33 @@ const VENDOR_DIR: &str = concat!(
     "/../../vendor/ProcessorTests/68000/v1"
 );
 
+/// CI guard: the vendored SingleStepTests data MUST be present when running under CI, so a fetch
+/// failure fails LOUDLY instead of every per-file test skipping cleanly and the whole SST suite
+/// (the 1,000,058-case ground-truth sweep) passing VACUOUSLY. GitHub Actions sets `CI=true`; the
+/// `build-test-lint` job runs `tools/fetch-tests.sh` before the test step, so if the dir or any
+/// vendored file is still missing in CI, that fetch regressed and this test must fail. Locally (no
+/// `CI` env var) this is a no-op — fetching is optional for dev and the per-file `SKIP` guards keep
+/// the suite friendly.
+#[test]
+fn vendor_data_present_when_running_in_ci() {
+    if std::env::var_os("CI").is_none() {
+        return; // local dev: the per-file SKIP guards handle an absent vendor dir
+    }
+    assert!(
+        Path::new(VENDOR_DIR).exists(),
+        "CI: vendored SingleStepTests dir {VENDOR_DIR} is missing — tools/fetch-tests.sh must run \
+         before the test job (a missing dir makes the whole SST suite skip and pass vacuously)"
+    );
+    for f in FILES {
+        let p = format!("{VENDOR_DIR}/{f}");
+        assert!(
+            Path::new(&p).exists(),
+            "CI: vendored SST file {p} is missing — tools/fetch-tests.sh did not fetch the full \
+             suite (the SST sweep would silently skip this family)"
+        );
+    }
+}
+
 /// Mnemonic files driven by the current decode. Extend as opcode coverage grows (keep in sync with
 /// `tools/fetch-tests.sh`).
 const FILES: &[&str] = &[
