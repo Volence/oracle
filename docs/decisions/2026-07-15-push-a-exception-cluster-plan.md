@@ -1,21 +1,29 @@
 # Push A plan: the exception/async cluster (D1–D4)
 
-**Status: IN PROGRESS 2026-07-15. A1 SHIPPED** (`0c1fb7c` privilege + `6988bcb` STOP/CpuState).
-`Cpu68000::step()`, the vector-8 privilege gate, and STOP + `CpuState{Normal,Stopped,Halted}` are done.
+**Status: IN PROGRESS 2026-07-15. A1 + A2 SHIPPED** (`0c1fb7c` privilege + `6988bcb` STOP/CpuState).
+`Cpu68000::step()`, the vector-8 privilege gate, and STOP + `CpuState{Normal,Stopped,Halted}` are done;
+`decode` is now TOTAL over the whole 65536-opcode space (no reachable `todo!()`). **NEXT = A3 trace.**
 
-**A2 SPLIT** (after measuring 17,984 decode panics over 65536):
+**A2 SPLIT — DONE** (after measuring 17,984 decode panics over 65536):
 - **A2a SHIPPED** (`04ae2e6`): the fall-through classifier — line-A (v10) / line-F (v11) / ILLEGAL (v4,
   incl. `0x4AFC`) via the shared `decode_time_exception_recipe(vector)` (privilege refactored into it).
   Kills the fall-through panic class: **17,984 → 2,805 panics**. SST 1,000,058 green.
-- **A2b NEXT** (the residual **2,805** panics = EA-builder `todo!`s in legal arms handed an illegal
-  `(mode,reg)`). Design: the EA builders (`ea_src`/`ea_src_long`/`ea_dst`/`ea_dst_long`/`ea_tas`/
-  `ea_move` src+dst/`ea_movea_long`/`cmpi_ea_read_long`) are the ground-truth arbiters of legal EAs
-  (their `_ => todo!()` = "illegal for this instruction"). Change each to **signal illegality** (return
-  `bool`; `_ => return false`) and each arm routes `false → decode_time_exception_recipe(4)`. Then the
-  **full 65536 no-panic classifier-fingerprint sweep**: assert line-A = line-F = **4096** literal, plus
-  implemented/illegal counts (so any future mask typo that flips an opcode between classes fails with a
-  visible diff, per the owner's design note). Residual distribution (nibble): 0x1/2/3xxx MOVE ≈ 1,650;
-  0x8/9/B/C/Dxxx ≈ 600; 0xExxx shifts 352; 0x4xxx 169; 0x0xxx 34.
+- **A2b SHIPPED** (`b597ebb` refactor + `a38f270` fingerprint) — the residual **2,805** panics now raise
+  ILLEGAL (vector 4). The EA builders are the ground-truth arbiters of legal EAs (their `_` arm = "illegal
+  for this instruction"); each now **signals illegality** instead of panicking — the value helpers
+  `src_seq`/`move_emit_source` return `Option` (`None`), the recipe builders (`ea_src`/`ea_src_long`/
+  `ea_dst`/`ea_dst_long`/`ea_move`+`move_emit_dest`/`ea_movea`(_long)/`ea_cmpa`/`ea_tst`/
+  `ea_read_word_operand`/`cmp_ea_src_long`/`cmpi_ea_read_long`) return `bool` (`false`), and every decode
+  arm routes it to `decode_time_exception_recipe(4)`. **Correction to the pre-push design**: the residual
+  was NOT purely the 9 EA-builder `todo!`s — it also included `ea_read_word_operand`'s `panic!` (16,
+  MOVEtoCCR/toSR from An) and `jmp_recipe`/`jsr_recipe`'s `unreachable!` (36+36, non-control JMP/JSR EAs).
+  JMP/JSR are gated at the arm with `is_control_mode` (the PEA/LEA precedent), so those recipes'
+  `unreachable!` are now genuine; `ea_tas` was already gated (`is_dst_mem_mode`) so its fall-through is
+  likewise `unreachable!` (never a reachable `todo!`, so it needed no `bool`). Because `bool` is not
+  `#[must_use]`, all 25 production call sites were wrapped explicitly. The **65536 no-panic
+  classifier-fingerprint sweep** is frozen: implemented **47552**, ILLEGAL **9792**, line-A = line-F =
+  **4096** (a priori nibbles), partitioning all 65536. Guardrail holds: 9792 − 6987(A2a fall-through) =
+  **2805** = the exact measured residual, so no legal encoding was swallowed. SST 1,000,058 green (660.84s).
 - The real `begin_next` priority dispatch lands with A3 (trace) — nothing to order against until then.
 
 Implements Push A of the integration-pivot design
