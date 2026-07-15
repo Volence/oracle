@@ -299,6 +299,12 @@ pub enum Operand {
     /// [`Operand::WordStep`]; distinct from [`Operand::DataRegFull`] (the dynamic `Dn`-count form, which the
     /// recipe passes directly and the exec masks `& 63` at run time).
     ShiftCount(u8),
+    /// A decode-time **quick immediate** baked into the recipe as a literal value (the `ADDQ`/`SUBQ`
+    /// immediate `qqq != 0 ? qqq : 8`, a constant 1-8, zero-extended). Resolved as the literal `u8`. Mirrors
+    /// the constant operands [`Operand::Zero`]/[`Operand::WordStep`]/[`Operand::ShiftCount`]; distinct from
+    /// [`Operand::ImmWord`] (a fetched extension word) — the value is fully known at decode time and needs no
+    /// bus access.
+    Quick(u8),
     /// The displacement word currently in the prefetch queue, sign-extended: `sign_extend16(prefetch[1])`.
     /// The `d16(An)`/`abs.w` extension word; captured by [`MicroOp::EaCalc`] **before** the refill that
     /// shifts it out of the queue.
@@ -1320,6 +1326,7 @@ impl MicroState {
             Operand::Zero => 0,
             Operand::WordStep => 2,
             Operand::ShiftCount(c) => c as u32,
+            Operand::Quick(q) => q as u32,
             Operand::DispWord => sign_extend16(regs.prefetch[1]),
             Operand::PcOfExt => regs.pc.wrapping_add(2),
             Operand::ExtWordHi => (regs.prefetch[1] as u32) << 16,

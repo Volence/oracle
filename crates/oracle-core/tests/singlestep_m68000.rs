@@ -1179,6 +1179,33 @@ fn eor_in_scope(opcode: u16) -> bool {
     }
 }
 
+/// Whether the framework covers this genuine `ADDQ #data,<ea>` case — the load-bearing classifier for the
+/// **CONTAMINATED** `ADD.*` files (each mixes the genuine `ADD Dn,<ea>` / `<ea>,Dn` register opcode, high
+/// nibble `0xD`, with the dedicated `ADDQ` quick-immediate opcode `0x5xxx` bit 8 = 0). Classifying **by
+/// OPCODE** (`0x5xxx`, bit 8 == 0, `ss` != 3), this admits ONLY ADDQ; the SUBQ (bit 8 == 1) contaminant in the
+/// `SUB.*` files is a DIFFERENT instruction not admitted this commit (implemented in C1). The `ss == 3` space
+/// (Scc/DBcc, bits 7-6 == 11) is disjoint by size and never matches.
+///
+/// Dest in scope = the FULL ADDQ destination set: `Dn` (0), `An` word/long (1, byte→An is illegal/absent),
+/// the seven alterable-memory modes (`(An)` 2 — INCL the clean `(A7)` mode-2 indirect, `(An)+` 3, `-(An)` 4,
+/// `d16(An)` 5, `d8(An,Xn)` 6, `abs.w` 7/0, `abs.l` 7/1). Odd word/long EAs are address errors the E3/E4 abort
+/// covers (NO parity filter). PC-relative (7/2, 7/3) / `#imm` (7/4) are not alterable and absent.
+fn addq_covered(opcode: u16) -> bool {
+    if opcode & 0xF000 != 0x5000 || (opcode >> 8) & 1 != 0 {
+        return false; // not ADDQ (e.g. SUBQ bit8=1, or not the 0x5xxx family)
+    }
+    let ss = (opcode >> 6) & 3;
+    if ss == 3 {
+        return false; // Scc / DBcc (handled by their own arms), not ADDQ
+    }
+    let mode = (opcode >> 3) & 7;
+    let reg = opcode & 7;
+    mode == 0
+        || (mode == 1 && ss != 0) // An word/long (byte→An illegal/absent)
+        || (2..=6).contains(&mode)
+        || (mode == 7 && (reg == 0 || reg == 1))
+}
+
 /// Whether the framework covers this case (else it is an xfail for this push). `ADD`/`SUB` in word, byte and
 /// long sizes, each in two forms — `Dn,<ea>` (memory dest; word ADD=0xD140/SUB=0x9140, byte ADD=0xD100/
 /// SUB=0x9100, long ADD=0xD180/SUB=0x9180) and `<ea>,Dn` (register dest; word ADD=0xD040/SUB=0x9040, byte
@@ -1789,6 +1816,16 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     if matches!(opcode & 0xFFF8, 0x4880 | 0x48C0 | 0x4840) {
         return true;
     }
+    // ADDQ `#data,<ea>` (`0101 qqq 0 ss mmm rrr`, 0x5xxx bit 8 = 0, ss != 3) — the quick-immediate add. NOW
+    // DECODED and in scope (the ADD.* files MIX the genuine `ADD` register form, high nibble 0xD, with this
+    // dedicated ADDQ opcode in the 0x5xxx space, 8265 cases/file across ADD.b/w/l). Classified by OPCODE via
+    // `addq_covered`, admitting ONLY ADDQ (the SUBQ contaminant in the SUB.* files, bit 8 = 1, is C1). Placed
+    // AFTER `dbcc_covered` (ss == 3, mode 001) so DBcc is consumed first; the `ss != 3` guard makes ADDQ
+    // disjoint from Scc/DBcc anyway. Full dest set incl the clean `(A7)` mode-2 indirect; odd word/long EAs are
+    // address errors the E3/E4 abort covers (no parity filter, no `(A7)` carve-out).
+    if addq_covered(opcode) {
+        return true;
+    }
     // Scc `<ea>` (`0101 cccc 11 mmm rrr`, opcode & 0xF0C0 == 0x50C0) — the conditional byte set (0xFF if cc
     // TRUE else 0x00, NO flags). Classified by OPCODE. The 0x50C8 mode-001 DBcc form is consumed by
     // `dbcc_covered` ABOVE (which returns true and so never reaches here); the data-alterable match below also
@@ -2143,8 +2180,14 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 976_047,
-        "expected 976047 covered cases — the 2026-07-15 `(A7)` mode-2 un-defer flipped plain `(A7)` indirect \
+        ran >= 984_312,
+        "expected 984312 covered cases — C0 un-skips ADDQ (`0x5xxx`, bit 8 = 0, ss != 3), the quick-immediate \
+         add hiding as a contaminant in the ADD.b/w/l files, admitting +8265 cases over the 976047 baseline \
+         (ADD.b 2635 + ADD.w 2841 + ADD.l 2789). New vocab `Operand::Quick(u8)` (decode-time 1-8, resolved as \
+         the literal), `addq_recipe` (Dn / An word-long / memory RMW arms), and the `addq_covered` admission — \
+         value/flags reuse the proven `AluOp::Add`/`Adda` VERBATIM; the An `.l` = 6 cyc quirk (n2, cheaper than \
+         the word form's 8) uses the bespoke An idle (NOT `adda_suba_recipe`). \
+         Prior baseline (976047) — the 2026-07-15 `(A7)` mode-2 un-defer flipped plain `(A7)` indirect \
          (`mode == 2 && reg == 7`) from deferred to covered across the older ADD/SUB/MOVE(A)/CMP(I/A)/AND/OR/EOR/ \
          NEG/NEGX/NOT/ADDA/SUBA families (+5769 cases over the 970278 ItoCCR baseline). Decode ALWAYS resolved A7 \
          via `addr_reg` like any An (no A7 guard) — the deferral lived only in `covered()`, so this is a pure \
@@ -3023,8 +3066,13 @@ fn add_sub_match_singlesteptests() {
          write-fault leaves `-(An)` decremented by only 2 — the 68000's two-step long store). The only \
          remaining deferrals are mode-scope (NOT odd-address): the `(A7)` (mode 2) plain-indirect form (a \
          pre-existing convention — its `(A7)+`/`-(A7)` siblings are in scope), the illegal `ADD.b An,Dn` byte \
-         source, and not-yet-implemented EA modes. Per-file true counts (each file holds 8065 cases): ADD.w \
-         4841 + SUB.w 4845 + ADD.b 5003 + SUB.b 4971 + ADD.l 4876 + SUB.l 4898 (ADD/SUB 29434) + MOVE.w 7746 \
+         source, and not-yet-implemented EA modes. NEW THIS PUSH (C0): ADDQ (`0x5xxx`, bit 8 = 0, ss != 3) is \
+         NOW DECODED and in scope in the ADD.* files (correcting the earlier `*Q skipped` note): the \
+         quick-immediate add across the FULL data-alterable dest set + An word/long (byte→An illegal/absent), \
+         odd EAs = E3/E4 address errors, plain `(A7)` mode-2 clean — +8265 (ADD.b 2635 + ADD.w 2841 + ADD.l \
+         2789), raising the covered total 976047 → 984312. Per-file covered counts: ADD.w \
+         7773 (4932 ADD + 2841 ADDQ) + SUB.w 4943 + ADD.b 7742 (5107 + 2635) + SUB.b 5092 + ADD.l 7770 (4981 \
+         + 2789) + SUB.l 4999 + MOVE.w 7746 \
          + MOVE.b 7796 + MOVE.l 7768 (MOVE 23310) + MOVEA.w 7923 + MOVEA.l 7931 (MOVEA 15854) + Bcc 8065 + \
          BSR 8065 (incl. the 35 `0x61FF` byte-form −1 odd-target cases) + JMP 8065 + JSR 8065 + RTS 8065 + \
          DBcc 8065 + RTR 8065 + RTE 8065 (all 8 fully in scope — every odd target/pop now covered) + TRAP \
@@ -3035,7 +3083,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+ANDItoCCR+ORItoCCR+EORItoCCR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX+ABCD+SBCD+NBCD+MOVEfromUSP+MOVEtoUSP+MOVEfromSR+MOVEtoCCR+MOVEtoSR+MOVEP.w+MOVEP.l (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+ADDQ+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+ANDItoCCR+ORItoCCR+EORItoCCR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX+ABCD+SBCD+NBCD+MOVEfromUSP+MOVEtoUSP+MOVEfromSR+MOVEtoCCR+MOVEtoSR+MOVEP.w+MOVEP.l (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -10492,4 +10540,147 @@ fn eor_to_ccr_quiescable_and_serializable_at_every_micro_op_boundary() {
         pause_after += 1;
     }
     eprintln!("A2 EORItoCCR snapshot/restore: EORItoCCR # (discard read + CcrLogic{{Eor}} + two re-prefetches, system byte preserved) resumed identically at every micro-op boundary");
+}
+
+/// C0 — named anchors pinning the new `ADDQ #data,<ea>` recipe (the new `Operand::Quick` + `addq_recipe`)
+/// against the vendored stream WITHOUT relying on the bulk `covered()` sweep. Each anchor is a real vendored
+/// case (hiding inside the ADD.b/w/l files) exercising a distinct ADDQ shape: a `Dn` byte and long (the b/w=4 /
+/// l=8 register idle), the `An` word AND long forms (the KEY quirk: `.l` = 6 cyc is CHEAPER than `.w`'s 8, NO
+/// flags, full-32 An write), an `(An)` memory RMW byte and long (12 / 20), a `-(An).l` predecrement (22), an
+/// `abs.l` (20), an ODD `(An).w` EA that PASSES via the E3/E4 address-error abort (len 50), and a plain `(A7)`
+/// mode-2 case (clean, in scope). Every anchor must decode as an ADDQ opcode (`addq_covered`) and pass both
+/// framework drivers via `run_case` (regs/SR/RAM/prefetch/cycles + the per-cycle transaction stream).
+#[test]
+fn addq_anchor_cases_pass_both_drivers() {
+    // (file, case-name, expected-length) — one real vendored case per ADDQ shape.
+    let anchors: &[(&str, &str, u32)] = &[
+        ("ADD.b.json", "5e05 [ADD.b Q, D5] 22", 4), // Dn.b (register idle b/w = 4)
+        ("ADD.l.json", "5c85 [ADD.l Q, D5] 15", 8), // Dn.l (register idle l = 8)
+        ("ADD.w.json", "5e4a [ADD.w Q, A2] 1", 8),  // An.w (n4 idle = 8, NO flags)
+        ("ADD.l.json", "528c [ADD.l Q, A4] 47", 6), // An.l THE QUIRK (n2 idle = 6, cheaper than .w)
+        ("ADD.b.json", "5016 [ADD.b Q, (A6)] 34", 12), // (An) byte RMW = 12
+        ("ADD.l.json", "5297 [ADD.l Q, (A7)] 3", 20), // (An).l RMW = 20 (also an (A7) mode-2 case)
+        ("ADD.l.json", "58a2 [ADD.l Q, -(A2)] 5", 22), // -(An).l predecrement RMW = 22
+        ("ADD.b.json", "5439 [ADD.b Q, (xxx).l] 141", 20), // abs.l = 20
+        ("ADD.w.json", "5653 [ADD.w Q, (A3)] 69", 50), // ODD (An).w EA → E3/E4 address error, len 50
+        ("ADD.b.json", "5a17 [ADD.b Q, (A7)] 89", 12), // plain (A7) mode-2 (clean, in scope)
+    ];
+    let mut found = 0usize;
+    for (fname, name, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| t["name"].as_str().unwrap() == *name)
+            .unwrap_or_else(|| panic!("C0 ADDQ anchor {name} not found in {fname}"));
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert!(
+            addq_covered(opcode),
+            "anchor {name} must be addq_covered (opcode {opcode:#06x})"
+        );
+        assert_eq!(
+            case["length"].as_u64().unwrap() as u32,
+            *length,
+            "ADDQ anchor {name} cycle length"
+        );
+        run_case(case);
+        found += 1;
+    }
+    // The An.l quirk anchor: 6 cyc (cheaper than the word form's 8), NO flag change, full-32 An write.
+    let path = format!("{VENDOR_DIR}/ADD.l.json");
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let anl = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "528c [ADD.l Q, A4] 47")
+        .unwrap();
+    let isr = anl["initial"]["sr"].as_u64().unwrap() as u16;
+    let fsr = anl["final"]["sr"].as_u64().unwrap() as u16;
+    let ia4 = anl["initial"]["a4"].as_u64().unwrap() as u32;
+    let fa4 = anl["final"]["a4"].as_u64().unwrap() as u32;
+    let op = anl["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+    let qqq = (op >> 9) & 7;
+    let data_q = if qqq == 0 { 8 } else { qqq } as u32;
+    assert_eq!(fsr, isr, "ADDQ.l→An sets NO flags (SR byte-identical)");
+    assert_eq!(
+        fa4,
+        ia4.wrapping_add(data_q),
+        "ADDQ.l→An is a full-32 An write (A4 += data)"
+    );
+    assert_eq!(found, anchors.len(), "all C0 ADDQ anchors exercised");
+    eprintln!("C0 ADDQ anchors: {found} cases (Dn.b/.l, An.w/.l [the .l=6 quirk, no flags, full-32], (An)/(An).l/-(An).l RMW, abs.l, odd-EA E3/E4, plain (A7)) passed both drivers");
+}
+
+/// C0 — the snapshot/restore anchor for the new `ADDQ` recipe, driven across BOTH new shapes: the `An`-direct
+/// no-flag write (the bespoke n2/n4 idle) and a memory read-modify-write. Drives a real vendored `ADDQ.l (A7)`
+/// RMW case through the quiesce driver, snapshotting + restoring the WHOLE `Cpu68000` (incl. the in-flight
+/// cursor + all scratch slots) at every micro-op boundary and proving the resumed run reproduces the
+/// run-to-completion final state + transaction stream bit-for-bit. Pins that the `Operand::Quick` recipe keeps
+/// `MicroState` fixed-size bincode (it is `Copy`).
+#[test]
+fn addq_quiescable_and_serializable_at_every_micro_op_boundary() {
+    // Two shapes: the An-direct no-flag write, and the (A7) mode-2 long memory RMW.
+    let shapes: &[(&str, &str)] = &[
+        ("ADD.l.json", "528c [ADD.l Q, A4] 47"), // An.l direct (bespoke n2 idle)
+        ("ADD.l.json", "5297 [ADD.l Q, (A7)] 3"), // (A7) mode-2 long RMW
+    ];
+    for (fname, name) in shapes {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| t["name"].as_str().unwrap() == *name)
+            .unwrap_or_else(|| panic!("C0 ADDQ snapshot anchor {name} not found in {fname}"));
+        let ini = &case["initial"];
+
+        let mut rref = Cpu68000::new(build_regs(ini));
+        let mut bref = build_bus(ini);
+        rref.run_instruction(&mut bref);
+
+        let cfg = bincode::config::standard();
+        let boundaries = {
+            let mut cpu = Cpu68000::new(build_regs(ini));
+            let mut bus = build_bus(ini);
+            cpu.start_instruction();
+            let mut n = 0usize;
+            while cpu.step_micro_op(&mut bus) == Step::Continue {
+                n += 1;
+            }
+            n
+        };
+        for pause_after in 0..=boundaries {
+            let mut cpu = Cpu68000::new(build_regs(ini));
+            let mut bus = build_bus(ini);
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "{name}: resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "{name}: transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+    eprintln!("C0 ADDQ snapshot/restore: ADDQ.l→An (bespoke idle) + ADDQ.l (A7) memory RMW resumed identically at every micro-op boundary");
 }

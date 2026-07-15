@@ -875,6 +875,36 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     if opcode & 0xFFF8 == 0x4E58 {
         return unlink_recipe(opcode);
     }
+    // ADDQ/SUBQ `#data,<ea>` (`0101 qqq d ss mmm rrr`, 0x5xxx, `ss` = 00/01/10 so `(opcode>>6)&3 != 3`) — the
+    // quick-immediate add (bit 8 = 0 → `AluOp::Add`/`Adda`) / subtract (bit 8 = 1 → `AluOp::Sub`/`Suba`). Only
+    // ADDQ is admitted by `covered()` this commit (SUBQ decodes but is not yet in scope); the recipe is
+    // parameterized by direction so both route through `addq_recipe`. Dest in scope: `Dn` (0), `An` word/long
+    // (1, not byte), the seven alterable-memory modes (2-6, 7/0, 7/1). The `ss == 3` space (bits 7-6 == 11) is
+    // Scc/DBcc, handled by their own arms below and disjoint from ADDQ/SUBQ by size — this arm never sees it.
+    {
+        let mode = (opcode >> 3) & 7;
+        let reg = opcode & 7;
+        let ss = (opcode >> 6) & 3;
+        if opcode & 0xF000 == 0x5000
+            && ss != 3
+            && (mode == 0
+                || (mode == 1 && ss != 0)
+                || (2..=6).contains(&mode)
+                || (mode == 7 && reg <= 1))
+        {
+            let size = match ss {
+                0 => Size::Byte,
+                1 => Size::Word,
+                _ => Size::Long,
+            };
+            let (op, addr_op) = if (opcode >> 8) & 1 == 0 {
+                (AluOp::Add, AluOp::Adda)
+            } else {
+                (AluOp::Sub, AluOp::Suba)
+            };
+            return addq_recipe(opcode, op, addr_op, size);
+        }
+    }
     // DBcc (`0101 cccc 11001 rrr`, opcode & 0xF0F8 == 0x50C8) — decrement-and-branch loop. This is the
     // `An`-direct (mode 001) special case of the `Scc` opcode space (`0101 cccc 11 mmm rrr`): only this exact
     // form is DBcc — every other mode is `Scc` (a conditional byte-set, NOT decoded here). The condition AND
@@ -1387,6 +1417,72 @@ fn adda_suba_recipe(opcode: u16, op: AluOp, size: Size) -> MicroState {
     // matches ADD.l <ea>,Dn (and thus ADDA.l/SUBA.l) exactly. Non-bus, so it does not alter the bus stream.
     if size == Size::Word {
         buf.push(MicroOp::Internal { cycles: 4 });
+    }
+    buf.finish()
+}
+
+/// `ADDQ #data,<ea>` / `SUBQ #data,<ea>` (`0101 qqq 0/1 ss mmm rrr`, 0x5xxx, bit8 = 0/1, `ss` = 00/01/10):
+/// add/subtract a decode-time quick immediate `data = qqq != 0 ? qqq : 8` (1-8) to/from the destination.
+/// Parameterized by `op` (the data/`Dn`/memory ALU op — [`AluOp::Add`] for ADDQ, [`AluOp::Sub`] for SUBQ)
+/// and `addr_op` (the An-direct no-flag address op — [`AluOp::Adda`] for ADDQ, [`AluOp::Suba`] for SUBQ).
+/// Three destination arms by `mode = (opcode>>3)&7`:
+///
+/// - **Dn (mode 0):** `[Prefetch, Alu{op, size, a = Dn (the minuend for SUBQ), b = Quick(data), dst = Dn}]`,
+///   then a trailing `Internal{4}` iff `.l`. Timing b/w = 4, l = 8.
+/// - **An (mode 1):** `[Prefetch, Alu{addr_op, size, a = An, b = Quick(data), dst = An}, Internal{idle}]` with
+///   idle = 4 for `.w` (n4) / **2 for `.l` (n2)** — THE QUIRK: ADDQ/SUBQ.l→An = 6 cyc is CHEAPER than the
+///   word form's 8, and CHEAPER than ADDA.l's 8; a naive [`adda_suba_recipe`] reuse (n4 for `.l`) would give 8
+///   and fail the cycle gate. NO flags. Byte→An is illegal and never decoded (absent from the data).
+/// - **memory (2-7):** `ea_dst(mode, reg, size, |a| Alu{op, size, a, b = Quick(data), dst = Scratch(1)})` —
+///   identical to [`arith_dn_ea`] but the addend is `Quick` instead of `dn_operand`; the memory operand is the
+///   minuend (`a`). Byte/word route through `ea_dst`, long through `ea_dst_long` (via `ea_dst`). An odd word/
+///   long EA faults on the RMW read via the E3/E4 address-error abort (in scope).
+fn addq_recipe(opcode: u16, op: AluOp, addr_op: AluOp, size: Size) -> MicroState {
+    let qqq = ((opcode >> 9) & 7) as u8;
+    let data = if qqq == 0 { 8 } else { qqq };
+    let mode = (opcode >> 3) & 7;
+    let reg = (opcode & 7) as u8;
+    let mut buf = RecipeBuf::new();
+    match mode {
+        // Dn: prefetch, size-masked ALU on the register, then the .l trailing idle (b/w = 4, l = 8).
+        0 => {
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::Alu {
+                op,
+                size,
+                a: dn_operand(reg, size),
+                b: Operand::Quick(data),
+                dst: dn_dest(reg, size),
+            });
+            if size == Size::Long {
+                buf.push(MicroOp::Internal { cycles: 4 });
+            }
+        }
+        // An: prefetch, no-flag full-32 An write, then the bespoke idle — n4 for word (= 8) / n2 for long
+        // (= 6, the quirk). Byte→An is never decoded.
+        1 => {
+            buf.push(MicroOp::Prefetch);
+            buf.push(MicroOp::Alu {
+                op: addr_op,
+                size,
+                a: Operand::AddrReg(reg),
+                b: Operand::Quick(data),
+                dst: Dest::AddrReg(reg),
+            });
+            buf.push(MicroOp::Internal {
+                cycles: if size == Size::Word { 4 } else { 2 },
+            });
+        }
+        // memory: the alterable-memory RMW skeleton (identical to `arith_dn_ea`, addend = Quick).
+        _ => {
+            ea_dst(&mut buf, mode, reg, size, |a| MicroOp::Alu {
+                op,
+                size,
+                a,
+                b: Operand::Quick(data),
+                dst: Dest::Scratch(1),
+            });
+        }
     }
     buf.finish()
 }
