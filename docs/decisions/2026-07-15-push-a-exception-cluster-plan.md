@@ -1,6 +1,11 @@
 # Push A plan: the exception/async cluster (D1–D4)
 
-**Status: IN PROGRESS 2026-07-15.** Implements Push A of the integration-pivot design
+**Status: IN PROGRESS 2026-07-15. A1 SHIPPED** (`0c1fb7c` privilege + `6988bcb` STOP/CpuState, on
+docs `679a55e`; each fmt-clean, full triplet, SST 1,000,058 green). `Cpu68000::step()` (orchestrator
+fast path), the vector-8 privilege-violation gate, and STOP + `CpuState{Normal,Stopped,Halted}` are
+done. NEXT = A2 (decode totality); the real `begin_next` priority dispatch lands with A3 (trace).
+
+Implements Push A of the integration-pivot design
 (`2026-07-15-integration-pivot-design.md`, sections D1–D4): the asynchronous exception
 cluster — orchestrator + processor states, decode totality, trace, interrupts/STOP. Pure CPU
 work over `FlatBus`; **no `System` changes** (those are Push B/C).
