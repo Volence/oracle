@@ -177,10 +177,13 @@ const FILES: &[&str] = &[
     // source = data modes, An-direct mode 1 ILLEGAL/absent) reuses `arith_ea_dn` verbatim; `Dn,<ea>` (<ea> =
     // <ea> | Dn, alterable-memory dest 2..6/abs.w/abs.l, mode 000/001 = SBCD/PACK reserved) reuses `arith_dn_ea`
     // verbatim. Identical to AND in every respect except the bit op (`|` vs `&`) and the base nibble (0x8 vs
-    // 0xC): sets N = msb / Z = (result == 0), clears V/C, PRESERVES X (the new `AluOp::Or`). **These files are
-    // CONTAMINATED with ORI** (the `0x00xx` immediate opcode, high nibble 0 — a DIFFERENT instruction NOT
-    // implemented this push): `covered()` classifies by OPCODE (`and_or_in_scope`: high nibble == 0x8),
-    // admitting ONLY the genuine register form so the ORI cases are skipped cleanly (never decoded). All
+    // 0xC): sets N = msb / Z = (result == 0), clears V/C, PRESERVES X (the `AluOp::Or`). **These files also MIX
+    // in ORI** (the `0x00xx` immediate-to-EA opcode, high nibble 0 — a DIFFERENT instruction, NOW DECODED and in
+    // scope via `imm_rmw_recipe` + `imm_class` = `AluOp::Or`): `covered()` classifies by OPCODE — the genuine
+    // register form (high nibble == 0x8) via `and_or_in_scope`, ORI (`0x00xx`) via `imm_covered` → so the
+    // OR.b/w/l files are 100% covered. (The high-byte-0 `0x003C` ORItoCCR / `0x007C` ORItoSR mode-7/4 `#imm`
+    // single points are NOT in these files — they live in their own files, covered by `to_ccr_covered`/
+    // `to_sr_covered` above, and are excluded from `imm_class` by the data-alterable dest guard.) All
     // source/dest modes in scope including plain `(A7)` mode-2 (un-deferred 2026-07-15); odd word/long
     // EAs are address errors the E3/E4 abort covers.
     "OR.b.json",
@@ -1212,14 +1215,14 @@ fn addq_covered(opcode: u16) -> bool {
 /// load-bearing classifier for the **CONTAMINATED** ADD/SUB/AND/OR/EOR files (each mixes the genuine register
 /// form, high nibble `0xD`/`0x9`/`0xC`/`0x8`/`0xB`, with the dedicated group-0 immediate-to-EA opcode
 /// `0000 hhhh ss mmm rrr`). Classifying **by OPCODE** via [`imm_class`] (which admits ADDI = high byte
-/// `0x06`, SUBI = high byte `0x04` and ANDI = high byte `0x02` this commit), the case is in scope iff the destination is data-alterable — `Dn` (0) or an
+/// `0x06`, SUBI = high byte `0x04`, ANDI = high byte `0x02` and ORI = high byte `0x00` this commit), the case is in scope iff the destination is data-alterable — `Dn` (0) or an
 /// alterable-memory mode (2-6, 7/0, 7/1). PC-relative (7/2, 7/3) / `#imm` (7/4) are not alterable and absent;
 /// the `*toSR`/`*toCCR` mode-7/4 `#imm` single points (which live in their own files) are excluded by the same
 /// guard. Odd word/long EAs are address errors the E3/E4 abort covers (NO parity filter); plain `(A7)` mode-2
 /// is clean and in scope.
 fn imm_covered(opcode: u16) -> bool {
     if imm_class(opcode).is_none() {
-        return false; // not an in-scope `*I` opcode (ADDI = 0x06 + SUBI = 0x04 + ANDI = 0x02 admitted this commit)
+        return false; // not an in-scope `*I` opcode (ADDI = 0x06 + SUBI = 0x04 + ANDI = 0x02 + ORI = 0x00 admitted this commit)
     }
     let mode = (opcode >> 3) & 7;
     let reg = opcode & 7;
@@ -1856,8 +1859,8 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // read-modify-write. NOW DECODED and in scope (the ADD/SUB/AND/OR/EOR files MIX the genuine register form,
     // high nibble 0xD/0x9/0xC/0x8/0xB, with this dedicated group-0 opcode). Classified by OPCODE via
     // `imm_covered` → `imm_class`, which admits ADDI (high byte 0x06 → `AluOp::Add`), SUBI (high byte 0x04 →
-    // `AluOp::Sub`) and ANDI (high byte 0x02 → `AluOp::And`) this commit (the classifier returns None for
-    // ORI/EORI until later commits, so those cases stay skipped cleanly).
+    // `AluOp::Sub`), ANDI (high byte 0x02 → `AluOp::And`) and ORI (high byte 0x00 → `AluOp::Or`) this commit
+    // (the classifier returns None for EORI until the last commit, so those cases stay skipped cleanly).
     // Full data-alterable dest set incl the clean `(A7)` mode-2 indirect; odd word/long EAs are address errors
     // the E3/E4 abort covers (no parity filter, no `(A7)` carve-out). This arm is DISJOINT from CMPI (0x0C),
     // the bit-ops (0x08 / 0x01xx), and MOVEP (all decoded/covered above by their own predicates).
@@ -2218,8 +2221,23 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 995_864,
-        "expected 995864 covered cases — C4 un-skips ANDI (`0000 0010 ss mmm rrr` = 0x02xx, ss != 3), the \
+        ran >= 997_325,
+        "expected 997325 covered cases — C5 un-skips ORI (`0000 0000 ss mmm rrr` = 0x00xx, ss != 3), the \
+         immediate-to-EA logical OR hiding as a contaminant in the OR.b/w/l files, admitting +1461 cases over \
+         C4's 995864 (OR.b 454 + OR.w 505 + OR.l 502). ORI REUSES the SHARED `imm_rmw_recipe` from C2 \
+         VERBATIM — OR is commutative, so the recipe passing the memory/`Dn` value as `a` and the captured \
+         immediate as `b` gives `<ea> | imm` (correct). This commit only extends `imm_class` by one high byte \
+         (0x00 → `AluOp::Or`) so decode and `imm_covered` admit ORI, and adds the ORI anchors. Value/flags \
+         reuse the proven `AluOp::Or` VERBATIM: LOGIC flags — N = msb / Z = (result == 0), V = C = 0, X \
+         PRESERVED (NOT the add/sub X = C shape) — byte-identical to the OR / ORItoSR / ORItoCCR families. The \
+         high-byte-0 mode-7/4 `#imm` single points 0x003C (ORItoCCR) / 0x007C (ORItoSR) are NOT ORI: they are \
+         data-INalterable, excluded by `imm_class`'s data-alterable dest guard, live in their own files, and are \
+         covered by `to_ccr_covered`/`to_sr_covered` ABOVE this arm (no double-claim). \
+         Full data-alterable dest set incl the clean `(A7)` mode-2 indirect; odd word/long EAs are address \
+         errors the E3/E4 abort covers (no parity filter). ADDI + SUBI + ANDI + ORI (high bytes \
+         0x06/0x04/0x02/0x00) are admitted this commit via `imm_class`; EORI decode-classifies to None until the \
+         last commit. \
+         C4 baseline (995864) un-skipped ANDI (`0000 0010 ss mmm rrr` = 0x02xx, ss != 3), the \
          immediate-to-EA logical AND hiding as a contaminant in the AND.b/w/l files, admitting +1481 cases over \
          C3's 994383 (AND.b 520 + AND.w 475 + AND.l 486). ANDI REUSES the SHARED `imm_rmw_recipe` from C2 \
          VERBATIM — AND is commutative, so the recipe passing the memory/`Dn` value as `a` and the captured \
@@ -3150,7 +3168,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+ADDQ+SUBQ+ADDI+SUBI+ANDI+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+ANDItoCCR+ORItoCCR+EORItoCCR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX+ABCD+SBCD+NBCD+MOVEfromUSP+MOVEtoUSP+MOVEfromSR+MOVEtoCCR+MOVEtoSR+MOVEP.w+MOVEP.l (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+ADDQ+SUBQ+ADDI+SUBI+ANDI+ORI+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+ANDItoCCR+ORItoCCR+EORItoCCR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX+ABCD+SBCD+NBCD+MOVEfromUSP+MOVEtoUSP+MOVEfromSR+MOVEtoCCR+MOVEtoSR+MOVEP.w+MOVEP.l (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -11302,4 +11320,134 @@ fn andi_quiescable_and_serializable_at_every_micro_op_boundary() {
         }
     }
     eprintln!("C4 ANDI snapshot/restore: ANDI.b (A1) + ANDI.l (A0) (the two-word immediate capture↔RMW seam) resumed identically at every micro-op boundary");
+}
+
+/// C5 — named anchors pinning the new `ORI #imm,<ea>` recipe against the vendored stream WITHOUT relying on the
+/// bulk `covered()` sweep. ORI REUSES the shared `imm_rmw_recipe` from C2 verbatim — OR is commutative, so the
+/// recipe passing the memory/`Dn` value as `a` and the captured immediate as `b` gives `<ea> | imm` (correct).
+/// The LOGIC flags are `AluOp::Or`'s reused verbatim: N = msb / Z = (result == 0), V = C = 0, and — the
+/// load-bearing distinction from the add/sub `*I` twins — **X is PRESERVED** from the initial CCR (logic never
+/// touches X). Each anchor is a real vendored case (hiding inside the OR.b/w/l files) exercising a distinct ORI
+/// shape: a `Dn.l` (len 16) whose result SETS N (msb) with the initial `X = 1` carried through UNCHANGED
+/// (proving the logic X-preservation, NOT the add/sub X = C shape); an `(An).b` memory RMW (len 16); an ODD
+/// `(A0).w` EA that PASSES via the E3/E4 address-error abort (len 54); and a plain `(A7)` mode-2 case (clean, in
+/// scope). Each anchor must decode as an in-scope ORI opcode (`imm_covered` — high byte 0x00) and pass both
+/// framework drivers via `run_case` (regs/SR/RAM/prefetch/cycles + the per-cycle transaction stream).
+///
+/// The high-byte-0 `0x003C` (ORItoCCR) / `0x007C` (ORItoSR) mode-7/4 `#imm` single points are NOT ORI and are
+/// NOT in these files (they live in their own files, covered by `to_ccr_covered`/`to_sr_covered`) — `imm_covered`
+/// rejects them anyway via the data-alterable dest guard (mode 7 reg 4 is neither Dn nor alterable memory).
+#[test]
+fn ori_anchor_cases_pass_both_drivers() {
+    // (file, case-name, expected-length) — one real vendored case per ORI shape.
+    let anchors: &[(&str, &str, u32)] = &[
+        ("OR.l.json", "0081 [OR.l #, D1] 1024", 16), // Dn.l: result SETS N, initial X = 1 PRESERVED (16)
+        ("OR.b.json", "0014 [OR.b #, (A4)] 242", 16), // (An).b memory RMW = 16
+        ("OR.w.json", "0050 [OR.w #, (A0)] 326", 54), // ODD (An).w EA → E3/E4 address error, len 54
+        ("OR.b.json", "0017 [OR.b #, (A7)] 404", 16), // plain (A7) mode-2 (clean, in scope)
+    ];
+    let mut found = 0usize;
+    for (fname, name, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| t["name"].as_str().unwrap() == *name)
+            .unwrap_or_else(|| panic!("C5 ORI anchor {name} not found in {fname}"));
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert!(
+            imm_covered(opcode),
+            "anchor {name} must be imm_covered (opcode {opcode:#06x})"
+        );
+        assert_eq!(
+            (opcode >> 8) & 0xFF,
+            0x00,
+            "anchor {name} must be an ORI opcode (high byte 0x00, {opcode:#06x})"
+        );
+        assert_eq!(
+            case["length"].as_u64().unwrap() as u32,
+            *length,
+            "ORI anchor {name} cycle length"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all C5 ORI anchors exercised");
+    eprintln!("C5 ORI anchors: {found} cases (Dn.l N-set X=1 preserved, (An).b RMW, odd-EA E3/E4, plain (A7)) passed both drivers");
+}
+
+/// C5 — the snapshot/restore anchor for `ORI`, driven across BOTH genuinely-exercised shapes: a memory
+/// read-modify-write and the long-immediate `Combine32` capture. Drives a real vendored `ORI.b (A4)` byte RMW
+/// and an `ORI.l (A3)` long RMW (which exercises the two-word immediate capture THEN the long memory RMW
+/// writeback — the whole capture↔RMW seam, with `AluOp::Or` giving `<ea> | imm` and PRESERVING X) through the
+/// quiesce driver, snapshotting + restoring the WHOLE `Cpu68000` (incl. the in-flight cursor + all scratch
+/// slots) at every micro-op boundary and proving the resumed run reproduces the run-to-completion final state +
+/// transaction stream bit-for-bit. Pins that the reused `imm_rmw_recipe` keeps `MicroState` fixed-size bincode
+/// under `AluOp::Or`.
+#[test]
+fn ori_quiescable_and_serializable_at_every_micro_op_boundary() {
+    // Two shapes: a byte (An) RMW (the short capture + write) and a long (A3) RMW (the two-word capture seam).
+    let shapes: &[(&str, &str)] = &[
+        ("OR.b.json", "0014 [OR.b #, (A4)] 242"), // (An).b RMW (byte capture + write)
+        ("OR.l.json", "0093 [OR.l #, (A3)] 28"), // (An).l RMW (the two-word immediate capture↔RMW seam)
+    ];
+    for (fname, name) in shapes {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| t["name"].as_str().unwrap() == *name)
+            .unwrap_or_else(|| panic!("C5 ORI snapshot anchor {name} not found in {fname}"));
+        let ini = &case["initial"];
+
+        let mut rref = Cpu68000::new(build_regs(ini));
+        let mut bref = build_bus(ini);
+        rref.run_instruction(&mut bref);
+
+        let cfg = bincode::config::standard();
+        let boundaries = {
+            let mut cpu = Cpu68000::new(build_regs(ini));
+            let mut bus = build_bus(ini);
+            cpu.start_instruction();
+            let mut n = 0usize;
+            while cpu.step_micro_op(&mut bus) == Step::Continue {
+                n += 1;
+            }
+            n
+        };
+        for pause_after in 0..=boundaries {
+            let mut cpu = Cpu68000::new(build_regs(ini));
+            let mut bus = build_bus(ini);
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "{name}: resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "{name}: transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+    eprintln!("C5 ORI snapshot/restore: ORI.b (A4) + ORI.l (A3) (the two-word immediate capture↔RMW seam) resumed identically at every micro-op boundary");
 }
