@@ -5138,4 +5138,77 @@ mod tests {
         assert_eq!(st.scratch[1], 0x7A, "the byte was read");
         assert!(st.is_done(), "no abort — the single Read completed");
     }
+
+    // --- Push A / A3.1: the trace frame's write order (Yacht L1548 `ns nS ns` = `s S s`) is a permutation
+    // of the standard frame's (`ns ns nS` = `s s S`) — SAME final layout, different on-bus order. Pin the
+    // DISTINCTION itself so a refactor can never silently collapse `push_trace_frame` into the standard one.
+    #[test]
+    fn trace_frame_write_order_is_s_capital_s_s_not_s_s_capital_s() {
+        use crate::m68000::ea::RecipeBuf;
+        use crate::m68000::exception::{push_standard_frame, push_trace_frame};
+
+        // Run a frame builder with seeded saved-PC (slot 0) + saved-SR (slot 1) and A7 = 0x1000, capturing
+        // its three word writes. Post-push B = SSP - 6 = 0x0FFA; the frame lands SR @ B+0 = 0x0FFA,
+        // PCH @ B+2 = 0x0FFC, PCL @ B+4 = 0x0FFE — identical layout for both builders.
+        fn run(build: fn(&mut RecipeBuf, Slot, Slot)) -> Vec<Transaction> {
+            let mut buf = RecipeBuf::new();
+            build(&mut buf, 0, 1);
+            let mut st = buf.finish();
+            st.scratch[0] = 0x1234_5678; // saved PC (PCH = 0x1234, PCL = 0x5678)
+            st.scratch[1] = 0x0000_2700; // saved SR
+            let regs_seed = Registers {
+                d: [0; 8],
+                a: [0; 7],
+                usp: 0,
+                ssp: 0x1000, // supervisor → A7 = SSP = 0x1000
+                pc: 0,
+                sr: SR_SUPERVISOR,
+                prefetch: [0; 2],
+            };
+            let mut regs = regs_seed;
+            let mut bus = FlatBus::new();
+            while !st.is_done() {
+                st.exec_one(&mut regs, &mut bus);
+            }
+            bus.log
+        }
+
+        let std_log = run(push_standard_frame);
+        let trace_log = run(push_trace_frame);
+
+        // Both push exactly three words, and the FINAL frame is identical (same {addr,value} multiset).
+        assert_eq!(std_log.len(), 3, "standard frame = 3 writes");
+        assert_eq!(trace_log.len(), 3, "trace frame = 3 writes");
+        let mut std_sorted = std_log.clone();
+        let mut trace_sorted = trace_log.clone();
+        std_sorted.sort_by_key(|t| t.addr);
+        trace_sorted.sort_by_key(|t| t.addr);
+        assert_eq!(
+            std_sorted, trace_sorted,
+            "identical final frame — same three writes at the same addresses/values"
+        );
+
+        // ...but the on-bus ORDER differs exactly in the `s S s` vs `s s S` positions: both write PCL @ B+4
+        // FIRST (index 0 identical); then the standard frame writes SR @ B+0 then PCH @ B+2, while the trace
+        // frame writes PCH @ B+2 then SR @ B+0 — the second and third writes are swapped.
+        assert_eq!(std_log[0], trace_log[0], "both write PCL @ B+4 first");
+        assert_eq!(std_log[0].addr, 0x0FFE, "PCL @ B+4");
+        assert_eq!(std_log[1].addr, 0x0FFA, "standard 2nd: SR @ B+0");
+        assert_eq!(std_log[2].addr, 0x0FFC, "standard 3rd: PCH @ B+2");
+        assert_eq!(trace_log[1].addr, 0x0FFC, "trace 2nd: PCH @ B+2");
+        assert_eq!(trace_log[2].addr, 0x0FFA, "trace 3rd: SR @ B+0");
+        // Stated as the exact permutation, so neither builder can silently converge into the other:
+        assert_eq!(
+            std_log[1], trace_log[2],
+            "standard's SR write = trace's third write"
+        );
+        assert_eq!(
+            std_log[2], trace_log[1],
+            "standard's PCH write = trace's second write"
+        );
+        assert_ne!(
+            std_log, trace_log,
+            "the two builders never produce the same on-bus order"
+        );
+    }
 }

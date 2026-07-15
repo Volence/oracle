@@ -271,6 +271,50 @@ pub fn push_standard_frame(buf: &mut RecipeBuf, saved_pc_slot: Slot, save_sr_slo
     });
 }
 
+/// Push the **trace** exception frame to the supervisor stack. The FINAL layout is identical to
+/// [`push_standard_frame`] (`SR @ B+0`, `PC-high @ B+2`, `PC-low @ B+4`), but the **on-bus write order
+/// differs**: Yacht L1548 gives Trace's three stack writes as `ns nS ns` = `s S s` — **`PCL @ B+4` first,
+/// `PCH @ B+2` second, `SR @ B+0` third** (the two PC halves back-to-back, SR written last) — versus the
+/// decode-time frame's `s s S` (`push_standard_frame`: PCL, SR, PCH). Same slots, same FC=5 word accesses;
+/// only the temporal order of the SR vs PCH writes is permuted. Pinned to the vendored Trace stream.
+pub fn push_trace_frame(buf: &mut RecipeBuf, saved_pc_slot: Slot, save_sr_slot: Slot) {
+    // SSP -= 6 — A7 now points at the new stack top (B).
+    buf.push(MicroOp::AdjustAddr { reg: 7, delta: -6 });
+    // PCL @ B+4 (written FIRST). B+4 = A7 + 2 + 2.
+    buf.push(MicroOp::EaCalc {
+        base: Operand::AddrReg(7),
+        index: Operand::WordStep,
+        disp: Operand::WordStep,
+        dst: FRAME_ADDR_SLOT,
+    });
+    buf.push(MicroOp::Write {
+        addr: Operand::Scratch(FRAME_ADDR_SLOT),
+        fc: Fc::Data,
+        size: Size::Word,
+        value: Operand::Scratch(saved_pc_slot), // low 16 of the saved PC (PCL)
+    });
+    // PCH @ B+2 (written SECOND — the trace frame writes the two PC halves back-to-back, `s S`).
+    buf.push(MicroOp::EaCalc {
+        base: Operand::AddrReg(7),
+        index: Operand::Zero,
+        disp: Operand::WordStep,
+        dst: FRAME_ADDR_SLOT,
+    });
+    buf.push(MicroOp::Write {
+        addr: Operand::Scratch(FRAME_ADDR_SLOT),
+        fc: Fc::Data,
+        size: Size::Word,
+        value: Operand::ScratchHi16(saved_pc_slot), // high 16 of the saved PC
+    });
+    // SR @ B+0 (written THIRD — SR last, completing `s S s`).
+    buf.push(MicroOp::Write {
+        addr: Operand::AddrReg(7),
+        fc: Fc::Data,
+        size: Size::Word,
+        value: Operand::Scratch(save_sr_slot),
+    });
+}
+
 /// Fetch the handler address from the exception vector at `vector_addr` and reload the prefetch queue at it.
 /// The two vector reads (`handler-hi @ vector_addr`, `handler-lo @ vector_addr + 2`) are **FC=5
 /// (supervisor-data)**; the assembled 32-bit handler address is UNMASKED (a vector may point into high
