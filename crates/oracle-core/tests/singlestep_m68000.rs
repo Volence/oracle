@@ -1210,15 +1210,15 @@ fn addq_covered(opcode: u16) -> bool {
 /// Whether the framework covers this genuine `ADDI`/`SUBI`/`ANDI`/`ORI`/`EORI #imm,<ea>` case — the
 /// load-bearing classifier for the **CONTAMINATED** ADD/SUB/AND/OR/EOR files (each mixes the genuine register
 /// form, high nibble `0xD`/`0x9`/`0xC`/`0x8`/`0xB`, with the dedicated group-0 immediate-to-EA opcode
-/// `0000 hhhh ss mmm rrr`). Classifying **by OPCODE** via [`imm_class`] (which admits ONLY ADDI = high byte
-/// `0x06` this commit), the case is in scope iff the destination is data-alterable — `Dn` (0) or an
+/// `0000 hhhh ss mmm rrr`). Classifying **by OPCODE** via [`imm_class`] (which admits ADDI = high byte
+/// `0x06` and SUBI = high byte `0x04` this commit), the case is in scope iff the destination is data-alterable — `Dn` (0) or an
 /// alterable-memory mode (2-6, 7/0, 7/1). PC-relative (7/2, 7/3) / `#imm` (7/4) are not alterable and absent;
 /// the `*toSR`/`*toCCR` mode-7/4 `#imm` single points (which live in their own files) are excluded by the same
 /// guard. Odd word/long EAs are address errors the E3/E4 abort covers (NO parity filter); plain `(A7)` mode-2
 /// is clean and in scope.
 fn imm_covered(opcode: u16) -> bool {
     if imm_class(opcode).is_none() {
-        return false; // not an in-scope `*I` opcode (only ADDI = 0x06 admitted this commit)
+        return false; // not an in-scope `*I` opcode (ADDI = 0x06 + SUBI = 0x04 admitted this commit)
     }
     let mode = (opcode >> 3) & 7;
     let reg = opcode & 7;
@@ -1234,10 +1234,11 @@ fn imm_covered(opcode: u16) -> bool {
 /// access PASSES unchanged; the auto-(in/de)crement register bump is committed before the faulting read,
 /// pinned to the data). The only remaining deferrals are mode-scope: `An`-direct as a byte source/dest
 /// (`ADD.b An,Dn` is illegal) and not-yet-implemented EA modes. Plain `(A7)` (mode 2) indirect is covered
-/// (un-deferred 2026-07-15) — decode resolves A7 through `addr_reg` like any An. The ADD.b/w/l files ALSO mix
-/// two dedicated non-register opcodes NOW DECODED and in scope (classified OUT of this predicate by OPCODE, in
-/// via their own arms): ADDQ (`0x5xxx`, `addq_covered`) and ADDI (`0x06xx`, `imm_covered`) — so the ADD.*
-/// files are 100% covered.
+/// (un-deferred 2026-07-15) — decode resolves A7 through `addr_reg` like any An. The ADD.b/w/l AND SUB.b/w/l
+/// files ALSO mix two dedicated non-register opcodes NOW DECODED and in scope (classified OUT of this predicate
+/// by OPCODE, in via their own arms): the `*Q` quick-immediate (`0x5xxx`, `addq_covered`) and the `*I`
+/// immediate-to-EA (`imm_covered`) — ADDI (`0x06xx`) for the ADD.* files and SUBI (`0x04xx`) for the SUB.*
+/// files — so the ADD.* AND SUB.* files are 100% covered.
 /// Whether the framework covers this `0xExxx` shift/rotate case (the EA-scope half — the 2 corrupt ASL.b
 /// entries are handled separately in [`covered`], which has the final state). Classified by OPCODE:
 ///
@@ -1853,8 +1854,9 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // ADDI/SUBI/ANDI/ORI/EORI `#imm,<ea>` (`0000 hhhh ss mmm rrr`, group-0) — the immediate-to-EA
     // read-modify-write. NOW DECODED and in scope (the ADD/SUB/AND/OR/EOR files MIX the genuine register form,
     // high nibble 0xD/0x9/0xC/0x8/0xB, with this dedicated group-0 opcode). Classified by OPCODE via
-    // `imm_covered` → `imm_class`, which admits ONLY ADDI (high byte 0x06 → `AluOp::Add`) this commit (the
-    // classifier returns None for SUBI/ANDI/ORI/EORI until later commits, so those cases stay skipped cleanly).
+    // `imm_covered` → `imm_class`, which admits ADDI (high byte 0x06 → `AluOp::Add`) and SUBI (high byte 0x04 →
+    // `AluOp::Sub`) this commit (the classifier returns None for ANDI/ORI/EORI until later commits, so those
+    // cases stay skipped cleanly).
     // Full data-alterable dest set incl the clean `(A7)` mode-2 indirect; odd word/long EAs are address errors
     // the E3/E4 abort covers (no parity filter, no `(A7)` carve-out). This arm is DISJOINT from CMPI (0x0C),
     // the bit-ops (0x08 / 0x01xx), and MOVEP (all decoded/covered above by their own predicates).
@@ -2215,21 +2217,26 @@ fn add_sub_match_singlesteptests() {
     }
 
     assert!(
-        ran >= 993_486,
-        "expected 993486 covered cases — C2 un-skips ADDI (`0000 0110 ss mmm rrr` = 0x06xx, ss != 3), the \
-         immediate-to-EA add hiding as a contaminant in the ADD.b/w/l files, admitting +910 cases over C1's \
-         992576 (ADD.b 323 + ADD.w 292 + ADD.l 295). ADDI introduces the SHARED `imm_rmw_recipe` the whole \
-         `*I` family reuses (C3-C6): the CMPI immediate-capture idiom (byte/word = one ext word via \
-         `EaCalc{{ImmWord}}`, long = TWO ext words via the `Combine32` HI/LO idiom) then the `ea_dst`/ \
-         `ea_dst_long` RMW writeback with the captured immediate as the addend `b` (the memory/`Dn` value is \
-         the minuend `a`, correct for the non-commutative SUBI later). Value/flags reuse the proven \
-         `AluOp::Add` VERBATIM. The long memory path prepends ONE refill before `ea_dst_long` so the two-word \
-         immediate + the EA's ext words align — byte-for-byte the CMPI long read structure, only writing back \
-         instead of discarding (e.g. `(An).l` = `[r@pc+4, r@pc+6, READ.hi, READ.lo, r@pc+8, WRITE.lo, \
-         WRITE.hi]` = 28 cyc). Only ADDI (high byte 0x06) is admitted this commit via `imm_class`; SUBI/ANDI/ \
-         ORI/EORI decode-classify to None until later commits. Full data-alterable dest set incl the clean \
+        ran >= 994_383,
+        "expected 994383 covered cases — C3 un-skips SUBI (`0000 0100 ss mmm rrr` = 0x04xx, ss != 3), the \
+         immediate-to-EA subtract hiding as a contaminant in the SUB.b/w/l files, admitting +897 cases over \
+         C2's 993486 (SUB.b 318 + SUB.w 300 + SUB.l 279). SUBI REUSES the SHARED `imm_rmw_recipe` from C2 \
+         VERBATIM — the immediate-to-EA read-modify-write is non-commutative and the recipe already passes the \
+         memory/`Dn` value as the minuend `a` and the captured immediate as the subtrahend `b`, so `AluOp::Sub` \
+         gives `<ea> - imm` (correct). This commit only extends `imm_class` by one high byte (0x04 → \
+         `AluOp::Sub`) so decode and `imm_covered` admit SUBI, and adds the SUBI anchors. Value/flags reuse the \
+         proven `AluOp::Sub` VERBATIM (full add/sub flags, X = C). Full data-alterable dest set incl the clean \
          `(A7)` mode-2 indirect; odd word/long EAs are address errors the E3/E4 abort covers (no parity \
-         filter). \
+         filter). ADDI + SUBI (high bytes 0x06/0x04) are admitted this commit via `imm_class`; ANDI/ORI/EORI \
+         decode-classify to None until later commits. \
+         C2 baseline (993486) un-skipped ADDI (`0000 0110 ss mmm rrr` = 0x06xx, ss != 3), the immediate-to-EA \
+         add hiding as a contaminant in the ADD.b/w/l files, admitting +910 cases (ADD.b 323 + ADD.w 292 + \
+         ADD.l 295). ADDI introduced the SHARED `imm_rmw_recipe`: the CMPI immediate-capture idiom (byte/word \
+         = one ext word via `EaCalc{{ImmWord}}`, long = TWO ext words via the `Combine32` HI/LO idiom) then the \
+         `ea_dst`/`ea_dst_long` RMW writeback with the captured immediate as the addend `b`. The long memory \
+         path prepends ONE refill before `ea_dst_long` so the two-word immediate + the EA's ext words align — \
+         byte-for-byte the CMPI long read structure, only writing back instead of discarding (e.g. `(An).l` = \
+         `[r@pc+4, r@pc+6, READ.hi, READ.lo, r@pc+8, WRITE.lo, WRITE.hi]` = 28 cyc). \
          C1 baseline (992576) un-skipped SUBQ (`0x5xxx`, bit 8 = 1, ss != 3), the quick-immediate \
          subtract hiding as a contaminant in the SUB.b/w/l files, admitting +8264 cases over C0's 984312 \
          (SUB.b 2655 + SUB.w 2822 + SUB.l 2787). SUBQ REUSES `addq_recipe` VERBATIM — the ADDQ decode arm \
@@ -3135,7 +3142,7 @@ fn add_sub_match_singlesteptests() {
          refill) (the always-supervisor S/T/A7 transform is structurally exercised but a no-op on the data — \
          correctness-only). ran {ran}"
     );
-    eprintln!("SingleStepTests ADD+SUB+ADDQ+SUBQ+ADDI+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+ANDItoCCR+ORItoCCR+EORItoCCR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX+ABCD+SBCD+NBCD+MOVEfromUSP+MOVEtoUSP+MOVEfromSR+MOVEtoCCR+MOVEtoSR+MOVEP.w+MOVEP.l (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
+    eprintln!("SingleStepTests ADD+SUB+ADDQ+SUBQ+ADDI+SUBI+MOVE+MOVEA+Bcc+BSR+JMP+JSR+RTS+DBcc+RTR+TRAP+RTE+TRAPV+CHK+ANDItoSR+ORItoSR+EORItoSR+ANDItoCCR+ORItoCCR+EORItoCCR+RESET+CMP+CMPA+TST+CLR+MOVEQ+ADDA+SUBA+AND+OR+EOR+NEG+NEGX+NOT+EXT+SWAP+Scc+TAS+BTST+BCHG+BCLR+BSET+ASL+ASR+LSL+LSR+ROL+ROR+ROXL+ROXR+MULU+MULS+DIVU+DIVS+NOP+EXG+LEA+PEA+LINK+UNLINK+MOVEM.w+MOVEM.l+ADDX+SUBX+ABCD+SBCD+NBCD+MOVEfromUSP+MOVEtoUSP+MOVEfromSR+MOVEtoCCR+MOVEtoSR+MOVEP.w+MOVEP.l (.w + .b + .l): {ran} covered cases passed (both framework drivers, regs/SR/RAM/prefetch/cycles/transactions)");
 }
 
 /// E3 — the execution-time **address-error abort** + the group-0 **14-byte frame**, proven on a handful of
@@ -11022,4 +11029,137 @@ fn addi_quiescable_and_serializable_at_every_micro_op_boundary() {
         }
     }
     eprintln!("C2 ADDI snapshot/restore: ADDI.b (A3) + ADDI.l (A2) (the two-word immediate capture↔RMW seam) resumed identically at every micro-op boundary");
+}
+
+/// C3 — named anchors pinning the new `SUBI #imm,<ea>` recipe against the vendored stream WITHOUT relying on the
+/// bulk `covered()` sweep. SUBI REUSES the shared `imm_rmw_recipe` from C2 verbatim — the recipe passes the
+/// memory/`Dn` value as the minuend `a` and the captured immediate as the subtrahend `b`, so `AluOp::Sub` gives
+/// `<ea> - imm` (correct for the non-commutative subtract). Each anchor is a real vendored case (hiding inside
+/// the SUB.b/w/l files) exercising a distinct SUBI shape: a `Dn` byte/word (len 8 — one imm word + a trailing
+/// refill), a `Dn.l` that UNDERFLOWS so the borrow sets `C = X = 1` (len 16 — the two-word immediate + two
+/// refills + the register n4 idle); an `(An)` byte memory RMW (len 16) and an `(An).l` (len 28 — the
+/// capture↔RMW seam: `[r@pc+4, r@pc+6, READ.hi, READ.lo, r@pc+8, WRITE.lo, WRITE.hi]`); a `-(An).w` predecrement
+/// (len 18); an `abs.w.l` (len 32); a `d16(An).l` (len 32); an ODD `(An).l` EA that PASSES via the E3/E4
+/// address-error abort (len 58); and a plain `(A7)` mode-2 case (clean, in scope). Each anchor must decode as an
+/// in-scope SUBI opcode (`imm_covered` — high byte 0x04) and pass both framework drivers via `run_case`
+/// (regs/SR/RAM/prefetch/cycles + the per-cycle transaction stream).
+#[test]
+fn subi_anchor_cases_pass_both_drivers() {
+    // (file, case-name, expected-length) — one real vendored case per SUBI shape.
+    let anchors: &[(&str, &str, u32)] = &[
+        ("SUB.b.json", "0405 [SUB.b #, D5] 86", 8), // Dn.b (1 imm word + trailing refill = 8)
+        ("SUB.w.json", "0443 [SUB.w #, D3] 91", 8), // Dn.w (8)
+        ("SUB.l.json", "0487 [SUB.l #, D7] 584", 16), // Dn.l UNDERFLOW: borrow → C = X = 1 (2 imm words + 2 refills + n4 = 16)
+        ("SUB.b.json", "0411 [SUB.b #, (A1)] 87", 16), // (An).b memory RMW = 16
+        ("SUB.l.json", "0490 [SUB.l #, (A0)] 400", 28), // (An).l RMW = 28 (the capture↔RMW seam)
+        ("SUB.w.json", "0463 [SUB.w #, -(A3)] 275", 18), // -(An).w predecrement = 18
+        ("SUB.l.json", "04b8 [SUB.l #, (xxx).w] 3634", 32), // abs.w.l = 32
+        ("SUB.l.json", "04ac [SUB.l #, (d16, A4)] 157", 32), // d16(An).l = 32
+        ("SUB.l.json", "0493 [SUB.l #, (A3)] 302", 58), // ODD (An).l EA → E3/E4 address error, len 58
+        ("SUB.b.json", "0417 [SUB.b #, (A7)] 1170", 16), // plain (A7) mode-2 (clean, in scope)
+    ];
+    let mut found = 0usize;
+    for (fname, name, length) in anchors {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| t["name"].as_str().unwrap() == *name)
+            .unwrap_or_else(|| panic!("C3 SUBI anchor {name} not found in {fname}"));
+        let opcode = case["initial"]["prefetch"][0].as_u64().unwrap() as u16;
+        assert!(
+            imm_covered(opcode),
+            "anchor {name} must be imm_covered (opcode {opcode:#06x})"
+        );
+        assert_eq!(
+            (opcode >> 8) & 0xFF,
+            0x04,
+            "anchor {name} must be a SUBI opcode (high byte 0x04, {opcode:#06x})"
+        );
+        assert_eq!(
+            case["length"].as_u64().unwrap() as u32,
+            *length,
+            "SUBI anchor {name} cycle length"
+        );
+        run_case(case);
+        found += 1;
+    }
+    assert_eq!(found, anchors.len(), "all C3 SUBI anchors exercised");
+    eprintln!("C3 SUBI anchors: {found} cases (Dn.b/.w, Dn.l underflow C=X=1, (An).b/.l RMW [the capture↔RMW seam], -(An).w, abs.w.l, d16(An).l, odd-EA E3/E4, plain (A7)) passed both drivers");
+}
+
+/// C3 — the snapshot/restore anchor for `SUBI`, driven across BOTH genuinely-exercised shapes: a memory
+/// read-modify-write and the long-immediate `Combine32` capture. Drives a real vendored `SUBI.l (A0)` long RMW
+/// (which exercises the two-word immediate capture THEN the long memory RMW writeback — the whole capture↔RMW
+/// seam, with `AluOp::Sub` giving `<ea> - imm`) through the quiesce driver, snapshotting + restoring the WHOLE
+/// `Cpu68000` (incl. the in-flight cursor + all scratch slots, notably the immediate slots 6/7 disjoint from the
+/// RMW's 0/1/2) at every micro-op boundary and proving the resumed run reproduces the run-to-completion final
+/// state + transaction stream bit-for-bit. Pins that the reused `imm_rmw_recipe` keeps `MicroState` fixed-size
+/// bincode under `AluOp::Sub`.
+#[test]
+fn subi_quiescable_and_serializable_at_every_micro_op_boundary() {
+    // Two shapes: a byte (An) RMW (the short capture + write) and a long (A0) RMW (the two-word capture seam).
+    let shapes: &[(&str, &str)] = &[
+        ("SUB.b.json", "0411 [SUB.b #, (A1)] 87"), // (An).b RMW (byte capture + write)
+        ("SUB.l.json", "0490 [SUB.l #, (A0)] 400"), // (An).l RMW (the two-word immediate capture↔RMW seam)
+    ];
+    for (fname, name) in shapes {
+        let path = format!("{VENDOR_DIR}/{fname}");
+        if !Path::new(&path).exists() {
+            eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+            return;
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+        let case = data
+            .iter()
+            .find(|t| t["name"].as_str().unwrap() == *name)
+            .unwrap_or_else(|| panic!("C3 SUBI snapshot anchor {name} not found in {fname}"));
+        let ini = &case["initial"];
+
+        let mut rref = Cpu68000::new(build_regs(ini));
+        let mut bref = build_bus(ini);
+        rref.run_instruction(&mut bref);
+
+        let cfg = bincode::config::standard();
+        let boundaries = {
+            let mut cpu = Cpu68000::new(build_regs(ini));
+            let mut bus = build_bus(ini);
+            cpu.start_instruction();
+            let mut n = 0usize;
+            while cpu.step_micro_op(&mut bus) == Step::Continue {
+                n += 1;
+            }
+            n
+        };
+        for pause_after in 0..=boundaries {
+            let mut cpu = Cpu68000::new(build_regs(ini));
+            let mut bus = build_bus(ini);
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs, rref.regs,
+                "{name}: resume from boundary {pause_after} diverged"
+            );
+            assert_eq!(
+                bus.log, bref.log,
+                "{name}: transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+    eprintln!("C3 SUBI snapshot/restore: SUBI.b (A1) + SUBI.l (A0) (the two-word immediate capture↔RMW seam) resumed identically at every micro-op boundary");
 }
