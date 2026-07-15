@@ -1147,6 +1147,12 @@ pub enum MicroOp {
     /// 0-cycle, non-bus, snapshot-visible internal step. (The `*toSR` write-back shares the same mask via its
     /// own op in a later commit.)
     LoadSr { value: Operand },
+    /// `STOP #imm`'s halt step: flag the recipe as a completed `STOP` so the orchestrator moves the CPU to
+    /// [`CpuState::Stopped`] at completion, and book the instruction's cycle cost. `STOP` is `4(0/0)` (Yacht
+    /// L908 — no bus access; the SR load is a preceding 0-cycle [`MicroOp::LoadSr`]), so this op costs the
+    /// full **4** cycles and touches no bus. It is the recipe's last op; wake-on-interrupt is the CPU driver's
+    /// job (Push A / A4), not this op's.
+    Stop,
     /// `CHK <ea>,Dn`'s compare-and-maybe-trap. Signed-compares the low word of `Dn` against `0` and against
     /// `bound` (the resolved EA operand, sign-extended from its low 16). Sets the CCR: **Z=V=C cleared, X
     /// kept**, and **N = 1 if `Dn.w < 0`, N = 0 if `Dn.w > bound`, else N PRESERVED** (the two predicates do
@@ -1281,6 +1287,10 @@ pub struct MicroState {
     /// `0` for hand-built recipes). Latched here because the address-error abort (E3) stacks it as the IR
     /// field and folds it into the SSW — it must survive the prefetch shifts that overwrite `regs.prefetch`.
     opcode: u16,
+    /// Set by [`MicroOp::Stop`] when the recipe is a completed `STOP`: the orchestrator moves the CPU to
+    /// [`CpuState::Stopped`] once the recipe finishes. A terminal signal the driver reads at completion,
+    /// so `STOP`'s state change flows through the same shared cook both drivers call.
+    stop_requested: bool,
 }
 
 impl MicroState {
@@ -1296,7 +1306,13 @@ impl MicroState {
             cycles: 0,
             scratch: [0; SCRATCH_SLOTS],
             opcode: 0,
+            stop_requested: false,
         }
+    }
+
+    /// True once a completed [`MicroOp::Stop`] has run — the orchestrator then enters [`CpuState::Stopped`].
+    pub fn requests_stop(&self) -> bool {
+        self.stop_requested
     }
 
     /// Latch the original opcode this recipe was decoded from (see [`MicroState::opcode`]). Called by
@@ -2672,6 +2688,12 @@ impl MicroState {
                 regs.sr = (self.resolve(value, regs) as u16) & SR_IMPLEMENTED;
                 0
             }
+            MicroOp::Stop => {
+                // STOP #imm's halt: the SR was loaded by the preceding LoadSr; flag the Stopped transition for
+                // the orchestrator to apply at completion. 4(0/0) — no bus access (Yacht L908).
+                self.stop_requested = true;
+                4
+            }
             MicroOp::ChkTrap { dn, bound } => {
                 // Signed compare Dn.w against 0 and the bound (both sign-extended from their low 16). The bound
                 // is resolved BEFORE any frame install (the install seeds the saved-PC slot, which may alias the
@@ -2919,6 +2941,19 @@ impl MicroState {
     }
 }
 
+/// The processor's high-level execution state (Exodus's serialized set, minus a separate "Exception" —
+/// in-flight recipes already cover exception entry). Plain serialized data, so snapshot/restore of a
+/// stopped or halted CPU is free.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+pub enum CpuState {
+    /// Executing instructions normally.
+    Normal,
+    /// `STOP #imm` halted fetching; wakes on an unmasked interrupt or reset (wake lands in Push A / A4).
+    Stopped,
+    /// The double-fault terminal state (a group-0 fault while stacking a group-0 frame); only reset exits.
+    Halted,
+}
+
 /// One 68000, driven by the micro-op framework. Between instructions `inflight` is `None`; while quiesced
 /// mid-instruction it holds the resumable cursor. The whole CPU is bincode-serializable, so a debugger can
 /// stop at a bus-access boundary, snapshot, restore, and resume.
@@ -2926,6 +2961,9 @@ impl MicroState {
 pub struct Cpu68000 {
     pub regs: Registers,
     inflight: Option<MicroState>,
+    /// The high-level processor state. `Normal` unless `STOP` (→ `Stopped`) or a double fault
+    /// (→ `Halted`) has fired. Serialized, so a stopped/halted snapshot round-trips.
+    state: CpuState,
 }
 
 /// The outcome of one [`Cpu68000::step_micro_op`].
@@ -2938,11 +2976,12 @@ pub enum Step {
 }
 
 impl Cpu68000 {
-    /// Power on with the given register file and no instruction in flight.
+    /// Power on with the given register file, no instruction in flight, in the Normal state.
     pub fn new(regs: Registers) -> Self {
         Self {
             regs,
             inflight: None,
+            state: CpuState::Normal,
         }
     }
 
@@ -2957,16 +2996,40 @@ impl Cpu68000 {
     /// in-flight instruction, leaving the machine coherent at a bus-access boundary. Returns
     /// [`Step::Done`] with the total cycle count when the instruction completes.
     pub fn step_micro_op(&mut self, bus: &mut impl Bus68k) -> Step {
-        let Cpu68000 { regs, inflight } = self;
-        let state = inflight.as_mut().expect("no instruction in flight");
-        state.exec_one(regs, bus);
-        if state.is_done() {
-            let total = state.cycles;
+        let Cpu68000 {
+            regs,
+            inflight,
+            state: cpu_state,
+        } = self;
+        let recipe = inflight.as_mut().expect("no instruction in flight");
+        recipe.exec_one(regs, bus);
+        if recipe.is_done() {
+            let total = recipe.cycles;
+            // A completed STOP recipe leaves the processor Stopped (both drivers honor this).
+            if recipe.requests_stop() {
+                *cpu_state = CpuState::Stopped;
+            }
             *inflight = None;
             Step::Done(total)
         } else {
             Step::Continue
         }
+    }
+
+    /// **The orchestrator fast path** (D1): decide the next unit of work, then run it to completion.
+    /// Returns the CPU cycles consumed. A thin superset of [`Cpu68000::run_instruction`] — the SST harness
+    /// keeps calling `run_instruction`/`step_micro_op` directly, so this path grows without touching the gate.
+    ///
+    /// For now (A1) the only work is "decode `prefetch[0]` and run it", plus applying a completed `STOP`'s
+    /// transition to [`CpuState::Stopped`]. Async events (trace, interrupt) and the `Stopped`/`Halted` wake
+    /// slot into a `begin_next` decision point as A3/A4 land.
+    pub fn step(&mut self, bus: &mut impl Bus68k) -> u32 {
+        let mut recipe = crate::m68000::decode::decode(&self.regs);
+        let cycles = recipe.run_to_completion(&mut self.regs, bus);
+        if recipe.requests_stop() {
+            self.state = CpuState::Stopped;
+        }
+        cycles
     }
 }
 
@@ -3323,6 +3386,100 @@ mod tests {
         // The write completes the instruction and reports the total: 4 + 4 + 4 = 12.
         assert_eq!(cpu.step_micro_op(&mut bus), Step::Done(12));
         assert_eq!(bus.log.len(), 2);
+    }
+
+    // --- Push A / A1: STOP + CpuState ------------------------------------------------------------
+    // STOP #imm (0x4E72): load the immediate word into SR (masked to SR_IMPLEMENTED), then halt
+    // fetching. Yacht L908: 4(0/0), no bus access. Privileged (gated at decode when in user mode).
+    // Wake-on-interrupt is deferred to A4; here we only pin the SR load + the Stopped transition.
+
+    /// A fresh CPU powers on in the Normal processor state.
+    #[test]
+    fn new_cpu_is_in_normal_state() {
+        let cpu = Cpu68000::new(regs());
+        assert_eq!(cpu.state, CpuState::Normal);
+    }
+
+    #[test]
+    fn stop_loads_sr_and_enters_stopped_state() {
+        let mut r = regs(); // supervisor (S=1) — STOP is privileged
+        r.pc = 0x0C00;
+        r.prefetch = [0x4E72, 0x2700]; // STOP #$2700 (S=1, I=7, T=0)
+        let mut cpu = Cpu68000::new(r);
+        let mut bus = FlatBus::new();
+
+        let cycles = cpu.step(&mut bus);
+
+        assert_eq!(cycles, 4, "STOP = 4(0/0)");
+        assert_eq!(
+            cpu.regs.sr, 0x2700,
+            "SR loaded from the immediate (masked to SR_IMPLEMENTED)"
+        );
+        assert_eq!(
+            cpu.state,
+            CpuState::Stopped,
+            "CPU entered the Stopped state"
+        );
+        assert!(bus.log.is_empty(), "STOP performs no bus access");
+    }
+
+    #[test]
+    fn stop_enters_stopped_via_step_micro_op_driver_too() {
+        let mut r = regs();
+        r.pc = 0x0C00;
+        r.prefetch = [0x4E72, 0x2700];
+        let mut cpu = Cpu68000::new(r);
+        let mut bus = FlatBus::new();
+
+        cpu.start_instruction();
+        let cycles = loop {
+            if let Step::Done(c) = cpu.step_micro_op(&mut bus) {
+                break c;
+            }
+        };
+        assert_eq!(cycles, 4);
+        assert_eq!(cpu.regs.sr, 0x2700, "both drivers load SR identically");
+        assert_eq!(cpu.state, CpuState::Stopped, "both drivers reach Stopped");
+        assert!(bus.log.is_empty());
+    }
+
+    #[test]
+    fn stop_quiescable_and_serializable_at_every_boundary() {
+        // 2 micro-ops (LoadSr, Stop) → in-flight boundaries after 0 and 1 of them. Snapshot/restore the
+        // whole CPU at each boundary, resume, and require the same final SR + Stopped state. The Stopped
+        // transition is applied by the driver at completion, so it must survive a mid-STOP snapshot.
+        let cfg = bincode::config::standard();
+        for pause_after in 0..=1 {
+            let mut r = regs();
+            r.pc = 0x0C00;
+            r.prefetch = [0x4E72, 0x2700];
+            let mut cpu = Cpu68000::new(r);
+            let mut bus = FlatBus::new();
+            cpu.start_instruction();
+            for _ in 0..pause_after {
+                assert_eq!(cpu.step_micro_op(&mut bus), Step::Continue);
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            loop {
+                if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cpu2.regs.sr, 0x2700,
+                "resume from boundary {pause_after} loaded SR"
+            );
+            assert_eq!(
+                cpu2.state,
+                CpuState::Stopped,
+                "resume from boundary {pause_after} reached Stopped"
+            );
+            assert!(
+                bus.log.is_empty(),
+                "STOP does no bus access from boundary {pause_after}"
+            );
+        }
     }
 
     #[test]

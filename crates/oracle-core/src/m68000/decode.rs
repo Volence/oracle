@@ -1075,6 +1075,14 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     if opcode == 0x4E70 {
         return reset_recipe();
     }
+    // STOP #imm (`0x4E72`) — load the immediate word (prefetch[1]) into SR (masked to SR_IMPLEMENTED),
+    // then halt fetching until an unmasked interrupt or reset (the wake is the CPU driver's job, Push A/A4).
+    // Privileged: a user-mode STOP is caught by the decode-time privilege gate above (vector 8) and never
+    // reaches here. Yacht L908: 4(0/0), no bus access. The opcode 0x4E72 is a single point in 0x4Exx,
+    // disjoint from RESET (0x4E70) / NOP (0x4E71) / RTE (0x4E73) and every arm above.
+    if opcode == 0x4E72 {
+        return stop_recipe();
+    }
     // MOVEfromUSP (`0100 1110 0110 1 rrr`, 0x4E68 | An) — `An = USP` (full 32 bits), NO flags, SR unchanged.
     // MOVEtoUSP   (`0100 1110 0110 0 rrr`, 0x4E60 | An) — `USP = An` (full 32 bits), NO flags, SR unchanged.
     // Both privileged on the 68000 but every vendored case is supervisor, so the privilege-violation trap is
@@ -1227,17 +1235,6 @@ impl Cpu68000 {
     pub fn run_instruction(&mut self, bus: &mut impl Bus68k) -> u32 {
         let mut recipe = decode(&self.regs);
         recipe.run_to_completion(&mut self.regs, bus)
-    }
-
-    /// **The orchestrator fast path** (D1): decide the next unit of work, then run it to completion.
-    /// Returns the CPU cycles consumed. A thin superset of [`run_instruction`] — the SST harness keeps
-    /// calling `run_instruction`/`step_micro_op` directly, so this path grows without touching the gate.
-    ///
-    /// For now (A1 skeleton) the only work is "decode prefetch[0] and run it"; async events (trace,
-    /// interrupt, STOP wake) and mid-instruction resume slot into [`Cpu68000::begin_next`] as their
-    /// slices land.
-    pub fn step(&mut self, bus: &mut impl Bus68k) -> u32 {
-        self.run_instruction(bus)
     }
 }
 
@@ -4815,6 +4812,26 @@ fn reset_recipe() -> MicroState {
     buf.finish()
 }
 
+/// `STOP #imm` (`0x4E72`): load the immediate word into the whole SR (masked to `SR_IMPLEMENTED`), then halt
+/// fetching until an unmasked interrupt or reset. Yacht L908: `4(0/0)`, no bus access (Yacht notes the second
+/// microcycle's spend is genuinely unknown — the one deferred timing item, harmless since no bus event
+/// occurs either way). Privileged: a user-mode `STOP` is caught by the decode-time privilege gate (vector 8)
+/// and never reaches here. NOT vendored in SST (audit finding 3) — hand-authored vectors only.
+///
+/// Recipe `[LoadSr(ImmWord), Stop]`: `LoadSr` writes SR (0 cycles, may change S/T/I), then [`MicroOp::Stop`]
+/// flags the recipe so the orchestrator ([`Cpu68000::step`]/`step_micro_op`) enters [`CpuState::Stopped`] at
+/// completion and books the 4-cycle cost. **No `Prefetch`** — `STOP` does no bus, so `pc`/`prefetch` are left
+/// pointing at the `STOP`; advancing past the two-word instruction and refilling the queue is the wake
+/// sequence's job (Push A / A4), which must stack PC = the instruction after `STOP` (M68000UM §6.2.5).
+fn stop_recipe() -> MicroState {
+    let mut buf = RecipeBuf::new();
+    buf.push(MicroOp::LoadSr {
+        value: Operand::ImmWord,
+    });
+    buf.push(MicroOp::Stop);
+    buf.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5125,6 +5142,42 @@ mod tests {
             assert_eq!(
                 bus.log, bref.log,
                 "transaction stream from boundary {pause_after} diverged"
+            );
+        }
+    }
+
+    #[test]
+    fn is_privileged_opcode_classifies_the_mc68000_set() {
+        // Positives — the full MC68000 privileged set (M68000UM §6.3.7).
+        for op in [
+            0x027C, // ANDI #imm,SR
+            0x007C, // ORI  #imm,SR
+            0x0A7C, // EORI #imm,SR
+            0x46C0, // MOVE Dn,SR (a representative EA)
+            0x46FC, // MOVE #imm,SR
+            0x4E60, // MOVE An,USP (bottom of the MOVE-USP block)
+            0x4E68, // MOVE USP,An
+            0x4E6F, // MOVE USP,A7 (top of the block)
+            0x4E70, // RESET
+            0x4E72, // STOP
+            0x4E73, // RTE
+        ] {
+            assert!(is_privileged_opcode(op), "{op:#06X} must be privileged");
+        }
+        // Near-miss negatives — the ones a one-bit mask slip or a 68010-flavored reference would break,
+        // and which the SST gate can NEVER catch (every vendored case is supervisor → the gate never fires).
+        for op in [
+            0x4E71, // NOP — sits directly between RESET (0x4E70) and STOP (0x4E72)
+            0x40C0, // MOVE from SR — UNPRIVILEGED on the 68000 (privileged only from the 68010)
+            0x40FC, // MOVE from SR, another EA — the same 68000-vs-68010 pin
+            0x4E75, // RTS
+            0x4E77, // RTR
+            0x4E5F, // UNLK A7 — just below the MOVE-USP block (0x4E60)
+            0x0000, // ORI #imm,Dn — the non-SR immediate form
+        ] {
+            assert!(
+                !is_privileged_opcode(op),
+                "{op:#06X} must NOT be privileged on the 68000"
             );
         }
     }
