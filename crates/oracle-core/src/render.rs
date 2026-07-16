@@ -147,9 +147,65 @@ pub struct PlaneScroll {
     pub vscroll: VScroll,
 }
 
-/// The semantic line report for the plane stages (design §4 `render_line_report`): the latched inputs and
-/// per-pixel resolution outcomes for one line. Push 4 adds the sprite-evaluation list + overflow/collision
-/// fields (the struct grows additively, per the §4 stability contract); this push has no sprite fields.
+/// One walked sprite's evaluation outcome on a line (design §4 `render_line_report`, recon R10 / RR8) — the
+/// "which sprites dropped on line N and why" differentiator.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SpriteOutcome {
+    /// On-line, within the per-line sprite + pixel limits, output not masked — drawn.
+    Rendered,
+    /// Parsed but this line is outside the sprite's Y span (design "offscreen"); consumes no budget.
+    OffLine,
+    /// On-line but beyond the per-line sprite count (20 H40 / 16 H32) — the brief's "limit".
+    DroppedLineLimit,
+    /// On-line but the per-line pixel budget (320 H40 / 256 H32) was already exhausted — dot overflow.
+    DroppedPixelBudget,
+    /// On-line, in budget, but R10 x=0 masking suppressed its pixel output — the brief's "masking"
+    /// (produced at render time when X is fetched, push-4 slice 3).
+    Masked,
+}
+
+/// Why the sprite link-walk ended (recon RR8 — the brief's "link-cut": sprites past this are unreachable).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SpriteWalkEnd {
+    /// A link field was 0 (points back at sprite 0) — the normal end of the list.
+    LinkZero,
+    /// The hardware maximum of 80 (H40) / 64 (H32) parsed sprites was reached (or a link ran out of range).
+    MaxCount,
+}
+
+/// One walked sprite's evaluation record (design §4), in link-walk order. Y / size / link come from the SAT
+/// cache; X from VRAM at the current base (recon R5 / RR8).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct SpriteEval {
+    /// SAT index of this sprite (the slot).
+    pub index: u8,
+    /// Screen Y = `(Yfield & 0x3FF) − 128` (cached).
+    pub y: i16,
+    /// Screen X = `(Xfield & 0x1FF) − 128` (VRAM at the current base).
+    pub x: i16,
+    /// Width in cells, 1..=4.
+    pub width_cells: u8,
+    /// Height in cells, 1..=4.
+    pub height_cells: u8,
+    /// This sprite's link field (next index).
+    pub link: u8,
+    /// Why this sprite did or did not draw on the line.
+    pub outcome: SpriteOutcome,
+}
+
+/// The result of the sprite evaluation walk for one line — shared by `render_line_report` (the evaluation
+/// list + status) and, in slice 3, the render compositing, so attribution is the render (design §1).
+struct SpriteLine {
+    /// Every walked sprite, in link-walk order, with its outcome.
+    sprites: Vec<SpriteEval>,
+    /// How the walk terminated (link-cut vs the parse cap).
+    walk_end: SpriteWalkEnd,
+    /// Any on-line sprite was dropped by the per-line sprite count or the pixel budget (status bit 6).
+    overflow: bool,
+}
+
+/// The semantic line report (design §4 `render_line_report`): the latched inputs and per-pixel + per-sprite
+/// resolution outcomes for one line.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct LineReport {
     /// The line number this report describes.
@@ -166,6 +222,15 @@ pub struct LineReport {
     pub plane_b: PlaneScroll,
     /// The window's horizontal span on this line (if any).
     pub window: Option<WindowSpan>,
+    /// The sprite evaluation list, in link-walk order (recon R10 / RR8) — each walked sprite + why it drew or
+    /// dropped. Sprites unreachable past `sprite_walk_end` are link-cut (absent).
+    pub sprites: Vec<SpriteEval>,
+    /// Why the sprite link-walk ended (link-cut vs the parse cap).
+    pub sprite_walk_end: SpriteWalkEnd,
+    /// Sprite overflow for this line (status bit 6): a per-line sprite-count or pixel-budget drop occurred.
+    pub sprite_overflow: bool,
+    /// Sprite collision for this line (status bit 5): two opaque sprite pixels overlapped.
+    pub sprite_collision: bool,
     /// Per-pixel resolution (length = the active width); the same computation `render_line` maps to RGB.
     pub pixels: Vec<PixelResolution>,
 }
@@ -231,6 +296,16 @@ pub fn plane_size(reg10: u8) -> (u16, u16) {
         }
     }
     (field(reg10 & 0x03), field((reg10 >> 4) & 0x03))
+}
+
+/// Per-line sprite limits `(max_sprites, max_pixels, parse_cap)` for the mode (recon R10 / RR8): H40 =
+/// 20 / 320 / 80, H32 = 16 / 256 / 64.
+fn sprite_limits(h40: bool) -> (usize, usize, usize) {
+    if h40 {
+        (20, 320, 80)
+    } else {
+        (16, 256, 64)
+    }
 }
 
 impl Vdp {
@@ -618,13 +693,78 @@ impl Vdp {
         PlaneScroll { hscroll, vscroll }
     }
 
+    /// Evaluate the sprite link-walk for one line (recon R10 / RR8) — the cache-only phase-1 evaluation:
+    /// walk from sprite 0 following the cached `link`, classify each parsed sprite's outcome by the Y span
+    /// (cached) and the per-line sprite-count + pixel-budget limits, and record how the walk terminated
+    /// (link-cut). Reads **only the SAT cache** for Y/size/link (X is fetched from VRAM for the report's
+    /// display value; masking — which needs X — is a render-phase refinement, slice 3). Pure.
+    fn evaluate_sprite_line(&self, line: u16, h40: bool) -> SpriteLine {
+        let (max_sprites, max_px, cap) = sprite_limits(h40);
+        let cache = self.sat_cache();
+        let base = self.sat_base();
+        let mut sprites = Vec::new();
+        let mut walk_end = SpriteWalkEnd::MaxCount; // exhausting the cap without a 0-link ends here
+        let mut idx = 0usize; // the walk always starts at sprite 0
+        let mut on_line_count = 0usize;
+        let mut px_used = 0usize;
+        let mut overflow = false;
+        for _ in 0..cap {
+            if idx >= 80 {
+                break; // an out-of-range link terminates the list (MaxCount)
+            }
+            let y_field = (((cache[idx * 4] as u16) << 8) | cache[idx * 4 + 1] as u16) & 0x03FF;
+            let size = cache[idx * 4 + 2];
+            let link = cache[idx * 4 + 3] & 0x7F;
+            let w = (size >> 2 & 0x03) + 1;
+            let h = (size & 0x03) + 1;
+            let screen_y = y_field as i16 - 128;
+            let on_line = (line as i16) >= screen_y && (line as i16) < screen_y + (h as i16) * 8;
+            let outcome = if !on_line {
+                SpriteOutcome::OffLine
+            } else if on_line_count >= max_sprites {
+                overflow = true;
+                SpriteOutcome::DroppedLineLimit
+            } else if px_used >= max_px {
+                overflow = true;
+                SpriteOutcome::DroppedPixelBudget
+            } else {
+                on_line_count += 1;
+                px_used += w as usize * 8;
+                SpriteOutcome::Rendered
+            };
+            let x_field = self.vram_word(base + idx * 8 + 6) & 0x01FF;
+            sprites.push(SpriteEval {
+                index: idx as u8,
+                y: screen_y,
+                x: x_field as i16 - 128,
+                width_cells: w,
+                height_cells: h,
+                link,
+                outcome,
+            });
+            if link == 0 {
+                walk_end = SpriteWalkEnd::LinkZero;
+                break;
+            }
+            idx = link as usize;
+        }
+        SpriteLine {
+            sprites,
+            walk_end,
+            overflow,
+        }
+    }
+
     /// The semantic line report for the plane stages (design §4 `render_line_report`): the latched scroll /
-    /// window inputs + the per-pixel resolution. The `pixels` are the *same* `resolve_line` output
-    /// `render_line` maps to RGB — attribution is the render, not a parallel path (design §1). Recomputed on
-    /// demand, never stored. (The sprite-evaluation list is push 4; no sprite fields exist yet.)
+    /// window inputs + the per-pixel resolution + the sprite evaluation list. The `pixels` are the *same*
+    /// `resolve_line` output `render_line` maps to RGB — attribution is the render, not a parallel path
+    /// (design §1). Recomputed on demand, never stored. The sprite section is the cache-only evaluation
+    /// (recon R10 / RR8): the walk, per-line limits, and drop reasons; the `Masked` outcome + collision are
+    /// render-phase refinements (slice 3), so `sprite_collision` is `false` here.
     pub fn render_line_report(&self, line: u16) -> LineReport {
         let h40 = self.render_h40();
         let width = if h40 { 320 } else { 256 };
+        let sl = self.evaluate_sprite_line(line, h40);
         LineReport {
             line,
             h40,
@@ -633,6 +773,10 @@ impl Vdp {
             plane_a: self.plane_scroll(Plane::A, line, h40, width),
             plane_b: self.plane_scroll(Plane::B, line, h40, width),
             window: self.window_span(line, width),
+            sprites: sl.sprites,
+            sprite_walk_end: sl.walk_end,
+            sprite_overflow: sl.overflow,
+            sprite_collision: false,
             pixels: self.resolve_line(line),
         }
     }
@@ -1270,5 +1414,158 @@ mod tests {
             s0.cache_divergence,
             "cached Y/size/link disagree with VRAM at the new base"
         );
+    }
+
+    // --- design §4 / R10 / RR8: sprite evaluation walk (render_line_report sprite section) ----------------
+
+    /// Write a chain of `n` sprites (indices 0..n) all at `y_field` with `size`, each linking to the next
+    /// (the last links to 0 = terminate). SAT base + autoinc must already be set.
+    fn write_chain(v: &mut Vdp, n: usize, y_field: u16, size: u16) {
+        for i in 0..n {
+            let link = if i + 1 < n { (i + 1) as u16 } else { 0 };
+            write_sprite(v, i, y_field, (size << 8) | link, 0x0001, 0x0080 + i as u16);
+        }
+    }
+
+    #[test]
+    fn evaluation_walks_the_link_list_and_ends_at_link_zero() {
+        let mut v = fresh();
+        v.vram_mut().fill(0);
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x05, 0x10); // base 0x2000
+        write_chain(&mut v, 3, 0x0080, 0x00); // sprites 0→1→2→(0 = end), all on line 0
+        let r = v.render_line_report(0);
+        assert_eq!(
+            r.sprites.iter().map(|s| s.index).collect::<Vec<_>>(),
+            vec![0, 1, 2],
+            "walked in link order from sprite 0"
+        );
+        assert_eq!(r.sprite_walk_end, SpriteWalkEnd::LinkZero);
+        assert!(r
+            .sprites
+            .iter()
+            .all(|s| s.outcome == SpriteOutcome::Rendered));
+        assert!(!r.sprite_overflow);
+    }
+
+    #[test]
+    fn evaluation_terminates_a_self_looping_link_at_the_parse_cap() {
+        let mut v = fresh();
+        v.vram_mut().fill(0);
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x05, 0x10);
+        // Sprite 0 links to 1; sprite 1 links to itself (link 1) → a cycle that link-0 can't express.
+        // (size byte 0 = 1×1, so the size/link word is just the link value.)
+        write_sprite(&mut v, 0, 0x0080, 0x0001, 0x0001, 0x0080);
+        write_sprite(&mut v, 1, 0x0080, 0x0001, 0x0001, 0x0088);
+        let r = v.render_line_report(0);
+        assert_eq!(
+            r.sprite_walk_end,
+            SpriteWalkEnd::MaxCount,
+            "a self-loop is bounded by the parse cap (never hangs)"
+        );
+        assert_eq!(r.sprites.len(), 64, "H32 parses at most 64 sprites");
+    }
+
+    #[test]
+    fn evaluation_marks_off_line_sprites_by_the_y_span() {
+        let mut v = fresh();
+        v.vram_mut().fill(0);
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x05, 0x10);
+        // Sprite 0: screen y 0, 1×2 (covers lines 0..=15); sprite 1: screen y 16, 1×1 (link 0).
+        write_sprite(&mut v, 0, 0x0080, (0x01 << 8) | 1, 0x0001, 0x0080);
+        write_sprite(&mut v, 1, 0x0090, 0x0000, 0x0001, 0x0090);
+        assert_eq!(v.render_line_report(0).sprites[0].height_cells, 2);
+        assert_eq!(
+            v.render_line_report(0).sprites[0].outcome,
+            SpriteOutcome::Rendered
+        );
+        assert_eq!(
+            v.render_line_report(0).sprites[1].outcome,
+            SpriteOutcome::OffLine
+        );
+        assert_eq!(
+            v.render_line_report(15).sprites[0].outcome,
+            SpriteOutcome::Rendered,
+            "the 2-cell-tall sprite still covers line 15"
+        );
+        assert_eq!(
+            v.render_line_report(16).sprites[0].outcome,
+            SpriteOutcome::OffLine,
+            "sprite 0 ends at line 15"
+        );
+    }
+
+    #[test]
+    fn evaluation_drops_beyond_the_per_line_sprite_limit() {
+        let mut v = fresh();
+        v.vram_mut().fill(0);
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x05, 0x10);
+        write_chain(&mut v, 18, 0x0080, 0x00); // 18 × 1×1 (8 px each = 144 px, no budget issue) on line 0
+        let r = v.render_line_report(0);
+        assert_eq!(r.sprites.len(), 18, "all 18 walked");
+        let drawn = r
+            .sprites
+            .iter()
+            .filter(|s| s.outcome == SpriteOutcome::Rendered)
+            .count();
+        assert_eq!(drawn, 16, "H32 draws only 16 per line");
+        assert_eq!(r.sprites[16].outcome, SpriteOutcome::DroppedLineLimit);
+        assert_eq!(r.sprites[17].outcome, SpriteOutcome::DroppedLineLimit);
+        assert!(r.sprite_overflow, "the count limit sets overflow");
+    }
+
+    #[test]
+    fn evaluation_drops_when_the_pixel_budget_is_exhausted() {
+        let mut v = fresh();
+        v.vram_mut().fill(0);
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x05, 0x10);
+        write_chain(&mut v, 10, 0x0080, 0x0C); // 10 × 4×1 (32 px each) on line 0
+        let r = v.render_line_report(0);
+        let drawn = r
+            .sprites
+            .iter()
+            .filter(|s| s.outcome == SpriteOutcome::Rendered)
+            .count();
+        assert_eq!(
+            drawn, 8,
+            "256 px / 32 px = 8 sprites fit (count 8 < 16, so it is a budget drop)"
+        );
+        assert_eq!(r.sprites[8].outcome, SpriteOutcome::DroppedPixelBudget);
+        assert!(r.sprite_overflow, "the pixel budget sets overflow");
+    }
+
+    #[test]
+    fn evaluation_uses_h40_limits() {
+        let mut v = fresh();
+        v.vram_mut().fill(0);
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x0C, 0x81); // H40
+        set_reg(&mut v, 0x05, 0x10); // base 0x2000 (H40 bit-0 mask keeps it)
+        write_chain(&mut v, 22, 0x0080, 0x00); // 22 × 1×1 on line 0
+        let r = v.render_line_report(0);
+        assert!(r.h40);
+        let drawn = r
+            .sprites
+            .iter()
+            .filter(|s| s.outcome == SpriteOutcome::Rendered)
+            .count();
+        assert_eq!(drawn, 20, "H40 draws 20 per line");
+    }
+
+    #[test]
+    fn plane_only_line_has_an_empty_sprite_list() {
+        // A cleared SAT (all entries link 0, y = -128) parses just sprite 0 (off-line) and stops.
+        let v = pa_fixture(false);
+        let r = v.render_line_report(0);
+        assert_eq!(r.sprite_walk_end, SpriteWalkEnd::LinkZero);
+        assert!(!r.sprite_overflow && !r.sprite_collision);
+        assert!(r
+            .sprites
+            .iter()
+            .all(|s| s.outcome == SpriteOutcome::OffLine));
     }
 }
