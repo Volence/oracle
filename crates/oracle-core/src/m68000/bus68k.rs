@@ -40,19 +40,27 @@ pub struct Transaction {
 /// one access and a byte drives a single bus half (UDS for an even address → the upper byte, LDS for an
 /// odd address → the lower byte); a long is **two** word accesses (the micro-op builder emits the two
 /// `read16`/`write16` halves itself), so the bus exposes no separate long primitive.
+/// Every access returns its **wait cycles** — the extra master cycles the access cost *beyond the base 4*
+/// (bus contention, VDP-port waits, DMA-halt stalls). `exec_one` adds them to the instruction's cycle count
+/// in its bus arms, so cycle costs live only there and recipes never change. [`FlatBus`] always returns 0
+/// (the SST harness pins un-contended timing), so the recorded streams + cycle counts stay bit-identical;
+/// the machine-side adapter fills real waits as the VDP/DMA models land. Nothing *asserts* a non-zero wait
+/// yet — this is the seam those models plug into without touching the CPU again.
 pub trait Bus68k {
-    fn read16(&mut self, addr: u32, fc: u8) -> u16;
-    fn write16(&mut self, addr: u32, fc: u8, value: u16);
+    /// Read a word; returns `(value, wait_cycles)`.
+    fn read16(&mut self, addr: u32, fc: u8) -> (u16, u32);
+    /// Write a word; returns `wait_cycles`.
+    fn write16(&mut self, addr: u32, fc: u8, value: u16) -> u32;
     /// Read the byte at `addr` (the addressed cell; the UDS/LDS half is an electrical detail — the value
-    /// is `mem[addr]`).
-    fn read8(&mut self, addr: u32, fc: u8) -> u8;
-    /// Write `value` to the byte at `addr`.
-    fn write8(&mut self, addr: u32, fc: u8, value: u8);
+    /// is `mem[addr]`). Returns `(value, wait_cycles)`.
+    fn read8(&mut self, addr: u32, fc: u8) -> (u8, u32);
+    /// Write `value` to the byte at `addr`; returns `wait_cycles`.
+    fn write8(&mut self, addr: u32, fc: u8, value: u8) -> u32;
     /// The indivisible `TAS` read-modify-write: atomically read the byte `orig` at `addr`, write
-    /// `orig | 0x80` back, and return `orig`. ONE locked bus cycle — the SST stream's single `'t'`
-    /// transaction (logged with `value = orig | 0x80`, the WRITTEN byte), NOT a separate read+write pair.
-    /// Byte-only → never faults on parity.
-    fn tas(&mut self, addr: u32, fc: u8) -> u8;
+    /// `orig | 0x80` back, and return `(orig, wait_cycles)`. ONE locked bus cycle — the SST stream's single
+    /// `'t'` transaction (logged with `value = orig | 0x80`, the WRITTEN byte), NOT a separate read+write
+    /// pair. Byte-only → never faults on parity.
+    fn tas(&mut self, addr: u32, fc: u8) -> (u8, u32);
 }
 
 /// A flat 16 MiB recording bus for tests/diagnostics: big-endian word access over the 24-bit space,
@@ -88,7 +96,7 @@ impl Default for FlatBus {
 }
 
 impl Bus68k for FlatBus {
-    fn read16(&mut self, addr: u32, fc: u8) -> u16 {
+    fn read16(&mut self, addr: u32, fc: u8) -> (u16, u32) {
         let a = (addr & ADDR_MASK) as usize;
         let b = ((addr.wrapping_add(1)) & ADDR_MASK) as usize;
         let value = ((self.mem[a] as u16) << 8) | self.mem[b] as u16;
@@ -99,10 +107,10 @@ impl Bus68k for FlatBus {
             size: Size::Word,
             value,
         });
-        value
+        (value, 0) // FlatBus is un-contended: 0 wait cycles (SST timing stays bit-identical).
     }
 
-    fn write16(&mut self, addr: u32, fc: u8, value: u16) {
+    fn write16(&mut self, addr: u32, fc: u8, value: u16) -> u32 {
         let a = (addr & ADDR_MASK) as usize;
         let b = ((addr.wrapping_add(1)) & ADDR_MASK) as usize;
         self.mem[a] = (value >> 8) as u8;
@@ -114,9 +122,10 @@ impl Bus68k for FlatBus {
             size: Size::Word,
             value,
         });
+        0
     }
 
-    fn read8(&mut self, addr: u32, fc: u8) -> u8 {
+    fn read8(&mut self, addr: u32, fc: u8) -> (u8, u32) {
         // A byte access drives one half of the 16-bit data bus (UDS for an even address → the upper byte;
         // LDS for an odd address → the lower byte); either way the addressed memory cell is `mem[addr]`,
         // and the on-bus value the SST suite records is that single byte. Logged byte-granular (`Size::Byte`)
@@ -130,10 +139,10 @@ impl Bus68k for FlatBus {
             size: Size::Byte,
             value: value as u16,
         });
-        value
+        (value, 0)
     }
 
-    fn write8(&mut self, addr: u32, fc: u8, value: u8) {
+    fn write8(&mut self, addr: u32, fc: u8, value: u8) -> u32 {
         let a = (addr & ADDR_MASK) as usize;
         self.mem[a] = value;
         self.log.push(Transaction {
@@ -143,9 +152,10 @@ impl Bus68k for FlatBus {
             size: Size::Byte,
             value: value as u16,
         });
+        0
     }
 
-    fn tas(&mut self, addr: u32, fc: u8) -> u8 {
+    fn tas(&mut self, addr: u32, fc: u8) -> (u8, u32) {
         // The indivisible test-and-set: read `orig`, write `orig | 0x80`, log ONE Tas transaction whose
         // value is the WRITTEN byte, return `orig`. A single locked RMW bus cycle (the SST `'t'` token) —
         // never a separate read+write pair. Byte-granular (`Size::Byte`).
@@ -159,7 +169,7 @@ impl Bus68k for FlatBus {
             size: Size::Byte,
             value: (orig | 0x80) as u16,
         });
-        orig
+        (orig, 0)
     }
 }
 
@@ -175,7 +185,7 @@ mod tests {
     fn read8_even_address_returns_upper_half_byte_and_logs_byte_transaction() {
         let mut bus = FlatBus::new();
         bus.poke(0x97_EA9E, 0x45);
-        let v = bus.read8(0x97_EA9E, 5);
+        let (v, _wait) = bus.read8(0x97_EA9E, 5);
         assert_eq!(
             v, 0x45,
             "read8 returns the addressed byte (SST anchor de11)"
@@ -198,7 +208,7 @@ mod tests {
     fn read8_odd_address_returns_lower_half_byte() {
         let mut bus = FlatBus::new();
         bus.poke(13_367_077, 0xE4);
-        let v = bus.read8(13_367_077, 5);
+        let (v, _wait) = bus.read8(13_367_077, 5);
         assert_eq!(
             v, 0xE4,
             "read8 at an odd address returns the addressed byte"
@@ -223,7 +233,7 @@ mod tests {
     fn tas_reads_orig_writes_or_0x80_and_logs_one_tas_transaction() {
         let mut bus = FlatBus::new();
         bus.poke(2_840_449, 0x35);
-        let orig = bus.tas(2_840_449, 5);
+        let (orig, _wait) = bus.tas(2_840_449, 5);
         assert_eq!(
             orig, 0x35,
             "tas returns the pre-modify byte (the READ value)"
