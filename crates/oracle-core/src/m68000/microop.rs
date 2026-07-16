@@ -1291,6 +1291,12 @@ pub struct MicroState {
     /// [`CpuState::Stopped`] once the recipe finishes. A terminal signal the driver reads at completion,
     /// so `STOP`'s state change flows through the same shared cook both drivers call.
     stop_requested: bool,
+    /// True when this recipe represents an instruction that was **not executed / was aborted** — a
+    /// decode-time exception (illegal / privilege / line-A / line-F) or an execution-time address/bus-error
+    /// abort. The `begin_next` trace dispatch reads it to **suppress a pending trace** (M68000UM §6.3.8: no
+    /// trace after an illegal/privileged/faulted instruction). Deliberately left `false` for instructions
+    /// that DO execute and then trap (`TRAP`/`TRAPV`/`CHK`/div0), so their trace sequences *after* the trap.
+    suppresses_trace: bool,
 }
 
 impl MicroState {
@@ -1307,12 +1313,25 @@ impl MicroState {
             scratch: [0; SCRATCH_SLOTS],
             opcode: 0,
             stop_requested: false,
+            suppresses_trace: false,
         }
     }
 
     /// True once a completed [`MicroOp::Stop`] has run — the orchestrator then enters [`CpuState::Stopped`].
     pub fn requests_stop(&self) -> bool {
         self.stop_requested
+    }
+
+    /// True when this recipe is a not-executed / aborted entry (illegal / privilege / line-A/F / address-bus
+    /// fault) — the `begin_next` trace dispatch reads it to suppress a pending trace (M68000UM §6.3.8).
+    pub fn suppresses_trace(&self) -> bool {
+        self.suppresses_trace
+    }
+
+    /// Mark this recipe as trace-suppressing (see [`MicroState::suppresses_trace`]). Set by the decode-time
+    /// exception builder and the address-error install; left `false` for executed-then-trapping instructions.
+    pub fn mark_suppresses_trace(&mut self) {
+        self.suppresses_trace = true;
     }
 
     /// Latch the original opcode this recipe was decoded from (see [`MicroState::opcode`]). Called by
@@ -2964,6 +2983,11 @@ pub struct Cpu68000 {
     /// The high-level processor state. `Normal` unless `STOP` (→ `Stopped`) or a double fault
     /// (→ `Halted`) has fired. Serialized, so a stopped/halted snapshot round-trips.
     state: CpuState,
+    /// Latched when an instruction completes with T set at its start and did not suppress the trace
+    /// (M68000UM §6.3.8): the NEXT [`Cpu68000::step`] services the vector-9 trace exception before decoding.
+    /// Serialized, so a snapshot taken between the traced instruction and its trace round-trips. This is the
+    /// first of `begin_next`'s async event latches (the interrupt latch joins it in A4).
+    trace_pending: bool,
 }
 
 /// The outcome of one [`Cpu68000::step_micro_op`].
@@ -2982,6 +3006,7 @@ impl Cpu68000 {
             regs,
             inflight: None,
             state: CpuState::Normal,
+            trace_pending: false,
         }
     }
 
@@ -3000,6 +3025,7 @@ impl Cpu68000 {
             regs,
             inflight,
             state: cpu_state,
+            trace_pending: _, // step_micro_op is the mid-instruction driver; trace is a begin_next concern
         } = self;
         let recipe = inflight.as_mut().expect("no instruction in flight");
         recipe.exec_one(regs, bus);
@@ -3024,10 +3050,26 @@ impl Cpu68000 {
     /// transition to [`CpuState::Stopped`]. Async events (trace, interrupt) and the `Stopped`/`Halted` wake
     /// slot into a `begin_next` decision point as A3/A4 land.
     pub fn step(&mut self, bus: &mut impl Bus68k) -> u32 {
+        // begin_next priority dispatch. Trace (a boundary event pended by the PREVIOUS instruction) outranks
+        // decoding the next instruction (M68000UM §6.2.3 group-1 order; the interrupt arm joins here in A4).
+        if self.trace_pending {
+            self.trace_pending = false;
+            let mut recipe = crate::m68000::decode::trace_exception_recipe();
+            return recipe.run_to_completion(&mut self.regs, bus);
+        }
+        // Latch T at the START of the instruction (before it can change SR) — §6.3.8.
+        let trace_armed = self.regs.sr & SR_TRACE != 0;
         let mut recipe = crate::m68000::decode::decode(&self.regs);
+        let suppresses_trace = recipe.suppresses_trace();
         let cycles = recipe.run_to_completion(&mut self.regs, bus);
         if recipe.requests_stop() {
             self.state = CpuState::Stopped;
+        }
+        // Pend the trace for the next begin_next, unless the instruction did not execute / was aborted
+        // (illegal/privilege/line-A/F/fault). Executed-then-trapping instructions do NOT suppress, so their
+        // trace correctly sequences after the trap.
+        if trace_armed && !suppresses_trace {
+            self.trace_pending = true;
         }
         cycles
     }
@@ -5210,5 +5252,226 @@ mod tests {
             std_log, trace_log,
             "the two builders never produce the same on-bus order"
         );
+    }
+
+    // --- Push A / A3.1: begin_next trace dispatch. T latched at instruction START (M68000UM §6.3.8); a
+    // trace exception (vector 9) is serviced on the FOLLOWING begin_next, stacked PC = the next instruction.
+    fn poke_w(bus: &mut FlatBus, addr: u32, val: u16) {
+        bus.poke(addr, (val >> 8) as u8);
+        bus.poke(addr + 1, val as u8);
+    }
+
+    /// A program at 0x0C00 (words) with a vector-9 trace handler (0x2000) and a vector-4 illegal handler
+    /// (0x3000), each a pair of NOPs, and the supervisor stack at 0x1000. Any word not in `program` reads as
+    /// NOP so trailing prefetches are always valid.
+    fn trace_env(sr: u16, program: &[u16]) -> (Cpu68000, FlatBus) {
+        let mut bus = FlatBus::new();
+        for a in (0x0C00u32..0x0C20).step_by(2) {
+            poke_w(&mut bus, a, 0x4E71); // NOP fill
+        }
+        for (i, &w) in program.iter().enumerate() {
+            poke_w(&mut bus, 0x0C00 + 2 * i as u32, w);
+        }
+        poke_w(&mut bus, 0x26, 0x2000); // vector 9 @ 0x24 → 0x0000_2000 (trace)
+        poke_w(&mut bus, 0x12, 0x3000); // vector 4 @ 0x10 → 0x0000_3000 (illegal)
+        poke_w(&mut bus, 0x22, 0x4000); // vector 8 @ 0x20 → 0x0000_4000 (privilege)
+        for a in [0x2000u32, 0x2002, 0x3000, 0x3002, 0x4000, 0x4002] {
+            poke_w(&mut bus, a, 0x4E71);
+        }
+        let regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0x0000_3000,
+            ssp: 0x0000_1000,
+            pc: 0x0C00,
+            sr,
+            prefetch: [
+                *program.first().unwrap_or(&0x4E71),
+                *program.get(1).unwrap_or(&0x4E71),
+            ],
+        };
+        (Cpu68000::new(regs), bus)
+    }
+
+    /// Two NOPs at 0x0C00/0x0C02, a vector-9 handler (0x2000) of NOPs, supervisor stack at 0x1000.
+    fn trace_setup(sr: u16) -> (Cpu68000, FlatBus) {
+        trace_env(sr, &[0x4E71, 0x4E71])
+    }
+
+    #[test]
+    fn trace_taken_after_a_plain_instruction_with_t_set() {
+        // SR = S=1, T=1, I=7 (0xA700). step #1 runs the NOP; step #2 must service the trace exception.
+        let (mut cpu, mut bus) = trace_setup(0xA700);
+        cpu.step(&mut bus); // NOP at 0x0C00 → pc = 0x0C02
+        assert_eq!(cpu.regs.pc, 0x0C02, "NOP advanced to the next instruction");
+        bus.log.clear(); // isolate the trace exception's transactions
+        cpu.step(&mut bus); // must be the trace exception, NOT the second NOP
+
+        assert_eq!(
+            cpu.regs.pc, 0x2000,
+            "reloaded at the vector-9 trace handler"
+        );
+        assert_eq!(cpu.regs.sr, 0x2700, "S kept, T cleared for the handler");
+        assert_eq!(cpu.regs.ssp, 0x0FFA, "6-byte frame pushed");
+        // Frame: stacked PC = 0x0C02 (the NEXT instruction), SR = 0xA700 (T still set — captured pre-clear).
+        assert_eq!(bus.peek(0x0FFA), 0xA7, "stacked SR high (T set)");
+        assert_eq!(bus.peek(0x0FFB), 0x00, "stacked SR low");
+        assert_eq!(bus.peek(0x0FFC), 0x00, "stacked PC high");
+        assert_eq!(
+            bus.peek(0x0FFE),
+            0x0C,
+            "stacked PC = 0x0C02 (next instruction), high byte"
+        );
+        assert_eq!(bus.peek(0x0FFF), 0x02, "stacked PC low byte");
+        // The trace frame's `s S s` write order: PCL @ 0x0FFE first, PCH @ 0x0FFC second, SR @ 0x0FFA third.
+        let writes: Vec<u32> = bus
+            .log
+            .iter()
+            .filter(|t| t.kind == TxKind::Write)
+            .map(|t| t.addr)
+            .collect();
+        assert_eq!(
+            writes,
+            vec![0x0FFE, 0x0FFC, 0x0FFA],
+            "trace `s S s` write order"
+        );
+        // Vector 9 fetched at 0x24 (FC=5, supervisor data).
+        assert!(
+            bus.log
+                .iter()
+                .any(|t| t.kind == TxKind::Read && t.addr == 0x24 && t.fc == 5),
+            "vector 9 fetched at 0x24"
+        );
+    }
+
+    #[test]
+    fn no_trace_when_t_is_clear() {
+        // T=0 (0x2700): both NOPs just execute; no trace is ever serviced.
+        let (mut cpu, mut bus) = trace_setup(0x2700);
+        cpu.step(&mut bus); // NOP @ 0x0C00 → 0x0C02
+        cpu.step(&mut bus); // NOP @ 0x0C02 → 0x0C04 (NOT a trace)
+        assert_eq!(cpu.regs.pc, 0x0C04, "ran both NOPs — no trace");
+        assert_eq!(cpu.regs.ssp, 0x1000, "nothing stacked");
+        assert!(
+            !bus.log.iter().any(|t| t.addr == 0x24),
+            "vector 9 never fetched"
+        );
+    }
+
+    #[test]
+    fn a_t_clearing_instruction_still_traces() {
+        // The start-of-instruction T LATCH decides: ANDI #0x2700,SR from T=1 CLEARS T, yet still traces
+        // (M68000UM §6.3.8 — T is sampled at the instruction's start, before it changes SR).
+        let (mut cpu, mut bus) = trace_env(0xA700, &[0x027C, 0x2700]); // ANDI #0x2700,SR
+        cpu.step(&mut bus); // ANDItoSR: sr 0xA700 → 0x2700 (T cleared), pc → 0x0C04
+        assert_eq!(cpu.regs.sr & SR_TRACE, 0, "the instruction cleared T");
+        assert_eq!(cpu.regs.pc, 0x0C04);
+        bus.log.clear();
+        cpu.step(&mut bus); // still traces — latch was set at the start
+        assert_eq!(cpu.regs.pc, 0x2000, "T-clearing instruction still traced");
+        assert_eq!(
+            bus.peek(0x0FFE),
+            0x0C,
+            "stacked PC = 0x0C04 (next instr) high"
+        );
+        assert_eq!(bus.peek(0x0FFF), 0x04, "stacked PC low");
+        assert_eq!(
+            bus.peek(0x0FFA),
+            0x27,
+            "stacked SR = the post-instruction SR (T already clear)"
+        );
+    }
+
+    #[test]
+    fn a_t_setting_instruction_does_not_trace_itself() {
+        // The dual: ORI #0x8000,SR from T=0 SETS T, but does NOT trace after itself (latch was clear); the
+        // NEXT instruction (now T=1) is the one that traces.
+        let (mut cpu, mut bus) = trace_env(0x2700, &[0x007C, 0x8000]); // ORI #0x8000,SR
+        cpu.step(&mut bus); // ORItoSR: sr 0x2700 → 0xA700 (T set), pc → 0x0C04
+        assert_eq!(cpu.regs.sr & SR_TRACE, SR_TRACE, "the instruction set T");
+        assert_eq!(
+            cpu.regs.pc, 0x0C04,
+            "no trace after the T-setting instruction itself"
+        );
+        assert_eq!(cpu.regs.ssp, 0x1000, "nothing stacked yet");
+        bus.log.clear();
+        cpu.step(&mut bus); // the NEXT instruction (NOP, now with T latched) runs...
+        assert_eq!(cpu.regs.pc, 0x0C06, "the next NOP executed");
+        bus.log.clear();
+        cpu.step(&mut bus); // ...and NOW the trace fires
+        assert_eq!(
+            cpu.regs.pc, 0x2000,
+            "trace fired after the first T=1-latched instruction"
+        );
+    }
+
+    #[test]
+    fn a_decode_time_exception_suppresses_the_pending_trace() {
+        // Illegal / privilege instructions are "not executed" — §6.3.8 suppresses the trace after them.
+        // (a) ILLEGAL (0x4AFC), supervisor + T=1 → vector-4 frame, no trace follows.
+        let (mut cpu, mut bus) = trace_env(0xA700, &[0x4AFC, 0x4E71]);
+        cpu.step(&mut bus);
+        assert_eq!(cpu.regs.pc, 0x3000, "illegal → vector-4 handler");
+        bus.log.clear();
+        cpu.step(&mut bus);
+        assert_ne!(cpu.regs.pc, 0x2000, "no trace after ILLEGAL");
+        assert!(
+            !bus.log.iter().any(|t| t.addr == 0x24),
+            "vector 9 not fetched"
+        );
+
+        // (b) PRIVILEGE: MOVE #imm,SR (0x46FC) in USER mode with T=1 → vector-8 frame, no trace follows.
+        let (mut cpu, mut bus) = trace_env(0x8000, &[0x46FC, 0x2700]); // T=1, S=0 (user)
+        cpu.step(&mut bus);
+        assert_eq!(
+            cpu.regs.pc, 0x4000,
+            "privileged op in user mode → vector-8 handler"
+        );
+        assert_eq!(
+            cpu.regs.sr & SR_SUPERVISOR,
+            SR_SUPERVISOR,
+            "entered supervisor"
+        );
+        bus.log.clear();
+        cpu.step(&mut bus);
+        assert_ne!(cpu.regs.pc, 0x2000, "no trace after a privilege violation");
+        assert!(
+            !bus.log.iter().any(|t| t.addr == 0x24),
+            "vector 9 not fetched"
+        );
+    }
+
+    #[test]
+    fn trace_exception_runs_identically_on_both_drivers() {
+        // The trace recipe itself must run bit-identically on run_to_completion and step_micro_op (the SST
+        // rigor, applied to the hand-authored trace frame). regs.pc = the next-instruction address at entry.
+        let mk = || {
+            let regs = Registers {
+                d: [0; 8],
+                a: [0; 7],
+                usp: 0x0000_3000,
+                ssp: 0x0000_1000,
+                pc: 0x0C02,
+                sr: 0xA700,
+                prefetch: [0x4E71, 0x4E71],
+            };
+            let mut bus = FlatBus::new();
+            poke_w(&mut bus, 0x26, 0x2000); // vector 9 → 0x2000
+            for a in [0x2000u32, 0x2002] {
+                poke_w(&mut bus, a, 0x4E71);
+            }
+            (regs, bus)
+        };
+        let (mut regs_rtc, mut bus_rtc) = mk();
+        crate::m68000::decode::trace_exception_recipe()
+            .run_to_completion(&mut regs_rtc, &mut bus_rtc);
+
+        let (regs_step, mut bus_step) = mk();
+        let mut cpu = Cpu68000::new(regs_step);
+        cpu.begin(crate::m68000::decode::trace_exception_recipe());
+        while cpu.step_micro_op(&mut bus_step) == Step::Continue {}
+
+        assert_eq!(cpu.regs, regs_rtc, "drivers agree on final registers");
+        assert_eq!(bus_step.log, bus_rtc.log, "drivers agree on transactions");
     }
 }

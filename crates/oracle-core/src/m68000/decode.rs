@@ -10,7 +10,7 @@ use super::bus68k::Bus68k;
 use super::ea::{
     ea_cmpa, ea_dst, ea_move, ea_movea, ea_read_word_operand, ea_src, ea_tas, ea_tst, RecipeBuf,
 };
-use super::exception::{push_standard_frame, vector_fetch_and_reload};
+use super::exception::{push_standard_frame, push_trace_frame, vector_fetch_and_reload};
 use super::microop::{
     condition_true, AluOp, Cpu68000, Dest, LogicOp, MicroOp, MicroState, Operand, Size,
 };
@@ -3797,6 +3797,37 @@ fn decode_time_exception_recipe(vector: u32) -> MicroState {
     buf.push(MicroOp::Internal { cycles: 4 });
     push_standard_frame(&mut buf, EXC_SAVED_PC_SLOT, EXC_SAVE_SR_SLOT);
     vector_fetch_and_reload(&mut buf, vector * 4);
+    // These are "the instruction did not execute" entries (illegal/privilege/line-A/F) — mark them so the
+    // begin_next trace dispatch suppresses a pending trace after them (M68000UM §6.3.8).
+    let mut state = buf.finish();
+    state.mark_suppresses_trace();
+    state
+}
+
+/// Build the **trace exception frame** (vector 9, `0x024`) — the boundary event `begin_next` services after
+/// an instruction completes with T latched (M68000UM §6.3.8). Timing-identical to
+/// [`decode_time_exception_recipe`] (Yacht L1548: `34(4/3)`, `nn ns nS ns nV nv np n np`) but with the two
+/// load-bearing differences: the frame is [`push_trace_frame`] (the `s S s` write order), and the stacked PC
+/// is the address of the **next** instruction — which, at the service point, is the live `regs.pc` (the queue
+/// head after the traced instruction completed). `TargetCalc(PcPlus(0))` captures it. NOT marked
+/// `suppresses_trace` (its own `EnterException` clears T, so no re-trace on the following boundary).
+pub(crate) fn trace_exception_recipe() -> MicroState {
+    let mut buf = RecipeBuf::new();
+    // Saved PC = the next instruction's address (= live pc at the trace boundary), UNMASKED.
+    buf.push(MicroOp::TargetCalc {
+        base: Operand::PcPlus(0),
+        index: Operand::Zero,
+        disp: Operand::Zero,
+        dst: EXC_SAVED_PC_SLOT,
+    });
+    // Capture the live SR (T still set — stacked for the handler) + enter supervisor (set S, clear T).
+    buf.push(MicroOp::EnterException {
+        save_sr: EXC_SAVE_SR_SLOT,
+    });
+    // The leading nn idle (= Internal{4}).
+    buf.push(MicroOp::Internal { cycles: 4 });
+    push_trace_frame(&mut buf, EXC_SAVED_PC_SLOT, EXC_SAVE_SR_SLOT);
+    vector_fetch_and_reload(&mut buf, 9 * 4);
     buf.finish()
 }
 
