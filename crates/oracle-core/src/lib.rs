@@ -14,7 +14,6 @@ pub mod m68000;
 pub mod rng;
 pub mod scheduler;
 pub mod state_hash;
-pub mod stub_cpu;
 pub mod system;
 /// Hand-authored 68000 test ROM fixture (see [`testrom::build`]). Not part of the stable API.
 #[doc(hidden)]

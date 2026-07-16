@@ -19,10 +19,13 @@ use oracle_core::system::System;
 const FRAMES: usize = 120;
 const SEED: u64 = 0xA5A5_5A5A_DEAD_BEEF;
 
-/// One cold-boot run: power on, reset to the anchor, then capture `export_state_hash` after each frame.
+/// One cold-boot run: power on, load the vendored test ROM, drive the power-on reset, then capture
+/// `export_state_hash` after each frame. The real CPU runs the ROM's RAM-stirring loop, so the sequence
+/// genuinely evolves frame to frame while staying byte-identical across instances.
 fn fresh_run(seed: u64) -> Vec<u64> {
     let mut sys = System::new(seed);
-    sys.reset(); // stopped anchor (matches the gate's `reset {run:false}`)
+    sys.load_rom(oracle_core::testrom::build());
+    sys.reset(); // power-on anchor (primes the CPU from the ROM vector table)
     let mut seq = Vec::with_capacity(FRAMES);
     for _ in 0..FRAMES {
         sys.run_frames(1);

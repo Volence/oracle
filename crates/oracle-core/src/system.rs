@@ -8,16 +8,21 @@
 //! the relevant fields per step (split-borrow). Memory regions are owned byte buffers, always allocated
 //! at their fixed hardware sizes by [`System::new`].
 
-use crate::bus::{BusEventSink, MegaDriveBus, SystemBus, Z80_RAM_SIZE};
+use crate::bus::{BusEventSink, MegaDriveBus, Z80_RAM_SIZE};
+use crate::m68000::microop::Cpu68000;
+use crate::m68000::registers::Registers;
 use crate::scheduler::Scheduler;
 use crate::state_hash::{StateHash, CRAM_SIZE, REG_COUNT, VRAM_SIZE, VSRAM_SIZE};
-use crate::stub_cpu::StubCpu;
 
 /// 68000 work RAM, `$FF0000..=$FFFFFF` (64 KiB).
 pub const RAM_SIZE: usize = 0x10000;
 
 /// Master-clock ticks per NTSC frame (H32: 262 scanlines × 3420 mclk).
 pub const MCLK_PER_FRAME: u64 = 896_040;
+
+/// Master-clock ticks per 68000 CPU cycle (the 68000 runs at mclk/7). The **one** place the CPU-cycle →
+/// mclk conversion happens is [`System::run_until`]; a `* 7` anywhere else is a bug.
+pub const MCLK_PER_CPU_CYCLE: u64 = 7;
 
 /// `export_state` format version (D8). Bumped when the layout changes; Push D freezes v1 + writes the
 /// spec. First byte(s) of every `export_state` image.
@@ -30,10 +35,6 @@ const EXPORT_M68K_REGS_LEN: usize = 8 * 4 + 7 * 4 + 4 + 4 + 4 + 2 + 2 * 2;
 const EXPORT_FM_PLACEHOLDER: usize = 0x200;
 /// Fixed all-zero PSG placeholder region (provisional size — Push D confirms/freezes).
 const EXPORT_PSG_PLACEHOLDER: usize = 0x10;
-
-/// Phase-0 placeholder workload: stub-chip steps executed per frame. Replaced by real cycle-accurate
-/// CPU stepping when the M68000 lands.
-const STUB_STEPS_PER_FRAME: u32 = 1000;
 
 /// The whole machine. One owner of all state.
 #[derive(Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
@@ -54,7 +55,13 @@ pub struct System {
     vdp_regs: [u8; REG_COUNT],
     /// The open-bus latch: the last word driven on the 68000 bus, returned by reads of unmapped space.
     last_bus_word: u16,
-    cpu: StubCpu,
+    /// The 68000. Driven over a [`MegaDriveBus`] in [`System::step_cpu`]; `step()` returns CPU cycles.
+    cpu: Cpu68000,
+    /// The absolute mclk of the last frame boundary [`System::run_frames`] targeted. Frame deadlines are
+    /// absolute (not `now + frame`), so a step that overshoots one frame's deadline by up to one
+    /// instruction is absorbed in the next frame — long-run time stays exact. Serialized so the carry
+    /// survives snapshot/restore. Reset to 0 at power-on.
+    frame_boundary_mclk: u64,
 }
 
 impl std::fmt::Debug for System {
@@ -75,11 +82,26 @@ impl std::fmt::Debug for System {
             .field("vsram", &format_args!("[{} bytes]", self.vsram.len()))
             .field("vdp_regs", &self.vdp_regs)
             .field("cpu", &self.cpu)
+            .field("frame_boundary_mclk", &self.frame_boundary_mclk)
             .field(
                 "state_hash.combined",
                 &crate::state_hash::hex(self.state_hash().combined),
             )
             .finish()
+    }
+}
+
+/// The 68000 register file before the power-on reset sequence runs (all zero; the reset recipe fetches
+/// SSP/PC from the ROM vector table and primes the prefetch queue).
+fn power_on_regs() -> Registers {
+    Registers {
+        d: [0; 8],
+        a: [0; 7],
+        usp: 0,
+        ssp: 0,
+        pc: 0,
+        sr: 0,
+        prefetch: [0; 2],
     }
 }
 
@@ -114,16 +136,21 @@ impl System {
             vsram: vec![0u8; VSRAM_SIZE],
             vdp_regs: [0u8; REG_COUNT],
             last_bus_word: 0,
-            cpu: StubCpu::new(),
+            cpu: Cpu68000::new(power_on_regs()),
+            frame_boundary_mclk: 0,
         }
     }
 
-    /// Restore the exact power-on state (the deterministic anchor the determinism gate resets to). The
-    /// cartridge ROM is preserved — a reset does not erase the cartridge.
+    /// Restore the deterministic power-on anchor (what the determinism gate resets to), preserving the
+    /// cartridge ROM, then drive the real `/RESET` sequence: the CPU reads the initial SSP and PC from the
+    /// ROM vector table and primes the prefetch queue, leaving the machine ready to execute from the ROM.
+    /// The reset runs at the mclk-0 anchor — its cycles are not added to the master clock.
     pub fn reset(&mut self) {
         let rom = std::mem::take(&mut self.rom);
         *self = Self::new(self.seed);
         self.rom = rom;
+        self.cpu.assert_reset();
+        self.step_cpu(&mut ()); // services reset_pending: runs the power-on reset recipe over the bus
     }
 
     /// Load the cartridge ROM (`$000000–$3FFFFF` on the 68000 bus). Reads past its end are open bus.
@@ -186,9 +213,25 @@ impl System {
             + EXPORT_PSG_PLACEHOLDER;
         let mut out = Vec::with_capacity(total);
         out.extend_from_slice(&EXPORT_STATE_VERSION.to_le_bytes());
-        // m68k regs — zero placeholder while the CPU is the phase-0 stub (no 68000 register file yet). The
-        // real `cpu.regs` serialization lands with the CPU swap (a hash change attributable to that slice).
-        out.extend_from_slice(&[0u8; EXPORT_M68K_REGS_LEN]);
+        // m68k regs (little-endian): d0–d7, a0–a6, usp, ssp, pc, sr, prefetch[0..2] = 78 bytes.
+        let r = &self.cpu.regs;
+        for v in r.d {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in r.a {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out.extend_from_slice(&r.usp.to_le_bytes());
+        out.extend_from_slice(&r.ssp.to_le_bytes());
+        out.extend_from_slice(&r.pc.to_le_bytes());
+        out.extend_from_slice(&r.sr.to_le_bytes());
+        out.extend_from_slice(&r.prefetch[0].to_le_bytes());
+        out.extend_from_slice(&r.prefetch[1].to_le_bytes());
+        debug_assert_eq!(
+            out.len(),
+            2 + EXPORT_M68K_REGS_LEN,
+            "regs region is 78 bytes"
+        );
         out.extend_from_slice(&self.ram);
         // Z80 / VDP / FM / PSG — fixed all-zero placeholders (the layout is frozen; the contents fill in as
         // each chip lands).
@@ -239,87 +282,138 @@ impl System {
         &mut self.scheduler
     }
 
-    /// Advance the machine by `frames` rendered frames, deterministically, leaving it paused.
+    /// Advance the machine by `frames` rendered frames, deterministically, leaving it paused at an
+    /// instruction boundary. Frame deadlines are **absolute** — `run_until(frame_boundary + frames ×
+    /// MCLK_PER_FRAME)` — so any overshoot from the previous frame is absorbed here and long-run time stays
+    /// exact (`run_frames(n)` ≡ n × `run_frames(1)`).
     pub fn run_frames(&mut self, frames: u64) {
-        for _ in 0..frames {
-            for _ in 0..STUB_STEPS_PER_FRAME {
-                self.step_chip(&mut ());
-            }
-            self.scheduler.advance(MCLK_PER_FRAME);
+        let target = self.frame_boundary_mclk + frames * MCLK_PER_FRAME;
+        self.run_until(target);
+        self.frame_boundary_mclk = target;
+    }
+
+    /// Run until the master clock reaches `deadline_mclk`: pop any due scheduler events (Push C slice 5
+    /// wires those to the IPL latch), step the CPU, and advance the clock by the step's cost. A CPU step
+    /// may overshoot the deadline by up to one instruction (the ratified sync-on-demand model); the
+    /// overshoot carries via [`run_frames`](Self::run_frames)'s absolute deadlines.
+    ///
+    /// **The one and only CPU-cycle → mclk conversion site**: `mclk += cycles × MCLK_PER_CPU_CYCLE`.
+    pub fn run_until(&mut self, deadline_mclk: u64) {
+        while self.scheduler.now() < deadline_mclk {
+            let cycles = self.step_cpu(&mut ());
+            self.scheduler.advance(cycles as u64 * MCLK_PER_CPU_CYCLE);
         }
     }
 
-    /// Step the (stub) chip once through a split-borrow [`SystemBus`], draining deferred writes. The
-    /// `sink` consumes the bus event stream (pass `&mut ()` for no instrumentation).
-    ///
-    /// This is the split-borrow proof: `self` is destructured so the chip field and the memory fields
-    /// are borrowed disjointly — the chip holds no bus, and only one `&mut` is live per access.
-    pub fn step_chip<S: BusEventSink>(&mut self, sink: &mut S) {
-        let System { cpu, ram, vram, .. } = self;
-        let mut bus = SystemBus::new(ram, vram, sink);
-        cpu.step(&mut bus);
-        bus.apply_writes();
+    /// Step the 68000 once through a split-borrow [`MegaDriveBus`], returning the CPU cycles it consumed.
+    /// The `sink` consumes the bus event stream (pass `&mut ()` for no instrumentation). `self` is
+    /// destructured so the CPU field and the memory fields borrow disjointly (the CPU holds no bus).
+    pub fn step_cpu<S: BusEventSink>(&mut self, sink: &mut S) -> u32 {
+        let System {
+            cpu,
+            rom,
+            ram,
+            z80_ram,
+            last_bus_word,
+            ..
+        } = self;
+        let mut bus = MegaDriveBus::new(rom, ram, z80_ram, last_bus_word, sink);
+        cpu.step(&mut bus)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::{BusEvent, BusOp, RAM_BASE, VRAM_BASE};
+    use crate::bus::BusEvent;
+
+    /// A booted machine: the test ROM loaded and the power-on reset driven (prefetch primed at the ROM's
+    /// entry point), ready to run real code.
+    fn booted(seed: u64) -> System {
+        let mut s = System::new(seed);
+        s.load_rom(crate::testrom::build());
+        s.reset();
+        s
+    }
+
+    /// A generous upper bound on how far one CPU step can overshoot a frame deadline, in mclk. The test
+    /// ROM's longest instruction is a few dozen CPU cycles; the worst case anywhere (DIV / RESET's
+    /// `Internal{124}`) is ~150 CPU cycles ≈ 1,050 mclk, so this covers it with margin.
+    const OVERSHOOT_SLACK_MCLK: u64 = 2_000;
 
     #[test]
     fn run_frames_is_deterministic() {
-        let mut a = System::new(7);
-        let mut b = System::new(7);
+        let mut a = booted(7);
+        let mut b = booted(7);
         a.run_frames(10);
         b.run_frames(10);
-        assert_eq!(a.state_hash(), b.state_hash());
+        assert_eq!(a.export_state_hash(), b.export_state_hash());
     }
 
     #[test]
     fn run_frames_evolves_state() {
-        let mut s = System::new(7);
-        let before = s.state_hash();
+        // The real CPU runs the test ROM's RAM-stirring loop, so the export_state (CPU regs + work RAM)
+        // changes every frame.
+        let mut s = booted(7);
+        let before = s.export_state_hash();
         s.run_frames(1);
-        assert_ne!(s.state_hash(), before);
+        assert_ne!(s.export_state_hash(), before);
     }
 
     #[test]
     fn run_frames_n_equals_n_times_one() {
-        let mut bulk = System::new(123);
-        let mut stepwise = System::new(123);
+        // The overshoot-carry invariant: absolute frame deadlines make bulk stepping identical to
+        // single-frame stepping, byte-for-byte, on the real CPU.
+        let mut bulk = booted(123);
+        let mut stepwise = booted(123);
         bulk.run_frames(5);
         for _ in 0..5 {
             stepwise.run_frames(1);
         }
-        assert_eq!(bulk.state_hash(), stepwise.state_hash());
+        assert_eq!(bulk.export_state_hash(), stepwise.export_state_hash());
+        assert_eq!(bulk, stepwise, "full state matches, not just the hash");
     }
 
     #[test]
-    fn run_frames_advances_master_clock() {
-        let mut s = System::new(7);
+    fn run_frames_tracks_absolute_frame_boundaries_with_bounded_overshoot() {
+        let mut s = booted(7);
         s.run_frames(3);
-        assert_eq!(s.scheduler().now(), 3 * MCLK_PER_FRAME);
+        assert_eq!(
+            s.frame_boundary_mclk,
+            3 * MCLK_PER_FRAME,
+            "the frame boundary is the exact absolute multiple"
+        );
+        let now = s.scheduler().now();
+        let window = 3 * MCLK_PER_FRAME..3 * MCLK_PER_FRAME + OVERSHOOT_SLACK_MCLK;
+        assert!(
+            window.contains(&now),
+            "now ({now}) is at-or-just-past the boundary (one-instruction overshoot)"
+        );
     }
 
     #[test]
-    fn step_chip_records_events_and_applies_deferred_vram() {
-        let mut s = System::new(0x42);
+    fn overshoot_never_accumulates_across_many_frames() {
+        // 100 single-frame steps must leave the frame boundary at exactly 100 frames — overshoot from each
+        // frame is absorbed by the next, never drifting.
+        let mut s = booted(0xBEEF);
+        for _ in 0..100 {
+            s.run_frames(1);
+        }
+        assert_eq!(s.frame_boundary_mclk, 100 * MCLK_PER_FRAME);
+        let now = s.scheduler().now();
+        let window = 100 * MCLK_PER_FRAME..100 * MCLK_PER_FRAME + OVERSHOOT_SLACK_MCLK;
+        assert!(window.contains(&now));
+    }
+
+    #[test]
+    fn step_cpu_records_a_rom_read_event() {
+        // The real CPU fetches its opcode from ROM through the MegaDriveBus; the event stream sees it.
+        let mut s = booted(0x42);
         let mut sink: Vec<BusEvent> = Vec::new();
-        s.step_chip(&mut sink);
+        s.step_cpu(&mut sink);
         assert!(
-            sink.iter()
-                .any(|e| e.op == BusOp::Read && e.addr == RAM_BASE),
-            "a RAM read should be recorded"
-        );
-        let w = sink
-            .iter()
-            .find(|e| e.op == BusOp::Write && e.addr == VRAM_BASE)
-            .expect("a VRAM write should be recorded");
-        assert_eq!(
-            s.vram()[0] as u32,
-            w.value,
-            "deferred VRAM write should be applied after the step"
+            !sink.is_empty(),
+            "a CPU step drives at least one bus access"
         );
     }
 
@@ -362,13 +456,19 @@ mod tests {
 
     #[test]
     fn reset_restores_power_on_state() {
-        let mut s = System::new(0x9999);
-        let fresh = System::new(0x9999);
+        // reset() now also drives the power-on /RESET sequence (priming the CPU from the ROM vector table),
+        // so the deterministic anchor is a freshly-reset machine — compared here against another one.
+        let mut s = booted(0x9999);
+        let fresh = booted(0x9999);
         s.vram_mut()[0] ^= 0xFF;
         s.vram_mut()[VRAM_SIZE - 1] ^= 0xFF;
-        assert_ne!(s.state_hash(), fresh.state_hash());
+        s.run_frames(2);
+        assert_ne!(s, fresh);
         s.reset();
-        assert_eq!(s, fresh);
+        assert_eq!(
+            s, fresh,
+            "reset returns to the deterministic power-on anchor"
+        );
         assert_eq!(s.state_hash(), fresh.state_hash());
     }
 
@@ -396,12 +496,16 @@ mod tests {
 
     #[test]
     fn reset_preserves_the_loaded_rom() {
+        // Use the valid test ROM: reset() now *drives* the power-on sequence over the ROM vector table, so
+        // the ROM must have a sane reset vector (a garbage ROM would fault during reset). The invariant
+        // under test is that reset does not erase the cartridge.
+        let rom = crate::testrom::build();
         let mut s = System::new(0x55);
-        s.load_rom(vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        s.load_rom(rom.clone());
         s.reset();
         assert_eq!(
             s.rom(),
-            &[0xDE, 0xAD, 0xBE, 0xEF],
+            &rom[..],
             "a reset does not erase the cartridge ROM"
         );
     }
