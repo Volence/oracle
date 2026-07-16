@@ -39,9 +39,26 @@ pub struct Vdp {
     regs: [u8; REG_COUNT],
     /// The frozen HV-counter value returned while the M3 latch (reg 0 bit 1) is set — an interim model of
     /// the HV counter latch (recon R2; the real trigger is the lightgun HL pin, which nothing on the Mega
-    /// Drive pad path asserts). Populated when M3 is turned on by a register write (the ports slice); the
-    /// read side ([`Vdp::hv_counter_read`]) consults it here.
+    /// Drive pad path asserts). Populated when M3 is turned on by a register write; the read side
+    /// ([`Vdp::hv_counter_read`]) consults it here.
     hv_latch: u16,
+    /// The live command code CD5..CD0 (recon R1). Directly fed by the control port — no input latch. Bit 0
+    /// (CD0) = 0 read / 1 write; bit 5 (CD5) = DMA (push 6). Determines the data-port target + direction.
+    code: u8,
+    /// The live A15..A0 address register (recon R1) — the auto-incrementing address *is* this register.
+    addr: u16,
+    /// The control-port first/second-write toggle (recon R1). Set by a first command word; cleared by the
+    /// second word, a data-port write, or a status read (the last is the instrument-sourced experiment pin —
+    /// see the pending-toggle experiment in `docs/2026-07-16-vdp-recon.md`). An HV-counter read does NOT
+    /// clear it. A `$8xxx` register write never arms it.
+    pending: bool,
+    /// The data-port read pre-cache buffer (recon R3): a data read returns this and refills it from the
+    /// current address (the read path bypasses the write FIFO). Pre-filled when a read command completes.
+    read_buffer: u16,
+    /// Latched debug flag for the pinned lockup cell (recon R1): a data-port *read* while a write command is
+    /// armed hangs real hardware. We model a deterministic outcome (open bus + this flag) instead of hanging
+    /// the host — a documented divergence (see the divergence note on [`Vdp::data_read`]).
+    latched_fault: bool,
 }
 
 impl std::fmt::Debug for Vdp {
@@ -52,6 +69,10 @@ impl std::fmt::Debug for Vdp {
             .field("cram", &format_args!("[{} bytes]", self.cram.len()))
             .field("vsram", &format_args!("[{} bytes]", self.vsram.len()))
             .field("regs", &self.regs)
+            .field("code", &format_args!("{:#04X}", self.code))
+            .field("addr", &format_args!("{:#06X}", self.addr))
+            .field("pending", &self.pending)
+            .field("latched_fault", &self.latched_fault)
             .finish()
     }
 }
@@ -70,6 +91,11 @@ impl Vdp {
             vsram: vec![0u8; VSRAM_SIZE],
             regs: [0u8; REG_COUNT],
             hv_latch: 0,
+            code: 0,
+            addr: 0,
+            pending: false,
+            read_buffer: 0,
+            latched_fault: false,
         }
     }
 
@@ -189,6 +215,169 @@ impl Vdp {
         }
         s
     }
+
+    // --- Control / data ports + memories (recon R1; the toggle rules also carry the R1 experiment pin).
+    // Writes apply immediately through `&mut self` — with the 68k the only bus master there is nothing to
+    // defer; the deferred-write seam stays reserved for the Z80/DMA era.
+
+    /// Whether the latched lockup-cell fault has fired (introspection / debuggers; recon R1). Reset only by
+    /// power-on.
+    pub fn latched_fault(&self) -> bool {
+        self.latched_fault
+    }
+
+    /// The auto-increment amount (VDP register 15) added to the address after every data-port access.
+    fn autoinc(&mut self) {
+        self.addr = self.addr.wrapping_add(self.regs[0x0F] as u16);
+    }
+
+    /// The current data-port target region, decoded from CD3..CD0 (recon R1). The low nibble names the
+    /// region for both plain and DMA (CD5) codes.
+    fn target(&self) -> Target {
+        match self.code & 0x0F {
+            0x3 | 0x8 => Target::Cram,  // CRAM write (0x3) / CRAM read (0x8)
+            0x4 | 0x5 => Target::Vsram, // VSRAM read (0x4) / write (0x5)
+            _ => Target::Vram,          // VRAM read (0x0) / write (0x1); unknown → VRAM
+        }
+    }
+
+    /// Read the current-address word from the data-port target (recon R1/R3). VRAM/CRAM/VSRAM are stored
+    /// big-endian (high byte first) — the `state_hash` currency's byte layout.
+    fn read_target(&self) -> u16 {
+        match self.target() {
+            Target::Vram => {
+                let b = (self.addr & 0xFFFE) as usize;
+                ((self.vram[b] as u16) << 8) | self.vram[b | 1] as u16
+            }
+            Target::Cram => {
+                let b = (self.addr as usize) & 0x7E;
+                ((self.cram[b] as u16) << 8) | self.cram[b | 1] as u16
+            }
+            Target::Vsram => {
+                let b = ((self.addr & 0xFFFE) as usize) % VSRAM_SIZE;
+                ((self.vsram[b] as u16) << 8) | self.vsram[b | 1] as u16
+            }
+        }
+    }
+
+    /// Write `w` to the data-port target at the current address (recon R1/R3), masked/laid out to match the
+    /// stored `state_hash` byte form: VRAM byte-granular with the odd-address byte-swap; CRAM to 9 bits
+    /// (`0x0EEE`); VSRAM to 11 bits (`0x07FF`); CRAM/VSRAM big-endian.
+    fn write_target(&mut self, w: u16) {
+        match self.target() {
+            Target::Vram => {
+                // VRAM odd-address byte-swap (recon R3): high byte → `addr`, low byte → `addr ^ 1`, so an
+                // odd address swaps the two bytes of the word. (Implementation-time pin, unit-tested below.)
+                let a = self.addr as usize;
+                self.vram[a & (VRAM_SIZE - 1)] = (w >> 8) as u8;
+                self.vram[(a ^ 1) & (VRAM_SIZE - 1)] = (w & 0xFF) as u8;
+            }
+            Target::Cram => {
+                let masked = w & 0x0EEE; // 9-bit colour (---- BBB- GGG- RRR-)
+                let b = (self.addr as usize) & 0x7E;
+                self.cram[b] = (masked >> 8) as u8;
+                self.cram[b | 1] = (masked & 0xFF) as u8;
+            }
+            Target::Vsram => {
+                let masked = w & 0x07FF; // 11-bit vertical scroll
+                let b = ((self.addr & 0xFFFE) as usize) % VSRAM_SIZE;
+                self.vsram[b] = (masked >> 8) as u8;
+                self.vsram[b | 1] = (masked & 0xFF) as u8;
+            }
+        }
+    }
+
+    /// Apply one register write (`$8xxx` first control word; recon R1). Registers ≥ 24 are ignored. Turning
+    /// on M3 (reg 0 bit 1) freezes the live HV counter into the latch at `mclk` (interim model, recon R2).
+    fn write_register(&mut self, reg: usize, val: u8, mclk: u64) {
+        if reg >= REG_COUNT {
+            return; // n >= 24 ignored
+        }
+        let m3_before = reg == 0 && self.regs[0] & 0x02 != 0;
+        self.regs[reg] = val;
+        if reg == 0 && val & 0x02 != 0 && !m3_before {
+            self.hv_latch = ((self.v_counter(mclk) as u16) << 8) | self.h_counter(mclk) as u16;
+        }
+    }
+
+    /// A control-port write ($C00004/6; recon R1). One of three things depending on the toggle + top bits:
+    /// a `$8xxx` register write (top bits `10`, never arms the toggle); a first command word (top bits set
+    /// CD1-CD0 + A13-A0 immediately, arm the toggle); or a second command word (CD5-CD2 + A15-A14, disarm).
+    pub fn control_write(&mut self, w: u16, mclk: u64) {
+        if !self.pending {
+            if (w >> 14) & 0x03 == 0b10 {
+                // Register write: reg = bits 12..8, value = bits 7..0. Does not arm the toggle.
+                self.write_register(((w >> 8) & 0x1F) as usize, (w & 0xFF) as u8, mclk);
+                return;
+            }
+            // First command word: apply the low half (CD1-CD0 + A13-A0) to the live registers immediately.
+            self.addr = (self.addr & 0xC000) | (w & 0x3FFF);
+            self.code = (self.code & 0x3C) | ((w >> 14) & 0x03) as u8;
+            self.pending = true;
+        } else {
+            // Second command word: apply the high half (CD5-CD2 + A15-A14), disarm.
+            self.addr = (self.addr & 0x3FFF) | ((w & 0x03) << 14);
+            let cd_hi = ((w >> 4) & 0x0F) as u8; // CD5..CD2
+            if self.regs[1] & 0x10 != 0 {
+                self.code = (self.code & 0x03) | (cd_hi << 2);
+            } else {
+                // CD5 can only change while DMA-enable (reg 1 bit 4) is set (recon R1); else it is retained.
+                self.code = (self.code & 0x23) | ((cd_hi << 2) & 0x1C);
+            }
+            self.pending = false;
+            // A completed read command pre-fills the read buffer from the set address (recon R3 pre-cache).
+            if self.code & 0x01 == 0 {
+                self.read_buffer = self.read_target();
+            }
+        }
+    }
+
+    /// A control-port (status) read ($C00004/6; recon R2 timing bits). **Clears the pending toggle** — the
+    /// instrument-sourced experiment pin (permitted docs are silent; see the pending-toggle experiment in
+    /// `docs/2026-07-16-vdp-recon.md`, same standing as the STOP×trace pin).
+    pub fn control_read_status(&mut self, mclk: u64) -> u16 {
+        self.pending = false;
+        self.status_word(mclk)
+    }
+
+    /// A data-port write ($C00000/2; recon R1). Clears the toggle, routes the word to VRAM/CRAM/VSRAM, and
+    /// auto-increments. A CD5 (DMA) command latches state and does nothing here — DMA is push 6 (documented
+    /// placeholder); the toggle still clears and the address does not advance.
+    pub fn data_write(&mut self, w: u16) {
+        self.pending = false;
+        if self.code & 0x20 != 0 {
+            return; // CD5/DMA: placeholder no-op until the DMA push
+        }
+        self.write_target(w);
+        self.autoinc();
+    }
+
+    /// A data-port read ($C00000/2; recon R1/R3). Clears the toggle, returns the pre-cached buffer, refills
+    /// it from the (post-increment) address, and auto-increments.
+    ///
+    /// **Lockup cell (recon R1):** a data read while a *write* command is armed (CD0 = 1) hangs real
+    /// hardware ("setup a write and then try to read → the 68K will hang until reset"). We return `open_bus`
+    /// and latch [`Vdp::latched_fault`] instead of hanging the host — a deliberate divergence recorded in the
+    /// divergence ledger (hardware hangs; we must stay debuggable).
+    pub fn data_read(&mut self, open_bus: u16) -> u16 {
+        self.pending = false;
+        if self.code & 0x01 != 0 {
+            self.latched_fault = true;
+            return open_bus;
+        }
+        let out = self.read_buffer;
+        self.autoinc();
+        self.read_buffer = self.read_target();
+        out
+    }
+}
+
+/// The data-port target region, decoded from the command code's low nibble (recon R1).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Target {
+    Vram,
+    Cram,
+    Vsram,
 }
 
 #[cfg(test)]
@@ -376,5 +565,187 @@ mod tests {
             0xABCD,
             "returns the live counter"
         );
+    }
+
+    // --- Control / data ports + memories (recon R1) ------------------------------------------------------
+
+    /// A VDP with a first VRAM-write command word written (toggle armed at address 0x0100, autoinc = 2).
+    fn armed() -> Vdp {
+        let mut v = fresh();
+        v.regs[0x0F] = 2;
+        v.control_write(0x4100, 0); // CD1CD0 = 01 (VRAM write low bits), A13-A0 = 0x0100
+        v
+    }
+
+    #[test]
+    fn command_splits_low_half_then_high_half_across_two_words() {
+        // VRAM write to 0xC123: word 1 = (01<<14)|(0xC123 & 0x3FFF) = 0x4123; word 2 A15-A14 = 3 → 0x0003.
+        let mut v = fresh();
+        v.control_write(0x4123, 0);
+        assert!(v.pending, "first word arms the toggle");
+        assert_eq!(v.code, 0x01, "CD1-CD0 applied immediately");
+        assert_eq!(
+            v.addr, 0x0123,
+            "A13-A0 applied immediately, A15-A14 old (0)"
+        );
+        v.control_write(0x0003, 0);
+        assert!(!v.pending, "second word disarms");
+        assert_eq!(v.code, 0x01);
+        assert_eq!(v.addr, 0xC123, "A15-A14 applied by the second word");
+    }
+
+    fn regs_with_reg15() -> [u8; REG_COUNT] {
+        let mut r = [0u8; REG_COUNT];
+        r[0x0F] = 0x02;
+        r
+    }
+
+    #[test]
+    fn register_write_never_arms_the_toggle() {
+        let mut v = fresh();
+        v.control_write(0x8F02, 0); // reg 15 = 2
+        assert!(!v.pending, "a $8xxx register write does not arm the toggle");
+        assert_eq!(v.regs[0x0F], 0x02, "register written");
+        v.control_write(0x9811, 0); // reg (0x18 = 24) >= 24 → ignored
+        assert_eq!(v.regs, regs_with_reg15(), "reg >= 24 ignored");
+    }
+
+    // The four pending-toggle experiment cells (recon R1, the recorded BlastEm experiment):
+    #[test]
+    fn toggle_cell0_no_probe_persists() {
+        let v = armed();
+        assert!(v.pending, "sel 0: no probe → the armed toggle persists");
+    }
+
+    #[test]
+    fn toggle_cell1_status_read_clears() {
+        let mut v = armed();
+        v.control_read_status(0);
+        assert!(
+            !v.pending,
+            "sel 1: a status read clears the toggle (instrument pin)"
+        );
+    }
+
+    #[test]
+    fn toggle_cell2_hv_read_does_not_clear() {
+        let v = armed();
+        v.hv_counter_read(0);
+        assert!(
+            v.pending,
+            "sel 2: an HV-counter read does NOT clear the toggle"
+        );
+    }
+
+    #[test]
+    fn toggle_cell3_data_write_clears() {
+        let mut v = armed();
+        v.data_write(0x1234);
+        assert!(!v.pending, "sel 3: a data-port write clears the toggle");
+    }
+
+    #[test]
+    fn autoincrement_advances_the_address_by_reg15() {
+        let mut v = fresh();
+        v.regs[0x0F] = 2;
+        v.code = 0x01; // VRAM write
+        v.addr = 0x0100;
+        v.data_write(0x1111);
+        assert_eq!(v.addr, 0x0102, "address advanced by reg 15 (2)");
+        v.data_write(0x2222);
+        assert_eq!(v.addr, 0x0104);
+    }
+
+    #[test]
+    fn cram_write_masks_to_nine_bits_big_endian() {
+        let mut v = fresh();
+        v.code = 0x03; // CRAM write
+        v.addr = 0;
+        v.data_write(0xFFFF);
+        assert_eq!(v.cram[0], 0x0E, "high byte of 0x0EEE (0xFFFF & 0x0EEE)");
+        assert_eq!(v.cram[1], 0xEE, "low byte");
+    }
+
+    #[test]
+    fn vsram_write_masks_to_eleven_bits_big_endian() {
+        let mut v = fresh();
+        v.code = 0x05; // VSRAM write
+        v.addr = 0;
+        v.data_write(0xFFFF);
+        assert_eq!(v.vsram[0], 0x07, "high byte of 0x07FF");
+        assert_eq!(v.vsram[1], 0xFF, "low byte");
+    }
+
+    #[test]
+    fn vram_even_address_writes_normally_odd_address_swaps_bytes() {
+        let mut v = fresh();
+        v.code = 0x01; // VRAM write
+        v.addr = 0x0002; // even
+        v.data_write(0x5678);
+        assert_eq!((v.vram[2], v.vram[3]), (0x56, 0x78), "even: high then low");
+        v.addr = 0x0001; // odd → byte-swap
+        v.data_write(0x1234);
+        assert_eq!(
+            (v.vram[0], v.vram[1]),
+            (0x34, 0x12),
+            "odd address swaps the two bytes (recon R3)"
+        );
+    }
+
+    #[test]
+    fn vram_readback_round_trips_through_the_precache() {
+        let mut v = fresh();
+        v.regs[0x0F] = 2;
+        // Write two words at VRAM 0x0100.
+        v.control_write(0x4100, 0); // VRAM write, addr 0x0100
+        v.control_write(0x0000, 0);
+        v.data_write(0xBEEF);
+        v.data_write(0xCAFE);
+        // Set up a VRAM read at 0x0100 (code 0x00) — completing the command pre-fills the read buffer.
+        v.control_write(0x0100, 0);
+        v.control_write(0x0000, 0);
+        assert_eq!(v.data_read(0), 0xBEEF, "first word via the pre-cache");
+        assert_eq!(v.data_read(0), 0xCAFE, "second word");
+    }
+
+    #[test]
+    fn data_read_with_a_write_code_is_the_lockup_cell() {
+        let mut v = fresh();
+        v.code = 0x01; // a WRITE command armed (CD0 = 1)
+        let got = v.data_read(0xDEAD);
+        assert_eq!(got, 0xDEAD, "the lockup cell returns open bus, never hangs");
+        assert!(
+            v.latched_fault(),
+            "the lockup fault is latched for the debugger"
+        );
+    }
+
+    #[test]
+    fn m3_latch_is_populated_on_the_register_write_that_sets_it() {
+        let mut v = fresh();
+        let mclk = 50 * MCLK_PER_LINE + 800;
+        let live = ((v.v_counter(mclk) as u16) << 8) | v.h_counter(mclk) as u16;
+        v.control_write(0x8002, mclk); // reg 0 = 0x02 → M3 set
+        assert_eq!(
+            v.hv_latch, live,
+            "the live HV counter is frozen when M3 turns on"
+        );
+        assert_eq!(
+            v.hv_counter_read(999_999),
+            live,
+            "the frozen value is returned regardless of mclk"
+        );
+    }
+
+    #[test]
+    fn mid_command_pending_survives_a_bincode_round_trip() {
+        let v = armed(); // pending = true, mid two-word command
+        let bytes = bincode::encode_to_vec(&v, bincode::config::standard()).unwrap();
+        let (back, _): (Vdp, usize) =
+            bincode::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
+        assert_eq!(v, back, "the whole VDP round-trips");
+        assert!(back.pending, "the armed toggle survives snapshot/restore");
+        assert_eq!(back.code, v.code);
+        assert_eq!(back.addr, v.addr);
     }
 }

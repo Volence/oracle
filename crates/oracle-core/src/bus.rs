@@ -178,10 +178,6 @@ pub const Z80_RAM_SIZE: usize = 0x2000;
 /// hardware version 0). Real region/timing + controller detection lands with the pads in a later phase.
 pub const MD_VERSION: u8 = 0xA0;
 
-/// The VDP status word returned from `$C00004`/`$C00006`: FIFO-empty set, VBlank clear — a fixed placeholder,
-/// replaced wholesale by the ratified VDP design.
-pub const VDP_STATUS: u16 = 0x0200;
-
 /// Split-borrow adapter implementing the CPU-facing [`Bus68k`] over the `System`'s memory fields laid out per
 /// the real Mega Drive map, emitting a [`BusEvent`] (with the real function code) per access. The CPU core
 /// cannot tell it apart from the SST harness's `FlatBus` — the point of the unification. Every 24-bit address
@@ -195,9 +191,9 @@ pub const VDP_STATUS: u16 = 0x0200;
 /// | `$A00000–$A0FFFF` | 8 KiB Z80 RAM (mirrored) |
 /// | `$A10000–$A1001F` | I/O: `$A10001` = [`MD_VERSION`]; else 0 |
 /// | `$A11100`/`$A11200` | Z80 BUSREQ/RESET: reads report bus granted (0); writes accepted |
-/// | `$C00004`/`$C00006` | VDP status = [`VDP_STATUS`] |
+/// | `$C00000`/`$C00002` | VDP data port (read = pre-cache buffer, write = VRAM/CRAM/VSRAM; recon R1) |
+/// | `$C00004`/`$C00006` | VDP control port (read = status word, write = command; recon R1/R2) |
 /// | `$C00008–$C0000F` | VDP HV counter (even byte = V, odd byte = H; recon R2) |
-/// | `$C00000–$C00003` | VDP data port → open bus (the ports slice fills it) |
 /// | `$E00000–$FFFFFF` | 64 KiB work RAM (mirrored) |
 ///
 /// The VDP is borrowed here (`&mut Vdp`) alongside the master-clock reading (`now_mclk`) so the timing FSM
@@ -251,18 +247,9 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             0xA1_0000..=0xA1_001F => Some(if a == 0xA1_0001 { MD_VERSION } else { 0x00 }),
             // Z80 BUSREQ ($A11100) / RESET ($A11200): report bus granted / reset released (0) so boot proceeds.
             0xA1_1100..=0xA1_1101 | 0xA1_1200..=0xA1_1201 => Some(0x00),
-            // VDP status word at $C00004 (mirrored at $C00006); the data port reads open bus.
-            0xC0_0004 | 0xC0_0006 => Some((VDP_STATUS >> 8) as u8),
-            0xC0_0005 | 0xC0_0007 => Some((VDP_STATUS & 0xFF) as u8),
-            // VDP HV counter ($C00008–$C0000F, mirrored every word): even byte = V, odd byte = H (recon R2).
-            0xC0_0008..=0xC0_000F => {
-                let hv = self.vdp.hv_counter_read(self.now_mclk);
-                Some(if a & 1 == 0 {
-                    (hv >> 8) as u8
-                } else {
-                    (hv & 0xFF) as u8
-                })
-            }
+            // VDP ports ($C00000–$C0000F): stateful, handled as whole accesses in read16/write16/read8/
+            // write8 (a byte-wise decode here would double a port access's side effects). Open bus for any
+            // fallthrough (e.g. a TAS against a port — never a real access).
             0xC0_0000..=0xC0_000F => None,
             // Work RAM: 64 KiB mirrored across $E00000–$FFFFFF.
             0xE0_0000..=0xFF_FFFF => Some(self.ram[(a as usize) & (RAM_SIZE - 1)]),
@@ -291,11 +278,45 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             value,
         });
     }
+
+    /// Whether `a` (already masked) is a VDP port ($C00000–$C0000F).
+    fn is_vdp_port(a: u32) -> bool {
+        (0xC0_0000..=0xC0_000F).contains(&a)
+    }
+
+    /// A whole-word VDP port read (recon R1/R2), with its side effects (toggle clear, autoincrement,
+    /// pre-cache refill). `a` is even (word-aligned).
+    fn vdp_read_word(&mut self, a: u32) -> u16 {
+        match a {
+            0xC0_0000 | 0xC0_0002 => {
+                let open_bus = *self.last_bus_word;
+                self.vdp.data_read(open_bus)
+            }
+            0xC0_0004 | 0xC0_0006 => self.vdp.control_read_status(self.now_mclk),
+            0xC0_0008..=0xC0_000F => self.vdp.hv_counter_read(self.now_mclk),
+            _ => *self.last_bus_word,
+        }
+    }
+
+    /// A whole-word VDP port write (recon R1). `a` is even (word-aligned).
+    fn vdp_write_word(&mut self, a: u32, value: u16) {
+        match a {
+            0xC0_0000 | 0xC0_0002 => self.vdp.data_write(value),
+            0xC0_0004 | 0xC0_0006 => self.vdp.control_write(value, self.now_mclk),
+            _ => {} // HV counter port writes ($C00008–$C0000F) are accepted but not stored.
+        }
+    }
 }
 
 impl<'a, S: BusEventSink> Bus68k for MegaDriveBus<'a, S> {
     fn read16(&mut self, addr: u32, fc: u8) -> (u16, u32) {
         let a = addr & ADDR_MASK;
+        if Self::is_vdp_port(a) {
+            let value = self.vdp_read_word(a);
+            *self.last_bus_word = value;
+            self.emit(BusOp::Read, fc, a, Size::Word, value as u32);
+            return (value, 0);
+        }
         let value = if let Some(hi) = self.mapped_byte(a) {
             let lo = self
                 .mapped_byte((a.wrapping_add(1)) & ADDR_MASK)
@@ -312,6 +333,12 @@ impl<'a, S: BusEventSink> Bus68k for MegaDriveBus<'a, S> {
 
     fn write16(&mut self, addr: u32, fc: u8, value: u16) -> u32 {
         let a = addr & ADDR_MASK;
+        if Self::is_vdp_port(a) {
+            self.vdp_write_word(a, value);
+            *self.last_bus_word = value;
+            self.emit(BusOp::Write, fc, a, Size::Word, value as u32);
+            return 0;
+        }
         self.store_byte(a, (value >> 8) as u8);
         self.store_byte((a.wrapping_add(1)) & ADDR_MASK, (value & 0xFF) as u8);
         *self.last_bus_word = value;
@@ -321,6 +348,19 @@ impl<'a, S: BusEventSink> Bus68k for MegaDriveBus<'a, S> {
 
     fn read8(&mut self, addr: u32, fc: u8) -> (u8, u32) {
         let a = addr & ADDR_MASK;
+        if Self::is_vdp_port(a) {
+            // A byte read of a 16-bit VDP port does the stateful word access on the even base and returns
+            // the addressed half (even = upper byte, odd = lower).
+            let word = self.vdp_read_word(a & !1);
+            let value = if a & 1 == 0 {
+                (word >> 8) as u8
+            } else {
+                (word & 0xFF) as u8
+            };
+            *self.last_bus_word = word;
+            self.emit(BusOp::Read, fc, a, Size::Byte, value as u32);
+            return (value, 0);
+        }
         let value = if let Some(b) = self.mapped_byte(a) {
             *self.last_bus_word = (b as u16) * 0x0101; // byte driven on both halves (placeholder open-bus rule)
             b
@@ -335,6 +375,15 @@ impl<'a, S: BusEventSink> Bus68k for MegaDriveBus<'a, S> {
 
     fn write8(&mut self, addr: u32, fc: u8, value: u8) -> u32 {
         let a = addr & ADDR_MASK;
+        if Self::is_vdp_port(a) {
+            // A byte write to a 16-bit VDP port drives the byte on both halves (the common byte-write model);
+            // the stateful word write runs on the even base.
+            let word = (value as u16) * 0x0101;
+            self.vdp_write_word(a & !1, word);
+            *self.last_bus_word = word;
+            self.emit(BusOp::Write, fc, a, Size::Byte, value as u32);
+            return 0;
+        }
         self.store_byte(a, value);
         *self.last_bus_word = (value as u16) * 0x0101;
         self.emit(BusOp::Write, fc, a, Size::Byte, value as u32);
@@ -621,11 +670,43 @@ mod tests {
     }
 
     #[test]
-    fn vdp_status_returns_the_fixed_constant() {
+    fn vdp_status_read_returns_the_live_status_word() {
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        // Line 100 (active), H=0x40 (dot 1280) — not v/h blank, so only the FIFO-empty placeholder is set.
+        mem.now_mclk = 100 * crate::vdp::MCLK_PER_LINE + 1280;
+        let expected = mem.vdp.status_word(mem.now_mclk);
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        assert_eq!(bus.read16(0xC0_0004, 5).0, expected, "live VDP status word");
+        assert_eq!(expected, 0x0200, "FIFO-empty only during active display");
+    }
+
+    #[test]
+    fn vdp_data_port_write_then_readback_through_the_bus() {
         let mut mem = MdMem::new(vec![0u8; 0x1000]);
         let mut sink = Vec::new();
         let mut bus = mem.bus(&mut sink);
-        assert_eq!(bus.read16(0xC0_0004, 5).0, VDP_STATUS, "VDP status word");
+        // Register write $8F02: reg 15 (autoincrement) = 2, so the address advances by a word per access.
+        bus.write16(0xC0_0004, 5, 0x8F02);
+        // Set up a VRAM write at address 0x0100 (code 0x01): word 1 = 01_00 0001 0000 0000 = 0x4100,
+        // word 2 = 0x0000 (CD5-CD2 = 0, A15-A14 = 0).
+        bus.write16(0xC0_0004, 5, 0x4100);
+        bus.write16(0xC0_0004, 5, 0x0000);
+        bus.write16(0xC0_0000, 5, 0xBEEF); // data write → VRAM[0x0100..0x0101], addr → 0x0102
+        bus.write16(0xC0_0000, 5, 0xCAFE); // → VRAM[0x0102..0x0103]
+                                           // Set up a VRAM read at 0x0100 (code 0x00): word 1 = 0x0100, word 2 = 0x0000.
+        bus.write16(0xC0_0004, 5, 0x0100);
+        bus.write16(0xC0_0004, 5, 0x0000);
+        assert_eq!(
+            bus.read16(0xC0_0000, 5).0,
+            0xBEEF,
+            "first VRAM word reads back"
+        );
+        assert_eq!(
+            bus.read16(0xC0_0000, 5).0,
+            0xCAFE,
+            "second VRAM word reads back"
+        );
     }
 
     #[test]
