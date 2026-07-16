@@ -92,6 +92,49 @@ pub struct WindowSpan {
     pub full_line: bool,
 }
 
+/// The effective vertical scroll of a plane on one line (design §4 "effective … v-scroll per plane",
+/// post-mode-resolution): a single value in full mode, or one value per 16-px column in 2-cell mode
+/// (including the R8 leftmost-column resolution).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum VScroll {
+    /// Full-screen vertical scroll (reg $0B bit 2 = 0).
+    Full(u16),
+    /// Per-16-px-column vertical scroll, left→right (reg $0B bit 2 = 1); 16 entries in H32 / 20 in H40.
+    TwoCell(Vec<u16>),
+}
+
+/// The effective post-mode-resolution scroll of one plane on one line (design §4).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct PlaneScroll {
+    /// Effective horizontal scroll (recon RR5).
+    pub hscroll: u16,
+    /// Effective vertical scroll (recon RR6/R8).
+    pub vscroll: VScroll,
+}
+
+/// The semantic line report for the plane stages (design §4 `render_line_report`): the latched inputs and
+/// per-pixel resolution outcomes for one line. Push 4 adds the sprite-evaluation list + overflow/collision
+/// fields (the struct grows additively, per the §4 stability contract); this push has no sprite fields.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct LineReport {
+    /// The line number this report describes.
+    pub line: u16,
+    /// H40 (320 px) vs H32 (256 px).
+    pub h40: bool,
+    /// Display-enable (reg $01 bit 6): when false the active area is the backdrop only.
+    pub display_enabled: bool,
+    /// The backdrop CRAM index (reg $07 & 0x3F).
+    pub backdrop: u8,
+    /// Plane A's effective scroll.
+    pub plane_a: PlaneScroll,
+    /// Plane B's effective scroll.
+    pub plane_b: PlaneScroll,
+    /// The window's horizontal span on this line (if any).
+    pub window: Option<WindowSpan>,
+    /// Per-pixel resolution (length = the active width); the same computation `render_line` maps to RGB.
+    pub pixels: Vec<PixelResolution>,
+}
+
 /// A fetched plane pixel before compositing (internal).
 #[derive(Clone, Copy)]
 struct PlanePixel {
@@ -477,6 +520,41 @@ impl Vdp {
             .iter()
             .map(|p| self.cram_rgb(p.cram_index))
             .collect()
+    }
+
+    /// The effective post-mode-resolution scroll of `plane` on `line` (design §4 report field): full v-scroll,
+    /// or one per-16-px-column value in 2-cell mode (including the R8 leftmost-column resolution).
+    fn plane_scroll(&self, plane: Plane, line: u16, h40: bool, width: usize) -> PlaneScroll {
+        let hscroll = self.plane_hscroll(plane, line);
+        let vscroll = if self.regs()[0x0B] & 0x04 == 0 {
+            VScroll::Full(self.plane_vscroll(plane, 0, h40, hscroll))
+        } else {
+            VScroll::TwoCell(
+                (0..width / 16)
+                    .map(|c| self.plane_vscroll(plane, c * 16, h40, hscroll))
+                    .collect(),
+            )
+        };
+        PlaneScroll { hscroll, vscroll }
+    }
+
+    /// The semantic line report for the plane stages (design §4 `render_line_report`): the latched scroll /
+    /// window inputs + the per-pixel resolution. The `pixels` are the *same* `resolve_line` output
+    /// `render_line` maps to RGB — attribution is the render, not a parallel path (design §1). Recomputed on
+    /// demand, never stored. (The sprite-evaluation list is push 4; no sprite fields exist yet.)
+    pub fn render_line_report(&self, line: u16) -> LineReport {
+        let h40 = self.render_h40();
+        let width = if h40 { 320 } else { 256 };
+        LineReport {
+            line,
+            h40,
+            display_enabled: self.regs()[0x01] & 0x40 != 0,
+            backdrop: self.backdrop_index(),
+            plane_a: self.plane_scroll(Plane::A, line, h40, width),
+            plane_b: self.plane_scroll(Plane::B, line, h40, width),
+            window: self.window_span(line, width),
+            pixels: self.resolve_line(line),
+        }
     }
 }
 
@@ -979,5 +1057,80 @@ mod tests {
             assert_eq!(*px, bg, "LCB blanks x={x} to backdrop");
         }
         assert_eq!(l[8], v.cram_rgb(2), "x=8 is unaffected by LCB");
+    }
+
+    // --- design §4: render_line_report -------------------------------------------------------------------
+
+    #[test]
+    fn report_pixels_reproduce_render_line() {
+        // The §4 attribution invariant: mapping each reported winner's cram_index to RGB reproduces the pixel.
+        let mut v = pa_fixture(false);
+        put_cell(&mut v, 0xE000, 0x0001); // B
+        put_cell(&mut v, 0xC000 + 2, 0x0002); // A
+        put_cell(&mut v, 0x8000, 3); // some plane A hscroll
+        put_cell(&mut v, 0x8002, 5); // some plane B hscroll
+        let rgb = v.render_line(5);
+        let rep = v.render_line_report(5);
+        assert_eq!(rep.pixels.len(), rgb.len());
+        for (x, px) in rep.pixels.iter().enumerate() {
+            assert_eq!(
+                v.cram_rgb(px.cram_index),
+                rgb[x],
+                "reported winner reproduces the pixel at x={x}"
+            );
+        }
+    }
+
+    #[test]
+    fn report_carries_effective_scroll_and_window() {
+        let mut v = pa_fixture(false);
+        put_cell(&mut v, 0x8000, 10); // plane A hscroll
+        put_cell(&mut v, 0x8002, 20); // plane B hscroll
+        write_vsram(&mut v, 0, 5); // plane A full vscroll
+        write_vsram(&mut v, 1, 7); // plane B full vscroll
+        set_reg(&mut v, 0x11, 0x02); // left window [0,32)
+        let r = v.render_line_report(0);
+        assert_eq!(r.plane_a.hscroll, 10);
+        assert_eq!(r.plane_b.hscroll, 20);
+        assert_eq!(r.plane_a.vscroll, VScroll::Full(5));
+        assert_eq!(r.plane_b.vscroll, VScroll::Full(7));
+        assert_eq!(
+            r.window,
+            Some(WindowSpan {
+                start_x: 0,
+                end_x: 32,
+                full_line: false
+            })
+        );
+        assert!(r.display_enabled && !r.h40);
+        assert_eq!(r.backdrop, 0);
+    }
+
+    #[test]
+    fn report_two_cell_vscroll_has_per_column_values() {
+        let mut v = pa_fixture(true); // H40 → 20 columns
+        set_reg(&mut v, 0x0B, 0x04); // full h, 2-cell v
+        write_vsram(&mut v, 2, 9); // plane A column 1 word (word idx 1*2 = 2)
+        let r = v.render_line_report(0);
+        match r.plane_a.vscroll {
+            VScroll::TwoCell(cols) => {
+                assert_eq!(cols.len(), 20, "H40 → 20 per-column values");
+                assert_eq!(cols[0], 0, "column 0");
+                assert_eq!(cols[1], 9, "column 1 from VSRAM word 2");
+            }
+            other => panic!("expected TwoCell, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn report_reflects_display_disabled() {
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x01, 0x00);
+        let r = v.render_line_report(0);
+        assert!(!r.display_enabled);
+        assert!(
+            r.pixels.iter().all(|p| p.layer == Layer::Backdrop),
+            "every pixel is backdrop when display is off"
+        );
     }
 }
