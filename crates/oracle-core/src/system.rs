@@ -31,9 +31,17 @@ pub const EXPORT_STATE_VERSION: u16 = 1;
 /// Serialized length of the 68000 register region in `export_state` (little-endian):
 /// d0–d7 (8×4) + a0–a6 (7×4) + usp + ssp + pc (3×4) + sr (2) + prefetch (2×2) = 78 bytes.
 const EXPORT_M68K_REGS_LEN: usize = 8 * 4 + 7 * 4 + 4 + 4 + 4 + 2 + 2 * 2;
-/// Fixed all-zero FM-chip placeholder region (provisional size — Push D confirms/freezes).
+/// Fixed reserved sub-block for the future Z80 register file, immediately after the live Z80 RAM. Zeroed
+/// until the Z80 core lands; sized (0x40) with 2× margin over the Z80's ~0x20-byte architectural register
+/// set so filling it later is a content change, not a layout change (no version bump).
+const EXPORT_Z80_REGS_PLACEHOLDER: usize = 0x40;
+/// Fixed all-zero FM-chip (YM2612) placeholder region — the 2-port × 0x100 addressable register-file scale.
+/// The full internal FM state exceeds this (and is unreadable over BlastEm's RSP: YM2612 registers are
+/// write-only), so a v2 version bump is the expected path when the FM core lands. FM is the second-to-last
+/// region, so resizing it churns only the PSG offset.
 const EXPORT_FM_PLACEHOLDER: usize = 0x200;
-/// Fixed all-zero PSG placeholder region (provisional size — Push D confirms/freezes).
+/// Fixed all-zero PSG (SN76489) placeholder region — register + latch scale (4 tone/noise channels + LFSR).
+/// PSG is the last region, so a future resize shifts nothing else.
 const EXPORT_PSG_PLACEHOLDER: usize = 0x10;
 
 /// The whole machine. One owner of all state.
@@ -196,9 +204,10 @@ impl System {
 
     /// The canonical cross-backend differential currency (integration-pivot D8), laid out in a fixed
     /// region order with fixed sizes so the layout never shifts as chips land. Push D freezes v1 + writes
-    /// `docs/export-state-v1.md`; here the placeholder sizes are provisional. Region order:
-    /// version → m68k regs → work RAM → Z80 → VDP → FM → PSG. Every not-yet-emulated chip serializes as a
-    /// fixed all-zero placeholder. This is distinct from [`state_hash`](Self::state_hash) (the frozen
+    /// `docs/export-state-v1.md` (the frozen v1 spec). Region order:
+    /// version → m68k regs → work RAM → Z80 RAM → Z80 regs → VDP → FM → PSG. The Z80 RAM is **live**
+    /// (68000-reachable at `$A00000`); every not-yet-emulated chip's register/memory state serializes as a
+    /// fixed all-zero reserved region. This is distinct from [`state_hash`](Self::state_hash) (the frozen
     /// Oracle-compatible VDP hash, kept for the live-Oracle differential).
     ///
     /// Instruction-boundary only: `run_frames` leaves the CPU quiesced at an instruction boundary, so this
@@ -208,6 +217,7 @@ impl System {
             + EXPORT_M68K_REGS_LEN
             + RAM_SIZE
             + Z80_RAM_SIZE
+            + EXPORT_Z80_REGS_PLACEHOLDER
             + (VRAM_SIZE + CRAM_SIZE + VSRAM_SIZE + REG_COUNT)
             + EXPORT_FM_PLACEHOLDER
             + EXPORT_PSG_PLACEHOLDER;
@@ -233,9 +243,11 @@ impl System {
             "regs region is 78 bytes"
         );
         out.extend_from_slice(&self.ram);
-        // Z80 / VDP / FM / PSG — fixed all-zero placeholders (the layout is frozen; the contents fill in as
-        // each chip lands).
-        out.extend(std::iter::repeat_n(0u8, Z80_RAM_SIZE));
+        // Z80: the live 8 KiB Z80 RAM (68000-reachable at $A00000 — real mutable state that must be in the
+        // currency) followed by the zeroed reserved register sub-block. VDP / FM / PSG are fixed all-zero
+        // placeholders (the layout is frozen; the contents fill in as each chip lands).
+        out.extend_from_slice(&self.z80_ram);
+        out.extend(std::iter::repeat_n(0u8, EXPORT_Z80_REGS_PLACEHOLDER));
         out.extend(std::iter::repeat_n(
             0u8,
             VRAM_SIZE + CRAM_SIZE + VSRAM_SIZE + REG_COUNT,
@@ -583,6 +595,7 @@ mod tests {
             + EXPORT_M68K_REGS_LEN
             + RAM_SIZE
             + Z80_RAM_SIZE
+            + EXPORT_Z80_REGS_PLACEHOLDER
             + (VRAM_SIZE + CRAM_SIZE + VSRAM_SIZE + REG_COUNT)
             + EXPORT_FM_PLACEHOLDER
             + EXPORT_PSG_PLACEHOLDER;
@@ -598,6 +611,30 @@ mod tests {
             &img[ram_off..ram_off + RAM_SIZE],
             s.ram(),
             "the work-RAM region mirrors System RAM"
+        );
+    }
+
+    #[test]
+    fn export_state_captures_live_z80_ram() {
+        use crate::m68000::bus68k::Bus68k;
+        let mut s = System::new(0x77);
+        // $A00000 -> z80_ram[0]. A 68000 write to Z80 RAM is real mutable state, so it must be visible in
+        // the differential currency (it was silently serialized as zeros before the v1 freeze).
+        s.mega_bus(&mut ()).write8(0xA0_0000, 5, 0xAB);
+        let img = s.export_state();
+        let z80_off = 2 + EXPORT_M68K_REGS_LEN + RAM_SIZE;
+        assert_eq!(
+            img[z80_off], 0xAB,
+            "the live Z80 RAM byte appears at the Z80-RAM offset in export_state"
+        );
+        // The reserved Z80-register sub-block that follows the 0x2000 of live RAM is zeroed (it fills when
+        // the Z80 core lands — a content change, not a layout change).
+        let regs_off = z80_off + Z80_RAM_SIZE;
+        assert!(
+            img[regs_off..regs_off + EXPORT_Z80_REGS_PLACEHOLDER]
+                .iter()
+                .all(|&b| b == 0),
+            "the reserved Z80-register sub-block is zeroed"
         );
     }
 
