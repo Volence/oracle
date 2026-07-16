@@ -1,6 +1,9 @@
 # Push B — bus unification, the Mega Drive memory map, and the power-on reset sequence
 
-**Status: PLAN (2026-07-15).** Design of record: `docs/decisions/2026-07-15-integration-pivot-design.md`
+**Status: SHIPPED (2026-07-16).** All six slices landed (`e4e667c` B1 → `4a5ba43` B6) on the plan
+`6d4fe4f`; SST re-run and green (1,000,058) at every slice; fmt/clippy/full-triplet clean per commit.
+See the "Shipped" note at the foot of this file. Design of record:
+`docs/decisions/2026-07-15-integration-pivot-design.md`
 (D5 bus unification, D6 memory map + reset). This is the third push of the integration pivot
 (Push 0 + Push A are code-complete; HEAD `4630800`, SST **1,000,058** green). Push B is pure
 bus/adapter/reset work over the existing proven CPU core — **no `System` run-loop wiring** (that is
@@ -220,3 +223,35 @@ the CPU is wired in Push C — the reset recipe is exercised standalone over a b
   when B1 removes the prototype.
 - Note in the SST harness header (if not already) that `'n'` idle tokens are pinned in aggregate length,
   not by position.
+
+---
+
+## Shipped (2026-07-16)
+
+| Slice | Commit | What landed |
+|---|---|---|
+| B1 | `e4e667c` | deleted `prototype.rs` + `cycle_granularity_perf.rs`; refreshed the `m68000/mod.rs` doc |
+| B2 | `64d6067` | one `Size` (canonical `microop::Size`, re-exported as `bus::Size`, `.bytes()` on it) |
+| B3 | `0a71801` | `BusEvent { fc }` + `BusOp::Tas`; `SystemBus` emits `fc = 0` |
+| B4 | `0fd3d77` | `Bus68k` wait-cycle return (`FlatBus` = 0 → SST bit-identical); `exec_one` folds it in |
+| B5 | `0236600` | `MegaDriveBus` + the memory map + open-bus latch + the TAS write-drop quirk; `System` gains `rom`/`z80_ram`/`last_bus_word` + `mega_bus()` |
+| B6 | `4a5ba43` | `reset_exception_recipe()` (FC=6 SSP/PC fetch, SR=0x2700, no stacking) + the `begin_next` reset-wake arm (`assert_reset`) |
+
+**Build corrections vs the plan (worth recording):**
+- **B4 was wider but cleaner than feared.** The elegant shape: every `exec_one` bus arm already returned
+  its base cost (`4`/`10`); the wait fold-in is just `base + wait`. 18 call sites, mechanical; a `WaitBus`
+  stub test proves a non-zero wait propagates, while `FlatBus`-returns-0 keeps every SST stream identical.
+- **B5 System-field scope settled to three fields** (`rom`, `z80_ram`, `last_bus_word`). The I/O / Z80-ctrl
+  / VDP-port regions are deterministic constants + accepted-but-unstored writes (the placeholder scope),
+  so no extra latch fields; `reset()` preserves `rom` (a reset does not erase the cartridge). The
+  open-bus/`last_bus_word` rule (word access → the word; byte access → byte mirrored to both halves;
+  open-bus read samples without changing) is a documented placeholder, refined only if a differential cares.
+- **B6 reset FC=6 held** — the recipe uses a distinct FC-6 path (`reset_vector_read` with `Fc::Program`),
+  NOT `vector_fetch_and_reload` (FC=5). SR is forced FIRST so the reads' FC is correct regardless of the
+  pre-reset mode. Cycle budget matched to Yacht `40(6/0)`: leading `Internal(14)` + six 4-cycle reads +
+  the `n2` inter-prefetch idle.
+
+**Sequencing note (unchanged):** the BlastEm differential harness slice (A3.2 STOP×trace 2×2 + the
+differential docket) is next, immediately before Push C — it is the same infrastructure C's nightly
+differential needs. `StubCpu` deletion + `System` run-loop wiring (`run_until`, ×7 clock, IPL plumbing)
+are Push C; `export_state` v1 is Push D.
