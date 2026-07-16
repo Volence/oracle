@@ -172,6 +172,80 @@ entries + shadow/highlight operators — all push 4–5, deliberately deferred. 
 
 ---
 
+## RR8 — Sprite attribute table byte format + sprite render geometry (§3 step 4, the sprite push)
+
+**PINNED** (added 2026-07-16 for the sprite push — VDP push 4). Companion to the behavioral R5 (SAT
+cache update rules) / R10 (x=0 masking + per-line limits); this item pins the *standard render byte-formats*
+the sprite walk + render need — the SAT entry layout, the sprite tile/attr word, the coordinate offsets, the
+size encoding, the column-major multi-cell tile order, the SAT base register, and the link-walk termination —
+none of which R5/R10 wrote down.
+
+- **SAT entry = 8 bytes, big-endian words** (Plutiedev "Sprites"):
+
+  | Offset | Size | Field | Layout |
+  |---|---|---|---|
+  | +0 | word | **Y coordinate** | bits 9–0 (`& 0x3FF`); **screen Y = `Y − 128`** |
+  | +2 | byte | **size** | bits 3–2 = **width** cells−1 (HSZ), bits 1–0 = **height** cells−1 (VSZ) |
+  | +3 | byte | **link** | bits 6–0 (`& 0x7F`) — next sprite index |
+  | +4 | word | **tile / attributes** | the **same 16-bit format as a nametable cell (RR1)**: bit 15 priority, 14–13 palette, 12 vflip, 11 hflip, 10–0 tile |
+  | +6 | word | **X coordinate** | bits 8–0 (`& 0x1FF`); **screen X = `X − 128`** |
+
+- **Coordinate offset**: *"You need to add 128 to both to get the value to write in the table"* (Plutiedev) —
+  so on-screen position = field − 128 for both axes (128 px of off-screen border each side, for smooth
+  entry/exit and full-off-screen parking). Y is 10 bits (`0x3FF`, Sega manual — allows the interlace-double
+  range and top-off-screen sprites); X is 9 bits (`0x1FF`, R10 / Natsumi).
+- **Size encoding** (Plutiedev, verbatim): *"Bits 3-2 are the width of the sprite, bits 1-0 are the height of
+  the sprite. Take the size in tiles then subtract one (i.e. `00` is 1 tile, `11` is 4 tiles)."* So
+  `width_cells = (byte>>2 & 3) + 1`, `height_cells = (byte & 3) + 1`, each 1–4 cells (8–32 px).
+- **Cached vs render-fetched half** (cross-ref R5): the VDP caches **`+0..+4` = Y (word) + size/link (word)**;
+  **`+4..+8` = tile/attr (word) + X (word) are fetched from VRAM at render time.** Phase-1 evaluation reads
+  ONLY the cache (so it never sees X — R10's "masking is a render-phase effect" corollary).
+- **SAT base register** (reg $05, Plutiedev: *"Bits 15-9 of the sprite table address are put into bits 6-0 of
+  this register"*): **base = `(reg $05 & 0x7F) << 9`** ($200 boundary). **H40 masks reg-5 bit 0** →
+  `(reg $05 & 0x7E) << 9` ($400 boundary) — R5.
+- **Multi-cell tile layout — column-major** (Plutiedev, verbatim): *"Tiles are arranged first vertically then
+  horizontally."* For a `W×H`-cell sprite with base tile `T`, the cell at sprite-relative `(cx, cy)` (0-based,
+  `cx` across, `cy` down) uses tile **`T + cx·H + cy`** (the index runs down each column before moving right).
+  Flips (RR1): **hflip** mirrors the cell columns (`cx → W−1−cx`) *and* the within-cell px (`& 7 ^ 7`);
+  **vflip** mirrors the cell rows (`cy → H−1−cy`) *and* the within-cell py.
+- **Link walk / termination** (Plutiedev: *"slap the sprite number plus one … except for the last sprite,
+  where you'll put 0 in it"*): the VDP starts at **sprite 0**, renders it, then jumps to the sprite named by
+  its link field, and so on; the walk **terminates when a link is 0** (points back at sprite 0) or when the
+  hardware **maximum of 80 (H40) / 64 (H32) sprites** has been parsed (the cap bounds a cyclic link list — it
+  cannot hang). Sprites unreachable because the list terminated early are **link-cut** (never evaluated).
+- **Per-line limits** (Plutiedev, cross-ref R10): H40 = **80** total / **20** per line / **320** sprite px per
+  line; H32 = **64** / **16** / **256**.
+
+**Evidence**: Plutiedev "Sprites" (plutiedev.com/sprites — the 8-byte entry table, the +128 offset, the size
+byte layout verbatim, the column-major tile arrangement, the link-plus-one convention, the reg-5 base bits,
+and both per-resolution limit sets); Plutiedev "Tile ID flags" (the +4 attribute word = the RR1 nametable
+format); Sega Genesis Software Manual (Y 10-bit, sprite-list mechanics); recon R5 (cache half / base H40
+mask) + R10 (X 9-bit, masking, limits). **Confidence**: high on the entry layout / size / column-major /
+link / base / limits (Plutiedev verbatim); high on the attribute word (identical to RR1, an established
+format). **Classification**: behavioral (the exact decode + geometry of every sprite pixel).
+
+**Open remainder** — the two R5 sprite-push cells (both behavioral, both a *sub-case of the already-pinned
+write-through rule*, so each gets a **deterministic interim model = the consistent extension of the pinned
+rule**, flagged for the push-5 golden-frame differential — the same pin mechanism as R8/R9, **not** an xfail):
+
+1. **Does the H40 reg-5 bit-0 mask apply to the write-through window compare?** — *interim: yes.* The cache
+   window is computed from the **same masked base evaluation uses** (`(reg5 & 0x7E) << 9` in H40), so the
+   cache tracks exactly the SAT the VDP will read. This is the consistent reading of R5 ("checked against the
+   window computed from the current reg 5"). **Concrete defer reason**: the internal SAT cache is not
+   observable over the ratified BlastEm GDB-RSP instrument (which exposes CPU + memory, not the VDP
+   framebuffer or the internal cache); the only CPU-readable proxies (sprite overflow/collision status bits)
+   don't discriminate a one-address window-base shift. Pinned instead by the push-5 golden-frame differential
+   on `s4.bin` (rendered position of a stale-cache sprite is directly observable there).
+2. **Do byte-wide / odd-address writes into the Y/size fields update the cache?** — *interim: yes, by
+   construction.* The write-through is modeled **byte-granular** (every VRAM byte write — including the
+   odd-address byte-swapped half — is checked against the window and mirrored), so a `move.b` into a cached
+   byte updates exactly that cache byte. This is the faithful application of "every VRAM write is checked."
+   **Concrete defer reason**: same instrument limit as (1); the differential surfaces it if a game relies on
+   sub-word SAT pokes. (DMA fill/copy × cache stays deferred to push 6 — no DMA engine exists yet; interim
+   per R5 = fill/copy steps hit the window compare like any write.)
+
+---
+
 ## Summary scoreboard
 
 | Item | Pin | Class | Remainder |
@@ -183,7 +257,9 @@ entries + shadow/highlight operators — all push 4–5, deliberately deferred. 
 | RR5 hscroll table/modes/sign | pinned (full/line/sign); medium on `01`/`10` indexing | behavioral | `01`/`10` byte offsets → interim, golden-diff push 5 |
 | RR6 vscroll VSRAM/mode/sign | pinned | behavioral | none (R8 variance already ledgered) |
 | RR7 layer compositing | design-pinned | behavioral | priority-bit ordering + sprites + S/H → pushes 4–5 |
+| RR8 SAT format + sprite geometry | pinned (Plutiedev verbatim) | behavioral | R5 window-base H40 mask + odd-address SAT writes → interim, golden-diff push 5 |
 
-Every render fact the planes push needs is pinned from a permitted source or, where a permitted verbatim
-formula is unavailable (the two intermediate hscroll modes, the invalid plane-size code), recorded as an
-explicit deterministic interim model flagged for the golden-frame differential — never improvised silently.
+Every render fact the planes/sprite pushes need is pinned from a permitted source or, where a permitted
+verbatim formula is unavailable (the two intermediate hscroll modes, the invalid plane-size code) or a
+behavioral sub-case is not instrument-observable (the two R5 cache-window cells), recorded as an explicit
+deterministic interim model flagged for the golden-frame differential — never improvised silently.
