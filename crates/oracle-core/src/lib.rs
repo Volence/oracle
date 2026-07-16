@@ -18,3 +18,4 @@ pub mod system;
 /// Hand-authored 68000 test ROM fixture (see [`testrom::build`]). Not part of the stable API.
 #[doc(hidden)]
 pub mod testrom;
+pub mod vdp;

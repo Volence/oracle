@@ -13,6 +13,7 @@ use crate::m68000::microop::Cpu68000;
 use crate::m68000::registers::Registers;
 use crate::scheduler::{EventKind, Scheduler};
 use crate::state_hash::{StateHash, CRAM_SIZE, REG_COUNT, VRAM_SIZE, VSRAM_SIZE};
+use crate::vdp::Vdp;
 
 /// 68000 work RAM, `$FF0000..=$FFFFFF` (64 KiB).
 pub const RAM_SIZE: usize = 0x10000;
@@ -57,10 +58,9 @@ pub struct System {
     ram: Vec<u8>,
     /// 8 KiB Z80 RAM, reachable from the 68000 at `$A00000` (nothing executes it in this pivot).
     z80_ram: Vec<u8>,
-    vram: Vec<u8>,
-    cram: Vec<u8>,
-    vsram: Vec<u8>,
-    vdp_regs: [u8; REG_COUNT],
+    /// The VDP (315-5313): owns VRAM/CRAM/VSRAM + the 24 registers (the four Oracle-hashed regions). Moved
+    /// out of `System`'s loose fields; `state_hash`/`export_state` read through it. Its byte layout is frozen.
+    vdp: Vdp,
     /// The open-bus latch: the last word driven on the 68000 bus, returned by reads of unmapped space.
     last_bus_word: u16,
     /// The 68000. Driven over a [`MegaDriveBus`] in [`System::step_cpu`]; `step()` returns CPU cycles.
@@ -85,10 +85,7 @@ impl std::fmt::Debug for System {
                 "last_bus_word",
                 &format_args!("{:#06X}", self.last_bus_word),
             )
-            .field("vram", &format_args!("[{} bytes]", self.vram.len()))
-            .field("cram", &format_args!("[{} bytes]", self.cram.len()))
-            .field("vsram", &format_args!("[{} bytes]", self.vsram.len()))
-            .field("vdp_regs", &self.vdp_regs)
+            .field("vdp", &self.vdp)
             .field("cpu", &self.cpu)
             .field("frame_boundary_mclk", &self.frame_boundary_mclk)
             .field(
@@ -113,8 +110,10 @@ fn power_on_regs() -> Registers {
     }
 }
 
-/// Fill `buf` with deterministic bytes drawn from `rng` (8 bytes per draw, little-endian).
-fn fill_random(rng: &mut crate::rng::SplitMix64, buf: &mut [u8]) {
+/// Fill `buf` with deterministic bytes drawn from `rng` (8 bytes per draw, little-endian). Shared with the
+/// [`Vdp`] power-on so VRAM is seeded from the same RNG stream, in the same draw order, as before the
+/// extraction (keeps the power-on `state_hash` byte-identical).
+pub(crate) fn fill_random(rng: &mut crate::rng::SplitMix64, buf: &mut [u8]) {
     let mut i = 0;
     while i < buf.len() {
         let chunk = rng.next_u64().to_le_bytes();
@@ -130,19 +129,17 @@ impl System {
     pub fn new(seed: u64) -> Self {
         let mut scheduler = Scheduler::new(seed);
         let mut ram = vec![0u8; RAM_SIZE];
-        let mut vram = vec![0u8; VRAM_SIZE];
         fill_random(scheduler.rng_mut(), &mut ram);
-        fill_random(scheduler.rng_mut(), &mut vram);
+        // VRAM is seeded next from the same RNG (Vdp::power_on draws after the work-RAM fill — the exact
+        // pre-extraction order), so the power-on state_hash is byte-identical.
+        let vdp = Vdp::power_on(scheduler.rng_mut());
         Self {
             seed,
             scheduler,
             rom: Vec::new(),
             ram,
             z80_ram: vec![0u8; Z80_RAM_SIZE],
-            vram,
-            cram: vec![0u8; CRAM_SIZE],
-            vsram: vec![0u8; VSRAM_SIZE],
-            vdp_regs: [0u8; REG_COUNT],
+            vdp,
             last_bus_word: 0,
             cpu: Cpu68000::new(power_on_regs()),
             frame_boundary_mclk: 0,
@@ -199,7 +196,12 @@ impl System {
     /// The VDP `state_hash`, byte-compatible with Oracle. Note: 68000 RAM is **not** part of this hash
     /// (Oracle hashes VDP memory + registers only); RAM is still part of the bincode snapshot.
     pub fn state_hash(&self) -> StateHash {
-        StateHash::compute(&self.vram, &self.cram, &self.vsram, &self.vdp_regs)
+        StateHash::compute(
+            self.vdp.vram(),
+            self.vdp.cram(),
+            self.vdp.vsram(),
+            self.vdp.regs(),
+        )
     }
 
     /// The canonical cross-backend differential currency (integration-pivot D8), laid out in a fixed
@@ -288,12 +290,17 @@ impl System {
 
     /// Read-only access to VRAM.
     pub fn vram(&self) -> &[u8] {
-        &self.vram
+        self.vdp.vram()
     }
 
     /// Mutable access to VRAM (used by the VDP / bus adapter; here it also lets tests perturb state).
     pub fn vram_mut(&mut self) -> &mut [u8] {
-        &mut self.vram
+        self.vdp.vram_mut()
+    }
+
+    /// Read-only access to the VDP (introspection / debuggers).
+    pub fn vdp(&self) -> &Vdp {
+        &self.vdp
     }
 
     /// The scheduler (sole master clock + RNG).
