@@ -193,15 +193,38 @@ pub struct SpriteEval {
     pub outcome: SpriteOutcome,
 }
 
-/// The result of the sprite evaluation walk for one line — shared by `render_line_report` (the evaluation
-/// list + status) and, in slice 3, the render compositing, so attribution is the render (design §1).
+/// The result of the sprite pipeline for one line — the walk, the composited sprite line buffer, and the
+/// status flags. Shared by `render_line` (overlays the buffer), `render_line_report` (the evaluation list +
+/// status), and `render_scanline` (commits the latches), so attribution is the render (design §1).
 struct SpriteLine {
-    /// Every walked sprite, in link-walk order, with its outcome.
+    /// Every walked sprite, in link-walk order, with its outcome (including R10 `Masked`).
     sprites: Vec<SpriteEval>,
     /// How the walk terminated (link-cut vs the parse cap).
     walk_end: SpriteWalkEnd,
     /// Any on-line sprite was dropped by the per-line sprite count or the pixel budget (status bit 6).
     overflow: bool,
+    /// Two opaque sprite pixels overlapped on the line (status bit 5).
+    collision: bool,
+    /// The composited opaque sprite pixels, indexed by screen x (first-come-wins in link order).
+    buffer: Vec<Option<SpritePixel>>,
+}
+
+/// One composited sprite pixel — the CRAM index + provenance for `Layer::Sprite`.
+#[derive(Clone, Copy)]
+struct SpritePixel {
+    cram_index: u8,
+    index: u8,
+    palette: u8,
+    priority: bool,
+    tile: u16,
+}
+
+/// A fully resolved line: the per-pixel composite plus the sprite-pipeline result. The single source
+/// `render_line` / `render_line_report` / `render_scanline` all derive from (design §1: attribution is the
+/// render).
+struct ResolvedLine {
+    pixels: Vec<PixelResolution>,
+    sprite: SpriteLine,
 }
 
 /// The semantic line report (design §4 `render_line_report`): the latched inputs and per-pixel + per-sprite
@@ -609,11 +632,12 @@ impl Vdp {
         }
     }
 
-    /// Resolve one scanline to per-pixel [`PixelResolution`] — the single source both `render_line` and (in a
-    /// later slice) `render_line_report` derive from (design §1: attribution is the render). Composites
-    /// backdrop → plane B → plane A / window **by transparency** (RR7); the priority bit is decoded and
-    /// reported but the ordering it drives is push 5.
-    fn resolve_line(&self, line: u16) -> Vec<PixelResolution> {
+    /// Resolve one scanline — the single source `render_line` / `render_line_report` / `render_scanline` all
+    /// derive from (design §1: attribution is the render). Composites backdrop → plane B → plane A / window →
+    /// **sprites**, all **by transparency / opacity** (RR7 + owner scope): the priority bit is decoded and
+    /// reported but does **not** reorder (push-5 boundary). Returns the per-pixel composite + the sprite
+    /// pipeline result (walk, status flags, buffer).
+    fn resolve_line(&self, line: u16) -> ResolvedLine {
         let h40 = self.render_h40();
         let width = if h40 { 320 } else { 256 };
         let backdrop = self.backdrop_index();
@@ -628,9 +652,15 @@ impl Vdp {
         let mut out: Vec<PixelResolution> = (0..width)
             .map(|x| PixelResolution { x: x as u16, ..bd })
             .collect();
-        // Display disabled (reg $01 bit 6 clear, RR4): the active area is the backdrop only.
+        // Sprite evaluation is display-independent (a debugger asks "which sprites on line N" regardless of
+        // display enable), so the walk always runs for the report; only compositing is gated on display.
+        let sprite = self.sprite_line(line, h40, width);
+        // Display disabled (reg $01 bit 6 clear, RR4): the active area is the backdrop only — no planes/sprites.
         if self.regs()[0x01] & 0x40 == 0 {
-            return out;
+            return ResolvedLine {
+                pixels: out,
+                sprite,
+            };
         }
         // Plane B over the backdrop.
         for (x, px) in out.iter_mut().enumerate() {
@@ -659,19 +689,39 @@ impl Vdp {
                 *px = px_from(x, layer, &ap);
             }
         }
-        // Leftmost-column blank (reg $00 bit 5, RR4): force the leftmost 8 px to the backdrop.
+        // Sprites over the planes, by opacity (RR7 + owner scope: the priority bit is decoded into
+        // `Layer::Sprite`'s pixel but does not reorder — push 5 slots it into the full step-5 order).
+        let sprite = self.sprite_line(line, h40, width);
+        for (x, px) in out.iter_mut().enumerate() {
+            if let Some(sp) = sprite.buffer[x] {
+                *px = PixelResolution {
+                    x: x as u16,
+                    layer: Layer::Sprite(sp.index),
+                    cram_index: sp.cram_index,
+                    tile: sp.tile,
+                    palette: sp.palette,
+                    priority: sp.priority,
+                };
+            }
+        }
+        // Leftmost-column blank (reg $00 bit 5, RR4): force the leftmost 8 px to the backdrop (after sprites —
+        // it is an output-stage blank).
         if self.regs()[0x00] & 0x20 != 0 {
             for (x, px) in out.iter_mut().enumerate().take(8.min(width)) {
                 *px = PixelResolution { x: x as u16, ..bd };
             }
         }
-        out
+        ResolvedLine {
+            pixels: out,
+            sprite,
+        }
     }
 
     /// Render one scanline to RGB (design §3): each pixel is `resolve_line`'s winning CRAM index decoded at
     /// the fixed ramp. Length = the active width (256 H32 / 320 H40). Pure function of latched state + line.
     pub fn render_line(&self, line: u16) -> Vec<(u8, u8, u8)> {
         self.resolve_line(line)
+            .pixels
             .iter()
             .map(|p| self.cram_rgb(p.cram_index))
             .collect()
@@ -693,21 +743,28 @@ impl Vdp {
         PlaneScroll { hscroll, vscroll }
     }
 
-    /// Evaluate the sprite link-walk for one line (recon R10 / RR8) — the cache-only phase-1 evaluation:
-    /// walk from sprite 0 following the cached `link`, classify each parsed sprite's outcome by the Y span
-    /// (cached) and the per-line sprite-count + pixel-budget limits, and record how the walk terminated
-    /// (link-cut). Reads **only the SAT cache** for Y/size/link (X is fetched from VRAM for the report's
-    /// display value; masking — which needs X — is a render-phase refinement, slice 3). Pure.
-    fn evaluate_sprite_line(&self, line: u16, h40: bool) -> SpriteLine {
+    /// The sprite pipeline for one line (recon R10 / RR8): the cache-only link-walk + per-line limits, then
+    /// the render phase — fetch X + tile/attr from VRAM, apply R10 x=0 masking (seeded from the
+    /// `sprite_dot_overflow_carry` field, read-only), draw each admitted sprite into the sprite line buffer
+    /// (first-come-wins in link order), and detect collision. Reads **only the SAT cache** for Y/size/link
+    /// (X/tile are VRAM at the current base). Pure — the carry is not written back here (that is
+    /// [`Vdp::render_scanline`]). `width` is the active pixel width for the buffer.
+    fn sprite_line(&self, line: u16, h40: bool, width: usize) -> SpriteLine {
         let (max_sprites, max_px, cap) = sprite_limits(h40);
         let cache = self.sat_cache();
         let base = self.sat_base();
         let mut sprites = Vec::new();
+        let mut buffer: Vec<Option<SpritePixel>> = vec![None; width];
         let mut walk_end = SpriteWalkEnd::MaxCount; // exhausting the cap without a 0-link ends here
         let mut idx = 0usize; // the walk always starts at sprite 0
         let mut on_line_count = 0usize;
         let mut px_used = 0usize;
         let mut overflow = false;
+        let mut collision = false;
+        // R10 masking: `seen_nonzero` seeds from the previous line's dot-overflow carry (the first-on-line
+        // mask); `masking_active` latches once an x=0 sprite masks, suppressing every later sprite this line.
+        let mut seen_nonzero = self.sprite_dot_overflow_carry();
+        let mut masking_active = false;
         for _ in 0..cap {
             if idx >= 80 {
                 break; // an out-of-range link terminates the list (MaxCount)
@@ -719,6 +776,7 @@ impl Vdp {
             let h = (size & 0x03) + 1;
             let screen_y = y_field as i16 - 128;
             let on_line = (line as i16) >= screen_y && (line as i16) < screen_y + (h as i16) * 8;
+            let x_field = self.vram_word(base + idx * 8 + 6) & 0x01FF;
             let outcome = if !on_line {
                 SpriteOutcome::OffLine
             } else if on_line_count >= max_sprites {
@@ -728,11 +786,35 @@ impl Vdp {
                 overflow = true;
                 SpriteOutcome::DroppedPixelBudget
             } else {
+                // Admitted: it consumes a slot + its pixel budget even if masked (recon R10).
                 on_line_count += 1;
                 px_used += w as usize * 8;
-                SpriteOutcome::Rendered
+                if masking_active {
+                    SpriteOutcome::Masked
+                } else if x_field == 0 && seen_nonzero {
+                    // An x=0 sprite read after an x≠0 sprite masks this + all later sprites (recon R10).
+                    masking_active = true;
+                    SpriteOutcome::Masked
+                } else {
+                    if x_field != 0 {
+                        seen_nonzero = true;
+                    }
+                    let attr = decode_cell(self.vram_word(base + idx * 8 + 4));
+                    self.draw_sprite(
+                        &mut buffer,
+                        idx as u8,
+                        &attr,
+                        screen_y,
+                        x_field,
+                        w,
+                        h,
+                        line,
+                        width,
+                        &mut collision,
+                    );
+                    SpriteOutcome::Rendered
+                }
             };
-            let x_field = self.vram_word(base + idx * 8 + 6) & 0x01FF;
             sprites.push(SpriteEval {
                 index: idx as u8,
                 y: screen_y,
@@ -752,19 +834,71 @@ impl Vdp {
             sprites,
             walk_end,
             overflow,
+            collision,
+            buffer,
+        }
+    }
+
+    /// Draw one admitted sprite into the sprite line buffer (recon RR8): column-major multi-cell tile
+    /// addressing with flips, first-come-wins (an already-set pixel is not overwritten), and collision on any
+    /// opaque-over-opaque overlap. `x_field` is the raw 9-bit X (screen X = `x_field − 128`).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_sprite(
+        &self,
+        buffer: &mut [Option<SpritePixel>],
+        index: u8,
+        attr: &Cell,
+        screen_y: i16,
+        x_field: u16,
+        w: u8,
+        h: u8,
+        line: u16,
+        width: usize,
+        collision: &mut bool,
+    ) {
+        let screen_x0 = x_field as i32 - 128;
+        let sy = (line as i32 - screen_y as i32) as usize; // 0..h*8 (on-line guaranteed)
+        let wpx = w as usize * 8;
+        let hpx = h as usize * 8;
+        for sx in 0..wpx {
+            let screen_x = screen_x0 + sx as i32;
+            if screen_x < 0 || screen_x >= width as i32 {
+                continue; // off the left/right edge
+            }
+            // Flips mirror the whole sprite; column-major tile = base + cell_col*height + cell_row (RR8).
+            let src_sx = if attr.hflip { wpx - 1 - sx } else { sx };
+            let src_sy = if attr.vflip { hpx - 1 - sy } else { sy };
+            let tile = attr
+                .tile
+                .wrapping_add(((src_sx / 8) * h as usize + src_sy / 8) as u16);
+            let nibble = self.tile_nibble(tile, (src_sx & 7) as u8, (src_sy & 7) as u8);
+            if nibble == 0 {
+                continue; // transparent sprite pixel
+            }
+            let sxi = screen_x as usize;
+            if buffer[sxi].is_some() {
+                *collision = true; // two opaque sprite pixels overlap — first-come-wins (recon RR8)
+                continue;
+            }
+            buffer[sxi] = Some(SpritePixel {
+                cram_index: attr.palette * 16 + nibble,
+                index,
+                palette: attr.palette,
+                priority: attr.priority,
+                tile,
+            });
         }
     }
 
     /// The semantic line report for the plane stages (design §4 `render_line_report`): the latched scroll /
-    /// window inputs + the per-pixel resolution + the sprite evaluation list. The `pixels` are the *same*
-    /// `resolve_line` output `render_line` maps to RGB — attribution is the render, not a parallel path
-    /// (design §1). Recomputed on demand, never stored. The sprite section is the cache-only evaluation
-    /// (recon R10 / RR8): the walk, per-line limits, and drop reasons; the `Masked` outcome + collision are
-    /// render-phase refinements (slice 3), so `sprite_collision` is `false` here.
+    /// window inputs + the per-pixel resolution + the sprite evaluation list. The `pixels` and the sprite
+    /// section both come from the *same* `resolve_line` call `render_line` maps to RGB — attribution is the
+    /// render, not a parallel path (design §1). Recomputed on demand, never stored. Each sprite's outcome
+    /// (recon R10 / RR8) — including the render-phase `Masked` — and `sprite_collision` are as rendered.
     pub fn render_line_report(&self, line: u16) -> LineReport {
         let h40 = self.render_h40();
         let width = if h40 { 320 } else { 256 };
-        let sl = self.evaluate_sprite_line(line, h40);
+        let resolved = self.resolve_line(line);
         LineReport {
             line,
             h40,
@@ -773,11 +907,11 @@ impl Vdp {
             plane_a: self.plane_scroll(Plane::A, line, h40, width),
             plane_b: self.plane_scroll(Plane::B, line, h40, width),
             window: self.window_span(line, width),
-            sprites: sl.sprites,
-            sprite_walk_end: sl.walk_end,
-            sprite_overflow: sl.overflow,
-            sprite_collision: false,
-            pixels: self.resolve_line(line),
+            sprites: resolved.sprite.sprites,
+            sprite_walk_end: resolved.sprite.walk_end,
+            sprite_overflow: resolved.sprite.overflow,
+            sprite_collision: resolved.sprite.collision,
+            pixels: resolved.pixels,
         }
     }
 }
@@ -1567,5 +1701,201 @@ mod tests {
             .sprites
             .iter()
             .all(|s| s.outcome == SpriteOutcome::OffLine));
+    }
+
+    // --- RR8 / R10 / RR7: sprite compositing + masking + collision (slice 3) -----------------------------
+
+    /// The reported pixel at screen `x`, asserting it is a sprite pixel.
+    fn sprite_px(r: &LineReport, x: usize) -> PixelResolution {
+        let p = r.pixels[x];
+        assert!(
+            matches!(p.layer, Layer::Sprite(_)),
+            "pixel {x} should be a sprite"
+        );
+        p
+    }
+
+    #[test]
+    fn sprite_composites_over_planes_by_opacity() {
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x05, 0x10); // SAT base 0x2000
+        put_cell(&mut v, 0xC000, 0x0002); // plane A cell(0,0) blue at x 0..7
+                                          // Sprite 0: screen (0,0), 1×1, tile 1 (red), link 0.
+        write_sprite(&mut v, 0, 0x0080, 0x0000, 0x0001, 0x0080);
+        assert_eq!(
+            v.render_line(0)[0],
+            v.cram_rgb(1),
+            "opaque sprite (red) overlays plane A (blue)"
+        );
+        assert_eq!(v.render_line_report(0).pixels[0].layer, Layer::Sprite(0));
+    }
+
+    #[test]
+    fn transparent_sprite_pixel_shows_the_plane() {
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x05, 0x10);
+        put_cell(&mut v, 0xC000, 0x0002); // plane A blue at x 0..7
+                                          // Sprite 0: tile 0 (all transparent), 1×1 at screen (0,0).
+        write_sprite(&mut v, 0, 0x0080, 0x0000, 0x0000, 0x0080);
+        assert_eq!(
+            v.render_line(0)[0],
+            v.cram_rgb(2),
+            "a transparent sprite pixel shows plane A beneath"
+        );
+    }
+
+    #[test]
+    fn sprite_multi_cell_tiles_are_column_major() {
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x05, 0x10);
+        for t in 4..=7 {
+            fill_tile(&mut v, t, 1); // solid opaque, distinct tile indices
+        }
+        // 2×2 sprite, base tile 4, at screen (0,0). size byte 0x05 = 2×2 (high byte of the size/link word).
+        write_sprite(&mut v, 0, 0x0080, 0x0500, 0x0004, 0x0080);
+        // Column-major (RR8): cell (cx,cy) tile = 4 + cx*height(2) + cy.
+        let r0 = v.render_line_report(0); // cy = 0
+        assert_eq!(sprite_px(&r0, 0).tile, 4, "cell (0,0) → base + 0");
+        assert_eq!(
+            sprite_px(&r0, 8).tile,
+            6,
+            "cell (1,0) → base + 2 (down the column first)"
+        );
+        let r8 = v.render_line_report(8); // cy = 1
+        assert_eq!(sprite_px(&r8, 0).tile, 5, "cell (0,1) → base + 1");
+        assert_eq!(sprite_px(&r8, 8).tile, 7, "cell (1,1) → base + 3");
+    }
+
+    #[test]
+    fn sprite_hflip_mirrors_the_cells() {
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x05, 0x10);
+        fill_tile(&mut v, 4, 1); // red
+        fill_tile(&mut v, 5, 2); // blue
+                                 // 2×1 sprite (size byte 0x04), base tile 4 → left cell tile 4 (red), right cell tile 5 (blue).
+        write_sprite(&mut v, 0, 0x0080, 0x0400, 0x0004, 0x0080);
+        let r = v.render_line(0);
+        assert_eq!(r[0], v.cram_rgb(1), "no flip: left cell red");
+        assert_eq!(r[8], v.cram_rgb(2), "no flip: right cell blue");
+        // hflip (attr bit 11 = 0x0800): the cells swap.
+        write_sprite(&mut v, 0, 0x0080, 0x0400, 0x0804, 0x0080);
+        let r = v.render_line(0);
+        assert_eq!(
+            r[0],
+            v.cram_rgb(2),
+            "hflip: left now shows the right cell (blue)"
+        );
+        assert_eq!(
+            r[8],
+            v.cram_rgb(1),
+            "hflip: right now shows the left cell (red)"
+        );
+    }
+
+    #[test]
+    fn x_zero_sprite_masks_all_later_sprites_after_a_nonzero_read() {
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x05, 0x10);
+        // Sprite 0: x≠0 (screen 16), tile 1 red, link 1 — arms the masking latch.
+        write_sprite(&mut v, 0, 0x0080, 0x0001, 0x0001, 128 + 16);
+        // Sprite 1: x=0 (screen -128, off-left), link 2 — masks itself + all later sprites (R10).
+        write_sprite(&mut v, 1, 0x0080, 0x0002, 0x0001, 0x0000);
+        // Sprite 2: x≠0 (screen 100), tile 1 red, link 0 — would draw, but is masked.
+        write_sprite(&mut v, 2, 0x0080, 0x0000, 0x0001, 128 + 100);
+        let r = v.render_line_report(0);
+        assert_eq!(r.sprites[0].outcome, SpriteOutcome::Rendered);
+        assert_eq!(
+            r.sprites[1].outcome,
+            SpriteOutcome::Masked,
+            "x=0 after x≠0 masks"
+        );
+        assert_eq!(
+            r.sprites[2].outcome,
+            SpriteOutcome::Masked,
+            "and every later sprite"
+        );
+        assert_eq!(
+            v.render_line(0)[16],
+            v.cram_rgb(1),
+            "sprite 0 drew before the mask"
+        );
+        assert_eq!(
+            v.render_line(0)[100],
+            v.cram_rgb(0),
+            "masked sprite 2 output suppressed → backdrop"
+        );
+    }
+
+    #[test]
+    fn first_on_line_x_zero_does_not_mask_without_the_carry() {
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x05, 0x10);
+        // Sprite 0: x=0 first-on-line (carry false at power-on) — does NOT mask; sprite 1: x≠0, draws.
+        write_sprite(&mut v, 0, 0x0080, 0x0001, 0x0001, 0x0000);
+        write_sprite(&mut v, 1, 0x0080, 0x0000, 0x0001, 128 + 50);
+        let r = v.render_line_report(0);
+        assert_eq!(
+            r.sprites[0].outcome,
+            SpriteOutcome::Rendered,
+            "first-on-line x=0 does not mask when the carry is clear"
+        );
+        assert_eq!(r.sprites[1].outcome, SpriteOutcome::Rendered);
+        assert_eq!(
+            v.render_line(0)[50],
+            v.cram_rgb(1),
+            "sprite 1 draws at x=50"
+        );
+    }
+
+    #[test]
+    fn overlapping_sprites_set_collision_first_come_wins() {
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x05, 0x10);
+        // Two opaque 1×1 sprites both at screen (0,0) → overlap.
+        write_sprite(&mut v, 0, 0x0080, 0x0001, 0x0001, 0x0080); // link 1
+        write_sprite(&mut v, 1, 0x0080, 0x0000, 0x0001, 0x0080); // link 0
+        let r = v.render_line_report(0);
+        assert!(
+            r.sprite_collision,
+            "two opaque sprite pixels overlapping set collision"
+        );
+        assert_eq!(
+            r.pixels[0].layer,
+            Layer::Sprite(0),
+            "first-come-wins: sprite 0 (earlier in link order) owns the pixel"
+        );
+    }
+
+    #[test]
+    fn low_priority_sprite_overlays_a_high_priority_plane() {
+        // Push-4 boundary (RR7 + owner scope): sprites composite by opacity, not priority. The priority
+        // ordering (high-sprite > high-A > …) is push 5.
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x05, 0x10);
+        put_cell(&mut v, 0xC000, 0x8002); // plane A cell(0,0): HIGH priority, blue
+        write_sprite(&mut v, 0, 0x0080, 0x0000, 0x0001, 0x0080); // low-priority red sprite
+        let r = v.render_line_report(0);
+        assert_eq!(
+            r.pixels[0].layer,
+            Layer::Sprite(0),
+            "the low-priority sprite overlays the high-priority plane (opacity, not priority)"
+        );
+        assert_eq!(
+            v.render_line(0)[0],
+            v.cram_rgb(1),
+            "sprite red wins by opacity"
+        );
+        assert!(
+            !r.pixels[0].priority,
+            "the sprite's own priority bit is decoded (false here)"
+        );
     }
 }

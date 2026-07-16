@@ -169,6 +169,13 @@ impl Vdp {
         &self.sat_cache
     }
 
+    /// The R10 sprite-masking carry (recon R10): whether the previously-rendered line ended in a sprite-pixel
+    /// (dot) overflow. The pure `render_line` seeds the next line's masking latch from this (read-only);
+    /// [`Vdp::render_scanline`] advances it.
+    pub fn sprite_dot_overflow_carry(&self) -> bool {
+        self.sprite_dot_overflow_carry
+    }
+
     /// The sprite attribute table base VRAM byte address (recon R5 / RR8): `(reg $05 & mask) << 9`, mask
     /// `0x7E` in H40 (bit 0 forced to the $400 boundary) / `0x7F` in H32 ($200 boundary). Used by both the
     /// write-through window (real state) and the render-time X/tile fetch.
