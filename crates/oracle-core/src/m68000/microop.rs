@@ -3173,12 +3173,26 @@ impl Cpu68000 {
         let suppresses_trace = recipe.suppresses_trace();
         let cycles = recipe.run_to_completion(&mut self.regs, bus);
         if recipe.requests_stop() {
-            self.state = CpuState::Stopped;
-        }
-        // Pend the trace for the next begin_next, unless the instruction did not execute / was aborted
-        // (illegal/privilege/line-A/F/fault). Executed-then-trapping instructions do NOT suppress, so their
-        // trace correctly sequences after the trap.
-        if trace_armed && !suppresses_trace {
+            // STOP loaded the SR (its `LoadSr` ran). Per the M68000 PRM STOP description, STOP with the
+            // trace bit set in the LOADED SR takes a trace exception INSTEAD of stopping — trace preempts
+            // stop (A3.2 owner pin 2026-07-15/16). The loaded immediate's T governs, NOT start-T: `regs.sr`
+            // here is the just-loaded SR, so `regs.sr & SR_TRACE` is the loaded-T. The BlastEm differential
+            // could not confirm this — BlastEm 0.6.2 models no trace-on-STOP (all four start-T×loaded-T cells
+            // Stopped) — so it is pinned from the PRM and recorded as an instrument limitation
+            // (tools/blastem-differential/known_differences.py, docs/plans/2026-07-16-m68000-blastem-differential.md).
+            if self.regs.sr & SR_TRACE != 0 {
+                // stop_recipe does no prefetch, so pc still points at the STOP opcode; advance past the
+                // 2-word STOP so the trace frame stacks the post-STOP (next-instruction) address — the same
+                // +4 the A4.2 STOP-wake applies. Trace preempts stop: pend the trace and do NOT enter Stopped.
+                self.regs.pc = self.regs.pc.wrapping_add(4);
+                self.trace_pending = true;
+            } else {
+                self.state = CpuState::Stopped;
+            }
+        } else if trace_armed && !suppresses_trace {
+            // Non-STOP: pend the trace for the next begin_next, unless the instruction did not execute / was
+            // aborted (illegal/privilege/line-A/F/fault). Executed-then-trapping instructions do NOT suppress,
+            // so their trace correctly sequences after the trap.
             self.trace_pending = true;
         }
         cycles
@@ -5598,6 +5612,127 @@ mod tests {
             !bus.log.iter().any(|t| t.addr == 0x24),
             "vector 9 not fetched"
         );
+    }
+
+    // --- Push A / A3.2: STOP × trace. STOP uniquely modifies SR (T) before its own stop/trace decision. Per
+    // the M68000 PRM STOP description, STOP with T set in the LOADED SR takes a trace exception INSTEAD of
+    // stopping (trace preempts stop); the loaded immediate's T governs, NOT start-T. The BlastEm-over-the-bus
+    // differential could not confirm this — BlastEm 0.6.2 models no trace-on-STOP (all four start-T×loaded-T
+    // cells Stopped) — so it is pinned from the PRM and recorded as an instrument limitation
+    // (docs/plans/2026-07-16-m68000-blastem-differential.md, tools/blastem-differential/known_differences.py).
+    // The two diagonal cells discriminate loaded-T from start-T and are hard-asserted below.
+
+    /// One STOP×trace cell: `start_sr` (S=1) is the SR before STOP; `loaded_imm` is STOP's immediate (the
+    /// loaded SR). Returns the CPU/bus after the single `step()` that executes the STOP.
+    fn stop_trace_cell(start_sr: u16, loaded_imm: u16) -> (Cpu68000, FlatBus) {
+        let (mut cpu, mut bus) = trace_env(start_sr, &[0x4E72, loaded_imm]); // STOP #loaded_imm
+        cpu.step(&mut bus); // execute the STOP
+        (cpu, bus)
+    }
+
+    #[test]
+    fn stop_with_loaded_t_clear_stops_and_does_not_trace() {
+        // loaded-T = 0 → Stopped, no trace pended — for BOTH start-T values (start-T is irrelevant to STOP).
+        for start_sr in [0x2700u16, 0xA700] {
+            let (cpu, bus) = stop_trace_cell(start_sr, 0x2700); // STOP #$2700 (loaded-T=0)
+            assert_eq!(
+                cpu.state,
+                CpuState::Stopped,
+                "start_sr={start_sr:#06x}: STOP entered Stopped"
+            );
+            assert!(
+                !cpu.trace_pending,
+                "start_sr={start_sr:#06x}: no trace pended"
+            );
+            assert_eq!(cpu.regs.sr, 0x2700, "the loaded SR");
+            assert!(
+                !bus.log.iter().any(|t| t.addr == 0x24),
+                "vector 9 not fetched"
+            );
+        }
+    }
+
+    #[test]
+    fn stop_with_loaded_t_set_traces_instead_of_stopping() {
+        // loaded-T = 1 → trace preempts stop: NOT Stopped, a trace is pended and serviced next — for BOTH
+        // start-T values. The frame stacks the post-STOP PC and the loaded SR (T set).
+        for start_sr in [0x2700u16, 0xA700] {
+            let (mut cpu, mut bus) = stop_trace_cell(start_sr, 0xA700); // STOP #$A700 (loaded-T=1)
+            assert_ne!(
+                cpu.state,
+                CpuState::Stopped,
+                "start_sr={start_sr:#06x}: trace preempts stop (not Stopped)"
+            );
+            assert!(cpu.trace_pending, "start_sr={start_sr:#06x}: trace pended");
+            assert_eq!(
+                cpu.regs.pc, 0x0C04,
+                "advanced past the 2-word STOP to the post-STOP address"
+            );
+            bus.log.clear();
+            cpu.step(&mut bus); // the pended trace is serviced
+            assert_eq!(
+                cpu.regs.pc, 0x2000,
+                "reloaded at the vector-9 trace handler"
+            );
+            assert_eq!(cpu.regs.sr, 0x2700, "handler SR: S kept, T cleared");
+            assert_eq!(cpu.regs.ssp, 0x0FFA, "6-byte trace frame pushed");
+            assert_eq!(
+                bus.peek(0x0FFA),
+                0xA7,
+                "stacked SR high = loaded SR (T set)"
+            );
+            assert_eq!(bus.peek(0x0FFB), 0x00, "stacked SR low");
+            assert_eq!(bus.peek(0x0FFE), 0x0C, "stacked PC high (post-STOP 0x0C04)");
+            assert_eq!(bus.peek(0x0FFF), 0x04, "stacked PC low = post-STOP");
+        }
+    }
+
+    #[test]
+    fn stop_trace_discriminator_start0_load1_traces_not_stops() {
+        // The cell where start-T and loaded-T DISAGREE and loaded-T says trace: start-T=0 (would NOT trace
+        // under the uniform start-T rule) but loaded-T=1 → TRACE. Hard-asserts loaded-T over start-T.
+        let (mut cpu, mut bus) = stop_trace_cell(0x2700, 0xA700);
+        assert_ne!(cpu.state, CpuState::Stopped, "did not stop");
+        assert!(
+            cpu.trace_pending,
+            "trace pended (loaded-T governs, not start-T)"
+        );
+        bus.log.clear();
+        cpu.step(&mut bus);
+        assert_eq!(cpu.regs.pc, 0x2000, "traced despite start-T=0");
+    }
+
+    #[test]
+    fn stop_trace_discriminator_start1_load0_stops_not_traces() {
+        // The dual: start-T=1 (would trace under the uniform start-T rule) but loaded-T=0 → STOPPED.
+        // Hard-asserts loaded-T over start-T.
+        let (cpu, bus) = stop_trace_cell(0xA700, 0x2700);
+        assert_eq!(cpu.state, CpuState::Stopped, "stopped despite start-T=1");
+        assert!(
+            !cpu.trace_pending,
+            "no trace (loaded-T=0 governs, not start-T)"
+        );
+        assert!(
+            !bus.log.iter().any(|t| t.addr == 0x24),
+            "vector 9 not fetched"
+        );
+    }
+
+    #[test]
+    fn stop_traced_is_serializable_across_the_preempt_boundary() {
+        // Snapshot/restore between the STOP (trace pended, NOT Stopped) and the serviced trace: the traced
+        // STOP must not linger Stopped and must resume to the identical trace frame.
+        let (cpu, mut bus) = stop_trace_cell(0xA700, 0xA700); // (start-T=1, loaded-T=1)
+        assert!(cpu.trace_pending && cpu.state != CpuState::Stopped);
+        let cfg = bincode::config::standard();
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        cpu2.step(&mut bus);
+        assert_eq!(
+            cpu2.regs.pc, 0x2000,
+            "resumed into the trace handler after restore"
+        );
+        assert_eq!(cpu2.regs.ssp, 0x0FFA, "trace frame pushed after restore");
     }
 
     #[test]
