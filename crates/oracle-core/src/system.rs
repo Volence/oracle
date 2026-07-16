@@ -11,7 +11,7 @@
 use crate::bus::{BusEventSink, MegaDriveBus, Z80_RAM_SIZE};
 use crate::m68000::microop::Cpu68000;
 use crate::m68000::registers::Registers;
-use crate::scheduler::Scheduler;
+use crate::scheduler::{EventKind, Scheduler};
 use crate::state_hash::{StateHash, CRAM_SIZE, REG_COUNT, VRAM_SIZE, VSRAM_SIZE};
 
 /// 68000 work RAM, `$FF0000..=$FFFFFF` (64 KiB).
@@ -300,8 +300,26 @@ impl System {
     /// **The one and only CPU-cycle → mclk conversion site**: `mclk += cycles × MCLK_PER_CPU_CYCLE`.
     pub fn run_until(&mut self, deadline_mclk: u64) {
         while self.scheduler.now() < deadline_mclk {
+            // Deliver any events whose deadline has arrived (instruction-boundary granularity, consistent
+            // with the ratified sync-on-demand model) before stepping — they may raise the IPL latch.
+            let now = self.scheduler.now();
+            while let Some((_, kind)) = self.scheduler.pop_due(now) {
+                self.deliver_event(kind);
+            }
             let cycles = self.step_cpu(&mut ());
             self.scheduler.advance(cycles as u64 * MCLK_PER_CPU_CYCLE);
+        }
+    }
+
+    /// Map a fired scheduler event to its effect on the CPU. The interrupt sources raise the latched IPL
+    /// input (`begin_next` takes the interrupt when the level exceeds the SR mask): VInt = level 6, HInt =
+    /// level 4 — the Mega Drive encoder. The VDP schedules these once it lands and deasserts the level on
+    /// acknowledge; here the mapping + drain is the plumbing. Scanline/FrameEnd are housekeeping (no IPL).
+    fn deliver_event(&mut self, kind: EventKind) {
+        match kind {
+            EventKind::VInt => self.cpu.set_ipl(6),
+            EventKind::HInt => self.cpu.set_ipl(4),
+            EventKind::Scanline | EventKind::FrameEnd => {}
         }
     }
 
@@ -414,6 +432,41 @@ mod tests {
         assert!(
             !sink.is_empty(),
             "a CPU step drives at least one bus access"
+        );
+    }
+
+    #[test]
+    fn scheduled_vint_is_delivered_as_a_level_6_interrupt() {
+        use crate::scheduler::EventKind;
+        // The test ROM's first instruction lowers the INT mask to 0, so a level-6 VInt is taken; its
+        // handler writes a sentinel to $FF8000 (outside the stirred range). Scheduling it at mclk 0 latches
+        // the request; it is taken once the mask drops.
+        let mut s = booted(0x1357);
+        s.scheduler_mut().schedule(0, EventKind::VInt);
+        let idx = (crate::testrom::INT_SENTINEL_ADDR & 0xFFFF) as usize;
+        s.run_frames(1);
+        assert_eq!(
+            &s.ram()[idx..idx + 2],
+            &crate::testrom::INT_SENTINEL.to_be_bytes(),
+            "the interrupt handler ran and wrote its sentinel"
+        );
+    }
+
+    #[test]
+    fn housekeeping_events_do_not_raise_an_interrupt() {
+        use crate::scheduler::EventKind;
+        // Scanline / FrameEnd are housekeeping — they must not raise the IPL latch. With no interrupt, the
+        // sentinel region ($FF8000, never touched by the main loop) stays at its power-on value.
+        let mut s = booted(0x2468);
+        let idx = (crate::testrom::INT_SENTINEL_ADDR & 0xFFFF) as usize;
+        let before = [s.ram()[idx], s.ram()[idx + 1]];
+        s.scheduler_mut().schedule(0, EventKind::FrameEnd);
+        s.scheduler_mut().schedule(1_000, EventKind::Scanline);
+        s.run_frames(1);
+        assert_eq!(
+            [s.ram()[idx], s.ram()[idx + 1]],
+            before,
+            "no interrupt fired for housekeeping events"
         );
     }
 

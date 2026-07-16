@@ -67,6 +67,18 @@ impl Scheduler {
         let kind = self.events.remove(&key).expect("key came from the map");
         Some((key.0, kind))
     }
+
+    /// Remove and return the earliest pending event **iff it is due** (its deadline `<= now_mclk`); leaves
+    /// not-yet-due events in the queue. The run loop drains this at each instruction boundary to deliver
+    /// events (raising the CPU's IPL latch) before stepping.
+    pub fn pop_due(&mut self, now_mclk: u64) -> Option<(u64, EventKind)> {
+        let &key = self.events.keys().next()?;
+        if key.0 > now_mclk {
+            return None;
+        }
+        let kind = self.events.remove(&key).expect("key came from the map");
+        Some((key.0, kind))
+    }
 }
 
 #[cfg(test)]
@@ -103,6 +115,26 @@ mod tests {
         assert_eq!(s.pop_next(), Some((100, EventKind::Scanline)));
         assert_eq!(s.pop_next(), Some((100, EventKind::HInt)));
         assert_eq!(s.pop_next(), Some((100, EventKind::VInt)));
+    }
+
+    #[test]
+    fn pop_due_only_pops_events_at_or_before_now() {
+        let mut s = Scheduler::new(0);
+        s.schedule(100, EventKind::Scanline);
+        s.schedule(200, EventKind::VInt);
+        assert_eq!(s.pop_due(50), None, "nothing due yet");
+        assert_eq!(
+            s.pop_due(150),
+            Some((100, EventKind::Scanline)),
+            "the 100-tick event is due"
+        );
+        assert_eq!(s.pop_due(150), None, "the 200-tick event is not due yet");
+        assert_eq!(
+            s.pop_due(200),
+            Some((200, EventKind::VInt)),
+            "now the 200-tick event is due"
+        );
+        assert_eq!(s.pop_due(1000), None, "queue drained");
     }
 
     #[test]
