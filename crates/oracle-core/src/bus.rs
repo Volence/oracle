@@ -16,24 +16,11 @@ pub const RAM_BASE: u32 = 0xFF_0000;
 /// same `Bus` interface; the real VDP data-port semantics replace this when the VDP lands.
 pub const VRAM_BASE: u32 = 0x10_0000;
 
-/// Access width. The Genesis bus is big-endian: the most-significant byte is at the lowest address.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Size {
-    Byte,
-    Word,
-    Long,
-}
-
-impl Size {
-    /// Number of bytes this access width touches.
-    pub fn bytes(self) -> u32 {
-        match self {
-            Size::Byte => 1,
-            Size::Word => 2,
-            Size::Long => 4,
-        }
-    }
-}
+/// Access width — byte, word, or long; the Genesis bus is big-endian (most-significant byte at the lowest
+/// address). This is the SINGLE definition shared with the 68000 core: it is `m68000::microop::Size`
+/// (bincode-serialized, used by every recipe + the `Bus68k` `Transaction` stream), re-exported here so the
+/// generic bus layer and the CPU name the exact same type.
+pub use crate::m68000::microop::Size;
 
 /// Whether a bus access reads or writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

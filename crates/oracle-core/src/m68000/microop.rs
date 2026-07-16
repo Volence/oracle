@@ -259,6 +259,18 @@ pub enum Size {
     Long,
 }
 
+impl Size {
+    /// Number of bytes this access width touches. (The generic `crate::bus` layer re-exports this enum,
+    /// so its byte-count helper lives here on the single definition.)
+    pub fn bytes(self) -> u32 {
+        match self {
+            Size::Byte => 1,
+            Size::Word => 2,
+            Size::Long => 4,
+        }
+    }
+}
+
 /// A value resolved at execution time — an address or an operand. Grows with addressing-mode coverage
 /// (immediates, indexed modes); a micro-op references registers symbolically so the recipe stays a
 /// `Copy` template independent of live register contents.
