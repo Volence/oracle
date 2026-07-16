@@ -40,7 +40,7 @@ pub struct Transaction {
 /// one access and a byte drives a single bus half (UDS for an even address → the upper byte, LDS for an
 /// odd address → the lower byte); a long is **two** word accesses (the micro-op builder emits the two
 /// `read16`/`write16` halves itself), so the bus exposes no separate long primitive.
-/// Every access returns its **wait cycles** — the extra master cycles the access cost *beyond the base 4*
+/// Every access returns its **wait cycles** — the extra CPU cycles the access cost *beyond the base 4*
 /// (bus contention, VDP-port waits, DMA-halt stalls). `exec_one` adds them to the instruction's cycle count
 /// in its bus arms, so cycle costs live only there and recipes never change. [`FlatBus`] always returns 0
 /// (the SST harness pins un-contended timing), so the recorded streams + cycle counts stay bit-identical;

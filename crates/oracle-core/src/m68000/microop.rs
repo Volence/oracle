@@ -1023,7 +1023,7 @@ fn sbcd_core(dst: i32, src: i32, xin: i32) -> (u32, u16) {
 }
 
 /// One resumable step. Bus-access steps emit a [`Transaction`](super::bus68k::Transaction) and cost
-/// 4 master cycles (one word access); compute/idle steps carry their own cost.
+/// 4 CPU cycles (one word access); compute/idle steps carry their own cost.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub enum MicroOp {
     /// Read a `size` operand at `addr` (data/program per `fc`) into scratch slot `dst` (zero-extended).
@@ -1051,7 +1051,7 @@ pub enum MicroOp {
         b: Operand,
         dst: Dest,
     },
-    /// Consume `cycles` master cycles with no bus access (compute / idle `n` cycles). The field is `u16`
+    /// Consume `cycles` CPU cycles with no bus access (compute / idle `n` cycles). The field is `u16`
     /// because `RESET` idles the bus-reset line for **124** cycles (`[Internal(4), Internal(124), Prefetch]`,
     /// len 132) — beyond the `u8` range the shorter idles (`n2`/`n4`/`n6`) used elsewhere fit in.
     Internal { cycles: u16 },
@@ -1504,7 +1504,7 @@ impl MicroState {
     }
 
     /// **Driver 1 — run-to-completion** (the default fast path): execute every remaining micro-op in
-    /// order, returning the total master cycles. Drives the *same* [`Self::exec_one`] the quiesce path
+    /// order, returning the total CPU cycles. Drives the *same* [`Self::exec_one`] the quiesce path
     /// uses, so the two paths cannot diverge.
     #[inline]
     pub fn run_to_completion(&mut self, regs: &mut Registers, bus: &mut impl Bus68k) -> u32 {
@@ -1515,7 +1515,7 @@ impl MicroState {
         total
     }
 
-    /// Execute exactly the next micro-op, advancing the cursor; returns the master cycles it cost.
+    /// Execute exactly the next micro-op, advancing the cursor; returns the CPU cycles it cost.
     /// This is the single shared "cook" both drivers call — identical behavior by construction.
     #[inline]
     pub fn exec_one(&mut self, regs: &mut Registers, bus: &mut impl Bus68k) -> u32 {
@@ -3056,7 +3056,7 @@ pub struct Cpu68000 {
 pub enum Step {
     /// A micro-op executed; the instruction is still in flight (quiesced at a bus-access boundary).
     Continue,
-    /// The instruction completed; carries the total master cycles it took.
+    /// The instruction completed; carries the total CPU cycles it took.
     Done(u32),
 }
 
@@ -3235,7 +3235,7 @@ mod tests {
 
         let cycles = st.exec_one(&mut regs, &mut bus);
 
-        assert_eq!(cycles, 4, "a word bus access is 4 master cycles");
+        assert_eq!(cycles, 4, "a word bus access is 4 CPU cycles");
         assert_eq!(st.scratch[1], 0xABCD, "operand landed in scratch slot 1");
         assert_eq!(st.step, 1, "cursor advanced one micro-op");
         assert!(st.is_done());
@@ -3715,7 +3715,7 @@ mod tests {
         st.scratch[0] = 0x1000;
 
         let cycles = st.exec_one(&mut regs, &mut bus);
-        assert_eq!(cycles, 4, "a word bus access is 4 master cycles");
+        assert_eq!(cycles, 4, "a word bus access is 4 CPU cycles");
         assert_eq!(st.scratch[1], 0xABCD, "operand landed in scratch slot 1");
         assert_eq!(
             bus.log,
@@ -4166,7 +4166,7 @@ mod tests {
 
         let cycles = st.exec_one(&mut regs, &mut bus);
 
-        assert_eq!(cycles, 4, "a byte bus access is 4 master cycles");
+        assert_eq!(cycles, 4, "a byte bus access is 4 CPU cycles");
         assert_eq!(
             st.scratch[1], 0x0000_0045,
             "byte zero-extended into scratch"

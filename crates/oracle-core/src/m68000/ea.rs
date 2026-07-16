@@ -498,7 +498,7 @@ fn push_long_read_pair(buf: &mut RecipeBuf, hi_addr: Operand) {
 
 /// The long source-EA sub-sequence for `ADD.l`/`SUB.l <ea>,Dn`. A `.l` operand is **two word reads** (hi at
 /// `addr`, lo at `addr+2`) assembled by [`MicroOp::Combine32`]; the long ALU then trails an `Internal` idle
-/// (the 68000's long-operand penalty — 4 master cycles for a register/immediate source, 2 for a memory
+/// (the 68000's long-operand penalty — 4 CPU cycles for a register/immediate source, 2 for a memory
 /// source). Every ordering here (the read pair, the prefetch placement, the trailing-idle width) is pinned
 /// against the vendored `ADD.l`/`SUB.l` SST stream, NOT asserted from memory.
 #[must_use]
