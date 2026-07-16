@@ -1,0 +1,260 @@
+ AS V1.42 Beta [Bld 212] - Source File harness.asm - Page 1 - 07/16/2026 01:53:38 AM
+
+
+       1/       0 :                     ; ---------------------------------------------------------------------------
+       2/       0 :                     ; BlastEm-over-the-bus differential harness ROM (clean-room, authored here).
+       3/       0 :                     ;
+       4/       0 :                     ; Instrument only. BlastEm's `-D` GDB-remote stub halts the CPU at Init on
+       5/       0 :                     ; entry; the RSP driver writes a RAM control block, sets breakpoints, and
+       6/       0 :                     ; continues. The ROM dispatches per the control block and records observable
+       7/       0 :                     ; side effects in work RAM. (PC/PC-register writes are unavailable over this
+       8/       0 :                     ; stub, so all experiment selection flows through writable RAM.)
+       9/       0 :                     ;
+      10/       0 :                     ; Control block (driver writes before `c`):
+      11/       0 :                     ;   $FF9000.b  loaded-T selector: 0 -> STOP #$2700 (loaded-T=0)
+      12/       0 :                     ;                                  1 -> STOP #$A700 (loaded-T=1)
+      13/       0 :                     ;   $FF9002.w  start SR value loaded via MOVE d0,SR immediately before the STOP
+      14/       0 :                     ;              ($2700 start-T=0 / $A700 start-T=1; S=1, mask=7 in both)
+      15/       0 :                     ;
+      16/       0 :                     ; Observable RAM:
+      17/       0 :                     ;   $FF8000.w  outcome  ($A909 trace / $FExx fell-through / $DEAD other / 0 none)
+      18/       0 :                     ;   $FF8004.l  stacked PC (from the 6-byte exception frame at 2(sp))
+      19/       0 :                     ;   $FF8008.w  stacked SR (from the frame at 0(sp))
+      20/       0 :                     ; ---------------------------------------------------------------------------
+      21/       0 :                             cpu     68000
+      22/       0 :                             padding off
+      23/       0 :                             org     $000000
+      24/       0 :                     
+      25/       0 :                     ; ---- Exception vector table (64 vectors) ----
+      26/       0 : 00FF 0000                   dc.l    $00FF0000               ; 0  initial SSP
+      27/       4 : 0000 0200                   dc.l    Init                    ; 1  reset PC
+      28/       8 : 0000 0258                   dc.l    GenericH                ; 2  bus error
+      29/       C : 0000 0258                   dc.l    GenericH                ; 3  address error
+      30/      10 : 0000 0258                   dc.l    GenericH                ; 4  illegal
+      31/      14 : 0000 0258                   dc.l    GenericH                ; 5  zero divide
+      32/      18 : 0000 0258                   dc.l    GenericH                ; 6  CHK
+      33/      1C : 0000 0258                   dc.l    GenericH                ; 7  TRAPV
+      34/      20 : 0000 0258                   dc.l    GenericH                ; 8  privilege violation
+      35/      24 : 0000 0242                   dc.l    TraceH                  ; 9  trace              ($24)
+      36/      28 :                             rept    54
+      37/      28 :                             dc.l    GenericH                ; 10..63
+      38/      28 :                             endm
+      37/      28 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      2C : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      30 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      34 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      38 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      3C : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      40 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      44 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      48 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      4C : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      50 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      54 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      58 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      5C : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      60 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      64 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      68 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      6C : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      70 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      74 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      78 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      7C : 0000 0258                   dc.l    GenericH                ; 10..63
+ AS V1.42 Beta [Bld 212] - Source File harness.asm - Page 2 - 07/16/2026 01:53:38 AM
+
+
+      37/      80 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      84 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      88 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      8C : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      90 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      94 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      98 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      9C : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      A0 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      A4 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      A8 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      AC : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      B0 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      B4 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      B8 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      BC : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      C0 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      C4 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      C8 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      CC : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      D0 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      D4 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      D8 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      DC : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      E0 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      E4 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      E8 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      EC : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      F0 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      F4 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      F8 : 0000 0258                   dc.l    GenericH                ; 10..63
+      37/      FC : 0000 0258                   dc.l    GenericH                ; 10..63
+      39/     100 :                     
+      40/     100 :                     ; ---- Minimal Mega Drive header at $100 ----
+      41/     100 :                             org     $000100
+      42/     100 : 5345 4741 2047              dc.b    "SEGA GENESIS    "
+              106 : 454E 4553 4953 
+              10C : 2020 2020          
+      43/     110 : 2843 2948 4152              dc.b    "(C)HARNESS 2026.JUL "
+              116 : 4E45 5353 2032 
+              11C : 3032 362E 4A55 
+              122 : 4C20             
+      44/     124 : 4D36 384B 2053              dc.b    "M68K STOP-TRACE DIFFERENTIAL HARNESS  ROM        "
+              12A : 544F 502D 5452 
+              130 : 4143 4520 4449 
+              136 : 4646 4552 454E 
+              13C : 5449 414C 2048 
+              142 : 4152 4E45 5353 
+              148 : 2020 524F 4D20 
+              14E : 2020 2020 2020 20 
+      45/     155 : 4D36 384B 2053              dc.b    "M68K STOP-TRACE DIFFERENTIAL HARNESS  ROM        "
+              15B : 544F 502D 5452 
+              161 : 4143 4520 4449 
+              167 : 4646 4552 454E 
+              16D : 5449 414C 2048 
+              173 : 4152 4E45 5353 
+              179 : 2020 524F 4D20 
+              17F : 2020 2020 2020 20 
+      46/     186 : 474D 2030 3030              dc.b    "GM 00000000-00"
+              18C : 3030 3030 302D 
+ AS V1.42 Beta [Bld 212] - Source File harness.asm - Page 3 - 07/16/2026 01:53:38 AM
+
+
+              192 : 3030             
+      47/     194 : 0000                        dc.w    $0000
+      48/     196 : 4A20 2020 2020              dc.b    "J               "
+              19C : 2020 2020 2020 
+              1A2 : 2020 2020          
+      49/     1A6 : 0000 0000                   dc.l    $00000000
+      50/     1AA : 0003 FFFF                   dc.l    $0003FFFF
+      51/     1AE : 00FF 0000                   dc.l    $00FF0000
+      52/     1B2 : 00FF FFFF                   dc.l    $00FFFFFF
+      53/     1B6 : 2020 2020 2020              dc.b    "                        "
+              1BC : 2020 2020 2020 
+              1C2 : 2020 2020 2020 
+              1C8 : 2020 2020 2020    
+      54/     1CE : 2020 2020 2020              dc.b    "                        "
+              1D4 : 2020 2020 2020 
+              1DA : 2020 2020 2020 
+              1E0 : 2020 2020 2020    
+      55/     1E6 : 4A55 4520 2020              dc.b    "JUE             "
+              1EC : 2020 2020 2020 
+              1F2 : 2020 2020          
+      56/     1F6 :                     
+      57/     1F6 :                     ; ---- Reset/dispatch entry ----
+      58/     200 :                             org     $000200
+      59/     200 :                     Init:
+      60/     200 : 2E7C 00FF 7000              movea.l #$00FF7000,a7           ; SSP in observable RAM
+      61/     206 : 3038 9002                   move.w  $00FF9002,d0            ; start SR (start-T selector)
+      62/     20A : 1238 9000                   move.b  $00FF9000,d1            ; instruction selector
+      63/     20E : 0C01 0001                   cmpi.b  #1,d1
+      64/     212 : 6714                        beq.s   RunT1
+      65/     214 : 0C01 0002                   cmpi.b  #2,d1
+      66/     218 : 671C                        beq.s   RunNop
+      67/     21A :                     
+      68/     21A :                     ; selector 0: STOP #$2700 (loaded-T = 0)
+      69/     21A :                     RunT0:
+> > > harness.asm(70):9: warning: privileged instruction
+      70/     21A : 46C0                        move    d0,sr                   ; load start SR (may set T) just before STOP
+> > > harness.asm(71):9: warning: privileged instruction
+      71/     21C : 4E72 2700                   stop    #$2700                  ; instruction under test (loaded-T=0)
+      72/     220 : 31FC FE00 8000              move.w  #$FE00,$00FF8000        ; fell-through marker
+      73/     226 :                     FT0:
+      74/     226 : 60FE                        bra     FT0
+      75/     228 :                     
+      76/     228 :                     ; selector 1: STOP #$A700 (loaded-T = 1)
+      77/     228 :                     RunT1:
+> > > harness.asm(78):9: warning: privileged instruction
+      78/     228 : 46C0                        move    d0,sr                   ; load start SR (may set T) just before STOP
+> > > harness.asm(79):9: warning: privileged instruction
+      79/     22A : 4E72 A700                   stop    #$A700                  ; instruction under test (loaded-T=1)
+      80/     22E : 31FC FE11 8000              move.w  #$FE11,$00FF8000        ; fell-through marker
+      81/     234 :                     FT1:
+      82/     234 : 60FE                        bra     FT1
+      83/     236 :                     
+      84/     236 :                     ; selector 2: NOP control (validates trace fires for a normal instruction)
+      85/     236 :                     RunNop:
+> > > harness.asm(86):9: warning: privileged instruction
+      86/     236 : 46C0                        move    d0,sr                   ; load start SR (may set T) just before NOP
+      87/     238 : 4E71                        nop                             ; normal instruction under test
+      88/     23A : 31FC FEAA 8000              move.w  #$FEAA,$00FF8000        ; nop-fell-through marker
+      89/     240 :                     FTN:
+      90/     240 : 60FE                        bra     FTN
+ AS V1.42 Beta [Bld 212] - Source File harness.asm - Page 4 - 07/16/2026 01:53:38 AM
+
+
+      91/     242 :                     
+      92/     242 :                     ; ---- Trace handler (vector 9): record the 6-byte frame, then halt ----
+      93/     242 :                     TraceH:
+      94/     242 : 207C 00FF 8000              movea.l #$00FF8000,a0
+      95/     248 : 3157 0008                   move.w  (sp),8(a0)              ; stacked SR  -> $FF8008
+      96/     24C : 216F 0002 0004              move.l  2(sp),4(a0)             ; stacked PC  -> $FF8004
+      97/     252 : 30BC A909                   move.w  #$A909,(a0)             ; trace-taken -> $FF8000
+      98/     256 :                     TraceHalt:
+      99/     256 : 60FE                        bra     TraceHalt
+     100/     258 :                     
+     101/     258 :                     ; ---- Generic handler (any other vector): mark + halt ----
+     102/     258 :                     GenericH:
+     103/     258 : 207C 00FF 8000              movea.l #$00FF8000,a0
+     104/     25E : 216F 0002 0004              move.l  2(sp),4(a0)
+     105/     264 : 30BC DEAD                   move.w  #$DEAD,(a0)
+     106/     268 :                     GenHalt:
+     107/     268 : 60FE                        bra     GenHalt
+     108/     26A :                     
+     109/     26A :                             end
+ AS V1.42 Beta [Bld 212] - Source File harness.asm - Page 5 - 07/16/2026 01:53:38 AM
+
+
+  Symbol Table (* = unused):
+  --------------------------
+
+*ARCHITECTURE :                                      "x86_64-unknown-linux" - |
+*BIGENDIAN :                      0 - | *BRANCHEXT :                      0 - |
+*CASESENSITIVE :                  1 - | *COMPMODE :                       0 - |
+*CONSTPI :        3.141592653589793 - | *CUSTOM :                         0 - |
+*DATE :                "07/16/2026" - | *FALSE :                          0 - |
+ FT0 :                          226 C |  FT1 :                          234 C |
+ FTN :                          240 C | *FULLPMMU :                       1 - |
+ GenHalt :                      268 C |  GenericH :                     258 C |
+*HAS64 :                          1 - | *HASDSP :                         0 - |
+*HASFPU :                         0 - | *HASPMMU :                        0 - |
+*INEXTMODE :                      0 - | *INLWORDMODE :                    0 - |
+*INMAXMODE :                      0 - | *INSRCMODE :                      0 - |
+*INSUPMODE :                      0 - |  Init :                         200 C |
+*LISTON :                         1 - | *MACEXP :                         7 - |
+*MOMCPU :                     68000 - | *MOMCPUNAME :               "68000" - |
+*NESTMAX :                      100 - | *PACKING :                        0 - |
+*PADDING :                        0 - | *RELAXED :                        0 - |
+ RunNop :                       236 C | *RunT0 :                        21A C |
+ RunT1 :                        228 C | *TIME :               "01:53:38 AM" - |
+*TRUE :                           1 - |  TraceH :                       242 C |
+ TraceHalt :                    256 C | *VERSION :                     142F - |
+*Z80SYNTAX :                      0 - |
+
+     42 symbols
+     32 unused symbols
+
+ AS V1.42 Beta [Bld 212] - Source File harness.asm - Page 6 - 07/16/2026 01:53:38 AM
+
+
+  Code Pages:
+  ----------
+
+STANDARD (0 changed characters)
+
+1 code page
+
+0.00 seconds assembly time
+
+    110 lines source file
+    164 lines incl. macro expansions
+      2 passes
+      0 errors
+      5 warnings
