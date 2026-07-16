@@ -32,6 +32,36 @@ KNOWN_DIFFERENCES = [
                      "M68000UM Sec 6.3.8. Owner decision 2026-07-16.",
         "action": "EXPECT-MISMATCH on STOP+trace cells; do not flag.",
     },
+    {
+        "id": "vdp-dataport-read-lockup",
+        "scenario": "A VDP data-port READ issued while a WRITE command is armed (CD0 = 1)",
+        "blastem_says": "On real hardware this HANGS the 68k until reset (Nemesis t=1291 / "
+                        "Mask of Destiny t=2036: 'setup a write and then try to read -> the "
+                        "68K will hang until the machine is reset').",
+        "oracle_next_pins": "A deterministic modeled outcome: return the open-bus word and "
+                            "latch Vdp.latched_fault (a debug flag); the host NEVER hangs. "
+                            "The emulator must stay debuggable.",
+        "reference": "docs/2026-07-16-vdp-recon.md R1 (the lockup cell). "
+                     "VDP timing-skeleton push, slice 3.",
+        "action": "EXPECT-MISMATCH: hardware hangs; we produce a debuggable deterministic "
+                  "result. Do not flag.",
+    },
+    {
+        "id": "vdp-interrupt-inline-position",
+        "scenario": "The exact in-line (sub-scanline) mclk at which HINT/VINT pending is set",
+        "blastem_says": "Sets the pending flag at the precise pinned H position within the "
+                        "line (H=$02 for VINT, H=$A6/$86 for HINT).",
+        "oracle_next_pins": "Events are delivered at 68k instruction boundaries (the ratified "
+                            "sync-on-demand model), so HINT/VINT pending can be set up to one "
+                            "instruction late (~1,050 mclk worst case, the DIV/RESET outliers). "
+                            "The in-line interrupt position is TIMING, not state; delivery ORDER "
+                            "stays deterministic (BTreeMap deadlines), so state evolution is "
+                            "unaffected.",
+        "reference": "docs/2026-07-16-vdp-recon.md R6/R7; "
+                     "docs/plans/2026-07-16-vdp-timing-skeleton.md (Risks). "
+                     "VDP timing-skeleton push, slice 4.",
+        "action": "EXPECT-MISMATCH on cycle-exact interrupt timing; architectural state agrees.",
+    },
 ]
 
 
