@@ -488,6 +488,46 @@ impl Vdp {
         let positions: u64 = if self.h40() { 422 } else { 342 };
         (h as u64 * 2) * MCLK_PER_LINE / positions
     }
+
+    // --- Introspection primitives (design §4, state-shaped only) -----------------------------------------
+    // The wire-protocol wrapping (the Oracle-parity ops) is out of scope this push; these are the pure,
+    // state-derived primitives the API owes now so it does not accrete later. render_line_report /
+    // pixel_attribution land with their pipeline stages (pushes 3–5).
+
+    /// Decode tile `index` from VRAM to its 64 4-bit colour indices, row-major (8×8). A Genesis tile is 32
+    /// bytes (8 rows × 4 bytes; each byte packs two pixels, high nibble = left). Pure VRAM decode.
+    pub fn tile_pixels(&self, index: usize) -> [u8; 64] {
+        let base = index.wrapping_mul(32);
+        let mut out = [0u8; 64];
+        for row in 0..8 {
+            for col in 0..4 {
+                let byte = self.vram[base.wrapping_add(row * 4 + col) & (VRAM_SIZE - 1)];
+                out[row * 8 + col * 2] = byte >> 4;
+                out[row * 8 + col * 2 + 1] = byte & 0x0F;
+            }
+        }
+        out
+    }
+
+    /// Decode the 64 CRAM colour entries to RGB at the fixed introspection ramp (`ramp3`). CRAM words are
+    /// stored big-endian; the 9-bit colour is laid out `---- BBB- GGG- RRR-`. These are our reported values,
+    /// NOT calibrated DAC output (the measured-level calibration is a deferred rendering item, recon R11).
+    pub fn cram_decoded(&self) -> [(u8, u8, u8); 64] {
+        let mut out = [(0u8, 0u8, 0u8); 64];
+        for (i, slot) in out.iter_mut().enumerate() {
+            let word = ((self.cram[i * 2] as u16) << 8) | self.cram[i * 2 + 1] as u16;
+            let r = ((word >> 1) & 0x07) as u8;
+            let g = ((word >> 5) & 0x07) as u8;
+            let b = ((word >> 9) & 0x07) as u8;
+            *slot = (ramp3(r), ramp3(g), ramp3(b));
+        }
+        out
+    }
+}
+
+/// The fixed introspection colour ramp: a 3-bit channel level (`0..=7`) → 8-bit, linear (`level × 255 / 7`).
+fn ramp3(level: u8) -> u8 {
+    (level as u16 * 255 / 7) as u8
 }
 
 /// The data-port target region, decoded from the command code's low nibble (recon R1).
@@ -1021,5 +1061,44 @@ mod tests {
         let (back, _): (Vdp, usize) =
             bincode::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
         assert_eq!(v, back, "the interrupt state round-trips");
+    }
+
+    // --- Introspection primitives (design §4) ------------------------------------------------------------
+
+    #[test]
+    fn tile_pixels_decodes_nibbles_row_major() {
+        let mut v = fresh();
+        // Tile 0, row 0: bytes 0x12 0x34 0x56 0x78 → pixels 1,2,3,4,5,6,7,8 (high nibble = left).
+        v.vram[0] = 0x12;
+        v.vram[1] = 0x34;
+        v.vram[2] = 0x56;
+        v.vram[3] = 0x78;
+        let px = v.tile_pixels(0);
+        assert_eq!(&px[0..8], &[1, 2, 3, 4, 5, 6, 7, 8], "row 0 nibbles");
+        // Tile 1 starts at VRAM byte 32.
+        v.vram[32] = 0xAB;
+        let t1 = v.tile_pixels(1);
+        assert_eq!((t1[0], t1[1]), (0xA, 0xB), "tile 1 offset = index * 32");
+    }
+
+    #[test]
+    fn cram_decoded_maps_the_nine_bit_colour_to_rgb() {
+        let mut v = fresh();
+        // Entry 0 = 0x0EEE (R=G=B=7) → white; entry 1 = 0x000E (R=7 only) → red; entry 2 stays 0 → black.
+        v.cram[0] = 0x0E;
+        v.cram[1] = 0xEE;
+        v.cram[2] = 0x00;
+        v.cram[3] = 0x0E;
+        let dec = v.cram_decoded();
+        assert_eq!(dec[0], (255, 255, 255), "max colour → white");
+        assert_eq!(dec[1], (255, 0, 0), "R=7, G=B=0 → red");
+        assert_eq!(dec[2], (0, 0, 0), "zero → black");
+    }
+
+    #[test]
+    fn ramp3_is_linear_across_the_eight_levels() {
+        assert_eq!(ramp3(0), 0);
+        assert_eq!(ramp3(7), 255);
+        assert_eq!(ramp3(4), (4u16 * 255 / 7) as u8);
     }
 }
