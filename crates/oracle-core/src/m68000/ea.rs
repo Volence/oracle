@@ -169,9 +169,12 @@ impl RecipeBuf {
         self.ops.swap(self.len - 1, self.len - 2);
     }
 
-    /// Finalize into the resumable [`MicroState`] the drivers execute.
-    pub fn finish(&self) -> MicroState {
-        MicroState::from_ops(self.as_ops())
+    /// Finalize into the resumable [`MicroState`] the drivers execute. Consumes the buffer and **moves** its
+    /// op array into the `MicroState` — the recipe's fixed `[MicroOp; MAX_OPS]` array is constructed exactly
+    /// once per decode (the old `from_ops(self.as_ops())` built a second array and `copy_from_slice`d the
+    /// prefix). Filler slots beyond `len` are already the inert `Internal { cycles: 0 }` both sides pad with.
+    pub fn finish(self) -> MicroState {
+        MicroState::from_buf(self.ops, self.len as u8)
     }
 }
 

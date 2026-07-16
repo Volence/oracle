@@ -1349,6 +1349,27 @@ impl MicroState {
         }
     }
 
+    /// Build a cursor from a **pre-filled** fixed op array + its length — moving the array in, no copy. The
+    /// slots beyond `len` MUST already be the inert `Internal { cycles: 0 }` filler [`Self::from_ops`] pads
+    /// with (invariant upheld by [`RecipeBuf`](super::ea::RecipeBuf), the only caller). This is the fast
+    /// decode-materialization path: [`RecipeBuf::finish`](super::ea::RecipeBuf::finish) hands over the array
+    /// it already built, so a decoded recipe constructs its `[MicroOp; MAX_OPS]` array exactly once.
+    pub fn from_buf(ops: [MicroOp; MAX_OPS], len: u8) -> Self {
+        debug_assert!(len as usize <= MAX_OPS, "recipe exceeds MAX_OPS");
+        Self {
+            ops,
+            len,
+            step: 0,
+            cycles: 0,
+            scratch: [0; SCRATCH_SLOTS],
+            opcode: 0,
+            stop_requested: false,
+            suppresses_trace: false,
+            in_group0_frame: false,
+            double_fault: false,
+        }
+    }
+
     /// True once a completed [`MicroOp::Stop`] has run — the orchestrator then enters [`CpuState::Stopped`].
     pub fn requests_stop(&self) -> bool {
         self.stop_requested
