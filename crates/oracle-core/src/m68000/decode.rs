@@ -14,7 +14,7 @@ use super::exception::{
     push_interrupt_frame, push_standard_frame, push_trace_frame, vector_fetch_and_reload,
 };
 use super::microop::{
-    condition_true, AluOp, Cpu68000, Dest, LogicOp, MicroOp, MicroState, Operand, Size,
+    condition_true, AluOp, Cpu68000, Dest, Fc, LogicOp, MicroOp, MicroState, Operand, Size,
 };
 use super::registers::{Registers, CCR_V};
 
@@ -4940,6 +4940,92 @@ fn reset_recipe() -> MicroState {
     let mut buf = RecipeBuf::new();
     buf.push(MicroOp::Internal { cycles: 4 });
     buf.push(MicroOp::Internal { cycles: 124 });
+    buf.push(MicroOp::Prefetch);
+    buf.finish()
+}
+
+/// Push a FC=6 (supervisor-program) word read of the fixed vector address `addr` into scratch `dst`, using
+/// `addr_slot` to stage the address (the reset vector reads target fixed low addresses `$0`/`$2`/`$4`/`$6`).
+fn reset_vector_read(buf: &mut RecipeBuf, addr: u32, addr_slot: u8, dst: u8) {
+    buf.push(MicroOp::LoadImm {
+        value: addr,
+        dst: addr_slot,
+    });
+    buf.push(MicroOp::Read {
+        addr: Operand::Scratch(addr_slot),
+        fc: Fc::Program,
+        size: Size::Word,
+        dst,
+    });
+}
+
+/// The power-on `/RESET` exception (M68000UM §6.3.1 + §6.2.1/§6.2.4, Yacht L1546) — NOT the `RESET`
+/// instruction ([`reset_recipe`]). The group-0 processor reset that runs at power-on / external reset:
+///
+/// - **Force** supervisor (S=1), trace off (T=0), interrupt mask level 7 → **SR = `0x2700`**. Done FIRST so
+///   the vector reads carry the correct function code regardless of the pre-reset mode.
+/// - **Fetch the initial SSP** from the first two words of the reset vector (`$0`/`$2`) → A7, and the
+///   **initial PC** from the last two (`$4`/`$6`).
+/// - **Stack NOTHING** — neither PC nor SR is saved (no assumption about register validity, §6.2.4).
+/// - **Refill** the prefetch queue at PC.
+///
+/// The reset vector is the ONE vector in supervisor **program** space (§6.2.1), so all six reads are
+/// **FC=6** — this recipe cannot reuse [`vector_fetch_and_reload`] (whose vector reads are FC=5
+/// supervisor-data). Yacht `40(6/0)`, stream `(n-)*5 nn nF nf nV nv np n np`: leading `Internal(14)` idle
+/// (7 idle tokens × 2), six 4-cycle reads (SSP hi/lo, PC hi/lo, two prefetches), the `n2` inter-prefetch
+/// idle = 40. Not vendored in SST — hand-authored vectors only.
+pub(crate) fn reset_exception_recipe() -> MicroState {
+    const ADDR: u8 = 0; // staging slot for the fixed vector addresses
+    const SSP_HI: u8 = 1;
+    const SSP_LO: u8 = 2;
+    const SSP: u8 = 3;
+    const PC_HI: u8 = 4;
+    const PC_LO: u8 = 5;
+    const PC: u8 = 6;
+    const SR_IMM: u8 = 7;
+    let mut buf = RecipeBuf::new();
+    // Force S=1 / T=0 / I=7 FIRST (LoadSr masks to SR_IMPLEMENTED; 0x2700 survives — T not set), so the
+    // vector reads below are FC=6 (supervisor program) regardless of the pre-reset mode.
+    buf.push(MicroOp::LoadImm {
+        value: 0x2700,
+        dst: SR_IMM,
+    });
+    buf.push(MicroOp::LoadSr {
+        value: Operand::Scratch(SR_IMM),
+    });
+    // The leading reset-sampling idle `(n-)*5 nn` (14 cycles): the balance of 40 after the six 4-cycle reads
+    // and the one inter-prefetch n2 idle. (Timing per Yacht; the read addresses/FC/values are the behavior.)
+    buf.push(MicroOp::Internal { cycles: 14 });
+    // SSP MSW @ $0, LSW @ $2 → A7 (the supervisor SP, S already set; nothing read A7 before this).
+    reset_vector_read(&mut buf, 0, ADDR, SSP_HI);
+    reset_vector_read(&mut buf, 2, ADDR, SSP_LO);
+    buf.push(MicroOp::Combine32 {
+        hi: SSP_HI,
+        lo: Operand::Scratch(SSP_LO),
+        dst: SSP,
+    });
+    buf.push(MicroOp::Alu {
+        op: AluOp::MoveA,
+        size: Size::Long,
+        a: Operand::Scratch(SSP),
+        b: Operand::Zero,
+        dst: Dest::AddrReg(7),
+    });
+    // PC MSW @ $4, LSW @ $6 → the initial program counter.
+    reset_vector_read(&mut buf, 4, ADDR, PC_HI);
+    reset_vector_read(&mut buf, 6, ADDR, PC_LO);
+    buf.push(MicroOp::Combine32 {
+        hi: PC_HI,
+        lo: Operand::Scratch(PC_LO),
+        dst: PC,
+    });
+    // Refill the queue at PC: SetPc primes pc = PC-4, two FC=6 Prefetches read PC / PC+2 with the n2 idle
+    // between (the universal taken-branch/reset tail).
+    buf.push(MicroOp::SetPc {
+        value: Operand::Scratch(PC),
+    });
+    buf.push(MicroOp::Prefetch);
+    buf.push(MicroOp::Internal { cycles: 2 });
     buf.push(MicroOp::Prefetch);
     buf.finish()
 }

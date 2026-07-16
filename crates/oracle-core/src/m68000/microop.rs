@@ -3045,6 +3045,10 @@ pub struct Cpu68000 {
     /// (the System drives it in Push C; tests set it directly). `begin_next` takes the interrupt when
     /// `ipl > SR` interrupt mask (M68000UM §6.3.2). Serialized so a snapshot round-trips the pending request.
     ipl: u8,
+    /// Latched external reset request ([`Cpu68000::assert_reset`]). `begin_next` services it FIRST — reset is
+    /// group 0, the highest priority — running the power-on reset sequence and returning to `Normal` from any
+    /// state (it is the only exit from `Stopped`/`Halted`). Serialized so a snapshot round-trips the request.
+    reset_pending: bool,
 }
 
 /// The outcome of one [`Cpu68000::step_micro_op`].
@@ -3065,6 +3069,7 @@ impl Cpu68000 {
             state: CpuState::Normal,
             trace_pending: false,
             ipl: 0,
+            reset_pending: false,
         }
     }
 
@@ -3072,6 +3077,13 @@ impl Cpu68000 {
     /// the SR interrupt mask (M68000UM §6.3.2). The System drives this in Push C.
     pub fn set_ipl(&mut self, level: u8) {
         self.ipl = level;
+    }
+
+    /// Assert an external reset. `begin_next` runs the power-on reset sequence on the next
+    /// [`Cpu68000::step`] (group 0, above everything), returning to `Normal` from any state — the only exit
+    /// from `Stopped`/`Halted`. The System drives this from `System::reset` in Push C.
+    pub fn assert_reset(&mut self) {
+        self.reset_pending = true;
     }
 
     /// Begin executing a decoded recipe (decode wraps this in a later step). Panics if one is already
@@ -3089,9 +3101,10 @@ impl Cpu68000 {
             regs,
             inflight,
             state: cpu_state,
-            // step_micro_op is the mid-instruction driver; trace/interrupt are begin_next concerns.
+            // step_micro_op is the mid-instruction driver; trace/interrupt/reset are begin_next concerns.
             trace_pending: _,
             ipl: _,
+            reset_pending: _,
         } = self;
         let recipe = inflight.as_mut().expect("no instruction in flight");
         recipe.exec_one(regs, bus);
@@ -3116,18 +3129,26 @@ impl Cpu68000 {
     /// transition to [`CpuState::Stopped`]. Async events (trace, interrupt) and the `Stopped`/`Halted` wake
     /// slot into a `begin_next` decision point as A3/A4 land.
     pub fn step(&mut self, bus: &mut impl Bus68k) -> u32 {
-        // begin_next priority dispatch. Trace (a boundary event pended by the PREVIOUS instruction) outranks
-        // decoding the next instruction (M68000UM §6.2.3 group-1 order; the interrupt arm joins here in A4).
-        // A `Stopped` CPU (after `STOP`) resumes only on an interrupt whose level exceeds the mask (§6.3.2)
-        // — or, from Push B, an external reset. The wake advances past the 2-word `STOP` (pc += 4); there is
-        // NO separate wake refill/bus activity — the interrupt arm below reloads the queue via its own vector
-        // fetch, so the only pinned stream is the interrupt's 44(5/3) (Yacht L1549; any wake-latency idle is
-        // docket residue). On wake we fall through to service that interrupt (stacked PC = the post-STOP addr).
+        // begin_next priority dispatch. RESET is group 0 — the highest priority, above everything, and the
+        // ONLY exit from `Stopped`/`Halted` (M68000UM §6.3.1). Serviced FIRST: run the power-on reset
+        // sequence and return to `Normal` from any state.
+        if self.reset_pending {
+            self.reset_pending = false;
+            self.state = CpuState::Normal;
+            let mut recipe = crate::m68000::decode::reset_exception_recipe();
+            return recipe.run_to_completion(&mut self.regs, bus);
+        }
+        // Trace (a boundary event pended by the PREVIOUS instruction) outranks decoding the next instruction
+        // (M68000UM §6.2.3 group-1 order; the interrupt arm joins here in A4). A `Stopped` CPU (after `STOP`)
+        // resumes on an interrupt whose level exceeds the mask (§6.3.2) — reset-wake is handled above. The
+        // wake advances past the 2-word `STOP` (pc += 4); there is NO separate wake refill/bus activity — the
+        // interrupt arm below reloads the queue via its own vector fetch, so the only pinned stream is the
+        // interrupt's 44(5/3) (Yacht L1549; any wake-latency idle is docket residue). On wake we fall through
+        // to service that interrupt (stacked PC = the post-STOP addr).
         if self.state == CpuState::Stopped {
             if self.ipl > self.regs.int_mask() {
                 self.state = CpuState::Normal;
                 self.regs.pc = self.regs.pc.wrapping_add(4); // advance past the 2-word STOP
-                                                             // (reset-wake is shaped here but unwired until Push B — do not fake a reset)
             } else {
                 // Remain stopped, consuming a nominal idle slice so `run_until` (Push C) makes progress. This
                 // per-poll idle cost is NOT pinned (no Yacht STOP-wait entry) — a progress device, not timing.
@@ -5997,5 +6018,167 @@ mod tests {
         // The interrupt frame is identical (post-STOP stacked PC).
         assert_eq!(bus.peek(0x0FFE), bus_ref.peek(0x0FFE));
         assert_eq!(bus.peek(0x0FFF), bus_ref.peek(0x0FFF));
+    }
+
+    // --- Push B / B6: the power-on reset sequence (M68000UM §6.3.1 + §6.2.1 + Yacht L1546) ----------------
+    // /RESET 40(6/0): fetch SSP MSW/LSW @ $0/$2, PC MSW/LSW @ $4/$6, force S=1/T=0/I=7 (SR=0x2700), NO
+    // stacking, refill the queue at PC. The reset vector is the ONE vector in supervisor PROGRAM space → all
+    // six reads are FC=6 (not FC=5). Not vendored in SST — hand-authored vectors only.
+
+    /// A FlatBus seeded with a reset vector table (SSP @ $0, PC @ $4) and handler words at the PC.
+    fn reset_vector_bus() -> FlatBus {
+        let mut bus = FlatBus::new();
+        // SSP = 0x00FFFFF0 (hi word 0x00FF @ $0, lo word 0xFFF0 @ $2).
+        for (a, v) in [(0u32, 0x00u8), (1, 0xFF), (2, 0xFF), (3, 0xF0)] {
+            bus.poke(a, v);
+        }
+        // PC = 0x00000400 (hi 0x0000 @ $4, lo 0x0400 @ $6).
+        for (a, v) in [(4u32, 0x00u8), (5, 0x00), (6, 0x04), (7, 0x00)] {
+            bus.poke(a, v);
+        }
+        // Handler at $400: two NOP words for the prefetch refill.
+        for (a, v) in [
+            (0x400u32, 0x4Eu8),
+            (0x401, 0x71),
+            (0x402, 0x4E),
+            (0x403, 0x71),
+        ] {
+            bus.poke(a, v);
+        }
+        bus
+    }
+
+    /// Registers in a deliberately non-supervisor, garbage state — reset must overwrite SSP/PC and force
+    /// supervisor regardless of the prior state.
+    fn pre_reset_regs() -> Registers {
+        Registers {
+            d: [0xDEAD_BEEF; 8],
+            a: [0xBAAD_F00D; 7],
+            usp: 0x1111_1111,
+            ssp: 0x2222_2222,
+            pc: 0x3333_3333,
+            sr: 0x0000, // user mode (S=0), no mask — reset forces S=1/I=7
+            prefetch: [0xAAAA, 0xBBBB],
+        }
+    }
+
+    #[test]
+    fn reset_recipe_fetches_ssp_and_pc_forces_supervisor_and_refills() {
+        let mut bus = reset_vector_bus();
+        let mut cpu = Cpu68000::new(pre_reset_regs());
+        let mut recipe = crate::m68000::decode::reset_exception_recipe();
+        let cycles = recipe.run_to_completion(&mut cpu.regs, &mut bus);
+
+        assert_eq!(cycles, 40, "/RESET is 40(6/0) (Yacht L1546)");
+        assert_eq!(cpu.regs.ssp, 0x00FF_FFF0, "SSP fetched from $0/$2");
+        assert_eq!(cpu.regs.pc, 0x0000_0400, "PC fetched from $4/$6");
+        assert_eq!(
+            cpu.regs.sr, 0x2700,
+            "forced supervisor (S=1), trace off (T=0), mask level 7"
+        );
+        assert_eq!(
+            cpu.regs.prefetch,
+            [0x4E71, 0x4E71],
+            "prefetch queue refilled at PC"
+        );
+        // Six reads, ALL FC=6 (supervisor program — the reset vector's space), NO writes (no stacking).
+        let reads: Vec<_> = bus
+            .log
+            .iter()
+            .map(|t| (t.kind, t.fc, t.addr, t.value))
+            .collect();
+        assert_eq!(
+            reads,
+            vec![
+                (TxKind::Read, 6, 0x0, 0x00FF),
+                (TxKind::Read, 6, 0x2, 0xFFF0),
+                (TxKind::Read, 6, 0x4, 0x0000),
+                (TxKind::Read, 6, 0x6, 0x0400),
+                (TxKind::Read, 6, 0x400, 0x4E71),
+                (TxKind::Read, 6, 0x402, 0x4E71),
+            ],
+            "SSP($0/$2), PC($4/$6), two prefetches — all FC=6, no stack writes"
+        );
+        assert!(
+            bus.log.iter().all(|t| t.kind == TxKind::Read),
+            "reset stacks nothing (M68000UM §6.2.4)"
+        );
+    }
+
+    #[test]
+    fn reset_recipe_runs_identically_on_both_drivers() {
+        // Fast path.
+        let mut b1 = reset_vector_bus();
+        let mut r1 = Cpu68000::new(pre_reset_regs());
+        crate::m68000::decode::reset_exception_recipe().run_to_completion(&mut r1.regs, &mut b1);
+        // Quiesce path (one micro-op at a time), snapshotting/restoring the recipe at every boundary.
+        let mut b2 = reset_vector_bus();
+        let mut r2 = Cpu68000::new(pre_reset_regs());
+        r2.begin(crate::m68000::decode::reset_exception_recipe());
+        while let Step::Continue = r2.step_micro_op(&mut b2) {}
+        assert_eq!(
+            r1.regs, r2.regs,
+            "final register state matches across drivers"
+        );
+        assert_eq!(b1.log, b2.log, "transaction stream matches across drivers");
+    }
+
+    #[test]
+    fn reset_wakes_a_stopped_cpu() {
+        let mut bus = reset_vector_bus();
+        let mut cpu = Cpu68000::new(pre_reset_regs());
+        cpu.state = CpuState::Stopped;
+        cpu.assert_reset();
+        let cycles = cpu.step(&mut bus);
+        assert_eq!(cycles, 40, "the reset sequence ran");
+        assert_eq!(cpu.state, CpuState::Normal, "reset left the Stopped state");
+        assert_eq!(cpu.regs.pc, 0x0000_0400);
+        assert_eq!(cpu.regs.ssp, 0x00FF_FFF0);
+        assert_eq!(cpu.regs.sr, 0x2700);
+    }
+
+    #[test]
+    fn reset_wakes_a_halted_cpu() {
+        // The double-fault terminal state — only reset leaves it.
+        let mut bus = reset_vector_bus();
+        let mut cpu = Cpu68000::new(pre_reset_regs());
+        cpu.state = CpuState::Halted;
+        cpu.assert_reset();
+        cpu.step(&mut bus);
+        assert_eq!(cpu.state, CpuState::Normal, "only reset leaves Halted");
+        assert_eq!(cpu.regs.pc, 0x0000_0400);
+        assert_eq!(cpu.regs.sr, 0x2700);
+    }
+
+    #[test]
+    fn reset_preempts_a_pending_interrupt() {
+        // Reset is group 0 — the highest priority, above an unmasked interrupt.
+        let mut bus = reset_vector_bus();
+        let mut cpu = Cpu68000::new(pre_reset_regs());
+        cpu.set_ipl(7); // an interrupt would otherwise be taken (pre-reset mask 0)
+        cpu.assert_reset();
+        let cycles = cpu.step(&mut bus);
+        assert_eq!(cycles, 40, "reset ran (40), not the 44-cycle interrupt");
+        assert_eq!(
+            cpu.regs.pc, 0x0000_0400,
+            "PC from the reset vector, not an interrupt vector"
+        );
+        assert_eq!(cpu.regs.sr, 0x2700, "reset forced the mask to 7");
+    }
+
+    #[test]
+    fn reset_pending_survives_snapshot_restore() {
+        let mut cpu = Cpu68000::new(pre_reset_regs());
+        cpu.assert_reset();
+        let cfg = bincode::config::standard();
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut restored, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        // The restored CPU still services the reset on its next step.
+        let mut bus = reset_vector_bus();
+        restored.step(&mut bus);
+        assert_eq!(
+            restored.regs.pc, 0x0000_0400,
+            "the latched reset round-tripped"
+        );
     }
 }
