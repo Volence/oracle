@@ -59,6 +59,23 @@ pub struct Vdp {
     /// armed hangs real hardware. We model a deterministic outcome (open bus + this flag) instead of hanging
     /// the host — a documented divergence (see the divergence note on [`Vdp::data_read`]).
     latched_fault: bool,
+    /// The vertical-interrupt pending latch (recon R12). Set by the VInt scheduler event at line 224; the
+    /// **only** thing that clears it is the 68k interrupt-acknowledge ([`Vdp::acknowledge`]) — not a status
+    /// read, not clearing the enable, not a frame boundary. Gated into the IPL by IE0 (reg 1 bit 5).
+    vint_pending: bool,
+    /// The horizontal-interrupt pending latch (recon R12). Set on HINT-counter underflow; cleared only by
+    /// the 68k interrupt-acknowledge. Gated into the IPL by IE1 (reg 0 bit 4).
+    hint_pending: bool,
+    /// The HINT line counter (recon R7): reloaded from reg 10 on every vblank line and on underflow;
+    /// decremented once per active line (0..=224). Underflow sets [`Vdp::hint_pending`].
+    hint_counter: u8,
+    /// Sprite-overflow status latch (status bit 6). Set by the render pipeline (push 4); serialized here so
+    /// the status word can report it. Read-only this push.
+    sprite_overflow: bool,
+    /// Sprite-collision status latch (status bit 5). Set by the render pipeline (push 4); read-only here.
+    sprite_collision: bool,
+    /// Odd-frame flag (status bit 4). Toggled each frame when the VInt latch is set (recon R12 delivery).
+    odd_frame: bool,
 }
 
 impl std::fmt::Debug for Vdp {
@@ -96,6 +113,12 @@ impl Vdp {
             pending: false,
             read_buffer: 0,
             latched_fault: false,
+            vint_pending: false,
+            hint_pending: false,
+            hint_counter: 0,
+            sprite_overflow: false,
+            sprite_collision: false,
+            odd_frame: false,
         }
     }
 
@@ -207,6 +230,18 @@ impl Vdp {
     /// ports slice (which also clears the pending toggle on a status read).
     pub fn status_word(&self, mclk: u64) -> u16 {
         let mut s = 1u16 << 9; // FIFO empty (placeholder: immediate drain this push)
+        if self.vint_pending {
+            s |= 1 << 7; // F: VINT-pending readback (conservative no-side-effect pin, recon R12)
+        }
+        if self.sprite_overflow {
+            s |= 1 << 6;
+        }
+        if self.sprite_collision {
+            s |= 1 << 5;
+        }
+        if self.odd_frame {
+            s |= 1 << 4;
+        }
         if self.vblank(mclk) {
             s |= 1 << 3;
         }
@@ -369,6 +404,89 @@ impl Vdp {
         self.autoinc();
         self.read_buffer = self.read_target();
         out
+    }
+
+    // --- Interrupts + the IPL-deassert path (recon R7/R12) ------------------------------------------------
+
+    /// The combinational interrupt level driven at /IPL0-2 (recon R12): level 6 when VINT is pending AND
+    /// enabled (IE0 = reg 1 bit 5); else level 4 when HINT is pending AND enabled (IE1 = reg 0 bit 4); else 0.
+    /// The System recomputes `cpu.set_ipl(vdp.ipl())` after every event and every CPU step.
+    pub fn ipl(&self) -> u8 {
+        if self.vint_pending && self.regs[1] & 0x20 != 0 {
+            6
+        } else if self.hint_pending && self.regs[0] & 0x10 != 0 {
+            4
+        } else {
+            0
+        }
+    }
+
+    /// The VINT pending latch (introspection / debuggers; recon R12).
+    pub fn vint_pending(&self) -> bool {
+        self.vint_pending
+    }
+
+    /// The HINT pending latch (introspection / debuggers; recon R12).
+    pub fn hint_pending(&self) -> bool {
+        self.hint_pending
+    }
+
+    /// The 68k interrupt-acknowledge (recon R12): clear exactly the acknowledged level's pending latch — the
+    /// **only** thing that clears these latches. Driven by the fc=7 /INTAK bus cycle in `MegaDriveBus`.
+    pub fn acknowledge(&mut self, level: u8) {
+        match level {
+            6 => self.vint_pending = false,
+            4 => self.hint_pending = false,
+            _ => {}
+        }
+    }
+
+    /// Set the VINT pending latch and toggle the odd-frame flag (recon R12; the VInt scheduler event at line
+    /// 224 drives this). The latch is cleared only by [`Vdp::acknowledge`].
+    pub fn raise_vint(&mut self) {
+        self.vint_pending = true;
+        self.odd_frame = !self.odd_frame;
+    }
+
+    /// Set the HINT pending latch (recon R12; an HInt scheduler event drives this on HINT-counter underflow).
+    pub fn raise_hint(&mut self) {
+        self.hint_pending = true;
+    }
+
+    /// Per-line HINT-counter bookkeeping (recon R7), driven at each line start by the Scanline event.
+    /// Returns `true` on HINT-counter underflow (the caller schedules an HInt for this line):
+    /// - vblank lines 225..=261 reload the counter from reg 10 (no decrement, no HINT);
+    /// - active lines 0..=224 decrement; on underflow the counter reloads from reg 10 and HINT fires
+    ///   (so reg10 = N → HINT on lines N, 2N+1, 3N+2, …; reg10 = 0 → every line 0..=224, incl. line 224).
+    pub fn on_line_start(&mut self, line: u16) -> bool {
+        if (225..=261).contains(&line) {
+            self.hint_counter = self.regs[0x0A];
+            false
+        } else if self.hint_counter == 0 {
+            self.hint_counter = self.regs[0x0A];
+            true
+        } else {
+            self.hint_counter -= 1;
+            false
+        }
+    }
+
+    /// The in-line mclk offset of the HINT-pending H anchor (recon R7): H = $A6 (H40) / $86 (H32).
+    pub fn hint_offset(&self) -> u64 {
+        self.dot_at_h(if self.h40() { 0xA6 } else { 0x86 })
+    }
+
+    /// The in-line mclk offset of the VINT-pending H anchor (recon R7/R6): H = $02.
+    pub fn vint_offset(&self) -> u64 {
+        self.dot_at_h(0x02)
+    }
+
+    /// The mclk offset within a line at which the readable H counter first reaches `h` (the inverse of the
+    /// linear dot→position map; used only for the pinned interrupt H anchors, all pre-jump values). Pure
+    /// timing — the exact offset is not currency-critical (events are delivered at instruction boundaries).
+    fn dot_at_h(&self, h: u8) -> u64 {
+        let positions: u64 = if self.h40() { 422 } else { 342 };
+        (h as u64 * 2) * MCLK_PER_LINE / positions
     }
 }
 
@@ -747,5 +865,161 @@ mod tests {
         assert!(back.pending, "the armed toggle survives snapshot/restore");
         assert_eq!(back.code, v.code);
         assert_eq!(back.addr, v.addr);
+    }
+
+    // --- Interrupts + IPL deassert (recon R7/R12) --------------------------------------------------------
+
+    fn enable_ie0(v: &mut Vdp) {
+        v.regs[1] |= 0x20; // IE0 (VINT enable)
+    }
+    fn enable_ie1(v: &mut Vdp) {
+        v.regs[0] |= 0x10; // IE1 (HINT enable)
+    }
+
+    #[test]
+    fn ipl_is_gated_by_the_enable_bits() {
+        let mut v = fresh();
+        v.vint_pending = true;
+        assert_eq!(v.ipl(), 0, "pending but IE0 off → no IPL");
+        enable_ie0(&mut v);
+        assert_eq!(v.ipl(), 6, "pending + IE0 → level 6");
+    }
+
+    #[test]
+    fn clearing_the_enable_drops_ipl_but_keeps_the_latch() {
+        // The Counting-Cafe re-assert shape (recon R12): clearing IE0 while pending drops the IPL but keeps
+        // the latch; re-enabling re-raises it (nothing cleared the latch but an /INTAK).
+        let mut v = fresh();
+        v.vint_pending = true;
+        enable_ie0(&mut v);
+        assert_eq!(v.ipl(), 6);
+        v.regs[1] &= !0x20; // clear IE0
+        assert_eq!(v.ipl(), 0, "IPL drops");
+        assert!(v.vint_pending, "but the latch is kept");
+        enable_ie0(&mut v);
+        assert_eq!(v.ipl(), 6, "re-enabling re-raises the interrupt");
+    }
+
+    #[test]
+    fn acknowledge_clears_only_the_acknowledged_level() {
+        let mut v = fresh();
+        v.vint_pending = true;
+        v.hint_pending = true;
+        v.acknowledge(6);
+        assert!(!v.vint_pending, "level-6 IACK clears VINT");
+        assert!(v.hint_pending, "HINT untouched");
+        v.acknowledge(4);
+        assert!(!v.hint_pending, "level-4 IACK clears HINT");
+    }
+
+    #[test]
+    fn both_pending_cascades_level_6_then_level_4() {
+        let mut v = fresh();
+        v.vint_pending = true;
+        v.hint_pending = true;
+        enable_ie0(&mut v);
+        enable_ie1(&mut v);
+        assert_eq!(v.ipl(), 6, "both pending → level 6 first");
+        v.acknowledge(6);
+        assert_eq!(v.ipl(), 4, "after the level-6 IACK, HINT re-drives level 4");
+        v.acknowledge(4);
+        assert_eq!(v.ipl(), 0);
+    }
+
+    #[test]
+    fn a_status_read_does_not_clear_the_pending_latches() {
+        let mut v = fresh();
+        v.vint_pending = true;
+        v.hint_pending = true;
+        v.control_read_status(0); // clears the control-port toggle, NOT the interrupt latches
+        assert!(
+            v.vint_pending,
+            "VINT latch survives a status read (recon R12)"
+        );
+        assert!(v.hint_pending, "HINT latch survives a status read");
+    }
+
+    #[test]
+    fn status_word_f_bit_reflects_vint_pending() {
+        let mut v = fresh();
+        assert_eq!(
+            v.status_word(0) & 0x80,
+            0,
+            "F bit clear when no VINT pending"
+        );
+        v.vint_pending = true;
+        assert_eq!(
+            v.status_word(0) & 0x80,
+            0x80,
+            "F bit set (recon R12 readback)"
+        );
+    }
+
+    /// Which active lines (0..=224) raise a HINT for a given reg-10 value, using the per-line bookkeeping
+    /// (mirrors the Scanline chain: reload during vblank 225..=261, then step lines 0..=224).
+    fn hint_lines(reg10: u8) -> Vec<u16> {
+        let mut v = fresh();
+        v.regs[0x0A] = reg10;
+        // Reload during a vblank line so we enter line 0 with the counter = reg10 (as the chain does).
+        v.on_line_start(261);
+        (0..=224).filter(|&line| v.on_line_start(line)).collect()
+    }
+
+    #[test]
+    fn hint_schedule_reg10_n_fires_on_n_2n_plus_1_3n_plus_2() {
+        // reg10 = 5 → HINT on lines 5, 11, 17, 23, … (N, 2N+1, 3N+2, …) while ≤ 224 (recon R7).
+        let lines = hint_lines(5);
+        assert_eq!(&lines[..4], &[5, 11, 17, 23], "N, 2N+1, 3N+2, 4N+3");
+        assert!(lines.iter().all(|&l| l <= 224));
+    }
+
+    #[test]
+    fn hint_schedule_reg10_zero_fires_every_line_including_224() {
+        // reg10 = 0 → the interrupt occurs on every line 0..=224, line 224 included (recon R7).
+        let lines = hint_lines(0);
+        assert_eq!(lines.len(), 225, "every line 0..=224");
+        assert_eq!(*lines.last().unwrap(), 224, "a HINT can fire on line 224");
+    }
+
+    #[test]
+    fn hint_counter_reloads_during_vblank() {
+        let mut v = fresh();
+        v.regs[0x0A] = 7;
+        v.on_line_start(261); // vblank reload → counter = 7 entering line 0
+        assert_eq!(v.hint_counter, 7);
+        // Step three active lines to draw the counter down…
+        for line in 0..3 {
+            v.on_line_start(line);
+        }
+        assert_eq!(v.hint_counter, 4, "7 → decremented three times");
+        // …then a vblank line reloads it from reg 10.
+        v.on_line_start(230);
+        assert_eq!(v.hint_counter, 7, "reloaded from reg 10 during vblank");
+    }
+
+    #[test]
+    fn raise_vint_toggles_the_odd_frame_flag() {
+        let mut v = fresh();
+        assert!(!v.odd_frame);
+        v.raise_vint();
+        assert!(
+            v.vint_pending && v.odd_frame,
+            "VINT set + odd-frame toggled"
+        );
+        v.raise_vint();
+        assert!(!v.odd_frame, "toggled back on the next frame");
+    }
+
+    #[test]
+    fn pending_latches_survive_a_bincode_round_trip() {
+        let mut v = fresh();
+        v.vint_pending = true;
+        v.hint_pending = true;
+        v.hint_counter = 42;
+        v.odd_frame = true;
+        let bytes = bincode::encode_to_vec(&v, bincode::config::standard()).unwrap();
+        let (back, _): (Vdp, usize) =
+            bincode::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
+        assert_eq!(v, back, "the interrupt state round-trips");
     }
 }

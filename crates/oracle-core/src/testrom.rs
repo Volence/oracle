@@ -125,6 +125,20 @@ pub fn build() -> Vec<u8> {
     rom
 }
 
+/// A variant of [`build`] whose level-6 (VInt) handler **increments** the word counter at
+/// [`INT_SENTINEL_ADDR`] instead of writing a constant sentinel, and then RTEs — so a test can count how
+/// many times the interrupt was taken. Used by the "VInt taken once, not re-fired after RTE" docket test.
+/// [`build`] itself is left byte-identical (the golden fixture depends on it).
+#[doc(hidden)]
+pub fn build_vint_counter() -> Vec<u8> {
+    let mut rom = build();
+    // INT_H: addq.w #1, ($00FF8000).L ; rte  (replaces the `move.w #$1234, $FF8000` body).
+    put_word(&mut rom, 0x2A0, 0x5279); // addq.w #1, (xxx).L
+    put_long(&mut rom, 0x2A2, INT_SENTINEL_ADDR); // $00FF8000
+    put_word(&mut rom, 0x2A6, 0x4E73); // rte
+    rom
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

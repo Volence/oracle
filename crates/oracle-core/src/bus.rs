@@ -311,6 +311,18 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
 impl<'a, S: BusEventSink> Bus68k for MegaDriveBus<'a, S> {
     fn read16(&mut self, addr: u32, fc: u8) -> (u16, u32) {
         let a = addr & ADDR_MASK;
+        if fc == 7 {
+            // The 68k interrupt-acknowledge (/INTAK) cycle: decode the acknowledged level from the address
+            // (`0xFFFFFFF1 | level << 1`) and clear the VDP's pending latch for exactly that level — the ONLY
+            // thing that clears the latches (recon R12, docs/2026-07-16-vdp-recon.md). The CPU discards the
+            // returned value (Mega Drive VPA → autovector). Zero CPU changes: the interrupt recipe already
+            // drives this fc=7 read (microop.rs IntAck), so the deassert rides the existing hook.
+            let level = ((a >> 1) & 0x07) as u8;
+            self.vdp.acknowledge(level);
+            let v = *self.last_bus_word;
+            self.emit(BusOp::Read, fc, a, Size::Word, v as u32);
+            return (v, 0);
+        }
         if Self::is_vdp_port(a) {
             let value = self.vdp_read_word(a);
             *self.last_bus_word = value;

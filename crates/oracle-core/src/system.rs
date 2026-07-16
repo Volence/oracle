@@ -13,7 +13,7 @@ use crate::m68000::microop::Cpu68000;
 use crate::m68000::registers::Registers;
 use crate::scheduler::{EventKind, Scheduler};
 use crate::state_hash::{StateHash, CRAM_SIZE, REG_COUNT, VRAM_SIZE, VSRAM_SIZE};
-use crate::vdp::Vdp;
+use crate::vdp::{Vdp, LINES_PER_FRAME, MCLK_PER_LINE};
 
 /// 68000 work RAM, `$FF0000..=$FFFFFF` (64 KiB).
 pub const RAM_SIZE: usize = 0x10000;
@@ -133,6 +133,10 @@ impl System {
         // VRAM is seeded next from the same RNG (Vdp::power_on draws after the work-RAM fill — the exact
         // pre-extraction order), so the power-on state_hash is byte-identical.
         let vdp = Vdp::power_on(scheduler.rng_mut());
+        // Seed the self-rescheduling per-line Scanline chain that drives the VDP's HINT/VINT timing from
+        // boot (recon R7/R12). It never advances the clock and (with the interrupt enables off) never raises
+        // an interrupt, so it is invisible to the export_state / state_hash currencies.
+        scheduler.schedule(0, EventKind::Scanline);
         Self {
             seed,
             scheduler,
@@ -305,6 +309,11 @@ impl System {
         &self.vdp
     }
 
+    /// Mutable access to the VDP (tests / the eventual debugger — e.g. setting up interrupt enables).
+    pub fn vdp_mut(&mut self) -> &mut Vdp {
+        &mut self.vdp
+    }
+
     /// The scheduler (sole master clock + RNG).
     pub fn scheduler(&self) -> &Scheduler {
         &self.scheduler
@@ -334,26 +343,47 @@ impl System {
     pub fn run_until(&mut self, deadline_mclk: u64) {
         while self.scheduler.now() < deadline_mclk {
             // Deliver any events whose deadline has arrived (instruction-boundary granularity, consistent
-            // with the ratified sync-on-demand model) before stepping — they may raise the IPL latch.
+            // with the ratified sync-on-demand model) before stepping — they may raise the pending latches.
             let now = self.scheduler.now();
-            while let Some((_, kind)) = self.scheduler.pop_due(now) {
-                self.deliver_event(kind);
+            while let Some((deadline, kind)) = self.scheduler.pop_due(now) {
+                self.deliver_event(deadline, kind);
             }
             let cycles = self.step_cpu(&mut ());
             self.scheduler.advance(cycles as u64 * MCLK_PER_CPU_CYCLE);
+            // Re-derive the IPL latch after the step: a taken interrupt's fc=7 /INTAK cleared the VDP's
+            // pending latch mid-step (so a delivered VInt does NOT re-fire after RTE), and any enable-bit
+            // register write mid-step is picked up here too (recon R12).
+            self.cpu.set_ipl(self.vdp.ipl());
         }
     }
 
-    /// Map a fired scheduler event to its effect on the CPU. The interrupt sources raise the latched IPL
-    /// input (`begin_next` takes the interrupt when the level exceeds the SR mask): VInt = level 6, HInt =
-    /// level 4 — the Mega Drive encoder. The VDP schedules these once it lands and deasserts the level on
-    /// acknowledge; here the mapping + drain is the plumbing. Scanline/FrameEnd are housekeeping (no IPL).
-    fn deliver_event(&mut self, kind: EventKind) {
+    /// Deliver a fired scheduler event (recon R7/R12). `deadline` is the event's absolute scheduled mclk (its
+    /// line start, for the Scanline chain). The **Scanline** event self-reschedules every line and drives the
+    /// per-line VDP housekeeping: HINT-counter bookkeeping (an underflow schedules an `HInt` at the pinned H
+    /// anchor), and line 224 schedules the `VInt`. `HInt`/`VInt` delivery sets the VDP's pending latches; the
+    /// IPL the CPU sees is always recomputed from `vdp.ipl()` (gated by the enable bits). `FrameEnd` is
+    /// housekeeping.
+    fn deliver_event(&mut self, deadline: u64, kind: EventKind) {
         match kind {
-            EventKind::VInt => self.cpu.set_ipl(6),
-            EventKind::HInt => self.cpu.set_ipl(4),
-            EventKind::Scanline | EventKind::FrameEnd => {}
+            EventKind::Scanline => {
+                let line = (deadline / MCLK_PER_LINE) % LINES_PER_FRAME;
+                if self.vdp.on_line_start(line as u16) {
+                    let off = self.vdp.hint_offset();
+                    self.scheduler.schedule(deadline + off, EventKind::HInt);
+                }
+                if line == 224 {
+                    let off = self.vdp.vint_offset();
+                    self.scheduler.schedule(deadline + off, EventKind::VInt);
+                }
+                self.scheduler
+                    .schedule(deadline + MCLK_PER_LINE, EventKind::Scanline);
+            }
+            EventKind::HInt => self.vdp.raise_hint(),
+            EventKind::VInt => self.vdp.raise_vint(),
+            EventKind::FrameEnd => {}
         }
+        // Any delivered event may change the pending latches — re-derive the IPL the CPU sees (recon R12).
+        self.cpu.set_ipl(self.vdp.ipl());
     }
 
     /// Step the 68000 once through a split-borrow [`MegaDriveBus`], returning the CPU cycles it consumed.
@@ -473,10 +503,11 @@ mod tests {
     #[test]
     fn scheduled_vint_is_delivered_as_a_level_6_interrupt() {
         use crate::scheduler::EventKind;
-        // The test ROM's first instruction lowers the INT mask to 0, so a level-6 VInt is taken; its
-        // handler writes a sentinel to $FF8000 (outside the stirred range). Scheduling it at mclk 0 latches
-        // the request; it is taken once the mask drops.
+        // A level-6 VInt is taken only when the VDP's VINT enable (IE0, reg 1 bit 5) is on AND the CPU mask
+        // is below 6 (the ROM's first instruction lowers it to 0). Enable IE0, latch a VInt at mclk 0, and
+        // the handler writes its $1234 sentinel to $FF8000 (outside the stirred range).
         let mut s = booted(0x1357);
+        s.vdp_mut().control_write(0x8120, 0); // reg 1 = 0x20 → IE0 (VINT enable)
         s.scheduler_mut().schedule(0, EventKind::VInt);
         let idx = (crate::testrom::INT_SENTINEL_ADDR & 0xFFFF) as usize;
         s.run_frames(1);
@@ -488,20 +519,44 @@ mod tests {
     }
 
     #[test]
-    fn housekeeping_events_do_not_raise_an_interrupt() {
-        use crate::scheduler::EventKind;
-        // Scanline / FrameEnd are housekeeping — they must not raise the IPL latch. With no interrupt, the
-        // sentinel region ($FF8000, never touched by the main loop) stays at its power-on value.
+    fn interrupts_do_not_fire_while_the_enable_bits_are_off() {
+        // The auto Scanline chain sets the VDP's pending latches (VInt at line 224, HInt on underflow) every
+        // frame, but with the interrupt enables off (power-on) `vdp.ipl()` stays 0, so no interrupt is taken.
+        // The sentinel region ($FF8000, never touched by the main loop) stays at its power-on value.
         let mut s = booted(0x2468);
         let idx = (crate::testrom::INT_SENTINEL_ADDR & 0xFFFF) as usize;
         let before = [s.ram()[idx], s.ram()[idx + 1]];
-        s.scheduler_mut().schedule(0, EventKind::FrameEnd);
-        s.scheduler_mut().schedule(1_000, EventKind::Scanline);
-        s.run_frames(1);
+        s.run_frames(2);
         assert_eq!(
             [s.ram()[idx], s.ram()[idx + 1]],
             before,
-            "no interrupt fired for housekeeping events"
+            "no interrupt fired while the enable bits are off"
+        );
+        // The latches DID get set (they are just not gated into the IPL) — proving the chain is live.
+        assert!(
+            s.vdp().vint_pending(),
+            "the VInt latch was set by the auto Scanline chain"
+        );
+    }
+
+    #[test]
+    fn a_delivered_vint_is_taken_once_and_does_not_refire_after_rte() {
+        // The docket test (recon R12): with IE0 enabled, the auto VInt fires once per frame; the counting ISR
+        // increments $FF8000 and RTEs. The fc=7 /INTAK during the interrupt clears the pending latch, so it
+        // is NOT re-taken after RTE — over 2 frames the counter advances by exactly 2 (a broken deassert
+        // would re-fire in a tight loop and blow the count far past 2).
+        let mut s = System::new(0x0BAD_F00D);
+        s.load_rom(crate::testrom::build_vint_counter());
+        s.reset();
+        s.vdp_mut().control_write(0x8120, 0); // enable IE0
+        let idx = (crate::testrom::INT_SENTINEL_ADDR & 0xFFFF) as usize;
+        let before = u16::from_be_bytes([s.ram()[idx], s.ram()[idx + 1]]);
+        s.run_frames(2);
+        let after = u16::from_be_bytes([s.ram()[idx], s.ram()[idx + 1]]);
+        assert_eq!(
+            after.wrapping_sub(before),
+            2,
+            "exactly one VInt taken per frame — no re-fire after RTE"
         );
     }
 
