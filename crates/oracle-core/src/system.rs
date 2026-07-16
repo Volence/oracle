@@ -19,6 +19,18 @@ pub const RAM_SIZE: usize = 0x10000;
 /// Master-clock ticks per NTSC frame (H32: 262 scanlines × 3420 mclk).
 pub const MCLK_PER_FRAME: u64 = 896_040;
 
+/// `export_state` format version (D8). Bumped when the layout changes; Push D freezes v1 + writes the
+/// spec. First byte(s) of every `export_state` image.
+pub const EXPORT_STATE_VERSION: u16 = 1;
+
+/// Serialized length of the 68000 register region in `export_state` (little-endian):
+/// d0–d7 (8×4) + a0–a6 (7×4) + usp + ssp + pc (3×4) + sr (2) + prefetch (2×2) = 78 bytes.
+const EXPORT_M68K_REGS_LEN: usize = 8 * 4 + 7 * 4 + 4 + 4 + 4 + 2 + 2 * 2;
+/// Fixed all-zero FM-chip placeholder region (provisional size — Push D confirms/freezes).
+const EXPORT_FM_PLACEHOLDER: usize = 0x200;
+/// Fixed all-zero PSG placeholder region (provisional size — Push D confirms/freezes).
+const EXPORT_PSG_PLACEHOLDER: usize = 0x10;
+
 /// Phase-0 placeholder workload: stub-chip steps executed per frame. Replaced by real cycle-accurate
 /// CPU stepping when the M68000 lands.
 const STUB_STEPS_PER_FRAME: u32 = 1000;
@@ -153,6 +165,53 @@ impl System {
     /// (Oracle hashes VDP memory + registers only); RAM is still part of the bincode snapshot.
     pub fn state_hash(&self) -> StateHash {
         StateHash::compute(&self.vram, &self.cram, &self.vsram, &self.vdp_regs)
+    }
+
+    /// The canonical cross-backend differential currency (integration-pivot D8), laid out in a fixed
+    /// region order with fixed sizes so the layout never shifts as chips land. Push D freezes v1 + writes
+    /// `docs/export-state-v1.md`; here the placeholder sizes are provisional. Region order:
+    /// version → m68k regs → work RAM → Z80 → VDP → FM → PSG. Every not-yet-emulated chip serializes as a
+    /// fixed all-zero placeholder. This is distinct from [`state_hash`](Self::state_hash) (the frozen
+    /// Oracle-compatible VDP hash, kept for the live-Oracle differential).
+    ///
+    /// Instruction-boundary only: `run_frames` leaves the CPU quiesced at an instruction boundary, so this
+    /// never captures mid-instruction state.
+    pub fn export_state(&self) -> Vec<u8> {
+        let total = 2
+            + EXPORT_M68K_REGS_LEN
+            + RAM_SIZE
+            + Z80_RAM_SIZE
+            + (VRAM_SIZE + CRAM_SIZE + VSRAM_SIZE + REG_COUNT)
+            + EXPORT_FM_PLACEHOLDER
+            + EXPORT_PSG_PLACEHOLDER;
+        let mut out = Vec::with_capacity(total);
+        out.extend_from_slice(&EXPORT_STATE_VERSION.to_le_bytes());
+        // m68k regs — zero placeholder while the CPU is the phase-0 stub (no 68000 register file yet). The
+        // real `cpu.regs` serialization lands with the CPU swap (a hash change attributable to that slice).
+        out.extend_from_slice(&[0u8; EXPORT_M68K_REGS_LEN]);
+        out.extend_from_slice(&self.ram);
+        // Z80 / VDP / FM / PSG — fixed all-zero placeholders (the layout is frozen; the contents fill in as
+        // each chip lands).
+        out.extend(std::iter::repeat_n(0u8, Z80_RAM_SIZE));
+        out.extend(std::iter::repeat_n(
+            0u8,
+            VRAM_SIZE + CRAM_SIZE + VSRAM_SIZE + REG_COUNT,
+        ));
+        out.extend(std::iter::repeat_n(0u8, EXPORT_FM_PLACEHOLDER));
+        out.extend(std::iter::repeat_n(0u8, EXPORT_PSG_PLACEHOLDER));
+        debug_assert_eq!(out.len(), total);
+        out
+    }
+
+    /// FNV-1a 64-bit hash of [`export_state`](Self::export_state) — the determinism gate's currency. An
+    /// independent hasher (does not touch the frozen Oracle `state_hash` FNV layout).
+    pub fn export_state_hash(&self) -> u64 {
+        let mut h = 0xCBF2_9CE4_8422_2325u64;
+        for b in self.export_state() {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01B3);
+        }
+        h
     }
 
     /// Read-only access to the 68000 work RAM.
@@ -344,6 +403,46 @@ mod tests {
             s.rom(),
             &[0xDE, 0xAD, 0xBE, 0xEF],
             "a reset does not erase the cartridge ROM"
+        );
+    }
+
+    #[test]
+    fn export_state_has_the_fixed_layout_and_version() {
+        let s = System::new(0x1234);
+        let img = s.export_state();
+        let expected = 2
+            + EXPORT_M68K_REGS_LEN
+            + RAM_SIZE
+            + Z80_RAM_SIZE
+            + (VRAM_SIZE + CRAM_SIZE + VSRAM_SIZE + REG_COUNT)
+            + EXPORT_FM_PLACEHOLDER
+            + EXPORT_PSG_PLACEHOLDER;
+        assert_eq!(img.len(), expected, "export_state total length");
+        assert_eq!(
+            u16::from_le_bytes([img[0], img[1]]),
+            EXPORT_STATE_VERSION,
+            "version field first"
+        );
+        // Work RAM follows the version + the 78-byte regs region.
+        let ram_off = 2 + EXPORT_M68K_REGS_LEN;
+        assert_eq!(
+            &img[ram_off..ram_off + RAM_SIZE],
+            s.ram(),
+            "the work-RAM region mirrors System RAM"
+        );
+    }
+
+    #[test]
+    fn export_state_hash_is_deterministic_and_seed_sensitive() {
+        assert_eq!(
+            System::new(9).export_state_hash(),
+            System::new(9).export_state_hash(),
+            "same seed -> same export_state_hash"
+        );
+        assert_ne!(
+            System::new(1).export_state_hash(),
+            System::new(2).export_state_hash(),
+            "different seeds -> different export_state_hash (the gate has teeth)"
         );
     }
 
