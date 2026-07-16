@@ -4,8 +4,10 @@
 //! (P6) image.
 //!
 //! This is a **dev tool, not a gate artifact** — it exercises the full CPU → `MegaDriveBus` → VDP → renderer
-//! path end-to-end. The fixture puts vertical white/red stripes (plane A, two solid tiles) on screen, so a
-//! glance at the PPM confirms the planes renderer is alive.
+//! path end-to-end. The fixture puts vertical white/red stripes (plane A, two solid tiles) on screen with
+//! three green/blue sprite boxes composited over them (via the SAT written through the data port, so the
+//! sprite cache write-through is exercised), so a glance at the PPM confirms the plane + sprite renderer is
+//! alive.
 //!
 //! Usage: `cargo run --release --example frame_dump -- [frames] [out.ppm]`
 //! (defaults: 2 frames, `frame.ppm` in the current directory).
@@ -40,7 +42,8 @@ fn disp16(target: u32, ext_addr: u32) -> u16 {
 }
 
 /// Build the hand-authored fixture ROM: reset vectors + a setup routine that programs the VDP (registers,
-/// CRAM palette, two solid tiles, a striped plane-A nametable) then parks in `STOP`.
+/// CRAM palette, plane + sprite tiles, a striped plane-A nametable, and a small sprite attribute table) then
+/// parks in `STOP`.
 fn fixture_rom() -> Vec<u8> {
     let mut rom = vec![0u8; 0x8]; // reset vectors filled below
                                   // Reset vectors: initial SSP = top of work RAM (even), initial PC = $200.
@@ -74,6 +77,7 @@ fn fixture_rom() -> Vec<u8> {
         0x8140u16, // reg 1  = $40  display enable
         0x8230,    // reg 2  = $30  plane A base $C000
         0x8407,    // reg 4  = $07  plane B base $E000
+        0x8558,    // reg 5  = $58  sprite attribute table base $B000
         0x8701,    // reg 7  = $01  backdrop = CRAM 1
         0x8B00,    // reg 11 = $00  full h + full v scroll
         0x8C00,    // reg 12 = $00  H32
@@ -105,6 +109,16 @@ fn fixture_rom() -> Vec<u8> {
         data(&mut rom, 0x2222);
     }
 
+    // Sprite tiles (a 2×2 sprite uses 4 consecutive tiles, column-major): tiles 3–6 = solid green, tiles
+    // 7–10 = solid blue. Tiles 3–10 are contiguous from byte 96, so one autoincrementing write fills them.
+    cmd(&mut rom, vdp_cmd(0x01, 96));
+    for _ in 0..(4 * 16) {
+        data(&mut rom, 0x3333); // tiles 3–6 green
+    }
+    for _ in 0..(4 * 16) {
+        data(&mut rom, 0x4444); // tiles 7–10 blue
+    }
+
     // Fill plane A ($C000) with vertical stripes: 896 cells, tile toggling 1↔2 each cell.
     cmd(&mut rom, vdp_cmd(0x01, 0xC000));
     w(&mut rom, 0x303C);
@@ -118,6 +132,26 @@ fn fixture_rom() -> Vec<u8> {
     w(&mut rom, 0x51C8); // dbra d0,<disp>
     let ext = rom.len() as u32;
     w(&mut rom, disp16(loop_top, ext));
+
+    // Sprite attribute table at $B000 (reg 5), written through the data port so the SAT-cache write-through
+    // populates the cache the sprite evaluation reads. Three boxes over the stripes (Y/X fields are
+    // screen + 128; size byte = high byte of the size/link word; the last sprite links to 0 to end the list).
+    cmd(&mut rom, vdp_cmd(0x01, 0xB000));
+    // Sprite 0: 2×2 green (tile 3) at screen (40, 40), link 1.
+    data(&mut rom, 40 + 128); // Y
+    data(&mut rom, 0x0501); // size 2×2, link 1
+    data(&mut rom, 0x0003); // tile 3 (green)
+    data(&mut rom, 40 + 128); // X
+                              // Sprite 1: 2×2 blue (base tile 7) at screen (120, 80), link 2.
+    data(&mut rom, 80 + 128); // Y
+    data(&mut rom, 0x0502); // size 2×2, link 2
+    data(&mut rom, 0x0007); // base tile 7 (blue block)
+    data(&mut rom, 120 + 128); // X
+                               // Sprite 2: 1×1 green (tile 3) at screen (200, 150), link 0 (end of list).
+    data(&mut rom, 150 + 128); // Y
+    data(&mut rom, 0x0000); // size 1×1, link 0
+    data(&mut rom, 0x0003); // tile 3 (green)
+    data(&mut rom, 200 + 128); // X
 
     // Park.
     w(&mut rom, 0x4E72);
