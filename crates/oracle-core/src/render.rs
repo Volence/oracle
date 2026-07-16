@@ -203,6 +203,8 @@ struct SpriteLine {
     walk_end: SpriteWalkEnd,
     /// Any on-line sprite was dropped by the per-line sprite count or the pixel budget (status bit 6).
     overflow: bool,
+    /// The per-line pixel (dot) budget was exhausted — the R10 masking carry into the next line.
+    dot_overflow: bool,
     /// Two opaque sprite pixels overlapped on the line (status bit 5).
     collision: bool,
     /// The composited opaque sprite pixels, indexed by screen x (first-come-wins in link order).
@@ -760,6 +762,7 @@ impl Vdp {
         let mut on_line_count = 0usize;
         let mut px_used = 0usize;
         let mut overflow = false;
+        let mut dot_overflow = false;
         let mut collision = false;
         // R10 masking: `seen_nonzero` seeds from the previous line's dot-overflow carry (the first-on-line
         // mask); `masking_active` latches once an x=0 sprite masks, suppressing every later sprite this line.
@@ -784,6 +787,7 @@ impl Vdp {
                 SpriteOutcome::DroppedLineLimit
             } else if px_used >= max_px {
                 overflow = true;
+                dot_overflow = true;
                 SpriteOutcome::DroppedPixelBudget
             } else {
                 // Admitted: it consumes a slot + its pixel budget even if masked (recon R10).
@@ -834,6 +838,7 @@ impl Vdp {
             sprites,
             walk_end,
             overflow,
+            dot_overflow,
             collision,
             buffer,
         }
@@ -896,9 +901,15 @@ impl Vdp {
     /// render, not a parallel path (design §1). Recomputed on demand, never stored. Each sprite's outcome
     /// (recon R10 / RR8) — including the render-phase `Masked` — and `sprite_collision` are as rendered.
     pub fn render_line_report(&self, line: u16) -> LineReport {
+        let resolved = self.resolve_line(line);
+        self.line_report_from(line, resolved)
+    }
+
+    /// Build the [`LineReport`] from an already-resolved line (shared by `render_line_report` and
+    /// `render_scanline` so both derive from the same `resolve_line` — attribution is the render, design §1).
+    fn line_report_from(&self, line: u16, resolved: ResolvedLine) -> LineReport {
         let h40 = self.render_h40();
         let width = if h40 { 320 } else { 256 };
-        let resolved = self.resolve_line(line);
         LineReport {
             line,
             h40,
@@ -913,6 +924,26 @@ impl Vdp {
             sprite_collision: resolved.sprite.collision,
             pixels: resolved.pixels,
         }
+    }
+
+    /// Render one scanline **and commit** its sprite latches (recon R10) — the stateful per-line advance that
+    /// makes the sprite-overflow / collision status bits and the masking carry "go real". Unlike the pure
+    /// `render_line` / `render_line_report`, this takes `&mut self`: it seeds masking from the current
+    /// `sprite_dot_overflow_carry`, then commits the new carry (this line's dot overflow), ORs the
+    /// sprite-overflow / collision status latches (sticky until a status read clears them), and returns the
+    /// same [`LineReport`]. This is the hook the eventual per-frame render loop / push-5 golden-frame
+    /// differential drives; it is **not** wired into `System::run` this push (so the export golden is
+    /// untouched — the test ROM drives no rendering).
+    pub fn render_scanline(&mut self, line: u16) -> LineReport {
+        let resolved = self.resolve_line(line);
+        let (dot, over, coll) = (
+            resolved.sprite.dot_overflow,
+            resolved.sprite.overflow,
+            resolved.sprite.collision,
+        );
+        let report = self.line_report_from(line, resolved);
+        self.commit_scanline_sprites(dot, over, coll);
+        report
     }
 }
 
@@ -1896,6 +1927,77 @@ mod tests {
         assert!(
             !r.pixels[0].priority,
             "the sprite's own priority bit is decoded (false here)"
+        );
+    }
+
+    // --- R10 slice 4: render_scanline commit path (status bits go real, the masking carry) ----------------
+
+    #[test]
+    fn render_scanline_commits_sprite_overflow() {
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x05, 0x10);
+        write_chain(&mut v, 18, 0x0080, 0x00); // 18 on-line 1×1 → per-line sprite-count overflow
+        assert_eq!(
+            v.status_word(0) & 0x40,
+            0,
+            "no overflow before render_scanline"
+        );
+        let r = v.render_scanline(0);
+        assert!(r.sprite_overflow);
+        assert_eq!(
+            v.status_word(0) & 0x40,
+            0x40,
+            "render_scanline commits overflow to the status latch (bit 6)"
+        );
+    }
+
+    #[test]
+    fn render_scanline_commits_collision() {
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x05, 0x10);
+        write_sprite(&mut v, 0, 0x0080, 0x0001, 0x0001, 0x0080); // link 1, opaque tile 1 at screen 0
+        write_sprite(&mut v, 1, 0x0080, 0x0000, 0x0001, 0x0080); // overlaps at screen 0
+        assert_eq!(v.status_word(0) & 0x20, 0, "no collision before");
+        v.render_scanline(0);
+        assert_eq!(
+            v.status_word(0) & 0x20,
+            0x20,
+            "render_scanline commits collision to the status latch (bit 5)"
+        );
+    }
+
+    #[test]
+    fn dot_overflow_carry_makes_the_next_line_first_x_zero_mask() {
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x05, 0x10);
+        // 10 sprites, 4×2 cells (32 px wide, cover lines 0..15), chained. Sprite 0 is x=0 (first-on-line);
+        // the rest are x≠0. On line 0 (carry clear) the x=0 does not mask and the line dot-overflows
+        // (10 × 32 px > 256 px budget).
+        for i in 0..10u16 {
+            let link = if i + 1 < 10 { i + 1 } else { 0 };
+            let x = if i == 0 { 0x0000 } else { 128 + 8 + i * 32 };
+            write_sprite(&mut v, i as usize, 0x0080, (0x0D << 8) | link, 0x0001, x);
+        }
+        let r0 = v.render_line_report(0);
+        assert_eq!(
+            r0.sprites[0].outcome,
+            SpriteOutcome::Rendered,
+            "line 0: first-on-line x=0 does not mask (carry clear)"
+        );
+        let committed = v.render_scanline(0);
+        assert!(
+            committed.sprite_overflow,
+            "line 0 dot-overflows the pixel budget"
+        );
+        // Line 1: the carry advanced by line 0 now seeds masking, so the first-on-line x=0 sprite masks.
+        let r1 = v.render_line_report(1);
+        assert_eq!(
+            r1.sprites[0].outcome,
+            SpriteOutcome::Masked,
+            "the previous line's dot-overflow carry makes the first-on-line x=0 mask (R10)"
         );
     }
 }

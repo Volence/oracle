@@ -433,10 +433,16 @@ impl Vdp {
 
     /// A control-port (status) read ($C00004/6; recon R2 timing bits). **Clears the pending toggle** — the
     /// instrument-sourced experiment pin (permitted docs are silent; see the pending-toggle experiment in
-    /// `docs/2026-07-16-vdp-recon.md`, same standing as the STOP×trace pin).
+    /// `docs/2026-07-16-vdp-recon.md`, same standing as the STOP×trace pin). Also **clears the sprite-overflow
+    /// and collision status latches** (Sega Genesis Software Manual — those two flags are cleared by reading
+    /// the status). Golden-safe: the frozen currencies do not include these fields, and the test ROM drives no
+    /// sprite rendering, so both are `false` here regardless.
     pub fn control_read_status(&mut self, mclk: u64) -> u16 {
         self.pending = false;
-        self.status_word(mclk)
+        let s = self.status_word(mclk);
+        self.sprite_overflow = false;
+        self.sprite_collision = false;
+        s
     }
 
     /// A data-port write ($C00000/2; recon R1). Clears the toggle, routes the word to VRAM/CRAM/VSRAM, and
@@ -515,6 +521,17 @@ impl Vdp {
     /// Set the HINT pending latch (recon R12; an HInt scheduler event drives this on HINT-counter underflow).
     pub fn raise_hint(&mut self) {
         self.hint_pending = true;
+    }
+
+    /// Commit one scanline's sprite latches (recon R10), driven by [`Vdp::render_scanline`]. Sets the R10
+    /// masking carry to **this line's** dot overflow (so the next line's first-on-line x=0 sprite masks), and
+    /// **ORs** the sprite-overflow (status bit 6) / collision (status bit 5) status latches — sticky until a
+    /// status read clears them. Kept in `vdp.rs` (the owner of these serialized fields); the renderer computes
+    /// the deltas and hands them here.
+    pub fn commit_scanline_sprites(&mut self, dot_overflow: bool, overflow: bool, collision: bool) {
+        self.sprite_dot_overflow_carry = dot_overflow;
+        self.sprite_overflow |= overflow;
+        self.sprite_collision |= collision;
     }
 
     /// Per-line HINT-counter bookkeeping (recon R7), driven at each line start by the Scanline event.
@@ -1278,6 +1295,48 @@ mod tests {
         assert_eq!(back.sat_cache[7], 0xAB);
         assert_eq!(back.sat_cache[SAT_CACHE_LEN - 1], 0xCD);
         assert!(back.sprite_dot_overflow_carry);
+    }
+
+    #[test]
+    fn commit_scanline_sprites_sets_carry_and_ors_status() {
+        let mut v = fresh();
+        v.commit_scanline_sprites(true, true, false);
+        assert!(
+            v.sprite_dot_overflow_carry,
+            "carry = this line's dot overflow"
+        );
+        assert!(v.sprite_overflow);
+        assert!(!v.sprite_collision);
+        // The carry is REPLACED each line (it tracks the previous line); overflow/collision are STICKY.
+        v.commit_scanline_sprites(false, false, true);
+        assert!(
+            !v.sprite_dot_overflow_carry,
+            "carry replaced by the new line's dot overflow"
+        );
+        assert!(v.sprite_overflow, "overflow is sticky (OR)");
+        assert!(v.sprite_collision, "collision is sticky (OR)");
+    }
+
+    #[test]
+    fn status_read_clears_sprite_overflow_and_collision() {
+        let mut v = fresh();
+        v.sprite_overflow = true;
+        v.sprite_collision = true;
+        let s = v.control_read_status(0);
+        assert_eq!(
+            s & 0x60,
+            0x60,
+            "the read still reports both flags (bits 6+5)"
+        );
+        assert!(
+            !v.sprite_overflow && !v.sprite_collision,
+            "reading the status clears them (Sega manual)"
+        );
+        assert_eq!(
+            v.control_read_status(0) & 0x60,
+            0,
+            "a subsequent read sees them cleared"
+        );
     }
 
     #[test]
