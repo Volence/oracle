@@ -10,7 +10,9 @@ use super::bus68k::Bus68k;
 use super::ea::{
     ea_cmpa, ea_dst, ea_move, ea_movea, ea_read_word_operand, ea_src, ea_tas, ea_tst, RecipeBuf,
 };
-use super::exception::{push_standard_frame, push_trace_frame, vector_fetch_and_reload};
+use super::exception::{
+    push_interrupt_frame, push_standard_frame, push_trace_frame, vector_fetch_and_reload,
+};
 use super::microop::{
     condition_true, AluOp, Cpu68000, Dest, LogicOp, MicroOp, MicroState, Operand, Size,
 };
@@ -3828,6 +3830,35 @@ pub(crate) fn trace_exception_recipe() -> MicroState {
     buf.push(MicroOp::Internal { cycles: 4 });
     push_trace_frame(&mut buf, EXC_SAVED_PC_SLOT, EXC_SAVE_SR_SLOT);
     vector_fetch_and_reload(&mut buf, 9 * 4);
+    buf.finish()
+}
+
+/// Build the **autovectored interrupt exception frame** for `level` (1–7) — the boundary event `begin_next`
+/// services when `level` exceeds the SR interrupt mask (M68000UM §6.3.2). Yacht L1549: `44(5/3)`,
+/// `n nn ns ni n- n nS ns nV nv np n np`. The stacked PC is the address of the would-be next instruction
+/// (the live `pc` at the boundary); the OLD SR (pre-mask) is stacked, and [`MicroOp::SetIntMask`] then raises
+/// the running priority to `level` (after `EnterException` captured the old SR). Autovector = **24 + level**
+/// (Table 6-2). The frame is [`push_interrupt_frame`] (the `s S s` order split around the `ni` IACK cycle).
+/// Timing: leading `n nn` (6) + frame (PCL 4, IACK 4, mid idle 4, PCH 4, SR 4 = 20) + vector/reload (18) = 44.
+pub(crate) fn interrupt_exception_recipe(level: u8) -> MicroState {
+    let mut buf = RecipeBuf::new();
+    // Saved PC = the would-be next instruction (live pc at the boundary), UNMASKED.
+    buf.push(MicroOp::TargetCalc {
+        base: Operand::PcPlus(0),
+        index: Operand::Zero,
+        disp: Operand::Zero,
+        dst: EXC_SAVED_PC_SLOT,
+    });
+    // Capture the OLD SR (pre-mask) + enter supervisor (set S, clear T).
+    buf.push(MicroOp::EnterException {
+        save_sr: EXC_SAVE_SR_SLOT,
+    });
+    // Raise the running priority mask to the acknowledged level (after the old SR was captured).
+    buf.push(MicroOp::SetIntMask { level });
+    // The leading `n nn` idle (6 cyc).
+    buf.push(MicroOp::Internal { cycles: 6 });
+    push_interrupt_frame(&mut buf, EXC_SAVED_PC_SLOT, EXC_SAVE_SR_SLOT, level);
+    vector_fetch_and_reload(&mut buf, (24 + level as u32) * 4);
     buf.finish()
 }
 

@@ -11,6 +11,9 @@ pub const SR_TRACE: u16 = 0x8000;
 /// The implemented SR bits on the 68000 (T | S | I2-I0 | CCR = `0xA71F`). A full-SR write (`RTE`'s
 /// restore, the `*toSR` ops) masks the written value to these — the unimplemented bits read as 0.
 pub const SR_IMPLEMENTED: u16 = 0xA71F;
+/// The interrupt priority mask (I2–I0, bits 10-8). An interrupt is taken only when its level is strictly
+/// greater than this mask (M68000UM §6.3.2); exception entry for an interrupt sets it to the level taken.
+pub const SR_INT_MASK: u16 = 0x0700;
 pub const CCR_X: u16 = 0x10;
 pub const CCR_N: u16 = 0x08;
 pub const CCR_Z: u16 = 0x04;
@@ -35,6 +38,17 @@ impl Registers {
     /// True when the supervisor bit is set.
     pub fn supervisor(&self) -> bool {
         self.sr & SR_SUPERVISOR != 0
+    }
+
+    /// The current interrupt priority mask (I2–I0), 0–7.
+    pub fn int_mask(&self) -> u8 {
+        ((self.sr & SR_INT_MASK) >> 8) as u8
+    }
+
+    /// Set the interrupt priority mask (I2–I0) to `level` (0–7), preserving all other SR bits. Used by the
+    /// interrupt exception entry to raise the processor priority to the level being acknowledged.
+    pub fn set_int_mask(&mut self, level: u8) {
+        self.sr = (self.sr & !SR_INT_MASK) | ((level as u16) << 8);
     }
 
     /// The active A7 (stack pointer), selected by the supervisor bit.
