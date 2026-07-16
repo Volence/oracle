@@ -11,6 +11,7 @@
 
 pub mod bus;
 pub mod m68000;
+pub mod render;
 pub mod rng;
 pub mod scheduler;
 pub mod state_hash;
