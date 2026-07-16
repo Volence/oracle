@@ -2986,6 +2986,12 @@ impl MicroState {
 /// The processor's high-level execution state (Exodus's serialized set, minus a separate "Exception" —
 /// in-flight recipes already cover exception entry). Plain serialized data, so snapshot/restore of a
 /// stopped or halted CPU is free.
+///
+/// The nominal idle a `Stopped` CPU consumes per `begin_next` poll when nothing wakes it — purely a
+/// `run_until` progress device (Push C), NOT a pinned timing. Yacht has no STOP-wait entry, so the real
+/// stopped-idle cadence is docket residue; 4 (one bus-cycle granule) keeps `run_until` advancing.
+const STOPPED_IDLE_SLICE: u32 = 4;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub enum CpuState {
     /// Executing instructions normally.
@@ -3088,6 +3094,22 @@ impl Cpu68000 {
     pub fn step(&mut self, bus: &mut impl Bus68k) -> u32 {
         // begin_next priority dispatch. Trace (a boundary event pended by the PREVIOUS instruction) outranks
         // decoding the next instruction (M68000UM §6.2.3 group-1 order; the interrupt arm joins here in A4).
+        // A `Stopped` CPU (after `STOP`) resumes only on an interrupt whose level exceeds the mask (§6.3.2)
+        // — or, from Push B, an external reset. The wake advances past the 2-word `STOP` (pc += 4); there is
+        // NO separate wake refill/bus activity — the interrupt arm below reloads the queue via its own vector
+        // fetch, so the only pinned stream is the interrupt's 44(5/3) (Yacht L1549; any wake-latency idle is
+        // docket residue). On wake we fall through to service that interrupt (stacked PC = the post-STOP addr).
+        if self.state == CpuState::Stopped {
+            if self.ipl > self.regs.int_mask() {
+                self.state = CpuState::Normal;
+                self.regs.pc = self.regs.pc.wrapping_add(4); // advance past the 2-word STOP
+                                                             // (reset-wake is shaped here but unwired until Push B — do not fake a reset)
+            } else {
+                // Remain stopped, consuming a nominal idle slice so `run_until` (Push C) makes progress. This
+                // per-poll idle cost is NOT pinned (no Yacht STOP-wait entry) — a progress device, not timing.
+                return STOPPED_IDLE_SLICE;
+            }
+        }
         if self.trace_pending {
             self.trace_pending = false;
             let mut recipe = crate::m68000::decode::trace_exception_recipe();
@@ -5761,5 +5783,146 @@ mod tests {
             !bus.log.iter().any(|t| t.addr == 0x24),
             "no trace exception in the interrupt handler"
         );
+    }
+
+    // --- Push A / A4.2: STOP wake. A Stopped CPU resumes on an interrupt whose level > mask; the wake
+    // advances past the 2-word STOP (pc += 4) and the interrupt (its own reload refills the queue) stacks the
+    // post-STOP PC. T=0 path only — fully pinned, independent of A3.2's T-fork.
+    #[test]
+    fn stopped_cpu_wakes_on_interrupt_and_stacks_the_post_stop_pc() {
+        let regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0x0000_3000,
+            ssp: 0x0000_1000,
+            pc: 0x0C00,
+            sr: 0x2700,                 // supervisor (STOP is privileged)
+            prefetch: [0x4E72, 0x2000], // STOP #0x2000 (S=1, mask 0, T=0)
+        };
+        let mut bus = FlatBus::new();
+        poke_w(&mut bus, 0x0C00, 0x4E72);
+        poke_w(&mut bus, 0x0C02, 0x2000);
+        for a in (0x0C04u32..0x0C10).step_by(2) {
+            poke_w(&mut bus, a, 0x4E71);
+        }
+        poke_w(&mut bus, 0x7A, 0x4000); // vector 30 (L6) → 0x4000
+        for a in [0x4000u32, 0x4002] {
+            poke_w(&mut bus, a, 0x4E71);
+        }
+        let mut cpu = Cpu68000::new(regs);
+
+        let c1 = cpu.step(&mut bus); // STOP → Stopped
+        assert_eq!(c1, 4, "STOP = 4(0/0)");
+        assert_eq!(cpu.regs.sr, 0x2000, "SR loaded (mask 0)");
+        assert_eq!(cpu.state, CpuState::Stopped);
+        assert_eq!(
+            cpu.regs.pc, 0x0C00,
+            "pc still at the STOP (advance deferred to the wake)"
+        );
+
+        cpu.set_ipl(6);
+        cpu.step(&mut bus); // wake + interrupt
+        assert_eq!(cpu.state, CpuState::Normal, "woke out of Stopped");
+        assert_eq!(
+            cpu.regs.pc, 0x4000,
+            "reloaded at the L6 handler (vector 30)"
+        );
+        assert_eq!(cpu.regs.sr & SR_INT_MASK, 0x0600, "mask raised to 6");
+        // Stacked PC = 0x0C04 (the instruction AFTER the 2-word STOP), NOT 0x0C00.
+        assert_eq!(
+            bus.peek(0x0FFE),
+            0x0C,
+            "stacked PC = 0x0C04 (post-STOP) high"
+        );
+        assert_eq!(bus.peek(0x0FFF), 0x04, "stacked PC low");
+    }
+
+    /// STOP #0x2700 at 0x0C00 (loads mask 7), an L6 handler, supervisor stack — for the "stays stopped" cases.
+    fn stop_env(stop_imm: u16) -> (Cpu68000, FlatBus) {
+        let regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0x0000_3000,
+            ssp: 0x0000_1000,
+            pc: 0x0C00,
+            sr: 0x2700,
+            prefetch: [0x4E72, stop_imm],
+        };
+        let mut bus = FlatBus::new();
+        poke_w(&mut bus, 0x0C00, 0x4E72);
+        poke_w(&mut bus, 0x0C02, stop_imm);
+        for a in (0x0C04u32..0x0C10).step_by(2) {
+            poke_w(&mut bus, a, 0x4E71);
+        }
+        poke_w(&mut bus, 0x7A, 0x4000); // vector 30 (L6) → 0x4000
+        for a in [0x4000u32, 0x4002] {
+            poke_w(&mut bus, a, 0x4E71);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    #[test]
+    fn stopped_cpu_stays_stopped_while_the_interrupt_is_masked() {
+        // STOP #0x2700 → mask 7. An L6 request (6 ≤ 7) is masked → the CPU stays stopped, no bus activity.
+        let (mut cpu, mut bus) = stop_env(0x2700);
+        cpu.step(&mut bus); // STOP → Stopped (mask 7)
+        assert_eq!(cpu.state, CpuState::Stopped);
+        cpu.set_ipl(6);
+        cpu.step(&mut bus); // masked → remains stopped
+        assert_eq!(cpu.state, CpuState::Stopped, "L6 ≤ mask 7 → stays stopped");
+        assert_eq!(cpu.regs.pc, 0x0C00, "pc unchanged while stopped");
+        assert!(bus.log.is_empty(), "no bus activity while stopped-idle");
+        // Once a higher request arrives (L7 > 7? no — level 7 needs the edge; use dropping the mask instead):
+        // an L6 request now exceeds a lowered mask and wakes it.
+        cpu.regs.set_int_mask(5); // mask now 5 < ipl 6
+        cpu.step(&mut bus);
+        assert_eq!(
+            cpu.state,
+            CpuState::Normal,
+            "wakes once the pending level exceeds the mask"
+        );
+        assert_eq!(cpu.regs.pc, 0x4000, "serviced the L6 handler");
+    }
+
+    #[test]
+    fn stopped_cpu_snapshot_mid_idle_wakes_identically() {
+        // The boundary discipline applied to the one state where the CPU can sit indefinitely: snapshot/restore
+        // a Stopped CPU partway through idle (nothing pending), then raise ipl — the wake must proceed
+        // identically to an uninterrupted run.
+        let cfg = bincode::config::standard();
+
+        // Reference run: STOP → Stopped, then wake immediately.
+        let (mut cpu_ref, mut bus_ref) = stop_env(0x2000); // mask 0
+        cpu_ref.step(&mut bus_ref); // STOP
+        cpu_ref.set_ipl(6);
+        cpu_ref.step(&mut bus_ref); // wake + interrupt
+
+        // Snapshot run: STOP → Stopped, idle-poll twice (nothing pending), snapshot, restore, THEN wake.
+        let (mut cpu, mut bus) = stop_env(0x2000);
+        cpu.step(&mut bus); // STOP
+        assert_eq!(
+            cpu.step(&mut bus),
+            STOPPED_IDLE_SLICE,
+            "idle poll 1 — stays stopped"
+        );
+        assert_eq!(
+            cpu.step(&mut bus),
+            STOPPED_IDLE_SLICE,
+            "idle poll 2 — stays stopped"
+        );
+        assert_eq!(cpu.state, CpuState::Stopped, "still stopped mid-idle");
+        let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+        let (mut restored, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+        restored.set_ipl(6);
+        restored.step(&mut bus); // wake + interrupt, on the restored CPU
+
+        assert_eq!(
+            restored.regs, cpu_ref.regs,
+            "the snapshot/restore-across-idle wake matches the uninterrupted wake"
+        );
+        assert_eq!(restored.state, cpu_ref.state, "both end Normal");
+        // The interrupt frame is identical (post-STOP stacked PC).
+        assert_eq!(bus.peek(0x0FFE), bus_ref.peek(0x0FFE));
+        assert_eq!(bus.peek(0x0FFF), bus_ref.peek(0x0FFF));
     }
 }
