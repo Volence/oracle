@@ -80,6 +80,18 @@ pub struct PixelResolution {
     pub priority: bool,
 }
 
+/// The window's horizontal span on one line (design §4 "window span"): screen x `[start_x, end_x)`.
+/// `full_line` marks a line the *vertical* window band covers entirely (recon RR4 / Sega manual §J).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct WindowSpan {
+    /// First window pixel (inclusive).
+    pub start_x: u16,
+    /// One past the last window pixel (exclusive).
+    pub end_x: u16,
+    /// The whole line is window (the vertical window band covers it).
+    pub full_line: bool,
+}
+
 /// A fetched plane pixel before compositing (internal).
 #[derive(Clone, Copy)]
 struct PlanePixel {
@@ -95,6 +107,18 @@ impl PlanePixel {
     }
     fn cram_index(&self) -> u8 {
         self.palette * 16 + self.nibble
+    }
+}
+
+/// Build a [`PixelResolution`] for screen `x` from a winning plane pixel `p` on layer `layer`.
+fn px_from(x: usize, layer: Layer, p: &PlanePixel) -> PixelResolution {
+    PixelResolution {
+        x: x as u16,
+        layer,
+        cram_index: p.cram_index(),
+        tile: p.tile,
+        palette: p.palette,
+        priority: p.priority,
     }
 }
 
@@ -296,20 +320,7 @@ impl Vdp {
         let plane_x = x.wrapping_sub(hscroll as usize) & (plane_w - 1);
         let plane_y = (line as usize + vscroll as usize) & (plane_h - 1);
         let cell = self.nametable_cell(base, w_cells, (plane_x / 8) as u16, (plane_y / 8) as u16);
-        let mut tpx = (plane_x & 7) as u8;
-        let mut tpy = (plane_y & 7) as u8;
-        if cell.hflip {
-            tpx ^= 7;
-        }
-        if cell.vflip {
-            tpy ^= 7;
-        }
-        PlanePixel {
-            nibble: self.tile_nibble(cell.tile, tpx, tpy),
-            palette: cell.palette,
-            priority: cell.priority,
-            tile: cell.tile,
-        }
+        self.cell_pixel(cell, (plane_x & 7) as u8, (plane_y & 7) as u8)
     }
 
     /// Decode one CRAM index (0..=63) to RGB at the fixed integer ramp — the same layout/ramp as
@@ -324,38 +335,136 @@ impl Vdp {
         )
     }
 
+    /// The window's horizontal span on `line` (recon RR4 / Sega manual §J union model): if the vertical
+    /// window band covers the line (reg $12: DOWN=0 ⇒ `line < WVP*8`; DOWN=1 ⇒ `line ≥ WVP*8`) the whole
+    /// line is window; otherwise the horizontal split (reg $11: RIGT=0 ⇒ cells `[0, WHP*2)`; RIGT=1 ⇒
+    /// `[WHP*2, w)`). Returns `None` if the window does not appear on this line.
+    fn window_span(&self, line: u16, width: usize) -> Option<WindowSpan> {
+        let wvp = (self.regs()[0x12] & 0x1F) as usize * 8;
+        let v_active = if self.regs()[0x12] & 0x80 != 0 {
+            line as usize >= wvp
+        } else {
+            (line as usize) < wvp
+        };
+        if v_active {
+            return Some(WindowSpan {
+                start_x: 0,
+                end_x: width as u16,
+                full_line: true,
+            });
+        }
+        let whp = (self.regs()[0x11] & 0x1F) as usize * 16;
+        if self.regs()[0x11] & 0x80 != 0 {
+            // Right window: [WHP*16, width).
+            (whp < width).then_some(WindowSpan {
+                start_x: whp as u16,
+                end_x: width as u16,
+                full_line: false,
+            })
+        } else {
+            // Left window: [0, WHP*16).
+            (whp > 0).then_some(WindowSpan {
+                start_x: 0,
+                end_x: whp as u16,
+                full_line: false,
+            })
+        }
+    }
+
+    /// The window pixel at screen (`x`, `line`) — the window map does not scroll (`plane_x = x`,
+    /// `plane_y = line`), base `(reg $03 & mask) << 10`, row stride 64/32 (recon RR3/RR4).
+    fn window_pixel(&self, line: u16, x: usize) -> PlanePixel {
+        let cell = self.nametable_cell(
+            self.window_base(),
+            self.window_stride(),
+            (x / 8) as u16,
+            line / 8,
+        );
+        self.cell_pixel(cell, (x & 7) as u8, (line & 7) as u8)
+    }
+
+    /// The R9 window-bug pixel (interim model, recon R9): the first 16 px of plane A right of a *left*
+    /// window boundary reuse the window's last-column tile, sampled at plane A's fine-scroll offset. The
+    /// exact sub-tile alignment is the recon R9 open remainder — confirm by the golden-frame differential
+    /// (push 5); the pinned observable is that the *tile* is the window's last column, not plane A's.
+    fn r9_reused_pixel(&self, line: u16, x: usize, boundary: usize, a_hscroll: u16) -> PlanePixel {
+        let last_col = ((boundary / 8) as u16).saturating_sub(1);
+        let cell =
+            self.nametable_cell(self.window_base(), self.window_stride(), last_col, line / 8);
+        let tpx = (((x - boundary) + (a_hscroll as usize & 7)) & 7) as u8;
+        self.cell_pixel(cell, tpx, (line & 7) as u8)
+    }
+
+    /// Sample cell `cell` at within-tile pixel (`px`, `py`) applying its flips (recon RR1/RR2).
+    fn cell_pixel(&self, cell: Cell, mut px: u8, mut py: u8) -> PlanePixel {
+        if cell.hflip {
+            px ^= 7;
+        }
+        if cell.vflip {
+            py ^= 7;
+        }
+        PlanePixel {
+            nibble: self.tile_nibble(cell.tile, px, py),
+            palette: cell.palette,
+            priority: cell.priority,
+            tile: cell.tile,
+        }
+    }
+
     /// Resolve one scanline to per-pixel [`PixelResolution`] — the single source both `render_line` and (in a
-    /// later slice) `render_line_report` derive from (design §1: attribution is the render). This slice
-    /// composites backdrop + plane B; plane A + window join in the next slice.
+    /// later slice) `render_line_report` derive from (design §1: attribution is the render). Composites
+    /// backdrop → plane B → plane A / window **by transparency** (RR7); the priority bit is decoded and
+    /// reported but the ordering it drives is push 5.
     fn resolve_line(&self, line: u16) -> Vec<PixelResolution> {
         let h40 = self.render_h40();
         let width = if h40 { 320 } else { 256 };
         let backdrop = self.backdrop_index();
+        let bd = PixelResolution {
+            x: 0,
+            layer: Layer::Backdrop,
+            cram_index: backdrop,
+            tile: 0,
+            palette: 0,
+            priority: false,
+        };
         let mut out: Vec<PixelResolution> = (0..width)
-            .map(|x| PixelResolution {
-                x: x as u16,
-                layer: Layer::Backdrop,
-                cram_index: backdrop,
-                tile: 0,
-                palette: 0,
-                priority: false,
-            })
+            .map(|x| PixelResolution { x: x as u16, ..bd })
             .collect();
         // Display disabled (reg $01 bit 6 clear, RR4): the active area is the backdrop only.
         if self.regs()[0x01] & 0x40 == 0 {
             return out;
         }
+        // Plane B over the backdrop.
         for (x, px) in out.iter_mut().enumerate() {
             let b = self.plane_pixel(Plane::B, line, x, h40);
             if b.opaque() {
-                *px = PixelResolution {
-                    x: x as u16,
-                    layer: Layer::PlaneB,
-                    cram_index: b.cram_index(),
-                    tile: b.tile,
-                    palette: b.palette,
-                    priority: b.priority,
-                };
+                *px = px_from(x, Layer::PlaneB, &b);
+            }
+        }
+        // Plane A / window over plane B (transparency; RR7). The window replaces plane A in its region.
+        let win = self.window_span(line, width);
+        let a_hscroll = self.plane_hscroll(Plane::A, line);
+        let boundary = win.map_or(0, |w| w.end_x as usize);
+        let r9 = matches!(win, Some(w) if !w.full_line && w.start_x == 0) && a_hscroll & 0x0F != 0;
+        for (x, px) in out.iter_mut().enumerate() {
+            let (ap, layer) = match win {
+                Some(w) if x >= w.start_x as usize && x < w.end_x as usize => {
+                    (self.window_pixel(line, x), Layer::Window)
+                }
+                _ if r9 && x >= boundary && x < boundary + 16 => (
+                    self.r9_reused_pixel(line, x, boundary, a_hscroll),
+                    Layer::PlaneA,
+                ),
+                _ => (self.plane_pixel(Plane::A, line, x, h40), Layer::PlaneA),
+            };
+            if ap.opaque() {
+                *px = px_from(x, layer, &ap);
+            }
+        }
+        // Leftmost-column blank (reg $00 bit 5, RR4): force the leftmost 8 px to the backdrop.
+        if self.regs()[0x00] & 0x20 != 0 {
+            for (x, px) in out.iter_mut().enumerate().take(8.min(width)) {
+                *px = PixelResolution { x: x as u16, ..bd };
             }
         }
         out
@@ -682,5 +791,193 @@ mod tests {
     fn render_line_width_tracks_the_mode() {
         assert_eq!(pb_fixture(false).render_line(0).len(), 256, "H32");
         assert_eq!(pb_fixture(true).render_line(0).len(), 320, "H40");
+    }
+
+    // --- RR7/RR4/R9: plane A + window + transparency compositing ------------------------------------------
+
+    /// A plane-A + plane-B + window fixture: display on, A at `$C000`, B at `$E000`, window at `$A000`,
+    /// 32×32, h-scroll table at `$8000`, full scroll, a solid red tile 1 + blue tile 2 (CRAM 1/2).
+    fn pa_fixture(h40: bool) -> Vdp {
+        let mut v = fresh();
+        v.vram_mut().fill(0);
+        set_reg(&mut v, 0x01, 0x40); // display on
+        if h40 {
+            set_reg(&mut v, 0x0C, 0x81);
+        }
+        set_reg(&mut v, 0x02, 0x30); // plane A base 0xC000
+        set_reg(&mut v, 0x04, 0x07); // plane B base 0xE000
+        set_reg(&mut v, 0x03, 0x28); // window base 0xA000
+        set_reg(&mut v, 0x10, 0x00); // 32x32
+        set_reg(&mut v, 0x0D, 0x20); // h-scroll table base 0x8000
+        set_reg(&mut v, 0x0B, 0x00); // full scroll
+        fill_tile(&mut v, 1, 1);
+        fill_tile(&mut v, 2, 2);
+        write_cram(&mut v, 1, 0x000E); // red
+        write_cram(&mut v, 2, 0x0E00); // blue
+        v
+    }
+
+    #[test]
+    fn plane_a_composites_over_b_by_transparency() {
+        let mut v = pa_fixture(false);
+        put_cell(&mut v, 0xE000, 0x0001); // B cell(0,0) red
+        put_cell(&mut v, 0xC000, 0x0002); // A cell(0,0) blue → opaque A wins
+        assert_eq!(
+            v.render_line(0)[0],
+            v.cram_rgb(2),
+            "opaque plane A over plane B"
+        );
+        put_cell(&mut v, 0xE000 + 2, 0x0001); // B cell(1,0) red
+                                              // A cell(1,0) stays tile 0 (transparent) → B shows through
+        assert_eq!(
+            v.render_line(0)[8],
+            v.cram_rgb(1),
+            "transparent plane A shows plane B"
+        );
+        assert_eq!(
+            v.render_line(0)[16],
+            v.cram_rgb(0),
+            "both transparent → backdrop"
+        );
+    }
+
+    #[test]
+    fn priority_bit_is_decoded_but_does_not_reorder() {
+        // Push-3 boundary (RR7): a HIGH-priority plane B still loses to an opaque LOW-priority plane A —
+        // compositing is by transparency; the priority bit is decoded (into the cell/report) but not ordered.
+        let mut v = pa_fixture(false);
+        put_cell(&mut v, 0xE000, 0x8001); // B cell(0,0) red, PRIORITY set
+        put_cell(&mut v, 0xC000, 0x0002); // A cell(0,0) blue, low priority
+        assert_eq!(
+            v.render_line(0)[0],
+            v.cram_rgb(2),
+            "low-priority A wins over high-priority B (priority ordering is push 5)"
+        );
+        assert!(
+            v.plane_decoded(
+                Plane::B,
+                Some(CellRect {
+                    col: 0,
+                    row: 0,
+                    cols: 1,
+                    rows: 1
+                })
+            )[0]
+            .priority,
+            "the priority bit is still decoded"
+        );
+    }
+
+    #[test]
+    fn window_span_covers_the_configured_region() {
+        let mut v = pa_fixture(false); // H32, width 256
+        set_reg(&mut v, 0x11, 0x03); // left window, WHP=3 → [0,48)
+        set_reg(&mut v, 0x12, 0x00);
+        assert_eq!(
+            v.window_span(0, 256),
+            Some(WindowSpan {
+                start_x: 0,
+                end_x: 48,
+                full_line: false
+            })
+        );
+        set_reg(&mut v, 0x11, 0x83); // right window → [48,256)
+        assert_eq!(
+            v.window_span(0, 256),
+            Some(WindowSpan {
+                start_x: 48,
+                end_x: 256,
+                full_line: false
+            })
+        );
+        set_reg(&mut v, 0x11, 0x00);
+        set_reg(&mut v, 0x12, 0x04); // top vertical window, WVP=4 → lines 0..32 full
+        assert_eq!(
+            v.window_span(0, 256),
+            Some(WindowSpan {
+                start_x: 0,
+                end_x: 256,
+                full_line: true
+            })
+        );
+        assert_eq!(
+            v.window_span(32, 256),
+            None,
+            "below the top band → no window"
+        );
+        set_reg(&mut v, 0x12, 0x84); // bottom vertical window → lines 32.. full
+        assert_eq!(v.window_span(0, 256), None);
+        assert_eq!(
+            v.window_span(32, 256),
+            Some(WindowSpan {
+                start_x: 0,
+                end_x: 256,
+                full_line: true
+            })
+        );
+        set_reg(&mut v, 0x12, 0x00);
+        assert_eq!(v.window_span(0, 256), None, "no window configured");
+    }
+
+    #[test]
+    fn window_replaces_plane_a_and_does_not_scroll() {
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x11, 0x02); // left window WHP=2 → [0,32)
+        put_cell(&mut v, 0xA000, 0x0001); // window cell(0,0) red
+        put_cell(&mut v, 0xC000, 0x0002); // plane A cell(0,0) blue (should be replaced)
+        put_cell(&mut v, 0xC000 + 4 * 2, 0x0002); // plane A cell(4,0) blue at x=32 (outside window)
+        assert_eq!(
+            v.render_line(0)[0],
+            v.cram_rgb(1),
+            "window replaces plane A at x=0"
+        );
+        assert_eq!(
+            v.render_line(0)[32],
+            v.cram_rgb(2),
+            "plane A shows outside the window"
+        );
+        put_cell(&mut v, 0x8000, 100); // plane A h-scroll = 100
+        assert_eq!(
+            v.render_line(0)[0],
+            v.cram_rgb(1),
+            "the window does not scroll with plane A"
+        );
+    }
+
+    #[test]
+    fn r9_reuses_the_window_last_column_tile() {
+        // R9 (interim): left window + plane-A hscroll & 15 != 0 → the first 16 px of plane A right of the
+        // boundary show the window's last-column tile, not plane A's own.
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x11, 0x02); // left window [0,32) → boundary at x=32
+        put_cell(&mut v, 0xA000 + 3 * 2, 0x0001); // window last column (col 3) = red
+        put_cell(&mut v, 0xC000 + 4 * 2, 0x0002); // plane A cell(4,0) = blue (would show without the bug)
+        put_cell(&mut v, 0x8000, 4); // plane A hscroll = 4 → & 15 != 0 → R9 active
+        assert_eq!(
+            v.render_line(0)[32],
+            v.cram_rgb(1),
+            "R9: the glitched column reuses the window's last-column tile (red)"
+        );
+        put_cell(&mut v, 0x8000, 0); // hscroll aligned → no R9
+        assert_eq!(
+            v.render_line(0)[32],
+            v.cram_rgb(2),
+            "no R9 when plane-A hscroll is 16-aligned → plane A's own tile (blue)"
+        );
+    }
+
+    #[test]
+    fn leftmost_column_blank_forces_backdrop() {
+        let mut v = pa_fixture(false);
+        put_cell(&mut v, 0xC000, 0x0002); // A cell(0,0) blue → x 0..7
+        put_cell(&mut v, 0xC000 + 2, 0x0002); // A cell(1,0) blue → x 8..15
+        assert_eq!(v.render_line(0)[0], v.cram_rgb(2), "no LCB: blue at x=0");
+        set_reg(&mut v, 0x00, 0x20); // LCB (reg 0 bit 5)
+        let l = v.render_line(0);
+        let bg = v.cram_rgb(0);
+        for (x, px) in l.iter().enumerate().take(8) {
+            assert_eq!(*px, bg, "LCB blanks x={x} to backdrop");
+        }
+        assert_eq!(l[8], v.cram_rgb(2), "x=8 is unaffected by LCB");
     }
 }
