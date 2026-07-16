@@ -252,14 +252,17 @@ impl System {
         );
         out.extend_from_slice(&self.ram);
         // Z80: the live 8 KiB Z80 RAM (68000-reachable at $A00000 — real mutable state that must be in the
-        // currency) followed by the zeroed reserved register sub-block. VDP / FM / PSG are fixed all-zero
-        // placeholders (the layout is frozen; the contents fill in as each chip lands).
+        // currency) followed by the zeroed reserved register sub-block.
         out.extend_from_slice(&self.z80_ram);
         out.extend(std::iter::repeat_n(0u8, EXPORT_Z80_REGS_PLACEHOLDER));
-        out.extend(std::iter::repeat_n(
-            0u8,
-            VRAM_SIZE + CRAM_SIZE + VSRAM_SIZE + REG_COUNT,
-        ));
+        // VDP region (now LIVE): the four Oracle-hashed regions at their frozen sizes, in the state_hash
+        // order VRAM → CRAM → VSRAM → regs. This fills the previously-zeroed reserve at UNCHANGED size — the
+        // designed v1 *content* change, NOT a layout change (no version bump); see docs/export-state-v1.md.
+        out.extend_from_slice(self.vdp.vram());
+        out.extend_from_slice(self.vdp.cram());
+        out.extend_from_slice(self.vdp.vsram());
+        out.extend_from_slice(self.vdp.regs());
+        // FM / PSG remain fixed all-zero placeholders (they fill when those chips land).
         out.extend(std::iter::repeat_n(0u8, EXPORT_FM_PLACEHOLDER));
         out.extend(std::iter::repeat_n(0u8, EXPORT_PSG_PLACEHOLDER));
         debug_assert_eq!(out.len(), total);

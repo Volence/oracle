@@ -29,7 +29,7 @@ are contiguous and gap-free, in this fixed order:
 | 2 | work RAM | `0x00050` | `0x10000` / 65536 | live `$FF0000–$FFFFFF` 68000 work RAM |
 | 3 | Z80 RAM | `0x10050` | `0x2000` / 8192 | **live** `$A00000` 8 KiB Z80 RAM |
 | 4 | Z80 regs (reserved) | `0x12050` | `0x40` / 64 | all-zero; reserved for the future Z80 register file |
-| 5 | VDP (reserved) | `0x12090` | `0x100E8` / 65768 | all-zero; reserved at final size (VRAM `0x10000` + CRAM `0x80` + VSRAM `0x50` + regs 24) |
+| 5 | VDP | `0x12090` | `0x100E8` / 65768 | **live** VRAM `0x10000` + CRAM `0x80` + VSRAM `0x50` + regs 24 (state_hash order) |
 | 6 | FM (reserved) | `0x22178` | `0x200` / 512 | all-zero; YM2612 register-file scale |
 | 7 | PSG (reserved) | `0x22378` | `0x10` / 16 | all-zero; SN76489 register/latch scale |
 
@@ -53,19 +53,22 @@ In order, each little-endian:
 supervisor bit selects, and both are present. `prefetch` is the 68000's two-word prefetch queue (part of the
 architectural state at an instruction boundary). This is exactly the SingleStepTests register vocabulary.
 
-### Regions 2–3 — live memory
+### Regions 2–3, 5 — live memory
 
-Work RAM and Z80 RAM are **live** bytes copied straight from `System`. The Z80 RAM is 68000-reachable at
-`$A00000` (a store there is real mutable state), so it is in the currency and is cross-backend comparable —
-BlastEm's RSP `m` command reads it through the 68k window (`read_mem(0xA00000, 0x2000)`).
+Work RAM, Z80 RAM, and the VDP region are **live** bytes copied straight from `System`. The Z80 RAM is
+68000-reachable at `$A00000` (a store there is real mutable state), so it is in the currency and is
+cross-backend comparable — BlastEm's RSP `m` command reads it through the 68k window
+(`read_mem(0xA00000, 0x2000)`). The VDP region is the four Oracle-hashed regions (VRAM → CRAM → VSRAM →
+registers, the `state_hash` order) at the frozen sizes; it went live filling the previously-zeroed reserve at
+unchanged size — the designed v1 *content* change (no version bump, per the rule below).
 
-### Regions 4–7 — reserved
+### Regions 4, 6–7 — reserved
 
 Zeroed placeholders for chips not yet emulated in this pivot. Two flavors:
 
-- **Reserved at final size** (region 5, VDP; and region 4, Z80 regs, at generous-margin size): when the chip
-  lands, its state fills the existing zeroed bytes. That is a *content* change, **not** a layout change — it
-  does **not** bump the version.
+- **Reserved at generous-margin size** (region 4, Z80 regs): when the chip lands, its state fills the existing
+  zeroed bytes. That is a *content* change, **not** a layout change — it does **not** bump the version. (Region
+  5, VDP, was such a reserve and has now filled — the designed content change.)
 - **Reserved at register-file scale** (regions 6/7, FM/PSG): sized to the chip's addressable register file,
   not its full internal state. The full YM2612/SN76489 internal state (envelope/phase accumulators, LFO,
   timers, LFSR) exceeds these and, in the FM case, is not even readable over BlastEm's RSP (YM2612 registers
@@ -108,7 +111,7 @@ commit**) **iff the byte layout changes**:
 - the endianness changes.
 
 Do **not** bump when a reserved zeroed region fills with live bytes at unchanged size — that is a content
-change, and it is the designed path for the VDP and Z80-register reserves.
+change, and it is the designed path (the VDP region 5 filled this way; the Z80-register reserve is next).
 
 ## Anti-drift guard
 

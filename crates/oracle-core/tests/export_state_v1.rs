@@ -38,7 +38,9 @@ const SZ_FM: usize = 0x200;
 const SZ_PSG: usize = 0x10;
 
 /// The byte-exact `export_state_hash` of the fixture below. Pinned from a green run; a drift makes it fail.
-const GOLDEN_HASH: u64 = 0x19A0_5381_3097_2951;
+/// Regenerated when the VDP region (5) went live — the designed v1 *content* change (no version bump); the
+/// prior value `0x19A0_5381_3097_2951` was the all-zero-VDP-region image.
+const GOLDEN_HASH: u64 = 0x22F8_0ECF_29ED_3AD4;
 
 /// Boot the machine, run the vendored ROM for a fixed number of frames, and return the `export_state` image.
 fn fixture() -> System {
@@ -131,10 +133,9 @@ fn v1_region_semantics_are_frozen() {
         "Z80 RAM region (untouched by this ROM)"
     );
 
-    // Regions 4–7 — reserved, all zero: Z80 regs, VDP, FM, PSG.
+    // Regions 4, 6, 7 — still reserved, all zero: Z80 regs, FM, PSG.
     for (name, off, sz) in [
         ("Z80 regs", OFF_Z80_REGS, SZ_Z80_REGS),
-        ("VDP", OFF_VDP, SZ_VDP),
         ("FM", OFF_FM, SZ_FM),
         ("PSG", OFF_PSG, SZ_PSG),
     ] {
@@ -143,6 +144,24 @@ fn v1_region_semantics_are_frozen() {
             "reserved {name} region is all zero"
         );
     }
+
+    // Region 5 — VDP: now LIVE (the v1 content change). Mirrors the four Oracle-hashed regions in the
+    // state_hash order VRAM → CRAM → VSRAM → regs, at unchanged offset/size.
+    let mut vdp_bytes = Vec::with_capacity(SZ_VDP);
+    vdp_bytes.extend_from_slice(sys.vdp().vram());
+    vdp_bytes.extend_from_slice(sys.vdp().cram());
+    vdp_bytes.extend_from_slice(sys.vdp().vsram());
+    vdp_bytes.extend_from_slice(sys.vdp().regs());
+    assert_eq!(vdp_bytes.len(), SZ_VDP, "VDP region size");
+    assert_eq!(
+        &img[OFF_VDP..OFF_VDP + SZ_VDP],
+        &vdp_bytes[..],
+        "VDP region mirrors VRAM/CRAM/VSRAM/regs"
+    );
+    assert!(
+        img[OFF_VDP..OFF_VDP + SZ_VDP].iter().any(|&b| b != 0),
+        "the VDP region is live (the power-on VRAM seed is non-zero)"
+    );
 }
 
 #[test]
