@@ -24,6 +24,10 @@ pub const MCLK_PER_FRAME: u64 = MCLK_PER_LINE * LINES_PER_FRAME;
 /// transition, recon R2). Also the first non-active line.
 const VBLANK_START_LINE: u64 = 0xE0;
 
+/// SAT-cache size: 80 sprite entries × the **cached 4 bytes** of each 8-byte entry — Y (word) + size/link
+/// (word); recon R5 / RR8. X + tile/attr (the other 4 bytes) are never cached.
+const SAT_CACHE_LEN: usize = 320;
+
 /// The VDP's owned state. The four hashed regions are always allocated at their fixed hardware sizes
 /// ([`crate::state_hash`]); the `state_hash`/`export_state` currencies read straight through them, so their
 /// byte layout is frozen.
@@ -76,6 +80,21 @@ pub struct Vdp {
     sprite_collision: bool,
     /// Odd-frame flag (status bit 4). Toggled each frame when the VInt latch is set (recon R12 delivery).
     odd_frame: bool,
+    /// The SAT cache (recon R5 / RR8): 80 entries × the cached 4 bytes (Y word + size/link word), in the
+    /// same big-endian byte order as VRAM. **Real hardware state, not derivable from VRAM** — the write-
+    /// through window updates it on every VRAM write against the *current* reg-5 base, and changing reg 5
+    /// never invalidates/reloads it (the Castlevania Bloodlines stale-cache mixing). Evaluation reads only
+    /// this; render fetches X + tile/attr from VRAM at the current base. Power-on = zeros (the real cache is
+    /// undefined until the first SAT write; games/fixtures write it before it matters — documented interim).
+    /// Serialized (round-trips snapshots); it is in **neither** frozen currency (`state_hash`/`export_state`
+    /// read only VRAM/CRAM/VSRAM/regs), a v2 export-currency candidate.
+    sat_cache: Vec<u8>,
+    /// The R10 sprite-masking carry: whether the previously-rendered line ended in a sprite-pixel (dot /
+    /// pixel-budget) overflow. Seeds the next line's x=0 masking latch so a first-on-line x=0 sprite masks
+    /// (Nemesis's previous-line-dot-overflow exception; Kabuto's "previous line/frame" reach). Persists
+    /// across lines *and* frames. Real state, serialized (round-trips); not in either frozen currency.
+    /// Power-on = false. Committed by [`Vdp::render_scanline`]; the pure `render_line` seeds from it read-only.
+    sprite_dot_overflow_carry: bool,
 }
 
 impl std::fmt::Debug for Vdp {
@@ -119,6 +138,8 @@ impl Vdp {
             sprite_overflow: false,
             sprite_collision: false,
             odd_frame: false,
+            sat_cache: vec![0u8; SAT_CACHE_LEN],
+            sprite_dot_overflow_carry: false,
         }
     }
 
@@ -140,6 +161,20 @@ impl Vdp {
     /// Read-only access to the 24 VDP registers.
     pub fn regs(&self) -> &[u8; REG_COUNT] {
         &self.regs
+    }
+
+    /// Read-only access to the SAT cache (recon R5 / RR8): 80 entries × the cached 4 bytes (Y word +
+    /// size/link word), big-endian. The sprite evaluation walk reads Y/size/link from here.
+    pub fn sat_cache(&self) -> &[u8] {
+        &self.sat_cache
+    }
+
+    /// The sprite attribute table base VRAM byte address (recon R5 / RR8): `(reg $05 & mask) << 9`, mask
+    /// `0x7E` in H40 (bit 0 forced to the $400 boundary) / `0x7F` in H32 ($200 boundary). Used by both the
+    /// write-through window (real state) and the render-time X/tile fetch.
+    pub fn sat_base(&self) -> usize {
+        let mask = if self.h40() { 0x7E } else { 0x7F };
+        ((self.regs[0x05] & mask) as usize) << 9
     }
 
     /// Mutable access to VRAM (used by tests to perturb state; the data-port write path lands in a later
@@ -295,6 +330,26 @@ impl Vdp {
         }
     }
 
+    /// Store one byte into VRAM **and run the SAT-cache write-through** (recon R5 / RR8). Every VRAM byte
+    /// write is checked against the SAT window computed from the *current* reg-5 base: a byte landing in the
+    /// cached half (bytes 0..4 = Y + size/link) of an entry within the window mirrors into the cache. The
+    /// check is byte-granular, so odd-address writes update exactly the byte they touch (RR8 open-remainder
+    /// 2). The H32 window covers the first 64 entries only (`base+512`); H40 covers all 80 (`base+640`), so
+    /// entries 64–79 never refresh in H32 — a faithful R5 detail. Changing reg 5 does **not** invalidate the
+    /// cache (there is no other refresh path) — the Bloodlines stale-cache behavior.
+    fn write_vram_byte(&mut self, addr: usize, byte: u8) {
+        let a = addr & (VRAM_SIZE - 1);
+        self.vram[a] = byte;
+        let base = self.sat_base();
+        let entries = if self.h40() { 80 } else { 64 };
+        let off = a.wrapping_sub(base);
+        let entry = off / 8;
+        let byte_in_entry = off % 8;
+        if byte_in_entry < 4 && entry < entries {
+            self.sat_cache[entry * 4 + byte_in_entry] = byte;
+        }
+    }
+
     /// Write `w` to the data-port target at the current address (recon R1/R3), masked/laid out to match the
     /// stored `state_hash` byte form: VRAM byte-granular with the odd-address byte-swap; CRAM to 9 bits
     /// (`0x0EEE`); VSRAM to 11 bits (`0x07FF`); CRAM/VSRAM big-endian.
@@ -303,9 +358,11 @@ impl Vdp {
             Target::Vram => {
                 // VRAM odd-address byte-swap (recon R3): high byte → `addr`, low byte → `addr ^ 1`, so an
                 // odd address swaps the two bytes of the word. (Implementation-time pin, unit-tested below.)
+                // Both bytes route through `write_vram_byte` so the SAT-cache write-through sees every byte
+                // (recon R5 / RR8; byte-granular — RR8 open-remainder 2, odd-address SAT writes).
                 let a = self.addr as usize;
-                self.vram[a & (VRAM_SIZE - 1)] = (w >> 8) as u8;
-                self.vram[(a ^ 1) & (VRAM_SIZE - 1)] = (w & 0xFF) as u8;
+                self.write_vram_byte(a & (VRAM_SIZE - 1), (w >> 8) as u8);
+                self.write_vram_byte((a ^ 1) & (VRAM_SIZE - 1), (w & 0xFF) as u8);
             }
             Target::Cram => {
                 let masked = w & 0x0EEE; // 9-bit colour (---- BBB- GGG- RRR-)
@@ -1100,5 +1157,139 @@ mod tests {
         assert_eq!(ramp3(0), 0);
         assert_eq!(ramp3(7), 255);
         assert_eq!(ramp3(4), (4u16 * 255 / 7) as u8);
+    }
+
+    // --- SAT cache write-through (recon R5 / RR8) --------------------------------------------------------
+
+    #[test]
+    fn sat_base_masks_reg5_bit0_in_h40() {
+        let mut v = fresh();
+        v.regs[0x05] = 0x7F;
+        assert_eq!(
+            v.sat_base(),
+            0x7F << 9,
+            "H32 keeps reg5 bit 0 ($200 boundary)"
+        );
+        v.regs[0x0C] = 0x81; // H40
+        assert_eq!(
+            v.sat_base(),
+            0x7E << 9,
+            "H40 masks reg5 bit 0 ($400 boundary)"
+        );
+    }
+
+    #[test]
+    fn sat_cache_write_through_mirrors_only_the_cached_half() {
+        let mut v = fresh();
+        v.regs[0x05] = 0x10; // SAT base = 0x10 << 9 = 0x2000 (H32)
+        v.code = 0x01; // VRAM write
+        v.addr = 0x2000; // entry 0, Y word
+        v.data_write(0x0142);
+        assert_eq!(
+            &v.sat_cache[0..4],
+            &[0x01, 0x42, 0x00, 0x00],
+            "Y word mirrored"
+        );
+        v.addr = 0x2002; // entry 0, size/link word
+        v.data_write(0x0503);
+        assert_eq!(
+            &v.sat_cache[0..4],
+            &[0x01, 0x42, 0x05, 0x03],
+            "size/link mirrored"
+        );
+        v.addr = 0x2004; // entry 0, tile/attr word — the render-fetched half, NOT cached
+        v.data_write(0xBEEF);
+        assert_eq!(
+            &v.sat_cache[0..4],
+            &[0x01, 0x42, 0x05, 0x03],
+            "tile/attr not cached"
+        );
+        v.addr = 0x1000; // outside the SAT window
+        v.data_write(0xAAAA);
+        assert!(
+            v.sat_cache[4..].iter().all(|&b| b == 0),
+            "out-of-window write ignored"
+        );
+    }
+
+    #[test]
+    fn sat_cache_write_through_is_byte_granular_on_odd_addresses() {
+        // RR8 open-remainder 2: an odd-address VRAM write (byte-swapped, recon R3) updates the swapped cache
+        // bytes — the write-through is byte-granular.
+        let mut v = fresh();
+        v.regs[0x05] = 0x10; // base 0x2000
+        v.code = 0x01;
+        v.addr = 0x2001; // odd → hi byte to 0x2001, lo byte to 0x2000
+        v.data_write(0x1234);
+        assert_eq!(
+            &v.sat_cache[0..2],
+            &[0x34, 0x12],
+            "odd-address write updates the swapped cache bytes"
+        );
+    }
+
+    #[test]
+    fn changing_reg5_does_not_invalidate_the_cache() {
+        // Recon R5 / Castlevania Bloodlines: reg5 changes never reload/invalidate the cache.
+        let mut v = fresh();
+        v.regs[0x05] = 0x10; // base 0x2000
+        v.code = 0x01;
+        v.addr = 0x2000;
+        v.data_write(0x0142); // cache entry 0 Y = 0x0142
+        v.regs[0x05] = 0x20; // move the SAT base to 0x4000
+        assert_eq!(
+            &v.sat_cache[0..2],
+            &[0x01, 0x42],
+            "the stale cache is kept across a reg5 change"
+        );
+        v.addr = 0x2000; // a write at the OLD base no longer hits the (moved) window
+        v.data_write(0x0999);
+        assert_eq!(
+            &v.sat_cache[0..2],
+            &[0x01, 0x42],
+            "old-base writes miss the window"
+        );
+        v.addr = 0x4000; // a write at the NEW base does update the cache
+        v.data_write(0x0777);
+        assert_eq!(
+            &v.sat_cache[0..2],
+            &[0x07, 0x77],
+            "new-base writes update the cache"
+        );
+    }
+
+    #[test]
+    fn sat_cache_and_carry_survive_a_bincode_round_trip() {
+        let mut v = fresh();
+        v.sat_cache[7] = 0xAB;
+        v.sat_cache[SAT_CACHE_LEN - 1] = 0xCD;
+        v.sprite_dot_overflow_carry = true;
+        let bytes = bincode::encode_to_vec(&v, bincode::config::standard()).unwrap();
+        let (back, _): (Vdp, usize) =
+            bincode::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
+        assert_eq!(v, back, "the SAT cache + carry round-trip");
+        assert_eq!(back.sat_cache[7], 0xAB);
+        assert_eq!(back.sat_cache[SAT_CACHE_LEN - 1], 0xCD);
+        assert!(back.sprite_dot_overflow_carry);
+    }
+
+    #[test]
+    fn sat_cache_and_carry_are_not_in_the_hashed_regions() {
+        // The currency-neutrality headline: the new fields are outside the four Oracle-hashed regions, so
+        // the `state_hash` is byte-identical no matter what they hold (the export golden is proven by the
+        // export_state_v1 test staying green).
+        let a = fresh();
+        let mut b = fresh();
+        b.sat_cache[0] = 0xAB;
+        b.sprite_dot_overflow_carry = true;
+        assert_eq!(a.vram(), b.vram());
+        assert_eq!(a.cram(), b.cram());
+        assert_eq!(a.vsram(), b.vsram());
+        assert_eq!(a.regs(), b.regs());
+        assert_eq!(
+            crate::state_hash::StateHash::compute(a.vram(), a.cram(), a.vsram(), a.regs()),
+            crate::state_hash::StateHash::compute(b.vram(), b.cram(), b.vsram(), b.regs()),
+            "the SAT cache + carry are outside the Oracle state_hash currency"
+        );
     }
 }

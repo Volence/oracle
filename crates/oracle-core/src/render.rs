@@ -52,14 +52,49 @@ pub struct CellRect {
     pub rows: u16,
 }
 
-/// Which layer produced a resolved screen pixel (recon RR7). Sprites join this enum in push 4; the
-/// shadow/highlight operators are push 5.
+/// A decoded sprite attribute-table entry (design §4 `sprites_decoded`, recon R5 / RR8). Y / size / link
+/// come from the **SAT cache**; X / tile / attributes from **VRAM at the current reg-5 base** — so
+/// `cache_divergence` exposes the stale-cache state (the cached Y/size/link disagree with VRAM at the new
+/// base after a reg-5 change without a rewrite — the Castlevania Bloodlines mixing).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct SpriteDecoded {
+    /// SAT index 0..=79 (the slot, not the link-walk position).
+    pub index: u8,
+    /// Screen Y = `(Yfield & 0x3FF) − 128` (cached).
+    pub y: i16,
+    /// Screen X = `(Xfield & 0x1FF) − 128` (VRAM at the current base).
+    pub x: i16,
+    /// Width in cells, 1..=4 (cached size bits 3–2 + 1).
+    pub width_cells: u8,
+    /// Height in cells, 1..=4 (cached size bits 1–0 + 1).
+    pub height_cells: u8,
+    /// Link — the next sprite index (cached, bits 6–0).
+    pub link: u8,
+    /// Base tile index (VRAM attribute word, recon RR1/RR8).
+    pub tile: u16,
+    /// Palette line 0–3 (VRAM attribute word).
+    pub palette: u8,
+    /// Horizontal flip (VRAM attribute word).
+    pub hflip: bool,
+    /// Vertical flip (VRAM attribute word).
+    pub vflip: bool,
+    /// Priority bit (VRAM attribute word; decoded + reported, the ordering it drives is push 5).
+    pub priority: bool,
+    /// The cached Y/size/link disagree with VRAM at the current reg-5 base — the stale-cache state made
+    /// visible (recon R5). False when the cache and VRAM are coherent.
+    pub cache_divergence: bool,
+}
+
+/// Which layer produced a resolved screen pixel (recon RR7). The `Sprite` variant carries the winning SAT
+/// index; the shadow/highlight operators are push 5.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Layer {
     Backdrop,
     PlaneB,
     PlaneA,
     Window,
+    /// A sprite pixel; the SAT index of the winning sprite (push 4).
+    Sprite(u8),
 }
 
 /// One resolved screen pixel + its provenance. Attribution **is** the render computation (design §1): the
@@ -232,6 +267,12 @@ impl Vdp {
         }
     }
 
+    /// Read a big-endian word from VRAM at byte address `addr` (wrapped into the 64 KiB region).
+    fn vram_word(&self, addr: usize) -> u16 {
+        let a = addr & (VRAM_SIZE - 1);
+        ((self.vram()[a] as u16) << 8) | self.vram()[(a + 1) & (VRAM_SIZE - 1)] as u16
+    }
+
     /// Read one plane/window nametable cell at grid position (`col`, `row`) given its `base` and row `stride`
     /// (both in the plane's own units); the grid wraps modulo the plane dimensions the caller passes via
     /// `stride`/`rows`. Returns the decoded [`Cell`] (recon RR1).
@@ -272,6 +313,45 @@ impl Vdp {
             }
         }
         out
+    }
+
+    /// Decode all 80 SAT entries (design §4 `sprites_decoded`, recon R5 / RR8). Y/size/link come from the
+    /// **SAT cache**; X/tile/attr from **VRAM at the current reg-5 base** — with a per-entry
+    /// `cache_divergence` flag exposing the stale-cache state. Pure introspection — recomputed on demand.
+    pub fn sprites_decoded(&self) -> Vec<SpriteDecoded> {
+        let base = self.sat_base();
+        let cache = self.sat_cache();
+        (0..80)
+            .map(|i| {
+                // Cached half (Y + size/link), big-endian.
+                let y_field = (((cache[i * 4] as u16) << 8) | cache[i * 4 + 1] as u16) & 0x03FF;
+                let size = cache[i * 4 + 2];
+                let link = cache[i * 4 + 3] & 0x7F;
+                // Render-fetched half from VRAM at the current base.
+                let slot = base + i * 8;
+                let cell = decode_cell(self.vram_word(slot + 4));
+                let x_field = self.vram_word(slot + 6) & 0x01FF;
+                // Divergence: cached Y/size/link vs the VRAM bytes at the current base (recon R5 stale-cache).
+                let v_y = self.vram_word(slot) & 0x03FF;
+                let v_size = self.vram()[(slot + 2) & (VRAM_SIZE - 1)];
+                let v_link = self.vram()[(slot + 3) & (VRAM_SIZE - 1)] & 0x7F;
+                let cache_divergence = y_field != v_y || size != v_size || link != v_link;
+                SpriteDecoded {
+                    index: i as u8,
+                    y: y_field as i16 - 128,
+                    x: x_field as i16 - 128,
+                    width_cells: (size >> 2 & 0x03) + 1,
+                    height_cells: (size & 0x03) + 1,
+                    link,
+                    tile: cell.tile,
+                    palette: cell.palette,
+                    hflip: cell.hflip,
+                    vflip: cell.vflip,
+                    priority: cell.priority,
+                    cache_divergence,
+                }
+            })
+            .collect()
     }
 
     // --- Scanline rendering (design §3 steps 1–3; recon RR2/RR4/RR5/RR6/R8/RR7) ---------------------------
@@ -1131,6 +1211,64 @@ mod tests {
         assert!(
             r.pixels.iter().all(|p| p.layer == Layer::Backdrop),
             "every pixel is backdrop when display is off"
+        );
+    }
+
+    // --- design §4 / RR8 / R5: sprites_decoded -----------------------------------------------------------
+
+    /// Write one SAT entry's four words through the data port (so the SAT-cache write-through runs), with
+    /// the base already set in reg 5 and autoinc = 2.
+    fn write_sprite(v: &mut Vdp, index: usize, y: u16, sizelink: u16, attr: u16, x: u16) {
+        let base = v.sat_base();
+        setup_write(v, 0x01, (base + index * 8) as u16);
+        v.data_write(y);
+        v.data_write(sizelink);
+        v.data_write(attr);
+        v.data_write(x);
+    }
+
+    #[test]
+    fn sprites_decoded_reads_cache_for_y_size_link_and_vram_for_x_tile() {
+        let mut v = fresh();
+        v.vram_mut().fill(0);
+        set_reg(&mut v, 0x0F, 2); // autoinc 2
+        set_reg(&mut v, 0x05, 0x10); // SAT base 0x2000
+                                     // Y=0x0100 (screen 128), size=0x05 (2×2), link=3, attr=0x8123 (pri, tile 0x123), X=0x00C8 (screen 72).
+        write_sprite(&mut v, 0, 0x0100, 0x0503, 0x8123, 0x00C8);
+        let s = v.sprites_decoded();
+        assert_eq!(s.len(), 80, "all 80 entries decoded");
+        let s0 = s[0];
+        assert_eq!(s0.y, 128, "screen Y = Yfield - 128 (cached)");
+        assert_eq!(s0.x, 72, "screen X = Xfield - 128 (VRAM)");
+        assert_eq!(
+            (s0.width_cells, s0.height_cells),
+            (2, 2),
+            "size 0x05 → 2×2 cells"
+        );
+        assert_eq!(s0.link, 3);
+        assert_eq!(s0.tile, 0x123);
+        assert!(s0.priority);
+        assert!(
+            !s0.cache_divergence,
+            "cache and VRAM coherent → no divergence"
+        );
+    }
+
+    #[test]
+    fn sprites_decoded_flags_cache_divergence_after_a_reg5_change() {
+        // Recon R5 (Bloodlines): move the SAT base without rewriting — the cache keeps the old Y/size/link
+        // while VRAM at the new base reads different, so the entry flags cache_divergence.
+        let mut v = fresh();
+        v.vram_mut().fill(0);
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x05, 0x10); // base 0x2000
+        write_sprite(&mut v, 0, 0x0100, 0x0503, 0x8123, 0x00C8);
+        set_reg(&mut v, 0x05, 0x20); // move base to 0x4000 (VRAM there is all zero)
+        let s0 = v.sprites_decoded()[0];
+        assert_eq!(s0.y, 0x0100 - 128, "Y is still the stale cached value");
+        assert!(
+            s0.cache_divergence,
+            "cached Y/size/link disagree with VRAM at the new base"
         );
     }
 }
