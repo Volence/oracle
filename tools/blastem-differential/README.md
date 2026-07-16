@@ -37,9 +37,36 @@ client. We drive it with a small clean-room RSP client (`rsp.py`): read/write th
 | `harness.asm` | clean-room RAM-dispatch harness ROM (the instrument) |
 | `build_rom.sh` | assemble `harness.bin` via the native `asl`/`p2bin` (aeon tools) |
 | `run_stop_trace.py` | the STOP×trace 2×2 experiment (+ NOP controls) |
+| `nightly_differential.py` | the Push C nightly job — instruction-boundary state differential |
 | `known_differences.py` | ledger the nightly differential imports to avoid false alarms |
 
 `harness.bin` / `harness.lst` are committed pre-built; regenerate with `build_rom.sh`.
+
+## Nightly differential (Push C)
+
+`nightly_differential.py` runs a fixed **register-only** 68000 sequence (a register-init
+prologue + an ALU/shift/logic body) in both emulators and compares the **architectural
+state at every instruction boundary** (d0-7, a0-7, pc, sr):
+
+- oracle-next side: the `differential_trace` example (`cargo run --example
+  differential_trace -- <rom> <n>`) emits one JSON state per boundary.
+- BlastEm side: breakpoints + `continue` over the RSP stub (the reliable path — the stub's
+  single-step `s` is unstable, and it crashes on register writes, so the ROM prologue aligns
+  the register file instead of `P`).
+
+Only architectural state is compared. **Timing is never a state divergence** — SST-model
+cycles vs BlastEm cycles legitimately differ and are xfail-manifest entries (D8). Scenarios in
+`known_differences.py` (e.g. STOP×trace) are treated as expected, not regressions. It is an
+*instrument, not a merge gate*: it prints `SKIPPED` and exits 0 where BlastEm/xvfb are absent
+(GitHub-hosted CI), and runs nightly via `.github/workflows/nightly-differential.yml`.
+
+First recorded result (2026-07-16, local, BlastEm 0.6.2): **PASS — 13 instruction boundaries
+agree on all architectural state.**
+
+```bash
+cd tools/blastem-differential
+python3 nightly_differential.py           # builds the ROM, runs oracle-next + BlastEm, diffs
+```
 
 ## Reproduce
 

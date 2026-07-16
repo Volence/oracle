@@ -257,6 +257,18 @@ impl System {
         h
     }
 
+    /// Read-only access to the 68000 register file (for the differential harness / debuggers).
+    pub fn cpu_regs(&self) -> &Registers {
+        &self.cpu.regs
+    }
+
+    /// Step the CPU exactly one instruction (or exception entry) over the Mega Drive bus, returning the CPU
+    /// cycles it took. The differential harness drives this to compare architectural state at instruction
+    /// boundaries; it does **not** advance the master clock (the caller owns time).
+    pub fn step_instruction(&mut self) -> u32 {
+        self.step_cpu(&mut ())
+    }
+
     /// Read-only access to the 68000 work RAM.
     pub fn ram(&self) -> &[u8] {
         &self.ram

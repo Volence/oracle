@@ -1,0 +1,34 @@
+name: Nightly BlastEm differential
+
+# The BlastEm-over-the-bus behavioral differential (integration-pivot Push C, point 7). An *instrument*,
+# not a merge gate: it compares oracle-next against real BlastEm at instruction boundaries and never blocks
+# a merge. Timing differences are xfail-manifest entries (compared separately), never state divergences;
+# `known_differences.py` gates the STOP×trace cells. BlastEm is driven strictly as a black-box GDB-RSP
+# oracle (clean-room — its source is never opened).
+#
+# GitHub-hosted runners do not ship the BlastEm binary, so the driver prints SKIPPED and exits 0 there;
+# point $BLASTEM at a binary (or run on a self-hosted runner that has it) to get real comparisons.
+
+on:
+  schedule:
+    - cron: "0 7 * * *" # 07:00 UTC nightly
+  workflow_dispatch: {}
+
+jobs:
+  differential:
+    name: Instruction-boundary differential
+    runs-on: ubuntu-latest
+    # Non-gating: this is an instrument. A real divergence is reported (job fails) but never blocks CI on
+    # other branches; scheduled runs surface it for review.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@v2
+      - name: Install xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+      - name: Build the differential tracer
+        run: cargo build --release --example differential_trace -p oracle-core
+      - name: Run the nightly differential
+        run: python3 tools/blastem-differential/nightly_differential.py
