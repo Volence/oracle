@@ -1301,7 +1301,8 @@ pub struct MicroState {
     ops: [MicroOp; MAX_OPS],
     len: u8,
     step: u8,
-    /// Master cycles consumed by the micro-ops executed so far (the instruction total once done).
+    /// CPU cycles consumed by the micro-ops executed so far (the instruction total once done). NOT master
+    /// clock: the one CPU-cycle → mclk (×7) conversion site is `System::run_until`.
     cycles: u32,
     scratch: [u32; SCRATCH_SLOTS],
     /// The original opcode word this recipe was decoded from (set by [`decode`](super::decode::decode);
