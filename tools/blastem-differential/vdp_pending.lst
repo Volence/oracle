@@ -1,0 +1,314 @@
+ AS V1.42 Beta [Bld 212] - Source File vdp_pending.asm - Page 1 - 07/16/2026 01:08:46 PM
+
+
+       1/       0 :                     ; ---------------------------------------------------------------------------
+       2/       0 :                     ; VDP control-port pending-toggle experiment ROM (clean-room, authored here).
+       3/       0 :                     ;
+       4/       0 :                     ; Question (VDP recon R1, open cell): after the FIRST word of a two-word VDP
+       5/       0 :                     ; command is written to $C00004, which accesses CLEAR the first/second-write
+       6/       0 :                     ; toggle? Permitted docs pin "data-port write clears" (Kabuto) and are silent
+       7/       0 :                     ; on control-port (status) reads and HV-counter reads; the folklore claim
+       8/       0 :                     ; ("status read clears the flag") exists only in non-permitted docs.
+       9/       0 :                     ;
+      10/       0 :                     ; Method: per cell, arm the toggle with the first word of a VRAM-write command
+      11/       0 :                     ; for $0200, apply the probe, then write the AMBIGUOUS word $4300:
+      12/       0 :                     ;   - toggle still armed  -> $4300 is the SECOND word (CD5-2=0, A15-14=0):
+      13/       0 :                     ;                            completes the VRAM write @ $0200
+      14/       0 :                     ;   - toggle cleared      -> $4300 is a FIRST word (CD1-0=01, A13-0=$0300):
+      15/       0 :                     ;                            arms a VRAM write @ $0300
+      16/       0 :                     ; A data-port write of $BBBB then lands at $0200 (armed) or $0300 (cleared) —
+      17/       0 :                     ; both interpretations are writes, so no read-with-write-target lockup hazard.
+      18/       0 :                     ; Sentinels $AAAA/$1111/$2222 pre-fill $0100/$0200/$0300; results are read back
+      19/       0 :                     ; through the data port into work RAM for the RSP driver.
+      20/       0 :                     ;
+      21/       0 :                     ; Control block (driver writes before `c`):
+      22/       0 :                     ;   $FF9000.b  probe selector: 0 -> none (control: pending persists)
+      23/       0 :                     ;                              1 -> status read  (move.w (a5),d0)
+      24/       0 :                     ;                              2 -> HV counter read ($C00008)
+      25/       0 :                     ;                              3 -> data-port write $CCCC (Kabuto predicts clear)
+      26/       0 :                     ;
+      27/       0 :                     ; Observable RAM:
+      28/       0 :                     ;   $FF8000.w VRAM[$0100]  (sentinel check, expect $AAAA)
+      29/       0 :                     ;   $FF8002.w VRAM[$0200]
+      30/       0 :                     ;   $FF8004.w VRAM[$0300]
+      31/       0 :                     ;   $FF8006.w VRAM[$0202]  (catches the sel-3 "data write did NOT clear" case)
+      32/       0 :                     ;   $FF8008.w the probe's read value (status / HV), $0000 for sel 0/3
+      33/       0 :                     ;   $FF8010.w done marker $C0DE
+      34/       0 :                     ; ---------------------------------------------------------------------------
+      35/       0 :                             cpu     68000
+      36/       0 :                             padding off
+      37/       0 :                             org     $000000
+      38/       0 :                     
+      39/       0 :                     ; ---- Exception vector table (64 vectors) ----
+      40/       0 : 00FF 0000                   dc.l    $00FF0000               ; 0  initial SSP
+      41/       4 : 0000 0200                   dc.l    Init                    ; 1  reset PC
+      42/       8 :                             rept    62
+      43/       8 :                             dc.l    GenericH                ; 2..63
+      44/       8 :                             endm
+      43/       8 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/       C : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      10 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      14 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      18 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      1C : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      20 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      24 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      28 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      2C : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      30 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      34 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      38 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      3C : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      40 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      44 : 0000 02D4                   dc.l    GenericH                ; 2..63
+ AS V1.42 Beta [Bld 212] - Source File vdp_pending.asm - Page 2 - 07/16/2026 01:08:46 PM
+
+
+      43/      48 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      4C : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      50 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      54 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      58 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      5C : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      60 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      64 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      68 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      6C : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      70 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      74 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      78 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      7C : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      80 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      84 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      88 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      8C : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      90 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      94 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      98 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      9C : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      A0 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      A4 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      A8 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      AC : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      B0 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      B4 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      B8 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      BC : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      C0 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      C4 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      C8 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      CC : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      D0 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      D4 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      D8 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      DC : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      E0 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      E4 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      E8 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      EC : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      F0 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      F4 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      F8 : 0000 02D4                   dc.l    GenericH                ; 2..63
+      43/      FC : 0000 02D4                   dc.l    GenericH                ; 2..63
+      45/     100 :                     
+      46/     100 :                     ; ---- Minimal Mega Drive header at $100 ----
+      47/     100 :                             org     $000100
+      48/     100 : 5345 4741 2047              dc.b    "SEGA GENESIS    "
+              106 : 454E 4553 4953 
+              10C : 2020 2020          
+      49/     110 : 2843 2948 4152              dc.b    "(C)HARNESS 2026.JUL "
+              116 : 4E45 5353 2032 
+              11C : 3032 362E 4A55 
+              122 : 4C20             
+      50/     124 : 5644 5020 5045              dc.b    "VDP PENDING-TOGGLE EXPERIMENT ROM                 "
+              12A : 4E44 494E 472D 
+              130 : 544F 4747 4C45 
+              136 : 2045 5850 4552 
+ AS V1.42 Beta [Bld 212] - Source File vdp_pending.asm - Page 3 - 07/16/2026 01:08:46 PM
+
+
+              13C : 494D 454E 5420 
+              142 : 524F 4D20 2020 
+              148 : 2020 2020 2020 
+              14E : 2020 2020 2020 
+              154 : 2020             
+      51/     156 : 5644 5020 5045              dc.b    "VDP PENDING-TOGGLE EXPERIMENT ROM                 "
+              15C : 4E44 494E 472D 
+              162 : 544F 4747 4C45 
+              168 : 2045 5850 4552 
+              16E : 494D 454E 5420 
+              174 : 524F 4D20 2020 
+              17A : 2020 2020 2020 
+              180 : 2020 2020 2020 
+              186 : 2020             
+      52/     188 : 474D 2030 3030              dc.b    "GM 00000000-00"
+              18E : 3030 3030 302D 
+              194 : 3030             
+      53/     196 : 0000                        dc.w    $0000
+      54/     198 : 4A20 2020 2020              dc.b    "J               "
+              19E : 2020 2020 2020 
+              1A4 : 2020 2020          
+      55/     1A8 : 0000 0000                   dc.l    $00000000
+      56/     1AC : 0003 FFFF                   dc.l    $0003FFFF
+      57/     1B0 : 00FF 0000                   dc.l    $00FF0000
+      58/     1B4 : 00FF FFFF                   dc.l    $00FFFFFF
+      59/     1B8 : 2020 2020 2020              dc.b    "                        "
+              1BE : 2020 2020 2020 
+              1C4 : 2020 2020 2020 
+              1CA : 2020 2020 2020    
+      60/     1D0 : 2020 2020 2020              dc.b    "                        "
+              1D6 : 2020 2020 2020 
+              1DC : 2020 2020 2020 
+              1E2 : 2020 2020 2020    
+      61/     1E8 : 4A55 4520 2020              dc.b    "JUE             "
+              1EE : 2020 2020 2020 
+              1F4 : 2020 2020          
+      62/     1F8 :                     
+      63/     1F8 :                     ; ---- Entry ----
+      64/     200 :                             org     $000200
+      65/     200 :                     Init:
+      66/     200 : 2E7C 00FF 7000              movea.l #$00FF7000,a7           ; SSP in work RAM
+> > > vdp_pending.asm(67):9: warning: privileged instruction
+      67/     206 : 46FC 2700                   move.w  #$2700,sr               ; supervisor, all interrupts masked
+      68/     20A :                     
+      69/     20A :                             ; TMSS unlock (harmless on pre-TMSS models)
+      70/     20A : 1039 00A1 0001              move.b  $00A10001,d0
+      71/     210 : 0200 000F                   andi.b  #$0F,d0
+      72/     214 : 670A                        beq.s   NoTmss
+      73/     216 : 23FC 5345 4741              move.l  #$53454741,$00A14000    ; 'SEGA'
+              21C : 00A1 4000          
+      74/     220 :                     NoTmss:
+      75/     220 : 2A7C 00C0 0004              movea.l #$00C00004,a5           ; VDP control port
+      76/     226 : 287C 00C0 0000              movea.l #$00C00000,a4           ; VDP data port
+      77/     22C :                     
+      78/     22C :                             ; Minimal VDP init: mode 5, display off, no interrupts, autoincrement 2
+      79/     22C : 3ABC 8004                   move.w  #$8004,(a5)             ; reg 0: no HINT, no HV latch
+      80/     230 : 3ABC 8104                   move.w  #$8104,(a5)             ; reg 1: mode 5, display off, no VINT, no DMA
+      81/     234 : 3ABC 8F02                   move.w  #$8F02,(a5)             ; reg 15: autoincrement 2
+      82/     238 :                     
+      83/     238 :                             ; Sentinels: VRAM[$0100]=$AAAA, [$0200]=$1111, [$0300]=$2222
+ AS V1.42 Beta [Bld 212] - Source File vdp_pending.asm - Page 4 - 07/16/2026 01:08:46 PM
+
+
+      84/     238 : 3ABC 4100                   move.w  #$4100,(a5)
+      85/     23C : 3ABC 0000                   move.w  #$0000,(a5)
+      86/     240 : 38BC AAAA                   move.w  #$AAAA,(a4)
+      87/     244 : 3ABC 4200                   move.w  #$4200,(a5)
+      88/     248 : 3ABC 0000                   move.w  #$0000,(a5)
+      89/     24C : 38BC 1111                   move.w  #$1111,(a4)
+      90/     250 : 3ABC 4300                   move.w  #$4300,(a5)
+      91/     254 : 3ABC 0000                   move.w  #$0000,(a5)
+      92/     258 : 38BC 2222                   move.w  #$2222,(a4)
+      93/     25C :                     
+      94/     25C :                             ; ---- Arm the toggle: FIRST word of "VRAM write @ $0200" ----
+      95/     25C : 3ABC 4200                   move.w  #$4200,(a5)
+      96/     260 :                     
+      97/     260 :                             ; ---- Probe (per selector) ----
+      98/     260 : 7000                        moveq   #0,d0
+      99/     262 : 1238 9000                   move.b  $00FF9000,d1
+     100/     266 : 0C01 0001                   cmpi.b  #1,d1
+     101/     26A : 670E                        beq.s   ProbeStatus
+     102/     26C : 0C01 0002                   cmpi.b  #2,d1
+     103/     270 : 670C                        beq.s   ProbeHv
+     104/     272 : 0C01 0003                   cmpi.b  #3,d1
+     105/     276 : 670E                        beq.s   ProbeData
+     106/     278 : 6010                        bra.s   ProbeDone               ; sel 0: no probe
+     107/     27A :                     ProbeStatus:
+     108/     27A : 3015                        move.w  (a5),d0                 ; status read
+     109/     27C : 600C                        bra.s   ProbeDone
+     110/     27E :                     ProbeHv:
+     111/     27E : 3039 00C0 0008              move.w  $00C00008,d0            ; HV counter read
+     112/     284 : 6004                        bra.s   ProbeDone
+     113/     286 :                     ProbeData:
+     114/     286 : 38BC CCCC                   move.w  #$CCCC,(a4)             ; data-port write (lands @ live addr $0200)
+     115/     28A :                     ProbeDone:
+     116/     28A : 31C0 8008                   move.w  d0,$00FF8008            ; record the probe's read value
+     117/     28E :                     
+     118/     28E :                             ; ---- Ambiguous word + discriminator write ----
+     119/     28E : 3ABC 4300                   move.w  #$4300,(a5)             ; word2 (completes @$0200) or word1 (arms @$0300)
+     120/     292 : 38BC BBBB                   move.w  #$BBBB,(a4)             ; lands where the toggle state says
+     121/     296 :                     
+     122/     296 :                             ; ---- Force the toggle to a known-clean state before readback ----
+     123/     296 :                             ; If armed, the first $8F02 is consumed as a second word (CD5-2=0 -> no
+     124/     296 :                             ; DMA hazard) and cleans the toggle; the second is then a real register
+     125/     296 :                             ; write (autoinc 2). If already clean, both are register writes.
+     126/     296 : 3ABC 8F02                   move.w  #$8F02,(a5)
+     127/     29A : 3ABC 8F02                   move.w  #$8F02,(a5)
+     128/     29E :                     
+     129/     29E :                             ; ---- Read back VRAM $0100/$0200/$0300/$0202 into work RAM ----
+     130/     29E : 207C 00FF 8000              movea.l #$00FF8000,a0
+     131/     2A4 : 3ABC 0100                   move.w  #$0100,(a5)             ; VRAM read @ $0100 (CD=0000)
+     132/     2A8 : 3ABC 0000                   move.w  #$0000,(a5)
+     133/     2AC : 30D4                        move.w  (a4),(a0)+
+     134/     2AE : 3ABC 0200                   move.w  #$0200,(a5)
+     135/     2B2 : 3ABC 0000                   move.w  #$0000,(a5)
+     136/     2B6 : 30D4                        move.w  (a4),(a0)+
+     137/     2B8 : 3ABC 0300                   move.w  #$0300,(a5)
+     138/     2BC : 3ABC 0000                   move.w  #$0000,(a5)
+     139/     2C0 : 30D4                        move.w  (a4),(a0)+
+     140/     2C2 : 3ABC 0202                   move.w  #$0202,(a5)
+     141/     2C6 : 3ABC 0000                   move.w  #$0000,(a5)
+     142/     2CA : 30D4                        move.w  (a4),(a0)+
+     143/     2CC :                     
+ AS V1.42 Beta [Bld 212] - Source File vdp_pending.asm - Page 5 - 07/16/2026 01:08:46 PM
+
+
+     144/     2CC : 31FC C0DE 8010              move.w  #$C0DE,$00FF8010        ; done marker
+     145/     2D2 :                     Done:
+     146/     2D2 : 60FE                        bra     Done
+     147/     2D4 :                     
+     148/     2D4 :                     ; ---- Generic handler: mark + halt ----
+     149/     2D4 :                     GenericH:
+     150/     2D4 : 31FC DEAD 8010              move.w  #$DEAD,$00FF8010
+     151/     2DA :                     GenHalt:
+     152/     2DA : 60FE                        bra     GenHalt
+     153/     2DC :                     
+     154/     2DC :                             end
+ AS V1.42 Beta [Bld 212] - Source File vdp_pending.asm - Page 6 - 07/16/2026 01:08:46 PM
+
+
+  Symbol Table (* = unused):
+  --------------------------
+
+*ARCHITECTURE :                                      "x86_64-unknown-linux" - |
+*BIGENDIAN :                      0 - | *BRANCHEXT :                      0 - |
+*CASESENSITIVE :                  1 - | *COMPMODE :                       0 - |
+*CONSTPI :        3.141592653589793 - | *CUSTOM :                         0 - |
+*DATE :                "07/16/2026" - |  Done :                         2D2 C |
+*FALSE :                          0 - | *FULLPMMU :                       1 - |
+ GenHalt :                      2DA C |  GenericH :                     2D4 C |
+*HAS64 :                          1 - | *HASDSP :                         0 - |
+*HASFPU :                         0 - | *HASPMMU :                        0 - |
+*INEXTMODE :                      0 - | *INLWORDMODE :                    0 - |
+*INMAXMODE :                      0 - | *INSRCMODE :                      0 - |
+*INSUPMODE :                      0 - |  Init :                         200 C |
+*LISTON :                         1 - | *MACEXP :                         7 - |
+*MOMCPU :                     68000 - | *MOMCPUNAME :               "68000" - |
+*NESTMAX :                      100 - |  NoTmss :                       220 C |
+*PACKING :                        0 - | *PADDING :                        0 - |
+ ProbeData :                    286 C |  ProbeDone :                    28A C |
+ ProbeHv :                      27E C |  ProbeStatus :                  27A C |
+*RELAXED :                        0 - | *TIME :               "01:08:46 PM" - |
+*TRUE :                           1 - | *VERSION :                     142F - |
+*Z80SYNTAX :                      0 - |
+
+     40 symbols
+     31 unused symbols
+
+ AS V1.42 Beta [Bld 212] - Source File vdp_pending.asm - Page 7 - 07/16/2026 01:08:46 PM
+
+
+  Code Pages:
+  ----------
+
+STANDARD (0 changed characters)
+
+1 code page
+
+0.00 seconds assembly time
+
+    155 lines source file
+    217 lines incl. macro expansions
+      2 passes
+      0 errors
+      1 warning

@@ -37,6 +37,7 @@ client. We drive it with a small clean-room RSP client (`rsp.py`): read/write th
 | `harness.asm` | clean-room RAM-dispatch harness ROM (the instrument) |
 | `build_rom.sh` | assemble `harness.bin` via the native `asl`/`p2bin` (aeon tools) |
 | `run_stop_trace.py` | the STOP×trace 2×2 experiment (+ NOP controls) |
+| `vdp_pending.asm` / `build_vdp_pending.sh` / `run_vdp_pending.py` | the VDP control-port pending-toggle experiment (recon R1) |
 | `nightly_differential.py` | the Push C nightly job — instruction-boundary state differential |
 | `known_differences.py` | ledger the nightly differential imports to avoid false alarms |
 
@@ -108,3 +109,22 @@ encountered"* — i.e. STOP with T set in the **loaded** SR traces instead of st
 (*trace preempts stop*). See `docs/plans/2026-07-16-m68000-blastem-differential.md`.
 The divergence is recorded in `known_differences.py` so the nightly differential does
 not false-alarm on these cells.
+
+## Recorded result — VDP control-port pending toggle (2026-07-16)
+
+VDP recon R1's open cell: which accesses clear the control port's first/second-write
+toggle? Permitted docs pin the data-port-write clear and are silent on status/HV reads.
+Per cell, `vdp_pending.asm` arms the toggle, applies one probe, then writes an ambiguous
+word whose interpretation routes a `$BBBB` sentinel to VRAM `$0200` (toggle survived)
+or `$0300` (toggle cleared); results are read back through the data port into work RAM.
+
+```
+sel=0 control (no probe) -> $0200=BBBB  pending PERSISTS   (validates the discriminator)
+sel=1 status read        -> $0300=BBBB  status read CLEARS the toggle
+sel=2 HV counter read    -> $0200=BBBB  HV read does NOT clear it
+sel=3 data-port write    -> $0300=BBBB  data write CLEARS it (doc-pinned, confirmed)
+```
+
+**Instrument-sourced pin** (BlastEm 0.6.2, same standing as the STOP×trace pin): a
+status read clears the toggle; an HV read does not. Recorded in
+`docs/2026-07-16-vdp-recon.md` (R1) and the amended `docs/2026-07-01-vdp-design.md`.
