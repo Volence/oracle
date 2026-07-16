@@ -84,6 +84,20 @@ Zeroed placeholders for chips not yet emulated in this pivot. Two flavors:
   `export_state` and are recorded as a timing difference, not a state divergence.
 - **Little-endian**, as built.
 
+## Deliberate exclusions (v1)
+
+Two pieces of real bus-level state are **deliberately not** in the currency:
+
+- **`last_bus_word` (the open-bus latch).** Mutable micro-architectural state (open-bus reads sample it),
+  present in the bincode snapshot, excluded here: cross-backend open-bus models legitimately differ (ours is
+  a documented placeholder), and same-seed determinism runs agree on it regardless. If open-bus behavior ever
+  causes a real divergence, it surfaces downstream as an architectural difference (a register or RAM byte) —
+  which is exactly what the currency compares.
+- **Z80 BUSREQ/RESET arbitration state.** Not stored state at all in this pivot (reads report a constant
+  bus-granted/reset-released; writes are accepted and dropped — `bus.rs`). There is nothing to serialize.
+  When these become real latches, their natural home is region 4's reserve — a content change at unchanged
+  size, no version bump.
+
 ## Version-bump rule
 
 Bump `EXPORT_STATE_VERSION` (and regenerate the golden constants in `export_state_v1.rs` in the **same
