@@ -60,3 +60,11 @@ integration pivot, before the differential fleet / N-instance workloads**. Its
 acceptance gate is the existing both-drivers equivalence harness (identical final state
 + transaction stream + cycles across the full SST sweep). The micro-op vocabulary it
 must reproduce is inventoried in `docs/m68000-vocabulary-ledger.md`.
+
+> **Amendment (2026-07-16, reviewer under delegated authority):** the trigger fired after Push D; the
+> pass ran (fresh baseline + P1 materialization fix, `docs/plans/2026-07-16-m68000-macro-rtc.md`).
+> **Resolution: satisfied at P1 + the standing `microop_perf` instrument** — the fresh measurements
+> showed the pass's premise (interpreter throughput gates the differential fleet) does not hold: the
+> RSP-lockstep differential is protocol-bound, and the only true consumer (N-instance headless) does not
+> exist yet. The macro-inlined fast path (P2) and the bounded interpreter round (P1b) are deferred behind
+> the concrete reopen triggers in the plan's §9.
