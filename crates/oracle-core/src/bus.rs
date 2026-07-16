@@ -22,17 +22,24 @@ pub const VRAM_BASE: u32 = 0x10_0000;
 /// generic bus layer and the CPU name the exact same type.
 pub use crate::m68000::microop::Size;
 
-/// Whether a bus access reads or writes.
+/// What kind of bus access this is. `Tas` is the 68000's indivisible test-and-set read-modify-write —
+/// ONE locked bus cycle, distinct from a separate `Read`+`Write` pair — so a consumer can tell the atomic
+/// RMW apart from an ordinary access (it is also the access whose write the Mega Drive bus drops).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BusOp {
     Read,
     Write,
+    Tas,
 }
 
-/// One memory access, emitted per `Bus` operation. `value` is the value read or (requested to be) written.
+/// One memory access, emitted per bus operation. `value` is the value read or (requested to be) written.
+/// `fc` is the 68000 function code that drove the access (5 = supervisor data, 6 = supervisor program,
+/// etc.); non-CPU masters (DMA, later chips) emit `fc = 0`, so instrumentation can attribute every access
+/// to its master and space.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BusEvent {
     pub op: BusOp,
+    pub fc: u8,
     pub addr: u32,
     pub size: Size,
     pub value: u32,
@@ -133,6 +140,7 @@ impl<'a, S: BusEventSink> Bus for SystemBus<'a, S> {
         let value = self.read_raw(addr, size);
         self.sink.on_event(BusEvent {
             op: BusOp::Read,
+            fc: 0,
             addr,
             size,
             value,
@@ -143,6 +151,7 @@ impl<'a, S: BusEventSink> Bus for SystemBus<'a, S> {
     fn write(&mut self, addr: u32, size: Size, value: u32) {
         self.sink.on_event(BusEvent {
             op: BusOp::Write,
+            fc: 0,
             addr,
             size,
             value,
@@ -173,6 +182,7 @@ mod tests {
             sink,
             vec![BusEvent {
                 op: BusOp::Read,
+                fc: 0,
                 addr: RAM_BASE + 5,
                 size: Size::Byte,
                 value: 0x7E,
@@ -244,6 +254,23 @@ mod tests {
                 self.hits += 1;
             }
         }
+    }
+
+    #[test]
+    fn system_bus_events_carry_fc_zero_for_a_non_cpu_master() {
+        // SystemBus is not a CPU master — it has no function code, so every event it emits reports fc = 0.
+        // (The CPU-side MegaDriveBus adapter fills the real 68000 FC; DMA and later chips also emit 0.)
+        let mut ram = vec![0u8; RAM_SIZE];
+        let mut vram = vec![0u8; VRAM_SIZE];
+        let mut sink: Vec<BusEvent> = Vec::new();
+        let mut bus = SystemBus::new(&mut ram, &mut vram, &mut sink);
+        bus.read(RAM_BASE, Size::Byte);
+        bus.write(RAM_BASE, Size::Byte, 1);
+        drop(bus);
+        assert!(sink.iter().all(|e| e.fc == 0), "SystemBus emits fc = 0");
+        // BusOp::Tas is a distinct third kind (the indivisible RMW), not a Read or a Write.
+        assert_ne!(BusOp::Tas, BusOp::Read);
+        assert_ne!(BusOp::Tas, BusOp::Write);
     }
 
     #[test]
