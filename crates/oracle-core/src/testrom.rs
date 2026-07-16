@@ -188,7 +188,9 @@ mod tests {
 
         let step = |cpu: &mut Cpu68000, ram: &mut Vec<u8>, z80: &mut Vec<u8>, last: &mut u16| {
             let mut sink = ();
-            let mut bus = MegaDriveBus::new(&rom, ram, z80, last, &mut sink);
+            // This ROM never touches the VDP ports; a fresh VDP + mclk 0 suffices for the CPU/RAM checks.
+            let mut vdp = crate::vdp::Vdp::power_on(&mut crate::rng::SplitMix64::new(1));
+            let mut bus = MegaDriveBus::new(&rom, ram, z80, &mut vdp, 0, last, &mut sink);
             cpu.step(&mut bus);
         };
 

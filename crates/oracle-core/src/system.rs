@@ -171,14 +171,16 @@ impl System {
     /// Build a [`MegaDriveBus`] over this machine's memory (split-borrow) for a CPU step. The `sink` consumes
     /// the bus event stream (pass `&mut ()` for none). The real CPU drives this in Push C.
     pub fn mega_bus<'a, S: BusEventSink>(&'a mut self, sink: &'a mut S) -> MegaDriveBus<'a, S> {
+        let now = self.scheduler.now();
         let System {
             rom,
             ram,
             z80_ram,
+            vdp,
             last_bus_word,
             ..
         } = self;
-        MegaDriveBus::new(rom, ram, z80_ram, last_bus_word, sink)
+        MegaDriveBus::new(rom, ram, z80_ram, vdp, now, last_bus_word, sink)
     }
 
     /// Serialize the entire machine to a bincode snapshot. O(struct) with no pointer fixup.
@@ -358,15 +360,17 @@ impl System {
     /// The `sink` consumes the bus event stream (pass `&mut ()` for no instrumentation). `self` is
     /// destructured so the CPU field and the memory fields borrow disjointly (the CPU holds no bus).
     pub fn step_cpu<S: BusEventSink>(&mut self, sink: &mut S) -> u32 {
+        let now = self.scheduler.now();
         let System {
             cpu,
             rom,
             ram,
             z80_ram,
+            vdp,
             last_bus_word,
             ..
         } = self;
-        let mut bus = MegaDriveBus::new(rom, ram, z80_ram, last_bus_word, sink);
+        let mut bus = MegaDriveBus::new(rom, ram, z80_ram, vdp, now, last_bus_word, sink);
         cpu.step(&mut bus)
     }
 }

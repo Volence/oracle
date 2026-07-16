@@ -9,6 +9,7 @@
 
 use crate::state_hash::VRAM_SIZE;
 use crate::system::RAM_SIZE;
+use crate::vdp::Vdp;
 
 /// 68000 work-RAM window base (`$FF0000`).
 pub const RAM_BASE: u32 = 0xFF_0000;
@@ -194,22 +195,32 @@ pub const VDP_STATUS: u16 = 0x0200;
 /// | `$A00000–$A0FFFF` | 8 KiB Z80 RAM (mirrored) |
 /// | `$A10000–$A1001F` | I/O: `$A10001` = [`MD_VERSION`]; else 0 |
 /// | `$A11100`/`$A11200` | Z80 BUSREQ/RESET: reads report bus granted (0); writes accepted |
-/// | `$C00000–$C0000F` | VDP: `$C00004`/`$C00006` status = [`VDP_STATUS`]; data port → open bus; writes accepted |
+/// | `$C00004`/`$C00006` | VDP status = [`VDP_STATUS`] |
+/// | `$C00008–$C0000F` | VDP HV counter (even byte = V, odd byte = H; recon R2) |
+/// | `$C00000–$C00003` | VDP data port → open bus (the ports slice fills it) |
 /// | `$E00000–$FFFFFF` | 64 KiB work RAM (mirrored) |
+///
+/// The VDP is borrowed here (`&mut Vdp`) alongside the master-clock reading (`now_mclk`) so the timing FSM
+/// (h/v counters, status bits) reads live off the clock at access time.
 pub struct MegaDriveBus<'a, S: BusEventSink> {
     rom: &'a [u8],
     ram: &'a mut [u8],
     z80_ram: &'a mut [u8],
+    vdp: &'a mut Vdp,
+    now_mclk: u64,
     last_bus_word: &'a mut u16,
     sink: &'a mut S,
 }
 
 impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
-    /// Build an adapter over the given memory regions, the open-bus latch, and an event sink.
+    /// Build an adapter over the given memory regions, the VDP + the master-clock reading, the open-bus
+    /// latch, and an event sink.
     pub fn new(
         rom: &'a [u8],
         ram: &'a mut [u8],
         z80_ram: &'a mut [u8],
+        vdp: &'a mut Vdp,
+        now_mclk: u64,
         last_bus_word: &'a mut u16,
         sink: &'a mut S,
     ) -> Self {
@@ -217,6 +228,8 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             rom,
             ram,
             z80_ram,
+            vdp,
+            now_mclk,
             last_bus_word,
             sink,
         }
@@ -241,6 +254,15 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             // VDP status word at $C00004 (mirrored at $C00006); the data port reads open bus.
             0xC0_0004 | 0xC0_0006 => Some((VDP_STATUS >> 8) as u8),
             0xC0_0005 | 0xC0_0007 => Some((VDP_STATUS & 0xFF) as u8),
+            // VDP HV counter ($C00008–$C0000F, mirrored every word): even byte = V, odd byte = H (recon R2).
+            0xC0_0008..=0xC0_000F => {
+                let hv = self.vdp.hv_counter_read(self.now_mclk);
+                Some(if a & 1 == 0 {
+                    (hv >> 8) as u8
+                } else {
+                    (hv & 0xFF) as u8
+                })
+            }
             0xC0_0000..=0xC0_000F => None,
             // Work RAM: 64 KiB mirrored across $E00000–$FFFFFF.
             0xE0_0000..=0xFF_FFFF => Some(self.ram[(a as usize) & (RAM_SIZE - 1)]),
@@ -467,11 +489,14 @@ mod tests {
 
     use crate::m68000::bus68k::Bus68k;
 
-    /// Backing store for a MegaDriveBus under test: a ROM, 64 KiB work RAM, 8 KiB Z80 RAM, the open-bus latch.
+    /// Backing store for a MegaDriveBus under test: a ROM, 64 KiB work RAM, 8 KiB Z80 RAM, a VDP, the
+    /// master-clock reading, the open-bus latch.
     struct MdMem {
         rom: Vec<u8>,
         ram: Vec<u8>,
         z80_ram: Vec<u8>,
+        vdp: Vdp,
+        now_mclk: u64,
         last_bus_word: u16,
     }
     impl MdMem {
@@ -480,6 +505,8 @@ mod tests {
                 rom,
                 ram: vec![0u8; RAM_SIZE],
                 z80_ram: vec![0u8; Z80_RAM_SIZE],
+                vdp: Vdp::power_on(&mut crate::rng::SplitMix64::new(1)),
+                now_mclk: 0,
                 last_bus_word: 0,
             }
         }
@@ -488,6 +515,8 @@ mod tests {
                 &self.rom,
                 &mut self.ram,
                 &mut self.z80_ram,
+                &mut self.vdp,
+                self.now_mclk,
                 &mut self.last_bus_word,
                 sink,
             )
@@ -597,6 +626,26 @@ mod tests {
         let mut sink = Vec::new();
         let mut bus = mem.bus(&mut sink);
         assert_eq!(bus.read16(0xC0_0004, 5).0, VDP_STATUS, "VDP status word");
+    }
+
+    #[test]
+    fn vdp_hv_counter_read_returns_the_live_counter() {
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.now_mclk = 50 * crate::vdp::MCLK_PER_LINE + 800; // a mid-frame instant
+        let expected = mem.vdp.hv_counter_read(mem.now_mclk);
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        assert_eq!(
+            bus.read16(0xC0_0008, 5).0,
+            expected,
+            "HV counter word ((V<<8)|H) at $C00008"
+        );
+        // The HV counter is mirrored across $C0000A/$C0000C/$C0000E.
+        assert_eq!(
+            bus.read16(0xC0_000A, 5).0,
+            expected,
+            "HV counter mirror at $C0000A"
+        );
     }
 
     #[test]
