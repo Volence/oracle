@@ -8,7 +8,7 @@
 //! the relevant fields per step (split-borrow). Memory regions are owned byte buffers, always allocated
 //! at their fixed hardware sizes by [`System::new`].
 
-use crate::bus::{BusEventSink, SystemBus};
+use crate::bus::{BusEventSink, MegaDriveBus, SystemBus, Z80_RAM_SIZE};
 use crate::scheduler::Scheduler;
 use crate::state_hash::{StateHash, CRAM_SIZE, REG_COUNT, VRAM_SIZE, VSRAM_SIZE};
 use crate::stub_cpu::StubCpu;
@@ -29,11 +29,19 @@ pub struct System {
     /// The power-on seed, retained so [`System::reset`] reproduces the exact power-on state.
     seed: u64,
     scheduler: Scheduler,
+    /// Cartridge ROM (`$000000–$3FFFFF`). Owned + in `Clone`/bincode for now (correctness before snapshot
+    /// cost; the checksum+reattach seam is a free future change per snapshot policy 5). Preserved across
+    /// [`System::reset`] — a reset does not erase the cartridge.
+    rom: Vec<u8>,
     ram: Vec<u8>,
+    /// 8 KiB Z80 RAM, reachable from the 68000 at `$A00000` (nothing executes it in this pivot).
+    z80_ram: Vec<u8>,
     vram: Vec<u8>,
     cram: Vec<u8>,
     vsram: Vec<u8>,
     vdp_regs: [u8; REG_COUNT],
+    /// The open-bus latch: the last word driven on the 68000 bus, returned by reads of unmapped space.
+    last_bus_word: u16,
     cpu: StubCpu,
 }
 
@@ -43,7 +51,13 @@ impl std::fmt::Debug for System {
         f.debug_struct("System")
             .field("seed", &format_args!("{:#018X}", self.seed))
             .field("scheduler", &self.scheduler)
+            .field("rom", &format_args!("[{} bytes]", self.rom.len()))
             .field("ram", &format_args!("[{} bytes]", self.ram.len()))
+            .field("z80_ram", &format_args!("[{} bytes]", self.z80_ram.len()))
+            .field(
+                "last_bus_word",
+                &format_args!("{:#06X}", self.last_bus_word),
+            )
             .field("vram", &format_args!("[{} bytes]", self.vram.len()))
             .field("cram", &format_args!("[{} bytes]", self.cram.len()))
             .field("vsram", &format_args!("[{} bytes]", self.vsram.len()))
@@ -80,18 +94,47 @@ impl System {
         Self {
             seed,
             scheduler,
+            rom: Vec::new(),
             ram,
+            z80_ram: vec![0u8; Z80_RAM_SIZE],
             vram,
             cram: vec![0u8; CRAM_SIZE],
             vsram: vec![0u8; VSRAM_SIZE],
             vdp_regs: [0u8; REG_COUNT],
+            last_bus_word: 0,
             cpu: StubCpu::new(),
         }
     }
 
-    /// Restore the exact power-on state (the deterministic anchor the determinism gate resets to).
+    /// Restore the exact power-on state (the deterministic anchor the determinism gate resets to). The
+    /// cartridge ROM is preserved — a reset does not erase the cartridge.
     pub fn reset(&mut self) {
+        let rom = std::mem::take(&mut self.rom);
         *self = Self::new(self.seed);
+        self.rom = rom;
+    }
+
+    /// Load the cartridge ROM (`$000000–$3FFFFF` on the 68000 bus). Reads past its end are open bus.
+    pub fn load_rom(&mut self, rom: Vec<u8>) {
+        self.rom = rom;
+    }
+
+    /// Read-only access to the cartridge ROM.
+    pub fn rom(&self) -> &[u8] {
+        &self.rom
+    }
+
+    /// Build a [`MegaDriveBus`] over this machine's memory (split-borrow) for a CPU step. The `sink` consumes
+    /// the bus event stream (pass `&mut ()` for none). The real CPU drives this in Push C.
+    pub fn mega_bus<'a, S: BusEventSink>(&'a mut self, sink: &'a mut S) -> MegaDriveBus<'a, S> {
+        let System {
+            rom,
+            ram,
+            z80_ram,
+            last_bus_word,
+            ..
+        } = self;
+        MegaDriveBus::new(rom, ram, z80_ram, last_bus_word, sink)
     }
 
     /// Serialize the entire machine to a bincode snapshot. O(struct) with no pointer fixup.
@@ -268,6 +311,40 @@ mod tests {
         s.reset();
         assert_eq!(s, fresh);
         assert_eq!(s.state_hash(), fresh.state_hash());
+    }
+
+    #[test]
+    fn mega_bus_reads_and_writes_the_systems_memory() {
+        use crate::bus::MD_VERSION;
+        use crate::m68000::bus68k::Bus68k;
+        let mut s = System::new(0x1234);
+        let mut sink: Vec<BusEvent> = Vec::new();
+        {
+            let mut bus = s.mega_bus(&mut sink);
+            // A work-RAM write through the map lands in the System's RAM (mirrored window → ram[0]).
+            bus.write16(0xFF_0000, 5, 0xABCD);
+            assert_eq!(bus.read16(0xFF_0000, 5).0, 0xABCD);
+            // The fixed version register is reachable through the same adapter.
+            assert_eq!(bus.read8(0xA1_0001, 5).0, MD_VERSION);
+        }
+        assert_eq!(
+            s.ram()[0],
+            0xAB,
+            "the map write reached System RAM (high byte)"
+        );
+        assert_eq!(s.ram()[1], 0xCD, "low byte");
+    }
+
+    #[test]
+    fn reset_preserves_the_loaded_rom() {
+        let mut s = System::new(0x55);
+        s.load_rom(vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        s.reset();
+        assert_eq!(
+            s.rom(),
+            &[0xDE, 0xAD, 0xBE, 0xEF],
+            "a reset does not erase the cartridge ROM"
+        );
     }
 
     #[test]

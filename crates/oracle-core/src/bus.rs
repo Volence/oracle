@@ -164,6 +164,179 @@ impl<'a, S: BusEventSink> Bus for SystemBus<'a, S> {
     }
 }
 
+// -----------------------------------------------------------------------------------------------------------
+// MegaDriveBus — the CPU-facing `Bus68k` adapter over the real Mega Drive memory map.
+// -----------------------------------------------------------------------------------------------------------
+
+use crate::m68000::bus68k::{Bus68k, ADDR_MASK};
+
+/// 8 KiB of Z80 RAM, visible to the 68000 at `$A00000` (mirrored across the 64 KiB `$A00000–$A0FFFF` window).
+pub const Z80_RAM_SIZE: usize = 0x2000;
+
+/// The byte returned from the version register at `$A10001` — a fixed placeholder (export/NTSC/no-expansion,
+/// hardware version 0). Real region/timing + controller detection lands with the pads in a later phase.
+pub const MD_VERSION: u8 = 0xA0;
+
+/// The VDP status word returned from `$C00004`/`$C00006`: FIFO-empty set, VBlank clear — a fixed placeholder,
+/// replaced wholesale by the ratified VDP design.
+pub const VDP_STATUS: u16 = 0x0200;
+
+/// Split-borrow adapter implementing the CPU-facing [`Bus68k`] over the `System`'s memory fields laid out per
+/// the real Mega Drive map, emitting a [`BusEvent`] (with the real function code) per access. The CPU core
+/// cannot tell it apart from the SST harness's `FlatBus` — the point of the unification. Every 24-bit address
+/// has a deterministic answer; open bus returns the last word driven on the bus (`last_bus_word`). Writes
+/// apply immediately in this pivot (no other master is live); the deferred-write seam plugs in with the VDP.
+///
+/// | Range | Behavior |
+/// |---|---|
+/// | `$000000–$3FFFFF` | ROM (read-only; past a short ROM's end → open bus) |
+/// | `$400000–$7FFFFF` | open bus |
+/// | `$A00000–$A0FFFF` | 8 KiB Z80 RAM (mirrored) |
+/// | `$A10000–$A1001F` | I/O: `$A10001` = [`MD_VERSION`]; else 0 |
+/// | `$A11100`/`$A11200` | Z80 BUSREQ/RESET: reads report bus granted (0); writes accepted |
+/// | `$C00000–$C0000F` | VDP: `$C00004`/`$C00006` status = [`VDP_STATUS`]; data port → open bus; writes accepted |
+/// | `$E00000–$FFFFFF` | 64 KiB work RAM (mirrored) |
+pub struct MegaDriveBus<'a, S: BusEventSink> {
+    rom: &'a [u8],
+    ram: &'a mut [u8],
+    z80_ram: &'a mut [u8],
+    last_bus_word: &'a mut u16,
+    sink: &'a mut S,
+}
+
+impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
+    /// Build an adapter over the given memory regions, the open-bus latch, and an event sink.
+    pub fn new(
+        rom: &'a [u8],
+        ram: &'a mut [u8],
+        z80_ram: &'a mut [u8],
+        last_bus_word: &'a mut u16,
+        sink: &'a mut S,
+    ) -> Self {
+        Self {
+            rom,
+            ram,
+            z80_ram,
+            last_bus_word,
+            sink,
+        }
+    }
+
+    /// The byte backing a mapped address, or `None` for open bus (unmapped ranges, past a short ROM's end,
+    /// the VDP data port). Real memory (ROM / work RAM / Z80 RAM) and the fixed-constant registers return
+    /// `Some`; the caller substitutes the open-bus latch for `None`.
+    fn mapped_byte(&self, a: u32) -> Option<u8> {
+        match a {
+            // ROM: bytes present up to the ROM's length; past the end is open bus (no mirroring assumed).
+            0x00_0000..=0x3F_FFFF => {
+                let i = a as usize;
+                (i < self.rom.len()).then(|| self.rom[i])
+            }
+            // Z80 RAM: 8 KiB mirrored across the 64 KiB window.
+            0xA0_0000..=0xA0_FFFF => Some(self.z80_ram[(a as usize) & (Z80_RAM_SIZE - 1)]),
+            // I/O: version register at $A10001; the rest read 0 (real pads land later).
+            0xA1_0000..=0xA1_001F => Some(if a == 0xA1_0001 { MD_VERSION } else { 0x00 }),
+            // Z80 BUSREQ ($A11100) / RESET ($A11200): report bus granted / reset released (0) so boot proceeds.
+            0xA1_1100..=0xA1_1101 | 0xA1_1200..=0xA1_1201 => Some(0x00),
+            // VDP status word at $C00004 (mirrored at $C00006); the data port reads open bus.
+            0xC0_0004 | 0xC0_0006 => Some((VDP_STATUS >> 8) as u8),
+            0xC0_0005 | 0xC0_0007 => Some((VDP_STATUS & 0xFF) as u8),
+            0xC0_0000..=0xC0_000F => None,
+            // Work RAM: 64 KiB mirrored across $E00000–$FFFFFF.
+            0xE0_0000..=0xFF_FFFF => Some(self.ram[(a as usize) & (RAM_SIZE - 1)]),
+            // $400000–$7FFFFF and every gap: open bus.
+            _ => None,
+        }
+    }
+
+    /// Store `byte` if `a` lands in writable memory (work RAM / Z80 RAM). Writes to ROM, the I/O / Z80-control
+    /// / VDP-port regions are accepted (they still drive the bus + emit an event) but not stored — the
+    /// placeholder scope until those chips land.
+    fn store_byte(&mut self, a: u32, byte: u8) {
+        match a {
+            0xA0_0000..=0xA0_FFFF => self.z80_ram[(a as usize) & (Z80_RAM_SIZE - 1)] = byte,
+            0xE0_0000..=0xFF_FFFF => self.ram[(a as usize) & (RAM_SIZE - 1)] = byte,
+            _ => {}
+        }
+    }
+
+    fn emit(&mut self, op: BusOp, fc: u8, addr: u32, size: Size, value: u32) {
+        self.sink.on_event(BusEvent {
+            op,
+            fc,
+            addr,
+            size,
+            value,
+        });
+    }
+}
+
+impl<'a, S: BusEventSink> Bus68k for MegaDriveBus<'a, S> {
+    fn read16(&mut self, addr: u32, fc: u8) -> (u16, u32) {
+        let a = addr & ADDR_MASK;
+        let value = if let Some(hi) = self.mapped_byte(a) {
+            let lo = self
+                .mapped_byte((a.wrapping_add(1)) & ADDR_MASK)
+                .unwrap_or(0);
+            let v = ((hi as u16) << 8) | lo as u16;
+            *self.last_bus_word = v; // a real word crossed the bus
+            v
+        } else {
+            *self.last_bus_word // open bus: the last word driven, unchanged
+        };
+        self.emit(BusOp::Read, fc, a, Size::Word, value as u32);
+        (value, 0)
+    }
+
+    fn write16(&mut self, addr: u32, fc: u8, value: u16) -> u32 {
+        let a = addr & ADDR_MASK;
+        self.store_byte(a, (value >> 8) as u8);
+        self.store_byte((a.wrapping_add(1)) & ADDR_MASK, (value & 0xFF) as u8);
+        *self.last_bus_word = value;
+        self.emit(BusOp::Write, fc, a, Size::Word, value as u32);
+        0
+    }
+
+    fn read8(&mut self, addr: u32, fc: u8) -> (u8, u32) {
+        let a = addr & ADDR_MASK;
+        let value = if let Some(b) = self.mapped_byte(a) {
+            *self.last_bus_word = (b as u16) * 0x0101; // byte driven on both halves (placeholder open-bus rule)
+            b
+        } else if a & 1 == 0 {
+            (*self.last_bus_word >> 8) as u8 // even address → UDS half
+        } else {
+            (*self.last_bus_word & 0xFF) as u8 // odd address → LDS half
+        };
+        self.emit(BusOp::Read, fc, a, Size::Byte, value as u32);
+        (value, 0)
+    }
+
+    fn write8(&mut self, addr: u32, fc: u8, value: u8) -> u32 {
+        let a = addr & ADDR_MASK;
+        self.store_byte(a, value);
+        *self.last_bus_word = (value as u16) * 0x0101;
+        self.emit(BusOp::Write, fc, a, Size::Byte, value as u32);
+        0
+    }
+
+    fn tas(&mut self, addr: u32, fc: u8) -> (u8, u32) {
+        // The Mega Drive bus controller does NOT honor the RMW write cycle of TAS (the Gargoyles/Ex-Mutants
+        // quirk): the read happens, the write is DROPPED. So we read `orig`, DO NOT store `orig | 0x80`, and
+        // still emit the Tas event (its value = the byte the CPU drove for the dropped write). The CPU gets
+        // `orig` back for its flags.
+        let a = addr & ADDR_MASK;
+        let orig = if let Some(b) = self.mapped_byte(a) {
+            b
+        } else {
+            (*self.last_bus_word & 0xFF) as u8
+        };
+        let written = orig | 0x80;
+        *self.last_bus_word = (written as u16) * 0x0101;
+        self.emit(BusOp::Tas, fc, a, Size::Byte, written as u32);
+        (orig, 0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,5 +461,176 @@ mod tests {
         bus.write(RAM_BASE + 0x21, Size::Byte, 3);
         drop(bus);
         assert_eq!(watch.hits, 2);
+    }
+
+    // --- MegaDriveBus: the real memory map ---------------------------------------------------------------
+
+    use crate::m68000::bus68k::Bus68k;
+
+    /// Backing store for a MegaDriveBus under test: a ROM, 64 KiB work RAM, 8 KiB Z80 RAM, the open-bus latch.
+    struct MdMem {
+        rom: Vec<u8>,
+        ram: Vec<u8>,
+        z80_ram: Vec<u8>,
+        last_bus_word: u16,
+    }
+    impl MdMem {
+        fn new(rom: Vec<u8>) -> Self {
+            Self {
+                rom,
+                ram: vec![0u8; RAM_SIZE],
+                z80_ram: vec![0u8; Z80_RAM_SIZE],
+                last_bus_word: 0,
+            }
+        }
+        fn bus<'a>(&'a mut self, sink: &'a mut Vec<BusEvent>) -> MegaDriveBus<'a, Vec<BusEvent>> {
+            MegaDriveBus::new(
+                &self.rom,
+                &mut self.ram,
+                &mut self.z80_ram,
+                &mut self.last_bus_word,
+                sink,
+            )
+        }
+    }
+
+    #[test]
+    fn rom_read_returns_the_rom_byte() {
+        let mut rom = vec![0u8; 0x1000];
+        rom[0] = 0x12;
+        rom[1] = 0x34;
+        rom[0x10] = 0xAB;
+        let mut mem = MdMem::new(rom);
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        assert_eq!(bus.read16(0x00_0000, 6).0, 0x1234, "word from ROM");
+        assert_eq!(bus.read8(0x00_0010, 6).0, 0xAB, "byte from ROM");
+    }
+
+    #[test]
+    fn rom_is_read_only_a_write_does_not_change_it() {
+        let mut mem = MdMem::new(vec![0x11u8; 0x1000]);
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        bus.write16(0x00_0000, 6, 0xFFFF);
+        assert_eq!(
+            bus.read16(0x00_0000, 6).0,
+            0x1111,
+            "ROM unchanged by a write"
+        );
+    }
+
+    #[test]
+    fn rom_past_the_end_is_open_bus() {
+        // A short 4 KiB ROM: reads past its end return the open-bus latch, NOT a mirror of the ROM.
+        let mut mem = MdMem::new(vec![0x11u8; 0x1000]);
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        // Drive a known word onto the bus (a work-RAM write), then read past the ROM end.
+        bus.write16(0xE0_0000, 5, 0xBEEF);
+        assert_eq!(
+            bus.read16(0x20_0000, 6).0,
+            0xBEEF,
+            "past-end ROM read returns the last bus word"
+        );
+    }
+
+    #[test]
+    fn unmapped_range_is_open_bus_and_does_not_change_the_latch() {
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        bus.write16(0xE0_0000, 5, 0xCAFE); // latch := 0xCAFE
+        assert_eq!(
+            bus.read16(0x50_0000, 6).0,
+            0xCAFE,
+            "unmapped read = last word"
+        );
+        // A second open-bus read still sees the same latch (an open-bus read does not drive a new word).
+        assert_eq!(bus.read16(0x60_0000, 6).0, 0xCAFE);
+    }
+
+    #[test]
+    fn work_ram_reads_writes_and_mirrors_across_the_window() {
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        bus.write16(0xE0_0000, 5, 0x1357);
+        assert_eq!(bus.read16(0xE0_0000, 5).0, 0x1357, "written then read back");
+        // The 64 KiB work RAM is mirrored across the whole $E00000–$FFFFFF window.
+        assert_eq!(bus.read16(0xFF_0000, 5).0, 0x1357, "mirror at $FF0000");
+        assert_eq!(bus.read16(0xF1_0000, 5).0, 0x1357, "mirror at $F10000");
+    }
+
+    #[test]
+    fn z80_ram_reads_writes_and_mirrors_in_its_window() {
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        bus.write8(0xA0_0000, 5, 0x9A);
+        assert_eq!(bus.read8(0xA0_0000, 5).0, 0x9A, "Z80 RAM byte round-trips");
+        // 8 KiB Z80 RAM mirrored across the 64 KiB window.
+        assert_eq!(bus.read8(0xA0_2000, 5).0, 0x9A, "mirror at +0x2000");
+    }
+
+    #[test]
+    fn version_register_returns_the_fixed_constant() {
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        assert_eq!(bus.read8(0xA1_0001, 5).0, MD_VERSION, "version register");
+    }
+
+    #[test]
+    fn z80_busreq_reports_the_bus_granted() {
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        // Writes are accepted (boot code releases/asserts the bus), reads report granted so boot proceeds.
+        bus.write8(0xA1_1100, 5, 0x01);
+        assert_eq!(bus.read8(0xA1_1100, 5).0, 0x00, "bus granted (bit0 = 0)");
+    }
+
+    #[test]
+    fn vdp_status_returns_the_fixed_constant() {
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        assert_eq!(bus.read16(0xC0_0004, 5).0, VDP_STATUS, "VDP status word");
+    }
+
+    #[test]
+    fn open_bus_read_returns_the_last_word_driven_by_a_write() {
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        bus.write16(0xE0_0010, 5, 0xF00D); // drives 0xF00D onto the bus
+        assert_eq!(
+            bus.read16(0x40_0000, 6).0,
+            0xF00D,
+            "open bus = last driven word"
+        );
+    }
+
+    #[test]
+    fn megadrive_tas_drops_the_write_but_flags_from_the_read() {
+        // The Gargoyles/Ex-Mutants quirk: on the Mega Drive the RMW WRITE cycle of TAS is dropped — the read
+        // happens, the write does not. So the byte in RAM is UNCHANGED (contrast FlatBus, which stores
+        // orig|0x80), while the CPU still gets `orig` back for its flags.
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        bus.write8(0xE0_0100, 5, 0x35);
+        let (orig, _wait) = bus.tas(0xE0_0100, 5);
+        assert_eq!(orig, 0x35, "TAS returns the pre-modify byte for the flags");
+        assert_eq!(
+            bus.read8(0xE0_0100, 5).0,
+            0x35,
+            "the Mega Drive drops the TAS write — RAM is UNCHANGED"
+        );
+        assert!(
+            sink.iter().any(|e| e.op == BusOp::Tas),
+            "the Tas access is still logged"
+        );
     }
 }
