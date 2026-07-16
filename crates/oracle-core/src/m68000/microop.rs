@@ -1319,6 +1319,14 @@ pub struct MicroState {
     /// trace after an illegal/privileged/faulted instruction). Deliberately left `false` for instructions
     /// that DO execute and then trap (`TRAP`/`TRAPV`/`CHK`/div0), so their trace sequences *after* the trap.
     suppresses_trace: bool,
+    /// True once this recipe has been rewritten into a group-0 (address/bus-error) exception frame by
+    /// [`Self::install_address_error`]. If a fault re-enters that install while this is already set, the
+    /// frame's own stacking has faulted — a **double bus fault** (M68000UM §5.4.4).
+    in_group0_frame: bool,
+    /// Set when a double bus fault is detected: a group-0 fault while stacking a group-0 frame. The
+    /// orchestrator moves the CPU to [`CpuState::Halted`] once the recipe finishes (mirrors
+    /// [`MicroState::stop_requested`] → `Stopped`). Only an external reset restarts a halted processor.
+    double_fault: bool,
 }
 
 impl MicroState {
@@ -1336,12 +1344,20 @@ impl MicroState {
             opcode: 0,
             stop_requested: false,
             suppresses_trace: false,
+            in_group0_frame: false,
+            double_fault: false,
         }
     }
 
     /// True once a completed [`MicroOp::Stop`] has run — the orchestrator then enters [`CpuState::Stopped`].
     pub fn requests_stop(&self) -> bool {
         self.stop_requested
+    }
+
+    /// True once a double bus fault has been detected — the orchestrator then enters [`CpuState::Halted`]
+    /// (M68000UM §5.4.4). A terminal signal read at completion, like [`Self::requests_stop`].
+    pub fn double_faulted(&self) -> bool {
+        self.double_fault
     }
 
     /// True when this recipe is a not-executed / aborted entry (illegal / privilege / line-A/F / address-bus
@@ -1433,6 +1449,15 @@ impl MicroState {
             build_address_error_frame, AERR_FAULT_ADDR_SLOT, AERR_IR_SLOT, AERR_SSW_SLOT,
             AERR_STACKED_PC_SLOT,
         };
+        // A fault while this recipe is ALREADY a group-0 frame means the frame's own stacking faulted — a
+        // double bus fault (M68000UM §5.4.4). Do NOT rebuild the frame (that spun `cycles` to a u32 overflow):
+        // flag the double fault and finish the recipe so the driver loop terminates and the CPU halts.
+        if self.in_group0_frame {
+            self.double_fault = true;
+            self.step = self.len;
+            return 0;
+        }
+        self.in_group0_frame = true;
         let ssw = (self.opcode & 0xFFE0) | low5;
         self.scratch[AERR_STACKED_PC_SLOT as usize] = regs.pc;
         self.scratch[AERR_FAULT_ADDR_SLOT as usize] = faulting_addr;
@@ -3111,8 +3136,11 @@ impl Cpu68000 {
         recipe.exec_one(regs, bus);
         if recipe.is_done() {
             let total = recipe.cycles;
-            // A completed STOP recipe leaves the processor Stopped (both drivers honor this).
-            if recipe.requests_stop() {
+            // A completed STOP recipe leaves the processor Stopped; a double bus fault leaves it Halted (both
+            // drivers honor these terminal transitions).
+            if recipe.double_faulted() {
+                *cpu_state = CpuState::Halted;
+            } else if recipe.requests_stop() {
                 *cpu_state = CpuState::Stopped;
             }
             *inflight = None;
@@ -3120,6 +3148,23 @@ impl Cpu68000 {
         } else {
             Step::Continue
         }
+    }
+
+    /// The high-level processor state (`Normal` / `Stopped` / `Halted`) — for the System, debugger, and
+    /// differential harness.
+    pub fn state(&self) -> CpuState {
+        self.state
+    }
+
+    /// Run a hand-built exception recipe (reset / trace / interrupt) to completion, applying its terminal
+    /// state transition: a double bus fault detected while stacking a group-0 frame halts the processor
+    /// (M68000UM §5.4.4). Shared by the `step` orchestrator arms so none can forget the transition.
+    fn run_terminal(&mut self, mut recipe: MicroState, bus: &mut impl Bus68k) -> u32 {
+        let cycles = recipe.run_to_completion(&mut self.regs, bus);
+        if recipe.double_faulted() {
+            self.state = CpuState::Halted;
+        }
+        cycles
     }
 
     /// **The orchestrator fast path** (D1): decide the next unit of work, then run it to completion.
@@ -3136,8 +3181,17 @@ impl Cpu68000 {
         if self.reset_pending {
             self.reset_pending = false;
             self.state = CpuState::Normal;
-            let mut recipe = crate::m68000::decode::reset_exception_recipe();
-            return recipe.run_to_completion(&mut self.regs, bus);
+            let recipe = crate::m68000::decode::reset_exception_recipe();
+            // A garbage reset vector (odd SSP/PC) faults during the vector fetch / first prefetch, and the
+            // resulting group-0 frame's own stacking faults again → a double bus fault halts the CPU here
+            // (M68000UM §5.4.4) rather than spinning `cycles` to a u32 overflow.
+            return self.run_terminal(recipe, bus);
+        }
+        // A Halted CPU (double bus fault) executes nothing — only reset (serviced above, the sole exit) wakes
+        // it. Consume a nominal idle so `run_until` still advances; the halt cadence is not pinned (Yacht's
+        // HALTED STATE is `?(0/0)` `(n-)*`, explicitly unbounded).
+        if self.state == CpuState::Halted {
+            return STOPPED_IDLE_SLICE;
         }
         // Trace (a boundary event pended by the PREVIOUS instruction) outranks decoding the next instruction
         // (M68000UM §6.2.3 group-1 order; the interrupt arm joins here in A4). A `Stopped` CPU (after `STOP`)
@@ -3158,22 +3212,26 @@ impl Cpu68000 {
         }
         if self.trace_pending {
             self.trace_pending = false;
-            let mut recipe = crate::m68000::decode::trace_exception_recipe();
-            return recipe.run_to_completion(&mut self.regs, bus);
+            let recipe = crate::m68000::decode::trace_exception_recipe();
+            return self.run_terminal(recipe, bus);
         }
         // Interrupt (a boundary event): taken when the request level STRICTLY exceeds the SR mask (§6.3.2).
         // Ranked below trace, above decode. (Level-7 nonmaskable / the `ipl == mask == 7` edge is docketed.)
         if self.ipl > self.regs.int_mask() {
             let level = self.ipl;
-            let mut recipe = crate::m68000::decode::interrupt_exception_recipe(level);
-            return recipe.run_to_completion(&mut self.regs, bus);
+            let recipe = crate::m68000::decode::interrupt_exception_recipe(level);
+            return self.run_terminal(recipe, bus);
         }
         // Latch T at the START of the instruction (before it can change SR) — §6.3.8.
         let trace_armed = self.regs.sr & SR_TRACE != 0;
         let mut recipe = crate::m68000::decode::decode(&self.regs);
         let suppresses_trace = recipe.suppresses_trace();
         let cycles = recipe.run_to_completion(&mut self.regs, bus);
-        if recipe.requests_stop() {
+        if recipe.double_faulted() {
+            // The instruction's own exception frame double-faulted (e.g. an address error stacked at an odd
+            // SP) → the CPU halts (M68000UM §5.4.4). No stop/trace bookkeeping for a halted processor.
+            self.state = CpuState::Halted;
+        } else if recipe.requests_stop() {
             // STOP loaded the SR (its `LoadSr` ran). Per the M68000 PRM STOP description, STOP with the
             // trace bit set in the LOADED SR takes a trace exception INSTEAD of stopping — trace preempts
             // stop (A3.2 owner pin 2026-07-15/16). The loaded immediate's T governs, NOT start-T: `regs.sr`
@@ -6284,6 +6342,97 @@ mod tests {
         assert_eq!(cpu.state, CpuState::Normal, "only reset leaves Halted");
         assert_eq!(cpu.regs.pc, 0x0000_0400);
         assert_eq!(cpu.regs.sr, 0x2700);
+    }
+
+    /// Registers primed to double-fault: supervisor, an ODD `(A0)` so `MOVE.W D0,(A0)` address-errors, and
+    /// an ODD supervisor stack so the group-0 frame's own writes fault again (M68000UM §5.4.4).
+    fn double_fault_regs() -> Registers {
+        let mut r = regs(); // supervisor (S=1)
+        r.a[0] = 0x0000_2001; // odd (A0) destination → the MOVE write address-errors (first group-0 fault)
+        r.ssp = 0x0000_3001; // odd supervisor stack → stacking the frame faults again (double fault)
+        r.pc = 0x0000_1000;
+        r.prefetch = [0x3080, 0x4E71]; // MOVE.W D0,(A0) ; NOP
+        r
+    }
+
+    #[test]
+    fn double_bus_fault_halts_via_run_to_completion() {
+        // A fault while stacking a group-0 frame is a double bus fault: the CPU HALTS instead of re-installing
+        // the frame forever (which spun MicroState.cycles to a u32 overflow). Driver 1 (run-to-completion).
+        let mut cpu = Cpu68000::new(double_fault_regs());
+        let mut bus = FlatBus::new();
+        cpu.step(&mut bus);
+        assert_eq!(cpu.state, CpuState::Halted, "double bus fault → Halted");
+        assert_eq!(cpu.state(), CpuState::Halted, "the public accessor agrees");
+    }
+
+    #[test]
+    fn double_bus_fault_halts_via_step_micro_op_driver_too() {
+        // Driver 2 (step-one-micro-op) must reach the same Halted state — both drivers apply the terminal
+        // transition at completion, so they cannot diverge.
+        let mut cpu = Cpu68000::new(double_fault_regs());
+        let mut bus = FlatBus::new();
+        cpu.start_instruction();
+        loop {
+            if let Step::Done(_) = cpu.step_micro_op(&mut bus) {
+                break;
+            }
+        }
+        assert_eq!(cpu.state, CpuState::Halted, "both drivers reach Halted");
+    }
+
+    #[test]
+    fn halted_cpu_executes_nothing_until_reset() {
+        // A Halted CPU consumes only a nominal idle and decodes/executes nothing — the PC and prefetch queue
+        // are untouched. Only reset (serviced first in `step`) exits, which the reset-wake test covers.
+        let mut r = regs();
+        r.pc = 0x0000_2000;
+        r.prefetch = [0x4E71, 0x4E71]; // NOPs — would advance the PC if the CPU were running
+        let mut cpu = Cpu68000::new(r);
+        cpu.state = CpuState::Halted;
+        let mut bus = FlatBus::new();
+        let cycles = cpu.step(&mut bus);
+        assert_eq!(cpu.state, CpuState::Halted, "stays halted without reset");
+        assert_eq!(cpu.regs.pc, 0x0000_2000, "a halted CPU executes nothing");
+        assert_eq!(
+            cycles, STOPPED_IDLE_SLICE,
+            "consumes a nominal idle so run_until advances"
+        );
+        assert!(bus.log.is_empty(), "a halted CPU drives no bus access");
+    }
+
+    #[test]
+    fn double_fault_halt_survives_snapshot() {
+        // Snapshot/restore the CPU at every mid-double-fault boundary, resume, and require the same Halted
+        // final state — the terminal transition is applied by the driver at completion, so it must survive a
+        // snapshot taken before the double fault resolves.
+        let cfg = bincode::config::standard();
+        for pause_after in 0..4 {
+            let mut cpu = Cpu68000::new(double_fault_regs());
+            let mut bus = FlatBus::new();
+            cpu.start_instruction();
+            let mut done_early = false;
+            for _ in 0..pause_after {
+                if let Step::Done(_) = cpu.step_micro_op(&mut bus) {
+                    done_early = true;
+                    break;
+                }
+            }
+            let bytes = bincode::encode_to_vec(&cpu, cfg).unwrap();
+            let (mut cpu2, _): (Cpu68000, usize) = bincode::decode_from_slice(&bytes, cfg).unwrap();
+            if !done_early {
+                loop {
+                    if let Step::Done(_) = cpu2.step_micro_op(&mut bus) {
+                        break;
+                    }
+                }
+            }
+            assert_eq!(
+                cpu2.state,
+                CpuState::Halted,
+                "resume from boundary {pause_after} reached Halted"
+            );
+        }
     }
 
     #[test]

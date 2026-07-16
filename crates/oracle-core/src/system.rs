@@ -588,6 +588,23 @@ mod tests {
     }
 
     #[test]
+    fn garbage_rom_reset_halts_without_spinning() {
+        // A garbage ROM gives an odd reset vector (SSP = PC = $FFFFFFFF): the power-on reset faults on the
+        // odd first prefetch, and the resulting group-0 frame's own stacking faults again at the odd SSP —
+        // a double bus fault (M68000UM §5.4.4). The CPU must HALT, not spin `MicroState.cycles` to a u32
+        // overflow. (Before the double-fault wiring this test hung / overflowed.)
+        use crate::m68000::microop::CpuState;
+        let mut s = System::new(0x99);
+        s.load_rom(vec![0xFFu8; 0x100]);
+        s.reset();
+        assert_eq!(
+            s.cpu.state(),
+            CpuState::Halted,
+            "a double bus fault during reset halts the processor"
+        );
+    }
+
+    #[test]
     fn export_state_has_the_fixed_layout_and_version() {
         let s = System::new(0x1234);
         let img = s.export_state();
