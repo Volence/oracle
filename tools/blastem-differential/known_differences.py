@@ -62,6 +62,25 @@ KNOWN_DIFFERENCES = [
                      "VDP timing-skeleton push, slice 4.",
         "action": "EXPECT-MISMATCH on cycle-exact interrupt timing; architectural state agrees.",
     },
+    {
+        "id": "vdp-hv-read-v-midline-increment",
+        "scenario": "An HV-counter read ($C00008) in the back portion of a scanline: the V byte",
+        "blastem_says": "The readable V counter increments MID-line, at H 0x84->0x85 (H32) / "
+                        "0xA4->0xA5 (H40) — recon R2's pinned anchor — so a read after that "
+                        "point on line N returns V = N+1.",
+        "oracle_next_pins": "V is derived from the line number (mclk / 3420) — a line-boundary "
+                            "increment. Reads after the mid-line anchor return V = N, one less "
+                            "than hardware for that window. The H byte is mclk-exact and agrees. "
+                            "Sub-line V position is TIMING per R2's classification (the jump "
+                            "VALUES are behavioral and match; the in-line increment position is "
+                            "not); a game that stores such a read makes this visible as a "
+                            "one-off RAM/register delta — attribute here, do not flag.",
+        "reference": "docs/2026-07-16-vdp-recon.md R2 (the V-increment anchor + the "
+                     "timing classification). VDP timing-skeleton push, slice 2 "
+                     "(worker deviation 5; ledgered by the reviewer).",
+        "action": "EXPECT-MISMATCH on V reads landing between the mid-line anchor and the "
+                  "line end; H reads and all other state agree.",
+    },
 ]
 
 
