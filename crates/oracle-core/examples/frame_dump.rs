@@ -4,7 +4,10 @@
 //! (P6) image.
 //!
 //! This is a **dev tool, not a gate artifact** — it exercises the full CPU → `MegaDriveBus` → VDP → renderer
-//! path end-to-end. The fixture puts vertical white/red stripes (plane A, two solid tiles) on screen with
+//! path end-to-end. Push 6's **DMA** is the visible headline: the fixture loads all of its **tile art via a
+//! 68k→VDP DMA** from ROM (exactly how a real game loads art) and **clears plane B via a VRAM fill DMA** — so a
+//! glance at the PPM confirms art reaches the screen through the DMA path. The fixture puts vertical white/red
+//! stripes (plane A, two solid tiles) on screen with
 //! green/blue sprite boxes composited over them (via the SAT written through the data port, so the sprite
 //! cache write-through is exercised). Push 5's **output stage** is visible too: **shadow/highlight** is enabled
 //! (reg $0C bit 3), so the low-priority stripes render dimmed while a band of **high-priority** plane-A cells
@@ -76,7 +79,7 @@ fn fixture_rom() -> Vec<u8> {
     // VDP registers (only what the planes renderer reads): display on, plane A $C000, plane B $E000,
     // backdrop = CRAM index 1, full scroll, H32, h-scroll table $8000, autoinc 2, 32×32 planes.
     for word in [
-        0x8140u16, // reg 1  = $40  display enable
+        0x8150u16, // reg 1  = $50  display enable + DMA enable (bit 4, for the art-load DMA below)
         0x8230,    // reg 2  = $30  plane A base $C000
         0x8407,    // reg 4  = $07  plane B base $E000
         0x8558,    // reg 5  = $58  sprite attribute table base $B000
@@ -101,44 +104,27 @@ fn fixture_rom() -> Vec<u8> {
         data(&mut rom, c);
     }
 
-    // Tile 1 (byte 32) = solid colour 1; tile 2 (byte 64) = solid colour 2.
-    cmd(&mut rom, vdp_cmd(0x01, 32));
-    for _ in 0..16 {
-        data(&mut rom, 0x1111);
-    }
-    cmd(&mut rom, vdp_cmd(0x01, 64));
-    for _ in 0..16 {
-        data(&mut rom, 0x2222);
-    }
+    // Load ALL tile art (tiles 1–14 = VRAM bytes 32..480, 448 bytes) via a 68k→VDP DMA from ROM — exactly how
+    // a real game loads its art. The bytes are staged at ROM $001000 (appended at the end of this ROM); one DMA
+    // moves 224 words (autoinc 2). This is the end-to-end proof of push 6: art reaches the screen via DMA.
+    const TILE_ART_ROM: u32 = 0x0000_1000;
+    let sw = TILE_ART_ROM >> 1; // DMA source is programmed as a 68k WORD address (recon RD3)
+    ctrl(&mut rom, 0x93E0); // reg 19 = length low  (224 words)
+    ctrl(&mut rom, 0x9400); // reg 20 = length high
+    ctrl(&mut rom, 0x9500 | (sw as u16 & 0xFF)); // reg 21 = source low
+    ctrl(&mut rom, 0x9600 | ((sw >> 8) as u16 & 0xFF)); // reg 22 = source mid
+    ctrl(&mut rom, 0x9700 | ((sw >> 16) as u16 & 0x7F)); // reg 23 = source high, mode Mem (bit 7 = 0)
+    cmd(&mut rom, vdp_cmd(0x21, 32)); // trigger: VRAM write @ byte 32 with CD5 → 68k→VDP transfer
 
-    // Sprite tiles (a 2×2 sprite uses 4 consecutive tiles, column-major): tiles 3–6 = solid green, tiles
-    // 7–10 = solid blue. Tiles 3–10 are contiguous from byte 96, so one autoincrementing write fills them.
-    cmd(&mut rom, vdp_cmd(0x01, 96));
-    for _ in 0..(4 * 16) {
-        data(&mut rom, 0x3333); // tiles 3–6 green
-    }
-    for _ in 0..(4 * 16) {
-        data(&mut rom, 0x4444); // tiles 7–10 blue
-    }
-
-    // Operator tiles 11–14 = solid colour 14 (a shadow/highlight highlight-operator when drawn at palette 3).
-    cmd(&mut rom, vdp_cmd(0x01, 11 * 32));
-    for _ in 0..(4 * 16) {
-        data(&mut rom, 0xEEEE);
-    }
-
-    // Clear plane B ($E000): power-on VRAM is random, and with real RR9 priority ordering a high-priority
-    // garbage cell would beat the low-priority stripes. Zero all 1024 cells (32×32).
-    cmd(&mut rom, vdp_cmd(0x01, 0xE000));
-    w(&mut rom, 0x343C);
-    w(&mut rom, 0x0000); // move.w #0,d2
-    w(&mut rom, 0x303C);
-    w(&mut rom, 1023); // move.w #1023,d0
-    let clr_top = rom.len() as u32;
-    w(&mut rom, 0x3282); // move.w d2,(a1)  write a zero cell
-    w(&mut rom, 0x51C8); // dbra d0,<disp>
-    let clr_ext = rom.len() as u32;
-    w(&mut rom, disp16(clr_top, clr_ext));
+    // Clear plane B ($E000, 2048 bytes) with a VRAM fill DMA (mode b) — the other real-game DMA idiom (games
+    // clear tilemaps this way). Autoinc 1 so every byte is covered, then restore autoinc 2 for the nametable.
+    ctrl(&mut rom, 0x8F01); // reg 15 = autoinc 1
+    ctrl(&mut rom, 0x9300); // reg 19 = length low  ($0800 = 2048 bytes)
+    ctrl(&mut rom, 0x9408); // reg 20 = length high
+    ctrl(&mut rom, 0x9780); // reg 23 = fill mode (bits 7-6 = 10)
+    cmd(&mut rom, vdp_cmd(0x21, 0xE000)); // VRAM write @ $E000 + CD5
+    data(&mut rom, 0x0000); // data-port write triggers the fill (fill byte = top byte = $00)
+    ctrl(&mut rom, 0x8F02); // reg 15 = autoinc 2 (restore for the nametable writes)
 
     // Fill plane A ($C000) with vertical stripes: 896 cells, tile toggling 1↔2 each cell.
     cmd(&mut rom, vdp_cmd(0x01, 0xC000));
@@ -190,6 +176,21 @@ fn fixture_rom() -> Vec<u8> {
     // Park.
     w(&mut rom, 0x4E72);
     w(&mut rom, 0x2700); // stop #$2700
+
+    // Staged tile art at ROM $001000 (DMA'd to VRAM byte 32 above): tiles 1–14, 448 bytes. Each solid tile is
+    // 32 bytes of a repeated colour nibble (identical bytes to the old data-port writes → the picture is
+    // unchanged; this is a load-path change, not a content change).
+    assert!(
+        rom.len() <= 0x1000,
+        "fixture code must fit below the staged tile art at $1000"
+    );
+    rom.resize(0x1000, 0);
+    let mut tile = |byte: u8, count: usize| rom.extend(std::iter::repeat_n(byte, count));
+    tile(0x11, 32); // tile 1      — solid colour 1 (white stripe)
+    tile(0x22, 32); // tile 2      — solid colour 2 (red stripe)
+    tile(0x33, 128); // tiles 3–6  — solid green (sprite)
+    tile(0x44, 128); // tiles 7–10 — solid blue (sprite)
+    tile(0xEE, 128); // tiles 11–14 — solid colour 14 (highlight operator)
     rom
 }
 
