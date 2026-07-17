@@ -335,8 +335,11 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
                 self.vdp.run_fill(len, fill, self.now_mclk);
                 0
             }
-            // Copy lands in the following slice.
-            DmaRequest::Copy { .. } => 0,
+            DmaRequest::Copy { source, len } => {
+                // VRAM copy: 68k keeps running (recon R4(c)) — the VDP copies + opens the busy window; 0 wait.
+                self.vdp.run_copy(source, len, self.now_mclk);
+                0
+            }
         }
     }
 
@@ -1049,6 +1052,84 @@ mod tests {
             &mem.vdp.sat_cache()[0..4],
             &[0x77, 0x77, 0x77, 0x77],
             "fill bytes hit the SAT write-through window compare"
+        );
+    }
+
+    /// Program + trigger a VRAM copy of `len` bytes from VRAM `source` to VRAM `dest` (autoinc 1). Returns the
+    /// trigger control write's wait cycles.
+    fn run_vram_copy(
+        bus: &mut MegaDriveBus<'_, Vec<BusEvent>>,
+        source: u16,
+        len: u16,
+        dest: u16,
+    ) -> u32 {
+        for w in [
+            0x8114u16,                       // reg 1: DMA enable + mode5, display off
+            0x8F01,                          // reg 15: autoinc 1
+            0x9300 | (len & 0xFF),           // reg 19: length low
+            0x9400 | (len >> 8),             // reg 20: length high
+            0x9500 | (source & 0xFF),        // reg 21: VRAM source low
+            0x9600 | ((source >> 8) & 0xFF), // reg 22: VRAM source high
+            0x97C0,                          // reg 23: copy mode (bits 7-6 = 11)
+        ] {
+            bus.write16(0xC0_0004, 5, w);
+        }
+        bus.write16(0xC0_0004, 5, 0x4000 | (dest & 0x3FFF)); // command word 1
+        bus.write16(0xC0_0004, 5, 0x0080 | ((dest >> 14) & 0x3)) // word 2 → CD5, triggers the copy
+    }
+
+    #[test]
+    fn vram_copy_moves_bytes_within_vram() {
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE;
+        let mut sink = Vec::new();
+        {
+            let mut bus = mem.bus(&mut sink);
+            // Preset VRAM $0200.. = 11 22 33 44 (autoinc 2, word-aligned so no byte-swap surprises).
+            bus.write16(0xC0_0004, 5, 0x8F02);
+            bus.write16(0xC0_0004, 5, 0x4200);
+            bus.write16(0xC0_0004, 5, 0x0000);
+            bus.write16(0xC0_0000, 5, 0x1122);
+            bus.write16(0xC0_0000, 5, 0x3344);
+            run_vram_copy(&mut bus, 0x0200, 4, 0x0100);
+        }
+        assert_eq!(
+            &mem.vdp.vram()[0x0100..0x0104],
+            &[0x11, 0x22, 0x33, 0x44],
+            "4 bytes copied within VRAM"
+        );
+    }
+
+    #[test]
+    fn copy_keeps_the_68k_running_no_wait() {
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE;
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        let wait = run_vram_copy(&mut bus, 0x0200, 4, 0x0100);
+        assert_eq!(wait, 0, "a copy keeps the 68k running (recon R4(c))");
+    }
+
+    #[test]
+    fn copy_updates_the_sat_cache_on_window_hits() {
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE;
+        let mut sink = Vec::new();
+        {
+            let mut bus = mem.bus(&mut sink);
+            bus.write16(0xC0_0004, 5, 0x8500); // reg 5 = 0 → SAT base $0000
+                                               // Preset source VRAM $0200.. = AA BB CC DD.
+            bus.write16(0xC0_0004, 5, 0x8F02);
+            bus.write16(0xC0_0004, 5, 0x4200);
+            bus.write16(0xC0_0004, 5, 0x0000);
+            bus.write16(0xC0_0000, 5, 0xAABB);
+            bus.write16(0xC0_0000, 5, 0xCCDD);
+            run_vram_copy(&mut bus, 0x0200, 4, 0x0000); // copy into SAT entry 0
+        }
+        assert_eq!(
+            &mem.vdp.sat_cache()[0..4],
+            &[0xAA, 0xBB, 0xCC, 0xDD],
+            "copy writes hit the SAT write-through window compare"
         );
     }
 

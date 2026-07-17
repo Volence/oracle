@@ -722,6 +722,34 @@ impl Vdp {
         self.dma_busy_until = now + cost;
     }
 
+    /// Execute a VRAM copy (recon R4(c) / RD2): `len` byte read+write steps within VRAM from `source` to the
+    /// live address, **bypassing the FIFO**, at half the fill byte rate (one byte read + one byte write per
+    /// step = 2 slots/byte). 68k keeps running (the bus returns no wait); the busy window models the elapsed
+    /// time. Each write routes through the SAT write-through (R5 rider). Length is in bytes (RD2); regs 19/20
+    /// → 0 after the transfer (recon R4).
+    pub fn run_copy(&mut self, source: u16, len: u16, now: u64) {
+        let count = if len == 0 { 0x1_0000u32 } else { len as u32 };
+        let dest = self.addr;
+        let mut src = source as usize;
+        for _ in 0..count {
+            let byte = self.vram[src & (VRAM_SIZE - 1)];
+            self.write_vram_byte(self.addr as usize & (VRAM_SIZE - 1), byte);
+            src = src.wrapping_add(1);
+            self.autoinc();
+        }
+        let cost = self.dma_cost(count as u64 * 2, now); // half the fill byte rate (recon R4(c))
+        self.regs[0x13] = 0;
+        self.regs[0x14] = 0;
+        self.last_dma = Some(DmaRecord {
+            mode: DmaMode::Copy,
+            source: source as u32,
+            dest,
+            len,
+            target: Target::Vram,
+        });
+        self.dma_busy_until = now + cost;
+    }
+
     /// A bus-timed data-port write (recon R1/R3): drain the FIFO up to `now`, stall the 68k if the FIFO is
     /// full (returning the wait in **CPU cycles** for the `Bus68k` channel — `MegaDriveBus` folds it into the
     /// instruction cost; `FlatBus` never reaches this path so the SST corpus is untouched), then apply the
@@ -1769,6 +1797,26 @@ mod tests {
             v.data_read(0xABCD),
             0x1234,
             "VRAM read fully defined — no snoop"
+        );
+    }
+
+    #[test]
+    fn copy_runs_at_half_the_fill_byte_rate() {
+        // Recon R4(c): a copy step is one byte read + one byte write = 2 slots/byte, half the fill's 1 slot/byte.
+        let mut f = fresh();
+        f.regs[1] = 0x40; // display on → active line, exact slot arithmetic
+        f.code = 0x01; // VRAM target
+        f.run_fill(8, 0xEE00, 0);
+        let fill_window = f.dma_busy_until;
+        let mut c = fresh();
+        c.regs[1] = 0x40;
+        c.code = 0x01;
+        c.run_copy(0, 8, 0);
+        let copy_window = c.dma_busy_until;
+        assert_eq!(
+            copy_window,
+            2 * fill_window,
+            "copy window = 2× the fill window for the same byte count"
         );
     }
 
