@@ -130,6 +130,58 @@ pub struct PixelResolution {
     pub state: PixelState,
 }
 
+/// Why a candidate layer did not display at a dot (design §4 losing-candidate reasons).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CandidateVerdict {
+    /// This layer is the displayed winner.
+    Won,
+    /// Opaque here, but a higher-priority layer (RR9) won.
+    LostToPriority,
+    /// No opaque pixel at this dot (colour nibble 0) — it contributes nothing to the display.
+    Transparent,
+    /// An opaque sprite **operator** (palette 3, nibble 14/15): it outranks the winner but is not displayed —
+    /// it shifted the winner's shadow/highlight state instead (recon R11.3).
+    Operator,
+}
+
+/// One candidate layer at a dot, in RR9 rank order, with why it won or lost (design §4 losing-candidate list).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Candidate {
+    /// The layer.
+    pub layer: Layer,
+    /// Did this layer have an opaque pixel at the dot.
+    pub opaque: bool,
+    /// The layer's priority bit.
+    pub priority: bool,
+    /// The CRAM index this layer would have shown.
+    pub cram_index: u8,
+    /// Why it won or lost.
+    pub verdict: CandidateVerdict,
+}
+
+/// The full per-dot resolution (design §4 `pixel_attribution`): the winning layer + its CRAM/RGB + resolved
+/// shadow/highlight state, the winning plane/window cell (if any), and the RR9-ordered candidate list with
+/// verdicts. Derived from the same `resolve_line` `render_line` maps to RGB — attribution **is** the render.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct PixelAttribution {
+    /// Screen x.
+    pub x: u16,
+    /// Screen y (line).
+    pub y: u16,
+    /// The winning layer.
+    pub winner: Layer,
+    /// The winner's CRAM index (post-operator: the displayed pixel's index).
+    pub cram_index: u8,
+    /// The winner's CRAM index decoded at the resolved shadow/highlight state — equals `render_line(y)[x]`.
+    pub rgb: (u8, u8, u8),
+    /// The resolved shadow/highlight state.
+    pub state: PixelState,
+    /// The winning plane/window nametable cell (tile/palette/flips/priority); `None` for sprite/backdrop.
+    pub cell: Option<Cell>,
+    /// The candidate layers in RR9 rank order with verdicts (design §4).
+    pub candidates: Vec<Candidate>,
+}
+
 /// The window's horizontal span on one line (design §4 "window span"): screen x `[start_x, end_x)`.
 /// `full_line` marks a line the *vertical* window band covers entirely (recon RR4 / Sega manual §J).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -625,10 +677,11 @@ impl Vdp {
         }
     }
 
-    /// Fetch the plane pixel covering screen (`x`, `line`) (recon RR5/RR6 sign conventions: increasing
-    /// hscroll ⇒ plane right, `plane_x = x − hscroll`; increasing vscroll ⇒ plane up, `plane_y = line +
-    /// vscroll`; both wrap modulo the plane's power-of-two pixel size). Tile pixel via RR1/RR2 with flips.
-    fn plane_pixel(&self, plane: Plane, line: u16, x: usize, h40: bool) -> PlanePixel {
+    /// The nametable cell + within-tile pixel covering screen (`x`, `line`) for `plane` (recon RR5/RR6 sign
+    /// conventions: increasing hscroll ⇒ plane right, `plane_x = x − hscroll`; increasing vscroll ⇒ plane up,
+    /// `plane_y = line + vscroll`; both wrap modulo the plane's power-of-two pixel size). Shared by
+    /// `plane_pixel` (samples the pixel) and `winning_cell` (attribution needs the decoded cell incl. flips).
+    fn plane_sample(&self, plane: Plane, line: u16, x: usize, h40: bool) -> (Cell, u8, u8) {
         let (base, w_cells, h_cells) = self.plane_geometry(plane);
         let plane_w = w_cells as usize * 8;
         let plane_h = h_cells as usize * 8;
@@ -637,7 +690,13 @@ impl Vdp {
         let plane_x = x.wrapping_sub(hscroll as usize) & (plane_w - 1);
         let plane_y = (line as usize + vscroll as usize) & (plane_h - 1);
         let cell = self.nametable_cell(base, w_cells, (plane_x / 8) as u16, (plane_y / 8) as u16);
-        self.cell_pixel(cell, (plane_x & 7) as u8, (plane_y & 7) as u8)
+        (cell, (plane_x & 7) as u8, (plane_y & 7) as u8)
+    }
+
+    /// Fetch the plane pixel covering screen (`x`, `line`) — the sampled cell pixel (RR1/RR2 with flips).
+    fn plane_pixel(&self, plane: Plane, line: u16, x: usize, h40: bool) -> PlanePixel {
+        let (cell, px, py) = self.plane_sample(plane, line, x, h40);
+        self.cell_pixel(cell, px, py)
     }
 
     /// Decode one CRAM index (0..=63) to RGB at the given shadow/highlight `state` (recon R11.5). The 9-bit
@@ -1097,6 +1156,169 @@ impl Vdp {
     pub fn render_line_report(&self, line: u16) -> LineReport {
         let resolved = self.resolve_line(line);
         self.line_report_from(line, resolved)
+    }
+
+    /// The winning plane/window nametable cell at screen (`x`, `line`) for `layer` (design §4: attribution
+    /// reports the decoded entry incl. flips). `None` for a sprite or backdrop winner. Uses the same
+    /// coordinate helpers `resolve_line` does, so the returned cell's tile matches the winner's.
+    fn winning_cell(
+        &self,
+        layer: Layer,
+        line: u16,
+        x: usize,
+        h40: bool,
+        ctx: &ASlotCtx,
+    ) -> Option<Cell> {
+        match layer {
+            Layer::PlaneB => Some(self.plane_sample(Plane::B, line, x, h40).0),
+            Layer::Window => Some(self.nametable_cell(
+                self.window_base(),
+                self.window_stride(),
+                (x / 8) as u16,
+                line / 8,
+            )),
+            Layer::PlaneA => {
+                if ctx.r9 && x >= ctx.boundary && x < ctx.boundary + 16 {
+                    // R9 reuse: the window's last-column cell (recon R9).
+                    let last_col = ((ctx.boundary / 8) as u16).saturating_sub(1);
+                    Some(self.nametable_cell(
+                        self.window_base(),
+                        self.window_stride(),
+                        last_col,
+                        line / 8,
+                    ))
+                } else {
+                    Some(self.plane_sample(Plane::A, line, x, h40).0)
+                }
+            }
+            Layer::Backdrop | Layer::Sprite(_) => None,
+        }
+    }
+
+    /// Build the RR9-ordered candidate list for one dot (design §4), annotating each with a verdict relative to
+    /// the displayed `winner_layer`: the winner is `Won`; an opaque layer ranked *below* the winner
+    /// `LostToPriority`; a transparent layer `Transparent`; an opaque layer ranked *above* the winner but not
+    /// displayed is a sprite `Operator` (it shifted the winner's state instead — recon R11.3).
+    fn dot_candidates(
+        &self,
+        backdrop: u8,
+        s: Option<SpritePixel>,
+        a: &PlanePixel,
+        a_layer: Layer,
+        b: &PlanePixel,
+        winner_layer: Layer,
+    ) -> Vec<Candidate> {
+        // (rank, layer, opaque, priority, cram_index) — RR9 rank: high-sprite 0, high-A 1, high-B 2,
+        // low-sprite 3, low-A 4, low-B 5, backdrop 6.
+        let mut list: Vec<(u8, Layer, bool, bool, u8)> = Vec::with_capacity(4);
+        if let Some(sp) = s {
+            let rank = if sp.priority { 0 } else { 3 };
+            list.push((
+                rank,
+                Layer::Sprite(sp.index),
+                true,
+                sp.priority,
+                sp.cram_index,
+            ));
+        }
+        list.push((
+            if a.priority { 1 } else { 4 },
+            a_layer,
+            a.opaque(),
+            a.priority,
+            a.cram_index(),
+        ));
+        list.push((
+            if b.priority { 2 } else { 5 },
+            Layer::PlaneB,
+            b.opaque(),
+            b.priority,
+            b.cram_index(),
+        ));
+        list.push((6, Layer::Backdrop, true, false, backdrop));
+        list.sort_by_key(|c| c.0);
+        let winner_rank = list.iter().find(|c| c.1 == winner_layer).map_or(6, |c| c.0);
+        list.into_iter()
+            .map(|(rank, layer, opaque, priority, cram_index)| {
+                let verdict = if layer == winner_layer {
+                    CandidateVerdict::Won
+                } else if opaque && rank < winner_rank {
+                    CandidateVerdict::Operator
+                } else if opaque {
+                    CandidateVerdict::LostToPriority
+                } else {
+                    CandidateVerdict::Transparent
+                };
+                Candidate {
+                    layer,
+                    opaque,
+                    priority,
+                    cram_index,
+                    verdict,
+                }
+            })
+            .collect()
+    }
+
+    /// Why pixel (`x`, `y`) is the colour it is (design §4 `pixel_attribution`): the winning layer, its
+    /// CRAM index → RGB at the resolved shadow/highlight state, the winning plane/window cell, and the
+    /// RR9-ordered losing-candidate list. Derived from the same `resolve_line` `render_line` maps to RGB
+    /// (attribution is the render, design §1), so `rgb == render_line(y)[x]`.
+    pub fn pixel_attribution(&self, x: u16, y: u16) -> PixelAttribution {
+        let h40 = self.render_h40();
+        let width = if h40 { 320 } else { 256 };
+        let xi = x as usize;
+        let backdrop = self.backdrop_index();
+        let resolved = self.resolve_line(y);
+        let winner = resolved
+            .pixels
+            .get(xi)
+            .copied()
+            .unwrap_or_else(|| backdrop_px(xi, backdrop));
+        // Per-line plane-A-slot inputs (same as resolve_line) for the candidate list + winning cell.
+        let win = self.window_span(y, width);
+        let a_hscroll = self.plane_hscroll(Plane::A, y);
+        let boundary = win.map_or(0, |w| w.end_x as usize);
+        let r9 = matches!(win, Some(w) if !w.full_line && w.start_x == 0) && a_hscroll & 0x0F != 0;
+        let ctx = ASlotCtx {
+            win,
+            r9,
+            boundary,
+            a_hscroll,
+        };
+        let disp = self.regs()[0x01] & 0x40 != 0;
+        let lcb = self.regs()[0x00] & 0x20 != 0 && xi < 8;
+        let candidates = if !disp || lcb || xi >= width {
+            // Blanked (display off / leftmost-column blank / out of range): only the backdrop is meaningful.
+            vec![Candidate {
+                layer: Layer::Backdrop,
+                opaque: true,
+                priority: false,
+                cram_index: backdrop,
+                verdict: CandidateVerdict::Won,
+            }]
+        } else {
+            let b = self.plane_pixel(Plane::B, y, xi, h40);
+            let (a, a_layer) = self.a_slot_pixel(y, xi, h40, &ctx);
+            self.dot_candidates(
+                backdrop,
+                resolved.sprite.buffer[xi],
+                &a,
+                a_layer,
+                &b,
+                winner.layer,
+            )
+        };
+        PixelAttribution {
+            x,
+            y,
+            winner: winner.layer,
+            cram_index: winner.cram_index,
+            rgb: self.cram_rgb_state(winner.cram_index, winner.state),
+            state: winner.state,
+            cell: self.winning_cell(winner.layer, y, xi, h40, &ctx),
+            candidates,
+        }
     }
 
     /// Build the [`LineReport`] from an already-resolved line (shared by `render_line_report` and
@@ -2473,6 +2695,114 @@ mod tests {
             "S/H off → the operator pixel is a normal palette-3 colour on top"
         );
         assert_eq!(v.render_line_report(0).pixels[0].layer, Layer::Sprite(0));
+    }
+
+    // --- design §4: pixel_attribution -------------------------------------------------------------------
+
+    #[test]
+    fn attribution_rgb_reproduces_render_line() {
+        // The §4 invariant, extended to carry the S/H state: for every pixel, the attribution's RGB equals the
+        // rendered pixel (attribution is the render, design §1).
+        let mut v = op_fixture(); // S/H on, operator tiles present
+        put_cell(&mut v, 0xC000, 0x0001); // plane A low red
+        put_cell(&mut v, 0xE000, 0x8002); // plane B high blue
+        write_sprite(&mut v, 0, 0x0080, 0x0001, 0x0001, 0x0088); // low sprite red at screen 8, link 1
+        write_sprite(&mut v, 1, 0x0080, 0x0000, 0x6008, 0x00A0); // highlight-op at screen 32
+        let rgb = v.render_line(0);
+        for (x, want) in rgb.iter().enumerate() {
+            let a = v.pixel_attribution(x as u16, 0);
+            assert_eq!(
+                a.rgb, *want,
+                "attribution RGB reproduces render_line at x={x}"
+            );
+        }
+    }
+
+    #[test]
+    fn attribution_candidate_order_and_verdicts() {
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x05, 0x10);
+        put_cell(&mut v, 0xC000, 0x8001); // plane A HIGH red, opaque → the winner
+                                          // plane B stays tile 0 → transparent
+        write_sprite(&mut v, 0, 0x0080, 0x0000, 0x0001, 0x0080); // low sprite red, opaque, at screen 0
+        let a = v.pixel_attribution(0, 0);
+        assert_eq!(a.winner, Layer::PlaneA);
+        let layers: Vec<_> = a.candidates.iter().map(|c| c.layer).collect();
+        assert_eq!(
+            layers,
+            vec![
+                Layer::PlaneA,    // high-A rank 1 (winner)
+                Layer::Sprite(0), // low-sprite rank 3
+                Layer::PlaneB,    // low-B rank 5
+                Layer::Backdrop,  // rank 6
+            ],
+            "candidates in RR9 rank order"
+        );
+        let verdicts: Vec<_> = a.candidates.iter().map(|c| c.verdict).collect();
+        assert_eq!(
+            verdicts,
+            vec![
+                CandidateVerdict::Won,
+                CandidateVerdict::LostToPriority, // opaque sprite, outranked by high-A
+                CandidateVerdict::Transparent,    // plane B has no opaque pixel
+                CandidateVerdict::LostToPriority, // backdrop
+            ]
+        );
+    }
+
+    #[test]
+    fn attribution_attaches_the_winning_cell() {
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x05, 0x10);
+        // Plane A winner: tile 1, hflip (0x0800), high priority (0x8000).
+        put_cell(&mut v, 0xC000, 0x8801);
+        let a = v.pixel_attribution(0, 0);
+        let cell = a.cell.expect("a plane-A winner reports its cell");
+        assert_eq!(cell.tile, 1);
+        assert!(cell.hflip && cell.priority && !cell.vflip);
+        // Sprite winner → no cell.
+        put_cell(&mut v, 0xC000, 0x0000); // clear plane A
+        write_sprite(&mut v, 0, 0x0080, 0x0000, 0x0001, 0x0080);
+        assert!(
+            v.pixel_attribution(0, 0).cell.is_none(),
+            "a sprite winner has no plane cell"
+        );
+        // Backdrop winner → no cell.
+        let empty = pa_fixture(false);
+        assert!(empty.pixel_attribution(0, 0).cell.is_none());
+        assert_eq!(empty.pixel_attribution(0, 0).winner, Layer::Backdrop);
+    }
+
+    #[test]
+    fn attribution_reports_operator_shift_and_verdict() {
+        let mut v = op_fixture();
+        put_cell(&mut v, 0xC000, 0x0001); // plane A low red (underlying)
+        put_cell(&mut v, 0xE000, 0x8000); // plane B high + transparent → default normal
+        write_sprite(&mut v, 0, 0x0080, 0x0000, 0x6008, 0x0080); // highlight-op
+        let a = v.pixel_attribution(0, 0);
+        assert_eq!(
+            a.winner,
+            Layer::PlaneA,
+            "the operator is not the displayed winner"
+        );
+        assert_eq!(
+            a.state,
+            PixelState::Highlight,
+            "it shifted the underlying state"
+        );
+        assert_eq!(a.rgb, (255, 127, 127));
+        let sprite_cand = a
+            .candidates
+            .iter()
+            .find(|c| matches!(c.layer, Layer::Sprite(_)))
+            .expect("the operator sprite is a candidate");
+        assert_eq!(
+            sprite_cand.verdict,
+            CandidateVerdict::Operator,
+            "the operator outranks the winner but shifted its state instead of displaying"
+        );
     }
 
     // --- R10 slice 4: render_scanline commit path (status bits go real, the masking carry) ----------------
