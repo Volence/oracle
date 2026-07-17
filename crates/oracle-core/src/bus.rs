@@ -1134,6 +1134,33 @@ mod tests {
     }
 
     #[test]
+    fn frame_report_lists_the_dma_performed() {
+        let mut rom = vec![0u8; 0x1000];
+        rom[0x400..0x408].copy_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
+        let mut mem = MdMem::new(rom);
+        mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE;
+        assert!(
+            mem.vdp.frame_report().dma.is_none(),
+            "no DMA before any transfer"
+        );
+        let mut sink = Vec::new();
+        {
+            let mut bus = mem.bus(&mut sink);
+            run_mem_dma_to_vram(&mut bus, 0x000400, 4, 0xC000);
+        }
+        let dma = mem
+            .vdp
+            .frame_report()
+            .dma
+            .expect("the performed DMA is reported");
+        assert_eq!(dma.mode, DmaMode::Mem);
+        assert_eq!(dma.dest, 0xC000, "destination address");
+        assert_eq!(dma.len, 4, "length");
+        assert_eq!(dma.target, Target::Vram);
+        assert_eq!(dma.source, 0x000400, "68k source byte address");
+    }
+
+    #[test]
     fn flatbus_vdp_address_write_yields_no_wait() {
         // The SST harness bus (FlatBus) has no VDP: a write to the VDP data-port address is plain memory and
         // returns 0 wait forever — the invariant that keeps the SST corpus bit-identical.

@@ -13,7 +13,7 @@
 //! (push 5), and DMA/FIFO (push 6) are out — see the plan `docs/plans/2026-07-16-vdp-planes.md`.
 
 use crate::state_hash::VRAM_SIZE;
-use crate::vdp::Vdp;
+use crate::vdp::{DmaRecord, Vdp};
 
 /// One of the three plane-stage nametables (design §4 `plane_decoded`). Sprites are a separate push.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -358,6 +358,17 @@ pub struct LineReport {
     pub sprite_collision: bool,
     /// Per-pixel resolution (length = the active width); the same computation `render_line` maps to RGB.
     pub pixels: Vec<PixelResolution>,
+}
+
+/// The per-frame introspection rollup (design §4 `frame_report`; recon R4). This push lands the **DMA
+/// section** — the most recent transfer performed (source / dest / length / mode / target). The design's full
+/// frame_report also rolls up dropped-sprites-per-line, overflow/collision lines, and HINT/VINT lines fired;
+/// those are derivable from the per-line [`LineReport`]s and land with their own push (documented interim —
+/// this push exists for DMA + FIFO).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct FrameReport {
+    /// The most recently completed DMA (recon R4), or `None` if none has run this session.
+    pub dma: Option<DmaRecord>,
 }
 
 /// Per-line plane-A-slot inputs computed once by `resolve_line` (the window span + the R9 window-bug
@@ -1156,6 +1167,14 @@ impl Vdp {
     pub fn render_line_report(&self, line: u16) -> LineReport {
         let resolved = self.resolve_line(line);
         self.line_report_from(line, resolved)
+    }
+
+    /// The per-frame rollup (design §4 `frame_report`; recon R4) — DMA section: the most recent transfer
+    /// performed (source / dest / length / mode / target). `None` until the first DMA runs.
+    pub fn frame_report(&self) -> FrameReport {
+        FrameReport {
+            dma: self.last_dma(),
+        }
     }
 
     /// The winning plane/window nametable cell at screen (`x`, `line`) for `layer` (design §4: attribution
