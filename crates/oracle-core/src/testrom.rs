@@ -139,6 +139,120 @@ pub fn build_vint_counter() -> Vec<u8> {
     rom
 }
 
+/// Build the **pad-poll fixture ROM** — the end-to-end proof for the controller/I/O push. It boots on a real
+/// [`crate::system::System`], zeroes VRAM (so the whole screen is transparent → pure backdrop), configures
+/// Player-1's port for a 3-button read (TH output), and then loops forever polling the pad through the real
+/// TH protocol (recon IO4): it reads the TH=0 nibble, extracts **Start** (bit 5, active-low), and sets the
+/// backdrop colour register (VDP reg 7) to CRAM index **1** (Start released) or **2** (Start held). So a
+/// glance at the rendered frame — every pixel is the backdrop — shows whether the injected pad reached the
+/// screen. There are no conditional branches on the input: `backdrop = $8702 - start_released_bit`, so the
+/// only branch is the outer poll loop.
+///
+/// Used by the `io_controllers` integration test (inject → run → assert the pixel flipped) and the
+/// `pad_probe` example (before/after PPM pair). This is a **new scene**, independent of the golden fixtures.
+#[doc(hidden)]
+pub fn build_pad_poll() -> Vec<u8> {
+    let mut rom = vec![0u8; 0x8];
+    rom[0..4].copy_from_slice(&INITIAL_SSP.to_be_bytes()); // reset SSP
+    rom[4..8].copy_from_slice(&MAIN.to_be_bytes()); // reset PC = $200
+    rom.resize(0x200, 0);
+
+    // Append helpers (big-endian), mirroring examples/frame_dump.rs.
+    fn w(rom: &mut Vec<u8>, word: u16) {
+        rom.push((word >> 8) as u8);
+        rom.push((word & 0xFF) as u8);
+    }
+    fn l(rom: &mut Vec<u8>, long: u32) {
+        w(rom, (long >> 16) as u16);
+        w(rom, (long & 0xFFFF) as u16);
+    }
+    // VDP write-command longword (control-port) for a two-word command.
+    fn vdp_cmd(code: u8, addr: u16) -> u32 {
+        let word1 = (((code & 0x03) as u32) << 14) | (addr as u32 & 0x3FFF);
+        let word2 = ((((code >> 2) & 0x0F) as u32) << 4) | (addr as u32 >> 14);
+        (word1 << 16) | word2
+    }
+    let ctrl = |rom: &mut Vec<u8>, word: u16| {
+        w(rom, 0x30BC);
+        w(rom, word);
+    }; // move.w #word,(a0)
+    let data = |rom: &mut Vec<u8>, word: u16| {
+        w(rom, 0x32BC);
+        w(rom, word);
+    }; // move.w #word,(a1)
+    let cmd = |rom: &mut Vec<u8>, c: u32| {
+        w(rom, 0x20BC);
+        l(rom, c);
+    }; // move.l #cmd,(a0)
+
+    // a0 = VDP control ($C00004), a1 = VDP data ($C00000), a2 = I/O base ($A10000).
+    w(&mut rom, 0x41F9);
+    l(&mut rom, 0x00C0_0004);
+    w(&mut rom, 0x43F9);
+    l(&mut rom, 0x00C0_0000);
+    w(&mut rom, 0x45F9);
+    l(&mut rom, 0x00A1_0000);
+
+    // VDP registers: display + DMA enable, plane/sprite bases, H32, autoinc 2 (for the CRAM writes below).
+    for word in [
+        0x8150u16, // reg 1  display + DMA enable
+        0x8230,    // reg 2  plane A $C000
+        0x8407,    // reg 4  plane B $E000
+        0x8558,    // reg 5  SAT $B000
+        0x8701,    // reg 7  backdrop = CRAM 1 (initial; the loop overwrites it)
+        0x8B00,    // reg 11 full scroll
+        0x8C00,    // reg 12 H32, no shadow/highlight
+        0x8D20,    // reg 13 h-scroll table $8000
+        0x8F02,    // reg 15 autoinc 2 (CRAM entries are 2 bytes)
+        0x9000,    // reg 16 32×32 planes
+    ] {
+        ctrl(&mut rom, word);
+    }
+
+    // CRAM palette: 0 black, 1 white, 2 red — the two backdrop colours the loop selects between. Autoinc 2
+    // steps entry-by-entry (a byte-1 autoinc would overlap the two-byte entries and corrupt the palette).
+    cmd(&mut rom, vdp_cmd(0x03, 0x0000));
+    for c in [0x0000u16, 0x0EEE, 0x000E] {
+        data(&mut rom, c);
+    }
+
+    // Zero VRAM with a fill DMA ($0000, $FFFF bytes, fill byte $00): every tile/nametable/SAT byte → 0, so
+    // all plane + sprite pixels are transparent and the whole screen shows the backdrop. Autoinc 1 covers
+    // every byte.
+    ctrl(&mut rom, 0x8F01); // reg 15 autoinc 1
+    ctrl(&mut rom, 0x93FF); // reg 19 fill length low
+    ctrl(&mut rom, 0x94FF); // reg 20 fill length high → $FFFF bytes
+    ctrl(&mut rom, 0x9780); // reg 23 DMA fill mode
+    cmd(&mut rom, vdp_cmd(0x21, 0x0000)); // VRAM write @ $0000 + CD5
+    data(&mut rom, 0x0000); // data-port write triggers the fill (fill byte = top byte = $00)
+
+    // Controller init: P1 control = $40 (TH output), P1 data = $00 (drive TH low for the Start/A nibble).
+    w(&mut rom, 0x157C);
+    w(&mut rom, 0x0040);
+    w(&mut rom, 0x0009); // move.b #$40,(9,a2)
+    w(&mut rom, 0x157C);
+    w(&mut rom, 0x0000);
+    w(&mut rom, 0x0003); // move.b #$00,(3,a2)
+
+    // Poll loop (forever): read the TH=0 nibble, isolate Start (bit 5, active-low), set reg 7 = $8702 − s,
+    // where s = 1 when Start is *released* → backdrop 1, s = 0 when *held* → backdrop 2. No input branch.
+    let loop_top = rom.len() as u32;
+    w(&mut rom, 0x102A);
+    w(&mut rom, 0x0003); // move.b (3,a2),d0
+    w(&mut rom, 0xEA48); // lsr.w #5,d0        d0 bit0 = old Start bit
+    w(&mut rom, 0x0240);
+    w(&mut rom, 0x0001); // andi.w #1,d0       d0 = 1 released / 0 held
+    w(&mut rom, 0x323C);
+    w(&mut rom, 0x8702); // move.w #$8702,d1
+    w(&mut rom, 0x9240); // sub.w d0,d1        d1 = $8701 released / $8702 held
+    w(&mut rom, 0x3081); // move.w d1,(a0)     reg 7 ← backdrop select
+    let bra_at = rom.len() as u32;
+    let disp = (loop_top as i32 - (bra_at as i32 + 2)) as i8 as u8;
+    w(&mut rom, 0x6000 | disp as u16); // bra.s loop_top
+
+    rom
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
