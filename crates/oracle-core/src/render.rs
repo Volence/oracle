@@ -235,8 +235,38 @@ struct SpritePixel {
     priority: bool,
     tile: u16,
     /// The raw colour nibble (1..=15) — needed for the R11 colour-14-never-shadowed quirk and operator
-    /// detection (palette 3 nibble 14 = highlight-op / 15 = shadow-op, added in the operator slice).
+    /// detection (palette 3 nibble 14 = highlight-op / 15 = shadow-op).
     nibble: u8,
+}
+
+impl SpritePixel {
+    /// The shadow/highlight operator this pixel is, if any (recon R11.3): palette line 3, colour nibble 14 =
+    /// highlight operator, nibble 15 = shadow operator. Operators are not displayed; they shift the underlying
+    /// pixel's S/H state. `None` for every ordinary sprite pixel.
+    fn operator(&self) -> Option<PixelState> {
+        match (self.palette, self.nibble) {
+            (3, 14) => Some(PixelState::Highlight),
+            (3, 15) => Some(PixelState::Shadow),
+            _ => None,
+        }
+    }
+}
+
+/// Combine an underlying S/H `base` state with an `op` operator (recon R11.3): levels Shadow=−1, Normal=0,
+/// Highlight=+1; the operator adds ±1, clamped to `[−1, +1]`. Realizes normal+highlight = highlight,
+/// normal+shadow = shadow, shadow+highlight = normal (undo), shadow+shadow = shadow (no double-shadow), and
+/// the symmetric highlight+highlight = highlight, highlight+shadow = normal.
+fn combine_operator(base: PixelState, op: PixelState) -> PixelState {
+    let level = |s| match s {
+        PixelState::Shadow => -1,
+        PixelState::Normal => 0,
+        PixelState::Highlight => 1,
+    };
+    match (level(base) + level(op)).clamp(-1, 1) {
+        -1 => PixelState::Shadow,
+        0 => PixelState::Normal,
+        _ => PixelState::Highlight,
+    }
 }
 
 /// A fully resolved line: the per-pixel composite plus the sprite-pipeline result. The single source
@@ -795,6 +825,39 @@ impl Vdp {
         }
     }
 
+    /// Resolve one dot fully (recon RR9 + R11): pick the RR9 winner, then apply shadow/highlight. A winning
+    /// **sprite operator** (palette 3, nibble 14/15) is not displayed — the winner is recomputed *without* the
+    /// sprite (planes + backdrop), and the operator shifts that underlying pixel's state one step (R11.3). An
+    /// operator that loses RR9 (a high-priority plane over a low-priority operator) has no effect — it never
+    /// becomes the winner. Ordinary winners take `sh_state`.
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_dot(
+        &self,
+        sh: bool,
+        x: usize,
+        backdrop: u8,
+        s: Option<SpritePixel>,
+        a: &PlanePixel,
+        a_layer: Layer,
+        b: &PlanePixel,
+    ) -> PixelResolution {
+        let winner = self.rr9_winner(x, backdrop, s, a, a_layer, b);
+        if sh {
+            if let Layer::Sprite(_) = winner.layer {
+                if let Some(op) = s.and_then(|sp| sp.operator()) {
+                    // The operator wins the sprite slot: display the background beneath it, shifted.
+                    let mut under = self.rr9_winner(x, backdrop, None, a, a_layer, b);
+                    let base = self.sh_state(sh, under.layer, a, b, None);
+                    under.state = combine_operator(base, op);
+                    return under;
+                }
+            }
+        }
+        let mut px = winner;
+        px.state = self.sh_state(sh, px.layer, a, b, s);
+        px
+    }
+
     /// Resolve one scanline — the single source `render_line` / `render_line_report` / `render_scanline` all
     /// derive from (design §1: attribution is the render). Each dot is resolved by RR9 priority ordering
     /// (high-sprite > high-A > high-B > low-sprite > low-A > low-B > backdrop) over the flattened sprite pixel,
@@ -833,9 +896,7 @@ impl Vdp {
                 let b = self.plane_pixel(Plane::B, line, x, h40);
                 let (a, a_layer) = self.a_slot_pixel(line, x, h40, &ctx);
                 let s = sprite.buffer[x];
-                let mut px = self.rr9_winner(x, backdrop, s, &a, a_layer, &b);
-                px.state = self.sh_state(sh, px.layer, &a, &b, s);
-                px
+                self.resolve_dot(sh, x, backdrop, s, &a, a_layer, &b)
             })
             .collect();
         // Leftmost-column blank (reg $00 bit 5, RR4): force the leftmost 8 px to the backdrop (an output-stage
@@ -2292,6 +2353,126 @@ mod tests {
             (127, 0, 0),
             "colour-13 sprite pixel → shadowed by the default"
         );
+    }
+
+    // --- R11.3: shadow/highlight operators ---------------------------------------------------------------
+
+    #[test]
+    fn combine_operator_table() {
+        use PixelState::*;
+        assert_eq!(combine_operator(Normal, Highlight), Highlight);
+        assert_eq!(combine_operator(Normal, Shadow), Shadow);
+        assert_eq!(combine_operator(Shadow, Highlight), Normal, "undo");
+        assert_eq!(combine_operator(Shadow, Shadow), Shadow, "no double-shadow");
+        assert_eq!(combine_operator(Highlight, Highlight), Highlight, "clamp");
+        assert_eq!(combine_operator(Highlight, Shadow), Normal);
+    }
+
+    /// An S/H-on fixture with a palette-3 highlight-op tile (8, nibble 14) and shadow-op tile (9, nibble 15).
+    fn op_fixture() -> Vdp {
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x0C, 0x08); // S/H on
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x05, 0x10); // SAT base 0x2000
+        fill_tile(&mut v, 8, 14); // highlight operator (palette-3 colour 14)
+        fill_tile(&mut v, 9, 15); // shadow operator (palette-3 colour 15)
+        v
+    }
+
+    #[test]
+    fn operator_highlight_over_normal_background() {
+        let mut v = op_fixture();
+        put_cell(&mut v, 0xC000, 0x0001); // plane A low, red (the underlying pixel)
+        put_cell(&mut v, 0xE000, 0x8000); // plane B high + transparent → default normal
+        write_sprite(&mut v, 0, 0x0080, 0x0000, 0x6008, 0x0080); // palette 3, tile 8 (highlight-op), low pri
+        let r = v.render_line_report(0);
+        assert_eq!(
+            r.pixels[0].layer,
+            Layer::PlaneA,
+            "the operator is not displayed → the underlying plane A shows"
+        );
+        assert_eq!(r.pixels[0].state, PixelState::Highlight);
+        assert_eq!(v.render_line(0)[0], (255, 127, 127), "highlighted red");
+    }
+
+    #[test]
+    fn operator_highlight_over_shadow_undoes_to_normal() {
+        let mut v = op_fixture();
+        put_cell(&mut v, 0xC000, 0x0001); // plane A low, red; plane B low + transparent → default shadow
+        write_sprite(&mut v, 0, 0x0080, 0x0000, 0x6008, 0x0080); // highlight-op
+        assert_eq!(
+            v.render_line(0)[0],
+            (255, 0, 0),
+            "shadow + highlight = normal (undo)"
+        );
+        assert_eq!(v.render_line_report(0).pixels[0].state, PixelState::Normal);
+    }
+
+    #[test]
+    fn operator_shadow_over_normal_and_over_shadow() {
+        let mut v = op_fixture();
+        put_cell(&mut v, 0xC000, 0x0001); // plane A low, red
+        put_cell(&mut v, 0xE000, 0x8000); // plane B high + transparent → default normal
+        write_sprite(&mut v, 0, 0x0080, 0x0000, 0x6009, 0x0080); // shadow-op (tile 9)
+        assert_eq!(v.render_line(0)[0], (127, 0, 0), "normal + shadow = shadow");
+        // Now both planes low → default shadow; shadow-op must not double.
+        put_cell(&mut v, 0xE000, 0x0000);
+        assert_eq!(
+            v.render_line(0)[0],
+            (127, 0, 0),
+            "shadow + shadow = shadow (no double-shadow)"
+        );
+    }
+
+    #[test]
+    fn low_operator_under_a_high_plane_has_no_effect() {
+        let mut v = op_fixture();
+        put_cell(&mut v, 0xC000, 0x8001); // plane A HIGH, red → beats the low operator (RR9)
+        write_sprite(&mut v, 0, 0x0080, 0x0000, 0x6008, 0x0080); // low highlight-op
+        let r = v.render_line_report(0);
+        assert_eq!(r.pixels[0].layer, Layer::PlaneA);
+        assert_eq!(r.pixels[0].state, PixelState::Normal, "unshifted");
+        assert_eq!(
+            v.render_line(0)[0],
+            (255, 0, 0),
+            "the operator lost RR9 → no effect"
+        );
+        // Drop plane A to low (B high + transparent → normal bg): the operator now wins and highlights.
+        put_cell(&mut v, 0xC000, 0x0001);
+        put_cell(&mut v, 0xE000, 0x8000);
+        assert_eq!(
+            v.render_line(0)[0],
+            (255, 127, 127),
+            "with a low plane the operator now fires"
+        );
+    }
+
+    #[test]
+    fn high_operator_fires_over_a_high_plane() {
+        let mut v = op_fixture();
+        put_cell(&mut v, 0xC000, 0x8001); // plane A HIGH, red → default normal
+        write_sprite(&mut v, 0, 0x0080, 0x0000, 0xE008, 0x0080); // HIGH highlight-op (attr bit 15 set)
+        assert_eq!(
+            v.render_line(0)[0],
+            (255, 127, 127),
+            "high-sprite > high-A → the operator fires (normal + highlight)"
+        );
+        assert_eq!(v.render_line_report(0).pixels[0].layer, Layer::PlaneA);
+    }
+
+    #[test]
+    fn operator_pixels_are_ordinary_colours_when_sh_disabled() {
+        let mut v = op_fixture();
+        set_reg(&mut v, 0x0C, 0x00); // S/H OFF
+        put_cell(&mut v, 0xC000, 0x0001); // plane A low, red
+        write_cram(&mut v, 3 * 16 + 14, 0x0E00); // palette-3 colour 14 = blue
+        write_sprite(&mut v, 0, 0x0080, 0x0000, 0x6008, 0x0080); // palette 3, nibble 14
+        assert_eq!(
+            v.render_line(0)[0],
+            v.cram_rgb(3 * 16 + 14),
+            "S/H off → the operator pixel is a normal palette-3 colour on top"
+        );
+        assert_eq!(v.render_line_report(0).pixels[0].layer, Layer::Sprite(0));
     }
 
     // --- R10 slice 4: render_scanline commit path (status bits go real, the masking carry) ----------------
