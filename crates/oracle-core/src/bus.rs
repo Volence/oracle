@@ -286,15 +286,17 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
 
     /// A whole-word VDP port read (recon R1/R2), with its side effects (toggle clear, autoincrement,
     /// pre-cache refill). `a` is even (word-aligned).
-    fn vdp_read_word(&mut self, a: u32) -> u16 {
+    /// A whole-word VDP port read (recon R1/R3). Returns the value plus the CPU wait cycles the access costs
+    /// (a data-port read stalls while the write FIFO drains — recon R3). Status / HV reads never stall.
+    fn vdp_read_word(&mut self, a: u32) -> (u16, u32) {
         match a {
             0xC0_0000 | 0xC0_0002 => {
                 let open_bus = *self.last_bus_word;
-                self.vdp.data_read(open_bus)
+                self.vdp.data_read_at(open_bus, self.now_mclk)
             }
-            0xC0_0004 | 0xC0_0006 => self.vdp.control_read_status(self.now_mclk),
-            0xC0_0008..=0xC0_000F => self.vdp.hv_counter_read(self.now_mclk),
-            _ => *self.last_bus_word,
+            0xC0_0004 | 0xC0_0006 => (self.vdp.control_read_status(self.now_mclk), 0),
+            0xC0_0008..=0xC0_000F => (self.vdp.hv_counter_read(self.now_mclk), 0),
+            _ => (*self.last_bus_word, 0),
         }
     }
 
@@ -329,10 +331,10 @@ impl<'a, S: BusEventSink> Bus68k for MegaDriveBus<'a, S> {
             return (v, 0);
         }
         if Self::is_vdp_port(a) {
-            let value = self.vdp_read_word(a);
+            let (value, wait) = self.vdp_read_word(a);
             *self.last_bus_word = value;
             self.emit(BusOp::Read, fc, a, Size::Word, value as u32);
-            return (value, 0);
+            return (value, wait);
         }
         let value = if let Some(hi) = self.mapped_byte(a) {
             let lo = self
@@ -368,7 +370,7 @@ impl<'a, S: BusEventSink> Bus68k for MegaDriveBus<'a, S> {
         if Self::is_vdp_port(a) {
             // A byte read of a 16-bit VDP port does the stateful word access on the even base and returns
             // the addressed half (even = upper byte, odd = lower).
-            let word = self.vdp_read_word(a & !1);
+            let (word, wait) = self.vdp_read_word(a & !1);
             let value = if a & 1 == 0 {
                 (word >> 8) as u8
             } else {
@@ -376,7 +378,7 @@ impl<'a, S: BusEventSink> Bus68k for MegaDriveBus<'a, S> {
             };
             *self.last_bus_word = word;
             self.emit(BusOp::Read, fc, a, Size::Byte, value as u32);
-            return (value, 0);
+            return (value, wait);
         }
         let value = if let Some(b) = self.mapped_byte(a) {
             *self.last_bus_word = (b as u16) * 0x0101; // byte driven on both halves (placeholder open-bus rule)
@@ -798,6 +800,29 @@ mod tests {
                 "a spaced write drains the FIFO first, so it never stalls"
             );
         }
+    }
+
+    #[test]
+    fn read_waits_for_a_nonempty_write_fifo() {
+        // A data-port read while writes are pending stalls the 68k until the write FIFO drains (recon R3:
+        // pending writes take priority over reads).
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.now_mclk = 100 * crate::vdp::MCLK_PER_LINE + 500; // active line
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        vdp_setup_vram_write(&mut bus);
+        for _ in 0..3 {
+            bus.write16(0xC0_0000, 5, 0xBEEF); // load the write FIFO (no stall yet)
+        }
+        // Switch to a (legal) VRAM read command @ $0000 so the read is not the write-armed lockup.
+        bus.write16(0xC0_0004, 5, 0x0000);
+        bus.write16(0xC0_0004, 5, 0x0000);
+        // A read at the same instant must wait for those 3 pending writes to drain.
+        let (_v, wait) = bus.read16(0xC0_0000, 5);
+        assert!(
+            wait > 0,
+            "a read waits for the pending write FIFO to drain (recon R3)"
+        );
     }
 
     #[test]

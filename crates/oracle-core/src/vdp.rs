@@ -625,10 +625,42 @@ impl Vdp {
             self.latched_fault = true;
             return open_bus;
         }
-        let out = self.read_buffer;
+        let mut out = self.read_buffer;
+        // Snoop quirk (recon R3): a CRAM/VSRAM data-port read fills its UNDEFINED bits (above the 9-bit CRAM /
+        // 11-bit VSRAM masks) from the next-available FIFO entry (the word written 4 writes ago). VRAM reads
+        // are fully defined — no snoop. Behavioral, currency-safe (rendering + the hashed currencies read the
+        // stored bytes directly, never through `data_read`).
+        match self.target() {
+            Target::Cram => out = (out & 0x0EEE) | (self.fifo_snoop_word() & !0x0EEE),
+            Target::Vsram => out = (out & 0x07FF) | (self.fifo_snoop_word() & !0x07FF),
+            Target::Vram => {}
+        }
         self.autoinc();
         self.read_buffer = self.read_target();
         out
+    }
+
+    /// A bus-timed data-port read (recon R1/R3): a read waits for the write FIFO to drain first (pending
+    /// writes take priority over reads), then returns the pre-cached word (with the CRAM/VSRAM snoop merge).
+    /// Returns the value plus the CPU wait cycles for the `Bus68k` channel (`FlatBus` never reaches here → the
+    /// SST corpus is untouched).
+    pub fn data_read_at(&mut self, open_bus: u16, now: u64) -> (u16, u32) {
+        self.fifo_drain(now);
+        let mut wait_mclk = 0u64;
+        // Reads wait for the write FIFO to empty (recon R3): drain every pending entry, banking the elapsed
+        // time as the read's stall.
+        while self.fifo_len > 0 {
+            let oldest = self.fifo[(self.fifo_write.wrapping_sub(self.fifo_len) & 3) as usize];
+            let cost = self.entry_drain_cost(oldest.code, self.fifo_slot_clock);
+            self.fifo_slot_clock += cost;
+            self.fifo_len -= 1;
+            wait_mclk = self.fifo_slot_clock.saturating_sub(now);
+        }
+        let out = self.data_read(open_bus);
+        (
+            out,
+            wait_mclk.div_ceil(crate::system::MCLK_PER_CPU_CYCLE) as u32,
+        )
     }
 
     // --- Interrupts + the IPL-deassert path (recon R7/R12) ------------------------------------------------
@@ -1511,6 +1543,54 @@ mod tests {
             v.fifo_snoop_word(),
             0x0000,
             "snoop slot still the pre-write default"
+        );
+    }
+
+    #[test]
+    fn cram_read_snoops_undefined_bits_from_next_available_fifo_entry() {
+        let mut v = fresh();
+        // Load the FIFO so the next-available slot holds a known word (recon R3: "4 writes ago").
+        vram_write_cmd(&mut v, 0x0000);
+        for w in [0xF00Du16, 0x1111, 0x2222, 0x3333] {
+            v.data_write(w);
+        }
+        assert_eq!(
+            v.fifo_snoop_word(),
+            0xF00D,
+            "next-available entry = the first of 4 writes"
+        );
+        // Give CRAM[0] a known (masked) value, then arm a CRAM read @ 0 (code 0x08 → prefills read_buffer).
+        v.cram[0] = 0x0A;
+        v.cram[1] = 0xA0;
+        v.control_write(0x0000, 0); // word1: CD1-0 = 00 (read low), addr 0
+        v.control_write(0x0020, 0); // word2: CD5-2 = 0010 → CRAM read (code 0x08)
+        assert_eq!(v.code, 0x08, "CRAM read command armed");
+        let out = v.data_read(0xABCD);
+        let expected = (0x0AA0 & 0x0EEE) | (0xF00D & !0x0EEE);
+        assert_eq!(
+            out, expected,
+            "CRAM read = defined bits | snooped undefined bits"
+        );
+    }
+
+    #[test]
+    fn vram_read_is_fully_defined_no_snoop() {
+        let mut v = fresh();
+        // FIFO garbage in the snoop slot.
+        vram_write_cmd(&mut v, 0x1000);
+        for w in [0xDEADu16, 0xBEEF, 0xCAFE, 0xF00D] {
+            v.data_write(w);
+        }
+        // Put a known word at VRAM $0000, then arm a VRAM read there.
+        v.vram[0] = 0x12;
+        v.vram[1] = 0x34;
+        v.control_write(0x0000, 0); // VRAM read @ 0 (code 0x00)
+        v.control_write(0x0000, 0);
+        assert_eq!(v.code, 0x00, "VRAM read command");
+        assert_eq!(
+            v.data_read(0xABCD),
+            0x1234,
+            "VRAM read fully defined — no snoop"
         );
     }
 
