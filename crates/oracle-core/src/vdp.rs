@@ -132,6 +132,13 @@ pub struct Vdp {
     /// control-port setup write; a fill/copy runs the 68k in parallel, so a poll sees busy for the coarse
     /// transfer window). Power-on = 0 (never busy). In neither frozen currency.
     dma_busy_until: u64,
+    /// A DMA the 68k has just triggered (recon R4), armed by the trigger write and taken by the bus to execute
+    /// (the bus owns the 68k source memory). Always `None` at an instruction boundary — armed and consumed
+    /// within one bus access — so it round-trips a quiesced snapshot as `None`. In neither frozen currency.
+    dma_pending: Option<DmaRequest>,
+    /// The most recently completed DMA, for the `frame_report` introspection surface (design §4; recon R4).
+    /// Serialized; in neither frozen currency. Power-on = `None`.
+    last_dma: Option<DmaRecord>,
 }
 
 impl std::fmt::Debug for Vdp {
@@ -182,6 +189,8 @@ impl Vdp {
             fifo_len: 0,
             fifo_slot_clock: 0,
             dma_busy_until: 0,
+            dma_pending: None,
+            last_dma: None,
         }
     }
 
@@ -550,7 +559,84 @@ impl Vdp {
             if self.code & 0x01 == 0 {
                 self.read_buffer = self.read_target();
             }
+            // A completed CD5 (DMA) command arms the transfer (recon R4 / RD2/RD4). The mode is reg 23's top
+            // bits: Mem (bit 7 = 0) and Copy (11) trigger on this control write; Fill (10) triggers on the next
+            // data-port write (its value is the fill data), so it is armed there.
+            if self.code & 0x20 != 0 {
+                self.arm_dma();
+            }
         }
+    }
+
+    /// Decode + arm the pending DMA from the live registers (recon R4 / RD1–RD4). Called when a CD5 command
+    /// completes (Mem/Copy) — Fill is armed on its data-port trigger instead.
+    fn arm_dma(&mut self) {
+        let len = ((self.regs[0x14] as u16) << 8) | self.regs[0x13] as u16;
+        match self.regs[0x17] & 0xC0 {
+            0x80 => {} // Fill: armed by the data-port trigger, not here
+            0xC0 => {
+                // Copy: source = low 16 bits of the source registers (a VRAM byte address), len bytes.
+                let source = ((self.regs[0x16] as u16) << 8) | self.regs[0x15] as u16;
+                self.dma_pending = Some(DmaRequest::Copy { source, len });
+            }
+            _ => {
+                // Mem (bit 7 = 0): source = 68k WORD address << 1 (RD3), len words.
+                let source = (((self.regs[0x17] as u32 & 0x7F) << 16)
+                    | ((self.regs[0x16] as u32) << 8)
+                    | self.regs[0x15] as u32)
+                    << 1;
+                self.dma_pending = Some(DmaRequest::Mem { source, len });
+            }
+        }
+    }
+
+    /// Take the pending DMA (recon R4) — the bus calls this after each control/data write to execute it.
+    pub fn take_dma_request(&mut self) -> Option<DmaRequest> {
+        self.dma_pending.take()
+    }
+
+    /// The live data-port target address (recon R1) — the DMA destination, exposed for the `DmaRecord`.
+    pub fn dma_dest(&self) -> u16 {
+        self.addr
+    }
+
+    /// The live data-port target region (recon R1) — exposed for the `DmaRecord` / introspection.
+    pub fn dma_target(&self) -> Target {
+        self.target()
+    }
+
+    /// The most recently completed DMA (recon R4; `frame_report`). `None` until the first transfer.
+    pub fn last_dma(&self) -> Option<DmaRecord> {
+        self.last_dma
+    }
+
+    /// Feed one DMA word to the current data-port target (68k→VDP transfer, recon R4(a)): route to
+    /// VRAM/CRAM/VSRAM through `write_target` (so the R5 SAT write-through fires for VRAM — "any DMA that
+    /// writes VRAM counts") and autoinc. The bus reads the source word from 68k memory and calls this.
+    pub fn dma_write_word(&mut self, w: u16) {
+        self.write_target(w);
+        self.autoinc();
+    }
+
+    /// The coarse mclk cost of a DMA (recon R4(e) / R3): `slots × MCLK_PER_LINE / slots_per_line`, using the
+    /// slot rate at the transfer's start instant (Phase-2 coarse — per-line active/blank variation across a
+    /// multi-line transfer is a Phase-3 refinement; slot positions within a line are deferred). Integer.
+    pub fn dma_cost(&self, slots: u64, start: u64) -> u64 {
+        slots * MCLK_PER_LINE / self.slots_per_line(start)
+    }
+
+    /// Record a completed DMA + advance the length/source registers to their post-transfer state (recon R4:
+    /// regs 19–23 mutate during a transfer — length → 0, source advanced; visible in both currencies) and
+    /// open the DMA-busy window to `busy_until`.
+    pub fn dma_complete(&mut self, record: DmaRecord, end_source_words: u32, busy_until: u64) {
+        self.regs[0x13] = 0;
+        self.regs[0x14] = 0;
+        // Advance the source registers (Mem: the 68k word address; the low 23 bits, reg 23 keeps its mode bit).
+        self.regs[0x15] = (end_source_words & 0xFF) as u8;
+        self.regs[0x16] = ((end_source_words >> 8) & 0xFF) as u8;
+        self.regs[0x17] = (self.regs[0x17] & 0x80) | ((end_source_words >> 16) & 0x7F) as u8;
+        self.last_dma = Some(record);
+        self.dma_busy_until = busy_until;
     }
 
     /// A control-port (status) read ($C00004/6; recon R2 timing bits). **Clears the pending toggle** — the
@@ -798,12 +884,45 @@ fn ramp3(level: u8) -> u8 {
     (level as u16 * 255 / 7) as u8
 }
 
-/// The data-port target region, decoded from the command code's low nibble (recon R1).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Target {
+/// The data-port target region, decoded from the command code's low nibble (recon R1). Public + serializable
+/// because [`DmaRecord`] carries it for the `frame_report` introspection surface.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, bincode::Encode, bincode::Decode)]
+pub enum Target {
     Vram,
     Cram,
     Vsram,
+}
+
+/// The three DMA modes (recon R4 / RD2): 68k→VDP transfer, VRAM fill, VRAM copy.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, bincode::Encode, bincode::Decode)]
+pub enum DmaMode {
+    Mem,
+    Fill,
+    Copy,
+}
+
+/// A DMA the 68k has just triggered (recon R4), armed on the trigger write and taken by the bus (which owns
+/// the 68k source memory) to execute. `len` is in the mode's transfer unit (words for `Mem`, bytes for
+/// `Fill`/`Copy` — RD2).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, bincode::Encode, bincode::Decode)]
+pub enum DmaRequest {
+    /// 68k→VDP: read `len` words from 68k byte address `source`, feed each through the FIFO to the current
+    /// data-port target + autoinc. Total 68k halt (recon R4(a)).
+    Mem { source: u32, len: u16 },
+    /// VRAM fill: `len` byte writes of `fill`'s data to the current target, 68k keeps running (recon R4(b)).
+    Fill { len: u16, fill: u16 },
+    /// VRAM copy: `len` byte read+write steps within VRAM from `source`, FIFO-bypass, 68k runs (recon R4(c)).
+    Copy { source: u16, len: u16 },
+}
+
+/// A completed DMA, for the `frame_report` introspection surface (design §4; recon R4).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, bincode::Encode, bincode::Decode)]
+pub struct DmaRecord {
+    pub mode: DmaMode,
+    pub source: u32,
+    pub dest: u16,
+    pub len: u16,
+    pub target: Target,
 }
 
 #[cfg(test)]
@@ -1513,12 +1632,23 @@ mod tests {
         v.data_write(0x1234);
         v.data_write(0x5678);
         v.dma_busy_until = 42_000;
+        v.last_dma = Some(DmaRecord {
+            mode: DmaMode::Mem,
+            source: 0x1234,
+            dest: 0xC000,
+            len: 16,
+            target: Target::Vram,
+        });
         let bytes = bincode::encode_to_vec(&v, bincode::config::standard()).unwrap();
         let (back, _): (Vdp, usize) =
             bincode::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
-        assert_eq!(v, back, "the FIFO ring + DMA-busy deadline round-trip");
+        assert_eq!(
+            v, back,
+            "the FIFO ring + DMA-busy deadline + last-DMA record round-trip"
+        );
         assert_eq!(back.fifo_len, 2);
         assert_eq!(back.dma_busy_until, 42_000);
+        assert_eq!(back.last_dma.unwrap().len, 16);
     }
 
     #[test]

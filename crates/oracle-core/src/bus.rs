@@ -170,6 +170,8 @@ impl<'a, S: BusEventSink> Bus for SystemBus<'a, S> {
 // -----------------------------------------------------------------------------------------------------------
 
 use crate::m68000::bus68k::{Bus68k, ADDR_MASK};
+use crate::system::MCLK_PER_CPU_CYCLE;
+use crate::vdp::{DmaMode, DmaRecord, DmaRequest, Target};
 
 /// 8 KiB of Z80 RAM, visible to the 68000 at `$A00000` (mirrored across the 64 KiB `$A00000–$A0FFFF` window).
 pub const Z80_RAM_SIZE: usize = 0x2000;
@@ -308,10 +310,58 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             0xC0_0000 | 0xC0_0002 => self.vdp.data_write_at(value, self.now_mclk),
             0xC0_0004 | 0xC0_0006 => {
                 self.vdp.control_write(value, self.now_mclk);
-                0
+                self.run_pending_dma() // a CD5 Mem/Copy command triggers here (recon R4)
             }
             _ => 0, // HV counter port writes ($C00008–$C0000F) are accepted but not stored.
         }
+    }
+
+    /// Execute the DMA the last control/data write armed (recon R4), returning the CPU wait cycles it costs the
+    /// 68k. Mode (a) 68k→VDP holds the bus for the whole transfer (a total halt window); fill/copy leave the
+    /// 68k running (0 wait). The VDP owns the target write + register bookkeeping; the bus owns the 68k source
+    /// reads (it holds ROM/RAM).
+    fn run_pending_dma(&mut self) -> u32 {
+        let Some(req) = self.vdp.take_dma_request() else {
+            return 0;
+        };
+        match req {
+            DmaRequest::Mem { source, len } => self.run_mem_dma(source, len),
+            // Fill and Copy land in the following slices.
+            DmaRequest::Fill { .. } | DmaRequest::Copy { .. } => 0,
+        }
+    }
+
+    /// 68k→VDP transfer (recon R4(a)): read `len` words from 68k byte address `source`, feed each through the
+    /// FIFO to the current data-port target (SAT write-through fires for VRAM — R5), and hold the 68k bus for
+    /// the whole transfer (the total halt window, returned as CPU wait cycles). Advances the source/length
+    /// registers to their post-transfer state (recon R4).
+    fn run_mem_dma(&mut self, source: u32, len: u16) -> u32 {
+        let now = self.now_mclk;
+        let count = if len == 0 { 0x1_0000u32 } else { len as u32 };
+        let dest = self.vdp.dma_dest();
+        let target = self.vdp.dma_target();
+        let mut src = source;
+        for _ in 0..count {
+            let hi = self
+                .mapped_byte(src & ADDR_MASK)
+                .unwrap_or((*self.last_bus_word >> 8) as u8);
+            let lo = self
+                .mapped_byte(src.wrapping_add(1) & ADDR_MASK)
+                .unwrap_or((*self.last_bus_word & 0xFF) as u8);
+            self.vdp.dma_write_word(((hi as u16) << 8) | lo as u16);
+            src = src.wrapping_add(2);
+        }
+        let slots_per_word = if target == Target::Vram { 2 } else { 1 };
+        let cost = self.vdp.dma_cost(count as u64 * slots_per_word, now);
+        let record = DmaRecord {
+            mode: DmaMode::Mem,
+            source,
+            dest,
+            len,
+            target,
+        };
+        self.vdp.dma_complete(record, src >> 1, now + cost);
+        cost.div_ceil(MCLK_PER_CPU_CYCLE) as u32
     }
 }
 
@@ -822,6 +872,100 @@ mod tests {
         assert!(
             wait > 0,
             "a read waits for the pending write FIFO to drain (recon R3)"
+        );
+    }
+
+    /// Program a 68k→VDP (Mem) DMA of `len` words from 68k byte address `src` to VRAM address `dest`, then
+    /// fire it by writing the CD5 command. Returns the wait cycles the trigger write reported.
+    fn run_mem_dma_to_vram(
+        bus: &mut MegaDriveBus<'_, Vec<BusEvent>>,
+        src: u32,
+        len: u16,
+        dest: u16,
+    ) -> u32 {
+        let sw = src >> 1; // source is programmed as a 68k WORD address (RD3)
+        for w in [
+            0x8114u16,                           // reg 1: DMA enable (bit4) + mode5, display off
+            0x8F02,                              // reg 15: autoinc 2
+            0x9300 | (len & 0xFF),               // reg 19: length low
+            0x9400 | (len >> 8),                 // reg 20: length high
+            0x9500 | (sw as u16 & 0xFF),         // reg 21: source low
+            0x9600 | ((sw >> 8) as u16 & 0xFF),  // reg 22: source mid
+            0x9700 | ((sw >> 16) as u16 & 0x7F), // reg 23: source high, mode Mem (bit7=0)
+        ] {
+            bus.write16(0xC0_0004, 5, w);
+        }
+        bus.write16(0xC0_0004, 5, 0x4000 | (dest & 0x3FFF)); // VRAM-write command word 1 (+CD5 via word 2)
+        bus.write16(0xC0_0004, 5, 0x0080 | ((dest >> 14) & 0x3)) // word 2: CD5-2 = 1000 → code $21
+    }
+
+    #[test]
+    fn mem_dma_copies_source_words_to_vram() {
+        let mut rom = vec![0u8; 0x1000];
+        rom[0x400..0x408].copy_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
+        let mut mem = MdMem::new(rom);
+        mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE; // vblank line: blanked (fast) transfer
+        let mut sink = Vec::new();
+        {
+            let mut bus = mem.bus(&mut sink);
+            run_mem_dma_to_vram(&mut bus, 0x000400, 4, 0x0000);
+        }
+        assert_eq!(
+            &mem.vdp.vram()[0..8],
+            &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88],
+            "the 4 source words landed in VRAM big-endian"
+        );
+    }
+
+    #[test]
+    fn mem_dma_updates_the_sat_cache() {
+        // R5 pin: "any DMA operation that writes to VRAM also counts" — a Mem DMA into the SAT window updates
+        // the cache exactly like a CPU write.
+        let mut rom = vec![0u8; 0x1000];
+        rom[0x400..0x408].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD, 0x00, 0x00, 0x00, 0x00]);
+        let mut mem = MdMem::new(rom);
+        mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE;
+        let mut sink = Vec::new();
+        {
+            let mut bus = mem.bus(&mut sink);
+            bus.write16(0xC0_0004, 5, 0x8500); // reg 5 = 0 → SAT base $0000
+            run_mem_dma_to_vram(&mut bus, 0x000400, 4, 0x0000);
+        }
+        assert_eq!(
+            &mem.vdp.sat_cache()[0..4],
+            &[0xAA, 0xBB, 0xCC, 0xDD],
+            "the DMA'd Y + size/link bytes of entry 0 updated the SAT cache"
+        );
+    }
+
+    #[test]
+    fn mem_dma_returns_a_halt_wait_from_the_slot_budget() {
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE;
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        let wait = run_mem_dma_to_vram(&mut bus, 0x000400, 16, 0x0000);
+        assert!(
+            wait > 0,
+            "the 68k is halted for the whole transfer (recon R4(a))"
+        );
+    }
+
+    #[test]
+    fn mem_dma_advances_source_and_zeroes_length_registers() {
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE;
+        let mut sink = Vec::new();
+        {
+            let mut bus = mem.bus(&mut sink);
+            run_mem_dma_to_vram(&mut bus, 0x000400, 4, 0x0000); // source words $0200, +4 → $0204
+        }
+        let r = mem.vdp.regs();
+        assert_eq!((r[0x14], r[0x13]), (0, 0), "length registers zeroed");
+        assert_eq!(
+            (r[0x17] & 0x7F, r[0x16], r[0x15]),
+            (0x00, 0x02, 0x04),
+            "source registers advanced to word address $000204"
         );
     }
 
