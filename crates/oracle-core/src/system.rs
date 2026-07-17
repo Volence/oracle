@@ -199,10 +199,11 @@ impl System {
             ram,
             z80_ram,
             vdp,
+            io,
             last_bus_word,
             ..
         } = self;
-        MegaDriveBus::new(rom, ram, z80_ram, vdp, now, last_bus_word, sink)
+        MegaDriveBus::new(rom, ram, z80_ram, vdp, io, now, last_bus_word, sink)
     }
 
     /// Serialize the entire machine to a bincode snapshot. O(struct) with no pointer fixup.
@@ -424,10 +425,11 @@ impl System {
             ram,
             z80_ram,
             vdp,
+            io,
             last_bus_word,
             ..
         } = self;
-        let mut bus = MegaDriveBus::new(rom, ram, z80_ram, vdp, now, last_bus_word, sink);
+        let mut bus = MegaDriveBus::new(rom, ram, z80_ram, vdp, io, now, last_bus_word, sink);
         cpu.step(&mut bus)
     }
 }

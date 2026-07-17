@@ -7,6 +7,7 @@
 //! explicit deferred-write seam: such writes are queued and drained by [`SystemBus::apply_writes`]
 //! after the access completes (jgenesis's `MainBusWrites` pattern, reimplemented).
 
+use crate::io::{io_reg, Io, IoReg};
 use crate::state_hash::VRAM_SIZE;
 use crate::system::RAM_SIZE;
 use crate::vdp::Vdp;
@@ -191,7 +192,7 @@ pub const MD_VERSION: u8 = 0xA0;
 /// | `$000000–$3FFFFF` | ROM (read-only; past a short ROM's end → open bus) |
 /// | `$400000–$7FFFFF` | open bus |
 /// | `$A00000–$A0FFFF` | 8 KiB Z80 RAM (mirrored) |
-/// | `$A10000–$A1001F` | I/O: `$A10001` = [`MD_VERSION`]; else 0 |
+/// | `$A10000–$A1001F` | I/O: `$A10001` = [`MD_VERSION`]; the 15 data/control/serial registers via [`Io`] |
 /// | `$A11100`/`$A11200` | Z80 BUSREQ/RESET: reads report bus granted (0); writes accepted |
 /// | `$C00000`/`$C00002` | VDP data port (read = pre-cache buffer, write = VRAM/CRAM/VSRAM; recon R1) |
 /// | `$C00004`/`$C00006` | VDP control port (read = status word, write = command; recon R1/R2) |
@@ -205,19 +206,22 @@ pub struct MegaDriveBus<'a, S: BusEventSink> {
     ram: &'a mut [u8],
     z80_ram: &'a mut [u8],
     vdp: &'a mut Vdp,
+    io: &'a mut Io,
     now_mclk: u64,
     last_bus_word: &'a mut u16,
     sink: &'a mut S,
 }
 
 impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
-    /// Build an adapter over the given memory regions, the VDP + the master-clock reading, the open-bus
-    /// latch, and an event sink.
+    /// Build an adapter over the given memory regions, the VDP + the master-clock reading, the I/O block,
+    /// the open-bus latch, and an event sink.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         rom: &'a [u8],
         ram: &'a mut [u8],
         z80_ram: &'a mut [u8],
         vdp: &'a mut Vdp,
+        io: &'a mut Io,
         now_mclk: u64,
         last_bus_word: &'a mut u16,
         sink: &'a mut S,
@@ -227,6 +231,7 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             ram,
             z80_ram,
             vdp,
+            io,
             now_mclk,
             last_bus_word,
             sink,
@@ -245,8 +250,17 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             }
             // Z80 RAM: 8 KiB mirrored across the 64 KiB window.
             0xA0_0000..=0xA0_FFFF => Some(self.z80_ram[(a as usize) & (Z80_RAM_SIZE - 1)]),
-            // I/O: version register at $A10001; the rest read 0 (real pads land later).
-            0xA1_0000..=0xA1_001F => Some(if a == 0xA1_0001 { MD_VERSION } else { 0x00 }),
+            // I/O ($A10000–$A1001F): the fixed version byte at $A10001, the 15 data/control/serial registers
+            // via the `Io` model (recon IO1–IO4), or 0 for the even (unmapped high-half) bytes.
+            0xA1_0001 => Some(MD_VERSION),
+            0xA1_0000..=0xA1_001F => Some(match io_reg(a) {
+                Some((port, IoReg::Data)) => self.io.read_data(port),
+                Some((port, IoReg::Ctrl)) => self.io.read_ctrl(port),
+                Some((port, IoReg::TxData)) => self.io.read_txdata(port),
+                Some((port, IoReg::SCtrl)) => self.io.read_sctrl(port),
+                // RxData: no serial device drives the receive line (decision 2). Even bytes: unmapped → 0.
+                Some((_, IoReg::RxData)) | None => 0x00,
+            }),
             // Z80 BUSREQ ($A11100) / RESET ($A11200): report bus granted / reset released (0) so boot proceeds.
             0xA1_1100..=0xA1_1101 | 0xA1_1200..=0xA1_1201 => Some(0x00),
             // VDP ports ($C00000–$C0000F): stateful, handled as whole accesses in read16/write16/read8/
@@ -266,6 +280,15 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
     fn store_byte(&mut self, a: u32, byte: u8) {
         match a {
             0xA0_0000..=0xA0_FFFF => self.z80_ram[(a as usize) & (Z80_RAM_SIZE - 1)] = byte,
+            // I/O register writes ($A10003–$A1001F): data/control latches + serial stubs (recon IO2/IO3).
+            // The version byte and RxData are read-only; even bytes are unmapped. All drop here.
+            0xA1_0000..=0xA1_001F => match io_reg(a) {
+                Some((port, IoReg::Data)) => self.io.write_data(port, byte),
+                Some((port, IoReg::Ctrl)) => self.io.write_ctrl(port, byte),
+                Some((port, IoReg::TxData)) => self.io.write_txdata(port, byte),
+                Some((port, IoReg::SCtrl)) => self.io.write_sctrl(port, byte),
+                Some((_, IoReg::RxData)) | None => {}
+            },
             0xE0_0000..=0xFF_FFFF => self.ram[(a as usize) & (RAM_SIZE - 1)] = byte,
             _ => {}
         }
@@ -626,6 +649,7 @@ mod tests {
         ram: Vec<u8>,
         z80_ram: Vec<u8>,
         vdp: Vdp,
+        io: Io,
         now_mclk: u64,
         last_bus_word: u16,
     }
@@ -636,6 +660,7 @@ mod tests {
                 ram: vec![0u8; RAM_SIZE],
                 z80_ram: vec![0u8; Z80_RAM_SIZE],
                 vdp: Vdp::power_on(&mut crate::rng::SplitMix64::new(1)),
+                io: Io::default(),
                 now_mclk: 0,
                 last_bus_word: 0,
             }
@@ -646,6 +671,7 @@ mod tests {
                 &mut self.ram,
                 &mut self.z80_ram,
                 &mut self.vdp,
+                &mut self.io,
                 self.now_mclk,
                 &mut self.last_bus_word,
                 sink,
@@ -738,6 +764,47 @@ mod tests {
         let mut sink = Vec::new();
         let mut bus = mem.bus(&mut sink);
         assert_eq!(bus.read8(0xA1_0001, 5).0, MD_VERSION, "version register");
+    }
+
+    #[test]
+    fn port1_pad_reads_through_the_th_protocol_over_the_bus() {
+        // Drive the whole read through the CPU-facing read8/write8 path — never Io directly. Inject Start on
+        // P1, configure TH as output ($40), and read both nibbles (recon IO4). The version byte still holds.
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.io.set_pad(
+            0,
+            crate::io::Pad {
+                start: true,
+                ..Default::default()
+            },
+        );
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        // P1 control: TH output.
+        bus.write8(0xA1_0009, 5, 0x40);
+        // TH=1: Start is on the TH=0 nibble, so it must NOT appear here — the C/B/R/L/D/U set reads released.
+        bus.write8(0xA1_0003, 5, 0x40);
+        assert_eq!(
+            bus.read8(0xA1_0003, 5).0,
+            0xFF,
+            "TH=1: nothing pressed in the C/B/R/L/D/U set"
+        );
+        // TH=0: bit 5 (Start) reads low; bits 3,2 forced low (detection signature); read = 0x93.
+        bus.write8(0xA1_0003, 5, 0x00);
+        let lo = bus.read8(0xA1_0003, 5).0;
+        assert_eq!(lo & 0x20, 0, "Start pressed (bit 5 = 0)");
+        assert_eq!(
+            lo & 0x0C,
+            0,
+            "bits 3,2 forced low (MD-pad detection signature)"
+        );
+        assert_eq!(lo, 0x93);
+        // The version register is untouched by the wiring.
+        assert_eq!(
+            bus.read8(0xA1_0001, 5).0,
+            MD_VERSION,
+            "version register still fixed"
+        );
     }
 
     #[test]
