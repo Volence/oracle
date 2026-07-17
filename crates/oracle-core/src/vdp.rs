@@ -31,6 +31,17 @@ const SAT_CACHE_LEN: usize = 320;
 /// The VDP's owned state. The four hashed regions are always allocated at their fixed hardware sizes
 /// ([`crate::state_hash`]); the `state_hash`/`export_state` currencies read straight through them, so their
 /// byte layout is frozen.
+/// One write-FIFO slot (recon R3): the data word plus a copy of the command code/address registers as they
+/// were when the write was enqueued. The physical slot **retains** its data after the entry drains (the pending
+/// count drops but the bytes stay) — that stale data is exactly what the CRAM/VSRAM snoop quirk and the
+/// VRAM-fill data source read ("the data written 4 writes ago").
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, bincode::Encode, bincode::Decode)]
+struct FifoEntry {
+    data: u16,
+    code: u8,
+    addr: u16,
+}
+
 #[derive(Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub struct Vdp {
     /// 64 KiB video RAM.
@@ -95,6 +106,27 @@ pub struct Vdp {
     /// across lines *and* frames. Real state, serialized (round-trips); not in either frozen currency.
     /// Power-on = false. Committed by [`Vdp::render_scanline`]; the pure `render_line` seeds from it read-only.
     sprite_dot_overflow_carry: bool,
+    /// The 4-entry write FIFO (recon R3), a physical ring. Each data-port write enqueues a [`FifoEntry`] here.
+    /// `fifo_write` is the next slot to fill; the oldest pending entry is `fifo[(fifo_write − fifo_len) & 3]`;
+    /// the **next-available** entry (about to be overwritten = written 4 writes ago) is `fifo[fifo_write]` —
+    /// the snoop-quirk / CRAM-VSRAM-fill data source. Real hardware state, serialized; in **neither** frozen
+    /// currency (`state_hash`/`export_state` read only VRAM/CRAM/VSRAM/regs). Power-on = empty.
+    ///
+    /// **Coarse Phase-2 model** (design brief §2): the FIFO carries *timing* (`fifo_len` + the drain clock,
+    /// added in the wait-channel slice) and *contents* (`fifo` for snoop/fill-source); the VRAM/CRAM/VSRAM
+    /// mutation itself stays applied at enqueue, since a data-port read waits for the FIFO to drain and
+    /// rendering latches at line start — no observer can distinguish enqueue-time from drain-time application
+    /// within Phase-2 granularity (divergence-ledger entry).
+    fifo: [FifoEntry; 4],
+    /// Index (0..=3) of the next FIFO slot to enqueue into (the physical write cursor).
+    fifo_write: u8,
+    /// Pending (not-yet-drained) FIFO entries, 0..=4 — the coarse timing abstraction. Saturates at 4 until the
+    /// drain clock (wait-channel slice) advances it; a 5th write while full stalls the 68k via the wait channel.
+    fifo_len: u8,
+    /// mclk before which the status DMA-busy bit (bit 1) reads set (recon R4 / Eke: DMA-busy sets on the
+    /// control-port setup write; a fill/copy runs the 68k in parallel, so a poll sees busy for the coarse
+    /// transfer window). Power-on = 0 (never busy). In neither frozen currency.
+    dma_busy_until: u64,
 }
 
 impl std::fmt::Debug for Vdp {
@@ -140,6 +172,10 @@ impl Vdp {
             odd_frame: false,
             sat_cache: vec![0u8; SAT_CACHE_LEN],
             sprite_dot_overflow_carry: false,
+            fifo: [FifoEntry::default(); 4],
+            fifo_write: 0,
+            fifo_len: 0,
+            dma_busy_until: 0,
         }
     }
 
@@ -272,6 +308,9 @@ impl Vdp {
     /// ports slice (which also clears the pending toggle on a status read).
     pub fn status_word(&self, mclk: u64) -> u16 {
         let mut s = 1u16 << 9; // FIFO empty (placeholder: immediate drain this push)
+        if mclk < self.dma_busy_until {
+            s |= 1 << 1; // DMA busy (recon R4 / Eke): set across a fill/copy's coarse transfer window
+        }
         if self.vint_pending {
             s |= 1 << 7; // F: VINT-pending readback (conservative no-side-effect pin, recon R12)
         }
@@ -311,11 +350,49 @@ impl Vdp {
     /// The current data-port target region, decoded from CD3..CD0 (recon R1). The low nibble names the
     /// region for both plain and DMA (CD5) codes.
     fn target(&self) -> Target {
-        match self.code & 0x0F {
+        Self::target_of(self.code)
+    }
+
+    /// The data-port target region for an arbitrary command `code` (recon R1) — the FIFO stores the code at
+    /// enqueue time, so the drain/snoop path decodes a captured code rather than the live one.
+    fn target_of(code: u8) -> Target {
+        match code & 0x0F {
             0x3 | 0x8 => Target::Cram,  // CRAM write (0x3) / CRAM read (0x8)
             0x4 | 0x5 => Target::Vsram, // VSRAM read (0x4) / write (0x5)
             _ => Target::Vram,          // VRAM read (0x0) / write (0x1); unknown → VRAM
         }
+    }
+
+    /// Enqueue a data-port write into the FIFO ring (recon R3): capture the data word plus the live
+    /// code/address registers. The physical slot is overwritten in place (retaining nothing of the old entry
+    /// beyond the ring position), and `fifo_len` counts pending entries (saturating at 4 until the drain clock
+    /// advances it in the wait-channel slice).
+    fn fifo_enqueue(&mut self, data: u16) {
+        self.fifo[self.fifo_write as usize] = FifoEntry {
+            data,
+            code: self.code,
+            addr: self.addr,
+        };
+        self.fifo_write = (self.fifo_write + 1) & 3;
+        self.fifo_len = (self.fifo_len + 1).min(4);
+    }
+
+    /// The number of pending (not-yet-drained) FIFO entries, 0..=4 (recon R3; introspection / debuggers).
+    pub fn fifo_len(&self) -> u8 {
+        self.fifo_len
+    }
+
+    /// The data word in the **next-available** FIFO slot — the entry about to be overwritten (written 4 writes
+    /// ago). Recon R3: this is what the CRAM/VSRAM read snoop quirk and the CRAM/VSRAM VRAM-fill data source
+    /// read. Exposed for introspection; consumed internally by the snoop/fill slices.
+    pub fn fifo_snoop_word(&self) -> u16 {
+        self.fifo[self.fifo_write as usize].data
+    }
+
+    /// Whether the DMA-busy status bit reads set at `mclk` (recon R4): true while a fill/copy's coarse transfer
+    /// window is still open. Introspection companion to the status word's bit 1.
+    pub fn dma_busy(&self, mclk: u64) -> bool {
+        mclk < self.dma_busy_until
     }
 
     /// Read the current-address word from the data-port target (recon R1/R3). VRAM/CRAM/VSRAM are stored
@@ -451,8 +528,11 @@ impl Vdp {
     pub fn data_write(&mut self, w: u16) {
         self.pending = false;
         if self.code & 0x20 != 0 {
-            return; // CD5/DMA: placeholder no-op until the DMA push
+            return; // CD5/DMA: placeholder no-op until the DMA-mode slices
         }
+        // Enqueue into the FIFO (recon R3, contents + timing), then apply the write (enqueue-immediate model —
+        // see the `fifo` field docs). The enqueue captures the pre-autoincrement address, per the pin.
+        self.fifo_enqueue(w);
         self.write_target(w);
         self.autoinc();
     }
@@ -1295,6 +1375,68 @@ mod tests {
         assert_eq!(back.sat_cache[7], 0xAB);
         assert_eq!(back.sat_cache[SAT_CACHE_LEN - 1], 0xCD);
         assert!(back.sprite_dot_overflow_carry);
+    }
+
+    /// Set up a completed VRAM write command @ `addr` with autoinc 2 (recon R1), leaving the toggle disarmed.
+    fn vram_write_cmd(v: &mut Vdp, addr: u16) {
+        v.control_write(0x8F02, 0); // reg 15 = autoinc 2
+        v.control_write(0x4000 | (addr & 0x3FFF), 0); // first word: CD1-0 = 01 (VRAM write), A13-A0
+        v.control_write((addr >> 14) & 0x03, 0); // second word: A15-A14, CD5-2 = 0
+    }
+
+    #[test]
+    fn fifo_records_data_code_addr_at_enqueue() {
+        let mut v = fresh();
+        vram_write_cmd(&mut v, 0x0100);
+        v.data_write(0xBEEF);
+        let newest = (v.fifo_write.wrapping_sub(1) & 3) as usize;
+        assert_eq!(v.fifo[newest].data, 0xBEEF, "data word captured");
+        assert_eq!(v.fifo[newest].code & 0x0F, 0x01, "VRAM-write code captured");
+        assert_eq!(
+            v.fifo[newest].addr, 0x0100,
+            "pre-autoincrement address captured (recon R3)"
+        );
+        assert_eq!(v.fifo_len, 1, "one pending entry");
+    }
+
+    #[test]
+    fn fifo_and_dma_fields_survive_a_bincode_round_trip() {
+        let mut v = fresh();
+        vram_write_cmd(&mut v, 0x0200);
+        v.data_write(0x1234);
+        v.data_write(0x5678);
+        v.dma_busy_until = 42_000;
+        let bytes = bincode::encode_to_vec(&v, bincode::config::standard()).unwrap();
+        let (back, _): (Vdp, usize) =
+            bincode::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
+        assert_eq!(v, back, "the FIFO ring + DMA-busy deadline round-trip");
+        assert_eq!(back.fifo_len, 2);
+        assert_eq!(back.dma_busy_until, 42_000);
+    }
+
+    #[test]
+    fn power_on_fifo_is_empty_and_busy_clear() {
+        let v = fresh();
+        assert_eq!(v.fifo_len(), 0, "FIFO empty at power-on");
+        assert_eq!(v.dma_busy_until, 0);
+        assert!(!v.dma_busy(0), "not busy at power-on");
+        assert_eq!(v.status_word(0) & (1 << 1), 0, "status DMA-busy bit clear");
+    }
+
+    #[test]
+    fn enqueue_still_writes_vram_immediately() {
+        // The enqueue-immediate model (currency-neutral): the FIFO tracks contents/timing but VRAM is written
+        // exactly as before, so VRAM/CRAM/VSRAM/regs stay byte-identical.
+        let mut v = fresh();
+        vram_write_cmd(&mut v, 0x0100);
+        v.data_write(0xBEEF);
+        assert_eq!(v.vram[0x0100], 0xBE, "high byte written immediately");
+        assert_eq!(v.vram[0x0101], 0xEF, "low byte written immediately");
+        assert_eq!(
+            v.fifo_snoop_word(),
+            0x0000,
+            "snoop slot still the pre-write default"
+        );
     }
 
     #[test]
