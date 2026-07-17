@@ -298,12 +298,17 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
         }
     }
 
-    /// A whole-word VDP port write (recon R1). `a` is even (word-aligned).
-    fn vdp_write_word(&mut self, a: u32, value: u16) {
+    /// A whole-word VDP port write (recon R1). `a` is even (word-aligned). Returns the CPU wait cycles the
+    /// access costs (recon R3: a data-port write to a full FIFO stalls the 68k via /DTACK) — folded into the
+    /// instruction cost through the `Bus68k` wait channel. Control-port writes never stall.
+    fn vdp_write_word(&mut self, a: u32, value: u16) -> u32 {
         match a {
-            0xC0_0000 | 0xC0_0002 => self.vdp.data_write(value),
-            0xC0_0004 | 0xC0_0006 => self.vdp.control_write(value, self.now_mclk),
-            _ => {} // HV counter port writes ($C00008–$C0000F) are accepted but not stored.
+            0xC0_0000 | 0xC0_0002 => self.vdp.data_write_at(value, self.now_mclk),
+            0xC0_0004 | 0xC0_0006 => {
+                self.vdp.control_write(value, self.now_mclk);
+                0
+            }
+            _ => 0, // HV counter port writes ($C00008–$C0000F) are accepted but not stored.
         }
     }
 }
@@ -346,10 +351,10 @@ impl<'a, S: BusEventSink> Bus68k for MegaDriveBus<'a, S> {
     fn write16(&mut self, addr: u32, fc: u8, value: u16) -> u32 {
         let a = addr & ADDR_MASK;
         if Self::is_vdp_port(a) {
-            self.vdp_write_word(a, value);
+            let wait = self.vdp_write_word(a, value);
             *self.last_bus_word = value;
             self.emit(BusOp::Write, fc, a, Size::Word, value as u32);
-            return 0;
+            return wait;
         }
         self.store_byte(a, (value >> 8) as u8);
         self.store_byte((a.wrapping_add(1)) & ADDR_MASK, (value & 0xFF) as u8);
@@ -391,10 +396,10 @@ impl<'a, S: BusEventSink> Bus68k for MegaDriveBus<'a, S> {
             // A byte write to a 16-bit VDP port drives the byte on both halves (the common byte-write model);
             // the stateful word write runs on the even base.
             let word = (value as u16) * 0x0101;
-            self.vdp_write_word(a & !1, word);
+            let wait = self.vdp_write_word(a & !1, word);
             *self.last_bus_word = word;
             self.emit(BusOp::Write, fc, a, Size::Byte, value as u32);
-            return 0;
+            return wait;
         }
         self.store_byte(a, value);
         *self.last_bus_word = (value as u16) * 0x0101;
@@ -738,6 +743,78 @@ mod tests {
             bus.read16(0xC0_000A, 5).0,
             expected,
             "HV counter mirror at $C0000A"
+        );
+    }
+
+    /// Drive display-on + autoinc-2 + a VRAM-write command @ `$0100` into the VDP through the control port.
+    fn vdp_setup_vram_write(bus: &mut MegaDriveBus<'_, Vec<BusEvent>>) {
+        bus.write16(0xC0_0004, 5, 0x8140); // reg 1 = display enable (bit 6)
+        bus.write16(0xC0_0004, 5, 0x8F02); // reg 15 = autoinc 2
+        bus.write16(0xC0_0004, 5, 0x4100); // VRAM write command, word 1 (@ $0100)
+        bus.write16(0xC0_0004, 5, 0x0000); // word 2
+    }
+
+    #[test]
+    fn fifo_full_write_returns_wait_cycles() {
+        // Five rapid data-port writes at the SAME instant on an active-display line (recon R3: 16 slots/line,
+        // a VRAM word exits in 2 slots): the first four fill the 4-entry FIFO, the fifth stalls the 68k.
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.now_mclk = 100 * crate::vdp::MCLK_PER_LINE + 500; // active line, mid-line
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        vdp_setup_vram_write(&mut bus);
+        for _ in 0..4 {
+            assert_eq!(
+                bus.write16(0xC0_0000, 5, 0xBEEF),
+                0,
+                "the first four writes fill the FIFO without stalling"
+            );
+        }
+        let wait = bus.write16(0xC0_0000, 5, 0xBEEF);
+        assert!(
+            wait > 0,
+            "the fifth write to a full FIFO stalls the 68k (recon R3)"
+        );
+    }
+
+    #[test]
+    fn fifo_writes_spaced_past_a_slot_do_not_stall() {
+        // Writes spaced well past the active VRAM slot cost (~427 mclk) drain between writes — the FIFO never
+        // fills, so no write stalls.
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.now_mclk = 0;
+        {
+            let mut sink = Vec::new();
+            let mut bus = mem.bus(&mut sink);
+            vdp_setup_vram_write(&mut bus);
+        }
+        for i in 0..8u64 {
+            mem.now_mclk = i * 1000; // active lines (0..2), 1000 mclk apart
+            let mut sink = Vec::new();
+            let mut bus = mem.bus(&mut sink);
+            assert_eq!(
+                bus.write16(0xC0_0000, 5, 0xBEEF),
+                0,
+                "a spaced write drains the FIFO first, so it never stalls"
+            );
+        }
+    }
+
+    #[test]
+    fn flatbus_vdp_address_write_yields_no_wait() {
+        // The SST harness bus (FlatBus) has no VDP: a write to the VDP data-port address is plain memory and
+        // returns 0 wait forever — the invariant that keeps the SST corpus bit-identical.
+        use crate::m68000::bus68k::FlatBus;
+        let mut bus = FlatBus::new();
+        assert_eq!(
+            bus.write16(0xC0_0000, 5, 0xBEEF),
+            0,
+            "FlatBus word write: no wait"
+        );
+        assert_eq!(
+            bus.write8(0xC0_0000, 5, 0xBE),
+            0,
+            "FlatBus byte write: no wait"
         );
     }
 

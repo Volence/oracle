@@ -121,8 +121,13 @@ pub struct Vdp {
     /// Index (0..=3) of the next FIFO slot to enqueue into (the physical write cursor).
     fifo_write: u8,
     /// Pending (not-yet-drained) FIFO entries, 0..=4 — the coarse timing abstraction. Saturates at 4 until the
-    /// drain clock (wait-channel slice) advances it; a 5th write while full stalls the 68k via the wait channel.
+    /// drain clock advances it; a 5th write while full stalls the 68k via the wait channel.
     fifo_len: u8,
+    /// The mclk up to which the FIFO has been drained (recon R3) — the coarse drain clock. `fifo_drain`
+    /// advances it one entry at a time at the pinned per-line slot rate (2 slots per VRAM word, 1 per
+    /// CRAM/VSRAM word; 16/18 active / 167/205 blanked slots per line). Real timing state, serialized; in
+    /// neither frozen currency. Power-on = 0.
+    fifo_slot_clock: u64,
     /// mclk before which the status DMA-busy bit (bit 1) reads set (recon R4 / Eke: DMA-busy sets on the
     /// control-port setup write; a fill/copy runs the 68k in parallel, so a poll sees busy for the coarse
     /// transfer window). Power-on = 0 (never busy). In neither frozen currency.
@@ -175,6 +180,7 @@ impl Vdp {
             fifo: [FifoEntry::default(); 4],
             fifo_write: 0,
             fifo_len: 0,
+            fifo_slot_clock: 0,
             dma_busy_until: 0,
         }
     }
@@ -382,6 +388,45 @@ impl Vdp {
         self.fifo_len
     }
 
+    /// External (CPU/DMA) access slots per line at `mclk` (recon R3): active display H32 = 16 / H40 = 18;
+    /// a blanked line (vblank or display-off) H32 = 167 / H40 = 205. One slot = one VRAM byte access.
+    fn slots_per_line(&self, mclk: u64) -> u64 {
+        let blanked = self.vblank(mclk) || (self.regs[1] & 0x40) == 0;
+        match (self.h40(), blanked) {
+            (false, false) => 16,
+            (true, false) => 18,
+            (false, true) => 167,
+            (true, true) => 205,
+        }
+    }
+
+    /// The mclk cost of draining one FIFO entry with command `code` at slot-clock instant `at` (recon R3): a
+    /// VRAM word exits in 2 slots, a CRAM/VSRAM word in 1, at the per-line slot rate. Integer throughout.
+    fn entry_drain_cost(&self, code: u8, at: u64) -> u64 {
+        let slots = match Self::target_of(code) {
+            Target::Vram => 2,
+            _ => 1,
+        };
+        slots * MCLK_PER_LINE / self.slots_per_line(at)
+    }
+
+    /// Advance the FIFO drain clock up to `now` (recon R3): pop each pending entry whose slot cost has elapsed.
+    /// When the FIFO empties, the clock coasts forward to `now` (an idle FIFO does not bank drain credit).
+    fn fifo_drain(&mut self, now: u64) {
+        while self.fifo_len > 0 {
+            let oldest = self.fifo[(self.fifo_write.wrapping_sub(self.fifo_len) & 3) as usize];
+            let cost = self.entry_drain_cost(oldest.code, self.fifo_slot_clock);
+            if self.fifo_slot_clock + cost > now {
+                break;
+            }
+            self.fifo_slot_clock += cost;
+            self.fifo_len -= 1;
+        }
+        if self.fifo_len == 0 {
+            self.fifo_slot_clock = self.fifo_slot_clock.max(now);
+        }
+    }
+
     /// The data word in the **next-available** FIFO slot — the entry about to be overwritten (written 4 writes
     /// ago). Recon R3: this is what the CRAM/VSRAM read snoop quirk and the CRAM/VSRAM VRAM-fill data source
     /// read. Exposed for introspection; consumed internally by the snoop/fill slices.
@@ -526,15 +571,45 @@ impl Vdp {
     /// auto-increments. A CD5 (DMA) command latches state and does nothing here — DMA is push 6 (documented
     /// placeholder); the toggle still clears and the address does not advance.
     pub fn data_write(&mut self, w: u16) {
+        self.apply_data_write(w);
+    }
+
+    /// The write body shared by the untimed [`Vdp::data_write`] and the bus-timed [`Vdp::data_write_at`]:
+    /// clear the toggle, and on a non-DMA command enqueue into the FIFO (recon R3, contents + timing) then
+    /// apply the write (enqueue-immediate model — see the `fifo` field docs; the enqueue captures the
+    /// pre-autoincrement address, per the pin).
+    fn apply_data_write(&mut self, w: u16) {
         self.pending = false;
         if self.code & 0x20 != 0 {
             return; // CD5/DMA: placeholder no-op until the DMA-mode slices
         }
-        // Enqueue into the FIFO (recon R3, contents + timing), then apply the write (enqueue-immediate model —
-        // see the `fifo` field docs). The enqueue captures the pre-autoincrement address, per the pin.
         self.fifo_enqueue(w);
         self.write_target(w);
         self.autoinc();
+    }
+
+    /// A bus-timed data-port write (recon R1/R3): drain the FIFO up to `now`, stall the 68k if the FIFO is
+    /// full (returning the wait in **CPU cycles** for the `Bus68k` channel — `MegaDriveBus` folds it into the
+    /// instruction cost; `FlatBus` never reaches this path so the SST corpus is untouched), then apply the
+    /// write. A 5th write while all 4 slots are pending waits for the oldest to drain (official /DTACK stall).
+    pub fn data_write_at(&mut self, w: u16, now: u64) -> u32 {
+        // A DMA command's data write is not FIFO-timed here (the DMA slices own it); no stall, apply as before.
+        if self.code & 0x20 != 0 {
+            self.apply_data_write(w);
+            return 0;
+        }
+        self.fifo_drain(now);
+        let mut wait_mclk = 0u64;
+        if self.fifo_len == 4 {
+            let oldest = self.fifo[(self.fifo_write.wrapping_sub(self.fifo_len) & 3) as usize];
+            let cost = self.entry_drain_cost(oldest.code, self.fifo_slot_clock);
+            let drain_at = self.fifo_slot_clock + cost;
+            wait_mclk = drain_at.saturating_sub(now);
+            self.fifo_slot_clock = drain_at;
+            self.fifo_len -= 1;
+        }
+        self.apply_data_write(w);
+        (wait_mclk.div_ceil(crate::system::MCLK_PER_CPU_CYCLE)) as u32
     }
 
     /// A data-port read ($C00000/2; recon R1/R3). Clears the toggle, returns the pre-cached buffer, refills
