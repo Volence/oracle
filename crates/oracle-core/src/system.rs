@@ -374,6 +374,12 @@ impl System {
                     let off = self.vdp.hint_offset();
                     self.scheduler.schedule(deadline + off, EventKind::HInt);
                 }
+                // Render active lines (0..=223) so the sprite overflow/collision status bits + the R10 masking
+                // carry evolve during normal runs (games poll them). Currency-safe: the sprite flags/carry are
+                // in neither frozen currency, and render output is discarded here. (recon R10 / design §5.)
+                if line < 224 {
+                    self.vdp.render_scanline(line as u16);
+                }
                 if line == 224 {
                     let off = self.vdp.vint_offset();
                     self.scheduler.schedule(deadline + off, EventKind::VInt);
@@ -539,6 +545,40 @@ mod tests {
         assert!(
             s.vdp().vint_pending(),
             "the VInt latch was set by the auto Scanline chain"
+        );
+    }
+
+    #[test]
+    fn scanline_wiring_evolves_the_sprite_masking_carry_during_a_run() {
+        // The Scanline event now calls render_scanline for active lines, so the sprite pipeline's state (here
+        // the R10 dot-overflow masking carry) evolves during run_frames. Program nine 4-cell sprites on the
+        // last active line (223) — 288 px > the 256-px H32 budget → dot overflow. The carry is NOT cleared by
+        // status reads, so committing it on line 223 survives to the end of the frame (robust vs the ROM).
+        let mut s = booted(0x1111);
+        {
+            let v = s.vdp_mut();
+            v.control_write(0x8F02, 0); // reg 15 = autoinc 2
+            v.control_write(0x8510, 0); // reg 5 = 0x10 → SAT base 0x2000
+            let base = v.sat_base();
+            for i in 0..9u16 {
+                let link = if i + 1 < 9 { i + 1 } else { 0 };
+                let addr = (base + i as usize * 8) as u16;
+                v.control_write((0x01u16 << 14) | (addr & 0x3FFF), 0); // VRAM write, code low = 1
+                v.control_write((addr >> 14) & 0x0003, 0); // code high = 0
+                v.data_write(223 + 128); // Y = screen 223 (the last active line)
+                v.data_write((0x0C << 8) | link); // size 4×1 (32 px), link
+                v.data_write(0x0001); // tile 1
+                v.data_write(128 + i * 32); // X, stepped across the line
+            }
+        }
+        assert!(
+            !s.vdp().sprite_dot_overflow_carry(),
+            "the carry is clear before the run"
+        );
+        s.run_frames(1);
+        assert!(
+            s.vdp().sprite_dot_overflow_carry(),
+            "render_scanline committed the dot-overflow carry on line 223 during the run"
         );
     }
 
