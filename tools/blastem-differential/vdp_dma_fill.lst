@@ -1,0 +1,291 @@
+ AS V1.42 Beta [Bld 212] - Source File vdp_dma_fill.asm - Page 1 - 07/16/2026 10:12:32 PM
+
+
+       1/       0 :                     ; ---------------------------------------------------------------------------
+       2/       0 :                     ; VDP DMA fill + data-port-read experiment ROM (clean-room, authored here).
+       3/       0 :                     ;
+       4/       0 :                     ; Two cells for the DMA + FIFO push (VDP recon R4(b) / R1 open remainders),
+       5/       0 :                     ; driven by BlastEm's GDB-remote stub exactly like vdp_pending.asm.
+       6/       0 :                     ;
+       7/       0 :                     ; Cell 0 (VRAM fill baseline, R4(b)): program a VRAM fill DMA of 8 bytes at
+       8/       0 :                     ;   $0400 with fill value $EE (data word $EEEE -> top byte for VRAM), then read
+       9/       0 :                     ;   VRAM $0400/$0402 back. Confirms the fill writes the top byte to consecutive
+      10/       0 :                     ;   addresses (autoincrement 1) and that DMA-enable (reg1 bit4) gates it. This
+      11/       0 :                     ;   is the concrete behavior slice F implements — pinned against hardware here.
+      12/       0 :                     ;
+      13/       0 :                     ; Cell 1 (data-port READ while a WRITE command is armed, R1 open cell): arm the
+      14/       0 :                     ;   FIRST word of a VRAM-WRITE command @ $0200, then perform a data-port READ.
+      15/       0 :                     ;   Recon R1 pins this configuration as a hardware LOCKUP ("setup a write then
+      16/       0 :                     ;   read -> the 68K hangs"). BlastEm's response (hang = watchdog timeout, or a
+      17/       0 :                     ;   returned value) is recorded by the driver — a low-exposure cell the recon
+      18/       0 :                     ;   flags as bracketed by the lockup; we record honestly, do not force a pin.
+      19/       0 :                     ;
+      20/       0 :                     ; Control block (driver writes $FF9000.b before `c`):
+      21/       0 :                     ;   0 -> cell 0 (VRAM fill baseline)
+      22/       0 :                     ;   1 -> cell 1 (data-read while write-armed; may hang = lockup)
+      23/       0 :                     ;
+      24/       0 :                     ; Observable RAM:
+      25/       0 :                     ;   $FF8000.w VRAM[$0400]  (fill readback; expect $EEEE for cell 0)
+      26/       0 :                     ;   $FF8002.w VRAM[$0402]  (fill readback; expect $EEEE for cell 0)
+      27/       0 :                     ;   $FF8004.w VRAM[$0406]  (fill tail; expect $EEEE if all 8 bytes filled)
+      28/       0 :                     ;   $FF8008.w cell-1 data-read value (if it did not hang)
+      29/       0 :                     ;   $FF8010.w done marker $C0DE  (absent => the machine hung, i.e. lockup)
+      30/       0 :                     ; ---------------------------------------------------------------------------
+      31/       0 :                             cpu     68000
+      32/       0 :                             padding off
+      33/       0 :                             org     $000000
+      34/       0 :                     
+      35/       0 :                     ; ---- Exception vector table (64 vectors) ----
+      36/       0 : 00FF 0000                   dc.l    $00FF0000               ; 0  initial SSP
+      37/       4 : 0000 0200                   dc.l    Init                    ; 1  reset PC
+      38/       8 :                             rept    62
+      39/       8 :                             dc.l    GenericH                ; 2..63
+      40/       8 :                             endm
+      39/       8 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/       C : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      10 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      14 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      18 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      1C : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      20 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      24 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      28 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      2C : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      30 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      34 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      38 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      3C : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      40 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      44 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      48 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      4C : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      50 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      54 : 0000 029A                   dc.l    GenericH                ; 2..63
+ AS V1.42 Beta [Bld 212] - Source File vdp_dma_fill.asm - Page 2 - 07/16/2026 10:12:32 PM
+
+
+      39/      58 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      5C : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      60 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      64 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      68 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      6C : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      70 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      74 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      78 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      7C : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      80 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      84 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      88 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      8C : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      90 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      94 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      98 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      9C : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      A0 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      A4 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      A8 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      AC : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      B0 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      B4 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      B8 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      BC : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      C0 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      C4 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      C8 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      CC : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      D0 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      D4 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      D8 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      DC : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      E0 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      E4 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      E8 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      EC : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      F0 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      F4 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      F8 : 0000 029A                   dc.l    GenericH                ; 2..63
+      39/      FC : 0000 029A                   dc.l    GenericH                ; 2..63
+      41/     100 :                     
+      42/     100 :                     ; ---- Minimal Mega Drive header at $100 ----
+      43/     100 :                             org     $000100
+      44/     100 : 5345 4741 2047              dc.b    "SEGA GENESIS    "
+              106 : 454E 4553 4953 
+              10C : 2020 2020          
+      45/     110 : 2843 2948 4152              dc.b    "(C)HARNESS 2026.JUL "
+              116 : 4E45 5353 2032 
+              11C : 3032 362E 4A55 
+              122 : 4C20             
+      46/     124 : 5644 5020 444D              dc.b    "VDP DMA FILL EXPERIMENT ROM                       "
+              12A : 4120 4649 4C4C 
+              130 : 2045 5850 4552 
+              136 : 494D 454E 5420 
+              13C : 524F 4D20 2020 
+              142 : 2020 2020 2020 
+              148 : 2020 2020 2020 
+              14E : 2020 2020 2020 
+ AS V1.42 Beta [Bld 212] - Source File vdp_dma_fill.asm - Page 3 - 07/16/2026 10:12:32 PM
+
+
+              154 : 2020             
+      47/     156 : 5644 5020 444D              dc.b    "VDP DMA FILL EXPERIMENT ROM                       "
+              15C : 4120 4649 4C4C 
+              162 : 2045 5850 4552 
+              168 : 494D 454E 5420 
+              16E : 524F 4D20 2020 
+              174 : 2020 2020 2020 
+              17A : 2020 2020 2020 
+              180 : 2020 2020 2020 
+              186 : 2020             
+      48/     188 : 474D 2030 3030              dc.b    "GM 00000000-00"
+              18E : 3030 3030 302D 
+              194 : 3030             
+      49/     196 : 0000                        dc.w    $0000
+      50/     198 : 4A20 2020 2020              dc.b    "J               "
+              19E : 2020 2020 2020 
+              1A4 : 2020 2020          
+      51/     1A8 : 0000 0000                   dc.l    $00000000
+      52/     1AC : 0003 FFFF                   dc.l    $0003FFFF
+      53/     1B0 : 00FF 0000                   dc.l    $00FF0000
+      54/     1B4 : 00FF FFFF                   dc.l    $00FFFFFF
+      55/     1B8 : 2020 2020 2020              dc.b    "                        "
+              1BE : 2020 2020 2020 
+              1C4 : 2020 2020 2020 
+              1CA : 2020 2020 2020    
+      56/     1D0 : 2020 2020 2020              dc.b    "                        "
+              1D6 : 2020 2020 2020 
+              1DC : 2020 2020 2020 
+              1E2 : 2020 2020 2020    
+      57/     1E8 : 4A55 4520 2020              dc.b    "JUE             "
+              1EE : 2020 2020 2020 
+              1F4 : 2020 2020          
+      58/     1F8 :                     
+      59/     1F8 :                     ; ---- Entry ----
+      60/     200 :                             org     $000200
+      61/     200 :                     Init:
+      62/     200 : 2E7C 00FF 7000              movea.l #$00FF7000,a7           ; SSP in work RAM
+> > > vdp_dma_fill.asm(63):9: warning: privileged instruction
+      63/     206 : 46FC 2700                   move.w  #$2700,sr               ; supervisor, all interrupts masked
+      64/     20A :                     
+      65/     20A :                             ; TMSS unlock (harmless on pre-TMSS models)
+      66/     20A : 1039 00A1 0001              move.b  $00A10001,d0
+      67/     210 : 0200 000F                   andi.b  #$0F,d0
+      68/     214 : 670A                        beq.s   NoTmss
+      69/     216 : 23FC 5345 4741              move.l  #$53454741,$00A14000    ; 'SEGA'
+              21C : 00A1 4000          
+      70/     220 :                     NoTmss:
+      71/     220 : 2A7C 00C0 0004              movea.l #$00C00004,a5           ; VDP control port
+      72/     226 : 287C 00C0 0000              movea.l #$00C00000,a4           ; VDP data port
+      73/     22C :                     
+      74/     22C :                             ; VDP init: mode 5, display off, DMA ENABLE (reg1 bit4), autoincrement 1
+      75/     22C : 3ABC 8004                   move.w  #$8004,(a5)             ; reg 0: no HINT, no HV latch
+      76/     230 : 3ABC 8114                   move.w  #$8114,(a5)             ; reg 1: mode5 (bit2) + DMA enable (bit4), display off
+      77/     234 : 3ABC 8F01                   move.w  #$8F01,(a5)             ; reg 15: autoincrement 1 (fill consecutive bytes)
+      78/     238 :                     
+      79/     238 : 1238 9000                   move.b  $00FF9000,d1
+      80/     23C : 0C01 0001                   cmpi.b  #1,d1
+      81/     240 : 6746                        beq     Cell1
+      82/     242 :                     
+      83/     242 :                     ; ================= Cell 0: VRAM fill baseline =================
+ AS V1.42 Beta [Bld 212] - Source File vdp_dma_fill.asm - Page 4 - 07/16/2026 10:12:32 PM
+
+
+      84/     242 :                             ; DMA length = 8 (reg19 low = 8, reg20 high = 0)
+      85/     242 : 3ABC 9308                   move.w  #$9308,(a5)             ; reg 19 = $08
+      86/     246 : 3ABC 9400                   move.w  #$9400,(a5)             ; reg 20 = $00
+      87/     24A :                             ; DMA mode = VRAM fill (reg23 bits 7-6 = 10)
+      88/     24A : 3ABC 9780                   move.w  #$9780,(a5)             ; reg 23 = $80
+      89/     24E :                     
+      90/     24E :                             ; Destination command: VRAM write @ $0400 with CD5 set (code $21).
+      91/     24E : 3ABC 4400                   move.w  #$4400,(a5)             ; word1: CD1-0=01, A13-0=$0400
+      92/     252 : 3ABC 0080                   move.w  #$0080,(a5)             ; word2: CD5-2=1000, A15-14=0
+      93/     256 :                             ; Trigger the fill: data-port write supplies the fill value ($EE = top byte).
+      94/     256 : 38BC EEEE                   move.w  #$EEEE,(a4)
+      95/     25A :                     
+      96/     25A :                             ; Wait for DMA-busy (status bit1) to clear before reading VRAM.
+      97/     25A :                     FillWait:
+      98/     25A : 3015                        move.w  (a5),d0
+      99/     25C : 0240 0002                   andi.w  #$0002,d0
+     100/     260 : 66F8                        bne.s   FillWait
+     101/     262 :                     
+     102/     262 :                             ; Read back VRAM $0400 / $0402 / $0406 into work RAM.
+     103/     262 : 207C 00FF 8000              movea.l #$00FF8000,a0
+     104/     268 : 3ABC 0400                   move.w  #$0400,(a5)
+     105/     26C : 3ABC 0000                   move.w  #$0000,(a5)
+     106/     270 : 30D4                        move.w  (a4),(a0)+
+     107/     272 : 3ABC 0402                   move.w  #$0402,(a5)
+     108/     276 : 3ABC 0000                   move.w  #$0000,(a5)
+     109/     27A : 30D4                        move.w  (a4),(a0)+
+     110/     27C : 3ABC 0406                   move.w  #$0406,(a5)
+     111/     280 : 3ABC 0000                   move.w  #$0000,(a5)
+     112/     284 : 30D4                        move.w  (a4),(a0)+
+     113/     286 :                     
+     114/     286 : 600A                        bra     Finish
+     115/     288 :                     
+     116/     288 :                     ; ================= Cell 1: data-read while write-armed =================
+     117/     288 :                     Cell1:
+     118/     288 :                             ; Arm the FIRST word of a VRAM-WRITE command @ $0200 (CD0=1 = write).
+     119/     288 : 3ABC 4200                   move.w  #$4200,(a5)
+     120/     28C :                             ; Now perform a DATA-PORT READ — recon R1 pins this as a hardware lockup.
+     121/     28C : 3014                        move.w  (a4),d0                 ; may hang the machine here (BlastEm models the lockup)
+     122/     28E : 31C0 8008                   move.w  d0,$00FF8008            ; only reached if it did NOT hang
+     123/     292 :                     
+     124/     292 :                     Finish:
+     125/     292 : 31FC C0DE 8010              move.w  #$C0DE,$00FF8010        ; done marker (absent => the machine hung)
+     126/     298 :                     Done:
+     127/     298 : 60FE                        bra     Done
+     128/     29A :                     
+     129/     29A :                     ; ---- Generic handler: mark + halt ----
+     130/     29A :                     GenericH:
+     131/     29A : 31FC DEAD 8010              move.w  #$DEAD,$00FF8010
+     132/     2A0 :                     GenHalt:
+     133/     2A0 : 60FE                        bra     GenHalt
+     134/     2A2 :                     
+     135/     2A2 :                             end
+ AS V1.42 Beta [Bld 212] - Source File vdp_dma_fill.asm - Page 5 - 07/16/2026 10:12:32 PM
+
+
+  Symbol Table (* = unused):
+  --------------------------
+
+*ARCHITECTURE :                                      "x86_64-unknown-linux" - |
+*BIGENDIAN :                      0 - | *BRANCHEXT :                      0 - |
+*CASESENSITIVE :                  1 - | *COMPMODE :                       0 - |
+*CONSTPI :        3.141592653589793 - | *CUSTOM :                         0 - |
+ Cell1 :                        288 C | *DATE :                "07/16/2026" - |
+ Done :                         298 C | *FALSE :                          0 - |
+*FULLPMMU :                       1 - |  FillWait :                     25A C |
+ Finish :                       292 C |  GenHalt :                      2A0 C |
+ GenericH :                     29A C | *HAS64 :                          1 - |
+*HASDSP :                         0 - | *HASFPU :                         0 - |
+*HASPMMU :                        0 - | *INEXTMODE :                      0 - |
+*INLWORDMODE :                    0 - | *INMAXMODE :                      0 - |
+*INSRCMODE :                      0 - | *INSUPMODE :                      0 - |
+ Init :                         200 C | *LISTON :                         1 - |
+*MACEXP :                         7 - | *MOMCPU :                     68000 - |
+*MOMCPUNAME :               "68000" - | *NESTMAX :                      100 - |
+ NoTmss :                       220 C | *PACKING :                        0 - |
+*PADDING :                        0 - | *RELAXED :                        0 - |
+*TIME :               "10:12:32 PM" - | *TRUE :                           1 - |
+*VERSION :                     142F - | *Z80SYNTAX :                      0 - |
+
+     39 symbols
+     31 unused symbols
+
+ AS V1.42 Beta [Bld 212] - Source File vdp_dma_fill.asm - Page 6 - 07/16/2026 10:12:32 PM
+
+
+  Code Pages:
+  ----------
+
+STANDARD (0 changed characters)
+
+1 code page
+
+0.01 seconds assembly time
+
+    136 lines source file
+    198 lines incl. macro expansions
+      2 passes
+      0 errors
+      1 warning
