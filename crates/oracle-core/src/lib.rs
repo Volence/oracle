@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 
 pub mod bus;
+pub mod io;
 pub mod m68000;
 pub mod render;
 pub mod rng;

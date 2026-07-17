@@ -61,6 +61,10 @@ pub struct System {
     /// The VDP (315-5313): owns VRAM/CRAM/VSRAM + the 24 registers (the four Oracle-hashed regions). Moved
     /// out of `System`'s loose fields; `state_hash`/`export_state` read through it. Its byte layout is frozen.
     vdp: Vdp,
+    /// The I/O controller block (`$A10003–$A1001F`): data/control registers + injected pad state. In
+    /// **neither** frozen currency (an export-v2 candidate, like the SAT cache) — it rides this snapshot but
+    /// is not emitted by `export_state`. See `crate::io` and `docs/2026-07-17-io-recon.md`.
+    io: crate::io::Io,
     /// The open-bus latch: the last word driven on the 68000 bus, returned by reads of unmapped space.
     last_bus_word: u16,
     /// The 68000. Driven over a [`MegaDriveBus`] in [`System::step_cpu`]; `step()` returns CPU cycles.
@@ -86,6 +90,7 @@ impl std::fmt::Debug for System {
                 &format_args!("{:#06X}", self.last_bus_word),
             )
             .field("vdp", &self.vdp)
+            .field("io", &self.io)
             .field("cpu", &self.cpu)
             .field("frame_boundary_mclk", &self.frame_boundary_mclk)
             .field(
@@ -144,6 +149,7 @@ impl System {
             ram,
             z80_ram: vec![0u8; Z80_RAM_SIZE],
             vdp,
+            io: crate::io::Io::default(),
             last_bus_word: 0,
             cpu: Cpu68000::new(power_on_regs()),
             frame_boundary_mclk: 0,
@@ -170,6 +176,18 @@ impl System {
     /// Read-only access to the cartridge ROM.
     pub fn rom(&self) -> &[u8] {
         &self.rom
+    }
+
+    /// Inject 3-button pad state (Player 1 = port 0, Player 2 = port 1). Deterministic injected state — the
+    /// core has no host-input path; tests, the future frontend, and the title-screen run all drive input
+    /// through here. The next Data-register read the guest performs reflects it (recon IO4).
+    pub fn set_pad(&mut self, port: usize, pad: crate::io::Pad) {
+        self.io.set_pad(port, pad);
+    }
+
+    /// The injected pad state for a port (0 = P1, 1 = P2).
+    pub fn pad(&self, port: usize) -> crate::io::Pad {
+        self.io.pad(port)
     }
 
     /// Build a [`MegaDriveBus`] over this machine's memory (split-borrow) for a CPU step. The `sink` consumes
@@ -440,6 +458,46 @@ mod tests {
         a.run_frames(10);
         b.run_frames(10);
         assert_eq!(a.export_state_hash(), b.export_state_hash());
+    }
+
+    #[test]
+    fn injected_pad_state_round_trips_a_snapshot() {
+        // The Io block rides the bincode snapshot (it is in neither frozen currency, but must survive
+        // snapshot/restore for determinism). Injected pad state comes back byte-identical.
+        use crate::io::Pad;
+        let mut sys = System::new(1);
+        sys.set_pad(
+            0,
+            Pad {
+                start: true,
+                up: true,
+                ..Default::default()
+            },
+        );
+        sys.set_pad(
+            1,
+            Pad {
+                a: true,
+                ..Default::default()
+            },
+        );
+        let restored = System::restore(&sys.snapshot()).unwrap();
+        assert_eq!(
+            restored.pad(0),
+            Pad {
+                start: true,
+                up: true,
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            restored.pad(1),
+            Pad {
+                a: true,
+                ..Default::default()
+            }
+        );
+        assert_eq!(restored, sys, "the whole machine round-trips, Io included");
     }
 
     #[test]
