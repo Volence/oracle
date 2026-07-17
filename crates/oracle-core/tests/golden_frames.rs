@@ -60,7 +60,23 @@ fn put_cell(v: &mut Vdp, addr: usize, word: u16) {
 /// Write one SAT entry's four words through the data port (so the SAT-cache write-through runs), base + reg-15
 /// autoinc already set.
 fn write_sprite(v: &mut Vdp, index: usize, y: u16, sizelink: u16, attr: u16, x: u16) {
-    let base = v.sat_base();
+    write_sprite_at(v, v.sat_base(), index, y, sizelink, attr, x);
+}
+
+/// [`write_sprite`] against an **explicit literal base**. Scene 5 uses this ON PURPOSE (reviewer fix): a
+/// fixture that derives its write addresses from `sat_base()` moves coherently with any change to the
+/// base-mask model and can never catch one — the literal base is what makes the P2 (H40 bit-0 mask) lock
+/// real: if the mask model changed, the evaluation/window base would move away from these literal writes
+/// and the frame would change.
+fn write_sprite_at(
+    v: &mut Vdp,
+    base: usize,
+    index: usize,
+    y: u16,
+    sizelink: u16,
+    attr: u16,
+    x: u16,
+) {
     setup_write(v, 0x01, (base + index * 8) as u16);
     v.data_write(y);
     v.data_write(sizelink);
@@ -197,12 +213,18 @@ fn scene_hscroll_modes() -> Vdp {
     set_reg(&mut v, 0x0B, 0x02); // per-cell-row h-scroll (mode 10: (line & !7) * 4)
     base_palette(&mut v);
     fill_tile(&mut v, 1, 1);
-    for c in 0..32 {
-        put_cell(
-            &mut v,
-            0xE000 + c * 2,
-            if c % 2 == 0 { 0x0001 } else { 0x0000 },
-        );
+    // Dashes on EVERY nametable row (reviewer fix): with content only on row 0, the sole visible band was
+    // band 0 whose mode-10 offset is 0 under any plausible indexing model — the hash could not discriminate
+    // the P6 model it exists to lock. With all 28 bands populated, each band's distinct scroll is visible
+    // and a changed mode-10/01 indexing changes the frame.
+    for row in 0..28 {
+        for c in 0..32 {
+            put_cell(
+                &mut v,
+                0xE000 + (row * 32 + c) * 2,
+                if c % 2 == 0 { 0x0001 } else { 0x0000 },
+            );
+        }
     }
     // A per-cell-row h-scroll table: each 8-line band scrolls by a distinct amount.
     for band in 0..28 {
@@ -222,13 +244,15 @@ fn scene_r5_cache_window() -> Vdp {
     set_reg(&mut v, 0x0F, 0x02);
     base_palette(&mut v);
     fill_tile(&mut v, 3, 3); // green sprite
-                             // Write a couple of sprites through the port (populating the cache via write-through) at the masked base.
-    write_sprite(&mut v, 0, 30 + 128, 0x0501, 0x0003, 60 + 128); // 2×2 green at (60,30), link 1
-    write_sprite(&mut v, 1, 50 + 128, 0x0000, 0x0003, 160 + 128); // 1×1 green at (160,50), link 0
-                                                                  // A byte-granular poke into the cached half of entry 0's Y (odd address) through the port.
-    let odd = (v.sat_base() + 1) as u16;
-    setup_write(&mut v, 0x01, odd);
-    v.data_write(0x00_2A); // low byte of entry-0 Y → shifts the sprite; exercises byte-granular write-through
+                             // Write the sprites at the LITERAL masked base $B000 — deliberately NOT via `sat_base()` (reviewer fix:
+                             // a `sat_base()`-derived fixture moves coherently with a mask-model change and can never catch one; the
+                             // literal address is what locks P2 — under an unmasked model the evaluation base would be $B200 and
+                             // these writes would populate the wrong entries → a different frame).
+    write_sprite_at(&mut v, 0xB000, 0, 30 + 128, 0x0501, 0x0003, 60 + 128); // 2×2 green at (60,30), link 1
+    write_sprite_at(&mut v, 0xB000, 1, 50 + 128, 0x0000, 0x0003, 160 + 128); // 1×1 green at (160,50), link 0
+                                                                             // A byte-granular poke into the cached half of entry 0's Y (odd LITERAL address) through the port.
+    setup_write(&mut v, 0x01, 0xB001);
+    v.data_write(0x00_2A); // low byte of entry-0 Y → moves the sprite; exercises byte-granular write-through
     v
 }
 
@@ -278,7 +302,10 @@ fn golden_frame_scene_3_r9_window_bug() {
 
 #[test]
 fn golden_frame_scene_4_hscroll_modes() {
-    assert_eq!(frame_hash(&scene_hscroll_modes()), 0xd985_1c89_7724_cf25);
+    // Hash regenerated 2026-07-16 (reviewer amendment, documented in the commit): the scene gained content
+    // on all 28 bands so the mode-10 per-band scroll is actually visible — the prior single-band scene
+    // hashed identically under any indexing model and locked nothing. Prior: 0xd985_1c89_7724_cf25.
+    assert_eq!(frame_hash(&scene_hscroll_modes()), 0xab18_e048_ff40_0b25);
 }
 
 #[test]
