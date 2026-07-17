@@ -297,9 +297,10 @@ nor the design brief wrote down.
 
 - **RD2 — mode select** (reg 23 top bits; Plutiedev "DMA transfer", Sega Software Manual): **bit 7 = 0 → 68k→VDP
   transfer** (source high bits = `regs[23] & 0x7F`); **bits 7–6 = `10` → VRAM fill**; **bits 7–6 = `11` → VRAM
-  copy**. **Length is in words** for the 68k→VDP transfer and the fill; **in bytes** for the copy (copy is a
-  byte-granular VRAM→VRAM move). A length register of 0 means `0x10000` (the counter is pre-decremented) — a
-  documented edge, not exercised by our fixtures.
+  copy**. **Length is in words** for the 68k→VDP transfer; **in bytes** for the VRAM fill and the copy (each
+  fill/copy step moves one byte — confirmed for the fill by `vdp_dma_fill.asm` cell 0: reg 19 = 8 filled 8
+  bytes). A length register of 0 means `0x10000` (the counter is pre-decremented) — a documented edge, not
+  exercised by our fixtures.
 
 - **RD3 — source address** (68k→VDP only; Plutiedev, verbatim: *"the address is in words, so it must be
   divided by 2 … the registers hold the source address shifted right by one"*): the 68k byte address =

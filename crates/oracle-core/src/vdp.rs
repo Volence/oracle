@@ -667,11 +667,59 @@ impl Vdp {
     fn apply_data_write(&mut self, w: u16) {
         self.pending = false;
         if self.code & 0x20 != 0 {
-            return; // CD5/DMA: placeholder no-op until the DMA-mode slices
+            // CD5 DMA data write. For a VRAM fill (reg 23 bits 7-6 = 10) this word is the fill trigger: enqueue
+            // it (so the FIFO's last/next-available entry holds it, recon R4(b)) and arm the fill; the bus
+            // executes it. Mem/Copy do not use a data-port write (they trigger on the control write).
+            if self.regs[0x17] & 0xC0 == 0x80 {
+                self.fifo_enqueue(w);
+                let len = ((self.regs[0x14] as u16) << 8) | self.regs[0x13] as u16;
+                self.dma_pending = Some(DmaRequest::Fill { len, fill: w });
+            }
+            return;
         }
         self.fifo_enqueue(w);
         self.write_target(w);
         self.autoinc();
+    }
+
+    /// Execute a VRAM fill (recon R4(b) / RD2). 68k keeps running (the bus returns no wait); the busy window
+    /// models the elapsed transfer time. Fill data source: the top byte of the trigger word for VRAM; the
+    /// **next-available FIFO entry** ("4 writes ago") for CRAM/VSRAM — the documented hardware bug. Every write
+    /// routes through the SAT write-through (R5 rider: fill steps hit the window compare like any VRAM write).
+    /// Length is in bytes (RD2); regs 19/20 → 0 after the transfer (recon R4).
+    pub fn run_fill(&mut self, len: u16, fill: u16, now: u64) {
+        let count = if len == 0 { 0x1_0000u32 } else { len as u32 };
+        let target = self.target();
+        let dest = self.addr;
+        match target {
+            Target::Vram => {
+                let byte = (fill >> 8) as u8; // top byte (recon R4(b))
+                for _ in 0..count {
+                    self.write_vram_byte(self.addr as usize & (VRAM_SIZE - 1), byte);
+                    self.autoinc();
+                }
+            }
+            _ => {
+                // CRAM/VSRAM fill: the data comes from the next-available FIFO entry, NOT the trigger word
+                // (recon R4(b), "4 writes ago" — a documented hardware bug).
+                let src = self.fifo_snoop_word();
+                for _ in 0..count {
+                    self.write_target(src);
+                    self.autoinc();
+                }
+            }
+        }
+        let cost = self.dma_cost(count as u64, now); // fill ≈ 1 slot/byte (recon R4(e))
+        self.regs[0x13] = 0;
+        self.regs[0x14] = 0;
+        self.last_dma = Some(DmaRecord {
+            mode: DmaMode::Fill,
+            source: 0,
+            dest,
+            len,
+            target,
+        });
+        self.dma_busy_until = now + cost;
     }
 
     /// A bus-timed data-port write (recon R1/R3): drain the FIFO up to `now`, stall the 68k if the FIFO is
@@ -1722,6 +1770,26 @@ mod tests {
             0x1234,
             "VRAM read fully defined — no snoop"
         );
+    }
+
+    #[test]
+    fn cram_fill_uses_the_four_writes_ago_entry() {
+        // Recon R4(b): a CRAM (or VSRAM) fill takes its data from the next-available FIFO entry ("4 writes
+        // ago"), NOT the trigger word — the documented hardware bug.
+        let mut v = fresh();
+        v.regs[1] = 0x10; // DMA enable
+        v.regs[0x17] = 0x80; // fill mode
+        v.fifo[v.fifo_write as usize].data = 0x0ABC; // the next-available (4-writes-ago) entry
+        v.code = 0x23; // CRAM write + CD5
+        v.addr = 0x0000;
+        v.run_fill(2, 0x0EEE, 0); // trigger word 0x0EEE — must be IGNORED for CRAM
+        let cram_word = ((v.cram[0] as u16) << 8) | v.cram[1] as u16;
+        assert_eq!(
+            cram_word,
+            0x0ABC & 0x0EEE,
+            "CRAM fill used the snooped entry, not the trigger word"
+        );
+        assert_ne!(cram_word, 0x0EEE, "the trigger word did NOT fill CRAM");
     }
 
     #[test]

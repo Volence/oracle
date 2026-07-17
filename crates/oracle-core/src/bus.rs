@@ -307,7 +307,11 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
     /// instruction cost through the `Bus68k` wait channel. Control-port writes never stall.
     fn vdp_write_word(&mut self, a: u32, value: u16) -> u32 {
         match a {
-            0xC0_0000 | 0xC0_0002 => self.vdp.data_write_at(value, self.now_mclk),
+            0xC0_0000 | 0xC0_0002 => {
+                // A data-port write may also trigger a VRAM fill (recon R4(b)); run any armed DMA after it.
+                let wait = self.vdp.data_write_at(value, self.now_mclk);
+                wait + self.run_pending_dma()
+            }
             0xC0_0004 | 0xC0_0006 => {
                 self.vdp.control_write(value, self.now_mclk);
                 self.run_pending_dma() // a CD5 Mem/Copy command triggers here (recon R4)
@@ -326,8 +330,13 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
         };
         match req {
             DmaRequest::Mem { source, len } => self.run_mem_dma(source, len),
-            // Fill and Copy land in the following slices.
-            DmaRequest::Fill { .. } | DmaRequest::Copy { .. } => 0,
+            DmaRequest::Fill { len, fill } => {
+                // VRAM fill: 68k keeps running (recon R4(b)) — the VDP fills + opens the busy window; 0 wait.
+                self.vdp.run_fill(len, fill, self.now_mclk);
+                0
+            }
+            // Copy lands in the following slice.
+            DmaRequest::Copy { .. } => 0,
         }
     }
 
@@ -966,6 +975,80 @@ mod tests {
             (r[0x17] & 0x7F, r[0x16], r[0x15]),
             (0x00, 0x02, 0x04),
             "source registers advanced to word address $000204"
+        );
+    }
+
+    /// Program + trigger a VRAM fill of `len` bytes of `fill`'s top byte at VRAM `dest` (autoinc 1).
+    fn run_vram_fill(
+        bus: &mut MegaDriveBus<'_, Vec<BusEvent>>,
+        dest: u16,
+        len: u16,
+        fill: u16,
+    ) -> u32 {
+        for w in [
+            0x8114u16,             // reg 1: DMA enable + mode5, display off
+            0x8F01,                // reg 15: autoinc 1 (consecutive bytes)
+            0x9300 | (len & 0xFF), // reg 19: length low
+            0x9400 | (len >> 8),   // reg 20: length high
+            0x9780,                // reg 23: fill mode (bits 7-6 = 10)
+        ] {
+            bus.write16(0xC0_0004, 5, w);
+        }
+        bus.write16(0xC0_0004, 5, 0x4000 | (dest & 0x3FFF)); // command word 1
+        bus.write16(0xC0_0004, 5, 0x0080 | ((dest >> 14) & 0x3)); // word 2 → code $21, CD5
+        bus.write16(0xC0_0000, 5, fill) // data-port write triggers the fill; returns its wait
+    }
+
+    #[test]
+    fn vram_fill_fills_the_target_with_the_top_byte() {
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE; // vblank
+        let mut sink = Vec::new();
+        {
+            let mut bus = mem.bus(&mut sink);
+            run_vram_fill(&mut bus, 0x0100, 8, 0xEEAA); // fill 8 bytes of $EE
+        }
+        assert!(
+            mem.vdp.vram()[0x0100..0x0108].iter().all(|&b| b == 0xEE),
+            "8 consecutive VRAM bytes filled with the top byte $EE"
+        );
+    }
+
+    #[test]
+    fn fill_sets_dma_busy_for_the_coarse_window_but_returns_no_wait() {
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE;
+        let mut sink = Vec::new();
+        let wait = {
+            let mut bus = mem.bus(&mut sink);
+            run_vram_fill(&mut bus, 0x0100, 8, 0xEEAA)
+        };
+        assert_eq!(wait, 0, "a fill keeps the 68k running (recon R4(b))");
+        assert!(
+            mem.vdp.dma_busy(mem.now_mclk),
+            "DMA-busy set at trigger time"
+        );
+        assert!(
+            !mem.vdp.dma_busy(mem.now_mclk + 1_000_000),
+            "DMA-busy clears after the coarse transfer window"
+        );
+    }
+
+    #[test]
+    fn fill_updates_the_sat_cache_on_window_hits() {
+        // R5 rider CONFIRMED: fill steps route through the SAT write-through like any VRAM write.
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE;
+        let mut sink = Vec::new();
+        {
+            let mut bus = mem.bus(&mut sink);
+            bus.write16(0xC0_0004, 5, 0x8500); // reg 5 = 0 → SAT base $0000
+            run_vram_fill(&mut bus, 0x0000, 4, 0x77AA); // fill 4 bytes of $77 into entry 0
+        }
+        assert_eq!(
+            &mem.vdp.sat_cache()[0..4],
+            &[0x77, 0x77, 0x77, 0x77],
+            "fill bytes hit the SAT write-through window compare"
         );
     }
 
