@@ -234,6 +234,9 @@ struct SpritePixel {
     palette: u8,
     priority: bool,
     tile: u16,
+    /// The raw colour nibble (1..=15) — needed for the R11 colour-14-never-shadowed quirk and operator
+    /// detection (palette 3 nibble 14 = highlight-op / 15 = shadow-op, added in the operator slice).
+    nibble: u8,
 }
 
 /// A fully resolved line: the per-pixel composite plus the sprite-pipeline result. The single source
@@ -343,10 +346,18 @@ fn sprite_px_res(x: usize, sp: &SpritePixel) -> PixelResolution {
     }
 }
 
-/// The fixed introspection colour ramp: a 3-bit channel level (`0..=7`) → 8-bit, linear (`level × 255 / 7`,
-/// integer — no floats). Matches `Vdp::cram_decoded`'s ramp (guarded by a test).
-fn ramp3(level: u8) -> u8 {
-    (level as u16 * 255 / 7) as u8
+/// The shadow/highlight-aware intensity ramp (recon R11.5, integer — no floats). A 3-bit CRAM channel level
+/// (`0..=7`) and a [`PixelState`] map through a shared `0..=14` quantization, `out = step × 255 / 14`:
+/// `Shadow` uses steps `0..=7` (Min→½Max), `Normal` uses the even steps `0,2,…,14` (Min→Max — the plain
+/// ramp), `Highlight` uses steps `7..=14` (½Max→Max). Exactly the pinned "normal Min→Max, shadow Min→½Max,
+/// highlight ½Max→Max". Exact DAC calibration is the R11 deferred remainder.
+fn intensity(level: u8, state: PixelState) -> u8 {
+    let step = match state {
+        PixelState::Shadow => level,        // 0..7   → Min..½Max
+        PixelState::Normal => level * 2,    // 0..14  → Min..Max (the plain ramp)
+        PixelState::Highlight => level + 7, // 7..14  → ½Max..Max
+    };
+    (step as u16 * 255 / 14) as u8
 }
 
 /// Decode a raw 16-bit nametable entry word into a [`Cell`] (recon RR1).
@@ -599,16 +610,24 @@ impl Vdp {
         self.cell_pixel(cell, (plane_x & 7) as u8, (plane_y & 7) as u8)
     }
 
-    /// Decode one CRAM index (0..=63) to RGB at the fixed integer ramp — the same layout/ramp as
-    /// `Vdp::cram_decoded` (guarded by `cram_rgb_matches_cram_decoded`).
-    fn cram_rgb(&self, index: u8) -> (u8, u8, u8) {
+    /// Decode one CRAM index (0..=63) to RGB at the given shadow/highlight `state` (recon R11.5). The 9-bit
+    /// colour is three 3-bit channels (B<<9 | G<<5 | R<<1, big-endian); each is run through `intensity`.
+    fn cram_rgb_state(&self, index: u8, state: PixelState) -> (u8, u8, u8) {
         let i = (index as usize & 0x3F) * 2;
         let word = ((self.cram()[i] as u16) << 8) | self.cram()[i + 1] as u16;
         (
-            ramp3(((word >> 1) & 0x07) as u8),
-            ramp3(((word >> 5) & 0x07) as u8),
-            ramp3(((word >> 9) & 0x07) as u8),
+            intensity(((word >> 1) & 0x07) as u8, state),
+            intensity(((word >> 5) & 0x07) as u8, state),
+            intensity(((word >> 9) & 0x07) as u8, state),
         )
+    }
+
+    /// Decode one CRAM index (0..=63) to RGB at `Normal` intensity — the same layout/ramp as
+    /// `Vdp::cram_decoded` (guarded by `cram_rgb_matches_cram_decoded`). Test-only reference: the renderer
+    /// uses `cram_rgb_state` so it never drops the shadow/highlight state.
+    #[cfg(test)]
+    fn cram_rgb(&self, index: u8) -> (u8, u8, u8) {
+        self.cram_rgb_state(index, PixelState::Normal)
     }
 
     /// The window's horizontal span on `line` (recon RR4 / Sega manual §J union model): if the vertical
@@ -742,6 +761,40 @@ impl Vdp {
         backdrop_px(x, backdrop)
     }
 
+    /// The shadow/highlight state of one dot (recon R11), given the S/H enable, the RR9 `winner` layer, the
+    /// plane-A-slot pixel `a`, the plane-B pixel `b`, and the flattened sprite pixel `s`. S/H disabled ⇒
+    /// `Normal`. The **default** state is `Shadow` iff both the A-slot and B priority bits are 0 (transparent
+    /// planes still contribute their tile's priority — the Bloodlines light-ray trick), else `Normal`; the
+    /// backdrop and plane/window winners take the default. A **high-priority** sprite pixel is never shadowed;
+    /// a **colour-14** sprite pixel (any palette) is never shadowed; a low-priority sprite takes the default.
+    /// Sprite operators (palette 3, nibble 14/15) are handled in the operator pass, not here.
+    fn sh_state(
+        &self,
+        sh: bool,
+        winner: Layer,
+        a: &PlanePixel,
+        b: &PlanePixel,
+        s: Option<SpritePixel>,
+    ) -> PixelState {
+        if !sh {
+            return PixelState::Normal;
+        }
+        let default = if a.priority || b.priority {
+            PixelState::Normal
+        } else {
+            PixelState::Shadow
+        };
+        match winner {
+            Layer::Sprite(_) => match s {
+                // High-priority or colour-14 sprite pixels are never shadowed (R11); a low-priority sprite
+                // takes the default (shadowed only when both planes are low-priority).
+                Some(sp) if sp.priority || sp.nibble == 14 => PixelState::Normal,
+                _ => default,
+            },
+            _ => default,
+        }
+    }
+
     /// Resolve one scanline — the single source `render_line` / `render_line_report` / `render_scanline` all
     /// derive from (design §1: attribution is the render). Each dot is resolved by RR9 priority ordering
     /// (high-sprite > high-A > high-B > low-sprite > low-A > low-B > backdrop) over the flattened sprite pixel,
@@ -773,11 +826,16 @@ impl Vdp {
             boundary,
             a_hscroll,
         };
+        // Shadow/highlight enable (reg $0C bit 3, recon R11).
+        let sh = self.regs()[0x0C] & 0x08 != 0;
         let mut out: Vec<PixelResolution> = (0..width)
             .map(|x| {
                 let b = self.plane_pixel(Plane::B, line, x, h40);
                 let (a, a_layer) = self.a_slot_pixel(line, x, h40, &ctx);
-                self.rr9_winner(x, backdrop, sprite.buffer[x], &a, a_layer, &b)
+                let s = sprite.buffer[x];
+                let mut px = self.rr9_winner(x, backdrop, s, &a, a_layer, &b);
+                px.state = self.sh_state(sh, px.layer, &a, &b, s);
+                px
             })
             .collect();
         // Leftmost-column blank (reg $00 bit 5, RR4): force the leftmost 8 px to the backdrop (an output-stage
@@ -799,7 +857,7 @@ impl Vdp {
         self.resolve_line(line)
             .pixels
             .iter()
-            .map(|p| self.cram_rgb(p.cram_index))
+            .map(|p| self.cram_rgb_state(p.cram_index, p.state))
             .collect()
     }
 
@@ -965,6 +1023,7 @@ impl Vdp {
                 palette: attr.palette,
                 priority: attr.priority,
                 tile,
+                nibble,
             });
         }
     }
@@ -2082,6 +2141,157 @@ mod tests {
             "high-B > low-priority window (A-slot)"
         );
         assert_eq!(v.render_line_report(0).pixels[0].layer, Layer::PlaneB);
+    }
+
+    // --- R11: shadow/highlight (non-operator) ------------------------------------------------------------
+
+    #[test]
+    fn intensity_ramp_matches_the_pinned_table() {
+        // R11.5: shared 0..14 quantization, out = step*255/14. Normal == the plain ramp.
+        assert_eq!(intensity(0, PixelState::Normal), 0);
+        assert_eq!(intensity(7, PixelState::Normal), 255);
+        assert_eq!(intensity(0, PixelState::Shadow), 0);
+        assert_eq!(intensity(7, PixelState::Shadow), 127, "shadow max = ½Max");
+        assert_eq!(
+            intensity(0, PixelState::Highlight),
+            127,
+            "highlight min = ½Max"
+        );
+        assert_eq!(
+            intensity(7, PixelState::Highlight),
+            255,
+            "highlight max = Max"
+        );
+    }
+
+    #[test]
+    fn sh_disabled_is_always_normal() {
+        // Reg $0C bit 3 = 0: both planes low-priority does NOT shadow — output is the plain ramp.
+        let mut v = pa_fixture(false);
+        put_cell(&mut v, 0xE000, 0x0001); // B low, red, opaque; A transparent → both planes low
+        assert_eq!(
+            v.render_line(0)[0],
+            v.cram_rgb(1),
+            "S/H disabled → normal red"
+        );
+        assert_eq!(v.render_line_report(0).pixels[0].state, PixelState::Normal);
+    }
+
+    #[test]
+    fn sh_default_shadow_when_both_planes_low() {
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x0C, 0x08); // S/H on (H32)
+        put_cell(&mut v, 0xE000, 0x0001); // B low, red, opaque; A transparent → default shadow
+        assert_eq!(
+            v.render_line(0)[0],
+            (127, 0, 0),
+            "both planes low + S/H → the plane B pixel is shadowed"
+        );
+        assert_eq!(v.render_line_report(0).pixels[0].state, PixelState::Shadow);
+        // A high-priority plane pixel makes the default normal.
+        put_cell(&mut v, 0xE000, 0x8001); // B high, red
+        assert_eq!(
+            v.render_line(0)[0],
+            (255, 0, 0),
+            "high-priority plane → normal"
+        );
+    }
+
+    #[test]
+    fn sh_transparent_plane_priority_contributes_to_default() {
+        // The Bloodlines light-ray trick: a transparent but HIGH-priority plane B still contributes its
+        // priority bit, flipping the default to normal even though it draws nothing.
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x0C, 0x08); // S/H on
+        put_cell(&mut v, 0xC000, 0x0001); // A low, red, opaque → wins
+        put_cell(&mut v, 0xE000, 0x8000); // B HIGH priority but tile 0 (transparent)
+        assert_eq!(
+            v.render_line(0)[0],
+            (255, 0, 0),
+            "transparent high-priority B → default normal → A not shadowed"
+        );
+        put_cell(&mut v, 0xE000, 0x0000); // B low + transparent → default shadow
+        assert_eq!(
+            v.render_line(0)[0],
+            (127, 0, 0),
+            "without B's priority the low-A pixel is shadowed"
+        );
+    }
+
+    #[test]
+    fn sh_backdrop_is_shadowed_when_both_planes_low() {
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x0C, 0x08); // S/H on
+        set_reg(&mut v, 0x07, 0x01); // backdrop = CRAM 1 (red)
+                                     // planes all transparent (cleared VRAM), both low → default shadow.
+        let r = v.render_line_report(0);
+        assert_eq!(r.pixels[0].layer, Layer::Backdrop);
+        assert_eq!(r.pixels[0].state, PixelState::Shadow);
+        assert_eq!(
+            v.render_line(0)[0],
+            (127, 0, 0),
+            "the backdrop is shadowed too"
+        );
+    }
+
+    #[test]
+    fn sh_high_priority_sprite_is_never_shadowed() {
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x0C, 0x08); // S/H on
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x05, 0x10);
+        // Both planes transparent (default shadow), a HIGH-priority red sprite → never shadowed.
+        write_sprite(&mut v, 0, 0x0080, 0x0000, 0x8001, 0x0080);
+        assert_eq!(v.render_line(0)[0], (255, 0, 0), "high sprite → normal");
+        assert_eq!(v.render_line_report(0).pixels[0].state, PixelState::Normal);
+    }
+
+    #[test]
+    fn sh_low_priority_sprite_takes_the_default() {
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x0C, 0x08); // S/H on
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x05, 0x10);
+        // Low-priority red sprite, both planes low → shadowed.
+        write_sprite(&mut v, 0, 0x0080, 0x0000, 0x0001, 0x0080);
+        assert_eq!(
+            v.render_line(0)[0],
+            (127, 0, 0),
+            "low sprite + both planes low → shadow"
+        );
+        // A high-priority (transparent) plane B flips the default to normal → the sprite is not shadowed.
+        put_cell(&mut v, 0xE000, 0x8000);
+        assert_eq!(
+            v.render_line(0)[0],
+            (255, 0, 0),
+            "low sprite + a high plane present → normal"
+        );
+    }
+
+    #[test]
+    fn sh_colour_14_sprite_pixel_is_never_shadowed() {
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x0C, 0x08); // S/H on
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x05, 0x10);
+        fill_tile(&mut v, 8, 14); // tile of solid nibble 14
+        fill_tile(&mut v, 9, 13); // tile of solid nibble 13 (the contrast)
+        write_cram(&mut v, 14, 0x000E); // colour 14 = red
+        write_cram(&mut v, 13, 0x000E); // colour 13 = red
+                                        // Low-priority sprite, both planes low (default shadow): nibble 14 is never shadowed.
+        write_sprite(&mut v, 0, 0x0080, 0x0000, 0x0008, 0x0080);
+        assert_eq!(
+            v.render_line(0)[0],
+            (255, 0, 0),
+            "colour-14 sprite pixel → never shadowed (normal)"
+        );
+        // Same setup with nibble 13 → shadowed (proving the quirk is specific to colour 14).
+        write_sprite(&mut v, 0, 0x0080, 0x0000, 0x0009, 0x0080);
+        assert_eq!(
+            v.render_line(0)[0],
+            (127, 0, 0),
+            "colour-13 sprite pixel → shadowed by the default"
+        );
     }
 
     // --- R10 slice 4: render_scanline commit path (status bits go real, the masking carry) ----------------
