@@ -97,13 +97,26 @@ pub enum Layer {
     Sprite(u8),
 }
 
+/// The per-pixel shadow/highlight state (recon R11). `Normal` is the plain intensity ramp; the two enabled
+/// S/H modes shift the winning pixel's intensity (never its identity). S/H disabled ⇒ every pixel `Normal`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum PixelState {
+    /// Half-intensity (Min→½Max ramp).
+    Shadow,
+    /// Full intensity (Min→Max ramp) — identical to no shadow/highlight.
+    #[default]
+    Normal,
+    /// Upper-half intensity (½Max→Max ramp).
+    Highlight,
+}
+
 /// One resolved screen pixel + its provenance. Attribution **is** the render computation (design §1): the
 /// pipeline produces this directly, so `render_line` and `render_line_report` cannot drift.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PixelResolution {
     /// Screen x (0-based).
     pub x: u16,
-    /// The winning layer.
+    /// The winning layer (recon RR9 priority resolution).
     pub layer: Layer,
     /// The winning CRAM index (0..=63): `palette * 16 + nibble`, or `reg $07 & 0x3F` for the backdrop.
     pub cram_index: u8,
@@ -111,8 +124,10 @@ pub struct PixelResolution {
     pub tile: u16,
     /// The winning cell's palette line (0 for the backdrop).
     pub palette: u8,
-    /// The winning cell's priority bit (decoded + reported; the ordering it drives is push 5).
+    /// The winning cell's priority bit (recon RR9: it selects the winner within its tier).
     pub priority: bool,
+    /// The resolved shadow/highlight state applied to this pixel's intensity (recon R11).
+    pub state: PixelState,
 }
 
 /// The window's horizontal span on one line (design §4 "window span"): screen x `[start_x, end_x)`.
@@ -260,6 +275,16 @@ pub struct LineReport {
     pub pixels: Vec<PixelResolution>,
 }
 
+/// Per-line plane-A-slot inputs computed once by `resolve_line` (the window span + the R9 window-bug
+/// predicate), passed to `a_slot_pixel` per dot.
+#[derive(Clone, Copy)]
+struct ASlotCtx {
+    win: Option<WindowSpan>,
+    r9: bool,
+    boundary: usize,
+    a_hscroll: u16,
+}
+
 /// A fetched plane pixel before compositing (internal).
 #[derive(Clone, Copy)]
 struct PlanePixel {
@@ -278,7 +303,8 @@ impl PlanePixel {
     }
 }
 
-/// Build a [`PixelResolution`] for screen `x` from a winning plane pixel `p` on layer `layer`.
+/// Build a [`PixelResolution`] for screen `x` from a winning plane pixel `p` on layer `layer` (state `Normal`;
+/// shadow/highlight is applied by `resolve_dot` in the R11 pass).
 fn px_from(x: usize, layer: Layer, p: &PlanePixel) -> PixelResolution {
     PixelResolution {
         x: x as u16,
@@ -287,6 +313,33 @@ fn px_from(x: usize, layer: Layer, p: &PlanePixel) -> PixelResolution {
         tile: p.tile,
         palette: p.palette,
         priority: p.priority,
+        state: PixelState::Normal,
+    }
+}
+
+/// Build a backdrop [`PixelResolution`] for screen `x` (recon RR4/RR9 floor).
+fn backdrop_px(x: usize, backdrop: u8) -> PixelResolution {
+    PixelResolution {
+        x: x as u16,
+        layer: Layer::Backdrop,
+        cram_index: backdrop,
+        tile: 0,
+        palette: 0,
+        priority: false,
+        state: PixelState::Normal,
+    }
+}
+
+/// Build a sprite [`PixelResolution`] for screen `x` from a composited sprite pixel `sp` (state `Normal`).
+fn sprite_px_res(x: usize, sp: &SpritePixel) -> PixelResolution {
+    PixelResolution {
+        x: x as u16,
+        layer: Layer::Sprite(sp.index),
+        cram_index: sp.cram_index,
+        tile: sp.tile,
+        palette: sp.palette,
+        priority: sp.priority,
+        state: PixelState::Normal,
     }
 }
 
@@ -634,83 +687,104 @@ impl Vdp {
         }
     }
 
+    /// The plane-A-slot pixel + its layer at screen `x` on `line` (recon RR4/R9): the window pixel in the
+    /// window span, else plane A — including the R9 window-bug reuse. Returned even when transparent (its
+    /// priority bit feeds RR9 and the R11 shadow/highlight default state). `ctx` holds the per-line window
+    /// inputs computed once by `resolve_line`.
+    fn a_slot_pixel(&self, line: u16, x: usize, h40: bool, ctx: &ASlotCtx) -> (PlanePixel, Layer) {
+        match ctx.win {
+            Some(w) if x >= w.start_x as usize && x < w.end_x as usize => {
+                (self.window_pixel(line, x), Layer::Window)
+            }
+            _ if ctx.r9 && x >= ctx.boundary && x < ctx.boundary + 16 => (
+                self.r9_reused_pixel(line, x, ctx.boundary, ctx.a_hscroll),
+                Layer::PlaneA,
+            ),
+            _ => (self.plane_pixel(Plane::A, line, x, h40), Layer::PlaneA),
+        }
+    }
+
+    /// Select the RR9 priority winner at screen `x` from the flattened sprite pixel `s`, the plane-A-slot pixel
+    /// `a` (on layer `a_layer`), and the plane-B pixel `b`, over the `backdrop` floor. Order (highest first):
+    /// high-sprite > high-A > high-B > low-sprite > low-A > low-B > backdrop; only opaque pixels are
+    /// candidates (transparent loses by transparency). State is `Normal` here (R11 is applied afterward).
+    fn rr9_winner(
+        &self,
+        x: usize,
+        backdrop: u8,
+        s: Option<SpritePixel>,
+        a: &PlanePixel,
+        a_layer: Layer,
+        b: &PlanePixel,
+    ) -> PixelResolution {
+        // High-priority tier.
+        if let Some(sp) = s {
+            if sp.priority {
+                return sprite_px_res(x, &sp);
+            }
+        }
+        if a.opaque() && a.priority {
+            return px_from(x, a_layer, a);
+        }
+        if b.opaque() && b.priority {
+            return px_from(x, Layer::PlaneB, b);
+        }
+        // Low-priority tier (sprite buffer pixels are always opaque).
+        if let Some(sp) = s {
+            return sprite_px_res(x, &sp);
+        }
+        if a.opaque() {
+            return px_from(x, a_layer, a);
+        }
+        if b.opaque() {
+            return px_from(x, Layer::PlaneB, b);
+        }
+        backdrop_px(x, backdrop)
+    }
+
     /// Resolve one scanline — the single source `render_line` / `render_line_report` / `render_scanline` all
-    /// derive from (design §1: attribution is the render). Composites backdrop → plane B → plane A / window →
-    /// **sprites**, all **by transparency / opacity** (RR7 + owner scope): the priority bit is decoded and
-    /// reported but does **not** reorder (push-5 boundary). Returns the per-pixel composite + the sprite
-    /// pipeline result (walk, status flags, buffer).
+    /// derive from (design §1: attribution is the render). Each dot is resolved by RR9 priority ordering
+    /// (high-sprite > high-A > high-B > low-sprite > low-A > low-B > backdrop) over the flattened sprite pixel,
+    /// the plane-A-slot pixel (window/plane A with R9), and plane B. Shadow/highlight (R11) is a later pass.
+    /// Returns the per-pixel composite + the sprite pipeline result (walk, status flags, buffer).
     fn resolve_line(&self, line: u16) -> ResolvedLine {
         let h40 = self.render_h40();
         let width = if h40 { 320 } else { 256 };
         let backdrop = self.backdrop_index();
-        let bd = PixelResolution {
-            x: 0,
-            layer: Layer::Backdrop,
-            cram_index: backdrop,
-            tile: 0,
-            palette: 0,
-            priority: false,
-        };
-        let mut out: Vec<PixelResolution> = (0..width)
-            .map(|x| PixelResolution { x: x as u16, ..bd })
-            .collect();
         // Sprite evaluation is display-independent (a debugger asks "which sprites on line N" regardless of
         // display enable), so the walk always runs for the report; only compositing is gated on display.
         let sprite = self.sprite_line(line, h40, width);
         // Display disabled (reg $01 bit 6 clear, RR4): the active area is the backdrop only — no planes/sprites.
         if self.regs()[0x01] & 0x40 == 0 {
+            let out = (0..width).map(|x| backdrop_px(x, backdrop)).collect();
             return ResolvedLine {
                 pixels: out,
                 sprite,
             };
         }
-        // Plane B over the backdrop.
-        for (x, px) in out.iter_mut().enumerate() {
-            let b = self.plane_pixel(Plane::B, line, x, h40);
-            if b.opaque() {
-                *px = px_from(x, Layer::PlaneB, &b);
-            }
-        }
-        // Plane A / window over plane B (transparency; RR7). The window replaces plane A in its region.
+        // Per-line plane-A-slot inputs (the window span + the R9 window-bug predicate).
         let win = self.window_span(line, width);
         let a_hscroll = self.plane_hscroll(Plane::A, line);
         let boundary = win.map_or(0, |w| w.end_x as usize);
         let r9 = matches!(win, Some(w) if !w.full_line && w.start_x == 0) && a_hscroll & 0x0F != 0;
-        for (x, px) in out.iter_mut().enumerate() {
-            let (ap, layer) = match win {
-                Some(w) if x >= w.start_x as usize && x < w.end_x as usize => {
-                    (self.window_pixel(line, x), Layer::Window)
-                }
-                _ if r9 && x >= boundary && x < boundary + 16 => (
-                    self.r9_reused_pixel(line, x, boundary, a_hscroll),
-                    Layer::PlaneA,
-                ),
-                _ => (self.plane_pixel(Plane::A, line, x, h40), Layer::PlaneA),
-            };
-            if ap.opaque() {
-                *px = px_from(x, layer, &ap);
-            }
-        }
-        // Sprites over the planes, by opacity (RR7 + owner scope: the priority bit is decoded into
-        // `Layer::Sprite`'s pixel but does not reorder — push 5 slots it into the full step-5 order).
-        let sprite = self.sprite_line(line, h40, width);
-        for (x, px) in out.iter_mut().enumerate() {
-            if let Some(sp) = sprite.buffer[x] {
-                *px = PixelResolution {
-                    x: x as u16,
-                    layer: Layer::Sprite(sp.index),
-                    cram_index: sp.cram_index,
-                    tile: sp.tile,
-                    palette: sp.palette,
-                    priority: sp.priority,
-                };
-            }
-        }
-        // Leftmost-column blank (reg $00 bit 5, RR4): force the leftmost 8 px to the backdrop (after sprites —
-        // it is an output-stage blank).
+        let ctx = ASlotCtx {
+            win,
+            r9,
+            boundary,
+            a_hscroll,
+        };
+        let mut out: Vec<PixelResolution> = (0..width)
+            .map(|x| {
+                let b = self.plane_pixel(Plane::B, line, x, h40);
+                let (a, a_layer) = self.a_slot_pixel(line, x, h40, &ctx);
+                self.rr9_winner(x, backdrop, sprite.buffer[x], &a, a_layer, &b)
+            })
+            .collect();
+        // Leftmost-column blank (reg $00 bit 5, RR4): force the leftmost 8 px to the backdrop (an output-stage
+        // blank, after priority resolution).
         if self.regs()[0x00] & 0x20 != 0 {
             for (x, px) in out.iter_mut().enumerate().take(8.min(width)) {
-                *px = PixelResolution { x: x as u16, ..bd };
+                *px = backdrop_px(x, backdrop);
             }
         }
         ResolvedLine {
@@ -1309,29 +1383,29 @@ mod tests {
     }
 
     #[test]
-    fn priority_bit_is_decoded_but_does_not_reorder() {
-        // Push-3 boundary (RR7): a HIGH-priority plane B still loses to an opaque LOW-priority plane A —
-        // compositing is by transparency; the priority bit is decoded (into the cell/report) but not ordered.
+    fn high_priority_plane_b_wins_over_low_priority_plane_a() {
+        // RR9 (push-5, replaces the push-3 opacity-only boundary): a HIGH-priority plane B now beats an opaque
+        // LOW-priority plane A (high-B > low-A). The pre-push-5 test asserted the opposite (opacity wins); the
+        // scope boundary moved when priority ordering went real.
         let mut v = pa_fixture(false);
         put_cell(&mut v, 0xE000, 0x8001); // B cell(0,0) red, PRIORITY set
         put_cell(&mut v, 0xC000, 0x0002); // A cell(0,0) blue, low priority
         assert_eq!(
             v.render_line(0)[0],
-            v.cram_rgb(2),
-            "low-priority A wins over high-priority B (priority ordering is push 5)"
+            v.cram_rgb(1),
+            "high-priority B wins over low-priority A (RR9: high-B > low-A)"
         );
-        assert!(
-            v.plane_decoded(
-                Plane::B,
-                Some(CellRect {
-                    col: 0,
-                    row: 0,
-                    cols: 1,
-                    rows: 1
-                })
-            )[0]
-            .priority,
-            "the priority bit is still decoded"
+        assert_eq!(
+            v.render_line_report(0).pixels[0].layer,
+            Layer::PlaneB,
+            "the reported winner is plane B"
+        );
+        // Sanity: with B low-priority instead, low-A > low-B → plane A (blue) wins.
+        put_cell(&mut v, 0xE000, 0x0001); // B now low priority
+        assert_eq!(
+            v.render_line(0)[0],
+            v.cram_rgb(2),
+            "both low → low-A > low-B, plane A (blue) wins"
         );
     }
 
@@ -1905,9 +1979,10 @@ mod tests {
     }
 
     #[test]
-    fn low_priority_sprite_overlays_a_high_priority_plane() {
-        // Push-4 boundary (RR7 + owner scope): sprites composite by opacity, not priority. The priority
-        // ordering (high-sprite > high-A > …) is push 5.
+    fn high_priority_plane_beats_low_priority_sprite() {
+        // RR9 (push-5, replaces the push-4 opacity-only boundary): a HIGH-priority plane now beats a
+        // LOW-priority sprite (high-A > low-sprite). The pre-push-5 test asserted the opposite (the sprite
+        // overlaid by opacity); the scope boundary moved when priority ordering went real.
         let mut v = pa_fixture(false);
         set_reg(&mut v, 0x0F, 2);
         set_reg(&mut v, 0x05, 0x10);
@@ -1916,18 +1991,97 @@ mod tests {
         let r = v.render_line_report(0);
         assert_eq!(
             r.pixels[0].layer,
-            Layer::Sprite(0),
-            "the low-priority sprite overlays the high-priority plane (opacity, not priority)"
+            Layer::PlaneA,
+            "high-priority plane A beats the low-priority sprite (RR9: high-A > low-sprite)"
         );
         assert_eq!(
             v.render_line(0)[0],
-            v.cram_rgb(1),
-            "sprite red wins by opacity"
+            v.cram_rgb(2),
+            "plane A blue wins by priority"
         );
         assert!(
-            !r.pixels[0].priority,
-            "the sprite's own priority bit is decoded (false here)"
+            r.pixels[0].priority,
+            "the winning plane's priority bit is set"
         );
+        // Make the sprite high-priority: high-sprite > high-A → the sprite (red) wins.
+        write_sprite(&mut v, 0, 0x0080, 0x0000, 0x8001, 0x0080); // attr bit 15 set → high priority
+        assert_eq!(
+            v.render_line(0)[0],
+            v.cram_rgb(1),
+            "a high-priority sprite beats the high-priority plane (RR9: high-sprite > high-A)"
+        );
+        assert_eq!(v.render_line_report(0).pixels[0].layer, Layer::Sprite(0));
+    }
+
+    // --- RR9: full inter-layer priority order ------------------------------------------------------------
+
+    #[test]
+    fn rr9_high_a_beats_high_b() {
+        // Both planes high-priority + opaque → high-A > high-B.
+        let mut v = pa_fixture(false);
+        put_cell(&mut v, 0xC000, 0x8001); // A high, red
+        put_cell(&mut v, 0xE000, 0x8002); // B high, blue
+        assert_eq!(
+            v.render_line(0)[0],
+            v.cram_rgb(1),
+            "high-A wins over high-B"
+        );
+        assert_eq!(v.render_line_report(0).pixels[0].layer, Layer::PlaneA);
+    }
+
+    #[test]
+    fn rr9_low_sprite_beats_low_a_beats_low_b_beats_backdrop() {
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x05, 0x10);
+        put_cell(&mut v, 0xE000, 0x0002); // B low, blue at x 0..7
+        put_cell(&mut v, 0xE000 + 2, 0x0002); // B low, blue at x 8..15
+        put_cell(&mut v, 0xC000, 0x0001); // A low, red at x 0..7 (covers B)
+        write_sprite(&mut v, 0, 0x0080, 0x0000, 0x0003, 0x0080); // low sprite, tile 3 at screen 0
+        fill_tile(&mut v, 3, 3); // tile 3 = colour 3
+        write_cram(&mut v, 3, 0x00E0); // colour 3 = green
+        let r = v.render_line(0);
+        assert_eq!(r[0], v.cram_rgb(3), "x0: low-sprite > low-A > low-B");
+        assert_eq!(r[8], v.cram_rgb(2), "x8: no sprite, no A → low-B (blue)");
+        assert_eq!(r[16], v.cram_rgb(0), "x16: nothing opaque → backdrop");
+    }
+
+    #[test]
+    fn rr9_transparent_higher_layer_is_skipped() {
+        // A transparent plane-A pixel does not block plane B (loses by transparency), even though A would
+        // outrank B at equal priority.
+        let mut v = pa_fixture(false);
+        put_cell(&mut v, 0xE000, 0x0001); // B opaque red
+                                          // A cell(0,0) stays tile 0 → transparent
+        assert_eq!(
+            v.render_line(0)[0],
+            v.cram_rgb(1),
+            "transparent A → plane B shows through"
+        );
+    }
+
+    #[test]
+    fn rr9_window_occupies_the_a_slot() {
+        // The window sits in plane A's priority slot: a high-priority window pixel beats low-priority plane B;
+        // a low-priority window pixel loses to high-priority plane B.
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x11, 0x02); // left window [0,32)
+        put_cell(&mut v, 0xA000, 0x8001); // window cell(0,0): HIGH priority, red
+        put_cell(&mut v, 0xE000, 0x0002); // plane B low, blue
+        assert_eq!(
+            v.render_line(0)[0],
+            v.cram_rgb(1),
+            "high-priority window (A-slot) > low-B"
+        );
+        assert_eq!(v.render_line_report(0).pixels[0].layer, Layer::Window);
+        put_cell(&mut v, 0xA000, 0x0001); // window now low priority
+        put_cell(&mut v, 0xE000, 0x8002); // plane B now HIGH priority
+        assert_eq!(
+            v.render_line(0)[0],
+            v.cram_rgb(2),
+            "high-B > low-priority window (A-slot)"
+        );
+        assert_eq!(v.render_line_report(0).pixels[0].layer, Layer::PlaneB);
     }
 
     // --- R10 slice 4: render_scanline commit path (status bits go real, the masking carry) ----------------
