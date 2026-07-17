@@ -246,6 +246,34 @@ rule**, flagged for the push-5 golden-frame differential — the same pin mechan
 
 ---
 
+## RR9 — Inter-layer priority resolution (§3 step 5, the output push)
+
+**PINNED.** At each dot the displayed layer is the **first present** in this fixed order:
+
+> **high-priority sprite > high-priority plane A > high-priority plane B > low-priority sprite >
+> low-priority plane A > low-priority plane B > backdrop.**
+
+- **"high-priority"** = the layer's priority bit set (plane cell bit 15 — RR1; sprite attribute bit 15 — RR8).
+- **"present"** = the layer has an **opaque** pixel at the dot (colour nibble ≠ 0 — RR2). A transparent pixel
+  loses *by transparency* and the next layer is considered. The **backdrop** (reg $07 & 0x3F — RR4) is the
+  always-present floor.
+- **Window replaces plane A in its region** (RR4/R9): the window pixel occupies plane A's priority slot,
+  carrying the **window cell's** own priority bit.
+- **Sprite-vs-sprite** is resolved *before* this step (first-come-wins in the SAT line buffer — RR8), so the
+  sprite layer is a single flattened pixel per dot entering RR9.
+- This is the priority *ordering* that RR7 decoded-but-did-not-apply in the planes/sprite pushes (the priority
+  bit was carried into the report; RR9 is where it selects the winner).
+
+**Evidence:** Plutiedev VDP primer "Priority" (the sprite-high / plane-high / sprite-low / plane-low ladder,
+plutiedev.com), Sega Genesis Software Manual layer-priority section, and design brief `docs/2026-07-01-vdp-design.md`
+§3 step 5 (ratified). **Confidence:** high — the canonical, universally-documented Mega Drive priority order.
+**Classification:** behavioral (the exact per-dot winner). **Open remainder:** none for the ordering itself —
+shadow/highlight is R11 (which shifts the *intensity* of the RR9 winner, never its identity); sprite-vs-sprite
+is RR8; the window-region shadow/highlight default-state (window in the A-slot) is the R11 push-5 golden-diff
+ledger row, not an RR9 question.
+
+---
+
 ## Summary scoreboard
 
 | Item | Pin | Class | Remainder |
@@ -258,6 +286,7 @@ rule**, flagged for the push-5 golden-frame differential — the same pin mechan
 | RR6 vscroll VSRAM/mode/sign | pinned | behavioral | none (R8 variance already ledgered) |
 | RR7 layer compositing | design-pinned | behavioral | priority-bit ordering + sprites + S/H → pushes 4–5 |
 | RR8 SAT format + sprite geometry | pinned (Plutiedev verbatim) | behavioral | R5 window-base H40 mask + odd-address SAT writes → interim, golden-diff push 5 |
+| RR9 inter-layer priority order | pinned (canonical) | behavioral | none (S/H = R11; window-region S/H default → ledger) |
 
 Every render fact the planes/sprite pushes need is pinned from a permitted source or, where a permitted
 verbatim formula is unavailable (the two intermediate hscroll modes, the invalid plane-size code) or a
