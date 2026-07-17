@@ -274,6 +274,69 @@ ledger row, not an RR9 question.
 
 ---
 
+## RD1–RD5 — DMA register / command byte formats (§2 DMA unit, the DMA push)
+
+**PINNED** (added 2026-07-16 for the DMA + FIFO push — VDP push 6). Companion to the behavioral R3 (FIFO /
+slots) and R4 (DMA ↔ 68k bus). R3/R4 pin *what the three DMA modes do*; RD pins the *standard register/command
+byte-formats* that decode a game's DMA setup into a mode + length + source + trigger — the layout neither R3/R4
+nor the design brief wrote down.
+
+- **RD1 — DMA register map** (Plutiedev "DMA transfer"; Sega Genesis Software Manual §DMA registers): the DMA
+  is programmed through six registers, all big-endian byte values:
+
+  | Reg | `$` | Field |
+  |---|---|---|
+  | 19 | `$13` | DMA length, low byte |
+  | 20 | `$14` | DMA length, high byte |
+  | 21 | `$15` | DMA source address, low byte |
+  | 22 | `$16` | DMA source address, mid byte |
+  | 23 | `$17` | DMA source address, high byte **+ the mode select** (top bits) |
+
+  So `length = (regs[20] << 8) | regs[19]` and the source's low 23 significant bits come from
+  `regs[21..=23]`.
+
+- **RD2 — mode select** (reg 23 top bits; Plutiedev "DMA transfer", Sega Software Manual): **bit 7 = 0 → 68k→VDP
+  transfer** (source high bits = `regs[23] & 0x7F`); **bits 7–6 = `10` → VRAM fill**; **bits 7–6 = `11` → VRAM
+  copy**. **Length is in words** for the 68k→VDP transfer and the fill; **in bytes** for the copy (copy is a
+  byte-granular VRAM→VRAM move). A length register of 0 means `0x10000` (the counter is pre-decremented) — a
+  documented edge, not exercised by our fixtures.
+
+- **RD3 — source address** (68k→VDP only; Plutiedev, verbatim: *"the address is in words, so it must be
+  divided by 2 … the registers hold the source address shifted right by one"*): the 68k byte address =
+  `((regs[23] & 0x7F) << 16 | regs[22] << 8 | regs[21]) << 1`. Fill/copy take no external source (fill's data
+  is the FIFO entry — R4(b); copy's source is the low 16 bits of the source registers, a **VRAM** byte address).
+
+- **RD4 — trigger points** (recon R1/R4; Kabuto command-port notes; Sega Software Manual DMA-trigger section):
+  a DMA arms when the command written to the control port has **CD5 set** (code bit 5). It **fires**:
+  - **68k→VDP transfer and VRAM copy**: on the **control-port second command word** completing (the destination
+    command write itself — CD5 already set, mode bits 7/6 of reg 23 chosen at setup). Copy needs no external
+    source, so the control write is the whole trigger.
+  - **VRAM fill**: on the **next data-port write** after the CD5 command — that data word supplies the fill
+    value (its top byte for a VRAM fill; the CRAM/VSRAM-fill data-source bug is R4(b)). CD5 stays armed across
+    the data write.
+  - **DMA-busy** (status bit 1; Eke, recon R4): sets on the **control-port setup write**, not the data-port
+    trigger — so a fill's busy flag is already set when the trigger data write lands.
+
+- **RD5 — the RAM-not-ROM rule** (Sega Genesis Technical Overview §7, verbatim: *"the final write must use the
+  work RAM"*; recon R4(d)): for a ROM→VRAM transfer the destination command must be a word write and the
+  triggering instruction must fetch from work RAM. Root cause is the separately-documented Z80/DMA bus-clash
+  glitch (Plutiedev "hardware issues"). **Nothing to model here** beyond the Z80 clash itself — deferred to the
+  Z80 era (recon R4 open remainder). Our emulator does not enforce the rule (it is a hardware hazard, not a
+  state transition).
+
+**Evidence**: Plutiedev "DMA transfer" (plutiedev.com/dma-transfer — the register map, the mode-select top
+bits, the word-address `>>1` source, the fill/copy distinction); Sega Genesis Software Manual §DMA (register
+assignments, length semantics, the trigger sequence); Sega Genesis Technical Overview v1.00 §7 (the three modes
++ the RAM-not-ROM rule, verbatim — the same source R4 cites); Kabuto command-port notes (CD5 arming, cross-ref
+R1); recon R1 (CD5 retention when DMA-enable is clear) / R4 (mode behavior) / R3 (the FIFO the words flow
+through). **Confidence**: high — the canonical, universally-documented Mega Drive DMA programming interface.
+**Classification**: behavioral (the decode selects the mode + length + source a game's setup produces).
+**Open remainder**: none for the register decode itself; the *behavioral* mid-fill and CRAM/VSRAM-fill cells
+are R1/R4 open remainders pinned by the DMA-push BlastEm experiment (`vdp_dma_fill`), and the coarse *timing*
+(slot budget, positions-within-line) is R3's Phase-3 deferral — neither is an RD decode question.
+
+---
+
 ## Summary scoreboard
 
 | Item | Pin | Class | Remainder |
@@ -287,6 +350,7 @@ ledger row, not an RR9 question.
 | RR7 layer compositing | design-pinned | behavioral | priority-bit ordering + sprites + S/H → pushes 4–5 |
 | RR8 SAT format + sprite geometry | pinned (Plutiedev verbatim) | behavioral | R5 window-base H40 mask + odd-address SAT writes → interim, golden-diff push 5 |
 | RR9 inter-layer priority order | pinned (canonical) | behavioral | none (S/H = R11; window-region S/H default → ledger) |
+| RD1–RD5 DMA register/command formats | pinned (canonical) | behavioral | none for the decode (mid-fill/CRAM-fill cells = R1/R4 experiment; coarse timing = R3 Phase-3) |
 
 Every render fact the planes/sprite pushes need is pinned from a permitted source or, where a permitted
 verbatim formula is unavailable (the two intermediate hscroll modes, the invalid plane-size code) or a
