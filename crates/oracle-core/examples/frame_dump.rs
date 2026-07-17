@@ -5,9 +5,11 @@
 //!
 //! This is a **dev tool, not a gate artifact** — it exercises the full CPU → `MegaDriveBus` → VDP → renderer
 //! path end-to-end. The fixture puts vertical white/red stripes (plane A, two solid tiles) on screen with
-//! three green/blue sprite boxes composited over them (via the SAT written through the data port, so the
-//! sprite cache write-through is exercised), so a glance at the PPM confirms the plane + sprite renderer is
-//! alive.
+//! green/blue sprite boxes composited over them (via the SAT written through the data port, so the sprite
+//! cache write-through is exercised). Push 5's **output stage** is visible too: **shadow/highlight** is enabled
+//! (reg $0C bit 3), so the low-priority stripes render dimmed while a band of **high-priority** plane-A cells
+//! renders at normal intensity (visible priority × S/H), and a palette-3 **highlight-operator** sprite lifts a
+//! rectangle of the stripes back to normal. A glance at the PPM confirms priority ordering + shadow/highlight.
 //!
 //! Usage: `cargo run --release --example frame_dump -- [frames] [out.ppm]`
 //! (defaults: 2 frames, `frame.ppm` in the current directory).
@@ -80,7 +82,7 @@ fn fixture_rom() -> Vec<u8> {
         0x8558,    // reg 5  = $58  sprite attribute table base $B000
         0x8701,    // reg 7  = $01  backdrop = CRAM 1
         0x8B00,    // reg 11 = $00  full h + full v scroll
-        0x8C00,    // reg 12 = $00  H32
+        0x8C08,    // reg 12 = $08  H32 + shadow/highlight enabled (bit 3)
         0x8D20,    // reg 13 = $20  h-scroll table base $8000
         0x8F02,    // reg 15 = $02  auto-increment 2
         0x9000,    // reg 16 = $00  32×32 plane
@@ -119,6 +121,25 @@ fn fixture_rom() -> Vec<u8> {
         data(&mut rom, 0x4444); // tiles 7–10 blue
     }
 
+    // Operator tiles 11–14 = solid colour 14 (a shadow/highlight highlight-operator when drawn at palette 3).
+    cmd(&mut rom, vdp_cmd(0x01, 11 * 32));
+    for _ in 0..(4 * 16) {
+        data(&mut rom, 0xEEEE);
+    }
+
+    // Clear plane B ($E000): power-on VRAM is random, and with real RR9 priority ordering a high-priority
+    // garbage cell would beat the low-priority stripes. Zero all 1024 cells (32×32).
+    cmd(&mut rom, vdp_cmd(0x01, 0xE000));
+    w(&mut rom, 0x343C);
+    w(&mut rom, 0x0000); // move.w #0,d2
+    w(&mut rom, 0x303C);
+    w(&mut rom, 1023); // move.w #1023,d0
+    let clr_top = rom.len() as u32;
+    w(&mut rom, 0x3282); // move.w d2,(a1)  write a zero cell
+    w(&mut rom, 0x51C8); // dbra d0,<disp>
+    let clr_ext = rom.len() as u32;
+    w(&mut rom, disp16(clr_top, clr_ext));
+
     // Fill plane A ($C000) with vertical stripes: 896 cells, tile toggling 1↔2 each cell.
     cmd(&mut rom, vdp_cmd(0x01, 0xC000));
     w(&mut rom, 0x303C);
@@ -132,6 +153,13 @@ fn fixture_rom() -> Vec<u8> {
     w(&mut rom, 0x51C8); // dbra d0,<disp>
     let ext = rom.len() as u32;
     w(&mut rom, disp16(loop_top, ext));
+
+    // A band of HIGH-priority white plane-A cells (rows 6–9 → screen y 48–79): under shadow/highlight these
+    // render at normal intensity while the surrounding low-priority stripes are shadowed — visible priority×S/H.
+    cmd(&mut rom, vdp_cmd(0x01, 0xC000 + 6 * 64));
+    for _ in 0..(4 * 32) {
+        data(&mut rom, 0x8001); // high-priority (bit 15) tile 1 (white)
+    }
 
     // Sprite attribute table at $B000 (reg 5), written through the data port so the SAT-cache write-through
     // populates the cache the sprite evaluation reads. Three boxes over the stripes (Y/X fields are
@@ -147,11 +175,17 @@ fn fixture_rom() -> Vec<u8> {
     data(&mut rom, 0x0502); // size 2×2, link 2
     data(&mut rom, 0x0007); // base tile 7 (blue block)
     data(&mut rom, 120 + 128); // X
-                               // Sprite 2: 1×1 green (tile 3) at screen (200, 150), link 0 (end of list).
+                               // Sprite 2: 1×1 green (tile 3) at screen (200, 150), link 3.
     data(&mut rom, 150 + 128); // Y
-    data(&mut rom, 0x0000); // size 1×1, link 0
+    data(&mut rom, 0x0003); // size 1×1, link 3
     data(&mut rom, 0x0003); // tile 3 (green)
     data(&mut rom, 200 + 128); // X
+                               // Sprite 3: a 2×2 highlight OPERATOR (palette 3, tiles 11–14) over the stripes at screen (100, 120),
+                               // link 0 (end). It is not displayed — it lifts the shadowed stripes beneath it back to normal intensity.
+    data(&mut rom, 120 + 128); // Y
+    data(&mut rom, 0x0500); // size 2×2, link 0
+    data(&mut rom, 0x600B); // palette 3, base tile 11 → highlight operator
+    data(&mut rom, 100 + 128); // X
 
     // Park.
     w(&mut rom, 0x4E72);
