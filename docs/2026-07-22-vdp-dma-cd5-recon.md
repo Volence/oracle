@@ -168,6 +168,37 @@ One `vdp.rs` change (the `take_dma_request` CD5 clear, Part 3). Gates, ordered:
 - **The broader mis-mirrored Z80 map** (`$A06000`/`$A07Fxx`/`$A08000`) — the Z80-map slice, unrelated.
 - **Cycle-exact DMA timing** — the interim `dma_cost` window stands; not this slice.
 
+## Part 7 — Implementation outcome (2026-07-22, slice shipped for review)
+
+Fix (iii) implemented per Part 3: `take_dma_request` clears `code & !0x20` on an actual consume (`is_some`
+guard). `vdp.rs` only.
+
+**Gates:**
+- **#1 semantics** — two new unit tests: `a_completed_dma_clears_cd5_so_a_later_m1_off_command_does_not_respawn_it`
+  (the TF4 sequence — real Mem DMA → M1:=0 → plain command must leave `dma_pending == None`; RED before, GREEN
+  after) and `fill_cd5_survives_the_control_write_until_the_data_trigger` (the Fill two-step — CD5 must survive
+  the control write; the `is_some` guard means the None-returning take does not clear it prematurely). Lib
+  **598/598**; fmt-clean, clippy-clean.
+- **#2 frozen currencies — byte-identical:** export golden 3/3, 7 golden_frames, determinism 2/2,
+  oracle_differential 3/3, **SST 112/112**, plus all push-6 DMA unit tests (bus `mem_dma`/`fill`/`copy`/SAT/
+  frame_report) and `export_state_captures_live_z80_ram`. Currency-neutral held (Part 4).
+- **#3 TF4 acceptance — the ~28-frame DMA halt is RESOLVED.** TF4 no longer stalls: it executes at normal step
+  rate and **renders ~128k non-zero pixels** (varying frame-to-frame = actively running), where before it froze
+  blank at 531 instructions. PC is past `$0FF350`. **Honest next-layer note:** PC still cycles the `$0FF35x`
+  VRAM-upload region across 120–1200 frames, so TF4 has not reached full gameplay — the halt is fixed, a
+  further init-loop layer remains (exactly the "may expose a next layer" the overseer flagged). Not
+  over-promised: DR-2's *blocker* is fixed; TF4 is not fully booting yet.
+- **#4 Batman diagnostic — CHANGED, not unchanged.** Batman still runs-and-draws-garbled (DR-3, unfixed), but
+  its render shifted (e.g. f1200 PC `$12D38`/0 px → `$9C14`/4682 px). The CD5 fix touched Batman's DMA path too
+  (Batman uses DMAs; it was silently relying on / exercising the old stale-CD5 behavior in some sequence). It is
+  **still broken, differently** — not a regression of a working state, but a real change. **DR-3 must be
+  re-triaged against this new post-fix baseline**, not compared to the pre-fix one.
+- **Regression check (working games):** Sonic 2 (207,621 px), S&K (134,589 px), aeon demo (215,040 px) all
+  render, display on — **no regression** on the games that already worked.
+
+**Net:** DR-2's spurious-DMA halt is fixed and gate-safe; TF4 renders but has a further init layer; Batman is
+unchanged-in-status (still DR-3) though its execution shifted and needs a fresh triage.
+
 ## Sources
 
 - [SpritesMind — VDP Internals (Nemesis: CD5 = DMA-pending; M1 only masks CD5 writes)](https://gendev.spritesmind.net/forum/viewtopic.php?t=1291)
