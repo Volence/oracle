@@ -139,6 +139,42 @@ pub fn build_vint_counter() -> Vec<u8> {
     rom
 }
 
+/// The VRAM byte address the [`build_vram_poke`] fixture writes to (high byte at this address, low byte at
+/// `+1`, autoinc 2).
+pub const VRAM_POKE_ADDR: u32 = 0x0100;
+/// The word [`build_vram_poke`] stores at [`VRAM_POKE_ADDR`] (so VRAM `$0100 = $BE`, `$0101 = $EF`).
+pub const VRAM_POKE_WORD: u16 = 0xBEEF;
+/// The PC of the `move.w #VRAM_POKE_WORD,(a1)` data-port write in [`build_vram_poke`] — the instruction a VRAM
+/// watch attributes the poke to.
+pub const VRAM_POKE_PC: u32 = 0x0000_0216;
+
+/// Build the **VRAM-poke fixture ROM** — the minimal end-to-end proof for a *direct* VDP-internal watch
+/// (watchpoints v2). It boots, points a0/a1 at the VDP control/data ports, sets autoinc 2, issues a VRAM-write
+/// command at [`VRAM_POKE_ADDR`], writes [`VRAM_POKE_WORD`] through the data port (at PC [`VRAM_POKE_PC`]), then
+/// spins forever. So one frame produces exactly one direct VRAM word write — two byte captures (`$BE` at
+/// `$0100`, `$EF` at `$0101`), both `via = Direct`, both attributed to [`VRAM_POKE_PC`].
+#[doc(hidden)]
+pub fn build_vram_poke() -> Vec<u8> {
+    let mut rom = vec![0u8; 0x220];
+    put_long(&mut rom, 0x0, INITIAL_SSP); // reset SSP
+    put_long(&mut rom, 0x4, MAIN); // reset PC = $200
+
+    // a0 = VDP control ($C00004), a1 = VDP data ($C00000).
+    put_word(&mut rom, 0x200, 0x41F9); // lea (xxx).l, a0
+    put_long(&mut rom, 0x202, 0x00C0_0004);
+    put_word(&mut rom, 0x206, 0x43F9); // lea (xxx).l, a1
+    put_long(&mut rom, 0x208, 0x00C0_0000);
+    put_word(&mut rom, 0x20C, 0x30BC); // move.w #imm,(a0)
+    put_word(&mut rom, 0x20E, 0x8F02); //   reg 15 = autoinc 2
+    put_word(&mut rom, 0x210, 0x20BC); // move.l #imm,(a0)
+                                       // VRAM write command @ $0100: word1 = 0x4100 (CD1CD0=01, A13-A0=$0100), word2 = 0x0000.
+    put_long(&mut rom, 0x212, 0x4100_0000);
+    put_word(&mut rom, VRAM_POKE_PC, 0x32BC); // move.w #imm,(a1)  ← the poke
+    put_word(&mut rom, VRAM_POKE_PC + 2, VRAM_POKE_WORD);
+    put_word(&mut rom, 0x21A, 0x60FE); // bra.s * (spin at $21A forever)
+    rom
+}
+
 /// Build the **pad-poll fixture ROM** — the end-to-end proof for the controller/I/O push. It boots on a real
 /// [`crate::system::System`], zeroes VRAM (so the whole screen is transparent → pure backdrop), configures
 /// Player-1's port for a 3-button read (TH output), and then loops forever polling the pad through the real

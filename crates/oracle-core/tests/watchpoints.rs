@@ -8,9 +8,9 @@
 //! once (at `$20E`) and written exactly once (at `$212`) — a clean single-hit assertion. Work RAM is
 //! randomized at power-on, so the read returns the power-on word `V` and the store writes `V + 1`.
 
-use oracle_core::bus::{BusOp, Size};
+use oracle_core::bus::{BusEventSink, BusOp, Size};
 use oracle_core::system::System;
-use oracle_core::watchpoints::{WatchOp, Watchpoints};
+use oracle_core::watchpoints::{WatchOp, WatchSpace, WatchVia, Watchpoints};
 
 /// A booted machine running the stir-RAM fixture ROM.
 fn booted() -> System {
@@ -110,5 +110,118 @@ fn function_code_distinguishes_program_from_data_space() {
     assert!(
         wp.hits().iter().all(|h| h.fc == 6),
         "instruction prefetch reads are program space (fc 6)"
+    );
+}
+
+// --- VDP-internal watches (v2): who wrote this tile / palette entry? -------------------------------------
+
+use oracle_core::testrom;
+
+/// A direct CPU data-port write to VRAM is captured byte-granular and attributed to the poking instruction.
+#[test]
+fn vram_watch_attributes_a_direct_poke_to_the_writing_instruction() {
+    let mut sys = System::new(0x5EED);
+    sys.load_rom(testrom::build_vram_poke());
+    sys.reset();
+    let old_hi = sys.vram()[testrom::VRAM_POKE_ADDR as usize];
+    let old_lo = sys.vram()[testrom::VRAM_POKE_ADDR as usize + 1];
+
+    let mut wp = Watchpoints::new(64);
+    wp.add_vdp_watch(
+        WatchSpace::Vram,
+        testrom::VRAM_POKE_ADDR..=testrom::VRAM_POKE_ADDR + 1,
+        WatchOp::Write,
+        "poke",
+    );
+    sys.run_frames_with_sink(1, &mut wp);
+
+    assert_eq!(wp.dropped(), 0, "no hits dropped");
+    assert_eq!(wp.hits().len(), 2, "one direct VRAM word = two byte writes");
+    let hi = wp.hits()[0];
+    assert_eq!(hi.space, WatchSpace::Vram);
+    assert_eq!(hi.addr, testrom::VRAM_POKE_ADDR, "resolved VRAM address");
+    assert_eq!(hi.old, old_hi as u32, "pre-write byte");
+    assert_eq!(hi.value, (testrom::VRAM_POKE_WORD >> 8) as u32, "$BE");
+    assert_eq!(hi.size, Size::Byte);
+    assert_eq!(hi.op, BusOp::Write);
+    assert_eq!(hi.via, WatchVia::Direct, "a direct CPU data-port write");
+    assert_eq!(hi.pc, testrom::VRAM_POKE_PC, "attributed to the poke");
+    assert_eq!(hi.frame, 0);
+    let lo = wp.hits()[1];
+    assert_eq!(lo.addr, testrom::VRAM_POKE_ADDR + 1);
+    assert_eq!(lo.old, old_lo as u32);
+    assert_eq!(lo.value, (testrom::VRAM_POKE_WORD & 0xFF) as u32, "$EF");
+    assert_eq!(lo.via, WatchVia::Direct);
+    assert_eq!(lo.pc, testrom::VRAM_POKE_PC);
+}
+
+/// A VRAM watch catches a *DMA* write (the pad-poll fixture zeroes VRAM with a fill DMA) with `via = Dma`,
+/// attributed to the instruction that triggered the transfer.
+#[test]
+fn vram_watch_catches_a_dma_fill_write_with_via_dma() {
+    let rom = testrom::build_pad_poll();
+    let mut sys = System::new(0x1234);
+    sys.load_rom(rom.clone());
+    sys.reset();
+    let old = sys.vram()[0x0100];
+
+    let mut wp = Watchpoints::new(64);
+    wp.add_vdp_watch(WatchSpace::Vram, 0x0100..=0x0100, WatchOp::Write, "tile");
+    sys.run_frames_with_sink(1, &mut wp);
+
+    assert_eq!(wp.hits().len(), 1, "the fill writes $0100 exactly once");
+    let hit = wp.hits()[0];
+    assert_eq!(hit.space, WatchSpace::Vram);
+    assert_eq!(hit.addr, 0x0100);
+    assert_eq!(hit.old, old as u32, "pre-fill byte");
+    assert_eq!(hit.value, 0x00, "the fill byte is $00");
+    assert_eq!(hit.via, WatchVia::Dma, "driven by DMA");
+    // The PC attributes to the data-port write that triggered the fill (opcode `move.w #imm,(a1)` = $32BC).
+    let op = ((rom[hit.pc as usize] as u16) << 8) | rom[hit.pc as usize + 1] as u16;
+    assert_eq!(op, 0x32BC, "triggering instruction is the data-port write");
+}
+
+/// A CRAM watch captures a direct palette write as a word with `via = Direct`.
+#[test]
+fn cram_watch_captures_a_direct_palette_write() {
+    let rom = testrom::build_pad_poll();
+    let mut sys = System::new(0x1234);
+    sys.load_rom(rom.clone());
+    sys.reset();
+
+    // CRAM entry 1 (byte address $02) is written once = $0EEE (the "white" backdrop colour).
+    let mut wp = Watchpoints::new(64);
+    wp.add_vdp_watch(WatchSpace::Cram, 0x02..=0x03, WatchOp::Any, "palette-1");
+    sys.run_frames_with_sink(1, &mut wp);
+
+    assert_eq!(wp.hits().len(), 1, "CRAM entry 1 written exactly once");
+    let hit = wp.hits()[0];
+    assert_eq!(hit.space, WatchSpace::Cram);
+    assert_eq!(hit.addr, 0x02, "resolved CRAM byte address");
+    assert_eq!(hit.old, 0x0000, "CRAM starts zeroed");
+    assert_eq!(hit.value, 0x0EEE, "9-bit white");
+    assert_eq!(hit.size, Size::Word, "a CRAM entry is a word");
+    assert_eq!(hit.via, WatchVia::Direct);
+}
+
+/// A bus watch attached to the same run never sees VDP-internal writes, and vice versa — capture only arms
+/// when a VDP watch is registered, and spaces do not cross.
+#[test]
+fn a_bus_only_watch_does_not_arm_vdp_capture() {
+    let mut sys = System::new(0x5EED);
+    sys.load_rom(testrom::build_vram_poke());
+    sys.reset();
+    // A bus watch numerically overlapping VRAM addresses ($0100) must not pick up the VDP-internal write.
+    let mut wp = Watchpoints::new(64);
+    wp.add_watch(0x0000_0100..=0x0000_0101, WatchOp::Write, "bus-100");
+    assert!(
+        !wp.wants_vdp_writes(),
+        "a bus-only watch never arms VDP capture"
+    );
+    sys.run_frames_with_sink(1, &mut wp);
+    assert_eq!(
+        wp.hits().len(),
+        0,
+        "the VDP-internal poke is not a bus write at $0100"
     );
 }

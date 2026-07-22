@@ -385,6 +385,11 @@ impl System {
     /// frame, so a consumer that attributes accesses to their writing instruction (watchpoints) has that
     /// context; the default `on_step_boundary` is a no-op, so `&mut ()` is byte-for-byte the old hot path.
     pub fn run_until_with_sink<S: BusEventSink>(&mut self, deadline_mclk: u64, sink: &mut S) {
+        // Arm the VDP write-capture buffer for this run only if the sink wants VDP-internal writes
+        // (watchpoints v2). Disarmed, the choke points are byte-for-byte the old hot path — this single query
+        // is the whole cost when no VDP watch is attached. Restored to off on return.
+        let capture = sink.wants_vdp_writes();
+        self.vdp.set_write_capture(capture);
         while self.scheduler.now() < deadline_mclk {
             // Deliver any events whose deadline has arrived (instruction-boundary granularity, consistent
             // with the ratified sync-on-demand model) before stepping — they may raise the pending latches.
@@ -396,11 +401,23 @@ impl System {
             // accesses to their driving instruction (watchpoints) has that context. No-op for `&mut ()`.
             sink.on_step_boundary(self.cpu.regs.pc, self.scheduler.now() / MCLK_PER_FRAME);
             let cycles = self.step_cpu(sink);
+            // Drain the VDP writes this step produced (empty unless armed) and deliver each to the sink, paired
+            // with the step-boundary PC/frame it just stamped — this is where a DMA write learns the
+            // instruction that triggered it. Empty at every instruction boundary (the `dma_pending` precedent).
+            if capture {
+                for w in self.vdp.take_write_captures() {
+                    sink.on_vdp_write(w);
+                }
+            }
             self.scheduler.advance(cycles as u64 * MCLK_PER_CPU_CYCLE);
             // Re-derive the IPL latch after the step: a taken interrupt's fc=7 /INTAK cleared the VDP's
             // pending latch mid-step (so a delivered VInt does NOT re-fire after RTE), and any enable-bit
             // register write mid-step is picked up here too (recon R12).
             self.cpu.set_ipl(self.vdp.ipl());
+        }
+        // Disarm — leave the VDP as the run found it (a subsequent null-sink run must stay on the hot path).
+        if capture {
+            self.vdp.set_write_capture(false);
         }
     }
 

@@ -58,6 +58,20 @@ pub trait BusEventSink {
     /// stamp is where the instruction identity enters the stream. The default is a no-op, so the null-sink
     /// hot path (`()`) and the recording sink (`Vec<BusEvent>`) are behaviorally unchanged.
     fn on_step_boundary(&mut self, _pc: u32, _frame: u64) {}
+
+    /// Whether this sink wants VDP-internal writes delivered (watchpoints v2). The sink-generic run loop calls
+    /// this **once per run** and, only if it returns `true`, arms the VDP's write-capture buffer for the run —
+    /// so the currency-sensitive capture path stays byte-for-byte off unless a consumer opts in. The default is
+    /// `false`, so `()` / `Vec<BusEvent>` never arm capture.
+    fn wants_vdp_writes(&self) -> bool {
+        false
+    }
+
+    /// A VDP-internal memory write (VRAM/CRAM/VSRAM), delivered after the driving CPU step when this sink's
+    /// [`wants_vdp_writes`](BusEventSink::wants_vdp_writes) returned `true` (watchpoints v2). Carries the
+    /// resolved region address, old→new value, size, and CPU-vs-DMA attribution; a consumer pairs it with the
+    /// most recent [`on_step_boundary`](BusEventSink::on_step_boundary) PC. The default is a no-op.
+    fn on_vdp_write(&mut self, _write: crate::vdp::VdpWrite) {}
 }
 
 /// Null sink — discards events (the hot path, with no instrumentation attached).
