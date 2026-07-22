@@ -356,8 +356,16 @@ impl System {
     /// MCLK_PER_FRAME)` — so any overshoot from the previous frame is absorbed here and long-run time stays
     /// exact (`run_frames(n)` ≡ n × `run_frames(1)`).
     pub fn run_frames(&mut self, frames: u64) {
+        self.run_frames_with_sink(frames, &mut ());
+    }
+
+    /// Like [`run_frames`](Self::run_frames), but with a [`BusEventSink`] attached for the whole run so a
+    /// consumer (a [`crate::watchpoints::Watchpoints`], a recorder, a decoder) observes every bus access. The
+    /// sink is the caller's — `System` never stores it, so it is in neither frozen currency and cannot move a
+    /// state hash. Passing `&mut ()` (what `run_frames` does) is the untouched null-sink path.
+    pub fn run_frames_with_sink<S: BusEventSink>(&mut self, frames: u64, sink: &mut S) {
         let target = self.frame_boundary_mclk + frames * MCLK_PER_FRAME;
-        self.run_until(target);
+        self.run_until_with_sink(target, sink);
         self.frame_boundary_mclk = target;
     }
 
@@ -368,6 +376,15 @@ impl System {
     ///
     /// **The one and only CPU-cycle → mclk conversion site**: `mclk += cycles × MCLK_PER_CPU_CYCLE`.
     pub fn run_until(&mut self, deadline_mclk: u64) {
+        self.run_until_with_sink(deadline_mclk, &mut ());
+    }
+
+    /// Like [`run_until`](Self::run_until), but with a [`BusEventSink`] attached for the whole run (see
+    /// [`run_frames_with_sink`](Self::run_frames_with_sink)). Immediately before each CPU step it calls
+    /// [`BusEventSink::on_step_boundary`] with the PC of the instruction about to execute and the current
+    /// frame, so a consumer that attributes accesses to their writing instruction (watchpoints) has that
+    /// context; the default `on_step_boundary` is a no-op, so `&mut ()` is byte-for-byte the old hot path.
+    pub fn run_until_with_sink<S: BusEventSink>(&mut self, deadline_mclk: u64, sink: &mut S) {
         while self.scheduler.now() < deadline_mclk {
             // Deliver any events whose deadline has arrived (instruction-boundary granularity, consistent
             // with the ratified sync-on-demand model) before stepping — they may raise the pending latches.
@@ -375,7 +392,10 @@ impl System {
             while let Some((deadline, kind)) = self.scheduler.pop_due(now) {
                 self.deliver_event(deadline, kind);
             }
-            let cycles = self.step_cpu(&mut ());
+            // Stamp the instruction about to execute (its PC) + the current frame, so a sink that attributes
+            // accesses to their driving instruction (watchpoints) has that context. No-op for `&mut ()`.
+            sink.on_step_boundary(self.cpu.regs.pc, self.scheduler.now() / MCLK_PER_FRAME);
+            let cycles = self.step_cpu(sink);
             self.scheduler.advance(cycles as u64 * MCLK_PER_CPU_CYCLE);
             // Re-derive the IPL latch after the step: a taken interrupt's fc=7 /INTAK cleared the VDP's
             // pending latch mid-step (so a delivered VInt does NOT re-fire after RTE), and any enable-bit

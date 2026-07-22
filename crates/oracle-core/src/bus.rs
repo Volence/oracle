@@ -50,6 +50,14 @@ pub struct BusEvent {
 /// A consumer of the bus event stream (watchpoints, recorders, decoders, the profiler...).
 pub trait BusEventSink {
     fn on_event(&mut self, event: BusEvent);
+
+    /// Called by the sink-generic run loop immediately before each CPU step, stamping the PC of the
+    /// instruction about to execute and the current frame. Consumers that attribute an access to its writing
+    /// instruction (watchpoints) latch this context so each subsequent [`BusEvent`] knows its PC/frame; a
+    /// `BusEvent` carries no PC of its own (it is emitted per-access deep in the CPU), so this step-boundary
+    /// stamp is where the instruction identity enters the stream. The default is a no-op, so the null-sink
+    /// hot path (`()`) and the recording sink (`Vec<BusEvent>`) are behaviorally unchanged.
+    fn on_step_boundary(&mut self, _pc: u32, _frame: u64) {}
 }
 
 /// Null sink — discards events (the hot path, with no instrumentation attached).

@@ -21,3 +21,4 @@ pub mod system;
 #[doc(hidden)]
 pub mod testrom;
 pub mod vdp;
+pub mod watchpoints;
