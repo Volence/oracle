@@ -20,10 +20,12 @@ OUT="$HERE/../vendor/ProcessorTests/z80/v1"
 CHECKSUMS="$HERE/singlesteptests-z80.sha256"
 
 # Opcodes needed by the z80 slice. Extend as opcode coverage grows — same model as the 68000
-# fetch script's FILES list. Starter batch = NOP + the 8-bit LD r,r' / LD r,(HL) block (0x40-0x7F,
-# incl. 0x76 HALT). Prefixed groups (CB/DD/ED/FD) land as the decoder implements them.
+# fetch script's FILES list. Batch = NOP + the 8-bit LD r,r' / LD r,(HL) block (0x40-0x7F, incl.
+# 0x76 HALT) + the 8-bit ALU A,r block (0x80-0xBF: ADD/ADC/SUB/SBC/AND/XOR/OR/CP A,r|(HL)).
+# Prefixed groups (CB/DD/ED/FD) land as the decoder implements them.
 FILES=(00)
 for i in $(seq 64 127); do FILES+=("$(printf '%02x' "$i")"); done   # 0x40-0x7F: LD r,r' / LD r,(HL) / HALT
+for i in $(seq 128 191); do FILES+=("$(printf '%02x' "$i")"); done  # 0x80-0xBF: 8-bit ALU A,r|(HL)
 
 mkdir -p "$OUT"
 for f in "${FILES[@]}"; do
