@@ -18,7 +18,7 @@
 //! | Host key          | Emulated input |
 //! |-------------------|----------------|
 //! | Arrow keys        | D-pad          |
-//! | Z / X / C         | A / B / C      |
+//! | A / S / D         | A / B / C      |
 //! | Enter             | Start          |
 //! | Space             | pause / resume |
 //! | `.` (period)      | single-frame step (while paused) |
@@ -70,16 +70,16 @@ fn parse_args() -> Result<Args, String> {
     Ok(Args { rom_path, scale })
 }
 
-/// Build the Player-1 [`Pad`] from the host keyboard: arrows = D-pad, Z/X/C = A/B/C, Enter = Start.
+/// Build the Player-1 [`Pad`] from the host keyboard: arrows = D-pad, A/S/D = A/B/C, Enter = Start.
 fn poll_pad(window: &Window) -> Pad {
     Pad {
         up: window.is_key_down(Key::Up),
         down: window.is_key_down(Key::Down),
         left: window.is_key_down(Key::Left),
         right: window.is_key_down(Key::Right),
-        a: window.is_key_down(Key::Z),
-        b: window.is_key_down(Key::X),
-        c: window.is_key_down(Key::C),
+        a: window.is_key_down(Key::A),
+        b: window.is_key_down(Key::S),
+        c: window.is_key_down(Key::D),
         start: window.is_key_down(Key::Enter),
     }
 }
@@ -143,7 +143,7 @@ fn main() {
     window.set_target_fps(60);
 
     println!(
-        "window {win_w}x{win_h} (up to {MAX_WIDTH}x{HEIGHT} @ {}x) — arrows=D-pad, Z/X/C=A/B/C, Enter=Start, Space=pause, .=step, Esc=quit",
+        "window {win_w}x{win_h} (up to {MAX_WIDTH}x{HEIGHT} @ {}x) — arrows=D-pad, A/S/D=A/B/C, Enter=Start, Space=pause, .=step, Esc=quit",
         args.scale
     );
 
