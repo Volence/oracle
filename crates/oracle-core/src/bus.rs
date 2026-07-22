@@ -215,7 +215,8 @@ pub const MD_VERSION: u8 = 0xA0;
 /// | `$400000–$7FFFFF` | open bus |
 /// | `$A00000–$A0FFFF` | 8 KiB Z80 RAM (mirrored) |
 /// | `$A10000–$A1001F` | I/O: `$A10001` = [`MD_VERSION`]; the 15 data/control/serial registers via [`Io`] |
-/// | `$A11100`/`$A11200` | Z80 BUSREQ/RESET: reads report bus granted (0); writes accepted |
+/// | `$A11100` | Z80 BUSREQ: bit0 read = 0 when 68000 is granted the bus (asserted), 1 when the Z80 owns it |
+/// | `$A11200` | Z80 RESET: read reports reset released (0); writes drop (deferred to the Z80 core) |
 /// | `$C00000`/`$C00002` | VDP data port (read = pre-cache buffer, write = VRAM/CRAM/VSRAM; recon R1) |
 /// | `$C00004`/`$C00006` | VDP control port (read = status word, write = command; recon R1/R2) |
 /// | `$C00008–$C0000F` | VDP HV counter (even byte = V, odd byte = H; recon R2) |
@@ -231,6 +232,12 @@ pub struct MegaDriveBus<'a, S: BusEventSink> {
     io: &'a mut Io,
     now_mclk: u64,
     last_bus_word: &'a mut u16,
+    /// The Z80 BUSREQ latch: `true` once the 68000 has written bit0 = 1 to `$A11100` (bus requested → granted),
+    /// `false` after a release (bit0 = 0). Read back at `$A11100` bit0 as 0 when granted to the 68000, 1 when
+    /// the Z80 owns the bus — the take-bus/release handshake real games spin on (DR-1 Gunstar). Bus-internal
+    /// state, threaded like `last_bus_word`; NOT in the frozen `export_state`. `$A11200` RESET is deferred to
+    /// the Z80 core (Z7). Semantics + evidence: `docs/2026-07-22-z80-busreq-recon.md` (Z2/Z5/Z6).
+    z80_busreq: &'a mut bool,
     sink: &'a mut S,
 }
 
@@ -246,6 +253,7 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
         io: &'a mut Io,
         now_mclk: u64,
         last_bus_word: &'a mut u16,
+        z80_busreq: &'a mut bool,
         sink: &'a mut S,
     ) -> Self {
         Self {
@@ -256,6 +264,7 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             io,
             now_mclk,
             last_bus_word,
+            z80_busreq,
             sink,
         }
     }
@@ -283,8 +292,13 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
                 // RxData: no serial device drives the receive line (decision 2). Even bytes: unmapped → 0.
                 Some((_, IoReg::RxData)) | None => 0x00,
             }),
-            // Z80 BUSREQ ($A11100) / RESET ($A11200): report bus granted / reset released (0) so boot proceeds.
-            0xA1_1100..=0xA1_1101 | 0xA1_1200..=0xA1_1201 => Some(0x00),
+            // Z80 BUSREQ ($A11100): bit0 reports bus ownership — 0 = 68000 granted (BUSREQ asserted), 1 = Z80
+            // owns the bus (released). Drives the take-bus (`bne`, wait for 0) and release (`beq`, wait for 1)
+            // spins real games use (recon Z2/Z5). $A11101 (odd half) = 0.
+            0xA1_1100 => Some(if *self.z80_busreq { 0x00 } else { 0x01 }),
+            0xA1_1101 => Some(0x00),
+            // Z80 RESET ($A11200): deferred to the Z80 core (Z7) — reports reset released (0) so boot proceeds.
+            0xA1_1200..=0xA1_1201 => Some(0x00),
             // VDP ports ($C00000–$C0000F): stateful, handled as whole accesses in read16/write16/read8/
             // write8 (a byte-wise decode here would double a port access's side effects). Open bus for any
             // fallthrough (e.g. a TAS against a port — never a real access).
@@ -302,6 +316,10 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
     fn store_byte(&mut self, a: u32, byte: u8) {
         match a {
             0xA0_0000..=0xA0_FFFF => self.z80_ram[(a as usize) & (Z80_RAM_SIZE - 1)] = byte,
+            // Z80 BUSREQ ($A11100): latch bit0 from the EVEN byte only — a word write (`move.w #$100/#$0`)
+            // puts the meaningful byte at $A11100 and 0 at $A11101, which must not clobber the latch. $A11101
+            // and $A11200 (RESET, deferred to Z7) fall through and drop (recon Z1/Z5).
+            0xA1_1100 => *self.z80_busreq = (byte & 1) != 0,
             // I/O register writes ($A10003–$A1001F): data/control latches + serial stubs (recon IO2/IO3).
             // The version byte and RxData are read-only; even bytes are unmapped. All drop here.
             0xA1_0000..=0xA1_001F => match io_reg(a) {
@@ -674,6 +692,7 @@ mod tests {
         io: Io,
         now_mclk: u64,
         last_bus_word: u16,
+        z80_busreq: bool,
     }
     impl MdMem {
         fn new(rom: Vec<u8>) -> Self {
@@ -685,6 +704,7 @@ mod tests {
                 io: Io::default(),
                 now_mclk: 0,
                 last_bus_word: 0,
+                z80_busreq: false,
             }
         }
         fn bus<'a>(&'a mut self, sink: &'a mut Vec<BusEvent>) -> MegaDriveBus<'a, Vec<BusEvent>> {
@@ -696,6 +716,7 @@ mod tests {
                 &mut self.io,
                 self.now_mclk,
                 &mut self.last_bus_word,
+                &mut self.z80_busreq,
                 sink,
             )
         }
@@ -830,13 +851,46 @@ mod tests {
     }
 
     #[test]
-    fn z80_busreq_reports_the_bus_granted() {
+    fn z80_busreq_reflects_the_request_latch() {
+        // `$A11100` bit0: 0 = 68000 granted the bus (BUSREQ asserted), 1 = Z80 owns it (released). Two real-
+        // game idioms depend on this: take-bus (assert, wait for bit0 -> 0) and release (deassert, wait for
+        // bit0 -> 1). The old constant-0 stub satisfied take-bus but hung the release spin forever (DR-1
+        // Gunstar). Semantics + in-situ evidence: docs/2026-07-22-z80-busreq-recon.md (Z2, Z5).
         let mut mem = MdMem::new(vec![0u8; 0x1000]);
         let mut sink = Vec::new();
         let mut bus = mem.bus(&mut sink);
-        // Writes are accepted (boot code releases/asserts the bus), reads report granted so boot proceeds.
+
+        // Power-on: nothing has requested the bus, so the Z80 owns it (bit0 = 1).
+        assert_eq!(
+            bus.read8(0xA1_1100, 5).0 & 1,
+            1,
+            "power-on -> Z80 owns the bus (bit0 = 1)"
+        );
+
+        // Assert via the word idiom `move.w #$100,$A11100` — byte $01 lands at the even address, $00 at the
+        // odd one; the odd byte must NOT clobber the latch.
+        bus.write16(0xA1_1100, 5, 0x0100);
+        assert_eq!(
+            bus.read8(0xA1_1100, 5).0 & 1,
+            0,
+            "asserted -> granted to 68000 (bit0 = 0)"
+        );
+
+        // Release via `move.w #$0,$A11100`: bit0 returns to 1 (Z80 owns the bus). The old stub hung here.
+        bus.write16(0xA1_1100, 5, 0x0000);
+        assert_eq!(
+            bus.read8(0xA1_1100, 5).0 & 1,
+            1,
+            "released -> Z80 owns the bus (bit0 = 1)"
+        );
+
+        // The byte-write idiom asserts too.
         bus.write8(0xA1_1100, 5, 0x01);
-        assert_eq!(bus.read8(0xA1_1100, 5).0, 0x00, "bus granted (bit0 = 0)");
+        assert_eq!(
+            bus.read8(0xA1_1100, 5).0 & 1,
+            0,
+            "byte assert -> granted (bit0 = 0)"
+        );
     }
 
     #[test]

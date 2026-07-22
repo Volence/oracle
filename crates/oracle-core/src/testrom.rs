@@ -355,7 +355,18 @@ mod tests {
             // This ROM never touches the VDP ports; a fresh VDP + mclk 0 suffices for the CPU/RAM checks.
             let mut vdp = crate::vdp::Vdp::power_on(&mut crate::rng::SplitMix64::new(1));
             let mut io = crate::io::Io::default();
-            let mut bus = MegaDriveBus::new(&rom, ram, z80, &mut vdp, &mut io, 0, last, &mut sink);
+            let mut z80_busreq = false;
+            let mut bus = MegaDriveBus::new(
+                &rom,
+                ram,
+                z80,
+                &mut vdp,
+                &mut io,
+                0,
+                last,
+                &mut z80_busreq,
+                &mut sink,
+            );
             cpu.step(&mut bus);
         };
 

@@ -67,6 +67,12 @@ pub struct System {
     io: crate::io::Io,
     /// The open-bus latch: the last word driven on the 68000 bus, returned by reads of unmapped space.
     last_bus_word: u16,
+    /// The Z80 BUSREQ latch (`$A11100` bit0): `true` = 68000 has requested/been granted the bus, `false` =
+    /// released (Z80 owns it). Drives the take-bus/release handshake real games spin on (DR-1 Gunstar). Rides
+    /// this internal snapshot for determinism but is **not** emitted by `export_state` (a bus-arbitration
+    /// scalar like `last_bus_word`, in neither frozen currency). Reset to `false` at power-on via `new`. See
+    /// `docs/2026-07-22-z80-busreq-recon.md`.
+    z80_busreq: bool,
     /// The 68000. Driven over a [`MegaDriveBus`] in [`System::step_cpu`]; `step()` returns CPU cycles.
     cpu: Cpu68000,
     /// The absolute mclk of the last frame boundary [`System::run_frames`] targeted. Frame deadlines are
@@ -151,6 +157,7 @@ impl System {
             vdp,
             io: crate::io::Io::default(),
             last_bus_word: 0,
+            z80_busreq: false,
             cpu: Cpu68000::new(power_on_regs()),
             frame_boundary_mclk: 0,
         }
@@ -201,9 +208,20 @@ impl System {
             vdp,
             io,
             last_bus_word,
+            z80_busreq,
             ..
         } = self;
-        MegaDriveBus::new(rom, ram, z80_ram, vdp, io, now, last_bus_word, sink)
+        MegaDriveBus::new(
+            rom,
+            ram,
+            z80_ram,
+            vdp,
+            io,
+            now,
+            last_bus_word,
+            z80_busreq,
+            sink,
+        )
     }
 
     /// Serialize the entire machine to a bincode snapshot. O(struct) with no pointer fixup.
@@ -469,9 +487,20 @@ impl System {
             vdp,
             io,
             last_bus_word,
+            z80_busreq,
             ..
         } = self;
-        let mut bus = MegaDriveBus::new(rom, ram, z80_ram, vdp, io, now, last_bus_word, sink);
+        let mut bus = MegaDriveBus::new(
+            rom,
+            ram,
+            z80_ram,
+            vdp,
+            io,
+            now,
+            last_bus_word,
+            z80_busreq,
+            sink,
+        );
         cpu.step(&mut bus)
     }
 }
