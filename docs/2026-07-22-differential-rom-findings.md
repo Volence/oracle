@@ -32,16 +32,19 @@ S.C.E. The ~15 Sonic-2 hack variants collapse to one engine — diversity, not c
 
 | # | Game | PC f600→f1800 | Display (r01 b6) | Symptom | Root cause / hypothesis | Status |
 |---|---|---|---|---|---|---|
-| **DR-1** | Gunstar | `$3090`→`$3090` (frozen) | OFF (0x24) | hard-stuck, display never enabled | **CONFIRMED: Z80 BUSREQ spin-wait.** Loop at `$3088`: `move.w #0,($A11100)` / `btst #0,($A11100)` / `beq $3088` — waits for `$A11100` bit 0, which oracle-next's "always-granted" Z80 stub never drives to the expected value. **The Z80 bus-arbitration gap** (`recon-io`: "BUSREQ/RESET arbitration lands with the Z80 core"). | OPEN — Z80 rock |
-| **DR-2** | Thunder Force IV | `$FF388`→`$FF354` (looping) | ON (0x44) | display on, permanently blank; loops near `$FF3xx`, never loads art | Likely the same Z80/handshake family (confirm: disassemble the `$FF3xx` loop, check for an `$A11100`/`$A11200`/Z80-status poll). | OPEN — confirm vs DR-1 |
+| **DR-1** | Gunstar | ~~`$3090` frozen~~ → now `$66360` | ~~OFF~~ | ~~hard-stuck, display never enabled~~ | **RESOLVED (BUSREQ) — 2nd blocker found.** The `$A11100` release-spin is fixed by the bus-level `z80_busreq` latch (`docs/2026-07-22-z80-busreq-recon.md` Part 5); PC advanced past `$3090`. Gunstar now hangs on a **YM2612 FM busy-flag poll** at `$A04000` (`btst #7,(a0)/bne`) because `$A04000–$A04003` is mis-mapped as Z80 RAM. Throwaway-proven: BUSREQ fix + FM-not-busy stub → full render (display on, non-black). | **DR-1a BUSREQ done**; **DR-1b = FM-status stub** (next slice) |
+| **DR-2** | Thunder Force IV | `$0FF3E8` (init-script loop) | ON (0x44) | display on, permanently blank; cycles a boot init-script/VDP-upload loop, never loads art | **RE-CLASSIFIED** (`docs/2026-07-22-z80-busreq-recon.md`, Part 2): same handshake *family* — TF4 uses `$A11100` (70 sites, take-bus at `$82C`) — but its hang is a `bsr.w`/VDP-upload loop at `$0FF3E8`, **not** a raw `$A11100` release-spin. So it is **not** confirmed same *root* as DR-1; downstream cause = a release-spin elsewhere, a Z80-execution mailbox (needs the full Z80 core), or a render/DMA bug (DR-3 class). Kept as a **re-test-after-fix** case, not a predicted pass. | OPEN — re-test after Z80 arbitration slice |
 | **DR-3** | Batman & Robin | `$9C10`→`$9C14` (advancing) | ON (0x64) | executing + drawing, but garbled tiles (intermittent non-black) | Separate **render/DMA correctness bug** — game runs, VRAM/mapping content wrong. Not Z80. Needs an Oracle A/B at a matched frame + VRAM diff. | OPEN — render thread |
 
 ## What this tells the roadmap
 
-- **The Z80 core is the right next rock, now evidence-backed.** DR-1 is a *confirmed* spin-wait on the Z80
-  BUSREQ register; proper `$A11100`/`$A11200` BUSREQ/RESET arbitration would very likely unblock Gunstar and
-  (pending confirmation) TF4 — a real game exposes the handshake the aeon ROM's looser use never did. The
-  disasm builds (Sonic 2, S&K) pass because their handshake happens to be satisfied by the stub.
+- **Z80 bus arbitration is the right next slice, now designed.** DR-1 is a *confirmed* release-spin on the Z80
+  BUSREQ register `$A11100`; the recon+design doc `docs/2026-07-22-z80-busreq-recon.md` pins the register
+  semantics (bit0 == 0 = 68000 granted; the stub's constant-0 satisfies *take-bus* but hangs *release*), proves
+  it needs **only a bus-level arbitration state machine, not the full Z80 core**, and shows the fix cannot
+  regress the frozen currencies (aeon's `startZ80` is poll-free). The disasm builds (Sonic 2, S&K) and s4.bin
+  pass because they use only the take-bus form the stub already satisfies. **TF4's post-fix behavior chooses
+  the next rock** (full Z80 core vs. the DR-3 render thread).
 - **Batman (DR-3) is a separate VDP/DMA render thread** — do not fold it into the Z80 work.
 - **Cadence for widening the ROM set:** don't. Six diverse engines already surfaced the top root cause; more
   ROMs now mostly re-hit DR-1/DR-3. Fix the roots, *then* widen to confirm and find the next layer.
