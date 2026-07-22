@@ -213,7 +213,8 @@ pub const MD_VERSION: u8 = 0xA0;
 /// |---|---|
 /// | `$000000–$3FFFFF` | ROM (read-only; past a short ROM's end → open bus) |
 /// | `$400000–$7FFFFF` | open bus |
-/// | `$A00000–$A0FFFF` | 8 KiB Z80 RAM (mirrored) |
+/// | `$A00000–$A0FFFF` | 8 KiB Z80 RAM (mirrored), except… |
+/// | `$A04000–$A04003` | YM2612 FM: read = status (bit7 BUSY clear = not busy); writes drop (no FM core yet) |
 /// | `$A10000–$A1001F` | I/O: `$A10001` = [`MD_VERSION`]; the 15 data/control/serial registers via [`Io`] |
 /// | `$A11100` | Z80 BUSREQ: bit0 read = 0 when 68000 is granted the bus (asserted), 1 when the Z80 owns it |
 /// | `$A11200` | Z80 RESET: read reports reset released (0); writes drop (deferred to the Z80 core) |
@@ -279,6 +280,11 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
                 let i = a as usize;
                 (i < self.rom.len()).then(|| self.rom[i])
             }
+            // YM2612 FM ($A04000-$A04003): a READ returns the status byte with bit7 (BUSY) clear = not busy,
+            // so the `btst #7,(a0)/bne` register-write busy-poll exits (recon F2/F4, DR-1b Gunstar). Timer
+            // overflow flags (bits 0/1) are 0 (no FM timers modeled — deferred to the FM core). This arm
+            // precedes the Z80-RAM mirror so the FM ports are not aliased to `z80_ram[0..3]`.
+            0xA0_4000..=0xA0_4003 => Some(0x00),
             // Z80 RAM: 8 KiB mirrored across the 64 KiB window.
             0xA0_0000..=0xA0_FFFF => Some(self.z80_ram[(a as usize) & (Z80_RAM_SIZE - 1)]),
             // I/O ($A10000–$A1001F): the fixed version byte at $A10001, the 15 data/control/serial registers
@@ -315,6 +321,10 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
     /// placeholder scope until those chips land.
     fn store_byte(&mut self, a: u32, byte: u8) {
         match a {
+            // YM2612 FM ($A04000-$A04003): writes go to the FM chip and are dropped (no FM core yet) — they
+            // must NOT fall through to the Z80-RAM store, which would corrupt `z80_ram[0..3]` (the FM ports
+            // alias it under the mirror). This arm precedes the Z80-RAM arm (recon F1/DR-1b, Option B).
+            0xA0_4000..=0xA0_4003 => {}
             0xA0_0000..=0xA0_FFFF => self.z80_ram[(a as usize) & (Z80_RAM_SIZE - 1)] = byte,
             // Z80 BUSREQ ($A11100): latch bit0 from the EVEN byte only — a word write (`move.w #$100/#$0`)
             // puts the meaningful byte at $A11100 and 0 at $A11101, which must not clobber the latch. $A11101
@@ -890,6 +900,49 @@ mod tests {
             bus.read8(0xA1_1100, 5).0 & 1,
             0,
             "byte assert -> granted (bit0 = 0)"
+        );
+    }
+
+    #[test]
+    fn fm_status_reads_not_busy_and_writes_do_not_alias_z80_ram() {
+        // $A04000-3 = the YM2612 FM chip (recon docs/2026-07-22-fm-status-recon.md F1/F2). Reads return the
+        // status byte with bit7 (BUSY) clear, so the `btst #7,(a0)/bne` busy-poll exits (DR-1b Gunstar).
+        // Writes go to the FM chip (dropped), NOT to z80_ram: $A04000-3 alias z80_ram[0..3] under the 8 KiB
+        // mirror, so before this carve-out an FM register-address write corrupted real Z80 RAM and left the
+        // "status" reading busy forever.
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+
+        // All four FM ports read not-busy (bit7 clear).
+        for a in [0xA0_4000u32, 0xA0_4001, 0xA0_4002, 0xA0_4003] {
+            assert_eq!(
+                bus.read8(a, 5).0 & 0x80,
+                0,
+                "FM status bit7 (BUSY) clear at {a:#08X}"
+            );
+        }
+
+        // An FM register-address write (>= $80, bit7 set) must NOT appear as real Z80 RAM at $A00000 (they
+        // alias z80_ram[0]). Old behavior: $A00000 read back $F3 and the busy-poll hung.
+        bus.write8(0xA0_4000, 5, 0xF3);
+        assert_ne!(
+            bus.read8(0xA0_0000, 5).0,
+            0xF3,
+            "FM write must not corrupt real Z80 RAM at $A00000"
+        );
+        assert_eq!(
+            bus.read8(0xA0_4000, 5).0 & 0x80,
+            0,
+            "FM status still not-busy after an FM write"
+        );
+
+        // Real Z80 RAM at $A00000 still round-trips — the carve-out is $A04000-3 only.
+        bus.write8(0xA0_0000, 5, 0xAB);
+        assert_eq!(
+            bus.read8(0xA0_0000, 5).0,
+            0xAB,
+            "Z80 RAM $A00000 still writable after the FM carve-out"
         );
     }
 
