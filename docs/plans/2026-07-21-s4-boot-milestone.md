@@ -178,7 +178,7 @@ with the owner for an Oracle-side fix.
 
 | # | Rung | Symptom | First divergence | Hypothesis | Slice/agent | Status |
 |---|---|---|---|---|---|---|
-| M-1 | motion | Oracle MCP `emulator_press` produces zero/inconsistent motion during stepped frames | n/a (tooling, Oracle repo) | ~~press injects at a layer the core only samples in free-run~~ **DISPROVEN** → press advances a *non-deterministic* frame count (render-token race) | Oracle-side session | **FIXED Oracle-side 2026-07-22 (agent-verified byte-identical) — overseer live re-verify pending GUI restart** |
+| M-1 | motion | Oracle MCP `emulator_press` produces zero/inconsistent motion during stepped frames | n/a (tooling, Oracle repo) | ~~press injects at a layer the core only samples in free-run~~ **DISPROVEN** → press advances a *non-deterministic* frame count (render-token race) | Oracle-side session | **RESOLVED + overseer-verified live 2026-07-22: 3× `reset→press right 120` byte-identical (Camera_X 0x0060, PC 0x5B4C, all regs); settled press scrolls camera → input reaches gameplay** |
 
 ### M-1 UPDATE — 2026-07-22 (Oracle-side forensic result)
 Our filed hypothesis ("held buttons never reach the game") is **disproven** on the current Oracle build.
