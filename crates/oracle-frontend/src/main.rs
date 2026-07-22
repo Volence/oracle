@@ -15,18 +15,32 @@
 //!
 //! ## Controls (Player 1 only)
 //!
-//! | Host key          | Emulated input |
-//! |-------------------|----------------|
+//! | Host key          | Emulated input / action |
+//! |-------------------|-------------------------|
 //! | Arrow keys        | D-pad          |
 //! | A / S / D         | A / B / C      |
 //! | Enter             | Start          |
 //! | Space             | pause / resume |
 //! | `.` (period)      | single-frame step (while paused) |
+//! | Left mouse click  | watch the VRAM tile under the clicked pixel ("who wrote this tile?") |
+//! | W                 | dump recorded watch hits (seq/frame/pc/addr/old→new/via) + drop count to stdout |
+//! | C                 | clear the watch (return to the fast null-sink run path) |
 //! | Esc / window-close| quit           |
+//!
+//! ## Pixel-attribution watch (record + display only)
+//!
+//! A left click asks the VDP `pixel_attribution(x,y)` who is showing at that dot; if the winner is a
+//! plane/window tile, its 32-byte VRAM range is armed as a VDP-internal write watch on a *caller-owned*
+//! [`Watchpoints`] (the core never stores it — this stays a zero-diff, frontend-only slice). While a watch is
+//! armed the run loop drives the sink-generic [`System::run_frames_with_sink`]; with no watch it stays on the
+//! untouched null-sink [`System::run_frames`] fast path. `W` prints the recorded hits; `C` disarms. Sprite /
+//! backdrop pixels (`cell == None`) report and arm nothing this slice (a documented follow-up). Break-on-hit
+//! and an on-screen text overlay are out of scope — the core is frame-batched and minifb has no text.
 
-use minifb::{Key, KeyRepeat, ScaleMode, Window, WindowOptions};
+use minifb::{Key, KeyRepeat, MouseButton, MouseMode, ScaleMode, Window, WindowOptions};
 use oracle_core::io::Pad;
 use oracle_core::system::System;
+use oracle_core::watchpoints::{WatchOp, WatchSpace, WatchVia, Watchpoints};
 
 /// Active display height in scanlines (Genesis NTSC active area). Width is queried from the VDP *every frame*
 /// (H32=256 / H40=320) — the game reprograms it after boot, so it is not fixed at reset.
@@ -35,6 +49,36 @@ const HEIGHT: usize = 224;
 /// Widest display mode (H40). The window is sized for this so an H40 scene fills it exactly at the requested
 /// integer scale; H32 content is pillarboxed by [`ScaleMode::AspectRatioStretch`].
 const MAX_WIDTH: usize = 320;
+
+/// Ring capacity of the pixel-attribution watch log. One armed watch covers a single 32-byte tile, so the
+/// per-frame write count is small; this is a generous bound (drops are still counted and reported by `W`).
+const WATCH_CAP: usize = 8192;
+
+/// Map a physical window-pixel click `(mx, my)` to a native VDP pixel `(x, y)`, or `None` if the click lands
+/// in the H32 pillarbox or outside the active frame.
+///
+/// The window is fixed at `MAX_WIDTH * scale` wide; the game's native frame is `width` wide (256 H32 / 320
+/// H40) and — under [`ScaleMode::AspectRatioStretch`] with a native-height (224) buffer — displays at exactly
+/// the integer `scale`, horizontally centered. So each axis divides by `scale`, and the horizontal pillarbox
+/// (`(MAX_WIDTH - width) / 2` native pixels each side, zero for H40) is subtracted. `get_mouse_pos` returns
+/// physical window coordinates here (the window uses `Scale::X1`), which is exactly this function's input.
+fn window_to_native(mx: f32, my: f32, scale: usize, width: usize) -> Option<(u16, u16)> {
+    if mx < 0.0 || my < 0.0 || scale == 0 {
+        return None;
+    }
+    let scale_f = scale as f32;
+    let pillarbox = MAX_WIDTH.saturating_sub(width) / 2; // native pixels of left/right box (0 for H40)
+    let nx = mx / scale_f - pillarbox as f32;
+    let ny = my / scale_f;
+    if nx < 0.0 || ny < 0.0 {
+        return None;
+    }
+    let (x, y) = (nx as usize, ny as usize);
+    if x >= width || y >= HEIGHT {
+        return None; // in the pillarbox (past the right edge of native content) or below the frame
+    }
+    Some((x as u16, y as u16))
+}
 
 /// Parsed command line: the ROM path and the integer window scale.
 struct Args {
@@ -100,6 +144,50 @@ fn render_into(sys: &System, buf: &mut Vec<u32>) -> usize {
     width
 }
 
+/// Print every recorded watch hit (oldest first) and the drop count to stdout. `pc` is raw hex (oracle-next
+/// has no symbol table), `via` is the CPU-vs-DMA attribution (`Direct` = CPU data-port write, `Dma` = DMA
+/// step, `Bus` = a v1 68000 bus access — unused by this slice's VRAM watch but printed faithfully).
+fn dump_hits(watchpoints: &Watchpoints) {
+    let hits = watchpoints.hits();
+    println!("--- watch hits: {} recorded ---", hits.len());
+    for h in hits {
+        let via = match h.via {
+            WatchVia::Bus => "Bus",
+            WatchVia::Direct => "Direct(CPU)",
+            WatchVia::Dma => "Dma",
+        };
+        println!(
+            "seq {:>6}  frame {:>6}  pc ${:06X}  addr ${:04X}  ${:X}->${:X}  via {via}",
+            h.seq, h.frame, h.pc, h.addr, h.old, h.value
+        );
+    }
+    println!("dropped: {}", watchpoints.dropped());
+}
+
+/// Draw a small contrasting crosshair (colour-inverted plus sign) at native pixel `(wx, wy)` in the packed
+/// `0x00RR_GGBB` frame buffer. Bounds-guarded: silently does nothing if the pixel is outside the current
+/// `width * HEIGHT` frame (e.g. after an H40→H32 mode switch since the click).
+fn draw_crosshair(buf: &mut [u32], width: usize, wx: u16, wy: u16) {
+    let (cx, cy) = (wx as usize, wy as usize);
+    if cx >= width || cy >= HEIGHT {
+        return;
+    }
+    // Horizontal arm over the full span, vertical arm only for d != 0 so the shared center is inverted once
+    // (XORing it twice would cancel back to the original colour).
+    for d in -2i32..=2 {
+        let mut arms = vec![(cx as i32 + d, cy as i32)];
+        if d != 0 {
+            arms.push((cx as i32, cy as i32 + d));
+        }
+        for (px, py) in arms {
+            if px >= 0 && (px as usize) < width && py >= 0 && (py as usize) < HEIGHT {
+                let idx = py as usize * width + px as usize;
+                buf[idx] ^= 0x00FF_FFFF; // invert RGB for visibility against any background
+            }
+        }
+    }
+}
+
 fn main() {
     let args = match parse_args() {
         Ok(a) => a,
@@ -143,13 +231,22 @@ fn main() {
     window.set_target_fps(60);
 
     println!(
-        "window {win_w}x{win_h} (up to {MAX_WIDTH}x{HEIGHT} @ {}x) — arrows=D-pad, A/S/D=A/B/C, Enter=Start, Space=pause, .=step, Esc=quit",
+        "window {win_w}x{win_h} (up to {MAX_WIDTH}x{HEIGHT} @ {}x) — arrows=D-pad, A/S/D=A/B/C, Enter=Start, Space=pause, .=step, click=watch-tile, W=dump, C=clear, Esc=quit",
         args.scale
     );
 
     let mut buf: Vec<u32> = Vec::with_capacity(MAX_WIDTH * HEIGHT);
     let mut paused = false;
     let mut frame: u64 = 0;
+
+    // The pixel-attribution watch — a *caller-owned* sink (the core never stores it, keeping this slice
+    // zero-diff on oracle-core). `watch_armed` mirrors "a VDP watch is registered" so the run loop can stay on
+    // the fast null-sink path when nothing is being watched. `watched_pixel` drives the on-screen crosshair.
+    let mut watchpoints = Watchpoints::new(WATCH_CAP);
+    let mut watch_armed = false;
+    let mut watched_pixel: Option<(u16, u16)> = None;
+    let mut prev_mouse_down = false;
+
     while window.is_open() && !window.is_key_down(Key::Escape) {
         // Edge-triggered controls (fire once per physical press, not every frame held).
         if window.is_key_pressed(Key::Space, KeyRepeat::No) {
@@ -157,17 +254,77 @@ fn main() {
         }
         let step = window.is_key_pressed(Key::Period, KeyRepeat::No);
 
+        // A left-click edge maps the clicked window pixel to a native dot and asks the VDP who is showing
+        // there; a plane/window tile winner arms a watch on that tile's 32-byte VRAM range (replacing any
+        // prior watch). Width is the *currently displayed* frame's width (pre-step), so the click resolves
+        // against what the user is actually looking at.
+        let mouse_down = window.get_mouse_down(MouseButton::Left);
+        let clicked = mouse_down && !prev_mouse_down;
+        prev_mouse_down = mouse_down;
+        if clicked {
+            let display_width = sys.vdp().render_line(0).len();
+            if let Some((mx, my)) = window.get_mouse_pos(MouseMode::Discard) {
+                if let Some((x, y)) = window_to_native(mx, my, args.scale, display_width) {
+                    match sys.vdp().pixel_attribution(x, y).cell {
+                        Some(cell) => {
+                            let lo = u32::from(cell.tile) * 32;
+                            let hi = lo + 31;
+                            watchpoints.clear();
+                            watchpoints.add_vdp_watch(
+                                WatchSpace::Vram,
+                                lo..=hi,
+                                WatchOp::Write,
+                                format!("tile ${:03X}", cell.tile),
+                            );
+                            watch_armed = true;
+                            watched_pixel = Some((x, y));
+                            println!(
+                                "watching tile ${:03X} (palette {}) @ VRAM ${lo:04X}-${hi:04X} — click ({x},{y})",
+                                cell.tile, cell.palette
+                            );
+                        }
+                        None => {
+                            println!(
+                                "pixel ({x},{y}) is a sprite/backdrop dot — no tile watch this slice (follow-up)"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // W dumps the recorded hits; C disarms the watch (back to the fast null-sink path).
+        if window.is_key_pressed(Key::W, KeyRepeat::No) {
+            dump_hits(&watchpoints);
+        }
+        if window.is_key_pressed(Key::C, KeyRepeat::No) {
+            watchpoints.clear();
+            watch_armed = false;
+            watched_pixel = None;
+            println!("watch cleared — back to the fast (null-sink) run path");
+        }
+
         // The pad is sampled live every frame; set_pad is the sole, deterministic input path into the core.
         sys.set_pad(0, poll_pad(&window));
 
-        // Advance when running, or on an explicit step request while paused.
+        // Advance when running, or on an explicit step request while paused. Only pay for the recording sink
+        // when a watch is armed; otherwise keep the untouched null-sink path so idle stays at 60 fps.
         if !paused || step {
-            sys.run_frames(1);
+            if watch_armed {
+                sys.run_frames_with_sink(1, &mut watchpoints);
+            } else {
+                sys.run_frames(1);
+            }
             frame += 1;
         }
 
         // Native-resolution frame (width re-queried in case the game switched H32↔H40); window upscales it.
         let width = render_into(&sys, &mut buf);
+        // Optional debug marker: a contrasting crosshair at the watched pixel so the live driver can confirm
+        // the click landed where intended (bounds-guarded against an H40→H32 mode switch since the click).
+        if let Some((wx, wy)) = watched_pixel {
+            draw_crosshair(&mut buf, width, wx, wy);
+        }
         let title = if paused {
             format!("oracle-next — frame {frame} [PAUSED]")
         } else {
@@ -180,5 +337,82 @@ fn main() {
             eprintln!("present failed: {e}");
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// H40 (native width 320) fills the window exactly: no pillarbox, every axis is a plain divide-by-scale.
+    #[test]
+    fn h40_maps_full_window_without_pillarbox() {
+        let (scale, width) = (3, 320);
+        assert_eq!(window_to_native(0.0, 0.0, scale, width), Some((0, 0)));
+        // Bottom-right physical pixel of the 960x672 window maps to the last native dot (319, 223).
+        assert_eq!(
+            window_to_native(959.0, 671.0, scale, width),
+            Some((319, 223))
+        );
+        // One row/column past the frame is rejected.
+        assert_eq!(window_to_native(960.0, 0.0, scale, width), None);
+        assert_eq!(window_to_native(0.0, 672.0, scale, width), None);
+    }
+
+    /// H32 (native width 256) is centered in the 320-wide window: a 32-native-pixel (= 96-window-pixel at 3x)
+    /// pillarbox on each side. Clicks inside the box map to no native pixel; the first/last content columns
+    /// map to native x 0 / 255.
+    #[test]
+    fn h32_pillarbox_is_rejected_and_content_maps() {
+        let (scale, width) = (3, 256);
+        let box_px = 32 * scale; // 96 window px of left pillarbox
+                                 // Anywhere in the left box → None.
+        assert_eq!(window_to_native(0.0, 100.0, scale, width), None);
+        assert_eq!(
+            window_to_native((box_px - 1) as f32, 100.0, scale, width),
+            None
+        );
+        // First content column (window x = box_px) → native x 0.
+        assert_eq!(
+            window_to_native(box_px as f32, 0.0, scale, width),
+            Some((0, 0))
+        );
+        // Last content column: window x = box_px + (255 * scale) → native x 255.
+        let last = box_px + 255 * scale;
+        assert_eq!(
+            window_to_native(last as f32, 0.0, scale, width),
+            Some((255, 0))
+        );
+        // One native column past content (into the right box) → None.
+        let past = box_px + 256 * scale;
+        assert_eq!(window_to_native(past as f32, 0.0, scale, width), None);
+    }
+
+    /// Negative coordinates (a click reported outside the top-left) and a zero scale are rejected, not panic.
+    #[test]
+    fn out_of_range_inputs_are_none() {
+        assert_eq!(window_to_native(-1.0, 10.0, 3, 320), None);
+        assert_eq!(window_to_native(10.0, -1.0, 3, 320), None);
+        assert_eq!(window_to_native(10.0, 10.0, 0, 320), None);
+    }
+
+    /// The crosshair writer never indexes out of the frame buffer, including a watched pixel that is now
+    /// outside a narrower (post-mode-switch) frame, and it does mutate in-bounds pixels.
+    #[test]
+    fn crosshair_is_bounds_safe() {
+        let width = 320;
+        let mut buf = vec![0u32; width * HEIGHT];
+        // Center pixel: the plus mutates it and its neighbours.
+        draw_crosshair(&mut buf, width, 160, 112);
+        assert_ne!(buf[112 * width + 160], 0, "center inverted");
+        // Watched pixel beyond the current (narrower) frame: no-op, no panic.
+        let mut narrow = vec![0u32; 256 * HEIGHT];
+        draw_crosshair(&mut narrow, 256, 300, 10); // x 300 >= width 256
+        assert!(
+            narrow.iter().all(|&p| p == 0),
+            "out-of-frame click drew nothing"
+        );
+        // A pixel at the very corner clips its off-buffer arms without panicking.
+        draw_crosshair(&mut buf, width, 0, 0);
     }
 }
