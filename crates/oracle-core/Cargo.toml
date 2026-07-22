@@ -11,3 +11,10 @@ bincode = { version = "2", features = ["derive"] }
 [dev-dependencies]
 proptest = "1"
 serde_json = "1"
+
+# motion_run carries unit tests (pad-script parsing / per-port union); tests in an example target are only
+# run by `cargo test` when the target opts in. All other examples stay auto-discovered (autoexamples defaults
+# to true — declaring one target explicitly does not turn discovery off).
+[[example]]
+name = "motion_run"
+test = true
