@@ -270,7 +270,7 @@ assert **motion happens and matches our trajectory**, not merely that repeated p
 ### Punch-list item M-2 (Oracle-side) — OPEN
 | # | Rung | Symptom | First divergence | Hypothesis | Owner | Status |
 |---|---|---|---|---|---|---|
-| M-2 | motion | Held Right does not advance `SST_x_pos` on Oracle though `Ctrl_1_Held=0x08` reaches the game; our core advances it exactly 16 px/frame (source-correct) | `SST_x_pos` stays 256 vs our 256→10928 over 700 frames | Oracle executes the debug-fly `add.l d1,SST_x_pos(a0)` path incorrectly OR never reaches `TestPlayer_Debug`/`RunObjects` for the player under held input during the emulated frame (input present in RAM at MCP-read boundary but the object-update that consumes it isn't advancing x_pos). CPU-exec (`add.l dN,d16(An)`) vs object-loop-scheduling vs pad-sample-phase — Oracle-side forensic needed. NOT oracle-next. | Oracle C++ session | **OPEN — relay to Oracle owner** |
+| M-2 | motion | Held Right does not advance `SST_x_pos` on Oracle though `Ctrl_1_Held=0x08` reaches the game; our core advances it exactly 16 px/frame (source-correct) | `SST_x_pos` stays 256 vs our 256→10928 over 700 frames | **Two compounding Oracle-C++ bugs (root-caused by the Oracle session):** (1) a paused reset left a deferred `FlagInitialize` that `press`'s first `ExecuteSystemStep` consumed → the controller `Initialize()` wiped the just-injected `_buttonPressed[]` (`main_gui.cpp doFullReset`); (2) `MDControl6::AssertCurrentOutputLineState` drove only *high* lines, so a button held-from-power-on never re-deltaed and its grounded line stayed stale-high (`0x7F` = not-pressed). Both required fixing (each verified necessary by reverting). NOT oracle-next. | Oracle C++ session | **RESOLVED + overseer-verified live 2026-07-22** |
 
 **Acceptance bar for the Oracle fix (unblocks the frame-exact A/B payoff):** `reset → press right N` (N≥~400)
 must **move** the game — specifically `SST_x_pos` (and `Camera_X`) must advance, and match our core's
@@ -278,6 +278,28 @@ reference trajectory `x_pos = 256 + (frame−33)×16` (debug free-flight, 16 px/
 at frame ~700. "3× identical" alone is INSUFFICIENT — it must be 3× identical **and non-trivially moved to the
 reference value**. Our-side reference dumps for the diff live in session scratch (`ours.f*.{ppm,ram.bin}`,
 `ni.f*` no-input neighbors, `oracle-ref-n700.ppm`).
+
+### M-2 RESOLVED + MOTION A/B PIXEL-IDENTICAL — overseer live verify 2026-07-22
+Oracle rebuilt (`oracle/linux-port/build/oracle_gui`, both fixes above), overseer relaunched it with
+`ORACLE_DETERMINISTIC=1` and drove the acceptance bar live over MCP on the byte-identical `db0eb0` ROM:
+- **Moves to the reference (M-2 fixed):** `reset → press right 700` (NO settle) → `Camera_X 0x0060→0x16C0`
+  (exact match) and player `x 256 → 10912` = `256+(700−34)×16` — our core's reference is `256+(700−33)×16 =
+  10928`, i.e. **within one frame / 16 px of deferred-reset offset, identical 16 px/frame slope**. Pre-fix this
+  was frozen at `x=256` / `Camera_X 0x0060`.
+- **Determinism intact (M-1 not regressed):** the run repeated byte-identical (`Camera_X 0x16C0`, `x 10912`).
+  The acceptance bar is met in full — **deterministic AND non-trivially moved to the reference**, the exact
+  gap the old "3×-identical" M-1 check couldn't see.
+- **Frame-exact motion pixel A/B — THE PAYOFF, DONE:** Oracle's moved press-700 screenshot vs our core's
+  held-Right frames 697–701 through the committed `ab_compare` = **0 / 71,680 differing pixels** (ramp
+  normalized) at every offset. Camera settled at `0x16C0` both sides, the free-flight box is off-screen right,
+  and the rings have scrolled out of view — so the scrolled scene renders **pixel-identical** with no
+  animation-phase residual. Both emulators, identical ROM, identical held input, mid-scroll: bit-for-bit the
+  same picture.
+
+**The s4-boot milestone's motion extension is COMPLETE.** Static bar (met 2026-07-21, re-held on `db0eb0`) +
+motion bar (input-driven scroll pixel-identical, 0/71,680) both green; the one divergence the whole-machine
+A/B surfaced (M-2) was Oracle-side, fixed, and verified. oracle-next validated end-to-end on a real game
+under real input.
 
 **oracle-next status: unchanged and correct.** No oracle-next `src/` code touched this session — the A/B
 validated our core, it did not implicate it. `motion_run` + a scratch ramp-normalized PPM comparator did the
