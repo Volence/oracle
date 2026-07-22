@@ -42,6 +42,38 @@ struct FifoEntry {
     addr: u16,
 }
 
+/// Which VDP-internal memory a captured write ([`VdpWrite`]) landed in (watchpoints v2).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, bincode::Encode, bincode::Decode)]
+pub enum VdpTarget {
+    Vram,
+    Cram,
+    Vsram,
+}
+
+/// How a captured VDP write was driven (watchpoints v2): straight from a CPU data-port write (`Direct`) or as
+/// a step of a DMA transfer (`Dma`). A `Dma` write attributes to the instruction that *triggered* the transfer
+/// (the step-boundary PC), which is exactly the "instruction $X triggered a DMA that wrote VRAM $Y" story.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, bincode::Encode, bincode::Decode)]
+pub enum VdpVia {
+    Direct,
+    Dma,
+}
+
+/// One VDP-internal memory mutation captured at its choke point (watchpoints v2 — the "who wrote this tile?"
+/// primitive). `addr` is the resolved byte address **within the region** (VRAM 0..64Ki, CRAM 0..128, VSRAM
+/// 0..80). `size` is 1 for a VRAM byte (VRAM is captured byte-granular, at its single `write_vram_byte`
+/// choke) or 2 for a CRAM/VSRAM word. `old`/`new` are the pre/post values in that width. `via` distinguishes a
+/// direct CPU write from a DMA step.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, bincode::Encode, bincode::Decode)]
+pub struct VdpWrite {
+    pub target: VdpTarget,
+    pub addr: u32,
+    pub old: u32,
+    pub new: u32,
+    pub size: u8,
+    pub via: VdpVia,
+}
+
 #[derive(Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub struct Vdp {
     /// 64 KiB video RAM.
@@ -139,6 +171,23 @@ pub struct Vdp {
     /// The most recently completed DMA, for the `frame_report` introspection surface (design §4; recon R4).
     /// Serialized; in neither frozen currency. Power-on = `None`.
     last_dma: Option<DmaRecord>,
+    /// Transient VDP-write capture buffer (watchpoints v2). When [`Vdp::capture_armed`] is set, every write
+    /// choke point (`write_vram_byte` for VRAM; the CRAM/VSRAM arms of `write_target`) pushes a [`VdpWrite`]
+    /// here. The system drains it after every `step_cpu` and clears it, so it is **empty at every instruction
+    /// boundary** — the `dma_pending` precedent. Serialized (round-trips a quiesced snapshot as empty); in
+    /// **neither** frozen currency (`state_hash`/`export_state` read only VRAM/CRAM/VSRAM/regs, never this).
+    /// Power-on = empty.
+    write_captures: Vec<VdpWrite>,
+    /// Whether the write-capture buffer is armed (watchpoints v2). Arming is **opt-in and zero-cost when off**:
+    /// each choke-point guard is a single cheap `if self.capture_armed` test with no behavioral effect, so a
+    /// run with no VDP watch (or a null sink) is byte-for-byte identical to today. Set per-run by the
+    /// sink-generic run loop iff the sink wants VDP writes; false at power-on and between runs. In neither
+    /// frozen currency.
+    capture_armed: bool,
+    /// Transient "this write is a DMA step" tag (watchpoints v2): raised around `run_fill`/`run_copy`/
+    /// `dma_write_word` so the choke points stamp `via = Dma`; otherwise `via = Direct`. Always false at an
+    /// instruction boundary (a DMA runs to completion within one bus access). In neither frozen currency.
+    in_dma: bool,
 }
 
 impl std::fmt::Debug for Vdp {
@@ -191,6 +240,9 @@ impl Vdp {
             dma_busy_until: 0,
             dma_pending: None,
             last_dma: None,
+            write_captures: Vec::new(),
+            capture_armed: false,
+            in_dma: false,
         }
     }
 
@@ -477,6 +529,15 @@ impl Vdp {
     /// cache (there is no other refresh path) — the Bloodlines stale-cache behavior.
     fn write_vram_byte(&mut self, addr: usize, byte: u8) {
         let a = addr & (VRAM_SIZE - 1);
+        // Watchpoints v2: the single VRAM byte choke — CPU data-port writes and every DMA byte route here, so
+        // capturing here (with `old` read before the store) catches all of them. No-op when disarmed.
+        self.capture(
+            VdpTarget::Vram,
+            a as u32,
+            self.vram[a] as u32,
+            byte as u32,
+            1,
+        );
         self.vram[a] = byte;
         let base = self.sat_base();
         let entries = if self.h40() { 80 } else { 64 };
@@ -505,12 +566,18 @@ impl Vdp {
             Target::Cram => {
                 let masked = w & 0x0EEE; // 9-bit colour (---- BBB- GGG- RRR-)
                 let b = (self.addr as usize) & 0x7E;
+                // Watchpoints v2: the CRAM choke — capture the word write (old read before the store).
+                let old = ((self.cram[b] as u32) << 8) | self.cram[b | 1] as u32;
+                self.capture(VdpTarget::Cram, b as u32, old, masked as u32, 2);
                 self.cram[b] = (masked >> 8) as u8;
                 self.cram[b | 1] = (masked & 0xFF) as u8;
             }
             Target::Vsram => {
                 let masked = w & 0x07FF; // 11-bit vertical scroll
                 let b = ((self.addr & 0xFFFE) as usize) % VSRAM_SIZE;
+                // Watchpoints v2: the VSRAM choke — capture the word write (old read before the store).
+                let old = ((self.vsram[b] as u32) << 8) | self.vsram[b | 1] as u32;
+                self.capture(VdpTarget::Vsram, b as u32, old, masked as u32, 2);
                 self.vsram[b] = (masked >> 8) as u8;
                 self.vsram[b | 1] = (masked & 0xFF) as u8;
             }
@@ -610,11 +677,46 @@ impl Vdp {
         self.last_dma
     }
 
+    /// Arm or disarm the VDP-write capture buffer (watchpoints v2). The sink-generic run loop arms it for a
+    /// run whose sink wants VDP writes and disarms it after; disarmed is byte-for-byte the old hot path.
+    pub fn set_write_capture(&mut self, on: bool) {
+        self.capture_armed = on;
+    }
+
+    /// Drain the VDP writes captured since the last drain (watchpoints v2), leaving the buffer empty. The
+    /// system calls this after every `step_cpu`, so the buffer is empty at every instruction boundary.
+    pub fn take_write_captures(&mut self) -> Vec<VdpWrite> {
+        std::mem::take(&mut self.write_captures)
+    }
+
+    /// Record one captured write **iff the buffer is armed** (watchpoints v2). The single `capture_armed`
+    /// branch is the whole cost when disarmed — it inlines to one predictable test in the DMA-fill hot path.
+    #[inline]
+    fn capture(&mut self, target: VdpTarget, addr: u32, old: u32, new: u32, size: u8) {
+        if self.capture_armed {
+            let via = if self.in_dma {
+                VdpVia::Dma
+            } else {
+                VdpVia::Direct
+            };
+            self.write_captures.push(VdpWrite {
+                target,
+                addr,
+                old,
+                new,
+                size,
+                via,
+            });
+        }
+    }
+
     /// Feed one DMA word to the current data-port target (68k→VDP transfer, recon R4(a)): route to
     /// VRAM/CRAM/VSRAM through `write_target` (so the R5 SAT write-through fires for VRAM — "any DMA that
     /// writes VRAM counts") and autoinc. The bus reads the source word from 68k memory and calls this.
     pub fn dma_write_word(&mut self, w: u16) {
+        self.in_dma = true; // watchpoints v2: this word's captures attribute to the triggering DMA
         self.write_target(w);
+        self.in_dma = false;
         self.autoinc();
     }
 
@@ -691,6 +793,7 @@ impl Vdp {
         let count = if len == 0 { 0x1_0000u32 } else { len as u32 };
         let target = self.target();
         let dest = self.addr;
+        self.in_dma = true; // watchpoints v2: fill writes attribute to the triggering DMA
         match target {
             Target::Vram => {
                 let byte = (fill >> 8) as u8; // top byte (recon R4(b))
@@ -709,6 +812,7 @@ impl Vdp {
                 }
             }
         }
+        self.in_dma = false;
         let cost = self.dma_cost(count as u64, now); // fill ≈ 1 slot/byte (recon R4(e))
         self.regs[0x13] = 0;
         self.regs[0x14] = 0;
@@ -731,12 +835,14 @@ impl Vdp {
         let count = if len == 0 { 0x1_0000u32 } else { len as u32 };
         let dest = self.addr;
         let mut src = source as usize;
+        self.in_dma = true; // watchpoints v2: copy writes attribute to the triggering DMA
         for _ in 0..count {
             let byte = self.vram[src & (VRAM_SIZE - 1)];
             self.write_vram_byte(self.addr as usize & (VRAM_SIZE - 1), byte);
             src = src.wrapping_add(1);
             self.autoinc();
         }
+        self.in_dma = false;
         let cost = self.dma_cost(count as u64 * 2, now); // half the fill byte rate (recon R4(c))
         self.regs[0x13] = 0;
         self.regs[0x14] = 0;
@@ -1900,5 +2006,131 @@ mod tests {
             crate::state_hash::StateHash::compute(b.vram(), b.cram(), b.vsram(), b.regs()),
             "the SAT cache + carry are outside the Oracle state_hash currency"
         );
+    }
+
+    // --- VDP-internal write capture (watchpoints v2) ------------------------------------------------------
+
+    /// Arm a VRAM write at addr 0x0100, autoinc 2.
+    fn arm_vram_write(v: &mut Vdp, addr: u16) {
+        v.regs[0x0F] = 2;
+        v.control_write(0x4000 | (addr & 0x3FFF), 0); // VRAM write (code 0x01), low addr bits
+        v.control_write(addr >> 14, 0); // high addr bits, disarm toggle
+    }
+
+    /// Disarmed (the default), a data-port write records no capture — the zero-cost-when-off guarantee.
+    #[test]
+    fn disarmed_captures_nothing() {
+        let mut v = fresh();
+        arm_vram_write(&mut v, 0x0100);
+        v.data_write(0xBEEF);
+        assert!(
+            v.take_write_captures().is_empty(),
+            "no capture when the buffer is disarmed"
+        );
+    }
+
+    /// Armed, a direct data-port VRAM write is captured byte-granular: two VRAM byte writes (high→addr,
+    /// low→addr^1), each with the pre-write `old`, the new byte, size 1, and `via = Direct`.
+    #[test]
+    fn armed_captures_a_direct_vram_write() {
+        let mut v = fresh();
+        arm_vram_write(&mut v, 0x0100);
+        let old_hi = v.vram()[0x0100];
+        let old_lo = v.vram()[0x0101];
+        v.set_write_capture(true);
+        v.data_write(0xBEEF);
+        let caps = v.take_write_captures();
+        assert_eq!(caps.len(), 2, "one capture per VRAM byte");
+        assert_eq!(
+            caps[0],
+            VdpWrite {
+                target: VdpTarget::Vram,
+                addr: 0x0100,
+                old: old_hi as u32,
+                new: 0xBE,
+                size: 1,
+                via: VdpVia::Direct,
+            }
+        );
+        assert_eq!(
+            caps[1],
+            VdpWrite {
+                target: VdpTarget::Vram,
+                addr: 0x0101,
+                old: old_lo as u32,
+                new: 0xEF,
+                size: 1,
+                via: VdpVia::Direct,
+            }
+        );
+        assert!(
+            v.take_write_captures().is_empty(),
+            "take drained the buffer"
+        );
+    }
+
+    /// Armed, a direct CRAM data-port write is captured as one word write: the resolved CRAM byte address,
+    /// old→new (9-bit masked), size 2, via = Direct.
+    #[test]
+    fn armed_captures_a_direct_cram_write() {
+        let mut v = fresh();
+        v.regs[0x0F] = 2;
+        v.control_write(0xC000, 0); // CRAM write (code 0x03), addr 0
+        v.control_write(0x0000, 0);
+        v.set_write_capture(true);
+        v.data_write(0x0EEE);
+        let caps = v.take_write_captures();
+        assert_eq!(caps.len(), 1, "one word capture for CRAM");
+        assert_eq!(
+            caps[0],
+            VdpWrite {
+                target: VdpTarget::Cram,
+                addr: 0x0000,
+                old: 0x0000,
+                new: 0x0EEE,
+                size: 2,
+                via: VdpVia::Direct,
+            }
+        );
+    }
+
+    /// Armed, a VRAM fill DMA attributes each byte write to `via = Dma`. Fill byte $AB over 4 bytes at $0200.
+    #[test]
+    fn armed_captures_a_dma_fill_with_via_dma() {
+        let mut v = fresh();
+        v.regs[0x0F] = 1;
+        v.control_write(0x4200, 0); // VRAM write (code 0x01), A13-A0 = 0x0200
+        v.control_write(0x0080, 0); // CD5..CD2 high nibble = 0b1000 → code 0x21 (VRAM write + CD5); disarm
+        let old: Vec<u8> = (0x0200..0x0204).map(|a| v.vram()[a]).collect();
+        v.set_write_capture(true);
+        v.run_fill(4, 0xAB00, 0); // fill byte = top byte = $AB, len 4
+        let caps = v.take_write_captures();
+        assert_eq!(caps.len(), 4, "one capture per filled byte");
+        for (i, cap) in caps.iter().enumerate() {
+            assert_eq!(cap.target, VdpTarget::Vram);
+            assert_eq!(cap.addr, 0x0200 + i as u32);
+            assert_eq!(cap.old, old[i] as u32);
+            assert_eq!(cap.new, 0xAB);
+            assert_eq!(cap.size, 1);
+            assert_eq!(cap.via, VdpVia::Dma, "fill writes attribute to DMA");
+        }
+    }
+
+    /// The capture buffer is in neither frozen currency: arming + capturing never moves the state_hash-hashed
+    /// regions beyond the real writes, and a quiesced (drained) buffer round-trips a snapshot as empty.
+    #[test]
+    fn capture_buffer_is_neither_currency_and_empties_at_boundaries() {
+        let mut v = fresh();
+        arm_vram_write(&mut v, 0x0100);
+        v.set_write_capture(true);
+        v.data_write(0xBEEF);
+        v.take_write_captures(); // drain: buffer empty at the boundary
+        v.set_write_capture(false);
+        // A fresh VDP driven the same way (disarmed) has byte-identical hashed regions.
+        let mut ref_vdp = fresh();
+        arm_vram_write(&mut ref_vdp, 0x0100);
+        ref_vdp.data_write(0xBEEF);
+        assert_eq!(v.vram(), ref_vdp.vram(), "capture never perturbs VRAM");
+        assert_eq!(v, ref_vdp, "drained capture buffer leaves the VDP equal");
     }
 }
