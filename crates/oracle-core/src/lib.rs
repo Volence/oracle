@@ -22,3 +22,4 @@ pub mod system;
 pub mod testrom;
 pub mod vdp;
 pub mod watchpoints;
+pub mod z80;
