@@ -113,12 +113,41 @@ overlay, 6-button pads.
 
 ## Capture inventory (filled in Phase 0)
 
-| Item | Where | ROM sha256 | Status |
-|---|---|---|---|
-| — | — | — | not started |
+ROM: `s4.bin` sha256 `560b348633f81ecadce2edf022bfe87c955800614de2dc2339f8b7475f65b27c` (420,749 bytes on
+disk; Oracle reports 420,750 — it pads odd-sized ROMs by one byte for word access; harmless, noted).
+
+| Item | Where | Status |
+|---|---|---|
+| Our settled frame + VRAM/CRAM/VSRAM/RAM/Z80/regs dumps (frame 600) | session scratch `s4boot.*` | captured 2026-07-21 |
+| Oracle settled-scene screenshot (paused, post-reload) | session scratch `oracle-settled.png` | captured 2026-07-21 |
+| Oracle CRAM (all 64 raw words via MCP) | compared in-band | captured 2026-07-21 |
+
+## Ladder walk — 2026-07-21 (first attempt)
+
+**All seven rungs passed on the first boot.** `boot_rom` ran s4.bin 600 frames with no panic, no
+unimplemented-opcode halt, no hang:
+
+- Rungs 1–3: 68k reached the game loop; H40 programmed; Z80 driver uploaded (5,900 nonzero bytes in Z80
+  RAM) — the BUSREQ "always granted" stub survived the real handshake (**D2 resolved: stub is enough** for
+  this milestone).
+- Rung 5: CRAM byte-identical to Oracle, 64/64 raw words.
+- Rungs 6–7: settled frame is **pixel-identical to Oracle — 0 / 71,680 pixels differ** after normalizing
+  the documented DAC-ramp difference (P8 in `docs/2026-07-16-vdp-pixel-known-differences.md`; Oracle renders
+  3-bit level L as L×34, we render round(L×255/7) — a bijection, verified 27↔27 colors 1:1).
+- **D1 resolved:** the Cam/Vel coord text is Oracle's UI overlay — absent from Oracle's own VDP framebuffer
+  screenshot. Excluded from the match, as suspected.
+- Comparison sensitivity proven, not assumed: pre-normalization the frames differ in 35,083 pixels (the
+  ramp), and our own frames 600 vs 604 differ in exactly the ring-animation region (276 px, x 204–235,
+  y 5–20) — the ring phase in the zero-diff match was genuinely aligned, and animation runs in our core.
 
 ## Punch-list (living — the milestone's real output)
 
 | # | Rung | Symptom | First divergence | Hypothesis | Slice/agent | Status |
 |---|---|---|---|---|---|---|
-| — | — | — | — | — | — | ladder not yet walked |
+| — | — | — | — | — | — | **empty — ladder walked clean 2026-07-21** |
+
+**The static done bar is met.** What the static scene cannot exercise — and where the punch-list will
+actually come from — is **motion**: input-driven gameplay (the placeholder player moving, camera scroll,
+tile streaming, h-scroll parallax mid-frame). Next step: an input-scripted A/B run (same held inputs, same
+frame count, both emulators) as the milestone's motion extension, per the "verify during motion, not at
+rest" rule.

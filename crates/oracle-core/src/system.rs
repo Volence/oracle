@@ -316,6 +316,11 @@ impl System {
         &self.ram
     }
 
+    /// Read-only access to the 8 KiB Z80 sound RAM (introspection — e.g. checking a driver upload landed).
+    pub fn z80_ram(&self) -> &[u8] {
+        &self.z80_ram
+    }
+
     /// Read-only access to VRAM.
     pub fn vram(&self) -> &[u8] {
         self.vdp.vram()
