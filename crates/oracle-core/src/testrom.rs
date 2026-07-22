@@ -356,6 +356,7 @@ mod tests {
             let mut vdp = crate::vdp::Vdp::power_on(&mut crate::rng::SplitMix64::new(1));
             let mut io = crate::io::Io::default();
             let mut z80_busreq = false;
+            let mut z80_running = false;
             let mut bus = MegaDriveBus::new(
                 &rom,
                 ram,
@@ -365,6 +366,7 @@ mod tests {
                 0,
                 last,
                 &mut z80_busreq,
+                &mut z80_running,
                 &mut sink,
             );
             cpu.step(&mut bus);

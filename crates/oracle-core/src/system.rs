@@ -14,6 +14,7 @@ use crate::m68000::registers::Registers;
 use crate::scheduler::{EventKind, Scheduler};
 use crate::state_hash::{StateHash, CRAM_SIZE, REG_COUNT, VRAM_SIZE, VSRAM_SIZE};
 use crate::vdp::{Vdp, LINES_PER_FRAME, MCLK_PER_LINE};
+use crate::z80::{Z80Bus, Z80};
 
 /// 68000 work RAM, `$FF0000..=$FFFFFF` (64 KiB).
 pub const RAM_SIZE: usize = 0x10000;
@@ -24,6 +25,11 @@ pub const MCLK_PER_FRAME: u64 = 896_040;
 /// Master-clock ticks per 68000 CPU cycle (the 68000 runs at mclk/7). The **one** place the CPU-cycle →
 /// mclk conversion happens is [`System::run_until`]; a `* 7` anywhere else is a bug.
 pub const MCLK_PER_CPU_CYCLE: u64 = 7;
+
+/// Master-clock ticks per Z80 cycle (the Z80 runs at mclk/15). The **one** place the Z80-cycle → mclk
+/// conversion happens is the Z80 catch-up in [`System::run_until`] (the parallel of the 68000's single ×7
+/// site); a `* 15` anywhere else is a bug.
+pub const MCLK_PER_Z80_CYCLE: u64 = 15;
 
 /// `export_state` format version (D8). Bumped when the layout changes; Push D freezes v1 + writes the
 /// spec. First byte(s) of every `export_state` image.
@@ -73,6 +79,12 @@ pub struct System {
     /// scalar like `last_bus_word`, in neither frozen currency). Reset to `false` at power-on via `new`. See
     /// `docs/2026-07-22-z80-busreq-recon.md`.
     z80_busreq: bool,
+    /// The Z80 RESET-release latch (`$A11200` bit0), stored positively: `true` = reset released (Z80 runs),
+    /// `false` = reset asserted (Z80 held). **Power-on = `false`** — real hardware holds the Z80 in reset
+    /// until the 68000 releases it. Together with `z80_busreq` it gates whether the Z80 steps
+    /// (`z80_running && !z80_busreq`). Bus-arbitration scalar threaded like `z80_busreq`: in this bincode
+    /// snapshot for determinism, **not** in `export_state`. See `docs/2026-07-22-z80-core-design.md` (ZC6).
+    z80_running: bool,
     /// The 68000. Driven over a [`MegaDriveBus`] in [`System::step_cpu`]; `step()` returns CPU cycles.
     cpu: Cpu68000,
     /// The absolute mclk of the last frame boundary [`System::run_frames`] targeted. Frame deadlines are
@@ -80,6 +92,16 @@ pub struct System {
     /// instruction is absorbed in the next frame — long-run time stays exact. Serialized so the carry
     /// survives snapshot/restore. Reset to 0 at power-on.
     frame_boundary_mclk: u64,
+    /// The Z80 sound CPU (register + interrupt state). Driven over a [`Z80Bus`] in the [`System::run_until`]
+    /// catch-up; held in reset this slice (Z-skeleton), so it steps zero instructions. Its register region
+    /// stays zeroed in `export_state` region 4 until the later Z-live go-live slice.
+    z80: Z80,
+    /// The absolute mclk up to which the Z80 has been simulated (its next-instruction boundary) — the Z80
+    /// frontier the catch-up in [`System::run_until`] chases the 68000's clock with (ZC4). When the Z80 is
+    /// gated off (held in reset / bus-granted) it is advanced to `now` each iteration so a later reset-release
+    /// carries **zero** backlog (ZC5). Absolute + bincode-serialized (like `frame_boundary_mclk`) so the chase
+    /// resumes exactly across snapshot/restore; **not** in `export_state` (a timing scalar). Power-on 0.
+    z80_frontier_mclk: u64,
 }
 
 impl std::fmt::Debug for System {
@@ -97,8 +119,12 @@ impl std::fmt::Debug for System {
             )
             .field("vdp", &self.vdp)
             .field("io", &self.io)
+            .field("z80_busreq", &self.z80_busreq)
+            .field("z80_running", &self.z80_running)
             .field("cpu", &self.cpu)
             .field("frame_boundary_mclk", &self.frame_boundary_mclk)
+            .field("z80", &self.z80)
+            .field("z80_frontier_mclk", &self.z80_frontier_mclk)
             .field(
                 "state_hash.combined",
                 &crate::state_hash::hex(self.state_hash().combined),
@@ -158,8 +184,11 @@ impl System {
             io: crate::io::Io::default(),
             last_bus_word: 0,
             z80_busreq: false,
+            z80_running: false,
             cpu: Cpu68000::new(power_on_regs()),
             frame_boundary_mclk: 0,
+            z80: Z80::new(),
+            z80_frontier_mclk: 0,
         }
     }
 
@@ -209,6 +238,7 @@ impl System {
             io,
             last_bus_word,
             z80_busreq,
+            z80_running,
             ..
         } = self;
         MegaDriveBus::new(
@@ -220,6 +250,7 @@ impl System {
             now,
             last_bus_word,
             z80_busreq,
+            z80_running,
             sink,
         )
     }
@@ -428,6 +459,10 @@ impl System {
                 }
             }
             self.scheduler.advance(cycles as u64 * MCLK_PER_CPU_CYCLE);
+            // Catch the Z80 up to the 68000's new `now` (ZC4): the fixed total order is events → 68000 step
+            // → Z80 catch-up → IPL. Gated on `z80_running && !z80_busreq`; held in reset this slice, so the
+            // catch-up runs zero instructions and only tracks `now`.
+            self.catch_up_z80();
             // Re-derive the IPL latch after the step: a taken interrupt's fc=7 /INTAK cleared the VDP's
             // pending latch mid-step (so a delivered VInt does NOT re-fire after RTE), and any enable-bit
             // register write mid-step is picked up here too (recon R12).
@@ -488,6 +523,7 @@ impl System {
             io,
             last_bus_word,
             z80_busreq,
+            z80_running,
             ..
         } = self;
         let mut bus = MegaDriveBus::new(
@@ -499,9 +535,40 @@ impl System {
             now,
             last_bus_word,
             z80_busreq,
+            z80_running,
             sink,
         );
         cpu.step(&mut bus)
+    }
+
+    /// Chase the Z80 frontier up to the 68000's current `now` (ZC4/ZC5) — the parallel of the 68000's clock
+    /// site, and the **one and only** Z80-cycle → mclk conversion (`t × MCLK_PER_Z80_CYCLE`).
+    ///
+    /// When the Z80 is gated on (`z80_running && !z80_busreq`) it runs whole instructions until its absolute
+    /// frontier reaches or passes `now`, carrying the bounded overshoot forward — the identical
+    /// absolute-deadline pattern the 68000 frame loop uses. When gated off (held in reset or bus-granted to
+    /// the 68000) the frontier is advanced to `now`, so it runs nothing but never falls behind: a later
+    /// reset-release resumes from `now` with **zero** backlog (ZC5). This slice holds the Z80 in reset
+    /// (`z80_running == false` in every fixture), so only the gated-off branch is ever taken and
+    /// [`Z80::step`] is never reached.
+    fn catch_up_z80(&mut self) {
+        let now = self.scheduler.now();
+        if self.z80_running && !self.z80_busreq {
+            let System {
+                z80,
+                z80_ram,
+                z80_frontier_mclk,
+                ..
+            } = self;
+            while *z80_frontier_mclk < now {
+                let mut bus = Z80Bus::new(z80_ram);
+                let t = z80.step(&mut bus);
+                *z80_frontier_mclk += t as u64 * MCLK_PER_Z80_CYCLE;
+            }
+        } else {
+            // Held in reset / bus-granted: run nothing, but track `now` so reset-release carries no backlog.
+            self.z80_frontier_mclk = now;
+        }
     }
 }
 
@@ -892,6 +959,43 @@ mod tests {
                 .iter()
                 .all(|&b| b == 0),
             "the reserved Z80-register sub-block is zeroed"
+        );
+    }
+
+    #[test]
+    fn export_state_z80_register_region_is_zeroed_in_the_z_skeleton() {
+        // The Z-skeleton wires the Z80 struct into System but keeps export_state region 4 (Z80 regs, 0x40 @
+        // the offset after the live Z80 RAM) all-zero — go-live is the later Z-live slice. Even after a run
+        // (the Z80 held in reset executes nothing), the region stays zero, so the export golden cannot move.
+        let mut s = booted(0x2E80);
+        s.run_frames(3);
+        let img = s.export_state();
+        let regs_off = 2 + EXPORT_M68K_REGS_LEN + RAM_SIZE + Z80_RAM_SIZE;
+        assert!(
+            img[regs_off..regs_off + EXPORT_Z80_REGS_PLACEHOLDER]
+                .iter()
+                .all(|&b| b == 0),
+            "export_state region 4 (Z80 registers) stays zeroed in the Z-skeleton"
+        );
+    }
+
+    #[test]
+    fn snapshot_round_trips_the_z80_and_its_frontier() {
+        // The Z80 struct + the z80_running / z80_frontier_mclk scalars ride the bincode snapshot (determinism)
+        // even though they are not in export_state. A booted, run machine round-trips them byte-for-byte.
+        let mut s = booted(0x5A5A);
+        s.run_frames(2);
+        // The frontier tracked `now` while the Z80 sat in reset (gated off), so it is non-trivial to carry.
+        assert_eq!(
+            s.z80_frontier_mclk,
+            s.scheduler().now(),
+            "the gated-off frontier tracks now (zero backlog on a future reset-release)"
+        );
+        assert!(!s.z80_running, "no fixture releases the Z80 from reset");
+        let back = System::restore(&s.snapshot()).expect("snapshot decodes");
+        assert_eq!(
+            s, back,
+            "the whole machine round-trips, Z80 + frontier included"
         );
     }
 

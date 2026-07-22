@@ -217,7 +217,7 @@ pub const MD_VERSION: u8 = 0xA0;
 /// | `$A04000–$A04003` | YM2612 FM: read = status (bit7 BUSY clear = not busy); writes drop (no FM core yet) |
 /// | `$A10000–$A1001F` | I/O: `$A10001` = [`MD_VERSION`]; the 15 data/control/serial registers via [`Io`] |
 /// | `$A11100` | Z80 BUSREQ: bit0 read = 0 when 68000 is granted the bus (asserted), 1 when the Z80 owns it |
-/// | `$A11200` | Z80 RESET: read reports reset released (0); writes drop (deferred to the Z80 core) |
+/// | `$A11200` | Z80 RESET: bit0 = the reset-release latch (`z80_running`) — write 1 = release (Z80 runs), 0 = assert (held); read reports it (power-on 0 = held) |
 /// | `$C00000`/`$C00002` | VDP data port (read = pre-cache buffer, write = VRAM/CRAM/VSRAM; recon R1) |
 /// | `$C00004`/`$C00006` | VDP control port (read = status word, write = command; recon R1/R2) |
 /// | `$C00008–$C0000F` | VDP HV counter (even byte = V, odd byte = H; recon R2) |
@@ -236,9 +236,17 @@ pub struct MegaDriveBus<'a, S: BusEventSink> {
     /// The Z80 BUSREQ latch: `true` once the 68000 has written bit0 = 1 to `$A11100` (bus requested → granted),
     /// `false` after a release (bit0 = 0). Read back at `$A11100` bit0 as 0 when granted to the 68000, 1 when
     /// the Z80 owns the bus — the take-bus/release handshake real games spin on (DR-1 Gunstar). Bus-internal
-    /// state, threaded like `last_bus_word`; NOT in the frozen `export_state`. `$A11200` RESET is deferred to
-    /// the Z80 core (Z7). Semantics + evidence: `docs/2026-07-22-z80-busreq-recon.md` (Z2/Z5/Z6).
+    /// state, threaded like `last_bus_word`; NOT in the frozen `export_state`. Semantics + evidence:
+    /// `docs/2026-07-22-z80-busreq-recon.md` (Z2/Z5/Z6).
     z80_busreq: &'a mut bool,
+    /// The Z80 RESET-release latch (`$A11200` bit0): `true` = reset released (Z80 runs), `false` = reset
+    /// asserted (Z80 held). **Power-on = `false`** — real hardware holds the Z80 in reset until the 68000
+    /// releases it (Plutiedev "Using the Z80"). Stored positively (`z80_running`) to avoid the reset-polarity
+    /// foot-gun. This slice (Z-skeleton) promotes it from the old constant-0/drop stub to a real latch, but
+    /// nothing releases it in any committed fixture, so the Z80 executes zero instructions. Bus-internal +
+    /// bincode-serialized like `z80_busreq`; NOT in `export_state`. See `docs/2026-07-22-z80-core-design.md`
+    /// (ZC6/ZC13).
+    z80_running: &'a mut bool,
     sink: &'a mut S,
 }
 
@@ -255,6 +263,7 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
         now_mclk: u64,
         last_bus_word: &'a mut u16,
         z80_busreq: &'a mut bool,
+        z80_running: &'a mut bool,
         sink: &'a mut S,
     ) -> Self {
         Self {
@@ -266,6 +275,7 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             now_mclk,
             last_bus_word,
             z80_busreq,
+            z80_running,
             sink,
         }
     }
@@ -303,8 +313,11 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             // spins real games use (recon Z2/Z5). $A11101 (odd half) = 0.
             0xA1_1100 => Some(if *self.z80_busreq { 0x00 } else { 0x01 }),
             0xA1_1101 => Some(0x00),
-            // Z80 RESET ($A11200): deferred to the Z80 core (Z7) — reports reset released (0) so boot proceeds.
-            0xA1_1200..=0xA1_1201 => Some(0x00),
+            // Z80 RESET ($A11200): bit0 reports the reset-release latch (`z80_running`) — 1 = released (Z80
+            // runs), 0 = asserted (held). Power-on = 0 (held), byte-identical to the old constant-0 stub, so
+            // this is currency-neutral until a game writes bit0 = 1 (recon Z1, design ZC6). $A11201 half = 0.
+            0xA1_1200 => Some(if *self.z80_running { 0x01 } else { 0x00 }),
+            0xA1_1201 => Some(0x00),
             // VDP ports ($C00000–$C0000F): stateful, handled as whole accesses in read16/write16/read8/
             // write8 (a byte-wise decode here would double a port access's side effects). Open bus for any
             // fallthrough (e.g. a TAS against a port — never a real access).
@@ -330,6 +343,10 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             // puts the meaningful byte at $A11100 and 0 at $A11101, which must not clobber the latch. $A11101
             // and $A11200 (RESET, deferred to Z7) fall through and drop (recon Z1/Z5).
             0xA1_1100 => *self.z80_busreq = (byte & 1) != 0,
+            // Z80 RESET ($A11200): latch bit0 from the EVEN byte only (a word write `move.w #$100,$A11200`
+            // puts the meaningful byte at $A11200, 0 at $A11201). 1 = release reset (Z80 runs), 0 = assert
+            // (held). $A11201 falls through and drops. No committed fixture writes bit0 = 1 (design ZC13).
+            0xA1_1200 => *self.z80_running = (byte & 1) != 0,
             // I/O register writes ($A10003–$A1001F): data/control latches + serial stubs (recon IO2/IO3).
             // The version byte and RxData are read-only; even bytes are unmapped. All drop here.
             0xA1_0000..=0xA1_001F => match io_reg(a) {
@@ -703,6 +720,7 @@ mod tests {
         now_mclk: u64,
         last_bus_word: u16,
         z80_busreq: bool,
+        z80_running: bool,
     }
     impl MdMem {
         fn new(rom: Vec<u8>) -> Self {
@@ -715,6 +733,7 @@ mod tests {
                 now_mclk: 0,
                 last_bus_word: 0,
                 z80_busreq: false,
+                z80_running: false,
             }
         }
         fn bus<'a>(&'a mut self, sink: &'a mut Vec<BusEvent>) -> MegaDriveBus<'a, Vec<BusEvent>> {
@@ -727,6 +746,7 @@ mod tests {
                 self.now_mclk,
                 &mut self.last_bus_word,
                 &mut self.z80_busreq,
+                &mut self.z80_running,
                 sink,
             )
         }
@@ -901,6 +921,51 @@ mod tests {
             0,
             "byte assert -> granted (bit0 = 0)"
         );
+    }
+
+    #[test]
+    fn z80_reset_latch_powers_on_asserted_and_toggles() {
+        // `$A11200` bit0 is the Z80 reset-release latch (`z80_running`): power-on = reset ASSERTED (Z80
+        // held), a write of bit0 = 1 releases it (Z80 runs), a write of bit0 = 0 re-asserts it. The read
+        // reports the latch. Promotes the old constant-0/drop stub to a real latch (design ZC6/ZC13). The
+        // power-on read value (0) is byte-identical to the old stub, so the change is currency-neutral.
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+
+        // Power-on: reset asserted, Z80 held → read bit0 = 0 (matches the old stub exactly).
+        assert_eq!(
+            bus.read8(0xA1_1200, 5).0 & 1,
+            0,
+            "power-on -> reset asserted (bit0 = 0)"
+        );
+
+        // Release reset via the word idiom `move.w #$100,$A11200`: $01 lands at the even address, $00 at the
+        // odd one; the odd byte must NOT clobber the latch.
+        bus.write16(0xA1_1200, 5, 0x0100);
+        assert_eq!(
+            bus.read8(0xA1_1200, 5).0 & 1,
+            1,
+            "reset released -> Z80 runs (bit0 = 1)"
+        );
+
+        // Re-assert via `move.w #$0,$A11200`: bit0 returns to 0 (held again).
+        bus.write16(0xA1_1200, 5, 0x0000);
+        assert_eq!(
+            bus.read8(0xA1_1200, 5).0 & 1,
+            0,
+            "reset re-asserted -> Z80 held (bit0 = 0)"
+        );
+
+        // The byte-write idiom releases too.
+        bus.write8(0xA1_1200, 5, 0x01);
+        assert_eq!(
+            bus.read8(0xA1_1200, 5).0 & 1,
+            1,
+            "byte release -> Z80 runs (bit0 = 1)"
+        );
+        // The odd half always reads 0.
+        assert_eq!(bus.read8(0xA1_1201, 5).0, 0, "$A11201 odd half = 0");
     }
 
     #[test]
