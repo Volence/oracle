@@ -151,3 +151,31 @@ actually come from — is **motion**: input-driven gameplay (the placeholder pla
 tile streaming, h-scroll parallax mid-frame). Next step: an input-scripted A/B run (same held inputs, same
 frame count, both emulators) as the milestone's motion extension, per the "verify during motion, not at
 rest" rule.
+
+## Motion A/B — first session, 2026-07-21 (foreground, motion_run 37f4339 + Oracle MCP)
+
+**Headline: when frames align, the emulators are pixel-identical even mid-spawn.** Oracle stepped to
+"frame 60" from reset matched our frames 56/57/58 with **0/71,680 differing pixels** (ramp-normalized);
+the 966-pixel residue at other offsets is pure ring-animation phase. Motion rendering itself shows no
+divergence so far: our deep-scroll frame under held Right reaches the same terrain Oracle reaches under a
+live free-run hold.
+
+**Blocker found (Oracle-side, not oracle-next):** `emulator_press` — the deterministic
+hold-N-frames-and-pause input tool — advances frames bit-exactly but its held buttons **never reach the
+game**: Right held via press for 298/598 frames from reset AND for 120 frames from a settled scene all
+produced zero player/camera motion, while the free-run `emulator_hold` path scrolls normally. Frame-exact
+input A/B is blocked until Oracle's press path injects into the pad model during stepped frames. Filed
+with the owner for an Oracle-side fix.
+
+**Protocol notes (hard-won, keep):**
+- `emulator_reset` is **deferred** — it applies when the next frame steps, and the following press
+  effectively starts at reset frame 0 (minus a 2–4 frame constant offset; calibrate per session by
+  matching a screenshot against our neighbour frames — the zero-diff match is unambiguous).
+- Oracle's `frame_token` is a UI/wall-clock counter, **not** an emulated-frame count — never use it for
+  frame accounting.
+- `emulator_screenshot`'s `path` parameter is ignored; shots land in `~/.config/oracle/screenshots/`.
+- Pause → reload does not survive: `emulator_reload_rom` resumes the emulator.
+
+| # | Rung | Symptom | First divergence | Hypothesis | Slice/agent | Status |
+|---|---|---|---|---|---|---|
+| M-1 | motion | Oracle MCP `emulator_press` drops pad input during stepped frames | n/a (tooling, Oracle repo) | press injects at a layer the core only samples in free-run | Oracle-side session | **open — blocks frame-exact motion A/B** |
