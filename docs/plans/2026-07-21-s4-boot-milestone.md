@@ -178,4 +178,38 @@ with the owner for an Oracle-side fix.
 
 | # | Rung | Symptom | First divergence | Hypothesis | Slice/agent | Status |
 |---|---|---|---|---|---|---|
-| M-1 | motion | Oracle MCP `emulator_press` drops pad input during stepped frames | n/a (tooling, Oracle repo) | press injects at a layer the core only samples in free-run | Oracle-side session | **open — blocks frame-exact motion A/B** |
+| M-1 | motion | Oracle MCP `emulator_press` produces zero/inconsistent motion during stepped frames | n/a (tooling, Oracle repo) | ~~press injects at a layer the core only samples in free-run~~ **DISPROVEN** → press advances a *non-deterministic* frame count (render-token race) | Oracle-side session | **FIXED Oracle-side 2026-07-22 (agent-verified byte-identical) — overseer live re-verify pending GUI restart** |
+
+### M-1 UPDATE — 2026-07-22 (Oracle-side forensic result)
+Our filed hypothesis ("held buttons never reach the game") is **disproven** on the current Oracle build.
+An Oracle agent verified under `ORACLE_DETERMINISTIC=1`: hold-right → the game's `Ctrl_1_Held ($FF802C)`
+reads the Right bit; press right 120 frames → `Camera_X` 0x60→0x0BC0 (moves), press left → 0x60→0x00
+(opposite), no-input control stays 0x60 — motion is genuinely input-caused. The literal "input doesn't
+reach the game" symptom was a **deterministic-mode line-change orphan bug already fixed 2026-07-02
+(7f88ce7)**. **The real, still-live defect:** `press` (main_gui.cpp:2094-2102 / 2288-2329) drives async
+`RunSystem()` + counts `GetImageLastRenderedFrameToken()` (render-thread frame count) to decide when to
+stop → it advances a **non-deterministic** number of emulated frames (3 identical `press right` → 3
+different state hashes AND camera 0x0660/0x0650/0x0640), while `run_frames` (ControlSocket.cpp:2247) steps
+exact `kNtscFrameNs` quanta via synchronous `ExecuteSystemStep` and is bit-exact. This non-determinism is
+the true cause of the "zero motion" WE saw (press likely stepped ~0 frames in our runs) and it blocks
+frame-exact A/B. **Fix greenlit (owner/overseer):** route the MCP `emulator_press` path through the same
+deterministic `ExecuteSystemStep(kNtscFrameNs)×N` stepping `run_frames` uses; input injection untouched.
+**Acceptance bar (unblocks our A/B):** 3 identical `emulator_press right N` from reset → identical state
+hash + identical `Camera_X`, matching a deterministic `run_frames`+injected-input reference; plus the exact
+env/config for deterministic press over the MCP socket. Overseer to verify the fix live once it lands.
+
+**RESOLVED Oracle-side 2026-07-22.** The Oracle agent rewrote the MCP `emulator_press` path (`OpPress` in
+`ControlSocket.cpp`) to run synchronously on the socket thread and step the same
+`ExecuteSystemStep(kNtscFrameNs)×N` quantum as `run_frames` (shared `kNtscFrameNs` constant; no more GUI
+main-loop marshaling / render-token counting). Agent-verified STRONGEST: 3× identical `press right` from
+one reset → byte-identical state hash AND Camera_X, and press == a `hold+run_frames+release` reference
+(both `0xE0C827EA14DD4041`, cam `0x0420`); regression guards intact; test
+`linux-port/harness/press_determinism_test.py` fails-old/passes-new. **PROTOCOL PIN for A/B:** bit-exact
+press requires the *oracle_gui process that owns the socket* to run with `ORACLE_DETERMINISTIC=1` (NOT the
+MCP server — it only connects to an existing `oracle.sock`; the harness `launcher.py:42` already sets it).
+Without it press still steps exactly N frames but isn't bit-exact (threaded exec). Not a global default
+(that's the future `set_deterministic` bus op). **Overseer live re-verify PENDING**: the running instance
+(PID 3366703) is the stale pre-fix binary — must restart the GUI on the new build + `ORACLE_DETERMINISTIC=1`,
+then reproduce 3×-identical over MCP and run the real frame-exact motion A/B vs our core. Oracle-side
+housekeeping flagged: `launcher.py` `headless_emulator` leaks oracle_gui grandchildren + Xvfb (xvfb-run
+terminate() misses them) → `start_new_session=True` + `os.killpg` fix (separate from the press commit).
