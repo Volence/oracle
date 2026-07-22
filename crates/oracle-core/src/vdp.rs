@@ -658,8 +658,16 @@ impl Vdp {
     }
 
     /// Take the pending DMA (recon R4) — the bus calls this after each control/data write to execute it.
+    /// Consuming a request clears CD5 (code bit 5, "DMA work pending"): the hardware DMA engine clears it on
+    /// completion (recon V2), and oracle-next runs the transfer synchronously, so consume == complete. Without
+    /// this, CD5 goes stale and a later M1=0 command retains it (recon R1/V1) and re-fires a phantom DMA — the
+    /// DR-2 spurious 65536-word transfer. Guarded on an actual take: a non-DMA VDP access must not touch CD5.
     pub fn take_dma_request(&mut self) -> Option<DmaRequest> {
-        self.dma_pending.take()
+        let req = self.dma_pending.take();
+        if req.is_some() {
+            self.code &= !0x20;
+        }
+        req
     }
 
     /// The live data-port target address (recon R1) — the DMA destination, exposed for the `DmaRecord`.
@@ -1944,6 +1952,72 @@ mod tests {
             "CRAM fill used the snooped entry, not the trigger word"
         );
         assert_ne!(cram_word, 0x0EEE, "the trigger word did NOT fill CRAM");
+    }
+
+    /// Issue a two-word VDP command through the control port (first word CD1-CD0 + A13-A0, second word
+    /// CD5-CD2 + A15-A14). `cd` is the full 6-bit command code; `addr` the 16-bit target address.
+    fn command(v: &mut Vdp, cd: u8, addr: u16) {
+        let w1 = (((cd & 0x03) as u16) << 14) | (addr & 0x3FFF);
+        let w2 = ((((cd >> 2) & 0x0F) as u16) << 4) | (addr >> 14);
+        v.control_write(w1, 0);
+        v.control_write(w2, 0);
+    }
+
+    #[test]
+    fn a_completed_dma_clears_cd5_so_a_later_m1_off_command_does_not_respawn_it() {
+        // CD5 = "DMA work pending" — the engine clears it on completion (recon V2). oracle-next consumes a DMA
+        // via take_dma_request; if CD5 is not cleared there, it goes stale and a later M1=0 command (which
+        // retains CD5, recon R1/V1) re-fires a phantom DMA — the DR-2 TF4 ~28-frame halt.
+        let mut v = fresh();
+        v.regs[1] = 0x10; // M1 (DMA enable) on
+        v.regs[0x17] = 0x00; // Mem mode (68k->VRAM); source high byte 0
+        v.regs[0x13] = 0x02; // length low  = 2 words
+        v.regs[0x14] = 0x00; // length high
+        v.regs[0x15] = 0x00; // source low
+        v.regs[0x16] = 0x00; // source mid
+
+        // A real Mem DMA command (CD = 0b100001: CD5 DMA + CD0 write, VRAM target) arms + is consumed.
+        command(&mut v, 0x21, 0x0000);
+        assert!(
+            v.take_dma_request().is_some(),
+            "a normal M1=1 Mem DMA still arms and is consumed"
+        );
+
+        // The game disables DMA, then issues a PLAIN VRAM-write command (CD5 = 0 in its pattern). With M1=0
+        // CD5 is retained (R1) — but the completed DMA must have cleared it, so nothing re-arms.
+        v.regs[1] = 0x00; // M1 off
+        command(&mut v, 0x01, 0x0100); // plain VRAM write
+        assert!(
+            v.take_dma_request().is_none(),
+            "no phantom DMA: the consumed DMA cleared CD5, so the M1=0 command does not re-arm"
+        );
+    }
+
+    #[test]
+    fn fill_cd5_survives_the_control_write_until_the_data_trigger() {
+        // A VRAM fill is a TWO-step DMA: the control write sets CD5 but arms nothing (arm_dma no-ops for
+        // Fill); the fill is armed by the following data-port write. So CD5 must SURVIVE the control write —
+        // take_dma_request returns None there and must NOT clear CD5 prematurely (it clears only on an actual
+        // consume, guarded by is_some). Recon V2 + the overseer's Fill-two-step check.
+        let mut v = fresh();
+        v.regs[1] = 0x10; // M1 on
+        v.regs[0x17] = 0x80; // Fill mode
+        v.regs[0x13] = 0x02; // length 2
+        v.addr = 0x0000;
+
+        // Fill control command (CD = 0b100001) — arms nothing yet.
+        command(&mut v, 0x21, 0x0000);
+        assert!(
+            v.take_dma_request().is_none(),
+            "the Fill control write arms nothing (armed by the data trigger)"
+        );
+
+        // The data-port write is the fill trigger — it must still see CD5 set and arm the Fill.
+        v.data_write(0xEEEE);
+        assert!(
+            v.take_dma_request().is_some(),
+            "CD5 survived the control write, so the data trigger arms the Fill"
+        );
     }
 
     #[test]
