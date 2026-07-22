@@ -116,6 +116,12 @@ overlay, 6-button pads.
 ROM: `s4.bin` sha256 `560b348633f81ecadce2edf022bfe87c955800614de2dc2339f8b7475f65b27c` (420,749 bytes on
 disk; Oracle reports 420,750 — it pads odd-sized ROMs by one byte for word access; harmless, noted).
 
+**ROM re-pinned 2026-07-22** (aeon rebuilds constantly): current `s4.bin` sha256
+`db0eb03d767a751b348f10a87ab0176e1e33adb8b9164c3e1ad5a7f43d080ab2` (420,749 bytes, built 02:19). Both
+emulators verified running this byte-identical file before the 2026-07-22 A/B — 3 build-specific offsets
+matched Oracle's loaded cart exactly (vectors `0x08` = `0005CAB0…`, code entry `0x5CAB0` = `4EB90005CC0A…`,
+deep data `0x40000` = `00000000…2222`). All 2026-07-22 findings below are on this ROM.
+
 | Item | Where | Status |
 |---|---|---|
 | Our settled frame + VRAM/CRAM/VSRAM/RAM/Z80/regs dumps (frame 600) | session scratch `s4boot.*` | captured 2026-07-21 |
@@ -213,3 +219,71 @@ Without it press still steps exactly N frames but isn't bit-exact (threaded exec
 then reproduce 3×-identical over MCP and run the real frame-exact motion A/B vs our core. Oracle-side
 housekeeping flagged: `launcher.py` `headless_emulator` leaks oracle_gui grandchildren + Xvfb (xvfb-run
 terminate() misses them) → `start_new_session=True` + `os.killpg` fix (separate from the press commit).
+
+## Frame-exact motion A/B — RUN 2026-07-22 (overseer, foreground MCP). Verdict: OUR CORE CORRECT, ORACLE HAS A NEW BUG
+
+The payoff A/B ran. It did **not** produce the clean pixel-match we expected — it produced a genuine
+**motion divergence**, and the milestone's own rule (localize the first divergence, mint the punch-list item)
+applies. **Determined rigorously: oracle-next executes this ROM's input-driven motion correctly; Oracle (the
+C++ emulator) does not.** This is the milestone's real output — the first bug the whole-machine A/B has
+surfaced, and it is Oracle-side.
+
+**Setup (all verified):** both emulators on byte-identical ROM `db0eb0…` (3 offsets, above). Oracle press is
+deterministic (2× `reset→press right 120` byte-identical: Camera_X `0x0060`, PC `0x5B4C`, all 16 regs). The
+M-1 press-determinism fix holds. **But determinism ≠ correctness**, and that is exactly the trap the earlier
+overseer "3×-identical" check fell into (see below).
+
+**The scenario:** the active player is `games/sonic4/objects/test_player.asm` running in **debug free-flight
+mode** (the yellow box — art `$A0FA`, mapping `Map_TestObj`; `TestPlayer_Debug`). In that mode the game does,
+per frame, `move.b (Ctrl_1_Held).w,d0` → `btst #3,d0` (RIGHT) → `add.l d1,SST_x_pos(a0)` with
+`d1 = DEBUG_FLY_SPEED<<16`, `DEBUG_FLY_SPEED = 16`. **Held Right must fly the box right at exactly 16 px/frame.**
+
+**What each core did under held Right (identical injected input):**
+- **Input reaches the game on BOTH cores.** `Ctrl_1_Held ($FF802C) = 0x08` (the Right bit) — read live on
+  Oracle mid-hold, and present in our `.ram.bin` dump. Input injection is NOT the issue (this retires the
+  earlier "press doesn't inject" hypothesis for good — the pad reaches the game variable on both sides).
+- **oracle-next (motion_run, `set_pad` Right every frame):** `SST_x_pos` 1648 px (f120) → 10928 px (f700) =
+  9280 px / 580 frames = **exactly 16 px/frame**, and the whole trajectory fits `x = 256 + (f−33)×16` (a ~33
+  frame boot/settle before free-flight input takes effect) to the pixel at both f120 and f700 — an **exact
+  match to the source arithmetic**. Camera follows: `Camera_X` `0x0060`→`0x16C0`. Render visibly deep-scrolled.
+- **Oracle (`press right 700` AND free-run `hold right`):** `SST_x_pos` frozen at 256, `Camera_X` `0x0060`,
+  `x_vel` 0, player `(256,256)` — **fails to advance x_pos despite `Ctrl_1_Held=0x08`.** Byte-identical regs
+  between press-120 and press-700 (a true fixed point: nothing moves).
+
+**Why our core is provably the correct one:** the per-frame delta is exactly `DEBUG_FLY_SPEED` (16) and the
+absolute trajectory matches `add.l #(16<<16),SST_x_pos` executed every frame — this is not "plausibly moving,"
+it is arithmetically the source. Oracle leaving x_pos at 256 with the same input in RAM is inconsistent with
+the (trivial, branchless-after-btst) game code.
+
+**Static A/B still holds on the new ROM (bonus):** our **no-input** f700 vs Oracle's `press right 700` (which
+is inert = no-input) match to **124 px / 71,680**, all inside bbox `x[206..233] y[5..19]` — the pinned
+ring-animation region (`x[204..235] y[5..20]`), pure sub-frame ring phase (offset-searched 694–706: residual
+oscillates 124↔227 px by ring phase, localized to that box only). Modulo the P8 DAC ramp (raw 73,553 → ramp
+normalized) and ring phase, the settled scene is pixel-identical. The static done bar is intact on `db0eb0`.
+
+**Why the earlier overseer verify passed but missed this:** the M-1 live check verified `3× press right 120 →
+byte-identical` and read that as resolved. But `Camera_X 0x0060` after press-120 is the **un-scrolled** value —
+the motion was already absent; deterministic-but-inert is still 3×-identical. Determinism was fixed; the
+input-driven-motion path was never actually asserted to *move* the game. Lesson for the acceptance bar below:
+assert **motion happens and matches our trajectory**, not merely that repeated presses agree.
+
+### Punch-list item M-2 (Oracle-side) — OPEN
+| # | Rung | Symptom | First divergence | Hypothesis | Owner | Status |
+|---|---|---|---|---|---|---|
+| M-2 | motion | Held Right does not advance `SST_x_pos` on Oracle though `Ctrl_1_Held=0x08` reaches the game; our core advances it exactly 16 px/frame (source-correct) | `SST_x_pos` stays 256 vs our 256→10928 over 700 frames | Oracle executes the debug-fly `add.l d1,SST_x_pos(a0)` path incorrectly OR never reaches `TestPlayer_Debug`/`RunObjects` for the player under held input during the emulated frame (input present in RAM at MCP-read boundary but the object-update that consumes it isn't advancing x_pos). CPU-exec (`add.l dN,d16(An)`) vs object-loop-scheduling vs pad-sample-phase — Oracle-side forensic needed. NOT oracle-next. | Oracle C++ session | **OPEN — relay to Oracle owner** |
+
+**Acceptance bar for the Oracle fix (unblocks the frame-exact A/B payoff):** `reset → press right N` (N≥~400)
+must **move** the game — specifically `SST_x_pos` (and `Camera_X`) must advance, and match our core's
+reference trajectory `x_pos = 256 + (frame−33)×16` (debug free-flight, 16 px/frame) / `Camera_X 0x0060→0x16C0`
+at frame ~700. "3× identical" alone is INSUFFICIENT — it must be 3× identical **and non-trivially moved to the
+reference value**. Our-side reference dumps for the diff live in session scratch (`ours.f*.{ppm,ram.bin}`,
+`ni.f*` no-input neighbors, `oracle-ref-n700.ppm`).
+
+**oracle-next status: unchanged and correct.** No oracle-next `src/` code touched this session — the A/B
+validated our core, it did not implicate it. `motion_run` + a scratch ramp-normalized PPM comparator did the
+live job; the **committed `examples/ab_compare.rs` then landed and was overseer-accepted** — it reproduces the
+scratch comparator's exact metric (best offset 124 px / 71,680, first divergence (210,5) in the ring region;
+raw ~73,553 from the P8 ramp), derives `ours_ramp` from the pinned truncated `intensity(Normal)` in
+`src/render.rs` (`[0,36,72,109,145,182,218,255]`, unit-test pinned), carries 7/7 unit tests, and leaves
+`src/`+`m68000/` zero-diff (Cargo.toml `[[example]] test=true` opt-in only). Staged-ready in the working tree
+(uncommitted, held separate from this doc edit per the two-commit structure).
