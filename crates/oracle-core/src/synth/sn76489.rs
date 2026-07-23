@@ -9,8 +9,11 @@
 //! - Each tone channel is a 10-bit period reload driving a fixed-point down-counter in the chip's
 //!   `clock/16` tick domain. When the counter underflows, the channel output **toggles** (`±volume`),
 //!   giving a bipolar square wave whose full-cycle frequency is `clock / (32 · period)`.
-//! - The noise channel clocks a 16-bit LFSR (tap mask `0x0009`, white) or a single tap (periodic) at a
-//!   selectable rate (three fixed divisors, or tone-2's period). Output is `±volume` from LFSR bit 0.
+//! - The noise channel clocks a 16-bit LFSR (tap mask `0x0009`, white) or a single tap (periodic). Its
+//!   counter drives a toggling output flip-flop (exactly like a tone channel); the LFSR advances only on
+//!   that output's rising edge — every *other* underflow — so the effective shift rate is `clock/512`,
+//!   `/1024`, `/2048` for rate_sel 0/1/2, and tone-2's output frequency `clock/(32·P)` for mode 3.
+//!   Output is `±volume` from LFSR bit 0.
 //! - Attenuation is a 16-entry table, 2 dB/step, entry 15 = silence.
 //!
 //! Determinism: the whole model is integer (Q16 fixed-point counters). This is a **synthesis** helper —
@@ -84,8 +87,12 @@ struct Noise {
     white: bool,
     /// Low two bits of the noise-control register: shift-rate selector (3 = "use tone-2 period").
     rate_sel: u8,
-    /// Down-counter in Q16 `clock/16` ticks; underflow clocks the LFSR.
+    /// Down-counter in Q16 `clock/16` ticks; underflow toggles [`output_flip`](Self::output_flip).
     counter_q16: i64,
+    /// The noise counter's output flip-flop. Like a tone channel, the counter drives a toggling
+    /// output; the LFSR is clocked only on that output's **rising edge** (every *other* underflow).
+    /// This halves the LFSR shift rate versus the raw counter, matching real SN76489 hardware.
+    output_flip: bool,
     /// Attenuation index into [`VOL_TABLE`].
     atten: u8,
 }
@@ -97,6 +104,7 @@ impl Noise {
             white: false,
             rate_sel: 0,
             counter_q16: 1 << 16,
+            output_flip: false,
             atten: 15,
         }
     }
@@ -127,7 +135,14 @@ impl Noise {
         self.counter_q16 -= ticks_per_sample_q16;
         while self.counter_q16 <= 0 {
             self.counter_q16 += reload;
-            self.clock_lfsr();
+            // The counter drives a toggling output flip-flop; the LFSR advances only on that
+            // output's rising edge (false→true), i.e. every *other* underflow. This makes the
+            // effective LFSR shift period 2× the counter reload: clock/512, /1024, /2048 for
+            // rate_sel 0/1/2, and exactly tone-2's output frequency clock/(32·P) for mode 3.
+            self.output_flip = !self.output_flip;
+            if self.output_flip {
+                self.clock_lfsr();
+            }
         }
         let vol = VOL_TABLE[self.atten as usize] as i32;
         if self.lfsr & 1 != 0 {
@@ -298,5 +313,76 @@ mod tests {
             }
         }
         assert!(differed, "white noise should not be a constant level");
+    }
+
+    /// Measure the LFSR shift period, in PSG-clock cycles, for a given noise-control byte by counting
+    /// how many `clock/16` ticks elapse between two LFSR-state changes. Drives the noise counter
+    /// directly (bypassing the output-sample rate) to isolate the counter+flip-flop timing.
+    fn measure_lfsr_shift_period_clocks(noise_ctrl: u8, tone2_period: u16) -> i64 {
+        let mut noise = Noise::new();
+        // Program the noise-control register (bit2 = white/periodic, bits1-0 = rate).
+        noise.white = noise_ctrl & 0x04 != 0;
+        noise.rate_sel = noise_ctrl & 0x03;
+        noise.lfsr = LFSR_SEED;
+
+        // Advance one clock/16 tick at a time (tick = 1<<16 in Q16) and count ticks between two
+        // consecutive LFSR shifts. The first change gives us a clean starting edge; the count to the
+        // second change is one full shift period in clock/16 ticks.
+        let one_tick_q16: i64 = 1 << 16;
+        let prev_lfsr = noise.lfsr;
+        loop {
+            noise.next_sample(one_tick_q16, tone2_period);
+            if noise.lfsr != prev_lfsr {
+                break;
+            }
+        }
+        let anchor = noise.lfsr;
+        let mut ticks_between = 0i64;
+        loop {
+            noise.next_sample(one_tick_q16, tone2_period);
+            ticks_between += 1;
+            if noise.lfsr != anchor {
+                break;
+            }
+        }
+        // Each clock/16 tick is 16 PSG-clock cycles.
+        ticks_between * 16
+    }
+
+    /// Pin the fixed-divisor noise rates: the LFSR must shift once every clock/512, /1024, /2048
+    /// (rate_sel 0/1/2) — i.e. the output-flip-flop halves the raw counter reloads of 16/32/64
+    /// clock/16-ticks into effective shift periods of 32/64/128 clock/16-ticks.
+    #[test]
+    fn noise_fixed_rates_are_clock_over_512_family() {
+        // rate_sel 0 → 0xE0 latch (bit7, reg=noise-ctrl=6, white bit + rate). Use white feedback so
+        // the LFSR state actually changes each shift. noise_ctrl low nibble: bit2=white, bits1-0=rate.
+        assert_eq!(
+            measure_lfsr_shift_period_clocks(0b100, 0),
+            512,
+            "rate_sel=0 must shift the LFSR every 512 PSG clocks"
+        );
+        assert_eq!(
+            measure_lfsr_shift_period_clocks(0b101, 0),
+            1024,
+            "rate_sel=1 must shift the LFSR every 1024 PSG clocks"
+        );
+        assert_eq!(
+            measure_lfsr_shift_period_clocks(0b110, 0),
+            2048,
+            "rate_sel=2 must shift the LFSR every 2048 PSG clocks"
+        );
+    }
+
+    /// Pin mode 3 (rate_sel=3, "use tone-2 period"): the LFSR must clock at tone-2's *output* square
+    /// frequency clock/(32·P), NOT double it. So the shift period is 32·P PSG clocks.
+    #[test]
+    fn noise_mode3_tracks_tone2_output_frequency() {
+        let p: u16 = 10;
+        // rate_sel=3, white feedback (bit2 set): low nibble 0b111.
+        assert_eq!(
+            measure_lfsr_shift_period_clocks(0b111, p),
+            32 * p as i64,
+            "mode-3 noise must shift at tone-2's output frequency clock/(32·P), not clock/(16·P)"
+        );
     }
 }
