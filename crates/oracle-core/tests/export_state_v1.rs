@@ -1,4 +1,5 @@
-//! Golden-layout test for the frozen `export_state` **v1** image (integration pivot D8).
+//! Golden-layout test for the frozen `export_state` image (integration pivot D8) — now at **v2** after the
+//! SRAM go-live (a 64 KiB SRAM tail region was appended; §v2 in `docs/export-state-v1.md`).
 //!
 //! This is the anti-drift guard: a known seed + the vendored test ROM + a fixed number of frames produces
 //! a byte-exact image whose total length, per-region offsets/sizes, and `export_state_hash` are all pinned
@@ -17,7 +18,8 @@ use oracle_core::system::System;
 const SEED: u64 = 0xD8_5EED_0F1C_ED01;
 const FRAMES: u64 = 60;
 
-/// Frozen v1 region offsets (byte, little-endian image). Independent of the production arithmetic.
+/// Frozen v2 region offsets (byte, little-endian image). Independent of the production arithmetic.
+/// Offsets 0–7 are unchanged from v1; region 8 (SRAM) is the new 64 KiB tail added at the go-live slice.
 const OFF_VERSION: usize = 0x00000;
 const OFF_M68K_REGS: usize = 0x00002;
 const OFF_WORK_RAM: usize = 0x00050;
@@ -26,7 +28,8 @@ const OFF_Z80_REGS: usize = 0x12050;
 const OFF_VDP: usize = 0x12090;
 const OFF_FM: usize = 0x22178;
 const OFF_PSG: usize = 0x22378;
-const TOTAL_LEN: usize = 0x22388; // 140168
+const OFF_SRAM: usize = 0x22388;
+const TOTAL_LEN: usize = 0x32388; // 205704 = old 0x22388 + 0x10000 SRAM tail
 
 /// Region sizes (bytes).
 const SZ_M68K_REGS: usize = 78;
@@ -36,11 +39,12 @@ const SZ_Z80_REGS: usize = 0x40;
 const SZ_VDP: usize = 0x100E8; // VRAM 0x10000 + CRAM 0x80 + VSRAM 0x50 + regs 24
 const SZ_FM: usize = 0x200;
 const SZ_PSG: usize = 0x10;
+const SZ_SRAM: usize = 0x10000; // fixed 64 KiB tail; all-zero for this no-SRAM fixture ROM
 
 /// The byte-exact `export_state_hash` of the fixture below. Pinned from a green run; a drift makes it fail.
-/// Regenerated when the VDP region (5) went live — the designed v1 *content* change (no version bump); the
-/// prior value `0x19A0_5381_3097_2951` was the all-zero-VDP-region image.
-const GOLDEN_HASH: u64 = 0x22F8_0ECF_29ED_3AD4;
+/// Regenerated at the SRAM go-live (v1→v2): the image gained a 64 KiB all-zero tail (this fixture ROM has no
+/// "RA" header → empty SRAM buffer → an all-zero region). The prior v1 value was `0x22F8_0ECF_29ED_3AD4`.
+const GOLDEN_HASH: u64 = 0xBF5D_1E1A_A727_143B;
 
 /// Boot the machine, run the vendored ROM for a fixed number of frames, and return the `export_state` image.
 fn fixture() -> System {
@@ -69,7 +73,8 @@ fn v1_total_length_and_region_boundaries_are_frozen() {
     assert_eq!(OFF_VDP, OFF_Z80_REGS + SZ_Z80_REGS, "Z80 regs region");
     assert_eq!(OFF_FM, OFF_VDP + SZ_VDP, "VDP region");
     assert_eq!(OFF_PSG, OFF_FM + SZ_FM, "FM region");
-    assert_eq!(TOTAL_LEN, OFF_PSG + SZ_PSG, "PSG region ends the image");
+    assert_eq!(OFF_SRAM, OFF_PSG + SZ_PSG, "PSG region");
+    assert_eq!(TOTAL_LEN, OFF_SRAM + SZ_SRAM, "SRAM region ends the image");
 }
 
 #[test]
@@ -85,8 +90,8 @@ fn v1_region_semantics_are_frozen() {
     );
     assert_eq!(
         oracle_core::system::EXPORT_STATE_VERSION,
-        1,
-        "this golden fixture pins v1"
+        2,
+        "this golden fixture pins v2 (after the SRAM go-live)"
     );
 
     // Region 1 — m68k regs: matches the live register file, little-endian.
@@ -134,10 +139,14 @@ fn v1_region_semantics_are_frozen() {
     );
 
     // Regions 4, 6, 7 — still reserved, all zero: Z80 regs, FM, PSG.
+    // Region 8 (SRAM) — this fixture ROM has no "RA" header, so its SRAM buffer is empty and the fixed
+    // 64 KiB tail region is all zero. (Liveness of a written SRAM cell is covered by the system.rs unit test
+    // `export_state_sram_region_is_live_left_justified_and_zero_padded`.)
     for (name, off, sz) in [
         ("Z80 regs", OFF_Z80_REGS, SZ_Z80_REGS),
         ("FM", OFF_FM, SZ_FM),
         ("PSG", OFF_PSG, SZ_PSG),
+        ("SRAM", OFF_SRAM, SZ_SRAM),
     ] {
         assert!(
             img[off..off + sz].iter().all(|&b| b == 0),

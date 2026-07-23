@@ -33,8 +33,10 @@ pub const MCLK_PER_CPU_CYCLE: u64 = 7;
 pub const MCLK_PER_Z80_CYCLE: u64 = 15;
 
 /// `export_state` format version (D8). Bumped when the layout changes; Push D freezes v1 + writes the
-/// spec. First byte(s) of every `export_state` image.
-pub const EXPORT_STATE_VERSION: u16 = 1;
+/// spec. First byte(s) of every `export_state` image. Bumped 1→2 at the SRAM go-live slice (S3): a new
+/// 64 KiB SRAM tail region was appended (a genuine layout change — SRAM has no pre-carved reserve, unlike
+/// the VDP/Z80 content-fills). See `docs/export-state-v1.md` (§v2 — SRAM region).
+pub const EXPORT_STATE_VERSION: u16 = 2;
 
 /// Serialized length of the 68000 register region in `export_state` (little-endian):
 /// d0–d7 (8×4) + a0–a6 (7×4) + usp + ssp + pc (3×4) + sr (2) + prefetch (2×2) = 78 bytes.
@@ -49,8 +51,16 @@ const EXPORT_Z80_REGS_PLACEHOLDER: usize = 0x40;
 /// region, so resizing it churns only the PSG offset.
 const EXPORT_FM_PLACEHOLDER: usize = 0x200;
 /// Fixed all-zero PSG (SN76489) placeholder region — register + latch scale (4 tone/noise channels + LFSR).
-/// PSG is the last region, so a future resize shifts nothing else.
+/// PSG is the second-to-last region since the SRAM go-live, so a future resize shifts only the SRAM offset.
 const EXPORT_PSG_PLACEHOLDER: usize = 0x10;
+/// Fixed 64 KiB (max standard cartridge SRAM) tail region holding the live SRAM contents left-justified and
+/// zero-padded (empty when `!sram_present`). Added at the SRAM go-live slice (S3), bumping the version to 2 —
+/// SRAM had no pre-carved reserve, so this is a genuine layout change. Fixed size keeps the layout stable
+/// regardless of the specific cart's SRAM size; being the tail region, any future resize churns no other
+/// offset. Holds only the raw SRAM byte lane — the `$A130F1` enable/write-protect latch, `sram_dirty`, and
+/// the base/end/odd map stay bincode-only, and SRAM is deliberately excluded from `state_hash` (Oracle's
+/// `OpStateHash` hashes VDP-only). See `docs/export-state-v1.md` (§v2).
+const EXPORT_SRAM_LEN: usize = 0x1_0000;
 
 /// The whole machine. One owner of all state.
 #[derive(Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
@@ -473,11 +483,13 @@ impl System {
 
     /// The canonical cross-backend differential currency (integration-pivot D8), laid out in a fixed
     /// region order with fixed sizes so the layout never shifts as chips land. Push D freezes v1 + writes
-    /// `docs/export-state-v1.md` (the frozen v1 spec). Region order:
-    /// version → m68k regs → work RAM → Z80 RAM → Z80 regs → VDP → FM → PSG. The Z80 RAM is **live**
+    /// `docs/export-state-v1.md` (the frozen v1 spec + the v2 SRAM go-live). Region order:
+    /// version → m68k regs → work RAM → Z80 RAM → Z80 regs → VDP → FM → PSG → SRAM. The Z80 RAM is **live**
     /// (68000-reachable at `$A00000`); every not-yet-emulated chip's register/memory state serializes as a
-    /// fixed all-zero reserved region. This is distinct from [`state_hash`](Self::state_hash) (the frozen
-    /// Oracle-compatible VDP hash, kept for the live-Oracle differential).
+    /// fixed all-zero reserved region. The trailing SRAM region (v2) holds the live cartridge SRAM contents
+    /// left-justified in a fixed 64 KiB block, zero-padded (all-zero when the cart has no SRAM). This is
+    /// distinct from [`state_hash`](Self::state_hash) (the frozen Oracle-compatible VDP hash, kept for the
+    /// live-Oracle differential — SRAM is deliberately excluded there).
     ///
     /// Instruction-boundary only: `run_frames` leaves the CPU quiesced at an instruction boundary, so this
     /// never captures mid-instruction state.
@@ -489,7 +501,8 @@ impl System {
             + EXPORT_Z80_REGS_PLACEHOLDER
             + (VRAM_SIZE + CRAM_SIZE + VSRAM_SIZE + REG_COUNT)
             + EXPORT_FM_PLACEHOLDER
-            + EXPORT_PSG_PLACEHOLDER;
+            + EXPORT_PSG_PLACEHOLDER
+            + EXPORT_SRAM_LEN;
         let mut out = Vec::with_capacity(total);
         out.extend_from_slice(&EXPORT_STATE_VERSION.to_le_bytes());
         // m68k regs (little-endian): d0–d7, a0–a6, usp, ssp, pc, sr, prefetch[0..2] = 78 bytes.
@@ -534,6 +547,15 @@ impl System {
         // FM / PSG remain fixed all-zero placeholders (they fill when those chips land).
         out.extend(std::iter::repeat_n(0u8, EXPORT_FM_PLACEHOLDER));
         out.extend(std::iter::repeat_n(0u8, EXPORT_PSG_PLACEHOLDER));
+        // SRAM (v2 go-live): the live cartridge SRAM contents (empty when !sram_present), left-justified and
+        // zero-padded to the fixed 64 KiB region. Only the raw byte lane — the $A130F1 enable/write-protect
+        // latch, sram_dirty, and the base/end/odd map stay bincode-only. This region added a slot with no
+        // pre-carved reserve → the one deliberate v1→v2 layout bump (see the golden regen in
+        // tests/export_state_v1.rs, same commit). Standard carts are <= 64 KiB; the `.min` keeps the region
+        // rigidly 0x10000 even for a pathological in-window header that declares a larger span.
+        let n = self.sram.len().min(EXPORT_SRAM_LEN);
+        out.extend_from_slice(&self.sram[..n]);
+        out.extend(std::iter::repeat_n(0u8, EXPORT_SRAM_LEN - n));
         debug_assert_eq!(out.len(), total);
         out
     }
@@ -1448,7 +1470,8 @@ mod tests {
             + EXPORT_Z80_REGS_PLACEHOLDER
             + (VRAM_SIZE + CRAM_SIZE + VSRAM_SIZE + REG_COUNT)
             + EXPORT_FM_PLACEHOLDER
-            + EXPORT_PSG_PLACEHOLDER;
+            + EXPORT_PSG_PLACEHOLDER
+            + EXPORT_SRAM_LEN;
         assert_eq!(img.len(), expected, "export_state total length");
         assert_eq!(
             u16::from_le_bytes([img[0], img[1]]),
@@ -1503,6 +1526,75 @@ mod tests {
                 .iter()
                 .all(|&b| b == 0),
             "export_state region 4 stays zeroed at reset (all-zero reset model → golden frozen at go-live)"
+        );
+    }
+
+    /// Byte offset of the v2 SRAM tail region: everything before it summed (the whole image sans the final
+    /// 0x10000 SRAM block). Written as the region ladder, matching `export_state`'s own arithmetic.
+    const EXPORT_SRAM_OFF: usize = 2
+        + EXPORT_M68K_REGS_LEN
+        + RAM_SIZE
+        + Z80_RAM_SIZE
+        + EXPORT_Z80_REGS_PLACEHOLDER
+        + (VRAM_SIZE + CRAM_SIZE + VSRAM_SIZE + REG_COUNT)
+        + EXPORT_FM_PLACEHOLDER
+        + EXPORT_PSG_PLACEHOLDER;
+
+    #[test]
+    fn export_state_sram_region_is_live_left_justified_and_zero_padded() {
+        // v2 SRAM go-live: a written SRAM cell appears in export_state's fixed 64 KiB tail region,
+        // left-justified with zero padding after, and the region is exactly 0x10000 long.
+        use crate::m68000::bus68k::Bus68k;
+        let mut s = System::new(0x5A);
+        s.load_rom(rom_with_sram(0x20_0001, 0x20_3FFF, true)); // 0x2000-byte odd-lane chip
+        assert!(s.sram_present, "RA header detected");
+
+        // Enable SRAM, then write known bytes to the first three odd cells: 0x200001→sram[0], etc.
+        let mut sink = ();
+        s.mega_bus(&mut sink).write8(0xA1_30F1, 5, 0x01);
+        {
+            let mut bus = s.mega_bus(&mut sink);
+            bus.write8(0x20_0001, 5, 0xDE);
+            bus.write8(0x20_0003, 5, 0xAD);
+            bus.write8(0x20_0005, 5, 0xBE);
+        }
+        assert_eq!(&s.sram()[..3], &[0xDE, 0xAD, 0xBE], "guest writes landed");
+
+        let img = s.export_state();
+        // The whole image ends with exactly one 0x10000 SRAM block.
+        assert_eq!(
+            img.len(),
+            EXPORT_SRAM_OFF + 0x1_0000,
+            "SRAM region is the final 0x10000 bytes"
+        );
+        let sram = &img[EXPORT_SRAM_OFF..EXPORT_SRAM_OFF + 0x1_0000];
+        assert_eq!(sram.len(), 0x1_0000, "SRAM region is exactly 64 KiB");
+        // Left-justified: the live chip bytes at the front.
+        assert_eq!(&sram[..3], &[0xDE, 0xAD, 0xBE], "SRAM bytes left-justified");
+        // Zero-padded: everything past the 0x2000-byte chip is zero.
+        assert!(
+            sram[0x2000..].iter().all(|&b| b == 0),
+            "the region is zero-padded past the live chip"
+        );
+    }
+
+    #[test]
+    fn export_state_sram_region_is_all_zero_without_sram() {
+        // The golden/fixture path: a cart with no "RA" header has an empty SRAM buffer, so the fixed 64 KiB
+        // SRAM region is all zeros — this is why the regenerated golden differs from v1 only by a version
+        // bump and a 64 KiB all-zero tail.
+        let mut s = System::new(0x5A);
+        s.load_rom(crate::testrom::build()); // no RA → !sram_present, empty buffer
+        assert!(!s.sram_present(), "fixture cart has no SRAM");
+        assert!(s.sram().is_empty(), "no SRAM buffer");
+
+        let img = s.export_state();
+        assert_eq!(img.len(), EXPORT_SRAM_OFF + 0x1_0000);
+        assert!(
+            img[EXPORT_SRAM_OFF..EXPORT_SRAM_OFF + 0x1_0000]
+                .iter()
+                .all(|&b| b == 0),
+            "!sram_present → an all-zero 64 KiB SRAM region"
         );
     }
 

@@ -1,6 +1,9 @@
-# `export_state` — v1 (frozen)
+# `export_state` — v1 (frozen) + v2 (SRAM go-live)
 
-**Status: FROZEN, 2026-07-16 (integration pivot D8).** `EXPORT_STATE_VERSION = 1`.
+**Status: v1 FROZEN, 2026-07-16 (integration pivot D8); v2 SHIPPED 2026-07-23 (SRAM go-live, slice S3).**
+`EXPORT_STATE_VERSION = 2`. The v1 layout below is retained as historical; v2 is v1 plus a single appended
+64 KiB SRAM tail region (see [## v2 — SRAM region](#v2--sram-region) at the end). Every offset 0–7 is
+unchanged; only the total length grows and the version field reads `2`.
 
 `export_state` is oracle-next's **cross-backend differential currency**: a flat, versioned, little-endian
 byte image of the machine's architectural state, captured at an instruction boundary. It is what the
@@ -119,3 +122,37 @@ change, and it is the designed path (the VDP region 5 filled this way; the Z80-r
 frame count: the total length, every region's offset/size (as independent literals, not recomputed from the
 production constants), the per-region semantics, and a byte-exact `export_state_hash`. A silent layout change
 fails the test loudly.
+
+## v2 — SRAM region
+
+**Shipped 2026-07-23 (slice S3, the SRAM feature's one deliberate currency-boundary change).** v2 appends
+exactly one region to the tail of the v1 image; nothing before it moves.
+
+| # | Region | Offset | Size (hex / dec) | Contents |
+|---|--------|--------|------------------|----------|
+| 8 | SRAM | `0x22388` | `0x10000` / 65536 | live cartridge SRAM bytes, **left-justified, zero-padded** to a fixed 64 KiB (all-zero when the cart has no SRAM) |
+
+**New total = `0x32388` = 205704 bytes** (v1 `0x22388` + `0x10000`).
+
+- **Why a version bump (not a content-fill).** Unlike the VDP and Z80-register reserves — which went live by
+  filling *pre-carved* zeroed bytes at unchanged size (a content change, no bump) — SRAM had **no** reserved
+  slot in v1. Adding the region is a genuine layout change, so per the version-bump rule it bumps
+  `EXPORT_STATE_VERSION` 1→2 and regenerates the `export_state_v1.rs` golden (`GOLDEN_HASH`, offsets, total)
+  in the **same commit**. This is the single attributable golden regen of the whole SRAM feature.
+- **Fixed 64 KiB, regardless of cart.** Real cartridge SRAM is 2–64 KiB and cart-dependent. Reserving the
+  standard maximum (64 KiB) keeps the layout stable across every cart; the live bytes (`System.sram`, sized to
+  the detected header range, empty when `!sram_present`) are written left-justified and the remainder
+  zero-filled. Being the tail region, any future resize churns no other offset (the same rationale FM/PSG
+  cite).
+- **Raw byte lane only.** The region holds only the SRAM chip's byte contents. The `$A130F1`
+  enable/write-protect latch, the `sram_dirty` throttle flag, and the base/end/odd map stay **bincode-only**
+  (real state that rides the snapshot for determinism, but not architectural currency) — exactly the split
+  used for `z80_busreq` and the other bus-arbitration scalars.
+- **SRAM stays OUT of `state_hash`.** Oracle's `OpStateHash` hashes VDP memory + registers only and excludes
+  SRAM, so the live-Oracle A/B differential (`oracle_differential.rs`) forbids us from adding SRAM to
+  `state_hash`. Fork 2 of the design recon is non-negotiable: v2 touches `export_state` alone; `state_hash` is
+  byte-identical.
+- **Currency scope.** The v2 SRAM region is currently **determinism-gated only** (the same-seed determinism
+  gate + snapshot round-trips exercise it). It becomes cross-backend-comparable only once the BlastEm-over-RSP
+  differential path can read `$200000+` SRAM through the 68k window (design recon open question 3) — until
+  then it is a determinism-only region, not a cross-backend one.
