@@ -22,30 +22,42 @@
 //! | `$8000-$FFFF` | 68k bank window | **live** — `(bank << 15) \| (addr & 0x7FFF)` → ROM / work RAM / Z80 RAM |
 
 use super::Z80Io;
-use crate::bus::Z80_RAM_SIZE;
+use crate::bus::{BusEvent, BusEventSink, BusOp, Size, Z80_RAM_SIZE};
 use crate::system::RAM_SIZE;
 
 /// Split-borrow adapter over the `System`'s Z80-visible memory for one Z80 step. Holds the Z80 RAM, the
 /// cartridge ROM + work RAM the bank window reaches, and the serial bank latch. No `Rc`/`RefCell`/`unsafe` —
-/// each field is one `&`/`&mut`, borrowed disjointly from the `System` for the step's duration.
-pub struct Z80Bus<'a> {
+/// each field is one `&`/`&mut`, borrowed disjointly from the `System` for the step's duration. Generic over
+/// the event `sink` (the same instrumentation channel the 68k-side `MegaDriveBus` feeds): FM/PSG register
+/// writes tap into it as `BusEvent`s (the VGM logger's source), and the null sink (`()`) stays a no-op.
+pub struct Z80Bus<'a, S: BusEventSink> {
     z80_ram: &'a mut [u8],
     rom: &'a [u8],
     ram: &'a mut [u8],
     /// The 9-bit bank register (`$6000`), serial-loaded LSB-first; selects the 32 KiB 68k page the
     /// `$8000-$FFFF` window maps to. Borrowed mutably so a `$6000` write persists into the `System`.
     bank: &'a mut u16,
+    /// The bus-event sink FM/PSG writes tap into (Phase RT). Threaded down from the run loop, monomorphized —
+    /// `()` is the no-op hot path, `Vec<BusEvent>` records.
+    sink: &'a mut S,
 }
 
-impl<'a> Z80Bus<'a> {
-    /// Build an adapter over the Z80 RAM, the cartridge ROM + work RAM the bank window reaches, and the
-    /// serial bank latch.
-    pub fn new(z80_ram: &'a mut [u8], rom: &'a [u8], ram: &'a mut [u8], bank: &'a mut u16) -> Self {
+impl<'a, S: BusEventSink> Z80Bus<'a, S> {
+    /// Build an adapter over the Z80 RAM, the cartridge ROM + work RAM the bank window reaches, the serial
+    /// bank latch, and the event sink.
+    pub fn new(
+        z80_ram: &'a mut [u8],
+        rom: &'a [u8],
+        ram: &'a mut [u8],
+        bank: &'a mut u16,
+        sink: &'a mut S,
+    ) -> Self {
         Self {
             z80_ram,
             rom,
             ram,
             bank,
+            sink,
         }
     }
 
@@ -91,7 +103,7 @@ impl<'a> Z80Bus<'a> {
     }
 }
 
-impl Z80Io for Z80Bus<'_> {
+impl<S: BusEventSink> Z80Io for Z80Bus<'_, S> {
     fn read(&mut self, addr: u16) -> u8 {
         match addr {
             // Z80 RAM (8 KiB), mirrored across $0000-$3FFF.
@@ -121,8 +133,19 @@ impl Z80Io for Z80Bus<'_> {
                 let a = self.window_addr(addr);
                 self.write_window(a, value);
             }
-            // FM ($4000-$4003) / PSG ($7F11) writes drop this slice — the BusEvent VGM tap is Phase RT.
-            // VDP mirror ($7F00-$7F1F) drops (deferred).
+            // YM2612 FM ($4000-$4003) / SN76489 PSG ($7F11): tap the register write into the bus-event stream
+            // (Phase RT — the VGM logger consumes it), then DROP the value (no synthesis this slice; that's a
+            // later FM/PSG-core phase). `fc = 0` because the Z80 is a non-68000 master (the DMA/other-master
+            // convention in crate::bus). The RAW Z80-side address ($4000 / $7F11) is emitted, NOT the 68k FM
+            // window ($A04000): a consumer unifies the two at the register-file level.
+            0x4000..=0x4003 | 0x7F11 => self.sink.on_event(BusEvent {
+                op: BusOp::Write,
+                fc: 0,
+                addr: addr as u32,
+                size: Size::Byte,
+                value: value as u32,
+            }),
+            // VDP mirror ($7F00-$7F1F, excluding the PSG at $7F11) drops (deferred).
             _ => {}
         }
     }
@@ -141,14 +164,16 @@ impl Z80Io for Z80Bus<'_> {
 mod tests {
     use super::*;
 
-    /// Build a bus over fresh buffers with an explicit bank value (helper for the map tests).
+    /// Build a bus over fresh buffers with an explicit bank value and a null sink (helper for the map tests
+    /// that do not care about the event stream).
     fn bus_with<'a>(
         ram: &'a mut [u8],
         rom: &'a [u8],
         work: &'a mut [u8],
         bank: &'a mut u16,
-    ) -> Z80Bus<'a> {
-        Z80Bus::new(ram, rom, work, bank)
+        sink: &'a mut (),
+    ) -> Z80Bus<'a, ()> {
+        Z80Bus::new(ram, rom, work, bank, sink)
     }
 
     #[test]
@@ -157,7 +182,8 @@ mod tests {
         let rom = vec![0u8; 0x10];
         let mut work = vec![0u8; RAM_SIZE];
         let mut bank = 0u16;
-        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank);
+        let mut sink = ();
+        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank, &mut sink);
         bus.write(0x0001, 0x9A);
         assert_eq!(bus.read(0x0001), 0x9A, "Z80 RAM byte round-trips");
         // 8 KiB RAM mirrored across $2000-$3FFF.
@@ -172,7 +198,8 @@ mod tests {
         let rom = vec![0u8; 0x10];
         let mut work = vec![0u8; RAM_SIZE];
         let mut bank = 0u16;
-        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank);
+        let mut sink = ();
+        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank, &mut sink);
         for a in [0x4000u16, 0x4001, 0x4002, 0x4003] {
             assert_eq!(
                 bus.read(a) & 0x80,
@@ -188,7 +215,8 @@ mod tests {
         let rom = vec![0u8; 0x10];
         let mut work = vec![0u8; RAM_SIZE];
         let mut bank = 0u16;
-        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank);
+        let mut sink = ();
+        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank, &mut sink);
         // Load the 9-bit page value 0b1_0000_0001 = 0x101 LSB-first: bit0 first ... bit8 last.
         for bit in [1u8, 0, 0, 0, 0, 0, 0, 0, 1] {
             bus.write(0x6000, bit);
@@ -205,7 +233,8 @@ mod tests {
         let mut work = vec![0u8; RAM_SIZE];
         // bank = 1 → window base = 1 << 15 = $8000.
         let mut bank = 1u16;
-        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank);
+        let mut sink = ();
+        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank, &mut sink);
         assert_eq!(
             bus.read(0x8000),
             0x7E,
@@ -220,12 +249,60 @@ mod tests {
         let mut work = vec![0u8; RAM_SIZE];
         // 68k work RAM $FF0000 = bank 0x1FE (0x1FE << 15 = $FF0000), window offset 0.
         let mut bank = 0x1FEu16;
-        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank);
+        let mut sink = ();
+        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank, &mut sink);
         bus.write(0x8000, 0x42);
         assert_eq!(bus.read(0x8000), 0x42, "window round-trips 68k work RAM");
         assert_eq!(
             work[0], 0x42,
             "the write landed in the shared work RAM buffer"
         );
+    }
+
+    #[test]
+    fn fm_and_psg_writes_tap_into_the_event_sink() {
+        // The Phase RT tap: an FM ($4000-$4003) or PSG ($7F11) register write emits a Write BusEvent (fc = 0,
+        // byte-sized, the RAW Z80-side address + the byte the Z80 drove) into the sink; the value is otherwise
+        // dropped (no synthesis this slice). Z80-RAM and bank-register writes emit NOTHING.
+        let mut ram = vec![0u8; Z80_RAM_SIZE];
+        let rom = vec![0u8; 0x10];
+        let mut work = vec![0u8; RAM_SIZE];
+        let mut bank = 0u16;
+        let mut sink: Vec<BusEvent> = Vec::new();
+        {
+            let mut bus = Z80Bus::new(&mut ram, &rom, &mut work, &mut bank, &mut sink);
+            // FM address/data ports + the PSG port, each with a distinct value.
+            bus.write(0x4000, 0x22);
+            bus.write(0x4001, 0x33);
+            bus.write(0x4002, 0x44);
+            bus.write(0x4003, 0x55);
+            bus.write(0x7F11, 0x9F);
+            // A Z80-RAM write and a bank-register write must NOT tap.
+            bus.write(0x0001, 0xAB);
+            bus.write(0x6000, 0x01);
+        }
+        let expected = [
+            (0x4000u32, 0x22u32),
+            (0x4001, 0x33),
+            (0x4002, 0x44),
+            (0x4003, 0x55),
+            (0x7F11, 0x9F),
+        ];
+        assert_eq!(
+            sink.len(),
+            expected.len(),
+            "only the 5 FM/PSG writes tap — RAM and bank writes emit nothing"
+        );
+        for (event, (addr, value)) in sink.iter().zip(expected) {
+            assert_eq!(event.op, BusOp::Write, "FM/PSG tap is a Write");
+            assert_eq!(event.fc, 0, "the Z80 is a non-68000 master (fc = 0)");
+            assert_eq!(
+                event.size,
+                Size::Byte,
+                "FM/PSG register writes are byte-sized"
+            );
+            assert_eq!(event.addr, addr, "raw Z80-side address");
+            assert_eq!(event.value, value, "the byte the Z80 drove");
+        }
     }
 }

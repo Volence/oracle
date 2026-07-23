@@ -477,7 +477,7 @@ impl System {
             // Catch the Z80 up to the 68000's new `now` (ZC4): the fixed total order is events → 68000 step
             // → Z80 catch-up → IPL. Gated on `z80_running && !z80_busreq`; held in reset this slice, so the
             // catch-up runs zero instructions and only tracks `now`.
-            self.catch_up_z80();
+            self.catch_up_z80(sink);
             // Re-derive the IPL latch after the step: a taken interrupt's fc=7 /INTAK cleared the VDP's
             // pending latch mid-step (so a delivered VInt does NOT re-fire after RTE), and any enable-bit
             // register write mid-step is picked up here too (recon R12).
@@ -576,7 +576,7 @@ impl System {
     /// reset-release resumes from `now` with **zero** backlog (ZC5). This slice holds the Z80 in reset
     /// (`z80_running == false` in every fixture), so only the gated-off branch is ever taken and
     /// [`Z80::step`] is never reached.
-    fn catch_up_z80(&mut self) {
+    fn catch_up_z80<S: BusEventSink>(&mut self, sink: &mut S) {
         let now = self.scheduler.now();
         if self.z80_running && !self.z80_busreq {
             let System {
@@ -589,7 +589,7 @@ impl System {
                 ..
             } = self;
             while *z80_frontier_mclk < now {
-                let mut bus = Z80Bus::new(z80_ram, rom, ram, z80_bank);
+                let mut bus = Z80Bus::new(z80_ram, rom, ram, z80_bank, sink);
                 let t = z80.step(&mut bus);
                 *z80_frontier_mclk += t as u64 * MCLK_PER_Z80_CYCLE;
             }
@@ -1104,6 +1104,37 @@ mod tests {
         let r = s.z80.regs();
         assert!(!r.iff1, "interrupt acceptance cleared IFF1");
         assert!(r.halted, "the handler's final HALT re-idled the Z80");
+    }
+
+    #[test]
+    fn z80_fm_and_psg_writes_surface_through_the_run_loop_sink() {
+        // The Phase RT tap end-to-end: a released Z80 whose driver writes the FM latch and the PSG must
+        // surface those register writes as BusEvents through the sink-generic run loop. Out-of-band (no
+        // committed fixture releases the Z80), so it touches no frozen currency. The 68000 also emits its own
+        // events into the same sink, so we assert the two expected sound writes are PRESENT (not exact count).
+        let mut s = booted(0x2E80);
+        // Program at $0000: LD A,$22 ; LD ($4000),A ; LD A,$9F ; LD ($7F11),A ; HALT.
+        let program = [
+            0x3E, 0x22, 0x32, 0x00, 0x40, 0x3E, 0x9F, 0x32, 0x11, 0x7F, 0x76,
+        ];
+        s.z80_ram[..program.len()].copy_from_slice(&program);
+        s.z80_running = true;
+        let mut sink: Vec<BusEvent> = Vec::new();
+        s.run_frames_with_sink(1, &mut sink);
+        assert!(
+            sink.iter().any(|e| e.op == crate::bus::BusOp::Write
+                && e.fc == 0
+                && e.addr == 0x4000
+                && e.value == 0x22),
+            "the Z80's FM write ($4000 <- $22) surfaced as a BusEvent"
+        );
+        assert!(
+            sink.iter().any(|e| e.op == crate::bus::BusOp::Write
+                && e.fc == 0
+                && e.addr == 0x7F11
+                && e.value == 0x9F),
+            "the Z80's PSG write ($7F11 <- $9F) surfaced as a BusEvent"
+        );
     }
 
     #[test]
