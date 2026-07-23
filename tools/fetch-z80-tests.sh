@@ -44,6 +44,19 @@ ED_OPS=(40 41 42 43 44 45 46 47 48 49 4a 4b 4d 4f \
 for op in "${ED_OPS[@]}"; do
   FILES+=("ed $op")                                                 # documented ED-prefixed ops (space in name)
 done
+# Documented DD/FD-prefixed BASE opcodes (index-register IX/IY forms): ADD IX,rr, LD IX,nn/(nn),IX/IX,(nn),
+# INC/DEC IX, INC/DEC (IX+d), LD (IX+d),n, LD r,(IX+d)/(IX+d),r, ALU A,(IX+d), POP/PUSH IX, EX (SP),IX,
+# JP (IX), LD SP,IX (and the FD/IY counterparts). The undocumented IXH/IXL halves and the DDCB/FDCB group
+# are separate later slices.
+DDFD_OPS=(09 19 21 22 23 29 2a 2b 34 35 36 39 \
+          46 4e 56 5e 66 6e \
+          70 71 72 73 74 75 77 7e \
+          86 8e 96 9e a6 ae b6 be \
+          e1 e3 e5 e9 f9)
+for op in "${DDFD_OPS[@]}"; do
+  FILES+=("dd $op")                                                 # documented DD-prefixed (IX) base ops
+  FILES+=("fd $op")                                                 # documented FD-prefixed (IY) base ops
+done
 
 mkdir -p "$OUT"
 for f in "${FILES[@]}"; do

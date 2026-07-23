@@ -852,19 +852,7 @@ impl Z80 {
     /// carry out of bit 15; `S/Z/P/V` preserved. `YF/XF` come from the result's high byte (undocumented,
     /// masked out of the documented-flag gate).
     fn op_add_hl(&mut self, rr: u16) {
-        let hl = self.hl;
-        let sum = hl as u32 + rr as u32;
-        let result = sum as u16;
-        let mut f = self.flags() & (FLAG_S | FLAG_Z | FLAG_PV); // preserved
-        if (hl & 0x0FFF) + (rr & 0x0FFF) > 0x0FFF {
-            f |= FLAG_H;
-        }
-        if sum > 0xFFFF {
-            f |= FLAG_C;
-        }
-        f |= (result >> 8) as u8 & FLAG_XY;
-        self.hl = result;
-        self.set_flags(f);
+        self.hl = self.add16(self.hl, rr);
     }
 
     /// `DAA` (`0x27`): decimal-adjust `A` after a binary add/subtract, using `N`/`H`/`C`. Sets `S Z P/V C H`;
@@ -1517,7 +1505,8 @@ impl Z80 {
     /// `DD`/`FD`-prefixed index-register (`IX`/`IY`) forms. A `DD`/`FD` sets an override for the following
     /// opcode; a run of `DD`/`FD` collapses (each is one M1, the last winning). `DDCB`/`FDCB` fetch the
     /// displacement `d` **before** the final opcode byte (ZC3b) — that irregular order is honored here. The
-    /// leaf bodies (index-overridden base, `DDCB`/`FDCB`) are the Z-execute slice.
+    /// **documented** index-overridden base opcodes land in [`Self::execute_indexed_base`]; the `DDCB`/`FDCB`
+    /// group and the undocumented `IXH`/`IXL` half-register (and no-op-prefix) forms remain for later slices.
     fn execute_indexed<B: Z80Io>(&mut self, idx: IndexReg, bus: &mut B) -> u32 {
         let sub = self.next_opcode(bus);
         match sub {
@@ -1530,10 +1519,194 @@ impl Z80 {
                 let op = self.next_byte(bus);
                 self.execute_ddcb(idx, d, op)
             }
+            other => self.execute_indexed_base(idx, other, bus),
+        }
+    }
+
+    /// The **documented** `DD`/`FD`-prefixed base opcodes (this slice): the index register replaces `HL`, and
+    /// `(HL)` becomes `(IX+d)`/`(IY+d)` with a signed displacement byte `d` fetched **after** the opcode (and
+    /// before the immediate for `LD (IX+d),n`). Covered: `ADD IX,rr`, `LD IX,nn`/`LD (nn),IX`/`LD IX,(nn)`,
+    /// `INC IX`/`DEC IX`, `INC (IX+d)`/`DEC (IX+d)`/`LD (IX+d),n`, `LD r,(IX+d)`/`LD (IX+d),r`,
+    /// `ALU A,(IX+d)`, `POP IX`/`PUSH IX`/`EX (SP),IX`/`JP (IX)`/`LD SP,IX` (and every `FD`/`IY` counterpart).
+    /// For the register↔`(IX+d)` moves the `r` operands are the **real** `B..A` registers (never `IXH`/`IXL`),
+    /// since encoding `6` is the memory operand. `INC`/`DEC`/`ALU` on `(IX+d)` set flags exactly like their
+    /// `(HL)` counterparts. The undocumented `IXH`/`IXL` half-register ops and the DD/FD-on-non-HL no-op
+    /// prefixes fall through to `unimplemented!` (deferred); the `DDCB`/`FDCB` group is a separate next slice.
+    fn execute_indexed_base<B: Z80Io>(&mut self, idx: IndexReg, op: u8, bus: &mut B) -> u32 {
+        match op {
+            // ---- ADD IX,rr (0x09/19/29/39): rr = bits 5..4 (BC/DE/IX/SP — the HL slot is the index reg, so
+            // 0x29 is ADD IX,IX). Flags identical to ADD HL,rr, computed over IX as the accumulator. ----
+            0x09 | 0x19 | 0x29 | 0x39 => {
+                let addend = match (op >> 4) & 3 {
+                    0 => self.bc,
+                    1 => self.de,
+                    2 => self.idx_get(idx),
+                    _ => self.sp,
+                };
+                let result = self.add16(self.idx_get(idx), addend);
+                self.idx_set(idx, result);
+                15
+            }
+
+            // ---- LD IX,nn (0x21). ----
+            0x21 => {
+                let nn = self.next_word(bus);
+                self.idx_set(idx, nn);
+                14
+            }
+
+            // ---- LD (nn),IX (0x22) / LD IX,(nn) (0x2A): 16-bit, little-endian; no flags. ----
+            0x22 => {
+                let addr = self.next_word(bus);
+                self.write16(addr, self.idx_get(idx), bus);
+                20
+            }
+            0x2A => {
+                let addr = self.next_word(bus);
+                let v = self.read16(addr, bus);
+                self.idx_set(idx, v);
+                20
+            }
+
+            // ---- INC IX (0x23) / DEC IX (0x2B): 16-bit, no flags. ----
+            0x23 => {
+                self.idx_set(idx, self.idx_get(idx).wrapping_add(1));
+                10
+            }
+            0x2B => {
+                self.idx_set(idx, self.idx_get(idx).wrapping_sub(1));
+                10
+            }
+
+            // ---- INC (IX+d) (0x34) / DEC (IX+d) (0x35): read-modify-write, flags as INC/DEC (HL). ----
+            0x34 => {
+                let addr = self.index_addr(idx, bus);
+                let v = bus.read(addr);
+                let (r, f) = inc8(v, self.flags());
+                bus.write(addr, r);
+                self.set_flags(f);
+                23
+            }
+            0x35 => {
+                let addr = self.index_addr(idx, bus);
+                let v = bus.read(addr);
+                let (r, f) = dec8(v, self.flags());
+                bus.write(addr, r);
+                self.set_flags(f);
+                23
+            }
+
+            // ---- LD (IX+d),n (0x36): fetch order is opcode, d, then n. ----
+            0x36 => {
+                let addr = self.index_addr(idx, bus);
+                let n = self.next_byte(bus);
+                bus.write(addr, n);
+                19
+            }
+
+            // ---- LD r,(IX+d) (0x46/4E/56/5E/66/6E/7E): dst = bits 5..3 (never 6 here — a real B..A reg). ----
+            0x46 | 0x4E | 0x56 | 0x5E | 0x66 | 0x6E | 0x7E => {
+                let addr = self.index_addr(idx, bus);
+                let v = bus.read(addr);
+                self.reg8_set((op >> 3) & 7, v, bus);
+                19
+            }
+
+            // ---- LD (IX+d),r (0x70-0x77 except 0x76): src = bits 0..2 (never 6 here — a real B..A reg). ----
+            0x70 | 0x71 | 0x72 | 0x73 | 0x74 | 0x75 | 0x77 => {
+                let addr = self.index_addr(idx, bus);
+                let v = self.reg8_get(op & 7, bus);
+                bus.write(addr, v);
+                19
+            }
+
+            // ---- ALU A,(IX+d) (0x86/8E/96/9E/A6/AE/B6/BE): op = bits 5..3, flags as ALU A,(HL). ----
+            0x86 | 0x8E | 0x96 | 0x9E | 0xA6 | 0xAE | 0xB6 | 0xBE => {
+                let addr = self.index_addr(idx, bus);
+                let v = bus.read(addr);
+                self.alu8((op >> 3) & 7, v);
+                19
+            }
+
+            // ---- POP IX (0xE1) / PUSH IX (0xE5). ----
+            0xE1 => {
+                let v = self.read16(self.sp, bus);
+                self.sp = self.sp.wrapping_add(2);
+                self.idx_set(idx, v);
+                14
+            }
+            0xE5 => {
+                self.sp = self.sp.wrapping_sub(2);
+                self.write16(self.sp, self.idx_get(idx), bus);
+                15
+            }
+
+            // ---- EX (SP),IX (0xE3): swap the index register with the word on the top of stack. ----
+            0xE3 => {
+                let tmp = self.read16(self.sp, bus);
+                self.write16(self.sp, self.idx_get(idx), bus);
+                self.idx_set(idx, tmp);
+                23
+            }
+
+            // ---- JP (IX) (0xE9): PC = IX (an indirect load, not a conditional branch). ----
+            0xE9 => {
+                self.pc = self.idx_get(idx);
+                8
+            }
+
+            // ---- LD SP,IX (0xF9). ----
+            0xF9 => {
+                self.sp = self.idx_get(idx);
+                10
+            }
+
             other => unimplemented!(
-                "Z80 {idx:?}-prefixed base opcode {other:#04X} is the Z-execute slice"
+                "Z80 {idx:?}-prefixed base opcode {other:#04X} is undocumented (IXH/IXL half-register op or \
+                 a no-op DD/FD prefix on a non-HL opcode) — deferred past the DD/FD base slice"
             ),
         }
+    }
+
+    /// Read the index register selected by a `DD`/`FD` prefix.
+    fn idx_get(&self, idx: IndexReg) -> u16 {
+        match idx {
+            IndexReg::Ix => self.ix,
+            IndexReg::Iy => self.iy,
+        }
+    }
+
+    /// Write the index register selected by a `DD`/`FD` prefix.
+    fn idx_set(&mut self, idx: IndexReg, v: u16) {
+        match idx {
+            IndexReg::Ix => self.ix = v,
+            IndexReg::Iy => self.iy = v,
+        }
+    }
+
+    /// Fetch the signed displacement byte `d` (advancing `PC`, no refresh bump) and form the `(IX+d)`/`(IY+d)`
+    /// effective address `index.wrapping_add(d as i8 as u16)`.
+    fn index_addr<B: Z80Io>(&mut self, idx: IndexReg, bus: &mut B) -> u16 {
+        let d = self.next_byte(bus) as i8;
+        self.idx_get(idx).wrapping_add(d as u16)
+    }
+
+    /// 16-bit `ADD` core shared by `ADD HL,rr` and `ADD IX/IY,rr`: `augend + addend`, setting `N = 0`,
+    /// `H` = carry out of bit 11, `C` = carry out of bit 15; `S/Z/P/V` preserved. `YF/XF` come from the
+    /// result's high byte (undocumented, masked out of the documented-flag gate). Returns the 16-bit result.
+    fn add16(&mut self, augend: u16, addend: u16) -> u16 {
+        let sum = augend as u32 + addend as u32;
+        let result = sum as u16;
+        let mut f = self.flags() & (FLAG_S | FLAG_Z | FLAG_PV); // preserved; N = 0
+        if (augend & 0x0FFF) + (addend & 0x0FFF) > 0x0FFF {
+            f |= FLAG_H;
+        }
+        if sum > 0xFFFF {
+            f |= FLAG_C;
+        }
+        f |= (result >> 8) as u8 & FLAG_XY;
+        self.set_flags(f);
+        result
     }
 
     /// `DDCB`/`FDCB` indexed bit/shift ops (displacement already fetched). Body is the Z-execute slice.

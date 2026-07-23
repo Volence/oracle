@@ -51,7 +51,9 @@ fn opcode_files() -> Vec<String> {
         .map(|op| format!("{op:02x}"));
     let cb = (0x00u16..=0xFF).map(|op| format!("cb {op:02x}"));
     let ed = ED_OPCODES.iter().map(|op| format!("ed {op:02x}"));
-    base.chain(cb).chain(ed).collect()
+    let dd = DDFD_OPCODES.iter().map(|op| format!("dd {op:02x}"));
+    let fd = DDFD_OPCODES.iter().map(|op| format!("fd {op:02x}"));
+    base.chain(cb).chain(ed).chain(dd).chain(fd).collect()
 }
 
 /// The documented ED-prefixed opcodes covered by sub-slice 5 (keep in sync with `tools/fetch-z80-tests.sh`'s
@@ -65,6 +67,19 @@ const ED_OPCODES: [u8; 58] = [
     0x72, 0x73, 0x78, 0x79, 0x7a, 0x7b, //
     0xa0, 0xa1, 0xa2, 0xa3, 0xa8, 0xa9, 0xaa, 0xab, //
     0xb0, 0xb1, 0xb2, 0xb3, 0xb8, 0xb9, 0xba, 0xbb, //
+];
+
+/// The documented `DD`/`FD`-prefixed **base** opcodes covered by the DD/FD base slice (keep in sync with
+/// `tools/fetch-z80-tests.sh`'s `DDFD_OPS`). The same list is fetched under both the `dd` (IX) and `fd` (IY)
+/// prefixes: `ADD IX,rr`, `LD IX,nn`/`LD (nn),IX`/`LD IX,(nn)`, `INC IX`/`DEC IX`, `INC (IX+d)`/`DEC (IX+d)`/
+/// `LD (IX+d),n`, `LD r,(IX+d)`/`LD (IX+d),r`, `ALU A,(IX+d)`, `POP IX`/`PUSH IX`/`EX (SP),IX`/`JP (IX)`/
+/// `LD SP,IX`. The undocumented `IXH`/`IXL` half-register ops and the `DDCB`/`FDCB` group are later slices.
+const DDFD_OPCODES: [u8; 39] = [
+    0x09, 0x19, 0x21, 0x22, 0x23, 0x29, 0x2a, 0x2b, 0x34, 0x35, 0x36, 0x39, //
+    0x46, 0x4e, 0x56, 0x5e, 0x66, 0x6e, //
+    0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x77, 0x7e, //
+    0x86, 0x8e, 0x96, 0x9e, 0xa6, 0xae, 0xb6, 0xbe, //
+    0xe1, 0xe3, 0xe5, 0xe9, 0xf9, //
 ];
 
 /// A flat 64 KiB Z80 address space (ZC10) — plain array (the SST corpus is pure memory) plus a port model
@@ -285,11 +300,13 @@ fn z80_matches_singlesteptests() {
         eprintln!("  {fname}.json: {} cases passed", data.len());
         total += data.len();
     }
-    // 252 base-table files + 256 CB-prefixed files + 58 documented ED-prefixed files = 566 opcode files ×
-    // 1000 cases. The base table is the 256 opcodes minus the four prefix bytes 0xCB/0xDD/0xED/0xFD; the CB
-    // group is "cb 00".."cb ff"; the ED subset is the 58 documented ED opcodes (see `ED_OPCODES`).
+    // 252 base-table files + 256 CB-prefixed files + 58 documented ED-prefixed files + 2×39 documented
+    // DD/FD-prefixed base files = 644 opcode files × 1000 cases. The base table is the 256 opcodes minus the
+    // four prefix bytes 0xCB/0xDD/0xED/0xFD; the CB group is "cb 00".."cb ff"; the ED subset is the 58
+    // documented ED opcodes (see `ED_OPCODES`); the DD/FD subset is the 39 documented index-register base
+    // opcodes (see `DDFD_OPCODES`), fetched under both the "dd" (IX) and "fd" (IY) prefixes.
     assert_eq!(
-        total, 566_000,
-        "expected 566000 Z80 SST cases (base table 252k + CB group 256k + documented ED subset 58k)"
+        total, 644_000,
+        "expected 644000 Z80 SST cases (base 252k + CB 256k + documented ED 58k + documented DD/FD base 78k)"
     );
 }
