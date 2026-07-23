@@ -16,6 +16,10 @@ pub mod render;
 pub mod rng;
 pub mod scheduler;
 pub mod state_hash;
+/// Native, opt-in sound synthesis (Phase SY). Feature-gated (`synth`, default OFF); a caller-owned sink
+/// that is never part of `System` / `state_hash` / `export_state`.
+#[cfg(feature = "synth")]
+pub mod synth;
 pub mod system;
 /// Hand-authored 68000 test ROM fixture (see [`testrom::build`]). Not part of the stable API.
 #[doc(hidden)]

@@ -5,6 +5,12 @@ edition.workspace = true
 license.workspace = true
 description = "Deterministic, no-I/O Sega Genesis / Mega Drive emulation core for the Oracle debugging engine."
 
+[features]
+# Native, opt-in sound synthesis (Phase SY). Default OFF: keeps the synth module (and any future
+# vendored FM core) out of the default build the currency gates compile. Currency-neutrality itself comes
+# from the caller-owned sink seam, not the feature — this is belt-and-suspenders isolation.
+synth = []
+
 [dependencies]
 bincode = { version = "2", features = ["derive"] }
 
@@ -23,3 +29,9 @@ test = true
 [[example]]
 name = "ab_compare"
 test = true
+
+# The synth WAV example references the feature-gated `synth` module, so it must not be part of the default
+# build the currency gates compile. `required-features` makes it compile only under `--features synth`.
+[[example]]
+name = "synth_render"
+required-features = ["synth"]
