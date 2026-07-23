@@ -1,77 +1,142 @@
-//! Hand-rolled **minimal** YM2612 (OPN2) FM synthesizer — Phase SY-2.
+//! Hand-rolled YM2612 (OPN2) FM synthesizer — Phase SY-3b (**integer OPN2 core**).
 //!
 //! The Genesis FM chip is a 4-operator, 6-channel phase-modulation (FM) synthesizer. This module turns
 //! the **same `(bank, reg, value)` register-write triples** the [`crate::vgm::VgmLogger`] decodes into PCM
-//! — it is the FM counterpart of the SY-1 [`Sn76489`](super::sn76489::Sn76489) hand-roll. The bar is
-//! **recognizable music**, not cycle-accuracy: the accurate ymfm-grade port is SY-3.
+//! — it is the FM counterpart of the SY-1 [`Sn76489`](super::sn76489::Sn76489) hand-roll.
 //!
-//! ## Model (what SY-2 implements)
+//! ## Table & operator attribution (Fork-1 decision, SY-3 plan)
 //!
-//! - **6 channels × 4 operators.** Each operator is a sine phase-generator plus an ADSR-ish envelope.
-//! - **Phase generator.** Per-channel `fnum`/`block` (`$A0-$A2` low byte + `$A4-$A6` block/fnum-hi latch)
-//!   plus per-operator `MUL` (`$30`) give each operator a real-Hz frequency; phase advances at the output
-//!   sample rate. Frequency = `fnum · 2^(block-1) · (7_670_453 / 144) / 2^20 · mul`.
-//! - **Envelope generator.** Attack / Decay / Sustain / Release keyed by `$28`, in the OPN 10-bit
-//!   attenuation domain (0 = loud, 1023 = silent), with `AR/D1R/SL/D2R/RR` (`$50/$60/$70/$80`) driving
-//!   approximate per-sample rates and `TL` (`$40`) as a fixed offset. Rates are *approximated* (see
-//!   deferred list) — the exact OPN rate/key-scale tables are SY-3.
+//! **Tables and operator semantics derived from ymfm (Copyright (c) Aaron Giles), BSD-3-Clause —
+//! <https://github.com/aaronsgiles/ymfm> (`src/ymfm_fm.ipp`: `abs_sin_attenuation` / `s_sin_table`,
+//! `attenuation_to_volume` / `s_power_table`, and the operator phase→volume pipeline).** Our generated
+//! tables are pinned to ymfm's literal values by unit tests (see [`tests`]). Nuked-OPN2 (LGPL) is **not**
+//! consulted, ported, or used as a fixture.
+//!
+//! ## Model (what SY-3b implements — the OPN2-exact integer datapath)
+//!
+//! - **6 channels × 4 operators.** Each operator is a phase generator plus an ADSR-ish envelope, both
+//!   advanced at the chip's **native operator rate** (`7_670_453 / 144 ≈ 53_267 Hz`); the mix is then
+//!   linearly resampled to the sink's 44.1 kHz (see [`Ym2612Synth::next_sample`]).
+//! - **Integer operator pipeline** (replaces SY-2's float sine × linear-gain path): a 256-entry
+//!   quarter-wave **log-sin** attenuation table + a 256-entry **exp/pow** table, both in the OPN2
+//!   log-attenuation domain. Operator output = `pow[(logsin(phase) + (env+TL)·4) ] >> shift`, sign from the
+//!   phase quadrant — i.e. **modulation sums into the phase, envelope/TL sum into the attenuation**, exactly
+//!   as OPN2/OPL. The 20-bit phase's top 10 bits index the sine; inter-operator modulation and op-1 feedback
+//!   are added to the phase in ymfm's units (`modulator >> 1`, `feedback >> (10-fb)`).
+//! - **Envelope generator.** Attack / Decay / Sustain / Release keyed by `$28`, value living in the OPN
+//!   10-bit attenuation domain (0 = loud, [`MAX_ATT`] = silent) so it sums with `TL` (`$40`) and the log-sin
+//!   in one place. The per-sample **rates are still the SY-2 approximation** (`RATE_BASE`/`ATTACK_SPEED`,
+//!   rescaled to the native tick) — the exact OPN rate/key-scale tables are the next slice (SY-3c).
 //! - **The 8 FM algorithms + operator-1 self-feedback** (`$B0`), and **stereo L/R pan** (`$B4`).
 //!
-//! ## DAC / PCM channel-6 (SY-3a)
+//! ## DAC / PCM channel-6 (SY-3a — preserved unchanged)
 //!
-//! - **DAC / PCM channel-6** (`$2A` stream, `$2B` enable): implemented. Each frame's ordered `$2A` bytes are
-//!   spread evenly across the frame's output samples with a zero-order hold ([`Ym2612Synth::begin_frame`] +
+//! - **DAC / PCM channel-6** (`$2A` stream, `$2B` enable). Each frame's ordered `$2A` bytes are spread
+//!   evenly across the frame's output samples with a zero-order hold ([`Ym2612Synth::begin_frame`] +
 //!   [`Ym2612Synth::dac_sample`]); the 8-bit unsigned samples are centered on `0x80` and scaled by
-//!   [`DAC_SCALE`]. While `$2B` bit7 is set, FM channel 6 is muted and the PCM stream plays in its place;
-//!   when it clears, channel 6 returns to normal FM. Sub-frame sample timing is SY-4 (frame-granular here).
+//!   [`DAC_SCALE`]. While `$2B` bit7 is set, FM channel 6 is muted and the PCM stream plays in its place.
+//!   The DAC path runs at the **output** rate (added after the FM resample), untouched by SY-3b.
 //!
 //! ## Deferred to later SY-3 slices (documented inaccuracies, not bugs)
 //!
-//! - **LFO** (`$22` AMS/FMS), **SSG-EG** (`$90`), **CSM / channel-3 special mode** (`$27` + `$A8-$AE`),
-//!   and **operator detune** (`$30` DT field): all skipped. Detune-off means no inter-operator beating.
-//! - **Exact envelope rate & key-scale tables**: SY-2 uses a calibrated approximation, so envelope timing
-//!   and timbre are "close", not sample-exact. This is the same long-tail the design doc calls out.
+//! - **Exact envelope rate & key-scale tables** (SY-3c), **detune** (`$30` DT, SY-3d), **LFO** (`$22`,
+//!   SY-3e), **SSG-EG** (`$90`) / **CSM / ch3-special** (SY-3f). Sub-frame `$2A` timing is SY-4.
 //!
-//! The synth is float-based (`f32`) — it is a **synthesis** helper, never part of `System`, `state_hash`,
+//! The synth is integer/float-based — it is a **synthesis** helper, never part of `System`, `state_hash`,
 //! or `export_state`, so it carries no currency obligations.
 
+use std::f64::consts::PI;
+
 /// YM2612 FM clock (Hz) — the master FM clock the phase generator's real-Hz frequency is derived from.
-const YM2612_CLOCK: f32 = 7_670_453.0;
-/// The FM operator sample-clock divisor: the chip advances an operator once per 144 master cycles, so the
-/// native operator rate is `YM2612_CLOCK / 144 ≈ 53_267 Hz`. Used only to scale `fnum`/`block` → real Hz.
-const FM_CLOCK_DIV: f32 = 144.0;
+const YM2612_CLOCK: f64 = 7_670_453.0;
+/// The FM operator sample-clock divisor: the chip advances an operator once per 144 master cycles.
+const FM_CLOCK_DIV: f64 = 144.0;
+/// The chip's native operator rate (Hz): `YM2612_CLOCK / 144 ≈ 53_267 Hz`. The phase/envelope tick runs
+/// here and the result is resampled to the sink's output rate.
+const NATIVE_RATE: f64 = YM2612_CLOCK / FM_CLOCK_DIV;
 
 /// Envelope attenuation is a 10-bit value: 0 = full volume, [`MAX_ATT`] = silence.
 const MAX_ATT: f32 = 1023.0;
-/// Full attenuation span in decibels (OPN2 ≈ 96 dB over the 10-bit range). Used to build [`exp table`].
-const ATT_DB_RANGE: f32 = 96.0;
 
-/// Per-sample envelope-rate scale (attenuation units per sample at effective rate 0's `2^0` base). Chosen
-/// so a mid rate (~31) sweeps the full range in ~0.2 s at 44.1 kHz — musically reasonable decay timing.
-/// Approximate: the exact OPN rate table is SY-3.
+/// Reference output rate the SY-2 envelope rates were calibrated at (Hz).
+const OUTPUT_RATE_REF: f32 = 44_100.0;
+/// Scale from the SY-2 per-output-sample envelope increment to a per-**native-tick** increment, so envelope
+/// wall-clock timing is preserved now that the EG clocks at [`NATIVE_RATE`] (~53_267 Hz) instead of 44.1 kHz.
+/// (Approximate EG — the exact rate table is SY-3c.)
+const ENV_RATE_SCALE: f32 = OUTPUT_RATE_REF / (NATIVE_RATE as f32);
+
+/// Per-native-tick envelope-rate scale (attenuation units per tick at effective rate 0's `2^0` base).
+/// Approximate: the exact OPN rate table is SY-3c.
 const RATE_BASE: f32 = 0.0006;
 /// Attack is the same rate curve as decay, sped up by this factor (attack is much faster than decay on
 /// real OPN2). Approximate.
 const ATTACK_SPEED: f32 = 12.0;
 
-/// Depth of inter-operator phase modulation: a full-amplitude (±1.0) modulator shifts the carrier phase by
-/// this many cycles. `1.0` is a neutral, recognizable FM depth (modulator TL still scales it down).
-const MOD_SCALE: f32 = 1.0;
+/// Post-mix FM gain in Q15. One full-scale operator (`attenuation_to_volume(0)` = `0x1FE8` = 8168) maps to
+/// `8168 · FM_LEVEL_Q15 >> 15 ≈ 3499`, matching SY-2's per-carrier ~3500 loudness so the mix sits at a
+/// comparable level (the spectral-corr gate stays meaningful and the DAC headroom note below still holds).
+const FM_LEVEL_Q15: i64 = 14_041;
 
-/// Per-carrier output level (pre-mix, pre-clamp). Comparable to one SN76489 tone channel (~4000) so FM and
-/// PSG sit at similar loudness before the sink sums + clamps them.
-const FM_LEVEL: f32 = 3500.0;
-
-/// DAC/PCM (channel-6) output scale — SY-3a. The 8-bit unsigned sample is centered around `0x80` to a
-/// signed `[-128, 127]`, then multiplied by this constant. Chosen so peak drum level (`128 · 28 = 3584`) is
-/// comparable to one FM carrier ([`FM_LEVEL`] = 3500) — drums sit at a clearly-audible, drum-prominent level
-/// without dominating the mix. Headroom check: while the DAC is on, FM ch6 is muted, so the worst-case
-/// pre-clamp sum is 5 FM carriers (`5 · 3500 = 17500`) + PSG (~4000) + DAC (3584) ≈ 25_084, inside the
-/// `i16` range (32_767) — no systematic clipping introduced by the DAC.
+/// DAC/PCM (channel-6) output scale — SY-3a (unchanged). The 8-bit unsigned sample is centered around `0x80`
+/// to a signed `[-128, 127]`, then multiplied by this constant. Peak drum level (`128 · 28 = 3584`) is
+/// comparable to one FM carrier (~3500). While the DAC is on, FM ch6 is muted, so the worst-case pre-clamp
+/// sum stays inside the `i16` range — no systematic clipping introduced by the DAC.
 const DAC_SCALE: i32 = 28;
 
-/// Number of entries in the sine and exp lookup tables (10-bit phase / attenuation resolution).
-const TABLE_LEN: usize = 1024;
+/// Length of the log-sin and exp/pow lookup tables (8-bit quarter-wave index).
+const TABLE_LEN: usize = 256;
+
+/// Build the 256-entry quarter-wave **log-sin** attenuation table (ymfm `s_sin_table`).
+///
+/// `log_sin[i] = round(-log2(sin((i + 0.5) · π / 512)) · 256)`. Pinned to ymfm's literal `s_sin_table`
+/// (entries 0-15 and the tail) by [`tests::log_sin_table_matches_ymfm`]. Values are in the OPN log domain:
+/// 0 ≈ loudest (sin near ±1), ~`0x859` ≈ the flat part near a zero crossing.
+fn build_log_sin() -> [u16; TABLE_LEN] {
+    let mut t = [0u16; TABLE_LEN];
+    for (i, v) in t.iter_mut().enumerate() {
+        let s = ((i as f64 + 0.5) * PI / 512.0).sin();
+        *v = (-(s.log2()) * 256.0).round() as u16;
+    }
+    t
+}
+
+/// Build the raw 256-entry **exp/pow** mantissa table (ymfm `s_power_table` **before** the `X` macro).
+///
+/// `pow_raw[i] = round((2^((255 - i) / 256) - 1) · 1024)` — descending `0x3fa … 0x000`. Pinned to ymfm's
+/// literal values by [`tests::pow_table_matches_ymfm`].
+fn build_pow_raw() -> [u16; TABLE_LEN] {
+    let mut t = [0u16; TABLE_LEN];
+    for (i, v) in t.iter_mut().enumerate() {
+        *v = ((2f64.powf((255 - i) as f64 / 256.0) - 1.0) * 1024.0).round() as u16;
+    }
+    t
+}
+
+/// Build the 256-entry exp/pow table with ymfm's `X(a) = ((a | 0x400) << 2)` macro applied, so
+/// [`attenuation_to_volume`] can index it directly. Entry 0 = `(0x3fa | 0x400) << 2 = 0x1FE8` (loudest).
+fn build_pow() -> [u16; TABLE_LEN] {
+    let raw = build_pow_raw();
+    let mut t = [0u16; TABLE_LEN];
+    for (i, v) in t.iter_mut().enumerate() {
+        *v = (raw[i] | 0x400) << 2;
+    }
+    t
+}
+
+/// ymfm `abs_sin_attenuation`: the log-domain magnitude of `sin(phase)` for a 10-bit phase. Bit 8 folds the
+/// quarter wave (`~input`); the low 8 bits index the table. The sign (bit 9) is applied by the caller.
+fn abs_sin_attenuation(phase: u32, log_sin: &[u16; TABLE_LEN]) -> u32 {
+    let input = if phase & 0x100 != 0 { !phase } else { phase };
+    log_sin[(input & 0xff) as usize] as u32
+}
+
+/// ymfm `attenuation_to_volume`: a total log-attenuation → linear volume. The low 8 bits pick the mantissa,
+/// the high bits are a power-of-two right shift (each 256 units = one octave = ÷2). The shift is clamped to
+/// 31 (values beyond ~13 already round to silence) so the `u32` shift can never overflow.
+fn attenuation_to_volume(atten: u32, pow: &[u16; TABLE_LEN]) -> u32 {
+    let shift = (atten >> 8).min(31);
+    (pow[(atten & 0xff) as usize] as u32) >> shift
+}
 
 /// The per-operator envelope phase.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -88,7 +153,7 @@ enum EgState {
     Release,
 }
 
-/// One FM operator: a sine phase generator plus an envelope generator and its programmed parameters.
+/// One FM operator: a phase generator plus an envelope generator and its programmed parameters.
 #[derive(Clone, Copy)]
 struct Operator {
     // --- programmed parameters ---
@@ -110,16 +175,16 @@ struct Operator {
     rr: u8,
 
     // --- runtime state ---
-    /// Phase accumulator in cycles/turns `[0,1)`.
-    phase: f32,
-    /// Current envelope attenuation (0 = loud, [`MAX_ATT`] = silent).
+    /// 20-bit phase accumulator (one full sine cycle = `1 << 20`; the top 10 bits index the sine).
+    phase: u32,
+    /// Current envelope attenuation (0 = loud, [`MAX_ATT`] = silent), kept `f32` for the approximate rates.
     env: f32,
     /// Envelope phase.
     eg: EgState,
-    /// This operator's last normalized output (±amplitude) — for operator-1 self-feedback.
-    prev_out: f32,
-    /// The output before that (feedback averages the last two).
-    prev_out2: f32,
+    /// This operator's last signed output (`compute_volume`) — for operator-1 self-feedback.
+    prev_out: i32,
+    /// The output before that (feedback sums the last two).
+    prev_out2: i32,
 }
 
 impl Operator {
@@ -133,20 +198,20 @@ impl Operator {
             d2r: 0,
             sl: 0,
             rr: 0,
-            phase: 0.0,
+            phase: 0,
             env: MAX_ATT,
             eg: EgState::Off,
-            prev_out: 0.0,
-            prev_out2: 0.0,
+            prev_out: 0,
+            prev_out2: 0,
         }
     }
 
     /// Key this operator on: (re)start the attack from phase 0 (OPN resets operator phase on key-on).
     fn key_on(&mut self) {
         self.eg = EgState::Attack;
-        self.phase = 0.0;
-        self.prev_out = 0.0;
-        self.prev_out2 = 0.0;
+        self.phase = 0;
+        self.prev_out = 0;
+        self.prev_out2 = 0;
     }
 
     /// Key this operator off: fall into the release phase (unless already fully silent).
@@ -156,8 +221,8 @@ impl Operator {
         }
     }
 
-    /// Advance the envelope one sample using this operator's effective rates (`kc` = channel key-code for
-    /// key-scaling). Approximate: linear-in-attenuation decays, faster linear attack.
+    /// Advance the envelope one native tick using this operator's effective rates (`kc` = channel key-code
+    /// for key-scaling). Approximate: linear-in-attenuation decays, faster linear attack (exact EG is SY-3c).
     fn step_envelope(&mut self, kc: u8) {
         match self.eg {
             EgState::Off => {}
@@ -203,42 +268,36 @@ impl Operator {
         }
     }
 
-    /// The current linear output amplitude (0..~1): envelope attenuation + TL, mapped through the exp
-    /// table. Silent operators return 0.
-    fn amplitude(&self, exp_table: &[f32; TABLE_LEN]) -> f32 {
-        if self.eg == EgState::Off {
-            return 0.0;
-        }
-        // TL step = 8 attenuation units; sum with the envelope and clamp to the table range.
-        let att = (self.env + (self.tl as f32) * 8.0).clamp(0.0, MAX_ATT);
-        exp_table[att as usize & (TABLE_LEN - 1)]
+    /// The 10-bit envelope attenuation (envelope + `TL`) in the OPN attenuation domain. `TL` (7-bit) is
+    /// shifted into the 10-bit domain (`<< 3`, each step ≈ 8 units); the sum may exceed [`MAX_ATT`] and
+    /// [`attenuation_to_volume`]'s shift saturates it to silence.
+    fn env_att(&self) -> u32 {
+        let e = self.env.round().clamp(0.0, MAX_ATT) as u32;
+        e + ((self.tl as u32) << 3)
     }
 
-    /// Produce this operator's normalized output for the current sample and advance its phase.
-    ///
-    /// `phase_inc` is the per-sample phase step (cycles) for the channel's pitch; `mod_turns` is the
-    /// summed phase modulation (in cycles) from feedback / modulator operators. Output is `±amplitude`.
-    fn next(
-        &mut self,
-        phase_inc: f32,
-        mod_turns: f32,
-        sine: &[f32; TABLE_LEN],
-        exp_table: &[f32; TABLE_LEN],
-        kc: u8,
-    ) -> f32 {
-        self.step_envelope(kc);
-        let amp = self.amplitude(exp_table);
-        let idx = (((self.phase + mod_turns).rem_euclid(1.0)) * TABLE_LEN as f32) as usize;
-        let out = sine[idx & (TABLE_LEN - 1)] * amp;
-        // Advance and wrap the phase.
-        self.phase += phase_inc;
-        if self.phase >= 1.0 {
-            self.phase -= self.phase.floor();
+    /// The operator's signed output for the current phase, given phase modulation `opmod` (in the 10-bit
+    /// phase's units — a modulator's output already right-shifted by the caller). This is ymfm's
+    /// `compute_volume`: log-sin(phase) + `env·4` → exp table → sign from the phase quadrant (bit 9).
+    fn compute(&self, opmod: i32, log_sin: &[u16; TABLE_LEN], pow: &[u16; TABLE_LEN]) -> i32 {
+        if self.eg == EgState::Off {
+            return 0;
         }
-        // Roll the feedback history (only operator 1 uses it, but harmless to keep for all).
-        self.prev_out2 = self.prev_out;
-        self.prev_out = out;
-        out
+        let phase10 = ((self.phase >> 10) as i32).wrapping_add(opmod) as u32;
+        let sin_att = abs_sin_attenuation(phase10, log_sin);
+        // Envelope/TL live in the 10-bit attenuation domain; `<< 2` converts to the exp table's 4×-finer
+        // units (256 units = one octave) before summing with the already-exp-domain log-sin attenuation.
+        let vol = attenuation_to_volume(sin_att + (self.env_att() << 2), pow) as i32;
+        if phase10 & 0x200 != 0 {
+            -vol
+        } else {
+            vol
+        }
+    }
+
+    /// Advance the 20-bit phase accumulator by `inc` (wrapping at one cycle = `1 << 20`).
+    fn advance(&mut self, inc: u32) {
+        self.phase = (self.phase.wrapping_add(inc)) & 0x000F_FFFF;
     }
 }
 
@@ -282,144 +341,150 @@ impl Channel {
         (self.block << 2) | ((self.fnum >> 9) & 0x03) as u8
     }
 
-    /// Per-sample phase increment (cycles) for this channel's pitch, before per-operator `MUL`.
-    fn base_phase_inc(&self, sample_rate: f32) -> f32 {
-        // f = fnum · 2^(block-1) · (clock/144) / 2^20 ; phase step = f / sample_rate.
-        let fm_rate = YM2612_CLOCK / FM_CLOCK_DIV;
-        let block_scale = if self.block == 0 {
-            0.5
-        } else {
-            (1u32 << (self.block - 1)) as f32
-        };
-        let f = self.fnum as f32 * block_scale * fm_rate / (1u32 << 20) as f32;
-        f / sample_rate
+    /// The per-native-tick phase increment for `MUL=1` (before the per-operator MUL): `fnum · 2^block`, in
+    /// the 20-bit phase's units. The MUL factor is applied per operator in [`Self::op_inc`].
+    ///
+    /// Derivation: `f = fnum · 2^(block-1) · NATIVE_RATE / 2^20`, so per native tick the phase (2^20 per
+    /// cycle) advances `fnum · 2^(block-1)`. Carried here as `fnum << block` (= `2·` that) so `op_inc`'s
+    /// `× MUL·2 >> 2` yields `fnum · 2^(block-1) · MUL` (and `MUL=0` → `× 0.5`).
+    fn base_phase_step(&self) -> u32 {
+        (self.fnum as u32) << self.block
     }
 
-    /// Render one sample for this channel, returning `(left, right)` scaled output.
-    fn next_sample(
-        &mut self,
-        sample_rate: f32,
-        sine: &[f32; TABLE_LEN],
-        exp_table: &[f32; TABLE_LEN],
-    ) -> (f32, f32) {
-        let base_inc = self.base_phase_inc(sample_rate);
+    /// The per-operator phase increment: `base · (2·MUL) >> 2` — i.e. `fnum · 2^(block-1) · MUL`, with
+    /// `MUL=0` giving `× 0.5` (the OPN "MUL=0 means half" quirk).
+    fn op_inc(base: u32, mul: u8) -> u32 {
+        let mul_x2 = if mul == 0 { 1 } else { 2 * mul as u32 };
+        (base * mul_x2) >> 2
+    }
+
+    /// Advance this channel by one native tick and return its `(left, right)` FM contribution (already
+    /// FM-scaled and panned). Envelopes clock first, then operator outputs are computed at the current
+    /// phases (OPN2 log-sin/exp pipeline, ymfm modulation units), then all phases advance.
+    fn tick(&mut self, log_sin: &[u16; TABLE_LEN], pow: &[u16; TABLE_LEN]) -> (i32, i32) {
         let kc = self.key_code();
+        for op in self.ops.iter_mut() {
+            op.step_envelope(kc);
+        }
+        let base = self.base_phase_step();
 
-        // Per-operator phase increment: MUL=0 → ×0.5, else ×MUL.
-        let op_inc = |mul: u8| -> f32 {
-            if mul == 0 {
-                base_inc * 0.5
-            } else {
-                base_inc * mul as f32
-            }
-        };
-
-        // Operator-1 self-feedback: average the last two Op1 outputs, scaled by the feedback level.
+        // Operator-1 self-feedback: sum the last two Op1 outputs, right-shifted by `10 - feedback` (ymfm).
         let fb = if self.feedback == 0 {
-            0.0
+            0
         } else {
-            let avg = (self.ops[0].prev_out + self.ops[0].prev_out2) * 0.5;
-            avg * ((1u32 << self.feedback) as f32 / 128.0)
+            (self.ops[0].prev_out + self.ops[0].prev_out2) >> (10 - self.feedback)
         };
+        let out1 = self.ops[0].compute(fb, log_sin, pow);
+        self.ops[0].prev_out2 = self.ops[0].prev_out;
+        self.ops[0].prev_out = out1;
 
-        let inc0 = op_inc(self.ops[0].mul);
-        let out1 = self.ops[0].next(inc0, fb, sine, exp_table, kc);
-
-        let inc1 = op_inc(self.ops[1].mul);
-        let inc2 = op_inc(self.ops[2].mul);
-        let inc3 = op_inc(self.ops[3].mul);
-
-        // The 8 FM algorithms wire Op1..Op4 into modulator/carrier roles. `MOD_SCALE` converts a modulator's
-        // normalized output into carrier phase shift; carriers are summed.
-        let m = MOD_SCALE;
-        let carriers: f32 = match self.algorithm {
+        // The 8 FM algorithms wire Op1..Op4 into modulator/carrier roles. A modulator's signed output is
+        // right-shifted by 1 (ymfm) before it is summed into the modulated operator's phase; carriers sum.
+        let carriers: i32 = match self.algorithm {
             0 => {
                 // Op1→Op2→Op3→Op4→out (serial).
-                let o2 = self.ops[1].next(inc1, out1 * m, sine, exp_table, kc);
-                let o3 = self.ops[2].next(inc2, o2 * m, sine, exp_table, kc);
-                self.ops[3].next(inc3, o3 * m, sine, exp_table, kc)
+                let o2 = self.ops[1].compute(out1 >> 1, log_sin, pow);
+                let o3 = self.ops[2].compute(o2 >> 1, log_sin, pow);
+                self.ops[3].compute(o3 >> 1, log_sin, pow)
             }
             1 => {
                 // (Op1+Op2)→Op3→Op4→out.
-                let o2 = self.ops[1].next(inc1, 0.0, sine, exp_table, kc);
-                let o3 = self.ops[2].next(inc2, (out1 + o2) * m, sine, exp_table, kc);
-                self.ops[3].next(inc3, o3 * m, sine, exp_table, kc)
+                let o2 = self.ops[1].compute(0, log_sin, pow);
+                let o3 = self.ops[2].compute((out1 + o2) >> 1, log_sin, pow);
+                self.ops[3].compute(o3 >> 1, log_sin, pow)
             }
             2 => {
                 // Op1→Op4, Op2→Op3→Op4→out.
-                let o2 = self.ops[1].next(inc1, 0.0, sine, exp_table, kc);
-                let o3 = self.ops[2].next(inc2, o2 * m, sine, exp_table, kc);
-                self.ops[3].next(inc3, (out1 + o3) * m, sine, exp_table, kc)
+                let o2 = self.ops[1].compute(0, log_sin, pow);
+                let o3 = self.ops[2].compute(o2 >> 1, log_sin, pow);
+                self.ops[3].compute((out1 + o3) >> 1, log_sin, pow)
             }
             3 => {
                 // Op1→Op2→Op4, Op3→Op4→out.
-                let o2 = self.ops[1].next(inc1, out1 * m, sine, exp_table, kc);
-                let o3 = self.ops[2].next(inc2, 0.0, sine, exp_table, kc);
-                self.ops[3].next(inc3, (o2 + o3) * m, sine, exp_table, kc)
+                let o2 = self.ops[1].compute(out1 >> 1, log_sin, pow);
+                let o3 = self.ops[2].compute(0, log_sin, pow);
+                self.ops[3].compute((o2 + o3) >> 1, log_sin, pow)
             }
             4 => {
                 // Op1→Op2→out, Op3→Op4→out (two parallel chains).
-                let o2 = self.ops[1].next(inc1, out1 * m, sine, exp_table, kc);
-                let o3 = self.ops[2].next(inc2, 0.0, sine, exp_table, kc);
-                let o4 = self.ops[3].next(inc3, o3 * m, sine, exp_table, kc);
+                let o2 = self.ops[1].compute(out1 >> 1, log_sin, pow);
+                let o3 = self.ops[2].compute(0, log_sin, pow);
+                let o4 = self.ops[3].compute(o3 >> 1, log_sin, pow);
                 o2 + o4
             }
             5 => {
                 // Op1 modulates Op2, Op3, Op4; all three → out.
-                let o2 = self.ops[1].next(inc1, out1 * m, sine, exp_table, kc);
-                let o3 = self.ops[2].next(inc2, out1 * m, sine, exp_table, kc);
-                let o4 = self.ops[3].next(inc3, out1 * m, sine, exp_table, kc);
+                let o2 = self.ops[1].compute(out1 >> 1, log_sin, pow);
+                let o3 = self.ops[2].compute(out1 >> 1, log_sin, pow);
+                let o4 = self.ops[3].compute(out1 >> 1, log_sin, pow);
                 o2 + o3 + o4
             }
             6 => {
                 // Op1→Op2→out; Op3→out; Op4→out.
-                let o2 = self.ops[1].next(inc1, out1 * m, sine, exp_table, kc);
-                let o3 = self.ops[2].next(inc2, 0.0, sine, exp_table, kc);
-                let o4 = self.ops[3].next(inc3, 0.0, sine, exp_table, kc);
+                let o2 = self.ops[1].compute(out1 >> 1, log_sin, pow);
+                let o3 = self.ops[2].compute(0, log_sin, pow);
+                let o4 = self.ops[3].compute(0, log_sin, pow);
                 o2 + o3 + o4
             }
             _ => {
                 // Algorithm 7: all four operators → out (fully additive).
-                let o2 = self.ops[1].next(inc1, 0.0, sine, exp_table, kc);
-                let o3 = self.ops[2].next(inc2, 0.0, sine, exp_table, kc);
-                let o4 = self.ops[3].next(inc3, 0.0, sine, exp_table, kc);
+                let o2 = self.ops[1].compute(0, log_sin, pow);
+                let o3 = self.ops[2].compute(0, log_sin, pow);
+                let o4 = self.ops[3].compute(0, log_sin, pow);
                 out1 + o2 + o3 + o4
             }
         };
 
-        let sample = carriers * FM_LEVEL;
-        let l = if self.pan_l { sample } else { 0.0 };
-        let r = if self.pan_r { sample } else { 0.0 };
+        // Advance every operator's phase for the next tick.
+        let inc0 = Self::op_inc(base, self.ops[0].mul);
+        self.ops[0].advance(inc0);
+        let inc1 = Self::op_inc(base, self.ops[1].mul);
+        self.ops[1].advance(inc1);
+        let inc2 = Self::op_inc(base, self.ops[2].mul);
+        self.ops[2].advance(inc2);
+        let inc3 = Self::op_inc(base, self.ops[3].mul);
+        self.ops[3].advance(inc3);
+
+        // Scale the summed carriers to the output loudness and route through the stereo pan.
+        let s = ((carriers as i64 * FM_LEVEL_Q15) >> 15) as i32;
+        let l = if self.pan_l { s } else { 0 };
+        let r = if self.pan_r { s } else { 0 };
         (l, r)
     }
 }
 
-/// The full minimal YM2612 FM synthesizer: 6 channels, the register-write decode, and shared lookup tables.
+/// The full YM2612 FM synthesizer: 6 channels, the register-write decode, the OPN2 lookup tables, and the
+/// native-rate → output-rate resampler.
 pub struct Ym2612Synth {
-    /// Output sample rate (Hz).
-    sample_rate: f32,
     /// The 6 FM channels (channels 0-2 = part I / bank 0, channels 3-5 = part II / bank 1).
     channels: [Channel; 6],
     /// DAC (channel-6 PCM) enable, `$2B` bit7. When set, FM channel 6 is muted and the DAC PCM stream plays
     /// in its place (SY-3a).
     dac_enabled: bool,
-    /// DAC sample bytes (`$2A` writes) collected during the current frame, in write order. Snapshotted and
-    /// drained by [`Self::begin_frame`] into [`Self::dac_frame`] for even-spread ZOH playback (SY-3a).
+    /// DAC sample bytes (`$2A` writes) collected during the current frame, in write order.
     dac_queue: Vec<u8>,
     /// The frame's DAC bytes, snapshotted from [`Self::dac_queue`] at the frame boundary; output sample `i`
-    /// plays `dac_frame[i · N / samples_per_frame]` (zero-order hold across the 735-sample frame).
+    /// plays `dac_frame[i · N / samples_per_frame]` (zero-order hold across the frame).
     dac_frame: Vec<u8>,
     /// Output samples the current frame's [`Self::dac_frame`] is spread across (set by [`Self::begin_frame`]).
     dac_samples_per_frame: u32,
-    /// The output-sample index within the current frame (0..`dac_samples_per_frame`), advanced per sample.
+    /// The output-sample index within the current frame, advanced per sample.
     dac_sample_idx: u32,
-    /// The most-recent DAC byte written; held (ZOH) across a DAC-enabled frame that has zero `$2A` writes.
-    /// Initialized to the unsigned center `0x80` so an untouched DAC is silence (`0x80 - 128 = 0`).
+    /// The most-recent DAC byte written; held (ZOH) across a DAC-enabled frame with zero `$2A` writes.
     dac_last: u8,
-    /// Sine lookup: one cycle, `[-1, 1]`.
-    sine: [f32; TABLE_LEN],
-    /// Attenuation → linear-amplitude lookup (index = 10-bit attenuation).
-    exp_table: [f32; TABLE_LEN],
+    /// 256-entry log-sin attenuation table (ymfm `s_sin_table`).
+    log_sin: [u16; TABLE_LEN],
+    /// 256-entry exp/pow table (ymfm `s_power_table`, `X` macro applied).
+    pow: [u16; TABLE_LEN],
+    /// Resampler: native ticks consumed per output sample (`NATIVE_RATE / output_rate ≈ 1.208`).
+    native_per_output: f64,
+    /// Resampler: fractional native-tick position in `[0, 1)` between [`Self::prev_native`] and
+    /// [`Self::cur_native`].
+    resample_frac: f64,
+    /// Resampler: the older bracketing native FM sample `(left, right)`.
+    prev_native: (i32, i32),
+    /// Resampler: the newer bracketing native FM sample `(left, right)`.
+    cur_native: (i32, i32),
 }
 
 /// Register-address → operator-index map. The low-nibble operator field of an `$30-$9F` write addresses
@@ -430,18 +495,7 @@ const SLOT_MAP: [usize; 4] = [0, 2, 1, 3];
 impl Ym2612Synth {
     /// A fresh FM synth producing `sample_rate` Hz output (all channels silent at reset).
     pub fn new(sample_rate: u32) -> Self {
-        let mut sine = [0.0f32; TABLE_LEN];
-        for (i, s) in sine.iter_mut().enumerate() {
-            *s = (2.0 * std::f32::consts::PI * i as f32 / TABLE_LEN as f32).sin();
-        }
-        let mut exp_table = [0.0f32; TABLE_LEN];
-        for (i, e) in exp_table.iter_mut().enumerate() {
-            // Attenuation (10-bit) → dB → linear amplitude. Index 0 = full volume, MAX = ~silent.
-            let db = i as f32 * (ATT_DB_RANGE / TABLE_LEN as f32);
-            *e = 10.0f32.powf(-db / 20.0);
-        }
         Self {
-            sample_rate: sample_rate as f32,
             channels: [Channel::new(); 6],
             dac_enabled: false,
             dac_queue: Vec::new(),
@@ -449,8 +503,12 @@ impl Ym2612Synth {
             dac_samples_per_frame: 0,
             dac_sample_idx: 0,
             dac_last: 0x80,
-            sine,
-            exp_table,
+            log_sin: build_log_sin(),
+            pow: build_pow(),
+            native_per_output: NATIVE_RATE / sample_rate as f64,
+            resample_frac: 0.0,
+            prev_native: (0, 0),
+            cur_native: (0, 0),
         }
     }
 
@@ -460,9 +518,7 @@ impl Ym2612Synth {
         match reg {
             // --- bank-0-only global registers ---
             0x28 if bank == 0 => self.key_on_off(value),
-            // $2A DAC data: queue the 8-bit PCM sample for this frame's channel-6 ZOH playback (SY-3a). The
-            // bytes are only *rendered* when the DAC is enabled ($2B bit7); queuing while disabled is
-            // harmless (the queue is drained per frame) and keeps `dac_last` tracking the true last sample.
+            // $2A DAC data: queue the 8-bit PCM sample for this frame's channel-6 ZOH playback (SY-3a).
             0x2A if bank == 0 => {
                 self.dac_queue.push(value);
                 self.dac_last = value;
@@ -521,7 +577,7 @@ impl Ym2612Synth {
         let op = SLOT_MAP[op_field];
         let o = &mut self.channels[ch].ops[op];
         match reg & 0xF0 {
-            0x30 => o.mul = value & 0x0F, // (detune bits 4-6 deferred to SY-3)
+            0x30 => o.mul = value & 0x0F, // (detune bits 4-6 deferred to SY-3d)
             0x40 => o.tl = value & 0x7F,
             0x50 => {
                 o.ks = (value >> 6) & 0x03;
@@ -533,7 +589,7 @@ impl Ym2612Synth {
                 o.sl = (value >> 4) & 0x0F;
                 o.rr = value & 0x0F;
             }
-            0x90 => {} // SSG-EG deferred to SY-3.
+            0x90 => {} // SSG-EG deferred to SY-3f.
             _ => {}
         }
     }
@@ -578,8 +634,7 @@ impl Ym2612Synth {
 
     /// Begin a new render frame (SY-3a): snapshot this frame's queued DAC bytes for even-spread ZOH playback
     /// and reset the per-sample index. The sink calls this once, before the frame's `samples_per_frame`
-    /// [`Self::next_sample`] calls. Draining the queue here means the *next* frame accumulates fresh `$2A`
-    /// writes; a frame with zero writes holds [`Self::dac_last`].
+    /// [`Self::next_sample`] calls.
     pub fn begin_frame(&mut self, samples_per_frame: u32) {
         self.dac_frame.clear();
         self.dac_frame.append(&mut self.dac_queue); // moves the bytes out and leaves `dac_queue` empty
@@ -607,23 +662,46 @@ impl Ym2612Synth {
         (l, r)
     }
 
-    /// Produce one stereo output sample `(left, right)` as the sum of all six channels' contributions.
-    /// While the DAC is enabled (`$2B` bit7), channel 6 (index 5) plays the streamed PCM sample (SY-3a)
-    /// instead of its FM voice; otherwise all six channels are FM.
-    pub fn next_sample(&mut self) -> (i32, i32) {
-        let mut l = 0.0f32;
-        let mut r = 0.0f32;
-        for (i, ch) in self.channels.iter_mut().enumerate() {
-            if i == 5 && self.dac_enabled {
-                // FM channel 6 is muted while the DAC drives it; the PCM sample is added below.
+    /// Advance the whole FM chip by one **native** operator tick and return the summed `(left, right)` FM
+    /// output. Channel 6's FM is skipped while the DAC drives it (`$2B` bit7); the PCM stream is added at the
+    /// output rate in [`Self::next_sample`].
+    fn tick_native(&mut self) -> (i32, i32) {
+        let Ym2612Synth {
+            channels,
+            log_sin,
+            pow,
+            dac_enabled,
+            ..
+        } = self;
+        let mut l = 0i32;
+        let mut r = 0i32;
+        for (i, ch) in channels.iter_mut().enumerate() {
+            if i == 5 && *dac_enabled {
                 continue;
             }
-            let (cl, cr) = ch.next_sample(self.sample_rate, &self.sine, &self.exp_table);
+            let (cl, cr) = ch.tick(log_sin, pow);
             l += cl;
             r += cr;
         }
-        let mut li = l as i32;
-        let mut ri = r as i32;
+        (l, r)
+    }
+
+    /// Produce one stereo output sample `(left, right)` at the sink's output rate.
+    ///
+    /// The FM chip is clocked at its native ~53_267 Hz inside [`Self::tick_native`]; this method consumes
+    /// `native_per_output ≈ 1.208` native ticks per call and **linearly interpolates** between the two
+    /// bracketing native samples to resample to the output rate (cutting the aliasing the old direct-at-output
+    /// path had). The SY-3a DAC contribution is added afterwards, at the output rate, unchanged.
+    pub fn next_sample(&mut self) -> (i32, i32) {
+        self.resample_frac += self.native_per_output;
+        while self.resample_frac >= 1.0 {
+            self.resample_frac -= 1.0;
+            self.prev_native = self.cur_native;
+            self.cur_native = self.tick_native();
+        }
+        let f = self.resample_frac as f32;
+        let mut li = lerp(self.prev_native.0, self.cur_native.0, f);
+        let mut ri = lerp(self.prev_native.1, self.cur_native.1, f);
         if self.dac_enabled {
             let (dl, dr) = self.dac_sample();
             li += dl;
@@ -634,8 +712,13 @@ impl Ym2612Synth {
     }
 }
 
+/// Linear interpolation between two integer samples: `a + (b - a) · f`, `f ∈ [0, 1)`.
+fn lerp(a: i32, b: i32, f: f32) -> i32 {
+    a + ((b - a) as f32 * f) as i32
+}
+
 /// The effective 6-bit envelope rate: `2·base + keyscale`, clamped to 63. `base` is a 5-bit rate register
-/// (or the RR-derived value); `ks`/`kc` add the key-scale contribution. Approximate (exact table is SY-3).
+/// (or the RR-derived value); `ks`/`kc` add the key-scale contribution. Approximate (exact table is SY-3c).
 fn effective_rate(base: u8, ks: u8, kc: u8) -> u8 {
     if base == 0 {
         return 0;
@@ -644,13 +727,14 @@ fn effective_rate(base: u8, ks: u8, kc: u8) -> u8 {
     (2 * base as u16 + ks_add as u16).min(63) as u8
 }
 
-/// Attenuation units added per sample at effective envelope `rate` (0-63). Rate 0 = frozen. Exponential in
-/// the rate (each +4 rate ≈ ×2 speed) — a calibrated approximation of the OPN rate table.
+/// Attenuation units added per **native tick** at effective envelope `rate` (0-63). Rate 0 = frozen.
+/// Exponential in the rate (each +4 rate ≈ ×2 speed) — a calibrated approximation of the OPN rate table,
+/// rescaled by [`ENV_RATE_SCALE`] so the native tick preserves the SY-2 wall-clock envelope timing.
 fn rate_increment(rate: u8) -> f32 {
     if rate == 0 {
         0.0
     } else {
-        RATE_BASE * 2.0f32.powf(rate as f32 / 4.0)
+        RATE_BASE * 2.0f32.powf(rate as f32 / 4.0) * ENV_RATE_SCALE
     }
 }
 
@@ -668,9 +752,69 @@ fn sustain_att(sl: u8) -> f32 {
 mod tests {
     use super::*;
 
+    /// The generated log-sin table must match ymfm's literal `s_sin_table` (verified verbatim against
+    /// `src/ymfm_fm.ipp`). This pins the table-generation formula to the ymfm fixture (Fork-1 requirement).
+    #[test]
+    fn log_sin_table_matches_ymfm() {
+        let t = build_log_sin();
+        // Entries 0-15, quoted verbatim from ymfm's s_sin_table first line.
+        let first16: [u16; 16] = [
+            0x859, 0x6c3, 0x607, 0x58b, 0x52e, 0x4e4, 0x4a6, 0x471, 0x443, 0x41a, 0x3f5, 0x3d3,
+            0x3b5, 0x398, 0x37e, 0x365,
+        ];
+        for (i, &v) in first16.iter().enumerate() {
+            assert_eq!(t[i], v, "log_sin[{i}] must equal ymfm s_sin_table[{i}]");
+        }
+        // The tail (loudest, sin near ±1 → ~0 attenuation), verified against ymfm's final row.
+        assert_eq!(t[247], 0x001, "log_sin[247]");
+        assert_eq!(t[248], 0x000, "log_sin[248]");
+        assert_eq!(t[255], 0x000, "log_sin[255]");
+        // A couple of mid values (the formula reproduces ymfm exactly across the whole table).
+        assert_eq!(t[64], 0x160, "log_sin[64]");
+        assert_eq!(t[128], 0x07f, "log_sin[128]");
+    }
+
+    /// The generated exp/pow table must match ymfm's literal `s_power_table` (before and after the `X`
+    /// macro), verified verbatim against `src/ymfm_fm.ipp`.
+    #[test]
+    fn pow_table_matches_ymfm() {
+        let raw = build_pow_raw();
+        // ymfm s_power_table first 8 and last 8 (the `a` inside `X(a)`).
+        let first8: [u16; 8] = [0x3fa, 0x3f5, 0x3ef, 0x3ea, 0x3e4, 0x3df, 0x3da, 0x3d4];
+        let last8: [u16; 8] = [0x014, 0x011, 0x00e, 0x00b, 0x008, 0x006, 0x003, 0x000];
+        for (i, &v) in first8.iter().enumerate() {
+            assert_eq!(raw[i], v, "pow_raw[{i}]");
+        }
+        for (i, &v) in last8.iter().enumerate() {
+            assert_eq!(raw[248 + i], v, "pow_raw[{}]", 248 + i);
+        }
+        // Post-macro anchor: X(0x3fa) = (0x3fa | 0x400) << 2 = 0x1FE8 (loudest volume).
+        let pow = build_pow();
+        assert_eq!(pow[0], 0x1FE8, "pow[0] = X(0x3fa)");
+        // attenuation_to_volume: zero attenuation is loudest; a large attenuation saturates to silence.
+        assert_eq!(attenuation_to_volume(0, &pow), 0x1FE8);
+        assert_eq!(attenuation_to_volume(0x2000, &pow), 0);
+        // The shift clamp must never overflow, even for absurd attenuation.
+        assert_eq!(attenuation_to_volume(0xFFFF, &pow), 0);
+    }
+
+    /// abs_sin_attenuation folds the quarter wave: index 0 (loudest? no — sin near 0, quietest) mirrors at
+    /// bit 8, and the sign comes from bit 9. Spot-check the fold symmetry and that a full 1024-phase spans a
+    /// sign flip.
+    #[test]
+    fn abs_sin_fold_and_sign() {
+        let t = build_log_sin();
+        // Bit-8 fold: phase 0x0FF and 0x100 both map to table[0xff] (mirror around the quarter boundary).
+        assert_eq!(abs_sin_attenuation(0x0FF, &t), t[0xff] as u32);
+        assert_eq!(abs_sin_attenuation(0x100, &t), t[0xff] as u32);
+        // Phase 0 → table[0] (quietest edge), phase 0x1FF → also table[0] by the fold.
+        assert_eq!(abs_sin_attenuation(0x000, &t), t[0] as u32);
+        assert_eq!(abs_sin_attenuation(0x1FF, &t), t[0] as u32);
+    }
+
     /// Program channel 0, operator 1 (algorithm 7 additive so Op1 is a bare carrier) to a known pitch and
-    /// key it on; render one second and count zero crossings — proving the phase generator emits the
-    /// expected fundamental frequency.
+    /// key it on; render one second and count zero crossings — proving the phase generator (native tick +
+    /// resample) emits the expected fundamental frequency.
     #[test]
     fn operator_produces_expected_pitch() {
         let sample_rate = 44_100u32;
@@ -678,8 +822,8 @@ mod tests {
 
         // Algorithm 7 (all operators are carriers), no feedback: $B0 = 0x07.
         fm.write(0, 0xB0, 0x07);
-        // Op1 params: MUL=1 (so pitch is exact, not ×0.5), TL=0 (loudest), AR=31 (instant attack),
-        // D1R=0/D2R=0 (no decay), SL=0, RR=0 → a sustained full-volume sine.
+        // Op1 params: MUL=1 (so pitch is exact), TL=0 (loudest), AR=31 (instant attack),
+        // D1R=0/D2R=0 (no decay), SL=0, RR=0 → a sustained full-volume tone.
         fm.write(0, 0x30, 0x01); // MUL=1 for operator-address-field 0 (Op1) of channel 0
         fm.write(0, 0x40, 0x00); // TL=0
         fm.write(0, 0x50, 0x1F); // KS=0, AR=31
@@ -687,13 +831,11 @@ mod tests {
         fm.write(0, 0x70, 0x00); // D2R=0
         fm.write(0, 0x80, 0x00); // SL=0, RR=0
                                  // Pitch: fnum=1083, block=4 → f = 1083·8·(7670453/144)/2^20 ≈ 440.1 Hz.
-                                 // $A4 = block(4)<<3 | fnum_hi(1083>>8 = 4) = 0x20 | 0x04 = 0x24 ; $A0 = fnum low = 1083 & 0xFF = 0x3B.
         fm.write(0, 0xA4, 0x24);
         fm.write(0, 0xA0, 0x3B);
-        // Stereo both sides.
-        fm.write(0, 0xB4, 0xC0);
-        // Key on Op1 only: channel 0, mask bit4 → 0x10.
-        fm.write(0, 0x28, 0x10);
+        fm.write(0, 0xB4, 0xC0); // stereo both
+
+        fm.write(0, 0x28, 0x10); // key on Op1 only: channel 0, mask bit4
 
         // Render one second; count left-channel sign changes once the attack has opened.
         let mut crossings = 0u32;
@@ -710,8 +852,8 @@ mod tests {
             }
         }
 
-        // A full cycle = 2 crossings → expect ≈ 2·440 ≈ 880/sec. Allow a modest band (attack ramp + the
-        // fixed-point index edge). This is a pitch check, not a sample-exact check.
+        // A full cycle = 2 crossings → expect ≈ 2·440 ≈ 880/sec. Within-octave (440-880 Hz) requires
+        // 880..1760 crossings; this tight band proves sample-accurate pitch, not just within-octave.
         assert!(
             (860..=900).contains(&crossings),
             "expected ~880 zero crossings for a 440 Hz operator, got {crossings}"
@@ -722,7 +864,6 @@ mod tests {
     #[test]
     fn unkeyed_channel_is_silent() {
         let mut fm = Ym2612Synth::new(44_100);
-        // Program a channel fully but never send a key-on.
         fm.write(0, 0xB0, 0x07);
         fm.write(0, 0x30, 0x01);
         fm.write(0, 0x40, 0x00);
@@ -852,20 +993,18 @@ mod tests {
         );
     }
 
-    /// SY-3a: with the DAC enabled, a frame of $2A writes streams on channel 6 as signed PCM. A ramp of
-    /// bytes centered above/below 0x80 produces the expected positive/negative, non-silent output; the FM
-    /// channels are otherwise all silent so the samples are the DAC alone.
+    /// SY-3a: with the DAC enabled, a frame of $2A writes streams on channel 6 as signed PCM. The first
+    /// output sample is the first byte and the last is the last byte (FM otherwise silent, so the samples
+    /// are the DAC alone — the FM resampler contributes exactly 0).
     #[test]
     fn dac_streams_written_bytes() {
         let mut fm = Ym2612Synth::new(44_100);
         fm.write(0, 0x2B, 0x80); // enable DAC (bit7)
         fm.write(1, 0xB6, 0xC0); // ch6 pan both so the PCM reaches L and R
 
-        // Queue a small set of DAC bytes for this frame: a value above center and one below.
         fm.write(0, 0x2A, 0xC0); // 0xC0 - 128 = +64 → positive
         fm.write(0, 0x2A, 0x40); // 0x40 - 128 = -64 → negative
 
-        // Render one frame; the first sample must be the first byte (+64·scale), the last the last byte.
         fm.begin_frame(735);
         let (l0, r0) = fm.next_sample();
         assert_eq!(
@@ -876,7 +1015,6 @@ mod tests {
         assert_eq!(r0, l0, "ch6 pan-both duplicates DAC to L and R");
         assert!(l0 > 0, "0xC0 is above center → positive");
 
-        // Advance to the final sample of the 735-sample frame.
         let mut last = (0, 0);
         for _ in 1..735 {
             last = fm.next_sample();
@@ -894,7 +1032,6 @@ mod tests {
     #[test]
     fn dac_disabled_ignores_2a() {
         let mut fm = Ym2612Synth::new(44_100);
-        // DAC disabled (never wrote $2B). Queue would-be-loud samples.
         fm.write(0, 0x2A, 0xFF);
         fm.write(0, 0x2A, 0x00);
         fm.write(1, 0xB6, 0xC0);
@@ -914,7 +1051,6 @@ mod tests {
         let mut fm = Ym2612Synth::new(44_100);
         fm.write(0, 0x2B, 0x80);
         fm.write(1, 0xB6, 0xC0);
-        // A distinct ramp of 5 bytes so we can map each output sample back to a byte index by its value.
         let bytes: [u8; 5] = [0x90, 0xA0, 0xB0, 0xC0, 0xD0];
         for &b in &bytes {
             fm.write(0, 0x2A, b);
@@ -926,11 +1062,8 @@ mod tests {
         for _ in 0..735 {
             samples.push(fm.next_sample().0);
         }
-        // First = byte 0, last = byte 4.
         assert_eq!(samples[0], (bytes[0] as i32 - 128) * DAC_SCALE);
         assert_eq!(samples[734], (bytes[4] as i32 - 128) * DAC_SCALE);
-        // Every sample must equal one of the five programmed bytes' scaled value (ZOH, no interpolation),
-        // and the spread must touch every byte across the frame.
         for &s in &samples {
             let mut matched = false;
             for (i, &b) in bytes.iter().enumerate() {
