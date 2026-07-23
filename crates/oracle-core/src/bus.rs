@@ -11,6 +11,7 @@ use crate::io::{io_reg, Io, IoReg};
 use crate::state_hash::VRAM_SIZE;
 use crate::system::RAM_SIZE;
 use crate::vdp::Vdp;
+use crate::ym2612::Ym2612;
 
 /// 68000 work-RAM window base (`$FF0000`).
 pub const RAM_BASE: u32 = 0xFF_0000;
@@ -247,12 +248,17 @@ pub struct MegaDriveBus<'a, S: BusEventSink> {
     /// bincode-serialized like `z80_busreq`; NOT in `export_state`. See `docs/2026-07-22-z80-core-design.md`
     /// (ZC6/ZC13).
     z80_running: &'a mut bool,
+    /// The YM2612 FM chip (its timers, this slice): a `$A04000-$A04003` read returns its status byte (Timer-A/B
+    /// overflow flags live, bit7 BUSY clear), and a write drives the address-latch/data protocol into its timer
+    /// model. Split-borrowed like `vdp`; rides the bincode snapshot but is NOT in `export_state`. See
+    /// `docs/2026-07-22-fm-timer-design.md`.
+    fm: &'a mut Ym2612,
     sink: &'a mut S,
 }
 
 impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
     /// Build an adapter over the given memory regions, the VDP + the master-clock reading, the I/O block,
-    /// the open-bus latch, and an event sink.
+    /// the open-bus latch, the FM chip, and an event sink.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         rom: &'a [u8],
@@ -264,6 +270,7 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
         last_bus_word: &'a mut u16,
         z80_busreq: &'a mut bool,
         z80_running: &'a mut bool,
+        fm: &'a mut Ym2612,
         sink: &'a mut S,
     ) -> Self {
         Self {
@@ -276,6 +283,7 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             last_bus_word,
             z80_busreq,
             z80_running,
+            fm,
             sink,
         }
     }
@@ -290,11 +298,12 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
                 let i = a as usize;
                 (i < self.rom.len()).then(|| self.rom[i])
             }
-            // YM2612 FM ($A04000-$A04003): a READ returns the status byte with bit7 (BUSY) clear = not busy,
-            // so the `btst #7,(a0)/bne` register-write busy-poll exits (recon F2/F4, DR-1b Gunstar). Timer
-            // overflow flags (bits 0/1) are 0 (no FM timers modeled — deferred to the FM core). This arm
-            // precedes the Z80-RAM mirror so the FM ports are not aliased to `z80_ram[0..3]`.
-            0xA0_4000..=0xA0_4003 => Some(0x00),
+            // YM2612 FM ($A04000-$A04003): a READ returns the live status byte — Timer-A overflow (bit0),
+            // Timer-B overflow (bit1), and bit7 (BUSY) always clear = not busy, so the `btst #7,(a0)/bne`
+            // register-write busy-poll still exits (recon F2/F4, DR-1b Gunstar). The overflow flags are a pure
+            // function of the timers + the current mclk (docs/2026-07-22-fm-timer-design.md). This arm precedes
+            // the Z80-RAM mirror so the FM ports are not aliased to `z80_ram[0..3]`.
+            0xA0_4000..=0xA0_4003 => Some(self.fm.read_status(self.now_mclk)),
             // Z80 RAM: 8 KiB mirrored across the 64 KiB window.
             0xA0_0000..=0xA0_FFFF => Some(self.z80_ram[(a as usize) & (Z80_RAM_SIZE - 1)]),
             // I/O ($A10000–$A1001F): the fixed version byte at $A10001, the 15 data/control/serial registers
@@ -334,10 +343,11 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
     /// placeholder scope until those chips land.
     fn store_byte(&mut self, a: u32, byte: u8) {
         match a {
-            // YM2612 FM ($A04000-$A04003): writes go to the FM chip and are dropped (no FM core yet) — they
-            // must NOT fall through to the Z80-RAM store, which would corrupt `z80_ram[0..3]` (the FM ports
-            // alias it under the mirror). This arm precedes the Z80-RAM arm (recon F1/DR-1b, Option B).
-            0xA0_4000..=0xA0_4003 => {}
+            // YM2612 FM ($A04000-$A04003): writes drive the FM chip's address-latch/data protocol (timer regs
+            // $24/$25/$26/$27 update the timer model; everything else is ignored — no synthesis this slice).
+            // They must NOT fall through to the Z80-RAM store, which would corrupt `z80_ram[0..3]` (the FM
+            // ports alias it under the mirror). This arm precedes the Z80-RAM arm (recon F1/DR-1b, Option B).
+            0xA0_4000..=0xA0_4003 => self.fm.write_port(a as u16, byte, self.now_mclk),
             0xA0_0000..=0xA0_FFFF => self.z80_ram[(a as usize) & (Z80_RAM_SIZE - 1)] = byte,
             // Z80 BUSREQ ($A11100): latch bit0 from the EVEN byte only — a word write (`move.w #$100/#$0`)
             // puts the meaningful byte at $A11100 and 0 at $A11101, which must not clobber the latch. $A11101
@@ -721,6 +731,7 @@ mod tests {
         last_bus_word: u16,
         z80_busreq: bool,
         z80_running: bool,
+        fm: Ym2612,
     }
     impl MdMem {
         fn new(rom: Vec<u8>) -> Self {
@@ -734,6 +745,7 @@ mod tests {
                 last_bus_word: 0,
                 z80_busreq: false,
                 z80_running: false,
+                fm: Ym2612::new(),
             }
         }
         fn bus<'a>(&'a mut self, sink: &'a mut Vec<BusEvent>) -> MegaDriveBus<'a, Vec<BusEvent>> {
@@ -747,6 +759,7 @@ mod tests {
                 &mut self.last_bus_word,
                 &mut self.z80_busreq,
                 &mut self.z80_running,
+                &mut self.fm,
                 sink,
             )
         }

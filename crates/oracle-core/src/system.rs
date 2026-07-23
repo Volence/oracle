@@ -14,6 +14,7 @@ use crate::m68000::registers::Registers;
 use crate::scheduler::{EventKind, Scheduler};
 use crate::state_hash::{StateHash, CRAM_SIZE, REG_COUNT, VRAM_SIZE, VSRAM_SIZE};
 use crate::vdp::{Vdp, LINES_PER_FRAME, MCLK_PER_LINE};
+use crate::ym2612::Ym2612;
 use crate::z80::{Z80Bus, Z80};
 
 /// 68000 work RAM, `$FF0000..=$FFFFFF` (64 KiB).
@@ -107,6 +108,13 @@ pub struct System {
     /// like `z80_busreq`: rides this bincode snapshot for determinism, **not** emitted by `export_state`.
     /// Power-on 0. No committed fixture releases the Z80, so it never changes in any gate.
     z80_bank: u16,
+    /// The YM2612 FM chip — its timers (this slice). The status byte a `$A04000`/`$4000` read returns is
+    /// derived from it: with the timers live, the SMPS driver's Timer-A overflow poll fires and the sequencer
+    /// ticks (the silent-song bug this fixes). Owned like `vdp`; rides this bincode snapshot for determinism,
+    /// but is **not** in `export_state` (region 6 stays the all-zero reserve) nor `state_hash`. Power-on
+    /// all-zero → status reads `0x00`, byte-identical to the old stub until a timer is programmed. See
+    /// `docs/2026-07-22-fm-timer-design.md`.
+    fm: Ym2612,
 }
 
 impl std::fmt::Debug for System {
@@ -131,6 +139,7 @@ impl std::fmt::Debug for System {
             .field("z80", &self.z80)
             .field("z80_frontier_mclk", &self.z80_frontier_mclk)
             .field("z80_bank", &self.z80_bank)
+            .field("fm", &self.fm)
             .field(
                 "state_hash.combined",
                 &crate::state_hash::hex(self.state_hash().combined),
@@ -196,6 +205,7 @@ impl System {
             z80: Z80::new(),
             z80_frontier_mclk: 0,
             z80_bank: 0,
+            fm: Ym2612::new(),
         }
     }
 
@@ -246,6 +256,7 @@ impl System {
             last_bus_word,
             z80_busreq,
             z80_running,
+            fm,
             ..
         } = self;
         MegaDriveBus::new(
@@ -258,6 +269,7 @@ impl System {
             last_bus_word,
             z80_busreq,
             z80_running,
+            fm,
             sink,
         )
     }
@@ -549,6 +561,7 @@ impl System {
             last_bus_word,
             z80_busreq,
             z80_running,
+            fm,
             ..
         } = self;
         let mut bus = MegaDriveBus::new(
@@ -561,6 +574,7 @@ impl System {
             last_bus_word,
             z80_busreq,
             z80_running,
+            fm,
             sink,
         );
         cpu.step(&mut bus)
@@ -586,10 +600,15 @@ impl System {
                 ram,
                 z80_bank,
                 z80_frontier_mclk,
+                fm,
                 ..
             } = self;
             while *z80_frontier_mclk < now {
-                let mut bus = Z80Bus::new(z80_ram, rom, ram, z80_bank, sink);
+                // The Z80 reads the FM timer at its own frontier (ZC4/FM7) — behind the 68000's `now`, both
+                // absolute on the one timeline. Pass the frontier value at the start of this step as the FM's
+                // `now`.
+                let mut bus =
+                    Z80Bus::new(z80_ram, rom, ram, z80_bank, fm, *z80_frontier_mclk, sink);
                 let t = z80.step(&mut bus);
                 *z80_frontier_mclk += t as u64 * MCLK_PER_Z80_CYCLE;
             }

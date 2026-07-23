@@ -357,6 +357,7 @@ mod tests {
             let mut io = crate::io::Io::default();
             let mut z80_busreq = false;
             let mut z80_running = false;
+            let mut fm = crate::ym2612::Ym2612::new();
             let mut bus = MegaDriveBus::new(
                 &rom,
                 ram,
@@ -367,6 +368,7 @@ mod tests {
                 last,
                 &mut z80_busreq,
                 &mut z80_running,
+                &mut fm,
                 &mut sink,
             );
             cpu.step(&mut bus);

@@ -24,6 +24,7 @@
 use super::Z80Io;
 use crate::bus::{BusEvent, BusEventSink, BusOp, Size, Z80_RAM_SIZE};
 use crate::system::RAM_SIZE;
+use crate::ym2612::Ym2612;
 
 /// Split-borrow adapter over the `System`'s Z80-visible memory for one Z80 step. Holds the Z80 RAM, the
 /// cartridge ROM + work RAM the bank window reaches, and the serial bank latch. No `Rc`/`RefCell`/`unsafe` —
@@ -37,6 +38,15 @@ pub struct Z80Bus<'a, S: BusEventSink> {
     /// The 9-bit bank register (`$6000`), serial-loaded LSB-first; selects the 32 KiB 68k page the
     /// `$8000-$FFFF` window maps to. Borrowed mutably so a `$6000` write persists into the `System`.
     bank: &'a mut u16,
+    /// The YM2612 FM chip (its timers): a `$4000-$4003` read returns its live status byte (the driver clocks
+    /// its sequencer off Timer-A overflow, bit0), and a write drives the address-latch/data protocol into its
+    /// timer model **in addition to** the RT-1 VGM tap below. Split-borrowed like the 68k side; read/written at
+    /// the Z80's own frontier time (`now_mclk`). See `docs/2026-07-22-fm-timer-design.md`.
+    fm: &'a mut Ym2612,
+    /// The Z80's current mclk (its frontier — the value at the start of this step), the absolute time the FM
+    /// status/timer is anchored to. The Z80 reads the chip *behind* the 68000's `now`; both are absolute on the
+    /// one shared timeline, so the flag is computed at this time (FM7).
+    now_mclk: u64,
     /// The bus-event sink FM/PSG writes tap into (Phase RT). Threaded down from the run loop, monomorphized —
     /// `()` is the no-op hot path, `Vec<BusEvent>` records.
     sink: &'a mut S,
@@ -44,12 +54,15 @@ pub struct Z80Bus<'a, S: BusEventSink> {
 
 impl<'a, S: BusEventSink> Z80Bus<'a, S> {
     /// Build an adapter over the Z80 RAM, the cartridge ROM + work RAM the bank window reaches, the serial
-    /// bank latch, and the event sink.
+    /// bank latch, the FM chip + the Z80's current mclk, and the event sink.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         z80_ram: &'a mut [u8],
         rom: &'a [u8],
         ram: &'a mut [u8],
         bank: &'a mut u16,
+        fm: &'a mut Ym2612,
+        now_mclk: u64,
         sink: &'a mut S,
     ) -> Self {
         Self {
@@ -57,6 +70,8 @@ impl<'a, S: BusEventSink> Z80Bus<'a, S> {
             rom,
             ram,
             bank,
+            fm,
+            now_mclk,
             sink,
         }
     }
@@ -108,9 +123,10 @@ impl<S: BusEventSink> Z80Io for Z80Bus<'_, S> {
         match addr {
             // Z80 RAM (8 KiB), mirrored across $0000-$3FFF.
             0x0000..=0x3FFF => self.z80_ram[(addr as usize) & (Z80_RAM_SIZE - 1)],
-            // YM2612 FM: read = status with bit7 (BUSY) clear = not busy (reuses the 68k-side model,
-            // crate::bus F2/F4). The real chip lands with the FM core.
-            0x4000..=0x4003 => 0x00,
+            // YM2612 FM: read = the live status byte (Timer-A overflow bit0, Timer-B overflow bit1, bit7 BUSY
+            // clear). The SMPS driver clocks its sequencer off Timer-A overflow, so this must answer truthfully
+            // (docs/2026-07-22-fm-timer-design.md). Anchored to the Z80's own frontier time.
+            0x4000..=0x4003 => self.fm.read_status(self.now_mclk),
             // 68k bank window: translate through the 9-bit bank and read 68000 space.
             0x8000..=0xFFFF => {
                 let a = self.window_addr(addr);
@@ -134,17 +150,23 @@ impl<S: BusEventSink> Z80Io for Z80Bus<'_, S> {
                 self.write_window(a, value);
             }
             // YM2612 FM ($4000-$4003) / SN76489 PSG ($7F11): tap the register write into the bus-event stream
-            // (Phase RT — the VGM logger consumes it), then DROP the value (no synthesis this slice; that's a
-            // later FM/PSG-core phase). `fc = 0` because the Z80 is a non-68000 master (the DMA/other-master
-            // convention in crate::bus). The RAW Z80-side address ($4000 / $7F11) is emitted, NOT the 68k FM
-            // window ($A04000): a consumer unifies the two at the register-file level.
-            0x4000..=0x4003 | 0x7F11 => self.sink.on_event(BusEvent {
-                op: BusOp::Write,
-                fc: 0,
-                addr: addr as u32,
-                size: Size::Byte,
-                value: value as u32,
-            }),
+            // (Phase RT — the VGM logger consumes it). `fc = 0` because the Z80 is a non-68000 master (the
+            // DMA/other-master convention in crate::bus). The RAW Z80-side address ($4000 / $7F11) is emitted,
+            // NOT the 68k FM window ($A04000): a consumer unifies the two at the register-file level. FM writes
+            // ADDITIONALLY drive the timer model (the tap is for the VGM logger; the timer update is what makes
+            // the driver's Timer-A overflow poll fire — docs/2026-07-22-fm-timer-design.md). PSG has no timer.
+            0x4000..=0x4003 | 0x7F11 => {
+                self.sink.on_event(BusEvent {
+                    op: BusOp::Write,
+                    fc: 0,
+                    addr: addr as u32,
+                    size: Size::Byte,
+                    value: value as u32,
+                });
+                if let 0x4000..=0x4003 = addr {
+                    self.fm.write_port(addr, value, self.now_mclk);
+                }
+            }
             // VDP mirror ($7F00-$7F1F, excluding the PSG at $7F11) drops (deferred).
             _ => {}
         }
@@ -165,15 +187,16 @@ mod tests {
     use super::*;
 
     /// Build a bus over fresh buffers with an explicit bank value and a null sink (helper for the map tests
-    /// that do not care about the event stream).
+    /// that do not care about the event stream). A fresh unprogrammed FM chip at mclk 0 (status reads 0x00).
     fn bus_with<'a>(
         ram: &'a mut [u8],
         rom: &'a [u8],
         work: &'a mut [u8],
         bank: &'a mut u16,
+        fm: &'a mut Ym2612,
         sink: &'a mut (),
     ) -> Z80Bus<'a, ()> {
-        Z80Bus::new(ram, rom, work, bank, sink)
+        Z80Bus::new(ram, rom, work, bank, fm, 0, sink)
     }
 
     #[test]
@@ -183,7 +206,8 @@ mod tests {
         let mut work = vec![0u8; RAM_SIZE];
         let mut bank = 0u16;
         let mut sink = ();
-        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank, &mut sink);
+        let mut fm = Ym2612::new();
+        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank, &mut fm, &mut sink);
         bus.write(0x0001, 0x9A);
         assert_eq!(bus.read(0x0001), 0x9A, "Z80 RAM byte round-trips");
         // 8 KiB RAM mirrored across $2000-$3FFF.
@@ -199,7 +223,8 @@ mod tests {
         let mut work = vec![0u8; RAM_SIZE];
         let mut bank = 0u16;
         let mut sink = ();
-        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank, &mut sink);
+        let mut fm = Ym2612::new();
+        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank, &mut fm, &mut sink);
         for a in [0x4000u16, 0x4001, 0x4002, 0x4003] {
             assert_eq!(
                 bus.read(a) & 0x80,
@@ -216,7 +241,8 @@ mod tests {
         let mut work = vec![0u8; RAM_SIZE];
         let mut bank = 0u16;
         let mut sink = ();
-        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank, &mut sink);
+        let mut fm = Ym2612::new();
+        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank, &mut fm, &mut sink);
         // Load the 9-bit page value 0b1_0000_0001 = 0x101 LSB-first: bit0 first ... bit8 last.
         for bit in [1u8, 0, 0, 0, 0, 0, 0, 0, 1] {
             bus.write(0x6000, bit);
@@ -234,7 +260,8 @@ mod tests {
         // bank = 1 → window base = 1 << 15 = $8000.
         let mut bank = 1u16;
         let mut sink = ();
-        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank, &mut sink);
+        let mut fm = Ym2612::new();
+        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank, &mut fm, &mut sink);
         assert_eq!(
             bus.read(0x8000),
             0x7E,
@@ -250,7 +277,8 @@ mod tests {
         // 68k work RAM $FF0000 = bank 0x1FE (0x1FE << 15 = $FF0000), window offset 0.
         let mut bank = 0x1FEu16;
         let mut sink = ();
-        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank, &mut sink);
+        let mut fm = Ym2612::new();
+        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank, &mut fm, &mut sink);
         bus.write(0x8000, 0x42);
         assert_eq!(bus.read(0x8000), 0x42, "window round-trips 68k work RAM");
         assert_eq!(
@@ -269,8 +297,9 @@ mod tests {
         let mut work = vec![0u8; RAM_SIZE];
         let mut bank = 0u16;
         let mut sink: Vec<BusEvent> = Vec::new();
+        let mut fm = Ym2612::new();
         {
-            let mut bus = Z80Bus::new(&mut ram, &rom, &mut work, &mut bank, &mut sink);
+            let mut bus = Z80Bus::new(&mut ram, &rom, &mut work, &mut bank, &mut fm, 0, &mut sink);
             // FM address/data ports + the PSG port, each with a distinct value.
             bus.write(0x4000, 0x22);
             bus.write(0x4001, 0x33);

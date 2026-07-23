@@ -23,4 +23,5 @@ pub mod testrom;
 pub mod vdp;
 pub mod vgm;
 pub mod watchpoints;
+pub mod ym2612;
 pub mod z80;
