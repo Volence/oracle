@@ -102,6 +102,11 @@ pub struct System {
     /// carries **zero** backlog (ZC5). Absolute + bincode-serialized (like `frame_boundary_mclk`) so the chase
     /// resumes exactly across snapshot/restore; **not** in `export_state` (a timing scalar). Power-on 0.
     z80_frontier_mclk: u64,
+    /// The Z80's 9-bit bank-address register (`$6000`), serial-loaded LSB-first, selecting the 32 KiB 68000
+    /// page the Z80's `$8000-$FFFF` window maps to (Plutiedev "Z80 banking"). A bus-arbitration-class scalar
+    /// like `z80_busreq`: rides this bincode snapshot for determinism, **not** emitted by `export_state`.
+    /// Power-on 0. No committed fixture releases the Z80, so it never changes in any gate.
+    z80_bank: u16,
 }
 
 impl std::fmt::Debug for System {
@@ -125,6 +130,7 @@ impl std::fmt::Debug for System {
             .field("frame_boundary_mclk", &self.frame_boundary_mclk)
             .field("z80", &self.z80)
             .field("z80_frontier_mclk", &self.z80_frontier_mclk)
+            .field("z80_bank", &self.z80_bank)
             .field(
                 "state_hash.combined",
                 &crate::state_hash::hex(self.state_hash().combined),
@@ -189,6 +195,7 @@ impl System {
             frame_boundary_mclk: 0,
             z80: Z80::new(),
             z80_frontier_mclk: 0,
+            z80_bank: 0,
         }
     }
 
@@ -565,11 +572,14 @@ impl System {
             let System {
                 z80,
                 z80_ram,
+                rom,
+                ram,
+                z80_bank,
                 z80_frontier_mclk,
                 ..
             } = self;
             while *z80_frontier_mclk < now {
-                let mut bus = Z80Bus::new(z80_ram);
+                let mut bus = Z80Bus::new(z80_ram, rom, ram, z80_bank);
                 let t = z80.step(&mut bus);
                 *z80_frontier_mclk += t as u64 * MCLK_PER_Z80_CYCLE;
             }
@@ -1005,6 +1015,51 @@ mod tests {
         assert_eq!(
             s, back,
             "the whole machine round-trips, Z80 + frontier included"
+        );
+    }
+
+    #[test]
+    fn z80_executes_in_the_run_loop_when_released() {
+        // The out-of-band Z-live harness (ZC13): release the Z80, load a small program into Z80 RAM, run one
+        // frame, and assert it executed real instructions through the System run loop over the Z80Bus. No
+        // committed fixture does this (they all hold the Z80 in reset), so this is opt-in and touches no
+        // frozen currency — it proves the wiring works, the way SST proves the 68000 out-of-band.
+        let mut s = booted(0x2E80);
+        // A tiny program at $0000: LD A,$5A ; LD ($1000),A ; HALT.
+        let program = [0x3E, 0x5A, 0x32, 0x00, 0x10, 0x76];
+        s.z80_ram[..program.len()].copy_from_slice(&program);
+        // Release the Z80 from reset — what a 68000 `$A11200` bit0 = 1 write does; the frontier already tracks
+        // `now`, so the chase starts with zero backlog (ZC5).
+        s.z80_running = true;
+        s.run_frames(1);
+        assert_eq!(
+            s.z80_ram[0x1000], 0x5A,
+            "the Z80 executed LD ($1000),A and stored into its RAM"
+        );
+        let r = s.z80.regs();
+        assert_eq!(r.a, 0x5A, "A holds the loaded immediate");
+        assert!(r.halted, "the Z80 reached HALT and idled there");
+        // The frontier kept pace with the 68000's clock (it ran real instructions, not just tracked `now`).
+        assert!(
+            s.z80_frontier_mclk >= s.scheduler().now(),
+            "the released Z80's frontier reaches the 68000 clock"
+        );
+    }
+
+    #[test]
+    fn z80_reads_rom_through_the_bank_window_in_the_run_loop() {
+        // A released Z80 fetches data from 68k ROM through its $8000-$FFFF window — the path a real sound
+        // driver uses to read music/DAC data. Program: LD A,($8000) ; LD ($1000),A ; HALT, with bank = 0 so
+        // the window base is $000000 (the ROM's first bytes). Asserts the byte the Z80 read matches the ROM.
+        let mut s = booted(0x2E80);
+        let rom_byte = s.rom()[0x0000];
+        let program = [0x3A, 0x00, 0x80, 0x32, 0x00, 0x10, 0x76];
+        s.z80_ram[..program.len()].copy_from_slice(&program);
+        s.z80_running = true;
+        s.run_frames(1);
+        assert_eq!(
+            s.z80_ram[0x1000], rom_byte,
+            "the Z80 read ROM $000000 through the bank window (bank 0)"
         );
     }
 

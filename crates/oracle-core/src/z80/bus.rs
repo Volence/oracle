@@ -2,11 +2,12 @@
 //!
 //! The analog of [`crate::bus::MegaDriveBus`] for the sound CPU: it borrows the `System`'s memory fields
 //! for the duration of one Z80 step and presents the Z80's own 16-bit address space. This is the
-//! **Z-skeleton** shape — the address decode is defined in full, but only Z80 RAM (`$0000-$1FFF` + its
-//! mirror) is live; the ports and the 68k bank window are **scaffolded stubs** (documented per arm), because
-//! nothing executes yet and their real handlers need chips/latches that land in later slices. When the
-//! Z-execute slice turns [`super::Z80::step`] on, these arms fill in against the shared 68k fields; when
-//! Phase RT lands, the FM/PSG writes become the `BusEvent` VGM tap.
+//! **Z-live** shape — Z80 RAM, the `$6000` serial bank latch, and the `$8000-$FFFF` 68k bank window
+//! (reaching ROM / work RAM / Z80 RAM) are **live**, so a released Z80 can fetch its driver code from RAM
+//! and read music/sample data from ROM through the window. The FM/PSG ports decode (read = not-busy / open
+//! bus, write = drop) — turning those writes into the `BusEvent` VGM tap is **Phase RT**. VDP-through-window
+//! and I/O-through-window are the named deferrals (a sound driver rarely reaches them; routing them needs
+//! the `Vdp`/`Io` borrows and is pinned for the RT/interrupt slices).
 //!
 //! Genesis Z80 memory map (Plutiedev "Using the Z80"):
 //!
@@ -14,26 +15,79 @@
 //! |---|---|---|
 //! | `$0000-$1FFF` | Z80 RAM (8 KiB) | **live** — the shared `z80_ram` buffer |
 //! | `$2000-$3FFF` | Z80 RAM mirror | **live** — mirrored (`& 0x1FFF`) |
-//! | `$4000-$4003` | YM2612 FM address/data | stub: read = not-busy status, write dropped (Phase RT tap) |
-//! | `$6000` | bank-address register | stub: 9-bit serial bank latch (Z-execute) |
-//! | `$7F11` | PSG (SN76489), write-only | stub (Phase RT tap) |
-//! | `$7F00-$7F1F` | VDP port mirror | stub (Z-execute) |
-//! | `$8000-$FFFF` | 68k bank window | stub: `(bank << 15) \| (addr & 0x7FFF)` into 68k space (Z-execute) |
+//! | `$4000-$4003` | YM2612 FM address/data | read = not-busy status; write dropped (Phase RT tap) |
+//! | `$6000` | bank-address register | **live** — 9-bit LSB-first serial latch |
+//! | `$7F11` | PSG (SN76489), write-only | decode: read open bus, write dropped (Phase RT tap) |
+//! | `$7F00-$7F1F` | VDP port mirror | deferred: open bus / drop (needs the `Vdp` borrow) |
+//! | `$8000-$FFFF` | 68k bank window | **live** — `(bank << 15) \| (addr & 0x7FFF)` → ROM / work RAM / Z80 RAM |
 
 use super::Z80Io;
 use crate::bus::Z80_RAM_SIZE;
+use crate::system::RAM_SIZE;
 
-/// Split-borrow adapter over the `System`'s Z80-visible memory for one Z80 step. Holds only the Z80 RAM
-/// this slice; the ports + 68k bank window are decoded but stubbed (they gain their borrows/latches when
-/// [`super::Z80::step`] executes in the Z-execute slice). No `Rc`/`RefCell`/`unsafe` — one `&mut` at a time.
+/// Split-borrow adapter over the `System`'s Z80-visible memory for one Z80 step. Holds the Z80 RAM, the
+/// cartridge ROM + work RAM the bank window reaches, and the serial bank latch. No `Rc`/`RefCell`/`unsafe` —
+/// each field is one `&`/`&mut`, borrowed disjointly from the `System` for the step's duration.
 pub struct Z80Bus<'a> {
     z80_ram: &'a mut [u8],
+    rom: &'a [u8],
+    ram: &'a mut [u8],
+    /// The 9-bit bank register (`$6000`), serial-loaded LSB-first; selects the 32 KiB 68k page the
+    /// `$8000-$FFFF` window maps to. Borrowed mutably so a `$6000` write persists into the `System`.
+    bank: &'a mut u16,
 }
 
 impl<'a> Z80Bus<'a> {
-    /// Build an adapter over the shared 8 KiB Z80 RAM.
-    pub fn new(z80_ram: &'a mut [u8]) -> Self {
-        Self { z80_ram }
+    /// Build an adapter over the Z80 RAM, the cartridge ROM + work RAM the bank window reaches, and the
+    /// serial bank latch.
+    pub fn new(z80_ram: &'a mut [u8], rom: &'a [u8], ram: &'a mut [u8], bank: &'a mut u16) -> Self {
+        Self {
+            z80_ram,
+            rom,
+            ram,
+            bank,
+        }
+    }
+
+    /// Translate a `$8000-$FFFF` window address to its absolute 68000 address: the 9-bit bank selects the
+    /// 32 KiB page, `addr & 0x7FFF` is the offset within it (Plutiedev "Z80 banking").
+    fn window_addr(&self, addr: u16) -> u32 {
+        ((*self.bank as u32) << 15) | (addr as u32 & 0x7FFF)
+    }
+
+    /// Read one byte of 68000 space through the bank window. ROM / work RAM / Z80 RAM are live; every other
+    /// 68k region (VDP ports, I/O, FM, the Z80-arbitration registers) reads open bus (`$FF`) this slice —
+    /// a sound driver reaches them through the window only in rare cases, deferred with the `Vdp`/`Io`
+    /// borrows to the RT/interrupt slices.
+    fn read_window(&self, a68k: u32) -> u8 {
+        match a68k {
+            // Cartridge ROM ($000000-$3FFFFF); past a short ROM's end is open bus.
+            0x00_0000..=0x3F_FFFF => {
+                let i = a68k as usize;
+                if i < self.rom.len() {
+                    self.rom[i]
+                } else {
+                    0xFF
+                }
+            }
+            // Z80 RAM aliased at $A00000 (8 KiB mirrored across its 64 KiB window).
+            0xA0_0000..=0xA0_FFFF => self.z80_ram[(a68k as usize) & (Z80_RAM_SIZE - 1)],
+            // Work RAM ($E00000-$FFFFFF, 64 KiB mirrored).
+            0xE0_0000..=0xFF_FFFF => self.ram[(a68k as usize) & (RAM_SIZE - 1)],
+            // VDP / I/O / FM / Z80-arbitration through the window: deferred → open bus.
+            _ => 0xFF,
+        }
+    }
+
+    /// Write one byte of 68000 space through the bank window. Only writable memory (work RAM / Z80 RAM)
+    /// stores; ROM and the port/register regions drop (the same placeholder scope as the 68k side).
+    fn write_window(&mut self, a68k: u32, value: u8) {
+        match a68k {
+            0xA0_0000..=0xA0_FFFF => self.z80_ram[(a68k as usize) & (Z80_RAM_SIZE - 1)] = value,
+            0xE0_0000..=0xFF_FFFF => self.ram[(a68k as usize) & (RAM_SIZE - 1)] = value,
+            // ROM and every port/register region through the window: dropped this slice.
+            _ => {}
+        }
     }
 }
 
@@ -45,18 +99,31 @@ impl Z80Io for Z80Bus<'_> {
             // YM2612 FM: read = status with bit7 (BUSY) clear = not busy (reuses the 68k-side model,
             // crate::bus F2/F4). The real chip lands with the FM core.
             0x4000..=0x4003 => 0x00,
-            // Bank register ($6000), PSG ($7F11, write-only), VDP mirror ($7F00-$7F1F), and the 68k bank
-            // window ($8000-$FFFF) are not reachable until Z-execute turns on execution; open-bus stub.
-            _ => 0x00,
+            // 68k bank window: translate through the 9-bit bank and read 68000 space.
+            0x8000..=0xFFFF => {
+                let a = self.window_addr(addr);
+                self.read_window(a)
+            }
+            // Bank register ($6000, write-only), PSG ($7F11, write-only), VDP mirror ($7F00-$7F1F): open bus.
+            _ => 0xFF,
         }
     }
 
     fn write(&mut self, addr: u16, value: u8) {
-        // Z80 RAM (8 KiB), mirrored across $0000-$3FFF, is the only live target this slice. FM
-        // ($4000-$4003) / PSG ($7F11) writes drop — the BusEvent VGM tap is Phase RT. The bank register
-        // ($6000) 9-bit serial latch and the 68k bank window ($8000-$FFFF) routing land in Z-execute.
-        if let 0x0000..=0x3FFF = addr {
-            self.z80_ram[(addr as usize) & (Z80_RAM_SIZE - 1)] = value;
+        match addr {
+            // Z80 RAM (8 KiB), mirrored across $0000-$3FFF.
+            0x0000..=0x3FFF => self.z80_ram[(addr as usize) & (Z80_RAM_SIZE - 1)] = value,
+            // Bank register ($6000): serial load, LSB-first — each write shifts bit0 of the byte into the top
+            // of the 9-bit latch (Plutiedev "Z80 banking"). After 9 writes the full page is selected.
+            0x6000..=0x60FF => *self.bank = (*self.bank >> 1) | (((value as u16) & 1) << 8),
+            // 68k bank window: translate through the 9-bit bank and write 68000 space.
+            0x8000..=0xFFFF => {
+                let a = self.window_addr(addr);
+                self.write_window(a, value);
+            }
+            // FM ($4000-$4003) / PSG ($7F11) writes drop this slice — the BusEvent VGM tap is Phase RT.
+            // VDP mirror ($7F00-$7F1F) drops (deferred).
+            _ => {}
         }
     }
 
@@ -74,10 +141,23 @@ impl Z80Io for Z80Bus<'_> {
 mod tests {
     use super::*;
 
+    /// Build a bus over fresh buffers with an explicit bank value (helper for the map tests).
+    fn bus_with<'a>(
+        ram: &'a mut [u8],
+        rom: &'a [u8],
+        work: &'a mut [u8],
+        bank: &'a mut u16,
+    ) -> Z80Bus<'a> {
+        Z80Bus::new(ram, rom, work, bank)
+    }
+
     #[test]
     fn z80_ram_reads_writes_and_mirrors() {
         let mut ram = vec![0u8; Z80_RAM_SIZE];
-        let mut bus = Z80Bus::new(&mut ram);
+        let rom = vec![0u8; 0x10];
+        let mut work = vec![0u8; RAM_SIZE];
+        let mut bank = 0u16;
+        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank);
         bus.write(0x0001, 0x9A);
         assert_eq!(bus.read(0x0001), 0x9A, "Z80 RAM byte round-trips");
         // 8 KiB RAM mirrored across $2000-$3FFF.
@@ -89,7 +169,10 @@ mod tests {
     #[test]
     fn fm_ports_read_not_busy() {
         let mut ram = vec![0u8; Z80_RAM_SIZE];
-        let mut bus = Z80Bus::new(&mut ram);
+        let rom = vec![0u8; 0x10];
+        let mut work = vec![0u8; RAM_SIZE];
+        let mut bank = 0u16;
+        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank);
         for a in [0x4000u16, 0x4001, 0x4002, 0x4003] {
             assert_eq!(
                 bus.read(a) & 0x80,
@@ -97,5 +180,52 @@ mod tests {
                 "FM status bit7 (BUSY) clear at {a:#06X}"
             );
         }
+    }
+
+    #[test]
+    fn bank_register_serial_loads_lsb_first() {
+        let mut ram = vec![0u8; Z80_RAM_SIZE];
+        let rom = vec![0u8; 0x10];
+        let mut work = vec![0u8; RAM_SIZE];
+        let mut bank = 0u16;
+        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank);
+        // Load the 9-bit page value 0b1_0000_0001 = 0x101 LSB-first: bit0 first ... bit8 last.
+        for bit in [1u8, 0, 0, 0, 0, 0, 0, 0, 1] {
+            bus.write(0x6000, bit);
+        }
+        assert_eq!(bank, 0x101, "9 LSB-first writes select the page");
+    }
+
+    #[test]
+    fn bank_window_reads_rom() {
+        let mut ram = vec![0u8; Z80_RAM_SIZE];
+        // ROM byte at 68k $008000 (page 1, offset 0).
+        let mut rom = vec![0u8; 0x1_0000];
+        rom[0x8000] = 0x7E;
+        let mut work = vec![0u8; RAM_SIZE];
+        // bank = 1 → window base = 1 << 15 = $8000.
+        let mut bank = 1u16;
+        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank);
+        assert_eq!(
+            bus.read(0x8000),
+            0x7E,
+            "window reads ROM at (bank<<15)|offset"
+        );
+    }
+
+    #[test]
+    fn bank_window_reads_and_writes_work_ram() {
+        let mut ram = vec![0u8; Z80_RAM_SIZE];
+        let rom = vec![0u8; 0x10];
+        let mut work = vec![0u8; RAM_SIZE];
+        // 68k work RAM $FF0000 = bank 0x1FE (0x1FE << 15 = $FF0000), window offset 0.
+        let mut bank = 0x1FEu16;
+        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank);
+        bus.write(0x8000, 0x42);
+        assert_eq!(bus.read(0x8000), 0x42, "window round-trips 68k work RAM");
+        assert_eq!(
+            work[0], 0x42,
+            "the write landed in the shared work RAM buffer"
+        );
     }
 }
