@@ -4,7 +4,8 @@
 //! `vendor/ProcessorTests/z80/v1`) — the Oracle-independent gate for the Z80 (the analog of
 //! `singlestep_m68000.rs`). Each `.json` is 1000 `{initial, final, cycles}` cases for one opcode. This slice
 //! covers the opcodes the fetch script pulls: the **entire un-prefixed base table** (every opcode `00`-`ff`
-//! except the four prefix bytes `cb`/`dd`/`ed`/`fd`), now including the branch/stack control flow.
+//! except the four prefix bytes `cb`/`dd`/`ed`/`fd`) PLUS the **full CB-prefixed group** (`"cb 00"`-`"cb ff"`:
+//! the rotates/shifts, `BIT`/`RES`/`SET`).
 //!
 //! **Structurally isolated** (ZC10): it instantiates a bare [`Z80`] + a flat 64 KiB [`Z80TestBus`] and **never**
 //! [`System`](oracle_core::system::System), so it cannot touch any frozen currency — identically to how the
@@ -39,13 +40,15 @@ const UNDOC_FLAGS: u8 = 0b0010_1000;
 
 /// Opcode files driven this slice (keep in sync with `tools/fetch-z80-tests.sh`'s `FILES`): the **entire
 /// un-prefixed base table** — every opcode `0x00`-`0xFF` except the four prefix bytes `0xCB`/`0xDD`/`0xED`/
-/// `0xFD` (their tables are the later prefix-group slices). This latest addition is the branch/stack control
-/// flow (`DJNZ`/`JR`/`JR cc`, `JP`/`JP cc`, `CALL`/`CALL cc`, `RET`/`RET cc`, `RST`, `PUSH`/`POP`, `EXX`).
+/// `0xFD` — PLUS the **full CB-prefixed group** (`"cb 00"`-`"cb ff"`: the rotates/shifts
+/// `RLC`/`RRC`/`RL`/`RR`/`SLA`/`SRA`/`SLL`/`SRL`, `BIT b`, `RES b`, `SET b`, across all eight targets). The
+/// `DD`/`ED`/`FD`/`DDCB`/`FDCB` tables are the later prefix-group slices.
 fn opcode_files() -> Vec<String> {
-    (0x00u16..=0xFF)
+    let base = (0x00u16..=0xFF)
         .filter(|op| !matches!(op, 0xCB | 0xDD | 0xED | 0xFD))
-        .map(|op| format!("{op:02x}"))
-        .collect()
+        .map(|op| format!("{op:02x}"));
+    let cb = (0x00u16..=0xFF).map(|op| format!("cb {op:02x}"));
+    base.chain(cb).collect()
 }
 
 /// A flat 64 KiB Z80 address space (ZC10) — plain array (the SST corpus is pure memory) plus a port model
@@ -266,10 +269,11 @@ fn z80_matches_singlesteptests() {
         eprintln!("  {fname}.json: {} cases passed", data.len());
         total += data.len();
     }
-    // 252 opcode files × 1000 cases = the entire un-prefixed base table (256 opcodes minus the four
-    // prefix bytes 0xCB/0xDD/0xED/0xFD), which this slice now fully implements.
+    // 252 base-table files + 256 CB-prefixed files = 508 opcode files × 1000 cases. The base table is the
+    // 256 opcodes minus the four prefix bytes 0xCB/0xDD/0xED/0xFD; the CB group is "cb 00".."cb ff". Both
+    // are fully implemented this slice.
     assert_eq!(
-        total, 252_000,
-        "expected 252000 Z80 SST cases (whole un-prefixed base table: 0x00-0xFF minus CB/DD/ED/FD)"
+        total, 508_000,
+        "expected 508000 Z80 SST cases (un-prefixed base table 252k + full CB-prefixed group 256k)"
     );
 }

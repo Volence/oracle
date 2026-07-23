@@ -20,15 +20,17 @@ OUT="$HERE/../vendor/ProcessorTests/z80/v1"
 CHECKSUMS="$HERE/singlesteptests-z80.sha256"
 
 # Opcodes needed by the z80 slice. Extend as opcode coverage grows — same model as the 68000
-# fetch script's FILES list. This batch completes the whole UN-PREFIXED base table: every opcode
-# 0x00-0xFF except the four prefix bytes 0xCB/0xDD/0xED/0xFD (those dispatch into the CB/DD/ED/FD
-# tables, which land in the later prefix-group slices). This latest addition is the branch/stack
-# control flow — DJNZ/JR/JR cc (0x10,0x18,0x20,0x28,0x30,0x38), JP/JP cc, CALL/CALL cc, RET/RET cc,
-# RST, PUSH/POP across 0xC0-0xFF, plus EXX (0xD9) — filling the remaining base-table holes.
+# fetch script's FILES list. This covers the whole UN-PREFIXED base table (every opcode 0x00-0xFF
+# except the four prefix bytes 0xCB/0xDD/0xED/0xFD) PLUS the full CB-prefixed group ("cb 00".."cb ff":
+# the rotates/shifts RLC/RRC/RL/RR/SLA/SRA/SLL/SRL, BIT b, RES b, SET b, across all eight targets).
+# The DD/ED/FD/DDCB/FDCB tables land in the later prefix-group slices.
 FILES=()
 for i in $(seq 0 255); do
   case $i in 203|221|237|253) continue;; esac                       # skip 0xCB/0xDD/0xED/0xFD prefix bytes
   FILES+=("$(printf '%02x' "$i")")
+done
+for i in $(seq 0 255); do
+  FILES+=("$(printf 'cb %02x' "$i")")                               # full CB-prefixed group (space in name)
 done
 
 mkdir -p "$OUT"

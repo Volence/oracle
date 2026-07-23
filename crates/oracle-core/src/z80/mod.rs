@@ -13,8 +13,9 @@
 //! SingleStepTests/z80 (architectural results at instruction boundaries), not SST's per-cycle bus trace, so
 //! no sub-instruction cursor is needed; the whole Z80 is captured by the [`Z80`] struct between `step()`
 //! calls. Coverage so far: the whole documented **un-prefixed base table** (`NOP`, the data/arith/rotate/misc
-//! ops, the 8-bit `LD`/ALU blocks, and the branch/stack control flow); only the `CB`/`ED`/`DD`/`FD` prefix
-//! groups remain as Z-execute work.
+//! ops, the 8-bit `LD`/ALU blocks, and the branch/stack control flow) plus the **full `CB`-prefixed group**
+//! (the rotates/shifts, `BIT`/`RES`/`SET`); only the `ED`/`DD`/`FD` (and `DDCB`/`FDCB`) prefix groups remain
+//! as Z-execute work.
 
 pub mod bus;
 
@@ -357,9 +358,9 @@ impl Z80 {
     /// loads, 8/16-bit `INC`/`DEC`, `ADD HL,rr`, the accumulator rotates, `DAA`/`CPL`/`SCF`/`CCF`, the `EX`
     /// forms + `EXX`, `JP (HL)`, `LD SP,HL`, `EI`/`DI`, `IN A,(n)`/`OUT (n),A`, the 8-bit `LD`/ALU blocks
     /// (`0x40-0xBF`), the ALU-immediate `A,n` ops, and the branch/stack control flow (`DJNZ`/`JR`/`JR cc`/
-    /// `JP`/`JP cc`/`CALL`/`CALL cc`/`RET`/`RET cc`/`RST`/`PUSH`/`POP`). Only the prefix groups
-    /// (`CB`/`ED`/`DD`/`FD`/`DDCB`/`FDCB`, decoded structurally but with stub leaf handlers) remain for the
-    /// next slice.
+    /// `JP`/`JP cc`/`CALL`/`CALL cc`/`RET`/`RET cc`/`RST`/`PUSH`/`POP`) — and the full `CB`-prefixed group
+    /// (rotates/shifts, `BIT`/`RES`/`SET`). Only the `ED`/`DD`/`FD` (and `DDCB`/`FDCB`) prefix groups, decoded
+    /// structurally but with stub leaf handlers, remain for the next slice.
     pub fn step<B: Z80Io>(&mut self, bus: &mut B) -> u32 {
         if self.halted {
             // HALT idle: the CPU runs internal NOPs (refresh continues) until an interrupt/reset clears
@@ -373,7 +374,8 @@ impl Z80 {
 
     /// The prefix-accumulating front end (ZC3b): `CB`/`ED` select an alternate table, `DD`/`FD` set an
     /// index-register override for the following opcode, and `DDCB`/`FDCB` fetch the displacement **before**
-    /// the final opcode byte. The alternate-table and index-override leaf handlers are stubbed this slice.
+    /// the final opcode byte. `CB` is fully implemented; the `ED`/`DD`/`FD` (index-override) leaf handlers
+    /// are stubbed this slice.
     fn execute<B: Z80Io>(&mut self, opcode: u8, bus: &mut B) -> u32 {
         match opcode {
             0xCB => self.execute_cb(bus),
@@ -390,7 +392,7 @@ impl Z80 {
     /// `IN A,(n)`/`OUT (n),A`, the 8-bit `LD`/ALU blocks, and the ALU-immediate `A,n` ops) this includes the
     /// branch/stack control flow: `DJNZ e`/`JR e`/`JR cc,e`, `JP nn`/`JP cc,nn`, `CALL nn`/`CALL cc,nn`,
     /// `RET`/`RET cc`, `RST p`, and `PUSH qq`/`POP qq`. Only the prefix escapes (`CB`/`ED`/`DD`/`FD`, handled
-    /// in [`Self::execute`]) remain — their tables are the next slice.
+    /// in [`Self::execute`]) reach elsewhere; `CB` is done and `ED`/`DD`/`FD` are the next slice.
     fn execute_base<B: Z80Io>(&mut self, opcode: u8, bus: &mut B) -> u32 {
         match opcode {
             0x00 => 4, // NOP
@@ -948,10 +950,104 @@ impl Z80 {
 
     // ---- Prefix leaf handlers — structurally reached, opcode bodies land in the Z-execute slice. ----
 
-    /// `CB`-prefixed rotate/shift/bit ops. Structurally reached; bodies are the Z-execute slice.
+    /// `CB`-prefixed rotate/shift/bit ops (the full `0xCB 0x00`-`0xFF` group). The sub-opcode is fetched over
+    /// a second M1 cycle (refresh bumps twice for a CB-prefixed instruction), then decoded by its high two
+    /// bits: `0x00-0x3F` = the eight rotate/shift ops `RLC RRC RL RR SLA SRA SLL SRL` (op = bits 5..3),
+    /// `0x40-0x7F` = `BIT b`, `0x80-0xBF` = `RES b`, `0xC0-0xFF` = `SET b` (b = bits 5..3); the low three bits
+    /// select the target (`0=B..7=A`, `6 = (HL)`, a read-modify-write of memory). Unlike the accumulator
+    /// rotates, the CB rotates/shifts set the **full** documented flag set (`S Z` from the result, `H = N = 0`,
+    /// `P/V` = parity, `C` = the shifted-out bit). `SLL` (op 6) is an undocumented opcode (shift left, bit 0
+    /// forced to 1) implemented for table completeness; its documented flags follow the same rule. `RES`/`SET`
+    /// touch no flags. The undocumented `YF/XF` (and `BIT`'s memory-sourced pair) stay masked out of the
+    /// documented-flag gate.
     fn execute_cb<B: Z80Io>(&mut self, bus: &mut B) -> u32 {
         let sub = self.next_opcode(bus);
-        unimplemented!("Z80 CB-prefixed opcode {sub:#04X} is the Z-execute slice")
+        let target = sub & 7;
+        let is_hl = target == 6;
+        match sub {
+            // ---- Rotates/shifts (0x00-0x3F): op = bits 5..3, full documented flag set. ----
+            0x00..=0x3F => {
+                let op = (sub >> 3) & 7;
+                let v = self.reg8_get(target, bus);
+                let (r, carry) = self.rotate_shift(op, v);
+                self.reg8_set(target, r, bus);
+                self.set_flags(shift_rotate_flags(r, carry));
+                if is_hl {
+                    15
+                } else {
+                    8
+                }
+            }
+            // ---- BIT b,r|(HL) (0x40-0x7F): Z = NOT(bit), H = 1, N = 0, S = (b==7 && set), P/V = Z, C
+            // preserved. No target write. ----
+            0x40..=0x7F => {
+                let b = (sub >> 3) & 7;
+                let v = self.reg8_get(target, bus);
+                self.op_bit(b, v);
+                if is_hl {
+                    12
+                } else {
+                    8
+                }
+            }
+            // ---- RES b,r|(HL) (0x80-0xBF): clear bit b; no flags. ----
+            0x80..=0xBF => {
+                let b = (sub >> 3) & 7;
+                let v = self.reg8_get(target, bus);
+                self.reg8_set(target, v & !(1 << b), bus);
+                if is_hl {
+                    15
+                } else {
+                    8
+                }
+            }
+            // ---- SET b,r|(HL) (0xC0-0xFF): set bit b; no flags. ----
+            _ => {
+                let b = (sub >> 3) & 7;
+                let v = self.reg8_get(target, bus);
+                self.reg8_set(target, v | (1 << b), bus);
+                if is_hl {
+                    15
+                } else {
+                    8
+                }
+            }
+        }
+    }
+
+    /// Apply a `CB`-space rotate/shift `op` (`0=RLC 1=RRC 2=RL 3=RR 4=SLA 5=SRA 6=SLL 7=SRL`) to `v`, returning
+    /// `(result, carry_out)`. `RL`/`RR` rotate through the current `C` flag; the others are circular
+    /// (`RLC`/`RRC`) or straight shifts. `SLA`/`SLL` shift left (bit 0 = 0 / 1); `SRA` is arithmetic (bit 7
+    /// preserved), `SRL` logical (bit 7 = 0). The caller derives the documented flags from `(result, carry)`.
+    fn rotate_shift(&self, op: u8, v: u8) -> (u8, bool) {
+        let old_c = self.flags() & FLAG_C != 0;
+        match op {
+            0 => (v.rotate_left(1), v & 0x80 != 0),                // RLC
+            1 => (v.rotate_right(1), v & 0x01 != 0),               // RRC
+            2 => ((v << 1) | old_c as u8, v & 0x80 != 0),          // RL
+            3 => ((v >> 1) | ((old_c as u8) << 7), v & 0x01 != 0), // RR
+            4 => (v << 1, v & 0x80 != 0),                          // SLA
+            5 => ((v >> 1) | (v & 0x80), v & 0x01 != 0),           // SRA
+            6 => ((v << 1) | 1, v & 0x80 != 0),                    // SLL (undocumented)
+            _ => (v >> 1, v & 0x01 != 0),                          // SRL
+        }
+    }
+
+    /// `BIT b,r|(HL)`: test bit `b` of `v`. `Z` = NOT(bit set), `H = 1`, `N = 0`, `S` set only for `b == 7`
+    /// with the bit set, `P/V` = `Z` (documented convention), `C` **preserved**. The undocumented `YF/XF`
+    /// (from the operand for the register form, from `wz` for `(HL)`) are set from `v` here but masked out of
+    /// the documented-flag gate.
+    fn op_bit(&mut self, b: u8, v: u8) {
+        let set = v & (1 << b) != 0;
+        let mut f = (self.flags() & FLAG_C) | FLAG_H; // C preserved, H = 1, N = 0
+        if !set {
+            f |= FLAG_Z | FLAG_PV;
+        }
+        if b == 7 && set {
+            f |= FLAG_S;
+        }
+        f |= v & FLAG_XY; // undocumented, masked out of the documented-flag gate
+        self.set_flags(f);
     }
 
     /// `ED`-prefixed extended ops. Structurally reached; bodies are the Z-execute slice.
@@ -1101,6 +1197,27 @@ fn dec8(v: u8, old_flags: u8) -> (u8, u8) {
     }
     f |= r & FLAG_XY;
     (r, f)
+}
+
+/// Flags for the `CB`-space rotates/shifts (`RLC`/`RRC`/`RL`/`RR`/`SLA`/`SRA`/`SLL`/`SRL`): the **full**
+/// documented set — `S`/`Z` from the result, `H = N = 0`, `P/V` = even parity, `C` from the shifted-out bit.
+/// `YF/XF` come from the result's bits 5/3 (undocumented, masked out of the documented-flag gate).
+fn shift_rotate_flags(result: u8, carry: bool) -> u8 {
+    let mut f = 0u8;
+    if result & 0x80 != 0 {
+        f |= FLAG_S;
+    }
+    if result == 0 {
+        f |= FLAG_Z;
+    }
+    if result.count_ones().is_multiple_of(2) {
+        f |= FLAG_PV; // parity even
+    }
+    if carry {
+        f |= FLAG_C;
+    }
+    f |= result & FLAG_XY;
+    f
 }
 
 /// Flags for the accumulator rotates (`RLCA`/`RRCA`/`RLA`/`RRA`): `H = N = 0`, `S/Z/P/V` preserved, `C` set
