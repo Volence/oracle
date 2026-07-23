@@ -8,3 +8,11 @@ description = "Live windowed frontend for the oracle-core Genesis emulation core
 [dependencies]
 oracle-core = { path = "../oracle-core" }
 minifb = "0.28"
+# Real-time audio (Phase SY-5) — frontend-only; pulls the core's opt-in synth + an SPSC ring.
+# cpal (the host output stream) is deferred to SY-5b; SY-5a lands the headless-testable substrate only.
+ringbuf = { version = "0.4", optional = true }
+
+[features]
+default = ["audio"]
+# Turns on the core's native synth (AudioSink) and the SPSC-ring audio substrate. cpal / live stream: SY-5b.
+audio = ["dep:ringbuf", "oracle-core/synth"]

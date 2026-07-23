@@ -37,6 +37,12 @@
 //! backdrop pixels (`cell == None`) report and arm nothing this slice (a documented follow-up). Break-on-hit
 //! and an on-screen text overlay are out of scope — the core is frame-batched and minifb has no text.
 
+// Phase SY-5a real-time-audio substrate (SPSC ring + `i16→f32` + composite `BusEventSink`). Feature-gated
+// and self-contained: it is exercised by its own headless tests here; the live loop below is switched to it
+// (plus the cpal output stream) in SY-5b. See `docs/2026-07-23-phase-sy5-realtime-audio-design.md`.
+#[cfg(feature = "audio")]
+mod audio;
+
 use minifb::{Key, KeyRepeat, MouseButton, MouseMode, ScaleMode, Window, WindowOptions};
 use oracle_core::io::Pad;
 use oracle_core::system::System;
