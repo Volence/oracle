@@ -204,6 +204,46 @@ impl Z80 {
         }
     }
 
+    /// The 30-byte export-golden layout for `export_state` region 4 (ZC9), in a fixed little-endian order.
+    /// The architectural register file, packed:
+    ///
+    /// | Bytes | Field |
+    /// |---|---|
+    /// | 8 | AF, BC, DE, HL (each LE `u16`) |
+    /// | 8 | AF', BC', DE', HL' |
+    /// | 4 | IX, IY |
+    /// | 4 | SP, PC |
+    /// | 2 | I, R |
+    /// | 1 | IFF1·IFF2·IM packed (`iff1<<0 | iff2<<1 | im<<2`) |
+    /// | 1 | HALT flag (0/1) |
+    /// | 2 | WZ |
+    ///
+    /// At the reset state every field is zero (ZC9 all-zero reset model), so this emits all-zero bytes and the
+    /// export golden does not move at Z-live go-live. `System::export_state` copies these 30 bytes and pads to
+    /// the reserved `0x40` region (>2× margin).
+    pub fn export_region(&self) -> [u8; 30] {
+        let mut b = [0u8; 30];
+        let mut w = |off: usize, v: u16| b[off..off + 2].copy_from_slice(&v.to_le_bytes());
+        w(0, self.af);
+        w(2, self.bc);
+        w(4, self.de);
+        w(6, self.hl);
+        w(8, self.af2);
+        w(10, self.bc2);
+        w(12, self.de2);
+        w(14, self.hl2);
+        w(16, self.ix);
+        w(18, self.iy);
+        w(20, self.sp);
+        w(22, self.pc);
+        b[24] = self.i;
+        b[25] = self.r;
+        b[26] = (self.iff1 as u8) | ((self.iff2 as u8) << 1) | (self.im << 2);
+        b[27] = self.halted as u8;
+        b[28..30].copy_from_slice(&self.wz.to_le_bytes());
+        b
+    }
+
     /// Power on in the reset state (ZC9): the Z80 `/RESET` strictly defines `PC = 0`, `I = 0`, `R = 0`,
     /// `IFF1 = IFF2 = 0`, `IM = 0`, not halted; SP and the main/index registers are architecturally
     /// undefined and pinned here to **all-zero** (a legitimate reset model that keeps `export_state`
@@ -1974,5 +2014,61 @@ mod tests {
             back, populated,
             "every Z80 register round-trips through bincode"
         );
+    }
+
+    #[test]
+    fn export_region_reset_is_all_zero() {
+        // The go-live guarantee: at reset the 30-byte export region is all zero, so export_state region 4
+        // stays byte-frozen and the golden never moves (all-zero reset model, ZC9).
+        assert_eq!(Z80::new().export_region(), [0u8; 30]);
+    }
+
+    #[test]
+    fn export_region_lays_out_registers_at_fixed_offsets() {
+        // Prove region 4 is genuinely DRIVEN from the struct (not still a hardcoded zero fill): distinct
+        // sentinels in every field must land at their pinned ZC9 little-endian offsets.
+        let z = Z80::from_regs(&Z80Regs {
+            a: 0xA1,
+            f: 0xF2, // AF = 0xA1F2
+            b: 0xB3,
+            c: 0xC4, // BC = 0xB3C4
+            d: 0xD5,
+            e: 0xE6, // DE = 0xD5E6
+            h: 0x17,
+            l: 0x28, // HL = 0x1728
+            af_: 0x090A,
+            bc_: 0x0B0C,
+            de_: 0x0D0E,
+            hl_: 0x0F10,
+            ix: 0x1112,
+            iy: 0x1314,
+            sp: 0x1516,
+            pc: 0x1718,
+            i: 0x19,
+            r: 0x1A,
+            iff1: true,
+            iff2: false,
+            im: 2,
+            halted: true,
+            wz: 0x1B1C,
+            q: 0x1D,
+        });
+        let b = z.export_region();
+        assert_eq!(&b[0..2], &0xA1F2u16.to_le_bytes(), "AF");
+        assert_eq!(&b[2..4], &0xB3C4u16.to_le_bytes(), "BC");
+        assert_eq!(&b[4..6], &0xD5E6u16.to_le_bytes(), "DE");
+        assert_eq!(&b[6..8], &0x1728u16.to_le_bytes(), "HL");
+        assert_eq!(&b[8..10], &0x090Au16.to_le_bytes(), "AF'");
+        assert_eq!(&b[14..16], &0x0F10u16.to_le_bytes(), "HL'");
+        assert_eq!(&b[16..18], &0x1112u16.to_le_bytes(), "IX");
+        assert_eq!(&b[18..20], &0x1314u16.to_le_bytes(), "IY");
+        assert_eq!(&b[20..22], &0x1516u16.to_le_bytes(), "SP");
+        assert_eq!(&b[22..24], &0x1718u16.to_le_bytes(), "PC");
+        assert_eq!(b[24], 0x19, "I");
+        assert_eq!(b[25], 0x1A, "R");
+        // IFF1·IFF2·IM packed: iff1=1, iff2=0, im=2 → 0b0000_1001 = 0x09.
+        assert_eq!(b[26], 0b0000_1001, "IFF/IM packed");
+        assert_eq!(b[27], 1, "HALT");
+        assert_eq!(&b[28..30], &0x1B1Cu16.to_le_bytes(), "WZ");
     }
 }

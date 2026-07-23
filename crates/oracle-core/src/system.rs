@@ -320,9 +320,17 @@ impl System {
         );
         out.extend_from_slice(&self.ram);
         // Z80: the live 8 KiB Z80 RAM (68000-reachable at $A00000 — real mutable state that must be in the
-        // currency) followed by the zeroed reserved register sub-block.
+        // currency) followed by the register sub-block. Region 4 is now LIVE (Z-live go-live): the 30-byte
+        // architectural register file (ZC9 layout), padded to the reserved 0x40. Because every committed
+        // fixture holds the Z80 in reset (all-zero reset model), these 30 bytes are all zero and the export
+        // golden does not move — a content change at unchanged size, no version bump (docs/export-state-v1.md).
         out.extend_from_slice(&self.z80_ram);
-        out.extend(std::iter::repeat_n(0u8, EXPORT_Z80_REGS_PLACEHOLDER));
+        let z80_regs = self.z80.export_region();
+        out.extend_from_slice(&z80_regs);
+        out.extend(std::iter::repeat_n(
+            0u8,
+            EXPORT_Z80_REGS_PLACEHOLDER - z80_regs.len(),
+        ));
         // VDP region (now LIVE): the four Oracle-hashed regions at their frozen sizes, in the state_hash
         // order VRAM → CRAM → VSRAM → regs. This fills the previously-zeroed reserve at UNCHANGED size — the
         // designed v1 *content* change, NOT a layout change (no version bump); see docs/export-state-v1.md.
@@ -963,10 +971,11 @@ mod tests {
     }
 
     #[test]
-    fn export_state_z80_register_region_is_zeroed_in_the_z_skeleton() {
-        // The Z-skeleton wires the Z80 struct into System but keeps export_state region 4 (Z80 regs, 0x40 @
-        // the offset after the live Z80 RAM) all-zero — go-live is the later Z-live slice. Even after a run
-        // (the Z80 held in reset executes nothing), the region stays zero, so the export golden cannot move.
+    fn export_state_z80_register_region_is_driven_and_zero_at_reset() {
+        // Z-live go-live: export_state region 4 (Z80 regs, 0x40 @ the offset after the live Z80 RAM) is now
+        // DRIVEN from the Z80 struct's register file (ZC9 layout), no longer a hardcoded zero fill. Because
+        // every committed fixture holds the Z80 in reset (all-zero reset model) and the reset struct is
+        // all-zero, the region still emits all zeros even after a run — so the export golden does NOT move.
         let mut s = booted(0x2E80);
         s.run_frames(3);
         let img = s.export_state();
@@ -975,7 +984,7 @@ mod tests {
             img[regs_off..regs_off + EXPORT_Z80_REGS_PLACEHOLDER]
                 .iter()
                 .all(|&b| b == 0),
-            "export_state region 4 (Z80 registers) stays zeroed in the Z-skeleton"
+            "export_state region 4 stays zeroed at reset (all-zero reset model → golden frozen at go-live)"
         );
     }
 
