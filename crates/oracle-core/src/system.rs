@@ -137,6 +137,14 @@ pub struct System {
     /// non-currency scalar (like `z80_frontier_mclk`): in this bincode snapshot for determinism, **not** in
     /// `export_state`/`state_hash`.
     sram_dirty: bool,
+    /// Latched `true` the first time the guest writes visible SRAM and **never** cleared by
+    /// [`clear_sram_dirty`](System::clear_sram_dirty) — the S4 "this cart actually uses SRAM" signal. With the
+    /// header-less `$A130F1`-activity fallback (S4), EVERY cart now gets a non-empty SRAM buffer, so
+    /// `sram_present` can no longer tell the frontend "should I make a `.srm`?". This flag can: it stays
+    /// `false` unless the game truly stored save data, so a pure-ROM cart (`s4.soundtest.bin`, the fixture)
+    /// still produces no file. Non-currency scalar like `sram_dirty` — in this bincode snapshot for
+    /// determinism, **not** in `export_state`/`state_hash`. See `docs/2026-07-23-sram-design-recon.md` (S4).
+    sram_used: bool,
     /// The 68000. Driven over a [`MegaDriveBus`] in [`System::step_cpu`]; `step()` returns CPU cycles.
     cpu: Cpu68000,
     /// The absolute mclk of the last frame boundary [`System::run_frames`] targeted. Frame deadlines are
@@ -193,6 +201,7 @@ impl std::fmt::Debug for System {
             .field("sram_odd", &self.sram_odd)
             .field("sram", &format_args!("[{} bytes]", self.sram.len()))
             .field("sram_dirty", &self.sram_dirty)
+            .field("sram_used", &self.sram_used)
             .field("cpu", &self.cpu)
             .field("frame_boundary_mclk", &self.frame_boundary_mclk)
             .field("z80", &self.z80)
@@ -239,6 +248,19 @@ pub(crate) fn fill_random(rng: &mut crate::rng::SplitMix64, buf: &mut [u8]) {
 fn sram_byte_len(base: u32, end: u32) -> usize {
     ((end - base) / 2 + 1) as usize
 }
+
+/// Header-less SRAM fallback window (S4). Some real battery-save carts carry **no** "RA" header yet still
+/// map SRAM through the `$A130F1` access latch — the reference case is `Sonic & Knuckles + Sonic 3` (USA),
+/// whose `$1B0` header is blank but which does `move.b #1,($A130F1)` and stores at `$200001+`
+/// (`skdisasm/sonic3k.constants.asm:218`, `sonic3k.asm:344/15756`; `CartRAM_Type` at `sonic3k.asm:83` =
+/// odd-byte SRAM). When [`parse_sram_header`] finds no "RA", we provision this standard odd-byte page so
+/// such carts can save. The map is **inert until `$A130F1` bit0 is set** (the mapping gate is
+/// `sram_enabled && in-range && parity`), and no golden ROM writes `$A130F1` → currency stays byte-identical.
+const SRAM_FALLBACK_BASE: u32 = 0x20_0001;
+/// End of the fallback window: `$20FFFF` = a 64 KiB address page → 32 KiB of odd-byte storage
+/// (`sram_byte_len(0x200001, 0x20FFFF) == 0x8000`), matching standard hardware and comfortably covering
+/// S3&K's few-KiB usage (`sonic3k.constants.asm:249-267`).
+const SRAM_FALLBACK_END: u32 = 0x20_FFFF;
 
 /// Parse the Genesis cartridge SRAM header (Fork 1c). Returns the detected map when the "RA" magic is
 /// present at `$1B0-1` **and** the declared range (`$1B4-7` start, `$1B8-B` end, both big-endian) is sane:
@@ -298,6 +320,7 @@ impl System {
             sram_odd: false,
             sram: Vec::new(),
             sram_dirty: false,
+            sram_used: false,
             cpu: Cpu68000::new(power_on_regs()),
             frame_boundary_mclk: 0,
             z80: Z80::new(),
@@ -317,11 +340,12 @@ impl System {
         // like the cartridge ROM); the `$A130F1` enable latch does NOT — real hardware powers up with SRAM
         // access off and the driver re-enables it. `sram_dirty` also clears (it is only a persistence throttle).
         let sram = std::mem::take(&mut self.sram);
-        let (present, base, end, odd) = (
+        let (present, base, end, odd, used) = (
             self.sram_present,
             self.sram_base,
             self.sram_end,
             self.sram_odd,
+            self.sram_used,
         );
         *self = Self::new(self.seed);
         self.rom = rom;
@@ -330,30 +354,35 @@ impl System {
         self.sram_base = base;
         self.sram_end = end;
         self.sram_odd = odd;
+        // `sram_used` is a "this cart has ever saved" latch, so it survives a soft reset alongside the SRAM
+        // contents (the enable latch, by contrast, powers off — restored above only for the map, not enable).
+        self.sram_used = used;
         self.cpu.assert_reset();
         self.step_cpu(&mut ()); // services reset_pending: runs the power-on reset recipe over the bus
     }
 
     /// Load the cartridge ROM (`$000000–$3FFFFF` on the 68000 bus). Reads past its end are open bus. Parses
     /// the Genesis SRAM header (Fork 1c hybrid): a valid "RA" field (magic + a sane `$200000-$3FFFFF` range)
-    /// allocates the SRAM buffer and records the map; an absent/garbage header leaves SRAM absent (pure ROM,
-    /// currency-neutral). The header-less `$A130F1`-activity fallback is a **named deferral** (design Fork 1c)
-    /// — not needed by the primary SRAM carts (Phantasy Star, Shining Force, S3K all set "RA") and not built.
+    /// records the exact map. When there is **no** "RA" header (S4), we fall back to the standard odd-byte
+    /// SRAM page (`$200001-$20FFFF` → 32 KiB) rather than leaving SRAM absent, so header-less battery carts
+    /// (the reference case `Sonic & Knuckles + Sonic 3`, whose header is blank yet which saves via `$A130F1`)
+    /// can still store. The header always wins when present. Either way a buffer is now provisioned for
+    /// **every** cart, but it is inert until the game writes `$A130F1` bit0 = 1 (the `sram_index` gate) — and
+    /// no golden ROM does, so the fallback is currency-neutral. Persistence is instead gated on
+    /// [`sram_used`](System::sram_used) (set only on a real guest write). See the recon (S4, Fork 1c).
     pub fn load_rom(&mut self, rom: Vec<u8>) {
-        if let Some(m) = parse_sram_header(&rom) {
-            self.sram_present = true;
-            self.sram_base = m.base;
-            self.sram_end = m.end;
-            self.sram_odd = m.odd;
-            self.sram = vec![0u8; sram_byte_len(m.base, m.end)];
-        } else {
-            self.sram_present = false;
-            self.sram_base = 0;
-            self.sram_end = 0;
-            self.sram_odd = false;
-            self.sram = Vec::new();
-        }
+        let m = parse_sram_header(&rom).unwrap_or(SramMap {
+            base: SRAM_FALLBACK_BASE,
+            end: SRAM_FALLBACK_END,
+            odd: true,
+        });
+        self.sram_present = true;
+        self.sram_base = m.base;
+        self.sram_end = m.end;
+        self.sram_odd = m.odd;
+        self.sram = vec![0u8; sram_byte_len(m.base, m.end)];
         self.sram_dirty = false;
+        self.sram_used = false;
         self.rom = rom;
     }
 
@@ -362,39 +391,55 @@ impl System {
         &self.rom
     }
 
-    /// The live battery-backed SRAM bytes, for the frontend to persist to a `.srm` file (S2). Empty when this
-    /// cart has no SRAM (`!sram_present`). These bytes are the chip's byte lane only — the odd/even bus parity
-    /// is a mapping concern handled inside [`load_rom`](Self::load_rom)/the bus, invisible to the file image.
+    /// The live battery-backed SRAM bytes, for the frontend to persist to a `.srm` file (S2). Since S4 every
+    /// cart has a provisioned buffer (the header-less fallback), so this is only empty before a ROM is loaded.
+    /// These bytes are the chip's byte lane only — the odd/even bus parity is a mapping concern handled inside
+    /// [`load_rom`](Self::load_rom)/the bus, invisible to the file image.
     pub fn sram(&self) -> &[u8] {
         &self.sram
     }
 
-    /// Whether this cartridge declared parallel SRAM (a valid "RA" header). The frontend gates all `.srm`
-    /// load/save on this so a pure-ROM cart (no SRAM) produces no file and no behaviour change.
+    /// Whether an SRAM map is provisioned for this cart. Since S4 this is `true` for **every** loaded ROM (a
+    /// valid "RA" header, else the standard fallback page), so it is no longer the frontend's persistence
+    /// signal — use [`sram_used`](System::sram_used) for "did the game actually save?". Still useful to a
+    /// probe/tool confirming a buffer exists.
     pub fn sram_present(&self) -> bool {
         self.sram_present
     }
 
+    /// Whether the guest has ever written visible SRAM this session (the S4 latch, never cleared by
+    /// [`clear_sram_dirty`](Self::clear_sram_dirty)). The frontend creates/writes a `.srm` **only** when this
+    /// is `true`, so the header-less fallback map never fabricates a save file for a cart that never stores
+    /// (`s4.soundtest.bin`, the fixture → `false` → no file, no behaviour change). Reset on [`load_rom`], kept
+    /// across a soft [`reset`](Self::reset). Snapshot-only; out of `export_state`/`state_hash`.
+    pub fn sram_used(&self) -> bool {
+        self.sram_used
+    }
+
+    /// Whether the game has enabled SRAM access via `$A130F1` bit0 (a harmless additive getter for probes).
+    /// Powers on `false`; the driver sets it before touching the save window and clears it after.
+    pub fn sram_enabled(&self) -> bool {
+        self.sram_enabled
+    }
+
     /// Copy a `.srm` file image into the SRAM buffer on boot (S2). Copies `min(bytes.len(), buffer.len())`
     /// bytes: a too-long file is truncated to the chip size, a too-short file leaves the remaining buffer bytes
-    /// untouched (they start zeroed from [`load_rom`](Self::load_rom)). No-op when `!sram_present`. Loading a
-    /// saved image is **not** a guest write, so `sram_dirty` is deliberately left unchanged.
+    /// untouched (they start zeroed from [`load_rom`](Self::load_rom)). Since S4 a buffer always exists, so
+    /// this always loads (the frontend calls it whenever a `.srm` is on disk). Loading a saved image is **not**
+    /// a guest write, so neither `sram_dirty` nor `sram_used` is set.
     pub fn load_sram(&mut self, bytes: &[u8]) {
-        if !self.sram_present {
-            return;
-        }
         let n = bytes.len().min(self.sram.len());
         self.sram[..n].copy_from_slice(&bytes[..n]);
     }
 
     /// Whether the guest has written SRAM since the last [`clear_sram_dirty`](Self::clear_sram_dirty) (the
-    /// persistence throttle: the frontend polls this, writes the `.srm`, then clears it). Always `false` for a
-    /// cart with no SRAM.
+    /// persistence throttle: the frontend polls this, writes the `.srm`, then clears it).
     pub fn sram_dirty(&self) -> bool {
         self.sram_dirty
     }
 
-    /// Clear the SRAM dirty flag after the frontend has persisted the buffer to disk (S2).
+    /// Clear the SRAM dirty flag after the frontend has persisted the buffer to disk (S2). Deliberately does
+    /// **not** clear [`sram_used`](System::sram_used) (that is a permanent "this cart saves" signal).
     pub fn clear_sram_dirty(&mut self) {
         self.sram_dirty = false;
     }
@@ -435,6 +480,7 @@ impl System {
             sram_write_protect,
             sram,
             sram_dirty,
+            sram_used,
             fm,
             ..
         } = self;
@@ -452,6 +498,7 @@ impl System {
             sram_write_protect,
             sram,
             sram_dirty,
+            sram_used,
             sram_map,
             fm,
             sink,
@@ -766,6 +813,7 @@ impl System {
             sram_write_protect,
             sram,
             sram_dirty,
+            sram_used,
             fm,
             ..
         } = self;
@@ -783,6 +831,7 @@ impl System {
             sram_write_protect,
             sram,
             sram_dirty,
+            sram_used,
             sram_map,
             fm,
             sink,
@@ -1231,15 +1280,60 @@ mod tests {
     }
 
     #[test]
-    fn sram_accessors_are_no_ops_without_sram() {
+    fn sram_used_latches_on_first_write_and_survives_clear_dirty() {
+        // S4: sram_used is the permanent "this cart saves" signal. It latches on the first guest SRAM write
+        // and, unlike sram_dirty, is NOT cleared by clear_sram_dirty (the debounce reset must not erase it).
+        use crate::m68000::bus68k::Bus68k;
         let mut s = System::new(0x5A);
-        s.load_rom(crate::testrom::build()); // no RA header → no SRAM
-        assert!(!s.sram_present(), "pure-ROM cart has no SRAM");
-        assert!(s.sram().is_empty(), "no buffer to persist");
-        // load_sram is a no-op; nothing to copy into, dirty stays clear.
+        s.load_rom(rom_with_sram(0x20_0001, 0x20_3FFF, true));
+        assert!(!s.sram_used(), "fresh cart has not saved");
+        s.mega_bus(&mut ()).write8(0xA1_30F1, 5, 0x01); // enable SRAM
+        s.mega_bus(&mut ()).write8(0x20_0001, 5, 0x42); // first guest write
+        assert!(s.sram_used(), "first write latches sram_used");
+        assert!(s.sram_dirty(), "…and dirties");
+        s.clear_sram_dirty();
+        assert!(
+            !s.sram_dirty() && s.sram_used(),
+            "clear_dirty keeps sram_used latched"
+        );
+        // Loading a save image is not a guest write → neither flag moves.
+        let mut s2 = System::new(0x5A);
+        s2.load_rom(rom_with_sram(0x20_0001, 0x20_3FFF, true));
+        s2.load_sram(&[0x99; 4]);
+        assert!(
+            !s2.sram_used() && !s2.sram_dirty(),
+            "load_sram is not a guest write"
+        );
+    }
+
+    #[test]
+    fn no_ra_cart_gets_the_fallback_map_but_stays_inert_until_used() {
+        // S4: a no-"RA" cart (the fixture) now gets the standard fallback SRAM page, so a buffer EXISTS — but
+        // it is inert (never mapped) until the game enables $A130F1, and `sram_used` stays false so the
+        // frontend makes no `.srm`. This is the currency-neutral fixture condition (no golden writes $A130F1).
+        let mut s = System::new(0x5A);
+        s.load_rom(crate::testrom::build()); // no RA header → fallback page provisioned
+        assert!(
+            s.sram_present(),
+            "fallback map is provisioned for every cart"
+        );
+        assert_eq!(s.sram_base, SRAM_FALLBACK_BASE);
+        assert_eq!(s.sram_end, SRAM_FALLBACK_END);
+        assert!(s.sram_odd, "fallback is the odd-byte lane");
+        assert_eq!(s.sram().len(), 0x8000, "64 KiB page → 32 KiB odd-byte chip");
+        assert!(
+            !s.sram_enabled(),
+            "not enabled until the game writes $A130F1"
+        );
+        assert!(
+            !s.sram_used(),
+            "no guest write yet → the frontend makes no file"
+        );
+        // load_sram now always copies (a buffer exists); it is not a guest write, so nothing dirties.
         s.load_sram(&[1, 2, 3, 4]);
-        assert!(s.sram().is_empty());
+        assert_eq!(&s.sram()[..4], &[1, 2, 3, 4]);
         assert!(!s.sram_dirty());
+        assert!(!s.sram_used());
     }
 
     #[test]
@@ -1326,29 +1420,72 @@ mod tests {
     }
 
     #[test]
-    fn no_ra_rom_never_maps_sram_even_after_a130f1_enable() {
-        // Currency-neutrality micro-check: a ROM without an "RA" header never maps SRAM, even when a game
-        // writes $A130F1 bit0 = 1. This is exactly the golden-ROM condition (fixture has no RA, no golden
-        // touches $A130F1) → the $000000-$3FFFFF region reads/writes ROM byte-identically.
+    fn no_ra_rom_maps_fallback_sram_after_a130f1_enable() {
+        // S4: the header-less fallback. A ROM with NO "RA" header (like Sonic & Knuckles + Sonic 3) still
+        // saves — enabling $A130F1 bit0 maps the standard fallback page at $200001+, and a write there is
+        // retained + latches `sram_used`. Before enabling and at the unused parity, the window reads ROM.
         use crate::m68000::bus68k::Bus68k;
         let mut s = System::new(0x99);
-        s.load_rom(vec![0x5Au8; 0x4000]); // no RA magic
-        assert!(!s.sram_present, "no RA → SRAM absent");
-        assert!(s.sram.is_empty(), "no buffer allocated");
+        s.load_rom(vec![0x5Au8; 0x4000]); // no RA magic → fallback map
+        assert!(s.sram_present, "no RA → fallback SRAM provisioned");
+        assert_eq!(s.sram_base, SRAM_FALLBACK_BASE);
+        assert_eq!(s.sram.len(), 0x8000, "fallback = 32 KiB odd-byte chip");
         let mut sink = ();
-        s.mega_bus(&mut sink).write8(0xA1_30F1, 5, 0x01); // enable bit set…
-        assert!(s.sram_enabled, "the latch still tracks the write");
-        let v = {
+        // Enable via $A130F1 bit0, then write + read back an odd fallback cell.
+        s.mega_bus(&mut sink).write8(0xA1_30F1, 5, 0x01);
+        assert!(s.sram_enabled, "the latch tracks the enable write");
+        {
             let mut bus = s.mega_bus(&mut sink);
-            bus.write8(0x20_0001, 5, 0xFF); // dropped — no SRAM buffer (drives open bus to 0xFFFF)
-            bus.read8(0xA1_0001, 5); // read the version reg → drives open bus to 0xA0A0
-            bus.read8(0x20_0001, 5).0 // open bus low = 0xA0, NOT a retained 0xFF (no SRAM held it)
-        };
+            bus.write8(0x20_0001, 5, 0xFF); // hits fallback sram[0]
+        }
         assert_eq!(
-            v, 0xA0,
-            "no RA: $200001 is open-bus/ROM, never a retained SRAM write"
+            s.mega_bus(&mut sink).read8(0x20_0001, 5).0,
+            0xFF,
+            "no-RA fallback SRAM retains + serves the guest write"
         );
-        assert!(!s.sram_dirty, "no SRAM buffer → nothing to dirty");
+        assert!(s.sram_dirty, "a guest SRAM write dirties the buffer");
+        assert!(s.sram_used, "…and latches sram_used (this cart saves)");
+        assert_eq!(s.sram[0], 0xFF, "sram[0] backs $200001 (odd-byte lane)");
+        // The even neighbour $200000 is the unused parity → ROM/open bus, NOT the SRAM cell (drive the open-bus
+        // latch to a distinct value first, then confirm the read echoes it, not the 0xFF SRAM byte).
+        {
+            let mut bus = s.mega_bus(&mut sink);
+            bus.write8(0xFF_0000, 5, 0x11); // work-RAM write drives open bus = 0x1111
+            assert_ne!(
+                bus.read8(0x20_0000, 5).0,
+                0xFF,
+                "even address (unused parity) is not the SRAM cell"
+            );
+        }
+    }
+
+    #[test]
+    fn no_a130f1_write_never_maps_sram_currency_neutral() {
+        // Currency-neutrality micro-check: with a buffer now provisioned for every cart, the guarantee is that
+        // WITHOUT an $A130F1 enable write, SRAM never maps — exactly the golden-ROM condition (no golden ROM
+        // touches $A130F1). The fixture and a plain synthetic ROM both stay inert: sram_enabled false, a write
+        // into the window stores NOTHING (buffer stays all-zero), and sram_used/dirty stay false → no persistence.
+        use crate::m68000::bus68k::Bus68k;
+        for rom in [crate::testrom::build(), vec![0x5Au8; 0x4000]] {
+            let mut s = System::new(0x99);
+            s.load_rom(rom);
+            assert!(s.sram_present, "buffer provisioned…");
+            assert!(!s.sram_enabled(), "…but never enabled (no $A130F1 write)");
+            let mut sink = ();
+            {
+                let mut bus = s.mega_bus(&mut sink);
+                bus.write8(0x20_0001, 5, 0xFF); // dropped — SRAM disabled (falls through to ROM/open-bus)
+            }
+            assert!(
+                s.sram.iter().all(|&b| b == 0),
+                "disabled: the SRAM buffer stores nothing (stays all-zero)"
+            );
+            assert!(!s.sram_dirty, "disabled write does not dirty SRAM");
+            assert!(
+                !s.sram_used,
+                "…and never latches sram_used → no `.srm` created"
+            );
+        }
     }
 
     #[test]
@@ -1579,14 +1716,22 @@ mod tests {
     }
 
     #[test]
-    fn export_state_sram_region_is_all_zero_without_sram() {
-        // The golden/fixture path: a cart with no "RA" header has an empty SRAM buffer, so the fixed 64 KiB
-        // SRAM region is all zeros — this is why the regenerated golden differs from v1 only by a version
-        // bump and a 64 KiB all-zero tail.
+    fn export_state_sram_region_is_all_zero_without_a_save() {
+        // The golden/fixture path. Since S4 the fixture cart gets a zeroed fallback SRAM buffer, but with no
+        // guest write it stays all-zero, so the fixed 64 KiB SRAM region serializes byte-identically to the
+        // old empty-buffer case — this is why the go-live golden stays valid (an all-zero fallback buffer is
+        // export-equivalent to an empty one, so the currency golden is untouched by S4).
         let mut s = System::new(0x5A);
-        s.load_rom(crate::testrom::build()); // no RA → !sram_present, empty buffer
-        assert!(!s.sram_present(), "fixture cart has no SRAM");
-        assert!(s.sram().is_empty(), "no SRAM buffer");
+        s.load_rom(crate::testrom::build()); // no RA → zeroed fallback buffer, never written
+        assert!(s.sram_present(), "fixture now has a fallback buffer");
+        assert!(
+            !s.sram_used(),
+            "…but no guest write → export region stays all-zero"
+        );
+        assert!(
+            s.sram().iter().all(|&b| b == 0),
+            "fallback buffer is zeroed"
+        );
 
         let img = s.export_state();
         assert_eq!(img.len(), EXPORT_SRAM_OFF + 0x1_0000);
@@ -1594,7 +1739,7 @@ mod tests {
             img[EXPORT_SRAM_OFF..EXPORT_SRAM_OFF + 0x1_0000]
                 .iter()
                 .all(|&b| b == 0),
-            "!sram_present → an all-zero 64 KiB SRAM region"
+            "no save → an all-zero 64 KiB SRAM region (export-equivalent to the old empty buffer)"
         );
     }
 

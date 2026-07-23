@@ -288,6 +288,11 @@ pub struct MegaDriveBus<'a, S: BusEventSink> {
     /// Set `true` on any guest write into visible SRAM — the frontend's S2 persistence throttle. Threaded
     /// like the latches; a non-currency scalar (in the snapshot for determinism, out of the frozen currencies).
     sram_dirty: &'a mut bool,
+    /// Latched `true` the first time the guest writes visible SRAM and **never cleared here** (the S4
+    /// "this cart actually uses SRAM" signal, distinct from the debounce-cleared `sram_dirty`). The frontend
+    /// gates `.srm` creation on it so the header-less fallback map never fabricates a save file for a cart
+    /// that only ever reads (or ignores) SRAM. Non-currency scalar, snapshot-only. See the design recon (S4).
+    sram_used: &'a mut bool,
     /// The detected SRAM map (`None` = no cart SRAM → the `$000000-$3FFFFF` region is pure ROM, currency-
     /// neutral). When `Some`, SRAM overlays ROM only while `sram_enabled` and the address is in range with the
     /// matching parity (see [`MegaDriveBus::sram_index`]). `Copy`, passed by value each step.
@@ -318,6 +323,7 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
         sram_write_protect: &'a mut bool,
         sram: &'a mut [u8],
         sram_dirty: &'a mut bool,
+        sram_used: &'a mut bool,
         sram_map: Option<SramMap>,
         fm: &'a mut Ym2612,
         sink: &'a mut S,
@@ -336,6 +342,7 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             sram_write_protect,
             sram,
             sram_dirty,
+            sram_used,
             sram_map,
             fm,
             sink,
@@ -424,6 +431,10 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
                     if !*self.sram_write_protect {
                         self.sram[i] = byte;
                         *self.sram_dirty = true;
+                        // Latch "this cart uses SRAM" (never cleared here) — the frontend's S4 signal that a
+                        // real save happened, so the header-less fallback map only births a `.srm` when the
+                        // game actually wrote it (a read-only / SRAM-ignoring cart makes no file).
+                        *self.sram_used = true;
                     }
                 }
             }
@@ -863,6 +874,7 @@ mod tests {
         sram_write_protect: bool,
         sram: Vec<u8>,
         sram_dirty: bool,
+        sram_used: bool,
         sram_map: Option<SramMap>,
         fm: Ym2612,
     }
@@ -882,6 +894,7 @@ mod tests {
                 sram_write_protect: false,
                 sram: Vec::new(),
                 sram_dirty: false,
+                sram_used: false,
                 sram_map: None,
                 fm: Ym2612::new(),
             }
@@ -901,6 +914,7 @@ mod tests {
                 &mut self.sram_write_protect,
                 &mut self.sram,
                 &mut self.sram_dirty,
+                &mut self.sram_used,
                 self.sram_map,
                 &mut self.fm,
                 sink,

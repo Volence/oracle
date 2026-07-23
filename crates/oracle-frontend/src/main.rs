@@ -333,25 +333,24 @@ fn main() {
     let mut sys = System::new(0x5EED);
     sys.load_rom(rom);
 
-    // Slice S2 — battery-save persistence. Only carts that declared SRAM ("RA" header) get a `.srm`; a
-    // pure-ROM cart (e.g. s4.soundtest.bin) touches no file and behaves exactly as before. Load the saved
-    // image (if any) before reset — a soft reset preserves SRAM contents (S1), so ordering is free.
+    // Slice S2/S4 — battery-save persistence. Since S4 every cart has a provisioned SRAM buffer (a valid "RA"
+    // header, else the standard fallback page), so we always load a `.srm` when one exists on disk — the save
+    // data must be present before the game first reads it. But we only ever *write* a `.srm` for carts that
+    // actually saved (`sram_used()`), so a pure-ROM cart (e.g. s4.soundtest.bin) still creates no file. Load
+    // before reset — a soft reset preserves SRAM contents (S1), so ordering is free.
     let srm_path = sram_file::srm_path_for(std::path::Path::new(&args.rom_path));
-    if sys.sram_present() {
-        if let Some(bytes) = sram_file::load_srm(&srm_path) {
-            sys.load_sram(&bytes);
-            println!(
-                "SRAM: loaded {} bytes from {}",
-                bytes.len(),
-                srm_path.display()
-            );
-        } else {
-            println!(
-                "SRAM: present ({} bytes), no save yet at {}",
-                sys.sram().len(),
-                srm_path.display()
-            );
-        }
+    if let Some(bytes) = sram_file::load_srm(&srm_path) {
+        sys.load_sram(&bytes);
+        println!(
+            "SRAM: loaded {} bytes from {}",
+            bytes.len(),
+            srm_path.display()
+        );
+    } else {
+        println!(
+            "SRAM: no save yet at {} (a `.srm` is written only once the game saves)",
+            srm_path.display()
+        );
     }
 
     sys.reset();
@@ -501,10 +500,11 @@ fn main() {
             frame += 1;
         }
 
-        // Slice S2 autosave: when the guest has dirtied SRAM, arm a debounce countdown and flush the `.srm`
-        // once it elapses (coalescing a burst of saves into one write). Guarded on `sram_present` so pure-ROM
-        // carts never touch the disk. A save failure is logged, not fatal.
-        if sys.sram_present() {
+        // Slice S2/S4 autosave: when the guest has dirtied SRAM, arm a debounce countdown and flush the `.srm`
+        // once it elapses (coalescing a burst of saves into one write). Guarded on `sram_used()` (S4) so only
+        // carts that actually saved touch the disk — the header-less fallback buffer never fabricates a file.
+        // A save failure is logged, not fatal.
+        if sys.sram_used() {
             if sys.sram_dirty() && sram_save_countdown.is_none() {
                 sram_save_countdown = Some(SRAM_AUTOSAVE_DEBOUNCE_FRAMES);
             }
@@ -556,9 +556,10 @@ fn main() {
         a.sink.finish();
     }
 
-    // Slice S2 — final save on quit: persist any SRAM the guest dirtied since the last autosave (or that a
-    // pending debounce never reached), so a save made just before closing the window is never lost.
-    if sys.sram_present() && (sys.sram_dirty() || sram_save_countdown.is_some()) {
+    // Slice S2/S4 — final save on quit: persist any SRAM the guest dirtied since the last autosave (or that a
+    // pending debounce never reached), so a save made just before closing the window is never lost. Gated on
+    // `sram_used()` (S4) so only a cart that actually saved writes a file.
+    if sys.sram_used() && (sys.sram_dirty() || sram_save_countdown.is_some()) {
         match sram_file::save_srm(&srm_path, sys.sram()) {
             Ok(()) => println!(
                 "SRAM: saved {} bytes to {} on quit",
