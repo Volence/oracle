@@ -11,7 +11,9 @@
 //! `attenuation_to_volume` / `s_power_table`, the operator phase→volume pipeline, and — as of SY-3c — the
 //! envelope generator: the 64-entry `s_increment_table` / `attenuation_increment`, the `clock_envelope`
 //! rate-shift + non-linear-attack update, and `src/ymfm_opn.cpp`'s `cache_operator_data` effective-rate /
-//! key-scale / sustain-level math).** Our generated tables are pinned to ymfm's literal values by unit
+//! key-scale / sustain-level math; and — as of SY-3d — operator **detune**: the 32×4 `s_detune_adjustment`
+//! table + `detune_adjustment` (`src/ymfm_fm.ipp`) and the OPN `compute_phase_step` detune application
+//! (`src/ymfm_opn.cpp`).** Our generated tables are pinned to ymfm's literal values by unit
 //! tests (see [`tests`]). Nuked-OPN2 (LGPL) is **not** consulted, ported, or used as a fixture.
 //!
 //! ## Model (what SY-3b implements — the OPN2-exact integer datapath)
@@ -35,6 +37,11 @@
 //!   (rising edge only — a held note re-asserted per tick does not restart). `rate_param == 0` freezes the
 //!   phase (AR = 0 never opens); AR whose effective rate ≥ 62 opens instantly.
 //! - **The 8 FM algorithms + operator-1 self-feedback** (`$B0`), and **stereo L/R pan** (`$B4`).
+//! - **Operator detune (SY-3d).** The `$30` DT field (bits 4-6) adds a small, pitch-dependent signed
+//!   phase-step displacement (a few cents) via ymfm's [`S_DETUNE_ADJUSTMENT`] table, indexed by DT&3 and the
+//!   OPN 5-bit **detune keycode** ([`Channel::detune_key_code`]); DT bit 2 is the sign. Following ymfm's OPN
+//!   `compute_phase_step`, the detune is summed into the base phase step (17-bit wrap) **before** the MUL
+//!   multiplier, so DT=0 leaves the increment bit-identical to SY-3c.
 //!
 //! ## DAC / PCM channel-6 (SY-3a — preserved unchanged)
 //!
@@ -46,7 +53,7 @@
 //!
 //! ## Deferred to later SY-3 slices (documented inaccuracies, not bugs)
 //!
-//! - **detune** (`$30` DT, SY-3d), **LFO** (`$22`, SY-3e), **SSG-EG** (`$90`) / **CSM / ch3-special**
+//! - **LFO** (`$22`, SY-3e), **SSG-EG** (`$90`) / **CSM / ch3-special**
 //!   (SY-3f). Sub-frame `$2A` timing is SY-4.
 //!
 //! The synth is integer/float-based — it is a **synthesis** helper, never part of `System`, `state_hash`,
@@ -98,6 +105,34 @@ const S_INCREMENT_TABLE: [u32; 64] = [
 /// attenuation step applied on an EG clock at effective `rate`, selected by 3 bits of the EG counter.
 fn attenuation_increment(rate: u32, index: u32) -> u32 {
     (S_INCREMENT_TABLE[rate as usize] >> (4 * index)) & 0xf
+}
+
+/// ymfm `s_detune_adjustment` (`src/ymfm_fm.ipp`, `detune_adjustment`): for each OPN 5-bit key-code (0-31,
+/// row) and each `DT & 3` magnitude (0-3, column), the **unsigned** 6-bit phase-step displacement. DT bit 2 is
+/// the sign (`DT` 4-7 negate the magnitude). Pinned to ymfm's literal values by
+/// [`tests::detune_table_matches_ymfm`]. (ymfm notes the table itself was verified against Nuked's equations,
+/// but the table — not Nuked — is what we port.)
+#[rustfmt::skip]
+const S_DETUNE_ADJUSTMENT: [[u8; 4]; 32] = [
+    [0,  0,  1,  2], [0,  0,  1,  2], [0,  0,  1,  2], [0,  0,  1,  2],
+    [0,  1,  2,  2], [0,  1,  2,  3], [0,  1,  2,  3], [0,  1,  2,  3],
+    [0,  1,  2,  4], [0,  1,  3,  4], [0,  1,  3,  4], [0,  1,  3,  5],
+    [0,  2,  4,  5], [0,  2,  4,  6], [0,  2,  4,  6], [0,  2,  5,  7],
+    [0,  2,  5,  8], [0,  3,  6,  8], [0,  3,  6,  9], [0,  3,  7, 10],
+    [0,  4,  8, 11], [0,  4,  8, 12], [0,  4,  9, 13], [0,  5, 10, 14],
+    [0,  5, 11, 16], [0,  6, 12, 17], [0,  6, 13, 19], [0,  7, 14, 20],
+    [0,  8, 16, 22], [0,  8, 16, 22], [0,  8, 16, 22], [0,  8, 16, 22],
+];
+
+/// ymfm `detune_adjustment(detune, keycode)`: the signed phase-step displacement for a 3-bit `DT` and the OPN
+/// 5-bit detune key-code. The magnitude is [`S_DETUNE_ADJUSTMENT`]`[keycode][DT & 3]`; `DT` bit 2 negates it.
+fn detune_adjustment(dt: u8, keycode: u8) -> i32 {
+    let mag = S_DETUNE_ADJUSTMENT[(keycode & 0x1f) as usize][(dt & 0x03) as usize] as i32;
+    if dt & 0x04 != 0 {
+        -mag
+    } else {
+        mag
+    }
 }
 
 /// Post-mix FM gain in Q15. One full-scale operator (`attenuation_to_volume(0)` = `0x1FE8` = 8168) maps to
@@ -187,6 +222,9 @@ struct Operator {
     // --- programmed parameters ---
     /// `MUL` (`$30` low nibble): frequency multiple. 0 means ×0.5.
     mul: u8,
+    /// `DT` (`$30` bits 4-6): detune. Bits 0-1 are the magnitude (indexing [`S_DETUNE_ADJUSTMENT`]); bit 2 is
+    /// the sign (DT 4-7 = negative). Applied to the phase step in [`Channel::op_inc`].
+    dt: u8,
     /// `TL` (`$40`, 0-127): total level — a fixed attenuation offset (each step = 8 att units ≈ 0.75 dB).
     tl: u8,
     /// `KS` (`$50` bits 6-7): key-scale — steepens the envelope rate with pitch.
@@ -223,6 +261,7 @@ impl Operator {
     fn new() -> Self {
         Self {
             mul: 0,
+            dt: 0,
             tl: 0,
             ks: 0,
             ar: 0,
@@ -395,6 +434,18 @@ impl Channel {
         (self.block << 2) | ((self.fnum >> 9) & 0x03) as u8
     }
 
+    /// The OPN **detune** 5-bit key-code (ymfm `cache_operator_data`, `src/ymfm_opn.cpp`): the top 4 bits of
+    /// `block_freq` (= block + F10) shifted up one, OR'd with a magic low bit derived from FNUM bits 7-10 via a
+    /// 16-entry constant (`bitfield(0xfe80, …)`). **This differs from [`Self::key_code`] (the EG key-scale
+    /// keycode) in bit 0 only:** the EG uses fnum bit 9; ymfm's detune/keycode uses the magic FNUM-mix bit. We
+    /// match ymfm exactly for the detune lookup rather than reuse the EG keycode.
+    fn detune_key_code(&self) -> u8 {
+        let block_freq = ((self.block as u32) << 11) | (self.fnum as u32 & 0x7ff);
+        let hi = ((block_freq >> 10) & 0x0f) << 1;
+        let magic = (0xfe80u32 >> ((block_freq >> 7) & 0x0f)) & 0x01;
+        (hi | magic) as u8
+    }
+
     /// The per-native-tick phase increment for `MUL=1` (before the per-operator MUL): `fnum · 2^block`, in
     /// the 20-bit phase's units. The MUL factor is applied per operator in [`Self::op_inc`].
     ///
@@ -405,11 +456,22 @@ impl Channel {
         (self.fnum as u32) << self.block
     }
 
-    /// The per-operator phase increment: `base · (2·MUL) >> 2` — i.e. `fnum · 2^(block-1) · MUL`, with
-    /// `MUL=0` giving `× 0.5` (the OPN "MUL=0 means half" quirk).
-    fn op_inc(base: u32, mul: u8) -> u32 {
+    /// The per-operator phase increment, following ymfm's OPN `compute_phase_step` (`src/ymfm_opn.cpp`):
+    ///
+    /// ```text
+    /// ps  = base >> 1                 // ymfm (fnum·2 << block) >> 2, == base>>1 in our units
+    /// ps  = (ps + detune) & 0x1_ffff  // detune summed BEFORE MUL, 17-bit wrap (ymfm)
+    /// inc = (ps · (2·MUL)) >> 1        // MUL as an x.1 value (MUL=0 → ×0.5)
+    /// ```
+    ///
+    /// With `detune = 0` and `base` even (any block ≥ 1) this is bit-identical to SY-3c's `(base·2·MUL) >> 2`;
+    /// they can differ only for a subsonic block-0 note with an odd FNUM (where `base>>1` truncates one phase
+    /// unit earlier), which is the ymfm-faithful behaviour.
+    fn op_inc(base: u32, mul: u8, detune: i32) -> u32 {
+        let ps_pre = base >> 1;
+        let ps = ps_pre.wrapping_add(detune as u32) & 0x1_ffff;
         let mul_x2 = if mul == 0 { 1 } else { 2 * mul as u32 };
-        (base * mul_x2) >> 2
+        (ps * mul_x2) >> 1
     }
 
     /// Advance this channel by one native tick and return its `(left, right)` FM contribution (already
@@ -497,15 +559,14 @@ impl Channel {
             }
         };
 
-        // Advance every operator's phase for the next tick.
-        let inc0 = Self::op_inc(base, self.ops[0].mul);
-        self.ops[0].advance(inc0);
-        let inc1 = Self::op_inc(base, self.ops[1].mul);
-        self.ops[1].advance(inc1);
-        let inc2 = Self::op_inc(base, self.ops[2].mul);
-        self.ops[2].advance(inc2);
-        let inc3 = Self::op_inc(base, self.ops[3].mul);
-        self.ops[3].advance(inc3);
+        // Advance every operator's phase for the next tick. Detune (SY-3d) uses the OPN detune keycode and is
+        // summed into the phase step before MUL (see [`Self::op_inc`]).
+        let dkc = self.detune_key_code();
+        for op in self.ops.iter_mut() {
+            let det = detune_adjustment(op.dt, dkc);
+            let inc = Self::op_inc(base, op.mul, det);
+            op.advance(inc);
+        }
 
         // Scale the summed carriers to the output loudness and route through the stereo pan.
         let s = ((carriers as i64 * FM_LEVEL_Q15) >> 15) as i32;
@@ -656,7 +717,10 @@ impl Ym2612Synth {
         let op = SLOT_MAP[op_field];
         let o = &mut self.channels[ch].ops[op];
         match reg & 0xF0 {
-            0x30 => o.mul = value & 0x0F, // (detune bits 4-6 deferred to SY-3d)
+            0x30 => {
+                o.mul = value & 0x0F;
+                o.dt = (value >> 4) & 0x07; // detune (SY-3d): magnitude in bits 0-1, sign in bit 2
+            }
             0x40 => o.tl = value & 0x7F,
             0x50 => {
                 o.ks = (value >> 6) & 0x03;
@@ -1323,6 +1387,128 @@ mod tests {
         assert_ne!(
             phase_end, phase_start,
             "ch6 phase must keep advancing while DAC-muted"
+        );
+    }
+
+    /// SY-3d: the detune table must match ymfm's literal `s_detune_adjustment` (`src/ymfm_fm.ipp`), and
+    /// `detune_adjustment` must select column `DT & 3` and negate on `DT` bit 2 (Fork-1 fixture requirement).
+    #[test]
+    fn detune_table_matches_ymfm() {
+        // Representative rows, quoted verbatim from ymfm's s_detune_adjustment (keycode = row).
+        assert_eq!(S_DETUNE_ADJUSTMENT[0], [0, 0, 1, 2]);
+        assert_eq!(S_DETUNE_ADJUSTMENT[4], [0, 1, 2, 2]);
+        assert_eq!(S_DETUNE_ADJUSTMENT[15], [0, 2, 5, 7]);
+        assert_eq!(S_DETUNE_ADJUSTMENT[19], [0, 3, 7, 10]);
+        assert_eq!(S_DETUNE_ADJUSTMENT[27], [0, 7, 14, 20]);
+        assert_eq!(S_DETUNE_ADJUSTMENT[31], [0, 8, 16, 22]);
+        // detune_adjustment: DT&3 picks the magnitude column; DT bit 2 (DT 4-7) negates it.
+        assert_eq!(detune_adjustment(0, 31), 0, "DT=0 is no detune");
+        assert_eq!(
+            detune_adjustment(3, 31),
+            22,
+            "DT=3 → max positive at keycode 31"
+        );
+        assert_eq!(detune_adjustment(4, 31), 0, "DT=4 → -0");
+        assert_eq!(
+            detune_adjustment(7, 31),
+            -22,
+            "DT=7 → max negative at keycode 31"
+        );
+        assert_eq!(detune_adjustment(1, 15), 2, "row 15 col 1");
+        assert_eq!(detune_adjustment(5, 15), -2, "DT=5 negates row 15 col 1");
+    }
+
+    /// SY-3d: detune is summed into the phase step before MUL (ymfm OPN `compute_phase_step`). DT=0 leaves the
+    /// increment bit-identical to SY-3c; a nonzero DT shifts it by a few phase units (a few cents — never an
+    /// octave); the shift is symmetric in sign and scales with MUL (proving the pre-MUL ordering).
+    #[test]
+    fn detune_shifts_phase_step_and_is_noop_at_zero() {
+        let base = 1083u32 << 4; // the 440 Hz test note (fnum=1083, block=4 → base even)
+        let sy3c = (base * 2) >> 2; // SY-3c's (base·2·MUL)>>2 with MUL=1
+        assert_eq!(
+            Channel::op_inc(base, 1, 0),
+            sy3c,
+            "DT=0 must not change the phase increment"
+        );
+        // Symmetric small shift around the base.
+        let up = Channel::op_inc(base, 1, 22);
+        let dn = Channel::op_inc(base, 1, -22);
+        assert!(
+            up > sy3c && dn < sy3c,
+            "detune must shift the step around the base"
+        );
+        assert_eq!(
+            up - sy3c,
+            22,
+            "positive detune adds the raw displacement (MUL=1)"
+        );
+        assert_eq!(
+            sy3c - dn,
+            22,
+            "negative detune subtracts symmetrically (MUL=1)"
+        );
+        assert!(
+            up - sy3c <= 30,
+            "detune shift is a few phase units, not octave-scale"
+        );
+        // MUL scales the detune because ymfm adds it BEFORE the ×MUL multiply: with MUL=2 the shift doubles.
+        let up_mul2 = Channel::op_inc(base, 2, 22);
+        let base_mul2 = Channel::op_inc(base, 2, 0);
+        assert_eq!(
+            up_mul2 - base_mul2,
+            2 * (up - sy3c),
+            "detune shift scales with MUL (added before the multiplier)"
+        );
+    }
+
+    /// SY-3d: two carriers on the same note with **opposite-sign** detune drift out of phase, so their sum
+    /// beats (the amplitude swings through deep cancellation dips) — whereas matched detune stays phase-locked
+    /// at a steady amplitude. This is the audible signature of operator detune.
+    #[test]
+    fn opposite_detune_produces_beating() {
+        // Render two algorithm-7 carriers (Op1 op-field 0, Op2 op-field 2) at one note; return the min and max
+        // windowed peak amplitude over ~2 s.
+        fn windowed_peak_range(dt_op1: u8, dt_op2: u8) -> (i32, i32) {
+            let sr = 44_100u32;
+            let mut fm = Ym2612Synth::new(sr);
+            fm.write(0, 0xB0, 0x07); // algorithm 7 (all carriers), no feedback
+            for (field_reg, dt) in [(0x00u8, dt_op1), (0x08u8, dt_op2)] {
+                fm.write(0, 0x30 | field_reg, ((dt & 0x07) << 4) | 0x01); // DT + MUL=1
+                fm.write(0, 0x40 | field_reg, 0x00); // TL=0
+                fm.write(0, 0x50 | field_reg, 0x1F); // KS=0, AR=31 (instant attack)
+                fm.write(0, 0x60 | field_reg, 0x00); // D1R=0
+                fm.write(0, 0x70 | field_reg, 0x00); // D2R=0
+                fm.write(0, 0x80 | field_reg, 0x00); // SL=0, RR=0 (sustained)
+            }
+            fm.write(0, 0xA4, 0x24);
+            fm.write(0, 0xA0, 0x3B);
+            fm.write(0, 0xB4, 0xC0); // stereo both
+            fm.write(0, 0x28, 0x30); // key on Op1 (bit4) + Op2 (bit5)
+            let mut min_peak = i32::MAX;
+            let mut max_peak = 0i32;
+            let win = (sr / 40) as usize; // 25 ms windows
+            for _ in 0..80 {
+                let mut peak = 0i32;
+                for _ in 0..win {
+                    let (l, _r) = fm.next_sample();
+                    peak = peak.max(l.abs());
+                }
+                min_peak = min_peak.min(peak);
+                max_peak = max_peak.max(peak);
+            }
+            (min_peak, max_peak)
+        }
+        // Matched detune → phase-locked → steady amplitude (min ≈ max).
+        let (lo0, hi0) = windowed_peak_range(0, 0);
+        assert!(
+            hi0 - lo0 < hi0 / 4,
+            "matched detune must hold a steady amplitude, got {lo0}..{hi0}"
+        );
+        // Opposite-sign detune (+mag vs −mag) → drift → beating: deep amplitude swing.
+        let (lo, hi) = windowed_peak_range(1, 5);
+        assert!(
+            lo * 2 < hi,
+            "opposite detune must beat (deep amplitude cancellation), got {lo}..{hi}"
         );
     }
 }
