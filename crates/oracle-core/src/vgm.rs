@@ -19,8 +19,15 @@
 //! - **Timing (RT6):** frame-bucketed waits — each record is stamped with the frame index latched from
 //!   [`on_step_boundary`](BusEventSink::on_step_boundary); the renderer emits one 735-sample frame-wait (`0x62`)
 //!   at each frame boundary.
+//! - **Sub-frame timing (SY-4b, opt-in):** [`VgmLogger::with_subframe_waits`] additionally captures each
+//!   record's absolute master-clock via the SY-4a [`on_event_at`](BusEventSink::on_event_at) seam. In that
+//!   mode the renderer converts each mclk to an absolute 44100 Hz sample (`mclk * 735 / MCLK_PER_FRAME`) and
+//!   emits the sample delta between consecutive records as `0x61 nn nn` waits (splitting on 65535), so writes
+//!   land at their true intra-frame sample rather than being quantized to frame start. The default `new()`
+//!   logger is unchanged and byte-identical.
 
 use crate::bus::{BusEvent, BusEventSink, BusOp};
+use crate::system::MCLK_PER_FRAME;
 
 /// The two Genesis sound chips a `VgmLogger` decodes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,8 +57,12 @@ pub struct VgmRecord {
 const CMD_PSG: u8 = 0x50; // SN76489 write: `0x50 dd`
 const CMD_YM2612_PORT0: u8 = 0x52; // YM2612 part I write: `0x52 aa dd`
 const CMD_YM2612_PORT1: u8 = 0x53; // YM2612 part II write: `0x53 aa dd`
+const CMD_WAIT: u8 = 0x61; // wait N samples: `0x61 nn nn` (little-endian u16)
 const CMD_WAIT_FRAME: u8 = 0x62; // wait 735 samples (1/60 s)
 const CMD_END: u8 = 0x66; // end of sound data
+
+/// Largest sample count expressible in one `0x61 nn nn` command.
+const WAIT_MAX: u64 = 0xFFFF;
 
 /// Samples per NTSC frame at the 44100 Hz VGM timebase (`0x62`).
 const SAMPLES_PER_FRAME: u32 = 735;
@@ -71,6 +82,16 @@ pub struct VgmLogger {
     frame: u64,
     /// The normalized record log (RT4).
     records: Vec<VgmRecord>,
+    /// Absolute master-clock (mclk) per record, in lockstep with `records` (SY-4b sub-frame timing). Captured
+    /// from the [`on_event_at`](BusEventSink::on_event_at) seam; frame-derived (`frame * MCLK_PER_FRAME`) for
+    /// untimed callers that use the plain `on_event` path.
+    mclks: Vec<u64>,
+    /// The mclk of the write currently being decoded, staged by `on_event_at` and consumed by `on_event`.
+    /// `None` when reached via the untimed `on_event` path (then the frame-derived mclk is used).
+    pending_mclk: Option<u64>,
+    /// Whether `render_vgm` emits sub-frame `0x61` waits (opt-in, [`with_subframe_waits`](Self::with_subframe_waits))
+    /// instead of the default frame-bucketed `0x62` waits.
+    subframe: bool,
     /// Status counter: completed YM2612 register writes.
     fm_writes: u64,
     /// Status counter: SN76489 byte writes.
@@ -78,21 +99,49 @@ pub struct VgmLogger {
 }
 
 impl VgmLogger {
-    /// A fresh logger: all latches/counters zero, no records.
+    /// A fresh logger: all latches/counters zero, no records. Renders **frame-bucketed** VGM (one `0x62` per
+    /// frame boundary) — the default, byte-identical to the RT-3 goldens.
     pub fn new() -> Self {
         Self {
             fm_addr_latch: [0; 2],
             psg_latch: 0,
             frame: 0,
             records: Vec::new(),
+            mclks: Vec::new(),
+            pending_mclk: None,
+            subframe: false,
             fm_writes: 0,
             psg_writes: 0,
+        }
+    }
+
+    /// A logger that renders **sub-frame-accurate** VGM: each record is placed at its true intra-frame sample
+    /// (derived from the absolute mclk captured via the SY-4a `on_event_at` seam), emitting `0x61` sample-delta
+    /// waits between consecutive records. Decode/records are identical to [`new`](Self::new); only `render_vgm`
+    /// differs. Use with `run_frames_with_sink` on a real machine so the timed emission sites feed real mclks.
+    pub fn with_subframe_waits() -> Self {
+        Self {
+            subframe: true,
+            ..Self::new()
         }
     }
 
     /// The decoded register-write records, in arrival order.
     pub fn records(&self) -> &[VgmRecord] {
         &self.records
+    }
+
+    /// The absolute master-clock (mclk) of each record, in lockstep with [`records`](Self::records). Populated
+    /// from the SY-4a `on_event_at` seam (frame-derived for untimed callers); the timing source `render_vgm`
+    /// uses in sub-frame mode, exposed for callers that want the raw sub-frame write timeline.
+    pub fn mclks(&self) -> &[u64] {
+        &self.mclks
+    }
+
+    /// Push a record and its absolute mclk together, keeping `records` and `mclks` in lockstep.
+    fn push_record(&mut self, r: VgmRecord, mclk: u64) {
+        self.records.push(r);
+        self.mclks.push(mclk);
     }
 
     /// Completed YM2612 register writes recorded so far.
@@ -116,6 +165,8 @@ impl VgmLogger {
         self.psg_latch = 0;
         self.frame = 0;
         self.records.clear();
+        self.mclks.clear();
+        self.pending_mclk = None;
         self.fm_writes = 0;
         self.psg_writes = 0;
     }
@@ -130,30 +181,41 @@ impl VgmLogger {
         // Build the command stream first so the header's total-sample count is exact.
         let mut cmds: Vec<u8> = Vec::new();
         let mut total_samples: u32 = 0;
-        let mut prev_frame: Option<u64> = None;
-        for r in &self.records {
-            // Frame-bucketed wait: one 0x62 at each frame boundary (RT6). No wait precedes the first record.
-            if let Some(pf) = prev_frame {
-                if r.frame != pf {
-                    cmds.push(CMD_WAIT_FRAME);
-                    total_samples += SAMPLES_PER_FRAME;
+        if self.subframe {
+            // Sub-frame mode (SY-4b): place each record at its absolute 44100 Hz sample derived from the
+            // record's own mclk, and emit the sample delta between consecutive records as `0x61` waits.
+            let mut prev_sample: Option<u64> = None;
+            for (i, r) in self.records.iter().enumerate() {
+                let sample = self.mclks[i] * SAMPLES_PER_FRAME as u64 / MCLK_PER_FRAME;
+                if let Some(ps) = prev_sample {
+                    // `saturating_sub`: cross-master interleaving (Z80 frontier lags the 68k) can present a
+                    // record whose mclk dips below its predecessor's; treat that as a zero-length wait rather
+                    // than winding time backwards.
+                    let mut delta = sample.saturating_sub(ps);
+                    while delta > 0 {
+                        let chunk = delta.min(WAIT_MAX);
+                        cmds.push(CMD_WAIT);
+                        cmds.extend_from_slice(&(chunk as u16).to_le_bytes());
+                        total_samples += chunk as u32;
+                        delta -= chunk;
+                    }
                 }
+                prev_sample = Some(sample);
+                push_write(&mut cmds, r);
             }
-            prev_frame = Some(r.frame);
-            match r.chip {
-                SoundChip::Ym2612 => {
-                    cmds.push(if r.port == 0 {
-                        CMD_YM2612_PORT0
-                    } else {
-                        CMD_YM2612_PORT1
-                    });
-                    cmds.push(r.reg);
-                    cmds.push(r.value);
+        } else {
+            // Default frame-bucketed mode (RT6): one 0x62 at each frame boundary. No wait precedes the first
+            // record. Byte-identical to the RT-3 goldens.
+            let mut prev_frame: Option<u64> = None;
+            for r in &self.records {
+                if let Some(pf) = prev_frame {
+                    if r.frame != pf {
+                        cmds.push(CMD_WAIT_FRAME);
+                        total_samples += SAMPLES_PER_FRAME;
+                    }
                 }
-                SoundChip::Psg => {
-                    cmds.push(CMD_PSG);
-                    cmds.push(r.value);
-                }
+                prev_frame = Some(r.frame);
+                push_write(&mut cmds, r);
             }
         }
         cmds.push(CMD_END);
@@ -191,6 +253,26 @@ fn write_le_u32(buf: &mut [u8], off: usize, value: u32) {
     buf[off..off + 4].copy_from_slice(&value.to_le_bytes());
 }
 
+/// Append one record's VGM write command — `0x52`/`0x53 aa dd` for the two YM2612 ports, `0x50 dd` for the
+/// PSG. Shared by both the frame-bucketed and sub-frame render paths so the command encoding never diverges.
+fn push_write(cmds: &mut Vec<u8>, r: &VgmRecord) {
+    match r.chip {
+        SoundChip::Ym2612 => {
+            cmds.push(if r.port == 0 {
+                CMD_YM2612_PORT0
+            } else {
+                CMD_YM2612_PORT1
+            });
+            cmds.push(r.reg);
+            cmds.push(r.value);
+        }
+        SoundChip::Psg => {
+            cmds.push(CMD_PSG);
+            cmds.push(r.value);
+        }
+    }
+}
+
 impl BusEventSink for VgmLogger {
     fn on_step_boundary(&mut self, _pc: u32, frame: u64) {
         self.frame = frame;
@@ -200,6 +282,12 @@ impl BusEventSink for VgmLogger {
         if e.op != BusOp::Write {
             return;
         }
+        // The write's absolute mclk: from `on_event_at` if timed, else frame-derived (frame start) for untimed
+        // callers — the latter keeps sub-frame deltas within a frame at zero, matching frame-bucketed semantics.
+        let mclk = self
+            .pending_mclk
+            .take()
+            .unwrap_or(self.frame * MCLK_PER_FRAME);
         let value = e.value as u8;
         // Classify on `addr` ALONE (fc-agnostic, RT3): the Z80 window and the 68k window fold into one chip.
         match e.addr {
@@ -207,26 +295,32 @@ impl BusEventSink for VgmLogger {
             0x4000 | 0xA0_4000 => self.fm_addr_latch[0] = value,
             // FM bank-0 data — completes a triple.
             0x4001 | 0xA0_4001 => {
-                self.records.push(VgmRecord {
-                    chip: SoundChip::Ym2612,
-                    port: 0,
-                    reg: self.fm_addr_latch[0],
-                    value,
-                    frame: self.frame,
-                });
+                self.push_record(
+                    VgmRecord {
+                        chip: SoundChip::Ym2612,
+                        port: 0,
+                        reg: self.fm_addr_latch[0],
+                        value,
+                        frame: self.frame,
+                    },
+                    mclk,
+                );
                 self.fm_writes += 1;
             }
             // FM bank-1 address latch — no record.
             0x4002 | 0xA0_4002 => self.fm_addr_latch[1] = value,
             // FM bank-1 data — completes a triple.
             0x4003 | 0xA0_4003 => {
-                self.records.push(VgmRecord {
-                    chip: SoundChip::Ym2612,
-                    port: 1,
-                    reg: self.fm_addr_latch[1],
-                    value,
-                    frame: self.frame,
-                });
+                self.push_record(
+                    VgmRecord {
+                        chip: SoundChip::Ym2612,
+                        port: 1,
+                        reg: self.fm_addr_latch[1],
+                        value,
+                        frame: self.frame,
+                    },
+                    mclk,
+                );
                 self.fm_writes += 1;
             }
             // PSG: self-describing byte. A `bit7=1` byte latches the channel/type selector; every byte records.
@@ -234,17 +328,28 @@ impl BusEventSink for VgmLogger {
                 if value & 0x80 != 0 {
                     self.psg_latch = (value >> 4) & 0x07;
                 }
-                self.records.push(VgmRecord {
-                    chip: SoundChip::Psg,
-                    port: 0,
-                    reg: self.psg_latch,
-                    value,
-                    frame: self.frame,
-                });
+                self.push_record(
+                    VgmRecord {
+                        chip: SoundChip::Psg,
+                        port: 0,
+                        reg: self.psg_latch,
+                        value,
+                        frame: self.frame,
+                    },
+                    mclk,
+                );
                 self.psg_writes += 1;
             }
             _ => {}
         }
+    }
+
+    /// Timestamped delivery (SY-4a seam): stage the absolute mclk, then dispatch through the shared decode.
+    /// `on_event` consumes the staged mclk; address-latch writes that produce no record discard it, and the
+    /// next timed write re-stages its own — so `mclks` stays in exact lockstep with `records`.
+    fn on_event_at(&mut self, e: BusEvent, mclk: u64) {
+        self.pending_mclk = Some(mclk);
+        self.on_event(e);
     }
 }
 
@@ -429,5 +534,120 @@ mod tests {
 
     fn read_le_u32(buf: &[u8], off: usize) -> u32 {
         u32::from_le_bytes(buf[off..off + 4].try_into().unwrap())
+    }
+
+    /// Feed a fixed write sequence through the SY-4a `on_event_at` seam with a variety of mclks into a DEFAULT
+    /// (frame-bucketed) logger, and prove the render is byte-identical to feeding the SAME sequence untimed via
+    /// `on_event`. Pins that the default logger ignores mclk entirely — the RT-3 goldens cannot move.
+    #[test]
+    fn default_mode_is_byte_identical_regardless_of_mclk() {
+        // Timed path: writes carry real, wildly different mclks (mid-frame and cross-frame).
+        let mut timed = VgmLogger::new();
+        timed.on_step_boundary(0, 0);
+        timed.on_event_at(write_event(0x4000, 0x28), 0);
+        timed.on_event_at(write_event(0x4001, 0xF0), 123_456);
+        timed.on_event_at(write_event(0x7F11, 0x9F), 500_000);
+        timed.on_step_boundary(0, 1);
+        timed.on_event_at(write_event(0x4000, 0x30), MCLK_PER_FRAME + 77);
+        timed.on_event_at(write_event(0x4001, 0x11), MCLK_PER_FRAME + 800_000);
+
+        // Untimed path: identical decode, frame stamps only.
+        let mut untimed = VgmLogger::new();
+        untimed.on_step_boundary(0, 0);
+        untimed.on_event(write_event(0x4000, 0x28));
+        untimed.on_event(write_event(0x4001, 0xF0));
+        untimed.on_event(write_event(0x7F11, 0x9F));
+        untimed.on_step_boundary(0, 1);
+        untimed.on_event(write_event(0x4000, 0x30));
+        untimed.on_event(write_event(0x4001, 0x11));
+
+        assert_eq!(
+            timed.render_vgm(),
+            untimed.render_vgm(),
+            "default mode must ignore mclk — byte-identical to the untimed frame-bucketed render"
+        );
+        // And the render still carries frame-bucketed 0x62 waits (one frame boundary), no 0x61.
+        let vgm = timed.render_vgm();
+        assert_eq!(vgm.iter().filter(|&&b| b == CMD_WAIT_FRAME).count(), 1);
+        assert_eq!(vgm.iter().filter(|&&b| b == CMD_WAIT).count(), 0);
+    }
+
+    #[test]
+    fn subframe_mode_emits_mclk_derived_sample_deltas() {
+        // Absolute sample = mclk * 735 / 896_040. Chosen mclks (two per frame, across a frame boundary):
+        //   A: mclk 0                    → sample 0
+        //   B: mclk 122_000             → 122_000*735/896_040 = 100
+        //   C: mclk 896_040 (= 1 frame) → 735
+        //   D: mclk 1_018_040          → 835
+        // Deltas between consecutive records: 100, 635, 100  → total 835 samples.
+        let mut log = VgmLogger::with_subframe_waits();
+        log.on_step_boundary(0, 0);
+        log.on_event_at(write_event(0x4000, 0x28), 0); // latch (no record)
+        log.on_event_at(write_event(0x4001, 0xF0), 0); // A
+        log.on_event_at(write_event(0x4000, 0x30), 122_000); // latch
+        log.on_event_at(write_event(0x4001, 0x11), 122_000); // B
+        log.on_step_boundary(0, 1);
+        log.on_event_at(write_event(0x7F11, 0x9F), MCLK_PER_FRAME); // C (PSG)
+        log.on_event_at(write_event(0x4000, 0x22), 1_018_040); // latch
+        log.on_event_at(write_event(0x4001, 0x33), 1_018_040); // D
+
+        let vgm = log.render_vgm();
+        let data = &vgm[0x40..];
+        // Expected command stream: A, wait 100, B, wait 635, C, wait 100, D, end.
+        #[rustfmt::skip]
+        let expected: &[u8] = &[
+            CMD_YM2612_PORT0, 0x28, 0xF0,        // A
+            CMD_WAIT, 100, 0,                    // 100 samples
+            CMD_YM2612_PORT0, 0x30, 0x11,        // B
+            CMD_WAIT, 0x7B, 0x02,                // 635 samples (0x027B)
+            CMD_PSG, 0x9F,                       // C
+            CMD_WAIT, 100, 0,                    // 100 samples
+            CMD_YM2612_PORT0, 0x22, 0x33,        // D
+            CMD_END,
+        ];
+        assert_eq!(data, expected, "sub-frame 0x61 sample-delta stream");
+        assert_eq!(
+            read_le_u32(&vgm, 0x18),
+            835,
+            "header total samples = sum of 0x61 waits (100+635+100)"
+        );
+    }
+
+    #[test]
+    fn subframe_mode_splits_gaps_over_65535_samples() {
+        // A gap whose sample delta exceeds one 0x61's u16 range must split into multiple 0x61 commands that
+        // sum to the exact delta. Second write at a large mclk: 200_000_000*735/896_040 = 164_054 samples.
+        let big_mclk: u64 = 200_000_000;
+        let expected_delta = big_mclk * SAMPLES_PER_FRAME as u64 / MCLK_PER_FRAME;
+        assert!(expected_delta > WAIT_MAX, "test needs a >65535 gap");
+
+        let mut log = VgmLogger::with_subframe_waits();
+        log.on_event_at(write_event(0x4001, 0xF0), 0); // record at sample 0
+        log.on_event_at(write_event(0x4003, 0x11), big_mclk); // record at the big sample
+
+        let vgm = log.render_vgm();
+        // Sum all 0x61 wait payloads and confirm they equal the delta, split into <=65535 chunks.
+        let data = &vgm[0x40..];
+        let mut i = 0;
+        let mut sum: u64 = 0;
+        let mut chunks = 0;
+        while i < data.len() {
+            match data[i] {
+                CMD_WAIT => {
+                    let n = u16::from_le_bytes([data[i + 1], data[i + 2]]) as u64;
+                    assert!(n <= WAIT_MAX);
+                    sum += n;
+                    chunks += 1;
+                    i += 3;
+                }
+                CMD_YM2612_PORT0 | CMD_YM2612_PORT1 => i += 3,
+                CMD_PSG => i += 2,
+                CMD_END => break,
+                other => panic!("unexpected command byte {other:#04x}"),
+            }
+        }
+        assert_eq!(sum, expected_delta, "split waits sum to the exact delta");
+        assert!(chunks >= 3, "164_054 samples splits into >=3 chunks");
+        assert_eq!(read_le_u32(&vgm, 0x18), expected_delta as u32);
     }
 }
