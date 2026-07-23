@@ -20,8 +20,9 @@
 //! (decode → frame-batched render → pull buffer). SY-2: a minimal hand-rolled
 //! [`Ym2612Synth`](ym2612_synth::Ym2612Synth) FM synthesizer (6 channels × 4 operators, the 8 algorithms,
 //! an ADSR-ish envelope), mixed into the same render. The FM synth's data source is the **identical**
-//! `(bank, reg, value)` write stream the PSG and VGM paths consume. DAC/PCM, LFO, and exact OPN rate/
-//! key-scale tables are SY-3 (see [`ym2612_synth`]).
+//! `(bank, reg, value)` write stream the PSG and VGM paths consume. SY-3a adds the DAC/PCM channel-6
+//! stream (`$2A`/`$2B`, frame-granular even-spread ZOH); LFO and the exact OPN rate/key-scale tables remain
+//! later SY-3 slices (see [`ym2612_synth`]).
 
 pub mod audio_sink;
 pub mod sn76489;

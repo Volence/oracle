@@ -77,6 +77,9 @@ impl AudioSink {
     /// Render one NTSC video frame worth of audio (`samples_per_frame` stereo samples) from the current
     /// chip state, appending to the output buffer.
     fn render_frame(&mut self) {
+        // Snapshot this frame's queued DAC ($2A) bytes for even-spread ZOH playback across the frame's
+        // samples (SY-3a). Called once per frame, before the per-sample loop.
+        self.fm.begin_frame(self.samples_per_frame);
         for _ in 0..self.samples_per_frame {
             // PSG is mono on the Genesis → the same value feeds both output channels.
             let psg = self.psg.next_sample() as i32;

@@ -17,10 +17,16 @@
 //!   deferred list) — the exact OPN rate/key-scale tables are SY-3.
 //! - **The 8 FM algorithms + operator-1 self-feedback** (`$B0`), and **stereo L/R pan** (`$B4`).
 //!
-//! ## Deferred to SY-3 (documented inaccuracies, not bugs)
+//! ## DAC / PCM channel-6 (SY-3a)
 //!
-//! - **DAC / PCM channel-6** (`$2A` stream, `$2B` enable): the PCM sample path is deferred; SY-2 only
-//!   **mutes FM channel 6 while DAC is enabled** (as the hardware does) so it does not emit stale tones.
+//! - **DAC / PCM channel-6** (`$2A` stream, `$2B` enable): implemented. Each frame's ordered `$2A` bytes are
+//!   spread evenly across the frame's output samples with a zero-order hold ([`Ym2612Synth::begin_frame`] +
+//!   [`Ym2612Synth::dac_sample`]); the 8-bit unsigned samples are centered on `0x80` and scaled by
+//!   [`DAC_SCALE`]. While `$2B` bit7 is set, FM channel 6 is muted and the PCM stream plays in its place;
+//!   when it clears, channel 6 returns to normal FM. Sub-frame sample timing is SY-4 (frame-granular here).
+//!
+//! ## Deferred to later SY-3 slices (documented inaccuracies, not bugs)
+//!
 //! - **LFO** (`$22` AMS/FMS), **SSG-EG** (`$90`), **CSM / channel-3 special mode** (`$27` + `$A8-$AE`),
 //!   and **operator detune** (`$30` DT field): all skipped. Detune-off means no inter-operator beating.
 //! - **Exact envelope rate & key-scale tables**: SY-2 uses a calibrated approximation, so envelope timing
@@ -55,6 +61,14 @@ const MOD_SCALE: f32 = 1.0;
 /// Per-carrier output level (pre-mix, pre-clamp). Comparable to one SN76489 tone channel (~4000) so FM and
 /// PSG sit at similar loudness before the sink sums + clamps them.
 const FM_LEVEL: f32 = 3500.0;
+
+/// DAC/PCM (channel-6) output scale — SY-3a. The 8-bit unsigned sample is centered around `0x80` to a
+/// signed `[-128, 127]`, then multiplied by this constant. Chosen so peak drum level (`128 · 28 = 3584`) is
+/// comparable to one FM carrier ([`FM_LEVEL`] = 3500) — drums sit at a clearly-audible, drum-prominent level
+/// without dominating the mix. Headroom check: while the DAC is on, FM ch6 is muted, so the worst-case
+/// pre-clamp sum is 5 FM carriers (`5 · 3500 = 17500`) + PSG (~4000) + DAC (3584) ≈ 25_084, inside the
+/// `i16` range (32_767) — no systematic clipping introduced by the DAC.
+const DAC_SCALE: i32 = 28;
 
 /// Number of entries in the sine and exp lookup tables (10-bit phase / attenuation resolution).
 const TABLE_LEN: usize = 1024;
@@ -386,8 +400,22 @@ pub struct Ym2612Synth {
     sample_rate: f32,
     /// The 6 FM channels (channels 0-2 = part I / bank 0, channels 3-5 = part II / bank 1).
     channels: [Channel; 6],
-    /// DAC (channel-6 PCM) enable, `$2B` bit7. When set, FM channel 6 is muted (PCM output is SY-3).
+    /// DAC (channel-6 PCM) enable, `$2B` bit7. When set, FM channel 6 is muted and the DAC PCM stream plays
+    /// in its place (SY-3a).
     dac_enabled: bool,
+    /// DAC sample bytes (`$2A` writes) collected during the current frame, in write order. Snapshotted and
+    /// drained by [`Self::begin_frame`] into [`Self::dac_frame`] for even-spread ZOH playback (SY-3a).
+    dac_queue: Vec<u8>,
+    /// The frame's DAC bytes, snapshotted from [`Self::dac_queue`] at the frame boundary; output sample `i`
+    /// plays `dac_frame[i · N / samples_per_frame]` (zero-order hold across the 735-sample frame).
+    dac_frame: Vec<u8>,
+    /// Output samples the current frame's [`Self::dac_frame`] is spread across (set by [`Self::begin_frame`]).
+    dac_samples_per_frame: u32,
+    /// The output-sample index within the current frame (0..`dac_samples_per_frame`), advanced per sample.
+    dac_sample_idx: u32,
+    /// The most-recent DAC byte written; held (ZOH) across a DAC-enabled frame that has zero `$2A` writes.
+    /// Initialized to the unsigned center `0x80` so an untouched DAC is silence (`0x80 - 128 = 0`).
+    dac_last: u8,
     /// Sine lookup: one cycle, `[-1, 1]`.
     sine: [f32; TABLE_LEN],
     /// Attenuation → linear-amplitude lookup (index = 10-bit attenuation).
@@ -416,6 +444,11 @@ impl Ym2612Synth {
             sample_rate: sample_rate as f32,
             channels: [Channel::new(); 6],
             dac_enabled: false,
+            dac_queue: Vec::new(),
+            dac_frame: Vec::new(),
+            dac_samples_per_frame: 0,
+            dac_sample_idx: 0,
+            dac_last: 0x80,
             sine,
             exp_table,
         }
@@ -427,6 +460,13 @@ impl Ym2612Synth {
         match reg {
             // --- bank-0-only global registers ---
             0x28 if bank == 0 => self.key_on_off(value),
+            // $2A DAC data: queue the 8-bit PCM sample for this frame's channel-6 ZOH playback (SY-3a). The
+            // bytes are only *rendered* when the DAC is enabled ($2B bit7); queuing while disabled is
+            // harmless (the queue is drained per frame) and keeps `dac_last` tracking the true last sample.
+            0x2A if bank == 0 => {
+                self.dac_queue.push(value);
+                self.dac_last = value;
+            }
             0x2B if bank == 0 => self.dac_enabled = value & 0x80 != 0,
             // Per-channel and per-operator registers exist in both banks.
             0x30..=0x9F => self.write_operator(bank, reg, value),
@@ -434,7 +474,7 @@ impl Ym2612Synth {
             0xA4..=0xA6 => self.write_fnum_high(bank, reg, value),
             0xB0..=0xB2 => self.write_alg_feedback(bank, reg, value),
             0xB4..=0xB6 => self.write_pan(bank, reg, value),
-            // Timers ($24-$27), LFO ($22), DAC data ($2A), ch3-special ($A8-$AE), SSG handled above/ignored.
+            // Timers ($24-$27), LFO ($22), ch3-special ($A8-$AE), SSG handled above/ignored.
             _ => {}
         }
     }
@@ -536,21 +576,61 @@ impl Ym2612Synth {
         c.pan_r = value & 0x40 != 0;
     }
 
+    /// Begin a new render frame (SY-3a): snapshot this frame's queued DAC bytes for even-spread ZOH playback
+    /// and reset the per-sample index. The sink calls this once, before the frame's `samples_per_frame`
+    /// [`Self::next_sample`] calls. Draining the queue here means the *next* frame accumulates fresh `$2A`
+    /// writes; a frame with zero writes holds [`Self::dac_last`].
+    pub fn begin_frame(&mut self, samples_per_frame: u32) {
+        self.dac_frame.clear();
+        self.dac_frame.append(&mut self.dac_queue); // moves the bytes out and leaves `dac_queue` empty
+        self.dac_samples_per_frame = samples_per_frame;
+        self.dac_sample_idx = 0;
+    }
+
+    /// The DAC (channel-6 PCM) contribution `(left, right)` for the current output sample. Even-spread ZOH:
+    /// output sample `i` plays `dac_frame[i · N / samples_per_frame]` (clamped to the last byte); a frame
+    /// with no `$2A` writes holds [`Self::dac_last`]. The 8-bit unsigned byte is centered around `0x80` and
+    /// scaled by [`DAC_SCALE`], then routed through channel 6's `$B6` stereo pan.
+    fn dac_sample(&self) -> (i32, i32) {
+        let byte = if self.dac_frame.is_empty() {
+            self.dac_last
+        } else {
+            let n = self.dac_frame.len();
+            let spf = self.dac_samples_per_frame.max(1) as usize;
+            let idx = (self.dac_sample_idx as usize * n / spf).min(n - 1);
+            self.dac_frame[idx]
+        };
+        let s = (byte as i32 - 128) * DAC_SCALE;
+        let ch6 = &self.channels[5];
+        let l = if ch6.pan_l { s } else { 0 };
+        let r = if ch6.pan_r { s } else { 0 };
+        (l, r)
+    }
+
     /// Produce one stereo output sample `(left, right)` as the sum of all six channels' contributions.
-    /// Channel 6 (index 5) is muted while the DAC is enabled (its PCM output is SY-3).
+    /// While the DAC is enabled (`$2B` bit7), channel 6 (index 5) plays the streamed PCM sample (SY-3a)
+    /// instead of its FM voice; otherwise all six channels are FM.
     pub fn next_sample(&mut self) -> (i32, i32) {
         let mut l = 0.0f32;
         let mut r = 0.0f32;
         for (i, ch) in self.channels.iter_mut().enumerate() {
             if i == 5 && self.dac_enabled {
-                // Still advance nothing extra — muted DAC channel contributes silence in SY-2.
+                // FM channel 6 is muted while the DAC drives it; the PCM sample is added below.
                 continue;
             }
             let (cl, cr) = ch.next_sample(self.sample_rate, &self.sine, &self.exp_table);
             l += cl;
             r += cr;
         }
-        (l as i32, r as i32)
+        let mut li = l as i32;
+        let mut ri = r as i32;
+        if self.dac_enabled {
+            let (dl, dr) = self.dac_sample();
+            li += dl;
+            ri += dr;
+        }
+        self.dac_sample_idx += 1;
+        (li, ri)
     }
 }
 
@@ -743,9 +823,10 @@ mod tests {
         assert!(right_energy > 0, "right must carry the signal");
     }
 
-    /// DAC-enable ($2B bit7) mutes FM channel 6 (index 5) so it emits no stale FM tone.
+    /// DAC-enable ($2B bit7) mutes the FM voice of channel 6 (index 5): with the DAC enabled but *no* $2A
+    /// samples written (queue empty → holds the 0x80 center), channel 6 emits no stale FM tone (silence).
     #[test]
-    fn dac_enable_mutes_channel_six() {
+    fn dac_enable_mutes_channel_six_fm() {
         let mut fm = Ym2612Synth::new(44_100);
         // Program + key channel 6 (bank 1, ch index within-part 2 → global 5) with a loud carrier.
         fm.write(1, 0xB2, 0x07); // algorithm 7 for channel 6
@@ -757,13 +838,142 @@ mod tests {
         fm.write(1, 0xB6, 0xC0); // pan both
         fm.write(0, 0x28, 0x16); // key on: channel selector 6 (=ch index 5), Op1 mask bit4
 
-        // Enable DAC → channel 6 must be silent.
+        // Enable DAC (no $2A data yet → DAC holds the 0x80 center = 0) → channel 6 must be silent.
         fm.write(0, 0x2B, 0x80);
         let mut peak = 0i32;
         for _ in 0..4410 {
+            fm.begin_frame(735);
             let (l, r) = fm.next_sample();
             peak = peak.max(l.abs()).max(r.abs());
         }
-        assert_eq!(peak, 0, "DAC-enabled channel 6 must be muted, peak {peak}");
+        assert_eq!(
+            peak, 0,
+            "DAC-enabled channel 6 FM must be muted, peak {peak}"
+        );
+    }
+
+    /// SY-3a: with the DAC enabled, a frame of $2A writes streams on channel 6 as signed PCM. A ramp of
+    /// bytes centered above/below 0x80 produces the expected positive/negative, non-silent output; the FM
+    /// channels are otherwise all silent so the samples are the DAC alone.
+    #[test]
+    fn dac_streams_written_bytes() {
+        let mut fm = Ym2612Synth::new(44_100);
+        fm.write(0, 0x2B, 0x80); // enable DAC (bit7)
+        fm.write(1, 0xB6, 0xC0); // ch6 pan both so the PCM reaches L and R
+
+        // Queue a small set of DAC bytes for this frame: a value above center and one below.
+        fm.write(0, 0x2A, 0xC0); // 0xC0 - 128 = +64 → positive
+        fm.write(0, 0x2A, 0x40); // 0x40 - 128 = -64 → negative
+
+        // Render one frame; the first sample must be the first byte (+64·scale), the last the last byte.
+        fm.begin_frame(735);
+        let (l0, r0) = fm.next_sample();
+        assert_eq!(
+            l0,
+            (0xC0i32 - 128) * DAC_SCALE,
+            "first sample = first DAC byte"
+        );
+        assert_eq!(r0, l0, "ch6 pan-both duplicates DAC to L and R");
+        assert!(l0 > 0, "0xC0 is above center → positive");
+
+        // Advance to the final sample of the 735-sample frame.
+        let mut last = (0, 0);
+        for _ in 1..735 {
+            last = fm.next_sample();
+        }
+        assert_eq!(
+            last.0,
+            (0x40i32 - 128) * DAC_SCALE,
+            "last sample = last DAC byte"
+        );
+        assert!(last.0 < 0, "0x40 is below center → negative");
+    }
+
+    /// SY-3a: the DAC path is inert while disabled. With the DAC OFF, writing $2A bytes changes nothing —
+    /// channel 6 stays pure FM (here fully unprogrammed → silence), proving $2A is ignored unless enabled.
+    #[test]
+    fn dac_disabled_ignores_2a() {
+        let mut fm = Ym2612Synth::new(44_100);
+        // DAC disabled (never wrote $2B). Queue would-be-loud samples.
+        fm.write(0, 0x2A, 0xFF);
+        fm.write(0, 0x2A, 0x00);
+        fm.write(1, 0xB6, 0xC0);
+        let mut peak = 0i32;
+        for _ in 0..735 {
+            fm.begin_frame(735);
+            let (l, r) = fm.next_sample();
+            peak = peak.max(l.abs()).max(r.abs());
+        }
+        assert_eq!(peak, 0, "DAC disabled → $2A writes must produce no output");
+    }
+
+    /// SY-3a: even-spread ZOH covers every output sample of the frame. N bytes spread across 735 samples →
+    /// the first sample is byte 0, the last is byte N-1, and every sample maps to a valid in-range byte.
+    #[test]
+    fn dac_zoh_even_spread_covers_frame() {
+        let mut fm = Ym2612Synth::new(44_100);
+        fm.write(0, 0x2B, 0x80);
+        fm.write(1, 0xB6, 0xC0);
+        // A distinct ramp of 5 bytes so we can map each output sample back to a byte index by its value.
+        let bytes: [u8; 5] = [0x90, 0xA0, 0xB0, 0xC0, 0xD0];
+        for &b in &bytes {
+            fm.write(0, 0x2A, b);
+        }
+        fm.begin_frame(735);
+
+        let mut seen = [false; 5];
+        let mut samples = Vec::with_capacity(735);
+        for _ in 0..735 {
+            samples.push(fm.next_sample().0);
+        }
+        // First = byte 0, last = byte 4.
+        assert_eq!(samples[0], (bytes[0] as i32 - 128) * DAC_SCALE);
+        assert_eq!(samples[734], (bytes[4] as i32 - 128) * DAC_SCALE);
+        // Every sample must equal one of the five programmed bytes' scaled value (ZOH, no interpolation),
+        // and the spread must touch every byte across the frame.
+        for &s in &samples {
+            let mut matched = false;
+            for (i, &b) in bytes.iter().enumerate() {
+                if s == (b as i32 - 128) * DAC_SCALE {
+                    seen[i] = true;
+                    matched = true;
+                }
+            }
+            assert!(
+                matched,
+                "ZOH sample {s} is not one of the programmed DAC bytes"
+            );
+        }
+        assert!(
+            seen.iter().all(|&b| b),
+            "even spread must cover every byte: {seen:?}"
+        );
+    }
+
+    /// SY-3a: an empty ($2A-less) DAC frame holds the last written value (ZOH across frames), and toggling
+    /// $2B enables/disables the whole DAC path.
+    #[test]
+    fn dac_hold_last_and_toggle() {
+        let mut fm = Ym2612Synth::new(44_100);
+        fm.write(1, 0xB6, 0xC0);
+        fm.write(0, 0x2B, 0x80); // enable
+        fm.write(0, 0x2A, 0xE0); // last value 0xE0 → +96
+        fm.begin_frame(735);
+        let _ = fm.next_sample();
+
+        // Next frame: no $2A writes → the DAC holds 0xE0.
+        fm.begin_frame(735);
+        let (l, _r) = fm.next_sample();
+        assert_eq!(
+            l,
+            (0xE0i32 - 128) * DAC_SCALE,
+            "empty frame holds last DAC byte"
+        );
+
+        // Disable the DAC → ch6 returns to (silent, unprogrammed) FM; the held value no longer sounds.
+        fm.write(0, 0x2B, 0x00);
+        fm.begin_frame(735);
+        let (l2, r2) = fm.next_sample();
+        assert_eq!((l2, r2), (0, 0), "$2B bit7 clear disables the DAC path");
     }
 }
