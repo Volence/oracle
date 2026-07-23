@@ -1138,6 +1138,49 @@ mod tests {
     }
 
     #[test]
+    fn vgm_logger_captures_z80_fm_and_psg_writes_end_to_end() {
+        // RT-2 end-to-end: a released Z80 whose driver latches an FM register (addr + data) and writes a PSG
+        // byte must surface through the sink-generic run loop into a VgmLogger as decoded records. Out-of-band
+        // (no committed fixture releases the Z80), so it touches no frozen currency.
+        use crate::vgm::{SoundChip, VgmLogger};
+        let mut s = booted(0x2E80);
+        // Program at $0000:
+        //   LD A,$28 ; LD ($4000),A   ; FM bank-0 address latch (reg $28)
+        //   LD A,$F0 ; LD ($4001),A   ; FM bank-0 data → completes the triple
+        //   LD A,$9F ; LD ($7F11),A   ; PSG latch byte
+        //   HALT
+        let program = [
+            0x3E, 0x28, 0x32, 0x00, 0x40, // LD A,$28 ; LD ($4000),A
+            0x3E, 0xF0, 0x32, 0x01, 0x40, // LD A,$F0 ; LD ($4001),A
+            0x3E, 0x9F, 0x32, 0x11, 0x7F, // LD A,$9F ; LD ($7F11),A
+            0x76, // HALT
+        ];
+        s.z80_ram[..program.len()].copy_from_slice(&program);
+        s.z80_running = true;
+        let mut logger = VgmLogger::new();
+        s.run_frames_with_sink(1, &mut logger);
+
+        // The completed FM triple {Ym2612, port 0, reg $28, value $F0} was captured.
+        assert!(
+            logger.records().iter().any(|r| r.chip == SoundChip::Ym2612
+                && r.port == 0
+                && r.reg == 0x28
+                && r.value == 0xF0),
+            "the Z80's FM register write ($28 <- $F0) decoded into a record"
+        );
+        // The PSG byte was captured.
+        assert!(
+            logger
+                .records()
+                .iter()
+                .any(|r| r.chip == SoundChip::Psg && r.value == 0x9F),
+            "the Z80's PSG write ($7F11 <- $9F) decoded into a record"
+        );
+        assert!(logger.fm_writes() >= 1, "at least one FM write recorded");
+        assert!(logger.psg_writes() >= 1, "at least one PSG write recorded");
+    }
+
+    #[test]
     fn export_state_hash_is_deterministic_and_seed_sensitive() {
         assert_eq!(
             System::new(9).export_state_hash(),

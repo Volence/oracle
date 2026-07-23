@@ -21,5 +21,6 @@ pub mod system;
 #[doc(hidden)]
 pub mod testrom;
 pub mod vdp;
+pub mod vgm;
 pub mod watchpoints;
 pub mod z80;
