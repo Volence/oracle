@@ -13,8 +13,12 @@
 //! rate-shift + non-linear-attack update, and `src/ymfm_opn.cpp`'s `cache_operator_data` effective-rate /
 //! key-scale / sustain-level math; and — as of SY-3d — operator **detune**: the 32×4 `s_detune_adjustment`
 //! table + `detune_adjustment` (`src/ymfm_fm.ipp`) and the OPN `compute_phase_step` detune application
-//! (`src/ymfm_opn.cpp`).** Our generated tables are pinned to ymfm's literal values by unit
-//! tests (see [`tests`]). Nuked-OPN2 (LGPL) is **not** consulted, ported, or used as a fixture.
+//! (`src/ymfm_opn.cpp`); and — as of SY-3e — the **LFO**: `opn_registers_base::clock_noise_and_lfo`'s
+//! `lfo_max_count` rate table + AM-triangle / PM-raw derivation (`src/ymfm_opn.cpp`), `lfo_am_offset`
+//! (AMS scaling), and `opn_lfo_pm_phase_adjustment`'s 8×8 `s_lfo_pm_shifts` PM table + the OPN
+//! `compute_phase_step` PM application (`src/ymfm_fm.ipp`).** Our generated tables are pinned to ymfm's
+//! literal values by unit tests (see [`tests`]). Nuked-OPN2 (LGPL) is **not** consulted, ported, or used
+//! as a fixture.
 //!
 //! ## Model (what SY-3b implements — the OPN2-exact integer datapath)
 //!
@@ -42,6 +46,14 @@
 //!   OPN 5-bit **detune keycode** ([`Channel::detune_key_code`]); DT bit 2 is the sign. Following ymfm's OPN
 //!   `compute_phase_step`, the detune is summed into the base phase step (17-bit wrap) **before** the MUL
 //!   multiplier, so DT=0 leaves the increment bit-identical to SY-3c.
+//! - **LFO — tremolo (AM) + vibrato (PM) (SY-3e).** `$22` bit3 enables a global low-frequency oscillator
+//!   whose rate (bits 0-2) selects one of 8 [`LFO_MAX_COUNT`] native-tick dividers (slowest ≈ 3.98 Hz). The
+//!   LFO ([`Ym2612Synth::clock_lfo`], once per native tick) produces a **0-126 AM triangle** and a stepped
+//!   signed **PM** value exactly as ymfm's `clock_noise_and_lfo`. **AM** (per-operator `$60` bit7 enable ×
+//!   per-channel `$B4` AMS bits 4-5) adds [`lfo_am_offset`] to the operator attenuation (AMS=0 ⇒ none).
+//!   **PM** (per-channel `$B4` FMS bits 0-2) perturbs every operator's phase increment through
+//!   [`opn_lfo_pm_phase_adjustment`] / [`S_LFO_PM_SHIFTS`] (FMS=0 ⇒ none). With the LFO **disabled** AM = 0
+//!   and PM = 0, so the datapath is bit-identical to SY-3d (see the note on `clock_lfo`).
 //!
 //! ## DAC / PCM channel-6 (SY-3a — preserved unchanged)
 //!
@@ -53,8 +65,7 @@
 //!
 //! ## Deferred to later SY-3 slices (documented inaccuracies, not bugs)
 //!
-//! - **LFO** (`$22`, SY-3e), **SSG-EG** (`$90`) / **CSM / ch3-special**
-//!   (SY-3f). Sub-frame `$2A` timing is SY-4.
+//! - **SSG-EG** (`$90`) / **CSM / ch3-special** (SY-3f). Sub-frame `$2A` timing is SY-4.
 //!
 //! The synth is integer/float-based — it is a **synthesis** helper, never part of `System`, `state_hash`,
 //! or `export_state`, so it carries no currency obligations.
@@ -132,6 +143,59 @@ fn detune_adjustment(dt: u8, keycode: u8) -> i32 {
         -mag
     } else {
         mag
+    }
+}
+
+/// ymfm `lfo_max_count` (`opn_registers_base::clock_noise_and_lfo`, `src/ymfm_opn.cpp`): for each 3-bit LFO
+/// rate (`$22` bits 0-2) the native-tick divider that advances the 7-bit LFO position living in bits 8-14 of
+/// the LFO counter. Pinned to ymfm's literal values by [`tests::lfo_tables_match_ymfm`]. Rate 0 (÷109 → a
+/// ~13_824-tick period ≈ 3.85 Hz) is the slowest; rate 7 (÷6) the fastest. (ymfm notes the counter carries a
+/// deliberate hardware-matching off-by-one, reproduced here.)
+const LFO_MAX_COUNT: [u8; 8] = [109, 78, 72, 68, 63, 45, 9, 6];
+
+/// ymfm `s_lfo_pm_shifts` (`opn_lfo_pm_phase_adjustment`, `src/ymfm_fm.ipp`): indexed by `[FMS (0-7)][abs_pm
+/// (0-7)]`, each byte packs two 4-bit right-shift amounts (low nibble + high nibble) applied to the top 7 bits
+/// of FNUM to build the PM phase displacement. Pinned to ymfm's literal values by
+/// [`tests::lfo_tables_match_ymfm`]. `0x77` ⇒ shift 7+7 (both fall off the 7-bit FNUM) ⇒ zero displacement.
+#[rustfmt::skip]
+const S_LFO_PM_SHIFTS: [[u8; 8]; 8] = [
+    [0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77],
+    [0x77, 0x77, 0x77, 0x77, 0x72, 0x72, 0x72, 0x72],
+    [0x77, 0x77, 0x77, 0x72, 0x72, 0x72, 0x17, 0x17],
+    [0x77, 0x77, 0x72, 0x72, 0x17, 0x17, 0x12, 0x12],
+    [0x77, 0x77, 0x72, 0x17, 0x17, 0x17, 0x12, 0x07],
+    [0x77, 0x77, 0x17, 0x12, 0x07, 0x07, 0x02, 0x01],
+    [0x77, 0x77, 0x17, 0x12, 0x07, 0x07, 0x02, 0x01],
+    [0x77, 0x77, 0x17, 0x12, 0x07, 0x07, 0x02, 0x01],
+];
+
+/// ymfm `lfo_am_offset` (`opn_registers_base`, `src/ymfm_opn.cpp`): scale the 6-bit LFO AM triangle
+/// (`lfo_am`, 0-63) by the channel's 2-bit AM-sensitivity (`ams`, 0-3) into an attenuation offset (10-bit
+/// domain). `am_shift = (1 << (ams ^ 3)) − 1` gives shifts 7/3/1/0 for AMS 0/1/2/3 → AMS=0 always yields 0
+/// (no tremolo), AMS=3 the deepest (`lfo_am << 1`, ≈ 11.8 dB peak-to-peak once summed into the attenuation).
+fn lfo_am_offset(lfo_am: u32, ams: u8) -> u32 {
+    let am_shift = (1u32 << ((ams & 0x03) ^ 3) as u32) - 1;
+    (lfo_am << 1) >> am_shift
+}
+
+/// ymfm `opn_lfo_pm_phase_adjustment` (`src/ymfm_fm.ipp`): the signed PM displacement summed into the 12-bit
+/// FNUM (before the block shift) for a given `fnum_bits` (top 7 bits of FNUM), channel PM-sensitivity `fms`
+/// (1-7; the caller skips `fms == 0`) and the LFO's raw PM value `pm` (−7..7). Two right-shifts from
+/// [`S_LFO_PM_SHIFTS`] are summed, boosted for `fms > 5`, then `>> 2`, then re-signed. `pm == 0` (and every
+/// FMS's `abs_pm == 0` entry `0x77`) yields 0, so a disabled/rest LFO leaves the phase step unperturbed.
+fn opn_lfo_pm_phase_adjustment(fnum_bits: u32, fms: u32, pm: i32) -> i32 {
+    let abs_pm = pm.unsigned_abs();
+    let shifts = S_LFO_PM_SHIFTS[(fms & 0x07) as usize][(abs_pm & 0x07) as usize] as u32;
+    let mut adjust =
+        ((fnum_bits >> (shifts & 0x0f)) + (fnum_bits >> ((shifts >> 4) & 0x0f))) as i32;
+    if fms > 5 {
+        adjust <<= fms - 5;
+    }
+    adjust >>= 2;
+    if pm < 0 {
+        -adjust
+    } else {
+        adjust
     }
 }
 
@@ -239,6 +303,9 @@ struct Operator {
     sl: u8,
     /// `RR` (`$80` bits 0-3): release rate (0-15).
     rr: u8,
+    /// `AM` enable (`$60` bit7): when set, the LFO tremolo ([`lfo_am_offset`]) is added to this operator's
+    /// attenuation. When clear the operator ignores the LFO AM entirely (SY-3e).
+    am_enable: bool,
 
     // --- runtime state ---
     /// 20-bit phase accumulator (one full sine cycle = `1 << 20`; the top 10 bits index the sine).
@@ -269,6 +336,7 @@ impl Operator {
             d2r: 0,
             sl: 0,
             rr: 0,
+            am_enable: false,
             phase: 0,
             env: MAX_ATT,
             eg: EgState::Off,
@@ -361,26 +429,34 @@ impl Operator {
         }
     }
 
-    /// The 10-bit envelope attenuation (envelope + `TL`) in the OPN attenuation domain. `TL` (7-bit) is
-    /// shifted into the 10-bit domain (`<< 3`, each step ≈ 8 units); the sum may exceed [`MAX_ATT`] and
-    /// [`attenuation_to_volume`]'s shift saturates it to silence.
-    fn env_att(&self) -> u32 {
+    /// The 10-bit envelope attenuation (envelope + `TL` + LFO AM) in the OPN attenuation domain. `TL` (7-bit)
+    /// is shifted into the 10-bit domain (`<< 3`, each step ≈ 8 units); `am_offset` is the LFO tremolo
+    /// contribution (0 unless the LFO is enabled and this operator has AM enabled — see [`lfo_am_offset`]).
+    /// The sum may exceed [`MAX_ATT`] and [`attenuation_to_volume`]'s shift saturates it to silence.
+    fn env_att(&self, am_offset: u32) -> u32 {
         let e = self.env.clamp(0, MAX_ATT) as u32;
-        e + ((self.tl as u32) << 3)
+        e + ((self.tl as u32) << 3) + am_offset
     }
 
     /// The operator's signed output for the current phase, given phase modulation `opmod` (in the 10-bit
-    /// phase's units — a modulator's output already right-shifted by the caller). This is ymfm's
-    /// `compute_volume`: log-sin(phase) + `env·4` → exp table → sign from the phase quadrant (bit 9).
-    fn compute(&self, opmod: i32, log_sin: &[u16; TABLE_LEN], pow: &[u16; TABLE_LEN]) -> i32 {
+    /// phase's units — a modulator's output already right-shifted by the caller) and this operator's LFO AM
+    /// attenuation offset `am_offset` (0 when no tremolo applies). This is ymfm's `compute_volume`:
+    /// log-sin(phase) + `(env + AM)·4` → exp table → sign from the phase quadrant (bit 9).
+    fn compute(
+        &self,
+        opmod: i32,
+        am_offset: u32,
+        log_sin: &[u16; TABLE_LEN],
+        pow: &[u16; TABLE_LEN],
+    ) -> i32 {
         if self.eg == EgState::Off {
             return 0;
         }
         let phase10 = ((self.phase >> 10) as i32).wrapping_add(opmod) as u32;
         let sin_att = abs_sin_attenuation(phase10, log_sin);
-        // Envelope/TL live in the 10-bit attenuation domain; `<< 2` converts to the exp table's 4×-finer
+        // Envelope/TL/AM live in the 10-bit attenuation domain; `<< 2` converts to the exp table's 4×-finer
         // units (256 units = one octave) before summing with the already-exp-domain log-sin attenuation.
-        let vol = attenuation_to_volume(sin_att + (self.env_att() << 2), pow) as i32;
+        let vol = attenuation_to_volume(sin_att + (self.env_att(am_offset) << 2), pow) as i32;
         if phase10 & 0x200 != 0 {
             -vol
         } else {
@@ -413,6 +489,12 @@ struct Channel {
     pan_l: bool,
     /// Right-channel enable (`$B4` bit6).
     pan_r: bool,
+    /// AM sensitivity (`$B4` bits 4-5, 0-3): how deeply the LFO tremolo scales into this channel's operator
+    /// attenuation (SY-3e; AMS=0 ⇒ no tremolo). See [`lfo_am_offset`].
+    ams: u8,
+    /// FM/PM sensitivity (`$B4` bits 0-2, 0-7): how deeply the LFO vibrato perturbs this channel's phase
+    /// increment (SY-3e; FMS=0 ⇒ no vibrato). See [`opn_lfo_pm_phase_adjustment`].
+    fms: u8,
 }
 
 impl Channel {
@@ -426,6 +508,8 @@ impl Channel {
             feedback: 0,
             pan_l: true,
             pan_r: true,
+            ams: 0,
+            fms: 0,
         }
     }
 
@@ -474,6 +558,24 @@ impl Channel {
         (ps * mul_x2) >> 1
     }
 
+    /// Apply the LFO vibrato (PM) to the channel's phase base, following ymfm's OPN `compute_phase_step`:
+    /// the PM displacement is summed into the **12-bit FNUM** (`fnum·2`) *before* the block shift, then the
+    /// block-shifted value re-enters the SY-3d [`Self::op_inc`] pipeline. Returns a `base'` such that
+    /// `op_inc(base', …)`'s internal `>> 1` reproduces ymfm's `(fnum12 << block) >> 2`.
+    ///
+    /// **No-op guarantees (byte-identity with SY-3d):** `fms == 0` returns `base` untouched; and even with
+    /// `fms != 0`, `pm == 0` (LFO disabled or at a rest point) leaves the FNUM unchanged
+    /// ([`opn_lfo_pm_phase_adjustment`] returns 0), so `base'` still equals `base`.
+    fn pm_base(&self, base: u32, pm: i32) -> u32 {
+        if self.fms == 0 {
+            return base;
+        }
+        let fnum_bits = ((self.fnum as u32) >> 4) & 0x7f; // top 7 bits of the 11-bit FNUM
+        let adj = opn_lfo_pm_phase_adjustment(fnum_bits, self.fms as u32, pm);
+        let fnum12 = ((((self.fnum as u32) & 0x7ff) << 1) as i32).wrapping_add(adj) as u32 & 0xfff;
+        (fnum12 << self.block) >> 1
+    }
+
     /// Advance this channel by one native tick and return its `(left, right)` FM contribution (already
     /// FM-scaled and panned). On an EG clock (`eg_clock = Some(counter)`, once per [`EG_CLOCK_DIVIDER`] native
     /// ticks) the envelopes advance first; then operator outputs are computed at the current phases (OPN2
@@ -481,6 +583,8 @@ impl Channel {
     fn tick(
         &mut self,
         eg_clock: Option<u32>,
+        lfo_am: u32,
+        lfo_pm: i32,
         log_sin: &[u16; TABLE_LEN],
         pow: &[u16; TABLE_LEN],
     ) -> (i32, i32) {
@@ -492,13 +596,23 @@ impl Channel {
         }
         let base = self.base_phase_step();
 
+        // LFO tremolo (SY-3e): the AM attenuation offset is per-channel (`ams`) scaled but only added to
+        // operators that have AM enabled (`$60` bit7). `lfo_am == 0` (LFO disabled/at rest) ⇒ all zero.
+        let am_offsets: [u32; 4] = std::array::from_fn(|i| {
+            if self.ops[i].am_enable {
+                lfo_am_offset(lfo_am, self.ams)
+            } else {
+                0
+            }
+        });
+
         // Operator-1 self-feedback: sum the last two Op1 outputs, right-shifted by `10 - feedback` (ymfm).
         let fb = if self.feedback == 0 {
             0
         } else {
             (self.ops[0].prev_out + self.ops[0].prev_out2) >> (10 - self.feedback)
         };
-        let out1 = self.ops[0].compute(fb, log_sin, pow);
+        let out1 = self.ops[0].compute(fb, am_offsets[0], log_sin, pow);
         self.ops[0].prev_out2 = self.ops[0].prev_out;
         self.ops[0].prev_out = out1;
 
@@ -507,64 +621,66 @@ impl Channel {
         let carriers: i32 = match self.algorithm {
             0 => {
                 // Op1→Op2→Op3→Op4→out (serial).
-                let o2 = self.ops[1].compute(out1 >> 1, log_sin, pow);
-                let o3 = self.ops[2].compute(o2 >> 1, log_sin, pow);
-                self.ops[3].compute(o3 >> 1, log_sin, pow)
+                let o2 = self.ops[1].compute(out1 >> 1, am_offsets[1], log_sin, pow);
+                let o3 = self.ops[2].compute(o2 >> 1, am_offsets[2], log_sin, pow);
+                self.ops[3].compute(o3 >> 1, am_offsets[3], log_sin, pow)
             }
             1 => {
                 // (Op1+Op2)→Op3→Op4→out.
-                let o2 = self.ops[1].compute(0, log_sin, pow);
-                let o3 = self.ops[2].compute((out1 + o2) >> 1, log_sin, pow);
-                self.ops[3].compute(o3 >> 1, log_sin, pow)
+                let o2 = self.ops[1].compute(0, am_offsets[1], log_sin, pow);
+                let o3 = self.ops[2].compute((out1 + o2) >> 1, am_offsets[2], log_sin, pow);
+                self.ops[3].compute(o3 >> 1, am_offsets[3], log_sin, pow)
             }
             2 => {
                 // Op1→Op4, Op2→Op3→Op4→out.
-                let o2 = self.ops[1].compute(0, log_sin, pow);
-                let o3 = self.ops[2].compute(o2 >> 1, log_sin, pow);
-                self.ops[3].compute((out1 + o3) >> 1, log_sin, pow)
+                let o2 = self.ops[1].compute(0, am_offsets[1], log_sin, pow);
+                let o3 = self.ops[2].compute(o2 >> 1, am_offsets[2], log_sin, pow);
+                self.ops[3].compute((out1 + o3) >> 1, am_offsets[3], log_sin, pow)
             }
             3 => {
                 // Op1→Op2→Op4, Op3→Op4→out.
-                let o2 = self.ops[1].compute(out1 >> 1, log_sin, pow);
-                let o3 = self.ops[2].compute(0, log_sin, pow);
-                self.ops[3].compute((o2 + o3) >> 1, log_sin, pow)
+                let o2 = self.ops[1].compute(out1 >> 1, am_offsets[1], log_sin, pow);
+                let o3 = self.ops[2].compute(0, am_offsets[2], log_sin, pow);
+                self.ops[3].compute((o2 + o3) >> 1, am_offsets[3], log_sin, pow)
             }
             4 => {
                 // Op1→Op2→out, Op3→Op4→out (two parallel chains).
-                let o2 = self.ops[1].compute(out1 >> 1, log_sin, pow);
-                let o3 = self.ops[2].compute(0, log_sin, pow);
-                let o4 = self.ops[3].compute(o3 >> 1, log_sin, pow);
+                let o2 = self.ops[1].compute(out1 >> 1, am_offsets[1], log_sin, pow);
+                let o3 = self.ops[2].compute(0, am_offsets[2], log_sin, pow);
+                let o4 = self.ops[3].compute(o3 >> 1, am_offsets[3], log_sin, pow);
                 o2 + o4
             }
             5 => {
                 // Op1 modulates Op2, Op3, Op4; all three → out.
-                let o2 = self.ops[1].compute(out1 >> 1, log_sin, pow);
-                let o3 = self.ops[2].compute(out1 >> 1, log_sin, pow);
-                let o4 = self.ops[3].compute(out1 >> 1, log_sin, pow);
+                let o2 = self.ops[1].compute(out1 >> 1, am_offsets[1], log_sin, pow);
+                let o3 = self.ops[2].compute(out1 >> 1, am_offsets[2], log_sin, pow);
+                let o4 = self.ops[3].compute(out1 >> 1, am_offsets[3], log_sin, pow);
                 o2 + o3 + o4
             }
             6 => {
                 // Op1→Op2→out; Op3→out; Op4→out.
-                let o2 = self.ops[1].compute(out1 >> 1, log_sin, pow);
-                let o3 = self.ops[2].compute(0, log_sin, pow);
-                let o4 = self.ops[3].compute(0, log_sin, pow);
+                let o2 = self.ops[1].compute(out1 >> 1, am_offsets[1], log_sin, pow);
+                let o3 = self.ops[2].compute(0, am_offsets[2], log_sin, pow);
+                let o4 = self.ops[3].compute(0, am_offsets[3], log_sin, pow);
                 o2 + o3 + o4
             }
             _ => {
                 // Algorithm 7: all four operators → out (fully additive).
-                let o2 = self.ops[1].compute(0, log_sin, pow);
-                let o3 = self.ops[2].compute(0, log_sin, pow);
-                let o4 = self.ops[3].compute(0, log_sin, pow);
+                let o2 = self.ops[1].compute(0, am_offsets[1], log_sin, pow);
+                let o3 = self.ops[2].compute(0, am_offsets[2], log_sin, pow);
+                let o4 = self.ops[3].compute(0, am_offsets[3], log_sin, pow);
                 out1 + o2 + o3 + o4
             }
         };
 
         // Advance every operator's phase for the next tick. Detune (SY-3d) uses the OPN detune keycode and is
-        // summed into the phase step before MUL (see [`Self::op_inc`]).
+        // summed into the phase step before MUL; LFO vibrato (SY-3e) perturbs the FNUM before the block shift
+        // via [`Self::pm_base`] (a no-op while FMS=0 or the LFO is at rest). See [`Self::op_inc`].
         let dkc = self.detune_key_code();
+        let pm_base = self.pm_base(base, lfo_pm);
         for op in self.ops.iter_mut() {
             let det = detune_adjustment(op.dt, dkc);
-            let inc = Self::op_inc(base, op.mul, det);
+            let inc = Self::op_inc(pm_base, op.mul, det);
             op.advance(inc);
         }
 
@@ -613,6 +729,20 @@ pub struct Ym2612Synth {
     eg_counter: u32,
     /// Native-tick subcounter feeding the `/3` EG divisor (0-2); the EG clocks when it wraps.
     eg_subcount: u32,
+    /// LFO enable (`$22` bit3). When clear, [`Self::clock_lfo`] holds [`Self::lfo_am`] / [`Self::lfo_pm`] at 0
+    /// so the datapath is bit-identical to SY-3d (SY-3e).
+    lfo_enabled: bool,
+    /// LFO rate (`$22` bits 0-2, 0-7): indexes [`LFO_MAX_COUNT`] for the counter divider.
+    lfo_rate: u8,
+    /// ymfm `m_lfo_counter`: the free-running LFO counter (7-bit AM/PM position in bits 8-14), advanced once
+    /// per native tick by [`Self::clock_lfo`].
+    lfo_counter: u32,
+    /// Current LFO AM triangle value (0-63), refreshed each native tick; scaled per channel by
+    /// [`lfo_am_offset`]. 0 while the LFO is disabled.
+    lfo_am: u32,
+    /// Current LFO raw PM value (−7..7), refreshed each native tick; scaled per channel/pitch by
+    /// [`opn_lfo_pm_phase_adjustment`]. 0 while the LFO is disabled.
+    lfo_pm: i32,
 }
 
 /// Register-address → operator-index map. The low-nibble operator field of an `$30-$9F` write addresses
@@ -639,6 +769,11 @@ impl Ym2612Synth {
             cur_native: (0, 0),
             eg_counter: 0,
             eg_subcount: 0,
+            lfo_enabled: false,
+            lfo_rate: 0,
+            lfo_counter: 0,
+            lfo_am: 0,
+            lfo_pm: 0,
         }
     }
 
@@ -647,6 +782,11 @@ impl Ym2612Synth {
     pub fn write(&mut self, bank: u8, reg: u8, value: u8) {
         match reg {
             // --- bank-0-only global registers ---
+            // $22 LFO: bit3 = enable, bits 0-2 = rate (SY-3e). Global (both banks share one LFO).
+            0x22 if bank == 0 => {
+                self.lfo_enabled = value & 0x08 != 0;
+                self.lfo_rate = value & 0x07;
+            }
             0x28 if bank == 0 => self.key_on_off(value),
             // $2A DAC data: queue the 8-bit PCM sample for this frame's channel-6 ZOH playback (SY-3a).
             0x2A if bank == 0 => {
@@ -660,7 +800,7 @@ impl Ym2612Synth {
             0xA4..=0xA6 => self.write_fnum_high(bank, reg, value),
             0xB0..=0xB2 => self.write_alg_feedback(bank, reg, value),
             0xB4..=0xB6 => self.write_pan(bank, reg, value),
-            // Timers ($24-$27), LFO ($22), ch3-special ($A8-$AE), SSG handled above/ignored.
+            // Timers ($24-$27), ch3-special ($A8-$AE), SSG handled above/ignored.
             _ => {}
         }
     }
@@ -726,7 +866,10 @@ impl Ym2612Synth {
                 o.ks = (value >> 6) & 0x03;
                 o.ar = value & 0x1F;
             }
-            0x60 => o.d1r = value & 0x1F, // (AM bit7 deferred with the LFO)
+            0x60 => {
+                o.d1r = value & 0x1F;
+                o.am_enable = value & 0x80 != 0; // AM enable (SY-3e): gates the LFO tremolo per operator
+            }
             0x70 => o.d2r = value & 0x1F,
             0x80 => {
                 o.sl = (value >> 4) & 0x0F;
@@ -765,7 +908,8 @@ impl Ym2612Synth {
         c.feedback = (value >> 3) & 0x07;
     }
 
-    /// `$B4-$B6` stereo pan (bit7 = left, bit6 = right). (AMS/FMS bits deferred with the LFO.)
+    /// `$B4-$B6` stereo pan (bit7 = left, bit6 = right) + LFO sensitivity (SY-3e): AMS (bits 4-5) sets the
+    /// tremolo depth, FMS (bits 0-2) the vibrato depth.
     fn write_pan(&mut self, bank: u8, reg: u8, value: u8) {
         let Some(ch) = Self::channel_index(bank, reg) else {
             return;
@@ -773,6 +917,8 @@ impl Ym2612Synth {
         let c = &mut self.channels[ch];
         c.pan_l = value & 0x80 != 0;
         c.pan_r = value & 0x40 != 0;
+        c.ams = (value >> 4) & 0x03;
+        c.fms = value & 0x07;
     }
 
     /// Begin a new render frame (SY-3a): snapshot this frame's queued DAC bytes for even-spread ZOH playback
@@ -805,6 +951,50 @@ impl Ym2612Synth {
         (l, r)
     }
 
+    /// Advance the global LFO one native tick (ymfm `clock_noise_and_lfo` for the OPNA/OPN2 register set).
+    ///
+    /// While disabled the counter is pinned to 0 and both AM and PM are **0** — the datapath then matches
+    /// SY-3d bit-for-bit. (ymfm instead pins its disabled AM to `0x3f`, so an operator with AM enabled sees a
+    /// constant added attenuation even with the LFO off — the "MegaDrive Venom" quirk. We deliberately do
+    /// **not** reproduce that here: the SY-3e byte-identity contract requires a disabled LFO to leave SY-3d
+    /// untouched, and the target ROM enables the LFO anyway, so the quirk is unobservable for it.)
+    ///
+    /// When enabled: `subcount` (the counter's low byte) drives the [`LFO_MAX_COUNT`] divider; on a crossing
+    /// the counter jumps to advance the 7-bit position in bits 8-14 (with ymfm's intentional off-by-one). The
+    /// AM triangle is the low 6 bits of that position, inverted on the first half of the period; the raw PM is
+    /// the low 3 bits of a 5-bit field, reflected and negated by the top two bits.
+    fn clock_lfo(&mut self) {
+        if !self.lfo_enabled {
+            self.lfo_counter = 0;
+            self.lfo_am = 0;
+            self.lfo_pm = 0;
+            return;
+        }
+        let subcount = self.lfo_counter & 0xff;
+        self.lfo_counter = self.lfo_counter.wrapping_add(1);
+        if subcount >= LFO_MAX_COUNT[self.lfo_rate as usize] as u32 {
+            // Push bit 8 (advance the 7-bit position) and zero the low byte; ymfm uses 0x101 rather than 0x100
+            // to match a hardware off-by-one that makes the fastest rate slightly faster than published.
+            self.lfo_counter = self.lfo_counter.wrapping_add(0x101 - subcount);
+        }
+        // AM: low 6 bits of the position (bits 8-13); inverted while bit 14 is 0 → a 0..63 triangle.
+        let mut am = (self.lfo_counter >> 8) & 0x3f;
+        if (self.lfo_counter >> (8 + 6)) & 1 == 0 {
+            am ^= 0x3f;
+        }
+        self.lfo_am = am;
+        // PM: low 3 bits (bits 10-12); reflected on bit 13, negated on bit 14 → a stepped −7..7 value.
+        let mut pm = ((self.lfo_counter >> 10) & 0x7) as i32;
+        if (self.lfo_counter >> (10 + 3)) & 1 != 0 {
+            pm ^= 7;
+        }
+        self.lfo_pm = if (self.lfo_counter >> (10 + 4)) & 1 != 0 {
+            -pm
+        } else {
+            pm
+        };
+    }
+
     /// Advance the whole FM chip by one **native** operator tick and return the summed `(left, right)` FM
     /// output. Channel 6's FM is skipped while the DAC drives it (`$2B` bit7); the PCM stream is added at the
     /// output rate in [`Self::next_sample`].
@@ -819,6 +1009,11 @@ impl Ym2612Synth {
         } else {
             None
         };
+        // The LFO advances every native tick (ymfm clocks it once per engine sample, ungated by the EG
+        // divisor) and feeds the same AM/PM values to all channels this tick.
+        self.clock_lfo();
+        let lfo_am = self.lfo_am;
+        let lfo_pm = self.lfo_pm;
         let Ym2612Synth {
             channels,
             log_sin,
@@ -832,7 +1027,7 @@ impl Ym2612Synth {
             // Always advance the channel (envelope + phase) — including ch6 while the DAC drives it (audit
             // F3): its EG must keep evolving muted so there is no stale-volume pop when the DAC turns off. The
             // FM output is simply discarded for ch6 during DAC playback (the PCM stream plays in its place).
-            let (cl, cr) = ch.tick(eg_clock, log_sin, pow);
+            let (cl, cr) = ch.tick(eg_clock, lfo_am, lfo_pm, log_sin, pow);
             if i == 5 && *dac_enabled {
                 continue;
             }
@@ -1509,6 +1704,252 @@ mod tests {
         assert!(
             lo * 2 < hi,
             "opposite detune must beat (deep amplitude cancellation), got {lo}..{hi}"
+        );
+    }
+
+    /// SY-3e: the LFO rate/PM tables must match ymfm's literals (`clock_noise_and_lfo` / `s_lfo_pm_shifts`),
+    /// and the AMS scaling ([`lfo_am_offset`]) + PM adjustment ([`opn_lfo_pm_phase_adjustment`]) must obey
+    /// ymfm's shift math — including AMS=0 ⇒ no tremolo and `pm == 0` ⇒ no vibrato (Fork-1 fixture pinning).
+    #[test]
+    fn lfo_tables_match_ymfm() {
+        // lfo_max_count, verbatim from ymfm.
+        assert_eq!(LFO_MAX_COUNT, [109, 78, 72, 68, 63, 45, 9, 6]);
+        // s_lfo_pm_shifts spot-checks, verbatim from ymfm (row = FMS, col = abs_pm).
+        assert_eq!(S_LFO_PM_SHIFTS[0], [0x77; 8]);
+        assert_eq!(
+            S_LFO_PM_SHIFTS[3],
+            [0x77, 0x77, 0x72, 0x72, 0x17, 0x17, 0x12, 0x12]
+        );
+        assert_eq!(
+            S_LFO_PM_SHIFTS[7],
+            [0x77, 0x77, 0x17, 0x12, 0x07, 0x07, 0x02, 0x01]
+        );
+
+        // lfo_am_offset: AMS 0/1/2/3 → shift 7/3/1/0 of (am<<1). AMS=0 is always 0 (no tremolo).
+        for am in 0..=63u32 {
+            assert_eq!(lfo_am_offset(am, 0), 0, "AMS=0 must never add tremolo");
+        }
+        assert_eq!(lfo_am_offset(63, 1), (63 << 1) >> 3); // 15
+        assert_eq!(lfo_am_offset(63, 2), 63 << 1 >> 1); // 63
+        assert_eq!(lfo_am_offset(63, 3), 63 << 1); // 126 (deepest)
+                                                   // Depth is monotone in AMS.
+        assert!(lfo_am_offset(63, 3) > lfo_am_offset(63, 2));
+        assert!(lfo_am_offset(63, 2) > lfo_am_offset(63, 1));
+
+        // opn_lfo_pm_phase_adjustment: pm==0 (and every FMS col-0 = 0x77) yields 0 → no vibrato at rest.
+        for fms in 1..=7u32 {
+            assert_eq!(opn_lfo_pm_phase_adjustment(0x7f, fms, 0), 0, "pm=0 ⇒ no PM");
+        }
+        // Sign symmetry: +pm and −pm mirror.
+        let up = opn_lfo_pm_phase_adjustment(0x7f, 7, 7);
+        let dn = opn_lfo_pm_phase_adjustment(0x7f, 7, -7);
+        assert_eq!(up, -dn, "PM must be symmetric in sign");
+        assert!(up > 0, "max +PM at FMS=7 must be positive");
+        // Depth scales with FMS: deeper sensitivity ⇒ larger |adjustment| for the same pitch + PM phase.
+        let d7 = opn_lfo_pm_phase_adjustment(0x7f, 7, 7);
+        let d5 = opn_lfo_pm_phase_adjustment(0x7f, 5, 7);
+        let d3 = opn_lfo_pm_phase_adjustment(0x7f, 3, 7);
+        assert!(
+            d7 > d5 && d5 > d3,
+            "PM depth must grow with FMS: {d3} {d5} {d7}"
+        );
+        // Never octave-scale: even the deepest (FMS=7, max PM, top FNUM) nudge stays a small fraction of the
+        // 12-bit FNUM (an octave = doubling the FNUM). 190 out of a ≈4064 FNUM ≈ 0.8 semitone.
+        assert!(
+            d7 * 8 < 0xfff,
+            "PM adjustment must be a small pitch nudge, got {d7}"
+        );
+    }
+
+    /// SY-3e: the LFO produces the expected AM triangle and signed PM oscillation. Clock it directly and
+    /// confirm: AM spans the full 0..63 triangle; PM swings through both signs and zero; the AM period at
+    /// rate 0 is ≈ 3.98 Hz (slowest); and a faster rate has a much shorter period.
+    #[test]
+    fn lfo_waveform_triangle_and_period() {
+        fn run(rate_reg: u8, ticks: usize) -> (Vec<u32>, Vec<i32>) {
+            let mut fm = Ym2612Synth::new(44_100);
+            fm.write(0, 0x22, rate_reg); // enable + rate
+            let mut am = Vec::with_capacity(ticks);
+            let mut pm = Vec::with_capacity(ticks);
+            for _ in 0..ticks {
+                fm.clock_lfo();
+                am.push(fm.lfo_am);
+                pm.push(fm.lfo_pm);
+            }
+            (am, pm)
+        }
+        // Mean spacing (in ticks) between successive triangle minima (start of each am==0 run).
+        fn period_ticks(am: &[u32]) -> f64 {
+            let mut starts = Vec::new();
+            let mut in_zero = false;
+            for (i, &v) in am.iter().enumerate() {
+                if v == 0 && !in_zero {
+                    starts.push(i);
+                    in_zero = true;
+                } else if v != 0 {
+                    in_zero = false;
+                }
+            }
+            assert!(
+                starts.len() >= 3,
+                "need several periods, got {}",
+                starts.len()
+            );
+            let diffs: Vec<usize> = starts.windows(2).map(|w| w[1] - w[0]).collect();
+            diffs.iter().sum::<usize>() as f64 / diffs.len() as f64
+        }
+
+        let (am0, pm0) = run(0x08, 60_000); // rate 0
+        assert_eq!(*am0.iter().min().unwrap(), 0, "AM triangle reaches 0");
+        assert_eq!(*am0.iter().max().unwrap(), 63, "AM triangle reaches 63");
+        assert!(pm0.iter().any(|&v| v > 0), "PM must go positive");
+        assert!(pm0.iter().any(|&v| v < 0), "PM must go negative");
+        assert!(pm0.contains(&0), "PM must pass through 0");
+
+        let hz0 = NATIVE_RATE / period_ticks(&am0);
+        assert!(
+            (3.6..4.3).contains(&hz0),
+            "rate-0 LFO AM must be ≈ 3.98 Hz, got {hz0:.2} Hz"
+        );
+
+        // Fastest rate 7 is dramatically quicker than the slowest.
+        let (am7, _) = run(0x0F, 60_000);
+        let hz7 = NATIVE_RATE / period_ticks(&am7);
+        assert!(
+            hz7 > hz0 * 8.0,
+            "rate 7 ({hz7:.1} Hz) must be far faster than rate 0 ({hz0:.2} Hz)"
+        );
+    }
+
+    /// SY-3e: render a sustained carrier and measure the peak-amplitude swing across 25 ms windows. With LFO
+    /// tremolo enabled the amplitude wobbles; the swing must (a) vanish when AMS=0, (b) vanish when the
+    /// operator's AM-enable ($60 bit7) is clear, and (c) grow with AMS.
+    #[test]
+    fn lfo_am_tremolo_scales_and_gates() {
+        // `bfield` = $B4 low bits (ams<<4 | fms); `am_en` sets $60 bit7; `lfo` = $22 value.
+        fn swing(bfield: u8, am_en: bool, lfo: u8) -> i32 {
+            let sr = 44_100u32;
+            let mut fm = Ym2612Synth::new(sr);
+            fm.write(0, 0xB0, 0x07); // algorithm 7, bare carrier
+            fm.write(0, 0x30, 0x01); // MUL=1
+            fm.write(0, 0x40, 0x00); // TL=0 (full baseline; AM only attenuates)
+            fm.write(0, 0x50, 0x1F); // KS=0, AR=31 (instant, steady)
+            fm.write(0, 0x60, if am_en { 0x80 } else { 0x00 }); // D1R=0 + AM-enable bit
+            fm.write(0, 0x70, 0x00);
+            fm.write(0, 0x80, 0x00); // SL=0, RR=0 → sustained full volume
+            fm.write(0, 0x22, lfo); // LFO
+            fm.write(0, 0xA4, 0x24);
+            fm.write(0, 0xA0, 0x3B);
+            fm.write(0, 0xB4, 0xC0 | bfield); // pan both + AMS/FMS
+            fm.write(0, 0x28, 0x10); // key on op1
+            let win = (sr / 40) as usize; // 25 ms « the ~250 ms LFO period
+            let mut lo = i32::MAX;
+            let mut hi = 0i32;
+            for _ in 0..80 {
+                let mut peak = 0i32;
+                for _ in 0..win {
+                    let (l, _r) = fm.next_sample();
+                    peak = peak.max(l.abs());
+                }
+                lo = lo.min(peak);
+                hi = hi.max(peak);
+            }
+            hi - lo
+        }
+        // AMS=3 (0x30) with AM enabled and the LFO on → deep tremolo swing.
+        let deep = swing(0x30, true, 0x08);
+        // AMS=1 (0x10) → shallower swing.
+        let shallow = swing(0x10, true, 0x08);
+        // AMS=0 → no tremolo even with AM enabled + LFO on.
+        let ams0 = swing(0x00, true, 0x08);
+        // AM-enable clear → no tremolo even at AMS=3 + LFO on.
+        let gated = swing(0x30, false, 0x08);
+
+        assert!(
+            deep > shallow,
+            "AMS=3 must wobble deeper than AMS=1 ({shallow} vs {deep})"
+        );
+        assert!(
+            shallow > 100,
+            "AMS=1 must still show real tremolo, got {shallow}"
+        );
+        assert!(
+            ams0 < shallow / 4,
+            "AMS=0 must give ~no tremolo, got {ams0}"
+        );
+        assert!(
+            gated < shallow / 4,
+            "AM-enable clear must gate the tremolo, got {gated}"
+        );
+    }
+
+    /// SY-3e / byte-identity: a disabled LFO must leave the SY-3d datapath untouched. A rich patch (AMS=3,
+    /// FMS=7, AM-enable) rendered with the LFO **off** is sample-for-sample identical to the same note with
+    /// no AMS/FMS/AM-enable at all; and the same rich patch with the LFO **on** genuinely differs (the LFO
+    /// is doing something).
+    #[test]
+    fn lfo_disabled_is_byte_identical_to_sy3d() {
+        fn render(bfield: u8, am_en: bool, lfo: u8, n: usize) -> Vec<(i32, i32)> {
+            let mut fm = Ym2612Synth::new(44_100);
+            fm.write(0, 0xB0, 0x07);
+            fm.write(0, 0x30, 0x71); // DT=7, MUL=1 (exercise the detune path too)
+            fm.write(0, 0x40, 0x00);
+            fm.write(0, 0x50, 0x1F);
+            fm.write(0, 0x60, if am_en { 0x80 } else { 0x00 });
+            fm.write(0, 0x70, 0x00);
+            fm.write(0, 0x80, 0x00);
+            fm.write(0, 0x22, lfo);
+            fm.write(0, 0xA4, 0x24);
+            fm.write(0, 0xA0, 0x3B);
+            fm.write(0, 0xB4, 0xC0 | bfield);
+            fm.write(0, 0x28, 0x10);
+            (0..n).map(|_| fm.next_sample()).collect()
+        }
+        // Rich patch, LFO OFF ($22=0) vs bare patch, LFO OFF → identical (disabled LFO neutralizes AMS/FMS/AM).
+        let rich_off = render(0x37 /* AMS=3, FMS=7 */, true, 0x00, 20_000);
+        let bare_off = render(0x00, false, 0x00, 20_000);
+        assert_eq!(
+            rich_off, bare_off,
+            "a disabled LFO must be bit-identical to SY-3d (no AMS/FMS/AM effect)"
+        );
+        // Same rich patch, LFO ON → must differ (proving the LFO changes the output).
+        let rich_on = render(0x37, true, 0x08, 20_000);
+        assert_ne!(rich_on, rich_off, "an enabled LFO must change the output");
+    }
+
+    /// SY-3e: FMS vibrato perturbs pitch. With the LFO on, FMS=7 diverges from FMS=0 (same note), whereas
+    /// FMS=0 with the LFO on stays identical to the LFO fully disabled (no PM path taken).
+    #[test]
+    fn lfo_fms_vibrato_moves_pitch() {
+        fn render(fms: u8, lfo: u8, n: usize) -> Vec<i32> {
+            let mut fm = Ym2612Synth::new(44_100);
+            fm.write(0, 0xB0, 0x07);
+            fm.write(0, 0x30, 0x01);
+            fm.write(0, 0x40, 0x00);
+            fm.write(0, 0x50, 0x1F);
+            fm.write(0, 0x60, 0x00);
+            fm.write(0, 0x70, 0x00);
+            fm.write(0, 0x80, 0x00);
+            fm.write(0, 0x22, lfo);
+            fm.write(0, 0xA4, 0x24);
+            fm.write(0, 0xA0, 0x3B);
+            fm.write(0, 0xB4, 0xC0 | fms);
+            fm.write(0, 0x28, 0x10);
+            (0..n).map(|_| fm.next_sample().0).collect()
+        }
+        let no_vib = render(0x00, 0x08, 30_000); // LFO on, FMS=0 → no PM
+        let vib = render(0x07, 0x08, 30_000); // LFO on, FMS=7 → vibrato
+        let lfo_off = render(0x07, 0x00, 30_000); // LFO off entirely
+                                                  // FMS=0 takes no PM path → identical to the LFO being off.
+        assert_eq!(
+            no_vib, lfo_off,
+            "FMS=0 must leave the phase step unperturbed"
+        );
+        // FMS=7 vibrato genuinely bends the pitch → the waveform drifts out of step with the un-modulated one.
+        let diverged = no_vib.iter().zip(&vib).filter(|(a, b)| a != b).count();
+        assert!(
+            diverged > no_vib.len() / 10,
+            "FMS=7 vibrato must move the pitch (only {diverged} samples differed)"
         );
     }
 }
