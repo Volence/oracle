@@ -256,6 +256,17 @@ pub struct MegaDriveBus<'a, S: BusEventSink> {
     /// bincode-serialized like `z80_busreq`; NOT in `export_state`. See `docs/2026-07-22-z80-core-design.md`
     /// (ZC6/ZC13).
     z80_running: &'a mut bool,
+    /// The cartridge SRAM-access-enable latch (`$A130F1` bit0): `true` once a game writes bit0 = 1 (SRAM
+    /// mapped at `$200001+`), `false` after bit0 = 0 (ROM shown). Latched from the ODD-byte write to
+    /// `$A130F1` (the shipping S3K driver does `move.b #1,($A130F1)`; `skdisasm/sonic3k.asm:344`). S0 promotes
+    /// the old drop-stub to a real latch but adds NO SRAM buffer and NO `$200000+` mapping change, so this
+    /// scalar has no consumer yet — currency-neutral by construction. Threaded like `z80_busreq`; NOT in
+    /// `export_state`/`state_hash`. Semantics: `docs/2026-07-23-sram-design-recon.md` (§"S0 — `$A130F1`").
+    sram_enabled: &'a mut bool,
+    /// The cartridge SRAM write-protect latch (`$A130F1` bit1): `true` = SRAM read-only. Convention-pinned
+    /// (no in-tree driver exercises it) and latched now so S1's buffer honors it without a second bus change.
+    /// Bus-internal + bincode-serialized like `sram_enabled`; NOT in `export_state`. See the design recon.
+    sram_write_protect: &'a mut bool,
     /// The YM2612 FM chip (its timers, this slice): a `$A04000-$A04003` read returns its status byte (Timer-A/B
     /// overflow flags live, bit7 BUSY clear), and a write drives the address-latch/data protocol into its timer
     /// model. Split-borrowed like `vdp`; rides the bincode snapshot but is NOT in `export_state`. See
@@ -278,6 +289,8 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
         last_bus_word: &'a mut u16,
         z80_busreq: &'a mut bool,
         z80_running: &'a mut bool,
+        sram_enabled: &'a mut bool,
+        sram_write_protect: &'a mut bool,
         fm: &'a mut Ym2612,
         sink: &'a mut S,
     ) -> Self {
@@ -291,6 +304,8 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             last_bus_word,
             z80_busreq,
             z80_running,
+            sram_enabled,
+            sram_write_protect,
             fm,
             sink,
         }
@@ -365,6 +380,18 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             // puts the meaningful byte at $A11200, 0 at $A11201). 1 = release reset (Z80 runs), 0 = assert
             // (held). $A11201 falls through and drops. No committed fixture writes bit0 = 1 (design ZC13).
             0xA1_1200 => *self.z80_running = (byte & 1) != 0,
+            // Cartridge SRAM control ($A130F1, the "TIME" line's SRAM-access byte): latch bit0 = SRAM enable
+            // (1 = SRAM mapped at $200001+, 0 = ROM shown) and bit1 = write-protect (1 = read-only). $A130F1
+            // is the ODD byte of its word, and the shipping driver writes it directly with a byte store
+            // (`move.b #1,($A130F1)`, S3K sonic3k.asm:344), so this arm sees the meaningful byte; a word write
+            // to the even neighbour $A130F0 puts 0 here and falls through the same way $A11101 does for the
+            // Z80 latch. Write-only register — there is deliberately NO read arm (reads stay open bus). S0 has
+            // no SRAM buffer/$200000+ mapping yet (that is S1), so this latch is inert and currency-neutral.
+            // Semantics: docs/2026-07-23-sram-design-recon.md (§"S0 — $A130F1 semantics").
+            0xA1_30F1 => {
+                *self.sram_enabled = (byte & 1) != 0;
+                *self.sram_write_protect = (byte & 2) != 0;
+            }
             // I/O register writes ($A10003–$A1001F): data/control latches + serial stubs (recon IO2/IO3).
             // The version byte and RxData are read-only; even bytes are unmapped. All drop here.
             0xA1_0000..=0xA1_001F => match io_reg(a) {
@@ -771,6 +798,8 @@ mod tests {
         last_bus_word: u16,
         z80_busreq: bool,
         z80_running: bool,
+        sram_enabled: bool,
+        sram_write_protect: bool,
         fm: Ym2612,
     }
     impl MdMem {
@@ -785,6 +814,8 @@ mod tests {
                 last_bus_word: 0,
                 z80_busreq: false,
                 z80_running: false,
+                sram_enabled: false,
+                sram_write_protect: false,
                 fm: Ym2612::new(),
             }
         }
@@ -799,6 +830,8 @@ mod tests {
                 &mut self.last_bus_word,
                 &mut self.z80_busreq,
                 &mut self.z80_running,
+                &mut self.sram_enabled,
+                &mut self.sram_write_protect,
                 &mut self.fm,
                 sink,
             )

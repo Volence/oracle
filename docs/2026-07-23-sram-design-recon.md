@@ -283,6 +283,55 @@ That is the whole seam. The frontend does all file I/O; the core never touches t
    wiring (Fork 5). SRAM rides the **bincode snapshot** but is **NOT** in `export_state` or `state_hash`.
    Determinism gate + proptests stay green (relative); `export_state_v1.rs` byte-identical (SRAM not yet in
    the image); Oracle differential byte-identical. This is the "game can save within a session" slice.
+## S0 — `$A130F1` semantics (pinned)
+
+**Pinned 2026-07-23 for slice S0.** Bit0 is **source-pinned** from a shipping driver + the Oracle reference;
+bit1 (write-protect) and the write-only read behavior are **convention-pinned** (the widely-documented Sega
+mapper convention) and corroborated by the drivers' never reading the register. Citations:
+
+- **`$A130F1` = the cartridge SRAM-access control register ("TIME" region `$A13000–$A130FF`).** Oracle's bus
+  arbiter decodes the whole TIME line as cart-mapper control:
+  `oracle/Devices/MD1600IO/MDBusArbiter.cpp:1086` — `lineTIME = (targetAddress >= 0xA13000) && (targetAddress
+  <= 0xA130FF)`. Sonic 3 & Knuckles names the exact byte:
+  `skdisasm/sonic3k.constants.asm:218` — `SRAM_access_flag = $A130F1`.
+
+- **bit0 = SRAM enable (1 = SRAM mapped at `$200001+`, 0 = ROM). SOURCE-PINNED.** The S3K driver toggles it
+  with byte writes of exactly `#1`/`#0`:
+  `skdisasm/sonic3k.asm:293` `move.b #0,(SRAM_access_flag).l ; disable SRAM access`;
+  `:344`/`:15697` `move.b #1,(SRAM_access_flag).l ; Access SRAM`;
+  `:15756` `move.b #1,(SRAM_access_flag).l ; Send I/O signal to SRAM, mapping it to $200001`;
+  `:15706`/`:15771` `move.b #0 ... ; Stop SRAM access`. The `$200001` in the driver's own comment confirms the
+  odd-byte SRAM window that bit0 gates. Independently stated in
+  `aeon/docs/ENGINE_ARCHITECTURE.md:3640`: *"Controlled by register `$A130F1`: write `$01` to enable SRAM,
+  `$00` to disable."*
+
+- **bit1 = write-protect (1 = SRAM read-only). CONVENTION-PINNED (not exercised by any in-tree driver).** The
+  standard Sega mapper convention pairs the enable bit with a write-protect bit at bit1; neither S3K nor S2/S3
+  touches it (they leave it 0). This is the design-of-record convention (design §A2) and is latched but has no
+  consumer until S1 gives SRAM a writable buffer. Flagged **convention-not-source-pinned**.
+
+- **Register is WRITE-ONLY → reads unchanged (open bus). CONVENTION-PINNED + corroborated.** A workspace grep
+  finds S3K only ever *writes* `$A130F1` (`move.b #0/#1,(SRAM_access_flag).l`) — zero reads (the source-side
+  `move.b (SRAM_access_flag),…` grep returns nothing). Consistent with the documented Sega mapper (the TIME
+  control registers are write-only; reads return open bus / ROM). **Decision: S0 adds NO read arm** — reads of
+  `$A130F1` stay open-bus (`mapped_byte`'s `_ => None`), byte-identical to today. This is what keeps S0
+  currency-neutral on the read side.
+
+- **Byte discipline: `$A130F1` is the ODD byte of its word — latch from the odd-byte write.** Mirrors the Z80
+  even-byte latch precedent inverted: the Z80 control regs (`$A11100`/`$A11200`) are EVEN addresses and latch
+  from the even byte; `$A130F1` is ODD, so the meaningful control byte is the odd half. The driver issues a
+  `move.b` straight to `$A130F1`, so `store_byte(0xA130F1, byte)` is called directly. A word write to the even
+  neighbour `$A130F0` would place the meaningful byte at odd `$A130F1` and `0x00` at even `$A130F0`; only the
+  `0xA130F1` arm latches, the even neighbour falls through and drops (exactly as `$A11101` does for the Z80
+  latch). `sram_enabled = (byte & 1) != 0`, `sram_write_protect = (byte & 2) != 0`.
+
+- **Power-on defaults: `sram_enabled = false`, `sram_write_protect = false`.** SRAM disabled at reset (ROM
+  shown), matching both the mapper convention and the S3K driver explicitly disabling access at boot
+  (`sonic3k.asm:293`). With no SRAM buffer in S0 and no golden ROM writing `$A130F1`, the latch is inert and
+  every currency golden stays byte-identical.
+
+---
+
 3. **S2 — core API + frontend persistence (frontend-only).** Add `load_sram`/`sram`/`sram_dirty` (§C9); wire
    `.srm` load-on-boot + dirty-throttled/quit autosave in `oracle-frontend` (§C8, Fork 4). **Zero core
    currency surface** — pure frontend, like the audio slices. Saves now survive across launches.

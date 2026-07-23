@@ -86,6 +86,21 @@ pub struct System {
     /// (`z80_running && !z80_busreq`). Bus-arbitration scalar threaded like `z80_busreq`: in this bincode
     /// snapshot for determinism, **not** in `export_state`. See `docs/2026-07-22-z80-core-design.md` (ZC6).
     z80_running: bool,
+    /// The cartridge SRAM-access-enable latch (`$A130F1` bit0): `true` once a game has written bit0 = 1 to
+    /// `$A130F1` (SRAM mapped at `$200001+`), `false` after bit0 = 0 (ROM shown). **Power-on = `false`** —
+    /// real hardware and the shipping drivers (S3K `sonic3k.asm:293` disables access at boot) power up with
+    /// SRAM off. S0 promotes `$A130F1` from a drop-stub to a real latch but adds **no** SRAM buffer, so this
+    /// scalar has no consumer yet and no golden ROM writes `$A130F1` → currency-neutral by construction.
+    /// A cartridge bus-control scalar exactly like `z80_busreq`: rides this bincode snapshot for determinism,
+    /// but is **not** in `export_state` and **not** in `state_hash`. Semantics pinned in
+    /// `docs/2026-07-23-sram-design-recon.md` (§"S0 — `$A130F1` semantics").
+    sram_enabled: bool,
+    /// The cartridge SRAM write-protect latch (`$A130F1` bit1): `true` = SRAM read-only. Convention-pinned
+    /// (no in-tree driver exercises it; the Sega mapper convention pairs enable at bit0 with write-protect at
+    /// bit1) and latched now so S1's writable buffer can honor it without a second bus change. **Power-on =
+    /// `false`**. Cartridge bus-control scalar like `sram_enabled`/`z80_busreq`: in this bincode snapshot for
+    /// determinism, **not** in `export_state`/`state_hash`. See `docs/2026-07-23-sram-design-recon.md`.
+    sram_write_protect: bool,
     /// The 68000. Driven over a [`MegaDriveBus`] in [`System::step_cpu`]; `step()` returns CPU cycles.
     cpu: Cpu68000,
     /// The absolute mclk of the last frame boundary [`System::run_frames`] targeted. Frame deadlines are
@@ -134,6 +149,8 @@ impl std::fmt::Debug for System {
             .field("io", &self.io)
             .field("z80_busreq", &self.z80_busreq)
             .field("z80_running", &self.z80_running)
+            .field("sram_enabled", &self.sram_enabled)
+            .field("sram_write_protect", &self.sram_write_protect)
             .field("cpu", &self.cpu)
             .field("frame_boundary_mclk", &self.frame_boundary_mclk)
             .field("z80", &self.z80)
@@ -200,6 +217,8 @@ impl System {
             last_bus_word: 0,
             z80_busreq: false,
             z80_running: false,
+            sram_enabled: false,
+            sram_write_protect: false,
             cpu: Cpu68000::new(power_on_regs()),
             frame_boundary_mclk: 0,
             z80: Z80::new(),
@@ -256,6 +275,8 @@ impl System {
             last_bus_word,
             z80_busreq,
             z80_running,
+            sram_enabled,
+            sram_write_protect,
             fm,
             ..
         } = self;
@@ -269,6 +290,8 @@ impl System {
             last_bus_word,
             z80_busreq,
             z80_running,
+            sram_enabled,
+            sram_write_protect,
             fm,
             sink,
         )
@@ -561,6 +584,8 @@ impl System {
             last_bus_word,
             z80_busreq,
             z80_running,
+            sram_enabled,
+            sram_write_protect,
             fm,
             ..
         } = self;
@@ -574,6 +599,8 @@ impl System {
             last_bus_word,
             z80_busreq,
             z80_running,
+            sram_enabled,
+            sram_write_protect,
             fm,
             sink,
         );
@@ -923,6 +950,93 @@ mod tests {
             "the map write reached System RAM (high byte)"
         );
         assert_eq!(s.ram()[1], 0xCD, "low byte");
+    }
+
+    #[test]
+    fn sram_control_latch_powers_on_disabled() {
+        // Power-on default: SRAM access disabled, not write-protected (ROM shown at $200000+). No golden ROM
+        // writes $A130F1, so the latch stays here for every gate → currency-neutral (design §"S0 semantics").
+        let s = System::new(0x130F);
+        assert!(!s.sram_enabled, "SRAM disabled at power-on");
+        assert!(
+            !s.sram_write_protect,
+            "SRAM not write-protected at power-on"
+        );
+    }
+
+    #[test]
+    fn sram_control_latch_tracks_a130f1_bit0_and_bit1() {
+        // $A130F1 bit0 = SRAM enable, bit1 = write-protect. A byte write to the odd address $A130F1 is exactly
+        // what the shipping S3K driver issues (`move.b #1,($A130F1)`), so store_byte sees the meaningful byte.
+        use crate::m68000::bus68k::Bus68k;
+        let mut s = System::new(0x130F);
+        // Enable SRAM (bit0 = 1), write-protect clear.
+        s.mega_bus(&mut ()).write8(0xA1_30F1, 5, 0x01);
+        assert!(s.sram_enabled, "bit0 = 1 enables SRAM");
+        assert!(!s.sram_write_protect, "bit1 still clear");
+        // Both bits: enable + write-protect.
+        s.mega_bus(&mut ()).write8(0xA1_30F1, 5, 0x03);
+        assert!(s.sram_enabled, "bit0 still set");
+        assert!(s.sram_write_protect, "bit1 = 1 sets write-protect");
+        // Write-protect only (bit1 = 1, bit0 = 0): SRAM mapped-off but protect latched.
+        s.mega_bus(&mut ()).write8(0xA1_30F1, 5, 0x02);
+        assert!(!s.sram_enabled, "bit0 = 0 disables SRAM");
+        assert!(s.sram_write_protect, "bit1 = 1 keeps write-protect");
+        // Clear both (what the driver writes to stop SRAM access, sonic3k.asm:293).
+        s.mega_bus(&mut ()).write8(0xA1_30F1, 5, 0x00);
+        assert!(!s.sram_enabled, "bit0 = 0 clears enable");
+        assert!(!s.sram_write_protect, "bit1 = 0 clears write-protect");
+    }
+
+    #[test]
+    fn sram_control_latch_ignores_the_even_neighbour_byte() {
+        // $A130F1 is the ODD byte of its word. A byte write to the even neighbour $A130F0 must NOT latch (the
+        // meaningful control byte lands on the odd half), mirroring how $A11101 is inert for the Z80 latch.
+        use crate::m68000::bus68k::Bus68k;
+        let mut s = System::new(0x130F);
+        s.mega_bus(&mut ()).write8(0xA1_30F0, 5, 0xFF);
+        assert!(
+            !s.sram_enabled,
+            "a write to even $A130F0 does not touch the latch"
+        );
+        assert!(
+            !s.sram_write_protect,
+            "even-byte write leaves write-protect clear"
+        );
+    }
+
+    #[test]
+    fn a130f1_is_write_only_reads_are_open_bus() {
+        // The register is write-only (no in-tree driver ever reads it): S0 adds no read arm, so a read of
+        // $A130F1 returns the open-bus latch, NOT the enable bit. Enable SRAM, then drive a distinct word on
+        // the bus (0xABAB via a RAM read) and confirm the $A130F1 read echoes open bus (0xAB), not the latch.
+        use crate::m68000::bus68k::Bus68k;
+        let mut s = System::new(0x130F);
+        let mut sink = ();
+        let v = {
+            let mut bus = s.mega_bus(&mut sink);
+            bus.write8(0xA1_30F1, 5, 0x01); // sram_enabled = true
+            bus.write8(0xFF_0000, 5, 0xAB); // drive 0xABAB onto the open-bus latch (a RAM byte write)
+            bus.read8(0xA1_30F1, 5).0
+        };
+        assert!(s.sram_enabled);
+        assert_eq!(
+            v, 0xAB,
+            "a $A130F1 read returns open bus (0xAB), proving there is no read arm reflecting the enable latch"
+        );
+    }
+
+    #[test]
+    fn sram_control_latch_round_trips_through_the_snapshot() {
+        // The latch rides the bincode snapshot for determinism (like z80_busreq) even though it is out of
+        // export_state/state_hash. A machine with SRAM enabled + write-protected round-trips byte-for-byte.
+        use crate::m68000::bus68k::Bus68k;
+        let mut s = System::new(0x130F);
+        s.mega_bus(&mut ()).write8(0xA1_30F1, 5, 0x03);
+        assert!(s.sram_enabled && s.sram_write_protect);
+        let back = System::restore(&s.snapshot()).expect("snapshot decodes");
+        assert_eq!(s, back, "the SRAM control latch survives snapshot/restore");
+        assert!(back.sram_enabled && back.sram_write_protect);
     }
 
     #[test]

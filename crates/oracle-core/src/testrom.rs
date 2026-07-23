@@ -357,6 +357,8 @@ mod tests {
             let mut io = crate::io::Io::default();
             let mut z80_busreq = false;
             let mut z80_running = false;
+            let mut sram_enabled = false;
+            let mut sram_write_protect = false;
             let mut fm = crate::ym2612::Ym2612::new();
             let mut bus = MegaDriveBus::new(
                 &rom,
@@ -368,6 +370,8 @@ mod tests {
                 last,
                 &mut z80_busreq,
                 &mut z80_running,
+                &mut sram_enabled,
+                &mut sram_write_protect,
                 &mut fm,
                 &mut sink,
             );
