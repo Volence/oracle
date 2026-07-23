@@ -38,8 +38,9 @@
 //! and an on-screen text overlay are out of scope — the core is frame-batched and minifb has no text.
 
 // Phase SY-5a real-time-audio substrate (SPSC ring + `i16→f32` + composite `BusEventSink`). Feature-gated
-// and self-contained: it is exercised by its own headless tests here; the live loop below is switched to it
-// (plus the cpal output stream) in SY-5b. See `docs/2026-07-23-phase-sy5-realtime-audio-design.md`.
+// and self-contained. Phase SY-5b (below) consumes it: the live loop drives the composite sink each frame
+// and drains→pushes into the ring, and `start_audio` spawns the cpal output stream that pops the ring's
+// consumer. See `docs/2026-07-23-phase-sy5-realtime-audio-design.md`.
 #[cfg(feature = "audio")]
 mod audio;
 
@@ -194,6 +195,119 @@ fn draw_crosshair(buf: &mut [u32], width: usize, wx: u16, wy: u16) {
     }
 }
 
+/// Live host-audio state (Phase SY-5b). Held for the whole run: the persistent synth [`AudioSink`] (advanced
+/// exactly one frame per loop iteration by the composite sink, then drained), the SPSC ring producer the
+/// drained PCM is pushed into, and the kept-alive cpal [`Stream`](cpal::Stream) — dropping the stream stops
+/// playback, so it must outlive the loop.
+#[cfg(feature = "audio")]
+struct AudioState {
+    sink: oracle_core::synth::AudioSink,
+    prod: audio::AudioProd,
+    _stream: cpal::Stream,
+}
+
+/// Enumerate the default output device and start a cpal f32 output stream feeding the SPSC ring, returning the
+/// live [`AudioState`]. Thin wrapper over [`build_audio`] with the host's real device; factored so the
+/// no-device branch is deterministically unit-testable (design §3.1, §7 Test 7).
+#[cfg(feature = "audio")]
+fn start_audio() -> Option<AudioState> {
+    use cpal::traits::HostTrait;
+    build_audio(cpal::default_host().default_output_device())
+}
+
+/// Build the cpal output stream for `device` (design §3). Returns `None` — **run video-only** — on ANY
+/// failure (no device, no default config, non-f32 format, stream build/play error), printing a one-line
+/// warning; it **never panics**. This is the graceful path for a headless, `/dev/snd`-less environment: pass
+/// `None` and it cleanly reports "no device" and disables audio.
+///
+/// The stream's callback pops the ring's consumer into the device buffer, zero-filling any underrun tail
+/// (design §2.5). It handles the device channel count: stereo = a straight interleaved copy; mono = average
+/// each L,R pair; other counts = write L,R into the first two lanes of each output frame and silence the rest
+/// (a documented first-cut simplification, design §3.3).
+#[cfg(feature = "audio")]
+fn build_audio(device: Option<cpal::Device>) -> Option<AudioState> {
+    use cpal::traits::{DeviceTrait, StreamTrait};
+    use ringbuf::traits::Consumer;
+
+    let Some(device) = device else {
+        eprintln!("audio: no default output device — running video-only");
+        return None;
+    };
+    let default_cfg = match device.default_output_config() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("audio: no default output config ({e}) — running video-only");
+            return None;
+        }
+    };
+    // First cut requires an f32 device format (matches the f32 ring; an i16/u16 match is a later robustness
+    // pass, design §3.3). Anything else → video-only rather than a wrong-format stream.
+    if default_cfg.sample_format() != cpal::SampleFormat::F32 {
+        eprintln!(
+            "audio: device sample format {:?} is not f32 (first cut requires f32) — running video-only",
+            default_cfg.sample_format()
+        );
+        return None;
+    }
+
+    // Take the DEVICE's native rate and channel count — AudioSink renders at exactly this rate, so there is
+    // no resampler and no pitch error (design §3.2).
+    let sample_rate = default_cfg.sample_rate().0;
+    let channels = default_cfg.channels() as usize;
+    let config: cpal::StreamConfig = default_cfg.config();
+
+    let sink = oracle_core::synth::AudioSink::new(sample_rate);
+    let (prod, mut cons) = audio::make_ring(sample_rate);
+
+    let data_cb = move |out: &mut [f32], _: &cpal::OutputCallbackInfo| {
+        match channels {
+            2 => {
+                // Stereo: the ring is already interleaved L,R,L,R… — a pure copy, silence any shortfall.
+                let n = cons.pop_slice(out);
+                out[n..].fill(0.0);
+            }
+            1 => {
+                // Mono: average each ring L,R pair into one sample; underrun → silence.
+                for slot in out.iter_mut() {
+                    let mut lr = [0.0f32; 2];
+                    let got = cons.pop_slice(&mut lr);
+                    *slot = if got == 2 { (lr[0] + lr[1]) * 0.5 } else { 0.0 };
+                }
+            }
+            ch => {
+                // >2 (or a degenerate 0): L,R into the first two lanes of each output frame, rest silent.
+                for out_frame in out.chunks_mut(ch.max(1)) {
+                    let mut lr = [0.0f32; 2];
+                    let got = cons.pop_slice(&mut lr);
+                    for (i, s) in out_frame.iter_mut().enumerate() {
+                        *s = if i < got { lr[i] } else { 0.0 };
+                    }
+                }
+            }
+        }
+    };
+    let err_cb = |err| eprintln!("audio stream error: {err}");
+
+    let stream = match device.build_output_stream::<f32, _, _>(&config, data_cb, err_cb, None) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("audio: failed to build output stream ({e}) — running video-only");
+            return None;
+        }
+    };
+    if let Err(e) = stream.play() {
+        eprintln!("audio: failed to start output stream ({e}) — running video-only");
+        return None;
+    }
+
+    println!("audio: {sample_rate} Hz, {channels} ch (f32) — streaming");
+    Some(AudioState {
+        sink,
+        prod,
+        _stream: stream,
+    })
+}
+
 fn main() {
     let args = match parse_args() {
         Ok(a) => a,
@@ -240,6 +354,12 @@ fn main() {
         "window {win_w}x{win_h} (up to {MAX_WIDTH}x{HEIGHT} @ {}x) — arrows=D-pad, A/S/D=A/B/C, Enter=Start, Space=pause, .=step, click=watch-tile, W=dump, C=clear, Esc=quit",
         args.scale
     );
+
+    // Start the host audio stream (Phase SY-5b). `None` = no device / build failure → video-only, never a
+    // panic (the default in a headless, /dev/snd-less environment). When present, its persistent AudioSink is
+    // advanced one frame per iteration below and drained→pushed into the ring the cpal callback consumes.
+    #[cfg(feature = "audio")]
+    let mut audio = start_audio();
 
     let mut buf: Vec<u32> = Vec::with_capacity(MAX_WIDTH * HEIGHT);
     let mut paused = false;
@@ -313,13 +433,40 @@ fn main() {
         // The pad is sampled live every frame; set_pad is the sole, deterministic input path into the core.
         sys.set_pad(0, poll_pad(&window));
 
-        // Advance when running, or on an explicit step request while paused. Only pay for the recording sink
-        // when a watch is armed; otherwise keep the untouched null-sink path so idle stays at 60 fps.
+        // Advance when running, or on an explicit step request while paused.
         if !paused || step {
-            if watch_armed {
-                sys.run_frames_with_sink(1, &mut watchpoints);
-            } else {
-                sys.run_frames(1);
+            // With audio live (SY-5b): drive every frame through the AudioAndWatch composite (audio + the
+            // optional armed watch), then drain that frame's PCM and push it into the ring for the cpal
+            // callback. The composite borrows `sink` for the run and is dropped before the drain re-borrow.
+            #[cfg(feature = "audio")]
+            {
+                if let Some(a) = audio.as_mut() {
+                    {
+                        let mut sink = audio::AudioAndWatch {
+                            audio: &mut a.sink,
+                            watch: watch_armed.then_some(&mut watchpoints),
+                        };
+                        sys.run_frames_with_sink(1, &mut sink);
+                    }
+                    let pcm = a.sink.drain();
+                    audio::push_frame(&mut a.prod, &pcm);
+                } else if watch_armed {
+                    // Audio disabled at runtime (no device): same video-only path as a no-audio build. Only
+                    // pay for the recording sink when a watch is armed; otherwise the fast null-sink path.
+                    sys.run_frames_with_sink(1, &mut watchpoints);
+                } else {
+                    sys.run_frames(1);
+                }
+            }
+            // No-audio build: today's exact loop — recording sink only when a watch is armed, else the fast
+            // null-sink path so idle stays at 60 fps.
+            #[cfg(not(feature = "audio"))]
+            {
+                if watch_armed {
+                    sys.run_frames_with_sink(1, &mut watchpoints);
+                } else {
+                    sys.run_frames(1);
+                }
             }
             frame += 1;
         }
@@ -343,6 +490,13 @@ fn main() {
             eprintln!("present failed: {e}");
             break;
         }
+    }
+
+    // On quit, flush the final in-progress frame once (harmless if the ring is already draining to a closing
+    // device). The cpal stream stops when `audio` — and with it the bound Stream — drops at scope end.
+    #[cfg(feature = "audio")]
+    if let Some(a) = audio.as_mut() {
+        a.sink.finish();
     }
 }
 
@@ -420,5 +574,27 @@ mod tests {
         );
         // A pixel at the very corner clips its off-buffer arms without panicking.
         draw_crosshair(&mut buf, width, 0, 0);
+    }
+
+    /// Design §7 Test 7 — the no-device fallback. `build_audio(None)` is the graceful path taken in a
+    /// headless, /dev/snd-less environment: it must return `None` (audio disabled → video-only) and **never
+    /// panic**. Injecting `None` makes this deterministic regardless of whether the host running the tests
+    /// has a sound card.
+    #[cfg(feature = "audio")]
+    #[test]
+    fn build_audio_without_device_is_video_only_not_a_panic() {
+        assert!(
+            build_audio(None).is_none(),
+            "no output device must disable audio (video-only), never panic"
+        );
+    }
+
+    /// `start_audio()` — the real host-enumeration entry point — must also be panic-free. In THIS build
+    /// environment there is no `/dev/snd`, so it returns `None`; on a machine with a sound card it may return
+    /// `Some`. Either way the contract under test is that the call never panics.
+    #[cfg(feature = "audio")]
+    #[test]
+    fn start_audio_never_panics() {
+        let _ = start_audio();
     }
 }

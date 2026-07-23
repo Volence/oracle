@@ -3,13 +3,10 @@
 //! pixel-attribution watch. This is the headless-testable half of Phase SY-5
 //! (`docs/2026-07-23-phase-sy5-realtime-audio-design.md`, §2/§5/§6/§8 SY-5a).
 //!
-//! It deliberately does **not** open a host audio device — that (`cpal` output stream) is SY-5b. The ring's
-//! consumer is popped only by the tests here; the live `main()` loop is switched to
-//! [`run_frames_with_sink`](oracle_core::system::System::run_frames_with_sink) + drain→push and the cpal
-//! callback (the real consumer) in SY-5b. Until that wiring lands, the substrate is exercised solely by the
-//! tests below, so the module carries `#![allow(dead_code)]` (the whole point of the SY-5a/SY-5b split is to
-//! *bank and review* the ring/sink logic before touching the un-hearable-here device glue).
-#![allow(dead_code)]
+//! It deliberately does **not** open a host audio device — that (`cpal` output stream) lives in `main.rs`
+//! (SY-5b). SY-5b now consumes this substrate: `main()`'s loop drives [`AudioAndWatch`] through
+//! [`run_frames_with_sink`](oracle_core::system::System::run_frames_with_sink), drains each frame, and
+//! [`push_frame`]s it into the [`AudioProd`] whose paired [`AudioCons`] is popped by the cpal callback.
 
 use oracle_core::bus::{BusEvent, BusEventSink};
 use oracle_core::synth::AudioSink;
