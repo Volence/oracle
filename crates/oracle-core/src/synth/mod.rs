@@ -14,14 +14,19 @@
 //! 3. **Not in `System`.** `AudioSink` is never stored in `System`, so it cannot enter `state_hash` or
 //!    `export_state`.
 //!
-//! ## SY-1 scope
+//! ## Scope (SY-1 + SY-2)
 //!
-//! A hand-rolled [`Sn76489`](sn76489::Sn76489) PSG synthesizer and the [`AudioSink`] pipeline
-//! (decode → frame-batched render → pull buffer). The FM (YM2612) synthesizer is a later slice; FM writes
-//! are decoded off the same stream but not yet turned into sound.
+//! SY-1: a hand-rolled [`Sn76489`](sn76489::Sn76489) PSG synthesizer and the [`AudioSink`] pipeline
+//! (decode → frame-batched render → pull buffer). SY-2: a minimal hand-rolled
+//! [`Ym2612Synth`](ym2612_synth::Ym2612Synth) FM synthesizer (6 channels × 4 operators, the 8 algorithms,
+//! an ADSR-ish envelope), mixed into the same render. The FM synth's data source is the **identical**
+//! `(bank, reg, value)` write stream the PSG and VGM paths consume. DAC/PCM, LFO, and exact OPN rate/
+//! key-scale tables are SY-3 (see [`ym2612_synth`]).
 
 pub mod audio_sink;
 pub mod sn76489;
+pub mod ym2612_synth;
 
 pub use audio_sink::{AudioSink, DEFAULT_SAMPLE_RATE};
 pub use sn76489::Sn76489;
+pub use ym2612_synth::Ym2612Synth;
