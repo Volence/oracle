@@ -199,16 +199,22 @@ fn opn_lfo_pm_phase_adjustment(fnum_bits: u32, fms: u32, pm: i32) -> i32 {
     }
 }
 
-/// Post-mix FM gain in Q15. One full-scale operator (`attenuation_to_volume(0)` = `0x1FE8` = 8168) maps to
-/// `8168 · FM_LEVEL_Q15 >> 15 ≈ 3499`, matching SY-2's per-carrier ~3500 loudness so the mix sits at a
-/// comparable level (the spectral-corr gate stays meaningful and the DAC headroom note below still holds).
+/// Post-mix FM gain in Q15 — **mix knob (by-ear tunable) and the mix ANCHOR.** One full-scale operator
+/// (`attenuation_to_volume(0)` = `0x1FE8` = 8168) maps to `8168 · FM_LEVEL_Q15 >> 15 ≈ 3499`, matching
+/// SY-2's per-carrier ~3500 loudness. This is the anchor of the three per-chip mix-level knobs
+/// (`PSG_LEVEL_Q15` in `audio_sink.rs` and [`DAC_SCALE`] here are set *relative* to it to hit the vgm2wav
+/// reference PSG:FM and DAC:FM ratios). The mix-balance calibration left this value unchanged — FM/pitch/
+/// timbre already read as accurate; only PSG (down) and DAC (up) moved.
 const FM_LEVEL_Q15: i64 = 14_041;
 
-/// DAC/PCM (channel-6) output scale — SY-3a (unchanged). The 8-bit unsigned sample is centered around `0x80`
-/// to a signed `[-128, 127]`, then multiplied by this constant. Peak drum level (`128 · 28 = 3584`) is
-/// comparable to one FM carrier (~3500). While the DAC is on, FM ch6 is muted, so the worst-case pre-clamp
-/// sum stays inside the `i16` range — no systematic clipping introduced by the DAC.
-const DAC_SCALE: i32 = 28;
+/// DAC/PCM (channel-6) output scale — **mix knob (by-ear tunable)**. The 8-bit unsigned sample is centered
+/// around `0x80` to a signed `[-128, 127]`, then multiplied by this constant. This is one of the three
+/// per-chip mix-level knobs (with [`FM_LEVEL_Q15`] here and `PSG_LEVEL_Q15` in `audio_sink.rs`): raising it
+/// makes the DAC drums louder relative to the FM anchor. Calibrated so our per-chip RMS matches the vgm2wav
+/// reference **DAC:FM ≈ 0.40** ratio (SY-3a shipped `28`, which sat one FM carrier low and left the drums
+/// too soft in real playback; `39` brings peak drum level to `128 · 39 = 4992`). While the DAC is on, FM ch6
+/// is muted, so the worst-case pre-clamp sum stays well inside the `i16` range — no clipping introduced.
+const DAC_SCALE: i32 = 39;
 
 /// Length of the log-sin and exp/pow lookup tables (8-bit quarter-wave index).
 const TABLE_LEN: usize = 256;

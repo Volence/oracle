@@ -22,6 +22,15 @@ use std::collections::BTreeMap;
 /// The canonical output sample rate for SY-1 (Hz).
 pub const DEFAULT_SAMPLE_RATE: u32 = 44_100;
 
+/// Post-mix PSG gain in Q15 — **mix knob (by-ear tunable).** The SN76489
+/// [`VOL_TABLE`](crate::synth::sn76489) peaks at 4000/channel and SY-1/SY-2 summed the PSG into the mix at
+/// that full amplitude with **no scale**, which made the PSG (tones *and* the noise/cymbal channel) far too
+/// loud next to the FM anchor in real playback. This is the third per-chip mix-level knob, symmetric with
+/// [`FM_LEVEL_Q15`](crate::synth::ym2612_synth) and `DAC_SCALE`: it multiplies the summed PSG sample before
+/// it enters the mix. Calibrated so our per-chip RMS matches the vgm2wav reference **PSG:FM ≈ 0.28** ratio
+/// (a full-scale PSG tone was ~3.5× too loud relative to FM at unity; `9416/32768 ≈ 0.287` brings it in).
+const PSG_LEVEL_Q15: i64 = 9_416;
+
 /// A [`BusEventSink`] that renders the machine's PSG register writes to interleaved stereo `i16` PCM.
 pub struct AudioSink {
     /// Output sample rate (Hz).
@@ -166,8 +175,9 @@ impl AudioSink {
                 self.apply_write(bucket[wi].1);
                 wi += 1;
             }
-            // PSG is mono on the Genesis → the same value feeds both output channels.
-            let psg = self.psg.next_sample() as i32;
+            // PSG is mono on the Genesis → the same value feeds both output channels. Scale by the
+            // PSG_LEVEL_Q15 mix knob (symmetric with the FM/DAC knobs) to hit the vgm2wav PSG:FM balance.
+            let psg = ((self.psg.next_sample() as i64 * PSG_LEVEL_Q15) >> 15) as i32;
             // FM carries its own stereo pan.
             let (fm_l, fm_r) = self.fm.next_sample();
             let l = (psg + fm_l).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
