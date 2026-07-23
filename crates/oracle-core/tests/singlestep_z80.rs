@@ -43,8 +43,11 @@ const UNDOC_FLAGS: u8 = 0b0010_1000;
 /// Opcode files driven this slice (keep in sync with `tools/fetch-z80-tests.sh`'s `FILES`): the **entire
 /// un-prefixed base table** — every opcode `0x00`-`0xFF` except the four prefix bytes `0xCB`/`0xDD`/`0xED`/
 /// `0xFD` — PLUS the **full CB-prefixed group** (`"cb 00"`-`"cb ff"`: the rotates/shifts
-/// `RLC`/`RRC`/`RL`/`RR`/`SLA`/`SRA`/`SLL`/`SRL`, `BIT b`, `RES b`, `SET b`, across all eight targets). The
-/// `DD`/`ED`/`FD`/`DDCB`/`FDCB` tables are the later prefix-group slices.
+/// `RLC`/`RRC`/`RL`/`RR`/`SLA`/`SRA`/`SLL`/`SRL`, `BIT b`, `RES b`, `SET b`, across all eight targets), the
+/// **documented `ED` subset** (see `ED_OPCODES`), the **documented `DD`/`FD` base ops** (see `DDFD_OPCODES`),
+/// and the **documented `DDCB`/`FDCB` bit/shift group** (see `DDCB_OPCODES`) — the whole documented set. The
+/// undocumented `ED` holes/mirrors, `IXH`/`IXL` half-register forms, and `DDCB`/`FDCB` register-copy variants
+/// are the later ZEXALL slice.
 fn opcode_files() -> Vec<String> {
     let base = (0x00u16..=0xFF)
         .filter(|op| !matches!(op, 0xCB | 0xDD | 0xED | 0xFD))
@@ -53,7 +56,15 @@ fn opcode_files() -> Vec<String> {
     let ed = ED_OPCODES.iter().map(|op| format!("ed {op:02x}"));
     let dd = DDFD_OPCODES.iter().map(|op| format!("dd {op:02x}"));
     let fd = DDFD_OPCODES.iter().map(|op| format!("fd {op:02x}"));
-    base.chain(cb).chain(ed).chain(dd).chain(fd).collect()
+    let ddcb = DDCB_OPCODES.iter().map(|op| format!("dd cb __ {op:02x}"));
+    let fdcb = DDCB_OPCODES.iter().map(|op| format!("fd cb __ {op:02x}"));
+    base.chain(cb)
+        .chain(ed)
+        .chain(dd)
+        .chain(fd)
+        .chain(ddcb)
+        .chain(fdcb)
+        .collect()
 }
 
 /// The documented ED-prefixed opcodes covered by sub-slice 5 (keep in sync with `tools/fetch-z80-tests.sh`'s
@@ -80,6 +91,19 @@ const DDFD_OPCODES: [u8; 39] = [
     0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x77, 0x7e, //
     0x86, 0x8e, 0x96, 0x9e, 0xa6, 0xae, 0xb6, 0xbe, //
     0xe1, 0xe3, 0xe5, 0xe9, 0xf9, //
+];
+
+/// The documented `DDCB`/`FDCB`-prefixed op bytes (keep in sync with `tools/fetch-z80-tests.sh`'s
+/// `DDCB_OPS`), fetched under both the `dd cb __` (IX+d) and `fd cb __` (IY+d) prefixes (the `__` is the
+/// literal displacement-slot placeholder in the corpus's filenames). Only the **documented** forms — op
+/// bytes whose low 3 bits `== 6` (the `(HL)`-slot encoding, here the indexed address): the rotates/shifts
+/// `RLC`/`RRC`/`RL`/`RR`/`SLA`/`SRA`/`SLL`/`SRL` `(IX+d)`, `BIT b,(IX+d)`, `RES b,(IX+d)`, `SET b,(IX+d)`.
+/// The undocumented register-copy variants (low 3 bits `!= 6`) are the ZEXALL follow-up.
+const DDCB_OPCODES: [u8; 32] = [
+    0x06, 0x0e, 0x16, 0x1e, 0x26, 0x2e, 0x36, 0x3e, //
+    0x46, 0x4e, 0x56, 0x5e, 0x66, 0x6e, 0x76, 0x7e, //
+    0x86, 0x8e, 0x96, 0x9e, 0xa6, 0xae, 0xb6, 0xbe, //
+    0xc6, 0xce, 0xd6, 0xde, 0xe6, 0xee, 0xf6, 0xfe, //
 ];
 
 /// A flat 64 KiB Z80 address space (ZC10) — plain array (the SST corpus is pure memory) plus a port model
@@ -301,12 +325,15 @@ fn z80_matches_singlesteptests() {
         total += data.len();
     }
     // 252 base-table files + 256 CB-prefixed files + 58 documented ED-prefixed files + 2×39 documented
-    // DD/FD-prefixed base files = 644 opcode files × 1000 cases. The base table is the 256 opcodes minus the
-    // four prefix bytes 0xCB/0xDD/0xED/0xFD; the CB group is "cb 00".."cb ff"; the ED subset is the 58
-    // documented ED opcodes (see `ED_OPCODES`); the DD/FD subset is the 39 documented index-register base
-    // opcodes (see `DDFD_OPCODES`), fetched under both the "dd" (IX) and "fd" (IY) prefixes.
+    // DD/FD-prefixed base files + 2×32 documented DDCB/FDCB-prefixed files = 708 opcode files × 1000 cases.
+    // The base table is the 256 opcodes minus the four prefix bytes 0xCB/0xDD/0xED/0xFD; the CB group is
+    // "cb 00".."cb ff"; the ED subset is the 58 documented ED opcodes (see `ED_OPCODES`); the DD/FD subset is
+    // the 39 documented index-register base opcodes (see `DDFD_OPCODES`); the DDCB/FDCB subset is the 32
+    // documented index-register bit/shift op bytes (see `DDCB_OPCODES`) — each fetched under both the "dd"
+    // (IX) and "fd" (IY) prefixes.
     assert_eq!(
-        total, 644_000,
-        "expected 644000 Z80 SST cases (base 252k + CB 256k + documented ED 58k + documented DD/FD base 78k)"
+        total, 708_000,
+        "expected 708000 Z80 SST cases (base 252k + CB 256k + documented ED 58k + documented DD/FD base 78k \
+         + documented DDCB/FDCB 64k)"
     );
 }

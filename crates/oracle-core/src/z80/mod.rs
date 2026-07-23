@@ -14,10 +14,13 @@
 //! no sub-instruction cursor is needed; the whole Z80 is captured by the [`Z80`] struct between `step()`
 //! calls. Coverage so far: the whole documented **un-prefixed base table** (`NOP`, the data/arith/rotate/misc
 //! ops, the 8-bit `LD`/ALU blocks, and the branch/stack control flow), the **full `CB`-prefixed group**
-//! (the rotates/shifts, `BIT`/`RES`/`SET`), and the **documented `ED`-prefixed subset** (the 16-bit
+//! (the rotates/shifts, `BIT`/`RES`/`SET`), the **documented `ED`-prefixed subset** (the 16-bit
 //! arithmetic/loads, `NEG`, `RETN`/`RETI`, `IM`, the `I`/`R` loads, `RRD`/`RLD`, `IN r,(C)`/`OUT (C),r`, and
-//! the block transfer/search/I/O groups). The undocumented `ED` holes/mirrors and the `DD`/`FD` (and
-//! `DDCB`/`FDCB`) prefix groups remain as Z-execute work.
+//! the block transfer/search/I/O groups), the **documented `DD`/`FD` (`IX`/`IY`) base ops**, and the
+//! **documented `DDCB`/`FDCB` group** (the `(IX+d)`/`(IY+d)` rotates/shifts, `BIT`/`RES`/`SET`) — which
+//! completes the **documented Z80 instruction set**. Only the undocumented opcodes (the `ED` holes/mirrors,
+//! the `IXH`/`IXL` half-register forms, and the `DDCB`/`FDCB` register-copy variants) remain, as the ZEXALL
+//! follow-up.
 
 pub mod bus;
 
@@ -361,9 +364,11 @@ impl Z80 {
     /// forms + `EXX`, `JP (HL)`, `LD SP,HL`, `EI`/`DI`, `IN A,(n)`/`OUT (n),A`, the 8-bit `LD`/ALU blocks
     /// (`0x40-0xBF`), the ALU-immediate `A,n` ops, and the branch/stack control flow (`DJNZ`/`JR`/`JR cc`/
     /// `JP`/`JP cc`/`CALL`/`CALL cc`/`RET`/`RET cc`/`RST`/`PUSH`/`POP`), the full `CB`-prefixed group
-    /// (rotates/shifts, `BIT`/`RES`/`SET`), and the documented `ED`-prefixed subset (see [`Self::execute_ed`]).
-    /// The undocumented `ED` holes/mirrors and the `DD`/`FD` (and `DDCB`/`FDCB`) index-prefix groups, decoded
-    /// structurally but with stub leaf handlers, remain for the next slice.
+    /// (rotates/shifts, `BIT`/`RES`/`SET`), the documented `ED`-prefixed subset (see [`Self::execute_ed`]), the
+    /// documented `DD`/`FD` (`IX`/`IY`) base ops (see [`Self::execute_indexed_base`]), and the documented
+    /// `DDCB`/`FDCB` bit/shift group (see [`Self::execute_ddcb`]) — the whole documented instruction set. Only
+    /// the undocumented opcodes (the `ED` holes/mirrors, the `IXH`/`IXL` half-register forms, and the
+    /// `DDCB`/`FDCB` register-copy variants) remain for the ZEXALL slice.
     pub fn step<B: Z80Io>(&mut self, bus: &mut B) -> u32 {
         if self.halted {
             // HALT idle: the CPU runs internal NOPs (refresh continues) until an interrupt/reset clears
@@ -1505,8 +1510,9 @@ impl Z80 {
     /// `DD`/`FD`-prefixed index-register (`IX`/`IY`) forms. A `DD`/`FD` sets an override for the following
     /// opcode; a run of `DD`/`FD` collapses (each is one M1, the last winning). `DDCB`/`FDCB` fetch the
     /// displacement `d` **before** the final opcode byte (ZC3b) — that irregular order is honored here. The
-    /// **documented** index-overridden base opcodes land in [`Self::execute_indexed_base`]; the `DDCB`/`FDCB`
-    /// group and the undocumented `IXH`/`IXL` half-register (and no-op-prefix) forms remain for later slices.
+    /// **documented** index-overridden base opcodes land in [`Self::execute_indexed_base`] and the documented
+    /// `DDCB`/`FDCB` bit/shift ops in [`Self::execute_ddcb`]; the undocumented `IXH`/`IXL` half-register (and
+    /// no-op-prefix) forms and the `DDCB`/`FDCB` register-copy variants remain for the ZEXALL slice.
     fn execute_indexed<B: Z80Io>(&mut self, idx: IndexReg, bus: &mut B) -> u32 {
         let sub = self.next_opcode(bus);
         match sub {
@@ -1517,7 +1523,7 @@ impl Z80 {
                 // DDCB/FDCB: displacement precedes the opcode byte (neither is an M1 refresh cycle).
                 let d = self.next_byte(bus) as i8;
                 let op = self.next_byte(bus);
-                self.execute_ddcb(idx, d, op)
+                self.execute_ddcb(idx, d, op, bus)
             }
             other => self.execute_indexed_base(idx, other, bus),
         }
@@ -1531,7 +1537,7 @@ impl Z80 {
     /// For the register↔`(IX+d)` moves the `r` operands are the **real** `B..A` registers (never `IXH`/`IXL`),
     /// since encoding `6` is the memory operand. `INC`/`DEC`/`ALU` on `(IX+d)` set flags exactly like their
     /// `(HL)` counterparts. The undocumented `IXH`/`IXL` half-register ops and the DD/FD-on-non-HL no-op
-    /// prefixes fall through to `unimplemented!` (deferred); the `DDCB`/`FDCB` group is a separate next slice.
+    /// prefixes fall through to `unimplemented!` (deferred); the `DDCB`/`FDCB` group is [`Self::execute_ddcb`].
     fn execute_indexed_base<B: Z80Io>(&mut self, idx: IndexReg, op: u8, bus: &mut B) -> u32 {
         match op {
             // ---- ADD IX,rr (0x09/19/29/39): rr = bits 5..4 (BC/DE/IX/SP — the HL slot is the index reg, so
@@ -1709,9 +1715,60 @@ impl Z80 {
         result
     }
 
-    /// `DDCB`/`FDCB` indexed bit/shift ops (displacement already fetched). Body is the Z-execute slice.
-    fn execute_ddcb(&mut self, idx: IndexReg, d: i8, op: u8) -> u32 {
-        unimplemented!("Z80 {idx:?}CB opcode {op:#04X} (d={d}) is the Z-execute slice")
+    /// `DDCB`/`FDCB` indexed rotate/shift/bit ops (the displacement `d` is already fetched — the ZC3b
+    /// decode quirk: after the `DD`/`FD` and `CB` prefix bytes, the signed `d` is fetched **before** the
+    /// final opcode byte). The operation targets `(IX+d)`/`(IY+d)`. Decoded by the op's high two bits like
+    /// the `CB` group: `0x00-0x3F` = `RLC RRC RL RR SLA SRA SLL SRL` (op = bits 5..3), `0x40-0x7F` =
+    /// `BIT b`, `0x80-0xBF` = `RES b`, `0xC0-0xFF` = `SET b` (b = bits 5..3). The rotates/shifts set the
+    /// full documented flag set (`S Z` from the result, `H = N = 0`, `P/V` = parity, `C` = the shifted-out
+    /// bit) and read-modify-write `(IX+d)`; `BIT b,(IX+d)` sets `Z = NOT(bit)`, `H = 1`, `N = 0`,
+    /// `S = (b==7 && set)`, `P/V = Z` (its `YF/XF` come from an internal address source, masked out of the
+    /// documented gate); `RES`/`SET` clear/set bit `b` of `(IX+d)` with no flags.
+    ///
+    /// **Only the documented forms** — those whose op byte's low 3 bits `== 6` (the `(HL)`-slot encoding,
+    /// which here is the indexed address) — are implemented. The undocumented register-copy variants (every
+    /// op byte whose low 3 bits `!= 6`, which also copy the result into a `B..A` register) are the ZEXALL
+    /// follow-up and fall through to `unimplemented!`; a documented-mode corpus never fetches them.
+    fn execute_ddcb<B: Z80Io>(&mut self, idx: IndexReg, d: i8, op: u8, bus: &mut B) -> u32 {
+        if op & 7 != 6 {
+            unimplemented!(
+                "Z80 {idx:?}CB opcode {op:#04X} (d={d}) is an undocumented register-copy variant \
+                 (op low 3 bits != 6) — deferred to the ZEXALL/undocumented slice"
+            );
+        }
+        let addr = self.idx_get(idx).wrapping_add(d as u16);
+        match op {
+            // ---- Rotates/shifts (0x06/0E/16/1E/26/2E/36/3E): op = bits 5..3, full documented flag set,
+            // read-modify-write of (IX+d). ----
+            0x00..=0x3F => {
+                let v = bus.read(addr);
+                let (r, carry) = self.rotate_shift((op >> 3) & 7, v);
+                bus.write(addr, r);
+                self.set_flags(shift_rotate_flags(r, carry));
+                23
+            }
+            // ---- BIT b,(IX+d) (0x46/4E/56/5E/66/6E/76/7E): test bit b; Z = NOT(bit), H = 1, N = 0,
+            // S = (b==7 && set), P/V = Z, C preserved. No target write. ----
+            0x40..=0x7F => {
+                let v = bus.read(addr);
+                self.op_bit((op >> 3) & 7, v);
+                20
+            }
+            // ---- RES b,(IX+d) (0x86/8E/96/9E/A6/AE/B6/BE): clear bit b; no flags. ----
+            0x80..=0xBF => {
+                let b = (op >> 3) & 7;
+                let v = bus.read(addr);
+                bus.write(addr, v & !(1 << b));
+                23
+            }
+            // ---- SET b,(IX+d) (0xC6/CE/D6/DE/E6/EE/F6/FE): set bit b; no flags. ----
+            _ => {
+                let b = (op >> 3) & 7;
+                let v = bus.read(addr);
+                bus.write(addr, v | (1 << b));
+                23
+            }
+        }
     }
 }
 

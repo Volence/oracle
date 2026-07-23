@@ -57,6 +57,17 @@ for op in "${DDFD_OPS[@]}"; do
   FILES+=("dd $op")                                                 # documented DD-prefixed (IX) base ops
   FILES+=("fd $op")                                                 # documented FD-prefixed (IY) base ops
 done
+# Documented DDCB/FDCB-prefixed opcodes (IX/IY bit-shift group). Encoding: DD CB d op — the signed
+# displacement d is fetched BEFORE the final op byte, so the repo names these "dd cb __ XX.json" (the "__"
+# is a literal placeholder for the displacement slot; XX = the final op byte). Only the DOCUMENTED forms —
+# op bytes whose low 3 bits == 6 (the (HL)-slot encoding = the indexed address): RLC/RRC/RL/RR/SLA/SRA/SLL/
+# SRL (IX+d), BIT/RES/SET b,(IX+d). The undocumented register-copy variants (low 3 bits != 6) are later.
+DDCB_OPS=(06 0e 16 1e 26 2e 36 3e 46 4e 56 5e 66 6e 76 7e \
+          86 8e 96 9e a6 ae b6 be c6 ce d6 de e6 ee f6 fe)
+for op in "${DDCB_OPS[@]}"; do
+  FILES+=("dd cb __ $op")                                           # documented DDCB-prefixed (IX+d) ops
+  FILES+=("fd cb __ $op")                                           # documented FDCB-prefixed (IY+d) ops
+done
 
 mkdir -p "$OUT"
 for f in "${FILES[@]}"; do
