@@ -13,9 +13,11 @@
 //! SingleStepTests/z80 (architectural results at instruction boundaries), not SST's per-cycle bus trace, so
 //! no sub-instruction cursor is needed; the whole Z80 is captured by the [`Z80`] struct between `step()`
 //! calls. Coverage so far: the whole documented **un-prefixed base table** (`NOP`, the data/arith/rotate/misc
-//! ops, the 8-bit `LD`/ALU blocks, and the branch/stack control flow) plus the **full `CB`-prefixed group**
-//! (the rotates/shifts, `BIT`/`RES`/`SET`); only the `ED`/`DD`/`FD` (and `DDCB`/`FDCB`) prefix groups remain
-//! as Z-execute work.
+//! ops, the 8-bit `LD`/ALU blocks, and the branch/stack control flow), the **full `CB`-prefixed group**
+//! (the rotates/shifts, `BIT`/`RES`/`SET`), and the **documented `ED`-prefixed subset** (the 16-bit
+//! arithmetic/loads, `NEG`, `RETN`/`RETI`, `IM`, the `I`/`R` loads, `RRD`/`RLD`, `IN r,(C)`/`OUT (C),r`, and
+//! the block transfer/search/I/O groups). The undocumented `ED` holes/mirrors and the `DD`/`FD` (and
+//! `DDCB`/`FDCB`) prefix groups remain as Z-execute work.
 
 pub mod bus;
 
@@ -358,8 +360,9 @@ impl Z80 {
     /// loads, 8/16-bit `INC`/`DEC`, `ADD HL,rr`, the accumulator rotates, `DAA`/`CPL`/`SCF`/`CCF`, the `EX`
     /// forms + `EXX`, `JP (HL)`, `LD SP,HL`, `EI`/`DI`, `IN A,(n)`/`OUT (n),A`, the 8-bit `LD`/ALU blocks
     /// (`0x40-0xBF`), the ALU-immediate `A,n` ops, and the branch/stack control flow (`DJNZ`/`JR`/`JR cc`/
-    /// `JP`/`JP cc`/`CALL`/`CALL cc`/`RET`/`RET cc`/`RST`/`PUSH`/`POP`) — and the full `CB`-prefixed group
-    /// (rotates/shifts, `BIT`/`RES`/`SET`). Only the `ED`/`DD`/`FD` (and `DDCB`/`FDCB`) prefix groups, decoded
+    /// `JP`/`JP cc`/`CALL`/`CALL cc`/`RET`/`RET cc`/`RST`/`PUSH`/`POP`), the full `CB`-prefixed group
+    /// (rotates/shifts, `BIT`/`RES`/`SET`), and the documented `ED`-prefixed subset (see [`Self::execute_ed`]).
+    /// The undocumented `ED` holes/mirrors and the `DD`/`FD` (and `DDCB`/`FDCB`) index-prefix groups, decoded
     /// structurally but with stub leaf handlers, remain for the next slice.
     pub fn step<B: Z80Io>(&mut self, bus: &mut B) -> u32 {
         if self.halted {
@@ -374,8 +377,8 @@ impl Z80 {
 
     /// The prefix-accumulating front end (ZC3b): `CB`/`ED` select an alternate table, `DD`/`FD` set an
     /// index-register override for the following opcode, and `DDCB`/`FDCB` fetch the displacement **before**
-    /// the final opcode byte. `CB` is fully implemented; the `ED`/`DD`/`FD` (index-override) leaf handlers
-    /// are stubbed this slice.
+    /// the final opcode byte. `CB` and the documented `ED` subset are fully implemented; the `DD`/`FD`
+    /// (index-override) leaf handlers are stubbed this slice.
     fn execute<B: Z80Io>(&mut self, opcode: u8, bus: &mut B) -> u32 {
         match opcode {
             0xCB => self.execute_cb(bus),
@@ -1050,10 +1053,465 @@ impl Z80 {
         self.set_flags(f);
     }
 
-    /// `ED`-prefixed extended ops. Structurally reached; bodies are the Z-execute slice.
+    /// `ED`-prefixed extended ops — the **documented** subset of the `0xED` table (Z-execute sub-slice 5).
+    /// The sub-opcode is fetched over a second M1 cycle (refresh bumps twice for an ED-prefixed instruction),
+    /// then decoded. Covered: `IN r,(C)`/`OUT (C),r`, `SBC HL,rr`/`ADC HL,rr`, `LD (nn),rr`/`LD rr,(nn)`,
+    /// `NEG`, `RETN`/`RETI`, `IM 0/1/2`, `LD I,A`/`LD R,A`/`LD A,I`/`LD A,R`, `RRD`/`RLD`, the block
+    /// transfer/search (`LDI`/`LDD`/`LDIR`/`LDDR`, `CPI`/`CPD`/`CPIR`/`CPDR`), and the block I/O
+    /// (`INI`/`IND`/`INIR`/`INDR`, `OUTI`/`OUTD`/`OTIR`/`OTDR`). The undocumented ED holes/NONI-NOPs and the
+    /// undocumented mirrors of `NEG`/`RETN`/`IM`/`IN (C)`/`OUT (C),0` (`0x70`/`0x71`) are deferred.
+    ///
+    /// Repeating variants (`LDIR`/`LDDR`/`CPIR`/`CPDR`/`INIR`/`INDR`/`OTIR`/`OTDR`) are modeled per the
+    /// SST instruction-atomic contract: one `step()` performs one iteration, and when the loop continues,
+    /// `PC` is rewound to the `ED`-instruction start (`PC - 2`) so the next `step()` re-enters the same
+    /// opcode; on the terminating iteration `PC` advances past the instruction. `R` keeps both M1 bumps
+    /// regardless (the fixture records the post-fetch refresh). The undocumented `YF`/`XF` (and the
+    /// block-op quirks that source them from internal values) stay masked out of the documented-flag gate.
     fn execute_ed<B: Z80Io>(&mut self, bus: &mut B) -> u32 {
         let sub = self.next_opcode(bus);
-        unimplemented!("Z80 ED-prefixed opcode {sub:#04X} is the Z-execute slice")
+        match sub {
+            // ---- IN r,(C) (0x40/48/50/58/60/68/78; reg = bits 5..3, encoding 6 = the undocumented
+            // flags-only form 0x70, deferred): port = BC (B on the high address lines). Sets S/Z/P-V from
+            // the value, H = N = 0, C preserved (unlike `IN A,(n)`, which is flagless). ----
+            0x40 | 0x48 | 0x50 | 0x58 | 0x60 | 0x68 | 0x78 => {
+                let val = bus.input(self.bc);
+                self.reg8_set((sub >> 3) & 7, val, bus);
+                let mut f = self.flags() & FLAG_C; // C preserved
+                if val & 0x80 != 0 {
+                    f |= FLAG_S;
+                }
+                if val == 0 {
+                    f |= FLAG_Z;
+                }
+                if val.count_ones().is_multiple_of(2) {
+                    f |= FLAG_PV;
+                }
+                f |= val & FLAG_XY;
+                self.set_flags(f);
+                12
+            }
+
+            // ---- OUT (C),r (0x41/49/51/59/61/69/79; reg = bits 5..3, encoding 6 = the undocumented
+            // `OUT (C),0` form 0x71, deferred): port = BC, no flags. ----
+            0x41 | 0x49 | 0x51 | 0x59 | 0x61 | 0x69 | 0x79 => {
+                let val = self.reg8_get((sub >> 3) & 7, bus);
+                bus.output(self.bc, val);
+                12
+            }
+
+            // ---- SBC HL,rr / ADC HL,rr (rr = bits 5..4: BC/DE/HL/SP). Full 16-bit flags. ----
+            0x42 | 0x52 | 0x62 | 0x72 => {
+                self.op_sbc_hl(self.rr_get((sub >> 4) & 3));
+                15
+            }
+            0x4A | 0x5A | 0x6A | 0x7A => {
+                self.op_adc_hl(self.rr_get((sub >> 4) & 3));
+                15
+            }
+
+            // ---- LD (nn),rr / LD rr,(nn) (rr = bits 5..4). 16-bit, little-endian; no flags. ----
+            0x43 | 0x53 | 0x63 | 0x73 => {
+                let addr = self.next_word(bus);
+                self.write16(addr, self.rr_get((sub >> 4) & 3), bus);
+                20
+            }
+            0x4B | 0x5B | 0x6B | 0x7B => {
+                let addr = self.next_word(bus);
+                let v = self.read16(addr, bus);
+                self.rr_set((sub >> 4) & 3, v);
+                20
+            }
+
+            // ---- NEG (0x44): A = 0 - A, flags as for `SUB 0,A`. ----
+            0x44 => {
+                let (r, f) = sub8(0, self.a(), 0);
+                self.set_a(r);
+                self.set_flags(f);
+                8
+            }
+
+            // ---- RETN (0x45) / RETI (0x4D): pop PC; both copy IFF2 -> IFF1 (the shared return-from-NMI/INT
+            // microcode does this on hardware, which the SST corpus encodes). ----
+            0x45 | 0x4D => {
+                self.pc = self.read16(self.sp, bus);
+                self.sp = self.sp.wrapping_add(2);
+                self.iff1 = self.iff2;
+                14
+            }
+
+            // ---- IM 0/1/2 (0x46/56/5E): set the interrupt mode; no flags. ----
+            0x46 => {
+                self.im = 0;
+                8
+            }
+            0x56 => {
+                self.im = 1;
+                8
+            }
+            0x5E => {
+                self.im = 2;
+                8
+            }
+
+            // ---- LD I,A (0x47) / LD R,A (0x4F): no flags. R stores all 8 bits (bit 7 included). ----
+            0x47 => {
+                self.i = self.a();
+                9
+            }
+            0x4F => {
+                self.r = self.a();
+                9
+            }
+
+            // ---- LD A,I (0x57) / LD A,R (0x5F): S/Z from the value, H = N = 0, P/V = IFF2, C preserved.
+            // For `LD A,R` the value is R after both M1 refresh bumps (already applied by `next_opcode`). ----
+            0x57 => {
+                let v = self.i;
+                self.set_a(v);
+                self.set_flags(self.ld_a_ir_flags(v));
+                9
+            }
+            0x5F => {
+                let v = self.r;
+                self.set_a(v);
+                self.set_flags(self.ld_a_ir_flags(v));
+                9
+            }
+
+            // ---- RRD (0x67) / RLD (0x6F): 4-bit nibble rotate through (HL); S/Z/P-V from A, H = N = 0,
+            // C preserved. ----
+            0x67 => {
+                self.op_rrd(bus);
+                18
+            }
+            0x6F => {
+                self.op_rld(bus);
+                18
+            }
+
+            // ---- Block transfer: LDI/LDD/LDIR/LDDR. ----
+            0xA0 => self.block_ld(bus, true, false),
+            0xA8 => self.block_ld(bus, false, false),
+            0xB0 => self.block_ld(bus, true, true),
+            0xB8 => self.block_ld(bus, false, true),
+
+            // ---- Block search: CPI/CPD/CPIR/CPDR. ----
+            0xA1 => self.block_cp(bus, true, false),
+            0xA9 => self.block_cp(bus, false, false),
+            0xB1 => self.block_cp(bus, true, true),
+            0xB9 => self.block_cp(bus, false, true),
+
+            // ---- Block input: INI/IND/INIR/INDR. ----
+            0xA2 => self.block_in(bus, true, false),
+            0xAA => self.block_in(bus, false, false),
+            0xB2 => self.block_in(bus, true, true),
+            0xBA => self.block_in(bus, false, true),
+
+            // ---- Block output: OUTI/OUTD/OTIR/OTDR. ----
+            0xA3 => self.block_out(bus, true, false),
+            0xAB => self.block_out(bus, false, false),
+            0xB3 => self.block_out(bus, true, true),
+            0xBB => self.block_out(bus, false, true),
+
+            other => unimplemented!(
+                "Z80 ED opcode {other:#04X} is an undocumented ED hole/mirror — deferred past sub-slice 5"
+            ),
+        }
+    }
+
+    /// `ADC HL,rr` (0x4A/5A/6A/7A): `HL = HL + rr + C`. `S/Z` from the 16-bit result, `H` = carry out of
+    /// bit 11, `P/V` = signed overflow, `N = 0`, `C` = carry out of bit 15. `YF/XF` from the result's high
+    /// byte (undocumented, masked).
+    fn op_adc_hl(&mut self, rr: u16) {
+        let hl = self.hl;
+        let c = (self.flags() & FLAG_C) as u32;
+        let sum = hl as u32 + rr as u32 + c;
+        let result = sum as u16;
+        let mut f = 0u8;
+        if result & 0x8000 != 0 {
+            f |= FLAG_S;
+        }
+        if result == 0 {
+            f |= FLAG_Z;
+        }
+        if (hl & 0x0FFF) as u32 + (rr & 0x0FFF) as u32 + c > 0x0FFF {
+            f |= FLAG_H;
+        }
+        if (hl ^ result) & (rr ^ result) & 0x8000 != 0 {
+            f |= FLAG_PV;
+        }
+        if sum & 0x1_0000 != 0 {
+            f |= FLAG_C;
+        }
+        f |= (result >> 8) as u8 & FLAG_XY;
+        self.hl = result;
+        self.set_flags(f);
+    }
+
+    /// `SBC HL,rr` (0x42/52/62/72): `HL = HL - rr - C`. `S/Z` from the result, `H` = borrow out of bit 12,
+    /// `P/V` = signed overflow, `N = 1`, `C` = borrow out of bit 15. `YF/XF` from the result's high byte.
+    fn op_sbc_hl(&mut self, rr: u16) {
+        let hl = self.hl;
+        let c = (self.flags() & FLAG_C) as i32;
+        let diff = hl as i32 - rr as i32 - c;
+        let result = diff as u16;
+        let mut f = FLAG_N;
+        if result & 0x8000 != 0 {
+            f |= FLAG_S;
+        }
+        if result == 0 {
+            f |= FLAG_Z;
+        }
+        if (hl & 0x0FFF) as i32 - (rr & 0x0FFF) as i32 - c < 0 {
+            f |= FLAG_H;
+        }
+        if (hl ^ rr) & (hl ^ result) & 0x8000 != 0 {
+            f |= FLAG_PV;
+        }
+        if diff < 0 {
+            f |= FLAG_C;
+        }
+        f |= (result >> 8) as u8 & FLAG_XY;
+        self.hl = result;
+        self.set_flags(f);
+    }
+
+    /// Documented flags for `LD A,I` / `LD A,R`: `S/Z` from the loaded value, `H = N = 0`, `P/V = IFF2`,
+    /// `C` preserved. `YF/XF` from the value (undocumented, masked).
+    fn ld_a_ir_flags(&self, v: u8) -> u8 {
+        let mut f = self.flags() & FLAG_C; // C preserved
+        if v & 0x80 != 0 {
+            f |= FLAG_S;
+        }
+        if v == 0 {
+            f |= FLAG_Z;
+        }
+        if self.iff2 {
+            f |= FLAG_PV;
+        }
+        f |= v & FLAG_XY;
+        f
+    }
+
+    /// `RRD` (0x67): rotate the low nibble of `A`, the low nibble of `(HL)`, and the high nibble of `(HL)`
+    /// one 4-bit digit to the right — `(HL)_lo -> A_lo`, `A_lo -> (HL)_hi`, `(HL)_hi -> (HL)_lo`.
+    fn op_rrd<B: Z80Io>(&mut self, bus: &mut B) {
+        let a = self.a();
+        let m = bus.read(self.hl);
+        let new_m = ((a << 4) & 0xF0) | (m >> 4);
+        let new_a = (a & 0xF0) | (m & 0x0F);
+        bus.write(self.hl, new_m);
+        self.set_a(new_a);
+        self.set_flags(self.rotate_digit_flags(new_a));
+    }
+
+    /// `RLD` (0x6F): the left-digit counterpart of [`Self::op_rrd`] — `(HL)_lo -> (HL)_hi`,
+    /// `(HL)_hi -> A_lo`, `A_lo -> (HL)_lo`.
+    fn op_rld<B: Z80Io>(&mut self, bus: &mut B) {
+        let a = self.a();
+        let m = bus.read(self.hl);
+        let new_m = ((m << 4) & 0xF0) | (a & 0x0F);
+        let new_a = (a & 0xF0) | (m >> 4);
+        bus.write(self.hl, new_m);
+        self.set_a(new_a);
+        self.set_flags(self.rotate_digit_flags(new_a));
+    }
+
+    /// Documented flags for `RRD`/`RLD`: `S/Z` from `A`, `P/V` = even parity of `A`, `H = N = 0`,
+    /// `C` preserved. `YF/XF` from `A` (undocumented, masked).
+    fn rotate_digit_flags(&self, a: u8) -> u8 {
+        let mut f = self.flags() & FLAG_C; // C preserved
+        if a & 0x80 != 0 {
+            f |= FLAG_S;
+        }
+        if a == 0 {
+            f |= FLAG_Z;
+        }
+        if a.count_ones().is_multiple_of(2) {
+            f |= FLAG_PV;
+        }
+        f |= a & FLAG_XY;
+        f
+    }
+
+    /// Block transfer `LDI`/`LDD` (+ the `LDIR`/`LDDR` repeats): `(DE) = (HL)`, then `HL`/`DE` step by
+    /// `±1` and `BC -= 1`. Flags: `S/Z/C` preserved, `H = N = 0`, `P/V = (BC != 0)`. `YF/XF` come from
+    /// `A + (transferred byte)` (undocumented, masked). A repeat variant with `BC != 0` rewinds `PC` by 2.
+    fn block_ld<B: Z80Io>(&mut self, bus: &mut B, inc: bool, repeat: bool) -> u32 {
+        let val = bus.read(self.hl);
+        bus.write(self.de, val);
+        if inc {
+            self.hl = self.hl.wrapping_add(1);
+            self.de = self.de.wrapping_add(1);
+        } else {
+            self.hl = self.hl.wrapping_sub(1);
+            self.de = self.de.wrapping_sub(1);
+        }
+        self.bc = self.bc.wrapping_sub(1);
+        let mut f = self.flags() & (FLAG_S | FLAG_Z | FLAG_C); // preserved; H = N = 0
+        if self.bc != 0 {
+            f |= FLAG_PV;
+        }
+        let n = val.wrapping_add(self.a()); // undocumented YF/XF source (masked)
+        f |= (n & 0x08) | ((n & 0x02) << 4);
+        self.set_flags(f);
+        if repeat && self.bc != 0 {
+            self.pc = self.pc.wrapping_sub(2);
+            21
+        } else {
+            16
+        }
+    }
+
+    /// Block search `CPI`/`CPD` (+ the `CPIR`/`CPDR` repeats): compare `A - (HL)` (result discarded), then
+    /// `HL` steps by `±1` and `BC -= 1`. Flags: `S/Z/H` from the compare, `N = 1`, `C` preserved,
+    /// `P/V = (BC != 0)`. `YF/XF` come from `(result - H)` (undocumented, masked). A repeat variant rewinds
+    /// `PC` by 2 while `BC != 0` **and** the compare did not match (`A != (HL)`).
+    fn block_cp<B: Z80Io>(&mut self, bus: &mut B, inc: bool, repeat: bool) -> u32 {
+        let a = self.a();
+        let n = bus.read(self.hl);
+        let (result, subf) = sub8(a, n, 0);
+        if inc {
+            self.hl = self.hl.wrapping_add(1);
+        } else {
+            self.hl = self.hl.wrapping_sub(1);
+        }
+        self.bc = self.bc.wrapping_sub(1);
+        let mut f = FLAG_N;
+        f |= subf & (FLAG_S | FLAG_Z | FLAG_H);
+        f |= self.flags() & FLAG_C; // C preserved
+        if self.bc != 0 {
+            f |= FLAG_PV;
+        }
+        let temp = result.wrapping_sub((subf & FLAG_H != 0) as u8); // undocumented YF/XF source (masked)
+        f |= (temp & 0x08) | ((temp & 0x02) << 4);
+        self.set_flags(f);
+        let matched = result == 0;
+        if repeat && self.bc != 0 && !matched {
+            self.pc = self.pc.wrapping_sub(2);
+            21
+        } else {
+            16
+        }
+    }
+
+    /// Block input `INI`/`IND` (+ the `INIR`/`INDR` repeats): read a byte from port `BC`, store it at
+    /// `(HL)`, decrement `B`, and step `HL` by `±1`. Documented flags follow the accepted hardware model
+    /// (`N` = value bit 7; `H = C = (value + ((C±1) & 0xFF)) > 0xFF`; `P/V` = parity of `((k & 7) ^ B)`;
+    /// `Z = (B == 0)`; `S = B & 0x80`), which the SST corpus records even though Zilog lists them undefined.
+    /// The repeating variants apply the extra loop correction to `H`/`P/V` when `B != 0` (see
+    /// [`Self::block_io_repeat_flags`]). A repeat with `B != 0` rewinds `PC` by 2.
+    fn block_in<B: Z80Io>(&mut self, bus: &mut B, inc: bool, repeat: bool) -> u32 {
+        let val = bus.input(self.bc);
+        bus.write(self.hl, val);
+        let c = self.bc as u8;
+        let b = ((self.bc >> 8) as u8).wrapping_sub(1);
+        self.bc = (self.bc & 0x00FF) | ((b as u16) << 8);
+        if inc {
+            self.hl = self.hl.wrapping_add(1);
+        } else {
+            self.hl = self.hl.wrapping_sub(1);
+        }
+        let t = if inc {
+            c.wrapping_add(1)
+        } else {
+            c.wrapping_sub(1)
+        };
+        let k = val as u16 + t as u16;
+        let mut f = self.block_io_flags(val, b, k, repeat);
+        f |= b & FLAG_XY; // undocumented (masked)
+        self.set_flags(f);
+        if repeat && b != 0 {
+            self.pc = self.pc.wrapping_sub(2);
+            21
+        } else {
+            16
+        }
+    }
+
+    /// Block output `OUTI`/`OUTD` (+ the `OTIR`/`OTDR` repeats): read `(HL)`, decrement `B`, step `HL` by
+    /// `±1`, then write the byte to port `BC` (the port carries the **decremented** `B` on its high half).
+    /// Flag model as for [`Self::block_in`], but the carry term uses `L` (after the `HL` step):
+    /// `k = value + L`. A repeat with `B != 0` rewinds `PC` by 2.
+    fn block_out<B: Z80Io>(&mut self, bus: &mut B, inc: bool, repeat: bool) -> u32 {
+        let val = bus.read(self.hl);
+        let b = ((self.bc >> 8) as u8).wrapping_sub(1);
+        self.bc = (self.bc & 0x00FF) | ((b as u16) << 8);
+        if inc {
+            self.hl = self.hl.wrapping_add(1);
+        } else {
+            self.hl = self.hl.wrapping_sub(1);
+        }
+        bus.output(self.bc, val); // port high = decremented B
+        let l = self.hl as u8;
+        let k = val as u16 + l as u16;
+        let mut f = self.block_io_flags(val, b, k, repeat);
+        f |= b & FLAG_XY; // undocumented (masked)
+        self.set_flags(f);
+        if repeat && b != 0 {
+            self.pc = self.pc.wrapping_sub(2);
+            21
+        } else {
+            16
+        }
+    }
+
+    /// The documented block-I/O flag byte (`S Z H P/V N C`, no `YF/XF`). `val` is the transferred byte,
+    /// `b` the post-decrement `B`, `k` the carry-term sum (`value + (C±1)` for input, `value + L` for
+    /// output). When `repeat` and the loop continues (`b != 0`), the `H`/`P/V` loop correction is applied.
+    fn block_io_flags(&self, val: u8, b: u8, k: u16, repeat: bool) -> u8 {
+        let carry = k > 0xFF;
+        let mut f = 0u8;
+        if val & 0x80 != 0 {
+            f |= FLAG_N;
+        }
+        if carry {
+            f |= FLAG_H | FLAG_C;
+        }
+        let mut pv = (((k & 7) as u8) ^ b).count_ones().is_multiple_of(2);
+        if b == 0 {
+            f |= FLAG_Z;
+        }
+        if b & 0x80 != 0 {
+            f |= FLAG_S;
+        }
+        if repeat && b != 0 {
+            let (h, p) = self.block_io_repeat_flags(val, b, carry, pv);
+            if h {
+                f |= FLAG_H;
+            } else {
+                f &= !FLAG_H;
+            }
+            pv = p;
+        }
+        if pv {
+            f |= FLAG_PV;
+        }
+        f
+    }
+
+    /// The loop correction (Patrik Rak) applied by the repeating block-I/O ops on every non-terminating
+    /// iteration (`B != 0`): recomputes `H` and `P/V` from the base carry, the base parity, and the value's
+    /// direction bit (its bit 7). Returns `(hf, pv)`. Derived from the SST corpus (behavioral test data),
+    /// clean-room.
+    fn block_io_repeat_flags(&self, val: u8, b: u8, carry: bool, base_pv: bool) -> (bool, bool) {
+        // Even-parity predicate for the low 3 bits of an adjusted counter value.
+        let par3 = |x: u8| (x & 7).count_ones().is_multiple_of(2);
+        let hf;
+        let p;
+        if carry {
+            if val & 0x80 != 0 {
+                hf = (b & 0x0F) == 0x00;
+                p = base_pv ^ par3(b.wrapping_sub(1)) ^ true;
+            } else {
+                hf = (b & 0x0F) == 0x0F;
+                p = base_pv ^ par3(b.wrapping_add(1)) ^ true;
+            }
+        } else {
+            hf = false;
+            p = base_pv ^ par3(b) ^ true;
+        }
+        (hf, p)
     }
 
     /// `DD`/`FD`-prefixed index-register (`IX`/`IY`) forms. A `DD`/`FD` sets an override for the following

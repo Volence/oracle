@@ -32,6 +32,18 @@ done
 for i in $(seq 0 255); do
   FILES+=("$(printf 'cb %02x' "$i")")                               # full CB-prefixed group (space in name)
 done
+# Documented ED-prefixed opcodes (Z-execute sub-slice 5): IN r,(C)/OUT (C),r, SBC/ADC HL,rr,
+# LD (nn),rr/LD rr,(nn), NEG, RETN/RETI, IM 0/1/2, LD I,A/R,A/A,I/A,R, RRD/RLD, and the block
+# transfer/search/I/O groups. The undocumented ED holes/mirrors and the DD/FD prefixes are later slices.
+ED_OPS=(40 41 42 43 44 45 46 47 48 49 4a 4b 4d 4f \
+        50 51 52 53 56 57 58 59 5a 5b 5e 5f \
+        60 61 62 63 67 68 69 6a 6b 6f \
+        72 73 78 79 7a 7b \
+        a0 a1 a2 a3 a8 a9 aa ab \
+        b0 b1 b2 b3 b8 b9 ba bb)
+for op in "${ED_OPS[@]}"; do
+  FILES+=("ed $op")                                                 # documented ED-prefixed ops (space in name)
+done
 
 mkdir -p "$OUT"
 for f in "${FILES[@]}"; do

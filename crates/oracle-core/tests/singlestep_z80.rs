@@ -4,8 +4,10 @@
 //! `vendor/ProcessorTests/z80/v1`) — the Oracle-independent gate for the Z80 (the analog of
 //! `singlestep_m68000.rs`). Each `.json` is 1000 `{initial, final, cycles}` cases for one opcode. This slice
 //! covers the opcodes the fetch script pulls: the **entire un-prefixed base table** (every opcode `00`-`ff`
-//! except the four prefix bytes `cb`/`dd`/`ed`/`fd`) PLUS the **full CB-prefixed group** (`"cb 00"`-`"cb ff"`:
-//! the rotates/shifts, `BIT`/`RES`/`SET`).
+//! except the four prefix bytes `cb`/`dd`/`ed`/`fd`), the **full CB-prefixed group** (`"cb 00"`-`"cb ff"`:
+//! the rotates/shifts, `BIT`/`RES`/`SET`), PLUS the **documented ED-prefixed subset** (`"ed 40"` … : the
+//! 16-bit arithmetic/loads, `NEG`, `RETN`/`RETI`, `IM`, the `I`/`R` loads, `RRD`/`RLD`, `IN r,(C)`/
+//! `OUT (C),r`, and the block transfer/search/I/O groups — see `ED_OPCODES`).
 //!
 //! **Structurally isolated** (ZC10): it instantiates a bare [`Z80`] + a flat 64 KiB [`Z80TestBus`] and **never**
 //! [`System`](oracle_core::system::System), so it cannot touch any frozen currency — identically to how the
@@ -48,8 +50,22 @@ fn opcode_files() -> Vec<String> {
         .filter(|op| !matches!(op, 0xCB | 0xDD | 0xED | 0xFD))
         .map(|op| format!("{op:02x}"));
     let cb = (0x00u16..=0xFF).map(|op| format!("cb {op:02x}"));
-    base.chain(cb).collect()
+    let ed = ED_OPCODES.iter().map(|op| format!("ed {op:02x}"));
+    base.chain(cb).chain(ed).collect()
 }
+
+/// The documented ED-prefixed opcodes covered by sub-slice 5 (keep in sync with `tools/fetch-z80-tests.sh`'s
+/// `ED_OPS`): `IN r,(C)`/`OUT (C),r`, `SBC`/`ADC HL,rr`, `LD (nn),rr`/`LD rr,(nn)`, `NEG`, `RETN`/`RETI`,
+/// `IM 0/1/2`, `LD I,A`/`R,A`/`A,I`/`A,R`, `RRD`/`RLD`, and the block transfer/search/I/O groups. The
+/// undocumented ED holes/mirrors (`0x70`/`0x71` etc.) and the `DD`/`FD` prefixes are later slices.
+const ED_OPCODES: [u8; 58] = [
+    0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x4b, 0x4d, 0x4f, //
+    0x50, 0x51, 0x52, 0x53, 0x56, 0x57, 0x58, 0x59, 0x5a, 0x5b, 0x5e, 0x5f, //
+    0x60, 0x61, 0x62, 0x63, 0x67, 0x68, 0x69, 0x6a, 0x6b, 0x6f, //
+    0x72, 0x73, 0x78, 0x79, 0x7a, 0x7b, //
+    0xa0, 0xa1, 0xa2, 0xa3, 0xa8, 0xa9, 0xaa, 0xab, //
+    0xb0, 0xb1, 0xb2, 0xb3, 0xb8, 0xb9, 0xba, 0xbb, //
+];
 
 /// A flat 64 KiB Z80 address space (ZC10) — plain array (the SST corpus is pure memory) plus a port model
 /// for `IN`/`OUT`. Seeded from each case's `initial.ram`; touched bytes are read back for the `final.ram`
@@ -269,11 +285,11 @@ fn z80_matches_singlesteptests() {
         eprintln!("  {fname}.json: {} cases passed", data.len());
         total += data.len();
     }
-    // 252 base-table files + 256 CB-prefixed files = 508 opcode files × 1000 cases. The base table is the
-    // 256 opcodes minus the four prefix bytes 0xCB/0xDD/0xED/0xFD; the CB group is "cb 00".."cb ff". Both
-    // are fully implemented this slice.
+    // 252 base-table files + 256 CB-prefixed files + 58 documented ED-prefixed files = 566 opcode files ×
+    // 1000 cases. The base table is the 256 opcodes minus the four prefix bytes 0xCB/0xDD/0xED/0xFD; the CB
+    // group is "cb 00".."cb ff"; the ED subset is the 58 documented ED opcodes (see `ED_OPCODES`).
     assert_eq!(
-        total, 508_000,
-        "expected 508000 Z80 SST cases (un-prefixed base table 252k + full CB-prefixed group 256k)"
+        total, 566_000,
+        "expected 566000 Z80 SST cases (base table 252k + CB group 256k + documented ED subset 58k)"
     );
 }
