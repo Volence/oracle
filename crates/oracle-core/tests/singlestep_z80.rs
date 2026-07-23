@@ -3,8 +3,8 @@
 //! Drives the pinned, vendored SingleStepTests/z80 corpus (`tools/fetch-z80-tests.sh`; data gitignored under
 //! `vendor/ProcessorTests/z80/v1`) — the Oracle-independent gate for the Z80 (the analog of
 //! `singlestep_m68000.rs`). Each `.json` is 1000 `{initial, final, cycles}` cases for one opcode. This slice
-//! covers the opcodes the fetch script pulls: `NOP` (`00`), the 8-bit `LD r,r'`/`LD r,(HL)`/`LD (HL),r`/`HALT`
-//! block (`40`-`7f`), and the 8-bit ALU `A,r|(HL)` block (`80`-`bf`).
+//! covers the opcodes the fetch script pulls: the **entire un-prefixed base table** (every opcode `00`-`ff`
+//! except the four prefix bytes `cb`/`dd`/`ed`/`fd`), now including the branch/stack control flow.
 //!
 //! **Structurally isolated** (ZC10): it instantiates a bare [`Z80`] + a flat 64 KiB [`Z80TestBus`] and **never**
 //! [`System`](oracle_core::system::System), so it cannot touch any frozen currency — identically to how the
@@ -37,31 +37,15 @@ const STRICT_FLAGS: bool = false;
 /// The undocumented flag bits (`YF` = bit 5, `XF` = bit 3), excluded from the documented-flag comparison.
 const UNDOC_FLAGS: u8 = 0b0010_1000;
 
-/// Opcode files driven this slice (keep in sync with `tools/fetch-z80-tests.sh`'s `FILES`): `NOP` + the
-/// base-table data/arithmetic/rotate/misc remainder (`0x01`-`0x3F`, minus the deferred `JR`/`DJNZ` branch
-/// ops) + the `LD` block + 8-bit ALU `A,r` block (`0x40`-`0xBF`) + the non-branch `0xC0`-`0xFF` subset
-/// (ALU-immediate, `EX`/`IN`/`OUT`/`EI`/`DI`/`JP (HL)`/`LD SP,HL`).
+/// Opcode files driven this slice (keep in sync with `tools/fetch-z80-tests.sh`'s `FILES`): the **entire
+/// un-prefixed base table** — every opcode `0x00`-`0xFF` except the four prefix bytes `0xCB`/`0xDD`/`0xED`/
+/// `0xFD` (their tables are the later prefix-group slices). This latest addition is the branch/stack control
+/// flow (`DJNZ`/`JR`/`JR cc`, `JP`/`JP cc`, `CALL`/`CALL cc`, `RET`/`RET cc`, `RST`, `PUSH`/`POP`, `EXX`).
 fn opcode_files() -> Vec<String> {
-    let mut files = vec!["00".to_string()];
-    // 0x01-0x3F: skip the JR/DJNZ branch ops (0x10,0x18,0x20,0x28,0x30,0x38) deferred to the next slice.
-    for op in 0x01u16..=0x3F {
-        if matches!(op, 0x10 | 0x18 | 0x20 | 0x28 | 0x30 | 0x38) {
-            continue;
-        }
-        files.push(format!("{op:02x}"));
-    }
-    // 0x40-0xBF: 8-bit LD block + 8-bit ALU A,r block (prior slice).
-    for op in 0x40u16..=0xBF {
-        files.push(format!("{op:02x}"));
-    }
-    // 0xC0-0xFF non-branch subset.
-    for op in [
-        0xC6u16, 0xCE, 0xD3, 0xD6, 0xDB, 0xDE, 0xE3, 0xE6, 0xE9, 0xEB, 0xEE, 0xF3, 0xF6, 0xF9,
-        0xFB, 0xFE,
-    ] {
-        files.push(format!("{op:02x}"));
-    }
-    files
+    (0x00u16..=0xFF)
+        .filter(|op| !matches!(op, 0xCB | 0xDD | 0xED | 0xFD))
+        .map(|op| format!("{op:02x}"))
+        .collect()
 }
 
 /// A flat 64 KiB Z80 address space (ZC10) — plain array (the SST corpus is pure memory) plus a port model
@@ -282,10 +266,10 @@ fn z80_matches_singlesteptests() {
         eprintln!("  {fname}.json: {} cases passed", data.len());
         total += data.len();
     }
-    // 202 opcode files × 1000 cases = every vendored Z80 case this slice implements (00 + the 0x01-0x3F
-    // non-branch remainder + 0x40-0xBF + the 0xC0-0xFF non-branch subset).
+    // 252 opcode files × 1000 cases = the entire un-prefixed base table (256 opcodes minus the four
+    // prefix bytes 0xCB/0xDD/0xED/0xFD), which this slice now fully implements.
     assert_eq!(
-        total, 202_000,
-        "expected 202000 Z80 SST cases (00 + 0x01-0x3F non-branch + 0x40-0xBF + 0xC0-0xFF non-branch)"
+        total, 252_000,
+        "expected 252000 Z80 SST cases (whole un-prefixed base table: 0x00-0xFF minus CB/DD/ED/FD)"
     );
 }

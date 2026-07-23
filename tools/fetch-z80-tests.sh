@@ -20,21 +20,15 @@ OUT="$HERE/../vendor/ProcessorTests/z80/v1"
 CHECKSUMS="$HERE/singlesteptests-z80.sha256"
 
 # Opcodes needed by the z80 slice. Extend as opcode coverage grows — same model as the 68000
-# fetch script's FILES list. Batch = NOP + the base-table data/arith/rotate/misc remainder
-# (0x01-0x3F: 8/16-bit loads, 8/16-bit INC/DEC, ADD HL,rr, accumulator rotates, DAA/CPL/SCF/CCF,
-# EX AF,AF') + the 8-bit LD block (0x40-0x7F, incl. 0x76 HALT) + the 8-bit ALU A,r block (0x80-0xBF)
-# + the non-branch 0xC0-0xFF subset (ALU-immediate A,n, IN/OUT, EX DE,HL / EX (SP),HL, JP (HL),
-# LD SP,HL, EI/DI). The JR/DJNZ branch ops (0x10,0x18,0x20,0x28,0x30,0x38) and the branch/stack
-# 0xC0-0xFF ops + prefixed groups (CB/DD/ED/FD) land in later slices.
-FILES=(00)
-for i in $(seq 1 63); do                                            # 0x01-0x3F non-branch remainder
-  case $i in 16|24|32|40|48|56) continue;; esac                     # skip 0x10,0x18,0x20,0x28,0x30,0x38 (JR/DJNZ)
+# fetch script's FILES list. This batch completes the whole UN-PREFIXED base table: every opcode
+# 0x00-0xFF except the four prefix bytes 0xCB/0xDD/0xED/0xFD (those dispatch into the CB/DD/ED/FD
+# tables, which land in the later prefix-group slices). This latest addition is the branch/stack
+# control flow — DJNZ/JR/JR cc (0x10,0x18,0x20,0x28,0x30,0x38), JP/JP cc, CALL/CALL cc, RET/RET cc,
+# RST, PUSH/POP across 0xC0-0xFF, plus EXX (0xD9) — filling the remaining base-table holes.
+FILES=()
+for i in $(seq 0 255); do
+  case $i in 203|221|237|253) continue;; esac                       # skip 0xCB/0xDD/0xED/0xFD prefix bytes
   FILES+=("$(printf '%02x' "$i")")
-done
-for i in $(seq 64 127); do FILES+=("$(printf '%02x' "$i")"); done   # 0x40-0x7F: LD r,r' / LD r,(HL) / HALT
-for i in $(seq 128 191); do FILES+=("$(printf '%02x' "$i")"); done  # 0x80-0xBF: 8-bit ALU A,r|(HL)
-for op in c6 ce d3 d6 db de e3 e6 e9 eb ee f3 f6 f9 fb fe; do        # 0xC0-0xFF non-branch subset
-  FILES+=("$op")
 done
 
 mkdir -p "$OUT"

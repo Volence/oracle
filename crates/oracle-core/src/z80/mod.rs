@@ -12,8 +12,9 @@
 //! serializable struct — **not** the 68000's resumable micro-op recipe framework. The Z80's gate is
 //! SingleStepTests/z80 (architectural results at instruction boundaries), not SST's per-cycle bus trace, so
 //! no sub-instruction cursor is needed; the whole Z80 is captured by the [`Z80`] struct between `step()`
-//! calls. Coverage so far: `NOP` + the documented base table minus the branch/stack control flow (that plus
-//! the `CB`/`ED`/`DD`/`FD` prefix groups are the remaining Z-execute work).
+//! calls. Coverage so far: the whole documented **un-prefixed base table** (`NOP`, the data/arith/rotate/misc
+//! ops, the 8-bit `LD`/ALU blocks, and the branch/stack control flow); only the `CB`/`ED`/`DD`/`FD` prefix
+//! groups remain as Z-execute work.
 
 pub mod bus;
 
@@ -309,17 +310,56 @@ impl Z80 {
         }
     }
 
+    /// Read the `PUSH`/`POP` register pair by its 2-bit encoding (`0=BC 1=DE 2=HL 3=AF`). Distinct from
+    /// [`Self::rr_get`]: the stack forms replace the `SP` slot with `AF` (Z80 UM008 `PUSH qq`/`POP qq`).
+    fn push_pair_get(&self, sel: u8) -> u16 {
+        match sel & 3 {
+            0 => self.bc,
+            1 => self.de,
+            2 => self.hl,
+            _ => self.af,
+        }
+    }
+
+    /// Write the `PUSH`/`POP` register pair by its 2-bit encoding (`0=BC 1=DE 2=HL 3=AF`).
+    fn push_pair_set(&mut self, sel: u8, val: u16) {
+        match sel & 3 {
+            0 => self.bc = val,
+            1 => self.de = val,
+            2 => self.hl = val,
+            _ => self.af = val,
+        }
+    }
+
+    /// Evaluate a Z80 branch condition code by its 3-bit encoding (bits 5..3 of the conditional
+    /// `JP`/`CALL`/`RET`; only the low two — `NZ`/`Z`/`NC`/`C` — appear in `JR cc`). `0=NZ 1=Z 2=NC 3=C
+    /// 4=PO 5=PE 6=P 7=M` over the documented `Z`/`C`/`P/V`/`S` flag bits.
+    fn cc(&self, sel: u8) -> bool {
+        let f = self.flags();
+        match sel & 7 {
+            0 => f & FLAG_Z == 0,  // NZ
+            1 => f & FLAG_Z != 0,  // Z
+            2 => f & FLAG_C == 0,  // NC
+            3 => f & FLAG_C != 0,  // C
+            4 => f & FLAG_PV == 0, // PO (parity odd)
+            5 => f & FLAG_PV != 0, // PE (parity even)
+            6 => f & FLAG_S == 0,  // P (positive)
+            _ => f & FLAG_S != 0,  // M (minus)
+        }
+    }
+
     /// Execute one Z80 instruction over `bus`, returning the T-states it consumed (the value the ×15 mclk
     /// catch-up in [`crate::system::System::run_until`] scales into the frontier).
     ///
     /// Instruction-atomic decode-execute (ZC1/ZC2): one non-yielding call that fetches the opcode, walks the
     /// prefix front end (ZC3b), runs the handler, and returns at the instruction boundary with all state in
-    /// the struct. This slice implements the whole documented **base table except the branch/stack control
-    /// flow**: `NOP`, the 8/16-bit loads, 8/16-bit `INC`/`DEC`, `ADD HL,rr`, the accumulator rotates,
-    /// `DAA`/`CPL`/`SCF`/`CCF`, the `EX` forms, `JP (HL)`, `LD SP,HL`, `EI`/`DI`, `IN A,(n)`/`OUT (n),A`, the
-    /// 8-bit `LD`/ALU blocks (`0x40-0xBF`), and the ALU-immediate `A,n` ops. The `JR`/`JP cc`/`CALL`/`RET`/
-    /// `DJNZ`/`RST`/`PUSH`/`POP` control flow and the prefix groups (`CB`/`ED`/`DD`/`FD`/`DDCB`/`FDCB`, decoded
-    /// structurally but with stub leaf handlers) are the next slice (Z-execute).
+    /// the struct. This slice completes the whole documented **un-prefixed base table**: `NOP`, the 8/16-bit
+    /// loads, 8/16-bit `INC`/`DEC`, `ADD HL,rr`, the accumulator rotates, `DAA`/`CPL`/`SCF`/`CCF`, the `EX`
+    /// forms + `EXX`, `JP (HL)`, `LD SP,HL`, `EI`/`DI`, `IN A,(n)`/`OUT (n),A`, the 8-bit `LD`/ALU blocks
+    /// (`0x40-0xBF`), the ALU-immediate `A,n` ops, and the branch/stack control flow (`DJNZ`/`JR`/`JR cc`/
+    /// `JP`/`JP cc`/`CALL`/`CALL cc`/`RET`/`RET cc`/`RST`/`PUSH`/`POP`). Only the prefix groups
+    /// (`CB`/`ED`/`DD`/`FD`/`DDCB`/`FDCB`, decoded structurally but with stub leaf handlers) remain for the
+    /// next slice.
     pub fn step<B: Z80Io>(&mut self, bus: &mut B) -> u32 {
         if self.halted {
             // HALT idle: the CPU runs internal NOPs (refresh continues) until an interrupt/reset clears
@@ -344,15 +384,50 @@ impl Z80 {
         }
     }
 
-    /// Base-table (unprefixed) opcodes. This slice covers the whole base table **except** the branch/stack
-    /// control flow (`JR`/`JP cc`/`CALL`/`RET`/`RET cc`/`DJNZ`/`RST`/`PUSH`/`POP`, deferred to the next
-    /// sub-slice) and the prefix escapes (`CB`/`ED`/`DD`/`FD`, handled in [`Self::execute`]): the 8/16-bit
-    /// loads, 8/16-bit `INC`/`DEC`, `ADD HL,rr`, the accumulator rotates, `DAA`/`CPL`/`SCF`/`CCF`,
-    /// `EX AF,AF'`/`EX DE,HL`/`EX (SP),HL`, `JP (HL)`, `LD SP,HL`, `EI`/`DI`, `IN A,(n)`/`OUT (n),A`, and
-    /// the ALU-immediate `A,n` ops.
+    /// Base-table (unprefixed) opcodes — now the **entire** un-prefixed base table. Alongside the earlier
+    /// data/arithmetic/rotate/misc coverage (8/16-bit loads, 8/16-bit `INC`/`DEC`, `ADD HL,rr`, the
+    /// accumulator rotates, `DAA`/`CPL`/`SCF`/`CCF`, the `EX` forms, `EXX`, `JP (HL)`, `LD SP,HL`, `EI`/`DI`,
+    /// `IN A,(n)`/`OUT (n),A`, the 8-bit `LD`/ALU blocks, and the ALU-immediate `A,n` ops) this includes the
+    /// branch/stack control flow: `DJNZ e`/`JR e`/`JR cc,e`, `JP nn`/`JP cc,nn`, `CALL nn`/`CALL cc,nn`,
+    /// `RET`/`RET cc`, `RST p`, and `PUSH qq`/`POP qq`. Only the prefix escapes (`CB`/`ED`/`DD`/`FD`, handled
+    /// in [`Self::execute`]) remain — their tables are the next slice.
     fn execute_base<B: Z80Io>(&mut self, opcode: u8, bus: &mut B) -> u32 {
         match opcode {
             0x00 => 4, // NOP
+
+            // ---- DJNZ e (0x10): B -= 1 (no flags), branch by the signed displacement if B != 0. The
+            // displacement is read (advancing PC past it) before the decrement, so it is relative to the
+            // instruction following DJNZ. ----
+            0x10 => {
+                let e = self.next_byte(bus) as i8;
+                let b = ((self.bc >> 8) as u8).wrapping_sub(1);
+                self.bc = (self.bc & 0x00FF) | ((b as u16) << 8);
+                if b != 0 {
+                    self.pc = self.pc.wrapping_add(e as u16);
+                    13
+                } else {
+                    8
+                }
+            }
+
+            // ---- JR e (0x18): unconditional relative jump by the signed 8-bit displacement. ----
+            0x18 => {
+                let e = self.next_byte(bus) as i8;
+                self.pc = self.pc.wrapping_add(e as u16);
+                12
+            }
+
+            // ---- JR cc,e (0x20 NZ / 0x28 Z / 0x30 NC / 0x38 C): cc = bits 4..3 (only Z/C tested here).
+            // The displacement is always consumed; the branch is taken only if the condition holds. ----
+            0x20 | 0x28 | 0x30 | 0x38 => {
+                let e = self.next_byte(bus) as i8;
+                if self.cc((opcode >> 3) & 3) {
+                    self.pc = self.pc.wrapping_add(e as u16);
+                    12
+                } else {
+                    7
+                }
+            }
 
             // ---- 16-bit immediate load: LD rr,nn (rr = bits 5..4). ----
             0x01 | 0x11 | 0x21 | 0x31 => {
@@ -491,6 +566,96 @@ impl Z80 {
                 7
             }
 
+            // ---- POP qq (qq = bits 5..4: BC/DE/HL/AF): load the pair from the top of stack, SP += 2. Low
+            // byte at the lower address. POP AF loads F wholesale (all bits, incl. the undocumented pair). ----
+            0xC1 | 0xD1 | 0xE1 | 0xF1 => {
+                let val = self.read16(self.sp, bus);
+                self.sp = self.sp.wrapping_add(2);
+                self.push_pair_set((opcode >> 4) & 3, val);
+                10
+            }
+
+            // ---- PUSH qq (qq = bits 5..4: BC/DE/HL/AF): SP -= 2, store the pair (low byte at the lower
+            // address). PUSH AF stores F wholesale. ----
+            0xC5 | 0xD5 | 0xE5 | 0xF5 => {
+                let val = self.push_pair_get((opcode >> 4) & 3);
+                self.sp = self.sp.wrapping_sub(2);
+                self.write16(self.sp, val, bus);
+                11
+            }
+
+            // ---- RET (0xC9): pop PC from the stack, SP += 2. ----
+            0xC9 => {
+                self.pc = self.read16(self.sp, bus);
+                self.sp = self.sp.wrapping_add(2);
+                10
+            }
+
+            // ---- RET cc (cc = bits 5..3): conditional return. ----
+            0xC0 | 0xC8 | 0xD0 | 0xD8 | 0xE0 | 0xE8 | 0xF0 | 0xF8 => {
+                if self.cc((opcode >> 3) & 7) {
+                    self.pc = self.read16(self.sp, bus);
+                    self.sp = self.sp.wrapping_add(2);
+                    11
+                } else {
+                    5
+                }
+            }
+
+            // ---- JP nn (0xC3): unconditional absolute jump. ----
+            0xC3 => {
+                let nn = self.next_word(bus);
+                self.pc = nn;
+                10
+            }
+
+            // ---- JP cc,nn (cc = bits 5..3): the immediate is always consumed; PC is set only if cc holds. ----
+            0xC2 | 0xCA | 0xD2 | 0xDA | 0xE2 | 0xEA | 0xF2 | 0xFA => {
+                let nn = self.next_word(bus);
+                if self.cc((opcode >> 3) & 7) {
+                    self.pc = nn;
+                }
+                10
+            }
+
+            // ---- CALL nn (0xCD): push the return address (PC of the next instruction), then jump. ----
+            0xCD => {
+                let nn = self.next_word(bus);
+                self.sp = self.sp.wrapping_sub(2);
+                self.write16(self.sp, self.pc, bus);
+                self.pc = nn;
+                17
+            }
+
+            // ---- CALL cc,nn (cc = bits 5..3): the immediate is always consumed; push+jump only if cc holds. ----
+            0xC4 | 0xCC | 0xD4 | 0xDC | 0xE4 | 0xEC | 0xF4 | 0xFC => {
+                let nn = self.next_word(bus);
+                if self.cc((opcode >> 3) & 7) {
+                    self.sp = self.sp.wrapping_sub(2);
+                    self.write16(self.sp, self.pc, bus);
+                    self.pc = nn;
+                    17
+                } else {
+                    10
+                }
+            }
+
+            // ---- RST p (p = bits 5..3 × 8 = opcode & 0x38): push PC, jump to the fixed page-0 vector. ----
+            0xC7 | 0xCF | 0xD7 | 0xDF | 0xE7 | 0xEF | 0xF7 | 0xFF => {
+                self.sp = self.sp.wrapping_sub(2);
+                self.write16(self.sp, self.pc, bus);
+                self.pc = (opcode & 0x38) as u16;
+                11
+            }
+
+            // ---- EXX (0xD9): swap BC/DE/HL with their shadow file (AF is unaffected; that is EX AF,AF'). ----
+            0xD9 => {
+                std::mem::swap(&mut self.bc, &mut self.bc2);
+                std::mem::swap(&mut self.de, &mut self.de2);
+                std::mem::swap(&mut self.hl, &mut self.hl2);
+                4
+            }
+
             // ---- OUT (n),A / IN A,(n): port = (A << 8) | n. Neither affects the flags. ----
             0xD3 => {
                 let n = self.next_byte(bus);
@@ -545,8 +710,10 @@ impl Z80 {
                 6
             }
 
-            other => unimplemented!(
-                "Z80 base opcode {other:#04X} is deferred (branch/stack control flow: the next sub-slice)"
+            // Unreachable: the whole un-prefixed base table is now covered, and the four prefix escapes
+            // (0xCB/0xED/0xDD/0xFD) are dispatched by `execute` before reaching here.
+            0xCB | 0xED | 0xDD | 0xFD => unreachable!(
+                "Z80 prefix byte {opcode:#04X} is dispatched by `execute`, never `execute_base`"
             ),
         }
     }
