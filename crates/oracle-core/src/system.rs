@@ -8,7 +8,7 @@
 //! the relevant fields per step (split-borrow). Memory regions are owned byte buffers, always allocated
 //! at their fixed hardware sizes by [`System::new`].
 
-use crate::bus::{BusEventSink, MegaDriveBus, Z80_RAM_SIZE};
+use crate::bus::{BusEventSink, MegaDriveBus, SramMap, Z80_RAM_SIZE};
 use crate::m68000::microop::Cpu68000;
 use crate::m68000::registers::Registers;
 use crate::scheduler::{EventKind, Scheduler};
@@ -101,6 +101,32 @@ pub struct System {
     /// `false`**. Cartridge bus-control scalar like `sram_enabled`/`z80_busreq`: in this bincode snapshot for
     /// determinism, **not** in `export_state`/`state_hash`. See `docs/2026-07-23-sram-design-recon.md`.
     sram_write_protect: bool,
+    /// SRAM-present flag: `true` once [`System::load_rom`] parsed a valid "RA" header (Fork 1c hybrid — magic
+    /// at `$1B0-1`, range `$1B4-B` inside `$200000-$3FFFFF`). **`false` for every golden ROM** (the fixture
+    /// has no "RA" field, no golden writes `$A130F1`) → SRAM overlays nothing and `$000000-$3FFFFF` reads and
+    /// writes ROM byte-identically → currency-neutral by construction. Rides this bincode snapshot for
+    /// determinism, but is **NOT** in `export_state` (the go-live is S3) and **NOT** in `state_hash` (never —
+    /// Oracle's `OpStateHash` excludes SRAM). See `docs/2026-07-23-sram-design-recon.md` (§A3, Fork 1).
+    sram_present: bool,
+    /// Inclusive SRAM window base bus address (header `$1B4-7`). Meaningful only when `sram_present`.
+    /// Snapshot-only, like `sram_present`.
+    sram_base: u32,
+    /// Inclusive SRAM window end bus address (header `$1B8-B`). Meaningful only when `sram_present`.
+    /// Snapshot-only.
+    sram_end: u32,
+    /// SRAM byte-lane parity from header `$1B2` bit3: `true` = odd-byte cart (the default — the chip answers
+    /// only odd bus addresses; the unused even parity falls through to ROM), `false` = even-byte. Snapshot-only.
+    sram_odd: bool,
+    /// The live cartridge SRAM bytes, sized to the detected chip (`(end-base)/2 + 1` for the every-other-byte
+    /// wiring); **empty when `!sram_present`**. Real mutable state — rides this bincode snapshot (like
+    /// `z80_ram`) so it survives save-states/determinism, but is **NOT** in `export_state` (that go-live is S3)
+    /// and **NOT** in `state_hash` (Oracle excludes SRAM). See the design recon (§B5-B7, Fork 5).
+    sram: Vec<u8>,
+    /// Set on any guest write into visible SRAM; the frontend's persistence throttle (S2) polls it so a `.srm`
+    /// is flushed only after a real save, not every frame (`sram_dirty()`/`clear_sram_dirty()` land in S2). A
+    /// non-currency scalar (like `z80_frontier_mclk`): in this bincode snapshot for determinism, **not** in
+    /// `export_state`/`state_hash`.
+    sram_dirty: bool,
     /// The 68000. Driven over a [`MegaDriveBus`] in [`System::step_cpu`]; `step()` returns CPU cycles.
     cpu: Cpu68000,
     /// The absolute mclk of the last frame boundary [`System::run_frames`] targeted. Frame deadlines are
@@ -151,6 +177,12 @@ impl std::fmt::Debug for System {
             .field("z80_running", &self.z80_running)
             .field("sram_enabled", &self.sram_enabled)
             .field("sram_write_protect", &self.sram_write_protect)
+            .field("sram_present", &self.sram_present)
+            .field("sram_base", &format_args!("{:#08X}", self.sram_base))
+            .field("sram_end", &format_args!("{:#08X}", self.sram_end))
+            .field("sram_odd", &self.sram_odd)
+            .field("sram", &format_args!("[{} bytes]", self.sram.len()))
+            .field("sram_dirty", &self.sram_dirty)
             .field("cpu", &self.cpu)
             .field("frame_boundary_mclk", &self.frame_boundary_mclk)
             .field("z80", &self.z80)
@@ -192,6 +224,37 @@ pub(crate) fn fill_random(rng: &mut crate::rng::SplitMix64, buf: &mut [u8]) {
     }
 }
 
+/// Byte count of the SRAM chip for a detected `[base, end]` bus span: an 8-bit Genesis SRAM sits on one
+/// byte lane, so it answers every *other* bus byte — `(end - base) / 2 + 1` chip bytes cover the span.
+fn sram_byte_len(base: u32, end: u32) -> usize {
+    ((end - base) / 2 + 1) as usize
+}
+
+/// Parse the Genesis cartridge SRAM header (Fork 1c). Returns the detected map when the "RA" magic is
+/// present at `$1B0-1` **and** the declared range (`$1B4-7` start, `$1B8-B` end, both big-endian) is sane:
+/// `start <= end` and the whole span sits inside the standard `$200000-$3FFFFF` SRAM window. The parity is
+/// taken from `$1B2` bit3 (1 = odd-byte, the default; 0 = even-byte). An absent magic, an inverted/out-of-
+/// range span, or a ROM too short to hold the header all yield `None` (no SRAM → pure ROM, currency-neutral).
+/// EEPROM/serial-save carts use a different protocol and are a **named deferral** (design open question 4) —
+/// this parser detects only parallel SRAM.
+fn parse_sram_header(rom: &[u8]) -> Option<SramMap> {
+    // Need bytes through the end-address field at $1B8-B.
+    if rom.len() < 0x1BC {
+        return None;
+    }
+    if &rom[0x1B0..0x1B2] != b"RA" {
+        return None;
+    }
+    let odd = (rom[0x1B2] & 0x08) != 0;
+    let base = u32::from_be_bytes([rom[0x1B4], rom[0x1B5], rom[0x1B6], rom[0x1B7]]);
+    let end = u32::from_be_bytes([rom[0x1B8], rom[0x1B9], rom[0x1BA], rom[0x1BB]]);
+    // Sanity: non-inverted, and the whole span inside the standard SRAM window.
+    if base > end || base < 0x20_0000 || end > 0x3F_FFFF {
+        return None;
+    }
+    Some(SramMap { base, end, odd })
+}
+
 impl System {
     /// Power on a fresh machine. RAM and VRAM are seeded with deterministic pseudo-random bytes from the
     /// single seeded RNG; CRAM/VSRAM/registers start zeroed. The same `seed` always yields identical state.
@@ -219,6 +282,12 @@ impl System {
             z80_running: false,
             sram_enabled: false,
             sram_write_protect: false,
+            sram_present: false,
+            sram_base: 0,
+            sram_end: 0,
+            sram_odd: false,
+            sram: Vec::new(),
+            sram_dirty: false,
             cpu: Cpu68000::new(power_on_regs()),
             frame_boundary_mclk: 0,
             z80: Z80::new(),
@@ -234,14 +303,47 @@ impl System {
     /// The reset runs at the mclk-0 anchor — its cycles are not added to the master clock.
     pub fn reset(&mut self) {
         let rom = std::mem::take(&mut self.rom);
+        // Battery-backed SRAM survives a soft reset (its contents + the detected map are preserved, exactly
+        // like the cartridge ROM); the `$A130F1` enable latch does NOT — real hardware powers up with SRAM
+        // access off and the driver re-enables it. `sram_dirty` also clears (it is only a persistence throttle).
+        let sram = std::mem::take(&mut self.sram);
+        let (present, base, end, odd) = (
+            self.sram_present,
+            self.sram_base,
+            self.sram_end,
+            self.sram_odd,
+        );
         *self = Self::new(self.seed);
         self.rom = rom;
+        self.sram = sram;
+        self.sram_present = present;
+        self.sram_base = base;
+        self.sram_end = end;
+        self.sram_odd = odd;
         self.cpu.assert_reset();
         self.step_cpu(&mut ()); // services reset_pending: runs the power-on reset recipe over the bus
     }
 
-    /// Load the cartridge ROM (`$000000–$3FFFFF` on the 68000 bus). Reads past its end are open bus.
+    /// Load the cartridge ROM (`$000000–$3FFFFF` on the 68000 bus). Reads past its end are open bus. Parses
+    /// the Genesis SRAM header (Fork 1c hybrid): a valid "RA" field (magic + a sane `$200000-$3FFFFF` range)
+    /// allocates the SRAM buffer and records the map; an absent/garbage header leaves SRAM absent (pure ROM,
+    /// currency-neutral). The header-less `$A130F1`-activity fallback is a **named deferral** (design Fork 1c)
+    /// — not needed by the primary SRAM carts (Phantasy Star, Shining Force, S3K all set "RA") and not built.
     pub fn load_rom(&mut self, rom: Vec<u8>) {
+        if let Some(m) = parse_sram_header(&rom) {
+            self.sram_present = true;
+            self.sram_base = m.base;
+            self.sram_end = m.end;
+            self.sram_odd = m.odd;
+            self.sram = vec![0u8; sram_byte_len(m.base, m.end)];
+        } else {
+            self.sram_present = false;
+            self.sram_base = 0;
+            self.sram_end = 0;
+            self.sram_odd = false;
+            self.sram = Vec::new();
+        }
+        self.sram_dirty = false;
         self.rom = rom;
     }
 
@@ -266,6 +368,13 @@ impl System {
     /// the bus event stream (pass `&mut ()` for none). The real CPU drives this in Push C.
     pub fn mega_bus<'a, S: BusEventSink>(&'a mut self, sink: &'a mut S) -> MegaDriveBus<'a, S> {
         let now = self.scheduler.now();
+        // Build the (Copy) SRAM map by value before the split-borrow, so the mutable buffer/dirty borrows
+        // are the only ones the bus holds. `None` when no cart declared SRAM (every golden) → no overlay.
+        let sram_map = self.sram_present.then_some(SramMap {
+            base: self.sram_base,
+            end: self.sram_end,
+            odd: self.sram_odd,
+        });
         let System {
             rom,
             ram,
@@ -277,6 +386,8 @@ impl System {
             z80_running,
             sram_enabled,
             sram_write_protect,
+            sram,
+            sram_dirty,
             fm,
             ..
         } = self;
@@ -292,6 +403,9 @@ impl System {
             z80_running,
             sram_enabled,
             sram_write_protect,
+            sram,
+            sram_dirty,
+            sram_map,
             fm,
             sink,
         )
@@ -574,6 +688,11 @@ impl System {
     /// destructured so the CPU field and the memory fields borrow disjointly (the CPU holds no bus).
     pub fn step_cpu<S: BusEventSink>(&mut self, sink: &mut S) -> u32 {
         let now = self.scheduler.now();
+        let sram_map = self.sram_present.then_some(SramMap {
+            base: self.sram_base,
+            end: self.sram_end,
+            odd: self.sram_odd,
+        });
         let System {
             cpu,
             rom,
@@ -586,6 +705,8 @@ impl System {
             z80_running,
             sram_enabled,
             sram_write_protect,
+            sram,
+            sram_dirty,
             fm,
             ..
         } = self;
@@ -601,6 +722,9 @@ impl System {
             z80_running,
             sram_enabled,
             sram_write_protect,
+            sram,
+            sram_dirty,
+            sram_map,
             fm,
             sink,
         );
@@ -962,6 +1086,161 @@ mod tests {
             !s.sram_write_protect,
             "SRAM not write-protected at power-on"
         );
+    }
+
+    /// A synthetic ROM carrying a valid Genesis "RA" SRAM header: magic at `$1B0-1`, parity in `$1B2` bit3,
+    /// and the `[base, end]` span in `$1B4-B` (big-endian). Long enough to hold the header + a sane reset
+    /// vector, so it also survives `reset()` if a test needs to boot it.
+    fn rom_with_sram(base: u32, end: u32, odd: bool) -> Vec<u8> {
+        let mut rom = vec![0u8; 0x1000];
+        rom[0x1B0] = b'R';
+        rom[0x1B1] = b'A';
+        // 0xA0 = the "backup RAM present" bits of a real header; bit3 (0x08) = odd-byte lane.
+        rom[0x1B2] = 0xA0 | if odd { 0x08 } else { 0x00 };
+        rom[0x1B4..0x1B8].copy_from_slice(&base.to_be_bytes());
+        rom[0x1B8..0x1BC].copy_from_slice(&end.to_be_bytes());
+        rom
+    }
+
+    #[test]
+    fn parse_sram_header_reads_a_valid_ra_field() {
+        let rom = rom_with_sram(0x20_0001, 0x20_3FFF, true);
+        let m = parse_sram_header(&rom).expect("a valid RA header parses");
+        assert_eq!((m.base, m.end, m.odd), (0x20_0001, 0x20_3FFF, true));
+        // The even-byte parity bit round-trips too.
+        let ev = parse_sram_header(&rom_with_sram(0x20_0000, 0x20_1FFE, false)).unwrap();
+        assert!(!ev.odd, "bit3 clear → even-byte cart");
+    }
+
+    #[test]
+    fn parse_sram_header_is_none_without_ra_magic() {
+        assert!(
+            parse_sram_header(&vec![0u8; 0x1000]).is_none(),
+            "no magic → no SRAM"
+        );
+        assert!(
+            parse_sram_header(&crate::testrom::build()).is_none(),
+            "the fixture ROM has no RA field → currency-neutral"
+        );
+    }
+
+    #[test]
+    fn parse_sram_header_rejects_garbage_and_out_of_range() {
+        // Inverted span (base > end).
+        assert!(parse_sram_header(&rom_with_sram(0x20_3FFF, 0x20_0001, true)).is_none());
+        // Span outside the standard $200000-$3FFFFF window.
+        assert!(parse_sram_header(&rom_with_sram(0x10_0000, 0x10_FFFF, false)).is_none());
+        // Too short to hold the header (magic would be past the end).
+        assert!(parse_sram_header(&vec![0u8; 0x100]).is_none());
+    }
+
+    #[test]
+    fn sram_saves_within_a_session_with_odd_byte_addressing() {
+        use crate::m68000::bus68k::Bus68k;
+        let mut s = System::new(0x5A);
+        s.load_rom(rom_with_sram(0x20_0001, 0x20_3FFF, true));
+        assert!(s.sram_present, "RA header detected");
+        assert_eq!(s.sram_base, 0x20_0001);
+        assert_eq!(s.sram_end, 0x20_3FFF);
+        // 8 KiB chip on the odd lane: (0x203FFF - 0x200001)/2 + 1.
+        assert_eq!(s.sram.len(), 0x2000);
+
+        let mut sink = ();
+        // Before enabling, the window reads ROM (open bus past this short ROM's end), never SRAM.
+        {
+            let mut bus = s.mega_bus(&mut sink);
+            bus.write8(0xA1_30F1, 5, 0x00); // ensure disabled
+            bus.write8(0x20_0001, 5, 0x77); // dropped — SRAM not enabled
+        }
+        assert!(!s.sram_dirty, "a write while disabled does not dirty SRAM");
+
+        // Enable via $A130F1 bit0, then write + read back an odd SRAM cell.
+        s.mega_bus(&mut sink).write8(0xA1_30F1, 5, 0x01);
+        {
+            let mut bus = s.mega_bus(&mut sink);
+            bus.write8(0x20_0001, 5, 0xC5);
+        }
+        assert!(s.sram_dirty, "a guest SRAM write sets the dirty flag");
+        assert_eq!(
+            s.mega_bus(&mut sink).read8(0x20_0001, 5).0,
+            0xC5,
+            "SRAM read-back at the odd address"
+        );
+
+        // An even address in an odd-byte cart is the unused parity → ROM/open bus, NOT the SRAM cell.
+        {
+            let mut bus = s.mega_bus(&mut sink);
+            bus.write8(0xFF_0000, 5, 0x11); // drive open bus = 0x1111
+            assert_ne!(
+                bus.read8(0x20_0000, 5).0,
+                0xC5,
+                "even address (unused parity) is not SRAM"
+            );
+        }
+
+        // Write-protect (bit1 = 1) blocks stores while keeping SRAM mapped for reads.
+        s.mega_bus(&mut sink).write8(0xA1_30F1, 5, 0x03);
+        {
+            let mut bus = s.mega_bus(&mut sink);
+            bus.write8(0x20_0001, 5, 0x99); // dropped by write-protect
+        }
+        assert_eq!(
+            s.mega_bus(&mut sink).read8(0x20_0001, 5).0,
+            0xC5,
+            "write-protect blocked the store"
+        );
+
+        // Disable (bit0 = 0) → the window reads ROM again, not the retained SRAM cell.
+        s.mega_bus(&mut sink).write8(0xA1_30F1, 5, 0x00);
+        {
+            let mut bus = s.mega_bus(&mut sink);
+            bus.write8(0xFF_0000, 5, 0x22); // open bus = 0x2222
+            assert_ne!(
+                bus.read8(0x20_0001, 5).0,
+                0xC5,
+                "disabled → ROM shown, not SRAM"
+            );
+        }
+    }
+
+    #[test]
+    fn sram_contents_and_map_survive_a_snapshot() {
+        // SRAM is real mutable state → it rides the bincode snapshot (like z80_ram), even though it is out of
+        // export_state/state_hash. A cart with a written SRAM cell round-trips byte-for-byte.
+        use crate::m68000::bus68k::Bus68k;
+        let mut s = System::new(0x5A);
+        s.load_rom(rom_with_sram(0x20_0001, 0x20_3FFF, true));
+        s.mega_bus(&mut ()).write8(0xA1_30F1, 5, 0x01);
+        s.mega_bus(&mut ()).write8(0x20_0001, 5, 0xC5);
+        let back = System::restore(&s.snapshot()).expect("snapshot decodes");
+        assert_eq!(s, back, "the whole machine round-trips, SRAM included");
+        assert!(back.sram_present && back.sram[0] == 0xC5);
+    }
+
+    #[test]
+    fn no_ra_rom_never_maps_sram_even_after_a130f1_enable() {
+        // Currency-neutrality micro-check: a ROM without an "RA" header never maps SRAM, even when a game
+        // writes $A130F1 bit0 = 1. This is exactly the golden-ROM condition (fixture has no RA, no golden
+        // touches $A130F1) → the $000000-$3FFFFF region reads/writes ROM byte-identically.
+        use crate::m68000::bus68k::Bus68k;
+        let mut s = System::new(0x99);
+        s.load_rom(vec![0x5Au8; 0x4000]); // no RA magic
+        assert!(!s.sram_present, "no RA → SRAM absent");
+        assert!(s.sram.is_empty(), "no buffer allocated");
+        let mut sink = ();
+        s.mega_bus(&mut sink).write8(0xA1_30F1, 5, 0x01); // enable bit set…
+        assert!(s.sram_enabled, "the latch still tracks the write");
+        let v = {
+            let mut bus = s.mega_bus(&mut sink);
+            bus.write8(0x20_0001, 5, 0xFF); // dropped — no SRAM buffer (drives open bus to 0xFFFF)
+            bus.read8(0xA1_0001, 5); // read the version reg → drives open bus to 0xA0A0
+            bus.read8(0x20_0001, 5).0 // open bus low = 0xA0, NOT a retained 0xFF (no SRAM held it)
+        };
+        assert_eq!(
+            v, 0xA0,
+            "no RA: $200001 is open-bus/ROM, never a retained SRAM write"
+        );
+        assert!(!s.sram_dirty, "no SRAM buffer → nothing to dirty");
     }
 
     #[test]

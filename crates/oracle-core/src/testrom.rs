@@ -359,6 +359,8 @@ mod tests {
             let mut z80_running = false;
             let mut sram_enabled = false;
             let mut sram_write_protect = false;
+            let mut sram: Vec<u8> = Vec::new();
+            let mut sram_dirty = false;
             let mut fm = crate::ym2612::Ym2612::new();
             let mut bus = MegaDriveBus::new(
                 &rom,
@@ -372,6 +374,9 @@ mod tests {
                 &mut z80_running,
                 &mut sram_enabled,
                 &mut sram_write_protect,
+                &mut sram,
+                &mut sram_dirty,
+                None,
                 &mut fm,
                 &mut sink,
             );

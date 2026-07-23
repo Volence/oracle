@@ -212,6 +212,20 @@ pub const Z80_RAM_SIZE: usize = 0x2000;
 /// hardware version 0). Real region/timing + controller detection lands with the pads in a later phase.
 pub const MD_VERSION: u8 = 0xA0;
 
+/// A detected cartridge SRAM mapping (from the ROM's "RA" header): the inclusive bus-address span the SRAM
+/// chip occupies and its byte-lane parity. `Copy` — the bus receives it by value each step; presence is
+/// carried by the `Option<SramMap>` wrapper (`None` = no cart SRAM → pure ROM). Parsed by
+/// `System::load_rom`; see `docs/2026-07-23-sram-design-recon.md` (§A3/A4, Fork 5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SramMap {
+    /// Inclusive base bus address of the SRAM window (header `$1B4-7`).
+    pub base: u32,
+    /// Inclusive end bus address of the SRAM window (header `$1B8-B`).
+    pub end: u32,
+    /// `true` = odd-byte cart (SRAM answers only odd bus addresses); `false` = even-byte.
+    pub odd: bool,
+}
+
 /// Split-borrow adapter implementing the CPU-facing [`Bus68k`] over the `System`'s memory fields laid out per
 /// the real Mega Drive map, emitting a [`BusEvent`] (with the real function code) per access. The CPU core
 /// cannot tell it apart from the SST harness's `FlatBus` — the point of the unification. Every 24-bit address
@@ -267,6 +281,17 @@ pub struct MegaDriveBus<'a, S: BusEventSink> {
     /// (no in-tree driver exercises it) and latched now so S1's buffer honors it without a second bus change.
     /// Bus-internal + bincode-serialized like `sram_enabled`; NOT in `export_state`. See the design recon.
     sram_write_protect: &'a mut bool,
+    /// The live cartridge SRAM bytes (empty when no cart declared SRAM). A visible SRAM read/write indexes
+    /// this by `(a - base) >> 1` (the every-other-byte wiring, §A4). Split-borrowed like `z80_ram`; rides the
+    /// bincode snapshot but is NOT in `export_state` (S3) / `state_hash`. See the design recon (§B5-B7, Fork 5).
+    sram: &'a mut [u8],
+    /// Set `true` on any guest write into visible SRAM — the frontend's S2 persistence throttle. Threaded
+    /// like the latches; a non-currency scalar (in the snapshot for determinism, out of the frozen currencies).
+    sram_dirty: &'a mut bool,
+    /// The detected SRAM map (`None` = no cart SRAM → the `$000000-$3FFFFF` region is pure ROM, currency-
+    /// neutral). When `Some`, SRAM overlays ROM only while `sram_enabled` and the address is in range with the
+    /// matching parity (see [`MegaDriveBus::sram_index`]). `Copy`, passed by value each step.
+    sram_map: Option<SramMap>,
     /// The YM2612 FM chip (its timers, this slice): a `$A04000-$A04003` read returns its status byte (Timer-A/B
     /// overflow flags live, bit7 BUSY clear), and a write drives the address-latch/data protocol into its timer
     /// model. Split-borrowed like `vdp`; rides the bincode snapshot but is NOT in `export_state`. See
@@ -291,6 +316,9 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
         z80_running: &'a mut bool,
         sram_enabled: &'a mut bool,
         sram_write_protect: &'a mut bool,
+        sram: &'a mut [u8],
+        sram_dirty: &'a mut bool,
+        sram_map: Option<SramMap>,
         fm: &'a mut Ym2612,
         sink: &'a mut S,
     ) -> Self {
@@ -306,9 +334,22 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             z80_running,
             sram_enabled,
             sram_write_protect,
+            sram,
+            sram_dirty,
+            sram_map,
             fm,
             sink,
         }
+    }
+
+    /// The SRAM buffer index a `$000000-$3FFFFF` access resolves to, or `None` when SRAM is not visible at
+    /// `a`. Visible iff a map is present, the game has enabled SRAM via `$A130F1` bit0, `a` is inside the
+    /// mapped range, **and** `a`'s parity is the chip's byte lane (odd-byte carts answer only odd addresses;
+    /// the unused parity falls through to ROM/open-bus). The index is `(a - base) >> 1` (§A4/Fork 5).
+    fn sram_index(&self, a: u32) -> Option<usize> {
+        let m = self.sram_map?;
+        (*self.sram_enabled && a >= m.base && a <= m.end && ((a & 1) == 1) == m.odd)
+            .then(|| ((a - m.base) >> 1) as usize)
     }
 
     /// The byte backing a mapped address, or `None` for open bus (unmapped ranges, past a short ROM's end,
@@ -316,10 +357,17 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
     /// `Some`; the caller substitutes the open-bus latch for `None`.
     fn mapped_byte(&self, a: u32) -> Option<u8> {
         match a {
-            // ROM: bytes present up to the ROM's length; past the end is open bus (no mirroring assumed).
+            // Cartridge address space. SRAM overlays ROM only when a cart declared SRAM AND the game has
+            // enabled it (`$A130F1` bit0) AND `a` is in range with the matching parity — otherwise this is
+            // ROM exactly as before (open bus past a short ROM's end, no mirroring). `sram_index` is `None`
+            // for every golden (no "RA" header, no `$A130F1` write) → byte-identical ROM decode.
             0x00_0000..=0x3F_FFFF => {
-                let i = a as usize;
-                (i < self.rom.len()).then(|| self.rom[i])
+                if let Some(i) = self.sram_index(a) {
+                    Some(self.sram[i])
+                } else {
+                    let i = a as usize;
+                    (i < self.rom.len()).then(|| self.rom[i])
+                }
             }
             // YM2612 FM ($A04000-$A04003): a READ returns the live status byte — Timer-A overflow (bit0),
             // Timer-B overflow (bit1), and bit7 (BUSY) always clear = not busy, so the `btst #7,(a0)/bne`
@@ -366,6 +414,19 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
     /// placeholder scope until those chips land.
     fn store_byte(&mut self, a: u32, byte: u8) {
         match a {
+            // Cartridge address space. A write hits SRAM only when it is visible (map present + enabled +
+            // in range + matching parity) AND not write-protected (`$A130F1` bit1); it then sets the dirty
+            // flag for the frontend's persistence throttle. Every other write here — ROM, write-protected
+            // SRAM, the unused parity, no-cart — is dropped exactly as ROM writes were before (currency-
+            // neutral: `sram_index` is `None` for every golden). See the design recon (§A4, Fork 5).
+            0x00_0000..=0x3F_FFFF => {
+                if let Some(i) = self.sram_index(a) {
+                    if !*self.sram_write_protect {
+                        self.sram[i] = byte;
+                        *self.sram_dirty = true;
+                    }
+                }
+            }
             // YM2612 FM ($A04000-$A04003): writes drive the FM chip's address-latch/data protocol (timer regs
             // $24/$25/$26/$27 update the timer model; everything else is ignored — no synthesis this slice).
             // They must NOT fall through to the Z80-RAM store, which would corrupt `z80_ram[0..3]` (the FM
@@ -800,6 +861,9 @@ mod tests {
         z80_running: bool,
         sram_enabled: bool,
         sram_write_protect: bool,
+        sram: Vec<u8>,
+        sram_dirty: bool,
+        sram_map: Option<SramMap>,
         fm: Ym2612,
     }
     impl MdMem {
@@ -816,6 +880,9 @@ mod tests {
                 z80_running: false,
                 sram_enabled: false,
                 sram_write_protect: false,
+                sram: Vec::new(),
+                sram_dirty: false,
+                sram_map: None,
                 fm: Ym2612::new(),
             }
         }
@@ -832,6 +899,9 @@ mod tests {
                 &mut self.z80_running,
                 &mut self.sram_enabled,
                 &mut self.sram_write_protect,
+                &mut self.sram,
+                &mut self.sram_dirty,
+                self.sram_map,
                 &mut self.fm,
                 sink,
             )
