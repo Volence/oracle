@@ -8,9 +8,11 @@
 //!
 //! **Tables and operator semantics derived from ymfm (Copyright (c) Aaron Giles), BSD-3-Clause —
 //! <https://github.com/aaronsgiles/ymfm> (`src/ymfm_fm.ipp`: `abs_sin_attenuation` / `s_sin_table`,
-//! `attenuation_to_volume` / `s_power_table`, and the operator phase→volume pipeline).** Our generated
-//! tables are pinned to ymfm's literal values by unit tests (see [`tests`]). Nuked-OPN2 (LGPL) is **not**
-//! consulted, ported, or used as a fixture.
+//! `attenuation_to_volume` / `s_power_table`, the operator phase→volume pipeline, and — as of SY-3c — the
+//! envelope generator: the 64-entry `s_increment_table` / `attenuation_increment`, the `clock_envelope`
+//! rate-shift + non-linear-attack update, and `src/ymfm_opn.cpp`'s `cache_operator_data` effective-rate /
+//! key-scale / sustain-level math).** Our generated tables are pinned to ymfm's literal values by unit
+//! tests (see [`tests`]). Nuked-OPN2 (LGPL) is **not** consulted, ported, or used as a fixture.
 //!
 //! ## Model (what SY-3b implements — the OPN2-exact integer datapath)
 //!
@@ -23,10 +25,15 @@
 //!   phase quadrant — i.e. **modulation sums into the phase, envelope/TL sum into the attenuation**, exactly
 //!   as OPN2/OPL. The 20-bit phase's top 10 bits index the sine; inter-operator modulation and op-1 feedback
 //!   are added to the phase in ymfm's units (`modulator >> 1`, `feedback >> (10-fb)`).
-//! - **Envelope generator.** Attack / Decay / Sustain / Release keyed by `$28`, value living in the OPN
+//! - **Envelope generator (SY-3c: OPN2-exact).** Attack / Decay / Sustain / Release, value living in the OPN
 //!   10-bit attenuation domain (0 = loud, [`MAX_ATT`] = silent) so it sums with `TL` (`$40`) and the log-sin
-//!   in one place. The per-sample **rates are still the SY-2 approximation** (`RATE_BASE`/`ATTACK_SPEED`,
-//!   rescaled to the native tick) — the exact OPN rate/key-scale tables are the next slice (SY-3c).
+//!   in one place. The EG is clocked on a global counter that advances **once every 3 native operator ticks**
+//!   ([`EG_CLOCK_DIVIDER`], the OPN2 EG divisor); the per-state 6-bit **effective rate** is
+//!   `2·rate_param + (keycode >> (3 − KS))` clamped to 63 ([`effective_rate`]), driving a `rate>>2` shift and
+//!   ymfm's 64-entry [`S_INCREMENT_TABLE`]. **Attack is non-linear** (`env += (~env·inc) >> 4`); decay,
+//!   second-decay and release add the increment linearly toward SL / silence. Key-on is **edge-triggered**
+//!   (rising edge only — a held note re-asserted per tick does not restart). `rate_param == 0` freezes the
+//!   phase (AR = 0 never opens); AR whose effective rate ≥ 62 opens instantly.
 //! - **The 8 FM algorithms + operator-1 self-feedback** (`$B0`), and **stereo L/R pan** (`$B4`).
 //!
 //! ## DAC / PCM channel-6 (SY-3a — preserved unchanged)
@@ -39,8 +46,8 @@
 //!
 //! ## Deferred to later SY-3 slices (documented inaccuracies, not bugs)
 //!
-//! - **Exact envelope rate & key-scale tables** (SY-3c), **detune** (`$30` DT, SY-3d), **LFO** (`$22`,
-//!   SY-3e), **SSG-EG** (`$90`) / **CSM / ch3-special** (SY-3f). Sub-frame `$2A` timing is SY-4.
+//! - **detune** (`$30` DT, SY-3d), **LFO** (`$22`, SY-3e), **SSG-EG** (`$90`) / **CSM / ch3-special**
+//!   (SY-3f). Sub-frame `$2A` timing is SY-4.
 //!
 //! The synth is integer/float-based — it is a **synthesis** helper, never part of `System`, `state_hash`,
 //! or `export_state`, so it carries no currency obligations.
@@ -56,21 +63,42 @@ const FM_CLOCK_DIV: f64 = 144.0;
 const NATIVE_RATE: f64 = YM2612_CLOCK / FM_CLOCK_DIV;
 
 /// Envelope attenuation is a 10-bit value: 0 = full volume, [`MAX_ATT`] = silence.
-const MAX_ATT: f32 = 1023.0;
+const MAX_ATT: i32 = 0x3ff;
 
-/// Reference output rate the SY-2 envelope rates were calibrated at (Hz).
-const OUTPUT_RATE_REF: f32 = 44_100.0;
-/// Scale from the SY-2 per-output-sample envelope increment to a per-**native-tick** increment, so envelope
-/// wall-clock timing is preserved now that the EG clocks at [`NATIVE_RATE`] (~53_267 Hz) instead of 44.1 kHz.
-/// (Approximate EG — the exact rate table is SY-3c.)
-const ENV_RATE_SCALE: f32 = OUTPUT_RATE_REF / (NATIVE_RATE as f32);
+/// OPN2 envelope-generator clock divisor (ymfm `EG_CLOCK_DIVIDER` for `opn_registers_base`): the global EG
+/// counter advances once every this many native operator ticks. So the EG runs at `NATIVE_RATE / 3 ≈ 17_756`
+/// Hz, a third of the phase generator — the wall-clock speed of every attack/decay/release.
+const EG_CLOCK_DIVIDER: u32 = 3;
 
-/// Per-native-tick envelope-rate scale (attenuation units per tick at effective rate 0's `2^0` base).
-/// Approximate: the exact OPN rate table is SY-3c.
-const RATE_BASE: f32 = 0.0006;
-/// Attack is the same rate curve as decay, sped up by this factor (attack is much faster than decay on
-/// real OPN2). Approximate.
-const ATTACK_SPEED: f32 = 12.0;
+/// ymfm `s_increment_table` (`src/ymfm_fm.ipp`, `attenuation_increment`): for each 6-bit effective rate (0-63)
+/// a `u32` packing eight 4-bit attenuation increments; [`attenuation_increment`] selects nibble `index`
+/// (0-7). Pinned to ymfm's literal values by [`tests::increment_table_matches_ymfm`]. Rates < 2 never move
+/// (0x0), rates ≥ 60 add 8/step (0x8888_8888); the interior rows interleave 1/2/4/8 to spread the rate.
+#[rustfmt::skip]
+const S_INCREMENT_TABLE: [u32; 64] = [
+    0x00000000, 0x00000000, 0x10101010, 0x10101010,
+    0x10101010, 0x10101010, 0x11101110, 0x11101110,
+    0x10101010, 0x10111010, 0x11101110, 0x11111110,
+    0x10101010, 0x10111010, 0x11101110, 0x11111110,
+    0x10101010, 0x10111010, 0x11101110, 0x11111110,
+    0x10101010, 0x10111010, 0x11101110, 0x11111110,
+    0x10101010, 0x10111010, 0x11101110, 0x11111110,
+    0x10101010, 0x10111010, 0x11101110, 0x11111110,
+    0x10101010, 0x10111010, 0x11101110, 0x11111110,
+    0x10101010, 0x10111010, 0x11101110, 0x11111110,
+    0x10101010, 0x10111010, 0x11101110, 0x11111110,
+    0x10101010, 0x10111010, 0x11101110, 0x11111110,
+    0x11111111, 0x21112111, 0x21212121, 0x22212221,
+    0x22222222, 0x42224222, 0x42424242, 0x44424442,
+    0x44444444, 0x84448444, 0x84848484, 0x88848884,
+    0x88888888, 0x88888888, 0x88888888, 0x88888888,
+];
+
+/// ymfm `attenuation_increment(rate, index)`: nibble `index` (0-7) of [`S_INCREMENT_TABLE`]`[rate]` — the
+/// attenuation step applied on an EG clock at effective `rate`, selected by 3 bits of the EG counter.
+fn attenuation_increment(rate: u32, index: u32) -> u32 {
+    (S_INCREMENT_TABLE[rate as usize] >> (4 * index)) & 0xf
+}
 
 /// Post-mix FM gain in Q15. One full-scale operator (`attenuation_to_volume(0)` = `0x1FE8` = 8168) maps to
 /// `8168 · FM_LEVEL_Q15 >> 15 ≈ 3499`, matching SY-2's per-carrier ~3500 loudness so the mix sits at a
@@ -177,10 +205,14 @@ struct Operator {
     // --- runtime state ---
     /// 20-bit phase accumulator (one full sine cycle = `1 << 20`; the top 10 bits index the sine).
     phase: u32,
-    /// Current envelope attenuation (0 = loud, [`MAX_ATT`] = silent), kept `f32` for the approximate rates.
-    env: f32,
+    /// Current envelope attenuation in the OPN 10-bit domain (0 = loud, [`MAX_ATT`] = silent). Held as `i32`
+    /// so the non-linear attack (`env += (~env·inc) >> 4`, arithmetic-shift signed) matches ymfm exactly.
+    env: i32,
     /// Envelope phase.
     eg: EgState,
+    /// The operator's last `$28` key bit, for **edge-triggered** key-on (audit F2): attack restarts only on a
+    /// rising edge, so a held note re-asserted every tick does not retrigger.
+    key_state: bool,
     /// This operator's last signed output (`compute_volume`) — for operator-1 self-feedback.
     prev_out: i32,
     /// The output before that (feedback sums the last two).
@@ -201,17 +233,26 @@ impl Operator {
             phase: 0,
             env: MAX_ATT,
             eg: EgState::Off,
+            key_state: false,
             prev_out: 0,
             prev_out2: 0,
         }
     }
 
-    /// Key this operator on: (re)start the attack from phase 0 (OPN resets operator phase on key-on).
-    fn key_on(&mut self) {
+    /// Start the attack (ymfm `start_attack` on a key-on rising edge): (re)enter Attack from phase 0. The
+    /// attack begins from the operator's **current** attenuation (OPN does not reset it), except that an
+    /// effective attack rate ≥ 62 opens instantly (`env = 0`). No-op if already attacking.
+    fn start_attack(&mut self, effective_ar: u8) {
+        if self.eg == EgState::Attack {
+            return;
+        }
         self.eg = EgState::Attack;
         self.phase = 0;
         self.prev_out = 0;
         self.prev_out2 = 0;
+        if effective_ar >= 62 {
+            self.env = 0;
+        }
     }
 
     /// Key this operator off: fall into the release phase (unless already fully silent).
@@ -221,47 +262,60 @@ impl Operator {
         }
     }
 
-    /// Advance the envelope one native tick using this operator's effective rates (`kc` = channel key-code
-    /// for key-scaling). Approximate: linear-in-attenuation decays, faster linear attack (exact EG is SY-3c).
-    fn step_envelope(&mut self, kc: u8) {
-        match self.eg {
-            EgState::Off => {}
-            EgState::Attack => {
-                let r = effective_rate(self.ar, self.ks, kc);
-                let inc = rate_increment(r) * ATTACK_SPEED;
-                if inc <= 0.0 {
-                    // AR effectively 0 → operator never opens (matches OPN AR=0 "stuck" behaviour).
-                    return;
-                }
-                self.env -= inc;
-                if self.env <= 0.0 {
-                    self.env = 0.0;
-                    self.eg = EgState::Decay;
+    /// Advance the envelope one **EG clock** (ymfm `clock_envelope`): `eg_counter` is the global EG counter
+    /// (advances once per [`EG_CLOCK_DIVIDER`] native ticks), `kc` the channel key-code for key-scaling. State
+    /// transitions run first, then the effective rate drives a `rate>>2` shift into [`S_INCREMENT_TABLE`]; the
+    /// low 11 bits of the shifted counter gate whether this clock actually moves the envelope. Attack is the
+    /// non-linear `env += (~env·inc) >> 4`; every other state adds the increment toward silence.
+    fn clock_envelope(&mut self, eg_counter: u32, kc: u8) {
+        // Attack → Decay when the envelope has risen to full volume.
+        if self.eg == EgState::Attack && self.env <= 0 {
+            self.eg = EgState::Decay;
+        }
+        // Decay → Sustain when the attenuation has fallen to the sustain level (checked immediately after the
+        // attack transition, so an SL=0 patch drops straight to Sustain — matches ymfm's ordering).
+        if self.eg == EgState::Decay && self.env >= sustain_att(self.sl) {
+            self.eg = EgState::Sustain;
+        }
+        if self.eg == EgState::Off {
+            return;
+        }
+
+        // The 6-bit effective rate for the current phase (`rate_param == 0` ⇒ frozen).
+        let rate: u32 = match self.eg {
+            EgState::Attack => effective_rate(self.ar, self.ks, kc),
+            EgState::Decay => effective_rate(self.d1r, self.ks, kc),
+            EgState::Sustain => effective_rate(self.d2r, self.ks, kc),
+            // RR is 4-bit; the OPN maps it to the 6-bit rate as `(rr << 1) | 1`.
+            EgState::Release => effective_rate((self.rr << 1) | 1, self.ks, kc),
+            EgState::Off => return,
+        } as u32;
+
+        let rate_shift = rate >> 2;
+        let counter = eg_counter << rate_shift;
+        // Not on this rate's boundary yet → no envelope change this clock.
+        if counter & 0x7ff != 0 {
+            return;
+        }
+        let pos = if rate_shift <= 11 { 11 } else { rate_shift };
+        let increment = attenuation_increment(rate, (counter >> pos) & 0x7) as i32;
+
+        if self.eg == EgState::Attack {
+            // ymfm attack: non-linear approach to 0. Rates 62/63 open instantly (handled at key-on) and are
+            // a documented no-op here.
+            if rate < 62 {
+                self.env += (!self.env).wrapping_mul(increment) >> 4;
+                if self.env < 0 {
+                    self.env = 0;
                 }
             }
-            EgState::Decay => {
-                let r = effective_rate(self.d1r, self.ks, kc);
-                self.env += rate_increment(r);
-                let sl_att = sustain_att(self.sl);
-                if self.env >= sl_att {
-                    self.env = sl_att;
-                    self.eg = EgState::Sustain;
-                }
-            }
-            EgState::Sustain => {
-                let r = effective_rate(self.d2r, self.ks, kc);
-                self.env += rate_increment(r);
-                if self.env >= MAX_ATT {
-                    self.env = MAX_ATT;
-                    self.eg = EgState::Off;
-                }
-            }
-            EgState::Release => {
-                // RR is 4-bit; the OPN maps it to the 6-bit rate as `(rr << 1) | 1`.
-                let r = effective_rate((self.rr << 1) | 1, self.ks, kc);
-                self.env += rate_increment(r);
-                if self.env >= MAX_ATT {
-                    self.env = MAX_ATT;
+        } else {
+            // Decay / second-decay / release: linear rise toward silence.
+            self.env += increment;
+            if self.env >= 0x400 {
+                self.env = MAX_ATT;
+                // Second-decay and release that reach full attenuation are silent and frozen.
+                if self.eg != EgState::Decay {
                     self.eg = EgState::Off;
                 }
             }
@@ -272,7 +326,7 @@ impl Operator {
     /// shifted into the 10-bit domain (`<< 3`, each step ≈ 8 units); the sum may exceed [`MAX_ATT`] and
     /// [`attenuation_to_volume`]'s shift saturates it to silence.
     fn env_att(&self) -> u32 {
-        let e = self.env.round().clamp(0.0, MAX_ATT) as u32;
+        let e = self.env.clamp(0, MAX_ATT) as u32;
         e + ((self.tl as u32) << 3)
     }
 
@@ -359,12 +413,20 @@ impl Channel {
     }
 
     /// Advance this channel by one native tick and return its `(left, right)` FM contribution (already
-    /// FM-scaled and panned). Envelopes clock first, then operator outputs are computed at the current
-    /// phases (OPN2 log-sin/exp pipeline, ymfm modulation units), then all phases advance.
-    fn tick(&mut self, log_sin: &[u16; TABLE_LEN], pow: &[u16; TABLE_LEN]) -> (i32, i32) {
+    /// FM-scaled and panned). On an EG clock (`eg_clock = Some(counter)`, once per [`EG_CLOCK_DIVIDER`] native
+    /// ticks) the envelopes advance first; then operator outputs are computed at the current phases (OPN2
+    /// log-sin/exp pipeline, ymfm modulation units), then all phases advance every native tick.
+    fn tick(
+        &mut self,
+        eg_clock: Option<u32>,
+        log_sin: &[u16; TABLE_LEN],
+        pow: &[u16; TABLE_LEN],
+    ) -> (i32, i32) {
         let kc = self.key_code();
-        for op in self.ops.iter_mut() {
-            op.step_envelope(kc);
+        if let Some(counter) = eg_clock {
+            for op in self.ops.iter_mut() {
+                op.clock_envelope(counter, kc);
+            }
         }
         let base = self.base_phase_step();
 
@@ -485,6 +547,11 @@ pub struct Ym2612Synth {
     prev_native: (i32, i32),
     /// Resampler: the newer bracketing native FM sample `(left, right)`.
     cur_native: (i32, i32),
+    /// Global envelope-generator counter (ymfm `m_env_counter >> 2`): advances by 1 once every
+    /// [`EG_CLOCK_DIVIDER`] native ticks and drives every operator's [`Operator::clock_envelope`].
+    eg_counter: u32,
+    /// Native-tick subcounter feeding the `/3` EG divisor (0-2); the EG clocks when it wraps.
+    eg_subcount: u32,
 }
 
 /// Register-address → operator-index map. The low-nibble operator field of an `$30-$9F` write addresses
@@ -509,6 +576,8 @@ impl Ym2612Synth {
             resample_frac: 0.0,
             prev_native: (0, 0),
             cur_native: (0, 0),
+            eg_counter: 0,
+            eg_subcount: 0,
         }
     }
 
@@ -536,7 +605,9 @@ impl Ym2612Synth {
     }
 
     /// `$28` key on/off: low 3 bits select the channel (0-2 = ch 1-3, 4-6 = ch 4-6); bits 4-7 are the
-    /// per-operator key mask (bit4 = Op1 … bit7 = Op4).
+    /// per-operator key mask (bit4 = Op1 … bit7 = Op4). Key-on is **edge-triggered** (audit F2): attack
+    /// restarts only when an operator's key bit rises 0→1, so a driver that re-asserts `$28` for a held note
+    /// does not retrigger.
     fn key_on_off(&mut self, value: u8) {
         let ch = match value & 0x07 {
             0 => 0,
@@ -548,11 +619,19 @@ impl Ym2612Synth {
             _ => return, // 3 and 7 are invalid channel selectors.
         };
         let channel = &mut self.channels[ch];
+        let kc = channel.key_code();
         for op in 0..4 {
-            if value & (0x10 << op) != 0 {
-                channel.ops[op].key_on();
+            let want = value & (0x10 << op) != 0;
+            let operator = &mut channel.ops[op];
+            if want == operator.key_state {
+                continue; // no edge → hold current envelope (a re-asserted held note must not restart)
+            }
+            operator.key_state = want;
+            if want {
+                let effective_ar = effective_rate(operator.ar, operator.ks, kc);
+                operator.start_attack(effective_ar);
             } else {
-                channel.ops[op].key_off();
+                operator.key_off();
             }
         }
     }
@@ -666,6 +745,16 @@ impl Ym2612Synth {
     /// output. Channel 6's FM is skipped while the DAC drives it (`$2B` bit7); the PCM stream is added at the
     /// output rate in [`Self::next_sample`].
     fn tick_native(&mut self) -> (i32, i32) {
+        // The EG advances once every EG_CLOCK_DIVIDER native ticks; on those ticks pass the incremented global
+        // counter down so the operators clock their envelopes (otherwise `None` = phase-only tick).
+        self.eg_subcount += 1;
+        let eg_clock = if self.eg_subcount >= EG_CLOCK_DIVIDER {
+            self.eg_subcount = 0;
+            self.eg_counter = self.eg_counter.wrapping_add(1);
+            Some(self.eg_counter)
+        } else {
+            None
+        };
         let Ym2612Synth {
             channels,
             log_sin,
@@ -676,10 +765,13 @@ impl Ym2612Synth {
         let mut l = 0i32;
         let mut r = 0i32;
         for (i, ch) in channels.iter_mut().enumerate() {
+            // Always advance the channel (envelope + phase) — including ch6 while the DAC drives it (audit
+            // F3): its EG must keep evolving muted so there is no stale-volume pop when the DAC turns off. The
+            // FM output is simply discarded for ch6 during DAC playback (the PCM stream plays in its place).
+            let (cl, cr) = ch.tick(eg_clock, log_sin, pow);
             if i == 5 && *dac_enabled {
                 continue;
             }
-            let (cl, cr) = ch.tick(log_sin, pow);
             l += cl;
             r += cr;
         }
@@ -717,8 +809,9 @@ fn lerp(a: i32, b: i32, f: f32) -> i32 {
     a + ((b - a) as f32 * f) as i32
 }
 
-/// The effective 6-bit envelope rate: `2·base + keyscale`, clamped to 63. `base` is a 5-bit rate register
-/// (or the RR-derived value); `ks`/`kc` add the key-scale contribution. Approximate (exact table is SY-3c).
+/// The effective 6-bit envelope rate (ymfm `effective_rate`, `cache_operator_data`): `2·base + keyscale`,
+/// clamped to 63, where `base` is a 5-bit rate register (or the RR-derived `(rr<<1)|1`) and
+/// `keyscale = kc >> (3 − KS)` (ymfm `keycode >> (op_ksr ^ 3)`). `base == 0` freezes the phase (returns 0).
 fn effective_rate(base: u8, ks: u8, kc: u8) -> u8 {
     if base == 0 {
         return 0;
@@ -727,25 +820,12 @@ fn effective_rate(base: u8, ks: u8, kc: u8) -> u8 {
     (2 * base as u16 + ks_add as u16).min(63) as u8
 }
 
-/// Attenuation units added per **native tick** at effective envelope `rate` (0-63). Rate 0 = frozen.
-/// Exponential in the rate (each +4 rate ≈ ×2 speed) — a calibrated approximation of the OPN rate table,
-/// rescaled by [`ENV_RATE_SCALE`] so the native tick preserves the SY-2 wall-clock envelope timing.
-fn rate_increment(rate: u8) -> f32 {
-    if rate == 0 {
-        0.0
-    } else {
-        RATE_BASE * 2.0f32.powf(rate as f32 / 4.0) * ENV_RATE_SCALE
-    }
-}
-
-/// The attenuation (in the 10-bit domain) at which Decay hands off to Sustain, from the 4-bit `SL` field:
-/// each step ≈ 32 units (≈ 3 dB); `SL=15` pins to the maximum (silence).
-fn sustain_att(sl: u8) -> f32 {
-    if sl >= 15 {
-        MAX_ATT
-    } else {
-        (sl as f32) * 32.0
-    }
+/// The attenuation (10-bit domain) at which Decay hands off to Sustain, from the 4-bit `SL` field (ymfm
+/// `cache.eg_sustain = (sl | ((sl+1) & 0x10)) << 5`): each step = 32 units, and the `SL=15` special case maps
+/// to 31·32 = `0x3E0` (effectively silence).
+fn sustain_att(sl: u8) -> i32 {
+    let level = if sl == 15 { 31 } else { sl as i32 };
+    level << 5
 }
 
 #[cfg(test)]
@@ -1108,5 +1188,141 @@ mod tests {
         fm.begin_frame(735);
         let (l2, r2) = fm.next_sample();
         assert_eq!((l2, r2), (0, 0), "$2B bit7 clear disables the DAC path");
+    }
+
+    /// SY-3c: the EG increment table must match ymfm's literal `s_increment_table` (`src/ymfm_fm.ipp`).
+    /// Pins the generation of the per-rate attenuation steps to the ymfm fixture (Fork-1 requirement).
+    #[test]
+    fn increment_table_matches_ymfm() {
+        // Rates 0-1 never move the envelope (all nibbles 0).
+        for i in 0..8 {
+            assert_eq!(attenuation_increment(0, i), 0, "rate 0 index {i}");
+            assert_eq!(attenuation_increment(1, i), 0, "rate 1 index {i}");
+        }
+        // Rate 2 = 0x1010_1010: nibbles alternate 0,1 (the slowest non-frozen rate).
+        assert_eq!(attenuation_increment(2, 0), 0);
+        assert_eq!(attenuation_increment(2, 1), 1);
+        assert_eq!(attenuation_increment(2, 2), 0);
+        assert_eq!(attenuation_increment(2, 3), 1);
+        // Interior rows, verbatim from ymfm.
+        assert_eq!(S_INCREMENT_TABLE[6], 0x1110_1110);
+        assert_eq!(S_INCREMENT_TABLE[11], 0x1111_1110);
+        assert_eq!(S_INCREMENT_TABLE[48], 0x1111_1111);
+        assert_eq!(S_INCREMENT_TABLE[52], 0x2222_2222);
+        // High-rate region: rate 48 adds 1/step, 52 adds 2, 56 adds 4, 60-63 add 8 (fastest).
+        for i in 0..8 {
+            assert_eq!(attenuation_increment(48, i), 1, "rate 48 index {i}");
+            assert_eq!(attenuation_increment(52, i), 2, "rate 52 index {i}");
+            assert_eq!(attenuation_increment(56, i), 4, "rate 56 index {i}");
+            assert_eq!(attenuation_increment(60, i), 8, "rate 60 index {i}");
+            assert_eq!(attenuation_increment(63, i), 8, "rate 63 index {i}");
+        }
+    }
+
+    /// SY-3c: the effective-rate / key-scaling formula `2·rate_param + (keycode >> (3 − KS))` (clamped to 63,
+    /// `rate_param == 0` frozen), spot-checked across the KS shift and the clamp.
+    #[test]
+    fn effective_rate_key_scaling() {
+        // rate_param 0 → frozen regardless of key-scale.
+        assert_eq!(effective_rate(0, 3, 31), 0);
+        // KS=0: keyscale = kc >> 3. AR=31, kc=18 → 62 + 2 = 64 → clamped to 63.
+        assert_eq!(effective_rate(31, 0, 18), 63);
+        // KS=3: keyscale = kc >> 0 = kc. rate_param=10, kc=28 → 20 + 28 = 48.
+        assert_eq!(effective_rate(10, 3, 28), 48);
+        // KS=0: rate_param=10, kc=28 → 20 + (28 >> 3 = 3) = 23.
+        assert_eq!(effective_rate(10, 0, 28), 23);
+        // KS=1: keyscale = kc >> 2. rate_param=5, kc=16 → 10 + (16 >> 2 = 4) = 14.
+        assert_eq!(effective_rate(5, 1, 16), 14);
+        // Release path: (rr<<1)|1 with rr=15 → 31; KS=0, kc=0 → 62.
+        assert_eq!(effective_rate(31, 0, 0), 62);
+    }
+
+    /// SY-3c / audit F2: key-on is edge-triggered. Re-asserting `$28` for a held note must NOT restart the
+    /// attack (no phase reset, no envelope reset); a genuine key-off→key-on edge DOES restart from phase 0.
+    #[test]
+    fn key_on_is_edge_triggered() {
+        let mut fm = Ym2612Synth::new(44_100);
+        fm.write(0, 0xB0, 0x07);
+        fm.write(0, 0x30, 0x01); // MUL=1
+        fm.write(0, 0x40, 0x00); // TL=0
+        fm.write(0, 0x50, 0x08); // KS=0, AR=8 (gradual attack, not the AR>=62 instant path)
+        fm.write(0, 0x60, 0x00);
+        fm.write(0, 0x70, 0x00);
+        fm.write(0, 0x80, 0x00);
+        fm.write(0, 0xA4, 0x24);
+        fm.write(0, 0xA0, 0x3B);
+        fm.write(0, 0xB4, 0xC0);
+        fm.write(0, 0x28, 0x10); // key on op1 (rising edge → attack, phase reset to 0)
+
+        // Advance: the phase winds forward and the gradual attack stays in Attack.
+        for _ in 0..500 {
+            let _ = fm.next_sample();
+        }
+        let phase_before = fm.channels[0].ops[0].phase;
+        let env_before = fm.channels[0].ops[0].env;
+        assert_ne!(phase_before, 0, "phase should have advanced");
+        assert_eq!(
+            fm.channels[0].ops[0].eg,
+            EgState::Attack,
+            "gradual AR keeps this op in Attack"
+        );
+
+        // Re-assert the SAME key-on (held note) → must be a no-op.
+        fm.write(0, 0x28, 0x10);
+        assert_eq!(
+            fm.channels[0].ops[0].phase, phase_before,
+            "held re-key must not reset phase"
+        );
+        assert_eq!(
+            fm.channels[0].ops[0].env, env_before,
+            "held re-key must not reset the envelope"
+        );
+        assert_eq!(
+            fm.channels[0].ops[0].eg,
+            EgState::Attack,
+            "held re-key must not restart the attack"
+        );
+
+        // A real key-off then key-on (a 0→1 edge) DOES restart the attack from phase 0.
+        fm.write(0, 0x28, 0x00);
+        fm.write(0, 0x28, 0x10);
+        assert_eq!(
+            fm.channels[0].ops[0].phase, 0,
+            "a fresh key-on edge restarts the attack from phase 0"
+        );
+        assert_eq!(fm.channels[0].ops[0].eg, EgState::Attack);
+    }
+
+    /// SY-3c / audit F3: while the DAC drives channel 6 (`$2B` bit7), ch6's FM output is discarded but its
+    /// envelope and phase must keep advancing (so there is no stale-volume pop when the DAC later turns off).
+    #[test]
+    fn dac_enabled_ch6_envelope_still_advances() {
+        let mut fm = Ym2612Synth::new(44_100);
+        // Program ch6 (bank 1, within-part 2 → global index 5) op1 with a gradual attack.
+        fm.write(1, 0xB2, 0x07); // algorithm 7
+        fm.write(1, 0x32, 0x01); // MUL=1
+        fm.write(1, 0x42, 0x00); // TL=0
+        fm.write(1, 0x52, 0x08); // KS=0, AR=8 (gradual, not instant)
+        fm.write(1, 0xA6, 0x24);
+        fm.write(1, 0xA2, 0x3B);
+        fm.write(0, 0x2B, 0x80); // DAC enabled → ch6 FM muted (output discarded)
+        fm.write(0, 0x28, 0x16); // key on ch6 op1 (rising edge)
+
+        let env_start = fm.channels[5].ops[0].env;
+        let phase_start = fm.channels[5].ops[0].phase;
+        for _ in 0..4000 {
+            fm.begin_frame(735);
+            let _ = fm.next_sample();
+        }
+        let env_end = fm.channels[5].ops[0].env;
+        let phase_end = fm.channels[5].ops[0].phase;
+        assert!(
+            env_end < env_start,
+            "ch6 envelope must keep advancing while DAC-muted ({env_start} -> {env_end})"
+        );
+        assert_ne!(
+            phase_end, phase_start,
+            "ch6 phase must keep advancing while DAC-muted"
+        );
     }
 }
