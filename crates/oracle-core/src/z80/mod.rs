@@ -1,16 +1,19 @@
 //! Zilog Z80 CPU core — the Genesis sound-driver host.
 //!
-//! This is the **Z-skeleton** slice (`docs/2026-07-22-z80-core-design.md`, ZC13): the architectural
+//! Built on the **Z-skeleton** slice (`docs/2026-07-22-z80-core-design.md`, ZC13): the architectural
 //! register state, the [`Z80Io`] memory protocol, and the [`bus::Z80Bus`] Genesis adapter, wired into
-//! [`crate::system::System`] and held in reset. **Nothing executes yet** — [`Z80::step`] is a deliberate
-//! stub, and every committed fixture leaves the Z80 in reset (power-on `z80_running = false`), so it steps
-//! zero instructions and every frozen currency stays byte-identical.
+//! [`crate::system::System`] and held in reset. The **Z-execute** opcode grind is now under way — the
+//! documented base table lands incrementally, gated by the SingleStepTests/z80 corpus. Currency-neutral by
+//! construction: every committed fixture leaves the Z80 in reset (power-on `z80_running = false`), so it
+//! steps zero instructions and every frozen currency stays byte-identical; the opcodes are validated
+//! out-of-band by the isolated SST-z80 harness (a bare [`Z80`] + flat test bus, never `System`).
 //!
 //! Execution model (settled in the design, ZC1): instruction-atomic decode-execute over a fully
 //! serializable struct — **not** the 68000's resumable micro-op recipe framework. The Z80's gate is
-//! ZEXDOC/ZEXALL (architectural results at instruction boundaries), not SST's per-cycle bus trace, so no
-//! sub-instruction cursor is needed; the whole Z80 is captured by the [`Z80`] struct between `step()` calls.
-//! The full documented opcode set + the ZEXDOC harness land in the **Z-execute** slice.
+//! SingleStepTests/z80 (architectural results at instruction boundaries), not SST's per-cycle bus trace, so
+//! no sub-instruction cursor is needed; the whole Z80 is captured by the [`Z80`] struct between `step()`
+//! calls. Coverage so far: `NOP` + the documented base table minus the branch/stack control flow (that plus
+//! the `CB`/`ED`/`DD`/`FD` prefix groups are the remaining Z-execute work).
 
 pub mod bus;
 
@@ -26,6 +29,13 @@ pub trait Z80Io {
     fn read(&mut self, addr: u16) -> u8;
     /// Write one byte `value` at the 16-bit Z80 address `addr`.
     fn write(&mut self, addr: u16, value: u8);
+    /// Read one byte from the 16-bit I/O port `port` (the `IN` instructions). The Genesis Z80 leaves the
+    /// I/O-port space unused (Plutiedev), so the [`Z80Bus`] adapter stubs it as open bus; the SST-z80
+    /// harness services it from each case's `ports` list. For `IN A,(n)`/`OUT (n),A` the port high byte is
+    /// `A` and the low byte the immediate `n`.
+    fn input(&mut self, port: u16) -> u8;
+    /// Write one byte `value` to the 16-bit I/O port `port` (the `OUT` instructions).
+    fn output(&mut self, port: u16, value: u8);
 }
 
 /// The Z80's programmer-visible architectural + interrupt state (ZC8). Pure owned data with **no** `System`
@@ -258,15 +268,58 @@ impl Z80 {
         b
     }
 
+    /// Fetch a little-endian 16-bit immediate at `PC` (low byte first), advancing `PC` by two.
+    fn next_word<B: Z80Io>(&mut self, bus: &mut B) -> u16 {
+        let lo = self.next_byte(bus) as u16;
+        let hi = self.next_byte(bus) as u16;
+        (hi << 8) | lo
+    }
+
+    /// Read a little-endian 16-bit word from `addr`/`addr+1`.
+    fn read16<B: Z80Io>(&mut self, addr: u16, bus: &mut B) -> u16 {
+        let lo = bus.read(addr) as u16;
+        let hi = bus.read(addr.wrapping_add(1)) as u16;
+        (hi << 8) | lo
+    }
+
+    /// Write a little-endian 16-bit word to `addr`/`addr+1` (low byte first).
+    fn write16<B: Z80Io>(&mut self, addr: u16, val: u16, bus: &mut B) {
+        bus.write(addr, val as u8);
+        bus.write(addr.wrapping_add(1), (val >> 8) as u8);
+    }
+
+    /// Read one of the four 16-bit register pairs by its 2-bit encoding (`0=BC 1=DE 2=HL 3=SP`) — the pair
+    /// selected by bits 5..4 of the `LD rr,nn`/`INC rr`/`DEC rr`/`ADD HL,rr` opcodes.
+    fn rr_get(&self, sel: u8) -> u16 {
+        match sel & 3 {
+            0 => self.bc,
+            1 => self.de,
+            2 => self.hl,
+            _ => self.sp,
+        }
+    }
+
+    /// Write one of the four 16-bit register pairs by its 2-bit encoding (`0=BC 1=DE 2=HL 3=SP`).
+    fn rr_set(&mut self, sel: u8, val: u16) {
+        match sel & 3 {
+            0 => self.bc = val,
+            1 => self.de = val,
+            2 => self.hl = val,
+            _ => self.sp = val,
+        }
+    }
+
     /// Execute one Z80 instruction over `bus`, returning the T-states it consumed (the value the ×15 mclk
     /// catch-up in [`crate::system::System::run_until`] scales into the frontier).
     ///
     /// Instruction-atomic decode-execute (ZC1/ZC2): one non-yielding call that fetches the opcode, walks the
     /// prefix front end (ZC3b), runs the handler, and returns at the instruction boundary with all state in
-    /// the struct. This slice implements the documented base opcodes `NOP` (`0x00`) + the 8-bit `LD` block
-    /// (`0x40-0x7F`, incl. `HALT` `0x76`) + the 8-bit ALU `A,r` block (`0x80-0xBF`); the prefix groups
-    /// (`CB`/`ED`/`DD`/`FD`/`DDCB`/`FDCB`) are decoded structurally but their leaf handlers are the next
-    /// slice (Z-execute), and the rest of the base table is not yet decoded.
+    /// the struct. This slice implements the whole documented **base table except the branch/stack control
+    /// flow**: `NOP`, the 8/16-bit loads, 8/16-bit `INC`/`DEC`, `ADD HL,rr`, the accumulator rotates,
+    /// `DAA`/`CPL`/`SCF`/`CCF`, the `EX` forms, `JP (HL)`, `LD SP,HL`, `EI`/`DI`, `IN A,(n)`/`OUT (n),A`, the
+    /// 8-bit `LD`/ALU blocks (`0x40-0xBF`), and the ALU-immediate `A,n` ops. The `JR`/`JP cc`/`CALL`/`RET`/
+    /// `DJNZ`/`RST`/`PUSH`/`POP` control flow and the prefix groups (`CB`/`ED`/`DD`/`FD`/`DDCB`/`FDCB`, decoded
+    /// structurally but with stub leaf handlers) are the next slice (Z-execute).
     pub fn step<B: Z80Io>(&mut self, bus: &mut B) -> u32 {
         if self.halted {
             // HALT idle: the CPU runs internal NOPs (refresh continues) until an interrupt/reset clears
@@ -291,15 +344,209 @@ impl Z80 {
         }
     }
 
-    /// Base-table (unprefixed) opcodes. Implemented this slice: `NOP`, the `LD r,r'`/`LD r,(HL)`/
-    /// `LD (HL),r`/`HALT` block (`0x40-0x7F`), and the 8-bit ALU `A,r|(HL)` block (`0x80-0xBF`).
+    /// Base-table (unprefixed) opcodes. This slice covers the whole base table **except** the branch/stack
+    /// control flow (`JR`/`JP cc`/`CALL`/`RET`/`RET cc`/`DJNZ`/`RST`/`PUSH`/`POP`, deferred to the next
+    /// sub-slice) and the prefix escapes (`CB`/`ED`/`DD`/`FD`, handled in [`Self::execute`]): the 8/16-bit
+    /// loads, 8/16-bit `INC`/`DEC`, `ADD HL,rr`, the accumulator rotates, `DAA`/`CPL`/`SCF`/`CCF`,
+    /// `EX AF,AF'`/`EX DE,HL`/`EX (SP),HL`, `JP (HL)`, `LD SP,HL`, `EI`/`DI`, `IN A,(n)`/`OUT (n),A`, and
+    /// the ALU-immediate `A,n` ops.
     fn execute_base<B: Z80Io>(&mut self, opcode: u8, bus: &mut B) -> u32 {
         match opcode {
             0x00 => 4, // NOP
+
+            // ---- 16-bit immediate load: LD rr,nn (rr = bits 5..4). ----
+            0x01 | 0x11 | 0x21 | 0x31 => {
+                let nn = self.next_word(bus);
+                self.rr_set((opcode >> 4) & 3, nn);
+                10
+            }
+
+            // ---- LD (BC/DE),A and LD A,(BC/DE). ----
+            0x02 => {
+                bus.write(self.bc, self.a());
+                7
+            }
+            0x0A => {
+                let v = bus.read(self.bc);
+                self.set_a(v);
+                7
+            }
+            0x12 => {
+                bus.write(self.de, self.a());
+                7
+            }
+            0x1A => {
+                let v = bus.read(self.de);
+                self.set_a(v);
+                7
+            }
+
+            // ---- 16-bit INC/DEC rr (no flags). ----
+            0x03 | 0x13 | 0x23 | 0x33 => {
+                let sel = (opcode >> 4) & 3;
+                self.rr_set(sel, self.rr_get(sel).wrapping_add(1));
+                6
+            }
+            0x0B | 0x1B | 0x2B | 0x3B => {
+                let sel = (opcode >> 4) & 3;
+                self.rr_set(sel, self.rr_get(sel).wrapping_sub(1));
+                6
+            }
+
+            // ---- 8-bit INC/DEC r|(HL) (dst = bits 5..3). ----
+            0x04 | 0x0C | 0x14 | 0x1C | 0x24 | 0x2C | 0x34 | 0x3C => {
+                let dst = (opcode >> 3) & 7;
+                let v = self.reg8_get(dst, bus);
+                let (r, f) = inc8(v, self.flags());
+                self.reg8_set(dst, r, bus);
+                self.set_flags(f);
+                if dst == 6 {
+                    11
+                } else {
+                    4
+                }
+            }
+            0x05 | 0x0D | 0x15 | 0x1D | 0x25 | 0x2D | 0x35 | 0x3D => {
+                let dst = (opcode >> 3) & 7;
+                let v = self.reg8_get(dst, bus);
+                let (r, f) = dec8(v, self.flags());
+                self.reg8_set(dst, r, bus);
+                self.set_flags(f);
+                if dst == 6 {
+                    11
+                } else {
+                    4
+                }
+            }
+
+            // ---- 8-bit immediate load: LD r,n (dst = bits 5..3). ----
+            0x06 | 0x0E | 0x16 | 0x1E | 0x26 | 0x2E | 0x36 | 0x3E => {
+                let dst = (opcode >> 3) & 7;
+                let n = self.next_byte(bus);
+                self.reg8_set(dst, n, bus);
+                if dst == 6 {
+                    10
+                } else {
+                    7
+                }
+            }
+
+            // ---- Accumulator rotates (H = N = 0; C from the rotated-out bit; S/Z/P/V preserved). ----
+            0x07 => self.op_rlca(),
+            0x0F => self.op_rrca(),
+            0x17 => self.op_rla(),
+            0x1F => self.op_rra(),
+
+            // ---- EX AF,AF'. ----
+            0x08 => {
+                std::mem::swap(&mut self.af, &mut self.af2);
+                4
+            }
+
+            // ---- ADD HL,rr. ----
+            0x09 | 0x19 | 0x29 | 0x39 => {
+                self.op_add_hl(self.rr_get((opcode >> 4) & 3));
+                11
+            }
+
+            // ---- LD (nn),HL / LD HL,(nn). ----
+            0x22 => {
+                let addr = self.next_word(bus);
+                self.write16(addr, self.hl, bus);
+                16
+            }
+            0x2A => {
+                let addr = self.next_word(bus);
+                self.hl = self.read16(addr, bus);
+                16
+            }
+
+            // ---- DAA / CPL / SCF / CCF. ----
+            0x27 => self.op_daa(),
+            0x2F => self.op_cpl(),
+            0x37 => self.op_scf(),
+            0x3F => self.op_ccf(),
+
+            // ---- LD (nn),A / LD A,(nn). ----
+            0x32 => {
+                let addr = self.next_word(bus);
+                bus.write(addr, self.a());
+                13
+            }
+            0x3A => {
+                let addr = self.next_word(bus);
+                let v = bus.read(addr);
+                self.set_a(v);
+                13
+            }
+
+            // ---- 8-bit LD block and ALU A,r block (prior slice). ----
             0x40..=0x7F => self.op_ld_block(opcode, bus),
             0x80..=0xBF => self.op_alu_block(opcode, bus),
+
+            // ---- ALU-immediate A,n (op = bits 5..3, reusing the register-form flag logic). ----
+            0xC6 | 0xCE | 0xD6 | 0xDE | 0xE6 | 0xEE | 0xF6 | 0xFE => {
+                let n = self.next_byte(bus);
+                self.alu8((opcode >> 3) & 7, n);
+                7
+            }
+
+            // ---- OUT (n),A / IN A,(n): port = (A << 8) | n. Neither affects the flags. ----
+            0xD3 => {
+                let n = self.next_byte(bus);
+                let port = ((self.a() as u16) << 8) | n as u16;
+                bus.output(port, self.a());
+                11
+            }
+            0xDB => {
+                let n = self.next_byte(bus);
+                let port = ((self.a() as u16) << 8) | n as u16;
+                let v = bus.input(port);
+                self.set_a(v);
+                11
+            }
+
+            // ---- EX (SP),HL. ----
+            0xE3 => {
+                let tmp = self.read16(self.sp, bus);
+                self.write16(self.sp, self.hl, bus);
+                self.hl = tmp;
+                19
+            }
+
+            // ---- JP (HL): an indirect load of HL into PC (not a conditional branch). ----
+            0xE9 => {
+                self.pc = self.hl;
+                4
+            }
+
+            // ---- EX DE,HL. ----
+            0xEB => {
+                std::mem::swap(&mut self.de, &mut self.hl);
+                4
+            }
+
+            // ---- DI / EI: set both interrupt-enable flip-flops (EI's one-instruction delay is unobserved
+            // by the SST-z80 gate, which checks only the final IFF1/IFF2). ----
+            0xF3 => {
+                self.iff1 = false;
+                self.iff2 = false;
+                4
+            }
+            0xFB => {
+                self.iff1 = true;
+                self.iff2 = true;
+                4
+            }
+
+            // ---- LD SP,HL. ----
+            0xF9 => {
+                self.sp = self.hl;
+                6
+            }
+
             other => unimplemented!(
-                "Z80 base opcode {other:#04X} is not decoded yet (this slice: NOP + 0x40-0xBF)"
+                "Z80 base opcode {other:#04X} is deferred (branch/stack control flow: the next sub-slice)"
             ),
         }
     }
@@ -387,6 +634,149 @@ impl Z80 {
                 self.set_flags(f);
             }
         }
+    }
+
+    /// `RLCA` (`0x07`): rotate `A` left circular; `C` = old bit 7. `H = N = 0`, `S/Z/P/V` preserved.
+    fn op_rlca(&mut self) -> u32 {
+        let a = self.a();
+        let c = a >> 7;
+        let r = (a << 1) | c;
+        self.set_a(r);
+        self.set_flags(rotate_a_flags(self.flags(), r, c != 0));
+        4
+    }
+
+    /// `RRCA` (`0x0F`): rotate `A` right circular; `C` = old bit 0.
+    fn op_rrca(&mut self) -> u32 {
+        let a = self.a();
+        let c = a & 1;
+        let r = (a >> 1) | (c << 7);
+        self.set_a(r);
+        self.set_flags(rotate_a_flags(self.flags(), r, c != 0));
+        4
+    }
+
+    /// `RLA` (`0x17`): rotate `A` left through carry; new bit 0 = old `C`, `C` = old bit 7.
+    fn op_rla(&mut self) -> u32 {
+        let a = self.a();
+        let old_c = self.flags() & FLAG_C;
+        let r = (a << 1) | old_c;
+        self.set_a(r);
+        self.set_flags(rotate_a_flags(self.flags(), r, a & 0x80 != 0));
+        4
+    }
+
+    /// `RRA` (`0x1F`): rotate `A` right through carry; new bit 7 = old `C`, `C` = old bit 0.
+    fn op_rra(&mut self) -> u32 {
+        let a = self.a();
+        let old_c = self.flags() & FLAG_C;
+        let r = (a >> 1) | (old_c << 7);
+        self.set_a(r);
+        self.set_flags(rotate_a_flags(self.flags(), r, a & 1 != 0));
+        4
+    }
+
+    /// `ADD HL,rr` (`0x09`/`0x19`/`0x29`/`0x39`): `HL += rr`. `N = 0`, `H` = carry out of bit 11, `C` =
+    /// carry out of bit 15; `S/Z/P/V` preserved. `YF/XF` come from the result's high byte (undocumented,
+    /// masked out of the documented-flag gate).
+    fn op_add_hl(&mut self, rr: u16) {
+        let hl = self.hl;
+        let sum = hl as u32 + rr as u32;
+        let result = sum as u16;
+        let mut f = self.flags() & (FLAG_S | FLAG_Z | FLAG_PV); // preserved
+        if (hl & 0x0FFF) + (rr & 0x0FFF) > 0x0FFF {
+            f |= FLAG_H;
+        }
+        if sum > 0xFFFF {
+            f |= FLAG_C;
+        }
+        f |= (result >> 8) as u8 & FLAG_XY;
+        self.hl = result;
+        self.set_flags(f);
+    }
+
+    /// `DAA` (`0x27`): decimal-adjust `A` after a binary add/subtract, using `N`/`H`/`C`. Sets `S Z P/V C H`;
+    /// `N` preserved. The correction adds/subtracts `0x06` to the low digit and `0x60` to the high digit,
+    /// with the direction chosen by `N` (UM008 §"DAA").
+    fn op_daa(&mut self) -> u32 {
+        let a = self.a();
+        let n = self.flags() & FLAG_N != 0;
+        let h = self.flags() & FLAG_H != 0;
+        let c = self.flags() & FLAG_C != 0;
+        let mut correction = 0u8;
+        let mut new_c = false;
+        if h || (a & 0x0F) > 9 {
+            correction |= 0x06;
+        }
+        if c || a > 0x99 {
+            correction |= 0x60;
+            new_c = true;
+        }
+        let result = if n {
+            a.wrapping_sub(correction)
+        } else {
+            a.wrapping_add(correction)
+        };
+        let new_h = if n {
+            h && (a & 0x0F) < 6
+        } else {
+            (a & 0x0F) > 9
+        };
+        self.set_a(result);
+        let mut f = if n { FLAG_N } else { 0 };
+        if result & 0x80 != 0 {
+            f |= FLAG_S;
+        }
+        if result == 0 {
+            f |= FLAG_Z;
+        }
+        if new_h {
+            f |= FLAG_H;
+        }
+        if result.count_ones().is_multiple_of(2) {
+            f |= FLAG_PV;
+        }
+        if new_c {
+            f |= FLAG_C;
+        }
+        f |= result & FLAG_XY;
+        self.set_flags(f);
+        4
+    }
+
+    /// `CPL` (`0x2F`): `A = !A`. Sets `H = N = 1`; `S/Z/P/V/C` preserved.
+    fn op_cpl(&mut self) -> u32 {
+        let r = !self.a();
+        self.set_a(r);
+        let mut f = self.flags() & (FLAG_S | FLAG_Z | FLAG_PV | FLAG_C);
+        f |= FLAG_H | FLAG_N;
+        f |= r & FLAG_XY;
+        self.set_flags(f);
+        4
+    }
+
+    /// `SCF` (`0x37`): set carry. `C = 1`, `H = N = 0`; `S/Z/P/V` preserved.
+    fn op_scf(&mut self) -> u32 {
+        let mut f = self.flags() & (FLAG_S | FLAG_Z | FLAG_PV);
+        f |= FLAG_C;
+        f |= self.a() & FLAG_XY; // undocumented, masked out of the documented-flag gate
+        self.set_flags(f);
+        4
+    }
+
+    /// `CCF` (`0x3F`): complement carry. `C = !C`, `H` = old `C`, `N = 0`; `S/Z/P/V` preserved.
+    fn op_ccf(&mut self) -> u32 {
+        let old_c = self.flags() & FLAG_C != 0;
+        let mut f = self.flags() & (FLAG_S | FLAG_Z | FLAG_PV);
+        if !old_c {
+            f |= FLAG_C;
+        }
+        if old_c {
+            f |= FLAG_H;
+        }
+        f |= self.a() & FLAG_XY; // undocumented, masked out of the documented-flag gate
+        self.set_flags(f);
+        4
     }
 
     // ---- Prefix leaf handlers — structurally reached, opcode bodies land in the Z-execute slice. ----
@@ -501,6 +891,60 @@ fn logic8(result: u8, half: bool) -> (u8, u8) {
     }
     f |= result & FLAG_XY;
     (result, f)
+}
+
+/// 8-bit `INC`: `v + 1` with the documented flags — `S Z H P/V` from the result, `N = 0`, `C` **preserved**
+/// (carried in via `old_flags`). `H` = carry out of bit 3 (low nibble was `0x0F`); `P/V` = overflow (`v`
+/// was `0x7F`). `YF/XF` from the result's bits 5/3 (masked out of the documented gate).
+fn inc8(v: u8, old_flags: u8) -> (u8, u8) {
+    let r = v.wrapping_add(1);
+    let mut f = old_flags & FLAG_C; // preserve carry, clear N
+    if r & 0x80 != 0 {
+        f |= FLAG_S;
+    }
+    if r == 0 {
+        f |= FLAG_Z;
+    }
+    if (v & 0x0F) == 0x0F {
+        f |= FLAG_H;
+    }
+    if v == 0x7F {
+        f |= FLAG_PV;
+    }
+    f |= r & FLAG_XY;
+    (r, f)
+}
+
+/// 8-bit `DEC`: `v - 1` with the documented flags — `S Z H P/V` from the result, `N = 1`, `C` **preserved**.
+/// `H` = borrow from bit 4 (low nibble was `0x00`); `P/V` = overflow (`v` was `0x80`).
+fn dec8(v: u8, old_flags: u8) -> (u8, u8) {
+    let r = v.wrapping_sub(1);
+    let mut f = (old_flags & FLAG_C) | FLAG_N; // preserve carry, set N
+    if r & 0x80 != 0 {
+        f |= FLAG_S;
+    }
+    if r == 0 {
+        f |= FLAG_Z;
+    }
+    if (v & 0x0F) == 0x00 {
+        f |= FLAG_H;
+    }
+    if v == 0x80 {
+        f |= FLAG_PV;
+    }
+    f |= r & FLAG_XY;
+    (r, f)
+}
+
+/// Flags for the accumulator rotates (`RLCA`/`RRCA`/`RLA`/`RRA`): `H = N = 0`, `S/Z/P/V` preserved, `C` set
+/// from the rotated-out bit, `YF/XF` from the result (undocumented, masked).
+fn rotate_a_flags(old_flags: u8, result: u8, carry: bool) -> u8 {
+    let mut f = old_flags & (FLAG_S | FLAG_Z | FLAG_PV);
+    if carry {
+        f |= FLAG_C;
+    }
+    f |= result & FLAG_XY;
+    f
 }
 
 #[cfg(test)]

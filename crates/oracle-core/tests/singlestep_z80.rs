@@ -38,25 +38,50 @@ const STRICT_FLAGS: bool = false;
 const UNDOC_FLAGS: u8 = 0b0010_1000;
 
 /// Opcode files driven this slice (keep in sync with `tools/fetch-z80-tests.sh`'s `FILES`): `NOP` + the
-/// `LD` block (`0x40`-`0x7F`) + the 8-bit ALU `A,r` block (`0x80`-`0xBF`).
+/// base-table data/arithmetic/rotate/misc remainder (`0x01`-`0x3F`, minus the deferred `JR`/`DJNZ` branch
+/// ops) + the `LD` block + 8-bit ALU `A,r` block (`0x40`-`0xBF`) + the non-branch `0xC0`-`0xFF` subset
+/// (ALU-immediate, `EX`/`IN`/`OUT`/`EI`/`DI`/`JP (HL)`/`LD SP,HL`).
 fn opcode_files() -> Vec<String> {
     let mut files = vec!["00".to_string()];
+    // 0x01-0x3F: skip the JR/DJNZ branch ops (0x10,0x18,0x20,0x28,0x30,0x38) deferred to the next slice.
+    for op in 0x01u16..=0x3F {
+        if matches!(op, 0x10 | 0x18 | 0x20 | 0x28 | 0x30 | 0x38) {
+            continue;
+        }
+        files.push(format!("{op:02x}"));
+    }
+    // 0x40-0xBF: 8-bit LD block + 8-bit ALU A,r block (prior slice).
     for op in 0x40u16..=0xBF {
+        files.push(format!("{op:02x}"));
+    }
+    // 0xC0-0xFF non-branch subset.
+    for op in [
+        0xC6u16, 0xCE, 0xD3, 0xD6, 0xDB, 0xDE, 0xE3, 0xE6, 0xE9, 0xEB, 0xEE, 0xF3, 0xF6, 0xF9,
+        0xFB, 0xFE,
+    ] {
         files.push(format!("{op:02x}"));
     }
     files
 }
 
-/// A flat 64 KiB Z80 address space (ZC10) — plain array, no banking or ports (the SST corpus is pure
-/// memory). Seeded from each case's `initial.ram`; touched bytes are read back for the `final.ram` check.
+/// A flat 64 KiB Z80 address space (ZC10) — plain array (the SST corpus is pure memory) plus a port model
+/// for `IN`/`OUT`. Seeded from each case's `initial.ram`; touched bytes are read back for the `final.ram`
+/// check. Port I/O is serviced from the case's `ports` list: the ordered `"r"` (read) values feed each
+/// `IN`, and every `OUT` is captured and compared against the `"w"` (write) entries.
 struct Z80TestBus {
     ram: Vec<u8>,
+    /// Expected `IN` responses (the case's `ports` `"r"` values, in order), popped front-to-back.
+    port_reads: std::collections::VecDeque<u8>,
+    /// Captured `OUT` writes `(port, value)`, compared against the case's `ports` `"w"` entries.
+    port_writes: Vec<(u16, u8)>,
 }
 
 impl Z80TestBus {
     fn new() -> Self {
         Self {
             ram: vec![0u8; 0x1_0000],
+            port_reads: std::collections::VecDeque::new(),
+            port_writes: Vec::new(),
         }
     }
 }
@@ -67,6 +92,14 @@ impl Z80Io for Z80TestBus {
     }
     fn write(&mut self, addr: u16, value: u8) {
         self.ram[addr as usize] = value;
+    }
+    fn input(&mut self, _port: u16) -> u8 {
+        self.port_reads
+            .pop_front()
+            .expect("case supplies an IN port-read value for every IN executed")
+    }
+    fn output(&mut self, port: u16, value: u8) {
+        self.port_writes.push((port, value));
     }
 }
 
@@ -172,16 +205,39 @@ fn assert_final(name: &str, got: &Z80Regs, bus: &Z80TestBus, fin: &Value) {
     }
 }
 
+/// Parse a case's top-level `ports` list into (ordered `IN` read values, expected `OUT` writes). Each entry
+/// is `[port, value, "r"|"w"]`: `"r"` feeds an `IN`, `"w"` is an `OUT` the core must reproduce.
+fn split_ports(t: &Value) -> (Vec<u8>, Vec<(u16, u8)>) {
+    let mut reads = Vec::new();
+    let mut writes = Vec::new();
+    if let Some(list) = t.get("ports").and_then(Value::as_array) {
+        for p in list {
+            let e = p.as_array().unwrap();
+            let port = e[0].as_u64().unwrap() as u16;
+            let val = e[1].as_u64().unwrap() as u8;
+            match e[2].as_str().unwrap() {
+                "r" => reads.push(val),
+                "w" => writes.push((port, val)),
+                other => panic!("unknown port direction {other:?}"),
+            }
+        }
+    }
+    (reads, writes)
+}
+
 fn run_case(t: &Value) {
     let name = t["name"].as_str().unwrap_or("?");
     let ini = &t["initial"];
     let mut z80 = Z80::from_regs(&build_regs(ini));
     let mut bus = Z80TestBus::new();
     seed_ram(&mut bus, ini);
+    let (reads, expected_writes) = split_ports(t);
+    bus.port_reads = reads.into();
 
     let _t_states = z80.step(&mut bus); // `cycles` trace intentionally ignored (ZC1 instruction-atomic).
 
     assert_final(name, &z80.regs(), &bus, &t["final"]);
+    assert_eq!(bus.port_writes, expected_writes, "port OUT writes [{name}]");
 }
 
 /// CI guard: the vendored corpus MUST be present under CI so a fetch regression fails loudly instead of the
@@ -226,9 +282,10 @@ fn z80_matches_singlesteptests() {
         eprintln!("  {fname}.json: {} cases passed", data.len());
         total += data.len();
     }
-    // 129 opcode files × 1000 cases = every vendored Z80 case this slice implements.
+    // 202 opcode files × 1000 cases = every vendored Z80 case this slice implements (00 + the 0x01-0x3F
+    // non-branch remainder + 0x40-0xBF + the 0xC0-0xFF non-branch subset).
     assert_eq!(
-        total, 129_000,
-        "expected 129000 Z80 SST cases (00 + 40-7f + 80-bf, 1000 each)"
+        total, 202_000,
+        "expected 202000 Z80 SST cases (00 + 0x01-0x3F non-branch + 0x40-0xBF + 0xC0-0xFF non-branch)"
     );
 }

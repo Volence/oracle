@@ -59,6 +59,15 @@ impl Z80Io for Z80Bus<'_> {
             self.z80_ram[(addr as usize) & (Z80_RAM_SIZE - 1)] = value;
         }
     }
+
+    fn input(&mut self, _port: u16) -> u8 {
+        // The Genesis Z80 does not use the I/O-port space (Plutiedev "Using the Z80"): `IN` reads open bus.
+        0xFF
+    }
+
+    fn output(&mut self, _port: u16, _value: u8) {
+        // The Genesis Z80's I/O-port space is unused; `OUT` writes are dropped.
+    }
 }
 
 #[cfg(test)]
