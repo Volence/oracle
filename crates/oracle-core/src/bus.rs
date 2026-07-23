@@ -52,6 +52,14 @@ pub struct BusEvent {
 pub trait BusEventSink {
     fn on_event(&mut self, event: BusEvent);
 
+    /// Timestamped delivery: the same event plus the absolute master-clock (mclk) of the access.
+    /// Emission sites that hold the current mclk (the real 68k/Z80 buses) call THIS; the default
+    /// forwards to `on_event`, so every existing sink is behaviorally unchanged and needs no edit.
+    /// Only a timing-aware sink (the synth AudioSink, SY-4b) overrides it.
+    fn on_event_at(&mut self, event: BusEvent, _mclk: u64) {
+        self.on_event(event);
+    }
+
     /// Called by the sink-generic run loop immediately before each CPU step, stamping the PC of the
     /// instruction about to execute and the current frame. Consumers that attribute an access to its writing
     /// instruction (watchpoints) latch this context so each subsequent [`BusEvent`] knows its PC/frame; a
@@ -372,13 +380,16 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
     }
 
     fn emit(&mut self, op: BusOp, fc: u8, addr: u32, size: Size, value: u32) {
-        self.sink.on_event(BusEvent {
-            op,
-            fc,
-            addr,
-            size,
-            value,
-        });
+        self.sink.on_event_at(
+            BusEvent {
+                op,
+                fc,
+                addr,
+                size,
+                value,
+            },
+            self.now_mclk,
+        );
     }
 
     /// Whether `a` (already masked) is a VDP port ($C00000–$C0000F).
@@ -592,6 +603,35 @@ impl<'a, S: BusEventSink> Bus68k for MegaDriveBus<'a, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SY-4a forwarder-equivalence (design §7 Test 4): a sink that implements ONLY `on_event`
+    /// must receive an identical event whether the emitting site calls `on_event` directly or
+    /// routes through the defaulted `on_event_at(ev, mclk)` — for any mclk. This pins the default
+    /// forwarder so the two real emission sites can switch to the timestamped path with zero
+    /// behavioral change to `()`/`Vec<BusEvent>`/Watchpoints/VgmLogger.
+    #[test]
+    fn on_event_at_default_forwards_identically_for_any_mclk() {
+        let ev = BusEvent {
+            op: BusOp::Write,
+            fc: 0,
+            addr: 0xA0_4000,
+            size: Size::Byte,
+            value: 0x2A,
+        };
+        for &mclk in &[0u64, 1, 1219, MD_VERSION as u64, 896_040, u64::MAX] {
+            // Path A: direct untimed delivery.
+            let mut direct: Vec<BusEvent> = Vec::new();
+            direct.on_event(ev);
+            // Path B: timestamped delivery through the default forwarder (no override on Vec).
+            let mut timed: Vec<BusEvent> = Vec::new();
+            timed.on_event_at(ev, mclk);
+            assert_eq!(
+                direct, timed,
+                "default on_event_at must deliver exactly the same event (mclk = {mclk})"
+            );
+            assert_eq!(timed, vec![ev]);
+        }
+    }
 
     #[test]
     fn read_returns_ram_byte_and_emits_event() {

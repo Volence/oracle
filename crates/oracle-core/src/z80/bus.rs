@@ -156,13 +156,16 @@ impl<S: BusEventSink> Z80Io for Z80Bus<'_, S> {
             // ADDITIONALLY drive the timer model (the tap is for the VGM logger; the timer update is what makes
             // the driver's Timer-A overflow poll fire — docs/2026-07-22-fm-timer-design.md). PSG has no timer.
             0x4000..=0x4003 | 0x7F11 => {
-                self.sink.on_event(BusEvent {
-                    op: BusOp::Write,
-                    fc: 0,
-                    addr: addr as u32,
-                    size: Size::Byte,
-                    value: value as u32,
-                });
+                self.sink.on_event_at(
+                    BusEvent {
+                        op: BusOp::Write,
+                        fc: 0,
+                        addr: addr as u32,
+                        size: Size::Byte,
+                        value: value as u32,
+                    },
+                    self.now_mclk,
+                );
                 if let 0x4000..=0x4003 = addr {
                     self.fm.write_port(addr, value, self.now_mclk);
                 }
