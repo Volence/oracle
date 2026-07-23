@@ -700,10 +700,13 @@ pub struct Ym2612Synth {
     /// DAC (channel-6 PCM) enable, `$2B` bit7. When set, FM channel 6 is muted and the DAC PCM stream plays
     /// in its place (SY-3a).
     dac_enabled: bool,
-    /// DAC sample bytes (`$2A` writes) collected during the current frame, in write order.
-    dac_queue: Vec<u8>,
-    /// The frame's DAC bytes, snapshotted from [`Self::dac_queue`] at the frame boundary; output sample `i`
-    /// plays `dac_frame[i · N / samples_per_frame]` (zero-order hold across the frame).
+    /// DAC sample bytes (`$2A` writes) collected during the current frame as `(sample_idx, byte)` pairs —
+    /// each byte tagged with its TRUE intra-frame output-sample index (SY-4b). SY-3a queued bare bytes and
+    /// spread them synthetically even; SY-4b queues the real sub-frame placement via [`Self::queue_dac`].
+    dac_queue: Vec<(u32, u8)>,
+    /// The frame's length-`samples_per_frame` ZOH track, built from [`Self::dac_queue`] by
+    /// [`Self::begin_frame`]: each byte is placed at its true `sample_idx` and held forward to the next
+    /// byte's sample (SY-4b); output sample `i` plays `dac_frame[i]`.
     dac_frame: Vec<u8>,
     /// Output samples the current frame's [`Self::dac_frame`] is spread across (set by [`Self::begin_frame`]).
     dac_samples_per_frame: u32,
@@ -788,11 +791,9 @@ impl Ym2612Synth {
                 self.lfo_rate = value & 0x07;
             }
             0x28 if bank == 0 => self.key_on_off(value),
-            // $2A DAC data: queue the 8-bit PCM sample for this frame's channel-6 ZOH playback (SY-3a).
-            0x2A if bank == 0 => {
-                self.dac_queue.push(value);
-                self.dac_last = value;
-            }
+            // $2A DAC data is no longer applied here: it carries no intra-frame sample. SY-4b routes it
+            // through [`Self::queue_dac`] with its true sub-frame sample index (the sink derives the sample
+            // from the write's master-clock). A stray untagged `$2A` write is intentionally a no-op.
             0x2B if bank == 0 => self.dac_enabled = value & 0x80 != 0,
             // Per-channel and per-operator registers exist in both banks.
             0x30..=0x9F => self.write_operator(bank, reg, value),
@@ -921,29 +922,51 @@ impl Ym2612Synth {
         c.fms = value & 0x07;
     }
 
-    /// Begin a new render frame (SY-3a): snapshot this frame's queued DAC bytes for even-spread ZOH playback
-    /// and reset the per-sample index. The sink calls this once, before the frame's `samples_per_frame`
-    /// [`Self::next_sample`] calls.
+    /// Queue a DAC (`$2A`) byte at its TRUE intra-frame output-sample index (SY-4b). The sink derives
+    /// `sample_idx` from the write's master-clock (`docs/…-phase-sy4-subframe-timing-design.md §3.2`) and
+    /// calls this in place of the SY-3a bare-byte push; [`Self::begin_frame`] then places the byte at that
+    /// sample in the ZOH track. Pairs arrive mostly-sorted (monotone mclk) — `begin_frame` sorts defensively.
+    pub fn queue_dac(&mut self, sample_idx: u32, byte: u8) {
+        self.dac_queue.push((sample_idx, byte));
+    }
+
+    /// Begin a new render frame (SY-4b): build this frame's length-`samples_per_frame` DAC ZOH track from the
+    /// queued `(sample_idx, byte)` pairs and reset the per-sample index. The sink calls this once, before the
+    /// frame's `samples_per_frame` [`Self::next_sample`] calls.
+    ///
+    /// The track starts held at [`Self::dac_last`] (the previous frame's final byte — a gap-free carry), then
+    /// each queued byte is placed at its true `sample_idx` and held forward to the next byte's sample (true
+    /// sub-frame placement, refining SY-3a's synthetic even spread). `dac_last` is updated to the frame's
+    /// final held byte so an empty next frame keeps holding it.
     pub fn begin_frame(&mut self, samples_per_frame: u32) {
+        let spf = samples_per_frame.max(1) as usize;
+        let mut queue = std::mem::take(&mut self.dac_queue);
+        queue.sort_by_key(|&(sample, _)| sample);
         self.dac_frame.clear();
-        self.dac_frame.append(&mut self.dac_queue); // moves the bytes out and leaves `dac_queue` empty
+        self.dac_frame.reserve(spf);
+        let mut held = self.dac_last; // ZOH carry from the previous frame's final byte
+        let mut qi = 0;
+        for i in 0..spf {
+            // Adopt every byte whose (clamped) sample has been reached; the last one at/-before `i` wins.
+            while qi < queue.len() && (queue[qi].0 as usize).min(spf - 1) <= i {
+                held = queue[qi].1;
+                qi += 1;
+            }
+            self.dac_frame.push(held);
+        }
+        self.dac_last = held;
         self.dac_samples_per_frame = samples_per_frame;
         self.dac_sample_idx = 0;
     }
 
-    /// The DAC (channel-6 PCM) contribution `(left, right)` for the current output sample. Even-spread ZOH:
-    /// output sample `i` plays `dac_frame[i · N / samples_per_frame]` (clamped to the last byte); a frame
-    /// with no `$2A` writes holds [`Self::dac_last`]. The 8-bit unsigned byte is centered around `0x80` and
-    /// scaled by [`DAC_SCALE`], then routed through channel 6's `$B6` stereo pan.
+    /// The DAC (channel-6 PCM) contribution `(left, right)` for the current output sample. The frame's ZOH
+    /// track (built by [`Self::begin_frame`]) is indexed directly at the per-sample position: output sample
+    /// `i` plays `dac_frame[i]`, i.e. the byte whose true sub-frame sample was `≤ i`. A frame with no `$2A`
+    /// writes holds [`Self::dac_last`]. The 8-bit unsigned byte is centered around `0x80` and scaled by
+    /// [`DAC_SCALE`], then routed through channel 6's `$B6` stereo pan.
     fn dac_sample(&self) -> (i32, i32) {
-        let byte = if self.dac_frame.is_empty() {
-            self.dac_last
-        } else {
-            let n = self.dac_frame.len();
-            let spf = self.dac_samples_per_frame.max(1) as usize;
-            let idx = (self.dac_sample_idx as usize * n / spf).min(n - 1);
-            self.dac_frame[idx]
-        };
+        let idx = (self.dac_sample_idx as usize).min(self.dac_frame.len().saturating_sub(1));
+        let byte = self.dac_frame.get(idx).copied().unwrap_or(self.dac_last);
         let s = (byte as i32 - 128) * DAC_SCALE;
         let ch6 = &self.channels[5];
         let l = if ch6.pan_l { s } else { 0 };
@@ -1341,8 +1364,8 @@ mod tests {
         fm.write(0, 0x2B, 0x80); // enable DAC (bit7)
         fm.write(1, 0xB6, 0xC0); // ch6 pan both so the PCM reaches L and R
 
-        fm.write(0, 0x2A, 0xC0); // 0xC0 - 128 = +64 → positive
-        fm.write(0, 0x2A, 0x40); // 0x40 - 128 = -64 → negative
+        fm.queue_dac(0, 0xC0); // 0xC0 - 128 = +64 → positive, placed at sample 0
+        fm.queue_dac(734, 0x40); // 0x40 - 128 = -64 → negative, placed at the last sample
 
         fm.begin_frame(735);
         let (l0, r0) = fm.next_sample();
@@ -1371,8 +1394,8 @@ mod tests {
     #[test]
     fn dac_disabled_ignores_2a() {
         let mut fm = Ym2612Synth::new(44_100);
-        fm.write(0, 0x2A, 0xFF);
-        fm.write(0, 0x2A, 0x00);
+        fm.queue_dac(0, 0xFF);
+        fm.queue_dac(1, 0x00);
         fm.write(1, 0xB6, 0xC0);
         let mut peak = 0i32;
         for _ in 0..735 {
@@ -1383,43 +1406,43 @@ mod tests {
         assert_eq!(peak, 0, "DAC disabled → $2A writes must produce no output");
     }
 
-    /// SY-3a: even-spread ZOH covers every output sample of the frame. N bytes spread across 735 samples →
-    /// the first sample is byte 0, the last is byte N-1, and every sample maps to a valid in-range byte.
+    /// SY-4b: true sub-frame placement + ZOH. Bytes queued at explicit sample indices land at exactly those
+    /// samples, and each is held forward until the next byte's sample (zero-order hold), with the final byte
+    /// held to the frame's end.
     #[test]
-    fn dac_zoh_even_spread_covers_frame() {
+    fn dac_zoh_true_placement_holds_between_writes() {
         let mut fm = Ym2612Synth::new(44_100);
         fm.write(0, 0x2B, 0x80);
         fm.write(1, 0xB6, 0xC0);
-        let bytes: [u8; 5] = [0x90, 0xA0, 0xB0, 0xC0, 0xD0];
-        for &b in &bytes {
-            fm.write(0, 0x2A, b);
-        }
+        // Place three bytes at known sub-frame samples (deliberately not even-spread).
+        fm.queue_dac(0, 0x90);
+        fm.queue_dac(100, 0xA0);
+        fm.queue_dac(400, 0xC0);
         fm.begin_frame(735);
 
-        let mut seen = [false; 5];
         let mut samples = Vec::with_capacity(735);
         for _ in 0..735 {
             samples.push(fm.next_sample().0);
         }
-        assert_eq!(samples[0], (bytes[0] as i32 - 128) * DAC_SCALE);
-        assert_eq!(samples[734], (bytes[4] as i32 - 128) * DAC_SCALE);
-        for &s in &samples {
-            let mut matched = false;
-            for (i, &b) in bytes.iter().enumerate() {
-                if s == (b as i32 - 128) * DAC_SCALE {
-                    seen[i] = true;
-                    matched = true;
-                }
-            }
-            assert!(
-                matched,
-                "ZOH sample {s} is not one of the programmed DAC bytes"
-            );
-        }
-        assert!(
-            seen.iter().all(|&b| b),
-            "even spread must cover every byte: {seen:?}"
+        let sc = |b: u8| (b as i32 - 128) * DAC_SCALE;
+        assert_eq!(samples[0], sc(0x90), "first byte lands at its sample 0");
+        assert_eq!(samples[99], sc(0x90), "ZOH holds 0x90 up to the next write");
+        assert_eq!(
+            samples[100],
+            sc(0xA0),
+            "true placement: 0xA0 lands at sample 100"
         );
+        assert_eq!(
+            samples[399],
+            sc(0xA0),
+            "ZOH holds 0xA0 up to the next write"
+        );
+        assert_eq!(
+            samples[400],
+            sc(0xC0),
+            "true placement: 0xC0 lands at sample 400"
+        );
+        assert_eq!(samples[734], sc(0xC0), "final byte holds to the frame end");
     }
 
     /// SY-3a: an empty ($2A-less) DAC frame holds the last written value (ZOH across frames), and toggling
@@ -1429,7 +1452,7 @@ mod tests {
         let mut fm = Ym2612Synth::new(44_100);
         fm.write(1, 0xB6, 0xC0);
         fm.write(0, 0x2B, 0x80); // enable
-        fm.write(0, 0x2A, 0xE0); // last value 0xE0 → +96
+        fm.queue_dac(0, 0xE0); // last value 0xE0 → +96
         fm.begin_frame(735);
         let _ = fm.next_sample();
 

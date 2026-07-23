@@ -16,6 +16,8 @@
 use crate::bus::{BusEvent, BusEventSink, BusOp};
 use crate::synth::sn76489::Sn76489;
 use crate::synth::ym2612_synth::Ym2612Synth;
+use crate::system::MCLK_PER_FRAME;
+use std::collections::BTreeMap;
 
 /// The canonical output sample rate for SY-1 (Hz).
 pub const DEFAULT_SAMPLE_RATE: u32 = 44_100;
@@ -37,6 +39,15 @@ pub struct AudioSink {
     out: Vec<i16>,
     /// The last frame index seen on a step boundary; `None` until the first boundary.
     last_frame: Option<u64>,
+    /// Current (in-progress) frame index — the frame an untimed [`Self::on_event`] write is attributed to.
+    /// Tracks the most recent boundary frame.
+    cur_frame: u64,
+    /// Per-frame write buckets: `frame → (intra-frame sample, write)`. [`Self::on_event_at`] buckets each
+    /// write by its OWN derived frame (overshoot-safe): a Z80 write a few ticks past a boundary carries
+    /// frame `f+1` and waits in bucket `f+1` until that frame renders, rather than landing in the frame
+    /// currently being flushed. [`Self::on_step_boundary`] drains every bucket `< frame`, so the map holds
+    /// only 1-2 open frames.
+    pending: BTreeMap<u64, Vec<(u32, BusEvent)>>,
 }
 
 impl AudioSink {
@@ -50,6 +61,8 @@ impl AudioSink {
             fm_addr_latch: [0; 2],
             out: Vec::new(),
             last_frame: None,
+            cur_frame: 0,
+            pending: BTreeMap::new(),
         }
     }
 
@@ -74,13 +87,85 @@ impl AudioSink {
         self.out.len() / 2
     }
 
-    /// Render one NTSC video frame worth of audio (`samples_per_frame` stereo samples) from the current
-    /// chip state, appending to the output buffer.
-    fn render_frame(&mut self) {
-        // Snapshot this frame's queued DAC ($2A) bytes for even-spread ZOH playback across the frame's
-        // samples (SY-3a). Called once per frame, before the per-sample loop.
-        self.fm.begin_frame(self.samples_per_frame);
-        for _ in 0..self.samples_per_frame {
+    /// Turn an absolute master-clock into a `(frame, intra-frame sample)` pair (design §3.2). Integer math
+    /// from the write's own mclk — the derived `frame` agrees with the run loop's boundary stamp
+    /// (`scheduler.now() / MCLK_PER_FRAME`) by construction. The top-boundary clamp mirrors the DAC clamp.
+    fn frame_and_sample(&self, mclk: u64) -> (u64, u32) {
+        let frame = mclk / MCLK_PER_FRAME;
+        let sample = ((mclk % MCLK_PER_FRAME) * self.samples_per_frame as u64 / MCLK_PER_FRAME)
+            .min(self.samples_per_frame as u64 - 1) as u32;
+        (frame, sample)
+    }
+
+    /// Enqueue a write into its frame's bucket at its intra-frame sample. Non-writes are dropped (only the
+    /// chip-write stream is synthesized). Keyed by the write's OWN `frame`, so overshoot writes wait for the
+    /// correct frame's render (design §3.3).
+    fn enqueue(&mut self, frame: u64, sample: u32, e: BusEvent) {
+        if e.op != BusOp::Write {
+            return;
+        }
+        self.pending.entry(frame).or_default().push((sample, e));
+    }
+
+    /// Apply one write's register effect to the live chip state — the classification formerly in `on_event`,
+    /// now invoked at the write's intra-frame sample from [`Self::render_frame`]. `$2A` DAC data is the one
+    /// exception: it is placed at its true sample by [`Ym2612Synth::begin_frame`]'s ZOH track (queued in the
+    /// render pre-pass), so it is skipped here.
+    fn apply_write(&mut self, e: BusEvent) {
+        let value = e.value as u8;
+        // Classify on `addr` alone (fc-agnostic), exactly as the VgmLogger does — same source of truth.
+        match e.addr {
+            // SN76489 PSG (Z80 window $7F11, 68k window $C00011): one self-describing byte.
+            0x7F11 | 0xC0_0011 => self.psg.write(value),
+            // YM2612 FM, latch-then-data per bank (Z80 $4000-$4003 / 68k $A04000-$A04003). Even ports latch
+            // the register number; odd ports complete a `(bank, reg, value)` write into the FM synth.
+            0x4000 | 0xA0_4000 => self.fm_addr_latch[0] = value,
+            0x4001 | 0xA0_4001 => {
+                let reg = self.fm_addr_latch[0];
+                // $2A DAC data is placed at its true sample via begin_frame's ZOH track, not applied here.
+                if reg != 0x2A {
+                    self.fm.write(0, reg, value);
+                }
+            }
+            0x4002 | 0xA0_4002 => self.fm_addr_latch[1] = value,
+            0x4003 | 0xA0_4003 => self.fm.write(1, self.fm_addr_latch[1], value),
+            _ => {}
+        }
+    }
+
+    /// Render one NTSC video frame worth of audio (`samples_per_frame` stereo samples), consuming `frame`'s
+    /// write bucket. Instead of applying every write at the frame boundary (SY-3), the writes are walked in
+    /// `sample` order and each one's register effect fires as the per-sample loop reaches its sample.
+    fn render_frame(&mut self, frame: u64) {
+        let spf = self.samples_per_frame;
+        let mut bucket = self.pending.remove(&frame).unwrap_or_default();
+        // Writes arrive mostly-sorted (monotone mclk); a stable sort by sample makes the per-sample walk
+        // exact regardless of any cross-master (68k/Z80) interleaving within the frame.
+        bucket.sort_by_key(|&(sample, _)| sample);
+
+        // Pre-pass: extract this frame's DAC ($2A) data writes with their true intra-frame sample and queue
+        // them as (sample, byte) pairs. The register latch is replayed on a scratch copy (the real latch is
+        // advanced only in the apply loop below) so we know which odd-port data writes carry DAC data.
+        let mut latch = self.fm_addr_latch;
+        for &(sample, e) in &bucket {
+            let v = e.value as u8;
+            match e.addr {
+                0x4000 | 0xA0_4000 => latch[0] = v,
+                0x4002 | 0xA0_4002 => latch[1] = v,
+                0x4001 | 0xA0_4001 if latch[0] == 0x2A => self.fm.queue_dac(sample, v),
+                _ => {}
+            }
+        }
+        // Snapshot the DAC ZOH track for this frame from the queued pairs (SY-4b true placement).
+        self.fm.begin_frame(spf);
+
+        let mut wi = 0usize;
+        for i in 0..spf {
+            // Apply every write scheduled at or before this sample, then generate the sample.
+            while wi < bucket.len() && bucket[wi].0 <= i {
+                self.apply_write(bucket[wi].1);
+                wi += 1;
+            }
             // PSG is mono on the Genesis → the same value feeds both output channels.
             let psg = self.psg.next_sample() as i32;
             // FM carries its own stereo pan.
@@ -90,51 +175,61 @@ impl AudioSink {
             self.out.push(l);
             self.out.push(r);
         }
+        // The sample clamp guarantees every write has `sample < spf`, so all were applied above; drain any
+        // residual defensively so no write is silently lost.
+        while wi < bucket.len() {
+            self.apply_write(bucket[wi].1);
+            wi += 1;
+        }
     }
 
     /// Flush the final in-progress frame after a run completes.
     ///
-    /// Rendering happens *at* frame boundaries, so the writes applied during the last frame of a run are
+    /// Rendering happens *at* frame boundaries, so the writes bucketed during the last frame of a run are
     /// not otherwise rendered (no boundary follows them). The `synth_render` example calls this once so an
     /// N-frame run yields ~N frames of audio.
     pub fn finish(&mut self) {
-        if self.last_frame.is_some() {
-            self.render_frame();
+        if let Some(frame) = self.last_frame {
+            self.render_frame(frame);
         }
     }
 }
 
 impl BusEventSink for AudioSink {
-    fn on_step_boundary(&mut self, _pc: u32, frame: u64) {
-        match self.last_frame {
-            None => self.last_frame = Some(frame),
-            Some(prev) if frame > prev => {
-                // One or more video frames elapsed; the just-ended frame's writes are all applied, so
-                // render it (and any wholly-silent frames skipped over) at the current chip state.
-                for _ in prev..frame {
-                    self.render_frame();
-                }
-                self.last_frame = Some(frame);
-            }
-            _ => {}
-        }
-    }
-
-    fn on_event(&mut self, e: BusEvent) {
+    /// The timestamped path the real 68k/Z80 buses call (SY-4b). Derive the write's frame + intra-frame
+    /// sample from its absolute mclk and bucket it by its OWN frame — the writes are applied at their true
+    /// sample when that frame renders, not batched at the boundary.
+    fn on_event_at(&mut self, e: BusEvent, mclk: u64) {
         if e.op != BusOp::Write {
             return;
         }
-        let value = e.value as u8;
-        // Classify on `addr` alone (fc-agnostic), exactly as the VgmLogger does — same source of truth.
-        match e.addr {
-            // SN76489 PSG (Z80 window $7F11, 68k window $C00011): one self-describing byte.
-            0x7F11 | 0xC0_0011 => self.psg.write(value),
-            // YM2612 FM, latch-then-data per bank (Z80 $4000-$4003 / 68k $A04000-$A04003). Even ports latch
-            // the register number; odd ports complete a `(bank, reg, value)` write into the FM synth.
-            0x4000 | 0xA0_4000 => self.fm_addr_latch[0] = value,
-            0x4001 | 0xA0_4001 => self.fm.write(0, self.fm_addr_latch[0], value),
-            0x4002 | 0xA0_4002 => self.fm_addr_latch[1] = value,
-            0x4003 | 0xA0_4003 => self.fm.write(1, self.fm_addr_latch[1], value),
+        let (frame, sample) = self.frame_and_sample(mclk);
+        self.enqueue(frame, sample, e);
+    }
+
+    /// Untimed fallback for direct callers with no timestamp (e.g. unit tests). Attributes the write to the
+    /// current frame at sample 0 — behaviorally the SY-3 frame-batched semantics. Real runs go through
+    /// [`Self::on_event_at`] and never hit this.
+    fn on_event(&mut self, e: BusEvent) {
+        self.enqueue(self.cur_frame, 0, e);
+    }
+
+    fn on_step_boundary(&mut self, _pc: u32, frame: u64) {
+        match self.last_frame {
+            None => {
+                self.last_frame = Some(frame);
+                self.cur_frame = frame;
+            }
+            Some(prev) if frame > prev => {
+                // One or more video frames elapsed; render every frame strictly before the new one,
+                // consuming each frame's write bucket at its true sub-frame timing. Buckets for the new
+                // (not-yet-reached) frame stay queued.
+                for f in prev..frame {
+                    self.render_frame(f);
+                }
+                self.last_frame = Some(frame);
+                self.cur_frame = frame;
+            }
             _ => {}
         }
     }
@@ -224,6 +319,81 @@ mod tests {
             pcm.iter().any(|&s| s != 0),
             "an FM carrier was keyed on but the frame was silent"
         );
+    }
+
+    /// SY-4b Test 1: absolute mclk → `(frame, intra-frame sample)`. Pins the boundaries, a hand-computed
+    /// mid-frame value, the frame-index carry, and the top-of-frame clamp.
+    #[test]
+    fn mclk_maps_to_frame_and_sample() {
+        let sink = AudioSink::new(44_100);
+        assert_eq!(sink.samples_per_frame, 735);
+        // Frame boundaries: offset 0 → sample 0 of that frame.
+        assert_eq!(sink.frame_and_sample(0), (0, 0));
+        assert_eq!(sink.frame_and_sample(MCLK_PER_FRAME), (1, 0));
+        // Just under the next boundary → the last sample of frame 0 (734), and the clamp holds it there.
+        let (tf, ts) = sink.frame_and_sample(MCLK_PER_FRAME - 1);
+        assert_eq!(tf, 0);
+        assert_eq!(ts, 734, "top of frame clamps to samples_per_frame - 1");
+        // Hand-computed mid-frame value: offset * 735 / 896_040.
+        let mid = MCLK_PER_FRAME / 2; // 448_020
+        assert_eq!(
+            sink.frame_and_sample(mid),
+            (0, (mid * 735 / MCLK_PER_FRAME) as u32)
+        );
+        // Frame-2 offset carries the frame index with the same intra-frame math.
+        let m = 2 * MCLK_PER_FRAME + 12_345;
+        assert_eq!(
+            sink.frame_and_sample(m),
+            (2, (12_345u64 * 735 / MCLK_PER_FRAME) as u32)
+        );
+    }
+
+    /// SY-4b Test 2 (overshoot): a write whose mclk is a few ticks past the frame-1 boundary carries frame 1
+    /// and must render in frame 1, NOT in frame 0 while frame 0 is being flushed (design §3.3).
+    #[test]
+    fn overshoot_write_renders_in_its_own_frame() {
+        let mut sink = AudioSink::new(44_100);
+        sink.on_step_boundary(0, 0); // rendering position: frame 0
+                                     // A Z80-style write just past the frame-1 boundary → derived frame 1, sample 0.
+        let mclk = MCLK_PER_FRAME + 50;
+        sink.on_event_at(write_event(0x7F11, 0x8E), mclk);
+        sink.on_event_at(write_event(0x7F11, 0x0F), mclk);
+        sink.on_event_at(write_event(0xC0_0011, 0x90), mclk);
+
+        // Flush frame 0: the overshoot write is bucketed for frame 1, so frame 0 stays silent.
+        sink.on_step_boundary(0, 1);
+        assert_eq!(sink.samples().len(), 1470);
+        assert!(
+            sink.samples().iter().all(|&s| s == 0),
+            "an overshoot write bucketed for frame 1 must not sound in the frame being flushed"
+        );
+        let after_f0 = sink.samples().len();
+
+        // Flush frame 1: now the write renders.
+        sink.on_step_boundary(0, 2);
+        assert!(
+            sink.samples()[after_f0..].iter().any(|&s| s != 0),
+            "the overshoot write must render in frame 1, its own derived frame"
+        );
+    }
+
+    /// SY-4b Test 3: non-decreasing mclk within a frame yields non-decreasing intra-frame sample indices.
+    #[test]
+    fn monotonic_mclk_yields_monotonic_sample() {
+        let sink = AudioSink::new(44_100);
+        let base = 3 * MCLK_PER_FRAME; // frame 3
+        let step = MCLK_PER_FRAME / 735; // ~1219 mclk ≈ one output sample
+        let mut prev = 0u32;
+        for k in 0..735u64 {
+            let (frame, sample) = sink.frame_and_sample(base + k * step);
+            assert_eq!(frame, 3, "the swept mclk stays within frame 3");
+            assert!(
+                sample >= prev,
+                "non-decreasing mclk must give non-decreasing sample ({sample} < {prev})"
+            );
+            prev = sample;
+        }
+        assert!(prev > 0, "the sample index must advance across the frame");
     }
 
     /// `drain` returns the buffer and clears it.
