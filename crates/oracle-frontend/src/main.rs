@@ -44,6 +44,9 @@
 #[cfg(feature = "audio")]
 mod audio;
 
+// Slice S2 — `.srm` battery-save persistence (frontend-only file I/O around the core's SRAM buffer).
+mod sram_file;
+
 use minifb::{Key, KeyRepeat, MouseButton, MouseMode, ScaleMode, Window, WindowOptions};
 use oracle_core::io::Pad;
 use oracle_core::system::System;
@@ -329,6 +332,28 @@ fn main() {
 
     let mut sys = System::new(0x5EED);
     sys.load_rom(rom);
+
+    // Slice S2 — battery-save persistence. Only carts that declared SRAM ("RA" header) get a `.srm`; a
+    // pure-ROM cart (e.g. s4.soundtest.bin) touches no file and behaves exactly as before. Load the saved
+    // image (if any) before reset — a soft reset preserves SRAM contents (S1), so ordering is free.
+    let srm_path = sram_file::srm_path_for(std::path::Path::new(&args.rom_path));
+    if sys.sram_present() {
+        if let Some(bytes) = sram_file::load_srm(&srm_path) {
+            sys.load_sram(&bytes);
+            println!(
+                "SRAM: loaded {} bytes from {}",
+                bytes.len(),
+                srm_path.display()
+            );
+        } else {
+            println!(
+                "SRAM: present ({} bytes), no save yet at {}",
+                sys.sram().len(),
+                srm_path.display()
+            );
+        }
+    }
+
     sys.reset();
 
     // Fixed window sized for the widest mode (H40) at the requested integer scale; minifb scales the
@@ -364,6 +389,11 @@ fn main() {
     let mut buf: Vec<u32> = Vec::with_capacity(MAX_WIDTH * HEIGHT);
     let mut paused = false;
     let mut frame: u64 = 0;
+
+    // Slice S2 autosave throttle: when the guest has dirtied SRAM, wait this many frames of quiescence before
+    // writing the `.srm`, so a burst of saves coalesces into one file write (~2 s at 60 fps).
+    const SRAM_AUTOSAVE_DEBOUNCE_FRAMES: u32 = 120;
+    let mut sram_save_countdown: Option<u32> = None;
 
     // The pixel-attribution watch — a *caller-owned* sink (the core never stores it, keeping this slice
     // zero-diff on oracle-core). `watch_armed` mirrors "a VDP watch is registered" so the run loop can stay on
@@ -471,6 +501,33 @@ fn main() {
             frame += 1;
         }
 
+        // Slice S2 autosave: when the guest has dirtied SRAM, arm a debounce countdown and flush the `.srm`
+        // once it elapses (coalescing a burst of saves into one write). Guarded on `sram_present` so pure-ROM
+        // carts never touch the disk. A save failure is logged, not fatal.
+        if sys.sram_present() {
+            if sys.sram_dirty() && sram_save_countdown.is_none() {
+                sram_save_countdown = Some(SRAM_AUTOSAVE_DEBOUNCE_FRAMES);
+            }
+            if let Some(n) = sram_save_countdown {
+                if n == 0 {
+                    match sram_file::save_srm(&srm_path, sys.sram()) {
+                        Ok(()) => {
+                            sys.clear_sram_dirty();
+                            println!(
+                                "SRAM: saved {} bytes to {}",
+                                sys.sram().len(),
+                                srm_path.display()
+                            );
+                        }
+                        Err(e) => eprintln!("SRAM: save failed ({}): {e}", srm_path.display()),
+                    }
+                    sram_save_countdown = None;
+                } else {
+                    sram_save_countdown = Some(n - 1);
+                }
+            }
+        }
+
         // Native-resolution frame (width re-queried in case the game switched H32↔H40); window upscales it.
         let width = render_into(&sys, &mut buf);
         // Optional debug marker: a contrasting crosshair at the watched pixel so the live driver can confirm
@@ -497,6 +554,19 @@ fn main() {
     #[cfg(feature = "audio")]
     if let Some(a) = audio.as_mut() {
         a.sink.finish();
+    }
+
+    // Slice S2 — final save on quit: persist any SRAM the guest dirtied since the last autosave (or that a
+    // pending debounce never reached), so a save made just before closing the window is never lost.
+    if sys.sram_present() && (sys.sram_dirty() || sram_save_countdown.is_some()) {
+        match sram_file::save_srm(&srm_path, sys.sram()) {
+            Ok(()) => println!(
+                "SRAM: saved {} bytes to {} on quit",
+                sys.sram().len(),
+                srm_path.display()
+            ),
+            Err(e) => eprintln!("SRAM: final save failed ({}): {e}", srm_path.display()),
+        }
     }
 }
 

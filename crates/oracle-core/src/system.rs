@@ -352,6 +352,43 @@ impl System {
         &self.rom
     }
 
+    /// The live battery-backed SRAM bytes, for the frontend to persist to a `.srm` file (S2). Empty when this
+    /// cart has no SRAM (`!sram_present`). These bytes are the chip's byte lane only — the odd/even bus parity
+    /// is a mapping concern handled inside [`load_rom`](Self::load_rom)/the bus, invisible to the file image.
+    pub fn sram(&self) -> &[u8] {
+        &self.sram
+    }
+
+    /// Whether this cartridge declared parallel SRAM (a valid "RA" header). The frontend gates all `.srm`
+    /// load/save on this so a pure-ROM cart (no SRAM) produces no file and no behaviour change.
+    pub fn sram_present(&self) -> bool {
+        self.sram_present
+    }
+
+    /// Copy a `.srm` file image into the SRAM buffer on boot (S2). Copies `min(bytes.len(), buffer.len())`
+    /// bytes: a too-long file is truncated to the chip size, a too-short file leaves the remaining buffer bytes
+    /// untouched (they start zeroed from [`load_rom`](Self::load_rom)). No-op when `!sram_present`. Loading a
+    /// saved image is **not** a guest write, so `sram_dirty` is deliberately left unchanged.
+    pub fn load_sram(&mut self, bytes: &[u8]) {
+        if !self.sram_present {
+            return;
+        }
+        let n = bytes.len().min(self.sram.len());
+        self.sram[..n].copy_from_slice(&bytes[..n]);
+    }
+
+    /// Whether the guest has written SRAM since the last [`clear_sram_dirty`](Self::clear_sram_dirty) (the
+    /// persistence throttle: the frontend polls this, writes the `.srm`, then clears it). Always `false` for a
+    /// cart with no SRAM.
+    pub fn sram_dirty(&self) -> bool {
+        self.sram_dirty
+    }
+
+    /// Clear the SRAM dirty flag after the frontend has persisted the buffer to disk (S2).
+    pub fn clear_sram_dirty(&mut self) {
+        self.sram_dirty = false;
+    }
+
     /// Inject 3-button pad state (Player 1 = port 0, Player 2 = port 1). Deterministic injected state — the
     /// core has no host-input path; tests, the future frontend, and the title-screen run all drive input
     /// through here. The next Data-register read the guest performs reflects it (recon IO4).
@@ -1132,6 +1169,55 @@ mod tests {
         assert!(parse_sram_header(&rom_with_sram(0x10_0000, 0x10_FFFF, false)).is_none());
         // Too short to hold the header (magic would be past the end).
         assert!(parse_sram_header(&vec![0u8; 0x100]).is_none());
+    }
+
+    #[test]
+    fn load_sram_truncates_and_zero_pads_and_leaves_dirty_untouched() {
+        let mut s = System::new(0x5A);
+        s.load_rom(rom_with_sram(0x20_0001, 0x20_3FFF, true)); // 0x2000-byte chip
+        assert_eq!(s.sram().len(), 0x2000);
+        assert!(!s.sram_dirty(), "fresh cart is clean");
+
+        // A too-short image copies its bytes and leaves the rest zeroed; loading is not a guest write.
+        s.load_sram(&[0x11, 0x22, 0x33]);
+        assert_eq!(&s.sram()[..3], &[0x11, 0x22, 0x33]);
+        assert!(s.sram()[3..].iter().all(|&b| b == 0), "tail stays zero");
+        assert!(
+            !s.sram_dirty(),
+            "load_sram is not a guest write → not dirty"
+        );
+
+        // A too-long image is truncated to the chip size (no panic, extra bytes discarded).
+        let big = vec![0xAAu8; 0x2000 + 16];
+        s.load_sram(&big);
+        assert_eq!(s.sram().len(), 0x2000);
+        assert!(
+            s.sram().iter().all(|&b| b == 0xAA),
+            "chip filled, no overrun"
+        );
+        assert!(!s.sram_dirty());
+    }
+
+    #[test]
+    fn sram_dirty_flag_round_trips_via_public_api() {
+        let mut s = System::new(0x5A);
+        s.load_rom(rom_with_sram(0x20_0001, 0x20_3FFF, true));
+        s.sram_dirty = true; // simulate a guest write having dirtied it
+        assert!(s.sram_dirty());
+        s.clear_sram_dirty();
+        assert!(!s.sram_dirty(), "clear_sram_dirty resets the throttle flag");
+    }
+
+    #[test]
+    fn sram_accessors_are_no_ops_without_sram() {
+        let mut s = System::new(0x5A);
+        s.load_rom(crate::testrom::build()); // no RA header → no SRAM
+        assert!(!s.sram_present(), "pure-ROM cart has no SRAM");
+        assert!(s.sram().is_empty(), "no buffer to persist");
+        // load_sram is a no-op; nothing to copy into, dirty stays clear.
+        s.load_sram(&[1, 2, 3, 4]);
+        assert!(s.sram().is_empty());
+        assert!(!s.sram_dirty());
     }
 
     #[test]
