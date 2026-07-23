@@ -410,14 +410,52 @@ impl Z80 {
     /// the undocumented opcodes (the `ED` holes/mirrors, the `IXH`/`IXL` half-register forms, and the
     /// `DDCB`/`FDCB` register-copy variants) remain for the ZEXALL slice.
     pub fn step<B: Z80Io>(&mut self, bus: &mut B) -> u32 {
+        // Maskable interrupt acceptance (ZC14), sampled at the instruction boundary. Taken only when the /INT
+        // line is asserted AND interrupts are enabled (IFF1). Acceptance also wakes a HALT. A masked request
+        // (IFF1 = 0) is ignored — HALT then continues idling. The Genesis has no Z80 NMI source (Plutiedev).
+        if self.int_pending && self.iff1 {
+            return self.accept_interrupt(bus);
+        }
         if self.halted {
-            // HALT idle: the CPU runs internal NOPs (refresh continues) until an interrupt/reset clears
-            // `halted` (interrupt acceptance is a later slice). Not exercised by SST (no halted-initial case).
+            // HALT idle: the CPU runs internal NOPs (refresh continues) until an accepted interrupt clears
+            // `halted`. Not exercised by SST (no halted-initial case).
             self.inc_r();
             return 4;
         }
         let opcode = self.next_opcode(bus);
         self.execute(opcode, bus)
+    }
+
+    /// Accept a maskable interrupt (ZC14): clear IFF1/IFF2, un-halt, push PC, and vector per interrupt mode.
+    /// On the Genesis the data bus floats to `$FF` during the interrupt-acknowledge M1, so IM 0 sees `RST 38h`
+    /// (→ `$0038`, identical to IM 1) and IM 2 forms its vector as `(I << 8) | $FF`. Cost: 13 T-states for
+    /// IM 0/1, 19 for IM 2 (Z80 UM008 §"Interrupt Response"). `int_pending` is consumed (the acknowledged
+    /// request is cleared); a still-asserted line re-arms only when the driver `EI`s and the next VINT raises it.
+    fn accept_interrupt<B: Z80Io>(&mut self, bus: &mut B) -> u32 {
+        self.halted = false;
+        self.iff1 = false;
+        self.iff2 = false;
+        self.int_pending = false;
+        self.inc_r(); // the interrupt-acknowledge cycle is an M1 (refresh) cycle.
+        self.sp = self.sp.wrapping_sub(2);
+        self.write16(self.sp, self.pc, bus);
+        if self.im == 2 {
+            // IM 2: fetch the handler address from the vector table at (I << 8) | (floating bus = $FF).
+            let vector = ((self.i as u16) << 8) | 0x00FF;
+            self.pc = self.read16(vector, bus);
+            19
+        } else {
+            // IM 0 (floating bus $FF = RST 38h) and IM 1 both vector to $0038.
+            self.pc = 0x0038;
+            13
+        }
+    }
+
+    /// Set the maskable-interrupt (`/INT`) line level (ZC14). The Genesis VDP asserts this once per frame at
+    /// vblank; `System` raises it on the VInt event and clears it at the next frame start. The Z80 samples it
+    /// at each instruction boundary in [`Z80::step`].
+    pub fn set_int_line(&mut self, asserted: bool) {
+        self.int_pending = asserted;
     }
 
     /// The prefix-accumulating front end (ZC3b): `CB`/`ED` select an alternate table, `DD`/`FD` set an

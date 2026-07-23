@@ -513,11 +513,21 @@ impl System {
                     let off = self.vdp.vint_offset();
                     self.scheduler.schedule(deadline + off, EventKind::VInt);
                 }
+                // Deassert the Z80 `/INT` line at the top of a new frame (ZC14): the VDP pulses the Z80 vblank
+                // interrupt for the vblank period, so an un-accepted request does not linger across frames.
+                if line == 0 {
+                    self.z80.set_int_line(false);
+                }
                 self.scheduler
                     .schedule(deadline + MCLK_PER_LINE, EventKind::Scanline);
             }
             EventKind::HInt => self.vdp.raise_hint(),
-            EventKind::VInt => self.vdp.raise_vint(),
+            // VInt raises the 68000's vblank IPL *and* asserts the Z80's `/INT` line (ZC14): on the Genesis the
+            // same vblank drives both CPUs' vblank interrupts. The Z80 accepts it if its driver has run `EI`.
+            EventKind::VInt => {
+                self.vdp.raise_vint();
+                self.z80.set_int_line(true);
+            }
             EventKind::FrameEnd => {}
         }
         // Any delivered event may change the pending latches — re-derive the IPL the CPU sees (recon R12).
@@ -1061,6 +1071,39 @@ mod tests {
             s.z80_ram[0x1000], rom_byte,
             "the Z80 read ROM $000000 through the bank window (bank 0)"
         );
+    }
+
+    #[test]
+    fn z80_takes_the_vblank_interrupt_and_runs_its_im1_handler() {
+        // The Z-live interrupt path (ZC14): a released Z80 running with interrupts enabled idles in HALT until
+        // the VDP's vblank raises its `/INT` line, then vectors to the IM 1 handler at $0038 and runs it. This
+        // is the timing spine a real SMPS driver rides. Out-of-band (no committed fixture releases the Z80).
+        let mut s = booted(0x2E80);
+        // Main program at $0000: EI ; HALT — enable interrupts, then idle waiting for vblank.
+        s.z80_ram[0x0000] = 0xFB; // EI
+        s.z80_ram[0x0001] = 0x76; // HALT
+                                  // IM 1 handler at $0038: LD A,$99 ; LD ($1000),A ; HALT.
+        s.z80_ram[0x0038] = 0x3E; // LD A,n
+        s.z80_ram[0x0039] = 0x99;
+        s.z80_ram[0x003A] = 0x32; // LD (nn),A
+        s.z80_ram[0x003B] = 0x00;
+        s.z80_ram[0x003C] = 0x10;
+        s.z80_ram[0x003D] = 0x76; // HALT
+                                  // Force IM 1 (the Genesis BIOS/SMPS mode) via the public register-view constructor; the reset default
+                                  // IM 0 also vectors to $0038 here, but pin IM 1 so the test asserts the real path.
+        s.z80 = crate::z80::Z80::from_regs(&crate::z80::Z80Regs {
+            im: 1,
+            ..Default::default()
+        });
+        s.z80_running = true;
+        s.run_frames(1);
+        assert_eq!(
+            s.z80_ram[0x1000], 0x99,
+            "the IM 1 vblank handler ran and stored its sentinel"
+        );
+        let r = s.z80.regs();
+        assert!(!r.iff1, "interrupt acceptance cleared IFF1");
+        assert!(r.halted, "the handler's final HALT re-idled the Z80");
     }
 
     #[test]
