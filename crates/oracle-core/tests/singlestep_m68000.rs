@@ -1049,8 +1049,10 @@ fn mul_covered(opcode: u16) -> bool {
 /// An-direct (mode 1) is illegal/absent (DIVU has no `An` source). **NO deferral, NO parity filter** — the
 /// `(A7)` mode-2 source is COVERED (NOT deferred), odd word EAs are address errors the E3/E4 abort covers
 /// (`ea_src` faults on the odd word read), and the overflow + the 1 div0 (vector-5 trap) cases are IN scope.
-/// All 8065 cases per file in scope. Both DIVU (`0x80C0`, opmode 3) and DIVS (`0x81C0`, opmode 7) — classified
-/// by OPCODE — are admitted; the two files are disjoint and each 100% PURE / in scope (8065 each, 16130 total).
+/// All 8065 cases per file in scope BY OPCODE — but `covered()` carves out DIVU.json's sole div0 sample as a
+/// K3 WRONG-VALUE exclusion (its stacked PC is the instruction start where group-2 hardware stacks the next
+/// instruction; see the exclusion comment there), so DIVU runs 8064. Both DIVU (`0x80C0`, opmode 3) and DIVS
+/// (`0x81C0`, opmode 7) — classified by OPCODE — are admitted; the two files are disjoint and each 100% PURE.
 /// (DIVS truncates toward zero with the remainder taking the dividend's sign and has NO div0 sample, but the
 /// COVERAGE predicate is identical — same 11 modes, same overflow/address-error in-scope rules.)
 fn div_covered(opcode: u16) -> bool {
@@ -1599,6 +1601,25 @@ fn covered(opcode: u16, ini: &Value, fin: &Value) -> bool {
     // illegal/absent. Three outcomes: normal (variable bit-serial timing), overflow (Dn unchanged, only V/C
     // change — DIVU flat 10, DIVS flat 16|18), div0 (DIVU's 1 case — vector-5 6-byte frame; DIVS has none).
     // Classified by OPCODE.
+    // K3 — the ONE documented WRONG-VALUE exclusion in the DIV family: the sole vendored div0 sample
+    // (`80ef [DIVU (d16, A7), D0] 5745`) stacks the INSTRUCTION-START PC (`0xc00`) in the vector-5 frame.
+    // That value is wrong: zero divide is a GROUP-2 exception whose stacked PC is the NEXT instruction's
+    // address (`0xc04` here — instruction start + 2 × the recipe's Prefetch count). SST 68000 v1 is
+    // emulator-generated, not hardware-derived, and this single sample contradicts (a) M68000UM §6.2.4,
+    // (b) a BlastEm GDB-RSP hardware-model probe (5 cases / 3 addressing modes / DIVU+DIVS all stack
+    // next-instruction, with CHK/TRAP controls reproducing SST exactly), (c) the Oracle reference
+    // (Exodus fork) `DIVU.h`/`DIVS.h` — `SetPC(location + GetInstructionSize())` before `PushStackFrame` —
+    // and (d) the SST corpus's OWN internal consistency (TRAP 8065/8065 and TRAPV 4095/4095 stack +2, CHK
+    // 3989/3989 stacks exactly instruction-length; this lone DIVU sample is the only group-2 outlier).
+    // The sample's TIMING/bus stream (len 46, `[Prefetch, Read, n8, frame]`) remains trusted and pinned.
+    // Key: the DIVU `(d16,A7)` opcode + the 6-byte frame push (`fin.ssp == ini.ssp − 6`) — the ONLY 0x80ef
+    // case that traps to vector 5 (address errors push 14 bytes; non-trap cases push nothing). The runner
+    // asserts this isolates EXACTLY 1 case, and the corrected value is pinned by
+    // `divu_div0_stacks_next_instruction_pc_known_difference` below (everything except the stacked PC
+    // still matches the sample bit-for-bit).
+    if opcode == 0x80EF && u32f(fin, "ssp") == u32f(ini, "ssp").wrapping_sub(6) {
+        return false;
+    }
     if div_covered(opcode) {
         return true;
     }
@@ -2247,13 +2268,41 @@ fn add_sub_match_singlesteptests() {
                 "ASL.b must run EXACTLY 8063 covered cases (8065 - 2 corrupt)"
             );
         }
+        // K3 — the ONE documented WRONG-VALUE exclusion in the DIV family: DIVU.json's sole div0 sample
+        // stacks the instruction-start PC where hardware (group-2, M68000UM §6.2.4) stacks the NEXT
+        // instruction's address — see the exclusion comment in `covered()`. Independently re-count with the
+        // same precise key (opcode 0x80EF + the 6-byte vector-5 frame push) and ASSERT it removes EXACTLY 1
+        // (no broadening: the other 22 0x80ef cases — non-trap and address-error — MUST run) and that
+        // DIVU.json runs EXACTLY 8064 (8065 − 1). The corrected stacked PC (0xc04) is pinned by
+        // `divu_div0_stacks_next_instruction_pc_known_difference`.
+        if *fname == "DIVU.json" {
+            let wrong_pc_div0 = data
+                .iter()
+                .filter(|t| {
+                    t["initial"]["prefetch"][0].as_u64().unwrap() as u16 == 0x80EF
+                        && u32f(&t["final"], "ssp") == u32f(&t["initial"], "ssp").wrapping_sub(6)
+                })
+                .count();
+            assert_eq!(
+                wrong_pc_div0, 1,
+                "the K3 div0 exclusion must isolate EXACTLY 1 wrong-saved-PC sample (no broadening)"
+            );
+            assert_eq!(
+                file_ran, 8064,
+                "DIVU.json must run EXACTLY 8064 covered cases (8065 - 1 wrong-saved-PC div0 sample)"
+            );
+        }
         eprintln!("  {fname}: {file_ran} covered cases passed");
         ran += file_ran;
     }
 
     assert!(
-        ran >= 1_000_058,
-        "expected 1000058 covered cases — C6 un-skips EORI (`0000 1010 ss mmm rrr` = 0x0Axx, ss != 3), the \
+        ran >= 1_000_057,
+        "expected 1000057 covered cases — K3 (2026-08-02) excludes DIVU.json's sole div0 sample \
+         (`80ef`, a WRONG-VALUE entry: it stacks the instruction-start PC where hardware stacks the \
+         next-instruction PC — group-2, M68000UM §6.2.4; see the exclusion comment in `covered()`), \
+         1 case under the prior floor. \
+         Prior floor 1000058 — C6 un-skips EORI (`0000 1010 ss mmm rrr` = 0x0Axx, ss != 3), the \
          immediate-to-EA logical XOR hiding as a contaminant in the EOR.b/w/l files, admitting +2733 cases over \
          C5's 997325 (EOR.b 911 + EOR.w 908 + EOR.l 914). This is the FINAL `*I` commit: the SST suite now \
          covers 1000058 cases (every vendored case except the 2 corrupt ASL.b entries). EORI REUSES the SHARED \
@@ -9318,7 +9367,10 @@ fn muls_mem_quiescable_and_serializable_at_every_micro_op_boundary() {
 ///   refill (`[idle, prefetch]`), so the Alu returns the documented cost minus 4 and a memory source adds its
 ///   EA bus cost on top.
 /// - **div0** (`80ef`, the SOLE vendored sample, mode 5 `d16(A7)`, len 46): the vector-5 6-byte frame, pushed
-///   CCR `0b10000` (N=Z=V=C=0, X kept), saved PC `0xc00` (the live pc), `Dn` UNCHANGED.
+///   CCR `0b10000` (N=Z=V=C=0, X kept), `Dn` UNCHANGED. NOT anchored via `run_case` — the sample's stacked-PC
+///   VALUE (`0xc00`, the instruction start) is WRONG (K3: group-2 stacks the next-instruction `0xc04`; see
+///   the exclusion in `covered()`); it is pinned instead by
+///   `divu_div0_stacks_next_instruction_pc_known_difference` (everything except the stacked PC bit-for-bit).
 /// - **`(A7)` mode-2 source is COVERED** (NOT deferred); an odd `(An)` word EA is an address error the E3/E4
 ///   abort covers (the `8ad0` anchor — must PASS via the 14-byte vector-3 frame).
 #[test]
@@ -9334,7 +9386,8 @@ fn divu_anchors_match_singlesteptests() {
         ("DIVU.json", "8cfa [DIVU (d16, PC), D6] 340", 128), // d16(PC) source (+8 ea)
         ("DIVU.json", "8efc [DIVU #, D7] 6", 122), // #imm source (+4 ea, the idle BETWEEN the two refills)
         ("DIVU.json", "8ad0 [DIVU (A0), D5] 45", 50), // odd (A0) word EA → address error (E3/E4, must PASS)
-        ("DIVU.json", "80ef [DIVU (d16, A7), D0] 5745", 46), // div0 (vector-5 frame, pushed CCR 0b10000, pc 0xc00)
+                                                      // (The div0 sample `80ef … 5745` is NOT here: its stacked-PC value is wrong — K3. It is pinned by
+                                                      // `divu_div0_stacks_next_instruction_pc_known_difference` below instead of `run_case`.)
     ];
     let mut found = 0usize;
     for (fname, name, length) in anchors {
@@ -9392,7 +9445,126 @@ fn divu_anchors_match_singlesteptests() {
     }
     assert_eq!(found, anchors.len(), "all D0 DIVU anchors exercised");
     eprintln!(
-        "D0 DIVU anchors: {found} cases (mode-0 N=1 / low-vs-high-cycle timing / overflow N,Z,X-preserved+Dn-unchanged / (An) / (A7) m2 / d16(PC) / #imm / odd-EA address error / div0 vector-5 frame; quotient-low/remainder-high, only N/Z change normal, X preserved, length 76+2nk+4nr+ea via the swapped ALU-returns-cycles mechanism) passed both drivers"
+        "D0 DIVU anchors: {found} cases (mode-0 N=1 / low-vs-high-cycle timing / overflow N,Z,X-preserved+Dn-unchanged / (An) / (A7) m2 / d16(PC) / #imm / odd-EA address error; the div0 sample is the K3 known-difference test; quotient-low/remainder-high, only N/Z change normal, X preserved, length 76+2nk+4nr+ea via the swapped ALU-returns-cycles mechanism) passed both drivers"
+    );
+}
+
+/// K3 — the known-difference pin for DIVU.json's SOLE div0 sample (`80ef [DIVU (d16, A7), D0] 5745`), which
+/// `covered()` EXCLUDES from the bulk sweep because its stacked-PC VALUE is wrong: the sample stacks the
+/// instruction-start PC (`0xc00`), but zero divide is a GROUP-2 exception whose stacked PC is the NEXT
+/// instruction's address (`0xc04` = instruction start + 2 × the recipe's 2 Prefetches) — M68000UM §6.2.4,
+/// BlastEm GDB-RSP hardware-model probe (5 cases / 3 modes / DIVU+DIVS), Oracle `DIVU.h`/`DIVS.h`
+/// (`SetPC(location + GetInstructionSize())` before `PushStackFrame`), and SST's own TRAP/TRAPV/CHK internal
+/// consistency (all stack next-instruction; SST 68000 v1 is emulator-generated, and this lone sample is the
+/// outlier). This test keeps every OTHER bit of the sample load-bearing: both drivers must reproduce the
+/// sample's cycle count (46), final registers, final RAM and transaction stream EXACTLY — except the four
+/// stacked-PC bytes / the two PC-push write values, which must carry the CORRECTED `0xc04`. It also asserts
+/// the sample still stacks `0xc00`, so if a future SST revision fixes the sample this fails LOUDLY and the
+/// exclusion must be retired.
+#[test]
+fn divu_div0_stacks_next_instruction_pc_known_difference() {
+    let path = format!("{VENDOR_DIR}/DIVU.json");
+    if !Path::new(&path).exists() {
+        eprintln!("SKIP: {path} missing — run tools/fetch-tests.sh");
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
+    let case = data
+        .iter()
+        .find(|t| t["name"].as_str().unwrap() == "80ef [DIVU (d16, A7), D0] 5745")
+        .expect("the sole DIVU div0 sample present");
+    let ini = &case["initial"];
+    let fin = &case["final"];
+    let length = case["length"].as_u64().unwrap() as u32;
+    assert_eq!(length, 46, "the sample's TIMING stays trusted (len 46)");
+
+    // The corrected saved PC: instruction start + 2 words (`80ef` + the d16 extension) = next instruction.
+    let saved = u32f(ini, "pc").wrapping_add(4);
+    assert_eq!(saved, 0x0C04);
+    let sp = u32f(fin, "ssp"); // frame base: [SR @ sp, PC.hi @ sp+2, PC.lo @ sp+4]
+
+    // Amend the expected transaction stream: ONLY the two PC-push write VALUES change (PCH @ sp+2,
+    // PCL @ sp+4) — order, kinds, addresses, FCs and sizes are the sample's, bit-for-bit. Assert the
+    // sample's own PCL value is still the wrong 0xc00 first (retire this test if SST ever fixes it).
+    let mut expected = expected_transactions(case);
+    let mut amended = 0;
+    for tr in &mut expected {
+        if tr.kind == TxKind::Write && tr.addr == sp + 2 {
+            assert_eq!(tr.value, (u32f(ini, "pc") >> 16) as u16, "sample PCH");
+            tr.value = (saved >> 16) as u16;
+            amended += 1;
+        }
+        if tr.kind == TxKind::Write && tr.addr == sp + 4 {
+            assert_eq!(
+                tr.value,
+                u32f(ini, "pc") as u16,
+                "sample stacks 0xc00 (still wrong)"
+            );
+            tr.value = saved as u16;
+            amended += 1;
+        }
+    }
+    assert_eq!(amended, 2, "exactly the two PC-push writes are amended");
+
+    // Driver 1 — run-to-completion.
+    let mut cpu = Cpu68000::new(build_regs(ini));
+    let mut bus = build_bus(ini);
+    let cycles = cpu.run_instruction(&mut bus);
+    assert_eq!(cycles, length, "cycle count UNCHANGED (value-only fix)");
+    assert_eq!(
+        bus.log, expected,
+        "transaction stream (with the corrected PC values)"
+    );
+
+    // Final registers: identical to the sample (the fix changes no register — the final pc is the vector
+    // target and the frame push only moves ssp, both as sampled).
+    for i in 0..8 {
+        assert_eq!(cpu.regs.d[i], u32f(fin, &format!("d{i}")), "d{i}");
+    }
+    for i in 0..7 {
+        assert_eq!(cpu.regs.a[i], u32f(fin, &format!("a{i}")), "a{i}");
+    }
+    assert_eq!(cpu.regs.usp, u32f(fin, "usp"), "usp");
+    assert_eq!(cpu.regs.ssp, u32f(fin, "ssp"), "ssp");
+    assert_eq!(cpu.regs.pc, u32f(fin, "pc"), "pc (the vector target)");
+    assert_eq!(cpu.regs.sr, u32f(fin, "sr") as u16, "sr");
+
+    // Final RAM: identical to the sample EXCEPT the four stacked-PC bytes, which carry the corrected value.
+    let overrides = [
+        (sp + 2, (saved >> 24) as u8),
+        (sp + 3, (saved >> 16) as u8),
+        (sp + 4, (saved >> 8) as u8),
+        (sp + 5, saved as u8),
+    ];
+    for pair in fin["ram"].as_array().unwrap() {
+        let p = pair.as_array().unwrap();
+        let addr = p[0].as_u64().unwrap() as u32;
+        let sample = p[1].as_u64().unwrap() as u8;
+        let expect = overrides
+            .iter()
+            .find(|(a, _)| *a == addr)
+            .map(|(_, v)| *v)
+            .unwrap_or(sample);
+        assert_eq!(bus.peek(addr), expect, "ram[{addr:#x}]");
+    }
+
+    // Driver 2 — step-one-micro-op; must agree with driver 1 bit-for-bit.
+    let mut cpu_step = Cpu68000::new(build_regs(ini));
+    let mut bus_step = build_bus(ini);
+    cpu_step.start_instruction();
+    let cycles_step = loop {
+        if let Step::Done(c) = cpu_step.step_micro_op(&mut bus_step) {
+            break c;
+        }
+    };
+    assert_eq!(cycles_step, cycles, "step-driver cycle count");
+    assert_eq!(cpu_step.regs, cpu.regs, "step-driver final regs");
+    assert_eq!(bus_step.log, bus.log, "step-driver transactions");
+
+    eprintln!(
+        "K3 known-difference: the op=0x80ef div0 sample reproduced bit-for-bit EXCEPT the stacked PC, \
+         which carries the corrected next-instruction 0xc04 (group-2) instead of the sample's wrong 0xc00"
     );
 }
 

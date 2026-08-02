@@ -87,12 +87,18 @@ additive-only harness.
 *Why deferred:* wiring it up needs the `Vdp` borrow through the Z80 bus, which is a real architectural
 change to the split-borrow bus, not a one-liner.
 
-### K3 — div0 stacked PC — **UNDER ADJUDICATION, unresolved**
+### K3 — div0 stacked PC — **RESOLVED & FIXED (2026-08-02)**
 
-Recorded for completeness because it sits adjacent to the exception work `itest` exercises. The stacked PC
-for the divide-by-zero (vector 5) trap is **under adjudication**; this ledger deliberately asserts **neither**
-value. `m68k_illegal`'s single-bit red/green verdict cannot discriminate it, so no scorecard row depends on
-it. Do not "resolve" it from this document.
+Adjudicated and fixed: zero divide (vector 5) is a **group-2** exception, so the stacked PC is the
+**next instruction's address** (`instruction_pc + 2 × the recipe's Prefetch count`), not the instruction
+start our core previously stacked (pinned from the sole SST DIVU div0 sample — that sample is wrong;
+emulator-generated, contradicting M68000UM §6.2.4, a BlastEm GDB-RSP hardware probe, Oracle's
+`DIVU.h`/`DIVS.h`, and SST's own TRAP/TRAPV/CHK internal consistency). Fix in
+`crates/oracle-core/src/m68000/microop.rs` (both `Divu`/`Divs` div0 arms); the SST sample is a documented
+exclusion in `tests/singlestep_m68000.rs` (`covered()` + the
+`divu_div0_stacks_next_instruction_pc_known_difference` pin). Value-only — timing/bus stream unchanged; no
+scorecard row moved (`m68k_illegal`'s single-bit verdict cannot discriminate it, and no vendored ROM
+executes a div0 on its scored path — measured 0 hits across the whole scorecard run).
 
 ### K4 — no open-bus model (root cause of most `memtest_68k` mismatches)
 

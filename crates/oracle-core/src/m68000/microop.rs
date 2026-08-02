@@ -794,7 +794,8 @@ pub enum AluOp {
     /// - **div0** (`divisor == 0`): take the DIVIDE-BY-ZERO trap (vector 5, the standard 6-byte frame). The CCR
     ///   is set to **N=0, Z=0, V=0, C=0, X PRESERVED** BEFORE the frame captures the SR, then the in-flight
     ///   `MicroState` is rewritten into the vector-5 frame ([`install_div0_trap`](MicroState), mirroring CHK's
-    ///   vector-6 install). `Dn` UNCHANGED; saved PC = the live `regs.pc`. Returns 0 (the frame's leading idle +
+    ///   vector-6 install). `Dn` UNCHANGED; saved PC = the NEXT instruction's address (group-2, M68000UM
+    ///   §6.2.4) = instruction start + 2 × the recipe's `Prefetch` count. Returns 0 (the frame's leading idle +
     ///   bus ops count the cycles).
     /// - **overflow** (`q > 0xFFFF`, equiv `(dividend >> 16) >= divisor`): `Dn` UNCHANGED. CCR **V=1, C=0, N/Z/X
     ///   PRESERVED** (only V set, C cleared — NOT a partial-state N/Z). Returns the flat overflow idle.
@@ -815,8 +816,9 @@ pub enum AluOp {
     /// q·sds` (so the **remainder takes the DIVIDEND's sign**), and `Dn = ((r & 0xFFFF) << 16) | (q & 0xFFFF)`
     /// (quotient low 16, remainder high 16, [`Dest::DataReg`]). THREE outcomes, identical in shape to DIVU:
     /// - **div0** (`divisor == 0`): the SAME vector-5 divide-by-zero trap as DIVU (CCR N=Z=V=C=0/X kept set
-    ///   BEFORE the frame captures the SR, then [`install_div0_trap`](MicroState)). `Dn` UNCHANGED. (DIVS has NO
-    ///   div0 sample in the vendored data — implemented for correctness only, like the DBcc-expired path.)
+    ///   BEFORE the frame captures the SR, then [`install_div0_trap`](MicroState)); saved PC = the NEXT
+    ///   instruction's address (group-2), like DIVU. `Dn` UNCHANGED. (DIVS has NO div0 sample in the vendored
+    ///   data — pinned by M68000UM/BlastEm/Oracle, like the DBcc-expired path.)
     /// - **overflow** (`q` out of the signed-16 range — `q > 0x7FFF || q < -0x8000`, INCLUDING the
     ///   `0x8000_0000 / -1` case where `q = +0x8000_0000`): `Dn` UNCHANGED. CCR **V=1, C=0, N/Z/X PRESERVED**
     ///   (identical to DIVU's overflow rule — only V set, NOT a partial-state N/Z). Returns the flat overflow
@@ -942,7 +944,8 @@ fn divs_cycles(dividend: u32, divisor: u32) -> u32 {
 /// read and the frame push. Pinned to the SOLE vendored div0 sample (`op=0x80ef`, mode 5 `d16(A7)`, len 46):
 /// prefix `[Prefetch, Read]` = 8, then this `n8` + the 6-byte frame (writes 12 + vector 8 + reload 10 = 30) =
 /// 38, total 46. The detection idle is independent of the EA, so it is fixed (single-sample caveat documented
-/// in the runner, like the DBcc-expired path; DIVS has no div0 sample).
+/// in the runner, like the DBcc-expired path; DIVS has no div0 sample). Only the sample's TIMING/bus stream is
+/// trusted — its stacked-PC VALUE is wrong (K3; see the runner's documented exclusion) and is NOT pinned here.
 const DIV0_TRAP_IDLE: u8 = 8;
 
 /// The MOVE flag computation at `size`: copy the (size-truncated) value, set N=msb / Z=(value==0), clear
@@ -1530,11 +1533,14 @@ impl MicroState {
     /// fixed-size bincode (snapshot-safe across the trap). Returns 0 (the Alu micro-op costs no cycles — the
     /// frame's leading idle + bus ops count).
     ///
-    /// `saved_pc` is the stacked return PC — the **faulting instruction's own address** (the DIVU opcode), NOT
-    /// `regs.pc` (the leading prefetch(es) have already advanced it past the ext word(s)). The `Divu` arm
-    /// computes it by undoing those advances (`regs.pc - 2*prefetches_before_the_Alu`), pinned to the sole
-    /// div0 sample (saved PC `0xc00` = the instruction start). This DIFFERS from CHK (which runs its trap LAST,
-    /// after every prefetch, so its saved PC is the next-instruction `= regs.pc`).
+    /// `saved_pc` is the stacked return PC — the **NEXT instruction's address** (zero divide is a group-2
+    /// exception, M68000UM §6.2.4, the same convention as CHK/TRAP/TRAPV): `instruction_pc + 2 × (Prefetch
+    /// micro-ops in the recipe)`. The `Divu`/`Divs` arms compute it as `regs.pc + 2*prefetches_remaining`
+    /// (the Alu runs BEFORE the trailing refill, so the remaining prefetch count completes the advance).
+    /// The sole SST div0 sample stacks the instruction start (`0xc00`) instead — that sample is WRONG
+    /// (emulator-generated; overturned by BlastEm's hardware model, Oracle's `DIVU.h`/`DIVS.h`
+    /// `SetPC(location + GetInstructionSize())`, M68000UM §6.2.4, and SST's own TRAP/TRAPV/CHK internal
+    /// consistency) — see the documented exclusion in `tests/singlestep_m68000.rs`.
     fn install_div0_trap(&mut self, saved_pc: u32, idle: u8) -> u32 {
         use super::ea::RecipeBuf;
         use super::exception::{build_div0_frame, DIV0_SAVED_PC_SLOT};
@@ -1764,15 +1770,21 @@ impl MicroState {
                             // DIVIDE-BY-ZERO trap (vector 5). Set the CCR (N=0,Z=0,V=0,C=0, X preserved) BEFORE
                             // the frame's EnterException captures the live SR, then rewrite the in-flight
                             // MicroState into the vector-5 6-byte frame. Dn UNCHANGED. The stacked PC is the
-                            // FAULTING instruction's own address — undo the leading prefetch(es)' pc advance
-                            // (`regs.pc - 2*prefetches_done`), since the div0 trap saves the instruction start,
-                            // unlike CHK (which runs last and saves the next-instruction pc).
+                            // NEXT instruction's address (zero divide is a GROUP-2 exception, like CHK/TRAP/
+                            // TRAPV — M68000UM §6.2.4): `instruction_pc + 2 × (Prefetch micro-ops in the
+                            // recipe)`, the prefetch count being the instruction's word count. Derived here as
+                            // `regs.pc + 2*prefetches_remaining` (the Alu runs before the trailing refill, so
+                            // regs.pc has not yet advanced past the instruction). NOT the instruction start the
+                            // sole SST div0 sample stacks — that sample is WRONG (emulator-generated; overturned
+                            // by BlastEm/Oracle/M68000UM + SST's own TRAP/TRAPV/CHK internal consistency; see
+                            // the documented exclusion in tests/singlestep_m68000.rs).
                             regs.sr = (regs.sr & 0xFF00) | (regs.sr & CCR_X);
-                            let prefetches_done = self.ops[..self.step as usize]
-                                .iter()
-                                .filter(|o| matches!(o, MicroOp::Prefetch))
-                                .count() as u32;
-                            let saved_pc = regs.pc.wrapping_sub(2 * prefetches_done);
+                            let prefetches_remaining =
+                                self.ops[self.step as usize..self.len as usize]
+                                    .iter()
+                                    .filter(|o| matches!(o, MicroOp::Prefetch))
+                                    .count() as u32;
+                            let saved_pc = regs.pc.wrapping_add(2 * prefetches_remaining);
                             return self.install_div0_trap(saved_pc, DIV0_TRAP_IDLE);
                         }
                         if (dividend >> 16) >= divisor {
@@ -1818,15 +1830,17 @@ impl MicroState {
                         if divisor == 0 {
                             // DIVIDE-BY-ZERO trap (vector 5) — IDENTICAL to DIVU. CCR N=0,Z=0,V=0,C=0, X
                             // preserved BEFORE the frame captures the live SR, then rewrite into the vector-5
-                            // 6-byte frame. Dn UNCHANGED. Saved PC = the faulting instruction's own address
-                            // (undo the leading prefetch(es)' pc advance). (DIVS has NO div0 vendored sample —
-                            // implemented for correctness only.)
+                            // 6-byte frame. Dn UNCHANGED. Saved PC = the NEXT instruction's address (group-2,
+                            // M68000UM §6.2.4) = `instruction_pc + 2 × (Prefetch micro-ops in the recipe)`,
+                            // derived as `regs.pc + 2*prefetches_remaining` exactly like DIVU. (DIVS has NO
+                            // div0 vendored sample — pinned by BlastEm/Oracle/M68000UM, like the DIVU arm.)
                             regs.sr = (regs.sr & 0xFF00) | (regs.sr & CCR_X);
-                            let prefetches_done = self.ops[..self.step as usize]
-                                .iter()
-                                .filter(|o| matches!(o, MicroOp::Prefetch))
-                                .count() as u32;
-                            let saved_pc = regs.pc.wrapping_sub(2 * prefetches_done);
+                            let prefetches_remaining =
+                                self.ops[self.step as usize..self.len as usize]
+                                    .iter()
+                                    .filter(|o| matches!(o, MicroOp::Prefetch))
+                                    .count() as u32;
+                            let saved_pc = regs.pc.wrapping_add(2 * prefetches_remaining);
                             return self.install_div0_trap(saved_pc, DIV0_TRAP_IDLE);
                         }
                         let sdd = dividend as i32;

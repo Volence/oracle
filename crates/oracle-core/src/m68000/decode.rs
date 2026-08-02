@@ -15070,4 +15070,57 @@ mod tests {
             let _ = decode(&regs);
         }
     }
+
+    /// K3 — the divide-by-zero trap (vector 5) is a **group-2** exception: the stacked PC is the address
+    /// of the NEXT instruction, NOT the faulting instruction's start. The invariant is
+    /// `saved_pc = instruction_pc + 2 × (Prefetch micro-ops in the recipe)` — the prefetch count equals the
+    /// instruction's word count (opcode + extension words), so the offset is +2 for the 1-word `Dn` form and
+    /// +4 for the 2-word `#imm` / `d16(An)` forms. NOT a hardcoded +2. Pinned by M68000UM §6.2.4 (zero divide
+    /// is group 2, saved PC = next instruction), the BlastEm GDB-RSP hardware-model probe (5 cases / 3
+    /// addressing modes / DIVU+DIVS), Oracle's `DIVU.h`/`DIVS.h` (`SetPC(location + GetInstructionSize())`
+    /// before `PushStackFrame`), and the SST corpus's own internal consistency (TRAP/TRAPV stack +2, CHK
+    /// stacks instruction-length — the sole DIVU div0 sample is the outlier and is wrong; see the documented
+    /// exclusion in `tests/singlestep_m68000.rs`).
+    #[test]
+    fn div0_stacks_next_instruction_pc() {
+        // (opcode, prefetch[1], a1, expected stacked PC, label). pc = 0x0C00, ssp = 0x0800 throughout; the
+        // divisor is 0 in every case (D1 = 0 / #0 / a zeroed FlatBus word), so each takes the vector-5 trap.
+        let cases: &[(u16, u16, u32, u32, &str)] = &[
+            // DIVU D1,D0 — 1 word, 1 Prefetch → saved_pc = 0x0C00 + 2.
+            (0x80C1, 0x4E71, 0, 0x0C02, "DIVU D1,D0"),
+            // DIVU #0,D0 — 2 words (opcode + immediate), 2 Prefetches → saved_pc = 0x0C00 + 4.
+            (0x80FC, 0x0000, 0, 0x0C04, "DIVU #0,D0"),
+            // DIVS (d16,A1),D0 — 2 words (opcode + displacement), 2 Prefetches → saved_pc = 0x0C00 + 4.
+            // A1 = 0x3000, d16 = 0x0010 → divisor read at 0x3010 = 0x0000 on the zeroed FlatBus.
+            (0x81E9, 0x0010, 0x3000, 0x0C04, "DIVS (d16,A1),D0"),
+        ];
+        for &(opcode, ext, a1, expected_pc, label) in cases {
+            let mut regs = Registers {
+                d: [0; 8],
+                a: [0; 7],
+                usp: 0,
+                ssp: 0x0800,
+                pc: 0x0C00,
+                sr: 0x2700, // supervisor → the frame pushes on ssp
+                prefetch: [opcode, ext],
+            };
+            regs.d[0] = 0x0001_2345; // the dividend (never written back on div0)
+            regs.a[1] = a1;
+            let mut bus = FlatBus::new();
+            let mut cpu = Cpu68000::new(regs);
+            cpu.run_instruction(&mut bus);
+
+            // The 6-byte vector-5 frame: [SR.w @ sp, PC.hi @ sp+2, PC.lo @ sp+4], sp = 0x0800 - 6 = 0x07FA.
+            let stacked_pc = ((bus.peek(0x07FC) as u32) << 24)
+                | ((bus.peek(0x07FD) as u32) << 16)
+                | ((bus.peek(0x07FE) as u32) << 8)
+                | (bus.peek(0x07FF) as u32);
+            assert_eq!(
+                stacked_pc, expected_pc,
+                "{label}: div0 must stack the NEXT-instruction PC (group-2), \
+                 = instruction start + 2 × recipe Prefetch count"
+            );
+            assert_eq!(cpu.regs.d[0], 0x0001_2345, "{label}: Dn unchanged on div0");
+        }
+    }
 }

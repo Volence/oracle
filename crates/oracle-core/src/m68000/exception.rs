@@ -162,7 +162,8 @@ pub(crate) fn build_chk_frame(buf: &mut RecipeBuf, idle: u8) {
     vector_fetch_and_reload(buf, 6 * 4);
 }
 
-/// Scratch slot holding the DIVU/DIVS divide-by-zero exception's stacked return PC (the live `regs.pc`, seeded
+/// Scratch slot holding the DIVU/DIVS divide-by-zero exception's stacked return PC (the NEXT instruction's
+/// address — group-2, `instruction_pc + 2 × recipe-Prefetch-count` — seeded
 /// by [`install_div0_trap`](super::microop::MicroState)). Slot 0 — the standard-frame saved-PC convention
 /// (same as CHK/TRAP), consumed by the frame's `PCL`/`PCH` writes. For a memory divisor this aliases the
 /// operand-read slot, but the [`AluOp::Divu`](super::microop::AluOp::Divu) arm resolves the divisor BEFORE the
@@ -176,16 +177,18 @@ const DIV0_SAVE_SR_SLOT: Slot = 1;
 
 /// Build the standard **6-byte divide-by-zero frame** recipe (vector 5, `0x14`) — the Shape-B tail a
 /// divide-by-zero [`AluOp::Divu`](super::microop::AluOp::Divu) installs in place via
-/// [`install_div0_trap`](super::microop::MicroState). The vector-5 twin of [`build_chk_frame`] (vector 6),
-/// pinned to the sole vendored `op=0x80ef` div0 sample (mode 5 `d16(A7)`, leading idle `n8`, pushed CCR
-/// `0b10000`, saved PC `0xc00`, len 46):
+/// [`install_div0_trap`](super::microop::MicroState). The vector-5 twin of [`build_chk_frame`] (vector 6).
+/// TIMING/bus stream pinned to the sole vendored `op=0x80ef` div0 sample (mode 5 `d16(A7)`, leading idle `n8`,
+/// pushed CCR `0b10000`, len 46) — but NOT that sample's stacked-PC VALUE (`0xc00`, the instruction start),
+/// which is WRONG (K3): the stacked PC is the NEXT instruction's address (group-2, M68000UM §6.2.4; see the
+/// runner's documented exclusion):
 ///
 /// - **Leading idle** of `idle` cycles (`n8` for the vendored sample), then the frame's
 ///   [`MicroOp::EnterException`] (capture the live SR — already carrying the div0 CCR N=Z=V=C=0/X-kept — and
 ///   enter supervisor / clear T).
 /// - The shared [`push_standard_frame`] (`SSP -= 6`; the on-bus write order `PCL @ B+4`, `SR @ B+0`,
-///   `PCH @ B+2`, FC=5). The stacked PC is the live `regs.pc` (seeded by the install — the `Divu` Alu runs
-///   after the source read + prefetch(es), so `regs.pc` already equals the saved return PC).
+///   `PCH @ B+2`, FC=5). The stacked PC is the NEXT instruction's address (seeded by the install as
+///   `regs.pc + 2*prefetches_remaining` — the `Divu`/`Divs` Alu runs BEFORE the trailing refill).
 /// - The shared [`vector_fetch_and_reload`] at vector `5*4 = 0x14`: two FC=5 vector reads, then the FC=6
 ///   handler reload with the `n2` idle between.
 ///
