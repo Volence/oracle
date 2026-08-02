@@ -13,3 +13,6 @@
 .DS_Store
 *.swp
 *~
+
+# Python tool bytecode
+__pycache__/
