@@ -174,6 +174,13 @@ Slice log (each row-flip amends the `BASELINE` in the same commit):
   *Ledgered follow-ups (not regressions):* the 68k-side path to the real serial bank latch (the
   Z80-side latch at `$6000` is live), the window's true 15-bit address masking (`$A08000+` currently
   still mirrors RAM 8-KiB-wise), and 68k-side `$A07F00+` VDP-mirror routing (K2's deferred half).
+- **K4-4** — the I/O block (`$A10000-$A1001F`) does not decode A0 (Exodus
+  `AddressDiscardLowerBitCount="1"`): each odd register answers BOTH byte lanes (`$A10000` reads the
+  version byte, word reads are the register duplicated — row 6 `A0A0`). Reads only; even-byte
+  *writes* still drop (unexercised by the corpus — the K4-0 table's ubiquitous `ioW` = 3 is the
+  boot-time `tst.w $A10008`-family over still-zero registers, value-unchanged by the mirror).
+  → **12/13**; `io_sample`/`gfx_joystick` and the rest byte-identical; sonic3k/s2rev01/ristar boot
+  A/B pixel-identical.
 
 ## Limitations of the instrument itself
 

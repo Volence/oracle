@@ -99,10 +99,10 @@ const BASELINE: &[(&str, &str)] = &[
         // K4-2 (2026-08-02): $A11100 residue + reset-folded grant bit — both `A11100` rows green.
         // K4-3 (2026-08-02): Z80-window gating + word duplication + $A06000-$A07EFF=$FF (and the
         // bank-canary alias fix) — the three `A0xxxx` window rows green.
+        // K4-4 (2026-08-02): the I/O block ignores A0 (registers answer both byte lanes) — row green.
         // See docs/2026-08-02-k4-openbus-design.md and the K4 ledger section.
         "m68k_memory_test",
-        "11/13 rows match the ROM's hardware reference; mismatch: \
-         A10000-A1001F, C00004-C00007",
+        "12/13 rows match the ROM's hardware reference; mismatch: C00004-C00007",
     ),
     (
         "m68k_opcode_sizes",

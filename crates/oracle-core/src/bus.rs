@@ -398,15 +398,17 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
                     Some(self.z80_ram[(a as usize) & (Z80_RAM_SIZE - 1)])
                 }
             }
-            // I/O ($A10000–$A1001F): the fixed version byte at $A10001, the 15 data/control/serial registers
-            // via the `Io` model (recon IO1–IO4), or 0 for the even (unmapped high-half) bytes.
-            0xA1_0001 => Some(MD_VERSION),
-            0xA1_0000..=0xA1_001F => Some(match io_reg(a) {
+            // I/O ($A10000–$A1001F): the register block does not decode A0 (K4-4; Exodus
+            // `AddressDiscardLowerBitCount="1"`, memtest row 6 `A0A0`), so each odd register answers BOTH
+            // byte lanes — decode `a | 1`: the version byte at $A10000/1, the 15 data/control/serial
+            // registers via the `Io` model (recon IO1–IO4). A word read is the register duplicated for free.
+            0xA1_0000 | 0xA1_0001 => Some(MD_VERSION),
+            0xA1_0002..=0xA1_001F => Some(match io_reg(a | 1) {
                 Some((port, IoReg::Data)) => self.io.read_data(port),
                 Some((port, IoReg::Ctrl)) => self.io.read_ctrl(port),
                 Some((port, IoReg::TxData)) => self.io.read_txdata(port),
                 Some((port, IoReg::SCtrl)) => self.io.read_sctrl(port),
-                // RxData: no serial device drives the receive line (decision 2). Even bytes: unmapped → 0.
+                // RxData: no serial device drives the receive line (decision 2).
                 Some((_, IoReg::RxData)) | None => 0x00,
             }),
             // Z80 BUSREQ ($A11100): partially decoded — the arbiter drives ONLY the grant bit (bit0 of this
@@ -1183,6 +1185,29 @@ mod tests {
         let mut sink = Vec::new();
         let mut bus = mem.bus(&mut sink);
         assert_eq!(bus.read8(0xA1_0001, 5).0, MD_VERSION, "version register");
+    }
+
+    #[test]
+    fn io_registers_ignore_a0_even_byte_and_word_reads_mirror_the_register() {
+        // K4-4 (design §3 row 6): the I/O block does not decode A0 (Exodus
+        // `AddressDiscardLowerBitCount="1"`), so each register answers BOTH byte lanes: the even byte
+        // reads the same register as its odd neighbour, and a word read is the register duplicated —
+        // memtest reads `A0A0 A0A0` at $A10000 (the version byte), not `00A0`.
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        assert_eq!(bus.read8(0xA1_0000, 5).0, MD_VERSION, "even byte = version");
+        assert_eq!(
+            bus.read16(0xA1_0000, 5).0,
+            (MD_VERSION as u16) * 0x0101,
+            "word = version duplicated (A0A0)"
+        );
+        // A configured register mirrors too: P1 ctrl = $40.
+        bus.write8(0xA1_0009, 5, 0x40);
+        assert_eq!(bus.read8(0xA1_0008, 5).0, 0x40, "even byte = P1 ctrl");
+        assert_eq!(bus.read16(0xA1_0008, 5).0, 0x4040, "word = ctrl duplicated");
+        // RxData still reads 0 on both lanes (no serial device drives the line).
+        assert_eq!(bus.read16(0xA1_0010, 5).0, 0x0000, "RxData word = 0000");
     }
 
     #[test]
