@@ -101,6 +101,19 @@ impl BusEventSink for AudioAndWatch<'_> {
             w.on_vdp_write(wr);
         }
     }
+
+    fn wants_scanlines(&self) -> bool {
+        // Neither member opts in today (both ride the trait default), but a composite must never silently
+        // drop a member's opt-in — OR over both, like `wants_vdp_writes` above.
+        self.audio.wants_scanlines() || self.watch.as_ref().is_some_and(|w| w.wants_scanlines())
+    }
+
+    fn on_scanline(&mut self, line: u16, rgb: &[(u8, u8, u8)]) {
+        self.audio.on_scanline(line, rgb);
+        if let Some(w) = &mut self.watch {
+            w.on_scanline(line, rgb);
+        }
+    }
 }
 
 #[cfg(test)]

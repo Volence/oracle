@@ -716,7 +716,7 @@ impl System {
             // with the ratified sync-on-demand model) before stepping — they may raise the pending latches.
             let now = self.scheduler.now();
             while let Some((deadline, kind)) = self.scheduler.pop_due(now) {
-                self.deliver_event(deadline, kind);
+                self.deliver_event(deadline, kind, sink);
             }
             // Stamp the instruction about to execute (its PC) + the current frame, so a sink that attributes
             // accesses to their driving instruction (watchpoints) has that context. No-op for `&mut ()`.
@@ -751,8 +751,10 @@ impl System {
     /// per-line VDP housekeeping: HINT-counter bookkeeping (an underflow schedules an `HInt` at the pinned H
     /// anchor), and line 224 schedules the `VInt`. `HInt`/`VInt` delivery sets the VDP's pending latches; the
     /// IPL the CPU sees is always recomputed from `vdp.ipl()` (gated by the enable bits). `FrameEnd` is
-    /// housekeeping.
-    fn deliver_event(&mut self, deadline: u64, kind: EventKind) {
+    /// housekeeping. The `sink` only matters to a scanline-capture consumer
+    /// ([`BusEventSink::wants_scanlines`]); every other sink (including `&mut ()`) leaves this the untouched
+    /// hot path.
+    fn deliver_event<S: BusEventSink>(&mut self, deadline: u64, kind: EventKind, sink: &mut S) {
         match kind {
             EventKind::Scanline => {
                 let line = (deadline / MCLK_PER_LINE) % LINES_PER_FRAME;
@@ -762,9 +764,15 @@ impl System {
                 }
                 // Render active lines (0..=223) so the sprite overflow/collision status bits + the R10 masking
                 // carry evolve during normal runs (games poll them). Currency-safe: the sprite flags/carry are
-                // in neither frozen currency, and render output is discarded here. (recon R10 / design §5.)
+                // in neither frozen currency, and render output is discarded here — unless the sink opts in
+                // (conformance Limitation L1), in which case the already-built report is decoded to RGB and
+                // handed out as a borrow. The sink is the caller's; `System` never stores it.
                 if line < 224 {
-                    self.vdp.render_scanline(line as u16);
+                    let report = self.vdp.render_scanline(line as u16);
+                    if sink.wants_scanlines() {
+                        let rgb = self.vdp.report_rgb(&report);
+                        sink.on_scanline(line as u16, &rgb);
+                    }
                 }
                 if line == 224 {
                     let off = self.vdp.vint_offset();
