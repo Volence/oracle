@@ -442,17 +442,25 @@ impl Vdp {
         }
     }
 
-    /// Enqueue a data-port write into the FIFO ring (recon R3): capture the data word plus the live
-    /// code/address registers. The physical slot is overwritten in place (retaining nothing of the old entry
-    /// beyond the ring position), and `fifo_len` counts pending entries (saturating at 4 until the drain clock
-    /// advances it in the wait-channel slice).
-    fn fifo_enqueue(&mut self, data: u16) {
+    /// Store `data` (plus the live code/address registers) into the next physical FIFO ring slot and advance
+    /// the write cursor. The physical slot is overwritten in place (retaining nothing of the old entry beyond
+    /// the ring position). The *pending count* is deliberately untouched: this is the bare slot write, which a
+    /// DMA payload word performs (A3a / P1) without occupying a pending-drain slot in our synchronous DMA
+    /// model — see [`Vdp::dma_write_word`].
+    fn fifo_store(&mut self, data: u16) {
         self.fifo[self.fifo_write as usize] = FifoEntry {
             data,
             code: self.code,
             addr: self.addr,
         };
         self.fifo_write = (self.fifo_write + 1) & 3;
+    }
+
+    /// Enqueue a data-port write into the FIFO ring (recon R3): store into the ring AND count it as pending.
+    /// `fifo_len` counts pending entries (saturating at 4 until the drain clock advances it in the
+    /// wait-channel slice).
+    fn fifo_enqueue(&mut self, data: u16) {
+        self.fifo_store(data);
         self.fifo_len = (self.fifo_len + 1).min(4);
     }
 
@@ -747,11 +755,28 @@ impl Vdp {
         }
     }
 
-    /// Feed one DMA word to the current data-port target (68k→VDP transfer, recon R4(a)): route to
-    /// VRAM/CRAM/VSRAM through `write_target` (so the R5 SAT write-through fires for VRAM — "any DMA that
-    /// writes VRAM counts") and autoinc. The bus reads the source word from 68k memory and calls this.
+    /// Feed one DMA word to the current data-port target (68k→VDP transfer, recon R4(a)): store it into the
+    /// physical FIFO ring, route it to VRAM/CRAM/VSRAM through `write_target` (so the R5 SAT write-through
+    /// fires for VRAM — "any DMA that writes VRAM counts") and autoinc. The bus reads the source word from
+    /// 68k memory and calls this.
+    ///
+    /// **A3a / P1** — the ring store: a DMA payload word occupies a real FIFO slot, exactly like a CPU
+    /// data-port write. Nemesis, *VDP Internals* (SpritesMind): a DMA "will read a value from external memory
+    /// using the DMA source address register and **add it to the FIFO** using the current command code and
+    /// incremented command address registers". Corroborated by Kabuto's hardware notes: "When writing a value
+    /// to the VDP's data port (or the VDP does that internally through DMA) both value and current address are
+    /// appended to its internal FIFO." Observable through the CRAM/VSRAM undefined-bit snoop — VDPFIFOTesting
+    /// test 3 (expected table ROM `$5E0C`) reads it back and is the acceptance test.
+    ///
+    /// `fifo_store`, not `fifo_enqueue`: the pending count stays put. Our Mem DMA runs synchronously inside
+    /// one bus access and bills its elapsed time through `dma_cost` + the returned halt wait, so counting the
+    /// payload as pending would leave phantom entries no clock has advanced past — a spurious /DTACK stall on
+    /// the next data-port write in every DMA-using ROM, for no test benefit (neither test 3 nor test 4 can
+    /// tell the difference). Open question Q1 in `docs/2026-08-03-a3-dma-fifo-design.md`; revisit here, not in
+    /// the status word, if slice A1/T16 ever needs post-DMA occupancy.
     pub fn dma_write_word(&mut self, w: u16) {
         self.in_dma = true; // watchpoints v2: this word's captures attribute to the triggering DMA
+        self.fifo_store(w);
         self.write_target(w);
         self.in_dma = false;
         self.autoinc();
@@ -2271,6 +2296,56 @@ mod tests {
             copy_window,
             2 * fill_window,
             "copy window = 2× the fill window for the same byte count"
+        );
+    }
+
+    #[test]
+    fn mem_dma_words_occupy_the_physical_fifo_ring() {
+        // P1 (slice A3a): every word a 68k→VDP DMA moves is stored into the same physical 4-slot write FIFO
+        // a CPU data-port write uses. Nemesis, VDP Internals: a DMA "will read a value from external memory
+        // using the DMA source address register and *add it to the FIFO* using the current command code and
+        // incremented command address registers". Observable through the CRAM/VSRAM undefined-bit snoop —
+        // this is the whole of VDPFIFOTesting test 3 (ROM $5E0C; replayed end-to-end in `bus.rs`).
+        let mut v = fresh();
+        command(&mut v, 0x01, 0x8000); // VRAM write @ $8000
+        for w in [0x1000u16, 0x2000, 0x3000, 0x4000, 0x5000, 0x6000] {
+            v.data_write(w); // six marker words fill (and wrap) the ring
+        }
+        for w in [0xAAAAu16, 0xBBBB, 0xCCCC, 0xDDDD, 0xEEEE, 0xFFFF] {
+            v.dma_write_word(w);
+        }
+        assert_eq!(
+            v.fifo_snoop_word(),
+            0xCCCC,
+            "the DMA displaced every marker: the ring holds the last four payload words with the write \
+             cursor parked on the oldest of them"
+        );
+        // Each subsequent data-port write walks the cursor one slot through the surviving payload.
+        command(&mut v, 0x03, 0x0020); // CRAM write
+        for expect in [0xDDDDu16, 0xEEEE, 0xFFFF] {
+            v.data_write(0xFFFF);
+            assert_eq!(v.fifo_snoop_word(), expect, "cursor walked one slot");
+        }
+    }
+
+    #[test]
+    fn mem_dma_ring_store_does_not_add_pending_entries() {
+        // Deliberate (design §3.3): a DMA payload word takes a physical ring slot but does NOT bump the
+        // pending count. Our Mem DMA runs synchronously inside one bus access and bills its elapsed time
+        // through `dma_cost` + the returned halt wait, so counting the words as pending would leave four
+        // phantom entries no clock has advanced past — a spurious /DTACK stall on the next data-port write
+        // in every DMA-using ROM, bought for no test-3 benefit. Neither test 3 nor test 4 can tell the
+        // difference. Recorded as open question Q1 (interacts with slice A1/T16).
+        let mut v = fresh();
+        command(&mut v, 0x01, 0x8000);
+        let before = v.fifo_len();
+        for w in [0xAAAAu16, 0xBBBB, 0xCCCC, 0xDDDD, 0xEEEE, 0xFFFF] {
+            v.dma_write_word(w);
+        }
+        assert_eq!(
+            v.fifo_len(),
+            before,
+            "a DMA ring store leaves the pending count untouched"
         );
     }
 

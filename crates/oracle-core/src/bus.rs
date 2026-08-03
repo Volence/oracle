@@ -1908,6 +1908,94 @@ mod tests {
         );
     }
 
+    #[test]
+    fn vdpfifo_t3_dma_payload_walks_the_fifo_ring() {
+        // VDPFIFOTesting test 3 "DMA Transfer using FIFO" (`vendor/TestRoms/vdp_port_access.bin`; name
+        // string at ROM $5DE8, expected-value table at ROM $5E0C, DMA source payload at ROM $5DDC =
+        // `AAAA BBBB CCCC DDDD EEEE FFFF`). This replays the ROM's exact port traffic (disassembled
+        // $5E60..$60AC; see docs/2026-08-03-a3-dma-fifo-design.md §1.3) and asserts its exact 16-word
+        // hardware-captured answer.
+        //
+        // The test never reads its DMA destination: all 16 observations are CRAM/VSRAM reads at address 0
+        // of a zeroed memory, so every expected bit comes from the undefined-bit FIFO snoop (Nemesis, VDP
+        // Internals: undefined bits "are actually initialized to the content on the next available FIFO
+        // entry"). It therefore pins exactly one thing — P1: a 68k→VDP DMA's payload words occupy physical
+        // FIFO slots, so after the 6-word transfer the ring holds `CCCC DDDD EEEE FFFF` with the write
+        // cursor parked on `CCCC`, and each intervening CRAM `$FFFF` write walks the cursor one slot.
+        let mut rom = vec![0u8; 0x1000];
+        // The DMA source payload, big-endian, at ROM $0400 (word address $000200).
+        rom[0x400..0x40C].copy_from_slice(&[
+            0xAA, 0xAA, 0xBB, 0xBB, 0xCC, 0xCC, 0xDD, 0xDD, 0xEE, 0xEE, 0xFF, 0xFF,
+        ]);
+        let mut mem = MdMem::new(rom);
+        mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE; // vblank line: blanked (fast) slot rate
+        let mut sink = Vec::new();
+        let mut observed = Vec::new();
+        {
+            let mut bus = mem.bus(&mut sink);
+            let ctrl = |bus: &mut MegaDriveBus<'_, Vec<BusEvent>>, w: u16| {
+                bus.write16(0xC0_0004, 5, w);
+            };
+            let data = |bus: &mut MegaDriveBus<'_, Vec<BusEvent>>, w: u16| {
+                bus.write16(0xC0_0000, 5, w);
+            };
+
+            // ROM $5E60: CRAM write @ $0000, then 64 data writes zero all 128 bytes of CRAM.
+            ctrl(&mut bus, 0xC000);
+            ctrl(&mut bus, 0x0000);
+            for _ in 0..64 {
+                data(&mut bus, 0x0000);
+            }
+
+            // ROM $5E7A: VRAM write @ $8000, then six marker words into the FIFO.
+            ctrl(&mut bus, 0x4000);
+            ctrl(&mut bus, 0x0002);
+            for w in [0x1000u16, 0x2000, 0x3000, 0x4000, 0x5000, 0x6000] {
+                data(&mut bus, w);
+            }
+
+            // ROM $5EBE..$5F0C: reg 1 = $54 (display on + M1/DMA enable), reg 15 = 2 (autoinc), regs 19/20
+            // = length 6 words, regs 21/22/23 = source word address $000200, mode Mem (reg 23 bit 7 = 0).
+            for w in [0x8154u16, 0x8F02, 0x9306, 0x9400, 0x9500, 0x9602, 0x9700] {
+                ctrl(&mut bus, w);
+            }
+
+            // ROM $5F18: CD = 100001 (VRAM write + CD5) @ $8000 fires the 68k→VDP DMA.
+            ctrl(&mut bus, 0x4000);
+            ctrl(&mut bus, 0x0082);
+            ctrl(&mut bus, 0x8144); // ROM $5F1E: M1 off
+
+            // Four groups of {2 x VSRAM read @0, 2 x CRAM read @0}, each separated by one ring-advancing
+            // CRAM data write of $FFFF @ $0020.
+            for group in 0..4 {
+                ctrl(&mut bus, 0x0000); // CD = 000100 = VSRAM read @ $0000
+                ctrl(&mut bus, 0x0010);
+                observed.push(bus.read16(0xC0_0000, 5).0);
+                observed.push(bus.read16(0xC0_0000, 5).0);
+                ctrl(&mut bus, 0x0000); // CD = 001000 = CRAM read @ $0000
+                ctrl(&mut bus, 0x0020);
+                observed.push(bus.read16(0xC0_0000, 5).0);
+                observed.push(bus.read16(0xC0_0000, 5).0);
+                if group < 3 {
+                    ctrl(&mut bus, 0xC020); // CD = 000011 = CRAM write @ $0020
+                    ctrl(&mut bus, 0x0000);
+                    data(&mut bus, 0xFFFF);
+                }
+            }
+        }
+
+        assert_eq!(
+            observed,
+            vec![
+                0xc800u16, 0xc800, 0xc000, 0xc000, // snoop = $CCCC
+                0xd800, 0xd800, 0xd111, 0xd111, // snoop = $DDDD
+                0xe800, 0xe800, 0xe000, 0xe000, // snoop = $EEEE
+                0xf800, 0xf800, 0xf111, 0xf111, // snoop = $FFFF
+            ],
+            "VDPFIFOTesting test 3's expected table (ROM $5E0C)"
+        );
+    }
+
     /// Program + trigger a VRAM fill of `len` bytes of `fill`'s top byte at VRAM `dest` (autoinc 1).
     fn run_vram_fill(
         bus: &mut MegaDriveBus<'_, Vec<BusEvent>>,

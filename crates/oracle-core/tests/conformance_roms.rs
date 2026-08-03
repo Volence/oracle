@@ -131,8 +131,12 @@ const BASELINE: &[(&str, &str)] = &[
         // Writes and Code Reg" and T10 "Partial CP Writes" flipped to pass. Page 1 is untouched (its
         // three failures, T3/T4/T6, are other slices). T12 "Register Write Mode4 Mask" is a named
         // residual: the fix is known but moves frozen currency (see the note in `Vdp::write_register`).
+        // A3a (2026-08-03): 68k→VDP DMA payload words now occupy physical FIFO slots. Page 1 went
+        // 6/3 → 7/2 — T3 "DMA Transfer using FIFO" flipped to pass (its 16 observations are pure
+        // undefined-bit FIFO snoop reads). T4 "DMA Fill FIFO Usage" still fails at exactly words 8 and
+        // 13; its fix (A3b) moves `export_state_v1::GOLDEN_HASH` and is PARKED for an owner ruling.
         "vdp_port_access",
-        "page1 pass/fail/total=6/3/9; pages1+2 cumulative=11/5/16",
+        "page1 pass/fail/total=7/2/9; pages1+2 cumulative=12/4/16",
     ),
     (
         "vdp_sprite_masking",
