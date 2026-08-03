@@ -30,6 +30,19 @@ bump is implied.
 
 ## Decision 1: may slice A3b regenerate `export_state_v1::GOLDEN_HASH`?
 
+> **RULED + RESOLVED 2026-08-03. Owner GRANTED permission to move the hash;
+> slice A3b then landed and the hash did NOT need to move.** The premise below
+> is wrong in one load-bearing detail: `testrom.rs:255-263` is
+> **`testrom::build_pad_poll`**, not the golden fixture. The `export_state_v1`
+> golden fixture is **`testrom::build`** — the RAM-stirring ROM at `$200` that
+> never writes a VDP port (verified directly: after its 60 frames every VDP
+> register is `$00` and VRAM is untouched power-on noise). `GOLDEN_HASH` stays
+> `0xBF5D_1E1A_A727_143B`. A3b landed with **zero currency movement**; the
+> scorecard moved to `page1 8/1/9; cumulative 13/3/16` as forecast.
+> The `$3B → $00` byte is real, but it is in the pad-poll fixture's VRAM at
+> `$FFFF`, outside every plane/SAT window — its render and watchpoint counts are
+> unchanged. Decision 2 (T12 Mode-4 masking) is unaffected and still open.
+
 **Short version:** fixing VDPFIFOTesting test 4 also fixes a real emulation bug
 that the frozen golden hash currently encodes. Fixing the bug therefore moves
 `GOLDEN_HASH`. That is the one currency the project has held byte-frozen, so
@@ -79,7 +92,8 @@ record of the bug.
 ### What was done overnight
 
 **Option B, pending the ruling.** A3a is the currency-neutral half; A3b is fully
-designed and ready but unlanded.
+designed and ready but unlanded. *(Update: the ruling arrived, A3b landed, and
+it turned out to be currency-neutral too — see the banner above.)*
 
 ### Also worth knowing before ruling
 
@@ -87,7 +101,7 @@ designed and ready but unlanded.
   drive no DMA) are both **immune** — this is `export_state_v1` only.
 - Three existing tests assert the current (buggy) fill behavior and would be
   rewritten as part of A3b: `bus.rs:1933`, `bus.rs:1968`, `vdp.rs:2323`.
-- Expected scorecard move if A3b lands: `page1 8/1/9; cumulative 11/5/16`.
+- Expected scorecard move if A3b lands: `page1 8/1/9; cumulative 11/5/16`. *(Measured: `page1 8/1/9; cumulative 13/3/16` — the cumulative figure here was stale, it predated A2 landing.)*
 - The differential ROMs (Gunstar / TF4 / Batman, fixed by the DR-1/2/3 slices)
   have **no automated conformance row**, so they should be re-checked by hand
   before pushing A3b.
@@ -122,6 +136,14 @@ note, so nothing is lost.
 which leaves M5 **clear**, and then programs registers 11/12/13/15/16 — writes
 real hardware would ignore. So the fixture is running in Mode 4 while using
 Mode 5 registers.
+
+> **Caution added 2026-08-03 by the A3b implementer (UNVERIFIED for this
+> decision):** the `reg 1 = $50` ROM cited here is `testrom::build_pad_poll`,
+> the same fixture Decision 1 mis-identified as the golden. The `export_state_v1`
+> golden fixture, `testrom::build`, writes **no** VDP registers at all — so the
+> claim that Decision 2 moves `GOLDEN_HASH` should be re-measured before it is
+> ruled on. The `golden_frames` scenes and the 52 red unit tests are separate
+> fixtures and were not re-checked here.
 
 Blast radius is **wider than Decision 1**:
 - `export_state_v1::GOLDEN_HASH` moves

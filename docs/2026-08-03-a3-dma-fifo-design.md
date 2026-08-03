@@ -380,6 +380,19 @@ changes, no floats.
 
 ### 4.1 The one real problem: `export_state_v1::GOLDEN_HASH` moves (change 3 + 4)
 
+> **CORRECTION, 2026-08-03 (slice A3b, measured — this section is WRONG).** `GOLDEN_HASH` does **not**
+> move; A3b landed currency-neutral. The lines cited below (`testrom.rs:255-263`) are inside
+> **`testrom::build_pad_poll`**, a fixture used only by `io_controllers.rs`, `watchpoints.rs` and the
+> `pad_probe` example. The `export_state_v1` golden fixture is **`testrom::build`** — the RAM-stirring ROM
+> at `$200`, which never writes a VDP port. Probed directly on the frozen fixture (seed
+> `0xD8_5EED_0F1C_ED01`, 60 frames): every VDP register reads `$00` and VRAM is untouched power-on noise
+> (254 zero bytes out of 65536, `vram[$FFFF] == $3B` **both before and after** the fix, because no fill
+> ever runs). `GOLDEN_HASH` stays `0xBF5D_1E1A_A727_143B`, and every currency suite passed unmodified.
+> The `$3B → $00` reasoning below is sound *for the pad-poll fixture* — that byte does change there — but
+> `$FFFF` is outside every plane/SAT window, so its render hash and watchpoint counts are unchanged too.
+> Everything else in this document (§1-§3, §5) was verified correct in implementation. Consequently
+> §4.2's `A3b` column, and the "recommended slicing" note's premise, are the only wrong rows.
+
 The arc's ground rules inherit the push-6 assumption that "the golden fixture drives no VDP DMA".
 **That assumption is now false.** `crates/oracle-core/src/testrom.rs:255-263` zeroes VRAM with a
 DMA fill:

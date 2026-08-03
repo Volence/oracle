@@ -846,6 +846,23 @@ impl Vdp {
             if self.regs[0x17] & 0xC0 == 0x80 {
                 self.fifo_enqueue(w);
                 let len = ((self.regs[0x14] as u16) << 8) | self.regs[0x13] as u16;
+                // A3b / P2: the trigger is NOT swallowed — it is completed as an ordinary data-port write
+                // before the fill engine runs, and the address then auto-increments, so the fill's first
+                // replicated byte lands back on the start address. Nemesis, *VDP Internals* (SpritesMind):
+                // "When a DMA Fill operation is pending, and you perform a data port write, that data port
+                // write is completed as normal… That pending write is then pulled out of the FIFO, and
+                // processed as a normal FIFO write." Observed by VDPFIFOTesting test 4 (expected table ROM
+                // $DC54): only a full word write puts the trigger's LSB $34 at $8001, and only the
+                // auto-increment keeps the fill's first step from destroying it again.
+                //
+                // Same invalid-target guard as the non-DMA path below: a code whose low nibble names no
+                // write target accepts the word into the FIFO and steps the address, but reaches no memory.
+                // (Applying the priming write to CRAM/VSRAM fill targets is the consistent reading of the
+                // citation but is not covered by the ROM — open question Q3 in the A3 design note.)
+                if matches!(self.code & 0x0F, 0x1 | 0x3 | 0x5) {
+                    self.write_target(w);
+                }
+                self.autoinc();
                 self.dma_pending = Some(DmaRequest::Fill { len, fill: w });
             }
             return;
@@ -871,13 +888,25 @@ impl Vdp {
     pub fn run_fill(&mut self, len: u16, fill: u16, now: u64) {
         let count = if len == 0 { 0x1_0000u32 } else { len as u32 };
         let target = self.target();
+        // The address register the fill engine starts from. Since A3b this is the *post-trigger* value
+        // (the trigger's autoincrement has already run), i.e. one step past the armed command address —
+        // which is what the engine actually walks. Introspection only (`last_dma`); in neither currency.
         let dest = self.addr;
         self.in_dma = true; // watchpoints v2: fill writes attribute to the triggering DMA
         match target {
             Target::Vram => {
                 let byte = (fill >> 8) as u8; // top byte (recon R4(b))
                 for _ in 0..count {
-                    self.write_vram_byte(self.addr as usize & (VRAM_SIZE - 1), byte);
+                    // A3b / P3: a VRAM *byte* write from the fill engine lands at `address ^ 1`, not at
+                    // `address`. Mask of Destiny, *Is DMA Fill buggy?* (SpritesMind): "MSB of the word in
+                    // the FIFO is written DMA length times to address ^ 1"; Eke, same thread: "VRAM byte
+                    // writes (used by VRAM fill and copy DMA) actually occur to VRAM address ^ 1 so you can
+                    // get unexpected results depending on start address, DMA length and increment
+                    // alignments." With an odd autoincrement this produces the characteristic interleave —
+                    // a skipped byte at the tail and one byte written past the naive end — that
+                    // VDPFIFOTesting test 4 checks (expected table ROM $DC54). `run_copy` is deliberately
+                    // NOT changed here: no test in the vendored suite covers it (open question Q2).
+                    self.write_vram_byte((self.addr ^ 1) as usize & (VRAM_SIZE - 1), byte);
                     self.autoinc();
                 }
             }
@@ -2350,6 +2379,89 @@ mod tests {
         );
     }
 
+    /// Arm a VRAM DMA fill of `len` bytes at `addr` with autoinc 1, and return the armed request's
+    /// `(len, fill)` after the trigger data-port write of `fill`.
+    fn arm_and_trigger_vram_fill(v: &mut Vdp, addr: u16, len: u16, fill: u16) -> (u16, u16) {
+        v.regs[1] = 0x10; // M1 (DMA enable) — CD5 only latches while it is set
+        v.regs[0x0F] = 1; // autoinc 1
+        v.regs[0x13] = (len & 0xFF) as u8;
+        v.regs[0x14] = (len >> 8) as u8;
+        v.regs[0x17] = 0x80; // fill mode
+        command(v, 0x21, addr); // VRAM write + CD5
+        v.data_write(fill);
+        match v.take_dma_request() {
+            Some(DmaRequest::Fill { len, fill }) => (len, fill),
+            other => panic!("the data-port write must arm a fill, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fill_trigger_is_applied_as_a_normal_word_write() {
+        // A3b / P2: the data-port write that fires a pending fill is NOT swallowed — it is completed as an
+        // ordinary write to the current target (VRAM: MSB → addr, LSB → addr ^ 1) and the address then
+        // auto-increments, so the fill's first replicated byte lands back on the start address. Nemesis,
+        // *VDP Internals* (SpritesMind): "When a DMA Fill operation is pending, and you perform a data port
+        // write, that data port write is completed as normal". Observed by VDPFIFOTesting test 4 (expected
+        // table ROM $DC54): only a full word write can put the trigger's LSB $34 at $8001.
+        let mut v = fresh();
+        let (len, fill) = arm_and_trigger_vram_fill(&mut v, 0x8000, 10, 0x1234);
+        assert_eq!((len, fill), (10, 0x1234), "the armed fill request");
+        assert_eq!(v.vram[0x8000], 0x12, "trigger MSB → address");
+        assert_eq!(v.vram[0x8001], 0x34, "trigger LSB → address ^ 1");
+        assert_eq!(v.addr, 0x8001, "the trigger auto-incremented the address");
+    }
+
+    #[test]
+    fn vram_fill_writes_the_msb_to_address_xor_one() {
+        // A3b / P3: every VRAM byte write the fill engine makes lands at `address ^ 1`. Mask of Destiny,
+        // *Is DMA Fill buggy?* (SpritesMind): "MSB of the word in the FIFO is written DMA length times to
+        // address ^ 1"; Eke, same thread: "VRAM byte writes (used by VRAM fill and copy DMA) actually occur
+        // to VRAM address ^ 1 so you can get unexpected results depending on start address, DMA length and
+        // increment alignments". With addr $8000, autoinc 1 and length 10 the ten steps run over addresses
+        // $8001..$800A and therefore write $8000, $8003, $8002, $8005, $8004, $8007, $8006, $8009, $8008,
+        // $800B — skipping $800A and reaching one byte past the naive end. That exact image is the second
+        // half of VDPFIFOTesting test 4's expected table (ROM $DC54).
+        let mut v = fresh();
+        v.vram[0x8000..0x8010].fill(0); // as the ROM does: eight zeroing data writes before the fill
+        let (len, fill) = arm_and_trigger_vram_fill(&mut v, 0x8000, 10, 0x1234);
+        v.run_fill(len, fill, 0);
+        assert_eq!(
+            &v.vram[0x8000..0x800C],
+            &[0x12, 0x34, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x00, 0x12],
+            "trigger word + ten `address ^ 1` fill bytes"
+        );
+        assert!(
+            v.vram[0x800C..0x8010].iter().all(|&b| b == 0),
+            "the fill reached exactly one byte past the naive end and no further"
+        );
+    }
+
+    #[test]
+    fn fill_adds_only_its_trigger_word_to_the_ring() {
+        // A3b / P4: the fill engine pulls its byte *out of* a FIFO entry, it does not push entries in — so
+        // the ring holds the eight zeroing writes plus the single trigger word, and nothing else. This is
+        // the snoop half of VDPFIFOTesting test 4 (ROM $DC54 words 0-7 = `0000 0000 0000 0000 0000 0000
+        // 1000 1000`), read here directly off the ring instead of through the VSRAM undefined-bit merge.
+        let mut v = fresh();
+        v.regs[0x0F] = 2;
+        command(&mut v, 0x01, 0x8000); // VRAM write
+        for _ in 0..8 {
+            v.data_write(0x0000);
+        }
+        let (len, fill) = arm_and_trigger_vram_fill(&mut v, 0x8000, 10, 0x1234);
+        v.run_fill(len, fill, 0);
+        assert_eq!(
+            v.fifo_snoop_word(),
+            0x0000,
+            "cursor parked on a zeroing write"
+        );
+        command(&mut v, 0x03, 0x0020); // CRAM write: each one walks the cursor a slot
+        for expect in [0x0000u16, 0x0000, 0x1234] {
+            v.data_write(0xFFFF);
+            assert_eq!(v.fifo_snoop_word(), expect, "cursor walked one slot");
+        }
+    }
+
     #[test]
     fn cram_fill_uses_the_four_writes_ago_entry() {
         // Recon R4(b): a CRAM (or VSRAM) fill takes its data from the next-available FIFO entry ("4 writes
@@ -2619,14 +2731,19 @@ mod tests {
         v.regs[0x0F] = 1;
         v.control_write(0x4200, 0); // VRAM write (code 0x01), A13-A0 = 0x0200
         v.control_write(0x0080, 0); // CD5..CD2 high nibble = 0b1000 → code 0x21 (VRAM write + CD5); disarm
-        let old: Vec<u8> = (0x0200..0x0204).map(|a| v.vram()[a]).collect();
+                                    // A3b: the captured addresses are the *written* bytes, `address ^ 1` at each step (P3), so with
+                                    // autoinc 1 from $0200 they come out pair-swapped. Everything else the test pins — one capture per
+                                    // filled byte, `via = Dma`, byte size, the pre-write value — is unchanged. This test calls
+                                    // `run_fill` directly, so the trigger-write change (P2) does not reach it.
+        let addrs = [0x0201u32, 0x0200, 0x0203, 0x0202];
+        let old: Vec<u8> = addrs.iter().map(|&a| v.vram()[a as usize]).collect();
         v.set_write_capture(true);
         v.run_fill(4, 0xAB00, 0); // fill byte = top byte = $AB, len 4
         let caps = v.take_write_captures();
         assert_eq!(caps.len(), 4, "one capture per filled byte");
         for (i, cap) in caps.iter().enumerate() {
             assert_eq!(cap.target, VdpTarget::Vram);
-            assert_eq!(cap.addr, 0x0200 + i as u32);
+            assert_eq!(cap.addr, addrs[i]);
             assert_eq!(cap.old, old[i] as u32);
             assert_eq!(cap.new, 0xAB);
             assert_eq!(cap.size, 1);
