@@ -509,11 +509,21 @@ green) and for the FIFO drain-cost model. The pre-cache (`read_target`) fetches 
 `address ^ 1` into the low half; `data_read` merges the snoop's high byte at read time, alongside the
 existing CRAM/VSRAM merges. **No existing test changed.**
 
-**Named follow-up (unevidenced by the ROM): the snoop sampling instant for the 8-bit read.** We merge the
-high byte at *read* time (consistent with the CRAM/VSRAM merges), not at pre-cache time. T6 never performs
-a FIFO write between arming the read command and consuming it, so its table cannot distinguish the two;
-neither can any other test in this ROM. Settling it needs a fresh probe (arm the read, write a word, then
-read), not another look at this ROM.
+**Named follow-up: F-SNOOPWHEN** (registered in the follow-up registry below) — the pre-cache/consume seam
+is unpinned in both directions: *when* the snoop word is sampled, and what happens when the command code
+changes between the two instants. See the registry entry for the full statement and the settling experiment.
+
+**A4 review pass (same day).** Two behavioural notes from the review, both landed in the follow-up commit:
+
+* `read_target`'s byte arm originally stored a **fabricated zero** in the buffer's high half. That leaked
+  through the code-mismatch path above (arm `$0C`, then any `$8xxx` register write makes the code `$0E`, so
+  `data_read` does not merge) and returned `$00XX` where pre-A4 the emulator returned the real VRAM word —
+  an observable read-path change outside the slice's evidence. The buffer now keeps the **real** VRAM high
+  byte and `data_read` masks it away, which is behaviour-identical for `$0C` (the only case the ROM pins)
+  and restores the pre-A4 result on the mismatch path. Pinned by
+  `vdp::tests::eight_bit_vram_read_buffer_degrades_to_the_plain_word_when_the_code_changes`.
+* The FIFO drain-cost model is genuinely unchanged for `$0C` — `target_of`'s `_ => Vram` fallback still
+  charges it a VRAM word's two slots — and that is now asserted rather than left to inspection.
 
 **Page 2's two residuals at the time of A4** were T12 "Register Write Mode4 Mask" (then believed to move
 `GOLDEN_HASH` + the `golden_frames` scenes — parked on an owner ruling; **that belief was wrong, and T12 is
@@ -721,6 +731,38 @@ write **and** sub-instruction clock advance through a DMA. That is a real engine
   reads back the effect — a DMA register is the sharpest probe, since arming a DMA with a length written
   while in Mode 4 is directly observable. Low practical risk (real software sets M5 before programming any
   Mode-5 register), but it is the one part of this slice that is extrapolation rather than a ROM answer.
+* **F-SNOOPWHEN — the read pre-cache/consume seam is unpinned.** (Registered 2026-08-03 by slice A4's
+  review pass. **Code anchors: `Vdp::read_target` and `Vdp::data_read` in `crates/oracle-core/src/vdp.rs`**
+  — the two instants are the pre-cache fill and the snoop merge; the as-shipped pin is
+  `vdp::tests::eight_bit_vram_read_buffer_degrades_to_the_plain_word_when_the_code_changes`.) A read command
+  fills the buffer when it completes, but `data_read` decides *at consume time*, from the live `self.code`,
+  which bits are undefined and what to substitute. Two things about that seam are unpinned:
+  1. **When is the snoop word sampled?** We read `fifo_snoop_word()` at consume time, consistent with the
+     CRAM/VSRAM merges. Sampling at pre-cache time is equally consistent with the citations. VDPFIFOTesting
+     test 6 never performs a FIFO write between arming the read and consuming it — and neither does any
+     other test in `vendor/TestRoms/` — so no expected table can distinguish the two.
+  2. **What if the code changes between the two instants?** A2's own pinned rule makes this reachable: any
+     `$8xxx` register write latches CD1-CD0 from its top bits `10`, so arming the 8-bit VRAM read `$0C` and
+     then writing a register leaves code `$0E`, for which `is_vram_byte_read` is false and no merge fires.
+     Hardware might re-derive the whole result from the new code, keep the armed code, or something else
+     again. **Our choice is "preserve the pre-A4 behaviour"** — the buffer holds the real full word, so the
+     mismatch path returns the plain VRAM read rather than a value A4 invented. That is a conservative
+     default where evidence is absent, *not* a hardware pin.
+  *What would settle it:* a probe (ROM or BlastEm instrument) that arms each snooping read code, then
+  between arming and reading (a) enqueues a FIFO write, and (b) clobbers the code register, and reads the
+  result back. Both sub-questions fall out of the same experiment. Behavioural only — the seam is not in
+  either currency.
+* **F-REPLAYFN — factor a shared `VdpReplay` test harness.** (Registered 2026-08-03 by slice A4's review
+  pass; the reviewer reversed an earlier deferral and judged it now factorable, and the owner scheduled it
+  separately rather than in A4's follow-up commit because T12 was in flight and T16 lands next, both adding
+  replays that a broad test refactor would collide with.) **Code anchor: the three
+  `bus::tests::vdpfifo_t{3,4,6}_*` replay tests in `crates/oracle-core/src/bus.rs`.** The evidence for the
+  refactor, recorded so the next slice does not have to rediscover it: all three share (a) the same
+  `MdMem::new` + `now_mclk = 250 * MCLK_PER_LINE` + `sink` + `observed` preamble, (b) byte-identical `ctrl`
+  and `data` closures, (c) 14 `observed.push(bus.read16(0xC0_0000, 5).0)` sites between them, and (d) the
+  ring-advancing `$FFFF` CRAM-write triplet (`ctrl $C020`, `ctrl` second word, `data $FFFF`) common to all
+  three. `MegaDriveBus::new` takes only `&mut` borrows, so a helper needs no borrow gymnastics. Tests only —
+  no production code, no currency.
 
 **L2 — frame budgets are settle-time guesses.** They were found empirically per ROM and are generous, but a
 timing change that slows a ROM past its budget shows up as a scorecard diff, not as a timeout. Read a diff on

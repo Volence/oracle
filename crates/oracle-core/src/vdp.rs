@@ -33,8 +33,9 @@ const SAT_CACHE_LEN: usize = 320;
 /// byte layout is frozen.
 /// One write-FIFO slot (recon R3): the data word plus a copy of the command code/address registers as they
 /// were when the write was enqueued. The physical slot **retains** its data after the entry drains (the pending
-/// count drops but the bytes stay) — that stale data is exactly what the CRAM/VSRAM snoop quirk and the
-/// VRAM-fill data source read ("the data written 4 writes ago").
+/// count drops but the bytes stay) — that stale data is exactly what the read snoop quirk (CRAM read $08,
+/// VSRAM read $04, and the 8-bit VRAM read $0C) and the CRAM/VSRAM fill data source read ("the data written
+/// 4 writes ago").
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, bincode::Encode, bincode::Decode)]
 struct FifoEntry {
     data: u16,
@@ -101,6 +102,12 @@ pub struct Vdp {
     pending: bool,
     /// The data-port read pre-cache buffer (recon R3): a data read returns this and refills it from the
     /// current address (the read path bypasses the write FIFO). Pre-filled when a read command completes.
+    ///
+    /// It always holds the **full 16-bit word** the target defines, even for the 8-bit VRAM read `$0C`,
+    /// whose low half is `vram[address ^ 1]` while its high half keeps the ordinary VRAM byte (A4). Bits the
+    /// live command code leaves undefined are masked out and replaced from the FIFO snoop at *consume* time
+    /// in [`Vdp::data_read`], not here — the two instants can see different codes (follow-up F-SNOOPWHEN),
+    /// so the buffer deliberately stores nothing fabricated.
     read_buffer: u16,
     /// Latched debug flag for the pinned lockup cell (recon R1): a data-port *read* while a write command is
     /// armed hangs real hardware. We model a deterministic outcome (open bus + this flag) instead of hanging
@@ -537,8 +544,10 @@ impl Vdp {
     }
 
     /// The data word in the **next-available** FIFO slot — the entry about to be overwritten (written 4 writes
-    /// ago). Recon R3: this is what the CRAM/VSRAM read snoop quirk and the CRAM/VSRAM VRAM-fill data source
-    /// read. Exposed for introspection; consumed internally by the snoop/fill slices.
+    /// ago). Recon R3: this is what the read snoop quirk and the CRAM/VSRAM fill data source read. Three read
+    /// codes snoop it — CRAM read `$08` and VSRAM read `$04` take their undefined bits from it, and (A4) the
+    /// undocumented 8-bit VRAM read `$0C` takes its whole high byte from it. Exposed for introspection;
+    /// consumed internally by the snoop/fill slices.
     pub fn fifo_snoop_word(&self) -> u16 {
         self.fifo[self.fifo_write as usize].data
     }
@@ -553,14 +562,25 @@ impl Vdp {
     /// big-endian (high byte first) — the `state_hash` currency's byte layout.
     fn read_target(&self) -> u16 {
         match self.target() {
-            // A4: the 8-bit VRAM read (code $0C) pre-caches ONE byte — the one at `address ^ 1` — into the
-            // low half; the high half is filled at read time from the FIFO snoop, so it is left clear here.
-            // The lane swap is the same one the fill/copy engine's byte writes take (Eke, *Is DMA Fill
+            // A4: the 8-bit VRAM read (code $0C) pre-caches the byte at `address ^ 1` into the LOW half —
+            // that lane swap is the same one the fill/copy engine's byte writes take (Eke, *Is DMA Fill
             // buggy?*, SpritesMind: "VRAM byte writes … actually occur to VRAM address ^ 1"), and is pinned
             // by VDPFIFOTesting test 6's expected table (ROM $DED4): autoinc 1 from $8000 over the image
             // `11 22 33 44` reads $22, $11, $44, $33.
+            //
+            // The HIGH half keeps the real VRAM byte even though [`Vdp::data_read`] masks it away and
+            // substitutes the FIFO snoop. Storing a fabricated zero there instead would be a value no
+            // evidence supports, and it would leak: `data_read` re-decides whether to merge from
+            // `self.code` at *consume* time, and A2's own pinned rule makes the two disagree — arm $0C,
+            // then any `$8xxx` register write clobbers CD1-CD0 to give code $0E, for which
+            // `is_vram_byte_read` is false and no merge happens. Keeping the real byte makes that
+            // code-mismatch path return the plain VRAM word, i.e. exactly the pre-A4 behaviour, instead of
+            // inventing a new one. The ROM is silent on the seam (follow-up F-SNOOPWHEN); where it is
+            // silent, preserving prior behaviour is the conservative choice. Behaviour for $0C itself —
+            // the only case the ROM pins — is identical either way.
             Target::Vram if Self::is_vram_byte_read(self.code) => {
-                self.vram[(self.addr ^ 1) as usize] as u16
+                let b = (self.addr & 0xFFFE) as usize;
+                ((self.vram[b] as u16) << 8) | self.vram[(self.addr ^ 1) as usize] as u16
             }
             Target::Vram => {
                 let b = (self.addr & 0xFFFE) as usize;
@@ -1050,19 +1070,24 @@ impl Vdp {
             return open_bus;
         }
         let mut out = self.read_buffer;
-        // Snoop quirk (recon R3): a CRAM/VSRAM data-port read fills its UNDEFINED bits (above the 9-bit CRAM /
-        // 11-bit VSRAM masks) from the next-available FIFO entry (the word written 4 writes ago). VRAM reads
-        // are fully defined — no snoop. Behavioral, currency-safe (rendering + the hashed currencies read the
-        // stored bytes directly, never through `data_read`).
+        // Snoop quirk (recon R3): a data-port read whose target does not define all sixteen result bits fills
+        // the UNDEFINED ones from the next-available FIFO entry (the word written 4 writes ago). THREE codes
+        // snoop: CRAM read $08 (above the 9-bit mask), VSRAM read $04 (above the 11-bit mask), and — since A4
+        // — the undocumented 8-bit VRAM read $0C (its whole high byte). The *plain* VRAM read $00 returns a
+        // full 16-bit word and is the one read target that does NOT snoop. Behavioral, currency-safe
+        // (rendering + the hashed currencies read the stored bytes directly, never through `data_read`).
         match self.target() {
             Target::Cram => out = (out & 0x0EEE) | (self.fifo_snoop_word() & !0x0EEE),
             Target::Vsram => out = (out & 0x07FF) | (self.fifo_snoop_word() & !0x07FF),
-            // A4: the undocumented 8-bit VRAM read (code $0C) is the third snooping target. Only the low
-            // byte is defined — it came from `vram[address ^ 1]` via the pre-cache — so the whole HIGH byte
-            // is undefined and reads back the next-available FIFO entry's high byte. VDPFIFOTesting test 6
-            // (expected table ROM $DED4) pins it: with the ring holding the eight marker words' last four,
-            // the high byte walks $99 → $BB → $DD → $12 as one CRAM write per group advances the cursor,
-            // while both reads *within* a group return the same high byte — a read does not advance it.
+            // A4: the undocumented 8-bit VRAM read (code $0C) is the third snooping target. Only its LOW
+            // byte is defined — the pre-cache put `vram[address ^ 1]` there — so the whole HIGH byte is
+            // undefined and reads back the next-available FIFO entry's high byte, MASKING AWAY the real
+            // VRAM byte the pre-cache also holds (see `read_target`: that byte is kept, not fabricated, so
+            // this arm not firing degrades to the plain-VRAM-read result rather than to a made-up zero).
+            // VDPFIFOTesting test 6 (expected table ROM $DED4) pins it: with the ring holding the eight
+            // marker words' last four, the high byte walks $99 → $BB → $DD → $12 as one CRAM write per
+            // group advances the cursor, while both reads *within* a group return the same high byte — a
+            // read does not advance it.
             Target::Vram if Self::is_vram_byte_read(self.code) => {
                 out = (out & 0x00FF) | (self.fifo_snoop_word() & 0xFF00)
             }
@@ -1074,7 +1099,8 @@ impl Vdp {
     }
 
     /// A bus-timed data-port read (recon R1/R3): a read waits for the write FIFO to drain first (pending
-    /// writes take priority over reads), then returns the pre-cached word (with the CRAM/VSRAM snoop merge).
+    /// writes take priority over reads), then returns the pre-cached word (with the snoop merge that CRAM
+    /// read `$08`, VSRAM read `$04` and the 8-bit VRAM read `$0C` each apply — see [`Vdp::data_read`]).
     /// Returns the value plus the CPU wait cycles for the `Bus68k` channel (`FlatBus` never reaches here → the
     /// SST corpus is untouched).
     pub fn data_read_at(&mut self, open_bus: u16, now: u64) -> (u16, u32) {
@@ -2363,11 +2389,18 @@ mod tests {
         for (i, addr) in [0x8000u16, 0x8004, 0x8008, 0x800C].into_iter().enumerate() {
             vram_byte_read_cmd(&mut v, addr, 2);
             highs.push((v.data_read(0xABCD) >> 8) as u8);
-            // One CRAM write @ $0020 advances the ring cursor by one slot (ROM $DF9C).
+            // One CRAM write advances the ring cursor by one slot (ROM $DF9C). `$C020` + `$0002` sets
+            // A15-A14 = 10, i.e. address $8020, which the CRAM write path masks to $20 — the ROM's fourth
+            // group uses `$0000` for the second word and so addresses $0020 directly. Either way the point
+            // is the same: one enqueued word, one slot of cursor travel.
             ctrl(&mut v, &[0xC020, if i == 3 { 0x0000 } else { 0x0002 }]);
             v.data_write(0xFFFF);
         }
-        assert_eq!(highs, vec![0x99, 0xBB, 0xDD, 0x12]);
+        assert_eq!(
+            highs,
+            vec![0x99, 0xBB, 0xDD, 0x12],
+            "ROM $DED4 words 0/2/4/6 ($9922 $BB66 $DDAA $12EE) — the high byte tracks the snoop cursor"
+        );
     }
 
     #[test]
@@ -2375,11 +2408,19 @@ mod tests {
         // A4 changes the READ path only. Code $0C's low nibble names no *write* target, so a data write
         // under it is accepted into the FIFO and steps the address but reaches no memory (the A2
         // invalid-target rule; VDPFIFOTesting test 5 "FIFO Write to invalid target" passes today and must
-        // stay passing). Guards that the byte-read carve-out did not leak into `write_target`.
+        // stay passing). Guards that the byte-read carve-out did not leak into `write_target`, into the
+        // FIFO accounting, or into the drain-cost model.
         let mut v = fresh();
         v.vram[0x0100] = 0x5A;
         v.vram[0x0101] = 0xA5;
         vram_byte_read_cmd(&mut v, 0x0100, 2);
+        // The drain cost is decided by `target_of`, whose `_ => Vram` fallback still claims code $0C — so a
+        // $0C entry costs a VRAM word's two slots, unchanged by A4 (H32 blanked: 167 slots/line).
+        assert_eq!(
+            v.entry_drain_cost(0x0C, 0),
+            2 * MCLK_PER_LINE / 167,
+            "code $0C still drains at the VRAM word rate (2 slots)"
+        );
         v.data_write(0xBEEF);
         assert_eq!(
             (v.vram[0x0100], v.vram[0x0101]),
@@ -2387,10 +2428,47 @@ mod tests {
             "a write under code $0C reaches no memory (invalid write target)"
         );
         assert_eq!(v.addr, 0x0102, "but the address still steps");
+        assert_eq!(v.fifo_len(), 1, "and it still occupies a pending FIFO slot");
+        let newest = (v.fifo_write.wrapping_sub(1) & 3) as usize;
         assert_eq!(
-            v.fifo_snoop_word(),
-            0x0000,
-            "and it still takes a FIFO slot"
+            (v.fifo[newest].data, v.fifo[newest].code),
+            (0xBEEF, 0x0C),
+            "the ring slot holds the word and the code that wrote it"
+        );
+    }
+
+    #[test]
+    fn eight_bit_vram_read_buffer_degrades_to_the_plain_word_when_the_code_changes() {
+        // S2-3 seam. The pre-cache is filled when the read command completes, but `data_read` re-decides
+        // whether to merge the snoop from `self.code` at CONSUME time, and A2's pinned rule makes the two
+        // disagree: a `$8xxx` register write always latches CD1-CD0 from its top bits `10`, so arming $0C
+        // and then writing any register leaves code $0E — not a byte read. `read_target` therefore keeps
+        // the REAL VRAM high byte in the buffer rather than a fabricated zero, so this path returns the
+        // plain VRAM word $1122 (exactly the pre-A4 result) instead of a value invented by A4.
+        //
+        // The ROM is silent here — test 6 never writes between arming and consuming — so this is pinned as
+        // "preserve prior behaviour", not as hardware truth; see follow-up F-SNOOPWHEN.
+        let mut v = fresh();
+        v.vram[0x8000] = 0x11;
+        v.vram[0x8001] = 0x22;
+        // Load the ring so a snoop merge, if it happened, would be loudly visible ($EEEE, not $0000).
+        vram_write_cmd(&mut v, 0x0000);
+        for w in [0xEEEEu16, 0x1111, 0x2222, 0x3333] {
+            v.data_write(w);
+        }
+        assert_eq!(v.fifo_snoop_word(), 0xEEEE, "snoop word primed");
+
+        vram_byte_read_cmd(&mut v, 0x8000, 2);
+        v.control_write(0x8F02, 0); // any `$8xxx` register write → code $0C becomes $0E
+        assert_eq!(v.code, 0x0E, "the register write clobbered CD1-CD0");
+        assert!(
+            !Vdp::is_vram_byte_read(v.code),
+            "so the consume-time merge does not fire"
+        );
+        assert_eq!(
+            v.data_read(0xABCD),
+            0x1122,
+            "degrades to the plain VRAM word — the pre-A4 result, not $EE22 and not $0022"
         );
     }
 
