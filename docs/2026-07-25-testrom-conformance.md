@@ -31,7 +31,7 @@ Harness facts, so a reader can reproduce a row by hand:
 | `m68k_bcd` (`bcd-verifier-u1`) | Exhaustive ABCD / SBCD / NBCD value **and** flag verification, including the undefined-flag cases | **Yes** — three scraped text rows, font base `$000`, 700 frames | **PASS** — `abcd`/`sbcd`/`nbcd` all `$00000 $00000` (0 value errors, 0 flag errors) | — (corroborates the SST BCD coverage on real silicon-derived vectors) |
 | `io_sample` (`Multitap - IO Sample Program`) | Controller-port device detection (the TH-handshake ID protocol) on both ports | **Yes** — both ports must print `JOYPAD`, font base `$000`, 160 frames | **PASS** — port1 = `JOYPAD`, port2 = `JOYPAD` | — (matches `docs/2026-07-17-io-recon.md` IO1–IO6) |
 | `m68k_illegal` (`itest`) | Illegal / privileged / unimplemented encodings must trap to the right vector | **Yes** — no text; verdict is the backdrop word `CRAM[0..2]`: blue `$0E00` while running, `$00E0` green = pass, `$000E` red = fail. 20 frames (the full sweep settles ~frame 9) | **PASS** — backdrop `$00E0` (green) since the 2026-08-02 K1 fix (was FAIL `$000E`) | **K1 — RESOLVED & FIXED.** See below. |
-| `m68k_memory_test` (`memtest_68k`) | Reads every non-lockup address range twice; prints what it read **and** the ROM's own built-in real-hardware reference (`?` = wildcard nibble) | **Yes** — per-row compare, font base `$100`, 30 frames | **4 / 13 rows match** — mismatches: `400000-7FFFFF`, `A00000-A0FFFF`, `A00000-A03FFF`, `A06000-A07EFF`, `A10000-A1001F`, `A11100` (×2), `A11200`, `C00004-C00007` | Mostly **known gap K4** (no open-bus model). `A00000-A0FFFF` also folds in **K2** (Z80 `$7F00` mirror). |
+| `m68k_memory_test` (`memtest_68k`) | Reads every non-lockup address range twice; prints what it read **and** the ROM's own built-in real-hardware reference (`?` = wildcard nibble) | **Yes** — per-row compare, font base `$100`, 30 frames | **4 / 13 rows match** — mismatches: `400000-7FFFFF`, `A00000-A0FFFF`, `A00000-A03FFF`, `A06000-A07EFF`, `A10000-A1001F`, `A11100` (×2), `A11200`, `C00004-C00007` | Mostly **known gap K4** (no open-bus model). `A00000-A0FFFF` also folds in the 68k-side view of the Z80 `$7Fxx` region (still the Z80-RAM mirror on our 68k bus — the piece of **K2** left deferred; the Z80-side mirror itself is fixed). |
 | `vdp_port_access` (`VDPFIFOTesting`) | 16 VDP port-access tests over two pages: FIFO size/behaviour, DMA-via-FIFO, byteswapping, partial CP writes, register-write masking, read-target switching, FIFO wait states | **Yes** — scrapes the on-screen `Results: ( P/ F/ T)` line; page 1 auto-runs (settles ~frame 42), `Start` advances to page 2 (~480 more frames) | **page 1 = 6 pass / 3 fail / 9**; **pages 1+2 cumulative = 9 pass / 7 fail / 16** | Expected: the VDP timing skeleton is an interim model (`docs/2026-07-16-vdp-recon.md`; the FIFO/wait-state rows are exactly the "Phase 3 per-line DMA cost" deferral). CHARTER explicitly does not gate on this ROM. |
 | `vdp_sprite_masking` (`SpriteMaskingTestRom`) | 9 sprite masking / per-line / per-frame / dot-overflow tests | **Yes** — verdict is a 32×8 glyph at the right edge, classified by **rendered-pixel hash** (its nametable cells are identical for the tick and cross cases, so only the framebuffer discriminates). 300 frames, settles ~frame 8 | `1=TICK/TICK 2=TICK/TICK 3=TICK/CROSS 4=PASS 5=PASS 6=FAIL 7=PASS 8=PASS 9=TICK/TICK` — **2 failures**: test 3's second sub-case (MAX SPRITE DOTS – COMPLEX) and test 6 (MASK S1 ON DOT OVERFLOW) | Expected: both are the **mid-sprite pixel-budget cut** interim model, ledger row **P1** in `docs/2026-07-16-vdp-pixel-known-differences.md` (we spend budget per whole sprite; hardware cuts mid-sprite at the exact dot). Open question **Q1** below on the H32/H40 toggle. |
 | `color_1536` (`TEST1536.BIN`) | 1536-colour trick — CRAM rewritten mid-scanline | Frame hash only | `frame_hash=0x96b9c93c4f3dd325` | **Limitation L1**: end-of-frame capture. This ROM renders correctly only with per-scanline capture; the end-of-frame framebuffer cannot show it. |
@@ -98,16 +98,33 @@ PC-rel-dest / SS=3 / bit-field cases vendored — verified per family) so the fu
 
 *Reference:* M68000PRM per-instruction "Effective Addressing Mode" tables; M68000UM §6 vector 4.
 
-### K2 — Z80 `$7F00-$7F1F` VDP-mirror reads return a constant `$FF`
+### K2 — Z80 `$7F00-$7F1F` VDP-mirror reads return a constant `$FF` — **RESOLVED & FIXED (2026-08-02, Z80 side)**
 
-*Symptom:* contributes to the `m68k_memory_test` `A00000-A0FFFF` row mismatch.
+Fixed: the Z80-side status/HV window is now routed to the live `Vdp`. `crates/oracle-core/src/z80/bus.rs`
+carries the `Vdp` split-borrow (threaded from `System::catch_up_z80` exactly like the `Ym2612`, read at the
+Z80's own frontier mclk), and:
 
-*Mechanism:* `crates/oracle-core/src/z80/bus.rs` — the read `match` falls through to `_ => 0xFF` for the
-`$7F00-$7F1F` VDP-port mirror (the module header table already records this as *deferred: open bus / drop
-(needs the `Vdp` borrow)*). Writes to the same window drop. Hardware mirrors the real VDP ports there.
+- **`$7F04-$7F07`** is a REAL control-port status read — `Vdp::control_read_status`, so it has the same
+  side effects as a 68k `$C00004` read (clears the control-port write-toggle, the pinned recon-vdp
+  semantic) and the same byte-lane split (even = status high byte, odd = low byte).
+- **`$7F08-$7F0F`** reads the live HV counter (`Vdp::hv_counter_read`, side-effect-free; even = V,
+  odd = H).
+- **`$7F00-$7F03` (data port) is deliberately UNCHANGED** — still `$FF`, because a Z80 read of the VDP
+  data port locks up real hardware (the `vdp-dataport-read-lockup` known-difference, recon R1 in
+  `docs/2026-07-16-vdp-recon.md`); we return open bus instead of modeling the hang. Pinned by the
+  `vdp_data_mirror_stays_open_bus_with_no_side_effects` test.
 
-*Why deferred:* wiring it up needs the `Vdp` borrow through the Z80 bus, which is a real architectural
-change to the split-borrow bus, not a one-liner.
+Unit pins in `z80/bus.rs` (`vdp_status_mirror_*`, `vdp_hv_mirror_*`, `vdp_data_mirror_*`). Blast radius
+measured before the change: **0** Z80 reads in `$7F00-$7F1F` across all four currency suites and the
+`s4.soundtest.bin` VGM-capture boot (600 frames); **298,333** reads (all `$7F05`, a status-low-byte poll)
+from `fm_test` in this corpus. No scorecard row moved (fm_test's end-of-frame visual pin does not depend on
+the poll result); all frozen currencies byte-identical.
+
+*Still deferred (ledgered here):* the **68k-side** view of the same region — our 68k bus maps all of
+`$A00000-$A0FFFF` to the Z80-RAM mirror, so a 68k read of `$A07F00+` does not reach the VDP ports. That is
+part of the `m68k_memory_test` `A00000-A0FFFF` row (alongside K4) and stays a recorded gap. Z80 *writes*
+to `$7F00-$7F1F` (other than the PSG tap at `$7F11`) still drop, and `$7F10-$7F1F` reads stay open bus
+(write-only region on hardware).
 
 ### K3 — div0 stacked PC — **RESOLVED & FIXED (2026-08-02)**
 

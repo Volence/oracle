@@ -860,14 +860,23 @@ impl System {
                 z80_bank,
                 z80_frontier_mclk,
                 fm,
+                vdp,
                 ..
             } = self;
             while *z80_frontier_mclk < now {
                 // The Z80 reads the FM timer at its own frontier (ZC4/FM7) — behind the 68000's `now`, both
                 // absolute on the one timeline. Pass the frontier value at the start of this step as the FM's
-                // `now`.
-                let mut bus =
-                    Z80Bus::new(z80_ram, rom, ram, z80_bank, fm, *z80_frontier_mclk, sink);
+                // `now`. The VDP port mirror ($7F04+) reads at the same frontier instant (K2).
+                let mut bus = Z80Bus::new(
+                    z80_ram,
+                    rom,
+                    ram,
+                    z80_bank,
+                    fm,
+                    vdp,
+                    *z80_frontier_mclk,
+                    sink,
+                );
                 let t = z80.step(&mut bus);
                 *z80_frontier_mclk += t as u64 * MCLK_PER_Z80_CYCLE;
             }

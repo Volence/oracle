@@ -5,9 +5,10 @@
 //! **Z-live** shape — Z80 RAM, the `$6000` serial bank latch, and the `$8000-$FFFF` 68k bank window
 //! (reaching ROM / work RAM / Z80 RAM) are **live**, so a released Z80 can fetch its driver code from RAM
 //! and read music/sample data from ROM through the window. The FM/PSG ports decode (read = not-busy / open
-//! bus, write = drop) — turning those writes into the `BusEvent` VGM tap is **Phase RT**. VDP-through-window
-//! and I/O-through-window are the named deferrals (a sound driver rarely reaches them; routing them needs
-//! the `Vdp`/`Io` borrows and is pinned for the RT/interrupt slices).
+//! bus, write = drop) — turning those writes into the `BusEvent` VGM tap is **Phase RT**. The `$7F04-$7F0F`
+//! VDP status/HV mirror is **live** (K2 fix — routed to the real `Vdp`); VDP/I/O-through-the-bank-window
+//! remain the named deferrals (a sound driver rarely reaches them; routing them needs the `Io` borrow and
+//! is pinned for a later slice).
 //!
 //! Genesis Z80 memory map (Plutiedev "Using the Z80"):
 //!
@@ -18,12 +19,16 @@
 //! | `$4000-$4003` | YM2612 FM address/data | read = not-busy status; write dropped (Phase RT tap) |
 //! | `$6000` | bank-address register | **live** — 9-bit LSB-first serial latch |
 //! | `$7F11` | PSG (SN76489), write-only | decode: read open bus, write dropped (Phase RT tap) |
-//! | `$7F00-$7F1F` | VDP port mirror | deferred: open bus / drop (needs the `Vdp` borrow) |
+//! | `$7F00-$7F03` | VDP data port mirror | read = open bus `$FF` (hardware LOCKS UP — ledgered `vdp-dataport-read-lockup`); write dropped |
+//! | `$7F04-$7F07` | VDP control port mirror | **live** read — real status read of the `Vdp` (clears the write-toggle, K2); write dropped |
+//! | `$7F08-$7F0F` | VDP HV counter mirror | **live** read — the live HV counter (side-effect-free); write dropped |
+//! | `$7F10-$7F1F` | rest of the VDP mirror | read open bus, write dropped |
 //! | `$8000-$FFFF` | 68k bank window | **live** — `(bank << 15) \| (addr & 0x7FFF)` → ROM / work RAM / Z80 RAM |
 
 use super::Z80Io;
 use crate::bus::{BusEvent, BusEventSink, BusOp, Size, Z80_RAM_SIZE};
 use crate::system::RAM_SIZE;
+use crate::vdp::Vdp;
 use crate::ym2612::Ym2612;
 
 /// Split-borrow adapter over the `System`'s Z80-visible memory for one Z80 step. Holds the Z80 RAM, the
@@ -43,6 +48,12 @@ pub struct Z80Bus<'a, S: BusEventSink> {
     /// timer model **in addition to** the RT-1 VGM tap below. Split-borrowed like the 68k side; read/written at
     /// the Z80's own frontier time (`now_mclk`). See `docs/2026-07-22-fm-timer-design.md`.
     fm: &'a mut Ym2612,
+    /// The VDP, for the `$7F00-$7F1F` port mirror (K2): a `$7F04-$7F07` read is a real control-port status
+    /// read — same side effects as the 68k's `$C00004` read (clears the control-port write-toggle), same
+    /// byte-lane split (even = status high byte, odd = low). `$7F08-$7F0F` reads the HV counter
+    /// (side-effect-free). Split-borrowed like `fm`; read at the Z80's own frontier time (`now_mclk`) —
+    /// the same instant a 68k-side access at this moment would use.
+    vdp: &'a mut Vdp,
     /// The Z80's current mclk (its frontier — the value at the start of this step), the absolute time the FM
     /// status/timer is anchored to. The Z80 reads the chip *behind* the 68000's `now`; both are absolute on the
     /// one shared timeline, so the flag is computed at this time (FM7).
@@ -54,7 +65,8 @@ pub struct Z80Bus<'a, S: BusEventSink> {
 
 impl<'a, S: BusEventSink> Z80Bus<'a, S> {
     /// Build an adapter over the Z80 RAM, the cartridge ROM + work RAM the bank window reaches, the serial
-    /// bank latch, the FM chip + the Z80's current mclk, and the event sink.
+    /// bank latch, the FM chip, the VDP (for the `$7F00-$7F1F` port mirror), the Z80's current mclk, and the
+    /// event sink.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         z80_ram: &'a mut [u8],
@@ -62,6 +74,7 @@ impl<'a, S: BusEventSink> Z80Bus<'a, S> {
         ram: &'a mut [u8],
         bank: &'a mut u16,
         fm: &'a mut Ym2612,
+        vdp: &'a mut Vdp,
         now_mclk: u64,
         sink: &'a mut S,
     ) -> Self {
@@ -71,6 +84,7 @@ impl<'a, S: BusEventSink> Z80Bus<'a, S> {
             ram,
             bank,
             fm,
+            vdp,
             now_mclk,
             sink,
         }
@@ -127,12 +141,38 @@ impl<S: BusEventSink> Z80Io for Z80Bus<'_, S> {
             // clear). The SMPS driver clocks its sequencer off Timer-A overflow, so this must answer truthfully
             // (docs/2026-07-22-fm-timer-design.md). Anchored to the Z80's own frontier time.
             0x4000..=0x4003 => self.fm.read_status(self.now_mclk),
+            // VDP control port mirror ($7F04-$7F07): a REAL status read of the live Vdp (K2) — same side
+            // effects as the 68k's $C00004 read, including clearing the control-port write-toggle (the
+            // pinned recon-vdp semantic), and the same byte-lane split as a 68k byte read (even = status
+            // high byte, odd = low byte). Read at the Z80's own frontier time, like the FM status above.
+            0x7F04..=0x7F07 => {
+                let s = self.vdp.control_read_status(self.now_mclk);
+                if addr & 1 == 0 {
+                    (s >> 8) as u8
+                } else {
+                    (s & 0xFF) as u8
+                }
+            }
+            // HV counter mirror ($7F08-$7F0F): the live counter, side-effect-free; even = V (word high),
+            // odd = H (word low) — the 68k $C00008 lane split.
+            0x7F08..=0x7F0F => {
+                let hv = self.vdp.hv_counter_read(self.now_mclk);
+                if addr & 1 == 0 {
+                    (hv >> 8) as u8
+                } else {
+                    (hv & 0xFF) as u8
+                }
+            }
             // 68k bank window: translate through the 9-bit bank and read 68000 space.
             0x8000..=0xFFFF => {
                 let a = self.window_addr(addr);
                 self.read_window(a)
             }
-            // Bank register ($6000, write-only), PSG ($7F11, write-only), VDP mirror ($7F00-$7F1F): open bus.
+            // Bank register ($6000, write-only), PSG ($7F11, write-only), and the VDP DATA-port mirror
+            // ($7F00-$7F03): open bus. The data-port mirror stays $FF deliberately — a Z80 read of the VDP
+            // data port locks up real hardware (the ledgered `vdp-dataport-read-lockup` known-difference);
+            // we return open bus instead of modeling the hang. $7F10-$7F1F (PSG mirror region) is
+            // write-only on hardware.
             _ => 0xFF,
         }
     }
@@ -189,17 +229,25 @@ impl<S: BusEventSink> Z80Io for Z80Bus<'_, S> {
 mod tests {
     use super::*;
 
+    /// A power-on VDP for the map tests (fixed seed — the seed only randomizes memory contents, not the
+    /// port-visible state these tests read).
+    fn fresh_vdp() -> Vdp {
+        Vdp::power_on(&mut crate::rng::SplitMix64::new(1))
+    }
+
     /// Build a bus over fresh buffers with an explicit bank value and a null sink (helper for the map tests
     /// that do not care about the event stream). A fresh unprogrammed FM chip at mclk 0 (status reads 0x00).
+    #[allow(clippy::too_many_arguments)]
     fn bus_with<'a>(
         ram: &'a mut [u8],
         rom: &'a [u8],
         work: &'a mut [u8],
         bank: &'a mut u16,
         fm: &'a mut Ym2612,
+        vdp: &'a mut Vdp,
         sink: &'a mut (),
     ) -> Z80Bus<'a, ()> {
-        Z80Bus::new(ram, rom, work, bank, fm, 0, sink)
+        Z80Bus::new(ram, rom, work, bank, fm, vdp, 0, sink)
     }
 
     #[test]
@@ -210,7 +258,10 @@ mod tests {
         let mut bank = 0u16;
         let mut sink = ();
         let mut fm = Ym2612::new();
-        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank, &mut fm, &mut sink);
+        let mut vdp = fresh_vdp();
+        let mut bus = bus_with(
+            &mut ram, &rom, &mut work, &mut bank, &mut fm, &mut vdp, &mut sink,
+        );
         bus.write(0x0001, 0x9A);
         assert_eq!(bus.read(0x0001), 0x9A, "Z80 RAM byte round-trips");
         // 8 KiB RAM mirrored across $2000-$3FFF.
@@ -227,7 +278,10 @@ mod tests {
         let mut bank = 0u16;
         let mut sink = ();
         let mut fm = Ym2612::new();
-        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank, &mut fm, &mut sink);
+        let mut vdp = fresh_vdp();
+        let mut bus = bus_with(
+            &mut ram, &rom, &mut work, &mut bank, &mut fm, &mut vdp, &mut sink,
+        );
         for a in [0x4000u16, 0x4001, 0x4002, 0x4003] {
             assert_eq!(
                 bus.read(a) & 0x80,
@@ -245,7 +299,10 @@ mod tests {
         let mut bank = 0u16;
         let mut sink = ();
         let mut fm = Ym2612::new();
-        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank, &mut fm, &mut sink);
+        let mut vdp = fresh_vdp();
+        let mut bus = bus_with(
+            &mut ram, &rom, &mut work, &mut bank, &mut fm, &mut vdp, &mut sink,
+        );
         // Load the 9-bit page value 0b1_0000_0001 = 0x101 LSB-first: bit0 first ... bit8 last.
         for bit in [1u8, 0, 0, 0, 0, 0, 0, 0, 1] {
             bus.write(0x6000, bit);
@@ -264,7 +321,10 @@ mod tests {
         let mut bank = 1u16;
         let mut sink = ();
         let mut fm = Ym2612::new();
-        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank, &mut fm, &mut sink);
+        let mut vdp = fresh_vdp();
+        let mut bus = bus_with(
+            &mut ram, &rom, &mut work, &mut bank, &mut fm, &mut vdp, &mut sink,
+        );
         assert_eq!(
             bus.read(0x8000),
             0x7E,
@@ -281,7 +341,10 @@ mod tests {
         let mut bank = 0x1FEu16;
         let mut sink = ();
         let mut fm = Ym2612::new();
-        let mut bus = bus_with(&mut ram, &rom, &mut work, &mut bank, &mut fm, &mut sink);
+        let mut vdp = fresh_vdp();
+        let mut bus = bus_with(
+            &mut ram, &rom, &mut work, &mut bank, &mut fm, &mut vdp, &mut sink,
+        );
         bus.write(0x8000, 0x42);
         assert_eq!(bus.read(0x8000), 0x42, "window round-trips 68k work RAM");
         assert_eq!(
@@ -301,8 +364,11 @@ mod tests {
         let mut bank = 0u16;
         let mut sink: Vec<BusEvent> = Vec::new();
         let mut fm = Ym2612::new();
+        let mut vdp = fresh_vdp();
         {
-            let mut bus = Z80Bus::new(&mut ram, &rom, &mut work, &mut bank, &mut fm, 0, &mut sink);
+            let mut bus = Z80Bus::new(
+                &mut ram, &rom, &mut work, &mut bank, &mut fm, &mut vdp, 0, &mut sink,
+            );
             // FM address/data ports + the PSG port, each with a distinct value.
             bus.write(0x4000, 0x22);
             bus.write(0x4001, 0x33);
@@ -336,5 +402,169 @@ mod tests {
             assert_eq!(event.addr, addr, "raw Z80-side address");
             assert_eq!(event.value, value, "the byte the Z80 drove");
         }
+    }
+
+    /// Build a bus over `vdp` at an explicit `now_mclk` (the K2 mirror tests care about the read instant).
+    #[allow(clippy::too_many_arguments)]
+    fn bus_at<'a>(
+        ram: &'a mut [u8],
+        rom: &'a [u8],
+        work: &'a mut [u8],
+        bank: &'a mut u16,
+        fm: &'a mut Ym2612,
+        vdp: &'a mut Vdp,
+        now_mclk: u64,
+        sink: &'a mut (),
+    ) -> Z80Bus<'a, ()> {
+        Z80Bus::new(ram, rom, work, bank, fm, vdp, now_mclk, sink)
+    }
+
+    #[test]
+    fn vdp_status_mirror_reads_the_live_status_bytes() {
+        // K2: $7F04-$7F07 mirror the VDP control port — a read returns the LIVE status word's bytes, with
+        // the same byte-lane split as a 68k byte read of $C00004/5 (even = high byte, odd = low byte).
+        use crate::vdp::MCLK_PER_LINE;
+        let mut ram = vec![0u8; Z80_RAM_SIZE];
+        let rom = vec![0u8; 0x10];
+        let mut work = vec![0u8; RAM_SIZE];
+        let mut bank = 0u16;
+        let mut sink = ();
+        let mut fm = Ym2612::new();
+        // One instant in active display (line 100) and one in vblank (line 240): the vblank status bit
+        // (b3, in the LOW byte) must differ between them — the fabricated constant $FF cannot do that.
+        for (mclk, in_vblank) in [
+            (100 * MCLK_PER_LINE + 1000, false),
+            (240 * MCLK_PER_LINE + 1000, true),
+        ] {
+            let mut vdp = fresh_vdp();
+            let expected = vdp.status_word(mclk);
+            assert_eq!(
+                expected & (1 << 3) != 0,
+                in_vblank,
+                "test instant lands where intended"
+            );
+            let mut bus = bus_at(
+                &mut ram, &rom, &mut work, &mut bank, &mut fm, &mut vdp, mclk, &mut sink,
+            );
+            for base in [0x7F04u16, 0x7F06] {
+                assert_eq!(
+                    bus.read(base),
+                    (expected >> 8) as u8,
+                    "even byte = status high at {base:#06X} (mclk {mclk})"
+                );
+                assert_eq!(
+                    bus.read(base + 1),
+                    (expected & 0xFF) as u8,
+                    "odd byte = status low at {:#06X} (mclk {mclk})",
+                    base + 1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn vdp_status_mirror_read_clears_the_control_port_toggle() {
+        // A status read through the Z80 mirror has the SAME side effect as a 68k $C00004 read: it clears
+        // the control-port write-toggle (the pinned recon-vdp semantic). Discriminator: arm the toggle with
+        // a command's first word, status-read through the mirror, then write $8F02 — if the toggle was
+        // cleared it lands as a register write (reg 15 = 2); if not, it would complete the command instead.
+        let mut ram = vec![0u8; Z80_RAM_SIZE];
+        let rom = vec![0u8; 0x10];
+        let mut work = vec![0u8; RAM_SIZE];
+        let mut bank = 0u16;
+        let mut sink = ();
+        let mut fm = Ym2612::new();
+
+        // Control leg (proves the discriminator): armed toggle + NO mirror read → $8F02 is command word 2,
+        // NOT a register write.
+        let mut vdp = fresh_vdp();
+        vdp.control_write(0x8F44, 0); // reg 15 = $44 (a known non-default)
+        vdp.control_write(0x4100, 0); // VRAM-write command word 1 → arms the toggle
+        vdp.control_write(0x8F02, 0); // completes the command (toggle armed)
+        assert_eq!(
+            vdp.regs()[0x0F],
+            0x44,
+            "without the mirror read, $8F02 is swallowed as command word 2"
+        );
+
+        // The real leg: armed toggle + a $7F05 status read through the Z80 bus → toggle cleared.
+        let mut vdp = fresh_vdp();
+        vdp.control_write(0x8F44, 0);
+        vdp.control_write(0x4100, 0);
+        {
+            let mut bus = bus_at(
+                &mut ram, &rom, &mut work, &mut bank, &mut fm, &mut vdp, 0, &mut sink,
+            );
+            bus.read(0x7F05);
+        }
+        vdp.control_write(0x8F02, 0);
+        assert_eq!(
+            vdp.regs()[0x0F],
+            0x02,
+            "the mirror status read cleared the toggle — $8F02 is a register write again"
+        );
+    }
+
+    #[test]
+    fn vdp_hv_mirror_reads_the_live_hv_counter() {
+        // $7F08-$7F0F mirror the HV counter port: even byte = V (word high), odd byte = H (word low) —
+        // the same lane split as a 68k byte read of $C00008/9. Side-effect-free.
+        use crate::vdp::MCLK_PER_LINE;
+        let mut ram = vec![0u8; Z80_RAM_SIZE];
+        let rom = vec![0u8; 0x10];
+        let mut work = vec![0u8; RAM_SIZE];
+        let mut bank = 0u16;
+        let mut sink = ();
+        let mut fm = Ym2612::new();
+        let mclk = 100 * MCLK_PER_LINE + 1000; // line 100 → V = 0x64, clearly not $FF
+        let mut vdp = fresh_vdp();
+        let expected = vdp.hv_counter_read(mclk);
+        assert_eq!(expected >> 8, 0x64, "V counter at line 100");
+        let mut bus = bus_at(
+            &mut ram, &rom, &mut work, &mut bank, &mut fm, &mut vdp, mclk, &mut sink,
+        );
+        for base in [0x7F08u16, 0x7F0A, 0x7F0C, 0x7F0E] {
+            assert_eq!(
+                bus.read(base),
+                (expected >> 8) as u8,
+                "even byte = V at {base:#06X}"
+            );
+            assert_eq!(
+                bus.read(base + 1),
+                (expected & 0xFF) as u8,
+                "odd byte = H at {:#06X}",
+                base + 1
+            );
+        }
+    }
+
+    #[test]
+    fn vdp_data_mirror_stays_open_bus_with_no_side_effects() {
+        // $7F00-$7F03 (the data port) is UNCHANGED by K2: reads return $FF and touch no VDP state — the
+        // ledgered `vdp-dataport-read-lockup` known-difference (a Z80 data-port read hangs real hardware;
+        // we return open bus instead of modeling the hang). The armed toggle must survive these reads.
+        let mut ram = vec![0u8; Z80_RAM_SIZE];
+        let rom = vec![0u8; 0x10];
+        let mut work = vec![0u8; RAM_SIZE];
+        let mut bank = 0u16;
+        let mut sink = ();
+        let mut fm = Ym2612::new();
+        let mut vdp = fresh_vdp();
+        vdp.control_write(0x8F44, 0); // reg 15 = $44
+        vdp.control_write(0x4100, 0); // arm the toggle
+        {
+            let mut bus = bus_at(
+                &mut ram, &rom, &mut work, &mut bank, &mut fm, &mut vdp, 0, &mut sink,
+            );
+            for a in [0x7F00u16, 0x7F01, 0x7F02, 0x7F03] {
+                assert_eq!(bus.read(a), 0xFF, "data-port mirror read at {a:#06X}");
+            }
+        }
+        vdp.control_write(0x8F02, 0); // toggle still armed → swallowed as command word 2
+        assert_eq!(
+            vdp.regs()[0x0F],
+            0x44,
+            "data-port mirror reads left the toggle armed (no side effects)"
+        );
     }
 }
