@@ -32,7 +32,7 @@ Harness facts, so a reader can reproduce a row by hand:
 | `io_sample` (`Multitap - IO Sample Program`) | Controller-port device detection (the TH-handshake ID protocol) on both ports | **Yes** — both ports must print `JOYPAD`, font base `$000`, 160 frames | **PASS** — port1 = `JOYPAD`, port2 = `JOYPAD` | — (matches `docs/2026-07-17-io-recon.md` IO1–IO6) |
 | `m68k_illegal` (`itest`) | Illegal / privileged / unimplemented encodings must trap to the right vector | **Yes** — no text; verdict is the backdrop word `CRAM[0..2]`: blue `$0E00` while running, `$00E0` green = pass, `$000E` red = fail. 20 frames (the full sweep settles ~frame 9) | **PASS** — backdrop `$00E0` (green) since the 2026-08-02 K1 fix (was FAIL `$000E`) | **K1 — RESOLVED & FIXED.** See below. |
 | `m68k_memory_test` (`memtest_68k`) | Reads every non-lockup address range twice; prints what it read **and** the ROM's own built-in real-hardware reference (`?` = wildcard nibble) | **Yes** — per-row compare, font base `$100`, 30 frames | **13 / 13 rows match** since the 2026-08-02 status-low-byte fixes (K4 slices took it 4/13 → 12/13; the row-11 residual was ODD-outside-interlace + VBlank-forced-while-display-disabled, both reference-corroborated semantics bugs — see the K4 ledger addendum) | **K4 — RESOLVED & FIXED**; row-11 status low byte also RESOLVED (adjudicated semantics, not timing — see below). |
-| `vdp_port_access` (`VDPFIFOTesting`) | 16 VDP port-access tests over two pages: FIFO size/behaviour, DMA-via-FIFO, byteswapping, partial CP writes, register-write masking, read-target switching, FIFO wait states | **Yes** — scrapes the on-screen `Results: ( P/ F/ T)` line; page 1 auto-runs (settles ~frame 42), `Start` advances to page 2 (~480 more frames) | **page 1 = 6 pass / 3 fail / 9**; **pages 1+2 cumulative = 9 pass / 7 fail / 16** (unchanged counts, but Test 16's byte matrix improved 54→18 red cells with the A1 live FIFO flags — see note below) | The 2026-08-03 arc supersedes the earlier "CHARTER explicitly does not gate on this ROM" stance for this ROM by owner request: its rows are now being fixed slice-by-slice (A1 = live FIFO EMPTY/FULL flags, 2026-08-03). **T16 "FIFO Wait States" remains FAIL but is now 62/80 verdict bytes green (was 26/80):** all 10 groups' first-probe word matches (FULL `$0100` / EMPTY `$0200` / partial `$0000` per each group's config), as do the drained-state probes in groups 1–8. Remaining reds: groups 9–10's stream probes need **DMA-through-FIFO** (slice A3 — the ROM triggers a 68k→VRAM DMA mid-group and expects the stream to see FULL/partial), and groups 2/3/5/6/8's stream-FULL probe needs **discrete per-line access-slot scheduling** (the write-6 stall phase-locks the CPU to the drain clock; with our uniform 380-mclk H40 slot spacing the post-insert probe deterministically lands just past a drain boundary every retry, where hardware's irregular slot gaps let it still catch FULL) — the "Phase 3 per-line DMA cost" deferral, not flag mechanics. |
+| `vdp_port_access` (`VDPFIFOTesting`) | 16 VDP port-access tests over two pages: FIFO size/behaviour, DMA-via-FIFO, byteswapping, partial CP writes, register-write masking, read-target switching, FIFO wait states | **Yes** — scrapes the on-screen `Results: ( P/ F/ T)` line; page 1 auto-runs (settles ~frame 42), `Start` advances to page 2 (~480 more frames) | **page 1 = 6 pass / 3 fail / 9**; **pages 1+2 cumulative = 11 pass / 5 fail / 16** (was 9/7/16 — slice A2 flipped T13 and T10; Test 16's byte matrix had already improved 54→18 red cells with the A1 live FIFO flags — see notes below) | The 2026-08-03 arc supersedes the earlier "CHARTER explicitly does not gate on this ROM" stance for this ROM by owner request: its rows are now being fixed slice-by-slice (A1 = live FIFO EMPTY/FULL flags; A2 = control-port / code-register edges, both 2026-08-03). Per-test today — page 1: T1 T2 T5 T7 T8 T9 pass, **T3 T4 T6 fail**; page 2: T10 T11 T13 T14 T15 pass, **T12 T16 fail**. **A2 flipped T13 "Register Writes and Code Reg" and T10 "Partial CP Writes"** (see the A2 note below), and left **T12 "Register Write Mode4 Mask"** as a named residual: in Mode 4 (reg 1 bit 2 = M5 clear) only the eleven SMS registers 0–10 are writable, and the one-line fix in `Vdp::write_register` **moves `export_state_v1::GOLDEN_HASH` and the `golden_frames` scenes**, because nearly every fixture here — `testrom.rs`'s golden ROM included, its `reg 1 = $50` leaving M5 clear — programs registers 11+ while still in Mode 4. Held for an owner ruling; the spec is pinned as an `#[ignore]`d unit test (`vdp::tests::mode4_ignores_register_writes_above_ten`). **T16 "FIFO Wait States" remains FAIL but is now 62/80 verdict bytes green (was 26/80):** all 10 groups' first-probe word matches (FULL `$0100` / EMPTY `$0200` / partial `$0000` per each group's config), as do the drained-state probes in groups 1–8. Remaining reds: groups 9–10's stream probes need **DMA-through-FIFO** (slice A3 — the ROM triggers a 68k→VRAM DMA mid-group and expects the stream to see FULL/partial), and groups 2/3/5/6/8's stream-FULL probe needs **discrete per-line access-slot scheduling** (the write-6 stall phase-locks the CPU to the drain clock; with our uniform 380-mclk H40 slot spacing the post-insert probe deterministically lands just past a drain boundary every retry, where hardware's irregular slot gaps let it still catch FULL) — the "Phase 3 per-line DMA cost" deferral, not flag mechanics. |
 | `vdp_sprite_masking` (`SpriteMaskingTestRom`) | 9 sprite masking / per-line / per-frame / dot-overflow tests | **Yes** — verdict is a 32×8 glyph at the right edge, classified by **rendered-pixel hash** (its nametable cells are identical for the tick and cross cases, so only the framebuffer discriminates). 300 frames, settles ~frame 8 | `1=TICK/TICK 2=TICK/TICK 3=TICK/CROSS 4=PASS 5=PASS 6=FAIL 7=PASS 8=PASS 9=TICK/TICK` — **2 failures**: test 3's second sub-case (MAX SPRITE DOTS – COMPLEX) and test 6 (MASK S1 ON DOT OVERFLOW) | Expected: both are the **mid-sprite pixel-budget cut** interim model, ledger row **P1** in `docs/2026-07-16-vdp-pixel-known-differences.md` (we spend budget per whole sprite; hardware cuts mid-sprite at the exact dot). Open question **Q1** below on the H32/H40 toggle. |
 | `color_1536` (`TEST1536.BIN`) | 1536-colour trick — CRAM rewritten mid-scanline | Frame hash only | `frame_hash=0x96b9c93c4f3dd325` | **Limitation L1**: end-of-frame capture. This ROM renders correctly only with per-scanline capture; the end-of-frame framebuffer cannot show it. |
 | `cram_flicker` (`cram flicker.bin`) | CRAM-dot / border artefacts from writing CRAM during active display | **NOT-RENDERABLE** — border-only rendering; the effect lives outside our active-area framebuffer | `frame_hash=0x815bb645bc46a325` | Structural: we render the 224-line active area, not the border where the artefact appears. |
@@ -278,6 +278,51 @@ One boundary note stays open (not exercised by any pinned test): our vblank wind
 224..=261 while Oracle's `vblankClearedPoint = 0x1FF` clears the flag on line 261 (V28 NTSC,
 `V28NtscNoIntScanSettingsStatic`, `S315-5313_Timing.cpp:250`) — memtest cannot discriminate (its only
 line-261 read happens with the display disabled, where the forced-set rule dominates).
+
+### A2 addendum (2026-08-03) — control-port / code-register edges; T13 + T10 fixed, T12 held
+
+Slice A2 of the FIFO/scanline arc. Both pins come from `vendor/TestRoms/vdp_port_access.bin`'s own
+**embedded expected-value tables** (each test's 36-byte name string is followed 36 bytes later by its
+expected words; the ROM loads both with literal `lea`s, so the addresses are the ROM's, not guesses), each
+corroborated by public hardware documentation. Scorecard movement: `vdp_port_access` page 2 went
+**9/7/16 → 11/5/16**; every other row, and all four frozen currency suites, byte-identical.
+
+**T13 "Register Writes and Code Reg"** (name `$22D6`, table `$22FA` =
+`0123 4567 ffff ffff ffff ffff f923 fd67 ffff ffff f923 fd67`). The observation group at ROM `$23B4` sets a
+VRAM-write command, writes register 15, then writes `$0123`/`$4567` — and hardware reads back the *old*
+`$FFFF`s. So the register write leaves the data port dead. *Mechanism pinned:* a first control word always
+latches CD1-CD0 from its bits 15-14, and the `$8xxx` register form's bits 15-14 are `10`, leaving
+CD3-CD0 = `xx10`, which names no target. Charles MacDonald, *genvdp.txt* 1.5f: "Writing to a VDP register
+will clear the code register. Games that rely on this are Golden Axe II … and Sonic 3D." **It is not a full
+clear:** the same test's fifth/sixth groups (ROM `$24EC`) write a register and then a *first-half-only*
+control word, and the following writes land on the previously latched **VSRAM** target — so CD5-CD2 survive
+(table words 8-11). A13-A0 is left alone on the register form: unobserved by the ROM, and MacDonald records
+the address side as unknown ("It is not known if the address register is cleared as well").
+
+**T10 "Partial CP Writes"** (name `$FC86`, table `$FCAA`; 14 words, 13 of which already matched). The single
+red word was #7, from ROM `$FFEA`: a full CRAM-**read** command, then a first-half-only word (CD1-CD0 ← 01),
+leaving CD3-CD0 = `1001` — CD0 set, so it looks like a write, but `1001` is not in genvdp.txt's code table
+(`0000` VRAM read / `0001` VRAM write / `0011` CRAM write / `0100` VSRAM read / `0101` VSRAM write / `1000`
+CRAM read). Hardware discards it; we were writing to VRAM. Fixed by gating `write_target` on
+CD3-CD0 ∈ {`0001`,`0011`,`0101`} — the write half of MacDonald's "You cannot write data after setting up a
+read operation, or read data after setting up a write operation. The write or read is ignored." The word is
+still enqueued into the FIFO and the address still auto-increments (unobserved by the ROM either way; kept
+so no FIFO/timing behaviour moves).
+
+**T12 "Register Write Mode4 Mask" — RESIDUAL, not fixed.** Table `$20EC`; sequence at ROM `$2244` sets
+reg 1 = `$40` (M5 clear → Mode 4), writes `$8F04` (reg 15 = 4), restores reg 1 = `$44`, then streams three
+words: hardware lands them contiguously, i.e. the autoincrement is still **2**, i.e. the mode-4 register
+write never happened. Kabuto's hardware notes: "All registers except for the 10(?) SMS registers are
+disabled." The fix is one line in `Vdp::write_register` (`if regs[1] & 0x04 == 0 && reg > 10 { return }`)
+and it does make T12 pass — but **it moves frozen currency**: `crates/oracle-core/src/testrom.rs`'s golden
+ROM programs reg 1 = `$50`, which leaves M5 **clear**, and then writes registers 11/12/13/15/16, so
+`export_state_v1::GOLDEN_HASH` and the `golden_frames` scenes both move (locally it also reddened 52 unit
+tests whose fixtures never set M5). Held for an owner ruling. The spec is preserved as an `#[ignore]`d unit
+test, `vdp::tests::mode4_ignores_register_writes_above_ten`, next to a NOT MODELLED note in
+`write_register`.
+
+Sources: [genvdp.txt 1.5f, Charles MacDonald](http://jiggawatt.org/genvdp.txt) ·
+[Kabuto's hardware notes (Plutiedev mirror)](https://plutiedev.com/mirror/kabuto-hardware-notes).
 
 ## Limitations of the instrument itself
 

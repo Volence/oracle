@@ -602,6 +602,15 @@ impl Vdp {
         if reg >= REG_COUNT {
             return; // n >= 24 ignored
         }
+        // NOT MODELLED (slice A2 residual, VDPFIFOTesting test 12 "Register Write Mode4 Mask", ROM $20EC):
+        // in Mode 4 (reg 1 bit 2 = M5 clear — the SMS mode) only the eleven SMS registers 0-10 are
+        // writable; the ROM sets reg 15 = 4 inside a mode-4 window and the autoincrement is still 2 when
+        // mode 5 returns. Kabuto's hardware notes: "All registers except for the 10(?) SMS registers are
+        // disabled." Implementing `if regs[1] & 0x04 == 0 && reg > 10 { return }` here is a one-line fix
+        // and it does make test 12 pass — but almost every fixture in this repo (including
+        // `testrom.rs`'s golden ROM, whose reg 1 = $50 leaves M5 CLEAR) programs registers 11+ without
+        // ever setting M5, so it moves `export_state_v1::GOLDEN_HASH` and the `golden_frames` scenes.
+        // Blocked on an owner ruling about that currency movement; see docs/2026-07-25-testrom-conformance.md.
         let m3_before = reg == 0 && self.regs[0] & 0x02 != 0;
         self.regs[reg] = val;
         if reg == 0 && val & 0x02 != 0 && !m3_before {
@@ -614,6 +623,15 @@ impl Vdp {
     /// CD1-CD0 + A13-A0 immediately, arm the toggle); or a second command word (CD5-CD2 + A15-A14, disarm).
     pub fn control_write(&mut self, w: u16, mclk: u64) {
         if !self.pending {
+            // A first control word ALWAYS latches CD1-CD0 from bits 15-14 — including the `$8xxx` register
+            // form, whose bits 15-14 are `10`. CD3-CD0 = `xx10` names no target in the code table, so after
+            // a register write the data port is dead until the next command word: genvdp.txt 1.5f, "Writing
+            // to a VDP register will clear the code register. Games that rely on this are Golden Axe II …
+            // and Sonic 3D." CD5-CD2 are *retained*, so this is not a full clear — VDPFIFOTesting test 13
+            // (ROM $22FA words 8-11) writes a register, then a first-half-only word, and the writes still
+            // land on the previously latched VSRAM target. A13-A0 is left alone on the register form: the
+            // ROM never observes it, and MacDonald records the address side as unknown.
+            self.code = (self.code & 0x3C) | ((w >> 14) & 0x03) as u8;
             if (w >> 14) & 0x03 == 0b10 {
                 // Register write: reg = bits 12..8, value = bits 7..0. Does not arm the toggle.
                 self.write_register(((w >> 8) & 0x1F) as usize, (w & 0xFF) as u8, mclk);
@@ -621,7 +639,6 @@ impl Vdp {
             }
             // First command word: apply the low half (CD1-CD0 + A13-A0) to the live registers immediately.
             self.addr = (self.addr & 0xC000) | (w & 0x3FFF);
-            self.code = (self.code & 0x3C) | ((w >> 14) & 0x03) as u8;
             self.pending = true;
         } else {
             // Second command word: apply the high half (CD5-CD2 + A15-A14), disarm.
@@ -809,7 +826,15 @@ impl Vdp {
             return;
         }
         self.fifo_enqueue(w);
-        self.write_target(w);
+        // Only CD3-CD0 = 0001 / 0011 / 0101 (VRAM / CRAM / VSRAM write) name a write target; every other
+        // code is undefined and "the write … is ignored" (genvdp.txt 1.5f code table — the same sentence
+        // that forbids writing after a read command). The port still *accepts* the word — it takes its FIFO
+        // slot and the address still steps — but nothing reaches memory. VDPFIFOTesting test 10 (ROM $FCAA
+        // word 7) pins the case CD0 alone cannot catch: a first-half-only word over a CRAM *read* command
+        // leaves code `001001`, which looks like a write but has no target.
+        if matches!(self.code & 0x0F, 0x1 | 0x3 | 0x5) {
+            self.write_target(w);
+        }
         self.autoinc();
     }
 
@@ -1193,6 +1218,121 @@ mod tests {
 
     fn fresh() -> Vdp {
         Vdp::power_on(&mut SplitMix64::new(1))
+    }
+
+    // --- Control-port / code-register edges (slice A2; VDPFIFOTesting tests 10, 12, 13) -------------------
+
+    /// Replay a control-port word stream (`ctrl`) / data-port word (`data`) at mclk 0, the way the ROM does.
+    fn ctrl(v: &mut Vdp, words: &[u16]) {
+        for &w in words {
+            v.control_write(w, 0);
+        }
+    }
+
+    /// VDPFIFOTesting test 13 "Register Writes and Code Reg" (ROM `$22D6`, expected table `$22FA`), the
+    /// second observation group at ROM `$23B4`: a `$8xxx` register write between a VRAM-write command and
+    /// the data writes makes those writes vanish — VRAM keeps the `$FFFF`s. This is Charles MacDonald's
+    /// "Writing to a VDP register will clear the code register. Games that rely on this are Golden Axe II
+    /// … and Sonic 3D" (genvdp.txt 1.5f).
+    #[test]
+    fn a_register_write_drops_the_following_data_port_writes() {
+        let mut v = fresh();
+        ctrl(&mut v, &[0x4000, 0x0002]); // VRAM write @ $8000
+        v.regs[0x0F] = 2; // autoinc 2 (the ROM inherits it)
+        for _ in 0..4 {
+            v.data_write(0xFFFF);
+        }
+        ctrl(&mut v, &[0x4000, 0x0002]); // VRAM write @ $8000 again
+        ctrl(&mut v, &[0x8F02]); // reg 15 = 2 — a REGISTER write
+        v.data_write(0x0123);
+        v.data_write(0x4567);
+        ctrl(&mut v, &[0x0000, 0x0002]); // VRAM read @ $8000
+        assert_eq!(
+            [v.data_read(0), v.data_read(0)],
+            [0xFFFF, 0xFFFF],
+            "ROM $22FA words 2-3: the writes after a register write never reach VRAM"
+        );
+    }
+
+    /// Same test 13, the fifth/sixth groups (ROM `$24EC`): CD5-CD2 SURVIVE the register write. A following
+    /// first-half-only control word re-supplies CD1-CD0 only, and the writes land on the *retained* VSRAM
+    /// write target — not VRAM. This is what forbids modelling "clear the code register" as a full clear.
+    #[test]
+    fn a_register_write_retains_cd5_cd2() {
+        let mut v = fresh();
+        v.regs[0x0F] = 2;
+        ctrl(&mut v, &[0x4000, 0x0002]); // VRAM write @ $8000
+        for _ in 0..4 {
+            v.data_write(0xFFFF);
+        }
+        ctrl(&mut v, &[0x4000, 0x0012]); // VSRAM write @ $8000 (CD5-CD2 = 0001)
+        ctrl(&mut v, &[0x8F02]); // register write
+        ctrl(&mut v, &[0x4000]); // first half only: CD1-CD0 = 01
+        v.data_write(0x0123);
+        v.data_write(0x4567);
+        ctrl(&mut v, &[0x0000, 0x0002]); // VRAM read @ $8000
+        assert_eq!(
+            [v.data_read(0), v.data_read(0)],
+            [0xFFFF, 0xFFFF],
+            "ROM $22FA words 8-9: VRAM is untouched — the retained target was VSRAM"
+        );
+        ctrl(&mut v, &[0x0000, 0x0012]); // VSRAM read @ $8000
+        let b = ((0x8000u16 & 0xFFFE) as usize) % VSRAM_SIZE;
+        assert_eq!(
+            [
+                u16::from_be_bytes([v.vsram[b], v.vsram[b + 1]]),
+                u16::from_be_bytes([v.vsram[b + 2], v.vsram[b + 3]])
+            ],
+            [0x0123, 0x0567],
+            "ROM $22FA words 10-11 ($F923/$FD67 before the snoop merge): the writes went to VSRAM"
+        );
+    }
+
+    /// VDPFIFOTesting test 10 "Partial CP Writes" (ROM `$FC86`, expected table `$FCAA`), the eighth
+    /// observation (ROM `$FFEA`): a first-half-only control word over a CRAM-*read* command leaves
+    /// CD3-CD0 = `1001`, which is not in genvdp.txt's code table — so the data-port write is ignored even
+    /// though CD0 (write) is set.
+    #[test]
+    fn a_data_write_with_an_undefined_code_is_ignored() {
+        let mut v = fresh();
+        v.regs[0x0F] = 2;
+        ctrl(&mut v, &[0x4000, 0x0002]); // VRAM write @ $8000
+        v.data_write(0xFFFF);
+        ctrl(&mut v, &[0x0000, 0x0022]); // CRAM read @ $8000 → code 0b001000
+        ctrl(&mut v, &[0x4000]); // first half only → code 0b001001 (undefined)
+        v.data_write(0x0246);
+        ctrl(&mut v, &[0x0000, 0x0002]); // VRAM read @ $8000
+        assert_eq!(
+            v.data_read(0),
+            0xFFFF,
+            "ROM $FCAA word 7: the undefined-code write is discarded"
+        );
+    }
+
+    /// VDPFIFOTesting test 12 "Register Write Mode4 Mask" (ROM `$20C8`, expected table `$20EC`, sequence at
+    /// ROM `$2244`): with M5 clear (reg 1 bit 2 — Mode 4, the SMS mode) a write to register 15 is ignored,
+    /// so the autoincrement stays at its Mode-5 value. Kabuto's hardware notes: "All registers except for
+    /// the 10(?) SMS registers are disabled".
+    ///
+    /// **RESIDUAL — deliberately `#[ignore]`d, not deleted.** The fix is one line in `write_register`
+    /// (see the NOT MODELLED note there), but nearly every fixture in this repo — `testrom.rs`'s golden
+    /// ROM included, its reg 1 = `$50` leaving M5 clear — programs registers 11+ while still in Mode 4, so
+    /// landing it moves `export_state_v1::GOLDEN_HASH` and the `golden_frames` scenes. This test is the
+    /// pinned spec, held until that currency movement is ruled on.
+    #[test]
+    #[ignore = "A2 residual: needs an owner ruling on the GOLDEN_HASH / golden_frames movement"]
+    fn mode4_ignores_register_writes_above_ten() {
+        let mut v = fresh();
+        ctrl(&mut v, &[0x8F02]); // reg 15 = 2 while in mode 5 (reg 1 = 0 … set M5 first)
+        ctrl(&mut v, &[0x8144]); // reg 1 = $44 → M5 set
+        ctrl(&mut v, &[0x8F02]); // reg 15 = 2
+        ctrl(&mut v, &[0x8140]); // reg 1 = $40 → M5 CLEAR = mode 4
+        ctrl(&mut v, &[0x8F04]); // reg 15 = 4 — must be IGNORED
+        assert_eq!(v.regs[0x0F], 2, "reg 15 > 10 is not writable in mode 4");
+        ctrl(&mut v, &[0x8144]); // reg 1 = $44 → back to mode 5
+        assert_eq!(v.regs[1], 0x44, "reg 1 <= 10 IS writable in mode 4");
+        ctrl(&mut v, &[0x8F04]);
+        assert_eq!(v.regs[0x0F], 4, "and reg 15 is writable again in mode 5");
     }
 
     /// The first mclk-in-line dot whose readable H counter equals `target` (each value occurs across a line).
