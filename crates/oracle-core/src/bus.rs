@@ -1020,11 +1020,16 @@ mod tests {
     }
     impl MdMem {
         fn new(rom: Vec<u8>) -> Self {
+            // The VDP is powered on **in Mode 5**: the tests below program autoincrement (reg 15) and the
+            // DMA registers (19/20/23), which a bare `power_on` (reg 1 = $00 = M5 clear = Mode 4) would
+            // discard — only registers 0-10 are writable in Mode 4 (see `Vdp::write_register`).
+            let mut vdp = Vdp::power_on(&mut crate::rng::SplitMix64::new(1));
+            vdp.control_write(0x8104, 0); // reg 1 = $04 → M5 set (mode 5)
             Self {
                 rom,
                 ram: vec![0u8; RAM_SIZE],
                 z80_ram: vec![0u8; Z80_RAM_SIZE],
-                vdp: Vdp::power_on(&mut crate::rng::SplitMix64::new(1)),
+                vdp,
                 io: Io::default(),
                 now_mclk: 0,
                 last_bus_word: 0,

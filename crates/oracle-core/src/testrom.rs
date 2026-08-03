@@ -164,6 +164,11 @@ pub fn build_vram_poke() -> Vec<u8> {
     put_long(&mut rom, 0x202, 0x00C0_0004);
     put_word(&mut rom, 0x206, 0x43F9); // lea (xxx).l, a1
     put_long(&mut rom, 0x208, 0x00C0_0000);
+    // The next two words write reg 15 = autoinc 2. NOTE: this ROM never sets reg 1, so it runs in Mode 4
+    // (M5 clear) and hardware discards that write — registers above 10 are not writable in Mode 4 (see
+    // `Vdp::write_register`). Left as-is deliberately: the fixture does a single word poke whose two bytes
+    // land regardless of the autoincrement, and the ROM's byte layout is address-packed, so declaring M5
+    // would mean relocating `VRAM_POKE_PC` and every literal offset below for no behavioural gain.
     put_word(&mut rom, 0x20C, 0x30BC); // move.w #imm,(a0)
     put_word(&mut rom, 0x20E, 0x8F02); //   reg 15 = autoinc 2
     put_word(&mut rom, 0x210, 0x20BC); // move.l #imm,(a0)
@@ -231,7 +236,7 @@ pub fn build_pad_poll() -> Vec<u8> {
 
     // VDP registers: display + DMA enable, plane/sprite bases, H32, autoinc 2 (for the CRAM writes below).
     for word in [
-        0x8150u16, // reg 1  display + DMA enable
+        0x8154u16, // reg 1  display + DMA enable + M5 (bit 2): regs 11+ need mode 5
         0x8230,    // reg 2  plane A $C000
         0x8407,    // reg 4  plane B $E000
         0x8558,    // reg 5  SAT $B000

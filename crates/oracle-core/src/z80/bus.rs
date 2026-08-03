@@ -256,9 +256,13 @@ mod tests {
     use super::*;
 
     /// A power-on VDP for the map tests (fixed seed — the seed only randomizes memory contents, not the
-    /// port-visible state these tests read).
+    /// port-visible state these tests read), put **in Mode 5**: the discriminator writes below program
+    /// reg 15, which a bare `power_on` (reg 1 = `$00` = M5 clear = Mode 4) would discard — only registers
+    /// 0-10 are writable in Mode 4 (see `Vdp::write_register`).
     fn fresh_vdp() -> Vdp {
-        Vdp::power_on(&mut crate::rng::SplitMix64::new(1))
+        let mut v = Vdp::power_on(&mut crate::rng::SplitMix64::new(1));
+        v.control_write(0x8104, 0); // reg 1 = $04 → M5 set (mode 5)
+        v
     }
 
     /// Build a bus over fresh buffers with an explicit bank value and a null sink (helper for the map tests

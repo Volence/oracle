@@ -143,8 +143,9 @@ const BASELINE: &[(&str, &str)] = &[
         // access-slot scheduling — see docs/2026-07-25-testrom-conformance.md.
         // A2 (2026-08-03): control-port / code-register edges. Page 2 went 9/7 → 11/5 — T13 "Register
         // Writes and Code Reg" and T10 "Partial CP Writes" flipped to pass. Page 1 is untouched (its
-        // three failures, T3/T4/T6, are other slices). T12 "Register Write Mode4 Mask" is a named
-        // residual: the fix is known but moves frozen currency (see the note in `Vdp::write_register`).
+        // three failures, T3/T4/T6, are other slices). T12 "Register Write Mode4 Mask" was left a named
+        // residual here, believed to move frozen currency — that belief was later measured and proved
+        // FALSE; see the T12 note at the end of this comment.
         // A3a (2026-08-03): 68k→VDP DMA payload words now occupy physical FIFO slots. Page 1 went
         // 6/3 → 7/2 — T3 "DMA Transfer using FIFO" flipped to pass (its 16 observations are pure
         // undefined-bit FIFO snoop reads).
@@ -158,10 +159,18 @@ const BASELINE: &[(&str, &str)] = &[
         // A4 (2026-08-03): the undocumented 8-bit VRAM read (CD = %001100) returns `vram[address ^ 1]` in
         // the low byte and the next-available FIFO entry's high byte in the high byte. Page 1 went 8/1 →
         // **9/0** — T6 "8-bit VRAM Read target 01100" flipped to pass, completing page 1. Cumulative
-        // 13/3 → 14/2; page 2's two residuals are T12 and T16, both parked on owner rulings / a named
-        // follow-up (see docs/2026-07-25-testrom-conformance.md).
+        // 13/3 → 14/2; page 2's two residuals were T12 and T16.
+        // T12 (2026-08-03): in Mode 4 (reg 1 bit 2 = M5 clear) only the eleven SMS registers 0-10 are
+        // writable — writes above 10 are discarded. Cumulative 14/2 → **15/1**; page 1 unchanged at 9/0
+        // (T12 is a page-2 test). The parked claim that this moves `export_state_v1::GOLDEN_HASH` and the
+        // `golden_frames` scenes was the *same* `build_pad_poll`/`build` mis-identification as above and is
+        // FALSE: measured, every frozen constant came back byte-identical once the fixtures that declared
+        // Mode 4 while programming Mode-5 registers were corrected to declare M5 (test-only, 8 sites; see
+        // docs/2026-08-03-decision2-premise-recheck.md). The `> 10` boundary is extrapolated from a hedged
+        // source — the ROM pins register 15 only — registered as follow-up F-M4REGS in the ledger.
+        // The sole remaining residual is T16 (per-line access-slot scheduling).
         "vdp_port_access",
-        "page1 pass/fail/total=9/0/9; pages1+2 cumulative=14/2/16",
+        "page1 pass/fail/total=9/0/9; pages1+2 cumulative=15/1/16",
     ),
     (
         "vdp_sprite_masking",

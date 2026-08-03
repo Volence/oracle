@@ -1082,6 +1082,7 @@ mod tests {
         let mut s = booted(0x1111);
         {
             let v = s.vdp_mut();
+            v.control_write(0x8104, 0); // reg 1 = $04 → M5 set: regs 11+ are only writable in mode 5
             v.control_write(0x8F02, 0); // reg 15 = autoinc 2
             v.control_write(0x8510, 0); // reg 5 = 0x10 → SAT base 0x2000
             let base = v.sat_base();

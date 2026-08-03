@@ -16,9 +16,14 @@ use oracle_core::vdp::Vdp;
 
 const ACTIVE_LINES: u16 = 224;
 
+/// A powered-on VDP with cleared VRAM, **in Mode 5**. Every scene below programs Mode-5-only state
+/// (autoincrement, plane/window bases, H40, two-cell scroll), and in Mode 4 — reg 1 bit 2 clear, which is
+/// what a bare `power_on` leaves — registers above 10 are not writable. Declaring M5 here is what these
+/// scenes always meant; it does not change any pinned hash below.
 fn fresh() -> Vdp {
     let mut v = Vdp::power_on(&mut SplitMix64::new(1));
     v.vram_mut().fill(0);
+    v.control_write(0x8104, 0); // reg 1 = $04 → M5 set (mode 5)
     v
 }
 
@@ -118,7 +123,7 @@ fn frame_hash(v: &Vdp) -> u64 {
 /// with a low-priority red sprite (loses to high-A, wins over low-A) and a highlight operator, S/H enabled.
 fn scene_priority_sh() -> Vdp {
     let mut v = fresh();
-    set_reg(&mut v, 0x01, 0x40); // display on
+    set_reg(&mut v, 0x01, 0x44); // display on
     set_reg(&mut v, 0x0C, 0x08); // S/H on, H32
     set_reg(&mut v, 0x02, 0x30); // plane A $C000
     set_reg(&mut v, 0x04, 0x07); // plane B $E000
@@ -152,7 +157,7 @@ fn scene_priority_sh() -> Vdp {
 /// the v-scroll choice is visible in the frame.
 fn scene_r8_partial_column() -> Vdp {
     let mut v = fresh();
-    set_reg(&mut v, 0x01, 0x40);
+    set_reg(&mut v, 0x01, 0x44);
     set_reg(&mut v, 0x04, 0x07); // plane B $E000
     set_reg(&mut v, 0x10, 0x00);
     set_reg(&mut v, 0x0D, 0x20);
@@ -180,7 +185,7 @@ fn scene_r8_partial_column() -> Vdp {
 
 fn scene_r9_window_bug() -> Vdp {
     let mut v = fresh();
-    set_reg(&mut v, 0x01, 0x40);
+    set_reg(&mut v, 0x01, 0x44);
     set_reg(&mut v, 0x02, 0x30); // plane A $C000
     set_reg(&mut v, 0x03, 0x28); // window $A000
     set_reg(&mut v, 0x10, 0x00);
@@ -206,7 +211,7 @@ fn scene_r9_window_bug() -> Vdp {
 
 fn scene_hscroll_modes() -> Vdp {
     let mut v = fresh();
-    set_reg(&mut v, 0x01, 0x40);
+    set_reg(&mut v, 0x01, 0x44);
     set_reg(&mut v, 0x04, 0x07); // plane B $E000
     set_reg(&mut v, 0x10, 0x00);
     set_reg(&mut v, 0x0D, 0x20);
@@ -238,7 +243,7 @@ fn scene_hscroll_modes() -> Vdp {
 
 fn scene_r5_cache_window() -> Vdp {
     let mut v = fresh();
-    set_reg(&mut v, 0x01, 0x40);
+    set_reg(&mut v, 0x01, 0x44);
     set_reg(&mut v, 0x0C, 0x81); // H40
     set_reg(&mut v, 0x05, 0x59); // SAT base: H40 masks bit 0 → $B000 (0x58<<9), not $B200
     set_reg(&mut v, 0x0F, 0x02);
@@ -262,7 +267,7 @@ fn scene_r5_cache_window() -> Vdp {
 /// that overshoots the budget draws FULLY (no mid-sprite cut); the next is dropped. Pins the push-4 model.
 fn scene_no_mid_sprite_cut() -> Vdp {
     let mut v = fresh();
-    set_reg(&mut v, 0x01, 0x40);
+    set_reg(&mut v, 0x01, 0x44);
     set_reg(&mut v, 0x05, 0x58); // SAT base $B000
     set_reg(&mut v, 0x0F, 0x02);
     base_palette(&mut v);

@@ -1,4 +1,22 @@
-# PARKED — needs the owner's ruling (2026-08-03 overnight arc)
+# ~~PARKED — needs the owner's ruling~~ — **CLOSED 2026-08-03, both decisions moot**
+
+> **CLOSED. Neither decision ever needed a ruling, because neither fix moved any
+> frozen currency.** Decision 1 (A3b) landed currency-neutral. Decision 2 (T12)
+> was re-measured before implementation
+> (`docs/2026-08-03-decision2-premise-recheck.md`) and then landed as slice T12,
+> also **currency-neutral**: `export_state_v1::GOLDEN_HASH`, the six
+> `golden_frames` scene hashes, `oracle_differential`, `determinism_gate` and
+> `singlestep_m68000` all came back **byte-identical**. `vdp_port_access` went
+> `14/2/16 → 15/1/16`.
+>
+> **Both premises failed the same way:** each cited `testrom::build_pad_poll`
+> (used only by `io_controllers`, `watchpoints` and the `pad_probe` example — no
+> frozen currency) while believing it was the `export_state_v1` golden fixture,
+> which is `testrom::build` and drives no VDP port at all. **The meta-point below
+> is therefore withdrawn: the golden fixture does not encode our bugs.** The
+> lesson that survives is the opposite one — *"a test goes red"* and *"the
+> currency moves"* are different events, and only measurement distinguishes them.
+> Everything below is kept as-written for the record; read it as history.
 
 **TWO** decisions came up during the FIFO/scanline arcs that are above an
 agent's pay grade, because they move frozen currency. Nothing was changed;
@@ -114,6 +132,18 @@ it turned out to be currency-neutral too — see the banner above.)*
 
 ## Decision 2: may T12's Mode-4 register masking land? (found during slice A2)
 
+> **RESOLVED 2026-08-03 — no ruling was needed; slice T12 LANDED currency-neutral.**
+> The "why it moves currency" section below is **FALSE**, verified by measurement
+> twice (`docs/2026-08-03-decision2-premise-recheck.md`, then again in the landing
+> slice). No frozen constant moved. The 52 (actually 57) red tests were real, but
+> every one was a fixture declaring Mode 4 while programming Mode-5 registers — an
+> impossible machine state; declaring M5 in them restored every pinned hash
+> byte-identically. The `#[ignore]` is removed and the test now runs.
+> One caveat did survive and is now follow-up **F-M4REGS**: the ROM pins register
+> 15 only, so the `> 10` boundary is extrapolated from Kabuto's own hedged
+> "10(?)". See the T12 addendum in `docs/2026-07-25-testrom-conformance.md`.
+
+
 **The rule.** In Mode 4 (reg 1 bit 2 = M5 clear) only the eleven SMS registers
 0-10 are writable; writes to registers above 10 are discarded. Source: Kabuto's
 hardware notes — "All registers except for the 10(?) SMS registers are
@@ -170,6 +200,8 @@ schedule Decision 2 as its own slice with the fixture cleanup budgeted.
 | + A3a (landing tonight, currency-neutral) | 12 / 4 / 16 expected |
 | + A3b (Decision 1) | ~13 / 3 / 16 |
 | + T12 (Decision 2) | ~14 / 2 / 16 |
+
+*(Actual, all landed 2026-08-03: A3a 12/4/16, A3b 13/3/16, A4 14/2/16, T12 **15/1/16**. The table above predates A4, so its T12 row is one slice behind. Only T16 remains.)*
 
 The last two rows are exactly what these rulings buy. The remaining tail after
 that is T6 (slice A4, 8-bit VRAM read target) and T16 (needs discrete per-line

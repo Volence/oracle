@@ -1401,8 +1401,13 @@ mod tests {
     use super::*;
     use crate::rng::SplitMix64;
 
+    /// A powered-on VDP **in Mode 5**. Every fixture below programs Mode-5-only state (H40, the window,
+    /// plane bases, autoincrement), so it must declare M5 (reg 1 bit 2); a bare `power_on` leaves reg 1 at
+    /// `$00`, which is Mode 4, where registers above 10 are not writable (see `Vdp::write_register`).
     fn fresh() -> Vdp {
-        Vdp::power_on(&mut SplitMix64::new(1))
+        let mut v = Vdp::power_on(&mut SplitMix64::new(1));
+        v.control_write(0x8104, 0); // reg 1 = $04 → M5 set (mode 5)
+        v
     }
 
     /// Set VDP register `r` to `val` via a real `$8xxx` control-port register write (keeps `vdp.rs` at a
@@ -1450,7 +1455,7 @@ mod tests {
     fn pb_fixture(h40: bool) -> Vdp {
         let mut v = fresh();
         v.vram_mut().fill(0);
-        set_reg(&mut v, 0x01, 0x40); // display enable (reg 1 bit 6)
+        set_reg(&mut v, 0x01, 0x44); // display enable (reg 1 bit 6) + M5 (bit 2)
         if h40 {
             set_reg(&mut v, 0x0C, 0x81); // H40
         }
@@ -1699,7 +1704,7 @@ mod tests {
         let mut v = pb_fixture(false);
         put_cell(&mut v, 0xE004, 0x0001);
         assert_eq!(v.render_line(0)[16], v.cram_rgb(1), "enabled: red");
-        set_reg(&mut v, 0x01, 0x00); // display off
+        set_reg(&mut v, 0x01, 0x04); // display off (M5 kept)
         assert_eq!(v.render_line(0)[16], v.cram_rgb(0), "disabled: backdrop");
     }
 
@@ -1716,7 +1721,7 @@ mod tests {
     fn pa_fixture(h40: bool) -> Vdp {
         let mut v = fresh();
         v.vram_mut().fill(0);
-        set_reg(&mut v, 0x01, 0x40); // display on
+        set_reg(&mut v, 0x01, 0x44); // display on + M5 (bit 2)
         if h40 {
             set_reg(&mut v, 0x0C, 0x81);
         }
@@ -1963,7 +1968,7 @@ mod tests {
     #[test]
     fn report_reflects_display_disabled() {
         let mut v = pa_fixture(false);
-        set_reg(&mut v, 0x01, 0x00);
+        set_reg(&mut v, 0x01, 0x04); // display off (M5 kept)
         let r = v.render_line_report(0);
         assert!(!r.display_enabled);
         assert!(
