@@ -31,7 +31,7 @@ Harness facts, so a reader can reproduce a row by hand:
 | `m68k_bcd` (`bcd-verifier-u1`) | Exhaustive ABCD / SBCD / NBCD value **and** flag verification, including the undefined-flag cases | **Yes** — three scraped text rows, font base `$000`, 700 frames | **PASS** — `abcd`/`sbcd`/`nbcd` all `$00000 $00000` (0 value errors, 0 flag errors) | — (corroborates the SST BCD coverage on real silicon-derived vectors) |
 | `io_sample` (`Multitap - IO Sample Program`) | Controller-port device detection (the TH-handshake ID protocol) on both ports | **Yes** — both ports must print `JOYPAD`, font base `$000`, 160 frames | **PASS** — port1 = `JOYPAD`, port2 = `JOYPAD` | — (matches `docs/2026-07-17-io-recon.md` IO1–IO6) |
 | `m68k_illegal` (`itest`) | Illegal / privileged / unimplemented encodings must trap to the right vector | **Yes** — no text; verdict is the backdrop word `CRAM[0..2]`: blue `$0E00` while running, `$00E0` green = pass, `$000E` red = fail. 20 frames (the full sweep settles ~frame 9) | **PASS** — backdrop `$00E0` (green) since the 2026-08-02 K1 fix (was FAIL `$000E`) | **K1 — RESOLVED & FIXED.** See below. |
-| `m68k_memory_test` (`memtest_68k`) | Reads every non-lockup address range twice; prints what it read **and** the ROM's own built-in real-hardware reference (`?` = wildcard nibble) | **Yes** — per-row compare, font base `$100`, 30 frames | **4 / 13 rows match** — mismatches: `400000-7FFFFF`, `A00000-A0FFFF`, `A00000-A03FFF`, `A06000-A07EFF`, `A10000-A1001F`, `A11100` (×2), `A11200`, `C00004-C00007` | Mostly **known gap K4** (no open-bus model). `A00000-A0FFFF` also folds in the 68k-side view of the Z80 `$7Fxx` region (still the Z80-RAM mirror on our 68k bus — the piece of **K2** left deferred; the Z80-side mirror itself is fixed). |
+| `m68k_memory_test` (`memtest_68k`) | Reads every non-lockup address range twice; prints what it read **and** the ROM's own built-in real-hardware reference (`?` = wildcard nibble) | **Yes** — per-row compare, font base `$100`, 30 frames | **12 / 13 rows match** since the 2026-08-02 K4 slices (was 4/13) — sole mismatch: `C00004-C00007`, whose open-bus half is now exact and which stays red on the pre-existing status-low-byte gap (ODD flag outside interlace + read-instant VBlank phase) | **K4 — RESOLVED & FIXED** (see below). The remaining row-11 delta is NOT open bus. |
 | `vdp_port_access` (`VDPFIFOTesting`) | 16 VDP port-access tests over two pages: FIFO size/behaviour, DMA-via-FIFO, byteswapping, partial CP writes, register-write masking, read-target switching, FIFO wait states | **Yes** — scrapes the on-screen `Results: ( P/ F/ T)` line; page 1 auto-runs (settles ~frame 42), `Start` advances to page 2 (~480 more frames) | **page 1 = 6 pass / 3 fail / 9**; **pages 1+2 cumulative = 9 pass / 7 fail / 16** | Expected: the VDP timing skeleton is an interim model (`docs/2026-07-16-vdp-recon.md`; the FIFO/wait-state rows are exactly the "Phase 3 per-line DMA cost" deferral). CHARTER explicitly does not gate on this ROM. |
 | `vdp_sprite_masking` (`SpriteMaskingTestRom`) | 9 sprite masking / per-line / per-frame / dot-overflow tests | **Yes** — verdict is a 32×8 glyph at the right edge, classified by **rendered-pixel hash** (its nametable cells are identical for the tick and cross cases, so only the framebuffer discriminates). 300 frames, settles ~frame 8 | `1=TICK/TICK 2=TICK/TICK 3=TICK/CROSS 4=PASS 5=PASS 6=FAIL 7=PASS 8=PASS 9=TICK/TICK` — **2 failures**: test 3's second sub-case (MAX SPRITE DOTS – COMPLEX) and test 6 (MASK S1 ON DOT OVERFLOW) | Expected: both are the **mid-sprite pixel-budget cut** interim model, ledger row **P1** in `docs/2026-07-16-vdp-pixel-known-differences.md` (we spend budget per whole sprite; hardware cuts mid-sprite at the exact dot). Open question **Q1** below on the H32/H40 toggle. |
 | `color_1536` (`TEST1536.BIN`) | 1536-colour trick — CRAM rewritten mid-scanline | Frame hash only | `frame_hash=0x96b9c93c4f3dd325` | **Limitation L1**: end-of-frame capture. This ROM renders correctly only with per-scanline capture; the end-of-frame framebuffer cannot show it. |
@@ -139,13 +139,23 @@ exclusion in `tests/singlestep_m68000.rs` (`covered()` + the
 scorecard row moved (`m68k_illegal`'s single-bit verdict cannot discriminate it, and no vendored ROM
 executes a div0 on its scored path — measured 0 hits across the whole scorecard run).
 
-### K4 — open-bus model — **IN PROGRESS (2026-08-02, design + K4-0/K4-1 landed)**
+### K4 — open-bus model — **RESOLVED & FIXED (2026-08-02, slices K4-0..K4-5 landed; memtest 4/13 → 12/13)**
 
 Unmapped / write-only / partially-decoded addresses returned fixed values instead of the residue the real
 bus leaves floating. Root-caused and designed in `docs/2026-08-02-k4-openbus-design.md`: the latch
 (`last_bus_word`) already existed and already carried hardware-exact prefetch residue — the *consumers*
 were wrong outside the VDP region. Blast radius measured first (K4-0, zero src changes):
 `docs/2026-08-02-k4-0-hit-table.md` — gate fixtures 0 hits, frozen currencies untouched by construction.
+
+**Row-by-row account (memtest hardware column):** rows 1 (`400000-7FFFFF`), 9 (`A11200`) — K4-1; rows
+7/8 (`A11100` ×2) — K4-2; rows 2/3/5 (the `A0xxxx` window) — K4-3; row 6 (`A10000-A1001F`) — K4-4;
+row 11 (`C00004-C00007`) — K4-5 fixed **the open-bus half exactly** (`0290`→`4E90`; the floating upper
+6 bits now carry the residue, `4E..` ✓) but the row stays red on the **status low byte** (`90` vs
+hardware `88`), a pre-existing non-open-bus gap outside the K4 design's rule (STOP-condition (c)
+discipline — reported, not folded in): our status bit 4 reports the raw odd-frame toggle where the
+Sega manual says ODD reads 0 outside interlace mode, and bit 3 (VBlank) depends on the frame phase at
+the ROM's read instant (timing-model, deferrable class). Rows 4/10/12/13 passed before K4.
+Final: **12/13**, every remaining bit the open-bus model owns is hardware-exact.
 
 Slice log (each row-flip amends the `BASELINE` in the same commit):
 
@@ -181,6 +191,24 @@ Slice log (each row-flip amends the `BASELINE` in the same commit):
   boot-time `tst.w $A10008`-family over still-zero registers, value-unchanged by the mirror).
   → **12/13**; `io_sample`/`gfx_joystick` and the rest byte-identical; sonic3k/s2rev01/ristar boot
   A/B pixel-identical.
+- **K4-5** — the VDP status word drives only its low 10 lines (`StatusRegisterMask = 0x03FF`,
+  `S315-5313_Ports.cpp:1163-1170`); bits 10-15 float with the open-bus residue.
+  `Vdp::control_read_status(open_bus, mclk)` (the `data_read_at` plumbing pattern); the 68k bus passes
+  the latch, internal callers and the Z80-side `$7F04` mirror pass 0 (K2 behavior byte-identical —
+  the Z80-side bus stays out of K4 scope). Row 11's open-bus half exact (`4E90`); the row's remaining
+  status-low-byte delta is the pre-existing gap ledgered above. **No other scorecard row moved** —
+  despite VDPFIFOTesting's 348k and TF4's 677k status reads (the corpus consumes low bits only).
+  Adjudicated beyond the scorecard: 7-game boot A/B pixel-identical (incl. TF4, the heaviest status
+  consumer), `s4.soundtest.bin` VGM capture **byte-identical** K4-4 → K4-5.
+
+**Open questions carried from the design's §6 (still open):** Q1 — the physical mechanism of the
+arbiter's low-byte-`$00` (adopted as the memtest-pinned empirical rule; the C++ reference retains the
+full word instead); Q4 — Z80-window word *writes* (Exodus TODO says only one byte should land; we
+still store both; untested by memtest, 0 corpus hits); Q5 — board-revision stability of the reference
+values (unknowable offline; the vendored ROM's column is the pinned ground truth); Q6 — region-wide
+extrapolation of the arbiter flavor to untested gaps (`$A10020-$A10FFF`, `$A11000`, `$A130xx` reads,
+`$A14000` — still full-latch retention, applied only where evidenced). Plus the K4-3 ledgered
+follow-ups (68k-side bank-latch path, true 15-bit window masking, 68k-side `$A07F00+` VDP routing).
 
 ## Limitations of the instrument itself
 

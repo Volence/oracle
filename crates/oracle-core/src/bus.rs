@@ -562,7 +562,13 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
                 let open_bus = *self.last_bus_word;
                 self.vdp.data_read_at(open_bus, self.now_mclk)
             }
-            0xC0_0004 | 0xC0_0006 => (self.vdp.control_read_status(self.now_mclk), 0),
+            // Status read: the VDP drives only the low 10 lines — bits 10-15 float with the open-bus
+            // residue (K4-5; memtest row 11 `4E88`). Same latch plumbing as the data-port read above.
+            0xC0_0004 | 0xC0_0006 => (
+                self.vdp
+                    .control_read_status(*self.last_bus_word, self.now_mclk),
+                0,
+            ),
             0xC0_0008..=0xC0_000F => (self.vdp.hv_counter_read(self.now_mclk), 0),
             _ => (*self.last_bus_word, 0),
         }
@@ -1436,8 +1442,35 @@ mod tests {
         let expected = mem.vdp.status_word(mem.now_mclk);
         let mut sink = Vec::new();
         let mut bus = mem.bus(&mut sink);
+        // Power-on latch is 0 → the floating upper 6 bits read 0 (K4-5).
         assert_eq!(bus.read16(0xC0_0004, 5).0, expected, "live VDP status word");
         assert_eq!(expected, 0x0200, "FIFO-empty only during active display");
+    }
+
+    #[test]
+    fn vdp_status_upper_six_bits_carry_the_bus_residue_through_the_port() {
+        // K4-5 end-to-end (memtest row 11): drive residue $4E71 onto the bus, read $C00004 — the upper
+        // 6 bits are the residue's ($4C00), the low 10 are the live status. The read then latches the
+        // merged word (it really crossed the bus), so a SECOND immediate read floats $0000 upper bits
+        // only if the residue changed — on real code a prefetch re-drives the latch first.
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.now_mclk = 100 * crate::vdp::MCLK_PER_LINE + 1280; // active display: status = $0200
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        bus.write16(0xE0_0000, 5, 0x4E71); // residue
+        assert_eq!(
+            bus.read16(0xC0_0004, 5).0,
+            0x4E00,
+            "status = (residue & $FC00) | (live status & $03FF)"
+        );
+        // Byte lanes split the same merged word: even = residue-carrying high byte.
+        bus.write16(0xE0_0000, 5, 0x4E71);
+        assert_eq!(bus.read8(0xC0_0004, 5).0, 0x4E, "even byte carries residue");
+        assert_eq!(
+            bus.read8(0xC0_0005, 5).0,
+            0x00,
+            "odd byte is the low status"
+        );
     }
 
     #[test]

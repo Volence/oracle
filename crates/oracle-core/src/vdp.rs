@@ -755,12 +755,18 @@ impl Vdp {
     /// and collision status latches** (Sega Genesis Software Manual — those two flags are cleared by reading
     /// the status). Golden-safe: the frozen currencies do not include these fields, and the test ROM drives no
     /// sprite rendering, so both are `false` here regardless.
-    pub fn control_read_status(&mut self, mclk: u64) -> u16 {
+    ///
+    /// K4-5: the VDP drives only the low 10 status lines (`StatusRegisterMask = 0x03FF`,
+    /// `S315-5313_Ports.cpp:1163-1170`); bits 10-15 float — the caller passes the open-bus residue
+    /// (`open_bus`, same plumbing pattern as [`Vdp::data_read_at`]) and gets it merged into the upper 6
+    /// bits (memtest row 11: residue `4E71` + status `$288` → `4E88`). Internal/Z80-mirror callers pass 0
+    /// (behavior-identical to pre-K4-5 for them).
+    pub fn control_read_status(&mut self, open_bus: u16, mclk: u64) -> u16 {
         self.pending = false;
         let s = self.status_word(mclk);
         self.sprite_overflow = false;
         self.sprite_collision = false;
-        s
+        (s & 0x03FF) | (open_bus & 0xFC00)
     }
 
     /// A data-port write ($C00000/2; recon R1). Clears the toggle, routes the word to VRAM/CRAM/VSRAM, and
@@ -1355,7 +1361,7 @@ mod tests {
     #[test]
     fn toggle_cell1_status_read_clears() {
         let mut v = armed();
-        v.control_read_status(0);
+        v.control_read_status(0, 0);
         assert!(
             !v.pending,
             "sel 1: a status read clears the toggle (instrument pin)"
@@ -1548,7 +1554,7 @@ mod tests {
         let mut v = fresh();
         v.vint_pending = true;
         v.hint_pending = true;
-        v.control_read_status(0); // clears the control-port toggle, NOT the interrupt latches
+        v.control_read_status(0, 0); // clears the control-port toggle, NOT the interrupt latches
         assert!(
             v.vint_pending,
             "VINT latch survives a status read (recon R12)"
@@ -2045,7 +2051,7 @@ mod tests {
         let mut v = fresh();
         v.sprite_overflow = true;
         v.sprite_collision = true;
-        let s = v.control_read_status(0);
+        let s = v.control_read_status(0, 0);
         assert_eq!(
             s & 0x60,
             0x60,
@@ -2056,9 +2062,37 @@ mod tests {
             "reading the status clears them (Sega manual)"
         );
         assert_eq!(
-            v.control_read_status(0) & 0x60,
+            v.control_read_status(0, 0) & 0x60,
             0,
             "a subsequent read sees them cleared"
+        );
+    }
+
+    #[test]
+    fn status_read_floats_the_upper_six_bits_with_the_open_bus_residue() {
+        // K4-5: the VDP drives only the low 10 status lines (StatusRegisterMask = 0x03FF); bits 10-15
+        // are whatever the caller's bus residue holds. memtest row 11: residue $4E71 -> $4C00 merged
+        // over the live low bits. A zero residue is byte-identical to the pre-K4-5 behavior.
+        let mut v = fresh();
+        let zero = v.control_read_status(0, 0);
+        assert_eq!(zero & 0xFC00, 0, "zero residue -> upper 6 bits clear");
+        let merged = v.control_read_status(0x4E71, 0);
+        assert_eq!(
+            merged & 0xFC00,
+            0x4C00,
+            "residue $4E71 -> bits 10-15 = $4C00"
+        );
+        assert_eq!(
+            merged & 0x03FF,
+            zero & 0x03FF,
+            "the VDP-driven low 10 bits are untouched by the residue"
+        );
+        // The residue NEVER leaks into bits 8-9 (FIFO full/empty are VDP-driven).
+        let full_residue = v.control_read_status(0xFFFF, 0);
+        assert_eq!(
+            full_residue & 0x0300,
+            zero & 0x0300,
+            "bits 8-9 stay VDP-driven under an all-ones residue"
         );
     }
 

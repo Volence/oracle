@@ -6,8 +6,9 @@
 //!
 //! **This harness does NOT gate on "everything passes."** Per `CHARTER.md` the launch target is
 //! *MVP-debuggable*, NOT "passes VDPFIFOTesting"; accuracy is an asymptote. Several of these ROMs fail
-//! today for documented reasons (the absent open-bus model, the Z80 `$7F00` VDP-mirror stub, ...; the
-//! K1 illegal-decode hole was fixed 2026-08-02 — `m68k_illegal` is green since). Those failures are
+//! today for documented reasons (the K1 illegal-decode hole, the Z80 `$7F00` VDP-mirror stub and the
+//! K4 open-bus model were all fixed 2026-08-02 — `m68k_illegal` is green and `m68k_memory_test` is
+//! 12/13 since). The remaining failures are
 //! **recorded, not fixed** — the baseline below is
 //! a *photograph of today*, and this test fires only on a **regression from it** (or an unannounced
 //! improvement, which is equally worth seeing). Every entry, its reference, and its expected-fail reason
@@ -100,6 +101,9 @@ const BASELINE: &[(&str, &str)] = &[
         // K4-3 (2026-08-02): Z80-window gating + word duplication + $A06000-$A07EFF=$FF (and the
         // bank-canary alias fix) — the three `A0xxxx` window rows green.
         // K4-4 (2026-08-02): the I/O block ignores A0 (registers answer both byte lanes) — row green.
+        // K4-5 (2026-08-02): status bits 10-15 float with the residue — the row's open-bus half is
+        // now exact (0290 -> 4E90); it stays red on the status LOW byte only (pre-existing
+        // ODD-flag-outside-interlace + read-instant VBlank phase, NOT open bus — see the K4 ledger).
         // See docs/2026-08-02-k4-openbus-design.md and the K4 ledger section.
         "m68k_memory_test",
         "12/13 rows match the ROM's hardware reference; mismatch: C00004-C00007",

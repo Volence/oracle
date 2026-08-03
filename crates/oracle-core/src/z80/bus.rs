@@ -145,8 +145,10 @@ impl<S: BusEventSink> Z80Io for Z80Bus<'_, S> {
             // effects as the 68k's $C00004 read, including clearing the control-port write-toggle (the
             // pinned recon-vdp semantic), and the same byte-lane split as a 68k byte read (even = status
             // high byte, odd = low byte). Read at the Z80's own frontier time, like the FM status above.
+            // K4-5 note: `open_bus = 0` — the Z80-side data bus keeps its own (unmodeled) residue, so the
+            // upper 6 bits stay 0 here, byte-identical to the K2 pin. The Z80-side bus is out of K4 scope.
             0x7F04..=0x7F07 => {
-                let s = self.vdp.control_read_status(self.now_mclk);
+                let s = self.vdp.control_read_status(0, self.now_mclk);
                 if addr & 1 == 0 {
                     (s >> 8) as u8
                 } else {
