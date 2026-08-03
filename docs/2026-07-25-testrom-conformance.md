@@ -139,14 +139,20 @@ exclusion in `tests/singlestep_m68000.rs` (`covered()` + the
 scorecard row moved (`m68k_illegal`'s single-bit verdict cannot discriminate it, and no vendored ROM
 executes a div0 on its scored path — measured 0 hits across the whole scorecard run).
 
-### K4 — no open-bus model (root cause of most `memtest_68k` mismatches)
+### K4 — open-bus model — **IN PROGRESS (2026-08-02, design + K4-0/K4-1 landed)**
 
-Unmapped / write-only / partially-decoded addresses return a fixed value in our bus instead of the last value
-left floating on the bus by the previous cycle. `memtest_68k`'s reference column shows hardware returning
-prefetch-derived residue (e.g. `4E00`, `4E71`, `4F00` — fragments of the ROM's own instruction stream) where
-we return zeros or `FFxx`. This single gap explains the `400000-7FFFFF`, `A11100` (×2), `A11200`,
-`A10000-A1001F` and `C00004-C00007` rows. It is a bus-level model, additive to the existing typed-bus
-protocol, and would move a golden-hash currency — hence recorded, not fixed here.
+Unmapped / write-only / partially-decoded addresses returned fixed values instead of the residue the real
+bus leaves floating. Root-caused and designed in `docs/2026-08-02-k4-openbus-design.md`: the latch
+(`last_bus_word`) already existed and already carried hardware-exact prefetch residue — the *consumers*
+were wrong outside the VDP region. Blast radius measured first (K4-0, zero src changes):
+`docs/2026-08-02-k4-0-hit-table.md` — gate fixtures 0 hits, frozen currencies untouched by construction.
+
+Slice log (each row-flip amends the `BASELINE` in the same commit):
+
+- **K4-1** — arbiter open-bus flavor (`$400000-$7FFFFF` gap + write-only `$A11200` reads = residue high
+  byte, low byte driven `$00`), plus the byte-read latch lane-merge (replacing the `b * 0x0101` smear).
+  memtest `400000-7FFFFF` + `A11200` rows green → **6/13**. No other scorecard row moved (per the K4-0
+  table, nothing else touches these addresses).
 
 ## Limitations of the instrument itself
 

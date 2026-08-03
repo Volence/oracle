@@ -235,12 +235,12 @@ pub struct SramMap {
 /// | Range | Behavior |
 /// |---|---|
 /// | `$000000–$3FFFFF` | ROM (read-only; past a short ROM's end → open bus) |
-/// | `$400000–$7FFFFF` | open bus |
+/// | `$400000–$7FFFFF` | open bus, arbiter flavor (residue high byte, low byte `$00` — K4-1) |
 /// | `$A00000–$A0FFFF` | 8 KiB Z80 RAM (mirrored), except… |
 /// | `$A04000–$A04003` | YM2612 FM: read = status (bit7 BUSY clear = not busy); writes drop (no FM core yet) |
 /// | `$A10000–$A1001F` | I/O: `$A10001` = [`MD_VERSION`]; the 15 data/control/serial registers via [`Io`] |
 /// | `$A11100` | Z80 BUSREQ: bit0 read = 0 when 68000 is granted the bus (asserted), 1 when the Z80 owns it |
-/// | `$A11200` | Z80 RESET: bit0 = the reset-release latch (`z80_running`) — write 1 = release (Z80 runs), 0 = assert (held); read reports it (power-on 0 = held) |
+/// | `$A11200` | Z80 RESET: bit0 = the reset-release latch (`z80_running`) — write 1 = release (Z80 runs), 0 = assert (held); WRITE-ONLY, reads are arbiter open bus (K4-1) |
 /// | `$C00000`/`$C00002` | VDP data port (read = pre-cache buffer, write = VRAM/CRAM/VSRAM; recon R1) |
 /// | `$C00004`/`$C00006` | VDP control port (read = status word, write = command; recon R1/R2) |
 /// | `$C00008–$C0000F` | VDP HV counter (even byte = V, odd byte = H; recon R2) |
@@ -400,11 +400,10 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             // spins real games use (recon Z2/Z5). $A11101 (odd half) = 0.
             0xA1_1100 => Some(if *self.z80_busreq { 0x00 } else { 0x01 }),
             0xA1_1101 => Some(0x00),
-            // Z80 RESET ($A11200): bit0 reports the reset-release latch (`z80_running`) — 1 = released (Z80
-            // runs), 0 = asserted (held). Power-on = 0 (held), byte-identical to the old constant-0 stub, so
-            // this is currency-neutral until a game writes bit0 = 1 (recon Z1, design ZC6). $A11201 half = 0.
-            0xA1_1200 => Some(if *self.z80_running { 0x01 } else { 0x00 }),
-            0xA1_1201 => Some(0x00),
+            // Z80 RESET ($A11200): WRITE-ONLY — a read drives no data lines at all (the reference arbiter's
+            // Z80RESET read handler returns nothing, MDBusArbiter.cpp:448-452), so it falls through to
+            // arbiter-flavored open bus (K4-1; memtest row 9 pins `4E00` across reset toggles). The write
+            // latch (`z80_running`) lives in `store_byte`.
             // VDP ports ($C00000–$C0000F): stateful, handled as whole accesses in read16/write16/read8/
             // write8 (a byte-wise decode here would double a port access's side effects). Open bus for any
             // fallthrough (e.g. a TAS against a port — never a real access).
@@ -494,6 +493,25 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
     /// Whether `a` (already masked) is a VDP port ($C00000–$C0000F).
     fn is_vdp_port(a: u32) -> bool {
         (0xC0_0000..=0xC0_000F).contains(&a)
+    }
+
+    /// The word an undriven ("open bus") read at `a` returns — the two open-bus flavors pinned by the
+    /// memtest hardware column (K4 design `docs/2026-08-02-k4-openbus-design.md` §3):
+    ///
+    /// - **Arbiter-answered** regions — the cart-time gap `$400000-$7FFFFF` (row 1) and the write-only
+    ///   `$A11200` reset register whose reads drive nothing (row 9) — return the residue's HIGH byte with
+    ///   the low byte driven to `$00` (`4E00`). An empirical rule (design §6 Q1): the reference keeps the
+    ///   full word here; the ROM's inline hardware column is our pinned ground truth.
+    /// - Everything else (ROM past a short cart's end, VDP-side gaps like `$C00018`) retains the **full**
+    ///   latch word — classic tri-state decay (row 13 `4E71`, already exact before K4).
+    ///
+    /// Callers: `read16`'s open arm, `read8`'s per-lane halves (an odd arbiter byte reads `$00` for free).
+    /// The latch itself is never updated by an undriven read — nothing new crossed the bus.
+    fn open_word(&self, a: u32) -> u16 {
+        match a {
+            0x40_0000..=0x7F_FFFF | 0xA1_1200 | 0xA1_1201 => *self.last_bus_word & 0xFF00,
+            _ => *self.last_bus_word,
+        }
     }
 
     /// A whole-word VDP port read (recon R1/R2), with its side effects (toggle clear, autoincrement,
@@ -616,7 +634,7 @@ impl<'a, S: BusEventSink> Bus68k for MegaDriveBus<'a, S> {
             *self.last_bus_word = v; // a real word crossed the bus
             v
         } else {
-            *self.last_bus_word // open bus: the last word driven, unchanged
+            self.open_word(a) // open bus: residue per region flavor (K4-1), latch unchanged
         };
         self.emit(BusOp::Read, fc, a, Size::Word, value as u32);
         (value, 0)
@@ -653,12 +671,19 @@ impl<'a, S: BusEventSink> Bus68k for MegaDriveBus<'a, S> {
             return (value, wait);
         }
         let value = if let Some(b) = self.mapped_byte(a) {
-            *self.last_bus_word = (b as u16) * 0x0101; // byte driven on both halves (placeholder open-bus rule)
+            // A byte read drives only its own half of the data bus; the other half keeps floating —
+            // merge the driven lane into the latch (Exodus's tri-state rule, M68000.cpp:2138; K4-1
+            // replaces the old both-halves `b * 0x0101` smear).
+            *self.last_bus_word = if a & 1 == 0 {
+                (*self.last_bus_word & 0x00FF) | ((b as u16) << 8)
+            } else {
+                (*self.last_bus_word & 0xFF00) | b as u16
+            };
             b
         } else if a & 1 == 0 {
-            (*self.last_bus_word >> 8) as u8 // even address → UDS half
+            (self.open_word(a) >> 8) as u8 // even address → UDS half
         } else {
-            (*self.last_bus_word & 0xFF) as u8 // odd address → LDS half
+            (self.open_word(a) & 0xFF) as u8 // odd address → LDS half
         };
         self.emit(BusOp::Read, fc, a, Size::Byte, value as u32);
         (value, 0)
@@ -968,14 +993,15 @@ mod tests {
         let mut mem = MdMem::new(vec![0u8; 0x1000]);
         let mut sink = Vec::new();
         let mut bus = mem.bus(&mut sink);
+        // K4-1: $400000-$7FFFFF is ARBITER-flavored open bus — high-byte residue, low byte $00.
         bus.write16(0xE0_0000, 5, 0xCAFE); // latch := 0xCAFE
         assert_eq!(
             bus.read16(0x50_0000, 6).0,
-            0xCAFE,
-            "unmapped read = last word"
+            0xCA00,
+            "unmapped read = residue high byte | $00"
         );
         // A second open-bus read still sees the same latch (an open-bus read does not drive a new word).
-        assert_eq!(bus.read16(0x60_0000, 6).0, 0xCAFE);
+        assert_eq!(bus.read16(0x60_0000, 6).0, 0xCA00);
     }
 
     #[test]
@@ -1096,46 +1122,43 @@ mod tests {
     #[test]
     fn z80_reset_latch_powers_on_asserted_and_toggles() {
         // `$A11200` bit0 is the Z80 reset-release latch (`z80_running`): power-on = reset ASSERTED (Z80
-        // held), a write of bit0 = 1 releases it (Z80 runs), a write of bit0 = 0 re-asserts it. The read
-        // reports the latch. Promotes the old constant-0/drop stub to a real latch (design ZC6/ZC13). The
-        // power-on read value (0) is byte-identical to the old stub, so the change is currency-neutral.
+        // held), a write of bit0 = 1 releases it (Z80 runs), a write of bit0 = 0 re-asserts it (design
+        // ZC6/ZC13). Since K4-1 the register is WRITE-ONLY (reads are undriven arbiter open bus — the
+        // memtest row-9 pin), so the latch is asserted directly on `mem.z80_running`.
         let mut mem = MdMem::new(vec![0u8; 0x1000]);
-        let mut sink = Vec::new();
-        let mut bus = mem.bus(&mut sink);
 
-        // Power-on: reset asserted, Z80 held → read bit0 = 0 (matches the old stub exactly).
-        assert_eq!(
-            bus.read8(0xA1_1200, 5).0 & 1,
-            0,
-            "power-on -> reset asserted (bit0 = 0)"
-        );
+        // Power-on: reset asserted, Z80 held.
+        assert!(!mem.z80_running, "power-on -> reset asserted");
 
         // Release reset via the word idiom `move.w #$100,$A11200`: $01 lands at the even address, $00 at the
         // odd one; the odd byte must NOT clobber the latch.
-        bus.write16(0xA1_1200, 5, 0x0100);
-        assert_eq!(
-            bus.read8(0xA1_1200, 5).0 & 1,
-            1,
-            "reset released -> Z80 runs (bit0 = 1)"
-        );
+        let mut sink = Vec::new();
+        {
+            let mut bus = mem.bus(&mut sink);
+            bus.write16(0xA1_1200, 5, 0x0100);
+        }
+        assert!(mem.z80_running, "reset released -> Z80 runs");
 
-        // Re-assert via `move.w #$0,$A11200`: bit0 returns to 0 (held again).
-        bus.write16(0xA1_1200, 5, 0x0000);
-        assert_eq!(
-            bus.read8(0xA1_1200, 5).0 & 1,
-            0,
-            "reset re-asserted -> Z80 held (bit0 = 0)"
-        );
+        // Re-assert via `move.w #$0,$A11200`: held again.
+        {
+            let mut bus = mem.bus(&mut sink);
+            bus.write16(0xA1_1200, 5, 0x0000);
+        }
+        assert!(!mem.z80_running, "reset re-asserted -> Z80 held");
 
         // The byte-write idiom releases too.
-        bus.write8(0xA1_1200, 5, 0x01);
-        assert_eq!(
-            bus.read8(0xA1_1200, 5).0 & 1,
-            1,
-            "byte release -> Z80 runs (bit0 = 1)"
-        );
-        // The odd half always reads 0.
-        assert_eq!(bus.read8(0xA1_1201, 5).0, 0, "$A11201 odd half = 0");
+        {
+            let mut bus = mem.bus(&mut sink);
+            bus.write8(0xA1_1200, 5, 0x01);
+        }
+        assert!(mem.z80_running, "byte release -> Z80 runs");
+
+        // A write to the odd half drops — it must not clobber the latch.
+        {
+            let mut bus = mem.bus(&mut sink);
+            bus.write8(0xA1_1201, 5, 0x00);
+        }
+        assert!(mem.z80_running, "odd-half write drops, latch intact");
     }
 
     #[test]
@@ -1614,11 +1637,82 @@ mod tests {
         let mut mem = MdMem::new(vec![0u8; 0x1000]);
         let mut sink = Vec::new();
         let mut bus = mem.bus(&mut sink);
+        // The residue source is the last driven word; $400000+ is arbiter-flavored (low byte $00, K4-1).
         bus.write16(0xE0_0010, 5, 0xF00D); // drives 0xF00D onto the bus
         assert_eq!(
             bus.read16(0x40_0000, 6).0,
-            0xF00D,
-            "open bus = last driven word"
+            0xF000,
+            "open bus = last driven word's high byte | $00"
+        );
+    }
+
+    #[test]
+    fn arbiter_open_bus_returns_high_byte_residue_low_byte_driven_00() {
+        // K4-1 (docs/2026-08-02-k4-openbus-design.md §3 row 1): a read answered by the arbiter/cart-time
+        // side ($400000-$7FFFFF) returns the residue's HIGH byte with the low byte driven to $00 — the
+        // memtest hardware column's `4E00` shape — unlike the VDP-side full-word retention (row 13).
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        bus.write16(0xE0_0000, 5, 0xCAFE); // latch := 0xCAFE
+        assert_eq!(
+            bus.read16(0x40_0000, 6).0,
+            0xCA00,
+            "word read: high-byte residue, low byte $00"
+        );
+        assert_eq!(
+            bus.read8(0x40_0000, 5).0,
+            0xCA,
+            "even byte (UDS): the residue half, unchanged"
+        );
+        assert_eq!(
+            bus.read8(0x40_0001, 5).0,
+            0x00,
+            "odd byte (LDS): driven to $00"
+        );
+        // The open-bus read itself drives nothing new — the latch is intact for the next read.
+        assert_eq!(bus.read16(0x7F_FFFE, 6).0, 0xCA00, "latch unchanged");
+    }
+
+    #[test]
+    fn a11200_reads_are_undriven_arbiter_open_bus_not_a_latch_readback() {
+        // K4-1 (design §3 row 9): `$A11200` reads drive NO lines (the reference arbiter's Z80RESET read
+        // handler returns nothing, MDBusArbiter.cpp:448-452) — the memtest hardware column shows `4E00`
+        // regardless of the reset toggles. The WRITE latch still works (asserted via `mem.z80_running`,
+        // since the readback no longer exists — exactly the point).
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        let mut sink = Vec::new();
+        {
+            let mut bus = mem.bus(&mut sink);
+            bus.write16(0xA1_1200, 5, 0x0100); // release reset (word idiom)
+            bus.write16(0xE0_0000, 5, 0x4E71); // re-drive a known residue word
+            assert_eq!(
+                bus.read16(0xA1_1200, 5).0,
+                0x4E00,
+                "read = arbiter open bus, NOT the 0x0100 readback"
+            );
+            assert_eq!(bus.read8(0xA1_1200, 5).0, 0x4E, "even byte = residue half");
+            assert_eq!(bus.read8(0xA1_1201, 5).0, 0x00, "odd byte driven $00");
+        }
+        assert!(mem.z80_running, "the write latch itself still landed");
+    }
+
+    #[test]
+    fn mapped_byte_read_merges_only_its_own_lane_into_the_latch() {
+        // K4-1 rider (design §4): a byte read drives only its own half of the data bus; the other half
+        // keeps floating (Exodus's tri-state merge, M68000.cpp:2138). Replaces the old `b * 0x0101`
+        // both-halves smear. Observed through a full-retention open-bus read (ROM past-end).
+        let mut rom = vec![0u8; 0x1000];
+        rom[0x10] = 0x12;
+        let mut mem = MdMem::new(rom);
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        bus.write16(0xE0_0000, 5, 0xBEEF); // latch := 0xBEEF
+        bus.read8(0x00_0010, 6); // even byte read: drives UDS only → latch = 0x12EF
+        assert_eq!(
+            bus.read16(0x20_0000, 6).0,
+            0x12EF,
+            "byte read merged its lane only (was 0x1212 under the smear)"
         );
     }
 

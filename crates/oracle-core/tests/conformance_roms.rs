@@ -95,10 +95,12 @@ const BASELINE: &[(&str, &str)] = &[
     ),
     ("m68k_illegal", "PASS backdrop=$00E0 (green)"),
     (
+        // K4-1 (2026-08-02): arbiter open-bus flavor landed — `400000-7FFFFF` + `A11200` rows green
+        // (was 4/13; see docs/2026-08-02-k4-openbus-design.md and the K4 ledger section).
         "m68k_memory_test",
-        "4/13 rows match the ROM's hardware reference; mismatch: \
-         400000-7FFFFF, A00000-A0FFFF, A00000-A03FFF, A06000-A07EFF, A10000-A1001F, \
-         A11100, A11100, A11200, C00004-C00007",
+        "6/13 rows match the ROM's hardware reference; mismatch: \
+         A00000-A0FFFF, A00000-A03FFF, A06000-A07EFF, A10000-A1001F, \
+         A11100, A11100, C00004-C00007",
     ),
     (
         "m68k_opcode_sizes",
