@@ -30,6 +30,13 @@
 //! | `bank` | open-window reads in `$A06000-$A07EFF` (→ `$FF` under K4-3) | K4-3 |
 //! | `ioE` / `ioW` | `$A10000-$A1001F` even-byte reads / word reads (register mirrors onto both lanes) | K4-4 |
 //! | `st` / `stO` | `$C00004-7` word + even-byte reads (upper 6 bits become residue) / odd-byte reads (unaffected, for scale) | K4-5 |
+//! | `wwW!` | open-window WORD writes to `$A0xxxx` (Q4: hardware lands only ONE byte; we store both) | Q4 |
+//! | `bkW` | open-window writes landing at Z80 offset `$6000-$60FF` (the 68k-side bank-latch path) | K4-3 follow-up |
+//! | `vpW` | open-window writes landing at Z80 offset `$7F00-$7F1F` (the VDP/PSG mirror seen from the 68k) | K4-3 follow-up |
+//!
+//! The three follow-up columns classify by the window's TRUE 15-bit offset (`addr & 0x7FFF`,
+//! `MDBusArbiter.cpp:487` — hardware masks the window to 15 bits), so `$A0E000` counts as bank-register
+//! territory even though the pre-remodel bus still treats it as a RAM mirror.
 
 use oracle_core::bus::{BusEvent, BusEventSink, BusOp, Size};
 use oracle_core::io::Pad;
@@ -56,6 +63,13 @@ struct K4Probe {
     io_word_reads: u64,
     status_upper_reads: u64,
     status_odd_byte_reads: u64,
+    z80win_open_word_writes: u64,
+    z80win_bank_writes: u64,
+    z80win_vdp_mirror_writes: u64,
+    /// Q4 adjudication detail: per (addr, "high byte == low byte") counts of the open-window word
+    /// writes, so the docket can say WHAT the writes are (an upload loop? a mailbox?) and whether the
+    /// one-byte-lands hardware rule could even change the stored value. Kept small — capped at 16 keys.
+    ww_detail: std::collections::BTreeMap<(u32, bool), u64>,
 }
 
 impl K4Probe {
@@ -75,7 +89,7 @@ impl K4Probe {
 
     fn row(&self, name: &str) -> String {
         format!(
-            "| {name} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            "| {name} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
             self.unmapped_reads,
             self.unmapped_would_change,
             self.a11200_reads,
@@ -89,7 +103,23 @@ impl K4Probe {
             self.io_word_reads,
             self.status_upper_reads,
             self.status_odd_byte_reads,
+            self.z80win_open_word_writes,
+            self.z80win_bank_writes,
+            self.z80win_vdp_mirror_writes,
         )
+    }
+
+    /// The Q4 word-write detail lines (empty string when there were none).
+    fn ww_detail_lines(&self, name: &str) -> String {
+        self.ww_detail
+            .iter()
+            .map(|((addr, same), n)| {
+                format!(
+                    "    wwW! {name}: {n} word write(s) @ ${addr:06X} (hi==lo: {same}) — one-byte-lands would {}\n",
+                    if *same { "store the SAME bytes" } else { "CHANGE the stored bytes" }
+                )
+            })
+            .collect()
     }
 }
 
@@ -113,6 +143,23 @@ impl BusEventSink for K4Probe {
                         let fm = (0xA0_4000..=0xA0_4003).contains(&e.addr);
                         if !fm && !(self.z80_busreq && self.z80_running) {
                             self.z80win_closed_writes += 1;
+                        } else if !fm {
+                            // Open-window write classification by the TRUE 15-bit window offset
+                            // (hardware masks to 15 bits, MDBusArbiter.cpp:487).
+                            if e.size == Size::Word {
+                                self.z80win_open_word_writes += 1; // Q4
+                                let same = (e.value >> 8) & 0xFF == e.value & 0xFF;
+                                if self.ww_detail.len() < 16
+                                    || self.ww_detail.contains_key(&(e.addr, same))
+                                {
+                                    *self.ww_detail.entry((e.addr, same)).or_insert(0) += 1;
+                                }
+                            }
+                            match e.addr & 0x7FFF {
+                                0x6000..=0x60FF => self.z80win_bank_writes += 1,
+                                0x7F00..=0x7F1F => self.z80win_vdp_mirror_writes += 1,
+                                _ => {}
+                            }
                         }
                     }
                     _ => {}
@@ -208,8 +255,8 @@ fn probe(rom: Vec<u8>, frames: u64, press_start_at: Option<u64>) -> (K4Probe, u6
 }
 
 const HEADER: &str =
-    "| ROM | unm | unm! | 1200 | 1100 | 1100R! | zcR! | zcW! | zw! | bank | ioE | ioW | st | stO |";
-const RULE: &str = "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|";
+    "| ROM | unm | unm! | 1200 | 1100 | 1100R! | zcR! | zcW! | zw! | bank | ioE | ioW | st | stO | wwW! | bkW | vpW |";
+const RULE: &str = "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -221,6 +268,7 @@ fn main() {
         let rom = std::fs::read(&args[0]).expect("ROM path");
         let (p, ran) = probe(rom, frames, None);
         println!("{}", p.row(&format!("{} ({ran}/{frames}f)", args[0])));
+        eprint!("{}", p.ww_detail_lines(&args[0]));
         return;
     }
 
@@ -250,6 +298,7 @@ fn main() {
         let press = (name == "vdp_port_access").then_some(60);
         let (p, ran) = probe(std::fs::read(&path).unwrap(), 700, press);
         println!("{}", p.row(&format!("{name} ({ran}/700f)")));
+        eprint!("{}", p.ww_detail_lines(&name));
     }
 
     // 3. The differential game corpus (docs/2026-07-22-differential-rom-findings.md — user-disk paths,
@@ -272,6 +321,7 @@ fn main() {
             Ok(rom) => {
                 let (p, ran) = probe(rom, 900, None);
                 println!("{}", p.row(&format!("{name} ({ran}/900f)")));
+                eprint!("{}", p.ww_detail_lines(name));
             }
             Err(_) => eprintln!("SKIP: {path} not on this disk"),
         }
