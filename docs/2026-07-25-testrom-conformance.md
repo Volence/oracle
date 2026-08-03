@@ -153,6 +153,12 @@ Slice log (each row-flip amends the `BASELINE` in the same commit):
   byte, low byte driven `$00`), plus the byte-read latch lane-merge (replacing the `b * 0x0101` smear).
   memtest `400000-7FFFFF` + `A11200` rows green → **6/13**. No other scorecard row moved (per the K4-0
   table, nothing else touches these addresses).
+- **K4-2** — `$A11100` is partially decoded: the arbiter drives only the grant bit (word bit 8) + the
+  low byte `$00`; bits 9-15 float with the residue, and the readable bit folds Z80 RESET in
+  (1 = unavailable while reset asserted — hardware row 7 `4F00` + Exodus `MDBusArbiter.cpp:444`).
+  Both `A11100` rows green → **8/13**; rest of the scorecard byte-identical. Game risk pre-adjudicated
+  in the K4-0 table (ristar's single under-reset read = a bounded 16-poll `dbeq`) and verified after:
+  ristar\@900f and gunstar\@420f/900f boot renders + PCs **pixel-identical** to the pre-K4 baselines.
 
 ## Limitations of the instrument itself
 

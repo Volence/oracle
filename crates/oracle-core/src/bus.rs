@@ -395,10 +395,17 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
                 // RxData: no serial device drives the receive line (decision 2). Even bytes: unmapped → 0.
                 Some((_, IoReg::RxData)) | None => 0x00,
             }),
-            // Z80 BUSREQ ($A11100): bit0 reports bus ownership — 0 = 68000 granted (BUSREQ asserted), 1 = Z80
-            // owns the bus (released). Drives the take-bus (`bne`, wait for 0) and release (`beq`, wait for 1)
-            // spins real games use (recon Z2/Z5). $A11101 (odd half) = 0.
-            0xA1_1100 => Some(if *self.z80_busreq { 0x00 } else { 0x01 }),
+            // Z80 BUSREQ ($A11100): partially decoded — the arbiter drives ONLY the grant bit (bit0 of this
+            // even byte / bit8 of the word) and the odd byte to $00; bits 1-7 here float with the residue's
+            // high byte (K4-2, memtest rows 7/8: `4F00`/`4E00`). The readable bit folds Z80 RESET in
+            // (MDBusArbiter.cpp:444: reset || !busreq || !busgrant): 1 = "bus unavailable" — so it reads 1
+            // while reset is asserted even with BUSREQ held, which is why real grant spins are bounded or
+            // release reset first. `btst #0` take-bus/release spins (recon Z2/Z5, DR-1) see the same bit as
+            // before once reset is released.
+            0xA1_1100 => {
+                let unavailable = !(*self.z80_busreq && *self.z80_running);
+                Some(((*self.last_bus_word >> 8) as u8 & 0xFE) | unavailable as u8)
+            }
             0xA1_1101 => Some(0x00),
             // Z80 RESET ($A11200): WRITE-ONLY — a read drives no data lines at all (the reference arbiter's
             // Z80RESET read handler returns nothing, MDBusArbiter.cpp:448-452), so it falls through to
@@ -1093,6 +1100,11 @@ mod tests {
             "power-on -> Z80 owns the bus (bit0 = 1)"
         );
 
+        // Release Z80 reset first — since K4-2 the readable bit folds RESET in (hardware/Exodus:
+        // 1 = "bus unavailable" while reset is asserted, regardless of BUSREQ), which is exactly what
+        // real init code does before spinning on the grant (memtest, ristar, gunstar).
+        bus.write16(0xA1_1200, 5, 0x0100);
+
         // Assert via the word idiom `move.w #$100,$A11100` — byte $01 lands at the even address, $00 at the
         // odd one; the odd byte must NOT clobber the latch.
         bus.write16(0xA1_1100, 5, 0x0100);
@@ -1116,6 +1128,47 @@ mod tests {
             bus.read8(0xA1_1100, 5).0 & 1,
             0,
             "byte assert -> granted (bit0 = 0)"
+        );
+    }
+
+    #[test]
+    fn a11100_reads_residue_in_bits_9_15_low_byte_00_and_folds_reset_into_the_grant_bit() {
+        // K4-2 (design §3 rows 7/8): `$A11100` is partially decoded — the arbiter drives ONLY the grant
+        // bit (bit 8 of the word / bit 0 of the even byte, MDBusArbiter.cpp:442-447 + the XML data-line
+        // mapping) and the low byte to $00; bits 9-15 float with the residue. The readable bit folds in
+        // Z80 RESET: 1 = "bus unavailable" = !(busreq && reset released) — the memtest column reads
+        // `4F00` with BUSREQ held while reset is asserted (row 7), `4E00` once released (row 8).
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+
+        // BUSREQ held, reset still asserted: bit reads 1 (unavailable), residue rides bits 9-15.
+        bus.write16(0xA1_1100, 5, 0x0100); // assert BUSREQ
+        bus.write16(0xE0_0000, 5, 0x4E71); // drive a known residue word
+        assert_eq!(
+            bus.read16(0xA1_1100, 5).0,
+            0x4F00,
+            "row 7: residue & $FE00 | grant-unavailable bit | low byte $00"
+        );
+        bus.write16(0xE0_0000, 5, 0x4E71);
+        assert_eq!(bus.read8(0xA1_1100, 5).0, 0x4F, "even byte: residue | bit0");
+        assert_eq!(bus.read8(0xA1_1101, 5).0, 0x00, "odd byte driven $00");
+
+        // Release reset (BUSREQ still held): the bus is now genuinely granted -> bit 0.
+        bus.write16(0xA1_1200, 5, 0x0100);
+        bus.write16(0xE0_0000, 5, 0x4E71);
+        assert_eq!(
+            bus.read16(0xA1_1100, 5).0,
+            0x4E00,
+            "row 8: granted, bit = 0"
+        );
+
+        // A residue with bit 9 set shows through (the arbiter masks only its own driven lines).
+        bus.write16(0xE0_0000, 5, 0xABCD);
+        assert_eq!(
+            bus.read16(0xA1_1100, 5).0,
+            0xAA00,
+            "residue $ABCD -> $AA00 (bit 8 cleared by grant, bit 0 region $00)"
         );
     }
 
