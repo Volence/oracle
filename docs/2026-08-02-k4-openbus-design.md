@@ -1,7 +1,8 @@
 # K4 — 68k open-bus model: recon + design (2026-08-02)
 
-Status: **DESIGN — not yet implemented.** Slices K4-0..K4-5 below; K4-0 (instrument, zero src
-changes) is a hard prerequisite before any behavior flips.
+Status: **IN PROGRESS — K4-0 landed** (instrument + per-ROM hit table:
+`docs/2026-08-02-k4-0-hit-table.md`, probe: `examples/k4_openbus_probe.rs`). Slices K4-1..K4-5 to
+follow, gated by that table.
 Origin: read-only recon pass over oracle-next + the Oracle C++ reference, adjudicated against the
 memtest_68k ROM's inline real-hardware reference column (our pinned ground truth for this work).
 Context: bug K4 from docs/2026-07-25-testrom-conformance.md (memtest_68k 4/13 rows).
