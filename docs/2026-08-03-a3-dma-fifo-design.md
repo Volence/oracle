@@ -342,6 +342,33 @@ Exactly one enqueue, so the snoop half of test 4 (which passes today) is preserv
 priming write for CRAM/VSRAM fill targets too is the consistent reading of the citation, but the
 ROM does not cover it — see **Q3**.
 
+> **ADDENDUM, 2026-08-03 (slice A3b, as-shipped — the snippet above is not what landed).** The
+> `self.write_target(w);` line shipped **guarded**, matching the non-DMA data-port path immediately below
+> it in `apply_data_write`:
+>
+> ```rust
+> if matches!(self.code & 0x0F, 0x1 | 0x3 | 0x5) {
+>     self.write_target(w);
+> }
+> self.autoinc();
+> ```
+>
+> *Why the guard is necessary.* Only CD3-CD0 = `0001` / `0011` / `0101` (VRAM / CRAM / VSRAM write) name a
+> write target; every other code is undefined and its write is ignored (genvdp.txt 1.5f code table — the
+> rule A2 pinned from VDPFIFOTesting test 10, ROM `$FCAA` word 7). But `target_of` falls back
+> `_ => Vram` for any unrecognised low nibble, so an *unguarded* `write_target` would let a fill armed on a
+> no-write-target code scribble two bytes into VRAM at the live address — a behaviour nothing evidences.
+> `autoinc()` stays unconditional, exactly as on the non-DMA path: the port accepts the word and the
+> address still steps even when nothing reaches memory. For every sequence the ROM actually performs
+> (`code = $21`, low nibble 1) the guarded and unguarded forms are identical, so test 4 is unaffected.
+>
+> *Asymmetry this exposes (pre-existing; deliberately NOT fixed in A3b).* `run_fill`'s body still resolves
+> its target through `Vdp::target()` — the same `_ => Vram` fallback — so a fill armed on a no-write-target
+> code now has its trigger write suppressed while its fill body still writes VRAM. One of the two decodes
+> is wrong and the ROM does not cover the case, so which one is unpinned. Registered as follow-up
+> **F-FILLTGT** in `docs/2026-07-25-testrom-conformance.md` → *Named follow-ups*. Q2 (VRAM copy and
+> `^ 1`) is registered there as **F-COPYXOR**.
+
 ### 3.5 Change 4 — the fill engine writes to `addr ^ 1` (`vdp.rs:817-824`)
 
 ```rust
@@ -390,8 +417,10 @@ changes, no floats.
 > ever runs). `GOLDEN_HASH` stays `0xBF5D_1E1A_A727_143B`, and every currency suite passed unmodified.
 > The `$3B → $00` reasoning below is sound *for the pad-poll fixture* — that byte does change there — but
 > `$FFFF` is outside every plane/SAT window, so its render hash and watchpoint counts are unchanged too.
-> Everything else in this document (§1-§3, §5) was verified correct in implementation. Consequently
-> §4.2's `A3b` column, and the "recommended slicing" note's premise, are the only wrong rows.
+> Everything else in this document (§1-§3, §5) was verified correct in implementation, with one
+> as-shipped deviation recorded in the §3.4 addendum (the trigger write landed guarded by the
+> invalid-target rule). Consequently §4.2's `A3b` column, and the "recommended slicing" note's premise,
+> are the only wrong rows.
 
 The arc's ground rules inherit the push-6 assumption that "the golden fixture drives no VDP DMA".
 **That assumption is now false.** `crates/oracle-core/src/testrom.rs:255-263` zeroes VRAM with a
@@ -552,10 +581,13 @@ regenerated constant ships in the same commit alongside the ledger amendment.
   `run_copy` (`vdp.rs:854-877`) in this slice — an unevidenced change there could move visual
   baselines with no test to justify it. Recommend a named follow-up in the ledger, pinned from a ROM
   or an instrument, not from this citation alone. (Also unresolved there: whether the copy's *source*
-  byte read is likewise `^ 1`.)
+  byte read is likewise `^ 1`.) **Registered 2026-08-03 as follow-up `F-COPYXOR`** in
+  `docs/2026-07-25-testrom-conformance.md` -> *Named follow-ups*.
 * **Q3 — the priming write for CRAM/VSRAM fill targets.** Nemesis's "completed as normal" is
   generic, so §3.4 applies it to all targets. The ROM only covers VRAM. Low risk (a CRAM/VSRAM fill
-  is already a documented hardware-bug path nothing sane uses) but genuinely unverified.
+  is already a documented hardware-bug path nothing sane uses) but genuinely unverified. **As shipped the
+  priming write is applied to any of the three write targets but suppressed on a code that names none --
+  see the §3.4 addendum, and follow-up `F-FILLTGT` for the decode asymmetry that leaves behind.**
 * **Q4 — the priming write's MSB is unobservable in test 4.** With autoinc 1 the fill's first step
   rewrites `$8000` with the same `$12`, so the table cannot distinguish "full word write" from "LSB
   only". I chose the full word because it is what the citation says and what a normal FIFO write

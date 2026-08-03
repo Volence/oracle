@@ -414,7 +414,15 @@ guard that the trigger change did not leak into the CRAM/VSRAM fill data source.
 
 **Not changed, deliberately (design Q2):** `run_copy` still writes at `address`, not `address ^ 1`, even
 though Eke's quote covers copy too — no test in the vendored suite exercises it, and an unevidenced change
-there could move visual baselines with nothing to justify it. Named follow-up.
+there could move visual baselines with nothing to justify it. Registered as follow-up **F-COPYXOR** in
+*Named follow-ups* below.
+
+**Invalid-target guard, and the asymmetry it exposes.** Design §3.4 shows the trigger write unconditional;
+it shipped guarded by `matches!(code & 0x0F, 0x1 | 0x3 | 0x5)`, the same invalid-target rule the non-DMA
+data-port path uses (T10's pin), because `target_of` falls back `_ => Vram` and would otherwise let a fill
+armed on a no-write-target code scribble VRAM. `Vdp::run_fill`'s body still resolves its target through
+that same fallback, so the two halves of the fill path now disagree for an invalid code — pre-existing, not
+covered by any ROM, and deliberately left alone here. Registered as follow-up **F-FILLTGT** below.
 
 **How the per-test and verdict-byte numbers above are measured (so a later slice can tell whether it moved
 them).** The committed harness scrapes only the ROM's aggregate `Results: (P/F/T)` line, so the finer
@@ -525,6 +533,26 @@ write **and** sub-instruction clock advance through a DMA. That is a real engine
   VDP write path and the DMA loop, i.e. it is currency-relevant — needs its own design pass.
 * **F-BORDER — border / overscan rendering.** We render the 224-line active area only. Independent of
   F-CRAMDOT and, per L1a, **not** what either remaining row needs; recorded so the gap stays visible.
+* **F-COPYXOR — does VRAM *copy* also write to `address ^ 1`?** (Registered 2026-08-03 by slice A3b;
+  design question Q2 of `docs/2026-08-03-a3-dma-fifo-design.md`.) A3b changed the **fill** engine to write
+  its byte at `address ^ 1` (`Vdp::run_fill`, VRAM arm), pinned by VDPFIFOTesting test 4's own expected
+  table at ROM `$DC54`. Eke's SpritesMind quote says the quirk covers copy as well — "VRAM byte writes
+  (used by VRAM fill **and copy** DMA) actually occur to VRAM address ^ 1" — but **no ROM in
+  `vendor/TestRoms/` exercises DMA copy**, so `Vdp::run_copy` was deliberately left writing at `address`.
+  Changing it on that citation alone would move visual baselines with no test to justify or bound the
+  move. Also unresolved in the same breath: whether the copy's *source* byte read is likewise `^ 1`.
+  Needs a ROM or a BlastEm instrument before it lands, not a forum quote. Currency-relevant (it touches
+  the VRAM write path used by every copy-using game).
+* **F-FILLTGT — the fill path's two target decodes disagree on an invalid code.** (Registered 2026-08-03
+  by slice A3b; pre-existing asymmetry that A3b's guard made visible, deliberately NOT fixed there.) The
+  fill *trigger* write in `Vdp::apply_data_write` is guarded by `matches!(code & 0x0F, 0x1 | 0x3 | 0x5)`
+  — the same invalid-target rule the non-DMA data-port path uses (pinned by VDPFIFOTesting test 10, ROM
+  `$FCAA` word 7) — so a code naming no write target takes its FIFO slot and steps the address but reaches
+  no memory. The fill *body* in `Vdp::run_fill` still resolves its target through `Vdp::target()`, whose
+  `target_of` falls back `_ => Vram` for any unrecognised low nibble. Net effect: a fill armed on a
+  no-write-target code has its trigger write suppressed yet its fill body still scribbles VRAM. One of the
+  two decodes is wrong; the ROM does not cover the case, so which one is unpinned. Resolve by pinning the
+  invalid-code fill behaviour from a ROM or an instrument, then making both paths share one decode.
 
 **L2 — frame budgets are settle-time guesses.** They were found empirically per ROM and are generous, but a
 timing change that slows a ROM past its budget shows up as a scorecard diff, not as a timeout. Read a diff on
