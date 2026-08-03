@@ -30,6 +30,7 @@
 //!
 //! If the vendored ROM is missing, that ROM skips cleanly (run `tools/fetch-testroms.sh`).
 
+use oracle_core::bus::{BusEvent, BusEventSink};
 use oracle_core::io::Pad;
 use oracle_core::system::System;
 use std::path::Path;
@@ -73,8 +74,12 @@ const ROMS: &[&str] = &[
 /// update `docs/2026-07-25-testrom-conformance.md` in the same change.
 const BASELINE: &[(&str, &str)] = &[
     (
+        // Re-pinned 2026-08-03 to the per-scanline capture (Limitation L1 narrowed). The old end-of-frame
+        // hash was 0x96b9c93c4f3dd325 — a picture with FOUR distinct colours, because CRAM at end-of-frame
+        // holds only the last of the mid-scanline rewrites. The capture hash below is the ROM's actual
+        // ~1400-colour gradient. Both verified by eye as PPM dumps; see the ledger's L1 section.
         "color_1536",
-        "VISUAL-BASELINE frame_hash=0x96b9c93c4f3dd325 (end-of-frame capture only)",
+        "VISUAL-BASELINE frame_hash=0x917371f07409cb25 (per-scanline capture)",
     ),
     (
         "cram_flicker",
@@ -165,19 +170,74 @@ fn boot(name: &str) -> Option<System> {
     Some(sys)
 }
 
-/// FNV-1a over the whole active framebuffer (the `golden_frames.rs` idiom). A *self-consistency* pin: it
-/// captures what the current model draws, nothing more.
-fn frame_hash(sys: &System) -> u64 {
-    let mut h = 0xcbf2_9ce4_8422_2325u64;
-    for line in 0..ACTIVE_LINES {
-        for (r, g, b) in sys.vdp().render_line(line) {
-            for byte in [r, g, b] {
-                h ^= byte as u64;
-                h = h.wrapping_mul(0x0000_0100_0000_01b3);
-            }
+/// The one FNV-1a byte layout every framebuffer hash here uses: r, g, b per pixel, in the caller's pixel
+/// order. Shared by [`frame_hash`] and [`frame_hash_scanline`] so an end-of-frame hash and a per-scanline
+/// hash of the same picture are directly comparable (they cannot drift into different layouts).
+fn fnv1a_rgb(mut h: u64, px: &[(u8, u8, u8)]) -> u64 {
+    for &(r, g, b) in px {
+        for byte in [r, g, b] {
+            h ^= byte as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
         }
     }
     h
+}
+
+const FNV1A_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// FNV-1a over the whole active framebuffer (the `golden_frames.rs` idiom). A *self-consistency* pin: it
+/// captures what the current model draws, nothing more.
+fn frame_hash(sys: &System) -> u64 {
+    let mut h = FNV1A_OFFSET;
+    for line in 0..ACTIVE_LINES {
+        h = fnv1a_rgb(h, &sys.vdp().render_line(line));
+    }
+    h
+}
+
+/// Per-scanline capture sink (Limitation L1): retains the LAST complete frame's active lines, each as the
+/// VDP rendered it *during* the run. Mid-frame CRAM rewrites are visible here and structurally invisible to
+/// [`frame_hash`], which reads only the end-of-frame palette.
+struct FrameCapture {
+    building: Vec<(u8, u8, u8)>,
+    last: Vec<(u8, u8, u8)>,
+}
+
+impl BusEventSink for FrameCapture {
+    fn on_event(&mut self, _event: BusEvent) {}
+
+    fn wants_scanlines(&self) -> bool {
+        true
+    }
+
+    fn on_scanline(&mut self, line: u16, rgb: &[(u8, u8, u8)]) {
+        if line == 0 {
+            self.building.clear();
+        }
+        self.building.extend_from_slice(rgb);
+        if line == ACTIVE_LINES - 1 {
+            self.last = std::mem::take(&mut self.building);
+        }
+    }
+}
+
+/// Run the ROM under the capture sink and hash the last complete captured frame, in the SAME byte layout as
+/// [`frame_hash`] (line-major, r/g/b per pixel over lines 0..=223) — so the two hashes name the same kind of
+/// thing and a row can be moved from one to the other with the difference being only *when* the pixels were
+/// read. The sink is state-neutral (`tests/scanline_capture.rs`), so the run itself is the plain run.
+fn frame_hash_scanline(sys: &mut System, frames: u64) -> u64 {
+    let mut cap = FrameCapture {
+        building: Vec::new(),
+        last: Vec::new(),
+    };
+    sys.run_frames_with_sink(frames, &mut cap);
+    let width = sys.vdp().render_line(0).len();
+    assert_eq!(
+        cap.last.len(),
+        width * ACTIVE_LINES as usize,
+        "capture must hold exactly one complete frame of active lines"
+    );
+    fnv1a_rgb(FNV1A_OFFSET, &cap.last)
 }
 
 /// FNV-1a over one rendered rectangle (used to classify `vdp_sprite_masking`'s verdict glyphs).
@@ -414,6 +474,18 @@ fn scrape_visual(sys: &mut System, note: &str) -> String {
     format!("{note}frame_hash=0x{:016x}", frame_hash(sys))
 }
 
+/// `color_1536` — the 1536-colour trick: CRAM is rewritten *mid-scanline*, so the picture exists only while
+/// the frame is being drawn. Captured per-scanline (Limitation L1, narrowed 2026-08-03): the end-of-frame
+/// framebuffer showed 4 distinct colours (a black + flat-grey rectangle on the backdrop), the per-scanline
+/// capture shows the real ~1400-colour gradient the ROM demonstrates. Still a regression baseline only — the
+/// ROM prints no verdict — but now a hash of the right picture.
+fn scrape_color_1536(sys: &mut System) -> String {
+    format!(
+        "VISUAL-BASELINE frame_hash=0x{:016x} (per-scanline capture)",
+        frame_hash_scanline(sys, 120)
+    )
+}
+
 // ---------------------------------------------------------------------------------------------------
 // The scorecard
 // ---------------------------------------------------------------------------------------------------
@@ -429,10 +501,7 @@ fn scrape(name: &str) -> Option<String> {
         "vdp_sprite_masking" => scrape_vdp_sprite_masking(&mut sys),
         "cram_flicker" => scrape_visual(&mut sys, "NOT-RENDERABLE (border-only rendering) "),
         "direct_color_dma" => scrape_visual(&mut sys, "NOT-RENDERABLE (sub-scanline CRAM) "),
-        "color_1536" => scrape_visual(
-            &mut sys,
-            "VISUAL-BASELINE ", // end-of-frame capture caveat appended below
-        ),
+        "color_1536" => scrape_color_1536(&mut sys),
         _ => scrape_visual(&mut sys, "VISUAL-BASELINE "),
     })
 }
@@ -445,14 +514,6 @@ fn testrom_conformance_scorecard() {
     for name in ROMS {
         if let Some(outcome) = scrape(name) {
             scorecard.push((name, outcome));
-        }
-    }
-
-    // `color_1536` carries an extra capture caveat in the pin (mid-frame effects are lost at
-    // end-of-frame capture); apply it here so the scraper stays uniform.
-    for entry in scorecard.iter_mut() {
-        if entry.0 == "color_1536" {
-            entry.1.push_str(" (end-of-frame capture only)");
         }
     }
 

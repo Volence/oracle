@@ -34,7 +34,7 @@ Harness facts, so a reader can reproduce a row by hand:
 | `m68k_memory_test` (`memtest_68k`) | Reads every non-lockup address range twice; prints what it read **and** the ROM's own built-in real-hardware reference (`?` = wildcard nibble) | **Yes** — per-row compare, font base `$100`, 30 frames | **13 / 13 rows match** since the 2026-08-02 status-low-byte fixes (K4 slices took it 4/13 → 12/13; the row-11 residual was ODD-outside-interlace + VBlank-forced-while-display-disabled, both reference-corroborated semantics bugs — see the K4 ledger addendum) | **K4 — RESOLVED & FIXED**; row-11 status low byte also RESOLVED (adjudicated semantics, not timing — see below). |
 | `vdp_port_access` (`VDPFIFOTesting`) | 16 VDP port-access tests over two pages: FIFO size/behaviour, DMA-via-FIFO, byteswapping, partial CP writes, register-write masking, read-target switching, FIFO wait states | **Yes** — scrapes the on-screen `Results: ( P/ F/ T)` line; page 1 auto-runs (settles ~frame 42), `Start` advances to page 2 (~480 more frames) | **page 1 = 6 pass / 3 fail / 9**; **pages 1+2 cumulative = 9 pass / 7 fail / 16** | Expected: the VDP timing skeleton is an interim model (`docs/2026-07-16-vdp-recon.md`; the FIFO/wait-state rows are exactly the "Phase 3 per-line DMA cost" deferral). CHARTER explicitly does not gate on this ROM. |
 | `vdp_sprite_masking` (`SpriteMaskingTestRom`) | 9 sprite masking / per-line / per-frame / dot-overflow tests | **Yes** — verdict is a 32×8 glyph at the right edge, classified by **rendered-pixel hash** (its nametable cells are identical for the tick and cross cases, so only the framebuffer discriminates). 300 frames, settles ~frame 8 | `1=TICK/TICK 2=TICK/TICK 3=TICK/CROSS 4=PASS 5=PASS 6=FAIL 7=PASS 8=PASS 9=TICK/TICK` — **2 failures**: test 3's second sub-case (MAX SPRITE DOTS – COMPLEX) and test 6 (MASK S1 ON DOT OVERFLOW) | Expected: both are the **mid-sprite pixel-budget cut** interim model, ledger row **P1** in `docs/2026-07-16-vdp-pixel-known-differences.md` (we spend budget per whole sprite; hardware cuts mid-sprite at the exact dot). Open question **Q1** below on the H32/H40 toggle. |
-| `color_1536` (`TEST1536.BIN`) | 1536-colour trick — CRAM rewritten mid-scanline | Frame hash only | `frame_hash=0x96b9c93c4f3dd325` | **Limitation L1**: end-of-frame capture. This ROM renders correctly only with per-scanline capture; the end-of-frame framebuffer cannot show it. |
+| `color_1536` (`TEST1536.BIN`) | 1536-colour trick — CRAM rewritten mid-scanline | Frame hash only — **per-scanline capture** (the only row that uses it) | `frame_hash=0x917371f07409cb25` (per-scanline capture; was `0x96b9c93c4f3dd325` end-of-frame, re-pinned 2026-08-03) | **Limitation L1 — NARROWED**: the row now hashes the picture the ROM actually draws. Still a regression pin, not a verdict (the ROM prints none). |
 | `cram_flicker` (`cram flicker.bin`) | CRAM-dot / border artefacts from writing CRAM during active display | **NOT-RENDERABLE** — border-only rendering; the effect lives outside our active-area framebuffer | `frame_hash=0x815bb645bc46a325` | Structural: we render the 224-line active area, not the border where the artefact appears. |
 | `direct_color_dma` (`Direct-Color-DMA.bin`) | Direct-colour DMA — CRAM streamed per pixel during active display | **NOT-RENDERABLE** — sub-scanline CRAM | `frame_hash=0xed40dc4a6c4fc325` | Structural: same root as L1, one level finer (needs sub-scanline CRAM state, not just per-line). |
 | `shadow_highlight` (`Shadow-Highlight Test Program #2`) | Shadow / highlight operator output | Frame hash only (visual judgment) | `frame_hash=0x428e03aa61cc0285` | Ledger row **P8** (S/H DAC calibration) governs any pixel-level divergence. |
@@ -281,11 +281,31 @@ line-261 read happens with the display disabled, where the forced-set rule domin
 
 ## Limitations of the instrument itself
 
-**L1 — end-of-frame capture.** The harness captures the framebuffer *after* `run_frames(n)` completes, so
-any effect that exists only mid-frame is lost. `color_1536` is the clean demonstration: it renders correctly
-only with per-scanline capture. Rows marked NOT-RENDERABLE (`cram_flicker`, `direct_color_dma`) are the
-stronger form of the same limitation. A per-scanline capture mode would upgrade these three rows from
-"frame hash of the wrong thing" to real verdicts.
+**L1 — end-of-frame capture — NARROWED 2026-08-03.** The harness's default capture reads the framebuffer
+*after* `run_frames(n)` completes, so any effect that exists only mid-frame is lost. That default is
+unchanged (every other row still hashes the end-of-frame picture and every one of those hashes is
+byte-identical across this change), but the harness now also has a **per-scanline capture** path:
+`FrameCapture` opts into `BusEventSink::wants_scanlines` and retains the last complete frame of lines as
+the `Scanline` event renders them, and `frame_hash_scanline` hashes that in the *same* FNV-1a byte layout
+as `frame_hash` (both go through `fnv1a_rgb`), so the two are directly comparable.
+
+`color_1536` is upgraded to it and is the clean demonstration of what the limitation cost. Both
+framebuffers were dumped as PPM and inspected by eye:
+
+* **End-of-frame** (`0x96b9c93c4f3dd325`): **4 distinct colours** in the whole frame — a dark-green
+  patterned backdrop with a rectangle in the middle that is flat black on the left ~2/3 and flat grey on
+  the right ~1/3. CRAM at end-of-frame holds only the *last* of the ROM's mid-scanline rewrites, so the
+  rectangle collapses to two solid blocks.
+* **Per-scanline** (`0x917371f07409cb25`): **~1400 distinct colours** — the rectangle is the ROM's actual
+  colour field: twelve vertical colour columns (dark red / olive / indigo / teal, then red / green / cyan /
+  violet, then pastel peach / lavender / mint / white) each ramping through many horizontal bands, and the
+  whole ramp repeated twice down the frame. This is the 1536-colour trick.
+
+**What remains.** The two NOT-RENDERABLE rows are *not* fixed by per-line capture and stay end-of-frame
+pins for now; each has its own structural blocker rather than a capture-time one — `cram_flicker`'s
+artefact is in the **border**, which we do not render at all, and `direct_color_dma` needs **sub-scanline**
+(per-pixel) CRAM, one level finer than a line. Both still need re-adjudicating *under* the new capture
+before their reasons can be restated precisely.
 
 **L2 — frame budgets are settle-time guesses.** They were found empirically per ROM and are generous, but a
 timing change that slows a ROM past its budget shows up as a scorecard diff, not as a timeout. Read a diff on
