@@ -2013,6 +2013,95 @@ mod tests {
         );
     }
 
+    #[test]
+    fn vdpfifo_t4_fill_trigger_and_byte_placement() {
+        // VDPFIFOTesting test 4 "DMA Fill FIFO Usage" (`vendor/TestRoms/vdp_port_access.bin`; name string
+        // at ROM $DC30, expected-value table at ROM $DC54). This replays the ROM's exact port traffic
+        // (disassembled $DCA8..$DEAE; see docs/2026-08-03-a3-dma-fifo-design.md §1.6) and asserts its exact
+        // 16-word hardware-captured answer.
+        //
+        // The 16 words split in half. Words 0-7 are VSRAM-read snoop probes: the fill's trigger word takes
+        // exactly ONE FIFO slot and the fill's own replicated bytes take none (P4), so the cursor walks
+        // `0000 → 0000 → 0000 → $1234 & $F800`. Words 8-15 are the settled VRAM image at $8000, which pins
+        // both halves of the fill fix: P2 — the trigger is completed as a NORMAL word write ($12 → $8000,
+        // $34 → $8001) and the address then auto-increments — and P3 — the fill engine writes its MSB to
+        // `address ^ 1`, so with autoinc 1 the ten steps at $8001..$800A touch
+        // {$8000} ∪ {$8002..$8009} ∪ {$800B}, leaving $800A zero. Citations: Nemesis, *VDP Internals*
+        // ("that data port write is completed as normal … then pulled out of the FIFO, and processed as a
+        // normal FIFO write"); Mask of Destiny, *Is DMA Fill buggy?* ("MSB of the word in the FIFO is
+        // written DMA length times to address ^ 1"); Eke, same thread ("VRAM byte writes (used by VRAM fill
+        // and copy DMA) actually occur to VRAM address ^ 1").
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE; // vblank line: blanked (fast) slot rate
+        let mut sink = Vec::new();
+        let mut observed = Vec::new();
+        {
+            let mut bus = mem.bus(&mut sink);
+            let ctrl = |bus: &mut MegaDriveBus<'_, Vec<BusEvent>>, w: u16| {
+                bus.write16(0xC0_0004, 5, w);
+            };
+            let data = |bus: &mut MegaDriveBus<'_, Vec<BusEvent>>, w: u16| {
+                bus.write16(0xC0_0000, 5, w);
+            };
+
+            // The ROM reaches test 4 with autoinc 2 and DMA enabled already latched by earlier tests; a
+            // fresh VDP needs them set explicitly (reg 1 = $54 is the ROM's own value at $DCFE).
+            ctrl(&mut bus, 0x8F02); // reg 15 autoinc 2
+            ctrl(&mut bus, 0x8154); // reg 1: display on + M1 (DMA enable) + M5
+
+            // ROM $DCA8: VRAM write @ $8000, then eight data writes zero VRAM $8000..$800F.
+            ctrl(&mut bus, 0x4000);
+            ctrl(&mut bus, 0x0002);
+            for _ in 0..8 {
+                data(&mut bus, 0x0000);
+            }
+
+            // ROM $DCF6..$DD20: reg 15 = 1 (autoinc 1), regs 19/20 = fill length 10, reg 23 = $80 (fill).
+            for w in [0x8F01u16, 0x930A, 0x9400, 0x9780] {
+                ctrl(&mut bus, w);
+            }
+
+            // ROM $DD56: CD = 100001 (VRAM write + CD5) @ $8000 arms the fill; ROM $DD5C: the data-port
+            // write that both triggers it and supplies the fill word.
+            ctrl(&mut bus, 0x4000);
+            ctrl(&mut bus, 0x0082);
+            data(&mut bus, 0x1234);
+
+            ctrl(&mut bus, 0x8F02); // ROM $DD7A: reg 15 back to autoinc 2
+
+            // Four groups of 2 VSRAM reads @0, each separated by one ring-advancing CRAM write of $FFFF.
+            for group in 0..4 {
+                ctrl(&mut bus, 0x0000); // CD = 000100 = VSRAM read @ $0000
+                ctrl(&mut bus, 0x0010);
+                observed.push(bus.read16(0xC0_0000, 5).0);
+                observed.push(bus.read16(0xC0_0000, 5).0);
+                if group < 3 {
+                    ctrl(&mut bus, 0xC020); // CD = 000011 = CRAM write @ $0020
+                    ctrl(&mut bus, 0x0000);
+                    data(&mut bus, 0xFFFF);
+                }
+            }
+
+            // ROM $DE60: VRAM read @ $8000, eight words (autoinc 2).
+            ctrl(&mut bus, 0x0000);
+            ctrl(&mut bus, 0x0002);
+            for _ in 0..8 {
+                observed.push(bus.read16(0xC0_0000, 5).0);
+            }
+        }
+
+        assert_eq!(
+            observed,
+            vec![
+                0x0000u16, 0x0000, 0x0000, 0x0000, // snoop = a zeroing write
+                0x0000, 0x0000, 0x1000, 0x1000, // snoop = the trigger word $1234 & $F800
+                0x1234, 0x1212, 0x1212, 0x1212, // VRAM $8000..$8007
+                0x1212, 0x0012, 0x0000, 0x0000, // VRAM $8008..$800F
+            ],
+            "VDPFIFOTesting test 4's expected table (ROM $DC54)"
+        );
+    }
+
     /// Program + trigger a VRAM fill of `len` bytes of `fill`'s top byte at VRAM `dest` (autoinc 1).
     fn run_vram_fill(
         bus: &mut MegaDriveBus<'_, Vec<BusEvent>>,
@@ -2036,16 +2125,33 @@ mod tests {
 
     #[test]
     fn vram_fill_fills_the_target_with_the_top_byte() {
+        // A3b rewrite (was: "$0100..$0108 are all $EE"). Two behaviors move the image, both pinned by
+        // VDPFIFOTesting test 4 (expected table ROM $DC54): P2 — the trigger word $EEAA is completed as a
+        // normal write ($EE → $0100, $AA → $0101) and the address auto-increments — and P3 — each fill byte
+        // lands at `address ^ 1`. So the eight fill steps run over addresses $0101..$0108 and write
+        // $0100, $0103, $0102, $0105, $0104, $0107, $0106, $0109: $0108 is skipped and $0109 is written.
         let mut mem = MdMem::new(vec![0u8; 0x1000]);
         mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE; // vblank
+        let skipped_before = mem.vdp.vram()[0x0108];
         let mut sink = Vec::new();
         {
             let mut bus = mem.bus(&mut sink);
             run_vram_fill(&mut bus, 0x0100, 8, 0xEEAA); // fill 8 bytes of $EE
         }
-        assert!(
-            mem.vdp.vram()[0x0100..0x0108].iter().all(|&b| b == 0xEE),
-            "8 consecutive VRAM bytes filled with the top byte $EE"
+        assert_eq!(
+            &mem.vdp.vram()[0x0100..0x0108],
+            &[0xEE, 0xAA, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE],
+            "the trigger word's LSB survives at $0101; the rest is the fill byte"
+        );
+        assert_eq!(
+            mem.vdp.vram()[0x0108],
+            skipped_before,
+            "the odd autoincrement skips $0108 entirely"
+        );
+        assert_eq!(
+            mem.vdp.vram()[0x0109],
+            0xEE,
+            "…and reaches one byte past the naive end instead"
         );
     }
 
@@ -2080,9 +2186,13 @@ mod tests {
             bus.write16(0xC0_0004, 5, 0x8500); // reg 5 = 0 → SAT base $0000
             run_vram_fill(&mut bus, 0x0000, 4, 0x77AA); // fill 4 bytes of $77 into entry 0
         }
+        // A3b rewrite (was: `[$77; 4]`). The point of the test is unchanged — every byte the fill path
+        // writes still routes through the SAT write-through — but the image moved: the trigger word $77AA
+        // is now applied as a normal write ($77 → $0000, $AA → $0001, P2) and the four fill steps run over
+        // addresses $0001..$0004 writing `address ^ 1` = $0000, $0003, $0002, $0005 (P3).
         assert_eq!(
             &mem.vdp.sat_cache()[0..4],
-            &[0x77, 0x77, 0x77, 0x77],
+            &[0x77, 0xAA, 0x77, 0x77],
             "fill bytes hit the SAT write-through window compare"
         );
     }

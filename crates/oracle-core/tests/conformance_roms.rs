@@ -147,10 +147,17 @@ const BASELINE: &[(&str, &str)] = &[
         // residual: the fix is known but moves frozen currency (see the note in `Vdp::write_register`).
         // A3a (2026-08-03): 68k→VDP DMA payload words now occupy physical FIFO slots. Page 1 went
         // 6/3 → 7/2 — T3 "DMA Transfer using FIFO" flipped to pass (its 16 observations are pure
-        // undefined-bit FIFO snoop reads). T4 "DMA Fill FIFO Usage" still fails at exactly words 8 and
-        // 13; its fix (A3b) moves `export_state_v1::GOLDEN_HASH` and is PARKED for an owner ruling.
+        // undefined-bit FIFO snoop reads).
+        // A3b (2026-08-03): the DMA-fill trigger is applied as a normal full-word write before the fill
+        // runs, and the fill engine writes its byte to `address ^ 1`. Page 1 went 7/2 → 8/1 — T4 "DMA Fill
+        // FIFO Usage" flipped to pass (its last two wrong words, 8 and 13, were exactly those two bugs).
+        // NOTE the A3 design note predicted this would move `export_state_v1::GOLDEN_HASH`; it does NOT —
+        // that prediction mis-identified `testrom::build_pad_poll` (which does DMA-fill VRAM, and is used
+        // only by the io/watchpoint tests) as the golden fixture. The golden fixture is `testrom::build`,
+        // which never touches the VDP. Verified: every currency gate is byte-identical across this slice.
+        // Page 1's residual is T6 "8-bit VRAM Read target 01100" (slice A4); page 2's are T12/T16.
         "vdp_port_access",
-        "page1 pass/fail/total=7/2/9; pages1+2 cumulative=12/4/16",
+        "page1 pass/fail/total=8/1/9; pages1+2 cumulative=13/3/16",
     ),
     (
         "vdp_sprite_masking",
