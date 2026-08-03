@@ -1129,8 +1129,9 @@ impl Z80 {
     /// then decoded. Covered: `IN r,(C)`/`OUT (C),r`, `SBC HL,rr`/`ADC HL,rr`, `LD (nn),rr`/`LD rr,(nn)`,
     /// `NEG`, `RETN`/`RETI`, `IM 0/1/2`, `LD I,A`/`LD R,A`/`LD A,I`/`LD A,R`, `RRD`/`RLD`, the block
     /// transfer/search (`LDI`/`LDD`/`LDIR`/`LDDR`, `CPI`/`CPD`/`CPIR`/`CPDR`), and the block I/O
-    /// (`INI`/`IND`/`INIR`/`INDR`, `OUTI`/`OUTD`/`OTIR`/`OTDR`). The undocumented ED holes/NONI-NOPs and the
-    /// undocumented mirrors of `NEG`/`RETN`/`IM`/`IN (C)`/`OUT (C),0` (`0x70`/`0x71`) are deferred.
+    /// (`INI`/`IND`/`INIR`/`INDR`, `OUTI`/`OUTD`/`OTIR`/`OTDR`). The undocumented ED HOLES execute as NONI
+    /// (8-T no-ops — see the arm below); the undocumented mirrors of `NEG`/`RETN`/`IM`/`IN (C)`/
+    /// `OUT (C),0` (`0x70`/`0x71`) remain deferred.
     ///
     /// Repeating variants (`LDIR`/`LDDR`/`CPIR`/`CPDR`/`INIR`/`INDR`/`OTIR`/`OTDR`) are modeled per the
     /// SST instruction-atomic contract: one `step()` performs one iteration, and when the loop continues,
@@ -1284,8 +1285,28 @@ impl Z80 {
             0xB3 => self.block_out(bus, true, true),
             0xBB => self.block_out(bus, false, true),
 
+            // ---- Undocumented ED HOLES (`$00-$3F`, `$77`/`$7F`, `$80-$9F`, the four gaps between the
+            // block groups, `$BC-$FF`): NONI — no operation, equivalent to two NOPs, 8 T-states, no
+            // register/flag effect beyond the two M1 refreshes `next_opcode` already applied. Pinned from
+            // "The Undocumented Z80 Documented" (Sean Young, §5.4: ED holes "have no effect, and take up
+            // 8 T states"). Promoted from a deferred panic because a scored conformance ROM
+            // (`m68k_opcode_sizes`) reaches `ED 00` for real: it uploads its Z80 program with 68k WORD
+            // writes, and under the hardware-true one-byte-lands window rule (Q4) the Z80 executes the
+            // half-landed stream — which real hardware runs straight through as NOPs. ----
+            0x00..=0x3F
+            | 0x77
+            | 0x7F
+            | 0x80..=0x9F
+            | 0xA4..=0xA7
+            | 0xAC..=0xAF
+            | 0xB4..=0xB7
+            | 0xBC..=0xFF => 8,
+
+            // The remaining `$40-$7B` gaps are undocumented MIRRORS with real semantics — `NEG`
+            // (`$4C/$54/...`), `RETN`/`RETI` (`$55/$5D/...`), `IM` (`$4E/$66/...`), and the flags-only
+            // `IN (C)` / `OUT (C),0` pair (`$70`/`$71`). Still deferred (they are NOT no-ops).
             other => unimplemented!(
-                "Z80 ED opcode {other:#04X} is an undocumented ED hole/mirror — deferred past sub-slice 5"
+                "Z80 ED opcode {other:#04X} is an undocumented NEG/RETN/IM/IN/OUT mirror — deferred"
             ),
         }
     }
@@ -1614,8 +1635,11 @@ impl Z80 {
     /// `ALU A,(IX+d)`, `POP IX`/`PUSH IX`/`EX (SP),IX`/`JP (IX)`/`LD SP,IX` (and every `FD`/`IY` counterpart).
     /// For the register↔`(IX+d)` moves the `r` operands are the **real** `B..A` registers (never `IXH`/`IXL`),
     /// since encoding `6` is the memory operand. `INC`/`DEC`/`ALU` on `(IX+d)` set flags exactly like their
-    /// `(HL)` counterparts. The undocumented `IXH`/`IXL` half-register ops and the DD/FD-on-non-HL no-op
-    /// prefixes fall through to `unimplemented!` (deferred); the `DDCB`/`FDCB` group is [`Self::execute_ddcb`].
+    /// `(HL)` counterparts. A `DD`/`FD` prefix on an opcode with **no** `H`/`L`/`HL` involvement is IGNORED
+    /// on hardware — the opcode executes exactly as unprefixed, +4 T-states for the prefix fetch ("The
+    /// Undocumented Z80 Documented" §5.1; this includes the famous `DD EB` quirk: `EX DE,HL` always swaps
+    /// `DE`/`HL`, never `IX`). Only the undocumented `IXH`/`IXL` half-register ops remain deferred (they
+    /// have real substituted semantics); the `DDCB`/`FDCB` group is [`Self::execute_ddcb`].
     fn execute_indexed_base<B: Z80Io>(&mut self, idx: IndexReg, op: u8, bus: &mut B) -> u32 {
         match op {
             // ---- ADD IX,rr (0x09/19/29/39): rr = bits 5..4 (BC/DE/IX/SP — the HL slot is the index reg, so
@@ -1745,10 +1769,38 @@ impl Z80 {
                 10
             }
 
-            other => unimplemented!(
-                "Z80 {idx:?}-prefixed base opcode {other:#04X} is undocumented (IXH/IXL half-register op or \
-                 a no-op DD/FD prefix on a non-HL opcode) — deferred past the DD/FD base slice"
+            // ---- Undocumented IXH/IXL half-register ops: the prefix substitutes IXH/IXL for H/L in the
+            // register fields. Real semantics — still deferred (NOT prefix-ignored): INC/DEC/LD-imm on
+            // the H/L slots ($24-$26/$2C-$2E), LD r,IXH/IXL and LD IXH/IXL,r ($44-$45/$4C-$4D/$54-$55/
+            // $5C-$5D/$60-$65/$67-$6D/$6F/$7C-$7D), and ALU A,IXH/IXL ($84-$85/.../$BC-$BD). ----
+            0x24..=0x26
+            | 0x2C..=0x2E
+            | 0x44..=0x45
+            | 0x4C..=0x4D
+            | 0x54..=0x55
+            | 0x5C..=0x5D
+            | 0x60..=0x65
+            | 0x67..=0x6D
+            | 0x6F
+            | 0x7C..=0x7D
+            | 0x84..=0x85
+            | 0x8C..=0x8D
+            | 0x94..=0x95
+            | 0x9C..=0x9D
+            | 0xA4..=0xA5
+            | 0xAC..=0xAD
+            | 0xB4..=0xB5
+            | 0xBC..=0xBD => unimplemented!(
+                "Z80 {idx:?}-prefixed base opcode {op:#04X} is an undocumented IXH/IXL \
+                 half-register op — deferred past the DD/FD base slice"
             ),
+
+            // ---- Every other base opcode has NO H/L/HL involvement, so the DD/FD prefix is IGNORED on
+            // hardware: execute exactly as unprefixed, +4 T-states for the prefix's M1 ("The Undocumented
+            // Z80 Documented" §5.1; `DD EB` still swaps DE/HL — the documented quirk). Reached for real
+            // by `m68k_opcode_sizes` (`DD 00` in its word-uploaded Z80 program under the Q4 one-byte
+            // window rule) and by Vectorman's driver (`FD FF`, the pre-existing 26-frame panic). ----
+            other => 4 + self.execute_base(other, bus),
         }
     }
 
@@ -2051,6 +2103,105 @@ mod tests {
         assert_eq!(
             back, populated,
             "every Z80 register round-trips through bincode"
+        );
+    }
+
+    #[test]
+    fn undocumented_ed_holes_execute_as_noni_8t_nops() {
+        // The Undocumented Z80 Documented §5.4: every ED opcode outside the documented set and the
+        // real-semantics mirrors is NONI — no effect, 8 T-states, PC past the 2-byte opcode, R bumped
+        // twice by the two M1 fetches. Reached for real by `m68k_opcode_sizes` (its Z80 program is
+        // word-uploaded, so only the high bytes land — Q4). A representative hole from each hole band:
+        struct Mem([u8; 0x100]);
+        impl Z80Io for Mem {
+            fn read(&mut self, addr: u16) -> u8 {
+                self.0[addr as usize & 0xFF]
+            }
+            fn write(&mut self, addr: u16, value: u8) {
+                self.0[addr as usize & 0xFF] = value;
+            }
+            fn input(&mut self, _port: u16) -> u8 {
+                0xFF
+            }
+            fn output(&mut self, _port: u16, _value: u8) {}
+        }
+        for hole in [0x00u8, 0x3F, 0x77, 0x7F, 0x9E, 0xA5, 0xAD, 0xB6, 0xBC, 0xFF] {
+            let mut mem = Mem([0; 0x100]);
+            mem.0[0] = 0xED;
+            mem.0[1] = hole;
+            let mut z = Z80::new();
+            let before = z.clone();
+            let t = z.step(&mut mem);
+            assert_eq!(t, 8, "ED {hole:#04X}: 8 T-states");
+            assert_eq!(z.pc, 2, "ED {hole:#04X}: PC past the 2-byte opcode");
+            assert_eq!(z.r, 2, "ED {hole:#04X}: two M1 refreshes");
+            let neutral = Z80 {
+                pc: z.pc,
+                r: z.r,
+                ..before
+            };
+            assert_eq!(z, neutral, "ED {hole:#04X}: no other state effect");
+        }
+    }
+
+    #[test]
+    fn dd_fd_prefix_is_ignored_on_non_hl_opcodes() {
+        // The Undocumented Z80 Documented §5.1: a DD/FD prefix before an opcode with no H/L/HL
+        // involvement is ignored — the opcode executes exactly as unprefixed, +4 T for the prefix M1.
+        // Reached for real by m68k_opcode_sizes (DD 00) and Vectorman (FD FF).
+        struct Mem([u8; 0x100]);
+        impl Z80Io for Mem {
+            fn read(&mut self, addr: u16) -> u8 {
+                self.0[addr as usize & 0xFF]
+            }
+            fn write(&mut self, addr: u16, value: u8) {
+                self.0[addr as usize & 0xFF] = value;
+            }
+            fn input(&mut self, _port: u16) -> u8 {
+                0xFF
+            }
+            fn output(&mut self, _port: u16, _value: u8) {}
+        }
+
+        // DD 00 = prefixed NOP: 4 (prefix) + 4 (NOP).
+        let mut mem = Mem([0; 0x100]);
+        mem.0[0] = 0xDD;
+        mem.0[1] = 0x00;
+        let mut z = Z80::new();
+        assert_eq!(z.step(&mut mem), 8, "DD 00 = 8 T");
+        assert_eq!(z.pc, 2);
+        assert_eq!(z.r, 2, "prefix + opcode M1 refreshes");
+
+        // DD EB — the famous quirk: EX DE,HL ALWAYS swaps DE/HL, never IX.
+        let mut mem = Mem([0; 0x100]);
+        mem.0[0] = 0xDD;
+        mem.0[1] = 0xEB;
+        let mut z = Z80 {
+            de: 0x1234,
+            hl: 0x5678,
+            ix: 0x9ABC,
+            ..Z80::new()
+        };
+        assert_eq!(z.step(&mut mem), 8, "DD EB = 4 + 4 T");
+        assert_eq!(z.de, 0x5678, "DE <- HL (not IX)");
+        assert_eq!(z.hl, 0x1234, "HL <- DE");
+        assert_eq!(z.ix, 0x9ABC, "IX untouched");
+
+        // FD FF = prefixed RST 38h: pushes PC-past-instruction, jumps to $0038; 4 + 11 T.
+        let mut mem = Mem([0; 0x100]);
+        mem.0[0] = 0xFD;
+        mem.0[1] = 0xFF;
+        let mut z = Z80 {
+            sp: 0x0080,
+            ..Z80::new()
+        };
+        assert_eq!(z.step(&mut mem), 15, "FD FF = 4 + 11 T");
+        assert_eq!(z.pc, 0x0038, "RST 38h vector");
+        assert_eq!(z.sp, 0x007E);
+        assert_eq!(
+            u16::from_le_bytes([mem.0[0x7E], mem.0[0x7F]]),
+            2,
+            "return address = past the 2-byte prefixed RST"
         );
     }
 
