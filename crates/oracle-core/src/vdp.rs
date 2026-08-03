@@ -459,6 +459,17 @@ impl Vdp {
         matches!(code & 0x0F, 0x1 | 0x3 | 0x5)
     }
 
+    /// Whether `code` selects the **undocumented 8-bit VRAM read**, CD3-CD0 = `1100` (A4). It is a VRAM
+    /// read like code `0000`, but only half of the 16-bit result comes from VRAM: the low byte is the
+    /// single byte at `address ^ 1`, and the high byte is stale FIFO contents (see [`Vdp::data_read`]).
+    ///
+    /// Deliberately a *predicate on the read path*, not a new [`Target`] variant: code `$0C` still decodes
+    /// to `Target::Vram` for the write path (where it names no valid write target and is ignored, the A2
+    /// rule) and for the FIFO drain-cost model, both of which A4 leaves byte-identical.
+    fn is_vram_byte_read(code: u8) -> bool {
+        code & 0x0F == 0x0C
+    }
+
     /// Store `data` (plus the live code/address registers) into the next physical FIFO ring slot and advance
     /// the write cursor. The physical slot is overwritten in place (retaining nothing of the old entry beyond
     /// the ring position). The *pending count* is deliberately untouched: this is the bare slot write, which a
@@ -542,6 +553,15 @@ impl Vdp {
     /// big-endian (high byte first) — the `state_hash` currency's byte layout.
     fn read_target(&self) -> u16 {
         match self.target() {
+            // A4: the 8-bit VRAM read (code $0C) pre-caches ONE byte — the one at `address ^ 1` — into the
+            // low half; the high half is filled at read time from the FIFO snoop, so it is left clear here.
+            // The lane swap is the same one the fill/copy engine's byte writes take (Eke, *Is DMA Fill
+            // buggy?*, SpritesMind: "VRAM byte writes … actually occur to VRAM address ^ 1"), and is pinned
+            // by VDPFIFOTesting test 6's expected table (ROM $DED4): autoinc 1 from $8000 over the image
+            // `11 22 33 44` reads $22, $11, $44, $33.
+            Target::Vram if Self::is_vram_byte_read(self.code) => {
+                self.vram[(self.addr ^ 1) as usize] as u16
+            }
             Target::Vram => {
                 let b = (self.addr & 0xFFFE) as usize;
                 ((self.vram[b] as u16) << 8) | self.vram[b | 1] as u16
@@ -1033,6 +1053,15 @@ impl Vdp {
         match self.target() {
             Target::Cram => out = (out & 0x0EEE) | (self.fifo_snoop_word() & !0x0EEE),
             Target::Vsram => out = (out & 0x07FF) | (self.fifo_snoop_word() & !0x07FF),
+            // A4: the undocumented 8-bit VRAM read (code $0C) is the third snooping target. Only the low
+            // byte is defined — it came from `vram[address ^ 1]` via the pre-cache — so the whole HIGH byte
+            // is undefined and reads back the next-available FIFO entry's high byte. VDPFIFOTesting test 6
+            // (expected table ROM $DED4) pins it: with the ring holding the eight marker words' last four,
+            // the high byte walks $99 → $BB → $DD → $12 as one CRAM write per group advances the cursor,
+            // while both reads *within* a group return the same high byte — a read does not advance it.
+            Target::Vram if Self::is_vram_byte_read(self.code) => {
+                out = (out & 0x00FF) | (self.fifo_snoop_word() & 0xFF00)
+            }
             Target::Vram => {}
         }
         self.autoinc();
@@ -2250,6 +2279,108 @@ mod tests {
         assert_eq!(
             out, expected,
             "CRAM read = defined bits | snooped undefined bits"
+        );
+    }
+
+    // --- The 8-bit VRAM read target, CD = %001100 (slice A4; VDPFIFOTesting test 6) ----------------------
+
+    /// Arm the undocumented 8-bit VRAM read (code `$0C`) at VRAM `addr` with autoinc `inc`, the way the
+    /// ROM does it (control words `$00xx` / `$0032`; ROM $DF72 and friends).
+    fn vram_byte_read_cmd(v: &mut Vdp, addr: u16, inc: u8) {
+        v.control_write(0x8F00 | inc as u16, 0);
+        v.control_write(addr & 0x3FFF, 0); // first word: CD1-0 = 00, A13-A0
+        v.control_write(0x0030 | ((addr >> 14) & 0x03), 0); // second word: CD5-2 = 0011, A15-A14
+        assert_eq!(v.code, 0x0C, "8-bit VRAM read command armed");
+    }
+
+    #[test]
+    fn eight_bit_vram_read_takes_the_low_byte_from_address_xor_one() {
+        // VDPFIFOTesting test 6 (expected table ROM $DED4), group 5: autoinc 1 from $8000 over the image
+        // `11 22 33 44` reads $22, $11, $44, $33 — i.e. `vram[address ^ 1]`, the same byte-lane swap A3b
+        // pinned for the fill engine (Eke, *Is DMA Fill buggy?*: "VRAM byte writes … actually occur to
+        // VRAM address ^ 1"). A plain `vram[address]` would give $11, $22, $33, $44.
+        let mut v = fresh();
+        v.vram[0x8000..0x8004].copy_from_slice(&[0x11, 0x22, 0x33, 0x44]);
+        vram_byte_read_cmd(&mut v, 0x8000, 1);
+        let out: Vec<u8> = (0..4).map(|_| v.data_read(0xABCD) as u8).collect();
+        assert_eq!(
+            out,
+            vec![0x22, 0x11, 0x44, 0x33],
+            "low byte = vram[addr ^ 1]"
+        );
+        assert_eq!(v.addr, 0x8004, "the address auto-increments normally");
+    }
+
+    #[test]
+    fn eight_bit_vram_read_takes_the_high_byte_from_the_fifo_snoop() {
+        // Test 6's groups 1-4: the high half is NOT VRAM at all — it is the high byte of the
+        // next-available FIFO entry, the same stale word the CRAM/VSRAM undefined bits snoop (Nemesis,
+        // *VDP Internals*: undefined bits "are actually initialized to the content on the next available
+        // FIFO entry (the one containing the data written to control port four writes ago)").
+        let mut v = fresh();
+        vram_write_cmd(&mut v, 0x8000);
+        for w in [
+            0x1122u16, 0x3344, 0x5566, 0x7788, 0x99AA, 0xBBCC, 0xDDEE, 0x1234,
+        ] {
+            v.data_write(w);
+        }
+        assert_eq!(
+            v.fifo_snoop_word(),
+            0x99AA,
+            "cursor parked four writes back"
+        );
+        vram_byte_read_cmd(&mut v, 0x8000, 2);
+        assert_eq!(v.data_read(0xABCD), 0x9922, "snoop MSB | vram[$8001]");
+        assert_eq!(
+            v.data_read(0xABCD),
+            0x9944,
+            "a read does NOT advance the cursor"
+        );
+    }
+
+    #[test]
+    fn eight_bit_vram_read_high_byte_walks_with_the_ring_cursor() {
+        // Test 6's ring-advancing $FFFF CRAM writes: each one moves the snoop on by one slot, so the
+        // read's high byte walks $99 → $BB → $DD → $12 while the VRAM image is untouched.
+        let mut v = fresh();
+        vram_write_cmd(&mut v, 0x8000);
+        for w in [
+            0x1122u16, 0x3344, 0x5566, 0x7788, 0x99AA, 0xBBCC, 0xDDEE, 0x1234,
+        ] {
+            v.data_write(w);
+        }
+        let mut highs = Vec::new();
+        for (i, addr) in [0x8000u16, 0x8004, 0x8008, 0x800C].into_iter().enumerate() {
+            vram_byte_read_cmd(&mut v, addr, 2);
+            highs.push((v.data_read(0xABCD) >> 8) as u8);
+            // One CRAM write @ $0020 advances the ring cursor by one slot (ROM $DF9C).
+            ctrl(&mut v, &[0xC020, if i == 3 { 0x0000 } else { 0x0002 }]);
+            v.data_write(0xFFFF);
+        }
+        assert_eq!(highs, vec![0x99, 0xBB, 0xDD, 0x12]);
+    }
+
+    #[test]
+    fn eight_bit_vram_read_does_not_change_the_write_path() {
+        // A4 changes the READ path only. Code $0C's low nibble names no *write* target, so a data write
+        // under it is accepted into the FIFO and steps the address but reaches no memory (the A2
+        // invalid-target rule; VDPFIFOTesting test 5 "FIFO Write to invalid target" passes today and must
+        // stay passing). Guards that the byte-read carve-out did not leak into `write_target`.
+        let mut v = fresh();
+        v.vram[0x0100] = 0x5A;
+        v.vram[0x0101] = 0xA5;
+        vram_byte_read_cmd(&mut v, 0x0100, 2);
+        v.data_write(0xBEEF);
+        assert_eq!(
+            (v.vram[0x0100], v.vram[0x0101]),
+            (0x5A, 0xA5),
+            "a write under code $0C reaches no memory (invalid write target)"
+        );
+        assert_eq!(v.addr, 0x0102, "but the address still steps");
+        assert_eq!(
+            v.fifo_snoop_word(),
+            0x0000,
+            "and it still takes a FIFO slot"
         );
     }
 
