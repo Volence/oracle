@@ -371,12 +371,18 @@ impl Vdp {
 
     /// The VDP status word ($C00004 read), with the timing bits live (recon R2). Bit layout (official Sega
     /// manual): b0 PAL, b1 DMA-busy, b2 HBlank, b3 VBlank, b4 odd-frame, b5 sprite-collision, b6
-    /// sprite-overflow, b7 VINT(F), b8 FIFO-full, b9 FIFO-empty. This slice fills the FIFO-empty placeholder
-    /// (the FIFO drains immediately this push) + the vblank/hblank timing bits; the interrupt / sprite /
-    /// odd-frame bits land with their state in later slices. Not yet wired to the control port — that is the
-    /// ports slice (which also clears the pending toggle on a status read).
+    /// sprite-overflow, b7 VINT(F), b8 FIFO-full, b9 FIFO-empty. The FIFO bits are LIVE from `fifo_len`
+    /// (A1, VDPFIFOTesting T16): EMPTY = no pending entries, FULL = all 4 slots pending. This function is
+    /// a pure snapshot — the mutable status-read path ([`Vdp::control_read_status`]) drains the FIFO to
+    /// `mclk` first, so a poll observes the time-based drain and nothing else.
     pub fn status_word(&self, mclk: u64) -> u16 {
-        let mut s = 1u16 << 9; // FIFO empty (placeholder: immediate drain this push)
+        let mut s = 0u16;
+        if self.fifo_len == 0 {
+            s |= 1 << 9; // FIFO empty (live: no pending entries)
+        }
+        if self.fifo_len == 4 {
+            s |= 1 << 8; // FIFO full (live: all 4 slots pending — the /DTACK-stall condition)
+        }
         if mclk < self.dma_busy_until {
             s |= 1 << 1; // DMA busy (recon R4 / Eke): set across a fill/copy's coarse transfer window
         }
@@ -769,6 +775,9 @@ impl Vdp {
     /// (behavior-identical to pre-K4-5 for them).
     pub fn control_read_status(&mut self, open_bus: u16, mclk: u64) -> u16 {
         self.pending = false;
+        // Advance the time-based FIFO drain to `mclk` first so the live EMPTY/FULL bits (A1, T16) reflect
+        // the FIFO's occupancy *now* — a status read never pops entries beyond this normal drain.
+        self.fifo_drain(mclk);
         let s = self.status_word(mclk);
         self.sprite_overflow = false;
         self.sprite_collision = false;
@@ -2013,6 +2022,75 @@ mod tests {
             out, expected,
             "CRAM read = defined bits | snooped undefined bits"
         );
+    }
+
+    #[test]
+    fn status_fifo_flags_clear_with_one_pending_entry() {
+        // A1 (VDPFIFOTesting T16): one pending entry during active display → neither EMPTY (bit 9) nor
+        // FULL (bit 8). Active H32 = 16 slots/line, a VRAM word costs 2 slots ≈ 427 mclk — at +10 mclk
+        // nothing has drained yet.
+        let mut v = fresh();
+        v.control_write(0x8140, 0); // display on → active-line (slow) drain rate
+        vram_write_cmd(&mut v, 0x0100);
+        let t0 = 500; // line 0, active display
+        v.data_write_at(0xBEEF, t0);
+        let s = v.control_read_status(0, t0 + 10);
+        assert_eq!(s & (1 << 9), 0, "EMPTY clear with a pending entry");
+        assert_eq!(s & (1 << 8), 0, "FULL clear with only one pending entry");
+    }
+
+    #[test]
+    fn status_fifo_full_with_four_pending_entries() {
+        let mut v = fresh();
+        v.control_write(0x8140, 0);
+        vram_write_cmd(&mut v, 0x0100);
+        let t0 = 500;
+        for w in [0x1111u16, 0x2222, 0x3333, 0x4444] {
+            v.data_write_at(w, t0);
+        }
+        let s = v.control_read_status(0, t0 + 10);
+        assert_ne!(s & (1 << 8), 0, "FULL set with all 4 slots pending");
+        assert_eq!(s & (1 << 9), 0, "EMPTY clear while full");
+    }
+
+    #[test]
+    fn status_read_drains_the_fifo_to_now_and_reports_empty() {
+        // After all four entries' slot costs elapse (4 × 427 ≈ 1708 mclk), a status read drains to `now`
+        // and reports EMPTY again.
+        let mut v = fresh();
+        v.control_write(0x8140, 0);
+        vram_write_cmd(&mut v, 0x0100);
+        let t0 = 500;
+        for w in [0x1111u16, 0x2222, 0x3333, 0x4444] {
+            v.data_write_at(w, t0);
+        }
+        let s = v.control_read_status(0, t0 + 2000);
+        assert_ne!(s & (1 << 9), 0, "EMPTY set once every entry has drained");
+        assert_eq!(s & (1 << 8), 0, "FULL clear again");
+        assert_eq!(v.fifo_len(), 0, "the drain really popped all four entries");
+    }
+
+    #[test]
+    fn repeated_status_reads_do_not_consume_fifo_entries() {
+        // A status read must NOT pop entries beyond the normal time-based drain: five reads at the same
+        // instant leave the FIFO exactly as one read would.
+        let mut v = fresh();
+        v.control_write(0x8140, 0);
+        vram_write_cmd(&mut v, 0x0100);
+        let t0 = 500;
+        for w in [0x1111u16, 0x2222, 0x3333, 0x4444] {
+            v.data_write_at(w, t0);
+        }
+        for _ in 0..5 {
+            let s = v.control_read_status(0, t0 + 10);
+            assert_ne!(s & (1 << 8), 0, "still FULL: nothing has drained at +10");
+        }
+        assert_eq!(v.fifo_len(), 4, "status reads never pop entries themselves");
+        // After one slot cost (427 mclk) exactly one entry has drained, no matter how many reads probe it.
+        for _ in 0..5 {
+            v.control_read_status(0, t0 + 500);
+        }
+        assert_eq!(v.fifo_len(), 3, "only the time-based drain moved the FIFO");
     }
 
     #[test]

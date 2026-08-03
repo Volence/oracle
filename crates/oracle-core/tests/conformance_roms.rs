@@ -123,6 +123,10 @@ const BASELINE: &[(&str, &str)] = &[
     ),
     ("vcounter", "VISUAL-BASELINE frame_hash=0x294957c8001b9f93"),
     (
+        // A1 (2026-08-03): live FIFO EMPTY/FULL status flags. The Results counts are UNCHANGED, but
+        // T16 "FIFO Wait States" went 26/80 → 62/80 verdict bytes green (every group's first-probe
+        // word now matches). The rest of T16 needs DMA-through-FIFO (slice A3) + discrete per-line
+        // access-slot scheduling — see docs/2026-07-25-testrom-conformance.md.
         "vdp_port_access",
         "page1 pass/fail/total=6/3/9; pages1+2 cumulative=9/7/16",
     ),
