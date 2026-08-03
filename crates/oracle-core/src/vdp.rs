@@ -442,6 +442,23 @@ impl Vdp {
         }
     }
 
+    /// Whether `code`'s low nibble names a **write** target. Only CD3-CD0 = 0001 / 0011 / 0101 (VRAM /
+    /// CRAM / VSRAM write) do; every other code is undefined and "the write … is ignored" (genvdp.txt 1.5f
+    /// code table — the same sentence that forbids writing after a read command). The port still *accepts*
+    /// the word — it takes its FIFO slot and the address still steps — but nothing reaches memory.
+    /// VDPFIFOTesting test 10 (ROM `$FCAA` word 7) pins the case CD0 alone cannot catch: a first-half-only
+    /// word over a CRAM *read* command leaves code `001001`, which looks like a write but has no target.
+    ///
+    /// Shared by BOTH data-port write paths — the ordinary write and the A3b fill-trigger write — so the
+    /// valid-code set can only ever be changed in one place. Note [`Vdp::target_of`] does **not** agree with
+    /// this predicate: it falls back `_ => Vram` for an unrecognised nibble, which is why a fill armed on a
+    /// no-write-target code has its trigger suppressed here yet its body still writes VRAM in
+    /// [`Vdp::run_fill`]. That asymmetry is unpinned and tracked as follow-up **F-FILLTGT** in
+    /// `docs/2026-07-25-testrom-conformance.md`.
+    fn code_names_a_write_target(code: u8) -> bool {
+        matches!(code & 0x0F, 0x1 | 0x3 | 0x5)
+    }
+
     /// Store `data` (plus the live code/address registers) into the next physical FIFO ring slot and advance
     /// the write cursor. The physical slot is overwritten in place (retaining nothing of the old entry beyond
     /// the ring position). The *pending count* is deliberately untouched: this is the bare slot write, which a
@@ -827,16 +844,19 @@ impl Vdp {
     }
 
     /// A data-port write ($C00000/2; recon R1). Clears the toggle, routes the word to VRAM/CRAM/VSRAM, and
-    /// auto-increments. A CD5 (DMA) command latches state and does nothing here — DMA is push 6 (documented
-    /// placeholder); the toggle still clears and the address does not advance.
+    /// auto-increments. A CD5 **Mem/Copy** command latches state and does nothing here (those transfers
+    /// trigger on the control write); a CD5 **fill** completes its trigger word as an ordinary write and
+    /// auto-increments before arming the transfer (A3b / P2 — see [`Vdp::apply_data_write`]). The toggle
+    /// clears either way.
     pub fn data_write(&mut self, w: u16) {
         self.apply_data_write(w);
     }
 
     /// The write body shared by the untimed [`Vdp::data_write`] and the bus-timed [`Vdp::data_write_at`]:
-    /// clear the toggle, and on a non-DMA command enqueue into the FIFO (recon R3, contents + timing) then
-    /// apply the write (enqueue-immediate model — see the `fifo` field docs; the enqueue captures the
-    /// pre-autoincrement address, per the pin).
+    /// clear the toggle, enqueue into the FIFO (recon R3, contents + timing) then apply the write
+    /// (enqueue-immediate model — see the `fifo` field docs; the enqueue captures the pre-autoincrement
+    /// address, per the pin). A CD5 **fill** trigger takes the same enqueue + write + autoincrement path
+    /// and then arms the transfer (A3b / P2); a CD5 Mem/Copy command falls straight through.
     fn apply_data_write(&mut self, w: u16) {
         self.pending = false;
         if self.code & 0x20 != 0 {
@@ -855,11 +875,19 @@ impl Vdp {
                 // $DC54): only a full word write puts the trigger's LSB $34 at $8001, and only the
                 // auto-increment keeps the fill's first step from destroying it again.
                 //
-                // Same invalid-target guard as the non-DMA path below: a code whose low nibble names no
-                // write target accepts the word into the FIFO and steps the address, but reaches no memory.
-                // (Applying the priming write to CRAM/VSRAM fill targets is the consistent reading of the
-                // citation but is not covered by the ROM — open question Q3 in the A3 design note.)
-                if matches!(self.code & 0x0F, 0x1 | 0x3 | 0x5) {
+                // Same invalid-target guard as the non-DMA path below (one shared predicate, so the
+                // valid-code set can only be changed in one place): a code whose low nibble names no write
+                // target accepts the word into the FIFO and steps the address, but the *trigger* reaches no
+                // memory. The fill *body* is not so guarded — `run_fill` resolves through `target_of`'s
+                // `_ => Vram` fallback and still writes VRAM. That inconsistency is unpinned; follow-up
+                // **F-FILLTGT** in `docs/2026-07-25-testrom-conformance.md`.
+                //
+                // The guard admits all three write targets, so a CRAM/VSRAM fill (code `$23`/`$25`) is
+                // primed too. That is EXTRAPOLATED: the ROM's pin is VRAM-only, and Nemesis's "completed as
+                // normal" is generic. Ruled 2026-08-03 — apply the pinned rule uniformly rather than invent
+                // an equally unevidenced VRAM-only exception; tracked as follow-up **F-FILLPRIME** (same
+                // ledger), and pinned as-shipped by `fill_trigger_primes_a_cram_fill_target` below.
+                if Self::code_names_a_write_target(self.code) {
                     self.write_target(w);
                 }
                 self.autoinc();
@@ -868,13 +896,9 @@ impl Vdp {
             return;
         }
         self.fifo_enqueue(w);
-        // Only CD3-CD0 = 0001 / 0011 / 0101 (VRAM / CRAM / VSRAM write) name a write target; every other
-        // code is undefined and "the write … is ignored" (genvdp.txt 1.5f code table — the same sentence
-        // that forbids writing after a read command). The port still *accepts* the word — it takes its FIFO
-        // slot and the address still steps — but nothing reaches memory. VDPFIFOTesting test 10 (ROM $FCAA
-        // word 7) pins the case CD0 alone cannot catch: a first-half-only word over a CRAM *read* command
-        // leaves code `001001`, which looks like a write but has no target.
-        if matches!(self.code & 0x0F, 0x1 | 0x3 | 0x5) {
+        // Undefined codes name no write target and are dropped — see `code_names_a_write_target` for the
+        // rule, its citation (genvdp.txt 1.5f) and the VDPFIFOTesting test 10 case that pins it.
+        if Self::code_names_a_write_target(self.code) {
             self.write_target(w);
         }
         self.autoinc();
@@ -1229,6 +1253,17 @@ pub enum DmaRequest {
 pub struct DmaRecord {
     pub mode: DmaMode,
     pub source: u32,
+    /// The address register the transfer started from.
+    ///
+    /// **`Mem` / `Copy`:** the armed command address, i.e. exactly what the CD5 command word set.
+    ///
+    /// **`Fill`: one autoincrement step PAST the armed command address.** Since A3b the fill's trigger
+    /// data-port write is completed as an ordinary write and auto-increments (P2), so the fill engine
+    /// begins from `armed + reg15` — which is genuinely where it starts walking, and with the `address ^ 1`
+    /// byte placement (P3) its first *written* byte is back at `armed` for the common even-address /
+    /// autoinc-1 case. A fill armed at `$8000` with autoinc 1 therefore reports `dest == $8001`. This is
+    /// deliberate but it does make `Fill` inconsistent with `Copy`; the field is introspection-only
+    /// (`Vdp::last_dma` → `FrameReport::dma`) and is in neither frozen currency.
     pub dest: u16,
     pub len: u16,
     pub target: Target,
@@ -2409,6 +2444,45 @@ mod tests {
         assert_eq!(v.vram[0x8000], 0x12, "trigger MSB → address");
         assert_eq!(v.vram[0x8001], 0x34, "trigger LSB → address ^ 1");
         assert_eq!(v.addr, 0x8001, "the trigger auto-incremented the address");
+        // I-4: `DmaRecord.dest` is the address the fill engine starts from, which since A3b is one
+        // autoincrement step past the armed command address. Introspection only, in neither currency, but
+        // it is what a debugger shows as "where the fill went" — pinned so the offset cannot drift silently.
+        v.run_fill(len, fill, 0);
+        assert_eq!(
+            v.last_dma().expect("the fill recorded a DmaRecord").dest,
+            0x8001,
+            "a fill armed at $8000 with autoinc 1 reports dest = $8001 (post-trigger address)"
+        );
+    }
+
+    #[test]
+    fn fill_trigger_primes_a_cram_fill_target() {
+        // EXTRAPOLATED BEHAVIOR, pinned as-shipped — design question Q3, follow-up **F-FILLPRIME**.
+        //
+        // A3b's guard admits all three write targets, so a fill armed with code $23 (CRAM write + CD5) has
+        // its trigger word written into CRAM before the fill body runs — where previously the write was
+        // swallowed. No ROM in `vendor/TestRoms/` exercises a $23/$25 fill: VDPFIFOTesting test 4 pins the
+        // trigger rule for VRAM only, and Nemesis's statement of it ("that data port write is completed as
+        // normal") names no target. Owner ruling 2026-08-03: apply the pinned rule uniformly rather than
+        // add an equally unevidenced VRAM-only exception. This test exists so the extrapolation is an
+        // explicit, greppable decision rather than a side effect of the guard's shape.
+        //
+        // Distinct from `cram_fill_uses_the_four_writes_ago_entry`, which pokes `code` directly and calls
+        // `run_fill` — it never reaches `apply_data_write`, so it cannot see the priming write at all.
+        let mut v = fresh();
+        v.cram.fill(0);
+        v.regs[1] = 0x10; // M1 (DMA enable)
+        v.regs[0x0F] = 2; // autoinc 2 (one CRAM entry)
+        v.regs[0x13] = 2; // fill length
+        v.regs[0x17] = 0x80; // fill mode
+        command(&mut v, 0x23, 0x0010); // CRAM write + CD5 @ entry 8
+        v.data_write(0x0EEE);
+        let entry = ((v.cram[0x10] as u16) << 8) | v.cram[0x11] as u16;
+        assert_eq!(
+            entry, 0x0EEE,
+            "the trigger word primed the armed CRAM entry"
+        );
+        assert_eq!(v.addr, 0x0012, "the trigger auto-incremented the address");
     }
 
     #[test]
@@ -2439,9 +2513,15 @@ mod tests {
     #[test]
     fn fill_adds_only_its_trigger_word_to_the_ring() {
         // A3b / P4: the fill engine pulls its byte *out of* a FIFO entry, it does not push entries in — so
-        // the ring holds the eight zeroing writes plus the single trigger word, and nothing else. This is
-        // the snoop half of VDPFIFOTesting test 4 (ROM $DC54 words 0-7 = `0000 0000 0000 0000 0000 0000
-        // 1000 1000`), read here directly off the ring instead of through the VSRAM undefined-bit merge.
+        // the 4-slot ring ends up holding the last three zeroing writes plus the single trigger word, and
+        // nothing else. This is the snoop half of VDPFIFOTesting test 4 (ROM $DC54 words 0-7 =
+        // `0000 0000 0000 0000 0000 0000 1000 1000`), read here directly off the ring instead of through
+        // the VSRAM undefined-bit merge.
+        //
+        // PROVENANCE: unlike its two siblings this is a **characterization guard, not a red-first test** —
+        // it passed against the pre-A3b code as well (the fill body never enqueued there either). It is
+        // kept for the same reason `cram_fill_uses_the_four_writes_ago_entry` is: it locks a property the
+        // A3b changes could plausibly have broken.
         let mut v = fresh();
         v.regs[0x0F] = 2;
         command(&mut v, 0x01, 0x8000); // VRAM write

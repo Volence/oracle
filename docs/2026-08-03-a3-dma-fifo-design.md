@@ -555,8 +555,17 @@ In `vdp.rs`'s test module (direct `Vdp` driving, no bus):
    `[12,34,12,12,12,12,12,12,12,12,00,12]` at `$8000`, with `$800C..$8010` still zero.
 5. `fill_adds_only_its_trigger_word_to_the_ring` — eight `$0000` writes, the `$1234` trigger + fill,
    then three ring-advancing writes; assert the snoop sequence `0, 0, 0, 0x1234`.
+   **As-built provenance correction (2026-08-03):** this one is a *characterization guard*, not a red-first
+   test — verified by applying it to `0514625^`, where it **passes** (the pre-A3b fill body did not enqueue
+   either, so P4 already held). Kept for the same reason item 6 is kept: it locks a property the A3b
+   changes could plausibly have broken. Items 3 and 4, and the two §5.1 replays, were genuinely red first.
 6. `cram_fill_still_uses_the_four_writes_ago_entry` — the existing `vdp.rs:2060` test must stay green
    verbatim (guards that change 3 did not leak into the CRAM/VSRAM fill source).
+7. **Added post-review (2026-08-03), not in the original plan:** `fill_trigger_primes_a_cram_fill_target`
+   — arm a fill with code `$23` (CRAM write + CD5) through `apply_data_write` and assert the armed CRAM
+   entry holds the trigger word. This pins the Q3 *extrapolation* as an explicit decision; item 6 cannot
+   cover it, because it pokes `code` directly and calls `run_fill`, never reaching `apply_data_write`.
+   Mutation-checked: adding a `&& self.target() == Target::Vram` clause to the guard turns it red.
 
 ### 5.3 Gates
 
@@ -585,9 +594,19 @@ regenerated constant ships in the same commit alongside the ledger amendment.
   `docs/2026-07-25-testrom-conformance.md` -> *Named follow-ups*.
 * **Q3 — the priming write for CRAM/VSRAM fill targets.** Nemesis's "completed as normal" is
   generic, so §3.4 applies it to all targets. The ROM only covers VRAM. Low risk (a CRAM/VSRAM fill
-  is already a documented hardware-bug path nothing sane uses) but genuinely unverified. **As shipped the
-  priming write is applied to any of the three write targets but suppressed on a code that names none --
-  see the §3.4 addendum, and follow-up `F-FILLTGT` for the decode asymmetry that leaves behind.**
+  is already a documented hardware-bug path nothing sane uses) but genuinely unverified.
+  **RULED 2026-08-03 (owner), during A3b's code-quality review — KEEP the uniform behaviour.** As shipped
+  the priming write is applied to any of the three write targets and suppressed only on a code that names
+  none (see the §3.4 addendum; follow-up `F-FILLTGT` covers the decode asymmetry that leaves behind).
+  *Reasoning:* the clause the ROM pins is "the trigger is completed as a **normal full-word write**".
+  Target selection is orthogonal to that clause — the normal write path already handles all three targets —
+  so honouring the pinned rule uniformly is the principled reading. Restricting to `Target::Vram` would
+  mean *adding* a special case that has no evidence either, and inventing an exception is a bigger
+  unevidenced step than applying a pinned rule consistently. This is deliberately a **different call from
+  Q2**: there the evidence points at changing `run_copy` and we declined for want of a ROM that exercises
+  it; here the evidence pins a general rule and only its reach is open. Registered as follow-up
+  `F-FILLPRIME` in `docs/2026-07-25-testrom-conformance.md` with the experiment that would settle it, and
+  pinned as-shipped by `vdp::tests::fill_trigger_primes_a_cram_fill_target` (§5.2 item 7).
 * **Q4 — the priming write's MSB is unobservable in test 4.** With autoinc 1 the fill's first step
   rewrites `$8000` with the same `$12`, so the table cannot distinguish "full word write" from "LSB
   only". I chose the full word because it is what the citation says and what a normal FIFO write

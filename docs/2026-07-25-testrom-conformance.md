@@ -422,7 +422,9 @@ it shipped guarded by `matches!(code & 0x0F, 0x1 | 0x3 | 0x5)`, the same invalid
 data-port path uses (T10's pin), because `target_of` falls back `_ => Vram` and would otherwise let a fill
 armed on a no-write-target code scribble VRAM. `Vdp::run_fill`'s body still resolves its target through
 that same fallback, so the two halves of the fill path now disagree for an invalid code — pre-existing, not
-covered by any ROM, and deliberately left alone here. Registered as follow-up **F-FILLTGT** below.
+covered by any ROM, and deliberately left alone here. Registered as follow-up **F-FILLTGT** below. The
+guard admitting CRAM/VSRAM means a `$23`/`$25` fill is primed too, which is extrapolated from a VRAM-only
+pin — ruled deliberate and registered as **F-FILLPRIME** below.
 
 **How the per-test and verdict-byte numbers above are measured (so a later slice can tell whether it moved
 them).** The committed harness scrapes only the ROM's aggregate `Results: (P/F/T)` line, so the finer
@@ -544,8 +546,9 @@ write **and** sub-instruction clock advance through a DMA. That is a real engine
   Needs a ROM or a BlastEm instrument before it lands, not a forum quote. Currency-relevant (it touches
   the VRAM write path used by every copy-using game).
 * **F-FILLTGT — the fill path's two target decodes disagree on an invalid code.** (Registered 2026-08-03
-  by slice A3b; pre-existing asymmetry that A3b's guard made visible, deliberately NOT fixed there.) The
-  fill *trigger* write in `Vdp::apply_data_write` is guarded by `matches!(code & 0x0F, 0x1 | 0x3 | 0x5)`
+  by slice A3b; pre-existing asymmetry that A3b's guard made visible, deliberately NOT fixed there.)
+  **Code anchor: `Vdp::code_names_a_write_target` in `crates/oracle-core/src/vdp.rs`** — grep that name to
+  find both sides of this. The fill *trigger* write in `Vdp::apply_data_write` is guarded by that predicate
   — the same invalid-target rule the non-DMA data-port path uses (pinned by VDPFIFOTesting test 10, ROM
   `$FCAA` word 7) — so a code naming no write target takes its FIFO slot and steps the address but reaches
   no memory. The fill *body* in `Vdp::run_fill` still resolves its target through `Vdp::target()`, whose
@@ -553,6 +556,24 @@ write **and** sub-instruction clock advance through a DMA. That is a real engine
   no-write-target code has its trigger write suppressed yet its fill body still scribbles VRAM. One of the
   two decodes is wrong; the ROM does not cover the case, so which one is unpinned. Resolve by pinning the
   invalid-code fill behaviour from a ROM or an instrument, then making both paths share one decode.
+* **F-FILLPRIME — CRAM/VSRAM fill priming is extrapolated from a VRAM-only ROM pin.** (Registered
+  2026-08-03 by slice A3b; design question Q3. Code anchor: `Vdp::code_names_a_write_target`, and the
+  as-shipped pin `vdp::tests::fill_trigger_primes_a_cram_fill_target`.) A3b made the fill's trigger
+  data-port write land in memory instead of being swallowed. The guard admits all three write targets, so a
+  fill armed with code `$23`/`$25` now writes its trigger word into CRAM/VSRAM as well. **That half is
+  extrapolated, not pinned:** VDPFIFOTesting test 4's expected table (ROM `$DC54`) exercises a VRAM fill
+  only, and Nemesis's statement of the rule — "that data port write is completed as normal" — names no
+  target. **No ROM in `vendor/TestRoms/` exercises a `$23`/`$25` fill at all.**
+  *Owner ruling, 2026-08-03: keep the uniform behaviour.* The clause the ROM pins is "the trigger is
+  completed as a *normal full-word write*"; target selection is orthogonal to that clause, and the normal
+  write path already handles all three targets. Restricting to VRAM would mean **adding** a special case
+  with no evidence of its own, which is a larger unevidenced step than applying a pinned rule consistently.
+  (Deliberately a different call from **F-COPYXOR**: there the evidence points *at* a change we declined
+  for want of a ROM that exercises it; here the evidence pins a general rule and only its reach is open.)
+  *What would settle it:* a ROM or BlastEm instrument that arms a CRAM or VSRAM fill and reads the armed
+  entry back — if the entry holds the trigger word, the current behaviour is right; if it is untouched, the
+  priming write is VRAM-only and the guard needs a `Target::Vram` clause. Low practical risk (a CRAM/VSRAM
+  fill is already a documented hardware-bug path nothing sane uses), but genuinely unverified.
 
 **L2 — frame budgets are settle-time guesses.** They were found empirically per ROM and are generous, but a
 timing change that slows a ROM past its budget shows up as a scorecard diff, not as a timeout. Read a diff on
