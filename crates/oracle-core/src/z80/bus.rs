@@ -16,7 +16,7 @@
 //! |---|---|---|
 //! | `$0000-$1FFF` | Z80 RAM (8 KiB) | **live** — the shared `z80_ram` buffer |
 //! | `$2000-$3FFF` | Z80 RAM mirror | **live** — mirrored (`& 0x1FFF`) |
-//! | `$4000-$4003` | YM2612 FM address/data | read = not-busy status; write dropped (Phase RT tap) |
+//! | `$4000-$4003` | YM2612 FM address/data | read = not-busy status; write dropped (Phase RT tap). **Known asymmetry (deferred):** the Z80-side decode deliberately stays `$4000-$4003` — `$4004-$5FFF` falls through to `$FF`/drop below — while the 68k-side window (K4-6) answers FM across the chip's full `$4000-$5FFF` select span (memtest-pinned there). The Z80-side span is unpinned and has zero corpus evidence (no driver touches `$4004+`), so widening it would move sound-currency surface for no gain; ledgered in `docs/2026-07-25-testrom-conformance.md` (K4-6) |
 //! | `$6000` | bank-address register | **live** — 9-bit LSB-first serial latch |
 //! | `$7F11` | PSG (SN76489), write-only | decode: read open bus, write dropped (Phase RT tap) |
 //! | `$7F00-$7F03` | VDP data port mirror | read = open bus `$FF` (hardware LOCKS UP — ledgered `vdp-dataport-read-lockup`); write dropped |
@@ -30,6 +30,48 @@ use crate::bus::{BusEvent, BusEventSink, BusOp, Size, Z80_RAM_SIZE};
 use crate::system::RAM_SIZE;
 use crate::vdp::Vdp;
 use crate::ym2612::Ym2612;
+
+/// One serial tick of the 9-bit `$6000` bank latch: shift right, load bit0 of the written byte into the
+/// top (LSB-first, Plutiedev "Z80 banking"). **The single source of truth for BOTH paths to the register**:
+/// the Z80's own `$6000-$60FF` write and the 68000's window write at the same Z80 offset (`$A06000+`
+/// masked to 15 bits) tick the SAME latch — hardware has one register (Oracle `MDBusArbiter.cpp`
+/// `Z80WindowBankswitch`, reached from both buses).
+pub(crate) fn bank_latch_tick(bank: &mut u16, value: u8) {
+    *bank = (*bank >> 1) | (((value as u16) & 1) << 8);
+}
+
+/// One byte read of the Z80-side `$7F00-$7FFF` VDP-port mirror (K2) — **the single source of truth for
+/// BOTH paths**: the Z80's own read and the 68000's window read at the same 15-bit offset route here.
+///
+/// - `$7F04-$7F07`: a REAL control-port status read — same side effects as a 68k `$C00004` read (clears
+///   the control-port write-toggle, the pinned recon-vdp semantic), same byte-lane split (even = status
+///   high byte, odd = low). `open_bus = 0`: the Z80-side data bus keeps its own (unmodeled) residue, so
+///   the floating upper 6 bits read 0 — the K2 pin, byte-identical from either bus (K4-5 note).
+/// - `$7F08-$7F0F`: the live HV counter, side-effect-free (even = V, odd = H).
+/// - `$7F00-$7F03` (data port): `$FF` — a real read locks up the machine (the ledgered
+///   `vdp-dataport-read-lockup` known-difference); we return open bus instead of modeling the hang.
+/// - `$7F10-$7FFF`: write-only / unused on hardware — open bus `$FF`.
+pub(crate) fn vdp_mirror_read(vdp: &mut Vdp, zaddr: u16, now_mclk: u64) -> u8 {
+    match zaddr {
+        0x7F04..=0x7F07 => {
+            let s = vdp.control_read_status(0, now_mclk);
+            if zaddr & 1 == 0 {
+                (s >> 8) as u8
+            } else {
+                (s & 0xFF) as u8
+            }
+        }
+        0x7F08..=0x7F0F => {
+            let hv = vdp.hv_counter_read(now_mclk);
+            if zaddr & 1 == 0 {
+                (hv >> 8) as u8
+            } else {
+                (hv & 0xFF) as u8
+            }
+        }
+        _ => 0xFF,
+    }
+}
 
 /// Split-borrow adapter over the `System`'s Z80-visible memory for one Z80 step. Holds the Z80 RAM, the
 /// cartridge ROM + work RAM the bank window reaches, and the serial bank latch. No `Rc`/`RefCell`/`unsafe` —
@@ -141,30 +183,11 @@ impl<S: BusEventSink> Z80Io for Z80Bus<'_, S> {
             // clear). The SMPS driver clocks its sequencer off Timer-A overflow, so this must answer truthfully
             // (docs/2026-07-22-fm-timer-design.md). Anchored to the Z80's own frontier time.
             0x4000..=0x4003 => self.fm.read_status(self.now_mclk),
-            // VDP control port mirror ($7F04-$7F07): a REAL status read of the live Vdp (K2) — same side
-            // effects as the 68k's $C00004 read, including clearing the control-port write-toggle (the
-            // pinned recon-vdp semantic), and the same byte-lane split as a 68k byte read (even = status
-            // high byte, odd = low byte). Read at the Z80's own frontier time, like the FM status above.
-            // K4-5 note: `open_bus = 0` — the Z80-side data bus keeps its own (unmodeled) residue, so the
-            // upper 6 bits stay 0 here, byte-identical to the K2 pin. The Z80-side bus is out of K4 scope.
-            0x7F04..=0x7F07 => {
-                let s = self.vdp.control_read_status(0, self.now_mclk);
-                if addr & 1 == 0 {
-                    (s >> 8) as u8
-                } else {
-                    (s & 0xFF) as u8
-                }
-            }
-            // HV counter mirror ($7F08-$7F0F): the live counter, side-effect-free; even = V (word high),
-            // odd = H (word low) — the 68k $C00008 lane split.
-            0x7F08..=0x7F0F => {
-                let hv = self.vdp.hv_counter_read(self.now_mclk);
-                if addr & 1 == 0 {
-                    (hv >> 8) as u8
-                } else {
-                    (hv & 0xFF) as u8
-                }
-            }
+            // VDP port mirror ($7F00-$7FFF): the shared [`vdp_mirror_read`] — status ($7F04-$7F07, real
+            // side-effecting read at the Z80's own frontier time), HV counter ($7F08-$7F0F), and the
+            // deliberate `$FF` arms (data port = the ledgered lockup known-difference; $7F10+ write-only).
+            // The 68000's window read at the same 15-bit offset routes through the SAME function.
+            0x7F00..=0x7FFF => vdp_mirror_read(self.vdp, addr, self.now_mclk),
             // 68k bank window: translate through the 9-bit bank and read 68000 space.
             0x8000..=0xFFFF => {
                 let a = self.window_addr(addr);
@@ -185,7 +208,8 @@ impl<S: BusEventSink> Z80Io for Z80Bus<'_, S> {
             0x0000..=0x3FFF => self.z80_ram[(addr as usize) & (Z80_RAM_SIZE - 1)] = value,
             // Bank register ($6000): serial load, LSB-first — each write shifts bit0 of the byte into the top
             // of the 9-bit latch (Plutiedev "Z80 banking"). After 9 writes the full page is selected.
-            0x6000..=0x60FF => *self.bank = (*self.bank >> 1) | (((value as u16) & 1) << 8),
+            // The 68000's window write at the same offset ticks the SAME latch (see `bank_latch_tick`).
+            0x6000..=0x60FF => bank_latch_tick(self.bank, value),
             // 68k bank window: translate through the 9-bit bank and write 68000 space.
             0x8000..=0xFFFF => {
                 let a = self.window_addr(addr);
