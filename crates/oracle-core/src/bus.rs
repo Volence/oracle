@@ -2153,8 +2153,11 @@ mod tests {
             }
 
             // ROM $DF72..$E04E: four groups of two 8-bit VRAM reads (CD = %001100, second control word
-            // $0032), at $8000/$8004/$8008/$800C, each group followed by one ring-advancing CRAM write
-            // of $FFFF @ $0020 (control $C020 / $0002).
+            // $0032), at $8000/$8004/$8008/$800C, each group followed by one ring-advancing CRAM write of
+            // $FFFF. The ROM's first three groups use control `$C020` / `$0002`, whose second word sets
+            // A15-A14 = 10 — so the command address is $8020, which the CRAM write path masks to $20; the
+            // fourth uses `$0000` and addresses $0020 directly. The address is incidental (CRAM is never
+            // read back here) — the point is that each write enqueues one word and steps the ring cursor.
             for lo in [0x0000u16, 0x0004, 0x0008, 0x000C] {
                 ctrl(&mut bus, lo);
                 ctrl(&mut bus, 0x0032);
