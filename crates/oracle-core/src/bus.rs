@@ -2184,15 +2184,18 @@ mod tests {
         {
             let mut bus = mem.bus(&mut sink);
             bus.write16(0xC0_0004, 5, 0x8500); // reg 5 = 0 → SAT base $0000
-            run_vram_fill(&mut bus, 0x0000, 4, 0x77AA); // fill 4 bytes of $77 into entry 0
+            run_vram_fill(&mut bus, 0x0000, 12, 0x77AA); // fill 12 bytes of $77 from $0000
         }
-        // A3b rewrite (was: `[$77; 4]`). The point of the test is unchanged — every byte the fill path
-        // writes still routes through the SAT write-through — but the image moved: the trigger word $77AA
-        // is now applied as a normal write ($77 → $0000, $AA → $0001, P2) and the four fill steps run over
-        // addresses $0001..$0004 writing `address ^ 1` = $0000, $0003, $0002, $0005 (P3).
+        // A3b rewrite (was: 4 bytes, asserting `[$77; 4]`). The point of the test is unchanged — every byte
+        // the fill path writes still routes through the SAT write-through — but the image moved: the
+        // trigger word $77AA is now applied as a normal write ($77 → $0000, $AA → $0001, P2) and the fill
+        // steps run over $0001.. writing `address ^ 1` (P3). The length is 12 rather than 4 so that entry
+        // 1's cached half (`sat_cache[4..8]`, VRAM $0008..$000B) is covered by **four consecutive fill
+        // bytes with no trigger byte among them** — the pure-fill coverage a 4-byte run cannot reach, since
+        // `write_vram_byte` only caches `byte_in_entry < 4` and the trigger sits inside entry 0's window.
         assert_eq!(
-            &mem.vdp.sat_cache()[0..4],
-            &[0x77, 0xAA, 0x77, 0x77],
+            &mem.vdp.sat_cache()[0..8],
+            &[0x77, 0xAA, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77],
             "fill bytes hit the SAT write-through window compare"
         );
     }
