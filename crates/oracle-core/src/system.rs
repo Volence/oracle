@@ -1639,6 +1639,10 @@ mod tests {
         let mut s = System::new(0x77);
         // $A00000 -> z80_ram[0]. A 68000 write to Z80 RAM is real mutable state, so it must be visible in
         // the differential currency (it was silently serialized as zeros before the v1 freeze).
+        // K4-3: the window forwards only while BUSREQ is granted AND reset released — do what real
+        // loader code does before storing.
+        s.mega_bus(&mut ()).write8(0xA1_1200, 5, 0x01);
+        s.mega_bus(&mut ()).write8(0xA1_1100, 5, 0x01);
         s.mega_bus(&mut ()).write8(0xA0_0000, 5, 0xAB);
         let img = s.export_state();
         let z80_off = 2 + EXPORT_M68K_REGS_LEN + RAM_SIZE;

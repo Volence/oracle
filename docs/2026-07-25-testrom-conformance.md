@@ -159,6 +159,21 @@ Slice log (each row-flip amends the `BASELINE` in the same commit):
   Both `A11100` rows green → **8/13**; rest of the scorecard byte-identical. Game risk pre-adjudicated
   in the K4-0 table (ristar's single under-reset read = a bounded 16-poll `dbeq`) and verified after:
   ristar\@900f and gunstar\@420f/900f boot renders + PCs **pixel-identical** to the pre-K4 baselines.
+- **K4-3** — the 68k-side Z80 window (`$A00000-$A0FFFF`) is gated on `busreq && reset-released`
+  (closed → arbiter open bus / dropped writes; memtest row 2), word reads mirror the single 8-bit
+  result into both halves (row 3 `F3F3`; `MDBusArbiter.cpp:489-495`), and `$A06000-$A07EFF` reads
+  `$FF` through the open window (row 5). **Plus a pre-existing corruption fix the row-3 debug
+  uncovered:** a 68k write to `$A06000-$A07FFF` (Z80-side bank-register/unused region — never RAM)
+  used to alias into `z80_ram` through the `& $1FFF` mirror — memtest's single `$FF` bank-canary
+  write (PC `$34C2`, f11) overwrote the loaded Z80 program's first byte, which is why row 3 read
+  `FFED` instead of `F3ED` *before* any gating existed. Those writes now drop from RAM's view.
+  → **11/13**; rest of the scorecard byte-identical. Verified beyond the scorecard: 7-game boot
+  render A/B all pixel-identical (drivers upload through this window holding BUSREQ, per K4-0's
+  zcR!/zcW! = 0), and the `s4.soundtest.bin` VGM capture still carries the full ~5.9k-write score
+  (18,530-byte VGM at 600 frames, key-ons through frame 599).
+  *Ledgered follow-ups (not regressions):* the 68k-side path to the real serial bank latch (the
+  Z80-side latch at `$6000` is live), the window's true 15-bit address masking (`$A08000+` currently
+  still mirrors RAM 8-KiB-wise), and 68k-side `$A07F00+` VDP-mirror routing (K2's deferred half).
 
 ## Limitations of the instrument itself
 

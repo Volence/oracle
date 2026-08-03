@@ -236,7 +236,7 @@ pub struct SramMap {
 /// |---|---|
 /// | `$000000–$3FFFFF` | ROM (read-only; past a short ROM's end → open bus) |
 /// | `$400000–$7FFFFF` | open bus, arbiter flavor (residue high byte, low byte `$00` — K4-1) |
-/// | `$A00000–$A0FFFF` | 8 KiB Z80 RAM (mirrored), except… |
+/// | `$A00000–$A0FFFF` | the Z80 window — forwarded only while BUSREQ is granted AND reset released (K4-3), else arbiter open bus / dropped writes; open: 8 KiB Z80 RAM (mirrored; word reads mirror the even byte into both halves), `$A06000–$A07EFF` reads `$FF`, except… |
 /// | `$A04000–$A04003` | YM2612 FM: read = status (bit7 BUSY clear = not busy); writes drop (no FM core yet) |
 /// | `$A10000–$A1001F` | I/O: `$A10001` = [`MD_VERSION`]; the 15 data/control/serial registers via [`Io`] |
 /// | `$A11100` | Z80 BUSREQ: bit0 read = 0 when 68000 is granted the bus (asserted), 1 when the Z80 owns it |
@@ -382,8 +382,22 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             // function of the timers + the current mclk (docs/2026-07-22-fm-timer-design.md). This arm precedes
             // the Z80-RAM mirror so the FM ports are not aliased to `z80_ram[0..3]`.
             0xA0_4000..=0xA0_4003 => Some(self.fm.read_status(self.now_mclk)),
-            // Z80 RAM: 8 KiB mirrored across the 64 KiB window.
-            0xA0_0000..=0xA0_FFFF => Some(self.z80_ram[(a as usize) & (Z80_RAM_SIZE - 1)]),
+            // The 68k-side Z80 window ($A00000-$A0FFFF): forwarded onto the Z80 bus only while the 68k
+            // owns it — BUSREQ granted AND reset released (K4-3; MDBusArbiter.cpp:482 `!reset && busgrant`;
+            // memtest row 2 reads open bus with BUSREQ held under reset). Closed -> None (arbiter open
+            // bus / dropped writes). Open: 8 KiB Z80 RAM mirrored, except $A06000-$A07EFF (the Z80-side
+            // bank register / unused region) which reads $FF (row 5; the reference arbiter returns
+            // all-ones there, MDBusArbiter.cpp:422-437). $A07F00+ (the Z80 VDP-port mirror seen from the
+            // 68k) deliberately stays the RAM mirror — the recorded K2-deferred gap.
+            0xA0_0000..=0xA0_FFFF => {
+                if !(*self.z80_busreq && *self.z80_running) {
+                    None
+                } else if (0xA0_6000..=0xA0_7EFF).contains(&a) {
+                    Some(0xFF)
+                } else {
+                    Some(self.z80_ram[(a as usize) & (Z80_RAM_SIZE - 1)])
+                }
+            }
             // I/O ($A10000–$A1001F): the fixed version byte at $A10001, the 15 data/control/serial registers
             // via the `Io` model (recon IO1–IO4), or 0 for the even (unmapped high-half) bytes.
             0xA1_0001 => Some(MD_VERSION),
@@ -449,7 +463,18 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             // They must NOT fall through to the Z80-RAM store, which would corrupt `z80_ram[0..3]` (the FM
             // ports alias it under the mirror). This arm precedes the Z80-RAM arm (recon F1/DR-1b, Option B).
             0xA0_4000..=0xA0_4003 => self.fm.write_port(a as u16, byte, self.now_mclk),
-            0xA0_0000..=0xA0_FFFF => self.z80_ram[(a as usize) & (Z80_RAM_SIZE - 1)] = byte,
+            // The Z80 window: a write lands in Z80 RAM only while the window is open (K4-3 gate, same
+            // `busreq && running` condition as reads); closed-window writes drop on the arbiter.
+            // $A06000-$A07FFF is the Z80-side bank-register / unused / port-mirror region — NOT RAM:
+            // storing it through the `& $1FFF` mirror corrupted z80_ram (memtest's $FF bank canary at
+            // $A06000 landed in z80_ram[0] and broke row 3), so those writes drop from RAM's view. The
+            // 68k-side path to the REAL serial bank latch stays deferred (the Z80-side latch at $6000
+            // is live in z80/bus.rs) — ledgered in the K4 section with the 15-bit window masking.
+            0xA0_0000..=0xA0_FFFF => {
+                if *self.z80_busreq && *self.z80_running && !(0xA0_6000..=0xA0_7FFF).contains(&a) {
+                    self.z80_ram[(a as usize) & (Z80_RAM_SIZE - 1)] = byte;
+                }
+            }
             // Z80 BUSREQ ($A11100): latch bit0 from the EVEN byte only — a word write (`move.w #$100/#$0`)
             // puts the meaningful byte at $A11100 and 0 at $A11101, which must not clobber the latch. $A11101
             // and $A11200 (RESET, deferred to Z7) fall through and drop (recon Z1/Z5).
@@ -516,7 +541,11 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
     /// The latch itself is never updated by an undriven read — nothing new crossed the bus.
     fn open_word(&self, a: u32) -> u16 {
         match a {
-            0x40_0000..=0x7F_FFFF | 0xA1_1200 | 0xA1_1201 => *self.last_bus_word & 0xFF00,
+            // The Z80 window reaches here only while CLOSED (mapped_byte answers it when open) — a
+            // closed-window read is arbiter-answered too (K4-3; memtest row 2 `4E00`).
+            0x40_0000..=0x7F_FFFF | 0xA0_0000..=0xA0_FFFF | 0xA1_1200 | 0xA1_1201 => {
+                *self.last_bus_word & 0xFF00
+            }
             _ => *self.last_bus_word,
         }
     }
@@ -632,6 +661,17 @@ impl<'a, S: BusEventSink> Bus68k for MegaDriveBus<'a, S> {
             *self.last_bus_word = value;
             self.emit(BusOp::Read, fc, a, Size::Word, value as u32);
             return (value, wait);
+        }
+        // K4-3: word-wide access to the Z80 space is impossible — the arbiter runs ONE 8-bit Z80-bus
+        // cycle (the even byte) and mirrors the result into both halves (MDBusArbiter.cpp:489-495;
+        // memtest row 3: bytes `F3 ED`, word `F3F3`). A closed window falls through to the open-bus arm.
+        if (0xA0_0000..=0xA0_FFFF).contains(&a) {
+            if let Some(b) = self.mapped_byte(a) {
+                let v = (b as u16) * 0x0101;
+                *self.last_bus_word = v;
+                self.emit(BusOp::Read, fc, a, Size::Word, v as u32);
+                return (v, 0);
+            }
         }
         let value = if let Some(hi) = self.mapped_byte(a) {
             let lo = self
@@ -1023,15 +1063,118 @@ mod tests {
         assert_eq!(bus.read16(0xF1_0000, 5).0, 0x1357, "mirror at $F10000");
     }
 
+    /// Open the 68k-side Z80 window the way real init code does (K4-3 gate): release Z80 reset, then
+    /// assert BUSREQ — the window forwards only while `z80_busreq && z80_running`.
+    fn open_z80_window(bus: &mut MegaDriveBus<'_, Vec<BusEvent>>) {
+        bus.write16(0xA1_1200, 5, 0x0100); // release reset
+        bus.write16(0xA1_1100, 5, 0x0100); // request the Z80 bus
+    }
+
     #[test]
     fn z80_ram_reads_writes_and_mirrors_in_its_window() {
         let mut mem = MdMem::new(vec![0u8; 0x1000]);
         let mut sink = Vec::new();
         let mut bus = mem.bus(&mut sink);
+        open_z80_window(&mut bus); // K4-3: the window forwards only while busreq is held + reset released
         bus.write8(0xA0_0000, 5, 0x9A);
         assert_eq!(bus.read8(0xA0_0000, 5).0, 0x9A, "Z80 RAM byte round-trips");
         // 8 KiB Z80 RAM mirrored across the 64 KiB window.
         assert_eq!(bus.read8(0xA0_2000, 5).0, 0x9A, "mirror at +0x2000");
+    }
+
+    #[test]
+    fn z80_window_closed_is_arbiter_open_bus_and_drops_writes() {
+        // K4-3 (design §3 rows 2/3): the 68k-side Z80 window forwards only when the 68k owns the Z80 bus
+        // AND reset is released (MDBusArbiter.cpp:482 `!reset && busgrant`). Closed — power-on, or BUSREQ
+        // held while reset is asserted (memtest row 2: `4E00 4E00`) — reads are arbiter open bus and
+        // writes are dropped.
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.z80_ram[0] = 0xF3;
+        let mut sink = Vec::new();
+        {
+            let mut bus = mem.bus(&mut sink);
+
+            // Power-on: both latches off -> closed.
+            bus.write16(0xE0_0000, 5, 0x4E71); // residue
+            assert_eq!(bus.read16(0xA0_0000, 5).0, 0x4E00, "closed: word = 4E00");
+            bus.write16(0xE0_0000, 5, 0x4E71);
+            assert_eq!(
+                bus.read8(0xA0_0000, 5).0,
+                0x4E,
+                "closed: even byte = residue hi"
+            );
+            assert_eq!(bus.read8(0xA0_0001, 5).0, 0x00, "closed: odd byte = $00");
+
+            // Row 2's exact condition: BUSREQ held, reset still asserted -> STILL closed.
+            bus.write16(0xA1_1100, 5, 0x0100);
+            bus.write16(0xE0_0000, 5, 0x4E71);
+            assert_eq!(
+                bus.read16(0xA0_0000, 5).0,
+                0x4E00,
+                "busreq alone does not open the window while reset is asserted"
+            );
+
+            // A write through the closed window is dropped.
+            bus.write8(0xA0_0000, 5, 0xAB);
+        }
+        assert_eq!(mem.z80_ram[0], 0xF3, "closed-window write dropped");
+    }
+
+    #[test]
+    fn z80_window_word_read_duplicates_the_even_byte() {
+        // K4-3 (design §3 row 3): word-wide access to the Z80 space is impossible — the arbiter runs ONE
+        // 8-bit Z80-bus cycle and mirrors the result into both halves (MDBusArbiter.cpp:489-495). memtest:
+        // bytes read `F3 ED`, the word reads `F3F3`.
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.z80_ram[0] = 0xF3;
+        mem.z80_ram[1] = 0xED;
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        open_z80_window(&mut bus);
+        assert_eq!(bus.read8(0xA0_0000, 5).0, 0xF3, "even byte");
+        assert_eq!(bus.read8(0xA0_0001, 5).0, 0xED, "odd byte");
+        assert_eq!(
+            bus.read16(0xA0_0000, 5).0,
+            0xF3F3,
+            "word = the even byte mirrored into both halves"
+        );
+    }
+
+    #[test]
+    fn z80_bank_and_unused_region_reads_ff_through_the_open_window() {
+        // K4-3 (design §3 row 5): `$A06000-$A07EFF` (the Z80-side bank register / unused region) reads
+        // `$FF` through the open window — the reference arbiter returns all-ones there ("hardware tests",
+        // MDBusArbiter.cpp:422-437); memtest: `FFFF FFFF`. NOT the Z80-RAM mirror.
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.z80_ram[0] = 0xF3; // $A06000 & $1FFF = 0 — would alias this under the old mirror
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        open_z80_window(&mut bus);
+        assert_eq!(bus.read8(0xA0_6000, 5).0, 0xFF, "bank register byte = $FF");
+        assert_eq!(bus.read8(0xA0_7EFF, 5).0, 0xFF, "top of the region = $FF");
+        assert_eq!(bus.read16(0xA0_6000, 5).0, 0xFFFF, "word = $FFFF");
+        // $A07F00+ (the 68k-side view of the Z80 VDP mirror) stays the recorded K2-deferred gap —
+        // deliberately NOT pinned here.
+    }
+
+    #[test]
+    fn z80_bank_region_writes_do_not_alias_into_z80_ram() {
+        // K4-3 rider: $6000-$7FFF on the Z80 side is the bank register / unused / port-mirror region —
+        // NOT RAM. Before this fix a 68k write to $A06000 (memtest writes a $FF bank canary at f11)
+        // landed in z80_ram[0] through the `& $1FFF` mirror, corrupting the loaded Z80 program and
+        // breaking the row-3 reference (`F3ED` read back `FFED`). The write must drop from RAM's view.
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.z80_ram[0] = 0xF3;
+        let mut sink = Vec::new();
+        {
+            let mut bus = mem.bus(&mut sink);
+            open_z80_window(&mut bus);
+            bus.write8(0xA0_6000, 5, 0xFF);
+        }
+        assert_eq!(
+            mem.z80_ram[0], 0xF3,
+            "a bank-region write must not corrupt Z80 RAM through the mirror"
+        );
     }
 
     #[test]
@@ -1224,6 +1367,9 @@ mod tests {
         let mut mem = MdMem::new(vec![0u8; 0x1000]);
         let mut sink = Vec::new();
         let mut bus = mem.bus(&mut sink);
+        // K4-3: open the window for the Z80-RAM probes below (the FM ports themselves stay ungated —
+        // this carve-out precedes the window arm, DR-1b Option B).
+        open_z80_window(&mut bus);
 
         // All four FM ports read not-busy (bit7 clear).
         for a in [0xA0_4000u32, 0xA0_4001, 0xA0_4002, 0xA0_4003] {
