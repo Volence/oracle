@@ -81,6 +81,22 @@ pub trait BusEventSink {
     /// resolved region address, old→new value, size, and CPU-vs-DMA attribution; a consumer pairs it with the
     /// most recent [`on_step_boundary`](BusEventSink::on_step_boundary) PC. The default is a no-op.
     fn on_vdp_write(&mut self, _write: crate::vdp::VdpWrite) {}
+
+    /// Whether this sink wants rendered scanlines delivered (conformance Limitation L1: mid-frame CRAM /
+    /// palette effects are invisible to an after-the-run capture). The `Scanline` event queries this per
+    /// active line and, only when `true`, decodes the already-built line report to RGB for
+    /// [`on_scanline`](BusEventSink::on_scanline) — the default `false` keeps the null-sink path exactly the
+    /// discard-the-render hot path (no decode, no allocation).
+    fn wants_scanlines(&self) -> bool {
+        false
+    }
+
+    /// One rendered active line (0..=223), delivered **during** the run at the moment the self-rescheduling
+    /// `Scanline` event renders it — so the RGB reflects the VDP state (CRAM included) live at that line, not
+    /// the end-of-frame state. `rgb` is a borrow of the line just rendered (length = the active width, 256
+    /// H32 / 320 H40); copy out whatever must outlive the call. Only called when
+    /// [`wants_scanlines`](BusEventSink::wants_scanlines) returned `true`. The default is a no-op.
+    fn on_scanline(&mut self, _line: u16, _rgb: &[(u8, u8, u8)]) {}
 }
 
 /// Null sink — discards events (the hot path, with no instrumentation attached).

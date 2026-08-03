@@ -985,8 +985,13 @@ impl Vdp {
     /// Render one scanline to RGB (design §3): each pixel is `resolve_line`'s winning CRAM index decoded at
     /// the fixed ramp. Length = the active width (256 H32 / 320 H40). Pure function of latched state + line.
     pub fn render_line(&self, line: u16) -> Vec<(u8, u8, u8)> {
-        self.resolve_line(line)
-            .pixels
+        self.pixels_rgb(&self.resolve_line(line).pixels)
+    }
+
+    /// The one CRAM decode map from resolved pixels to RGB (winning index at the resolved shadow/highlight
+    /// state) — shared by [`Vdp::render_line`] and [`Vdp::report_rgb`] so the two cannot drift.
+    fn pixels_rgb(&self, pixels: &[PixelResolution]) -> Vec<(u8, u8, u8)> {
+        pixels
             .iter()
             .map(|p| self.cram_rgb_state(p.cram_index, p.state))
             .collect()
@@ -1359,6 +1364,15 @@ impl Vdp {
             sprite_collision: resolved.sprite.collision,
             pixels: resolved.pixels,
         }
+    }
+
+    /// Decode an already-built [`LineReport`]'s pixels to RGB — the exact map [`Vdp::render_line`] applies
+    /// (`cram_rgb_state` per winning index/state), but from the report a [`Vdp::render_scanline`] call
+    /// already produced, so a caller holding that report (the `Scanline` event's opt-in capture sink) does
+    /// not re-resolve the line. Re-resolving after `render_scanline` would be wrong as well as wasteful: the
+    /// committed dot-overflow carry would reseed the R10 masking and could change the sprites.
+    pub fn report_rgb(&self, report: &LineReport) -> Vec<(u8, u8, u8)> {
+        self.pixels_rgb(&report.pixels)
     }
 
     /// Render one scanline **and commit** its sprite latches (recon R10) — the stateful per-line advance that
@@ -2446,6 +2460,34 @@ mod tests {
     }
 
     // --- R11: shadow/highlight (non-operator) ------------------------------------------------------------
+
+    #[test]
+    fn report_rgb_is_render_line_decode_of_the_written_cram_color() {
+        // The scanline-capture decode (report_rgb over render_scanline's report) is byte-identical to
+        // render_line's map — same winning index, same shadow/highlight state — and the pixels really carry
+        // the CRAM color that was written. Zeroed VRAM = transparent planes + empty SAT, so the whole line is
+        // the backdrop: reg $07 index 42, programmed to level-7 R/G/B through the real data port.
+        let mut v = fresh();
+        v.vram_mut().fill(0);
+        set_reg(&mut v, 0x07, 42);
+        write_cram(&mut v, 42, 0x0EEE);
+        let line = 100;
+        // Captured BEFORE render_scanline: the carry commit could reseed R10 masking for a later re-resolve,
+        // so the reference decode must come from the same pre-commit state the report was resolved in.
+        let expected = v.render_line(line);
+        let report = v.render_scanline(line);
+        assert_eq!(
+            v.report_rgb(&report),
+            expected,
+            "report_rgb is exactly render_line's decode of the same resolution"
+        );
+        let max = intensity(7, PixelState::Normal);
+        assert_eq!(expected.len(), 256, "H32 default width");
+        assert!(
+            expected.iter().all(|&px| px == (max, max, max)),
+            "every backdrop pixel decodes to the written CRAM color"
+        );
+    }
 
     #[test]
     fn intensity_ramp_matches_the_pinned_table() {
