@@ -2251,7 +2251,8 @@ mod tests {
             assert_ne!(s & (1 << 8), 0, "still FULL: nothing has drained at +10");
         }
         assert_eq!(v.fifo_len(), 4, "status reads never pop entries themselves");
-        // After one slot cost (427 mclk) exactly one entry has drained, no matter how many reads probe it.
+        // After one entry's drain cost (427 mclk = 2 slots for a VRAM word; a slot itself is 3420/16 ≈ 213
+        // mclk here) exactly one entry has drained, no matter how many reads probe it.
         for _ in 0..5 {
             v.control_read_status(0, t0 + 500);
         }

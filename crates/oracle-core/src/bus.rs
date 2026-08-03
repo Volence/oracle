@@ -1667,7 +1667,8 @@ mod tests {
     #[test]
     fn vdp_status_read_returns_the_live_status_word() {
         let mut mem = MdMem::new(vec![0u8; 0x1000]);
-        // Line 100 (active), H=0x40 (dot 1280) — not v/h blank, so only the FIFO-empty placeholder is set.
+        // Line 100 (active), H=0x40 (dot 1280) — not v/h blank, and the FIFO is empty, so bit 9 is the only
+        // bit set (A1 made that bit live from `fifo_len` rather than a hardcoded placeholder).
         mem.now_mclk = 100 * crate::vdp::MCLK_PER_LINE + 1280;
         mem.vdp.control_write(0x8140, 0); // display on (bit 3 is forced set while the display is disabled)
         let expected = mem.vdp.status_word(mem.now_mclk);
