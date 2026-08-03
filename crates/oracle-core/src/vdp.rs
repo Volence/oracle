@@ -647,15 +647,19 @@ impl Vdp {
         if reg >= REG_COUNT {
             return; // n >= 24 ignored
         }
-        // NOT MODELLED (slice A2 residual, VDPFIFOTesting test 12 "Register Write Mode4 Mask", ROM $20EC):
-        // in Mode 4 (reg 1 bit 2 = M5 clear — the SMS mode) only the eleven SMS registers 0-10 are
-        // writable; the ROM sets reg 15 = 4 inside a mode-4 window and the autoincrement is still 2 when
-        // mode 5 returns. Kabuto's hardware notes: "All registers except for the 10(?) SMS registers are
-        // disabled." Implementing `if regs[1] & 0x04 == 0 && reg > 10 { return }` here is a one-line fix
-        // and it does make test 12 pass — but almost every fixture in this repo (including
-        // `testrom.rs`'s golden ROM, whose reg 1 = $50 leaves M5 CLEAR) programs registers 11+ without
-        // ever setting M5, so it moves `export_state_v1::GOLDEN_HASH` and the `golden_frames` scenes.
-        // Blocked on an owner ruling about that currency movement; see docs/2026-07-25-testrom-conformance.md.
+        // Mode-4 register mask (slice T12; VDPFIFOTesting test 12 "Register Write Mode4 Mask", ROM $20C8,
+        // expected table $20EC). In Mode 4 — reg 1 bit 2 = M5 CLEAR, the SMS mode — only the eleven SMS
+        // registers 0-10 are writable and writes above 10 are discarded: the ROM sets reg 15 = 4 inside a
+        // mode-4 window and observes the autoincrement still at its Mode-5 value when mode 5 returns.
+        // Kabuto's hardware notes: "All registers except for the 10(?) SMS registers are disabled."
+        //
+        // EVIDENCE HONESTY: the ROM pins **register 15 only**; the `> 10` boundary is extrapolated from
+        // that hedged sentence ("the 10(?) SMS registers"), so masking 11-14 and 16-23 — the DMA registers
+        // 19-23 included — is a uniform-rule inference, not a ROM-pinned fact. Registered as follow-up
+        // F-M4REGS in docs/2026-07-25-testrom-conformance.md.
+        if self.regs[1] & 0x04 == 0 && reg > 10 {
+            return;
+        }
         let m3_before = reg == 0 && self.regs[0] & 0x02 != 0;
         self.regs[reg] = val;
         if reg == 0 && val & 0x02 != 0 && !m3_before {
@@ -1334,8 +1338,13 @@ mod tests {
 
     // --- Timing FSM (recon R2) ---------------------------------------------------------------------------
 
+    /// A powered-on VDP **in Mode 5**. A bare `power_on` leaves reg 1 at `$00` = M5 clear = Mode 4, where
+    /// registers above 10 are not writable (see `Vdp::write_register`); every fixture here means Mode 5.
+    /// The mode-4 masking test below re-clears M5 itself, deliberately.
     fn fresh() -> Vdp {
-        Vdp::power_on(&mut SplitMix64::new(1))
+        let mut v = Vdp::power_on(&mut SplitMix64::new(1));
+        v.control_write(0x8104, 0); // reg 1 = $04 → M5 set (mode 5)
+        v
     }
 
     // --- Control-port / code-register edges (slice A2; VDPFIFOTesting tests 10, 12, 13) -------------------
@@ -1432,17 +1441,17 @@ mod tests {
     /// so the autoincrement stays at its Mode-5 value. Kabuto's hardware notes: "All registers except for
     /// the 10(?) SMS registers are disabled".
     ///
-    /// **RESIDUAL — deliberately `#[ignore]`d, not deleted.** The fix is one line in `write_register`
-    /// (see the NOT MODELLED note there), but nearly every fixture in this repo — `testrom.rs`'s golden
-    /// ROM included, its reg 1 = `$50` leaving M5 clear — programs registers 11+ while still in Mode 4, so
-    /// landing it moves `export_state_v1::GOLDEN_HASH` and the `golden_frames` scenes. This test is the
-    /// pinned spec, held until that currency movement is ruled on.
+    /// Landed in slice T12. The "this moves `export_state_v1::GOLDEN_HASH` and the `golden_frames`
+    /// scenes" reason this test was previously `#[ignore]`d for was re-measured and is FALSE — it
+    /// mis-identified `testrom::build_pad_poll` (no frozen currency) as the golden fixture, which is
+    /// `testrom::build` and drives no VDP port at all. See docs/2026-08-03-decision2-premise-recheck.md.
+    /// The fixtures that went red all declared Mode 4 while programming Mode-5 registers; declaring M5
+    /// in them restored every frozen hash byte-identically.
     #[test]
-    #[ignore = "A2 residual: needs an owner ruling on the GOLDEN_HASH / golden_frames movement"]
     fn mode4_ignores_register_writes_above_ten() {
         let mut v = fresh();
-        ctrl(&mut v, &[0x8F02]); // reg 15 = 2 while in mode 5 (reg 1 = 0 … set M5 first)
-        ctrl(&mut v, &[0x8144]); // reg 1 = $44 → M5 set
+        ctrl(&mut v, &[0x8F02]); // reg 15 = 2 (fresh() is already in mode 5)
+        ctrl(&mut v, &[0x8144]); // reg 1 = $44 → display on, M5 still set
         ctrl(&mut v, &[0x8F02]); // reg 15 = 2
         ctrl(&mut v, &[0x8140]); // reg 1 = $40 → M5 CLEAR = mode 4
         ctrl(&mut v, &[0x8F04]); // reg 15 = 4 — must be IGNORED
@@ -1660,6 +1669,7 @@ mod tests {
 
     fn regs_with_reg15() -> [u8; REG_COUNT] {
         let mut r = [0u8; REG_COUNT];
+        r[0x01] = 0x04; // M5 set — reg 15 is only writable in mode 5
         r[0x0F] = 0x02;
         r
     }
