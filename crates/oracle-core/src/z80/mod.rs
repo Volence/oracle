@@ -460,8 +460,9 @@ impl Z80 {
 
     /// The prefix-accumulating front end (ZC3b): `CB`/`ED` select an alternate table, `DD`/`FD` set an
     /// index-register override for the following opcode, and `DDCB`/`FDCB` fetch the displacement **before**
-    /// the final opcode byte. `CB` and the documented `ED` subset are fully implemented; the `DD`/`FD`
-    /// (index-override) leaf handlers are stubbed this slice.
+    /// the final opcode byte. `CB`, the documented `ED` subset (holes = NONI), and the `DD`/`FD` documented
+    /// forms + ignored-prefix rule are implemented; only the `IXH`/`IXL` half-register ops, the ED mirrors,
+    /// and the `DDCB`/`FDCB` register-copy variants remain deferred.
     fn execute<B: Z80Io>(&mut self, opcode: u8, bus: &mut B) -> u32 {
         match opcode {
             0xCB => self.execute_cb(bus),
@@ -1610,8 +1611,9 @@ impl Z80 {
     /// opcode; a run of `DD`/`FD` collapses (each is one M1, the last winning). `DDCB`/`FDCB` fetch the
     /// displacement `d` **before** the final opcode byte (ZC3b) — that irregular order is honored here. The
     /// **documented** index-overridden base opcodes land in [`Self::execute_indexed_base`] and the documented
-    /// `DDCB`/`FDCB` bit/shift ops in [`Self::execute_ddcb`]; the undocumented `IXH`/`IXL` half-register (and
-    /// no-op-prefix) forms and the `DDCB`/`FDCB` register-copy variants remain for the ZEXALL slice.
+    /// `DDCB`/`FDCB` bit/shift ops in [`Self::execute_ddcb`]; a prefix on a non-HL opcode is IGNORED (+4 T,
+    /// see `execute_indexed_base`'s fall-through). The undocumented `IXH`/`IXL` half-register forms and the
+    /// `DDCB`/`FDCB` register-copy variants remain for the ZEXALL slice.
     fn execute_indexed<B: Z80Io>(&mut self, idx: IndexReg, bus: &mut B) -> u32 {
         let sub = self.next_opcode(bus);
         match sub {

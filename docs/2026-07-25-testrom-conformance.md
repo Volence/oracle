@@ -207,7 +207,11 @@ Slice log (each row-flip amends the `BASELINE` in the same commit):
   15 bits (`$A08000-$A0FFFF` behaves as `$A00000-$A07FFF`; MDBusArbiter.cpp:304 — Charles MacDonald's
   hardware tests) and decoded per the Z80's own local bus map, one source of truth: `$0000-$3FFF` Z80
   RAM; `$4000-$5FFF` the YM2612's full select span (ports = low 2 bits; memtest row
-  `A04000-A05FFF = 0000` — the FM carve-out keeps its K4-3 answer-regardless-of-ownership pin);
+  `A04000-A05FFF = 0000` — the FM carve-out keeps its K4-3 answer-regardless-of-ownership pin).
+  *Known asymmetry (deferred):* the **Z80-side** decode deliberately stays `$4000-$4003` (`$4004-$5FFF`
+  reads `$FF` / drops there) — that span is unpinned by any test ROM from the Z80 side and has zero
+  corpus evidence (no driver touches `$4004+`), so widening it would move sound-currency surface for no
+  gain; the two sides intentionally differ until Z80-side evidence exists;
   `$6000-$60FF` = one serial tick of the **same** 9-bit bank latch the Z80's `$6000` write loads
   (`z80/bus.rs::bank_latch_tick` — one register, two paths; only memtest's `$FF` canary exercises it,
   probe column `bkW`); `$6100-$7EFF` `$FF`; `$7F00-$7FFF` the **same** VDP-mirror reader the Z80 uses

@@ -1638,7 +1638,8 @@ mod tests {
             "FM status still not-busy after an FM write"
         );
 
-        // Real Z80 RAM at $A00000 still round-trips — the carve-out is $A04000-3 only.
+        // Real Z80 RAM at $A00000 still round-trips — the FM carve-out spans window offset $4000-$5FFF
+        // (K4-6), never the RAM region.
         bus.write8(0xA0_0000, 5, 0xAB);
         assert_eq!(
             bus.read8(0xA0_0000, 5).0,

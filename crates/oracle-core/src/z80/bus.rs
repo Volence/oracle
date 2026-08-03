@@ -16,7 +16,7 @@
 //! |---|---|---|
 //! | `$0000-$1FFF` | Z80 RAM (8 KiB) | **live** — the shared `z80_ram` buffer |
 //! | `$2000-$3FFF` | Z80 RAM mirror | **live** — mirrored (`& 0x1FFF`) |
-//! | `$4000-$4003` | YM2612 FM address/data | read = not-busy status; write dropped (Phase RT tap) |
+//! | `$4000-$4003` | YM2612 FM address/data | read = not-busy status; write dropped (Phase RT tap). **Known asymmetry (deferred):** the Z80-side decode deliberately stays `$4000-$4003` — `$4004-$5FFF` falls through to `$FF`/drop below — while the 68k-side window (K4-6) answers FM across the chip's full `$4000-$5FFF` select span (memtest-pinned there). The Z80-side span is unpinned and has zero corpus evidence (no driver touches `$4004+`), so widening it would move sound-currency surface for no gain; ledgered in `docs/2026-07-25-testrom-conformance.md` (K4-6) |
 //! | `$6000` | bank-address register | **live** — 9-bit LSB-first serial latch |
 //! | `$7F11` | PSG (SN76489), write-only | decode: read open bus, write dropped (Phase RT tap) |
 //! | `$7F00-$7F03` | VDP data port mirror | read = open bus `$FF` (hardware LOCKS UP — ledgered `vdp-dataport-read-lockup`); write dropped |
