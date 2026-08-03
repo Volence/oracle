@@ -2529,4 +2529,180 @@ mod tests {
             "the Tas access is still logged"
         );
     }
+
+    // -----------------------------------------------------------------------------------------------
+    // VDPFIFOTesting test 16 "FIFO Wait States" — the S1/S2 acceptance tests
+    // -----------------------------------------------------------------------------------------------
+    //
+    // The expected words below are the ROM's own hardware-captured table at `vendor/TestRoms/
+    // vdp_port_access.bin` ROM **`$ED10`** — located by the record builder's literal `lea`s
+    // (`00ED70: lea.l $ecec.l,a1` = the 36-byte name string "FIFO Wait States",
+    // `00ED84: lea.l $ed10.l,a1` = the 80-byte expected table). 40 words = 10 groups × 4:
+    //
+    // ```
+    //   group  1  0100 0100 0000 0200      group  6  0100 0100 0000 0200
+    //   group  2  0100 0100 0000 0200      group  7  0100 ffff ffff 0200
+    //   group  3  0100 0100 0000 0200      group  8  0100 0100 0000 0200
+    //   group  4  0100 0100 0000 0200      group  9  0200 0100 0000 0200
+    //   group  5  0100 0100 0000 0200      group 10  0000 0100 0000 0200
+    // ```
+    //
+    // Per group the four words are: probe 1; the first FULL (`$100`), the first PARTIAL (`$000`/`$002`)
+    // and the first EMPTY (`$200`) seen anywhere in the 16-word status stream that follows the group's
+    // *inserted operation*; `$ffff` = "hardware never observed that state in 2048 retries". Full decode
+    // in `docs/2026-08-03-t16-slot-scheduling-recon.md` §1.3-§1.4.
+
+    /// FIFO status bits as the ROM masks them (`andi.w #$302`): bit 9 = EMPTY, bit 8 = FULL, bit 1 = DMA.
+    const T16_MASK: u16 = 0x0302;
+    const T16_FULL: u16 = 0x0100;
+    const T16_EMPTY: u16 = 0x0200;
+
+    /// Instruction costs in 68000 clock cycles for the three instructions T16's inner loop is built from.
+    /// Each is independently corroborated by the measured mclk gaps in the recon's `BusEventSink` trace
+    /// (§1.6): data writes land 140 mclk = 20 cycles apart, `move.w $C00004,dn` 112 mclk = 16, and the
+    /// buffered stream reads 140 mclk = 20.
+    const T16_MOVE_IMM_TO_ABS_W: u32 = 20; // move.w #imm,(xxx).L
+    const T16_MOVE_ABS_TO_REG_W: u32 = 16; // move.w (xxx).L,dn
+    const T16_MOVE_ABS_TO_MEM_W: u32 = 20; // move.w (xxx).L,(an)+
+
+    /// One VDP-port write as a whole 68k instruction: perform it at the harness's current mclk, then
+    /// advance that clock by the instruction's own cost **plus** whatever /DTACK wait the VDP asked for.
+    /// Folding the wait back into the clock is what phase-locks the CPU to the drain schedule — the
+    /// mechanism T16 measures.
+    fn t16_write(mem: &mut MdMem, addr: u32, value: u16, cycles: u32) {
+        let mut sink = Vec::new();
+        let wait = {
+            let mut bus = mem.bus(&mut sink);
+            bus.write16(addr, 5, value)
+        };
+        mem.now_mclk += (cycles + wait) as u64 * crate::system::MCLK_PER_CPU_CYCLE;
+    }
+
+    /// One VDP-port read as a whole 68k instruction (see [`t16_write`]).
+    fn t16_read(mem: &mut MdMem, addr: u32, cycles: u32) -> u16 {
+        let mut sink = Vec::new();
+        let (v, wait) = {
+            let mut bus = mem.bus(&mut sink);
+            bus.read16(addr, 5)
+        };
+        mem.now_mclk += (cycles + wait) as u64 * crate::system::MCLK_PER_CPU_CYCLE;
+        v
+    }
+
+    /// A `MdMem` on an active H40 display line with the display enabled and DMA enabled — the state
+    /// T16's groups run in (group 9's prologue writes reg 1 = `$54`).
+    fn t16_mem(start_mclk: u64) -> MdMem {
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.vdp.control_write(0x8154, 0); // reg 1  = $54: mode 5 + display on + DMA enable
+        mem.vdp.control_write(0x8C81, 0); // reg 12 = $81: RS0|RS1 → H40
+        mem.vdp.control_write(0x8F02, 0); // reg 15 = 2: autoincrement
+        mem.now_mclk = start_mclk;
+        mem
+    }
+
+    /// Replay one retry of T16 groups 1-8 at master-clock phase `start_mclk`, and return the group's
+    /// `d1`/`d2`/`d3` verdict words — the first FULL / PARTIAL / EMPTY seen in the 16-word stream, or
+    /// `$ffff` for a state never seen. `insert` runs the group's inserted operation between probe 1 and
+    /// probe 2 (ROM $EDAC, $EF1A, $F090, …; recon §1.4).
+    ///
+    /// Shared stimulus for all eight: a VRAM-write command to `$8000` then **six** data-port writes into
+    /// a 4-deep FIFO, so the sixth write /DTACK-stalls. Probe 2 is appended to the stream **last**, as
+    /// the ROM does (`move.w d4,(a1)+` after the 15 buffered reads).
+    fn t16_retry(start_mclk: u64, insert: impl Fn(&mut MdMem)) -> [u16; 3] {
+        let mut mem = t16_mem(start_mclk);
+        t16_write(&mut mem, 0xC0_0004, 0x4000, 0); // control word 1 \ move.l #$40000002,$C00004
+        t16_write(&mut mem, 0xC0_0004, 0x0002, 28); // control word 2 /
+        for _ in 0..6 {
+            t16_write(&mut mem, 0xC0_0000, 0xFFFF, T16_MOVE_IMM_TO_ABS_W);
+        }
+        let _probe1 = t16_read(&mut mem, 0xC0_0004, T16_MOVE_ABS_TO_REG_W);
+        insert(&mut mem);
+        let probe2 = t16_read(&mut mem, 0xC0_0004, T16_MOVE_ABS_TO_REG_W) & T16_MASK;
+        let mut stream: Vec<u16> = (0..15)
+            .map(|_| t16_read(&mut mem, 0xC0_0004, T16_MOVE_ABS_TO_MEM_W) & T16_MASK)
+            .collect();
+        stream.push(probe2); // the ROM appends probe 2 after the 15 buffered reads
+
+        let first = |pred: &dyn Fn(u16) -> bool| -> u16 {
+            stream.iter().copied().find(|&s| pred(s)).unwrap_or(0xFFFF)
+        };
+        [
+            first(&|s| s & T16_FULL != 0),
+            first(&|s| s & (T16_FULL | T16_EMPTY) == 0),
+            first(&|s| s & T16_EMPTY != 0),
+        ]
+    }
+
+    /// Sweep a retry across a scanline the way the ROM's 2048 retries do (each begins at a different h/v
+    /// position), and report whether **any** phase observed FULL in the stream. `$ED10` says hardware
+    /// does; the whole of T16 groups 2/3/5/6/8 is that one bit.
+    fn t16_any_phase_sees_full(insert: impl Fn(&mut MdMem) + Copy) -> bool {
+        let base = 100 * crate::vdp::MCLK_PER_LINE; // an active display line
+        (0..crate::vdp::MCLK_PER_LINE)
+            .step_by(20)
+            .any(|phase| t16_retry(base + phase, insert)[0] == T16_FULL)
+    }
+
+    #[test]
+    fn vdpfifo_t16_group1_no_inserted_operation_sees_full() {
+        // Group 1 (ROM $EDAC) inserts nothing; expected `0100 0100 0000 0200`. This is the control: it
+        // already passes, and it must keep passing.
+        assert!(
+            t16_any_phase_sees_full(|_| {}),
+            "group 1: the FIFO is still FULL at probe 2 with no inserted operation (ROM $ED10 word 5)"
+        );
+    }
+
+    #[test]
+    fn vdpfifo_t16_groups_with_one_inserted_control_word_still_see_full() {
+        // Groups 2 and 5 (ROM $EF1A / $F390) insert a single control word between the two probes —
+        // 20 CPU cycles. Expected `d1` = `0100`: hardware still catches FULL. We miss it because our
+        // uniform 190-mclk slot spacing puts the probe a fixed 15 mclk past a drain boundary on EVERY
+        // retry (recon §1.6: 1815 of 1815 active-display retries produce the identical miss).
+        for word in [0xC000u16, 0x0000] {
+            assert!(
+                t16_any_phase_sees_full(|mem| t16_write(
+                    mem,
+                    0xC0_0004,
+                    word,
+                    T16_MOVE_IMM_TO_ABS_W
+                )),
+                "inserted control word ${word:04X}: FULL is still observable (ROM $ED10, groups 2/5)"
+            );
+        }
+    }
+
+    #[test]
+    fn vdpfifo_t16_groups_with_an_inserted_control_long_still_see_full() {
+        // Groups 3, 6 and 8 (ROM $F090 / $F506 / $F7FC) insert a full control *pair* — 28 CPU cycles,
+        // which lands the probe 71 mclk past our uniform drain boundary. Expected `d1` = `0100`.
+        for (hi, lo) in [(0x4000u16, 0x0012u16), (0x0000, 0x0000), (0x0000, 0x8F01)] {
+            assert!(
+                t16_any_phase_sees_full(|mem| {
+                    t16_write(mem, 0xC0_0004, hi, 0);
+                    t16_write(mem, 0xC0_0004, lo, 28);
+                }),
+                "inserted control pair ${hi:04X}{lo:04X}: FULL is still observable (ROM $ED10, groups 3/6/8)"
+            );
+        }
+    }
+
+    #[test]
+    fn vdpfifo_t16_group7_data_read_drains_the_fifo_so_full_is_never_seen() {
+        // Group 7 (ROM $F67E) inserts the control pair **plus a data-port read**. A read waits for the
+        // pending writes to drain (Nemesis, VDP Internals: pending FIFO writes take priority), so the
+        // FIFO is empty afterwards and hardware sees neither FULL nor PARTIAL — expected
+        // `0100 ffff ffff 0200`, the only `$ffff` row in the table. This is the negative control that
+        // proves the other seven rows are about timing and not about a missing state.
+        let verdict = t16_retry(100 * crate::vdp::MCLK_PER_LINE, |mem| {
+            t16_write(mem, 0xC0_0004, 0x0000, 0);
+            t16_write(mem, 0xC0_0004, 0x0000, 28);
+            t16_read(mem, 0xC0_0000, T16_MOVE_ABS_TO_REG_W);
+        });
+        assert_eq!(
+            verdict,
+            [0xFFFF, 0xFFFF, T16_EMPTY],
+            "group 7: no FULL, no PARTIAL, EMPTY throughout (ROM $ED10 words 25-28)"
+        );
+    }
 }

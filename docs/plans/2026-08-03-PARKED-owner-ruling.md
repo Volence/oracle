@@ -207,3 +207,13 @@ The last two rows are exactly what these rulings buy. The remaining tail after
 that is T6 (slice A4, 8-bit VRAM read target) and T16 (needs discrete per-line
 access-slot scheduling — the long-standing "Phase 3 per-line DMA cost"
 deferral, a genuinely larger piece of work).
+
+> **CORRECTION (2026-08-03, slice T16/S1).** The parenthetical above is wrong and
+> was corrected in `docs/2026-07-25-testrom-conformance.md` (S1 addendum). T16
+> needed *two* independent things, and neither is the "Phase 3 per-line DMA
+> cost" deferral: **intra-line slot positions** (groups 2/3/5/6/8, ~50 lines of
+> table-driven integer code) and **post-DMA FIFO occupancy** (groups 9/10, two
+> lines — design question Q1 of `docs/2026-08-03-a3-dma-fifo-design.md`). Both
+> are currency-neutral. The genuinely larger piece — integrating `dma_cost`
+> across the lines a transfer spans — is **not needed for T16** and stays
+> deferred.

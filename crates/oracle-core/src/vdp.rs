@@ -509,14 +509,80 @@ impl Vdp {
         }
     }
 
+    /// The **positions** of the external (CPU/DMA) access slots within an active-display line, as access
+    /// indices into the line's 210 (H40) / 171 (H32) accesses. These are the `~` entries in Kabuto's
+    /// published per-line access-pattern strings (hardware notes, Plutiedev mirror):
+    ///
+    /// ```text
+    /// H40: Hssss AsaaBsbb ((A~aaBSbb)*3 AraaBSbb)*5 ~~ s*23 ~ s*11        (210 accesses)
+    /// H32: Hssss AsaaBsbb ((A~aaBSbb)*3 AraaBSbb)*4 ~~ s*13 ~ s*13 ~      (171 accesses)
+    /// ```
+    ///
+    /// `H` = hscroll, `A`/`B` = tilemap, `a`/`b` = tile pixels, `S` = sprite refs, `s` = sprite pixels,
+    /// `r` = VRAM refresh, `~` = external slot. Expanding them yields exactly **18 `~` + 5 `r`** (H40) and
+    /// **16 `~` + 4 `r`** (H32), reproducing the Sega *Genesis Technical Overview* DMA-capacity table's
+    /// 18/16 figures — already pinned in `docs/2026-07-16-vdp-recon.md:109` — from an independent source.
+    ///
+    /// The gaps are **irregular**, and that is the entire content of VDPFIFOTesting test 16 groups
+    /// 2/3/5/6/8. The H40 gap sequence is `8,8,16 | …×5 | 1 | 24 | 26` accesses; the wrap-around gap of 26
+    /// matches TascoDLX's measured figure (SpritesMind t=851: the manual's 16-slot maximum gap is wrong,
+    /// "the largest gap is actually 26 slots"), which is independent corroboration that Kabuto's string
+    /// transcribes Nemesis's logic-analyser measurements.
+    const H40_ACTIVE_SLOTS: [u64; 18] = [
+        14, 22, 30, 46, 54, 62, 78, 86, 94, 110, 118, 126, 142, 150, 158, 173, 174, 198,
+    ];
+    const H32_ACTIVE_SLOTS: [u64; 16] = [
+        14, 22, 30, 46, 54, 62, 78, 86, 94, 110, 118, 126, 141, 142, 156, 170,
+    ];
+    const H40_ACCESSES_PER_LINE: u64 = 210;
+    const H32_ACCESSES_PER_LINE: u64 = 171;
+
+    /// The mclk instant of the first external access slot **strictly after** `at`, on an active-display
+    /// line. Access `k` is placed at `k × MCLK_PER_LINE / accesses`, i.e. a uniform access grid — an
+    /// approximation, since EDCLK is not constant across the line (follow-up **F-SLOTGRID**). Wraps to the
+    /// next line's first slot, so the returned instant is always `> at` and a drain always makes progress.
+    fn next_active_slot(&self, at: u64) -> u64 {
+        let (slots, accesses): (&[u64], u64) = if self.h40() {
+            (&Self::H40_ACTIVE_SLOTS, Self::H40_ACCESSES_PER_LINE)
+        } else {
+            (&Self::H32_ACTIVE_SLOTS, Self::H32_ACCESSES_PER_LINE)
+        };
+        let line = at / MCLK_PER_LINE;
+        let pos = at % MCLK_PER_LINE;
+        for &k in slots {
+            let t = k * MCLK_PER_LINE / accesses;
+            if t > pos {
+                return line * MCLK_PER_LINE + t;
+            }
+        }
+        (line + 1) * MCLK_PER_LINE + slots[0] * MCLK_PER_LINE / accesses
+    }
+
     /// The mclk cost of draining one FIFO entry with command `code` at slot-clock instant `at` (recon R3): a
-    /// VRAM word exits in 2 slots, a CRAM/VSRAM word in 1, at the per-line slot rate. Integer throughout.
+    /// VRAM word exits in 2 slots, a CRAM/VSRAM word in 1. Integer throughout.
+    ///
+    /// **T16/S1** — on an active display line the two slots are taken from the real schedule
+    /// ([`Vdp::next_active_slot`]) rather than the uniform per-line rate, so a VRAM word drains in anywhere
+    /// from ~260 to ~814 mclk depending where in the line it lands, against the old invariant 380. The
+    /// per-line *total* is unchanged by construction (the table has exactly 18/16 entries) — this
+    /// redistributes drains within a line, it does not add or remove capacity.
+    ///
+    /// A **blanked** line (vblank or display-off) keeps the aggregate-rate model: nearly every access there
+    /// is an external slot, so positions carry almost no information. That is a deliberate, recorded
+    /// inconsistency in the model — follow-up **F-BLANKSLOT**.
     fn entry_drain_cost(&self, code: u8, at: u64) -> u64 {
         let slots = match Self::target_of(code) {
             Target::Vram => 2,
             _ => 1,
         };
-        slots * MCLK_PER_LINE / self.slots_per_line(at)
+        if self.vblank(at) || !self.display_enabled() {
+            return slots * MCLK_PER_LINE / self.slots_per_line(at);
+        }
+        let mut t = at;
+        for _ in 0..slots {
+            t = self.next_active_slot(t);
+        }
+        t - at
     }
 
     /// Advance the FIFO drain clock up to `now` (recon R3): pop each pending entry whose slot cost has elapsed.
@@ -2462,6 +2528,173 @@ mod tests {
             v.control_read_status(0, t0 + 500);
         }
         assert_eq!(v.fifo_len(), 3, "only the time-based drain moved the FIFO");
+    }
+
+    // --- Intra-line access-slot positions (slice T16/S1) --------------------------------------------------
+
+    /// Expand Kabuto's published per-line access-pattern string into its literal access sequence, exactly
+    /// as written in the hardware notes (Plutiedev mirror). Deliberately spelled out rather than parsed:
+    /// the point is that a reader can diff this function against the quoted string character by character.
+    fn kabuto_pattern(h40: bool) -> String {
+        let mut s = String::new();
+        s.push_str("Hssss"); // `Hssss`
+        s.push_str("AsaaBsbb"); // `AsaaBsbb`
+                                // `((A~aaBSbb)*3 AraaBSbb)*5` (H40) / `*4` (H32)
+        for _ in 0..if h40 { 5 } else { 4 } {
+            for _ in 0..3 {
+                s.push_str("A~aaBSbb");
+            }
+            s.push_str("AraaBSbb");
+        }
+        if h40 {
+            // `~~ s*23 ~ s*11`
+            s.push_str("~~");
+            s.push_str(&"s".repeat(23));
+            s.push('~');
+            s.push_str(&"s".repeat(11));
+        } else {
+            // `~~ s*13 ~ s*13 ~`
+            s.push_str("~~");
+            s.push_str(&"s".repeat(13));
+            s.push('~');
+            s.push_str(&"s".repeat(13));
+            s.push('~');
+        }
+        s
+    }
+
+    #[test]
+    fn active_slot_gaps_follow_the_published_pattern() {
+        // T16/S1, and the guard on the whole slice: the slot-index tables are transcribed from Kabuto's
+        // access-pattern strings, so re-expand those strings here and check the constants against them.
+        // A typo in an index would otherwise only surface three layers downstream as a moved frame hash.
+        //
+        //   H40: Hssss AsaaBsbb ((A~aaBSbb)*3 AraaBSbb)*5 ~~ s*23 ~ s*11
+        //   H32: Hssss AsaaBsbb ((A~aaBSbb)*3 AraaBSbb)*4 ~~ s*13 ~ s*13 ~
+        //
+        // The counts are the independent cross-check: they must reproduce the Sega *Genesis Technical
+        // Overview* DMA-capacity figures (18 external slots per H40 active line, 16 per H32 —
+        // `docs/2026-07-16-vdp-recon.md:109`) and the refresh counts Kabuto's own text states.
+        for (h40, accesses, externals, refreshes, table) in [
+            (
+                true,
+                Vdp::H40_ACCESSES_PER_LINE,
+                18,
+                5,
+                &Vdp::H40_ACTIVE_SLOTS[..],
+            ),
+            (
+                false,
+                Vdp::H32_ACCESSES_PER_LINE,
+                16,
+                4,
+                &Vdp::H32_ACTIVE_SLOTS[..],
+            ),
+        ] {
+            let p = kabuto_pattern(h40);
+            let label = if h40 { "H40" } else { "H32" };
+            assert_eq!(p.len() as u64, accesses, "{label}: accesses per line");
+            assert_eq!(
+                p.matches('~').count(),
+                externals,
+                "{label}: external slots per active line"
+            );
+            assert_eq!(
+                p.matches('r').count(),
+                refreshes,
+                "{label}: VRAM refresh slots per active line"
+            );
+            let from_pattern: Vec<u64> = p
+                .char_indices()
+                .filter(|&(_, c)| c == '~')
+                .map(|(i, _)| i as u64)
+                .collect();
+            assert_eq!(
+                from_pattern, table,
+                "{label}: the slot-index constant matches the published pattern"
+            );
+        }
+    }
+
+    #[test]
+    fn active_slots_are_irregularly_spaced_not_a_uniform_period() {
+        // The whole content of T16 groups 2/3/5/6/8: hardware's external slots are NOT evenly spread, so a
+        // VRAM word's two-slot drain costs a different amount depending where in the line it starts. The
+        // old uniform model returned an invariant 2 × 3420/18 = 380 mclk everywhere.
+        let mut v = fresh();
+        v.control_write(0x8144, 0); // reg 1 = $44: mode 5 + display on (M5 must stay set, or the reg-12
+        v.control_write(0x8C81, 0); // write below is discarded by the Mode-4 mask) → H40
+                                    // Slot instants are `k × 3420 / 210`: the first two are 228 and 358, and the last is 3224.
+        assert_eq!(
+            v.next_active_slot(0),
+            228,
+            "first slot of an active H40 line"
+        );
+        assert_eq!(v.next_active_slot(228), 358, "the 8-access gap = 130 mclk");
+        assert_eq!(
+            v.next_active_slot(3224),
+            3420 + 228,
+            "wraps to the next line"
+        );
+        // A VRAM word (2 slots) at the top of the line drains in 358 mclk; one that starts in the wide
+        // hblank gap takes 648 — a spread of ±270 mclk around the old invariant 380.
+        let vram_write = 0x01;
+        assert_eq!(
+            v.entry_drain_cost(vram_write, 0),
+            358,
+            "cheap: two close slots"
+        );
+        assert_eq!(
+            v.entry_drain_cost(vram_write, 3000),
+            648,
+            "expensive: the last slot of the line, then a wrap to the next"
+        );
+        // A CRAM word costs one slot, and it too follows the schedule.
+        let cram_write = 0x03;
+        assert_eq!(v.entry_drain_cost(cram_write, 0), 228);
+    }
+
+    #[test]
+    fn a_full_fifo_write_stalls_to_the_next_real_slot_not_a_uniform_period() {
+        // The /DTACK stall a 5th write takes is now read off the schedule, which is what unlocks T16: the
+        // stall lands the resuming 68k on a real slot instant, and the *following* gap differs by phase
+        // instead of being a constant 380 mclk. Two phases, two different stalls.
+        let stall_at = |t0: u64| -> u32 {
+            let mut v = fresh();
+            v.control_write(0x8144, 0); // mode 5 + display on
+            v.control_write(0x8C81, 0); // H40
+            vram_write_cmd(&mut v, 0x8000);
+            for w in [0x1111u16, 0x2222, 0x3333, 0x4444] {
+                v.data_write_at(w, t0);
+            }
+            v.data_write_at(0x5555, t0) // the 5th write into a full FIFO
+        };
+        let (early, late) = (stall_at(100), stall_at(2900));
+        assert!(early > 0 && late > 0, "a full FIFO always stalls the 68k");
+        assert_ne!(
+            early, late,
+            "the stall depends on where in the line the FIFO filled — it is not a uniform period"
+        );
+    }
+
+    #[test]
+    fn blanked_lines_keep_the_aggregate_slot_rate() {
+        // Deliberate scope line (follow-up F-BLANKSLOT): S1 changes active-display drains only. On a
+        // blanked line nearly every access is an external slot, so positions carry almost no information,
+        // and it is the path every real game's bulk VDP traffic takes.
+        let mut v = fresh();
+        v.control_write(0x8C81, 0); // H40, display OFF → blanked
+        let vram_write = 0x01;
+        let blanked = 2 * MCLK_PER_LINE / 205;
+        assert_eq!(v.entry_drain_cost(vram_write, 0), blanked);
+        assert_eq!(
+            v.entry_drain_cost(vram_write, 3000),
+            blanked,
+            "position-independent while blanked"
+        );
+        // Display on but inside vblank is blanked too.
+        v.control_write(0x8144, 0);
+        assert_eq!(v.entry_drain_cost(vram_write, 240 * MCLK_PER_LINE), blanked);
     }
 
     #[test]
