@@ -102,11 +102,14 @@ const BASELINE: &[(&str, &str)] = &[
         // bank-canary alias fix) — the three `A0xxxx` window rows green.
         // K4-4 (2026-08-02): the I/O block ignores A0 (registers answer both byte lanes) — row green.
         // K4-5 (2026-08-02): status bits 10-15 float with the residue — the row's open-bus half is
-        // now exact (0290 -> 4E90); it stays red on the status LOW byte only (pre-existing
-        // ODD-flag-outside-interlace + read-instant VBlank phase, NOT open bus — see the K4 ledger).
+        // now exact (0290 -> 4E90); it stayed red on the status LOW byte only.
         // See docs/2026-08-02-k4-openbus-design.md and the K4 ledger section.
+        // Status-low-byte fixes (2026-08-02): ODD forced 0 outside interlace (reference toggle rule
+        // `interlace && !odd`, Oracle S315-5313_Timing.cpp:1103) + VBlank bit forced set while the
+        // display is disabled (Oracle S315-5313_General.cpp:2345-2351 "hardware tests have confirmed";
+        // memtest's C00004 reads land mid active scan at line 27 with reg 1 = $04) — row green, 13/13.
         "m68k_memory_test",
-        "12/13 rows match the ROM's hardware reference; mismatch: C00004-C00007",
+        "13/13 rows match the ROM's hardware reference",
     ),
     (
         "m68k_opcode_sizes",
@@ -292,10 +295,14 @@ fn scrape_m68k_memory_test(sys: &mut System) -> String {
             mismatched.push(label.trim().to_string());
         }
     }
-    format!(
-        "{matched}/{total} rows match the ROM's hardware reference; mismatch: {}",
-        mismatched.join(", ")
-    )
+    if mismatched.is_empty() {
+        format!("{matched}/{total} rows match the ROM's hardware reference")
+    } else {
+        format!(
+            "{matched}/{total} rows match the ROM's hardware reference; mismatch: {}",
+            mismatched.join(", ")
+        )
+    }
 }
 
 /// `Multitap - IO Sample Program` — probes both controller ports and names the detected device. A

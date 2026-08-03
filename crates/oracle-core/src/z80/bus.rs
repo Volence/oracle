@@ -439,6 +439,7 @@ mod tests {
             (240 * MCLK_PER_LINE + 1000, true),
         ] {
             let mut vdp = fresh_vdp();
+            vdp.control_write(0x8140, 0); // display on (bit 3 is forced set while the display is disabled)
             let expected = vdp.status_word(mclk);
             assert_eq!(
                 expected & (1 << 3) != 0,

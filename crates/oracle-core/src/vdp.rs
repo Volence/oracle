@@ -392,7 +392,11 @@ impl Vdp {
         if self.odd_frame {
             s |= 1 << 4;
         }
-        if self.vblank(mclk) {
+        if self.vblank(mclk) || !self.display_enabled() {
+            // Bit 3 is forced set while the display is disabled, regardless of the beam position —
+            // reference: Oracle `vblankFlag |= !_displayEnabledCached`, "hardware tests have confirmed"
+            // (`Devices/315-5313/S315-5313_General.cpp:2345-2351`); hardware ground truth: memtest_68k's
+            // `C00004-C00007` row (`4E88`, bit 3 set) reads mid active scan with reg 1 = $04.
             s |= 1 << 3;
         }
         if self.hblank(mclk) {
@@ -454,7 +458,7 @@ impl Vdp {
     /// External (CPU/DMA) access slots per line at `mclk` (recon R3): active display H32 = 16 / H40 = 18;
     /// a blanked line (vblank or display-off) H32 = 167 / H40 = 205. One slot = one VRAM byte access.
     fn slots_per_line(&self, mclk: u64) -> u64 {
-        let blanked = self.vblank(mclk) || (self.regs[1] & 0x40) == 0;
+        let blanked = self.vblank(mclk) || !self.display_enabled();
         match (self.h40(), blanked) {
             (false, false) => 16,
             (true, false) => 18,
@@ -989,6 +993,11 @@ impl Vdp {
         self.regs[0x0C] & 0x02 != 0
     }
 
+    /// Whether the display is enabled: reg 1 bit 6 (the DISP/M2 bit).
+    fn display_enabled(&self) -> bool {
+        self.regs[1] & 0x40 != 0
+    }
+
     /// Set the VINT pending latch and advance the odd-frame flag (recon R12; the VInt scheduler event at
     /// line 224 drives this). The latch is cleared only by [`Vdp::acknowledge`].
     ///
@@ -1277,8 +1286,9 @@ mod tests {
 
     #[test]
     fn status_word_reflects_the_timing_bits() {
-        let v = fresh(); // H32
-                         // Active display, H well inside the visible span (not hblank): only FIFO-empty (bit 9).
+        let mut v = fresh(); // H32
+        v.regs[1] = 0x40; // display enabled (bit 3 is forced set while the display is disabled)
+                          // Active display, H well inside the visible span (not hblank): only FIFO-empty (bit 9).
         let active = 100 * MCLK_PER_LINE + dot_with_h(&v, 0x40);
         assert_eq!(
             v.status_word(active),
@@ -1298,6 +1308,36 @@ mod tests {
             v.status_word(in_hblank) & (1 << 2),
             1 << 2,
             "hblank bit (b2)"
+        );
+    }
+
+    /// Status bit 3 (VBlank) is FORCED SET while the display is disabled (reg 1 bit 6 clear), regardless of
+    /// the beam position. Reference: Oracle `vblankFlag |= !_displayEnabledCached` with the comment
+    /// "although not mentioned in the official documentation, hardware tests have confirmed that the VBlank
+    /// flag is always forced to set when the display is disabled" (`Devices/315-5313/S315-5313_General.cpp:
+    /// 2345-2351`). Hardware ground truth: memtest_68k's `C00004-C00007` row reads `4E88` (bit 3 SET) while
+    /// its status reads land mid active scan (our probe: frame 11, line 27) with reg 1 = $04 — the ROM only
+    /// enables the display after the memory sweep.
+    #[test]
+    fn status_vblank_bit_forced_while_display_is_disabled() {
+        let mut v = fresh(); // reg 1 = 0 → display disabled
+        let active = 100 * MCLK_PER_LINE + dot_with_h(&v, 0x40);
+        assert_eq!(
+            v.status_word(active) & (1 << 3),
+            1 << 3,
+            "display off → bit 3 set even mid active scan"
+        );
+        v.regs[1] = 0x40; // display on
+        assert_eq!(
+            v.status_word(active) & (1 << 3),
+            0,
+            "display on → bit 3 tracks the real beam position"
+        );
+        let in_vblank = 240 * MCLK_PER_LINE + dot_with_h(&v, 0x40);
+        assert_eq!(
+            v.status_word(in_vblank) & (1 << 3),
+            1 << 3,
+            "display on during vblank → bit 3 still set"
         );
     }
 

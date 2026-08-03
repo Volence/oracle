@@ -1439,6 +1439,7 @@ mod tests {
         let mut mem = MdMem::new(vec![0u8; 0x1000]);
         // Line 100 (active), H=0x40 (dot 1280) — not v/h blank, so only the FIFO-empty placeholder is set.
         mem.now_mclk = 100 * crate::vdp::MCLK_PER_LINE + 1280;
+        mem.vdp.control_write(0x8140, 0); // display on (bit 3 is forced set while the display is disabled)
         let expected = mem.vdp.status_word(mem.now_mclk);
         let mut sink = Vec::new();
         let mut bus = mem.bus(&mut sink);
@@ -1455,6 +1456,7 @@ mod tests {
         // only if the residue changed — on real code a prefetch re-drives the latch first.
         let mut mem = MdMem::new(vec![0u8; 0x1000]);
         mem.now_mclk = 100 * crate::vdp::MCLK_PER_LINE + 1280; // active display: status = $0200
+        mem.vdp.control_write(0x8140, 0); // display on (bit 3 is forced set while the display is disabled)
         let mut sink = Vec::new();
         let mut bus = mem.bus(&mut sink);
         bus.write16(0xE0_0000, 5, 0x4E71); // residue

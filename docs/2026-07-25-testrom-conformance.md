@@ -31,7 +31,7 @@ Harness facts, so a reader can reproduce a row by hand:
 | `m68k_bcd` (`bcd-verifier-u1`) | Exhaustive ABCD / SBCD / NBCD value **and** flag verification, including the undefined-flag cases | **Yes** — three scraped text rows, font base `$000`, 700 frames | **PASS** — `abcd`/`sbcd`/`nbcd` all `$00000 $00000` (0 value errors, 0 flag errors) | — (corroborates the SST BCD coverage on real silicon-derived vectors) |
 | `io_sample` (`Multitap - IO Sample Program`) | Controller-port device detection (the TH-handshake ID protocol) on both ports | **Yes** — both ports must print `JOYPAD`, font base `$000`, 160 frames | **PASS** — port1 = `JOYPAD`, port2 = `JOYPAD` | — (matches `docs/2026-07-17-io-recon.md` IO1–IO6) |
 | `m68k_illegal` (`itest`) | Illegal / privileged / unimplemented encodings must trap to the right vector | **Yes** — no text; verdict is the backdrop word `CRAM[0..2]`: blue `$0E00` while running, `$00E0` green = pass, `$000E` red = fail. 20 frames (the full sweep settles ~frame 9) | **PASS** — backdrop `$00E0` (green) since the 2026-08-02 K1 fix (was FAIL `$000E`) | **K1 — RESOLVED & FIXED.** See below. |
-| `m68k_memory_test` (`memtest_68k`) | Reads every non-lockup address range twice; prints what it read **and** the ROM's own built-in real-hardware reference (`?` = wildcard nibble) | **Yes** — per-row compare, font base `$100`, 30 frames | **12 / 13 rows match** since the 2026-08-02 K4 slices (was 4/13) — sole mismatch: `C00004-C00007`, whose open-bus half is now exact and which stays red on the pre-existing status-low-byte gap (ODD flag outside interlace + read-instant VBlank phase) | **K4 — RESOLVED & FIXED** (see below). The remaining row-11 delta is NOT open bus. |
+| `m68k_memory_test` (`memtest_68k`) | Reads every non-lockup address range twice; prints what it read **and** the ROM's own built-in real-hardware reference (`?` = wildcard nibble) | **Yes** — per-row compare, font base `$100`, 30 frames | **13 / 13 rows match** since the 2026-08-02 status-low-byte fixes (K4 slices took it 4/13 → 12/13; the row-11 residual was ODD-outside-interlace + VBlank-forced-while-display-disabled, both reference-corroborated semantics bugs — see the K4 ledger addendum) | **K4 — RESOLVED & FIXED**; row-11 status low byte also RESOLVED (adjudicated semantics, not timing — see below). |
 | `vdp_port_access` (`VDPFIFOTesting`) | 16 VDP port-access tests over two pages: FIFO size/behaviour, DMA-via-FIFO, byteswapping, partial CP writes, register-write masking, read-target switching, FIFO wait states | **Yes** — scrapes the on-screen `Results: ( P/ F/ T)` line; page 1 auto-runs (settles ~frame 42), `Start` advances to page 2 (~480 more frames) | **page 1 = 6 pass / 3 fail / 9**; **pages 1+2 cumulative = 9 pass / 7 fail / 16** | Expected: the VDP timing skeleton is an interim model (`docs/2026-07-16-vdp-recon.md`; the FIFO/wait-state rows are exactly the "Phase 3 per-line DMA cost" deferral). CHARTER explicitly does not gate on this ROM. |
 | `vdp_sprite_masking` (`SpriteMaskingTestRom`) | 9 sprite masking / per-line / per-frame / dot-overflow tests | **Yes** — verdict is a 32×8 glyph at the right edge, classified by **rendered-pixel hash** (its nametable cells are identical for the tick and cross cases, so only the framebuffer discriminates). 300 frames, settles ~frame 8 | `1=TICK/TICK 2=TICK/TICK 3=TICK/CROSS 4=PASS 5=PASS 6=FAIL 7=PASS 8=PASS 9=TICK/TICK` — **2 failures**: test 3's second sub-case (MAX SPRITE DOTS – COMPLEX) and test 6 (MASK S1 ON DOT OVERFLOW) | Expected: both are the **mid-sprite pixel-budget cut** interim model, ledger row **P1** in `docs/2026-07-16-vdp-pixel-known-differences.md` (we spend budget per whole sprite; hardware cuts mid-sprite at the exact dot). Open question **Q1** below on the H32/H40 toggle. |
 | `color_1536` (`TEST1536.BIN`) | 1536-colour trick — CRAM rewritten mid-scanline | Frame hash only | `frame_hash=0x96b9c93c4f3dd325` | **Limitation L1**: end-of-frame capture. This ROM renders correctly only with per-scanline capture; the end-of-frame framebuffer cannot show it. |
@@ -155,7 +155,8 @@ hardware `88`), a pre-existing non-open-bus gap outside the K4 design's rule (ST
 discipline — reported, not folded in): our status bit 4 reports the raw odd-frame toggle where the
 Sega manual says ODD reads 0 outside interlace mode, and bit 3 (VBlank) depends on the frame phase at
 the ROM's read instant (timing-model, deferrable class). Rows 4/10/12/13 passed before K4.
-Final: **12/13**, every remaining bit the open-bus model owns is hardware-exact.
+K4 final: **12/13**, every remaining bit the open-bus model owns is hardware-exact. The row-11
+status-low-byte residual was then adjudicated and fixed the same day — **13/13** (addendum below).
 
 Slice log (each row-flip amends the `BASELINE` in the same commit):
 
@@ -209,6 +210,41 @@ values (unknowable offline; the vendored ROM's column is the pinned ground truth
 extrapolation of the arbiter flavor to untested gaps (`$A10020-$A10FFF`, `$A11000`, `$A130xx` reads,
 `$A14000` — still full-latch retention, applied only where evidenced). Plus the K4-3 ledgered
 follow-ups (68k-side bank-latch path, true 15-bit window masking, 68k-side `$A07F00+` VDP routing).
+
+### Row-11 status-low-byte addendum (2026-08-02) — adjudicated SEMANTICS, fixed, memtest 13/13
+
+The residual after K4-5 was the status LOW byte: hardware `4E88` (bit 3 VBlank SET, bit 4 ODD CLEAR)
+vs our `4E90` (bit 3 clear, bit 4 set). Both halves turned out to be **behavioral bugs with direct
+reference corroboration — NOT read-instant timing**, so the deferrable-timing escape hatch was not
+taken:
+
+- **ODD (bit 4) outside interlace.** We toggled the odd-frame flag unconditionally every VInt; the ROM
+  runs with reg $0C = $81 (LSM bits 2:1 = 0, interlace OFF), and hardware reads bit 4 = 0. The
+  reference implements this at the toggle point, not the read: `oddFlagSet = interlaceIsEnabled &
+  !oddFlagSet` (Oracle `Devices/315-5313/S315-5313_Timing.cpp:1103` in `AdvanceHVCounters`, repeated at
+  :1181 in `AdvanceHVCountersOneStep`; interlace-enable = reg $0C bit 1, `_interlaceEnabledCached =
+  data.GetBit(1)`, `S315-5313_Ports.cpp:1883`). Fix in `Vdp::raise_vint` — the stored flag is forced 0
+  while interlace is off. No corpus ROM enables interlace on its scored path, and the renderer never
+  consumes the flag (it only feeds status bit 4), so no other row could move — and none did.
+- **VBlank (bit 3) at the read instant.** Measured with a throwaway `on_event_at` instrument: memtest's
+  three row-11 reads land at mclk 9,949,478 / 9,949,646 / 9,949,814 = frame 11, **line 27** — mid
+  active scan, nowhere near the vblank window, with **reg 1 = $04 (display DISABLED)**; the ROM only
+  enables the display (reg 1 $04→$44) at mclk 11,198,824, *after* the sweep. Hardware still reads
+  VBlank SET because **the VBlank status bit is forced set while the display is disabled** — Oracle:
+  `vblankFlag |= !_displayEnabledCached` with the comment "although not mentioned in the official
+  documentation, hardware tests have confirmed that the VBlank flag is always forced to set when the
+  display is disabled" (`Devices/315-5313/S315-5313_General.cpp:2345-2351`). So the delta was a missing
+  status-semantics rule, not a whole-boot phase difference: at line 27 the read instant is ~170 lines
+  from either vblank boundary, far beyond any plausible per-instruction timing skew. Fix in
+  `Vdp::status_word` (bit 3 only — `vblank()` itself stays a pure timing function; the renderer and
+  goldens are untouched).
+
+With both: low byte `$90`→`$88`, row green, **memtest 13/13**. Scorecard otherwise byte-identical
+(io_sample, VDPFIFOTesting and every VISUAL-BASELINE hash unchanged); all four currency suites green.
+One boundary note stays open (not exercised by any pinned test): our vblank window covers lines
+224..=261 while Oracle's `vblankClearedPoint = 0x1FF` clears the flag on line 261 (V28 NTSC,
+`V28NtscNoIntScanSettingsStatic`, `S315-5313_Timing.cpp:250`) — memtest cannot discriminate (its only
+line-261 read happens with the display disabled, where the forced-set rule dominates).
 
 ## Limitations of the instrument itself
 

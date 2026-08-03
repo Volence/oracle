@@ -4,6 +4,9 @@ Status: **IMPLEMENTED K4-0..K4-5 (2026-08-02).** memtest 4/13 → **12/13**; eve
 model owns is hardware-exact. Row 11's residual is the status LOW byte (pre-existing: ODD-flag
 reported outside interlace + read-instant VBlank phase) — outside this design's rule, ledgered in
 `docs/2026-07-25-testrom-conformance.md` (K4 section) with the §6 open questions that remain open.
+*(Follow-up, same day: that residual was adjudicated as two reference-corroborated semantics bugs and
+fixed — ODD forced 0 outside interlace + VBlank forced set while the display is disabled — memtest
+**13/13**; see the row-11 addendum in the conformance doc's K4 ledger.)*
 Instrument + per-ROM hit table: `docs/2026-08-02-k4-0-hit-table.md`, `examples/k4_openbus_probe.rs`.
 Origin: read-only recon pass over oracle-next + the Oracle C++ reference, adjudicated against the
 memtest_68k ROM's inline real-hardware reference column (our pinned ground truth for this work).
