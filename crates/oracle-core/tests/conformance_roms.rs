@@ -155,9 +155,13 @@ const BASELINE: &[(&str, &str)] = &[
         // that prediction mis-identified `testrom::build_pad_poll` (which does DMA-fill VRAM, and is used
         // only by the io/watchpoint tests) as the golden fixture. The golden fixture is `testrom::build`,
         // which never touches the VDP. Verified: every currency gate is byte-identical across this slice.
-        // Page 1's residual is T6 "8-bit VRAM Read target 01100" (slice A4); page 2's are T12/T16.
+        // A4 (2026-08-03): the undocumented 8-bit VRAM read (CD = %001100) returns `vram[address ^ 1]` in
+        // the low byte and the next-available FIFO entry's high byte in the high byte. Page 1 went 8/1 →
+        // **9/0** — T6 "8-bit VRAM Read target 01100" flipped to pass, completing page 1. Cumulative
+        // 13/3 → 14/2; page 2's two residuals are T12 and T16, both parked on owner rulings / a named
+        // follow-up (see docs/2026-07-25-testrom-conformance.md).
         "vdp_port_access",
-        "page1 pass/fail/total=8/1/9; pages1+2 cumulative=13/3/16",
+        "page1 pass/fail/total=9/0/9; pages1+2 cumulative=14/2/16",
     ),
     (
         "vdp_sprite_masking",

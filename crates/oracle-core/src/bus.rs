@@ -2102,6 +2102,102 @@ mod tests {
         );
     }
 
+    #[test]
+    fn vdpfifo_t6_eight_bit_vram_read_target() {
+        // VDPFIFOTesting test 6 "8-bit VRAM Read target 01100" (`vendor/TestRoms/vdp_port_access.bin`;
+        // name string at ROM $DEB0, expected-value table at ROM $DED4 — both loaded by the ROM's own
+        // literal `lea`s at $DF04 / $DF18, which is the ground truth for the offsets). This replays the
+        // ROM's exact port traffic (disassembled $DF28..$E0F0) and asserts its 16-word hardware answer.
+        //
+        // The undocumented code CD = %001100 is an 8-bit VRAM read. Every one of the sixteen words pins
+        // the same three clauses:
+        //   * LOW byte  = `vram[address ^ 1]` — the same byte-lane swap A3b pinned for the fill engine.
+        //     Group 5 is the decisive one: autoinc 1 at $8000 reads $22,$11,$44,$33, i.e. bytes
+        //     $8001,$8000,$8003,$8002 — a plain `vram[address]` would read $11,$22,$33,$44.
+        //   * HIGH byte = the high byte of the next-available FIFO entry (the word written four writes
+        //     ago) — the same stale-contents snoop the CRAM/VSRAM undefined bits already read. Groups
+        //     1-4 hold the address family fixed while a single ring-advancing CRAM write of $FFFF walks
+        //     the snoop $99AA → $BBCC → $DDEE → $1234, and the high byte tracks it exactly.
+        //   * the address auto-increments normally, and a read does NOT advance the snoop cursor (both
+        //     reads of every 2-read group return the same high byte).
+        //
+        // Citations: Nemesis, *VDP Internals* (SpritesMind) — undefined result bits "are actually
+        // initialized to the content on the next available FIFO entry (the one containing the data
+        // written to control port four writes ago)"; Eke, *Is DMA Fill buggy?* (SpritesMind) — "VRAM
+        // byte writes … actually occur to VRAM address ^ 1".
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE; // vblank line: blanked (fast) slot rate
+        let mut sink = Vec::new();
+        let mut observed = Vec::new();
+        {
+            let mut bus = mem.bus(&mut sink);
+            let ctrl = |bus: &mut MegaDriveBus<'_, Vec<BusEvent>>, w: u16| {
+                bus.write16(0xC0_0004, 5, w);
+            };
+            let data = |bus: &mut MegaDriveBus<'_, Vec<BusEvent>>, w: u16| {
+                bus.write16(0xC0_0000, 5, w);
+            };
+
+            // The ROM reaches test 6 with autoinc 2 latched by the previous test (every test leaves
+            // reg 15 = 2 on exit — test 6's own last act, ROM $E0E8, is `move.w #$8F02`).
+            ctrl(&mut bus, 0x8F02);
+
+            // ROM $DF28: VRAM write @ $8000, then eight marker words fill $8000..$800F and leave the
+            // last four ($99AA $BBCC $DDEE $1234) in the physical FIFO ring, cursor parked on $99AA.
+            ctrl(&mut bus, 0x4000);
+            ctrl(&mut bus, 0x0002);
+            for w in [
+                0x1122u16, 0x3344, 0x5566, 0x7788, 0x99AA, 0xBBCC, 0xDDEE, 0x1234,
+            ] {
+                data(&mut bus, w);
+            }
+
+            // ROM $DF72..$E04E: four groups of two 8-bit VRAM reads (CD = %001100, second control word
+            // $0032), at $8000/$8004/$8008/$800C, each group followed by one ring-advancing CRAM write
+            // of $FFFF @ $0020 (control $C020 / $0002).
+            for lo in [0x0000u16, 0x0004, 0x0008, 0x000C] {
+                ctrl(&mut bus, lo);
+                ctrl(&mut bus, 0x0032);
+                observed.push(bus.read16(0xC0_0000, 5).0);
+                observed.push(bus.read16(0xC0_0000, 5).0);
+                ctrl(&mut bus, 0xC020);
+                ctrl(&mut bus, if lo == 0x000C { 0x0000 } else { 0x0002 });
+                data(&mut bus, 0xFFFF);
+            }
+
+            // ROM $E062: reg 15 = 1 (autoinc 1). Then four reads @ $8000, a ring-advancing CRAM write,
+            // and four more @ $8001 — the odd start address that proves the `^ 1` lane swap.
+            ctrl(&mut bus, 0x8F01);
+            for lo in [0x0000u16, 0x0001] {
+                ctrl(&mut bus, lo);
+                ctrl(&mut bus, 0x0032);
+                for _ in 0..4 {
+                    observed.push(bus.read16(0xC0_0000, 5).0);
+                }
+                if lo == 0x0000 {
+                    ctrl(&mut bus, 0xC020);
+                    ctrl(&mut bus, 0x0000);
+                    data(&mut bus, 0xFFFF);
+                }
+            }
+        }
+
+        assert_eq!(
+            observed,
+            vec![
+                // snoop $99AA / $BBCC; VRAM bytes $8001 $8003 $8005 $8007
+                0x9922u16, 0x9944, 0xBB66, 0xBB88,
+                // snoop $DDEE / $1234; VRAM bytes $8009 $800B $800D $800F
+                0xDDAA, 0xDDCC, 0x12EE, 0x1234,
+                // autoinc 1 @ $8000: VRAM bytes $8001 $8000 $8003 $8002
+                0xFF22, 0xFF11, 0xFF44, 0xFF33,
+                // autoinc 1 @ $8001: VRAM bytes $8000 $8003 $8002 $8005
+                0xFF11, 0xFF44, 0xFF33, 0xFF66,
+            ],
+            "VDPFIFOTesting test 6's expected table (ROM $DED4)"
+        );
+    }
+
     /// Program + trigger a VRAM fill of `len` bytes of `fill`'s top byte at VRAM `dest` (autoinc 1).
     fn run_vram_fill(
         bus: &mut MegaDriveBus<'_, Vec<BusEvent>>,
