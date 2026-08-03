@@ -137,8 +137,20 @@ const BASELINE: &[(&str, &str)] = &[
     ),
     ("vcounter", "VISUAL-BASELINE frame_hash=0x294957c8001b9f93"),
     (
+        // A1 (2026-08-03): live FIFO EMPTY/FULL status flags. The Results counts were UNCHANGED, but
+        // T16 "FIFO Wait States" went 26/80 → 62/80 verdict bytes green (every group's first-probe
+        // word now matches). The rest of T16 needs DMA-through-FIFO (slice A3) + discrete per-line
+        // access-slot scheduling — see docs/2026-07-25-testrom-conformance.md.
+        // A2 (2026-08-03): control-port / code-register edges. Page 2 went 9/7 → 11/5 — T13 "Register
+        // Writes and Code Reg" and T10 "Partial CP Writes" flipped to pass. Page 1 is untouched (its
+        // three failures, T3/T4/T6, are other slices). T12 "Register Write Mode4 Mask" is a named
+        // residual: the fix is known but moves frozen currency (see the note in `Vdp::write_register`).
+        // A3a (2026-08-03): 68k→VDP DMA payload words now occupy physical FIFO slots. Page 1 went
+        // 6/3 → 7/2 — T3 "DMA Transfer using FIFO" flipped to pass (its 16 observations are pure
+        // undefined-bit FIFO snoop reads). T4 "DMA Fill FIFO Usage" still fails at exactly words 8 and
+        // 13; its fix (A3b) moves `export_state_v1::GOLDEN_HASH` and is PARKED for an owner ruling.
         "vdp_port_access",
-        "page1 pass/fail/total=6/3/9; pages1+2 cumulative=9/7/16",
+        "page1 pass/fail/total=7/2/9; pages1+2 cumulative=12/4/16",
     ),
     (
         "vdp_sprite_masking",

@@ -371,12 +371,18 @@ impl Vdp {
 
     /// The VDP status word ($C00004 read), with the timing bits live (recon R2). Bit layout (official Sega
     /// manual): b0 PAL, b1 DMA-busy, b2 HBlank, b3 VBlank, b4 odd-frame, b5 sprite-collision, b6
-    /// sprite-overflow, b7 VINT(F), b8 FIFO-full, b9 FIFO-empty. This slice fills the FIFO-empty placeholder
-    /// (the FIFO drains immediately this push) + the vblank/hblank timing bits; the interrupt / sprite /
-    /// odd-frame bits land with their state in later slices. Not yet wired to the control port — that is the
-    /// ports slice (which also clears the pending toggle on a status read).
+    /// sprite-overflow, b7 VINT(F), b8 FIFO-full, b9 FIFO-empty. The FIFO bits are LIVE from `fifo_len`
+    /// (A1, VDPFIFOTesting T16): EMPTY = no pending entries, FULL = all 4 slots pending. This function is
+    /// a pure snapshot — the mutable status-read path ([`Vdp::control_read_status`]) drains the FIFO to
+    /// `mclk` first, so a poll observes the time-based drain and nothing else.
     pub fn status_word(&self, mclk: u64) -> u16 {
-        let mut s = 1u16 << 9; // FIFO empty (placeholder: immediate drain this push)
+        let mut s = 0u16;
+        if self.fifo_len == 0 {
+            s |= 1 << 9; // FIFO empty (live: no pending entries)
+        }
+        if self.fifo_len == 4 {
+            s |= 1 << 8; // FIFO full (live: all 4 slots pending — the /DTACK-stall condition)
+        }
         if mclk < self.dma_busy_until {
             s |= 1 << 1; // DMA busy (recon R4 / Eke): set across a fill/copy's coarse transfer window
         }
@@ -436,17 +442,25 @@ impl Vdp {
         }
     }
 
-    /// Enqueue a data-port write into the FIFO ring (recon R3): capture the data word plus the live
-    /// code/address registers. The physical slot is overwritten in place (retaining nothing of the old entry
-    /// beyond the ring position), and `fifo_len` counts pending entries (saturating at 4 until the drain clock
-    /// advances it in the wait-channel slice).
-    fn fifo_enqueue(&mut self, data: u16) {
+    /// Store `data` (plus the live code/address registers) into the next physical FIFO ring slot and advance
+    /// the write cursor. The physical slot is overwritten in place (retaining nothing of the old entry beyond
+    /// the ring position). The *pending count* is deliberately untouched: this is the bare slot write, which a
+    /// DMA payload word performs (A3a / P1) without occupying a pending-drain slot in our synchronous DMA
+    /// model — see [`Vdp::dma_write_word`].
+    fn fifo_store(&mut self, data: u16) {
         self.fifo[self.fifo_write as usize] = FifoEntry {
             data,
             code: self.code,
             addr: self.addr,
         };
         self.fifo_write = (self.fifo_write + 1) & 3;
+    }
+
+    /// Enqueue a data-port write into the FIFO ring (recon R3): store into the ring AND count it as pending.
+    /// `fifo_len` counts pending entries (saturating at 4 until the drain clock advances it in the
+    /// wait-channel slice).
+    fn fifo_enqueue(&mut self, data: u16) {
+        self.fifo_store(data);
         self.fifo_len = (self.fifo_len + 1).min(4);
     }
 
@@ -596,6 +610,15 @@ impl Vdp {
         if reg >= REG_COUNT {
             return; // n >= 24 ignored
         }
+        // NOT MODELLED (slice A2 residual, VDPFIFOTesting test 12 "Register Write Mode4 Mask", ROM $20EC):
+        // in Mode 4 (reg 1 bit 2 = M5 clear — the SMS mode) only the eleven SMS registers 0-10 are
+        // writable; the ROM sets reg 15 = 4 inside a mode-4 window and the autoincrement is still 2 when
+        // mode 5 returns. Kabuto's hardware notes: "All registers except for the 10(?) SMS registers are
+        // disabled." Implementing `if regs[1] & 0x04 == 0 && reg > 10 { return }` here is a one-line fix
+        // and it does make test 12 pass — but almost every fixture in this repo (including
+        // `testrom.rs`'s golden ROM, whose reg 1 = $50 leaves M5 CLEAR) programs registers 11+ without
+        // ever setting M5, so it moves `export_state_v1::GOLDEN_HASH` and the `golden_frames` scenes.
+        // Blocked on an owner ruling about that currency movement; see docs/2026-07-25-testrom-conformance.md.
         let m3_before = reg == 0 && self.regs[0] & 0x02 != 0;
         self.regs[reg] = val;
         if reg == 0 && val & 0x02 != 0 && !m3_before {
@@ -608,6 +631,15 @@ impl Vdp {
     /// CD1-CD0 + A13-A0 immediately, arm the toggle); or a second command word (CD5-CD2 + A15-A14, disarm).
     pub fn control_write(&mut self, w: u16, mclk: u64) {
         if !self.pending {
+            // A first control word ALWAYS latches CD1-CD0 from bits 15-14 — including the `$8xxx` register
+            // form, whose bits 15-14 are `10`. CD3-CD0 = `xx10` names no target in the code table, so after
+            // a register write the data port is dead until the next command word: genvdp.txt 1.5f, "Writing
+            // to a VDP register will clear the code register. Games that rely on this are Golden Axe II …
+            // and Sonic 3D." CD5-CD2 are *retained*, so this is not a full clear — VDPFIFOTesting test 13
+            // (ROM $22FA words 8-11) writes a register, then a first-half-only word, and the writes still
+            // land on the previously latched VSRAM target. A13-A0 is left alone on the register form: the
+            // ROM never observes it, and MacDonald records the address side as unknown.
+            self.code = (self.code & 0x3C) | ((w >> 14) & 0x03) as u8;
             if (w >> 14) & 0x03 == 0b10 {
                 // Register write: reg = bits 12..8, value = bits 7..0. Does not arm the toggle.
                 self.write_register(((w >> 8) & 0x1F) as usize, (w & 0xFF) as u8, mclk);
@@ -615,7 +647,6 @@ impl Vdp {
             }
             // First command word: apply the low half (CD1-CD0 + A13-A0) to the live registers immediately.
             self.addr = (self.addr & 0xC000) | (w & 0x3FFF);
-            self.code = (self.code & 0x3C) | ((w >> 14) & 0x03) as u8;
             self.pending = true;
         } else {
             // Second command word: apply the high half (CD5-CD2 + A15-A14), disarm.
@@ -724,11 +755,28 @@ impl Vdp {
         }
     }
 
-    /// Feed one DMA word to the current data-port target (68k→VDP transfer, recon R4(a)): route to
-    /// VRAM/CRAM/VSRAM through `write_target` (so the R5 SAT write-through fires for VRAM — "any DMA that
-    /// writes VRAM counts") and autoinc. The bus reads the source word from 68k memory and calls this.
+    /// Feed one DMA word to the current data-port target (68k→VDP transfer, recon R4(a)): store it into the
+    /// physical FIFO ring, route it to VRAM/CRAM/VSRAM through `write_target` (so the R5 SAT write-through
+    /// fires for VRAM — "any DMA that writes VRAM counts") and autoinc. The bus reads the source word from
+    /// 68k memory and calls this.
+    ///
+    /// **A3a / P1** — the ring store: a DMA payload word occupies a real FIFO slot, exactly like a CPU
+    /// data-port write. Nemesis, *VDP Internals* (SpritesMind): a DMA "will read a value from external memory
+    /// using the DMA source address register and **add it to the FIFO** using the current command code and
+    /// incremented command address registers". Corroborated by Kabuto's hardware notes: "When writing a value
+    /// to the VDP's data port (or the VDP does that internally through DMA) both value and current address are
+    /// appended to its internal FIFO." Observable through the CRAM/VSRAM undefined-bit snoop — VDPFIFOTesting
+    /// test 3 (expected table ROM `$5E0C`) reads it back and is the acceptance test.
+    ///
+    /// `fifo_store`, not `fifo_enqueue`: the pending count stays put. Our Mem DMA runs synchronously inside
+    /// one bus access and bills its elapsed time through `dma_cost` + the returned halt wait, so counting the
+    /// payload as pending would leave phantom entries no clock has advanced past — a spurious /DTACK stall on
+    /// the next data-port write in every DMA-using ROM, for no test benefit (neither test 3 nor test 4 can
+    /// tell the difference). Open question Q1 in `docs/2026-08-03-a3-dma-fifo-design.md`; revisit here, not in
+    /// the status word, if slice A1/T16 ever needs post-DMA occupancy.
     pub fn dma_write_word(&mut self, w: u16) {
         self.in_dma = true; // watchpoints v2: this word's captures attribute to the triggering DMA
+        self.fifo_store(w);
         self.write_target(w);
         self.in_dma = false;
         self.autoinc();
@@ -769,6 +817,9 @@ impl Vdp {
     /// (behavior-identical to pre-K4-5 for them).
     pub fn control_read_status(&mut self, open_bus: u16, mclk: u64) -> u16 {
         self.pending = false;
+        // Advance the time-based FIFO drain to `mclk` first so the live EMPTY/FULL bits (A1, T16) reflect
+        // the FIFO's occupancy *now* — a status read never pops entries beyond this normal drain.
+        self.fifo_drain(mclk);
         let s = self.status_word(mclk);
         self.sprite_overflow = false;
         self.sprite_collision = false;
@@ -800,7 +851,15 @@ impl Vdp {
             return;
         }
         self.fifo_enqueue(w);
-        self.write_target(w);
+        // Only CD3-CD0 = 0001 / 0011 / 0101 (VRAM / CRAM / VSRAM write) name a write target; every other
+        // code is undefined and "the write … is ignored" (genvdp.txt 1.5f code table — the same sentence
+        // that forbids writing after a read command). The port still *accepts* the word — it takes its FIFO
+        // slot and the address still steps — but nothing reaches memory. VDPFIFOTesting test 10 (ROM $FCAA
+        // word 7) pins the case CD0 alone cannot catch: a first-half-only word over a CRAM *read* command
+        // leaves code `001001`, which looks like a write but has no target.
+        if matches!(self.code & 0x0F, 0x1 | 0x3 | 0x5) {
+            self.write_target(w);
+        }
         self.autoinc();
     }
 
@@ -1184,6 +1243,121 @@ mod tests {
 
     fn fresh() -> Vdp {
         Vdp::power_on(&mut SplitMix64::new(1))
+    }
+
+    // --- Control-port / code-register edges (slice A2; VDPFIFOTesting tests 10, 12, 13) -------------------
+
+    /// Replay a control-port word stream (`ctrl`) / data-port word (`data`) at mclk 0, the way the ROM does.
+    fn ctrl(v: &mut Vdp, words: &[u16]) {
+        for &w in words {
+            v.control_write(w, 0);
+        }
+    }
+
+    /// VDPFIFOTesting test 13 "Register Writes and Code Reg" (ROM `$22D6`, expected table `$22FA`), the
+    /// second observation group at ROM `$23B4`: a `$8xxx` register write between a VRAM-write command and
+    /// the data writes makes those writes vanish — VRAM keeps the `$FFFF`s. This is Charles MacDonald's
+    /// "Writing to a VDP register will clear the code register. Games that rely on this are Golden Axe II
+    /// … and Sonic 3D" (genvdp.txt 1.5f).
+    #[test]
+    fn a_register_write_drops_the_following_data_port_writes() {
+        let mut v = fresh();
+        ctrl(&mut v, &[0x4000, 0x0002]); // VRAM write @ $8000
+        v.regs[0x0F] = 2; // autoinc 2 (the ROM inherits it)
+        for _ in 0..4 {
+            v.data_write(0xFFFF);
+        }
+        ctrl(&mut v, &[0x4000, 0x0002]); // VRAM write @ $8000 again
+        ctrl(&mut v, &[0x8F02]); // reg 15 = 2 — a REGISTER write
+        v.data_write(0x0123);
+        v.data_write(0x4567);
+        ctrl(&mut v, &[0x0000, 0x0002]); // VRAM read @ $8000
+        assert_eq!(
+            [v.data_read(0), v.data_read(0)],
+            [0xFFFF, 0xFFFF],
+            "ROM $22FA words 2-3: the writes after a register write never reach VRAM"
+        );
+    }
+
+    /// Same test 13, the fifth/sixth groups (ROM `$24EC`): CD5-CD2 SURVIVE the register write. A following
+    /// first-half-only control word re-supplies CD1-CD0 only, and the writes land on the *retained* VSRAM
+    /// write target — not VRAM. This is what forbids modelling "clear the code register" as a full clear.
+    #[test]
+    fn a_register_write_retains_cd5_cd2() {
+        let mut v = fresh();
+        v.regs[0x0F] = 2;
+        ctrl(&mut v, &[0x4000, 0x0002]); // VRAM write @ $8000
+        for _ in 0..4 {
+            v.data_write(0xFFFF);
+        }
+        ctrl(&mut v, &[0x4000, 0x0012]); // VSRAM write @ $8000 (CD5-CD2 = 0001)
+        ctrl(&mut v, &[0x8F02]); // register write
+        ctrl(&mut v, &[0x4000]); // first half only: CD1-CD0 = 01
+        v.data_write(0x0123);
+        v.data_write(0x4567);
+        ctrl(&mut v, &[0x0000, 0x0002]); // VRAM read @ $8000
+        assert_eq!(
+            [v.data_read(0), v.data_read(0)],
+            [0xFFFF, 0xFFFF],
+            "ROM $22FA words 8-9: VRAM is untouched — the retained target was VSRAM"
+        );
+        ctrl(&mut v, &[0x0000, 0x0012]); // VSRAM read @ $8000
+        let b = ((0x8000u16 & 0xFFFE) as usize) % VSRAM_SIZE;
+        assert_eq!(
+            [
+                u16::from_be_bytes([v.vsram[b], v.vsram[b + 1]]),
+                u16::from_be_bytes([v.vsram[b + 2], v.vsram[b + 3]])
+            ],
+            [0x0123, 0x0567],
+            "ROM $22FA words 10-11 ($F923/$FD67 before the snoop merge): the writes went to VSRAM"
+        );
+    }
+
+    /// VDPFIFOTesting test 10 "Partial CP Writes" (ROM `$FC86`, expected table `$FCAA`), the eighth
+    /// observation (ROM `$FFEA`): a first-half-only control word over a CRAM-*read* command leaves
+    /// CD3-CD0 = `1001`, which is not in genvdp.txt's code table — so the data-port write is ignored even
+    /// though CD0 (write) is set.
+    #[test]
+    fn a_data_write_with_an_undefined_code_is_ignored() {
+        let mut v = fresh();
+        v.regs[0x0F] = 2;
+        ctrl(&mut v, &[0x4000, 0x0002]); // VRAM write @ $8000
+        v.data_write(0xFFFF);
+        ctrl(&mut v, &[0x0000, 0x0022]); // CRAM read @ $8000 → code 0b001000
+        ctrl(&mut v, &[0x4000]); // first half only → code 0b001001 (undefined)
+        v.data_write(0x0246);
+        ctrl(&mut v, &[0x0000, 0x0002]); // VRAM read @ $8000
+        assert_eq!(
+            v.data_read(0),
+            0xFFFF,
+            "ROM $FCAA word 7: the undefined-code write is discarded"
+        );
+    }
+
+    /// VDPFIFOTesting test 12 "Register Write Mode4 Mask" (ROM `$20C8`, expected table `$20EC`, sequence at
+    /// ROM `$2244`): with M5 clear (reg 1 bit 2 — Mode 4, the SMS mode) a write to register 15 is ignored,
+    /// so the autoincrement stays at its Mode-5 value. Kabuto's hardware notes: "All registers except for
+    /// the 10(?) SMS registers are disabled".
+    ///
+    /// **RESIDUAL — deliberately `#[ignore]`d, not deleted.** The fix is one line in `write_register`
+    /// (see the NOT MODELLED note there), but nearly every fixture in this repo — `testrom.rs`'s golden
+    /// ROM included, its reg 1 = `$50` leaving M5 clear — programs registers 11+ while still in Mode 4, so
+    /// landing it moves `export_state_v1::GOLDEN_HASH` and the `golden_frames` scenes. This test is the
+    /// pinned spec, held until that currency movement is ruled on.
+    #[test]
+    #[ignore = "A2 residual: needs an owner ruling on the GOLDEN_HASH / golden_frames movement"]
+    fn mode4_ignores_register_writes_above_ten() {
+        let mut v = fresh();
+        ctrl(&mut v, &[0x8F02]); // reg 15 = 2 while in mode 5 (reg 1 = 0 … set M5 first)
+        ctrl(&mut v, &[0x8144]); // reg 1 = $44 → M5 set
+        ctrl(&mut v, &[0x8F02]); // reg 15 = 2
+        ctrl(&mut v, &[0x8140]); // reg 1 = $40 → M5 CLEAR = mode 4
+        ctrl(&mut v, &[0x8F04]); // reg 15 = 4 — must be IGNORED
+        assert_eq!(v.regs[0x0F], 2, "reg 15 > 10 is not writable in mode 4");
+        ctrl(&mut v, &[0x8144]); // reg 1 = $44 → back to mode 5
+        assert_eq!(v.regs[1], 0x44, "reg 1 <= 10 IS writable in mode 4");
+        ctrl(&mut v, &[0x8F04]);
+        assert_eq!(v.regs[0x0F], 4, "and reg 15 is writable again in mode 5");
     }
 
     /// The first mclk-in-line dot whose readable H counter equals `target` (each value occurs across a line).
@@ -2016,6 +2190,75 @@ mod tests {
     }
 
     #[test]
+    fn status_fifo_flags_clear_with_one_pending_entry() {
+        // A1 (VDPFIFOTesting T16): one pending entry during active display → neither EMPTY (bit 9) nor
+        // FULL (bit 8). Active H32 = 16 slots/line, a VRAM word costs 2 slots ≈ 427 mclk — at +10 mclk
+        // nothing has drained yet.
+        let mut v = fresh();
+        v.control_write(0x8140, 0); // display on → active-line (slow) drain rate
+        vram_write_cmd(&mut v, 0x0100);
+        let t0 = 500; // line 0, active display
+        v.data_write_at(0xBEEF, t0);
+        let s = v.control_read_status(0, t0 + 10);
+        assert_eq!(s & (1 << 9), 0, "EMPTY clear with a pending entry");
+        assert_eq!(s & (1 << 8), 0, "FULL clear with only one pending entry");
+    }
+
+    #[test]
+    fn status_fifo_full_with_four_pending_entries() {
+        let mut v = fresh();
+        v.control_write(0x8140, 0);
+        vram_write_cmd(&mut v, 0x0100);
+        let t0 = 500;
+        for w in [0x1111u16, 0x2222, 0x3333, 0x4444] {
+            v.data_write_at(w, t0);
+        }
+        let s = v.control_read_status(0, t0 + 10);
+        assert_ne!(s & (1 << 8), 0, "FULL set with all 4 slots pending");
+        assert_eq!(s & (1 << 9), 0, "EMPTY clear while full");
+    }
+
+    #[test]
+    fn status_read_drains_the_fifo_to_now_and_reports_empty() {
+        // After all four entries' slot costs elapse (4 × 427 ≈ 1708 mclk), a status read drains to `now`
+        // and reports EMPTY again.
+        let mut v = fresh();
+        v.control_write(0x8140, 0);
+        vram_write_cmd(&mut v, 0x0100);
+        let t0 = 500;
+        for w in [0x1111u16, 0x2222, 0x3333, 0x4444] {
+            v.data_write_at(w, t0);
+        }
+        let s = v.control_read_status(0, t0 + 2000);
+        assert_ne!(s & (1 << 9), 0, "EMPTY set once every entry has drained");
+        assert_eq!(s & (1 << 8), 0, "FULL clear again");
+        assert_eq!(v.fifo_len(), 0, "the drain really popped all four entries");
+    }
+
+    #[test]
+    fn repeated_status_reads_do_not_consume_fifo_entries() {
+        // A status read must NOT pop entries beyond the normal time-based drain: five reads at the same
+        // instant leave the FIFO exactly as one read would.
+        let mut v = fresh();
+        v.control_write(0x8140, 0);
+        vram_write_cmd(&mut v, 0x0100);
+        let t0 = 500;
+        for w in [0x1111u16, 0x2222, 0x3333, 0x4444] {
+            v.data_write_at(w, t0);
+        }
+        for _ in 0..5 {
+            let s = v.control_read_status(0, t0 + 10);
+            assert_ne!(s & (1 << 8), 0, "still FULL: nothing has drained at +10");
+        }
+        assert_eq!(v.fifo_len(), 4, "status reads never pop entries themselves");
+        // After one slot cost (427 mclk) exactly one entry has drained, no matter how many reads probe it.
+        for _ in 0..5 {
+            v.control_read_status(0, t0 + 500);
+        }
+        assert_eq!(v.fifo_len(), 3, "only the time-based drain moved the FIFO");
+    }
+
+    #[test]
     fn vram_read_is_fully_defined_no_snoop() {
         let mut v = fresh();
         // FIFO garbage in the snoop slot.
@@ -2053,6 +2296,56 @@ mod tests {
             copy_window,
             2 * fill_window,
             "copy window = 2× the fill window for the same byte count"
+        );
+    }
+
+    #[test]
+    fn mem_dma_words_occupy_the_physical_fifo_ring() {
+        // P1 (slice A3a): every word a 68k→VDP DMA moves is stored into the same physical 4-slot write FIFO
+        // a CPU data-port write uses. Nemesis, VDP Internals: a DMA "will read a value from external memory
+        // using the DMA source address register and *add it to the FIFO* using the current command code and
+        // incremented command address registers". Observable through the CRAM/VSRAM undefined-bit snoop —
+        // this is the whole of VDPFIFOTesting test 3 (ROM $5E0C; replayed end-to-end in `bus.rs`).
+        let mut v = fresh();
+        command(&mut v, 0x01, 0x8000); // VRAM write @ $8000
+        for w in [0x1000u16, 0x2000, 0x3000, 0x4000, 0x5000, 0x6000] {
+            v.data_write(w); // six marker words fill (and wrap) the ring
+        }
+        for w in [0xAAAAu16, 0xBBBB, 0xCCCC, 0xDDDD, 0xEEEE, 0xFFFF] {
+            v.dma_write_word(w);
+        }
+        assert_eq!(
+            v.fifo_snoop_word(),
+            0xCCCC,
+            "the DMA displaced every marker: the ring holds the last four payload words with the write \
+             cursor parked on the oldest of them"
+        );
+        // Each subsequent data-port write walks the cursor one slot through the surviving payload.
+        command(&mut v, 0x03, 0x0020); // CRAM write
+        for expect in [0xDDDDu16, 0xEEEE, 0xFFFF] {
+            v.data_write(0xFFFF);
+            assert_eq!(v.fifo_snoop_word(), expect, "cursor walked one slot");
+        }
+    }
+
+    #[test]
+    fn mem_dma_ring_store_does_not_add_pending_entries() {
+        // Deliberate (design §3.3): a DMA payload word takes a physical ring slot but does NOT bump the
+        // pending count. Our Mem DMA runs synchronously inside one bus access and bills its elapsed time
+        // through `dma_cost` + the returned halt wait, so counting the words as pending would leave four
+        // phantom entries no clock has advanced past — a spurious /DTACK stall on the next data-port write
+        // in every DMA-using ROM, bought for no test-3 benefit. Neither test 3 nor test 4 can tell the
+        // difference. Recorded as open question Q1 (interacts with slice A1/T16).
+        let mut v = fresh();
+        command(&mut v, 0x01, 0x8000);
+        let before = v.fifo_len();
+        for w in [0xAAAAu16, 0xBBBB, 0xCCCC, 0xDDDD, 0xEEEE, 0xFFFF] {
+            v.dma_write_word(w);
+        }
+        assert_eq!(
+            v.fifo_len(),
+            before,
+            "a DMA ring store leaves the pending count untouched"
         );
     }
 
