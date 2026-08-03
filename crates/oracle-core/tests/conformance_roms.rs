@@ -82,10 +82,19 @@ const BASELINE: &[(&str, &str)] = &[
         "VISUAL-BASELINE frame_hash=0x917371f07409cb25 (per-scanline capture)",
     ),
     (
+        // Re-adjudicated 2026-08-03 under the per-scanline capture (ledger L1a). The HASH is unchanged —
+        // the capture is byte-identical to the end-of-frame frame (224/224 lines, one distinct colour) —
+        // only the reason moved: "border-only rendering" was wrong. The ROM leaves the screen blank and
+        // hammers palette indices 4 and 36 (never index 0, so it is not a border-colour demo) 16x per
+        // active line; what it demonstrates is the CRAM-write artefact at the beam position, which is
+        // sub-scanline and which we do not model anywhere. Follow-up F-CRAMDOT.
         "cram_flicker",
-        "NOT-RENDERABLE (border-only rendering) frame_hash=0x815bb645bc46a325",
+        "NOT-RENDERABLE (CRAM-write artefact, sub-scanline) frame_hash=0x815bb645bc46a325",
     ),
     (
+        // Re-adjudicated 2026-08-03 (ledger L1b): reason confirmed, hash and caption unchanged. The
+        // per-scanline capture is byte-identical to end-of-frame because a whole frame's 44,352 CRAM
+        // words (all DMA, all into index 0) land inside ONE inter-line window in our model.
         "direct_color_dma",
         "NOT-RENDERABLE (sub-scanline CRAM) frame_hash=0xed40dc4a6c4fc325",
     ),
@@ -499,7 +508,10 @@ fn scrape(name: &str) -> Option<String> {
         "m68k_illegal" => scrape_m68k_illegal(&mut sys),
         "vdp_port_access" => scrape_vdp_port_access(&mut sys),
         "vdp_sprite_masking" => scrape_vdp_sprite_masking(&mut sys),
-        "cram_flicker" => scrape_visual(&mut sys, "NOT-RENDERABLE (border-only rendering) "),
+        "cram_flicker" => scrape_visual(
+            &mut sys,
+            "NOT-RENDERABLE (CRAM-write artefact, sub-scanline) ",
+        ),
         "direct_color_dma" => scrape_visual(&mut sys, "NOT-RENDERABLE (sub-scanline CRAM) "),
         "color_1536" => scrape_color_1536(&mut sys),
         _ => scrape_visual(&mut sys, "VISUAL-BASELINE "),

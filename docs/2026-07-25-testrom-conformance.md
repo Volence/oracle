@@ -35,8 +35,8 @@ Harness facts, so a reader can reproduce a row by hand:
 | `vdp_port_access` (`VDPFIFOTesting`) | 16 VDP port-access tests over two pages: FIFO size/behaviour, DMA-via-FIFO, byteswapping, partial CP writes, register-write masking, read-target switching, FIFO wait states | **Yes** — scrapes the on-screen `Results: ( P/ F/ T)` line; page 1 auto-runs (settles ~frame 42), `Start` advances to page 2 (~480 more frames) | **page 1 = 6 pass / 3 fail / 9**; **pages 1+2 cumulative = 9 pass / 7 fail / 16** | Expected: the VDP timing skeleton is an interim model (`docs/2026-07-16-vdp-recon.md`; the FIFO/wait-state rows are exactly the "Phase 3 per-line DMA cost" deferral). CHARTER explicitly does not gate on this ROM. |
 | `vdp_sprite_masking` (`SpriteMaskingTestRom`) | 9 sprite masking / per-line / per-frame / dot-overflow tests | **Yes** — verdict is a 32×8 glyph at the right edge, classified by **rendered-pixel hash** (its nametable cells are identical for the tick and cross cases, so only the framebuffer discriminates). 300 frames, settles ~frame 8 | `1=TICK/TICK 2=TICK/TICK 3=TICK/CROSS 4=PASS 5=PASS 6=FAIL 7=PASS 8=PASS 9=TICK/TICK` — **2 failures**: test 3's second sub-case (MAX SPRITE DOTS – COMPLEX) and test 6 (MASK S1 ON DOT OVERFLOW) | Expected: both are the **mid-sprite pixel-budget cut** interim model, ledger row **P1** in `docs/2026-07-16-vdp-pixel-known-differences.md` (we spend budget per whole sprite; hardware cuts mid-sprite at the exact dot). Open question **Q1** below on the H32/H40 toggle. |
 | `color_1536` (`TEST1536.BIN`) | 1536-colour trick — CRAM rewritten mid-scanline | Frame hash only — **per-scanline capture** (the only row that uses it) | `frame_hash=0x917371f07409cb25` (per-scanline capture; was `0x96b9c93c4f3dd325` end-of-frame, re-pinned 2026-08-03) | **Limitation L1 — NARROWED**: the row now hashes the picture the ROM actually draws. Still a regression pin, not a verdict (the ROM prints none). |
-| `cram_flicker` (`cram flicker.bin`) | CRAM-dot / border artefacts from writing CRAM during active display | **NOT-RENDERABLE** — border-only rendering; the effect lives outside our active-area framebuffer | `frame_hash=0x815bb645bc46a325` | Structural: we render the 224-line active area, not the border where the artefact appears. |
-| `direct_color_dma` (`Direct-Color-DMA.bin`) | Direct-colour DMA — CRAM streamed per pixel during active display | **NOT-RENDERABLE** — sub-scanline CRAM | `frame_hash=0xed40dc4a6c4fc325` | Structural: same root as L1, one level finer (needs sub-scanline CRAM state, not just per-line). |
+| `cram_flicker` (`cram flicker.bin`) | The artefact from writing CRAM during active display | **NOT-RENDERABLE** — the artefact is the write itself appearing at the beam position, which we do not model | `frame_hash=0x815bb645bc46a325` (unchanged; re-adjudicated 2026-08-03) | Structural: **CRAM-write artefact, sub-scanline** — reason narrowed from "border-only rendering", which the evidence disproved (see **L1a**). Follow-up **F-CRAMDOT**. |
+| `direct_color_dma` (`Direct-Color-DMA.bin`) | Direct-colour DMA — CRAM streamed per pixel during active display | **NOT-RENDERABLE** — sub-scanline CRAM | `frame_hash=0xed40dc4a6c4fc325` (unchanged; re-adjudicated 2026-08-03) | Structural: needs a per-pixel CRAM timeline — writes carry no h-position, and the mclk is instruction-granular (see **L1b**). Follow-up **F-CRAMDOT**. |
 | `shadow_highlight` (`Shadow-Highlight Test Program #2`) | Shadow / highlight operator output | Frame hash only (visual judgment) | `frame_hash=0x428e03aa61cc0285` | Ledger row **P8** (S/H DAC calibration) governs any pixel-level divergence. |
 | `window_test` (`Window Test by Fonzie`) | Window plane placement / clipping | Frame hash only | `frame_hash=0x4efcfda475af0d12` | — |
 | `window_distortion` (`Window distortion bug.BIN`) | The hardware window-plane distortion bug (left window + fine h-scroll) | Frame hash only | `frame_hash=0x5102219d295b4e2c` | Ledger row **P5** (R9 window-bug sub-tile alignment) governs the exact reused-tile offset. |
@@ -301,11 +301,71 @@ framebuffers were dumped as PPM and inspected by eye:
   violet, then pastel peach / lavender / mint / white) each ramping through many horizontal bands, and the
   whole ramp repeated twice down the frame. This is the 1536-colour trick.
 
-**What remains.** The two NOT-RENDERABLE rows are *not* fixed by per-line capture and stay end-of-frame
-pins for now; each has its own structural blocker rather than a capture-time one — `cram_flicker`'s
-artefact is in the **border**, which we do not render at all, and `direct_color_dma` needs **sub-scanline**
-(per-pixel) CRAM, one level finer than a line. Both still need re-adjudicating *under* the new capture
-before their reasons can be restated precisely.
+**What remains.** The two NOT-RENDERABLE rows are *not* fixed by per-line capture. Both were probed under
+the capture sink on 2026-08-03 and re-adjudicated below (L1a, L1b): they share **one** root, and it is not a
+capture-time limitation at all. They stay end-of-frame pins, with their reasons narrowed.
+
+### L1a — `cram_flicker`: the CRAM-write artefact, not the border
+
+Probed under the scanline sink (120 frames, the harness's own budget and seed):
+
+* The per-scanline frame is **byte-identical** to the end-of-frame frame — same hash
+  `0x815bb645bc46a325`, **224 of 224 lines identical**, and the whole frame is **one distinct colour**
+  (verified by eye as a PPM: solid black).
+* The active display is **empty**. Plane A base is `$0000`, every pixel resolves to the backdrop, and
+  `R7 = $00` → backdrop = CRAM index 0 = `$0000`.
+* The ROM writes CRAM **16 times per active line, on every active line** (4,528 word-writes in the last
+  frame; 420,386 over 120 frames), **all CPU writes, zero DMA**, cycling `$000E` / `$00E0` / `$0E00`
+  round-robin into exactly **two entries: index 4 and index 36**.
+
+That last fact is the adjudication. The earlier reason on this row — "border-only rendering" — does not
+survive it: a border-colour demo would hammer **index 0** (the backdrop is the border), and this ROM never
+touches index 0. It writes two ordinary palette entries that **no on-screen pixel references**, on a screen
+it deliberately leaves blank. What the ROM demonstrates is therefore the **CRAM-write artefact** itself (the
+written colour appearing on the display at the beam position of the write) — a *sub-scanline* effect at the
+write's h-position, which we do not model anywhere, in the active area or the border. Per-line capture
+cannot help, and **rendering the border would not help either**: with no dot model there would still be
+nothing to draw.
+
+Row reason narrowed accordingly: *border-only rendering* → *CRAM-write artefact, sub-scanline*. Same root as
+L1b. (Pinning the exact on-hardware appearance would need a reference capture — out of scope for this
+instrument; nothing here depends on it, since the blocker is on our side either way.)
+
+### L1b — `direct_color_dma`: sub-scanline CRAM, two concrete blockers
+
+Probed the same way:
+
+* Per-scanline frame **byte-identical** to end-of-frame — hash `0xed40dc4a6c4fc325`, 224/224 lines
+  identical, **one distinct colour** (solid black by eye).
+* The ROM's CRAM traffic is **99.997% DMA** (4,923,072 of 4,923,206 writes over 120 frames) and lands
+  **entirely on CRAM index 0** — the backdrop — with the address never advancing. **44,352 words per
+  frame** = 198 × 224, i.e. ~198 colours per line for all 224 active lines. This is the direct-colour
+  technique exactly: the *picture* is the sequence of values passing through CRAM[0], one per pixel slot.
+* In our model **all 44,352 of a frame's writes land inside a single inter-line window** (they bucket into
+  one `Scanline` boundary), so there is nothing for a per-line sampler to sample.
+
+The two blockers, precisely:
+
+1. **CRAM writes carry no h-position.** `Vdp::write_target`'s CRAM arm (`crates/oracle-core/src/vdp.rs`,
+   the `Target::Cram` branch) stores the masked word and captures a `VdpWrite` — target, address, old, new,
+   size, via — and **no time**. A write leaves no record of *when* inside the line it happened.
+2. **Even a timestamp would be instruction-granular.** `System::step_cpu`
+   (`crates/oracle-core/src/system.rs`) samples `let now = self.scheduler.now()` **once**, before
+   `cpu.step`, and hands that single value to `MegaDriveBus` as `now_mclk`; every VDP access the
+   instruction makes sees it. For this ROM that is decisive: `MegaDriveBus::run_mem_dma`
+   (`crates/oracle-core/src/bus.rs`) runs the **whole** transfer loop in one pass at that one `now_mclk`,
+   so a frame's entire colour stream is emitted at a single instant of model time.
+
+Rendering this ROM therefore needs a per-pixel (not per-line) CRAM timeline, which means a timestamped CRAM
+write **and** sub-instruction clock advance through a DMA. That is a real engine change, not a harness one.
+
+### Named follow-ups (not implemented here)
+
+* **F-CRAMDOT — sub-scanline CRAM timeline.** Timestamp CRAM writes with an h-position and advance the
+  clock through a DMA body so writes distribute across the line. Unblocks **both** rows above. Touches the
+  VDP write path and the DMA loop, i.e. it is currency-relevant — needs its own design pass.
+* **F-BORDER — border / overscan rendering.** We render the 224-line active area only. Independent of
+  F-CRAMDOT and, per L1a, **not** what either remaining row needs; recorded so the gap stays visible.
 
 **L2 — frame budgets are settle-time guesses.** They were found empirically per ROM and are generous, but a
 timing change that slows a ROM past its budget shows up as a scorecard diff, not as a timeout. Read a diff on
