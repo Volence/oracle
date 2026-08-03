@@ -269,11 +269,13 @@ fn src_seq(mode: u16, reg: u8, size: Size) -> Option<SrcSeq> {
             operand: Operand::DataRegLow16(reg),
             placement: AluPlacement::AfterPrefetch,
         },
-        // An — address-register direct (word/long only; LEGAL `ADD.w`/`SUB.w An,Dn`, NOT `ADDA`; byte is
-        // illegal and never reaches here, and An is not an alterable destination). Same bus shape as Dn —
-        // no operand read, one refill, then combine — but the operand is An's low word. A7 source is fine
-        // (no memory access, no address error).
-        (1, _) => SrcSeq {
+        // An — address-register direct, WORD/LONG ONLY (LEGAL `ADD.w`/`SUB.w An,Dn`, NOT `ADDA`; An is not
+        // an alterable destination). A byte-size An source is illegal on the 68000 for EVERY instruction
+        // (`AND.b/ADD.b/CMP.b/… An,Dn` — the K1 itest class), so byte falls through to the `None` arm and
+        // the caller raises ILLEGAL (vector 4). Same bus shape as Dn — no operand read, one refill, then
+        // combine — but the operand is An's low word. A7 source is fine (no memory access, no address
+        // error).
+        (1, _) if size != Size::Byte => SrcSeq {
             ea_calc: None,
             pre_read: [None, None],
             read_addr: None,
@@ -1196,10 +1198,11 @@ fn move_emit_source(buf: &mut RecipeBuf, sm: u16, sr: u8, size: Size) -> Option<
             },
             reads: false,
         },
-        // An direct — word/long only (`MOVE.b An,<ea>` is illegal, never reaches here for byte). The operand
-        // is An's low word (`.w`) or its full 32 bits (`.l`). MOVE reading An as a SOURCE is fine (it is
-        // MOVEA only when An is the DESTINATION).
-        (1, _) => MoveSrc {
+        // An direct — WORD/LONG ONLY: `MOVE.b An,<ea>` is illegal on the 68000 (the K1 itest class — every
+        // byte-size An source is), so byte falls through to the `None` arm and the caller raises ILLEGAL
+        // (vector 4). The operand is An's low word (`.w`) or its full 32 bits (`.l`). MOVE reading An as a
+        // SOURCE is fine (it is MOVEA only when An is the DESTINATION).
+        (1, _) if size != Size::Byte => MoveSrc {
             operand: match size {
                 Size::Long => Operand::AddrReg(sr),
                 _ => Operand::AddrRegLow16(sr),
@@ -1769,6 +1772,12 @@ pub fn ea_cmpa(buf: &mut RecipeBuf, dst_reg: u8, src_mode: u16, src_reg: u8, siz
 /// PC-rel/`#imm` arms of `ea_movea_long` are never reached.
 #[must_use]
 pub fn ea_tst(buf: &mut RecipeBuf, mode: u16, reg: u8, size: Size) -> bool {
+    // TST's EA is data-alterable ONLY on the 68000: An-direct (mode 1) and the source-only PC-relative /
+    // `#imm` modes (7/2-4) are ILLEGAL at every size (`TST.w An` / `TST.x d16(PC)` became legal on the
+    // 68020 — the K1 `itest` class). Without this gate the permissive shared readers below accept them.
+    if mode == 1 || (mode == 7 && (2..=4).contains(&reg)) {
+        return false;
+    }
     // The flag-only Cmp-vs-zero ALU: the source operand is the minuend `a`, `b` is a constant zero, nothing is
     // written back (`Dest::None`). `make_alu` receives the source operand the EA builder fetched.
     let make_alu = |operand: Operand| MicroOp::Alu {

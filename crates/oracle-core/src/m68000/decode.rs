@@ -510,7 +510,10 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         let size = match (opcode >> 6) & 3 {
             0 => Size::Byte,
             1 => Size::Word,
-            _ => Size::Long, // SS = 2
+            2 => Size::Long,
+            // SS = 3 (`0x0CC0-0x0CFF`) is NOT a CMPI size — the 68020 claims it for CAS; on the 68000
+            // it is ILLEGAL (the K1 `itest` class; previously fell into the `.l` arm and executed).
+            _ => return decode_time_exception_recipe(4),
         };
         return cmpi_recipe(opcode, size);
     }
@@ -1121,6 +1124,14 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     // (the idle's `2*cnt` is the DECODE-TIME count — imm `ccc!=0?ccc:8` / live `D[ccc]&63`) or the word
     // memory shift-by-1 RMW (CLR.w/NEG.w's `ea_dst` path; an odd EA address-errors on the READ via E3/E4).
     if opcode >> 12 == 0xE {
+        // Memory-form shifts are `1110 0tt d 11 mmm rrr` — bit 11 MUST be 0. Bits 11-9 >= 4 with the
+        // size field 11 (`0xE8C0-0xEFFF`) is the 68020 bit-field space (BFTST/BFCHG/…), ILLEGAL on the
+        // 68000 (the K1 `itest` class; the type reads bits 10-9, so without this gate bit 11 was
+        // silently ignored and these decoded as memory shifts). Register-form bits 11-9 are the count
+        // field — every value is legal there.
+        if (opcode >> 6) & 3 == 3 && opcode & 0x0800 != 0 {
+            return decode_time_exception_recipe(4);
+        }
         let is_asl = if (opcode >> 6) & 3 == 3 {
             (opcode >> 8) & 1 == 1 && (opcode >> 9) & 3 == 0 // memory: dir LEFT, type AS (bits 10-9)
         } else {
@@ -1362,6 +1373,12 @@ fn arith_ea_dn(opcode: u16, op: AluOp, size: Size) -> MicroState {
     let dn = ((opcode >> 9) & 7) as u8;
     let mode = (opcode >> 3) & 7;
     let reg = (opcode & 7) as u8;
+    // AND/OR sources are data-addressable ONLY (M68000PRM): An-direct is ILLEGAL at EVERY size (the K1
+    // `itest` class). ADD/SUB/CMP take An sources at word/long (the byte case is `src_seq`'s size gate),
+    // so the op discriminates here — this builder is shared across both families.
+    if mode == 1 && matches!(op, AluOp::And | AluOp::Or) {
+        return decode_time_exception_recipe(4);
+    }
     let mut buf = RecipeBuf::new();
     if !ea_src(&mut buf, mode, reg, size, |b| MicroOp::Alu {
         op,
@@ -2715,6 +2732,15 @@ fn cmpm_recipe(opcode: u16, size: Size) -> MicroState {
 fn cmpi_recipe(opcode: u16, size: Size) -> MicroState {
     let mode = (opcode >> 3) & 7;
     let reg = (opcode & 7) as u8;
+    // CMPI's destination is data-alterable ONLY (M68000PRM): An-direct (mode 1 — comparing An is CMPA's
+    // job; CMPI to An arrived with the 68020) and the source-only PC-relative / `#imm` modes (7/2, 7/3,
+    // 7/4 — PC-relative CMPI is 68020+, `#imm` never) are ILLEGAL at every size on the 68000. The long
+    // path's `cmpi_ea_read_long` already rejects them; gate byte/word identically HERE, at decode time,
+    // so all three sizes share one guard (the K1 `itest` class — byte/word previously fell through to the
+    // permissive source-EA builder and executed).
+    if mode == 1 || (mode == 7 && (2..=4).contains(&reg)) {
+        return decode_time_exception_recipe(4);
+    }
     // Scratch slots: 6 holds the captured immediate (byte/word) or its HI half (long); 7 holds the assembled
     // long immediate. Disjoint from `ea_src`'s slots (0 read, 2 EA, 3 abs-HI, 4/5 long lo) so every in-flight
     // value is snapshot-visible.
@@ -3987,6 +4013,11 @@ fn mul_recipe(opcode: u16, op: AluOp) -> MicroState {
     let dn = ((opcode >> 9) & 7) as u8;
     let mode = (opcode >> 3) & 7;
     let reg = (opcode & 7) as u8;
+    // MUL's source is data-addressable ONLY (M68000PRM): An-direct is ILLEGAL (the K1 `itest` class —
+    // `ea_src(Word)` would otherwise accept it). PC-relative / `#imm` ARE legal.
+    if mode == 1 {
+        return decode_time_exception_recipe(4);
+    }
     let mut buf = RecipeBuf::new();
     if (mode, reg) == (7, 4) {
         // #imm: capture the immediate (prefetch[1], zero-extended) into scratch BEFORE the two refills shift it
@@ -4046,6 +4077,11 @@ fn div_recipe(opcode: u16, op: AluOp) -> MicroState {
     let dn = ((opcode >> 9) & 7) as u8;
     let mode = (opcode >> 3) & 7;
     let reg = (opcode & 7) as u8;
+    // DIV's source is data-addressable ONLY (M68000PRM): An-direct is ILLEGAL (the K1 `itest` class —
+    // `ea_src(Word)` would otherwise accept it). PC-relative / `#imm` ARE legal.
+    if mode == 1 {
+        return decode_time_exception_recipe(4);
+    }
     let mut buf = RecipeBuf::new();
     if (mode, reg) == (7, 4) {
         // #imm: capture the immediate (prefetch[1], zero-extended) into scratch BEFORE the two refills shift it
@@ -4108,6 +4144,11 @@ fn chk_recipe(opcode: u16) -> MicroState {
     let dn = ((opcode >> 9) & 7) as u8;
     let mode = (opcode >> 3) & 7;
     let reg = (opcode & 7) as u8;
+    // CHK's source is data-addressable ONLY (M68000PRM): An-direct is ILLEGAL (the K1 `itest` class —
+    // `ea_src(Word)` would otherwise accept it). PC-relative / `#imm` ARE legal for CHK.
+    if mode == 1 {
+        return decode_time_exception_recipe(4);
+    }
     let mut buf = RecipeBuf::new();
     if (mode, reg) == (7, 4) {
         // #imm: capture the immediate (prefetch[1], zero-extended) into scratch BEFORE the two refills shift it
@@ -5587,9 +5628,14 @@ mod tests {
         // (owner's fingerprint note). Supervisor SR so the privilege gate does not pre-empt the classification
         // (privileged opcodes decode to their real recipe = implemented). No SST data covers this cluster
         // (audit finding 3); the counts were measured on the SST-green tree that introduced the illegal-EA
-        // gates. The 2×4096 line-A/line-F counts are a priori (the exact `0xAxxx`/`0xFxxx` nibbles); the
-        // 9792 ILLEGAL is the 6987 fall-through unassigned encodings + the 2805 EA-illegal gates (the
-        // measured residual-panic count before this push), a direct check on the CAUTION guardrail.
+        // gates. The 2×4096 line-A/line-F counts are a priori (the exact `0xAxxx`/`0xFxxx` nibbles).
+        //
+        // ILLEGAL count history: 9792 (= 6987 fall-through unassigned + 2805 EA-illegal gates) before the
+        // 2026-08-02 K1 fix; 11529 after it (+1737: the byte-An sources, CMPI An/PC-rel/#imm dests + SS=3,
+        // TST An/PC-rel/#imm, CHK/MUL/DIV An, AND/OR An, and the `0xE8C0-0xEFFF` bit-field space — see
+        // `docs/2026-07-25-testrom-conformance.md` §K1). 11529 is EXACTLY the entry count of the `itest`
+        // ROM's own illegal-opcode table (ROM `$4FC`, 0x2D09 words): our vector-4 set now matches the
+        // hardware test ROM's enumeration 1:1 — a strong independent cross-check on both counts.
         let illegal = decode_time_exception_recipe(4);
         let line_a = decode_time_exception_recipe(10);
         let line_f = decode_time_exception_recipe(11);
@@ -5618,10 +5664,10 @@ mod tests {
         assert_eq!(n_line_a, 4096, "line-A = the 0xAxxx nibble (a priori)");
         assert_eq!(n_line_f, 4096, "line-F = the 0xFxxx nibble (a priori)");
         assert_eq!(
-            n_illegal, 9792,
-            "ILLEGAL = 6987 fall-through + 2805 EA-illegal gates (CAUTION guardrail)"
+            n_illegal, 11529,
+            "ILLEGAL = the full 68000 vector-4 set (== itest's table size; CAUTION guardrail)"
         );
-        assert_eq!(n_impl, 47552, "implemented encodings");
+        assert_eq!(n_impl, 45815, "implemented encodings");
         assert_eq!(
             n_impl + n_illegal + n_line_a + n_line_f,
             65536,
@@ -15122,5 +15168,160 @@ mod tests {
             );
             assert_eq!(cpu.regs.d[0], 0x0001_2345, "{label}: Dn unchanged on div0");
         }
+    }
+
+    // --- K1: illegal An-direct-byte sources / non-data-alterable CMPI destinations must trap ------
+    // (vector 4, group-1 semantics: stacked PC = the offending instruction's own address, TRAP-shaped
+    // 34(4/3) — the same decode_time_exception_recipe(4) path unbound opcodes take.) These encodings
+    // are structurally absent from SST v1 (only VALID encodings are vendored), so they are pinned to
+    // M68000PRM addressing-mode legality + the `itest` (`m68k_illegal`) hardware test ROM.
+
+    /// Env for a vector-4 probe: supervisor, pc = 0x0C00, the two opcode words queued, vector 4 →
+    /// handler 0x2000 (two NOPs). A0 = an even readable address so a WRONGLY-decoded encoding would
+    /// execute cleanly (not fault for an unrelated reason) and the trap assertion stays meaningful.
+    fn setup_vector4_probe(prefetch: [u16; 2]) -> (Cpu68000, FlatBus) {
+        let mut regs = Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0x0000_3000,
+            ssp: 0x0000_1000,
+            pc: 0x0C00,
+            sr: 0x2700,
+            prefetch,
+        };
+        regs.a[0] = 0x0000_4000; // even + readable, in case the encoding wrongly executes
+        let mut bus = FlatBus::new();
+        for (a, v) in [
+            // Vector 4 @ 0x10 → handler 0x0000_2000.
+            (0x10u32, 0x00u8),
+            (0x11, 0x00),
+            (0x12, 0x20),
+            (0x13, 0x00),
+            // Handler code (two NOPs) for the prefetch reload.
+            (0x2000, 0x4E),
+            (0x2001, 0x71),
+            (0x2002, 0x4E),
+            (0x2003, 0x71),
+        ] {
+            bus.poke(a, v);
+        }
+        (Cpu68000::new(regs), bus)
+    }
+
+    /// Assert `opcode ext` takes the ILLEGAL trap: handler PC, TRAP-shaped 34 cycles, 6-byte frame,
+    /// stacked PC = 0x0C00 (the instruction's OWN address — group-1, no advance).
+    fn assert_vector4_trap(opcode: u16, ext: u16, label: &str) {
+        let (mut cpu, mut bus) = setup_vector4_probe([opcode, ext]);
+        let cycles = cpu.run_instruction(&mut bus);
+        assert_eq!(cycles, 34, "{label}: ILLEGAL is TRAP-shaped 34(4/3)");
+        assert_eq!(cpu.regs.pc, 0x2000, "{label}: pc at the vector-4 handler");
+        assert_eq!(cpu.regs.ssp, 0x0FFA, "{label}: 6-byte frame pushed");
+        let stacked_pc = ((bus.peek(0x0FFC) as u32) << 24)
+            | ((bus.peek(0x0FFD) as u32) << 16)
+            | ((bus.peek(0x0FFE) as u32) << 8)
+            | (bus.peek(0x0FFF) as u32);
+        assert_eq!(
+            stacked_pc, 0x0C00,
+            "{label}: stacked PC = the offending instruction (group-1)"
+        );
+    }
+
+    /// Assert `opcode ext` is a LEGAL encoding: it executes (no handler, no frame).
+    fn assert_executes(opcode: u16, ext: u16, label: &str) {
+        let (mut cpu, mut bus) = setup_vector4_probe([opcode, ext]);
+        cpu.run_instruction(&mut bus);
+        assert_ne!(cpu.regs.pc, 0x2000, "{label}: legal encoding must execute");
+        assert_eq!(cpu.regs.ssp, 0x0000_1000, "{label}: no exception frame");
+    }
+
+    #[test]
+    fn k1_cmpi_an_direct_destination_traps_all_sizes() {
+        // CMPI's destination is data-alterable only; An-direct is CMPA's job and illegal for CMPI at
+        // EVERY size on the 68000 (CMPI to An arrived with the 68020).
+        assert_vector4_trap(0x0C08, 0x0001, "CMPI.B #1,A0");
+        assert_vector4_trap(0x0C48, 0x0001, "CMPI.W #1,A0");
+        assert_vector4_trap(0x0C88, 0x0000, "CMPI.L #imm,A0"); // long: already gated — regression guard
+    }
+
+    #[test]
+    fn k1_cmpi_pcrel_and_imm_destinations_trap() {
+        // PC-relative / #imm CMPI destinations are source-only modes — illegal on the 68000
+        // (PC-relative CMPI became legal on the 68020+, #imm never).
+        assert_vector4_trap(0x0C3A, 0x0001, "CMPI.B #1,d16(PC)");
+        assert_vector4_trap(0x0C3B, 0x0001, "CMPI.B #1,d8(PC,Xn)");
+        assert_vector4_trap(0x0C3C, 0x0001, "CMPI.B #1,#imm");
+        assert_vector4_trap(0x0C7A, 0x0001, "CMPI.W #1,d16(PC)");
+        assert_vector4_trap(0x0C7B, 0x0001, "CMPI.W #1,d8(PC,Xn)");
+        assert_vector4_trap(0x0C7C, 0x0001, "CMPI.W #1,#imm");
+    }
+
+    #[test]
+    fn k1_byte_an_direct_sources_trap() {
+        // An-direct sources are word/long only on the 68000 — every `.b <ea>,Dn` form with mode 1 is
+        // illegal. The enumerated trio plus the collateral the structural size gate catches.
+        assert_vector4_trap(0xC008, 0x4E71, "AND.b A0,D0");
+        assert_vector4_trap(0xD008, 0x4E71, "ADD.b A0,D0");
+        assert_vector4_trap(0xB008, 0x4E71, "CMP.b A0,D0");
+        assert_vector4_trap(0x9008, 0x4E71, "SUB.b A0,D0"); // collateral
+        assert_vector4_trap(0x8008, 0x4E71, "OR.b A0,D0"); // collateral
+    }
+
+    #[test]
+    fn k1_collateral_byte_an_forms_trap() {
+        assert_vector4_trap(0x1008, 0x4E71, "MOVE.b A0,D0"); // byte MOVE An source
+        assert_vector4_trap(0x4A08, 0x4E71, "TST.b A0"); // byte TST on An
+
+        // Static bit-test on An — BTST #n,An is the byte ea_src path on mode 1. (The DYNAMIC
+        // encoding with mode 1, $0108, is MOVEP — legal, see the neighbor test.)
+        assert_vector4_trap(0x0808, 0x0000, "BTST #0,A0");
+    }
+
+    #[test]
+    fn k1_itest_families_trap() {
+        // The rest of the `itest` sweep: every family below wrongly EXECUTED before the K1 fix
+        // (enumerated by running the ROM's own 11529-entry opcode table against the decoder).
+        assert_vector4_trap(0x0CC0, 0x0001, "CMPI SS=3 (0x0CC0 — 68020 CAS space)");
+        assert_vector4_trap(0x0CE2, 0x0001, "CMPI SS=3 -(A2) (the itest derailer)");
+        assert_vector4_trap(0x4188, 0x4E71, "CHK A0,D0");
+        assert_vector4_trap(0x4A48, 0x4E71, "TST.w A0");
+        assert_vector4_trap(0x4A88, 0x4E71, "TST.l A0");
+        assert_vector4_trap(0x4A7A, 0x0000, "TST.w d16(PC)");
+        assert_vector4_trap(0x4ABC, 0x0000, "TST.l #imm");
+        assert_vector4_trap(0x8048, 0x4E71, "OR.w A0,D0");
+        assert_vector4_trap(0x8088, 0x4E71, "OR.l A0,D0");
+        assert_vector4_trap(0xC048, 0x4E71, "AND.w A0,D0");
+        assert_vector4_trap(0xC088, 0x4E71, "AND.l A0,D0");
+        assert_vector4_trap(0x80C8, 0x4E71, "DIVU A0,D0");
+        assert_vector4_trap(0x81C8, 0x4E71, "DIVS A0,D0");
+        assert_vector4_trap(0xC0C8, 0x4E71, "MULU A0,D0");
+        assert_vector4_trap(0xC1C8, 0x4E71, "MULS A0,D0");
+        assert_vector4_trap(
+            0xE8D0,
+            0x4E71,
+            "bit-field space (68020 BFTST) as memory shift",
+        );
+        assert_vector4_trap(0xEFF9, 0x0000, "bit-field space upper edge");
+    }
+
+    #[test]
+    fn k1_valid_neighbors_still_execute() {
+        assert_executes(0x0C40, 0x0001, "CMPI.W #1,D0");
+        assert_executes(0x0C10, 0x0001, "CMPI.B #1,(A0)");
+        assert_executes(0xD048, 0x4E71, "ADD.w A0,D0");
+        assert_executes(0xB048, 0x4E71, "CMP.w A0,D0");
+        assert_executes(0x9048, 0x4E71, "SUB.w A0,D0");
+        assert_executes(0xB0C8, 0x4E71, "CMPA.W A0,A0");
+        assert_executes(0x3008, 0x4E71, "MOVE.w A0,D0");
+        assert_executes(0x4A10, 0x4E71, "TST.b (A0)");
+        // Mode 1 in the DYNAMIC bit-op space is MOVEP, not a bit op — it must keep decoding as MOVEP.
+        assert_executes(0x0108, 0x0010, "MOVEP.w d16(A0),D0");
+        // Legal neighbors of the newly gated families.
+        assert_executes(0x4190, 0x4E71, "CHK (A0),D0"); // memory CHK stays legal
+        assert_executes(0x80FC, 0x4E71, "DIVU #imm,D0"); // #imm DIV stays legal (nonzero divisor)
+        assert_executes(0xC0D0, 0x4E71, "MULU (A0),D0"); // memory MUL stays legal
+        assert_executes(0xC050, 0x4E71, "AND.w (A0),D0"); // memory AND stays legal
+        assert_executes(0xE0D0, 0x4E71, "ASR.w (A0)"); // memory shift (bit 11 clear) stays legal
+        assert_executes(0xE1D0, 0x4E71, "ASL.w (A0)");
+        assert_executes(0xE7D0, 0x4E71, "ROL.w (A0)"); // bits 10-9 = 3, bit 11 clear — legal RO shift
     }
 }

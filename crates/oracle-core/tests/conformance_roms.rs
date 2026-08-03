@@ -6,8 +6,9 @@
 //!
 //! **This harness does NOT gate on "everything passes."** Per `CHARTER.md` the launch target is
 //! *MVP-debuggable*, NOT "passes VDPFIFOTesting"; accuracy is an asymptote. Several of these ROMs fail
-//! today for documented reasons (a 68000 `CMPI.B/.W #imm,An` decode hole, the absent open-bus model, the
-//! Z80 `$7F00` VDP-mirror stub, ...). Those failures are **recorded, not fixed** — the baseline below is
+//! today for documented reasons (the absent open-bus model, the Z80 `$7F00` VDP-mirror stub, ...; the
+//! K1 illegal-decode hole was fixed 2026-08-02 — `m68k_illegal` is green since). Those failures are
+//! **recorded, not fixed** — the baseline below is
 //! a *photograph of today*, and this test fires only on a **regression from it** (or an unannounced
 //! improvement, which is equally worth seeing). Every entry, its reference, and its expected-fail reason
 //! is written up in `docs/2026-07-25-testrom-conformance.md`.
@@ -92,10 +93,7 @@ const BASELINE: &[(&str, &str)] = &[
         "m68k_bcd",
         "PASS abcd/sbcd/nbcd 0 value errors, 0 flag errors",
     ),
-    (
-        "m68k_illegal",
-        "FAIL backdrop=$000E (red); pass would be $00E0 (green)",
-    ),
+    ("m68k_illegal", "PASS backdrop=$00E0 (green)"),
     (
         "m68k_memory_test",
         "4/13 rows match the ROM's hardware reference; mismatch: \
@@ -104,7 +102,9 @@ const BASELINE: &[(&str, &str)] = &[
     ),
     (
         "m68k_opcode_sizes",
-        "VISUAL-BASELINE frame_hash=0xca81010c64f8e701",
+        // Re-pinned 2026-08-02 with the K1 illegal-decode fix: the ROM plots the live decode map, and
+        // the newly-trapping encodings move a handful of its cells (476 px in the 0x0/4/8/C/E pages).
+        "VISUAL-BASELINE frame_hash=0x5436cda5786ea450",
     ),
     (
         "shadow_highlight",
@@ -309,10 +309,11 @@ fn scrape_io_sample(sys: &mut System) -> String {
 }
 
 /// `itest` — sweeps illegal / privileged / unimplemented encodings and checks each traps correctly. No
-/// text: the verdict is the backdrop colour, green `$00E0` = pass, red `$000E` = fail. It decides within
-/// a couple of frames.
+/// text: the verdict is the backdrop colour — blue `$0E00` while the sweep runs, then green `$00E0` =
+/// pass, red `$000E` = fail. A completed sweep (all 11529 table entries trapping) settles by ~frame 9;
+/// the old 2-frame budget dated from when the ROM failed fast (K1) and never reached the verdict write.
 fn scrape_m68k_illegal(sys: &mut System) -> String {
-    sys.run_frames(2);
+    sys.run_frames(20);
     let cram = sys.vdp().cram();
     let backdrop = u16::from_be_bytes([cram[0], cram[1]]);
     match backdrop {
