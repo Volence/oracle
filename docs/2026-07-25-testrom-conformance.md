@@ -120,10 +120,11 @@ measured before the change: **0** Z80 reads in `$7F00-$7F1F` across all four cur
 from `fm_test` in this corpus. No scorecard row moved (fm_test's end-of-frame visual pin does not depend on
 the poll result); all frozen currencies byte-identical.
 
-*Still deferred (ledgered here):* the **68k-side** view of the same region — our 68k bus maps all of
-`$A00000-$A0FFFF` to the Z80-RAM mirror, so a 68k read of `$A07F00+` does not reach the VDP ports. That is
-part of the `m68k_memory_test` `A00000-A0FFFF` row (alongside K4) and stays a recorded gap. Z80 *writes*
-to `$7F00-$7F1F` (other than the PSG tap at `$7F11`) still drop, and `$7F10-$7F1F` reads stay open bus
+*The 68k-side half — RESOLVED (2026-08-02, K4-6):* the 68k window now routes `$A07F00+` (15-bit-masked)
+through the **same** shared reader (`z80/bus.rs::vdp_mirror_read`) — live status at `$7F04-$7F07`
+(side-effecting, `open_bus = 0` per the K2 pin), live HV at `$7F08-$7F0F`, `$FF` for the data port (the
+same ledgered lockup known-difference) and `$7F10+`. Z80 *writes* to `$7F00-$7F1F` (other than the PSG
+tap at `$7F11`, which the 68k window now also taps) still drop, and `$7F10-$7F1F` reads stay open bus
 (write-only region on hardware).
 
 ### K3 — div0 stacked PC — **RESOLVED & FIXED (2026-08-02)**
@@ -184,6 +185,7 @@ Slice log (each row-flip amends the `BASELINE` in the same commit):
   *Ledgered follow-ups (not regressions):* the 68k-side path to the real serial bank latch (the
   Z80-side latch at `$6000` is live), the window's true 15-bit address masking (`$A08000+` currently
   still mirrors RAM 8-KiB-wise), and 68k-side `$A07F00+` VDP-mirror routing (K2's deferred half).
+  **All three closed by K4-6 below (2026-08-02).**
 - **K4-4** — the I/O block (`$A10000-$A1001F`) does not decode A0 (Exodus
   `AddressDiscardLowerBitCount="1"`): each odd register answers BOTH byte lanes (`$A10000` reads the
   version byte, word reads are the register duplicated — row 6 `A0A0`). Reads only; even-byte
@@ -201,14 +203,41 @@ Slice log (each row-flip amends the `BASELINE` in the same commit):
   Adjudicated beyond the scorecard: 7-game boot A/B pixel-identical (incl. TF4, the heaviest status
   consumer), `s4.soundtest.bin` VGM capture **byte-identical** K4-4 → K4-5.
 
+- **K4-6 (2026-08-02)** — the 68k-side Z80 window **completed**: the window's address is masked to
+  15 bits (`$A08000-$A0FFFF` behaves as `$A00000-$A07FFF`; MDBusArbiter.cpp:304 — Charles MacDonald's
+  hardware tests) and decoded per the Z80's own local bus map, one source of truth: `$0000-$3FFF` Z80
+  RAM; `$4000-$5FFF` the YM2612's full select span (ports = low 2 bits; memtest row
+  `A04000-A05FFF = 0000` — the FM carve-out keeps its K4-3 answer-regardless-of-ownership pin);
+  `$6000-$60FF` = one serial tick of the **same** 9-bit bank latch the Z80's `$6000` write loads
+  (`z80/bus.rs::bank_latch_tick` — one register, two paths; only memtest's `$FF` canary exercises it,
+  probe column `bkW`); `$6100-$7EFF` `$FF`; `$7F00-$7FFF` the **same** VDP-mirror reader the Z80 uses
+  (`vdp_mirror_read`, K2's 68k-side half — see the K2 entry) with the Z80-shaped PSG write tap at
+  `$7F11` (probe `vpW` = 0 corpus-wide). **Q4 RESOLVED — word writes land ONE byte:** the probe's
+  `wwW!` column found real ROMs exercising it (Gunstar Heroes + Alien Soldier: a 4096-word even-address
+  sweep clearing all 8 KiB of Z80 RAM; `m68k_opcode_sizes`: 21 real data words), so the rule was
+  adjudicated and implemented — only the HIGH byte lands, at the (even) target address. Provenance:
+  the reference arbiter's implemented code (MDBusArbiter.cpp:496-501, even address →
+  `data.GetUpperHalf()`, one byte written; its TODO admits their own hardware tests never confirmed
+  it), Genesis Plus GX's implemented `z80_write_word` (`mem68k.c`: stores `data >> 8` only), Plutiedev
+  ("you must use byte accesses when touching Z80 RAM, word accesses won't work"), and the read side of
+  the same one-8-bit-cycle mechanism being hardware-pinned by memtest row 3 (`F3F3`). No direct
+  hardware test of the write side exists in any source we hold — recorded honestly here. Rider: the
+  one-byte rule makes `m68k_opcode_sizes`' word-uploaded Z80 program execute its half-landed stream
+  (as hardware does), which reached two deferred-panic undocumented-Z80 classes; those are now the
+  pinned NONI/prefix-ignored behaviors (see the z80 commit — ED holes = 8T no-ops, DD/FD prefix
+  ignored on non-HL opcodes; Vectorman's `FD FF` boot panic un-stuck as a side effect, 26 → 900/900
+  frames). **Scorecard byte-identical** (memtest stays 12/13, `m68k_opcode_sizes` visual pin
+  unmoved); currencies byte-identical; s4 VGM capture sha-identical; gunstar + sonic3k 900-frame boot
+  renders sha-identical.
+
 **Open questions carried from the design's §6 (still open):** Q1 — the physical mechanism of the
 arbiter's low-byte-`$00` (adopted as the memtest-pinned empirical rule; the C++ reference retains the
-full word instead); Q4 — Z80-window word *writes* (Exodus TODO says only one byte should land; we
-still store both; untested by memtest, 0 corpus hits); Q5 — board-revision stability of the reference
+full word instead); Q5 — board-revision stability of the reference
 values (unknowable offline; the vendored ROM's column is the pinned ground truth); Q6 — region-wide
 extrapolation of the arbiter flavor to untested gaps (`$A10020-$A10FFF`, `$A11000`, `$A130xx` reads,
-`$A14000` — still full-latch retention, applied only where evidenced). Plus the K4-3 ledgered
-follow-ups (68k-side bank-latch path, true 15-bit window masking, 68k-side `$A07F00+` VDP routing).
+`$A14000` — still full-latch retention, applied only where evidenced). Q4 and the K4-3 ledgered
+follow-ups (68k-side bank-latch path, true 15-bit window masking, 68k-side `$A07F00+` VDP routing)
+are **closed by K4-6** above.
 
 ## Limitations of the instrument itself
 

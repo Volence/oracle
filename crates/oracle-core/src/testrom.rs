@@ -357,6 +357,7 @@ mod tests {
             let mut io = crate::io::Io::default();
             let mut z80_busreq = false;
             let mut z80_running = false;
+            let mut z80_bank = 0u16;
             let mut sram_enabled = false;
             let mut sram_write_protect = false;
             let mut sram: Vec<u8> = Vec::new();
@@ -373,6 +374,7 @@ mod tests {
                 last,
                 &mut z80_busreq,
                 &mut z80_running,
+                &mut z80_bank,
                 &mut sram_enabled,
                 &mut sram_write_protect,
                 &mut sram,
