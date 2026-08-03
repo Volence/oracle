@@ -121,7 +121,9 @@ pub struct Vdp {
     sprite_overflow: bool,
     /// Sprite-collision status latch (status bit 5). Set by the render pipeline (push 4); read-only here.
     sprite_collision: bool,
-    /// Odd-frame flag (status bit 4). Toggled each frame when the VInt latch is set (recon R12 delivery).
+    /// Odd-frame flag (status bit 4). Advanced each frame when the VInt latch is set (recon R12 delivery)
+    /// under the reference's toggle rule `interlace_enabled && !odd` — forced to 0 while interlace is off
+    /// (see [`Vdp::raise_vint`]).
     odd_frame: bool,
     /// The SAT cache (recon R5 / RR8): 80 entries × the cached 4 bytes (Y word + size/link word), in the
     /// same big-endian byte order as VRAM. **Real hardware state, not derivable from VRAM** — the write-
@@ -980,11 +982,25 @@ impl Vdp {
         }
     }
 
-    /// Set the VINT pending latch and toggle the odd-frame flag (recon R12; the VInt scheduler event at line
-    /// 224 drives this). The latch is cleared only by [`Vdp::acknowledge`].
+    /// Whether an interlace mode is active: reg $0C bit 1 (LSM0) — set in both interlace mode 1 (LSM = 01)
+    /// and mode 2 (LSM = 11). Reference: Oracle `_interlaceEnabledCached = data.GetBit(1)`
+    /// (`Devices/315-5313/S315-5313_Ports.cpp:1883`).
+    fn interlace_enabled(&self) -> bool {
+        self.regs[0x0C] & 0x02 != 0
+    }
+
+    /// Set the VINT pending latch and advance the odd-frame flag (recon R12; the VInt scheduler event at
+    /// line 224 drives this). The latch is cleared only by [`Vdp::acknowledge`].
+    ///
+    /// The ODD flag (status bit 4) reflects the odd/even frame **only while an interlace mode is active**;
+    /// outside interlace it reads 0. The reference implements this at the toggle point, not the read:
+    /// `oddFlagSet = interlaceIsEnabled & !oddFlagSet` (Oracle `Devices/315-5313/S315-5313_Timing.cpp:1103`
+    /// in `AdvanceHVCounters`, repeated at :1181 in `AdvanceHVCountersOneStep`) — the stored flag is forced
+    /// to 0 at each toggle while interlace is off. Hardware ground truth: memtest_68k's `C00004-C00007` row
+    /// reads `4E88` (bit 4 clear) with reg $0C = $81 (interlace off).
     pub fn raise_vint(&mut self) {
         self.vint_pending = true;
-        self.odd_frame = !self.odd_frame;
+        self.odd_frame = self.interlace_enabled() && !self.odd_frame;
     }
 
     /// Set the HINT pending latch (recon R12; an HInt scheduler event drives this on HINT-counter underflow).
@@ -1621,8 +1637,9 @@ mod tests {
     }
 
     #[test]
-    fn raise_vint_toggles_the_odd_frame_flag() {
+    fn raise_vint_toggles_the_odd_frame_flag_in_interlace() {
         let mut v = fresh();
+        v.regs[0x0C] = 0x02; // LSM0 — interlace mode on
         assert!(!v.odd_frame);
         v.raise_vint();
         assert!(
@@ -1631,6 +1648,65 @@ mod tests {
         );
         v.raise_vint();
         assert!(!v.odd_frame, "toggled back on the next frame");
+    }
+
+    /// ODD (status bit 4) reads 0 outside interlace across BOTH frame parities: the reference forces the
+    /// stored flag at each toggle point — `oddFlagSet = interlaceIsEnabled & !oddFlagSet`
+    /// (Oracle `Devices/315-5313/S315-5313_Timing.cpp:1103` in `AdvanceHVCounters`, and again at :1181 in
+    /// `AdvanceHVCountersOneStep`) — so with interlace off it can never become 1. Hardware ground truth:
+    /// memtest_68k row `C00004-C00007` reads `4E88` (bit 4 clear) with reg $0C = $81 (interlace off).
+    #[test]
+    fn odd_flag_stays_zero_outside_interlace() {
+        let mut v = fresh(); // reg $0C = 0 → interlace off
+        for frame in 0..4 {
+            v.raise_vint();
+            assert_eq!(
+                v.status_word(0) & (1 << 4),
+                0,
+                "ODD reads 0 outside interlace (frame parity {frame})"
+            );
+        }
+    }
+
+    /// Interlace-enable is reg $0C bit 1 (LSM0) alone — both interlace modes 1 (LSM = 01) and 2 (LSM = 11)
+    /// expose the toggle (Oracle `_interlaceEnabledCached = data.GetBit(1)`, `S315-5313_Ports.cpp:1883`).
+    #[test]
+    fn odd_flag_toggles_in_both_interlace_modes() {
+        for lsm in [0x02u8, 0x06u8] {
+            let mut v = fresh();
+            v.regs[0x0C] = 0x81 | lsm; // H40 + interlace
+            v.raise_vint();
+            assert_eq!(
+                v.status_word(0) & (1 << 4),
+                1 << 4,
+                "ODD toggles on with LSM bits {lsm:#04x}"
+            );
+            v.raise_vint();
+            assert_eq!(v.status_word(0) & (1 << 4), 0, "…and off the next frame");
+        }
+    }
+
+    /// Turning interlace OFF mid-stream: the stored flag keeps its value until the next toggle point, where
+    /// the reference's `interlaceIsEnabled & !oddFlagSet` forces it to 0 (no read-time gate — Oracle reads
+    /// the stored `_status` flag as-is).
+    #[test]
+    fn odd_flag_clears_at_the_first_toggle_after_interlace_off() {
+        let mut v = fresh();
+        v.regs[0x0C] = 0x02;
+        v.raise_vint();
+        assert!(v.odd_frame, "odd frame reached under interlace");
+        v.regs[0x0C] = 0x00; // interlace off mid-frame
+        assert_eq!(
+            v.status_word(0) & (1 << 4),
+            1 << 4,
+            "stored flag still reads until the next toggle point"
+        );
+        v.raise_vint();
+        assert_eq!(
+            v.status_word(0) & (1 << 4),
+            0,
+            "forced to 0 at the first toggle with interlace off"
+        );
     }
 
     #[test]
