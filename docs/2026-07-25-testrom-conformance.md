@@ -32,7 +32,7 @@ Harness facts, so a reader can reproduce a row by hand:
 | `io_sample` (`Multitap - IO Sample Program`) | Controller-port device detection (the TH-handshake ID protocol) on both ports | **Yes** — both ports must print `JOYPAD`, font base `$000`, 160 frames | **PASS** — port1 = `JOYPAD`, port2 = `JOYPAD` | — (matches `docs/2026-07-17-io-recon.md` IO1–IO6) |
 | `m68k_illegal` (`itest`) | Illegal / privileged / unimplemented encodings must trap to the right vector | **Yes** — no text; verdict is the backdrop word `CRAM[0..2]`: blue `$0E00` while running, `$00E0` green = pass, `$000E` red = fail. 20 frames (the full sweep settles ~frame 9) | **PASS** — backdrop `$00E0` (green) since the 2026-08-02 K1 fix (was FAIL `$000E`) | **K1 — RESOLVED & FIXED.** See below. |
 | `m68k_memory_test` (`memtest_68k`) | Reads every non-lockup address range twice; prints what it read **and** the ROM's own built-in real-hardware reference (`?` = wildcard nibble) | **Yes** — per-row compare, font base `$100`, 30 frames | **13 / 13 rows match** since the 2026-08-02 status-low-byte fixes (K4 slices took it 4/13 → 12/13; the row-11 residual was ODD-outside-interlace + VBlank-forced-while-display-disabled, both reference-corroborated semantics bugs — see the K4 ledger addendum) | **K4 — RESOLVED & FIXED**; row-11 status low byte also RESOLVED (adjudicated semantics, not timing — see below). |
-| `vdp_port_access` (`VDPFIFOTesting`) | 16 VDP port-access tests over two pages: FIFO size/behaviour, DMA-via-FIFO, byteswapping, partial CP writes, register-write masking, read-target switching, FIFO wait states | **Yes** — scrapes the on-screen `Results: ( P/ F/ T)` line; page 1 auto-runs (settles ~frame 42), `Start` advances to page 2 (~480 more frames) | **page 1 = 9 pass / 0 fail / 9 (complete)**; **pages 1+2 cumulative = 15 pass / 1 fail / 16** (was 9/7/16 — slice A2 flipped T13 and T10, slice A3a flipped T3, slice A3b flipped T4, slice A4 flipped T6, slice T12 flipped T12; Test 16's byte matrix had already improved 54→18 red cells with the A1 live FIFO flags — see notes below) | The harness remains non-gating on this ROM (the CHARTER line stands, and `conformance_roms.rs`'s header still states it); what changed on 2026-08-03 is that the owner asked for this ROM's rows to be worked, so they are now being fixed slice-by-slice (A1 = live FIFO EMPTY/FULL flags; A2 = control-port / code-register edges; A3a = DMA payload words through the FIFO ring; A3b = the DMA-fill trigger write + `address ^ 1` fill bytes; A4 = the 8-bit VRAM read target, all 2026-08-03). Per-test today — page 1: **T1-T9 all pass**; page 2: T10 T11 T12 T13 T14 T15 pass, **only T16 fails**. **A4 flipped T6 "8-bit VRAM Read target 01100"** — CD `%001100` returns `vram[address ^ 1]` in the low byte and the next-available FIFO entry's high byte in the high byte (see the A4 addendum below); it is currency-neutral and changed no existing test. **A3a flipped T3 "DMA Transfer using FIFO"** and **A3b flipped T4 "DMA Fill FIFO Usage"** (see the A3a/A3b notes below). A3b was expected to move `export_state_v1::GOLDEN_HASH` and **does not** — the design note's §4.1 mis-identified the golden fixture (it is `testrom::build`, which never touches the VDP; the DMA-filling ROM is `testrom::build_pad_poll`, used only by the io/watchpoint tests). Every currency gate is byte-identical across A3b. **A2 flipped T13 "Register Writes and Code Reg" and T10 "Partial CP Writes"** (see the A2 note below), and left **T12 "Register Write Mode4 Mask"** as a named residual, **which slice T12 has now FIXED (2026-08-03)**: in Mode 4 (reg 1 bit 2 = M5 clear) only the eleven SMS registers 0–10 are writable, and writes above 10 are discarded (one line in `Vdp::write_register`). **CORRECTION — the reason this was held was false.** The claim that the fix "moves `export_state_v1::GOLDEN_HASH` and the `golden_frames` scenes" rested on the *same* fixture mis-identification as A3b's: it cited `testrom.rs`'s `reg 1 = $8150`, which lives in `testrom::build_pad_poll` (used only by `io_controllers`, `watchpoints` and the `pad_probe` example — no frozen currency), whereas `export_state_v1` loads `testrom::build`, which drives no VDP port at all. Re-measured: **no frozen constant moves.** 66 tests did go red, every one the same fixture defect — fixtures that write `reg 1 = $40` (M5 clear) and then program registers 11+, i.e. they intend Mode 5 but never declare it, a machine state that cannot exist on hardware. Declaring M5 in them (test-only, 8 sites) brought all frozen hashes back **byte-identical**. See `docs/2026-08-03-decision2-premise-recheck.md` and the T12 addendum below. The spec test `vdp::tests::mode4_ignores_register_writes_above_ten` is no longer `#[ignore]`d. **Evidence caveat:** the `> 10` boundary is extrapolated from a hedged source — follow-up **F-M4REGS**. **T16 "FIFO Wait States" remains FAIL but is now 62/80 verdict bytes green (was 26/80):** all 10 groups' first-probe word matches (FULL `$0100` / EMPTY `$0200` / partial `$0000` per each group's config), as do the drained-state probes in groups 1–8. Remaining reds: groups 9–10's stream probes need DMA words to occupy the FIFO as **pending** entries (the ROM triggers a 68k→VRAM DMA mid-group and expects the stream to see FULL/partial) — **slice A3a landed DMA-through-FIFO ring *contents* and left T16 unmoved at 62/80**, confirming these groups need *occupancy*, which our synchronous DMA model deliberately does not produce (design Q1; see the A3a note below) — and groups 2/3/5/6/8's stream-FULL probe needs **discrete per-line access-slot scheduling** (the write-6 stall phase-locks the CPU to the drain clock; with our uniform slot spacing — an H40 VRAM word costs 380 mclk, i.e. 2 slots of 190 mclk each — the post-insert probe deterministically lands just past a drain boundary every retry, where hardware's irregular slot gaps let it still catch FULL) — the "Phase 3 per-line DMA cost" deferral, not flag mechanics. |
+| `vdp_port_access` (`VDPFIFOTesting`) | 16 VDP port-access tests over two pages: FIFO size/behaviour, DMA-via-FIFO, byteswapping, partial CP writes, register-write masking, read-target switching, FIFO wait states | **Yes** — scrapes the on-screen `Results: ( P/ F/ T)` line; page 1 auto-runs (settles ~frame 42), `Start` advances to page 2 (~480 more frames) | **page 1 = 9 pass / 0 fail / 9 (complete)**; **pages 1+2 cumulative = 16 pass / 0 fail / 16 — this ROM is COMPLETE** (was 9/7/16 — slice A2 flipped T13 and T10, slice A3a flipped T3, slice A3b flipped T4, slice A4 flipped T6, slice T12 flipped T12, slices T16/S1 + T16/S2 flipped T16; Test 16's byte matrix had already improved 54→18 red cells with the A1 live FIFO flags — see notes below) | The harness remains non-gating on this ROM (the CHARTER line stands, and `conformance_roms.rs`'s header still states it); what changed on 2026-08-03 is that the owner asked for this ROM's rows to be worked, so they are now being fixed slice-by-slice (A1 = live FIFO EMPTY/FULL flags; A2 = control-port / code-register edges; A3a = DMA payload words through the FIFO ring; A3b = the DMA-fill trigger write + `address ^ 1` fill bytes; A4 = the 8-bit VRAM read target, all 2026-08-03). Per-test today — page 1: **T1-T9 all pass**; page 2: **T10-T16 all pass**. **A4 flipped T6 "8-bit VRAM Read target 01100"** — CD `%001100` returns `vram[address ^ 1]` in the low byte and the next-available FIFO entry's high byte in the high byte (see the A4 addendum below); it is currency-neutral and changed no existing test. **A3a flipped T3 "DMA Transfer using FIFO"** and **A3b flipped T4 "DMA Fill FIFO Usage"** (see the A3a/A3b notes below). A3b was expected to move `export_state_v1::GOLDEN_HASH` and **does not** — the design note's §4.1 mis-identified the golden fixture (it is `testrom::build`, which never touches the VDP; the DMA-filling ROM is `testrom::build_pad_poll`, used only by the io/watchpoint tests). Every currency gate is byte-identical across A3b. **A2 flipped T13 "Register Writes and Code Reg" and T10 "Partial CP Writes"** (see the A2 note below), and left **T12 "Register Write Mode4 Mask"** as a named residual, **which slice T12 has now FIXED (2026-08-03)**: in Mode 4 (reg 1 bit 2 = M5 clear) only the eleven SMS registers 0–10 are writable, and writes above 10 are discarded (one line in `Vdp::write_register`). **CORRECTION — the reason this was held was false.** The claim that the fix "moves `export_state_v1::GOLDEN_HASH` and the `golden_frames` scenes" rested on the *same* fixture mis-identification as A3b's: it cited `testrom.rs`'s `reg 1 = $8150`, which lives in `testrom::build_pad_poll` (used only by `io_controllers`, `watchpoints` and the `pad_probe` example — no frozen currency), whereas `export_state_v1` loads `testrom::build`, which drives no VDP port at all. Re-measured: **no frozen constant moves.** 66 tests did go red, every one the same fixture defect — fixtures that write `reg 1 = $40` (M5 clear) and then program registers 11+, i.e. they intend Mode 5 but never declare it, a machine state that cannot exist on hardware. Declaring M5 in them (test-only, 8 sites) brought all frozen hashes back **byte-identical**. See `docs/2026-08-03-decision2-premise-recheck.md` and the T12 addendum below. The spec test `vdp::tests::mode4_ignores_register_writes_above_ten` is no longer `#[ignore]`d. **Evidence caveat:** the `> 10` boundary is extrapolated from a hedged source — follow-up **F-M4REGS**. **T16 "FIFO Wait States" PASSES — all 80/80 verdict bytes green (was 26/80, then 62/80, then 72/80).** Two independent causes, fixed in two slices, and *neither* was the "Phase 3 per-line DMA cost" deferral this residual had been filed under. **T16/S1** gave the FIFO drain the *positions* of the external access slots within an active display line instead of a uniform per-line rate, flipping groups 2/3/5/6/8 [62→72]. **T16/S2** made a finished 68k→VDP DMA leave words **pending** in the FIFO — the DMA unit's job ends when the last word is pushed into the FIFO, not when it reaches VRAM — flipping groups 9/10 [72→**80**]; that reverses A3a's deliberate ring-store-only choice and answers design question Q1 of `docs/2026-08-03-a3-dma-fifo-design.md`, which A3a had explicitly deferred to here. (**A3a landed DMA-through-FIFO ring *contents* and left T16 unmoved at 62/80** — which is exactly what identified groups 9/10 as needing *occupancy* rather than contents.) See the S1 and S2 addenda below. |
 | `vdp_sprite_masking` (`SpriteMaskingTestRom`) | 9 sprite masking / per-line / per-frame / dot-overflow tests | **Yes** — verdict is a 32×8 glyph at the right edge, classified by **rendered-pixel hash** (its nametable cells are identical for the tick and cross cases, so only the framebuffer discriminates). 300 frames, settles ~frame 8 | `1=TICK/TICK 2=TICK/TICK 3=TICK/CROSS 4=PASS 5=PASS 6=FAIL 7=PASS 8=PASS 9=TICK/TICK` — **2 failures**: test 3's second sub-case (MAX SPRITE DOTS – COMPLEX) and test 6 (MASK S1 ON DOT OVERFLOW) | Expected: both are the **mid-sprite pixel-budget cut** interim model, ledger row **P1** in `docs/2026-07-16-vdp-pixel-known-differences.md` (we spend budget per whole sprite; hardware cuts mid-sprite at the exact dot). Open question **Q1** below on the H32/H40 toggle. |
 | `color_1536` (`TEST1536.BIN`) | 1536-colour trick — CRAM rewritten mid-scanline | Frame hash only — **per-scanline capture** (the only row that uses it) | `frame_hash=0x917371f07409cb25` (per-scanline capture; was `0x96b9c93c4f3dd325` end-of-frame, re-pinned 2026-08-03) | **Limitation L1 — NARROWED**: the row now hashes the picture the ROM actually draws. Still a regression pin, not a verdict (the ROM prints none). |
 | `cram_flicker` (`cram flicker.bin`) | The artefact from writing CRAM during active display | **NOT-RENDERABLE** — the artefact is the write itself appearing at the beam position, which we do not model | `frame_hash=0x815bb645bc46a325` (unchanged; re-adjudicated 2026-08-03) | Structural: **CRAM-write artefact, sub-scanline** — reason narrowed from "border-only rendering", which the evidence disproved (see **L1a**). Follow-up **F-CRAMDOT**. |
@@ -371,6 +371,13 @@ needs a non-synchronous DMA, or an occupancy model decoupled from the drain cloc
 named blocker for T16's remaining reds; the rest of T16 still needs discrete per-line access-slot
 scheduling, as noted in the A1 entry.
 
+> **RESOLVED 2026-08-03 by slice T16/S2 (addendum below).** The diagnosis above was exactly right; the
+> parenthetical guess about the *remedy* was not. Occupancy needed neither a non-synchronous DMA nor an
+> occupancy model decoupled from the drain clock — it needed the drain clock **anchored at the transfer's
+> end instant**, which is two lines and makes the pending entries real rather than phantom. `dma_write_word`
+> now calls `fifo_enqueue`. T16 62/80 → 80/80 across S1+S2, `vdp_port_access` 15/1/16 → **16/0/16**, with
+> every frozen currency constant byte-identical.
+
 **T4 "DMA Fill FIFO Usage" — RESIDUAL at A3a, fixed by A3b (below).** Expected table `$DC54`; we differed at
 exactly words 8 and 13 (`1212` vs `1234`, `0000` vs `0012`) — precisely the design's §4.3 prediction, and
 its snoop half (words 0-7) already passed.
@@ -584,8 +591,148 @@ single word poke whose two bytes land regardless of the autoincrement.
 
 **T16 "FIFO Wait States" is now the sole remaining `vdp_port_access` failure.**
 
+(Superseded 2026-08-03 by slices T16/S1 and T16/S2, below: **T16 passes and this ROM is 16/0/16.**)
+
 Sources: [Kabuto's hardware notes (Plutiedev mirror)](https://plutiedev.com/mirror/kabuto-hardware-notes) ·
 the ROM's own expected table at `$20EC`.
+
+### T16/S1 addendum (2026-08-03) — intra-line access-slot positions; groups 2/3/5/6/8 fixed
+
+Slice T16/S1. Scorecard movement: **none** — `vdp_port_access` stays `page1 9/0/9; cumulative 15/1/16`,
+because T16 is still FAIL on groups 9/10. What moved is T16's verdict-byte count, **62/80 → 72/80**. Every
+other conformance row, **every** `VISUAL-BASELINE frame_hash=` row, and **all frozen currency suites are
+byte-identical with their existing constants** (`export_state_v1::GOLDEN_HASH`, `oracle_differential`,
+`golden_frames`, `determinism_gate`, `singlestep_m68000` 113/113). No field was added to `state_hash` or
+`export_state`. Design and measurements: `docs/2026-08-03-t16-slot-scheduling-recon.md`.
+
+**CORRECTION — "a genuinely larger piece of work" was wrong, and this ledger said it.** The scorecard row
+above, `docs/plans/2026-08-03-fifo-scanline-arcs.md` and
+`docs/plans/2026-08-03-PARKED-owner-ruling.md:207-209` all filed T16's remaining reds under the
+long-standing **"Phase 3 per-line DMA cost"** deferral. That conflated three separate things:
+
+* **(A) intra-line slot positions** — *missing*, and the whole of groups 2/3/5/6/8. **This slice.** ~50
+  lines of table-driven integer code in `Vdp::next_active_slot` / `Vdp::entry_drain_cost`.
+* **(B) post-DMA FIFO occupancy** — *missing deliberately* (A3a §3.3, design question Q1), and the whole of
+  groups 9/10. Two lines. Not slot scheduling at all. Slice T16/S2.
+* **(C) per-line cost integration** — the actual Phase-3 deferral: `Vdp::dma_cost` samples `slots_per_line`
+  **once**, at the transfer's start instant, so a DMA that starts in vblank and runs into active display is
+  mis-billed by up to ~11×. **T16 does not need it**, it changes DMA elapsed time for every DMA-using ROM,
+  and that is where the visual-baseline risk actually lives. It stays deferred (recon §3.4 "S3").
+
+**What the ROM asks.** T16's expected table is 80 bytes — 40 words, 10 groups × 4 — at ROM **`$ED10`**, found
+via the record builder's own literal `lea`s (`00ED70: lea.l $ecec.l,a1` = the 36-byte name string
+"FIFO Wait States"; `00ED84: lea.l $ed10.l,a1`; `00ED6A: move.w #$50,d6` states the 80-byte length). Per
+group the words are probe 1, then the first FULL / first PARTIAL / first EMPTY seen in the 16-word status
+stream that follows the group's *inserted operation*; `$ffff` = "never observed in 2048 retries". Groups
+1-8 share a stimulus — a VRAM-write command to `$8000` then **six** data-port writes into a 4-deep FIFO —
+and differ only in what is inserted between the two probes (nothing / one control word / a control pair /
+a control pair plus data writes / a control pair plus a data-port *read*).
+
+**The mechanism, measured.** The sixth write /DTACK-stalls, which **phase-locks the CPU to the drain
+clock**: whatever h/v position a retry starts at, the 68k resumes exactly at a drain instant. With uniform
+slot spacing the post-insert probe then lands at a *fixed* offset past the next drain instant on every
+retry — 15 mclk for a 20-cycle inserted control word, 71 mclk for a 28-cycle control pair. 1815 of 1815
+active-display retries produced the identical miss. The ROM's 2048 retries buy hardware 2048 different slot
+phases; they bought us 2048 copies of one phase.
+
+**The fix, and its source.** External access slots are not evenly spread across a line. Kabuto's hardware
+notes publish the per-line access pattern as a string:
+
+```text
+H40: Hssss AsaaBsbb ((A~aaBSbb)*3 AraaBSbb)*5 ~~ s*23 ~ s*11        (210 accesses)
+H32: Hssss AsaaBsbb ((A~aaBSbb)*3 AraaBSbb)*4 ~~ s*13 ~ s*13 ~      (171 accesses)
+```
+
+`~` = external (CPU/DMA) slot, `r` = VRAM refresh. Expanding them gives exactly **18 `~` + 5 `r`** (H40)
+and **16 `~` + 4 `r`** (H32) — which reproduces the Sega *Genesis Technical Overview* DMA-capacity table's
+18/16 figures (already pinned at `docs/2026-07-16-vdp-recon.md:109`) from an independent source. The H40
+gap sequence is `8,8,16 | …×5 | 1 | 24 | 26` accesses; the wrap-around gap of **26** matches TascoDLX's
+measured figure (SpritesMind t=851 — the manual's 16-slot maximum gap is wrong; "the largest gap is
+actually 26 slots"), which is independent corroboration that Kabuto's string transcribes Nemesis's
+logic-analyser measurements. `Vdp::entry_drain_cost` now walks that schedule on active lines, so a VRAM
+word drains in anywhere from 358 to ~814 mclk instead of an invariant 380. **The per-line total is
+unchanged by construction** — the table has exactly 18/16 entries — so this redistributes drains within a
+line, it does not add or remove capacity. That is why it is currency-free where a crude uniform fudge is
+not: the recon measured that an arbitrary `entry_drain_cost += 80` reaches the same 72/80 *and* moves two
+visual baselines (`m68k_opcode_sizes`, `window_distortion`), while the real table moves none.
+
+`vdp::tests::active_slot_gaps_follow_the_published_pattern` re-expands both strings and checks the
+shipped index constants against them, plus the external/refresh counts — a transcription typo would
+otherwise surface three layers downstream as a moved frame hash.
+
+**Acceptance tests.** `bus::tests::vdpfifo_t16_*` replay T16's own port sequences through `MegaDriveBus`
+(instruction costs 20 / 16 / 20 CPU cycles, each corroborated by the measured 140 / 112 / 140 mclk gaps in
+the recon's `BusEventSink` trace) and sweep the retry across a scanline the way the ROM's 2048 retries do.
+Group 1 (nothing inserted) and group 7 (an inserted data-port read → the FIFO drains, so `$ffff ffff` is
+*correct*) are the two controls: both passed before this slice and still pass.
+
+Sources: [Kabuto's hardware notes (Plutiedev mirror)](https://plutiedev.com/mirror/kabuto-hardware-notes) ·
+[Nemesis / TascoDLX / Eke, VRAM access timing (t=851)](https://gendev.spritesmind.net/forum/viewtopic.php?t=851) ·
+[Sega Genesis Technical Overview (1991)](https://segaretro.org/images/1/18/GenesisTechnicalOverview.pdf) ·
+the ROM's own expected table at `$ED10`.
+
+### T16/S2 addendum (2026-08-03) — post-DMA FIFO occupancy; T16 passes, this ROM is complete
+
+Slice T16/S2. Scorecard movement: `vdp_port_access` **`cumulative 15/1/16 → 16/0/16`** (page 1 unchanged at
+`9/0/9` — T16 is a page-2 test). T16's verdict bytes **72/80 → 80/80**. Every other conformance row, **every**
+`VISUAL-BASELINE frame_hash=` row — including `m68k_opcode_sizes` `0x5436cda5786ea450` and
+`window_distortion` `0x5102219d295b4e2c`, the two rows measurably sensitive to FIFO stall timing — and
+**all frozen currency suites are byte-identical with their existing constants** (`export_state_v1::GOLDEN_HASH`,
+`oracle_differential`, `golden_frames`, `determinism_gate`, `singlestep_m68000` 113/113). No field was added
+to `state_hash` or `export_state`.
+
+**This closes design question Q1 of `docs/2026-08-03-a3-dma-fifo-design.md`, by reversing A3a's choice.**
+A3a fed DMA payload words through `Vdp::fifo_store` — the bare ring write — so a word took a physical FIFO
+slot (which VDPFIFOTesting test 3 pins, through the undefined-bit snoop) **without** bumping the pending
+count. Its stated reason: our Mem DMA runs synchronously inside the triggering bus access and bills the
+whole transfer through `Vdp::dma_cost` plus the returned halt wait, so pending entries would be phantoms no
+clock had advanced past — a spurious /DTACK stall on the next data-port write in every DMA-using ROM, for no
+test-3 or test-4 benefit. A3a was right to defer it and right to name it Q1.
+
+**What the ROM says.** T16 groups 9 and 10 (expected table ROM `$ED10` words 33-40, `0200 0100 0000 0200`
+and `0000 0100 0000 0200`) fire a 68k→VRAM DMA *between* their two probes and require the resuming 68k to
+observe **FULL → partial → EMPTY**. Group 9 uses an 8-word DMA from an empty FIFO; group 10 a 3-word DMA
+onto a FIFO already holding three words — which is the case that pins saturation at 4 rather than "the
+transfer leaves exactly `count` entries". With the bare ring store the CPU saw EMPTY on every read and both
+groups reported the `$ffff` "never observed in 2048 retries" sentinel.
+
+**Why hardware behaves that way.** The DMA unit's job ends when the last word is pushed *into the FIFO*, not
+when it reaches VRAM. Nemesis, *VDP Internals*: a DMA "will read a value from external memory using the DMA
+source address register and **add it to the FIFO** using the current command code and incremented command
+address registers" — the same sentence A3a quoted for the ring store. So a transfer completes with up to
+four words still queued, and the CPU that resumes can see them.
+
+**The phantom-stall objection is answered, not overruled.** Two changes, both in `vdp.rs`:
+
+* `Vdp::dma_write_word` calls `fifo_enqueue` instead of `fifo_store` — the payload word is pending, and
+  `fifo_len` saturates at 4 as it does for CPU writes.
+* `Vdp::dma_complete` anchors `fifo_slot_clock` at `busy_until` — the transfer's **end** instant — while
+  entries remain pending. Without this the residual would be measured against a slot clock still sitting at
+  the transfer's *start* and would appear to have drained the moment the 68k resumed, which is precisely
+  A3a's objection. With it the entries are not phantom: they are the words that genuinely have not reached
+  VRAM, the stall they produce is the real one, and the residual drains from the end of the transfer
+  exactly as groups 9/10 observe. `bus.rs`'s `run_mem_dma` needed no edit — it already passes `now + cost`.
+
+**Carried forward.** The total halt stays at `count × slots × rate` while up to four of those words are now
+*also* accounted as pending, so the last four are billed twice; physically the DMA unit should release the
+bus about four slots earlier. The ROM cannot see it (it measures FIFO state, not transfer duration) and
+shortening the halt would change DMA timing for every ROM. Registered as follow-up **F-DMAHALT**.
+
+**Test rewritten, not deleted.** `vdp::tests::mem_dma_ring_store_does_not_add_pending_entries` existed
+specifically to guard the A3a choice this slice reverses. It is replaced by its inverse,
+`vdp::tests::mem_dma_leaves_the_fifo_full`, citing ROM `$ED10` groups 9/10 in its comment, plus
+`vdp::tests::post_dma_fifo_drains_from_the_transfer_end` for the clock anchor. The acceptance tests are
+`bus::tests::vdpfifo_t16_group9_a_finished_dma_leaves_the_fifo_full` and
+`…_group10_a_short_dma_onto_a_partial_fifo_also_leaves_it_full`, which replay the ROM's own port sequences
+through `MegaDriveBus`.
+
+**Manual re-check still owed before this is pushed.** The DR-1/DR-2/DR-3 differential ROMs (Gunstar Heroes,
+Thunder Force IV, Batman — `docs/2026-07-22-differential-rom-findings.md`) have no automated conformance row
+and are all heavy DMA users. S2 changes what the FIFO looks like immediately after **every** DMA, so they
+should be run by hand. They are not vendored, so this slice could not do it.
+
+Sources: [Nemesis, VDP Internals p.3](https://gendev.spritesmind.net/forum/viewtopic.php?t=1291&start=43) ·
+the ROM's own expected table at `$ED10`.
 
 ## Limitations of the instrument itself
 
@@ -763,6 +910,80 @@ write **and** sub-instruction clock advance through a DMA. That is a real engine
   ring-advancing `$FFFF` CRAM-write triplet (`ctrl $C020`, `ctrl` second word, `data $FFFF`) common to all
   three. `MegaDriveBus::new` takes only `&mut` borrows, so a helper needs no borrow gymnastics. Tests only —
   no production code, no currency.
+
+* **F-SLOTGRID — an access slot's mclk position is a uniform grid, and hardware's is not.** (Registered
+  2026-08-03 by slice T16/S1; recon question Q1. **Code anchor: `Vdp::next_active_slot` in
+  `crates/oracle-core/src/vdp.rs`** — the line `k * MCLK_PER_LINE / accesses`.) S1 places access *k* at
+  `k × 3420 / total`, i.e. it assumes the line's 210 (H40) / 171 (H32) accesses are evenly spaced. They are
+  not: 210 × 16 mclk = 3360 ≠ 3420, because EDCLK slows around hsync. Eke (SpritesMind t=851): "EDCLK is
+  not always MCLK/5 during HSYNC, it's actually variating between MCLK/5 and MCLK/4 around HSYNC"; TmEE's
+  nesdev timing table describes the H40 line as "30 slow pixels, 4 medium pixels, and 386 fast pixels".
+  Both descriptions total 3420 and disagree on the microstructure, and no source found reconciles them. The
+  *ordering and count* of slots — which is what T16 measures — is unaffected; only their exact instants
+  are. **This is the choice `docs/2026-08-03-t16-slot-scheduling-recon.md` §4.4 flags as the one whose
+  variants must re-prove currency-neutrality**: a different mapping could plausibly move
+  `m68k_opcode_sizes` or `window_distortion`, the two frame-hash rows measurably sensitive to FIFO stall
+  timing. *What would settle it:* a source that pins the per-pixel clock division across the H40 line, or a
+  BlastEm instrument timing a full-FIFO stall at known h positions near hsync. Implement it as a
+  position→mclk function and re-run every currency gate; do **not** regenerate a baseline if one moves.
+* **F-BLANKSLOT — blanked lines keep the aggregate-rate model.** (Registered 2026-08-03 by slice T16/S1;
+  recon question Q3. **Code anchor: the early return in `Vdp::entry_drain_cost`,
+  `crates/oracle-core/src/vdp.rs`**, and the pin `vdp::tests::blanked_lines_keep_the_aggregate_slot_rate`.)
+  S1 gives *positions* to active-display drains but leaves vblank / display-off drains on the old
+  `slots × 3420 / slots_per_line` rate. That is an acknowledged inconsistency in the model, not an
+  oversight: on a blanked line nearly every access is an external slot so positions carry little
+  information, and it is the path every real game's bulk VDP traffic takes — the highest-blast-radius place
+  to change. *What would settle it:* Kabuto's notes do not publish a display-off pattern string; Mask of
+  Destiny's measured refresh cadence (see **F-BLANKREFRESH**) is the only positional datum found. Needs a
+  measured blanked-line pattern before it lands, and it belongs with the deferred per-line `dma_cost`
+  integration (recon §3.4 "S3"), not on its own.
+* **F-BLANKREFRESH — 205/167 vs 204/166 blanked-line slots.** (Registered 2026-08-03 by slice T16/S1;
+  recon question Q4. **Code anchor: `Vdp::slots_per_line` in `crates/oracle-core/src/vdp.rs`.**) The Sega
+  manual's DMA-capacity table gives 205 (H40) / 167 (H32) external slots on a blanked line, corroborated by
+  TascoDLX ("on V-blank lines it's all external access slots except for the usual refresh slots (H32:
+  167+4=171 ; H40: 205+5=210)") and confirmed by Nemesis. Mask of Destiny reports a *measured* extra
+  refresh slot with the display off — "In H40 mode, there are 6 refresh slots when the display is off.
+  There is one refresh slot every 32 slots starting at slot 37" — which gives 204, and 166 by analogy for
+  H32 (whose display-off refresh positions he says he never determined). **No source adjudicates.** We keep
+  the currently pinned 205/167. The recon measured the swap as currency-free on today's fixtures either
+  way, so this is a correctness question with no gate pressure behind it. *What would settle it:* a
+  hardware or BlastEm measurement of maximum DMA throughput on a display-off line, which differs by exactly
+  one word per line between the two models.
+* **F-H32SLOTS — no ROM exercises the H32 slot table.** (Registered 2026-08-03 by slice T16/S1; recon
+  question Q6. **Code anchor: `Vdp::H32_ACTIVE_SLOTS` in `crates/oracle-core/src/vdp.rs`.**) T16 runs in
+  H40 — measured: its drain cost was the H40 380 mclk. The H32 indices are derived from Kabuto's H32
+  pattern string by the same expansion as H40's, and `vdp::tests::active_slot_gaps_follow_the_published_pattern`
+  now checks both tables against the re-expanded strings, so a *transcription* error is caught. What is
+  **not** covered is whether the H32 string itself is right, and no vendored ROM would notice.
+  `vdp_sprite_masking` is the only H32 row we exercise and it is not FIFO-timing sensitive. *What would
+  settle it:* run VDPFIFOTesting in H32 — but see Open question Q1 below, the H32/H40 toggle on the sprite
+  ROM already behaves oddly for us, and VDPFIFOTesting offers no H32 mode at all. A BlastEm A/B on a
+  synthetic H32 full-FIFO stall is the realistic instrument.
+* **F-FIFOLAT — the FIFO's pipeline latency is not modeled.** (Registered 2026-08-03 by slice T16/S1;
+  recon question Q2. **Code anchor: `Vdp::entry_drain_cost` / `Vdp::fifo_drain` in
+  `crates/oracle-core/src/vdp.rs`** — our drain begins at the first slot strictly after the write.) Mask of
+  Destiny: "There's also some latency involved in the FIFO, so there's a delay (2 or 3 slots IIRC) between
+  when a word gets written to the FIFO and when the first byte gets written to VRAM even when the display
+  is off." The hedge is his. This is pre-existing (the uniform model had zero latency too), but S1 makes it
+  directly adjacent: with real slot positions, "which slot does a word start draining on" is now a
+  meaningful question. T16 cannot distinguish the two — it observes FIFO *occupancy*, not VRAM — so nothing
+  in the suite would move. *What would settle it:* a ROM or BlastEm instrument that writes one word and
+  reads the destination back at a known slot offset. Do not add it on the forum hedge alone; it would shift
+  every active-display drain and is a currency risk.
+
+* **F-DMAHALT — the last four words of a DMA are accounted twice.** (Registered 2026-08-03 by slice T16/S2;
+  recon question Q5. **Code anchors: `Vdp::dma_cost` and `Vdp::dma_complete` in
+  `crates/oracle-core/src/vdp.rs`, and `MegaDriveBus::run_mem_dma` in `crates/oracle-core/src/bus.rs`.**)
+  S2 leaves the 68k halt at the full `count × slots × rate` *and* leaves up to four words pending in the
+  FIFO afterwards, so those words are billed both inside the halt and again as post-transfer drain.
+  Physically the DMA unit should release the bus roughly four slots earlier, since its job ends when the
+  last word enters the FIFO. VDPFIFOTesting test 16 cannot see the difference — it measures FIFO *state*,
+  not transfer duration — so nothing in the suite constrains it either way, and shortening the halt changes
+  DMA elapsed time for **every** DMA-using ROM, which is a real currency risk. Shipped deliberately as a
+  small, documented over-count rather than an unmeasured change. *What would settle it:* a ROM or BlastEm
+  instrument that times a DMA's 68k halt directly (e.g. counting a free-running timer across the transfer)
+  rather than inspecting the FIFO afterwards. Naturally belongs with the deferred per-line `dma_cost`
+  integration, since both are about how a transfer's elapsed time is computed.
 
 **L2 — frame budgets are settle-time guesses.** They were found empirically per ROM and are generous, but a
 timing change that slows a ROM past its budget shows up as a scorecard diff, not as a timeout. Read a diff on
