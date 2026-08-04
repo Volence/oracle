@@ -164,10 +164,15 @@ pub struct Vdp {
     /// Pending (not-yet-drained) FIFO entries, 0..=4 — the coarse timing abstraction. Saturates at 4 until the
     /// drain clock advances it; a 5th write while full stalls the 68k via the wait channel.
     fifo_len: u8,
-    /// The mclk up to which the FIFO has been drained (recon R3) — the coarse drain clock. `fifo_drain`
-    /// advances it one entry at a time at the pinned per-line slot rate (2 slots per VRAM word, 1 per
-    /// CRAM/VSRAM word; 16/18 active / 167/205 blanked slots per line). Real timing state, serialized; in
-    /// neither frozen currency. Power-on = 0.
+    /// The mclk up to which the FIFO has been drained (recon R3) — the drain clock. Two things move it.
+    /// **`fifo_drain`** (and the stall paths in `data_write_at` / `data_read_at`) advances it one entry at a
+    /// time by [`Vdp::entry_drain_cost`]: on an **active display line** that is the real intra-line access
+    /// schedule (T16/S1, [`Vdp::next_active_slot`] — 2 slots per VRAM word, 1 per CRAM/VSRAM word, at the
+    /// published H32/H40 slot *positions*); on a **blanked** line it is still the flat per-line rate
+    /// (167/205 slots per line — follow-up F-BLANKSLOT). **[`Vdp::dma_complete`]** additionally re-anchors it
+    /// forward to a finished transfer's end instant while entries are still pending (T16/S2), so a DMA's
+    /// residual drains from where the transfer ended rather than from where it began. Real timing state,
+    /// serialized; in neither frozen currency. Power-on = 0.
     fifo_slot_clock: u64,
     /// mclk before which the status DMA-busy bit (bit 1) reads set (recon R4 / Eke: DMA-busy sets on the
     /// control-port setup write; a fill/copy runs the 68k in parallel, so a poll sees busy for the coarse
@@ -479,9 +484,8 @@ impl Vdp {
 
     /// Store `data` (plus the live code/address registers) into the next physical FIFO ring slot and advance
     /// the write cursor. The physical slot is overwritten in place (retaining nothing of the old entry beyond
-    /// the ring position). The *pending count* is deliberately untouched: this is the bare slot write, which a
-    /// DMA payload word performs (A3a / P1) without occupying a pending-drain slot in our synchronous DMA
-    /// model — see [`Vdp::dma_write_word`].
+    /// the ring position). The ring-write half of [`Vdp::fifo_enqueue`], which is its only caller and which
+    /// bumps the pending count.
     fn fifo_store(&mut self, data: u16) {
         self.fifo[self.fifo_write as usize] = FifoEntry {
             data,
@@ -506,6 +510,11 @@ impl Vdp {
 
     /// External (CPU/DMA) access slots per line at `mclk` (recon R3): active display H32 = 16 / H40 = 18;
     /// a blanked line (vblank or display-off) H32 = 167 / H40 = 205. One slot = one VRAM byte access.
+    ///
+    /// A per-line **rate**, with no notion of where in the line the slots sit. Since T16/S1 the FIFO drain
+    /// uses it only on **blanked** lines (F-BLANKSLOT); on an active line it reads real slot positions from
+    /// [`Vdp::next_active_slot`], whose tables carry these same 18/16 counts by construction.
+    /// [`Vdp::dma_cost`] still bills every transfer at this rate.
     fn slots_per_line(&self, mclk: u64) -> u64 {
         let blanked = self.vblank(mclk) || !self.display_enabled();
         match (self.h40(), blanked) {
@@ -531,7 +540,9 @@ impl Vdp {
     /// 18/16 figures — already pinned in `docs/2026-07-16-vdp-recon.md:109` — from an independent source.
     ///
     /// The gaps are **irregular**, and that is the entire content of VDPFIFOTesting test 16 groups
-    /// 2/3/5/6/8. The H40 gap sequence is `8,8,16 | …×5 | 1 | 24 | 26` accesses; the wrap-around gap of 26
+    /// 2/3/5/6/8. The H40 gap sequence is `(8,8,16)×4 | 8,8,15 | 1 | 24 | 26` accesses — the fifth render
+    /// group's last gap is 15, not 16, because the pair at 173/174 starts one access early; it sums to the
+    /// 210 accesses of the line, which is the arithmetic cross-check. The wrap-around gap of 26
     /// matches TascoDLX's measured figure (SpritesMind t=851: the manual's 16-slot maximum gap is wrong,
     /// "the largest gap is actually 26 slots"), which is independent corroboration that Kabuto's string
     /// transcribes Nemesis's logic-analyser measurements.
@@ -548,21 +559,29 @@ impl Vdp {
     /// line. Access `k` is placed at `k × MCLK_PER_LINE / accesses`, i.e. a uniform access grid — an
     /// approximation, since EDCLK is not constant across the line (follow-up **F-SLOTGRID**). Wraps to the
     /// next line's first slot, so the returned instant is always `> at` and a drain always makes progress.
+    ///
+    /// **The wrap uses the active table unconditionally**, without asking whether the *next* line is active:
+    /// a drain that starts past the last slot of line 223 is charged as if line 224 were still displaying,
+    /// when it is in fact the first vblank line and nearly every access on it is external. The caller
+    /// ([`Vdp::entry_drain_cost`]) makes the same simplification in the other direction — it picks the
+    /// active/blanked branch once, from the *start* instant. Recorded as a rider on follow-up
+    /// **F-BLANKSLOT**; it is the same active-vs-blanked boundary, seen from the far side.
     fn next_active_slot(&self, at: u64) -> u64 {
-        let (slots, accesses): (&[u64], u64) = if self.h40() {
+        let (slot_indices, accesses): (&[u64], u64) = if self.h40() {
             (&Self::H40_ACTIVE_SLOTS, Self::H40_ACCESSES_PER_LINE)
         } else {
             (&Self::H32_ACTIVE_SLOTS, Self::H32_ACCESSES_PER_LINE)
         };
         let line = at / MCLK_PER_LINE;
         let pos = at % MCLK_PER_LINE;
-        for &k in slots {
+        // F-SLOTTABLE: `k * MCLK_PER_LINE / accesses` is recomputed per probe, up to 18 divisions per call.
+        for &k in slot_indices {
             let t = k * MCLK_PER_LINE / accesses;
             if t > pos {
                 return line * MCLK_PER_LINE + t;
             }
         }
-        (line + 1) * MCLK_PER_LINE + slots[0] * MCLK_PER_LINE / accesses
+        (line + 1) * MCLK_PER_LINE + slot_indices[0] * MCLK_PER_LINE / accesses
     }
 
     /// The mclk cost of draining one FIFO entry with command `code` at slot-clock instant `at` (recon R3): a
@@ -570,7 +589,9 @@ impl Vdp {
     ///
     /// **T16/S1** — on an active display line the two slots are taken from the real schedule
     /// ([`Vdp::next_active_slot`]) rather than the uniform per-line rate, so a VRAM word drains in anywhere
-    /// from ~260 to ~814 mclk depending where in the line it lands, against the old invariant 380. The
+    /// from 260 mclk (a drain starting *on* a slot instant and taking the two close slots of a render group
+    /// — `t30 - t14` = 488 − 228) to ~814 (one starting just after the line's last slot, so both its slots
+    /// come from the next line), against the old invariant 380. The
     /// per-line *total* is unchanged by construction (the table has exactly 18/16 entries) — this
     /// redistributes drains within a line, it does not add or remove capacity.
     ///
@@ -919,8 +940,14 @@ impl Vdp {
     }
 
     /// The coarse mclk cost of a DMA (recon R4(e) / R3): `slots × MCLK_PER_LINE / slots_per_line`, using the
-    /// slot rate at the transfer's start instant (Phase-2 coarse — per-line active/blank variation across a
-    /// multi-line transfer is a Phase-3 refinement; slot positions within a line are deferred). Integer.
+    /// slot rate at the transfer's start instant. Integer.
+    ///
+    /// Deliberately still the flat rate, and the **one** part of the slot model T16 left untouched: a
+    /// transfer that starts in vblank and runs into active display is billed entirely at the vblank rate,
+    /// mis-costing it by up to ~11×. That is the long-standing "Phase 3 per-line DMA cost" deferral (recon
+    /// §3.4 "S3"). T16 does not need it, and unlike T16/S1 — which redistributes drains *within* a line and
+    /// leaves the per-line total identical — integrating this rate would change DMA elapsed time for every
+    /// DMA-using ROM, which is where the visual-baseline risk actually lives.
     pub fn dma_cost(&self, slots: u64, start: u64) -> u64 {
         slots * MCLK_PER_LINE / self.slots_per_line(start)
     }
@@ -937,11 +964,17 @@ impl Vdp {
     /// 16 groups 9/10 observe: the residual drains **from the end of the transfer**, so the resuming CPU
     /// sees FULL, then partial, then EMPTY (ROM `$ED10` words 33-40).
     ///
-    /// The assignment is unconditional rather than a `max`, deliberately: a transfer of four or more words
-    /// has overwritten the whole ring, so any earlier cursor position refers to entries that no longer
-    /// exist. (A shorter transfer can leave one or two pre-DMA entries alive, and their drain is then
-    /// re-anchored later than it would otherwise have been — an approximation shared with the rest of the
-    /// synchronous-DMA model, since in reality the DMA and the FIFO contend for the same access slots.)
+    /// The re-anchor is a **`max`**, so the clock never runs backwards. `fifo_slot_clock` is a *time*, not a
+    /// ring cursor, and it is routinely **ahead of** the caller's `now`: a /DTACK stall in `data_write_at` /
+    /// `data_read_at` advances it to the drain instant it waited for, which is by construction later than
+    /// the access that stalled. The invariant that keeps `busy_until >= fifo_slot_clock` in practice is a
+    /// property of the *bus*, not of this function — every stall those paths return is folded into
+    /// `now_mclk` before the next bus access, and `now_mclk` is instruction-start-granular, so a later
+    /// access always starts at or after the stall it was charged. A single instruction touching both
+    /// `$C00000` and `$C00004` would break that, which is why this takes the max rather than trusting it.
+    /// (Measured: 0 occurrences across all 16 conformance ROMs; reproducible in
+    /// `bus::tests::vdpfifo_t3_dma_payload_walks_the_fifo_ring`, which drives ports directly at a fixed
+    /// mclk and so does not fold stalls at all.)
     ///
     /// The total halt is deliberately left at `count × slots × rate` even though up to four of those words
     /// are now also accounted as pending — physically the DMA unit should release the bus about four slots
@@ -949,7 +982,16 @@ impl Vdp {
     /// shortening the halt would change DMA timing for every ROM; registered as follow-up **F-DMAHALT**.
     pub fn dma_complete(&mut self, record: DmaRecord, end_source_words: u32, busy_until: u64) {
         if self.fifo_len > 0 {
-            self.fifo_slot_clock = busy_until;
+            // The drain clock is monotonic. It holds for every bus-driven caller (see above); the `max` is
+            // what makes it hold unconditionally, and the assert is what would make a violation loud in a
+            // debug build rather than silently shortening a drain.
+            debug_assert!(
+                busy_until >= self.fifo_slot_clock,
+                "DMA ended at {busy_until} but the FIFO drain clock is already at {}: a bus access started \
+                 before a stall it was charged for",
+                self.fifo_slot_clock
+            );
+            self.fifo_slot_clock = self.fifo_slot_clock.max(busy_until);
         }
         self.regs[0x13] = 0;
         self.regs[0x14] = 0;
@@ -2731,9 +2773,11 @@ mod tests {
         // VRAM word's two-slot drain costs a different amount depending where in the line it starts. The
         // old uniform model returned an invariant 2 × 3420/18 = 380 mclk everywhere.
         let mut v = fresh();
-        v.control_write(0x8144, 0); // reg 1 = $44: mode 5 + display on (M5 must stay set, or the reg-12
-        v.control_write(0x8C81, 0); // write below is discarded by the Mode-4 mask) → H40
-                                    // Slot instants are `k × 3420 / 210`: the first two are 228 and 358, and the last is 3224.
+        // Reg 1 = $44 is mode 5 + display on. M5 must stay SET or the reg-12 write below is discarded by
+        // the Mode-4 register mask (slice T12) and the VDP silently stays in H32.
+        v.control_write(0x8144, 0);
+        v.control_write(0x8C81, 0);
+        // Slot instants are `k × 3420 / 210`: the first two are 228 and 358, and the last is 3224.
         assert_eq!(
             v.next_active_slot(0),
             228,
@@ -2745,18 +2789,26 @@ mod tests {
             3420 + 228,
             "wraps to the next line"
         );
-        // A VRAM word (2 slots) at the top of the line drains in 358 mclk; one that starts in the wide
-        // hblank gap takes 648 — a spread of ±270 mclk around the old invariant 380.
+        // A VRAM word costs two slots, so its drain spans the gap sequence from wherever it starts. The
+        // cheapest case is a drain that begins ON a slot instant and takes a render group's two close
+        // slots (t14 → t30 = 488 − 228 = 260); the dearest starts just past the line's last slot so both
+        // its slots come from the next line (648). Against the old invariant 380 that is a −120/+268
+        // spread, and it is the whole of T16 groups 2/3/5/6/8.
         let vram_write = 0x01;
         assert_eq!(
-            v.entry_drain_cost(vram_write, 0),
-            358,
-            "cheap: two close slots"
+            v.entry_drain_cost(vram_write, 228),
+            260,
+            "cheapest: starting on a slot instant, two close slots"
         );
         assert_eq!(
             v.entry_drain_cost(vram_write, 3000),
             648,
-            "expensive: the last slot of the line, then a wrap to the next"
+            "dearest: past the line's last slot, so both slots come from the next line"
+        );
+        assert_eq!(
+            v.entry_drain_cost(vram_write, 0),
+            358,
+            "mid-range: mclk 0 is not itself a slot instant"
         );
         // A CRAM word costs one slot, and it too follows the schedule.
         let cram_write = 0x03;
