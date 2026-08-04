@@ -1930,6 +1930,45 @@ mod tests {
         );
     }
 
+    // --- Shared VDP-port replay helpers (VDPFIFOTesting tests 3 and 16) -----------------------------
+
+    /// Instruction costs in 68000 clock cycles for the three instructions these replays are built from.
+    /// Each is independently corroborated by the measured mclk gaps in the T16 recon's `BusEventSink` trace
+    /// (`docs/2026-08-03-t16-slot-scheduling-recon.md` §1.6): data writes land 140 mclk = 20 cycles apart,
+    /// `move.w $C00004,dn` 112 mclk = 16, and the buffered stream reads 140 mclk = 20.
+    const MOVE_IMM_TO_ABS_W: u32 = 20; // move.w #imm,(xxx).L
+    const MOVE_ABS_TO_REG_W: u32 = 16; // move.w (xxx).L,dn
+    const MOVE_ABS_TO_MEM_W: u32 = 20; // move.w (xxx).L,(an)+
+
+    /// One VDP-port write as a whole 68k instruction: perform it at the harness's current mclk, then
+    /// advance that clock by the instruction's own cost **plus** whatever /DTACK wait the VDP asked for.
+    ///
+    /// Folding the wait back into the clock is not a detail — it is the **contract every real bus caller
+    /// honours** (`System::step_cpu` bills the returned wait into `now_mclk` before the next access), and it
+    /// is what phase-locks the CPU to the drain schedule, the mechanism T16 measures. A fixture that leaves
+    /// `now_mclk` frozen across a burst of port writes is not merely imprecise: it lets the FIFO drain clock
+    /// run ahead of the bus clock, which is exactly the backwards-time case `Vdp::dma_complete` asserts
+    /// against. Use these helpers rather than a single long-lived `bus()` borrow whenever a replay stalls.
+    fn vdp_port_write(mem: &mut MdMem, addr: u32, value: u16, cycles: u32) {
+        let mut sink = Vec::new();
+        let wait = {
+            let mut bus = mem.bus(&mut sink);
+            bus.write16(addr, 5, value)
+        };
+        mem.now_mclk += (cycles + wait) as u64 * crate::system::MCLK_PER_CPU_CYCLE;
+    }
+
+    /// One VDP-port read as a whole 68k instruction (see [`t16_write`]).
+    fn vdp_port_read(mem: &mut MdMem, addr: u32, cycles: u32) -> u16 {
+        let mut sink = Vec::new();
+        let (v, wait) = {
+            let mut bus = mem.bus(&mut sink);
+            bus.read16(addr, 5)
+        };
+        mem.now_mclk += (cycles + wait) as u64 * crate::system::MCLK_PER_CPU_CYCLE;
+        v
+    }
+
     #[test]
     fn vdpfifo_t3_dma_payload_walks_the_fifo_ring() {
         // VDPFIFOTesting test 3 "DMA Transfer using FIFO" (`vendor/TestRoms/vdp_port_access.bin`; name
@@ -1951,58 +1990,57 @@ mod tests {
         ]);
         let mut mem = MdMem::new(rom);
         mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE; // vblank line: blanked (fast) slot rate
-        let mut sink = Vec::new();
         let mut observed = Vec::new();
-        {
-            let mut bus = mem.bus(&mut sink);
-            let ctrl = |bus: &mut MegaDriveBus<'_, Vec<BusEvent>>, w: u16| {
-                bus.write16(0xC0_0004, 5, w);
-            };
-            let data = |bus: &mut MegaDriveBus<'_, Vec<BusEvent>>, w: u16| {
-                bus.write16(0xC0_0000, 5, w);
-            };
+        // Every access advances `now_mclk` by its instruction cost plus the /DTACK wait the VDP returned —
+        // the same contract `System::step_cpu` honours. This replay stalls (70 data-port writes into a
+        // 4-deep FIFO), so driving it from one long-lived `bus()` borrow at a frozen mclk would let the FIFO
+        // drain clock run ahead of the bus clock and trip `Vdp::dma_complete`'s monotonicity assert. The
+        // assertions below are all about ring *contents*, which are timing-independent, so this changes
+        // nothing the test measures — it just stops the fixture describing an impossible 68k.
+        let ctrl = |mem: &mut MdMem, w: u16| vdp_port_write(mem, 0xC0_0004, w, MOVE_IMM_TO_ABS_W);
+        let data = |mem: &mut MdMem, w: u16| vdp_port_write(mem, 0xC0_0000, w, MOVE_IMM_TO_ABS_W);
+        let read = |mem: &mut MdMem| vdp_port_read(mem, 0xC0_0000, MOVE_ABS_TO_MEM_W);
 
-            // ROM $5E60: CRAM write @ $0000, then 64 data writes zero all 128 bytes of CRAM.
-            ctrl(&mut bus, 0xC000);
-            ctrl(&mut bus, 0x0000);
-            for _ in 0..64 {
-                data(&mut bus, 0x0000);
-            }
+        // ROM $5E60: CRAM write @ $0000, then 64 data writes zero all 128 bytes of CRAM.
+        ctrl(&mut mem, 0xC000);
+        ctrl(&mut mem, 0x0000);
+        for _ in 0..64 {
+            data(&mut mem, 0x0000);
+        }
 
-            // ROM $5E7A: VRAM write @ $8000, then six marker words into the FIFO.
-            ctrl(&mut bus, 0x4000);
-            ctrl(&mut bus, 0x0002);
-            for w in [0x1000u16, 0x2000, 0x3000, 0x4000, 0x5000, 0x6000] {
-                data(&mut bus, w);
-            }
+        // ROM $5E7A: VRAM write @ $8000, then six marker words into the FIFO.
+        ctrl(&mut mem, 0x4000);
+        ctrl(&mut mem, 0x0002);
+        for w in [0x1000u16, 0x2000, 0x3000, 0x4000, 0x5000, 0x6000] {
+            data(&mut mem, w);
+        }
 
-            // ROM $5EBE..$5F0C: reg 1 = $54 (display on + M1/DMA enable), reg 15 = 2 (autoinc), regs 19/20
-            // = length 6 words, regs 21/22/23 = source word address $000200, mode Mem (reg 23 bit 7 = 0).
-            for w in [0x8154u16, 0x8F02, 0x9306, 0x9400, 0x9500, 0x9602, 0x9700] {
-                ctrl(&mut bus, w);
-            }
+        // ROM $5EBE..$5F0C: reg 1 = $54 (display on + M1/DMA enable), reg 15 = 2 (autoinc), regs 19/20
+        // = length 6 words, regs 21/22/23 = source word address $000200, mode Mem (reg 23 bit 7 = 0).
+        for w in [0x8154u16, 0x8F02, 0x9306, 0x9400, 0x9500, 0x9602, 0x9700] {
+            ctrl(&mut mem, w);
+        }
 
-            // ROM $5F18: CD = 100001 (VRAM write + CD5) @ $8000 fires the 68k→VDP DMA.
-            ctrl(&mut bus, 0x4000);
-            ctrl(&mut bus, 0x0082);
-            ctrl(&mut bus, 0x8144); // ROM $5F1E: M1 off
+        // ROM $5F18: CD = 100001 (VRAM write + CD5) @ $8000 fires the 68k→VDP DMA.
+        ctrl(&mut mem, 0x4000);
+        ctrl(&mut mem, 0x0082);
+        ctrl(&mut mem, 0x8144); // ROM $5F1E: M1 off
 
-            // Four groups of {2 x VSRAM read @0, 2 x CRAM read @0}, each separated by one ring-advancing
-            // CRAM data write of $FFFF @ $0020.
-            for group in 0..4 {
-                ctrl(&mut bus, 0x0000); // CD = 000100 = VSRAM read @ $0000
-                ctrl(&mut bus, 0x0010);
-                observed.push(bus.read16(0xC0_0000, 5).0);
-                observed.push(bus.read16(0xC0_0000, 5).0);
-                ctrl(&mut bus, 0x0000); // CD = 001000 = CRAM read @ $0000
-                ctrl(&mut bus, 0x0020);
-                observed.push(bus.read16(0xC0_0000, 5).0);
-                observed.push(bus.read16(0xC0_0000, 5).0);
-                if group < 3 {
-                    ctrl(&mut bus, 0xC020); // CD = 000011 = CRAM write @ $0020
-                    ctrl(&mut bus, 0x0000);
-                    data(&mut bus, 0xFFFF);
-                }
+        // Four groups of {2 x VSRAM read @0, 2 x CRAM read @0}, each separated by one ring-advancing
+        // CRAM data write of $FFFF @ $0020.
+        for group in 0..4 {
+            ctrl(&mut mem, 0x0000); // CD = 000100 = VSRAM read @ $0000
+            ctrl(&mut mem, 0x0010);
+            observed.push(read(&mut mem));
+            observed.push(read(&mut mem));
+            ctrl(&mut mem, 0x0000); // CD = 001000 = CRAM read @ $0000
+            ctrl(&mut mem, 0x0020);
+            observed.push(read(&mut mem));
+            observed.push(read(&mut mem));
+            if group < 3 {
+                ctrl(&mut mem, 0xC020); // CD = 000011 = CRAM write @ $0020
+                ctrl(&mut mem, 0x0000);
+                data(&mut mem, 0xFFFF);
             }
         }
 
@@ -2560,38 +2598,6 @@ mod tests {
     const T16_FULL: u16 = 0x0100;
     const T16_EMPTY: u16 = 0x0200;
 
-    /// Instruction costs in 68000 clock cycles for the three instructions T16's inner loop is built from.
-    /// Each is independently corroborated by the measured mclk gaps in the recon's `BusEventSink` trace
-    /// (§1.6): data writes land 140 mclk = 20 cycles apart, `move.w $C00004,dn` 112 mclk = 16, and the
-    /// buffered stream reads 140 mclk = 20.
-    const T16_MOVE_IMM_TO_ABS_W: u32 = 20; // move.w #imm,(xxx).L
-    const T16_MOVE_ABS_TO_REG_W: u32 = 16; // move.w (xxx).L,dn
-    const T16_MOVE_ABS_TO_MEM_W: u32 = 20; // move.w (xxx).L,(an)+
-
-    /// One VDP-port write as a whole 68k instruction: perform it at the harness's current mclk, then
-    /// advance that clock by the instruction's own cost **plus** whatever /DTACK wait the VDP asked for.
-    /// Folding the wait back into the clock is what phase-locks the CPU to the drain schedule — the
-    /// mechanism T16 measures.
-    fn t16_write(mem: &mut MdMem, addr: u32, value: u16, cycles: u32) {
-        let mut sink = Vec::new();
-        let wait = {
-            let mut bus = mem.bus(&mut sink);
-            bus.write16(addr, 5, value)
-        };
-        mem.now_mclk += (cycles + wait) as u64 * crate::system::MCLK_PER_CPU_CYCLE;
-    }
-
-    /// One VDP-port read as a whole 68k instruction (see [`t16_write`]).
-    fn t16_read(mem: &mut MdMem, addr: u32, cycles: u32) -> u16 {
-        let mut sink = Vec::new();
-        let (v, wait) = {
-            let mut bus = mem.bus(&mut sink);
-            bus.read16(addr, 5)
-        };
-        mem.now_mclk += (cycles + wait) as u64 * crate::system::MCLK_PER_CPU_CYCLE;
-        v
-    }
-
     /// A `MdMem` on an active H40 display line with the display enabled and DMA enabled — the state
     /// T16's groups run in (group 9's prologue writes reg 1 = `$54`).
     fn t16_mem(start_mclk: u64) -> MdMem {
@@ -2603,29 +2609,10 @@ mod tests {
         mem
     }
 
-    /// Replay one retry of T16 groups 1-8 at master-clock phase `start_mclk`, and return the group's
-    /// `d1`/`d2`/`d3` verdict words — the first FULL / PARTIAL / EMPTY seen in the 16-word stream, or
-    /// `$ffff` for a state never seen. `insert` runs the group's inserted operation between probe 1 and
-    /// probe 2 (ROM $EDAC, $EF1A, $F090, …; recon §1.4).
-    ///
-    /// Shared stimulus for all eight: a VRAM-write command to `$8000` then **six** data-port writes into
-    /// a 4-deep FIFO, so the sixth write /DTACK-stalls. Probe 2 is appended to the stream **last**, as
-    /// the ROM does (`move.w d4,(a1)+` after the 15 buffered reads).
-    fn t16_retry(start_mclk: u64, insert: impl Fn(&mut MdMem)) -> [u16; 3] {
-        let mut mem = t16_mem(start_mclk);
-        t16_write(&mut mem, 0xC0_0004, 0x4000, 0); // control word 1 \ move.l #$40000002,$C00004
-        t16_write(&mut mem, 0xC0_0004, 0x0002, 28); // control word 2 /
-        for _ in 0..6 {
-            t16_write(&mut mem, 0xC0_0000, 0xFFFF, T16_MOVE_IMM_TO_ABS_W);
-        }
-        let _probe1 = t16_read(&mut mem, 0xC0_0004, T16_MOVE_ABS_TO_REG_W);
-        insert(&mut mem);
-        let probe2 = t16_read(&mut mem, 0xC0_0004, T16_MOVE_ABS_TO_REG_W) & T16_MASK;
-        let mut stream: Vec<u16> = (0..15)
-            .map(|_| t16_read(&mut mem, 0xC0_0004, T16_MOVE_ABS_TO_MEM_W) & T16_MASK)
-            .collect();
-        stream.push(probe2); // the ROM appends probe 2 after the 15 buffered reads
-
+    /// The ROM's `d1`/`d2`/`d3` classification of a 16-word status stream: the first FULL, the first
+    /// PARTIAL (`$000`/`$002`) and the first EMPTY it contains, or `$ffff` for a state it never showed
+    /// (ROM `$EEBC` / `$EEAA` / `$EECE`).
+    fn t16_classify(stream: &[u16]) -> [u16; 3] {
         let first = |pred: &dyn Fn(u16) -> bool| -> u16 {
             stream.iter().copied().find(|&s| pred(s)).unwrap_or(0xFFFF)
         };
@@ -2636,23 +2623,54 @@ mod tests {
         ]
     }
 
+    /// Replay one retry of T16 groups 1-8 at master-clock phase `start_mclk`, and return the group's **four**
+    /// verdict words in the ROM's own order: probe 1, then the first FULL / PARTIAL / EMPTY seen in the
+    /// 16-word stream (`$ffff` for a state never seen). `insert` runs the group's inserted operation between
+    /// probe 1 and probe 2 (ROM $EDAC, $EF1A, $F090, …; recon §1.4).
+    ///
+    /// Shared stimulus for all eight: a VRAM-write command to `$8000` then **six** data-port writes into
+    /// a 4-deep FIFO, so the sixth write /DTACK-stalls. Probe 2 is appended to the stream **last**, as
+    /// the ROM does (`move.w d4,(a1)+` after the 15 buffered reads).
+    fn t16_retry(start_mclk: u64, insert: impl Fn(&mut MdMem)) -> [u16; 4] {
+        let mut mem = t16_mem(start_mclk);
+        vdp_port_write(&mut mem, 0xC0_0004, 0x4000, 0); // control word 1 \ move.l #$40000002,$C00004
+        vdp_port_write(&mut mem, 0xC0_0004, 0x0002, 28); // control word 2 /
+        for _ in 0..6 {
+            vdp_port_write(&mut mem, 0xC0_0000, 0xFFFF, MOVE_IMM_TO_ABS_W);
+        }
+        let probe1 = vdp_port_read(&mut mem, 0xC0_0004, MOVE_ABS_TO_REG_W) & T16_MASK;
+        insert(&mut mem);
+        let probe2 = vdp_port_read(&mut mem, 0xC0_0004, MOVE_ABS_TO_REG_W) & T16_MASK;
+        let mut stream: Vec<u16> = (0..15)
+            .map(|_| vdp_port_read(&mut mem, 0xC0_0004, MOVE_ABS_TO_MEM_W) & T16_MASK)
+            .collect();
+        stream.push(probe2); // the ROM appends probe 2 after the 15 buffered reads
+
+        let [d1, d2, d3] = t16_classify(&stream);
+        [probe1, d1, d2, d3]
+    }
+
     /// Sweep a retry across a scanline the way the ROM's 2048 retries do (each begins at a different h/v
-    /// position), and report whether **any** phase observed FULL in the stream. `$ED10` says hardware
-    /// does; the whole of T16 groups 2/3/5/6/8 is that one bit.
-    fn t16_any_phase_sees_full(insert: impl Fn(&mut MdMem) + Copy) -> bool {
+    /// position), and return the first phase whose row matches the ROM's `expect`, if any. Groups 2/3/5/6/8
+    /// hinge on a *sometimes*-observable state, so "some phase reproduces the hardware row" is the faithful
+    /// assertion — a single fixed phase would be asserting something the ROM does not claim.
+    fn t16_phase_matching(expect: [u16; 4], insert: impl Fn(&mut MdMem) + Copy) -> Option<u64> {
         let base = 100 * crate::vdp::MCLK_PER_LINE; // an active display line
         (0..crate::vdp::MCLK_PER_LINE)
             .step_by(20)
-            .any(|phase| t16_retry(base + phase, insert)[0] == T16_FULL)
+            .find(|&phase| t16_retry(base + phase, insert) == expect)
     }
+
+    /// The row groups 1-6 and 8 all share at ROM `$ED10`: probe 1 FULL, then FULL → partial → EMPTY.
+    const T16_ROW_FULL: [u16; 4] = [T16_FULL, T16_FULL, 0x0000, T16_EMPTY];
 
     #[test]
     fn vdpfifo_t16_group1_no_inserted_operation_sees_full() {
         // Group 1 (ROM $EDAC) inserts nothing; expected `0100 0100 0000 0200`. This is the control: it
         // already passes, and it must keep passing.
         assert!(
-            t16_any_phase_sees_full(|_| {}),
-            "group 1: the FIFO is still FULL at probe 2 with no inserted operation (ROM $ED10 word 5)"
+            t16_phase_matching(T16_ROW_FULL, |_| {}).is_some(),
+            "group 1: `0100 0100 0000 0200` with no inserted operation (ROM $ED10 words 1-4)"
         );
     }
 
@@ -2664,13 +2682,15 @@ mod tests {
         // retry (recon §1.6: 1815 of 1815 active-display retries produce the identical miss).
         for word in [0xC000u16, 0x0000] {
             assert!(
-                t16_any_phase_sees_full(|mem| t16_write(
+                t16_phase_matching(T16_ROW_FULL, |mem| vdp_port_write(
                     mem,
                     0xC0_0004,
                     word,
-                    T16_MOVE_IMM_TO_ABS_W
-                )),
-                "inserted control word ${word:04X}: FULL is still observable (ROM $ED10, groups 2/5)"
+                    MOVE_IMM_TO_ABS_W
+                ))
+                .is_some(),
+                "inserted control word ${word:04X}: the full row `0100 0100 0000 0200` (ROM $ED10, \
+                 groups 2/5 — words 5-8 and 17-20)"
             );
         }
     }
@@ -2681,11 +2701,13 @@ mod tests {
         // which lands the probe 71 mclk past our uniform drain boundary. Expected `d1` = `0100`.
         for (hi, lo) in [(0x4000u16, 0x0012u16), (0x0000, 0x0000), (0x0000, 0x8F01)] {
             assert!(
-                t16_any_phase_sees_full(|mem| {
-                    t16_write(mem, 0xC0_0004, hi, 0);
-                    t16_write(mem, 0xC0_0004, lo, 28);
-                }),
-                "inserted control pair ${hi:04X}{lo:04X}: FULL is still observable (ROM $ED10, groups 3/6/8)"
+                t16_phase_matching(T16_ROW_FULL, |mem| {
+                    vdp_port_write(mem, 0xC0_0004, hi, 0);
+                    vdp_port_write(mem, 0xC0_0004, lo, 28);
+                })
+                .is_some(),
+                "inserted control pair ${hi:04X}{lo:04X}: the full row `0100 0100 0000 0200` (ROM $ED10, \
+                 groups 3/6/8 — words 9-12, 21-24 and 29-32)"
             );
         }
     }
@@ -2697,15 +2719,31 @@ mod tests {
         // FIFO is empty afterwards and hardware sees neither FULL nor PARTIAL — expected
         // `0100 ffff ffff 0200`, the only `$ffff` row in the table. This is the negative control that
         // proves the other seven rows are about timing and not about a missing state.
-        let verdict = t16_retry(100 * crate::vdp::MCLK_PER_LINE, |mem| {
-            t16_write(mem, 0xC0_0004, 0x0000, 0);
-            t16_write(mem, 0xC0_0004, 0x0000, 28);
-            t16_read(mem, 0xC0_0000, T16_MOVE_ABS_TO_REG_W);
-        });
-        assert_eq!(
-            verdict,
-            [0xFFFF, 0xFFFF, T16_EMPTY],
-            "group 7: no FULL, no PARTIAL, EMPTY throughout (ROM $ED10 words 25-28)"
+        //
+        // Asserted the ROM's way, which is stronger than "some phase matches": `d1`/`d2` are `$ffff`
+        // because hardware never saw those states in **any** of 2048 retries, so every swept phase must
+        // show `ffff ffff <EMPTY>`; `d0` is latched on whichever retry satisfies the group's condition, so
+        // it is enough that *some* phase probes FULL.
+        let insert = |mem: &mut MdMem| {
+            vdp_port_write(mem, 0xC0_0004, 0x0000, 0);
+            vdp_port_write(mem, 0xC0_0004, 0x0000, 28);
+            vdp_port_read(mem, 0xC0_0000, MOVE_ABS_TO_REG_W);
+        };
+        let base = 100 * crate::vdp::MCLK_PER_LINE;
+        let mut saw_full_probe1 = false;
+        for phase in (0..crate::vdp::MCLK_PER_LINE).step_by(20) {
+            let [probe1, d1, d2, d3] = t16_retry(base + phase, insert);
+            assert_eq!(
+                [d1, d2, d3],
+                [0xFFFF, 0xFFFF, T16_EMPTY],
+                "group 7 @ phase {phase}: an inserted data-port read drains the FIFO, so no phase may \
+                 ever observe FULL or PARTIAL (ROM $ED10 words 26-28)"
+            );
+            saw_full_probe1 |= probe1 == T16_FULL;
+        }
+        assert!(
+            saw_full_probe1,
+            "group 7: probe 1 still catches the full FIFO before the inserted read (ROM $ED10 word 25)"
         );
     }
 
@@ -2722,7 +2760,7 @@ mod tests {
         // current command code and incremented command address registers". So the transfer completes
         // with up to four words still queued.
         let mut mem = t16_mem(100 * crate::vdp::MCLK_PER_LINE);
-        let probe1 = t16_read(&mut mem, 0xC0_0004, T16_MOVE_ABS_TO_REG_W) & T16_MASK;
+        let probe1 = vdp_port_read(&mut mem, 0xC0_0004, MOVE_ABS_TO_REG_W) & T16_MASK;
         assert_eq!(probe1, T16_EMPTY, "group 9 probe 1: an idle FIFO is EMPTY");
 
         for w in [
@@ -2732,13 +2770,13 @@ mod tests {
             0x9600,    // reg 22 = 0   : source mid
             0x9700,    // reg 23 = 0   : source high, mode Mem
         ] {
-            t16_write(&mut mem, 0xC0_0004, w, T16_MOVE_IMM_TO_ABS_W);
+            vdp_port_write(&mut mem, 0xC0_0004, w, MOVE_IMM_TO_ABS_W);
         }
-        t16_write(&mut mem, 0xC0_0004, 0x4000, 0); // VRAM write @ $8000 \ move.l #$40000082,…
-        t16_write(&mut mem, 0xC0_0004, 0x0082, 28); // + CD5 → fires the DMA /
+        vdp_port_write(&mut mem, 0xC0_0004, 0x4000, 0); // VRAM write @ $8000 \ move.l #$40000082,…
+        vdp_port_write(&mut mem, 0xC0_0004, 0x0082, 28); // + CD5 → fires the DMA /
 
         let stream: Vec<u16> = (0..16)
-            .map(|_| t16_read(&mut mem, 0xC0_0004, T16_MOVE_ABS_TO_MEM_W) & T16_MASK)
+            .map(|_| vdp_port_read(&mut mem, 0xC0_0004, MOVE_ABS_TO_MEM_W) & T16_MASK)
             .collect();
         let first = |pred: &dyn Fn(u16) -> bool| -> u16 {
             stream.iter().copied().find(|&s| pred(s)).unwrap_or(0xFFFF)
@@ -2759,28 +2797,40 @@ mod tests {
         // Group 10 (ROM $FB04) is group 9's independent confirmation with different numbers: **three**
         // data-port writes first (so probe 1 expects the partial `0000`, not `0200`), then a **3-word**
         // DMA. Expected `0000 0100 0000 0200` — the stream must still see FULL, partial and EMPTY in that
-        // order. Three DMA words onto a partly-filled FIFO is the case that pins saturation at 4 rather
-        // than "the transfer leaves exactly `count` entries".
+        // order. A short DMA onto a partly-filled FIFO is the case that pins saturation at 4 rather than
+        // "the transfer leaves exactly `count` entries".
+        //
+        // In THIS replay the FIFO holds 2 (not 3) entries when the DMA fires: the five register writes
+        // between probe 1 and the trigger take long enough for one pre-DMA entry to drain. 2 + 3 > 4, so
+        // saturation is still exercised — but it is asserted below rather than assumed, because a timing
+        // change that dropped it to 0 or 1 would silently turn this into a plain "DMA fills the FIFO" test
+        // without failing.
         let mut mem = t16_mem(100 * crate::vdp::MCLK_PER_LINE);
-        t16_write(&mut mem, 0xC0_0004, 0x4000, 0); // VRAM write @ $8000
-        t16_write(&mut mem, 0xC0_0004, 0x0002, 28);
+        vdp_port_write(&mut mem, 0xC0_0004, 0x4000, 0); // VRAM write @ $8000
+        vdp_port_write(&mut mem, 0xC0_0004, 0x0002, 28);
         for _ in 0..3 {
-            t16_write(&mut mem, 0xC0_0000, 0xFFFF, T16_MOVE_IMM_TO_ABS_W);
+            vdp_port_write(&mut mem, 0xC0_0000, 0xFFFF, MOVE_IMM_TO_ABS_W);
         }
-        let probe1 = t16_read(&mut mem, 0xC0_0004, T16_MOVE_ABS_TO_REG_W) & T16_MASK;
+        let probe1 = vdp_port_read(&mut mem, 0xC0_0004, MOVE_ABS_TO_REG_W) & T16_MASK;
         assert_eq!(
             probe1, 0x0000,
             "group 10 probe 1: three of four slots = partial"
         );
 
         for w in [0x9303u16, 0x9400, 0x9500, 0x9600, 0x9700] {
-            t16_write(&mut mem, 0xC0_0004, w, T16_MOVE_IMM_TO_ABS_W);
+            vdp_port_write(&mut mem, 0xC0_0004, w, MOVE_IMM_TO_ABS_W);
         }
-        t16_write(&mut mem, 0xC0_0004, 0x4000, 0);
-        t16_write(&mut mem, 0xC0_0004, 0x0082, 28); // CD5 → 3-word 68k→VRAM DMA
+        assert_eq!(
+            mem.vdp.fifo_len(),
+            2,
+            "the replay reaches the trigger with a partly-filled FIFO, so 2 + 3 saturates at 4"
+        );
+        vdp_port_write(&mut mem, 0xC0_0004, 0x4000, 0);
+        vdp_port_write(&mut mem, 0xC0_0004, 0x0082, 28); // CD5 → 3-word 68k→VRAM DMA
+        assert_eq!(mem.vdp.fifo_len(), 4, "saturated, not 2 + 3 = 5 and not 3");
 
         let stream: Vec<u16> = (0..16)
-            .map(|_| t16_read(&mut mem, 0xC0_0004, T16_MOVE_ABS_TO_MEM_W) & T16_MASK)
+            .map(|_| vdp_port_read(&mut mem, 0xC0_0004, MOVE_ABS_TO_MEM_W) & T16_MASK)
             .collect();
         let first = |pred: &dyn Fn(u16) -> bool| -> u16 {
             stream.iter().copied().find(|&s| pred(s)).unwrap_or(0xFFFF)

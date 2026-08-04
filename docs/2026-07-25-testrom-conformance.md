@@ -606,9 +606,10 @@ byte-identical with their existing constants** (`export_state_v1::GOLDEN_HASH`, 
 `export_state`. Design and measurements: `docs/2026-08-03-t16-slot-scheduling-recon.md`.
 
 **CORRECTION — "a genuinely larger piece of work" was wrong, and this ledger said it.** The scorecard row
-above, `docs/plans/2026-08-03-fifo-scanline-arcs.md` and
-`docs/plans/2026-08-03-PARKED-owner-ruling.md:207-209` all filed T16's remaining reds under the
-long-standing **"Phase 3 per-line DMA cost"** deferral. That conflated three separate things:
+above and `docs/plans/2026-08-03-PARKED-owner-ruling.md:207-209` both filed T16's remaining reds under the
+long-standing **"Phase 3 per-line DMA cost"** deferral. (`docs/plans/2026-08-03-fifo-scanline-arcs.md` does
+*not* — it says only "fixes T16" and targets 16/16; it was cited here in error and the citation is
+withdrawn.) That conflated three separate things:
 
 * **(A) intra-line slot positions** — *missing*, and the whole of groups 2/3/5/6/8. **This slice.** ~50
   lines of table-driven integer code in `Vdp::next_active_slot` / `Vdp::entry_drain_cost`.
@@ -646,11 +647,15 @@ H32: Hssss AsaaBsbb ((A~aaBSbb)*3 AraaBSbb)*4 ~~ s*13 ~ s*13 ~      (171 accesse
 `~` = external (CPU/DMA) slot, `r` = VRAM refresh. Expanding them gives exactly **18 `~` + 5 `r`** (H40)
 and **16 `~` + 4 `r`** (H32) — which reproduces the Sega *Genesis Technical Overview* DMA-capacity table's
 18/16 figures (already pinned at `docs/2026-07-16-vdp-recon.md:109`) from an independent source. The H40
-gap sequence is `8,8,16 | …×5 | 1 | 24 | 26` accesses; the wrap-around gap of **26** matches TascoDLX's
+gap sequence is `(8,8,16)×4 | 8,8,15 | 1 | 24 | 26` accesses — the fifth render group's last gap is 15, not
+16, because the pair at 173/174 begins one access early, and written that way it sums to the line's 210
+accesses, which is the arithmetic cross-check. The wrap-around gap of **26** matches TascoDLX's
 measured figure (SpritesMind t=851 — the manual's 16-slot maximum gap is wrong; "the largest gap is
 actually 26 slots"), which is independent corroboration that Kabuto's string transcribes Nemesis's
 logic-analyser measurements. `Vdp::entry_drain_cost` now walks that schedule on active lines, so a VRAM
-word drains in anywhere from 358 to ~814 mclk instead of an invariant 380. **The per-line total is
+word drains in anywhere from **260** mclk (a drain beginning *on* a slot instant and taking a render
+group's two close slots, `t30 - t14` = 488 − 228) to ~814 (one beginning just past the line's last slot, so
+both its slots come from the next line) instead of an invariant 380. **The per-line total is
 unchanged by construction** — the table has exactly 18/16 entries — so this redistributes drains within a
 line, it does not add or remove capacity. That is why it is currency-free where a crude uniform fudge is
 not: the recon measured that an arbitrary `entry_drain_cost += 80` reaches the same 72/80 *and* moves two
@@ -914,6 +919,15 @@ write **and** sub-instruction clock advance through a DMA. That is a real engine
   ring-advancing `$FFFF` CRAM-write triplet (`ctrl $C020`, `ctrl` second word, `data $FFFF`) common to all
   three. `MegaDriveBus::new` takes only `&mut` borrows, so a helper needs no borrow gymnastics. Tests only —
   no production code, no currency.
+  *Amended 2026-08-03 by slice T16 — the scope grew, and partly shrank.* T16 added **six** more replays
+  (`bus::tests::vdpfifo_t16_group*`), so the anchor is now the nine `bus::tests::vdpfifo_t{3,4,6,16}_*`
+  tests. Two pieces of the eventual harness already exist and the refactor should adopt rather than
+  re-invent them: `vdp_port_write` / `vdp_port_read`, which perform one port access **and fold the returned
+  /DTACK wait into `now_mclk`** the way `System::step_cpu` does, and `t16_classify`, which replaced three
+  copy-pasted "first FULL / PARTIAL / EMPTY" closures. The wait-folding matters beyond tidiness: T16's
+  review found that the older fixed-`now_mclk` fixtures let the FIFO drain clock run ahead of the bus
+  clock, which is a state no real 68k can reach, and `vdpfifo_t3_dma_payload_walks_the_fifo_ring` was
+  converted to the helpers for exactly that reason. Any harness must keep that property.
 
 * **F-SLOTGRID — an access slot's mclk position is a uniform grid, and hardware's is not.** (Registered
   2026-08-03 by slice T16/S1; recon question Q1. **Code anchor: `Vdp::next_active_slot` in
@@ -941,6 +955,13 @@ write **and** sub-instruction clock advance through a DMA. That is a real engine
   Destiny's measured refresh cadence (see **F-BLANKREFRESH**) is the only positional datum found. Needs a
   measured blanked-line pattern before it lands, and it belongs with the deferred per-line `dma_cost`
   integration (recon §3.4 "S3"), not on its own.
+  *Rider, registered 2026-08-03 by the T16 review — the same boundary seen from the other side.*
+  **`Vdp::next_active_slot` wraps into the next line using the active table unconditionally**, without
+  asking whether that line is active: a drain starting past the last slot of line 223 is charged as if line
+  224 were still displaying, when it is the first vblank line on which nearly every access is external.
+  `Vdp::entry_drain_cost` makes the mirror-image simplification, picking the active/blanked branch once from
+  the drain's *start* instant. Both are one-line consequences of "a drain is costed against a single line's
+  model", and both should be fixed together with the blanked-line positions rather than piecemeal.
 * **F-BLANKREFRESH — 205/167 vs 204/166 blanked-line slots.** (Registered 2026-08-03 by slice T16/S1;
   recon question Q4. **Code anchor: `Vdp::slots_per_line` in `crates/oracle-core/src/vdp.rs`.**) The Sega
   manual's DMA-capacity table gives 205 (H40) / 167 (H32) external slots on a blanked line, corroborated by
@@ -975,6 +996,22 @@ write **and** sub-instruction clock advance through a DMA. That is a real engine
   reads the destination back at a known slot offset. Do not add it on the forum hedge alone; it would shift
   every active-display drain and is a currency risk.
 
+* **F-SLOTTABLE — the slot instants are divided out on every probe instead of being a const table.**
+  (Registered 2026-08-03 by the T16 review. **Code anchor: the `// F-SLOTTABLE` comment inside
+  `Vdp::next_active_slot`, `crates/oracle-core/src/vdp.rs`.**) The loop recomputes
+  `k * MCLK_PER_LINE / accesses` per candidate slot — up to 18 (H40) integer divisions per call, and a VRAM
+  entry costs two calls, so up to 36 divisions per drained entry. `entry_drain_cost` sits on the drain path
+  of **every data-port write and every status read in every ROM**, which is as hot as core code gets here.
+  Storing the mclk instants directly as a `const [u64; 18]` / `[u64; 16]` would be both faster and more
+  readable (the reader sees 228, 358, 488 … rather than an index needing mental arithmetic). Deferred, not
+  done, for one reason: the current form keeps the *published access indices* in the source, which is what
+  `vdp::tests::active_slot_gaps_follow_the_published_pattern` checks against Kabuto's re-expanded pattern
+  strings — the slice's main defence against a transcription typo. A precomputed table must therefore keep
+  that test meaningful by asserting the derivation (indices → instants) rather than replacing it. Purely an
+  optimisation and a readability change: the values are identical by construction, so it must land with
+  every currency gate byte-identical, and any movement means the derivation is wrong. Note it interacts with
+  **F-SLOTGRID** — if the mclk mapping changes, the table changes with it, so do F-SLOTGRID first if both
+  are on the board.
 * **F-DMAHALT — the last four words of a DMA are accounted twice.** (Registered 2026-08-03 by slice T16/S2;
   recon question Q5. **Code anchors: `Vdp::dma_cost` and `Vdp::dma_complete` in
   `crates/oracle-core/src/vdp.rs`, and `MegaDriveBus::run_mem_dma` in `crates/oracle-core/src/bus.rs`.**)
