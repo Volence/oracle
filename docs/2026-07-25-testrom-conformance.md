@@ -726,10 +726,14 @@ specifically to guard the A3a choice this slice reverses. It is replaced by its 
 `…_group10_a_short_dma_onto_a_partial_fifo_also_leaves_it_full`, which replay the ROM's own port sequences
 through `MegaDriveBus`.
 
-**Manual re-check still owed before this is pushed.** The DR-1/DR-2/DR-3 differential ROMs (Gunstar Heroes,
-Thunder Force IV, Batman — `docs/2026-07-22-differential-rom-findings.md`) have no automated conformance row
-and are all heavy DMA users. S2 changes what the FIFO looks like immediately after **every** DMA, so they
-should be run by hand. They are not vendored, so this slice could not do it.
+**Manual re-check — OWED, then DISCHARGED CLEAN (overseer, 2026-08-03).** The DR-1/DR-2/DR-3 differential
+ROMs (Gunstar Heroes, Thunder Force IV, Batman — `docs/2026-07-22-differential-rom-findings.md`) have no
+automated conformance row and are all heavy DMA users. S2 changes what the FIFO looks like immediately after
+**every** DMA, so they had to be run by hand; they are not vendored, so the implementing slice could not do
+it. The overseer ran the A/B directly: `examples/boot_rom`, 600 frames each, built at `5cac0fa` (pre-T16)
+and at the T16 merge, comparing `ppm` / `vram` / `cram` / `vsram` / `ram` / `z80` per ROM. **All 18
+comparisons byte-identical.** S1+S2 are confirmed inert on the three ROMs the DR-1/2/3 slices exist to
+support.
 
 Sources: [Nemesis, VDP Internals p.3](https://gendev.spritesmind.net/forum/viewtopic.php?t=1291&start=43) ·
 the ROM's own expected table at `$ED10`.
