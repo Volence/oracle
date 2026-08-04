@@ -738,7 +738,9 @@ automated conformance row and are all heavy DMA users. S2 changes what the FIFO 
 it. The overseer ran the A/B directly: `examples/boot_rom`, 600 frames each, built at `5cac0fa` (pre-T16)
 and at the T16 merge, comparing `ppm` / `vram` / `cram` / `vsram` / `ram` / `z80` per ROM. **All 18
 comparisons byte-identical.** S1+S2 are confirmed inert on the three ROMs the DR-1/2/3 slices exist to
-support.
+support. **Re-run after the review pass** (`631dbd0` changed `dma_complete`'s anchor to `.max()`, a real
+behaviour change, so the earlier discharge no longer covered the shipped code): same three ROMs, same
+method, against the same `5cac0fa` baseline — **all 18 comparisons byte-identical again.**
 
 Sources: [Nemesis, VDP Internals p.3](https://gendev.spritesmind.net/forum/viewtopic.php?t=1291&start=43) ·
 the ROM's own expected table at `$ED10`.
