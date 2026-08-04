@@ -2705,4 +2705,91 @@ mod tests {
             "group 7: no FULL, no PARTIAL, EMPTY throughout (ROM $ED10 words 25-28)"
         );
     }
+
+    #[test]
+    fn vdpfifo_t16_group9_a_finished_dma_leaves_the_fifo_full() {
+        // Group 9 (ROM $F99E, prologue $F966): probe 1 on an empty FIFO, then an **8-word 68k→VRAM DMA**,
+        // then probe 2 + the stream. Expected `0200 0100 0000 0200` — after the transfer the resuming
+        // 68k must see FULL, then partial, then empty. Group 10 (ROM $FB04) says the same with a 3-word
+        // DMA on a partly-filled FIFO.
+        //
+        // Hardware behaves this way because the DMA unit's job ends when the last word is pushed **into
+        // the FIFO**, not when it reaches VRAM — Nemesis, *VDP Internals*: a DMA "will read a value from
+        // external memory using the DMA source address register and **add it to the FIFO** using the
+        // current command code and incremented command address registers". So the transfer completes
+        // with up to four words still queued.
+        let mut mem = t16_mem(100 * crate::vdp::MCLK_PER_LINE);
+        let probe1 = t16_read(&mut mem, 0xC0_0004, T16_MOVE_ABS_TO_REG_W) & T16_MASK;
+        assert_eq!(probe1, T16_EMPTY, "group 9 probe 1: an idle FIFO is EMPTY");
+
+        for w in [
+            0x9308u16, // reg 19 = 8   : length low  (8 words)
+            0x9400,    // reg 20 = 0   : length high
+            0x9500,    // reg 21 = 0   : source low
+            0x9600,    // reg 22 = 0   : source mid
+            0x9700,    // reg 23 = 0   : source high, mode Mem
+        ] {
+            t16_write(&mut mem, 0xC0_0004, w, T16_MOVE_IMM_TO_ABS_W);
+        }
+        t16_write(&mut mem, 0xC0_0004, 0x4000, 0); // VRAM write @ $8000 \ move.l #$40000082,…
+        t16_write(&mut mem, 0xC0_0004, 0x0082, 28); // + CD5 → fires the DMA /
+
+        let stream: Vec<u16> = (0..16)
+            .map(|_| t16_read(&mut mem, 0xC0_0004, T16_MOVE_ABS_TO_MEM_W) & T16_MASK)
+            .collect();
+        let first = |pred: &dyn Fn(u16) -> bool| -> u16 {
+            stream.iter().copied().find(|&s| pred(s)).unwrap_or(0xFFFF)
+        };
+        assert_eq!(
+            [
+                first(&|s| s & T16_FULL != 0),
+                first(&|s| s & (T16_FULL | T16_EMPTY) == 0),
+                first(&|s| s & T16_EMPTY != 0),
+            ],
+            [T16_FULL, 0x0000, T16_EMPTY],
+            "group 9: FULL → partial → EMPTY after the DMA (ROM $ED10 words 33-36), stream {stream:04X?}"
+        );
+    }
+
+    #[test]
+    fn vdpfifo_t16_group10_a_short_dma_onto_a_partial_fifo_also_leaves_it_full() {
+        // Group 10 (ROM $FB04) is group 9's independent confirmation with different numbers: **three**
+        // data-port writes first (so probe 1 expects the partial `0000`, not `0200`), then a **3-word**
+        // DMA. Expected `0000 0100 0000 0200` — the stream must still see FULL, partial and EMPTY in that
+        // order. Three DMA words onto a partly-filled FIFO is the case that pins saturation at 4 rather
+        // than "the transfer leaves exactly `count` entries".
+        let mut mem = t16_mem(100 * crate::vdp::MCLK_PER_LINE);
+        t16_write(&mut mem, 0xC0_0004, 0x4000, 0); // VRAM write @ $8000
+        t16_write(&mut mem, 0xC0_0004, 0x0002, 28);
+        for _ in 0..3 {
+            t16_write(&mut mem, 0xC0_0000, 0xFFFF, T16_MOVE_IMM_TO_ABS_W);
+        }
+        let probe1 = t16_read(&mut mem, 0xC0_0004, T16_MOVE_ABS_TO_REG_W) & T16_MASK;
+        assert_eq!(
+            probe1, 0x0000,
+            "group 10 probe 1: three of four slots = partial"
+        );
+
+        for w in [0x9303u16, 0x9400, 0x9500, 0x9600, 0x9700] {
+            t16_write(&mut mem, 0xC0_0004, w, T16_MOVE_IMM_TO_ABS_W);
+        }
+        t16_write(&mut mem, 0xC0_0004, 0x4000, 0);
+        t16_write(&mut mem, 0xC0_0004, 0x0082, 28); // CD5 → 3-word 68k→VRAM DMA
+
+        let stream: Vec<u16> = (0..16)
+            .map(|_| t16_read(&mut mem, 0xC0_0004, T16_MOVE_ABS_TO_MEM_W) & T16_MASK)
+            .collect();
+        let first = |pred: &dyn Fn(u16) -> bool| -> u16 {
+            stream.iter().copied().find(|&s| pred(s)).unwrap_or(0xFFFF)
+        };
+        assert_eq!(
+            [
+                first(&|s| s & T16_FULL != 0),
+                first(&|s| s & (T16_FULL | T16_EMPTY) == 0),
+                first(&|s| s & T16_EMPTY != 0),
+            ],
+            [T16_FULL, 0x0000, T16_EMPTY],
+            "group 10: FULL → partial → EMPTY after the DMA (ROM $ED10 words 37-40), stream {stream:04X?}"
+        );
+    }
 }

@@ -168,9 +168,23 @@ const BASELINE: &[(&str, &str)] = &[
         // Mode 4 while programming Mode-5 registers were corrected to declare M5 (test-only, 8 sites; see
         // docs/2026-08-03-decision2-premise-recheck.md). The `> 10` boundary is extrapolated from a hedged
         // source — the ROM pins register 15 only — registered as follow-up F-M4REGS in the ledger.
-        // The sole remaining residual is T16 (per-line access-slot scheduling).
+        // T16 (2026-08-03, slices T16/S1 + T16/S2): the last one. **This ROM now passes 16/16.** Two
+        // independent causes, neither of them the "Phase 3 per-line DMA cost" deferral this residual had
+        // been filed under: (S1) the external access slots within an active line are irregularly spaced —
+        // Kabuto's published per-line access pattern — and our uniform spacing let the /DTACK-stall
+        // phase-lock park the ROM's probe just past a drain boundary on every one of its 2048 retries,
+        // costing groups 2/3/5/6/8 [62/80 → 72/80 verdict bytes]; (S2) a finished 68k→VDP DMA leaves words
+        // *pending* in the FIFO, because the DMA unit's job ends when the last word is pushed into the FIFO
+        // rather than when it reaches VRAM, so the resuming 68k sees FULL → partial → EMPTY, which is
+        // groups 9/10 [72/80 → **80/80**]. S2 reverses A3a's deliberate ring-store-only choice and thereby
+        // answers design question Q1 of docs/2026-08-03-a3-dma-fifo-design.md. Cumulative 15/1 → **16/0**;
+        // page 1 unchanged at 9/0 (T16 is a page-2 test). Every other row here — including the two
+        // frame_hash rows measurably sensitive to FIFO stall timing, m68k_opcode_sizes and
+        // window_distortion — and every frozen currency constant is byte-identical across both slices.
+        // The genuinely large piece (integrating `Vdp::dma_cost` across the lines a transfer spans) is NOT
+        // needed for T16 and stays deferred; see the ledger's S1/S2 addenda.
         "vdp_port_access",
-        "page1 pass/fail/total=9/0/9; pages1+2 cumulative=15/1/16",
+        "page1 pass/fail/total=9/0/9; pages1+2 cumulative=16/0/16",
     ),
     (
         "vdp_sprite_masking",

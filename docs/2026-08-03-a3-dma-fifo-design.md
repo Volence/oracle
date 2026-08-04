@@ -585,6 +585,27 @@ regenerated constant ships in the same commit alongside the ledger amendment.
   ROM. Neither test 3 nor test 4 can tell the difference. This *may* matter to slice A1/T16 ("FIFO
   Wait States") and to any future non-synchronous DMA; if A1's implementer finds T16 needs post-DMA
   occupancy, revisit here rather than papering over it in the status word.
+
+  **CLOSED 2026-08-03 by slice T16/S2 — the answer is YES, and it was decided by the ROM.** T16's own
+  expected table at ROM `$ED10` (groups 9 and 10, words 33-40: `0200 0100 0000 0200` and
+  `0000 0100 0000 0200`) fires a 68k→VRAM DMA between its two probes and requires the resuming 68k to
+  observe **FULL → partial → EMPTY**. With the bare ring store it observed EMPTY throughout and both
+  groups reported the `$ffff` "never seen" sentinel. `Vdp::dma_write_word` therefore now calls
+  `fifo_enqueue`.
+
+  **The phantom-stall objection above was correct and is answered, not overruled.** It applied because
+  our synchronous DMA left entries pending against a slot clock still sitting at the transfer's *start*
+  instant. `Vdp::dma_complete` now anchors `fifo_slot_clock` at the transfer's **end** instant while
+  entries remain pending, so the residual is not phantom: it is the (up to four) words that genuinely
+  have not reached VRAM, and the stall they produce on the next data-port write is the real one. This
+  matches the physical picture in the same Nemesis sentence A3a quoted — the DMA unit "add[s] it to the
+  FIFO", so its job ends at the FIFO, not at VRAM. Deferring the question to this slice was the right
+  call: the evidence that settles it did not exist in tests 3 or 4.
+
+  Measured: T16 72/80 → **80/80**, `vdp_port_access` `15/1/16` → **`16/0/16`**, and every frozen currency
+  constant plus every other `VISUAL-BASELINE frame_hash=` row byte-identical. One residual is carried
+  forward — the DMA halt is still billed at `count × slots × rate` while up to four of those words are
+  now *also* pending, so the last four are accounted twice; registered as follow-up **F-DMAHALT**.
 * **Q2 — does VRAM *copy* also write to `address ^ 1`?** Eke's quote says yes ("used by VRAM fill
   **and copy** DMA"). Neither test 3 nor test 4 exercises copy, so I am **not** proposing to change
   `run_copy` (`vdp.rs:854-877`) in this slice — an unevidenced change there could move visual

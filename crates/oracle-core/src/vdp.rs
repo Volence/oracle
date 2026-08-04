@@ -875,15 +875,24 @@ impl Vdp {
     /// appended to its internal FIFO." Observable through the CRAM/VSRAM undefined-bit snoop — VDPFIFOTesting
     /// test 3 (expected table ROM `$5E0C`) reads it back and is the acceptance test.
     ///
-    /// `fifo_store`, not `fifo_enqueue`: the pending count stays put. Our Mem DMA runs synchronously inside
-    /// one bus access and bills its elapsed time through `dma_cost` + the returned halt wait, so counting the
-    /// payload as pending would leave phantom entries no clock has advanced past — a spurious /DTACK stall on
-    /// the next data-port write in every DMA-using ROM, for no test benefit (neither test 3 nor test 4 can
-    /// tell the difference). Open question Q1 in `docs/2026-08-03-a3-dma-fifo-design.md`; revisit here, not in
-    /// the status word, if slice A1/T16 ever needs post-DMA occupancy.
+    /// **T16/S2 — `fifo_enqueue`, so the word is *pending*, not just resident in the ring.** A3a used the
+    /// bare `fifo_store` deliberately, on the reasoning that our synchronous Mem DMA bills its whole elapsed
+    /// time through `dma_cost` + the returned halt wait, so pending entries would be phantoms no clock had
+    /// advanced past — a spurious /DTACK stall on the next data-port write in every DMA-using ROM. That was
+    /// the right call **at the time** and was recorded as open question Q1 of
+    /// `docs/2026-08-03-a3-dma-fifo-design.md`, to be revisited here. It is now answered against, by the ROM.
+    ///
+    /// The reasoning no longer applies because [`Vdp::dma_complete`] anchors the drain clock at the
+    /// transfer's end instant: the surviving entries are **not** phantoms, they are the (up to four) words
+    /// that genuinely have not reached VRAM yet, and the stall they produce is the real one. Physically the
+    /// DMA unit's job ends when the last word is pushed *into the FIFO*, not when it reaches VRAM — the same
+    /// Nemesis sentence quoted above, "add it to the FIFO", is the pin. VDPFIFOTesting test 16 groups 9 and
+    /// 10 (expected table ROM `$ED10` words 33-40, `0200 0100 0000 0200` / `0000 0100 0000 0200`) fire a
+    /// DMA between their two probes and require the resuming 68k to see **FULL → partial → EMPTY**; with a
+    /// bare ring store it sees EMPTY throughout and both groups report `$ffff`.
     pub fn dma_write_word(&mut self, w: u16) {
         self.in_dma = true; // watchpoints v2: this word's captures attribute to the triggering DMA
-        self.fifo_store(w);
+        self.fifo_enqueue(w);
         self.write_target(w);
         self.in_dma = false;
         self.autoinc();
@@ -899,7 +908,29 @@ impl Vdp {
     /// Record a completed DMA + advance the length/source registers to their post-transfer state (recon R4:
     /// regs 19–23 mutate during a transfer — length → 0, source advanced; visible in both currencies) and
     /// open the DMA-busy window to `busy_until`.
+    ///
+    /// **T16/S2** — it also anchors the FIFO drain clock at `busy_until` while entries are still pending.
+    /// Our Mem DMA runs synchronously inside the triggering bus access, so without this the entries
+    /// [`Vdp::dma_write_word`] left pending would be measured against a slot clock still sitting at the
+    /// transfer's *start*, and would appear to have drained the instant the 68k resumed. Anchoring at the
+    /// end instant is what makes those entries real rather than phantom, and it is what VDPFIFOTesting test
+    /// 16 groups 9/10 observe: the residual drains **from the end of the transfer**, so the resuming CPU
+    /// sees FULL, then partial, then EMPTY (ROM `$ED10` words 33-40).
+    ///
+    /// The assignment is unconditional rather than a `max`, deliberately: a transfer of four or more words
+    /// has overwritten the whole ring, so any earlier cursor position refers to entries that no longer
+    /// exist. (A shorter transfer can leave one or two pre-DMA entries alive, and their drain is then
+    /// re-anchored later than it would otherwise have been — an approximation shared with the rest of the
+    /// synchronous-DMA model, since in reality the DMA and the FIFO contend for the same access slots.)
+    ///
+    /// The total halt is deliberately left at `count × slots × rate` even though up to four of those words
+    /// are now also accounted as pending — physically the DMA unit should release the bus about four slots
+    /// earlier. The ROM cannot see the difference (it measures FIFO state, not transfer duration) and
+    /// shortening the halt would change DMA timing for every ROM; registered as follow-up **F-DMAHALT**.
     pub fn dma_complete(&mut self, record: DmaRecord, end_source_words: u32, busy_until: u64) {
+        if self.fifo_len > 0 {
+            self.fifo_slot_clock = busy_until;
+        }
         self.regs[0x13] = 0;
         self.regs[0x14] = 0;
         // Advance the source registers (Mem: the 68k word address; the low 23 bits, reg 23 keeps its mode bit).
@@ -2768,23 +2799,69 @@ mod tests {
     }
 
     #[test]
-    fn mem_dma_ring_store_does_not_add_pending_entries() {
-        // Deliberate (design §3.3): a DMA payload word takes a physical ring slot but does NOT bump the
-        // pending count. Our Mem DMA runs synchronously inside one bus access and bills its elapsed time
-        // through `dma_cost` + the returned halt wait, so counting the words as pending would leave four
-        // phantom entries no clock has advanced past — a spurious /DTACK stall on the next data-port write
-        // in every DMA-using ROM, bought for no test-3 benefit. Neither test 3 nor test 4 can tell the
-        // difference. Recorded as open question Q1 (interacts with slice A1/T16).
+    fn mem_dma_leaves_the_fifo_full() {
+        // T16/S2 — the INVERSE of A3a's `mem_dma_ring_store_does_not_add_pending_entries`, which this
+        // replaces. A3a deliberately used the bare ring store so a DMA payload word took a physical slot
+        // without bumping the pending count, and recorded the choice as design question Q1 of
+        // `docs/2026-08-03-a3-dma-fifo-design.md`. **VDPFIFOTesting test 16 answers Q1 against it.**
+        //
+        // The ROM's own expected table at `$ED10` (word 34 of group 9, word 38 of group 10) requires the
+        // 68k resuming after a 68k→VRAM DMA to observe the FIFO **FULL**. It can only do that if the
+        // transfer left words undrained — which is what hardware does, because the DMA unit's job ends
+        // when the last word is pushed *into the FIFO*, not when it reaches VRAM (Nemesis, VDP Internals:
+        // a DMA "will read a value from external memory using the DMA source address register and *add it
+        // to the FIFO*"). Group 10's three-word DMA onto a partly-filled FIFO is the case that pins
+        // saturation at 4 rather than "the transfer leaves exactly `count` entries".
         let mut v = fresh();
         command(&mut v, 0x01, 0x8000);
-        let before = v.fifo_len();
+        assert_eq!(v.fifo_len(), 0, "an idle FIFO before the transfer");
         for w in [0xAAAAu16, 0xBBBB, 0xCCCC, 0xDDDD, 0xEEEE, 0xFFFF] {
             v.dma_write_word(w);
         }
         assert_eq!(
             v.fifo_len(),
-            before,
-            "a DMA ring store leaves the pending count untouched"
+            4,
+            "a six-word DMA leaves the four-deep FIFO full, not empty (ROM $ED10 groups 9/10)"
+        );
+    }
+
+    #[test]
+    fn post_dma_fifo_drains_from_the_transfer_end() {
+        // The other half of S2, and what makes the entries above real rather than phantom: our Mem DMA runs
+        // synchronously inside the triggering bus access, so `dma_complete` anchors the drain clock at the
+        // transfer's END instant. Without that anchor the residual would be measured against a slot clock
+        // still sitting at the transfer's start and would appear already drained the moment the 68k
+        // resumed — the very "phantom entries" objection A3a raised, here answered rather than ignored.
+        let mut v = fresh();
+        v.control_write(0x8144, 0); // mode 5 + display on
+        v.control_write(0x8C81, 0); // H40
+        command(&mut v, 0x01, 0x8000);
+        let start = 100 * MCLK_PER_LINE;
+        for w in [0xAAAAu16, 0xBBBB, 0xCCCC, 0xDDDD] {
+            v.dma_write_word(w);
+        }
+        let end = start + 4_000; // a plausible transfer window; the exact cost is `Vdp::dma_cost`'s job
+        v.dma_complete(
+            DmaRecord {
+                mode: DmaMode::Mem,
+                source: 0,
+                dest: 0x8000,
+                len: 4,
+                target: Target::Vram,
+            },
+            0,
+            end,
+        );
+        // Immediately after the transfer nothing has drained: the clock starts at `end`, not at `start`.
+        let s = v.control_read_status(0, end);
+        assert_ne!(s & (1 << 8), 0, "FULL the instant the 68k resumes");
+        assert_eq!(v.fifo_len(), 4, "no entry drained during the halt itself");
+        // Letting one entry's slot cost elapse pops exactly one — the residual really drains from `end`.
+        v.control_read_status(0, end + 400);
+        assert_eq!(
+            v.fifo_len(),
+            3,
+            "the residual drains from the transfer's end"
         );
     }
 
