@@ -728,7 +728,9 @@ T2's ids already distinguish them.)*
 >   `a11100_reads`. (Even these are not exact: the probe's read arm is `BusOp::Read | BusOp::Tas`
 >   (`:170`) and `WatchOp::Read` deliberately excludes TAS, so a TAS into unmapped space would be
 >   miscounted. `WatchOp::Any` over-counts instead. Irreducible without a third op filter; noted, not
->   built.)
+>   built. → **`F-TRACE-TASOP`**, registered 2026-08-14 with the size-filter close-out below, because it
+>   qualifies *those* four counters too. Confirmed not to bite: **0 `Tas` events** across all 21 ROMs — the
+>   4 `testrom` builders plus every `vendor/TestRoms/*.bin`, 20 frames each.)
 > - **Needs a size and/or address-parity filter, which §5/§6 never specified and this pass did not
 >   build: 4.** `io_even_byte_reads` (Byte **and** even address), `io_word_reads` (Word),
 >   `status_upper_reads` (Word **or** even address), `status_odd_byte_reads` (Byte **and** odd address)
@@ -737,24 +739,47 @@ T2's ids already distinguish them.)*
 >   (add `Option<Size>` and an address-parity filter to a spec; ~8 lines, four episodes, no currency
 >   surface — but it is a filter §6 did not sanction, so it is registered rather than smuggled in).
 >
->   > **SHIPPED 2026-08-14 (`F-TRACE-SIZEFILTER`) — and it is 3 of the 4, not 4.** `Watch::size` +
->   > `Watch::addr_parity` land the sanctioned two filters. `io_even_byte_reads`, `io_word_reads` and
->   > `status_odd_byte_reads` each become one `Count` watch; **`status_upper_reads` does not**, because
->   > `Word` **or** even is a *disjunction* and `WatchSpec::matches` is a conjunction of optional filters
->   > by design. It is recoverable only as a hand-summed set of disjoint watches enumerating the size
->   > domain (`Word` ∪ `Byte`∧even ∪ `Long`∧even). No predicate language was added to catch it.
+>   > **SHIPPED 2026-08-14 (`F-TRACE-SIZEFILTER`) — all 4 of the 4, on every stream this emulator can
+>   > produce.** `Watch::size` + `Watch::addr_parity` land the sanctioned two filters, and each of the four
+>   > counters becomes **one `Count` watch**: `io_even_byte_reads` (Byte∧even), `io_word_reads` (Word),
+>   > `status_odd_byte_reads` (Byte∧odd), and `status_upper_reads` — which is a plain **even**-parity watch.
 >   >
->   > One correction to the bullet above, found by writing the tests rather than by reading:
->   > `status_odd_byte_reads` is **not** "Byte **and** odd" — the probe computes it as the `else` of
->   > `Word ∥ even`, i.e. **odd ∧ non-Word**, which also claims an odd `Size::Long` access. The two agree
->   > on every real stream only because the 68000 bus adapter emits `Byte`/`Word` and never `Long` (a `.l`
->   > operand is two word bus cycles) — now pinned on a real run by
->   > `tests/watchpoints.rs::the_bus_emits_only_byte_and_word_accesses` rather than taken on faith.
+>   > *(Corrected 2026-08-14, second pass. The first write-up of this insert said "3 of the 4" and called
+>   > `status_upper_reads` recoverable only by summing disjoint watches. That verdict was an artefact of a
+>   > synthetic test stream containing events the emulator cannot emit — see the two facts below. The
+>   > inconsistency was self-inflicted: the same insert already pinned the `Size::Long` fact on a real run
+>   > in order to simplify `status_odd_byte_reads`, then declined to apply the same real-stream standard one
+>   > clause further, where it would have cost the headline. Both standards are now the same one.)*
 >   >
->   > The `Read`-vs-`Tas` gap in the bullet above is **untouched and still open**: the probe's arm is
->   > `BusOp::Read | BusOp::Tas` and `WatchOp::Read` excludes `Tas`. It does not bite these three counters
->   > on any stream observed here (no `Tas` reaches `$A10000-$A1001F` or `$C00004-$C00007`), so the
->   > agreement tests hold; a ROM that `TAS`es a VDP or I/O port would break them.
+>   > Two facts about real streams do the work, and **both are pinned on real runs** over a six-ROM corpus
+>   > (`build_pad_poll` + `direct_color_dma`, `io_sample`, `m68k_bcd`, `m68k_memory_test`, `color_1536`):
+>   >
+>   > - `tests/watchpoints.rs::the_bus_emits_only_byte_and_word_accesses` — no `Size::Long` bus event
+>   >   exists (a `.l` operand is two word bus cycles). So `status_odd_byte_reads`, which the probe computes
+>   >   as the `else` of `Word ∥ even` and which is therefore really **odd ∧ non-Word** rather than
+>   >   "odd ∧ Byte" as the bullet above says, is exactly Byte∧odd.
+>   > - `tests/watchpoints.rs::no_odd_address_word_access_ever_reaches_a_mapped_port` — a word access to an
+>   >   odd address takes the address-error abort (`m68000/microop.rs`, `install_address_error`) *before*
+>   >   `bus.read16`, so no `BusEvent` is emitted at all. The only odd-address `Word` events anywhere are
+>   >   the `fc=7` interrupt-acknowledge cycles at `$00FFFFF9`/`$00FFFFFD`, which `MegaDriveBus::read16`
+>   >   serves from an arm that returns ahead of every port decode. Hence inside any mapped range
+>   >   `Word ⟹ even`, and `Word ∨ even` ≡ `even`.
+>   >
+>   > **The abstract limit is still real and still recorded.** `Word ∨ even` is not a product of the two
+>   > filter domains, and `WatchSpec::matches` remains a conjunction of optional filters by design — no
+>   > predicate language was added. That claim now lives in its own, explicitly **counterfactual** test,
+>   > `word_or_even_is_not_a_product_of_the_two_filter_domains`, whose stream contains odd-address `Word`
+>   > and `Size::Long` events precisely because the machine cannot produce them. If a fourth `Size` variant
+>   > or a new bus master ever appears, the limit binds again and the decomposition (one watch per width) is
+>   > what to fall back to; that decomposition is generated from an exhaustive `match` over `Size`, so a new
+>   > variant is a compile error rather than a silent undercount.
+>   >
+>   > **Stream-conditional caveat, stated with the verdict and not in a tail bullet.** No `WatchOp` is
+>   > *exactly* the probe's outer arm: it gates on `BusOp::Read | BusOp::Tas`, `WatchOp::Read` excludes
+>   > `Tas`, and `WatchOp::Any` admits writes. So all four equivalences hold **on TAS-free streams**. Every
+>   > ROM in the corpus is TAS-free (asserted by an `Op` census in the agreement test; 0 `Tas` events across
+>   > all 21 ROMs when swept). A ROM that `TAS`es a VDP or I/O port would break them. Registered as its own
+>   > follow-up, **`F-TRACE-TASOP`** — deliberately *not* closed by building a third op filter here.
 > - **Shadow-gated, i.e. stateful, and therefore in the "not replaced" bucket: the remaining 9**, not 3.
 >   §9 puts `z80win_bank_reads`, `z80win_bank_writes`, `z80win_vdp_mirror_writes` and
 >   `z80win_open_word_writes` in the *replaced* column, but every one of them sits inside the
@@ -1019,7 +1044,8 @@ Each with the reason, so a later reader can reopen it on evidence rather than ta
 | ~~`F-TRACE-PAL`~~ **CLOSED 2026-08-14** | Ruled (A): carry the basis. `TimingBasis` on `System`/`Watchpoints` + `timingBasis` in Aether `initialize`, numbers derived from `MCLK_PER_FRAME` | `system.rs` (`TimingBasis`), `watchpoints.rs`, `oracle-aether/src/{engine,rpc}.rs` | no — closed |
 | `F-TRACE-VDPWRITE-MCLK` | `VdpWrite` has no per-write mclk, so sub-scanline CRAM effects are unlocatable — the recorded blocker *"CRAM writes carry no h-position"* | `vdp.rs` capture path, `system.rs:728-732`, `docs/2026-07-25-testrom-conformance.md:815` | no — own slice |
 | `F-TRACE-TUPLEKEY` | 2-key composite census (`(k1,k2) → count`), the T16 "deterministic or stochastic?" shape | `docs/2026-08-03-t16-slot-scheduling-recon.md:252-262` | no |
-| ~~`F-TRACE-SIZEFILTER`~~ **CLOSED 2026-08-14** | Sanctioned by the rulings doc §F item 3 and shipped: `Watch::size(Size)` + `Watch::addr_parity(AddrParity)`, two clauses in `WatchSpec::matches`, both carried on `WatchReport`. **3 of the 4 episodes became one watch each** (`io_even_byte_reads`, `io_word_reads`, `status_odd_byte_reads`). **Residual: `status_upper_reads` is a *disjunction*** (Word **or** even) and no conjunction of optional filters expresses it — recoverable only by summing disjoint watches over an enumerated size domain. Deliberately **not** generalised into a predicate language. Second residual found while testing: the probe computes `status_odd_byte_reads` as the `else` of `Word ∥ even`, i.e. **odd ∧ non-Word**, not "odd ∧ Byte" as this doc said — equal only because the bus emits no `Size::Long` (pinned by `the_bus_emits_only_byte_and_word_accesses`) | `examples/k4_openbus_probe.rs:201-214` (line anchor re-verified), `watchpoints.rs` `WatchSpec::matches` | no — closed |
+| ~~`F-TRACE-SIZEFILTER`~~ **CLOSED 2026-08-14** | Sanctioned by the rulings doc §F item 3 and shipped: `Watch::size(Size)` + `Watch::addr_parity(AddrParity)`, two clauses in `WatchSpec::matches`, both carried on `WatchReport`. **All 4 episodes became one watch each** — `io_even_byte_reads` (Byte∧even), `io_word_reads` (Word), `status_odd_byte_reads` (Byte∧odd), `status_upper_reads` (**even**). *(Corrected on a second pass: the first write-up said 3 of 4 and called `status_upper_reads` a hand-summed disjunction. That was an artefact of a synthetic stream carrying events the emulator cannot emit.)* Two enabling facts, both pinned on real runs over a 6-ROM corpus: no `Size::Long` bus event exists (`the_bus_emits_only_byte_and_word_accesses`), and no odd-address `Word` access ever reaches a mapped port — the address-error abort precedes the bus, and the only odd `Word` events are the `fc=7` IACK cycles at `$00FFFFF9`/`$00FFFFFD` (`no_odd_address_word_access_ever_reaches_a_mapped_port`). So `Word ⟹ even` inside any mapped range and `Word ∨ even` ≡ `even`. **Abstract residual, unchanged:** `Word ∨ even` is not a product of the two filter domains; kept as the explicitly counterfactual `word_or_even_is_not_a_product_of_the_two_filter_domains`, with the fallback decomposition generated from an exhaustive `match` over `Size` so a new variant is a compile error. Deliberately **not** generalised into a predicate language. Second residual: the probe computes `status_odd_byte_reads` as the `else` of `Word ∥ even`, i.e. **odd ∧ non-Word**, not "odd ∧ Byte" as this doc said — equal only because the bus emits no `Size::Long`. **Caveat:** all four equivalences are conditional on TAS-free streams — see `F-TRACE-TASOP` | `examples/k4_openbus_probe.rs:201-214` (line anchor re-verified), `watchpoints.rs` `WatchSpec::matches`, `tests/watchpoints.rs` | no — closed |
+| `F-TRACE-TASOP` | No `WatchOp` equals `K4Probe`'s outer arm `BusOp::Read \| BusOp::Tas`: `WatchOp::Read` excludes `Tas`, `WatchOp::Any` admits writes. So *strictly* none of the four counters above is exactly expressible — they are equivalent on TAS-free streams only. Confirmed not to bite: **0 `Tas` events across all 21 ROMs** (4 `testrom` builders + 17 `vendor/TestRoms`), and the agreement test asserts a TAS-free `Op` census per ROM. A third op filter was deliberately NOT built | `examples/k4_openbus_probe.rs:201-214`, `watchpoints.rs` `WatchOp::matches` | no |
 | `F-TRACE-MINMAX` | Add min/max aggregation when an episode demands it | — | no |
 | `F-TRACE-VALUEPRED` | Add value-predicate filtering when an episode demands it | — | no |
 | `F-RECON-K4-COUNT` | Recon doc says "26 hand-declared counters"; the file has 16 | `docs/2026-08-14-tooling-frontier-recon.md:153` | no — doc fix |
