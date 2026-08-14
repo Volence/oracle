@@ -824,6 +824,14 @@ richer trace — it is exposing the latches (`z80_busreq`, `z80_running`, the FM
 read-only accessors on `System`/`Ym2612`. → **`F-TRACE-EXPOSE-LATCHES`**, separate item, cheap, and it
 would delete more hand-rolled code than the census primitives will.
 
+> **Correction (2026-08-14, when the item shipped).** The last clause is wrong: it deletes **zero**. Two
+> of the three sites are *sinks* — handed events, never the machine — so they cannot call an accessor at
+> all; and the third, `K4Probe`, was measured and kept its shadow, because a frame-boundary sample of a
+> latch the counters read *per event* moved 22 of 29 sweep rows. The paragraph's diagnosis stands (three
+> sinks really do shadow state the machine holds, and the accessors really are what the next
+> bus-arbitration hunt reaches for); only its yield estimate was wrong. Full accounting in the closed
+> follow-up row for `F-TRACE-EXPOSE-LATCHES` below.
+
 ### `FrameCapture` (`tests/conformance_roms.rs:254-276`) vs `LineCollector` (`tests/scanline_capture.rs:12-39`) — **NOT replaced. Wrong seam.**
 
 The near-duplicate claim is **confirmed and then some**: same seam, same day (`cb2162e` 2026-08-03 00:59
