@@ -16,6 +16,11 @@
 //! in [`METHODS`] and therefore a capability-flag change, not a breaking one. What is *not* implemented,
 //! and the two places the contract could not be followed without a change request, are recorded in
 //! `docs/2026-08-14-aether-change-requests.md`.
+//!
+//! The four **checkpoint** methods (§6.1, D13) are *additional to* that 53: the 2026-08-14 amendment adds
+//! them to the catalog, and per D4/D5 a server that does not implement them simply does not advertise
+//! them. They are advertised here, so `capabilities.checkpoints` carries the cap a client has to plan
+//! around.
 
 use crate::hex;
 use crate::outbound::Subscribers;
@@ -48,6 +53,12 @@ pub struct EngineConfig {
     pub max_read_len: u64,
     /// Ceiling on `otherMatches` in a symbol lookup, per `protocol.md` §4 ("up to 5").
     pub max_symbol_matches: usize,
+    /// **The checkpoint cap** (`protocol.md` §6.1, D13 rule 3), advertised in `initialize` as
+    /// `capabilities.checkpoints.cap`. At the cap `emulator/checkpoint` **refuses** with `-32005`; it
+    /// never evicts the oldest, because an id a client is still holding must never quietly start meaning
+    /// nothing. Doubles as the default and maximum page size for `emulator/checkpoint_list` — there can
+    /// never be more live checkpoints than this, so a bigger page could not return more.
+    pub max_checkpoints: usize,
     /// Wall-clock pacing for free-running mode, or `None` to run flat out. **Pacing only** — it never
     /// touches an emulated stamp, so determinism is unaffected (recon §5 C2). Tests use `None`.
     pub free_run_pace: Option<Duration>,
@@ -61,6 +72,9 @@ impl Default for EngineConfig {
             max_run_frames: 3600,
             max_read_len: 4096,
             max_symbol_matches: 5,
+            // The contract's own advertised example (`"checkpoints":{"supported":true,"cap":8}`). A
+            // snapshot is the whole machine, so the cap is a memory bound as much as a policy one.
+            max_checkpoints: 8,
             free_run_pace: Some(Duration::from_micros(16_667)),
             server_name: "oracle-next".into(),
             server_version: env!("CARGO_PKG_VERSION").into(),
@@ -107,6 +121,26 @@ pub const METHODS: &[MethodSpec] = &[
         name: "emulator/resume",
         handler: Engine::resume,
         summary: "enter free-running mode (emits resumed)",
+    },
+    MethodSpec {
+        name: "emulator/checkpoint",
+        handler: Engine::checkpoint,
+        summary: "capture the whole machine into a volatile in-memory slot and return its server-assigned id",
+    },
+    MethodSpec {
+        name: "emulator/restore",
+        handler: Engine::restore,
+        summary: "restore the entire machine, ROM included, from a checkpoint",
+    },
+    MethodSpec {
+        name: "emulator/checkpoint_list",
+        handler: Engine::checkpoint_list,
+        summary: "the live checkpoints, bounded and cursored",
+    },
+    MethodSpec {
+        name: "emulator/checkpoint_drop",
+        handler: Engine::checkpoint_drop,
+        summary: "drop one checkpoint by id, or all of them, and report how many went",
     },
     MethodSpec {
         name: "emulator/read_memory",
@@ -169,6 +203,36 @@ pub const EVENTS: &[&str] = &[
     "emulator/romReloaded",
 ];
 
+/// One live checkpoint: a **whole machine**, a server-assigned id, and the coordinate it was taken at
+/// (`protocol.md` §6.1, D13).
+///
+/// **Volatility is structural, not a policy someone has to remember** (D13 rule 1): the bytes live in
+/// this `Vec` and there is no code path from here to the filesystem. The snapshot is a bincode encoding
+/// of the live `System` struct and is version-fragile across builds *by design* — writing it to a file
+/// would promise a durability the format does not have, so no "save to file" variant of these methods
+/// exists and none may be added. Persistent save-states are a separate versioned artifact and a separate
+/// change request.
+///
+/// Ids are assigned from a monotonic counter and **never reused**, including after a drop. Two clients
+/// share one bus and one set of coordinates; a recycled id would let one client's `restore` silently
+/// land on another client's machine.
+struct Checkpoint {
+    id: u64,
+    /// Carried back verbatim by `checkpoint_list` and never interpreted (§6.1).
+    label: Option<String>,
+    frame: u64,
+    mclk: u64,
+    /// bincode of the entire `System` — CPU, RAM, VDP, sound state **and the ROM** (D13 rule 2).
+    snapshot: Vec<u8>,
+    /// The engine-side shadows of machine state, captured with the machine so a restore cannot leave
+    /// them describing a cartridge and a pad set that are no longer loaded. They are not extra state:
+    /// [`Engine::held`] mirrors the pads inside `System`, and `rom_path` names the image inside it. A
+    /// restore that brought the ROM back but left `status` reporting the *other* image's path would be
+    /// exactly the half-applied restore D13 rule 2 forbids.
+    held: [Pad; 2],
+    rom_path: Option<String>,
+}
+
 /// The emulator and everything the bus knows about it. Lives on exactly one thread (the core is
 /// single-threaded and `System` is plain owned data); every connection reaches it through a channel.
 pub struct Engine {
@@ -194,6 +258,12 @@ pub struct Engine {
     /// restore exactly what was held before it and `hold` has unambiguous set-not-add semantics (the
     /// sibling's *"`hold` ADDS, it does not replace"* defect, recon §1c).
     held: [Pad; 2],
+    /// The live checkpoints (§6.1, D13). In memory, per **server session**, capped by
+    /// [`EngineConfig::max_checkpoints`], and owned by the engine rather than by a connection — the
+    /// coordinates belong to the machine, so two clients on one bus see one set.
+    checkpoints: Vec<Checkpoint>,
+    /// Monotonic id source. Never rewound, never reused (see [`Checkpoint`]).
+    next_checkpoint_id: u64,
 }
 
 impl Engine {
@@ -208,6 +278,8 @@ impl Engine {
             free_run: false,
             running: false,
             held: [Pad::default(); 2],
+            checkpoints: Vec::new(),
+            next_checkpoint_id: 1,
         }
     }
 
@@ -304,6 +376,15 @@ impl Engine {
                 // A 6-button pad is not modelled by the core, so x/y/z/mode are refused rather than
                 // silently ignored.
                 "sixButtonPad": false,
+                // §6.1: an object rather than a bare boolean, because D13 requires the cap to be
+                // discoverable *before* a client plans around it — a client that has to hit the limit
+                // to learn it is a client that loses a checkpoint finding out. No `maxBytes`: this
+                // server caps the count only, and advertising a byte ceiling it does not enforce would
+                // be worse than omitting the optional key.
+                "checkpoints": {
+                    "supported": true,
+                    "cap": self.config.max_checkpoints,
+                },
                 "symbolsLoaded": self.symbols.is_some(),
                 "romLoaded": !self.sys.rom().is_empty(),
                 // The three recon §4 non-negotiables, advertised so a client can assert them.
@@ -443,8 +524,14 @@ impl Engine {
     /// change the machine's mode as a side effect of a read-shaped call, which is exactly the class of
     /// silent state change this bus exists to make impossible.
     ///
-    /// **Contract gap:** `protocol.md` §5 has no code for "wrong machine state for this operation", so
-    /// this is `-32600` with the reason in `data`. Filed as change request CR-3.
+    /// **Contract gap, now closed upstream but not yet here:** §5 had no code for "wrong machine state
+    /// for this operation", so this returns `-32600` with the reason in `data`. That was filed as change
+    /// request CR-3 — and CR-3 was *adopted*: the 2026-08-14 amendment added
+    /// [`code::INVALID_STATE`](crate::rpc::code::INVALID_STATE) (`-32005`), and §5 now names
+    /// `emulator/run_frames` while free-running as its first worked example. So this call site is
+    /// knowingly non-conformant until a separate slice moves it (and its test) to `-32005`; the `reason`
+    /// discriminant a client branches on is already the contract's `"machineRunning"`, so the migration
+    /// is the code integer alone. New code uses [`RpcError::invalid_state`](crate::rpc::RpcError::invalid_state).
     fn require_paused(&self, method: &str) -> Result<(), RpcError> {
         if self.free_run {
             return Err(RpcError::invalid_request(format!(
@@ -988,9 +1075,195 @@ impl Engine {
         }
         Ok(out)
     }
+
+    // ------------------------------------------------------- checkpoints (§6.1, D13)
+    //
+    // **Deliberately NOT `require_paused`.** §6's run-control state rule names exactly the ops that
+    // demand a paused machine — `run_to`, `run_to_scanline`, `run_frames`, `step*` — because each of them
+    // *advances* the machine and would fight the free-run loop for it. None of the four checkpoint
+    // methods advances anything: they read or replace the machine wholesale, on the engine thread,
+    // between frames (see `server::engine_loop`), so a capture taken while free-running is a coherent
+    // frame-aligned coordinate and a restore leaves the mode exactly as it found it. §5's own worked
+    // examples of `-32005` list only the cap and the unknown id for these methods, never "while
+    // running". Refusing anyway would be a bound the contract does not ask for, and — since §5 also
+    // forbids resolving a wrong-state case implicitly — the client's only recourse would be to pause,
+    // call, and resume, which changes the machine's mode to service a call that never needed it.
+
+    fn checkpoint(&mut self, params: &Value) -> Result<Value, RpcError> {
+        // Ids are **server-assigned** (§6.1). A client-proposed `id` is not an error, it is simply not
+        // an input — honouring one would let two clients on one bus overwrite each other's coordinates.
+        let label =
+            match params.get("label") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(s)) => Some(s.clone()),
+                Some(_) => return Err(RpcError::invalid_params(
+                    "`label` must be a string (it is carried back verbatim and never interpreted)",
+                )),
+            };
+
+        // D13 rule 3: refuse at the cap, never evict. Checked *before* the snapshot is taken so a
+        // refusal costs nothing.
+        let cap = self.config.max_checkpoints;
+        let count = self.checkpoints.len();
+        if count >= cap {
+            return Err(RpcError::invalid_state(
+                "checkpointCapReached",
+                format!(
+                    "all {cap} checkpoint slots are in use; make room first: \
+                     emulator/checkpoint_drop"
+                ),
+                json!({"cap": cap, "count": count}),
+            ));
+        }
+
+        let snapshot = self.sys.snapshot();
+        let bytes = snapshot.len();
+        let mclk = self.sys.scheduler().now();
+        let id = self.next_checkpoint_id;
+        self.next_checkpoint_id += 1;
+        self.checkpoints.push(Checkpoint {
+            id,
+            label,
+            frame: mclk / MCLK_PER_FRAME,
+            mclk,
+            snapshot,
+            held: self.held,
+            rom_path: self.rom_path.clone(),
+        });
+        // `frame`/`mclk` are deliberately absent: §6.1 says they **are** the machine stamp, and the stamp
+        // is merged in structurally after this returns (`rpc::stamp_result`). Emitting them here would be
+        // a shadowed duplicate that the envelope overwrites with the identical values anyway — nothing
+        // has advanced the machine between the capture above and the stamp.
+        Ok(json!({"id": id, "bytes": bytes}))
+    }
+
+    fn restore(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let id = parse_checkpoint_id(params)?;
+        let Some(cp) = self.checkpoints.iter().find(|c| c.id == id) else {
+            // D13 rule 4: an unknown or already-dropped id is refused, never a silent no-op. A no-op here
+            // would leave the caller running its next experiment against whatever machine happened to be
+            // loaded, believing it had gone back.
+            return Err(unknown_checkpoint(id));
+        };
+
+        // D13 rule 2: the ENTIRE machine — CPU, RAM, VDP, sound state and the ROM. A checkpoint taken
+        // before an `emulator/reload_rom` therefore brings the previous cartridge back; that is defined
+        // behaviour, not an error case.
+        let sys = System::restore(&cp.snapshot).map_err(|e| {
+            RpcError::new(
+                code::INTERNAL_ERROR,
+                format!("checkpoint {id} could not be decoded: {e}"),
+            )
+            .with_data(json!({"id": id}))
+        })?;
+        let (held, rom_path) = (cp.held, cp.rom_path.clone());
+        // Nothing is applied until the decode has succeeded — a half-applied restore is exactly what
+        // "MUST NOT partially restore" rules out.
+        self.sys = sys;
+        self.held = held;
+        self.rom_path = rom_path;
+
+        // The whole result **is** the machine stamp (§6.1), reporting the restored coordinate — which is
+        // precisely the confirmation the caller wants, so no extra field is needed and none is invented.
+        Ok(json!({}))
+    }
+
+    fn checkpoint_list(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let total = self.checkpoints.len();
+        let cap = self.config.max_checkpoints;
+        let cursor = match params.get("cursor") {
+            None => 0,
+            Some(v) => hex::parse_count("cursor", v, 0, total as u64)? as usize,
+        };
+        let limit = match params.get("limit") {
+            None => cap,
+            Some(v) => hex::parse_count("limit", v, 1, cap as u64)? as usize,
+        };
+        let items: Vec<Value> = self
+            .checkpoints
+            .iter()
+            .skip(cursor)
+            .take(limit)
+            .map(|c| {
+                let mut e = json!({
+                    "id": c.id,
+                    "frame": c.frame,
+                    "mclk": c.mclk,
+                    "bytes": c.snapshot.len(),
+                });
+                // Optional per §6.1: a checkpoint taken without one carries no key, rather than an empty
+                // string a client would have to guess the meaning of.
+                if let Some(l) = &c.label {
+                    e["label"] = json!(l);
+                }
+                e
+            })
+            .collect();
+
+        // The house's one bounded-array rule (`rpc::bounded_array`, recon §4 non-negotiable #2) computes
+        // the page; §6.1's spelling for this method names the array `checkpoints` and its continuation
+        // token `cursor`, so the same envelope is emitted under the catalog's names rather than a second
+        // pagination convention being invented alongside it.
+        let page = rpc::bounded_array(items, total, cursor, limit);
+        let mut out = Map::new();
+        out.insert("checkpoints".into(), page["items"].clone());
+        out.insert("total".into(), page["total"].clone());
+        out.insert("returned".into(), page["returned"].clone());
+        out.insert("limit".into(), page["limit"].clone());
+        out.insert("truncated".into(), page["truncated"].clone());
+        // `cursor` is returned **when more remain** and is absent otherwise, so a client can never mistake
+        // "here is where to continue" for "you are at the end".
+        if let Some(next) = page["nextCursor"].as_u64() {
+            out.insert("cursor".into(), json!(next));
+        }
+        Ok(Value::Object(out))
+    }
+
+    fn checkpoint_drop(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let all = match params.get("all") {
+            None => false,
+            Some(Value::Bool(b)) => *b,
+            Some(_) => return Err(RpcError::invalid_params("`all` must be a boolean (D9)")),
+        };
+        if all {
+            if params.get("id").is_some() {
+                return Err(RpcError::invalid_params(
+                    "`id` and `all` are mutually exclusive — pass one",
+                ));
+            }
+            let removed = self.checkpoints.len();
+            self.checkpoints.clear();
+            return Ok(json!({"removed": removed}));
+        }
+        let id = parse_checkpoint_id(params)?;
+        let before = self.checkpoints.len();
+        self.checkpoints.retain(|c| c.id != id);
+        // Unlike `restore`, dropping an id that is already gone is answered rather than refused: `removed`
+        // is the count that actually went (§6.1), and `0` is a complete, machine-readable answer to
+        // "is it gone?" — the caller's intent is satisfied either way. The hazard D13 rule 4 names is a
+        // `restore` that succeeds against a machine the client did not ask for, which has no analogue
+        // here: nothing was restored, nothing was evicted, and no id changed meaning.
+        Ok(json!({"removed": before - self.checkpoints.len()}))
+    }
 }
 
 // -------------------------------------------------------------------- free functions
+
+/// A checkpoint `id`: a **JSON number** per D9 (an id is a slot handle, not an address), required.
+fn parse_checkpoint_id(params: &Value) -> Result<u64, RpcError> {
+    let Some(v) = params.get("id") else {
+        return Err(RpcError::invalid_params("`id` (a JSON number) is required"));
+    };
+    hex::parse_count("id", v, 0, u64::MAX)
+}
+
+fn unknown_checkpoint(id: u64) -> RpcError {
+    RpcError::invalid_state(
+        "unknownCheckpoint",
+        format!("no checkpoint {id} — it was never taken, or it has been dropped"),
+        json!({ "id": id }),
+    )
+}
 
 fn no_symbols() -> RpcError {
     RpcError::new(

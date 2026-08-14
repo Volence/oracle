@@ -86,6 +86,14 @@ This is the one place the intended scope was consciously not delivered.
 > and the count is **capped and refused loudly** at the limit with `-32005`, never silently evicted.
 > §9's deferral was lifted, with the reasoning recorded in the contract's §9.1 so the history is legible.
 
+> **Delivered.** The four methods are live in `crates/oracle-aether/src/engine.rs` (`METHODS` rows +
+> `Engine::{checkpoint, restore, checkpoint_list, checkpoint_drop}`), advertised as
+> `capabilities.checkpoints = {supported, cap}` with `cap = 8`, and pinned at the wire by
+> `crates/oracle-aether/tests/checkpoints.rs` — one test per D13 rule, including "the previous cartridge
+> comes back across a `reload_rom`" and "the oldest id still means what it meant once the cap is hit".
+> The sentence above — *"the one place the intended scope was consciously not delivered"* — no longer
+> holds; it is left in place because these drafts are the record of what was raised, not a status page.
+
 ---
 
 ## CR-3 — §5 has no error code for "wrong machine state for this operation"
@@ -104,6 +112,17 @@ is not.
 
 **Proposed change.** Add `-32005 | invalid state for this operation` to §5, with `data.reason` carrying
 a machine-readable discriminant.
+
+> **Adopted** (contract §5). `-32005` now exists in code as `rpc::code::INVALID_STATE`, with
+> `RpcError::invalid_state(reason, message, extra)` merging the discriminant into `data` so it cannot be
+> forgotten. The checkpoint methods use it (`checkpointCapReached`, `unknownCheckpoint`).
+> **Not yet migrated:** `Engine::require_paused` still returns `-32600`, so `emulator/run_frames` while
+> free-running — §5's own first worked example of `-32005` — is knowingly non-conformant. Its
+> `data.reason` is already the contract's `"machineRunning"`, so the fix is the code integer at
+> `engine.rs` `require_paused` plus the assertion in `tests/methods.rs`
+> (`a_run_request_while_free_running_is_refused_rather_than_silently_changing_mode`). Left for a separate
+> slice rather than folded into the checkpoint work, so a behaviour change to shipped methods gets its
+> own review.
 
 ---
 
