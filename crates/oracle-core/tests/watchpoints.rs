@@ -402,14 +402,22 @@ fn the_trace_report_carries_the_machines_own_timing_basis() {
 
 // --- F-TRACE-SIZEFILTER: the size + address-parity filters, on a real machine ----------------------------
 
-/// `K4Probe`'s read-arm classifier, copied from `examples/k4_openbus_probe.rs` (outer `Read | Tas` gate
-/// included) so the comparison below is against the real hand-rolled counters, not a paraphrase.
+use std::path::Path;
+
+/// `K4Probe`'s read-arm classifier. The four counter fields and the whole `classify` body are copied
+/// verbatim from `examples/k4_openbus_probe.rs:201-214`, outer `Read | Tas` gate included, so the
+/// comparison below is against the real hand-rolled counters and not a paraphrase.
+///
+/// `io_reads_total` is **not** one of the probe's counters — it is a control **added by this test** (the
+/// probe's I/O arm has only `io_even_byte_reads` and `io_word_reads`). It exists so the tests can show the
+/// I/O range is busy before claiming a filter correctly refused it.
 #[derive(Default)]
 struct K4Counters {
     io_even_byte_reads: u64,
     io_word_reads: u64,
     status_upper_reads: u64,
     status_odd_byte_reads: u64,
+    /// Test-added control, not a probe counter — see the type docs.
     io_reads_total: u64,
 }
 
@@ -420,7 +428,7 @@ impl K4Counters {
         }
         match e.addr {
             0xA1_0000..=0xA1_001F => {
-                self.io_reads_total += 1;
+                self.io_reads_total += 1; // control, not the probe's
                 match e.size {
                     Size::Byte if e.addr & 1 == 0 => self.io_even_byte_reads += 1,
                     Size::Word => self.io_word_reads += 1,
@@ -447,96 +455,400 @@ impl BusEventSink for K4Counters {
     }
 }
 
-/// A booted machine running the pad-poll fixture, whose loop reads `$A10003` — a **byte** access at an
-/// **odd** address in the I/O range, i.e. real traffic the two new filters must discriminate.
-fn booted_pad_poll() -> System {
+/// A booted machine running `image`.
+fn booted_rom(image: Vec<u8>) -> System {
     let mut sys = System::new(0x5EED);
-    sys.load_rom(oracle_core::testrom::build_pad_poll());
+    sys.load_rom(image);
     sys.reset();
     sys
 }
 
-/// Three of `K4Probe`'s four motivating counters, expressed as watch configuration, agree with the
-/// hand-rolled originals over a real run of a real machine — and the agreement is not vacuous: a filterless
-/// watch over the same range counts hundreds of accesses, every one of which the *odd*-parity byte watch
-/// claims and the *even*-parity byte watch correctly refuses.
+const IO: std::ops::RangeInclusive<u32> = 0xA1_0000..=0xA1_001F;
+const STATUS: std::ops::RangeInclusive<u32> = 0xC0_0004..=0xC0_0007;
+
+const VENDOR_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendor/TestRoms");
+
+/// The vendored hardware test ROMs in the corpus below. `build_pad_poll` alone drives **zero** reads of
+/// `$C00004-$C00007` — it only ever *writes* the control port — so the whole status arm of both
+/// classifiers is dead on it, an agreement of `0 == 0`. (Measured: `status.any` = 0 on that fixture; it is
+/// still in the corpus, as the negative case.) These ROMs are the ones that hammer the status port, and
+/// they are what makes the comparison discriminating.
+const VENDOR_ROMS: &[&str] = &[
+    "direct_color_dma",
+    "io_sample",
+    "m68k_bcd",
+    "m68k_memory_test",
+    "color_1536",
+];
+
+/// Frames per vendor ROM. Enough to get well past boot into the ROM's own polling loops.
+const VENDOR_FRAMES: u64 = 20;
+
+/// The ROM corpus for the real-machine pins: the in-repo pad-poll fixture plus [`VENDOR_ROMS`].
+///
+/// **Absence is never silent.** If `vendor/TestRoms` exists but a named ROM does not, this panics — a
+/// half-corpus would quietly re-introduce the `0 == 0` vacuity these tests exist to remove. If the whole
+/// directory is absent (nobody ever ran `tools/fetch-testroms.sh`) the caller is told so and skips loudly,
+/// and the callers below print the banner rather than swallowing it.
+fn corpus() -> Option<Vec<(String, Vec<u8>, u64)>> {
+    let mut out = vec![(
+        "testrom::build_pad_poll".to_string(),
+        oracle_core::testrom::build_pad_poll(),
+        2u64,
+    )];
+    if !Path::new(VENDOR_DIR).is_dir() {
+        return None;
+    }
+    for name in VENDOR_ROMS {
+        let path = Path::new(VENDOR_DIR).join(format!("{name}.bin"));
+        let image = std::fs::read(&path).unwrap_or_else(|e| {
+            panic!(
+                "vendor ROM {} is required by this test and could not be read ({e}). \
+                 `vendor/TestRoms` exists, so this is a broken checkout, not an un-fetched one — \
+                 run tools/fetch-testroms.sh. Running the reduced corpus would make the counter \
+                 comparisons vacuous (0 == 0), which is exactly what this test is guarding against.",
+                path.display()
+            )
+        });
+        out.push((format!("vendor/{name}.bin"), image, VENDOR_FRAMES));
+    }
+    Some(out)
+}
+
+/// Announce a corpus skip on stderr in a form that is hard to miss in a log.
+fn announce_missing_vendor(test: &str) {
+    eprintln!(
+        "\n***** SKIPPED (reduced evidence): {test} — {VENDOR_DIR} is absent.\n\
+         ***** Run tools/fetch-testroms.sh; without it the K4 status-arm comparisons are 0 == 0.\n"
+    );
+}
+
+/// The four watch specs that are `K4Probe`'s four counters, all in `Count` mode. `status_upper_reads` is a
+/// **plain even-parity watch**: `Word ∨ even` collapses to `even` because no odd-address `Word` access
+/// exists (pinned by [`no_odd_address_word_access_ever_reaches_a_mapped_port`]).
+fn k4_watches(wp: &mut Watchpoints) -> [oracle_core::watchpoints::WatchId; 4] {
+    [
+        wp.add(
+            Watch::bus(IO, WatchOp::Read, "io_even_byte_reads")
+                .size(Size::Byte)
+                .addr_parity(AddrParity::Even)
+                .mode(WatchMode::Count),
+        ),
+        wp.add(
+            Watch::bus(IO, WatchOp::Read, "io_word_reads")
+                .size(Size::Word)
+                .mode(WatchMode::Count),
+        ),
+        wp.add(
+            Watch::bus(STATUS, WatchOp::Read, "status_upper_reads")
+                .addr_parity(AddrParity::Even)
+                .mode(WatchMode::Count),
+        ),
+        wp.add(
+            Watch::bus(STATUS, WatchOp::Read, "status_odd_byte_reads")
+                .size(Size::Byte)
+                .addr_parity(AddrParity::Odd)
+                .mode(WatchMode::Count),
+        ),
+    ]
+}
+
+/// **All four** of `K4Probe`'s motivating counters, expressed as watch configuration, agree with the
+/// hand-rolled originals over real runs of a real machine — including `status_upper_reads`, which is one
+/// plain even-parity watch and not a hand-summed set of three.
+///
+/// The corpus is deliberately not `build_pad_poll` alone: that fixture never *reads* `$C00004-$C00007`, so
+/// on it the entire status arm of both classifiers agrees at zero. The vendored ROMs below drive thousands
+/// of status reads, and the test asserts a per-counter non-zero floor across the corpus so an agreement can
+/// never again be `0 == 0` without failing. Measured, per ROM,
+/// `[io_even_byte, io_word, status_upper, status_odd_byte]`:
+///
+/// | ROM | counts |
+/// |---|---|
+/// | `testrom::build_pad_poll` (2 frames) | `[0, 0, 0, 0]` — status arm entirely dead, which is the point |
+/// | `direct_color_dma` | `[0, 3, 3, 9327]` |
+/// | `io_sample` | `[0, 3, 8403, 0]` |
+/// | `m68k_bcd` | `[0, 3, 5582, 0]` |
+/// | `m68k_memory_test` | `[1, 1, 30, 1]` |
+/// | `color_1536` | `[0, 0, 2, 1]` |
+/// | **corpus total** | **`[1, 10, 14020, 9329]`** |
+///
+/// `io_even_byte_reads` clears the floor by exactly one access (`m68k_memory_test`) — thin, and recorded as
+/// thin rather than dressed up; the other three are in the thousands.
+///
+/// **Stream-conditional caveat:** the probe's outer gate is `BusOp::Read | BusOp::Tas`; [`WatchOp::Read`]
+/// excludes `Tas` and [`WatchOp::Any`] admits writes, so no `WatchOp` is *exactly* the probe's arm. The
+/// equivalences below therefore hold on TAS-free streams — which every ROM in the corpus is (the `Op`
+/// census asserted here contains no `2`). The gap stays registered as `F-TRACE-TASOP`.
 #[test]
-fn k4_io_counters_as_watch_config_agree_with_the_hand_rolled_counters() {
-    let mut sys = booted_pad_poll();
-    let mut hand = K4Counters::default();
-    let mut wp = Watchpoints::new(0);
-    const IO: std::ops::RangeInclusive<u32> = 0xA1_0000..=0xA1_001F;
-    const STATUS: std::ops::RangeInclusive<u32> = 0xC0_0004..=0xC0_0007;
-    let io_even_byte = wp.add(
-        Watch::bus(IO, WatchOp::Read, "io_even_byte_reads")
-            .size(Size::Byte)
-            .addr_parity(AddrParity::Even)
-            .mode(WatchMode::Count),
-    );
-    let io_word = wp.add(
-        Watch::bus(IO, WatchOp::Read, "io_word_reads")
-            .size(Size::Word)
-            .mode(WatchMode::Count),
-    );
-    let status_odd_byte = wp.add(
-        Watch::bus(STATUS, WatchOp::Read, "status_odd_byte_reads")
-            .size(Size::Byte)
-            .addr_parity(AddrParity::Odd)
-            .mode(WatchMode::Count),
-    );
-    // Controls: every I/O read, and every I/O read that is an odd-address byte.
-    let io_any = wp.add(Watch::bus(IO, WatchOp::Read, "io.any").mode(WatchMode::Count));
-    let io_odd_byte = wp.add(
-        Watch::bus(IO, WatchOp::Read, "io.odd.byte")
-            .size(Size::Byte)
-            .addr_parity(AddrParity::Odd)
-            .mode(WatchMode::Count),
-    );
+fn k4_counters_as_watch_config_agree_with_the_hand_rolled_counters() {
+    let Some(roms) = corpus() else {
+        announce_missing_vendor("k4_counters_as_watch_config_agree_with_the_hand_rolled_counters");
+        return;
+    };
+    let mut totals = [0u64; 4];
+    let mut ran = 0;
+    for (name, image, frames) in roms {
+        let mut sys = booted_rom(image);
+        let mut hand = K4Counters::default();
+        let mut wp = Watchpoints::new(0);
+        let ids = k4_watches(&mut wp);
+        // Controls: every I/O read, every status read, and an `Op` census proving the stream is TAS-free.
+        let io_any = wp.add(Watch::bus(IO, WatchOp::Read, "io.any").mode(WatchMode::Count));
+        let status_any =
+            wp.add(Watch::bus(STATUS, WatchOp::Read, "status.any").mode(WatchMode::Count));
+        let ops = wp.add(
+            Watch::bus(0..=0xFFFF_FFFF, WatchOp::Any, "ops").mode(WatchMode::Census(CensusKey::Op)),
+        );
 
-    let mut both = Fanout::new(&mut hand, &mut wp);
-    sys.run_frames_with_sink(2, &mut both);
+        let mut both = Fanout::new(&mut hand, &mut wp);
+        sys.run_frames_with_sink(frames, &mut both);
 
-    let of = |id| wp.watch(id).unwrap().matched;
-    assert!(wp.seen() > 10_000, "a live instrument: {}", wp.seen());
-    // The negative control comes first: the range really is busy.
-    let io_total = of(io_any);
-    assert!(io_total > 0, "the pad-poll loop reads the I/O range");
-    assert_eq!(io_total, hand.io_reads_total, "same stream, same total");
-    assert_eq!(
-        of(io_odd_byte),
-        io_total,
-        "every I/O read this ROM makes is an odd-address byte ($A10003)"
-    );
-    // ...so the even-parity filter must refuse all of them, and it agrees with the probe that it should.
-    assert_eq!(of(io_even_byte), hand.io_even_byte_reads);
-    assert_eq!(
-        of(io_even_byte),
-        0,
-        "no even-address byte read, per the ROM"
-    );
-    assert_eq!(of(io_word), hand.io_word_reads);
-    assert_eq!(of(io_word), 0, "and no word read of the I/O range");
-    assert_eq!(of(status_odd_byte), hand.status_odd_byte_reads);
+        let of = |id| wp.watch(id).unwrap().matched;
+        assert!(
+            wp.seen() > 10_000,
+            "{name}: a live instrument: {}",
+            wp.seen()
+        );
+        let got = [of(ids[0]), of(ids[1]), of(ids[2]), of(ids[3])];
+        let want = [
+            hand.io_even_byte_reads,
+            hand.io_word_reads,
+            hand.status_upper_reads,
+            hand.status_odd_byte_reads,
+        ];
+        assert_eq!(
+            got, want,
+            "{name}: watch config vs the probe's own classifier"
+        );
+        // The two arms are partitions of their ranges: the parts must add back up to the whole.
+        assert_eq!(
+            of(io_any),
+            hand.io_reads_total,
+            "{name}: same stream, same I/O total"
+        );
+        assert_eq!(
+            got[2] + got[3],
+            of(status_any),
+            "{name}: upper + odd-byte partition every status read"
+        );
+        assert!(
+            !wp.watch(ops)
+                .unwrap()
+                .census
+                .unwrap()
+                .iter()
+                .any(|(k, _)| *k == 2),
+            "{name}: the TAS caveat does not bite — no TAS on this stream"
+        );
+        for (t, g) in totals.iter_mut().zip(got) {
+            *t += g;
+        }
+        ran += 1;
+    }
+    assert_eq!(ran, 1 + VENDOR_ROMS.len(), "the whole corpus ran");
+    // The anti-vacuity floor. Without it, every assertion above can pass as `0 == 0`.
+    let names = [
+        "io_even_byte_reads",
+        "io_word_reads",
+        "status_upper_reads",
+        "status_odd_byte_reads",
+    ];
+    for (n, t) in names.iter().zip(totals) {
+        assert!(
+            t > 0,
+            "{n} is zero across the whole corpus — the comparison would be vacuous"
+        );
+    }
 }
 
 /// The precondition behind "`status_odd_byte_reads` = Byte and odd": the 68000 bus adapter emits **only**
 /// `Byte` and `Word` accesses (a `.l` operand is two word bus cycles), so the probe's "odd and non-Word"
-/// and a `Byte`+`Odd` watch classify identically on any real stream. A census over `Size` proves it on a
-/// real run rather than asserting it from the source comment.
+/// and a `Byte`+`Odd` watch classify identically on any real stream. A census over `Size` proves it on real
+/// runs rather than asserting it from the source comment.
 #[test]
 fn the_bus_emits_only_byte_and_word_accesses() {
-    let mut sys = booted_pad_poll();
-    let mut wp = Watchpoints::new(0);
-    let id = wp.add(
-        Watch::bus(0..=0xFFFF_FFFF, WatchOp::Any, "widths")
-            .mode(WatchMode::Census(CensusKey::Size)),
+    let Some(roms) = corpus() else {
+        announce_missing_vendor("the_bus_emits_only_byte_and_word_accesses");
+        return;
+    };
+    for (name, image, frames) in roms {
+        let mut sys = booted_rom(image);
+        let mut wp = Watchpoints::new(0);
+        let id = wp.add(
+            Watch::bus(0..=0xFFFF_FFFF, WatchOp::Any, "widths")
+                .mode(WatchMode::Census(CensusKey::Size)),
+        );
+        sys.run_frames_with_sink(frames, &mut wp);
+        let census = wp.watch(id).unwrap().census.unwrap();
+        assert!(!census.is_empty(), "{name}: the machine ran");
+        assert!(
+            census.iter().all(|(k, _)| *k == 1 || *k == 2),
+            "{name}: only 1-byte and 2-byte bus accesses, never 4: {census:?}"
+        );
+        assert!(!wp.watch(id).unwrap().keys_capped);
+    }
+}
+
+/// **The fact that makes `status_upper_reads` one watch (F1).** A word access to an odd address never
+/// reaches the bus at all: `m68000/microop.rs` takes the address-error abort (`install_address_error`)
+/// *before* `bus.read16`, so no `BusEvent` is emitted. The only odd-address `Word` events that exist
+/// anywhere are the `fc=7` interrupt-acknowledge cycles — and `MegaDriveBus::read16` handles `fc == 7`
+/// (`bus.rs`) in an arm that returns *ahead of every port decode*, at the two fixed CPU-space addresses
+/// `$FFFFF9`/`$FFFFFD` (emitted 24-bit-masked, so `$00FFFFF9`/`$00FFFFFD`). No mapped port is involved.
+///
+/// So within any mapped range `Word ⟹ even`, and `Word ∨ even` ≡ `even`. Pinned on real runs, to exactly
+/// the standard [`the_bus_emits_only_byte_and_word_accesses`] applies to the `Size::Long` claim — the two
+/// facts stand or fall together, and using one but not the other is what made the first verdict wrong.
+///
+/// Corroborated out of band over a wider sweep than this test runs — all 21 ROMs (the 4 `testrom` builders
+/// plus every `vendor/TestRoms/*.bin`), 20 frames each, **0 odd-address word events that are not one of the
+/// two IACK addresses**, against a healthy population that *are* (`window_test` 1175, `vdp_test_register`
+/// 23, `io_sample` 17, `gfx_joystick` 18, …). The same sweep found **0 `Tas` events**, which is the
+/// condition the `F-TRACE-TASOP` caveat depends on.
+#[test]
+fn no_odd_address_word_access_ever_reaches_a_mapped_port() {
+    let Some(roms) = corpus() else {
+        announce_missing_vendor("no_odd_address_word_access_ever_reaches_a_mapped_port");
+        return;
+    };
+    let mut iacks = 0u64;
+    for (name, image, frames) in roms {
+        let mut sys = booted_rom(image);
+        let mut wp = Watchpoints::new(8192);
+        let odd_word = wp.add(
+            Watch::bus(0..=0xFFFF_FFFF, WatchOp::Any, "odd.word")
+                .size(Size::Word)
+                .addr_parity(AddrParity::Odd),
+        );
+        // The live control: word accesses at EVEN addresses, which are everywhere. A size filter that
+        // matched nothing would satisfy the assertion below for the wrong reason.
+        let even_word = wp.add(
+            Watch::bus(0..=0xFFFF_FFFF, WatchOp::Any, "even.word")
+                .size(Size::Word)
+                .addr_parity(AddrParity::Even)
+                .mode(WatchMode::Count),
+        );
+        // The claim the K4 verdict actually rests on, stated directly: zero odd-address word accesses in
+        // either range the probe watches.
+        let io_odd_word = wp.add(
+            Watch::bus(IO, WatchOp::Any, "io.odd.word")
+                .size(Size::Word)
+                .addr_parity(AddrParity::Odd)
+                .mode(WatchMode::Count),
+        );
+        let status_odd_word = wp.add(
+            Watch::bus(STATUS, WatchOp::Any, "status.odd.word")
+                .size(Size::Word)
+                .addr_parity(AddrParity::Odd)
+                .mode(WatchMode::Count),
+        );
+        sys.run_frames_with_sink(frames, &mut wp);
+
+        let even = wp.watch(even_word).unwrap().matched;
+        assert!(even > 10_000, "{name}: the size filter is live: {even}");
+        assert_eq!(
+            wp.watch(io_odd_word).unwrap().matched,
+            0,
+            "{name}: no odd-address word access to the I/O range"
+        );
+        assert_eq!(
+            wp.watch(status_odd_word).unwrap().matched,
+            0,
+            "{name}: no odd-address word access to the VDP status range"
+        );
+        assert_eq!(wp.dropped(), 0, "{name}: every odd-word hit was recorded");
+        assert_eq!(
+            wp.watch(odd_word).unwrap().matched,
+            wp.hits().len() as u64,
+            "{name}: the only recording watch is the odd-word one"
+        );
+        for h in wp.hits() {
+            assert_eq!(
+                h.fc, 7,
+                "{name}: an odd-address word access can only be CPU space (interrupt acknowledge), \
+                 got addr ${:08X} fc {}",
+                h.addr, h.fc
+            );
+            assert!(
+                h.addr == 0x00FF_FFF9 || h.addr == 0x00FF_FFFD,
+                "{name}: ...at an autovector IACK address ($FFFFF9/$FFFFFD, 24-bit-masked), and the \
+                 fc==7 arm of MegaDriveBus::read16 returns before any port decode: ${:08X}",
+                h.addr
+            );
+        }
+        iacks += wp.hits().len() as u64;
+    }
+    // Anti-vacuity: the odd-word watch is not dead. Odd-address word events DO exist on this corpus (the
+    // interrupt-acknowledge cycles); the claim is that they are only ever those. `build_pad_poll` never
+    // enables an interrupt, so this is a corpus-level floor, not a per-ROM one.
+    assert!(iacks > 0, "the corpus acknowledged interrupts");
+}
+
+/// **F6 — the `size`/`addr_parity` filters on a VDP-internal watch**, where "size" is not a bus width at
+/// all: it is derived from the captured write's own byte count (`on_vdp_write`). Every VRAM capture is one
+/// byte and every CRAM capture is one two-byte entry, so a VRAM watch filters as [`Size::Byte`] and a CRAM
+/// watch as [`Size::Word`] — which is what [`Watch::size`]'s docs now say, keyed on the capture width
+/// rather than on the region.
+#[test]
+fn size_and_parity_filter_a_vdp_internal_watch_by_capture_width() {
+    let count = |space, range: std::ops::RangeInclusive<u32>, f: fn(Watch) -> Watch| {
+        let mut sys = System::new(0x1234);
+        sys.load_rom(testrom::build_pad_poll());
+        sys.reset();
+        let mut wp = Watchpoints::new(0);
+        let id = wp.add(f(Watch::vdp(space, range, WatchOp::Write, "v")).mode(WatchMode::Count));
+        sys.run_frames_with_sink(1, &mut wp);
+        wp.watch(id).unwrap().matched
+    };
+
+    // VRAM: the fill DMA writes $0100..$0103, one byte at a time.
+    let vram_all = count(WatchSpace::Vram, 0x0100..=0x0103, |w| w);
+    assert_eq!(vram_all, 4, "four VRAM bytes written");
+    assert_eq!(
+        count(WatchSpace::Vram, 0x0100..=0x0103, |w| w.size(Size::Byte)),
+        4,
+        "a VRAM capture is one byte, so the Byte filter takes all four"
     );
-    sys.run_frames_with_sink(2, &mut wp);
-    let census = wp.watch(id).unwrap().census.unwrap();
-    assert!(!census.is_empty(), "the machine ran");
-    assert!(
-        census.iter().all(|(k, _)| *k == 1 || *k == 2),
-        "only 1-byte and 2-byte bus accesses, never 4: {census:?}"
+    assert_eq!(
+        count(WatchSpace::Vram, 0x0100..=0x0103, |w| w.size(Size::Word)),
+        0,
+        "and the Word filter takes none — the capture width is 1, not the region's word"
     );
-    assert!(!wp.watch(id).unwrap().keys_capped);
+    assert_eq!(
+        count(WatchSpace::Vram, 0x0100..=0x0103, |w| w
+            .addr_parity(AddrParity::Even)),
+        2,
+        "$0100 and $0102"
+    );
+    assert_eq!(
+        count(WatchSpace::Vram, 0x0100..=0x0103, |w| w
+            .addr_parity(AddrParity::Odd)),
+        2,
+        "$0101 and $0103"
+    );
+
+    // CRAM: entry 1 (byte address $02) is written once, as a two-byte capture at an even address.
+    let cram_all = count(WatchSpace::Cram, 0x02..=0x03, |w| w);
+    assert_eq!(cram_all, 1, "CRAM entry 1 written exactly once");
+    assert_eq!(
+        count(WatchSpace::Cram, 0x02..=0x03, |w| w.size(Size::Word)),
+        1,
+        "a CRAM capture is a two-byte entry"
+    );
+    assert_eq!(
+        count(WatchSpace::Cram, 0x02..=0x03, |w| w.size(Size::Byte)),
+        0
+    );
+    assert_eq!(
+        count(WatchSpace::Cram, 0x02..=0x03, |w| w
+            .addr_parity(AddrParity::Even)),
+        1,
+        "a CRAM entry address is always even (`addr & 0x7E`)"
+    );
+    assert_eq!(
+        count(WatchSpace::Cram, 0x02..=0x03, |w| w
+            .addr_parity(AddrParity::Odd)),
+        0
+    );
 }
