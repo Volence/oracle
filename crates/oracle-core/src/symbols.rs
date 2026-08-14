@@ -1,0 +1,1084 @@
+//! Symbol table — turn raw hex addresses back into the names the programmer wrote
+//! (`docs/2026-08-14-tooling-frontier-recon.md` §1b, §6 item 2).
+//!
+//! Every address oracle-next reports today is raw hex. This module is the other half: parse the
+//! `<rom>.lst` listing Aeon's `sigil` build emits, and answer the three questions a debugger actually
+//! asks — *what address is `Player_1`?*, *what is the PC `$00021A` inside of?*, and *what symbols start
+//! with `Ring_`?*
+//!
+//! # No I/O, by charter
+//!
+//! `oracle-core` is the "deterministic, no-I/O" core (see the crate doc), so [`SymbolTable::parse`] takes
+//! a `&str` and the **caller** reads the file. A symbol table is also never part of `System`, the state
+//! hash, or `export_state`: it is caller-owned metadata *about* a ROM, exactly like [`crate::watchpoints`]
+//! is caller-owned observation of one. It therefore cannot move a currency hash.
+//!
+//! # The input format (verified against the emitter, not guessed)
+//!
+//! The producer is `sigil/crates/sigil-link/src/listing.rs::emit_listing`. It writes **two** views of the
+//! same address-sorted symbol list, because two different consumers each read one half:
+//!
+//! ```text
+//! (0) 1971/FFFF8CFA :        Player_1:            <- body line   ("(depth) idx/HEXADDR :        Name:")
+//!  ...
+//!   Symbol Table (* = unused):                    <- section header
+//!   --------------------------
+//!
+//!  Player_1 : FFFF8CFA C |                        <- table row   ("[*]Name : HEXADDR <C|-> |")
+//!  ...
+//!    2129 symbols                                 <- footer
+//!     0 unused symbols
+//! ```
+//!
+//! We prefer the **table rows**: they are the richer half, carrying the `*` unused marker and the
+//! `C`(code)/`-`(equate) type marker that the body lines drop. Body lines are parsed only as a fallback,
+//! for a listing that has no `Symbol Table` section at all. See [`TableSource`].
+//!
+//! ## Four traps, each of which silently produces wrong answers
+//!
+//! 1. **RAM addresses are plain 8-hex `FFFFxxxx`** — *not* the 48-bit sign-extended `FFFFFFFFFFFFxxxx`
+//!    older AS tooling emitted. (Aeon's own `tools/s4budget.py::_is_ram_addr_str` still tests for the old
+//!    form and consequently reports `RAM: 0 bytes` — a live bug in their tree, deliberately not copied.)
+//! 2. **`FFFFxxxx` is a 32-bit spelling of a 24-bit bus address.** The 68000 drives 24 address lines, and
+//!    this core decodes work RAM at `$E00000–$FFFFFF` (`bus.rs`), so the listing's `FFFF8CFA` *is* the
+//!    machine's `$FF8CFA`. Matching a PC or a bus address against the raw value finds nothing, every time.
+//!    Each [`Symbol`] therefore carries both [`raw_addr`](Symbol::raw_addr) (as written in the file) and
+//!    [`addr`](Symbol::addr) (masked to 24 bits); **all lookups use the 24-bit form**, and mask the query
+//!    too, so a caller may pass either spelling.
+//! 3. **The type column does not discriminate code from RAM.** The emitter supports `-` for equates, but
+//!    Aeon dumps no EQUs, so all 2,129 rows of the real `s4.lst` are `C` — including every RAM variable.
+//!    Code and RAM are separable only by *address range*, which is what [`AddrSpace`] does.
+//! 4. **Symbols bind per-game AND per-build-shape.** `if DEBUG == 1 @shape_divergent` blocks in the
+//!    engine's `ram.emp` shift the RAM layout between shapes: of the symbols `s4.lst` and `s4.debug.lst`
+//!    share, **92.6% resolve to a different address**, with divergence starting at `BootData` (`$3A0` vs
+//!    `$3B0`) and never recovering. A mismatched table is not degraded — it is confidently wrong. See
+//!    [`SymbolTable::validate_against_rom`].
+//!
+//! # The `$` scope tree
+//!
+//! Sigil mangles a proc-local label as `$<module.path>$<Parent>$<local>` (e.g.
+//! `$engine.boot$EntryPoint$wait_dma`). Splitting on `$` yields a three-level scope at zero build cost, so
+//! a PC in the middle of a long routine resolves to `EntryPoint.wait_dma` rather than
+//! "`EntryPoint` + $14 — somewhere". Both spellings are kept: [`Symbol::name`] is the raw mangled name
+//! (what the file said), [`Symbol::demangled`] is the readable `Parent.local` form, and
+//! [`Symbol::scope`] exposes the parts. The demangling matches sigil's own `demangle_symbols`, so a name
+//! printed here reads the same as one shown by the on-target MD Debugger.
+//!
+//! Sigil *drops* its plumbing symbols (`__align$…`, `$…$asm<N>$…`) when it builds the on-ROM appendix. We
+//! keep them — they are real addresses and make nearest-preceding resolution *tighter* — but flag them via
+//! [`Symbol::is_synthetic`] so a caller can prefer a source-meaningful name.
+
+use std::collections::BTreeMap;
+use std::fmt;
+
+/// The 68000 drives 24 address lines; every address above that is an alias. Listing values such as
+/// `FFFF8CFA` are masked with this to get the address the machine actually puts on the bus (`$FF8CFA`).
+pub const BUS_ADDR_MASK: u32 = 0x00FF_FFFF;
+
+/// What kind of value a row declares, from the listing's type column. Note trap 3: this does **not**
+/// separate code from RAM — Aeon emits `Code` for everything, variables included.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SymbolKind {
+    /// `C` — an address in the assembled image's address space (the only kind Aeon currently emits).
+    Code,
+    /// `-` — an equate/constant. Supported by the emitter, never seen in a real Aeon listing.
+    Equate,
+}
+
+/// Which half of the listing a table was built from. Recorded so a caller can tell a full listing from a
+/// body-only one (the fallback path loses the `unused` and `Equate` markers, which body lines do not carry).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TableSource {
+    /// The `Symbol Table (* = unused):` section — the preferred, richer half.
+    SymbolTable,
+    /// The `(depth) idx/HEXADDR :        Name:` body lines — used only when no section header was found.
+    BodyLines,
+}
+
+/// Which region of the 68000 bus map an address falls in. This is the *only* way to tell a code label from
+/// a RAM variable in this format (trap 3), and it is what stops a RAM query from resolving to the last ROM
+/// symbol with a nonsense displacement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AddrSpace {
+    /// `$000000–$3FFFFF` — cartridge ROM.
+    Rom,
+    /// `$E00000–$FFFFFF` — 64 KiB work RAM (mirrored); where every `FFFFxxxx` listing value lands.
+    Ram,
+    /// Anything else — I/O, VDP ports, the open-bus gaps. No Aeon symbol lives here.
+    Other,
+}
+
+impl AddrSpace {
+    /// Classify a **24-bit** bus address. Callers passing a 32-bit spelling should mask first (or use the
+    /// [`SymbolTable`] lookups, which mask for them).
+    pub fn of(addr: u32) -> Self {
+        match addr & BUS_ADDR_MASK {
+            0x00_0000..=0x3F_FFFF => AddrSpace::Rom,
+            0xE0_0000..=0xFF_FFFF => AddrSpace::Ram,
+            _ => AddrSpace::Other,
+        }
+    }
+}
+
+/// The three levels a mangled `$module.path$Parent$local` name decomposes into. A plain (unmangled) name
+/// has only [`local`](Scope::local).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Scope<'a> {
+    /// `engine.boot` — the `.emp` module path, if the name was mangled.
+    pub module: Option<&'a str>,
+    /// `EntryPoint` — the enclosing proc, if the name was mangled.
+    pub parent: Option<&'a str>,
+    /// `wait_dma` — the innermost label. Always present; equals the whole name for plain symbols.
+    pub local: &'a str,
+}
+
+/// One symbol: a name (in both spellings), an address (in both widths), and the listing's markers.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Symbol {
+    /// The name exactly as the listing spells it, mangling included (`$engine.boot$EntryPoint$wait_dma`).
+    pub name: String,
+    /// The readable form (`EntryPoint.wait_dma`); identical to [`name`](Symbol::name) for plain symbols.
+    /// Not guaranteed unique — two modules may each hold a `Parent.local` pair with the same spelling.
+    pub demangled: String,
+    /// The address as written in the file, unmasked (`0xFFFF_8CFA`). Kept so a caller can round-trip a
+    /// value back to the listing's own spelling.
+    pub raw_addr: u32,
+    /// The 24-bit bus address (`0xFF_8CFA`) — **what every lookup here matches against** (trap 2).
+    pub addr: u32,
+    /// `C` or `-`. Does not discriminate code from RAM (trap 3) — use [`AddrSpace::of`] for that.
+    pub kind: SymbolKind,
+    /// The listing's `*` marker. Always `false` in practice: real Aeon listings end `0 unused symbols`.
+    pub unused: bool,
+    /// Compiler plumbing rather than a name anyone wrote — an `__align$…` pad or a synthetic `asm<N>`
+    /// block scope. Sigil drops these from the on-ROM appendix; we keep them (a closer nearest-preceding
+    /// answer) but mark them so a caller can prefer a source-meaningful name.
+    pub is_synthetic: bool,
+}
+
+impl Symbol {
+    /// The name split into its `$` levels. Borrows from [`name`](Symbol::name) — no allocation.
+    pub fn scope(&self) -> Scope<'_> {
+        let parts = scope_parts(&self.name);
+        Scope {
+            module: parts.0,
+            parent: parts.1,
+            local: parts.2,
+        }
+    }
+
+    /// Which region of the bus map this symbol lives in.
+    pub fn space(&self) -> AddrSpace {
+        AddrSpace::of(self.addr)
+    }
+}
+
+/// A resolved address: the symbol it landed in (or on) and how far past that symbol's start it is.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Resolution<'a> {
+    /// The nearest symbol at or before the queried address, in the same [`AddrSpace`].
+    pub symbol: &'a Symbol,
+    /// Queried address minus the symbol's address; `0` for an exact hit.
+    pub displacement: u32,
+}
+
+impl fmt::Display for Resolution<'_> {
+    /// `EntryPoint.wait_dma` for an exact hit, `EntryPoint.wait_dma+$1A` otherwise — the form a
+    /// disassembly listing or a watch-hit dump wants.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.displacement == 0 {
+            write!(f, "{}", self.symbol.demangled)
+        } else {
+            write!(f, "{}+${:X}", self.symbol.demangled, self.displacement)
+        }
+    }
+}
+
+/// Why a listing could not be parsed at all. Individual malformed *lines* are never an error — they are
+/// skipped and counted in [`SymbolTable::skipped_lines`], because a listing that gains an unrecognised
+/// decoration should still yield its symbols.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SymbolParseError {
+    /// Neither a `Symbol Table` section nor any body line produced a single symbol. Almost certainly not
+    /// a listing file.
+    NoSymbols,
+}
+
+impl fmt::Display for SymbolParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SymbolParseError::NoSymbols => {
+                write!(f, "no symbols found (not a sigil/AS `.lst` listing?)")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SymbolParseError {}
+
+/// The verdict on whether a parsed table belongs to a given ROM image. Three-state on purpose: "we cannot
+/// tell" is a different answer from "it does not match", and the caller's policy for the two differs
+/// (warn-and-use vs refuse).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RomBinding {
+    /// The ROM carries a `deb2` symbol appendix exactly where this listing's `EndOfRom` says it should.
+    Match {
+        /// The `EndOfRom` value == the appendix's offset in the image.
+        appendix_offset: u32,
+        /// Bytes from the appendix start to end-of-image.
+        appendix_len: usize,
+    },
+    /// Positively wrong — this listing does not describe this image.
+    Mismatch(BindingFault),
+    /// Nothing to key on. Not an error: a hand-written or non-Aeon listing simply cannot be checked.
+    Indeterminate(Indeterminate),
+}
+
+/// The specific way a listing failed to bind to a ROM.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BindingFault {
+    /// `EndOfRom` points past the end of the image (or leaves no room for the 2-byte magic).
+    EndOfRomOutOfRange { end_of_rom: u32, rom_len: usize },
+    /// The image has no `de b2` magic at `EndOfRom` — the load-bearing check. This is what catches
+    /// `s4.debug.lst` against `s4.bin` (verified in both directions).
+    NoAppendixMagic { offset: u32, found: [u8; 2] },
+    /// The magic is there but the appendix is implausibly short (< [`DEB2_MIN_LEN`]).
+    AppendixTooSmall { offset: u32, len: usize },
+}
+
+/// Why no verdict was possible.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Indeterminate {
+    /// The listing declares no `EndOfRom` symbol, so there is no offset to probe.
+    NoEndOfRomSymbol,
+}
+
+/// Magic at the head of the `deb2` symbol appendix every sigil-built Aeon ROM carries at `EndOfRom`.
+/// Verified firsthand: `s4.bin` `0x000A11F0` = `de b2 04 02 …`. This is byte-for-byte the check the
+/// on-target MD Debugger blob itself performs (`cmpi.w #$DEB2,(a1)+`) to find its own symbol table.
+pub const DEB2_MAGIC: [u8; 2] = [0xDE, 0xB2];
+
+/// Floor for a plausible appendix, copied from sigil's own `SONIC4_APPENDIX_FLOOR`. Observed real sizes
+/// span 29,603–43,474 bytes, so this rejects a coincidental two-byte match near end-of-image without
+/// coming close to a real table.
+pub const DEB2_MIN_LEN: usize = 0x2000;
+
+/// The symbol named `EndOfRom` — sigil places the appendix there, so it is the one value in the whole
+/// listing derivable from the ROM bytes.
+const END_OF_ROM_SYMBOL: &str = "EndOfRom";
+
+/// Offset of the ROM header's "last address in image" longword (`$1A4`), re-fixed by sigil *after* the
+/// appendix is appended. See [`rom_declared_end`].
+pub const ROM_HEADER_END_OFF: usize = 0x1A4;
+
+/// Read the ROM header's declared last-address longword (`$1A4`). For a complete sigil-built image this
+/// equals `rom.len() - 1` — verified 5/5 across `s4`, `s4.debug`, `demo.debug`, `s4.stress`,
+/// `s4.stressart`. Exposed as a **separate** helper rather than folded into
+/// [`SymbolTable::validate_against_rom`] because it validates the ROM against *itself* (is this a whole,
+/// untruncated image?) and says nothing about which listing describes it; a legitimately pad-to-power-of-two
+/// ROM would also fail it.
+pub fn rom_declared_end(rom: &[u8]) -> Option<u32> {
+    let b = rom.get(ROM_HEADER_END_OFF..ROM_HEADER_END_OFF + 4)?;
+    Some(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+}
+
+/// A parsed listing: symbols address-sorted, plus name indexes for both spellings and a module index.
+///
+/// Immutable once built. All lookups are `O(log n)`; construction is a single pass plus one sort.
+#[derive(Clone, Debug)]
+pub struct SymbolTable {
+    /// Sorted by `(addr, name)`. The sort key is the **24-bit** address (trap 2).
+    syms: Vec<Symbol>,
+    /// Raw mangled name → index. `BTreeMap`, not `HashMap`: ordered iteration makes prefix search a range
+    /// query, and the crate bans `HashMap` in anything that might be hashed or serialized.
+    by_name: BTreeMap<String, usize>,
+    /// Demangled name → indexes. A `Vec` because `Parent.local` is not unique across modules.
+    by_demangled: BTreeMap<String, Vec<usize>>,
+    /// `.emp` module path → indexes, for the scope tree.
+    by_module: BTreeMap<String, Vec<usize>>,
+    source: TableSource,
+    declared_count: Option<usize>,
+    declared_unused: Option<usize>,
+    skipped_lines: usize,
+}
+
+impl SymbolTable {
+    /// Parse a sigil/AS `.lst` listing. Pure: no filesystem access — the caller supplies the text.
+    ///
+    /// Prefers the `Symbol Table` section and falls back to the body lines when no section header is
+    /// present (see [`TableSource`]). Unrecognised lines are skipped and counted, never fatal; the only
+    /// hard failure is finding no symbols at all.
+    pub fn parse(text: &str) -> Result<Self, SymbolParseError> {
+        let mut table_syms: Vec<Symbol> = Vec::new();
+        let mut body_syms: Vec<Symbol> = Vec::new();
+        let mut in_table = false;
+        let mut declared_count = None;
+        let mut declared_unused = None;
+        let mut skipped_lines = 0usize;
+
+        for line in text.lines() {
+            let t = line.trim_end();
+            if t.trim().is_empty() {
+                continue;
+            }
+            if !in_table && t.trim_start().starts_with("Symbol Table") {
+                in_table = true;
+                continue;
+            }
+            if in_table {
+                // The `-----` rule under the header, and the two footer counts.
+                if t.trim_start().starts_with('-') && t.trim().chars().all(|c| c == '-') {
+                    continue;
+                }
+                if let Some(n) = parse_footer(t, "unused symbols") {
+                    declared_unused = Some(n);
+                    continue;
+                }
+                if let Some(n) = parse_footer(t, "symbols") {
+                    declared_count = Some(n);
+                    continue;
+                }
+                match parse_table_row(t) {
+                    Some(s) => table_syms.push(s),
+                    None => skipped_lines += 1,
+                }
+            } else if let Some(s) = parse_body_line(t) {
+                // Body lines are only a fallback, and a real AS listing's body is full of source text
+                // that is not a label — a non-match there is normal, so it is not counted as skipped
+                // (that count is about the authoritative half).
+                body_syms.push(s);
+            }
+        }
+
+        let (syms, source) = if table_syms.is_empty() {
+            (body_syms, TableSource::BodyLines)
+        } else {
+            (table_syms, TableSource::SymbolTable)
+        };
+        if syms.is_empty() {
+            return Err(SymbolParseError::NoSymbols);
+        }
+        Ok(Self::build(
+            syms,
+            source,
+            declared_count,
+            declared_unused,
+            skipped_lines,
+        ))
+    }
+
+    fn build(
+        mut syms: Vec<Symbol>,
+        source: TableSource,
+        declared_count: Option<usize>,
+        declared_unused: Option<usize>,
+        skipped_lines: usize,
+    ) -> Self {
+        // Sort on the 24-bit address so nearest-preceding search matches what the bus sees; `name` breaks
+        // ties so the ordering (and therefore every lookup answer) is deterministic across runs.
+        syms.sort_by(|a, b| a.addr.cmp(&b.addr).then_with(|| a.name.cmp(&b.name)));
+
+        let mut by_name = BTreeMap::new();
+        let mut by_demangled: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        let mut by_module: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for (i, s) in syms.iter().enumerate() {
+            // A duplicate raw name cannot occur in a real listing (verified: 0 duplicates in `s4.lst`);
+            // if one ever does, the later entry in sort order wins, deterministically.
+            by_name.insert(s.name.clone(), i);
+            by_demangled.entry(s.demangled.clone()).or_default().push(i);
+            if let Some(m) = s.scope().module {
+                by_module.entry(m.to_string()).or_default().push(i);
+            }
+        }
+        Self {
+            syms,
+            by_name,
+            by_demangled,
+            by_module,
+            source,
+            declared_count,
+            declared_unused,
+            skipped_lines,
+        }
+    }
+
+    /// Every symbol, address-sorted (ties broken by raw name).
+    pub fn symbols(&self) -> &[Symbol] {
+        &self.syms
+    }
+
+    /// How many symbols were parsed.
+    pub fn len(&self) -> usize {
+        self.syms.len()
+    }
+
+    /// Always `false` — [`parse`](Self::parse) rejects an empty listing — but `clippy` asks for it
+    /// alongside [`len`](Self::len).
+    pub fn is_empty(&self) -> bool {
+        self.syms.is_empty()
+    }
+
+    /// Which half of the listing this table came from.
+    pub fn source(&self) -> TableSource {
+        self.source
+    }
+
+    /// The count the listing's own `N symbols` footer declares, when present.
+    pub fn declared_count(&self) -> Option<usize> {
+        self.declared_count
+    }
+
+    /// The count the listing's `N unused symbols` footer declares, when present.
+    pub fn declared_unused(&self) -> Option<usize> {
+        self.declared_unused
+    }
+
+    /// Lines inside the `Symbol Table` section that did not parse as a row. Non-zero means the file is
+    /// truncated or the format drifted — worth surfacing, never fatal.
+    pub fn skipped_lines(&self) -> usize {
+        self.skipped_lines
+    }
+
+    /// Did we parse exactly as many symbols as the footer promised? `None` when there is no footer to
+    /// check against. A `Some(false)` is the cheap tripwire for a truncated download or a half-written file.
+    pub fn matches_declared_count(&self) -> Option<bool> {
+        self.declared_count.map(|n| n == self.syms.len())
+    }
+
+    /// Exact lookup by the **raw** mangled name (`$engine.boot$EntryPoint$wait_dma`).
+    pub fn by_name(&self, name: &str) -> Option<&Symbol> {
+        self.by_name.get(name).map(|&i| &self.syms[i])
+    }
+
+    /// Exact lookup by the **demangled** name (`EntryPoint.wait_dma`). Returns every match, because
+    /// `Parent.local` is not unique across modules; address-sorted, and empty when nothing matches.
+    pub fn by_demangled(&self, name: &str) -> Vec<&Symbol> {
+        self.by_demangled
+            .get(name)
+            .map(|v| v.iter().map(|&i| &self.syms[i]).collect())
+            .unwrap_or_default()
+    }
+
+    /// Name → address, trying the raw spelling first and then the demangled one. Returns the **24-bit**
+    /// bus address. Ambiguous demangled names yield `None` rather than an arbitrary pick — silently
+    /// choosing one of several `Parent.local` collisions is exactly the kind of confidently-wrong answer
+    /// this module exists to prevent.
+    pub fn address_of(&self, name: &str) -> Option<u32> {
+        if let Some(s) = self.by_name(name) {
+            return Some(s.addr);
+        }
+        match self.by_demangled.get(name) {
+            Some(v) if v.len() == 1 => Some(self.syms[v[0]].addr),
+            _ => None,
+        }
+    }
+
+    /// Every symbol whose address is exactly `addr` (masked to 24 bits). More than one is normal — sigil
+    /// emits a label per source line, so two consecutive labels with no code between them share an address
+    /// (`$engine.boot$EntryPoint$wait_dma` and `…$warm_boot` are both `$214`).
+    pub fn symbols_at(&self, addr: u32) -> &[Symbol] {
+        let a = addr & BUS_ADDR_MASK;
+        let lo = self.syms.partition_point(|s| s.addr < a);
+        let hi = self.syms.partition_point(|s| s.addr <= a);
+        &self.syms[lo..hi]
+    }
+
+    /// **The workhorse.** Nearest symbol at or before `addr`, plus the displacement — "PC is at
+    /// `EntryPoint`+$1A".
+    ///
+    /// `addr` may be given in either spelling (`0xFFFF_8CFA` or `0xFF_8CFA`); it is masked to 24 bits
+    /// first. Resolution never crosses an [`AddrSpace`] boundary: an address in work RAM below the first
+    /// RAM symbol returns `None` instead of the last ROM symbol plus a ~15 MB displacement, and an address
+    /// in an unmapped gap resolves to nothing at all.
+    ///
+    /// When several symbols share the winning address, the last in `(addr, name)` order is returned —
+    /// deterministic, and [`symbols_at`](Self::symbols_at) exposes the full set of aliases.
+    pub fn resolve(&self, addr: u32) -> Option<Resolution<'_>> {
+        let a = addr & BUS_ADDR_MASK;
+        let idx = self.syms.partition_point(|s| s.addr <= a);
+        let sym = &self.syms[idx.checked_sub(1)?];
+        if AddrSpace::of(sym.addr) != AddrSpace::of(a) {
+            return None;
+        }
+        Some(Resolution {
+            symbol: sym,
+            displacement: a - sym.addr,
+        })
+    }
+
+    /// [`resolve`](Self::resolve), but rejecting an answer further than `max_displacement` past the
+    /// symbol. Use this when a wrong-but-plausible name is worse than no name — e.g. annotating a PC that
+    /// may have run off into unmapped space, where the nearest preceding label can be thousands of bytes back.
+    pub fn resolve_within(&self, addr: u32, max_displacement: u32) -> Option<Resolution<'_>> {
+        self.resolve(addr)
+            .filter(|r| r.displacement <= max_displacement)
+    }
+
+    /// Every symbol whose **raw** name starts with `prefix`, address-sorted. A range query on the ordered
+    /// index, so it costs `O(log n + matches)`.
+    pub fn with_prefix(&self, prefix: &str) -> Vec<&Symbol> {
+        let mut idx = prefix_indexes(&self.by_name, prefix, std::slice::from_ref);
+        idx.sort_unstable();
+        idx.into_iter().map(|i| &self.syms[i]).collect()
+    }
+
+    /// Every symbol whose **demangled** name starts with `prefix` — the search a human types
+    /// (`Player_`, `EntryPoint.`), address-sorted and de-duplicated.
+    pub fn with_demangled_prefix(&self, prefix: &str) -> Vec<&Symbol> {
+        let mut idx = prefix_indexes(&self.by_demangled, prefix, Vec::as_slice);
+        idx.sort_unstable();
+        idx.dedup();
+        idx.into_iter().map(|i| &self.syms[i]).collect()
+    }
+
+    /// Every `.emp` module path seen, sorted. The top level of the scope tree.
+    pub fn modules(&self) -> Vec<&str> {
+        self.by_module.keys().map(String::as_str).collect()
+    }
+
+    /// Every symbol belonging to one module, address-sorted. The second level of the scope tree.
+    pub fn symbols_in_module(&self, module: &str) -> Vec<&Symbol> {
+        self.by_module
+            .get(module)
+            .map(|v| v.iter().map(|&i| &self.syms[i]).collect())
+            .unwrap_or_default()
+    }
+
+    /// Decide whether this listing describes `rom` — the guard against trap 4.
+    ///
+    /// Mechanism (chosen after investigating the alternatives, all verified against real images): every
+    /// sigil-built Aeon ROM carries a `deb2` symbol appendix appended at `EndOfRom`, and `EndOfRom` is a
+    /// symbol *in the listing*. So the listing names an offset, and the ROM either has the magic there or
+    /// it does not. No new format needs decoding — we read two bytes.
+    ///
+    /// Verified in both directions: `s4.bin` at `s4.debug.lst`'s `EndOfRom` (`$A30B0`) reads `43 0b …`,
+    /// and `s4.debug.bin` at `s4.lst`'s `EndOfRom` (`$A11F0`) reads all zeros. The shape cross that
+    /// silently mis-resolves 92.6% of shared symbols is caught.
+    ///
+    /// # Known residual limit — this is a strong filter, not a proof
+    ///
+    /// `demo.lst` and `demo.debug.lst` **both** declare `EndOfRom : 11224`. Two genuinely different builds
+    /// (1,400 vs 1,621 symbols; 1,197 shared symbols at differing addresses) therefore agree on the one
+    /// offset we can probe, so this check would pass either listing against either image. Nothing available
+    /// today binds a listing to an image with certainty short of decoding the appendix or re-running
+    /// `convsym`; closing it properly wants a producer-side change in sigil (emit the built image's
+    /// checksum, or a hash, into a sidecar beside the `.lst`). Callers should treat [`RomBinding::Match`]
+    /// as "not obviously wrong", not as "proven right".
+    pub fn validate_against_rom(&self, rom: &[u8]) -> RomBinding {
+        let Some(end) = self.address_of(END_OF_ROM_SYMBOL) else {
+            return RomBinding::Indeterminate(Indeterminate::NoEndOfRomSymbol);
+        };
+        let off = end as usize;
+        let Some(head) = rom.get(off..off + DEB2_MAGIC.len()) else {
+            return RomBinding::Mismatch(BindingFault::EndOfRomOutOfRange {
+                end_of_rom: end,
+                rom_len: rom.len(),
+            });
+        };
+        if head != DEB2_MAGIC {
+            return RomBinding::Mismatch(BindingFault::NoAppendixMagic {
+                offset: end,
+                found: [head[0], head[1]],
+            });
+        }
+        let len = rom.len() - off;
+        if len < DEB2_MIN_LEN {
+            return RomBinding::Mismatch(BindingFault::AppendixTooSmall { offset: end, len });
+        }
+        RomBinding::Match {
+            appendix_offset: end,
+            appendix_len: len,
+        }
+    }
+}
+
+/// Collect the indexes of every ordered-map entry whose key starts with `prefix`, via a range query.
+/// `expand` turns one entry's value into the indexes it contributes (one for `by_name`, many for
+/// `by_demangled`).
+fn prefix_indexes<'m, V, F>(map: &'m BTreeMap<String, V>, prefix: &str, expand: F) -> Vec<usize>
+where
+    F: Fn(&'m V) -> &'m [usize],
+{
+    let mut out = Vec::new();
+    for (k, v) in map.range(prefix.to_string()..) {
+        if !k.starts_with(prefix) {
+            break;
+        }
+        out.extend_from_slice(expand(v));
+    }
+    out
+}
+
+/// Parse `   2129 symbols` / `    0 unused symbols`. `suffix` is matched on the whole remainder so
+/// `"symbols"` does not swallow the `"unused symbols"` line (the caller tries the longer one first).
+fn parse_footer(line: &str, suffix: &str) -> Option<usize> {
+    let t = line.trim();
+    let rest = t.strip_suffix(suffix)?;
+    rest.trim_end().parse::<usize>().ok()
+}
+
+/// Parse one `Symbol Table` row: `[*]NAME : HEXADDR <C|-> |`.
+///
+/// The `*` is emitted in the leading column (no separating space) when a symbol is unused; a used symbol
+/// gets a space there instead. Tokenising on whitespace after peeling the marker tolerates any column
+/// alignment while still rejecting anything that is not exactly a five-token row — which is what keeps a
+/// real AS listing's source text from being mistaken for symbols.
+fn parse_table_row(line: &str) -> Option<Symbol> {
+    let t = line.trim_start();
+    let (unused, rest) = match t.strip_prefix('*') {
+        Some(r) => (true, r),
+        None => (false, t),
+    };
+    let tok: Vec<&str> = rest.split_whitespace().collect();
+    if tok.len() != 5 || tok[1] != ":" || tok[4] != "|" {
+        return None;
+    }
+    let kind = match tok[3] {
+        "C" => SymbolKind::Code,
+        "-" => SymbolKind::Equate,
+        _ => return None,
+    };
+    // A string equate (`NAME : "text" - |`) is legal in AS listings and has no address; sigil never emits
+    // one, and there is nothing useful we could do with it, so it is skipped like any unparseable row.
+    let raw_addr = u32::from_str_radix(tok[2], 16).ok()?;
+    Some(make_symbol(tok[0].to_string(), raw_addr, kind, unused))
+}
+
+/// Parse one body line: `(depth) IDX/HEXADDR :        NAME:`.
+///
+/// Used only when a listing has no `Symbol Table` section. Deliberately strict — exactly four tokens, a
+/// parenthesised depth, an `IDX/HEX` pair, a bare `:`, and a name ending in `:` — so that an ordinary AS
+/// listing's code lines (`(0) 5/200 : 4E71   nop`) do not parse as symbols.
+fn parse_body_line(line: &str) -> Option<Symbol> {
+    let tok: Vec<&str> = line.split_whitespace().collect();
+    if tok.len() != 4 || tok[2] != ":" {
+        return None;
+    }
+    if !(tok[0].starts_with('(') && tok[0].ends_with(')')) {
+        return None;
+    }
+    let (_idx, hex) = tok[1].split_once('/')?;
+    let raw_addr = u32::from_str_radix(hex, 16).ok()?;
+    let name = tok[3].strip_suffix(':')?;
+    if name.is_empty() {
+        return None;
+    }
+    // Body lines carry neither the `*` marker nor the type column; `Code`/not-unused is the only honest
+    // reading, and `TableSource::BodyLines` tells the caller those two fields are unavailable, not observed.
+    Some(make_symbol(
+        name.to_string(),
+        raw_addr,
+        SymbolKind::Code,
+        false,
+    ))
+}
+
+/// Is `part` a synthetic compiler block scope (`asm0`, `asm1`, …)? Mirrors sigil's own
+/// `is_asm_block_scope`: `asm` alone and `asmName` are real names and must not match.
+fn is_asm_block_scope(part: &str) -> bool {
+    part.strip_prefix("asm")
+        .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Split a possibly-mangled name into `(module, parent, local)`.
+///
+/// `$engine.boot$EntryPoint$wait_dma` → `(Some("engine.boot"), Some("EntryPoint"), "wait_dma")`.
+/// A leading `__offsets` / `__align` marker is peeled first so the three levels line up for those too.
+/// A plain name yields `(None, None, name)`.
+fn scope_parts(name: &str) -> (Option<&str>, Option<&str>, &str) {
+    if !name.contains('$') {
+        return (None, None, name);
+    }
+    let mut parts: Vec<&str> = name.split('$').filter(|p| !p.is_empty()).collect();
+    if matches!(parts.first(), Some(&"__offsets") | Some(&"__align")) {
+        parts.remove(0);
+    }
+    match parts.len() {
+        0 => (None, None, name),
+        1 => (None, None, parts[0]),
+        2 => (None, Some(parts[0]), parts[1]),
+        n => (Some(parts[n - 3]), Some(parts[n - 2]), parts[n - 1]),
+    }
+}
+
+/// Build a [`Symbol`], deriving the demangled name, the 24-bit address, and the synthetic flag.
+fn make_symbol(name: String, raw_addr: u32, kind: SymbolKind, unused: bool) -> Symbol {
+    let (_module, parent, local) = scope_parts(&name);
+    let demangled = match parent {
+        Some(p) => format!("{p}.{local}"),
+        None => local.to_string(),
+    };
+    let is_synthetic = name.starts_with("__align")
+        || name
+            .split('$')
+            .filter(|p| !p.is_empty())
+            .any(is_asm_block_scope);
+    Symbol {
+        demangled,
+        raw_addr,
+        addr: raw_addr & BUS_ADDR_MASK,
+        kind,
+        unused,
+        is_synthetic,
+        name,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A miniature but format-faithful listing: both sections, mangled and plain names, an `__align`
+    /// pad, an `asm<N>` block scope, an aliased address, an 8-hex `FFFFxxxx` RAM block, an unused `*`
+    /// row, an `-` equate, and the two footers.
+    const FIXTURE: &str = "\
+(0) 1/200 :        EntryPoint:
+(0) 2/214 :        $engine.boot$EntryPoint$wait_dma:
+(0) 3/214 :        $engine.boot$EntryPoint$warm_boot:
+(0) 4/2B8 :        $engine.boot$asm1$wait_z80:
+(0) 5/1BEA :        __align$engine.boot_data$0:
+(0) 6/A11F0 :        EndOfRom:
+(0) 7/FFFF8CFA :        Player_1:
+(0) 8/FFFFB790 :        Character_ID:
+  Symbol Table (* = unused):
+  --------------------------
+
+ EntryPoint : 200 C |
+ $engine.boot$EntryPoint$wait_dma : 214 C |
+ $engine.boot$EntryPoint$warm_boot : 214 C |
+ $engine.boot$asm1$wait_z80 : 2B8 C |
+*__align$engine.boot_data$0 : 1BEA C |
+ EndOfRom : A11F0 C |
+ Player_1 : FFFF8CFA C |
+ Character_ID : FFFFB790 - |
+
+   8 symbols
+    1 unused symbols
+";
+
+    fn table() -> SymbolTable {
+        SymbolTable::parse(FIXTURE).expect("fixture parses")
+    }
+
+    #[test]
+    fn parses_both_sections_and_prefers_the_symbol_table() {
+        let t = table();
+        assert_eq!(t.source(), TableSource::SymbolTable);
+        assert_eq!(t.len(), 8);
+        assert_eq!(t.declared_count(), Some(8));
+        assert_eq!(t.declared_unused(), Some(1));
+        assert_eq!(t.matches_declared_count(), Some(true));
+        assert_eq!(t.skipped_lines(), 0);
+    }
+
+    #[test]
+    fn body_lines_are_the_fallback_when_no_section_exists() {
+        let body_only = FIXTURE.split("  Symbol Table").next().unwrap();
+        let t = SymbolTable::parse(body_only).expect("body-only listing parses");
+        assert_eq!(t.source(), TableSource::BodyLines);
+        assert_eq!(t.len(), 8);
+        // Both halves agree on every address — the emitter writes one sorted list twice.
+        let full = table();
+        for s in t.symbols() {
+            assert_eq!(
+                full.by_name(&s.name).map(|f| f.addr),
+                Some(s.addr),
+                "body/table address disagreement for {}",
+                s.name
+            );
+        }
+    }
+
+    #[test]
+    fn markers_are_read_from_the_type_and_unused_columns() {
+        let t = table();
+        assert_eq!(t.by_name("EntryPoint").unwrap().kind, SymbolKind::Code);
+        assert_eq!(t.by_name("Character_ID").unwrap().kind, SymbolKind::Equate);
+        assert!(t.by_name("__align$engine.boot_data$0").unwrap().unused);
+        assert!(!t.by_name("EntryPoint").unwrap().unused);
+    }
+
+    /// Trap 1 + trap 2: `FFFF8CFA` is an 8-hex RAM address, and it means the bus address `$FF8CFA`.
+    #[test]
+    fn ram_addresses_are_plain_8_hex_and_mask_to_24_bits() {
+        let t = table();
+        let p = t.by_name("Player_1").unwrap();
+        assert_eq!(p.raw_addr, 0xFFFF_8CFA, "raw listing spelling must survive");
+        assert_eq!(p.addr, 0x00FF_8CFA, "lookup address must be 24-bit");
+        assert_eq!(p.space(), AddrSpace::Ram);
+        // Either spelling of the same address must find it.
+        assert_eq!(t.address_of("Player_1"), Some(0x00FF_8CFA));
+        assert_eq!(t.resolve(0xFFFF_8CFA).unwrap().symbol.name, "Player_1");
+        assert_eq!(t.resolve(0x00FF_8CFA).unwrap().symbol.name, "Player_1");
+    }
+
+    /// Trap 3: the type column does not separate code from RAM — `Player_1` is a RAM variable marked `C`.
+    #[test]
+    fn type_column_does_not_discriminate_code_from_ram() {
+        let t = table();
+        let p = t.by_name("Player_1").unwrap();
+        assert_eq!(p.kind, SymbolKind::Code);
+        assert_eq!(p.space(), AddrSpace::Ram, "only the address range tells us");
+        assert_eq!(t.by_name("EntryPoint").unwrap().space(), AddrSpace::Rom);
+    }
+
+    #[test]
+    fn resolve_reports_nearest_preceding_and_displacement() {
+        let t = table();
+        let r = t.resolve(0x0000_021A).unwrap();
+        assert_eq!(r.symbol.demangled, "EntryPoint.warm_boot");
+        assert_eq!(r.displacement, 6);
+        assert_eq!(r.to_string(), "EntryPoint.warm_boot+$6");
+        // Exact hit prints bare.
+        assert_eq!(t.resolve(0x200).unwrap().to_string(), "EntryPoint");
+    }
+
+    #[test]
+    fn resolve_never_crosses_an_address_space() {
+        let t = table();
+        // Work RAM below the first RAM symbol must not resolve to the last ROM symbol (`EndOfRom`) with a
+        // ~15 MB displacement — the classic confidently-wrong answer.
+        assert!(t.resolve(0x00FF_0000).is_none());
+        // An unmapped gap (VDP ports) resolves to nothing at all.
+        assert!(t.resolve(0x00C0_0004).is_none());
+        // Below every symbol.
+        assert!(t.resolve(0x0000_0100).is_none());
+    }
+
+    #[test]
+    fn resolve_within_rejects_an_implausibly_distant_answer() {
+        let t = table();
+        // $2A11F0 is 2 MB past EndOfRom ($A11F0) — off the end of a 696 KB cart, but still inside the
+        // ROM decode window, so nearest-preceding happily hands back `EndOfRom` + $200000.
+        let far = t.resolve(0x002A_11F0).expect("still ROM space");
+        assert_eq!(far.symbol.name, "EndOfRom");
+        assert_eq!(far.displacement, 0x0020_0000);
+        assert!(t.resolve_within(0x002A_11F0, 0x100).is_none());
+        assert!(t.resolve_within(0x0000_021A, 0x100).is_some());
+    }
+
+    #[test]
+    fn aliased_addresses_are_all_reachable() {
+        let t = table();
+        let at = t.symbols_at(0x214);
+        assert_eq!(at.len(), 2, "two labels share $214: {at:?}");
+        assert!(at.iter().any(|s| s.demangled == "EntryPoint.wait_dma"));
+        assert!(at.iter().any(|s| s.demangled == "EntryPoint.warm_boot"));
+        assert!(t.symbols_at(0x216).is_empty());
+    }
+
+    #[test]
+    fn scope_tree_splits_on_dollar() {
+        let t = table();
+        let s = t.by_name("$engine.boot$EntryPoint$wait_dma").unwrap();
+        let sc = s.scope();
+        assert_eq!(sc.module, Some("engine.boot"));
+        assert_eq!(sc.parent, Some("EntryPoint"));
+        assert_eq!(sc.local, "wait_dma");
+        assert_eq!(s.demangled, "EntryPoint.wait_dma");
+        // A plain name has only a local level, and demangles to itself.
+        let p = t.by_name("EntryPoint").unwrap();
+        assert_eq!(p.scope().module, None);
+        assert_eq!(p.scope().parent, None);
+        assert_eq!(p.demangled, "EntryPoint");
+        // The module index is the top of the tree.
+        assert_eq!(t.modules(), vec!["engine.boot"]);
+        assert_eq!(t.symbols_in_module("engine.boot").len(), 3);
+        assert!(t.symbols_in_module("nope").is_empty());
+    }
+
+    #[test]
+    fn synthetic_plumbing_is_flagged_but_kept() {
+        let t = table();
+        assert!(
+            t.by_name("__align$engine.boot_data$0")
+                .unwrap()
+                .is_synthetic
+        );
+        assert!(
+            t.by_name("$engine.boot$asm1$wait_z80")
+                .unwrap()
+                .is_synthetic
+        );
+        assert!(
+            !t.by_name("$engine.boot$EntryPoint$wait_dma")
+                .unwrap()
+                .is_synthetic
+        );
+        assert!(!t.by_name("EntryPoint").unwrap().is_synthetic);
+        // `asm` and `asmFoo` are real names, not block scopes (mirrors sigil's own precision test).
+        assert!(is_asm_block_scope("asm0"));
+        assert!(is_asm_block_scope("asm12"));
+        assert!(!is_asm_block_scope("asm"));
+        assert!(!is_asm_block_scope("asmName"));
+    }
+
+    #[test]
+    fn prefix_search_works_on_both_spellings() {
+        let t = table();
+        let raw = t.with_prefix("$engine.boot$EntryPoint$");
+        assert_eq!(raw.len(), 2);
+        let dem = t.with_demangled_prefix("EntryPoint.");
+        assert_eq!(
+            dem.len(),
+            2,
+            "{:?}",
+            dem.iter().map(|s| &s.demangled).collect::<Vec<_>>()
+        );
+        // `EntryPoint` itself is a prefix of `EntryPoint.wait_dma`, so it matches all three.
+        assert_eq!(t.with_demangled_prefix("EntryPoint").len(), 3);
+        assert!(t.with_prefix("zzz").is_empty());
+    }
+
+    #[test]
+    fn ambiguous_demangled_name_refuses_to_guess() {
+        // Two modules, each with a `Foo.bar`. `address_of` must not pick one.
+        let src = "\
+  Symbol Table (* = unused):
+
+ $a.mod$Foo$bar : 100 C |
+ $b.mod$Foo$bar : 200 C |
+
+   2 symbols
+";
+        let t = SymbolTable::parse(src).unwrap();
+        assert_eq!(t.by_demangled("Foo.bar").len(), 2);
+        assert_eq!(t.address_of("Foo.bar"), None);
+        // The unambiguous raw name still resolves.
+        assert_eq!(t.address_of("$a.mod$Foo$bar"), Some(0x100));
+    }
+
+    #[test]
+    fn malformed_rows_are_skipped_and_counted_not_fatal() {
+        let src = "\
+  Symbol Table (* = unused):
+
+ Good : 100 C |
+ Bad : NOTHEX C |
+ AlsoBad : 200 X |
+ Truncated : 300
+ StringEquate : \"text\" - |
+
+   1 symbols
+";
+        let t = SymbolTable::parse(src).unwrap();
+        assert_eq!(t.len(), 1);
+        assert_eq!(t.by_name("Good").unwrap().addr, 0x100);
+        assert_eq!(t.skipped_lines(), 4);
+        assert_eq!(t.matches_declared_count(), Some(true));
+    }
+
+    #[test]
+    fn a_truncated_listing_is_detectable_via_the_footer() {
+        let src = "\
+  Symbol Table (* = unused):
+
+ Good : 100 C |
+
+   9 symbols
+";
+        let t = SymbolTable::parse(src).unwrap();
+        assert_eq!(t.matches_declared_count(), Some(false));
+    }
+
+    #[test]
+    fn a_non_listing_is_a_parse_error() {
+        assert_eq!(
+            SymbolTable::parse("hello\nworld\n").unwrap_err(),
+            SymbolParseError::NoSymbols
+        );
+        assert_eq!(
+            SymbolTable::parse("").unwrap_err(),
+            SymbolParseError::NoSymbols
+        );
+    }
+
+    /// Build a stand-in ROM image with a `deb2` appendix at `end`.
+    fn rom_with_appendix(end: usize, appendix_len: usize) -> Vec<u8> {
+        let mut rom = vec![0u8; end + appendix_len];
+        rom[end] = DEB2_MAGIC[0];
+        rom[end + 1] = DEB2_MAGIC[1];
+        rom
+    }
+
+    #[test]
+    fn shape_match_accepts_the_rom_the_listing_describes() {
+        let t = table();
+        let rom = rom_with_appendix(0xA11F0, 35_860);
+        assert_eq!(
+            t.validate_against_rom(&rom),
+            RomBinding::Match {
+                appendix_offset: 0xA11F0,
+                appendix_len: 35_860
+            }
+        );
+    }
+
+    /// Trap 4, the load-bearing case: a debug-shape listing against a release ROM. The debug listing's
+    /// `EndOfRom` ($A30B0) lands inside the release image's appendix, where there is no magic.
+    #[test]
+    fn shape_mismatch_is_refused_not_tolerated() {
+        let debug_lst = FIXTURE.replace("A11F0", "A30B0");
+        let t = SymbolTable::parse(&debug_lst).unwrap();
+        let release_rom = rom_with_appendix(0xA11F0, 35_860);
+        match t.validate_against_rom(&release_rom) {
+            RomBinding::Mismatch(BindingFault::NoAppendixMagic { offset, found }) => {
+                assert_eq!(offset, 0xA30B0);
+                assert_eq!(found, [0, 0]);
+            }
+            other => panic!("shape cross must be refused, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn end_of_rom_past_the_image_is_a_mismatch() {
+        let t = table();
+        let short = rom_with_appendix(0x1000, 0x2000);
+        match t.validate_against_rom(&short) {
+            RomBinding::Mismatch(BindingFault::EndOfRomOutOfRange {
+                end_of_rom,
+                rom_len,
+            }) => {
+                assert_eq!(end_of_rom, 0xA11F0);
+                assert_eq!(rom_len, 0x3000);
+            }
+            other => panic!("expected out-of-range, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_coincidental_magic_with_no_room_for_a_table_is_refused() {
+        let t = table();
+        let rom = rom_with_appendix(0xA11F0, 16);
+        match t.validate_against_rom(&rom) {
+            RomBinding::Mismatch(BindingFault::AppendixTooSmall { offset, len }) => {
+                assert_eq!(offset, 0xA11F0);
+                assert_eq!(len, 16);
+            }
+            other => panic!("expected too-small, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_listing_without_end_of_rom_is_indeterminate_not_a_mismatch() {
+        let src = "\
+  Symbol Table (* = unused):
+
+ Main : 100 C |
+
+   1 symbols
+";
+        let t = SymbolTable::parse(src).unwrap();
+        assert_eq!(
+            t.validate_against_rom(&rom_with_appendix(0xA11F0, 35_860)),
+            RomBinding::Indeterminate(Indeterminate::NoEndOfRomSymbol)
+        );
+    }
+
+    #[test]
+    fn rom_declared_end_reads_the_header_longword() {
+        let mut rom = vec![0u8; 0x200];
+        rom[0x1A4..0x1A8].copy_from_slice(&0x000A_A203u32.to_be_bytes());
+        assert_eq!(rom_declared_end(&rom), Some(0x000A_A203));
+        assert_eq!(rom_declared_end(&[0u8; 4]), None);
+    }
+}

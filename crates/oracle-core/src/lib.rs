@@ -16,6 +16,10 @@ pub mod render;
 pub mod rng;
 pub mod scheduler;
 pub mod state_hash;
+/// `<rom>.lst` symbol table — name↔address resolution and the `$`-mangled scope tree. Pure (`&str` in,
+/// no filesystem); caller-owned metadata about a ROM, never part of `System` / `state_hash` /
+/// `export_state`.
+pub mod symbols;
 /// Native, opt-in sound synthesis (Phase SY). Feature-gated (`synth`, default OFF); a caller-owned sink
 /// that is never part of `System` / `state_hash` / `export_state`.
 #[cfg(feature = "synth")]
