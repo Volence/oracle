@@ -3,7 +3,7 @@ name = "oracle-frontend"
 version = "0.0.0"
 edition.workspace = true
 license.workspace = true
-description = "Live windowed frontend for the oracle-core Genesis emulation core — window + keyboard, no I/O in the core."
+description = "Live windowed frontend for the oracle-core Genesis emulation core — window + keyboard + gamepad, no I/O in the core."
 
 [dependencies]
 oracle-core = { path = "../oracle-core" }
@@ -12,8 +12,13 @@ minifb = "0.28"
 # host output stream. All three are optional and confined to the frontend `audio` feature.
 ringbuf = { version = "0.4", optional = true }
 cpal = { version = "0.15", optional = true }
+# Host gamepad input — frontend-only, pure-Rust (no SDL). Optional and confined to the `gamepad` feature; it
+# must never reach oracle-core, whose dependency list is deliberately tiny and I/O-free.
+gilrs = { version = "0.11", optional = true }
 
 [features]
-default = ["audio"]
+default = ["audio", "gamepad"]
 # Turns on the core's native synth (AudioSink), the SPSC-ring substrate, and the cpal host output stream.
 audio = ["dep:ringbuf", "dep:cpal", "oracle-core/synth"]
+# Turns on host gamepad polling (gilrs). Off → keyboard-only, exactly as before this feature existed.
+gamepad = ["dep:gilrs"]
