@@ -104,6 +104,32 @@ pub trait BusEventSink {
     /// [`wants_scanlines`](BusEventSink::wants_scanlines) returned `true`. The default is a no-op.
     fn on_scanline(&mut self, _line: u16, _rgb: &[(u8, u8, u8)]) {}
 
+    /// **Frame structure.** Called by the sink-generic run loop **exactly once per emulated frame**, at the
+    /// instant that frame's active display ends — the start of vblank (the line-224 `Scanline` event), which
+    /// is *after* [`on_scanline`](BusEventSink::on_scanline) for line 223 and *before* any line of the next
+    /// frame. `frame` is the index of the frame that just completed, in the same units as
+    /// [`on_step_boundary`](BusEventSink::on_step_boundary)'s `frame` (`mclk / mclk_per_frame`, see
+    /// [`crate::system::TimingBasis`]). The default is a no-op, so the null-sink hot path (`()`) and the
+    /// recording sink (`Vec<BusEvent>`) are behaviorally unchanged by construction.
+    ///
+    /// **Why end-of-active-display rather than top-of-frame.** Line 0 is the more obvious "frame boundary",
+    /// and it is the wrong one *here*. `run_frames` deadlines land exactly on a frame-boundary mclk and the
+    /// run loop tests `now < deadline` *before* popping due events, so the line-0 event of the frame after
+    /// the last is never delivered inside the run — which is why a 1-frame run delivers 224 scanlines, not
+    /// 225. A top-of-frame hook would therefore orphan the final frame of every run, silently, which is
+    /// precisely the class of hand-rolled frame bookkeeping this hook exists to retire. End-of-active-display
+    /// fires for exactly those frames whose active lines the run actually produced, and it is the instant at
+    /// which a frame-accumulating consumer's buffer holds one complete frame — see
+    /// [`ScanlineCapture`](crate::scanline_capture::ScanlineCapture)'s `LastFrame` retention, whose whole
+    /// implementation is this callback.
+    ///
+    /// **Why on the trait and not on [`BusEvent`]:** the standing precedent of
+    /// [`on_event_at`](BusEventSink::on_event_at) (SY-4a) and
+    /// [`on_step_boundary`](BusEventSink::on_step_boundary) — extend the trait, never the event struct (it
+    /// derives `Eq` and is recorded into `Vec<BusEvent>` by tests asserting exact event sequences). A frame
+    /// boundary is also not an access, so it has no `addr`/`op`/`value` to carry.
+    fn on_frame_boundary(&mut self, _frame: u64) {}
+
     /// **The stop signal.** Queried by the sink-generic run loop once per CPU step, immediately after
     /// [`on_step_boundary`](BusEventSink::on_step_boundary) and *before* the instruction executes; returning
     /// `true` ends the run early with
@@ -155,6 +181,9 @@ impl<S: BusEventSink + ?Sized> BusEventSink for &mut S {
     fn on_scanline(&mut self, line: u16, rgb: &[(u8, u8, u8)]) {
         (**self).on_scanline(line, rgb);
     }
+    fn on_frame_boundary(&mut self, frame: u64) {
+        (**self).on_frame_boundary(frame);
+    }
     fn stop_requested(&self) -> bool {
         (**self).stop_requested()
     }
@@ -193,6 +222,11 @@ impl<S: BusEventSink> BusEventSink for Option<S> {
     fn on_scanline(&mut self, line: u16, rgb: &[(u8, u8, u8)]) {
         if let Some(s) = self {
             s.on_scanline(line, rgb);
+        }
+    }
+    fn on_frame_boundary(&mut self, frame: u64) {
+        if let Some(s) = self {
+            s.on_frame_boundary(frame);
         }
     }
     fn stop_requested(&self) -> bool {
@@ -259,6 +293,10 @@ impl<A: BusEventSink, B: BusEventSink> BusEventSink for Fanout<A, B> {
     fn on_scanline(&mut self, line: u16, rgb: &[(u8, u8, u8)]) {
         self.a.on_scanline(line, rgb);
         self.b.on_scanline(line, rgb);
+    }
+    fn on_frame_boundary(&mut self, frame: u64) {
+        self.a.on_frame_boundary(frame);
+        self.b.on_frame_boundary(frame);
     }
     fn stop_requested(&self) -> bool {
         self.a.stop_requested() || self.b.stop_requested()
@@ -3061,6 +3099,7 @@ mod tests {
         events: Vec<BusEvent>,
         timed: Vec<(BusEvent, u64)>,
         boundaries: Vec<(u32, u64)>,
+        frame_boundaries: Vec<u64>,
         vdp_writes: usize,
         scanlines: Vec<u16>,
         want_vdp: bool,
@@ -3090,6 +3129,9 @@ mod tests {
         }
         fn on_scanline(&mut self, line: u16, _rgb: &[(u8, u8, u8)]) {
             self.scanlines.push(line);
+        }
+        fn on_frame_boundary(&mut self, frame: u64) {
+            self.frame_boundaries.push(frame);
         }
         fn stop_requested(&self) -> bool {
             self.stop
@@ -3129,6 +3171,7 @@ mod tests {
             f.on_step_boundary(0x400, 7);
             f.on_vdp_write(vdp_write_probe());
             f.on_scanline(99, &[(1, 2, 3)]);
+            f.on_frame_boundary(11);
         }
         for (name, s) in [("a", &a), ("b", &b)] {
             assert_eq!(
@@ -3144,6 +3187,12 @@ mod tests {
             assert_eq!(s.boundaries, vec![(0x400, 7)], "{name}: step boundary");
             assert_eq!(s.vdp_writes, 1, "{name}: VDP write");
             assert_eq!(s.scanlines, vec![99], "{name}: scanline");
+            assert_eq!(
+                s.frame_boundaries,
+                vec![11],
+                "{name}: frame boundary — a composite that dropped it would starve a frame-shaped sink \
+                 silently, which is the exact bug the hook exists to remove"
+            );
         }
     }
 
@@ -3231,9 +3280,18 @@ mod tests {
             let mut armed = Fanout::new(&mut audio, Some(&mut watch));
             assert!(armed.wants_vdp_writes(), "the armed half's opt-in wins");
             armed.on_event(ev(3));
+            armed.on_frame_boundary(5);
         }
         assert_eq!(audio.events.len(), 1);
         assert_eq!(watch.events.len(), 1);
+        assert_eq!(
+            (
+                audio.frame_boundaries.as_slice(),
+                watch.frame_boundaries.as_slice()
+            ),
+            (&[5u64][..], &[5u64][..]),
+            "the frame boundary reaches through BOTH the &mut and the Option forwarder"
+        );
 
         let mut audio2 = Spy::default();
         {
@@ -3243,8 +3301,14 @@ mod tests {
                 "with the optional half absent, nothing opts in"
             );
             disarmed.on_event(ev(4));
+            disarmed.on_frame_boundary(6);
         }
         assert_eq!(audio2.events.len(), 1, "the present half still receives");
+        assert_eq!(
+            audio2.frame_boundaries,
+            vec![6],
+            "an absent optional half is the null sink, not a blocked path"
+        );
     }
 
     /// `StopWhen` latches on the first true and never re-evaluates the predicate afterwards.

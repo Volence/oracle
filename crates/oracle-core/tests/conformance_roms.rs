@@ -32,6 +32,7 @@
 
 use oracle_core::bus::{BusEvent, BusEventSink, BusOp};
 use oracle_core::io::Pad;
+use oracle_core::scanline_capture::{Retain, ScanlineCapture};
 use oracle_core::system::System;
 use std::path::Path;
 
@@ -250,49 +251,27 @@ fn frame_hash(sys: &System) -> u64 {
     h
 }
 
-/// Per-scanline capture sink (Limitation L1): retains the LAST complete frame's active lines, each as the
-/// VDP rendered it *during* the run. Mid-frame CRAM rewrites are visible here and structurally invisible to
-/// [`frame_hash`], which reads only the end-of-frame palette.
-struct FrameCapture {
-    building: Vec<(u8, u8, u8)>,
-    last: Vec<(u8, u8, u8)>,
-}
-
-impl BusEventSink for FrameCapture {
-    fn on_event(&mut self, _event: BusEvent) {}
-
-    fn wants_scanlines(&self) -> bool {
-        true
-    }
-
-    fn on_scanline(&mut self, line: u16, rgb: &[(u8, u8, u8)]) {
-        if line == 0 {
-            self.building.clear();
-        }
-        self.building.extend_from_slice(rgb);
-        if line == ACTIVE_LINES - 1 {
-            self.last = std::mem::take(&mut self.building);
-        }
-    }
-}
-
-/// Run the ROM under the capture sink and hash the last complete captured frame, in the SAME byte layout as
-/// [`frame_hash`] (line-major, r/g/b per pixel over lines 0..=223) — so the two hashes name the same kind of
-/// thing and a row can be moved from one to the other with the difference being only *when* the pixels were
-/// read. The sink is state-neutral (`tests/scanline_capture.rs`), so the run itself is the plain run.
+/// Run the ROM under the shared per-scanline capture sink (Limitation L1) in `LastFrame` retention — the
+/// last complete frame's active lines, each as the VDP rendered it *during* the run, so mid-frame CRAM
+/// rewrites are visible here and structurally invisible to [`frame_hash`], which reads only the end-of-frame
+/// palette. Hashed in the SAME byte layout as [`frame_hash`] (line-major, r/g/b per pixel over lines
+/// 0..=223), so the two hashes name the same kind of thing and a row can be moved from one to the other with
+/// the difference being only *when* the pixels were read.
+///
+/// The retention (and the frame boundary that drives it) lives in
+/// [`oracle_core::scanline_capture::ScanlineCapture`] — this file used to hand-roll it from magic line
+/// comparisons (`F-SCANLINE-CAPTURE`). The sink is state-neutral (`tests/scanline_capture.rs`), so the run
+/// itself is the plain run.
 fn frame_hash_scanline(sys: &mut System, frames: u64) -> u64 {
-    let mut cap = FrameCapture {
-        building: Vec::new(),
-        last: Vec::new(),
-    };
+    let mut cap = ScanlineCapture::new(Retain::LastFrame);
     sys.run_frames_with_sink(frames, &mut cap);
     let width = sys.vdp().render_line(0).len();
     assert_eq!(
-        cap.last.len(),
+        cap.pixels().len(),
         width * ACTIVE_LINES as usize,
         "capture must hold exactly one complete frame of active lines"
     );
-    fnv1a_rgb(FNV1A_OFFSET, &cap.last)
+    fnv1a_rgb(FNV1A_OFFSET, cap.pixels())
 }
 
 // ---------------------------------------------------------------------------------------------------

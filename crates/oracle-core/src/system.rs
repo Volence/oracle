@@ -1017,6 +1017,11 @@ impl System {
                     }
                 }
                 if line == 224 {
+                    // The frame-structure hook (`F-SCANLINE-CAPTURE`). Active display has just ended, so a
+                    // frame-accumulating sink's buffer holds exactly one complete frame right here — see
+                    // [`BusEventSink::on_frame_boundary`] for why this instant, and not line 0, is the
+                    // boundary. Defaulted to a no-op, so `&mut ()` is byte-for-byte the old hot path.
+                    sink.on_frame_boundary(deadline / MCLK_PER_FRAME);
                     let off = self.vdp.vint_offset();
                     self.scheduler.schedule(deadline + off, EventKind::VInt);
                 }

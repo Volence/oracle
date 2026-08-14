@@ -806,6 +806,17 @@ largest source of duplicated bookkeeping"*). ~60 lines, collapses both types to 
 independently useful. **Do this before or instead of half of the recorder work if forced to choose** —
 it is cheaper and its duplication evidence is stronger (byte-identical bodies, 9 hours apart).
 
+> **BUILT 2026-08-14** (ruling F item 2), as specified: `crates/oracle-core/src/scanline_capture.rs` holds
+> `ScanlineCapture { retain: First | LastFrame | All }`, both ad-hoc sinks are gone, and
+> `BusEventSink::on_frame_boundary(frame)` is called once per frame by `System::deliver_event`.
+> **One design call this section did not anticipate:** the boundary is placed at the **end of active
+> display** (the line-224 `Scanline` event), *not* at top-of-frame. `run_frames` deadlines land exactly on a
+> frame-boundary mclk and `run_until_with_sink` tests `now < deadline` *before* popping due events, so the
+> line-0 event of the frame after the last is never delivered inside a run — the reason a 1-frame run
+> delivers 224 scanlines and not 225. A top-of-frame hook would therefore have silently orphaned the last
+> frame of every run, and `LastFrame` retention would have moved the `color_1536` currency. The rationale is
+> written into the trait's doc comment so the next reader does not "fix" it back to line 0.
+
 ### `AudioAndWatch` (`crates/oracle-frontend/src/audio.rs:158-217`) — **replaced by S1, not by this**
 
 Seven hand-written forwards with an inconsistency the census caught: `wants_vdp_writes` drops
@@ -995,7 +1006,7 @@ Each with the reason, so a later reader can reopen it on evidence rather than ta
 | `F-TRACE-MASTER` | `fc = 0` conflates DMA / Z80 / 68k-through-Z80-window; an fc census on `$7F11` mis-attributes | `bus.rs:522`, `z80/bus.rs:228` | **Yes** — option (a) is currency-gated |
 | ~~`F-TRACE-POWERON-CHECK`~~ **CLOSED 2026-08-14** | Our anchor is **all-zero**, not the sibling's `0xFFFF…`; `System::is_pristine_power_on()` shipped alongside `reset_with_sink`/`boot_with_sink` (C1) | `system.rs` (`power_on_regs`, `reset_with_sink`) | no — closed |
 | ~~`F-TRACE-S1-DISARM`~~ **DISCHARGED 2026-08-14** | Verified: the early stop is a `break` out of the `while`, and the `if capture { self.vdp.set_write_capture(false) }` disarm sits *after* the loop — both exit paths reach it, so no `write_capture` leaks across runs | `system.rs:801-851` | no — closed |
-| `F-SCANLINE-CAPTURE` | Promote `ScanlineCapture` + add `on_frame_boundary`; collapses `FrameCapture`/`LineCollector` | `tests/conformance_roms.rs:254`, `tests/scanline_capture.rs:12` | no — cheap, strong evidence |
+| ~~`F-SCANLINE-CAPTURE`~~ **CLOSED 2026-08-14** | `scanline_capture::ScanlineCapture { retain: First \| LastFrame \| All }` promoted into `oracle-core`; `BusEventSink::on_frame_boundary(frame)` added (defaulted, forwarded by `&mut S` / `Option<S>` / `Fanout`) and called once per frame from the `Scanline` line-224 event. **Boundary chosen = end of active display, NOT line 0**: `run_frames` deadlines land on a frame-boundary mclk and the loop tests `now < deadline` before popping due events, so a top-of-frame hook would orphan the last frame of every run (this is why a 1-frame run delivers 224 lines, not 225). Both ad-hoc sinks deleted; `frame_hash=0x917371f07409cb25` unmoved | `src/scanline_capture.rs`, `bus.rs` (`on_frame_boundary`), `system.rs` (`deliver_event`) | no — closed |
 | `F-TRACE-EXPOSE-LATCHES` | Expose `z80_busreq`/`z80_running`/FM address latch read-only; deletes 3 shadow reimplementations | `k4_openbus_probe.rs:49`, `vgm.rs:291`, `synth/audio_sink.rs:43` | no |
 | ~~`F-TRACE-PAL`~~ **CLOSED 2026-08-14** | Ruled (A): carry the basis. `TimingBasis` on `System`/`Watchpoints` + `timingBasis` in Aether `initialize`, numbers derived from `MCLK_PER_FRAME` | `system.rs` (`TimingBasis`), `watchpoints.rs`, `oracle-aether/src/{engine,rpc}.rs` | no — closed |
 | `F-TRACE-VDPWRITE-MCLK` | `VdpWrite` has no per-write mclk, so sub-scanline CRAM effects are unlocatable — the recorded blocker *"CRAM writes carry no h-position"* | `vdp.rs` capture path, `system.rs:728-732`, `docs/2026-07-25-testrom-conformance.md:815` | no — own slice |
