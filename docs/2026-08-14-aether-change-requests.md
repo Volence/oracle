@@ -1,11 +1,29 @@
 # Aether change requests + recorded ambiguities (2026-08-14)
 
-**Status: drafted, NOT filed.** `empyrean/contract/protocol.md` §8 is explicit — *"What the Oracle side
-must not do: invent new ops not in this spec, design its own envelope, or start a second parser.
-Deviations are raised as **change requests against this file**, not implemented unilaterally — the
-contract leads."* This document is that raising. It is deliberately not sent: the overnight plan
-(`docs/plans/2026-08-14-tooling-track2-overnight.md`, question b) records that filing a change request
-against another team's contract is outward-facing and not ours to initiate unprompted.
+**Status: ALL SIX ADOPTED, 2026-08-14** (Fable ruling C; `empyrean` commit `3b49e1a`). This document is
+now the *record* of what was raised and why — the normative text lives in `empyrean/contract/protocol.md`
+(amendment log: its §11). Two changes were made to the CRs as drafted below, and the drafts are left
+un-rewritten so the difference stays visible:
+
+- **CR-1's enum value is `runFrames`, not `frames`** — matching the existing `runTo` / `runToScanline`
+  spelling convention.
+- **CR-5 was adopted with its trade-off accepted, not hedged.** Making the stamp normative renders the
+  retiring C++ Oracle non-conformant; no `stamped` capability flag was added, because one would preserve
+  the defect through capability negotiation indefinitely (contract §10 decision 5).
+
+CR-2 additionally gained three rules the draft did not pin: checkpoints are volatile (never persisted —
+the snapshot format is version-fragile by design), `restore` covers the whole machine *including the
+ROM*, and the count is capped and **refused loudly** rather than silently evicted (contract D13, §6.1).
+
+*Original framing, kept for the record:* `empyrean/contract/protocol.md` §8 is explicit — *"What the
+Oracle side must not do: invent new ops not in this spec, design its own envelope, or start a second
+parser. Deviations are raised as **change requests against this file**, not implemented unilaterally —
+the contract leads."* This document is that raising. It was deliberately not sent at the time: the
+overnight plan (`docs/plans/2026-08-14-tooling-track2-overnight.md`, question b) recorded that filing a
+change request against another team's contract is outward-facing and not ours to initiate unprompted.
+**Ruling E retired that framing** — one person owns every repo, so a CR against this contract is the
+owner editing the owner's own spec. The sequencing discipline (contract first, implementation second)
+stands; the foreign-counterparty fiction does not.
 
 Everything below was hit while implementing `crates/oracle-aether` against the contract verbatim. Each
 entry says what the contract says, what we did instead, and why. **Nothing here was deviated from
@@ -28,6 +46,9 @@ the event stream sees `resumed` and then either an unmapped reason or, worse, no
 when a `run_to` fired). Additive params on a catalogued event are not a new op.
 
 **Proposed change.** Add `frames` to the `reason` enum in §3.
+
+> **Adopted as `runFrames`** (contract §3) — the proposed `frames` was inconsistent with the enum's
+> existing `runTo` / `runToScanline` spelling. `frames` and `deadlineReached` are normative params.
 
 ---
 
@@ -56,6 +77,14 @@ This is the one place the intended scope was consciously not delivered.
 | `emulator/checkpoint_drop` | `id` \| `all` | `removed` |
 
 `id` is server-assigned, so a client cannot collide with another client's checkpoints on a shared bus.
+
+> **Adopted as drafted, plus three rules this draft did not pin** (contract D13 + §6.1): checkpoints are
+> **volatile** (in-memory, per-server-session, never written to disk — the snapshot is a serialization of
+> the live emulator struct and is version-fragile across builds *by design*, so persisting it would
+> promise a durability the format does not have); **`restore` restores the whole machine, ROM included**
+> (restoring across a `reload_rom` brings the old cartridge back — defined behaviour, not a refusal);
+> and the count is **capped and refused loudly** at the limit with `-32005`, never silently evicted.
+> §9's deferral was lifted, with the reasoning recorded in the contract's §9.1 so the history is legible.
 
 ---
 
@@ -136,6 +165,13 @@ event name from the one `protocol.md` §3 fixes. We implement `protocol.md`'s sp
 (`emulator/romReloaded`), because it is the stated source of truth. **One of the two documents is wrong
 and only the owner should decide which.** Until then, an approved client is subscribing to an event
 this server will never emit.
+
+> **RESOLVED — the contract's spelling stands; Aurora's spec was corrected** (`aurora` commit `26378c9`,
+> line 35, one identifier, nothing else touched). camelCase event names are now normative in the contract
+> (§3, §10 decision 4), and servers are explicitly forbidden from emitting both spellings to bridge the
+> gap. The live bug is closed: it was the only item in this set where an approved client was subscribed
+> to an event that would never arrive. Our implementation needed no change — it already emitted the
+> contract's spelling.
 
 ---
 

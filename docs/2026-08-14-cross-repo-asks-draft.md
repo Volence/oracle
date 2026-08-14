@@ -1,12 +1,31 @@
 # Two cross-repo asks — DRAFTED, NOT SENT (2026-08-14)
 
-**Status: awaiting owner decision.** Both of these are change requests against repos oracle-next does
+**Status: BOTH ACTIONED, 2026-08-14** (Fable ruling E). The framing this document opens with was wrong,
+and the ruling says so plainly: there is no "other side". One person owns every repo, so these are work
+items in the owner's own suite, not petitions. What survives the correction is the *sequencing*
+discipline — write the contract first, implement second — not the separation of parties.
+
+- **Ask 1 — DONE.** It collapsed into CR-6. Aurora's spec corrected (`aurora` commit `26378c9`); the
+  contract's camelCase spelling made normative with both-spellings bridging explicitly forbidden
+  (`empyrean` commit `3b49e1a`, `protocol.md` §3 and §10 decision 4).
+- **Ask 2 — RECORDED, NOT IMPLEMENTED.** The requirement is now tracked in `empyrean/docs/ROADMAP.md`
+  (Sigil greenfield track) with its minimum field set, and `protocol.md` §9 splits the manifest out from
+  the deferred build node — the manifest is a producer-side artifact that needs nothing from Aether to
+  exist. **The sigil-side implementation is unstarted**, deliberately: writing code in the assembler that
+  builds the game was not in scope for the contract pass.
+
+*Original framing, kept for the record:* both of these are change requests against repos oracle-next does
 not own (`empyrean/contract`, `sigil`, `aurora`). Filing them is outward-facing and is the owner's
 call, not mine — so they are written out here ready to send, and nothing has been sent, filed, or
 committed to another repo. Both were surfaced by the 2026-08-13/14 engine-side recon
 (`docs/2026-08-14-tooling-frontier-recon.md` §6).
 
 Neither blocks the current overnight arc. Both are cheap for the other side.
+
+*Figures below re-verified firsthand on adoption:* `aeon/s4.lst` has `Camera_X : FFFFA428` (it has indeed
+moved twice more since the contract's D7 incident was written up), and the demo pair share an identical
+`EndOfRom : 11224` while **1,197** shared symbol names sit at differing addresses — so the `deb2`
+appendix probe genuinely cannot separate them, exactly as claimed.
 
 ---
 
