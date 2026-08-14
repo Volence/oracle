@@ -29,10 +29,14 @@
 //! | Enter             | Start (P1)     |
 //! | Space             | pause / resume |
 //! | `.` (period)      | single-frame step (while paused) |
+//! | F1                | soft-reset the console (SRAM contents preserved, as on real hardware) |
+//! | F5                | re-read the ROM file from disk and reset — the edit-assemble-test loop |
 //! | F2                | save state to the current slot |
 //! | F4                | load state from the current slot |
 //! | F6 / F7           | previous / next save-state slot |
 //! | 0 – 9             | select save-state slot directly |
+//! | `-` / `=`         | output volume down / up (audio builds; repeats while held) |
+//! | M                 | mute toggle (audio builds; remembers the volume level) |
 //! | Left mouse click  | watch the VRAM tile under the clicked pixel ("who wrote this tile?") |
 //! | W                 | dump recorded watch hits (seq/frame/pc/addr/old→new/via) + drop count to stdout |
 //! | C                 | clear the watch (return to the fast null-sink run path) |
@@ -42,15 +46,36 @@
 //! in one place — the mapping tables at the top of the `gamepad` module — so remapping means editing those
 //! tables.
 //!
+//! ## Reset and ROM reload
+//!
+//! `F1` drives the core's [`System::reset`] — the same `/RESET` sequence the frontend already runs at boot,
+//! which keeps the cartridge and its battery-backed SRAM and re-runs the vector fetch. `F5` additionally
+//! re-reads the ROM **file**, so rebuilding a ROM and testing it costs a key press instead of a relaunch.
+//!
+//! Both are more than a single core call, and every extra step is there to stop something being lost:
+//!
+//! * **Battery data first.** `reset` clears `sram_dirty` and `load_rom` re-provisions a *zeroed* buffer, so
+//!   anything the guest saved inside the autosave debounce window would silently never reach disk. Both paths
+//!   flush the pending `.srm` first ([`flush_pending_srm`]). If that write fails, reset re-arms the debounce
+//!   to retry (the bytes survive a reset, so a retry writes the right thing) and reload **aborts** (the bytes
+//!   do not survive `load_rom`, so there would be nothing left to retry with).
+//! * **The `.srm` is re-applied after a reload,** because `load_rom` zeroes the buffer it just sized from the
+//!   new header. The path is derived from the ROM *path*, which a reload does not change.
+//! * **The ROM fingerprint is re-derived,** so save states written against the previous build are refused
+//!   (`StateError::Rom`) rather than restoring a machine that still carries the old cartridge bytes — a state
+//!   file is a snapshot of a whole machine, ROM included.
+//! * **The audio sink is rebuilt** ([`audio::resync_sink`]) because both paths rewind the master clock, and a
+//!   sink carrying a stale high frame index renders nothing at all until the machine catches back up.
+//!
 //! ## Save states
 //!
 //! Ten numbered slots written next to the ROM (`…/foo.bin` slot 3 → `…/foo.state3`), the same naming rule the
 //! `.srm` battery save uses. The container — magic, version, a derived machine-layout fingerprint, the ROM's
 //! fingerprint, and a payload checksum — lives in [`save_state`]; a stale or corrupt file is refused with a
-//! message and the running machine keeps going untouched. Loading also flushes the audio ring (stale queued
-//! samples belong to a timeline that no longer exists) and, because the snapshot carries the cartridge SRAM
-//! backwards with it, first persists any pending `.srm` and then cancels the autosave debounce — so a state
-//! load never rewinds the on-disk battery. See the load handler below.
+//! message and the running machine keeps going untouched. Loading also resynchronises audio (the queued
+//! samples, and the sink's own frame clock, belong to a timeline that no longer exists) and, because the
+//! snapshot carries the cartridge SRAM backwards with it, first persists any pending `.srm` and then cancels
+//! the autosave debounce — so a state load never rewinds the on-disk battery. See the load handler below.
 //!
 //! ## Pixel-attribution watch (record + display only)
 //!
@@ -255,25 +280,71 @@ fn draw_crosshair(buf: &mut [u32], width: usize, wx: u16, wy: u16) {
 
 /// Live host-audio state (Phase SY-5b). Held for the whole run: the persistent synth `AudioSink` (advanced
 /// exactly one frame per loop iteration by the composite sink, then drained), the SPSC ring producer the
-/// drained PCM is pushed into, the save-state flush flag shared with the audio callback, and the kept-alive
-/// cpal [`Stream`](cpal::Stream) — dropping the stream stops playback, so it must outlive the loop.
+/// drained PCM is pushed into, the ring-flush flag shared with the audio callback, and the kept-alive cpal
+/// [`Stream`](cpal::Stream) — dropping the stream stops playback, so it must outlive the loop.
 #[cfg(feature = "audio")]
 struct AudioState {
     sink: oracle_core::synth::AudioSink,
     prod: audio::AudioProd,
-    /// Raised by the emulation thread after a save-state load; the next audio callback drops the whole ring
-    /// backlog (see [`audio::fill_output`]). The main thread owns only the producer half, so it cannot drain
-    /// the ring itself — this flag is the hand-off.
+    /// Raised by the emulation thread whenever the machine's timeline jumps (state load, soft reset, ROM
+    /// reload — see [`resync_audio`]); the next audio callback drops the whole ring backlog (see
+    /// [`audio::fill_output`]). The main thread owns only the producer half, so it cannot drain the ring
+    /// itself — this flag is the hand-off.
     flush: std::sync::Arc<std::sync::atomic::AtomicBool>,
     _stream: cpal::Stream,
 }
 
-/// Ask the audio callback to discard everything still queued. Called after a state load, when the queued
-/// samples belong to a timeline the machine has just left. No-op when audio is disabled (no device).
+/// Put audio back in step with a machine whose timeline has just jumped — a save-state load, a soft reset, or
+/// a ROM reload. No-op when audio is disabled (no device).
+///
+/// Two things have to happen, for two different reasons:
+///
+/// 1. **Drop the ring backlog.** Up to [`audio::RING_FRAMES`] frames of already-rendered PCM belong to the
+///    timeline the machine has left; playing them out would be an audible burp of the past. The emulation
+///    thread owns only the producer half of the ring, so it raises the shared flag the callback checks
+///    ([`audio::fill_output`]) rather than draining it itself.
+/// 2. **Rebuild the sink** ([`audio::resync_sink`]). All three jumps can move the master clock *backwards*,
+///    and the sink renders only on an advancing frame index — a stale one would go silent indefinitely. See
+///    that function's docs for the full mechanism.
 #[cfg(feature = "audio")]
-fn flush_audio(audio: Option<&AudioState>) {
+fn resync_audio(audio: Option<&mut AudioState>) {
     if let Some(a) = audio {
+        audio::resync_sink(&mut a.sink);
         a.flush.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Persist any battery data the guest has written that the autosave debounce has not yet flushed, ahead of an
+/// operation that would otherwise lose it (quit, state load, reset, ROM reload). `why` names that operation
+/// and appears verbatim in the log line — "on quit", "before the reset", ….
+///
+/// Returns `true` when the on-disk `.srm` is up to date, **including** the common case of nothing being
+/// pending (a cart that has never saved never touches the disk — the `sram_used` gate). `false` means the
+/// write failed and memory still holds the only copy, which the callers treat differently according to
+/// whether their operation destroys that copy: the reset path re-arms its debounce to retry, the ROM-reload
+/// path aborts, and quit can only report it.
+fn flush_pending_srm(
+    sys: &System,
+    path: &std::path::Path,
+    countdown: Option<u32>,
+    why: &str,
+) -> bool {
+    if !(sys.sram_used() && (sys.sram_dirty() || countdown.is_some())) {
+        return true; // nothing pending — disk already matches memory
+    }
+    match sram_file::save_srm(path, sys.sram()) {
+        Ok(()) => {
+            println!(
+                "SRAM: saved {} bytes to {} {why}",
+                sys.sram().len(),
+                path.display()
+            );
+            true
+        }
+        Err(e) => {
+            eprintln!("SRAM: save {why} failed ({}): {e}", path.display());
+            false
+        }
     }
 }
 
@@ -378,8 +449,9 @@ fn main() {
 
     // Identity of this cartridge, computed before the ROM moves into the core. Every save state records it,
     // so a state written while running a *different* game is refused instead of silently swapping the ROM
-    // (the snapshot carries the cartridge bytes with it).
-    let rom_fp = save_state::rom_fingerprint(&rom);
+    // (the snapshot carries the cartridge bytes with it). Re-derived by the F5 reload, which deliberately
+    // invalidates every state written against the previous build.
+    let mut rom_fp = save_state::rom_fingerprint(&rom);
 
     let mut sys = System::new(0x5EED);
     sys.load_rom(rom);
@@ -434,6 +506,15 @@ fn main() {
         save_state::SLOT_COUNT,
         save_state::state_path_for(std::path::Path::new(&args.rom_path), 0).display()
     );
+    println!(
+        "machine: F1=soft reset, F5=reload the ROM from disk (re-read {} and reset)",
+        args.rom_path
+    );
+    #[cfg(feature = "audio")]
+    println!(
+        "audio: -/= volume down/up ({} steps, starts at full), M=mute",
+        audio::VOLUME_STEPS
+    );
 
     // Host gamepads: `None` = gilrs unavailable → keyboard-only, never a panic (same contract as `start_audio`
     // below). `Some` with no controller attached is normal — one plugged in later is picked up by `poll`.
@@ -466,6 +547,14 @@ fn main() {
 
     // The save-state slot F2/F4 act on; F6/F7 step it, 0-9 pick it directly.
     let mut state_slot: usize = 0;
+
+    // Output volume (audio builds only — with no audio there is nothing to attenuate, and the state would be
+    // dead code). `volume` is a step in `0..=audio::VOLUME_STEPS`, defaulting to full so behaviour is
+    // unchanged until the user touches it; `muted` is an independent toggle so unmuting restores the level.
+    #[cfg(feature = "audio")]
+    let mut volume: u8 = audio::VOLUME_STEPS;
+    #[cfg(feature = "audio")]
+    let mut muted = false;
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
         // Edge-triggered controls (fire once per physical press, not every frame held).
@@ -562,33 +651,27 @@ fn main() {
                     // SRAM rides the snapshot, so the restore is about to roll the battery buffer backwards.
                     // Flush any battery data the guest has written but the debounce has not yet persisted
                     // *first*, exactly like the quit path — otherwise a state load would silently destroy a
-                    // real in-game save that happened to be a second old.
-                    if sys.sram_used() && (sys.sram_dirty() || sram_save_countdown.is_some()) {
-                        match sram_file::save_srm(&srm_path, sys.sram()) {
-                            Ok(()) => println!(
-                                "SRAM: saved {} bytes to {} before the state load",
-                                sys.sram().len(),
-                                srm_path.display()
-                            ),
-                            Err(e) => {
-                                eprintln!(
-                                    "SRAM: pre-load save failed ({}): {e}",
-                                    srm_path.display()
-                                )
-                            }
-                        }
-                    }
+                    // real in-game save that happened to be a second old. (A failed flush is reported by the
+                    // helper; the load still proceeds, since the restored buffer is a *valid* older save and
+                    // the user explicitly asked to go back to it.)
+                    flush_pending_srm(
+                        &sys,
+                        &srm_path,
+                        sram_save_countdown,
+                        "before the state load",
+                    );
 
                     // Whole-value swap: `save_state::load` builds a complete machine or returns `Err`, so
                     // there is no window in which a half-restored `System` is running.
                     sys = loaded;
 
-                    // The queued PCM was rendered from the timeline we just left — drop it rather than burp
-                    // up to RING_FRAMES of pre-load audio. (The synth's own register shadow is frontend
-                    // state and is deliberately *not* rolled back: keeping the last-known patches sounds far
-                    // better than muting every channel until the driver happens to rewrite them.)
+                    // A restore rewinds the master clock, so audio has to be resynchronised: the queued PCM
+                    // belongs to the timeline we just left, and the sink's frame clock would otherwise sit
+                    // above the restored one and render nothing at all. Rebuilding also drops the synth's
+                    // register shadow — a brief gap until the driver rewrites its patches, versus the
+                    // indefinite silence of a stale sink.
                     #[cfg(feature = "audio")]
-                    flush_audio(audio.as_ref());
+                    resync_audio(audio.as_mut());
 
                     // …and now the other half of the SRAM interaction (bytes, `sram_dirty` and `sram_used`
                     // are all `System` fields — proven empirically in `save_state`'s tests): (1) cancel the
@@ -608,6 +691,102 @@ fn main() {
                     );
                 }
                 Err(e) => eprintln!("state: load of slot {state_slot} failed: {e}"),
+            }
+        }
+
+        // --- Machine control: F1 soft-resets, F5 re-reads the ROM from disk and resets (module doc). ---
+        if window.is_key_pressed(Key::F1, KeyRepeat::No) {
+            // `System::reset` keeps the SRAM *contents* but clears `sram_dirty`, so an in-flight save would
+            // lose the only signal that it still needs writing. Persist it first; if that fails the bytes
+            // survive the reset unchanged, so re-arming the debounce retries with exactly the right image.
+            if flush_pending_srm(&sys, &srm_path, sram_save_countdown, "before the reset") {
+                sram_save_countdown = None;
+            } else {
+                sram_save_countdown = Some(SRAM_AUTOSAVE_DEBOUNCE_FRAMES);
+            }
+            sys.reset();
+            frame = 0; // the machine's own clock restarts, so the displayed counter follows it
+            #[cfg(feature = "audio")]
+            resync_audio(audio.as_mut());
+            println!("reset: soft reset — SRAM contents preserved, as on real hardware");
+        }
+        if window.is_key_pressed(Key::F5, KeyRepeat::No) {
+            // Read the file first: a rebuild that failed (or is still being written) must leave the running
+            // machine — and its battery data — completely untouched.
+            match std::fs::read(&args.rom_path) {
+                Err(e) => eprintln!(
+                    "reload: cannot read ROM {} ({e}) — still running the previous image",
+                    args.rom_path
+                ),
+                Ok(bytes) => {
+                    // Unlike a reset, `load_rom` re-provisions a *zeroed* SRAM buffer from the new header and
+                    // clears `sram_used`/`sram_dirty` — unflushed battery data would be destroyed outright,
+                    // with nothing left to retry from. So a failed flush aborts the reload.
+                    if !flush_pending_srm(
+                        &sys,
+                        &srm_path,
+                        sram_save_countdown,
+                        "before the ROM reload",
+                    ) {
+                        eprintln!(
+                            "reload: ABORTED — unsaved battery data could not be written to {}, and reloading \
+                             would zero it. Fix the write error and press F5 again.",
+                            srm_path.display()
+                        );
+                    } else {
+                        println!(
+                            "reload: re-read {} bytes from {}",
+                            bytes.len(),
+                            args.rom_path
+                        );
+                        // The cartridge identity changes with its bytes. Re-deriving it makes every state
+                        // written against the previous build fail with `StateError::Rom` — which is the point:
+                        // a state carries the whole machine, so restoring one would put the old ROM back.
+                        rom_fp = save_state::rom_fingerprint(&bytes);
+                        sys.load_rom(bytes);
+                        // `load_rom` zeroed the buffer it just sized from the new header, so re-apply the
+                        // on-disk battery image. The `.srm` path comes from the ROM *path*, unchanged here.
+                        if let Some(saved) = sram_file::load_srm(&srm_path) {
+                            sys.load_sram(&saved);
+                            println!(
+                                "SRAM: re-loaded {} bytes from {}",
+                                saved.len(),
+                                srm_path.display()
+                            );
+                        }
+                        sram_save_countdown = None; // the fresh buffer is clean and matches disk
+                        sys.reset(); // `load_rom` only swaps the cartridge; this runs the /RESET sequence
+                        frame = 0;
+                        #[cfg(feature = "audio")]
+                        resync_audio(audio.as_mut());
+                    }
+                }
+            }
+        }
+
+        // --- Output volume (audio builds only). Repeat-on-hold for the level so `-`/`=` ramp smoothly; the
+        // mute toggle is edge-only so holding M does not flap it. ---
+        #[cfg(feature = "audio")]
+        {
+            let mut changed = false;
+            if window.is_key_pressed(Key::Minus, KeyRepeat::Yes) {
+                volume = volume.saturating_sub(1);
+                changed = true;
+            }
+            if window.is_key_pressed(Key::Equal, KeyRepeat::Yes) {
+                volume = (volume + 1).min(audio::VOLUME_STEPS);
+                changed = true;
+            }
+            if window.is_key_pressed(Key::M, KeyRepeat::No) {
+                muted = !muted;
+                changed = true;
+            }
+            if changed {
+                println!(
+                    "volume: {volume}/{}{}",
+                    audio::VOLUME_STEPS,
+                    if muted { "  [MUTED]" } else { "" }
+                );
             }
         }
 
@@ -644,7 +823,9 @@ fn main() {
                         sys.run_frames_with_sink(1, &mut sink);
                     }
                     let pcm = a.sink.drain();
-                    audio::push_frame(&mut a.prod, &pcm);
+                    // The volume/mute setting is applied here, on the producer side, so the real-time
+                    // callback stays a pure copy (see `audio::push_frame`).
+                    audio::push_frame(&mut a.prod, &pcm, audio::gain_for(volume, muted));
                 } else if watch_armed {
                     // Audio disabled at runtime (no device): same video-only path as a no-audio build. Only
                     // pay for the recording sink when a watch is armed; otherwise the fast null-sink path.
@@ -723,18 +904,9 @@ fn main() {
     }
 
     // Slice S2/S4 — final save on quit: persist any SRAM the guest dirtied since the last autosave (or that a
-    // pending debounce never reached), so a save made just before closing the window is never lost. Gated on
-    // `sram_used()` (S4) so only a cart that actually saved writes a file.
-    if sys.sram_used() && (sys.sram_dirty() || sram_save_countdown.is_some()) {
-        match sram_file::save_srm(&srm_path, sys.sram()) {
-            Ok(()) => println!(
-                "SRAM: saved {} bytes to {} on quit",
-                sys.sram().len(),
-                srm_path.display()
-            ),
-            Err(e) => eprintln!("SRAM: final save failed ({}): {e}", srm_path.display()),
-        }
-    }
+    // pending debounce never reached), so a save made just before closing the window is never lost. The helper
+    // is gated on `sram_used()` (S4) so only a cart that actually saved writes a file.
+    flush_pending_srm(&sys, &srm_path, sram_save_countdown, "on quit");
 }
 
 #[cfg(test)]
@@ -823,6 +995,67 @@ mod tests {
         assert!(
             build_audio(None).is_none(),
             "no output device must disable audio (video-only), never panic"
+        );
+    }
+
+    /// **The premises the F1/F5 SRAM handling is built on**, pinned against the core rather than assumed
+    /// from its docs — the two paths deliberately behave differently, and only because these two facts differ:
+    ///
+    /// * `System::reset` keeps the SRAM *bytes* and the `sram_used` latch but **clears `sram_dirty`**. So a
+    ///   reset silently discards the *signal* that a save is pending while keeping the data — hence F1 flushes
+    ///   first, and can safely re-arm the debounce to retry if that flush fails.
+    /// * `System::load_rom` re-provisions a **zeroed** buffer and clears both flags. So a reload discards the
+    ///   *data* — hence F5 aborts outright when its flush fails, because a retry would have nothing to write.
+    ///
+    /// The cart is a hand-assembled ROM that enables `$A130F1` SRAM access and stores one byte, mirroring
+    /// `save_state`'s `snapshot_carries_sram_bytes_and_its_dirty_bookkeeping`.
+    #[test]
+    fn reset_keeps_sram_bytes_but_load_rom_zeroes_them() {
+        //   move.b #$01,$00A130F1   ; SRAM access on
+        //   move.b #$5A,$00200001   ; store into the fallback SRAM window (odd byte lane)
+        //   bra.s  *                ; spin
+        let mut rom = vec![0u8; 0x400];
+        rom[0x00..0x04].copy_from_slice(&0x00FF_0000u32.to_be_bytes()); // initial SSP
+        rom[0x04..0x08].copy_from_slice(&0x0000_0200u32.to_be_bytes()); // initial PC
+        let code: [u8; 18] = [
+            0x13, 0xFC, 0x00, 0x01, 0x00, 0xA1, 0x30, 0xF1, // move.b #$01,$00A130F1
+            0x13, 0xFC, 0x00, 0x5A, 0x00, 0x20, 0x00, 0x01, // move.b #$5A,$00200001
+            0x60, 0xFE, // bra.s *
+        ];
+        rom[0x200..0x200 + code.len()].copy_from_slice(&code);
+
+        let mut sys = System::new(0x5EED);
+        sys.load_rom(rom.clone());
+        sys.reset();
+        sys.run_frames(1);
+        assert_eq!(sys.sram()[0], 0x5A, "the guest stored a byte");
+        assert!(
+            sys.sram_dirty() && sys.sram_used(),
+            "…and both flags latched"
+        );
+
+        // F1's premise: the bytes survive, the "needs writing" flag does not.
+        sys.reset();
+        assert_eq!(
+            sys.sram()[0],
+            0x5A,
+            "a soft reset preserves SRAM contents, as on real hardware"
+        );
+        assert!(sys.sram_used(), "the `this cart saves` latch also survives");
+        assert!(
+            !sys.sram_dirty(),
+            "…but `sram_dirty` is cleared — so an unflushed save would never be written again"
+        );
+
+        // F5's premise: reloading the cartridge wipes the buffer outright, flags and all.
+        sys.load_rom(rom);
+        assert!(
+            sys.sram().iter().all(|&b| b == 0),
+            "load_rom re-provisions a zeroed buffer — a reload destroys unflushed battery data"
+        );
+        assert!(
+            !sys.sram_used() && !sys.sram_dirty(),
+            "and clears both flags"
         );
     }
 
