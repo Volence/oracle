@@ -263,9 +263,14 @@ impl std::fmt::Display for LoadError {
 
 /// Write `sys` to `path` as a save state. Returns the byte count written, or the I/O error (a failed save is
 /// reported, never fatal — exactly like the `.srm` writer).
+///
+/// The write goes through [`crate::sram_file::write_atomic`], so overwriting an occupied slot either succeeds
+/// completely or leaves the slot's previous contents untouched — a crash mid-write cannot turn a good state
+/// into a truncated one. (The container's length + checksum fields would *detect* such a file; atomic
+/// replacement means it never exists.)
 pub fn save(path: &Path, sys: &System, rom_fp: u64) -> std::io::Result<usize> {
     let image = encode(sys, rom_fp);
-    std::fs::write(path, &image)?;
+    crate::sram_file::write_atomic(path, &image)?;
     Ok(image.len())
 }
 
@@ -497,6 +502,39 @@ mod tests {
             }
             other_err => panic!("expected a Rom error, got {other_err:?}"),
         }
+    }
+
+    /// **The ROM-reload interaction.** Reloading the ROM from disk (`F5`) re-fingerprints the cartridge, so a
+    /// state written before a rebuild must be refused afterwards — the snapshot carries the *old* ROM bytes,
+    /// and restoring it would silently put the previous build back on the bus while the user believes they
+    /// are testing the new one. A single changed byte is enough to move the fingerprint.
+    #[test]
+    fn a_state_written_before_a_rebuild_is_refused_after_the_reload() {
+        let mut rom = vendored("m68k_memory_test.bin");
+        let before_fp = rom_fingerprint(&rom);
+        let mut sys = System::new(0x5EED);
+        sys.load_rom(rom.clone());
+        sys.reset();
+        sys.run_frames(2);
+        let image = encode(&sys, before_fp);
+
+        // The "rebuild": one byte of the ROM changes, and the frontend re-derives the fingerprint on reload.
+        rom[0x2000] ^= 0x01;
+        let after_fp = rom_fingerprint(&rom);
+        assert_ne!(
+            before_fp, after_fp,
+            "a rebuilt ROM fingerprints differently"
+        );
+
+        match decode(&image, after_fp) {
+            Err(StateError::Rom { found, expected }) => {
+                assert_eq!((found, expected), (before_fp, after_fp));
+            }
+            other => panic!("a pre-rebuild state must be refused after a reload, got {other:?}"),
+        }
+        // …and it still loads against the build it was written for, so the guard is the fingerprint and not
+        // some incidental corruption of the image.
+        assert!(decode(&image, before_fp).is_ok());
     }
 
     /// Truncation, padding, short files and foreign files are all clean refusals — never a panic.

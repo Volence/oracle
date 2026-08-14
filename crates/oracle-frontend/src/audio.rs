@@ -48,25 +48,78 @@ pub fn sample_i16_to_f32(s: i16) -> f32 {
     s as f32 / 32768.0
 }
 
-/// Convert an interleaved `i16` frame (from [`AudioSink::drain`]), `push_slice` it into the ring producer, and
-/// return the count of samples **dropped** on overrun. `push_slice` accepts fewer than offered when the ring
-/// is full (design §2.5 overrun); the surplus is discarded — the producer **never** blocks/spins waiting for
-/// the audio thread (that would stall video). Conversion is done here, on the non-real-time producer thread.
-pub fn push_frame(prod: &mut AudioProd, pcm: &[i16]) -> usize {
-    let converted: Vec<f32> = pcm.iter().copied().map(sample_i16_to_f32).collect();
+/// Number of volume steps the frontend's `-` / `=` keys move through. Step `VOLUME_STEPS` is unattenuated
+/// output (the default) and step 0 is silence, so there are `VOLUME_STEPS + 1` settings in all.
+pub const VOLUME_STEPS: u8 = 10;
+
+/// The linear output gain for volume `step` (clamped to `0..=VOLUME_STEPS`) with the mute toggle `muted`.
+/// Pure — this is the whole of the volume control's arithmetic, so it is testable without a sound card.
+///
+/// The curve is deliberately **linear** in amplitude (`step / VOLUME_STEPS`) rather than perceptual: it is
+/// trivially auditable, exact at both ends (step 0 is true digital silence, full step is a bit-exact
+/// pass-through of the synth's output), and the frontend is a development tool, not a mixing desk. Mute is
+/// kept independent of the level so unmuting restores the level the user had chosen.
+///
+/// The result is always in `0.0..=1.0`, so applying it can only ever attenuate — [`push_frame`] cannot clip.
+pub fn gain_for(step: u8, muted: bool) -> f32 {
+    if muted {
+        return 0.0;
+    }
+    f32::from(step.min(VOLUME_STEPS)) / f32::from(VOLUME_STEPS)
+}
+
+/// Convert an interleaved `i16` frame (from [`AudioSink::drain`]) at output gain `gain`, `push_slice` it into
+/// the ring producer, and return the count of samples **dropped** on overrun. `push_slice` accepts fewer than
+/// offered when the ring is full (design §2.5 overrun); the surplus is discarded — the producer **never**
+/// blocks/spins waiting for the audio thread (that would stall video). Conversion is done here, on the
+/// non-real-time producer thread.
+///
+/// `gain` comes from [`gain_for`] and is expected in `0.0..=1.0`; anything else (including a non-finite value)
+/// is coerced into that range rather than trusted, because this is the last stop before the user's speakers.
+/// Applying the gain on the *producer* side keeps the real-time callback a pure copy and needs no shared
+/// atomic; the cost is that a volume change reaches the ears only once the ring's ~[`RING_FRAMES`] frames of
+/// already-queued audio have played out (~67 ms — below the threshold where a key press feels laggy).
+pub fn push_frame(prod: &mut AudioProd, pcm: &[i16], gain: f32) -> usize {
+    let gain = if gain.is_finite() {
+        gain.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let converted: Vec<f32> = pcm
+        .iter()
+        .copied()
+        .map(|s| sample_i16_to_f32(s) * gain)
+        .collect();
     let pushed = prod.push_slice(&converted);
     converted.len() - pushed
+}
+
+/// Rebuild `sink` at its current sample rate, discarding the frame clock and chip shadow it has accumulated.
+///
+/// **Mandatory after anything that moves the machine's clock backwards** — a soft reset, a ROM reload, or a
+/// save-state load. [`AudioSink`] renders a video frame only when the frame index it is handed *advances*
+/// past the highest it has seen ([`AudioSink::on_step_boundary`] ignores a frame `<=` the last one), and that
+/// index is derived from the master clock (`scheduler.now() / MCLK_PER_FRAME`). A machine that restarts at
+/// mclk 0 therefore hands the old sink frame 0, 1, 2… — all far below its stale high-water mark — and the
+/// sink renders *nothing at all* until the counter climbs back, i.e. minutes of total silence.
+///
+/// Rebuilding also drops the synth's register shadow, which is the right call here for a second reason: after
+/// a reset the real chip is reinitialised, so carrying yesterday's key-ons across would hold a note droning
+/// until the driver happened to rewrite those registers.
+pub fn resync_sink(sink: &mut AudioSink) {
+    *sink = AudioSink::new(sink.sample_rate());
 }
 
 /// Fill one host output buffer from the ring — the body of the cpal callback, factored out so it is
 /// unit-testable without a sound card (it touches no cpal type).
 ///
-/// `flush` is the save-state seam: loading a state teleports the machine to a different point in its
-/// timeline, so every sample still queued in the ring belongs to a timeline that no longer exists. The
-/// emulation thread cannot drain the ring itself (it owns only the producer half; `clear` is a consumer
-/// operation), so it raises this flag instead and the very next callback discards the backlog. The buffer it
-/// was called for then underruns into silence — a sub-frame gap, versus the ~[`RING_FRAMES`]-frame burp of
-/// pre-load audio you would otherwise hear.
+/// `flush` is the timeline-jump seam: loading a save state, soft-resetting, or reloading the ROM teleports
+/// the machine to a different point in its timeline, so every sample still queued in the ring belongs to a
+/// timeline that no longer exists. The emulation thread cannot drain the ring itself (it owns only the
+/// producer half; `clear` is a consumer operation), so it raises this flag instead and the very next callback
+/// discards the backlog. The buffer it was called for then underruns into silence — a sub-frame gap, versus
+/// the ~[`RING_FRAMES`]-frame burp of stale audio you would otherwise hear. The frontend raises it from
+/// `resync_audio`, alongside the [`resync_sink`] the same jump requires.
 ///
 /// Channel handling matches the device: stereo = a straight interleaved copy; mono = average each L,R pair;
 /// other counts = L,R into the first two lanes of each output frame, rest silent (design §3.3). Any shortfall
@@ -263,7 +316,7 @@ mod tests {
             sink.on_step_boundary(0, f); // renders exactly one frame
             let pcm = sink.drain();
             assert_eq!(pcm.len(), per_frame, "one frame renders 2·(rate/60) i16");
-            let dropped = push_frame(&mut prod, &pcm);
+            let dropped = push_frame(&mut prod, &pcm, gain_for(VOLUME_STEPS, false));
             assert_eq!(dropped, 0, "ring is sized to not overrun in this test");
             let mut out = vec![0.0f32; per_frame];
             let n = cons.pop_slice(&mut out);
@@ -347,6 +400,110 @@ mod tests {
         let mut wide = [-1.0f32; 8];
         fill_output(&mut cons, &mut wide, 4, &flush);
         assert_eq!(wide, [0.5, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    }
+
+    /// The volume curve: full step is an exact pass-through, step 0 is exact silence, mute overrides any
+    /// level, the mapping is monotone, and out-of-range steps saturate instead of exceeding unity gain.
+    #[test]
+    fn volume_gain_curve() {
+        assert_eq!(gain_for(VOLUME_STEPS, false), 1.0, "full volume is unity");
+        assert_eq!(gain_for(0, false), 0.0, "step 0 is exact silence");
+        assert_eq!(
+            gain_for(VOLUME_STEPS, true),
+            0.0,
+            "mute overrides the level"
+        );
+        assert_eq!(gain_for(0, true), 0.0);
+        // Half-way is half amplitude (the curve is linear in amplitude by design).
+        assert_eq!(gain_for(VOLUME_STEPS / 2, false), 0.5);
+        // Monotone non-decreasing over the whole range, and never above unity — including a step past the top.
+        for s in 0..VOLUME_STEPS {
+            let (lo, hi) = (gain_for(s, false), gain_for(s + 1, false));
+            assert!(hi > lo, "step {s} -> {} must increase the gain", s + 1);
+            assert!((0.0..=1.0).contains(&hi));
+        }
+        assert_eq!(
+            gain_for(u8::MAX, false),
+            1.0,
+            "an out-of-range step saturates at unity, never louder"
+        );
+    }
+
+    /// [`push_frame`] applies the gain to what actually reaches the ring: full volume is bit-exact, mute
+    /// queues true silence, half volume halves every sample, and a garbage gain is coerced rather than trusted.
+    #[test]
+    fn push_frame_applies_the_gain() {
+        let pcm: [i16; 4] = [i16::MIN, -8192, 0, 16384];
+        let expect = |gain: f32| -> Vec<f32> {
+            let (mut prod, mut cons) = AudioRing::new(64).split();
+            assert_eq!(push_frame(&mut prod, &pcm, gain), 0, "no overrun");
+            let mut out = vec![0.0f32; pcm.len()];
+            assert_eq!(cons.pop_slice(&mut out), pcm.len());
+            out
+        };
+        let unattenuated: Vec<f32> = pcm.iter().copied().map(sample_i16_to_f32).collect();
+        assert_eq!(
+            expect(gain_for(VOLUME_STEPS, false)),
+            unattenuated,
+            "full volume is a bit-exact pass-through"
+        );
+        assert!(
+            expect(gain_for(VOLUME_STEPS, true))
+                .iter()
+                .all(|&s| s == 0.0),
+            "mute queues true silence"
+        );
+        assert_eq!(
+            expect(0.5),
+            unattenuated.iter().map(|s| s * 0.5).collect::<Vec<_>>(),
+            "half gain halves every sample"
+        );
+        // Defensive coercion: an over-unity gain cannot amplify past the pass-through, and NaN is silence
+        // rather than NaN samples going to the speakers.
+        assert_eq!(expect(4.0), unattenuated, "an over-unity gain is clamped");
+        assert!(expect(f32::NAN).iter().all(|&s| s == 0.0), "NaN is silence");
+    }
+
+    /// **The rewind bug [`resync_sink`] exists for.** A sink that has already seen a high frame index renders
+    /// nothing when the machine restarts its clock (reset / ROM reload / state load hand it frame 0 again),
+    /// because `on_step_boundary` only renders on an *advancing* frame. Rebuilding the sink re-latches it to
+    /// the new timeline and audio resumes immediately.
+    #[test]
+    fn resync_sink_restores_rendering_after_the_machine_clock_rewinds() {
+        let mut sink = AudioSink::new(44_100);
+        // Drive it well into a run, with a PSG tone programmed so frames are non-silent.
+        sink.on_step_boundary(0, 0);
+        sink.on_event(write_event(0x7F11, 0x8E));
+        sink.on_event(write_event(0x7F11, 0x0F));
+        sink.on_event(write_event(0xC0_0011, 0x90));
+        for f in 1..=500u64 {
+            sink.on_step_boundary(0, f);
+        }
+        assert!(
+            !sink.drain().is_empty(),
+            "the sink was rendering at frame 500"
+        );
+
+        // The machine resets: the frame index restarts at 0 and climbs. The stale sink renders nothing.
+        for f in 0..=5u64 {
+            sink.on_step_boundary(0, f);
+        }
+        assert!(
+            sink.drain().is_empty(),
+            "a rewound clock silences a stale sink — this is the bug resync_sink fixes"
+        );
+
+        // After a resync the very same boundary sequence renders again.
+        resync_sink(&mut sink);
+        assert_eq!(sink.sample_rate(), 44_100, "the device rate is preserved");
+        for f in 0..=5u64 {
+            sink.on_step_boundary(0, f);
+        }
+        assert_eq!(
+            sink.drain().len(),
+            5 * 2 * (44_100 / 60),
+            "five frames render after the resync"
+        );
     }
 
     /// Design §7 Test 4 — composite-sink equivalence: `AudioAndWatch { watch: Some(..) }` must (a) render
