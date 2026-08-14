@@ -3,6 +3,45 @@
 **Status:** recon + proposed sequencing. No implementation decisions ratified yet; the owner has
 approved nothing in tracks 2/3 beyond the investigation itself.
 
+> ## ⚠ ERRATA — five claims in this document are wrong (corrected 2026-08-14)
+>
+> The follow-up design pass `docs/2026-08-14-trace-recorder-design.md` was commissioned from this
+> document and, doing its job properly, **refuted five of its claims**. All five were re-verified
+> firsthand by the overseer before acceptance. They are corrected inline below and listed here so
+> nobody reads a stale figure out of the tables:
+>
+> 1. **"6 ad-hoc sinks", with "two near-duplicates written for the same seam on the same day"
+>    (§3 item 1)** — WRONG as evidence for a bus trace. `FrameCapture`
+>    (`tests/conformance_roms.rs:262`) and `LineCollector` (`tests/scanline_capture.rs:27`) both have
+>    a byte-identical **empty** `on_event` stub: they are *scanline* collectors on a different seam
+>    and record no bus events at all. **Committed recurrence for a bus trace is 2, not 6.**
+> 2. **"`k4_openbus_probe.rs` (26 hand-declared counters)" (§3, §5)** — WRONG. It has **16**
+>    counters (18 struct fields, two of which are boolean latch shadows). The 26 was a markdown
+>    table's column count.
+> 3. **"Do NOT add fields to `BusEvent` … a new field poisons those asserts" (§5, constraint 2)** —
+>    the *conclusion* survives but the *stated reason* is folklore. Measured blast radius: **2
+>    breaking assertions in 1 file plus 12 mechanical literal edits, zero exhaustive
+>    destructurings.** The "~40 sites" figure traces to `docs/2026-07-23-phase-sy4-subframe-timing-design.md:97-100`,
+>    which counted helper *call* sites. **The real reason a field is wrong is stronger:** three of the
+>    four emission sites do not know `pc`/`frame` (`bus.rs:563` has only `now_mclk`; `bus.rs:190/201`
+>    has no clock), so the field would be a sentinel in the 22 unit tests that build a bus with no
+>    `System` — a lie exactly where the struct is most used.
+> 4. **Function-code master attribution "is what let the sound-silence hunt eliminate the 68k"
+>    (§5)** — NOT SUPPORTED. The primary record (`docs/2026-07-22-phase-rt-design.md:145-148, :444`)
+>    shows that hunt classified on `addr` and was explicitly `fc`-agnostic; the 68k was never a
+>    suspect. Master attribution may still be worth having, but this document's justifying episode
+>    does not hold it up. Registered as open question `F-TRACE-MASTER`.
+> 5. **C1 (atomic arm-at-power-on) is presented as a constraint to honour (§5)** — it is currently
+>    **structurally impossible**: `System::reset()` hardcodes a unit sink (`system.rs:361`), so the
+>    reset vector fetches cannot be captured by any caller, and all eight bespoke sinks in the tree
+>    attach post-reset. That is a real defect, ~5 lines to fix, and it should be unbundled rather
+>    than carried as a constraint everything else must satisfy.
+>
+> **Method note for future recon:** every one of these came from an agent instructed to be skeptical
+> of the brief that commissioned it, and four of the five are cases where *this document restated a
+> figure without recounting it*. Recurrence counts and blast radii must be measured at the moment
+> they are cited, not inherited. That is the same failure mode as the self-reported `exit 0` in §8.
+
 **Provenance.** Three independent agent surveys, run in parallel, each required to cite `file:line`
 or quote primary documents:
 
@@ -150,7 +189,7 @@ examples have exactly one commit** — they are disposable single-question instr
 
 | # | Capability | Recurrence | Status in our core |
 |---|---|---|---|
-| 1 | Filtered, attributed, timestamped **bus-event trace** | 11 hunts + 6 ad-hoc sinks (two near-duplicates, same seam, same day) | Seam exists, capability does not |
+| 1 | Filtered, attributed, timestamped **bus-event trace** | 11 hunts + ~~6~~ **2** committed bus-trace sinks — see ERRATA 1; the "near-duplicate pair" are scanline collectors with empty `on_event` stubs, a different seam | Seam exists, capability does not |
 | 2 | **Boot → run to frame N → dump regions → byte-diff** | 6 hunts; `boot_rom` cited in 10 docs; `write_ppm` byte-identical in **4 files** | Copy-paste only |
 | 3 | **Frame comparison** w/ normalization + offset alignment | 6 episodes; alignment solved 3 separate ways | Sharpest "unreachable primitive" case (below) |
 | 4 | **Guest-structure decoding** (read the game's own data) | 4+; the single biggest unlock of the conformance arc | Doesn't exist |
@@ -262,9 +301,14 @@ Two structural notes for whoever builds the control layer:
   (`oracle-frontend/src/audio.rs`, `AudioAndWatch`). **Build the combinator before the tool surface or
   it will be written five times.**
 - **`BusEvent` carries no attribution** (`bus.rs:43-49` is op/fc/addr/size/value only), so every
-  consumer relatches PC/frame/mclk itself. Function-code *master* attribution — which chip drove the
-  access, distinct from which instruction — is what let the sound-silence hunt eliminate the 68k, and
-  belongs **in the event**.
+  consumer relatches PC/frame/mclk itself. ~~Function-code *master* attribution … is what let the
+  sound-silence hunt eliminate the 68k, and belongs **in the event**.~~
+  **CORRECTED (ERRATA 3 and 4).** Attribution does **not** belong in the event: three of the four
+  emission sites do not know `pc`/`frame`, so a field would be a sentinel wherever the struct is most
+  used. The design pass settles this as a richer type layered *above* `BusEvent`
+  (`docs/2026-08-14-trace-recorder-design.md` §3-§4). And the master-attribution justification above
+  is not supported by the primary record — that hunt classified on `addr` and was explicitly
+  `fc`-agnostic. Master attribution is now open question `F-TRACE-MASTER`, not a settled requirement.
 - **Watchpoints have two gaps to close before exposure:** the per-watch `label` is
   `#[allow(dead_code)]` and never propagated into hits, and there is no watch id / removal /
   enumeration — an agent running three concurrent watches cannot tell which one fired.

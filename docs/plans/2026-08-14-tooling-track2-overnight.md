@@ -17,9 +17,16 @@ records execution.
 1. **Currency is a hard gate.** No golden may be regenerated. A moved golden means the model is
    wrong, not that the baseline needs updating (the T16 precedent: the *correct* model was cheaper in
    currency than the crude one). If a hash moves: STOP, report, do not regenerate.
-2. **`BusEvent` gains no fields.** It derives `Eq` and is recorded into `Vec<BusEvent>` by tests
-   asserting exact sequences. The established pattern for extending the seam is a **defaulted
-   forwarder method** (`on_event_at`, `ebebe8e`), not a field.
+2. **`BusEvent` gains no fields** — conclusion unchanged, **stated reason corrected 2026-08-14.**
+   This plan originally justified it as "a new field poisons the `Vec<BusEvent>` recording asserts".
+   That is folklore, and the design pass measured it: **2 breaking assertions in 1 file plus 12
+   mechanical literal edits, zero exhaustive destructurings.** The real and stronger reason is that
+   **three of the four emission sites do not know the values** — `MegaDriveBus::emit` (`bus.rs:563`)
+   holds only `now_mclk`, and the phase-0 `SystemBus` (`bus.rs:190/201`) has no clock at all — so a
+   `pc`/`frame` field would be a sentinel in the 22 unit tests that build a bus with no `System`.
+   The established extension pattern remains a **defaulted forwarder method** (`on_event_at`,
+   `ebebe8e`); attribution belongs in a type layered *above* `BusEvent`. See
+   `docs/2026-08-14-trace-recorder-design.md` §2-§4.
 3. **The no-instrumentation path stays bit-identical.** §2a of the recon doc records three separate
    investigations damaged by instrumentation that perturbed scheduling. Anything added here must be
    provably inert when unused.
@@ -78,11 +85,24 @@ emulator.** `aeon/docs/BUGS.md:494-551` records a frozen repro frame *"lost to a
 control-socket hang before the sprite table could be dumped"* — a hang in the debug transport
 destroyed irreplaceable evidence.
 
-### S4 — candidate: the trace recorder (recon §3 item 1, recurrence 11)
-The most-recurring hand-rolled capability, and the one that has been re-implemented six times. **Higher
-risk than it looks**: attribution wants to live *in* the event, which collides with constraint 2 above.
-Needs a design pass on the forwarder-vs-field question before implementation, so it is not being
-dispatched blind overnight.
+### S4 — the trace recorder  ▸ DESIGNED (`27e3d14`), not implemented
+Design: `docs/2026-08-14-trace-recorder-design.md`. **Verdict: build it at roughly a quarter of the
+implied size**, as four additive changes to `watchpoints.rs` — which is already a filtered,
+attributed, bounded, record-time recorder missing only `mclk`, ids/labels, and aggregation. The
+forwarder-vs-field question is settled (a richer type layered *above* `BusEvent`), though not for the
+reason this plan originally gave — see constraint 2 above.
+
+The design pass **refuted five claims in the recon doc that commissioned it** (all re-verified
+firsthand; see that doc's ERRATA banner). It also unbundles three cheaper items that were wrongly
+lumped in, and records an honest shortfall: of the six sinks it fully replaces one, partially replaces
+one, and correctly declines three. Notably the "near-duplicate pair" cited as motivating evidence
+would be **untouched** — their real need is a promoted `ScanlineCapture` plus an `on_frame_boundary`
+hook that exists nowhere in the tree, ~60 lines, with *stronger* duplication evidence than half the
+recorder work.
+
+Three open questions left for the owner rather than silently picked: `F-TRACE-MASTER` (is
+function-code master attribution wanted at all, given its justifying episode does not hold up?),
+`F-TRACE-PAL` (every timestamp is silently NTSC), and whether scanline capture should go first.
 
 ---
 
