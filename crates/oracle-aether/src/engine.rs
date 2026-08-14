@@ -1227,6 +1227,14 @@ impl Engine {
             None => cap,
             Some(v) => hex::parse_count("limit", v, 1, cap as u64)? as usize,
         };
+        // The continuation token below is "the last id on this page", which is only the right place to
+        // resume if the slots are id-ascending. They are, by construction — `checkpoint` pushes ids from
+        // a monotonic counter and `checkpoint_drop` uses `retain`, which preserves order — so this is the
+        // assumption written down where it would break rather than left implicit.
+        debug_assert!(
+            self.checkpoints.windows(2).all(|w| w[0].id < w[1].id),
+            "the checkpoint slots must stay id-ascending for the cursor to be a resume point"
+        );
         // How many live slots the cursor is already past. This is what the shared bounded-array rule
         // needs in order to compute `truncated` correctly, and it is derived from the ids rather than
         // assumed from the cursor, so a drop under the client cannot make it lie.
