@@ -50,7 +50,7 @@ records execution.
 
 ## Slices
 
-### S1 — sink stop signal → `run_until(predicate)` + fan-out combinator  ▸ dispatched
+### S1 — sink stop signal → `run_until(predicate)` + fan-out combinator  ▸ SHIPPED
 The recon doc's cheapest high-value item: `run_until_with_sink` already calls `on_step_boundary` on
 every CPU step (`system.rs:723`) but nothing can interrupt the loop, which is why nine hand-tuned
 magic frame budgets and two polling loops exist. Adds a **defaulted** stop signal (existing sinks
@@ -62,7 +62,7 @@ pair (`AudioAndWatch`).
 Proof-of-value requirement: convert **two** of the nine magic budgets, not all nine — two demonstrates
 the API, a mass rewrite is a separate reviewable change.
 
-### S2 — sigil `.lst` symbol loader  ▸ dispatched
+### S2 — sigil `.lst` symbol loader  ▸ SHIPPED
 Highest single-feature leverage (recon §6 item 2). Pure parser in the core (charter: no I/O — the
 caller reads the file), lookup in both directions including **address → nearest symbol + displacement**,
 and the `$module$Proc$local` scope tree that resolves a PC to `EntryPoint.wait_dma` rather than
@@ -73,7 +73,7 @@ per-shape binding that makes `s4.debug.lst` against `s4.bin` a wrong answer to b
 
 Tests use in-repo synthetic fixtures; the aeon repo is read-only and CI must not depend on it.
 
-### S3 — candidate, not yet dispatched: Aether transport
+### S3 — Aether transport  ▸ IN FLIGHT
 `empyrean/contract/protocol.md` verbatim — NDJSON JSON-RPC over `AF_UNIX` (mode 0600),
 `initialize`/`initialized` with a **generated** method list, push events. Gated on S1's combinator.
 Must honour recon §4's three non-negotiables from the start: every reply carries `{frame, mclk,
@@ -93,11 +93,28 @@ configuration (twelve `add` calls, no `BusEventSink` impl at all) and its output
 to the hand-rolled sink's over 7,631 lines. The **other** §9 claim was refuted by the same method:
 "11 of `K4Probe`'s 16 counters become config" is **3 of 16** (the design assumed a size/parity filter it
 never specified, and missed that four more counters are arbiter-latch-shadow-gated). Corrected in §9,
-registered as `F-TRACE-SIZEFILTER`; it raises the value of `F-TRACE-EXPOSE-LATCHES`. **Verdict: build it at roughly a quarter of the
-implied size**, as four additive changes to `watchpoints.rs` — which is already a filtered,
-attributed, bounded, record-time recorder missing only `mclk`, ids/labels, and aggregation. The
-forwarder-vs-field question is settled (a richer type layered *above* `BusEvent`), though not for the
-reason this plan originally gave — see constraint 2 above.
+registered as `F-TRACE-SIZEFILTER`; it raises the value of `F-TRACE-EXPOSE-LATCHES` above any further
+aggregation work.
+
+Built at roughly a quarter of the size the recon doc implied, because `watchpoints.rs` was already a
+filtered, attributed, bounded, record-time recorder missing only `mclk`, ids/labels and aggregation.
+The forwarder-vs-field question is settled (a richer type layered *above* `BusEvent`), though not for
+the reason this plan originally gave — see constraint 2 above. **No core `src/` file outside
+`watchpoints.rs` changed**, which is the whole bit-identity argument: the facility is one sink
+implementation, so the no-instrumentation path is unchanged *textually*, not by optimiser faith.
+
+**Overseer-verified independently** (not taken on report): fmt 0, clippy 0 warnings, currency suites
+green with no golden touched, and the byte-identical claim reproduced firsthand — I ran the old and
+new `diag_soundqueue` over 600 frames of `s4.soundtest.bin` and diffed them. **Zero lines appear only
+in the old output**; all 7,631 match. The 17 differing lines are pure additions: an instrument report
+(`seen: 16,832,607 / matched: 21,242 / dropped: 0`, per-watch first/last mclk) and two caveats
+recording a PSG master-attribution conflation the hand-rolled tally silently got wrong. Note a raw
+`diff` exits 1 on that appended block, so the agent's "diff exit 0" phrasing was loose even though its
+substantive claim was right.
+
+Census cap is **256** with explicit `census_overflow` / `keys_capped` reporting, not the 16 an earlier
+draft used — the real episodes ranged over 390–516 distinct keys, so `distinct_keys` can never be
+misread as exact when it means "≥ cap".
 
 The design pass **refuted five claims in the recon doc that commissioned it** (all re-verified
 firsthand; see that doc's ERRATA banner). It also unbundles three cheaper items that were wrongly
