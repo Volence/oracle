@@ -73,7 +73,7 @@ per-shape binding that makes `s4.debug.lst` against `s4.bin` a wrong answer to b
 
 Tests use in-repo synthetic fixtures; the aeon repo is read-only and CI must not depend on it.
 
-### S3 — Aether transport  ▸ IN FLIGHT
+### S3 — Aether transport  ▸ SHIPPED (see "S3 as shipped" below)
 `empyrean/contract/protocol.md` verbatim — NDJSON JSON-RPC over `AF_UNIX` (mode 0600),
 `initialize`/`initialized` with a **generated** method list, push events. Gated on S1's combinator.
 Must honour recon §4's three non-negotiables from the start: every reply carries `{frame, mclk,
@@ -211,3 +211,49 @@ declare `EndOfRom : 11224` while sharing 1,197 symbols at differing addresses, s
 `validate_against_rom` is deliberately three-state. Rejected alternatives, all checked: the ROM header
 is byte-identical between s4 shapes; the `.lst` carries no date/version/hash; names are not
 ASCII-searchable in the appendix. **The clean fix is producer-side** — strengthening cross-repo Ask 2.
+
+### S3 as shipped — `crates/oracle-aether`
+**Transport, handshake and event machinery: complete. Methods: a thin 16, every name verbatim from
+`protocol.md` §6.** New workspace crate, per the architecture call — the core's charter is
+"deterministic, no-I/O" with a one-crate dependency list, so threads/sockets/JSON live outside it.
+Verified: the `Cargo.lock` diff adds exactly one entry (`oracle-aether → oracle-core, serde_json`) and
+`oracle-core`'s own entry is untouched; no new third-party crate entered the graph, because `serde_json`
+was already there as a core dev-dependency.
+
+**Wire conformance.** NDJSON JSON-RPC 2.0 over `AF_UNIX`; §7.1's path resolution
+(`$ORACLE_SOCKET` → `$EXODUS_SOCKET` → `$XDG_RUNTIME_DIR/oracle.sock` → `/tmp/oracle.sock`); mode 0600
+set *and re-read to verify*, refusing to serve otherwise; a live server on the path is refused while a
+stale socket file is reclaimed; batches refused `-32600`; notifications never answered; a 1 MiB line
+ceiling that drains rather than buffers, so refusing one over-long message does not desync the framing.
+The §5 error table is implemented, `-32012` (no symbols) and `-32013` (not found) distinct.
+
+**D4 made literal.** `engine::METHODS` is the function-pointer dispatch table *and* the advertised list.
+Drift is impossible in **both** directions, not just the sibling's advertised-but-stale direction, and a
+test asserts the identity plus that every advertised name really dispatches.
+
+**The three non-negotiables are structural, not per-handler.** The stamp is merged after the handler
+returns and overwrites any same-named key, so a handler cannot omit or shadow it — it rides on success
+`result`, on `error.data`, and on every event's `params`. Arrays go through one
+bounded/cursored/truncation-flagged wrapper. Approximate answers carry `caveat`: a debug read that
+bypasses the bus, a whole-frame render that is not scanline-accurate, `state_hash`'s VDP-only coverage, a
+nearest-preceding symbol match, a symbol listing that could not be bound to the ROM, and a `run_to` that
+ended on its bound rather than its condition.
+
+**★ The slow-client property is a test, not a claim.** A subscriber that completes the handshake and then
+never reads another byte, with the queue deliberately shrunk to 4, while a second client drives 600
+events: the driver's slowest single request and the machine's frame count are both asserted, and the dead
+client is shown its own `droppedEvents` total when it finally reads — the loss is visible, never silent.
+The mechanism is that **the emulator thread never writes to a socket at all**: it broadcasts into bounded
+per-connection queues that drop oldest-first, and a blocking write only ever happens on that connection's
+own writer thread.
+
+**★ `checkpoint` was deliberately NOT shipped**, and this is the one place the brief was not delivered as
+written. §9 explicitly defers save-state ops and §8 forbids inventing them, so the slice ships catalogued
+`emulator/state_hash` instead and raises `emulator/checkpoint` as **CR-2** with a concrete proposed
+schema. Six change requests and six recorded ambiguities are drafted (not filed, per question b) in
+`docs/2026-08-14-aether-change-requests.md` — the sharpest being CR-4: §6 specifies `run_to` with **no
+bound and no fired-vs-timed-out result**, which is simultaneously the hang that destroyed a frozen repro
+frame and the ambiguous-success defect the core's own `StopReason` exists to prevent.
+
+**Currency: neutral by construction and verified so** — no core file was touched, no golden regenerated,
+and the conformance scorecard re-ran byte-identical (`vdp_port_access` page1 9/0/9, cumulative 16/0/16).

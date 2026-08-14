@@ -57,6 +57,17 @@ the rest of the machine (VDP, Z80, audio, MCP wiring) is not started yet.
   integration is the next inflection after the remaining 68000 families.
 - VDP, Z80, audio, and the Oracle MCP/bus wiring are unstarted.
 
+> **⚠ The status block above is dated 2026-06-28 and several of its "not yet" items have since
+> shipped** — the CPU is wired in, and the VDP, Z80 and audio stacks are built and gate-green.
+> Most relevant to the last bullet: **the bus layer exists as of 2026-08-14.**
+> `crates/oracle-aether` implements the Aether control surface (`empyrean/contract/protocol.md`):
+> JSON-RPC 2.0 over NDJSON on an `AF_UNIX` socket at mode 0600, the `initialize`/`initialized`
+> handshake with a generated method list, and server-push events — with a thin 16-method subset of
+> the 53-method catalog. Run it with `cargo run -p oracle-aether -- <rom.bin>`. The Python MCP has
+> **not** been ported onto it (it still speaks the legacy flat envelope). See
+> `docs/2026-08-14-aether-change-requests.md`. Treat the rest of this section as history until it
+> is rewritten.
+
 ## Build & test
 
 ```sh
