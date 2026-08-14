@@ -64,13 +64,27 @@ to the loaded ROM, instead of cheerfully resolving every address to a plausible-
 A wrong symbol is worse than no symbol — no symbol makes you go look it up; a wrong one makes you
 confident.
 
-**Partial mitigation already available to us, requiring nothing from anyone:** every shipped Aeon ROM
-appears to carry a `deb2` symbol appendix at `EndOfRom` (verified: `s4.bin` at `0xA11F0`, 36,884 bytes;
-`s4.debug.bin` at `0xA30B0`, 43,474 bytes). Its presence, offset and size are a usable build
-fingerprint **even without decoding the packed names**, and because it is emitted into the ROM by a
-hard placement invariant, it cannot drift from the bytes it ships in. We intend to use that as an
-interim check regardless of whether this ask is granted — but it is a fingerprint, not a manifest: it
-cannot tell us the *shape*, and shape is exactly what silently changes RAM layout.
+**Partial mitigation already built, requiring nothing from anyone — and now measured.** Every shipped
+Aeon ROM carries a `deb2` symbol appendix at `EndOfRom`. Verified to the byte on 2026-08-14: `s4.bin`
+is 696,836 bytes, the appendix starts at `0xA11F0` (659,952), the difference is **36,884**, and the
+magic `de b2 04 02` is exactly there. oracle-next now uses that as an interim build check
+(`crates/oracle-core/src/symbols.rs::validate_against_rom`, shipped `642d77e`).
+
+**But it is a filter, not a proof, and we have the counterexample.** `demo.lst` and `demo.debug.lst`
+both declare `EndOfRom : 11224` — identical — while sharing **1,197 symbols at differing addresses**.
+The appendix probe cannot separate that pair, which is why `validate_against_rom` is deliberately
+three-state (`Match` documented as "not obviously wrong", never "verified"). The s4 shape crosses are
+caught; the demo pair is not.
+
+Every alternative we could check from the consumer side was checked and rejected: the ROM header
+`$100–$18D` is **byte-identical** between s4 shapes (it separates games, never shapes); the `.lst`
+carries no date, version or hash; symbol names are not ASCII-searchable in the appendix; and while
+`$1A4 == len-1` holds 5/5 and `$18E` is a real whole-image checksum, both validate the ROM against
+*itself* and say nothing about which `.lst` belongs to it.
+
+**So the clean fix is producer-side, and it is small:** have `sigil build` emit the built image's
+checksum (and the shape) into a sidecar beside the `.lst`, or into the manifest this ask is already
+about. That converts a three-state guess into a decision.
 
 **Cost to the other side:** small, and it is already on their own roadmap with a "ship it now" note
 against it.

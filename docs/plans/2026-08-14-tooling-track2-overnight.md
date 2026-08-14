@@ -121,5 +121,69 @@ function-code master attribution wanted at all, given its justifying episode doe
 
 ## Status log
 
-- **00:5x** — S1 and S2 dispatched in parallel isolated worktrees. Independent, different files.
-- (updated as slices land)
+- **00:5x** — S1, S2 and the S4 design pass dispatched in parallel isolated worktrees.
+- **02:2x** — **all three died on transient API 529s** within two minutes of each other, during
+  startup. No work lost (none had begun). Backed off four minutes and re-dispatched **staggered**
+  rather than simultaneously; all three then survived. Worth remembering: three simultaneous spawns
+  may have contributed, and a stagger costs minutes while a mass failure costs the batch.
+- **03:1x** — S4 design landed (`27e3d14`), refuting five claims in the recon doc that commissioned
+  it. All five re-verified firsthand before acceptance; corrections committed (`a333ce1`).
+- **03:5x** — **S1 and S2 both landed, verified, and merged.** Details below.
+
+### S1 as shipped — `be6f341`, merged
+`BusEventSink::stop_requested()` defaulted `false`; the loop asks once per step, after the existing
+`on_step_boundary` stamp and **before** the instruction commits, so the machine is never left
+mid-instruction and `record.pc` is the instruction that has *not* run — classic breakpoint semantics.
+`run_until_with_sink`/`run_frames_with_sink` now return `StopRecord { reason, pc, frame, mclk }` with
+`StopReason::{SinkRequested, DeadlineReached}` — fired-vs-timed-out is unambiguous by construction,
+the defect the recon doc flagged in the sibling. `System::run_until_stop(max_frames, predicate)` is
+the closure form. `bus::Fanout<A, B>` plus impls for `&mut S` and `Option<S>`; the hand-written
+`AudioAndWatch` is now a type alias over it, safe because `AudioSink` overrides none of the differing
+hooks.
+
+**Overseer-verified independently:** fmt 0, clippy 0 warnings (both feature settings), currency
+suites green, **no golden regenerated**, and the conformance scorecard re-run byte-identical
+(`vdp_port_access` 16/0/16, memtest 13/13) — so the two converted budgets changed no verdict.
+
+**★ The agent pushed back on this plan's brief, with a measurement, and was right.** Told nine budgets
+were convertible, it converted two and stopped: instrumenting `m68k_bcd` over its 700-frame budget
+shows VDP traffic on frames **0, 6 and 530** — 523 frames of total silence while it computes, then it
+prints. Any "the screen went quiet" predicate stops 523 frames before the answer exists and reads a
+blank row as a verdict: exactly the confidently-wrong-answer class §5 says to design against. Each
+remaining budget needs its own measurement. It also found `k4_openbus_probe`'s frame loop is **not** a
+stop-on-condition workaround — it wraps each frame in `catch_unwind` for ROMs hitting deferred Z80
+opcodes, and converting it would delete the panic guard.
+
+### S2 as shipped — `642d77e` (3 commits), merged
+`crates/oracle-core/src/symbols.rs` — pure parser, `&str` in, no filesystem, no new dependencies.
+Name→address, address→nearest-preceding+displacement, prefix search, the `$`-scope tree,
+`validate_against_rom`. Frontend `symbol_file.rs` does the file half; watch-hit PCs are symbolised
+(raw hex always retained) and symbols are **re-read and re-validated on F5**, which is the actual D7
+stale-symbol scenario.
+
+**Real-file evidence, run and read back:** 2,129 symbols / 54 modules; **279 RAM symbols where Aeon's
+own `s4budget.py` reports 0**; `Player_1` listed `$FFFF8CFA` = bus `$FF8CFA`; PC `$000216` resolves to
+**`EntryPoint.warm_boot+$2`** — the scope tree working on real data.
+
+**★ A fourth trap this plan did not list, and it is the one that silently kills every RAM lookup:**
+`FFFF8CFA` is a 32-bit spelling of a **24-bit** bus address. The 68000 drives 24 lines and our bus
+decodes work RAM at `$E00000–$FFFFFF`, so the listing's `FFFF8CFA` *is* the machine's `$FF8CFA`. Match
+a PC against the raw value and you find nothing, every time. Corollary the agent also caught:
+nearest-preceding must not cross an address space, or a RAM query resolves to the last ROM symbol
++15 MB. Nuance on trap 2: `C`-for-everything is a property of Aeon's current *source*, not the format
+— sigil's emitter does support `-` for equates.
+
+**Two real bugs its own adversarial self-review caught, both on real data:** (1) locating the module
+positionally invented **34 phantom modules and misfiled 125 symbols** in `s4.debug.lst`, because
+macro-scoped names put the macro instance outside the module — `s4.lst` contains none of that shape,
+so validating against one artifact validated one artifact; (2) the refusal was **fail-open** — deleting
+the `EndOfRom` row (and truncation cuts from the end) downgraded a correct refusal to "loading it
+unverified", after which 1,775/1,811 shared symbols named the wrong address.
+
+**`deb2` finding (investigation only, as instructed):** real, and **overseer-verified to the byte** —
+offset 659952, `s4.bin` 696836 bytes, difference **36884**, magic `de b2 04 02` exactly there. It
+works as a shape fingerprint but is **a filter, not a proof**: `demo.lst` and `demo.debug.lst` both
+declare `EndOfRom : 11224` while sharing 1,197 symbols at differing addresses, so
+`validate_against_rom` is deliberately three-state. Rejected alternatives, all checked: the ROM header
+is byte-identical between s4 shapes; the `.lst` carries no date/version/hash; names are not
+ASCII-searchable in the appendix. **The clean fix is producer-side** — strengthening cross-repo Ask 2.
