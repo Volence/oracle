@@ -68,11 +68,13 @@ fn real_s4_lst_parses_completely() {
         0,
         "unrecognised rows in the symbol table section"
     );
+    // The unused footer must agree with the rows we actually flagged (an invariant, not the current value).
     assert_eq!(
         t.declared_unused(),
-        Some(0),
-        "s4.lst reports no unused symbols"
+        Some(t.symbols().iter().filter(|s| s.unused).count()),
+        "the `N unused symbols` footer disagrees with the `*` markers"
     );
+    assert!(t.is_intact(), "s4.lst should be a whole, undamaged listing");
     // Sanity floor rather than an exact pin: the count moves every time the game gains a label.
     assert!(
         t.len() > 1000,
@@ -80,6 +82,97 @@ fn real_s4_lst_parses_completely() {
         t.len()
     );
     println!("s4.lst: {} symbols, {} modules", t.len(), t.modules().len());
+}
+
+/// Regression for the macro-scope shape (`$diag2$engine.bg_anim$raise`), which puts the macro instance
+/// *outside* the module. It appears only in debug/stress builds — `s4.lst` has none — so this test must run
+/// against `s4.debug.lst` or it proves nothing. A positional module rule invents a phantom module per macro
+/// instance; the dot rule must not.
+#[test]
+fn real_debug_lst_has_no_phantom_macro_modules() {
+    let Some(text) = listing("s4.debug.lst") else {
+        return;
+    };
+    let t = SymbolTable::parse(&text).expect("s4.debug.lst must parse");
+
+    // Every module the tree reports must be a real `.emp` module path, which always contains a dot.
+    let phantom: Vec<&str> = t
+        .modules()
+        .into_iter()
+        .filter(|m| !m.contains('.'))
+        .collect();
+    assert!(
+        phantom.is_empty(),
+        "phantom modules in the scope tree: {phantom:?}"
+    );
+
+    // And the shape must actually be present, or the test is vacuous.
+    let macro_scoped: Vec<_> = t
+        .symbols()
+        .iter()
+        .filter(|s| s.scope().outer.is_some_and(|o| !o.starts_with("__")))
+        .collect();
+    assert!(
+        !macro_scoped.is_empty(),
+        "no macro-scoped labels found — this regression is no longer exercised"
+    );
+    for s in &macro_scoped {
+        let sc = s.scope();
+        assert!(
+            sc.module.is_some_and(|m| m.contains('.')),
+            "{} resolved to module {:?}",
+            s.name,
+            sc.module
+        );
+    }
+    println!(
+        "s4.debug.lst: {} modules, all real; {} macro-scoped labels correctly attributed",
+        t.modules().len(),
+        macro_scoped.len()
+    );
+}
+
+/// Where a demangled spelling names more than one address, it must be flagged so it is never printed as if
+/// it identified a location. Macro expansion is what produces these.
+#[test]
+fn real_debug_lst_flags_its_ambiguous_demangled_names() {
+    let Some(text) = listing("s4.debug.lst") else {
+        return;
+    };
+    let t = SymbolTable::parse(&text).expect("s4.debug.lst must parse");
+
+    let ambiguous: Vec<_> = t
+        .symbols()
+        .iter()
+        .filter(|s| s.demangled_ambiguous)
+        .collect();
+    assert!(
+        !ambiguous.is_empty(),
+        "no collisions found — this regression is no longer exercised"
+    );
+    // Every flagged symbol must really share its spelling with a symbol at a different address…
+    for s in &ambiguous {
+        let peers = t.by_demangled(&s.demangled);
+        assert!(
+            peers.iter().any(|p| p.addr != s.addr),
+            "{} flagged ambiguous but nothing else uses `{}`",
+            s.name,
+            s.demangled
+        );
+    }
+    // …and resolving into one must print the unique raw name, not the shared readable one.
+    let s = ambiguous[0];
+    let shown = t.resolve(s.addr).unwrap().to_string();
+    assert!(
+        shown.starts_with(&s.name),
+        "an ambiguous name was displayed: {shown} (demangled `{}`)",
+        s.demangled
+    );
+    println!(
+        "s4.debug.lst: {} symbols carry an ambiguous demangled name (e.g. `{}`)",
+        ambiguous.len(),
+        s.demangled
+    );
 }
 
 /// Both halves of the file describe the same symbol list, so parsing the body lines alone must agree with
@@ -143,12 +236,17 @@ fn real_s4_lst_has_ram_symbols_that_mask_to_the_bus_address() {
         assert!((0x00E0_0000..=0x00FF_FFFF).contains(&s.addr));
     }
 
-    // The canonical example from the recon doc, both spellings.
+    // The canonical example from the recon doc. Its *value* is not pinned — it moves on any rebuild — but
+    // the invariant that both spellings of it resolve to the same symbol is exactly what trap 2 is about.
     let p = t.by_name("Player_1").expect("Player_1 must exist");
-    assert_eq!(p.raw_addr, 0xFFFF_8CFA);
-    assert_eq!(p.addr, 0x00FF_8CFA);
-    assert_eq!(t.resolve(0xFFFF_8CFA).unwrap().symbol.name, "Player_1");
-    assert_eq!(t.resolve(0x00FF_8CFA).unwrap().symbol.name, "Player_1");
+    assert_eq!(p.raw_addr >> 16, 0xFFFF);
+    assert_eq!(p.addr, p.raw_addr & 0x00FF_FFFF);
+    assert_eq!(t.resolve(p.raw_addr).unwrap().symbol.name, "Player_1");
+    assert_eq!(t.resolve(p.addr).unwrap().symbol.name, "Player_1");
+    println!(
+        "s4.lst: Player_1 listed as ${:08X} = bus ${:06X}",
+        p.raw_addr, p.addr
+    );
 }
 
 /// Trap 3 on real data: the type column is `C` for **every** row, RAM variables included, so it cannot be
@@ -189,11 +287,20 @@ fn real_s4_lst_scope_tree_resolves_a_pc_to_a_proc_local() {
     assert_eq!(wait.scope().module, Some("engine.boot"));
     assert_eq!(wait.scope().parent, Some("EntryPoint"));
     assert_eq!(wait.scope().local, "wait_dma");
-    assert_eq!(wait.addr, 0x214);
+    assert_eq!(wait.scope().outer, None);
+    // Relationship, not a literal: the local sits inside its parent routine. Pinning `0x214` would break
+    // this test on every Aeon rebuild, in a repo that cannot even see the rebuild.
+    let entry = t.by_name("EntryPoint").expect("EntryPoint must exist");
+    assert!(
+        wait.addr > entry.addr,
+        "a proc-local must follow its proc: {:06X} vs {:06X}",
+        wait.addr,
+        entry.addr
+    );
 
-    // A PC two bytes into that label lands on a local, not on `EntryPoint` + $16.
+    // A PC two bytes into that label lands on a local, not on `EntryPoint` + a blind offset.
     let r = t.resolve(wait.addr + 2).expect("must resolve");
-    assert_eq!(r.symbol.addr, 0x214);
+    assert_eq!(r.symbol.addr, wait.addr);
     assert_eq!(r.displacement, 2);
     assert!(
         r.symbol.demangled.starts_with("EntryPoint."),
@@ -227,16 +334,24 @@ fn real_shape_binding_accepts_the_matching_rom_and_refuses_the_crosses() {
             println!(
                 "s4.lst/s4.bin: deb2 appendix at ${appendix_offset:06X}, {appendix_len} bytes"
             );
-            assert_eq!(appendix_offset, 0x000A_11F0);
+            // The offset is whatever the listing says — pinning the literal would break on any rebuild.
+            assert_eq!(appendix_offset, rel.address_of("EndOfRom").unwrap());
+            assert_eq!(appendix_len, rel_rom.len() - appendix_offset as usize);
         }
         other => panic!("s4.lst must bind to s4.bin, got {other:?}"),
     }
     match dbg.validate_against_rom(&dbg_rom) {
         RomBinding::Match {
             appendix_offset, ..
-        } => assert_eq!(appendix_offset, 0x000A_30B0),
+        } => assert_eq!(appendix_offset, dbg.address_of("EndOfRom").unwrap()),
         other => panic!("s4.debug.lst must bind to s4.debug.bin, got {other:?}"),
     }
+    // The two shapes must actually differ, or the crosses below prove nothing.
+    assert_ne!(
+        rel.address_of("EndOfRom"),
+        dbg.address_of("EndOfRom"),
+        "the s4 shapes share an EndOfRom — the appendix probe cannot separate them"
+    );
 
     // The crosses. Both must be a positive Mismatch — not merely Indeterminate.
     assert!(

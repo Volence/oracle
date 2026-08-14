@@ -8,24 +8,32 @@
 //! # Policy
 //!
 //! Symbols are **opt-in by presence** and never load-bearing: the emulator runs identically without them.
-//! Four outcomes, three of which end with the machine running unsymbolised:
 //!
-//! | on disk | verdict | what happens |
-//! |---|---|---|
-//! | absent | — | one informational line, exactly like a first-launch `.srm`; not an error |
-//! | unparseable | — | warning, run without symbols |
-//! | parsed, [`RomBinding::Mismatch`] | **refused** | warning naming the fault, run without symbols |
-//! | parsed, [`RomBinding::Match`] / [`RomBinding::Indeterminate`] | accepted | symbols annotate output |
+//! | on disk | what happens |
+//! |---|---|
+//! | absent | one informational line, exactly like a first-launch `.srm`; not an error |
+//! | unparseable | warning, run without symbols |
+//! | [`RomBinding::Mismatch`] | **refused** — warning naming the fault, run without symbols |
+//! | [`RomBinding::Indeterminate`] **and** not [intact](SymbolTable::is_intact) | **refused** |
+//! | [`RomBinding::Indeterminate`] and intact | accepted, with a warning that it is unverified |
+//! | [`RomBinding::Match`] | accepted (with a warning if the file is not intact) |
 //!
 //! The refusal is the point. A listing from a different build shape is not *degraded* information — of the
 //! symbols `s4.lst` and `s4.debug.lst` share, 92.6% name a different address, so every annotation would be
 //! confidently wrong. The suite contract's decision D7 records exactly this failure: a session in which
 //! every symbol shifted by `+$24` and a "verified" hardcoded literal rotted while it was being used.
 //!
-//! `Indeterminate` is accepted rather than refused because it means "this listing carries no `EndOfRom`, so
-//! there is nothing to check" — a hand-written or non-Aeon listing, where refusing would be a false negative.
+//! # Why `Indeterminate` alone is not enough to accept
+//!
+//! `Indeterminate` means "this listing declares no `EndOfRom`, so there is nothing to probe" — the honest
+//! verdict for a hand-written or non-Aeon listing, where refusing would be a false negative. But the two
+//! verdicts are not independent: **any listing that would be a `Mismatch` becomes `Indeterminate` if its
+//! `EndOfRom` row goes missing**, and a truncated file loses rows from the end, where `EndOfRom` sits.
+//! Verified: deleting that one row from the real `s4.debug.lst` turns a correct refusal against `s4.bin`
+//! into `Indeterminate` — and then 1,775 of 1,811 shared symbols name the wrong address. So the fail-open
+//! path is closed by requiring an `Indeterminate` listing to at least be *internally* whole.
 
-use oracle_core::symbols::{RomBinding, SymbolTable};
+use oracle_core::symbols::{RomBinding, SymbolTable, TableSource};
 use std::path::{Path, PathBuf};
 
 /// The `.lst` listing that sits next to the ROM: same directory + stem, `.lst` extension
@@ -70,6 +78,17 @@ pub fn load_symbols(rom_path: &Path, rom: &[u8]) -> Option<SymbolTable> {
             );
             return None;
         }
+        RomBinding::Indeterminate(why) if !table.is_intact() => {
+            // "No fingerprint" plus "damaged file" most likely means the fingerprint symbol fell off a
+            // truncated end — so this may be a mismatch wearing a disguise. Refuse; see the module doc.
+            eprintln!(
+                "symbols: REFUSED {} — no build fingerprint ({why:?}) AND the file is not intact \
+                 ({}); it may be a truncated listing for a different ROM. Running with raw addresses.",
+                path.display(),
+                integrity_note(&table)
+            );
+            return None;
+        }
         RomBinding::Indeterminate(why) => {
             eprintln!(
                 "symbols: {} carries no build fingerprint ({why:?}) — loading it unverified",
@@ -89,17 +108,38 @@ pub fn load_symbols(rom_path: &Path, rom: &[u8]) -> Option<SymbolTable> {
         }
     }
 
-    // A count that disagrees with the file's own footer means a truncated or half-written listing. Worth
-    // saying out loud, but the symbols that *did* parse are still correct, so it is not a refusal.
-    if table.matches_declared_count() == Some(false) {
+    // A listing that bound to the ROM but is not whole still resolves *correctly* — its symbols are real,
+    // there are just fewer of them, so a PC lands on a coarser name rather than a wrong one. Say so out
+    // loud (the coarser name looks perfectly healthy) but do not refuse.
+    if !table.is_intact() {
         eprintln!(
-            "symbols: warning — parsed {} but {} declares {:?}; the file may be truncated",
-            table.len(),
+            "symbols: warning — {} does not look intact ({}); addresses will resolve to coarser names",
             path.display(),
-            table.declared_count()
+            integrity_note(&table)
         );
     }
     Some(table)
+}
+
+/// A short human account of *how* a listing failed [`SymbolTable::is_intact`], for the warning text.
+fn integrity_note(table: &SymbolTable) -> String {
+    let mut why = Vec::new();
+    if table.source() != TableSource::SymbolTable {
+        why.push("no `Symbol Table` section — fell back to the body lines".to_string());
+    }
+    match table.matches_declared_count() {
+        None => why.push("no `N symbols` footer".to_string()),
+        Some(false) => why.push(format!(
+            "parsed {} but the footer declares {:?}",
+            table.len(),
+            table.declared_count()
+        )),
+        Some(true) => {}
+    }
+    if table.skipped_lines() > 0 {
+        why.push(format!("{} unrecognised rows", table.skipped_lines()));
+    }
+    why.join("; ")
 }
 
 #[cfg(test)]
@@ -164,6 +204,42 @@ mod tests {
             load_symbols(&rom_path, &rom_with_appendix(0x8000)).is_none(),
             "a mismatched listing must be refused, not loaded"
         );
+    }
+
+    /// The fail-open path, closed: a listing that would be refused as a `Mismatch` loses that verdict the
+    /// moment its `EndOfRom` row goes missing (which is what truncation does — it cuts from the end). The
+    /// combination "unverifiable AND visibly damaged" must still be refused.
+    #[test]
+    fn an_unverifiable_and_damaged_listing_is_refused() {
+        let dir = scratch("indet-damaged");
+        let rom_path = dir.join("game.bin");
+        std::fs::write(&rom_path, [0u8; 4]).unwrap();
+        // No `EndOfRom` (so: Indeterminate) and a footer that disagrees (so: not intact).
+        std::fs::write(
+            dir.join("game.lst"),
+            "  Symbol Table (* = unused):\n\n Main : 300 C |\n\n   9 symbols\n",
+        )
+        .unwrap();
+        assert!(
+            load_symbols(&rom_path, &rom_with_appendix(0x8000)).is_none(),
+            "an unverifiable listing that is also damaged must be refused"
+        );
+    }
+
+    /// …but an unverifiable listing that is otherwise whole is a legitimate hand-written or non-Aeon file,
+    /// and refusing it would be a false negative. It loads, with a warning.
+    #[test]
+    fn an_unverifiable_but_intact_listing_still_loads() {
+        let dir = scratch("indet-ok");
+        let rom_path = dir.join("game.bin");
+        std::fs::write(&rom_path, [0u8; 4]).unwrap();
+        std::fs::write(
+            dir.join("game.lst"),
+            "  Symbol Table (* = unused):\n\n Main : 300 C |\n\n   1 symbols\n",
+        )
+        .unwrap();
+        let t = load_symbols(&rom_path, &rom_with_appendix(0x8000)).expect("must load");
+        assert_eq!(t.address_of("Main"), Some(0x300));
     }
 
     /// …and the matching listing for the same image loads and resolves.

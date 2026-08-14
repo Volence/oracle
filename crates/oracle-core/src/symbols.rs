@@ -57,12 +57,16 @@
 //! # The `$` scope tree
 //!
 //! Sigil mangles a proc-local label as `$<module.path>$<Parent>$<local>` (e.g.
-//! `$engine.boot$EntryPoint$wait_dma`). Splitting on `$` yields a three-level scope at zero build cost, so
+//! `$engine.boot$EntryPoint$wait_dma`). Splitting on `$` yields a multi-level scope at zero build cost, so
 //! a PC in the middle of a long routine resolves to `EntryPoint.wait_dma` rather than
 //! "`EntryPoint` + $14 — somewhere". Both spellings are kept: [`Symbol::name`] is the raw mangled name
-//! (what the file said), [`Symbol::demangled`] is the readable `Parent.local` form, and
-//! [`Symbol::scope`] exposes the parts. The demangling matches sigil's own `demangle_symbols`, so a name
-//! printed here reads the same as one shown by the on-target MD Debugger.
+//! (what the file said), [`Symbol::demangled`] is the readable form, and [`Symbol::scope`] exposes the
+//! levels. The demangling reproduces sigil's own `demangle_symbols`, so a name printed here reads the same
+//! as one shown by the on-target MD Debugger.
+//!
+//! **The module is found by the dot, not by position** — a label emitted inside a macro puts the macro
+//! instance *outside* the module (`$diag2$engine.bg_anim$raise`), so the positional reading invents phantom
+//! modules. See [`scope_parts`] for the evidence and the rule.
 //!
 //! Sigil *drops* its plumbing symbols (`__align$…`, `$…$asm<N>$…`) when it builds the on-ROM appendix. We
 //! keep them — they are real addresses and make nearest-preceding resolution *tighter* — but flag them via
@@ -120,13 +124,16 @@ impl AddrSpace {
     }
 }
 
-/// The three levels a mangled `$module.path$Parent$local` name decomposes into. A plain (unmangled) name
-/// has only [`local`](Scope::local).
+/// The levels a mangled name decomposes into. A plain (unmangled) name has only
+/// [`local`](Scope::local).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Scope<'a> {
+    /// `__offsets` / `__align` / `diag2` — a synthetic scope wrapped *around* the module, when one is
+    /// present. See [`scope_parts`] for why this level exists.
+    pub outer: Option<&'a str>,
     /// `engine.boot` — the `.emp` module path, if the name was mangled.
     pub module: Option<&'a str>,
-    /// `EntryPoint` — the enclosing proc, if the name was mangled.
+    /// `EntryPoint` — the enclosing proc, if the name has a level between the module and the label.
     pub parent: Option<&'a str>,
     /// `wait_dma` — the innermost label. Always present; equals the whole name for plain symbols.
     pub local: &'a str,
@@ -153,17 +160,18 @@ pub struct Symbol {
     /// block scope. Sigil drops these from the on-ROM appendix; we keep them (a closer nearest-preceding
     /// answer) but mark them so a caller can prefer a source-meaningful name.
     pub is_synthetic: bool,
+    /// Some other symbol in the same table shares this [`demangled`](Symbol::demangled) spelling at a
+    /// **different** address, so the readable name does not identify a location on its own. Real and not
+    /// rare: a macro expanded 46 times emits 46 labels that all demangle to `engine.bg_anim.raise`
+    /// (24 such collisions in `s4.debug.lst`). [`Resolution`]'s `Display` falls back to the raw mangled
+    /// name — which is always unique — whenever this is set.
+    pub demangled_ambiguous: bool,
 }
 
 impl Symbol {
     /// The name split into its `$` levels. Borrows from [`name`](Symbol::name) — no allocation.
     pub fn scope(&self) -> Scope<'_> {
-        let parts = scope_parts(&self.name);
-        Scope {
-            module: parts.0,
-            parent: parts.1,
-            local: parts.2,
-        }
+        scope_parts(&self.name)
     }
 
     /// Which region of the bus map this symbol lives in.
@@ -184,11 +192,21 @@ pub struct Resolution<'a> {
 impl fmt::Display for Resolution<'_> {
     /// `EntryPoint.wait_dma` for an exact hit, `EntryPoint.wait_dma+$1A` otherwise — the form a
     /// disassembly listing or a watch-hit dump wants.
+    ///
+    /// Falls back to the raw mangled name when the readable one is
+    /// [ambiguous](Symbol::demangled_ambiguous): a name that several different addresses share does not
+    /// identify a location, and printing it anyway is precisely the confidently-wrong output this module
+    /// exists to avoid. The raw name is unique, so the answer stays exact even when it is uglier.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.displacement == 0 {
-            write!(f, "{}", self.symbol.demangled)
+        let name = if self.symbol.demangled_ambiguous {
+            &self.symbol.name
         } else {
-            write!(f, "{}+${:X}", self.symbol.demangled, self.displacement)
+            &self.symbol.demangled
+        };
+        if self.displacement == 0 {
+            write!(f, "{name}")
+        } else {
+            write!(f, "{name}+${:X}", self.displacement)
         }
     }
 }
@@ -389,6 +407,22 @@ impl SymbolTable {
                 by_module.entry(m.to_string()).or_default().push(i);
             }
         }
+        // A demangled spelling shared by two symbols at *different* addresses does not identify a location.
+        // Marked per-symbol now that the whole table is known, so `Resolution`'s `Display` can fall back to
+        // the unique raw name. Aliases at the *same* address are not ambiguous — either name is correct.
+        for idx in by_demangled.values() {
+            if idx.len() < 2 {
+                continue;
+            }
+            let a = syms[idx[0]].addr;
+            if idx.iter().all(|&i| syms[i].addr == a) {
+                continue;
+            }
+            for &i in idx {
+                syms[i].demangled_ambiguous = true;
+            }
+        }
+
         Self {
             syms,
             by_name,
@@ -439,9 +473,31 @@ impl SymbolTable {
     }
 
     /// Did we parse exactly as many symbols as the footer promised? `None` when there is no footer to
-    /// check against. A `Some(false)` is the cheap tripwire for a truncated download or a half-written file.
+    /// check against — which is itself a damage signal, so prefer [`is_intact`](Self::is_intact) for a
+    /// yes/no verdict.
     pub fn matches_declared_count(&self) -> Option<bool> {
         self.declared_count.map(|n| n == self.syms.len())
+    }
+
+    /// Does this listing look like a whole, undamaged file? True only when it has the `Symbol Table`
+    /// section, its `N symbols` footer, a count that matches what we parsed, and no unrecognised rows.
+    ///
+    /// Truncation is the case this exists for, and it is nastier than it looks. A half-written listing
+    /// usually loses its footer *along with* its tail, so `matches_declared_count()` returns `None` rather
+    /// than `Some(false)` and a naive check waves it through; worse, cutting the whole `Symbol Table`
+    /// section silently demotes parsing to the body-line fallback while still producing thousands of valid
+    /// symbols. Measured on a truncated real `s4.lst`: at a 90% cut, 2,023 addresses resolve to a
+    /// *different but still plausible* name. Every one of those four conditions catches a cut this
+    /// coarse-grained count comparison alone would miss.
+    ///
+    /// This is deliberately about the **file**, not about which ROM it describes — see
+    /// [`validate_against_rom`](Self::validate_against_rom) for that. Callers should combine the two: a
+    /// listing whose ROM binding is `Indeterminate` *and* which is not intact should be refused, because
+    /// "no fingerprint" may simply be the fingerprint symbol having fallen off the end.
+    pub fn is_intact(&self) -> bool {
+        self.source == TableSource::SymbolTable
+            && self.matches_declared_count() == Some(true)
+            && self.skipped_lines == 0
     }
 
     /// Exact lookup by the **raw** mangled name (`$engine.boot$EntryPoint$wait_dma`).
@@ -679,46 +735,101 @@ fn is_asm_block_scope(part: &str) -> bool {
         .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// Split a possibly-mangled name into `(module, parent, local)`.
+/// Split a possibly-mangled name into its scope levels.
 ///
-/// `$engine.boot$EntryPoint$wait_dma` → `(Some("engine.boot"), Some("EntryPoint"), "wait_dma")`.
-/// A leading `__offsets` / `__align` marker is peeled first so the three levels line up for those too.
-/// A plain name yields `(None, None, name)`.
-fn scope_parts(name: &str) -> (Option<&str>, Option<&str>, &str) {
+/// **The module is located by the dot, not by position.** The obvious reading of the mangling —
+/// "`$<module>$<Parent>$<local>`, so the module is the first component" — is wrong for a shape that occurs
+/// in real listings: a label emitted inside a macro carries the macro instance *outside* the module, as
+/// `$diag2$engine.bg_anim$raise`. Taking the first component there yields a phantom module `diag2`, and on
+/// the real `s4.debug.lst` that misfiles 125 symbols and invents 34 phantom modules alongside the 51 real
+/// ones. (The release `s4.lst` contains no macro-scoped labels at all, which is exactly why a positional
+/// rule looks correct until you open a debug build.)
+///
+/// A `.emp` module path always contains a `.` and no other level ever does. Verified across all six real
+/// listings (`s4`, `s4.debug`, `demo`, `demo.debug`, `s4.stress`, `s4.stressart`): every mangled name has
+/// **exactly one** dotted component, in one of three arrangements —
+///
+/// | shape | example | dotted |
+/// |---|---|---|
+/// | `$module$Parent$local` | `$engine.boot$EntryPoint$wait_dma` | 1st |
+/// | `$outer$module$local` | `$diag2$engine.bg_anim$raise`, `__align$engine.boot_data$0` | 2nd |
+/// | `$outer$module$Parent$local` | `__offsets$games.sonic4.sonic_anims$Ani_Sonic$Walk` | 2nd |
+///
+/// so "the component with the dot is the module" resolves all three without guessing. Anything before it is
+/// [`Scope::outer`]; the last component is always the label; anything between module and label is the
+/// parent. A name with no dotted component falls back to the positional reading rather than giving up.
+fn scope_parts(name: &str) -> Scope<'_> {
+    let plain = Scope {
+        outer: None,
+        module: None,
+        parent: None,
+        local: name,
+    };
     if !name.contains('$') {
-        return (None, None, name);
+        return plain;
     }
-    let mut parts: Vec<&str> = name.split('$').filter(|p| !p.is_empty()).collect();
-    if matches!(parts.first(), Some(&"__offsets") | Some(&"__align")) {
-        parts.remove(0);
+    let parts: Vec<&str> = name.split('$').filter(|p| !p.is_empty()).collect();
+    let Some((&local, head)) = parts.split_last() else {
+        return plain;
+    };
+    // The module is the one dotted component; without one, fall back to "second-to-last is the parent".
+    match head.iter().position(|p| p.contains('.')) {
+        Some(m) => Scope {
+            // `then`, not `then_some`: the latter evaluates `head[m - 1]` even when `m == 0`.
+            outer: (m > 0).then(|| head[m - 1]),
+            module: Some(head[m]),
+            parent: head.get(m + 1..).and_then(|t| t.last()).copied(),
+            local,
+        },
+        None => Scope {
+            outer: head.len().checked_sub(2).and_then(|i| head.get(i)).copied(),
+            module: None,
+            parent: head.last().copied(),
+            local,
+        },
     }
+}
+
+/// The readable spelling of a mangled name: **the last two `$` components, joined with a dot** — sigil's
+/// own `demangle_symbols` rule, reproduced deliberately rather than derived from [`scope_parts`].
+///
+/// Matching sigil matters because sigil applies this same rule before handing names to `convsym`, so these
+/// are the strings baked into the ROM's `deb2` appendix and shown by the on-target MD Debugger. A name
+/// printed here therefore reads identically to one printed on the Genesis screen. That is why
+/// `$diag2$engine.bg_anim$raise` demangles to `engine.bg_anim.raise` (module + label) even though
+/// [`scope_parts`] correctly reports its module as `engine.bg_anim` and its parent as none: the display
+/// name follows the debugger, the scope tree follows the truth.
+///
+/// Divergence from sigil, all on degenerate forms that occur in **no** real listing (verified across all
+/// six): sigil *drops* a single-component mangled name (`$only`) and a bare `$`; we keep them as their
+/// remaining text rather than losing an address.
+fn demangle(name: &str) -> String {
+    if !name.contains('$') {
+        return name.to_string();
+    }
+    let parts: Vec<&str> = name.split('$').filter(|p| !p.is_empty()).collect();
     match parts.len() {
-        0 => (None, None, name),
-        1 => (None, None, parts[0]),
-        2 => (None, Some(parts[0]), parts[1]),
-        n => (Some(parts[n - 3]), Some(parts[n - 2]), parts[n - 1]),
+        0 => name.to_string(),
+        1 => parts[0].to_string(),
+        n => format!("{}.{}", parts[n - 2], parts[n - 1]),
     }
 }
 
 /// Build a [`Symbol`], deriving the demangled name, the 24-bit address, and the synthetic flag.
+/// `demangled_ambiguous` is not knowable per-symbol and is filled in later by [`SymbolTable::build`].
 fn make_symbol(name: String, raw_addr: u32, kind: SymbolKind, unused: bool) -> Symbol {
-    let (_module, parent, local) = scope_parts(&name);
-    let demangled = match parent {
-        Some(p) => format!("{p}.{local}"),
-        None => local.to_string(),
-    };
-    let is_synthetic = name.starts_with("__align")
-        || name
-            .split('$')
-            .filter(|p| !p.is_empty())
-            .any(is_asm_block_scope);
+    let parts: Vec<&str> = name.split('$').filter(|p| !p.is_empty()).collect();
+    // `parts.first()`, not `name.starts_with` — a plain symbol called `__alignment` is a real name.
+    let is_synthetic =
+        parts.first() == Some(&"__align") || parts.iter().copied().any(is_asm_block_scope);
     Symbol {
-        demangled,
+        demangled: demangle(&name),
         raw_addr,
         addr: raw_addr & BUS_ADDR_MASK,
         kind,
         unused,
         is_synthetic,
+        demangled_ambiguous: false,
         name,
     }
 }
@@ -735,10 +846,12 @@ mod tests {
 (0) 2/214 :        $engine.boot$EntryPoint$wait_dma:
 (0) 3/214 :        $engine.boot$EntryPoint$warm_boot:
 (0) 4/2B8 :        $engine.boot$asm1$wait_z80:
-(0) 5/1BEA :        __align$engine.boot_data$0:
-(0) 6/A11F0 :        EndOfRom:
-(0) 7/FFFF8CFA :        Player_1:
-(0) 8/FFFFB790 :        Character_ID:
+(0) 5/2C0 :        $diag2$engine.bg_anim$raise:
+(0) 6/2C8 :        $diag3$engine.bg_anim$raise:
+(0) 7/1BEA :        __align$engine.boot_data$0:
+(0) 8/A11F0 :        EndOfRom:
+(0) 9/FFFF8CFA :        Player_1:
+(0) 10/FFFFB790 :        Character_ID:
   Symbol Table (* = unused):
   --------------------------
 
@@ -746,12 +859,14 @@ mod tests {
  $engine.boot$EntryPoint$wait_dma : 214 C |
  $engine.boot$EntryPoint$warm_boot : 214 C |
  $engine.boot$asm1$wait_z80 : 2B8 C |
+ $diag2$engine.bg_anim$raise : 2C0 C |
+ $diag3$engine.bg_anim$raise : 2C8 C |
 *__align$engine.boot_data$0 : 1BEA C |
  EndOfRom : A11F0 C |
  Player_1 : FFFF8CFA C |
  Character_ID : FFFFB790 - |
 
-   8 symbols
+   10 symbols
     1 unused symbols
 ";
 
@@ -763,8 +878,8 @@ mod tests {
     fn parses_both_sections_and_prefers_the_symbol_table() {
         let t = table();
         assert_eq!(t.source(), TableSource::SymbolTable);
-        assert_eq!(t.len(), 8);
-        assert_eq!(t.declared_count(), Some(8));
+        assert_eq!(t.len(), 10);
+        assert_eq!(t.declared_count(), Some(10));
         assert_eq!(t.declared_unused(), Some(1));
         assert_eq!(t.matches_declared_count(), Some(true));
         assert_eq!(t.skipped_lines(), 0);
@@ -775,7 +890,9 @@ mod tests {
         let body_only = FIXTURE.split("  Symbol Table").next().unwrap();
         let t = SymbolTable::parse(body_only).expect("body-only listing parses");
         assert_eq!(t.source(), TableSource::BodyLines);
-        assert_eq!(t.len(), 8);
+        assert_eq!(t.len(), 10);
+        // Losing the section is itself a damage signal, even though every symbol parsed fine.
+        assert!(!t.is_intact());
         // Both halves agree on every address — the emitter writes one sorted list twice.
         let full = table();
         for s in t.symbols() {
@@ -874,6 +991,7 @@ mod tests {
         assert_eq!(sc.module, Some("engine.boot"));
         assert_eq!(sc.parent, Some("EntryPoint"));
         assert_eq!(sc.local, "wait_dma");
+        assert_eq!(sc.outer, None);
         assert_eq!(s.demangled, "EntryPoint.wait_dma");
         // A plain name has only a local level, and demangles to itself.
         let p = t.by_name("EntryPoint").unwrap();
@@ -881,9 +999,107 @@ mod tests {
         assert_eq!(p.scope().parent, None);
         assert_eq!(p.demangled, "EntryPoint");
         // The module index is the top of the tree.
-        assert_eq!(t.modules(), vec!["engine.boot"]);
+        assert_eq!(
+            t.modules(),
+            vec!["engine.bg_anim", "engine.boot", "engine.boot_data"]
+        );
         assert_eq!(t.symbols_in_module("engine.boot").len(), 3);
         assert!(t.symbols_in_module("nope").is_empty());
+    }
+
+    /// Regression for the shape a positional module rule gets wrong: a label emitted inside a macro carries
+    /// the macro instance *outside* the module (`$diag2$engine.bg_anim$raise`). Reading the module as "the
+    /// first component" invents a phantom module `diag2` — on the real `s4.debug.lst` that means 34 phantom
+    /// modules and 125 misfiled symbols. `s4.lst` contains none of these, so only a debug build exposes it.
+    #[test]
+    fn macro_scoped_labels_find_the_module_by_the_dot_not_by_position() {
+        let t = table();
+        let s = t.by_name("$diag2$engine.bg_anim$raise").unwrap();
+        let sc = s.scope();
+        assert_eq!(
+            sc.outer,
+            Some("diag2"),
+            "the macro instance is the outer scope"
+        );
+        assert_eq!(sc.module, Some("engine.bg_anim"), "NOT `diag2`");
+        assert_eq!(sc.parent, None, "there is no proc level in this shape");
+        assert_eq!(sc.local, "raise");
+        // No phantom module is indexed, and the real one collects both macro instances.
+        assert!(t.symbols_in_module("diag2").is_empty());
+        assert_eq!(t.symbols_in_module("engine.bg_anim").len(), 2);
+        assert!(!t.modules().iter().any(|m| m.starts_with("diag")));
+        // The *display* name still follows sigil's own rule (last two components), so it reads the same as
+        // the on-target MD Debugger shows it — module + label here, not parent + label.
+        assert_eq!(s.demangled, "engine.bg_anim.raise");
+        // `__align$engine.boot_data$0` is the same shape and must resolve the same way.
+        let a = t.by_name("__align$engine.boot_data$0").unwrap();
+        assert_eq!(a.scope().outer, Some("__align"));
+        assert_eq!(a.scope().module, Some("engine.boot_data"));
+    }
+
+    /// Two macro expansions of the same label share a demangled spelling at *different* addresses, so that
+    /// spelling does not identify a location. `Display` must fall back to the unique raw name rather than
+    /// print a name that means two places (24 such collisions exist in the real `s4.debug.lst`).
+    #[test]
+    fn an_ambiguous_demangled_name_is_never_displayed() {
+        let t = table();
+        let a = t.by_name("$diag2$engine.bg_anim$raise").unwrap();
+        let b = t.by_name("$diag3$engine.bg_anim$raise").unwrap();
+        assert_eq!(a.demangled, b.demangled);
+        assert_ne!(a.addr, b.addr);
+        assert!(a.demangled_ambiguous && b.demangled_ambiguous);
+        // The raw name is unique, so the printed answer stays exact.
+        let r = t.resolve(0x2C4).unwrap();
+        assert_eq!(r.to_string(), "$diag2$engine.bg_anim$raise+$4");
+        // An unambiguous name is still printed in its readable form.
+        assert!(!t.by_name("EntryPoint").unwrap().demangled_ambiguous);
+        assert_eq!(t.resolve(0x200).unwrap().to_string(), "EntryPoint");
+        // Aliases at the SAME address are not ambiguous — either name is a correct answer.
+        assert!(
+            !t.by_name("$engine.boot$EntryPoint$wait_dma")
+                .unwrap()
+                .demangled_ambiguous
+        );
+    }
+
+    /// `is_intact` must catch the truncation shapes a bare footer-count comparison misses.
+    #[test]
+    fn is_intact_catches_every_damage_shape() {
+        assert!(table().is_intact());
+        // Footer present but the count disagrees (a row was deleted).
+        let missing_row = FIXTURE.replace(" EndOfRom : A11F0 C |\n", "");
+        let t = SymbolTable::parse(&missing_row).unwrap();
+        assert_eq!(t.matches_declared_count(), Some(false));
+        assert!(!t.is_intact());
+        // Footer gone entirely (the usual truncation) — the count check returns `None`, not `Some(false)`,
+        // which is exactly why `is_intact` cannot be built on it alone.
+        let no_footer = FIXTURE.replace("   10 symbols\n", "");
+        let t = SymbolTable::parse(&no_footer).unwrap();
+        assert_eq!(t.matches_declared_count(), None);
+        assert!(!t.is_intact());
+        // An unrecognised row inside the section.
+        let junk = FIXTURE.replace(" EndOfRom : A11F0 C |", " EndOfRom : ZZZZ C |");
+        let t = SymbolTable::parse(&junk).unwrap();
+        assert_eq!(t.skipped_lines(), 1);
+        assert!(!t.is_intact());
+    }
+
+    /// The fail-open path the binding check must not have: a listing that *would* be refused becomes
+    /// merely `Indeterminate` once its `EndOfRom` row is gone. `is_intact` is what lets a caller tell that
+    /// apart from an honestly-unfingerprinted listing.
+    #[test]
+    fn a_mismatch_that_lost_its_fingerprint_is_still_detectable() {
+        let no_end = FIXTURE.replace(" EndOfRom : A11F0 C |\n", "");
+        let t = SymbolTable::parse(&no_end).unwrap();
+        assert_eq!(
+            t.validate_against_rom(&rom_with_appendix(0xA11F0, 35_860)),
+            RomBinding::Indeterminate(Indeterminate::NoEndOfRomSymbol),
+            "losing the fingerprint downgrades the verdict — that is the trap"
+        );
+        assert!(
+            !t.is_intact(),
+            "…but the file is visibly damaged, so a caller can still refuse"
+        );
     }
 
     #[test]

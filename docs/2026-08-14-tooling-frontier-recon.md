@@ -332,7 +332,7 @@ shape and let the archaeology choose the order.
 - **P2 — symbols** from `.lst`, with shape refusal. Everything downstream reads better immediately.
   **SHIPPED** — `crates/oracle-core/src/symbols.rs` (pure parser, both lookup directions, `$`-scope tree,
   `deb2` shape refusal) + `crates/oracle-frontend/src/symbol_file.rs` (the file half) + symbolised watch-hit
-  PCs. See §9 for the four corrections shipping it produced.
+  PCs. See §9 for the seven corrections shipping it produced.
 - **P3 — deterministic scripted input + the headless replay runner.** First real payback to the engine.
 - **P4 — KDebug `$C00004`**, then break-on-fault.
 - **P5 — trace/query as a first-class recorder** on the sink seam (attribution in the event, filtering,
@@ -364,7 +364,8 @@ the sibling's input driver is broken, and its frame identity is not emulation-de
 ## 9. Addendum — what shipping P2 (symbols) corrected (2026-08-14)
 
 The recon above was right about the format and the traps. Implementing it against the real files surfaced
-four things it did not have. Recorded here rather than edited into §1b, so the original reading stays intact.
+seven things it did not have — three of them (9e–9g) only after an adversarial review of the first working
+version. Recorded here rather than edited into §1b, so the original reading stays intact.
 
 **9a. A fourth trap: `FFFFxxxx` is a 32-bit spelling of a 24-bit bus address.** §1b correctly says RAM
 addresses are plain 8-hex and not sign-extended, but stops there. The 68000 drives 24 address lines and
@@ -399,7 +400,33 @@ beside the `.lst`. That is a cross-repo ask, not our work.
 symbols; their tool reports `RAM: 0 bytes` because its regex still expects the 48-bit sign-extended form.
 Pinned as a regression test here (`tests/symbols_real_lst.rs`), and worth raising with them.
 
-**Also confirmed against the real file:** 2,129 symbols across **51** modules, footer count exact, zero
+**9e. A fifth trap, found in review: the module is located by the dot, not by position.** §1b reads the
+mangling as `$<module.path>$<Proc>$<local>`, and that is true of the release listing — but a label emitted
+inside a macro puts the macro instance *outside* the module: `$diag2$engine.bg_anim$raise`. Taking the first
+component as the module invents a phantom module per macro instance. Measured on `s4.debug.lst`: **94
+"modules", 34 of them phantom `diag1…diag46`, with 125 symbols misfiled**. `s4.lst` contains no
+macro-scoped labels at all, which is precisely why the positional rule looks correct until someone opens a
+debug build — a reminder that validating a format against one artifact validates one artifact. Across all
+six real listings every mangled name has **exactly one** dotted component and it is always the module, in
+three arrangements (`$mod$Parent$local`, `$outer$mod$local`, `$outer$mod$Parent$local`), so the dot rule
+resolves all of them. Corrected count for `s4.debug.lst`: 64 modules, all real.
+
+**9f. And a consequence of it: some readable names are ambiguous.** Because a macro expands N times, N
+labels share one demangled spelling at N *different* addresses — 24 non-synthetic collisions in
+`s4.debug.lst` (e.g. `engine.compression_selftest.raise` names five addresses), 130 counting plumbing. That
+spelling does not identify a location, so printing it is exactly the failure mode this work exists to
+prevent. Such symbols are flagged and displayed by their raw mangled name, which is unique.
+
+**9g. The shape refusal was fail-open, also found in review.** `Mismatch` and `Indeterminate` are not
+independent: **any listing that would be refused becomes merely `Indeterminate` if its `EndOfRom` row goes
+missing** — and truncation removes rows from the end, where `EndOfRom` sits. Verified: deleting that one row
+from `s4.debug.lst` turns a correct refusal against `s4.bin` into "loading it unverified", after which 1,775
+of 1,811 shared symbols name the wrong address. Closed by requiring an unverifiable listing to at least be
+internally whole (`is_intact`: section present, footer present, count matching, no unparsed rows) — note
+that a footer-count comparison alone does *not* catch this, because truncation usually takes the footer too,
+yielding `None` rather than a mismatch.
+
+**Also confirmed against the real file:** 2,129 symbols across **54** modules, footer count exact, zero
 unparsed rows, zero duplicate names, and the two halves of the file (body lines and symbol-table rows) agree
 on all 2,129 addresses. The type column is `C` for 100% of rows — though sigil's emitter *does* support `-`
 for equates (`sigil-link/src/listing.rs`), so §1b's "the emitter dumps no EQU/constants" is a property of
