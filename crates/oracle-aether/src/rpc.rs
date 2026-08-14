@@ -30,6 +30,12 @@ pub mod code {
     pub const OP_NOT_WIRED: i64 = -32000;
     /// Address out of range / write rejected.
     pub const ADDRESS_OUT_OF_RANGE: i64 = -32004;
+    /// **Invalid state for this operation** — the envelope is fine (not [`INVALID_REQUEST`]), the params
+    /// are fine (not [`INVALID_PARAMS`]), nothing failed internally (not [`INTERNAL_ERROR`]); the request
+    /// is simply wrong for the machine's mode *right now* (§5). `error.data.reason` MUST carry a
+    /// machine-readable discriminant — `checkpointCapReached`, `unknownCheckpoint`, `machineRunning` — so
+    /// a client branches on the field and never on the message text.
+    pub const INVALID_STATE: i64 = -32005;
     /// Operation timed out.
     #[allow(dead_code)]
     pub const TIMED_OUT: i64 = -32010;
@@ -70,6 +76,23 @@ impl RpcError {
 
     pub fn invalid_request(message: impl Into<String>) -> Self {
         Self::new(code::INVALID_REQUEST, message)
+    }
+
+    /// A `-32005`: a perfectly good request in the wrong machine state (§5). The `reason` is the
+    /// machine-readable discriminant and is merged into `data` here so it can never be forgotten;
+    /// `extra` carries the rest of the context (`cap`/`count`, the offending `id`, …).
+    pub fn invalid_state(reason: &str, message: impl Into<String>, extra: Value) -> Self {
+        let mut data = match extra {
+            Value::Object(m) => m,
+            Value::Null => Map::new(),
+            other => {
+                let mut m = Map::new();
+                m.insert("detail".into(), other);
+                m
+            }
+        };
+        data.insert("reason".into(), json!(reason));
+        Self::new(code::INVALID_STATE, message).with_data(Value::Object(data))
     }
 
     /// The error object as JSON, with `data` merged with the machine stamp (see [`stamp_object`]) so an
@@ -416,6 +439,29 @@ mod tests {
         assert_eq!(j["data"]["addr"], json!("0x0"));
         assert_eq!(j["data"]["frame"], json!(5));
         assert_eq!(j["data"]["running"], json!(false));
+    }
+
+    #[test]
+    fn invalid_state_always_carries_a_machine_readable_reason() {
+        let stamp = stamp_object(1, 2, false);
+        let e = RpcError::invalid_state(
+            "checkpointCapReached",
+            "full",
+            json!({"cap": 8, "count": 8}),
+        );
+        assert_eq!(e.code, code::INVALID_STATE);
+        let j = e.to_json(&stamp);
+        assert_eq!(j["data"]["reason"], json!("checkpointCapReached"));
+        assert_eq!(j["data"]["cap"], json!(8));
+        // The stamp still wins over anything the caller put in `data` (§2.2).
+        assert_eq!(j["data"]["frame"], json!(1));
+
+        // The reason is merged in structurally, so a caller cannot shadow it out by accident.
+        let e = RpcError::invalid_state("unknownCheckpoint", "gone", json!({"reason": "oops"}));
+        assert_eq!(
+            e.to_json(&stamp)["data"]["reason"],
+            json!("unknownCheckpoint")
+        );
     }
 
     #[test]
