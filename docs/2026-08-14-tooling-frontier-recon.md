@@ -132,6 +132,13 @@ frame)` on *every* CPU step (`system.rs:718-720`), but no sink method can return
 (`bus.rs:52-100`), so the loop cannot be interrupted. **A ~10-line trait change gates roughly half of
 the archaeology's Tier 1.**
 
+> **SHIPPED 2026-08-14 (P0).** `BusEventSink::stop_requested` (defaulted `false`), asked once per step
+> immediately after the `on_step_boundary` stamp and *before* the instruction commits, plus
+> `System::run_until_stop(max_frames, predicate)` and a `StopRecord { reason, pc, frame, mclk }` that
+> keeps "the predicate fired" and "I gave up" as distinct variants. The estimate was accurate: the loop
+> change is 4 lines. Settled semantics and the currency argument are in `system.rs` /
+> `bus.rs` doc comments; the resumability property (`stop → resume ≡ uninterrupted`) is a test.
+
 ### 2b. The success precedent to copy
 
 Watchpoints are the **only** Tier-1 capability that stopped being hand-rolled — predicted 2026-07-20,
@@ -156,7 +163,7 @@ examples have exactly one commit** — they are disposable single-question instr
 | 4 | **Guest-structure decoding** (read the game's own data) | 4+; the single biggest unlock of the conformance arc | Doesn't exist |
 | 5 | **Disassembler** | 5 external uses; leaked into permanent source at `bus.rs:1976,2063,2153` | Doesn't exist |
 | 6 | **Capture with atomic arm-at-power-on** | 11 differential episodes; **the 3 most expensive failures were capture-control failures, not core bugs** | Doesn't exist |
-| 7 | **Run-until-condition / stop-on-event** | 9 hand-tuned magic frame budgets + 2 polling loops | **90% exists, unreachable — ~10 lines** |
+| 7 | **Run-until-condition / stop-on-event** | 9 hand-tuned magic frame budgets + 2 polling loops | **SHIPPED 2026-08-14** — `stop_requested` + `run_until_stop`; 2 of the 9 budgets converted |
 | 8 | **Scripted deterministic input** | 4 independent implementations | Nothing above the raw `set_pad` |
 | 9 | **Aggregate/statistical probing** | 5 episodes — and this class **disproved two recorded root causes** | Doesn't exist |
 | 10 | Fixture-ROM authoring | 8 hand-authored ROMs | Exists but `#[doc(hidden)]`, deliberately unreachable |
@@ -261,6 +268,11 @@ Two structural notes for whoever builds the control layer:
   A control layer needs a fan-out combinator, and the only existing example is hand-written
   (`oracle-frontend/src/audio.rs`, `AudioAndWatch`). **Build the combinator before the tool surface or
   it will be written five times.**
+  > **SHIPPED 2026-08-14.** `bus::Fanout<A, B>` (nest for 3+), plus `BusEventSink` impls for `&mut S` and
+  > `Option<S>` so an only-sometimes-attached member needs no bespoke type. Composition rules: deliveries go
+  > to both halves in a fixed `a`-then-`b` order; every `wants_*` capability query and the stop signal are
+  > **OR**ed. The hand-written `AudioAndWatch` is now a type alias for it — the one remaining hand-rolled
+  > fan-out is retired rather than joined.
 - **`BusEvent` carries no attribution** (`bus.rs:43-49` is op/fc/addr/size/value only), so every
   consumer relatches PC/frame/mclk itself. Function-code *master* attribution — which chip drove the
   access, distinct from which instruction — is what let the sound-silence hunt eliminate the 68k, and
@@ -321,11 +333,15 @@ Reconciling "conform to Aether" with "our record says build recorders, not a deb
 fixes the *wire*, not which methods we implement first or how their bodies behave. So we conform on
 shape and let the archaeology choose the order.
 
-- **P0 — the ~10-line unlock.** A stop signal on the sink trait → `run_until(predicate)`. No transport,
-  no protocol, immediately useful in-tree, and it retires 9 hand-tuned magic frame budgets. Do this
-  regardless of what follows.
-- **P1 — Aether socket + handshake + events**, verbatim per `protocol.md`, with the fan-out sink
-  combinator built first. Thin surface only: `status`, `run`, `read`, `input`, `checkpoint`, `screen`.
+- **P0 — the ~10-line unlock. DONE 2026-08-14.** A stop signal on the sink trait → `run_until(predicate)`,
+  shipped with the P1 fan-out combinator pulled forward alongside it (it is the other half of the same seam).
+  2 of the 9 magic frame budgets are converted as proof; the other 7 are a separate reviewable change. Each
+  one needs its own measurement rather than a blanket idle detector — `m68k_bcd` turns out to touch the VDP
+  on frames 0, 6 and 530 and nowhere in between, so a "the screen went quiet" predicate stops 523 frames
+  before its answer exists (recorded in `docs/2026-07-25-testrom-conformance.md` L2).
+- **P1 — Aether socket + handshake + events**, verbatim per `protocol.md`. The fan-out sink combinator it
+  asked for first is already built (see §5). Thin surface only: `status`, `run`, `read`, `input`,
+  `checkpoint`, `screen`.
   Every reply carries `{frame, mclk, running}` from day one — retrofitting C2 later is far more
   expensive than honouring it now.
 - **P2 — symbols** from `.lst`, with shape refusal. Everything downstream reads better immediately.

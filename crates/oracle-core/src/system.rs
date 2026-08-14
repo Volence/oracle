@@ -8,7 +8,7 @@
 //! the relevant fields per step (split-borrow). Memory regions are owned byte buffers, always allocated
 //! at their fixed hardware sizes by [`System::new`].
 
-use crate::bus::{BusEventSink, MegaDriveBus, SramMap, Z80_RAM_SIZE};
+use crate::bus::{BusEventSink, MegaDriveBus, SramMap, StopWhen, Z80_RAM_SIZE};
 use crate::m68000::microop::Cpu68000;
 use crate::m68000::registers::Registers;
 use crate::scheduler::{EventKind, Scheduler};
@@ -37,6 +37,49 @@ pub const MCLK_PER_Z80_CYCLE: u64 = 15;
 /// 64 KiB SRAM tail region was appended (a genuine layout change — SRAM has no pre-carved reserve, unlike
 /// the VDP/Z80 content-fills). See `docs/export-state-v1.md` (§v2 — SRAM region).
 pub const EXPORT_STATE_VERSION: u16 = 2;
+
+/// Why a sink-attached run ended. **The two outcomes are never merged into one "success" flag** — the
+/// sibling emulator's `ok:true` alongside `timeout_reached:true` is an ambiguous-success defect
+/// (`docs/2026-08-14-tooling-frontier-recon.md` §3 item 7), and a caller that cannot tell "my condition
+/// happened" from "I gave up waiting" will confidently draw the wrong conclusion from the state it reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StopReason {
+    /// The sink asked the run to stop ([`BusEventSink::stop_requested`] returned `true`) — the condition
+    /// was actually observed.
+    SinkRequested,
+    /// The run reached its time bound with the sink never asking to stop. The condition was **not**
+    /// observed; nothing about the machine state may be assumed from this.
+    DeadlineReached,
+}
+
+/// Where a sink-attached run stopped, and why.
+///
+/// Every stamp is **emulated**, never wall-clock (recon §5 C2): two runs of the same ROM with the same input
+/// and the same power-on seed produce identical records, so a record is a citable coordinate rather than a
+/// timing observation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StopRecord {
+    /// Predicate fired, or bound reached — see [`StopReason`].
+    pub reason: StopReason,
+    /// The PC of the instruction that has **not** yet executed (the run stops before it commits).
+    pub pc: u32,
+    /// Emulated frame index at the stop (`mclk / MCLK_PER_FRAME`).
+    pub frame: u64,
+    /// Absolute emulated master clock at the stop.
+    pub mclk: u64,
+}
+
+impl StopRecord {
+    /// The condition was observed — the run ended early because the sink asked it to.
+    pub fn fired(&self) -> bool {
+        self.reason == StopReason::SinkRequested
+    }
+
+    /// The bound was hit without the condition ever being observed. **Not** a success.
+    pub fn timed_out(&self) -> bool {
+        self.reason == StopReason::DeadlineReached
+    }
+}
 
 /// Serialized length of the 68000 register region in `export_state` (little-endian):
 /// d0–d7 (8×4) + a0–a6 (7×4) + usp + ssp + pc (3×4) + sr (2) + prefetch (2×2) = 78 bytes.
@@ -684,10 +727,50 @@ impl System {
     /// consumer (a [`crate::watchpoints::Watchpoints`], a recorder, a decoder) observes every bus access. The
     /// sink is the caller's — `System` never stores it, so it is in neither frozen currency and cannot move a
     /// state hash. Passing `&mut ()` (what `run_frames` does) is the untouched null-sink path.
-    pub fn run_frames_with_sink<S: BusEventSink>(&mut self, frames: u64, sink: &mut S) {
+    /// Returns the [`StopRecord`] for the run: with no stop signal in play this is always
+    /// [`StopReason::DeadlineReached`] and the call is exactly the pre-stop-signal behaviour.
+    pub fn run_frames_with_sink<S: BusEventSink>(
+        &mut self,
+        frames: u64,
+        sink: &mut S,
+    ) -> StopRecord {
         let target = self.frame_boundary_mclk + frames * MCLK_PER_FRAME;
-        self.run_until_with_sink(target, sink);
-        self.frame_boundary_mclk = target;
+        let record = self.run_until_with_sink(target, sink);
+        self.frame_boundary_mclk = match record.reason {
+            // Ran the whole budget: the pre-existing rule — absolute deadlines absorb the overshoot.
+            StopReason::DeadlineReached => target,
+            // Stopped early: the frame grid has only advanced to the last *whole* frame boundary actually
+            // crossed, so anchor there. `.max` keeps the anchor monotonic (it can never move backwards, and
+            // `now >= frame_boundary_mclk` always holds on entry, so this is belt-and-braces).
+            StopReason::SinkRequested => (self.scheduler.now() / MCLK_PER_FRAME * MCLK_PER_FRAME)
+                .max(self.frame_boundary_mclk),
+        };
+        record
+    }
+
+    /// **Run until a predicate fires, with a bounded fallback** — the predicate-driven run.
+    ///
+    /// Steps the machine for at most `max_frames`, calling `predicate(pc, frame)` at every instruction
+    /// boundary (`pc` = the instruction about to execute, `frame` = the emulated frame index), and stops at
+    /// the first boundary where it returns `true`. The bound is not optional: an unbounded `run_until` that
+    /// silently hangs is strictly worse than a hand-tuned frame budget, so a predicate that never fires
+    /// degrades to exactly `run_frames(max_frames)`.
+    ///
+    /// The returned [`StopRecord`] says **which of those two happened** — `record.fired()` vs
+    /// `record.timed_out()` — and carries the deterministic emulated stamp (`pc`, `frame`, `mclk`) of the
+    /// stopping point. The two outcomes are never conflated into one "success" flag.
+    ///
+    /// For a condition that depends on bus traffic rather than the PC, write a sink and pass it to
+    /// [`run_frames_with_sink`](Self::run_frames_with_sink) — that is the same mechanism; this is the
+    /// closure-shaped convenience over it (see [`crate::bus::StopWhen`], and [`crate::bus::Fanout`] to keep
+    /// another sink attached at the same time).
+    pub fn run_until_stop<F: FnMut(u32, u64) -> bool>(
+        &mut self,
+        max_frames: u64,
+        predicate: F,
+    ) -> StopRecord {
+        let mut sink = StopWhen::new(predicate);
+        self.run_frames_with_sink(max_frames, &mut sink)
     }
 
     /// Run until the master clock reaches `deadline_mclk`: pop any due scheduler events (Push C slice 5
@@ -705,12 +788,27 @@ impl System {
     /// [`BusEventSink::on_step_boundary`] with the PC of the instruction about to execute and the current
     /// frame, so a consumer that attributes accesses to their writing instruction (watchpoints) has that
     /// context; the default `on_step_boundary` is a no-op, so `&mut ()` is byte-for-byte the old hot path.
-    pub fn run_until_with_sink<S: BusEventSink>(&mut self, deadline_mclk: u64, sink: &mut S) {
+    ///
+    /// **Early stop.** Right after that stamp — and *before* the instruction executes — the loop asks
+    /// [`BusEventSink::stop_requested`]; `true` ends the run at that instruction boundary. The machine is
+    /// therefore never left mid-instruction: `pc` in the returned [`StopRecord`] is the instruction that has
+    /// **not** yet run, and the state is exactly as resumable as a deadline exit. A sink that raises its flag
+    /// during a step (from `on_event` / `on_vdp_write`) is honoured at the *next* boundary, i.e. after the
+    /// triggering instruction has fully committed.
+    ///
+    /// With no sink overriding `stop_requested` the added code is `if false { break }`: the instruction
+    /// stream, the bus traffic and the clock are unchanged **by construction**, not merely by optimisation.
+    pub fn run_until_with_sink<S: BusEventSink>(
+        &mut self,
+        deadline_mclk: u64,
+        sink: &mut S,
+    ) -> StopRecord {
         // Arm the VDP write-capture buffer for this run only if the sink wants VDP-internal writes
         // (watchpoints v2). Disarmed, the choke points are byte-for-byte the old hot path — this single query
         // is the whole cost when no VDP watch is attached. Restored to off on return.
         let capture = sink.wants_vdp_writes();
         self.vdp.set_write_capture(capture);
+        let mut reason = StopReason::DeadlineReached;
         while self.scheduler.now() < deadline_mclk {
             // Deliver any events whose deadline has arrived (instruction-boundary granularity, consistent
             // with the ratified sync-on-demand model) before stepping — they may raise the pending latches.
@@ -721,6 +819,13 @@ impl System {
             // Stamp the instruction about to execute (its PC) + the current frame, so a sink that attributes
             // accesses to their driving instruction (watchpoints) has that context. No-op for `&mut ()`.
             sink.on_step_boundary(self.cpu.regs.pc, self.scheduler.now() / MCLK_PER_FRAME);
+            // The stop signal. Asked here — after the stamp, before the instruction commits — so the run
+            // always ends on an instruction boundary with `pc` on the not-yet-executed instruction. With the
+            // trait default this is `if false`, so the no-predicate path is unchanged by construction.
+            if sink.stop_requested() {
+                reason = StopReason::SinkRequested;
+                break;
+            }
             let cycles = self.step_cpu(sink);
             // Drain the VDP writes this step produced (empty unless armed) and deliver each to the sink, paired
             // with the step-boundary PC/frame it just stamped — this is where a DMA write learns the
@@ -743,6 +848,13 @@ impl System {
         // Disarm — leave the VDP as the run found it (a subsequent null-sink run must stay on the hot path).
         if capture {
             self.vdp.set_write_capture(false);
+        }
+        let mclk = self.scheduler.now();
+        StopRecord {
+            reason,
+            pc: self.cpu.regs.pc,
+            frame: mclk / MCLK_PER_FRAME,
+            mclk,
         }
     }
 
@@ -1963,5 +2075,162 @@ mod tests {
         let back = System::restore(&snap).expect("snapshot should decode");
         assert_eq!(s, back);
         assert_eq!(s.state_hash(), back.state_hash());
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // The stop signal / predicate-driven run
+    // -----------------------------------------------------------------------------------------------
+
+    /// A sink that asks to stop after exactly `n` instruction boundaries, latching once fired. Written by
+    /// hand (rather than via `StopWhen`) so the tests below also cover a *foreign* sink driving the seam.
+    #[derive(Default)]
+    struct StopAfter {
+        n: u64,
+        seen: u64,
+    }
+
+    impl BusEventSink for StopAfter {
+        fn on_event(&mut self, _event: crate::bus::BusEvent) {}
+        fn on_step_boundary(&mut self, _pc: u32, _frame: u64) {
+            self.seen += 1;
+        }
+        fn stop_requested(&self) -> bool {
+            self.seen > self.n
+        }
+    }
+
+    /// **The currency argument, executed.** A sink that never asks to stop must leave the run
+    /// byte-for-byte what the null sink produces — same instruction stream, same clock, same everything.
+    #[test]
+    fn a_never_firing_stop_signal_leaves_the_run_identical_to_the_null_sink() {
+        let mut plain = booted(7);
+        let mut instrumented = booted(7);
+        plain.run_frames(3);
+        let mut never = StopWhen::new(|_pc, _frame| false);
+        let record = instrumented.run_frames_with_sink(3, &mut never);
+        assert!(
+            record.timed_out(),
+            "a predicate that is never true must report DeadlineReached, not success"
+        );
+        assert_eq!(
+            plain.export_state_hash(),
+            instrumented.export_state_hash(),
+            "the export-state currency is unmoved by an attached (never-firing) stop signal"
+        );
+        assert_eq!(
+            plain, instrumented,
+            "the WHOLE machine is identical, not merely the hash"
+        );
+        assert_eq!(
+            plain.frame_boundary_mclk, instrumented.frame_boundary_mclk,
+            "the frame anchor is untouched on the deadline path"
+        );
+    }
+
+    /// The run stops **before** the flagged instruction commits: `pc` in the record is the instruction that
+    /// has not yet executed, and it is the machine's live PC.
+    #[test]
+    fn a_predicate_stops_before_the_flagged_instruction_commits() {
+        // Find a PC the ROM actually reaches, by recording the 40th step boundary of a plain run.
+        let mut probe = booted(7);
+        let mut boundaries: Vec<u32> = Vec::new();
+        {
+            let mut collect = StopWhen::new(|pc, _f| {
+                boundaries.push(pc);
+                false
+            });
+            probe.run_frames_with_sink(1, &mut collect);
+        }
+        let target = boundaries[40];
+
+        let mut s = booted(7);
+        let record = s.run_until_stop(1, |pc, _frame| pc == target);
+        assert!(record.fired(), "the predicate must have fired");
+        assert_eq!(
+            record.pc, target,
+            "the record names the flagged instruction"
+        );
+        assert_eq!(
+            s.cpu.regs.pc, target,
+            "the machine is parked ON that instruction — it has not executed"
+        );
+    }
+
+    /// `fired()` and `timed_out()` are never both-ish: a predicate that cannot match reports the bound, and
+    /// the caller can tell the two apart without guessing.
+    #[test]
+    fn an_unmatched_predicate_reports_the_bound_and_not_success() {
+        let mut s = booted(7);
+        let record = s.run_until_stop(2, |pc, _frame| pc == 0x00FF_FFFE);
+        assert!(!record.fired());
+        assert!(record.timed_out());
+        assert_eq!(record.reason, StopReason::DeadlineReached);
+        assert_eq!(
+            s.frame_boundary_mclk,
+            2 * MCLK_PER_FRAME,
+            "a bounded fallback runs the full budget, exactly like run_frames(2)"
+        );
+    }
+
+    /// **Resumability.** Stopping early and continuing to the same absolute deadline must land on exactly the
+    /// state an uninterrupted run reaches — i.e. the stop is a pause at an instruction boundary, not a
+    /// perturbation. This is the property that lets a stop condition be used inside a currency-bearing run.
+    #[test]
+    fn a_stopped_run_resumes_to_the_state_an_uninterrupted_run_reaches() {
+        let deadline = 3 * MCLK_PER_FRAME;
+
+        let mut straight = booted(0x1234);
+        straight.run_until(deadline);
+
+        let mut interrupted = booted(0x1234);
+        let mut stop = StopAfter { n: 500, seen: 0 };
+        let record = interrupted.run_until_with_sink(deadline, &mut stop);
+        assert!(
+            record.fired(),
+            "the sink must actually have stopped the run"
+        );
+        assert!(
+            record.mclk < deadline,
+            "and it must have stopped strictly before the deadline ({} < {deadline})",
+            record.mclk
+        );
+        // Resume to the SAME absolute deadline with no sink attached.
+        interrupted.run_until(deadline);
+
+        assert_eq!(
+            straight, interrupted,
+            "an interrupted-and-resumed run is byte-identical to an uninterrupted one"
+        );
+    }
+
+    /// Stamps are emulated, never wall-clock (recon §5 C2): the same ROM + seed + predicate yields the same
+    /// record, run after run.
+    #[test]
+    fn stop_records_are_reproducible() {
+        let mut a = booted(0x99);
+        let mut b = booted(0x99);
+        let ra = a.run_until_stop(2, |_pc, frame| frame >= 1);
+        let rb = b.run_until_stop(2, |_pc, frame| frame >= 1);
+        assert_eq!(ra, rb, "identical runs produce identical stop records");
+        assert!(ra.fired());
+        assert_eq!(ra.frame, ra.mclk / MCLK_PER_FRAME);
+    }
+
+    /// After an early stop the frame anchor moves to the last WHOLE frame boundary crossed — it neither
+    /// claims frames that were not run nor goes backwards.
+    #[test]
+    fn an_early_stop_anchors_the_frame_grid_at_the_last_whole_frame() {
+        let mut s = booted(0x2468);
+        let record = s.run_frames_with_sink(10, &mut StopWhen::new(|_pc, frame| frame >= 4));
+        assert!(record.fired());
+        assert_eq!(record.frame, 4, "stopped inside frame 4");
+        assert_eq!(
+            s.frame_boundary_mclk,
+            4 * MCLK_PER_FRAME,
+            "the anchor is the last whole frame boundary crossed, not the unrun 10-frame target"
+        );
+        // And the anchor is usable: a following run advances from there.
+        s.run_frames(1);
+        assert_eq!(s.frame_boundary_mclk, 5 * MCLK_PER_FRAME);
     }
 }

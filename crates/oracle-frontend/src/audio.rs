@@ -10,9 +10,8 @@
 //! [`run_frames_with_sink`](oracle_core::system::System::run_frames_with_sink), drains each frame, and
 //! [`push_frame`]s it into the [`AudioProd`] whose paired [`AudioCons`] is popped by the cpal callback.
 
-use oracle_core::bus::{BusEvent, BusEventSink};
+use oracle_core::bus::Fanout;
 use oracle_core::synth::AudioSink;
-use oracle_core::vdp::VdpWrite;
 use oracle_core::watchpoints::Watchpoints;
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
@@ -155,71 +154,23 @@ pub fn fill_output(cons: &mut AudioCons, out: &mut [f32], channels: usize, flush
     }
 }
 
-/// A composite [`BusEventSink`] that forwards **every** event to the synth's [`AudioSink`] and, when present,
+/// A composite [`BusEventSink`] that forwards **every** hook to the synth's [`AudioSink`] and, when present,
 /// to the pixel-attribution [`Watchpoints`] — so real-time audio and the milestone-D3 watch tooling stay live
-/// at the same time (design §6.2). [`BusEvent`] is `Copy`, so forwarding the same event to both sinks is a
-/// trivial copy.
-pub struct AudioAndWatch<'a> {
-    /// The persistent synth sink — attached every frame while audio is on.
-    pub audio: &'a mut AudioSink,
-    /// The tile watch — `Some` only while one is armed (mirrors the frontend's `watch_armed`).
-    pub watch: Option<&'a mut Watchpoints>,
-}
-
-impl BusEventSink for AudioAndWatch<'_> {
-    fn on_event(&mut self, e: BusEvent) {
-        self.audio.on_event(e);
-        if let Some(w) = &mut self.watch {
-            w.on_event(e);
-        }
-    }
-
-    fn on_event_at(&mut self, e: BusEvent, mclk: u64) {
-        // AudioSink's SY-4b timed path; Watchpoints rides the default forwarder to `on_event`.
-        self.audio.on_event_at(e, mclk);
-        if let Some(w) = &mut self.watch {
-            w.on_event_at(e, mclk);
-        }
-    }
-
-    fn on_step_boundary(&mut self, pc: u32, frame: u64) {
-        // Drives AudioSink's per-frame render; stamps the watch's PC/frame context.
-        self.audio.on_step_boundary(pc, frame);
-        if let Some(w) = &mut self.watch {
-            w.on_step_boundary(pc, frame);
-        }
-    }
-
-    fn wants_vdp_writes(&self) -> bool {
-        // AudioSink wants none; only the watch (when present) can arm the currency-sensitive VDP capture.
-        self.watch.as_ref().is_some_and(|w| w.wants_vdp_writes())
-    }
-
-    fn on_vdp_write(&mut self, wr: VdpWrite) {
-        // AudioSink ignores VDP writes; forward only to the watch.
-        if let Some(w) = &mut self.watch {
-            w.on_vdp_write(wr);
-        }
-    }
-
-    fn wants_scanlines(&self) -> bool {
-        // Neither member opts in today (both ride the trait default), but a composite must never silently
-        // drop a member's opt-in — OR over both, like `wants_vdp_writes` above.
-        self.audio.wants_scanlines() || self.watch.as_ref().is_some_and(|w| w.wants_scanlines())
-    }
-
-    fn on_scanline(&mut self, line: u16, rgb: &[(u8, u8, u8)]) {
-        self.audio.on_scanline(line, rgb);
-        if let Some(w) = &mut self.watch {
-            w.on_scanline(line, rgb);
-        }
-    }
-}
+/// at the same time (design §6.2).
+///
+/// This used to be a hand-written struct with a hand-written seven-method `BusEventSink` impl. It is now the
+/// *generic* [`Fanout`] combinator from the core, with the "only sometimes attached" watch expressed by the
+/// core's `Option<S>` sink impl — same delivery order (audio first), same OR-composed `wants_*` queries, and
+/// now the stop signal is composed too, for free. The name is kept because it says what the pair *is*.
+///
+/// Construct it with `AudioAndWatch::new(&mut audio_sink, watch_armed.then_some(&mut watchpoints))`; the two
+/// halves are the public fields `a` (audio) and `b` (watch).
+pub type AudioAndWatch<'a> = Fanout<&'a mut AudioSink, Option<&'a mut Watchpoints>>;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oracle_core::bus::{BusOp, Size};
+    use oracle_core::bus::{BusEvent, BusEventSink, BusOp, Size};
     use oracle_core::watchpoints::WatchOp;
 
     fn write_event(addr: u32, value: u8) -> BusEvent {
@@ -527,10 +478,7 @@ mod tests {
         let mut watch = Watchpoints::new(64);
         watch.add_watch(watched, WatchOp::Write, "ref");
         {
-            let mut sink = AudioAndWatch {
-                audio: &mut audio,
-                watch: Some(&mut watch),
-            };
+            let mut sink = AudioAndWatch::new(&mut audio, Some(&mut watch));
             sink.on_step_boundary(0x1234, 0); // latches audio's first frame + stamps the watch
             sink.on_event(write_event(0xFF_0100, 0xAB));
             sink.on_event(write_event(0xFF_0200, 0xCD));
@@ -559,10 +507,7 @@ mod tests {
     #[test]
     fn composite_without_watch_drives_audio_only() {
         let mut audio = AudioSink::new(44_100);
-        let mut sink = AudioAndWatch {
-            audio: &mut audio,
-            watch: None,
-        };
+        let mut sink = AudioAndWatch::new(&mut audio, None);
         assert!(
             !sink.wants_vdp_writes(),
             "audio-only composite wants no VDP writes"

@@ -6,6 +6,12 @@
 //! event-stream *consumer* rather than a CPU special-case. Re-entrant cross-chip writes go through one
 //! explicit deferred-write seam: such writes are queued and drained by [`SystemBus::apply_writes`]
 //! after the access completes (jgenesis's `MainBusWrites` pattern, reimplemented).
+//!
+//! A sink is **monomorphized and passed per-run** — one sink type per run, no registry — so composing two
+//! consumers needs an explicit combinator: [`Fanout`], with `BusEventSink` impls for `&mut S` and
+//! `Option<S>` (an absent optional half is exactly the null sink) so a nest of them covers any arity. A sink
+//! can also *end* a run, via [`BusEventSink::stop_requested`]; [`StopWhen`] is the closure-shaped predicate
+//! behind [`crate::system::System::run_until_stop`].
 
 use crate::io::{io_reg, Io, IoReg};
 use crate::state_hash::VRAM_SIZE;
@@ -97,6 +103,206 @@ pub trait BusEventSink {
     /// H32 / 320 H40); copy out whatever must outlive the call. Only called when
     /// [`wants_scanlines`](BusEventSink::wants_scanlines) returned `true`. The default is a no-op.
     fn on_scanline(&mut self, _line: u16, _rgb: &[(u8, u8, u8)]) {}
+
+    /// **The stop signal.** Queried by the sink-generic run loop once per CPU step, immediately after
+    /// [`on_step_boundary`](BusEventSink::on_step_boundary) and *before* the instruction executes; returning
+    /// `true` ends the run early with
+    /// [`StopReason::SinkRequested`](crate::system::StopReason::SinkRequested).
+    ///
+    /// **Semantics (settled — see `System::run_until_with_sink`).** The machine always stops **at an
+    /// instruction boundary, never mid-instruction**, with `pc` pointing at the instruction that has *not*
+    /// yet executed. So a sink that raises its flag from `on_step_boundary(pc, _)` gets classic breakpoint
+    /// semantics (stop *before* `pc` runs); a sink that raises it from `on_event`/`on_vdp_write` — i.e. in
+    /// the middle of an instruction — stops at the *next* boundary, after the triggering instruction has
+    /// fully committed. Consequence to know about: on the stopping iteration `on_step_boundary` is called
+    /// for an instruction that does not run, and it is called again for that same PC when the caller
+    /// resumes. Every in-tree sink latches (rather than accumulates) that stamp, so the repeat is
+    /// idempotent; a counting sink must account for it.
+    ///
+    /// **Why a query rather than a return value on `on_step_boundary`:** adding a return type there would
+    /// break every existing overrider. This is a new, defaulted, side-effect-free `&self` query, so all
+    /// existing sinks compile untouched *and* the emulation path is unchanged by construction — with the
+    /// default the loop gains only `if false { break }`, which can neither reorder a bus access nor move the
+    /// clock. The precedent is the [`on_event_at`](BusEventSink::on_event_at) forwarder (SY-4a): extend the
+    /// trait, never the [`BusEvent`] struct (it derives `Eq` and is recorded into `Vec<BusEvent>` by tests
+    /// asserting exact event sequences).
+    fn stop_requested(&self) -> bool {
+        false
+    }
+}
+
+/// Forwarding impl for a `&mut` borrow of a sink, so a sink can be handed to a combinator by reference
+/// without giving up ownership ([`Fanout`] leans on this).
+impl<S: BusEventSink + ?Sized> BusEventSink for &mut S {
+    fn on_event(&mut self, event: BusEvent) {
+        (**self).on_event(event);
+    }
+    fn on_event_at(&mut self, event: BusEvent, mclk: u64) {
+        (**self).on_event_at(event, mclk);
+    }
+    fn on_step_boundary(&mut self, pc: u32, frame: u64) {
+        (**self).on_step_boundary(pc, frame);
+    }
+    fn wants_vdp_writes(&self) -> bool {
+        (**self).wants_vdp_writes()
+    }
+    fn on_vdp_write(&mut self, write: crate::vdp::VdpWrite) {
+        (**self).on_vdp_write(write);
+    }
+    fn wants_scanlines(&self) -> bool {
+        (**self).wants_scanlines()
+    }
+    fn on_scanline(&mut self, line: u16, rgb: &[(u8, u8, u8)]) {
+        (**self).on_scanline(line, rgb);
+    }
+    fn stop_requested(&self) -> bool {
+        (**self).stop_requested()
+    }
+}
+
+/// Optional sink: `None` is exactly the null sink (every hook a no-op, every capability query `false`, never
+/// stops). This is what lets a composite hold a member that is only sometimes attached — the frontend's
+/// "watch armed?" case — without a bespoke composite type.
+impl<S: BusEventSink> BusEventSink for Option<S> {
+    fn on_event(&mut self, event: BusEvent) {
+        if let Some(s) = self {
+            s.on_event(event);
+        }
+    }
+    fn on_event_at(&mut self, event: BusEvent, mclk: u64) {
+        if let Some(s) = self {
+            s.on_event_at(event, mclk);
+        }
+    }
+    fn on_step_boundary(&mut self, pc: u32, frame: u64) {
+        if let Some(s) = self {
+            s.on_step_boundary(pc, frame);
+        }
+    }
+    fn wants_vdp_writes(&self) -> bool {
+        self.as_ref().is_some_and(|s| s.wants_vdp_writes())
+    }
+    fn on_vdp_write(&mut self, write: crate::vdp::VdpWrite) {
+        if let Some(s) = self {
+            s.on_vdp_write(write);
+        }
+    }
+    fn wants_scanlines(&self) -> bool {
+        self.as_ref().is_some_and(|s| s.wants_scanlines())
+    }
+    fn on_scanline(&mut self, line: u16, rgb: &[(u8, u8, u8)]) {
+        if let Some(s) = self {
+            s.on_scanline(line, rgb);
+        }
+    }
+    fn stop_requested(&self) -> bool {
+        self.as_ref().is_some_and(|s| s.stop_requested())
+    }
+}
+
+/// Fan-out combinator: one sink that drives **two**, forwarding every hook to `a` then `b`.
+///
+/// `BusEventSink` is monomorphized and passed per-run, so a run has exactly one sink type and there is no
+/// registry — composing two consumers (a recorder *and* a stop condition; audio *and* a watch) needs an
+/// explicit combinator. Nest it (`Fanout::new(a, Fanout::new(b, c))`) for three or more; pair it with the
+/// [`Option`] impl above for a member that is only sometimes attached.
+///
+/// **Composition rules, which are the whole content of this type:**
+/// - Every *delivery* hook runs on both halves, `a` first, in a fixed order (a sink must never observe a
+///   different stream because of who it was composed with).
+/// - Every `wants_*` *capability* query is the **OR** of the halves — a composite that answered `false`
+///   while one half wanted the data would silently starve it. The cost is that the *other* half then also
+///   sees data it did not ask for; that is safe (its hooks default to no-ops) and is the only direction
+///   that cannot lose information.
+/// - [`stop_requested`](BusEventSink::stop_requested) is likewise the **OR**: if either half wants the run
+///   to end, the run ends. It is short-circuiting on `a`, which is sound because the query is a pure `&self`
+///   read with no side effects.
+pub struct Fanout<A, B> {
+    /// The first half — receives every hook before `b`.
+    pub a: A,
+    /// The second half.
+    pub b: B,
+}
+
+impl<A, B> Fanout<A, B> {
+    /// Compose `a` and `b` into one sink. Delivery order is `a` then `b`.
+    pub fn new(a: A, b: B) -> Self {
+        Self { a, b }
+    }
+}
+
+impl<A: BusEventSink, B: BusEventSink> BusEventSink for Fanout<A, B> {
+    fn on_event(&mut self, event: BusEvent) {
+        self.a.on_event(event);
+        self.b.on_event(event);
+    }
+    fn on_event_at(&mut self, event: BusEvent, mclk: u64) {
+        // Forward the *timed* hook to both: each half independently decides (via its own default or
+        // override) whether it wants the mclk or the plain `on_event` forward.
+        self.a.on_event_at(event, mclk);
+        self.b.on_event_at(event, mclk);
+    }
+    fn on_step_boundary(&mut self, pc: u32, frame: u64) {
+        self.a.on_step_boundary(pc, frame);
+        self.b.on_step_boundary(pc, frame);
+    }
+    fn wants_vdp_writes(&self) -> bool {
+        self.a.wants_vdp_writes() || self.b.wants_vdp_writes()
+    }
+    fn on_vdp_write(&mut self, write: crate::vdp::VdpWrite) {
+        self.a.on_vdp_write(write);
+        self.b.on_vdp_write(write);
+    }
+    fn wants_scanlines(&self) -> bool {
+        self.a.wants_scanlines() || self.b.wants_scanlines()
+    }
+    fn on_scanline(&mut self, line: u16, rgb: &[(u8, u8, u8)]) {
+        self.a.on_scanline(line, rgb);
+        self.b.on_scanline(line, rgb);
+    }
+    fn stop_requested(&self) -> bool {
+        self.a.stop_requested() || self.b.stop_requested()
+    }
+}
+
+/// The predicate sink behind [`System::run_until_stop`](crate::system::System::run_until_stop): evaluates
+/// `f(pc, frame)` at every instruction boundary and requests a stop the first time it returns `true`.
+///
+/// It observes only what a step boundary carries (the PC about to execute and the emulated frame), which is
+/// what a `run_until(pc == X)` / `run_until(frame >= N)` caller needs. A condition that depends on bus
+/// traffic belongs in a sink of its own — compose it with [`Fanout`] to keep both.
+///
+/// The flag **latches**: once fired it stays fired, so `f` is never called again and the record is stable if
+/// the run is re-entered.
+pub struct StopWhen<F> {
+    f: F,
+    fired: bool,
+}
+
+impl<F: FnMut(u32, u64) -> bool> StopWhen<F> {
+    /// Stop at the first instruction boundary where `f(pc, frame)` is `true`.
+    pub fn new(f: F) -> Self {
+        Self { f, fired: false }
+    }
+
+    /// Whether the predicate has fired.
+    pub fn fired(&self) -> bool {
+        self.fired
+    }
+}
+
+impl<F: FnMut(u32, u64) -> bool> BusEventSink for StopWhen<F> {
+    fn on_event(&mut self, _event: BusEvent) {}
+
+    fn on_step_boundary(&mut self, pc: u32, frame: u64) {
+        if !self.fired {
+            self.fired = (self.f)(pc, frame);
+        }
+    }
+
+    fn stop_requested(&self) -> bool {
+        self.fired
+    }
 }
 
 /// Null sink — discards events (the hot path, with no instrumentation attached).
@@ -2843,6 +3049,236 @@ mod tests {
             ],
             [T16_FULL, 0x0000, T16_EMPTY],
             "group 10: FULL → partial → EMPTY after the DMA (ROM $ED10 words 37-40), stream {stream:04X?}"
+        );
+    }
+
+    // --- Sink combinators: Fanout, Option<S>, StopWhen -----------------------------------------------
+
+    /// A test sink that records every hook it receives, so a combinator can be checked hook-by-hook rather
+    /// than by proxy. `wants_*` are settable, and it can be told to request a stop.
+    #[derive(Default)]
+    struct Spy {
+        events: Vec<BusEvent>,
+        timed: Vec<(BusEvent, u64)>,
+        boundaries: Vec<(u32, u64)>,
+        vdp_writes: usize,
+        scanlines: Vec<u16>,
+        want_vdp: bool,
+        want_lines: bool,
+        stop: bool,
+    }
+
+    impl BusEventSink for Spy {
+        fn on_event(&mut self, event: BusEvent) {
+            self.events.push(event);
+        }
+        fn on_event_at(&mut self, event: BusEvent, mclk: u64) {
+            self.timed.push((event, mclk));
+            self.on_event(event);
+        }
+        fn on_step_boundary(&mut self, pc: u32, frame: u64) {
+            self.boundaries.push((pc, frame));
+        }
+        fn wants_vdp_writes(&self) -> bool {
+            self.want_vdp
+        }
+        fn on_vdp_write(&mut self, _write: crate::vdp::VdpWrite) {
+            self.vdp_writes += 1;
+        }
+        fn wants_scanlines(&self) -> bool {
+            self.want_lines
+        }
+        fn on_scanline(&mut self, line: u16, _rgb: &[(u8, u8, u8)]) {
+            self.scanlines.push(line);
+        }
+        fn stop_requested(&self) -> bool {
+            self.stop
+        }
+    }
+
+    fn ev(addr: u32) -> BusEvent {
+        BusEvent {
+            op: BusOp::Write,
+            fc: 0,
+            addr,
+            size: Size::Byte,
+            value: 0xAB,
+        }
+    }
+
+    fn vdp_write_probe() -> crate::vdp::VdpWrite {
+        crate::vdp::VdpWrite {
+            target: crate::vdp::VdpTarget::Vram,
+            addr: 0,
+            old: 0,
+            new: 1,
+            size: 1,
+            via: crate::vdp::VdpVia::Direct,
+        }
+    }
+
+    /// Every *delivery* hook reaches both halves, in `a`-then-`b` order.
+    #[test]
+    fn fanout_forwards_every_hook_to_both_halves() {
+        let mut a = Spy::default();
+        let mut b = Spy::default();
+        {
+            let mut f = Fanout::new(&mut a, &mut b);
+            f.on_event(ev(1));
+            f.on_event_at(ev(2), 4242);
+            f.on_step_boundary(0x400, 7);
+            f.on_vdp_write(vdp_write_probe());
+            f.on_scanline(99, &[(1, 2, 3)]);
+        }
+        for (name, s) in [("a", &a), ("b", &b)] {
+            assert_eq!(
+                s.events.iter().map(|e| e.addr).collect::<Vec<_>>(),
+                vec![1, 2],
+                "{name}: both plain and timed events arrive"
+            );
+            assert_eq!(
+                s.timed,
+                vec![(ev(2), 4242)],
+                "{name}: the mclk is preserved"
+            );
+            assert_eq!(s.boundaries, vec![(0x400, 7)], "{name}: step boundary");
+            assert_eq!(s.vdp_writes, 1, "{name}: VDP write");
+            assert_eq!(s.scanlines, vec![99], "{name}: scanline");
+        }
+    }
+
+    /// The capability queries are ORed: one half opting in must not be starved because the other did not.
+    #[test]
+    fn fanout_ors_the_capability_queries() {
+        let cases = [
+            (false, false, false),
+            (true, false, true),
+            (false, true, true),
+            (true, true, true),
+        ];
+        for (wa, wb, want) in cases {
+            let a = Spy {
+                want_vdp: wa,
+                want_lines: wa,
+                ..Default::default()
+            };
+            let b = Spy {
+                want_vdp: wb,
+                want_lines: wb,
+                ..Default::default()
+            };
+            let f = Fanout::new(a, b);
+            assert_eq!(f.wants_vdp_writes(), want, "wants_vdp_writes({wa}, {wb})");
+            assert_eq!(f.wants_scanlines(), want, "wants_scanlines({wa}, {wb})");
+        }
+    }
+
+    /// The stop signal is ORed too — either half can end the run — and it is inert when neither asks.
+    #[test]
+    fn fanout_ors_the_stop_signal() {
+        for (sa, sb, want) in [
+            (false, false, false),
+            (true, false, true),
+            (false, true, true),
+            (true, true, true),
+        ] {
+            let a = Spy {
+                stop: sa,
+                ..Default::default()
+            };
+            let b = Spy {
+                stop: sb,
+                ..Default::default()
+            };
+            assert_eq!(Fanout::new(a, b).stop_requested(), want, "({sa}, {sb})");
+        }
+    }
+
+    /// `None` is exactly the null sink: no hook panics, no capability is claimed, no stop is requested.
+    #[test]
+    fn an_absent_optional_sink_is_inert() {
+        let mut none: Option<Spy> = None;
+        none.on_event(ev(1));
+        none.on_event_at(ev(2), 5);
+        none.on_step_boundary(0, 0);
+        none.on_vdp_write(vdp_write_probe());
+        none.on_scanline(0, &[]);
+        assert!(!none.wants_vdp_writes());
+        assert!(!none.wants_scanlines());
+        assert!(!none.stop_requested());
+
+        // And `Some` forwards everything.
+        let mut some = Some(Spy {
+            want_vdp: true,
+            stop: true,
+            ..Default::default()
+        });
+        some.on_event(ev(9));
+        assert_eq!(some.as_ref().unwrap().events.len(), 1);
+        assert!(some.wants_vdp_writes());
+        assert!(some.stop_requested());
+    }
+
+    /// The composite an armed-or-not tool actually builds: a real sink plus an optional second one.
+    #[test]
+    fn fanout_composes_with_an_optional_half() {
+        let mut audio = Spy::default();
+        let mut watch = Spy {
+            want_vdp: true,
+            ..Default::default()
+        };
+        {
+            let mut armed = Fanout::new(&mut audio, Some(&mut watch));
+            assert!(armed.wants_vdp_writes(), "the armed half's opt-in wins");
+            armed.on_event(ev(3));
+        }
+        assert_eq!(audio.events.len(), 1);
+        assert_eq!(watch.events.len(), 1);
+
+        let mut audio2 = Spy::default();
+        {
+            let mut disarmed: Fanout<&mut Spy, Option<&mut Spy>> = Fanout::new(&mut audio2, None);
+            assert!(
+                !disarmed.wants_vdp_writes(),
+                "with the optional half absent, nothing opts in"
+            );
+            disarmed.on_event(ev(4));
+        }
+        assert_eq!(audio2.events.len(), 1, "the present half still receives");
+    }
+
+    /// `StopWhen` latches on the first true and never re-evaluates the predicate afterwards.
+    #[test]
+    fn stop_when_latches_on_the_first_match() {
+        let mut calls = 0;
+        {
+            let mut s = StopWhen::new(|pc, _frame| {
+                calls += 1;
+                pc == 0x200
+            });
+            assert!(!s.stop_requested());
+            s.on_step_boundary(0x100, 0);
+            assert!(!s.stop_requested(), "no match yet");
+            s.on_step_boundary(0x200, 0);
+            assert!(s.stop_requested(), "matched");
+            assert!(s.fired());
+            s.on_step_boundary(0x300, 0);
+            assert!(s.stop_requested(), "the flag latches");
+        }
+        assert_eq!(calls, 2, "the predicate is not called again after it fires");
+    }
+
+    /// The default trait implementation never stops — this is the property that makes every pre-existing
+    /// sink (and the null sink) behaviourally unchanged by the new signal.
+    #[test]
+    fn the_default_stop_signal_is_never_set() {
+        assert!(!().stop_requested());
+        let v: Vec<BusEvent> = Vec::new();
+        assert!(!v.stop_requested());
+        let w = WriteWatch { target: 0, hits: 0 };
+        assert!(
+            !w.stop_requested(),
+            "a sink written before the signal existed"
         );
     }
 }
