@@ -84,8 +84,12 @@
 //! [`Watchpoints`] (the core never stores it — this stays a zero-diff, frontend-only slice). While a watch is
 //! armed the run loop drives the sink-generic [`System::run_frames_with_sink`]; with no watch it stays on the
 //! untouched null-sink [`System::run_frames`] fast path. `W` prints the recorded hits; `C` disarms. Sprite /
-//! backdrop pixels (`cell == None`) report and arm nothing this slice (a documented follow-up). Break-on-hit
-//! and an on-screen text overlay are out of scope — the core is frame-batched and minifb has no text.
+//! backdrop pixels (`cell == None`) report and arm nothing this slice (a documented follow-up). An on-screen
+//! text overlay is out of scope (minifb has no text). Break-on-hit is no longer *blocked*: as of 2026-08-14
+//! the core's run loop honours a sink's [`oracle_core::bus::BusEventSink::stop_requested`], so a run can end
+//! at the instruction boundary a watch fires on. Wiring that into this loop (pause, then report the
+//! [`oracle_core::system::StopRecord`]) is unbuilt, not impossible — the "the core is frame-batched" reason
+//! recorded here previously no longer holds.
 
 // Phase SY-5a real-time-audio substrate (SPSC ring + `i16→f32` + composite `BusEventSink`). Feature-gated
 // and self-contained. Phase SY-5b (below) consumes it: the live loop drives the composite sink each frame
@@ -816,10 +820,10 @@ fn main() {
             {
                 if let Some(a) = audio.as_mut() {
                     {
-                        let mut sink = audio::AudioAndWatch {
-                            audio: &mut a.sink,
-                            watch: watch_armed.then_some(&mut watchpoints),
-                        };
+                        let mut sink = audio::AudioAndWatch::new(
+                            &mut a.sink,
+                            watch_armed.then_some(&mut watchpoints),
+                        );
                         sys.run_frames_with_sink(1, &mut sink);
                     }
                     let pcm = a.sink.drain();

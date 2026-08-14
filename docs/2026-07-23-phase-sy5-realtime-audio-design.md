@@ -371,6 +371,12 @@ sound card exists.
 `wants_vdp_writes`, `on_vdp_write`. A composite forwarding all five is ~30 lines and keeps the watch
 tooling working. Shape (frontend-local, under `#[cfg(feature = "audio")]`):
 
+> **Superseded 2026-08-14 (historical record kept as written).** The hand-written struct below shipped as
+> described and behaved correctly; it has since been replaced, with identical behaviour, by the generic
+> `oracle_core::bus::Fanout<&mut AudioSink, Option<&mut Watchpoints>>` — `AudioAndWatch` is now a type alias
+> for it, and its members are the fields `a` / `b`. The trait has also grown `wants_scanlines`, `on_scanline`
+> and `stop_requested` since this doc was written, which the generic combinator composes for free.
+
 ```rust
 struct AudioAndWatch<'a> {
     audio: &'a mut AudioSink,

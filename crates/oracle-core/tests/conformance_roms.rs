@@ -30,7 +30,7 @@
 //!
 //! If the vendored ROM is missing, that ROM skips cleanly (run `tools/fetch-testroms.sh`).
 
-use oracle_core::bus::{BusEvent, BusEventSink};
+use oracle_core::bus::{BusEvent, BusEventSink, BusOp};
 use oracle_core::io::Pad;
 use oracle_core::system::System;
 use std::path::Path;
@@ -295,6 +295,111 @@ fn frame_hash_scanline(sys: &mut System, frames: u64) -> u64 {
     fnv1a_rgb(FNV1A_OFFSET, &cap.last)
 }
 
+// ---------------------------------------------------------------------------------------------------
+// Stop conditions — the ROM's own "I am done" signal, instead of a hand-tuned frame budget
+// ---------------------------------------------------------------------------------------------------
+//
+// Every budget in this file was tuned by hand to "comfortably more than the ROM needs", because the run
+// loop could not be interrupted. `BusEventSink::stop_requested` (2026-08-14) makes the ROM's own signal
+// expressible, so a scraper can say *what it is waiting for* and keep the old number only as a bound.
+//
+// Two are converted here as proof of the seam; the rest are a separate, reviewable change. Both keep their
+// original number as the fallback bound and both `assert!(record.fired())`, so the condition is proven to
+// have actually happened — a predicate that quietly never fires would otherwise degrade to the old budget
+// and look identical.
+
+/// Whether `addr` is inside the VDP port block `$C00000-$C0001F` — the data port (`$C00000-3`), the control
+/// port (`$C00004-7`) and the HV counter (`$C00008-F`). Every 68000-driven change to VDP state passes
+/// through it: VRAM/CRAM/VSRAM writes via the data port, register writes and DMA triggers via the control
+/// port. The wider `$C00000-$DFFFFF` mirror range is deliberately not matched — it is not needed by the one
+/// ROM this is used on (measured), and the `assert!(record.fired())` at the call site turns a miss into a
+/// loud failure rather than a wrong early stop.
+fn is_vdp_port(addr: u32) -> bool {
+    addr & 0xFF_FFE0 == 0x00C0_0000
+}
+
+/// **`m68k_illegal`'s verdict channel.** The ROM has no text at all: it paints the backdrop blue (`$0E00`)
+/// while the illegal/privileged sweep runs and overwrites CRAM index 0 with green (`$00E0`) or red (`$000E`)
+/// when it is done. Stop on that write — the verdict *is* the condition.
+///
+/// Deliberately verdict-agnostic: it stops on red as well as green, so converting this scraper cannot turn a
+/// future FAIL into a timeout that reads as INDETERMINATE.
+#[derive(Default)]
+struct BackdropVerdict {
+    seen: bool,
+}
+
+impl BusEventSink for BackdropVerdict {
+    fn on_event(&mut self, _event: BusEvent) {}
+
+    fn wants_vdp_writes(&self) -> bool {
+        true
+    }
+
+    fn on_vdp_write(&mut self, w: oracle_core::vdp::VdpWrite) {
+        // CRAM index 0 is the backdrop; `addr` is its byte address, and the ROM writes it as a word.
+        if w.target == oracle_core::vdp::VdpTarget::Cram && w.addr < 2 {
+            let v = w.new & 0xFFFF;
+            self.seen |= v == 0x00E0 || v == 0x000E;
+        }
+    }
+
+    fn stop_requested(&self) -> bool {
+        self.seen
+    }
+}
+
+/// **"The ROM has stopped drawing."** Stops once the VDP port block has been *busy at least once* and then
+/// completely silent for [`Self::QUIET_FRAMES`] consecutive frames.
+///
+/// The "busy at least once" latch is not optional: several of these ROMs are silent for the first few frames
+/// while they set themselves up, and a naive idle detector stops on that.
+///
+/// **This condition is only valid for a ROM whose activity is measured to be contiguous**, and it is applied
+/// to exactly one (`vdp_sprite_masking`) for that reason. `m68k_bcd` is the counter-example that kept it
+/// narrow: instrumented over its full 700-frame budget it touches the VDP on frames 0, 6 and **530** —
+/// 523 frames of total silence in the middle while it computes, then it prints its results. An idle detector
+/// there stops before the answer exists and produces a confident wrong reading, which is exactly the failure
+/// mode the tooling recon (§5) says these instruments must be designed against. `vdp_sprite_masking` was
+/// measured the same way over its full 300-frame budget: activity on frames 0-7 contiguously and **not one
+/// VDP access on frames 8-299**, so the picture the scraper hashes is final long before the old budget ends.
+#[derive(Default)]
+struct VdpIdle {
+    frame: u64,
+    busy_seen: bool,
+    last_busy_frame: u64,
+    idle_frames: u64,
+}
+
+impl VdpIdle {
+    /// Consecutive silent frames that count as "done". Generous relative to the measured behaviour (the ROM
+    /// it is used on goes silent forever after frame 7), so it is not a re-tuned magic number in disguise.
+    const QUIET_FRAMES: u64 = 8;
+}
+
+impl BusEventSink for VdpIdle {
+    fn on_event(&mut self, event: BusEvent) {
+        if event.op == BusOp::Write && is_vdp_port(event.addr) {
+            self.busy_seen = true;
+            self.last_busy_frame = self.frame;
+            self.idle_frames = 0;
+        }
+    }
+
+    fn on_step_boundary(&mut self, _pc: u32, frame: u64) {
+        if frame > self.frame {
+            self.frame = frame;
+            if self.busy_seen {
+                self.idle_frames = frame - self.last_busy_frame;
+            }
+        }
+    }
+
+    fn stop_requested(&self) -> bool {
+        self.busy_seen && self.idle_frames >= Self::QUIET_FRAMES
+    }
+}
+
 /// FNV-1a over one rendered rectangle (used to classify `vdp_sprite_masking`'s verdict glyphs).
 fn block_hash(sys: &System, x0: usize, x1: usize, y0: u16, y1: u16) -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
@@ -442,8 +547,20 @@ fn scrape_io_sample(sys: &mut System) -> String {
 /// text: the verdict is the backdrop colour — blue `$0E00` while the sweep runs, then green `$00E0` =
 /// pass, red `$000E` = fail. A completed sweep (all 11529 table entries trapping) settles by ~frame 9;
 /// the old 2-frame budget dated from when the ROM failed fast (K1) and never reached the verdict write.
+///
+/// **Converted from a frame budget to a stop condition (2026-08-14).** `run_frames(20)` is now
+/// "run until the ROM writes its verdict, and give up after 20 frames" — the 20 is a bound, not a guess at
+/// how long the sweep takes. Measured: the ROM writes CRAM index 0 three times — `$0000` and `$0E00` (blue,
+/// running) on frame 0, then `$00E0` (green) on frame **9** — so the stop fires at 9 and the 11 frames after
+/// it were always dead time.
 fn scrape_m68k_illegal(sys: &mut System) -> String {
-    sys.run_frames(20);
+    let mut verdict = BackdropVerdict::default();
+    let stop = sys.run_frames_with_sink(20, &mut verdict);
+    assert!(
+        stop.fired(),
+        "m68k_illegal wrote no backdrop verdict within 20 frames (stopped at {stop:?}) — the scrape below \
+         would be reading a mid-sweep screen, so fail loudly instead"
+    );
     let cram = sys.vdp().cram();
     let backdrop = u16::from_be_bytes([cram[0], cram[1]]);
     match backdrop {
@@ -499,7 +616,18 @@ fn scrape_vdp_port_access(sys: &mut System) -> String {
 /// toggles — an OPEN QUESTION recorded in `docs/2026-07-25-testrom-conformance.md`, deliberately NOT
 /// "fixed" here.
 fn scrape_vdp_sprite_masking(sys: &mut System) -> String {
-    sys.run_frames(300);
+    // Converted from a frame budget to a stop condition (2026-08-14): "run until the ROM stops drawing,
+    // and give up after 300 frames". Measured over the full old budget, every VDP access this ROM makes is
+    // on frames 0-7 and there is not one on frames 8-299, so the screen the glyph hashes read is final by
+    // frame 7 and the stop fires at 15 (7 + QUIET_FRAMES). `block_hash` re-renders from live VDP state, so
+    // stopping mid-frame is irrelevant to it — only the VDP state matters, and that state is settled.
+    let mut idle = VdpIdle::default();
+    let stop = sys.run_frames_with_sink(300, &mut idle);
+    assert!(
+        stop.fired(),
+        "vdp_sprite_masking never went idle within 300 frames (stopped at {stop:?}) — the idle condition no \
+         longer describes this ROM, so fail loudly rather than silently falling back to the old budget"
+    );
     // Verdict-glyph classification, pinned from the rendered pixels (see doc).
     const TICK_TICK: u64 = 0xb498_5631_5ac3_a445;
     const TICK_CROSS: u64 = 0xa126_fa46_503f_8e4d;
