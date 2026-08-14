@@ -679,6 +679,22 @@ impl Watchpoints {
         self.seq
     }
 
+    /// **The timing basis every `frame` stamp in this trace is expressed in** (`F-TRACE-PAL`).
+    ///
+    /// A `frame` index is meaningless without the frame length that produced it, and a trace outlives the
+    /// session that took it: once a report says "frame 601" and nothing says what a frame *was*, the
+    /// ambiguity is permanent and lands in someone else's cached data. So the basis is a field of the
+    /// report, machine-readable (label **and** numbers), not a sentence in a doc a script cannot branch on.
+    ///
+    /// Constant today because [`crate::system::System`] is NTSC-only, and derived from the scheduler's own
+    /// [`MCLK_PER_FRAME`](crate::system::MCLK_PER_FRAME) so it cannot disagree with the stamps. When region
+    /// becomes machine state the recorder will be handed the machine's
+    /// [`System::timing_basis`](crate::system::System::timing_basis) — **this accessor's signature does not
+    /// change, so no consumer breaks**; that is the whole reason for stamping it while it is free.
+    pub fn timing_basis(&self) -> crate::system::TimingBasis {
+        crate::system::TimingBasis::NTSC
+    }
+
     /// Caveats that must travel **with** the numbers, not in documentation next to them — agents (and humans)
     /// over-trust precise-looking figures. Empty when nothing applies.
     pub fn caveats(&self) -> Vec<String> {

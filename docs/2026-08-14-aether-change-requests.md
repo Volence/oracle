@@ -175,6 +175,28 @@ this server will never emit.
 
 ---
 
+## CR-7 — `initialize` now advertises `timingBasis`, which the contract does not define (2026-08-14)
+
+Added while executing **Fable ruling A** (`docs/2026-08-14-fable-rulings.md` §A): the `initialize`
+result carries a new top-level key
+
+```json
+"timingBasis": {"standard": "ntsc", "mclkPerFrame": 896040, "linesPerFrame": 262}
+```
+
+**Why it is not a silent deviation, and why it is recorded here anyway.** Every `frame` in every stamp
+(CR-5's envelope field) is currently NTSC and says so nowhere; a client that caches frame coordinates
+across sessions has no way to record what a frame *was*. Prose cannot be branched on, so the basis is a
+field. It is additive and ignorable — a client that does not read it is unaffected — which is exactly why
+it went in ahead of a contract edit rather than waiting. But `protocol.md` §8 is about *unilateral
+invention*, and a new result key is one, so: **request that `timingBasis` be added to the contract's
+`initialize` result**, with the numbers normative (not just the label — "ntsc" alone is under-specified;
+262 lines × 3420 mclk is the thing that matters) and the field REQUIRED, so it stays meaningful the day a
+server is not NTSC-only. Source: `oracle_core::system::TimingBasis`, derived from the core's own
+`MCLK_PER_FRAME`, so a server cannot advertise a basis its stamps were not computed with.
+
+---
+
 ## Recorded ambiguities (no change requested, but the reading should be confirmed)
 
 **A1 — what error code answers a method sent before `initialize`?** §2.1 says `initialize` is the first

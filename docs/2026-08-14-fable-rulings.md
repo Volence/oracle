@@ -59,6 +59,22 @@ what makes it safe to decide now.
 sessions, caveat-only would suffice. That is contradicted by the existing corpus (magic frame budgets,
 docs full of cached frame numbers), so I don't expect it.
 
+> **EXECUTED 2026-08-14.** `system::TimingBasis { standard: TimingStandard, mclk_per_frame,
+> lines_per_frame }`, both numbers derived from `MCLK_PER_FRAME`/`MCLK_PER_LINE` and tied to `vdp`'s
+> geometry by `const _: () = assert!(…)`, so the reported basis and the scheduler's arithmetic cannot
+> disagree. Exposed as `System::timing_basis()` (the accessor that goes live under PAL without changing
+> shape), `Watchpoints::timing_basis()` (the trace-report surface), and `timingBasis` in the Aether
+> `initialize` result.
+>
+> **One correction to this ruling's wording:** `TraceReport` does not exist. It is a *sketch* in the
+> trace-recorder design's §11 ("Output shape"); what shipped on 2026-08-14 is the four additive changes to
+> `watchpoints.rs`, whose report surface is `Watchpoints`' accessors + `WatchReport`. The basis therefore
+> landed as `Watchpoints::timing_basis()`. Consequence worth knowing: because `Watchpoints` is never handed
+> the machine, its basis is the NTSC constant rather than a value read off `System`. That is correct while
+> the core is NTSC-only (an integration test asserts `wp.timing_basis() == sys.timing_basis()` so the two
+> cannot silently diverge), and the PAL-day fix is to plumb the machine's basis into the recorder — the
+> accessor's signature, and every consumer, are unaffected.
+
 ---
 
 ## B. `F-TRACE-MASTER` — function-code master attribution
@@ -245,6 +261,14 @@ capture that "diverged at melody index 0, a garbage comparison"). It is the chea
 load-bearing for the trustworthiness of everything else on this list — an aggregate over a mis-armed
 capture returns a plausible number, not an error. `reset_with_sink` + the atomic `boot_with_sink`
 constructor, exactly as the design sketches.
+
+> **EXECUTED 2026-08-14, and the ~5-line estimate held for the fix itself** (`reset` → `reset_with_sink`
+> + delegate + `boot_with_sink` = 4 changed/added lines of logic). The slice around it is larger and
+> deliberately so: `is_pristine_power_on()` — C1's *"the API must expose that check"* half, which this
+> ruling's item 1 does not mention and the design doc left open as `F-TRACE-POWERON-CHECK` — plus the
+> tests. **Finding: our power-on anchor is all-zero**, not the `PC=0xFFFFFFFF, SP=0xFFFFFFFF, SR=0xFFFF`
+> the recon quotes; those are the *sibling* Oracle's values, so a check ported on those literals would be
+> wrong here. `F-TRACE-POWERON-CHECK` is closed by the predicate.
 
 **2. `F-SCANLINE-CAPTURE` + `on_frame_boundary` (~60 lines) — second.**
 The duplication evidence is the strongest in the whole corpus (two sinks with byte-identical method

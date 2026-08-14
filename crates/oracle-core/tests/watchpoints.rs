@@ -256,11 +256,13 @@ fn two_identical_runs_produce_byte_identical_hit_sequences() {
 /// decreases, and agrees with the frame the hit was stamped with.
 #[test]
 fn hits_carry_a_monotonic_master_clock_consistent_with_the_frame() {
-    const MCLK_PER_FRAME: u64 = 896_040;
     let mut sys = booted();
     let mut wp = Watchpoints::new(4096);
     wp.add_watch(WATCH_ADDR..=WATCH_ADDR + 0xFF, WatchOp::Any, "stir");
     sys.run_frames_with_sink(2, &mut wp);
+    // The frame length comes from the report's own timing basis (F-TRACE-PAL), not from a copy of 896_040
+    // pasted into the test — a reader who has to look the number up is the failure mode the basis prevents.
+    let mclk_per_frame = wp.timing_basis().mclk_per_frame;
 
     let hits = wp.hits();
     assert!(!hits.is_empty());
@@ -270,7 +272,7 @@ fn hits_carry_a_monotonic_master_clock_consistent_with_the_frame() {
         "the clock never runs backwards across the hit log"
     );
     assert!(
-        hits.iter().all(|h| h.mclk / MCLK_PER_FRAME == h.frame),
+        hits.iter().all(|h| h.mclk / mclk_per_frame == h.frame),
         "mclk and the step-boundary frame stamp name the same instant"
     );
     assert!(wp.seen() > wp.matched(), "the filter rejected most traffic");
@@ -340,4 +342,60 @@ fn a_census_over_a_real_run_reports_distinct_destinations() {
     }
     assert_eq!(r.first.map(|s| s.seq), Some(0), "first matched access");
     assert_eq!(r.last.map(|s| s.seq), Some(r.matched - 1));
+}
+
+/// **C1, with a real instrument.** `System::boot_with_sink` arms a `Watchpoints` *for the reset itself*, so
+/// the vector fetches — the first accesses of the machine's life, invisible to every sink in this tree until
+/// 2026-08-14 — are recordable by the same facility used for everything else, not just by a `Vec<BusEvent>`.
+#[test]
+fn a_watchpoint_can_be_armed_at_power_on() {
+    let mut wp = Watchpoints::new(64);
+    let id = wp.add_watch(0x0..=0x7, WatchOp::Read, "reset vectors");
+    let sys = System::boot_with_sink(0x5EED, oracle_core::testrom::build(), &mut wp);
+
+    let hits = wp.hits();
+    assert_eq!(
+        hits.len(),
+        4,
+        "the four reset-vector reads reach a watch armed at power-on: {hits:?}"
+    );
+    assert_eq!(
+        hits.iter().map(|h| h.addr).collect::<Vec<_>>(),
+        vec![0x0, 0x2, 0x4, 0x6]
+    );
+    assert!(
+        hits.iter().all(|h| h.fc == 6 && h.op == BusOp::Read),
+        "the reset vector is fetched from supervisor PROGRAM space"
+    );
+    // No instruction drives a reset, so the PC attribution is 0 — the honest answer, not a lost stamp.
+    assert!(hits.iter().all(|h| h.pc == 0));
+    assert_eq!(wp.watch(id).unwrap().matched, 4);
+    // The capture describes the boot that actually happened.
+    assert!(wp.seen() > 4, "and it saw the prefetches too");
+    assert!(!sys.is_pristine_power_on(), "the machine did come up");
+}
+
+/// `F-TRACE-PAL`: a trace's `frame` stamps are only interpretable with the basis that produced them, so the
+/// report carries it — and it must be the *machine's* basis, not a second opinion. This is the assertion that
+/// fails the day a PAL machine is stamped with an NTSC report.
+#[test]
+fn the_trace_report_carries_the_machines_own_timing_basis() {
+    let mut sys = booted();
+    let mut wp = Watchpoints::new(16);
+    wp.add_watch(WATCH_ADDR..=WATCH_ADDR, WatchOp::Any, "stir");
+    sys.run_frames_with_sink(1, &mut wp);
+
+    let basis = wp.timing_basis();
+    assert_eq!(
+        basis,
+        sys.timing_basis(),
+        "the report's basis is the machine's basis"
+    );
+    assert_eq!(basis.standard.as_str(), "ntsc");
+    assert!(!wp.hits().is_empty(), "there was something to check");
+    // Every hit's `frame` is its `mclk` divided by the reported frame length — the basis is the arithmetic
+    // the stamps were made with, not a decoration next to them.
+    for h in wp.hits() {
+        assert_eq!(h.frame, h.mclk / basis.mclk_per_frame);
+    }
 }

@@ -226,6 +226,21 @@ pub fn stamp_object(frame: u64, mclk: u64, running: bool) -> Map<String, Value> 
     m
 }
 
+/// The wire form of the machine's timing basis — the meaning of the `frame` in every stamp
+/// ([`stamp_object`]), advertised once in `initialize` (`F-TRACE-PAL`).
+///
+/// Carries the numbers as well as the label so a client never has to look 896_040 up, and never has to
+/// guess whether "ntsc" meant 262 lines or 263. Both come from
+/// [`System::timing_basis`](oracle_core::system::System::timing_basis), which derives them from the
+/// scheduler's own constants — the server cannot advertise a basis its stamps were not computed with.
+pub fn timing_basis_object(basis: oracle_core::system::TimingBasis) -> Value {
+    json!({
+        "standard": basis.standard.as_str(),
+        "mclkPerFrame": basis.mclk_per_frame,
+        "linesPerFrame": basis.lines_per_frame,
+    })
+}
+
 /// Merge the stamp into a result object, overwriting any same-named key so the stamp can never be
 /// shadowed by a handler. A non-object result is wrapped rather than dropped.
 pub fn stamp_result(result: Value, stamp: &Map<String, Value>) -> Value {

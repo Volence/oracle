@@ -23,6 +23,65 @@ pub const RAM_SIZE: usize = 0x10000;
 /// Master-clock ticks per NTSC frame (H32: 262 scanlines × 3420 mclk).
 pub const MCLK_PER_FRAME: u64 = 896_040;
 
+/// The video timing standard a set of frame/line stamps was produced under.
+///
+/// An enum rather than a bare string so a consumer *branches* on it; [`TimingStandard::as_str`] is the
+/// wire spelling (`"ntsc"`). Only one variant exists today because the core is NTSC-only — `Pal` joins it
+/// when PAL lands, and every consumer that already matches on this keeps compiling and keeps being right.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TimingStandard {
+    /// 60 Hz, 262 lines/frame.
+    Ntsc,
+}
+
+impl TimingStandard {
+    /// The wire/report spelling, lowercase (`"ntsc"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TimingStandard::Ntsc => "ntsc",
+        }
+    }
+}
+
+/// **The basis every emulated `frame` / line stamp in this crate is expressed in** (`F-TRACE-PAL`).
+///
+/// Carried alongside stamps rather than left implicit: a `frame` index means nothing without the frame
+/// length that produced it, and once downstream tooling has cached frame coordinates an unlabeled basis
+/// becomes an unfixable ambiguity in *other people's* data. It carries the numbers, not just the label, so
+/// a consumer never has to look 896_040 up (and cannot look up the wrong one).
+///
+/// Both numbers are **derived** from [`MCLK_PER_FRAME`] and [`MCLK_PER_LINE`], the same constants
+/// `System`'s frame arithmetic uses (`mclk / MCLK_PER_FRAME`), so the reported basis and the scheduler can
+/// never disagree.
+///
+/// Today this is a constant ([`TimingBasis::NTSC`]) because the machine genuinely is NTSC-only. Read it
+/// from [`System::timing_basis`] rather than from the constant: when region becomes machine state the
+/// method's *value* goes live while its *signature* does not change, so no consumer breaks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TimingBasis {
+    /// The video standard (`ntsc`).
+    pub standard: TimingStandard,
+    /// Master-clock ticks in one frame — the divisor that turns an `mclk` stamp into a `frame` index.
+    pub mclk_per_frame: u64,
+    /// Scanlines in one frame, including blanking (262 NTSC).
+    pub lines_per_frame: u64,
+}
+
+impl TimingBasis {
+    /// The NTSC basis: 262 lines × 3420 mclk = 896_040 mclk/frame, derived from the scheduler's own
+    /// constants.
+    pub const NTSC: TimingBasis = TimingBasis {
+        standard: TimingStandard::Ntsc,
+        mclk_per_frame: MCLK_PER_FRAME,
+        lines_per_frame: MCLK_PER_FRAME / MCLK_PER_LINE,
+    };
+}
+
+// The reported basis must agree with the VDP's own line/frame geometry — checked at compile time so the
+// two spellings of the frame length (this module's and `vdp`'s) can never drift apart silently.
+const _: () = assert!(MCLK_PER_FRAME == crate::vdp::MCLK_PER_FRAME);
+const _: () = assert!(TimingBasis::NTSC.lines_per_frame == LINES_PER_FRAME);
+
 /// Master-clock ticks per 68000 CPU cycle (the 68000 runs at mclk/7). The **one** place the CPU-cycle →
 /// mclk conversion happens is [`System::run_until`]; a `* 7` anywhere else is a bug.
 pub const MCLK_PER_CPU_CYCLE: u64 = 7;
@@ -377,7 +436,34 @@ impl System {
     /// cartridge ROM, then drive the real `/RESET` sequence: the CPU reads the initial SSP and PC from the
     /// ROM vector table and primes the prefetch queue, leaving the machine ready to execute from the ROM.
     /// The reset runs at the mclk-0 anchor — its cycles are not added to the master clock.
+    ///
+    /// The reset's own bus traffic is discarded. To *observe* it — the first accesses in the machine's
+    /// life — use [`reset_with_sink`](Self::reset_with_sink) or, better,
+    /// [`boot_with_sink`](Self::boot_with_sink).
     pub fn reset(&mut self) {
+        self.reset_with_sink(&mut ());
+    }
+
+    /// [`reset`](Self::reset) with an instrument attached **for the reset itself** (recon §5, C1).
+    ///
+    /// The reset recipe's six reads — the SSP/PC vector table at `$0`/`$2`/`$4`/`$6`, then the two
+    /// prefetches at the new PC, all FC=6 — are the first bus accesses the machine ever makes. Until this existed they
+    /// were unobservable by *any* caller — `reset` hardcoded the null sink — so every instrument in the
+    /// tree necessarily attached after the machine had already come up. That is not a missing feature but a
+    /// hole under every instrument: a capture armed after boot silently omits the window under
+    /// investigation, and an *aggregate* over a mis-armed capture returns a plausible number rather than an
+    /// error (this exact gap voided an investigation, see
+    /// `docs/2026-07-23-timing-adjudication-oracle.md:3-11`).
+    ///
+    /// Arming is indivisible with the reset: there is no instant between "the machine is at its power-on
+    /// anchor" and "the sink is attached" for a caller to miss. [`is_pristine_power_on`](
+    /// Self::is_pristine_power_on) is the caller-visible check that the anchor was where it should be.
+    ///
+    /// One thing to know when reading such a capture: the reset is not an instruction, so no
+    /// [`BusEventSink::on_step_boundary`] precedes it and a PC-attributing sink (a
+    /// [`Watchpoints`](crate::watchpoints::Watchpoints)) stamps these accesses with `pc = 0`. That is the
+    /// honest answer — no instruction drove them — not a lost PC.
+    pub fn reset_with_sink<S: BusEventSink>(&mut self, sink: &mut S) {
         let rom = std::mem::take(&mut self.rom);
         // Battery-backed SRAM survives a soft reset (its contents + the detected map are preserved, exactly
         // like the cartridge ROM); the `$A130F1` enable latch does NOT — real hardware powers up with SRAM
@@ -400,8 +486,52 @@ impl System {
         // `sram_used` is a "this cart has ever saved" latch, so it survives a soft reset alongside the SRAM
         // contents (the enable latch, by contrast, powers off — restored above only for the map, not enable).
         self.sram_used = used;
+        // The machine is now exactly at its power-on anchor, with the sink already attached — this is the
+        // arm point C1 requires, and it is not expressible as "reset, then arm".
+        debug_assert!(
+            self.is_pristine_power_on(),
+            "reset must arm at the pristine power-on anchor"
+        );
         self.cpu.assert_reset();
-        self.step_cpu(&mut ()); // services reset_pending: runs the power-on reset recipe over the bus
+        self.step_cpu(sink); // services reset_pending: runs the power-on reset recipe over the bus
+    }
+
+    /// Power on a machine, load `rom`, and reset it with `sink` attached — **one indivisible call**, so
+    /// "reset, then arm" is not expressible (recon §5, C1).
+    ///
+    /// `load_rom` must precede `reset` (the reset recipe reads its vectors out of the cartridge), which is
+    /// exactly what makes the hand-rolled three-step dance easy to get wrong; this is the shape every
+    /// instrument should boot through.
+    pub fn boot_with_sink<S: BusEventSink>(seed: u64, rom: Vec<u8>, sink: &mut S) -> System {
+        let mut sys = System::new(seed);
+        sys.load_rom(rom);
+        sys.reset_with_sink(sink);
+        sys
+    }
+
+    /// Whether the machine is at its **pristine power-on anchor**: the reset recipe has not run, so no
+    /// vector has been fetched and no instruction has executed (C1's "verifiable from the captured state
+    /// itself" — the API exposes the check rather than assuming it).
+    ///
+    /// **Our anchor is all-zero**, not the `PC=0xFFFFFFFF, SP=0xFFFFFFFF, SR=0xFFFF` recorded in
+    /// `docs/2026-08-14-tooling-frontier-recon.md` §5 — those values are the *sibling* Oracle's, and were
+    /// never our own (`power_on_regs`, this module: every register, the SR and the prefetch queue start at
+    /// 0). A caller porting that check across emulators must use this predicate, not those literals. This
+    /// resolves the `F-TRACE-POWERON-CHECK` open question the trace-recorder design left unanswered.
+    ///
+    /// The clock is part of the check because the reset recipe runs at the mclk-0 anchor without advancing
+    /// it: a non-zero clock means the machine has run regardless of what the registers say. One honest
+    /// limitation: a cartridge whose reset vector is all zeros would leave the registers indistinguishable
+    /// from the anchor, so this is "nothing has run", not a cryptographic proof.
+    pub fn is_pristine_power_on(&self) -> bool {
+        self.scheduler.now() == 0 && self.cpu.regs == power_on_regs()
+    }
+
+    /// The video timing basis every emulated `frame` / line stamp this machine produces is expressed in
+    /// (`F-TRACE-PAL`). Constant today (the core is NTSC-only); this is the accessor that goes live when
+    /// region becomes machine state, without its signature changing.
+    pub fn timing_basis(&self) -> TimingBasis {
+        TimingBasis::NTSC
     }
 
     /// Load the cartridge ROM (`$000000–$3FFFFF` on the 68000 bus). Reads past its end are open bus. Parses
@@ -1014,7 +1144,7 @@ impl System {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::BusEvent;
+    use crate::bus::{BusEvent, BusOp, Size};
 
     /// A booted machine: the test ROM loaded and the power-on reset driven (prefetch primed at the ROM's
     /// entry point), ready to run real code.
@@ -1132,6 +1262,112 @@ mod tests {
         let now = s.scheduler().now();
         let window = 100 * MCLK_PER_FRAME..100 * MCLK_PER_FRAME + OVERSHOOT_SLACK_MCLK;
         assert!(window.contains(&now));
+    }
+
+    /// **C1.** The reset recipe's bus traffic — the first accesses in the machine's life — is visible to an
+    /// attached sink. Before `reset_with_sink` this stream was unobservable to every possible caller, so
+    /// this test is the whole point of the change: with the sink plumbing removed (`step_cpu(&mut ())`) the
+    /// capture is empty and the vector-read assertions below fail rather than passing vacuously.
+    #[test]
+    fn boot_with_sink_captures_the_reset_vector_fetches() {
+        let rom = crate::testrom::build();
+        let ssp = u32::from_be_bytes([rom[0], rom[1], rom[2], rom[3]]);
+        let entry = u32::from_be_bytes([rom[4], rom[5], rom[6], rom[7]]);
+        let mut sink: Vec<BusEvent> = Vec::new();
+        let s = System::boot_with_sink(0x51, rom, &mut sink);
+
+        // The four vector-table reads: words at $0/$2/$4/$6, in order, all supervisor PROGRAM space (fc 6 —
+        // the reset vector is the one vector that is not fc 5 data).
+        let vec_reads: Vec<BusEvent> = sink.iter().copied().filter(|e| e.addr < 8).collect();
+        assert_eq!(
+            vec_reads.len(),
+            4,
+            "the reset vector fetches must reach the sink (got {sink:?})"
+        );
+        for (i, e) in vec_reads.iter().enumerate() {
+            assert_eq!(e.op, BusOp::Read, "vector read {i}");
+            assert_eq!(e.size, Size::Word, "vector read {i}");
+            assert_eq!(e.fc, 6, "vector read {i} is supervisor program space");
+            assert_eq!(e.addr, i as u32 * 2, "vector read {i} address");
+        }
+        assert_eq!(
+            [
+                vec_reads[0].value,
+                vec_reads[1].value,
+                vec_reads[2].value,
+                vec_reads[3].value
+            ],
+            [ssp >> 16, ssp & 0xFFFF, entry >> 16, entry & 0xFFFF],
+            "the captured words are the ROM's SSP and entry vectors"
+        );
+        // ...and the two prefetches at the new PC, so the capture covers the whole power-on sequence.
+        assert!(
+            sink.iter()
+                .any(|e| e.addr == entry && e.op == BusOp::Read && e.fc == 6),
+            "the post-reset prefetch at the entry point is captured too"
+        );
+        // The capture describes the boot that actually happened: the machine ended up on that vector.
+        assert_eq!(s.cpu.regs.pc, entry, "reset primed the PC from the vector");
+        assert_eq!(
+            s.cpu.regs.ssp, ssp,
+            "reset primed A7 (the SSP) from the vector"
+        );
+    }
+
+    /// **C1's verifiable half.** The arm point is checkable, and our anchor is all-zero — *not* the
+    /// sibling emulator's `PC=0xFFFFFFFF, SP=0xFFFFFFFF, SR=0xFFFF` (resolves `F-TRACE-POWERON-CHECK`).
+    #[test]
+    fn pristine_power_on_is_observable_and_ends_at_the_reset() {
+        let mut s = System::new(0x51);
+        assert!(s.is_pristine_power_on(), "a fresh machine is pristine");
+        assert_eq!(
+            (s.cpu.regs.pc, s.cpu.regs.ssp, s.cpu.regs.sr),
+            (0, 0, 0),
+            "our power-on anchor is all-zero, not the sibling's 0xFFFF.. values"
+        );
+        s.load_rom(crate::testrom::build());
+        assert!(
+            s.is_pristine_power_on(),
+            "loading a cartridge runs nothing — still pristine, so this is a valid arm point"
+        );
+        s.reset();
+        assert!(
+            !s.is_pristine_power_on(),
+            "once the vectors are fetched the machine is no longer pristine"
+        );
+    }
+
+    /// The no-instrumentation path is unchanged: attaching a sink to the reset observes it and nothing more.
+    #[test]
+    fn reset_with_a_sink_leaves_identical_machine_state() {
+        let mut plain = System::new(0x51);
+        plain.load_rom(crate::testrom::build());
+        plain.reset();
+
+        let mut sink: Vec<BusEvent> = Vec::new();
+        let watched = System::boot_with_sink(0x51, crate::testrom::build(), &mut sink);
+
+        assert_eq!(
+            plain.state_hash(),
+            watched.state_hash(),
+            "observing the reset must not change it"
+        );
+        assert!(!sink.is_empty(), "and the observation is not empty");
+    }
+
+    /// `F-TRACE-PAL`: the reported basis is the arithmetic the stamps are actually computed with.
+    #[test]
+    fn timing_basis_is_the_scheduler_arithmetic() {
+        let mut s = booted(0x51);
+        let basis = s.timing_basis();
+        assert_eq!(basis.standard.as_str(), "ntsc");
+        assert_eq!(basis.mclk_per_frame, MCLK_PER_FRAME);
+        assert_eq!(basis.lines_per_frame, LINES_PER_FRAME);
+        assert_eq!(basis.mclk_per_frame, basis.lines_per_frame * MCLK_PER_LINE);
+        // The frame index a caller reads back is `mclk / mclk_per_frame` in this basis, not an opaque count.
+        let rec = s.run_until_stop(3, |_pc, frame| frame >= 2);
+        assert!(rec.fired());
+        assert_eq!(rec.frame, rec.mclk / basis.mclk_per_frame);
     }
 
     #[test]

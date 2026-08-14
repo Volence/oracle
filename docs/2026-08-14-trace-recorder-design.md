@@ -10,8 +10,10 @@
 > `add_watch_multi` was not built (so one watch per address window, as §9's own parenthetical prefers), and
 > each window needs a `Record` *and* a `Census(Fc)` watch: 3 instruments × 2 windows × 2 modes. §9's "six"
 > assumed both a multi-range spec and one watch per mode per instrument. Everything else in §13's
-> "deliberately does NOT build" list is still not built. The open questions in §15 remain open — in
-> particular `F-TRACE-PAL`, so every stamp this recorder produces is still silently NTSC.
+> "deliberately does NOT build" list is still not built. ~~The open questions in §15 remain open — in
+> particular `F-TRACE-PAL`, so every stamp this recorder produces is still silently NTSC.~~
+> **Updated 2026-08-14: `F-TRACE-PAL` is closed** (ruling A — `Watchpoints::timing_basis()`; stamps are
+> labelled, not silent). §15's other questions remain open.
 >
 > **§9's *other* claim did not survive the same treatment.** "Roughly 11 of `K4Probe`'s 16 counters become
 > `Count` watches" is **3 of 16** — see the correction banner in §9. The shortfall has two causes, both
@@ -573,12 +575,21 @@ recurrence conclusion is unchanged; the number should be fixed.
 
 ## 8. C1–C4, applied
 
-### C1 — atomic arm-at-power-on: **currently structurally impossible, and this is a real defect**
+### C1 — atomic arm-at-power-on: ~~**currently structurally impossible, and this is a real defect**~~ **FIXED 2026-08-14**
 
-`System::reset()` ends with:
+> **SHIPPED** (Fable ruling F item 1, "a bug, not a feature"). `System::reset_with_sink<S: BusEventSink>`
+> now runs the reset recipe over the caller's sink; `reset()` delegates to it with `&mut ()`, so the
+> no-instrumentation path is textually unchanged. `System::boot_with_sink(seed, rom, sink)` is the
+> indivisible constructor, and `System::is_pristine_power_on()` is C1's exposed check (see the
+> `F-TRACE-POWERON-CHECK` resolution below). Proof: `system::tests::boot_with_sink_captures_the_reset_vector_fetches`
+> asserts the four `$0/$2/$4/$6` FC=6 vector reads *and* the post-reset prefetch — it fails (empty
+> capture) if the sink plumbing is reverted, verified by doing exactly that.
+> The account below is preserved as the diagnosis.
+
+`System::reset()` ended with (then `system.rs:359-361`, later `:404` — the anchor drifted twice as
+surrounding code grew; the line number is not the citation, the statement is):
 
 ```
-// crates/oracle-core/src/system.rs:359-361
 self.cpu.assert_reset();
 self.step_cpu(&mut ()); // services reset_pending: runs the power-on reset recipe over the bus
 ```
@@ -632,6 +643,15 @@ are from the sibling Oracle. **What our `Cpu68000::assert_reset` (`m68000/microo
 observable has not been checked in this pass** and must not be assumed. → **`F-TRACE-POWERON-CHECK`**:
 determine our pre-reset register anchor and expose a `System::is_pristine_power_on()` predicate, or
 record that we have no equivalent.
+
+> **RESOLVED 2026-08-14 — and the doc was right to refuse to assume.** Our anchor is **all-zero**
+> (`power_on_regs`: every D/A register, USP, SSP, PC, SR and the prefetch queue start at 0), *not* the
+> sibling's `0xFFFFFFFF`/`0xFFFF`. A check ported across emulators on those literals would be wrong here.
+> `System::is_pristine_power_on()` ships as the predicate: `scheduler.now() == 0 && regs == power_on_regs()`
+> — "the reset recipe has not run". `reset_with_sink` `debug_assert!`s it at the arm point, and
+> `system::tests::pristine_power_on_is_observable_and_ends_at_the_reset` pins both the anchor values and the
+> flip to `false` once the vectors are fetched. Honest limit, documented on the method: a cartridge whose
+> reset vector is all zeros leaves the registers indistinguishable from the anchor.
 
 ### C2 — deterministic emulated frame identity: satisfied, once T1 lands
 
@@ -841,6 +861,8 @@ report type serves both; only the rendering differs. The core produces the struc
 TraceReport {
     // recon §4's first non-negotiable: every reply carries these
     frame: u64, mclk: u64, running: bool,
+    // F-TRACE-PAL (SHIPPED as `Watchpoints::timing_basis()`): what `frame` above *means*
+    timing_basis: TimingBasis { standard, mclk_per_frame, lines_per_frame },
     // C3, structural (§8)
     seen: u64,            // every event offered to the sink, matched or not
     // per watch
@@ -934,6 +956,17 @@ region/PAL as hardcoded. **Every frame and line stamp this design produces is si
 **`F-TRACE-PAL`**: either carry the timing basis in the report, or refuse to stamp lines when a PAL model
 lands. Recording it now is free; retrofitting it after agents have cached "frame 601" is not.
 
+> **RESOLVED 2026-08-14 — carry the basis** (Fable ruling A; refusing to stamp and caveat-only prose were
+> both explicitly rejected — the stamps are *correct*, just unlabelled, and a consumer cannot branch on
+> prose). Shipped as `system::TimingBasis { standard: TimingStandard, mclk_per_frame, lines_per_frame }`,
+> both numbers **derived** from `MCLK_PER_FRAME`/`MCLK_PER_LINE` (with `const _: () = assert!(...)` tying
+> them to `vdp::MCLK_PER_FRAME`/`LINES_PER_FRAME`), so the advertised basis cannot drift from the
+> arithmetic the stamps were made with. Read it from `System::timing_basis()` (the accessor that goes live
+> when region becomes machine state) or `Watchpoints::timing_basis()` (the trace report). The Aether
+> `initialize` result advertises the same thing once as `timingBasis`
+> (`{standard:"ntsc", mclkPerFrame:896040, linesPerFrame:262}`). No consumer breaks when PAL lands: the
+> signatures and the key do not change, only the value.
+
 ---
 
 ## 13. What this design deliberately does NOT build
@@ -960,11 +993,11 @@ Each with the reason, so a later reader can reopen it on evidence rather than ta
 | Tag | What | Where | Owner call needed? |
 |---|---|---|---|
 | `F-TRACE-MASTER` | `fc = 0` conflates DMA / Z80 / 68k-through-Z80-window; an fc census on `$7F11` mis-attributes | `bus.rs:522`, `z80/bus.rs:228` | **Yes** — option (a) is currency-gated |
-| `F-TRACE-POWERON-CHECK` | What our `assert_reset` leaves observable; expose `is_pristine_power_on()` | `m68000/microop.rs:3146`, `system.rs:359` | no — investigate first |
+| ~~`F-TRACE-POWERON-CHECK`~~ **CLOSED 2026-08-14** | Our anchor is **all-zero**, not the sibling's `0xFFFF…`; `System::is_pristine_power_on()` shipped alongside `reset_with_sink`/`boot_with_sink` (C1) | `system.rs` (`power_on_regs`, `reset_with_sink`) | no — closed |
 | ~~`F-TRACE-S1-DISARM`~~ **DISCHARGED 2026-08-14** | Verified: the early stop is a `break` out of the `while`, and the `if capture { self.vdp.set_write_capture(false) }` disarm sits *after* the loop — both exit paths reach it, so no `write_capture` leaks across runs | `system.rs:801-851` | no — closed |
 | `F-SCANLINE-CAPTURE` | Promote `ScanlineCapture` + add `on_frame_boundary`; collapses `FrameCapture`/`LineCollector` | `tests/conformance_roms.rs:254`, `tests/scanline_capture.rs:12` | no — cheap, strong evidence |
 | `F-TRACE-EXPOSE-LATCHES` | Expose `z80_busreq`/`z80_running`/FM address latch read-only; deletes 3 shadow reimplementations | `k4_openbus_probe.rs:49`, `vgm.rs:291`, `synth/audio_sink.rs:43` | no |
-| `F-TRACE-PAL` | Every frame/line stamp is silently NTSC | `system.rs:24`, `vdp.rs:17-21` | **Yes** — carry basis now, or accept the retrofit cost |
+| ~~`F-TRACE-PAL`~~ **CLOSED 2026-08-14** | Ruled (A): carry the basis. `TimingBasis` on `System`/`Watchpoints` + `timingBasis` in Aether `initialize`, numbers derived from `MCLK_PER_FRAME` | `system.rs` (`TimingBasis`), `watchpoints.rs`, `oracle-aether/src/{engine,rpc}.rs` | no — closed |
 | `F-TRACE-VDPWRITE-MCLK` | `VdpWrite` has no per-write mclk, so sub-scanline CRAM effects are unlocatable — the recorded blocker *"CRAM writes carry no h-position"* | `vdp.rs` capture path, `system.rs:728-732`, `docs/2026-07-25-testrom-conformance.md:815` | no — own slice |
 | `F-TRACE-TUPLEKEY` | 2-key composite census (`(k1,k2) → count`), the T16 "deterministic or stochastic?" shape | `docs/2026-08-03-t16-slot-scheduling-recon.md:252-262` | no |
 | `F-TRACE-SIZEFILTER` | A watch spec cannot filter on access **size** or address **parity**, so 4 of `K4Probe`'s counters stay hand-rolled that §9 assumed were config. ~8 lines (`Option<Size>` + a parity filter), four episodes, no currency surface — not built because §6 sanctioned only the `fc` filter | `k4_openbus_probe.rs:202-213`, `watchpoints.rs` `WatchSpec::matches` | no |
@@ -983,8 +1016,9 @@ Each with the reason, so a later reader can reopen it on evidence rather than ta
    priced at 12 literal edits + 2 assertions) are both live. **This is the one place recon §5 makes a
    recommendation this design declines, so it wants a ruling rather than a silent override.**
 
-2. **`F-TRACE-PAL`.** Carry the timing basis in every report now (free), or accept that stamps are NTSC
-   and retrofit later (not free once agents cache coordinates)?
+2. ~~**`F-TRACE-PAL`.** Carry the timing basis in every report now (free), or accept that stamps are NTSC
+   and retrofit later (not free once agents cache coordinates)?~~ **ANSWERED (ruling A) and SHIPPED
+   2026-08-14: carry it** — see §12's resolution block.
 
 3. **Sequencing against `F-SCANLINE-CAPTURE`.** The scanline-capture item has *stronger* duplication
    evidence than half of the recorder work (two byte-identical method bodies written 9 hours apart) and
