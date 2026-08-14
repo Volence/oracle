@@ -44,6 +44,17 @@ use oracle_core::system::System;
 
 /// The classifier. Shadows the two arbiter latches from the write stream (the sink sees every write,
 /// so the reconstruction is exact — same even-byte-only latch rule as the bus).
+///
+/// **The shadow stays, deliberately** (`F-TRACE-EXPOSE-LATCHES`, measured 2026-08-14). `System` now
+/// exposes `z80_busreq()`/`z80_running()`, but a sink is *handed events* — it never holds the machine —
+/// so the only place this probe could read them is the frame boundary in [`probe`], and the five
+/// stateful counters gate on the latch state **at each event**. Those are not the same instant: the
+/// guest's take-bus → upload → release handshake completes many times *inside* one frame. Substituting
+/// a frame-boundary sample was tried and moved **22 of the 29 rows** in the sweep — `zcW!` on
+/// `aeon-s4` went 0 → 7563 (a normal driver upload misread as writes through a closed window),
+/// `m68k_memory_test`'s `zcR!` collapsed 3 → 0, and `1100R!` fabricated a hit on nearly every ROM.
+/// That table is the evidence behind the shipped K4 open-bus finding, so the shadow is the correct
+/// implementation here, not a duplication to be deleted.
 #[derive(Default)]
 struct K4Probe {
     /// Shadow of the `$A11100` BUSREQ latch (bit0 of the even byte).

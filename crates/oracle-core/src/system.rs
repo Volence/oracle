@@ -815,6 +815,33 @@ impl System {
         &self.z80_ram
     }
 
+    /// The live Z80 BUSREQ latch (`$A11100` bit0): `true` = the 68000 has requested/been granted the Z80
+    /// bus. Read-only introspection (`F-TRACE-EXPOSE-LATCHES`) — the latch is written only by the guest,
+    /// through the bus (`bus.rs` `store_byte`, even byte only). Powers on `false`.
+    ///
+    /// Together with [`z80_running`](Self::z80_running) this is the Z80-window gate the bus applies:
+    /// the `$A00000-$A0FFFF` window forwards (and the Z80 is stopped) only while `busreq && running`.
+    /// Note the read is a *sample at the moment you call it* — a tool that must classify each bus access
+    /// by the latch state **at that access** still has to follow the write stream.
+    pub fn z80_busreq(&self) -> bool {
+        self.z80_busreq
+    }
+
+    /// The live Z80 RESET-release latch (`$A11200` bit0), stored positively: `true` = reset released (the
+    /// Z80 runs), `false` = held in reset. Read-only introspection (`F-TRACE-EXPOSE-LATCHES`); the guest
+    /// writes it through the bus. **Powers on `false`** — hardware holds the Z80 in reset until the 68000
+    /// releases it. Same sampling caveat as [`z80_busreq`](Self::z80_busreq).
+    pub fn z80_running(&self) -> bool {
+        self.z80_running
+    }
+
+    /// Read-only access to the YM2612 timer/status model (introspection / debuggers), chiefly for its
+    /// [`addr_latch`](crate::ym2612::Ym2612::addr_latch) — the latch-then-data protocol's currently
+    /// latched register number per bank.
+    pub fn fm(&self) -> &crate::ym2612::Ym2612 {
+        &self.fm
+    }
+
     /// Read-only access to VRAM.
     pub fn vram(&self) -> &[u8] {
         self.vdp.vram()
@@ -1170,6 +1197,58 @@ mod tests {
     /// ROM's longest instruction is a few dozen CPU cycles; the worst case anywhere (DIV / RESET's
     /// `Internal{124}`) is ~150 CPU cycles ≈ 1,050 mclk, so this covers it with margin.
     const OVERSHOOT_SLACK_MCLK: u64 = 2_000;
+
+    /// `F-TRACE-EXPOSE-LATCHES`: the two arbiter accessors report the latches the bus actually wrote, and
+    /// report *different* ones. Every step below moves exactly one latch and pins both, so a body that
+    /// returned the other field (or a constant) fails here rather than passing on a lucky agreement — the
+    /// two are deliberately driven to opposite values in the last step.
+    #[test]
+    fn arbiter_latch_accessors_report_what_the_bus_latched() {
+        use crate::m68000::bus68k::Bus68k;
+        let mut s = System::new(0xA11100);
+        // Power-on: BUSREQ released, Z80 held in reset (hardware's power-on state, `System::new`).
+        assert!(!s.z80_busreq(), "power-on: BUSREQ not requested");
+        assert!(!s.z80_running(), "power-on: Z80 held in reset");
+
+        // $A11200 bit0 = 1 releases the Z80 from reset; it must NOT move BUSREQ.
+        s.mega_bus(&mut ()).write8(0xA1_1200, 5, 0x01);
+        assert!(s.z80_running(), "reset released after $A11200 = 1");
+        assert!(!s.z80_busreq(), "$A11200 did not touch the BUSREQ latch");
+
+        // $A11100 bit0 = 1 requests the bus; now both are set.
+        s.mega_bus(&mut ()).write8(0xA1_1100, 5, 0x01);
+        assert!(s.z80_busreq(), "BUSREQ granted after $A11100 = 1");
+        assert!(s.z80_running(), "reset stays released");
+
+        // Release BUSREQ only: the two latches now hold OPPOSITE values, so an accessor wired to the wrong
+        // field is caught.
+        s.mega_bus(&mut ()).write8(0xA1_1100, 5, 0x00);
+        assert!(!s.z80_busreq(), "BUSREQ released after $A11100 = 0");
+        assert!(s.z80_running(), "releasing BUSREQ does not re-assert reset");
+    }
+
+    /// `F-TRACE-EXPOSE-LATCHES`: the FM address latch is reachable from the machine, and a 68k-side write
+    /// to the `$A04000` window lands in it (the same latch `Ym2612::addr_latch` pins directly).
+    #[test]
+    fn fm_address_latch_is_reachable_through_the_system() {
+        use crate::m68000::bus68k::Bus68k;
+        let mut s = System::new(0xA0_4000);
+        assert_eq!(s.fm().addr_latch(0), 0x00, "power-on latch is zero");
+        // Even port = address latch. $27 is the timer-control register the SMPS driver programs.
+        s.mega_bus(&mut ()).write8(0xA0_4000, 5, 0x27);
+        assert_eq!(
+            s.fm().addr_latch(0),
+            0x27,
+            "the 68k-side even-port write latched the register number"
+        );
+        // The odd (data) port writes the register, it does not re-latch.
+        s.mega_bus(&mut ()).write8(0xA0_4001, 5, 0x05);
+        assert_eq!(
+            s.fm().addr_latch(0),
+            0x27,
+            "a data write leaves the address latch alone"
+        );
+    }
 
     #[test]
     fn run_frames_is_deterministic() {
