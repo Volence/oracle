@@ -736,6 +736,25 @@ T2's ids already distinguish them.)*
 >   appears in this sentence and in **no** spec list anywhere in §5, §6 or §11. → **`F-TRACE-SIZEFILTER`**
 >   (add `Option<Size>` and an address-parity filter to a spec; ~8 lines, four episodes, no currency
 >   surface — but it is a filter §6 did not sanction, so it is registered rather than smuggled in).
+>
+>   > **SHIPPED 2026-08-14 (`F-TRACE-SIZEFILTER`) — and it is 3 of the 4, not 4.** `Watch::size` +
+>   > `Watch::addr_parity` land the sanctioned two filters. `io_even_byte_reads`, `io_word_reads` and
+>   > `status_odd_byte_reads` each become one `Count` watch; **`status_upper_reads` does not**, because
+>   > `Word` **or** even is a *disjunction* and `WatchSpec::matches` is a conjunction of optional filters
+>   > by design. It is recoverable only as a hand-summed set of disjoint watches enumerating the size
+>   > domain (`Word` ∪ `Byte`∧even ∪ `Long`∧even). No predicate language was added to catch it.
+>   >
+>   > One correction to the bullet above, found by writing the tests rather than by reading:
+>   > `status_odd_byte_reads` is **not** "Byte **and** odd" — the probe computes it as the `else` of
+>   > `Word ∥ even`, i.e. **odd ∧ non-Word**, which also claims an odd `Size::Long` access. The two agree
+>   > on every real stream only because the 68000 bus adapter emits `Byte`/`Word` and never `Long` (a `.l`
+>   > operand is two word bus cycles) — now pinned on a real run by
+>   > `tests/watchpoints.rs::the_bus_emits_only_byte_and_word_accesses` rather than taken on faith.
+>   >
+>   > The `Read`-vs-`Tas` gap in the bullet above is **untouched and still open**: the probe's arm is
+>   > `BusOp::Read | BusOp::Tas` and `WatchOp::Read` excludes `Tas`. It does not bite these three counters
+>   > on any stream observed here (no `Tas` reaches `$A10000-$A1001F` or `$C00004-$C00007`), so the
+>   > agreement tests hold; a ROM that `TAS`es a VDP or I/O port would break them.
 > - **Shadow-gated, i.e. stateful, and therefore in the "not replaced" bucket: the remaining 9**, not 3.
 >   §9 puts `z80win_bank_reads`, `z80win_bank_writes`, `z80win_vdp_mirror_writes` and
 >   `z80win_open_word_writes` in the *replaced* column, but every one of them sits inside the
@@ -1011,7 +1030,7 @@ Each with the reason, so a later reader can reopen it on evidence rather than ta
 | ~~`F-TRACE-PAL`~~ **CLOSED 2026-08-14** | Ruled (A): carry the basis. `TimingBasis` on `System`/`Watchpoints` + `timingBasis` in Aether `initialize`, numbers derived from `MCLK_PER_FRAME` | `system.rs` (`TimingBasis`), `watchpoints.rs`, `oracle-aether/src/{engine,rpc}.rs` | no — closed |
 | `F-TRACE-VDPWRITE-MCLK` | `VdpWrite` has no per-write mclk, so sub-scanline CRAM effects are unlocatable — the recorded blocker *"CRAM writes carry no h-position"* | `vdp.rs` capture path, `system.rs:728-732`, `docs/2026-07-25-testrom-conformance.md:815` | no — own slice |
 | `F-TRACE-TUPLEKEY` | 2-key composite census (`(k1,k2) → count`), the T16 "deterministic or stochastic?" shape | `docs/2026-08-03-t16-slot-scheduling-recon.md:252-262` | no |
-| `F-TRACE-SIZEFILTER` | A watch spec cannot filter on access **size** or address **parity**, so 4 of `K4Probe`'s counters stay hand-rolled that §9 assumed were config. ~8 lines (`Option<Size>` + a parity filter), four episodes, no currency surface — not built because §6 sanctioned only the `fc` filter | `k4_openbus_probe.rs:202-213`, `watchpoints.rs` `WatchSpec::matches` | no |
+| ~~`F-TRACE-SIZEFILTER`~~ **CLOSED 2026-08-14** | Sanctioned by the rulings doc §F item 3 and shipped: `Watch::size(Size)` + `Watch::addr_parity(AddrParity)`, two clauses in `WatchSpec::matches`, both carried on `WatchReport`. **3 of the 4 episodes became one watch each** (`io_even_byte_reads`, `io_word_reads`, `status_odd_byte_reads`). **Residual: `status_upper_reads` is a *disjunction*** (Word **or** even) and no conjunction of optional filters expresses it — recoverable only by summing disjoint watches over an enumerated size domain. Deliberately **not** generalised into a predicate language. Second residual found while testing: the probe computes `status_odd_byte_reads` as the `else` of `Word ∥ even`, i.e. **odd ∧ non-Word**, not "odd ∧ Byte" as this doc said — equal only because the bus emits no `Size::Long` (pinned by `the_bus_emits_only_byte_and_word_accesses`) | `examples/k4_openbus_probe.rs:201-214` (line anchor re-verified), `watchpoints.rs` `WatchSpec::matches` | no — closed |
 | `F-TRACE-MINMAX` | Add min/max aggregation when an episode demands it | — | no |
 | `F-TRACE-VALUEPRED` | Add value-predicate filtering when an episode demands it | — | no |
 | `F-RECON-K4-COUNT` | Recon doc says "26 hand-declared counters"; the file has 16 | `docs/2026-08-14-tooling-frontier-recon.md:153` | no — doc fix |

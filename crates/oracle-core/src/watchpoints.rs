@@ -120,6 +120,29 @@ impl WatchOp {
     }
 }
 
+/// An address-**parity** filter: which half of the 68000 data bus an access sits on. `Even` is the UDS
+/// (high-byte) half, `Odd` the LDS (low-byte) half — the distinction four `K4Probe` counters draw by hand
+/// (`examples/k4_openbus_probe.rs`, the `$A10000-$A1001F` and `$C00004-$C00007` read arms), because open-bus
+/// and I/O behaviour differs between them. Optional and defaulting to "don't care", exactly like the `fc`
+/// filter (`F-TRACE-SIZEFILTER`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AddrParity {
+    /// Even addresses (`addr & 1 == 0`) — the UDS half.
+    Even,
+    /// Odd addresses (`addr & 1 == 1`) — the LDS half.
+    Odd,
+}
+
+impl AddrParity {
+    /// Whether this filter matches an access address.
+    fn matches(self, addr: u32) -> bool {
+        match self {
+            AddrParity::Even => addr & 1 == 0,
+            AddrParity::Odd => addr & 1 == 1,
+        }
+    }
+}
+
 /// Which address space a watch (and a hit) lives in. `Bus` is the v1 68000 bus address space; `Vram`/`Cram`/
 /// `Vsram` are the v2 VDP-internal byte-address spaces (the "who wrote this tile" case). A watch only ever
 /// matches accesses in its own space — a numeric address collision across spaces never cross-triggers.
@@ -255,6 +278,8 @@ pub struct Watch {
     hi: u32,
     op: WatchOp,
     fc: Option<u8>,
+    size: Option<Size>,
+    addr_parity: Option<AddrParity>,
     mode: WatchMode,
     key_cap: usize,
     stop_after: Option<u64>,
@@ -290,6 +315,8 @@ impl Watch {
             hi: *range.end(),
             op,
             fc: None,
+            size: None,
+            addr_parity: None,
             mode: WatchMode::Record,
             key_cap: DEFAULT_CENSUS_KEY_CAP,
             stop_after: None,
@@ -301,6 +328,22 @@ impl Watch {
     /// every other filter — a non-matching access is never stored.
     pub fn fc(mut self, fc: u8) -> Self {
         self.fc = Some(fc);
+        self
+    }
+
+    /// Also require this access width (`F-TRACE-SIZEFILTER`). Record-time, like every other filter.
+    ///
+    /// On a VDP-internal watch the hit's size is the region's ([`Size::Byte`] for a VRAM byte,
+    /// [`Size::Word`] for a CRAM/VSRAM entry), not a bus width.
+    pub fn size(mut self, size: Size) -> Self {
+        self.size = Some(size);
+        self
+    }
+
+    /// Also require this address parity — the UDS (even) / LDS (odd) half (`F-TRACE-SIZEFILTER`).
+    /// Record-time, like every other filter.
+    pub fn addr_parity(mut self, parity: AddrParity) -> Self {
+        self.addr_parity = Some(parity);
         self
     }
 
@@ -339,6 +382,8 @@ struct WatchSpec {
     hi: u32,
     op: WatchOp,
     fc: Option<u8>,
+    size: Option<Size>,
+    addr_parity: Option<AddrParity>,
     mode: WatchMode,
     key_cap: usize,
     stop_after: Option<u64>,
@@ -355,11 +400,17 @@ struct WatchSpec {
 
 impl WatchSpec {
     /// Whether this watch matches an access. Every clause is a record-time filter: a non-match stores nothing.
+    ///
+    /// This is a **conjunction of optional filters**, deliberately — not a predicate language. A counter that
+    /// needs a *disjunction* (`K4Probe`'s `status_upper_reads` = Word **or** even address) is not expressible
+    /// as one watch; sum disjoint watches instead. See `docs/2026-08-14-trace-recorder-design.md`.
     fn matches(&self, hit: &WatchHit) -> bool {
         self.space == hit.space
             && self.op.matches(hit.op)
             && (self.lo..=self.hi).contains(&hit.addr)
             && self.fc.is_none_or(|f| f == hit.fc)
+            && self.size.is_none_or(|s| s == hit.size)
+            && self.addr_parity.is_none_or(|p| p.matches(hit.addr))
     }
 
     /// Fold one matched access into this watch's aggregates.
@@ -452,6 +503,10 @@ pub struct WatchReport {
     pub op: WatchOp,
     /// The function-code filter, if any.
     pub fc: Option<u8>,
+    /// The access-width filter, if any (`F-TRACE-SIZEFILTER`).
+    pub size: Option<Size>,
+    /// The address-parity filter, if any (`F-TRACE-SIZEFILTER`).
+    pub addr_parity: Option<AddrParity>,
     pub mode: WatchMode,
     /// How many accesses this watch matched — counted in every mode, including the modes that store nothing.
     pub matched: u64,
@@ -523,6 +578,8 @@ impl Watchpoints {
             hi: w.hi,
             op: w.op,
             fc: w.fc,
+            size: w.size,
+            addr_parity: w.addr_parity,
             mode: w.mode,
             key_cap: w.key_cap,
             stop_after: w.stop_after,
@@ -752,6 +809,8 @@ fn report_of(s: &WatchSpec) -> WatchReport {
         range: s.lo..=s.hi,
         op: s.op,
         fc: s.fc,
+        size: s.size,
+        addr_parity: s.addr_parity,
         mode: s.mode,
         matched: s.matched,
         first: s.first,
@@ -1306,6 +1365,305 @@ mod tests {
         });
         assert_eq!(wp.hits().len(), 1, "the fc-0 master hits");
         assert_eq!(wp.seen(), 2, "both were offered");
+    }
+
+    // --- F-TRACE-SIZEFILTER: the size and address-parity filters --------------------------------------------
+
+    /// A bus event at `addr` of `size` (fc 5, the CPU), for the size/parity filter tests.
+    fn ev_sized(op: BusOp, addr: u32, size: Size, value: u32) -> BusEvent {
+        BusEvent {
+            op,
+            fc: 5,
+            addr,
+            size,
+            value,
+        }
+    }
+
+    /// A `size` filter is a record-time filter shaped exactly like `fc`: optional, defaulting to "don't
+    /// care", and a non-matching width stores nothing.
+    #[test]
+    fn size_filter_selects_the_access_width() {
+        let mut wp = Watchpoints::new(16);
+        let word = wp.add(Watch::bus(0..=0xFFFF, WatchOp::Any, "words").size(Size::Word));
+        let any = wp.add_watch(0..=0xFFFF, WatchOp::Any, "any-width");
+        for size in [Size::Byte, Size::Word, Size::Long, Size::Word] {
+            wp.on_event(ev_sized(BusOp::Read, 0x10, size, 0));
+        }
+        assert_eq!(wp.watch(word).unwrap().matched, 2, "only the two words");
+        assert_eq!(
+            wp.watch(any).unwrap().matched,
+            4,
+            "an unfiltered watch is unchanged"
+        );
+        assert_eq!(
+            wp.watch(word).unwrap().size,
+            Some(Size::Word),
+            "the report carries the filter"
+        );
+        assert_eq!(
+            wp.watch(any).unwrap().size,
+            None,
+            "and says so when there is none"
+        );
+    }
+
+    /// An address-parity filter splits the UDS (even) half from the LDS (odd) half — the distinction four
+    /// `K4Probe` counters make by hand (`examples/k4_openbus_probe.rs`).
+    #[test]
+    fn addr_parity_filter_selects_even_or_odd() {
+        let mut wp = Watchpoints::new(16);
+        let even = wp.add(
+            Watch::bus(0xA1_0000..=0xA1_001F, WatchOp::Read, "even").addr_parity(AddrParity::Even),
+        );
+        let odd = wp.add(
+            Watch::bus(0xA1_0000..=0xA1_001F, WatchOp::Read, "odd").addr_parity(AddrParity::Odd),
+        );
+        for addr in 0xA1_0000..=0xA1_0004u32 {
+            wp.on_event(ev_sized(BusOp::Read, addr, Size::Byte, 0));
+        }
+        assert_eq!(wp.watch(even).unwrap().matched, 3, "$00, $02, $04");
+        assert_eq!(wp.watch(odd).unwrap().matched, 2, "$01, $03");
+        assert_eq!(
+            wp.watch(even).unwrap().addr_parity,
+            Some(AddrParity::Even),
+            "the report carries the filter"
+        );
+        assert_eq!(wp.watch(odd).unwrap().addr_parity, Some(AddrParity::Odd));
+        assert_eq!(wp.seen(), 5, "all five were offered");
+    }
+
+    /// The size and parity filters compose with each other and with `fc`, all as one conjunction.
+    #[test]
+    fn size_and_parity_and_fc_compose_as_a_conjunction() {
+        let mut wp = Watchpoints::new(16);
+        let id = wp.add(
+            Watch::bus(0..=0xFFFF, WatchOp::Read, "byte.odd.cpu")
+                .size(Size::Byte)
+                .addr_parity(AddrParity::Odd)
+                .fc(5),
+        );
+        wp.on_event(ev_sized(BusOp::Read, 0x11, Size::Byte, 0)); // matches
+        wp.on_event(ev_sized(BusOp::Read, 0x10, Size::Byte, 0)); // wrong parity
+        wp.on_event(ev_sized(BusOp::Read, 0x11, Size::Word, 0)); // wrong size
+        wp.on_event(ev_sized(BusOp::Write, 0x11, Size::Byte, 0)); // wrong op
+        wp.on_event(BusEvent {
+            op: BusOp::Read,
+            fc: 0,
+            addr: 0x11,
+            size: Size::Byte,
+            value: 0,
+        }); // wrong fc
+        assert_eq!(wp.watch(id).unwrap().matched, 1, "exactly one full match");
+    }
+
+    /// `K4Probe`'s read-arm classifier, copied from `examples/k4_openbus_probe.rs` (including its outer
+    /// `BusOp::Read | BusOp::Tas` gate) so these tests compare against the real thing rather than a paraphrase.
+    #[derive(Default)]
+    struct K4Counters {
+        io_even_byte_reads: u64,
+        io_word_reads: u64,
+        status_upper_reads: u64,
+        status_odd_byte_reads: u64,
+    }
+
+    impl K4Counters {
+        fn classify(&mut self, e: &BusEvent) {
+            if !matches!(e.op, BusOp::Read | BusOp::Tas) {
+                return;
+            }
+            match e.addr {
+                0xA1_0000..=0xA1_001F => match e.size {
+                    Size::Byte if e.addr & 1 == 0 => self.io_even_byte_reads += 1,
+                    Size::Word => self.io_word_reads += 1,
+                    _ => {}
+                },
+                0xC0_0004..=0xC0_0007 => {
+                    if e.size == Size::Word || e.addr & 1 == 0 {
+                        self.status_upper_reads += 1;
+                    } else {
+                        self.status_odd_byte_reads += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// The four `K4Probe` counters that motivated this filter (`examples/k4_openbus_probe.rs`, the
+    /// `$A10000-$A1001F` and `$C00004-$C00007` read arms), classified by the probe's own code, versus the
+    /// same classification expressed as watch configuration.
+    ///
+    /// **Three of the four are one watch each.** `status_upper_reads` is a *disjunction* (Word **or** even
+    /// address) and no single conjunction of optional filters expresses it — see
+    /// [`status_upper_reads_is_a_disjunction_no_single_watch_expresses`].
+    ///
+    /// The stream is Byte and Word only, which is what the 68000 bus adapter actually emits (a `.l` access is
+    /// two word bus cycles — `m68000::microop::Size`; the integration test `bus_emits_only_byte_and_word`
+    /// pins it on a real run). `Size::Long` is where `status_odd_byte_reads` stops being "Byte and odd" —
+    /// see [`status_odd_byte_reads_is_odd_and_non_word_not_odd_and_byte`].
+    #[test]
+    fn three_of_the_four_k4_counters_are_expressible_as_watch_config() {
+        // Every (range x size x parity) cell the classifier distinguishes, at the widths the bus emits.
+        let mut stream = Vec::new();
+        for base in [0xA1_0000u32, 0xC0_0004] {
+            for off in 0..4u32 {
+                for size in [Size::Byte, Size::Word] {
+                    stream.push(ev_sized(BusOp::Read, base + off, size, 0));
+                }
+            }
+        }
+        // Plus traffic no counter and no watch may claim: outside both ranges, and a write.
+        stream.push(ev_sized(BusOp::Read, 0xFF_0000, Size::Word, 0));
+        stream.push(ev_sized(BusOp::Write, 0xA1_0000, Size::Byte, 0));
+
+        let mut hand = K4Counters::default();
+        let mut wp = Watchpoints::new(0);
+        let io_even_byte = wp.add(
+            Watch::bus(0xA1_0000..=0xA1_001F, WatchOp::Read, "io_even_byte_reads")
+                .size(Size::Byte)
+                .addr_parity(AddrParity::Even)
+                .mode(WatchMode::Count),
+        );
+        let io_word = wp.add(
+            Watch::bus(0xA1_0000..=0xA1_001F, WatchOp::Read, "io_word_reads")
+                .size(Size::Word)
+                .mode(WatchMode::Count),
+        );
+        let status_odd_byte = wp.add(
+            Watch::bus(
+                0xC0_0004..=0xC0_0007,
+                WatchOp::Read,
+                "status_odd_byte_reads",
+            )
+            .size(Size::Byte)
+            .addr_parity(AddrParity::Odd)
+            .mode(WatchMode::Count),
+        );
+        for e in &stream {
+            hand.classify(e);
+            wp.on_event(*e);
+        }
+
+        let of = |id| wp.watch(id).unwrap().matched;
+        assert_eq!(hand.io_even_byte_reads, 2, "$A10000 and $A10002, as bytes");
+        assert_eq!(of(io_even_byte), hand.io_even_byte_reads);
+        assert_eq!(hand.io_word_reads, 4, "one word read at each of the four");
+        assert_eq!(of(io_word), hand.io_word_reads);
+        assert_eq!(
+            hand.status_odd_byte_reads, 2,
+            "$C00005 and $C00007, as bytes"
+        );
+        assert_eq!(of(status_odd_byte), hand.status_odd_byte_reads);
+        assert_eq!(hand.status_upper_reads, 6, "the fourth is exercised too");
+        assert_eq!(wp.seen(), stream.len() as u64, "every event was offered");
+    }
+
+    /// A second honest residual, found by writing this test rather than by reading the design doc: the design
+    /// calls `status_odd_byte_reads` "Byte **and** odd address", but the probe computes it as the `else` of
+    /// `Word || even` — i.e. **odd and non-Word**, which also claims an odd `Size::Long` access.
+    ///
+    /// The two agree on every stream the real bus produces (Byte/Word only), and diverge the moment a `Long`
+    /// bus event exists. Pinned here so the equivalence is a stated precondition, not an accident.
+    #[test]
+    fn status_odd_byte_reads_is_odd_and_non_word_not_odd_and_byte() {
+        let stream = [
+            ev_sized(BusOp::Read, 0xC0_0005, Size::Byte, 0),
+            ev_sized(BusOp::Read, 0xC0_0005, Size::Long, 0),
+        ];
+        let mut hand = K4Counters::default();
+        let mut wp = Watchpoints::new(0);
+        let id = wp.add(
+            Watch::bus(0xC0_0004..=0xC0_0007, WatchOp::Read, "byte.odd")
+                .size(Size::Byte)
+                .addr_parity(AddrParity::Odd)
+                .mode(WatchMode::Count),
+        );
+        for e in &stream {
+            hand.classify(e);
+            wp.on_event(*e);
+        }
+        assert_eq!(
+            hand.status_odd_byte_reads, 2,
+            "the probe claims the Long too"
+        );
+        assert_eq!(
+            wp.watch(id).unwrap().matched,
+            1,
+            "a Byte filter does not — the equivalence holds only while the bus emits no Long"
+        );
+    }
+
+    /// The honest residual. `status_upper_reads` is `size == Word` **OR** `addr & 1 == 0`; a watch spec is a
+    /// conjunction of optional filters, so no single watch expresses it. This pass deliberately did **not**
+    /// grow a predicate language to catch it (Fable's sanction was `Option<Size>` + parity, nothing more).
+    ///
+    /// It is recoverable only by *summing disjoint watches* that enumerate the size domain — which the caller
+    /// must do by hand, and which is only correct because `Size` has exactly three variants.
+    #[test]
+    fn status_upper_reads_is_a_disjunction_no_single_watch_expresses() {
+        let mut stream = Vec::new();
+        for off in 0..4u32 {
+            for size in [Size::Byte, Size::Word, Size::Long] {
+                stream.push(ev_sized(BusOp::Read, 0xC0_0004 + off, size, 0));
+            }
+        }
+        let mut hand = 0u64;
+        for e in &stream {
+            if e.size == Size::Word || e.addr & 1 == 0 {
+                hand += 1;
+            }
+        }
+
+        // The naive single watch: "Word", "even", or the conjunction of both — none of the three is it.
+        for (label, w) in [
+            (
+                "word-only",
+                Watch::bus(0xC0_0004..=0xC0_0007, WatchOp::Read, "w").size(Size::Word),
+            ),
+            (
+                "even-only",
+                Watch::bus(0xC0_0004..=0xC0_0007, WatchOp::Read, "e").addr_parity(AddrParity::Even),
+            ),
+            (
+                "word-and-even",
+                Watch::bus(0xC0_0004..=0xC0_0007, WatchOp::Read, "we")
+                    .size(Size::Word)
+                    .addr_parity(AddrParity::Even),
+            ),
+        ] {
+            let mut wp = Watchpoints::new(0);
+            let id = wp.add(w.mode(WatchMode::Count));
+            for e in &stream {
+                wp.on_event(*e);
+            }
+            assert_ne!(
+                wp.watch(id).unwrap().matched,
+                hand,
+                "{label} cannot be the disjunction"
+            );
+        }
+
+        // The recovery: Word (any parity) + Byte-and-even + Long-and-even. Disjoint by construction, and
+        // exhaustive only because `Size` has exactly three variants.
+        let mut wp = Watchpoints::new(0);
+        let parts: Vec<_> = [
+            Watch::bus(0xC0_0004..=0xC0_0007, WatchOp::Read, "word").size(Size::Word),
+            Watch::bus(0xC0_0004..=0xC0_0007, WatchOp::Read, "byte.even")
+                .size(Size::Byte)
+                .addr_parity(AddrParity::Even),
+            Watch::bus(0xC0_0004..=0xC0_0007, WatchOp::Read, "long.even")
+                .size(Size::Long)
+                .addr_parity(AddrParity::Even),
+        ]
+        .into_iter()
+        .map(|w| wp.add(w.mode(WatchMode::Count)))
+        .collect();
+        for e in &stream {
+            wp.on_event(*e);
+        }
+        let sum: u64 = parts.iter().map(|id| wp.watch(*id).unwrap().matched).sum();
+        assert_eq!(sum, hand, "three disjoint watches sum to the disjunction");
     }
 
     // --- T4: seen -------------------------------------------------------------------------------------------
