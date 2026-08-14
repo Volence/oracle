@@ -306,7 +306,7 @@ fn the_cap_is_refused_loudly_and_never_silently_evicts() {
     c.ok("emulator/checkpoint", json!({}));
 }
 
-// ------------------------------------------------------------------ D13 rule 4: unknown ids
+// ------------------------------------------------------------------ §6.1: unknown ids
 
 #[test]
 fn restoring_an_unknown_or_dropped_id_is_refused_never_a_silent_no_op() {
@@ -333,7 +333,7 @@ fn restoring_an_unknown_or_dropped_id_is_refused_never_a_silent_no_op() {
     );
 }
 
-// ------------------------------------------------------------------ D13 rule 5: server-assigned ids
+// ------------------------------------------------------------------ §6.1: server-assigned ids
 
 #[test]
 fn ids_are_server_assigned_never_client_proposed_and_labels_are_carried_verbatim() {
@@ -385,7 +385,7 @@ fn ids_are_server_assigned_never_client_proposed_and_labels_are_carried_verbatim
     );
 }
 
-// ------------------------------------------------------------------ D13 rule 6: the cursored list
+// ------------------------------------------------------------------ §6.1: the cursored list
 
 #[test]
 fn checkpoint_list_is_bounded_cursored_and_flags_truncation() {

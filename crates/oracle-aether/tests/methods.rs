@@ -513,6 +513,60 @@ fn a_run_request_while_free_running_is_refused_rather_than_silently_changing_mod
     c.ok("emulator/run_frames", json!({"frames": 1}));
 }
 
+/// Every `require_paused` call site, pinned on the wire — one row per gated method, not a matrix.
+///
+/// The helper's *logic* is tested once (above); what this pins is the *wiring*: that each entry point
+/// actually calls it, and calls it before it parses params. Structural inheritance ("it is the first
+/// statement in all four handlers") is a claim about today's source text and says nothing about a
+/// refactor that hoists param parsing above the gate, a new run-shaped method that forgets the call, or
+/// a cleanup that inlines one site and drops it. The litmus test is mutation-shaped: deleting any one
+/// `require_paused(...)?` must fail a test. It does now; before this, it did for exactly one of four.
+///
+/// The "after pause" leg is what keeps the refusal leg honest — without it, a test whose calls all
+/// errored for some unrelated reason would pass just as green.
+#[test]
+fn every_pause_gated_method_refuses_while_free_running_and_succeeds_once_paused() {
+    let h = spawn("gated");
+    let mut c = Client::connect(&h);
+    c.handshake(false);
+
+    // `reload_rom`'s minimal valid params need a real ROM on disk; anything less would weaken the
+    // succeeds-once-paused leg into "fails for a different reason".
+    let rom_path = std::env::temp_dir().join(format!("ae-gated-{}.bin", std::process::id()));
+    std::fs::write(&rom_path, oracle_core::testrom::build()).unwrap();
+
+    let gated = [
+        ("emulator/run_frames", json!({"frames": 1})),
+        (
+            "emulator/run_to",
+            json!({"addr": "0x000200", "maxFrames": 1}),
+        ),
+        ("emulator/press", json!({"buttons": ["a"], "frames": 1})),
+        (
+            "emulator/reload_rom",
+            json!({"path": rom_path.display().to_string()}),
+        ),
+    ];
+
+    c.ok("emulator/resume", json!({}));
+    for (method, params) in &gated {
+        let e = c.err(method, params.clone());
+        assert_eq!(e["code"], json!(-32005), "{method} refusal code");
+        assert_eq!(
+            e["data"]["reason"],
+            json!("machineRunning"),
+            "{method} refusal reason"
+        );
+    }
+
+    c.ok("emulator/pause", json!({}));
+    for (method, params) in &gated {
+        c.ok(method, params.clone());
+    }
+
+    let _ = std::fs::remove_file(&rom_path);
+}
+
 #[test]
 fn reload_rom_resets_the_machine_and_reports_the_path() {
     let h = spawn("reload");
