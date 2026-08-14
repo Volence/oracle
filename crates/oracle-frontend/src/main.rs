@@ -1,31 +1,41 @@
 //! Live windowed frontend for the oracle-core Genesis / Mega Drive core — the milestone's "watchable and
 //! interactive" substrate (`docs/plans/2026-07-21-s4-boot-milestone.md`). Where `boot_rom`/`motion_run`
 //! wrap [`System`]'s run loop and dump frames to files, this wraps the identical loop in a window: poll the
-//! host keyboard → build a [`Pad`] → `set_pad(0, pad)` → `run_frames(1)` → blit the 224-line frame → throttle
-//! to ~60 fps.
+//! host keyboard *and* any connected gamepads → merge them into a [`Pad`] per player → `set_pad(port, pad)` →
+//! `run_frames(1)` → blit the 224-line frame → throttle to ~60 fps.
 //!
-//! This crate deliberately owns *all* the non-determinism (real-time keyboard, wall-clock throttle) so the
-//! core stays the "deterministic, no-I/O" artifact its Cargo description promises. The core is driven only
-//! through its existing public API — this slice adds no core methods. Audio is out of scope (milestone D3).
+//! This crate deliberately owns *all* the non-determinism (real-time keyboard/gamepad, wall-clock throttle) so
+//! the core stays the "deterministic, no-I/O" artifact its Cargo description promises. The core is driven only
+//! through its existing public API — this slice adds no core methods. (Pre-existing drift fixed in passing:
+//! audio is no longer "out of scope" — Phase SY-5 shipped it, see the `audio` module and `start_audio`.)
 //!
 //! Upgrade path (not this slice): swap minifb for `pixels` + `winit` when GPU-composited debug overlays
 //! (watchpoint highlights, bus-legality heatmaps — `docs/2026-07-20-diagnostic-tooling-ideas.md`) are wanted.
 //!
 //! Usage: `cargo run --release -p oracle-frontend -- <rom.bin> [--scale N]`
 //!
-//! ## Controls (Player 1 only)
+//! ## Controls
+//!
+//! The keyboard drives **Player 1** only. Gamepads (feature `gamepad`, on by default) drive Player 1 and
+//! Player 2 — the first connected controller takes port 0, the second port 1, hotplugged either way. Keyboard
+//! and gamepad are merged per button (logical OR), so the keyboard never goes dead while a pad is plugged in,
+//! and no controller at all leaves behaviour exactly as it was: keyboard-only Player 1.
 //!
 //! | Host key          | Emulated input / action |
 //! |-------------------|-------------------------|
-//! | Arrow keys        | D-pad          |
-//! | A / S / D         | A / B / C      |
-//! | Enter             | Start          |
+//! | Arrow keys        | D-pad (P1)     |
+//! | A / S / D         | A / B / C (P1) |
+//! | Enter             | Start (P1)     |
 //! | Space             | pause / resume |
 //! | `.` (period)      | single-frame step (while paused) |
 //! | Left mouse click  | watch the VRAM tile under the clicked pixel ("who wrote this tile?") |
 //! | W                 | dump recorded watch hits (seq/frame/pc/addr/old→new/via) + drop count to stdout |
 //! | C                 | clear the watch (return to the fast null-sink run path) |
 //! | Esc / window-close| quit           |
+//!
+//! The gamepad layout (face buttons → A/B/C, Start, d-pad and left stick → directions, analog deadzone) lives
+//! in one place — the mapping tables at the top of the `gamepad` module — so remapping means editing those
+//! tables.
 //!
 //! ## Pixel-attribution watch (record + display only)
 //!
@@ -43,6 +53,11 @@
 // consumer. See `docs/2026-07-23-phase-sy5-realtime-audio-design.md`.
 #[cfg(feature = "audio")]
 mod audio;
+
+// Host gamepad input (gilrs) — frontend-only, feature-gated exactly like `audio`, and degrading to
+// keyboard-only on every failure path. See the module docs for the mapping tables.
+#[cfg(feature = "gamepad")]
+mod gamepad;
 
 // Slice S2 — `.srm` battery-save persistence (frontend-only file I/O around the core's SRAM buffer).
 mod sram_file;
@@ -124,7 +139,8 @@ fn parse_args() -> Result<Args, String> {
     Ok(Args { rom_path, scale })
 }
 
-/// Build the Player-1 [`Pad`] from the host keyboard: arrows = D-pad, A/S/D = A/B/C, Enter = Start.
+/// Build the Player-1 [`Pad`] from the host keyboard: arrows = D-pad, A/S/D = A/B/C, Enter = Start. The
+/// keyboard is Player 1 only; Player 2 comes from a second gamepad (see the `gamepad` module).
 fn poll_pad(window: &Window) -> Pad {
     Pad {
         up: window.is_key_down(Key::Up),
@@ -375,9 +391,15 @@ fn main() {
     window.set_target_fps(60);
 
     println!(
-        "window {win_w}x{win_h} (up to {MAX_WIDTH}x{HEIGHT} @ {}x) — arrows=D-pad, A/S/D=A/B/C, Enter=Start, Space=pause, .=step, click=watch-tile, W=dump, C=clear, Esc=quit",
+        "window {win_w}x{win_h} (up to {MAX_WIDTH}x{HEIGHT} @ {}x) — keyboard (P1): arrows=D-pad, A/S/D=A/B/C, Enter=Start; Space=pause, .=step, click=watch-tile, W=dump, C=clear, Esc=quit",
         args.scale
     );
+
+    // Host gamepads: `None` = gilrs unavailable → keyboard-only, never a panic (same contract as `start_audio`
+    // below). `Some` with no controller attached is normal — one plugged in later is picked up by `poll`.
+    // Detected controllers are announced by `Gamepads::new` itself, one line per pad.
+    #[cfg(feature = "gamepad")]
+    let mut gamepads = gamepad::Gamepads::new();
 
     // Start the host audio stream (Phase SY-5b). `None` = no device / build failure → video-only, never a
     // panic (the default in a headless, /dev/snd-less environment). When present, its persistent AudioSink is
@@ -459,8 +481,22 @@ fn main() {
             println!("watch cleared — back to the fast (null-sink) run path");
         }
 
-        // The pad is sampled live every frame; set_pad is the sole, deterministic input path into the core.
-        sys.set_pad(0, poll_pad(&window));
+        // Inputs are sampled live every frame; set_pad is the sole, deterministic input path into the core.
+        // Player 1 = keyboard OR gamepad 1 (merged per button, so neither source can suppress the other);
+        // Player 2 = gamepad 2 only, and an all-released Pad when there is none — which is exactly the state
+        // port 1 already had before this slice, so a one-player session is unaffected.
+        // `mut` is used only by the `gamepad` arm below; a no-gamepad build never writes it.
+        #[allow(unused_mut)]
+        let mut player = [poll_pad(&window), Pad::default()];
+        #[cfg(feature = "gamepad")]
+        if let Some(g) = gamepads.as_mut() {
+            let pads = g.poll();
+            for (p, from_pad) in player.iter_mut().zip(pads) {
+                *p = gamepad::merge_pads(*p, from_pad);
+            }
+        }
+        sys.set_pad(0, player[0]);
+        sys.set_pad(1, player[1]);
 
         // Advance when running, or on an explicit step request while paused.
         if !paused || step {
