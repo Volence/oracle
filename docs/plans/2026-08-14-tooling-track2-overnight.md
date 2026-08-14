@@ -153,6 +153,38 @@ function-code master attribution wanted at all, given its justifying episode doe
 - **03:1x** — S4 design landed (`27e3d14`), refuting five claims in the recon doc that commissioned
   it. All five re-verified firsthand before acceptance; corrections committed (`a333ce1`).
 - **03:5x** — **S1 and S2 both landed, verified, and merged.** Details below.
+- **04:4x** — **S4 (trace recorder) landed, verified, merged.** Its replacement claim reproduced
+  firsthand; its *other* claim refuted by the implementer.
+- **05:2x** — **S3 (Aether) landed, verified, merged.** Server built and driven end-to-end by the
+  overseer from a separate process against the real `s4.bin`.
+- **05:3x — ARC COMPLETE AND PUSHED (`ddaef03`).** Full suite on the final tree:
+  **exit 0, 1102 passed, 0 failed, 23 suites.** **No golden was regenerated at any point in this
+  arc**, across four slices and roughly 6,000 lines of change.
+
+### Owner-facing summary — what needs a decision
+
+Nothing here is blocked, but five things want a ruling:
+
+1. **The two cross-repo asks** are drafted and unsent (`docs/2026-08-14-cross-repo-asks-draft.md`).
+   Ask 2 got materially stronger overnight: the `deb2` fingerprint works but is provably a filter and
+   not a proof — the demo pair share an identical `EndOfRom` while 1,197 shared symbols moved.
+2. **Six Aether change requests** (`docs/2026-08-14-aether-change-requests.md`) are raised against
+   `protocol.md`, none deviated from. CR-4 (`run_to` has no bound and no fired-vs-timed-out result)
+   and CR-6 (the `romReloaded` drift, where an *approved* Aurora spec subscribes to an event the
+   contract does not define) are the two with teeth.
+3. **`checkpoint` was deliberately not shipped.** The contract defers save-state ops and forbids
+   inventing them. It needs a contract change before it can exist, which is CR-2.
+4. **`F-TRACE-PAL`** — every timestamp the recorder produces is silently NTSC. Left untouched on
+   purpose so the owner picks the timing basis rather than inheriting one.
+5. **`F-TRACE-MASTER`** — is function-code master attribution wanted at all, given its justifying
+   episode did not survive checking?
+
+### Still open, unbundled, and cheap
+`F-SCANLINE-CAPTURE` + an `on_frame_boundary` hook (~60 lines, and the design argues its duplication
+evidence is *stronger* than half the recorder work); **C1 arm-at-power-on** (~5 lines — `System::reset`
+hardcodes a unit sink, so reset-vector fetches are uncapturable today); `F-TRACE-SIZEFILTER` (~8 lines,
+four episodes); `F-TRACE-TUPLEKEY`; `F-TRACE-EXPOSE-LATCHES`, whose value rose when the k4 claim was
+refuted.
 
 ### S1 as shipped — `be6f341`, merged
 `BusEventSink::stop_requested()` defaulted `false`; the loop asks once per step, after the existing
