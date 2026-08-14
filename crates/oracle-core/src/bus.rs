@@ -123,6 +123,28 @@ pub trait BusEventSink {
     /// [`ScanlineCapture`](crate::scanline_capture::ScanlineCapture)'s `LastFrame` retention, whose whole
     /// implementation is this callback.
     ///
+    /// **Why the index comes from the event's own deadline, not the clock's `now()`.** A single `step_cpu`
+    /// can advance the master clock by more than a frame — a 68k→VRAM DMA is billed as CPU wait cycles on
+    /// one instruction, so one step can jump several frames at once — after which the run loop's `pop_due`
+    /// drains the whole backlog of scheduled `Scanline` events in a burst, at a `now()` that is already past
+    /// all of them. An index read from `now()` would stamp every boundary in that burst with the same frame
+    /// number; the event's own `deadline` is *when the boundary happened*, so the indices stay `n, n+1,
+    /// n+2, …` across a DMA stall. Load-bearing — do not "simplify" it to `scheduler.now()`.
+    ///
+    /// **Sharp edge — "exactly once per frame" is a LIFETIME invariant, not a per-run one.** A run that ends
+    /// inside the ~one-line window between line 223's `on_scanline` and the line-224 event delivers a full
+    /// 224 scanlines and **zero** boundaries; that boundary is deferred into the next run (verified in
+    /// `tests/scanline_capture.rs`). So a caller who reads a frame-accumulating sink right after such a run
+    /// gets the *previous* frame back, with nothing to distinguish it — and `run_frames(0)` delivers no
+    /// boundary at all. Only runs whose end lands on a frame-boundary mclk (`run_frames(n >= 1)`, the
+    /// harness path) get the one-boundary-per-frame reading for free.
+    ///
+    /// **Sharp edge — `frame` is not monotonic across a reset.** It is `mclk / mclk_per_frame` and
+    /// [`System::reset`](crate::system::System::reset) zeroes mclk, so two frames, a reset, then two more
+    /// frames delivers `[0, 1, 0, 1]`. Count boundaries yourself (as
+    /// [`ScanlineCapture::frames_completed`](crate::scanline_capture::ScanlineCapture::frames_completed)
+    /// does) if you need a monotonic counter; `frame` is a *position on the emulated clock*, not a tally.
+    ///
     /// **Why on the trait and not on [`BusEvent`]:** the standing precedent of
     /// [`on_event_at`](BusEventSink::on_event_at) (SY-4a) and
     /// [`on_step_boundary`](BusEventSink::on_step_boundary) — extend the trait, never the event struct (it

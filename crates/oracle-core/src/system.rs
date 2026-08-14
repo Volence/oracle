@@ -1021,6 +1021,12 @@ impl System {
                     // frame-accumulating sink's buffer holds exactly one complete frame right here — see
                     // [`BusEventSink::on_frame_boundary`] for why this instant, and not line 0, is the
                     // boundary. Defaulted to a no-op, so `&mut ()` is byte-for-byte the old hot path.
+                    //
+                    // The index is derived from this event's own `deadline`, NOT `self.scheduler.now()`: one
+                    // `step_cpu` can advance the clock past several frames (a 68k->VRAM DMA is billed as CPU
+                    // wait cycles on a single instruction), after which `pop_due` drains the backlog in a
+                    // burst at a `now()` already past all of them, and every boundary in the burst would
+                    // report the same frame. Load-bearing — see the hook's doc comment.
                     sink.on_frame_boundary(deadline / MCLK_PER_FRAME);
                     let off = self.vdp.vint_offset();
                     self.scheduler.schedule(deadline + off, EventKind::VInt);
