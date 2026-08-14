@@ -387,7 +387,14 @@ fn real_demo_pair_documents_the_binding_checks_residual_limit() {
         SymbolTable::parse(&a).unwrap(),
         SymbolTable::parse(&b).unwrap(),
     );
-    let (ea, eb) = (ta.address_of("EndOfRom"), tb.address_of("EndOfRom"));
+    // `is_some()` first: `assert_eq!(None, None)` would pass vacuously and claim the collision exists
+    // when in fact neither listing carries the symbol at all.
+    let ea = ta
+        .address_of("EndOfRom")
+        .expect("demo.lst declares EndOfRom");
+    let eb = tb
+        .address_of("EndOfRom")
+        .expect("demo.debug.lst declares EndOfRom");
     assert_eq!(
         ea, eb,
         "if this ever diverges the demo shapes became separable — update the docs"
@@ -403,7 +410,6 @@ fn real_demo_pair_documents_the_binding_checks_residual_limit() {
         "the two demo shapes must actually differ, else there is no limit to document"
     );
     println!(
-        "demo shapes share EndOfRom ${:06X} yet {shared_but_moved} shared symbols moved — the probe cannot separate them",
-        ea.unwrap()
+        "demo shapes share EndOfRom ${ea:06X} yet {shared_but_moved} shared symbols moved — the probe cannot separate them"
     );
 }
