@@ -375,11 +375,16 @@ fn engine_loop(mut engine: Engine, rx: mpsc::Receiver<EngineMsg>, shared: &Share
                 let _ = reply.send(CallResult { result, stamp });
             }
             None => {
-                if let Some(pace) = engine.free_run_step() {
-                    publish(&engine, shared);
-                    std::thread::sleep(pace);
-                } else {
-                    publish(&engine, shared);
+                let started = std::time::Instant::now();
+                let pace = engine.free_run_step();
+                publish(&engine, shared);
+                // Sleep only the *remainder* of the interval. Sleeping the full interval on top of the
+                // frame's own cost paces at ~53 Hz rather than 60 — measured, not assumed. Pacing is
+                // wall-clock by nature and deliberately touches no emulated stamp (recon §5 C2), so
+                // getting it wrong would cost nothing but a slow-looking game; getting it right costs
+                // three lines.
+                if let Some(rest) = pace.and_then(|p| p.checked_sub(started.elapsed())) {
+                    std::thread::sleep(rest);
                 }
             }
         }

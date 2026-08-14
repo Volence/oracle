@@ -134,7 +134,7 @@ mid = c.call("emulator/status")["result"]
 c.call("emulator/pause")
 check("free-run advanced frames", mid["frame"] > before + 5, f"{before} -> {mid['frame']}")
 check("free-run reports running", mid["running"] is True)
-check("free-run is paced near 60Hz", 40 <= (mid["frame"] - before) <= 75, mid["frame"] - before)
+check("free-run is paced near 60Hz", 55 <= (mid["frame"] - before) <= 65, mid["frame"] - before)
 
 # Refusing a wrong-shape listing on a real ROM (s4.debug.lst against s4.bin).
 dbg = "/home/volence/sonic_hacks/aeon/s4.debug.lst"
