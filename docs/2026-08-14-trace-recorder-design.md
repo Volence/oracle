@@ -1,6 +1,40 @@
 # The trace recorder — design pass (2026-08-14)
 
-**Status:** design only. Nothing implemented, nothing committed by this pass. This is the S4 design gate
+> **▸ IMPLEMENTED 2026-08-14.** T1–T5 (§5), the filtering decisions (§6) and the aggregation set (§7) are
+> shipped in `crates/oracle-core/src/watchpoints.rs`, additively, with no golden regenerated and no field
+> added to `BusEvent`. Also shipped: `Watch::stop_after` (§10 dep 2) and `Watchpoints::caveats` (§11's
+> caveats-as-payload rule). **§9's replacement claim was tested, not assumed:** `examples/diag_soundqueue.rs`
+> was re-expressed as eight `add` calls with no `BusEventSink` impl at all, and its output is byte-identical
+> to the hand-rolled sink's across all 7,631 lines of a 600-frame `s4.soundtest.bin` run — same counts, same
+> fc tallies, same per-event lines. One correction to §9's sketch: it costs **twelve** watches, not six —
+> `add_watch_multi` was not built (so one watch per address window, as §9's own parenthetical prefers), and
+> each window needs a `Record` *and* a `Census(Fc)` watch: 3 instruments × 2 windows × 2 modes. §9's "six"
+> assumed both a multi-range spec and one watch per mode per instrument. Everything else in §13's
+> "deliberately does NOT build" list is still not built. The open questions in §15 remain open — in
+> particular `F-TRACE-PAL`, so every stamp this recorder produces is still silently NTSC.
+>
+> **§9's *other* claim did not survive the same treatment.** "Roughly 11 of `K4Probe`'s 16 counters become
+> `Count` watches" is **3 of 16** — see the correction banner in §9. The shortfall has two causes, both
+> this design's: it assumed a **size/parity filter** §5 and §6 never specify (→ `F-TRACE-SIZEFILTER`), and
+> it overlooked that four more counters sit inside the probe's arbiter-latch shadow gate. §9's *conclusion*
+> (`K4Probe` stays hand-rolled) is unchanged and better supported; what changes is *why*, and it raises the
+> value of `F-TRACE-EXPOSE-LATCHES` over any further aggregation work.
+>
+> **Four small, deliberate deviations from the letter of §5, all narrower than what was asked for:**
+> (1) T2's `watches()` returns `Vec<WatchReport>` (owned, built per read) rather than `&[WatchInfo]` — a
+> census is a `BTreeMap` and cannot be handed out as a borrowed `Vec<(key, count)>`, and a read-time
+> allocation is free on a path that is never per-access. (2) The optional knobs (fc filter, mode, key cap,
+> stop-after) are reached through a `Watch` **builder** rather than an `add_watch_with_mode` variant — §5
+> allowed either, and four optional knobs make the builder the smaller surface; `add_watch`/`add_vdp_watch`
+> keep their exact signatures (they now *return* a `WatchId`, which no existing call site had to change,
+> except one `match` arm in `examples/watch_probe.rs` that needed a `;`). (3) T4's ring is a `Vec` with a
+> head index rather than a `VecDeque` — §5 allowed either, and only the head index keeps `hits() ->
+> &[WatchHit]` a contiguous slice, which three existing callers rely on. (4) T2's "lowest matching id" rule
+> is refined to "lowest matching id **in `Record` mode**", since attributing a stored hit to a `Count` watch
+> whose log it is not in would be a false statement; with all-`Record` watches the two rules coincide.
+> `F-TRACE-S1-DISARM` was checked and **discharged** (see §14).
+>
+> **Status of the original pass:** design only. Nothing implemented, nothing committed by this pass. This is the S4 design gate
 that `docs/plans/2026-08-14-tooling-track2-overnight.md:81-86` says must happen before dispatch:
 
 > **S4 — candidate: the trace recorder** … **Higher risk than it looks**: attribution wants to live *in*
@@ -665,6 +699,39 @@ T2's ids already distinguish them.)*
 
 ### `examples/k4_openbus_probe.rs` — **partially replaced; the remainder is a genuine finding**
 
+> ## ⚠ CORRECTION (implementation pass, 2026-08-14): the "11 of 16" below is **wrong — it is 3 of 16**
+>
+> The implementation pass tried this claim against the shipped API before believing it, and it does not
+> hold. Counted against `k4_openbus_probe.rs` as it actually reads:
+>
+> - **Expressible as `Count` config today: 3.** `unmapped_reads` (`$400000-$7FFFFF`), `a11200_reads`,
+>   `a11100_reads`. (Even these are not exact: the probe's read arm is `BusOp::Read | BusOp::Tas`
+>   (`:170`) and `WatchOp::Read` deliberately excludes TAS, so a TAS into unmapped space would be
+>   miscounted. `WatchOp::Any` over-counts instead. Irreducible without a third op filter; noted, not
+>   built.)
+> - **Needs a size and/or address-parity filter, which §5/§6 never specified and this pass did not
+>   build: 4.** `io_even_byte_reads` (Byte **and** even address), `io_word_reads` (Word),
+>   `status_upper_reads` (Word **or** even address), `status_odd_byte_reads` (Byte **and** odd address)
+>   — `k4_openbus_probe.rs:202-213`. The phrase "address range + op + **size**" below is the tell: `size`
+>   appears in this sentence and in **no** spec list anywhere in §5, §6 or §11. → **`F-TRACE-SIZEFILTER`**
+>   (add `Option<Size>` and an address-parity filter to a spec; ~8 lines, four episodes, no currency
+>   surface — but it is a filter §6 did not sanction, so it is registered rather than smuggled in).
+> - **Shadow-gated, i.e. stateful, and therefore in the "not replaced" bucket: the remaining 9**, not 3.
+>   §9 puts `z80win_bank_reads`, `z80win_bank_writes`, `z80win_vdp_mirror_writes` and
+>   `z80win_open_word_writes` in the *replaced* column, but every one of them sits inside the
+>   `!(self.z80_busreq && self.z80_running)` branch (`k4_openbus_probe.rs:145-165`, `:190-200`) — they are
+>   gated on the probe's reconstructed arbiter latches exactly as the three §9 already concedes are.
+> - **`ww_detail` is not "exactly one `Census(Addr)` + `Census(ValueHiEqLo)` pair".** Its key is the
+>   *composite* `(addr, hi == lo)`; two independent 1-D censuses give the two **marginals**, from which the
+>   joint distribution cannot be recovered. That is the `F-TRACE-TUPLEKEY` shape this same design defers —
+>   so §9 quietly assumed a primitive §7 explicitly did not ship. It is also shadow-gated.
+>
+> **The direction of §9's conclusion is unchanged and if anything strengthened**: `K4Probe` stays
+> hand-rolled, and the dominant reason is not the census primitives but that **11 of its 16 counters read a
+> hardware latch the probe has to shadow because the machine does not expose it**. That is exactly
+> `F-TRACE-EXPOSE-LATCHES`, and this measurement raises its value: expose `z80_busreq`/`z80_running` and
+> most of `K4Probe` collapses; ship every census primitive imaginable and it does not.
+
 **Replaced:** roughly 11 of the 16 counters become `Count` watches over an address range + op + size —
 `unmapped_reads`, `a11200_reads`, `a11100_reads`, `io_even_byte_reads`, `io_word_reads`,
 `status_upper_reads`, `status_odd_byte_reads`, `z80win_bank_reads`, `z80win_bank_writes`,
@@ -894,12 +961,13 @@ Each with the reason, so a later reader can reopen it on evidence rather than ta
 |---|---|---|---|
 | `F-TRACE-MASTER` | `fc = 0` conflates DMA / Z80 / 68k-through-Z80-window; an fc census on `$7F11` mis-attributes | `bus.rs:522`, `z80/bus.rs:228` | **Yes** — option (a) is currency-gated |
 | `F-TRACE-POWERON-CHECK` | What our `assert_reset` leaves observable; expose `is_pristine_power_on()` | `m68000/microop.rs:3146`, `system.rs:359` | no — investigate first |
-| `F-TRACE-S1-DISARM` | Verify `vdp.set_write_capture(false)` still runs on S1's early-stop path | `system.rs:712-746` | no — S1 review item |
+| ~~`F-TRACE-S1-DISARM`~~ **DISCHARGED 2026-08-14** | Verified: the early stop is a `break` out of the `while`, and the `if capture { self.vdp.set_write_capture(false) }` disarm sits *after* the loop — both exit paths reach it, so no `write_capture` leaks across runs | `system.rs:801-851` | no — closed |
 | `F-SCANLINE-CAPTURE` | Promote `ScanlineCapture` + add `on_frame_boundary`; collapses `FrameCapture`/`LineCollector` | `tests/conformance_roms.rs:254`, `tests/scanline_capture.rs:12` | no — cheap, strong evidence |
 | `F-TRACE-EXPOSE-LATCHES` | Expose `z80_busreq`/`z80_running`/FM address latch read-only; deletes 3 shadow reimplementations | `k4_openbus_probe.rs:49`, `vgm.rs:291`, `synth/audio_sink.rs:43` | no |
 | `F-TRACE-PAL` | Every frame/line stamp is silently NTSC | `system.rs:24`, `vdp.rs:17-21` | **Yes** — carry basis now, or accept the retrofit cost |
 | `F-TRACE-VDPWRITE-MCLK` | `VdpWrite` has no per-write mclk, so sub-scanline CRAM effects are unlocatable — the recorded blocker *"CRAM writes carry no h-position"* | `vdp.rs` capture path, `system.rs:728-732`, `docs/2026-07-25-testrom-conformance.md:815` | no — own slice |
 | `F-TRACE-TUPLEKEY` | 2-key composite census (`(k1,k2) → count`), the T16 "deterministic or stochastic?" shape | `docs/2026-08-03-t16-slot-scheduling-recon.md:252-262` | no |
+| `F-TRACE-SIZEFILTER` | A watch spec cannot filter on access **size** or address **parity**, so 4 of `K4Probe`'s counters stay hand-rolled that §9 assumed were config. ~8 lines (`Option<Size>` + a parity filter), four episodes, no currency surface — not built because §6 sanctioned only the `fc` filter | `k4_openbus_probe.rs:202-213`, `watchpoints.rs` `WatchSpec::matches` | no |
 | `F-TRACE-MINMAX` | Add min/max aggregation when an episode demands it | — | no |
 | `F-TRACE-VALUEPRED` | Add value-predicate filtering when an episode demands it | — | no |
 | `F-RECON-K4-COUNT` | Recon doc says "26 hand-declared counters"; the file has 16 | `docs/2026-08-14-tooling-frontier-recon.md:153` | no — doc fix |

@@ -7,76 +7,74 @@
 //! (`$7F11`/`$C00011`) writes (fc 0 = Z80 master, 5/6 = 68000 master); (3) the first 64 bytes of Z80 RAM at
 //! the end of the run. Touches no `src/` state; uses only the public API.
 //!
+//! **This example is now configuration, not a sink.** It used to hand-roll 81 lines of `BusEventSink`: a
+//! `Rec` struct that re-declared `BusEvent` field-for-field plus a copied frame, a frame latch, two
+//! address-classifier free functions, three unbounded `Vec<Rec>`, and three `BTreeMap<u8, u64>` fc tallies
+//! — with bounding applied only at print time. All of it is now `Watchpoints` configuration: twelve
+//! `add`-calls (three instruments × two address windows × [`WatchMode::Record`] + `Census(Fc)`)
+//! and no `BusEventSink` impl at all (`docs/2026-08-14-trace-recorder-design.md` §9). The instrument gained
+//! what the hand-rolled version never
+//! had: a per-access `mclk`, record-time bounding with a drop count, the `seen` negative control, and the
+//! master-attribution caveat on the PSG port that the hand-rolled fc tally silently got wrong.
+//!
 //! Usage: `cargo run --release -p oracle-core --example diag_soundqueue -- [rom.bin] [frames]`
 
-use oracle_core::bus::{BusEvent, BusEventSink, BusOp, Size};
 use oracle_core::system::System;
+use oracle_core::watchpoints::{
+    CensusKey, Watch, WatchHit, WatchId, WatchMode, WatchOp, Watchpoints,
+};
 use std::collections::BTreeMap;
+use std::ops::RangeInclusive;
 
 const DEFAULT_ROM: &str = "/home/volence/sonic_hacks/aeon/s4.soundtest.bin";
 const DEFAULT_FRAMES: u64 = 600;
+/// Hit-ring capacity. Bounding is now record-time rather than print-time, so this is the honest memory
+/// bound of the run; `dropped` reports any loss instead of it being invisible.
+const HIT_CAP: usize = 1 << 18;
 
-/// A captured write of interest.
-struct Rec {
-    frame: u64,
-    op: BusOp,
-    addr: u32,
-    value: u32,
-    size: Size,
-    fc: u8,
+/// One logical instrument: a set of address ranges watched twice over — once in `Record` mode (the event
+/// log) and once as `Census(Fc)` (the master tally). Two ranges are needed wherever one chip answers at two
+/// windows (the FM at `$4000`/`$A04000`, the PSG at `$7F11`/`$C00011`), and the ids keep them distinguishable.
+struct Group {
+    log: Vec<WatchId>,
+    fc: Vec<WatchId>,
 }
 
-#[derive(Default)]
-struct Diag {
-    frame: u64,
-    /// Writes to the Z80-RAM window `$A00000-$A0FFFF` (the SMPS sound-queue window), EXCLUDING the FM ports
-    /// `$A04000-$A04003` which alias inside that window but are the YM2612, not Z80 RAM.
-    z80_ram_writes: Vec<Rec>,
-    /// FM register writes, both windows (`$4000-$4003` Z80, `$A04000-$A04003` 68k).
-    fm_writes: Vec<Rec>,
-    /// PSG writes, both windows (`$7F11` Z80, `$C00011` 68k).
-    psg_writes: Vec<Rec>,
-    /// fc tallies.
-    fm_fc: BTreeMap<u8, u64>,
-    psg_fc: BTreeMap<u8, u64>,
-    z80_ram_fc: BTreeMap<u8, u64>,
-}
-
-fn is_fm(a: u32) -> bool {
-    matches!(a, 0x4000..=0x4003 | 0xA0_4000..=0xA0_4003)
-}
-fn is_psg(a: u32) -> bool {
-    matches!(a, 0x7F11 | 0xC0_0011)
-}
-
-impl BusEventSink for Diag {
-    fn on_step_boundary(&mut self, _pc: u32, frame: u64) {
-        self.frame = frame;
+impl Group {
+    fn register(wp: &mut Watchpoints, label: &str, ranges: &[RangeInclusive<u32>]) -> Self {
+        let mut log = Vec::new();
+        let mut fc = Vec::new();
+        for r in ranges {
+            log.push(wp.add(Watch::bus(r.clone(), WatchOp::Write, label)));
+            fc.push(
+                wp.add(
+                    Watch::bus(r.clone(), WatchOp::Write, format!("{label}.fc"))
+                        .mode(WatchMode::Census(CensusKey::Fc)),
+                ),
+            );
+        }
+        Self { log, fc }
     }
 
-    fn on_event(&mut self, e: BusEvent) {
-        if e.op != BusOp::Write {
-            return;
+    /// Every recorded write in this group, in the order the machine made them (the shared ring is ordered by
+    /// `seq`, so filtering it by this group's watch ids preserves that order exactly).
+    fn hits(&self, wp: &Watchpoints) -> Vec<WatchHit> {
+        wp.hits()
+            .iter()
+            .filter(|h| self.log.contains(&h.watch))
+            .copied()
+            .collect()
+    }
+
+    /// The fc tally, folded back over this group's windows.
+    fn fc_tally(&self, wp: &Watchpoints) -> BTreeMap<u8, u64> {
+        let mut out = BTreeMap::new();
+        for id in &self.fc {
+            for (k, n) in wp.watch(*id).unwrap().census.unwrap_or_default() {
+                *out.entry(k as u8).or_insert(0) += n;
+            }
         }
-        let rec = || Rec {
-            frame: self.frame,
-            op: e.op,
-            addr: e.addr,
-            value: e.value,
-            size: e.size,
-            fc: e.fc,
-        };
-        if is_fm(e.addr) {
-            *self.fm_fc.entry(e.fc).or_default() += 1;
-            self.fm_writes.push(rec());
-        } else if is_psg(e.addr) {
-            *self.psg_fc.entry(e.fc).or_default() += 1;
-            self.psg_writes.push(rec());
-        } else if (0xA0_0000..=0xA0_FFFF).contains(&e.addr) {
-            // The Z80-RAM window proper (FM ports already peeled off above): the sound queue lives here.
-            *self.z80_ram_fc.entry(e.fc).or_default() += 1;
-            self.z80_ram_writes.push(rec());
-        }
+        out
     }
 }
 
@@ -104,14 +102,25 @@ fn main() {
     sys.load_rom(rom);
     sys.reset();
 
-    let mut diag = Diag::default();
-    sys.run_frames_with_sink(frames, &mut diag);
+    let mut wp = Watchpoints::new(HIT_CAP);
+    // The FM ports alias *inside* the Z80-RAM window but are the YM2612, not Z80 RAM — so the Z80-RAM watch
+    // is the window with those four bytes peeled out, expressed as two ranges rather than as an `if` in a
+    // hand-written sink.
+    let fm = Group::register(&mut wp, "fm", &[0x4000..=0x4003, 0xA0_4000..=0xA0_4003]);
+    let psg = Group::register(&mut wp, "psg", &[0x7F11..=0x7F11, 0xC0_0011..=0xC0_0011]);
+    let z80_ram = Group::register(
+        &mut wp,
+        "z80ram",
+        &[0xA0_0000..=0xA0_3FFF, 0xA0_4004..=0xA0_FFFF],
+    );
+    sys.run_frames_with_sink(frames, &mut wp);
 
     // ---- 68k -> Z80-RAM-window writes ------------------------------------------------------------------
+    let z80_ram_writes = z80_ram.hits(&wp);
     println!("\n=== 68k->Z80-RAM-window writes ($A00000-$A0FFFF, FM ports excluded) ===");
-    println!("count: {}", diag.z80_ram_writes.len());
-    println!("fc tally: {:?}", diag.z80_ram_fc);
-    for r in &diag.z80_ram_writes {
+    println!("count: {}", z80_ram_writes.len());
+    println!("fc tally: {:?}", z80_ram.fc_tally(&wp));
+    for r in &z80_ram_writes {
         let nz = if r.value != 0 { "  <== NON-ZERO" } else { "" };
         println!(
             "  frame={:4} {:?} addr={:06X} size={:?} value={:04X} fc={}{}",
@@ -120,39 +129,41 @@ fn main() {
     }
 
     // ---- FM fc attribution -----------------------------------------------------------------------------
+    let fm_writes = fm.hits(&wp);
     println!("\n=== FM writes ($4000-$4003 / $A04000-$A04003) ===");
     println!(
         "count: {}   fc tally: {:?}",
-        diag.fm_writes.len(),
-        diag.fm_fc
+        fm_writes.len(),
+        fm.fc_tally(&wp)
     );
-    let show = diag.fm_writes.len().min(32);
-    for r in &diag.fm_writes[..show] {
+    let show = fm_writes.len().min(32);
+    for r in &fm_writes[..show] {
         println!(
             "  frame={:4} addr={:06X} size={:?} value={:02X} fc={}",
             r.frame, r.addr, r.size, r.value, r.fc
         );
     }
-    if diag.fm_writes.len() > show {
-        println!("  ... ({} more)", diag.fm_writes.len() - show);
+    if fm_writes.len() > show {
+        println!("  ... ({} more)", fm_writes.len() - show);
     }
 
     // ---- PSG fc attribution ----------------------------------------------------------------------------
+    let psg_writes = psg.hits(&wp);
     println!("\n=== PSG writes ($7F11 / $C00011) ===");
     println!(
         "count: {}   fc tally: {:?}",
-        diag.psg_writes.len(),
-        diag.psg_fc
+        psg_writes.len(),
+        psg.fc_tally(&wp)
     );
-    let show = diag.psg_writes.len().min(32);
-    for r in &diag.psg_writes[..show] {
+    let show = psg_writes.len().min(32);
+    for r in &psg_writes[..show] {
         println!(
             "  frame={:4} addr={:06X} size={:?} value={:02X} fc={}",
             r.frame, r.addr, r.size, r.value, r.fc
         );
     }
-    if diag.psg_writes.len() > show {
-        println!("  ... ({} more)", diag.psg_writes.len() - show);
+    if psg_writes.len() > show {
+        println!("  ... ({} more)", psg_writes.len() - show);
     }
 
     // ---- Z80 RAM dump ----------------------------------------------------------------------------------
@@ -190,5 +201,34 @@ fn main() {
     }
     if nz.len() > 64 {
         println!("  ... ({} more)", nz.len() - 64);
+    }
+
+    // ---- What the hand-rolled sink could not report -----------------------------------------------------
+    println!("\n=== instrument report ===");
+    println!(
+        "seen: {}   matched: {}   recorded: {}   dropped: {}",
+        wp.seen(),
+        wp.matched(),
+        wp.hits().len(),
+        wp.dropped()
+    );
+    for r in wp.watches() {
+        let first = r.first.map(|s| s.mclk).unwrap_or_default();
+        let last = r.last.map(|s| s.mclk).unwrap_or_default();
+        println!(
+            "  #{:<2} {:<8} {:?} ${:06X}-${:06X} {:?}  matched={:<6} mclk {}..{}",
+            r.id.0,
+            r.label,
+            r.mode,
+            r.range.start(),
+            r.range.end(),
+            r.op,
+            r.matched,
+            first,
+            last
+        );
+    }
+    for c in wp.caveats() {
+        println!("  CAVEAT: {c}");
     }
 }

@@ -225,3 +225,119 @@ fn a_bus_only_watch_does_not_arm_vdp_capture() {
         "the VDP-internal poke is not a bus write at $0100"
     );
 }
+
+// --- The trace recorder (2026-08-14): mclk, determinism, stop-after, census -------------------------------
+
+use oracle_core::system::StopReason;
+use oracle_core::watchpoints::{CensusKey, Watch, WatchMode};
+
+/// **T5 — two runs of the same ROM, input and power-on seed produce byte-identical hit sequences.**
+///
+/// This is the property the whole instrument's credibility rests on: every comparison in the corpus that
+/// mattered was a diff between two traces, and a diff is only evidence if a re-run reproduces itself. It
+/// falls out of the emulator's determinism (recon C2), but it is asserted rather than assumed — and it is
+/// asserted over the *whole* `WatchHit`, which is why the type stays `Copy + Eq`.
+#[test]
+fn two_identical_runs_produce_byte_identical_hit_sequences() {
+    let trace = || {
+        let mut sys = booted();
+        let mut wp = Watchpoints::new(4096);
+        wp.add_watch(WATCH_ADDR..=WATCH_ADDR + 0xFF, WatchOp::Any, "stir");
+        sys.run_frames_with_sink(2, &mut wp);
+        wp.take_hits()
+    };
+    let a = trace();
+    let b = trace();
+    assert!(!a.is_empty(), "the fixture drives accesses in the window");
+    assert_eq!(a, b, "the same run must trace identically, hit for hit");
+}
+
+/// The master clock reaches a hit from the bus's own `on_event_at`: it is non-zero on a real run, never
+/// decreases, and agrees with the frame the hit was stamped with.
+#[test]
+fn hits_carry_a_monotonic_master_clock_consistent_with_the_frame() {
+    const MCLK_PER_FRAME: u64 = 896_040;
+    let mut sys = booted();
+    let mut wp = Watchpoints::new(4096);
+    wp.add_watch(WATCH_ADDR..=WATCH_ADDR + 0xFF, WatchOp::Any, "stir");
+    sys.run_frames_with_sink(2, &mut wp);
+
+    let hits = wp.hits();
+    assert!(!hits.is_empty());
+    assert!(hits[0].mclk > 0, "a real bus access carries its own clock");
+    assert!(
+        hits.windows(2).all(|w| w[0].mclk <= w[1].mclk),
+        "the clock never runs backwards across the hit log"
+    );
+    assert!(
+        hits.iter().all(|h| h.mclk / MCLK_PER_FRAME == h.frame),
+        "mclk and the step-boundary frame stamp name the same instant"
+    );
+    assert!(wp.seen() > wp.matched(), "the filter rejected most traffic");
+    assert!(
+        wp.caveats().is_empty(),
+        "a plain bus watch has nothing to caveat: {:?}",
+        wp.caveats()
+    );
+}
+
+/// **`stop_after` composes with the S1 stop signal**: a watch that has fired N times ends the run at the next
+/// instruction boundary, with `StopReason::SinkRequested` — "run until X happens" instead of a hand-tuned
+/// frame budget. The bound is still honoured if it never fires.
+#[test]
+fn stop_after_ends_the_run_at_the_watch() {
+    let mut sys = booted();
+    let mut wp = Watchpoints::new(64);
+    let id =
+        wp.add(Watch::bus(WATCH_ADDR..=WATCH_ADDR + 0xFF, WatchOp::Write, "stir").stop_after(3));
+    let record = sys.run_frames_with_sink(60, &mut wp);
+
+    assert_eq!(
+        record.reason,
+        StopReason::SinkRequested,
+        "the watch ended the run, long before the 60-frame bound"
+    );
+    assert!(record.frame < 60, "stopped early (frame {})", record.frame);
+    // The flag is raised mid-instruction and honoured at the next boundary, so the triggering access has
+    // committed: exactly the threshold, never fewer.
+    assert_eq!(wp.watch(id).unwrap().matched, 3);
+    assert_eq!(wp.hits().len(), 3);
+
+    // A threshold the run never reaches degrades to the plain bounded run.
+    let mut sys = booted();
+    let mut never = Watchpoints::new(64);
+    never.add(Watch::bus(0xFF_C000..=0xFF_C0FF, WatchOp::Any, "untouched").stop_after(1));
+    let record = sys.run_frames_with_sink(1, &mut never);
+    assert_eq!(record.reason, StopReason::DeadlineReached);
+}
+
+/// A `Census` over a real run answers the shape of question that retracted two recorded root causes: *which*
+/// destinations does this ROM touch, and how many distinct ones are there — with the log itself switched off.
+#[test]
+fn a_census_over_a_real_run_reports_distinct_destinations() {
+    let mut sys = booted();
+    let mut wp = Watchpoints::new(0); // pure aggregate: nothing stored at all
+    let id = wp.add(
+        Watch::bus(WATCH_ADDR..=WATCH_ADDR + 0x1F, WatchOp::Write, "stir")
+            .mode(WatchMode::Census(CensusKey::Addr)),
+    );
+    sys.run_frames_with_sink(2, &mut wp);
+
+    let r = wp.watch(id).unwrap();
+    assert_eq!(wp.hits().len(), 0, "a census stores no hits");
+    assert!(r.matched > 0, "but it counted the accesses");
+    assert!(!r.keys_capped, "well inside the default 256-key cap");
+    assert_eq!(
+        r.distinct_keys,
+        r.census.as_ref().unwrap().len() as u64,
+        "the cardinality is the census's own key count"
+    );
+    // The fixture stirs consecutive words: every key is even and inside the watched window.
+    for (k, n) in r.census.unwrap() {
+        assert_eq!(k % 2, 0, "word writes land on even addresses");
+        assert!((WATCH_ADDR as u64..=WATCH_ADDR as u64 + 0x1F).contains(&k));
+        assert!(n > 0);
+    }
+    assert_eq!(r.first.map(|s| s.seq), Some(0), "first matched access");
+    assert_eq!(r.last.map(|s| s.seq), Some(r.matched - 1));
+}
