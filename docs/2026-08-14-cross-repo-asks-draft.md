@@ -1,0 +1,85 @@
+# Two cross-repo asks — DRAFTED, NOT SENT (2026-08-14)
+
+**Status: awaiting owner decision.** Both of these are change requests against repos oracle-next does
+not own (`empyrean/contract`, `sigil`, `aurora`). Filing them is outward-facing and is the owner's
+call, not mine — so they are written out here ready to send, and nothing has been sent, filed, or
+committed to another repo. Both were surfaced by the 2026-08-13/14 engine-side recon
+(`docs/2026-08-14-tooling-frontier-recon.md` §6).
+
+Neither blocks the current overnight arc. Both are cheap for the other side.
+
+---
+
+## Ask 1 — resolve the `rom_reloaded` vs `romReloaded` event-name drift
+
+**Severity: low, but it is a live latent bug and it gets more expensive the longer both spellings
+exist in approved documents.**
+
+- `empyrean/contract/protocol.md` §3 specifies the push event as **`emulator/romReloaded`** (camelCase,
+  consistent with `protocolVersion` and the rest of the envelope).
+- `aurora/docs/specs/2026-07-03-aether-client-playtest-design.md` — an **approved** spec — subscribes
+  to **`emulator/rom_reloaded`** (snake_case).
+
+One of the two is wrong. Since the contract explicitly declares itself the source of truth (*"the
+emulator conforms to it, not the reverse"*), the presumption should be that Aurora's spec needs the
+correction — but that is the contract owner's call, not oracle-next's.
+
+**What we are asking for:** a ruling on which spelling is normative, and a correction to whichever
+document is wrong.
+
+**What we are explicitly NOT doing, and why:** oracle-next will not quietly emit both spellings. A
+server that accepts both makes the drift permanent and invisible — every client keeps working, so
+nobody ever fixes it, and the next client author copies whichever one they happened to read. We would
+rather implement the one true name and have Aurora's subscription fail loudly than paper over a
+contract disagreement in our implementation.
+
+**Cost to the other side:** a one-line edit in one document.
+
+---
+
+## Ask 2 — ship `s4.build.json` from `sigil build`
+
+**Severity: moderate. This is the standing fix for the single most-cited bug class in the suite docs.**
+
+Stale symbols have now bitten **three times**. The contract itself documents an incident where
+`Camera_X` moved `$FFFFA120` → `$FFFFA144` mid-session and every symbol shifted by +$24, rotting a
+"verified" literal inside a single session (`protocol.md:68-78`). That documentation is itself out of
+date in an instructive way: today's `aeon/s4.lst` has `Camera_X : FFFFA428`, so **it has moved twice
+more since the incident was written up**.
+
+A build manifest is already specified and already blessed — it simply has not been emitted:
+- `empyrean/docs/STUDIO_VISION.md` §6.2 specifies it.
+- `empyrean/docs/ASSEMBLER_VISION.md:159` references it.
+- `empyrean/CLAUDE.md:203` says to ship it **"now"** rather than waiting for Sigil Spec 4.
+- The sibling emulator already carries a no-op validation seam for it (`protocol.md` §4 forward note,
+  §8 item 7), and its `buildId` check is stubbed out (`ControlSocket.cpp:1487-1492`).
+
+**What we are asking for:** `sigil build` emits a small `<rom>.build.json` alongside the `.bin` and
+`.lst`, carrying at minimum a build id, the ROM hash, the game and shape (`s4` vs `s4.debug` vs `demo`
+— these have *different RAM layouts*, so shape is not cosmetic), and the paths/hashes of the emitted
+artifacts.
+
+**Why it matters specifically to oracle-next:** we can then refuse a symbol table that does not belong
+to the loaded ROM, instead of cheerfully resolving every address to a plausible-looking wrong name.
+A wrong symbol is worse than no symbol — no symbol makes you go look it up; a wrong one makes you
+confident.
+
+**Partial mitigation already available to us, requiring nothing from anyone:** every shipped Aeon ROM
+appears to carry a `deb2` symbol appendix at `EndOfRom` (verified: `s4.bin` at `0xA11F0`, 36,884 bytes;
+`s4.debug.bin` at `0xA30B0`, 43,474 bytes). Its presence, offset and size are a usable build
+fingerprint **even without decoding the packed names**, and because it is emitted into the ROM by a
+hard placement invariant, it cannot drift from the bytes it ships in. We intend to use that as an
+interim check regardless of whether this ask is granted — but it is a fingerprint, not a manifest: it
+cannot tell us the *shape*, and shape is exactly what silently changes RAM layout.
+
+**Cost to the other side:** small, and it is already on their own roadmap with a "ship it now" note
+against it.
+
+---
+
+## Suggested handling
+
+Both are better raised as short written change requests against `empyrean/contract` than as informal
+mentions, since the contract's whole value is that it is the written source of truth. Ask 1 is a
+one-line correction and could go in immediately. Ask 2 is a small feature on sigil's side and can
+follow at whatever pace suits, since we have the `deb2` fingerprint as an interim.
