@@ -136,23 +136,33 @@ param, and not an internal error — it is a well-formed request that is wrong *
 implicitly (pause, run, stay paused) would change the machine's mode as a side effect of a call the
 client did not ask to change mode, which is the class of silent state change this bus exists to prevent.
 
-**What we did.** `-32600` with `data.reason = "machineRunning"` and a message naming the fix
-(`emulator/pause` first). `-32600` is the least-wrong code but it reads as "bad envelope", which this
+**What we did at the time.** `-32600` with `data.reason = "machineRunning"` and a message naming the fix
+(`emulator/pause` first). `-32600` was the least-wrong code but it reads as "bad envelope", which this
 is not.
 
 **Proposed change.** Add `-32005 | invalid state for this operation` to §5, with `data.reason` carrying
 a machine-readable discriminant.
 
-> **Adopted** (contract §5). `-32005` now exists in code as `rpc::code::INVALID_STATE`, with
+> **Adopted** (contract §5). `-32005` exists in code as `rpc::code::INVALID_STATE`, with
 > `RpcError::invalid_state(reason, message, extra)` merging the discriminant into `data` so it cannot be
 > forgotten. The checkpoint methods use it (`checkpointCapReached`, `unknownCheckpoint`).
-> **Not yet migrated:** `Engine::require_paused` still returns `-32600`, so `emulator/run_frames` while
-> free-running — §5's own first worked example of `-32005` — is knowingly non-conformant. Its
-> `data.reason` is already the contract's `"machineRunning"`, so the fix is the code integer at
-> `engine.rs` `require_paused` plus the assertion in `tests/methods.rs`
-> (`a_run_request_while_free_running_is_refused_rather_than_silently_changing_mode`). Left for a separate
-> slice rather than folded into the checkpoint work, so a behaviour change to shipped methods gets its
-> own review.
+>
+> **Migrated — delivered.** `Engine::require_paused` (`crates/oracle-aether/src/engine.rs`) now returns
+> `-32005` via `RpcError::invalid_state`, so `emulator/run_frames` while free-running — §5's own first
+> worked example of `-32005` — is conformant. The `data.reason` discriminant was already the contract's
+> `"machineRunning"` and is unchanged, as is the message naming the fix; the migration was the code
+> integer alone, with no implicit pausing added. The pinning assertion in `crates/oracle-aether/tests/methods.rs`
+> (`a_run_request_while_free_running_is_refused_rather_than_silently_changing_mode`) was flipped to
+> `-32005` first and observed failing against the old implementation before the change. This closes the
+> branch's last known deviation from §5 / §6's run-control state rule / §8 item 12.
+>
+> The gate covers all four `require_paused` callers — `run_frames`, `run_to`, `press` and `reload_rom`
+> (each of which *advances or replaces* the machine). `run_to_scanline` and `step*`, also named by §6's
+> rule, are not implemented in this slice and so are not advertised by `initialize`. The remaining
+> `-32600` sites were audited and are all genuine envelope errors: batch / non-object message /
+> malformed `id` / `jsonrpc` / `method` (`rpc.rs`), the over-long-line refusal (`server.rs`), and the
+> handshake-sequencing checks (`session.rs`) — the last of which are *connection*-state, not machine-mode,
+> and so stay outside `-32005`'s §5 definition ("not in the machine's current mode").
 
 ---
 
