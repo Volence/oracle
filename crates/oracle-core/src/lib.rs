@@ -14,6 +14,10 @@ pub mod io;
 pub mod m68000;
 pub mod render;
 pub mod rng;
+/// Per-scanline capture (`F-SCANLINE-CAPTURE`): one configurable [`scanline_capture::ScanlineCapture`] sink
+/// replacing the ad-hoc first-wins / last-frame collectors. Caller-owned, never part of `System` /
+/// `state_hash` / `export_state`.
+pub mod scanline_capture;
 pub mod scheduler;
 pub mod state_hash;
 /// `<rom>.lst` symbol table — name↔address resolution and the `$`-mangled scope tree. Pure (`&str` in,

@@ -751,9 +751,12 @@ the ROM's own expected table at `$ED10`.
 *after* `run_frames(n)` completes, so any effect that exists only mid-frame is lost. That default is
 unchanged (every other row still hashes the end-of-frame picture and every one of those hashes is
 byte-identical across this change), but the harness now also has a **per-scanline capture** path:
-`FrameCapture` opts into `BusEventSink::wants_scanlines` and retains the last complete frame of lines as
-the `Scanline` event renders them, and `frame_hash_scanline` hashes that in the *same* FNV-1a byte layout
-as `frame_hash` (both go through `fnv1a_rgb`), so the two are directly comparable.
+`oracle_core::scanline_capture::ScanlineCapture` in `Retain::LastFrame` opts into
+`BusEventSink::wants_scanlines` and retains the last complete frame of lines as the `Scanline` event
+renders them, and `frame_hash_scanline` hashes that in the *same* FNV-1a byte layout as `frame_hash` (both
+go through `fnv1a_rgb`), so the two are directly comparable. (Until `F-SCANLINE-CAPTURE`, 2026-08-14, this
+was a test-local `FrameCapture` that hand-detected the frame boundary from magic line numbers; the sink is
+now shared and the boundary comes from `BusEventSink::on_frame_boundary`. The hashes did not move.)
 
 `color_1536` is upgraded to it and is the clean demonstration of what the limitation cost. Both
 framebuffers were dumped as PPM and inspected by eye:

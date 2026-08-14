@@ -278,6 +278,16 @@ infers it from magic line numbers), and it directly serves the audience the reco
 work is *for* — Aeon developers, who independently rediscovered the frame-latched-CRAM trap three
 times. This is the item the trace recorder's motivating evidence actually pointed at.
 
+> **EXECUTED 2026-08-14, and the ~60-line estimate held** (`crates/oracle-core/src/scanline_capture.rs` =
+> 117 lines of type + impl, `on_frame_boundary` = 1 trait method + 3 forwarders + 1 call site; both ad-hoc
+> sinks deleted). **The one non-obvious call: the boundary is end-of-active-display (the line-224 `Scanline`
+> event), not top-of-frame.** `run_frames` deadlines land exactly on a frame-boundary mclk and the run loop
+> tests `now < deadline` *before* popping due events, so the line-0 event of the frame after the last is
+> never delivered inside a run — which is why a 1-frame run delivers 224 scanlines and not 225. Placing the
+> hook at line 0 would have silently orphaned the final frame of every run and moved the `color_1536`
+> per-scanline `frame_hash` currency. Pinned by a test that runs the deleted magic-line sink as an oracle
+> and asserts byte-identical retained pixels.
+
 **3. `F-TRACE-SIZEFILTER` (~8 lines) — third.** Four real episodes, no currency surface, and it was
 only left out because the design honorably refused to smuggle in a filter its spec hadn't sanctioned.
 Sanctioned now. Do it in the same sitting as item 2 if convenient.
