@@ -8,9 +8,9 @@
 //! once (at `$20E`) and written exactly once (at `$212`) — a clean single-hit assertion. Work RAM is
 //! randomized at power-on, so the read returns the power-on word `V` and the store writes `V + 1`.
 
-use oracle_core::bus::{BusEventSink, BusOp, Size};
+use oracle_core::bus::{BusEventSink, BusOp, Fanout, Size};
 use oracle_core::system::System;
-use oracle_core::watchpoints::{WatchOp, WatchSpace, WatchVia, Watchpoints};
+use oracle_core::watchpoints::{AddrParity, WatchOp, WatchSpace, WatchVia, Watchpoints};
 
 /// A booted machine running the stir-RAM fixture ROM.
 fn booted() -> System {
@@ -398,4 +398,145 @@ fn the_trace_report_carries_the_machines_own_timing_basis() {
     for h in wp.hits() {
         assert_eq!(h.frame, h.mclk / basis.mclk_per_frame);
     }
+}
+
+// --- F-TRACE-SIZEFILTER: the size + address-parity filters, on a real machine ----------------------------
+
+/// `K4Probe`'s read-arm classifier, copied from `examples/k4_openbus_probe.rs` (outer `Read | Tas` gate
+/// included) so the comparison below is against the real hand-rolled counters, not a paraphrase.
+#[derive(Default)]
+struct K4Counters {
+    io_even_byte_reads: u64,
+    io_word_reads: u64,
+    status_upper_reads: u64,
+    status_odd_byte_reads: u64,
+    io_reads_total: u64,
+}
+
+impl K4Counters {
+    fn classify(&mut self, e: &oracle_core::bus::BusEvent) {
+        if !matches!(e.op, BusOp::Read | BusOp::Tas) {
+            return;
+        }
+        match e.addr {
+            0xA1_0000..=0xA1_001F => {
+                self.io_reads_total += 1;
+                match e.size {
+                    Size::Byte if e.addr & 1 == 0 => self.io_even_byte_reads += 1,
+                    Size::Word => self.io_word_reads += 1,
+                    _ => {}
+                }
+            }
+            0xC0_0004..=0xC0_0007 => {
+                if e.size == Size::Word || e.addr & 1 == 0 {
+                    self.status_upper_reads += 1;
+                } else {
+                    self.status_odd_byte_reads += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The counters are a sink in their own right, so `Fanout` (not a hand-rolled composite) feeds them and the
+/// `Watchpoints` from **one** event stream — the comparison below cannot be confounded by two runs.
+impl BusEventSink for K4Counters {
+    fn on_event(&mut self, event: oracle_core::bus::BusEvent) {
+        self.classify(&event);
+    }
+}
+
+/// A booted machine running the pad-poll fixture, whose loop reads `$A10003` — a **byte** access at an
+/// **odd** address in the I/O range, i.e. real traffic the two new filters must discriminate.
+fn booted_pad_poll() -> System {
+    let mut sys = System::new(0x5EED);
+    sys.load_rom(oracle_core::testrom::build_pad_poll());
+    sys.reset();
+    sys
+}
+
+/// Three of `K4Probe`'s four motivating counters, expressed as watch configuration, agree with the
+/// hand-rolled originals over a real run of a real machine — and the agreement is not vacuous: a filterless
+/// watch over the same range counts hundreds of accesses, every one of which the *odd*-parity byte watch
+/// claims and the *even*-parity byte watch correctly refuses.
+#[test]
+fn k4_io_counters_as_watch_config_agree_with_the_hand_rolled_counters() {
+    let mut sys = booted_pad_poll();
+    let mut hand = K4Counters::default();
+    let mut wp = Watchpoints::new(0);
+    const IO: std::ops::RangeInclusive<u32> = 0xA1_0000..=0xA1_001F;
+    const STATUS: std::ops::RangeInclusive<u32> = 0xC0_0004..=0xC0_0007;
+    let io_even_byte = wp.add(
+        Watch::bus(IO, WatchOp::Read, "io_even_byte_reads")
+            .size(Size::Byte)
+            .addr_parity(AddrParity::Even)
+            .mode(WatchMode::Count),
+    );
+    let io_word = wp.add(
+        Watch::bus(IO, WatchOp::Read, "io_word_reads")
+            .size(Size::Word)
+            .mode(WatchMode::Count),
+    );
+    let status_odd_byte = wp.add(
+        Watch::bus(STATUS, WatchOp::Read, "status_odd_byte_reads")
+            .size(Size::Byte)
+            .addr_parity(AddrParity::Odd)
+            .mode(WatchMode::Count),
+    );
+    // Controls: every I/O read, and every I/O read that is an odd-address byte.
+    let io_any = wp.add(Watch::bus(IO, WatchOp::Read, "io.any").mode(WatchMode::Count));
+    let io_odd_byte = wp.add(
+        Watch::bus(IO, WatchOp::Read, "io.odd.byte")
+            .size(Size::Byte)
+            .addr_parity(AddrParity::Odd)
+            .mode(WatchMode::Count),
+    );
+
+    let mut both = Fanout::new(&mut hand, &mut wp);
+    sys.run_frames_with_sink(2, &mut both);
+
+    let of = |id| wp.watch(id).unwrap().matched;
+    assert!(wp.seen() > 10_000, "a live instrument: {}", wp.seen());
+    // The negative control comes first: the range really is busy.
+    let io_total = of(io_any);
+    assert!(io_total > 0, "the pad-poll loop reads the I/O range");
+    assert_eq!(io_total, hand.io_reads_total, "same stream, same total");
+    assert_eq!(
+        of(io_odd_byte),
+        io_total,
+        "every I/O read this ROM makes is an odd-address byte ($A10003)"
+    );
+    // ...so the even-parity filter must refuse all of them, and it agrees with the probe that it should.
+    assert_eq!(of(io_even_byte), hand.io_even_byte_reads);
+    assert_eq!(
+        of(io_even_byte),
+        0,
+        "no even-address byte read, per the ROM"
+    );
+    assert_eq!(of(io_word), hand.io_word_reads);
+    assert_eq!(of(io_word), 0, "and no word read of the I/O range");
+    assert_eq!(of(status_odd_byte), hand.status_odd_byte_reads);
+}
+
+/// The precondition behind "`status_odd_byte_reads` = Byte and odd": the 68000 bus adapter emits **only**
+/// `Byte` and `Word` accesses (a `.l` operand is two word bus cycles), so the probe's "odd and non-Word"
+/// and a `Byte`+`Odd` watch classify identically on any real stream. A census over `Size` proves it on a
+/// real run rather than asserting it from the source comment.
+#[test]
+fn the_bus_emits_only_byte_and_word_accesses() {
+    let mut sys = booted_pad_poll();
+    let mut wp = Watchpoints::new(0);
+    let id = wp.add(
+        Watch::bus(0..=0xFFFF_FFFF, WatchOp::Any, "widths")
+            .mode(WatchMode::Census(CensusKey::Size)),
+    );
+    sys.run_frames_with_sink(2, &mut wp);
+    let census = wp.watch(id).unwrap().census.unwrap();
+    assert!(!census.is_empty(), "the machine ran");
+    assert!(
+        census.iter().all(|(k, _)| *k == 1 || *k == 2),
+        "only 1-byte and 2-byte bus accesses, never 4: {census:?}"
+    );
+    assert!(!wp.watch(id).unwrap().keys_capped);
 }
