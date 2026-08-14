@@ -94,6 +94,36 @@ This is the one place the intended scope was consciously not delivered.
 > The sentence above — *"the one place the intended scope was consciously not delivered"* — no longer
 > holds; it is left in place because these drafts are the record of what was raised, not a status page.
 
+> **Review corrections (same day).** An adversarial review of the delivery found three things, all fixed
+> on top rather than by rewriting the commit:
+>
+> 1. **`checkpoint_list`'s cursor is an `id`, not a `Vec` position.** `checkpoint_drop` compacts the
+>    slot vector, so a drop *before* an outstanding cursor shifted every later slot left and the next
+>    page stepped over a live checkpoint — while still reporting `truncated: false`, which is exactly the
+>    "partial list a client can mistake for a complete one" §6.1 forbids, on a bus §6.1 explicitly
+>    expects two clients to share. The cursor now means *"resume at the first id strictly greater than
+>    this"*, which is stable under concurrent drops because ids are monotonic and never reused.
+>    `rpc::bounded_array` is **not** changed — it is shared with `lookup_symbol`, whose cursor really is
+>    a position into an immutable result set — so it is fed the positional skip count for its
+>    `total`/`returned`/`truncated` maths and only the emitted continuation token is checkpoint-specific.
+>    A knock-on: a cursor whose slots have since been dropped is now an honest empty page instead of a
+>    hard `-32602`; an id the server never issued is still refused.
+> 2. **The symbol table rides in the slot too.** `symbols`/`symbols_path` are engine-side shadows of the
+>    loaded cartridge in exactly the way `rom_path` is, and leaving them behind meant a restore came back
+>    with ROM A while `lookup_symbol` still answered from ROM B's listing — D7's named hazard, and a
+>    `read_memory {symbol}` that reads a wrong address and reports success. `reload_rom` already drops a
+>    table that stops binding; `restore` was strictly weaker for the same cartridge transition. No wire
+>    field was invented (§6.1: "no extra fields are needed and none should be invented"). The pair is not
+>    re-validated on restore — both halves come from one slot and were checked against each other when
+>    the listing was loaded — and that reasoning is a `debug_assert!` rather than a comment.
+> 3. **The volatility test was a name grep, and it was vacuous.** Adding a `std::fs::write` inside
+>    `Engine::checkpoint` left the whole suite green. D13 rule 1 is a claim about *code paths*, so it is
+>    now checked by reading them: the four handler bodies and their helpers are scanned for filesystem
+>    tokens, with an anti-vacuity control asserting the same scan **does** fire on `reload_rom` and
+>    `load_symbols`, which legitimately read files. Not airtight — a violation hidden behind a helper
+>    defined elsewhere in the file would slip past — but it catches what actually happens, and it fails
+>    on the exact mutation that used to pass.
+
 ---
 
 ## CR-3 — §5 has no error code for "wrong machine state for this operation"

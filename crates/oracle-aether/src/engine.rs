@@ -30,6 +30,7 @@ use oracle_core::symbols::{BindingFault, RomBinding, SymbolTable};
 use oracle_core::system::{System, MCLK_PER_FRAME, RAM_SIZE};
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Work RAM's decode window on the 68000's 24-bit bus (`bus.rs`: `0xE0_0000..=0xFF_FFFF`, mirrored every
@@ -226,11 +227,23 @@ struct Checkpoint {
     snapshot: Vec<u8>,
     /// The engine-side shadows of machine state, captured with the machine so a restore cannot leave
     /// them describing a cartridge and a pad set that are no longer loaded. They are not extra state:
-    /// [`Engine::held`] mirrors the pads inside `System`, and `rom_path` names the image inside it. A
-    /// restore that brought the ROM back but left `status` reporting the *other* image's path would be
-    /// exactly the half-applied restore D13 rule 2 forbids.
+    /// [`Engine::held`] mirrors the pads inside `System`, `rom_path` names the image inside it, and the
+    /// symbol table is a listing bound to *that* image. A restore that brought the ROM back but left
+    /// `status` reporting the *other* image's path, or resolving names against the *other* image's
+    /// listing, would be exactly the half-applied restore D13 rule 2 forbids.
+    ///
+    /// The symbol table rides along for D7's reason specifically: stale symbol resolution is this bus's
+    /// named hazard ("the 'verified' literal went stale within the session"), and a `read_memory
+    /// {symbol}` answered from the wrong cartridge's table reads a wrong address and reports success.
+    /// [`Engine::reload_rom`] already drops a table that stops binding to the loaded image; a `restore`
+    /// that did neither would be strictly weaker than `reload_rom` for the same cartridge transition.
+    ///
+    /// The table is an [`Arc`] so a capture is a refcount bump rather than a copy of every symbol — at
+    /// the cap that is the difference between one listing in memory and one per slot.
     held: [Pad; 2],
     rom_path: Option<String>,
+    symbols: Option<Arc<SymbolTable>>,
+    symbols_path: Option<String>,
 }
 
 /// The emulator and everything the bus knows about it. Lives on exactly one thread (the core is
@@ -239,7 +252,8 @@ pub struct Engine {
     sys: System,
     config: EngineConfig,
     subs: Subscribers,
-    symbols: Option<SymbolTable>,
+    /// Shared, never mutated in place: a checkpoint captures the table by refcount (see [`Checkpoint`]).
+    symbols: Option<Arc<SymbolTable>>,
     symbols_path: Option<String>,
     rom_path: Option<String>,
     /// **Free-running mode** — `emulator/resume` sets it, `emulator/pause` clears it. This is the *mode*
@@ -300,7 +314,7 @@ impl Engine {
     /// Install an already-parsed symbol table (the binary does this at startup from the `.lst` beside
     /// the ROM). The binding check is the caller's — see [`Engine::load_symbols`] for the wire path.
     pub fn set_symbols(&mut self, table: Option<SymbolTable>, path: Option<String>) {
-        self.symbols = table;
+        self.symbols = table.map(Arc::new);
         self.symbols_path = path;
     }
 
@@ -558,7 +572,7 @@ impl Engine {
             // Deliberately the *emulated* frame index, not a UI counter. The sibling's `frame_token` is a
             // UI counter, which forced hand-rolled realignment three separate ways (recon §5 C2).
             "frameToken": self.frame(),
-            "symbolCount": self.symbols.as_ref().map_or(0, SymbolTable::len),
+            "symbolCount": self.symbols.as_ref().map_or(0, |t| t.len()),
             "symbolsPath": self.symbols_path.clone(),
             "romPath": self.rom_path.clone(),
             "romBytes": self.sys.rom().len(),
@@ -1008,7 +1022,7 @@ impl Engine {
 
         let count = table.len();
         let modules = table.modules().len();
-        self.symbols = Some(table);
+        self.symbols = Some(Arc::new(table));
         self.symbols_path = Some(path.clone());
         let mut out = json!({
             "path": path,
@@ -1129,6 +1143,8 @@ impl Engine {
             snapshot,
             held: self.held,
             rom_path: self.rom_path.clone(),
+            symbols: self.symbols.clone(),
+            symbols_path: self.symbols_path.clone(),
         });
         // `frame`/`mclk` are deliberately absent: §6.1 says they **are** the machine stamp, and the stamp
         // is merged in structurally after this returns (`rpc::stamp_result`). Emitting them here would be
@@ -1157,11 +1173,30 @@ impl Engine {
             .with_data(json!({"id": id}))
         })?;
         let (held, rom_path) = (cp.held, cp.rom_path.clone());
+        let (symbols, symbols_path) = (cp.symbols.clone(), cp.symbols_path.clone());
         // Nothing is applied until the decode has succeeded — a half-applied restore is exactly what
         // "MUST NOT partially restore" rules out.
         self.sys = sys;
         self.held = held;
         self.rom_path = rom_path;
+        // The symbol table travels with the cartridge it was bound to (D7). It is deliberately *not*
+        // re-validated here: the listing and the ROM were checked against each other when the listing was
+        // loaded, and both halves are being replaced together from the same slot, so the pair is coherent
+        // by construction. Re-running `validate_against_rom` would add a way for a restore to fail
+        // half-way through — the one outcome §6.1 rules out — in service of an invariant already held.
+        // The debug assertion below is that reasoning, made checkable.
+        self.symbols = symbols;
+        self.symbols_path = symbols_path;
+        #[cfg(debug_assertions)]
+        if let Some(t) = &self.symbols {
+            debug_assert!(
+                !matches!(
+                    t.validate_against_rom(self.sys.rom()),
+                    RomBinding::Mismatch(_)
+                ),
+                "a checkpoint's symbol table must still bind to the ROM restored from the same slot"
+            );
+        }
 
         // The whole result **is** the machine stamp (§6.1), reporting the restored coordinate — which is
         // precisely the confirmation the caller wants, so no extra field is needed and none is invented.
@@ -1171,18 +1206,43 @@ impl Engine {
     fn checkpoint_list(&mut self, params: &Value) -> Result<Value, RpcError> {
         let total = self.checkpoints.len();
         let cap = self.config.max_checkpoints;
+        // **The cursor is an `id`, not a position** — "resume at the first id strictly greater than
+        // this". §6.1 requires that a client "must never be handed a partial list it can mistake for a
+        // complete one", and it is explicit that two clients share one bus (the stated reason ids are
+        // server-assigned at all). A positional cursor breaks precisely there: `checkpoint_drop`
+        // compacts the `Vec`, so a drop *before* an outstanding cursor shifts every later slot left and
+        // the next page steps over a live checkpoint — while still reporting `truncated: false`, which is
+        // the one thing the sentence above forbids. Ids are monotonic and never reused, so an id cursor
+        // is stable no matter what is dropped underneath it.
+        //
+        // The bound is the highest id the server has ever *issued*, not the live count: a cursor for
+        // slots that have since been dropped is a legitimate stale page (answered below with an empty
+        // one), while an id that was never handed out is a typo and is still refused loudly.
+        let highest_issued = self.next_checkpoint_id - 1;
         let cursor = match params.get("cursor") {
             None => 0,
-            Some(v) => hex::parse_count("cursor", v, 0, total as u64)? as usize,
+            Some(v) => hex::parse_count("cursor", v, 0, highest_issued)?,
         };
         let limit = match params.get("limit") {
             None => cap,
             Some(v) => hex::parse_count("limit", v, 1, cap as u64)? as usize,
         };
+        // The continuation token below is "the last id on this page", which is only the right place to
+        // resume if the slots are id-ascending. They are, by construction — `checkpoint` pushes ids from
+        // a monotonic counter and `checkpoint_drop` uses `retain`, which preserves order — so this is the
+        // assumption written down where it would break rather than left implicit.
+        debug_assert!(
+            self.checkpoints.windows(2).all(|w| w[0].id < w[1].id),
+            "the checkpoint slots must stay id-ascending for the cursor to be a resume point"
+        );
+        // How many live slots the cursor is already past. This is what the shared bounded-array rule
+        // needs in order to compute `truncated` correctly, and it is derived from the ids rather than
+        // assumed from the cursor, so a drop under the client cannot make it lie.
+        let skipped = self.checkpoints.iter().filter(|c| c.id <= cursor).count();
         let items: Vec<Value> = self
             .checkpoints
             .iter()
-            .skip(cursor)
+            .filter(|c| c.id > cursor)
             .take(limit)
             .map(|c| {
                 let mut e = json!({
@@ -1200,11 +1260,22 @@ impl Engine {
             })
             .collect();
 
+        // The continuation token is the last id on this page. Taken *before* the items are handed to
+        // the bounded-array helper, which consumes them.
+        let next_cursor = items
+            .last()
+            .and_then(|e| e["id"].as_u64())
+            .unwrap_or(cursor);
+
         // The house's one bounded-array rule (`rpc::bounded_array`, recon §4 non-negotiable #2) computes
         // the page; §6.1's spelling for this method names the array `checkpoints` and its continuation
         // token `cursor`, so the same envelope is emitted under the catalog's names rather than a second
-        // pagination convention being invented alongside it.
-        let page = rpc::bounded_array(items, total, cursor, limit);
+        // pagination convention being invented alongside it. The helper is **not** changed to understand
+        // ids — it is shared with `lookup_symbol`, whose cursor really is a position into an immutable
+        // result set, and re-defining it for everyone to fix one caller would be the wrong trade. It is
+        // fed the positional `skipped`, which is exactly what its `total`/`returned`/`truncated` maths
+        // needs, and only the emitted continuation token is this method's own.
+        let page = rpc::bounded_array(items, total, skipped, limit);
         let mut out = Map::new();
         out.insert("checkpoints".into(), page["items"].clone());
         out.insert("total".into(), page["total"].clone());
@@ -1212,9 +1283,10 @@ impl Engine {
         out.insert("limit".into(), page["limit"].clone());
         out.insert("truncated".into(), page["truncated"].clone());
         // `cursor` is returned **when more remain** and is absent otherwise, so a client can never mistake
-        // "here is where to continue" for "you are at the end".
-        if let Some(next) = page["nextCursor"].as_u64() {
-            out.insert("cursor".into(), json!(next));
+        // "here is where to continue" for "you are at the end". The helper's own `nextCursor` is
+        // positional and is deliberately not emitted; only whether it exists is used.
+        if page["nextCursor"].is_u64() {
+            out.insert("cursor".into(), json!(next_cursor));
         }
         Ok(Value::Object(out))
     }
