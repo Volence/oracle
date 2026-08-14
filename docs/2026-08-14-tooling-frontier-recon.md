@@ -1,7 +1,8 @@
 # The tooling frontier — consolidated recon (2026-08-14)
 
-**Status:** recon + proposed sequencing. No implementation decisions ratified yet; the owner has
-approved nothing in tracks 2/3 beyond the investigation itself.
+**Status:** recon + proposed sequencing. Of §7, **only P2 (symbols) has been built** — see the P2 entry and
+§9. Everything else remains proposed: the owner has approved nothing further in tracks 2/3 beyond the
+investigation itself.
 
 > ## ⚠ ERRATA — five claims in this document are wrong (corrected 2026-08-14)
 >
@@ -389,6 +390,9 @@ shape and let the archaeology choose the order.
   Every reply carries `{frame, mclk, running}` from day one — retrofitting C2 later is far more
   expensive than honouring it now.
 - **P2 — symbols** from `.lst`, with shape refusal. Everything downstream reads better immediately.
+  **SHIPPED** — `crates/oracle-core/src/symbols.rs` (pure parser, both lookup directions, `$`-scope tree,
+  `deb2` shape refusal) + `crates/oracle-frontend/src/symbol_file.rs` (the file half) + symbolised watch-hit
+  PCs. See §9 for the seven corrections shipping it produced.
 - **P3 — deterministic scripted input + the headless replay runner.** First real payback to the engine.
 - **P4 — KDebug `$C00004`**, then break-on-fault.
 - **P5 — trace/query as a first-class recorder** on the sink seam (attribution in the event, filtering,
@@ -414,3 +418,76 @@ claim, and report negative evidence*. Worth repeating on the next recon.
 
 Two findings were reached **independently by two streams**, which is the strongest signal in the set:
 the sibling's input driver is broken, and its frame identity is not emulation-derived.
+
+---
+
+## 9. Addendum — what shipping P2 (symbols) corrected (2026-08-14)
+
+The recon above was right about the format and the traps. Implementing it against the real files surfaced
+seven things it did not have — three of them (9e–9g) only after an adversarial review of the first working
+version. Recorded here rather than edited into §1b, so the original reading stays intact.
+
+**9a. A fourth trap: `FFFFxxxx` is a 32-bit spelling of a 24-bit bus address.** §1b correctly says RAM
+addresses are plain 8-hex and not sign-extended, but stops there. The 68000 drives 24 address lines and
+`bus.rs` decodes work RAM at `$E00000–$FFFFFF`, so the listing's `FFFF8CFA` **is** the machine's `$FF8CFA`.
+Matching a PC or a bus address against the raw listing value finds nothing, every time — a loader that got
+traps 1–3 right and missed this would still resolve zero RAM addresses. `Symbol` therefore carries both
+`raw_addr` (the file's spelling) and `addr` (masked); all lookups use the masked form and mask the query too.
+Corollary: nearest-preceding search must not cross an `AddrSpace` boundary, or a RAM address below the first
+RAM symbol resolves to the last ROM symbol with a ~15 MB displacement.
+
+**9b. `deb2` is verified, and it does catch the shape cross — but it is a filter, not a proof.** Verified
+firsthand: `s4.bin` carries `de b2 04 02 …` at `$A11F0` (= 659,952; appendix 36,884 bytes, matching §1b),
+`s4.debug.bin` at `$A30B0` (43,474 bytes). Both crosses are caught — `s4.bin` at the debug `EndOfRom` reads
+`43 0b …`, `s4.debug.bin` at the release `EndOfRom` reads zeros. **But `demo.lst` and `demo.debug.lst` both
+declare `EndOfRom : 11224`**, so the probe cannot separate two genuinely different demo builds that share
+1,197 symbols at differing addresses. §1b's "structurally unstaleable" is true only of a *decoded* appendix;
+the offset+magic probe is a strong filter with a real, reproduced blind spot. `validate_against_rom` returns
+three states (`Match` / `Mismatch` / `Indeterminate`) rather than a bool for exactly this reason, and a
+`Match` is documented as "not obviously wrong", never "proven right".
+
+**9c. The cost of a real binding guarantee is producer-side, and small.** Investigated and rejected as
+insufficient: the ROM header `$100–$18D` is **byte-identical** between `s4.bin` and `s4.debug.bin` (same date,
+title, and serial `GM S4-0001-00`), so it separates *games* but never *shapes*; the `.lst` itself carries no
+date, version, hash, or ROM size — `EndOfRom` is the only ROM-derivable datum in the whole file; and symbol
+names are **not** ASCII-searchable in the appendix (`deb2` packs them), so no zero-decode substring check
+exists. `$1A4` == `len - 1` holds 5/5 across shapes, and `$18E` is a genuine whole-image checksum over
+`[0x200, len)` — but both validate the ROM against *itself*, not the listing against the ROM. The clean fix
+is a **sidecar from sigil**: have `append_deb2_appendix` also emit the built image's `$18E`/`$1A4` (or a hash)
+beside the `.lst`. That is a cross-repo ask, not our work.
+
+**9d. Aeon's `s4budget.py` bug is measurable, not just theoretical.** The real `s4.lst` has **279** RAM
+symbols; their tool reports `RAM: 0 bytes` because its regex still expects the 48-bit sign-extended form.
+Pinned as a regression test here (`tests/symbols_real_lst.rs`), and worth raising with them.
+
+**9e. A fifth trap, found in review: the module is located by the dot, not by position.** §1b reads the
+mangling as `$<module.path>$<Proc>$<local>`, and that is true of the release listing — but a label emitted
+inside a macro puts the macro instance *outside* the module: `$diag2$engine.bg_anim$raise`. Taking the first
+component as the module invents a phantom module per macro instance. Measured on `s4.debug.lst`: **94
+"modules", 34 of them phantom `diag1…diag46`, with 125 symbols misfiled**. `s4.lst` contains no
+macro-scoped labels at all, which is precisely why the positional rule looks correct until someone opens a
+debug build — a reminder that validating a format against one artifact validates one artifact. Across all
+six real listings every mangled name has **exactly one** dotted component and it is always the module, in
+three arrangements (`$mod$Parent$local`, `$outer$mod$local`, `$outer$mod$Parent$local`), so the dot rule
+resolves all of them. Corrected count for `s4.debug.lst`: 64 modules, all real.
+
+**9f. And a consequence of it: some readable names are ambiguous.** Because a macro expands N times, N
+labels share one demangled spelling at N *different* addresses — 24 non-synthetic collisions in
+`s4.debug.lst` (e.g. `engine.compression_selftest.raise` names five addresses), 130 counting plumbing. That
+spelling does not identify a location, so printing it is exactly the failure mode this work exists to
+prevent. Such symbols are flagged and displayed by their raw mangled name, which is unique.
+
+**9g. The shape refusal was fail-open, also found in review.** `Mismatch` and `Indeterminate` are not
+independent: **any listing that would be refused becomes merely `Indeterminate` if its `EndOfRom` row goes
+missing** — and truncation removes rows from the end, where `EndOfRom` sits. Verified: deleting that one row
+from `s4.debug.lst` turns a correct refusal against `s4.bin` into "loading it unverified", after which 1,775
+of 1,811 shared symbols name the wrong address. Closed by requiring an unverifiable listing to at least be
+internally whole (`is_intact`: section present, footer present, count matching, no unparsed rows) — note
+that a footer-count comparison alone does *not* catch this, because truncation usually takes the footer too,
+yielding `None` rather than a mismatch.
+
+**Also confirmed against the real file:** 2,129 symbols across **54** modules, footer count exact, zero
+unparsed rows, zero duplicate names, and the two halves of the file (body lines and symbol-table rows) agree
+on all 2,129 addresses. The type column is `C` for 100% of rows — though sigil's emitter *does* support `-`
+for equates (`sigil-link/src/listing.rs`), so §1b's "the emitter dumps no EQU/constants" is a property of
+Aeon's current source, not of the format. The parser reads both markers and depends on neither.

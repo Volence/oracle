@@ -38,7 +38,7 @@
 //! | `-` / `=`         | output volume down / up (audio builds; repeats while held) |
 //! | M                 | mute toggle (audio builds; remembers the volume level) |
 //! | Left mouse click  | watch the VRAM tile under the clicked pixel ("who wrote this tile?") |
-//! | W                 | dump recorded watch hits (seq/frame/pc/addr/old→new/via) + drop count to stdout |
+//! | W                 | dump recorded watch hits (seq/frame/pc/addr/old→new/via, PC symbolised) + drop count |
 //! | C                 | clear the watch (return to the fast null-sink run path) |
 //! | Esc / window-close| quit           |
 //!
@@ -66,6 +66,16 @@
 //!   file is a snapshot of a whole machine, ROM included.
 //! * **The audio sink is rebuilt** ([`audio::resync_sink`]) because both paths rewind the master clock, and a
 //!   sink carrying a stale high frame index renders nothing at all until the machine catches back up.
+//! * **The symbol table is re-read and re-validated** against the new bytes, because a rebuild moves symbols
+//!   and a cached table would keep naming the previous build's addresses while looking perfectly healthy.
+//!
+//! ## Symbols
+//!
+//! If a `<rom>.lst` listing sits next to the ROM (`…/s4.bin` → `…/s4.lst`, exactly where
+//! `sigil build --emit-lst` puts it) it is loaded at boot and used to name addresses — today, the PC of every
+//! watch hit. Loading is opt-in by presence and never load-bearing: absent, unparseable, or belonging to a
+//! *different build* all leave the emulator running exactly as before, with raw hex. That last case is a
+//! deliberate refusal rather than a best effort — see [`symbol_file`] and [`oracle_core::symbols`].
 //!
 //! ## Save states
 //!
@@ -108,9 +118,12 @@ mod save_state;
 
 // Slice S2 — `.srm` battery-save persistence (frontend-only file I/O around the core's SRAM buffer).
 mod sram_file;
+// Opt-in `<rom>.lst` symbol loading — the file half of `oracle_core::symbols`, kept out of the no-I/O core.
+mod symbol_file;
 
 use minifb::{Key, KeyRepeat, MouseButton, MouseMode, ScaleMode, Window, WindowOptions};
 use oracle_core::io::Pad;
+use oracle_core::symbols::SymbolTable;
 use oracle_core::system::System;
 use oracle_core::watchpoints::{WatchOp, WatchSpace, WatchVia, Watchpoints};
 
@@ -238,10 +251,18 @@ fn render_into(sys: &System, buf: &mut Vec<u32>) -> usize {
     width
 }
 
-/// Print every recorded watch hit (oldest first) and the drop count to stdout. `pc` is raw hex (oracle-next
-/// has no symbol table), `via` is the CPU-vs-DMA attribution (`Direct` = CPU data-port write, `Dma` = DMA
-/// step, `Bus` = a v1 68000 bus access — unused by this slice's VRAM watch but printed faithfully).
-fn dump_hits(watchpoints: &Watchpoints) {
+/// How far past a symbol a PC may sit before the name stops being useful. Aeon's listings are dense (2,129
+/// symbols over ~660 KB, and code far denser than that average, which is dragged out by art blobs), so a PC
+/// more than 4 KiB past the nearest label is almost certainly in data or off the end of the image — cases
+/// where naming the previous routine would be actively misleading. Beyond this the hit prints raw hex.
+const MAX_SYMBOL_DISPLACEMENT: u32 = 0x1000;
+
+/// Print every recorded watch hit (oldest first) and the drop count to stdout. `pc` is annotated with the
+/// nearest preceding symbol when a `<rom>.lst` was loaded (`EntryPoint.wait_dma+$1A` — the `$`-scope tree
+/// means this names the *local* label inside a long routine, not just its entry). `via` is the CPU-vs-DMA
+/// attribution (`Direct` = CPU data-port write, `Dma` = DMA step, `Bus` = a v1 68000 bus access — unused by
+/// this slice's VRAM watch but printed faithfully).
+fn dump_hits(watchpoints: &Watchpoints, symbols: Option<&SymbolTable>) {
     let hits = watchpoints.hits();
     println!("--- watch hits: {} recorded ---", hits.len());
     for h in hits {
@@ -250,8 +271,13 @@ fn dump_hits(watchpoints: &Watchpoints) {
             WatchVia::Direct => "Direct(CPU)",
             WatchVia::Dma => "Dma",
         };
+        // Raw hex stays, always: the symbol is an annotation on the address, never a replacement for it.
+        let sym = symbols
+            .and_then(|t| t.resolve_within(h.pc, MAX_SYMBOL_DISPLACEMENT))
+            .map(|r| format!(" {r}"))
+            .unwrap_or_default();
         println!(
-            "seq {:>6}  frame {:>6}  pc ${:06X}  addr ${:04X}  ${:X}->${:X}  via {via}",
+            "seq {:>6}  frame {:>6}  pc ${:06X}{sym}  addr ${:04X}  ${:X}->${:X}  via {via}",
             h.seq, h.frame, h.pc, h.addr, h.old, h.value
         );
     }
@@ -457,6 +483,11 @@ fn main() {
     // invalidates every state written against the previous build.
     let mut rom_fp = save_state::rom_fingerprint(&rom);
 
+    // Opt-in symbols. Loaded here, while `rom` is still ours to borrow: the binding check probes the image's
+    // `deb2` appendix at the offset the listing's own `EndOfRom` names, so it needs the bytes, not the core.
+    // A missing/unusable/mismatched listing is never fatal — the machine runs identically without one.
+    let mut symbols = symbol_file::load_symbols(std::path::Path::new(&args.rom_path), &rom);
+
     let mut sys = System::new(0x5EED);
     sys.load_rom(rom);
 
@@ -608,7 +639,7 @@ fn main() {
 
         // W dumps the recorded hits; C disarms the watch (back to the fast null-sink path).
         if window.is_key_pressed(Key::W, KeyRepeat::No) {
-            dump_hits(&watchpoints);
+            dump_hits(&watchpoints, symbols.as_ref());
         }
         if window.is_key_pressed(Key::C, KeyRepeat::No) {
             watchpoints.clear();
@@ -747,6 +778,14 @@ fn main() {
                         // written against the previous build fail with `StateError::Rom` — which is the point:
                         // a state carries the whole machine, so restoring one would put the old ROM back.
                         rom_fp = save_state::rom_fingerprint(&bytes);
+                        // Re-read the listing too. This is the whole reason symbol resolution is a
+                        // primitive rather than a lookup the user does once: a rebuild moves symbols, and a
+                        // table cached across it names the *previous* build's addresses while looking
+                        // perfectly healthy (the suite contract's D7 incident — every symbol shifted +$24
+                        // mid-session and a "verified" literal rotted). Re-validated against the new bytes,
+                        // so a listing that stopped matching is dropped rather than carried forward.
+                        symbols =
+                            symbol_file::load_symbols(std::path::Path::new(&args.rom_path), &bytes);
                         sys.load_rom(bytes);
                         // `load_rom` zeroed the buffer it just sized from the new header, so re-apply the
                         // on-disk battery image. The `.srm` path comes from the ROM *path*, unchanged here.
