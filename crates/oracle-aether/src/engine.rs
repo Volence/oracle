@@ -1156,7 +1156,7 @@ impl Engine {
     fn restore(&mut self, params: &Value) -> Result<Value, RpcError> {
         let id = parse_checkpoint_id(params)?;
         let Some(cp) = self.checkpoints.iter().find(|c| c.id == id) else {
-            // D13 rule 4: an unknown or already-dropped id is refused, never a silent no-op. A no-op here
+            // §6.1: an unknown or already-dropped id is refused, never a silent no-op. A no-op here
             // would leave the caller running its next experiment against whatever machine happened to be
             // loaded, believing it had gone back.
             return Err(unknown_checkpoint(id));
@@ -1312,9 +1312,9 @@ impl Engine {
         self.checkpoints.retain(|c| c.id != id);
         // Unlike `restore`, dropping an id that is already gone is answered rather than refused: `removed`
         // is the count that actually went (§6.1), and `0` is a complete, machine-readable answer to
-        // "is it gone?" — the caller's intent is satisfied either way. The hazard D13 rule 4 names is a
-        // `restore` that succeeds against a machine the client did not ask for, which has no analogue
-        // here: nothing was restored, nothing was evicted, and no id changed meaning.
+        // "is it gone?" — the caller's intent is satisfied either way. The hazard behind §6.1's refusal
+        // is a `restore` that succeeds against a machine the client did not ask for, which has no
+        // analogue here: nothing was restored, nothing was evicted, and no id changed meaning.
         Ok(json!({"removed": before - self.checkpoints.len()}))
     }
 }
