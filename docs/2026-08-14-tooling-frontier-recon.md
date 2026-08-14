@@ -389,6 +389,23 @@ shape and let the archaeology choose the order.
   `checkpoint`, `screen`.
   Every reply carries `{frame, mclk, running}` from day one — retrofitting C2 later is far more
   expensive than honouring it now.
+  > **SHIPPED 2026-08-14** — `crates/oracle-aether`, a new workspace crate (the core's charter is
+  > "deterministic, no-I/O" and its dependency list stays `bincode` alone; verified with
+  > `cargo tree -p oracle-core`). Transport, handshake and event machinery are **complete**:
+  > NDJSON JSON-RPC 2.0 over `AF_UNIX` with the §7.1 path resolution and a *verified* mode 0600,
+  > `initialize`/`initialized` where the advertised `methods` list **is** the dispatch table (D4
+  > drift is impossible in both directions, and a test asserts it), and per-connection opt-in
+  > push events registered at `initialized` and not one message earlier.
+  > All three non-negotiables are structural rather than per-handler: the stamp is merged in
+  > *after* the handler returns and overwrites any same-named key, so a handler cannot omit or
+  > shadow it; arrays go through one bounded/cursored/truncation-flagged wrapper; approximate
+  > answers carry `caveat`. The slow-client property is a test, not a claim — a subscriber that
+  > stops reading with a 4-deep queue while another client drives 600 events stalls neither the
+  > driver nor the machine, and learns its own `droppedEvents` count when it finally reads.
+  > **`checkpoint` was NOT shipped, deliberately:** §9 defers save-state ops and §8 forbids
+  > inventing them, so the slice ships catalogued `emulator/state_hash` instead and raises
+  > `emulator/checkpoint` as CR-2 (`docs/2026-08-14-aether-change-requests.md`, six change
+  > requests and six recorded ambiguities in all). 16 of 53 methods, every name verbatim from §6.
 - **P2 — symbols** from `.lst`, with shape refusal. Everything downstream reads better immediately.
   **SHIPPED** — `crates/oracle-core/src/symbols.rs` (pure parser, both lookup directions, `$`-scope tree,
   `deb2` shape refusal) + `crates/oracle-frontend/src/symbol_file.rs` (the file half) + symbolised watch-hit

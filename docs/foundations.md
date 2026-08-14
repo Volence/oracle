@@ -53,6 +53,14 @@ A no-I/O **`oracle-core`** crate:
 - **Crates:** `oracle-core` (no I/O, `Send`), `oracle-bus` (tokio `UnixListener`
   JSON-RPC, owns N core instances one-per-thread), `oracle-host` (optional wgpu GUI). The
   same `oracle-core` compiles to **wasm32** for deterministic replay.
+  > **SHIPPED 2026-08-14, under a different name and without tokio.** The bus crate is
+  > **`oracle-aether`** (`crates/oracle-aether`, `docs/2026-08-14-aether-change-requests.md`) —
+  > `std::os::unix::net::UnixListener` plus one reader/writer thread pair per connection, and
+  > `serde_json` as its only third-party dependency. No async runtime: the machine is
+  > single-threaded by charter, so every request already serialises onto one engine thread and
+  > tokio would have bought nothing but a dependency tree. It owns **one** core instance, not N —
+  > multi-instance stays a later call. `oracle-core`'s dependency set is unchanged (`bincode`),
+  > which is the whole reason the transport is a separate crate.
 
 ### Handling shared mutable state (the plan)
 
@@ -125,6 +133,15 @@ empirically: prototype one opcode both ways in Phase 0 before committing.**
 5. `oracle-bus` (tokio `UnixListener` JSON-RPC) mirroring the Aether handshake + core op
    profile with Exodus-identical shapes; `screenshot`→base64; run `oracle_mcp.py` +
    `determinism_gate.py` against it **unchanged** as the conformance gate.
+   > **PARTLY SHIPPED 2026-08-14 as `oracle-aether`** — transport, handshake and event channel
+   > complete; **16 of the 53 catalogued methods**, chosen so every one appears in
+   > `protocol.md` §6 verbatim. Two things this step assumed have since been settled the other
+   > way: replies are **not** Exodus-identical (every reply additionally carries
+   > `{frame, mclk, running}` — recon §4's headline defect in the sibling), and `screenshot`
+   > writes a PPM to a path rather than returning base64, because the contract's §6 result is
+   > `path` and the I/O lives outside the core either way. Running `oracle_mcp.py` unchanged
+   > against it is **not** yet possible and was never attempted: it speaks the legacy flat
+   > `{"op":…}` envelope, which decision §10.3 retires in a flag-day.
 6. Differential harness (lockstep vs BlastEm + Exodus, canonical `export_state` diff
    currency) + nightly cargo-fuzz.
 
