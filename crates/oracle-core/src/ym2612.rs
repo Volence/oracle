@@ -157,6 +157,20 @@ impl Ym2612 {
         );
     }
 
+    /// The register number currently latched for `bank` (0 = `$4000`/`$4001`, 1 = `$4002`/`$4003`) — the
+    /// even-port half of the chip's latch-then-data protocol, i.e. the register the *next* odd-port data
+    /// write will target. Read-only introspection (`F-TRACE-EXPOSE-LATCHES`); powers on `0`.
+    ///
+    /// Sampling caveat: this is the latch *now*. A sink decoding a write stream into (register, value)
+    /// triples sees the latch as it was at each write and must keep its own running decode state — which
+    /// is exactly why `VgmLogger` and `AudioSink` keep theirs.
+    ///
+    /// # Panics
+    /// If `bank > 1`.
+    pub fn addr_latch(&self, bank: usize) -> u8 {
+        self.addr_latch[bank]
+    }
+
     /// The status byte at `$4000`/`$A04000` (and mirrored across `$4001-$4003`/`$A04001-$A04003`): bit0 =
     /// Timer-A overflow, bit1 = Timer-B overflow, **bit7 = 0** (BUSY never set — the Gunstar DR-1b poll
     /// depends on it, FM3), all other bits 0. Pure function of the stored anchors + `now_mclk`, no side effect.
@@ -191,6 +205,36 @@ mod tests {
         // $27 = $05 = LOAD_A | ENBL_A.
         fm.write_port(0x4000, 0x27, t);
         fm.write_port(0x4001, 0x05, t);
+    }
+
+    /// `F-TRACE-EXPOSE-LATCHES`: `addr_latch(bank)` reports the register number the even-port write
+    /// latched, **per bank**. The two banks are deliberately given different values and read back in the
+    /// opposite order, so an accessor that ignores `bank` (or returns a constant) fails.
+    #[test]
+    fn addr_latch_reports_the_latched_register_per_bank() {
+        let mut fm = Ym2612::new();
+        assert_eq!(fm.addr_latch(0), 0x00, "bank 0 powers on at zero");
+        assert_eq!(fm.addr_latch(1), 0x00, "bank 1 powers on at zero");
+
+        // $4000 = bank-0 address port, $4002 = bank-1 address port.
+        fm.write_port(0x4000, 0x27, 0);
+        fm.write_port(0x4002, 0xB4, 0);
+        assert_eq!(fm.addr_latch(1), 0xB4, "bank 1 holds its own latch");
+        assert_eq!(fm.addr_latch(0), 0x27, "bank 0 is untouched by bank 1");
+
+        // Odd ports are data writes: they target the latch, they do not replace it.
+        fm.write_port(0x4001, 0x05, 0);
+        fm.write_port(0x4003, 0xC0, 0);
+        assert_eq!(
+            fm.addr_latch(0),
+            0x27,
+            "bank 0 latch survives its data write"
+        );
+        assert_eq!(
+            fm.addr_latch(1),
+            0xB4,
+            "bank 1 latch survives its data write"
+        );
     }
 
     #[test]
