@@ -28,6 +28,49 @@ fn take(c: &mut Client, label: Option<&str>) -> u64 {
         .expect("`id` must be a server-assigned number")
 }
 
+/// Two listings that declare no `EndOfRom`, so both are accepted *unverified* against the fixture ROM.
+/// They name the same symbol at two different addresses — D7's stale-literal hazard, in fixture form.
+const LST_A: &str = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ EntryPoint : 200 C |
+ $engine.boot$EntryPoint$wait_dma : 214 C |
+ $engine.boot$EntryPoint$warm_boot : 218 C |
+ Player_1 : FFFF8CFA C |
+ Player_2 : FFFF8D4A C |
+
+    5 symbols
+    0 unused symbols
+";
+
+const LST_B: &str = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ EntryPoint : 300 C |
+ Player_1 : FFFF8D1E C |
+
+    2 symbols
+    0 unused symbols
+";
+
+fn write_lst(tag: &str, text: &str) -> std::path::PathBuf {
+    let p = std::env::temp_dir().join(format!("ae-{tag}-{}.lst", std::process::id()));
+    std::fs::write(&p, text).unwrap();
+    p
+}
+
+/// The ids in a `checkpoint_list` page, in the order the server returned them.
+fn page_ids(page: &Value) -> Vec<u64> {
+    page["checkpoints"]
+        .as_array()
+        .expect("`checkpoints` must be an array")
+        .iter()
+        .map(|e| e["id"].as_u64().expect("every entry carries a numeric id"))
+        .collect()
+}
+
 // ------------------------------------------------------------------ the catalog surface
 
 #[test]
@@ -51,16 +94,31 @@ fn the_four_checkpoint_methods_are_advertised_and_no_save_to_file_variant_exists
         assert!(methods.contains(&m), "{m} must be advertised: {methods:?}");
     }
 
-    // D13 rule 1, structurally: there is no method that writes a checkpoint to disk, and no `path`-ish
-    // sibling. The whole method table is the advertised set, so this is an exhaustive check.
+    // D13 rule 1, one half: no advertised method is a persist-to-disk variant. The whole method table is
+    // the advertised set, so this is exhaustive over *names*. Names are the weak half — see
+    // `the_checkpoint_handlers_contain_no_path_from_the_bus_to_the_filesystem` for the half that bites.
     for spec in METHODS {
         let n = spec.name;
-        assert!(
-            !(n.contains("save_state")
-                || n.contains("save_checkpoint")
-                || n.contains("load_state")),
-            "D13 rule 1 forbids a persist-to-disk variant, found {n}"
-        );
+        for banned in [
+            "save_state",
+            "load_state",
+            "save_checkpoint",
+            "checkpoint_save",
+            "checkpoint_export",
+            "checkpoint_write",
+            "export_state",
+            "write_state",
+            "dump_state",
+            "persist",
+            "to_file",
+            "to_disk",
+            "snapshot_to",
+        ] {
+            assert!(
+                !n.contains(banned),
+                "D13 rule 1 forbids a persist-to-disk variant, found {n} (matched {banned:?})"
+            );
+        }
     }
 
     assert_eq!(
@@ -376,6 +434,158 @@ fn checkpoint_list_is_bounded_cursored_and_flags_truncation() {
     );
 }
 
+#[test]
+fn a_drop_between_two_pages_never_skips_a_live_checkpoint() {
+    // §6.1: "a client must never be handed a partial list it can mistake for a complete one" — and the
+    // section is explicit that two clients share one bus, which is the stated reason ids are
+    // server-assigned. A *positional* cursor breaks exactly there: a drop before an outstanding cursor
+    // shifts every later slot left, so the next page steps over a live checkpoint and still reports
+    // `truncated: false`. The cursor is therefore an **id** ("resume after this id"), which is stable
+    // under concurrent drops because ids are monotonic and never reused.
+    let h = spawn("cpskip");
+    let mut c = Client::connect(&h);
+    let init = c.handshake(false);
+    let n = cap(&init) as usize;
+    assert!(n >= 5, "this test needs a cap of at least 5, got {n}");
+
+    let ids: Vec<u64> = (0..n)
+        .map(|i| take(&mut c, Some(&format!("p{i}"))))
+        .collect();
+
+    // Drop the first slot up front so a positional cursor and an id cursor cannot coincide by accident.
+    assert_eq!(
+        c.ok("emulator/checkpoint_drop", json!({"id": ids[0]}))["removed"],
+        json!(1)
+    );
+
+    let p1 = c.ok("emulator/checkpoint_list", json!({"limit": 3}));
+    assert_eq!(page_ids(&p1), vec![ids[1], ids[2], ids[3]]);
+    assert_eq!(p1["truncated"], json!(true));
+    assert_eq!(
+        p1["cursor"],
+        json!(ids[3]),
+        "`cursor` must be the id to resume after, not a Vec position"
+    );
+
+    // A second client drops a checkpoint that page 1 already returned — i.e. *before* the cursor.
+    let mut b = Client::connect(&h);
+    b.handshake(false);
+    assert_eq!(
+        b.ok("emulator/checkpoint_drop", json!({"id": ids[1]}))["removed"],
+        json!(1)
+    );
+
+    // Walk the rest and prove the union of the pages covers every checkpoint still alive.
+    let mut seen = page_ids(&p1);
+    let mut cursor = p1["cursor"].clone();
+    loop {
+        let p = c.ok(
+            "emulator/checkpoint_list",
+            json!({"cursor": cursor, "limit": 3}),
+        );
+        seen.extend(page_ids(&p));
+        match p.get("cursor") {
+            Some(next) => {
+                assert_eq!(p["truncated"], json!(true));
+                cursor = next.clone();
+            }
+            None => {
+                assert_eq!(
+                    p["truncated"],
+                    json!(false),
+                    "no cursor means the walk is complete"
+                );
+                break;
+            }
+        }
+    }
+    for id in &ids[2..] {
+        assert!(
+            seen.contains(id),
+            "checkpoint {id} is live but the paged walk never listed it: {seen:?}"
+        );
+    }
+    assert_eq!(
+        c.ok("emulator/checkpoint_list", json!({}))["total"],
+        json!(n - 2)
+    );
+}
+
+#[test]
+fn a_cursor_whose_checkpoints_are_all_gone_is_an_empty_page_not_a_hard_error() {
+    // Under a positional cursor a `drop all` turned every outstanding cursor into a `-32602`, because
+    // the bound was the live count. An id cursor has no such coupling: "nothing after id N" is a
+    // complete, honest answer, and `total` tells the client the set changed under it. What is still
+    // refused loudly is a cursor the server could never have issued — that is a typo, not a stale page.
+    let h = spawn("cpstale");
+    let mut c = Client::connect(&h);
+    c.handshake(false);
+    let ids: Vec<u64> = (0..3)
+        .map(|i| take(&mut c, Some(&format!("s{i}"))))
+        .collect();
+
+    let p1 = c.ok("emulator/checkpoint_list", json!({"limit": 2}));
+    let cursor = p1["cursor"].clone();
+    assert_eq!(cursor, json!(ids[1]));
+
+    c.ok("emulator/checkpoint_drop", json!({"all": true}));
+    let p2 = c.ok("emulator/checkpoint_list", json!({"cursor": cursor}));
+    assert_eq!(p2["checkpoints"], json!([]));
+    assert_eq!(p2["total"], json!(0));
+    assert_eq!(p2["truncated"], json!(false));
+    assert!(p2.get("cursor").is_none());
+
+    // An id the server never assigned is still refused, never clamped (the house rule).
+    assert_eq!(
+        c.err("emulator/checkpoint_list", json!({"cursor": 9999}))["code"],
+        json!(-32602)
+    );
+}
+
+#[test]
+fn each_listed_slot_reports_its_own_coordinate_and_its_own_size() {
+    // §6.1 names `frame`, `mclk` and `bytes` as normative result fields of `checkpoint_list`. Taking
+    // every checkpoint at frame 0 would let all three be hardcoded and still pass, so these are taken at
+    // three different coordinates and cross-checked against what `emulator/checkpoint` itself reported.
+    let h = spawn("cpcoord");
+    let mut c = Client::connect(&h);
+    c.handshake(false);
+
+    let mut expected: Vec<(u64, u64, u64, u64)> = Vec::new(); // id, frame, mclk, bytes
+    for (i, advance) in [0u64, 3, 4].iter().enumerate() {
+        if *advance > 0 {
+            c.ok("emulator/run_frames", json!({"frames": advance}));
+        }
+        let r = c.ok("emulator/checkpoint", json!({"label": format!("c{i}")}));
+        expected.push((
+            r["id"].as_u64().unwrap(),
+            r["frame"].as_u64().unwrap(),
+            r["mclk"].as_u64().unwrap(),
+            r["bytes"].as_u64().unwrap(),
+        ));
+    }
+    assert_eq!(
+        expected.iter().map(|e| e.1).collect::<Vec<_>>(),
+        vec![0, 3, 7],
+        "the three slots must sit at three different frames"
+    );
+    let mclks: Vec<u64> = expected.iter().map(|e| e.2).collect();
+    assert!(mclks[0] < mclks[1] && mclks[1] < mclks[2]);
+
+    // Advance again, so a list that reported *now* instead of the capture coordinate would be caught.
+    c.ok("emulator/run_frames", json!({"frames": 2}));
+
+    let list = c.ok("emulator/checkpoint_list", json!({}));
+    let items = list["checkpoints"].as_array().unwrap();
+    assert_eq!(items.len(), 3);
+    for (e, (id, frame, mclk, bytes)) in items.iter().zip(expected) {
+        assert_eq!(e["id"], json!(id));
+        assert_eq!(e["frame"], json!(frame), "entry {id} has the wrong frame");
+        assert_eq!(e["mclk"], json!(mclk), "entry {id} has the wrong mclk");
+        assert_eq!(e["bytes"], json!(bytes), "entry {id} has the wrong size");
+    }
+}
+
 // ------------------------------------------------------------------ drop
 
 #[test]
@@ -416,6 +626,113 @@ fn drop_all_clears_every_slot_and_reports_how_many_went() {
 
 // ------------------------------------------------------------------ volatility, per session
 
+/// Everything the four checkpoint handlers and their helpers are made of, as source text.
+///
+/// D13 rule 1 is a claim about *code paths* ("there is no code path from here to the filesystem"), and
+/// the only honest way to check a claim about code paths from a test is to read the code. A wire test
+/// cannot see a stray `std::fs::write`, and neither can a grep over method names — the reviewer proved
+/// that by adding one and watching the whole suite stay green.
+fn checkpoint_source() -> String {
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/engine.rs"))
+        .expect("engine.rs must be readable from the crate root");
+    let mut out = String::new();
+    for name in [
+        "checkpoint",
+        "restore",
+        "checkpoint_list",
+        "checkpoint_drop",
+        "parse_checkpoint_id",
+        "unknown_checkpoint",
+    ] {
+        out.push_str(&fn_body(&src, name));
+        out.push('\n');
+    }
+    out
+}
+
+/// The body of `fn <name>(…)`, by brace counting. Panics if the function is missing or unbalanced — a
+/// rename must break this test loudly rather than silently stop checking anything.
+fn fn_body(src: &str, name: &str) -> String {
+    let needle = format!("fn {name}(");
+    let start = src
+        .find(&needle)
+        .unwrap_or_else(|| panic!("`{needle}` is not in engine.rs — did it get renamed?"));
+    let open = start
+        + src[start..]
+            .find('{')
+            .unwrap_or_else(|| panic!("`{needle}` has no body"));
+    let mut depth = 0usize;
+    for (i, ch) in src[open..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    let body = &src[open..open + i + 1];
+                    assert!(
+                        body.len() > 40,
+                        "`{needle}` body came out suspiciously short"
+                    );
+                    return body.to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("`{needle}` body has unbalanced braces");
+}
+
+/// Tokens that can only appear in code that touches the filesystem.
+const FS_TOKENS: &[&str] = &[
+    "std::fs",
+    "fs::",
+    "File",
+    "OpenOptions",
+    "PathBuf",
+    "Path::",
+    "BufWriter",
+    "write_all",
+    "tempfile",
+    "temp_dir",
+    "create_dir",
+    "to_writer",
+];
+
+fn fs_tokens_in(text: &str) -> Vec<&'static str> {
+    FS_TOKENS
+        .iter()
+        .copied()
+        .filter(|t| text.contains(t))
+        .collect()
+}
+
+#[test]
+fn the_checkpoint_handlers_contain_no_path_from_the_bus_to_the_filesystem() {
+    // D13 rule 1, the half that bites: "checkpoints live in server memory ... and are **never** written
+    // to disk". This is a source-level assertion over the four handlers and their helpers, because that
+    // is what the claim is about. It is not airtight — a violation hidden behind a helper defined
+    // elsewhere in the file would slip past — but it does catch the thing that actually happens, which
+    // is somebody reaching for `std::fs` right where the bytes are.
+    let src = checkpoint_source();
+    let hits = fs_tokens_in(&src);
+    assert!(
+        hits.is_empty(),
+        "D13 rule 1: the checkpoint handlers must not touch the filesystem, found {hits:?}"
+    );
+
+    // Anti-vacuity: the same scan, run over two handlers that legitimately DO read files, must fire.
+    // Without this the assertion above could pass because the scanner is broken rather than because the
+    // code is clean — which is exactly how the name-grep this replaced managed to prove nothing.
+    let whole =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/engine.rs")).unwrap();
+    for control in ["reload_rom", "load_symbols"] {
+        assert!(
+            !fs_tokens_in(&fn_body(&whole, control)).is_empty(),
+            "the scanner is broken: it found no filesystem token in `fn {control}`, which reads a file"
+        );
+    }
+}
+
 #[test]
 fn checkpoints_are_per_server_session_and_do_not_outlive_it() {
     let h = spawn("cpvol");
@@ -437,6 +754,100 @@ fn checkpoints_are_per_server_session_and_do_not_outlive_it() {
         c2.ok("emulator/checkpoint_list", json!({}))["total"],
         json!(0)
     );
+}
+
+// ------------------------------------------------------------------ the engine-side shadows
+
+#[test]
+fn restore_brings_the_held_pads_back_with_the_machine() {
+    // `held` is the engine's mirror of the pads inside `System`, so a restore that put the machine back
+    // but left the mirror alone would leave the *next* frame pressing a button the restored machine
+    // never had down — the half-applied restore §6.1 forbids, one field over.
+    let h = spawn("cpheld");
+    let mut c = Client::connect(&h);
+    c.handshake(false);
+
+    let r = c.ok("emulator/hold", json!({"port": 0, "buttons": ["up"]}));
+    assert_eq!(r["held"], json!(["up"]));
+    let id = take(&mut c, Some("holding up"));
+
+    c.ok("emulator/release_all", json!({}));
+    let r = c.ok("emulator/hold", json!({"port": 0, "buttons": ["a"]}));
+    assert_eq!(r["held"], json!(["a"]));
+
+    c.ok("emulator/restore", json!({"id": id}));
+    // A no-op `hold` reports the live set without changing it.
+    let r = c.ok("emulator/hold", json!({"port": 0, "buttons": []}));
+    assert_eq!(
+        r["held"],
+        json!(["up"]),
+        "the restored machine's held set must come back with it"
+    );
+}
+
+#[test]
+fn restore_brings_the_symbol_table_back_with_the_cartridge_it_was_bound_to() {
+    // D7's named hazard is stale symbol resolution: "the 'verified' literal went stale within the
+    // session". `symbols`/`symbols_path` are engine-side shadows of the loaded cartridge in exactly the
+    // way `rom_path` is, so a restore that brought the ROM back but left the table behind would resolve
+    // names against a cartridge that is no longer loaded — and `read_memory {symbol}` would then read a
+    // wrong address and report success.
+    let h = spawn("cpsym");
+    let mut c = Client::connect(&h);
+    c.handshake(false);
+
+    // A coordinate taken before any listing was loaded at all.
+    let clean = take(&mut c, Some("before any listing"));
+
+    let a = write_lst("cpsym-a", LST_A);
+    let load_a = c.ok(
+        "emulator/load_symbols",
+        json!({"path": a.display().to_string()}),
+    );
+    assert_eq!(load_a["symbolCount"], json!(5));
+    let with_a = take(&mut c, Some("listing A loaded"));
+
+    // A different listing: same names, different addresses — the exact shape D7 says goes stale.
+    let b = write_lst("cpsym-b", LST_B);
+    let load_b = c.ok(
+        "emulator/load_symbols",
+        json!({"path": b.display().to_string()}),
+    );
+    assert_eq!(load_b["symbolCount"], json!(2));
+    assert_eq!(
+        c.ok("emulator/lookup_symbol", json!({"name": "EntryPoint"}))["addr"],
+        json!("0x00000300")
+    );
+
+    // Back to the coordinate where listing A was loaded: the table that was bound there comes back.
+    c.ok("emulator/restore", json!({"id": with_a}));
+    let s = c.ok("emulator/status", json!({}));
+    assert_eq!(
+        s["symbolCount"],
+        json!(5),
+        "the restored machine's symbol table must come back with it"
+    );
+    assert_eq!(s["symbolsPath"], json!(a.display().to_string()));
+    assert_eq!(
+        c.ok("emulator/lookup_symbol", json!({"name": "EntryPoint"}))["addr"],
+        json!("0x00000200"),
+        "resolving after a restore must use the restored machine's table (D7)"
+    );
+
+    // And back to before any listing existed: the table goes away with the machine, rather than
+    // outliving it and answering for a cartridge state that is gone.
+    c.ok("emulator/restore", json!({"id": clean}));
+    let s = c.ok("emulator/status", json!({}));
+    assert_eq!(s["symbolCount"], json!(0));
+    assert_eq!(s["symbolsPath"], json!(null));
+    assert_eq!(
+        c.err("emulator/lookup_symbol", json!({"name": "EntryPoint"}))["code"],
+        json!(-32012),
+        "no symbols were loaded at that coordinate, so resolution must refuse, not answer"
+    );
+
+    let _ = std::fs::remove_file(&a);
+    let _ = std::fs::remove_file(&b);
 }
 
 #[test]
