@@ -1,0 +1,18 @@
+[package]
+name = "oracle-aether"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "Aether control surface for oracle-core — JSON-RPC 2.0 over NDJSON on an AF_UNIX socket, per empyrean/contract/protocol.md."
+
+# The socket server deliberately lives OUTSIDE `oracle-core`, whose charter is "deterministic, no-I/O"
+# (`crates/oracle-core/src/lib.rs`) and whose dependency list is one crate (`bincode`). Threads, sockets
+# and JSON all live here; the core keeps its dependency set unchanged. Verify with
+# `cargo tree -p oracle-core`.
+[dependencies]
+oracle-core = { path = "../oracle-core" }
+serde_json = "1"
+
+[[bin]]
+name = "oracle-aether"
+path = "src/main.rs"

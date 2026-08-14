@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/oracle-core", "crates/oracle-frontend"]
+members = ["crates/oracle-aether", "crates/oracle-core", "crates/oracle-frontend"]
 
 [workspace.package]
 edition = "2021"
