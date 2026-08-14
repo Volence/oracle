@@ -160,7 +160,7 @@ Mask, 13 Register Writes and Code Reg, 16 FIFO Wait States.
 
 - [x] Scorecard row at its new maximum (target 16/16; any residual row gets a named, pinned reason in the ledger — no silent partials).
 - [x] Ledger: conformance doc's `vdp_port_access` row rewritten (counts, remaining caveats, charter-supersession note).
-- [ ] Final whole-arc code review (both arcs merged), then push per owner's usual flow. *(Review DONE — two-stage per slice through T16, plus the T16 differential-ROM re-check: Gunstar / Thunder Force IV / Batman, 600 frames, all 18 comparisons byte-identical. The PUSH is the owner's call and is the only thing left in this plan.)*
+- [x] Final whole-arc code review (both arcs merged), then push per owner's usual flow. *(Review DONE — two-stage per slice through T16, plus the T16 differential-ROM re-check: Gunstar / Thunder Force IV / Batman, 600 frames, all 18 comparisons byte-identical.)* **PUSHED 2026-08-13 (`0586dac..f123696`, 21 commits) after a full re-gate: `cargo fmt --check` clean, `cargo clippy --workspace --all-targets` 0 warnings, `cargo test --release --workspace` exit 0 = 929 passed / 0 failed / 16 suites, and the conformance scorecard re-run under `--nocapture` to confirm 17/17 ROMs actually ran (no silent vendor skip) with `vdp_port_access` 16/0/16 and memtest 13/13. THIS PLAN IS CLOSED.**
 
 ---
 
