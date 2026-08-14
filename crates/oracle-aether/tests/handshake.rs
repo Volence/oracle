@@ -88,6 +88,30 @@ fn list_ops_is_gone() {
     assert!(!METHODS.iter().any(|m| m.name.contains("list_ops")));
 }
 
+/// `F-TRACE-PAL`: the `frame` in every stamp is only meaningful with the basis that produced it, so the
+/// server advertises it once — label *and* numbers, machine-readable, never prose. The numbers must be the
+/// core's own, so a client can divide `mclk` by them and land on the `frame` the server reports.
+#[test]
+fn initialize_advertises_the_timing_basis_with_its_numbers() {
+    let h = spawn("basis");
+    let mut c = Client::connect(&h);
+    let r = c.handshake(true);
+
+    let basis = &r["timingBasis"];
+    assert_eq!(basis["standard"], json!("ntsc"));
+    assert_eq!(
+        basis["mclkPerFrame"],
+        json!(oracle_core::system::MCLK_PER_FRAME),
+        "the advertised frame length is the core's own constant"
+    );
+    assert_eq!(basis["linesPerFrame"], json!(262));
+
+    // Not a decoration: it is the divisor the server's own stamps are computed with.
+    let mclk = r["mclk"].as_u64().expect("stamped reply");
+    let frame = r["frame"].as_u64().expect("stamped reply");
+    assert_eq!(frame, mclk / basis["mclkPerFrame"].as_u64().unwrap());
+}
+
 #[test]
 fn an_incompatible_protocol_version_is_32015_and_names_what_we_support() {
     let h = spawn("ver");

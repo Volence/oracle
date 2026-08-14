@@ -32,11 +32,17 @@ investigation itself.
 >    shows that hunt classified on `addr` and was explicitly `fc`-agnostic; the 68k was never a
 >    suspect. Master attribution may still be worth having, but this document's justifying episode
 >    does not hold it up. Registered as open question `F-TRACE-MASTER`.
-> 5. **C1 (atomic arm-at-power-on) is presented as a constraint to honour (§5)** — it is currently
->    **structurally impossible**: `System::reset()` hardcodes a unit sink (`system.rs:361`), so the
->    reset vector fetches cannot be captured by any caller, and all eight bespoke sinks in the tree
->    attach post-reset. That is a real defect, ~5 lines to fix, and it should be unbundled rather
->    than carried as a constraint everything else must satisfy.
+> 5. **C1 (atomic arm-at-power-on) is presented as a constraint to honour (§5)** — it ~~is~~ *was*
+>    **structurally impossible**: `System::reset()` hardcoded a unit sink (`system.rs:404`, `:361` at
+>    the time of writing), so the reset vector fetches could not be captured by any caller, and all
+>    eight bespoke sinks in the tree attach post-reset. That is a real defect, ~5 lines to fix, and it
+>    should be unbundled rather than carried as a constraint everything else must satisfy.
+>    > **FIXED 2026-08-14** (Fable ruling F, item 1). `System::reset_with_sink` +
+>    > `System::boot_with_sink` + `System::is_pristine_power_on` — the reset's four vector reads (and
+>    > the two prefetches after them) now reach an attached sink, proved by `system::tests::boot_with_sink_captures_the_reset_vector_fetches`
+>    > (which fails, not passes vacuously, if the sink is unplumbed). `reset()` delegates, so the
+>    > no-instrumentation path is unchanged. **Our power-on anchor is all-zero, not the sibling's
+>    > `PC=0xFFFFFFFF, SP=0xFFFFFFFF, SR=0xFFFF` quoted in §5** — that closes `F-TRACE-POWERON-CHECK`.
 >
 > **Method note for future recon:** every one of these came from an agent instructed to be skeptical
 > of the brief that commissioned it, and four of the five are cases where *this document restated a
@@ -286,6 +292,12 @@ array is bounded, cursored, and flags truncation; anything approximate carries a
 > comparison"*, voiding a full investigation; the doc carries a banner retracting its own verdict. The
 > correct arm point was confirmed only by observing pristine power-on values (`PC=0xFFFFFFFF,
 > SP=0xFFFFFFFF, SR=0xFFFF`) — so the API must **expose** that check, not assume it.
+>
+> > **SATISFIED 2026-08-14.** `System::boot_with_sink(seed, rom, sink)` is the indivisible constructor
+> > (load-then-reset-then-arm is not expressible against it); `reset_with_sink` arms a soft reset the
+> > same way; `is_pristine_power_on()` is the exposed check. **Correction to the values above: those are
+> > the sibling Oracle's. Ours are all-zero** (`power_on_regs`), so a check ported across emulators on
+> > those literals would be wrong here — use the predicate.
 >
 > **C2 — Deterministic frame identity.** Every capture stamped with an *emulated* frame/mclk index,
 > never wall-clock. Two runs of the same ROM+input must yield identical stamps. Precedent: the

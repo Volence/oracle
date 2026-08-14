@@ -318,6 +318,12 @@ impl Engine {
                 "maxReadLen": self.config.max_read_len,
                 "maxLineBytes": rpc::MAX_LINE_BYTES,
             },
+            // What the `frame` in every stamp actually *means* (`F-TRACE-PAL`). Advertised once, here,
+            // rather than repeated on every reply: it is a property of the machine, not of the answer.
+            // A client that caches frame coordinates across sessions can record the basis with them; a
+            // client that ignores it was NTSC-only anyway. Constant while the core is NTSC-only — it
+            // becomes a live value when PAL lands and this key does not change shape.
+            "timingBasis": rpc::timing_basis_object(self.sys.timing_basis()),
         }))
     }
 
