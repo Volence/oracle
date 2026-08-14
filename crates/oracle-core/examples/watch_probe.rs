@@ -120,7 +120,7 @@ fn main() {
     match space {
         WatchSpace::Bus => wp.add_watch(addr..=addr + 1, op, "probe"),
         s => wp.add_vdp_watch(s, addr..=addr + 1, op, "probe"),
-    }
+    };
     sys.run_frames_with_sink(frames, &mut wp);
 
     let hits = wp.hits();

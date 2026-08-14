@@ -197,7 +197,7 @@ examples have exactly one commit** — they are disposable single-question instr
 
 | # | Capability | Recurrence | Status in our core |
 |---|---|---|---|
-| 1 | Filtered, attributed, timestamped **bus-event trace** | 11 hunts + ~~6~~ **2** committed bus-trace sinks — see ERRATA 1; the "near-duplicate pair" are scanline collectors with empty `on_event` stubs, a different seam | Seam exists, capability does not |
+| 1 | Filtered, attributed, timestamped **bus-event trace** | 11 hunts + ~~6~~ **2** committed bus-trace sinks — see ERRATA 1; the "near-duplicate pair" are scanline collectors with empty `on_event` stubs, a different seam | **SHIPPED 2026-08-14** — as four additive changes to `watchpoints.rs` (`mclk`, watch ids/labels, record/count/census modes, `seen` + an amortized ring), not a new subsystem. `examples/diag_soundqueue.rs` is now pure configuration with byte-identical output. Design + measured corrections: `docs/2026-08-14-trace-recorder-design.md` |
 | 2 | **Boot → run to frame N → dump regions → byte-diff** | 6 hunts; `boot_rom` cited in 10 docs; `write_ppm` byte-identical in **4 files** | Copy-paste only |
 | 3 | **Frame comparison** w/ normalization + offset alignment | 6 episodes; alignment solved 3 separate ways | Sharpest "unreachable primitive" case (below) |
 | 4 | **Guest-structure decoding** (read the game's own data) | 4+; the single biggest unlock of the conformance arc | Doesn't exist |
@@ -322,9 +322,15 @@ Two structural notes for whoever builds the control layer:
   (`docs/2026-08-14-trace-recorder-design.md` §3-§4). And the master-attribution justification above
   is not supported by the primary record — that hunt classified on `addr` and was explicitly
   `fc`-agnostic. Master attribution is now open question `F-TRACE-MASTER`, not a settled requirement.
-- **Watchpoints have two gaps to close before exposure:** the per-watch `label` is
+- ~~**Watchpoints have two gaps to close before exposure:** the per-watch `label` is
   `#[allow(dead_code)]` and never propagated into hits, and there is no watch id / removal /
-  enumeration — an agent running three concurrent watches cannot tell which one fired.
+  enumeration — an agent running three concurrent watches cannot tell which one fired.~~
+  > **CLOSED 2026-08-14** (S4/T2). `add`/`add_watch`/`add_vdp_watch` return a `WatchId`; every
+  > `WatchHit` carries the id of the watch that recorded it (the id, not the `String` — a hit stays
+  > `Copy` and nothing allocates on the instrumented path), resolvable via `label_of`/`watches`.
+  > `remove(id)` retires one watch, and ids are never reused, so a stale handle resolves to nothing
+  > rather than silently to a different watch. An access matching several watches is recorded once,
+  > attributed to the lowest-id matching `Record` watch, while every matching watch counts it.
 
 ---
 
@@ -395,8 +401,11 @@ shape and let the archaeology choose the order.
   PCs. See §9 for the seven corrections shipping it produced.
 - **P3 — deterministic scripted input + the headless replay runner.** First real payback to the engine.
 - **P4 — KDebug `$C00004`**, then break-on-fault.
-- **P5 — trace/query as a first-class recorder** on the sink seam (attribution in the event, filtering,
-  aggregation) — the archaeology's #1, and the thing that has been re-implemented six times.
+- ~~**P5 — trace/query as a first-class recorder** on the sink seam (attribution in the event, filtering,
+  aggregation) — the archaeology's #1, and the thing that has been re-implemented six times.~~
+  > **SHIPPED 2026-08-14.** Attribution is *not* in the event (ERRATA 3/4) — it is in `WatchHit`, layered
+  > above `BusEvent`. Filtering stayed record-time and gained an `fc` predicate; aggregation shipped as
+  > count / bounded census / distinct-cardinality / first-last. "Re-implemented six times" is 2 (ERRATA 1).
 - **Later / evidence-gated:** disassembler, object descriptors, profiler, bus-legality lint. Explicitly
   **argue against** interactive step/break, call stacks, and rewind until something demands them.
 

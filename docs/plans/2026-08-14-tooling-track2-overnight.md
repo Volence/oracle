@@ -85,8 +85,15 @@ emulator.** `aeon/docs/BUGS.md:494-551` records a frozen repro frame *"lost to a
 control-socket hang before the sprite table could be dumped"* — a hang in the debug transport
 destroyed irreplaceable evidence.
 
-### S4 — the trace recorder  ▸ DESIGNED (`27e3d14`), not implemented
-Design: `docs/2026-08-14-trace-recorder-design.md`. **Verdict: build it at roughly a quarter of the
+### S4 — the trace recorder  ▸ SHIPPED
+Design: `docs/2026-08-14-trace-recorder-design.md` (designed `27e3d14`), implemented as T1–T5 + §6 + §7
+in `crates/oracle-core/src/watchpoints.rs` — additive, zero currency movement, no golden regenerated.
+The §9 replacement claim was tested rather than asserted: `examples/diag_soundqueue.rs` is now
+configuration (twelve `add` calls, no `BusEventSink` impl at all) and its output is **byte-identical**
+to the hand-rolled sink's over 7,631 lines. The **other** §9 claim was refuted by the same method:
+"11 of `K4Probe`'s 16 counters become config" is **3 of 16** (the design assumed a size/parity filter it
+never specified, and missed that four more counters are arbiter-latch-shadow-gated). Corrected in §9,
+registered as `F-TRACE-SIZEFILTER`; it raises the value of `F-TRACE-EXPOSE-LATCHES`. **Verdict: build it at roughly a quarter of the
 implied size**, as four additive changes to `watchpoints.rs` — which is already a filtered,
 attributed, bounded, record-time recorder missing only `mclk`, ids/labels, and aggregation. The
 forwarder-vs-field question is settled (a richer type layered *above* `BusEvent`), though not for the
