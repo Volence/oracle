@@ -3,8 +3,10 @@
 //! pixel-attribution watch. This is the headless-testable half of Phase SY-5
 //! (`docs/2026-07-23-phase-sy5-realtime-audio-design.md`, §2/§5/§6/§8 SY-5a).
 //!
-//! It deliberately does **not** open a host audio device — that (`cpal` output stream) lives in `main.rs`
-//! (SY-5b). SY-5b now consumes this substrate: `main()`'s loop drives [`AudioAndWatch`] through
+//! It deliberately does **not** open a host audio device — building and owning the `cpal` output stream
+//! lives in `main.rs` (SY-5b). The callback's *body* is here as [`fill_output`] (it touches no cpal type, so
+//! it stays unit-testable without a sound card). SY-5b consumes this substrate: `main()`'s loop drives
+//! [`AudioAndWatch`] through
 //! [`run_frames_with_sink`](oracle_core::system::System::run_frames_with_sink), drains each frame, and
 //! [`push_frame`]s it into the [`AudioProd`] whose paired [`AudioCons`] is popped by the cpal callback.
 
@@ -12,8 +14,9 @@ use oracle_core::bus::{BusEvent, BusEventSink};
 use oracle_core::synth::AudioSink;
 use oracle_core::vdp::VdpWrite;
 use oracle_core::watchpoints::Watchpoints;
-use ringbuf::traits::{Producer, Split};
+use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Video frames of stereo audio the ring holds (its slack, in frames). ~4 frames keeps end-to-end latency
 /// ~50–67 ms while absorbing a couple of late producer ticks (design §2.4). Retune by this one number.
@@ -53,6 +56,50 @@ pub fn push_frame(prod: &mut AudioProd, pcm: &[i16]) -> usize {
     let converted: Vec<f32> = pcm.iter().copied().map(sample_i16_to_f32).collect();
     let pushed = prod.push_slice(&converted);
     converted.len() - pushed
+}
+
+/// Fill one host output buffer from the ring — the body of the cpal callback, factored out so it is
+/// unit-testable without a sound card (it touches no cpal type).
+///
+/// `flush` is the save-state seam: loading a state teleports the machine to a different point in its
+/// timeline, so every sample still queued in the ring belongs to a timeline that no longer exists. The
+/// emulation thread cannot drain the ring itself (it owns only the producer half; `clear` is a consumer
+/// operation), so it raises this flag instead and the very next callback discards the backlog. The buffer it
+/// was called for then underruns into silence — a sub-frame gap, versus the ~[`RING_FRAMES`]-frame burp of
+/// pre-load audio you would otherwise hear.
+///
+/// Channel handling matches the device: stereo = a straight interleaved copy; mono = average each L,R pair;
+/// other counts = L,R into the first two lanes of each output frame, rest silent (design §3.3). Any shortfall
+/// is zero-filled.
+pub fn fill_output(cons: &mut AudioCons, out: &mut [f32], channels: usize, flush: &AtomicBool) {
+    if flush.swap(false, Ordering::AcqRel) {
+        cons.clear();
+    }
+    match channels {
+        2 => {
+            // Stereo: the ring is already interleaved L,R,L,R… — a pure copy, silence any shortfall.
+            let n = cons.pop_slice(out);
+            out[n..].fill(0.0);
+        }
+        1 => {
+            // Mono: average each ring L,R pair into one sample; underrun → silence.
+            for slot in out.iter_mut() {
+                let mut lr = [0.0f32; 2];
+                let got = cons.pop_slice(&mut lr);
+                *slot = if got == 2 { (lr[0] + lr[1]) * 0.5 } else { 0.0 };
+            }
+        }
+        ch => {
+            // >2 (or a degenerate 0): L,R into the first two lanes of each output frame, rest silent.
+            for out_frame in out.chunks_mut(ch.max(1)) {
+                let mut lr = [0.0f32; 2];
+                let got = cons.pop_slice(&mut lr);
+                for (i, s) in out_frame.iter_mut().enumerate() {
+                    *s = if i < got { lr[i] } else { 0.0 };
+                }
+            }
+        }
+    }
 }
 
 /// A composite [`BusEventSink`] that forwards **every** event to the synth's [`AudioSink`] and, when present,
@@ -121,7 +168,6 @@ mod tests {
     use super::*;
     use oracle_core::bus::{BusOp, Size};
     use oracle_core::watchpoints::WatchOp;
-    use ringbuf::traits::Consumer; // `pop_slice` — only the tests consume the ring in SY-5a
 
     fn write_event(addr: u32, value: u8) -> BusEvent {
         BusEvent {
@@ -232,6 +278,75 @@ mod tests {
             popped_any_nonzero,
             "the programmed tone must survive the ring as non-zero f32"
         );
+    }
+
+    /// [`fill_output`] without a flush request is the plain stereo copy + zero-filled underrun tail.
+    #[test]
+    fn fill_output_copies_stereo_and_silences_the_tail() {
+        let (mut prod, mut cons) = make_ring(240); // capacity 32
+        let flush = AtomicBool::new(false);
+        assert_eq!(prod.push_slice(&[1.0, 2.0, 3.0, 4.0]), 4);
+
+        let mut out = [-1.0f32; 8];
+        fill_output(&mut cons, &mut out, 2, &flush);
+        assert_eq!(
+            out,
+            [1.0, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0],
+            "the four queued samples copy through; the underrun tail is silence"
+        );
+        assert!(!flush.load(Ordering::Acquire), "no request, flag untouched");
+    }
+
+    /// **The save-state seam.** With the flush flag raised, the samples already queued from the pre-load
+    /// timeline must be *discarded*, not played: the callback outputs silence and the ring is empty
+    /// afterwards. Without this, a state load burps up to [`RING_FRAMES`] frames of stale audio.
+    #[test]
+    fn fill_output_flush_drops_the_stale_backlog() {
+        let (mut prod, mut cons) = make_ring(240);
+        let flush = AtomicBool::new(false);
+
+        // Queue "old timeline" audio, then request a flush (what the main loop does on a state load).
+        let stale: Vec<f32> = (1..=16).map(|i| i as f32).collect();
+        assert_eq!(prod.push_slice(&stale), 16);
+        flush.store(true, Ordering::Release);
+
+        let mut out = [-1.0f32; 8];
+        fill_output(&mut cons, &mut out, 2, &flush);
+        assert!(
+            out.iter().all(|&s| s == 0.0),
+            "the callback that services the flush outputs silence, not stale samples: {out:?}"
+        );
+        assert!(
+            !flush.load(Ordering::Acquire),
+            "the request is consumed exactly once"
+        );
+
+        // Nothing of the old timeline survives, and the ring works normally again.
+        let mut out2 = [-1.0f32; 4];
+        fill_output(&mut cons, &mut out2, 2, &flush);
+        assert_eq!(out2, [0.0; 4], "the backlog is gone, not merely delayed");
+        assert_eq!(prod.push_slice(&[9.0, 8.0]), 2);
+        fill_output(&mut cons, &mut out2, 2, &flush);
+        assert_eq!(out2, [9.0, 8.0, 0.0, 0.0], "post-load audio flows again");
+    }
+
+    /// Mono and >2-channel devices keep their existing mixdown behaviour through [`fill_output`].
+    #[test]
+    fn fill_output_handles_mono_and_wide_devices() {
+        let (mut prod, mut cons) = make_ring(240);
+        let flush = AtomicBool::new(false);
+
+        // Mono: each L,R pair averages into one output sample; the tail underruns to silence.
+        assert_eq!(prod.push_slice(&[1.0, 3.0, -1.0, 1.0]), 4);
+        let mut mono = [-1.0f32; 3];
+        fill_output(&mut cons, &mut mono, 1, &flush);
+        assert_eq!(mono, [2.0, 0.0, 0.0]);
+
+        // 4-channel: L,R land in lanes 0,1 of each frame; lanes 2,3 are silent.
+        assert_eq!(prod.push_slice(&[0.5, 0.25]), 2);
+        let mut wide = [-1.0f32; 8];
+        fill_output(&mut cons, &mut wide, 4, &flush);
+        assert_eq!(wide, [0.5, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
     }
 
     /// Design §7 Test 4 — composite-sink equivalence: `AudioAndWatch { watch: Some(..) }` must (a) render

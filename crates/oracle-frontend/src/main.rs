@@ -6,7 +6,9 @@
 //!
 //! This crate deliberately owns *all* the non-determinism (real-time keyboard, wall-clock throttle) so the
 //! core stays the "deterministic, no-I/O" artifact its Cargo description promises. The core is driven only
-//! through its existing public API — this slice adds no core methods. Audio is out of scope (milestone D3).
+//! through its existing public API — nothing here adds a core method. (Audio was once out of scope; it
+//! arrived with Phase SY-5 and lives behind the default-on `audio` feature — see the `audio` module and
+//! `build_audio`.)
 //!
 //! Upgrade path (not this slice): swap minifb for `pixels` + `winit` when GPU-composited debug overlays
 //! (watchpoint highlights, bus-legality heatmaps — `docs/2026-07-20-diagnostic-tooling-ideas.md`) are wanted.
@@ -22,10 +24,24 @@
 //! | Enter             | Start          |
 //! | Space             | pause / resume |
 //! | `.` (period)      | single-frame step (while paused) |
+//! | F2                | save state to the current slot |
+//! | F4                | load state from the current slot |
+//! | F6 / F7           | previous / next save-state slot |
+//! | 0 – 9             | select save-state slot directly |
 //! | Left mouse click  | watch the VRAM tile under the clicked pixel ("who wrote this tile?") |
 //! | W                 | dump recorded watch hits (seq/frame/pc/addr/old→new/via) + drop count to stdout |
 //! | C                 | clear the watch (return to the fast null-sink run path) |
 //! | Esc / window-close| quit           |
+//!
+//! ## Save states
+//!
+//! Ten numbered slots written next to the ROM (`…/foo.bin` slot 3 → `…/foo.state3`), the same naming rule the
+//! `.srm` battery save uses. The container — magic, version, a derived machine-layout fingerprint, the ROM's
+//! fingerprint, and a payload checksum — lives in [`save_state`]; a stale or corrupt file is refused with a
+//! message and the running machine keeps going untouched. Loading also flushes the audio ring (stale queued
+//! samples belong to a timeline that no longer exists) and, because the snapshot carries the cartridge SRAM
+//! backwards with it, first persists any pending `.srm` and then cancels the autosave debounce — so a state
+//! load never rewinds the on-disk battery. See the load handler below.
 //!
 //! ## Pixel-attribution watch (record + display only)
 //!
@@ -43,6 +59,9 @@
 // consumer. See `docs/2026-07-23-phase-sy5-realtime-audio-design.md`.
 #[cfg(feature = "audio")]
 mod audio;
+
+// User-facing save states — the versioned/checksummed container around the core's snapshot/restore pair.
+mod save_state;
 
 // Slice S2 — `.srm` battery-save persistence (frontend-only file I/O around the core's SRAM buffer).
 mod sram_file;
@@ -124,6 +143,27 @@ fn parse_args() -> Result<Args, String> {
     Ok(Args { rom_path, scale })
 }
 
+/// Number keys 0-9, in slot order: pressing one selects that save-state slot directly. Indexed by slot, so
+/// the array length must stay equal to [`save_state::SLOT_COUNT`] (asserted in the tests below).
+const SLOT_KEYS: [Key; save_state::SLOT_COUNT] = [
+    Key::Key0,
+    Key::Key1,
+    Key::Key2,
+    Key::Key3,
+    Key::Key4,
+    Key::Key5,
+    Key::Key6,
+    Key::Key7,
+    Key::Key8,
+    Key::Key9,
+];
+
+/// Step the save-state slot by `delta`, wrapping over `0..SLOT_COUNT` in both directions (F6 = -1, F7 = +1).
+fn next_slot(slot: usize, delta: isize) -> usize {
+    let n = save_state::SLOT_COUNT as isize;
+    (((slot as isize + delta) % n + n) % n) as usize
+}
+
 /// Build the Player-1 [`Pad`] from the host keyboard: arrows = D-pad, A/S/D = A/B/C, Enter = Start.
 fn poll_pad(window: &Window) -> Pad {
     Pad {
@@ -198,15 +238,28 @@ fn draw_crosshair(buf: &mut [u32], width: usize, wx: u16, wy: u16) {
     }
 }
 
-/// Live host-audio state (Phase SY-5b). Held for the whole run: the persistent synth [`AudioSink`] (advanced
+/// Live host-audio state (Phase SY-5b). Held for the whole run: the persistent synth `AudioSink` (advanced
 /// exactly one frame per loop iteration by the composite sink, then drained), the SPSC ring producer the
-/// drained PCM is pushed into, and the kept-alive cpal [`Stream`](cpal::Stream) — dropping the stream stops
-/// playback, so it must outlive the loop.
+/// drained PCM is pushed into, the save-state flush flag shared with the audio callback, and the kept-alive
+/// cpal [`Stream`](cpal::Stream) — dropping the stream stops playback, so it must outlive the loop.
 #[cfg(feature = "audio")]
 struct AudioState {
     sink: oracle_core::synth::AudioSink,
     prod: audio::AudioProd,
+    /// Raised by the emulation thread after a save-state load; the next audio callback drops the whole ring
+    /// backlog (see [`audio::fill_output`]). The main thread owns only the producer half, so it cannot drain
+    /// the ring itself — this flag is the hand-off.
+    flush: std::sync::Arc<std::sync::atomic::AtomicBool>,
     _stream: cpal::Stream,
+}
+
+/// Ask the audio callback to discard everything still queued. Called after a state load, when the queued
+/// samples belong to a timeline the machine has just left. No-op when audio is disabled (no device).
+#[cfg(feature = "audio")]
+fn flush_audio(audio: Option<&AudioState>) {
+    if let Some(a) = audio {
+        a.flush.store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 
 /// Enumerate the default output device and start a cpal f32 output stream feeding the SPSC ring, returning the
@@ -223,14 +276,12 @@ fn start_audio() -> Option<AudioState> {
 /// warning; it **never panics**. This is the graceful path for a headless, `/dev/snd`-less environment: pass
 /// `None` and it cleanly reports "no device" and disables audio.
 ///
-/// The stream's callback pops the ring's consumer into the device buffer, zero-filling any underrun tail
-/// (design §2.5). It handles the device channel count: stereo = a straight interleaved copy; mono = average
-/// each L,R pair; other counts = write L,R into the first two lanes of each output frame and silence the rest
-/// (a documented first-cut simplification, design §3.3).
+/// The stream's callback is [`audio::fill_output`]: it pops the ring's consumer into the device buffer,
+/// zero-filling any underrun tail (design §2.5), handles the device channel count (stereo copy / mono
+/// average / wide-device first-two-lanes, design §3.3), and honours the shared save-state flush flag.
 #[cfg(feature = "audio")]
 fn build_audio(device: Option<cpal::Device>) -> Option<AudioState> {
     use cpal::traits::{DeviceTrait, StreamTrait};
-    use ringbuf::traits::Consumer;
 
     let Some(device) = device else {
         eprintln!("audio: no default output device — running video-only");
@@ -261,33 +312,12 @@ fn build_audio(device: Option<cpal::Device>) -> Option<AudioState> {
 
     let sink = oracle_core::synth::AudioSink::new(sample_rate);
     let (prod, mut cons) = audio::make_ring(sample_rate);
+    // Shared with the callback so a save-state load can drop the (now bogus) queued backlog.
+    let flush = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cb_flush = std::sync::Arc::clone(&flush);
 
     let data_cb = move |out: &mut [f32], _: &cpal::OutputCallbackInfo| {
-        match channels {
-            2 => {
-                // Stereo: the ring is already interleaved L,R,L,R… — a pure copy, silence any shortfall.
-                let n = cons.pop_slice(out);
-                out[n..].fill(0.0);
-            }
-            1 => {
-                // Mono: average each ring L,R pair into one sample; underrun → silence.
-                for slot in out.iter_mut() {
-                    let mut lr = [0.0f32; 2];
-                    let got = cons.pop_slice(&mut lr);
-                    *slot = if got == 2 { (lr[0] + lr[1]) * 0.5 } else { 0.0 };
-                }
-            }
-            ch => {
-                // >2 (or a degenerate 0): L,R into the first two lanes of each output frame, rest silent.
-                for out_frame in out.chunks_mut(ch.max(1)) {
-                    let mut lr = [0.0f32; 2];
-                    let got = cons.pop_slice(&mut lr);
-                    for (i, s) in out_frame.iter_mut().enumerate() {
-                        *s = if i < got { lr[i] } else { 0.0 };
-                    }
-                }
-            }
-        }
+        audio::fill_output(&mut cons, out, channels, &cb_flush);
     };
     let err_cb = |err| eprintln!("audio stream error: {err}");
 
@@ -307,6 +337,7 @@ fn build_audio(device: Option<cpal::Device>) -> Option<AudioState> {
     Some(AudioState {
         sink,
         prod,
+        flush,
         _stream: stream,
     })
 }
@@ -329,6 +360,11 @@ fn main() {
         }
     };
     println!("ROM {}: {} bytes", args.rom_path, rom.len());
+
+    // Identity of this cartridge, computed before the ROM moves into the core. Every save state records it,
+    // so a state written while running a *different* game is refused instead of silently swapping the ROM
+    // (the snapshot carries the cartridge bytes with it).
+    let rom_fp = save_state::rom_fingerprint(&rom);
 
     let mut sys = System::new(0x5EED);
     sys.load_rom(rom);
@@ -378,6 +414,11 @@ fn main() {
         "window {win_w}x{win_h} (up to {MAX_WIDTH}x{HEIGHT} @ {}x) — arrows=D-pad, A/S/D=A/B/C, Enter=Start, Space=pause, .=step, click=watch-tile, W=dump, C=clear, Esc=quit",
         args.scale
     );
+    println!(
+        "save states: F2=save, F4=load, F6/F7=prev/next slot, 0-9=pick slot ({} slots, written next to the ROM as `{}`)",
+        save_state::SLOT_COUNT,
+        save_state::state_path_for(std::path::Path::new(&args.rom_path), 0).display()
+    );
 
     // Start the host audio stream (Phase SY-5b). `None` = no device / build failure → video-only, never a
     // panic (the default in a headless, /dev/snd-less environment). When present, its persistent AudioSink is
@@ -401,6 +442,9 @@ fn main() {
     let mut watch_armed = false;
     let mut watched_pixel: Option<(u16, u16)> = None;
     let mut prev_mouse_down = false;
+
+    // The save-state slot F2/F4 act on; F6/F7 step it, 0-9 pick it directly.
+    let mut state_slot: usize = 0;
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
         // Edge-triggered controls (fire once per physical press, not every frame held).
@@ -457,6 +501,93 @@ fn main() {
             watch_armed = false;
             watched_pixel = None;
             println!("watch cleared — back to the fast (null-sink) run path");
+        }
+
+        // --- Save states (edge-triggered like every control above; usable while paused too). ---
+        // Slot selection: F6/F7 step, 0-9 pick directly.
+        if window.is_key_pressed(Key::F6, KeyRepeat::No) {
+            state_slot = next_slot(state_slot, -1);
+            println!("state: slot {state_slot} selected");
+        }
+        if window.is_key_pressed(Key::F7, KeyRepeat::No) {
+            state_slot = next_slot(state_slot, 1);
+            println!("state: slot {state_slot} selected");
+        }
+        for (n, key) in SLOT_KEYS.iter().enumerate() {
+            if window.is_key_pressed(*key, KeyRepeat::No) {
+                state_slot = n;
+                println!("state: slot {state_slot} selected");
+            }
+        }
+
+        // F2 = save, F4 = load, both on the currently selected slot. The path is built inside each arm so the
+        // idle loop allocates nothing.
+        if window.is_key_pressed(Key::F2, KeyRepeat::No) {
+            let state_path =
+                save_state::state_path_for(std::path::Path::new(&args.rom_path), state_slot);
+            match save_state::save(&state_path, &sys, rom_fp) {
+                Ok(n) => println!(
+                    "state: saved {n} bytes to slot {state_slot} ({})",
+                    state_path.display()
+                ),
+                Err(e) => eprintln!("state: save to {} failed: {e}", state_path.display()),
+            }
+        }
+        if window.is_key_pressed(Key::F4, KeyRepeat::No) {
+            let state_path =
+                save_state::state_path_for(std::path::Path::new(&args.rom_path), state_slot);
+            match save_state::load(&state_path, rom_fp) {
+                Ok(loaded) => {
+                    // SRAM rides the snapshot, so the restore is about to roll the battery buffer backwards.
+                    // Flush any battery data the guest has written but the debounce has not yet persisted
+                    // *first*, exactly like the quit path — otherwise a state load would silently destroy a
+                    // real in-game save that happened to be a second old.
+                    if sys.sram_used() && (sys.sram_dirty() || sram_save_countdown.is_some()) {
+                        match sram_file::save_srm(&srm_path, sys.sram()) {
+                            Ok(()) => println!(
+                                "SRAM: saved {} bytes to {} before the state load",
+                                sys.sram().len(),
+                                srm_path.display()
+                            ),
+                            Err(e) => {
+                                eprintln!(
+                                    "SRAM: pre-load save failed ({}): {e}",
+                                    srm_path.display()
+                                )
+                            }
+                        }
+                    }
+
+                    // Whole-value swap: `save_state::load` builds a complete machine or returns `Err`, so
+                    // there is no window in which a half-restored `System` is running.
+                    sys = loaded;
+
+                    // The queued PCM was rendered from the timeline we just left — drop it rather than burp
+                    // up to RING_FRAMES of pre-load audio. (The synth's own register shadow is frontend
+                    // state and is deliberately *not* rolled back: keeping the last-known patches sounds far
+                    // better than muting every channel until the driver happens to rewrite them.)
+                    #[cfg(feature = "audio")]
+                    flush_audio(audio.as_ref());
+
+                    // …and now the other half of the SRAM interaction (bytes, `sram_dirty` and `sram_used`
+                    // are all `System` fields — proven empirically in `save_state`'s tests): (1) cancel the
+                    // pending autosave, which would otherwise fire moments later and overwrite the `.srm`
+                    // we just flushed with the *older*, restored contents; (2) clear the restored dirty
+                    // flag, so the rolled-back SRAM reaches disk only once the game actually saves again.
+                    // Net effect: the on-disk battery is never rewound by a state load, only by a real
+                    // in-game save.
+                    sram_save_countdown = None;
+                    sys.clear_sram_dirty();
+
+                    // The watch (if armed) stays armed on the same VRAM range; hits recorded before the load
+                    // remain in the log — `C` clears them.
+                    println!(
+                        "state: loaded slot {state_slot} from {} (frame counter continues at {frame})",
+                        state_path.display()
+                    );
+                }
+                Err(e) => eprintln!("state: load of slot {state_slot} failed: {e}"),
+            }
         }
 
         // The pad is sampled live every frame; set_pad is the sole, deterministic input path into the core.
@@ -657,6 +788,37 @@ mod tests {
         assert!(
             build_audio(None).is_none(),
             "no output device must disable audio (video-only), never panic"
+        );
+    }
+
+    /// Slot stepping wraps in both directions and never leaves `0..SLOT_COUNT`, and every slot has a
+    /// distinct number key.
+    #[test]
+    fn slot_stepping_wraps_and_covers_every_key() {
+        let last = save_state::SLOT_COUNT - 1;
+        assert_eq!(next_slot(0, 1), 1);
+        assert_eq!(
+            next_slot(0, -1),
+            last,
+            "stepping back from 0 wraps to the last"
+        );
+        assert_eq!(next_slot(last, 1), 0, "stepping past the last wraps to 0");
+        for s in 0..save_state::SLOT_COUNT {
+            assert!(next_slot(s, 1) < save_state::SLOT_COUNT);
+            assert!(next_slot(s, -1) < save_state::SLOT_COUNT);
+        }
+        // A full lap of +1 returns to the start, so every slot is reachable by stepping alone.
+        let mut s = 0;
+        for _ in 0..save_state::SLOT_COUNT {
+            s = next_slot(s, 1);
+        }
+        assert_eq!(s, 0);
+
+        let keys: std::collections::BTreeSet<_> = SLOT_KEYS.iter().map(|k| *k as u32).collect();
+        assert_eq!(
+            keys.len(),
+            save_state::SLOT_COUNT,
+            "each slot needs its own distinct number key"
         );
     }
 
