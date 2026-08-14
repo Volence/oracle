@@ -503,7 +503,9 @@ fn a_run_request_while_free_running_is_refused_rather_than_silently_changing_mod
     c.handshake(false);
     c.ok("emulator/resume", json!({}));
     let e = c.err("emulator/run_frames", json!({"frames": 1}));
-    assert_eq!(e["code"], json!(-32600));
+    // §5/§6: wrong *machine state*, not a bad envelope. The envelope is fine, so `-32600` would be a
+    // lie to any client branching on the code.
+    assert_eq!(e["code"], json!(-32005));
     assert_eq!(e["data"]["reason"], json!("machineRunning"));
     let paused = c.ok("emulator/pause", json!({}));
     assert_eq!(paused["wasRunning"], json!(true));

@@ -536,22 +536,22 @@ impl Engine {
 
     /// Refuse a run request while free-running. Doing it implicitly (pause, run, stay paused) would
     /// change the machine's mode as a side effect of a read-shaped call, which is exactly the class of
-    /// silent state change this bus exists to make impossible.
+    /// silent state change this bus exists to make impossible — and which §5 and §8 item 12 explicitly
+    /// forbid ("never pause or resume implicitly to make a call succeed").
     ///
-    /// **Contract gap, now closed upstream but not yet here:** §5 had no code for "wrong machine state
-    /// for this operation", so this returns `-32600` with the reason in `data`. That was filed as change
-    /// request CR-3 — and CR-3 was *adopted*: the 2026-08-14 amendment added
-    /// [`code::INVALID_STATE`](crate::rpc::code::INVALID_STATE) (`-32005`), and §5 now names
-    /// `emulator/run_frames` while free-running as its first worked example. So this call site is
-    /// knowingly non-conformant until a separate slice moves it (and its test) to `-32005`; the `reason`
-    /// discriminant a client branches on is already the contract's `"machineRunning"`, so the migration
-    /// is the code integer alone. New code uses [`RpcError::invalid_state`](crate::rpc::RpcError::invalid_state).
+    /// The code is [`code::INVALID_STATE`](crate::rpc::code::INVALID_STATE) (`-32005`), not `-32600`:
+    /// the envelope is fine, the params are fine, nothing failed internally — the request is simply
+    /// wrong *right now*. §5 names `emulator/run_frames` while free-running as its first worked example
+    /// of exactly this, and the §6 run-control state rule requires `-32005` with
+    /// `data.reason = "machineRunning"` for `run_to`, `run_to_scanline`, `run_frames` and `step*`.
+    /// `reason` is the discriminant clients branch on; `message` names the fix, per §5.
     fn require_paused(&self, method: &str) -> Result<(), RpcError> {
         if self.free_run {
-            return Err(RpcError::invalid_request(format!(
-                "{method} needs the machine paused; call emulator/pause first"
-            ))
-            .with_data(json!({"reason": "machineRunning"})));
+            return Err(RpcError::invalid_state(
+                "machineRunning",
+                format!("{method} needs the machine paused; call emulator/pause first"),
+                Value::Null,
+            ));
         }
         Ok(())
     }
