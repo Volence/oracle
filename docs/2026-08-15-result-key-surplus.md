@@ -25,7 +25,7 @@ this sweep and by neither of the two passes before it.
 | `initialize` | §2.1's six keys | `limits`, `methodSummaries` |
 | `emulator/status` | `running,pc,sp,sr,symbolAtPc?,frameToken,symbolCount,romLoading?` | `romBytes`, `romPath`, `symbolsPath`, **`symbolDisp`** |
 | `emulator/registers` | `d0–d7,a0–a7,pc,sp,sr` | `usp`, `ssp` |
-| `emulator/run_to` | `target,reached,pc,maxFrames,symbol?,symbolDisp?,caveat?` | `stoppedAtFrame`, `stoppedAtMclk` |
+| ~~`emulator/run_to`~~ | `target,reached,pc,maxFrames,symbol?,symbolDisp?,caveat?` | ~~`stoppedAtFrame`, `stoppedAtMclk`~~ — **ruled out and REMOVED**, `f36b548` |
 | `emulator/pause` / `resume` | *(no result)* | `wasRunning` |
 | `emulator/checkpoint_list` | `checkpoints[]{…},cursor?,truncated` | `total`, `returned`, `limit` |
 | `emulator/read_memory` | `addr,len,bytes,symbol?` | `caveat`, `region`, `symbolDisp` |
@@ -34,7 +34,7 @@ this sweep and by neither of the two passes before it.
 | `emulator/screenshot` | `path` | **`bytes`, `format`, `height`, `source`, `width`** — five keys against a one-key row |
 | `emulator/press` | `buttons,frames,frameToken` | `port` (and `port` as an undocumented *param*) |
 | `emulator/hold` | `buttons,down` | `port`, `held` |
-| `emulator/release_all` | *(no result)* | `released` — a hardcoded `true`, ruled for removal |
+| ~~`emulator/release_all`~~ | *(no result)* | ~~`released`~~ — a hardcoded `true`; **ruled out and REMOVED**, `f36b548` |
 | `emulator/lookup_symbol` (exact) | §4: `addr,name,otherMatches?` | `ambiguous`, `demangled`, `rawAddr` |
 | `emulator/lookup_symbol` (prefix) | *(as above)* | `caveat`, `exact`, `query`, and `otherMatches` in the wrong container (CR-14) |
 | `emulator/lookup_symbol` (addr→label) | §4: `name,addr,disp` | `ambiguous`, `query`, `rawName`, `synthetic` |
