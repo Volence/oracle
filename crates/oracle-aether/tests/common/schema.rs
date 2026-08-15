@@ -24,11 +24,19 @@
 //! been judged by the thing that matters. If outgoing validation is ever wanted, the seam is
 //! `Client::send_raw`, and the opt-out belongs there.
 //!
+//! ## Closure: contract §8 item 20
+//!
+//! Every result is validated against its fragment **closed with `unevaluatedProperties: false`** ([`closed`]).
+//! An unknown key on the wire is a change request, never a shipment. The keyword and its location are both
+//! load-bearing and both were got wrong before they were got right — see [`closed`].
+//!
 //! ## Known divergences: [`KNOWN_CONTRACT_DIVERGENCES`]
 //!
 //! Wiring this in turned four existing tests red on two shapes where the server and the schema disagree.
-//! Neither is resolved here — D14 calls a disagreement of that kind a **spec bug awaiting amendment**,
-//! and both server shapes are arguably the better ones, so the ruling is the owner's.
+//! Neither was resolved here — D14 calls a disagreement of that kind a **spec bug awaiting amendment** —
+//! and both (CR-14, CR-15) have since been ruled on and retired, by the registry's own anti-rot test
+//! rather than by anyone remembering. **CR-16 replaced them the same day**, found by turning §8 item 20's
+//! closure on: five keys `protocol.md`'s prose registers by name and its schema forgot to declare.
 //!
 //! They are therefore **registered, not silenced**. Each entry names its CR, its method, its JSON path
 //! and a canonical instance of the diverging shape, and the registry has three properties that matter
@@ -50,8 +58,8 @@
 //! legal member of the enum — while §3 and §8 item 13 say the value is `runFrames` and that `step` is a
 //! knowing mislabel. Nothing schema-shaped protects that rule. It has its own behavioural assertions in
 //! `tests/events.rs`; see the comment there. Read `docs/2026-08-15-schema-validator.md` for the full
-//! account of the blind spots, and the coverage split (the schema has a `result` for 9 of the 21 methods
-//! we advertise — `tests/schema_conformance.rs` prints and pins it).
+//! account of the blind spots, and the coverage split (as of the 2026-08-15 re-vendor the schema has a
+//! `result` for **all 21** methods we advertise — `tests/schema_conformance.rs` prints and pins it).
 
 #![allow(dead_code)]
 
@@ -88,6 +96,37 @@ pub struct Schemas {
 pub fn schemas() -> &'static Schemas {
     static S: OnceLock<Schemas> = OnceLock::new();
     S.get_or_init(Schemas::compile)
+}
+
+/// **Contract §8 item 20 — close a result fragment, at test time only.**
+///
+/// Item 20: *"A server's conformance suite MUST fail on any result key absent from that method's
+/// fragment. An unknown key on the wire is a change request, never a shipment."* This is the keyword that
+/// implements it, and both halves of where it goes were got wrong before they were got right — §11.5
+/// reproduces the experiment, and so does `schema_conformance::the_strict_closure_needs_unevaluated…`:
+///
+/// * `additionalProperties: false` **rejects every conformant reply**. Every fragment pulls its envelope
+///   in through `allOf: [{"$ref": "#/$defs/replyFields"}]`, and in draft 2020-12 `additionalProperties`
+///   sees only the `properties` in its own schema object — never those an adjacent `allOf` contributes. So
+///   it rejects `frame`, `mclk`, `running` and `droppedEvents` on every reply, which is to say it rejects
+///   D11 and D17.
+/// * `unevaluatedProperties` **does** see across applicators, and catches exactly the surplus.
+///
+/// And it is applied **here**, never written into the vendored schema: closure binds *servers*, additivity
+/// (D5) protects *clients*, and a published closure would let a client's month-old schema reject a server
+/// that added a registered key. The harness is the one place where only servers stand.
+///
+/// Closure is applied at the **top level of the result object**. That is item 20's literal subject ("any
+/// result key"), and it is where the whole measured surplus lived. Nested objects are closed only where
+/// the contract closes them itself — `otherMatches.items[]` carries its own `additionalProperties: false`
+/// in the published schema, which is legal there because that subschema has no `allOf` to see past.
+fn closed(fragment: &Value) -> Value {
+    let mut o: Map<String, Value> = fragment
+        .as_object()
+        .cloned()
+        .expect("a schema fragment must be an object");
+    o.insert("unevaluatedProperties".into(), Value::Bool(false));
+    Value::Object(o)
 }
 
 /// Splice the root `$defs` into a fragment so its `#/$defs/...` refs resolve.
@@ -128,7 +167,7 @@ impl Schemas {
             if let Some(result) = spec.get("result") {
                 method_results.insert(
                     name.clone(),
-                    compile(result, &format!("methods.{name}.result")),
+                    compile(&closed(result), &format!("methods.{name}.result")),
                 );
             }
         }
@@ -150,8 +189,9 @@ impl Schemas {
 
         Self {
             any_message: compile(&root["anyMessage"], "anyMessage"),
+            // The handshake reply is a result too, and item 20 says *every* result.
             handshake_result: compile(
-                &root["handshake"]["initialize"]["result"],
+                &closed(&root["handshake"]["initialize"]["result"]),
                 "handshake.initialize.result",
             ),
             method_results,
@@ -201,24 +241,55 @@ pub struct Divergence {
 /// nothing is allowed for implicitly, and no entry may be added without a CR number.
 pub const KNOWN_CONTRACT_DIVERGENCES: &[Divergence] = &[
     Divergence {
-        cr: "CR-14",
-        method: "emulator/lookup_symbol",
-        path: "$.otherMatches",
-        summary: "schema says an array of strings; we emit the house bounded-array object with \
-                  {name,demangled,addr} items — wrong container AND wrong element type",
+        cr: "CR-16",
+        method: "initialize",
+        path: "$.limits, $.methodSummaries",
+        summary: "§11.5 registers both by name (\"`initialize.limits` and `.methodSummaries` (§2.1)\") \
+                  but the handshake fragment declares neither, so §8 item 20's closure rejects them",
         canonical: || {
             (
-                json!({"jsonrpc":"2.0","id":3,"result":{
-                    "name":"Player_1","addr":"0x00FF8CFA",
-                    "otherMatches":{"items":[{"name":"Player_2","demangled":"Player_2","addr":"0x00FF8D4A"}],
-                                    "total":2,"returned":1,"cursor":0,"limit":5,
-                                    "truncated":true,"nextCursor":1},
+                json!({"jsonrpc":"2.0","id":1,"result":{
+                    "serverName":"oracle-next","serverVersion":"0.0.0","protocolVersion":1,
+                    "capabilities":{"events":["emulator/stopped"]},
+                    "methods":["emulator/status"],
+                    "methodSummaries":{"emulator/status":"run state, PC/SP/SR, symbol at PC, loaded ROM"},
+                    "limits":{"maxRunFrames":3600,"maxReadLen":4096,"maxLineBytes":1048576},
+                    "timingBasis":{"standard":"ntsc","mclkPerFrame":896040,"linesPerFrame":262},
                     "frame":0,"mclk":0,"running":false,"droppedEvents":0}}),
-                Some("emulator/lookup_symbol"),
+                Some("initialize"),
             )
         },
     },
-    // **CR-15 was here, and was retired the same day it was raised** — the registry's anti-rot property
+    Divergence {
+        cr: "CR-16",
+        method: "emulator/read_memory",
+        path: "$.region, $.symbolDisp, $.caveat",
+        summary: "§11.5 registers `read_memory.region` + `symbolDisp?` and §2.4 MUSTs a `caveat` \
+                  declaration for any method that emits one; the fragment declares none of the three",
+        canonical: || {
+            (
+                json!({"jsonrpc":"2.0","id":7,"result":{
+                    "addr":"0x00FF8CFA","len":4,"bytes":"0x00000000","symbol":"Player_1",
+                    "region":"work RAM","symbolDisp":0,
+                    "caveat":"a debug read, bypassing the bus",
+                    "frame":0,"mclk":0,"running":false,"droppedEvents":0}}),
+                Some("emulator/read_memory"),
+            )
+        },
+    },
+    // **The two entries the registry held before today were retired by the mechanism they were built
+    // for, not by a tidy-up.** Kept as the record of what retirement looks like:
+    //
+    // **CR-14 was here until 2026-08-15.** Its entry said the schema typed
+    // `lookup_symbol.otherMatches` as an array of strings while this server emitted a bounded object with
+    // two different item shapes and a numeric continuation token. The contract ruled it (`empyrean`
+    // `f309cc8`, `protocol.md` §4 rewritten + §2.4's new bounded-list rule) and ruled it *our way on the
+    // container and against us on the token*: `otherMatches` is now `$defs/boundedList` with one pinned
+    // item shape and **no `cursor`, no `nextCursor`**. The schema was re-vendored, and
+    // `every_registered_divergence_is_still_live` went red — the canonical message it registered was no
+    // longer rejected — which is the only reason this entry is deleted rather than quietly wrong.
+    //
+    // **CR-15 was here too, and was retired the same day it was raised** — the registry's anti-rot property
     // working on real traffic rather than in a drill. Its entry said `$defs/id` is `[integer,string]`
     // while JSON-RPC 2.0 §5 mandates `null` when the id could not be detected. The contract was amended
     // (`empyrean` §11.4), the vendored copy refreshed, and `every_registered_divergence_is_still_live`
@@ -258,52 +329,75 @@ pub fn is_json_rpc_undetectable_id_error(line: &Value) -> bool {
             .is_some_and(|c| c == -32700 || c == -32600)
 }
 
-/// **CR-14's allowance.** `methods["emulator/lookup_symbol"].result.otherMatches` is
-/// `{"type":"array","items":{"type":"string"}}` in the schema and §4's prose agrees; this server emits
-/// `rpc::bounded_array` there — an object `{items, total, returned, cursor, limit, truncated,
-/// nextCursor}` with `{name, demangled, addr}` items. Wrong container *and* wrong element type, because
-/// *"every array is bounded, cursored, and flags truncation"* is a standing non-negotiable here, asserted
-/// by name in `tests/methods.rs::arrays_are_bounded_cursored_and_flag_truncation`.
-///
-/// The key is **not left unchecked**, which is the difference between registering a divergence and
-/// exempting a method from validation. It is lifted out before the schema runs and checked against the
-/// house shape by [`bounded_array_failures`] instead — so the allowance swaps one authority for another,
-/// and everything else in the result is still the schema's business. Pinned by
-/// `schema_conformance::the_othermatches_divergence_is_swapped_for_the_house_shape_not_left_unchecked`.
-///
-/// Note what is deliberately **not** allowed for, because CR-14 folds it in: `cursor`/`nextCursor` are
-/// JSON numbers while §8 item 16 says every list cursor is a string, and `lookup_symbol` accepts no
-/// `cursor` param at all. That is CR-14's to rule on, not this harness's to check.
-fn known_result_divergence(method: &str, key: &str) -> bool {
-    matches!((method, key), ("emulator/lookup_symbol", "otherMatches"))
-}
+/// The checker a registered divergence substitutes for the schema, on one key. Takes the key's value and
+/// a label for the failure message; returns one message per failure, empty when the key is well-shaped.
+type KeyChecker = fn(&Value, &str) -> Vec<String>;
 
-/// The house bounded-array envelope, as `rpc::bounded_array` builds it.
-pub fn bounded_array_failures(v: &Value, what: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let Some(o) = v.as_object() else {
-        return vec![format!("{what}: not an object")];
-    };
-    for k in ["items", "total", "returned", "cursor", "limit", "truncated"] {
-        if !o.contains_key(k) {
-            out.push(format!("{what}: bounded array is missing `{k}`"));
-        }
+/// **The allowance seam** — see [`KNOWN_CONTRACT_DIVERGENCES`].
+///
+/// A registered divergence names result keys whose shape the schema and this server disagree about,
+/// pending a ruling. Those keys are then **not left unchecked**, which is the difference between
+/// registering a divergence and exempting a method from validation: this returns the checker that takes
+/// the schema's place for one key, so an allowance swaps one authority for another. Everything else in the
+/// result — including §8 item 20's closure over every key that is *not* listed here — still runs.
+///
+/// Today this holds **CR-16** only: five keys across two fragments that `protocol.md`'s prose registers by
+/// name and the schema forgot to declare. Each checker asserts what that prose says the key is, so the
+/// authority swapped in is the same document, one section over.
+fn known_result_divergence(method: &str, key: &str) -> Option<KeyChecker> {
+    match (method, key) {
+        // §2.1: "an object mapping each method name to a short human-readable string." Rule 3 makes the
+        // values non-normative, so nothing is asserted about wording — but an EMPTY summary is a key that
+        // failed to derive, not a terse one. Rule 2's key-set equality is the clause with teeth and it is
+        // asserted unconditionally elsewhere, in `tests/handshake.rs`, deliberately outside the allowance:
+        // an allowance that carried the whole of a rule could hide it by being deleted.
+        ("initialize", "methodSummaries") => Some(|v, what| {
+            let Some(o) = v.as_object() else {
+                return vec![format!("{what}: methodSummaries is not an object (§2.1)")];
+            };
+            o.iter()
+                .filter(|(_, s)| !s.as_str().is_some_and(|s| !s.trim().is_empty()))
+                .map(|(k, _)| format!("{what}: `{k}` has no summary string (§2.1)"))
+                .collect()
+        }),
+        // §2.1: "the values MUST be the ones the server's own parameter checks actually enforce" — a
+        // client has no other way to discover them, and discovering one by being refused is discovering
+        // it too late. A ceiling is a count, so D9 category 2 puts it in a JSON number.
+        ("initialize", "limits") => Some(|v, what| {
+            let Some(o) = v.as_object() else {
+                return vec![format!("{what}: limits is not an object (§2.1)")];
+            };
+            o.iter()
+                .filter(|(_, n)| !n.as_u64().is_some_and(|n| n > 0))
+                .map(|(k, _)| format!("{what}: limit `{k}` is not a positive integer (§2.1, D9)"))
+                .collect()
+        }),
+        // §11.5 registers `read_memory.region`: which bus region the read landed in. A non-empty string.
+        ("emulator/read_memory", "region") => Some(|v, what| match v.as_str() {
+            Some(s) if !s.trim().is_empty() => vec![],
+            _ => vec![format!("{what}: region is not a non-empty string (§11.5)")],
+        }),
+        // §11.5 registers `read_memory.symbolDisp?`, and §4 pins what it is *for*: the displacement lives
+        // in its own numeric field so it never has to be parsed back out of a name string.
+        ("emulator/read_memory", "symbolDisp") => Some(|v, what| {
+            if v.as_u64().is_some() {
+                vec![]
+            } else {
+                vec![format!(
+                    "{what}: symbolDisp is not a non-negative integer (§4, §11.5)"
+                )]
+            }
+        }),
+        // §2.4: a caveat is prose, and prose is all a client may treat it as.
+        ("emulator/read_memory", "caveat") => Some(|v, what| {
+            if v.is_string() {
+                vec![]
+            } else {
+                vec![format!("{what}: caveat is not a string (§2.4)")]
+            }
+        }),
+        _ => None,
     }
-    if !o.contains_key("nextCursor") {
-        out.push(format!("{what}: bounded array is missing `nextCursor`"));
-    }
-    if o.get("items").is_some_and(|i| !i.is_array()) {
-        out.push(format!("{what}: `items` is not an array"));
-    }
-    if o.get("truncated").is_some_and(|t| !t.is_boolean()) {
-        out.push(format!("{what}: `truncated` is not a boolean"));
-    }
-    for k in ["total", "returned", "limit"] {
-        if o.get(k).is_some_and(|n| !n.is_u64()) {
-            out.push(format!("{what}: `{k}` is not a non-negative integer"));
-        }
-    }
-    out
 }
 
 /// One validation failure, rendered for a panic message.
@@ -357,42 +451,47 @@ fn check(line: &Value, method: Option<&str>, allow: bool) -> Result<(), Vec<Stri
     //    There is nothing left to patch, so the envelope is now checked verbatim.
     out.extend(errors(&s.any_message, line, "anyMessage"));
 
-    // 2. A success reply, keyed off the method of the request it answers.
+    // 2. A success reply, keyed off the method of the request it answers. The handshake reply goes down
+    //    the same path as any other result and differs only in which fragment it is validated against —
+    //    it is a result, it is closed by item 20, and it can carry a registered divergence like any other.
+    //    (It does: CR-16's `limits`/`methodSummaries`.)
     if let Some(result) = line.get("result") {
-        match method {
-            Some("initialize") => out.extend(errors(
+        let target = match method {
+            Some("initialize") => Some((
                 &s.handshake_result,
-                result,
-                "handshake.initialize.result",
+                "handshake.initialize.result".to_string(),
             )),
-            Some(m) => {
-                if let Some(v) = s.method_results.get(m) {
-                    // CR-14's allowance: lift the diverging key out and check it against the house shape
-                    // instead, so this swaps authorities rather than creating a hole. Everything left is
-                    // validated against the schema unchanged.
-                    let mut subject = result.clone();
-                    if allow {
-                        if let Some(o) = subject.as_object_mut() {
-                            let diverging: Vec<String> = o
-                                .keys()
-                                .filter(|k| known_result_divergence(m, k))
-                                .cloned()
-                                .collect();
-                            for k in diverging {
-                                let val = o.remove(&k).expect("just enumerated");
-                                out.extend(bounded_array_failures(
-                                    &val,
-                                    &format!("CR-14 divergence methods.{m}.result.{k}"),
-                                ));
-                            }
-                        }
+            // `None` on a method the schema has no `result` for is not a pass — it is an absence.
+            // `tests/schema_conformance.rs` prints and pins that list so it cannot grow. As of the
+            // 2026-08-15 re-vendor the list is EMPTY: every advertised method has a fragment.
+            Some(m) => s
+                .method_results
+                .get(m)
+                .map(|v| (v, format!("methods.{m}.result"))),
+            None => None,
+        };
+        if let (Some((validator, label)), Some(owner)) = (target, method) {
+            // An allowance lifts its key out and hands it to the registered checker instead, so this
+            // swaps authorities rather than creating a hole. Everything left is validated against the
+            // schema unchanged — including, since 2026-08-15, item 20's closure, so a key that is neither
+            // in the fragment nor registered here fails.
+            let mut subject = result.clone();
+            if allow {
+                if let Some(o) = subject.as_object_mut() {
+                    let diverging: Vec<(String, KeyChecker)> = o
+                        .keys()
+                        .filter_map(|k| known_result_divergence(owner, k).map(|f| (k.clone(), f)))
+                        .collect();
+                    for (k, check_key) in diverging {
+                        let val = o.remove(&k).expect("just enumerated");
+                        out.extend(check_key(
+                            &val,
+                            &format!("registered divergence {label}.{k}"),
+                        ));
                     }
-                    out.extend(errors(v, &subject, &format!("methods.{m}.result")));
                 }
-                // else: one of the 12 methods the SEED schema has no `result` for. Not a pass — an
-                // absence. `tests/schema_conformance.rs` prints and pins that list so it cannot grow.
             }
-            None => {}
+            out.extend(errors(validator, &subject, &label));
         }
     }
 

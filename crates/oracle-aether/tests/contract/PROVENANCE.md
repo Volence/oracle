@@ -14,30 +14,42 @@ an explicit re-vendor commit. That commit is the auditable record of "we adopted
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo commit (`HEAD` at vendor time) | `90178fce` — *"contract: CR-15 — JSON-RPC 2.0 mandates a null error id and the schema forbade it"* (2026-08-15) |
-| Last commit that touched the schema | `90178fce` — same commit |
-| SHA-256 | `b6fd1ff6f79ecd03f2968bce6b69f188a394c17e550967835f66ad2ce4b7a200` |
-| Bytes | 30075 |
+| Contract repo commit (`HEAD` at vendor time) | `f309cc8` — *"contract: rule the result-key surplus — §2.4, §4 rewritten, 12 fragments, and two refusals"* (2026-08-15) |
+| Last commit that touched the schema | `f309cc8` — same commit |
+| SHA-256 | `e00c5e1697471027132e9e18220c5b33b7791134bf5bd0ced78cf1ac96882e95` |
+| Bytes | 59356 |
 | Vendored on | 2026-08-15 |
 
 ### What this re-vendor adopted
 
-Two contract commits, in the order they were made:
+One contract commit, **`f309cc8`** — the result-key ruling (`protocol.md` §11.5), which nearly doubled the
+schema (30,075 → 59,356 bytes). Four things landed, and three of them change our wire:
 
-- **`28ef4bb` — CR-10 adopted** (`protocol.md` §11.3): `emulator/pixel_attribution` gains a §6 row, three
-  normative behaviours in prose, and a schema entry. The schema goes from 9 methods to 10. Nothing existing
-  changed; the diff is insertion-only.
-- **`04a67bc` — CR-15 adopted** (`protocol.md` §11.4): `errorResponse.id` now accepts `null`, which
-  JSON-RPC 2.0 §5 **mandates** for a response whose request id could not be detected — **restricted by an
-  `if`/`then` to `-32700` and `-32600`**, the only two codes decided before a request object exists. On any
-  other code a real id was available to echo, so a null one is a correlation bug. `$defs/id` is deliberately
-  unchanged, so null stays illegal on a request and on a success response. The adopted shape therefore
-  preserves all four fences the harness had already built around its own allowance.
+- **12 new result fragments.** Every advertised method now has one, so `tests/schema_conformance.rs`'s
+  `UNCOVERED_METHODS` goes from 12 entries to **none**. This is the direction that counts: the fragments
+  were written upstream from the ruling, not derived here from what we emit.
+- **§4 rewritten, and `lookup_symbol` changed on three counts.** `name` is the identifying spelling on
+  every branch and MUST round-trip — `$defs/symbolName` rejects a `+$hex` displacement suffix by pattern,
+  which is what our address direction used to emit. `rawName` is **struck**. `exact` becomes REQUIRED and
+  present on both name-direction branches. `otherMatches` becomes `$defs/boundedList` with one pinned item
+  shape and **no `cursor`, no `nextCursor`**.
+- **§2.4, new: the shared result conventions** — `caveat` specified once for the whole bus, and the
+  bounded-list rule (a)–(d). Clause (b) is why `rpc::bounded_array` stopped emitting a continuation token:
+  a method that accepts no cursor param must not emit one.
+- **§8 item 20, new:** a server's conformance suite MUST close every result against its fragment, as
+  `unevaluatedProperties: false` applied **at test time** and deliberately not published. Implemented in
+  `common::schema::closed`.
 
-**CR-15's registered divergence is therefore retired in this commit** — the mechanism working as designed:
-the ruling landed upstream, the copy was refreshed, and
-`every_registered_divergence_is_still_live` would have failed had the entry been left behind. CR-14
-(`lookup_symbol.otherMatches`) is **not** ruled and stays registered.
+**CR-14's registered divergence is retired in this commit** — the mechanism working as designed: the ruling
+landed upstream, the copy was refreshed, and `every_registered_divergence_is_still_live` failed on the next
+run because the shape it registered was no longer rejected. That failure is the reason the entry is deleted
+rather than quietly wrong.
+
+**And CR-16 was raised by this re-vendor**, on the first run with item 20's closure live: five keys that
+§11.5's own prose registers by name — `initialize.limits`, `initialize.methodSummaries`,
+`read_memory.region`, `read_memory.symbolDisp`, `read_memory.caveat` — never reached their fragments. Two
+fragments out of 22 were left behind by a large amendment. Registered, not silenced; see
+`docs/2026-08-14-aether-change-requests.md`.
 
 ## Re-vendoring
 

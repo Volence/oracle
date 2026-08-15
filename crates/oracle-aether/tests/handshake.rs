@@ -6,6 +6,7 @@ mod common;
 use common::{spawn, Client};
 use oracle_aether::engine::{EVENTS, METHODS};
 use serde_json::json;
+use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt;
 
 #[test]
@@ -66,6 +67,57 @@ fn initialize_advertises_a_generated_method_list_that_is_the_dispatch_table() {
     assert_eq!(
         events,
         EVENTS.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn method_summaries_are_derived_from_the_same_registry_and_their_key_set_equals_methods() {
+    // **§2.1's derivation clause, registered 2026-08-15 (§11.5) — and this test pins a property this
+    // server already had rather than fixing a bug.** Both lists come from the one `METHODS` table
+    // (`engine::initialize` walks it once, emitting a name into `methods` and a `name -> summary` pair
+    // into `methodSummaries`), so equality is structural here and cannot drift while that stays true.
+    //
+    // It is pinned anyway because of what §2.1 says the clause is *for*: D4 retired `list_ops` because a
+    // second hand-maintained inventory drifts from the first, and `list_ops` was advertising 34 of 47
+    // before anyone noticed. `methodSummaries` is admissible only as long as it is not a second
+    // inventory. The way this server would stop obeying that is not a wrong entry today but somebody
+    // adding a method and giving it a bespoke summary somewhere else — which is precisely the edit this
+    // assertion turns red. A structural property with a test is a property; without one it is a habit.
+    let h = spawn("summaries");
+    let mut c = Client::connect(&h);
+    let r = c.handshake(true);
+
+    let methods: BTreeSet<&str> = r["methods"]
+        .as_array()
+        .expect("methods is an array")
+        .iter()
+        .map(|v| v.as_str().expect("a method name is a string"))
+        .collect();
+    let summaries = r["methodSummaries"]
+        .as_object()
+        .expect("methodSummaries is an object");
+    let summarised: BTreeSet<&str> = summaries.keys().map(String::as_str).collect();
+
+    assert_eq!(
+        summarised,
+        methods,
+        "§2.1 rule 2: methodSummaries' key set MUST equal `methods`, exactly — no extra key, no \
+         missing one. Extra: {:?}; missing: {:?}",
+        summarised.difference(&methods).collect::<Vec<_>>(),
+        methods.difference(&summarised).collect::<Vec<_>>(),
+    );
+    // Rule 3 makes the values non-normative, so nothing is asserted about their wording. Empty is a
+    // different matter: a key with no summary is a key that failed to derive.
+    for (name, summary) in summaries {
+        let s = summary.as_str().expect("a summary is a string");
+        assert!(!s.trim().is_empty(), "{name} has an empty summary");
+    }
+    // And the derivation is checked at its source, not only at its output — this is the half that would
+    // still hold if the handshake ever grew a second producer.
+    assert_eq!(
+        methods,
+        METHODS.iter().map(|m| m.name).collect::<BTreeSet<&str>>(),
+        "the advertised set must be the dispatch table (D4)"
     );
 }
 
