@@ -1,6 +1,9 @@
-# `emulator/pixel_attribution` — closing the §8 item 19 violation, and the sweep that found four more
+# `emulator/pixel_attribution` — closing the §8 item 19 violation, and the sweep that found three more
 
-**Status: design + change request, drafted here for the owner to rule on. No code, no contract edit.**
+**Status: RULED — adopt with changes** (`docs/2026-08-15-fable-ruling-attribution.md`, 2026-08-15). This
+document has been amended to satisfy the ruling's four conditions; the amendments are marked inline as
+block quotes rather than folded in silently, so the difference stays visible. **No contract edit yet** —
+the contract row lands after the §8 item 15 validator, per the ruling's sequencing.
 Base: `0a31d09` on `m68000-microop-framework`.
 
 `empyrean/contract/protocol.md` §8 item 19 (D15's prescriptive half) says:
@@ -9,8 +12,11 @@ Base: `0a31d09` on `m68000-microop-framework`.
 > panel that renders it. **No panel-only capabilities.**
 
 The handoff (`docs/2026-08-15-handoff-capability-layer.md` §2, ranked item 8) names one violation:
-`pixel_attribution`. **It is real, and it is not alone.** The sweep in §1 found five, and the one the
-handoff named is the third-largest.
+`pixel_attribution`. **It is real, and it is not alone.** The sweep in §1 found **four** item-19 violations
+— A, B, C and D in the table below — and the one the handoff named is the third-largest. (An earlier draft
+said five, counting **E** among them; E is a *catalog* gap in the opposite direction — our server already
+returns more than §6's row promises — and the sweep summary always scored it that way. The ruling caught
+the inconsistency between the intro and the table. Four is the number.)
 
 ---
 
@@ -67,7 +73,7 @@ from the `shots` diagnostic at `main.rs:2082` (`sys.vdp().pixel_attribution(x, y
 (`METHODS`) has 20 rows; attribution is not among them. Violation on all three counts.
 
 **Aggravating provenance, which strengthens the CR rather than weakening it.** This capability was designed
-*bus-first* thirteen months ago. `docs/2026-07-01-vdp-design.md:162` opens §4 with *"Wire form: new
+*bus-first* six weeks ago. `docs/2026-07-01-vdp-design.md:162` opens §4 with *"Wire form: new
 `emulator/<op>` methods on the existing bus protocol (Aether JSON-RPC)"*, and `:173-177` specifies
 `pixel_attribution(x, y)` with the winning layer, the decoded entry, the CRAM→RGB chain and *"the ordered
 list of losing candidates"*. The core delivered it (`render.rs:1291`, doc comment *"design §4
@@ -184,15 +190,28 @@ Drafted in the CR-1…CR-8 house style of `docs/2026-08-14-aether-change-request
 applied to the contract repo** — §8: *"Deviations are raised as change requests against this file, not
 implemented unilaterally."*
 
-### CR-9 — there is no coordinate-shaped read, so screen-position → game-state attribution is panel-only
+### CR-10 — there is no coordinate-shaped read, so screen-position → game-state attribution is panel-only
+
+> **Renumbered from CR-9 by the ruling.** A different agent filed a *different* CR-9 (`press` reporting
+> `runFrames`) into `docs/2026-08-14-aether-change-requests.md` one minute after this document's first
+> commit — a same-day race neither could see. This is CR-10; the `press` one keeps CR-9.
 
 **Contract.** §6's *VRAM / CRAM / layers* table has eight rows, none keyed by a screen coordinate. §8
 item 19 requires a bus method and a schema entry *before* the panel. D15: *"A capability that exists only
 inside a panel is the `list_ops` drift of §0 re-created in pixels."*
 
 **The gap.** `oracle_core::vdp::Vdp::pixel_attribution` (`crates/oracle-core/src/render.rs:1291`) is
-consumed by our own player (`pick.rs:111`, `main.rs:918`, `main.rs:2082`) and by nothing else. The panel
-shipped **one day after** item 19 became binding. `docs/2026-07-01-vdp-design.md:162,173-177` had already
+consumed by our own player (`pick.rs:111`, `main.rs:918`, `main.rs:2082`) and by nothing else.
+
+> **A culpability claim this document made, and the ruling disproved.** The first draft said the panel
+> *"shipped one day after item 19 became binding"* — inherited from the handoff, which says the same. Both
+> are wrong, in both directions. Measured from the two repos: `pick.rs` landed at **06:28** on 2026-08-15
+> (`2945a84`), and item 19 / D15's prescriptive half landed at **12:14–12:28** the same day (`627e5e4`
+> … `18a551e`). The panel **predates the rule by about six hours**; there was no day, and there was no
+> defiance. What is unaffected is the violation *as a current state* — the capability is panel-only right
+> now — which is the only thing the CR actually rests on.
+
+`docs/2026-07-01-vdp-design.md:162,173-177` had already
 specified this as an `emulator/<op>` bus method; only the core half was built.
 
 **What we did.** Consumed it in-process from the player and shipped no bus surface. Recorded here rather
@@ -377,7 +396,8 @@ against it, on the code rather than on taste:
    of it. *(`minItems` is 1, not 3: I first wrote 3 and the schema check in §5.3 caught it against the
    blanked case I had documented two lines away — a small live demonstration of §8 item 15's argument that
    a normative artifact nothing executes is one nobody has checked.)* (Contrast `checkpoint_list`, where the bound is `max_checkpoints`, a *server policy*,
-   which is exactly why that one is cursored — `engine.rs:1449-1521`.)
+   which is exactly why that one is cursored — `engine.rs:1495-1567` (the ruling caught this anchor citing
+   `restore`'s span rather than `checkpoint_list`'s).)
 3. **The method's own name is the candidate list.** *Attribution* is "why this and not the others". A
    variant that returns only the winner is `read_pixel`, a different and much smaller question.
 
@@ -416,8 +436,17 @@ would answer for the mode the VDP is in **now** (a post-hoc read)"*. A remote cl
 and will assume it is querying the picture it just screenshotted. It is not. Hence the `$comment` in the
 schema and the bullet in the CR.
 
-*Consequence worth stating plainly:* against a free-running machine, `emulator/screenshot` and
-`emulator/pixel_attribution` can disagree, legitimately. Pause first, or read the stamp.
+*Consequence worth stating plainly, and **corrected by the ruling** (`docs/2026-08-15-fable-ruling-attribution.md`,
+condition 2):* `emulator/screenshot` and `emulator/pixel_attribution` can disagree, legitimately — and
+**pausing does not reconcile them.** The first draft of this bullet said *"pause first, or read the stamp"*,
+which is wrong, and this project's own measurements disprove it: the overnight per-scanline work found
+**6 of 17 ROMs diverging post-hoc vs live**, one of them (`shadow_highlight`) making *zero* active-display
+writes and all 18 of its VDP writes in vblank. Attribution is a whole-frame-state read **by construction**,
+so on any ROM whose registers, CRAM or scroll changed mid-frame it disagrees with the raster that was
+actually drawn *whether the machine is paused or not*. The reconciliation path is the per-scanline
+capability (the handoff's ranked item 6), not `pause`. Getting this wrong in exactly the paragraph that
+calls itself *"the single most misreadable thing about the method"* is the invalid-yardstick failure mode
+this project keeps a standing warning about.
 
 ### 3.5 A dot outside the active display — **refuse with `-32004`.** Recommended, against the core's behaviour
 
@@ -565,7 +594,16 @@ export the predicate.
 
 ### 5.4 Sequencing
 
-This work is blocked on the owner ruling CR-9 in or out. Per §8 and §11.1's *"the discipline worth keeping
+> **Settled by the ruling (2026-08-15).** The order is **validator → this CR → the watchpoint surface as
+> its own two-CR design pass**. Landing an eleventh method *before* the §8 item 15 instrument exists would
+> repeat the exact pattern §11.2 documents, and this document's own test 9 assumes the validator. The
+> watchpoint violation is confirmed larger in scope but is **not** ready: its evidence base is *request*
+> evidence, which is the yardstick the handoff quantified as confidently wrong, and it carries an unsettled
+> shape question (measure value *changes*, not write counts). Blocking a finished, executable-validated CR
+> behind an undrafted design-laden one buys nothing.
+
+The paragraph below is the original reasoning, left standing because the ruling agreed with its final
+sentence. Per §8 and §11.1's *"the discipline worth keeping
 is the sequencing — write the contract first, implement second"*, the contract row and schema fragment land
 in `empyrean` **before** the handler. If the ruling is "yes, but fix the watchpoint log first" (§4's
 closing note, which I think is the stronger evidence-based order), nothing here spoils.
