@@ -29,6 +29,26 @@
 //! 89 others exist across `engine/` + `games/` plus all 12 CPU exception vectors, and several are reachable
 //! mid-replay. Every one lands at the same blob entry, so the decoded message — not the stop itself — is
 //! what separates a desync from anything else.
+//!
+//! # Most inline messages are NOT plain ASCII, and that is normal
+//!
+//! `raise_exception "REPLAY DESYNC"` happens to carry a bare string, but the ~75 `assert` sites in Aeon do
+//! not. `sigil`'s `assert_message` (`sigil/crates/sigil-frontend-emp/src/eval/diag.rs:298-322`) **always**
+//! embeds the MD Debugger's format-control bytes:
+//!
+//! ```text
+//! "Assertion failed:" $E0 $EC "> assert.<w> " $E8 "<src>," $EC "<cond>" [$E8 ",<dest>"]
+//!     $E0 $EA "Got: " <$80|width> $00
+//! ```
+//!
+//! `$E0` is `%<endl>`, `$E8`/`$EA`/`$EC` are palette selects, and `$80 | width` is a value descriptor. A
+//! decoder that demands printable ASCII to the NUL therefore rejects the entire population it exists to
+//! serve — throwing away the readable `"Assertion failed:"` prefix that is sitting right in front of the
+//! first control byte, and (under `--negative-control`) reporting the flatly false "did NOT trap".
+//!
+//! So a byte outside `$20..$7F` is a **soft terminator**: the readable prefix is returned, flagged
+//! [`truncated`](FaultReport::truncated). The only hard errors left are a pointer outside the image, a
+//! pointer with nothing readable at all at it, and a run of printable bytes with no NUL inside the limit.
 
 use oracle_core::m68000::Registers;
 use std::fmt;
@@ -94,8 +114,13 @@ pub struct DesyncDetail {
 /// A fault decoded at `ErrorHandlerBlob + 0`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FaultReport {
-    /// The inline message text, e.g. `REPLAY DESYNC`.
+    /// The inline message text, e.g. `REPLAY DESYNC` — or its readable prefix when
+    /// [`truncated`](Self::truncated), e.g. `Assertion failed:`.
     pub message: String,
+    /// Whether [`message`](Self::message) stops at a format-control byte rather than at the NUL. True for
+    /// every `assert` site, whose messages always embed `$E0`/`$E8`/`$EA`/`$EC` and a `$80|width`
+    /// descriptor.
+    pub truncated: bool,
     /// Where that text lives in the ROM — i.e. the value the `jsr` pushed.
     pub message_addr: u32,
     /// The `jsr` itself: `message_addr - 6`.
@@ -122,7 +147,8 @@ pub enum FaultDecodeError {
     MessageOutOfRom { addr: u32, rom_len: usize },
     /// No NUL within `limit` bytes — `(A7)` is not a message pointer.
     Unterminated { addr: u32, limit: usize },
-    /// The bytes are not printable ASCII, so this is not an inline diagnostic string.
+    /// The very first byte is neither printable nor a NUL, so there is not even a readable prefix here.
+    /// A control byte *after* some readable text is a soft terminator, not this.
     NotAscii { addr: u32, byte: u8 },
     /// A7 does not point into work RAM, so there is no stack frame to read.
     StackNotInWorkRam { a7: u32 },
@@ -142,7 +168,8 @@ impl fmt::Display for FaultDecodeError {
             ),
             Self::NotAscii { addr, byte } => write!(
                 f,
-                "byte ${byte:02X} at ${addr:06X} is not printable ASCII — (A7) does not point at a message"
+                "${addr:06X} starts with ${byte:02X}, which is neither printable nor a NUL — there is \
+                 not even a readable prefix here, so (A7) does not point at a message"
             ),
             Self::StackNotInWorkRam { a7 } => write!(
                 f,
@@ -156,8 +183,21 @@ impl fmt::Display for FaultDecodeError {
 /// bound, not a budget.
 pub const MAX_MESSAGE_LEN: usize = 128;
 
-/// Read a NUL-terminated printable-ASCII string out of the ROM image.
-pub fn read_message(rom: &[u8], addr: u32) -> Result<String, FaultDecodeError> {
+/// The readable part of an inline message, and whether it stopped early.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Message {
+    pub text: String,
+    /// `true` when a format-control byte ended the read before the NUL.
+    pub truncated: bool,
+}
+
+/// Read the readable prefix of an inline message out of the ROM image.
+///
+/// The read ends at the first NUL (complete) or at the first byte outside `$20..$7F` (truncated — a
+/// format-control byte, which every `assert` message carries; see the module docs). A pointer with nothing
+/// readable at all at it is still refused, because that is the signature of an `(A7)` that is not a message
+/// pointer, and lossily rendering one byte of binary would hide it.
+pub fn read_message(rom: &[u8], addr: u32) -> Result<Message, FaultDecodeError> {
     let start = addr as usize;
     if start >= rom.len() {
         return Err(FaultDecodeError::MessageOutOfRom {
@@ -166,15 +206,21 @@ pub fn read_message(rom: &[u8], addr: u32) -> Result<String, FaultDecodeError> {
         });
     }
     let limit = MAX_MESSAGE_LEN.min(rom.len() - start);
+    let complete = |i: usize, truncated: bool| {
+        Ok(Message {
+            text: String::from_utf8_lossy(&rom[start..start + i]).into_owned(),
+            truncated,
+        })
+    };
     for (i, &b) in rom[start..start + limit].iter().enumerate() {
         if b == 0 {
-            return Ok(String::from_utf8_lossy(&rom[start..start + i]).into_owned());
+            return complete(i, false);
         }
         if !(0x20..0x7F).contains(&b) {
-            return Err(FaultDecodeError::NotAscii {
-                addr: addr + i as u32,
-                byte: b,
-            });
+            if i == 0 {
+                return Err(FaultDecodeError::NotAscii { addr, byte: b });
+            }
+            return complete(i, true);
         }
     }
     Err(FaultDecodeError::Unterminated { addr, limit })
@@ -196,15 +242,18 @@ pub fn decode(
     regs: &RegSnapshot,
     resolve: impl FnOnce(u32) -> Option<String>,
 ) -> Result<FaultReport, FaultDecodeError> {
-    let message = read_message(rom, stack_top)?;
+    let Message { text, truncated } = read_message(rom, stack_top)?;
     let site = raise_site(stack_top);
-    let desync = (message == DESYNC_MESSAGE).then(|| DesyncDetail {
+    // A desync's `d0`/`d1`/`d2` are only meaningful at the desync raise site, so the match is exact *and*
+    // untruncated: a truncated prefix that merely starts the same way is a different message.
+    let desync = (!truncated && text == DESYNC_MESSAGE).then(|| DesyncDetail {
         actual: regs.d[0],
         logic_tick: regs.d[1],
         expected: regs.d[2],
     });
     Ok(FaultReport {
-        message,
+        message: text,
+        truncated,
         message_addr: stack_top,
         raise_site: site,
         raise_site_symbol: resolve(site),
@@ -254,6 +303,10 @@ mod tests {
         );
         assert_eq!(rom[0x26A7], 0xB9);
         assert_eq!(f.raise_site_symbol.as_deref(), Some("site@$0026A6"));
+        assert!(
+            !f.truncated,
+            "a bare raise_exception string ends at its NUL"
+        );
         assert!(f.is_desync());
         assert_eq!(
             f.desync,
@@ -285,15 +338,80 @@ mod tests {
             Err(FaultDecodeError::MessageOutOfRom { .. })
         ));
         // Points at all-zero bytes: that is an immediate NUL, i.e. an empty message — legal but useless…
-        assert_eq!(read_message(&rom, 0), Ok(String::new()));
-        // …whereas binary garbage is refused rather than lossily rendered.
+        assert_eq!(
+            read_message(&rom, 0),
+            Ok(Message {
+                text: String::new(),
+                truncated: false
+            })
+        );
+        // …whereas a pointer with nothing readable at all at it is refused rather than lossily rendered.
         let mut rom = vec![0u8; 0x100];
-        rom[0x10] = 0x4E;
-        rom[0x11] = 0xB9;
+        rom[0x10] = 0xB9;
+        rom[0x11] = 0x4E;
         assert!(matches!(
             read_message(&rom, 0x10),
-            Err(FaultDecodeError::NotAscii { .. })
+            Err(FaultDecodeError::NotAscii {
+                addr: 0x10,
+                byte: 0xB9
+            })
         ));
+    }
+
+    /// **The `assert` population, which is ~75 of Aeon's ~77 raise sites.** `sigil`'s `assert_message`
+    /// always embeds `$E0`/`$E8`/`$EA`/`$EC` format-control bytes and a `$80|width` descriptor, so demanding
+    /// printable ASCII to the NUL rejects every one of them — discarding the readable prefix that is right
+    /// there, and (under `--negative-control`) reporting "did NOT trap … THE GATE IS INVERTED".
+    #[test]
+    fn an_assert_message_decodes_to_its_readable_prefix_instead_of_failing() {
+        // Byte-for-byte the template at diag.rs:298-322, for `assert.w d0, eq, #1`.
+        let mut msg: Vec<u8> = Vec::new();
+        msg.extend_from_slice(b"Assertion failed:");
+        msg.push(0xE0);
+        msg.push(0xEC);
+        msg.extend_from_slice(b"> assert.w ");
+        msg.push(0xE8);
+        msg.extend_from_slice(b"d0,");
+        msg.push(0xEC);
+        msg.extend_from_slice(b"eq");
+        msg.push(0xE8);
+        msg.extend_from_slice(b",#1");
+        msg.push(0xE0);
+        msg.push(0xEA);
+        msg.extend_from_slice(b"Got: ");
+        msg.push(0x81); // $80 | width bits
+        msg.push(0x00);
+
+        let mut rom = vec![0u8; 0x200];
+        rom[0x100..0x100 + msg.len()].copy_from_slice(&msg);
+
+        let m = read_message(&rom, 0x100).expect("the readable prefix must survive");
+        assert_eq!(m.text, "Assertion failed:");
+        assert!(m.truncated);
+
+        let f = decode(&rom, 0x100, &regs([1, 2, 3, 0, 0, 0, 0, 0]), |_| None)
+            .expect("an assert must decode, not error");
+        assert_eq!(f.message, "Assertion failed:");
+        assert!(f.truncated);
+        // …and it is emphatically NOT a desync: d0/d1/d2 mean nothing at an assert site.
+        assert!(!f.is_desync());
+        assert_eq!(f.desync, None);
+    }
+
+    /// A truncated prefix that happens to read like the desync string must not be promoted to a desync,
+    /// because the registers behind it are not a desync's registers.
+    #[test]
+    fn a_truncated_prefix_is_never_promoted_to_a_desync() {
+        let mut rom = vec![0u8; 0x100];
+        rom[0x20..0x20 + 13].copy_from_slice(DESYNC_MESSAGE.as_bytes());
+        rom[0x20 + 13] = 0xE0; // a control byte where the NUL would be
+        let f = decode(&rom, 0x20, &regs([9, 9, 9, 0, 0, 0, 0, 0]), |_| None).unwrap();
+        assert_eq!(f.message, DESYNC_MESSAGE);
+        assert!(f.truncated);
+        assert!(
+            !f.is_desync(),
+            "the exact match must also be an untruncated one"
+        );
     }
 
     #[test]

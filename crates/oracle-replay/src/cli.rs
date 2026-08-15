@@ -68,6 +68,21 @@ pub const DEFAULT_MAX_FRAMES: u64 = 9000;
 /// milliseconds of wall-clock rather than at the end of the frame cap.
 pub const DEFAULT_STALL_FRAMES: u64 = 240;
 
+/// The measured worst case the default above must clear: 34 consecutive frames with `Logic_Tick` frozen,
+/// on a **healthy** run, from `Level_LoadArt`'s `VSync_Wait` spin immediately after the arm. Swept on both
+/// fixtures: `--stall-frames 34` reports a false TIMEOUT on a green run and 35 passes.
+///
+/// Named so the *relationship* can be enforced, rather than a constant being asserted against its own
+/// literal (which is what the previous `assert_eq!(DEFAULT_STALL_FRAMES, 240)` did — it could never fail,
+/// and it said nothing about why 240 is a defensible number).
+pub const MEASURED_STALL_WORST_CASE: u64 = 34;
+
+/// The invariant that makes [`DEFAULT_STALL_FRAMES`] defensible: it must clear the worst case a **healthy**
+/// run really produces, or the gate reports false TIMEOUTs on green runs. Enforced at compile time, which
+/// is strictly stronger than a test — the crate does not build if someone lowers the budget below the
+/// measurement.
+const _: () = assert!(DEFAULT_STALL_FRAMES > MEASURED_STALL_WORST_CASE);
+
 /// Parsed command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Args {
@@ -116,6 +131,8 @@ EXIT CODES:
     3  FAULT — some other trap fired during the replay
     4  TIMEOUT — wedged, or the frame cap was reached
     5  the negative control did NOT trip: the gate is inverted and proves nothing
+    6  SHORT COMPLETION — Replay_Done was set, but the run verified less than it claims (a
+       truncated or mis-packed stream). This is the case a bare Replay_Done compare called a PASS.
 ";
 
 /// Parse an argument list (excluding `argv[0]`).
@@ -193,10 +210,10 @@ mod tests {
         assert!(!a.negative_control);
         assert_eq!(a.max_frames, DEFAULT_MAX_FRAMES);
         assert_eq!(a.stall_frames, DEFAULT_STALL_FRAMES);
-        assert_eq!(
-            DEFAULT_STALL_FRAMES, 240,
-            "the measured worst case is 34 frozen frames"
-        );
+        // The property that matters — `DEFAULT_STALL_FRAMES > MEASURED_STALL_WORST_CASE` — is a
+        // relationship between two constants, so it is enforced at compile time next to them rather than
+        // re-stated here. (The line this replaces asserted `DEFAULT_STALL_FRAMES == 240`, i.e. a constant
+        // against its own literal, which could never fail.)
     }
 
     #[test]

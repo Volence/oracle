@@ -53,7 +53,9 @@ pub struct ReplayHeader {
     pub tick_count: u32,
     /// Offset 10. Stale metadata with zero consumers — reported, never validated against.
     pub core_hash: u32,
-    /// Offset 14.
+    /// Offset 14. `aeon/tools/replay_pack.py:18` documents it as *"reserved, 0 until an RNG exists"*, and
+    /// nothing in `replay.emp` reads it. A **non-zero** value is refused rather than reported (see
+    /// [`HeaderError::RngSeedNotZero`]).
     pub rng_seed: u32,
     /// Absolute address of the first stream opcode (`base + REPLAY_HEADER_LEN`). This is the value the
     /// runner pokes into `Replay_Ptr`.
@@ -71,6 +73,8 @@ pub enum HeaderError {
     PadNotZero(u8),
     /// `reserved` (offset 18) must be zero (`aeon/tools/replay_pack.py:124`).
     ReservedNotZero(u16),
+    /// `rng_seed` (offset 14) is non-zero, and this runner cannot honour it.
+    RngSeedNotZero(u32),
     /// Every recorded fixture opens on a ring-0 checkpoint, i.e. `FF 01`. Anything else means the symbol
     /// does not point where we think it does.
     BodyNotCheckpoint([u8; 2]),
@@ -92,6 +96,13 @@ impl fmt::Display for HeaderError {
             Self::ReservedNotZero(v) => {
                 write!(f, "header reserved word is ${v:04X}, must be $0000")
             }
+            Self::RngSeedNotZero(v) => write!(
+                f,
+                "header rng_seed is ${v:08X}, but the packer documents the field as \"reserved, 0 until \
+                 an RNG exists\" (replay_pack.py:18) and nothing in replay.emp reads it. This runner \
+                 pins its own power-on seed, so it cannot honour a recorded one — a non-zero seed would \
+                 mean the run is not the run that was recorded, silently. Refusing"
+            ),
             Self::BodyNotCheckpoint(got) => write!(
                 f,
                 "the stream opens with {got:02X?}, not FF 01 (a ring-0 checkpoint) — \
@@ -134,6 +145,14 @@ impl ReplayHeader {
         if reserved != 0 {
             return Err(HeaderError::ReservedNotZero(reserved));
         }
+        // The third reserved field. `core_hash` is dead metadata we deliberately do not validate, but
+        // `rng_seed` is different in kind: it is dead *today*, and the day it stops being dead this runner
+        // — which pins `POWER_ON_SEED` — would be running a different machine than the one recorded,
+        // without saying so. Refusing a non-zero value keeps that from ever being silent.
+        let rng_seed = be_u32(&h[14..18]);
+        if rng_seed != 0 {
+            return Err(HeaderError::RngSeedNotZero(rng_seed));
+        }
         let opener: [u8; 2] = [h[20], h[21]];
         if opener != [REPLAY_ESCAPE, REPLAY_OP_CHECK] {
             return Err(HeaderError::BodyNotCheckpoint(opener));
@@ -144,7 +163,7 @@ impl ReplayHeader {
             flags: h[4],
             tick_count: be_u32(&h[6..10]),
             core_hash: be_u32(&h[10..14]),
-            rng_seed: be_u32(&h[14..18]),
+            rng_seed,
             body: base + REPLAY_HEADER_LEN,
         })
     }
@@ -225,6 +244,24 @@ mod tests {
             ReplayHeader::parse(&rom, 0x100),
             Err(HeaderError::ReservedNotZero(2))
         );
+    }
+
+    /// The third reserved field, and the one with teeth. `rng_seed` is dead today (`replay_pack.py:18`:
+    /// *"reserved, 0 until an RNG exists"*, no reader in `replay.emp`), but this runner pins its own
+    /// power-on seed — so the day a stream carries one, running it anyway would silently be a different
+    /// run than the one recorded. Refused rather than reported, unlike `core_hash`, which is dead metadata
+    /// nothing could ever honour.
+    #[test]
+    fn a_non_zero_rng_seed_is_refused_because_this_runner_cannot_honour_it() {
+        let mut rom = rom_with_fixture(0x100, 1721, &OPENER);
+        rom[0x10E..0x112].copy_from_slice(&0x1234_5678u32.to_be_bytes());
+        assert_eq!(
+            ReplayHeader::parse(&rom, 0x100),
+            Err(HeaderError::RngSeedNotZero(0x1234_5678))
+        );
+        assert!(HeaderError::RngSeedNotZero(1)
+            .to_string()
+            .contains("cannot honour"));
     }
 
     /// The load-bearing shape check: a symbol that points somewhere plausible but wrong (or a stream whose
