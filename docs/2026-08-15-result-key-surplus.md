@@ -73,3 +73,31 @@ sequencing than any of the prose about it, and it is worth more than the individ
 5. The `caveat` count is now **five** methods (`read_memory`, `read_vram`, `state_hash`, `load_symbols`,
    `lookup_symbol`) plus `run_to`'s catalogued one — reinforcing the ruling's call to define it once in
    §2.4 rather than per row.
+
+---
+
+## Closed, 2026-08-15 evening (`empyrean` `f309cc8`, `protocol.md` §11.5)
+
+Every row above is now ruled, and the table stands unedited because it is the **measurement** — the
+record of what was on the wire when the sweep ran, not a to-do list. What changed:
+
+- **Registered** (contract text now says what the wire already said): everything not named below.
+- **Struck, and removed from the server** (`f36b548`): `run_to.stoppedAtFrame`/`stoppedAtMclk`,
+  `release_all.released`, and — from §4 — **`rawName`**, redundant once `name` is the identifying spelling.
+- **Restructured:** `caveat` moved into a new §2.4 once for the whole bus; `otherMatches` became
+  `$defs/boundedList` with one pinned item shape and **no continuation token** (§2.4 clause (b)).
+- **Fixed in the server** rather than registered, because §4 ruled our shape wrong:
+  `lookup_symbol.name` on the address direction carried a `+$hex` displacement suffix and did not
+  round-trip; `exact` appeared only on the branch where it is always `false`; `otherMatches` had two item
+  shapes and a numeric cursor.
+
+Consequence 4 above was the right call and understated the size of it: §4 was rewritten wholesale, and it
+turned out to contain a *live defect* rather than eleven undocumented-but-working keys — the one field D7
+exists to make reliable was the one that could not be handed back. `tests/methods.rs::a_name_from_an_address_lookup_round_trips`
+is that promise made executable, and nothing had ever checked it.
+
+**And the sweep's own lesson repeated once more.** This document opens by saying the floor was never 10
+methods, it was 16. It was not 16 either. §8 item 20 — a `unevaluatedProperties: false` gate over every
+result, replacing sampling entirely — found **five more keys** on its first run, all of them in fragments
+the amendment itself forgot to update (**CR-16**). Three passes of careful sweeping each called its own
+count a floor; only the gate stopped being wrong.
