@@ -74,8 +74,9 @@ Reordered, with the cause recorded.
 | | divergence | found by | outcome |
 |---|---|---|---|
 | **CR-10** | no coordinate-shaped read; attribution is panel-only | sweeping the GUI against the catalog | **adopted**, contract `28ef4bb` |
-| **CR-13** | ten methods emit result keys in no contract text | diffing live result key sets against §6 | **raised**, awaiting ruling |
-| **CR-14** | `lookup_symbol.otherMatches` is an object; schema says array of strings | probe + validator, independently | **raised**, registered as a live divergence |
+| **CR-13** | ~~ten~~ **sixteen** methods emit result keys in no contract text | diffing live result key sets against §6 | **ruled and applied** — block split, two removals; contract `f309cc8` |
+| **CR-14** | `lookup_symbol.otherMatches` is an object; schema says array of strings | probe + validator, independently | **ruled and applied** — envelope adopted *without* the dead token; contract `f309cc8` |
+| **CR-16** | five of §11.5's *own* registrations never reached the schema | §8 item 20's closure, first run | **adopted**, contract `d45dc87` |
 | **CR-15** | `$defs/id` forbids the `null` JSON-RPC 2.0 **mandates** | the validator, first run | **adopted**, contract `90178fc` |
 
 **CR-15 is the one where the server had no legal move.** §2 adopts JSON-RPC 2.0 and §8 item 2 makes that a
@@ -86,8 +87,10 @@ because `-32700` and `-32600` are the only codes decided before a request object
 a real id was available to echo, so a null one is a correlation bug. The schema carries an `if`/`then`.
 
 **CR-14 is the first type-level divergence where our shape looks like the better one**, so neither side moved
-unilaterally: D14 says a disagreement is a spec bug, and the schema governs until amended. **The reference
-server is non-conformant here today, knowingly.**
+unilaterally: D14 says a disagreement is a spec bug, and the schema governs until amended. It was then ruled
+**our way on the container and against us on the token** — `otherMatches` is `$defs/boundedList` with one
+pinned item shape and **no continuation at all**, because `lookup_symbol` accepts no cursor and a token that
+can never be handed back trains clients that handles are ignorable. See §6b.
 
 ---
 
@@ -104,10 +107,12 @@ teeth: `reason: "step"` for a completed `run_frames` **passes** the schema, beca
 member. Of the three conformance items in this arc the validator catches **one** and is blind to another by
 construction. Item 13 has its own behavioural assertions for exactly this reason.
 
-**A harness must report its own coverage or it reads as complete.** The schema is a SEED: 9 of the 21
-advertised methods have a `result` schema. The harness prints the split, pins the uncovered list, prints
-the registered divergences, and ends in the words *"this server is NOT fully schema-conformant."* Green now
-means "no **unregistered** divergences", which is weaker and far more useful.
+**A harness must report its own coverage or it reads as complete.** The schema was a SEED — 9 of 21 methods
+had a `result` schema when the validator landed; it is **21/21** now. The harness prints the split, pins the
+uncovered list (empty), prints the registered divergences (none), and its closing claim is **adaptive**,
+because a fixed sentence is how a report starts lying: with divergences it says green means only "nothing
+unregistered"; with none it says shape-conformance is *not* §8 conformance, and names the item-13 blind spot
+and the two open shape holes rather than letting silence imply they are closed.
 
 ---
 
