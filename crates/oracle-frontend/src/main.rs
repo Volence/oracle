@@ -113,6 +113,24 @@
 //! at the instruction boundary a watch fires on. Wiring that into this loop (pause, then report the
 //! [`oracle_core::system::StopRecord`]) is unbuilt, not impossible — the "the core is frame-batched" reason
 //! recorded here previously no longer holds.
+//!
+//! ## Pacing — why the audio device, not the window, decides how many frames run
+//!
+//! The loop runs **0, 1 or 2** emulated frames per iteration, chosen from the audio ring's occupancy by
+//! `audio::frames_to_run`, whose docs carry the measurements (the module is feature-gated, so that is
+//! deliberately not an intra-doc link). This is not a refinement; without it the frontend crackles
+//! continuously.
+//! `minifb::set_target_fps(60)` cannot hold 60: its limiter sleeps `target - elapsed` and only *then*
+//! restarts its clock, so every period is `16.667 ms + sleep overshoot` (measured 59.54–59.63 fps here). One
+//! emulated frame per iteration produces `735 x 59.63 = 43,826` samples a second into a device that eats
+//! 44,100 — a **permanent 0.62 % deficit**, which drains any reservoir no matter how large, pins the ring at
+//! empty and makes the output callback silence-fill 8–16 % of its buffers forever.
+//!
+//! So the *device* is the master clock (the standard emulator arrangement) and minifb keeps pacing
+//! presentation. The cost is bounded and small: ~0.43 **video** frames a second dropped from the display
+//! (0.7 %), and none duplicated — the drift only ever runs one way.
+//! A 0-frame iteration re-presents the retained framebuffer, exactly as a paused one does; a 2-frame
+//! iteration presents the second frame whole. Measured: 0 underruns over 30 s at every callback block size.
 
 // Phase SY-5a real-time-audio substrate (SPSC ring + `i16→f32` + composite `BusEventSink`). Feature-gated
 // and self-contained. Phase SY-5b (below) consumes it: the live loop drives the composite sink each frame
@@ -372,6 +390,13 @@ fn draw_crosshair(buf: &mut [u32], width: usize, wx: u16, wy: u16) {
 struct AudioState {
     sink: oracle_core::synth::AudioSink,
     prod: audio::AudioProd,
+    /// `f32` one emulated frame contributes to the ring at this device's rate — the unit
+    /// [`audio::frames_to_run`] measures the ring's occupancy in. Cached from the device rate at build time.
+    frame_samples: usize,
+    /// Consecutive loop iterations the feedback has already answered "run 0 frames" for. Bounded by
+    /// [`audio::MAX_CONSECUTIVE_SKIPS`] so a device that stops consuming cannot back-pressure the emulator
+    /// into a permanent standstill.
+    skips: usize,
     /// Raised by the emulation thread whenever the machine's timeline jumps (state load, soft reset, ROM
     /// reload — see [`resync_audio`]); the next audio callback drops the whole ring backlog (see
     /// [`audio::fill_output`]). The main thread owns only the producer half, so it cannot drain the ring
@@ -483,7 +508,12 @@ fn build_audio(device: Option<cpal::Device>) -> Option<AudioState> {
     let config: cpal::StreamConfig = default_cfg.config();
 
     let sink = oracle_core::synth::AudioSink::new(sample_rate);
-    let (prod, mut cons) = audio::make_ring(sample_rate);
+    let (mut prod, mut cons) = audio::make_ring(sample_rate);
+    // Queue a reservoir of silence *before* the stream is allowed to pop anything, so the first callbacks
+    // have something to play while the first emulated frame is still being computed, and the feedback loop
+    // starts inside its steady band instead of climbing out of the empty wall (see `audio::preroll_silence`).
+    let frame_samples = audio::frame_samples(sample_rate);
+    let prerolled = audio::preroll_silence(&mut prod, frame_samples);
     // Shared with the callback so a save-state load can drop the (now bogus) queued backlog.
     let flush = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cb_flush = std::sync::Arc::clone(&flush);
@@ -505,10 +535,16 @@ fn build_audio(device: Option<cpal::Device>) -> Option<AudioState> {
         return None;
     }
 
-    println!("audio: {sample_rate} Hz, {channels} ch (f32) — streaming");
+    println!(
+        "audio: {sample_rate} Hz, {channels} ch (f32) — streaming ({} ms pre-roll, {} ms ring)",
+        prerolled * 500 / sample_rate.max(1) as usize,
+        audio::ring_capacity(&prod) * 500 / sample_rate.max(1) as usize,
+    );
     Some(AudioState {
         sink,
         prod,
+        frame_samples,
+        skips: 0,
         flush,
         _stream: stream,
     })
@@ -932,13 +968,41 @@ fn main() {
         sys.set_pad(0, player[0]);
         sys.set_pad(1, player[1]);
 
-        // Advance when running, or on an explicit step request while paused. Every branch now carries the
-        // scanline capture, because it *is* the pixel path — there is no longer a "fast null-sink" video run.
-        // That is cheaper, not dearer, than what it replaces: the run already rendered every scanline and
-        // threw the RGB away (`system.rs`), and the presenter then rendered all 224 lines a *second* time.
-        // Measured on the S3K state at 320x224, 600 frames x3: 4.0 ms/frame before, 2.5 ms/frame after.
-        let advanced = !paused || step;
-        if advanced {
+        // How many emulated frames this iteration runs. Normally one; while paused, none unless `.` asked for
+        // a single step. With audio live it is whatever the ring's occupancy asks for — 0, 1 or 2 — which is
+        // what makes the **audio device** the master clock while minifb keeps pacing presentation.
+        //
+        // Why it cannot simply be one: minifb's `set_target_fps(60)` limiter sleeps `target - elapsed` and
+        // only then restarts its clock, so its period is `16.667 ms + sleep overshoot` and its rate is always
+        // *under* 60 (measured 59.54–59.63 fps here). One frame per iteration therefore produces
+        // `735 x 59.63 = 43,826` samples/s against a device eating 44,100 — a permanent 0.62 % deficit that
+        // pins the ring at empty and makes the callback silence-fill ~8–16 % of its buffers. See
+        // `audio::frames_to_run` for the measurements and the policy.
+        #[cfg(feature = "audio")]
+        let frames_this_iter = if paused {
+            usize::from(step) // a `.` step is deliberate: it runs its frame whatever the ring says
+        } else if let Some(a) = audio.as_mut() {
+            let n = audio::frames_to_run_for(&a.prod, a.frame_samples, a.skips);
+            a.skips = if n == 0 { a.skips + 1 } else { 0 };
+            n
+        } else {
+            1 // no device — nothing to pace against, so run at the window's rate as before
+        };
+        // No-audio build: nothing to steer by, so one frame per iteration exactly as before.
+        #[cfg(not(feature = "audio"))]
+        let frames_this_iter = usize::from(!paused || step);
+
+        // Every branch below carries the scanline capture, because it *is* the pixel path — there is no
+        // longer a "fast null-sink" video run. That is cheaper, not dearer, than what it replaces: the run
+        // already rendered every scanline and threw the RGB away (`system.rs`), and the presenter then
+        // rendered all 224 lines a *second* time. Measured on the S3K state at 320x224, 600 frames x3:
+        // 4.0 ms/frame before, 2.5 ms/frame after.
+        //
+        // One iteration of this loop is exactly one emulated frame, capture lifecycle and all, so the two
+        // unusual counts stay correct by construction: running 2 frames presents the *second* one (the first
+        // is dropped from the display, never half-shown), and running 0 leaves `buf`/`width` untouched so the
+        // retained framebuffer is re-presented below — the identical path a paused frontend takes.
+        for _ in 0..frames_this_iter {
             // With audio live (SY-5b): drive every frame through the AudioAndWatch composite (audio + the
             // optional armed watch), then drain that frame's PCM and push it into the ring for the cpal
             // callback. The composite borrows `sink` for the run and is dropped before the drain re-borrow.
@@ -977,6 +1041,26 @@ fn main() {
                 }
             }
             frame += 1;
+
+            // Take the frame the run just completed, width and all — an H32↔H40 switch rides along in the
+            // capture's own per-line log, so nothing here re-queries the VDP. A run that completed no frame
+            // (one that ended mid-frame) leaves `buf`/`width` alone, so the last good image stays on screen.
+            // Done per emulated frame rather than once per iteration, so the capture lifecycle below sees
+            // exactly one frame at a time however many this iteration runs.
+            if let Some(w) = blit_capture(&cap, &mut buf) {
+                width = w;
+            }
+            // Release the capture's per-delivery log (~215 KB/emulated second, unbounded by design) now that
+            // the frame it held has been copied out. The normal case is a run that ended cleanly on the frame
+            // boundary — exactly `HEIGHT` deliveries and one completed frame — where the sink's in-progress
+            // buffer is empty and `clear` drops nothing but bookkeeping. A run that ended *mid*-frame still
+            // has real pixels buffered for a frame that has not completed yet, so it is left to finish, with
+            // `MAX_CAPTURE_LINES` as the backstop that bounds even a pathological run of those.
+            let ended_on_a_frame_boundary =
+                cap.frames_completed() >= 1 && cap.lines().len() == HEIGHT;
+            if ended_on_a_frame_boundary || cap.lines().len() >= MAX_CAPTURE_LINES {
+                cap.clear();
+            }
         }
 
         // Slice S2/S4 autosave: when the guest has dirtied SRAM, arm a debounce countdown and flush the `.srm`
@@ -1007,25 +1091,6 @@ fn main() {
             }
         }
 
-        // Take the frame the run just completed, width and all — an H32↔H40 switch rides along in the
-        // capture's own per-line log, so nothing here re-queries the VDP. A run that completed no frame —
-        // every paused iteration — leaves `buf`/`width` alone, so the last good image stays on screen.
-        if advanced {
-            if let Some(w) = blit_capture(&cap, &mut buf) {
-                width = w;
-            }
-            // Release the capture's per-delivery log (~215 KB/emulated second, unbounded by design) now that
-            // the frame it held has been copied out. The normal case is a run that ended cleanly on the frame
-            // boundary — exactly `HEIGHT` deliveries and one completed frame — where the sink's in-progress
-            // buffer is empty and `clear` drops nothing but bookkeeping. A run that ended *mid*-frame still
-            // has real pixels buffered for a frame that has not completed yet, so it is left to finish, with
-            // `MAX_CAPTURE_LINES` as the backstop that bounds even a pathological run of those.
-            let ended_on_a_frame_boundary =
-                cap.frames_completed() >= 1 && cap.lines().len() == HEIGHT;
-            if ended_on_a_frame_boundary || cap.lines().len() >= MAX_CAPTURE_LINES {
-                cap.clear();
-            }
-        }
         // Optional debug marker: a contrasting crosshair at the watched pixel so the live driver can confirm
         // the click landed where intended (bounds-guarded against an H40→H32 mode switch since the click).
         // Drawn into a scratch copy, never into `buf`: the crosshair is an XOR, and a paused frontend
@@ -1385,6 +1450,98 @@ mod tests {
             "expected the frame to carry many per-line colours, got {}",
             live.len()
         );
+    }
+
+    /// **The audio-feedback / retained-framebuffer interaction.** The run loop no longer runs exactly one
+    /// emulated frame per iteration — `audio::frames_to_run` can ask for 0 (ring nearly full) or 2 (ring
+    /// nearly empty). This replays that loop body verbatim over the sequence 1, 2, 0, 1 and pins the two
+    /// properties the change could plausibly break:
+    ///
+    /// * a **0-frame** iteration must re-present the retained framebuffer unchanged — never an empty capture,
+    ///   never a blanked screen (the same contract the paused path has);
+    /// * a **2-frame** iteration must present the *second* frame whole, never a half-collected one, and must
+    ///   leave the capture's per-line log bounded exactly as a 1-frame iteration does.
+    #[test]
+    fn the_frame_budget_presents_correctly_at_zero_one_and_two_frames() {
+        let mut sys = System::new(0x5EED);
+        sys.load_rom(build_midframe_cram_rom());
+        sys.reset();
+        sys.run_frames(4);
+
+        // A second machine from the same seed and ROM, advanced strictly one frame at a time. It is the
+        // oracle for "which frame is on screen": two identical machines given the same number of frames are
+        // in the same state, so `reference[k]` is exactly what the k-th emulated frame looked like.
+        let mut refsys = System::new(0x5EED);
+        refsys.load_rom(build_midframe_cram_rom());
+        refsys.reset();
+        refsys.run_frames(4);
+        let mut refcap = ScanlineCapture::new(Retain::LastFrame);
+        let mut next_reference_frame = |cap: &mut ScanlineCapture| -> Vec<u32> {
+            refsys.run_frames_with_sink(1, cap);
+            let mut b = Vec::new();
+            blit_capture(cap, &mut b).expect("the reference completes a frame every run");
+            cap.clear();
+            b
+        };
+
+        let mut cap = ScanlineCapture::new(Retain::LastFrame);
+        let mut buf: Vec<u32> = Vec::new();
+        let mut width = 0usize;
+
+        for frames_this_iter in [1usize, 2, 0, 1] {
+            let before = buf.clone();
+            // What each of this iteration's frames should look like, in order.
+            let expected: Vec<Vec<u32>> = (0..frames_this_iter)
+                .map(|_| next_reference_frame(&mut refcap))
+                .collect();
+            // --- verbatim copy of the run loop's per-frame body ---
+            for _ in 0..frames_this_iter {
+                sys.run_frames_with_sink(1, &mut cap);
+                if let Some(w) = blit_capture(&cap, &mut buf) {
+                    width = w;
+                }
+                let ended_on_a_frame_boundary =
+                    cap.frames_completed() >= 1 && cap.lines().len() == HEIGHT;
+                if ended_on_a_frame_boundary || cap.lines().len() >= MAX_CAPTURE_LINES {
+                    cap.clear();
+                }
+            }
+            // --- what the presenter then hands to the window ---
+            assert_eq!(width, 256, "the fixture programs H32");
+            assert_eq!(
+                buf.len(),
+                width * HEIGHT,
+                "the presented buffer is always a whole frame, never a partial one"
+            );
+            match expected.last() {
+                // 0 frames: the retained framebuffer is re-presented byte for byte — the paused contract.
+                None => assert_eq!(
+                    buf, before,
+                    "a 0-frame iteration must re-present the retained framebuffer byte for byte"
+                ),
+                // 1 or 2 frames: what is on screen is the LAST frame the machine ran. For the 2-frame case
+                // that is the pin that matters — the display must show the second frame, not the first and
+                // not a blend of the two.
+                Some(last) => {
+                    assert_eq!(
+                        &buf, last,
+                        "the presented frame must be the last one run at budget {frames_this_iter}"
+                    );
+                    if frames_this_iter == 2 {
+                        assert_ne!(
+                            &buf, &expected[0],
+                            "the 2-frame iteration must present the SECOND frame — the first is dropped \
+                             from the display, not shown"
+                        );
+                    }
+                }
+            }
+            // The capture log never accumulates across iterations, whatever the frame budget was.
+            assert!(
+                cap.lines().len() < MAX_CAPTURE_LINES,
+                "the per-line log stayed bounded at budget {frames_this_iter}"
+            );
+        }
     }
 
     /// A run that completed no frame must not blank the window: [`blit_capture`] reports `None` and leaves the
