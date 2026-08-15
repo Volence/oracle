@@ -14,10 +14,10 @@ an explicit re-vendor commit. That commit is the auditable record of "we adopted
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo commit (`HEAD` at vendor time) | `f309cc8` — *"contract: rule the result-key surplus — §2.4, §4 rewritten, 12 fragments, and two refusals"* (2026-08-15) |
-| Last commit that touched the schema | `f309cc8` — same commit |
-| SHA-256 | `e00c5e1697471027132e9e18220c5b33b7791134bf5bd0ced78cf1ac96882e95` |
-| Bytes | 59356 |
+| Contract repo commit (`HEAD` at vendor time) | `d45dc87` — *"contract: CR-16 — five of §11.5's own registrations never reached the schema"* (2026-08-15) |
+| Last commit that touched the schema | `d45dc87` — same commit |
+| SHA-256 | `ba5a2563761f323f6731c392fcf79339bbdc02800caf4b9b796c43e82ec23490` |
+| Bytes | 62134 |
 | Vendored on | 2026-08-15 |
 
 ### What this re-vendor adopted
@@ -78,3 +78,21 @@ The freshness test looks for the sibling checkout, in order:
 If none hit, the test **fails loudly** rather than passing — see the comment on
 `the_vendored_schema_is_byte_identical_to_the_upstream_contract` for why, and for the
 `AETHER_CONTRACT_OPTIONAL=1` escape hatch.
+
+### CR-16, adopted hours after `f309cc8` and retired the same day
+
+`d45dc87` adds five `properties` entries across two fragments — `initialize.limits`,
+`initialize.methodSummaries`, `read_memory.region`/`.symbolDisp`/`.caveat` — all of which `protocol.md`
+already **registered in prose** and none of which reached the schema. `limits` joins `initialize`'s
+`required`, `region` joins `read_memory`'s. No prose changed; the prose was already right.
+
+It was found by §8 item 20's closure on its first run, in the document rather than in the server. Its
+registry entries and their key-checkers are gone from `tests/common/schema.rs`, and that retirement was
+**forced, not remembered**: those checkers *lift* their key out of the payload before validating it, so the
+moment the schema required `limits`, lifting it made it missing — and every checkpoint test went red on the
+handshake. An allowance that outlives its divergence does not go stale quietly; it starts causing the
+failure it was written to suppress, in tests unrelated to it.
+
+One fixture moved with it: `schema_conformance.rs`'s `good_read_memory_reply()` omitted `region` and so
+stopped being conformant the moment the fragment declared it — the positive control catching its own drift,
+which is the only reason the rejection controls beneath it stayed meaningful.

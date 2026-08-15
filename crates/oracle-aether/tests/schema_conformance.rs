@@ -349,8 +349,13 @@ fn rejects(line: &Value, method: Option<&str>, needle: &str) -> Vec<String> {
 
 /// A well-formed `emulator/read_memory` reply, used as the base for the planted defects below.
 fn good_read_memory_reply() -> Value {
+    // `region` is REQUIRED as of the CR-16 re-vendor (`empyrean` `d45dc87`, §11.6) — §6's row lists it
+    // un-parenthesised, and the server has always emitted it. This fixture omitted it and so stopped
+    // being conformant the moment the fragment declared it, which is the positive control doing its job
+    // on itself: a "conformant reply" fixture that drifts from the contract silently weakens every
+    // rejection control underneath it.
     json!({"jsonrpc":"2.0","id":7,"result":{
-        "addr":"0x00FFA144","len":4,"bytes":"0x02600000","symbol":"Camera_X",
+        "addr":"0x00FFA144","len":4,"bytes":"0x02600000","symbol":"Camera_X","region":"work RAM",
         "frame":601,"mclk":538008040,"running":false,"droppedEvents":0}})
 }
 

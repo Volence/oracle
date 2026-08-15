@@ -168,7 +168,7 @@
       },
       "result": {
         "allOf": [{ "$ref": "#/$defs/replyFields" }],
-        "required": ["serverName", "protocolVersion", "capabilities", "methods", "timingBasis"],
+        "required": ["serverName", "protocolVersion", "capabilities", "methods", "timingBasis", "limits"],
         "properties": {
           "serverName": { "type": "string" },
           "serverVersion": { "type": "string" },
@@ -198,6 +198,21 @@
             "type": "array",
             "items": { "type": "string" },
             "description": "Authoritative live method set — replaces the removed list_ops (D4). This array IS the count of the server's surface; no number in prose tracks it."
+          },
+          "limits": {
+            "type": "object",
+            "required": ["maxRunFrames", "maxReadLen", "maxLineBytes"],
+            "properties": {
+              "maxRunFrames": { "type": "integer", "minimum": 1, "description": "Largest `frames`/`maxFrames` this server accepts on a run-shaped op." },
+              "maxReadLen": { "type": "integer", "minimum": 1, "description": "Largest `len` this server accepts on a read-shaped op." },
+              "maxLineBytes": { "type": "integer", "minimum": 1, "description": "Largest single NDJSON line this server accepts (protocol.md §7.1) before refusing it." }
+            },
+            "description": "REQUIRED (protocol.md §2.1, §11.5). THIS SERVER's ceilings, not the catalog's: §6's parenthetical defaults describe the catalog, while a server hosted inside a player window legitimately runs a far lower maxRunFrames and REFUSES above it rather than clamping (§5). A client has no other way to discover that number, and discovering it by being refused is discovering it too late. The values MUST be the ones the server's own parameter checks actually enforce."
+          },
+          "methodSummaries": {
+            "type": "object",
+            "additionalProperties": { "type": "string" },
+            "description": "OPTIONAL (protocol.md §2.1, §11.5), and its derivation clause is the whole condition of its existence: a server advertising it MUST derive it from the same registry as `methods`, its key set MUST equal `methods`, its values are non-normative prose, and clients MUST NOT use it for capability discovery — that is `methods` (D4), which exists because hand-maintained op inventories drift."
           },
           "timingBasis": {
             "type": "object",
@@ -540,12 +555,15 @@
       },
       "result": {
         "allOf": [{ "$ref": "#/$defs/replyFields" }],
-        "required": ["addr", "len", "bytes"],
+        "required": ["addr", "len", "bytes", "region"],
         "properties": {
           "addr": { "$ref": "#/$defs/hex" },
           "len": { "type": "integer" },
           "bytes": { "$ref": "#/$defs/hex" },
-          "symbol": { "type": "string" }
+          "symbol": { "$ref": "#/$defs/symbolName" },
+          "symbolDisp": { "type": "integer", "minimum": 0, "description": "Bytes past the resolved symbol. Present with `symbol`; per §4 the displacement lives in this number and NEVER inside the name string." },
+          "region": { "type": "string", "description": "PROVENANCE, not decoration (protocol.md §6, §11.5): the region the bytes were actually taken from — 'work RAM', 'cartridge ROM', and whatever a wider map adds. An inspection read is a DEBUG read, taken straight out of the region and bypassing the bus, so which region answered is a fact about the answer rather than one derivable from the address. A client can derive it from `addr` ONLY against a fixed map, and the moment a cartridge mapper or a bank register enters the catalog that derivation is wrong while looking right." },
+          "caveat": { "type": "string", "description": "§2.4's shared convention. Declared here because §8 item 20 closes results against their fragments, so a method that CAN emit a caveat must declare it or its own conformant reply is rejected." }
         }
       }
     },

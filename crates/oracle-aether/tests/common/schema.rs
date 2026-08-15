@@ -64,7 +64,7 @@
 #![allow(dead_code)]
 
 use jsonschema::Validator;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
@@ -240,43 +240,18 @@ pub struct Divergence {
 /// **Every known divergence, and nothing else.** Adding an entry here is a deliberate, reviewable act;
 /// nothing is allowed for implicitly, and no entry may be added without a CR number.
 pub const KNOWN_CONTRACT_DIVERGENCES: &[Divergence] = &[
-    Divergence {
-        cr: "CR-16",
-        method: "initialize",
-        path: "$.limits, $.methodSummaries",
-        summary: "§11.5 registers both by name (\"`initialize.limits` and `.methodSummaries` (§2.1)\") \
-                  but the handshake fragment declares neither, so §8 item 20's closure rejects them",
-        canonical: || {
-            (
-                json!({"jsonrpc":"2.0","id":1,"result":{
-                    "serverName":"oracle-next","serverVersion":"0.0.0","protocolVersion":1,
-                    "capabilities":{"events":["emulator/stopped"]},
-                    "methods":["emulator/status"],
-                    "methodSummaries":{"emulator/status":"run state, PC/SP/SR, symbol at PC, loaded ROM"},
-                    "limits":{"maxRunFrames":3600,"maxReadLen":4096,"maxLineBytes":1048576},
-                    "timingBasis":{"standard":"ntsc","mclkPerFrame":896040,"linesPerFrame":262},
-                    "frame":0,"mclk":0,"running":false,"droppedEvents":0}}),
-                Some("initialize"),
-            )
-        },
-    },
-    Divergence {
-        cr: "CR-16",
-        method: "emulator/read_memory",
-        path: "$.region, $.symbolDisp, $.caveat",
-        summary: "§11.5 registers `read_memory.region` + `symbolDisp?` and §2.4 MUSTs a `caveat` \
-                  declaration for any method that emits one; the fragment declares none of the three",
-        canonical: || {
-            (
-                json!({"jsonrpc":"2.0","id":7,"result":{
-                    "addr":"0x00FF8CFA","len":4,"bytes":"0x00000000","symbol":"Player_1",
-                    "region":"work RAM","symbolDisp":0,
-                    "caveat":"a debug read, bypassing the bus",
-                    "frame":0,"mclk":0,"running":false,"droppedEvents":0}}),
-                Some("emulator/read_memory"),
-            )
-        },
-    },
+    // **CR-16 was here for a few hours on 2026-08-15, and is the shortest-lived entry the registry has
+    // held.** Its two entries said that five keys `protocol.md` registers by name — `initialize.limits`,
+    // `.methodSummaries`, and `read_memory.region`/`.symbolDisp`/`.caveat` — were absent from the schema
+    // fragments that §8 item 20's closure checks against, so a conformant reply was rejected by the
+    // artifact meant to describe it. The contract adopted the fix (`empyrean` `d45dc87`,
+    // `protocol.md` §11.6): five `properties` entries, `limits` added to `initialize`'s `required`,
+    // `region` to `read_memory`'s, and **no prose changed, because the prose was already right**.
+    //
+    // Retiring it was not optional and not tidy-up. These entries *lift* their keys out of the payload
+    // before validating, so the moment the schema **required** `limits`, lifting it made it missing and
+    // every checkpoint test went red on the handshake. An allowance that outlives its divergence does not
+    // merely go stale — it starts causing the failure it was written to suppress.
     // **The two entries the registry held before today were retired by the mechanism they were built
     // for, not by a tidy-up.** Kept as the record of what retirement looks like:
     //
@@ -341,63 +316,21 @@ type KeyChecker = fn(&Value, &str) -> Vec<String>;
 /// the schema's place for one key, so an allowance swaps one authority for another. Everything else in the
 /// result — including §8 item 20's closure over every key that is *not* listed here — still runs.
 ///
-/// Today this holds **CR-16** only: five keys across two fragments that `protocol.md`'s prose registers by
-/// name and the schema forgot to declare. Each checker asserts what that prose says the key is, so the
-/// authority swapped in is the same document, one section over.
-fn known_result_divergence(method: &str, key: &str) -> Option<KeyChecker> {
-    match (method, key) {
-        // §2.1: "an object mapping each method name to a short human-readable string." Rule 3 makes the
-        // values non-normative, so nothing is asserted about wording — but an EMPTY summary is a key that
-        // failed to derive, not a terse one. Rule 2's key-set equality is the clause with teeth and it is
-        // asserted unconditionally elsewhere, in `tests/handshake.rs`, deliberately outside the allowance:
-        // an allowance that carried the whole of a rule could hide it by being deleted.
-        ("initialize", "methodSummaries") => Some(|v, what| {
-            let Some(o) = v.as_object() else {
-                return vec![format!("{what}: methodSummaries is not an object (§2.1)")];
-            };
-            o.iter()
-                .filter(|(_, s)| !s.as_str().is_some_and(|s| !s.trim().is_empty()))
-                .map(|(k, _)| format!("{what}: `{k}` has no summary string (§2.1)"))
-                .collect()
-        }),
-        // §2.1: "the values MUST be the ones the server's own parameter checks actually enforce" — a
-        // client has no other way to discover them, and discovering one by being refused is discovering
-        // it too late. A ceiling is a count, so D9 category 2 puts it in a JSON number.
-        ("initialize", "limits") => Some(|v, what| {
-            let Some(o) = v.as_object() else {
-                return vec![format!("{what}: limits is not an object (§2.1)")];
-            };
-            o.iter()
-                .filter(|(_, n)| !n.as_u64().is_some_and(|n| n > 0))
-                .map(|(k, _)| format!("{what}: limit `{k}` is not a positive integer (§2.1, D9)"))
-                .collect()
-        }),
-        // §11.5 registers `read_memory.region`: which bus region the read landed in. A non-empty string.
-        ("emulator/read_memory", "region") => Some(|v, what| match v.as_str() {
-            Some(s) if !s.trim().is_empty() => vec![],
-            _ => vec![format!("{what}: region is not a non-empty string (§11.5)")],
-        }),
-        // §11.5 registers `read_memory.symbolDisp?`, and §4 pins what it is *for*: the displacement lives
-        // in its own numeric field so it never has to be parsed back out of a name string.
-        ("emulator/read_memory", "symbolDisp") => Some(|v, what| {
-            if v.as_u64().is_some() {
-                vec![]
-            } else {
-                vec![format!(
-                    "{what}: symbolDisp is not a non-negative integer (§4, §11.5)"
-                )]
-            }
-        }),
-        // §2.4: a caveat is prose, and prose is all a client may treat it as.
-        ("emulator/read_memory", "caveat") => Some(|v, what| {
-            if v.is_string() {
-                vec![]
-            } else {
-                vec![format!("{what}: caveat is not a string (§2.4)")]
-            }
-        }),
-        _ => None,
-    }
+/// **It is empty today, and that is the point.** CR-16's five keys lived here for a few hours on
+/// 2026-08-15 — `initialize.limits`/`.methodSummaries` and `read_memory.region`/`.symbolDisp`/`.caveat`,
+/// all registered in `protocol.md`'s prose and none of them declared in the schema. The contract adopted
+/// the declarations (`empyrean` `d45dc87`, §11.6) and the entries went the same day. Nothing is allowed
+/// for implicitly: a key appears here only with a CR number, and only while its divergence is live.
+///
+/// **The retirement was forced, not remembered, and by a failure mode the registry was not designed
+/// around.** A checker here *lifts its key out of the payload* before validating it, so the moment the
+/// amended schema **required** `limits`, lifting it made it missing — and every checkpoint test went red
+/// on the handshake, in tests with nothing to do with checkpoints. An allowance that outlives its
+/// divergence does not go stale quietly; it starts causing the failure it was written to suppress.
+///
+/// To add one: restore the `match (method, key)` this function used to be, with an arm per key.
+fn known_result_divergence(_method: &str, _key: &str) -> Option<KeyChecker> {
+    None
 }
 
 /// One validation failure, rendered for a panic message.
