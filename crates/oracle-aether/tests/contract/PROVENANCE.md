@@ -14,11 +14,30 @@ an explicit re-vendor commit. That commit is the auditable record of "we adopted
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo commit (`HEAD` at vendor time) | `18a551ee0d038292a4ac018a5840d9390463d196` — *"contract: give the parity rule the checklist entry its own subject demands"* (2026-08-15) |
-| Last commit that touched the schema | `627e5e4a77ed149934264ac890f7b8120443edaf` — *"contract: a checkpoint id is a handle, and the schema wins ties"* (2026-08-15) |
-| SHA-256 | `6e6369c9ea78247533015c67feeddde2b0e84cbbf973c72ed4e1e79eb986cec5` |
-| Bytes | 19193 |
+| Contract repo commit (`HEAD` at vendor time) | `90178fce` — *"contract: CR-15 — JSON-RPC 2.0 mandates a null error id and the schema forbade it"* (2026-08-15) |
+| Last commit that touched the schema | `90178fce` — same commit |
+| SHA-256 | `b6fd1ff6f79ecd03f2968bce6b69f188a394c17e550967835f66ad2ce4b7a200` |
+| Bytes | 30075 |
 | Vendored on | 2026-08-15 |
+
+### What this re-vendor adopted
+
+Two contract commits, in the order they were made:
+
+- **`28ef4bb` — CR-10 adopted** (`protocol.md` §11.3): `emulator/pixel_attribution` gains a §6 row, three
+  normative behaviours in prose, and a schema entry. The schema goes from 9 methods to 10. Nothing existing
+  changed; the diff is insertion-only.
+- **`04a67bc` — CR-15 adopted** (`protocol.md` §11.4): `errorResponse.id` now accepts `null`, which
+  JSON-RPC 2.0 §5 **mandates** for a response whose request id could not be detected — **restricted by an
+  `if`/`then` to `-32700` and `-32600`**, the only two codes decided before a request object exists. On any
+  other code a real id was available to echo, so a null one is a correlation bug. `$defs/id` is deliberately
+  unchanged, so null stays illegal on a request and on a success response. The adopted shape therefore
+  preserves all four fences the harness had already built around its own allowance.
+
+**CR-15's registered divergence is therefore retired in this commit** — the mechanism working as designed:
+the ruling landed upstream, the copy was refreshed, and
+`every_registered_divergence_is_still_live` would have failed had the entry been left behind. CR-14
+(`lookup_symbol.otherMatches`) is **not** ruled and stays registered.
 
 ## Re-vendoring
 

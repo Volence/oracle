@@ -469,43 +469,57 @@ fn the_null_id_allowance_is_exactly_as_wide_as_json_rpc_2_0_requires_and_no_wide
     // of which had a parseable request and therefore a real id, so it never saw a null one.
     //
     // JSON-RPC 2.0 §5 MANDATES `"id": null` when the id could not be detected, and our server obeys:
-    // three handshake tests (invalid JSON, a batch, an over-long line) all produce it. The schema's
-    // `$defs/id` is `["integer","string"]` and rejects it. That is a spec bug per D14 — raised as CR-15
-    // — and the harness registers it, with a narrow allowance, rather than either going red on correct
-    // behaviour or shrugging. This test is the fence around that allowance.
+    // three handshake tests (invalid JSON, a batch, an over-long line) all produce it. `$defs/id` was
+    // `["integer","string"]` and rejected it — a spec bug under D14, raised as CR-15, and originally
+    // carried here as a narrow harness allowance.
+    //
+    // **CR-15 was ruled and the contract amended the same day** (`empyrean` `protocol.md` §11.4), at
+    // exactly this width: `errorResponse.id` is nullable, narrowed by an `if`/`then` to the two codes
+    // decided before a request object exists. So the four fences below are no longer OUR fences — they
+    // are the schema's, and this test now checks that the schema's width and
+    // `is_json_rpc_undetectable_id_error`'s still agree. If the contract ever widens (a nullable id on a
+    // code that answers a parsed request), (a) goes red here rather than being discovered by a client
+    // that cannot correlate its own failures.
     let parse_error = json!({"jsonrpc":"2.0","id":null,"error":{
         "code":-32700,"message":"invalid JSON",
         "data":{"frame":0,"mclk":0,"running":false,"droppedEvents":0}}});
-    assert!(common::schema::is_exempt_null_id_transport_error(
+    assert!(common::schema::is_json_rpc_undetectable_id_error(
         &parse_error
     ));
-    check_incoming(&parse_error, None).expect("the allowance must let the real shape through");
+    check_incoming(&parse_error, None)
+        .expect("the schema must accept the shape JSON-RPC 2.0 mandates");
+    // ...and the *strict* verdict too: with CR-15 retired there is no allowance left to lean on, so the
+    // mandated shape must pass with no allowances in play at all. This is what proves the entry was
+    // retired because the contract moved, not because the harness got more permissive.
+    check_incoming_strict(&parse_error, None)
+        .expect("no allowance should be needed for this shape any more");
 
-    // Now the fence, four sides of it. Each of these is NOT exempt and must still be rejected.
+    // Now the fence, four sides of it. Each of these must still be rejected.
 
     // (a) A null id on a code that answers a request we DID parse. There is a real id to echo, so a
-    //     null there is a correlation bug, not the protocol's mandate.
+    //     null there is a correlation bug, not the protocol's mandate. The schema's `if`/`then` is what
+    //     rejects this now.
     let mut wrong_code = parse_error.clone();
     wrong_code["error"]["code"] = json!(-32602);
-    assert!(!common::schema::is_exempt_null_id_transport_error(
+    assert!(!common::schema::is_json_rpc_undetectable_id_error(
         &wrong_code
     ));
     rejects(&wrong_code, None, "oneOf");
 
     // (b) A null id on a SUCCESS. Nothing in JSON-RPC 2.0 permits it: a result always answers a request
-    //     whose id was read.
+    //     whose id was read. `$defs/id` was deliberately left unwidened, which is what keeps this shut.
     let null_id_success = json!({"jsonrpc":"2.0","id":null,"result":{
         "frame":0,"mclk":0,"running":false,"droppedEvents":0}});
-    assert!(!common::schema::is_exempt_null_id_transport_error(
+    assert!(!common::schema::is_json_rpc_undetectable_id_error(
         &null_id_success
     ));
     rejects(&null_id_success, None, "oneOf");
 
-    // (c) The allowance substitutes a placeholder id — it does not skip the envelope. A parse error
-    //     that lost its `data` (and so its stamp and `droppedEvents`, §2.2/§2.3) is still caught.
+    // (c) Legalising the null id does not legalise anything else about the message. A parse error that
+    //     lost its `data` (and so its stamp and `droppedEvents`, §2.2/§2.3) is still caught.
     let mut no_data = parse_error.clone();
     no_data["error"].as_object_mut().unwrap().remove("data");
-    assert!(common::schema::is_exempt_null_id_transport_error(&no_data));
+    assert!(common::schema::is_json_rpc_undetectable_id_error(&no_data));
     rejects(&no_data, None, "oneOf");
 
     // (d) ...and so is one whose `data` lost `droppedEvents`.

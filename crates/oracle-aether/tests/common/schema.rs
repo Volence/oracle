@@ -218,22 +218,13 @@ pub const KNOWN_CONTRACT_DIVERGENCES: &[Divergence] = &[
             )
         },
     },
-    Divergence {
-        cr: "CR-15",
-        method: "<envelope>",
-        path: "$.id",
-        summary:
-            "$defs/id is [integer,string]; JSON-RPC 2.0 §5 MANDATES null when the id could not be \
-                  detected (-32700 parse error, -32600 invalid request)",
-        canonical: || {
-            (
-                json!({"jsonrpc":"2.0","id":null,"error":{
-                    "code":-32700,"message":"invalid JSON",
-                    "data":{"frame":0,"mclk":0,"running":false,"droppedEvents":0}}}),
-                None,
-            )
-        },
-    },
+    // **CR-15 was here, and was retired the same day it was raised** — the registry's anti-rot property
+    // working on real traffic rather than in a drill. Its entry said `$defs/id` is `[integer,string]`
+    // while JSON-RPC 2.0 §5 mandates `null` when the id could not be detected. The contract was amended
+    // (`empyrean` §11.4), the vendored copy refreshed, and `every_registered_divergence_is_still_live`
+    // went red on the next run because the canonical message it registered was no longer rejected. That
+    // failure is the only reason this entry is gone rather than quietly wrong — which is exactly the
+    // property the list was built for and the reason it is worth more than a comment.
 ];
 
 /// The registry, rendered for the report the coverage test prints.
@@ -244,27 +235,26 @@ pub fn divergence_report() -> Vec<String> {
         .collect()
 }
 
-/// **CR-15's allowance.** JSON-RPC 2.0 §5: *"If there was an error in detecting the id in the Request
-/// object (e.g. Parse error / Invalid Request), it MUST be Null."* The schema's `$defs/id` is
-/// `["integer", "string"]`, so the correct reply to unparseable input is rejected by the schema. §2 of
-/// `protocol.md` is titled *"The envelope (JSON-RPC 2.0)"* and §8 item 2 says to adopt that envelope —
-/// so this is a spec bug under D14, and the alternatives (inventing an id for a request whose id we
-/// could not read, or omitting it) are both worse than the divergence.
+/// Whether a line is the JSON-RPC 2.0 §5 *"id could not be detected"* reply: `error`, `id: null`, and one
+/// of the two **transport-level** codes — `-32700` (parse error) and `-32600` (invalid request). Both are
+/// decided *before* a request object exists, which is exactly when the standard mandates the null; every
+/// other code answers a request the server did parse and therefore has a real id to echo.
 ///
-/// The allowance is exactly `error` + `id: null` + a **transport-level** code, and it substitutes a
-/// placeholder id rather than skipping the check, so the code, the message and the always-present `data`
-/// with its stamp and `droppedEvents` are all still validated. Its width is pinned by
-/// `schema_conformance::the_null_id_allowance_is_exactly_as_wide_as_json_rpc_2_0_requires_and_no_wider`.
-pub fn is_exempt_null_id_transport_error(line: &Value) -> bool {
+/// **This is no longer an allowance.** It was CR-15's, when the schema's `$defs/id` was
+/// `["integer","string"]` and rejected the reply the standard requires. The contract adopted the fix on
+/// 2026-08-15 (`protocol.md` §11.4) at *exactly* this width — `errorResponse.id` is nullable, narrowed by
+/// an `if`/`then` to these two codes — so the schema now enforces what this predicate used to assert.
+/// It survives as the oracle for
+/// `schema_conformance::the_null_id_allowance_is_exactly_as_wide_as_json_rpc_2_0_requires_and_no_wider`,
+/// which now checks the *schema's* width against it rather than our own: the two must agree, and if the
+/// contract ever widens, that test says so.
+pub fn is_json_rpc_undetectable_id_error(line: &Value) -> bool {
     line.get("result").is_none()
         && line.get("id").is_some_and(Value::is_null)
         && line
             .get("error")
             .and_then(|e| e.get("code"))
             .and_then(Value::as_i64)
-            // -32700 parse error, -32600 invalid request. Both are decided BEFORE a request object
-            // exists, which is exactly when JSON-RPC 2.0 mandates the null. Every other code answers a
-            // request we did parse, and therefore has a real id to echo.
             .is_some_and(|c| c == -32700 || c == -32600)
 }
 
@@ -359,22 +349,13 @@ fn check(line: &Value, method: Option<&str>, allow: bool) -> Result<(), Vec<Stri
     // 1. The envelope, for every line, no exceptions. This arm is also what validates `error.data`:
     //    `anyMessage` -> `errorResponse` -> `$defs/errorObject` -> `data` -> `$defs/replyFields`.
     //
-    //    CR-15's allowance substitutes a placeholder id rather than skipping the check, so everything
-    //    else about the message — the code, the message, the always-present `data` with its stamp and
-    //    `droppedEvents` — is still validated in full.
-    let patched;
-    let envelope_subject = if allow && is_exempt_null_id_transport_error(line) {
-        let mut o = line
-            .as_object()
-            .cloned()
-            .expect("a JSON-RPC line is an object");
-        o.insert("id".into(), Value::from(0));
-        patched = Value::Object(o);
-        &patched
-    } else {
-        line
-    };
-    out.extend(errors(&s.any_message, envelope_subject, "anyMessage"));
+    //    **CR-15 used to need an allowance here and no longer does.** The schema rejected the `"id": null`
+    //    that JSON-RPC 2.0 §5 mandates on `-32700`/`-32600`, so this arm substituted a placeholder id to
+    //    keep checking the rest of the message. The contract was amended the same day (§11.4) — and
+    //    amended *narrowly*, restricting null to exactly those two codes via `if`/`then`, so all four
+    //    fences the allowance carried are now enforced by the schema itself rather than by our harness.
+    //    There is nothing left to patch, so the envelope is now checked verbatim.
+    out.extend(errors(&s.any_message, line, "anyMessage"));
 
     // 2. A success reply, keyed off the method of the request it answers.
     if let Some(result) = line.get("result") {

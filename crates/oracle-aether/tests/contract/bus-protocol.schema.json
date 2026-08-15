@@ -67,9 +67,19 @@
       "required": ["jsonrpc", "id", "error"],
       "properties": {
         "jsonrpc": { "const": "2.0" },
-        "id": { "$ref": "#/$defs/id" },
+        "id": {
+          "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }],
+          "$comment": "NULL IS PERMITTED HERE AND NOWHERE ELSE (CR-15, protocol.md §11.4). JSON-RPC 2.0 §5: 'If there was an error in detecting the id in the Request Object (e.g. Parse error/Invalid Request), it MUST be Null.' protocol.md §2 adopts JSON-RPC 2.0 wholesale and §8 item 2 makes it a conformance item, so the adopted standard MANDATED a value this schema excluded — a server answering a -32700 or a -32600 had no conformant option at all. Deliberately NOT widened in #/$defs/id: a request must carry a real id (an id-less request is a notification, matched by #/$defs/notification), and a success response echoes the request's id, so null is meaningless in both. The `allOf` below narrows it further, to the two codes that mandate it."
+        },
         "error": { "$ref": "#/$defs/errorObject" }
       },
+      "allOf": [
+        {
+          "if": { "required": ["id"], "properties": { "id": { "type": "null" } } },
+          "then": { "properties": { "error": { "properties": { "code": { "enum": [-32700, -32600] } } } } },
+          "$comment": "A null id is permitted ONLY on the two codes decided before a request object exists: -32700 (parse error) and -32600 (invalid request). Every other code answers a request the server DID parse, so a real id was available to echo and a null one is a correlation bug — the client cannot match the failure to the call that caused it, which is the silent-wrong-answer class this contract exists to prevent (D11's argument, applied to the error path). Expressed as if/then rather than in prose alone so it is mechanically enforced, per D14's reason for making the schema the tiebreaker at all."
+        }
+      ],
       "additionalProperties": false
     },
     "notification": {
@@ -389,6 +399,105 @@
         "allOf": [{ "$ref": "#/$defs/replyFields" }],
         "required": ["removed"],
         "properties": { "removed": { "type": "integer", "minimum": 0 } }
+      }
+    },
+    "emulator/pixel_attribution": {
+      "$comment": "protocol.md §6 (VRAM/CRAM/layers). Answers 'why is the dot at (x,y) the colour it is' against the VDP's CURRENT state — the server re-derives the scanline per call and reads no framebuffer, so on a free-running machine the answer is a live sample and the envelope's `running: true` is what says so (D11). A pure read: NOT subject to §6's run-control state rule.",
+      "params": {
+        "type": "object",
+        "required": ["x", "y"],
+        "properties": {
+          "x": { "type": "integer", "minimum": 0, "maximum": 511, "description": "Screen column, 0-based (D9 category 2 — a position a client counts with, not an address). Bounded here at the widest addressable value; the ACTIVE bound is the `width` this method reports, and a dot outside it is refused with -32004." },
+          "y": { "type": "integer", "minimum": 0, "maximum": 511, "description": "Screen line, 0-based. Same category and the same treatment as `x` — D9 names `line` among the JSON numbers, and this is that field." }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["x", "y", "width", "height", "winner", "cramIndex", "cramAddr", "rgb", "state", "candidates"],
+        "properties": {
+          "x": { "type": "integer", "minimum": 0 },
+          "y": { "type": "integer", "minimum": 0 },
+          "width": { "type": "integer", "minimum": 1, "description": "Active display width the coordinates were resolved against (256 H32 / 320 H40). Reported so a client can bound its own sweep without first provoking a -32004." },
+          "height": { "type": "integer", "minimum": 1, "description": "Active display height (224, or 240 in V30)." },
+          "winner": {
+            "type": "object",
+            "required": ["layer"],
+            "properties": {
+              "layer": { "enum": ["backdrop", "planeB", "planeA", "window", "sprite"], "description": "The displayed layer. camelCase values, matching the `runTo`/`runToScanline` stopped-reason spelling (protocol.md §3)." },
+              "spriteIndex": { "type": "integer", "minimum": 0, "maximum": 79, "description": "SAT slot of the winning sprite. Present if and only if `layer` is 'sprite'. A slot index — D9 category 2." }
+            },
+            "additionalProperties": false
+          },
+          "cramIndex": { "type": "integer", "minimum": 0, "maximum": 63, "description": "The DISPLAYED colour's CRAM entry (palette*16 + nibble; the backdrop register's value for a backdrop dot). An index — D9 category 2." },
+          "cramAddr": { "$ref": "#/$defs/hex", "$comment": "The CRAM byte address of that entry (index*2). An address — D9 category 1, and `cramAddr` is the spelling emulator/write_cram already uses." },
+          "rgb": {
+            "type": "object",
+            "required": ["r", "g", "b"],
+            "properties": {
+              "r": { "type": "integer", "minimum": 0, "maximum": 255 },
+              "g": { "type": "integer", "minimum": 0, "maximum": 255 },
+              "b": { "type": "integer", "minimum": 0, "maximum": 255 }
+            },
+            "additionalProperties": false,
+            "description": "The colour actually put on the glass: the 3-bit channels run through the intensity ramp at the resolved shadow/highlight `state`. NOT the stored CRAM components — emulator/write_cram's r/g/b (0-7) are the stored colour, this is the displayed one, and the two differ whenever `state` is not 'normal'. Components, so JSON numbers (D9 category 2); 0-255 because that is the range the ramp emits."
+          },
+          "state": { "enum": ["shadow", "normal", "highlight"], "description": "The resolved shadow/highlight state applied to this dot's intensity (never its identity)." },
+          "cell": {
+            "type": "object",
+            "required": ["tile", "tileAddr", "palette", "hflip", "vflip", "priority"],
+            "properties": {
+              "tile": { "type": "integer", "minimum": 0, "maximum": 2047, "description": "Pattern index. A JSON number (D9 category 2) and NOT a hex string: arithmetic on it is meaningful and load-bearing — tile*32 is the VRAM address, and a multi-cell sprite's dot is base+offset. D9's category-4 test is 'a type a client must never compute on'; this is the opposite of that." },
+              "tileAddr": { "$ref": "#/$defs/hex", "$comment": "VRAM byte address of that pattern (tile*32, wrapped into VRAM). The address form, so a client can feed it straight to emulator/read_vram. A pattern is 32 bytes and cannot straddle the 64 KB wrap, so this plus 32 is the whole range." },
+              "palette": { "type": "integer", "minimum": 0, "maximum": 3 },
+              "hflip": { "type": "boolean" },
+              "vflip": { "type": "boolean" },
+              "priority": { "type": "boolean" }
+            },
+            "additionalProperties": false,
+            "description": "The winning nametable entry, decoded. Present if and only if `winner.layer` is planeA, planeB or window — a sprite or backdrop dot has no nametable cell."
+          },
+          "sprite": {
+            "type": "object",
+            "required": ["index", "x", "y", "widthCells", "heightCells", "baseTile", "palette", "hflip", "vflip", "priority", "satAddr"],
+            "properties": {
+              "index": { "type": "integer", "minimum": 0, "maximum": 79 },
+              "x": { "type": "integer", "description": "Screen X of the sprite's top-left, (Xfield & 0x1FF) - 128. Signed: a sprite scrolling in from the left is legitimately negative." },
+              "y": { "type": "integer", "description": "Screen Y, (Yfield & 0x3FF) - 128. Signed, same reason." },
+              "widthCells": { "type": "integer", "minimum": 1, "maximum": 4 },
+              "heightCells": { "type": "integer", "minimum": 1, "maximum": 4 },
+              "baseTile": { "type": "integer", "minimum": 0, "maximum": 65535, "description": "The sprite's base pattern index from its attribute word." },
+              "tile": { "type": "integer", "minimum": 0, "maximum": 65535, "description": "The pattern this DOT is drawn from — base + (col*heightCells) + row after flips, column-major, wrapping. ABSENT when the winning sprite's box no longer contains the dot, which means the SAT was rewritten between the render and this query; the server reports the absence rather than inventing a tile." },
+              "tileAddr": { "$ref": "#/$defs/hex", "$comment": "VRAM byte address of `tile`. Present exactly when `tile` is." },
+              "palette": { "type": "integer", "minimum": 0, "maximum": 3 },
+              "hflip": { "type": "boolean" },
+              "vflip": { "type": "boolean" },
+              "priority": { "type": "boolean" },
+              "satAddr": { "$ref": "#/$defs/hex", "$comment": "VRAM byte address of this sprite's 8-byte attribute-table entry (sat_base + index*8). This is the range a game writes when it moves, re-points or re-links the sprite — the answer to 'who MOVED this?' as opposed to 'who DREW this?'." },
+              "cacheDivergence": { "type": "boolean", "description": "The cached Y/size/link disagree with VRAM at the current reg-5 base — the stale-SAT-cache state made visible (the Castlevania Bloodlines mixing). Present only when true." }
+            },
+            "additionalProperties": false,
+            "description": "The winning sprite, decoded. Present if and only if `winner.layer` is 'sprite'."
+          },
+          "candidates": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "description": "Every layer that could have shown at this dot, in VDP priority order, with why each won or lost. Deliberately NOT cursored: the list is bounded at 4 BY CONSTRUCTION (at most one flattened sprite pixel, the plane-A slot, plane B, and the backdrop), not by a server policy a client would have to page around. A live dot yields 3 or 4 entries; a BLANKED dot (display off, or the leftmost-column blank at x<8) yields exactly one — the backdrop, verdict 'won' — which is why minItems is 1 and not 3.",
+            "items": {
+              "type": "object",
+              "required": ["layer", "opaque", "priority", "cramIndex", "verdict"],
+              "properties": {
+                "layer": { "enum": ["backdrop", "planeB", "planeA", "window", "sprite"] },
+                "spriteIndex": { "type": "integer", "minimum": 0, "maximum": 79 },
+                "opaque": { "type": "boolean" },
+                "priority": { "type": "boolean" },
+                "cramIndex": { "type": "integer", "minimum": 0, "maximum": 63, "description": "The colour this layer WOULD have shown." },
+                "verdict": { "enum": ["won", "lostToPriority", "transparent", "operator"], "description": "won = displayed. lostToPriority = opaque, but outranked. transparent = colour nibble 0, contributes nothing. operator = an opaque sprite operator (palette 3, nibble 14/15) that outranks the winner but is not drawn — it shifted the winner's shadow/highlight state instead." }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
       }
     }
   }
