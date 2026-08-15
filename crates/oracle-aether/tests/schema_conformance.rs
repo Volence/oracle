@@ -264,12 +264,17 @@ fn every_registered_divergence_is_still_live() {
             d.path
         );
 
+        // A weak locator, and labelled as one rather than dressed up. For a divergence the schema
+        // reports at a key (`/otherMatches`) this really does check the entry describes the right bug.
+        // For one that falls out at the root `oneOf` (CR-15) the failure text embeds the whole instance,
+        // so the key name is present either way and this proves little. The load-bearing assertions are
+        // the two either side of it; this one only catches an entry whose path is outright unrelated.
         let failures = strict.unwrap_err();
+        let key = d.path.trim_start_matches("$.");
         assert!(
-            failures.iter().any(|f| f.contains(d.path.trim_start_matches("$."))
-                || f.contains(d.path)),
-            "{} ({} {}) diverges, but not at the path it claims — the entry may be describing one bug \
-             while its canonical message trips over another.\n  failures: {failures:#?}",
+            failures.iter().any(|f| f.contains(key)),
+            "{} ({} {}) diverges, but `{key}` appears nowhere in the failure — the entry may be \
+             describing one bug while its canonical message trips over another.\n  failures: {failures:#?}",
             d.cr,
             d.method,
             d.path
@@ -466,8 +471,8 @@ fn the_null_id_allowance_is_exactly_as_wide_as_json_rpc_2_0_requires_and_no_wide
     // JSON-RPC 2.0 §5 MANDATES `"id": null` when the id could not be detected, and our server obeys:
     // three handshake tests (invalid JSON, a batch, an over-long line) all produce it. The schema's
     // `$defs/id` is `["integer","string"]` and rejects it. That is a spec bug per D14 — raised as CR-15
-    // — and the harness exempts it narrowly rather than either going red on correct behaviour or
-    // shrugging. This test is the fence around the allowance.
+    // — and the harness registers it, with a narrow allowance, rather than either going red on correct
+    // behaviour or shrugging. This test is the fence around that allowance.
     let parse_error = json!({"jsonrpc":"2.0","id":null,"error":{
         "code":-32700,"message":"invalid JSON",
         "data":{"frame":0,"mclk":0,"running":false,"droppedEvents":0}}});
@@ -514,13 +519,21 @@ fn the_null_id_allowance_is_exactly_as_wide_as_json_rpc_2_0_requires_and_no_wide
 
 #[test]
 fn the_othermatches_divergence_is_swapped_for_the_house_shape_not_left_unchecked() {
-    // ALSO FOUND BY THIS VALIDATOR, not by the probe: the probe served `vdp_port_access.bin`, which has
-    // no symbol listing, so every `lookup_symbol` it drove ended in `-32012` and the result shape was
-    // never on the wire. That makes probe finding F1 — "the only schema-level failure on the live wire is
-    // the checkpoint `id`" — understated. There were three.
+    // ALSO FOUND BY THIS VALIDATOR, independently of and concurrently with the main session's re-probe,
+    // which registered the same defect as CR-14 / probe finding F5. Two instruments reaching it from
+    // opposite directions — a hand-driven probe that widened its sample, a validator that inherited the
+    // suite's — is corroboration; it is not two findings.
     //
-    // The schema types `otherMatches` as an array of strings; we emit the house bounded/cursored object.
-    // Raised as CR-14. This test is the fence: the allowance must check the key, not skip it.
+    // The first probe missed it because `otherMatches` is emitted only on the *partial-match* path (a
+    // prefix hit, or an ambiguous demangled name), and that run called `lookup_symbol` with a name that
+    // resolves to nothing, so it only ever exercised the error path. Probe finding F1 — "the only
+    // schema-level failure on the live wire is the checkpoint `id`" — is therefore a floor, not a result.
+    //
+    // The schema types `otherMatches` as an array of strings and §4's prose agrees; we emit the house
+    // bounded/cursored object with `{name, demangled, addr}` items. This test is the fence around the
+    // allowance: it must CHECK the key against the house shape, not skip it. Exempting `lookup_symbol`
+    // from validation would leave `truncated` — the one field the non-negotiable exists for — unguarded
+    // for however long the ruling takes.
     let ok = json!({"jsonrpc":"2.0","id":3,"result":{
         "name":"Player_1","addr":"0x00FF8CFA",
         "otherMatches":{"items":[{"name":"Player_2","addr":"0x00FF8D4A"}],

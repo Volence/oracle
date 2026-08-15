@@ -500,6 +500,15 @@ by a 33-message probe. That is a bigger change than this CR and is named, not pr
 **The first divergence where the contract and the server disagree about a *type*, not a spelling — and the
 first where the server's shape looks like the better one.**
 
+> **Confirmed independently by the in-tree validator, 2026-08-15.** Wiring the §8 item 15 schema check into
+> the test client's `recv` turned `arrays_are_bounded_cursored_and_flag_truncation` red on exactly this,
+> with no knowledge of this CR. It is now registered as `CR-14 emulator/lookup_symbol $.otherMatches` in
+> `common::schema::KNOWN_CONTRACT_DIVERGENCES` — **not** exempted from validation: the key is lifted out
+> and checked against the house bounded-array shape instead, so a `truncated` flag that went missing would
+> still fail, and the rest of the result is still the schema's business. The registry prints on every run
+> beside the coverage split, and `every_registered_divergence_is_still_live` fails the day this entry stops
+> diverging, so the allowance cannot outlive the ruling. See `docs/2026-08-15-schema-validator.md`.
+
 **Contract.** §4 gives `emulator/lookup_symbol`'s result as
 `{"addr":…,"name":"Camera_X","otherMatches":[…]?}`, and the schema types `otherMatches` as
 `{"type":"array","items":{"type":"string"}}`.
@@ -540,6 +549,52 @@ already converts its own token to a string on the way out; the shared helper doe
 ships numeric ones. Worse, `lookup_symbol` accepts **no `cursor` param at all**, so the token it emits can
 never be handed back — a continuation offered for a query with no continuation. Whatever is ruled for the
 envelope should settle the token's type and whether it should be emitted here at all.
+
+---
+
+## CR-15 — the schema's `$defs/id` forbids the `null` JSON-RPC 2.0 *mandates* on a parse error (2026-08-15)
+
+**Found by the §8 item 15 validator on its first run against the existing suite, not by reading either
+document.** It turned three tests red the moment it was wired into the test client's `recv`:
+`invalid_json_is_32700_with_a_null_id`, `batches_are_refused_with_32600` and
+`an_over_long_line_is_refused_without_desyncing_the_connection` (`crates/oracle-aether/tests/handshake.rs`).
+
+**Contract.** §2 is titled *"The envelope (JSON-RPC 2.0)"* and §8 item 2 says to **adopt** that envelope.
+The schema types the correlation id as `$defs/id`: `{"type": ["integer", "string"]}`. §5 catalogs `-32700`
+*parse error (invalid JSON)* and `-32600` *invalid request*, and says nothing about what `id` those replies
+carry.
+
+**The gap.** JSON-RPC 2.0 §5 is explicit: *"If there was an error in detecting the id in the Request
+object (e.g. Parse error / Invalid Request), it **MUST** be Null."* Those two codes are decided **before a
+request object exists** — reading the id is the step that failed. So the adopted standard *requires*
+exactly the value the schema's type union excludes, and under D14 the schema governs the wire, which would
+make the conformant JSON-RPC reply non-conformant to the contract.
+
+**Why this one is a schema bug rather than a server bug**, which is not the usual direction and is worth
+stating: the two alternatives are inventing an id (`0`, or the last one seen — which tells a client the
+failure belongs to a call it never made, on the one code path where the client's own framing is already
+suspect) or omitting `id` entirely (which breaks JSON-RPC 2.0 a second way). Neither is available. This is
+the one divergence in the register where the server has no conformant option at all.
+
+**Why the probe missed it.** All six of the probe's error paths sent a *parseable* request and therefore
+had a real id to echo (`docs/2026-08-15-wire-conformance-probe.md`, F1). Same lesson as CR-14 from the
+other direction: a sample that never reaches a code path is measuring its own reach.
+
+**What we did.** Nothing to the server. The harness registers it in
+`common::schema::KNOWN_CONTRACT_DIVERGENCES` as `CR-15 <envelope> $.id`, printed beside the coverage
+report on every run, with a **narrow** allowance — exactly `error` + `id: null` + a code in
+`{-32700, -32600}` — that substitutes a placeholder id rather than skipping the check, so the code, the
+message and the always-present `data` with its stamp and `droppedEvents` are all still validated. Its
+width is pinned by
+`tests/schema_conformance.rs::the_null_id_allowance_is_exactly_as_wide_as_json_rpc_2_0_requires_and_no_wider`,
+which asserts a null id on any *other* code, and on a *success*, are both still rejected.
+
+**Proposed change.** One line in the schema: `$defs/id` becomes `{"type": ["integer","string","null"]}` —
+or, if the extra precision is wanted, `null` is admitted only in `errorResponse`'s `id`, since a `result`
+always answers a request whose id was read. A sentence in §5 naming which codes carry it would close the
+question for the next server author, who will otherwise derive it from JSON-RPC 2.0 exactly as we did, one
+test failure at a time. **This is the raising; the ruling is the owner's. The contract repo was not
+edited.**
 
 ---
 
