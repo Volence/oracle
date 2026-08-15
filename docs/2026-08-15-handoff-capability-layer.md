@@ -67,7 +67,13 @@ never implemented. Eight weeks lost to an unimplemented specified method.
    `run_to_scanline`/`wait_for_break`/`breakpoint_add|list|clear`/`watchpoint_add` (**10 → 1**). Core gap:
    `System::run_until_stop`'s predicate is `(pc, frame)` only and cannot express "stop when
    `Replay_Done != 0`".
-4. **Per-frame value trace** — the most-requested missing instrument, which never existed. Note the shape
+4. **Per-frame value trace** — ~~the most-requested missing instrument, which never existed.~~ **Corrected
+   2026-08-15: this row conflates two instruments.** A per-frame *sampler* is what never existed; a watch
+   *recorder* does exist, in `crates/oracle-core/src/watchpoints.rs`, with **two executed consumers**
+   (the player's click-to-watch panel and `crates/oracle-core/examples/watch_probe.rs`). CR-11/CR-12
+   (`docs/2026-08-15-watchpoint-bus-surface.md`) put the recorder on the bus and explicitly refuse to be
+   sold as the sampler. Note also that "most-*requested*" is request evidence — the yardstick this same
+   document quantifies as confidently wrong — which is why this ranked 4th on the wrong basis. Note the shape
    ruling from their own record: **measure value *changes*, not write counts** (a census found 97% of freq
    writes were redundant re-writes of unchanged values and nearly funded two unnecessary features).
    `watchpoints.rs` already has record/count/census modes — **it is simply not on the bus.**

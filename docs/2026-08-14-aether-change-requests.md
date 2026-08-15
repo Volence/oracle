@@ -420,12 +420,42 @@ silently collide is worse than one with a gap.
 
 ---
 
-## CR-11 / CR-12 — the watchpoint surface (2026-08-15, drafting)
+## CR-11 / CR-12 — the watchpoint surface (2026-08-15, drafted, awaiting ruling)
 
-Reserved for the largest of the four item-19 violations: watch **hit reading**, the **drop count**, and
-**VDP-internal-space range watches**, none of which §6's single `watchpoint_add | addr|symbol, read?,
-write? | addr` row can express. Directed as the next design pass by the CR-10 ruling. Drafted in
-`docs/2026-08-15-watchpoint-bus-surface.md`.
+The largest of the four item-19 violations: watch **hit reading**, the **drop count**, and **VDP-internal
+range watches**, none of which §6's single `watchpoint_add | addr|symbol, read?, write? | addr` row can
+express. Directed as the next design pass by the CR-10 ruling. Drafted in full, with paste-ready schema
+fragments, in **`docs/2026-08-15-watchpoint-bus-surface.md`**. **Adopt both or neither.**
+
+**The seam: CR-11 is what a watch *is*; CR-12 is what a watch *tells you*.** They are different kinds of
+contract change — amend an existing row and add its inverse, versus add two new query rows — and each owns
+exactly one of the two rulings the design had to settle, so neither can be adopted while leaving a ruling
+homeless.
+
+**Two claims in the sweep that produced this CR did not survive the design pass**, and both are corrected
+in that document:
+
+- *"On evidence this outranks attribution."* The design found a **second executed consumer** the sweep
+  missed — `crates/oracle-core/examples/watch_probe.rs`, a real "who wrote this?" dev tool against a real
+  ROM — which makes the watchpoint surface a **peer** of pixel attribution on executed-consumer count
+  (2 vs 2), not its superior. The CR-10 ruling's sequencing was right for a reason neither document had.
+- *The D17 analogy is right in principle and wrong in scope.* `droppedEvents` is a **connection** fact, so
+  it rides the envelope; the hit ring's `dropped()` is an **instrument** fact, identical for every client
+  looking at it. It belongs in the body, and inventing a second envelope counter by analogy would have been
+  the wrong move.
+
+**And the handoff's ranked item 4 conflates two instruments.** It calls this *"the most-requested missing
+instrument, which never existed"* while pointing at the file that implements it and which has two live
+consumers. A per-frame **sampler** and a watch **recorder** are different things; these CRs deliver the
+recorder and explicitly refuse to be sold as the sampler.
+
+**One live bug fell out of the design and is already fixed** (`a542b54`): `Watchpoints::clear()` retires the
+specs and *keeps* the recorded hits — deliberately, and documented — while the player's click path
+clears-and-rearms on every click and its `dump_hits` printed no watch id. Two successive clicks therefore
+produced a single interleaved log with no way to tell which pixel a hit belonged to, and the first click's
+labels gone. `WatchHit.watch` already carried the attribution; only the printing was missing. This is
+exactly the stale-watch contamination the handoff's negative record on interactive debugging warns about,
+found in our own player rather than in the record.
 
 ---
 
