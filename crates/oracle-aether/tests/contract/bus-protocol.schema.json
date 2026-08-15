@@ -140,6 +140,18 @@
           "description": "Always present: it carries the machine stamp (D11) and droppedEvents (D17), plus any structured context."
         }
       }
+    },
+    "watchStamp": {
+      "type": "object",
+      "required": ["pc", "frame", "mclk", "seq"],
+      "properties": {
+        "pc": { "$ref": "#/$defs/hex" },
+        "frame": { "type": "integer", "minimum": 0 },
+        "mclk": { "type": "integer", "minimum": 0 },
+        "seq": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false,
+      "description": "A deterministic emulated coordinate for one matched access (protocol.md §6). The same shape a stop record uses, so a stop and a hit name the same kind of point. Never wall-clock. Nested rather than top-level: the envelope stamp (§2.2) overwrites same-named keys at the top level of a result."
     }
   },
   "anyMessage": {
@@ -191,6 +203,17 @@
                   "maxBytes": { "type": "integer", "minimum": 1 }
                 },
                 "description": "protocol.md §6.1. An object, not a bare flag, because the cap must be discoverable before a client plans around it."
+              },
+              "watchpoints": {
+                "type": "object",
+                "required": ["supported"],
+                "properties": {
+                  "supported": { "type": "boolean" },
+                  "spaces": { "type": "array", "items": { "enum": ["bus", "vram", "cram", "vsram"] }, "description": "Which address spaces this server can watch. Advertised rather than assumed: a server with no VDP-internal write capture supports only 'bus', and a client must not have to arm a watch to find out." },
+                  "maxWatches": { "type": "integer", "minimum": 1, "description": "Max live watches; the server REFUSES at this count with -32005 {reason:'watchCapReached', cap, count} (protocol.md §6, D13 rule 3 applied here). It never silently grows past it and never silently evicts, because a handle a client still holds must not quietly start meaning nothing." },
+                  "ringCap": { "type": "integer", "minimum": 0, "description": "Capacity of the hit ring, in hits. Discoverable BEFORE a client plans around it, for D13's reason: past this the oldest hits are dropped (and counted by watchpoint_hits.dropped), so a client sweeping a hot range needs the number in advance, not after losing evidence to it. 0 is legal and means record nothing — a pure census configuration." }
+                },
+                "description": "protocol.md §6. An object, not a bare flag, for the reason D13 gives checkpoints.cap: a client that has to hit a limit to learn it is a client that loses evidence finding out."
               }
             }
           },
@@ -236,7 +259,15 @@
     "$comment": "Event names are camelCase (romReloaded, never rom_reloaded) — protocol.md §3 and §10 decision 4. Every event's params also carries the machine stamp.",
     "emulator/stopped": {
       "params": {
-        "allOf": [{ "$ref": "#/$defs/stamp" }],
+        "allOf": [
+          { "$ref": "#/$defs/stamp" },
+          {
+            "$comment": "protocol.md §6: `watch` is REQUIRED when reason is 'watchpoint' and absent otherwise. Unlike `buttons`/`port` that rule DOES have a discriminator in the event itself, so it is enforced here rather than only in prose.",
+            "if": { "required": ["reason"], "properties": { "reason": { "const": "watchpoint" } } },
+            "then": { "required": ["watch"] },
+            "else": { "not": { "required": ["watch"] } }
+          }
+        ],
         "required": ["reason", "pc"],
         "properties": {
           "reason": { "enum": ["breakpoint", "watchpoint", "step", "runTo", "runToScanline", "runFrames", "pause", "entry"] },
@@ -244,8 +275,25 @@
           "symbol": { "type": "string" },
           "symbolDisp": { "type": "integer" },
           "frames": { "type": "integer", "minimum": 1, "description": "Frames actually advanced. REQUIRED when reason is runFrames (protocol.md §3)." },
-          "deadlineReached": { "type": "boolean", "description": "True when the run ended on its bound rather than its condition (D12). Always true for runFrames." }
-        }
+          "deadlineReached": { "type": "boolean", "description": "True when the run ended on its bound rather than its condition (D12). Always true for runFrames." },
+          "buttons": {
+            "type": "array",
+            "items": { "enum": ["up", "down", "left", "right", "a", "b", "c", "start", "x", "y", "z", "mode"] },
+            "description": "The buttons held across the advance. REQUIRED when the advance was driven by emulator/press, absent otherwise (protocol.md §3). `reason` names the stop CONDITION and never the method, so this is where the stream learns that an input was injected — the half a subscriber that was not the caller cannot otherwise recover."
+          },
+          "port": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Which controller the buttons were held on. REQUIRED alongside `buttons` and absent without it: a partial attribution is worse than none, because a subscriber reading the stream in a two-pad session would attribute the input to the wrong pad."
+          },
+          "watch": {
+            "allOf": [{ "$ref": "#/$defs/handle" }],
+            "description": "The watch whose `stopAfter` ended the run. REQUIRED when `reason` is 'watchpoint', absent otherwise (protocol.md §6). An opaque handle (D9 category 4) — the same one watchpoint_add issued and every hit carries — so a free-run halt always names its cause instead of leaving a client to guess which armed watch fired."
+          }
+        },
+        "dependentRequired": { "buttons": ["port"], "port": ["buttons"] },
+        "$comment": "protocol.md §3: `buttons` and `port` are REQUIRED when the bounded frame advance was driven by emulator/press and absent otherwise. Only half of that is mechanically enforceable — `reason` names the stop CONDITION and never the driving method, so a press-driven advance and a run_frames one both read `runFrames` and the event carries no discriminator to key an if/then on. What IS enforceable, and is enforced by dependentRequired, is that the two travel together: a partial attribution would tell a subscriber in a two-pad session which buttons went down and not which pad."
       }
     },
     "emulator/resumed": { "params": { "$ref": "#/$defs/stamp" } },
@@ -824,6 +872,209 @@
               "additionalProperties": false
             }
           }
+        }
+      }
+    },
+    "emulator/watchpoint_add": {
+      "$comment": "protocol.md §6 (breakpoints & watchpoints). Arms a RECORDING watch: it observes and does not halt unless `stopAfter` is given, in which case the run ends at the next instruction boundary and `emulator/stopped` fires with reason 'watchpoint' and a `watch` param naming the cause. Not subject to §6's run-control state rule — it mutates an observer, not the timeline. Refused with -32005 {reason:'watchCapReached'} at capabilities.watchpoints.maxWatches (D13 rule 3 applied to this surface).",
+      "params": {
+        "type": "object",
+        "oneOf": [{ "required": ["addr"] }, { "required": ["symbol"] }],
+        "properties": {
+          "space": {
+            "enum": ["bus", "vram", "cram", "vsram"],
+            "default": "bus",
+            "description": "Which address space. 'bus' is the 68000 address space (work RAM, ROM, Z80 RAM, I/O, VDP ports); the other three are VDP-INTERNAL byte-address spaces — the 'who wrote this tile / palette entry?' watch. Spaces never cross-trigger: a numeric collision between a bus address and a VRAM byte address matches only the watch in its own space."
+          },
+          "addr": { "$ref": "#/$defs/hex", "description": "First address of the watched range, inclusive. D9 category 1." },
+          "symbol": {
+            "allOf": [{ "$ref": "#/$defs/symbolName" }],
+            "description": "Resolved to an address (D7); §4's round-trip rule binds it as it binds every method's `symbol` param. Valid ONLY with space 'bus' — a symbol names a 68000 address, and a VDP-internal byte address has no symbol. Any other space with `symbol` is -32602."
+          },
+          "len": { "type": "integer", "minimum": 1, "maximum": 16777216, "default": 1, "description": "Length of the watched range in bytes; the range is addr..=addr+len-1. A count, so a JSON number (D9 category 2). Default 1 reproduces the single-address call this row carried before this amendment." },
+          "read": { "type": "boolean", "description": "Match reads." },
+          "write": { "type": "boolean", "description": "Match writes. Neither given means write-only: the recorded purpose of this instrument is 'who wrote this?'. Both true means any access. A write watch also matches the 68000 TAS (its read-modify-write store); a read watch does not." },
+          "mode": {
+            "enum": ["record", "census"],
+            "default": "record",
+            "description": "'record' stores each matched access in the server's bounded hit ring. 'census' stores NOTHING and instead groups matched accesses by one key, which is what turns a watch over a wide range from a context bomb into a number. Both modes count `matched` either way."
+          },
+          "censusKey": {
+            "enum": ["addr", "value", "via"],
+            "description": "REQUIRED with mode 'census', and REFUSED (-32602) without it — a param this bus silently ignored would be a caller believing it asked for something it did not get, which §5's refuse-and-name ethos exists to prevent. 'value' is the distinct-value census: a WRITE COUNT IS A MISLEADING PROXY for how much a value moves, and this is the aggregate that survives that (protocol.md §6 prose). 'addr' answers which addresses in the range are actually touched. 'via' answers CPU-vs-DMA on a VDP-internal watch, which a function-code census cannot (there is no bus function code on a VDP-internal write)."
+          },
+          "stopAfter": { "type": "integer", "minimum": 1, "description": "Halt the run at the next instruction boundary once this watch has matched N accesses, emitting emulator/stopped with reason 'watchpoint'. ABSENT means the watch never affects when the machine stops. This is stop-on-condition, not an interactive break: the triggering instruction has fully committed when the run ends, and the run was already bounded by its own caller." },
+          "label": { "type": "string", "description": "Optional human string, carried back verbatim and never interpreted." }
+        },
+        "allOf": [
+          {
+            "$comment": "§5's refuse-and-name ethos, enforced mechanically in both directions rather than left to prose: a `censusKey` without mode 'census' is -32602 and MUST NOT be silently ignored, and mode 'census' without a `censusKey` has no key to group by. D14 makes the schema the authority on which keys may appear together.",
+            "if": { "required": ["censusKey"] },
+            "then": { "required": ["mode"], "properties": { "mode": { "const": "census" } } }
+          },
+          {
+            "if": { "required": ["mode"], "properties": { "mode": { "const": "census" } } },
+            "then": { "required": ["censusKey"] }
+          }
+        ]
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["watch", "space", "addr", "len", "op", "mode"],
+        "properties": {
+          "watch": {
+            "allOf": [{ "$ref": "#/$defs/handle" }],
+            "description": "The watch handle. Server-assigned, NEVER REUSED, and an opaque string per D9 category 4 — not an address and not an index. It cannot be an address: one address may carry several watches, and the same number names four different things across the four spaces. A client hands it back to watchpoint_clear and reads it off every hit."
+          },
+          "space": { "enum": ["bus", "vram", "cram", "vsram"] },
+          "addr": { "$ref": "#/$defs/hex" },
+          "len": { "type": "integer", "minimum": 1 },
+          "op": { "enum": ["read", "write", "any"], "description": "The resolved op filter — what `read`/`write` actually became, so a caller that supplied neither is told what it got." },
+          "mode": { "enum": ["record", "census"] },
+          "censusKey": { "enum": ["addr", "value", "via"] },
+          "stopAfter": { "type": "integer", "minimum": 1 },
+          "label": { "type": "string" },
+          "caveat": { "type": "string", "description": "§2.4. Optional and handler-emitted; clients SHOULD surface it and MUST NOT parse it. Declared because §8 item 20 closes results against this fragment." }
+        }
+      }
+    },
+    "emulator/watchpoint_clear": {
+      "$comment": "protocol.md §6. The inverse of watchpoint_add, and the anti-staleness half of this surface: without it an armed watch outlives the session that wanted it. Idempotent — an unknown handle succeeds with removed: 0, per §6.1's rule for checkpoint_drop. Hits already recorded are NOT deleted; they keep naming their handle, and a handle absent from watchpoint_list is a retired watch.",
+      "params": {
+        "type": "object",
+        "oneOf": [{ "required": ["watch"] }, { "required": ["all"] }],
+        "properties": {
+          "watch": { "$ref": "#/$defs/handle" },
+          "all": { "type": "boolean" }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["removed"],
+        "properties": {
+          "removed": { "type": "integer", "minimum": 0 },
+          "caveat": { "type": "string", "description": "§2.4. Optional, handler-emitted, never parsed." }
+        }
+      }
+    },
+    "emulator/watchpoint_list": {
+      "$comment": "protocol.md §6. The armed instrument, with what each watch has observed. §2.4's FLAT spelling of the bounded-list rule, used because the list here IS the whole result rather than a field of one: total/returned/limit/truncated as siblings of the array, the same field set as $defs/boundedList. A pure read: not subject to §6's run-control state rule. A handle that appears on a hit but not here is a watch that has been cleared — ids are never reused, so that test cannot give a false negative.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "cursor": { "allOf": [{ "$ref": "#/$defs/handle" }], "description": "Continuation handle from a previous call. Opaque (D9 category 4); its behaviour is normative (protocol.md §2.4 clause (c)), its representation is the server's." },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 4096, "description": "House ceiling, the same 4096 read_memory and watchpoint_hits carry. A `limit` bounded on one list and unbounded on its sibling is two policies wearing one name." }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["watches", "total", "returned", "truncated"],
+        "properties": {
+          "watches": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["watch", "space", "addr", "len", "op", "mode", "matched"],
+              "properties": {
+                "watch": { "$ref": "#/$defs/handle" },
+                "label": { "type": "string" },
+                "space": { "enum": ["bus", "vram", "cram", "vsram"] },
+                "addr": { "$ref": "#/$defs/hex" },
+                "len": { "type": "integer", "minimum": 1 },
+                "op": { "enum": ["read", "write", "any"] },
+                "mode": { "enum": ["record", "census"] },
+                "censusKey": { "enum": ["addr", "value", "via"] },
+                "stopAfter": { "type": "integer", "minimum": 1, "description": "Present only when this watch will halt the run. A watch left armed with this set is the one that can change a later capture's outcome, so it is listed rather than left to be discovered." },
+                "matched": { "type": "integer", "minimum": 0, "description": "Accesses this watch matched, counted in EVERY mode including the ones that store nothing. A count of writes, NOT a measure of how much the value changed — see the census below and protocol.md §6." },
+                "first": { "$ref": "#/$defs/watchStamp" },
+                "last": { "$ref": "#/$defs/watchStamp" },
+                "census": {
+                  "type": "array",
+                  "description": "key -> count, ascending by key. Present only when mode is 'census'. The bounded group-by that makes a wide watch survivable, and — over censusKey 'value' — the aggregate that a raw write count misleads about.",
+                  "items": {
+                    "type": "object",
+                    "required": ["key", "count"],
+                    "properties": {
+                      "key": { "type": "integer", "minimum": 0, "description": "The grouped value: an address, a written value, or 0=bus/1=direct(CPU)/2=dma for censusKey 'via'." },
+                      "count": { "type": "integer", "minimum": 0 }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "distinctKeys": { "type": "integer", "minimum": 0, "description": "How many distinct keys the census retained. A LOWER BOUND when keysCapped is true — never read distinctKeys == keyCap as an exact answer." },
+                "keyCap": { "type": "integer", "minimum": 0, "description": "The configured cap, so a reader can tell distinctKeys AT the cap from distinctKeys under it." },
+                "keysCapped": { "type": "boolean", "description": "The census refused at least one new key because it was at its cap. Known keys keep counting past the cap; only new ones are refused. THE TYPED KEY, not a caveat: §2.4 rule 3 says any consequence a client must act on needs one." },
+                "censusOverflow": { "type": "integer", "minimum": 0, "description": "Accesses carrying a key the capped census could not retain. Counted, never silently dropped." }
+              },
+              "additionalProperties": false
+            }
+          },
+          "total": { "type": "integer", "minimum": 0, "description": "Watches armed in total, not on this page (§2.4 clause (a))." },
+          "returned": { "type": "integer", "minimum": 0, "description": "watches.length, restated so a client can compare it to `total` without counting." },
+          "limit": { "type": "integer", "minimum": 1, "description": "The page ceiling actually applied, which is not necessarily the one the client asked for (§2.4 clause (a), OPTIONAL)." },
+          "cursor": { "allOf": [{ "$ref": "#/$defs/handle" }], "description": "Present when more remain. This method accepts a `cursor` param, so §2.4 clause (b) permits it to emit one." },
+          "truncated": { "type": "boolean", "description": "REQUIRED EVEN WHEN FALSE (§2.4 clause (a))." },
+          "caveat": { "type": "string", "description": "§2.4. Optional, handler-emitted, never parsed." }
+        }
+      }
+    },
+    "emulator/watchpoint_hits": {
+      "$comment": "protocol.md §6. The recorded hit log — the 'who wrote this?' answer. POLLED, never pushed: a per-hit event would feed one bounded lossy stage (the ring) into another (the event queue), and moving droppedEvents for recorder volume would degrade the signal D17 defines for stopped/romReloaded. A pure read: not subject to §6's run-control state rule, and non-destructive, so two clients on one bus cannot steal each other's evidence. §2.4's flat bounded-list spelling, plus three counters that are NOT part of it: `dropped` (loss at record time), `seen` (the negative control) and `matched`.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "watch": { "allOf": [{ "$ref": "#/$defs/handle" }], "description": "Return only hits recorded by this watch. Absent means every watch — the ring is one shared, seq-ordered stream." },
+          "cursor": { "allOf": [{ "$ref": "#/$defs/handle" }], "description": "Continuation handle. Opaque (D9 category 4). A hit dropped from the ring between two calls was not live at both requests, so resuming past it does not violate §2.4 clause (c)'s invariant; `dropped` moving is how a client learns it happened." },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 4096, "default": 100 }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["hits", "total", "returned", "truncated", "dropped", "seen", "matched"],
+        "properties": {
+          "hits": {
+            "type": "array",
+            "description": "Oldest first. Each hit is attributed to the instruction that drove it (pc, from the step boundary) and to the master that drove it (fc on the bus, via for a VDP-internal write).",
+            "items": {
+              "type": "object",
+              "required": ["watch", "space", "addr", "value", "size", "op", "via", "pc", "frame", "mclk", "seq"],
+              "properties": {
+                "watch": { "allOf": [{ "$ref": "#/$defs/handle" }], "description": "The watch that recorded this hit. REQUIRED: the ring is shared, so without it a log spanning two watches is uninterpretable — and a handle absent from watchpoint_list marks a hit recorded by a watch that has since been cleared, which is how a stale instrument's evidence stays distinguishable from a live one's." },
+                "space": { "enum": ["bus", "vram", "cram", "vsram"] },
+                "addr": { "$ref": "#/$defs/hex" },
+                "value": { "$ref": "#/$defs/hex", "description": "The value read or written (for a VDP-internal write, the NEW value)." },
+                "old": { "allOf": [{ "$ref": "#/$defs/hex" }], "description": "The value that was there before the access. Present IF AND ONLY IF space is not 'bus': the 68000 bus event stream carries no prior value, so a bus hit has none to report and emitting 0x0 would assert something false. Where present, old != value is the exact per-write change test — the measurement a raw write count misleads about." },
+                "size": { "type": "integer", "enum": [1, 2, 4], "description": "Access width in bytes. A count (D9 category 2)." },
+                "op": { "enum": ["read", "write", "tas"], "description": "'tas' is the 68000 read-modify-write store; it matches a write watch and not a read one." },
+                "fc": { "type": "integer", "minimum": 0, "maximum": 7, "description": "68000 function code of the access (5/6 = CPU supervisor data/program, 0 = a non-CPU master). Present IF AND ONLY IF space is 'bus' — a VDP-internal write has no bus function code, and its CPU-vs-DMA attribution is `via`." },
+                "via": { "enum": ["bus", "direct", "dma"], "description": "How the access reached its target. 'bus' = a 68000 bus access. 'direct' = a CPU data-port write into VDP memory; 'dma' = a DMA step, attributed to the instruction that TRIGGERED the transfer. This is the CPU-vs-DMA answer for VDP-internal writes, which no function code can give." },
+                "pc": { "$ref": "#/$defs/hex", "description": "PC of the instruction that drove the access, stamped at the step boundary. One instruction driving several accesses (a MOVEM, a read-modify-write) attributes them all to itself." },
+                "symbol": { "allOf": [{ "$ref": "#/$defs/symbolName" }], "description": "Nearest preceding label for `pc`, when symbols are loaded (D7). An annotation on the address, never a replacement for it. Typed as the round-trip name for §4's reason, the same retype §11.6 applied to read_memory's." },
+                "symbolDisp": { "type": "integer", "minimum": 0 },
+                "frame": { "type": "integer", "minimum": 0, "description": "Emulated frame of THIS HIT — deliberately inside the hit and never at the top level of the result, where the envelope stamp (§2.2) would overwrite it with the machine's current coordinate." },
+                "mclk": { "type": "integer", "minimum": 0, "description": "Emulated master clock of this hit. STEP-GRANULAR whenever `space` is not 'bus' — a VDP-internal write is drained after the driving CPU step and carries that step's clock. That is a PERMANENT property of a VDP hit and is stated in §6 rather than repeated as a per-reply caveat (§2.4's advisory: a caveat that is always present is one clients learn to ignore)." },
+                "seq": { "type": "integer", "minimum": 0, "description": "Monotonic id of the matched access, assigned in order and STABLE ACROSS RING DROPS — so a gap in seq marks hits the ring discarded. A count (D9 category 2); the cursor is the server's business and is not this number." }
+              },
+              "additionalProperties": false,
+              "allOf": [
+                {
+                  "$comment": "The two presence rules, enforced mechanically rather than left to prose. A bus hit has no prior value to report (the 68000 bus event stream carries none) and a VDP-internal write has no bus function code; emitting either as a zero would assert something false, which is the silent-wrong-answer class this bus exists to prevent. D14 makes the schema the authority on which keys exist, so the rule belongs here and not only in §6.",
+                  "if": { "properties": { "space": { "const": "bus" } } },
+                  "then": { "required": ["fc"], "not": { "required": ["old"] } },
+                  "else": { "required": ["old"], "not": { "required": ["fc"] } }
+                }
+              ]
+            }
+          },
+          "total": { "type": "integer", "minimum": 0, "description": "Hits the ring currently HOLDS that match this query — not `matched` (accesses, including ones no ring stored) and not `dropped` (hits the ring has already discarded). §2.4 clause (a)'s `total`, and the three numbers are deliberately distinct." },
+          "returned": { "type": "integer", "minimum": 0, "description": "hits.length, restated so a client can compare it to `total` without counting." },
+          "limit": { "type": "integer", "minimum": 1, "description": "The page ceiling actually applied, which is not necessarily the one the client asked for (§2.4 clause (a), OPTIONAL)." },
+          "cursor": { "allOf": [{ "$ref": "#/$defs/handle" }], "description": "Present when more remain. This method accepts a `cursor` param, so §2.4 clause (b) permits it to emit one." },
+          "truncated": { "type": "boolean", "description": "Loss at READ time — more hits are held than this page returned. Distinct from `dropped`. REQUIRED EVEN WHEN FALSE (§2.4 clause (a))." },
+          "dropped": { "type": "integer", "minimum": 0, "description": "Hits the recorder discarded at RECORD time because its ring was at capacity (oldest first). An INSTRUMENT fact, identical for every client — unlike droppedEvents (§2.3), which is a per-connection fact — which is why it rides in the body and not in the envelope. D17's principle, applied to the second lossy stage on this bus: a bounded ring that discards is correct, the silence is not." },
+          "seen": { "type": "integer", "minimum": 0, "description": "THE STRUCTURAL NEGATIVE CONTROL. Every access offered to the recorder, matched or not. seen > 0 with matched == 0 is a live instrument that found nothing; seen == 0 is an instrument that was never attached to the run, and a zero from it means nothing at all. REQUIRED so a client cannot mistake the second for the first — and REQUIRED as a typed number rather than carried in prose, per §2.4 rule 3." },
+          "matched": { "type": "integer", "minimum": 0, "description": "Accesses that matched at least one watch, across all modes. matched - total - dropped is what the non-recording watches absorbed. A count of accesses, not a measure of change." },
+          "caveat": { "type": "string", "description": "§2.4: OPTIONAL, singular, handler-emitted, surfaced verbatim and never parsed. Every machine-actionable warning this instrument can raise already has a typed key — `seen`, `keysCapped`, `censusOverflow` — and the one permanent property (a VDP hit's step-granular `mclk`) is stated in §6 instead, because §2.4's advisory is that an always-present caveat is one clients learn to ignore." }
         }
       }
     }
