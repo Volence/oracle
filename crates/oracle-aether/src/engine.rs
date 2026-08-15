@@ -1282,15 +1282,24 @@ impl Engine {
                 )
                 .with_data(json!({"addr": hex::addr(addr)}))
             })?;
+            // §4, rewritten 2026-08-15: `name` is the **identifying** spelling on every branch and it
+            // MUST round-trip. This branch used to emit `Resolution`'s `Display` — the *readable* name
+            // with a `+$hex` displacement glued on — which meant the one field D7 exists to make reliable
+            // was the one field that could not be handed back: `lookup_symbol {name:"EntryPoint+$10"}`
+            // answered `-32013`. The readable form moves to `demangled` (display only) and the
+            // displacement stays in `disp`, where it already was. `$defs/symbolName` now rejects the old
+            // spelling outright, which is D14's reason for expressing the rule as a pattern.
             let mut out = json!({
                 "query": hex::addr(addr),
-                "name": r.to_string(),
-                "rawName": r.symbol.name,
+                "name": r.symbol.name,
                 "addr": hex::addr(r.symbol.addr),
                 "disp": r.displacement,
                 "ambiguous": r.symbol.demangled_ambiguous,
                 "synthetic": r.symbol.is_synthetic,
             });
+            if r.symbol.demangled != r.symbol.name {
+                out["demangled"] = json!(r.symbol.demangled);
+            }
             if r.displacement > 0 {
                 out["caveat"] = json!(format!(
                     "nearest *preceding* symbol: the address is ${:X} past it and may belong to no \
@@ -1301,7 +1310,7 @@ impl Engine {
             if r.symbol.demangled_ambiguous {
                 out["caveat"] = json!(
                     "several different addresses share this readable name (a macro expanded more than \
-                     once), so it does not identify a location — use `rawName`, which is unique."
+                     once), so `demangled` does not identify a location — `name` is the unique one."
                 );
             }
             return Ok(out);
@@ -1317,34 +1326,52 @@ impl Engine {
             return Err(RpcError::invalid_params("`name` must be a string"));
         };
         if let Some(sym) = table.by_name(name) {
-            return Ok(json!({
+            // §4's exact shape. `exact` is REQUIRED on the name direction and present in **both** cases —
+            // it used to appear only on the prefix branch, where it is always `false`, which is a field
+            // nobody reads (§11.5: "`released`'s defect with a useful name").
+            let mut out = json!({
                 "name": sym.name,
-                "demangled": sym.demangled,
                 "addr": hex::addr(sym.addr),
                 "rawAddr": hex::addr(sym.raw_addr),
                 "ambiguous": sym.demangled_ambiguous,
-            }));
+                "exact": true,
+            });
+            // "Present when it differs from `name`" (§4), same rule as the other three branches. An
+            // unmangled listing does not pay for a key that repeats `name` verbatim.
+            if sym.demangled != sym.name {
+                out["demangled"] = json!(sym.demangled);
+            }
+            return Ok(out);
         }
         let exact_demangled = table.by_demangled(name);
         if !exact_demangled.is_empty() {
             let total = exact_demangled.len();
             let items: Vec<Value> = exact_demangled
                 .iter()
+                .copied()
                 .take(limit)
-                .map(|s| json!({"name": s.name, "addr": hex::addr(s.addr)}))
+                .map(match_item)
                 .collect();
             let first = exact_demangled[0];
+            // Still `exact: true`: the query matched a symbol's readable spelling **exactly**, and §4
+            // reads `exact` as "a symbol has exactly this name" against "these are prefix guesses".
+            // Nothing here was guessed. What the client cannot rely on is that the *readable* name
+            // identifies a location, and that is `ambiguous`'s job, not `exact`'s. `query` is carried
+            // because the reply's `name` is the mangled spelling — not the one that was asked for — so
+            // without it the reply does not record the request (§4's own reason for the field).
             let mut out = json!({
+                "query": name,
                 "name": first.name,
                 "demangled": first.demangled,
                 "addr": hex::addr(first.addr),
                 "otherMatches": rpc::bounded_array(items, total, 0, limit),
                 "ambiguous": total > 1,
+                "exact": true,
             });
             if total > 1 {
                 out["caveat"] = json!(format!(
                     "{total} different addresses answer to this readable name; `addr` is only the \
-                     first. Use the unique mangled `name` from `otherMatches`."
+                     first. Use the unique `name` from `otherMatches`."
                 ));
             }
             return Ok(out);
@@ -1363,11 +1390,10 @@ impl Engine {
             .with_data(json!({"name": name})));
         }
         let total = all.len();
-        let items: Vec<Value> = all
-            .iter()
-            .take(limit)
-            .map(|s| json!({"name": s.name, "demangled": s.demangled, "addr": hex::addr(s.addr)}))
-            .collect();
+        // **One** item shape, not one per branch (§4/CR-14). This branch used to emit `demangled`
+        // unconditionally and the branch above used to omit it, so a client had to know which branch it
+        // was on in order to read the list.
+        let items: Vec<Value> = all.iter().copied().take(limit).map(match_item).collect();
         Ok(json!({
             "query": name,
             "exact": false,
@@ -1704,14 +1730,16 @@ impl Engine {
             })
             .collect();
 
-        // The house's one bounded-array rule (`rpc::bounded_array`, recon §4 non-negotiable #2) computes
-        // the page; §6.1's spelling for this method names the array `checkpoints` and its continuation
-        // token `cursor`, so the same envelope is emitted under the catalog's names rather than a second
-        // pagination convention being invented alongside it. The helper is **not** changed to understand
-        // ids — it is shared with `lookup_symbol`, whose cursor really is a position into an immutable
-        // result set, and re-defining it for everyone to fix one caller would be the wrong trade. It is
-        // fed the positional `skipped`, which is exactly what its `total`/`returned`/`truncated` maths
-        // needs, and only the emitted continuation token is this method's own.
+        // The house's one bounded-array rule (`rpc::bounded_array`, recon §4 non-negotiable #2, now
+        // contract §2.4) computes the page; §6.1's spelling for this method names the array `checkpoints`
+        // and its continuation token `cursor`, so the same envelope is emitted under the catalog's names
+        // rather than a second pagination convention being invented alongside it. The helper is **not**
+        // changed to understand ids — it is fed the positional `skipped`, which is exactly what its
+        // `total`/`returned`/`truncated` maths needs, and the continuation token is this method's own.
+        //
+        // **This method is now the only place a cursor is minted on this bus** (§2.4 clause (b)): the
+        // helper stopped emitting one, because `lookup_symbol` — its other caller — accepts no cursor
+        // param and so may not publish a token that can never be handed back.
         let page = rpc::bounded_array(items, total, skipped, limit);
         let mut out = Map::new();
         out.insert("checkpoints".into(), page["items"].clone());
@@ -1720,8 +1748,10 @@ impl Engine {
         out.insert("limit".into(), page["limit"].clone());
         out.insert("truncated".into(), page["truncated"].clone());
         // `cursor` is returned **when more remain** and is absent otherwise, so a client can never mistake
-        // "here is where to continue" for "you are at the end". The helper's own `nextCursor` is
-        // positional and is deliberately not emitted; only whether it exists is used.
+        // "here is where to continue" for "you are at the end". "More remain" is read off `truncated`,
+        // which is the same bit the helper's old positional `nextCursor` encoded — that token was only
+        // ever consulted for its existence here, never for its value, which is why removing it costs this
+        // method nothing.
         //
         // The token is emitted as a **JSON string**, which is what the contract schema types it as
         // (`schema/bus-protocol.schema.json`, `emulator/checkpoint_list` params *and* result) — §8
@@ -1730,7 +1760,7 @@ impl Engine {
         // bare number is an open invitation to the `cursor + 1` / `cursor > n` arithmetic that the
         // opacity rule exists to prevent. Quoting it does not *stop* a determined client — the value
         // is still an id in decimal — but it stops the accident.
-        if page["nextCursor"].is_u64() {
+        if page["truncated"] == json!(true) {
             out.insert("cursor".into(), json!(next_cursor.to_string()));
         }
         Ok(Value::Object(out))
@@ -1868,6 +1898,19 @@ fn no_symbols() -> RpcError {
         code::NO_SYMBOLS_LOADED,
         "no symbol table is loaded — call emulator/load_symbols first",
     )
+}
+
+/// One `otherMatches` entry, in the **single** item shape §4 pins: `{name, addr, demangled?}`.
+///
+/// `name` is the identifying spelling, because this is the value a client hands straight back to resolve
+/// the match — the same round-trip promise the top-level `name` carries. `demangled` rides along only when
+/// it differs, so a listing with no mangling does not pay for a key that repeats `name` verbatim.
+fn match_item(s: &oracle_core::symbols::Symbol) -> Value {
+    let mut o = json!({"name": s.name, "addr": hex::addr(s.addr)});
+    if s.demangled != s.name {
+        o["demangled"] = json!(s.demangled);
+    }
+    o
 }
 
 /// A [`Layer`] as the `{layer, spriteIndex?}` object both `winner` and each `candidates[]` entry carry.

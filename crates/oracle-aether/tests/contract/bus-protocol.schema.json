@@ -9,10 +9,37 @@
       "pattern": "^0x[0-9A-Fa-f]+$",
       "description": "Address or byte blob as a hex string (D9 category 1)."
     },
+    "symbolName": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!.*\\+\\$[0-9A-Fa-f]+$).+$",
+      "description": "A symbol's IDENTIFYING spelling, exactly as the listing writes it (protocol.md §4). It MUST round-trip: passing it back as lookup_symbol's `name`, or as any method's `symbol` param, MUST resolve to the same symbol — which is D7 made operable. The pattern forbids exactly one thing: a trailing `+$<hex>` displacement suffix. A displacement belongs in the reply's OWN numeric field (`disp`, `symbolDisp`), and a name carrying it duplicates a number the same reply already holds, inside a string a client would have to parse to get it back — §2.4's 'MUST NOT parse' and the same defect §11.5 struck run_to.stoppedAtFrame for. Mangling is NOT forbidden: `$engine.boot$EntryPoint$wait_dma` is a legitimate identifying name and the pattern accepts it, because `$` is only rejected in the `+$hex`-at-the-end position. Expressed as a pattern rather than as a sentence for D14's stated reason — a schema either accepts a message or does not."
+    },
+    "hash64": {
+      "type": "string",
+      "pattern": "^0x[0-9A-Fa-f]{16}$",
+      "description": "A 64-bit FNV-1a fingerprint, spelled as a hex string of exactly 16 digits (protocol.md §6's '16-hex FNV-1a each', read through D9 category 1 — a hex value on this bus is a hex string). A fingerprint is compared, never computed on, so the fixed width is part of the type: a 15-digit answer is a leading zero somebody dropped, and two servers that disagree about padding produce fingerprints that never match."
+    },
     "handle": {
       "type": "string",
       "minLength": 1,
       "description": "An opaque handle (D9 category 4): a value the server issues purely so the client can hand it back — a checkpoint `id`, a list `cursor`. A string, deliberately: a client MUST NOT parse, order, compare or do arithmetic on one, and a number would invite exactly that. The representation is the server's business (protocol.md §6.1)."
+    },
+    "boundedList": {
+      "type": "object",
+      "required": ["items", "total", "returned", "truncated"],
+      "properties": {
+        "items": { "type": "array", "description": "This page of the list. Item shape is the owning method's business; the envelope around it is not." },
+        "total": { "type": "integer", "minimum": 0, "description": "How many items exist, not how many were returned." },
+        "returned": { "type": "integer", "minimum": 0, "description": "items.length, restated so a client can compare it to `total` without counting." },
+        "truncated": { "type": "boolean", "description": "REQUIRED EVEN WHEN FALSE (protocol.md §2.4 clause (a)): absence and `false` must not both mean 'you have everything', for the same reason droppedEvents is always present (§2.3)." },
+        "cursor": {
+          "allOf": [{ "$ref": "#/$defs/handle" }],
+          "description": "Continuation handle. Present ONLY on methods that accept a cursor param — §2.4 clause (b): a method that accepts no continuation MUST NOT emit one, because a token that can never be handed back trains clients that handles are ignorable and publishes the server's position for nothing (D9 category 4's opacity argument). Behaviour is normative (§2.4 clause (c)); representation is the server's."
+        },
+        "limit": { "type": "integer", "minimum": 1, "description": "The page ceiling the server actually applied, which is not necessarily the one the client asked for." }
+      },
+      "description": "The container for a list that is a FIELD of a result (protocol.md §2.4). A list that IS the whole result keeps the flat spelling its §6 row gives it — the array under its own name with total/returned/limit/truncated/cursor? as siblings — which is emulator/checkpoint_list. Identical field set, identical rules; only the nesting differs. Governs POLICY-bounded lists (a bound the server chose). A STRUCTURALLY bounded list — emulator/pixel_attribution's `candidates`, capped at 4 by the video hardware — takes neither the flag nor the cursor, because a list that cannot be partial has no partial-list failure mode (§2.4 clause (d))."
     },
     "id": { "type": ["integer", "string"], "description": "JSON-RPC correlation id." },
     "stamp": {
@@ -219,6 +246,236 @@
     }
   },
   "methods": {
+    "$comment": "THE TWELVE FRAGMENTS ADDED 2026-08-15 (protocol.md §11.5) — emulator/status, load_symbols, pause, resume, press, hold, release_all, read_vram, reload_rom, run_frames, screenshot, state_hash — were each written FROM THE AMENDED §6 ROW, never from a server's replies. That direction is the whole point: §8 forbids the emulator side to invent, and a fragment transcribed from what a server emits would encode the implementation as the contract, which is the inversion this document exists to prevent (§0: 'the contract leads; the emulator implements against it'). Where a shipped key had no §6 row it was ruled first — registered, pinned, or struck — and only then schematized.",
+    "emulator/status": {
+      "$comment": "protocol.md §6 (status / misc). `running` is NOT declared here: it is the machine stamp's (§2.2, D11), applied envelope-level after the handler returns and arriving through replyFields. §6's row lists it because the row predates D11; §2.2 is explicit that clients MUST NOT treat the stamp as a per-method field. Declaring it twice would invite a handler to think it owns the value.",
+      "params": { "type": "object" },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["pc", "sp", "sr", "frameToken", "symbolCount", "romBytes"],
+        "properties": {
+          "pc": { "$ref": "#/$defs/hex" },
+          "sp": { "$ref": "#/$defs/hex" },
+          "sr": { "$ref": "#/$defs/hex" },
+          "frameToken": { "type": "integer", "minimum": 0, "description": "A JSON number under D9 category 2, and checked to be one: it is the emulated frame index, not a UI counter (protocol.md §11.2's 'what this pass deliberately did not change'). NOT a handle." },
+          "symbolCount": { "type": "integer", "minimum": 0 },
+          "symbolAtPc": {
+            "$ref": "#/$defs/symbolName",
+            "$comment": "The BARE label at the PC — protocol.md §4's naming rule, which binds every symbol field on this bus. The displacement is `symbolDisp` and appears nowhere else; a rendering like 'Obj_Spring+$4' is the two fields concatenated, and a client that wants it can build it."
+          },
+          "symbolDisp": { "type": "integer", "minimum": 0, "description": "Registered 2026-08-15 (§11.5). Bytes past `symbolAtPc`; 0 is an exact hit. Present when symbolAtPc is." },
+          "romBytes": { "type": "integer", "minimum": 0, "description": "Size of the loaded cartridge image. Registered 2026-08-15." },
+          "romPath": { "type": ["string", "null"], "description": "Path to the loaded ROM on the SERVER's filesystem — a host-filesystem fact, which D8's trusted-local-developer trust model makes unremarkable (see §6's paths note). Null when no ROM has been loaded from a path." },
+          "symbolsPath": { "type": ["string", "null"], "description": "Path to the loaded listing, same treatment. Null when no listing is loaded." },
+          "romLoading": { "type": "boolean" }
+        }
+      }
+    },
+    "emulator/load_symbols": {
+      "$comment": "protocol.md §4 and §6 (symbols). `binding` is §4's forward note, no longer forward.",
+      "params": {
+        "type": "object",
+        "required": ["path"],
+        "properties": { "path": { "type": "string" } }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["path", "symbolCount", "moduleCount", "binding"],
+        "properties": {
+          "path": { "type": "string" },
+          "symbolCount": { "type": "integer", "minimum": 0 },
+          "moduleCount": { "type": "integer", "minimum": 0, "description": "How many modules the listing spans, beside the symbol count. Registered 2026-08-15 (§11.5)." },
+          "binding": {
+            "enum": ["match", "indeterminate"],
+            "description": "Whether the listing could be checked against the ROM image actually loaded. `match` = it passed the check; `indeterminate` = it could not be checked at all and was accepted UNVERIFIED. There is deliberately no `mismatch` value: a listing that positively binds to a DIFFERENT image is refused with -32602 and carries its binding in error.data, because D7's hazard is that a mismatched listing is not degraded information but confidently wrong information."
+          },
+          "caveat": { "type": "string", "description": "protocol.md §2.4." }
+        }
+      }
+    },
+    "emulator/pause": {
+      "$comment": "protocol.md §6 (run-control). `wasRunning` registered 2026-08-15 (§11.5): it is D12's `reached` logic transposed — a result that reports nothing cannot distinguish 'I stopped it' from 'it was already stopped', and it is what lets a client make pause idempotent without a second round-trip.",
+      "params": { "type": "object" },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["wasRunning"],
+        "properties": { "wasRunning": { "type": "boolean", "description": "Whether the machine was free-running BEFORE this call. Reports the transition, not the destination — the destination is known from the method name." } }
+      }
+    },
+    "emulator/resume": {
+      "$comment": "protocol.md §6 (run-control). Mirror of emulator/pause; same field, same registration.",
+      "params": { "type": "object" },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["wasRunning"],
+        "properties": { "wasRunning": { "type": "boolean", "description": "Whether the machine was free-running BEFORE this call." } }
+      }
+    },
+    "emulator/press": {
+      "$comment": "protocol.md §6 (input). Named in §6's run-control state rule: it mutates the timeline (it holds buttons across a bounded run of frames), so it requires a paused machine and MUST fail -32005 machineRunning otherwise.",
+      "params": {
+        "type": "object",
+        "required": ["buttons"],
+        "properties": {
+          "buttons": { "type": "array", "items": { "enum": ["up", "down", "left", "right", "a", "b", "c", "start", "x", "y", "z", "mode"] } },
+          "frames": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 2, "description": "Catalog ceiling. A given server's ACTUAL ceiling is initialize's limits.maxRunFrames, which it refuses above rather than clamping to (§2.1)." },
+          "port": { "type": "integer", "minimum": 0, "maximum": 1, "default": 0, "description": "Which controller. Registered 2026-08-15 (§11.5) — the two-controller surface the catalog never grew. D9 category 2 (an index a client counts with). Defaults to 0 so every call written before this row existed keeps meaning what it meant." }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["buttons", "frames", "frameToken", "port"],
+        "properties": {
+          "buttons": { "type": "array", "items": { "type": "string" } },
+          "frames": { "type": "integer", "minimum": 1 },
+          "frameToken": { "type": "integer", "minimum": 0 },
+          "port": { "type": "integer", "minimum": 0, "maximum": 1, "description": "Echoed on the result as well as accepted on the params: a reply that does not say which pad it acted on is unreadable in a two-client session, where the caller is not the only source of input." }
+        }
+      }
+    },
+    "emulator/hold": {
+      "$comment": "protocol.md §6 (input). NOT in the run-control state rule: hold sets pad state and advances nothing.",
+      "params": {
+        "type": "object",
+        "required": ["buttons"],
+        "properties": {
+          "buttons": { "type": "array", "items": { "enum": ["up", "down", "left", "right", "a", "b", "c", "start", "x", "y", "z", "mode"] } },
+          "down": { "type": "boolean", "default": true },
+          "port": { "type": "integer", "minimum": 0, "maximum": 1, "default": 0 }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["buttons", "down", "port", "held"],
+        "properties": {
+          "buttons": { "type": "array", "items": { "type": "string" } },
+          "down": { "type": "boolean" },
+          "port": { "type": "integer", "minimum": 0, "maximum": 1 },
+          "held": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "The buttons held on this port AFTER the call — the resulting set, not an echo of `buttons`. Registered 2026-08-15 (§11.5): hold has set-not-add semantics, and this is what makes that verifiable without a second round-trip. Deliberately NOT a boundedList: it is bounded at 8 by the controller, which is a structural bound (§2.4 clause (d))."
+          }
+        }
+      }
+    },
+    "emulator/release_all": {
+      "$comment": "protocol.md §6 (input). NO RESULT KEYS, and that is a ruling rather than an omission: the reference server emitted `released: true`, a hardcoded constant that can never be false and carries zero bits, and it was REMOVED (§11.5) rather than registered. Removing it is not amputation — there was nothing attached. §6's row said `—` and still does, so this fragment is the row.",
+      "params": { "type": "object" },
+      "result": { "$ref": "#/$defs/replyFields" }
+    },
+    "emulator/read_vram": {
+      "$comment": "protocol.md §6 (VRAM / CRAM / layers). The row is unchanged by this pass: its only surplus was a `caveat`, which §2.4 now defines once for the whole bus and which §2.4 clause 4 says a row need not enumerate. The fragment declares it anyway, because §8 item 20 closes results at test time and an undeclared caveat would fail that check.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "addr": { "$ref": "#/$defs/hex" },
+          "len": { "type": "integer", "minimum": 1, "maximum": 4096 }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["addr", "len", "bytes"],
+        "properties": {
+          "addr": { "$ref": "#/$defs/hex" },
+          "len": { "type": "integer", "minimum": 1 },
+          "bytes": { "$ref": "#/$defs/hex" },
+          "caveat": { "type": "string", "description": "protocol.md §2.4." }
+        }
+      }
+    },
+    "emulator/reload_rom": {
+      "$comment": "protocol.md §6 (run-control). Named in §6's run-control state rule — it swaps the cartridge out from under whatever is executing — so it requires a paused machine. Emits emulator/romReloaded.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string", "description": "Omit to reload the image already loaded." },
+          "wait": { "type": "boolean" },
+          "reset": { "type": "boolean" }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "anyOf": [{ "required": ["reloaded"] }, { "required": ["queued"] }],
+        "required": ["path", "romBytes", "symbolsDropped"],
+        "properties": {
+          "reloaded": { "type": "boolean", "description": "The reload completed synchronously. Exactly one of `reloaded`/`queued` is present." },
+          "queued": { "type": "boolean", "description": "The reload was accepted and will complete asynchronously; the romReloaded event is the completion signal." },
+          "path": { "type": "string" },
+          "romBytes": { "type": "integer", "minimum": 0, "description": "Size of the image now in the machine. Registered 2026-08-15 (§11.5), same key and same meaning as status.romBytes — it is the confirmation that the file read is the cartridge loaded." },
+          "symbolsDropped": {
+            "type": "boolean",
+            "description": "The loaded symbol listing stopped binding to the new image and was dropped. Registered 2026-08-15 (§11.5), and it is the strongest registration in that pass: D7 is this contract's most emphatic decision, and a reload that silently invalidates the symbol table while a client keeps resolving names against it is precisely D7's named hazard. REQUIRED, present even when false — absence and false must not both mean 'your symbols are fine' (§2.3's argument)."
+          },
+          "diagnostic": { "type": "string" },
+          "caveat": { "type": "string", "description": "protocol.md §2.4." }
+        }
+      }
+    },
+    "emulator/run_frames": {
+      "$comment": "protocol.md §6 (run-control) and §3. Requires a paused machine (-32005 machineRunning otherwise). Emits emulator/resumed, then emulator/stopped with reason 'runFrames' — NOT the nearest-looking 'step' (§8 item 13). This method's reply carried no surplus at all on the 2026-08-15 sweep, which §11.5 notes is not luck.",
+      "params": {
+        "type": "object",
+        "properties": { "frames": { "type": "integer", "minimum": 1, "default": 1, "description": "Catalog default 1. The server's ceiling is initialize's limits.maxRunFrames, refused above rather than clamped." } }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["frames", "frameToken", "pc"],
+        "properties": {
+          "frames": { "type": "integer", "minimum": 1, "description": "Frames actually advanced." },
+          "frameToken": { "type": "integer", "minimum": 0 },
+          "pc": { "$ref": "#/$defs/hex" }
+        }
+      }
+    },
+    "emulator/screenshot": {
+      "$comment": "protocol.md §6 (status / misc). Five keys registered 2026-08-15 (§11.5) against a row that said only `path`. Neither this method nor reload_rom was reached by the ruling that opened that pass; both are ruled there.",
+      "params": {
+        "type": "object",
+        "properties": { "path": { "type": "string", "description": "Where to write. Omit and the server chooses; the chosen path is always echoed." } }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["path", "format", "width", "height", "bytes", "source"],
+        "properties": {
+          "path": { "type": "string" },
+          "format": { "type": "string", "description": "The encoding written. A constant on any one server today and registered anyway — unlike the vacuous `released` struck from release_all, its value space is genuinely open, and §6's row already anticipates a second representation ('the HTTP binding MAY return image content inline'). A client that must infer the format from a file extension is guessing." },
+          "width": { "type": "integer", "minimum": 1, "description": "Not constant: H32 is 256 and H40 is 320, and a client indexing a pixel out of the file gets it wrong on one of them." },
+          "height": { "type": "integer", "minimum": 1 },
+          "bytes": { "type": "integer", "minimum": 0, "description": "Size written, on the checkpoint.bytes precedent — how a caller knows the write completed rather than merely that a path was chosen." },
+          "source": {
+            "enum": ["raster", "stateRender"],
+            "description": "WHICH PICTURE WAS SERVED. `raster` = the frame the scanline path actually drew. `stateRender` = re-derived from VDP state as it stands now, the honest fallback before any whole frame has been drawn. Provenance, and the register case rather than a nicety: §6's pixel_attribution prose already spends a paragraph on why the two legitimately differ and why pausing does NOT reconcile them (measured over 17 test ROMs). A stateRender picture silently labelled as the frame is the silent wrong answer D11 exists to prevent."
+          },
+          "caveat": { "type": "string", "description": "protocol.md §2.4 — and this method is the shape §2.4's advisory says to copy: it warns only when `source` is stateRender, rather than emitting a constant string on every reply." }
+        }
+      }
+    },
+    "emulator/state_hash": {
+      "$comment": "protocol.md §6 (status / misc). The five fingerprints cover VDP state only.",
+      "params": {
+        "type": "object",
+        "properties": { "includeFramebuffer": { "type": "boolean", "default": false } }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["vram", "cram", "vsram", "regs", "combined"],
+        "$comment": "§6's row spells each hash '16-hex FNV-1a'. Read through D9 category 1 — a hex value on this bus is a hex string — that is $defs/hex narrowed to exactly 16 digits, which is the pattern used below rather than a bare 16-character form.",
+        "properties": {
+          "vram": { "$ref": "#/$defs/hash64" },
+          "cram": { "$ref": "#/$defs/hash64" },
+          "vsram": { "$ref": "#/$defs/hash64" },
+          "regs": { "$ref": "#/$defs/hash64" },
+          "combined": { "$ref": "#/$defs/hash64" },
+          "framebuffer": { "$ref": "#/$defs/hash64", "$comment": "Present if and only if the includeFramebuffer param was true." },
+          "framebufferSource": {
+            "enum": ["raster", "stateRender"],
+            "description": "Which picture was hashed — the same enum and the same meaning as emulator/screenshot's `source`, registered in the same pass (§11.5) and for a sharper version of the same reason: a fingerprint whose input provenance is unstated is worse than one that is simply wrong, because two machines can disagree on it for a reason that has nothing to do with either machine. Present if and only if `framebuffer` is."
+          },
+          "caveat": { "type": "string", "description": "protocol.md §2.4." }
+        }
+      }
+    },
     "emulator/lookup_symbol": {
       "params": {
         "type": "object",
@@ -233,11 +490,41 @@
       },
       "result": {
         "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "anyOf": [{ "required": ["addr"] }, { "required": ["otherMatches"] }],
+        "$comment": "protocol.md §4, rewritten 2026-08-15 (§11.5). The anyOf is §4's one structural invariant: a result MUST carry either `addr` or `otherMatches` — the call either resolved to a location or offers candidates, and a reply that does neither has answered nothing while reporting success. Nothing else is required across all three result shapes, so nothing else is listed as required here; the per-shape obligations are prose in §4, which D14 makes normative for semantics.",
         "properties": {
-          "addr": { "$ref": "#/$defs/hex" },
-          "name": { "type": "string" },
-          "disp": { "type": "integer" },
-          "otherMatches": { "type": "array", "items": { "type": "string" } }
+          "addr": { "$ref": "#/$defs/hex", "$comment": "The resolved bus address. Absent only on the prefix-fallback shape, where nothing was resolved and inventing one would be a silent wrong answer." },
+          "name": { "$ref": "#/$defs/symbolName" },
+          "demangled": { "type": "string", "description": "The readable spelling, for display to a human. Present when it differs from `name`. NOT guaranteed unique and NOT guaranteed to round-trip — `ambiguous` is how a server says so." },
+          "disp": { "type": "integer", "minimum": 0, "description": "Queried address minus the resolved symbol's address; 0 is an exact hit. Address direction only. This is the ONLY place the displacement appears — see `name`." },
+          "query": { "type": "string", "description": "The `addr` or `name` the request asked for, echoed. Load-bearing rather than decorative: on the address direction the answer's `addr` is the SYMBOL's address, not the queried one, so without this the reply does not record what was asked; on the prefix shape it is the reply's only trace of the request. A string in both directions (a hex address is a string, D9 category 1)." },
+          "exact": { "type": "boolean", "description": "REQUIRED on the name direction and present in BOTH cases: true = a symbol has exactly this name, false = these are prefix guesses. Not omitted on the true branch — a field that appears only in the unusual case is a field nobody reads (D16's argument, and D17's)." },
+          "ambiguous": { "type": "boolean", "description": "Several DIFFERENT addresses share this symbol's demangled spelling, so the readable name does not identify a location. The machine-readable half of the corresponding caveat, and it exists because §2.4 forbids parsing the caveat." },
+          "synthetic": { "type": "boolean", "description": "The resolved label is toolchain plumbing (an alignment pad, a synthetic block scope) rather than a name a person wrote. Address direction. A client showing a PC to a human needs to know the nearest label is a pad." },
+          "rawAddr": { "$ref": "#/$defs/hex", "$comment": "The listing's own unmasked spelling of `addr` where the two differ — a 68000 listing writes work RAM as 0xFFFF8CFA while the machine drives 24 address lines and puts 0x00FF8CFA on the bus. Carried so a client can round-trip a value back to the listing text. `addr` is the one to compute with." },
+          "caveat": { "type": "string", "description": "protocol.md §2.4. Conditional here, correctly: it fires on a non-zero displacement, on an ambiguous readable name, and on the prefix fallback." },
+          "otherMatches": {
+            "allOf": [{ "$ref": "#/$defs/boundedList" }],
+            "$comment": "CR-14, adopted 2026-08-15. Was `{type: array, items: {type: string}}`, which the reference server had never emitted: a bare array is exactly what §2.4 clause (a) forbids on a method §4 itself says truncates at 5, and bare strings would drop the `addr` the client asked for. The bound is a POLICY bound (this spec chose 5; a symbol table holds thousands) so total/truncated are mandatory — and there is NO cursor and NO nextCursor, because lookup_symbol accepts no continuation param and §2.4 clause (b) forbids a token that can never be handed back. Symbol BROWSING, if ever wanted, is a new cursored method and its own change request; lookup_symbol is a resolution primitive.",
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["name", "addr"],
+                  "properties": {
+                    "name": { "$ref": "#/$defs/symbolName", "$comment": "Same contract as the top-level `name` — this is the value a client hands back to resolve the match, so it is the round-trippable spelling and not the readable one." },
+                    "addr": { "$ref": "#/$defs/hex" },
+                    "demangled": { "type": "string" }
+                  },
+                  "additionalProperties": false,
+                  "description": "ONE pinned item shape. The reference server emitted two — {name,addr} on the exact-demangled branch and {name,demangled,addr} on the prefix branch — which is a client having to discover which branch it is on in order to read the list."
+                }
+              },
+              "cursor": false,
+              "nextCursor": false
+            }
+          }
         }
       }
     },
@@ -284,17 +571,35 @@
       }
     },
     "emulator/registers": {
+      "$comment": "protocol.md §6 (memory & Z80). PROPERTIES ADDED 2026-08-15 (§11.5): this fragment previously declared NONE, and stood in for them with `additionalProperties: {$ref hex}` plus a hand-listing of the four envelope fields to stop that catch-all rejecting them. The catch-all is gone with the properties: it was open in the direction that mattered (any misspelled register name passed, so long as its value looked like hex) and closed in the direction D5 protects (a future registered non-hex key would have been rejected). Enumerating the file is what makes `usp`/`ssp` — registered in the same pass — checkable at all.",
       "params": { "type": "object" },
       "result": {
         "allOf": [{ "$ref": "#/$defs/replyFields" }],
-        "description": "d0–d7, a0–a7, pc, sp, sr — all hex strings; plus the envelope fields (§2.2 stamp + §2.3 droppedEvents), which are numbers/booleans and are therefore listed explicitly so additionalProperties does not reject them.",
+        "description": "The 68000 architectural register file: d0–d7, a0–a7, pc, sp, usp, ssp, sr — every one a hex string (D9 category 1). The envelope fields (§2.2 stamp, §2.3 droppedEvents) arrive through replyFields and are numbers/booleans; they are NOT listed here, because nothing in this fragment rejects them any more.",
+        "required": ["d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "pc", "sp", "usp", "ssp", "sr"],
         "properties": {
-          "frame": { "type": "integer" },
-          "mclk": { "type": "integer" },
-          "running": { "type": "boolean" },
-          "droppedEvents": { "type": "integer" }
-        },
-        "additionalProperties": { "$ref": "#/$defs/hex" }
+          "d0": { "$ref": "#/$defs/hex" },
+          "d1": { "$ref": "#/$defs/hex" },
+          "d2": { "$ref": "#/$defs/hex" },
+          "d3": { "$ref": "#/$defs/hex" },
+          "d4": { "$ref": "#/$defs/hex" },
+          "d5": { "$ref": "#/$defs/hex" },
+          "d6": { "$ref": "#/$defs/hex" },
+          "d7": { "$ref": "#/$defs/hex" },
+          "a0": { "$ref": "#/$defs/hex" },
+          "a1": { "$ref": "#/$defs/hex" },
+          "a2": { "$ref": "#/$defs/hex" },
+          "a3": { "$ref": "#/$defs/hex" },
+          "a4": { "$ref": "#/$defs/hex" },
+          "a5": { "$ref": "#/$defs/hex" },
+          "a6": { "$ref": "#/$defs/hex" },
+          "a7": { "$ref": "#/$defs/hex", "$comment": "A7 is the ACTIVE stack pointer — the same value as `sp` — because the 68000 selects between usp and ssp by the S bit. Both spellings are carried because both are how people read a register dump; `usp` and `ssp` below are the two banks unconditionally, which is the fact a7/sp cannot express while the S bit is unknown to the reader." },
+          "pc": { "$ref": "#/$defs/hex" },
+          "sp": { "$ref": "#/$defs/hex" },
+          "usp": { "$ref": "#/$defs/hex", "description": "User stack pointer, registered 2026-08-15 (§11.5). Named because the active `sp`/`a7` is only one of the two banks and a debugger cannot tell which without decoding the S bit out of `sr`." },
+          "ssp": { "$ref": "#/$defs/hex", "description": "Supervisor stack pointer. Same registration, same reason." },
+          "sr": { "$ref": "#/$defs/hex" }
+        }
       }
     },
     "emulator/run_to": {
@@ -362,8 +667,12 @@
       },
       "result": {
         "allOf": [{ "$ref": "#/$defs/replyFields" }],
-        "required": ["checkpoints", "truncated"],
+        "$comment": "§2.4's FLAT spelling of the bounded-list rule, used because the list here IS the whole result rather than a field of one: the same field set as $defs/boundedList, as siblings of the array instead of wrapped around it. total/returned/limit registered 2026-08-15 (§11.5). Deliberately not unified onto the nested container — see §2.4's closing paragraph, which is also the one point this amendment says it would not argue with an owner who unified it.",
+        "required": ["checkpoints", "total", "returned", "truncated"],
         "properties": {
+          "total": { "type": "integer", "minimum": 0, "description": "Live checkpoints in total, not on this page." },
+          "returned": { "type": "integer", "minimum": 0, "description": "checkpoints.length, restated so a client can compare it to `total` without counting." },
+          "limit": { "type": "integer", "minimum": 1, "description": "The page ceiling actually applied, which is not necessarily the one the client asked for — a server clamps this to its checkpoint cap." },
           "checkpoints": {
             "type": "array",
             "items": {

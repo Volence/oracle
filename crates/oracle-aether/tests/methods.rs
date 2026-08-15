@@ -108,7 +108,7 @@ fn an_error_reply_is_stamped_too() {
 // ------------------------------------------------------------------ non-negotiable 2
 
 #[test]
-fn arrays_are_bounded_cursored_and_flag_truncation() {
+fn arrays_are_bounded_flag_truncation_and_carry_no_uncursorable_token() {
     let h = spawn("bounded");
     let mut c = Client::connect(&h);
     c.handshake(false);
@@ -124,9 +124,19 @@ fn arrays_are_bounded_cursored_and_flag_truncation() {
     assert_eq!(m["total"], json!(2));
     assert_eq!(m["returned"], json!(2));
     assert_eq!(m["truncated"], json!(false));
-    assert_eq!(m["nextCursor"], json!(null));
     assert!(m["items"].is_array());
     assert!(m["limit"].is_number());
+
+    // **The half this test used to assert the opposite of.** It required a `nextCursor`, because "every
+    // array is bounded, *cursored*, and flags truncation" was a house non-negotiable. Contract §2.4
+    // clause (b) took the middle word out and the reasoning is stronger than the habit was:
+    // `lookup_symbol` accepts no continuation param, so any token it emitted is one the client can never
+    // hand back — it trains clients that handles are ignorable and publishes the server's position for
+    // nothing. Symbol *browsing*, if ever wanted, is a new cursored method and its own change request;
+    // `lookup_symbol` is a resolution primitive, and a client that sees `truncated: true` refines its
+    // prefix.
+    assert!(m.get("cursor").is_none(), "otherMatches: {m}");
+    assert!(m.get("nextCursor").is_none(), "otherMatches: {m}");
 }
 
 #[test]
@@ -196,7 +206,10 @@ fn approximate_answers_carry_a_caveat() {
         json!({"path": lst.display().to_string()}),
     );
     let r = c.ok("emulator/lookup_symbol", json!({"addr": "0x000210"}));
-    assert_eq!(r["name"], json!("EntryPoint+$10"));
+    // `name` is the BARE label; the displacement lives in `disp` and nowhere else. This assertion used to
+    // read `"EntryPoint+$10"`, which §4 now forbids and `$defs/symbolName` rejects by pattern — see
+    // `a_name_from_an_address_lookup_round_trips` for why that was a live defect and not a spelling.
+    assert_eq!(r["name"], json!("EntryPoint"));
     assert_eq!(r["disp"], json!(16));
     assert!(r["caveat"].as_str().unwrap().contains("nearest"));
 }
@@ -505,6 +518,94 @@ fn no_symbols_and_symbol_not_found_are_distinct_codes() {
         c.err("emulator/lookup_symbol", json!({"name": "Nope_Nope"}))["code"],
         json!(-32013)
     );
+}
+
+#[test]
+fn a_name_from_an_address_lookup_round_trips() {
+    // **D7 made executable, and nothing checked it until now.**
+    //
+    // §4: *"`name` is the identifying spelling, and it MUST round-trip. A value a client receives as
+    // `name` MUST resolve to that same symbol when passed back as `lookup_symbol`'s `name` param."* A
+    // contract that tells clients to resolve symbols instead of hardcoding addresses owes them a name
+    // that resolves — and until 2026-08-15 this server did not pay it. The address direction returned
+    // `Resolution`'s Display: the *readable* spelling with a `+$hex` displacement glued on. Measured
+    // before the fix:
+    //
+    // ```
+    // addr->label gave name = 'EntryPoint+$10'  (disp=16, rawName='EntryPoint')
+    //   round-trip name -> ? : REFUSED -32013  no symbol named or prefixed EntryPoint+$10
+    //   rawName round-trips  : 0x00000200
+    // ```
+    //
+    // The field D7 exists to make reliable was the one that did not resolve, and the one that did
+    // (`rawName`) is the one §4 struck as redundant. So this test is the fix's whole point, not its
+    // paperwork.
+    let h = spawn("roundtrip");
+    let mut c = Client::connect(&h);
+    c.handshake(false);
+    let lst = write_lst("roundtrip", LST_UNBOUND);
+    c.ok(
+        "emulator/load_symbols",
+        json!({"path": lst.display().to_string()}),
+    );
+
+    // Every symbol in the fixture, hit exactly and hit past — including the mangled ones, which are the
+    // sharp case: `$engine.boot$EntryPoint$wait_dma` demangles to `EntryPoint.wait_dma`, a spelling three
+    // symbols could share, so a server that put the readable name in `name` would round-trip the wrong
+    // symbol or none at all.
+    for (queried, expected_addr) in [
+        ("0x000200", "0x00000200"),   // exact hit on a plain label
+        ("0x000210", "0x00000200"),   // 16 bytes past it — the case that was broken
+        ("0x000214", "0x00000214"),   // exact hit on a MANGLED label
+        ("0x000219", "0x00000218"),   // one byte past a mangled label
+        ("0xFFFF8CFA", "0x00FF8CFA"), // work RAM, where the listing's spelling is 32-bit
+    ] {
+        let by_addr = c.ok("emulator/lookup_symbol", json!({"addr": queried}));
+        let name = by_addr["name"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{queried}: no `name` in {by_addr}"))
+            .to_string();
+
+        // The displacement is a number in its own field and appears nowhere inside the name string.
+        assert!(
+            !name.contains("+$"),
+            "{queried}: `name` carries a displacement suffix ({name}) — §4 forbids it and \
+             `$defs/symbolName` rejects it by pattern"
+        );
+        assert!(by_addr["disp"].is_number(), "{queried}: {by_addr}");
+
+        // THE ROUND TRIP: hand `name` straight back, unedited, and land on the same symbol.
+        let back = c.ok("emulator/lookup_symbol", json!({"name": name.clone()}));
+        assert_eq!(
+            back["addr"], by_addr["addr"],
+            "{queried}: `name` = {name:?} did not resolve back to the symbol it names.\n  \
+             out: {by_addr}\n  back: {back}"
+        );
+        assert_eq!(back["addr"], json!(expected_addr), "{queried}: {back}");
+        assert_eq!(
+            back["name"], by_addr["name"],
+            "{queried}: the round trip landed on a DIFFERENT symbol with the same address"
+        );
+        // And the round trip is the exact-name branch, not a prefix guess that happened to be right.
+        assert_eq!(back["exact"], json!(true), "{queried}: {back}");
+    }
+
+    // The same promise for a name that arrives inside `otherMatches`: §4 gives those items the same
+    // `name` contract, because that value is what a client hands back to resolve the match.
+    let matches = c.ok("emulator/lookup_symbol", json!({"name": "Play"}));
+    let items = matches["otherMatches"]["items"]
+        .as_array()
+        .expect("otherMatches.items is an array")
+        .clone();
+    assert!(!items.is_empty(), "the fixture must produce matches");
+    for item in items {
+        let name = item["name"].as_str().expect("an item name is a string");
+        let back = c.ok("emulator/lookup_symbol", json!({"name": name}));
+        assert_eq!(
+            back["addr"], item["addr"],
+            "an otherMatches name must resolve to that match's own address: {item}"
+        );
+    }
 }
 
 #[test]

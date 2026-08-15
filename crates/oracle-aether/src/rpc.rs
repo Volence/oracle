@@ -281,22 +281,32 @@ pub fn stamp_result(result: Value, stamp: &Map<String, Value>) -> Value {
     Value::Object(obj)
 }
 
-/// **Non-negotiable #2 (recon §4).** Every array is bounded, cursored, and flags truncation — no
-/// unbounded dumps.
+/// **Non-negotiable #2 (recon §4), narrowed to contract §2.4's bounded-list rule.** Every policy-bounded
+/// list carries `total`, `returned` and `truncated` — `truncated` even when it is `false`, because absence
+/// and `false` must not both mean "you have everything" — plus the `limit` actually applied. No unbounded
+/// dumps.
 ///
 /// `total` is the true size before the bound was applied, so a client always learns what it did not get.
-/// `nextCursor` is the index to pass back to continue; it is `null` exactly when `truncated` is false.
-pub fn bounded_array(items: Vec<Value>, total: usize, cursor: usize, limit: usize) -> Value {
+/// `offset` is how many items of `total` this page starts past, and exists only to make `truncated` come
+/// out right; it is **not** emitted.
+///
+/// **This helper emits no continuation token, and that is the fix rather than an omission.** It used to
+/// return a numeric `cursor`/`nextCursor` pair, which broke two rules at once: §8 item 16 makes every list
+/// cursor on the wire a *string*, and §2.4 clause (b) forbids a method that accepts no cursor param from
+/// emitting one at all — a token the client can never hand back trains clients that handles are ignorable.
+/// Both of this helper's callers wanted it gone. `lookup_symbol` is a resolution primitive with no cursor
+/// param, so §2.4 (b) applies literally; `checkpoint_list` does continue, but its token is an **id**, not
+/// this helper's position, and it already stringified its own — it used the helper's `nextCursor` only as a
+/// boolean, which `truncated` says directly. So continuation belongs to the one caller that can honour it,
+/// and the shared envelope stops publishing a promise it cannot keep.
+pub fn bounded_array(items: Vec<Value>, total: usize, offset: usize, limit: usize) -> Value {
     let returned = items.len();
-    let truncated = cursor + returned < total;
     json!({
         "items": items,
         "total": total,
         "returned": returned,
-        "cursor": cursor,
         "limit": limit,
-        "truncated": truncated,
-        "nextCursor": if truncated { json!(cursor + returned) } else { Value::Null },
+        "truncated": offset + returned < total,
     })
 }
 
@@ -465,15 +475,28 @@ mod tests {
     }
 
     #[test]
-    fn bounded_array_flags_truncation_and_cursors() {
+    fn bounded_array_flags_truncation_and_emits_no_continuation_token() {
         let full = bounded_array(vec![json!(1), json!(2)], 2, 0, 5);
         assert_eq!(full["truncated"], json!(false));
-        assert_eq!(full["nextCursor"], Value::Null);
+        assert_eq!(full["returned"], json!(2));
 
         let cut = bounded_array(vec![json!(1), json!(2)], 9, 0, 2);
         assert_eq!(cut["truncated"], json!(true));
-        assert_eq!(cut["nextCursor"], json!(2));
         assert_eq!(cut["total"], json!(9));
+        assert_eq!(cut["limit"], json!(2));
+
+        // A page that starts past the front is still complete when it reaches the end — this is the only
+        // reason `offset` is a parameter, and it is what `checkpoint_list` feeds from its live slot count.
+        let tail = bounded_array(vec![json!(9)], 3, 2, 5);
+        assert_eq!(tail["truncated"], json!(false));
+
+        // §8 item 16 + §2.4 clause (b): the shared envelope carries NO continuation token, in either
+        // spelling, on either branch. Continuation is the owning method's, because only it knows whether
+        // handing the token back means anything.
+        for page in [&full, &cut, &tail] {
+            assert!(page.get("cursor").is_none(), "{page}");
+            assert!(page.get("nextCursor").is_none(), "{page}");
+        }
     }
 
     #[test]

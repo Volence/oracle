@@ -657,6 +657,73 @@ edited.**
 
 ---
 
+## CR-16 — two fragments were left behind by the CR-13 amendment, and §8 item 20 makes that fatal (2026-08-15)
+
+**Found by implementing §8 item 20 on the day it was written, which is the item working exactly as
+advertised: a sampling instrument would have called this clean.** Item 20 closes every result against its
+schema fragment with `unevaluatedProperties: false` at test time. Wiring it in turned the whole suite red
+on two fragments — and *only* two, out of 22.
+
+**Contract.** §11.5's CR-13 table registers, by name and with conditions:
+
+> **Registered** with conditions: `initialize.limits` and `.methodSummaries` (§2.1); … `read_memory.region`
+> + `symbolDisp?`; …
+
+and §2.4 adds a MUST that points straight at this:
+
+> **A schema fragment, however, MUST declare `caveat` for any method that can emit one**, because §8 item 20
+> closes results against their fragments at test time and an undeclared caveat would fail that check.
+
+**The gap.** Both statements are in the prose; neither reached the schema.
+
+| fragment | declares | the prose registers, and it is missing |
+|---|---|---|
+| `handshake.initialize.result` | `serverName`, `serverVersion`, `protocolVersion`, `capabilities`, `methods`, `timingBasis` | **`limits`**, **`methodSummaries`** |
+| `methods["emulator/read_memory"].result` | `addr`, `len`, `bytes`, `symbol` | **`region`**, **`symbolDisp`**, **`caveat`** |
+
+Twelve fragments *were* updated by `f309cc8` and are complete — `status` carries `romBytes`/`romPath`/
+`symbolsPath`/`symbolDisp`, `run_to` carries `caveat` and `symbolDisp`, `load_symbols`/`read_vram`/
+`screenshot`/`state_hash`/`reload_rom` all carry `caveat`. So this is an omission in a large amendment, not
+a disagreement about design: every key above is one the contract already decided to keep, in the same
+document, in the same commit.
+
+**Why it is registered rather than fixed on our side.** Every one of the five keys is *required* of us by
+the prose that omitted it from the schema. `read_memory.symbolDisp` is §4's own "a displacement is never
+inside a name string" rule applied to this method — deleting it would put us back to concatenating. Nor is
+this a case where the server has a conformant option: the two authorities disagree, D14 makes the schema
+the tiebreaker on shapes, and the schema here says less than the document it is derived from. The
+resolution is five `properties` entries upstream, and the contract repo was **not** edited.
+
+**What we did.** Two entries in `common::schema::KNOWN_CONTRACT_DIVERGENCES`, printed beside the coverage
+report on every run. Each lifts only its own keys out and hands them to a checker that asserts the shape
+**§2.1 and §11.5's prose** gives them — an object of non-empty summary strings, a `limits` object of
+non-negative integers, a non-empty `region` string, a non-negative `symbolDisp`, a `caveat` string. So the
+allowance swaps one authority for another rather than opening a hole, and everything else in both results
+— including item 20's closure over every other key — still runs. `methodSummaries`' key-set equality with
+`methods` (§2.1 rule 2) is asserted separately and unconditionally in
+`tests/handshake.rs::method_summaries_are_derived_from_the_same_registry_and_their_key_set_equals_methods`,
+so the one clause with teeth is not inside the allowance.
+
+**Proposed change.** Five `properties` entries, no new prose:
+
+```json
+"handshake.initialize.result.properties.limits":           {"type": "object"},
+"handshake.initialize.result.properties.methodSummaries":  {"type": "object", "additionalProperties": {"type": "string"}},
+"methods[emulator/read_memory].result.properties.region":     {"type": "string"},
+"methods[emulator/read_memory].result.properties.symbolDisp": {"type": "integer", "minimum": 0},
+"methods[emulator/read_memory].result.properties.caveat":     {"type": "string"}
+```
+
+**This is the raising; the ruling is the owner's.**
+
+> **Worth noting for the ruling, because it is evidence for item 20 rather than against the amendment.**
+> The whole surplus this arc chased was found by *sweeping* — three passes, each calling its own count a
+> floor and each being wrong about how much of a floor. Item 20 replaced that with a gate on its first
+> day, and the first thing the gate caught was a gap in the amendment that created it. Five keys, two
+> fragments, zero sampling.
+
+---
+
 ## Recorded ambiguities (no change requested, but the reading should be confirmed)
 
 **A1 — what error code answers a method sent before `initialize`?** §2.1 says `initialize` is the first

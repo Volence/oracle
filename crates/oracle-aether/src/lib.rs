@@ -19,8 +19,10 @@
 //!    conclusion may be reading four different machine states with no way to detect it. Structural, not
 //!    per-handler: [`rpc::stamp_result`] merges the stamp after the handler returns and overwrites any
 //!    key of the same name, so a handler cannot omit or shadow it.
-//! 2. **Every array is bounded, cursored, and flags truncation** ([`rpc::bounded_array`]). No unbounded
-//!    dumps. Out-of-range bounds are a loud refusal, never a silent clamp.
+//! 2. **Every array is bounded and flags truncation** ([`rpc::bounded_array`]). No unbounded dumps.
+//!    Out-of-range bounds are a loud refusal, never a silent clamp. *Cursored* used to be part of this
+//!    sentence and contract §2.4 clause (b) took it out: continuation belongs to the methods that accept
+//!    a cursor param, and a token the client can never hand back is worse than none.
 //! 3. **Anything approximate carries a `caveat` string** in the payload — a nearest-preceding symbol
 //!    match, a debug read that bypasses the bus, a whole-frame render that is not scanline-accurate, a
 //!    symbol listing that could not be bound to the ROM, a run that ended on its bound instead of its

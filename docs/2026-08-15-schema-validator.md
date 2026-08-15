@@ -264,6 +264,43 @@ proves it **rejects**, and each control names the field it caught:
 
 ---
 
+## Postscript, 2026-08-15 evening: item 20 landed, and calls 3–5 above are all superseded
+
+The contract ruled the surplus (`empyrean` `f309cc8`, `protocol.md` §11.5) and added **§8 item 20**:
+*"A server's conformance suite MUST close every result against its schema fragment."* That changes three
+of the five judgement calls above, and it is worth recording which way:
+
+- **Call 3 is resolved, in our favour on the container and against us on the token.** CR-14's ruling
+  adopted the bounded object (the server's shape *was* the better one) and struck the numeric
+  `cursor`/`nextCursor` under new §2.4 clause (b). So there was no amputation to fear and no ruling to
+  wait for: the entry is deleted, `rpc::bounded_array` stopped minting a token, and `checkpoint_list` —
+  the one caller that can actually honour continuation — owns its own.
+- **Call 4 is retired with the entry it described.**
+- **Call 5 was answered by making the strict verdict the *only* verdict.** `AETHER_STRICT` was never
+  built. Item 20 is a MUST, so closure is unconditional: every result is validated against its fragment
+  composed with `unevaluatedProperties: false` (`common::schema::closed`). An env-gated strict mode would
+  have made conformance opt-in, which is the sampling posture item 20 exists to end.
+
+**What the closure found on its first run, beyond the two failures that were predicted:** exactly one
+thing, and it is upstream. Five keys that §11.5's own prose registers by name never reached their schema
+fragments — `initialize.limits`, `initialize.methodSummaries`, `read_memory.region`,
+`read_memory.symbolDisp`, `read_memory.caveat`. Two fragments out of 22 were left behind by the amendment
+that created item 20. Raised as **CR-16**, registered with per-key checkers that assert what §2.1/§2.4/§11.5
+say those keys are, so the allowance swaps authorities rather than opening a hole.
+
+That is the item's whole argument, measured on day one: three sampling passes each called their own count
+a floor and each was wrong; the gate found the last five keys in a single run, and they were in the
+document rather than in the server.
+
+**The keyword's mechanics are now an executable assertion, not a note.**
+`schema_conformance::the_strict_closure_rejects_a_surplus_key_and_needs_the_unevaluated_keyword_to_do_it`
+compiles the same fragment both ways and asserts that `additionalProperties: false` rejects the
+*conformant* reply on all four envelope fields while `unevaluatedProperties: false` accepts it and catches
+the surplus — so nobody can "simplify" the harness to the obvious keyword without a red test explaining
+why not.
+
+---
+
 ## Files
 
 | | |

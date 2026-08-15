@@ -3,17 +3,22 @@
 //! Four jobs, and only the first is the obvious one:
 //!
 //! 1. **Freshness.** The vendored schema is byte-identical to the contract's copy.
-//! 2. **Coverage, reported and pinned.** The schema is a SEED: it gives a `result` schema for 9 of the 21
-//!    methods we advertise. A harness that validates every reply and does not say that reads as though it
-//!    checks everything. This file prints both lists and pins the uncovered one.
-//! 3. **The divergence registry, reported and kept live.** Two shapes where the server and the schema
+//! 2. **Coverage, reported and pinned.** The schema used to be a SEED, covering 9 of the 21 methods we
+//!    advertise; since the 2026-08-15 re-vendor (`empyrean` `f309cc8`) it covers all 21. The pin stays,
+//!    now guarding the one direction that is left: a newly advertised method joining the unchecked pile
+//!    silently.
+//! 3. **The divergence registry, reported and kept live.** Shapes where the server and the schema
 //!    disagree are registered rather than silenced, each with its CR number, and the report prints
 //!    beside the coverage split so nobody reads a green suite as "fully conformant". An entry that stops
-//!    firing fails `every_registered_divergence_is_still_live`, so the list cannot rot after a ruling.
+//!    firing fails `every_registered_divergence_is_still_live`, so the list cannot rot after a ruling —
+//!    which is exactly how the first two entries it held came to be deleted. It holds CR-16 today, found
+//!    by turning item 20's closure on for the first time.
 //! 4. **Anti-vacuity.** Proof that the validator *rejects*. This repo has twice shipped an assertion that
 //!    passed while testing nothing — a volatility test that was a name grep, an assertion that passed with
 //!    zero enqueues. A validator that accepts everything is exactly that failure wearing a library's
-//!    clothes, and it would be invisible: the suite would be green and the wire unchecked.
+//!    clothes, and it would be invisible: the suite would be green and the wire unchecked. Since §8 item
+//!    20 landed, this carries the closure's own control too: the working keyword is proven to accept a
+//!    conformant reply and catch a surplus key, and the obvious-but-wrong one is proven to do neither.
 
 mod common;
 
@@ -119,31 +124,22 @@ fn the_vendored_schema_is_byte_identical_to_the_upstream_contract() {
 ///
 /// The list did **not** move when `emulator/pixel_attribution` was implemented, and that is the
 /// mechanism working rather than a gap: CR-10 put the fragment in the contract *first*, so the method
-/// arrived already schematized and the covered count went 8 → 9 while this list stayed at 12. The other
-/// direction — a method landing here — is the one that means a fragment is owed.
+/// arrived already schematized and the covered count went 8 → 9 while this list stayed at 12.
 ///
-/// Writing the 12 missing fragments is explicitly *not* this slice's job. The probe
-/// (`docs/2026-08-15-wire-conformance-probe.md`, finding F4) measured ~10 methods emitting result keys
-/// that appear in no contract text; writing schemas from what this server emits would encode the
-/// implementation as the contract — the exact inversion of "the contract leads; the implementation
-/// follows it, never the reverse" (§8). That needs a change request and an owner ruling first.
-const UNCOVERED_METHODS: &[&str] = &[
-    "emulator/hold",
-    "emulator/load_symbols",
-    "emulator/pause",
-    "emulator/read_vram",
-    "emulator/release_all",
-    "emulator/reload_rom",
-    "emulator/resume",
-    "emulator/run_frames",
-    "emulator/screenshot",
-    "emulator/state_hash",
-    "emulator/status",
-    "emulator/press",
-];
+/// **It is now empty, and it emptied the right way round.** Writing the 12 missing fragments was
+/// explicitly not this harness's job — writing schemas from what this server emits would encode the
+/// implementation as the contract, the exact inversion of "the contract leads" (§8). So they were raised
+/// as CR-13, the contract ruled every key on its merits (`empyrean` `f309cc8`, `protocol.md` §11.5:
+/// registered, restructured, or **struck**), and the 12 fragments arrived upstream. Coverage went 9 → 21
+/// because the contract moved first, which is the only direction that counts.
+///
+/// The pin stays, and it now guards the one remaining direction: a **newly advertised** method would join
+/// this list silently, arriving on the wire with nothing checking its result shape and nothing saying so.
+/// An empty expectation makes that failure loud on the first run.
+const UNCOVERED_METHODS: &[&str] = &[];
 
 #[test]
-fn the_schema_covers_9_of_the_21_methods_we_advertise_and_the_uncovered_list_is_pinned() {
+fn the_schema_covers_every_method_we_advertise_and_the_uncovered_list_is_pinned_empty() {
     let advertised: Vec<&str> = METHODS.iter().map(|m| m.name).collect();
     let schematized = schemas().methods_with_result();
 
@@ -193,10 +189,11 @@ fn the_schema_covers_9_of_the_21_methods_we_advertise_and_the_uncovered_list_is_
     );
     println!(
         "  => envelope coverage 100% of lines; result coverage {}/{} methods. \
-         Every line is checked against `anyMessage`; a reply to one of the UNCOVERED methods gets the \
-         envelope and nothing more.",
+         Every line is checked against `anyMessage`; a reply to an UNCOVERED method would get the \
+         envelope and nothing more — there are {} of those.",
         covered.len(),
-        advertised.len()
+        advertised.len(),
+        uncovered.len()
     );
 
     // The registry prints HERE, beside the coverage split, and not in a test of its own — because the
@@ -210,8 +207,10 @@ fn the_schema_covers_9_of_the_21_methods_we_advertise_and_the_uncovered_list_is_
         println!("    {line}");
     }
     println!(
-        "  => this server is NOT fully schema-conformant. A green suite means \"no unregistered \
-         divergences\", which is a weaker and more useful claim."
+        "  => this server is NOT fully schema-conformant. A green suite means \"no UNREGISTERED \
+         divergences\", which is a weaker and more useful claim — and since §8 item 20 landed it is a \
+         much sharper one: every result is closed against its fragment, so an unknown key is a red \
+         test rather than a shape nobody sampled."
     );
 
     let mut expected_uncovered = UNCOVERED_METHODS.to_vec();
@@ -249,11 +248,13 @@ fn every_registered_divergence_is_still_live() {
     // Liveness is keyed to the schema rather than to observed traffic on purpose. Counting live firings
     // would only see the messages the binary that owns the counter happened to produce — precisely the
     // sampling weakness that let CR-14 through a 33-message probe of a live server.
-    assert!(
-        !KNOWN_CONTRACT_DIVERGENCES.is_empty(),
-        "an empty registry would make this test vacuous; if the last divergence was ruled on and \
-         removed, delete this assertion deliberately"
-    );
+    //
+    // The non-emptiness assertion that used to stand here is gone, deliberately: its own comment asked
+    // for exactly that ("if the last divergence was ruled on and removed, delete this assertion"), CR-14's
+    // ruling is the event it was written for, and a registry that is empty for a day should not have to
+    // fake an entry to keep a test honest. The anti-vacuity job it was doing has moved somewhere it holds
+    // whether the list is empty or not: `the_strict_closure_rejects_a_surplus_key_and_needs_the_…`
+    // proves the validator still bites. (The list is not empty today — CR-16 landed the same afternoon.)
     for d in KNOWN_CONTRACT_DIVERGENCES {
         let (line, method) = (d.canonical)();
 
@@ -274,16 +275,20 @@ fn every_registered_divergence_is_still_live() {
         // For one that falls out at the root `oneOf` (CR-15) the failure text embeds the whole instance,
         // so the key name is present either way and this proves little. The load-bearing assertions are
         // the two either side of it; this one only catches an entry whose path is outright unrelated.
+        // An entry may name several keys (`"$.region, $.symbolDisp, $.caveat"`), and EVERY one of them
+        // must show up — a divergence that listed three keys and tripped over one would otherwise pass
+        // while two-thirds of it went unproven.
         let failures = strict.unwrap_err();
-        let key = d.path.trim_start_matches("$.");
-        assert!(
-            failures.iter().any(|f| f.contains(key)),
-            "{} ({} {}) diverges, but `{key}` appears nowhere in the failure — the entry may be \
-             describing one bug while its canonical message trips over another.\n  failures: {failures:#?}",
-            d.cr,
-            d.method,
-            d.path
-        );
+        for key in d.path.split(',').map(|k| k.trim().trim_start_matches("$.")) {
+            assert!(
+                failures.iter().any(|f| f.contains(key)),
+                "{} ({} {}) diverges, but `{key}` appears nowhere in the failure — the entry may be \
+                 describing one bug while its canonical message trips over another.\n  failures: {failures:#?}",
+                d.cr,
+                d.method,
+                d.path
+            );
+        }
 
         check_incoming(&line, method).unwrap_or_else(|e| {
             panic!(
@@ -537,46 +542,119 @@ fn the_null_id_allowance_is_exactly_as_wide_as_json_rpc_2_0_requires_and_no_wide
 }
 
 #[test]
-fn the_othermatches_divergence_is_swapped_for_the_house_shape_not_left_unchecked() {
-    // ALSO FOUND BY THIS VALIDATOR, independently of and concurrently with the main session's re-probe,
-    // which registered the same defect as CR-14 / probe finding F5. Two instruments reaching it from
-    // opposite directions — a hand-driven probe that widened its sample, a validator that inherited the
-    // suite's — is corroboration; it is not two findings.
+fn the_strict_closure_rejects_a_surplus_key_and_needs_the_unevaluated_keyword_to_do_it() {
+    // **Contract §8 item 20, and its own anti-vacuity control.** Two claims, and the second is the one
+    // that was got wrong upstream before it was got right — so it is reproduced here rather than trusted.
     //
-    // The first probe missed it because `otherMatches` is emitted only on the *partial-match* path (a
-    // prefix hit, or an ambiguous demangled name), and that run called `lookup_symbol` with a name that
-    // resolves to nothing, so it only ever exercised the error path. Probe finding F1 — "the only
-    // schema-level failure on the live wire is the checkpoint `id`" — is therefore a floor, not a result.
+    // Claim 1: a conformant reply passes, and the same reply with one invented key does not. This is the
+    // whole of item 20: "an unknown key on the wire is a change request, never a shipment".
+    let good = good_read_memory_reply();
+    check_incoming(&good, Some("emulator/read_memory")).expect("a conformant reply must pass");
+
+    let mut surplus = good.clone();
+    surplus["result"]["stoppedAtVibes"] = json!(7);
+    rejects(&surplus, Some("emulator/read_memory"), "stoppedAtVibes");
+
+    // Claim 2, the mechanics: `additionalProperties: false` would have rejected the CONFORMANT reply, not
+    // the surplus one, because in draft 2020-12 it sees only its own `properties` and never those an
+    // adjacent `allOf` contributes — and every fragment pulls the stamp (§2.2) and `droppedEvents` (§2.3)
+    // in through `allOf: [{"$ref": "#/$defs/replyFields"}]`. Asserting this here means the harness cannot
+    // be "simplified" to the obvious keyword without a red test explaining why not.
+    let mut fragment = common::schema::schema_root()["methods"]["emulator/read_memory"]["result"]
+        .as_object()
+        .expect("the fragment is an object")
+        .clone();
+    fragment.insert(
+        "$schema".into(),
+        json!("https://json-schema.org/draft/2020-12/schema"),
+    );
+    fragment.insert(
+        "$defs".into(),
+        common::schema::schema_root()["$defs"].clone(),
+    );
+
+    let mut wrong = fragment.clone();
+    wrong.insert("additionalProperties".into(), json!(false));
+    let wrong = jsonschema::validator_for(&Value::Object(wrong)).expect("compiles");
+    let envelope_fields: Vec<String> = wrong
+        .iter_errors(&good["result"])
+        .map(|e| e.to_string())
+        .collect();
+    assert!(
+        !envelope_fields.is_empty(),
+        "additionalProperties:false was expected to reject the conformant reply — if it no longer does, \
+         the fragments stopped composing their envelope through `allOf` and item 20's note is stale"
+    );
+    for f in ["frame", "mclk", "running", "droppedEvents"] {
+        assert!(
+            envelope_fields.iter().any(|e| e.contains(f)),
+            "additionalProperties:false must reject `{f}` — that is the defect item 20 documents. \
+             errors: {envelope_fields:#?}"
+        );
+    }
+
+    let mut right = fragment;
+    right.insert("unevaluatedProperties".into(), json!(false));
+    let right = jsonschema::validator_for(&Value::Object(right)).expect("compiles");
+    assert!(
+        right.is_valid(&good["result"]),
+        "unevaluatedProperties:false must ACCEPT the conformant reply — it is the keyword that sees \
+         across applicators, which is the whole reason item 20 names it"
+    );
+    assert!(
+        !right.is_valid(&surplus["result"]),
+        "...and must still catch the surplus key"
+    );
+}
+
+#[test]
+fn othermatches_is_the_bounded_container_the_contract_pins_and_carries_no_cursor() {
+    // **What is left of the CR-14 fence, re-aimed at the ruled shape.** The test this replaces asserted
+    // the *un-ruled* shape under an allowance, which was the honest thing to do while a ruling was
+    // pending and is the wrong thing to do now that one has landed (`empyrean` `f309cc8`, §4 + §2.4).
     //
-    // The schema types `otherMatches` as an array of strings and §4's prose agrees; we emit the house
-    // bounded/cursored object with `{name, demangled, addr}` items. This test is the fence around the
-    // allowance: it must CHECK the key against the house shape, not skip it. Exempting `lookup_symbol`
-    // from validation would leave `truncated` — the one field the non-negotiable exists for — unguarded
-    // for however long the ruling takes.
+    // The history is worth keeping because of how the defect was found: `otherMatches` is emitted only on
+    // the partial-match paths, and the 33-message probe that opened this arc called `lookup_symbol` with a
+    // name resolving to nothing, so it only ever drove the error path. Probe finding F1 — "the only
+    // schema-level failure on the live wire is the checkpoint id" — was a floor, not a result. That is the
+    // sampling weakness §8 item 20 replaces with a gate.
     let ok = json!({"jsonrpc":"2.0","id":3,"result":{
-        "name":"Player_1","addr":"0x00FF8CFA",
+        "query":"Play","exact":false,
         "otherMatches":{"items":[{"name":"Player_2","addr":"0x00FF8D4A"}],
-                        "total":2,"returned":1,"cursor":0,"limit":5,"truncated":true,"nextCursor":1},
+                        "total":2,"returned":1,"limit":5,"truncated":true},
         "frame":0,"mclk":0,"running":false,"droppedEvents":0}});
     check_incoming(&ok, Some("emulator/lookup_symbol"))
-        .expect("the shape this server actually emits must pass");
+        .expect("the ruled container shape must pass");
 
-    // A bare array — what the SCHEMA asks for — is now the thing that fails, because the allowance
-    // hands this key to the house checker. That asymmetry is exactly the CR: the two authorities want
-    // different objects and the harness cannot honour both.
+    // A bare array of strings — what the schema asked for BEFORE the ruling — is now rejected. CR-14 was
+    // the first divergence where the server's shape was the better one, and this is the ruling landing.
     let mut bare = ok.clone();
     bare["result"]["otherMatches"] = json!(["Player_2"]);
-    rejects(&bare, Some("emulator/lookup_symbol"), "not an object");
+    rejects(&bare, Some("emulator/lookup_symbol"), "otherMatches");
 
-    // And a bounded array that lost its truncation flag is caught — the allowance is a swap of
-    // authority, not a hole. `truncated` is the one field the whole non-negotiable exists for: without
-    // it a client cannot tell a complete list from a partial one.
+    // §2.4 clause (a): losing `truncated` is losing the one field the whole rule exists for.
     let mut lost = ok.clone();
     lost["result"]["otherMatches"]
         .as_object_mut()
         .unwrap()
         .remove("truncated");
     rejects(&lost, Some("emulator/lookup_symbol"), "truncated");
+
+    // §2.4 clause (b) / §8 item 16: `lookup_symbol` accepts no continuation param, so a token it emits is
+    // one the client can never hand back. The schema spells this `"cursor": false` / `"nextCursor": false`
+    // rather than leaving it to prose, and both spellings are fenced.
+    for token in ["cursor", "nextCursor"] {
+        let mut with_token = ok.clone();
+        with_token["result"]["otherMatches"][token] = json!(1);
+        rejects(&with_token, Some("emulator/lookup_symbol"), token);
+    }
+
+    // One item shape, closed. A branch-specific extra key is exactly the "which branch am I on?" problem
+    // §4 struck, and `items[]` closes with `additionalProperties` legally — that subschema has no `allOf`
+    // for the keyword to be blind past.
+    let mut odd_item = ok.clone();
+    odd_item["result"]["otherMatches"]["items"][0]["rawName"] = json!("Player_2");
+    rejects(&odd_item, Some("emulator/lookup_symbol"), "rawName");
 
     // The rest of the result is still the schema's business. `addr` is `$defs/hex`.
     let mut bad_addr = ok.clone();
