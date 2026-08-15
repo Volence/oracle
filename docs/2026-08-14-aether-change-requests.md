@@ -355,7 +355,13 @@ than flattering.
 pins two of its members against each other: **`step`** is *"a `step` / `step_over` / `step_out`
 completed. One instruction, or one instruction-shaped unit. It is **not** the value for a frame
 advance."* **`runFrames`** is *"an `emulator/run_frames(n)` ran to completion."* §6 catalogs
-`emulator/press | buttons, port?, frames? | buttons, frames, port, frameToken`.
+`emulator/press | buttons[], frames? (1–1000, def 2) | buttons, frames, frameToken`.
+
+> **Corrected on review.** This paragraph first quoted the row as carrying `port` in both its params and
+> its result. It does not — `port` appears nowhere in §6, and we emit and accept it anyway. That is not a
+> slip in this CR so much as a symptom of the thing **CR-13** below documents: a field we have been putting
+> on the wire long enough that it reads as catalogued. The argument below is unaffected; `buttons` alone
+> still distinguishes a `press` reply from a `run_frames` one.
 
 **The gap.** `emulator/press` advances whole **frames** — it holds the buttons down, runs `frames` of
 them, then restores the held set — and then stops. That completion is none of the eight. It is not a
@@ -392,6 +398,100 @@ should have to lose.
 Option 2 costs a sentence and closes the question. Option 1 costs an enum value and additionally lets
 the stream carry the fact that an input was injected — which is the half option 2 gives up. **This is the
 raising; the ruling is the owner's.** The contract repo was not edited.
+
+---
+
+## CR-10 — no method is keyed by a screen coordinate, so pixel attribution is panel-only (2026-08-15)
+
+Drafted in full in **`docs/2026-08-15-pixel-attribution-bus-method.md`** §2, with a paste-ready schema
+fragment, and **RULED "adopt with changes"** in `docs/2026-08-15-fable-ruling-attribution.md`. Summarised
+here only so this register stays the single index of what has been raised.
+
+**The gap.** `oracle_core::vdp::Vdp::pixel_attribution` is consumed by our own player and by nothing else;
+§6's *VRAM / CRAM / layers* table has eight rows and none is coordinate-shaped. That is a live §8 item 19
+violation, and the sweep that found it found **three more** (the watchpoint surface — CR-11/CR-12 below —
+SAT/sprite decode, and `sprite_tile_at`, which is not even in `oracle-core`).
+
+**Proposed change.** One row, `emulator/pixel_attribution | x, y | …`, plus the schema fragment.
+
+**Numbering note.** This was drafted as "CR-9" and renumbered: a *different* CR-9 (the `press` reason,
+above) was committed **one minute later** by a concurrent agent. Recorded because a register whose numbers
+silently collide is worse than one with a gap.
+
+---
+
+## CR-11 / CR-12 — the watchpoint surface (2026-08-15, drafting)
+
+Reserved for the largest of the four item-19 violations: watch **hit reading**, the **drop count**, and
+**VDP-internal-space range watches**, none of which §6's single `watchpoint_add | addr|symbol, read?,
+write? | addr` row can express. Directed as the next design pass by the CR-10 ruling. Drafted in
+`docs/2026-08-15-watchpoint-bus-surface.md`.
+
+---
+
+## CR-13 — ten methods put result keys on the wire that appear in no contract text (2026-08-15)
+
+**This is CR-8's offence at scale, and like CR-8 it is a self-report.**
+
+**Contract.** §6's catalog gives each method a params/result row, and §8 forbids the emulator side to
+*"invent new ops not in this spec, design its own envelope, or start a second parser."* CR-4 established
+that an **optional additive field** on a catalogued method is not a new op — but CR-8 established the other
+half: a field that reaches the wire with **no trace in any document** is a deviation whether or not it is a
+good field, and it must be recorded.
+
+**The gap, measured rather than recalled.** A live server was driven through 33 messages and every result's
+key set diffed against §6's row for that method; each surplus key was then confirmed absent from
+`protocol.md` by grep. Full method and evidence in `docs/2026-08-15-wire-conformance-probe.md` (finding F4).
+
+| method | §6's row | we also emit |
+|---|---|---|
+| `initialize` | §2.1's listed keys | `limits`, `methodSummaries` |
+| `emulator/status` | `running,pc,sp,sr,symbolAtPc?,frameToken,symbolCount,romLoading?` | `romBytes`, `romPath`, `symbolsPath` |
+| `emulator/read_memory` | `addr,len,bytes,symbol?` | `caveat`, `region` |
+| `emulator/read_vram` | `addr,len,bytes` | `caveat` |
+| `emulator/state_hash` | `vram,cram,vsram,regs,combined,framebuffer?` | `caveat` |
+| `emulator/press` | `buttons,frames,frameToken` | `port` (and `port` as an undocumented **param**) |
+| `emulator/hold` | `buttons,down` | `port`, `held` |
+| `emulator/pause` / `emulator/resume` | *(no result)* | `wasRunning` |
+| `emulator/release_all` | *(no result)* | `released` |
+| `emulator/checkpoint_list` | `checkpoints[],cursor?,truncated` | `total`, `returned`, `limit` |
+| `emulator/run_to` | `target,reached,pc,maxFrames,symbol?,symbolDisp?,caveat?` | `stoppedAtFrame`, `stoppedAtMclk` |
+
+The count is a **floor**: only 33 messages were sampled, and `screenshot`, `reload_rom` and `load_symbols`
+were not among them. (`load_symbols` is separately known to return `binding`, `moduleCount` and a `caveat`
+beyond its row.)
+
+**Why nothing caught it.** The schema has no `additionalProperties: false` anywhere, **12 of the 20 methods
+we advertise have no `result` schema at all**, and until today nothing validated our replies against the
+schema in the first place. The one place the drift is already visible in this very document is CR-9's
+opening paragraph, which quoted `port` as though §6 catalogued it.
+
+**What we did.** Nothing yet — deliberately. This is raised before any of the 12 missing schema fragments
+are written, because writing them **from what this server emits** would encode the implementation as the
+contract, which is the exact inversion of *"the contract leads; the implementation follows it, never the
+reverse."* The source for a fragment is §6's row; every key beyond that row is a change request first.
+
+**Proposed change.** Rule on the ten as a block, and expect the answer to be **register, not remove** —
+several are load-bearing and deleting them would be conforming by amputation:
+
+- `caveat` is **D12's own device** (*"a `caveat` string stating in words that nothing about the machine's
+  state follows"*) applied to reads. If it is right for `run_to` it is right for a truncated read.
+- `total` / `returned` / `limit` are the house bounded-array envelope, which §6.1 relies on for the rule
+  that *"a client must never be handed a partial list it can mistake for a complete one."*
+- `wasRunning` is what lets a client make `pause` idempotent without a second round-trip.
+- `limits.maxRunFrames` is how a hosted server advertises that it **refuses rather than clamps** above 120
+  frames — a client cannot discover that any other way.
+- `port` is the two-controller surface, which the catalog simply never grew.
+
+Three that deserve a harder look rather than a rubber stamp: `methodSummaries` (D4 makes `methods`
+authoritative — is a second, richer list a second source of truth?), `stoppedAtFrame`/`stoppedAtMclk` on
+`run_to` (D11 already stamps every reply with `frame`/`mclk`; are these the *same numbers* under different
+names, and if so they should go), and `romBytes`/`romPath` (a path is host filesystem state on a bus whose
+trust model is deliberately local-only — fine, but it should be said).
+
+**And one structural ask.** Once the ten are ruled on, adding `"additionalProperties": false` to the
+schematized result objects would make the next such drift **impossible to ship**, rather than discoverable
+by a 33-message probe. That is a bigger change than this CR and is named, not proposed.
 
 ---
 
