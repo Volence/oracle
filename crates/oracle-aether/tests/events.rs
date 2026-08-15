@@ -47,7 +47,15 @@ fn events_reach_a_subscriber_and_carry_the_stamp() {
                 stopped += 1;
                 assert_eq!(v["params"]["running"], json!(false), "{v}");
                 assert!(v["params"]["pc"].as_str().unwrap().starts_with("0x"));
-                assert!(v["params"]["reason"].is_string());
+                // §3 / §8 item 13: a completed `run_frames` is `runFrames` — **not** `step`, which §3
+                // pins as one instruction-shaped unit and explicitly "not the value for a frame
+                // advance". Reporting the nearest-looking value is a knowing mislabel, and a client
+                // watching the stream is the one consumer that cannot undo it.
+                assert_eq!(v["params"]["reason"], json!("runFrames"), "{v}");
+                // The two additive params §3 pins with it: `frames` is REQUIRED when the reason is
+                // `runFrames`, and `deadlineReached` is always `true` there.
+                assert_eq!(v["params"]["frames"], json!(1), "{v}");
+                assert_eq!(v["params"]["deadlineReached"], json!(true), "{v}");
             }
             other => panic!("unexpected event {other}"),
         }
@@ -57,6 +65,46 @@ fn events_reach_a_subscriber_and_carry_the_stamp() {
         (1, 1),
         "one run = one resumed + one stopped"
     );
+}
+
+#[test]
+fn a_press_reports_runframes_because_step_is_the_one_value_section_3_rules_out() {
+    // `emulator/press` advances whole **frames**, so §3's pinning of `step` — "one instruction, or one
+    // instruction-shaped unit … **not** the value for a frame advance" — makes `step` affirmatively
+    // wrong here. `runFrames` is merely *imprecise*: this was not an `emulator/run_frames` call. The
+    // enum is closed, so a new value cannot be emitted unilaterally (§8), and between a value the
+    // contract rules out and the nearest admissible one, the nearest admissible one wins.
+    //
+    // The residual gap — §3 has no value for "a bounded frame advance driven by `press` completed" — is
+    // registered as **CR-9** in `docs/2026-08-14-aether-change-requests.md`. If the owner rules for an
+    // explicit `press` reason, this assertion is where the change lands.
+    let h = spawn_with("evpress", rom(), 1024);
+    let mut c = Client::connect(&h);
+    c.handshake(true);
+    c.send_raw(
+        &json!({"jsonrpc":"2.0","id":902,"method":"emulator/press",
+                "params":{"buttons":["start"],"frames":2}})
+        .to_string(),
+    );
+    let mut stopped: Option<Value> = None;
+    loop {
+        let v = c.recv();
+        if v["id"] == json!(902) {
+            break;
+        }
+        if v["method"] == json!("emulator/stopped") {
+            stopped = Some(v);
+        }
+    }
+    let s = stopped.expect("a press emits exactly one emulator/stopped");
+    assert_eq!(s["params"]["reason"], json!("runFrames"), "{s}");
+    assert_ne!(
+        s["params"]["reason"],
+        json!("step"),
+        "a frame advance is never `step` (§3)"
+    );
+    assert_eq!(s["params"]["frames"], json!(2), "{s}");
+    assert_eq!(s["params"]["deadlineReached"], json!(true), "{s}");
 }
 
 #[test]

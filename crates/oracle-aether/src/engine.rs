@@ -850,12 +850,15 @@ impl Engine {
         self.advance(frames);
         self.running = false;
         let pc = self.sys.cpu_regs().pc;
-        // CR-1: §3's `reason` enum has no value for "a bounded frame advance completed", so this reports
-        // the nearest listed reason and puts the precise one in an additive field.
+        // §3, §8 item 13: a completed `run_frames` is **`runFrames`**, not the nearest-looking `step`.
+        // (CR-1 raised the gap — the enum had no value for a bounded frame advance — and was adopted on
+        // 2026-08-14 as exactly this spelling, matching the existing `runTo`/`runToScanline`.) §3 pins
+        // the two additive params with it: `frames` is REQUIRED here, and `deadlineReached` is always
+        // `true`, the bound being the frame count itself.
         let mut extra = Map::new();
         extra.insert("frames".into(), json!(frames));
         extra.insert("deadlineReached".into(), json!(true));
-        self.emit_stopped("step", pc, extra);
+        self.emit_stopped("runFrames", pc, extra);
         Ok(json!({
             "frames": frames,
             "frameToken": self.frame(),
@@ -1067,10 +1070,19 @@ impl Engine {
         // button the client is separately holding (nor one the human is physically holding).
         self.apply_pads();
         let pc = self.sys.cpu_regs().pc;
+        // A tap advances whole **frames**, so `step` is affirmatively wrong: §3 pins it as "one
+        // instruction, or one instruction-shaped unit … **not** the value for a frame advance".
+        // `runFrames` is merely imprecise — this was not an `emulator/run_frames` call — and the enum is
+        // closed, so emitting a new value unilaterally is the invention §8 forbids. Between a value §3
+        // rules out and the nearest admissible one, the nearest admissible one wins: a client watching
+        // the stream sees "a bounded frame advance completed", which is true, instead of "an instruction
+        // completed", which is not. The residual ambiguity — *which method* drove the advance — is
+        // raised as CR-9 (`docs/2026-08-14-aether-change-requests.md`) and is the owner's to rule on;
+        // this comment is the record of the choice, not a licence to keep it if the ruling differs.
         let mut extra = Map::new();
         extra.insert("frames".into(), json!(frames));
         extra.insert("deadlineReached".into(), json!(true));
-        self.emit_stopped("step", pc, extra);
+        self.emit_stopped("runFrames", pc, extra);
         Ok(json!({
             "buttons": buttons,
             "frames": frames,
