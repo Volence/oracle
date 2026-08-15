@@ -149,6 +149,51 @@ is 0.37 s. I had guessed `ctags` over 20+ worktrees would dominate. It does not.
 
 ---
 
+## 6b. Overnight (delegated, 2026-08-15)
+
+**Per-scanline goldens** (`ada89dc`) — additive, as planned. `tests/scanline_goldens.rs` hashes the last
+complete frame *as the VDP drew it* and compares against a post-hoc hash from the same run. Rows that
+diverge pin a live hash; rows that don't **pin nothing** and assert the equality instead, so they stay
+machine-checked without adding to anyone's amendment burden. **Zero deleted lines in the whole commit**;
+all 25 `conformance_roms.rs` literals byte-identical; `golden_frames.rs` and `src/` untouched.
+
+Three findings beyond the brief:
+
+- **The blindness was broader than "raster effects".** 6 of 17 ROMs diverge, by *three* mechanisms where
+  only one was anticipated. The broadest is **vblank updates that postdate the frame** —
+  `shadow_highlight` makes **zero** active-display writes and 18 vblank writes per frame, so any ROM
+  that merely does its VDP work in vblank was hashed wrong. No raster trick required.
+  `window_distortion` is the tightest case: **one** R17 write at line 111 makes 112 lines wrong.
+- **★ The conformance scorecard may be understating us.** `vdp_sprite_masking` test 6 reads **FAIL
+  post-hoc and PASS live** — the 8 divergent lines land exactly on the rectangle the glyph classifier
+  reads. And the ledger credits *both* of that ROM's failures to P1, which owns at most one.
+- **Adjudicated with a Fable pass and deliberately left unfixed** as `F-POSTHOC-STALE-CARRY`. The
+  harness is non-gating; the "one-line fix" hides an instrument redesign (the glyph constants are
+  themselves pinned from post-hoc pixels). Both readings now sit side by side as an exhibit, with a
+  warning on the row: **do not "fix" the emulator until the post-hoc render agrees** — that would mean
+  breaking correct carry-seeding to satisfy a broken instrument.
+
+`golden_frames.rs` got no live coverage and *cannot* — its scenes are static `Vdp` fixtures with no
+machine to run, so per-scanline capture is not merely unimplemented there but meaningless.
+
+**Player polish** (`683f67f`) — driven entirely by what real play exposed.
+
+- **Sprite/backdrop picking**, the gap hit in the first minutes. A sprite click arms both the VRAM
+  pattern that drew that dot *and* the sprite's SAT entry. 205 of 4480 sampled dots in one S3K frame are
+  sprites. The test refuses to restate the addressing arithmetic: it checks, for every dot of 7 sprite
+  sizes × 4 flips, that the tile it names is the tile the **core's own renderer** drew from.
+- **On-screen feedback** — volume, mute, pause, slot, filter revision, save/load all previously went
+  only to stdout, which a windowed user never sees. Self-contained 5×7 font, no new dependency;
+  `println!` output byte-unchanged; toasts de-duplicate and expire on the *presented* frame clock.
+  `PAUSED` is load-bearing now that paused frames re-present a retained buffer.
+- **Resizable window, correct aspect** (4:3 default — a real console puts H32's 256 dots and H40's 320
+  across the same TV width). **A latent bug fixed in passing:** the old `window_to_native` was correct
+  only by coincidence, agreeing with minifb's stretch at exactly one window size, and would have
+  mis-mapped every click the moment the window could be dragged.
+- **Fullscreen deliberately skipped**, reason recorded: minifb 0.28 has no runtime fullscreen call, no
+  `set_size`, no screen-dimension query; the only route is recreating the `Window` mid-loop.
+  `resize: true` delegates to the window manager.
+
 ## 7. Next
 
 1. **Per-scanline goldens** (in flight) — additive, zero currency movement.
