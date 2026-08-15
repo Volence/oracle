@@ -188,6 +188,23 @@ const BASELINE: &[(&str, &str)] = &[
         "page1 pass/fail/total=9/0/9; pages1+2 cumulative=16/0/16",
     ),
     (
+        // **`6=FAIL` is measured to be an artefact of this scraper, NOT an emulator inaccuracy (2026-08-15).**
+        // `block_hash` classifies the verdict glyphs through the post-hoc `Vdp::render_line`, which re-seeds
+        // R10 sprite masking from a STALE `sprite_dot_overflow_carry` (`Vdp::report_rgb`'s own doc comment
+        // says re-resolving after `render_scanline` "would be wrong"). Through the LIVE per-scanline path the
+        // same glyph reads **PASS**; the other eight glyphs are identical through both paths, and this ROM
+        // makes zero VDP accesses after frame 7, so nothing mid-frame is involved. Proven by replaying the
+        // stateful path over the settled machine: it reproduces the live picture exactly, the pure path does
+        // not. The live frame is pinned as separate currency in `tests/scanline_goldens.rs`.
+        //
+        // The row is left as-is ON PURPOSE. This harness is non-gating, so a wrong pin blocks nothing, and
+        // switching the scraper is not a one-line change — the four glyph constants below are themselves
+        // pinned from post-hoc pixels and `block_hash` re-renders from settled state at any stop point, so a
+        // live-path scrape needs a frame-aligned capture and a decision about which frame. See
+        // `F-POSTHOC-STALE-CARRY` and `docs/2026-08-15-scanline-golden-coverage.md`.
+        //
+        // **Do not "fix" the emulator until the post-hoc render says PASS** — that would mean breaking the
+        // correct live carry-seeding to satisfy a broken instrument.
         "vdp_sprite_masking",
         "H32: 1=TICK/TICK 2=TICK/TICK 3=TICK/CROSS 4=PASS 5=PASS 6=FAIL 7=PASS 8=PASS 9=TICK/TICK",
     ),
