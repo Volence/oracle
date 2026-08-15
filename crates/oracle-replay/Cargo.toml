@@ -1,0 +1,21 @@
+[package]
+name = "oracle-replay"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "Headless runner for Aeon's embedded input-replay regression net — boots the DEBUG ROM, arms the stream, and reports PASS / DESYNC / FAULT / TIMEOUT with an exit code."
+
+# One dependency, deliberately. `oracle-core`'s charter is "deterministic, no-I/O" with `bincode` as its
+# single dependency, so file loading cannot live there — `oracle-aether` is the standing precedent for
+# "this needs I/O, so it lives outside core". Argument parsing is hand-rolled for the same reason: a gate
+# artifact another repo invokes by path should not drag a dependency tree behind it.
+#
+# **Zero changes to `oracle-core`.** Every primitive this crate needs is already public (`boot_with_sink`,
+# `run_until_stop`, `mega_bus`, `ram`, `rom`, `cpu_regs`, `symbols`), so currency-neutrality is structural
+# rather than merely tested. Verify with `cargo tree -p oracle-core --depth 1` (bincode, and nothing else).
+[dependencies]
+oracle-core = { path = "../oracle-core" }
+
+[[bin]]
+name = "replay_runner"
+path = "src/main.rs"

@@ -879,6 +879,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "oracle-replay"
+version = "0.0.0"
+dependencies = [
+ "oracle-core",
+]
+
+[[package]]
 name = "orbclient"
 version = "0.3.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
