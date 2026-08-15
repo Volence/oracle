@@ -20,6 +20,13 @@ gilrs = { version = "0.11", optional = true }
 # the run loop identical either way.
 oracle-aether = { path = "../oracle-aether", optional = true }
 
+[dev-dependencies]
+# TEST-ONLY, and only reached under the `aether` feature: `pick.rs`'s bus-parity tests read the JSON the
+# Aether handler returns, so they need to index a `Value`. It is not a runtime dependency of the player —
+# the frontend links serde_json only via the optional `oracle-aether`, and a `--no-default-features`
+# build has neither.
+serde_json = "1"
+
 [features]
 default = ["audio", "gamepad", "aether"]
 # Turns on the core's native synth (AudioSink), the SPSC-ring substrate, and the cpal host output stream.

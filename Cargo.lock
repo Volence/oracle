@@ -1233,6 +1233,7 @@ dependencies = [
  "oracle-aether",
  "oracle-core",
  "ringbuf",
+ "serde_json",
 ]
 
 [[package]]

@@ -493,4 +493,156 @@ mod tests {
         );
         assert_eq!(hi - lo, 31);
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // The parity invariant — contract §8 item 19's whole point
+    // ---------------------------------------------------------------------------------------------
+
+    /// **This panel and the `emulator/pixel_attribution` bus method must never disagree**, and the
+    /// guard lives here rather than in `oracle-aether/tests/` for a structural reason: `oracle-frontend`
+    /// depends on `oracle-aether`, so only this crate can see both sides at once.
+    ///
+    /// §8 item 19 mandates the *capability* on the bus; D15 argues explicitly against the panel reaching
+    /// it through a socket round-trip per repaint ("an in-process GUI is a consumer of the same registry,
+    /// not a second server"), and our `Host::pump` arrangement makes that worse — a click would have to
+    /// enqueue a command and wait a frame to answer a question it can answer synchronously. So the panel
+    /// keeps calling core, and *this test* is what makes "one implementation under both consumers"
+    /// checkable rather than merely intended. Moving `sprite_tile_at` into `oracle-core` is what makes it
+    /// true; if the two ever drift, this is the assertion that says so.
+    #[cfg(feature = "aether")]
+    mod bus_parity {
+        use super::*;
+        use oracle_aether::engine::{Engine, EngineConfig};
+        use oracle_aether::outbound::Subscribers;
+        use oracle_core::system::System;
+        use serde_json::{json, Value};
+
+        /// An engine whose machine shows `v`.
+        fn engine_showing(v: &Vdp) -> Engine {
+            let mut sys = System::new(0x5EED);
+            sys.load_rom(oracle_core::testrom::build());
+            sys.reset();
+            *sys.vdp_mut() = v.clone();
+            Engine::new(sys, EngineConfig::default(), Subscribers::new())
+        }
+
+        /// `"0x0000B000"` → `0xB000`. The bus spells addresses as hex strings (D9 category 1); the panel
+        /// carries them as numbers, so the comparison has to cross that boundary explicitly.
+        fn addr_of(v: &Value) -> u32 {
+            let s = v
+                .as_str()
+                .unwrap_or_else(|| panic!("an address string, got {v}"));
+            u32::from_str_radix(s.trim_start_matches("0x"), 16).expect("hex")
+        }
+
+        fn attribution(e: &mut Engine, x: u16, y: u16) -> Value {
+            e.dispatch("emulator/pixel_attribution", &json!({"x": x, "y": y}))
+                .expect("a dot inside the active display must answer")
+        }
+
+        /// Sprite dots: the tile the panel arms a watch on is the tile the bus reports, for every dot of
+        /// a 3x2 and a 2x3 sprite under all four flips — and the SAT entry likewise. A column-major /
+        /// row-major split between the two would surface here as a mismatched `lo`.
+        #[test]
+        fn the_panel_and_the_bus_name_the_same_sprite_tile_and_sat_entry() {
+            for (w, h) in [(3u8, 2u8), (2, 3), (1, 1), (4, 1)] {
+                for (hflip, vflip) in [(false, false), (true, false), (false, true), (true, true)] {
+                    let v = vdp_with_sprite(w, h, hflip, vflip);
+                    let mut e = engine_showing(&v);
+                    for dy in 0..usize::from(h) * 8 {
+                        for dx in 0..usize::from(w) * 8 {
+                            let (x, y) = (SPRITE_AT + dx as u16, SPRITE_AT + dy as u16);
+                            let r = attribution(&mut e, x, y);
+                            let p = resolve(&v, x, y);
+
+                            assert_eq!(r["winner"]["layer"], json!("sprite"), "({x},{y})");
+                            assert_eq!(r["winner"]["spriteIndex"], json!(0), "({x},{y})");
+                            assert_eq!(
+                                p.targets[0].lo,
+                                addr_of(&r["sprite"]["tileAddr"]),
+                                "{w}x{h} hflip={hflip} vflip={vflip} at ({x},{y}): the panel arms \
+                                 ${:04X} but the bus names {} — the two have DRIFTED",
+                                p.targets[0].lo,
+                                r["sprite"]["tileAddr"]
+                            );
+                            assert_eq!(p.targets[0].space, Space::Vram);
+                            assert_eq!(
+                                p.targets[1].lo,
+                                addr_of(&r["sprite"]["satAddr"]),
+                                "({x},{y}): SAT entry"
+                            );
+                            // And the tile index itself, as the panel prints it into its description.
+                            let tile = r["sprite"]["tile"].as_u64().expect("tile") as u16;
+                            assert!(
+                                p.description.contains(&format!("tile ${tile:03X}")),
+                                "({x},{y}): the panel says {:?}, the bus says tile ${tile:03X}",
+                                p.description
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        /// Plane dots: the panel's armed pattern range is the bus's `cell.tileAddr`, and the two agree on
+        /// the winning layer. Backdrop dots: the panel's armed CRAM word is the bus's `cramAddr`, and on
+        /// `cramIndex` — which is the number the panel prints to a person.
+        #[test]
+        fn the_panel_and_the_bus_agree_on_plane_cells_and_on_the_backdrop() {
+            let mut v = fresh();
+            set_reg(&mut v, 0x01, 0x74); // display on, mode 5 — before $0C
+            set_reg(&mut v, 0x0C, 0x81); // H40
+            set_reg(&mut v, 0x02, 0x30); // plane A nametable @ $C000
+            set_reg(&mut v, 0x04, 0x07); // plane B nametable @ $E000
+            set_reg(&mut v, 0x05, 0x58); // SAT @ $B000, empty
+            set_reg(&mut v, 0x07, 0x25); // backdrop = CRAM entry $25
+            set_reg(&mut v, 0x0F, 0x02);
+            set_reg(&mut v, 0x10, 0x00);
+            write_vram(&mut v, 0xC000, &[(1 << 13) | 0x055]);
+            write_vram(&mut v, 0x055 * 32, &[0x3333; 16]);
+            let mut e = engine_showing(&v);
+
+            // The one opaque plane-A cell.
+            let r = attribution(&mut e, 2, 2);
+            let p = resolve(&v, 2, 2);
+            assert_eq!(r["winner"]["layer"], json!("planeA"));
+            assert_eq!(p.targets[0].lo, addr_of(&r["cell"]["tileAddr"]));
+            assert_eq!(p.targets[0].hi, addr_of(&r["cell"]["tileAddr"]) + 31);
+            assert_eq!(r["cell"]["tile"], json!(0x055));
+            assert!(p.description.contains("$055"), "{}", p.description);
+
+            // Everywhere else is backdrop.
+            let r = attribution(&mut e, 200, 100);
+            let p = resolve(&v, 200, 100);
+            assert_eq!(r["winner"]["layer"], json!("backdrop"));
+            assert_eq!(r["cramIndex"], json!(0x25));
+            assert_eq!(p.targets[0].space, Space::Cram);
+            assert_eq!(p.targets[0].lo, addr_of(&r["cramAddr"]));
+            assert!(
+                p.description.contains("CRAM entry 37"),
+                "0x25 = 37, the number the panel shows a person: {}",
+                p.description
+            );
+        }
+
+        /// The panel is total over the whole active display; the bus refuses outside it (§3.5). That
+        /// difference is deliberate — the core's totality is right in-process and a silent wrong answer
+        /// on a wire — so it is pinned rather than left to look like an accident.
+        #[test]
+        fn the_bus_refuses_a_dot_the_panel_would_still_answer() {
+            let v = vdp_with_sprite(1, 1, false, false);
+            let mut e = engine_showing(&v);
+            // 400 is past the H40 active width; the core answers backdrop, the bus refuses.
+            assert_eq!(v.pixel_attribution(400, 10).winner, Layer::Backdrop);
+            let err = e
+                .dispatch("emulator/pixel_attribution", &json!({"x": 400, "y": 10}))
+                .expect_err("outside the active display");
+            assert_eq!(err.code, -32004);
+            let data = err
+                .data
+                .expect("-32004 must carry the bound it refused against");
+            assert_eq!(data["width"], json!(320));
+            assert_eq!(data["height"], json!(224));
+        }
+    }
 }
