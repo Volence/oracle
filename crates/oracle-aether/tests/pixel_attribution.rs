@@ -540,7 +540,8 @@ fn the_reported_sprite_tile_is_the_one_the_renderer_drew_from() {
 /// cache + VRAM the sprite walk did, within the same handler invocation. There is no interval for the SAT
 /// to move in. So the pin here is the *positive* one — the bus never reports a sprite winner without a
 /// tile — and the absent branch stays exercised where it can be: `sprite_tile_at`'s own tests in
-/// `oracle-core` and `oracle-frontend`, which drive it with a dot outside the box directly.
+/// `oracle-frontend`'s `pick.rs` (`a_dot_outside_the_sprite_has_no_tile`), which drive it with a dot
+/// outside the box directly rather than through a machine.
 ///
 /// This is flagged for review rather than worked around silently: if the handler ever grows a cached or
 /// deferred render, this test is the one that should be replaced by a real absence case.
