@@ -461,9 +461,16 @@ fn dump_hits(watchpoints: &Watchpoints, symbols: Option<&SymbolTable>) {
             .and_then(|t| t.resolve_within(h.pc, MAX_SYMBOL_DISPLACEMENT))
             .map(|r| format!(" {r}"))
             .unwrap_or_default();
+        // `watch` is printed because `Watchpoints::clear()` discards the *specs* and keeps the recorded
+        // hits by design ("ids are not reused, so hits recorded before the clear keep naming watches that
+        // no longer exist"), and the click path clears-then-rearms on every click. Without the id, two
+        // successive clicks produced one interleaved log with no way to tell which pixel a hit belonged
+        // to, and the first click's labels gone — a misleading instrument, which is the failure this
+        // whole subsystem exists to prevent. The id is the attribution the core already recorded; only
+        // the printing was missing.
         println!(
-            "seq {:>6}  frame {:>6}  pc ${:06X}{sym}  addr ${:04X}  ${:X}->${:X}  via {via}",
-            h.seq, h.frame, h.pc, h.addr, h.old, h.value
+            "watch {:>3}  seq {:>6}  frame {:>6}  pc ${:06X}{sym}  addr ${:04X}  ${:X}->${:X}  via {via}",
+            h.watch.0, h.seq, h.frame, h.pc, h.addr, h.old, h.value
         );
     }
     println!("dropped: {}", watchpoints.dropped());
