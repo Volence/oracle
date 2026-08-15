@@ -412,11 +412,16 @@ fn checkpoint_list_is_bounded_cursored_and_flags_truncation() {
     assert_eq!(page["truncated"], json!(true));
     assert_eq!(
         page["cursor"],
-        json!(2),
-        "`cursor` is returned when more remain"
+        json!("2"),
+        "`cursor` is returned when more remain, as the JSON string the schema types it as"
     );
 
-    let rest = c.ok("emulator/checkpoint_list", json!({"cursor": 2, "limit": 2}));
+    // Resume from the token the server actually handed back, unexamined — the way §6.1 says a client
+    // must treat it.
+    let rest = c.ok(
+        "emulator/checkpoint_list",
+        json!({"cursor": page["cursor"], "limit": 2}),
+    );
     let items = rest["checkpoints"].as_array().unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["id"], json!(ids[2]));
@@ -432,6 +437,94 @@ fn checkpoint_list_is_bounded_cursored_and_flags_truncation() {
         c.err("emulator/checkpoint_list", json!({"cursor": 99}))["code"],
         json!(-32602)
     );
+}
+
+#[test]
+fn the_cursor_is_emitted_as_a_string_and_accepted_as_either_shape() {
+    // The contract schema types `cursor` as a JSON **string** on both the params and the result of
+    // `emulator/checkpoint_list` (`schema/bus-protocol.schema.json`), and §8 forbids inventing a wire
+    // shape alongside the catalog's. §6.1 is the substantive reason: the token is **opaque** — "a
+    // client MUST NOT parse it" — and a bare number invites the `cursor + 1` id-arithmetic that the
+    // opacity invariant exists to prevent.
+    //
+    // Emit is therefore strict (one shape) while parse is lenient (two). That asymmetry is
+    // deliberate: this server emitted numbers before the fix, and refusing to recognise a token we
+    // ourselves handed out would punish a client for our bug.
+    let h = spawn("cpcursorshape");
+    let mut c = Client::connect(&h);
+    c.handshake(false);
+
+    let ids: Vec<u64> = (0..3)
+        .map(|i| take(&mut c, Some(&format!("s{i}"))))
+        .collect();
+
+    // --- emit is a string -------------------------------------------------------------------
+    let p1 = c.ok("emulator/checkpoint_list", json!({"limit": 1}));
+    let token = p1["cursor"].clone();
+    assert!(
+        token.is_string(),
+        "`cursor` must be emitted as a JSON string, got {token}"
+    );
+    assert!(!token.is_number(), "a numeric cursor invites id-arithmetic");
+
+    // --- parse accepts the string it emitted (the round trip a client actually performs) ------
+    let from_string = c.ok(
+        "emulator/checkpoint_list",
+        json!({"cursor": token, "limit": 1}),
+    );
+    assert_eq!(page_ids(&from_string), vec![ids[1]]);
+
+    // --- parse accepts a bare number, for clients written against the older spelling ----------
+    let from_number = c.ok(
+        "emulator/checkpoint_list",
+        json!({"cursor": ids[0], "limit": 1}),
+    );
+    assert_eq!(
+        page_ids(&from_number),
+        page_ids(&from_string),
+        "the two accepted spellings of one token must resolve to the same page"
+    );
+
+    // --- a full paged walk driven only by the emitted tokens ---------------------------------
+    let mut seen = page_ids(&p1);
+    let mut cursor = p1["cursor"].clone();
+    loop {
+        let p = c.ok(
+            "emulator/checkpoint_list",
+            json!({"cursor": cursor, "limit": 1}),
+        );
+        seen.extend(page_ids(&p));
+        match p.get("cursor") {
+            Some(next) => {
+                assert!(next.is_string(), "every emitted cursor is a string");
+                cursor = next.clone();
+            }
+            None => break,
+        }
+    }
+    assert_eq!(
+        seen, ids,
+        "the walk must cover every checkpoint exactly once"
+    );
+
+    // --- leniency stops at the shape ---------------------------------------------------------
+    // Out of range is refused loudly in *both* spellings, never clamped (the house rule)...
+    assert_eq!(
+        c.err("emulator/checkpoint_list", json!({"cursor": "9999"}))["code"],
+        json!(-32602)
+    );
+    assert_eq!(
+        c.err("emulator/checkpoint_list", json!({"cursor": 9999}))["code"],
+        json!(-32602)
+    );
+    // ...and a string that is not a token this server could ever have issued is refused too.
+    for bad in [json!("not-a-token"), json!("0x2"), json!("-1"), json!(true)] {
+        assert_eq!(
+            c.err("emulator/checkpoint_list", json!({"cursor": bad.clone()}))["code"],
+            json!(-32602),
+            "cursor {bad} must be refused"
+        );
+    }
 }
 
 #[test]
@@ -463,8 +556,8 @@ fn a_drop_between_two_pages_never_skips_a_live_checkpoint() {
     assert_eq!(p1["truncated"], json!(true));
     assert_eq!(
         p1["cursor"],
-        json!(ids[3]),
-        "`cursor` must be the id to resume after, not a Vec position"
+        json!(ids[3].to_string()),
+        "`cursor` must stand for the id to resume after, not a Vec position"
     );
 
     // A second client drops a checkpoint that page 1 already returned — i.e. *before* the cursor.
@@ -526,7 +619,7 @@ fn a_cursor_whose_checkpoints_are_all_gone_is_an_empty_page_not_a_hard_error() {
 
     let p1 = c.ok("emulator/checkpoint_list", json!({"limit": 2}));
     let cursor = p1["cursor"].clone();
-    assert_eq!(cursor, json!(ids[1]));
+    assert_eq!(cursor, json!(ids[1].to_string()));
 
     c.ok("emulator/checkpoint_drop", json!({"all": true}));
     let p2 = c.ok("emulator/checkpoint_list", json!({"cursor": cursor}));
