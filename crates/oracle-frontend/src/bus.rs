@@ -25,10 +25,12 @@
 //! `#[cfg]` of its own.
 
 use oracle_aether::host::{Host, HostConfig};
+use oracle_core::bus::Observe;
 use oracle_core::io::Pad;
 use oracle_core::scanline_capture::ScanlineCapture;
 use oracle_core::symbols::SymbolTable;
 use oracle_core::system::System;
+use oracle_core::watchpoints::Watchpoints;
 use std::path::PathBuf;
 
 /// What the bus should know about the loaded cartridge — the ROM's path, and the listing bound to it (D7).
@@ -81,7 +83,13 @@ impl Bus {
     /// A bind failure is reported and degraded to inert, never fatal: someone who launched a game to play it
     /// should not be stopped by a stale socket file, and the message says exactly what did not happen.
     pub fn start(socket: Option<Option<PathBuf>>, info: MachineInfo) -> Self {
-        let mut host = Host::new(HostConfig::default());
+        // The hit ring is sized by the *player*, not by the headless default: this instrument is shared with
+        // the pixel-attribution panel (see [`Bus::watchpoints_mut`]), and a panel that silently held fewer
+        // hits when the bus happened to be compiled in would be the drift item 19 exists to prevent, wearing
+        // a config value's clothes.
+        let mut config = HostConfig::default();
+        config.engine.watch_ring_cap = crate::WATCH_CAP;
+        let mut host = Host::new(config);
         host.set_machine_info(info.into());
         if let Some(path) = socket {
             match host.serve(path) {
@@ -113,6 +121,31 @@ impl Bus {
     /// `emulator/hold` compose with it instead of erasing it.
     pub fn set_live_pads(&mut self, pads: [Pad; 2]) {
         self.host.set_live_pads(pads);
+    }
+
+    /// **Conflict 4: the watch instrument the player's own run loop must feed.**
+    ///
+    /// The player owns the loop, so a `Watchpoints` that only the bus's own runs fed would see nothing while
+    /// the window is running the game — and would report `seen == 0`, which correctly means "the recorder was
+    /// never attached" and is useless. So the loop arms and reads *this* one instead of a private instance,
+    /// and the pixel-attribution panel and `emulator/watchpoint_hits` become two readers of one instrument
+    /// rather than two instruments that have to be kept in step (contract §8 item 19).
+    ///
+    /// Returned unconditionally, not only while serving: a `Host` exists either way, and switching
+    /// instruments on `--aether` would mean the panel behaved differently depending on whether a socket was
+    /// bound — a difference nobody asked for and the harder one to debug.
+    pub fn watchpoints_mut(&mut self) -> &mut Watchpoints {
+        self.host.watchpoints_mut()
+    }
+
+    /// The same instrument, wrapped for **attaching to this loop's run** — see
+    /// [`Observe`](oracle_core::bus::Observe). A watch armed over the socket with `stopAfter` raises
+    /// `stop_requested` on a level, not an edge, so attaching the bare instrument would end every one of
+    /// this loop's 1-frame runs before it began: a client's stop condition turned into a frozen window on a
+    /// machine nobody asked to pause. The observations still land; only the halt, which belongs to the runs
+    /// a client bounded, is dropped.
+    pub fn watch_sink(&mut self) -> Observe<&mut Watchpoints> {
+        Observe(self.watchpoints_mut())
     }
 
     /// Conflict 1, outbound: the player's pause state becomes the bus's free-run state.

@@ -10,7 +10,7 @@
 //! [`run_frames_with_sink`](oracle_core::system::System::run_frames_with_sink), drains each frame, and
 //! [`push_frame`]s it into the [`AudioProd`] whose paired [`AudioCons`] is popped by the cpal callback.
 
-use oracle_core::bus::Fanout;
+use oracle_core::bus::{Fanout, Observe};
 use oracle_core::synth::AudioSink;
 use oracle_core::watchpoints::Watchpoints;
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
@@ -292,9 +292,16 @@ pub fn fill_output(cons: &mut AudioCons, out: &mut [f32], channels: usize, flush
 /// core's `Option<S>` sink impl — same delivery order (audio first), same OR-composed `wants_*` queries, and
 /// now the stop signal is composed too, for free. The name is kept because it says what the pair *is*.
 ///
-/// Construct it with `AudioAndWatch::new(&mut audio_sink, watch_armed.then_some(&mut watchpoints))`; the two
-/// halves are the public fields `a` (audio) and `b` (watch).
-pub type AudioAndWatch<'a> = Fanout<&'a mut AudioSink, Option<&'a mut Watchpoints>>;
+/// **The watch half is wrapped in [`Observe`], and that is load-bearing.** The instrument is shared with the
+/// Aether bus, so a client can arm a watch with `stopAfter` — which raises `stop_requested` on a *level*
+/// (`matched >= n`, permanently), not an edge. Composed bare, the OR would end every one of this loop's
+/// 1-frame runs before it began: a client's stop condition turned into a frozen window on a machine nobody
+/// asked to pause. `Observe` forwards every observation (so `seen` still means "the recorder rode this run")
+/// and drops only the halt, which belongs to the runs a client bounded.
+///
+/// Construct it with `AudioAndWatch::new(&mut audio_sink, armed.then(|| bus.watch_sink()))`; the two halves
+/// are the public fields `a` (audio) and `b` (watch).
+pub type AudioAndWatch<'a> = Fanout<&'a mut AudioSink, Option<Observe<&'a mut Watchpoints>>>;
 
 #[cfg(test)]
 mod tests {
@@ -775,7 +782,7 @@ mod tests {
         let mut watch = Watchpoints::new(64);
         watch.add_watch(watched, WatchOp::Write, "ref");
         {
-            let mut sink = AudioAndWatch::new(&mut audio, Some(&mut watch));
+            let mut sink = AudioAndWatch::new(&mut audio, Some(Observe(&mut watch)));
             sink.on_step_boundary(0x1234, 0); // latches audio's first frame + stamps the watch
             sink.on_event(write_event(0xFF_0100, 0xAB));
             sink.on_event(write_event(0xFF_0200, 0xCD));
