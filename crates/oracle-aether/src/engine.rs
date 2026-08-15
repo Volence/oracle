@@ -1221,7 +1221,7 @@ impl Engine {
         let highest_issued = self.next_checkpoint_id - 1;
         let cursor = match params.get("cursor") {
             None => 0,
-            Some(v) => hex::parse_count("cursor", v, 0, highest_issued)?,
+            Some(v) => parse_cursor(v, highest_issued)?,
         };
         let limit = match params.get("limit") {
             None => cap,
@@ -1285,8 +1285,16 @@ impl Engine {
         // `cursor` is returned **when more remain** and is absent otherwise, so a client can never mistake
         // "here is where to continue" for "you are at the end". The helper's own `nextCursor` is
         // positional and is deliberately not emitted; only whether it exists is used.
+        //
+        // The token is emitted as a **JSON string**, which is what the contract schema types it as
+        // (`schema/bus-protocol.schema.json`, `emulator/checkpoint_list` params *and* result) — §8
+        // forbids inventing a wire shape alongside the catalog's. The string is also the shape the
+        // §6.1 cursor paragraph wants: the token is **opaque**, "a client MUST NOT parse it", and a
+        // bare number is an open invitation to the `cursor + 1` / `cursor > n` arithmetic that the
+        // opacity rule exists to prevent. Quoting it does not *stop* a determined client — the value
+        // is still an id in decimal — but it stops the accident.
         if page["nextCursor"].is_u64() {
-            out.insert("cursor".into(), json!(next_cursor));
+            out.insert("cursor".into(), json!(next_cursor.to_string()));
         }
         Ok(Value::Object(out))
     }
@@ -1327,6 +1335,49 @@ fn parse_checkpoint_id(params: &Value) -> Result<u64, RpcError> {
         return Err(RpcError::invalid_params("`id` (a JSON number) is required"));
     };
     hex::parse_count("id", v, 0, u64::MAX)
+}
+
+/// A `checkpoint_list` continuation token, resolved back to the id it stands for.
+///
+/// **A deliberate asymmetry: this server emits exactly one shape and accepts two** (Postel's law, and
+/// nothing more than that — leniency here is a migration allowance, not a licence for the emit side
+/// to drift).
+///
+/// * *Emitted:* a **JSON string**, always. That is what the contract schema types `cursor` as, on
+///   both the params and the result of `emulator/checkpoint_list`, and §8 forbids inventing a
+///   different wire shape alongside the catalog's. It is also the spelling §6.1's opacity rule
+///   wants: "a client MUST NOT parse it", and a bare number invites exactly the `cursor + 1`
+///   arithmetic that rule exists to prevent.
+/// * *Accepted:* a string **or** a bare number. This server emitted numbers before this fix, so a
+///   client written against that behaviour — or one that round-tripped a token through a
+///   number-typed field — would break on a strict-string parse for no contract benefit. A cursor is
+///   an opaque token the server itself issued; refusing to recognise a token we ourselves handed out
+///   punishes the client for our bug.
+///
+/// The leniency stops at the shape. An out-of-range token is still refused loudly, never clamped
+/// (the house rule), and a string that is not a token this server could have issued is refused too.
+fn parse_cursor(v: &Value, max: u64) -> Result<u64, RpcError> {
+    let n = match v {
+        // The shape we emit.
+        Value::String(s) => s.parse::<u64>().ok(),
+        // The shape we used to emit.
+        _ => v.as_u64(),
+    };
+    let Some(n) = n else {
+        // Name what was actually sent: a malformed *string* is a different mistake from the wrong
+        // JSON type, and reporting "not a string" for a string would be a riddle.
+        let got = match v {
+            Value::String(s) => format!("{s:?} is not one"),
+            other => format!("got {}", hex::kind_of(other)),
+        };
+        return Err(RpcError::invalid_params(format!(
+            "`cursor` must be a token returned by a previous `checkpoint_list` (a JSON string; a bare \
+             number is also accepted, for clients written against the older numeric spelling) — {got}"
+        )));
+    };
+    // Range-check through the house's shared counted-field rule so the bound and its error message
+    // stay identical to every other paging parameter on this bus.
+    hex::parse_count("cursor", &Value::from(n), 0, max)
 }
 
 fn unknown_checkpoint(id: u64) -> RpcError {

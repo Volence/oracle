@@ -107,7 +107,7 @@ fn strip_prefix(s: &str) -> Option<&str> {
         .or_else(|| s.strip_prefix('$'))
 }
 
-fn kind_of(v: &Value) -> &'static str {
+pub(crate) fn kind_of(v: &Value) -> &'static str {
     match v {
         Value::Null => "null",
         Value::Bool(_) => "a boolean",
