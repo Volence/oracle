@@ -468,6 +468,10 @@ found in our own player rather than in the record.
 
 ## CR-13 — ten methods put result keys on the wire that appear in no contract text (2026-08-15)
 
+> **The heading undercounts, and the drafts are left un-rewritten by house convention.** The table below
+> covers twelve rows; the complete sweep the ruling then demanded (condition 7) found **sixteen**
+> (`docs/2026-08-15-result-key-surplus.md`). Each pass called its own figure a floor and each was right to.
+
 **This is CR-8's offence at scale, and like CR-8 it is a self-report.**
 
 **Contract.** §6's catalog gives each method a params/result row, and §8 forbids the emulator side to
@@ -693,6 +697,24 @@ inside a name string" rule applied to this method — deleting it would put us b
 this a case where the server has a conformant option: the two authorities disagree, D14 makes the schema
 the tiebreaker on shapes, and the schema here says less than the document it is derived from. The
 resolution is five `properties` entries upstream, and the contract repo was **not** edited.
+
+> **ADOPTED THE SAME DAY** (`empyrean` `d45dc87`, `protocol.md` §11.6) — five `properties` entries across
+> the two fragments, `limits` added to `initialize`'s `required` and `region` to `read_memory`'s, and **no
+> prose changed, because the prose was already right**. `read_memory.symbol` was also retyped to
+> `$defs/symbolName` while the fragment was open, since §4's round-trip rule binds the `symbol` param of any
+> method that accepts one and a result field a client hands back carries the same obligation.
+>
+> **Retiring the two registry entries was forced, not remembered — and by a failure mode the registry was
+> not designed around.** A checker here *lifts its key out of the payload* before validating it, so the
+> moment the amended schema **required** `limits`, lifting it made it missing and **every checkpoint test
+> went red on the handshake** — tests with nothing to do with checkpoints. The liveness test would have
+> caught a stale entry; what actually happened was louder and stranger. Recorded because the general rule is
+> now stronger than "the list cannot rot": *an allowance that outlives its divergence starts causing the
+> failure it was written to suppress, somewhere unrelated.*
+>
+> One fixture moved with it: `schema_conformance.rs`'s `good_read_memory_reply()` omitted `region` and so
+> stopped being conformant the moment the fragment declared it — the positive control catching its own
+> drift, which is the only reason the rejection controls beneath it stayed meaningful.
 
 **What we did.** Two entries in `common::schema::KNOWN_CONTRACT_DIVERGENCES`, printed beside the coverage
 report on every run. Each lifts only its own keys out and hands them to a checker that asserts the shape
