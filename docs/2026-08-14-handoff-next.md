@@ -98,9 +98,13 @@ From the recon's own §7 close:
 
 - **(a)** Does the `deb2` decoder earn its cost now, or is the `.lst` path sufficient until symbols rot
   again?
-- **(b)** Raise the two cross-repo asks now or carry them — ship `s4.build.json`, and **CR-6**, the
-  `emulator/romReloaded` vs `emulator/rom_reloaded` drift between Aurora's approved spec and
-  `protocol.md` §3 (still carried, still unresolved).
+- **(b)** Raise the cross-repo ask now or carry it — ship `s4.build.json`.
+  > **CORRECTION 2026-08-15: CR-6 is RESOLVED and this entry was wrong to carry it.** Verified in the
+  > contract itself: `protocol.md:253` makes camelCase normative (*"Event names are camelCase
+  > (`romReloaded`, never `rom_reloaded`)"*), §10 decision 4 (`:682-685`) rules this contract wins and
+  > forbids both-spellings bridging, `:718` records the CR as closed, the schema agrees
+  > (`bus-protocol.schema.json:150,166`), and Aurora's spec was corrected (`aurora` commit `26378c9`).
+  > Every surviving `rom_reloaded` in `protocol.md` is prose *explaining* the ruling. Nothing to raise.
 - **(c)** How much of the 53-method catalog do we commit to, given the critique's finding that ~20
   well-shaped tools cover more ground?
 
