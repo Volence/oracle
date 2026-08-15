@@ -21,16 +21,26 @@
 //! them to the catalog, and per D4/D5 a server that does not implement them simply does not advertise
 //! them. They are advertised here, so `capabilities.checkpoints` carries the cap a client has to plan
 //! around.
+//!
+//! The four **watchpoint** methods (§6, §11.8 — CR-11 and CR-12) arrived the same way on 2026-08-15: §6's
+//! single `watchpoint_add` row became four, and `capabilities.watchpoints` carries the spaces, the watch
+//! cap and the hit-ring depth for the same reason `checkpoints` carries its own. The instrument they expose
+//! is engine-owned and **lent** — see [`Engine::watchpoints`], which is the one place the hosted
+//! arrangement's two-run-drivers problem is answered.
 
 use crate::hex;
 use crate::outbound::Subscribers;
 use crate::rpc::{self, code, RpcError};
-use oracle_core::bus::{Fanout, StopWhen};
+use oracle_core::bus::{Fanout, Observe, StopWhen};
 use oracle_core::io::Pad;
 use oracle_core::render::{CandidateVerdict, Layer, PixelState};
 use oracle_core::scanline_capture::{Retain, ScanlineCapture};
 use oracle_core::symbols::{BindingFault, RomBinding, SymbolTable};
-use oracle_core::system::{System, MCLK_PER_FRAME, RAM_SIZE};
+use oracle_core::system::{StopRecord, System, MCLK_PER_FRAME, RAM_SIZE};
+use oracle_core::watchpoints::{
+    CensusKey, Stamp, Watch, WatchHit, WatchId, WatchMode, WatchOp, WatchReport, WatchSpace,
+    WatchVia, Watchpoints,
+};
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -63,6 +73,19 @@ pub struct EngineConfig {
     /// nothing. Doubles as the default and maximum page size for `emulator/checkpoint_list` — there can
     /// never be more live checkpoints than this, so a bigger page could not return more.
     pub max_checkpoints: usize,
+    /// **The watch cap** (`protocol.md` §6, D13 rule 3 applied to watchpoints), advertised in `initialize`
+    /// as `capabilities.watchpoints.maxWatches`. At the cap `emulator/watchpoint_add` **refuses** with
+    /// `-32005 {reason:"watchCapReached", cap, count}`; it never silently grows past it and never evicts.
+    ///
+    /// The reason is sharper here than for checkpoints: a silently-dropped watch produces a `seen`-positive,
+    /// `matched`-zero hits read, which is **indistinguishable from a genuine negative finding** — the one
+    /// failure this whole instrument exists to make impossible.
+    pub max_watches: usize,
+    /// Capacity of the shared hit ring, in hits — `capabilities.watchpoints.ringCap`. Past it the recorder
+    /// drops oldest-first and counts the loss in `watchpoint_hits.dropped`. Advertised *before* a client
+    /// plans around it, for D13's reason: a client sweeping a hot range needs the number in advance, not
+    /// after losing evidence to it.
+    pub watch_ring_cap: usize,
     /// Wall-clock pacing for free-running mode, or `None` to run flat out. **Pacing only** — it never
     /// touches an emulated stamp, so determinism is unaffected (recon §5 C2). Tests use `None`.
     pub free_run_pace: Option<Duration>,
@@ -79,6 +102,14 @@ impl Default for EngineConfig {
             // The contract's own advertised example (`"checkpoints":{"supported":true,"cap":8}`). A
             // snapshot is the whole machine, so the cap is a memory bound as much as a policy one.
             max_checkpoints: 8,
+            // The contract's own advertised example for this capability
+            // (`"watchpoints":{"supported":true,"maxWatches":32,…}`). A watch is a small struct plus its
+            // census map, so 32 is a policy bound rather than a memory one — but it is refused at, loudly.
+            max_watches: 32,
+            // 4,096 hits. Sized against the measured volumes this instrument exists for — a single test ROM
+            // writes 4,923,206 CRAM words over 120 frames — where the honest answer is never "the ring held
+            // it all" but "the ring held the tail and `dropped` says how much it did not".
+            watch_ring_cap: 4096,
             free_run_pace: Some(Duration::from_micros(16_667)),
             server_name: "oracle-next".into(),
             server_version: env!("CARGO_PKG_VERSION").into(),
@@ -145,6 +176,26 @@ pub const METHODS: &[MethodSpec] = &[
         name: "emulator/checkpoint_drop",
         handler: Engine::checkpoint_drop,
         summary: "drop one checkpoint by id, or all of them, and report how many went",
+    },
+    MethodSpec {
+        name: "emulator/watchpoint_add",
+        handler: Engine::watchpoint_add,
+        summary: "arm a recording watch over an address range in one of the four spaces, and return its handle",
+    },
+    MethodSpec {
+        name: "emulator/watchpoint_clear",
+        handler: Engine::watchpoint_clear,
+        summary: "retire one watch by handle, or all of them, and report how many went",
+    },
+    MethodSpec {
+        name: "emulator/watchpoint_list",
+        handler: Engine::watchpoint_list,
+        summary: "the armed watches and what each has observed, bounded and cursored",
+    },
+    MethodSpec {
+        name: "emulator/watchpoint_hits",
+        handler: Engine::watchpoint_hits,
+        summary: "the recorded hit log — polled, non-destructive, with dropped/seen/matched beside it",
     },
     MethodSpec {
         name: "emulator/read_memory",
@@ -317,6 +368,24 @@ pub struct Engine {
     checkpoints: Vec<Checkpoint>,
     /// Monotonic id source. Never rewound, never reused (see [`Checkpoint`]).
     next_checkpoint_id: u64,
+    /// **The watchpoint instrument (§6, CR-11/CR-12), owned here and lent out.**
+    ///
+    /// Engine-owned because the standalone server drives its own runs and has nowhere else to put it; lent
+    /// out through [`watchpoints_mut`](Engine::watchpoints_mut) because in the **hosted** arrangement the
+    /// player owns the run loop and this engine only borrows the machine inside `Host::pump`. There are two
+    /// run drivers, and an instrument attached to only one of them sees nothing while the other runs —
+    /// honestly reported as `seen == 0`, and useless. One instrument, both drivers, which is also what makes
+    /// the player's panel and the bus's `watchpoint_hits` incapable of disagreeing (contract §8 item 19).
+    ///
+    /// Not part of `System`, so it survives `swap_system`, `restore` and `reload_rom` untouched: watches are
+    /// engine-owned and are **not** auto-cleared (§6), because a watch with `stopAfter` changes how the
+    /// machine runs and disarming one nobody asked to disarm is a machine-state change §5 forbids.
+    watchpoints: Watchpoints,
+    /// How many watch handles this engine has ever issued. Equal to the core facility's own next id — this
+    /// engine is its only caller — and used for exactly one thing: telling a handle that was **never
+    /// issued** (a typo) from one that was issued and has since been cleared (a retired watch, whose hits
+    /// are still legitimately queryable). Never rewound.
+    watches_issued: u32,
     /// **The screen path.** Attached to every run this engine performs, so the picture a client asks for is
     /// the one the raster actually drew — see [`Engine::framebuffer`] for why a post-hoc render cannot be.
     screen: ScanlineCapture,
@@ -335,6 +404,22 @@ pub struct Engine {
     rom_generation: u64,
 }
 
+/// What one advancing run did, in the terms its caller has to branch on.
+///
+/// It exists because a `stopAfter` watch made "the sink asked to stop" ambiguous. Before watchpoints there
+/// was exactly one thing in the Fanout that could end a run early, so [`StopRecord::fired`] answered
+/// "did my condition happen?" directly. Now two can, and a caller that reads the record alone would report
+/// a target as *reached* because an unrelated watch halted the run — the ambiguous-success defect
+/// [`StopReason`](oracle_core::system::StopReason) was split in two to prevent, rebuilt one level up.
+struct Advanced {
+    record: StopRecord,
+    /// The `run_to` predicate's own verdict. Always `false` for a plain frame advance, which has none.
+    predicate_fired: bool,
+    /// The watch whose `stopAfter` ended the run, when that is what ended it (§6: *"the halt always names
+    /// its watch"*).
+    stopped_by: Option<WatchId>,
+}
+
 /// One pixel, in the core's own line-delivery spelling.
 pub type Rgb = (u8, u8, u8);
 
@@ -350,6 +435,7 @@ pub type FrameRef<'a> = (usize, &'a [Rgb]);
 
 impl Engine {
     pub fn new(sys: System, config: EngineConfig, subs: Subscribers) -> Self {
+        let watchpoints = Watchpoints::new(config.watch_ring_cap);
         Self {
             sys,
             config,
@@ -363,6 +449,8 @@ impl Engine {
             live: [Pad::default(); 2],
             checkpoints: Vec::new(),
             next_checkpoint_id: 1,
+            watchpoints,
+            watches_issued: 0,
             screen: ScanlineCapture::new(Retain::LastFrame),
             last_frame: None,
             screen_generation: 0,
@@ -483,7 +571,19 @@ impl Engine {
     /// One free-running frame, called by the server loop between command drains. Returns the pacing
     /// interval to sleep for, if any.
     pub fn free_run_step(&mut self) -> Option<Duration> {
-        self.advance(1);
+        // **The instrument is fed here, and its stop signal is deliberately dropped** ([`Observe`]).
+        //
+        // Fed, because free-running is still the machine running: a watch armed by one client while another
+        // resumed the bus must observe these frames, or its silence says nothing. Stop-suppressed, because
+        // `stopAfter` is a *level* and not an edge — `matched >= n` stays true forever — so honouring it
+        // here would end every subsequent free-run step before it began, which is a permanent freeze of a
+        // machine nobody asked to pause rather than a stop condition. §6 rules this exact case: a
+        // `stopAfter` watch on a free-running machine "is answered by attribution rather than by a gate",
+        // and the attribution lands on the runs a client actually bounded.
+        let armed = (self.watchpoints.watch_count() > 0).then_some(&mut self.watchpoints);
+        let mut sink = Fanout::new(&mut self.screen, Observe(armed));
+        self.sys.run_frames_with_sink(1, &mut sink);
+        self.latch_screen();
         self.config.free_run_pace
     }
 
@@ -494,9 +594,52 @@ impl Engine {
     ///
     /// Every advancing path in this engine goes through here or through [`advance_until`](Engine::advance_until)
     /// — that is what makes `emulator/screenshot` scanline-accurate rather than a post-hoc guess.
-    fn advance(&mut self, frames: u64) {
-        self.sys.run_frames_with_sink(frames, &mut self.screen);
+    /// The watchpoint instrument, borrowed. **The seam the hosted arrangement turns on** — see
+    /// [`Engine::watchpoints`] for why there is exactly one of these and why it is not inside `System`.
+    ///
+    /// Safe to call outside a `Host::pump` drain window, unlike every handler on this type: the instrument
+    /// is engine state, not machine state, so it does not answer for the placeholder `System`.
+    pub fn watchpoints_mut(&mut self) -> &mut Watchpoints {
+        &mut self.watchpoints
+    }
+
+    /// Advance the machine `frames` whole frames through the screen capture **and the watch instrument**,
+    /// then latch whatever frame the run completed.
+    ///
+    /// The instrument rides the same run as the capture, which is what gives a `stopAfter` watch its halt:
+    /// `Watchpoints::stop_requested` becomes true mid-step and the run ends at the next instruction
+    /// boundary, with the triggering instruction fully committed. Attached only when a watch is actually
+    /// registered — an unarmed instrument would still count every bus event into `seen`, which costs the
+    /// unarmed path something for nothing and, worse, makes `seen > 0` mean less than it should.
+    fn advance(&mut self, frames: u64) -> Advanced {
+        let record = {
+            let armed = (self.watchpoints.watch_count() > 0).then_some(&mut self.watchpoints);
+            let mut sink = Fanout::new(&mut self.screen, armed);
+            self.sys.run_frames_with_sink(frames, &mut sink)
+        };
         self.latch_screen();
+        // Nothing else in this run could have asked to stop, so a `SinkRequested` here **is** a watch.
+        let stopped_by = record.fired().then(|| self.watch_wanting_stop()).flatten();
+        Advanced {
+            record,
+            predicate_fired: false,
+            stopped_by,
+        }
+    }
+
+    /// The lowest-id armed watch that has reached its `stopAfter` threshold, if any.
+    ///
+    /// `Watchpoints::stop_requested` is one bool over every watch, which is all a *run* needs; a `stopped`
+    /// event needs the identity, because §6's answer to "a `stopAfter` watch on a machine somebody else is
+    /// running" is attribution rather than a gate — *"the halt always names its watch"*. Lowest id, to match
+    /// the rule the recorder itself uses when several watches match one access.
+    fn watch_wanting_stop(&self) -> Option<WatchId> {
+        self.watchpoints
+            .watches()
+            .into_iter()
+            .filter(|w| w.stop_after.is_some_and(|n| w.matched >= n))
+            .map(|w| w.id)
+            .min()
     }
 
     /// [`advance`](Engine::advance) with a stop predicate: the capture and the predicate ride the same run as
@@ -506,12 +649,31 @@ impl Engine {
         &mut self,
         max_frames: u64,
         predicate: F,
-    ) -> oracle_core::system::StopRecord {
+    ) -> Advanced {
         let mut stop = StopWhen::new(predicate);
-        let mut sink = Fanout::new(&mut self.screen, &mut stop);
-        let record = self.sys.run_frames_with_sink(max_frames, &mut sink);
+        // The instrument rides here too, and it has to: a run that does not feed it produces a `seen == 0`
+        // reading — "the recorder was never attached" — from a run that really happened. The `Option` arm of
+        // `BusEventSink` is what expresses "only sometimes attached" without a second code path.
+        let record = {
+            let armed = (self.watchpoints.watch_count() > 0).then_some(&mut self.watchpoints);
+            let mut sink = Fanout::new(&mut self.screen, Fanout::new(&mut stop, armed));
+            self.sys.run_frames_with_sink(max_frames, &mut sink)
+        };
         self.latch_screen();
-        record
+        // **Two things can now end this run, and the caller must not confuse them.** `StopRecord::fired`
+        // says only that *the sink* asked to stop — and with a watch in the Fanout that sink is an OR of
+        // two. `StopWhen::fired` is the predicate's own answer, which is the one `run_to` reports as
+        // `reached`; anything else that ended the run early was a `stopAfter` watch, and is attributed
+        // rather than mislabelled as the target having been reached.
+        let predicate_fired = stop.fired();
+        let stopped_by = (record.fired() && !predicate_fired)
+            .then(|| self.watch_wanting_stop())
+            .flatten();
+        Advanced {
+            record,
+            predicate_fired,
+            stopped_by,
+        }
     }
 
     /// Take the completed frame out of the capture and release the capture's bookkeeping.
@@ -610,7 +772,6 @@ impl Engine {
                 "objectDecoders": false,
                 "profiler": false,
                 "breakpoints": false,
-                "watchpoints": false,
                 "batch": false,
                 // A 6-button pad is not modelled by the core, so x/y/z/mode are refused rather than
                 // silently ignored.
@@ -623,6 +784,16 @@ impl Engine {
                 "checkpoints": {
                     "supported": true,
                     "cap": self.config.max_checkpoints,
+                },
+                // §6, and an object for the same reason `checkpoints` is one: a client that has to hit a
+                // limit to learn it is a client that loses evidence finding out. All four spaces, because
+                // the core's VDP-internal write capture is live — a server without it would advertise
+                // `["bus"]` and a client would not have to arm a watch to find that out.
+                "watchpoints": {
+                    "supported": true,
+                    "spaces": ["bus", "vram", "cram", "vsram"],
+                    "maxWatches": self.config.max_watches,
+                    "ringCap": self.config.watch_ring_cap,
                 },
                 "symbolsLoaded": self.symbols.is_some(),
                 "romLoaded": !self.sys.rom().is_empty(),
@@ -670,6 +841,64 @@ impl Engine {
 
     fn emit_resumed(&self) {
         self.emit("emulator/resumed", Map::new());
+    }
+
+    /// Emit the `emulator/stopped` for a **bounded frame advance** — `run_frames` or `press` — choosing the
+    /// stop *condition* and carrying the params that identify which instance of it fired.
+    ///
+    /// Two conditions can end one of these runs, and §11.7's house rule decides how each is spelled:
+    ///
+    /// * **the frame count ran out** → `reason: "runFrames"`, with `frames` and `deadlineReached: true`.
+    ///   §3 was widened by §11.7 so this value covers `emulator/press` as well as `emulator/run_frames`:
+    ///   *"`reason` names the condition that ended the run, never the method that drove it."* A ninth enum
+    ///   value for `press` was drafted and refused — it would have made this enum name a **caller** for the
+    ///   first time, and would still not have said *what* was pressed.
+    /// * **a `stopAfter` watch matched its threshold** → `reason: "watchpoint"` with `watch` naming it.
+    ///   `frames` is omitted, because §3 requires it only for `runFrames` and this run did not end on its
+    ///   frame count; `deadlineReached` is `false`, because the run ended on a condition, not on its bound.
+    ///
+    /// `buttons`/`port` are the CR-9 half and are passed in by `press` alone. **The rule that they are
+    /// present iff a press drove the advance is behavioural and cannot be schema-enforced** — the event
+    /// deliberately carries no method discriminator, which is the cost §11.7 records rather than hides. The
+    /// enforceable half, that the two travel together, is a `dependentRequired` in the schema *and* is
+    /// structural here: they enter as one `Option` of a pair and there is no path that inserts one alone.
+    fn emit_run_stop(
+        &self,
+        run: &Advanced,
+        pc: u32,
+        frames: u64,
+        input: Option<(&[String], usize)>,
+    ) {
+        let mut extra = Map::new();
+        if let Some((buttons, port)) = input {
+            extra.insert("buttons".into(), json!(buttons));
+            extra.insert("port".into(), json!(port));
+        }
+        if let Some(id) = run.stopped_by {
+            extra.insert("deadlineReached".into(), json!(false));
+            extra.insert("watch".into(), json!(watch_wire_id(id)));
+            self.emit_stopped("watchpoint", pc, extra);
+            return;
+        }
+        extra.insert("frames".into(), json!(frames));
+        extra.insert("deadlineReached".into(), json!(true));
+        self.emit_stopped("runFrames", pc, extra);
+    }
+
+    /// Whole emulated frames a bounded advance actually completed, as the reply must report them.
+    ///
+    /// **The one place the contract's shape forced a rounding, recorded rather than hidden.** Both
+    /// `run_frames.frames` and `press.frames` are `"Frames actually advanced"` with `minimum: 1`, which was
+    /// exact while the only way a bounded advance could end was by exhausting its count. A `stopAfter` watch
+    /// can now end one inside its first frame, where the truthful whole-frame count is **0** and the schema
+    /// has no way to say so. `frameToken` in the same reply carries the machine's real coordinate and is not
+    /// rounded, and the `emulator/stopped` event for such a run omits `frames` entirely (it is required only
+    /// for `reason: "runFrames"`), so nothing that *can* be exact is made vague by this.
+    fn frames_advanced(&self, run: &Advanced, requested: u64, mclk_before: u64) -> u64 {
+        if run.stopped_by.is_none() {
+            return requested;
+        }
+        (self.sys.scheduler().now().saturating_sub(mclk_before) / MCLK_PER_FRAME).max(1)
     }
 
     // ---------------------------------------------------------------- helpers
@@ -853,18 +1082,18 @@ impl Engine {
         };
         self.running = true;
         self.emit_resumed();
-        self.advance(frames);
+        let mclk_before = self.sys.scheduler().now();
+        let run = self.advance(frames);
         self.running = false;
+        let frames = self.frames_advanced(&run, frames, mclk_before);
         let pc = self.sys.cpu_regs().pc;
         // §3, §8 item 13: a completed `run_frames` is **`runFrames`**, not the nearest-looking `step`.
         // (CR-1 raised the gap — the enum had no value for a bounded frame advance — and was adopted on
         // 2026-08-14 as exactly this spelling, matching the existing `runTo`/`runToScanline`.) §3 pins
         // the two additive params with it: `frames` is REQUIRED here, and `deadlineReached` is always
-        // `true`, the bound being the frame count itself.
-        let mut extra = Map::new();
-        extra.insert("frames".into(), json!(frames));
-        extra.insert("deadlineReached".into(), json!(true));
-        self.emit_stopped("runFrames", pc, extra);
+        // `true`, the bound being the frame count itself — unless a `stopAfter` watch ended the run first,
+        // in which case the condition that ended it was the watch and `emit_run_stop` says so.
+        self.emit_run_stop(&run, pc, frames, None);
         Ok(json!({
             "frames": frames,
             "frameToken": self.frame(),
@@ -884,12 +1113,22 @@ impl Engine {
         };
         self.running = true;
         self.emit_resumed();
-        let record = self.advance_until(max_frames, |pc, _| pc == target);
+        let run = self.advance_until(max_frames, |pc, _| pc == target);
+        let record = run.record;
         self.running = false;
+        // A `stopAfter` watch can end this run too, and when it does the run reached neither its target nor
+        // its bound. §6 answers that case by attribution: the halt names its watch, and `runTo` would be a
+        // knowing mislabel — the same class of error §8 item 13 names for `step` on a frame advance.
         let mut extra = Map::new();
-        extra.insert("target".into(), json!(hex::addr(target)));
-        extra.insert("deadlineReached".into(), json!(record.timed_out()));
-        self.emit_stopped("runTo", record.pc, extra);
+        if let Some(id) = run.stopped_by {
+            extra.insert("deadlineReached".into(), json!(false));
+            extra.insert("watch".into(), json!(watch_wire_id(id)));
+            self.emit_stopped("watchpoint", record.pc, extra);
+        } else {
+            extra.insert("target".into(), json!(hex::addr(target)));
+            extra.insert("deadlineReached".into(), json!(!run.predicate_fired));
+            self.emit_stopped("runTo", record.pc, extra);
+        }
 
         // No `stoppedAtFrame`/`stoppedAtMclk`. They would be the envelope stamp (§2.2) spelled twice:
         // `record` is captured at the halt, and the stamp is computed on the same engine thread the
@@ -900,9 +1139,14 @@ impl Engine {
         // stamp inside the result teaches clients that the stamp is not the answer, which is the one
         // lesson D11 exists to prevent. (CR-13, ruled 2026-08-15 —
         // `docs/2026-08-15-fable-ruling-cr13-cr14.md`; §6's row for this method is unchanged by it.)
+        //
+        // **`reached` is the predicate's own verdict, never the sink's.** Since a `stopAfter` watch joined
+        // the Fanout, `StopRecord::fired` means only "*something* asked to stop", and reading it here would
+        // report a target as reached because an unrelated watch halted the run — the ambiguous-success
+        // defect `StopReason` was split in two to prevent, rebuilt one level up.
         let mut out = json!({
             "target": hex::addr(target),
-            "reached": record.fired(),
+            "reached": run.predicate_fired,
             "pc": hex::addr(record.pc),
             "maxFrames": max_frames,
         });
@@ -910,7 +1154,13 @@ impl Engine {
             out["symbol"] = json!(name);
             out["symbolDisp"] = json!(disp);
         }
-        if record.timed_out() {
+        if let Some(id) = run.stopped_by {
+            out["caveat"] = json!(format!(
+                "the target PC was never reached — watch {} hit its stopAfter threshold and ended the \
+                 run first, so NOTHING about the machine state follows from where it stopped",
+                watch_wire_id(id)
+            ));
+        } else if !run.predicate_fired {
             out["caveat"] = json!(
                 "the target PC was never reached within maxFrames — the run ended on its bound, so \
                  NOTHING about the machine state follows from where it stopped"
@@ -1206,25 +1456,28 @@ impl Engine {
         self.sys.set_pad(port, pad);
         self.running = true;
         self.emit_resumed();
-        self.advance(frames);
+        let mclk_before = self.sys.scheduler().now();
+        let run = self.advance(frames);
         self.running = false;
+        let frames = self.frames_advanced(&run, frames, mclk_before);
         // Restore exactly the held set — a tap must not leak into later frames, and must not clear a
         // button the client is separately holding (nor one the human is physically holding).
         self.apply_pads();
         let pc = self.sys.cpu_regs().pc;
         // A tap advances whole **frames**, so `step` is affirmatively wrong: §3 pins it as "one
-        // instruction, or one instruction-shaped unit … **not** the value for a frame advance".
-        // `runFrames` is merely imprecise — this was not an `emulator/run_frames` call — and the enum is
-        // closed, so emitting a new value unilaterally is the invention §8 forbids. Between a value §3
-        // rules out and the nearest admissible one, the nearest admissible one wins: a client watching
-        // the stream sees "a bounded frame advance completed", which is true, instead of "an instruction
-        // completed", which is not. The residual ambiguity — *which method* drove the advance — is
-        // raised as CR-9 (`docs/2026-08-14-aether-change-requests.md`) and is the owner's to rule on;
-        // this comment is the record of the choice, not a licence to keep it if the ruling differs.
-        let mut extra = Map::new();
-        extra.insert("frames".into(), json!(frames));
-        extra.insert("deadlineReached".into(), json!(true));
-        self.emit_stopped("runFrames", pc, extra);
+        // instruction, or one instruction-shaped unit … **not** the value for a frame advance". This server
+        // emitted `runFrames` here before CR-9 was ruled on, calling it "merely imprecise" and recording the
+        // residual ambiguity — *which method* drove the advance — as the open question.
+        //
+        // **CR-9 ruled that `runFrames` was not imprecise but exactly right, and that the missing half was
+        // never the enum.** §3 now defines the value by its condition — "a bounded frame advance ran to
+        // completion — `emulator/run_frames`, `emulator/press`, or any future method whose stop condition is
+        // an exhausted frame count" — and the two drafted options were both refused: a ninth enum value
+        // would have made this enum name a *caller* for the first time, and a bare `reason: "press"` still
+        // would not have said *what* was pressed or on which pad, which is precisely what a subscriber that
+        // was not the caller cannot otherwise recover. So the input rides as params, and this is the one
+        // call site that supplies them.
+        self.emit_run_stop(&run, pc, frames, Some((&buttons, port)));
         Ok(json!({
             "buttons": buttons,
             "frames": frames,
@@ -1792,6 +2045,347 @@ impl Engine {
         // analogue here: nothing was restored, nothing was evicted, and no id changed meaning.
         Ok(json!({"removed": before - self.checkpoints.len()}))
     }
+
+    // ------------------------------------------------------- watchpoints (§6, CR-11 / CR-12)
+    //
+    // **None of the four is subject to §6's run-control state rule**, and §6 says so in as many words:
+    // arming and clearing "mutate an **observer**, not the timeline", and `watchpoint_list`/`watchpoint_hits`
+    // are pure reads. The one case that genuinely differs — a `stopAfter` watch armed while something else
+    // is running the machine — is answered by *attribution* rather than by a gate: the halt always names its
+    // watch (`emit_run_stop`). Refusing to arm while free-running would force a client to pause, arm and
+    // resume, which is the machine-state change §5 forbids a server to make on a caller's behalf.
+    //
+    // **Hits are polled and never pushed**, and this server defines no per-hit event. The volumes are the
+    // argument and they are this repo's own: 4,923,206 CRAM writes over 120 frames in one test ROM. Pushing
+    // that would feed one bounded lossy stage (the ring) into another (the per-connection event queue) and
+    // move `droppedEvents` for reasons having nothing to do with a client's ability to keep up — degrading
+    // the exact signal D17 defines for `stopped` and `romReloaded`. The one push this capability needs
+    // already exists: `stopped {reason:"watchpoint", watch}`.
+
+    fn watchpoint_add(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let space = parse_watch_space(params)?;
+        // §6: a symbol names a 68000 address, and a VDP-internal byte address has no symbol. Checked before
+        // resolution so the refusal names the real mistake instead of "no symbol named …".
+        if params.get("symbol").is_some() && space != WatchSpace::Bus {
+            return Err(RpcError::invalid_params(format!(
+                "`symbol` is valid only with space \"bus\" — a VDP-internal byte address has no symbol \
+                 (got space {:?})",
+                space_name(space)
+            )));
+        }
+        let addr = self.resolve_target(params)?;
+        let len = match params.get("len") {
+            None => 1,
+            Some(v) => hex::parse_count("len", v, 1, MAX_WATCH_LEN)?,
+        };
+        // A range whose **end** runs off the bus is refused rather than clipped: a clipped watch reports a
+        // negative finding about addresses it never looked at, which is the one answer this instrument must
+        // never be able to give. `resolve_target` has already bounded the *base* to the 68000's 24 bits for
+        // every space — that check is shared and is why the VDP spaces need no ceiling of their own here,
+        // a base under 24 bits plus a `len` the schema caps at 16 MiB cannot leave a `u32`.
+        let hi = u64::from(addr) + len - 1;
+        if space == WatchSpace::Bus && hi > u64::from(BUS_ADDR_MAX) {
+            return Err(out_of_range(
+                addr,
+                "the watched range would run past the end of the 68000's 24-bit address space",
+            ));
+        }
+        let op = parse_watch_op(params)?;
+        let (mode, census_key) = parse_watch_mode(params)?;
+        let stop_after = match params.get("stopAfter") {
+            None => None,
+            Some(v) => Some(hex::parse_count("stopAfter", v, 1, u64::MAX)?),
+        };
+        let label =
+            match params.get("label") {
+                None | Some(Value::Null) => String::new(),
+                Some(Value::String(s)) => s.clone(),
+                Some(_) => return Err(RpcError::invalid_params(
+                    "`label` must be a string (it is carried back verbatim and never interpreted)",
+                )),
+            };
+
+        // **D13 rule 3, verbatim.** Checked last, so a request that is *also* malformed is told about the
+        // malformation rather than about a cap it would not have reached anyway — and checked at all,
+        // because the alternative failure is the worst this instrument has: a silently-dropped watch reads
+        // out as `seen` positive and `matched` zero, which is exactly what a genuine negative finding looks
+        // like. Never grow past the number, never evict a handle a client is still holding.
+        let cap = self.config.max_watches;
+        let count = self.watchpoints.watch_count();
+        if count >= cap {
+            return Err(RpcError::invalid_state(
+                "watchCapReached",
+                format!(
+                    "all {cap} watch slots are in use; make room first: emulator/watchpoint_clear"
+                ),
+                json!({"cap": cap, "count": count}),
+            ));
+        }
+
+        let hi = hi as u32;
+        let mut w = match space {
+            WatchSpace::Bus => Watch::bus(addr..=hi, op, label.clone()),
+            other => Watch::vdp(other, addr..=hi, op, label.clone()),
+        }
+        .mode(mode);
+        if let Some(n) = stop_after {
+            w = w.stop_after(n);
+        }
+        let id = self.watchpoints.add(w);
+        self.watches_issued = self.watches_issued.max(id.0 + 1);
+
+        // Exactly the schematized keys, and the resolved values rather than the caller's: `op` says what
+        // `read`/`write` actually became, so a caller that supplied neither is told it got a write watch.
+        let mut out = Map::new();
+        out.insert("watch".into(), json!(watch_wire_id(id)));
+        out.insert("space".into(), json!(space_name(space)));
+        out.insert("addr".into(), json!(hex::addr(addr)));
+        out.insert("len".into(), json!(len));
+        out.insert("op".into(), json!(op_name(op)));
+        out.insert("mode".into(), json!(mode_name(mode)));
+        if let Some(k) = census_key {
+            // Always `Some` here: `parse_watch_mode` is this path's only constructor and it accepts exactly
+            // the three spellings §6 exposes.
+            out.insert("censusKey".into(), json!(census_key_name(k)));
+        }
+        if let Some(n) = stop_after {
+            out.insert("stopAfter".into(), json!(n));
+        }
+        if !label.is_empty() {
+            out.insert("label".into(), json!(label));
+        }
+        Ok(Value::Object(out))
+    }
+
+    fn watchpoint_clear(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let all = match params.get("all") {
+            None => false,
+            Some(Value::Bool(b)) => *b,
+            Some(_) => return Err(RpcError::invalid_params("`all` must be a boolean (D9)")),
+        };
+        if all {
+            if params.get("watch").is_some() {
+                return Err(RpcError::invalid_params(
+                    "`watch` and `all` are mutually exclusive — pass one",
+                ));
+            }
+            let removed = self.watchpoints.watch_count();
+            self.watchpoints.clear();
+            return Ok(json!({"removed": removed}));
+        }
+        let handle = parse_watch_handle(params, "watch")?;
+        // **Deliberately permissive, and deliberately unlike the `watch` filter on `watchpoint_hits`.**
+        // §6.1's rule for `checkpoint_drop` applies here for §6.1's reason: deletion is idempotent, and an
+        // error a client must learn to swallow teaches clients to swallow errors. `removed: 0` is a
+        // complete, machine-readable answer to "is it gone?" for a handle that was retired, was never
+        // issued, or was never a handle at all. Nothing was evicted and no id changed meaning.
+        let removed = match resolve_watch_handle(&handle) {
+            Some(id) => usize::from(self.watchpoints.remove(id)),
+            None => 0,
+        };
+        // Recorded hits are **not** deleted with the watch. A destructive clear would let one client erase
+        // another's evidence on a shared bus, and it is what makes a retired handle legible: its hits keep
+        // naming it while `watchpoint_list` no longer does, and ids are never reused, so that test cannot
+        // give a false negative.
+        Ok(json!({ "removed": removed }))
+    }
+
+    fn watchpoint_list(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let reports = self.watchpoints.watches();
+        let total = reports.len();
+        // The cursor is a **watch handle**, resolved to the id it stands for: "resume at the first id
+        // strictly greater than this". Ids are monotonic and never reused, so a watch cleared under an
+        // outstanding cursor cannot make the next page step over a live one — the positional failure §2.4
+        // clause (c) forbids.
+        let cursor = match params.get("cursor") {
+            None => None,
+            Some(v) => Some(self.parse_watch_cursor(v)?),
+        };
+        // House ceiling 4096, the same one `read_memory` and `watchpoint_hits` carry. The default is the
+        // watch cap: there can never be more live watches than that, so a bigger page could not return more.
+        let limit = match params.get("limit") {
+            None => self.config.max_watches,
+            Some(v) => hex::parse_count("limit", v, 1, MAX_PAGE)? as usize,
+        };
+        let after = cursor.map_or(0, |c| c.0 + 1);
+        let skipped = reports.iter().filter(|r| r.id.0 < after).count();
+        let page: Vec<&WatchReport> = reports
+            .iter()
+            .filter(|r| r.id.0 >= after)
+            .take(limit)
+            .collect();
+        let next_cursor = page.last().map(|r| r.id);
+        let items: Vec<Value> = page.iter().map(|r| watch_report_json(r)).collect();
+
+        let bounded = rpc::bounded_array(items, total, skipped, limit);
+        let mut out = Map::new();
+        // §2.4's **flat** spelling, the same one `checkpoint_list` uses: the list here *is* the whole
+        // result, so wrapping it in a `boundedList` container would buy one level of indirection and
+        // nothing else. `total`/`returned`/`truncated` are required even when the page is complete.
+        out.insert("watches".into(), bounded["items"].clone());
+        out.insert("total".into(), bounded["total"].clone());
+        out.insert("returned".into(), bounded["returned"].clone());
+        out.insert("limit".into(), bounded["limit"].clone());
+        out.insert("truncated".into(), bounded["truncated"].clone());
+        if bounded["truncated"] == json!(true) {
+            if let Some(id) = next_cursor {
+                out.insert("cursor".into(), json!(watch_wire_id(id)));
+            }
+        }
+        // The instrument is shared with the player's own panel, which holds a `&mut Watchpoints` and is not
+        // limited to the three census keys §6 exposes. A watch grouped by one of core's other four is
+        // reported without a `censusKey` — never relabelled as the nearest exposed one, which would put a
+        // wrong name on a correct number — and this says so, because a census with no key is otherwise a
+        // reader's puzzle. §2.4: optional, singular, surfaced verbatim, never parsed.
+        if page
+            .iter()
+            .any(|r| matches!(r.mode, WatchMode::Census(k) if census_key_name(k).is_none()))
+        {
+            out.insert(
+                "caveat".into(),
+                json!(
+                    "at least one listed watch groups by a census key this bus does not expose, so its                      `censusKey` is absent while its `census` counts are real — the watch was armed                      locally rather than over this socket"
+                ),
+            );
+        }
+        Ok(Value::Object(out))
+    }
+
+    fn watchpoint_hits(&mut self, params: &Value) -> Result<Value, RpcError> {
+        // **`hits()`, never `take_hits()`.** A draining read is one client stealing another's evidence on a
+        // shared bus — the same hazard §6.1 refuses for checkpoints — and it would make the reply's own
+        // `total` unreproducible: a second identical call would answer differently for no reason the client
+        // could see.
+        let filter = match params.get("watch") {
+            None => None,
+            Some(_) => {
+                let handle = parse_watch_handle(params, "watch")?;
+                // Unlike `watchpoint_clear`, this one refuses a handle this server could never have issued.
+                // The distinction is decidable and it matters: a **retired** handle must keep working here,
+                // because clearing a watch does not delete its hits and reading them back is how a stale
+                // instrument's evidence stays distinguishable from a live one's. A handle that was never
+                // issued is a typo, and answering a typo with an honest-looking empty page is exactly the
+                // silent wrong answer this surface exists to prevent.
+                Some(self.resolve_issued_handle(&handle, "watch")?)
+            }
+        };
+        let cursor = match params.get("cursor") {
+            None => None,
+            Some(v) => Some(parse_cursor(v, u64::MAX)?),
+        };
+        let limit = match params.get("limit") {
+            None => DEFAULT_HITS_PAGE,
+            Some(v) => hex::parse_count("limit", v, 1, MAX_PAGE)? as usize,
+        };
+
+        let hits = self.watchpoints.hits();
+        let matching: Vec<&WatchHit> = hits
+            .iter()
+            .filter(|h| filter.is_none_or(|w| h.watch == w))
+            .collect();
+        // §2.4 clause (a)'s `total`: hits the ring currently **holds** that match this query. Not `matched`
+        // (accesses, including ones no ring stored) and not `dropped` (hits the ring has discarded). Three
+        // numbers, three questions.
+        let total = matching.len();
+        let after = cursor.map_or(0, |c| c + 1);
+        let skipped = matching.iter().filter(|h| h.seq < after).count();
+        let page: Vec<&WatchHit> = matching
+            .into_iter()
+            .filter(|h| h.seq >= after)
+            .take(limit)
+            .collect();
+        let next_cursor = page.last().map(|h| h.seq);
+        let items: Vec<Value> = page
+            .iter()
+            .map(|h| self.watch_hit_json(h))
+            .collect::<Vec<_>>();
+
+        let bounded = rpc::bounded_array(items, total, skipped, limit);
+        let mut out = Map::new();
+        out.insert("hits".into(), bounded["items"].clone());
+        out.insert("total".into(), bounded["total"].clone());
+        out.insert("returned".into(), bounded["returned"].clone());
+        out.insert("limit".into(), bounded["limit"].clone());
+        out.insert("truncated".into(), bounded["truncated"].clone());
+        if bounded["truncated"] == json!(true) {
+            if let Some(seq) = next_cursor {
+                out.insert("cursor".into(), json!(seq.to_string()));
+            }
+        }
+        // **The three honesty numbers, and they are three different questions.** `dropped` is loss at record
+        // time and rides in the body rather than the envelope because it is an *instrument* fact — one
+        // number, identical for every client — unlike `droppedEvents` (§2.3), which is per-connection.
+        // `seen` is the structural negative control: `seen > 0` with `matched == 0` is a live instrument
+        // that found nothing, while `seen == 0` is an instrument that was never attached to the run and a
+        // zero from it means nothing at all. `matched` counts accesses across every mode, including the
+        // census modes that store no hit — so it is a count of writes and never a measure of change.
+        out.insert("dropped".into(), json!(self.watchpoints.dropped()));
+        out.insert("seen".into(), json!(self.watchpoints.seen()));
+        out.insert("matched".into(), json!(self.watchpoints.matched()));
+        Ok(Value::Object(out))
+    }
+
+    /// One recorded hit, in exactly the schematized keys.
+    ///
+    /// The two presence rules are **structural**, not stylistic, and are enforced here as the schema
+    /// enforces them on the wire: `old` is emitted **iff** the space is not `bus`, because `on_event` builds
+    /// every bus hit with `old: 0` unconditionally (the 68000 bus event stream carries no prior value) and
+    /// emitting that zero would assert something false; `fc` is emitted **iff** the space *is* `bus`,
+    /// because `on_vdp_write` hardwires `fc: 0` and a VDP-internal write's CPU-vs-DMA attribution is `via`.
+    /// Where `old` is present, `old != value` is the exact per-write change test — the measurement a raw
+    /// write count misleads about.
+    fn watch_hit_json(&self, h: &WatchHit) -> Value {
+        let mut e = Map::new();
+        e.insert("watch".into(), json!(watch_wire_id(h.watch)));
+        e.insert("space".into(), json!(space_name(h.space)));
+        e.insert("addr".into(), json!(hex::addr(h.addr)));
+        e.insert("value".into(), json!(hex::addr(h.value)));
+        if h.space == WatchSpace::Bus {
+            e.insert("fc".into(), json!(h.fc));
+        } else {
+            e.insert("old".into(), json!(hex::addr(h.old)));
+        }
+        e.insert("size".into(), json!(h.size.bytes()));
+        e.insert("op".into(), json!(bus_op_name(h.op)));
+        e.insert("via".into(), json!(via_name(h.via)));
+        e.insert("pc".into(), json!(hex::addr(h.pc)));
+        if let Some((name, disp)) = self.symbol_at(h.pc) {
+            e.insert("symbol".into(), json!(name));
+            e.insert("symbolDisp".into(), json!(disp));
+        }
+        // `frame`/`mclk` live **inside** the hit and never at the top level of the result, where §2.2's
+        // envelope stamp would overwrite them with the machine's *current* coordinate — a silent wrong
+        // answer of exactly the class D11 exists to prevent.
+        e.insert("frame".into(), json!(h.frame));
+        e.insert("mclk".into(), json!(h.mclk));
+        e.insert("seq".into(), json!(h.seq));
+        Value::Object(e)
+    }
+
+    /// A `watchpoint_list` continuation token, resolved back to the watch id it stands for.
+    fn parse_watch_cursor(&self, v: &Value) -> Result<WatchId, RpcError> {
+        let handle = match v {
+            Value::String(s) if !s.is_empty() => s.clone(),
+            _ => {
+                return Err(RpcError::invalid_params(
+                    "`cursor` must be the non-empty opaque string this server issued",
+                ))
+            }
+        };
+        self.resolve_issued_handle(&handle, "cursor")
+    }
+
+    /// Resolve a handle this server **must have issued**, refusing anything else by name.
+    fn resolve_issued_handle(&self, handle: &str, field: &str) -> Result<WatchId, RpcError> {
+        resolve_watch_handle(handle)
+            .filter(|id| id.0 < self.watches_issued)
+            .ok_or_else(|| {
+                RpcError::invalid_params(format!(
+                    "`{field}`: {handle:?} is not a handle this server issued — pass back one \
+                     emulator/watchpoint_add returned"
+                ))
+            })
+    }
 }
 
 // -------------------------------------------------------------------- free functions
@@ -1898,6 +2492,299 @@ fn no_symbols() -> RpcError {
         code::NO_SYMBOLS_LOADED,
         "no symbol table is loaded — call emulator/load_symbols first",
     )
+}
+
+// -------------------------------------------------------------------- watchpoints (§6)
+
+/// House ceiling on one page of a bounded list — the same 4096 `read_memory` carries. A `limit` bounded on
+/// one list and unbounded on its twin is two policies wearing one name.
+const MAX_PAGE: u64 = 4096;
+/// `watchpoint_hits`' catalog default page size.
+const DEFAULT_HITS_PAGE: usize = 100;
+/// Ceiling on one watched range, from the schema (`len` ≤ 16 MiB).
+const MAX_WATCH_LEN: u64 = 16_777_216;
+
+/// A watch id **as it goes on the wire**: an opaque string (D9 category 4, §8 item 16).
+///
+/// The `w` prefix is not decoration. `checkpoint`'s handles are bare decimal strings and §6.1's own
+/// commentary concedes that quoting a number "does not *stop* a determined client — the value is still an id
+/// in decimal — but it stops the accident". A handle that is not a number at all stops the accident harder,
+/// and this surface is where it matters most: the schema types the handle as a string in **five** places,
+/// §8 item 16 records this server having shipped a numeric handle once already, and a watch id is precisely
+/// the value §6 says cannot be an address or an index — one address may carry several watches, and the same
+/// number names four different things across the four spaces.
+fn watch_wire_id(id: WatchId) -> String {
+    format!("w{}", id.0)
+}
+
+/// The inverse of [`watch_wire_id`]. `None` for any string this server could not have spelled.
+///
+/// Deliberately strict about the spelling it accepts — no bare-number fallback, unlike [`parse_cursor`]'s
+/// migration allowance. This handle has never had another spelling, so leniency here would buy nothing and
+/// would quietly bless the `{"watch": 3}` that D9 category 4 exists to forbid.
+fn resolve_watch_handle(handle: &str) -> Option<WatchId> {
+    handle.strip_prefix('w')?.parse::<u32>().ok().map(WatchId)
+}
+
+/// A required opaque-string handle param. Strict — a string only, for [`parse_checkpoint_id`]'s reason:
+/// this is the handle a human hand-types into the next call, and typing `{"watch": 3}` *is* the arithmetic
+/// on a handle that D9 category 4 forbids.
+fn parse_watch_handle(params: &Value, field: &str) -> Result<String, RpcError> {
+    match params.get(field) {
+        Some(Value::String(s)) if !s.is_empty() => Ok(s.clone()),
+        Some(Value::String(_)) => Err(RpcError::invalid_params(format!(
+            "`{field}` must be a non-empty string — pass back the handle emulator/watchpoint_add returned"
+        ))),
+        None | Some(Value::Null) => Err(RpcError::invalid_params(format!(
+            "`{field}` (the opaque string handle returned by emulator/watchpoint_add) is required"
+        ))),
+        Some(other) => Err(RpcError::invalid_params(format!(
+            "`{field}` must be a JSON string — the handle is opaque and a client must not compute on it \
+             (D9 category 4); got {}",
+            hex::kind_of(other)
+        ))),
+    }
+}
+
+fn parse_watch_space(params: &Value) -> Result<WatchSpace, RpcError> {
+    match params.get("space") {
+        None | Some(Value::Null) => Ok(WatchSpace::Bus),
+        Some(Value::String(s)) => match s.as_str() {
+            "bus" => Ok(WatchSpace::Bus),
+            "vram" => Ok(WatchSpace::Vram),
+            "cram" => Ok(WatchSpace::Cram),
+            "vsram" => Ok(WatchSpace::Vsram),
+            other => Err(RpcError::invalid_params(format!(
+                "`space` must be one of \"bus\", \"vram\", \"cram\", \"vsram\"; got {other:?}"
+            ))),
+        },
+        Some(other) => Err(RpcError::invalid_params(format!(
+            "`space` must be a string; got {}",
+            hex::kind_of(other)
+        ))),
+    }
+}
+
+/// Resolve `read`/`write` into the op filter §6 pins.
+///
+/// **Neither given means write-only** — the recorded purpose of this instrument is *"who wrote this?"* — and
+/// both true means any access. A write watch also matches the 68000 TAS (its read-modify-write store);
+/// a read watch does not.
+///
+/// Both explicitly `false` is **refused**, not honoured. It arms a watch that can never match, whose reading
+/// is `seen` positive and `matched` zero — indistinguishable on the wire from a live instrument that found
+/// nothing, which is the single failure mode this whole surface exists to make impossible.
+fn parse_watch_op(params: &Value) -> Result<WatchOp, RpcError> {
+    let flag = |name: &str| -> Result<Option<bool>, RpcError> {
+        match params.get(name) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::Bool(b)) => Ok(Some(*b)),
+            Some(other) => Err(RpcError::invalid_params(format!(
+                "`{name}` must be a boolean (D9); got {}",
+                hex::kind_of(other)
+            ))),
+        }
+    };
+    let (read, write) = (flag("read")?, flag("write")?);
+    match (read.unwrap_or(false), write.unwrap_or(false)) {
+        (true, true) => Ok(WatchOp::Any),
+        (true, false) => Ok(WatchOp::Read),
+        (false, true) => Ok(WatchOp::Write),
+        // Neither *given* is the documented default; both given as `false` is a request for a watch that
+        // matches nothing, and is named rather than silently turned into a write watch.
+        (false, false) if read.is_none() && write.is_none() => Ok(WatchOp::Write),
+        (false, false) => Err(RpcError::invalid_params(
+            "`read: false, write: false` arms a watch that can never match — omit both for the \
+             write-only default, or set at least one true",
+        )),
+    }
+}
+
+/// Resolve `mode` and `censusKey` together, because neither is legal without the other's agreement.
+///
+/// §6 and the schema both enforce this in **both** directions: a `censusKey` without `mode: "census"` is
+/// `-32602` and MUST NOT be silently ignored — a param this bus quietly dropped would be a caller believing
+/// it asked for a grouping it did not get, which is §5's refuse-and-name ethos applied one level down — and
+/// `mode: "census"` without a key has nothing to group by.
+fn parse_watch_mode(params: &Value) -> Result<(WatchMode, Option<CensusKey>), RpcError> {
+    let key = match params.get("censusKey") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(match s.as_str() {
+            "addr" => CensusKey::Addr,
+            "value" => CensusKey::Value,
+            "via" => CensusKey::Via,
+            other => {
+                return Err(RpcError::invalid_params(format!(
+                    "`censusKey` must be one of \"addr\", \"value\", \"via\"; got {other:?}"
+                )))
+            }
+        }),
+        Some(other) => Err(RpcError::invalid_params(format!(
+            "`censusKey` must be a string; got {}",
+            hex::kind_of(other)
+        )))?,
+    };
+    let census = match params.get("mode") {
+        None | Some(Value::Null) => false,
+        Some(Value::String(s)) => match s.as_str() {
+            "record" => false,
+            "census" => true,
+            other => {
+                return Err(RpcError::invalid_params(format!(
+                    "`mode` must be \"record\" or \"census\"; got {other:?}"
+                )))
+            }
+        },
+        Some(other) => {
+            return Err(RpcError::invalid_params(format!(
+                "`mode` must be a string; got {}",
+                hex::kind_of(other)
+            )))
+        }
+    };
+    match (census, key) {
+        (true, Some(k)) => Ok((WatchMode::Census(k), Some(k))),
+        (true, None) => Err(RpcError::invalid_params(
+            "`mode: \"census\"` requires `censusKey` — a census with no key has nothing to group by",
+        )),
+        (false, Some(_)) => Err(RpcError::invalid_params(
+            "`censusKey` is only meaningful with `mode: \"census\"` and is refused without it rather \
+             than ignored — a param this bus dropped silently would be a caller believing it asked for \
+             a grouping it did not get",
+        )),
+        (false, None) => Ok((WatchMode::Record, None)),
+    }
+}
+
+fn space_name(s: WatchSpace) -> &'static str {
+    match s {
+        WatchSpace::Bus => "bus",
+        WatchSpace::Vram => "vram",
+        WatchSpace::Cram => "cram",
+        WatchSpace::Vsram => "vsram",
+    }
+}
+
+fn op_name(o: WatchOp) -> &'static str {
+    match o {
+        WatchOp::Read => "read",
+        WatchOp::Write => "write",
+        WatchOp::Any => "any",
+    }
+}
+
+/// A recorded access's own op. `tas` is the 68000 read-modify-write store; it matches a write watch and not
+/// a read one, and it is spelled out on the wire rather than folded into `write` — the whole point of a
+/// "who modified this?" watch is that the atomic case is visible.
+fn bus_op_name(o: oracle_core::bus::BusOp) -> &'static str {
+    match o {
+        oracle_core::bus::BusOp::Read => "read",
+        oracle_core::bus::BusOp::Write => "write",
+        oracle_core::bus::BusOp::Tas => "tas",
+    }
+}
+
+fn via_name(v: WatchVia) -> &'static str {
+    match v {
+        WatchVia::Bus => "bus",
+        WatchVia::Direct => "direct",
+        WatchVia::Dma => "dma",
+    }
+}
+
+/// The wire spelling of a mode. Core has a third, [`WatchMode::Count`], which this bus deliberately does
+/// **not** expose: `matched` is required on every hits read and is counted in every mode, so a count-only
+/// watch is what `record` already gives a client that reads `matched` and ignores `hits`.
+fn mode_name(m: WatchMode) -> &'static str {
+    match m {
+        WatchMode::Census(_) => "census",
+        _ => "record",
+    }
+}
+
+/// The wire spelling of a census key, or `None` for one this bus does not expose.
+///
+/// **An `Option` rather than a `_ => "addr"` fallback, and the difference is the whole point.** Core has
+/// seven `CensusKey` variants and §6 exposes three; the other four are reachable on the *shared* instrument,
+/// because the player's panel holds a `&mut Watchpoints` too and could arm one. Mapping an unexposed key to
+/// the nearest exposed spelling would put a **wrong label on a correct number** — a client would read an
+/// `AddrPage(8)` census as an `addr` census and conclude the ROM touches 60 addresses when it touches
+/// 15,000 pages' worth. Omitting the key says "this census is not one you asked for" and the caller's
+/// `caveat` says why.
+fn census_key_name(k: CensusKey) -> Option<&'static str> {
+    match k {
+        CensusKey::Addr => Some("addr"),
+        CensusKey::Value => Some("value"),
+        CensusKey::Via => Some("via"),
+        _ => None,
+    }
+}
+
+/// One `watchpoint_list` entry, in exactly the schematized keys.
+///
+/// `census`, `distinctKeys`, `keyCap`, `keysCapped` and `censusOverflow` are emitted **only** in census
+/// mode. In `record` mode core reports `distinct_keys: 0` and `keys_capped: false`, which are not answers —
+/// they are the absence of a census wearing an answer's clothes, and a client comparing `distinctKeys` to
+/// `matched` across a mixed list would read them as findings.
+///
+/// `keysCapped` and `censusOverflow` are **typed keys, not a caveat**, per §2.4 rule 3: a capped census
+/// makes `distinctKeys` a *lower bound*, and that is a consequence a client must act on.
+fn watch_report_json(r: &WatchReport) -> Value {
+    let mut e = Map::new();
+    e.insert("watch".into(), json!(watch_wire_id(r.id)));
+    if !r.label.is_empty() {
+        e.insert("label".into(), json!(r.label));
+    }
+    e.insert("space".into(), json!(space_name(r.space)));
+    e.insert("addr".into(), json!(hex::addr(*r.range.start())));
+    e.insert(
+        "len".into(),
+        json!(u64::from(*r.range.end() - *r.range.start()) + 1),
+    );
+    e.insert("op".into(), json!(op_name(r.op)));
+    e.insert("mode".into(), json!(mode_name(r.mode)));
+    if let WatchMode::Census(k) = r.mode {
+        // Absent when the key has no wire spelling — see [`census_key_name`]. `watchpoint_list` adds the
+        // `caveat` that explains the hole rather than leaving a reader to guess at a census with no key.
+        if let Some(name) = census_key_name(k) {
+            e.insert("censusKey".into(), json!(name));
+        }
+    }
+    if let Some(n) = r.stop_after {
+        e.insert("stopAfter".into(), json!(n));
+    }
+    // Counted in EVERY mode, including the ones that store nothing. A count of writes, **not** a measure of
+    // how much the value moved — see the census below, and `docs/2026-08-15-watchpoint-bus-surface.md` §2.1.
+    e.insert("matched".into(), json!(r.matched));
+    if let Some(s) = r.first {
+        e.insert("first".into(), watch_stamp_json(&s));
+    }
+    if let Some(s) = r.last {
+        e.insert("last".into(), watch_stamp_json(&s));
+    }
+    if let Some(census) = &r.census {
+        let rows: Vec<Value> = census
+            .iter()
+            .map(|(k, c)| json!({"key": k, "count": c}))
+            .collect();
+        e.insert("census".into(), Value::Array(rows));
+        e.insert("distinctKeys".into(), json!(r.distinct_keys));
+        e.insert("keyCap".into(), json!(r.key_cap));
+        e.insert("keysCapped".into(), json!(r.keys_capped));
+        e.insert("censusOverflow".into(), json!(r.census_overflow));
+    }
+    Value::Object(e)
+}
+
+/// A `first`/`last` coordinate. **Nested**, never spread at the top level of a result: §2.2's envelope stamp
+/// overwrites same-named keys, so a top-level `frame` here would come back as the machine's *now*.
+fn watch_stamp_json(s: &Stamp) -> Value {
+    json!({
+        "pc": hex::addr(s.pc),
+        "frame": s.frame,
+        "mclk": s.mclk,
+        "seq": s.seq,
+    })
 }
 
 /// One `otherMatches` entry, in the **single** item shape §4 pins: `{name, addr, demangled?}`.
