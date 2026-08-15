@@ -13,7 +13,7 @@
 //! Upgrade path (not this slice): swap minifb for `pixels` + `winit` when GPU-composited debug overlays
 //! (watchpoint highlights, bus-legality heatmaps — `docs/2026-07-20-diagnostic-tooling-ideas.md`) are wanted.
 //!
-//! Usage: `cargo run --release -p oracle-frontend -- <rom.bin> [--scale N]`
+//! Usage: `cargo run --release -p oracle-frontend -- <rom.bin> [--scale N] [--aspect tv|square|integer]`
 //!
 //! ## Controls
 //!
@@ -37,10 +37,22 @@
 //! | 0 – 9             | select save-state slot directly |
 //! | `-` / `=`         | output volume down / up (audio builds; repeats while held) |
 //! | M                 | mute toggle (audio builds; remembers the volume level) |
-//! | Left mouse click  | watch the VRAM tile under the clicked pixel ("who wrote this tile?") |
+//! | F3                | toggle the on-screen status line (slot strip, volume, filter, aspect, frame) |
+//! | Left mouse click  | watch what is under the clicked pixel — plane tile, **sprite**, or backdrop |
 //! | W                 | dump recorded watch hits (seq/frame/pc/addr/old→new/via, PC symbolised) + drop count |
 //! | C                 | clear the watch (stop recording write hits) |
 //! | Esc / window-close| quit           |
+//!
+//! The window is **resizable** (so the window manager's own maximise / fullscreen works), and `--aspect`
+//! chooses how the picture is fitted into it — see [`present`].
+//!
+//! ## On-screen output
+//!
+//! Every message also appears **in the window** ([`overlay`]), because a person who launched a window never
+//! reads stdout — the owner's first real session was spent guessing whether a save had happened. `println!`
+//! is unchanged, so terminal logs and anything parsing them are unaffected; the toast is additional. The
+//! `PAUSED` banner is load-bearing rather than decorative: since the render path started retaining the last
+//! good framebuffer, a paused frontend and a hung one are otherwise pixel-identical.
 //!
 //! The gamepad layout (face buttons → A/B/C, Start, d-pad and left stick → directions, analog deadzone) lives
 //! in one place — the mapping tables at the top of the `gamepad` module — so remapping means editing those
@@ -106,9 +118,14 @@
 //! plane/window tile, its 32-byte VRAM range is armed as a VDP-internal write watch on a *caller-owned*
 //! [`Watchpoints`] (the core never stores it — this stays a zero-diff, frontend-only slice). The run loop
 //! always drives the sink-generic [`System::run_frames_with_sink`] (see "Pixels" above); arming a watch just
-//! composes it into that sink. `W` prints the recorded hits; `C` disarms. Sprite /
-//! backdrop pixels (`cell == None`) report and arm nothing this slice (a documented follow-up). An on-screen
-//! text overlay is out of scope (minifb has no text). Break-on-hit is no longer *blocked*: as of 2026-08-14
+//! composes it into that sink. `W` prints the recorded hits; `C` disarms.
+//!
+//! **Sprites too, as of this slice.** A sprite dot used to print "no tile watch this slice (follow-up)" and
+//! do nothing, which in a Sonic game means almost everything interesting on screen was un-clickable. It now
+//! arms the sprite's *drawing* tile for that dot **and** its 8-byte attribute-table entry, so "who drew
+//! this?" and "who moved this?" both land in the same log; a backdrop dot arms the CRAM entry behind it. The
+//! addressing lives in [`pick`], computed entirely from public core API. Break-on-hit is no longer *blocked*:
+//! as of 2026-08-14
 //! the core's run loop honours a sink's [`oracle_core::bus::BusEventSink::stop_requested`], so a run can end
 //! at the instruction boundary a watch fires on. Wiring that into this loop (pause, then report the
 //! [`oracle_core::system::StopRecord`]) is unbuilt, not impossible — the "the core is frame-batched" reason
@@ -152,6 +169,15 @@ mod sram_file;
 // Opt-in `<rom>.lst` symbol loading — the file half of `oracle_core::symbols`, kept out of the no-I/O core.
 mod symbol_file;
 
+// On-screen output: a self-contained bitmap font, and the notification / status / paused overlay it draws.
+// Nothing in a window ever reads stdout, which is where every message used to go.
+mod font;
+mod overlay;
+// Display geometry — aspect handling, the window-sized presentation blit, and the exact click inverse.
+mod present;
+// Click-to-watch: resolving a clicked dot to armable VRAM/CRAM ranges, sprites included.
+mod pick;
+
 use minifb::{Key, KeyRepeat, MouseButton, MouseMode, ScaleMode, Window, WindowOptions};
 use oracle_core::bus::Fanout;
 use oracle_core::io::Pad;
@@ -159,6 +185,8 @@ use oracle_core::scanline_capture::{Retain, ScanlineCapture};
 use oracle_core::symbols::SymbolTable;
 use oracle_core::system::System;
 use oracle_core::watchpoints::{WatchOp, WatchSpace, WatchVia, Watchpoints};
+use overlay::{Overlay, Status, ACCENT, ERROR, INFO};
+use present::Aspect;
 
 /// Active display height in scanlines (Genesis NTSC active area). Width is queried from the VDP *every frame*
 /// (H32=256 / H40=320) — the game reprograms it after boot, so it is not fixed at reset.
@@ -172,44 +200,26 @@ const MAX_WIDTH: usize = 320;
 /// per-frame write count is small; this is a generous bound (drops are still counted and reported by `W`).
 const WATCH_CAP: usize = 8192;
 
-/// Map a physical window-pixel click `(mx, my)` to a native VDP pixel `(x, y)`, or `None` if the click lands
-/// in the H32 pillarbox or outside the active frame.
-///
-/// The window is fixed at `MAX_WIDTH * scale` wide; the game's native frame is `width` wide (256 H32 / 320
-/// H40) and — under [`ScaleMode::AspectRatioStretch`] with a native-height (224) buffer — displays at exactly
-/// the integer `scale`, horizontally centered. So each axis divides by `scale`, and the horizontal pillarbox
-/// (`(MAX_WIDTH - width) / 2` native pixels each side, zero for H40) is subtracted. `get_mouse_pos` returns
-/// physical window coordinates here (the window uses `Scale::X1`), which is exactly this function's input.
-fn window_to_native(mx: f32, my: f32, scale: usize, width: usize) -> Option<(u16, u16)> {
-    if mx < 0.0 || my < 0.0 || scale == 0 {
-        return None;
-    }
-    let scale_f = scale as f32;
-    let pillarbox = MAX_WIDTH.saturating_sub(width) / 2; // native pixels of left/right box (0 for H40)
-    let nx = mx / scale_f - pillarbox as f32;
-    let ny = my / scale_f;
-    if nx < 0.0 || ny < 0.0 {
-        return None;
-    }
-    let (x, y) = (nx as usize, ny as usize);
-    if x >= width || y >= HEIGHT {
-        return None; // in the pillarbox (past the right edge of native content) or below the frame
-    }
-    Some((x as u16, y as u16))
-}
-
-/// Parsed command line: the ROM path and the integer window scale.
+/// Parsed command line: the ROM path, the initial window scale, and the aspect mode.
 struct Args {
     rom_path: String,
     scale: usize,
+    aspect: Aspect,
 }
 
-/// Parse `<rom.bin> [--scale N]`. Returns a human-readable error string on misuse (the caller prints it and
-/// exits non-zero) — a missing/garbled ROM is a plain error, not a panic, matching the `boot_rom` convention.
+/// Parse `<rom.bin> [--scale N] [--aspect tv|square|integer]`. Returns a human-readable error string on
+/// misuse (the caller prints it and exits non-zero) — a missing/garbled ROM is a plain error, not a panic,
+/// matching the `boot_rom` convention.
 fn parse_args() -> Result<Args, String> {
+    parse_args_from(std::env::args().skip(1))
+}
+
+/// The testable half of [`parse_args`], over an arbitrary argument sequence.
+fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
     let mut rom_path: Option<String> = None;
     let mut scale: usize = 3;
-    let mut it = std::env::args().skip(1);
+    let mut aspect = Aspect::default();
+    let mut it = args.into_iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--scale" => {
@@ -220,6 +230,11 @@ fn parse_args() -> Result<Args, String> {
                     .filter(|&s| (1..=8).contains(&s))
                     .ok_or_else(|| format!("--scale must be an integer 1..=8, got `{v}`"))?;
             }
+            "--aspect" => {
+                let v = it.next().ok_or("--aspect needs a value")?;
+                aspect = Aspect::from_name(&v)
+                    .ok_or_else(|| format!("--aspect must be tv, square or integer, got `{v}`"))?;
+            }
             other if other.starts_with("--") => return Err(format!("unknown flag `{other}`")),
             other => {
                 if rom_path.replace(other.to_string()).is_some() {
@@ -229,7 +244,35 @@ fn parse_args() -> Result<Args, String> {
         }
     }
     let rom_path = rom_path.ok_or("missing <rom.bin>")?;
-    Ok(Args { rom_path, scale })
+    Ok(Args {
+        rom_path,
+        scale,
+        aspect,
+    })
+}
+
+/// Say something to **both** audiences: the terminal log (which scripts, the tests and a developer read) and
+/// the window (which is the only place a person who double-clicked the binary is looking). Every message the
+/// run loop used to `println!` goes through here, so the two can never drift apart.
+fn notify(ov: &mut Overlay, color: u32, msg: impl AsRef<str> + Into<String>) {
+    println!("{}", msg.as_ref());
+    ov.push(msg, color);
+}
+
+/// The same, for failures: `eprintln!` plus a red toast.
+fn notify_err(ov: &mut Overlay, msg: impl AsRef<str> + Into<String>) {
+    eprintln!("{}", msg.as_ref());
+    ov.push(msg, ERROR);
+}
+
+/// Which save-state slots currently have a file on disk. Probed only when it can have changed (a save, a
+/// load, a slot change), never per frame — this is the only thing the slot strip cannot know for itself.
+fn probe_slots(rom_path: &str) -> [bool; save_state::SLOT_COUNT] {
+    let mut out = [false; save_state::SLOT_COUNT];
+    for (slot, occupied) in out.iter_mut().enumerate() {
+        *occupied = save_state::state_path_for(std::path::Path::new(rom_path), slot).exists();
+    }
+    out
 }
 
 /// Number keys 0-9, in slot order: pressing one selects that save-state slot directly. Indexed by slot, so
@@ -402,6 +445,10 @@ struct AudioState {
     /// [`audio::fill_output`]). The main thread owns only the producer half, so it cannot drain the ring
     /// itself — this flag is the hand-off.
     flush: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Name of the console output-filter revision in use, for the on-screen status line. Which revision is
+    /// "correct" is a choice the listener makes (`ORACLE_CONSOLE_FILTER`), so it is worth showing rather than
+    /// leaving in a startup line that has long since scrolled away.
+    filter: &'static str,
     _stream: cpal::Stream,
 }
 
@@ -570,6 +617,7 @@ fn build_audio(device: Option<cpal::Device>) -> Option<AudioState> {
         frame_samples,
         skips: 0,
         flush,
+        filter: console_model.name(),
         _stream: stream,
     })
 }
@@ -579,7 +627,12 @@ fn main() {
         Ok(a) => a,
         Err(e) => {
             eprintln!("error: {e}");
-            eprintln!("usage: oracle-frontend <rom.bin> [--scale N]   (N = 1..=8, default 3)");
+            eprintln!(
+                "usage: oracle-frontend <rom.bin> [--scale N] [--aspect tv|square|integer]\n  \
+                 --scale   N = 1..=8 (default 3) — multiples of the 224-line frame height\n  \
+                 --aspect  tv = the console's own 4:3 (default), square = square pixels, \
+                 integer = square pixels at a whole scale"
+            );
             std::process::exit(2);
         }
     };
@@ -629,15 +682,20 @@ fn main() {
 
     sys.reset();
 
-    // Fixed window sized for the widest mode (H40) at the requested integer scale; minifb scales the
-    // native-resolution frame buffer up to fill it, pillarboxing H32 to keep the aspect ratio correct.
-    let (win_w, win_h) = (MAX_WIDTH * args.scale, HEIGHT * args.scale);
+    // A **resizable** window, presented 1:1 from a window-sized buffer this frontend fills itself
+    // (`ScaleMode::Stretch` with a buffer of exactly the window's size is an identity present). minifb has no
+    // runtime fullscreen call and no way to ask how big the screen is, so "make it fullscreen" is delegated
+    // to the window manager, which `resize: true` is what enables. All the geometry — aspect, letterboxing,
+    // and the exact inverse a click needs — is [`present`]'s, so it stays correct at any size the user drags
+    // the window to. The initial size is `--scale` applied to the frame's height, widened per `--aspect`.
+    let (win_w, win_h) = present::initial_window_size(args.scale, MAX_WIDTH, HEIGHT, args.aspect);
     let mut window = Window::new(
         "oracle-next",
         win_w,
         win_h,
         WindowOptions {
-            scale_mode: ScaleMode::AspectRatioStretch,
+            scale_mode: ScaleMode::Stretch,
+            resize: true,
             ..WindowOptions::default()
         },
     )
@@ -649,8 +707,8 @@ fn main() {
     window.set_target_fps(60);
 
     println!(
-        "window {win_w}x{win_h} (up to {MAX_WIDTH}x{HEIGHT} @ {}x) — keyboard (P1): arrows=D-pad, A/S/D=A/B/C, Enter=Start; Space=pause, .=step, click=watch-tile, W=dump, C=clear, Esc=quit",
-        args.scale
+        "window {win_w}x{win_h}, resizable, aspect {} — keyboard (P1): arrows=D-pad, A/S/D=A/B/C, Enter=Start; Space=pause, .=step, click=watch, W=dump, C=clear, F3=status line, Esc=quit",
+        args.aspect.name()
     );
     println!(
         "save states: F2=save, F4=load, F6/F7=prev/next slot, 0-9=pick slot ({} slots, written next to the ROM as `{}`)",
@@ -687,9 +745,20 @@ fn main() {
     let mut buf: Vec<u32> = vec![0; width * HEIGHT];
     // Scratch copy used only when the crosshair overlay is active, so `buf` stays a clean frame and the
     // XOR-based crosshair cannot accumulate across the repeated presents of a paused frontend.
-    let mut present: Vec<u32> = Vec::new();
+    let mut marked: Vec<u32> = Vec::new();
+    // The window-sized presentation buffer, rebuilt from `buf` every present, plus the blit's column map.
+    // Both are scratch that outlives the loop only so the steady state allocates nothing. The overlay draws
+    // into *this*, never into `buf` — which is the whole reason a re-presented retained frame can never
+    // accumulate overlay ink.
+    let mut screen: Vec<u32> = Vec::new();
+    let mut xmap: Vec<usize> = Vec::new();
     let mut paused = false;
     let mut frame: u64 = 0;
+
+    // On-screen notifications, status line and the paused banner. Everything the loop `println!`s is also
+    // pushed here (see `notify`), because the window is where the user is looking.
+    let mut ov = Overlay::new();
+    let mut slots_on_disk = probe_slots(&args.rom_path);
 
     // The per-scanline pixel path (`F-SCANLINE-CAPTURE`). Attached to **every** run below so the window shows
     // what the VDP drew line by line, against the CRAM live at each line — the only way a mid-frame palette
@@ -723,9 +792,19 @@ fn main() {
     let mut muted = false;
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
+        // The window is resizable, so its geometry is re-derived every iteration rather than assumed. The
+        // click inverse below and the present at the bottom both use this same rectangle.
+        let (win_w, win_h) = window.get_size();
+        let view = present::dest_rect(win_w, win_h, width, HEIGHT, args.aspect);
+
         // Edge-triggered controls (fire once per physical press, not every frame held).
         if window.is_key_pressed(Key::Space, KeyRepeat::No) {
             paused = !paused;
+            // No toast: the PAUSED banner is the feedback, and it stays up for as long as the state lasts.
+            println!("{}", if paused { "paused" } else { "resumed" });
+        }
+        if window.is_key_pressed(Key::F3, KeyRepeat::No) {
+            ov.status_line = !ov.status_line;
         }
         let step = window.is_key_pressed(Key::Period, KeyRepeat::No);
 
@@ -737,36 +816,33 @@ fn main() {
         let clicked = mouse_down && !prev_mouse_down;
         prev_mouse_down = mouse_down;
         if clicked {
-            // The width of the frame *currently on screen* — the one the user clicked into. That is the width
-            // the last successful blit reported, not a fresh `render_line` query, which would answer for the
-            // mode the VDP is in *now* (a post-hoc read; see `blit_capture`).
-            let display_width = width;
+            // `view` is the rectangle the frame *currently on screen* occupies, derived from the width the
+            // last successful blit reported — not a fresh `render_line` query, which would answer for the
+            // mode the VDP is in *now* (a post-hoc read; see `blit_capture`). `window_to_native` is the exact
+            // inverse of the blit that painted it, so this is correct at any window size.
             if let Some((mx, my)) = window.get_mouse_pos(MouseMode::Discard) {
-                if let Some((x, y)) = window_to_native(mx, my, args.scale, display_width) {
-                    match sys.vdp().pixel_attribution(x, y).cell {
-                        Some(cell) => {
-                            let lo = u32::from(cell.tile) * 32;
-                            let hi = lo + 31;
-                            watchpoints.clear();
-                            watchpoints.add_vdp_watch(
-                                WatchSpace::Vram,
-                                lo..=hi,
-                                WatchOp::Write,
-                                format!("tile ${:03X}", cell.tile),
-                            );
-                            watch_armed = true;
-                            watched_pixel = Some((x, y));
-                            println!(
-                                "watching tile ${:03X} (palette {}) @ VRAM ${lo:04X}-${hi:04X} — click ({x},{y})",
-                                cell.tile, cell.palette
-                            );
-                        }
-                        None => {
-                            println!(
-                                "pixel ({x},{y}) is a sprite/backdrop dot — no tile watch this slice (follow-up)"
-                            );
-                        }
+                if let Some((x, y)) = present::window_to_native(mx, my, view, width, HEIGHT) {
+                    // Resolve the dot to whatever it is — plane tile, sprite (its drawing pattern *and* its
+                    // attribute-table entry), or backdrop palette entry. A sprite dot used to arm nothing.
+                    let p = pick::resolve(sys.vdp(), x, y);
+                    watchpoints.clear();
+                    for t in &p.targets {
+                        let space = match t.space {
+                            pick::Space::Vram => WatchSpace::Vram,
+                            pick::Space::Cram => WatchSpace::Cram,
+                        };
+                        watchpoints.add_vdp_watch(
+                            space,
+                            t.lo..=t.hi,
+                            WatchOp::Write,
+                            t.label.clone(),
+                        );
                     }
+                    watch_armed = !p.targets.is_empty();
+                    watched_pixel = watch_armed.then_some((x, y));
+                    // The terminal gets the full line; the toast gets the short form that fits on screen.
+                    println!("{}", p.description);
+                    ov.push(p.toast, if watch_armed { INFO } else { ERROR });
                 }
             }
         }
@@ -774,29 +850,54 @@ fn main() {
         // W dumps the recorded hits; C disarms the watch (dropping it back out of the run's sink).
         if window.is_key_pressed(Key::W, KeyRepeat::No) {
             dump_hits(&watchpoints, symbols.as_ref());
+            // The hits themselves are far too wide for the glass; the toast just confirms the key landed and
+            // says how much went to the terminal — which is where the answer actually is.
+            ov.push(
+                format!("DUMPED {} WATCH HITS TO STDOUT", watchpoints.hits().len()),
+                INFO,
+            );
         }
         if window.is_key_pressed(Key::C, KeyRepeat::No) {
             watchpoints.clear();
             watch_armed = false;
             watched_pixel = None;
-            println!("watch cleared — no longer recording VRAM writes");
+            notify(&mut ov, INFO, "watch cleared — no longer recording writes");
         }
 
         // --- Save states (edge-triggered like every control above; usable while paused too). ---
         // Slot selection: F6/F7 step, 0-9 pick directly.
+        let mut slot_changed = false;
         if window.is_key_pressed(Key::F6, KeyRepeat::No) {
             state_slot = next_slot(state_slot, -1);
-            println!("state: slot {state_slot} selected");
+            slot_changed = true;
         }
         if window.is_key_pressed(Key::F7, KeyRepeat::No) {
             state_slot = next_slot(state_slot, 1);
-            println!("state: slot {state_slot} selected");
+            slot_changed = true;
         }
         for (n, key) in SLOT_KEYS.iter().enumerate() {
             if window.is_key_pressed(*key, KeyRepeat::No) {
                 state_slot = n;
-                println!("state: slot {state_slot} selected");
+                slot_changed = true;
             }
+        }
+        if slot_changed {
+            // Re-probe on every slot move: another process (or an earlier session) can have written a state
+            // file since we last looked, and the strip is only useful if it is telling the truth.
+            slots_on_disk = probe_slots(&args.rom_path);
+            ov.flash(); // put the slot strip on screen without needing F3 first
+            notify(
+                &mut ov,
+                ACCENT,
+                format!(
+                    "slot {state_slot} selected ({})",
+                    if slots_on_disk[state_slot] {
+                        "occupied"
+                    } else {
+                        "empty"
+                    }
+                ),
+            );
         }
 
         // F2 = save, F4 = load, both on the currently selected slot. The path is built inside each arm so the
@@ -805,11 +906,19 @@ fn main() {
             let state_path =
                 save_state::state_path_for(std::path::Path::new(&args.rom_path), state_slot);
             match save_state::save(&state_path, &sys, rom_fp) {
-                Ok(n) => println!(
-                    "state: saved {n} bytes to slot {state_slot} ({})",
-                    state_path.display()
-                ),
-                Err(e) => eprintln!("state: save to {} failed: {e}", state_path.display()),
+                Ok(n) => {
+                    slots_on_disk[state_slot] = true;
+                    println!(
+                        "state: saved {n} bytes to slot {state_slot} ({})",
+                        state_path.display()
+                    );
+                    ov.push(format!("SAVED SLOT {state_slot}"), ACCENT);
+                    ov.flash();
+                }
+                Err(e) => {
+                    eprintln!("state: save to {} failed: {e}", state_path.display());
+                    ov.push(format!("SAVE SLOT {state_slot} FAILED: {e}"), ERROR);
+                }
             }
         }
         if window.is_key_pressed(Key::F4, KeyRepeat::No) {
@@ -864,8 +973,13 @@ fn main() {
                         "state: loaded slot {state_slot} from {} (frame counter continues at {frame})",
                         state_path.display()
                     );
+                    ov.push(format!("LOADED SLOT {state_slot}"), ACCENT);
+                    ov.flash();
                 }
-                Err(e) => eprintln!("state: load of slot {state_slot} failed: {e}"),
+                Err(e) => {
+                    eprintln!("state: load of slot {state_slot} failed: {e}");
+                    ov.push(format!("LOAD SLOT {state_slot} FAILED: {e}"), ERROR);
+                }
             }
         }
 
@@ -884,15 +998,22 @@ fn main() {
             cap.clear(); // the line stream restarts from the reset vector — drop the pre-reset frame
             #[cfg(feature = "audio")]
             resync_audio(audio.as_mut());
-            println!("reset: soft reset — SRAM contents preserved, as on real hardware");
+            notify(
+                &mut ov,
+                ACCENT,
+                "reset: soft reset — SRAM contents preserved, as on real hardware",
+            );
         }
         if window.is_key_pressed(Key::F5, KeyRepeat::No) {
             // Read the file first: a rebuild that failed (or is still being written) must leave the running
             // machine — and its battery data — completely untouched.
             match std::fs::read(&args.rom_path) {
-                Err(e) => eprintln!(
-                    "reload: cannot read ROM {} ({e}) — still running the previous image",
-                    args.rom_path
+                Err(e) => notify_err(
+                    &mut ov,
+                    format!(
+                        "reload: cannot read ROM {} ({e}) — still running the previous image",
+                        args.rom_path
+                    ),
                 ),
                 Ok(bytes) => {
                     // Unlike a reset, `load_rom` re-provisions a *zeroed* SRAM buffer from the new header and
@@ -904,16 +1025,23 @@ fn main() {
                         sram_save_countdown,
                         "before the ROM reload",
                     ) {
-                        eprintln!(
-                            "reload: ABORTED — unsaved battery data could not be written to {}, and reloading \
-                             would zero it. Fix the write error and press F5 again.",
-                            srm_path.display()
+                        notify_err(
+                            &mut ov,
+                            format!(
+                                "reload: ABORTED — unsaved battery data could not be written to {}, and \
+                                 reloading would zero it. Fix the write error and press F5 again.",
+                                srm_path.display()
+                            ),
                         );
                     } else {
-                        println!(
-                            "reload: re-read {} bytes from {}",
-                            bytes.len(),
-                            args.rom_path
+                        notify(
+                            &mut ov,
+                            ACCENT,
+                            format!(
+                                "reload: re-read {} bytes from {}",
+                                bytes.len(),
+                                args.rom_path
+                            ),
                         );
                         // The cartridge identity changes with its bytes. Re-deriving it makes every state
                         // written against the previous build fail with `StateError::Rom` — which is the point:
@@ -967,11 +1095,12 @@ fn main() {
                 changed = true;
             }
             if changed {
-                println!(
-                    "volume: {volume}/{}{}",
-                    audio::VOLUME_STEPS,
-                    if muted { "  [MUTED]" } else { "" }
-                );
+                let line = if muted {
+                    format!("volume: {volume}/{}  [MUTED]", audio::VOLUME_STEPS)
+                } else {
+                    format!("volume: {volume}/{}", audio::VOLUME_STEPS)
+                };
+                notify(&mut ov, INFO, line);
             }
         }
 
@@ -1119,12 +1248,12 @@ fn main() {
         // the click landed where intended (bounds-guarded against an H40→H32 mode switch since the click).
         // Drawn into a scratch copy, never into `buf`: the crosshair is an XOR, and a paused frontend
         // re-presents the same buffer every iteration — applied in place it would flicker and smear.
-        let shown: &[u32] = match watched_pixel {
+        let native: &[u32] = match watched_pixel {
             Some((wx, wy)) => {
-                present.clear();
-                present.extend_from_slice(&buf);
-                draw_crosshair(&mut present, width, wx, wy);
-                &present
+                marked.clear();
+                marked.extend_from_slice(&buf);
+                draw_crosshair(&mut marked, width, wx, wy);
+                &marked
             }
             None => &buf,
         };
@@ -1135,8 +1264,55 @@ fn main() {
         };
         window.set_title(&title);
 
-        // update_with_buffer both presents and pumps the OS event queue; it honours set_target_fps.
-        if let Err(e) = window.update_with_buffer(shown, width, HEIGHT) {
+        // Scale the native frame into a window-sized buffer ourselves and draw the overlay on top of *that*.
+        // `buf` — the retained framebuffer — is never written here, which is what stops a re-presented frame
+        // accumulating overlay ink across the many iterations a paused (or 0-frame) loop spends on one image.
+        //
+        // Re-derived rather than reusing `view`: the frames run above can have switched H32↔H40, and the
+        // picture must be fitted to the width actually being presented. `view` stays what it was — the
+        // geometry of the frame the user was looking at when they clicked.
+        let present_view = present::dest_rect(win_w, win_h, width, HEIGHT, args.aspect);
+        present::scale_into(
+            &mut screen,
+            win_w,
+            win_h,
+            present::Frame {
+                px: native,
+                w: width,
+                h: HEIGHT,
+            },
+            present_view,
+            0x0000_0000,
+            &mut xmap,
+        );
+        ov.tick();
+        #[cfg(feature = "audio")]
+        let (vol, filt) = (
+            Some((volume, audio::VOLUME_STEPS, muted)),
+            audio.as_ref().map(|a| a.filter),
+        );
+        #[cfg(not(feature = "audio"))]
+        let (vol, filt) = (None, None);
+        ov.draw(
+            &mut screen,
+            win_w,
+            win_h,
+            present_view,
+            &Status {
+                paused,
+                frame,
+                slot: state_slot,
+                occupied: slots_on_disk,
+                volume: vol,
+                filter: filt,
+                aspect: args.aspect.name(),
+                native: (width, HEIGHT),
+            },
+        );
+
+        // update_with_buffer both presents and pumps the OS event queue; it honours set_target_fps. The
+        // buffer is exactly the window's size, so `ScaleMode::Stretch` is a 1:1 present.
+        if let Err(e) = window.update_with_buffer(&screen, win_w, win_h) {
             eprintln!("present failed: {e}");
             break;
         }
@@ -1159,56 +1335,58 @@ fn main() {
 mod tests {
     use super::*;
 
-    /// H40 (native width 320) fills the window exactly: no pillarbox, every axis is a plain divide-by-scale.
+    /// The command line parses as documented, and a bad value is refused rather than silently ignored.
     #[test]
-    fn h40_maps_full_window_without_pillarbox() {
-        let (scale, width) = (3, 320);
-        assert_eq!(window_to_native(0.0, 0.0, scale, width), Some((0, 0)));
-        // Bottom-right physical pixel of the 960x672 window maps to the last native dot (319, 223).
+    fn the_command_line_parses_scale_and_aspect() {
+        let a = |v: &[&str]| parse_args_from(v.iter().map(|s| s.to_string()));
+        let ok = a(&["rom.bin"]).expect("a bare ROM path is enough");
+        assert_eq!(ok.rom_path, "rom.bin");
+        assert_eq!(ok.scale, 3);
         assert_eq!(
-            window_to_native(959.0, 671.0, scale, width),
-            Some((319, 223))
+            ok.aspect,
+            Aspect::Tv,
+            "a player defaults to the console's own 4:3"
         );
-        // One row/column past the frame is rejected.
-        assert_eq!(window_to_native(960.0, 0.0, scale, width), None);
-        assert_eq!(window_to_native(0.0, 672.0, scale, width), None);
+
+        let both = a(&["--scale", "2", "--aspect", "integer", "rom.bin"]).unwrap();
+        assert_eq!((both.scale, both.aspect), (2, Aspect::Integer));
+
+        assert!(a(&[]).is_err(), "no ROM path");
+        assert!(a(&["a.bin", "b.bin"]).is_err(), "two ROM paths");
+        assert!(
+            a(&["--scale", "0", "rom.bin"]).is_err(),
+            "scale out of range"
+        );
+        assert!(a(&["--scale", "9", "rom.bin"]).is_err());
+        assert!(a(&["--scale"]).is_err(), "missing value");
+        assert!(
+            a(&["--aspect", "cinema", "rom.bin"]).is_err(),
+            "unknown aspect"
+        );
+        assert!(a(&["--aspect"]).is_err());
+        assert!(a(&["--nope", "rom.bin"]).is_err(), "unknown flag");
     }
 
-    /// H32 (native width 256) is centered in the 320-wide window: a 32-native-pixel (= 96-window-pixel at 3x)
-    /// pillarbox on each side. Clicks inside the box map to no native pixel; the first/last content columns
-    /// map to native x 0 / 255.
+    /// Slot occupancy is read from the disk, and an absent file reads as empty rather than as an error — the
+    /// slot strip's whole job is to say which slots have something in them.
     #[test]
-    fn h32_pillarbox_is_rejected_and_content_maps() {
-        let (scale, width) = (3, 256);
-        let box_px = 32 * scale; // 96 window px of left pillarbox
-                                 // Anywhere in the left box → None.
-        assert_eq!(window_to_native(0.0, 100.0, scale, width), None);
-        assert_eq!(
-            window_to_native((box_px - 1) as f32, 100.0, scale, width),
-            None
-        );
-        // First content column (window x = box_px) → native x 0.
-        assert_eq!(
-            window_to_native(box_px as f32, 0.0, scale, width),
-            Some((0, 0))
-        );
-        // Last content column: window x = box_px + (255 * scale) → native x 255.
-        let last = box_px + 255 * scale;
-        assert_eq!(
-            window_to_native(last as f32, 0.0, scale, width),
-            Some((255, 0))
-        );
-        // One native column past content (into the right box) → None.
-        let past = box_px + 256 * scale;
-        assert_eq!(window_to_native(past as f32, 0.0, scale, width), None);
-    }
+    fn slot_occupancy_is_probed_from_disk() {
+        let dir = std::env::temp_dir().join(format!("oracle-slots-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rom = dir.join("probe.bin");
+        std::fs::write(&rom, b"not a rom").unwrap();
+        let path = rom.to_str().unwrap();
 
-    /// Negative coordinates (a click reported outside the top-left) and a zero scale are rejected, not panic.
-    #[test]
-    fn out_of_range_inputs_are_none() {
-        assert_eq!(window_to_native(-1.0, 10.0, 3, 320), None);
-        assert_eq!(window_to_native(10.0, -1.0, 3, 320), None);
-        assert_eq!(window_to_native(10.0, 10.0, 0, 320), None);
+        assert_eq!(
+            probe_slots(path),
+            [false; save_state::SLOT_COUNT],
+            "nothing saved yet"
+        );
+        std::fs::write(save_state::state_path_for(&rom, 4), b"x").unwrap();
+        let occ = probe_slots(path);
+        assert!(occ[4], "slot 4 is occupied");
+        assert_eq!(occ.iter().filter(|&&o| o).count(), 1, "and only slot 4");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The crosshair writer never indexes out of the frame buffer, including a watched pixel that is now
@@ -1636,6 +1814,297 @@ mod tests {
         assert_eq!(buf[319], 0);
         assert_eq!(buf[2 * 320], 0x0011_2233, "full-width lines are unpadded");
         assert_eq!(buf[2 * 320 + 319], 0x0011_2233);
+    }
+
+    /// **Visual check for the presentation path** (`cargo test -p oracle-frontend -- --ignored
+    /// --nocapture`). Renders real frames of a real game through *exactly* the code the run loop presents
+    /// with — `blit_capture` → `present::scale_into` → `Overlay::draw` — and writes them out as PPM, because
+    /// nobody can review a windowed frontend by reading its unit tests. Ignored by default: it needs a ROM,
+    /// which the repository does not carry.
+    ///
+    /// `ORACLE_SHOT_ROM` names the ROM (a `<rom>.state0` beside it is loaded when present), `ORACLE_SHOT_DIR`
+    /// where the images go. Nothing here is a pass/fail assertion beyond "it produced images"; the point is
+    /// the images.
+    #[test]
+    #[ignore = "needs a ROM: set ORACLE_SHOT_ROM (and optionally ORACLE_SHOT_DIR)"]
+    fn write_presentation_screenshots() {
+        let Ok(rom_path) = std::env::var("ORACLE_SHOT_ROM") else {
+            panic!("set ORACLE_SHOT_ROM to a Genesis ROM");
+        };
+        let dir = std::env::var("ORACLE_SHOT_DIR")
+            .unwrap_or_else(|_| std::env::temp_dir().to_string_lossy().into());
+        std::fs::create_dir_all(&dir).unwrap();
+        let rom = std::fs::read(&rom_path).expect("readable ROM");
+        let rom_fp = save_state::rom_fingerprint(&rom);
+
+        let mut sys = System::new(0x5EED);
+        sys.load_rom(rom.clone());
+        sys.reset();
+        // Prefer a save state (a real in-game scene beats a title screen); fall back to booting a while.
+        let state = save_state::state_path_for(std::path::Path::new(&rom_path), 0);
+        match save_state::load(&state, rom_fp) {
+            Ok(loaded) => {
+                println!("shots: loaded {}", state.display());
+                sys = loaded;
+            }
+            Err(e) => println!("shots: no usable state ({e}) — booting instead"),
+        }
+
+        // Advance far enough to be past any blank frame, exactly as the run loop does it.
+        let mut cap = ScanlineCapture::new(Retain::LastFrame);
+        let mut buf: Vec<u32> = Vec::new();
+        let mut width = 0usize;
+        for _ in 0..12 {
+            sys.run_frames_with_sink(1, &mut cap);
+            if let Some(w) = blit_capture(&cap, &mut buf) {
+                width = w;
+            }
+            if cap.frames_completed() >= 1 && cap.lines().len() == HEIGHT {
+                cap.clear();
+            }
+        }
+        assert!(width > 0, "no frame was captured");
+        println!("shots: native frame {width}x{HEIGHT}");
+
+        // --- Task 1, against a real game: what does a click actually resolve to now? ---
+        // Sweep the frame, tally what each dot is, and report the picker's answer for a real sprite dot and
+        // a real plane dot. On the old code every sprite dot printed "no tile watch this slice (follow-up)".
+        let (mut sprite_dots, mut plane_dots, mut backdrop_dots) = (0usize, 0usize, 0usize);
+        // The sprite dot nearest the middle of the screen — i.e. the player character rather than the HUD,
+        // which in S3K is also sprites and would otherwise always win by being first in the sweep.
+        let (cx, cy) = (width as i32 / 2, HEIGHT as i32 / 2);
+        let mut a_sprite_dot: Option<(u16, u16, i32)> = None;
+        for y in (0..HEIGHT as u16).step_by(4) {
+            for x in (0..width as u16).step_by(4) {
+                match sys.vdp().pixel_attribution(x, y).winner {
+                    oracle_core::render::Layer::Sprite(_) => {
+                        sprite_dots += 1;
+                        let d = (i32::from(x) - cx).pow(2) + (i32::from(y) - cy).pow(2);
+                        if a_sprite_dot.is_none_or(|(_, _, best)| d < best) {
+                            a_sprite_dot = Some((x, y, d));
+                        }
+                    }
+                    oracle_core::render::Layer::Backdrop => backdrop_dots += 1,
+                    _ => plane_dots += 1,
+                }
+            }
+        }
+        println!(
+            "shots: sampled dots — {sprite_dots} sprite, {plane_dots} plane/window, {backdrop_dots} backdrop"
+        );
+        assert!(
+            sprite_dots > 0,
+            "the scene must contain sprites to test against"
+        );
+        let (sx, sy, _) = a_sprite_dot.unwrap();
+        let sprite_pick = pick::resolve(sys.vdp(), sx, sy);
+        println!("shots: click ({sx},{sy}) -> {}", sprite_pick.description);
+        println!("shots:   toast: {}", sprite_pick.toast);
+        for t in &sprite_pick.targets {
+            println!(
+                "shots:   arms {:?} ${:04X}-${:04X}  \"{}\"",
+                t.space, t.lo, t.hi, t.label
+            );
+        }
+        assert_eq!(
+            sprite_pick.targets.len(),
+            2,
+            "a sprite click arms its tile and its SAT entry"
+        );
+
+        // "Before": what the old path put on screen — the native frame, nearest-scaled 3x by minifb, with no
+        // overlay and no aspect correction.
+        let mut before = Vec::new();
+        let mut xmap = Vec::new();
+        let (bw, bh) = (width * 3, HEIGHT * 3);
+        present::scale_into(
+            &mut before,
+            bw,
+            bh,
+            present::Frame {
+                px: &buf,
+                w: width,
+                h: HEIGHT,
+            },
+            present::Rect {
+                x: 0,
+                y: 0,
+                w: bw,
+                h: bh,
+            },
+            0,
+            &mut xmap,
+        );
+        write_ppm(&format!("{dir}/before-3x-square.ppm"), &before, bw, bh);
+
+        // "After": the new presentation buffer, per aspect mode, with the overlay the run loop draws.
+        let mut ov = Overlay::new();
+        ov.status_line = true;
+        ov.push("STATE: SAVED SLOT 3", ACCENT);
+        ov.push("WATCH SPRITE 12 TILE $2A0 + SAT $F080", INFO);
+        ov.push("VOLUME 7/10", INFO);
+        let mut occupied = [false; save_state::SLOT_COUNT];
+        occupied[0] = true;
+        occupied[3] = true;
+        occupied[7] = true;
+
+        for (name, aspect, (ww, wh)) in [
+            ("after-tv", Aspect::Tv, (896usize, 672usize)),
+            ("after-square", Aspect::Square, (960, 672)),
+            ("after-integer", Aspect::Integer, (1000, 700)),
+            ("after-tv-wide", Aspect::Tv, (1280, 600)),
+        ] {
+            let view = present::dest_rect(ww, wh, width, HEIGHT, aspect);
+            let mut screen = Vec::new();
+            present::scale_into(
+                &mut screen,
+                ww,
+                wh,
+                present::Frame {
+                    px: &buf,
+                    w: width,
+                    h: HEIGHT,
+                },
+                view,
+                0x0000_0000,
+                &mut xmap,
+            );
+            ov.draw(
+                &mut screen,
+                ww,
+                wh,
+                view,
+                &Status {
+                    paused: name == "after-tv-wide",
+                    frame: 4211,
+                    slot: 3,
+                    occupied,
+                    volume: Some((7, 10, false)),
+                    filter: Some("VA0-VA2"),
+                    aspect: aspect.name(),
+                    native: (width, HEIGHT),
+                },
+            );
+            write_ppm(&format!("{dir}/{name}.ppm"), &screen, ww, wh);
+            println!("shots: {name} {ww}x{wh} view {view:?}");
+        }
+
+        // How long the present costs, since the audio pacer only holds if the loop keeps up with the device.
+        // The blit is the frontend's own work now (minifb used to do it in C), so it is worth a number.
+        {
+            let view = present::dest_rect(896, 672, width, HEIGHT, Aspect::Tv);
+            let mut screen = Vec::new();
+            let t = std::time::Instant::now();
+            const N: u32 = 200;
+            for _ in 0..N {
+                present::scale_into(
+                    &mut screen,
+                    896,
+                    672,
+                    present::Frame {
+                        px: &buf,
+                        w: width,
+                        h: HEIGHT,
+                    },
+                    view,
+                    0,
+                    &mut xmap,
+                );
+                ov.draw(
+                    &mut screen,
+                    896,
+                    672,
+                    view,
+                    &Status {
+                        paused: true,
+                        aspect: "4:3",
+                        native: (width, HEIGHT),
+                        ..Status::default()
+                    },
+                );
+            }
+            println!(
+                "shots: present cost {:.3} ms/frame at 896x672 (budget 16.7 ms)",
+                t.elapsed().as_secs_f64() * 1000.0 / f64::from(N)
+            );
+        }
+
+        // …and one clean frame with no overlay at all, to prove the overlay is additive and the picture
+        // underneath is untouched.
+        let view = present::dest_rect(896, 672, width, HEIGHT, Aspect::Tv);
+        let mut clean = Vec::new();
+        present::scale_into(
+            &mut clean,
+            896,
+            672,
+            present::Frame {
+                px: &buf,
+                w: width,
+                h: HEIGHT,
+            },
+            view,
+            0,
+            &mut xmap,
+        );
+        write_ppm(&format!("{dir}/after-tv-nooverlay.ppm"), &clean, 896, 672);
+
+        // The whole click path, end to end, on a real sprite: crosshair at the clicked dot + the toast the
+        // click produces. The retained `buf` is deliberately not the buffer the crosshair goes into.
+        let retained = buf.clone();
+        let mut marked = buf.clone();
+        draw_crosshair(&mut marked, width, sx, sy);
+        assert_ne!(marked, retained, "the crosshair marked the scratch copy");
+        let mut shot = Vec::new();
+        present::scale_into(
+            &mut shot,
+            896,
+            672,
+            present::Frame {
+                px: &marked,
+                w: width,
+                h: HEIGHT,
+            },
+            view,
+            0,
+            &mut xmap,
+        );
+        let mut click_ov = Overlay::new();
+        click_ov.push(sprite_pick.toast.clone(), INFO);
+        click_ov.draw(
+            &mut shot,
+            896,
+            672,
+            view,
+            &Status {
+                aspect: "4:3",
+                native: (width, HEIGHT),
+                ..Status::default()
+            },
+        );
+        write_ppm(&format!("{dir}/after-sprite-click.ppm"), &shot, 896, 672);
+        assert_eq!(
+            buf, retained,
+            "…and the retained framebuffer itself is never written — the invariant the whole \
+             scratch-copy dance exists for"
+        );
+    }
+
+    /// Dump a packed `0x00RR_GGBB` buffer as a binary PPM (P6) — the least machinery that produces an image
+    /// any viewer can open.
+    #[cfg(test)]
+    fn write_ppm(path: &str, buf: &[u32], w: usize, h: usize) {
+        use std::io::Write;
+        let mut out = Vec::with_capacity(15 + w * h * 3);
+        out.extend_from_slice(format!("P6\n{w} {h}\n255\n").as_bytes());
+        for px in buf {
+            out.push((px >> 16) as u8);
+            out.push((px >> 8) as u8);
+            out.push(*px as u8);
+        }
+        std::fs::File::create(path)
+            .and_then(|mut f| f.write_all(&out))
+            .unwrap_or_else(|e| panic!("cannot write {path}: {e}"));
+        println!("shots: wrote {path}");
     }
 
     /// `start_audio()` — the real host-enumeration entry point — must also be panic-free. In THIS build
