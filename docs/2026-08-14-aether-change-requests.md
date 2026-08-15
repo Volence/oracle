@@ -399,6 +399,34 @@ Option 2 costs a sentence and closes the question. Option 1 costs an enum value 
 the stream carry the fact that an input was injected — which is the half option 2 gives up. **This is the
 raising; the ruling is the owner's.** The contract repo was not edited.
 
+> **RULED 2026-08-15 — neither option as drafted** (`docs/2026-08-15-fable-ruling-cr9-cr11-cr12.md`;
+> `empyrean` `8adf219`, `protocol.md` §11.7). **Option 2's sentence is adopted, option 1 is refused, and
+> the half both options gave up is added as params.**
+>
+> §3's `runFrames` is redefined by its **stop condition**: *"a bounded frame advance ran to completion —
+> `emulator/run_frames`, `emulator/press`, or any future method whose stop condition is an exhausted frame
+> count. `reason` names the condition that ended the run, never the method that drove it."* And
+> `emulator/stopped` gains two **additive** params, **`buttons`** and **`port`**, REQUIRED when the advance
+> was `press`-driven and absent otherwise.
+>
+> **Why the enum value went.** The enum's organizing principle was already the stop condition and not the
+> method: `step` covers *three* methods because they share one condition, while `runTo` and `runToScanline`
+> are separate because their **conditions** differ. `press` is a method whose condition is an exhausted
+> frame count. Adding a value for it would have been the first time this enum named a caller. And option 1
+> is **incomplete on its own terms** — the CR's whole case is that a subscriber who was not the caller
+> cannot learn an input was injected, and `reason: "press"` still does not say *what* or *on which pad*.
+> Once `buttons` and `port` are params, the enum value carries zero extra bits.
+>
+> **The house rule it set**, because the watchpoint design reached it independently one document over:
+> **`reason` is a small closed vocabulary of stop *conditions*; anything identifying which instance fired
+> is a param.** A new `reason` value needs a genuinely new condition, never a new method or cause.
+>
+> **The cost, recorded not hidden.** `buttons`/`port` cannot be bound to their trigger mechanically — the
+> event carries no discriminator, *precisely because* `reason` no longer names the method. What is enforced
+> is that the two travel together (`dependentRequired`), since a subscriber told which buttons went down
+> but not which pad would blame the wrong controller. Our emission of `"runFrames"` is now conformant by
+> construction; **what we still owe is the two params.** That rides with the same server pass as CR-11/12.
+
 ---
 
 ## CR-10 — no method is keyed by a screen coordinate, so pixel attribution is panel-only (2026-08-15)
@@ -427,12 +455,50 @@ silently collide is worse than one with a gap.
 
 ---
 
-## CR-11 / CR-12 — the watchpoint surface (2026-08-15, drafted, awaiting ruling)
+## CR-11 / CR-12 — the watchpoint surface (2026-08-15)
 
 The largest of the four item-19 violations: watch **hit reading**, the **drop count**, and **VDP-internal
 range watches**, none of which §6's single `watchpoint_add | addr|symbol, read?, write? | addr` row can
 express. Directed as the next design pass by the CR-10 ruling. Drafted in full, with paste-ready schema
 fragments, in **`docs/2026-08-15-watchpoint-bus-surface.md`**. **Adopt both or neither.**
+
+> **★ BOTH ADOPTED 2026-08-15, as a package, with eight conditions**
+> (`docs/2026-08-15-fable-ruling-cr9-cr11-cr12.md`; `empyrean` `af434a2`, `protocol.md` §11.8). §6's one
+> watch row became four; `capabilities.watchpoints` is an object; `emulator/stopped` gained `watch`; and
+> the schema went from 22 methods to 26. Both rulings the design settled **stand** — value-changes-not-
+> write-counts, and the interactive-debugging line — as do poll-only, the handle-not-address argument, the
+> seam, `hits()`-not-`take_hits`, and the refusal list.
+>
+> **The substance of the ruling is a rebase, and the reason is chronology.** The design was committed at
+> **14:37**; §2.4 — the shared result conventions §11.5 introduced — landed at **16:49** the same
+> afternoon, **2 h 11 m later**. Three non-conformances, all the same mistake in three costumes (an
+> honesty mechanism invented locally where the bus had just specified one): both list results carried
+> `truncated` without `total`/`returned`; a REQUIRED `caveats[]` array contradicted §2.4's optional
+> singular `caveat`; the `limit` echo was missing. **The collapse cost nothing** — every machine-actionable
+> half already had a typed key (`seen`, `keysCapped`, `censusOverflow`), and the one permanent property
+> left over, a VDP hit's step-granular `mclk`, is §6 prose now per §2.4's own advisory that an
+> always-present caveat is one clients learn to ignore.
+>
+> **Two conditions land on us as work, and one of them is CR-16 repeating itself.** The design gave
+> `emulator/stopped` an additive `watch` param **in prose only** — in zero of its four JSON fragments,
+> proposed on the day CR-16 was adopted for exactly that defect. It is in the schema now. The other:
+> `watchpoint_list.limit` was uncapped while its sibling capped at 4096.
+>
+> **Also normative, and neither was in the draft:** the watch count is capped, advertised and **refused
+> loudly** at `maxWatches` with `-32005 {reason:"watchCapReached"}` (D13 rule 3 verbatim, because a
+> silently-dropped watch reads exactly like a negative finding), and a `censusKey` without
+> `mode:"census"` is **`-32602`** rather than ignored. New §8 item 21 lists both.
+>
+> **`via` is adopted** — the one core change, ~8 lines — on evidence rather than symmetry: `CensusKey::Fc`
+> provably cannot answer CPU-vs-DMA on a VDP watch, because `fc` is hardwired to `0` there
+> (`crates/oracle-core/src/watchpoints.rs:203`, `:896`).
+>
+> **Registered, not built,** each with its reversal condition: a `sinceSeq` / read-from-now param on
+> `watchpoint_hits`; a bus-side last-value table (what exact change counts on the 68000 bus would need); the
+> per-frame sampler, as its own capability on its own evidence; and `CensusKey::Pc`.
+>
+> **What we owe:** the handlers, in `crates/oracle-aether` only, per condition 8 — contract first. Plus the
+> `via` census arm in core, and `crates/oracle-core/tests/` untouched throughout.
 
 **The seam: CR-11 is what a watch *is*; CR-12 is what a watch *tells you*.** They are different kinds of
 contract change — amend an existing row and add its inverse, versus add two new query rows — and each owns

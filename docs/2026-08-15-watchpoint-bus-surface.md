@@ -1,5 +1,29 @@
 # The watchpoint bus surface — CR-11 and CR-12, and the two rulings settled in this pass
 
+> **★ ADOPTED 2026-08-15 — both, as a package, with eight conditions.** Ruled in
+> `docs/2026-08-15-fable-ruling-cr9-cr11-cr12.md`; landed in `empyrean` `af434a2` (`protocol.md` §11.8).
+> Both rulings this document settled are **upheld** — value-changes-not-write-counts, and the
+> interactive-debugging line — as are poll-only, the handle-not-address argument, the seam, and §5's
+> refusal list. The `via` census is adopted, the one core change.
+>
+> **The drafts below are left un-rewritten and the conditions are marked inline as block quotes**, per this
+> project's convention, so the difference stays visible. Five conditions touch this document:
+>
+> 1. **★ Rebase onto §2.4** — which landed **2 h 11 m after this document was committed**. Three
+>    non-conformances: `total`/`returned` missing from both list results (§4.2, §8); `caveats[]` replaced
+>    by §2.4's optional singular `caveat` (§1.2, §8); the `limit` echo added.
+> 2. **★ The `watch` param on `emulator/stopped` was prose-only** — in zero of the four JSON fragments
+>    (§4.3, §7). CR-16's exact defect. Now in the schema.
+> 3. **The watch cap is specified**: `-32005 {reason:"watchCapReached", cap, count}` (§7).
+> 4. **`censusKey` is refused, not ignored**, without `mode:"census"` (§7).
+> 5. **`watchpoint_list.limit` takes the house 4096 cap** (§4.2, §8); the package hedge in §8.1 is struck;
+>    every `protocol.md` anchor below is **recomputed in the ruling document, not here** — they were exact
+>    at this document's base (`empyrean` `18a551e`) and are now stale by between +10 and +507 lines
+>    depending on section, with five having moved section or been rewritten outright.
+>
+> Conditions 6 and 7 are "as drafted". Condition 8 sequences the handlers **after** the rows and fragments,
+> which have now landed — so the implementation pass is unblocked.
+
 **Status: DRAFT, raised not applied.** Base: `f69d361` on `m68000-microop-framework`. No contract file was
 edited; §8 is explicit that *"deviations are raised as change requests against this file, not implemented
 unilaterally."* Directed by `docs/2026-08-15-fable-ruling-attribution.md` ("Directed next"): *"The watchpoint
@@ -77,6 +101,27 @@ sits in neither frozen currency and can never move a state hash"* (`:11-13`). Th
 | Loss + controls | `:723-752` | `hits()`, `take_hits()`, `dropped()`, `seen()`, `matched()` |
 | Timing basis | `:766-768` | returns `TimingBasis::NTSC`, derived from `MCLK_PER_FRAME` |
 | Caveats | `:772-810` | `Vec<String>`, emitted *with* the numbers: `seen == 0`, VDP-internal step-granular `mclk`, the PSG-port master ambiguity, and a capped census |
+
+> **Condition 1 (the `caveats[]` → `caveat` collapse).** Core's `Vec<String>` is right for core and wrong
+> for the wire: §2.4 defines `caveat` as **singular, string, optional, handler-emitted, never parsed**.
+> Nothing was lost placing the four, because this document had already given every machine-actionable half
+> a typed key for §2.4 rule 3's reason:
+>
+> | core's caveat | on the wire |
+> |---|---|
+> | `seen == 0` | the typed key **`seen`**, REQUIRED on every hits read |
+> | census hit its key cap | **`keysCapped`** + **`censusOverflow`** (+ `keyCap` / `distinctKeys`) |
+> | a VDP hit's `mclk` is step-granular | **§6 prose, as a permanent property of a VDP hit** |
+> | the PSG-port `fc` census cannot attribute a master | unreachable from the wire — §4.6 does not expose `fc` as a `censusKey` — and left to the optional `caveat` if that ever changes |
+>
+> The third is the one that moved rather than mapped, and §2.4's own advisory is why: *a caveat that is
+> always present is documentation wearing signal's clothes, and clients learn to ignore it — including on
+> the one reply where it would have mattered.* It is now read once by an implementer instead of ignored
+> forever by a client. `caveat` is still **declared** in every fragment, because §2.4 clause 4 requires it
+> of any method that can emit one or §8 item 20's closure rejects the reply.
+>
+> *One anchor correction while here:* `old: 0` is at `:851`, not `:850`, and `old: w.old` at `:892`, not
+> `:891`. The claim survives; the anchors were each off by one.
 
 Four properties matter to the wire and are easy to get wrong:
 
@@ -346,6 +391,23 @@ Two honest sub-rules that follow from the ring being lossy at the *record* end:
 default is a policy number and is stated as one — which is exactly why the reply carries `truncated` and a
 `cursor`.
 
+> **Conditions 1 and 5 (what a policy-bounded list must carry).** This section reasons its way to the
+> **right** conclusion — *"a hit ring is bounded by server policy … which is precisely why `checkpoint_list`
+> is cursored"* — against the rule as it stood when this was written, and §2.4 clause (a) had already
+> generalised it by the time it was read. `truncated` alone is not enough: **`total` and `returned` are
+> REQUIRED beside it**, and `limit` is an optional echo of the ceiling the server actually applied. Both
+> list results take them, in `checkpoint_list`'s **flat** spelling rather than `$defs/boundedList` — the
+> list *is* the whole result here, and a nested container inside a result whose entire content is that
+> container buys a level of indirection and nothing else.
+>
+> `total` is the number that will get misread, so §6 pins what it is **not**: it is how many hits the ring
+> currently *holds* matching the query — not `matched` (accesses, including ones no ring stored) and not
+> `dropped` (hits already discarded). Three numbers, three questions.
+>
+> And the cap in this paragraph applies to **`watchpoint_list.limit` too**, which the draft left at
+> `minimum: 1` with no maximum while its sibling capped at 4096. A `limit` bounded on one list and
+> unbounded on its twin is two policies wearing one name.
+
 ### 4.3 Does arming require a paused machine? — **no.** Recommended
 
 §6's run-control state rule names a closed list — `run_to`, `run_to_scanline`, `run_frames`, `step*`, `press`,
@@ -363,6 +425,20 @@ thing it prevents. Instead the stop is made **attributable**: §3's `stopped` ga
 
 *What would change my mind:* one recorded instance of a client being surprised by a free-run halt it could
 not attribute. Then gate `stopAfter`, not arming.
+
+> **★ Condition 2 (the additive `watch` param stopped at the prose).** The call is upheld — the halt is
+> made attributable rather than gated — but the param **never reached a JSON fragment**. This document has
+> four fenced JSON blocks (`:624`, `:693`, `:769`, `:892`); `emulator/stopped` appears in JSON at `:626`
+> (a `$comment`) and `:650` (a `description`), and **in none of the four is there an `events` entry**. That
+> is CR-16's exact defect — a registration that stopped at the prose — proposed on the day CR-16 was
+> adopted for it, and under §8 item 20's closure the server's own conformant stop event would have been
+> rejected by the artifact meant to describe it.
+>
+> It is in the schema now, in `events["emulator/stopped"].params`, alongside CR-9's `buttons`/`port`. And
+> unlike those two it is **mechanically bindable**: `reason: "watchpoint"` is a discriminator, so an
+> `if`/`then`/`else` requires `watch` when the reason is `watchpoint` and forbids it otherwise. `buttons`
+> and `port` cannot be bound that way, because CR-9's ruling makes `reason` name the stop *condition* and
+> never the driving method — recorded in §11.7 as a real cost rather than hidden.
 
 ### 4.4 How is a watch cleared, and what stops a stale one contaminating a later capture?
 
@@ -619,7 +695,25 @@ around.
    client that has to hit a limit to learn it is a client that loses evidence finding out:
    `{supported, spaces[], maxWatches, ringCap}`.
 
-**Schema fragment**, ready to paste under `methods`:
+> **Condition 3 (advertising a cap is half a rule).** `maxWatches` is advertised above with **no behaviour
+> at the cap**, and core's spec list is an unbounded `Vec` — so a server could satisfy the advertisement by
+> ignoring it. **D13 rule 3 verbatim:** refuse at the cap with `-32005` carrying
+> `{"reason":"watchCapReached","cap":n,"count":n}`; never silently grow past the advertised number, never
+> silently evict. The reason is sharper here than for checkpoints: a silently-dropped watch produces a
+> `seen`-positive, `matched`-zero reading, which is indistinguishable from a genuine negative finding — the
+> one failure §4.4 item 4 exists to make impossible.
+>
+> **Condition 4 (`censusKey` must not be silently ignored).** The fragment below reads *"Required when mode
+> is 'census', **ignored otherwise**"*, which is against §5's refuse-and-name ethos: a param a bus quietly
+> discards is a caller believing it asked for a grouping it did not get. It is **`-32602`**, enforced by an
+> `if`/`then` — the same device this document already uses for `old`/`fc` — and in both directions, since
+> `mode: "census"` with no key has nothing to group by either.
+>
+> Both landed in `empyrean` `af434a2`, and §8 item 21 lists them for the reason item 19 exists.
+
+**Schema fragment**, ready to paste under `methods`. **The version that landed is the contract's**
+(`empyrean` `af434a2`), which differs from the draft below by conditions 1–5; the draft is left as written
+so the difference stays visible:
 
 ```json
     "emulator/watchpoint_add": {
@@ -764,7 +858,19 @@ Semantics for §6 prose:
 - **A hit's `frame`/`mclk` are inside `hits[]`, never at the top level**, where the envelope stamp (§2.2)
   would overwrite them.
 
-**Schema fragment**, ready to paste under `methods`:
+> **Condition 1, applied to the two rows above.** Both result shapes carry `truncated` alone; §2.4 clause
+> (a) requires **`total` and `returned`** beside it and permits an optional `limit` echo, and the contract's
+> rows carry all four. The `caveats[]` in `watchpoint_hits`'s row is gone — see §1.2 for where its four
+> members went. And **the cursor invariant these bullets cite as "§6.1's" now lives in §2.4 clause (c)**,
+> moved there whole by §11.5; the ruling document carries the full recomputed anchor table.
+>
+> One drafting point worth keeping visible: the step-granular-`mclk` note the `hits[].mclk` description
+> below defers to `caveats` is a **permanent property of a VDP-space hit**, and permanent properties do not
+> belong in a per-reply warning. It is §6 prose now, and the landed description says so in place of the
+> deferral.
+
+**Schema fragment**, ready to paste under `methods`. As above, **the contract's version is the one that
+landed**; this draft is left un-rewritten:
 
 ```json
     "emulator/watchpoint_list": {
@@ -932,8 +1038,15 @@ Three further reasons the seam is there rather than anywhere else:
 **They should be adopted together or not at all**, and that is stated rather than left to be discovered:
 CR-11 alone leaves the largest half of the violation open (a client could arm a watch it can never read,
 which is a strictly worse surface than none), and CR-12 alone can only read watches nobody can arm in a VDP
-space. If exactly one is adopted, CR-12 is the one that closes the item-19 violation the sweep called
-largest; CR-11 is the one that makes the capability match what our own panel already does.
+space. ~~If exactly one is adopted, CR-12 is the one that closes the item-19 violation the sweep called
+largest; CR-11 is the one that makes the capability match what our own panel already does.~~
+
+> **Condition 5 — the struck sentence.** It contradicts the package rule stated two sentences above it, and
+> the package rule is **structural** rather than a preference: CR-12's `hits[].watch` and its `watch`
+> filter consume the D9-category-4 handle that only **CR-11** introduces, so "CR-12 alone" is not a
+> reachable state. Offering a fallback the argument rules out invites exactly the partial adoption the
+> paragraph exists to prevent. *(The ruling attributed this sentence to the CR register; it is here, in
+> this document — recorded in the ruling doc rather than silently corrected.)*
 
 ### 8.2 The fragments were executed, not just written
 
@@ -962,6 +1075,22 @@ Reproduced by `scratchpad/check_wp_schema.py` in this session's scratchpad, whic
 this document itself rather than from a copy — a throwaway instrument, deliberately outside the repo. The
 durable version is §8 item 15's in-tree validator.
 
+> **Re-executed on adoption, against the committed contract and in both validators.** The rebased fragments
+> were spliced into the real `contract/schema/bus-protocol.schema.json` and driven through `jsonschema` 4.26
+> (Python) **and** `jsonschema` 0.49 (Rust — the crate `crates/oracle-aether/tests/common/schema.rs` uses,
+> compiled the same way that harness compiles fragments). **22 → 26 methods**, the whole document still a
+> legal draft 2020-12 schema, all four names passing D3's request pattern, all eleven new subschemas
+> compiling **open and closed**, and **72 cases met — 24 accept / 48 refuse**.
+>
+> **The run earned its keep a second time, and differently.** The `caveats[]` → `caveat` collapse looked
+> complete until it was executed: the **published** fragment still *accepts* a stray `caveats` array, and
+> refuses it only under §8 item 20's test-time `unevaluatedProperties: false`. That is D5 working as
+> intended — the published artifact is deliberately open so a stale vendored schema cannot reject a
+> conformant server — but it means the closure case has to be *in the case list* or the collapse is
+> untested. Two closed-mode refusals and five closed-mode accepts were added for exactly that, and §11.6's
+> rule is the one they enforce: **a registration is done when a conformant reply passes its closed
+> fragment.**
+
 ---
 
 ## 9. Sequencing
@@ -973,3 +1102,10 @@ and §11.1's *"the discipline worth keeping is the sequencing — write the cont
 And per the ruling's fourth condition, the handler must emit **exactly** the schematized keys: the wire
 probe's F4 found ten existing methods emitting result keys documented nowhere
 (`docs/2026-08-15-wire-conformance-probe.md:63-98`), and every key proposed above is in this document.
+
+> **Done, 2026-08-15.** Rows and fragments landed in `empyrean` `af434a2` (§11.8); CR-9's §3 redefinition
+> landed separately in `8adf219` (§11.7), because it changes `stopped` for *every* stop-shaped method and
+> earns its own line in the permanent record. **The handler is the next pass** — condition 8 — and it lands
+> in `crates/oracle-aether` only, with `crates/oracle-core/tests/` untouched as §6.2's table promises. §8
+> item 20's closure is already live in this repo's harness, so the "exactly the schematized keys" rule
+> above is now a gate rather than an intention.
