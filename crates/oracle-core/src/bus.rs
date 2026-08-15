@@ -256,6 +256,54 @@ impl<S: BusEventSink> BusEventSink for Option<S> {
     }
 }
 
+/// **Observer combinator: forward every hook, but never end the run.**
+///
+/// [`stop_requested`](BusEventSink::stop_requested) is the one hook that lets a sink reach back and change
+/// the run it is attached to, and [`Fanout`] ORs it — which is right when one run has one caller, and wrong
+/// the moment the sink is *shared* between two run drivers.
+///
+/// That is exactly the case this exists for. A recording watch with a stop-after threshold belongs to the
+/// client that armed it, and its halt belongs to runs that client bounded. Attach the same instrument to
+/// somebody else's loop — a player's 60 Hz frame loop, a server's free-run step — and the OR turns a
+/// client's stop condition into a permanent freeze of a machine nobody asked to pause: the threshold is a
+/// level, not an edge, so every subsequent run ends before it starts.
+///
+/// Wrapping the shared half in `Observe` keeps every *observation* (so the instrument still sees those
+/// frames, and its `seen` counter still means what it says) while dropping the one capability that is not
+/// the borrower's to exercise.
+pub struct Observe<S>(pub S);
+
+impl<S: BusEventSink> BusEventSink for Observe<S> {
+    fn on_event(&mut self, event: BusEvent) {
+        self.0.on_event(event);
+    }
+    fn on_event_at(&mut self, event: BusEvent, mclk: u64) {
+        self.0.on_event_at(event, mclk);
+    }
+    fn on_step_boundary(&mut self, pc: u32, frame: u64) {
+        self.0.on_step_boundary(pc, frame);
+    }
+    fn wants_vdp_writes(&self) -> bool {
+        self.0.wants_vdp_writes()
+    }
+    fn on_vdp_write(&mut self, write: crate::vdp::VdpWrite) {
+        self.0.on_vdp_write(write);
+    }
+    fn wants_scanlines(&self) -> bool {
+        self.0.wants_scanlines()
+    }
+    fn on_scanline(&mut self, line: u16, rgb: &[(u8, u8, u8)]) {
+        self.0.on_scanline(line, rgb);
+    }
+    fn on_frame_boundary(&mut self, frame: u64) {
+        self.0.on_frame_boundary(frame);
+    }
+    /// The whole point: every capability query forwards, this one does not.
+    fn stop_requested(&self) -> bool {
+        false
+    }
+}
+
 /// Fan-out combinator: one sink that drives **two**, forwarding every hook to `a` then `b`.
 ///
 /// `BusEventSink` is monomorphized and passed per-run, so a run has exactly one sink type and there is no
@@ -3263,6 +3311,53 @@ mod tests {
             };
             assert_eq!(Fanout::new(a, b).stop_requested(), want, "({sa}, {sb})");
         }
+    }
+
+    /// `Observe` forwards every delivery and every capability query, and drops exactly one thing: the stop
+    /// signal. That asymmetry is the whole type — a shared instrument's *observations* belong to whoever is
+    /// running the machine, and its *halt* belongs only to the caller that armed it.
+    #[test]
+    fn observe_forwards_everything_except_the_stop_signal() {
+        let mut spy = Spy {
+            want_vdp: true,
+            want_lines: true,
+            stop: true,
+            ..Default::default()
+        };
+        {
+            let mut o = Observe(&mut spy);
+            o.on_event(ev(1));
+            o.on_event_at(ev(2), 5);
+            o.on_step_boundary(0x200, 3);
+            o.on_vdp_write(vdp_write_probe());
+            o.on_scanline(0, &[]);
+            o.on_frame_boundary(3);
+            assert!(o.wants_vdp_writes(), "capability queries still forward");
+            assert!(o.wants_scanlines());
+            assert!(
+                !o.stop_requested(),
+                "the one hook that reaches back into the run is dropped"
+            );
+        }
+        assert_eq!(spy.events.len(), 2, "both event hooks landed");
+        assert!(spy.stop, "and the inner sink still WANTS to stop");
+
+        // Composed, it is what stops one half's stop condition from ending somebody else's run.
+        let a = Spy::default();
+        let b = Spy {
+            stop: true,
+            ..Default::default()
+        };
+        assert!(Fanout::new(a, b).stop_requested(), "bare: the OR fires");
+        let a = Spy::default();
+        let b = Spy {
+            stop: true,
+            ..Default::default()
+        };
+        assert!(
+            !Fanout::new(a, Observe(b)).stop_requested(),
+            "wrapped: it does not"
+        );
     }
 
     /// `None` is exactly the null sink: no hook panics, no capability is claimed, no stop is requested.
