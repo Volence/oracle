@@ -407,6 +407,13 @@ Drafted in full in **`docs/2026-08-15-pixel-attribution-bus-method.md`** §2, wi
 fragment, and **RULED "adopt with changes"** in `docs/2026-08-15-fable-ruling-attribution.md`. Summarised
 here only so this register stays the single index of what has been raised.
 
+> **ADOPTED 2026-08-15** (`empyrean` `28ef4bb`, `protocol.md` §11.3), with the ruling's four conditions
+> applied first: renumbered from CR-9, the "pause first" reconciliation sentence corrected (it is wrong —
+> attribution disagrees with the drawn raster *paused or not*), two false provenance claims struck before
+> they could enter the amendment log, and the handler sequenced **after** the §8 item 15 validator so its
+> replies are schema-checked from the first run. The §6 row, the three normative behaviours and the schema
+> entry are live; the handler follows.
+
 **The gap.** `oracle_core::vdp::Vdp::pixel_attribution` is consumed by our own player and by nothing else;
 §6's *VRAM / CRAM / layers* table has eight rows and none is coordinate-shaped. That is a live §8 item 19
 violation, and the sweep that found it found **three more** (the watchpoint surface — CR-11/CR-12 below —
@@ -625,6 +632,28 @@ always answers a request whose id was read. A sentence in §5 naming which codes
 question for the next server author, who will otherwise derive it from JSON-RPC 2.0 exactly as we did, one
 test failure at a time. **This is the raising; the ruling is the owner's. The contract repo was not
 edited.**
+
+> **ADOPTED the same day** (`empyrean` `90178fc`, `protocol.md` §11.4) — and adopted at the *second* of the
+> two shapes proposed above, not the first. `errorResponse.id` accepts null via `anyOf`; `$defs/id` is
+> deliberately **not** widened, because a request must carry a real id (an id-less request is a
+> notification) and a success response echoes an id that was read, so null is meaningless in both.
+>
+> **And it was narrowed one step further than this CR asked.** A bare "nullable error id" is *wider than
+> the standard*: `-32700` and `-32600` are the only codes decided before a request object exists, and on
+> every other code a real id was available to echo, so a null one is a **correlation bug** — the client
+> cannot match the failure to the call that caused it, and will retry the wrong one. The schema therefore
+> carries an `if`/`then` restricting null to those two codes, which is exactly the width this harness's own
+> allowance had already been fenced to. The CR's closing suggestion — *"a sentence in §5 naming which codes
+> carry it"* — was taken as a **schema rule** instead of a sentence, on D14's grounds that the tiebreaker
+> should be the artifact a validator can enforce mechanically.
+>
+> **The divergence is retired** (`f45d318`): contract amended, vendored copy refreshed, registry entry
+> removed, allowance deleted. That sequence was not voluntary —
+> `every_registered_divergence_is_still_live` went red the moment the new schema stopped rejecting the
+> canonical message, which is the anti-rot property firing on real traffic on the day it was written. The
+> fence test survives, re-pointed: it now checks that the **schema's** width and the harness's predicate
+> still agree, so a future widening of the contract goes red here rather than being discovered by a client
+> that cannot correlate its own failures.
 
 ---
 
