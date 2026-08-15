@@ -231,8 +231,11 @@ pub fn push_frame(prod: &mut AudioProd, pcm: &[i16], gain: f32) -> usize {
 /// Rebuilding also drops the synth's register shadow, which is the right call here for a second reason: after
 /// a reset the real chip is reinitialised, so carrying yesterday's key-ons across would hold a note droning
 /// until the driver happened to rewrite those registers.
+/// The console output revision is carried across the rebuild: it is a listener's choice about the
+/// hardware being modelled, not accumulated chip state, so a state load must not silently revert the
+/// output stage to unfiltered.
 pub fn resync_sink(sink: &mut AudioSink) {
-    *sink = AudioSink::new(sink.sample_rate());
+    *sink = AudioSink::with_console_model(sink.sample_rate(), sink.console_model());
 }
 
 /// Fill one host output buffer from the ring — the body of the cpal callback, factored out so it is

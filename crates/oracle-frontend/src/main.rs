@@ -507,7 +507,31 @@ fn build_audio(device: Option<cpal::Device>) -> Option<AudioState> {
     let channels = default_cfg.channels() as usize;
     let config: cpal::StreamConfig = default_cfg.config();
 
-    let sink = oracle_core::synth::AudioSink::new(sample_rate);
+    // The console's analog output stage (SY-6b). Which RC corner is "correct" is revision-dependent, so
+    // the core deliberately defaults to `Unfiltered` rather than baking a number in; this lets the
+    // listener pick one without a rebuild. Accepts the same spellings as `ConsoleModel::from_name`
+    // ("va0", "va3", "off"). An unrecognised value is named and ignored rather than silently falling
+    // back, since a typo would otherwise present as "the filter does nothing".
+    let console_model = match std::env::var("ORACLE_CONSOLE_FILTER") {
+        Ok(name) => match oracle_core::synth::ConsoleModel::from_name(&name) {
+            Some(m) => m,
+            None => {
+                eprintln!(
+                    "audio: ORACLE_CONSOLE_FILTER={name:?} is not a known console revision \
+                     (try va0, va3, or off) — using the default"
+                );
+                oracle_core::synth::ConsoleModel::default()
+            }
+        },
+        // The PLAYER models a console, and every real board has an output stage — so unfiltered is the
+        // one setting that matches no hardware at all, and it is the wrong default here. VA0-VA2 was
+        // picked by ear against VA3-VA6 and the raw output (2026-08-15). This is deliberately a
+        // frontend-only default: `AudioSink::new` stays `Unfiltered`, so library users, tests and
+        // offline renders keep their bit-identical output and nothing shifts underneath them.
+        Err(_) => oracle_core::synth::ConsoleModel::Model1Va0Va2,
+    };
+    let sink = oracle_core::synth::AudioSink::with_console_model(sample_rate, console_model);
+    println!("audio: console output stage = {}", console_model.name());
     let (mut prod, mut cons) = audio::make_ring(sample_rate);
     // Queue a reservoir of silence *before* the stream is allowed to pop anything, so the first callbacks
     // have something to play while the first emulated frame is still being computed, and the feedback loop
