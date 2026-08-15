@@ -10,11 +10,11 @@ divergence where the server **had no conformant option at all**.
 | repo | tip | state |
 |---|---|---|
 | `oracle-next` | `m68000-microop-framework` | committed, **not pushed** |
-| `empyrean` | `90178fc` on `main` | committed, **not pushed** — two contract amendments |
+| `empyrean` | `d45dc87` on `main` | committed, **not pushed** — **four** contract amendments (§11.3–§11.6) |
 
 Gates, run firsthand on the merged tree with nothing else contending:
 
-- `cargo test --workspace` → **EXIT=0, 1360 passed / 0 failed / 4 ignored / 32 legs** (baseline 1330/30).
+- `cargo test --workspace` → **EXIT=0, 1363 passed / 0 failed / 32 legs** (baseline 1330/30).
 - `cargo clippy --all-targets --workspace` → 0 warnings; `--no-default-features` → 0 warnings.
 - `cargo fmt --all --check` → clean.
 - **`git diff 0a31d09 HEAD -- crates/oracle-core/tests/` is a zero-file diff.** Third session running.
@@ -147,14 +147,54 @@ contract's permanent amendment log.
 
 ---
 
+## 6b. ★ The CR-13/CR-14 arc, ruled and applied the same day
+
+An un-framed adjudication (`docs/2026-08-15-fable-ruling-cr13-cr14.md`) **split CR-13's block** rather than
+registering it, and the two entries it removed are the ones CR-13's own triage flagged least:
+`run_to.stoppedAtFrame`/`stoppedAtMclk` (byte-identical to the envelope stamp, verified three ways) and
+`release_all.released` (a hardcoded `true`). It also corrected the structural ask **I** wrote:
+`additionalProperties: false` provably rejects every conformant reply, because the stamp arrives through
+`allOf: [$ref replyFields]` which it cannot see — the working keyword is `unevaluatedProperties: false`,
+and it belongs in the **harness**, not the published schema, because D5 makes fields additive and closure
+there would break clients on the next conformant amendment. **Closure binds servers; additivity protects
+clients.**
+
+**Ruling condition 7 ran first and changed the input to everything else.** The complete sweep
+(`docs/2026-08-15-result-key-surplus.md`) found the surplus is **16 methods, not 10** — `screenshot` alone
+emits five undocumented keys against a one-key row. Its most useful finding is which methods are *clean*:
+`run_frames`, `checkpoint`, `restore`, `checkpoint_drop`, `pixel_attribution` — and every one of them was
+**specified before it was implemented**. The surplus is not carelessness; it is what happens when a method
+is built before its row is written. That is the first time contract-leads sequencing has been *measured*
+rather than asserted.
+
+**Four contract amendments landed** (`empyrean` §11.3–§11.6): CR-10, CR-15, the surplus ruling
+(§2.4 shared result conventions, §4 rewritten, `$defs/boundedList`, 12 fragments, §8 item 20), and CR-16.
+
+**§4's rewrite exposed a live break of D7's central promise.** `name` meant opposite things on two
+branches, and on the address branch carried a `+$hex` displacement suffix duplicating the `disp` field
+beside it. Verified on a live server: `lookup_symbol {addr}` → `name: "EntryPoint+$10"` → passing that
+back is **refused `-32013`**. The one field D7 exists to make reliable did not resolve. Now pinned by
+`$defs/symbolName` and by a round-trip test that hands every returned `name` straight back.
+
+**CR-16: five of §11.5's own registrations never reached the schema** — found by item 20's closure on its
+first run, *in the contract document rather than in the server*. Fixed in `d45dc87`; no prose changed,
+because the prose was already right. Retiring its allowance was **forced, not remembered**, by a failure
+mode the registry was not designed around: an allowance *lifts* its key out before validating, so once the
+schema **required** `limits`, lifting made it missing and every checkpoint test went red on the handshake.
+**An allowance that outlives its divergence starts causing the failure it was written to suppress.**
+
+Final state: **21/21 advertised methods have a result fragment, 0 uncovered, 0 registered divergences**,
+every result closed against its fragment. The report's closing claim is now *adaptive* — a fixed sentence
+is how a report starts lying — and when the registry is empty it says plainly that shape-conformance is
+not §8 conformance, naming the item-13 blind spot and the two open shape holes.
+
 ## 7. Next
 
 1. **CR-11/CR-12 — the watchpoint surface.** Drafted with paste-ready fragments in
    `docs/2026-08-15-watchpoint-bus-surface.md`, adopt-both-or-neither, directed as next by the CR-10 ruling.
-2. **CR-13 and CR-14 need owner rulings.** Both block writing the 12 missing schema fragments: writing them
-   from what this server emits would encode the implementation as the contract.
+2. ~~CR-13 and CR-14 need owner rulings.~~ **Done** — ruled, applied, and closed; see §6b.
 3. **Queue item 3 — the MCP server** as a *client* of Aether (D10), untouched this session.
-4. **Neither repo is pushed.** Two contract amendments are the outward-facing part; that is the owner's call.
+4. **Neither repo is pushed.** Four contract amendments are the outward-facing part; that is the owner's call.
 
 ## 8. Owner-owed, unchanged and now longer
 
