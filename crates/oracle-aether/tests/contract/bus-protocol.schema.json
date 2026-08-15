@@ -1,0 +1,395 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://empyrean/contract/bus-protocol.schema.json",
+  "title": "Empyrean / Aether Bus Protocol (Phase 1 thin slice — SEED)",
+  "description": "Source-of-truth message schema for the Aether bus (the Empyrean suite's shared protocol). SEED: the envelope, handshake, events, the symbol primitive, and a representative set of ops are schematized here; the remaining per-method param/result schemas (see contract/protocol.md §6) are completed mechanically during emulator conformance. The authoritative live method set is whatever `initialize` advertises. PRECEDENCE (protocol.md D14): this file is NORMATIVE for wire shapes — which keys exist, their JSON types and ranges, whether they are required — while protocol.md is normative for semantics and behaviour. A disagreement between the two is a spec bug to be fixed by amendment in the pass that finds it; until amended, this file governs what goes on the wire. It is not a place to introduce behaviour: a shape here with no counterpart in protocol.md is an un-specced field, and §8's ban on unilateral invention applies. The two are amended together.",
+  "$defs": {
+    "hex": {
+      "type": "string",
+      "pattern": "^0x[0-9A-Fa-f]+$",
+      "description": "Address or byte blob as a hex string (D9 category 1)."
+    },
+    "handle": {
+      "type": "string",
+      "minLength": 1,
+      "description": "An opaque handle (D9 category 4): a value the server issues purely so the client can hand it back — a checkpoint `id`, a list `cursor`. A string, deliberately: a client MUST NOT parse, order, compare or do arithmetic on one, and a number would invite exactly that. The representation is the server's business (protocol.md §6.1)."
+    },
+    "id": { "type": ["integer", "string"], "description": "JSON-RPC correlation id." },
+    "stamp": {
+      "type": "object",
+      "required": ["frame", "mclk", "running"],
+      "properties": {
+        "frame": { "type": "integer", "minimum": 0, "description": "Emulated frames since power-on (D11)." },
+        "mclk": { "type": "integer", "minimum": 0, "description": "Emulated master-clock ticks since power-on (D11)." },
+        "running": { "type": "boolean", "description": "Whether the machine was free-running when this payload was built." }
+      },
+      "description": "The machine stamp (protocol.md §2.2, D11). Present on every result, every error.data, and every event's params. Emulated clocks only — never wall-clock. Applied envelope-level after the handler returns, overwriting any same-named key. What a `frame` IS — the basis these clocks are expressed in — is advertised once in the initialize result as `timingBasis` (D16)."
+    },
+    "replyFields": {
+      "allOf": [{ "$ref": "#/$defs/stamp" }],
+      "required": ["droppedEvents"],
+      "properties": {
+        "droppedEvents": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Server→client events discarded on THIS connection since it opened (protocol.md §2.3, D17). Monotonically non-decreasing, cumulative, and always present — 0 is the answer, not the absence of one. Not part of the stamp (the stamp is a machine coordinate every connection sees identically; this is a per-connection fact) and never present on an event."
+        }
+      },
+      "description": "The full envelope field set carried by every SUCCESS result and every error.data: the machine stamp (§2.2) plus the dropped-event counter (§2.3). Events carry `stamp` only."
+    },
+    "request": {
+      "type": "object",
+      "required": ["jsonrpc", "id", "method"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/id" },
+        "method": {
+          "type": "string",
+          "pattern": "^([a-z][a-z0-9]*/)?[a-z][a-z0-9_]*$",
+          "$comment": "Role-namespaced, snake_case, digits allowed after the first character (D3). The digits matter: the previous pattern `^([a-z]+/)?[a-z_]+$` rejected three catalogued methods — emulator/z80_read, emulator/z80_write, emulator/z80_registers — and nothing caught it because nothing validated against this file. Fixed 2026-08-15 (protocol.md §11.2); checked against every method name in protocol.md §6. Request methods only: EVENT names are camelCase (emulator/romReloaded, §3) and are matched by #/$defs/notification, which deliberately carries no pattern."
+        },
+        "params": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "successResponse": {
+      "type": "object",
+      "required": ["jsonrpc", "id", "result"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/id" },
+        "result": { "$ref": "#/$defs/replyFields" }
+      },
+      "additionalProperties": false
+    },
+    "errorResponse": {
+      "type": "object",
+      "required": ["jsonrpc", "id", "error"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/id" },
+        "error": { "$ref": "#/$defs/errorObject" }
+      },
+      "additionalProperties": false
+    },
+    "notification": {
+      "type": "object",
+      "required": ["jsonrpc", "method"],
+      "not": { "required": ["id"] },
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "method": { "type": "string" },
+        "params": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "errorObject": {
+      "type": "object",
+      "required": ["code", "message", "data"],
+      "properties": {
+        "code": {
+          "type": "integer",
+          "description": "-32700 parse | -32600 invalid request | -32601 method not found | -32602 invalid params | -32603 internal | -32000 not wired | -32004 addr out of range | -32005 invalid state for this operation | -32010 timeout | -32012 no symbols | -32013 symbol not found | -32015 unsupported protocol version"
+        },
+        "message": { "type": "string" },
+        "data": {
+          "allOf": [{ "$ref": "#/$defs/replyFields" }],
+          "properties": {
+            "reason": {
+              "type": "string",
+              "description": "Machine-readable discriminant. REQUIRED for -32005, e.g. machineRunning | checkpointCapReached | unknownCheckpoint (protocol.md §5)."
+            }
+          },
+          "description": "Always present: it carries the machine stamp (D11) and droppedEvents (D17), plus any structured context."
+        }
+      }
+    }
+  },
+  "anyMessage": {
+    "oneOf": [
+      { "$ref": "#/$defs/request" },
+      { "$ref": "#/$defs/successResponse" },
+      { "$ref": "#/$defs/errorResponse" },
+      { "$ref": "#/$defs/notification" }
+    ]
+  },
+  "handshake": {
+    "initialize": {
+      "params": {
+        "type": "object",
+        "required": ["clientId", "protocolVersion"],
+        "properties": {
+          "clientId": { "type": "string", "description": "stable short id, e.g. 'mcp', 'editor', 'cli'" },
+          "clientName": { "type": "string" },
+          "clientVersion": { "type": "string" },
+          "protocolVersion": { "type": "integer" },
+          "clientCapabilities": {
+            "type": "object",
+            "properties": { "events": { "type": "boolean", "default": false } }
+          }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["serverName", "protocolVersion", "capabilities", "methods", "timingBasis"],
+        "properties": {
+          "serverName": { "type": "string" },
+          "serverVersion": { "type": "string" },
+          "protocolVersion": { "type": "integer" },
+          "capabilities": {
+            "type": "object",
+            "properties": {
+              "events": { "type": "array", "items": { "type": "string" } },
+              "z80": { "type": "boolean" },
+              "vgm": { "type": "boolean" },
+              "objectDecoders": { "type": "boolean" },
+              "profiler": { "type": "boolean" },
+              "symbolsLoaded": { "type": "boolean" },
+              "checkpoints": {
+                "type": "object",
+                "required": ["supported"],
+                "properties": {
+                  "supported": { "type": "boolean" },
+                  "cap": { "type": "integer", "minimum": 1, "description": "Max live checkpoints; the server refuses at this count with -32005 (D13 rule 3)." },
+                  "maxBytes": { "type": "integer", "minimum": 1 }
+                },
+                "description": "protocol.md §6.1. An object, not a bare flag, because the cap must be discoverable before a client plans around it."
+              }
+            }
+          },
+          "methods": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Authoritative live method set — replaces the removed list_ops (D4). This array IS the count of the server's surface; no number in prose tracks it."
+          },
+          "timingBasis": {
+            "type": "object",
+            "required": ["standard", "mclkPerFrame", "linesPerFrame"],
+            "properties": {
+              "standard": {
+                "type": "string",
+                "description": "Video standard, lowercase. Defined values today: 'ntsc', 'pal'. Deliberately not an enum — a client SHOULD branch on the numbers below, and the label exists so a human reading a log knows what they are looking at."
+              },
+              "mclkPerFrame": { "type": "integer", "minimum": 1, "description": "Master-clock ticks in one frame — the divisor that turns an mclk stamp into a frame index (896040 NTSC)." },
+              "linesPerFrame": { "type": "integer", "minimum": 1, "description": "Scanlines in one frame, including blanking (262 NTSC)." }
+            },
+            "description": "REQUIRED (protocol.md §2.1, D16). What the `frame` in every stamp MEANS. A top-level key rather than a capability flag: it is not something a server may or may not support, it is what that server's stamps are expressed in. The numbers are normative, not just the label ('ntsc' alone does not say 262 lines or 263), and a server MUST derive them from the same constants its own frame arithmetic uses."
+          }
+        }
+      }
+    },
+    "initialized": { "params": { "type": "object", "description": "notification, no params" } }
+  },
+  "events": {
+    "$comment": "Event names are camelCase (romReloaded, never rom_reloaded) — protocol.md §3 and §10 decision 4. Every event's params also carries the machine stamp.",
+    "emulator/stopped": {
+      "params": {
+        "allOf": [{ "$ref": "#/$defs/stamp" }],
+        "required": ["reason", "pc"],
+        "properties": {
+          "reason": { "enum": ["breakpoint", "watchpoint", "step", "runTo", "runToScanline", "runFrames", "pause", "entry"] },
+          "pc": { "$ref": "#/$defs/hex" },
+          "symbol": { "type": "string" },
+          "symbolDisp": { "type": "integer" },
+          "frames": { "type": "integer", "minimum": 1, "description": "Frames actually advanced. REQUIRED when reason is runFrames (protocol.md §3)." },
+          "deadlineReached": { "type": "boolean", "description": "True when the run ended on its bound rather than its condition (D12). Always true for runFrames." }
+        }
+      }
+    },
+    "emulator/resumed": { "params": { "$ref": "#/$defs/stamp" } },
+    "emulator/romReloaded": {
+      "params": {
+        "allOf": [{ "$ref": "#/$defs/stamp" }],
+        "required": ["path"],
+        "properties": {
+          "path": { "type": "string" },
+          "buildId": { "type": "string", "description": "reserved for the future build manifest" }
+        }
+      }
+    }
+  },
+  "methods": {
+    "emulator/lookup_symbol": {
+      "params": {
+        "type": "object",
+        "oneOf": [
+          { "required": ["name"] },
+          { "required": ["addr"] }
+        ],
+        "properties": {
+          "name": { "type": "string" },
+          "addr": { "$ref": "#/$defs/hex" }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "properties": {
+          "addr": { "$ref": "#/$defs/hex" },
+          "name": { "type": "string" },
+          "disp": { "type": "integer" },
+          "otherMatches": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "emulator/read_memory": {
+      "params": {
+        "type": "object",
+        "oneOf": [ { "required": ["addr"] }, { "required": ["symbol"] } ],
+        "properties": {
+          "addr": { "$ref": "#/$defs/hex" },
+          "symbol": { "type": "string" },
+          "len": { "type": "integer", "minimum": 1, "maximum": 4096, "default": 1 }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["addr", "len", "bytes"],
+        "properties": {
+          "addr": { "$ref": "#/$defs/hex" },
+          "len": { "type": "integer" },
+          "bytes": { "$ref": "#/$defs/hex" },
+          "symbol": { "type": "string" }
+        }
+      }
+    },
+    "emulator/write_cram": {
+      "params": {
+        "type": "object",
+        "required": ["line", "index"],
+        "properties": {
+          "line": { "type": "integer", "minimum": 0, "maximum": 3 },
+          "index": { "type": "integer", "minimum": 0, "maximum": 15 },
+          "r": { "type": "integer", "minimum": 0, "maximum": 7 },
+          "g": { "type": "integer", "minimum": 0, "maximum": 7 },
+          "b": { "type": "integer", "minimum": 0, "maximum": 7 },
+          "raw": { "type": "integer" }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "properties": {
+          "cramAddr": { "$ref": "#/$defs/hex" },
+          "value": { "$ref": "#/$defs/hex" }
+        }
+      }
+    },
+    "emulator/registers": {
+      "params": { "type": "object" },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "description": "d0–d7, a0–a7, pc, sp, sr — all hex strings; plus the envelope fields (§2.2 stamp + §2.3 droppedEvents), which are numbers/booleans and are therefore listed explicitly so additionalProperties does not reject them.",
+        "properties": {
+          "frame": { "type": "integer" },
+          "mclk": { "type": "integer" },
+          "running": { "type": "boolean" },
+          "droppedEvents": { "type": "integer" }
+        },
+        "additionalProperties": { "$ref": "#/$defs/hex" }
+      }
+    },
+    "emulator/run_to": {
+      "$comment": "protocol.md D12 — bounded, and it says whether it fired.",
+      "params": {
+        "type": "object",
+        "oneOf": [{ "required": ["addr"] }, { "required": ["symbol"] }],
+        "properties": {
+          "addr": { "$ref": "#/$defs/hex" },
+          "symbol": { "type": "string" },
+          "maxFrames": { "type": "integer", "minimum": 1, "default": 600, "description": "Bound. Without it an unreachable target is an unbounded run (D12)." }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["target", "reached", "pc", "maxFrames"],
+        "properties": {
+          "target": { "$ref": "#/$defs/hex" },
+          "reached": { "type": "boolean", "description": "True = the condition fired. False = the run ended on maxFrames; NOTHING about the machine state follows from where it stopped." },
+          "pc": { "$ref": "#/$defs/hex" },
+          "maxFrames": { "type": "integer" },
+          "symbol": { "type": "string" },
+          "symbolDisp": { "type": "integer" },
+          "caveat": { "type": "string", "description": "SHOULD be present when reached is false." }
+        }
+      }
+    },
+    "emulator/checkpoint": {
+      "$comment": "protocol.md §6.1 / D13 — volatile, whole-machine, capped, refused loudly.",
+      "params": {
+        "type": "object",
+        "properties": { "label": { "type": "string", "description": "Optional human string; carried back verbatim, never interpreted." } }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["id", "bytes"],
+        "properties": {
+          "id": {
+            "allOf": [{ "$ref": "#/$defs/handle" }],
+            "description": "The checkpoint handle. Server-assigned, never client-proposed (no cross-client collisions), and an OPAQUE STRING per D9 category 4 — not a slot index. A client hands it back to restore/checkpoint_drop and does nothing else with it. Pinned 2026-08-15 (protocol.md §6.1, §11.2); a numeric id here is non-conformant however plausible D9's earlier wording made it."
+          },
+          "bytes": { "type": "integer", "minimum": 0, "description": "Snapshot size, so a client can see the cap coming." }
+        }
+      }
+    },
+    "emulator/restore": {
+      "$comment": "Restores the WHOLE machine, ROM included (D13 rule 2). Unknown id => -32005 unknownCheckpoint.",
+      "params": {
+        "type": "object",
+        "required": ["id"],
+        "properties": { "id": { "$ref": "#/$defs/handle" } }
+      },
+      "result": { "$ref": "#/$defs/replyFields" }
+    },
+    "emulator/checkpoint_list": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "allOf": [{ "$ref": "#/$defs/handle" }],
+            "description": "A continuation handle previously returned by this method. Opaque (D9 category 4): the client hands it back unexamined. Its BEHAVIOUR is normative — stable under concurrent mutation, never skipping or repeating a live item (protocol.md §6.1) — while its representation is deliberately the server's."
+          },
+          "limit": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["checkpoints", "truncated"],
+        "properties": {
+          "checkpoints": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "frame", "mclk", "bytes"],
+              "properties": {
+                "id": { "$ref": "#/$defs/handle" },
+                "label": { "type": "string" },
+                "frame": { "type": "integer" },
+                "mclk": { "type": "integer" },
+                "bytes": { "type": "integer" }
+              }
+            }
+          },
+          "cursor": {
+            "allOf": [{ "$ref": "#/$defs/handle" }],
+            "description": "Present when more remain. Opaque (D9 category 4) — pass it back as the `cursor` param, unexamined."
+          },
+          "truncated": { "type": "boolean", "description": "Bounded/cursored like every list on this bus — a client must never mistake a partial list for a complete one." }
+        }
+      }
+    },
+    "emulator/checkpoint_drop": {
+      "params": {
+        "type": "object",
+        "oneOf": [{ "required": ["id"] }, { "required": ["all"] }],
+        "properties": {
+          "id": { "$ref": "#/$defs/handle" },
+          "all": { "type": "boolean" }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["removed"],
+        "properties": { "removed": { "type": "integer", "minimum": 0 } }
+      }
+    }
+  }
+}
