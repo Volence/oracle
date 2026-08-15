@@ -206,12 +206,28 @@ fn the_schema_covers_every_method_we_advertise_and_the_uncovered_list_is_pinned_
     for line in divergence_report() {
         println!("    {line}");
     }
-    println!(
-        "  => this server is NOT fully schema-conformant. A green suite means \"no UNREGISTERED \
-         divergences\", which is a weaker and more useful claim — and since §8 item 20 landed it is a \
-         much sharper one: every result is closed against its fragment, so an unknown key is a red \
-         test rather than a shape nobody sampled."
-    );
+    // The closing claim adapts to the registry, because a fixed sentence is how a report starts lying.
+    // With divergences registered, green means only "nothing UNregistered". With none, the claim is
+    // genuinely stronger — but it is still a claim about *shapes*, and D14 puts behaviour under the
+    // prose, so it must not be read as conformance to §8 as a whole.
+    if KNOWN_CONTRACT_DIVERGENCES.is_empty() {
+        println!(
+            "  => no registered divergences: every advertised method's replies match the contract's \
+             own wire shapes, closed against their fragments (§8 item 20), so an unknown key is a red \
+             test rather than a shape nobody sampled. This is NOT the same as conformance to §8: D14 \
+             puts BEHAVIOUR under the prose, and the sharpest live example is that `reason: \"step\"` \
+             for a completed run_frames would pass everything here (see the item-13 test below). Two \
+             shape-level holes also remain, both pinned as open: `anyMessage` is a oneOf over both wire \
+             directions, and the closure is top-level only."
+        );
+    } else {
+        println!(
+            "  => this server is NOT fully schema-conformant. A green suite means \"no UNREGISTERED \
+             divergences\", which is a weaker and more useful claim — and since §8 item 20 landed it is \
+             a much sharper one: every result is closed against its fragment, so an unknown key is a \
+             red test rather than a shape nobody sampled."
+        );
+    }
 
     let mut expected_uncovered = UNCOVERED_METHODS.to_vec();
     expected_uncovered.sort_unstable();
