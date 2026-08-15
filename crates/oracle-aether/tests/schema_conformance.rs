@@ -3,7 +3,7 @@
 //! Four jobs, and only the first is the obvious one:
 //!
 //! 1. **Freshness.** The vendored schema is byte-identical to the contract's copy.
-//! 2. **Coverage, reported and pinned.** The schema is a SEED: it gives a `result` schema for 8 of the 20
+//! 2. **Coverage, reported and pinned.** The schema is a SEED: it gives a `result` schema for 9 of the 21
 //!    methods we advertise. A harness that validates every reply and does not say that reads as though it
 //!    checks everything. This file prints both lists and pins the uncovered one.
 //! 3. **The divergence registry, reported and kept live.** Two shapes where the server and the schema
@@ -117,6 +117,11 @@ fn the_vendored_schema_is_byte_identical_to_the_upstream_contract() {
 /// * a **newly schematized** method would leave it, and that has to be a deliberate edit here rather
 ///   than a number quietly improving.
 ///
+/// The list did **not** move when `emulator/pixel_attribution` was implemented, and that is the
+/// mechanism working rather than a gap: CR-10 put the fragment in the contract *first*, so the method
+/// arrived already schematized and the covered count went 8 → 9 while this list stayed at 12. The other
+/// direction — a method landing here — is the one that means a fragment is owed.
+///
 /// Writing the 12 missing fragments is explicitly *not* this slice's job. The probe
 /// (`docs/2026-08-15-wire-conformance-probe.md`, finding F4) measured ~10 methods emitting result keys
 /// that appear in no contract text; writing schemas from what this server emits would encode the
@@ -138,7 +143,7 @@ const UNCOVERED_METHODS: &[&str] = &[
 ];
 
 #[test]
-fn the_schema_covers_8_of_the_20_methods_we_advertise_and_the_uncovered_list_is_pinned() {
+fn the_schema_covers_9_of_the_21_methods_we_advertise_and_the_uncovered_list_is_pinned() {
     let advertised: Vec<&str> = METHODS.iter().map(|m| m.name).collect();
     let schematized = schemas().methods_with_result();
 

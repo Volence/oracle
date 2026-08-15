@@ -34,6 +34,13 @@ pub fn spawn_with(tag: &str, rom: Vec<u8>, queue_cap: usize) -> ServerHandle {
     let mut sys = System::new(0x5EED);
     sys.load_rom(rom);
     sys.reset();
+    spawn_system(tag, sys, queue_cap)
+}
+
+/// A server around a `System` the test has already configured — the seam for a test that needs a
+/// specific *machine* rather than a specific ROM (a VDP posed by hand, say). Everything else is
+/// identical to [`spawn`], pacing included.
+pub fn spawn_system(tag: &str, sys: System, queue_cap: usize) -> ServerHandle {
     let config = ServerConfig {
         socket_path: temp_socket(tag),
         engine: EngineConfig {
