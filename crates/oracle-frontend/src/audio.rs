@@ -13,13 +13,140 @@
 use oracle_core::bus::Fanout;
 use oracle_core::synth::AudioSink;
 use oracle_core::watchpoints::Watchpoints;
-use ringbuf::traits::{Consumer, Producer, Split};
+use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Video frames of stereo audio the ring holds (its slack, in frames). ~4 frames keeps end-to-end latency
-/// ~50–67 ms while absorbing a couple of late producer ticks (design §2.4). Retune by this one number.
-pub const RING_FRAMES: usize = 4;
+/// Video frames of stereo audio the ring holds (its slack, in frames). 8 frames is ~133 ms of headroom —
+/// enough for the [`frames_to_run`] feedback loop to slew in without ever touching either wall. Retune by
+/// this one number.
+///
+/// It was 4 while the producer ran open-loop, which left no room for slew *and* did not matter, because an
+/// open-loop producer at a systematically low rate pins the ring at empty regardless of how big it is (see
+/// [`frames_to_run`]).
+pub const RING_FRAMES: usize = 8;
+
+/// Frames of silence queued into the ring before the stream starts, so the first callbacks have a reservoir
+/// to draw on instead of underrunning while the first emulated frame is still being computed.
+///
+/// Two frames sits above [`LOW_WATER_FRAMES`] (so the loop does not immediately burst) and far below the
+/// high-water mark (so it does not immediately skip) — the loop starts already inside its steady band.
+pub const PREROLL_FRAMES: usize = 2;
+
+/// The ring occupancy, in video frames, below which [`frames_to_run`] runs an extra emulated frame.
+///
+/// **This one constant is the latency/robustness dial.** Measured on this machine (44.1 kHz stereo, the real
+/// 59.63 fps minifb trace, 30 s, event-driven ring model) the steady-state occupancy sits between this and
+/// one frame above it, and the *margin* — the smallest occupancy any callback saw, minus its block size —
+/// came out:
+///
+/// | low-water | mean occupancy | margin @256 | @512 | @1024 | @2048-frame blocks |
+/// |-----------|----------------|-------------|------|-------|--------------------|
+/// | 1 frame   | 43.5–62.4 ms   | +15.4 ms    | +15.2 | +14.1 | +11.6 ms          |
+/// | 2 frames  | 60.2–79.0 ms   | +32.1 ms    | +31.8 | +30.8 | +28.3 ms          |
+/// | 3 frames  | 76.9–95.7 ms   | +48.8 ms    | +48.5 | +47.4 | +44.9 ms          |
+///
+/// All three give **zero** underruns; 1 frame is chosen because it is the lowest latency that does, and the
+/// measured window jitter it has to absorb is small (p99 period 18.2 ms, max 19.2 ms, against a 16.77 ms
+/// mean — i.e. ~2.5 ms of overshoot against ~12 ms of margin). A machine that stalls its render loop for
+/// tens of milliseconds at a time wants 2 or 3 here; nothing else has to change.
+pub const LOW_WATER_FRAMES: usize = 1;
+
+/// The most emulated frames one window-loop iteration may run. Two: one to keep pace, one to close the
+/// ~0.6 %/s production deficit. The video cost is bounded by construction — at most one frame per iteration
+/// is dropped from the display, measured at 0.43/s (0.7 % of frames).
+pub const MAX_FRAMES_PER_ITER: usize = 2;
+
+/// How many *consecutive* iterations [`frames_to_run`] may answer 0 before it stops honouring the high-water
+/// mark and runs a frame anyway.
+///
+/// This is a safety valve, not a tuning knob. Making the audio device the master clock means a device that
+/// stops consuming — suspended, wedged, a compositor stall — would otherwise back-pressure the emulator to a
+/// permanent standstill: the ring stays full, every iteration answers 0, and the game freezes with the window
+/// still pumping events. Capping the skip run bounds that to ~4 iterations (~67 ms) and then falls back to
+/// exactly the old behaviour (run anyway; [`push_frame`] discards what will not fit).
+pub const MAX_CONSECUTIVE_SKIPS: usize = 4;
+
+/// `f32` the synth produces per emulated video frame at `sample_rate`: one interleaved-stereo pair per sample,
+/// 60 frames a second. The single definition of the ring's unit of account — [`make_ring`], the pre-roll and
+/// [`frames_to_run`] all measure in these.
+pub fn frame_samples(sample_rate: u32) -> usize {
+    2 * (sample_rate as usize / 60)
+}
+
+/// How many emulated frames the window loop should run this iteration, from the ring's current `occupied`
+/// count, its `capacity` and one frame's worth of samples (all in `f32`). `skips` is how many consecutive
+/// iterations have already answered 0 (see [`MAX_CONSECUTIVE_SKIPS`]).
+///
+/// **Why this exists.** The window is paced by `minifb::set_target_fps(60)`, whose limiter sleeps
+/// `target - elapsed` and only *then* restarts its clock — so its period is always `16.667 ms + sleep
+/// overshoot` and its rate is always **under** 60. Measured here: 59.54–59.63 fps. The synth, meanwhile,
+/// emits exactly `sample_rate / 60` pairs per *emulated* frame, so an open-loop producer delivers
+/// `735 x 59.63 = 43,826` samples/s into a device consuming 44,100 — a **permanent 0.62 % deficit**. A
+/// deficit is not a latency problem: it drains any reservoir, so neither a bigger ring nor a pre-roll fixes
+/// it alone (both measured: 8.3 % of callbacks underrunning becomes 7.7 %). The ring simply sits pinned at
+/// empty and the callback silence-fills 8–16 % of its buffers — 233 ms of inserted silence every 30 s,
+/// continuously, which is the crackle.
+///
+/// Occupancy feedback closes the loop the other way round: the **audio device becomes the master clock** (the
+/// standard emulator design) and minifb keeps pacing presentation. Running a second frame when the ring dips
+/// below [`LOW_WATER_FRAMES`] supplies the missing 0.62 %, and skipping one when it approaches full absorbs
+/// the opposite drift. Measured over the same 30 s: **0 underruns at 256/512/1024/2048-frame callback
+/// blocks**, occupancy settling at 43–62 ms, and 0.43 **video** frames a second dropped from the display
+/// (0.7 %). The drift being one-directional, the skip branch never fired in steady state — measured 0.00/s —
+/// so in practice the cost is dropped frames only, never duplicated ones.
+///
+/// Pure, so the policy is testable without a sound card.
+pub fn frames_to_run(
+    occupied: usize,
+    capacity: usize,
+    frame_samples: usize,
+    skips: usize,
+) -> usize {
+    // A ring too small to hold a low band and a high band cannot be steered — run at the nominal rate and let
+    // `push_frame` drop the surplus, exactly as before this feedback existed.
+    if frame_samples == 0 || capacity < (LOW_WATER_FRAMES + 2) * frame_samples {
+        return 1;
+    }
+    if occupied < LOW_WATER_FRAMES * frame_samples {
+        return MAX_FRAMES_PER_ITER;
+    }
+    // Above the high-water mark, hold the emulator back a frame so the ring can drain — unless we have
+    // already done that `MAX_CONSECUTIVE_SKIPS` times running, which means the consumer is not consuming and
+    // waiting on it would stall the game outright.
+    if occupied > capacity - frame_samples && skips < MAX_CONSECUTIVE_SKIPS {
+        return 0;
+    }
+    1
+}
+
+/// [`frames_to_run`] against a live ring producer — reads the occupancy and capacity off the producer half so
+/// callers need no `ringbuf` imports of their own.
+pub fn frames_to_run_for(prod: &AudioProd, frame_samples: usize, skips: usize) -> usize {
+    frames_to_run(
+        prod.occupied_len(),
+        ring_capacity(prod),
+        frame_samples,
+        skips,
+    )
+}
+
+/// The ring's total capacity in `f32`, off the producer half. Exists so `main.rs` needs no `ringbuf` import.
+pub fn ring_capacity(prod: &AudioProd) -> usize {
+    prod.capacity().get()
+}
+
+/// Queue [`PREROLL_FRAMES`] frames of digital silence into a freshly built ring, returning the samples
+/// pushed. Called once, before the output stream is handed any work: without it the very first callbacks pop
+/// an empty ring and silence-fill while the first emulated frame is still being computed.
+///
+/// Silence, not audio, because there *is* no audio yet — the machine has not run a frame. It costs
+/// [`PREROLL_FRAMES`] frames of latency and buys the loop a reservoir to start inside its steady band rather
+/// than climbing out of the empty wall.
+pub fn preroll_silence(prod: &mut AudioProd, frame_samples: usize) -> usize {
+    let silence = vec![0.0f32; PREROLL_FRAMES * frame_samples];
+    prod.push_slice(&silence)
+}
 
 /// The ring element type: interleaved-stereo `f32` PCM (L,R,L,R…). Storing `f32` (not `i16`) makes the SY-5b
 /// audio callback a pure `memcpy`; the `i16 → f32` conversion happens on the producer / non-real-time thread
@@ -35,8 +162,7 @@ pub type AudioCons = HeapCons<f32>;
 /// `2 · (sample_rate / 60)` `f32` (interleaved stereo); capacity is floored at 2 so a degenerate rate still
 /// yields a usable ring.
 pub fn make_ring(sample_rate: u32) -> (AudioProd, AudioCons) {
-    let per_frame = 2 * (sample_rate as usize / 60);
-    let capacity = (RING_FRAMES * per_frame).max(2);
+    let capacity = (RING_FRAMES * frame_samples(sample_rate)).max(2);
     AudioRing::new(capacity).split()
 }
 
@@ -186,7 +312,7 @@ mod tests {
     /// Design §7 Test 1 — ring FIFO order + values, plus the underrun and overrun contracts (§2.5).
     #[test]
     fn ring_fifo_underrun_and_overrun() {
-        // Capacity is exact so overrun is easy to force: RING_FRAMES=4 · 2 · (240/60=4) = 32 f32.
+        // Capacity is exact so overrun is easy to force: RING_FRAMES · 2 · (240/60=4) f32.
         let (mut prod, mut cons) = make_ring(240);
         assert_eq!(prod.push_slice(&[]), 0, "empty push is a no-op");
 
@@ -214,7 +340,8 @@ mod tests {
         );
 
         // Overrun: offer more than capacity → push_slice accepts < offered, surplus dropped, no panic.
-        let cap = 32usize; // 4 frames · 2 · 4 samples/frame
+        let cap = RING_FRAMES * frame_samples(240); // derived, so retuning RING_FRAMES cannot stale it
+        assert_eq!(cap, prod.capacity().get(), "the ring really is this big");
         let big: Vec<f32> = (0..cap as i32 + 10).map(|i| i as f32).collect();
         let pushed = prod.push_slice(&big);
         assert!(
@@ -455,6 +582,173 @@ mod tests {
             5 * 2 * (44_100 / 60),
             "five frames render after the resync"
         );
+    }
+
+    /// The feedback policy itself, at every boundary that matters. Pure arithmetic, no device.
+    #[test]
+    fn frames_to_run_policy_boundaries() {
+        let f = frame_samples(44_100); // 1470
+        assert_eq!(f, 1470);
+        let cap = RING_FRAMES * f; // 11760
+        let low = LOW_WATER_FRAMES * f;
+        let run = |occ: usize| frames_to_run(occ, cap, f, 0);
+
+        // Below the low-water mark → burst, so the deficit gets made up.
+        assert_eq!(run(0), MAX_FRAMES_PER_ITER, "an empty ring bursts");
+        assert_eq!(run(low - 1), MAX_FRAMES_PER_ITER, "just under → burst");
+        // At and above it, and below the high-water mark → the nominal one frame.
+        assert_eq!(run(low), 1, "at the low-water mark → nominal");
+        assert_eq!(run(cap / 2), 1, "mid-ring → nominal");
+        assert_eq!(run(cap - f), 1, "at the high-water mark → nominal");
+        // Above the high-water mark → hold back a frame and let the ring drain.
+        assert_eq!(run(cap - f + 1), 0, "just over → skip");
+        assert_eq!(run(cap), 0, "a full ring skips");
+
+        // Never more than the cap, never a silent third answer.
+        for occ in (0..=cap).step_by(97) {
+            let n = frames_to_run(occ, cap, f, 0);
+            assert!(n <= MAX_FRAMES_PER_ITER, "occ {occ} asked for {n} frames");
+        }
+    }
+
+    /// **The safety valve.** A consumer that stops consuming must not be able to stall the emulator: after
+    /// [`MAX_CONSECUTIVE_SKIPS`] skips in a row the policy runs a frame regardless of how full the ring is.
+    /// Without this, making the audio device the master clock would freeze the game on a wedged device.
+    #[test]
+    fn frames_to_run_never_stalls_the_emulator_forever() {
+        let f = frame_samples(44_100);
+        let cap = RING_FRAMES * f;
+        for skips in 0..MAX_CONSECUTIVE_SKIPS {
+            assert_eq!(frames_to_run(cap, cap, f, skips), 0, "skip {skips} holds");
+        }
+        assert_eq!(
+            frames_to_run(cap, cap, f, MAX_CONSECUTIVE_SKIPS),
+            1,
+            "the skip run is capped — the emulator runs anyway"
+        );
+        // Degenerate rings (a device rate so low the ring cannot hold the two bands) disable the feedback
+        // rather than steering on nonsense — and, critically, never answer 0.
+        assert_eq!(
+            frames_to_run(0, 2, 0, 0),
+            1,
+            "no samples per frame → nominal"
+        );
+        assert_eq!(frames_to_run(2, 2, 4, 0), 1, "ring too small to steer");
+    }
+
+    /// [`preroll_silence`] queues exactly [`PREROLL_FRAMES`] frames of true silence, leaving the ring inside
+    /// the band where [`frames_to_run`] answers the nominal 1 — neither wall.
+    #[test]
+    fn preroll_lands_the_ring_inside_the_steady_band() {
+        let rate = 44_100;
+        let f = frame_samples(rate);
+        let (mut prod, mut cons) = make_ring(rate);
+        assert_eq!(prod.occupied_len(), 0, "a fresh ring starts empty");
+        assert_eq!(
+            frames_to_run_for(&prod, f, 0),
+            MAX_FRAMES_PER_ITER,
+            "which is exactly why the first callbacks underrun without a pre-roll"
+        );
+
+        assert_eq!(preroll_silence(&mut prod, f), PREROLL_FRAMES * f);
+        assert_eq!(prod.occupied_len(), PREROLL_FRAMES * f);
+        assert_eq!(
+            frames_to_run_for(&prod, f, 0),
+            1,
+            "the pre-roll starts the loop in its steady band, not against a wall"
+        );
+
+        // It is silence, not garbage — the reservoir is inaudible.
+        let mut out = vec![1.0f32; PREROLL_FRAMES * f];
+        assert_eq!(cons.pop_slice(&mut out), PREROLL_FRAMES * f);
+        assert!(
+            out.iter().all(|&s| s == 0.0),
+            "the pre-roll is true silence"
+        );
+    }
+
+    /// **The bug, reproduced and fixed as a measurement.** An event-driven model of the two clocks: a producer
+    /// ticking at the window's *measured* 59.63 fps (minifb's rate limiter can never exceed its target and
+    /// always lands under it) and a device consuming at exactly 44,100 Hz in fixed blocks.
+    ///
+    /// Open-loop — one emulated frame per iteration, whatever the ring says — that is a permanent 0.62 %
+    /// production deficit, and the assertion below is that it audibly breaks: the ring pins at empty and the
+    /// callback silence-fills a large fraction of its buffers. With the feedback loop, zero.
+    #[test]
+    fn occupancy_feedback_eliminates_the_underruns_an_open_loop_producer_guarantees() {
+        const RATE: f64 = 44_100.0;
+        const FPS: f64 = 59.6272; // measured on this machine over 1,183 window periods
+
+        /// Returns (underrunning callbacks, total callbacks, min occupancy a callback saw, frames run).
+        fn sim(block_frames: usize, feedback: bool, secs: f64) -> (usize, usize, usize, usize) {
+            let f = frame_samples(RATE as u32);
+            let cap = if feedback { RING_FRAMES * f } else { 4 * f };
+            let block = block_frames * 2;
+            let cb_period = block_frames as f64 / RATE;
+            let prod_period = 1.0 / FPS;
+
+            let mut occ = if feedback { PREROLL_FRAMES * f } else { 0 };
+            let (mut skips, mut under, mut cbs, mut ran) = (0usize, 0usize, 0usize, 0usize);
+            let mut occ_min = usize::MAX;
+            let (mut t_p, mut t_c) = (prod_period, cb_period);
+            while t_p.min(t_c) <= secs {
+                if t_p <= t_c {
+                    t_p += prod_period;
+                    let n = if feedback {
+                        frames_to_run(occ, cap, f, skips)
+                    } else {
+                        1
+                    };
+                    skips = if n == 0 { skips + 1 } else { 0 };
+                    ran += n;
+                    occ = (occ + n * f).min(cap); // push_slice drops what will not fit
+                } else {
+                    t_c += cb_period;
+                    cbs += 1;
+                    occ_min = occ_min.min(occ);
+                    if occ < block {
+                        under += 1;
+                    }
+                    occ = occ.saturating_sub(block);
+                }
+            }
+            (under, cbs, occ_min, ran)
+        }
+
+        for block in [256usize, 512, 1024, 2048] {
+            let (under, cbs, _, _) = sim(block, false, 30.0);
+            assert!(
+                under * 100 / cbs >= 5,
+                "open loop at {block}-frame blocks must underrun badly (this is the reported crackle): \
+                 {under}/{cbs}"
+            );
+
+            let (under, cbs, occ_min, ran) = sim(block, true, 30.0);
+            assert_eq!(
+                under, 0,
+                "feedback must eliminate underruns at {block}-frame blocks: {under}/{cbs}"
+            );
+            // Not merely zero — zero with margin. The smallest occupancy any callback saw must exceed the
+            // block it was about to pop, which is what stops jitter from turning into a dropout.
+            assert!(
+                occ_min > block * 2,
+                "at {block}-frame blocks the margin is too thin: min occupancy {occ_min} f32 \
+                 vs a {} f32 block",
+                block * 2
+            );
+            // And it settles mid-ring rather than pinned at either wall.
+            let f = frame_samples(RATE as u32);
+            assert!(
+                occ_min >= LOW_WATER_FRAMES * f && occ_min < RING_FRAMES * f,
+                "occupancy should settle inside the ring, saw a floor of {occ_min}"
+            );
+            // The emulator ends up running at the *device's* 60 Hz, not the window's 59.63.
+            let fps = ran as f64 / 30.0;
+            assert!(
+                (fps - 60.0).abs() < 0.2,
+                "the audio device is now the master clock, expected ~60 fps, got {fps:.3}"
+            );
+        }
     }
 
     /// Design §7 Test 4 — composite-sink equivalence: `AudioAndWatch { watch: Some(..) }` must (a) render
