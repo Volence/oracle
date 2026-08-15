@@ -11,7 +11,7 @@
 //!   - `[rom.bin]` — ROM path (default `/home/volence/sonic_hacks/aeon/s4.soundtest.bin`).
 //!   - `[frames]` — frames to run (default 600 ≈ 10 s at 60 Hz).
 
-use oracle_core::synth::{AudioSink, DEFAULT_SAMPLE_RATE};
+use oracle_core::synth::{AudioSink, ConsoleModel, DEFAULT_SAMPLE_RATE};
 use oracle_core::system::System;
 
 const DEFAULT_ROM: &str = "/home/volence/sonic_hacks/aeon/s4.soundtest.bin";
@@ -40,7 +40,17 @@ fn main() {
     sys.load_rom(rom);
     sys.reset();
 
-    let mut sink = AudioSink::new(DEFAULT_SAMPLE_RATE);
+    let console = match args.next() {
+        None => ConsoleModel::default(),
+        Some(s) => match ConsoleModel::from_name(&s) {
+            Some(m) => m,
+            None => {
+                eprintln!("unknown console model {s:?}; try va0, va3 or va7");
+                std::process::exit(1);
+            }
+        },
+    };
+    let mut sink = AudioSink::with_console_model(DEFAULT_SAMPLE_RATE, console);
     sys.run_frames_with_sink(frames, &mut sink);
     sink.finish(); // flush the final in-progress frame
 
@@ -48,6 +58,7 @@ fn main() {
     let non_silent = pcm.iter().filter(|&&s| s != 0).count();
     println!("frames run:     {frames}");
     println!("sample rate:    {} Hz", sink.sample_rate());
+    println!("console model:  {}", sink.console_model().name());
     println!("stereo frames:  {}", sink.len_frames());
     println!("i16 samples:    {}", pcm.len());
     println!(

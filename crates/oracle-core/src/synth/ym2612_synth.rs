@@ -55,13 +55,17 @@
 //!   [`opn_lfo_pm_phase_adjustment`] / [`S_LFO_PM_SHIFTS`] (FMS=0 ⇒ none). With the LFO **disabled** AM = 0
 //!   and PM = 0, so the datapath is bit-identical to SY-3d (see the note on `clock_lfo`).
 //!
-//! ## DAC / PCM channel-6 (SY-3a — preserved unchanged)
+//! ## DAC / PCM channel-6 (SY-3a, rerouted by SY-6a)
 //!
-//! - **DAC / PCM channel-6** (`$2A` stream, `$2B` enable). Each frame's ordered `$2A` bytes are spread
-//!   evenly across the frame's output samples with a zero-order hold ([`Ym2612Synth::begin_frame`] +
-//!   [`Ym2612Synth::dac_sample`]); the 8-bit unsigned samples are centered on `0x80` and scaled by
-//!   [`DAC_SCALE`]. While `$2B` bit7 is set, FM channel 6 is muted and the PCM stream plays in its place.
-//!   The DAC path runs at the **output** rate (added after the FM resample), untouched by SY-3b.
+//! - **DAC / PCM channel-6** (`$2A` stream, `$2B` enable). Each frame's ordered `$2A` bytes are placed at
+//!   their true sub-frame samples and held ([`Ym2612Synth::begin_frame`] + [`Ym2612Synth::dac_sample`]);
+//!   the 8-bit unsigned samples are centered on `0x80` and scaled by [`DAC_SCALE`]. While `$2B` bit7 is
+//!   set, FM channel 6 is muted and the PCM stream plays in its place.
+//! - **SY-6a**: the DAC is summed inside [`Ym2612Synth::tick_native`], in channel 6's slot, rather than
+//!   added after the resample at the output rate. That matches the chip (its output is time-multiplexed
+//!   across channel slots, the DAC substituting for slot 6) and puts the PCM through the same
+//!   linear-interpolation resampler as the FM, replacing a raw output-grid staircase whose step edges
+//!   folded energy back into 15-22 kHz.
 //!
 //! ## Deferred to later SY-3 slices (documented inaccuracies, not bugs)
 //!
@@ -965,7 +969,12 @@ impl Ym2612Synth {
         self.dac_sample_idx = 0;
     }
 
-    /// The DAC (channel-6 PCM) contribution `(left, right)` for the current output sample. The frame's ZOH
+    /// The DAC (channel-6 PCM) contribution `(left, right)` for the current position in the frame.
+    ///
+    /// Since SY-6a this is read once per **native** tick from [`Self::tick_native`], not once per output
+    /// sample. The track it indexes is still built at output-sample resolution, so the value is constant
+    /// across the 1-2 native ticks that fall inside one output sample; the resampler downstream is what
+    /// turns the resulting steps into a first-order reconstruction. The frame's ZOH
     /// track (built by [`Self::begin_frame`]) is indexed directly at the per-sample position: output sample
     /// `i` plays `dac_frame[i]`, i.e. the byte whose true sub-frame sample was `≤ i`. A frame with no `$2A`
     /// writes holds [`Self::dac_last`]. The 8-bit unsigned byte is centered around `0x80` and scaled by
@@ -1024,10 +1033,27 @@ impl Ym2612Synth {
         };
     }
 
-    /// Advance the whole FM chip by one **native** operator tick and return the summed `(left, right)` FM
-    /// output. Channel 6's FM is skipped while the DAC drives it (`$2B` bit7); the PCM stream is added at the
-    /// output rate in [`Self::next_sample`].
+    /// Advance the whole FM chip by one **native** operator tick and return the summed `(left, right)` chip
+    /// output. Channel 6's FM is skipped while the DAC drives it (`$2B` bit7) and the held PCM byte is summed
+    /// in its place, **inside the native tick** (SY-6a).
+    ///
+    /// SY-6a moved the DAC here from [`Self::next_sample`]. Two reasons:
+    /// 1. **It is what the chip does.** The OPN2 output is time-multiplexed across its six channel slots and
+    ///    the DAC simply substitutes for slot 6 — it is not a separate output-rate mixer stage.
+    /// 2. **It removes a reconstruction artifact.** Held at the output rate the DAC was a raw zero-order-hold
+    ///    staircase whose step edges snapped to the 44.1 kHz grid, folding energy back in at 15-22 kHz. Riding
+    ///    the native tick puts it through the same linear-interpolation resampler as the FM, which reconstructs
+    ///    first-order instead of zeroth-order.
+    ///
+    /// Consequence: the DAC no longer reproduces its input bytes *instantaneously*. A step now settles over
+    /// roughly one output sample rather than landing whole — see `dac_streams_written_bytes`.
     fn tick_native(&mut self) -> (i32, i32) {
+        // Sample the DAC before the channel borrow below (it reads `channels[5]`'s pan).
+        let dac = if self.dac_enabled {
+            Some(self.dac_sample())
+        } else {
+            None
+        };
         // The EG advances once every EG_CLOCK_DIVIDER native ticks; on those ticks pass the incremented global
         // counter down so the operators clock their envelopes (otherwise `None` = phase-only tick).
         self.eg_subcount += 1;
@@ -1063,6 +1089,10 @@ impl Ym2612Synth {
             l += cl;
             r += cr;
         }
+        if let Some((dl, dr)) = dac {
+            l += dl;
+            r += dr;
+        }
         (l, r)
     }
 
@@ -1071,7 +1101,8 @@ impl Ym2612Synth {
     /// The FM chip is clocked at its native ~53_267 Hz inside [`Self::tick_native`]; this method consumes
     /// `native_per_output ≈ 1.208` native ticks per call and **linearly interpolates** between the two
     /// bracketing native samples to resample to the output rate (cutting the aliasing the old direct-at-output
-    /// path had). The SY-3a DAC contribution is added afterwards, at the output rate, unchanged.
+    /// path had). Since SY-6a the DAC is part of that native mix, so it is resampled the same way rather than
+    /// being zero-order-held onto the output grid.
     pub fn next_sample(&mut self) -> (i32, i32) {
         self.resample_frac += self.native_per_output;
         while self.resample_frac >= 1.0 {
@@ -1080,13 +1111,8 @@ impl Ym2612Synth {
             self.cur_native = self.tick_native();
         }
         let f = self.resample_frac as f32;
-        let mut li = lerp(self.prev_native.0, self.cur_native.0, f);
-        let mut ri = lerp(self.prev_native.1, self.cur_native.1, f);
-        if self.dac_enabled {
-            let (dl, dr) = self.dac_sample();
-            li += dl;
-            ri += dr;
-        }
+        let li = lerp(self.prev_native.0, self.cur_native.0, f);
+        let ri = lerp(self.prev_native.1, self.cur_native.1, f);
         self.dac_sample_idx += 1;
         (li, ri)
     }
@@ -1361,9 +1387,13 @@ mod tests {
         );
     }
 
-    /// SY-3a: with the DAC enabled, a frame of $2A writes streams on channel 6 as signed PCM. The first
-    /// output sample is the first byte and the last is the last byte (FM otherwise silent, so the samples
-    /// are the DAC alone — the FM resampler contributes exactly 0).
+    /// SY-3a/SY-6a: with the DAC enabled, a frame of $2A writes streams on channel 6 as signed PCM.
+    ///
+    /// Since SY-6a the DAC rides the native tick and is resampled with the FM, so a step no longer lands
+    /// *instantaneously*: the first sample after a change is interpolated toward the new byte, and the
+    /// value is exact once it has settled (a sample or two later). What must still hold exactly is the
+    /// **settled** level, so that is what this pins — plus the guarantee that the interpolation never
+    /// overshoots past the byte it is heading for.
     #[test]
     fn dac_streams_written_bytes() {
         let mut fm = Ym2612Synth::new(44_100);
@@ -1373,26 +1403,38 @@ mod tests {
         fm.queue_dac(0, 0xC0); // 0xC0 - 128 = +64 → positive, placed at sample 0
         fm.queue_dac(734, 0x40); // 0x40 - 128 = -64 → negative, placed at the last sample
 
+        let high = (0xC0i32 - 128) * DAC_SCALE;
+        let low = (0x40i32 - 128) * DAC_SCALE;
+
         fm.begin_frame(735);
         let (l0, r0) = fm.next_sample();
-        assert_eq!(
-            l0,
-            (0xC0i32 - 128) * DAC_SCALE,
-            "first sample = first DAC byte"
-        );
         assert_eq!(r0, l0, "ch6 pan-both duplicates DAC to L and R");
-        assert!(l0 > 0, "0xC0 is above center → positive");
+        assert!(
+            l0 > 0 && l0 <= high,
+            "the first sample must rise toward the first byte without overshooting: {l0} vs {high}"
+        );
 
-        let mut last = (0, 0);
-        for _ in 1..735 {
-            last = fm.next_sample();
+        // Settled: the DAC has been holding 0xC0 for many samples, so it must read exactly.
+        let mut settled = (0, 0);
+        for _ in 1..700 {
+            settled = fm.next_sample();
         }
         assert_eq!(
-            last.0,
-            (0x40i32 - 128) * DAC_SCALE,
-            "last sample = last DAC byte"
+            settled.0, high,
+            "a held DAC byte must resolve to exactly its value once settled"
         );
-        assert!(last.0 < 0, "0x40 is below center → negative");
+
+        // Run out the frame; the final byte (written at the last sample) is still interpolating toward
+        // `low`, so it must be heading down without passing it.
+        let mut last = settled;
+        for _ in 700..735 {
+            last = fm.next_sample();
+        }
+        assert!(
+            last.0 < 0 && last.0 >= low,
+            "0x40 is below center; must approach {low} without overshooting, got {}",
+            last.0
+        );
     }
 
     /// SY-3a: the DAC path is inert while disabled. With the DAC OFF, writing $2A bytes changes nothing —
@@ -1412,11 +1454,15 @@ mod tests {
         assert_eq!(peak, 0, "DAC disabled → $2A writes must produce no output");
     }
 
-    /// SY-4b: true sub-frame placement + ZOH. Bytes queued at explicit sample indices land at exactly those
-    /// samples, and each is held forward until the next byte's sample (zero-order hold), with the final byte
-    /// held to the frame's end.
+    /// SY-4b/SY-6a: true sub-frame placement. Bytes queued at explicit sample indices take effect at
+    /// exactly those samples and hold until the next byte.
+    ///
+    /// Since SY-6a the hold is reconstructed through the resampler rather than as a hard staircase, so the
+    /// *timing* is pinned exactly (nothing moves before its sample; the change is visible immediately at
+    /// it) while the *level* is pinned once settled. That combination is what proves placement is right
+    /// without re-asserting the zero-order hold this change deliberately removed.
     #[test]
-    fn dac_zoh_true_placement_holds_between_writes() {
+    fn dac_true_placement_holds_between_writes() {
         let mut fm = Ym2612Synth::new(44_100);
         fm.write(0, 0x2B, 0x80);
         fm.write(1, 0xB6, 0xC0);
@@ -1431,24 +1477,39 @@ mod tests {
             samples.push(fm.next_sample().0);
         }
         let sc = |b: u8| (b as i32 - 128) * DAC_SCALE;
-        assert_eq!(samples[0], sc(0x90), "first byte lands at its sample 0");
-        assert_eq!(samples[99], sc(0x90), "ZOH holds 0x90 up to the next write");
-        assert_eq!(
-            samples[100],
-            sc(0xA0),
-            "true placement: 0xA0 lands at sample 100"
-        );
-        assert_eq!(
-            samples[399],
-            sc(0xA0),
-            "ZOH holds 0xA0 up to the next write"
-        );
-        assert_eq!(
-            samples[400],
-            sc(0xC0),
-            "true placement: 0xC0 lands at sample 400"
-        );
+
+        // Settled levels are exact.
+        assert_eq!(samples[99], sc(0x90), "0x90 holds up to the next write");
+        assert_eq!(samples[399], sc(0xA0), "0xA0 holds up to the next write");
         assert_eq!(samples[734], sc(0xC0), "final byte holds to the frame end");
+
+        // Timing: nothing moves before its sample, and each write is visibly in effect at its own sample.
+        assert_eq!(
+            samples[98], samples[99],
+            "the DAC must be steady just before a write"
+        );
+        assert_ne!(
+            samples[100], samples[99],
+            "0xA0 must take effect exactly at sample 100"
+        );
+        assert_eq!(
+            samples[398], samples[399],
+            "the DAC must be steady just before a write"
+        );
+        assert_ne!(
+            samples[400], samples[399],
+            "0xC0 must take effect exactly at sample 400"
+        );
+
+        // Each transition is monotone toward the new level and never overshoots it.
+        for (from, to, at) in [(sc(0x90), sc(0xA0), 100usize), (sc(0xA0), sc(0xC0), 400)] {
+            for (k, &s) in samples[at..at + 3].iter().enumerate() {
+                assert!(
+                    s > from && s <= to,
+                    "transition at {at}+{k} must move from {from} toward {to} without overshoot, got {s}"
+                );
+            }
+        }
     }
 
     /// SY-3a: an empty ($2A-less) DAC frame holds the last written value (ZOH across frames), and toggling
@@ -1472,10 +1533,22 @@ mod tests {
         );
 
         // Disable the DAC → ch6 returns to (silent, unprogrammed) FM; the held value no longer sounds.
+        // Since SY-6a the DAC is inside the resampled mix, so the output decays to silence across a
+        // sample or two rather than dropping to 0 instantly — it must still get there, and stay.
         fm.write(0, 0x2B, 0x00);
         fm.begin_frame(735);
-        let (l2, r2) = fm.next_sample();
-        assert_eq!((l2, r2), (0, 0), "$2B bit7 clear disables the DAC path");
+        let mut out = (0, 0);
+        for _ in 0..4 {
+            out = fm.next_sample();
+        }
+        assert_eq!(out, (0, 0), "$2B bit7 clear disables the DAC path");
+        for _ in 0..64 {
+            assert_eq!(
+                fm.next_sample(),
+                (0, 0),
+                "a disabled DAC must stay silent, not drift back"
+            );
+        }
     }
 
     /// SY-3c: the EG increment table must match ymfm's literal `s_increment_table` (`src/ymfm_fm.ipp`).

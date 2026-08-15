@@ -25,9 +25,11 @@
 //! later SY-3 slices (see [`ym2612_synth`]).
 
 pub mod audio_sink;
+pub mod console_filter;
 pub mod sn76489;
 pub mod ym2612_synth;
 
 pub use audio_sink::{AudioSink, DEFAULT_SAMPLE_RATE};
+pub use console_filter::{ConsoleModel, ConsoleOutputFilter, OnePoleLowPass};
 pub use sn76489::Sn76489;
 pub use ym2612_synth::Ym2612Synth;
