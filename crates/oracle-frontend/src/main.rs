@@ -39,12 +39,25 @@
 //! | M                 | mute toggle (audio builds; remembers the volume level) |
 //! | Left mouse click  | watch the VRAM tile under the clicked pixel ("who wrote this tile?") |
 //! | W                 | dump recorded watch hits (seq/frame/pc/addr/old→new/via, PC symbolised) + drop count |
-//! | C                 | clear the watch (return to the fast null-sink run path) |
+//! | C                 | clear the watch (stop recording write hits) |
 //! | Esc / window-close| quit           |
 //!
 //! The gamepad layout (face buttons → A/B/C, Start, d-pad and left stick → directions, analog deadzone) lives
 //! in one place — the mapping tables at the top of the `gamepad` module — so remapping means editing those
 //! tables.
+//!
+//! ## Pixels — why the window is painted from the per-scanline seam
+//!
+//! The frame shown here is assembled **during** the run, line by line, by an
+//! [`oracle_core::scanline_capture::ScanlineCapture`] attached to every `run_frames_with_sink` call — not by
+//! reading the VDP once the frame is over. The distinction is not academic: `run_frames(1)` returns in
+//! V-Blank, by which time a game has already rewritten CRAM for the *next* frame, so a post-hoc
+//! `Vdp::render_line` sweep cannot show any mid-frame palette effect. Sonic 3 & Knuckles' underwater palette
+//! split is the loud case — the water came out bright red (the above-water palette) instead of slate blue.
+//! The core already rendered every line during the run and threw the pixels away; this frontend simply opts
+//! into them (`wants_scanlines`), so nothing in `oracle-core` changed and no currency moved. Measured on the
+//! S3K state at 320x224, it is also ~36% *cheaper* per frame than the old path, which rendered every scanline
+//! twice.
 //!
 //! ## Reset and ROM reload
 //!
@@ -91,9 +104,9 @@
 //!
 //! A left click asks the VDP `pixel_attribution(x,y)` who is showing at that dot; if the winner is a
 //! plane/window tile, its 32-byte VRAM range is armed as a VDP-internal write watch on a *caller-owned*
-//! [`Watchpoints`] (the core never stores it — this stays a zero-diff, frontend-only slice). While a watch is
-//! armed the run loop drives the sink-generic [`System::run_frames_with_sink`]; with no watch it stays on the
-//! untouched null-sink [`System::run_frames`] fast path. `W` prints the recorded hits; `C` disarms. Sprite /
+//! [`Watchpoints`] (the core never stores it — this stays a zero-diff, frontend-only slice). The run loop
+//! always drives the sink-generic [`System::run_frames_with_sink`] (see "Pixels" above); arming a watch just
+//! composes it into that sink. `W` prints the recorded hits; `C` disarms. Sprite /
 //! backdrop pixels (`cell == None`) report and arm nothing this slice (a documented follow-up). An on-screen
 //! text overlay is out of scope (minifb has no text). Break-on-hit is no longer *blocked*: as of 2026-08-14
 //! the core's run loop honours a sink's [`oracle_core::bus::BusEventSink::stop_requested`], so a run can end
@@ -122,7 +135,9 @@ mod sram_file;
 mod symbol_file;
 
 use minifb::{Key, KeyRepeat, MouseButton, MouseMode, ScaleMode, Window, WindowOptions};
+use oracle_core::bus::Fanout;
 use oracle_core::io::Pad;
+use oracle_core::scanline_capture::{Retain, ScanlineCapture};
 use oracle_core::symbols::SymbolTable;
 use oracle_core::system::System;
 use oracle_core::watchpoints::{WatchOp, WatchSpace, WatchVia, Watchpoints};
@@ -235,20 +250,61 @@ fn poll_pad(window: &Window) -> Pad {
     }
 }
 
-/// Render the current frame into `buf` at *native* resolution and return the frame width. `buf` is (re)sized
-/// to `width * HEIGHT`; the window does the integer upscale. Native pixels come from the pure `render_line`
-/// renderer as `(r,g,b)`, packed here into minifb's `0x00RR_GGBB` u32 layout. Width is re-queried each call
-/// because the game switches H32↔H40 after boot.
-fn render_into(sys: &System, buf: &mut Vec<u32>) -> usize {
-    let width = sys.vdp().render_line(0).len();
+/// Hard ceiling on the [`ScanlineCapture`]'s per-delivery bookkeeping before it is released unconditionally.
+/// The steady-state path clears the capture after every clean frame (see the run loop), so this only ever
+/// fires on the pathological case where a run keeps ending mid-frame — e.g. a single 68k→VRAM DMA billed as
+/// tens of thousands of CPU wait cycles, which can carry the clock past a whole frame's worth of events.
+/// Eight frames of `(line, width)` pairs is ~28 KB; without the valve the log grows ~215 KB per emulated
+/// second forever (`ScanlineCapture`'s memory note).
+const MAX_CAPTURE_LINES: usize = 8 * HEIGHT;
+
+/// Pack the capture's most recently **completed** frame into `buf` at native resolution, returning its width,
+/// or `None` when the capture is not holding a whole frame right now (nothing completed yet, or a run that
+/// ended mid-frame). `buf` is left untouched on `None`, so the caller re-presents the last good framebuffer
+/// instead of flashing an empty one — which is exactly what a paused frontend does every iteration.
+///
+/// **Why the capture and not `Vdp::render_line`.** `render_line` is a pure, *post-hoc* read of whatever CRAM
+/// happens to hold when it is called — and `run_frames(1)` returns in V-Blank, after a game has rewritten the
+/// palette for the next frame. Every mid-frame palette effect (S3K's underwater split being the loud one) is
+/// therefore invisible to it: the water renders in the above-water palette. The pixels here come from
+/// [`Vdp::render_scanline`](oracle_core::vdp::Vdp), delivered line by line *during* the run against the CRAM
+/// live at that line, through the sink seam the core already had.
+///
+/// **Width, and ragged frames.** Width is taken from the capture's own per-line log, never from re-querying
+/// the VDP — a post-hoc query answers for whatever mode the chip is in *now*, which after an H32↔H40 switch is
+/// the next frame's. A frame is *not* guaranteed rectangular: a game can switch mode part-way down, and S3K
+/// does exactly that on the first frame after a soft reset (two 256-px lines, then 222 at 320). So the display
+/// width is the width the frame **ended** on — what the VDP is actually scanning out by V-Blank — and shorter
+/// lines are padded with black to reach it. Rejecting those frames instead would blank the window for as long
+/// as a game kept switching.
+fn blit_capture(cap: &ScanlineCapture, buf: &mut Vec<u32>) -> Option<usize> {
+    let px = cap.pixels();
+    let log = cap.lines();
+    if px.is_empty() || log.len() < HEIGHT {
+        return None;
+    }
+    // The completed frame is the last HEIGHT deliveries; the sum check is what proves that (a run that ended
+    // mid-frame leaves a *previous* frame in `pixels()` whose lines are no longer the tail of the log).
+    let widths = &log[log.len() - HEIGHT..];
+    if widths.iter().map(|&(_, w)| w).sum::<usize>() != px.len() {
+        return None;
+    }
+    let width = widths[HEIGHT - 1].1;
+    if width == 0 {
+        return None;
+    }
     buf.clear();
     buf.reserve(width * HEIGHT);
-    for line in 0..HEIGHT {
-        for &(r, g, b) in sys.vdp().render_line(line as u16).iter() {
+    let mut at = 0;
+    for &(_, line_width) in widths {
+        let line = &px[at..at + line_width];
+        at += line_width;
+        for x in 0..width {
+            let (r, g, b) = line.get(x).copied().unwrap_or((0, 0, 0));
             buf.push((u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b));
         }
     }
-    width
+    Some(width)
 }
 
 /// How far past a symbol a PC may sit before the name stops being useful. Aeon's listings are dense (2,129
@@ -563,9 +619,24 @@ fn main() {
     #[cfg(feature = "audio")]
     let mut audio = start_audio();
 
-    let mut buf: Vec<u32> = Vec::with_capacity(MAX_WIDTH * HEIGHT);
+    // The presented framebuffer and its native width. Both are *retained*: a frame that produced no capture
+    // (paused, or a run that ended mid-frame) re-presents the last good one rather than a blank. Seeded with
+    // a black frame at the VDP's post-reset width so the very first iteration has something valid to show and
+    // a click before the first frame resolves against a sane geometry.
+    let mut width = sys.vdp().render_line(0).len();
+    let mut buf: Vec<u32> = vec![0; width * HEIGHT];
+    // Scratch copy used only when the crosshair overlay is active, so `buf` stays a clean frame and the
+    // XOR-based crosshair cannot accumulate across the repeated presents of a paused frontend.
+    let mut present: Vec<u32> = Vec::new();
     let mut paused = false;
     let mut frame: u64 = 0;
+
+    // The per-scanline pixel path (`F-SCANLINE-CAPTURE`). Attached to **every** run below so the window shows
+    // what the VDP drew line by line, against the CRAM live at each line — the only way a mid-frame palette
+    // change (S3K's underwater split) can reach the screen. `Retain::LastFrame` holds exactly the frame the
+    // run completed. The core is untouched by this: the sink is caller-owned and opts in via
+    // `wants_scanlines`, so nothing frozen moves.
+    let mut cap = ScanlineCapture::new(Retain::LastFrame);
 
     // Slice S2 autosave throttle: when the guest has dirtied SRAM, wait this many frames of quiescence before
     // writing the `.srm`, so a burst of saves coalesces into one file write (~2 s at 60 fps).
@@ -574,7 +645,7 @@ fn main() {
 
     // The pixel-attribution watch — a *caller-owned* sink (the core never stores it, keeping this slice
     // zero-diff on oracle-core). `watch_armed` mirrors "a VDP watch is registered" so the run loop can stay on
-    // the fast null-sink path when nothing is being watched. `watched_pixel` drives the on-screen crosshair.
+    // the recording sink out of the run when nothing is being watched. `watched_pixel` drives the crosshair.
     let mut watchpoints = Watchpoints::new(WATCH_CAP);
     let mut watch_armed = false;
     let mut watched_pixel: Option<(u16, u16)> = None;
@@ -606,7 +677,10 @@ fn main() {
         let clicked = mouse_down && !prev_mouse_down;
         prev_mouse_down = mouse_down;
         if clicked {
-            let display_width = sys.vdp().render_line(0).len();
+            // The width of the frame *currently on screen* — the one the user clicked into. That is the width
+            // the last successful blit reported, not a fresh `render_line` query, which would answer for the
+            // mode the VDP is in *now* (a post-hoc read; see `blit_capture`).
+            let display_width = width;
             if let Some((mx, my)) = window.get_mouse_pos(MouseMode::Discard) {
                 if let Some((x, y)) = window_to_native(mx, my, args.scale, display_width) {
                     match sys.vdp().pixel_attribution(x, y).cell {
@@ -637,7 +711,7 @@ fn main() {
             }
         }
 
-        // W dumps the recorded hits; C disarms the watch (back to the fast null-sink path).
+        // W dumps the recorded hits; C disarms the watch (dropping it back out of the run's sink).
         if window.is_key_pressed(Key::W, KeyRepeat::No) {
             dump_hits(&watchpoints, symbols.as_ref());
         }
@@ -645,7 +719,7 @@ fn main() {
             watchpoints.clear();
             watch_armed = false;
             watched_pixel = None;
-            println!("watch cleared — back to the fast (null-sink) run path");
+            println!("watch cleared — no longer recording VRAM writes");
         }
 
         // --- Save states (edge-triggered like every control above; usable while paused too). ---
@@ -718,6 +792,12 @@ fn main() {
                     sram_save_countdown = None;
                     sys.clear_sram_dirty();
 
+                    // The scanline capture is pointed at a different machine now, so anything it has buffered
+                    // belongs to the timeline we just left. `ScanlineCapture` self-heals when the line stream
+                    // restarts, but dropping it here means the very next completed frame is unambiguously the
+                    // restored one. `buf` deliberately keeps the old image until that frame arrives.
+                    cap.clear();
+
                     // The watch (if armed) stays armed on the same VRAM range; hits recorded before the load
                     // remain in the log — `C` clears them.
                     println!(
@@ -741,6 +821,7 @@ fn main() {
             }
             sys.reset();
             frame = 0; // the machine's own clock restarts, so the displayed counter follows it
+            cap.clear(); // the line stream restarts from the reset vector — drop the pre-reset frame
             #[cfg(feature = "audio")]
             resync_audio(audio.as_mut());
             println!("reset: soft reset — SRAM contents preserved, as on real hardware");
@@ -800,6 +881,7 @@ fn main() {
                         sram_save_countdown = None; // the fresh buffer is clean and matches disk
                         sys.reset(); // `load_rom` only swaps the cartridge; this runs the /RESET sequence
                         frame = 0;
+                        cap.clear(); // a different cartridge draws a different frame — drop the old one
                         #[cfg(feature = "audio")]
                         resync_audio(audio.as_mut());
                     }
@@ -850,8 +932,13 @@ fn main() {
         sys.set_pad(0, player[0]);
         sys.set_pad(1, player[1]);
 
-        // Advance when running, or on an explicit step request while paused.
-        if !paused || step {
+        // Advance when running, or on an explicit step request while paused. Every branch now carries the
+        // scanline capture, because it *is* the pixel path — there is no longer a "fast null-sink" video run.
+        // That is cheaper, not dearer, than what it replaces: the run already rendered every scanline and
+        // threw the RGB away (`system.rs`), and the presenter then rendered all 224 lines a *second* time.
+        // Measured on the S3K state at 320x224, 600 frames x3: 4.0 ms/frame before, 2.5 ms/frame after.
+        let advanced = !paused || step;
+        if advanced {
             // With audio live (SY-5b): drive every frame through the AudioAndWatch composite (audio + the
             // optional armed watch), then drain that frame's PCM and push it into the ring for the cpal
             // callback. The composite borrows `sink` for the run and is dropped before the drain re-borrow.
@@ -859,10 +946,11 @@ fn main() {
             {
                 if let Some(a) = audio.as_mut() {
                     {
-                        let mut sink = audio::AudioAndWatch::new(
+                        let audio_and_watch = audio::AudioAndWatch::new(
                             &mut a.sink,
                             watch_armed.then_some(&mut watchpoints),
                         );
+                        let mut sink = Fanout::new(&mut cap, audio_and_watch);
                         sys.run_frames_with_sink(1, &mut sink);
                     }
                     let pcm = a.sink.drain();
@@ -871,20 +959,21 @@ fn main() {
                     audio::push_frame(&mut a.prod, &pcm, audio::gain_for(volume, muted));
                 } else if watch_armed {
                     // Audio disabled at runtime (no device): same video-only path as a no-audio build. Only
-                    // pay for the recording sink when a watch is armed; otherwise the fast null-sink path.
-                    sys.run_frames_with_sink(1, &mut watchpoints);
+                    // pay for the recording watch sink when a watch is armed.
+                    let mut sink = Fanout::new(&mut cap, &mut watchpoints);
+                    sys.run_frames_with_sink(1, &mut sink);
                 } else {
-                    sys.run_frames(1);
+                    sys.run_frames_with_sink(1, &mut cap);
                 }
             }
-            // No-audio build: today's exact loop — recording sink only when a watch is armed, else the fast
-            // null-sink path so idle stays at 60 fps.
+            // No-audio build: same shape without the audio half.
             #[cfg(not(feature = "audio"))]
             {
                 if watch_armed {
-                    sys.run_frames_with_sink(1, &mut watchpoints);
+                    let mut sink = Fanout::new(&mut cap, &mut watchpoints);
+                    sys.run_frames_with_sink(1, &mut sink);
                 } else {
-                    sys.run_frames(1);
+                    sys.run_frames_with_sink(1, &mut cap);
                 }
             }
             frame += 1;
@@ -918,13 +1007,38 @@ fn main() {
             }
         }
 
-        // Native-resolution frame (width re-queried in case the game switched H32↔H40); window upscales it.
-        let width = render_into(&sys, &mut buf);
+        // Take the frame the run just completed, width and all — an H32↔H40 switch rides along in the
+        // capture's own per-line log, so nothing here re-queries the VDP. A run that completed no frame —
+        // every paused iteration — leaves `buf`/`width` alone, so the last good image stays on screen.
+        if advanced {
+            if let Some(w) = blit_capture(&cap, &mut buf) {
+                width = w;
+            }
+            // Release the capture's per-delivery log (~215 KB/emulated second, unbounded by design) now that
+            // the frame it held has been copied out. The normal case is a run that ended cleanly on the frame
+            // boundary — exactly `HEIGHT` deliveries and one completed frame — where the sink's in-progress
+            // buffer is empty and `clear` drops nothing but bookkeeping. A run that ended *mid*-frame still
+            // has real pixels buffered for a frame that has not completed yet, so it is left to finish, with
+            // `MAX_CAPTURE_LINES` as the backstop that bounds even a pathological run of those.
+            let ended_on_a_frame_boundary =
+                cap.frames_completed() >= 1 && cap.lines().len() == HEIGHT;
+            if ended_on_a_frame_boundary || cap.lines().len() >= MAX_CAPTURE_LINES {
+                cap.clear();
+            }
+        }
         // Optional debug marker: a contrasting crosshair at the watched pixel so the live driver can confirm
         // the click landed where intended (bounds-guarded against an H40→H32 mode switch since the click).
-        if let Some((wx, wy)) = watched_pixel {
-            draw_crosshair(&mut buf, width, wx, wy);
-        }
+        // Drawn into a scratch copy, never into `buf`: the crosshair is an XOR, and a paused frontend
+        // re-presents the same buffer every iteration — applied in place it would flicker and smear.
+        let shown: &[u32] = match watched_pixel {
+            Some((wx, wy)) => {
+                present.clear();
+                present.extend_from_slice(&buf);
+                draw_crosshair(&mut present, width, wx, wy);
+                &present
+            }
+            None => &buf,
+        };
         let title = if paused {
             format!("oracle-next — frame {frame} [PAUSED]")
         } else {
@@ -933,7 +1047,7 @@ fn main() {
         window.set_title(&title);
 
         // update_with_buffer both presents and pumps the OS event queue; it honours set_target_fps.
-        if let Err(e) = window.update_with_buffer(&buf, width, HEIGHT) {
+        if let Err(e) = window.update_with_buffer(shown, width, HEIGHT) {
             eprintln!("present failed: {e}");
             break;
         }
@@ -1131,6 +1245,216 @@ mod tests {
             save_state::SLOT_COUNT,
             "each slot needs its own distinct number key"
         );
+    }
+
+    /// Build a fixture ROM whose **only** interesting behaviour is changing CRAM *continuously, mid-frame*.
+    ///
+    /// It boots, configures a plain H32 display, zeroes VRAM with a fill DMA (so every plane and sprite pixel
+    /// is transparent and the whole screen is the backdrop), points the backdrop register at CRAM entry 1, and
+    /// then spins in a tight loop rewriting **entry 1** with a colour derived from a counter. Every scanline is
+    /// therefore drawn in a different colour, while at any single instant CRAM holds exactly one backdrop
+    /// colour — which is precisely the property that separates the two pixel paths.
+    ///
+    /// Structurally this is `oracle_core::testrom::build_pad_poll`'s scene (full-screen backdrop) with the
+    /// pad-poll loop swapped for a palette-churn loop; it is written here rather than added to `testrom`
+    /// because this slice does not touch `oracle-core`.
+    fn build_midframe_cram_rom() -> Vec<u8> {
+        fn w(rom: &mut Vec<u8>, word: u16) {
+            rom.push((word >> 8) as u8);
+            rom.push((word & 0xFF) as u8);
+        }
+        fn l(rom: &mut Vec<u8>, long: u32) {
+            w(rom, (long >> 16) as u16);
+            w(rom, (long & 0xFFFF) as u16);
+        }
+        /// Two-word VDP control-port command longword.
+        fn vdp_cmd(code: u8, addr: u16) -> u32 {
+            let word1 = (((code & 0x03) as u32) << 14) | (addr as u32 & 0x3FFF);
+            let word2 = ((((code >> 2) & 0x0F) as u32) << 4) | (addr as u32 >> 14);
+            (word1 << 16) | word2
+        }
+
+        let mut rom = Vec::new();
+        l(&mut rom, 0x00FF_0000); // reset SSP
+        l(&mut rom, 0x0000_0200); // reset PC = $200
+        rom.resize(0x200, 0);
+
+        // a0 = VDP control ($C00004), a1 = VDP data ($C00000).
+        w(&mut rom, 0x41F9);
+        l(&mut rom, 0x00C0_0004);
+        w(&mut rom, 0x43F9);
+        l(&mut rom, 0x00C0_0000);
+
+        for reg in [
+            0x8154u16, // reg 1  display + DMA enable + M5 (regs 11+ need mode 5)
+            0x8230,    // reg 2  plane A $C000
+            0x8407,    // reg 4  plane B $E000
+            0x8558,    // reg 5  SAT $B000
+            0x8701,    // reg 7  backdrop = CRAM entry 1 — the entry the loop rewrites
+            0x8B00,    // reg 11 full scroll
+            0x8C00,    // reg 12 H32, no shadow/highlight
+            0x8D20,    // reg 13 h-scroll table $8000
+            0x8F02,    // reg 15 autoinc 2 (one CRAM entry per data write)
+            0x9000,    // reg 16 32x32 planes
+        ] {
+            w(&mut rom, 0x30BC);
+            w(&mut rom, reg);
+        }
+
+        // Zero VRAM with a fill DMA: every tile / nametable / SAT byte -> 0, so the whole screen is backdrop.
+        for reg in [0x8F01u16, 0x93FF, 0x94FF, 0x9780] {
+            w(&mut rom, 0x30BC);
+            w(&mut rom, reg);
+        }
+        w(&mut rom, 0x20BC);
+        l(&mut rom, vdp_cmd(0x21, 0x0000)); // VRAM write @ $0000 + CD5
+        w(&mut rom, 0x32BC);
+        w(&mut rom, 0x0000); // data write triggers the fill (fill byte $00)
+        w(&mut rom, 0x30BC);
+        w(&mut rom, 0x8F02); // reg 15 back to autoinc 2
+
+        // The churn loop: d0++ ; d1 = d0 & $0EEE ; CRAM[1] = d1. Roughly a couple of thousand iterations per
+        // frame, so the backdrop colour differs from one scanline to the next, and no branch depends on
+        // anything external.
+        let loop_top = rom.len() as u32;
+        w(&mut rom, 0x5240); // addq.w #1,d0
+        w(&mut rom, 0x3200); // move.w d0,d1
+        w(&mut rom, 0x0241);
+        w(&mut rom, 0x0EEE); // andi.w #$0EEE,d1   (keep to the 9 valid CRAM colour bits)
+        w(&mut rom, 0x20BC);
+        l(&mut rom, vdp_cmd(0x03, 0x0002)); // move.l #<CRAM write @ entry 1>,(a0)
+        w(&mut rom, 0x3281); // move.w d1,(a1)
+        let bra_at = rom.len() as u32;
+        let disp = (loop_top as i32 - (bra_at as i32 + 2)) as i8 as u8;
+        w(&mut rom, 0x6000 | disp as u16); // bra.s loop_top
+        rom
+    }
+
+    /// **The regression test for the post-hoc frame bug.** The window used to be painted by looping
+    /// `Vdp::render_line` *after* `run_frames(1)` returned — i.e. against whatever CRAM the frame ended with.
+    /// Every mid-frame palette effect was therefore invisible; S3K's underwater split rendered the water in the
+    /// above-water palette (bright red instead of slate blue).
+    ///
+    /// The fixture repaints the backdrop colour continuously during the frame, so the frame the VDP actually
+    /// drew has many colours in it while CRAM at any instant — and so the whole post-hoc render — has exactly
+    /// one. Asserting `live > post` fails on the old path by construction: there, both counts are 1.
+    #[test]
+    fn the_presented_frame_carries_mid_frame_palette_changes() {
+        use std::collections::HashSet;
+
+        let mut sys = System::new(0x5EED);
+        sys.load_rom(build_midframe_cram_rom());
+        sys.reset();
+        sys.run_frames(4); // let the setup (including the fill DMA) finish; the loop is running by now
+
+        // The frontend's path: one frame run with the scanline capture attached, then blit what it holds.
+        let mut cap = ScanlineCapture::new(Retain::LastFrame);
+        sys.run_frames_with_sink(1, &mut cap);
+        let mut buf: Vec<u32> = Vec::new();
+        let width = blit_capture(&cap, &mut buf).expect("a completed frame to present");
+        assert_eq!(width, 256, "the fixture programs H32");
+        assert_eq!(buf.len(), width * HEIGHT);
+        let live: HashSet<u32> = buf.iter().copied().collect();
+
+        // The old path: `render_line` over the same machine, right where `render_into` used to run it.
+        let post: HashSet<u32> = (0..HEIGHT)
+            .flat_map(|line| {
+                sys.vdp()
+                    .render_line(line as u16)
+                    .into_iter()
+                    .map(|(r, g, b)| (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b))
+            })
+            .collect();
+
+        assert_eq!(
+            post.len(),
+            1,
+            "the whole screen is backdrop, so a single post-hoc CRAM read can only produce ONE colour \
+             — this is the ceiling the old presenter was stuck at"
+        );
+        assert!(
+            live.len() > post.len(),
+            "the presented frame must show the palette the VDP drew each line with, not the one CRAM \
+             ended the frame holding: got {} distinct colours, post-hoc ceiling {}",
+            live.len(),
+            post.len()
+        );
+        // Not merely "more than one": the churn is per-scanline, so a correct capture shows many bands.
+        assert!(
+            live.len() >= 16,
+            "expected the frame to carry many per-line colours, got {}",
+            live.len()
+        );
+    }
+
+    /// A run that completed no frame must not blank the window: [`blit_capture`] reports `None` and leaves the
+    /// caller's framebuffer untouched, which is what keeps the last good image on screen while paused (no run
+    /// happens, so no scanlines are delivered) and across the rare run that ends mid-frame.
+    #[test]
+    fn blit_capture_leaves_the_last_frame_alone_when_nothing_completed() {
+        use oracle_core::bus::BusEventSink;
+
+        let mut buf: Vec<u32> = vec![0xAA_BBCC; 256 * HEIGHT];
+        let before = buf.clone();
+
+        // Nothing captured at all — the paused case.
+        let empty = ScanlineCapture::new(Retain::LastFrame);
+        assert_eq!(blit_capture(&empty, &mut buf), None);
+        assert_eq!(buf, before, "framebuffer untouched");
+
+        // A partial frame with no boundary — the mid-frame-exit case. `LastFrame` hands out nothing until a
+        // boundary, so this is also `None`.
+        let mut partial = ScanlineCapture::new(Retain::LastFrame);
+        for line in 0..100u16 {
+            partial.on_scanline(line, &vec![(1, 2, 3); 256]);
+        }
+        assert_eq!(blit_capture(&partial, &mut buf), None);
+        assert_eq!(buf, before, "framebuffer untouched");
+
+        // A capture whose completed frame is not the tail of its line log (a mid-frame exit *after* an earlier
+        // frame completed) is refused by the sum check rather than blitted from mismatched metadata.
+        let mut stale = ScanlineCapture::new(Retain::LastFrame);
+        for line in 0..HEIGHT as u16 {
+            stale.on_scanline(line, &vec![(7, 7, 7); 256]);
+        }
+        stale.on_frame_boundary(0);
+        for line in 0..20u16 {
+            stale.on_scanline(line, &vec![(8, 8, 8); 320]); // a torn next frame, wider
+        }
+        assert_eq!(blit_capture(&stale, &mut buf), None);
+        assert_eq!(buf, before, "framebuffer untouched");
+    }
+
+    /// A frame the VDP switched display mode part-way down is **not** rectangular. It must still reach the
+    /// window — S3K produces exactly one of these on the first frame after a soft reset (two H32 lines, then
+    /// H40), and refusing them would blank the window for as long as a game kept switching. The presented
+    /// width is the one the frame *ended* on (what the chip is scanning out by V-Blank) and short lines are
+    /// padded with black.
+    #[test]
+    fn a_mid_frame_mode_switch_is_padded_to_the_final_width() {
+        use oracle_core::bus::BusEventSink;
+
+        let mut ragged = ScanlineCapture::new(Retain::LastFrame);
+        for line in 0..HEIGHT as u16 {
+            // Two narrow (H32) lines, then the rest H40 — the shape S3K's post-reset frame has.
+            let w = if line < 2 { 256 } else { 320 };
+            ragged.on_scanline(line, &vec![(0x11, 0x22, 0x33); w]);
+        }
+        ragged.on_frame_boundary(0);
+        assert!(
+            !ragged.pixels().len().is_multiple_of(HEIGHT),
+            "the payload really is ragged — no single width divides it"
+        );
+
+        let mut buf: Vec<u32> = Vec::new();
+        assert_eq!(blit_capture(&ragged, &mut buf), Some(320));
+        assert_eq!(buf.len(), 320 * HEIGHT);
+        assert_eq!(buf[0], 0x0011_2233, "the narrow line's own pixels survive");
+        assert_eq!(buf[255], 0x0011_2233, "…up to its real width");
+        assert_eq!(buf[256], 0, "…and the rest of that line is padded black");
+        assert_eq!(buf[319], 0);
+        assert_eq!(buf[2 * 320], 0x0011_2233, "full-width lines are unpadded");
+        assert_eq!(buf[2 * 320 + 319], 0x0011_2233);
     }
 
     /// `start_audio()` — the real host-enumeration entry point — must also be panic-free. In THIS build
