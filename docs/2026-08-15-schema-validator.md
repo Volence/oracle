@@ -1,5 +1,12 @@
 # A schema validator in the test loop (2026-08-15)
 
+> **SUPERSEDED IN ITS FIGURES, KEPT FOR ITS REASONING (2026-08-15, later the same day).** The coverage
+> split below (8 of 20) is now **21 of 21**, and the two registered divergences it describes — CR-14 and
+> CR-15 — were both ruled and retired, as was CR-16 which came after it. The transcript of the report is a
+> snapshot, not current state; run the suite for that. What has not aged: why the validator is blind to §8
+> item 13, why closure belongs in the harness and not the published schema, and why an allowance is
+> registered rather than silenced.
+
 Contract **§8 item 15**: *"[the schema] is the authority on wire shapes; a server's own tests SHOULD
 assert real messages against it rather than against a reading of this prose."* **D14** makes
 `schema/bus-protocol.schema.json` normative for wire shapes and `protocol.md` normative for behaviour.

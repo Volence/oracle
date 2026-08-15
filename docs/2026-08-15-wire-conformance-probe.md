@@ -1,5 +1,14 @@
 # Probing the live wire against the contract schema (2026-08-15)
 
+> **SUPERSEDED IN ITS FIGURES, KEPT FOR ITS METHOD (2026-08-15, later the same day).** Every number below
+> was true when measured and none is true now: the schema covered 8 of 20 methods and now covers **21 of
+> 21**; F4's "ten methods" was a floor that the ruling's condition-7 sweep raised to **sixteen**
+> (`docs/2026-08-15-result-key-surplus.md`); the checkpoint-id failure (F1) and the `otherMatches`
+> divergence (F5) are both fixed; §8 item 20 now closes every result against its fragment, so the class of
+> defect F4 describes cannot ship any more. **This document is deliberately not rewritten.** Its value is
+> the record of a count that was wrong three times in a row, each time in the same direction, and of F2 —
+> which has not aged at all, because no schema can ever express it.
+
 Written before the schema validator of contract §8 item 15 was built, to find out what it would catch —
 and, more usefully, what it would **not**. Everything below was measured firsthand against a running
 server, not read off the source.
