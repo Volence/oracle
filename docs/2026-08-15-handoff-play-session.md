@@ -194,6 +194,43 @@ machine to run, so per-scanline capture is not merely unimplemented there but me
   `set_size`, no screen-dimension query; the only route is recreating the `Window` mid-loop.
   `resize: true` delegates to the window manager.
 
+**`--restamp`** (`3781b56`) — Aeon's candidate fix **(b)**, which closes the pair its ledger names.
+
+**The design's Slice 3 mechanism was unachievable and would have bought nothing**, and the
+implementation was right to refuse it. Once `PC == ErrorHandlerBlob` the `jsr` has been taken and the
+handler never returns, so "patch and continue" needs register writes the core deliberately does not
+expose — and the payload is never re-read within a pass, so patching it live is a no-op. What must
+change is **control flow, not data**.
+
+What shipped: before boot, the ten bytes at the desync raise site are overwritten with the compare's
+*own match path* — exactly the ten bytes of `move.l Logic_Tick,d1 / jsr ErrorHandlerBlob` they displace,
+asserted byte-for-byte against symbols resolved by name. A mismatch then **stops** the machine where it
+used to **trap** it, and the pass becomes semantically the clean run. §2.6's aside that
+`raise_exception` looks mis-selected at a non-vector site is exactly what makes this possible: no frame
+prologue means the raise site is a clean ten-byte window.
+
+**The proof is a perfect oracle.** Corrupting an expected hash cannot change what the game computes, so
+the pristine artifacts are ground truth. 4 corrupted checkpoints in `ojz_fixture`, 3 in
+`ojz_slide_fixture`, one pass each — and **both repaired ROMs and both repaired fixture `.bin`s came
+back byte-identical to the originals** (`cmp` clean). Frame counts agree between the instrumented pass
+and a clean run of the repaired image.
+
+**A hole in my brief it closed:** a truncated stream *passes* checkpoint 0, so the runner's `SHORT`
+classification cannot protect a re-stamp — the fixture would be "repaired" into something green that
+verifies 1 of 27. A static stream walk before boot is the authoritative slot map: only offsets it
+vouches for may be patched, and a stream whose RLE runs don't reconcile with its header is refused.
+
+**The win is scaling, not seconds:** three runs constant in N, against N+1 runs each longer than the
+last (the manual loop replays from tick 0 every time) — and N human debugger reads go to zero. Headless
+playthroughs are 3.7 s / 5.2 s; the recorded "10–20 minutes" was a windowed, load-contended emulator
+with a human at a debugger.
+
+Safety, all exercised: dry-run default; writing inside the inputs' git repo needs `--allow-source-write`
+(refused writing into `aeon/`); overwrite needs `--force`; the length invariant is asserted on every
+apply; a pass that doesn't reach PASS emits nothing; and the tool re-runs the restamped image clean
+**and** re-runs the negative control on it before emitting anything. `--emit-rom` is off by default —
+the durable artifact is the committed fixture `.bin` the ROM embeds, not the ROM.
+
 ## 7. Next
 
 1. **Per-scanline goldens** (in flight) — additive, zero currency movement.
@@ -201,7 +238,13 @@ machine to run, so per-scanline capture is not merely unimplemented there but me
    immediately; plus fullscreen, scaling, aspect, on-screen feedback (volume/mute/pause/slot state all
    currently go to stdout, which a windowed user never sees).
 3. **Owner-owed, longest outstanding: nobody has plugged in a gamepad.** Deadzone 0.5 is an unfelt
-   guess. Now joined by: nobody has heard the new mix levels.
+   guess. Now joined by: **nobody has heard the new mix levels** (SY-7 changed the FM/PSG/DAC balance
+   deliberately), and nobody has used the new overlay/aspect work in anger.
+4. **Cross-repo write the owner must make:** `aeon/docs/DEFERRED_WORK.md:113-125` still lists candidate
+   fix **(b)** as open. Both (a) and (b) now exist. Not done here because `aeon/` is owner territory.
+5. Pre-existing and unrepinned: `crates/oracle-replay/src/cli.rs` and its test doc quote 1815/2628
+   frames for the two fixtures; today's aeon build measures **1783/2420**. Harmless — the 9000 cap is
+   still ~3.7× — but stale.
 4. Deferred with reasons, not forgotten: the runner hardcodes sonic4's scene entry (`F8`); its
    real-artifact tests skip green when Aeon isn't built (`F6`); `--restamp` (collapses Aeon's candidate
    fix (b) into a flag on the runner); the shared pad-timeline type retiring six re-implementations;
