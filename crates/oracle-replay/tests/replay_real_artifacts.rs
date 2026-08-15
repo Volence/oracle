@@ -39,8 +39,9 @@ use oracle_replay::fault::DESYNC_MESSAGE;
 use oracle_replay::header::{ReplayHeader, REPLAY_ESCAPE, REPLAY_OP_END};
 use oracle_replay::outcome::Shortfall;
 use oracle_replay::policy;
+use oracle_replay::restamp::StreamMap;
 use oracle_replay::runner::{
-    self, Prepared, RunConfig, TimeoutReason, Verdict, NEGATIVE_CONTROL_PAYLOAD,
+    self, Prepared, RestampSession, RunConfig, TimeoutReason, Verdict, NEGATIVE_CONTROL_PAYLOAD,
 };
 use std::path::PathBuf;
 
@@ -513,4 +514,258 @@ fn the_standing_fixture_runs_green() {
 #[ignore = "full playthrough: ~49 s unoptimized. cargo test --release -p oracle-replay -- --ignored"]
 fn the_slide_fixture_runs_green() {
     assert_green(Fixture::OjzSlide, 2350);
+}
+
+// ---------------------------------------------------------------------------------------------------
+// --restamp, against the real fixtures
+//
+// The claim under test is **"one pass finds them all"**, so every test here corrupts more than one
+// checkpoint. A single-checkpoint test would pass identically on a tool that still stopped at the first
+// one, which is exactly the tool this flag replaces.
+// ---------------------------------------------------------------------------------------------------
+
+/// Corrupt the `which` checkpoints of `rom`, returning `(payload address, original hash)` for each.
+///
+/// The corruption is a value no hash will ever be, and — crucially — it changes not one byte the *game*
+/// reads, so the run stays healthy and the hash the guest produces at each of those checkpoints is still
+/// the one originally recorded. That makes the pristine image a perfect oracle: a correct re-stamp must
+/// reproduce it byte for byte.
+fn make_stale(rom: &mut [u8], map: &StreamMap, which: &[usize]) -> Vec<(u32, u32)> {
+    which
+        .iter()
+        .map(|&i| {
+            let s = map.slots[i];
+            let at = s.payload as usize;
+            let was = u32::from_be_bytes([rom[at], rom[at + 1], rom[at + 2], rom[at + 3]]);
+            rom[at..at + 4].copy_from_slice(&(0xC0FF_EE00 | i as u32).to_be_bytes());
+            (s.payload, was)
+        })
+        .collect()
+}
+
+/// The static walk of both real streams, and the fact that it reconciles. This is what `--restamp` trusts
+/// instead of trusting the running guest, so it is checked against the genuine bytes.
+#[test]
+fn the_real_streams_walk_and_reconcile() {
+    for (fixture, ticks, checkpoints) in [(Fixture::Ojz, 1721, 27), (Fixture::OjzSlide, 2350, 37)] {
+        let Some(p) = prepared(fixture) else {
+            return;
+        };
+        let m = p.stream_map().expect("a real fixture must walk");
+        assert_eq!(m.total_ticks, ticks, "{fixture} tick total");
+        assert_eq!(m.slots.len(), checkpoints, "{fixture} checkpoint count");
+        for (i, s) in m.slots.iter().enumerate() {
+            assert_eq!(s.index, i);
+            assert_eq!(
+                s.ring,
+                i as u32 * 64,
+                "{fixture} checkpoint {i} is off the ring grid"
+            );
+            assert!(s.payload > p.anchors.fixture + 20 && s.payload < p.anchors.fixture + 0x200);
+        }
+        println!(
+            "{fixture}: {checkpoints} checkpoints over {ticks} ticks, first payload ${:06X}",
+            m.slots[0].payload
+        );
+    }
+}
+
+/// The recovery stub, built and verified against the **real** `Input_Tick`. Every shape assertion in
+/// `build_recovery_stub` fires on these bytes, so this is where they are proven against something other
+/// than a hand-written test ROM.
+#[test]
+fn the_recovery_stub_builds_against_the_real_input_tick() {
+    let Some(mut p) = prepared(Fixture::Ojz) else {
+        return;
+    };
+    let pristine = p.rom.clone();
+    let stub = p
+        .install_recovery_stub()
+        .expect("the real Input_Tick must carry the shape the stub replaces");
+    assert_eq!(p.rom.len(), pristine.len(), "installing must not resize");
+    // `movea.l (Replay_Ptr).w, a0` then `jmp Input_Tick.fetch_a0` — over a `move.l (xxx).w, d1` and a
+    // `jsr xxx.l`, which is what the raise site is.
+    assert_eq!(&stub.bytes[4..6], &[0x4E, 0xF9], "a `jmp xxx.l`");
+    assert_eq!(
+        &stub.replaced[0..2],
+        &[0x22, 0x38],
+        "a `move.l (xxx).w, d1`"
+    );
+    assert_eq!(&stub.replaced[4..6], &[0x4E, 0xB9], "a `jsr xxx.l`");
+    // Nothing outside `.desync`'s ten bytes moved. (Fewer than ten *differ*: three of the ten happen to
+    // coincide with the bytes they replace, which is why this is a containment check and not a count.)
+    let moved: Vec<usize> = pristine
+        .iter()
+        .zip(&p.rom)
+        .enumerate()
+        .filter(|(_, (a, b))| a != b)
+        .map(|(i, _)| i)
+        .collect();
+    let window = stub.at as usize..stub.at as usize + 10;
+    assert!(!moved.is_empty(), "the stub must actually change something");
+    assert!(
+        moved.iter().all(|i| window.contains(i)),
+        "the stub wrote outside `.desync`: {moved:X?} vs {window:X?}"
+    );
+    assert_eq!(
+        &p.rom[window.clone()],
+        &stub.bytes,
+        "the stub is what landed"
+    );
+    println!(
+        "stub at ${:06X}: {:02X?} -> {:02X?}",
+        stub.at, stub.replaced, stub.bytes
+    );
+}
+
+/// **The new behaviour, cheaply.** Two adjacent checkpoints go stale; the pass must find *both*.
+///
+/// Rings 0 and 64 are reached at `Logic_Tick` 2 and 66, i.e. within ~100 frames of the arm, so this runs in
+/// well under a second and still proves the thing that matters: the run **continued past the first
+/// desync**. The frame budget is deliberately short, so the verdict is a TIMEOUT — the session is judged on
+/// what it collected, not on the verdict, which is the same separation `main.rs` makes (it requires a PASS
+/// before it will *emit* anything).
+#[test]
+fn one_pass_continues_past_the_first_stale_checkpoint() {
+    let Some(mut p) = prepared(Fixture::Ojz) else {
+        return;
+    };
+    let before = p.stream_map().expect("must walk");
+    let planted = make_stale(&mut p.rom, &before, &[0, 1]);
+    // Re-walk *after* the corruption: the map is the authoritative record of what the running image
+    // holds, which is exactly the relationship the tool has with a genuinely stale fixture.
+    let map = p.stream_map().expect("a stale stream still reconciles");
+    let stub = p.install_recovery_stub().expect("must install");
+    let mut session = RestampSession::new(&stub, &map);
+    let report = runner::run_restamp(
+        &p,
+        RunConfig {
+            max_frames: 200,
+            stall_frames: oracle_replay::cli::DEFAULT_STALL_FRAMES,
+        },
+        &mut session,
+    )
+    .expect("the pass must reach a verdict");
+
+    let found = session.stale();
+    assert_eq!(
+        found.len(),
+        2,
+        "the pass stopped at the first stale checkpoint — that is the tool this flag replaces \
+         (verdict was {:?})",
+        report.verdict
+    );
+    for (n, s) in found.iter().enumerate() {
+        assert_eq!(s.index, n);
+        assert_eq!(s.ring, n as u32 * 64);
+        assert_eq!(
+            s.logic_tick,
+            s.ring + 2,
+            "the arm point fixes tick = ring + 2"
+        );
+        assert_eq!(
+            s.payload, planted[n].0,
+            "the payload the static walk vouched for"
+        );
+        assert_eq!(s.expected, 0xC0FF_EE00 | n as u32, "the value we planted");
+        assert_eq!(
+            s.actual, planted[n].1,
+            "a healthy run must reproduce the hash originally recorded at ring {}",
+            s.ring
+        );
+        assert_eq!(s.fixture_offset, s.payload - p.anchors.fixture);
+    }
+    println!(
+        "two stale checkpoints, one pass: ring 0 @ tick {} and ring 64 @ tick {}",
+        found[0].logic_tick, found[1].logic_tick
+    );
+}
+
+/// A stream that does not reconcile is refused **before the machine boots**, so a truncated fixture can
+/// never be "repaired" into one that is green and verifies almost nothing. The runner's runtime SHORT
+/// classification catches this from the other side; neither is a substitute for the other.
+#[test]
+fn restamp_refuses_a_truncated_stream() {
+    let Some(mut p) = prepared(Fixture::Ojz) else {
+        return;
+    };
+    // `FF 01 <hash>` then straight to `FF 00`: header validation passes, the arm takes, checkpoint 0 is
+    // compared and matches, and `Replay_Done` is set at tick 2 having verified 1 of 27.
+    let body = p.header.body as usize;
+    p.rom[body + 6..body + 8].copy_from_slice(&[0xFF, 0x00]);
+    let e = p
+        .stream_map()
+        .expect_err("a truncated stream must be refused");
+    assert!(e.contains("truncated or mis-packed"), "{e}");
+    assert!(e.contains("1721"), "{e}");
+    println!("{e}");
+}
+
+#[test]
+#[ignore = "three full playthroughs: ~100 s unoptimized. cargo test --release -p oracle-replay -- --ignored"]
+fn one_pass_repairs_four_stale_checkpoints_and_reproduces_the_pristine_image() {
+    let Some(mut p) = prepared(Fixture::Ojz) else {
+        return;
+    };
+    let pristine = p.rom.clone();
+    const WHICH: [usize; 4] = [3, 9, 17, 26];
+    let before = p.stream_map().expect("must walk");
+    let planted = make_stale(&mut p.rom, &before, &WHICH);
+    let map = p.stream_map().expect("a stale stream still reconciles");
+    let stale_image = p.rom.clone();
+    let stub = p.install_recovery_stub().expect("must install");
+
+    let mut session = RestampSession::new(&stub, &map);
+    let report =
+        runner::run_restamp(&p, default_config(), &mut session).expect("must reach a verdict");
+    assert!(
+        matches!(report.verdict, Verdict::Pass),
+        "the instrumented pass must run the stream to its end: {:?}",
+        report.verdict
+    );
+    assert_eq!(
+        session.stale().len(),
+        WHICH.len(),
+        "all four must be found in ONE pass"
+    );
+    for (s, (&i, (payload, was))) in session.stale().iter().zip(WHICH.iter().zip(&planted)) {
+        assert_eq!(s.index, i);
+        assert_eq!(s.ring, i as u32 * 64);
+        assert_eq!(s.payload, *payload);
+        assert_eq!(s.actual, *was);
+    }
+
+    // The repair, applied to the stale image, must reproduce the pristine bytes exactly — a perfect
+    // oracle, because corrupting an expected hash cannot change what the game computes.
+    let plan = session.into_plan(stale_image.len());
+    assert_eq!(plan.total_checkpoints, 27);
+    let mut restamped = stale_image.clone();
+    plan.apply_to_rom(&mut restamped).expect("must apply");
+    assert_eq!(restamped.len(), pristine.len(), "length is invariant");
+    assert_eq!(
+        restamped, pristine,
+        "the re-stamped image must be byte-identical to the image the fixture was recorded against"
+    );
+
+    // …and it runs clean, with the negative control still tripping on it.
+    let verify = p.with_rom(restamped.clone()).expect("must re-prepare");
+    let clean = runner::run(&verify, default_config()).expect("must reach a verdict");
+    assert!(
+        matches!(clean.verdict, Verdict::Pass),
+        "the re-stamped image must run green: {:?}",
+        clean.verdict
+    );
+    let mut control = p.with_rom(restamped).expect("must re-prepare");
+    control.corrupt_first_checkpoint().expect("must corrupt");
+    let tripped = runner::run(&control, default_config()).expect("must reach a verdict");
+    let fault = match &tripped.verdict {
+        Verdict::Trap(t) => t.fault(),
+        _ => None,
+    };
+    runner::judge_negative_control(fault, NEGATIVE_CONTROL_PAYLOAD)
+        .expect("the negative control must still trip on the re-stamped image");
+    println!(
+        "4 of 27 checkpoints re-stamped in one pass; the result is byte-identical to the pristine image \
+         and runs green with the control still tripping"
+    );
 }

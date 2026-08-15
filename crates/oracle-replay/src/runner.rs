@@ -8,6 +8,9 @@ use crate::fault::{self, FaultDecodeError, FaultReport, RegSnapshot};
 use crate::header::{HeaderError, ReplayHeader, REPLAY_HEADER_LEN};
 use crate::outcome::{dispose, Disposition, Expected, Probe, Shortfall, Watchdog};
 use crate::policy::{self, LstVerdict};
+use crate::restamp::{
+    self, RecoveryStub, RestampPlan, StaleCheckpoint, StreamMap, StubAnchors, PAYLOAD_LEN,
+};
 use crate::{ram_u32, ram_u8, stack_in_work_ram};
 use oracle_core::bus::{Fanout, StopWhen};
 use oracle_core::io::Pad;
@@ -169,6 +172,238 @@ impl Prepared {
         self.rom[i..i + 4].copy_from_slice(&NEGATIVE_CONTROL_PAYLOAD.to_be_bytes());
         Ok((at, original))
     }
+
+    /// The same ROM and listing with a **different image** — used to verify a re-stamped image without
+    /// re-reading the listing off disk or re-resolving anything.
+    ///
+    /// Both refusals are re-applied and the header is re-parsed against the new bytes, so this cannot be
+    /// used to smuggle an unvalidated image into a run. The symbol table and anchors carry over unchanged,
+    /// which is correct precisely because a re-stamp moves no addresses: same offsets, same length.
+    pub fn with_rom(&self, rom: Vec<u8>) -> Result<Self, String> {
+        if rom.len() != self.rom.len() {
+            return Err(format!(
+                "the replacement image is {} bytes and the original is {} — a re-stamp changes hash \
+                 payloads only, so any length change means the anchors resolved from the listing no \
+                 longer describe it",
+                rom.len(),
+                self.rom.len()
+            ));
+        }
+        policy::require_debug_rom(&rom)?;
+        let header = ReplayHeader::parse(&rom, self.anchors.fixture)
+            .map_err(|e| format!("the replacement image's stream is not usable: {e}"))?;
+        Ok(Self {
+            rom,
+            table: self.table.clone(),
+            anchors: self.anchors,
+            header,
+            fixture: self.fixture,
+            notes: self.notes.clone(),
+        })
+    }
+
+    /// Walk the stream statically. This is the **authoritative** slot map for `--restamp` — see
+    /// [`crate::restamp`]'s "Trust flows from the static walk".
+    pub fn stream_map(&self) -> Result<StreamMap, String> {
+        StreamMap::walk(&self.rom, &self.header).map_err(|e| {
+            format!(
+                "`{}` is not a stream this tool will re-stamp: {e}",
+                self.fixture.symbol()
+            )
+        })
+    }
+
+    /// Install the recovery stub over `Input_Tick.desync`, turning every checkpoint mismatch from a
+    /// one-shot trap into a resumable stop. **Mutates the image**, and refuses unless the ten bytes it
+    /// displaces are exactly the raise site it was written against.
+    pub fn install_recovery_stub(&mut self) -> Result<RecoveryStub, String> {
+        let anchors = resolve_stub_anchors(&self.table, &self.anchors)?;
+        let stub = restamp::build_recovery_stub(&self.rom, &anchors)?;
+        let before = self.rom.len();
+        stub.install(&mut self.rom)?;
+        if self.rom.len() != before {
+            return Err("installing the stub changed the image length — impossible".into());
+        }
+        Ok(stub)
+    }
+}
+
+/// The label spellings the stub needs, demangled first.
+///
+/// The demangled form (`Input_Tick.desync`) survives a module rename, which the mangled form
+/// (`$engine.replay$Input_Tick$desync`) does not; the mangled form is the fallback for the day a demangled
+/// spelling collides with another module's. Either way the *bytes* at whatever this resolves to are checked
+/// before anything is written — see [`restamp::build_recovery_stub`].
+const STUB_LABELS: [(&str, [&str; 2]); 3] = [
+    (
+        "fetch",
+        ["Input_Tick.fetch", "$engine.replay$Input_Tick$fetch"],
+    ),
+    (
+        "fetch_a0",
+        ["Input_Tick.fetch_a0", "$engine.replay$Input_Tick$fetch_a0"],
+    ),
+    (
+        "desync",
+        ["Input_Tick.desync", "$engine.replay$Input_Tick$desync"],
+    ),
+];
+
+/// Resolve the three `Input_Tick` labels the stub is built from, by name.
+pub fn resolve_stub_anchors(table: &SymbolTable, a: &Anchors) -> Result<StubAnchors, String> {
+    let mut found = [0u32; 3];
+    for (slot, (label, spellings)) in found.iter_mut().zip(STUB_LABELS) {
+        *slot = spellings
+            .iter()
+            .find_map(|n| table.address_of(n))
+            .ok_or_else(|| {
+                format!(
+                    "the listing does not resolve the `{label}` label of `Input_Tick` under any of \
+                     {spellings:?}. --restamp installs a recovery stub at the desync raise site, and it \
+                     will not guess where that is."
+                )
+            })?;
+    }
+    Ok(StubAnchors {
+        fetch: found[0],
+        fetch_a0: found[1],
+        desync: found[2],
+        replay_ptr: a.replay_ptr,
+        logic_tick: a.logic_tick,
+        error_handler: a.error_handler,
+    })
+}
+
+/// State carried across one `--restamp` pass: where the stub is, what the static walk says, and every
+/// stale checkpoint met so far.
+#[derive(Debug)]
+pub struct RestampSession<'a> {
+    /// The stop predicate — `Input_Tick.desync`, now the stub's first byte.
+    pub stub_at: u32,
+    map: &'a StreamMap,
+    stale: Vec<StaleCheckpoint>,
+    /// `Logic_Tick - ring` at the first stop. It must be the same at every subsequent stop: the arm point
+    /// fixes it, and a change means ring and tick have drifted apart, so the static map no longer
+    /// describes what the guest is executing.
+    tick_offset: Option<u32>,
+}
+
+impl<'a> RestampSession<'a> {
+    pub fn new(stub: &RecoveryStub, map: &'a StreamMap) -> Self {
+        Self {
+            stub_at: stub.at,
+            map,
+            stale: Vec::new(),
+            tick_offset: None,
+        }
+    }
+
+    /// Every stale checkpoint found so far, in stream order.
+    pub fn stale(&self) -> &[StaleCheckpoint] {
+        &self.stale
+    }
+
+    /// The repair this pass implies.
+    pub fn into_plan(self, rom_len: usize) -> RestampPlan {
+        RestampPlan {
+            stale: self.stale,
+            total_checkpoints: self.map.slots.len(),
+            fixture_base: self.map.base,
+            rom_len,
+        }
+    }
+
+    /// Record one stop at the recovery stub.
+    ///
+    /// Every field is cross-checked against the static walk before anything is recorded. The stub is
+    /// reached by a branch we did not write (`bne .desync`), so *what is at* `.desync` proves nothing about
+    /// *who jumped there*: these checks are what make each stop self-validating regardless of how control
+    /// arrived.
+    fn observe(&mut self, sys: &System, a: &Anchors) -> Result<(), String> {
+        // Runaway guard. A fully-stale stream under the stub never reaches `ErrorHandlerBlob`, so nothing
+        // else would ever bound this loop.
+        if self.stale.len() >= self.map.slots.len() {
+            return Err(format!(
+                "the recovery stub was reached {} times, but the stream only has {} checkpoints — \
+                 something other than the checkpoint compare is branching to `Input_Tick.desync`. \
+                 Refusing to record any more",
+                self.stale.len() + 1,
+                self.map.slots.len()
+            ));
+        }
+
+        let regs = sys.cpu_regs();
+        let actual = regs.d[0];
+        let expected = regs.d[2];
+        let ram = sys.ram();
+        let cursor = crate::bus_addr(ram_u32(ram, a.replay_ptr));
+        let logic_tick = ram_u32(ram, a.logic_tick);
+
+        // `move.l a0, Replay_Ptr` runs *before* `Replay_Hash`, so the cursor is one longword past the
+        // payload at the compare. This is read from work RAM, never guessed.
+        let payload = cursor.checked_sub(PAYLOAD_LEN).ok_or_else(|| {
+            format!("Replay_Ptr reads ${cursor:08X} at the stub — there is no payload before it")
+        })?;
+        let slot = *self.map.slot_for_payload(payload).ok_or_else(|| {
+            format!(
+                "the stub was reached with Replay_Ptr - 4 = ${payload:06X}, which the static stream \
+                 walk does not identify as a checkpoint payload. This tool only ever patches offsets \
+                 that walk vouches for, so this stop is refused rather than re-stamped"
+            )
+        })?;
+        if slot.expected != expected {
+            return Err(format!(
+                "at checkpoint {} (ring {}) the guest compared against ${expected:08X}, but the ROM \
+                 holds ${:08X} at ${payload:06X} — the running image and the image we walked disagree",
+                slot.index, slot.ring, slot.expected
+            ));
+        }
+        if actual == expected {
+            return Err(format!(
+                "the stub was reached at checkpoint {} (ring {}) with d0 == d2 == ${actual:08X} — the \
+                 hashes matched, so this is not a desync and something else branched here",
+                slot.index, slot.ring
+            ));
+        }
+        if self.stale.iter().any(|s| s.index == slot.index) {
+            return Err(format!(
+                "checkpoint {} (ring {}) tripped the stub twice — the stream is being replayed more \
+                 than once, which no re-stamp can express",
+                slot.index, slot.ring
+            ));
+        }
+        // The arm point fixes `Logic_Tick - ring`; it is the same at every checkpoint of a healthy pass.
+        let offset = logic_tick.checked_sub(slot.ring).ok_or_else(|| {
+            format!(
+                "Logic_Tick is {logic_tick} at checkpoint {} (ring {}) — the tick clock is behind the \
+                 stream's own ring index, which cannot happen on a run that replayed to here",
+                slot.index, slot.ring
+            )
+        })?;
+        match self.tick_offset {
+            None => self.tick_offset = Some(offset),
+            Some(first) if first != offset => {
+                return Err(format!(
+                    "checkpoint {} (ring {}) stopped at Logic_Tick {logic_tick} (ring + {offset}), but \
+                     the first stop of this pass established ring + {first}. Ring and tick have drifted \
+                     apart, so the static map no longer describes what the guest is replaying",
+                    slot.index, slot.ring
+                ));
+            }
+            Some(_) => {}
+        }
+
+        self.stale.push(StaleCheckpoint {
+            index: slot.index,
+            ring: slot.ring,
+            logic_tick,
+            payload,
+            fixture_offset: payload - self.map.base,
+            expected,
+            actual,
+        });
+        Ok(())
+    }
 }
 
 /// Configuration for one run.
@@ -278,6 +513,29 @@ impl RunReport {
 
 /// Boot, arm, run, classify.
 pub fn run(prepared: &Prepared, cfg: RunConfig) -> Result<RunReport, String> {
+    run_inner(prepared, cfg, None)
+}
+
+/// Boot, arm, run, classify — collecting every stale checkpoint on the way instead of stopping at the
+/// first.
+///
+/// `prepared` must already carry the recovery stub ([`Prepared::install_recovery_stub`]) and `session` must
+/// have been built from that stub and the same image's [`StreamMap`]. The verdict has exactly the same
+/// meaning as [`run`]'s: a PASS means the stream ran to its corroborated end, which under the stub means
+/// *every* checkpoint was reached — that is what makes one pass equal to the seven the manual loop costs.
+pub fn run_restamp(
+    prepared: &Prepared,
+    cfg: RunConfig,
+    session: &mut RestampSession<'_>,
+) -> Result<RunReport, String> {
+    run_inner(prepared, cfg, Some(session))
+}
+
+fn run_inner(
+    prepared: &Prepared,
+    cfg: RunConfig,
+    mut restamp: Option<&mut RestampSession<'_>>,
+) -> Result<RunReport, String> {
     let a = prepared.anchors;
 
     // Boot with **both** predicates already attached. `boot_with_sink` makes "load, then reset, then arm"
@@ -387,8 +645,34 @@ pub fn run(prepared: &Prepared, cfg: RunConfig) -> Result<RunReport, String> {
     };
     let mut watchdog = Watchdog::new(cfg.stall_frames);
     let mut frames = 0u64;
+    // The stop signal is asked at an instruction boundary *before* the instruction commits, so resuming
+    // from a stop with the same predicate would fire again at zero progress and spin forever. Exactly one
+    // boundary is ignored on the resume after a stub stop; the instruction it lets through is the stub's
+    // own `movea.l`, and the next boundary is already past the predicate's address.
+    let mut skip_boundary = false;
+    let stub_at = restamp.as_ref().map(|s| s.stub_at);
     loop {
-        let rec = sys.run_until_stop(1, |pc, _| pc == a.error_handler);
+        let mut skip = std::mem::take(&mut skip_boundary);
+        let rec = sys.run_until_stop(1, |pc, _| {
+            if skip {
+                skip = false;
+                return false;
+            }
+            pc == a.error_handler || Some(pc) == stub_at
+        });
+
+        // A stop at the recovery stub is neither a frame nor a verdict: record the stale checkpoint and
+        // let the machine run on, exactly where the match path would have taken it. `observe` caps the
+        // pass at one stop per checkpoint in the stream, so this cannot spin.
+        if rec.fired() && Some(rec.pc) == stub_at {
+            let session = restamp
+                .as_mut()
+                .expect("stub_at is Some only when a session is attached");
+            session.observe(&sys, &a)?;
+            skip_boundary = true;
+            continue;
+        }
+
         frames += 1;
         let p = probe(&sys, &a);
         let stalled = watchdog.observe(p.logic_tick);
