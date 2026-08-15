@@ -219,6 +219,14 @@ pub const EVENTS: &[&str] = &[
 /// Ids are assigned from a monotonic counter and **never reused**, including after a drop. Two clients
 /// share one bus and one set of coordinates; a recycled id would let one client's `restore` silently
 /// land on another client's machine.
+///
+/// **The counter stays a `u64` here; only the wire is a string** (D9 category 4, §6.1, §8 item 16). §6.1
+/// blesses exactly this: typing the id as a string "does not cost a server the monotonic-counter
+/// technique … it may keep ids in any order it likes internally, including a counter it formats as a
+/// decimal string — because the client never compares two handles." The ordering is load-bearing
+/// *internally* — it is what makes `checkpoint_list`'s cursor a resume point ("the first id strictly
+/// greater than this") — and that machinery is untouched by the wire type. [`Checkpoint::wire_id`] is
+/// the one place the two representations meet.
 struct Checkpoint {
     id: u64,
     /// Carried back verbatim by `checkpoint_list` and never interpreted (§6.1).
@@ -246,6 +254,18 @@ struct Checkpoint {
     rom_path: Option<String>,
     symbols: Option<Arc<SymbolTable>>,
     symbols_path: Option<String>,
+}
+
+impl Checkpoint {
+    /// This checkpoint's id **as it goes on the wire**: the internal counter formatted as a decimal
+    /// string (§6.1, D9 category 4). Every wire position — `checkpoint`'s result, `checkpoint_list`'s
+    /// entries, and the comparison an incoming `restore`/`checkpoint_drop` id is matched against — goes
+    /// through here, so there is exactly one definition of the mapping and no way for two of them to
+    /// drift apart. The decimal spelling is an implementation detail a client MUST NOT rely on; it is
+    /// chosen only because it is the cheapest formatting of the counter that already exists.
+    fn wire_id(&self) -> String {
+        self.id.to_string()
+    }
 }
 
 /// The emulator and everything the bus knows about it. Lives on exactly one thread (the core is
@@ -830,12 +850,15 @@ impl Engine {
         self.advance(frames);
         self.running = false;
         let pc = self.sys.cpu_regs().pc;
-        // CR-1: §3's `reason` enum has no value for "a bounded frame advance completed", so this reports
-        // the nearest listed reason and puts the precise one in an additive field.
+        // §3, §8 item 13: a completed `run_frames` is **`runFrames`**, not the nearest-looking `step`.
+        // (CR-1 raised the gap — the enum had no value for a bounded frame advance — and was adopted on
+        // 2026-08-14 as exactly this spelling, matching the existing `runTo`/`runToScanline`.) §3 pins
+        // the two additive params with it: `frames` is REQUIRED here, and `deadlineReached` is always
+        // `true`, the bound being the frame count itself.
         let mut extra = Map::new();
         extra.insert("frames".into(), json!(frames));
         extra.insert("deadlineReached".into(), json!(true));
-        self.emit_stopped("step", pc, extra);
+        self.emit_stopped("runFrames", pc, extra);
         Ok(json!({
             "frames": frames,
             "frameToken": self.frame(),
@@ -1047,10 +1070,19 @@ impl Engine {
         // button the client is separately holding (nor one the human is physically holding).
         self.apply_pads();
         let pc = self.sys.cpu_regs().pc;
+        // A tap advances whole **frames**, so `step` is affirmatively wrong: §3 pins it as "one
+        // instruction, or one instruction-shaped unit … **not** the value for a frame advance".
+        // `runFrames` is merely imprecise — this was not an `emulator/run_frames` call — and the enum is
+        // closed, so emitting a new value unilaterally is the invention §8 forbids. Between a value §3
+        // rules out and the nearest admissible one, the nearest admissible one wins: a client watching
+        // the stream sees "a bounded frame advance completed", which is true, instead of "an instruction
+        // completed", which is not. The residual ambiguity — *which method* drove the advance — is
+        // raised as CR-9 (`docs/2026-08-14-aether-change-requests.md`) and is the owner's to rule on;
+        // this comment is the record of the choice, not a licence to keep it if the ruling differs.
         let mut extra = Map::new();
         extra.insert("frames".into(), json!(frames));
         extra.insert("deadlineReached".into(), json!(true));
-        self.emit_stopped("step", pc, extra);
+        self.emit_stopped("runFrames", pc, extra);
         Ok(json!({
             "buttons": buttons,
             "frames": frames,
@@ -1371,7 +1403,7 @@ impl Engine {
         let mclk = self.sys.scheduler().now();
         let id = self.next_checkpoint_id;
         self.next_checkpoint_id += 1;
-        self.checkpoints.push(Checkpoint {
+        let slot = Checkpoint {
             id,
             label,
             frame: mclk / MCLK_PER_FRAME,
@@ -1381,21 +1413,35 @@ impl Engine {
             rom_path: self.rom_path.clone(),
             symbols: self.symbols.clone(),
             symbols_path: self.symbols_path.clone(),
-        });
+        };
+        // The handle goes out as a **JSON string** (D9 category 4, §6.1, §8 item 16, and
+        // `#/$defs/handle` in the schema, which D14 makes the authority on the wire). It is issued to be
+        // handed back and nothing else: a client MUST NOT parse it, order it, compare two of them or do
+        // arithmetic on one. A number here would invite exactly that computation — an id assigned from a
+        // counter *reads* like a slot index, which is how this server shipped one in good faith against
+        // D9's earlier wording, and why the string is now pinned rather than left to a reading.
+        let wire_id = slot.wire_id();
+        self.checkpoints.push(slot);
         // `frame`/`mclk` are deliberately absent: §6.1 says they **are** the machine stamp, and the stamp
         // is merged in structurally after this returns (`rpc::stamp_result`). Emitting them here would be
         // a shadowed duplicate that the envelope overwrites with the identical values anyway — nothing
         // has advanced the machine between the capture above and the stamp.
-        Ok(json!({"id": id, "bytes": bytes}))
+        Ok(json!({"id": wire_id, "bytes": bytes}))
     }
 
     fn restore(&mut self, params: &Value) -> Result<Value, RpcError> {
         let id = parse_checkpoint_id(params)?;
-        let Some(cp) = self.checkpoints.iter().find(|c| c.id == id) else {
+        let Some(cp) = self.checkpoints.iter().find(|c| c.wire_id() == id) else {
             // §6.1: an unknown or already-dropped id is refused, never a silent no-op. A no-op here
             // would leave the caller running its next experiment against whatever machine happened to be
             // loaded, believing it had gone back.
-            return Err(unknown_checkpoint(id));
+            //
+            // A well-formed string this server could never have issued (`"0x1"`, `"abc"`) lands here
+            // too, and deliberately: to a client the handle is opaque, so "that is not one of mine" is
+            // the only distinction the wire is allowed to make. Refusing garbage with a *different* code
+            // than a dropped id would publish the internal spelling of an id — the one thing D9
+            // category 4 exists to keep private — and would break the day the spelling changes.
+            return Err(unknown_checkpoint(&id));
         };
 
         // D13 rule 2: the ENTIRE machine — CPU, RAM, VDP, sound state and the ROM. A checkpoint taken
@@ -1406,7 +1452,7 @@ impl Engine {
                 code::INTERNAL_ERROR,
                 format!("checkpoint {id} could not be decoded: {e}"),
             )
-            .with_data(json!({"id": id}))
+            .with_data(json!({ "id": &id }))
         })?;
         let (held, rom_path) = (cp.held, cp.rom_path.clone());
         let (symbols, symbols_path) = (cp.symbols.clone(), cp.symbols_path.clone());
@@ -1482,14 +1528,21 @@ impl Engine {
         // needs in order to compute `truncated` correctly, and it is derived from the ids rather than
         // assumed from the cursor, so a drop under the client cannot make it lie.
         let skipped = self.checkpoints.iter().filter(|c| c.id <= cursor).count();
-        let items: Vec<Value> = self
+        let page_slots: Vec<&Checkpoint> = self
             .checkpoints
             .iter()
             .filter(|c| c.id > cursor)
             .take(limit)
+            .collect();
+        // The continuation token is the last id on this page, read from the **slot** rather than parsed
+        // back out of the emitted JSON: the wire id is an opaque string now, and re-parsing a decimal out
+        // of it would be this server doing to its own handle precisely what §6.1 forbids a client to do.
+        let next_cursor = page_slots.last().map_or(cursor, |c| c.id);
+        let items: Vec<Value> = page_slots
+            .iter()
             .map(|c| {
                 let mut e = json!({
-                    "id": c.id,
+                    "id": c.wire_id(),
                     "frame": c.frame,
                     "mclk": c.mclk,
                     "bytes": c.snapshot.len(),
@@ -1502,13 +1555,6 @@ impl Engine {
                 e
             })
             .collect();
-
-        // The continuation token is the last id on this page. Taken *before* the items are handed to
-        // the bounded-array helper, which consumes them.
-        let next_cursor = items
-            .last()
-            .and_then(|e| e["id"].as_u64())
-            .unwrap_or(cursor);
 
         // The house's one bounded-array rule (`rpc::bounded_array`, recon §4 non-negotiable #2) computes
         // the page; §6.1's spelling for this method names the array `checkpoints` and its continuation
@@ -1560,7 +1606,7 @@ impl Engine {
         }
         let id = parse_checkpoint_id(params)?;
         let before = self.checkpoints.len();
-        self.checkpoints.retain(|c| c.id != id);
+        self.checkpoints.retain(|c| c.wire_id() != id);
         // Unlike `restore`, dropping an id that is already gone is answered rather than refused: `removed`
         // is the count that actually went (§6.1), and `0` is a complete, machine-readable answer to
         // "is it gone?" — the caller's intent is satisfied either way. The hazard behind §6.1's refusal
@@ -1572,12 +1618,45 @@ impl Engine {
 
 // -------------------------------------------------------------------- free functions
 
-/// A checkpoint `id`: a **JSON number** per D9 (an id is a slot handle, not an address), required.
-fn parse_checkpoint_id(params: &Value) -> Result<u64, RpcError> {
-    let Some(v) = params.get("id") else {
-        return Err(RpcError::invalid_params("`id` (a JSON number) is required"));
-    };
-    hex::parse_count("id", v, 0, u64::MAX)
+/// A checkpoint `id`: an **opaque JSON string** (D9 category 4, §6.1, §8 item 16), required.
+///
+/// **Strict — a string only, with no numeric fallback**, and deliberately unlike [`parse_cursor`] two
+/// functions down, which accepts both. The two handles are handled differently because they reach the
+/// server by different routes:
+///
+/// * A `cursor` is only ever *round-tripped*. A client takes the token this server issued and hands it
+///   straight back, so a number-typed field somewhere in the client's own storage is a plausible
+///   accident, and refusing a token we ourselves issued punishes the client for our bug.
+/// * An `id` is the handle a **human hand-types** into the next call. Typing `{"id": 3}` **is** the
+///   arithmetic-on-a-handle that D9 category 4 exists to forbid — the client has looked at the id,
+///   decided it is the number three, and written it down as one. Accepting it would reward the
+///   forbidden usage and, worse, make it invisible: everything would keep working right up until the
+///   day the ids stop looking like small integers.
+///
+/// The strictness is affordable exactly once. §8 item 16 names it: this surface has no clients yet,
+/// which is the cheapest moment the change will ever be available.
+///
+/// The refusals stay loud and keep their existing codes. The wrong JSON *type* is `-32602`; an id that
+/// is not live — dropped, never issued, or a string this server could not have spelled — is `-32005
+/// unknownCheckpoint` at the call site. Neither is ever clamped to a neighbour and neither is a silent
+/// no-op.
+fn parse_checkpoint_id(params: &Value) -> Result<String, RpcError> {
+    match params.get("id") {
+        Some(Value::String(s)) if !s.is_empty() => Ok(s.clone()),
+        // `#/$defs/handle` is `{"type":"string","minLength":1}`; an empty handle is a shape violation,
+        // not an unknown checkpoint, so it is refused here rather than looked up and missed.
+        Some(Value::String(_)) => Err(RpcError::invalid_params(
+            "`id` must be a non-empty string — pass back the handle `emulator/checkpoint` returned",
+        )),
+        None | Some(Value::Null) => Err(RpcError::invalid_params(
+            "`id` (the opaque string handle returned by emulator/checkpoint) is required",
+        )),
+        Some(other) => Err(RpcError::invalid_params(format!(
+            "`id` must be a JSON string — the handle is opaque and a client must not compute on it \
+             (D9 category 4); got {}",
+            hex::kind_of(other)
+        ))),
+    }
 }
 
 /// A `checkpoint_list` continuation token, resolved back to the id it stands for.
@@ -1623,10 +1702,15 @@ fn parse_cursor(v: &Value, max: u64) -> Result<u64, RpcError> {
     hex::parse_count("cursor", &Value::from(n), 0, max)
 }
 
-fn unknown_checkpoint(id: u64) -> RpcError {
+/// The `-32005 unknownCheckpoint` refusal. `data.id` echoes the handle **as the client sent it** — a
+/// string, per D9 category 4 — so a client can correlate the refusal with the call that caused it
+/// without the server reformatting the one value it is not supposed to interpret.
+fn unknown_checkpoint(id: &str) -> RpcError {
     RpcError::invalid_state(
         "unknownCheckpoint",
-        format!("no checkpoint {id} — it was never taken, or it has been dropped"),
+        // Quoted, because the id is now an arbitrary client-supplied string: unquoted, an id of `""` or
+        // `" "` would produce a message with a hole in it.
+        format!("no checkpoint {id:?} — it was never taken, or it has been dropped"),
         json!({ "id": id }),
     )
 }

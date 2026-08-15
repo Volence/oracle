@@ -69,6 +69,13 @@ when a `run_to` fired). Additive params on a catalogued event are not a new op.
 > **Adopted as `runFrames`** (contract §3) — the proposed `frames` was inconsistent with the enum's
 > existing `runTo` / `runToScanline` spelling. `frames` and `deadlineReached` are normative params.
 
+> **Migrated 2026-08-15.** The adoption sat unimplemented for a day: `Engine::run_frames` kept emitting
+> `"step"`, with the pre-adoption CR-1 comment still above it explaining why. It now emits `"runFrames"`
+> (`crates/oracle-aether/src/engine.rs`), pinned at the wire in
+> `crates/oracle-aether/tests/events.rs::events_reach_a_subscriber_and_carry_the_stamp`, which asserts
+> the reason **and** the two additive params §3 makes normative alongside it. `Engine::press` emitted the
+> same wrong `"step"` and is covered by **CR-9** below, which is the part that is not merely a migration.
+
 ---
 
 ## CR-2 — there is no `emulator/checkpoint`, and §9 defers the ops that would cover it
@@ -142,6 +149,29 @@ This is the one place the intended scope was consciously not delivered.
 >    `load_symbols`, which legitimately read files. Not airtight — a violation hidden behind a helper
 >    defined elsewhere in the file would slip past — but it catches what actually happens, and it fails
 >    on the exact mutation that used to pass.
+
+> **The `id` became a string, 2026-08-15 — and this is not a CR, it is us conforming.** The delivery
+> above shipped the `id` as a **JSON number**, with an in-code comment reading *"a checkpoint `id`: a
+> JSON number per D9"*. That reading of D9's *"counts, lengths, **slot indices**, line numbers"* was fair
+> against the text as it then stood, and the contract says so — but the **schema** has typed all four
+> `id` positions as `{"type":"string"}` since the checkpoint methods were specified, and D14 makes the
+> schema the authority on the wire. The 2026-08-15 amendment settled it by adding **D9 category 4**
+> (opaque handles are strings) and named this server as non-conformant by file and comment (§8 item 16).
+> The `id` is now a string in all five wire positions — `checkpoint`'s result, `restore`'s and
+> `checkpoint_drop`'s params, `checkpoint_list`'s entries, and the `-32005` `error.data.id`. The
+> internal counter stays a `u64`, which §6.1 blesses explicitly, so the id-ordered cursor is untouched.
+>
+> One judgement call inside it, recorded because it is a deliberate asymmetry a reader will trip over:
+> `parse_checkpoint_id` is **strict** (a JSON string only) while `parse_cursor` still accepts a bare
+> number. A cursor is only ever *round-tripped*, so a number-typed field in a client's own storage is a
+> plausible accident and refusing a token we ourselves issued would punish a client for our bug. An `id`
+> is the handle a human hand-types into the next call, and typing `{"id": 3}` **is** the
+> arithmetic-on-a-handle D9 category 4 exists to forbid — accepting it would reward the forbidden usage
+> and keep it invisible until ids stop looking like small integers. §8 item 16 names why the strictness
+> is affordable: this surface has no clients yet. Relatedly, a well-formed string this server could never
+> have issued (`"0x1"`) is answered `-32005 unknownCheckpoint`, not `-32602`: to a client the handle is
+> opaque, so "that is not one of mine" is the only distinction the wire may draw, and a parse error there
+> would publish the internal spelling of an id.
 
 ---
 
@@ -315,6 +345,53 @@ than flattering.
 > identically, while this is a per-connection fact two clients will legitimately disagree about — which
 > is why §2.2 and §2.3 are separate sections even though both fields ride the same envelope and are
 > applied the same way. **No change here.**
+
+---
+
+## CR-9 — `emulator/stopped` has no `reason` for a bounded frame advance driven by `press` (2026-08-15)
+
+**Contract.** §3 fixes the `emulator/stopped` `reason` enum at
+`breakpoint | watchpoint | step | runTo | runToScanline | runFrames | pause | entry` — a closed set — and
+pins two of its members against each other: **`step`** is *"a `step` / `step_over` / `step_out`
+completed. One instruction, or one instruction-shaped unit. It is **not** the value for a frame
+advance."* **`runFrames`** is *"an `emulator/run_frames(n)` ran to completion."* §6 catalogs
+`emulator/press | buttons, port?, frames? | buttons, frames, port, frameToken`.
+
+**The gap.** `emulator/press` advances whole **frames** — it holds the buttons down, runs `frames` of
+them, then restores the held set — and then stops. That completion is none of the eight. It is not a
+`runTo` (no target), not a `pause` (nobody asked), not `entry`, and §3's own pinning rules out `step`
+affirmatively: a frame advance is exactly what `step` is defined not to be. `runFrames` is the only
+member left standing, and it is *imprecise* rather than wrong — this was not an `emulator/run_frames`
+call. CR-1 closed the same hole for `run_frames` and did not reach the second method that has it.
+
+**What we did.** Emit **`reason: "runFrames"`** for `press`, keeping the `frames` / `deadlineReached`
+params it already carried (`Engine::press`, `crates/oracle-aether/src/engine.rs`; pinned by
+`crates/oracle-aether/tests/events.rs::a_press_reports_runframes_because_step_is_the_one_value_section_3_rules_out`).
+The reasoning is written into the code comment beside it, not just here. Between a value the contract
+rules out and the nearest admissible one, we take the nearest admissible one: the enum is closed, so
+minting a ninth value unilaterally is the invention §8 forbids, and a client watching the stream is then
+told "a bounded frame advance completed" — true, if under-specified — instead of "an instruction
+completed", which is false.
+
+**Why it still matters that the value is imprecise.** `press`'s **reply** already distinguishes the
+case: it carries `buttons` and `port`, which no `run_frames` reply has. So a caller can always tell what
+happened. The ambiguity is confined to the **event stream** — and that is precisely the consumer that
+cannot undo it. A subscriber that was not the caller sees only `resumed`, `stopped {reason: runFrames,
+frames: 2}`, and has no way to learn that an input was injected into those two frames. For a bus whose
+whole purpose is reproducible experiments, "someone pressed Start here" is not a detail the stream
+should have to lose.
+
+**Proposed change.** Either of two, and the cheaper one is fine:
+
+1. Add an explicit value to §3's enum — e.g. `press` — for "a bounded frame advance driven by
+   `emulator/press` completed", with the same `frames` / `deadlineReached` params; or
+2. Add one sentence to §3 confirming that **`runFrames` covers any bounded frame advance regardless of
+   which method drove it**, which makes today's emission conformant by construction and tells the next
+   server author the same thing without their having to derive it.
+
+Option 2 costs a sentence and closes the question. Option 1 costs an enum value and additionally lets
+the stream carry the fact that an input was injected — which is the half option 2 gives up. **This is the
+raising; the ruling is the owner's.** The contract repo was not edited.
 
 ---
 
