@@ -490,11 +490,51 @@ fn sprite_limits(h40: bool) -> (usize, usize, usize) {
     }
 }
 
+/// Which VRAM pattern sprite `s` draws screen dot (`x`, `y`) from, or `None` if the dot is outside the
+/// sprite's box.
+///
+/// This is the same addressing [`Vdp::draw_sprite`] uses, hoisted out so the *one* derivation serves every
+/// consumer: flips mirror the whole sprite (not each cell), and a multi-cell sprite's patterns run
+/// **column-major** — down a column before moving right — so the offset from the base tile is
+/// `(col * height_cells) + row` (recon RR8). The addition wraps, because a base tile near the top of VRAM
+/// with a large sprite genuinely does wrap there.
+///
+/// `None` is the honest answer for a dot the sprite's box no longer contains — which, asked *after* the
+/// frame was drawn, means the SAT moved since. Callers report the absence rather than inventing a tile.
+pub fn sprite_tile_at(s: &SpriteDecoded, x: u16, y: u16) -> Option<u16> {
+    let wpx = usize::from(s.width_cells) * 8;
+    let hpx = usize::from(s.height_cells) * 8;
+    let sx = usize::try_from(i32::from(x) - i32::from(s.x)).ok()?;
+    let sy = usize::try_from(i32::from(y) - i32::from(s.y)).ok()?;
+    if sx >= wpx || sy >= hpx {
+        return None;
+    }
+    let src_sx = if s.hflip { wpx - 1 - sx } else { sx };
+    let src_sy = if s.vflip { hpx - 1 - sy } else { sy };
+    let offset = (src_sx / 8) * usize::from(s.height_cells) + src_sy / 8;
+    Some(s.tile.wrapping_add(offset as u16))
+}
+
 impl Vdp {
     /// H40 (40-cell / 320 px) mode: reg $0C bits RS0 (bit 0) + RS1 (bit 7) both set (recon RR3, matching the
     /// timing FSM's `h40`). Recomputed from `regs()` so the renderer never reaches into private VDP state.
     fn render_h40(&self) -> bool {
         self.regs()[0x0C] & 0x81 == 0x81
+    }
+
+    /// The active display geometry `(width, height)` in pixels, as the renderer is currently configured:
+    /// **320 × 224** in H40, **256 × 224** in H32.
+    ///
+    /// Exported so a caller that has to *bound* a coordinate — a bus method refusing a dot outside the
+    /// display — gets the same answer the renderer resolves against, instead of re-deriving `render_h40`
+    /// on its own. Width is the length [`Vdp::render_line`] returns; the two cannot drift.
+    ///
+    /// Height is 224 unconditionally, which is a statement about this core rather than about the chip:
+    /// the whole machine is NTSC V28 (`vdp::LINES_PER_FRAME`, the line-224 VBlank anchor, the scheduler's
+    /// active-line chain), so reporting 240 off reg $01's M2 bit would name a geometry nothing here
+    /// renders. When V30 lands, it lands here.
+    pub fn active_display(&self) -> (u16, u16) {
+        (if self.render_h40() { 320 } else { 256 }, 224)
     }
 
     /// Plane A nametable base VRAM byte address (recon RR3): `(reg $02 & 0x38) << 10`.

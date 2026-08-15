@@ -13,7 +13,8 @@
 //!
 //! * **which sprite** — [`Layer::Sprite`] already carries the winning SAT index;
 //! * **which VRAM tile it draws that dot from** — a multi-cell sprite is a *column-major* run of tiles from a
-//!   base index, so the dot's tile is `base + (col * height_cells) + row` after flips ([`sprite_tile_at`]);
+//!   base index, so the dot's tile is `base + (col * height_cells) + row` after flips
+//!   ([`oracle_core::render::sprite_tile_at`]);
 //! * **which attribute-table entry positions it** — the 8 bytes at `sat_base + index * 8`, which is what a
 //!   game writes when it moves, re-points, or re-links the sprite.
 //!
@@ -21,15 +22,18 @@
 //! "who moved this?" both land in the same hit log. A backdrop click arms the CRAM entry the backdrop register
 //! selects, which is the only writable thing behind a backdrop dot.
 //!
-//! ## No core change
+//! ## Where the sprite addressing lives
 //!
-//! Everything here is computed from already-public core API: `pixel_attribution`, `sprites_decoded`, and
-//! `sat_base`. [`sprite_tile_at`] deliberately re-derives the addressing that
-//! `oracle_core::render`'s `draw_sprite` uses, and the tests pin it *against the core's own renderer* rather
-//! than against the arithmetic being restated — so if the core's sprite addressing ever changed, these tests
-//! fail rather than the picker silently naming the wrong tile.
+//! Everything here is computed from public core API: `pixel_attribution`, `sprites_decoded`, `sat_base`,
+//! and [`oracle_core::render::sprite_tile_at`]. That last one used to be a local copy that deliberately
+//! *re-derived* `draw_sprite`'s addressing; it now lives in `oracle-core` beside the renderer it mirrors,
+//! because the same derivation answers `emulator/pixel_attribution` on the bus (contract §8 item 19: one
+//! implementation under both consumers, so the panel and the wire cannot drift). The tests below still pin
+//! it *against the core's own renderer* rather than against the arithmetic being restated — so if the
+//! core's sprite addressing ever changed, these tests fail rather than the picker silently naming the
+//! wrong tile.
 
-use oracle_core::render::{Layer, SpriteDecoded};
+use oracle_core::render::{sprite_tile_at, Layer};
 use oracle_core::vdp::Vdp;
 
 /// One armable range the click resolved to: a watch to arm, and how to describe it.
@@ -79,27 +83,6 @@ const SAT_ENTRY_BYTES: u32 = 8;
 fn tile_range(tile: u16) -> (u32, u32) {
     let lo = (u32::from(tile) * TILE_BYTES) & VRAM_MASK;
     (lo, lo + TILE_BYTES - 1)
-}
-
-/// Which VRAM tile sprite `s` draws screen dot `(x, y)` from, or `None` if the dot is outside the sprite's
-/// box.
-///
-/// This mirrors `oracle_core::render`'s `draw_sprite`: flips mirror the whole sprite (not each cell), and a
-/// multi-cell sprite's patterns run **column-major** — going down a column before moving right — so the
-/// offset from the base tile is `(col * height_cells) + row`. The addition wraps like the core's
-/// `wrapping_add`, because a base tile near the top of VRAM with a large sprite genuinely does wrap there.
-pub fn sprite_tile_at(s: &SpriteDecoded, x: u16, y: u16) -> Option<u16> {
-    let wpx = usize::from(s.width_cells) * 8;
-    let hpx = usize::from(s.height_cells) * 8;
-    let sx = usize::try_from(i32::from(x) - i32::from(s.x)).ok()?;
-    let sy = usize::try_from(i32::from(y) - i32::from(s.y)).ok()?;
-    if sx >= wpx || sy >= hpx {
-        return None;
-    }
-    let src_sx = if s.hflip { wpx - 1 - sx } else { sx };
-    let src_sy = if s.vflip { hpx - 1 - sy } else { sy };
-    let offset = (src_sx / 8) * usize::from(s.height_cells) + src_sy / 8;
-    Some(s.tile.wrapping_add(offset as u16))
 }
 
 /// Resolve the dot at `(x, y)` into a description and the ranges worth watching.
@@ -233,7 +216,7 @@ pub fn resolve(vdp: &Vdp, x: u16, y: u16) -> Pick {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oracle_core::render::Layer;
+    use oracle_core::render::{Layer, SpriteDecoded};
     use oracle_core::rng::SplitMix64;
     use oracle_core::vdp::Vdp;
 
@@ -291,8 +274,11 @@ mod tests {
             "the fixture gives each cell a unique colour nibble (1..=15)"
         );
         let mut v = fresh();
-        set_reg(&mut v, 0x0C, 0x81); // H40 — set before the SAT writes, the cache window depends on it
+        // Reg $01 FIRST, and the order is load-bearing: the mode-4 register mask discards writes to
+        // registers above 10 while M5 (reg $01 bit 2) is clear, so an $0C written ahead of it is
+        // silently dropped and this fixture comes up H32 while the comment claims H40.
         set_reg(&mut v, 0x01, 0x74); // display on, mode 5, DMA enable
+        set_reg(&mut v, 0x0C, 0x81); // H40 — set before the SAT writes, the cache window depends on it
         set_reg(&mut v, 0x05, 0x58); // SAT base $B000
         set_reg(&mut v, 0x07, 0x00); // backdrop = CRAM 0
         set_reg(&mut v, 0x0F, 0x02); // autoincrement 2 (one word per data write)
@@ -459,8 +445,8 @@ mod tests {
     #[test]
     fn clicking_a_plane_tile_still_arms_that_tile() {
         let mut v = fresh();
+        set_reg(&mut v, 0x01, 0x74); // display on, mode 5 — before $0C, see `vdp_with_sprite`
         set_reg(&mut v, 0x0C, 0x81); // H40
-        set_reg(&mut v, 0x01, 0x74); // display on, mode 5
         set_reg(&mut v, 0x02, 0x30); // plane A nametable @ $C000
         set_reg(&mut v, 0x04, 0x07); // plane B nametable @ $E000
         set_reg(&mut v, 0x05, 0x58); // SAT @ $B000 (empty — sprite 0's Y is 0-128 = off-screen)
