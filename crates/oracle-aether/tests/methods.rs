@@ -5,7 +5,8 @@ mod common;
 
 use common::{spawn, Client};
 use oracle_aether::engine::METHODS;
-use serde_json::json;
+use oracle_core::system::MCLK_PER_FRAME;
+use serde_json::{json, Value};
 
 /// A `.lst` with no `EndOfRom` row — internally intact, so it is accepted *unverified* with a caveat.
 const LST_UNBOUND: &str = "\
@@ -245,12 +246,47 @@ fn run_to_reaches_a_real_target_and_reports_fired_vs_timed_out_distinctly() {
     assert_eq!(r["reached"], json!(true));
     assert_eq!(r["pc"], json!(pc));
     assert!(r.get("caveat").is_none(), "a fired run needs no caveat");
+    // CR-13 (ruled 2026-08-15): `stoppedAtFrame`/`stoppedAtMclk` are removed because they *were* the
+    // envelope stamp (§2.2). Pinned as **lossless**, not merely deleted — the two numbers they carried
+    // are asserted here on the envelope. The target is the entry PC, which matches before anything
+    // executes, so the halt coordinate is the origin.
+    assert_no_stopped_at(&r);
+    assert_eq!(r["frame"], json!(0), "the run fired before it advanced");
+    assert_eq!(r["mclk"], json!(0));
 
     let miss = c.ok(
         "emulator/run_to",
         json!({"addr": "0x00FEED", "maxFrames": 1}),
     );
     assert_eq!(miss["reached"], json!(false));
+    // The deadlined branch carries the same proof: the stamp is the *halt* coordinate. The run ended on
+    // its one-frame bound, so `frame` is 1 and `mclk` is one frame's worth of master clock plus however
+    // far the last instruction ran past the boundary — precisely what `stoppedAtMclk` used to report.
+    assert_no_stopped_at(&miss);
+    let frame = miss["frame"].as_u64().expect("`frame` on the envelope");
+    let mclk = miss["mclk"].as_u64().expect("`mclk` on the envelope");
+    assert_eq!(frame, 1, "one frame of bound was consumed");
+    assert_eq!(frame, mclk / MCLK_PER_FRAME, "the stamp is self-consistent");
+    assert!(
+        (MCLK_PER_FRAME..2 * MCLK_PER_FRAME).contains(&mclk),
+        "the halt mclk must be at-or-just-past the one-frame bound, got {mclk}"
+    );
+    // And nothing advanced between the halt and the stamp: a call that cannot move the machine reads
+    // back the identical coordinate. That is the whole argument for the removal, executed.
+    let s = c.ok("emulator/status", json!({}));
+    assert_eq!(s["frame"], miss["frame"]);
+    assert_eq!(s["mclk"], miss["mclk"]);
+}
+
+/// The two keys CR-13 removed from `run_to`, asserted absent — so the removal is pinned rather than
+/// merely done, and re-introducing either fails a test instead of shipping.
+fn assert_no_stopped_at(r: &Value) {
+    for k in ["stoppedAtFrame", "stoppedAtMclk"] {
+        assert!(
+            r.get(k).is_none(),
+            "`{k}` duplicated the envelope stamp and is removed (CR-13); got {r}"
+        );
+    }
 }
 
 #[test]
@@ -386,7 +422,27 @@ fn input_has_set_semantics_and_refuses_six_button_buttons() {
         "the tap was restored to the held set"
     );
 
-    c.ok("emulator/release_all", json!({}));
+    // CR-13 (ruled 2026-08-15): `release_all`'s result is `—`, so the reply is `{}` plus the envelope,
+    // exactly like `emulator/restore`. The old `"released": true` was a hardcoded constant no branch
+    // could falsify; it carried zero bits. Pinned as *lossless* rather than merely deleted: the key is
+    // gone, the envelope still stamps the reply, and the answer a client actually needs — that the held
+    // set is now empty — is observable, as the `hold` below shows.
+    let r = c.ok("emulator/release_all", json!({}));
+    assert!(
+        r.get("released").is_none(),
+        "`released` was a constant `true` and is removed (CR-13); got {r}"
+    );
+    for k in ["frame", "mclk", "running", "droppedEvents"] {
+        assert!(
+            r.get(k).is_some(),
+            "the envelope must still stamp the reply — `{k}` missing from {r}"
+        );
+    }
+    assert_eq!(
+        r.as_object().unwrap().len(),
+        4,
+        "the result is the stamp and nothing else: {r}"
+    );
     let r = c.ok("emulator/hold", json!({"buttons": [], "down": true}));
     assert_eq!(r["held"], json!([]));
 

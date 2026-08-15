@@ -891,12 +891,19 @@ impl Engine {
         extra.insert("deadlineReached".into(), json!(record.timed_out()));
         self.emit_stopped("runTo", record.pc, extra);
 
+        // No `stoppedAtFrame`/`stoppedAtMclk`. They would be the envelope stamp (§2.2) spelled twice:
+        // `record` is captured at the halt, and the stamp is computed on the same engine thread the
+        // instant `dispatch` returns with the machine paused — and `run_to` *requires* a paused machine —
+        // so nothing can advance between the two. §6.1 has already ruled this exact case for `restore`:
+        // *"The `frame`/`mclk` in `checkpoint`'s result, and the whole of `restore`'s result, **are** the
+        // machine stamp (§2.2) — no extra fields are needed and none should be invented."* Re-spelling the
+        // stamp inside the result teaches clients that the stamp is not the answer, which is the one
+        // lesson D11 exists to prevent. (CR-13, ruled 2026-08-15 —
+        // `docs/2026-08-15-fable-ruling-cr13-cr14.md`; §6's row for this method is unchanged by it.)
         let mut out = json!({
             "target": hex::addr(target),
             "reached": record.fired(),
             "pc": hex::addr(record.pc),
-            "stoppedAtFrame": record.frame,
-            "stoppedAtMclk": record.mclk,
             "maxFrames": max_frames,
         });
         if let Some((name, disp)) = self.symbol_at(record.pc) {
@@ -1252,7 +1259,13 @@ impl Engine {
         // exactly until the next iteration re-read the keyboard.
         self.held = [Pad::default(); 2];
         self.apply_pads();
-        Ok(json!({"released": true}))
+        // `{}`, deliberately. §6's row for this method gives the result as `—`, and a `"released": true`
+        // that no branch can ever set to `false` carries zero bits — it is a constant wearing an answer's
+        // clothes. §6.1's ruling for `restore` is the precedent and it is verbatim applicable: the reply
+        // *is* the machine stamp (§2.2), *"no extra fields are needed and none should be invented"*, so
+        // `restore` emits `{}` too. (CR-13, ruled 2026-08-15 —
+        // `docs/2026-08-15-fable-ruling-cr13-cr14.md`; §6's row is unchanged by that ruling.)
+        Ok(json!({}))
     }
 
     fn lookup_symbol(&mut self, params: &Value) -> Result<Value, RpcError> {
