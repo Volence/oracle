@@ -51,7 +51,25 @@ fn events_reach_a_subscriber_and_carry_the_stamp() {
                 // pins as one instruction-shaped unit and explicitly "not the value for a frame
                 // advance". Reporting the nearest-looking value is a knowing mislabel, and a client
                 // watching the stream is the one consumer that cannot undo it.
+                //
+                // ** THIS ASSERTION HAS NO MECHANICAL BACKSTOP, AND THAT IS STRUCTURAL. ** Every line
+                // this client receives is now validated against the normative wire schema
+                // (`common::schema`, contract §8 item 15) — and that validator is BLIND here. `step` is
+                // a legal member of the schema's `reason` enum, so a mislabelled stop passes it
+                // cleanly; the rule that picks between two legal members lives in §3's prose, and D14
+                // puts behaviour under the prose, not the schema. Probe finding F2
+                // (`docs/2026-08-15-wire-conformance-probe.md`), proved as an executable fact by
+                // `tests/schema_conformance.rs::the_schema_cannot_express_section_8_item_13_and_this_test_proves_it`.
+                //
+                // So: do not delete this on the grounds that "the schema checks the events now". Of the
+                // two mechanical conformance items in this arc the validator catches one (item 16, the
+                // checkpoint id) and cannot catch this one. This line is the only thing holding it.
                 assert_eq!(v["params"]["reason"], json!("runFrames"), "{v}");
+                assert_ne!(
+                    v["params"]["reason"],
+                    json!("step"),
+                    "a frame advance is never `step` (§3) — and the schema will not tell you: {v}"
+                );
                 // The two additive params §3 pins with it: `frames` is REQUIRED when the reason is
                 // `runFrames`, and `deadlineReached` is always `true` there.
                 assert_eq!(v["params"]["frames"], json!(1), "{v}");
@@ -98,10 +116,12 @@ fn a_press_reports_runframes_because_step_is_the_one_value_section_3_rules_out()
     }
     let s = stopped.expect("a press emits exactly one emulator/stopped");
     assert_eq!(s["params"]["reason"], json!("runFrames"), "{s}");
+    // As above: the wire-schema validator cannot adjudicate between two legal enum members, so this
+    // assertion is load-bearing on its own. See the long note in the `run_frames` test.
     assert_ne!(
         s["params"]["reason"],
         json!("step"),
-        "a frame advance is never `step` (§3)"
+        "a frame advance is never `step` (§3) — and the schema will not tell you"
     );
     assert_eq!(s["params"]["frames"], json!(2), "{s}");
     assert_eq!(s["params"]["deadlineReached"], json!(true), "{s}");
