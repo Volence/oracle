@@ -16,6 +16,7 @@
 //! - [`policy`] — the two refusals (mismatched listing, release ROM).
 //! - [`fault`] — decoding a trap from the stack: message text, raise site, pre-clobber registers.
 //! - [`outcome`] — the classification precedence and the progress watchdog.
+//! - [`restamp`] — the one-pass fixture repair: the static slot map, the recovery stub, and the plan.
 //!
 //! [`runner`] is the thin impure half that drives `oracle-core`, and [`cli`] is a hand-rolled argument
 //! parser. **`oracle-core` is unchanged by this crate**: `boot_with_sink`, `run_until_stop`, `mega_bus`,
@@ -32,11 +33,13 @@
 //! 3. **A desync presents exactly as a hang.** [`outcome::dispose`] checks for the trap before it will ever
 //!    report a timeout.
 
+pub mod artifacts;
 pub mod cli;
 pub mod fault;
 pub mod header;
 pub mod outcome;
 pub mod policy;
+pub mod restamp;
 pub mod runner;
 
 /// Work RAM is a 64 KiB chip mirrored across `$E00000-$FFFFFF`; the mirror index is `addr & (RAM_SIZE - 1)`.
