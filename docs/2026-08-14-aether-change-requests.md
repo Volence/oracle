@@ -143,6 +143,29 @@ This is the one place the intended scope was consciously not delivered.
 >    defined elsewhere in the file would slip past — but it catches what actually happens, and it fails
 >    on the exact mutation that used to pass.
 
+> **The `id` became a string, 2026-08-15 — and this is not a CR, it is us conforming.** The delivery
+> above shipped the `id` as a **JSON number**, with an in-code comment reading *"a checkpoint `id`: a
+> JSON number per D9"*. That reading of D9's *"counts, lengths, **slot indices**, line numbers"* was fair
+> against the text as it then stood, and the contract says so — but the **schema** has typed all four
+> `id` positions as `{"type":"string"}` since the checkpoint methods were specified, and D14 makes the
+> schema the authority on the wire. The 2026-08-15 amendment settled it by adding **D9 category 4**
+> (opaque handles are strings) and named this server as non-conformant by file and comment (§8 item 16).
+> The `id` is now a string in all five wire positions — `checkpoint`'s result, `restore`'s and
+> `checkpoint_drop`'s params, `checkpoint_list`'s entries, and the `-32005` `error.data.id`. The
+> internal counter stays a `u64`, which §6.1 blesses explicitly, so the id-ordered cursor is untouched.
+>
+> One judgement call inside it, recorded because it is a deliberate asymmetry a reader will trip over:
+> `parse_checkpoint_id` is **strict** (a JSON string only) while `parse_cursor` still accepts a bare
+> number. A cursor is only ever *round-tripped*, so a number-typed field in a client's own storage is a
+> plausible accident and refusing a token we ourselves issued would punish a client for our bug. An `id`
+> is the handle a human hand-types into the next call, and typing `{"id": 3}` **is** the
+> arithmetic-on-a-handle D9 category 4 exists to forbid — accepting it would reward the forbidden usage
+> and keep it invisible until ids stop looking like small integers. §8 item 16 names why the strictness
+> is affordable: this surface has no clients yet. Relatedly, a well-formed string this server could never
+> have issued (`"0x1"`) is answered `-32005 unknownCheckpoint`, not `-32602`: to a client the handle is
+> opaque, so "that is not one of mine" is the only distinction the wire may draw, and a parse error there
+> would publish the internal spelling of an id.
+
 ---
 
 ## CR-3 — §5 has no error code for "wrong machine state for this operation"

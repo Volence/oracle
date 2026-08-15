@@ -18,14 +18,18 @@ fn cap(init: &Value) -> u64 {
         .expect("capabilities.checkpoints.cap must be advertised (D13 rule 3)")
 }
 
-fn take(c: &mut Client, label: Option<&str>) -> u64 {
+/// Take a checkpoint and return its handle. The handle is a **string** (D9 category 4, §6.1, §8 item
+/// 16); every test below carries it around as one and hands it back unexamined, which is the whole of a
+/// client's contract with it.
+fn take(c: &mut Client, label: Option<&str>) -> String {
     let params = match label {
         Some(l) => json!({ "label": l }),
         None => json!({}),
     };
     c.ok("emulator/checkpoint", params)["id"]
-        .as_u64()
-        .expect("`id` must be a server-assigned number")
+        .as_str()
+        .expect("`id` must be a server-assigned opaque string (D9 category 4)")
+        .to_string()
 }
 
 /// Two listings that declare no `EndOfRom`, so both are accepted *unverified* against the fixture ROM.
@@ -62,12 +66,17 @@ fn write_lst(tag: &str, text: &str) -> std::path::PathBuf {
 }
 
 /// The ids in a `checkpoint_list` page, in the order the server returned them.
-fn page_ids(page: &Value) -> Vec<u64> {
+fn page_ids(page: &Value) -> Vec<String> {
     page["checkpoints"]
         .as_array()
         .expect("`checkpoints` must be an array")
         .iter()
-        .map(|e| e["id"].as_u64().expect("every entry carries a numeric id"))
+        .map(|e| {
+            e["id"]
+                .as_str()
+                .expect("every entry carries a string handle")
+                .to_string()
+        })
         .collect()
 }
 
@@ -138,13 +147,17 @@ fn a_checkpoint_restores_the_machine_to_exactly_the_same_coordinate() {
 
     c.ok("emulator/run_frames", json!({"frames": 3}));
     let cp = c.ok("emulator/checkpoint", json!({"label": "three frames in"}));
-    assert!(cp["id"].is_number());
+    assert!(
+        cp["id"].is_string(),
+        "the handle is a JSON string (D9 category 4): {}",
+        cp["id"]
+    );
     assert!(
         cp["bytes"].as_u64().unwrap() > 0,
         "`bytes` is the snapshot size"
     );
     assert_eq!(cp["frame"], json!(3), "the stamp IS the capture coordinate");
-    let id = cp["id"].as_u64().unwrap();
+    let id = cp["id"].as_str().unwrap().to_string();
     let (frame_at, mclk_at) = (cp["frame"].clone(), cp["mclk"].clone());
     let hash_at = c.ok("emulator/state_hash", json!({}))["combined"].clone();
     let ram_at = c.ok(
@@ -165,7 +178,7 @@ fn a_checkpoint_restores_the_machine_to_exactly_the_same_coordinate() {
     assert_ne!(ram_at, ram_after, "the machine must actually have moved on");
 
     // §6.1: the whole of `restore`'s result is the machine stamp, reporting the *restored* coordinate.
-    let r = c.ok("emulator/restore", json!({"id": id}));
+    let r = c.ok("emulator/restore", json!({ "id": &id }));
     assert_eq!(r["frame"], frame_at);
     assert_eq!(r["mclk"], mclk_at);
     assert_eq!(
@@ -208,7 +221,7 @@ fn a_checkpoint_can_be_restored_more_than_once_and_survives_a_restore() {
 
     for _ in 0..3 {
         c.ok("emulator/run_frames", json!({"frames": 4}));
-        let r = c.ok("emulator/restore", json!({"id": id}));
+        let r = c.ok("emulator/restore", json!({ "id": &id }));
         assert_eq!(r["frame"], json!(2));
     }
     // Restoring must not consume the slot.
@@ -251,7 +264,7 @@ fn restore_brings_the_previous_cartridge_back_it_never_partially_restores() {
     );
 
     // D13 rule 2: this is defined behaviour, not a refusal.
-    c.ok("emulator/restore", json!({"id": id}));
+    c.ok("emulator/restore", json!({ "id": &id }));
     assert_eq!(
         c.ok(
             "emulator/read_memory",
@@ -291,7 +304,7 @@ fn the_cap_is_refused_loudly_and_never_silently_evicts() {
     assert_eq!(e["data"]["count"], json!(n));
 
     // Silent eviction is forbidden: the oldest id must still mean exactly what it meant.
-    let r = c.ok("emulator/restore", json!({"id": first}));
+    let r = c.ok("emulator/restore", json!({ "id": &first }));
     assert_eq!(r["frame"], json!(0));
     assert_eq!(
         c.ok("emulator/checkpoint_list", json!({}))["total"],
@@ -300,7 +313,7 @@ fn the_cap_is_refused_loudly_and_never_silently_evicts() {
 
     // Dropping is how a client makes room.
     assert_eq!(
-        c.ok("emulator/checkpoint_drop", json!({"id": first}))["removed"],
+        c.ok("emulator/checkpoint_drop", json!({ "id": &first }))["removed"],
         json!(1)
     );
     c.ok("emulator/checkpoint", json!({}));
@@ -314,23 +327,128 @@ fn restoring_an_unknown_or_dropped_id_is_refused_never_a_silent_no_op() {
     let mut c = Client::connect(&h);
     c.handshake(false);
 
-    let e = c.err("emulator/restore", json!({"id": 9999}));
+    let e = c.err("emulator/restore", json!({"id": "9999"}));
     assert_eq!(e["code"], json!(-32005));
     assert_eq!(e["data"]["reason"], json!("unknownCheckpoint"));
-    assert_eq!(e["data"]["id"], json!(9999));
+    assert_eq!(
+        e["data"]["id"],
+        json!("9999"),
+        "`error.data.id` echoes the handle as a string too (D9 category 4)"
+    );
 
     let id = take(&mut c, None);
-    c.ok("emulator/checkpoint_drop", json!({"id": id}));
-    let e = c.err("emulator/restore", json!({"id": id}));
+    c.ok("emulator/checkpoint_drop", json!({ "id": &id }));
+    let e = c.err("emulator/restore", json!({ "id": &id }));
     assert_eq!(e["code"], json!(-32005));
     assert_eq!(e["data"]["reason"], json!("unknownCheckpoint"));
 
-    // `id` is required and is a JSON number (D9), not a hex string.
+    // `id` is required, and is refused for the *shape* with -32602.
     assert_eq!(c.err("emulator/restore", json!({}))["code"], json!(-32602));
     assert_eq!(
-        c.err("emulator/restore", json!({"id": "0x1"}))["code"],
+        c.err("emulator/restore", json!({"id": ""}))["code"],
+        json!(-32602),
+        "`#/$defs/handle` is minLength 1 — an empty handle is a shape violation, not an unknown id"
+    );
+
+    // A well-formed string this server could never have issued is *not* a shape error: to a client the
+    // handle is opaque, so the only distinction the wire may draw is "that is not one of mine".
+    // Answering `"0x1"` with a parse error would publish the internal spelling of an id.
+    let e = c.err("emulator/restore", json!({"id": "0x1"}));
+    assert_eq!(e["code"], json!(-32005));
+    assert_eq!(e["data"]["reason"], json!("unknownCheckpoint"));
+}
+
+// ------------------------------------------------------ D9 category 4: the handle's wire type
+
+#[test]
+fn the_checkpoint_id_is_a_json_string_in_every_wire_position() {
+    // §8 item 16, D9 category 4, §6.1, and `#/$defs/handle` in `schema/bus-protocol.schema.json` —
+    // which D14 makes the authority on the wire. All four positions, pinned against the *JSON type*
+    // rather than against a value, because the bug this replaces passed every value assertion it had.
+    let h = spawn("cphandle");
+    let mut c = Client::connect(&h);
+    c.handshake(false);
+
+    let cp = c.ok("emulator/checkpoint", json!({"label": "handle"}));
+    assert!(
+        cp["id"].is_string(),
+        "emulator/checkpoint result `id` must be a JSON string, got {}",
+        cp["id"]
+    );
+    let id = cp["id"].as_str().unwrap().to_string();
+    assert!(!id.is_empty(), "`#/$defs/handle` is minLength 1");
+
+    let entry = c.ok("emulator/checkpoint_list", json!({}))["checkpoints"][0].clone();
+    assert!(
+        entry["id"].is_string(),
+        "checkpoint_list entry `id` must be a JSON string, got {}",
+        entry["id"]
+    );
+    assert_eq!(entry["id"], json!(&id), "and it is the same handle");
+
+    // The `-32005` payload echoes it as a string too.
+    let e = c.err("emulator/restore", json!({"id": "no-such-handle"}));
+    assert_eq!(e["code"], json!(-32005));
+    assert!(
+        e["data"]["id"].is_string(),
+        "error.data.id must be a JSON string, got {}",
+        e["data"]["id"]
+    );
+
+    // And the handle round-trips: handed straight back, unexamined, it works.
+    c.ok("emulator/restore", json!({ "id": &id }));
+    assert_eq!(
+        c.ok("emulator/checkpoint_drop", json!({ "id": &id }))["removed"],
+        json!(1)
+    );
+}
+
+#[test]
+fn a_bare_number_id_is_refused_because_typing_one_is_the_arithmetic_d9_forbids() {
+    // **Deliberately unlike the `cursor`, which accepts both spellings.** A cursor is only ever
+    // round-tripped, so a number-typed field in a client's own storage is a plausible accident and
+    // refusing a token we ourselves issued would punish the client for our bug. An `id` is the handle a
+    // human hand-types into the next call, and typing `{"id": 3}` **is** the arithmetic-on-a-handle
+    // that D9 category 4 exists to forbid — the client looked at the handle, decided it was the number
+    // three, and wrote it down as one. Accepting that would reward the forbidden usage and make it
+    // invisible until the day ids stop looking like small integers. §8 item 16 names why the
+    // strictness is affordable now: this surface has no clients yet.
+    let h = spawn("cpnumid");
+    let mut c = Client::connect(&h);
+    c.handshake(false);
+
+    let id = take(&mut c, None);
+    let numeric: u64 = id
+        .parse()
+        .expect("this server happens to spell ids in decimal");
+
+    // The very handle that works as a string is refused as a number — by both methods that take one.
+    assert_eq!(
+        c.err("emulator/restore", json!({ "id": numeric }))["code"],
+        json!(-32602),
+        "a bare-number `id` is a shape error, not an unknown checkpoint"
+    );
+    assert_eq!(
+        c.err("emulator/checkpoint_drop", json!({ "id": numeric }))["code"],
         json!(-32602)
     );
+    // Refused loudly, never a silent no-op: the checkpoint is still there.
+    assert_eq!(
+        c.ok("emulator/checkpoint_list", json!({}))["total"],
+        json!(1)
+    );
+
+    // Every other wrong type is refused the same way.
+    for bad in [json!(true), json!(1.5), json!(null), json!([1]), json!({})] {
+        assert_eq!(
+            c.err("emulator/restore", json!({ "id": bad.clone() }))["code"],
+            json!(-32602),
+            "`id` of {bad} must be refused"
+        );
+    }
+
+    // ...and the string spelling of the same handle still works, so this is a type rule, not a break.
+    c.ok("emulator/restore", json!({ "id": &id }));
 }
 
 // ------------------------------------------------------------------ §6.1: server-assigned ids
@@ -342,15 +460,19 @@ fn ids_are_server_assigned_never_client_proposed_and_labels_are_carried_verbatim
     c.handshake(false);
 
     // A client-proposed id is ignored: the server assigns, so two clients cannot collide.
-    let a = c.ok("emulator/checkpoint", json!({"id": 4242}))["id"]
-        .as_u64()
-        .unwrap();
+    let a = c.ok("emulator/checkpoint", json!({"id": "4242"}))["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let b = take(&mut c, None);
-    assert_ne!(a, 4242, "the server assigns ids, the client never proposes");
+    assert_ne!(
+        a, "4242",
+        "the server assigns ids, the client never proposes"
+    );
     assert_ne!(a, b, "ids are unique");
 
     // A dropped id is never handed out again — an id must not quietly start meaning something else.
-    c.ok("emulator/checkpoint_drop", json!({"id": b}));
+    c.ok("emulator/checkpoint_drop", json!({ "id": &b }));
     let d = take(&mut c, None);
     assert_ne!(d, b, "a retired id must never be reused");
 
@@ -362,7 +484,7 @@ fn ids_are_server_assigned_never_client_proposed_and_labels_are_carried_verbatim
         .as_array()
         .unwrap()
         .iter()
-        .find(|e| e["id"] == json!(l))
+        .find(|e| e["id"] == json!(&l))
         .unwrap()
         .clone();
     assert_eq!(entry["label"], json!(weird));
@@ -371,7 +493,7 @@ fn ids_are_server_assigned_never_client_proposed_and_labels_are_carried_verbatim
         .as_array()
         .unwrap()
         .iter()
-        .find(|e| e["id"] == json!(a))
+        .find(|e| e["id"] == json!(&a))
         .unwrap();
     assert!(unlabelled.get("label").is_none());
     assert!(unlabelled["frame"].is_number());
@@ -399,15 +521,15 @@ fn checkpoint_list_is_bounded_cursored_and_flags_truncation() {
     assert_eq!(empty["truncated"], json!(false));
     assert!(empty.get("cursor").is_none(), "no cursor when none remain");
 
-    let ids: Vec<u64> = (0..3)
+    let ids: Vec<String> = (0..3)
         .map(|i| take(&mut c, Some(&format!("s{i}"))))
         .collect();
 
     let page = c.ok("emulator/checkpoint_list", json!({"limit": 2}));
     let items = page["checkpoints"].as_array().unwrap();
     assert_eq!(items.len(), 2);
-    assert_eq!(items[0]["id"], json!(ids[0]));
-    assert_eq!(items[1]["id"], json!(ids[1]));
+    assert_eq!(items[0]["id"], json!(&ids[0]));
+    assert_eq!(items[1]["id"], json!(&ids[1]));
     assert_eq!(page["total"], json!(3));
     assert_eq!(page["truncated"], json!(true));
     assert_eq!(
@@ -424,7 +546,7 @@ fn checkpoint_list_is_bounded_cursored_and_flags_truncation() {
     );
     let items = rest["checkpoints"].as_array().unwrap();
     assert_eq!(items.len(), 1);
-    assert_eq!(items[0]["id"], json!(ids[2]));
+    assert_eq!(items[0]["id"], json!(&ids[2]));
     assert_eq!(rest["truncated"], json!(false));
     assert!(rest.get("cursor").is_none());
 
@@ -454,7 +576,7 @@ fn the_cursor_is_emitted_as_a_string_and_accepted_as_either_shape() {
     let mut c = Client::connect(&h);
     c.handshake(false);
 
-    let ids: Vec<u64> = (0..3)
+    let ids: Vec<String> = (0..3)
         .map(|i| take(&mut c, Some(&format!("s{i}"))))
         .collect();
 
@@ -472,12 +594,21 @@ fn the_cursor_is_emitted_as_a_string_and_accepted_as_either_shape() {
         "emulator/checkpoint_list",
         json!({"cursor": token, "limit": 1}),
     );
-    assert_eq!(page_ids(&from_string), vec![ids[1]]);
+    assert_eq!(page_ids(&from_string), vec![ids[1].clone()]);
 
     // --- parse accepts a bare number, for clients written against the older spelling ----------
+    // The number is derived from the *token the server just issued*, not from a checkpoint id: that is
+    // exactly the accident the leniency exists for — a client that round-tripped our own token through
+    // a number-typed field of its own storage. (The `id` handle gets no such fallback; see
+    // `a_bare_number_id_is_refused_because_typing_one_is_the_arithmetic_d9_forbids`.)
+    let legacy_number: u64 = token
+        .as_str()
+        .unwrap()
+        .parse()
+        .expect("this server spells its cursor tokens as decimal, which is what made the old shape a number");
     let from_number = c.ok(
         "emulator/checkpoint_list",
-        json!({"cursor": ids[0], "limit": 1}),
+        json!({"cursor": legacy_number, "limit": 1}),
     );
     assert_eq!(
         page_ids(&from_number),
@@ -541,22 +672,25 @@ fn a_drop_between_two_pages_never_skips_a_live_checkpoint() {
     let n = cap(&init) as usize;
     assert!(n >= 5, "this test needs a cap of at least 5, got {n}");
 
-    let ids: Vec<u64> = (0..n)
+    let ids: Vec<String> = (0..n)
         .map(|i| take(&mut c, Some(&format!("p{i}"))))
         .collect();
 
     // Drop the first slot up front so a positional cursor and an id cursor cannot coincide by accident.
     assert_eq!(
-        c.ok("emulator/checkpoint_drop", json!({"id": ids[0]}))["removed"],
+        c.ok("emulator/checkpoint_drop", json!({ "id": &ids[0] }))["removed"],
         json!(1)
     );
 
     let p1 = c.ok("emulator/checkpoint_list", json!({"limit": 3}));
-    assert_eq!(page_ids(&p1), vec![ids[1], ids[2], ids[3]]);
+    assert_eq!(
+        page_ids(&p1),
+        vec![ids[1].clone(), ids[2].clone(), ids[3].clone()]
+    );
     assert_eq!(p1["truncated"], json!(true));
     assert_eq!(
         p1["cursor"],
-        json!(ids[3].to_string()),
+        json!(&ids[3]),
         "`cursor` must stand for the id to resume after, not a Vec position"
     );
 
@@ -564,7 +698,7 @@ fn a_drop_between_two_pages_never_skips_a_live_checkpoint() {
     let mut b = Client::connect(&h);
     b.handshake(false);
     assert_eq!(
-        b.ok("emulator/checkpoint_drop", json!({"id": ids[1]}))["removed"],
+        b.ok("emulator/checkpoint_drop", json!({ "id": &ids[1] }))["removed"],
         json!(1)
     );
 
@@ -613,13 +747,13 @@ fn a_cursor_whose_checkpoints_are_all_gone_is_an_empty_page_not_a_hard_error() {
     let h = spawn("cpstale");
     let mut c = Client::connect(&h);
     c.handshake(false);
-    let ids: Vec<u64> = (0..3)
+    let ids: Vec<String> = (0..3)
         .map(|i| take(&mut c, Some(&format!("s{i}"))))
         .collect();
 
     let p1 = c.ok("emulator/checkpoint_list", json!({"limit": 2}));
     let cursor = p1["cursor"].clone();
-    assert_eq!(cursor, json!(ids[1].to_string()));
+    assert_eq!(cursor, json!(&ids[1]));
 
     c.ok("emulator/checkpoint_drop", json!({"all": true}));
     let p2 = c.ok("emulator/checkpoint_list", json!({"cursor": cursor}));
@@ -644,14 +778,14 @@ fn each_listed_slot_reports_its_own_coordinate_and_its_own_size() {
     let mut c = Client::connect(&h);
     c.handshake(false);
 
-    let mut expected: Vec<(u64, u64, u64, u64)> = Vec::new(); // id, frame, mclk, bytes
+    let mut expected: Vec<(String, u64, u64, u64)> = Vec::new(); // id, frame, mclk, bytes
     for (i, advance) in [0u64, 3, 4].iter().enumerate() {
         if *advance > 0 {
             c.ok("emulator/run_frames", json!({"frames": advance}));
         }
         let r = c.ok("emulator/checkpoint", json!({"label": format!("c{i}")}));
         expected.push((
-            r["id"].as_u64().unwrap(),
+            r["id"].as_str().unwrap().to_string(),
             r["frame"].as_u64().unwrap(),
             r["mclk"].as_u64().unwrap(),
             r["bytes"].as_u64().unwrap(),
@@ -672,7 +806,7 @@ fn each_listed_slot_reports_its_own_coordinate_and_its_own_size() {
     let items = list["checkpoints"].as_array().unwrap();
     assert_eq!(items.len(), 3);
     for (e, (id, frame, mclk, bytes)) in items.iter().zip(expected) {
-        assert_eq!(e["id"], json!(id));
+        assert_eq!(e["id"], json!(&id));
         assert_eq!(e["frame"], json!(frame), "entry {id} has the wrong frame");
         assert_eq!(e["mclk"], json!(mclk), "entry {id} has the wrong mclk");
         assert_eq!(e["bytes"], json!(bytes), "entry {id} has the wrong size");
@@ -702,7 +836,7 @@ fn drop_all_clears_every_slot_and_reports_how_many_went() {
         json!(0)
     );
     assert_eq!(
-        c.ok("emulator/checkpoint_drop", json!({"id": 12345}))["removed"],
+        c.ok("emulator/checkpoint_drop", json!({"id": "12345"}))["removed"],
         json!(0)
     );
 
@@ -712,7 +846,7 @@ fn drop_all_clears_every_slot_and_reports_how_many_went() {
         json!(-32602)
     );
     assert_eq!(
-        c.err("emulator/checkpoint_drop", json!({"id": 1, "all": true}))["code"],
+        c.err("emulator/checkpoint_drop", json!({"id": "1", "all": true}))["code"],
         json!(-32602)
     );
 }
@@ -868,7 +1002,7 @@ fn restore_brings_the_held_pads_back_with_the_machine() {
     let r = c.ok("emulator/hold", json!({"port": 0, "buttons": ["a"]}));
     assert_eq!(r["held"], json!(["a"]));
 
-    c.ok("emulator/restore", json!({"id": id}));
+    c.ok("emulator/restore", json!({ "id": &id }));
     // A no-op `hold` reports the live set without changing it.
     let r = c.ok("emulator/hold", json!({"port": 0, "buttons": []}));
     assert_eq!(
@@ -913,7 +1047,7 @@ fn restore_brings_the_symbol_table_back_with_the_cartridge_it_was_bound_to() {
     );
 
     // Back to the coordinate where listing A was loaded: the table that was bound there comes back.
-    c.ok("emulator/restore", json!({"id": with_a}));
+    c.ok("emulator/restore", json!({ "id": &with_a }));
     let s = c.ok("emulator/status", json!({}));
     assert_eq!(
         s["symbolCount"],
@@ -929,7 +1063,7 @@ fn restore_brings_the_symbol_table_back_with_the_cartridge_it_was_bound_to() {
 
     // And back to before any listing existed: the table goes away with the machine, rather than
     // outliving it and answering for a cartridge state that is gone.
-    c.ok("emulator/restore", json!({"id": clean}));
+    c.ok("emulator/restore", json!({ "id": &clean }));
     let s = c.ok("emulator/status", json!({}));
     assert_eq!(s["symbolCount"], json!(0));
     assert_eq!(s["symbolsPath"], json!(null));
@@ -955,6 +1089,6 @@ fn checkpoints_are_shared_across_connections_to_one_server() {
     let mut b = Client::connect(&h);
     b.handshake(false);
     let list = b.ok("emulator/checkpoint_list", json!({}));
-    assert_eq!(list["checkpoints"][0]["id"], json!(id));
-    b.ok("emulator/restore", json!({"id": id}));
+    assert_eq!(list["checkpoints"][0]["id"], json!(&id));
+    b.ok("emulator/restore", json!({ "id": &id }));
 }
