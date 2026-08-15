@@ -14,6 +14,7 @@
 //! NTSC frame.
 
 use crate::bus::{BusEvent, BusEventSink, BusOp};
+use crate::synth::console_filter::{ConsoleModel, ConsoleOutputFilter};
 use crate::synth::sn76489::Sn76489;
 use crate::synth::ym2612_synth::Ym2612Synth;
 use crate::system::MCLK_PER_FRAME;
@@ -57,11 +58,26 @@ pub struct AudioSink {
     /// currently being flushed. [`Self::on_step_boundary`] drains every bucket `< frame`, so the map holds
     /// only 1-2 open frames.
     pending: BTreeMap<u64, Vec<(u32, BusEvent)>>,
+    /// The console's analog output stage (SY-6b), applied to the FINAL mix — FM + PSG + DAC — because on
+    /// hardware the RC network sits downstream of everything. Defaults to the *unfiltered* revision, so
+    /// the out-of-the-box render is bit-identical to the pre-SY-6b output until a revision is chosen.
+    console_filter: ConsoleOutputFilter,
 }
 
 impl AudioSink {
     /// A fresh sink producing `sample_rate` Hz stereo `i16`. Use [`DEFAULT_SAMPLE_RATE`] for 44.1 kHz.
+    ///
+    /// The console output stage defaults to [`ConsoleModel::Unfiltered`], so this render is bit-identical
+    /// to the pre-SY-6b output. The cutoff is genuinely
+    /// revision-dependent (see [`ConsoleModel`]), so the revision to ship is a selection to be made by
+    /// ear, not a number to bake in here. Use [`Self::with_console_model`] or
+    /// [`Self::set_console_model`] to pick one.
     pub fn new(sample_rate: u32) -> Self {
+        Self::with_console_model(sample_rate, ConsoleModel::default())
+    }
+
+    /// As [`Self::new`], but selecting which board revision's analog output stage to model.
+    pub fn with_console_model(sample_rate: u32, model: ConsoleModel) -> Self {
         Self {
             sample_rate,
             samples_per_frame: sample_rate / 60,
@@ -72,7 +88,19 @@ impl AudioSink {
             last_frame: None,
             cur_frame: 0,
             pending: BTreeMap::new(),
+            console_filter: ConsoleOutputFilter::new(model, sample_rate),
         }
+    }
+
+    /// Swap the modelled output stage mid-run (including to the unfiltered revision). The filter memory
+    /// is cleared, so the change does not drag the old stage's state along.
+    pub fn set_console_model(&mut self, model: ConsoleModel) {
+        self.console_filter = ConsoleOutputFilter::new(model, self.sample_rate);
+    }
+
+    /// Which board revision's output stage is currently modelled.
+    pub fn console_model(&self) -> ConsoleModel {
+        self.console_filter.model()
     }
 
     /// The output sample rate (Hz).
@@ -180,8 +208,15 @@ impl AudioSink {
             let psg = ((self.psg.next_sample() as i64 * PSG_LEVEL_Q15) >> 15) as i32;
             // FM carries its own stereo pan.
             let (fm_l, fm_r) = self.fm.next_sample();
-            let l = (psg + fm_l).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-            let r = (psg + fm_r).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+            // SY-6b: the console's analog output stage sits downstream of the whole mix, so it is applied
+            // here — after the FM+PSG+DAC sum and BEFORE the clamp, so the filter sees the true mix rather
+            // than an already-clipped one. For the unfiltered revision this is the exact identity, which
+            // keeps the default render bit-identical (the f64 round-trip of an i32 mix is lossless).
+            let (fl, fr) = self
+                .console_filter
+                .process((psg + fm_l) as f64, (psg + fm_r) as f64);
+            let l = (fl.round() as i32).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+            let r = (fr.round() as i32).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
             self.out.push(l);
             self.out.push(r);
         }
@@ -273,6 +308,72 @@ mod tests {
         sink.on_step_boundary(0, 1); // one frame elapsed → 735 stereo samples = 1470 i16
         assert_eq!(sink.samples().len(), 1470);
         assert_eq!(sink.len_frames(), 735);
+    }
+
+    /// Render a fixed PSG tone through a given console model, returning the frame's PCM.
+    fn render_tone(model: ConsoleModel) -> Vec<i16> {
+        let mut sink = AudioSink::with_console_model(44_100, model);
+        sink.on_step_boundary(0, 0);
+        sink.on_event(write_event(0x7F11, 0x8E));
+        sink.on_event(write_event(0x7F11, 0x0F));
+        sink.on_event(write_event(0xC0_0011, 0x90));
+        sink.on_step_boundary(0, 1);
+        sink.samples().to_vec()
+    }
+
+    /// SY-6b: the sink defaults to the UNFILTERED output stage, and that path is byte-for-byte the
+    /// pre-SY-6b render. This is the guarantee that adding the filter changed nothing by default.
+    #[test]
+    fn default_console_model_is_unfiltered_and_byte_identical() {
+        assert_eq!(
+            AudioSink::new(44_100).console_model(),
+            ConsoleModel::Unfiltered,
+            "the shipped default must not silently filter"
+        );
+
+        // `AudioSink::new` must render exactly what the explicitly-unfiltered sink renders.
+        let mut default_sink = AudioSink::new(44_100);
+        default_sink.on_step_boundary(0, 0);
+        default_sink.on_event(write_event(0x7F11, 0x8E));
+        default_sink.on_event(write_event(0x7F11, 0x0F));
+        default_sink.on_event(write_event(0xC0_0011, 0x90));
+        default_sink.on_step_boundary(0, 1);
+        assert_eq!(
+            default_sink.samples(),
+            render_tone(ConsoleModel::Unfiltered).as_slice(),
+            "the default path must be byte-identical to the unfiltered path"
+        );
+    }
+
+    /// SY-6b: selecting a filtered revision actually changes the rendered audio, and the two revisions
+    /// differ from each other — so the selector is really wired to the mix, not merely stored.
+    #[test]
+    fn selecting_a_console_model_changes_the_render() {
+        let raw = render_tone(ConsoleModel::Unfiltered);
+        let va0 = render_tone(ConsoleModel::Model1Va0Va2);
+        let va3 = render_tone(ConsoleModel::Model1Va3Va6);
+
+        assert_eq!(raw.len(), va0.len());
+        assert_ne!(raw, va0, "VA0-VA2 must filter the mix");
+        assert_ne!(va0, va3, "the two revisions must differ from each other");
+
+        // The tone is well above both cutoffs, so each filtered render must be quieter than raw, and
+        // the darker board must be the quieter of the two.
+        let energy = |v: &[i16]| v.iter().map(|&s| (s as i64) * (s as i64)).sum::<i64>();
+        assert!(energy(&va0) < energy(&raw), "filtering must attenuate");
+        assert!(
+            energy(&va3) < energy(&va0),
+            "the VA3-VA6 board is darker than VA0-VA2"
+        );
+    }
+
+    /// Swapping the model mid-run takes effect on subsequent frames.
+    #[test]
+    fn set_console_model_takes_effect() {
+        let mut sink = AudioSink::with_console_model(44_100, ConsoleModel::Unfiltered);
+        assert_eq!(sink.console_model(), ConsoleModel::Unfiltered);
+        sink.set_console_model(ConsoleModel::Model1Va3Va6);
+        assert_eq!(sink.console_model(), ConsoleModel::Model1Va3Va6);
     }
 
     /// PSG writes routed through `on_event` reach the synth and produce non-silent audio.
