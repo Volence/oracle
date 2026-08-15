@@ -4,10 +4,13 @@
 
 #![allow(dead_code)]
 
+pub mod schema;
+
 use oracle_aether::engine::EngineConfig;
 use oracle_aether::server::{Machine, Server, ServerConfig, ServerHandle};
 use oracle_core::system::System;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -49,6 +52,13 @@ pub struct Client {
     reader: BufReader<UnixStream>,
     writer: UnixStream,
     next_id: i64,
+    /// The method each outstanding request asked for, keyed by the request's `id` rendered as JSON.
+    ///
+    /// This is what lets [`Client::recv`] — the single funnel for every line the server sends — pick the
+    /// right `methods.<name>.result` schema for a reply it is only handed *after* the fact. Populated by
+    /// both [`Client::call`] and [`Client::send_raw`]: many tests write the request line by hand, and a
+    /// reply the harness cannot attribute to a method gets envelope validation only.
+    pending: HashMap<String, String>,
 }
 
 impl Client {
@@ -63,6 +73,7 @@ impl Client {
                         reader: BufReader::new(s.try_clone().unwrap()),
                         writer: s,
                         next_id: 1,
+                        pending: HashMap::new(),
                     };
                 }
                 Err(e) if std::time::Instant::now() < deadline => {
@@ -74,18 +85,47 @@ impl Client {
         }
     }
 
+    /// Write one line verbatim.
+    ///
+    /// The line is **not** validated against the schema on its way out, and that is a decision rather
+    /// than an omission — see the module doc on `common::schema`. Several tests deliberately send
+    /// malformed params to assert `-32602`, so outgoing validation would need a per-call opt-out at every
+    /// such site; the server, not the test client, is the conformance subject.
+    ///
+    /// It is still *parsed*, purely to learn `id -> method` for a well-formed request, so a hand-written
+    /// request gets its reply checked against the right per-method result schema.
     pub fn send_raw(&mut self, line: &str) {
+        if let Ok(v) = serde_json::from_str::<Value>(line) {
+            if let (Some(id), Some(m)) = (v.get("id"), v.get("method").and_then(Value::as_str)) {
+                if !id.is_null() {
+                    self.pending.insert(id.to_string(), m.to_string());
+                }
+            }
+        }
         self.writer.write_all(line.as_bytes()).unwrap();
         self.writer.write_all(b"\n").unwrap();
         self.writer.flush().unwrap();
     }
 
     /// Read one NDJSON line as JSON. Panics on EOF or timeout — a hung transport is a test failure.
+    ///
+    /// **This is the single funnel for every line the server sends, and therefore where contract §8
+    /// item 15 lands**: every line is validated against the schema here, so no test can receive an
+    /// off-contract shape without failing. See `common::schema` for what that covers and what it
+    /// structurally cannot.
     pub fn recv(&mut self) -> Value {
         let mut line = String::new();
         let n = self.reader.read_line(&mut line).expect("read");
         assert!(n > 0, "connection closed while a reply was expected");
-        serde_json::from_str(&line).unwrap_or_else(|e| panic!("bad JSON on the wire: {e}: {line}"))
+        let v: Value = serde_json::from_str(&line)
+            .unwrap_or_else(|e| panic!("bad JSON on the wire: {e}: {line}"));
+        let method = v
+            .get("id")
+            .filter(|i| !i.is_null())
+            .and_then(|i| self.pending.get(&i.to_string()))
+            .cloned();
+        schema::assert_incoming(&v, method.as_deref());
+        v
     }
 
     /// Read lines until one has an `id` (i.e. skip any events queued ahead of the reply).
