@@ -23,14 +23,31 @@ use std::collections::BTreeMap;
 /// The canonical output sample rate for SY-1 (Hz).
 pub const DEFAULT_SAMPLE_RATE: u32 = 44_100;
 
-/// Post-mix PSG gain in Q15 — **mix knob (by-ear tunable).** The SN76489
-/// [`VOL_TABLE`](crate::synth::sn76489) peaks at 4000/channel and SY-1/SY-2 summed the PSG into the mix at
-/// that full amplitude with **no scale**, which made the PSG (tones *and* the noise/cymbal channel) far too
-/// loud next to the FM anchor in real playback. This is the third per-chip mix-level knob, symmetric with
-/// [`FM_LEVEL_Q15`](crate::synth::ym2612_synth) and `DAC_SCALE`: it multiplies the summed PSG sample before
-/// it enters the mix. Calibrated so our per-chip RMS matches the vgm2wav reference **PSG:FM ≈ 0.28** ratio
-/// (a full-scale PSG tone was ~3.5× too loud relative to FM at unity; `9416/32768 ≈ 0.287` brings it in).
-const PSG_LEVEL_Q15: i64 = 9_416;
+/// Post-mix PSG gain in Q15 — **reference-derived, no longer a by-ear knob.** The SN76489
+/// [`VOL_TABLE`](crate::synth::sn76489) peaks at 4000/channel, and this multiplies the summed PSG sample
+/// before it enters the mix.
+///
+/// Unlike the FM/DAC levels this one has **no die-level ground truth** — the PSG and the YM2612 are summed
+/// in the *analog* domain, so the ratio is a property of the board (Nemesis: it "varies by console revision
+/// and even unit to unit"). What the emulators agree on, in full-scale PSG : full-scale FM:
+/// - **Genesis Plus GX** `core/sound/psg.c`: `#define PSG_MAX_VOLUME 2800`, under the comment "*roughly
+///   adjusted to match VA4 MD1 PSG/FM balance with 1.5x amplification of PSG output*" (`psg_preamp = 150`,
+///   `fm_preamp = 100`) → **−15.4 dB**. This is the only constant in any of these codebases pinned to a
+///   named board.
+/// - **Exodus** (`Devices/SN76489/SN76489.cpp`): the four channels are averaged then scaled by `32767/6`,
+///   the same `1/6` its YM2612 core applies per channel → **−15.6 dB**.
+/// - TmEE's tooling divides by 6.4 → −16.1 dB. **BlastEm** (`psg.c` `PSG_VOL_DIV 14` vs `ym2612.c`
+///   `volume_mult 79 / volume_div 120`) → −16.9 dB. **jgenesis** is the hot outlier at −13.0 dB.
+///
+/// So: a ~4 dB spread clustered on **≈ ÷6 (−15.5 dB)**, which is the value taken here. Six FM channels at
+/// their 9-bit clip fill the `i16` range, so full-scale FM is 32768 and the whole PSG at attenuation 0 gets
+/// `32768/6 ≈ 5461`; one of the four channels is `5461/4 ≈ 1365`, i.e. `1365/4000 · 32768 ≈ 11185` in Q15.
+/// Equivalently: the entire PSG is as loud as one FM channel, which is also where Exodus and GPGX land.
+///
+/// The pre-SY-7 value `9416` was calibrated to a `vgm2wav` render's PSG:FM ratio, but libvgm applies a
+/// content-dependent `NormalizeOverallVolume` ×2 and a `_CHIP_VOLUME` table (`0x80` SN vs `0x100` YM), so
+/// that render's balance is a player mixing choice rather than a measurement.
+const PSG_LEVEL_Q15: i64 = 11_185;
 
 /// A [`BusEventSink`] that renders the machine's PSG register writes to interleaved stereo `i16` PCM.
 pub struct AudioSink {
@@ -429,6 +446,120 @@ mod tests {
         assert!(
             pcm.iter().any(|&s| s != 0),
             "an FM carrier was keyed on but the frame was silent"
+        );
+    }
+
+    /// Render `frames` frames after running `program`, and return the peak absolute sample.
+    fn peak_of(program: impl FnOnce(&mut AudioSink), frames: u64) -> i32 {
+        let mut sink = AudioSink::new(44_100);
+        sink.on_step_boundary(0, 0);
+        program(&mut sink);
+        for f in 1..=frames {
+            sink.on_step_boundary(0, f);
+        }
+        sink.samples()
+            .iter()
+            .map(|&s| (s as i32).abs())
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Program FM channel 0 on algorithm 7 (all four operators are carriers) with `carriers` of them at
+    /// TL=0 and the rest muted, keyed on at ~440 Hz.
+    fn program_alg7(sink: &mut AudioSink, carriers: usize) {
+        let mut fm = |reg: u8, val: u8| {
+            sink.on_event(write_event(0x4000, reg));
+            sink.on_event(write_event(0x4001, val));
+        };
+        fm(0x22, 0x00); // LFO off
+        fm(0x2B, 0x00); // DAC off
+        fm(0xB0, 0x07); // feedback 0, algorithm 7
+        fm(0xB4, 0xC0); // pan L+R
+        for s in 0..4u8 {
+            let off = 4 * s;
+            fm(0x30 + off, 0x01); // DT=0 MUL=1
+            fm(
+                0x40 + off,
+                if (s as usize) < carriers { 0x00 } else { 0x7F },
+            );
+            fm(0x50 + off, 0x1F); // KS=0 AR=31
+            fm(0x60 + off, 0x00); // DR=0
+            fm(0x70 + off, 0x00); // SR=0
+            fm(0x80 + off, 0x0F); // SL=0 RR=15
+        }
+        fm(0xA4, 0x22);
+        fm(0xA0, 0x69);
+        fm(0x28, 0xF0); // key on all four operators, channel 0
+    }
+
+    /// SY-7: the three sources sit on ONE reference-derived scale. Both ymfm (`ym2612::generate`) and
+    /// Exodus's YM2612 core average the six channel slots onto a single output pin, so **one FM channel at
+    /// its 9-bit clip, the DAC at full swing, and all four PSG channels at attenuation 0 are the same
+    /// level**. This test pins that relationship, so a future by-ear tweak to any one knob cannot silently
+    /// break the mix balance.
+    #[test]
+    fn the_three_sources_share_one_reference_level() {
+        // One FM channel driven past its clip (4 full-scale carriers on algorithm 7).
+        let fm_clipped = peak_of(|s| program_alg7(s, 4), 40);
+        // The DAC held at 0x00 — the largest excursion an 8-bit unsigned sample can make from 0x80.
+        let dac_full = peak_of(
+            |s| {
+                s.on_event(write_event(0x4000, 0x2B));
+                s.on_event(write_event(0x4001, 0x80)); // DAC enable
+                s.on_event(write_event(0x4002, 0xB6));
+                s.on_event(write_event(0x4003, 0xC0)); // ch6 pan L+R
+                s.on_event(write_event(0x4000, 0x2A));
+                s.on_event(write_event(0x4001, 0x00));
+            },
+            8,
+        );
+        // All four PSG channels at attenuation 0, tones sharing one period so they sum in phase.
+        let psg_full = peak_of(
+            |s| {
+                for (tone_lo, tone_hi, vol) in
+                    [(0x8C, 0x1F, 0x90), (0xAC, 0x1F, 0xB0), (0xCC, 0x1F, 0xD0)]
+                {
+                    s.on_event(write_event(0x7F11, tone_lo));
+                    s.on_event(write_event(0x7F11, tone_hi));
+                    s.on_event(write_event(0x7F11, vol));
+                }
+                s.on_event(write_event(0x7F11, 0xE4)); // noise: white, tone-2 period
+                s.on_event(write_event(0x7F11, 0xF0)); // noise volume 0
+            },
+            40,
+        );
+
+        // Every source must land within 1 % of the shared level.
+        for (name, v) in [("dac", dac_full), ("psg", psg_full)] {
+            let ratio = v as f64 / fm_clipped as f64;
+            assert!(
+                (0.99..=1.01).contains(&ratio),
+                "{name} full scale ({v}) must match one clipped FM channel ({fm_clipped}); ratio {ratio:.4}"
+            );
+        }
+
+        // And six FM channels at the clip must land on the i16 range: the chip's own output scale is
+        // defined so the full multiplexed mix is exactly full scale. (The Q15 shift floors, so the extreme
+        // negative clip can sit a few LSB past `i16::MIN` — 0.05 % is the tolerance, not a licence to drift.)
+        let full_mix = 6 * fm_clipped;
+        assert!(
+            (32_752..=32_784).contains(&full_mix),
+            "six clipped FM channels should fill the i16 range, got {full_mix}"
+        );
+    }
+
+    /// SY-7: the 9-bit per-channel clip is real — piling four full-scale carriers onto one channel must
+    /// NOT make it ~4× louder than a single carrier, because the chip's channel DAC saturates first.
+    #[test]
+    fn a_channel_cannot_exceed_its_nine_bit_clip() {
+        let one = peak_of(|s| program_alg7(s, 1), 40);
+        let four = peak_of(|s| program_alg7(s, 4), 40);
+        assert!(one > 0 && four > 0, "both patches must sound");
+        let ratio = four as f64 / one as f64;
+        assert!(
+            ratio < 1.05,
+            "four carriers must clip to about one full-scale carrier, got {ratio:.3}× \
+             (an unclamped sum would be ~4×)"
         );
     }
 

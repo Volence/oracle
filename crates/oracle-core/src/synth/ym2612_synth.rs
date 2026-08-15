@@ -59,7 +59,7 @@
 //!
 //! - **DAC / PCM channel-6** (`$2A` stream, `$2B` enable). Each frame's ordered `$2A` bytes are placed at
 //!   their true sub-frame samples and held ([`Ym2612Synth::begin_frame`] + [`Ym2612Synth::dac_sample`]);
-//!   the 8-bit unsigned samples are centered on `0x80` and scaled by [`DAC_SCALE`]. While `$2B` bit7 is
+//!   the 8-bit unsigned samples are centered on `0x80` and scaled by [`DAC_SHIFT`]. While `$2B` bit7 is
 //!   set, FM channel 6 is muted and the PCM stream plays in its place.
 //! - **SY-6a**: the DAC is summed inside [`Ym2612Synth::tick_native`], in channel 6's slot, rather than
 //!   added after the resample at the output rate. That matches the chip (its output is time-multiplexed
@@ -67,9 +67,28 @@
 //!   linear-interpolation resampler as the FM, replacing a raw output-grid staircase whose step edges
 //!   folded energy back into 15-22 kHz.
 //!
+//! ## Output level (SY-7)
+//!
+//! The three per-chip levels are **derived from the references, not tuned by ear**. Each channel's carrier
+//! sum saturates at the chip's 9-bit channel accumulator ([`CHANNEL_CLIP_MIN`]) and the six channel slots
+//! are averaged onto one output pin, exactly as ymfm's `ym2612::generate` and Exodus's YM2612 core both
+//! model it. The
+//! consequence is that one FM channel at its clip, the DAC at full swing, and the whole PSG at full
+//! attenuation-0 all land on the *same* level (~5460), and six FM channels at the clip fill the `i16` range
+//! (100 % FS). See [`CHANNEL_CLIP_MIN`], [`FM_LEVEL_Q15`], [`DAC_SHIFT`] and `audio_sink::PSG_LEVEL_Q15`.
+//!
 //! ## Deferred to later SY-3 slices (documented inaccuracies, not bugs)
 //!
 //! - **SSG-EG** (`$90`) / **CSM / ch3-special** (SY-3f). Sub-frame `$2A` timing is SY-4.
+//! - **9-bit channel quantization.** ymfm and Nuked quantize each channel to 9 bits (`>> 5`) before the
+//!   chip's output scale; we saturate at the same bound but keep the full operator-unit precision. That is
+//!   strictly *more* resolution than the chip has, so it cannot change the level — only the (unmodelled)
+//!   quantization noise floor.
+//! - **Saturation point within a multi-carrier algorithm.** Nuked and jsgroth saturate the accumulator
+//!   *after each carrier is added*; we saturate the finished sum. The two agree whenever the running sum
+//!   never leaves the 9-bit range and come apart only when an intermediate partial sum would have clipped
+//!   and a later carrier pulls it back — a timbre difference on algorithms 4-7, not a level one, since both
+//!   bound the channel identically.
 //!
 //! The synth is integer/float-based — it is a **synthesis** helper, never part of `System`, `state_hash`,
 //! or `export_state`, so it carries no currency obligations.
@@ -203,22 +222,77 @@ fn opn_lfo_pm_phase_adjustment(fnum_bits: u32, fms: u32, pm: i32) -> i32 {
     }
 }
 
-/// Post-mix FM gain in Q15 — **mix knob (by-ear tunable) and the mix ANCHOR.** One full-scale operator
-/// (`attenuation_to_volume(0)` = `0x1FE8` = 8168) maps to `8168 · FM_LEVEL_Q15 >> 15 ≈ 3499`, matching
-/// SY-2's per-carrier ~3500 loudness. This is the anchor of the three per-chip mix-level knobs
-/// (`PSG_LEVEL_Q15` in `audio_sink.rs` and [`DAC_SCALE`] here are set *relative* to it to hit the vgm2wav
-/// reference PSG:FM and DAC:FM ratios). The mix-balance calibration left this value unchanged — FM/pitch/
-/// timbre already read as accurate; only PSG (down) and DAC (up) moved.
-const FM_LEVEL_Q15: i64 = 14_041;
+/// The OPN2's **9-bit per-channel intermediate clip**, expressed in operator-output units — the inclusive
+/// bounds `[CHANNEL_CLIP_MIN, CHANNEL_CLIP_MAX]` a channel's summed carriers are clamped to.
+///
+/// Each channel's carrier sum reaches a 9-bit channel accumulator, so it saturates there: a channel cannot
+/// get louder than one full-scale operator however many carriers an algorithm sums. Four references agree
+/// the accumulator is 9-bit:
+/// - **Nuked-OPN2** (die-shot derived), `OPN2_ChGenerate`: `add += fm_out[slot] >> 5;` then
+///   `if (sum > 255) sum = 255; else if (sum < -256) sum = -256;`
+/// - **jsgroth**, *Emulating the YM2612, Part 5*: "the carrier outputs are summed using a 9-bit accumulator
+///   rather than a 14-bit accumulator … equivalent for the single-carrier algorithms (0-3) but not for the
+///   multi-carrier algorithms (4-7)" (`CARRIER_MIN = -(1<<8)`, `CARRIER_MAX = (1<<8)-1`).
+/// - **BlastEm** `ym2612.c`: clamps to `[-0x1FF0, +0x1FE0]` = `[-256, +255] << 5`.
+/// - **ymfm** `ym2612::generate`: `m_fm.output(temp, /*rshift=*/5, /*clipmax=*/256, …)` under the comment
+///   "OPN2 is 9-bit with intermediate clipping" (ymfm's bound is one LSB wider on each side, `[-257, +256]`;
+///   we follow the die-derived three).
+///
+/// `[-256, +255] << 5` is `[-8192, +8191]` before the shift, which is the domain our carrier sum lives in.
+/// Empirically corroborated against Genesis Plus GX through `vgm2wav`: algorithm 7 with **one** TL=0
+/// operator peaks at 16336 and with **four** at 16384 — `8168` and `8192` in operator units, i.e. a clamp,
+/// not a 4× sum.
+///
+/// Without this clamp a dense patch renders up to 4× louder than the chip allows, and the whole FM gain has
+/// to be held below the reference scale to keep such patches inside the `i16` range. The clamp is what makes
+/// [`FM_LEVEL_Q15`]'s reference-derived value safe.
+const CHANNEL_CLIP_MIN: i32 = -8_192;
+/// Upper bound of the 9-bit channel accumulator — see [`CHANNEL_CLIP_MIN`].
+const CHANNEL_CLIP_MAX: i32 = 8_191;
 
-/// DAC/PCM (channel-6) output scale — **mix knob (by-ear tunable)**. The 8-bit unsigned sample is centered
-/// around `0x80` to a signed `[-128, 127]`, then multiplied by this constant. This is one of the three
-/// per-chip mix-level knobs (with [`FM_LEVEL_Q15`] here and `PSG_LEVEL_Q15` in `audio_sink.rs`): raising it
-/// makes the DAC drums louder relative to the FM anchor. Calibrated so our per-chip RMS matches the vgm2wav
-/// reference **DAC:FM ≈ 0.40** ratio (SY-3a shipped `28`, which sat one FM carrier low and left the drums
-/// too soft in real playback; `39` brings peak drum level to `128 · 39 = 4992`). While the DAC is on, FM ch6
-/// is muted, so the worst-case pre-clamp sum stays well inside the `i16` range — no clipping introduced.
-const DAC_SCALE: i32 = 39;
+/// Post-mix FM gain in Q15 — **reference-derived, no longer a by-ear knob.**
+///
+/// The chip drives ONE output pin from six channel slots in turn, so what reaches the analog stage is the
+/// *average* of the six 9-bit channel values, not their sum. ymfm's `ym3438::generate` (`ymfm_opn.cpp`)
+/// scales the six-channel sum by `(x * 128) / 6` = `x · 21.3333` per 9-bit unit, i.e. six channels at the
+/// 9-bit clip map onto exactly `i16` full scale. Exodus's independently written YM2612 core
+/// (`Devices/YM2612/YM2612.cpp`) does the same — `finalOutput += channelOutputNormalized / ChannelCount`
+/// then `* 32767` — under the comment "The DAC in the real YM2612 multiplexes the output from each of the 6
+/// channels … we calculate the average sample output instead."
+///
+/// (ymfm's discrete-`ym2612` path uses `· 8192/390` = `· 21.005` instead. The extra `64/65` renormalizes its
+/// `dac_discontinuity` model, which we do not implement, so the undistorted `128/6` is the right constant
+/// for us.)
+///
+/// Our channel value is in operator units, 32× the 9-bit domain, so the gain is `21.3333 / 32 = 2/3`, i.e.
+/// `21845` in Q15. A full-scale carrier maps to `8168 · 21845 >> 15 = 5445` — the same per-channel figure
+/// BlastEm's independently derived `volume_mult = 79 / volume_div = 120` produces — and a clipped channel to
+/// `8191 · 21845 >> 15 = 5460`, so six clipped channels fill the `i16` range exactly. That is by
+/// construction, not by luck.
+const FM_LEVEL_Q15: i64 = 21_845;
+
+/// DAC/PCM (channel-6) sample → **operator units**, so the PCM stream enters the mix in the same domain as
+/// an FM channel and rides the identical [`FM_LEVEL_Q15`] output scale.
+///
+/// The 8-bit unsigned byte is centered around `0x80` to a signed `[-128, 127]` and shifted left by this,
+/// which is exactly Genesis Plus GX's `ym2612.c` DAC load (`((int)v - 0x80) << 6`) and matches ymfm, which
+/// loads `$2A` as a 9-bit value (`(data ^ 0x80) << 1`) in the *channel* domain and feeds it through the
+/// identical chip scale. Both put DAC full swing on exactly one FM channel's clip: `128 << 6` = `8192`
+/// against [`CHANNEL_CLIP_MIN`]'s `-8192`, i.e. ~5461 in the output domain, and `2 · 21.3333 = 42.67` i16
+/// units per unit of `byte - 128`.
+///
+/// The pre-SY-7 scale (39 i16 units per unit) was calibrated against a `vgm2wav` render whose YM2612 device
+/// carried libvgm's content-dependent `NormalizeOverallVolume` ×2, which put the DAC ~3 dB hot relative to
+/// the FM.
+const DAC_SHIFT: u32 = 6;
+
+/// One DAC (`$2A`) byte's settled contribution to one output channel: into operator units via
+/// [`DAC_SHIFT`], then through the shared [`FM_LEVEL_Q15`] output scale. Used by the synth and by its tests
+/// so the two cannot drift apart.
+fn dac_output_level(byte: u8) -> i32 {
+    let units = (byte as i32 - 128) << DAC_SHIFT;
+    ((units as i64 * FM_LEVEL_Q15) >> 15) as i32
+}
 
 /// Length of the log-sin and exp/pow lookup tables (8-bit quarter-wave index).
 const TABLE_LEN: usize = 256;
@@ -694,8 +768,11 @@ impl Channel {
             op.advance(inc);
         }
 
-        // Scale the summed carriers to the output loudness and route through the stereo pan.
-        let s = ((carriers as i64 * FM_LEVEL_Q15) >> 15) as i32;
+        // Saturate the summed carriers at the chip's 9-bit channel accumulator before scaling — a channel
+        // cannot exceed one full-scale operator however many carriers the algorithm sums — then scale to the
+        // output loudness and route through the stereo pan.
+        let clipped = carriers.clamp(CHANNEL_CLIP_MIN, CHANNEL_CLIP_MAX);
+        let s = ((clipped as i64 * FM_LEVEL_Q15) >> 15) as i32;
         let l = if self.pan_l { s } else { 0 };
         let r = if self.pan_r { s } else { 0 };
         (l, r)
@@ -977,12 +1054,13 @@ impl Ym2612Synth {
     /// turns the resulting steps into a first-order reconstruction. The frame's ZOH
     /// track (built by [`Self::begin_frame`]) is indexed directly at the per-sample position: output sample
     /// `i` plays `dac_frame[i]`, i.e. the byte whose true sub-frame sample was `≤ i`. A frame with no `$2A`
-    /// writes holds [`Self::dac_last`]. The 8-bit unsigned byte is centered around `0x80` and scaled by
-    /// [`DAC_SCALE`], then routed through channel 6's `$B6` stereo pan.
+    /// writes holds [`Self::dac_last`]. The 8-bit unsigned byte enters the mix in the same operator-unit
+    /// domain as an FM channel ([`dac_output_level`]) and rides the identical [`FM_LEVEL_Q15`] output
+    /// scale, then is routed through channel 6's `$B6` stereo pan.
     fn dac_sample(&self) -> (i32, i32) {
         let idx = (self.dac_sample_idx as usize).min(self.dac_frame.len().saturating_sub(1));
         let byte = self.dac_frame.get(idx).copied().unwrap_or(self.dac_last);
-        let s = (byte as i32 - 128) * DAC_SCALE;
+        let s = dac_output_level(byte);
         let ch6 = &self.channels[5];
         let l = if ch6.pan_l { s } else { 0 };
         let r = if ch6.pan_r { s } else { 0 };
@@ -1403,8 +1481,8 @@ mod tests {
         fm.queue_dac(0, 0xC0); // 0xC0 - 128 = +64 → positive, placed at sample 0
         fm.queue_dac(734, 0x40); // 0x40 - 128 = -64 → negative, placed at the last sample
 
-        let high = (0xC0i32 - 128) * DAC_SCALE;
-        let low = (0x40i32 - 128) * DAC_SCALE;
+        let high = dac_output_level(0xC0);
+        let low = dac_output_level(0x40);
 
         fm.begin_frame(735);
         let (l0, r0) = fm.next_sample();
@@ -1476,7 +1554,7 @@ mod tests {
         for _ in 0..735 {
             samples.push(fm.next_sample().0);
         }
-        let sc = |b: u8| (b as i32 - 128) * DAC_SCALE;
+        let sc = dac_output_level;
 
         // Settled levels are exact.
         assert_eq!(samples[99], sc(0x90), "0x90 holds up to the next write");
@@ -1526,11 +1604,7 @@ mod tests {
         // Next frame: no $2A writes → the DAC holds 0xE0.
         fm.begin_frame(735);
         let (l, _r) = fm.next_sample();
-        assert_eq!(
-            l,
-            (0xE0i32 - 128) * DAC_SCALE,
-            "empty frame holds last DAC byte"
-        );
+        assert_eq!(l, dac_output_level(0xE0), "empty frame holds last DAC byte");
 
         // Disable the DAC → ch6 returns to (silent, unprogrammed) FM; the held value no longer sounds.
         // Since SY-6a the DAC is inside the resampled mix, so the output decays to silence across a
