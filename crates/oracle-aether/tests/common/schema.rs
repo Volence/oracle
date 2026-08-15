@@ -50,7 +50,7 @@
 //! legal member of the enum — while §3 and §8 item 13 say the value is `runFrames` and that `step` is a
 //! knowing mislabel. Nothing schema-shaped protects that rule. It has its own behavioural assertions in
 //! `tests/events.rs`; see the comment there. Read `docs/2026-08-15-schema-validator.md` for the full
-//! account of the blind spots, and the coverage split (the schema has a `result` for 8 of the 20 methods
+//! account of the blind spots, and the coverage split (the schema has a `result` for 9 of the 21 methods
 //! we advertise — `tests/schema_conformance.rs` prints and pins it).
 
 #![allow(dead_code)]

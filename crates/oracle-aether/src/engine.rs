@@ -27,6 +27,7 @@ use crate::outbound::Subscribers;
 use crate::rpc::{self, code, RpcError};
 use oracle_core::bus::{Fanout, StopWhen};
 use oracle_core::io::Pad;
+use oracle_core::render::{CandidateVerdict, Layer, PixelState};
 use oracle_core::scanline_capture::{Retain, ScanlineCapture};
 use oracle_core::symbols::{BindingFault, RomBinding, SymbolTable};
 use oracle_core::system::{System, MCLK_PER_FRAME, RAM_SIZE};
@@ -154,6 +155,11 @@ pub const METHODS: &[MethodSpec] = &[
         name: "emulator/read_vram",
         handler: Engine::read_vram,
         summary: "debug read of VDP VRAM",
+    },
+    MethodSpec {
+        name: "emulator/pixel_attribution",
+        handler: Engine::pixel_attribution,
+        summary: "why the dot at (x,y) is the colour it is: winner, cell/sprite, and the losing candidates",
     },
     MethodSpec {
         name: "emulator/state_hash",
@@ -967,6 +973,135 @@ impl Engine {
         }))
     }
 
+    /// **Why is the dot at (x,y) the colour it is** — `protocol.md` §6, adopted as CR-10.
+    ///
+    /// Three normative behaviours, all of which are decisions rather than accidents:
+    ///
+    /// * **It is a pure read**, so it does **not** call [`require_paused`](Engine::require_paused). §6's
+    ///   run-control state rule names the ops that mutate the timeline; a read mutates nothing, and the
+    ///   torn-instant hazard of sampling a free-running machine is what D11's envelope stamp already
+    ///   answers (`running: true` is the client's warning, and it is on every reply).
+    /// * **It answers about the VDP's state *now***. The core re-derives the scanline on every call and
+    ///   reads no framebuffer, so this and `emulator/screenshot` can legitimately disagree — and pausing
+    ///   does **not** reconcile them, because attribution is a whole-frame-state read by construction.
+    ///   On any ROM whose registers, CRAM or scroll moved mid-frame the two differ paused or not; the
+    ///   reconciliation path is per-scanline capture, not `pause`.
+    /// * **A dot outside the active display is refused** with `-32004`, carrying `width`/`height` in
+    ///   `error.data` so the client learns the bound from the refusal. The core is deliberately *total*
+    ///   there — it answers backdrop — which is right in-process and wrong on a wire: a client asking
+    ///   about a dot that does not exist would get a well-formed backdrop answer indistinguishable from a
+    ///   genuine backdrop dot. That is the silent-wrong-answer class this bus exists to prevent.
+    ///
+    /// Two cases that look like the third but are **not** errors, and must keep answering: a blanked
+    /// display, and the leftmost-column blank at `x < 8`. Those dots exist, and the backdrop genuinely is
+    /// what is shown. Both yield exactly one candidate.
+    ///
+    /// The reply's key set is **exactly** the schematized one — no surplus (the ruling's condition 4).
+    fn pixel_attribution(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let vdp = self.sys.vdp();
+        let (width, height) = vdp.active_display();
+        // The schema bounds the *params* at 0..=511 (the widest addressable value); the ACTIVE bound is
+        // the width/height reported below, and it is enforced separately so the two failures stay
+        // distinguishable: a nonsensical coordinate is -32602, an off-display one is -32004.
+        let coord = |field: &str| -> Result<u16, RpcError> {
+            let v = params
+                .get(field)
+                .ok_or_else(|| RpcError::invalid_params(format!("`{field}` is required")))?;
+            Ok(hex::parse_count(field, v, 0, 511)? as u16)
+        };
+        let x = coord("x")?;
+        let y = coord("y")?;
+        if x >= width || y >= height {
+            return Err(RpcError::new(
+                code::ADDRESS_OUT_OF_RANGE,
+                format!(
+                    "({x},{y}) is outside the active display ({width}x{height}) — the dot does not \
+                     exist, so there is nothing to attribute it to"
+                ),
+            )
+            .with_data(json!({"width": width, "height": height})));
+        }
+
+        let attr = vdp.pixel_attribution(x, y);
+        let mut out = json!({
+            "x": attr.x,
+            "y": attr.y,
+            "width": width,
+            "height": height,
+            "winner": layer_json(attr.winner),
+            "cramIndex": attr.cram_index,
+            "cramAddr": hex::addr(u32::from(attr.cram_index) * 2),
+            "rgb": {"r": attr.rgb.0, "g": attr.rgb.1, "b": attr.rgb.2},
+            "state": match attr.state {
+                PixelState::Shadow => "shadow",
+                PixelState::Normal => "normal",
+                PixelState::Highlight => "highlight",
+            },
+            "candidates": attr.candidates.iter().map(|c| {
+                let mut o = layer_json(c.layer);
+                o["opaque"] = json!(c.opaque);
+                o["priority"] = json!(c.priority);
+                o["cramIndex"] = json!(c.cram_index);
+                o["verdict"] = json!(match c.verdict {
+                    CandidateVerdict::Won => "won",
+                    CandidateVerdict::LostToPriority => "lostToPriority",
+                    CandidateVerdict::Transparent => "transparent",
+                    CandidateVerdict::Operator => "operator",
+                });
+                o
+            }).collect::<Vec<_>>(),
+        });
+
+        // `cell` is present iff the winner is a plane or the window; the core returns `None` for
+        // sprite/backdrop, so the iff is the core's own invariant rather than a second decision here.
+        if let Some(cell) = attr.cell {
+            out["cell"] = json!({
+                "tile": cell.tile,
+                "tileAddr": hex::addr(tile_addr(cell.tile)),
+                "palette": cell.palette,
+                "hflip": cell.hflip,
+                "vflip": cell.vflip,
+                "priority": cell.priority,
+            });
+        }
+        if let Layer::Sprite(index) = attr.winner {
+            let sprites = self.sys.vdp().sprites_decoded();
+            let s = sprites.get(usize::from(index)).ok_or_else(|| {
+                RpcError::new(
+                    code::INTERNAL_ERROR,
+                    format!(
+                        "the renderer named sprite {index}, which the SAT decode does not have"
+                    ),
+                )
+            })?;
+            let sat_addr = (self.sys.vdp().sat_base() as u32 + u32::from(index) * 8) & 0xFFFF;
+            let mut sp = json!({
+                "index": s.index,
+                "x": s.x,
+                "y": s.y,
+                "widthCells": s.width_cells,
+                "heightCells": s.height_cells,
+                "baseTile": s.tile,
+                "palette": s.palette,
+                "hflip": s.hflip,
+                "vflip": s.vflip,
+                "priority": s.priority,
+                "satAddr": hex::addr(sat_addr),
+            });
+            // Absent, not invented: the winning sprite's box no longer containing the dot means the SAT
+            // was rewritten between the render and this query.
+            if let Some(tile) = oracle_core::render::sprite_tile_at(s, x, y) {
+                sp["tile"] = json!(tile);
+                sp["tileAddr"] = json!(hex::addr(tile_addr(tile)));
+            }
+            if s.cache_divergence {
+                sp["cacheDivergence"] = json!(true);
+            }
+            out["sprite"] = sp;
+        }
+        Ok(out)
+    }
+
     fn state_hash(&mut self, params: &Value) -> Result<Value, RpcError> {
         let include_fb = match params.get("includeFramebuffer") {
             None => false,
@@ -1720,6 +1855,27 @@ fn no_symbols() -> RpcError {
         code::NO_SYMBOLS_LOADED,
         "no symbol table is loaded — call emulator/load_symbols first",
     )
+}
+
+/// A [`Layer`] as the `{layer, spriteIndex?}` object both `winner` and each `candidates[]` entry carry.
+///
+/// The values are camelCase — matching the `runTo`/`runToScanline` stopped-reason spelling (§3) rather
+/// than Rust's variant names — and `spriteIndex` is present **if and only if** `layer` is `"sprite"`,
+/// which is what makes one helper safe for both sites.
+fn layer_json(layer: Layer) -> Value {
+    match layer {
+        Layer::Backdrop => json!({"layer": "backdrop"}),
+        Layer::PlaneB => json!({"layer": "planeB"}),
+        Layer::PlaneA => json!({"layer": "planeA"}),
+        Layer::Window => json!({"layer": "window"}),
+        Layer::Sprite(i) => json!({"layer": "sprite", "spriteIndex": i}),
+    }
+}
+
+/// The VRAM byte address of pattern `tile`, wrapped into VRAM exactly as the core's tile addressing does.
+/// A pattern is 32 bytes and 65536 is a multiple of 32, so a pattern never straddles the wrap.
+fn tile_addr(tile: u16) -> u32 {
+    (u32::from(tile) * 32) & 0xFFFF
 }
 
 fn out_of_range(addr: u32, why: &str) -> RpcError {

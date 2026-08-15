@@ -13,7 +13,8 @@
 //!
 //! * **which sprite** — [`Layer::Sprite`] already carries the winning SAT index;
 //! * **which VRAM tile it draws that dot from** — a multi-cell sprite is a *column-major* run of tiles from a
-//!   base index, so the dot's tile is `base + (col * height_cells) + row` after flips ([`sprite_tile_at`]);
+//!   base index, so the dot's tile is `base + (col * height_cells) + row` after flips
+//!   ([`oracle_core::render::sprite_tile_at`]);
 //! * **which attribute-table entry positions it** — the 8 bytes at `sat_base + index * 8`, which is what a
 //!   game writes when it moves, re-points, or re-links the sprite.
 //!
@@ -21,15 +22,18 @@
 //! "who moved this?" both land in the same hit log. A backdrop click arms the CRAM entry the backdrop register
 //! selects, which is the only writable thing behind a backdrop dot.
 //!
-//! ## No core change
+//! ## Where the sprite addressing lives
 //!
-//! Everything here is computed from already-public core API: `pixel_attribution`, `sprites_decoded`, and
-//! `sat_base`. [`sprite_tile_at`] deliberately re-derives the addressing that
-//! `oracle_core::render`'s `draw_sprite` uses, and the tests pin it *against the core's own renderer* rather
-//! than against the arithmetic being restated — so if the core's sprite addressing ever changed, these tests
-//! fail rather than the picker silently naming the wrong tile.
+//! Everything here is computed from public core API: `pixel_attribution`, `sprites_decoded`, `sat_base`,
+//! and [`oracle_core::render::sprite_tile_at`]. That last one used to be a local copy that deliberately
+//! *re-derived* `draw_sprite`'s addressing; it now lives in `oracle-core` beside the renderer it mirrors,
+//! because the same derivation answers `emulator/pixel_attribution` on the bus (contract §8 item 19: one
+//! implementation under both consumers, so the panel and the wire cannot drift). The tests below still pin
+//! it *against the core's own renderer* rather than against the arithmetic being restated — so if the
+//! core's sprite addressing ever changed, these tests fail rather than the picker silently naming the
+//! wrong tile.
 
-use oracle_core::render::{Layer, SpriteDecoded};
+use oracle_core::render::{sprite_tile_at, Layer};
 use oracle_core::vdp::Vdp;
 
 /// One armable range the click resolved to: a watch to arm, and how to describe it.
@@ -79,27 +83,6 @@ const SAT_ENTRY_BYTES: u32 = 8;
 fn tile_range(tile: u16) -> (u32, u32) {
     let lo = (u32::from(tile) * TILE_BYTES) & VRAM_MASK;
     (lo, lo + TILE_BYTES - 1)
-}
-
-/// Which VRAM tile sprite `s` draws screen dot `(x, y)` from, or `None` if the dot is outside the sprite's
-/// box.
-///
-/// This mirrors `oracle_core::render`'s `draw_sprite`: flips mirror the whole sprite (not each cell), and a
-/// multi-cell sprite's patterns run **column-major** — going down a column before moving right — so the
-/// offset from the base tile is `(col * height_cells) + row`. The addition wraps like the core's
-/// `wrapping_add`, because a base tile near the top of VRAM with a large sprite genuinely does wrap there.
-pub fn sprite_tile_at(s: &SpriteDecoded, x: u16, y: u16) -> Option<u16> {
-    let wpx = usize::from(s.width_cells) * 8;
-    let hpx = usize::from(s.height_cells) * 8;
-    let sx = usize::try_from(i32::from(x) - i32::from(s.x)).ok()?;
-    let sy = usize::try_from(i32::from(y) - i32::from(s.y)).ok()?;
-    if sx >= wpx || sy >= hpx {
-        return None;
-    }
-    let src_sx = if s.hflip { wpx - 1 - sx } else { sx };
-    let src_sy = if s.vflip { hpx - 1 - sy } else { sy };
-    let offset = (src_sx / 8) * usize::from(s.height_cells) + src_sy / 8;
-    Some(s.tile.wrapping_add(offset as u16))
 }
 
 /// Resolve the dot at `(x, y)` into a description and the ranges worth watching.
@@ -233,7 +216,7 @@ pub fn resolve(vdp: &Vdp, x: u16, y: u16) -> Pick {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oracle_core::render::Layer;
+    use oracle_core::render::{Layer, SpriteDecoded};
     use oracle_core::rng::SplitMix64;
     use oracle_core::vdp::Vdp;
 
@@ -291,8 +274,11 @@ mod tests {
             "the fixture gives each cell a unique colour nibble (1..=15)"
         );
         let mut v = fresh();
-        set_reg(&mut v, 0x0C, 0x81); // H40 — set before the SAT writes, the cache window depends on it
+        // Reg $01 FIRST, and the order is load-bearing: the mode-4 register mask discards writes to
+        // registers above 10 while M5 (reg $01 bit 2) is clear, so an $0C written ahead of it is
+        // silently dropped and this fixture comes up H32 while the comment claims H40.
         set_reg(&mut v, 0x01, 0x74); // display on, mode 5, DMA enable
+        set_reg(&mut v, 0x0C, 0x81); // H40 — set before the SAT writes, the cache window depends on it
         set_reg(&mut v, 0x05, 0x58); // SAT base $B000
         set_reg(&mut v, 0x07, 0x00); // backdrop = CRAM 0
         set_reg(&mut v, 0x0F, 0x02); // autoincrement 2 (one word per data write)
@@ -459,8 +445,8 @@ mod tests {
     #[test]
     fn clicking_a_plane_tile_still_arms_that_tile() {
         let mut v = fresh();
+        set_reg(&mut v, 0x01, 0x74); // display on, mode 5 — before $0C, see `vdp_with_sprite`
         set_reg(&mut v, 0x0C, 0x81); // H40
-        set_reg(&mut v, 0x01, 0x74); // display on, mode 5
         set_reg(&mut v, 0x02, 0x30); // plane A nametable @ $C000
         set_reg(&mut v, 0x04, 0x07); // plane B nametable @ $E000
         set_reg(&mut v, 0x05, 0x58); // SAT @ $B000 (empty — sprite 0's Y is 0-128 = off-screen)
@@ -506,5 +492,157 @@ mod tests {
             "the armed range stays inside VRAM: ${lo:04X}-${hi:04X}"
         );
         assert_eq!(hi - lo, 31);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // The parity invariant — contract §8 item 19's whole point
+    // ---------------------------------------------------------------------------------------------
+
+    /// **This panel and the `emulator/pixel_attribution` bus method must never disagree**, and the
+    /// guard lives here rather than in `oracle-aether/tests/` for a structural reason: `oracle-frontend`
+    /// depends on `oracle-aether`, so only this crate can see both sides at once.
+    ///
+    /// §8 item 19 mandates the *capability* on the bus; D15 argues explicitly against the panel reaching
+    /// it through a socket round-trip per repaint ("an in-process GUI is a consumer of the same registry,
+    /// not a second server"), and our `Host::pump` arrangement makes that worse — a click would have to
+    /// enqueue a command and wait a frame to answer a question it can answer synchronously. So the panel
+    /// keeps calling core, and *this test* is what makes "one implementation under both consumers"
+    /// checkable rather than merely intended. Moving `sprite_tile_at` into `oracle-core` is what makes it
+    /// true; if the two ever drift, this is the assertion that says so.
+    #[cfg(feature = "aether")]
+    mod bus_parity {
+        use super::*;
+        use oracle_aether::engine::{Engine, EngineConfig};
+        use oracle_aether::outbound::Subscribers;
+        use oracle_core::system::System;
+        use serde_json::{json, Value};
+
+        /// An engine whose machine shows `v`.
+        fn engine_showing(v: &Vdp) -> Engine {
+            let mut sys = System::new(0x5EED);
+            sys.load_rom(oracle_core::testrom::build());
+            sys.reset();
+            *sys.vdp_mut() = v.clone();
+            Engine::new(sys, EngineConfig::default(), Subscribers::new())
+        }
+
+        /// `"0x0000B000"` → `0xB000`. The bus spells addresses as hex strings (D9 category 1); the panel
+        /// carries them as numbers, so the comparison has to cross that boundary explicitly.
+        fn addr_of(v: &Value) -> u32 {
+            let s = v
+                .as_str()
+                .unwrap_or_else(|| panic!("an address string, got {v}"));
+            u32::from_str_radix(s.trim_start_matches("0x"), 16).expect("hex")
+        }
+
+        fn attribution(e: &mut Engine, x: u16, y: u16) -> Value {
+            e.dispatch("emulator/pixel_attribution", &json!({"x": x, "y": y}))
+                .expect("a dot inside the active display must answer")
+        }
+
+        /// Sprite dots: the tile the panel arms a watch on is the tile the bus reports, for every dot of
+        /// a 3x2 and a 2x3 sprite under all four flips — and the SAT entry likewise. A column-major /
+        /// row-major split between the two would surface here as a mismatched `lo`.
+        #[test]
+        fn the_panel_and_the_bus_name_the_same_sprite_tile_and_sat_entry() {
+            for (w, h) in [(3u8, 2u8), (2, 3), (1, 1), (4, 1)] {
+                for (hflip, vflip) in [(false, false), (true, false), (false, true), (true, true)] {
+                    let v = vdp_with_sprite(w, h, hflip, vflip);
+                    let mut e = engine_showing(&v);
+                    for dy in 0..usize::from(h) * 8 {
+                        for dx in 0..usize::from(w) * 8 {
+                            let (x, y) = (SPRITE_AT + dx as u16, SPRITE_AT + dy as u16);
+                            let r = attribution(&mut e, x, y);
+                            let p = resolve(&v, x, y);
+
+                            assert_eq!(r["winner"]["layer"], json!("sprite"), "({x},{y})");
+                            assert_eq!(r["winner"]["spriteIndex"], json!(0), "({x},{y})");
+                            assert_eq!(
+                                p.targets[0].lo,
+                                addr_of(&r["sprite"]["tileAddr"]),
+                                "{w}x{h} hflip={hflip} vflip={vflip} at ({x},{y}): the panel arms \
+                                 ${:04X} but the bus names {} — the two have DRIFTED",
+                                p.targets[0].lo,
+                                r["sprite"]["tileAddr"]
+                            );
+                            assert_eq!(p.targets[0].space, Space::Vram);
+                            assert_eq!(
+                                p.targets[1].lo,
+                                addr_of(&r["sprite"]["satAddr"]),
+                                "({x},{y}): SAT entry"
+                            );
+                            // And the tile index itself, as the panel prints it into its description.
+                            let tile = r["sprite"]["tile"].as_u64().expect("tile") as u16;
+                            assert!(
+                                p.description.contains(&format!("tile ${tile:03X}")),
+                                "({x},{y}): the panel says {:?}, the bus says tile ${tile:03X}",
+                                p.description
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        /// Plane dots: the panel's armed pattern range is the bus's `cell.tileAddr`, and the two agree on
+        /// the winning layer. Backdrop dots: the panel's armed CRAM word is the bus's `cramAddr`, and on
+        /// `cramIndex` — which is the number the panel prints to a person.
+        #[test]
+        fn the_panel_and_the_bus_agree_on_plane_cells_and_on_the_backdrop() {
+            let mut v = fresh();
+            set_reg(&mut v, 0x01, 0x74); // display on, mode 5 — before $0C
+            set_reg(&mut v, 0x0C, 0x81); // H40
+            set_reg(&mut v, 0x02, 0x30); // plane A nametable @ $C000
+            set_reg(&mut v, 0x04, 0x07); // plane B nametable @ $E000
+            set_reg(&mut v, 0x05, 0x58); // SAT @ $B000, empty
+            set_reg(&mut v, 0x07, 0x25); // backdrop = CRAM entry $25
+            set_reg(&mut v, 0x0F, 0x02);
+            set_reg(&mut v, 0x10, 0x00);
+            write_vram(&mut v, 0xC000, &[(1 << 13) | 0x055]);
+            write_vram(&mut v, 0x055 * 32, &[0x3333; 16]);
+            let mut e = engine_showing(&v);
+
+            // The one opaque plane-A cell.
+            let r = attribution(&mut e, 2, 2);
+            let p = resolve(&v, 2, 2);
+            assert_eq!(r["winner"]["layer"], json!("planeA"));
+            assert_eq!(p.targets[0].lo, addr_of(&r["cell"]["tileAddr"]));
+            assert_eq!(p.targets[0].hi, addr_of(&r["cell"]["tileAddr"]) + 31);
+            assert_eq!(r["cell"]["tile"], json!(0x055));
+            assert!(p.description.contains("$055"), "{}", p.description);
+
+            // Everywhere else is backdrop.
+            let r = attribution(&mut e, 200, 100);
+            let p = resolve(&v, 200, 100);
+            assert_eq!(r["winner"]["layer"], json!("backdrop"));
+            assert_eq!(r["cramIndex"], json!(0x25));
+            assert_eq!(p.targets[0].space, Space::Cram);
+            assert_eq!(p.targets[0].lo, addr_of(&r["cramAddr"]));
+            assert!(
+                p.description.contains("CRAM entry 37"),
+                "0x25 = 37, the number the panel shows a person: {}",
+                p.description
+            );
+        }
+
+        /// The panel is total over the whole active display; the bus refuses outside it (§3.5). That
+        /// difference is deliberate — the core's totality is right in-process and a silent wrong answer
+        /// on a wire — so it is pinned rather than left to look like an accident.
+        #[test]
+        fn the_bus_refuses_a_dot_the_panel_would_still_answer() {
+            let v = vdp_with_sprite(1, 1, false, false);
+            let mut e = engine_showing(&v);
+            // 400 is past the H40 active width; the core answers backdrop, the bus refuses.
+            assert_eq!(v.pixel_attribution(400, 10).winner, Layer::Backdrop);
+            let err = e
+                .dispatch("emulator/pixel_attribution", &json!({"x": 400, "y": 10}))
+                .expect_err("outside the active display");
+            assert_eq!(err.code, -32004);
+            let data = err
+                .data
+                .expect("-32004 must carry the bound it refused against");
+            assert_eq!(data["width"], json!(320));
+            assert_eq!(data["height"], json!(224));
+        }
     }
 }
