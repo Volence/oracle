@@ -15,6 +15,25 @@ CR-2 additionally gained three rules the draft did not pin: checkpoints are vola
 the snapshot format is version-fragile by design), `restore` covers the whole machine *including the
 ROM*, and the count is capped and **refused loudly** rather than silently evicted (contract D13, §6.1).
 
+**Update 2026-08-15 — CR-7 ADOPTED, CR-8 registered and adopted, and one ruling lands on us as work.**
+The contract's second amendment (`empyrean` commit `627e5e4`, `protocol.md` §11.2) closes the last open
+item in this document and adds one that was never in it:
+
+- **CR-7 (`timingBasis`) is adopted** as contract **D16** + §2.1, at exactly the shape we shipped, with
+  the numbers normative and the field REQUIRED. Nothing to change here; see CR-7 below.
+- **CR-8 (`droppedEvents`) is adopted** as contract **D17** + a new §2.3 — a field this server has been
+  putting on every reply while it appeared in **no contract text and no change request**. It is now
+  written down. Nothing to change here either; see CR-8 below. The lesson is the one §11.1 closed on:
+  raising CR-7 was right, and not raising this one was the failure that praise exists to prevent.
+- **We are now non-conformant on one point, deliberately.** Contract **D9 gained a fourth type category**
+  — opaque handles (checkpoint ids, cursors) are **strings** — and **D14** pins schema-vs-prose
+  precedence (the schema is normative for wire shapes). Our checkpoint `id` is a `u64` on the wire, with
+  `parse_checkpoint_id`'s doc comment reading *"a **JSON number** per D9"* — a fair reading of D9 as it
+  then stood, and one the schema has disagreed with in all four id positions since the methods were
+  specified. **`crates/oracle-aether` must move the `id` to a string** (`checkpoint`'s result,
+  `restore`/`checkpoint_drop`'s params, `checkpoint_list`'s items and cursor) with its checkpoint tests.
+  See contract §8 item 16. It is a breaking change to a surface with no clients yet.
+
 *Original framing, kept for the record:* `empyrean/contract/protocol.md` §8 is explicit — *"What the
 Oracle side must not do: invent new ops not in this spec, design its own envelope, or start a second
 parser. Deviations are raised as **change requests against this file**, not implemented unilaterally —
@@ -253,6 +272,49 @@ invention*, and a new result key is one, so: **request that `timingBasis` be add
 262 lines × 3420 mclk is the thing that matters) and the field REQUIRED, so it stays meaningful the day a
 server is not NTSC-only. Source: `oracle_core::system::TimingBasis`, derived from the core's own
 `MCLK_PER_FRAME`, so a server cannot advertise a basis its stamps were not computed with.
+
+> **ADOPTED 2026-08-15** as contract **D16** + §2.1 (`empyrean` `627e5e4`), at the shape that shipped and
+> with both asks granted: the field is REQUIRED, and the *numbers* are normative rather than the label
+> alone. It is a top-level key of the `initialize` result, not a capability flag, on the grounds that it
+> is not something a server may or may not support — it is what that server's stamps mean. The schema
+> requires all three of `standard` / `mclkPerFrame` / `linesPerFrame`, and `standard` is deliberately a
+> string rather than an enum so a client branches on the numbers. **No change here.** One case the
+> contract left open rather than settle by inference: what happens if the basis changes mid-connection
+> (a `reload_rom` of another region's ROM). Registered in the contract's §10 remaining list; unreachable
+> while the core is NTSC-only.
+
+---
+
+## CR-8 — every reply carries `droppedEvents`, which the contract does not define (raised retroactively, 2026-08-15)
+
+**Contract as it stood.** §2.2 defined the envelope-level fields as exactly `{frame, mclk, running}`.
+Nothing anywhere mentioned a dropped-event count.
+
+**The gap — and it is a self-report, not a finding about someone else.** `server.rs`'s `with_dropped`
+inserts `droppedEvents` into the stamp map of **every** success `result` and **every** `error.data`
+(`crates/oracle-aether/src/server.rs`), carrying the per-connection monotonic total that
+`Outbound::take_dropped` accumulates when the bounded outbound queue discards for a client that is not
+draining (`crates/oracle-aether/src/outbound.rs`). It is pinned at the wire by the incident test
+`a_client_that_subscribes_and_stops_reading_cannot_wedge_the_emulator`
+(`crates/oracle-aether/tests/events.rs`), whose third assertion is precisely *"the loss is visible, never
+silent."*
+
+It is a good field — a non-blocking event channel is required by contract §8 item 4, and one that drops
+*silently* turns the push stream into the same silent-wrong-answer generator CR-5's stamp exists to
+prevent. But it reached the wire with no trace in any document: **not in the contract, and not in this
+file either.** That makes it the same offence as CR-7 one degree worse — the deviation was not silent in
+the code, only in the record — and it is written up here retroactively so the record is complete rather
+than flattering.
+
+> **ADOPTED 2026-08-15** as contract **D17** + new **§2.3** (`empyrean` `627e5e4`), at the shape that
+> shipped: on every `result` and every `error.data`, per-connection, cumulative, monotonically
+> non-decreasing, **always present even at zero** (absence and zero must not both mean "nothing was
+> lost"), and **absent from events** (an event that did not arrive cannot report anything, and one that
+> did would carry a number that can change between queueing and writing). The contract states explicitly
+> that it is **not part of the machine stamp** — the stamp is a machine coordinate every connection sees
+> identically, while this is a per-connection fact two clients will legitimately disagree about — which
+> is why §2.2 and §2.3 are separate sections even though both fields ride the same envelope and are
+> applied the same way. **No change here.**
 
 ---
 
