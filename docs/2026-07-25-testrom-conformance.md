@@ -828,8 +828,52 @@ The two blockers, precisely:
 Rendering this ROM therefore needs a per-pixel (not per-line) CRAM timeline, which means a timestamped CRAM
 write **and** sub-instruction clock advance through a DMA. That is a real engine change, not a harness one.
 
+### L1c — the limitation is general, and it has three mechanisms (2026-08-15)
+
+L1 was written as though the end-of-frame capture cost us **one ROM** (`color_1536`). A corpus-wide survey —
+all 17 vendored ROMs, 120 frames, the harness's own seed, hashing the same run's last frame through both the
+live per-scanline capture and the post-hoc re-render — shows it is a general property of the instrument:
+**6 of 17 ROMs discriminate.** Full table, causes and evidence in
+`docs/2026-08-15-scanline-golden-coverage.md`; the live hashes are pinned additively in
+`crates/oracle-core/tests/scanline_goldens.rs` (no row of the scorecard above moved).
+
+Three distinct mechanisms, only the first of which L1 anticipated:
+
+1. **Mid-frame state changes** — `color_1536` (645 active-display writes/frame), `window_distortion` (**one**
+   active-display write per frame, R17 → `$00` at line 111, and 112 wrong lines below it), `io_sample` (328),
+   `m68k_opcode_sizes` (~34).
+2. **Stale `sprite_dot_overflow_carry`** — `vdp_sprite_masking`. `render_line` re-seeds R10 masking from the
+   end-of-frame carry on every line instead of advancing it; `Vdp::report_rgb`'s doc comment already said this
+   was wrong, but nothing had measured it. **This changes a recorded verdict — see below.**
+3. **Vblank updates that postdate the frame** — `shadow_highlight` (zero active-display writes, 18 vblank
+   writes per frame, 4-frame animation cycle). No raster trick and no sprite state: the post-hoc render simply
+   describes a moment one update newer than the frame it claims to describe. **This one was not on anyone's
+   list, and it is the broadest**: it needs only a ROM that does its VDP work in vblank, which is most ROMs.
+   Six rows of the scorecard above are plain end-of-frame `frame_hash` visual baselines and are exposed to it.
+
+**Correction to the `vdp_sprite_masking` row (table above).** That row records two failures and credits both to
+the mid-sprite pixel-budget cut, ledger row **P1** in `docs/2026-07-16-vdp-pixel-known-differences.md`. Test 6
+(MASK S1 ON DOT OVERFLOW) reads `FAIL` through the post-hoc path and **`PASS` through the live path**; the
+other eight glyphs are identical through both, and the ROM makes zero VDP accesses after frame 7. So **P1 owns
+at most one of those two failures** (test 3's second sub-case). The row and the P1 entry are deliberately left
+unamended — see F-POSTHOC-STALE-CARRY.
+
 ### Named follow-ups (not implemented here)
 
+* **F-POSTHOC-STALE-CARRY — the verdict-glyph scraper reads the wrong render path.** (Registered 2026-08-15 by
+  the per-scanline golden survey; evidence in `docs/2026-08-15-scanline-golden-coverage.md`.) **Code anchors:**
+  `block_hash` in `crates/oracle-core/tests/conformance_roms.rs` (calls the post-hoc `Vdp::render_line`);
+  `Vdp::render_scanline` / `Vdp::report_rgb` / `Vdp::sprite_dot_overflow_carry` in
+  `crates/oracle-core/src/render.rs` and `vdp.rs`. The proposed amendment is: scraper → live path, row →
+  `6=PASS`, glyph constants re-derived, and the P1 ledger row corrected to claim one failure instead of two.
+  **Two things it must settle first**, which is why it was not done overnight: (a) whether the four pinned
+  glyph constants survive the substrate change for every ROM and glyph — they are pinned *from post-hoc
+  pixels*, and only tests 4/5/7/8 being path-identical is what let the live test-6 hash be recognised as `PASS`
+  at all; (b) `block_hash` re-renders from settled VDP state at any stop point, which is exactly why the
+  idle-stop conversion could say "stopping mid-frame is irrelevant to it" — a live-path scrape instead needs a
+  frame-aligned capture and a decision about *which* frame. Non-urgent: this harness is non-gating, so the
+  wrong pin blocks nothing. A comment on the `BASELINE` row records the artefact at the point of use, including
+  the warning not to "fix" the emulator until the post-hoc render agrees.
 * **F-CRAMDOT — sub-scanline CRAM timeline.** Timestamp CRAM writes with an h-position and advance the
   clock through a DMA body so writes distribute across the line. Unblocks **both** rows above. Touches the
   VDP write path and the DMA loop, i.e. it is currency-relevant — needs its own design pass.
