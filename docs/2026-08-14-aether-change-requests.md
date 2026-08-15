@@ -495,6 +495,54 @@ by a 33-message probe. That is a bigger change than this CR and is named, not pr
 
 ---
 
+## CR-14 — `lookup_symbol.otherMatches` is an object where the schema says an array of strings (2026-08-15)
+
+**The first divergence where the contract and the server disagree about a *type*, not a spelling — and the
+first where the server's shape looks like the better one.**
+
+**Contract.** §4 gives `emulator/lookup_symbol`'s result as
+`{"addr":…,"name":"Camera_X","otherMatches":[…]?}`, and the schema types `otherMatches` as
+`{"type":"array","items":{"type":"string"}}`.
+
+**What we emit.** The house bounded-array **object** — `{items, total, returned, cursor, limit, truncated,
+nextCursor}` — whose `items` are objects `{name, demangled, addr}`, not strings. Two levels of divergence:
+wrong container, wrong element type inside it. Pinned by
+`crates/oracle-aether/tests/methods.rs::arrays_are_bounded_cursored_and_flag_truncation`, and confirmed on
+a live socket.
+
+**Why we did it, and why it is not obviously wrong.** The recon's **non-negotiable #2** is *every array is
+bounded, cursored, and flags truncation*, and §6.1 states the reason in the checkpoint context: *"a client
+must never be handed a partial list it can mistake for a complete one."* A bare `[…]` is exactly the shape
+that rule exists to forbid — §4 even says the method *"returns up to 5 `otherMatches`"*, i.e. it truncates,
+with nothing on the wire to say so. And bare strings would drop `addr`, which is the entire reason a client
+asked.
+
+**How it survived.** Nothing validated our replies against the schema. It also survived a 33-message probe
+run *today*, because that probe only exercised `lookup_symbol`'s **error** path — a reminder that a sample
+which never reaches a code path is measuring its own reach. The in-tree validator catches it immediately,
+since the existing suite does exercise the success path.
+
+**Proposed change — and deliberately not resolved here.** D14 is explicit that this is a **spec bug**,
+*"to be fixed by amendment in the pass that finds it — and until it is amended, the schema governs what
+goes on the wire."* So neither artifact moves unilaterally. Three options, in the order we would rank them:
+
+1. **Amend §4 and the schema to the bounded-array envelope**, making the house rule normative for every
+   list on this bus rather than one it was applied to informally. Costs a schema `$def`; gains one
+   pagination convention instead of two.
+2. Keep the bare array and **drop the envelope for this method**, accepting silent truncation on a method
+   that already truncates at 5. We would argue against this.
+3. Emit both. Rejected on the same grounds §3 rejects emitting two event spellings: it makes the drift
+   permanent and invisible because every client keeps working and nobody ever fixes it.
+
+**Folded in with option 1:** `rpc::bounded_array` emits `cursor` and `nextCursor` as **JSON numbers**,
+while §8 item 16 says *"a checkpoint `id` and **every list `cursor`** are JSON strings."* `checkpoint_list`
+already converts its own token to a string on the way out; the shared helper does not, so `lookup_symbol`
+ships numeric ones. Worse, `lookup_symbol` accepts **no `cursor` param at all**, so the token it emits can
+never be handed back — a continuation offered for a query with no continuation. Whatever is ruled for the
+envelope should settle the token's type and whether it should be emitted here at all.
+
+---
+
 ## Recorded ambiguities (no change requested, but the reading should be confirmed)
 
 **A1 — what error code answers a method sent before `initialize`?** §2.1 says `initialize` is the first

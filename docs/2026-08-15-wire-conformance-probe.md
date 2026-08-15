@@ -97,6 +97,47 @@ Two things follow, and they pull in opposite directions, so both are stated:
   catalog row. Every key beyond that row is a change request first and a schema edit second, in that
   order, in one pass (D14: *"the two artifacts are amended together, always"*).
 
+## F5 ★ — `lookup_symbol.otherMatches` is the wrong JSON **type**, and the first probe missed it
+
+Added after the fact, and the way it was missed is the point. The 33-message run called
+`emulator/lookup_symbol` with a name that does not resolve, so it only ever exercised the **error** path and
+reported zero failures for that method. Loading a three-symbol listing first and asking for a prefix that
+matches two of them produces:
+
+```
+x1  emulator/lookup_symbol  $.otherMatches  {'cursor': 0, 'items': [{'addr': '0x00FF8CFA', …}], …}
+                                            is not of type 'array'
+```
+
+The schema types `otherMatches` as `{"type":"array","items":{"type":"string"}}`, and §4's prose agrees
+(`result:{"addr":…,"name":…,"otherMatches":[…]?}`). We emit the **house bounded-array object** —
+`{items, total, returned, cursor, limit, truncated, nextCursor}` — with object items, not strings. So the
+divergence is two levels deep: wrong container, and wrong element type inside it.
+
+**And our shape is probably the better one**, which is what makes this a spec bug rather than a server bug.
+A bare array is exactly the thing the recon's non-negotiable #2 exists to forbid — *every array is bounded,
+cursored, and flags truncation* — and §6.1 states the reason in the checkpoint context: *"a client must
+never be handed a partial list it can mistake for a complete one."* `crates/oracle-aether/tests/methods.rs`
+pins our envelope under the name `arrays_are_bounded_cursored_and_flag_truncation`.
+
+D14 anticipates precisely this: *"Where the two disagree, that is a spec bug, to be fixed by amendment in
+the pass that finds it — and until it is amended, the schema governs what goes on the wire."* So neither
+side changes unilaterally. Raised as **CR-14**.
+
+Two things follow for the plan:
+
+- **The validator will catch this on day one**, because the existing suite *does* exercise the success path
+  (`methods.rs`) even though my probe did not. That is a real, un-manufactured catch and it is the best
+  argument yet that §8 item 15 was worth doing.
+- **F1's "only one failure" was an artifact of my sampling**, not a property of the server. A probe that
+  drives a method's error path and calls the method covered is measuring its own reach. The in-tree
+  validator does not have that weakness: it rides every message every existing test already produces.
+
+Related, found the same way and folded into CR-13 rather than CR-14: `rpc::bounded_array` emits `cursor`
+and `nextCursor` as **JSON numbers**, while §8 item 16 says *"a checkpoint `id` and **every list `cursor`**
+are JSON strings."* And `lookup_symbol` accepts no `cursor` param at all, so it ships a continuation token
+a client has no way to hand back.
+
 ---
 
 ## What this changes about the plan
