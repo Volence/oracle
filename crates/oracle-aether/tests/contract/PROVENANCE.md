@@ -14,10 +14,10 @@ an explicit re-vendor commit. That commit is the auditable record of "we adopted
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo commit (`HEAD` at vendor time) | `d45dc87` — *"contract: CR-16 — five of §11.5's own registrations never reached the schema"* (2026-08-15) |
-| Last commit that touched the schema | `d45dc87` — same commit |
-| SHA-256 | `ba5a2563761f323f6731c392fcf79339bbdc02800caf4b9b796c43e82ec23490` |
-| Bytes | 62134 |
+| Contract repo commit (`HEAD` at vendor time) | `432f631` — *"contract: the schema's front door said SEED while covering every advertised method"* (2026-08-15) |
+| Last commit that touched the schema | `432f631` — same commit |
+| SHA-256 | `43a00bdbe7b91f89b4e6fa738551f0ab1ee94593c783b9ad844af4ce83e7a301` |
+| Bytes | 62434 |
 | Vendored on | 2026-08-15 |
 
 ### What this re-vendor adopted
@@ -96,3 +96,14 @@ failure it was written to suppress, in tests unrelated to it.
 One fixture moved with it: `schema_conformance.rs`'s `good_read_memory_reply()` omitted `region` and so
 stopped being conformant the moment the fragment declared it — the positive control catching its own drift,
 which is the only reason the rejection controls beneath it stayed meaningful.
+
+### `432f631` — a description fix, no shapes touched
+
+The schema's `title` and `description` still called it a **SEED** with *"a representative set of ops"*,
+written when 9 of 21 advertised methods had a `result`. It is now 23 of §6's ~60 catalogued methods, which
+is **every method the reference server advertises**, both halves. The old wording understated the artifact
+at its front door — the first thing a new consumer reads — so it now states exactly what is and is not
+covered, and points at §8 item 20 as the reason an unschematized method cannot quietly ship a result.
+
+**No shape changed**, so this re-vendor cannot move a single validation verdict; the freshness test still
+demands it, which is the point of byte-identity.
