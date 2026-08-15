@@ -1,0 +1,84 @@
+//! The `--no-default-features` twin of [`crate::bus`]: the same surface, every method a no-op.
+//!
+//! It exists so the run loop has **one** shape. The alternative — a `#[cfg(feature = "aether")]` around every
+//! place the loop meets the bus — is how a feature-gated path quietly stops compiling, and worse, how the two
+//! builds start meaning different things. Here the gated build is a build in which every one of those calls
+//! provably does nothing, which is exactly what the claim "the default launch is unaffected" needs in order
+//! to be checkable rather than argued.
+//!
+//! `Bus::start` is the only method with an observable effect, and only on the path where the user explicitly
+//! asked for a socket from a binary that cannot provide one: it says so, rather than silently ignoring the
+//! flag.
+
+use oracle_core::io::Pad;
+use oracle_core::scanline_capture::ScanlineCapture;
+use oracle_core::symbols::SymbolTable;
+use oracle_core::system::System;
+use std::path::PathBuf;
+
+/// What the bus would know about the loaded cartridge. Carried and dropped — the fields are unread here on
+/// purpose, because the whole point of this build is that there is nothing to tell.
+#[derive(Default)]
+#[allow(dead_code)]
+pub struct MachineInfo {
+    pub rom_path: Option<String>,
+    pub symbols: Option<SymbolTable>,
+    pub symbols_path: Option<String>,
+}
+
+/// What one `Bus::pump` did. Always nothing.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Pumped {
+    pub timeline_moved: bool,
+    pub screen_changed: bool,
+    pub rom_changed: bool,
+    pub frames_advanced: u64,
+}
+
+/// The inert bus. Holds exactly one thing: the pause state it was told, so that reading it back is an
+/// identity rather than a lie. The loop assigns `paused` from `is_paused` unconditionally, and it must keep
+/// working in this build too.
+#[derive(Default)]
+pub struct Bus {
+    paused: bool,
+}
+
+impl Bus {
+    pub fn start(socket: Option<Option<PathBuf>>, _info: MachineInfo) -> Self {
+        if socket.is_some() {
+            eprintln!(
+                "aether: NOT serving — this binary was built without the `aether` feature. \
+                 Rebuild with it to serve the bus."
+            );
+        }
+        Self::default()
+    }
+
+    pub fn merge_held(&self, pads: [Pad; 2]) -> [Pad; 2] {
+        pads
+    }
+
+    pub fn set_live_pads(&mut self, _pads: [Pad; 2]) {}
+
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+    }
+
+    /// Exactly what [`set_paused`](Bus::set_paused) was last told. Nothing outside the window can change it
+    /// in this build, so reading it back is the identity the loop needs it to be.
+    pub fn is_paused(&self) -> bool {
+        self.paused
+    }
+
+    pub fn publish(&mut self, _cap: &ScanlineCapture) {}
+
+    pub fn present_frame(&self, _buf: &mut Vec<u32>) -> Option<usize> {
+        None
+    }
+
+    pub fn pump(&mut self, _sys: &mut System) -> Pumped {
+        Pumped::default()
+    }
+
+    pub fn set_machine_info(&mut self, _info: MachineInfo) {}
+}

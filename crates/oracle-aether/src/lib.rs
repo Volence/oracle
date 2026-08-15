@@ -29,6 +29,21 @@
 //!    it broadcasts into per-connection bounded queues that drop oldest-first and count the loss. See
 //!    [`outbound`] for the incident that makes this a requirement rather than polish.
 //!
+//! # Two arrangements, one engine
+//!
+//! The same [`engine`] serves the bus in two shapes, and which one is right is decided by **who owns the run
+//! loop**:
+//!
+//! * [`server`] — the bus owns the machine, on a thread of its own. The headless arrangement; the shape
+//!   below.
+//! * [`host`] — **something else owns the machine and its loop** (the player process, with a window, an
+//!   audio device and a keyboard), and drains the bus once per iteration. There cannot be two things
+//!   advancing one `System`, so the capability layer becomes a thing the owner pumps rather than a thread
+//!   that runs.
+//!
+//! Neither is a wrapper around the other: they share the accept loop, the connection threads and the engine
+//! verbatim, and differ only in where the `System` lives.
+//!
 //! # Shape
 //!
 //! ```no_run
@@ -48,6 +63,7 @@
 
 pub mod engine;
 pub mod hex;
+pub mod host;
 pub mod outbound;
 pub mod rpc;
 pub mod server;

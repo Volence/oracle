@@ -25,7 +25,9 @@
 use crate::hex;
 use crate::outbound::Subscribers;
 use crate::rpc::{self, code, RpcError};
+use oracle_core::bus::{Fanout, StopWhen};
 use oracle_core::io::Pad;
+use oracle_core::scanline_capture::{Retain, ScanlineCapture};
 use oracle_core::symbols::{BindingFault, RomBinding, SymbolTable};
 use oracle_core::system::{System, MCLK_PER_FRAME, RAM_SIZE};
 use serde_json::{json, Map, Value};
@@ -272,13 +274,53 @@ pub struct Engine {
     /// restore exactly what was held before it and `hold` has unambiguous set-not-add semantics (the
     /// sibling's *"`hold` ADDS, it does not replace"* defect, recon §1c).
     held: [Pad; 2],
+    /// The **live host** pad state per port — what a human is physically holding on the keyboard or a
+    /// gamepad *right now*, published by whatever owns the machine (the player process; nothing at all in
+    /// the standalone server, where it stays all-released and every pad expression below is therefore
+    /// byte-identical to what it was before this field existed).
+    ///
+    /// It is kept apart from [`held`](Engine::held) because the two answer different questions and only one
+    /// of them is the bus's to own: `held` is *the client's* held set, with the set-not-add semantics
+    /// `emulator/hold` promises, and it must stay exactly what the client last asked for. Merging the human's
+    /// live input into `held` would make `emulator/hold`'s reply — and `Engine::held` itself — report buttons
+    /// no client ever pressed.
+    live: [Pad; 2],
     /// The live checkpoints (§6.1, D13). In memory, per **server session**, capped by
     /// [`EngineConfig::max_checkpoints`], and owned by the engine rather than by a connection — the
     /// coordinates belong to the machine, so two clients on one bus see one set.
     checkpoints: Vec<Checkpoint>,
     /// Monotonic id source. Never rewound, never reused (see [`Checkpoint`]).
     next_checkpoint_id: u64,
+    /// **The screen path.** Attached to every run this engine performs, so the picture a client asks for is
+    /// the one the raster actually drew — see [`Engine::framebuffer`] for why a post-hoc render cannot be.
+    screen: ScanlineCapture,
+    /// The most recently completed frame, latched out of [`screen`](Engine::screen) after a run — or
+    /// published from outside by [`publish_capture`](Engine::publish_capture) when something else owns the
+    /// run loop. `None` until a whole frame has been drawn.
+    last_frame: Option<CapturedFrame>,
+    /// Bumped whenever [`last_frame`](Engine::last_frame) is replaced **by this engine's own run**. A host
+    /// that drives the run loop itself watches this to learn that a client-driven run has moved the picture
+    /// on underneath it; a frame it published itself does not bump it, because the publisher already has it.
+    screen_generation: u64,
+    /// Bumped whenever the cartridge in the machine is replaced — `emulator/reload_rom`, or an
+    /// `emulator/restore` that brought a different image back (D13 rule 2). A host that derives anything
+    /// from the ROM bytes (a save-state fingerprint, a symbol listing) watches this so it cannot keep
+    /// describing a cartridge that is no longer loaded.
+    rom_generation: u64,
 }
+
+/// One pixel, in the core's own line-delivery spelling.
+pub type Rgb = (u8, u8, u8);
+
+/// One whole frame of active display, line-major, exactly as the raster drew it.
+#[derive(Clone, Debug)]
+struct CapturedFrame {
+    width: usize,
+    rgb: Vec<Rgb>,
+}
+
+/// A borrowed frame: its width, and its pixels line-major. Height is always [`ACTIVE_LINES`].
+pub type FrameRef<'a> = (usize, &'a [Rgb]);
 
 impl Engine {
     pub fn new(sys: System, config: EngineConfig, subs: Subscribers) -> Self {
@@ -292,8 +334,13 @@ impl Engine {
             free_run: false,
             running: false,
             held: [Pad::default(); 2],
+            live: [Pad::default(); 2],
             checkpoints: Vec::new(),
             next_checkpoint_id: 1,
+            screen: ScanlineCapture::new(Retain::LastFrame),
+            last_frame: None,
+            screen_generation: 0,
+            rom_generation: 0,
         }
     }
 
@@ -304,6 +351,95 @@ impl Engine {
     /// Whether the server loop should keep stepping the machine on its own (free-run mode).
     pub fn is_running(&self) -> bool {
         self.free_run
+    }
+
+    /// **Lend the machine to the engine, or take it back.** The whole of the hosted arrangement rests on
+    /// this one call: the player process owns the `System` and swaps it in for the duration of a command
+    /// drain, so every handler below runs against the real machine and stamps the real clocks (D11), then
+    /// swaps it straight back out.
+    ///
+    /// A swap, rather than a borrow, because `Engine` also owns state that must survive between drains — the
+    /// held set, the checkpoints, the symbol table, the free-run flag — and a borrowed-`System` engine would
+    /// have to be rebuilt (and that state re-threaded) on every iteration. `System` is 1,152 bytes of struct
+    /// (every large region is behind a `Vec`), so the exchange is two ~1 KB moves; it is not a copy of the
+    /// machine.
+    ///
+    /// Between drains the engine holds an inert placeholder. That is why nothing outside a drain window may
+    /// call a handler or [`stamp`](Engine::stamp) — it would answer for the placeholder. The host enforces
+    /// this by doing every such thing inside the swapped window.
+    pub fn swap_system(&mut self, other: &mut System) {
+        std::mem::swap(&mut self.sys, other);
+    }
+
+    /// The buttons a client is holding on `port` (`emulator/hold`). A host merges these with the human's
+    /// live input before it writes the pad — see [`set_live_pads`](Engine::set_live_pads).
+    pub fn held(&self, port: usize) -> Pad {
+        self.held[port & 1]
+    }
+
+    /// Publish what the human is physically holding, so the engine's own pad writes (`hold`, `press`,
+    /// `release_all`) compose with live input instead of erasing it. Pure state: it never touches the
+    /// machine, so it is safe to call outside a drain window.
+    pub fn set_live_pads(&mut self, pads: [Pad; 2]) {
+        self.live = pads;
+    }
+
+    /// Free-run mode, set from outside. **Hosted, this is the player's own pause state**: while the player is
+    /// advancing the machine, the bus is free-running by definition, and `protocol.md` §6's run-control state
+    /// rule then requires `run_frames`/`run_to`/`step*` to be refused with `-32005 machineRunning` — which is
+    /// exactly what [`require_paused`](Engine::require_paused) already does.
+    ///
+    /// Emits the same `emulator/stopped` / `emulator/resumed` a client-driven `pause`/`resume` would, because
+    /// from a subscriber's point of view nothing distinguishes them: the machine stopped, or it started.
+    /// **Must be called inside a drain window** — the events it emits carry the machine stamp.
+    pub fn set_free_run(&mut self, on: bool) -> bool {
+        let was = self.free_run;
+        if was == on {
+            return was;
+        }
+        self.free_run = on;
+        self.running = on;
+        if on {
+            self.emit_resumed();
+        } else {
+            self.emit_stopped("pause", self.sys.cpu_regs().pc, Map::new());
+        }
+        was
+    }
+
+    /// The machine's master clock. Only meaningful while the real machine is swapped in.
+    pub fn mclk(&self) -> u64 {
+        self.sys.scheduler().now()
+    }
+
+    /// The latched frame — line-major RGB and its width — or `None` before any whole frame has been drawn.
+    pub fn latched_frame(&self) -> Option<FrameRef<'_>> {
+        self.last_frame.as_ref().map(|f| (f.width, &f.rgb[..]))
+    }
+
+    /// How many times this engine's **own** runs have replaced the latched frame (see
+    /// [`Engine::last_frame`]).
+    pub fn screen_generation(&self) -> u64 {
+        self.screen_generation
+    }
+
+    /// How many times the cartridge has been replaced (see [`Engine::rom_generation`]).
+    pub fn rom_generation(&self) -> u64 {
+        self.rom_generation
+    }
+
+    /// Hand the engine a frame drawn by somebody else's run loop, so `emulator/screenshot` and
+    /// `emulator/state_hash {includeFramebuffer}` answer with the picture that is actually on the glass.
+    ///
+    /// Takes the [`ScanlineCapture`] rather than a packed buffer on purpose: it is the same input
+    /// [`latch_screen`](Engine::latch_screen) consumes, run through the same reader, so a published frame and
+    /// a client-driven one cannot disagree about geometry, ragged mode switches or which frame is the
+    /// complete one. Returns whether a whole frame was found and taken.
+    ///
+    /// Deliberately does **not** bump [`screen_generation`](Engine::screen_generation): the publisher already
+    /// has this image, and a bump means "the picture moved without you".
+    pub fn publish_capture(&mut self, cap: &ScanlineCapture) -> bool {
+        store_from_capture(&mut self.last_frame, cap)
     }
 
     /// Attach the ROM's own path so `emulator/reload_rom` and `emulator/status` can name it.
@@ -321,8 +457,71 @@ impl Engine {
     /// One free-running frame, called by the server loop between command drains. Returns the pacing
     /// interval to sleep for, if any.
     pub fn free_run_step(&mut self) -> Option<Duration> {
-        self.sys.run_frames(1);
+        self.advance(1);
         self.config.free_run_pace
+    }
+
+    // ---------------------------------------------------------------- the screen path
+
+    /// Advance the machine `frames` whole frames **through the screen capture**, then latch whatever frame
+    /// the run completed.
+    ///
+    /// Every advancing path in this engine goes through here or through [`advance_until`](Engine::advance_until)
+    /// — that is what makes `emulator/screenshot` scanline-accurate rather than a post-hoc guess.
+    fn advance(&mut self, frames: u64) {
+        self.sys.run_frames_with_sink(frames, &mut self.screen);
+        self.latch_screen();
+    }
+
+    /// [`advance`](Engine::advance) with a stop predicate: the capture and the predicate ride the same run as
+    /// a [`Fanout`], which is precisely what `System::run_until_stop` does internally with the predicate
+    /// alone.
+    fn advance_until<F: FnMut(u32, u64) -> bool>(
+        &mut self,
+        max_frames: u64,
+        predicate: F,
+    ) -> oracle_core::system::StopRecord {
+        let mut stop = StopWhen::new(predicate);
+        let mut sink = Fanout::new(&mut self.screen, &mut stop);
+        let record = self.sys.run_frames_with_sink(max_frames, &mut sink);
+        self.latch_screen();
+        record
+    }
+
+    /// Take the completed frame out of the capture and release the capture's bookkeeping.
+    ///
+    /// The release is not optional: `ScanlineCapture`'s per-delivery log grows ~215 KB per emulated second
+    /// under every retention policy and is bounded only by run length, so a long-lived capture on a
+    /// free-running machine is an unbounded leak. `clear` drops the latched pixels too, which is why the
+    /// frame is copied out first.
+    fn latch_screen(&mut self) {
+        if store_from_capture(&mut self.last_frame, &self.screen) {
+            self.screen_generation += 1;
+        }
+        self.screen.clear();
+    }
+
+    /// Forget the picture entirely — the machine under it has been replaced. Also drops the capture's
+    /// half-built frame, which would otherwise be spliced onto the next machine's first lines.
+    fn invalidate_screen(&mut self) {
+        self.last_frame = None;
+        self.screen.clear();
+        self.screen_generation += 1;
+    }
+
+    /// Write the pads the machine should see: **the client's held set OR the human's live input**, per port.
+    ///
+    /// The merge is the answer to "who owns the pad" when a client and a person share one machine. Either
+    /// alternative loses information a caller cannot get back — a client-wins rule makes `emulator/hold` a
+    /// silent input lockout, and a human-wins rule makes `hold` a no-op the moment anyone touches the
+    /// keyboard — whereas OR is what the player already does between its own two input sources (keyboard and
+    /// gamepad merge per button, so neither can suppress the other). In the standalone server `live` is
+    /// all-released and this is byte-identical to writing `held` directly.
+    fn apply_pads(&mut self) {
+        for port in 0..2 {
+            self.sys
+                .set_pad(port, merge_pads(self.live[port], self.held[port]));
+        }
     }
 
     // ---------------------------------------------------------------- dispatch
@@ -524,14 +723,32 @@ impl Engine {
         ))
     }
 
-    /// The active display as a row-major RGB framebuffer, plus its width.
-    fn framebuffer(&self) -> (usize, Vec<(u8, u8, u8)>) {
+    /// The active display as a row-major RGB framebuffer, its width, and **whether it is the frame the
+    /// raster actually drew**.
+    ///
+    /// The latched frame is preferred, and it is preferred for a reason that was measured rather than
+    /// argued: the fallback below re-renders every line out of the VDP state as it stands *now*, and a run
+    /// ends in V-Blank, by which point a game has already rewritten CRAM for the next frame. Every mid-frame
+    /// palette effect is therefore invisible to it — S3K's underwater split comes out in the above-water
+    /// palette, bright red instead of slate blue — and the window hit exactly this bug over 6 of 17
+    /// conformance ROMs (`docs/2026-08-15-scanline-golden-coverage.md`) before it was fixed the same way.
+    ///
+    /// The fallback is still reached, and is still the honest answer when it is: before the first whole frame
+    /// has been drawn (a machine that has been reset but not run) there is no raster output to show, and a
+    /// post-hoc render of the reset state is better than a black rectangle. Callers report which one they got
+    /// — see the `caveat` on `emulator/screenshot`.
+    fn framebuffer(&self) -> (usize, Vec<Rgb>, bool) {
+        if let Some(f) = &self.last_frame {
+            if f.width > 0 && f.rgb.len() == f.width * ACTIVE_LINES as usize {
+                return (f.width, f.rgb.clone(), true);
+            }
+        }
         let width = self.sys.vdp().render_line(0).len();
         let mut fb = Vec::with_capacity(width * ACTIVE_LINES as usize);
         for line in 0..ACTIVE_LINES {
             fb.extend_from_slice(&self.sys.vdp().render_line(line));
         }
-        (width, fb)
+        (width, fb, false)
     }
 
     /// Refuse a run request while free-running. Doing it implicitly (pause, run, stay paused) would
@@ -610,7 +827,7 @@ impl Engine {
         };
         self.running = true;
         self.emit_resumed();
-        self.sys.run_frames(frames);
+        self.advance(frames);
         self.running = false;
         let pc = self.sys.cpu_regs().pc;
         // CR-1: §3's `reason` enum has no value for "a bounded frame advance completed", so this reports
@@ -638,7 +855,7 @@ impl Engine {
         };
         self.running = true;
         self.emit_resumed();
-        let record = self.sys.run_until_stop(max_frames, |pc, _| pc == target);
+        let record = self.advance_until(max_frames, |pc, _| pc == target);
         self.running = false;
         let mut extra = Map::new();
         extra.insert("target".into(), json!(hex::addr(target)));
@@ -666,24 +883,17 @@ impl Engine {
         Ok(out)
     }
 
+    // `pause`/`resume` are the wire spelling of exactly one state change, so they share
+    // [`set_free_run`](Engine::set_free_run) with the host's own pause mirroring — a client pausing the bus
+    // and a person pressing the player's pause key must land in the same place, or the two would disagree
+    // about whether the machine is running and every `-32005 machineRunning` decision after that is a coin
+    // toss.
     fn pause(&mut self, _params: &Value) -> Result<Value, RpcError> {
-        let was = self.free_run;
-        self.free_run = false;
-        self.running = false;
-        if was {
-            self.emit_stopped("pause", self.sys.cpu_regs().pc, Map::new());
-        }
-        Ok(json!({"wasRunning": was}))
+        Ok(json!({"wasRunning": self.set_free_run(false)}))
     }
 
     fn resume(&mut self, _params: &Value) -> Result<Value, RpcError> {
-        let was = self.free_run;
-        self.free_run = true;
-        self.running = true;
-        if !was {
-            self.emit_resumed();
-        }
-        Ok(json!({"wasRunning": was}))
+        Ok(json!({"wasRunning": self.set_free_run(true)}))
     }
 
     fn read_memory(&mut self, params: &Value) -> Result<Value, RpcError> {
@@ -757,12 +967,16 @@ impl Engine {
                        agreeing here can still differ.",
         });
         if include_fb {
-            let (_, fb) = self.framebuffer();
+            let (_, fb, from_raster) = self.framebuffer();
             let mut bytes = Vec::with_capacity(fb.len() * 3);
             for (r, g, b) in fb {
                 bytes.extend_from_slice(&[r, g, b]);
             }
             out["framebuffer"] = json!(hex_of(oracle_core::state_hash::fnv1a_bytes(&bytes)));
+            // Two different pictures can be hashed here, so which one it was has to be on the wire: a
+            // fingerprint whose provenance is ambiguous is a fingerprint two machines can disagree on for a
+            // reason that has nothing to do with either machine.
+            out["framebufferSource"] = json!(if from_raster { "raster" } else { "stateRender" });
         }
         Ok(out)
     }
@@ -773,7 +987,7 @@ impl Engine {
             Some(Value::String(s)) => PathBuf::from(s),
             Some(_) => return Err(RpcError::invalid_params("`path` must be a string")),
         };
-        let (width, fb) = self.framebuffer();
+        let (width, fb, from_raster) = self.framebuffer();
         let mut bytes = Vec::with_capacity(20 + fb.len() * 3);
         bytes.extend_from_slice(format!("P6\n{width} {ACTIVE_LINES}\n255\n").as_bytes());
         for (r, g, b) in &fb {
@@ -786,38 +1000,52 @@ impl Engine {
             )
             .with_data(json!({"path": path.display().to_string()}))
         })?;
-        Ok(json!({
+        let mut out = json!({
             "path": path.display().to_string(),
             "format": "ppm",
             "width": width,
             "height": ACTIVE_LINES,
             "bytes": bytes.len(),
-            "caveat": "the whole frame is rendered from the VDP state as it is right now. Mid-frame \
-                       CRAM/scroll changes that a real raster would show on different lines are NOT \
-                       reproduced — this is a state render, not a scanline-accurate capture.",
-        }))
+            "source": if from_raster { "raster" } else { "stateRender" },
+        });
+        if !from_raster {
+            // The honest caveat is now only true of the fallback — see [`Engine::framebuffer`]. Emitting it
+            // unconditionally would be the mirror of the bug it warns about: telling a caller their
+            // scanline-accurate capture is not one.
+            out["caveat"] = json!(
+                "no whole frame has been drawn yet, so this is rendered from the VDP state as it stands \
+                 right now. Mid-frame CRAM/scroll changes that a real raster would show on different \
+                 lines are NOT reproduced — run at least one frame for a scanline-accurate capture."
+            );
+        }
+        Ok(out)
     }
 
     fn press(&mut self, params: &Value) -> Result<Value, RpcError> {
         self.require_paused("emulator/press")?;
         let port = parse_port(params)?;
         let buttons = parse_buttons(params)?;
+        // A tap advances the machine, so its own ceiling cannot exceed the run ceiling: hosted, a 1,000-frame
+        // tap would freeze the player's window (and its OS event pump) for as long as a 1,000-frame
+        // `run_frames`, and bounding one without the other would just move the hole. `min` rather than a
+        // rewrite because the default 3,600-frame server keeps the 1,000 it always had.
+        let frame_cap = self.config.max_run_frames.min(1000);
         let frames = match params.get("frames") {
             None => 2,
-            Some(v) => hex::parse_count("frames", v, 1, 1000)?,
+            Some(v) => hex::parse_count("frames", v, 1, frame_cap)?,
         };
-        let mut pad = self.held[port];
+        let mut pad = merge_pads(self.live[port], self.held[port]);
         for b in &buttons {
             set_button(&mut pad, b, true);
         }
         self.sys.set_pad(port, pad);
         self.running = true;
         self.emit_resumed();
-        self.sys.run_frames(frames);
+        self.advance(frames);
         self.running = false;
         // Restore exactly the held set — a tap must not leak into later frames, and must not clear a
-        // button the client is separately holding.
-        self.sys.set_pad(port, self.held[port]);
+        // button the client is separately holding (nor one the human is physically holding).
+        self.apply_pads();
         let pc = self.sys.cpu_regs().pc;
         let mut extra = Map::new();
         extra.insert("frames".into(), json!(frames));
@@ -842,7 +1070,7 @@ impl Engine {
         for b in &buttons {
             set_button(&mut self.held[port], b, down);
         }
-        self.sys.set_pad(port, self.held[port]);
+        self.apply_pads();
         Ok(json!({
             "buttons": buttons,
             "down": down,
@@ -852,9 +1080,11 @@ impl Engine {
     }
 
     fn release_all(&mut self, _params: &Value) -> Result<Value, RpcError> {
+        // Clears **the client's** held set on both pads, which is all this method ever owned. A button the
+        // human is physically holding is not the bus's to release, and pretending otherwise would last
+        // exactly until the next iteration re-read the keyboard.
         self.held = [Pad::default(); 2];
-        self.sys.set_pad(0, Pad::default());
-        self.sys.set_pad(1, Pad::default());
+        self.apply_pads();
         Ok(json!({"released": true}))
     }
 
@@ -1055,6 +1285,12 @@ impl Engine {
         self.sys.reset();
         self.held = [Pad::default(); 2];
         self.rom_path = Some(path.clone());
+        // A different cartridge draws a different picture, and the line stream restarts from the reset
+        // vector — so the frame latched from the previous image is not "slightly stale", it is another
+        // game's. Dropped rather than kept, which puts `framebuffer` back on its honest fallback until the
+        // new image has drawn a frame of its own.
+        self.invalidate_screen();
+        self.rom_generation += 1;
 
         // A reload can invalidate the loaded symbols — that is D7's whole point. Re-run the binding
         // check and drop the table if it no longer describes the image.
@@ -1179,6 +1415,13 @@ impl Engine {
         self.sys = sys;
         self.held = held;
         self.rom_path = rom_path;
+        // The restored machine is a different timeline (D13 rule 2 makes it a different *cartridge* too, if
+        // the checkpoint predates a `reload_rom`), so the latched frame and the half-built capture both
+        // belong to a machine that is no longer here. `rom_generation` moves unconditionally: this restore
+        // may or may not have swapped the image, and a host that has to guess which is a host that will
+        // eventually guess wrong.
+        self.invalidate_screen();
+        self.rom_generation += 1;
         // The symbol table travels with the cartridge it was bound to (D7). It is deliberately *not*
         // re-validated here: the listing and the ROM were checked against each other when the listing was
         // loaded, and both halves are being replaced together from the same slot, so the pair is coherent
@@ -1502,6 +1745,70 @@ fn set_button(pad: &mut Pad, name: &str, down: bool) {
         "start" => pad.start = down,
         _ => unreachable!("parse_buttons rejects everything else"),
     }
+}
+
+/// Per-button OR of two pads. See [`Engine::apply_pads`] for why the merge is an OR and not a precedence
+/// rule.
+pub fn merge_pads(a: Pad, b: Pad) -> Pad {
+    Pad {
+        up: a.up || b.up,
+        down: a.down || b.down,
+        left: a.left || b.left,
+        right: a.right || b.right,
+        a: a.a || b.a,
+        b: a.b || b.b,
+        c: a.c || b.c,
+        start: a.start || b.start,
+    }
+}
+
+/// Read the most recently **completed** frame out of a [`Retain::LastFrame`] capture into `slot`, and report
+/// whether there was one to take.
+///
+/// This is the same reader the window uses (`oracle-frontend`'s `blit_capture`), down to the two subtleties
+/// that are not obvious and are both load-bearing:
+///
+/// * **The sum check is what proves the frame is the one just drawn.** A run that ends mid-frame leaves the
+///   *previous* frame in `pixels()`, whose lines are no longer the tail of the delivery log; without the
+///   check a torn run would hand back a frame stitched from two different geometries.
+/// * **A frame is not guaranteed rectangular.** A game can switch H32↔H40 part-way down (S3K does exactly
+///   that on the first frame after a soft reset), so the width is the width the frame *ended* on — what the
+///   VDP is actually scanning out by V-Blank — and short lines are padded with black to reach it.
+///
+/// Written in place because it runs once per emulated frame on a free-running server: reusing the slot's
+/// `Vec` makes the steady state a memcpy rather than a fresh 215 KB allocation and free every 16.7 ms. `slot`
+/// is left completely untouched when there is nothing to take — every rejection above happens before the
+/// first write — so a caller keeps presenting the frame it already had.
+fn store_from_capture(slot: &mut Option<CapturedFrame>, cap: &ScanlineCapture) -> bool {
+    let px = cap.pixels();
+    let log = cap.lines();
+    let height = ACTIVE_LINES as usize;
+    if px.is_empty() || log.len() < height {
+        return false;
+    }
+    let widths = &log[log.len() - height..];
+    if widths.iter().map(|&(_, w)| w).sum::<usize>() != px.len() {
+        return false;
+    }
+    let width = widths[height - 1].1;
+    if width == 0 {
+        return false;
+    }
+    let f = slot.get_or_insert_with(|| CapturedFrame {
+        width,
+        rgb: Vec::with_capacity(width * height),
+    });
+    f.width = width;
+    f.rgb.clear();
+    let mut at = 0;
+    for &(_, line_width) in widths {
+        let line = &px[at..at + line_width];
+        at += line_width;
+        for x in 0..width {
+            f.rgb.push(line.get(x).copied().unwrap_or((0, 0, 0)));
+        }
+    }
+    true
 }
 
 fn held_names(pad: &Pad) -> Vec<&'static str> {
