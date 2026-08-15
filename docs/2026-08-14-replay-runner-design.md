@@ -154,6 +154,24 @@ to 0 on the same path as an independent corroboration. Both live inside one 4-by
 live input (green runs recorded 2423 ticks for a 1721-tick stream). So `Logic_Tick == tick_count` is not
 the completion test; `Replay_Done == $FF` is.
 
+> **Amended 2026-08-14, after review.** `Replay_Done == $FF` is the completion *signal*, but on its own it
+> is not a sufficient PASS, and the paragraph above under-specified this. A truncated or mis-packed stream
+> (`FF 01 <hash> FF 00 …`) passes header validation, arms cleanly, compares the ring-0 checkpoint — which
+> *matches* — reaches `REPLAY_OP_END` at tick 2 and sets the same `$FF`, having verified 1 of 27
+> checkpoints. **The negative control cannot catch this**, because it corrupts checkpoint 0, which such a
+> stream does compare. So a PASS additionally requires all three of:
+>
+> 1. `Logic_Tick >= tick_count` — safe by construction in the direction this section already establishes:
+>    playback consumes exactly one tick per `GameLoop` iteration and the arm lands at `Logic_Tick 1`, so
+>    genuine completion is `tick_count + 1` and it only grows from there. This is a *relationship* to the
+>    stream's own header, not a pinned number, so it survives a re-record.
+> 2. `Input_Source` self-cleared, as above.
+> 3. `Replay_Ptr` advanced past the 20-byte header (the §2.7 bad-arm signature, which was previously
+>    consulted on the timeout path only).
+>
+> Anything that sets `Replay_Done` without all three is **SHORT COMPLETION** — a loud failure naming what
+> was short, exit code 6 — never a PASS.
+
 ### 2.6 FAIL — one predicate catches everything
 
 There are exactly two raise sites on the replay path, both DEBUG-only (`replay.emp:210-218`):

@@ -36,7 +36,8 @@
 
 use oracle_replay::cli::Fixture;
 use oracle_replay::fault::DESYNC_MESSAGE;
-use oracle_replay::header::ReplayHeader;
+use oracle_replay::header::{ReplayHeader, REPLAY_ESCAPE, REPLAY_OP_END};
+use oracle_replay::outcome::Shortfall;
 use oracle_replay::policy;
 use oracle_replay::runner::{
     self, Prepared, RunConfig, TimeoutReason, Verdict, NEGATIVE_CONTROL_PAYLOAD,
@@ -246,7 +247,13 @@ fn the_negative_control_trips_the_gate() {
     let (at, was) = p
         .corrupt_first_checkpoint()
         .expect("a checkpoint to corrupt");
-    assert_eq!(was, 0x1D37_5066, "the ring-0 expected hash");
+    // `was` is read from the ROM, never pinned: it is the ring-0 hash of *this* build's curated state, and
+    // a re-record moves it. What must hold is that the patch was a real change, and that the trap reports
+    // this exact value back as `d0` (asserted below).
+    assert_ne!(
+        was, NEGATIVE_CONTROL_PAYLOAD,
+        "the payload must differ from the sentinel, or the patch is a no-op"
+    );
 
     let r = runner::run(&p, default_config()).expect("the run must complete");
     let Verdict::Trap(t) = &r.verdict else {
@@ -261,9 +268,14 @@ fn the_negative_control_trips_the_gate() {
     let d = f.desync.expect("a desync carries its registers");
     assert_eq!(d.expected, NEGATIVE_CONTROL_PAYLOAD, "d2 = what we planted");
     assert_eq!(d.actual, was, "d0 = the hash the game really produced");
-    assert_eq!(
-        d.logic_tick, 2,
-        "the ring-0 checkpoint is compared at tick 2"
+    // NOT `== 2`. `Logic_Tick = ring + 2` is fixture-specific and the design's own trap table
+    // (`notes/…-restamp-ab.md:22`) singles it out as a thing never to hardcode: it is a property of where
+    // the arm lands and how the packer split the runs, both of which a re-record moves. What is
+    // load-bearing is that the trap happened during the replay at all.
+    assert!(
+        d.logic_tick > 0,
+        "the desync must be reported at a real tick, got {}",
+        d.logic_tick
     );
 
     // The raise site is decoded from the stack, not guessed: `(A7).l - 6` must land on a `jsr` opcode
@@ -290,6 +302,134 @@ fn the_negative_control_trips_the_gate() {
         .expect("the negative control must pass");
     println!("planted at ${at:06X}; {why}");
     println!("raised at ${:06X} ({site})", f.raise_site);
+}
+
+/// **The strongest test in this crate: a truncated stream must NOT report PASS.**
+///
+/// This is the failure the whole gate is built to prevent, and the one the negative control structurally
+/// cannot catch. Splice `FF 00` (`REPLAY_OP_END`) in directly behind the ring-0 checkpoint of the real
+/// fixture, in the real ROM image. The result passes every header check, arms cleanly, compares checkpoint
+/// 0 — which *matches*, so no desync fires — reaches end-of-stream at tick 2 and sets `Replay_Done = $FF`
+/// with `Input_Source` cleared and the cursor past the header, exactly as a green run does.
+///
+/// A PASS resting on `Replay_Done` alone reports exit 0 on that, having verified 1 checkpoint out of 27.
+/// The negative control does not catch it: the negative control corrupts checkpoint 0, which this stream
+/// still compares, so it would trip on this ROM just as happily.
+///
+/// It costs about what the negative control costs (it reaches its verdict at tick 2), so it runs by
+/// default. What it asserts is a *relationship* — `Logic_Tick` fell short of the header's own declared
+/// count — so nothing here moves when the fixture is re-recorded.
+#[test]
+fn a_truncated_stream_that_sets_replay_done_is_not_a_pass() {
+    let Some(mut p) = prepared(Fixture::Ojz) else {
+        return;
+    };
+    let h = p.header;
+    let full_ticks = h.tick_count;
+
+    // The real stream opens `FF 01 <4-byte hash> | 00 3F …`. Overwrite the first ordinary pair — the byte
+    // right after the ring-0 checkpoint record — with the end-of-stream opcode.
+    let end_at = (h.body + 6) as usize;
+    let overwritten = [p.rom[end_at], p.rom[end_at + 1]];
+    p.rom[end_at] = REPLAY_ESCAPE;
+    p.rom[end_at + 1] = REPLAY_OP_END;
+    assert_ne!(
+        overwritten,
+        [REPLAY_ESCAPE, REPLAY_OP_END],
+        "the stream must not already end here, or this test proves nothing"
+    );
+
+    let r = runner::run(&p, default_config()).expect("the run must complete");
+
+    let Verdict::Short(s) = &r.verdict else {
+        panic!(
+            "a stream truncated to one checkpoint must NOT be a PASS — got {:?}. The completion flag \
+             alone cannot tell a full replay from a two-tick one.",
+            r.verdict
+        );
+    };
+
+    // The machine really did take the completion path: this is not a hang or a trap wearing a PASS's
+    // clothes, which is exactly why a bare `Replay_Done` compare is fooled by it.
+    assert_eq!(r.probe.replay_done, 0xFF, "Replay_Done IS set");
+    assert!(r.corroborated(), "and Input_Source DID self-clear");
+    assert!(
+        !r.probe.stuck_in_header(r.anchors.fixture),
+        "and the cursor DID leave the header — every other corroboration passes"
+    );
+
+    // The one thing that gives it away, and the shortfall that must be named.
+    assert!(
+        r.probe.logic_tick < full_ticks,
+        "the truncated run must stop short of the {full_ticks} ticks the header declares, got {}",
+        r.probe.logic_tick
+    );
+    assert_eq!(
+        s.shortfalls,
+        vec![Shortfall::TicksShort {
+            logic_tick: r.probe.logic_tick,
+            required: full_ticks
+        }],
+        "the failure must name what was short"
+    );
+    let said = s.shortfalls[0].to_string();
+    assert!(said.contains("never replayed"), "{said}");
+
+    println!(
+        "truncated at ${end_at:06X} (was {overwritten:02X?}): Replay_Done=$FF at Logic_Tick {} of a \
+         {full_ticks}-tick stream, {} frames after the arm — reported SHORT, not PASS",
+        r.probe.logic_tick, s.frames
+    );
+    println!("  {said}");
+}
+
+/// **The stall watchdog's wiring**, which no test above the pure `Watchdog` unit level exercised: a stubbed
+/// `observe()` that never returned `true` would have passed the entire suite.
+///
+/// A budget of 1 frame must fire almost immediately after the arm, because `GameState_OJZScroll_Init` is
+/// the entry that loads the level and `Level_LoadArt`'s `VSync_Wait` spin runs inside that single dispatch
+/// — the measured worst case on a *healthy* run is 34 consecutive frozen frames. Costs ~0.05 s.
+#[test]
+fn the_stall_watchdog_is_actually_wired_to_the_verdict() {
+    let Some(p) = prepared(Fixture::Ojz) else {
+        return;
+    };
+    let r = runner::run(
+        &p,
+        RunConfig {
+            max_frames: oracle_replay::cli::DEFAULT_MAX_FRAMES,
+            stall_frames: 1,
+        },
+    )
+    .expect("the run must complete");
+
+    let Verdict::Timeout(t) = &r.verdict else {
+        panic!(
+            "a 1-frame stall budget must wedge the run, got {:?}",
+            r.verdict
+        );
+    };
+    let TimeoutReason::Stalled { frozen_frames } = t.reason else {
+        panic!(
+            "the watchdog must be the reason, not the {} frame cap: {:?}",
+            oracle_replay::cli::DEFAULT_MAX_FRAMES,
+            t.reason
+        );
+    };
+    assert!(frozen_frames >= 1, "the report must carry the count");
+    assert!(
+        t.frames < oracle_replay::cli::MEASURED_STALL_WORST_CASE + 10,
+        "the watchdog must fire during the level-load spin, not hundreds of frames later: {} frames",
+        t.frames
+    );
+    assert_eq!(t.phase, oracle_replay::runner::Phase::Replay);
+    println!(
+        "stall_frames=1 wedged {} frames after the arm ({frozen_frames} frozen) at Logic_Tick {}",
+        t.frames,
+        t.probe
+            .expect("an armed timeout reports the cells")
+            .logic_tick
+    );
 }
 
 /// A ludicrously small frame cap must produce a TIMEOUT — with the trap checked first — rather than a

@@ -8,8 +8,8 @@ use oracle_replay::cli::{self, Args, Parsed};
 use oracle_replay::fault::FaultReport;
 use oracle_replay::header::REPLAY_HEADER_LEN;
 use oracle_replay::runner::{
-    self, Phase, Prepared, RunConfig, RunReport, TimeoutReason, TimeoutReport, TrapReport, Verdict,
-    NEGATIVE_CONTROL_PAYLOAD,
+    self, Phase, Prepared, RunConfig, RunReport, ShortReport, TimeoutReason, TimeoutReport,
+    TrapReport, Verdict, NEGATIVE_CONTROL_PAYLOAD,
 };
 
 /// Exit codes. Kept as named constants because another repo's harness branches on them.
@@ -20,6 +20,9 @@ mod exit {
     pub const FAULT: i32 = 3;
     pub const TIMEOUT: i32 = 4;
     pub const GATE_INVERTED: i32 = 5;
+    /// The stream reported completion that its own cells do not corroborate — a truncated or mis-packed
+    /// stream. Distinct from every other code because it is the one failure that used to be a PASS.
+    pub const SHORT: i32 = 6;
 }
 
 fn main() {
@@ -102,6 +105,22 @@ fn go(args: &Args) -> Result<i32, String> {
 
     if args.negative_control {
         let (at, _) = planted.expect("planted when --negative-control");
+        // Branch on the verdict's *shape* first. A run that never reached a verdict cannot say anything
+        // about whether the gate is inverted, and reporting a timeout as "THE GATE IS INVERTED" is a
+        // confident wrong answer where an honest "inconclusive" was available.
+        if let Verdict::Timeout(t) = &report.verdict {
+            eprintln!(
+                "\nNEGATIVE CONTROL INCONCLUSIVE — the run timed out ({}) before it could either trap \
+                 or complete, so it says nothing about whether the gate works. Diagnose the timeout \
+                 above first; this is NOT evidence of an inverted gate.",
+                match t.reason {
+                    TimeoutReason::Stalled { frozen_frames } =>
+                        format!("Logic_Tick frozen for {frozen_frames} frames"),
+                    TimeoutReason::Deadline => format!("{} frame cap", t.frames),
+                }
+            );
+            return Ok(exit::TIMEOUT);
+        }
         let fault: Option<&FaultReport> = match &report.verdict {
             Verdict::Trap(t) => t.fault(),
             _ => None,
@@ -123,6 +142,7 @@ fn go(args: &Args) -> Result<i32, String> {
 
     Ok(match &report.verdict {
         Verdict::Pass => exit::PASS,
+        Verdict::Short(_) => exit::SHORT,
         Verdict::Trap(t) if t.is_desync() => exit::DESYNC,
         Verdict::Trap(_) => exit::FAULT,
         Verdict::Timeout(_) => exit::TIMEOUT,
@@ -136,28 +156,62 @@ fn print_verdict(r: &RunReport) {
     );
     match &r.verdict {
         Verdict::Pass => {
-            println!("\nPASS — the stream ran to its end.");
+            println!("\nPASS — the stream ran to its end, corroborated three ways.");
+            println!("  Replay_Done  = $FF");
             println!(
-                "  Replay_Done = $FF, Logic_Tick = {} (header declares {} ticks; an overshoot is \
-                 normal — the game keeps running on live input after end-of-stream)",
+                "  Logic_Tick   = {} >= the {} ticks the header declares (an overshoot is normal — the \
+                 game keeps running on live input after end-of-stream)",
                 r.probe.logic_tick, r.header.tick_count
             );
             println!(
-                "  Input_Source = ${:02X} — {}",
-                r.probe.input_source,
-                if r.corroborated() {
-                    "self-cleared on the completion path, corroborating the verdict"
-                } else {
-                    "WARNING: not cleared, which the completion path should have done"
-                }
+                "  Input_Source = ${:02X} — self-cleared on the completion path",
+                r.probe.input_source
+            );
+            println!(
+                "  Replay_Ptr   = ${:08X} — fixture+{}, well past the {REPLAY_HEADER_LEN}-byte header",
+                r.probe.replay_ptr,
+                r.probe.stream_offset(r.anchors.fixture)
             );
         }
+        Verdict::Short(s) => print_short(s, r),
         Verdict::Trap(t) => print_trap(t, r),
         Verdict::Timeout(t) => print_timeout(t, r),
     }
 }
 
+/// The failure that used to be a PASS: `Replay_Done` set, corroborations missing.
+fn print_short(s: &ShortReport, r: &RunReport) {
+    println!("\nSHORT COMPLETION — Replay_Done is $FF, but this run verified less than it claims.");
+    println!(
+        "  The playback path reached an end-of-stream opcode, so the flag is honestly set. What is \
+         wrong is WHICH end it reached:"
+    );
+    for f in &s.shortfalls {
+        println!("    - {f}");
+    }
+    println!(
+        "  This is what a truncated or mis-packed stream looks like. A byte compare on Replay_Done \
+         alone would have called it a PASS."
+    );
+    println!(
+        "  cells    Logic_Tick={} Replay_Done=${:02X} Input_Source=${:02X} Replay_Ptr=${:08X} \
+         (fixture+{})",
+        s.probe.logic_tick,
+        s.probe.replay_done,
+        s.probe.input_source,
+        s.probe.replay_ptr,
+        s.probe.stream_offset(r.anchors.fixture)
+    );
+    println!("  header   declares {} ticks", r.header.tick_count);
+}
+
 fn print_trap(t: &TrapReport, r: &RunReport) {
+    if t.phase == Phase::Boot {
+        println!(
+            "\n(this trap fired BEFORE the arm — during boot or level load. The stream was never armed, \
+             so nothing below implicates the fixture; the replay cells are whatever boot left there.)"
+        );
+    }
     match &t.decoded {
         Ok(f) if f.is_desync() => {
             let d = f.desync.expect("a desync carries its detail");
@@ -175,7 +229,17 @@ fn print_trap(t: &TrapReport, r: &RunReport) {
         }
     }
     if let Ok(f) = &t.decoded {
-        println!("  message  \"{}\" at ${:06X}", f.message, f.message_addr);
+        println!(
+            "  message  \"{}\"{} at ${:06X}",
+            f.message,
+            if f.truncated {
+                " (readable prefix; the rest is MD Debugger format-control bytes — every `assert` site \
+                 carries them)"
+            } else {
+                ""
+            },
+            f.message_addr
+        );
         println!(
             "  raised at ${:06X}{}",
             f.raise_site,
@@ -230,15 +294,20 @@ fn print_timeout(t: &TimeoutReport, r: &RunReport) {
         println!(
             "  Replay_Ptr   ${:08X}  (fixture + {off}){}",
             p.replay_ptr,
-            if off < i64::from(REPLAY_HEADER_LEN) {
+            if p.stuck_in_header(r.anchors.fixture) {
                 "  <-- STILL INSIDE THE HEADER: this is the signature of a bad arm"
             } else {
                 ""
             }
         );
     }
-    println!(
-        "  (the trap predicate was checked first — the machine is not sitting at ErrorHandlerBlob, so \
-         this is a genuine stall rather than a desync wearing a hang's clothes)"
-    );
+    // Only true after the arm. In `Phase::Boot` the run was under the composed arm+trap predicate too, but
+    // the sentence below is about the *replay* loop's ordering, and printing it unconditionally asserted
+    // something the boot path had not checked.
+    if t.phase == Phase::Replay {
+        println!(
+            "  (the trap predicate was checked first — the machine is not sitting at ErrorHandlerBlob, \
+             so this is a genuine stall rather than a desync wearing a hang's clothes)"
+        );
+    }
 }

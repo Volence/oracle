@@ -6,10 +6,10 @@
 use crate::cli::Fixture;
 use crate::fault::{self, FaultDecodeError, FaultReport, RegSnapshot};
 use crate::header::{HeaderError, ReplayHeader, REPLAY_HEADER_LEN};
-use crate::outcome::{dispose, Disposition, Probe, Watchdog};
+use crate::outcome::{dispose, Disposition, Expected, Probe, Shortfall, Watchdog};
 use crate::policy::{self, LstVerdict};
 use crate::{ram_u32, ram_u8, stack_in_work_ram};
-use oracle_core::bus::StopWhen;
+use oracle_core::bus::{Fanout, StopWhen};
 use oracle_core::io::Pad;
 use oracle_core::m68000::bus68k::Bus68k;
 use oracle_core::symbols::SymbolTable;
@@ -156,6 +156,16 @@ impl Prepared {
             self.rom[i + 2],
             self.rom[i + 3],
         ]);
+        // A payload that already *is* the sentinel means the patch changes nothing: the trap that follows
+        // would be the genuine recorded hash mismatching, not our corruption, and the whole control would
+        // be a tautology dressed as evidence.
+        if original == NEGATIVE_CONTROL_PAYLOAD {
+            return Err(format!(
+                "the first checkpoint payload at ${at:06X} is ALREADY ${NEGATIVE_CONTROL_PAYLOAD:08X}, \
+                 so patching it would be a no-op and the negative control would prove nothing about \
+                 whether the corruption caused the trap. Refusing"
+            ));
+        }
         self.rom[i..i + 4].copy_from_slice(&NEGATIVE_CONTROL_PAYLOAD.to_be_bytes());
         Ok((at, original))
     }
@@ -201,6 +211,9 @@ pub struct TimeoutReport {
 /// A stop at `ErrorHandlerBlob + 0`, decoded if the frame is intelligible.
 #[derive(Debug, Clone)]
 pub struct TrapReport {
+    /// Which phase trapped. [`Phase::Boot`] means the fault happened before the arm — the replay cells in
+    /// [`probe`](Self::probe) are meaningless there, and nothing about the stream is implicated.
+    pub phase: Phase,
     pub decoded: Result<FaultReport, FaultDecodeError>,
     /// `(A7).l` as read — kept even when decoding failed, because it is the evidence.
     pub stack_top: Option<u32>,
@@ -221,10 +234,21 @@ impl TrapReport {
     }
 }
 
+/// A `Replay_Done == $FF` that does not stand up — see [`crate::outcome`]'s "A PASS is never one byte".
+#[derive(Debug, Clone)]
+pub struct ShortReport {
+    /// Everything that was short. Never empty.
+    pub shortfalls: Vec<Shortfall>,
+    pub frames: u64,
+    pub probe: Probe,
+}
+
 /// The verdict of one run.
 #[derive(Debug, Clone)]
 pub enum Verdict {
     Pass,
+    /// The stream reported completion, but the completion was not corroborated. **A failure.**
+    Short(Box<ShortReport>),
     Trap(Box<TrapReport>),
     Timeout(Box<TimeoutReport>),
 }
@@ -256,10 +280,19 @@ impl RunReport {
 pub fn run(prepared: &Prepared, cfg: RunConfig) -> Result<RunReport, String> {
     let a = prepared.anchors;
 
-    // Boot with the arm predicate already attached. `boot_with_sink` makes "load, then reset, then arm"
+    // Boot with **both** predicates already attached. `boot_with_sink` makes "load, then reset, then arm"
     // inexpressible, so the sibling's "arm the breakpoint BEFORE reload_rom" ordering hazard cannot occur.
-    let mut arm = StopWhen::new(|pc, _| pc == a.init);
-    let mut sys = System::boot_with_sink(POWER_ON_SEED, prepared.rom.clone(), &mut arm);
+    //
+    // The trap half matters as much as the arm half: every CPU exception vector routes through
+    // `raise_exception` → `jsr (blob).l`, and the handler tail loops forever. A boot or level-load fault
+    // under an arm-only predicate therefore burns the entire frame cap and reports a TIMEOUT with no
+    // decode — the most expensive way to say "something crashed". Composed, it is a decoded FAULT within a
+    // frame of the crash.
+    let mut boot_sink = Fanout::new(
+        StopWhen::new(|pc, _| pc == a.init),
+        StopWhen::new(|pc, _| pc == a.error_handler),
+    );
+    let mut sys = System::boot_with_sink(POWER_ON_SEED, prepared.rom.clone(), &mut boot_sink);
 
     // The pad stays at all-zero for the entire run, and is never touched again: `replay.emp:157-159` reads
     // live `Ctrl_1_Press` *before* the playback overwrite and sets `Replay_Exit_Request` on Start.
@@ -271,24 +304,38 @@ pub fn run(prepared: &Prepared, cfg: RunConfig) -> Result<RunReport, String> {
         );
     }
 
-    let boot = sys.run_frames_with_sink(cfg.max_frames, &mut arm);
-    if !boot.fired() {
-        return Ok(RunReport {
-            verdict: Verdict::Timeout(Box::new(TimeoutReport {
-                phase: Phase::Boot,
-                reason: TimeoutReason::Deadline,
-                frames: boot.frame,
-                probe: None,
-                pc: boot.pc,
-                pc_symbol: prepared.table.resolve(boot.pc).map(|r| r.to_string()),
-            })),
-            frames_to_arm: boot.frame,
-            frames_after_arm: 0,
-            probe: probe(&sys, &a),
-            header: prepared.header,
-            anchors: a,
-            fixture: prepared.fixture,
-        });
+    let boot = sys.run_frames_with_sink(cfg.max_frames, &mut boot_sink);
+    let boot_trapped = boot_sink.b.fired() || boot.pc == a.error_handler;
+    let boot_armed = boot_sink.a.fired();
+    if !boot_armed {
+        let unarmed = |verdict| {
+            Ok(RunReport {
+                verdict,
+                frames_to_arm: boot.frame,
+                frames_after_arm: 0,
+                probe: probe(&sys, &a),
+                header: prepared.header,
+                anchors: a,
+                fixture: prepared.fixture,
+            })
+        };
+        if boot_trapped {
+            return unarmed(Verdict::Trap(Box::new(decode_trap(
+                &sys,
+                prepared,
+                Phase::Boot,
+                boot.frame,
+                probe(&sys, &a),
+            ))));
+        }
+        return unarmed(Verdict::Timeout(Box::new(TimeoutReport {
+            phase: Phase::Boot,
+            reason: TimeoutReason::Deadline,
+            frames: boot.frame,
+            probe: None,
+            pc: boot.pc,
+            pc_symbol: prepared.table.resolve(boot.pc).map(|r| r.to_string()),
+        })));
     }
     let frames_to_arm = boot.frame;
 
@@ -318,7 +365,26 @@ pub fn run(prepared: &Prepared, cfg: RunConfig) -> Result<RunReport, String> {
             armed.input_source
         ));
     }
+    // The third cell of the same read-back, and the one that is free. Work RAM is **not** zero at power-on
+    // (`system.rs:393-398` seeds it with deterministic pseudo-random bytes), so `Replay_Done` reading clear
+    // here is a property of *this* build's boot clearing work RAM before `Game.entry` — not of the runner.
+    // Build-independence is this tool's stated value, so it is asserted rather than assumed: a flag that is
+    // already set means the very first poll would report completion and the run would "pass" before it
+    // started.
+    if armed.replay_done != 0 {
+        return Err(format!(
+            "the arm is not trustworthy: Replay_Done already reads ${:02X} at the arm point, before a \
+             single tick of the stream has been replayed. A pre-set flag makes the first poll report \
+             completion, so this run would report a verdict it never earned. (Work RAM is seeded \
+             pseudo-randomly at power-on; this build's boot is expected to clear it before Game.entry.)",
+            armed.replay_done
+        ));
+    }
 
+    let expected = Expected {
+        tick_count: prepared.header.tick_count,
+        fixture_base: a.fixture,
+    };
     let mut watchdog = Watchdog::new(cfg.stall_frames);
     let mut frames = 0u64;
     loop {
@@ -340,12 +406,28 @@ pub fn run(prepared: &Prepared, cfg: RunConfig) -> Result<RunReport, String> {
             })
         };
 
-        match dispose(rec.fired(), &p, stalled, deadline) {
+        // `rec.pc` is the backstop the reviewer asked for: a `DeadlineReached` can land at an instruction
+        // boundary whose PC already *is* the blob, and reporting that as a TIMEOUT would print "the machine
+        // is not sitting at ErrorHandlerBlob" directly under the PC that disproves it.
+        let trapped = rec.fired() || rec.pc == a.error_handler;
+
+        match dispose(trapped, &p, &expected, stalled, deadline) {
             Disposition::Continue => continue,
             Disposition::Passed => return done(Verdict::Pass),
+            Disposition::ShortCompletion => {
+                return done(Verdict::Short(Box::new(ShortReport {
+                    shortfalls: p.shortfalls(&expected),
+                    frames,
+                    probe: p,
+                })))
+            }
             Disposition::Trapped => {
                 return done(Verdict::Trap(Box::new(decode_trap(
-                    &sys, prepared, frames, p,
+                    &sys,
+                    prepared,
+                    Phase::Replay,
+                    frames,
+                    p,
                 ))))
             }
             Disposition::Stalled | Disposition::Deadline => {
@@ -383,11 +465,18 @@ fn probe(sys: &System, a: &Anchors) -> Probe {
 
 /// Decode a stop at `ErrorHandlerBlob + 0`: `(A7).l` is the message pointer the `jsr` pushed, and the
 /// registers have not been touched yet.
-fn decode_trap(sys: &System, prepared: &Prepared, frames: u64, p: Probe) -> TrapReport {
+fn decode_trap(
+    sys: &System,
+    prepared: &Prepared,
+    phase: Phase,
+    frames: u64,
+    p: Probe,
+) -> TrapReport {
     let regs = RegSnapshot::from_regs(sys.cpu_regs());
     let a7 = regs.a[7];
     let Some(sp) = stack_in_work_ram(a7) else {
         return TrapReport {
+            phase,
             decoded: Err(FaultDecodeError::StackNotInWorkRam { a7 }),
             stack_top: None,
             regs,
@@ -403,6 +492,7 @@ fn decode_trap(sys: &System, prepared: &Prepared, frames: u64, p: Probe) -> Trap
         prepared.table.resolve(site).map(|r| r.to_string())
     });
     TrapReport {
+        phase,
         decoded,
         stack_top: Some(stack_top),
         regs,
@@ -457,6 +547,7 @@ mod tests {
     fn fault_with(message: &str, desync: Option<DesyncDetail>) -> FaultReport {
         FaultReport {
             message: message.to_string(),
+            truncated: false,
             message_addr: 0x26AC,
             raise_site: 0x26A6,
             raise_site_symbol: None,
@@ -521,6 +612,115 @@ mod tests {
             .expect("must refuse");
         assert!(e.contains("REPLAY DESYNC"), "{e}");
         assert!(e.contains("false green"), "{e}");
+    }
+
+    /// A negative control whose "corruption" changes nothing proves nothing: any trap that followed would
+    /// be the recorded hash mismatching on its own merits, and we would credit our patch for it.
+    #[test]
+    fn corrupting_a_payload_that_is_already_the_sentinel_is_refused() {
+        let mut rom = vec![0u8; 0x400];
+        rom[0x100..0x100 + 4].copy_from_slice(b"ARP0");
+        rom[0x100 + 6..0x100 + 10].copy_from_slice(&7u32.to_be_bytes());
+        rom[0x114..0x11A].copy_from_slice(&[0xFF, 0x01, 0xDE, 0xAD, 0xBE, 0xEF]);
+        let header = crate::header::ReplayHeader::parse(&rom, 0x100).expect("a usable header");
+        let mut p = Prepared {
+            rom,
+            table: oracle_core::symbols::SymbolTable::parse(
+                "  Symbol Table (* = unused):\n\n Main : 300 C |\n\n   1 symbols\n",
+            )
+            .unwrap(),
+            anchors: Anchors {
+                init: 0,
+                fixture: 0x100,
+                replay_ptr: 0,
+                input_source: 0,
+                replay_done: 0,
+                logic_tick: 0,
+                error_handler: 0,
+                replay_hold: None,
+            },
+            header,
+            fixture: Fixture::Ojz,
+            notes: Vec::new(),
+        };
+        let e = p.corrupt_first_checkpoint().expect_err("must refuse");
+        assert!(e.contains("ALREADY"), "{e}");
+        assert!(e.contains("no-op"), "{e}");
+    }
+
+    /// **A fault before the arm must be a decoded FAULT, not a TIMEOUT.**
+    ///
+    /// Every CPU exception vector routes through `raise_exception` → `jsr (blob).l`, and the handler tail
+    /// loops forever. Under an arm-only boot predicate, a boot or level-load fault therefore burns the
+    /// whole frame cap and reports TIMEOUT with no decode — and `print_timeout` then asserts "the machine
+    /// is not sitting at ErrorHandlerBlob", which in `Phase::Boot` was simply false.
+    ///
+    /// This uses a hand-assembled ROM rather than the real artifacts, so it runs everywhere: reset lands on
+    /// a `jsr (blob).l` with an inline message behind it, and `GameState_OJZScroll_Init` is at an address
+    /// the machine never reaches.
+    #[test]
+    fn a_fault_before_the_arm_is_a_decoded_fault_not_a_timeout() {
+        const END_OF_ROM: usize = 0x8000;
+        let mut rom = vec![0u8; END_OF_ROM + 0x4000];
+        // Vectors: SSP into work RAM (so the frame is readable), reset PC at $200.
+        rom[0..4].copy_from_slice(&0x00FF_FE00u32.to_be_bytes());
+        rom[4..8].copy_from_slice(&0x0000_0200u32.to_be_bytes());
+        // The refusal's positive assertion.
+        rom[0x100..0x100 + policy::DESYNC_TRAP_STRING.len()]
+            .copy_from_slice(policy::DESYNC_TRAP_STRING);
+        // $200: jsr $00000400.l — the blob — with the message inline behind it, exactly as
+        // `raise_exception` lowers.
+        rom[0x200..0x206].copy_from_slice(&[0x4E, 0xB9, 0x00, 0x00, 0x04, 0x00]);
+        rom[0x206..0x206 + 11].copy_from_slice(b"BOOT FAULT\0");
+        // $400: the blob, whose tail loops forever (`bra.s *`).
+        rom[0x400..0x402].copy_from_slice(&[0x60, 0xFE]);
+        // A well-formed fixture, so nothing else refuses first.
+        rom[0x1000..0x1004].copy_from_slice(b"ARP0");
+        rom[0x1006..0x100A].copy_from_slice(&99u32.to_be_bytes());
+        rom[0x1014..0x101A].copy_from_slice(&[0xFF, 0x01, 0x11, 0x22, 0x33, 0x44]);
+        rom[END_OF_ROM] = 0xDE;
+        rom[END_OF_ROM + 1] = 0xB2;
+
+        let lst = "  Symbol Table (* = unused):\n\n \
+             ErrorHandlerBlob : 400 C |\n \
+             GameState_OJZScroll_Init : 600 C |\n \
+             Input_Source : FFFF8036 C |\n \
+             Logic_Tick : FFFF8004 C |\n \
+             Replay_Done : FFFF8038 C |\n \
+             Replay_OJZ_Fixture : 1000 C |\n \
+             Replay_Ptr : FFFF803C C |\n \
+             EndOfRom : 8000 C |\n\n   8 symbols\n";
+        let p = Prepared::new(rom, lst, Fixture::Ojz).expect("this synthetic pair must prepare");
+
+        let r = run(
+            &p,
+            RunConfig {
+                max_frames: 4,
+                stall_frames: 2,
+            },
+        )
+        .expect("the run must reach a verdict");
+
+        let Verdict::Trap(t) = &r.verdict else {
+            panic!(
+                "a boot fault must be a decoded FAULT, not {:?} — an arm-only boot predicate would burn \
+                 the whole frame cap and report a TIMEOUT with nothing decoded",
+                r.verdict
+            );
+        };
+        assert_eq!(t.phase, Phase::Boot, "and it must say it happened pre-arm");
+        let f = t
+            .fault()
+            .unwrap_or_else(|| panic!("the frame must decode: {:?}", t.decoded));
+        assert_eq!(f.message, "BOOT FAULT");
+        assert!(
+            !f.is_desync(),
+            "a boot fault implicates nothing about the stream"
+        );
+        assert_eq!(f.raise_site, 0x200, "(A7).l - 6 is the jsr");
+        assert_eq!(r.frames_after_arm, 0, "nothing was ever armed");
+        // …and it happens immediately, not at the end of the budget.
+        assert!(t.frames <= 1, "the trap fired at frame {}", t.frames);
     }
 
     /// …and an unresolved symbol is fatal by name, never a silent fallback to a literal.
