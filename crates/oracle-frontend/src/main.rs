@@ -13,7 +13,8 @@
 //! Upgrade path (not this slice): swap minifb for `pixels` + `winit` when GPU-composited debug overlays
 //! (watchpoint highlights, bus-legality heatmaps — `docs/2026-07-20-diagnostic-tooling-ideas.md`) are wanted.
 //!
-//! Usage: `cargo run --release -p oracle-frontend -- <rom.bin> [--scale N] [--aspect tv|square|integer]`
+//! Usage: `cargo run --release -p oracle-frontend -- <rom.bin> [--scale N] [--aspect tv|square|integer]
+//! [--aether] [--socket PATH]`
 //!
 //! ## Controls
 //!
@@ -131,6 +132,31 @@
 //! [`oracle_core::system::StopRecord`]) is unbuilt, not impossible — the "the core is frame-batched" reason
 //! recorded here previously no longer holds.
 //!
+//! ## The Aether control bus, hosted here
+//!
+//! With `--aether` (or `--socket PATH`, or `ORACLE_AETHER=1`) this process **also serves the Aether control
+//! surface** — `empyrean/contract/protocol.md`, the same one `oracle-aether` serves headlessly. It is hosted
+//! rather than run as a separate process because the contract leaves no alternative: a checkpoint is "a
+//! serialization of the live emulator struct" (D13), every reply carries the machine's `frame`/`mclk` *at
+//! reply time* (D11), and the trust model is the emulator process serving a socket it created (D8). All
+//! three need hands on *this* `System`.
+//!
+//! Off by default, and off means off: no socket is created, no thread starts, and every call the loop makes
+//! into [`bus`] is an identity operation on the machine.
+//!
+//! Three things about it are visible from inside this loop, and each is a decision rather than a detail:
+//!
+//! * **Pause is one flag.** An un-paused player *is* a free-running bus, so a client's `run_frames`/`run_to`
+//!   is refused with `-32005 machineRunning` while the window is running — which is what §6's run-control
+//!   state rule requires, not a workaround. `emulator/pause` therefore pauses *the window*, and Space is
+//!   read back out of the bus so the two can never disagree.
+//! * **Pads merge.** A client's `emulator/hold` set is OR'd into the pad this loop writes, exactly as the
+//!   keyboard and gamepad already OR with each other, and the human's live input is published to the bus so
+//!   `emulator/press` does not silently drop it.
+//! * **The picture is shared.** The completed frame is handed to the bus (before the capture is released),
+//!   so `emulator/screenshot` serves what is on the glass. A client-driven run happens with this loop's
+//!   sinks detached, so the bus runs its own capture and the loop pulls that frame back afterwards.
+//!
 //! ## Pacing — why the audio device, not the window, decides how many frames run
 //!
 //! The loop runs **0, 1 or 2** emulated frames per iteration, chosen from the audio ring's occupancy by
@@ -173,6 +199,15 @@ mod symbol_file;
 // Nothing in a window ever reads stdout, which is where every message used to go.
 mod font;
 mod overlay;
+// The Aether capability layer, hosted in this process (`--aether` / `--socket`). Two implementations with
+// one surface: the real one when the `aether` feature is on, a set of no-ops when it is not — so the run
+// loop below has a single shape and no `#[cfg]` of its own. See `bus.rs`'s module docs for the design and
+// for the three semantic conflicts it resolves.
+#[cfg(feature = "aether")]
+mod bus;
+#[cfg(not(feature = "aether"))]
+#[path = "bus_stub.rs"]
+mod bus;
 // Display geometry — aspect handling, the window-sized presentation blit, and the exact click inverse.
 mod present;
 // Click-to-watch: resolving a clicked dot to armable VRAM/CRAM ranges, sprites included.
@@ -200,11 +235,15 @@ const MAX_WIDTH: usize = 320;
 /// per-frame write count is small; this is a generous bound (drops are still counted and reported by `W`).
 const WATCH_CAP: usize = 8192;
 
-/// Parsed command line: the ROM path, the initial window scale, and the aspect mode.
+/// Parsed command line: the ROM path, the initial window scale, the aspect mode, and whether to serve the
+/// Aether bus.
 struct Args {
     rom_path: String,
     scale: usize,
     aspect: Aspect,
+    /// `None` = do not serve (the default — no socket is created at all). `Some(None)` = serve on the
+    /// contract's default path; `Some(Some(p))` = serve on `p`.
+    socket: Option<Option<std::path::PathBuf>>,
 }
 
 /// Parse `<rom.bin> [--scale N] [--aspect tv|square|integer]`. Returns a human-readable error string on
@@ -219,9 +258,22 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
     let mut rom_path: Option<String> = None;
     let mut scale: usize = 3;
     let mut aspect = Aspect::default();
+    // Serving is **opt-in**, and the default is "no socket exists". `ORACLE_AETHER` is read here rather than
+    // deep in the bus so that `--aether` and the environment are one decision with one spelling, and so the
+    // usage text can be truthful about both.
+    let mut socket: Option<Option<std::path::PathBuf>> = std::env::var_os("ORACLE_AETHER")
+        .is_some_and(|v| v != "0")
+        .then_some(None);
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
+            // `--socket PATH` implies `--aether`: asking for a specific path and then not serving on it
+            // would be a flag that does nothing.
+            "--aether" => socket = Some(socket.flatten()),
+            "--socket" => {
+                let v = it.next().ok_or("--socket needs a value")?;
+                socket = Some(Some(std::path::PathBuf::from(v)));
+            }
             "--scale" => {
                 let v = it.next().ok_or("--scale needs a value")?;
                 scale = v
@@ -248,6 +300,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
         rom_path,
         scale,
         aspect,
+        socket,
     })
 }
 
@@ -273,6 +326,21 @@ fn probe_slots(rom_path: &str) -> [bool; save_state::SLOT_COUNT] {
         *occupied = save_state::state_path_for(std::path::Path::new(rom_path), slot).exists();
     }
     out
+}
+
+/// What the hosted bus should know about the cartridge: the ROM's path, and the `.lst` listing bound to it.
+/// The listing is only named when one was actually loaded — the bus refuses to resolve symbols rather than
+/// resolve them against a path that holds nothing (D7).
+fn bus_machine_info(rom_path: &str, symbols: Option<SymbolTable>) -> bus::MachineInfo {
+    let symbols_path = symbols
+        .is_some()
+        .then(|| symbol_file::lst_path_for(std::path::Path::new(rom_path)))
+        .map(|p| p.display().to_string());
+    bus::MachineInfo {
+        rom_path: Some(rom_path.to_string()),
+        symbols,
+        symbols_path,
+    }
 }
 
 /// Number keys 0-9, in slot order: pressing one selects that save-state slot directly. Indexed by slot, so
@@ -628,10 +696,14 @@ fn main() {
         Err(e) => {
             eprintln!("error: {e}");
             eprintln!(
-                "usage: oracle-frontend <rom.bin> [--scale N] [--aspect tv|square|integer]\n  \
+                "usage: oracle-frontend <rom.bin> [--scale N] [--aspect tv|square|integer] \
+                 [--aether] [--socket PATH]\n  \
                  --scale   N = 1..=8 (default 3) — multiples of the 224-line frame height\n  \
                  --aspect  tv = the console's own 4:3 (default), square = square pixels, \
-                 integer = square pixels at a whole scale"
+                 integer = square pixels at a whole scale\n  \
+                 --aether  serve the Aether control bus from this process (also: ORACLE_AETHER=1). \
+                 Off by default — no socket is created.\n  \
+                 --socket  serve on PATH instead of the contract's default; implies --aether"
             );
             std::process::exit(2);
         }
@@ -723,6 +795,25 @@ fn main() {
     println!(
         "audio: -/= volume down/up ({} steps, starts at full), M=mute",
         audio::VOLUME_STEPS
+    );
+
+    // The Aether capability layer, hosted here. **Opt-in**: with no `--aether`/`--socket`/`ORACLE_AETHER`
+    // this binds nothing, creates no filesystem entry and starts no thread, and every call into it below is
+    // an identity operation — the default launch is the launch it always was.
+    //
+    // Built here, before the loop, because the bus has to be able to name the cartridge and resolve against
+    // its listing from the first request (D7). The symbol table is cloned rather than moved: this frontend
+    // keeps using its own for watch-hit annotation, and the bus's copy travels with checkpoints — and the
+    // clone is skipped entirely when nothing is being served, so the default launch does not pay for a
+    // second copy of a listing nobody will read.
+    let serving = args.socket.is_some();
+    let mut bus = bus::Bus::start(
+        args.socket.clone(),
+        if serving {
+            bus_machine_info(&args.rom_path, symbols.clone())
+        } else {
+            bus::MachineInfo::default()
+        },
     );
 
     // Host gamepads: `None` = gilrs unavailable → keyboard-only, never a panic (same contract as `start_audio`
@@ -1055,6 +1146,12 @@ fn main() {
                         // so a listing that stopped matching is dropped rather than carried forward.
                         symbols =
                             symbol_file::load_symbols(std::path::Path::new(&args.rom_path), &bytes);
+                        // …and re-point the bus at the same pair, for the same reason. A hosted client
+                        // resolving `read_memory {symbol}` against the previous build's listing reads a
+                        // wrong address and reports success — the D7 incident, exactly.
+                        if serving {
+                            bus.set_machine_info(bus_machine_info(&args.rom_path, symbols.clone()));
+                        }
                         sys.load_rom(bytes);
                         // `load_rom` zeroed the buffer it just sized from the new header, so re-apply the
                         // on-disk battery image. The `.srm` path comes from the ROM *path*, unchanged here.
@@ -1118,8 +1215,16 @@ fn main() {
                 *p = gamepad::merge_pads(*p, from_pad);
             }
         }
-        sys.set_pad(0, player[0]);
-        sys.set_pad(1, player[1]);
+        // The hosted bus is a third input source, and it composes with the other two the same way they
+        // compose with each other: **per-button OR**. A client's `emulator/hold` set is added to what the
+        // human is holding, and the human's input is published to the bus so that `emulator/press` and
+        // `emulator/hold` write pads that still contain it. Neither side can suppress the other, and
+        // `emulator/hold`'s reply keeps reporting exactly what the client asked for rather than whatever the
+        // keyboard happened to be doing. Both calls are no-ops while nothing is being served.
+        bus.set_live_pads(player);
+        let pads = bus.merge_held(player);
+        sys.set_pad(0, pads[0]);
+        sys.set_pad(1, pads[1]);
 
         // How many emulated frames this iteration runs. Normally one; while paused, none unless `.` asked for
         // a single step. With audio live it is whatever the ring's occupancy asks for — 0, 1 or 2 — which is
@@ -1202,6 +1307,13 @@ fn main() {
             // exactly one frame at a time however many this iteration runs.
             if let Some(w) = blit_capture(&cap, &mut buf) {
                 width = w;
+                // Hand the same completed frame to the bus, so `emulator/screenshot` serves the picture that
+                // is on the glass rather than a post-hoc re-render of the VDP state — which, taken in
+                // V-Blank after a game has rewritten CRAM for the next frame, cannot show a single mid-frame
+                // palette effect. Published *before* the release below, because that release drops the
+                // retained pixels along with the line log. A no-op while nothing is served, and skipped
+                // internally while nobody is connected.
+                bus.publish(&cap);
             }
             // Release the capture's per-delivery log (~215 KB/emulated second, unbounded by design) now that
             // the frame it held has been copied out. The normal case is a run that ended cleanly on the frame
@@ -1214,6 +1326,62 @@ fn main() {
             if ended_on_a_frame_boundary || cap.lines().len() >= MAX_CAPTURE_LINES {
                 cap.clear();
             }
+        }
+
+        // --- The hosted Aether bus: one bounded, non-blocking drain per iteration. ---
+        //
+        // This is the whole seam. It runs *after* the frame and its publish (so a client asking for the
+        // screen this iteration gets the frame just drawn, not the one before it) and *before* the present
+        // (so a client-driven run reaches the glass without a frame of lag).
+        //
+        // Nothing here can stall: the drain only ever `try_recv`s, every socket write happens on a connection
+        // thread, and events go into per-connection queues that drop oldest-first rather than wait. A client
+        // that stops reading stalls its own reader thread and nothing else. The two length bounds are the
+        // bus's: `HOSTED_MAX_RUN_FRAMES` caps one command, `pump_budget` caps one drain.
+        bus.set_paused(paused);
+        let pumped = bus.pump(&mut sys);
+        if pumped.timeline_moved {
+            // A client advanced (or rewound) the machine behind the loop's back. That is the same class of
+            // event as a save-state load, and it needs the same two repairs: audio belongs to a timeline
+            // that has moved, and the capture is holding lines from before the jump.
+            frame += pumped.frames_advanced;
+            cap.clear();
+            #[cfg(feature = "audio")]
+            resync_audio(audio.as_mut());
+        }
+        if pumped.screen_changed {
+            // The bus's advancing calls run their own scanline capture (this loop's is not attached to
+            // them), so the frame they drew lives there. Pull it in; `None` means the run drew no complete
+            // frame, in which case the retained image stays up exactly as it does for a 0-frame iteration.
+            if let Some(w) = bus.present_frame(&mut buf) {
+                width = w;
+            }
+        }
+        if pumped.rom_changed {
+            // `emulator/reload_rom` (or a restore that brought a different cartridge back) changed the bytes
+            // under us. Re-derive the save-state fingerprint or every slot written for the previous image
+            // would silently load into this one.
+            rom_fp = save_state::rom_fingerprint(sys.rom());
+            notify(
+                &mut ov,
+                ACCENT,
+                "aether: the cartridge was replaced over the bus — save-state slots re-keyed",
+            );
+        }
+        // Conflict 1's inbound half: `emulator/pause` / `emulator/resume` are the client's way of stopping
+        // and starting *this* loop, and they only mean anything if the loop follows them.
+        let bus_paused = bus.is_paused();
+        if bus_paused != paused {
+            paused = bus_paused;
+            notify(
+                &mut ov,
+                ACCENT,
+                if paused {
+                    "aether: paused by a client"
+                } else {
+                    "aether: resumed by a client"
+                },
+            );
         }
 
         // Slice S2/S4 autosave: when the guest has dirtied SRAM, arm a debounce countdown and flush the `.srm`
@@ -1365,6 +1533,41 @@ mod tests {
         );
         assert!(a(&["--aspect"]).is_err());
         assert!(a(&["--nope", "rom.bin"]).is_err(), "unknown flag");
+    }
+
+    /// Serving the Aether bus is **opt-in**, and the default really is "no socket exists" — the whole
+    /// "a default launch is unaffected" guarantee starts here.
+    #[test]
+    fn the_aether_bus_is_off_unless_asked_for() {
+        let a = |v: &[&str]| parse_args_from(v.iter().map(|s| s.to_string()));
+        // The env var is read at parse time, so a stray one in the test environment would make this lie.
+        assert!(
+            std::env::var_os("ORACLE_AETHER").is_none(),
+            "this test assumes ORACLE_AETHER is unset"
+        );
+        assert!(
+            a(&["rom.bin"]).unwrap().socket.is_none(),
+            "no flag, no socket — nothing is bound and nothing is created"
+        );
+        assert_eq!(
+            a(&["--aether", "rom.bin"]).unwrap().socket,
+            Some(None),
+            "--aether serves on the contract's default path"
+        );
+        assert_eq!(
+            a(&["--socket", "/tmp/x.sock", "rom.bin"]).unwrap().socket,
+            Some(Some(std::path::PathBuf::from("/tmp/x.sock"))),
+            "--socket implies --aether, and names the path"
+        );
+        // Order must not matter, and the explicit path must survive a later bare --aether.
+        assert_eq!(
+            a(&["--socket", "/tmp/x.sock", "--aether", "rom.bin"])
+                .unwrap()
+                .socket,
+            Some(Some(std::path::PathBuf::from("/tmp/x.sock"))),
+            "--aether after --socket must not throw the path away"
+        );
+        assert!(a(&["--socket"]).is_err(), "--socket needs a value");
     }
 
     /// Slot occupancy is read from the disk, and an absent file reads as empty rather than as an error — the

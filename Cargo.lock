@@ -874,6 +874,7 @@ dependencies = [
  "cpal",
  "gilrs",
  "minifb",
+ "oracle-aether",
  "oracle-core",
  "ringbuf",
 ]

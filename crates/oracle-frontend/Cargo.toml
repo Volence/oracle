@@ -15,10 +15,17 @@ cpal = { version = "0.15", optional = true }
 # Host gamepad input — frontend-only, pure-Rust (no SDL). Optional and confined to the `gamepad` feature; it
 # must never reach oracle-core, whose dependency list is deliberately tiny and I/O-free.
 gilrs = { version = "0.11", optional = true }
+# The Aether capability layer, hosted in this process (`--aether`). Optional because it is `#![cfg(unix)]`
+# and because the player must be buildable without a control surface at all; the `bus`/`bus_stub` pair keeps
+# the run loop identical either way.
+oracle-aether = { path = "../oracle-aether", optional = true }
 
 [features]
-default = ["audio", "gamepad"]
+default = ["audio", "gamepad", "aether"]
 # Turns on the core's native synth (AudioSink), the SPSC-ring substrate, and the cpal host output stream.
 audio = ["dep:ringbuf", "dep:cpal", "oracle-core/synth"]
 # Turns on host gamepad polling (gilrs). Off → keyboard-only, exactly as before this feature existed.
 gamepad = ["dep:gilrs"]
+# Hosts the Aether capability layer in this process. Serving is still opt-in at *runtime* (`--aether`); this
+# only decides whether the binary is capable of it.
+aether = ["dep:oracle-aether"]

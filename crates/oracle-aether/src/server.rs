@@ -34,7 +34,7 @@ use std::io::{BufReader, BufWriter, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -151,13 +151,13 @@ impl Drop for ServerHandle {
 /// Replies that *did* reach the engine carry the engine's own exact stamp instead; this snapshot is only
 /// ever used for errors the engine never saw, and is at most one frame stale.
 #[derive(Default)]
-struct SharedStamp {
+pub(crate) struct SharedStamp {
     mclk: AtomicU64,
     running: AtomicBool,
 }
 
 impl SharedStamp {
-    fn store(&self, mclk: u64, running: bool) {
+    pub(crate) fn store(&self, mclk: u64, running: bool) {
         self.mclk.store(mclk, Ordering::Relaxed);
         self.running.store(running, Ordering::Relaxed);
     }
@@ -175,7 +175,7 @@ impl SharedStamp {
     }
 }
 
-enum EngineMsg {
+pub(crate) enum EngineMsg {
     Call {
         method: String,
         params: Value,
@@ -188,9 +188,131 @@ enum EngineMsg {
     Shutdown,
 }
 
-struct CallResult {
-    result: Result<Value, RpcError>,
-    stamp: Map<String, Value>,
+pub(crate) struct CallResult {
+    pub(crate) result: Result<Value, RpcError>,
+    pub(crate) stamp: Map<String, Value>,
+}
+
+/// Everything the accept loop and its connection threads share. Bundled because there are two of them —
+/// [`Server::spawn`] and [`crate::host::Host::serve`] — and a per-field parameter list is how the two drift
+/// apart.
+pub(crate) struct AcceptCtx {
+    pub(crate) subs: Subscribers,
+    pub(crate) shared: Arc<SharedStamp>,
+    pub(crate) stop: Arc<AtomicBool>,
+    pub(crate) conns: Arc<Mutex<Vec<Option<UnixStream>>>>,
+    /// Connections currently live. A host uses it to skip per-frame work (publishing the picture) that
+    /// nobody is there to read; the standalone server ignores it.
+    pub(crate) live: Arc<AtomicUsize>,
+    pub(crate) event_queue_cap: usize,
+}
+
+impl AcceptCtx {
+    pub(crate) fn new(event_queue_cap: usize) -> Self {
+        Self {
+            subs: Subscribers::new(),
+            shared: Arc::new(SharedStamp::default()),
+            stop: Arc::new(AtomicBool::new(false)),
+            conns: Arc::new(Mutex::new(Vec::new())),
+            live: Arc::new(AtomicUsize::new(0)),
+            event_queue_cap,
+        }
+    }
+
+    fn clone_handles(&self) -> Self {
+        Self {
+            subs: self.subs.clone(),
+            shared: Arc::clone(&self.shared),
+            stop: Arc::clone(&self.stop),
+            conns: Arc::clone(&self.conns),
+            live: Arc::clone(&self.live),
+            event_queue_cap: self.event_queue_cap,
+        }
+    }
+
+    /// Stop accepting and hang up on every live connection. Idempotent.
+    pub(crate) fn close_all(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Ok(conns) = self.conns.lock() {
+            for c in conns.iter().flatten() {
+                let _ = c.shutdown(std::net::Shutdown::Both);
+            }
+        }
+    }
+}
+
+/// The accept loop, shared by the standalone server and the hosted one. It knows nothing about who owns the
+/// `System`: every connection reaches the engine through `engine_tx` and nothing else, which is exactly why
+/// the same loop serves both arrangements.
+pub(crate) fn spawn_accept(
+    listener: UnixListener,
+    ctx: &AcceptCtx,
+    engine_tx: Sender<EngineMsg>,
+) -> std::thread::JoinHandle<()> {
+    let ctx = ctx.clone_handles();
+    std::thread::Builder::new()
+        .name("aether-accept".into())
+        .spawn(move || {
+            while !ctx.stop.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        let _ = stream.set_nonblocking(false);
+                        // Park a clone in a slot so a shutdown can unblock this connection's reader. The
+                        // connection thread clears its own slot on exit, so the registry tracks *live*
+                        // connections rather than growing forever — a long-lived bus will see thousands of
+                        // short client sessions.
+                        let slot = stream.try_clone().ok().map(|clone| {
+                            let mut c = ctx
+                                .conns
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            match c.iter().position(Option::is_none) {
+                                Some(i) => {
+                                    c[i] = Some(clone);
+                                    i
+                                }
+                                None => {
+                                    c.push(Some(clone));
+                                    c.len() - 1
+                                }
+                            }
+                        });
+                        let tx = engine_tx.clone();
+                        let conn = ctx.clone_handles();
+                        conn.live.fetch_add(1, Ordering::SeqCst);
+                        let spawned = std::thread::Builder::new()
+                            .name("aether-conn".into())
+                            .spawn(move || {
+                                connection_loop(
+                                    stream,
+                                    tx,
+                                    conn.subs.clone(),
+                                    &conn.shared,
+                                    conn.event_queue_cap,
+                                );
+                                conn.live.fetch_sub(1, Ordering::SeqCst);
+                                if let Some(i) = slot {
+                                    let mut c = conn
+                                        .conns
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                    c[i] = None;
+                                }
+                            })
+                            .is_ok();
+                        if !spawned {
+                            // The thread never started, so nothing will ever decrement for it.
+                            ctx.live.fetch_sub(1, Ordering::SeqCst);
+                        }
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(ACCEPT_POLL);
+                    }
+                    Err(_) => std::thread::sleep(ACCEPT_POLL),
+                }
+            }
+        })
+        .expect("spawn accept thread")
 }
 
 impl Server {
@@ -244,90 +366,40 @@ impl Server {
         &self.config.socket_path
     }
 
+    /// Take the bound listener apart, for a caller that runs its own accept wiring
+    /// ([`crate::host::Host::serve`]). Crate-private: binding is the only part of [`Server`] that is
+    /// reusable, and exposing the listener publicly would let a caller serve on a socket whose 0600 check
+    /// [`Server::bind`] performed and then bypass everything that check protects.
+    pub(crate) fn into_parts(self) -> (UnixListener, ServerConfig) {
+        (self.listener, self.config)
+    }
+
     /// Start the emulator thread and the accept loop. Returns immediately; the returned handle owns the
     /// shutdown.
     pub fn spawn(self, machine: Machine) -> ServerHandle {
         let Server { listener, config } = self;
-        let subs = Subscribers::new();
-        let shared = Arc::new(SharedStamp::default());
-        let stop = Arc::new(AtomicBool::new(false));
-        let conns: Arc<Mutex<Vec<Option<UnixStream>>>> = Arc::new(Mutex::new(Vec::new()));
+        let ctx = AcceptCtx::new(config.event_queue_cap);
         let (engine_tx, engine_rx) = mpsc::channel::<EngineMsg>();
 
-        let mut engine = Engine::new(machine.system, config.engine.clone(), subs.clone());
+        let mut engine = Engine::new(machine.system, config.engine.clone(), ctx.subs.clone());
         engine.set_rom_path(machine.rom_path);
         engine.set_symbols(machine.symbols, machine.symbols_path);
 
-        let engine_shared = Arc::clone(&shared);
+        let engine_shared = Arc::clone(&ctx.shared);
         let engine_thread = std::thread::Builder::new()
             .name("aether-engine".into())
             .spawn(move || engine_loop(engine, engine_rx, &engine_shared))
             .expect("spawn engine thread");
 
-        let accept_stop = Arc::clone(&stop);
-        let accept_conns = Arc::clone(&conns);
-        let accept_tx = engine_tx.clone();
-        let accept_cfg = config.clone();
-        let accept_thread = std::thread::Builder::new()
-            .name("aether-accept".into())
-            .spawn(move || {
-                while !accept_stop.load(Ordering::SeqCst) {
-                    match listener.accept() {
-                        Ok((stream, _)) => {
-                            let _ = stream.set_nonblocking(false);
-                            // Park a clone in a slot so `shutdown` can unblock this connection's
-                            // reader. The connection thread clears its own slot on exit, so the
-                            // registry tracks *live* connections rather than growing forever — a
-                            // long-lived bus will see thousands of short client sessions.
-                            let slot = stream.try_clone().ok().map(|clone| {
-                                let mut c = accept_conns
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                match c.iter().position(Option::is_none) {
-                                    Some(i) => {
-                                        c[i] = Some(clone);
-                                        i
-                                    }
-                                    None => {
-                                        c.push(Some(clone));
-                                        c.len() - 1
-                                    }
-                                }
-                            });
-                            let tx = accept_tx.clone();
-                            let subs = subs.clone();
-                            let shared = Arc::clone(&shared);
-                            let cap = accept_cfg.event_queue_cap;
-                            let registry = Arc::clone(&accept_conns);
-                            std::thread::Builder::new()
-                                .name("aether-conn".into())
-                                .spawn(move || {
-                                    connection_loop(stream, tx, subs, &shared, cap);
-                                    if let Some(i) = slot {
-                                        let mut c = registry
-                                            .lock()
-                                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                        c[i] = None;
-                                    }
-                                })
-                                .ok();
-                        }
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(ACCEPT_POLL);
-                        }
-                        Err(_) => std::thread::sleep(ACCEPT_POLL),
-                    }
-                }
-            })
-            .expect("spawn accept thread");
+        let accept_thread = spawn_accept(listener, &ctx, engine_tx.clone());
 
         ServerHandle {
             socket_path: config.socket_path,
-            stop,
+            stop: Arc::clone(&ctx.stop),
             accept_thread: Some(accept_thread),
             engine_thread: Some(engine_thread),
             engine_tx,
-            conns,
+            conns: Arc::clone(&ctx.conns),
         }
     }
 }
@@ -393,7 +465,7 @@ fn engine_loop(mut engine: Engine, rx: mpsc::Receiver<EngineMsg>, shared: &Share
 
 /// One connection: reads NDJSON, runs the handshake state machine, forwards to the engine, and hands
 /// every outgoing line to its own writer thread.
-fn connection_loop(
+pub(crate) fn connection_loop(
     stream: UnixStream,
     engine_tx: Sender<EngineMsg>,
     subs: Subscribers,
@@ -528,7 +600,7 @@ fn connection_loop(
     }
 }
 
-fn with_dropped(mut stamp: Map<String, Value>, dropped: u64) -> Map<String, Value> {
+pub(crate) fn with_dropped(mut stamp: Map<String, Value>, dropped: u64) -> Map<String, Value> {
     stamp.insert("droppedEvents".into(), json!(dropped));
     stamp
 }
