@@ -10,10 +10,12 @@
 //! asked for a socket from a binary that cannot provide one: it says so, rather than silently ignoring the
 //! flag.
 
+use oracle_core::bus::Observe;
 use oracle_core::io::Pad;
 use oracle_core::scanline_capture::ScanlineCapture;
 use oracle_core::symbols::SymbolTable;
 use oracle_core::system::System;
+use oracle_core::watchpoints::Watchpoints;
 use std::path::PathBuf;
 
 /// What the bus would know about the loaded cartridge. Carried and dropped — the fields are unread here on
@@ -35,12 +37,28 @@ pub struct Pumped {
     pub frames_advanced: u64,
 }
 
-/// The inert bus. Holds exactly one thing: the pause state it was told, so that reading it back is an
-/// identity rather than a lie. The loop assigns `paused` from `is_paused` unconditionally, and it must keep
-/// working in this build too.
-#[derive(Default)]
+/// The inert bus. Holds exactly two things: the pause state it was told, so that reading it back is an
+/// identity rather than a lie, and the watch instrument the run loop feeds. The loop assigns `paused` from
+/// `is_paused` unconditionally and arms its watches through `watchpoints_mut` unconditionally, and both must
+/// keep working in this build too.
 pub struct Bus {
     paused: bool,
+    /// **The one thing in this file that is not a no-op, and it is not one for a structural reason.** The
+    /// pixel-attribution panel is unconditional — it predates the bus and does not depend on it — so the
+    /// instrument it reads has to exist in both builds. Owning it here is what lets the run loop have a
+    /// single shape: it always feeds `bus.watchpoints_mut()`, which in the served build is the engine's own
+    /// instrument and here is simply the panel's. Nothing is exposed and nothing is served; the panel that
+    /// arms it is the only thing that ever reads it.
+    watchpoints: Watchpoints,
+}
+
+impl Default for Bus {
+    fn default() -> Self {
+        Self {
+            paused: false,
+            watchpoints: Watchpoints::new(crate::WATCH_CAP),
+        }
+    }
 }
 
 impl Bus {
@@ -59,6 +77,18 @@ impl Bus {
     }
 
     pub fn set_live_pads(&mut self, _pads: [Pad; 2]) {}
+
+    /// The panel's instrument. Same signature as the served build's, so the run loop is one shape.
+    pub fn watchpoints_mut(&mut self) -> &mut Watchpoints {
+        &mut self.watchpoints
+    }
+
+    /// The same instrument as a run sink. Nothing here can arm `stopAfter` — there is no bus to arm it from
+    /// — but the wrapper is kept so the two builds are the same shape at the one place a difference would
+    /// mean the loop behaved differently depending on how it was compiled.
+    pub fn watch_sink(&mut self) -> Observe<&mut Watchpoints> {
+        Observe(&mut self.watchpoints)
+    }
 
     pub fn set_paused(&mut self, paused: bool) {
         self.paused = paused;

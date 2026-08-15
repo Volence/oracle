@@ -591,6 +591,32 @@ cannot drift.
 | `crates/oracle-core/tests/` | **no change** — this adds a bus surface over an existing core capability. No pinned literal moves, and that must stay true through review. | 0 |
 | `empyrean/` | **owner's, on ruling.** Two §6 rows amended/added, two new rows, the schema fragments below, an §11.3 amendment entry. Not edited here. | — |
 
+> **BUILT 2026-08-15. Where the estimate held, and the four places it did not.** The shape above survived —
+> engine-owned instrument, lent to the host, four handlers, `crates/oracle-core/tests/` untouched. The
+> differences are recorded because three of them are things a reader of this table would otherwise expect
+> to find and not:
+>
+> - **No `WatchId ↔ handle` map.** The handle is `format!("w{}", id.0)` and its inverse, a pure function
+>   both ways. Core's ids are already monotonic and never reused, so a map would have stored a second copy
+>   of a fact core already guarantees — and would have been the thing to go stale.
+> - **Two more core lines than `via`.** `WatchReport::stop_after` (the wire needs `stopAfter` in
+>   `watchpoint_list`, and it is also the only way to say *which* watch ended a run: `stop_requested()` is
+>   one bool over all of them) and `Watchpoints::watch_count` (the cheap attach probe a run loop needs once
+>   the instrument is shared and the panel's own flag stops answering for it).
+> - **★ `oracle_core::bus::Observe`, which this design did not see coming.** §4.3 argued that arming should
+>   not require a paused machine and that `stopAfter` on a running machine is answered by attribution. True
+>   — and incomplete: `stop_requested` is a **level** (`matched >= n`, permanently), so the moment the
+>   instrument is shared with the player's 60 Hz loop, a client arming `stopAfter` would end **every**
+>   subsequent frame-run before it began. A stop condition becomes a frozen window. `Observe` lends an
+>   instrument's observations without its halt, and is used at every borrowed-run seam. It was found by a
+>   test written to check something else entirely.
+> - **The parity test lives in `src/host.rs`, not in `tests/watchpoints.rs`.** §6.3 item 11 needs to read
+>   one instrument from **both** sides at once — over the wire, and through the accessor the player's loop
+>   uses. No socket client can do the second, so it belongs where `Host`'s own tests are.
+>
+> Actuals: engine `~530` (against ~340 — the parsers and the two list serializers were the underestimate),
+> `tests/watchpoints.rs` `~860` (against ~260), core `~45` including its own tests (against ~8).
+
 ### 6.3 What the tests would pin
 
 1. **The handle is a string, everywhere it appears** — `watchpoint_add`'s result, `watchpoint_list`'s items,

@@ -427,6 +427,19 @@ raising; the ruling is the owner's.** The contract repo was not edited.
 > but not which pad would blame the wrong controller. Our emission of `"runFrames"` is now conformant by
 > construction; **what we still owe is the two params.** That rides with the same server pass as CR-11/12.
 
+> **CLOSED 2026-08-15 — the two params are on the wire.** `Engine::press` now supplies `buttons` and `port`
+> to a shared `emit_run_stop`, and it is the **only** call site that does: they enter as one `Option` of a
+> pair, so there is no path that emits one without the other and the `dependentRequired` half is structural
+> here as well as schematic.
+>
+> **The unenforceable half is pinned twice, deliberately.**
+> `tests/watchpoints.rs::press_stops_carry_buttons_and_port_and_run_frames_does_not` asserts the behaviour
+> (a `press` stop carries them, a `run_frames` stop does not, and a *held* button is not a press-driven
+> advance); and
+> `tests/schema_conformance.rs::control_buttons_without_port_is_rejected_and_that_is_all_the_schema_can_do`
+> asserts the **gap** — a `run_frames` stop wearing `buttons`/`port` is schema-*valid*, and that fact is
+> written down as a passing assertion so nobody later reads the schema as covering more than it does.
+
 ---
 
 ## CR-10 — no method is keyed by a screen coordinate, so pixel attribution is panel-only (2026-08-15)
@@ -499,6 +512,37 @@ fragments, in **`docs/2026-08-15-watchpoint-bus-surface.md`**. **Adopt both or n
 >
 > **What we owe:** the handlers, in `crates/oracle-aether` only, per condition 8 — contract first. Plus the
 > `via` census arm in core, and `crates/oracle-core/tests/` untouched throughout.
+
+> **CLOSED 2026-08-15 — the four handlers are live, and `crates/oracle-core/tests/` was not touched.**
+> `capabilities.watchpoints` is an object; the cap refuses with `-32005 {reason:"watchCapReached",cap,count}`;
+> `censusKey` without `mode:"census"` is `-32602` in both directions; hits are read with `hits()` and never
+> `take_hits()`. Coverage went 21 → 25 advertised-and-schematized methods, and the four fragments were in
+> the contract before a line of handler existed — the direction §8 requires.
+>
+> **`via` landed as ~8 lines of `oracle-core/src`, and two more went with it that the design did not
+> anticipate.** `WatchReport::stop_after` (the wire needs `stopAfter` in `watchpoint_list`, and it is also
+> what lets a stop *name* the watch that caused it — `stop_requested()` is one bool over all of them), and
+> `Watchpoints::watch_count` (the cheap "is this instrument worth attaching?" probe a run loop needs when
+> the instrument is shared and the panel's own flag no longer answers for it).
+>
+> **★ And one hazard the design did not foresee, found by a test written for something else.**
+> `stopAfter` raises `stop_requested` on a **level** (`matched >= n`, permanently), not an edge. Once the
+> instrument is shared with the player's 60 Hz loop — which is the whole point of the hosted arrangement —
+> a client arming a `stopAfter` watch would have ended **every** subsequent frame-run before it began: a
+> stop condition turned into a permanently frozen window, on a machine nobody asked to pause. §6 already
+> rules the case (*"answered by attribution rather than by a gate"*); what was missing was a way to lend an
+> instrument's *observations* without its *halt*. That is `oracle_core::bus::Observe`, and it is used at
+> every borrowed-run seam: the player's loop, and `Engine::free_run_step`. The halt now applies only to
+> runs a client bounded — `run_frames`, `press`, `run_to` — which is what the contract's own *"the run was
+> already bounded by its own caller"* describes.
+>
+> **One place the contract turned out to be impractical, recorded rather than worked around.**
+> `run_frames.frames` and `press.frames` are both `"Frames actually advanced"` with `minimum: 1`, which was
+> exact while an exhausted frame count was the only way a bounded advance could end. A `stopAfter` watch can
+> end one inside its first frame, where the truthful whole-frame count is **0** and the schema cannot say
+> so. `Engine::frames_advanced` rounds that single case up to 1 and says why at the site; `frameToken` in
+> the same reply is the unrounded coordinate, and the `stopped` event for such a run omits `frames`
+> entirely (it is REQUIRED only for `reason: "runFrames"`), so nothing that *can* be exact was made vague.
 
 **The seam: CR-11 is what a watch *is*; CR-12 is what a watch *tells you*.** They are different kinds of
 contract change — amend an existing row and add its inverse, versus add two new query rows — and each owns

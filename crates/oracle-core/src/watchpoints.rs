@@ -212,6 +212,15 @@ pub enum CensusKey {
     /// The byte-duplication test on the low 16 bits of the value: `1` when the high byte equals the low byte,
     /// `0` otherwise. This is the recurring open-bus word shape (a word access whose halves are the same byte).
     ValueHiEqLo,
+    /// **How the access reached its target** — `0` = [`WatchVia::Bus`], `1` = [`WatchVia::Direct`] (a CPU
+    /// data-port write), `2` = [`WatchVia::Dma`]. The CPU-vs-DMA group-by for a **VDP-internal** watch.
+    ///
+    /// [`CensusKey::Fc`] provably cannot answer that question there: `on_vdp_write` hardwires `fc: 0` because
+    /// a VDP-internal write has no bus function code, so an `Fc` census over a VRAM/CRAM/VSRAM watch reports
+    /// one key and nothing else. The two findings that settled `cram_flicker` (*"all CPU writes, zero DMA"*)
+    /// and `direct_color_dma` (*"99.997% DMA"*) are exactly this group-by, and both were computed by hand
+    /// off a full hit log; this is the bounded aggregate that answers them without one.
+    Via,
 }
 
 impl CensusKey {
@@ -229,6 +238,11 @@ impl CensusKey {
             CensusKey::Size => hit.size.bytes() as u64,
             CensusKey::Value => hit.value as u64,
             CensusKey::ValueHiEqLo => u64::from((hit.value >> 8) & 0xFF == hit.value & 0xFF),
+            CensusKey::Via => match hit.via {
+                WatchVia::Bus => 0,
+                WatchVia::Direct => 1,
+                WatchVia::Dma => 2,
+            },
         }
     }
 
@@ -247,6 +261,11 @@ impl CensusKey {
             CensusKey::Size => format!("{key}B"),
             CensusKey::Value => format!("${key:X}"),
             CensusKey::ValueHiEqLo => if key == 0 { "hi!=lo" } else { "hi==lo" }.to_string(),
+            CensusKey::Via => match key {
+                0 => "bus".to_string(),
+                1 => "direct".to_string(),
+                _ => "dma".to_string(),
+            },
         }
     }
 }
@@ -523,6 +542,13 @@ pub struct WatchReport {
     /// The address-parity filter, if any (`F-TRACE-SIZEFILTER`).
     pub addr_parity: Option<AddrParity>,
     pub mode: WatchMode,
+    /// The [`stop_after`](Watch::stop_after) threshold, if this watch will halt a run.
+    ///
+    /// Reported because a watch left armed with this set is the one that can change a *later* capture's
+    /// outcome, and a reader who cannot see it has to discover it by having a run end somewhere unexpected.
+    /// It is also what lets a consumer name *which* watch ended a run: [`Watchpoints::stop_requested`] is a
+    /// single bool over all of them, and `matched >= stop_after` on a report identifies the one.
+    pub stop_after: Option<u64>,
     /// How many accesses this watch matched — counted in every mode, including the modes that store nothing.
     pub matched: u64,
     /// The first and last matched access, stamped. `None` when the watch never fired.
@@ -699,6 +725,16 @@ impl Watchpoints {
         self.specs.len() != before
     }
 
+    /// How many watches are registered right now.
+    ///
+    /// The cheap "is this instrument worth attaching?" probe, for a run loop that would otherwise pay a
+    /// per-bus-event `seen += 1` for nothing. Deliberately **not** spelled `len`/`is_empty`: this counts the
+    /// registered *specs*, and a reader who saw `is_empty()` on a facility that also holds a hit ring would
+    /// have to guess which of the two it meant.
+    pub fn watch_count(&self) -> usize {
+        self.specs.len()
+    }
+
     /// A read-time snapshot of every registered watch, in registration order.
     pub fn watches(&self) -> Vec<WatchReport> {
         self.specs.iter().map(report_of).collect()
@@ -827,6 +863,7 @@ fn report_of(s: &WatchSpec) -> WatchReport {
         size: s.size,
         addr_parity: s.addr_parity,
         mode: s.mode,
+        stop_after: s.stop_after,
         matched: s.matched,
         first: s.first,
         last: s.last,
@@ -1858,6 +1895,52 @@ mod tests {
             size,
             via,
         }
+    }
+
+    /// **The `via` census answers CPU-vs-DMA on a VDP watch, and `Fc` provably cannot.**
+    ///
+    /// This is the whole case for the variant, asserted side by side rather than argued: the same stream of
+    /// writes, censused two ways. `Fc` reports **one** key — a VDP-internal write has no bus function code
+    /// and `on_vdp_write` hardwires it to `0` — so it says "one master" about a stream with two. `Via`
+    /// separates them. The two findings that settled `cram_flicker` (*"all CPU writes, zero DMA"*) and
+    /// `direct_color_dma` (*"99.997% DMA"*) are exactly this group-by, both computed by hand off full logs.
+    #[test]
+    fn a_via_census_separates_cpu_from_dma_where_an_fc_census_cannot() {
+        let stream = [
+            vw(VdpTarget::Cram, 0x00, 0, 1, 2, VdpVia::Direct),
+            vw(VdpTarget::Cram, 0x02, 0, 2, 2, VdpVia::Dma),
+            vw(VdpTarget::Cram, 0x04, 0, 3, 2, VdpVia::Dma),
+            vw(VdpTarget::Cram, 0x06, 0, 4, 2, VdpVia::Dma),
+        ];
+        let census_of = |key: CensusKey| {
+            let mut wp = Watchpoints::new(0);
+            let id = wp.add(
+                Watch::vdp(WatchSpace::Cram, 0x00..=0x7F, WatchOp::Write, "palette")
+                    .mode(WatchMode::Census(key)),
+            );
+            for w in stream {
+                wp.on_vdp_write(w);
+            }
+            let r = wp.watch(id).expect("registered");
+            (r.matched, r.census.expect("a census watch reports one"))
+        };
+
+        let (matched, via) = census_of(CensusKey::Via);
+        assert_eq!(matched, 4);
+        // 0 = Bus, 1 = Direct (a CPU data-port write), 2 = Dma.
+        assert_eq!(via, vec![(1, 1), (2, 3)], "one CPU write, three DMA steps");
+        assert_eq!(CensusKey::Via.describe(1), "direct");
+        assert_eq!(CensusKey::Via.describe(2), "dma");
+
+        let (matched, fc) = census_of(CensusKey::Fc);
+        assert_eq!(matched, 4, "the same four accesses…");
+        assert_eq!(
+            fc,
+            vec![(0, 4)],
+            "…and a function-code census collapses them into one key, because there is no bus \
+             function code on a VDP-internal write. It is not a worse answer than `via`; it is not an \
+             answer to this question at all."
+        );
     }
 
     /// A VRAM watch records a `VdpWrite` as a hit: resolved region address, old→new, byte size, `via`, and the

@@ -116,10 +116,20 @@
 //! ## Pixel-attribution watch (record + display only)
 //!
 //! A left click asks the VDP `pixel_attribution(x,y)` who is showing at that dot; if the winner is a
-//! plane/window tile, its 32-byte VRAM range is armed as a VDP-internal write watch on a *caller-owned*
-//! [`Watchpoints`] (the core never stores it — this stays a zero-diff, frontend-only slice). The run loop
-//! always drives the sink-generic [`System::run_frames_with_sink`] (see "Pixels" above); arming a watch just
+//! plane/window tile, its 32-byte VRAM range is armed as a VDP-internal write watch. The run loop always
+//! drives the sink-generic [`System::run_frames_with_sink`] (see "Pixels" above); arming a watch just
 //! composes it into that sink. `W` prints the recorded hits; `C` disarms.
+//!
+//! **The instrument is the bus's, not this file's** (`bus.watchpoints_mut()`, and `bus.watch_sink()` for the
+//! run). It used to be a private `Watchpoints` owned by this loop, which was right while the panel was the
+//! only reader. It stopped being right when `emulator/watchpoint_add` landed: the player owns the run loop,
+//! so a bus-owned instrument attached only to the *bus's* runs would see nothing while the window runs the
+//! game and would report `seen == 0` — "the recorder was never attached", which is honest and useless —
+//! while a loop-owned one would be a second instrument for `emulator/watchpoint_hits` to disagree with.
+//! There is one, and contract §8 item 19's parity is therefore structural rather than maintained. Two
+//! consequences show up in the code below: a click retires only the ids **this panel** armed
+//! (`panel_watches`) instead of calling `clear()`, which would take a socket client's watches with it; and
+//! the sink is attached whenever the instrument holds any watch, not when this panel armed one.
 //!
 //! **Sprites too, as of this slice.** A sprite dot used to print "no tile watch this slice (follow-up)" and
 //! do nothing, which in a Sonic game means almost everything interesting on screen was un-clickable. It now
@@ -870,11 +880,16 @@ fn main() {
     const SRAM_AUTOSAVE_DEBOUNCE_FRAMES: u32 = 120;
     let mut sram_save_countdown: Option<u32> = None;
 
-    // The pixel-attribution watch — a *caller-owned* sink (the core never stores it, keeping this slice
-    // zero-diff on oracle-core). `watch_armed` mirrors "a VDP watch is registered" so the run loop can stay on
-    // the recording sink out of the run when nothing is being watched. `watched_pixel` drives the crosshair.
-    let mut watchpoints = Watchpoints::new(WATCH_CAP);
-    let mut watch_armed = false;
+    // The pixel-attribution watch. **The instrument now lives on the bus** (`bus.watchpoints_mut()`) rather
+    // than here, and that is the whole of contract §8 item 19 for this capability: the player owns the run
+    // loop, so an instrument the bus owned privately would see nothing while the window runs the game, and
+    // one *this* loop owned privately would be a second instrument for `emulator/watchpoint_hits` to
+    // disagree with. There is one, both sides feed and read it, and they cannot drift.
+    //
+    // `panel_watches` is what this panel itself armed. It exists because the instrument is shared: a click
+    // must replace **the panel's** prior watch and not a watch some client armed over the socket, so the
+    // panel removes its own ids by handle instead of reaching for `clear()`.
+    let mut panel_watches: Vec<oracle_core::watchpoints::WatchId> = Vec::new();
     let mut watched_pixel: Option<(u16, u16)> = None;
     let mut prev_mouse_down = false;
 
@@ -923,41 +938,54 @@ fn main() {
                     // Resolve the dot to whatever it is — plane tile, sprite (its drawing pattern *and* its
                     // attribute-table entry), or backdrop palette entry. A sprite dot used to arm nothing.
                     let p = pick::resolve(sys.vdp(), x, y);
-                    watchpoints.clear();
+                    let wp = bus.watchpoints_mut();
+                    // Retire only what this panel armed. `clear()` would take a socket client's watches
+                    // with it — the shared-instrument hazard, and the one thing that made the panel's
+                    // "a click replaces the prior watch" rule need a list instead of a reset.
+                    for id in panel_watches.drain(..) {
+                        wp.remove(id);
+                    }
                     for t in &p.targets {
                         let space = match t.space {
                             pick::Space::Vram => WatchSpace::Vram,
                             pick::Space::Cram => WatchSpace::Cram,
                         };
-                        watchpoints.add_vdp_watch(
+                        panel_watches.push(wp.add_vdp_watch(
                             space,
                             t.lo..=t.hi,
                             WatchOp::Write,
                             t.label.clone(),
-                        );
+                        ));
                     }
-                    watch_armed = !p.targets.is_empty();
-                    watched_pixel = watch_armed.then_some((x, y));
+                    let armed_now = !p.targets.is_empty();
+                    watched_pixel = armed_now.then_some((x, y));
                     // The terminal gets the full line; the toast gets the short form that fits on screen.
                     println!("{}", p.description);
-                    ov.push(p.toast, if watch_armed { INFO } else { ERROR });
+                    ov.push(p.toast, if armed_now { INFO } else { ERROR });
                 }
             }
         }
 
         // W dumps the recorded hits; C disarms the watch (dropping it back out of the run's sink).
         if window.is_key_pressed(Key::W, KeyRepeat::No) {
-            dump_hits(&watchpoints, symbols.as_ref());
+            // **The panel side of the item-19 parity.** This reads the same ring `emulator/watchpoint_hits`
+            // serves, through the same non-destructive `hits()` — never `take_hits()`, which would let this
+            // key press delete a socket client's evidence.
+            let n = {
+                let wp = bus.watchpoints_mut();
+                let n = wp.hits().len();
+                dump_hits(wp, symbols.as_ref());
+                n
+            };
             // The hits themselves are far too wide for the glass; the toast just confirms the key landed and
             // says how much went to the terminal — which is where the answer actually is.
-            ov.push(
-                format!("DUMPED {} WATCH HITS TO STDOUT", watchpoints.hits().len()),
-                INFO,
-            );
+            ov.push(format!("DUMPED {n} WATCH HITS TO STDOUT"), INFO);
         }
         if window.is_key_pressed(Key::C, KeyRepeat::No) {
-            watchpoints.clear();
-            watch_armed = false;
+            let wp = bus.watchpoints_mut();
+            for id in panel_watches.drain(..) {
+                wp.remove(id);
+            }
             watched_pixel = None;
             notify(&mut ov, INFO, "watch cleared — no longer recording writes");
         }
@@ -1271,14 +1299,21 @@ fn main() {
             // With audio live (SY-5b): drive every frame through the AudioAndWatch composite (audio + the
             // optional armed watch), then drain that frame's PCM and push it into the ring for the cpal
             // callback. The composite borrows `sink` for the run and is dropped before the drain re-borrow.
+            //
+            // **The attach condition is the instrument's own count, and there is no longer a panel flag
+            // beside it.** A `watch_armed` boolean would say only "the *click* armed something"; a watch a
+            // socket client armed with
+            // `emulator/watchpoint_add` is just as real, and a loop that skipped the sink for it would hand
+            // that client a `seen == 0` reply — "the recorder was never attached to the run" — about frames
+            // that really happened. Asking the shared instrument how many watches it holds is the one
+            // question that covers both sources.
+            let armed = bus.watchpoints_mut().watch_count() > 0;
             #[cfg(feature = "audio")]
             {
                 if let Some(a) = audio.as_mut() {
                     {
-                        let audio_and_watch = audio::AudioAndWatch::new(
-                            &mut a.sink,
-                            watch_armed.then_some(&mut watchpoints),
-                        );
+                        let audio_and_watch =
+                            audio::AudioAndWatch::new(&mut a.sink, armed.then(|| bus.watch_sink()));
                         let mut sink = Fanout::new(&mut cap, audio_and_watch);
                         sys.run_frames_with_sink(1, &mut sink);
                     }
@@ -1286,10 +1321,10 @@ fn main() {
                     // The volume/mute setting is applied here, on the producer side, so the real-time
                     // callback stays a pure copy (see `audio::push_frame`).
                     audio::push_frame(&mut a.prod, &pcm, audio::gain_for(volume, muted));
-                } else if watch_armed {
+                } else if armed {
                     // Audio disabled at runtime (no device): same video-only path as a no-audio build. Only
                     // pay for the recording watch sink when a watch is armed.
-                    let mut sink = Fanout::new(&mut cap, &mut watchpoints);
+                    let mut sink = Fanout::new(&mut cap, bus.watch_sink());
                     sys.run_frames_with_sink(1, &mut sink);
                 } else {
                     sys.run_frames_with_sink(1, &mut cap);
@@ -1298,8 +1333,8 @@ fn main() {
             // No-audio build: same shape without the audio half.
             #[cfg(not(feature = "audio"))]
             {
-                if watch_armed {
-                    let mut sink = Fanout::new(&mut cap, &mut watchpoints);
+                if armed {
+                    let mut sink = Fanout::new(&mut cap, bus.watch_sink());
                     sys.run_frames_with_sink(1, &mut sink);
                 } else {
                     sys.run_frames_with_sink(1, &mut cap);

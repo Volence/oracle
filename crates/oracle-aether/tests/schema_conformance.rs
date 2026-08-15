@@ -4,9 +4,10 @@
 //!
 //! 1. **Freshness.** The vendored schema is byte-identical to the contract's copy.
 //! 2. **Coverage, reported and pinned.** The schema used to be a SEED, covering 9 of the 21 methods we
-//!    advertise; since the 2026-08-15 re-vendor (`empyrean` `f309cc8`) it covers all 21. The pin stays,
-//!    now guarding the one direction that is left: a newly advertised method joining the unchecked pile
-//!    silently.
+//!    advertise; since the 2026-08-15 re-vendors (`empyrean` `f309cc8`, then `af434a2`) it covers all 25 —
+//!    the four watchpoint methods arrived already schematized, which is the direction that counts. The pin
+//!    stays, now guarding the one direction that is left: a newly advertised method joining the unchecked
+//!    pile silently.
 //! 3. **The divergence registry, reported and kept live.** Shapes where the server and the schema
 //!    disagree are registered rather than silenced, each with its CR number, and the report prints
 //!    beside the coverage split so nobody reads a green suite as "fully conformant". An entry that stops
@@ -131,7 +132,9 @@ fn the_vendored_schema_is_byte_identical_to_the_upstream_contract() {
 /// implementation as the contract, the exact inversion of "the contract leads" (§8). So they were raised
 /// as CR-13, the contract ruled every key on its merits (`empyrean` `f309cc8`, `protocol.md` §11.5:
 /// registered, restructured, or **struck**), and the 12 fragments arrived upstream. Coverage went 9 → 21
-/// because the contract moved first, which is the only direction that counts.
+/// because the contract moved first, which is the only direction that counts — and 21 → 25 on 2026-08-15
+/// for the same reason, when CR-11/CR-12's four fragments were ruled into the contract before a line of
+/// handler was written.
 ///
 /// The pin stays, and it now guards the one remaining direction: a **newly advertised** method would join
 /// this list silently, arriving on the wire with nothing checking its result shape and nothing saying so.
@@ -414,6 +417,143 @@ fn control_a_numeric_checkpoint_id_is_rejected() {
         "id":1,"bytes":262144,"frame":10,"mclk":8960400,"running":false,"droppedEvents":0}});
     check_incoming(&line, None).expect("the envelope alone accepts it — that is the point");
     rejects(&line, Some("emulator/checkpoint"), "id");
+}
+
+/// A well-formed `emulator/watchpoint_hits` reply carrying one **bus** hit, used as the base for the
+/// planted defects below.
+fn good_hits_reply(hit: Value) -> Value {
+    json!({"jsonrpc":"2.0","id":11,"result":{
+        "hits":[hit],"total":1,"returned":1,"limit":100,"truncated":false,
+        "dropped":0,"seen":42,"matched":1,
+        "frame":3,"mclk":2688120,"running":false,"droppedEvents":0}})
+}
+
+fn good_bus_hit() -> Value {
+    json!({"watch":"w0","space":"bus","addr":"0x00FF8000","value":"0x00001234","size":2,
+           "op":"write","fc":5,"via":"bus","pc":"0x000002A0","frame":1,"mclk":896040,"seq":0})
+}
+
+#[test]
+fn control_a_bus_hit_carrying_old_and_a_vdp_hit_missing_it_are_both_rejected() {
+    // **The structural presence rule, both directions.** `Watchpoints::on_event` builds every bus hit with
+    // `old: 0` unconditionally — the 68000 bus event stream carries no prior value — so a bus hit that
+    // reports `old` is asserting something false, and it would defeat the one exact per-write change test
+    // this instrument offers. A VDP-internal write has the prior value and has no bus function code.
+    check_incoming(
+        &good_hits_reply(good_bus_hit()),
+        Some("emulator/watchpoint_hits"),
+    )
+    .expect("the positive control first: a conformant bus hit must pass");
+
+    let mut hit = good_bus_hit();
+    hit["old"] = json!("0x00000000");
+    rejects(
+        &good_hits_reply(hit),
+        Some("emulator/watchpoint_hits"),
+        "old",
+    );
+
+    // And the mirror: a VDP hit must carry `old` and must not carry `fc`.
+    let vdp = json!({"watch":"w0","space":"vram","addr":"0x00000100","value":"0x000000BE",
+                     "old":"0x00000000","size":1,"op":"write","via":"direct","pc":"0x00000216",
+                     "frame":0,"mclk":0,"seq":0});
+    check_incoming(
+        &good_hits_reply(vdp.clone()),
+        Some("emulator/watchpoint_hits"),
+    )
+    .expect("a conformant VDP hit must pass");
+    let mut missing_old = vdp.clone();
+    missing_old.as_object_mut().unwrap().remove("old");
+    rejects(
+        &good_hits_reply(missing_old),
+        Some("emulator/watchpoint_hits"),
+        "old",
+    );
+    let mut with_fc = vdp;
+    with_fc["fc"] = json!(0);
+    rejects(
+        &good_hits_reply(with_fc),
+        Some("emulator/watchpoint_hits"),
+        "fc",
+    );
+}
+
+#[test]
+fn control_a_numeric_watch_handle_is_rejected_wherever_it_appears() {
+    // §8 item 16's mistake, generalised: this server shipped a numeric checkpoint handle once, and the
+    // watch handle appears in five places. Two of them are checked here — the rest are covered
+    // behaviourally by `tests/watchpoints.rs`.
+    let mut hit = good_bus_hit();
+    hit["watch"] = json!(0);
+    rejects(
+        &good_hits_reply(hit),
+        Some("emulator/watchpoint_hits"),
+        "watch",
+    );
+
+    let line = json!({"jsonrpc":"2.0","id":12,"result":{
+        "watch":0,"space":"bus","addr":"0x00FF8000","len":2,"op":"write","mode":"record",
+        "frame":0,"mclk":0,"running":false,"droppedEvents":0}});
+    rejects(&line, Some("emulator/watchpoint_add"), "watch");
+}
+
+#[test]
+fn control_a_hits_reply_missing_an_honesty_counter_is_rejected() {
+    // §8 item 21: `seen`, `dropped` and `matched` are REQUIRED beside §2.4's `total`/`returned`/
+    // `truncated`. `seen` is the one that matters most — without it a client cannot tell "this address is
+    // never written" from "the recorder was not in the run" — so a reply that omits it is rejected rather
+    // than read as a zero.
+    for key in [
+        "seen",
+        "dropped",
+        "matched",
+        "total",
+        "returned",
+        "truncated",
+    ] {
+        let mut line = good_hits_reply(good_bus_hit());
+        line["result"].as_object_mut().unwrap().remove(key);
+        rejects(&line, Some("emulator/watchpoint_hits"), key);
+    }
+}
+
+#[test]
+fn control_a_watchpoint_stop_that_does_not_name_its_watch_is_rejected() {
+    // Unlike CR-9's `buttons`/`port`, this rule HAS a discriminator in the event, so the schema enforces
+    // both halves of it: a `watchpoint` stop must name its watch, and no other stop may.
+    let missing = json!({"jsonrpc":"2.0","method":"emulator/stopped","params":{
+        "reason":"watchpoint","pc":"0x000002A0","deadlineReached":false,
+        "frame":1,"mclk":896040,"running":false}});
+    rejects(&missing, None, "watch");
+
+    let spurious = json!({"jsonrpc":"2.0","method":"emulator/stopped","params":{
+        "reason":"runFrames","pc":"0x000002A0","frames":1,"deadlineReached":true,"watch":"w0",
+        "frame":1,"mclk":896040,"running":false}});
+    rejects(&spurious, None, "watch");
+}
+
+#[test]
+fn control_buttons_without_port_is_rejected_and_that_is_all_the_schema_can_do() {
+    // **CR-9's cost, made executable.** `dependentRequired` catches the half-attribution — a subscriber
+    // told which buttons went down and not which pad would blame the wrong controller in a two-pad
+    // session — and that is the ONLY half a schema can reach. The other half (present iff `press` drove
+    // the advance) has no discriminator in the event, deliberately: `reason` names the stop condition and
+    // never the driving method, so a press-driven advance and a `run_frames` one both read `runFrames`.
+    // The second assertion below is that gap, asserted rather than assumed, so nobody later reads the
+    // schema as enforcing more than it does. Its behavioural half is
+    // `watchpoints::press_stops_carry_buttons_and_port_and_run_frames_does_not`.
+    let half = json!({"jsonrpc":"2.0","method":"emulator/stopped","params":{
+        "reason":"runFrames","pc":"0x000002A0","frames":2,"deadlineReached":true,
+        "buttons":["start"],"frame":2,"mclk":1792080,"running":false}});
+    rejects(&half, None, "port");
+
+    let fabricated = json!({"jsonrpc":"2.0","method":"emulator/stopped","params":{
+        "reason":"runFrames","pc":"0x000002A0","frames":2,"deadlineReached":true,
+        "buttons":["start"],"port":0,"frame":2,"mclk":1792080,"running":false}});
+    check_incoming(&fabricated, None).expect(
+        "a run_frames stop wearing buttons/port is SCHEMA-VALID — the event carries no method \
+         discriminator, so this rule is behavioural and is pinned in tests/watchpoints.rs",
+    );
 }
 
 #[test]

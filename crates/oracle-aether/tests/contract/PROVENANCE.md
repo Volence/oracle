@@ -14,13 +14,44 @@ an explicit re-vendor commit. That commit is the auditable record of "we adopted
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo commit (`HEAD` at vendor time) | `432f631` — *"contract: the schema's front door said SEED while covering every advertised method"* (2026-08-15) |
-| Last commit that touched the schema | `432f631` — same commit |
-| SHA-256 | `43a00bdbe7b91f89b4e6fa738551f0ab1ee94593c783b9ad844af4ce83e7a301` |
-| Bytes | 62434 |
+| Contract repo commit (`HEAD` at vendor time) | `af434a2` — *"contract: the watchpoint surface, rebased onto the conventions that landed after it"* (2026-08-15) |
+| Last commit that touched the schema | `af434a2` — same commit |
+| SHA-256 | `b68b5c9b715e99167df6baf862b70db794cd01232b8c5d26a57ab8b9fef84634` |
+| Bytes | 89020 |
 | Vendored on | 2026-08-15 |
 
-### What this re-vendor adopted
+### What this re-vendor adopted — CR-9, CR-11 and CR-12
+
+Two contract commits, both ruled in `docs/2026-08-15-fable-ruling-cr9-cr11-cr12.md`, taking the schema from
+22 method fragments to **26** (62,434 → 89,020 bytes). *(`methods` holds 27 keys; one of them is a
+`$comment`, which is where a "27" in a hand-count comes from.)*
+
+- **`8adf219` — §11.7, CR-9.** `emulator/stopped` gains **`buttons`** and **`port`**, REQUIRED when the
+  advance was driven by `emulator/press` and absent otherwise. The `reason` enum is **not** extended: §3
+  redefines `runFrames` as *"a bounded frame advance ran to completion — `emulator/run_frames`,
+  `emulator/press`, or any future method whose stop condition is an exhausted frame count"*, and pins the
+  house rule that `reason` names the **condition**, never the method or the cause.
+
+  **The enforcement is deliberately asymmetric, and the schema says so in a `$comment`.** The event carries
+  no method discriminator — that is the *point* of the widening — so "present iff `press` drove it" cannot be
+  keyed on an `if`/`then`. What is enforceable is enforced: `dependentRequired: {buttons:[port],
+  port:[buttons]}`, because a subscriber told which buttons went down and not which pad would attribute the
+  input to the wrong controller in a two-pad session. The behavioural half is ours to honour and is pinned by
+  `tests/watchpoints.rs::press_stops_carry_buttons_and_port_and_run_frames_does_not`.
+
+- **`af434a2` — §11.8, CR-11 and CR-12.** Four new method fragments
+  (`emulator/watchpoint_add`/`_clear`/`_list`/`_hits`), `$defs/watchStamp`, `capabilities.watchpoints`, the
+  `watch` param on `emulator/stopped` (this one **does** have a discriminator, so both directions are
+  enforced by `if`/`then`/`else`), the `censusKey`-without-`mode:"census"` refusal as a two-way `if`/`then`,
+  §5's `-32005 watchCapReached` reason, and a new **§8 item 21**.
+
+  Three rules in these fragments are structural rather than stylistic, and each is pinned by a test here:
+  a hit's **`old` is present iff `space != "bus"`** and **`fc` iff `space == "bus"`** (an `if`/`then`/`else`
+  inside `hits[].items`); the watch **handle is a string at all five places it appears**; and both list
+  results take §2.4's **flat** bounded-list spelling — `total`/`returned`/`limit`/`truncated` as siblings of
+  the array, not a nested `boundedList`.
+
+### What the earlier re-vendor adopted
 
 One contract commit, **`f309cc8`** — the result-key ruling (`protocol.md` §11.5), which nearly doubled the
 schema (30,075 → 59,356 bytes). Four things landed, and three of them change our wire:

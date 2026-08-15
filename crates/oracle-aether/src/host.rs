@@ -54,6 +54,7 @@
 use crate::engine::{Engine, EngineConfig};
 use crate::outbound::DEFAULT_CAPACITY;
 use crate::server::{spawn_accept, AcceptCtx, EngineMsg, Server, ServerConfig};
+use oracle_core::bus::Observe;
 use oracle_core::io::Pad;
 use oracle_core::scanline_capture::ScanlineCapture;
 use oracle_core::symbols::SymbolTable;
@@ -286,6 +287,42 @@ impl Host {
         self.engine.set_live_pads(pads);
     }
 
+    // ---------------------------------------------------------------- the instrument (conflict 4)
+
+    /// **The watchpoint instrument, lent to the host's own run loop.**
+    ///
+    /// This is the fourth conflict, and it is the one a naive implementation gets wrong. There are **two run
+    /// drivers**: in the standalone server the engine advances the machine itself, and hosted, the player
+    /// does — the engine only borrows it inside [`pump`](Host::pump). A `Watchpoints` owned by the engine and
+    /// attached only to the engine's own runs would therefore see **nothing** while the player is running,
+    /// and would report it as `seen == 0` — which is honest ("the recorder was never attached to the run")
+    /// and useless.
+    ///
+    /// So the instrument is engine-owned and lent here. The host's loop puts it in the sink it already
+    /// builds per frame, exactly as it does the scanline capture, and the panel that reads it locally and the
+    /// bus's `emulator/watchpoint_hits` then read **one** instrument. That is contract §8 item 19's
+    /// guarantee made structural rather than promised: they cannot drift, because there is nothing for them
+    /// to drift apart *from*.
+    ///
+    /// Safe to call outside a drain window, unlike anything that touches the machine: watches are engine
+    /// state, not `System` state, so this never answers for the placeholder.
+    pub fn watchpoints_mut(&mut self) -> &mut oracle_core::watchpoints::Watchpoints {
+        self.engine.watchpoints_mut()
+    }
+
+    /// The same instrument, wrapped for **attaching to the host's own run** — see [`watchpoints_mut`] for
+    /// what it is and [`Observe`](oracle_core::bus::Observe) for what the wrapper drops.
+    ///
+    /// A host must put *this* in its per-frame sink and never the bare instrument. A watch armed with
+    /// `stopAfter` raises `stop_requested` on a level (`matched >= n`, permanently), so a shared instrument
+    /// attached bare would end every one of the host's 1-frame runs before it began — a client's stop
+    /// condition turned into a frozen window, on a machine nobody asked to pause. The observations still
+    /// land, so `seen` still means "the recorder rode this run"; only the halt, which belongs to the runs a
+    /// client bounded, is dropped.
+    pub fn watch_sink(&mut self) -> Observe<&mut oracle_core::watchpoints::Watchpoints> {
+        Observe(self.engine.watchpoints_mut())
+    }
+
     // ---------------------------------------------------------------- the picture (conflict 3)
 
     /// Hand the bus the frame the host's own run loop just drew, so `emulator/screenshot` and
@@ -404,7 +441,8 @@ pub struct MachineInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use oracle_core::scanline_capture::Retain;
+    use serde_json::{json, Value};
 
     fn booted() -> System {
         let mut sys = System::new(0x5EED);
@@ -571,6 +609,222 @@ mod tests {
         h.engine.swap_system(&mut sys);
         // …and the advertised limit is the one enforced, so a client can plan around it.
         assert_eq!(h.engine.config().max_run_frames, HOSTED_MAX_RUN_FRAMES);
+    }
+
+    /// [`booted`], with the VDP's VINT enable (reg 1 bit 5) on, so the fixture's interrupt handler actually
+    /// runs and writes its `$1234` sentinel to `$FF8000` once per frame. At power-on IE0 is off and the
+    /// latch is set every frame without ever reaching the IPL, so the handler never runs — the same pose
+    /// `system.rs`'s own interrupt tests use.
+    fn booted_with_vint() -> System {
+        let mut sys = booted();
+        sys.vdp_mut().control_write(0x8120, 0);
+        sys
+    }
+
+    /// [`call`], returning the handler's `result` instead of the drain report.
+    fn call_ok(h: &mut Host, sys: &mut System, method: &str, params: serde_json::Value) -> Value {
+        let (tx, rx) = mpsc::channel();
+        h.tx.send(EngineMsg::Call {
+            method: method.into(),
+            params,
+            reply: tx,
+        })
+        .expect("queue the call");
+        h.pump(sys);
+        rx.try_recv()
+            .expect("the drain answered")
+            .result
+            .unwrap_or_else(|e| panic!("{method}: {e:?}"))
+    }
+
+    /// One iteration of the **player's** run loop, in the shape `oracle-frontend/src/main.rs` uses it:
+    /// the machine is advanced through the scanline capture *and* the bus's watch instrument, borrowed for
+    /// the run. `armed` mirrors the loop's own attach condition.
+    fn player_frame(h: &mut Host, sys: &mut System, cap: &mut ScanlineCapture, armed: bool) {
+        if armed {
+            // `watch_sink`, never `watchpoints_mut`: the bare instrument would halt this loop.
+            let mut sink = oracle_core::bus::Fanout::new(&mut *cap, h.watch_sink());
+            sys.run_frames_with_sink(1, &mut sink);
+        } else {
+            sys.run_frames_with_sink(1, &mut *cap);
+        }
+        cap.clear();
+    }
+
+    /// ## ★ NON-WAIVABLE ★ — **contract §8 item 19, made executable: the bus and the panel read ONE
+    /// instrument.**
+    ///
+    /// This is the test the whole hosted arrangement turns on, and it is here rather than in an
+    /// integration test because it has to reach the instrument from **both** sides at once: over the wire
+    /// as a client does, and through [`Host::watchpoints_mut`] as the player's run loop and its `W`-key
+    /// panel do. No socket client can do the second.
+    ///
+    /// It asserts three things in one run:
+    ///
+    /// 1. **A watch armed over the bus observes frames the PLAYER ran.** That is the two-run-drivers
+    ///    problem: an engine-owned instrument attached only to the engine's own runs would see nothing
+    ///    here and report `seen == 0` — honest ("the recorder was never attached") and useless.
+    /// 2. **The bus's `watchpoint_hits` and the panel's `Watchpoints::hits()` agree hit for hit.** Not
+    ///    "are kept in step" — they cannot disagree, because there is nothing for them to disagree with.
+    /// 3. **The failure it prevents is real**, shown by the negative control: a frame run *without*
+    ///    lending the instrument moves the machine and leaves `seen` exactly where it was.
+    #[test]
+    fn the_bus_and_the_panel_read_one_instrument() {
+        let mut h = Host::new(HostConfig::default());
+        let mut sys = booted_with_vint();
+        let mut cap = ScanlineCapture::new(Retain::LastFrame);
+
+        // --- Armed over the wire, by a client that does not own the run loop. ---
+        let armed = call_ok(
+            &mut h,
+            &mut sys,
+            "emulator/watchpoint_add",
+            json!({"addr": "0x00FF8000", "len": 2, "label": "vint sentinel"}),
+        );
+        let handle = armed["watch"]
+            .as_str()
+            .expect("a string handle")
+            .to_string();
+
+        // --- The negative control, first, while it is still unambiguous. A run the instrument is not lent
+        //     to advances the machine and tells the recorder nothing. This is precisely what a naive
+        //     engine-owned instrument would do on EVERY frame of a hosted session.
+        let mclk = sys.scheduler().now();
+        player_frame(&mut h, &mut sys, &mut cap, false);
+        assert!(sys.scheduler().now() > mclk, "the machine really advanced");
+        assert_eq!(
+            h.watchpoints_mut().seen(),
+            0,
+            "an unlent instrument sees nothing — the failure item 19 exists to prevent"
+        );
+
+        // --- Now the real loop: the player runs the machine and lends the bus's instrument to it. ---
+        for _ in 0..4 {
+            player_frame(&mut h, &mut sys, &mut cap, true);
+        }
+        assert!(
+            h.watchpoints_mut().seen() > 0,
+            "the bus's watch rode the PLAYER's run"
+        );
+
+        // --- Read it both ways. ---
+        let wire = call_ok(&mut h, &mut sys, "emulator/watchpoint_hits", json!({}));
+        // The panel's read is `hits()` — non-destructive, so this test's own two readers cannot steal each
+        // other's evidence either, which is the same property a second client relies on.
+        let panel: Vec<(u32, u32, u64, u64)> = h
+            .watchpoints_mut()
+            .hits()
+            .iter()
+            .map(|hit| (hit.addr, hit.value, hit.seq, hit.frame))
+            .collect();
+
+        assert!(!panel.is_empty(), "the VInt handler wrote the sentinel");
+        assert_eq!(
+            wire["total"].as_u64().unwrap() as usize,
+            panel.len(),
+            "the bus and the panel hold the same number of hits"
+        );
+        let from_wire: Vec<(u32, u32, u64, u64)> = wire["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|hit| {
+                let hex = |k: &str| {
+                    u32::from_str_radix(hit[k].as_str().unwrap().trim_start_matches("0x"), 16)
+                        .unwrap()
+                };
+                (
+                    hex("addr"),
+                    hex("value"),
+                    hit["seq"].as_u64().unwrap(),
+                    hit["frame"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            from_wire, panel,
+            "hit for hit: the bus and the panel are two readers of ONE instrument"
+        );
+        // …and every hit names the handle the wire issued, so the two views are not merely the same
+        // length, they are the same watch's evidence.
+        for hit in wire["hits"].as_array().unwrap() {
+            assert_eq!(hit["watch"], json!(handle));
+        }
+
+        // A watch the PANEL arms is visible to the bus in the same way — the parity is symmetric, which is
+        // what makes "one instrument" a structural claim rather than a direction of travel.
+        h.watchpoints_mut().add_watch(
+            0x00FF_0000..=0x00FF_0001,
+            oracle_core::watchpoints::WatchOp::Write,
+            "panel",
+        );
+        let list = call_ok(&mut h, &mut sys, "emulator/watchpoint_list", json!({}));
+        assert_eq!(
+            list["total"],
+            json!(2),
+            "the bus sees the panel's watch too"
+        );
+        assert_eq!(list["watches"][1]["label"], json!("panel"));
+    }
+
+    /// The other consequence of one shared instrument: the panel can arm a census by a key this **bus** does
+    /// not expose. §6 exposes three of core's seven `CensusKey` variants, and the panel is not limited to
+    /// them, so `watchpoint_list` must answer for a watch it could not have created.
+    ///
+    /// It reports the census counts, which are real, **omits** `censusKey`, and says why in a `caveat`.
+    /// Relabelling the key as the nearest exposed spelling — an `AddrPage(8)` census reported as `addr` —
+    /// would put a wrong name on a correct number, and a client would read a page count as an address count.
+    #[test]
+    fn a_census_by_a_key_this_bus_does_not_expose_is_reported_without_one() {
+        use oracle_core::watchpoints::{CensusKey, Watch, WatchMode, WatchOp};
+        let mut h = Host::new(HostConfig::default());
+        let mut sys = booted_with_vint();
+        let mut cap = ScanlineCapture::new(Retain::LastFrame);
+        h.watchpoints_mut().add(
+            Watch::bus(0x00FF_0000..=0x00FF_FFFF, WatchOp::Write, "panel pages")
+                // 256-byte pages: a legitimate core census with no wire spelling.
+                .mode(WatchMode::Census(CensusKey::AddrPage(8))),
+        );
+        player_frame(&mut h, &mut sys, &mut cap, true);
+
+        let list = call_ok(&mut h, &mut sys, "emulator/watchpoint_list", json!({}));
+        let w = &list["watches"][0];
+        assert_eq!(w["mode"], json!("census"));
+        assert!(
+            w.get("censusKey").is_none(),
+            "an unexposed key must not be relabelled as an exposed one: {w}"
+        );
+        assert!(
+            w["census"].as_array().is_some_and(|c| !c.is_empty()),
+            "the counts are real and are reported: {w}"
+        );
+        let caveat = list["caveat"].as_str().expect("the hole is explained");
+        assert!(caveat.contains("censusKey"), "{caveat}");
+    }
+
+    /// A `stopAfter` watch armed over the bus does **not** silently halt the player's own loop: the halt is
+    /// a property of a run whose sink asked for it, and the player's loop does not consult it. §6 answers
+    /// this case by attribution rather than by a gate, and the attribution is on the *bus's* runs.
+    #[test]
+    fn a_stop_after_watch_does_not_wedge_the_players_loop() {
+        let mut h = Host::new(HostConfig::default());
+        let mut sys = booted_with_vint();
+        let mut cap = ScanlineCapture::new(Retain::LastFrame);
+        call_ok(
+            &mut h,
+            &mut sys,
+            "emulator/watchpoint_add",
+            json!({"addr": "0x00FF8000", "len": 2, "stopAfter": 1}),
+        );
+        let mclk = sys.scheduler().now();
+        for _ in 0..3 {
+            player_frame(&mut h, &mut sys, &mut cap, true);
+        }
+        assert_eq!(
+            (sys.scheduler().now() - mclk) / MCLK_PER_FRAME,
+            3,
+            "the window keeps running: a watch cannot pause a machine nobody asked it to pause"
+        );
     }
 
     /// Conflict 3: after a client-driven run the picture has moved, and the host is told so.

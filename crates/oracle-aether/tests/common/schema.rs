@@ -58,8 +58,15 @@
 //! legal member of the enum — while §3 and §8 item 13 say the value is `runFrames` and that `step` is a
 //! knowing mislabel. Nothing schema-shaped protects that rule. It has its own behavioural assertions in
 //! `tests/events.rs`; see the comment there. Read `docs/2026-08-15-schema-validator.md` for the full
-//! account of the blind spots, and the coverage split (as of the 2026-08-15 re-vendor the schema has a
-//! `result` for **all 21** methods we advertise — `tests/schema_conformance.rs` prints and pins it).
+//! account of the blind spots, and the coverage split (as of the `af434a2` re-vendor the schema has a
+//! `result` for **all 25** methods we advertise — `tests/schema_conformance.rs` prints and pins it).
+//!
+//! The sharpest live blind spot gained a second instance with CR-9. `emulator/stopped`'s `buttons`/`port`
+//! are REQUIRED *iff* `emulator/press` drove the advance, and the event deliberately carries no method
+//! discriminator — `reason` names the stop CONDITION, so a press-driven advance and a `run_frames` one both
+//! read `runFrames`. `dependentRequired` enforces the half that is expressible (the two travel together);
+//! the rest is behavioural, and `control_buttons_without_port_is_rejected_and_that_is_all_the_schema_can_do`
+//! asserts the gap so nobody reads the schema as covering more than it does.
 
 #![allow(dead_code)]
 
