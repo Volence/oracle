@@ -232,14 +232,55 @@ reason at the site* and raised it rather than absorbing it. **The contract was a
 number bent** (§11.9): `minimum: 0` on both result fields, `stopped.frames` deliberately unchanged because
 a run cut short by a watch reports `reason:"watchpoint"` and the zero case cannot arise there.
 
-## 7. Next
+## 7. Next — the order, and the one call that is the owner's
 
-1. ~~CR-11/CR-12 — the watchpoint surface.~~ **Done.** Originally: Drafted with paste-ready fragments in
-   `docs/2026-08-15-watchpoint-bus-surface.md`, adopt-both-or-neither, directed as next by the CR-10 ruling.
-2. ~~CR-13 and CR-14 need owner rulings.~~ **Done** — ruled, applied, and closed; see §6b.
-2. **Queue item 3 — the MCP server** as a *client* of Aether (D10), untouched this session.
-3. **Neither repo is pushed.** **Seven** contract amendments are the outward-facing part; that is the owner's call.
-4. **All seventeen CRs are closed.** The register says so at the top and every entry carries its own marker.
+**Both repos are PUSHED** (`oracle-next` `31a61be`, `empyrean` `34a1993`). All seventeen CRs are closed;
+the register says so at the top and every entry carries its own outcome marker.
+
+**1. The MCP server as a client of Aether** (capability-layer handoff §3 item 3, D10). It is in a far
+stronger position than when that queue was written: it then faced a 16-method surface with 9 schematized
+fragments and four live divergences, and it now faces **25 methods, all schematized, all closed under §8
+item 20, zero registered divergences**. D10's reasoning is that the MCP already exercises most of the ops,
+so porting it validates the whole surface in one move — *"the MCP becomes one client of Aether, not the
+definition of it."*
+
+> **★ THE SEQUENCING TENSION, LEFT FOR THE OWNER — it is arguable both ways and should not be settled by
+> whoever picks the work up.** Ranked capability 1 is a unified `read{space, addr|symbol, len}` collapsing
+> six read methods into one. **MCP first** means that collapse churns a client that already exists.
+> **Collapse first** means redesigning a surface no client has ever exercised — which is exactly how the
+> 201-of-225 proposed-never-executed problem happens, and this project has *measured* that failure mode.
+> The recommendation on the record is **MCP first, scoped explicitly as a validation exercise rather than a
+> product**, letting what it learns decide whether the collapse earns itself. Invert it only on a
+> deliberate call, not by drift.
+
+**2. Violation B — SAT / sprite decode.** The last open §8 item-19 violation of the four the sweep found:
+the panel renders it and the catalog has no row anywhere. (A closed by CR-10; D closed by CR-11/CR-12; C
+resolved by moving `sprite_tile_at` into `oracle-core`.) Building new surface while a known violation of a
+binding rule stays open is the pattern item 19 exists to stop.
+
+**3. Capability 2 — deterministic scripted input / the pad timeline.** The largest **executed**-usage
+signal in the corpus (52 of ~90 real calls) and it retires six in-tree re-implementations. Needs a CR
+first: the catalogue has no pad-timeline row.
+
+**4. Capabilities 1 and 6.** The unified read (see the tension above), and per-scanline visual state —
+which needs `F-TRACE-VDPWRITE-MCLK` for sub-scanline resolution, and that in turn unblocks `F-CRAMDOT`, a
+blocker two prior arcs already hit.
+
+**5. Player build-out** (§3 item 5): group by subsystem, separate views from settings, a command palette
+rather than a menu at ~30 items.
+
+### Deliberately NOT on the list
+
+Four items are **registered with reversal conditions and must stay unbuilt until one fires** — see
+`docs/2026-08-15-fable-ruling-cr9-cr11-cr12.md`: `sinceSeq` on `watchpoint_hits`, a bus-side last-value
+table, the per-frame sampler, and `CensusKey::Pc`. **The sampler is the one most likely to be built by
+accident:** shipping the watch *recorder* and calling it the value trace is precisely the ranking error
+this project measured, and the handoff's own ranked item 4 already made that conflation once.
+
+Two shape holes stay **pinned as open** rather than fixed, each with a test asserting the hole is still
+there so it cannot close silently: `anyMessage` is a `oneOf` over both wire directions (an event that grew
+an `id` validates as a request), and item 20's closure is top-level only. Both need contract changes;
+neither has bitten.
 
 ## 8. Owner-owed, unchanged and now longer
 
