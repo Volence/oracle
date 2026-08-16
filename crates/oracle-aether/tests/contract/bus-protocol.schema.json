@@ -194,6 +194,9 @@
               "objectDecoders": { "type": "boolean" },
               "profiler": { "type": "boolean" },
               "symbolsLoaded": { "type": "boolean" },
+          "sixButtonPad": { "type": "boolean", "description": "Whether this server models a 6-button pad. When false, `x`/`y`/`z`/`mode` are REFUSED with -32602 on every method that takes `buttons` — refused rather than silently ignored, because a caller who asked for a button that was dropped cannot tell that from a button the game ignored. Registered 2026-08-16 (§11.11): the reference server has advertised this key since the input methods shipped, while the schema's `buttons` enum accepted the names it refuses." },
+          "breakpoints": { "type": "boolean", "description": "Whether the breakpoint family (§6) is served." },
+          "batch": { "type": "boolean", "description": "Whether the server accepts batched requests (§2)." },
               "checkpoints": {
                 "type": "object",
                 "required": ["supported"],
@@ -228,7 +231,8 @@
             "properties": {
               "maxRunFrames": { "type": "integer", "minimum": 1, "description": "Largest `frames`/`maxFrames` this server accepts on a run-shaped op." },
               "maxReadLen": { "type": "integer", "minimum": 1, "description": "Largest `len` this server accepts on a read-shaped op." },
-              "maxLineBytes": { "type": "integer", "minimum": 1, "description": "Largest single NDJSON line this server accepts (protocol.md §7.1) before refusing it." }
+              "maxLineBytes": { "type": "integer", "minimum": 1, "description": "Largest single NDJSON line this server accepts (protocol.md §7.1) before refusing it." },
+          "maxInputRows": { "type": "integer", "minimum": 1, "description": "Largest `rows` count `emulator/play_input` accepts. Discoverable for the reason the checkpoint cap is: a client that must hit a limit to learn it is a client that loses the work it was doing when it found out." }
             },
             "description": "REQUIRED (protocol.md §2.1, §11.5). THIS SERVER's ceilings, not the catalog's: §6's parenthetical defaults describe the catalog, while a server hosted inside a player window legitimately runs a far lower maxRunFrames and REFUSES above it rather than clamping (§5). A client has no other way to discover that number, and discovering it by being refused is discovering it too late. The values MUST be the ones the server's own parameter checks actually enforce."
           },
@@ -872,6 +876,44 @@
               "additionalProperties": false
             }
           }
+        }
+      }
+    },
+    "emulator/play_input": {
+      "$comment": "protocol.md §6 (input), added 2026-08-16 by §11.11 (CR-19). The pad as a TIMELINE rather than as accumulated state. THE normative property, which the schema cannot express and the prose therefore carries: the pad at frame N is a pure function of `rows` and of NOTHING else — the client's held set and any host live input are both SUSPENDED for the duration and restored unchanged afterwards, and a port no row covers is fully released. Overlapping rows on one port UNION, order-independently, so rows need not be sorted or disjoint. Subject to §6's run-control state rule (-32005 while free-running). Does NOT subsume emulator/press: press UNIONS with session state, this REPLACES it. Not wait-shaped, so D12's `reached` does not apply.",
+      "params": {
+        "type": "object",
+        "required": ["rows"],
+        "properties": {
+          "rows": {
+            "type": "array",
+            "minItems": 1,
+            "description": "The timeline. Empty is -32602: a request to do nothing is refused rather than silently satisfied. The upper bound is this server's `limits.maxInputRows`.",
+            "items": {
+              "type": "object",
+              "required": ["start", "end", "buttons"],
+              "properties": {
+                "start": { "type": "integer", "minimum": 0, "description": "First frame this row applies to, 0-based and relative to the call. A count, so a JSON number (D9 category 2)." },
+                "end": { "type": "integer", "minimum": 1, "description": "One past the last frame this row applies to: the interval is half-open [start, end). `end <= start` is -32602 — an empty interval is a row that says nothing, and accepting it would let a script look like it did something it did not." },
+                "buttons": {
+                  "type": "array",
+                  "description": "The buttons this row CONTRIBUTES (not a complete pad state — under union no single row is complete).",
+                  "items": { "enum": ["up", "down", "left", "right", "a", "b", "c", "start", "x", "y", "z", "mode"] }
+                },
+                "port": { "type": "integer", "enum": [0, 1], "default": 0 }
+              }
+            }
+          },
+          "maxFrames": { "type": "integer", "minimum": 0, "description": "Frame ceiling for this call, bounded by `limits.maxRunFrames` — run_frames' own ceiling, NOT press's legacy 1000, which is far too short for the re-record workflow this method exists for. Absent, it is the largest `end`. Below the largest `end` it TRUNCATES, and rows starting at or beyond it never apply." }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["frames", "frameToken", "pc"],
+        "properties": {
+          "frames": { "type": "integer", "minimum": 0, "description": "Frames actually advanced. EXACT, including zero (§11.9) — a watch with `stopAfter` can end the run inside frame 0, and this is also the stop position, which is why no separate `stoppedAt` exists (§11.5's struck run_to.stoppedAtFrame)." },
+          "frameToken": { "type": "integer", "minimum": 0 },
+          "pc": { "$ref": "#/$defs/hex" }
         }
       }
     },

@@ -139,6 +139,62 @@ pub fn build_vint_counter() -> Vec<u8> {
     rom
 }
 
+/// Where [`build_pad_log`] leaves what it last read from the controller ports: four bytes, P1 then P2,
+/// each port's TH=1 phase followed by its TH=0 phase. Active-low, exactly as the pins read.
+///
+/// `+0` P1 TH=1 (`C B R L D U`) · `+1` P1 TH=0 (`Start A 0 0 D U`) · `+2` P2 TH=1 · `+3` P2 TH=0.
+pub const PAD_LOG_ADDR: u32 = 0x00FF_9000;
+
+/// Build the **pad-log fixture ROM** — a ROM that makes the pad *observable*, for both ports and both TH
+/// phases, by writing what it reads to [`PAD_LOG_ADDR`] on every poll.
+///
+/// [`build_pad_poll`] exposes only **Start**, and only as a backdrop colour. That is enough to prove input
+/// reaches the machine and not enough to prove *which* input did: a test asking whether a timeline leaked a
+/// held `right` into its frames, or whether an un-driven port was released, cannot see either. This ROM is
+/// the instrument for those questions — read the four bytes back with a memory read and compare against
+/// the buttons the timeline named.
+#[doc(hidden)]
+pub fn build_pad_log() -> Vec<u8> {
+    let mut rom = vec![0u8; 0x8];
+    rom[0..4].copy_from_slice(&INITIAL_SSP.to_be_bytes());
+    rom[4..8].copy_from_slice(&MAIN.to_be_bytes());
+    rom.resize(0x200, 0);
+
+    fn w(rom: &mut Vec<u8>, word: u16) {
+        rom.push((word >> 8) as u8);
+        rom.push((word & 0xFF) as u8);
+    }
+    fn l(rom: &mut Vec<u8>, long: u32) {
+        w(rom, (long >> 16) as u16);
+        w(rom, (long & 0xFFFF) as u16);
+    }
+    // a2 = I/O base $A10000. Data regs at +3 (P1) / +5 (P2); control regs at +9 / +$B.
+    w(&mut rom, 0x45F9);
+    l(&mut rom, 0x00A1_0000);
+    for ctrl_off in [0x0009u16, 0x000B] {
+        w(&mut rom, 0x157C);
+        w(&mut rom, 0x0040); // TH as output
+        w(&mut rom, ctrl_off);
+    }
+
+    let loop_top = rom.len() as u32;
+    for (data_off, log) in [(0x0003u16, PAD_LOG_ADDR), (0x0005, PAD_LOG_ADDR + 2)] {
+        for (th, slot) in [(0x0040u16, 0u32), (0x0000, 1)] {
+            w(&mut rom, 0x157C);
+            w(&mut rom, th);
+            w(&mut rom, data_off); // move.b #TH,(off,a2)
+            w(&mut rom, 0x102A);
+            w(&mut rom, data_off); // move.b (off,a2),d0
+            w(&mut rom, 0x13C0);
+            l(&mut rom, log + slot); // move.b d0,(log).l
+        }
+    }
+    let bra_at = rom.len() as u32;
+    let disp = (loop_top as i32 - (bra_at as i32 + 2)) as i8 as u8;
+    w(&mut rom, 0x6000 | disp as u16); // bra.s loop_top
+    rom
+}
+
 /// The address of the illegal-instruction handler in every ROM this module builds — the fixture stand-in
 /// for an engine's fault handler (Aeon vectors all sixteen TRAPs plus the reserved vectors at a single
 /// `ErrorTrap`, and routes `raise_exception` to its MD Debugger blob).

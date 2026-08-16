@@ -65,6 +65,10 @@ pub struct EngineConfig {
     pub max_run_frames: u64,
     /// Ceiling for one memory/VRAM read, per `protocol.md` §6 (`len`? ≤ 4096).
     pub max_read_len: u64,
+    /// Ceiling for one `emulator/play_input` timeline (`protocol.md` §6, §11.11). Advertised as
+    /// `limits.maxInputRows` because a client that must hit a limit to learn it loses the work it was
+    /// doing when it found out.
+    pub max_input_rows: usize,
     /// Ceiling on `otherMatches` in a symbol lookup, per `protocol.md` §4 ("up to 5").
     pub max_symbol_matches: usize,
     /// **The checkpoint cap** (`protocol.md` §6.1, D13 rule 3), advertised in `initialize` as
@@ -98,6 +102,7 @@ impl Default for EngineConfig {
         Self {
             max_run_frames: 3600,
             max_read_len: 4096,
+            max_input_rows: 256,
             max_symbol_matches: 5,
             // The contract's own advertised example (`"checkpoints":{"supported":true,"cap":8}`). A
             // snapshot is the whole machine, so the cap is a memory bound as much as a policy one.
@@ -231,6 +236,11 @@ pub const METHODS: &[MethodSpec] = &[
         name: "emulator/press",
         handler: Engine::press,
         summary: "tap buttons for N frames, then restore the held set",
+    },
+    MethodSpec {
+        name: "emulator/play_input",
+        handler: Engine::play_input,
+        summary: "play a pad timeline: the pad each frame is a pure function of the rows, nothing else",
     },
     MethodSpec {
         name: "emulator/hold",
@@ -813,6 +823,7 @@ impl Engine {
                 "maxRunFrames": self.config.max_run_frames,
                 "maxReadLen": self.config.max_read_len,
                 "maxLineBytes": rpc::MAX_LINE_BYTES,
+                "maxInputRows": self.config.max_input_rows,
             },
             // What the `frame` in every stamp actually *means* (`F-TRACE-PAL`). Advertised once, here,
             // rather than repeated on every reply: it is a property of the machine, not of the answer.
@@ -1553,6 +1564,75 @@ impl Engine {
             "frames": frames,
             "port": port,
             "frameToken": self.frame(),
+        }))
+    }
+
+    /// `emulator/play_input` — the pad as a timeline (§6 input, added by §11.11 / CR-19).
+    ///
+    /// **The pad at frame N is a pure function of `rows`, and of nothing else.** Both non-row sources are
+    /// suspended for the duration and restored afterwards: the client's `held` set *and* the host's
+    /// `live` input. That is why this writes `set_pad` directly from the rows each frame instead of going
+    /// through [`Engine::apply_pads`], which merges all three — merging is exactly the accumulation this
+    /// method exists to remove, and "apply the rows on top of what is already held" is the easier
+    /// implementation the contract had to forbid by name.
+    fn play_input(&mut self, params: &Value) -> Result<Value, RpcError> {
+        self.require_paused("emulator/play_input")?;
+        let rows = parse_input_rows(params, self.config.max_input_rows)?;
+
+        // Absent, the ceiling is the timeline's own length; present, it may TRUNCATE it. Rows starting at
+        // or beyond the ceiling simply never apply — which falls out of the loop bound rather than needing
+        // a rule of its own.
+        let largest_end = rows.iter().map(|r| r.end).max().unwrap_or(0);
+        let max_frames = match params.get("maxFrames") {
+            None => largest_end.min(self.config.max_run_frames),
+            Some(v) => hex::parse_count("maxFrames", v, 0, self.config.max_run_frames)?,
+        };
+        let total = largest_end.min(max_frames);
+
+        self.running = true;
+        self.emit_resumed();
+        let mclk_before = self.sys.scheduler().now();
+        // One `resumed` at the start and one `stopped` at the end — never one per frame, even though the
+        // machine really is advanced a frame at a time. The per-frame advance is how the pad gets applied
+        // at each boundary; it is not a sequence of runs the client asked for.
+        let mut run: Option<Advanced> = None;
+        let mut completed = 0u64;
+        for frame in 0..total {
+            for port in 0..2 {
+                // A port no row covers is fully released — `Pad::default()`, not whatever was held.
+                self.sys.set_pad(port, pad_at(&rows, port, frame));
+            }
+            let step = self.advance(1);
+            let stopped = step.stopped_by.is_some();
+            run = Some(step);
+            if stopped {
+                break;
+            }
+            completed += 1;
+        }
+        // A timeline truncated to zero frames still owes a record — CR-17 made the 0-frame outcome
+        // reachable, and a zero-frame advance is the honest way to produce one.
+        let run = match run {
+            Some(r) => r,
+            None => self.advance(0),
+        };
+        self.running = false;
+        // Exact, including zero (§11.9): a watch with `stopAfter` can end the run inside frame 0, and the
+        // completed-frame count is then whole frames of elapsed mclk, the same arithmetic `press` uses.
+        let frames = if run.stopped_by.is_some() {
+            self.frames_advanced(&run, completed, mclk_before)
+        } else {
+            completed
+        };
+        // Restore both suspended sources, unchanged. Not cleared: a button the human is physically holding
+        // is not this method's to release.
+        self.apply_pads();
+        let pc = self.sys.cpu_regs().pc;
+        self.emit_run_stop(&run, pc, frames, None);
+        Ok(json!({
+            "frames": frames,
+            "frameToken": self.frame(),
+            "pc": hex::addr(pc),
         }))
     }
 
@@ -2938,6 +3018,102 @@ const BUTTONS_3: &[&str] = &["up", "down", "left", "right", "a", "b", "c", "star
 /// are refused by name rather than silently ignored — a silently-ignored button is a test that "passes"
 /// while pressing nothing (the sibling's *"the `c` button never registers"*, recon §1c).
 const BUTTONS_6: &[&str] = &["x", "y", "z", "mode"];
+
+/// One row of an `emulator/play_input` timeline: the buttons it **contributes** over `[start, end)` on
+/// one port. Not a complete pad state — under union no single row is complete.
+struct InputRow {
+    start: u64,
+    end: u64,
+    port: usize,
+    pad: Pad,
+}
+
+/// The pad for `frame` on `port`: the **union** of every row covering it, and `Pad::default()` when none
+/// does.
+///
+/// Union rather than later-row-wins, and the contract rules it normatively: the union is
+/// **order-independent**, so the pad depends on the row *set* and rows need not be sorted or disjoint.
+/// Later-row-wins would make row order load-bearing — a place two conformant servers would silently
+/// disagree — and would cost the two-row "hold right, tap A at 120" script that motivates the shape.
+fn pad_at(rows: &[InputRow], port: usize, frame: u64) -> Pad {
+    let mut pad = Pad::default();
+    for r in rows
+        .iter()
+        .filter(|r| r.port == port && r.start <= frame && frame < r.end)
+    {
+        pad.up |= r.pad.up;
+        pad.down |= r.pad.down;
+        pad.left |= r.pad.left;
+        pad.right |= r.pad.right;
+        pad.a |= r.pad.a;
+        pad.b |= r.pad.b;
+        pad.c |= r.pad.c;
+        pad.start |= r.pad.start;
+    }
+    pad
+}
+
+/// Parse and bound `rows`. Every refusal here is `-32602` and names what was wrong, because a timeline
+/// that silently drops a row is a script that looks like it did something it did not.
+fn parse_input_rows(params: &Value, cap: usize) -> Result<Vec<InputRow>, RpcError> {
+    let Some(v) = params.get("rows") else {
+        return Err(RpcError::invalid_params("`rows` (array) is required"));
+    };
+    let Some(arr) = v.as_array() else {
+        return Err(RpcError::invalid_params("`rows` must be an array"));
+    };
+    // An empty timeline is a request to do nothing, refused rather than silently satisfied.
+    if arr.is_empty() {
+        return Err(RpcError::invalid_params(
+            "`rows` is empty — a timeline that applies to no frame is refused rather than treated as a \
+             no-op, so a script cannot look like it ran when it did not",
+        ));
+    }
+    if arr.len() > cap {
+        return Err(RpcError::invalid_params(format!(
+            "`rows` has {} entries; this server accepts {cap} (limits.maxInputRows)",
+            arr.len()
+        )));
+    }
+    let mut out = Vec::with_capacity(arr.len());
+    for (i, row) in arr.iter().enumerate() {
+        let at = |what: &str| format!("rows[{i}]: {what}");
+        let Some(obj) = row.as_object() else {
+            return Err(RpcError::invalid_params(at("must be an object")));
+        };
+        let num = |key: &str| -> Result<u64, RpcError> {
+            match obj.get(key) {
+                Some(Value::Number(n)) if n.is_u64() => Ok(n.as_u64().unwrap()),
+                Some(_) => Err(RpcError::invalid_params(at(&format!(
+                    "`{key}` must be a non-negative whole number (D9 category 2)"
+                )))),
+                None => Err(RpcError::invalid_params(at(&format!(
+                    "`{key}` is required"
+                )))),
+            }
+        };
+        let (start, end) = (num("start")?, num("end")?);
+        if end <= start {
+            return Err(RpcError::invalid_params(at(&format!(
+                "`end` ({end}) must be greater than `start` ({start}) — the interval is half-open \
+                 [start, end), so an empty one is a row that says nothing"
+            ))));
+        }
+        let port = parse_port(row)?;
+        let names = parse_buttons(row)?;
+        let mut pad = Pad::default();
+        for b in &names {
+            set_button(&mut pad, b, true);
+        }
+        out.push(InputRow {
+            start,
+            end,
+            port,
+            pad,
+        });
+    }
+    Ok(out)
+}
 
 fn parse_buttons(params: &Value) -> Result<Vec<String>, RpcError> {
     let Some(v) = params.get("buttons") else {

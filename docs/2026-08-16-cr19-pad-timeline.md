@@ -1,172 +1,198 @@
 # CR-19 — a pad timeline, and two claims in its ranking that do not survive checking
 
-**Status: proposed, unruled.** Ranked item 3 of `docs/2026-08-15-handoff-conformance-and-item19.md` §7,
+**Status: RULED 2026-08-16 — adopt with ten changes, all applied below.** Ruling recorded in
+`docs/2026-08-16-ruling-cr19.md`. Ranked item 3 of `docs/2026-08-15-handoff-conformance-and-item19.md` §7,
 inherited from `docs/2026-08-14-tooling-frontier-recon.md` §6 item 3 and §1c.
 
-The capability is worth building. **Two of the three claims that rank it are wrong**, and both change what
-gets built — so they come first, before any design that would inherit them.
+> **What the adjudication found, kept rather than quietly folded in.** Both of this CR's headline
+> corrections were **verified and right about what they checked — and each stopped exactly one step
+> short.** One examined the replay net's *playback* path while the evidence it cited lives in the
+> *recording* path; the other objected to a promise in the MCP while the same promise sat unfixed in this
+> contract. It also struck three of five proposed result keys under CR-13, aimed the row at the wrong §6
+> table, and found the purity pin one input source short of its own property. **Checking a claim is not
+> the same as checking its scope.**
 
-## ☠ Correction 1: the ARP0 replay runner needs no pad capability at all
+## ☠ Correction 1: the ARP0 replay runner needs no pad capability — *on the playback side*
 
 The recon bundles this as one item: *"Deterministic scripted input → headless `ARP0` replay runner — NEW
 glue over two built halves"*, and calls it *"the highest-leverage engine-facing item we found."*
 
-**MEASURED, by reading `aeon/engine/system/replay.emp`:** in `INPUT_PLAYBACK` mode the **engine plays its
-own stream**, from an `ARP0` blob embedded in the ROM. `Input_Tick` fetches `(buttons_byte, hold_minus_1)`
-RLE pairs from `Replay_Ptr` and overwrites `Ctrl_1_Held` / `Ctrl_1_Press` itself, deriving presses from
+**MEASURED**, by reading `aeon/engine/system/replay.emp`: in `INPUT_PLAYBACK` the **engine plays its own
+stream**, from an `ARP0` blob embedded in the ROM. `Input_Tick` fetches `(buttons_byte, hold_minus_1)` RLE
+pairs from `Replay_Ptr` and overwrites `Ctrl_1_Held` / `Ctrl_1_Press` itself, deriving presses from
 **stream** history rather than the live pad — deliberately, to kill the S1-REV00/S2 input-bleed desync
 class structurally.
 
-So the emulator injects nothing. **A pad timeline would be inert during a replay run**, and any design that
-justifies itself by "it drives the ARP0 net" is justifying the wrong instrument.
+**But "a pad timeline would be inert during a replay run" is overstated, and the qualifier matters.** The
+playback path reads the **live** `Ctrl_1_Press` Start bit *before* overwriting and sets
+`Replay_Exit_Request`. Injected Start is not inert — **it aborts the replay.** Injection cannot help a
+playback run and can actively break it; that is the true statement.
 
-What the runner actually needs is to notice that the engine raised `REPLAY DESYNC` and to read the three
-registers the trap carries. **MEASURED:** the desync path is `raise_exception "REPLAY DESYNC"` with `d0` =
-actual hash, `d2` = expected, `d1` = `Logic_Tick` (`replay.emp`, the `.desync` label, DEBUG builds only).
+### ★ And the pain this CR cites as its evidence is in the *recording* half
 
-### The spike, run — and the symbol this document first named was the wrong one
+`replay.emp` has a third mode. **`INPUT_RECORD` taps the *latched live* pad** into the record ring — and
+outside playback, that latched pad is exactly what the emulator's `set_pad` drives. The sibling failures
+quoted to rank this work — *"`emulator_hold` fails ~50% of the time"*, *"re-recording is impossible"*, a
+re-stamp costing ~7 manual playthroughs — are **recording-side**.
 
-**`ErrorTrap` is not the common entry.** It is a `proc` in `engine/debug/error_handler.emp:186` that
-handles the TRAP 0–15 and reserved *vectors* (`vectors.emp:135–140`) and raises `"ERROR TRAP"` itself.
-`raise_exception` routes to the vendored MD Debugger blob, *"reached only via `jsr
-(MDDBG__ErrorHandler).l`"* — i.e. **`ErrorHandlerBlob`**. An earlier draft of this correction named
-`ErrorTrap`, which would have watched the wrong address and produced a runner that never fires.
+So the ARP0 case does not evaporate. It **moves** from the half this correction examined to the half it
+did not, and a deterministic timeline is precisely the re-record instrument.
 
-Run firsthand against `s4.debug.bin` + `s4.debug.lst` (2,540 symbols, bound to the image), on the server
-as it ships today:
+### The playback-verification half, spiked
 
-| check | result |
+What that half needs is to notice the engine raised `REPLAY DESYNC` and read the registers it carries:
+`d0` = actual hash, `d2` = expected, `d1` = `Logic_Tick` (`replay.emp`, `.desync`, DEBUG builds only).
+
+**`ErrorTrap` is not the common entry.** It is a `proc` (`engine/debug/error_handler.emp:186`) handling the
+TRAP 0–15 and reserved *vectors* (`vectors.emp:135–142`), raising `"ERROR TRAP"` itself. `raise_exception`
+reaches the vendored MD Debugger blob — `MDDBG__ErrorHandler = extern("ErrorHandlerBlob")`
+(`error_handler.emp:84`). An earlier draft named `ErrorTrap` and would have produced a runner that never
+fires.
+
+| check (firsthand, against `s4.debug.bin` + its listing) | result |
 |---|---|
 | `lookup_symbol ErrorHandlerBlob` | `0x000A217A`, exact |
-| `lookup_symbol ErrorTrap` | `0x000A2162`, exact |
-| **negative control** — clean 900-frame boot, `run_to ErrorHandlerBlob` | `reached: false`, machine live in `Render_Sprites.band_loop` |
+| **negative control** — clean 900-frame boot, `run_to ErrorHandlerBlob` | `reached: false`, live in `Render_Sprites.band_loop` |
 
-**So the mechanism is `load_symbols` + `run_to {symbol: "ErrorHandlerBlob"}` + `registers`: three methods
-we already ship, zero new surface, for the half the recon called highest-leverage.**
-
-**What the spike did NOT prove, stated so nobody cites it as more than it is:** no desync was observed.
-This build arms no `ARP0` stream, and with no register-write op (deliberately dead) there is no way from
-the bus to force the trap. What is established is that the target resolves, that a clean run does not
-reach it, and that `run_to` stops exactly on a symbol when the PC arrives (`EntryPoint`, `reached: true`,
-`symbolDisp: 0`). The remaining link — that a real desync lands there — needs an engine-side build with a
-stream, which is an Aeon-side ask, not a bus capability.
+**That half is `load_symbols` + `run_to` + `registers`: three shipped methods, zero new surface.** It has
+since shipped as `examples/fault_run.rs` — see `docs/2026-08-16-fault-run-replay-gate.md`.
 
 ## ☠ Correction 2: one in-tree re-implementation, not six
 
 The handoff says the capability *"retires six in-tree re-implementations."* **MEASURED**, by reading every
-`set_pad` site in the tree:
+`set_pad` site — and verified independently, row for row:
 
 | site | what it does | a timeline? |
 |---|---|---|
-| `examples/motion_run.rs` | per-frame scripted pad from a parsed script, both ports, `run_frames(1)` in a loop | **YES** |
-| `examples/s3k_sram_probe.rs` | one pad, then N frames | no — `hold` + `run_frames` |
-| `examples/pad_probe.rs` | one pad, 3 frames | no |
-| `examples/k4_openbus_probe.rs`, `examples/testrom_probe.rs` | fixture state | no |
-| `tests/io_controllers.rs`, `tests/conformance_roms.rs` | fixture state | no |
-| `src/io.rs`, `src/system.rs`, `src/bus.rs` | the API itself and its tests | no |
+| `examples/motion_run.rs:266-267` | per-frame scripted pad from a parsed script, both ports | **YES** |
+| `examples/s3k_sram_probe.rs:23`, `pad_probe.rs:35` | one pad, then N frames | no — `hold` + `run_frames` |
+| `examples/testrom_probe.rs:50-52`, `k4_openbus_probe.rs:245-254` | set at frame N, clear at N+len | no — `press`-shaped |
+| `tests/*`, `src/io.rs`, `src/system.rs`, `src/bus.rs` | fixture state and the API itself | no |
+| `frontend/main.rs`, `frontend/gamepad.rs` | live host input | no — not a timeline |
 
-**One** site hand-rolls a timeline. The rest inject a single pad state, which the existing `hold` +
-`run_frames` already expresses on the wire. The capability's real executed evidence is *narrower and
-better* than the claim: it is `motion_run.rs`, a dev tool that had to parse its own script format because
-the bus has no way to say "hold right from frame 60 to 360."
+**One** site hand-rolls a timeline, and it exists because the bus cannot say "hold right from frame 60 to
+360."
 
-**What survives, and is enough:** pad input is the largest executed-usage signal in the corpus (52 of ~90
-real calls), and the one in-tree timeline exists because the bus cannot express one.
+## The row: `emulator/play_input`
 
-## The gap, stated precisely
-
-`press{buttons, frames}` holds a set and releases it. `hold{buttons, down}` sets named buttons and leaves
-the rest alone. Between them a client can express any sequence — **in one call per change**, with the
-machine's pad state carried across calls as accumulated mutable state.
-
-Three things that costs:
-
-1. **No artifact.** A reproduction is a sequence of calls in someone's scrollback, not a file. `motion_run`
-   has a checkable script; the bus has nothing to check in.
-2. **Accumulation, not declaration.** `hold` mutates a set that persists. Two clients, or one client and a
-   forgotten `hold`, and the pad at frame N depends on call history rather than on the script. This is the
-   sibling's measured failure — *"`hold` ADDS, it does not replace"*, *"re-recording is impossible"*, a
-   re-stamp costing ~7 manual playthroughs.
-3. **No overlap.** "Hold right for 300 frames and tap A at frame 120" needs four calls and cannot be
-   expressed as one intention at all.
-
-## Proposed: `emulator/play_input`
-
-**One row.** §6's *run control* table, beside `press`:
+**§6's *input* table, beside `press`** — *not* run control, where an earlier draft aimed it. `press`'s row
+lives in the input table; run control merely *names* the methods its state rule binds. **`play_input` is
+added to that named list**, because the rule is an explicit enumeration and an unnamed method in it is the
+"one server refuses, another accepts, both conforming" hole the rule's own prose warns about.
 
 | Method | params | result |
 |---|---|---|
-| `emulator/play_input` | `rows[]{start,end,buttons,port?}`, `maxFrames`? | `frames`, `stoppedAt`, `reason`, `rowsApplied`, `ports[]` |
+| `emulator/play_input` | `rows[]{start,end,buttons,port?}`, `maxFrames`? | `frames`, `frameToken`, `pc` |
+
+The result is `run_frames`' own shape, which is what this method is. **Four proposed keys were struck:**
+
+| proposed | why struck |
+|---|---|
+| `reason` | §11.7 cited backwards — the house rule puts the stop condition on the **`stopped` event**; no catalogued method carries `reason` as a result key |
+| `stoppedAt` | CR-17 made `frames` exact *precisely* in the watch-cut case, so the stop position is `frames` in **every** case. This is §11.5's struck `run_to.stoppedAtFrame`, re-proposed |
+| `rowsApplied`, `ports[]` | pure functions of `rows` + `frames` — the offence §11.10 struck a per-entry `parsed` flag for |
 
 ### ★ The one normative property, from which the rest follows
 
-**The pad at frame N is a pure function of `rows`, and of nothing else.** Not of previous `hold` calls, not
-of the pad's state when the call began, not of call order. A server MUST compute each frame's pad from the
-timeline alone and MUST NOT union it with the client's held set.
+**The pad at frame N is a pure function of `rows`, and of nothing else.** A server MUST compute each
+frame's pad from the timeline alone and **MUST NOT merge any other input source** — the client's held set
+and the host's live input alike.
 
-That is the property that kills the desync class, and it is why this is a *timeline* rather than a
-convenience wrapper over `hold`. It is also the property a second implementation is most likely to get
-wrong, because "apply the rows on top of what's already held" is the easier implementation.
+Naming both sources is the correction: the engine merges **two** non-row sources (`held[]`, and `live[]`
+for a human's physical pad), and a pin naming only the first would let a hosted server union `live` and
+argue conformance from the letter.
 
-*Interaction with `hold`, pinned:* the client's held set is **suspended** for the duration and **restored**
-after, unchanged. Not cleared — clearing would make `play_input` a destructive operation on state it does
-not own, which is the `release_all` reasoning (*"a button the human is physically holding is not the bus's
-to release"*) applied one method over.
+- **Both are suspended for the duration and restored afterwards, unchanged** — not cleared. Clearing would
+  make this destructive to state it does not own, which is `release_all`'s reasoning (*"a button the human
+  is physically holding is not the bus's to release"*) one method over. It hides nothing: the held set is
+  client-authored and re-observable via `hold` after the call.
+- **A port no row covers is fully released** for every frame of the run. "Pure function of rows" implies
+  it; leaving it unsaid is where two servers differ.
+- **Application point:** the pad computed for frame *i* is applied at the frame boundary **before** frame
+  *i* runs. Indices are 0-based and relative to the call.
 
-### Intervals, not steps — and this is the executed shape
+This property is also what makes `play_input` a different method from `press` rather than a longer
+spelling of it — see below.
 
-`rows` are half-open `[start, end)` frame intervals relative to the call, each naming a **complete** button
-set for one port. This is `motion_run.rs`'s format (`START END BUTTONS [PORT]`, `end > start` enforced),
-which is the only such format in the tree that has actually been used.
+### Intervals, and union
 
-**Overlapping rows on one port UNION.** `pad_for` does exactly this (`|=` per button), and it is what makes
-"hold right, tap A at 120" a two-row script instead of a hand-computed sequence of disjoint states. The
-alternative — later row wins — is defensible and MUST be ruled explicitly either way, because it is a place
-two conformant servers would silently differ.
+`rows` are half-open `[start, end)` frame intervals relative to the call, each naming **the buttons that
+row contributes** for one port. This is `motion_run.rs`'s executed format (`START END BUTTONS [PORT]`,
+`end > start` enforced, half-open, union via `|=`).
 
-*Why not RLE steps* (`[{buttons, frames}, …]`, ARP0's own shape): consecutive runs cannot express overlap
-without pre-flattening, which pushes the composition work onto every client. And the ARP0 argument for
-matching that shape is **Correction 1** — it does not apply.
+**Overlapping rows on one port UNION**, normatively. It is the executed shape, it is what makes "hold
+right, tap A at 120" a two-row script — and, decisive for the contract, it is **order-independent**: the
+pad depends on the row *set*, not the row order. That extends the purity property naturally and is why
+"rows need not be sorted" costs nothing. *Later-row-wins was rejected* precisely because it would make row
+order load-bearing and reintroduce a silent divergence.
 
-### Bounds, and what a client gets back
+*Why not RLE steps* (ARP0's own shape): consecutive runs cannot express overlap without pre-flattening,
+which pushes composition onto every client — and Correction 1 removes the argument for matching ARP0's
+shape on the playback side.
 
-- `rows` is bounded (proposed 256) and each `port` is 0 or 1. Rows need not be sorted or disjoint.
-- `maxFrames` bounds the run; absent, it is the largest `end`. It shares `press`'s ceiling for the reason
-  `press` has one: hosted, a long tap freezes the player's window and its OS event pump.
-- `frames` is **exact, including zero** (CR-17), because a watch with `stopAfter` can end the run inside
-  its first frame.
-- `reason` names the **stop condition**, not the method (§11.7 / CR-9): `runFrames` when the timeline ran
-  to its end, `watchpoint` when a watch stopped it.
-- `stoppedAt` is the frame index within the call where it ended — the field that tells a client which row
-  was in effect. **Open:** whether this duplicates `frames` and is therefore CR-13 bait. It does when the
-  run completes and does not when a watch cuts it short; that may still be one field too many.
+### Bounds
 
-### Behaviours to pin
+- `rows` bounded at 256; `port` is 0 or 1. Rows need not be sorted or disjoint. **The bound is
+  discoverable** via `initialize.limits.maxInputRows` — a client that must hit a limit to learn it loses
+  the work it was doing when it found out.
+- **`maxFrames`'s ceiling is `max_run_frames`**, `run_frames`' own — *not* `press`'s legacy 1000. That
+  1000 is a compatibility floor press always had; 1000 frames is ≈16.7 s, far too short for the re-record
+  workflow that is now this capability's strongest case. Absent, `maxFrames` is the largest `end`, capped
+  at the ceiling. **A `maxFrames` below the largest `end` truncates**, and rows starting at or beyond it
+  never apply.
+- `frames` is **exact, including zero** (CR-17): a watch with `stopAfter` can end the run inside frame 0.
 
-1. **Run control**, unlike CR-18: it advances the machine, so §6's run-control state rule applies and it is
-   `-32005` on a free-running machine, exactly as `press` is.
-2. **Determinism is the promise.** The same `rows` from the same machine state MUST produce the same frames.
-   This is a statement the schema cannot express and the prose must therefore make.
-3. **A row naming a port with no pad is `-32602`**, not silently dropped (ports 0/1 only; EXP has none).
-4. **3-button only.** Core's `Pad` has exactly `up/down/left/right/a/b/c/start`; a 6-button pad is on the
-   accuracy backlog and unbuilt. `buttons` MUST refuse `x`/`y`/`z`/`mode` rather than accept and ignore
-   them — the MCP's tool description currently *promises* them ("plus x, y, z, mode on a 6-button pad"),
-   which is a client documenting a capability no server has.
+### Behaviours pinned
 
-## Cost
+1. **Run control.** It advances the machine, so §6's run-control state rule applies: `-32005` with
+   `data.reason: "machineRunning"` on a free-running machine, exactly as `press` is.
+2. **Events.** One `resumed` at the start and one `stopped` at the end — **never one per frame**.
+   `reason: "runFrames"` when the timeline ran out (§11.7's redefinition covers a bounded frame advance
+   whose stop condition is an exhausted count), or `"watchpoint"` with `watch` when a watch cut it short.
+   A timeline-driven stop carries the pad in effect at the stop frame per driven port, on the same
+   `dependentRequired` machinery §11.7 gave `buttons`/`port` — ruled explicitly, because silence here is
+   where two servers differ.
+3. **Determinism is the promise.** The same `rows` from the same machine state MUST produce the same
+   frames. The schema cannot express this; the prose must.
+4. **D12 does not apply.** This is not wait-shaped — its stop condition is an exhausted count, not a
+   predicate — so there is no `reached`. Stated, or a second implementer will add one.
+5. **Errors**: `end <= start` in a row, an empty `rows`, `rows` over the bound, and a `port` other than
+   0/1 are each `-32602`. An empty timeline is a request to do nothing and is refused rather than treated
+   as a no-op.
 
-Schema 27 → 28 fragments; advertised 26 → 27. The handler is a loop over `run_frames(1)` with a computed
-pad, which is `motion_run.rs`'s body. No core change: `System::set_pad` is the sole input path and already
-public.
+### ★ `press` survives, on semantics — the "subsumes" claim was false
 
-## ☐ Unruled questions
+An earlier draft offered to keep `press` for compatibility and called the overlap a smell. **There is no
+overlap.** `press` **unions** its buttons with the live and held sets by design; `play_input` suspends
+both. With Right held, `press{buttons:["a"]}` taps Right+A, while the one-row timeline taps A alone. They
+are different semantics, not two spellings. Both rows gain one sentence naming the difference: *press
+composes with held and live input; play_input replaces it.*
 
-1. **Should this exist at all before the spike in Correction 1?** If `run_to ErrorTrap` closes the replay
-   runner, the strongest stated motivation for this capability evaporates and what remains is
-   `motion_run.rs` plus ergonomics. That is a real case but a smaller one, and the honest ranking may drop.
-2. **Union vs later-row-wins** on overlap (above).
-3. **`stoppedAt`** — worth its key, or CR-13 bait?
-4. **Does `press` survive?** `play_input` subsumes it (`[{start:0, end:n, buttons}]`). Keeping both is a
-   two-spellings-one-meaning smell; removing `press` breaks the single most-executed call in the corpus.
-   Recommended: keep `press`, and say in its row that it is the one-row spelling — but this is exactly the
-   kind of overlap the register should rule rather than let accumulate.
+### ★ The 6-button reconciliation, which this CR first aimed at the wrong target
+
+Core's `Pad` is 3-button (`up/down/left/right/a/b/c/start`). An earlier draft pinned only that the **MCP**
+promises `x`/`y`/`z`/`mode` it cannot deliver. That is true and is the *smallest* of three sites:
+
+- **The contract's own §6 `press` row and the schema's `press.buttons` enum both list `x`/`y`/`z`/`mode`
+  as legal**, while
+- **the reference server refuses them with `-32602`**, justified by a `sixButtonPad: false` capability
+  that **appears nowhere in the contract or schema**.
+
+The server rejects a parameter its own normative schema accepts, on the strength of a capability key it
+invented — a live divergence plus a CR-13-class invention, in a shipped method. **Pin 4 is therefore
+adopted only together with:** striking `x/y/z/mode` from `press`'s row and the schema enum (or gating them
+on a registered capability), **registering `capabilities.sixButtonPad`**, and fixing the MCP description.
+One button vocabulary, defined once, shared by `press` / `hold` / `play_input`.
+
+## Cost, and the adoption condition
+
+Schema **27 → 28** fragments; advertised **26 → 27**. No core change: `System::set_pad` is public and the
+sole input path.
+
+**Implementation anchor:** the handler loops `Engine::advance(1)`, **not** bare `run_frames(1)` — the watch
+fan-out and CR-17's exact-frames accounting ride `advance`, and a bare-core loop would lose mid-frame
+`stopAfter` stops.
+
+**★ ADOPTION IS CONDITIONAL ON THE FRAGMENT BEING EXECUTED**, per §11.6 / §11.8 / §11.10: registered when a
+conformant reply passes it **closed** under §8 item 20 — both branches, including a watch-cut reply
+carrying `frames: 0` and a completed-timeline reply.
