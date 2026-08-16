@@ -1,5 +1,18 @@
 # Aether change requests + recorded ambiguities (2026-08-14)
 
+> **★ ALL SEVENTEEN CRs ARE RULED AND APPLIED as of 2026-08-15.** CR-1..CR-6 on 2026-08-14; CR-7..CR-17
+> across seven contract amendments (`protocol.md` §11.2–§11.9) the same day. Every entry below carries its
+> own outcome marker — CR-4, CR-5, CR-13 and CR-14 got theirs late, on 2026-08-15, when an audit found the
+> register was relying on this header for some entries and on per-entry blockquotes for others. A register
+> a reader has to know the history of in order to read is not a register.
+>
+> **The drafts are deliberately left un-rewritten.** Where a CR proposed something the ruling changed or
+> refused — CR-1's `frames` spelling, CR-9's enum value, CR-13's expected "register everything", CR-14's
+> full-envelope option 1, CR-13's `additionalProperties` — the draft stands and the outcome is quoted
+> beneath it, so the difference stays visible. Four CRs were **changed on the way in** and two shipped
+> **refusals of a shape the server had already sent**; a register that hid that would make §8's
+> raise-don't-deviate rule look cheaper than it is.
+
 **Status: ALL SIX ADOPTED, 2026-08-14** (Fable ruling C; `empyrean` commit `3b49e1a`). This document is
 now the *record* of what was raised and why — the normative text lives in `empyrean/contract/protocol.md`
 (amendment log: its §11). Two changes were made to the CRs as drafted below, and the drafts are left
@@ -242,6 +255,11 @@ additive, not a new op.
 
 ---
 
+> **Adopted 2026-08-14** as contract **D12** + the §6 rows (`empyrean` `3b49e1a`), covered by this
+> document's opening "ALL SIX ADOPTED" line. Marker added here 2026-08-15 for consistency: CR-7 onward each
+> carry their own, and a register where some entries record their outcome and some rely on a header is one
+> a reader has to know the history of in order to read.
+
 ## CR-5 — no reply carries a machine timestamp
 
 **Contract.** §2's response shape is `{"jsonrpc","id","result"}` with per-method result fields; only
@@ -264,6 +282,10 @@ Retrofitting it later costs every method and every client; the whole reason it i
 that it is far cheaper now.
 
 ---
+
+> **Adopted 2026-08-14** as contract **D11** + §2.2 (`empyrean` `3b49e1a`), with its trade-off accepted
+> rather than hedged — no `stamped` capability flag, because one would have preserved the defect through
+> negotiation indefinitely. Marker added here 2026-08-15 for the same consistency reason as CR-4.
 
 ## CR-6 — `emulator/romReloaded` vs `emulator/rom_reloaded` (carried, not resolved)
 
@@ -646,6 +668,32 @@ by a 33-message probe. That is a bigger change than this CR and is named, not pr
 
 ---
 
+> **RULED AND APPLIED 2026-08-15** — the block was **split, not registered wholesale**
+> (`docs/2026-08-15-fable-ruling-cr13-cr14.md`; contract `empyrean` `f309cc8`, `protocol.md` §11.5).
+>
+> **Registered:** `initialize.limits` (REQUIRED) and `.methodSummaries` (with a MUST-derive clause, without
+> which it would be a second op inventory and D4 retired those by name); `status.romBytes/romPath/
+> symbolsPath/symbolDisp`; `read_memory.region` + `symbolDisp`; `registers.usp/ssp`;
+> `pause`/`resume.wasRunning`; `press.port` and `hold.port/held`; `checkpoint_list.total/returned/limit`;
+> `load_symbols.binding/moduleCount`; `reload_rom.romBytes/symbolsDropped`;
+> `screenshot.format/width/height/bytes/source`; `state_hash.framebufferSource`.
+>
+> **Removed — and these are the two the CR's own triage flagged least:** `run_to.stoppedAtFrame`/
+> `stoppedAtMclk`, byte-identical to the envelope stamp on both branches (verified three ways), for which
+> §6.1 had already ruled the identical case on `restore`; and `release_all.released`, a hardcoded `true`
+> carrying zero bits. **Restructured:** `caveat` into a new **§2.4**, once, for the whole bus.
+>
+> **The CR's structural ask was adopted in its goal and corrected in its mechanism.**
+> `additionalProperties: false` provably rejects *every* conformant reply — the stamp and `droppedEvents`
+> arrive through `allOf: [$ref replyFields]`, which it cannot see in draft 2020-12. The working keyword is
+> `unevaluatedProperties: false`, and it belongs in the **harness**, not the published schema: D5 makes
+> fields additive, so closure there would break clients on the next conformant amendment. **Closure binds
+> servers; additivity protects clients.** Landed as §8 item 20.
+>
+> The ruling also warned about this CR's own framing — it opened *expecting* "register", and an expectation
+> like that becomes self-fulfilling, at which point §8's prohibition is a filing ritual. Two removals and
+> two restructurings out of one block are the teeth.
+
 ## CR-14 — `lookup_symbol.otherMatches` is an object where the schema says an array of strings (2026-08-15)
 
 **The first divergence where the contract and the server disagree about a *type*, not a spelling — and the
@@ -702,6 +750,26 @@ never be handed back — a continuation offered for a query with no continuation
 envelope should settle the token's type and whether it should be emitted here at all.
 
 ---
+
+> **RULED AND APPLIED 2026-08-15** (`empyrean` `f309cc8`, `protocol.md` §4 rewritten + §2.4's new
+> bounded-list rule) — **our way on the container, against us on the token.** `otherMatches` is now the
+> bounded object with **one pinned item shape** (`{name, addr, demangled?}`) and **no `cursor`, no
+> `nextCursor`**: the method accepts no continuation param, and a token that can never be handed back
+> trains clients that handles are ignorable while publishing the server's position for nothing — which is
+> what D9 category 4's opacity exists to prevent. The CR's own option 1, adopted as drafted, would have
+> made that dead token normative.
+>
+> **The rewrite exposed something larger than the CR.** `name` meant *opposite things* on two branches —
+> the mangled identifying spelling on one, the readable one on the other, where it additionally carried a
+> `+$hex` displacement suffix duplicating the `disp` field beside it. Confirmed on a live server:
+> `lookup_symbol {addr}` returned `name: "EntryPoint+$10"`, and passing that straight back was **refused
+> `-32013`**. The one field D7 exists to make reliable did not resolve, while `rawName` — which §4 strikes
+> as redundant — did. §4 now pins `name` as the identifying, round-trippable spelling and forbids a
+> displacement inside it, expressed as `$defs/symbolName`'s pattern rather than as prose, and a round-trip
+> test hands every returned `name` back.
+>
+> The registry entry was retired when the schema was re-vendored, forced by
+> `every_registered_divergence_is_still_live` rather than remembered.
 
 ## CR-15 — the schema's `$defs/id` forbids the `null` JSON-RPC 2.0 *mandates* on a parse error (2026-08-15)
 
