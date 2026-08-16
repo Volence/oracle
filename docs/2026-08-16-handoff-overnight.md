@@ -5,11 +5,11 @@ down. **Nothing is pushed** in any of the three repos.
 
 | repo | tip | state |
 |---|---|---|
-| `oracle-next` | `0f92730` | committed, **not pushed** |
+| `oracle-next` | `55cf62b` | committed, **not pushed** |
 | `empyrean` | `2d5dac9` | committed, **not pushed** — three amendments, §11.10 – §11.12 |
 | `oracle` | `7da5344` | committed, **not pushed** — the MCP client fixes |
 
-Gates on the final tree, run firsthand: `cargo test --workspace` → **EXIT=0, 1421 passed / 0 failed / 36
+Gates on the final tree, run firsthand: `cargo test --workspace` → **EXIT=0, 1426 passed / 0 failed / 36
 legs** (session baseline 1392/33); clippy 0 warnings default *and* `--no-default-features`; `cargo fmt
 --all --check` clean; **`crates/oracle-core/tests/` still a zero-file diff**, fourth session running.
 
@@ -69,10 +69,10 @@ fingerprint, to look for a mid-run transient.
 
 **Two product decisions from the MCP validation, deliberately not settled:**
 
-- **A model driving oracle-next through the MCP cannot see the screen.** Honest text now replaces the
-  corrupt image, but it is not a frame. Fixing it properly means `emulator/screenshot` emitting PNG — one
-  line with the `png` crate, against a deliberate policy that `oracle-aether` depends only on
-  `oracle-core` + `serde_json`; ~150 lines dependency-free.
+- ~~A model driving oracle-next through the MCP cannot see the screen.~~ **CLOSED** — `emulator/screenshot`
+  now emits PNG from an encoder written here (`oracle-aether/src/png.rs`), so the dependency exception was
+  not needed. Verified by round-tripping seven images through an *independent* decoder, and end to end
+  through the real MCP: `mimeType=image/png`, and the frame is viewable.
 - **Nine Aether methods no MCP tool can reach**, including three quarters of the watchpoint surface — from
   the MCP a watch can be **armed and never read**. Three tool-table rows fix that half.
 
