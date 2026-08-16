@@ -917,3 +917,36 @@ Deferred deliberately, with the contract's own justification where it has one:
   calls the sibling's version *"a genuine landmine"* because it writes straight into the VRAM buffer,
   bypassing the VDP port path, autoincrement, FIFO and DMA, and *"nothing in its docstring says so"*.
   If ported, it must be named `poke_vram` and flag `bypassesVdpPort: true`.
+
+---
+
+## CR-17 — a `frames` count could not report zero, because the amendment before it made zero reachable (2026-08-15)
+
+**Raised by the implementer of CR-11/CR-12, mid-implementation, rather than absorbed.** This is the
+behaviour §11.5 spent an entry arguing for, turning up unprompted one amendment later.
+
+**Contract.** `emulator/run_frames` and `emulator/press` report `frames` as *"Frames actually advanced"*,
+schematized `minimum: 1`. Exact for as long as the only way a bounded advance could end was by exhausting
+its own count.
+
+**The gap.** §11.8 gave a watch a `stopAfter`, so a bounded advance can now end **inside its own first
+frame**. The truthful whole-frame count is then `0`, and the schema forbade it — leaving a conformant
+server two illegal moves: emit `0` and fail the schema, or round to `1` and report a frame it did not
+advance. Neither fragment permits a `caveat` either; both are closed to three keys.
+
+**What we did.** Shipped the round-to-`1` with the reason written at the site, and raised this rather than
+leaving a silent lie in the field.
+
+**Proposed change.** `minimum: 0` on both, with the reachability stated in the field's description.
+
+> **ADOPTED THE SAME DAY** (`empyrean` `34a1993`, `protocol.md` §11.9). `minimum: 0` on both result fields;
+> **`stopped.frames` deliberately left at `minimum: 1`**, because `frames` is REQUIRED on that event only
+> when `reason` is `runFrames`, and a run cut short by a watch ended on the *watch's* condition — it
+> reports `reason: "watchpoint"` and carries `watch`. The zero case cannot arise there, and widening it
+> would legalise a shape no server should emit. The reply answers *"how far did my call get"*; the event
+> answers *"why did the machine stop"*. The rounding is now gone from `Engine::frames_advanced`
+> (`crates/oracle-aether/src/engine.rs`), which records why it was worth refusing: a count that silently
+> becomes `1` when it was `0` is wrong exactly when a caller most needs it right — it is establishing
+> whether anything executed at all before its watch fired. Widening a minimum cannot break a conformant
+> reply or a client, so the adoption costs nothing but the exactness promise it adds.
+
