@@ -213,6 +213,11 @@ pub const METHODS: &[MethodSpec] = &[
         summary: "why the dot at (x,y) is the colour it is: winner, cell/sprite, and the losing candidates",
     },
     MethodSpec {
+        name: "emulator/sprites",
+        handler: Engine::sprites,
+        summary: "the sprite attribute table in slot order, with the parse cap and the stale-cache flag",
+    },
+    MethodSpec {
         name: "emulator/state_hash",
         handler: Engine::state_hash,
         summary: "FNV-1a fingerprints of the VDP state regions",
@@ -1401,6 +1406,66 @@ impl Engine {
         Ok(out)
     }
 
+    /// `emulator/sprites` — the sprite attribute table as a table (§6, added by §11.10 / CR-18).
+    ///
+    /// A pure read: no `require_paused`, and **no `caveat`** — the envelope's `running` is the contract's
+    /// answer to a torn sample, and §2.4 rule 4 makes that an active decision rather than an omission.
+    fn sprites(&mut self, params: &Value) -> Result<Value, RpcError> {
+        // Bounded at the table's own size: a page that could never be filled is a policy wearing a count's
+        // name (§11.8). `parse_count` gives the shared -32602 spelling for a non-number or a zero.
+        let limit = match params.get("limit") {
+            None => SAT_SLOTS,
+            Some(v) => hex::parse_count("limit", v, 1, SAT_SLOTS as u64)? as usize,
+        };
+        let vdp = self.sys.vdp();
+        // `parsedMax` comes from core, never from a local `if h40 { 80 } else { 64 }`: the contract forbids
+        // this handler deriving it, so that the number can never drift from the one the sprite walk uses.
+        let parsed_max = vdp.parsed_sprite_max();
+        let sat_base = vdp.sat_base() as u32;
+        let decoded = vdp.sprites_decoded();
+        let total = decoded.len();
+
+        // Slot order, index-ascending — pinned by the contract precisely because the SAT's *other* reading
+        // is link-ordered. `take` off the front is that order; there is no cursor to resume from.
+        let items: Vec<Value> = decoded
+            .iter()
+            .take(limit)
+            .map(|s| {
+                json!({
+                    "index": s.index,
+                    "x": s.x,
+                    "y": s.y,
+                    "widthCells": s.width_cells,
+                    "heightCells": s.height_cells,
+                    "link": s.link,
+                    "baseTile": s.tile,
+                    "palette": s.palette,
+                    "hflip": s.hflip,
+                    "vflip": s.vflip,
+                    "priority": s.priority,
+                    // Always present, `false` included: the two agreeing is a real answer, and a field that
+                    // only appears in the unusual case is a field nobody reads.
+                    "cacheDivergence": s.cache_divergence,
+                })
+            })
+            .collect();
+
+        let bounded = rpc::bounded_array(items, total, 0, limit);
+        let mut out = Map::new();
+        // §2.4's flat spelling, as `watchpoint_hits` uses it: the list is the result, and `satBase` /
+        // `parsedMax` are scalars beside it rather than a container level nothing would read.
+        out.insert("sprites".into(), bounded["items"].clone());
+        // 80 always — the size of the table, not the parse cap and not the page. An H32 server reporting
+        // 64 here would be a defensible misreading, which is why the schema pins it as a const.
+        out.insert("total".into(), bounded["total"].clone());
+        out.insert("returned".into(), bounded["returned"].clone());
+        out.insert("limit".into(), bounded["limit"].clone());
+        out.insert("truncated".into(), bounded["truncated"].clone());
+        out.insert("satBase".into(), json!(hex::addr(sat_base)));
+        out.insert("parsedMax".into(), json!(parsed_max));
+        Ok(Value::Object(out))
+    }
+
     fn screenshot(&mut self, params: &Value) -> Result<Value, RpcError> {
         let path: PathBuf = match params.get("path") {
             None => std::env::temp_dir().join(format!("oracle-frame-{}.ppm", self.frame())),
@@ -2503,6 +2568,10 @@ fn no_symbols() -> RpcError {
 
 /// House ceiling on one page of a bounded list — the same 4096 `read_memory` carries. A `limit` bounded on
 /// one list and unbounded on its twin is two policies wearing one name.
+/// Slots in the sprite attribute table. The table is this size in both modes; how many of them the
+/// hardware *parses* is `parsedMax` and is core's answer, not this crate's (§11.10).
+const SAT_SLOTS: usize = 80;
+
 const MAX_PAGE: u64 = 4096;
 /// `watchpoint_hits`' catalog default page size.
 const DEFAULT_HITS_PAGE: usize = 100;

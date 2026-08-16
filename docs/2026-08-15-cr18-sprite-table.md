@@ -213,6 +213,12 @@ ruled — and both proved it on themselves — that a registration is done when 
 carrying all of `total`/`returned`/`truncated`; and an undeclared eleventh key rejected under §8 item 20's
 closure.
 
+> **The condition paid for itself on its first run — it rejected this row.** The server emits `limit` (the
+> flat bounded-list spelling requires it) and neither the §6 row nor the fragment declared it. **That is
+> CR-16's exact defect, committed inside the CR that cites CR-16**, and no amount of review had caught it:
+> the closed fragment did, the first time a real reply met it. Fixed in all three places (row, schema,
+> vendored copy).
+
 ## What this closes, and what it does not
 
 Closes the panel's whole sprite story. With the table on the wire, `sprite_tile_at`'s answer — which

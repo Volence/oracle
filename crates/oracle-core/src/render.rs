@@ -537,6 +537,18 @@ impl Vdp {
         (if self.render_h40() { 320 } else { 256 }, 224)
     }
 
+    /// How many SAT slots the hardware actually parses in the current mode: **80** in H40, **64** in H32
+    /// (recon R10 / RR8, via [`sprite_limits`]).
+    ///
+    /// Exported for the same reason [`Vdp::active_display`] is, one field over: [`Vdp::sprites_decoded`]
+    /// decodes all 80 slots unconditionally, so a caller reporting how many of them are *real* must get
+    /// the number from the same place the sprite walk gets it, instead of re-deriving `render_h40` and a
+    /// `64 or 80` of its own. The bus method `emulator/sprites` reports this as `parsedMax`, and the
+    /// contract (§11.10) forbids it computing the value itself for exactly this reason.
+    pub fn parsed_sprite_max(&self) -> u8 {
+        sprite_limits(self.render_h40()).2 as u8
+    }
+
     /// Plane A nametable base VRAM byte address (recon RR3): `(reg $02 & 0x38) << 10`.
     fn plane_a_base(&self) -> usize {
         ((self.regs()[0x02] & 0x38) as usize) << 10

@@ -875,6 +875,50 @@
         }
       }
     },
+    "emulator/sprites": {
+      "$comment": "protocol.md §6 (VRAM / CRAM / layers), added 2026-08-16 by §11.10 (CR-18) closing the last item-19 violation. The sprite attribute table AS A TABLE — the whole-machine reading, in slot order. Deliberately NOT the SAT's other reading, the per-scanline link walk, which reaches no panel and is therefore not in violation; it gets its own row when something renders it. A pure read: not subject to §6's run-control state rule, and emitting NO caveat, because the envelope's `running` is the whole answer to a torn sample (§2.4 rule 4 — declared absent, not omitted by accident). §2.4's flat bounded-list spelling, as `watchpoint_hits` uses it, with `satBase` and `parsedMax` as scalars beside the list. No cursor: the table is a fixed 80 entries and the method accepts no continuation (CR-14's ruling for `otherMatches`).",
+      "params": {
+        "type": "object",
+        "properties": {
+          "limit": { "type": "integer", "minimum": 1, "maximum": 80, "default": 80, "description": "Maximum entries to return, from slot 0 upward. Bounded at the table's own size: a limit that could exceed what exists would be a policy wearing a count's name. A count, so a JSON number (D9 category 2)." }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["sprites", "satBase", "parsedMax", "total", "returned", "limit", "truncated"],
+        "properties": {
+          "satBase": { "$ref": "#/$defs/hex", "description": "VRAM byte address of the sprite attribute table (reg $05, masked for the mode). D9 category 1. Emitted ONCE here rather than as a per-entry satAddr: each entry's address is satBase + index*8, which D9 category 2 explicitly permits a client to compute, and CR-13 struck result keys derivable from values already present." },
+          "parsedMax": { "type": "integer", "enum": [64, 80], "description": "How many slots the hardware would actually parse in the current mode: 80 in H40, 64 in H32. Slots at index >= parsedMax are returned anyway — they are really in VRAM, and clipping them would hide bytes the caller asked about — but the hardware never looks at them. On THIS reply rather than left to a second call, per D11. There is deliberately no per-entry `parsed` flag: it is index < parsedMax, the derivable key CR-13 struck." },
+          "total": { "type": "integer", "const": 80, "description": "The size of the table, ALWAYS 80. Never parsedMax (which is a hardware limit, not a table size) and never `returned`. Pinned as a const because an H32 server reporting 64 here is otherwise a defensible misreading." },
+          "returned": { "type": "integer", "minimum": 0, "maximum": 80, "description": "§2.4." },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 80, "description": "The page size in effect, echoed so a caller can tell a default from its own request. Bounded at the table's own size rather than the house 4096: this list cannot exceed 80, and a ceiling a list can never reach is two policies wearing one name (§11.8)." },
+          "truncated": { "type": "boolean", "description": "REQUIRED EVEN WHEN FALSE (§2.4 clause (a))." },
+          "sprites": {
+            "type": "array",
+            "maxItems": 80,
+            "description": "SLOT ORDER, index-ascending — NEVER link order. With no `limit`, entry i is slot i. Pinned because the SAT's other reading IS link-ordered, making this the one place two conformant servers could differ defensibly.",
+            "items": {
+              "type": "object",
+              "required": ["index", "x", "y", "widthCells", "heightCells", "link", "baseTile", "palette", "hflip", "vflip", "priority", "cacheDivergence"],
+              "properties": {
+                "index": { "type": "integer", "minimum": 0, "maximum": 79, "description": "SAT slot, not link-walk position. A slot index, so a JSON number (D9 category 2)." },
+                "x": { "type": "integer", "minimum": -128, "maximum": 383, "description": "Screen X = Xfield - 128. Legitimately NEGATIVE for a sprite entering from the left; that is not an error state and MUST NOT be clamped." },
+                "y": { "type": "integer", "minimum": -128, "maximum": 895, "description": "Screen Y = Yfield - 128, from the VDP's internal cache. Legitimately negative; see `x`." },
+                "widthCells": { "type": "integer", "minimum": 1, "maximum": 4 },
+                "heightCells": { "type": "integer", "minimum": 1, "maximum": 4 },
+                "link": { "type": "integer", "minimum": 0, "maximum": 127, "description": "Next sprite index in the link chain. Reported as decoded state; this row does not walk it." },
+                "baseTile": { "type": "integer", "minimum": 0, "maximum": 65535, "description": "The sprite's base pattern index from its attribute word. Same spelling and same semantics as pixel_attribution.sprite.baseTile — two sprite decodes on one bus MUST NOT drift apart." },
+                "palette": { "type": "integer", "minimum": 0, "maximum": 3 },
+                "hflip": { "type": "boolean" },
+                "vflip": { "type": "boolean" },
+                "priority": { "type": "boolean" },
+                "cacheDivergence": { "type": "boolean", "description": "The cached Y/size/link disagree with VRAM at the current reg-5 base — the stale-SAT-cache state made visible, i.e. the difference between 'the game wrote the sprite' and 'the VDP will draw the sprite'. PRESENT ON EVERY ENTRY, false included: false is a real answer (the two agree), and a field that appeared only in the unusual case is a field nobody reads (§11.5's `exact` re-ruling). Deliberately the opposite convention from pixel_attribution.sprite.cacheDivergence, whose alignment to always-present is a registered follow-up." }
+              }
+            }
+          }
+        }
+      }
+    },
     "emulator/watchpoint_add": {
       "$comment": "protocol.md §6 (breakpoints & watchpoints). Arms a RECORDING watch: it observes and does not halt unless `stopAfter` is given, in which case the run ends at the next instruction boundary and `emulator/stopped` fires with reason 'watchpoint' and a `watch` param naming the cause. Not subject to §6's run-control state rule — it mutates an observer, not the timeline. Refused with -32005 {reason:'watchCapReached'} at capabilities.watchpoints.maxWatches (D13 rule 3 applied to this surface).",
       "params": {
