@@ -887,18 +887,23 @@ impl Engine {
 
     /// Whole emulated frames a bounded advance actually completed, as the reply must report them.
     ///
-    /// **The one place the contract's shape forced a rounding, recorded rather than hidden.** Both
-    /// `run_frames.frames` and `press.frames` are `"Frames actually advanced"` with `minimum: 1`, which was
-    /// exact while the only way a bounded advance could end was by exhausting its count. A `stopAfter` watch
-    /// can now end one inside its first frame, where the truthful whole-frame count is **0** and the schema
-    /// has no way to say so. `frameToken` in the same reply carries the machine's real coordinate and is not
-    /// rounded, and the `emulator/stopped` event for such a run omits `frames` entirely (it is required only
-    /// for `reason: "runFrames"`), so nothing that *can* be exact is made vague by this.
+    /// **Exact, including zero.** This rounded `0` up to `1` for exactly as long as it took to raise the
+    /// question: `run_frames.frames` and `press.frames` were `"Frames actually advanced"` with
+    /// `minimum: 1`, which was exact while the only way a bounded advance could end was by exhausting its
+    /// count — and stopped being exact the moment §11.8 gave a watch a `stopAfter`, which can end one
+    /// inside its own first frame. The contract was amended rather than the number bent
+    /// (`empyrean` `34a1993`, §11.9 / CR-17): `minimum: 0` on both, with the reachability in the field's
+    /// own description.
+    ///
+    /// *Why the rounding was worth refusing rather than documenting:* a count that silently becomes `1`
+    /// when it was `0` is wrong precisely when a caller most needs it right — the caller is establishing
+    /// whether anything executed at all before its watch fired. That is the defect §11.5 struck
+    /// `run_to.stoppedAtFrame` for, wearing a different hat.
     fn frames_advanced(&self, run: &Advanced, requested: u64, mclk_before: u64) -> u64 {
         if run.stopped_by.is_none() {
             return requested;
         }
-        (self.sys.scheduler().now().saturating_sub(mclk_before) / MCLK_PER_FRAME).max(1)
+        self.sys.scheduler().now().saturating_sub(mclk_before) / MCLK_PER_FRAME
     }
 
     // ---------------------------------------------------------------- helpers

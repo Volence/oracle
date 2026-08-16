@@ -390,7 +390,7 @@
         "required": ["buttons", "frames", "frameToken", "port"],
         "properties": {
           "buttons": { "type": "array", "items": { "type": "string" } },
-          "frames": { "type": "integer", "minimum": 1 },
+          "frames": { "type": "integer", "minimum": 0, "description": "Frames actually advanced, exact. Zero is reachable — see emulator/run_frames (§11.9)." },
           "frameToken": { "type": "integer", "minimum": 0 },
           "port": { "type": "integer", "minimum": 0, "maximum": 1, "description": "Echoed on the result as well as accepted on the params: a reply that does not say which pad it acted on is unreadable in a two-client session, where the caller is not the only source of input." }
         }
@@ -485,7 +485,7 @@
         "allOf": [{ "$ref": "#/$defs/replyFields" }],
         "required": ["frames", "frameToken", "pc"],
         "properties": {
-          "frames": { "type": "integer", "minimum": 1, "description": "Frames actually advanced." },
+          "frames": { "type": "integer", "minimum": 0, "description": "Frames actually advanced, and it is EXACT — never rounded (protocol.md §6, §11.9). ZERO IS REACHABLE and is not an error: §11.8 gave a watch a `stopAfter`, so a bounded advance can end inside its own first frame, before one whole frame completed. The minimum was 1 until that amendment made 0 truthful, and a floor of 1 would have forced a server to report one frame it did not advance — a wrong number in the one case a caller most needs the right one." },
           "frameToken": { "type": "integer", "minimum": 0 },
           "pc": { "$ref": "#/$defs/hex" }
         }

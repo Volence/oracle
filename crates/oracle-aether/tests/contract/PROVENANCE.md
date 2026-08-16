@@ -14,10 +14,10 @@ an explicit re-vendor commit. That commit is the auditable record of "we adopted
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo commit (`HEAD` at vendor time) | `af434a2` — *"contract: the watchpoint surface, rebased onto the conventions that landed after it"* (2026-08-15) |
-| Last commit that touched the schema | `af434a2` — same commit |
-| SHA-256 | `b68b5c9b715e99167df6baf862b70db794cd01232b8c5d26a57ab8b9fef84634` |
-| Bytes | 89020 |
+| Contract repo commit (`HEAD` at vendor time) | `34a1993` — *"contract: CR-17 — the watchpoint amendment made a 0-frame advance reachable and illegal"* (2026-08-15) |
+| Last commit that touched the schema | `34a1993` — same commit |
+| SHA-256 | `2c6af3f49ad8703e983c783b1570ce62ebdecd05f9ee7ce3778748786c73d783` |
+| Bytes | 89562 |
 | Vendored on | 2026-08-15 |
 
 ### What this re-vendor adopted — CR-9, CR-11 and CR-12
@@ -138,3 +138,12 @@ covered, and points at §8 item 20 as the reason an unschematized method cannot 
 
 **No shape changed**, so this re-vendor cannot move a single validation verdict; the freshness test still
 demands it, which is the point of byte-identity.
+
+### `34a1993` — CR-17, the amendment the previous amendment made necessary
+
+`minimum: 0` on `run_frames.frames` and `press.frames`. §11.8's `stopAfter` made a bounded advance able to
+end inside its own first frame, where the truthful whole-frame count is **0** — and the field that counts
+frames still had a floor of 1, leaving a conformant server no legal way to say what happened. The server
+had shipped a round-to-1 with the reason at the site and raised it rather than absorbing it; the rounding
+is now gone. `stopped.frames` is deliberately unchanged at `minimum: 1` — see §11.9 for why the reply and
+the event are not the same field with two homes.
