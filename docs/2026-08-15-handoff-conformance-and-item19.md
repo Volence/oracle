@@ -10,11 +10,11 @@ divergence where the server **had no conformant option at all**.
 | repo | tip | state |
 |---|---|---|
 | `oracle-next` | `m68000-microop-framework` | committed, **not pushed** |
-| `empyrean` | `d45dc87` on `main` | committed, **not pushed** — **four** contract amendments (§11.3–§11.6) |
+| `empyrean` | `34a1993` on `main` | committed, **not pushed** — **seven** contract amendments (§11.3–§11.9) |
 
 Gates, run firsthand on the merged tree with nothing else contending:
 
-- `cargo test --workspace` → **EXIT=0, 1363 passed / 0 failed / 32 legs** (baseline 1330/30).
+- `cargo test --workspace` → **EXIT=0, 1392 passed / 0 failed / 33 legs** (baseline 1330/30).
 - `cargo clippy --all-targets --workspace` → 0 warnings; `--no-default-features` → 0 warnings.
 - `cargo fmt --all --check` → clean.
 - **`git diff 0a31d09 HEAD -- crates/oracle-core/tests/` is a zero-file diff.** Third session running.
@@ -193,13 +193,53 @@ every result closed against its fragment. The report's closing claim is now *ada
 is how a report starts lying — and when the registry is empty it says plainly that shape-conformance is
 not §8 conformance, naming the item-13 blind spot and the two open shape holes.
 
+## 6c. ★ The last three CRs, ruled and shipped
+
+**CR-9 — neither drafted option.** The ruling took option 2's clarifying sentence **plus** additive
+`buttons`/`port` params on `stopped`, and refused the new enum value on a principle nobody had stated: the
+enum's organizing principle is already **the stop condition, not the method** (`step` covers three methods
+sharing one condition; `runTo`/`runToScanline` differ because their conditions do). A side effect is param
+material. And a bare `reason:"press"` says input was injected but not *what* — once `buttons` is a param
+the enum value carries zero extra bits. The watchpoint design had independently reached the same pattern
+(`reason:"watchpoint"` + an additive `watch`), so **coarse condition in `reason`, attribution in params**
+is now the house rule rather than two ad-hoc calls.
+
+**CR-11/CR-12 — adopted as a package, with eight conditions.** Both self-settled rulings upheld after
+independent verification; poll-only for hits upheld (a hit stream would move `droppedEvents` for reasons
+unrelated to tracking `stopped`/`romReloaded`, degrading the exact signal D17 exists to carry). `via` added
+to the census enum, because the two findings that settled `cram_flicker` and `direct_color_dma` are
+group-by-`via` computations done by hand and `CensusKey::Fc` cannot answer them on a VDP watch.
+
+**Two defects the ruling found in the design, both verified here:**
+- **The design predates §2.4 by 2 h 11 m** (14:37:56 vs 16:49:21). Its `caveats[]` array contradicted
+  §2.4's singular optional `caveat`; its two list results lacked the `total`/`returned` clause (a) requires.
+  The step-granular-`mclk` note moved to §6 prose as a **permanent property**, per §2.4's own advisory that
+  an always-present caveat is one clients learn to ignore.
+- **The `watch` param on `stopped` was prose-only** — present in zero of the design's four JSON fragments.
+  **CR-16's exact defect, proposed on the day CR-16 was adopted for it.**
+
+**★ And the implementation found a hazard both the design and the ruling missed.** `stopAfter` raises its
+stop on a **level** (`matched >= n`, permanently), not an edge. Shared with the player's 60 Hz loop — the
+whole point of the hosted arrangement — one armed watch would have ended *every* subsequent frame-run
+before it began: a stop condition silently turned into a frozen machine nobody asked to pause. Fixed by
+`oracle_core::bus::Observe`, which forwards every observation and drops only the halt, so a borrowed
+instrument still sees frames and its `seen` counter still means what it says.
+
+**CR-17 — the amendment before it made a truthful answer illegal.** §11.8's `stopAfter` let a bounded
+advance end inside its own first frame, where the honest whole-frame count is **0** — and `frames` was
+`minimum: 1`, leaving a conformant server two illegal moves. The implementer shipped a round-to-1 *with the
+reason at the site* and raised it rather than absorbing it. **The contract was amended rather than the
+number bent** (§11.9): `minimum: 0` on both result fields, `stopped.frames` deliberately unchanged because
+a run cut short by a watch reports `reason:"watchpoint"` and the zero case cannot arise there.
+
 ## 7. Next
 
-1. **CR-11/CR-12 — the watchpoint surface.** Drafted with paste-ready fragments in
+1. ~~CR-11/CR-12 — the watchpoint surface.~~ **Done.** Originally: Drafted with paste-ready fragments in
    `docs/2026-08-15-watchpoint-bus-surface.md`, adopt-both-or-neither, directed as next by the CR-10 ruling.
 2. ~~CR-13 and CR-14 need owner rulings.~~ **Done** — ruled, applied, and closed; see §6b.
-3. **Queue item 3 — the MCP server** as a *client* of Aether (D10), untouched this session.
-4. **Neither repo is pushed.** Four contract amendments are the outward-facing part; that is the owner's call.
+2. **Queue item 3 — the MCP server** as a *client* of Aether (D10), untouched this session.
+3. **Neither repo is pushed.** **Seven** contract amendments are the outward-facing part; that is the owner's call.
+4. **All seventeen CRs are closed.** The register says so at the top and every entry carries its own marker.
 
 ## 8. Owner-owed, unchanged and now longer
 
