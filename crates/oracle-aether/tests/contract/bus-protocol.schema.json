@@ -595,6 +595,39 @@
         }
       }
     },
+    "emulator/read": {
+      "$comment": "protocol.md §6 (memory), added 2026-08-16 by §11.12 (CR-20). ONE byte read across the four address spaces, taking emulator/watchpoint_add's `space` vocabulary UNCHANGED. The reason for the row is not the count of methods it absorbs: a cram/vsram watch hit reports `space`+`addr`, and before this row no method accepted that pair back — this is the read half of the watch surface. The Z80's space is deliberately NOT a value here; emulator/z80_read keeps its own row and its own bounds. A pure read: not subject to §6's run-control state rule. emulator/read_memory and emulator/read_vram are exact aliases of space bus/vram and are retained (D5, and a live client drives both by name).",
+      "params": {
+        "type": "object",
+        "properties": {
+          "space": { "enum": ["bus", "vram", "cram", "vsram"], "default": "bus", "description": "Which address space, spelled exactly as emulator/watchpoint_add spells it. An unknown value is -32602." },
+          "addr": { "$ref": "#/$defs/hex", "description": "First byte to read, in `space`. D9 category 1." },
+          "symbol": { "allOf": [{ "$ref": "#/$defs/symbolName" }], "description": "Resolved to an address (D7). Valid ONLY with space 'bus' — a symbol names a 68000 address and a VDP-internal byte address has no symbol. Any other space with `symbol` is -32602." },
+          "len": { "type": "integer", "minimum": 1, "maximum": 4096, "default": 1, "description": "Bytes to read. A base outside the space, or a range whose END runs past it, is -32004 — REFUSED, never clipped, because a clipped read reports bytes it never looked at. Space sizes: bus 24-bit, VRAM 0xFFFF, CRAM 0x7F, VSRAM 0x4F." }
+        }
+      },
+      "result": {
+        "allOf": [
+          { "$ref": "#/$defs/replyFields" },
+          {
+            "if": { "properties": { "space": { "const": "bus" } }, "required": ["space"] },
+            "then": { "required": ["region"] },
+            "else": { "not": { "anyOf": [ { "required": ["region"] }, { "required": ["symbol"] }, { "required": ["symbolDisp"] } ] } }
+          }
+        ],
+        "required": ["space", "addr", "len", "bytes"],
+        "properties": {
+          "space": { "enum": ["bus", "vram", "cram", "vsram"], "description": "Echoed, so a reply is self-describing: `addr` means nothing without the space it is in." },
+          "addr": { "$ref": "#/$defs/hex" },
+          "len": { "type": "integer", "minimum": 1, "maximum": 4096 },
+          "bytes": { "$ref": "#/$defs/hex" },
+          "region": { "type": "string", "description": "Which region of the 68000 map the read landed in. Present IFF space is 'bus' — one region per VDP-internal space makes it meaningless there. Enforced in the schema rather than left to prose, in both directions (the `old`/`fc` precedent)." },
+          "symbol": { "allOf": [{ "$ref": "#/$defs/symbolName" }], "description": "Nearest preceding symbol. Bus only." },
+          "symbolDisp": { "type": "integer", "minimum": 0, "description": "Displacement from `symbol`. Bus only." },
+          "caveat": { "type": "string", "description": "§2.4. Emitted CONDITIONALLY, never on every reply — a caveat every reply carries is one nobody reads. The debug-read property of these reads lives in the row's prose instead." }
+        }
+      }
+    },
     "emulator/read_memory": {
       "params": {
         "type": "object",

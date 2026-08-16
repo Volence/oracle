@@ -203,6 +203,11 @@ pub const METHODS: &[MethodSpec] = &[
         summary: "the recorded hit log — polled, non-destructive, with dropped/seen/matched beside it",
     },
     MethodSpec {
+        name: "emulator/read",
+        handler: Engine::read,
+        summary: "one byte read across the bus/vram/cram/vsram spaces — the read half of the watch surface",
+    },
+    MethodSpec {
         name: "emulator/read_memory",
         handler: Engine::read_memory,
         summary: "debug read of ROM or work RAM by address or symbol",
@@ -1223,6 +1228,79 @@ impl Engine {
             out["symbolDisp"] = json!(disp);
         }
         Ok(out)
+    }
+
+    /// `emulator/read` — one byte read across the four address spaces (§6 memory, added by §11.12 / CR-20).
+    ///
+    /// **This is the read half of the watch surface.** A `cram`/`vsram` watch hit reports `space` *and*
+    /// `addr`, and before this row nothing on the bus accepted that pair back — the client held a
+    /// coordinate it could not use. The `space` vocabulary is `watchpoint_add`'s, unchanged, and reuses its
+    /// parser so the two surfaces cannot drift apart.
+    ///
+    /// A pure read: no `require_paused`. The Z80's space is deliberately absent — `emulator/z80_read` keeps
+    /// its own row and its own catalogued bounds.
+    fn read(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let space = parse_watch_space(params)?;
+        // §4's round-trip rule, and `watchpoint_add`'s reason verbatim: a symbol names a 68000 address, and
+        // a VDP-internal byte address has no symbol. Checked before resolution so the refusal names the
+        // real mistake rather than "no symbol named …".
+        if params.get("symbol").is_some() && space != WatchSpace::Bus {
+            return Err(RpcError::invalid_params(format!(
+                "`symbol` is valid only with space \"bus\" — a VDP-internal byte address has no symbol \
+                 (got space {:?})",
+                space_name(space)
+            )));
+        }
+        let addr = self.resolve_target(params)?;
+        let len = match params.get("len") {
+            None => 1,
+            Some(v) => hex::parse_count("len", v, 1, self.config.max_read_len)?,
+        };
+
+        // Refused, never clipped: a clipped read reports bytes it never looked at, which is the one answer
+        // a read must never be able to give.
+        let (bytes, region) = match space {
+            WatchSpace::Bus => {
+                let (data, region) = self.debug_read(addr, len as usize)?;
+                (data, Some(region))
+            }
+            _ => {
+                let mem: &[u8] = match space {
+                    WatchSpace::Vram => self.sys.vram(),
+                    WatchSpace::Cram => self.sys.vdp().cram(),
+                    _ => self.sys.vdp().vsram(),
+                };
+                let end = u64::from(addr) + len;
+                if end > mem.len() as u64 {
+                    return Err(out_of_range(
+                        addr,
+                        &format!(
+                            "the read would run past the end of {} ({} bytes)",
+                            space_name(space),
+                            mem.len()
+                        ),
+                    ));
+                }
+                (mem[addr as usize..end as usize].to_vec(), None)
+            }
+        };
+
+        let mut out = Map::new();
+        // Echoed so the reply is self-describing: an `addr` means nothing without the space it is in.
+        out.insert("space".into(), json!(space_name(space)));
+        out.insert("addr".into(), json!(hex::addr(addr)));
+        out.insert("len".into(), json!(bytes.len()));
+        out.insert("bytes".into(), json!(hex::bytes(&bytes)));
+        // `region`, `symbol` and `symbolDisp` appear **iff** the space is `bus` — enforced in the schema in
+        // both directions, and here by construction.
+        if let Some(region) = region {
+            out.insert("region".into(), json!(region));
+            if let Some((name, disp)) = self.symbol_at(addr) {
+                out.insert("symbol".into(), json!(name));
+                out.insert("symbolDisp".into(), json!(disp));
+            }
+        }
+        Ok(Value::Object(out))
     }
 
     fn read_vram(&mut self, params: &Value) -> Result<Value, RpcError> {
