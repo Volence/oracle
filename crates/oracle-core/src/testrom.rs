@@ -139,6 +139,55 @@ pub fn build_vint_counter() -> Vec<u8> {
     rom
 }
 
+/// The address of the illegal-instruction handler in every ROM this module builds — the fixture stand-in
+/// for an engine's fault handler (Aeon vectors all sixteen TRAPs plus the reserved vectors at a single
+/// `ErrorTrap`, and routes `raise_exception` to its MD Debugger blob).
+pub const TRAP_HANDLER_ADDR: u32 = ILLEGAL_H;
+
+/// Build a ROM that runs normally and then **faults on a chosen frame** — the positive control for a
+/// fault-watching runner.
+///
+/// Its VInt handler counts frames at [`INT_SENTINEL_ADDR`] and executes an `ILLEGAL` once the count
+/// reaches `frame`, so the CPU vectors to [`TRAP_HANDLER_ADDR`] exactly as an engine's `raise_exception`
+/// reaches its handler. Without a ROM that really faults, a runner that watches for faults can only ever
+/// be tested against ROMs that do not — which proves the watch is *silent*, not that it *works*.
+///
+/// [`build`] is left byte-identical (the golden fixture depends on it), as [`build_vint_counter`] is.
+#[doc(hidden)]
+pub fn build_trap_on_frame(frame: u16) -> Vec<u8> {
+    let mut rom = build();
+    // Zero the counter before interrupts are enabled. Work RAM comes up **seeded, not zeroed**
+    // (`System::new` takes a fill seed), so a handler that increments-and-compares without this starts
+    // from garbage and may never reach `frame` — which is precisely how the first draft of this fixture
+    // produced a runner that reported CLEAN on a ROM built to fault.
+    put_long(&mut rom, 0x4, 0x0000_02C0); // reset PC -> the new init stub
+    put_word(&mut rom, 0x2C0, 0x4279); // clr.w (xxx).l
+    put_long(&mut rom, 0x2C2, INT_SENTINEL_ADDR);
+    // And enable the VDP's VInt (reg $01 IE0), which [`build`] never does — its VInt test enables IE0
+    // from outside. A fixture that relies on a handler it never arms cannot fault, and this is the second
+    // reason the first draft of it reported CLEAN on a ROM built to fault.
+    put_word(&mut rom, 0x2C6, 0x33FC); // move.w #imm, (xxx).l
+    put_word(&mut rom, 0x2C8, 0x8120); //   reg $01 = $20 (IE0)
+    put_long(&mut rom, 0x2CA, 0x00C0_0004); //   VDP control port
+    put_word(&mut rom, 0x2CE, 0x4EF9); // jmp (xxx).l
+    put_long(&mut rom, 0x2D0, MAIN);
+    // INT_H, replacing the constant-sentinel body:
+    //   move.w ($00FF8000).l, d0 ; addq.w #1, d0 ; move.w d0, ($00FF8000).l
+    //   cmpi.w #frame, d0 ; bne.w rte ; illegal ; rte
+    put_word(&mut rom, 0x2A0, 0x3039); // move.w (xxx).l, d0
+    put_long(&mut rom, 0x2A2, INT_SENTINEL_ADDR);
+    put_word(&mut rom, 0x2A6, 0x5240); // addq.w #1, d0
+    put_word(&mut rom, 0x2A8, 0x33C0); // move.w d0, (xxx).l
+    put_long(&mut rom, 0x2AA, INT_SENTINEL_ADDR);
+    put_word(&mut rom, 0x2AE, 0x0C40); // cmpi.w #imm, d0
+    put_word(&mut rom, 0x2B0, frame);
+    put_word(&mut rom, 0x2B2, 0x6600); // bne.w <rte>
+    put_word(&mut rom, 0x2B4, disp16(0x2B8, 0x2B4));
+    put_word(&mut rom, 0x2B6, 0x4AFC); // illegal
+    put_word(&mut rom, 0x2B8, 0x4E73); // rte
+    rom
+}
+
 /// The VRAM byte address the [`build_vram_poke`] fixture writes to (high byte at this address, low byte at
 /// `+1`, autoinc 2).
 pub const VRAM_POKE_ADDR: u32 = 0x0100;
@@ -420,5 +469,44 @@ mod tests {
         step(&mut cpu, &mut ram, &mut z80, &mut last); // move.w D0,(A0)+
         assert_eq!(&ram[2..4], &[0x00, 0x01], "ram[1] word incremented");
         assert_eq!(cpu.regs.a[0], 0x00FF_0004, "dbra looped: A0 advanced again");
+    }
+
+    /// The positive control for a fault-watching runner: a ROM built to fault really does reach the
+    /// handler, and the stock ROM does not.
+    ///
+    /// Both halves are load-bearing. The negative half alone is what the first draft of this fixture
+    /// passed — twice — while the ROM it claimed would fault ran cleanly to the bound, because work RAM
+    /// comes up seeded (so the counter started from garbage) and because [`build`] never enables the
+    /// VDP's VInt (its own VInt test arms IE0 from outside). A watch that has never been seen to fire
+    /// has not been shown to work.
+    #[test]
+    fn a_rom_built_to_fault_reaches_the_handler_and_the_stock_rom_does_not() {
+        use crate::system::System;
+
+        let mut s = System::new(0x5EED);
+        s.load_rom(build_trap_on_frame(3));
+        s.reset();
+        let stop = s.run_until_stop(60, |pc, _| pc == TRAP_HANDLER_ADDR);
+        assert!(stop.fired(), "the trap fixture must reach the handler");
+        assert_eq!(stop.pc, TRAP_HANDLER_ADDR, "stopped ON the handler");
+        assert!(
+            stop.frame < 10,
+            "it must fault early (3rd VInt), not merely somewhere in 60 frames; got frame {}",
+            stop.frame
+        );
+        assert_eq!(
+            s.cpu_regs().d[0],
+            3,
+            "d0 carries the frame counter that tripped it — the register a real handler would report"
+        );
+
+        let mut s = System::new(0x5EED);
+        s.load_rom(build());
+        s.reset();
+        let stop = s.run_until_stop(60, |pc, _| pc == TRAP_HANDLER_ADDR);
+        assert!(
+            !stop.fired(),
+            "the stock ROM must NOT reach the handler — otherwise the positive half proves nothing"
+        );
     }
 }
