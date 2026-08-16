@@ -180,7 +180,7 @@ fn approximate_answers_carry_a_caveat() {
     assert!(r["caveat"].as_str().unwrap().contains("bypassing the bus"));
 
     // A whole-frame render is not scanline-accurate.
-    let png = std::env::temp_dir().join(format!("ae-shot-{}.ppm", std::process::id()));
+    let png = std::env::temp_dir().join(format!("ae-shot-{}.png", std::process::id()));
     let r = c.ok(
         "emulator/screenshot",
         json!({"path": png.display().to_string()}),
@@ -393,23 +393,41 @@ fn state_hash_is_deterministic_and_optionally_covers_the_framebuffer() {
     );
 }
 
+/// The screenshot is a **PNG**, and the reply says so. It wrote a PPM until 2026-08-16, which nothing
+/// displays inline — the reference MCP was wrapping those bytes in an `image/png` block and handing a
+/// model a frame it could not decode.
 #[test]
-fn screenshot_writes_a_readable_ppm() {
+fn screenshot_writes_a_png_and_says_so() {
     let h = spawn("shot");
     let mut c = Client::connect(&h);
     c.handshake(false);
-    let p = std::env::temp_dir().join(format!("ae-ppm-{}.ppm", std::process::id()));
+    let p = std::env::temp_dir().join(format!("ae-png-{}.png", std::process::id()));
     let r = c.ok(
         "emulator/screenshot",
         json!({"path": p.display().to_string()}),
     );
-    assert_eq!(r["format"], json!("ppm"));
-    let bytes = std::fs::read(&p).expect("the PPM exists");
-    assert!(bytes.starts_with(b"P6\n"));
-    let width = r["width"].as_u64().unwrap() as usize;
-    let height = r["height"].as_u64().unwrap() as usize;
-    let header = format!("P6\n{width} {height}\n255\n");
-    assert_eq!(bytes.len(), header.len() + width * height * 3);
+    assert_eq!(r["format"], json!("png"));
+    let bytes = std::fs::read(&p).expect("the PNG exists");
+    assert_eq!(
+        &bytes[0..8],
+        &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A],
+        "PNG signature"
+    );
+    // IHDR's dimensions must agree with the reply's: a file whose header disagreed with what the caller
+    // was told is the mislabelling this change exists to end, one level down.
+    let width = r["width"].as_u64().unwrap() as u32;
+    let height = r["height"].as_u64().unwrap() as u32;
+    assert_eq!(&bytes[12..16], b"IHDR");
+    assert_eq!(u32::from_be_bytes(bytes[16..20].try_into().unwrap()), width);
+    assert_eq!(
+        u32::from_be_bytes(bytes[20..24].try_into().unwrap()),
+        height
+    );
+    assert_eq!(r["bytes"].as_u64().unwrap() as usize, bytes.len());
+    assert!(
+        bytes.len() < (width as usize) * (height as usize) * 3,
+        "a compressed frame must be smaller than its raw pixels"
+    );
     let _ = std::fs::remove_file(&p);
 }
 

@@ -1557,16 +1557,17 @@ impl Engine {
 
     fn screenshot(&mut self, params: &Value) -> Result<Value, RpcError> {
         let path: PathBuf = match params.get("path") {
-            None => std::env::temp_dir().join(format!("oracle-frame-{}.ppm", self.frame())),
+            None => std::env::temp_dir().join(format!("oracle-frame-{}.png", self.frame())),
             Some(Value::String(s)) => PathBuf::from(s),
             Some(_) => return Err(RpcError::invalid_params("`path` must be a string")),
         };
         let (width, fb, from_raster) = self.framebuffer();
-        let mut bytes = Vec::with_capacity(20 + fb.len() * 3);
-        bytes.extend_from_slice(format!("P6\n{width} {ACTIVE_LINES}\n255\n").as_bytes());
-        for (r, g, b) in &fb {
-            bytes.extend_from_slice(&[*r, *g, *b]);
-        }
+        // PNG, not the PPM this wrote before. A PPM is what a project emits *before* anyone asks for
+        // screenshots: nothing displays it inline, so the reference MCP was handing a model 200 KB of
+        // undecodable bytes labelled `image/png`. The encoder is ours (`crate::png`) rather than a
+        // dependency — the same call RetroArch and stb_image_write made — so this crate's runtime deps
+        // stay `oracle-core` + `serde_json`.
+        let bytes = crate::png::encode(&fb, width as u32, u32::from(ACTIVE_LINES));
         std::fs::write(&path, &bytes).map_err(|e| {
             RpcError::new(
                 code::INTERNAL_ERROR,
@@ -1576,7 +1577,7 @@ impl Engine {
         })?;
         let mut out = json!({
             "path": path.display().to_string(),
-            "format": "ppm",
+            "format": "png",
             "width": width,
             "height": ACTIVE_LINES,
             "bytes": bytes.len(),

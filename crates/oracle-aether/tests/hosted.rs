@@ -275,7 +275,7 @@ fn the_screen_served_is_the_frame_the_raster_drew() {
     c.handshake(false);
     p.expect_progress(10, "let a frame or two be drawn");
 
-    let path = std::env::temp_dir().join(format!("ah-shot-{}.ppm", std::process::id()));
+    let path = std::env::temp_dir().join(format!("ah-shot-{}.png", std::process::id()));
     let r = c.ok(
         "emulator/screenshot",
         json!({"path": path.display().to_string()}),
@@ -289,12 +289,15 @@ fn the_screen_served_is_the_frame_the_raster_drew() {
         r.get("caveat").is_none(),
         "and the not-scanline-accurate caveat must NOT be attached to a frame that is"
     );
-    let bytes = std::fs::read(&path).expect("the PPM exists");
+    let bytes = std::fs::read(&path).expect("the PNG exists");
     let (w, h) = (
-        r["width"].as_u64().unwrap() as usize,
-        r["height"].as_u64().unwrap() as usize,
+        r["width"].as_u64().unwrap() as u32,
+        r["height"].as_u64().unwrap() as u32,
     );
-    assert_eq!(bytes.len(), format!("P6\n{w} {h}\n255\n").len() + w * h * 3);
+    assert_eq!(&bytes[12..16], b"IHDR");
+    assert_eq!(u32::from_be_bytes(bytes[16..20].try_into().unwrap()), w);
+    assert_eq!(u32::from_be_bytes(bytes[20..24].try_into().unwrap()), h);
+    assert_eq!(r["bytes"].as_u64().unwrap() as usize, bytes.len());
     let _ = std::fs::remove_file(&path);
 
     // The same frame backs the framebuffer fingerprint, and it says which picture it hashed.

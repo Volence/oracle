@@ -67,6 +67,7 @@ pub mod engine;
 pub mod hex;
 pub mod host;
 pub mod outbound;
+pub mod png;
 pub mod rpc;
 pub mod server;
 pub mod session;
