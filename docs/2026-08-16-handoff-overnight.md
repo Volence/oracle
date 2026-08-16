@@ -5,11 +5,11 @@ down. **Nothing is pushed** in any of the three repos.
 
 | repo | tip | state |
 |---|---|---|
-| `oracle-next` | `2f1757d` | committed, **not pushed** |
-| `empyrean` | `193906a` | committed, **not pushed** — two amendments, §11.10 and §11.11 |
+| `oracle-next` | `0f92730` | committed, **not pushed** |
+| `empyrean` | `2d5dac9` | committed, **not pushed** — three amendments, §11.10 – §11.12 |
 | `oracle` | `7da5344` | committed, **not pushed** — the MCP client fixes |
 
-Gates on the final tree, run firsthand: `cargo test --workspace` → **EXIT=0, 1412 passed / 0 failed / 35
+Gates on the final tree, run firsthand: `cargo test --workspace` → **EXIT=0, 1421 passed / 0 failed / 36
 legs** (session baseline 1392/33); clippy 0 warnings default *and* `--no-default-features`; `cargo fmt
 --all --check` clean; **`crates/oracle-core/tests/` still a zero-file diff**, fourth session running.
 
@@ -28,7 +28,9 @@ legs** (session baseline 1392/33); clippy 0 warnings default *and* `--no-default
    reached its fault handler. Exit 0 clean / 1 faulted / 2 setup error.
 4. **`emulator/play_input`** (CR-19, §11.11) — the pad as a timeline. Advertised methods **25 → 27** across
    the session.
-5. **CR-20** (the unified read) written and **left unruled**, with its adjudication running.
+5. **`emulator/read`** (CR-20, §11.12) — one byte read across the `bus`/`vram`/`cram`/`vsram` spaces.
+   **Advertised methods 25 → 28 across the session.** `read_memory` and `read_vram` are
+   deprecated-and-kept as exact aliases, so the MCP needs no change at all.
 
 ## The three things worth reading even if you skip the rest
 
@@ -38,8 +40,8 @@ legs** (session baseline 1392/33); clippy 0 warnings default *and* `--no-default
   one real client, and cost an afternoon rather than an arc.
 - Item 3: "retires six in-tree re-implementations" — it is **one**. And its ARP0 justification pointed at
   the *playback* path, where a pad timeline is inert; the pain it cited lives in the *recording* path.
-- Capability 1: "collapses six read methods into one" — three of the six are **decodes, not reads**. They
-  take no address and no length. The collapse is 3 → 1.
+- Capability 1: "collapses six read methods into one" — three of the six are not **address-shaped**. Under
+  deprecate-and-keep it is two built methods absorbed plus two never-built rows, and nothing is retired.
 
 These were all ranked from a recon this project wrote itself, and the recon's *conclusions* have held up
 every time. It is the supporting counts and mechanisms that have not. **Check the scope of a claim, not
@@ -49,6 +51,11 @@ just the claim.**
 lesson of the session: both of the CR's corrections were verified and correct about what they checked, and
 each stopped exactly one step early — one examined playback while its evidence lived in recording, the
 other objected to a promise in the MCP while the identical promise sat unfixed in our own contract.
+
+**2b. Each of three rulings found its defect in the same place — the CR's evidence, never its design.**
+§11.10 struck a quotation that appears in no document; §11.11 named the wrong entry symbol; §11.12 caught
+me narrowing `z80_read`'s catalogued bounds against the contract. The scope-correction habit that produced
+three good deflated headlines is also what produced three supporting-detail errors while deflating them.
 
 **3. When mutations survive, suspect the instrument.** The first `play_input` test suite passed while
 **four of five mutations survived**, including both that matter — merging the held set into the timeline,
@@ -73,8 +80,9 @@ fingerprint, to look for a mid-run transient.
 stream and no register-write op exists to force one. A debug build with a stream armed, run under
 `fault_run`, turns the dead regression net into a one-command CI gate.
 
-**And CR-20 needs your call on sequencing** even if its adjudication says the design is sound: it churns
-the MCP you just validated.
+**CR-20 is no longer waiting on you** — its adjudication ruled build-now, and deprecate-and-keep means it
+churns the MCP not at all. What remains is the *next* pick: ranked item 5 (player build-out) or capability
+6 (per-scanline visual state, which needs `F-TRACE-VDPWRITE-MCLK` and in turn unblocks `F-CRAMDOT`).
 
 ## Ops
 
