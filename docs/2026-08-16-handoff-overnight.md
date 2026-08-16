@@ -26,8 +26,8 @@ legs** (session baseline 1392/33); clippy 0 warnings default *and* `--no-default
 3. **`fault_run`** (`examples/fault_run.rs`) — the emulator half of Aeon's replay net, which needed **no
    new emulator capability**: the engine plays its own `ARP0` stream, so the whole job is noticing it
    reached its fault handler. Exit 0 clean / 1 faulted / 2 setup error.
-4. **`emulator/play_input`** (CR-19, §11.11) — the pad as a timeline. Advertised methods **25 → 27** across
-   the session.
+4. **`emulator/play_input`** (CR-19, §11.11) — the pad as a timeline: the pad at frame N is a pure
+   function of the timeline and of nothing else.
 5. **`emulator/read`** (CR-20, §11.12) — one byte read across the `bus`/`vram`/`cram`/`vsram` spaces.
    **Advertised methods 25 → 28 across the session.** `read_memory` and `read_vram` are
    deprecated-and-kept as exact aliases, so the MCP needs no change at all.
