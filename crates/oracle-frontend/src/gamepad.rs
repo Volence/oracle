@@ -72,9 +72,11 @@ pub const AXIS_MAP: &[(Axis, PadButton, PadButton)] = &[
     (Axis::DPadY, PadButton::Down, PadButton::Up),
 ];
 
-/// Analog deadzone: an axis counts as a direction press only at or past this magnitude. 0.5 is a deliberately
-/// generous half-throw — a digital d-pad press must be unambiguous for a platformer, and it also makes a
-/// diagonal require real intent on both axes. A hat axis reports exactly ±1.0, so it clears this trivially.
+/// Analog deadzone **default**: an axis counts as a direction press only at or past this magnitude. 0.5 is a
+/// deliberately generous half-throw — a digital d-pad press must be unambiguous for a platformer, and it also
+/// makes a diagonal require real intent on both axes. A hat axis reports exactly ±1.0, so it clears this
+/// trivially. The live value is per-[`Gamepads`] instance (config-fed, see `gamepad_default_deadzone` in
+/// `main.rs`); this const is only where that default comes from.
 pub const STICK_DEADZONE: f32 = 0.5;
 
 /// Set one [`PadButton`] on `pad`. The only place the [`PadButton`] enum meets [`Pad`]'s fields.
@@ -97,8 +99,9 @@ fn press(pad: &mut Pad, which: PadButton) {
 /// control that is absent on the physical device simply never reports pressed (`gilrs` returns `false` / `0.0`
 /// for an unmapped element), so an unmapped d-pad or a stick-less pad degrades to "that direction is not
 /// held" rather than misbehaving. Both tables contribute by OR, so a stick and a d-pad can be used
-/// interchangeably.
-pub fn map_gamepad<P, A>(is_pressed: P, axis_value: A) -> Pad
+/// interchangeably. `deadzone` is the caller's live value (see [`STICK_DEADZONE`] for the default it starts
+/// from) — kept as a parameter rather than a const read so it is configurable per [`Gamepads`] instance.
+pub fn map_gamepad<P, A>(is_pressed: P, axis_value: A, deadzone: f32) -> Pad
 where
     P: Fn(Button) -> bool,
     A: Fn(Axis) -> f32,
@@ -111,9 +114,9 @@ where
     }
     for &(axis, negative, positive) in AXIS_MAP {
         let v = axis_value(axis);
-        if v <= -STICK_DEADZONE {
+        if v <= -deadzone {
             press(&mut pad, negative);
-        } else if v >= STICK_DEADZONE {
+        } else if v >= deadzone {
             press(&mut pad, positive);
         }
     }
@@ -169,6 +172,8 @@ fn release_port<T: Copy + PartialEq>(ports: &mut [Option<T>; PORTS], id: T) -> O
 pub struct Gamepads {
     gilrs: Gilrs,
     ports: [Option<gilrs::GamepadId>; PORTS],
+    /// Analog deadzone applied by [`Gamepads::poll`] — config-fed; [`STICK_DEADZONE`] is only its default.
+    deadzone: f32,
 }
 
 impl Gamepads {
@@ -179,7 +184,10 @@ impl Gamepads {
     /// error such as no `/dev/input` access), after printing a one-line warning. It **never panics**. Having
     /// no controller attached is not a failure: that returns `Some` with both ports empty, because a
     /// controller plugged in later is picked up by [`Gamepads::poll`]'s hotplug handling.
-    pub fn new() -> Option<Self> {
+    ///
+    /// `deadzone` is the live analog deadzone this instance polls with (config-fed; callers with no config
+    /// value yet should pass [`STICK_DEADZONE`] or `gamepad_default_deadzone()` from `main.rs`).
+    pub fn new(deadzone: f32) -> Option<Self> {
         let gilrs = match Gilrs::new() {
             Ok(g) => g,
             // `NotImplemented` carries a usable dummy context, but a dummy reports no gamepads forever — the
@@ -209,7 +217,11 @@ impl Gamepads {
                 "gamepad: no controllers detected — keyboard only (hotplug is picked up live)"
             );
         }
-        Some(Self { gilrs, ports })
+        Some(Self {
+            gilrs,
+            ports,
+            deadzone,
+        })
     }
 
     /// Pump hotplug events and sample both ports, returning `[player1, player2]`.
@@ -246,7 +258,7 @@ impl Gamepads {
         let mut pads = [Pad::default(); PORTS];
         for (port, slot) in self.ports.iter().enumerate() {
             if let Some(gp) = slot.and_then(|id| self.gilrs.connected_gamepad(id)) {
-                pads[port] = map_gamepad(|b| gp.is_pressed(b), |a| gp.value(a));
+                pads[port] = map_gamepad(|b| gp.is_pressed(b), |a| gp.value(a), self.deadzone);
             }
         }
         pads
@@ -259,12 +271,23 @@ mod tests {
 
     /// Sample the mapping with a canned set of pressed buttons and no stick deflection.
     fn pad_from_buttons(pressed: &[Button]) -> Pad {
-        map_gamepad(|b| pressed.contains(&b), |_| 0.0)
+        map_gamepad(|b| pressed.contains(&b), |_| 0.0, STICK_DEADZONE)
     }
 
-    /// Sample the mapping with a canned axis value and no buttons pressed.
+    /// Sample the mapping with a canned axis value and no buttons pressed, at the default deadzone.
     fn pad_from_axis(target: Axis, value: f32) -> Pad {
-        map_gamepad(|_| false, |a| if a == target { value } else { 0.0 })
+        pad_from_axis_deadzone(target, value, STICK_DEADZONE)
+    }
+
+    /// Sample the mapping with a canned axis value, no buttons pressed, and an explicit deadzone —
+    /// what [`deadzone_is_configurable_per_instance`] drives to prove the deadzone is a parameter,
+    /// not a hardcoded const, in the pure mapping helper.
+    fn pad_from_axis_deadzone(target: Axis, value: f32, deadzone: f32) -> Pad {
+        map_gamepad(
+            |_| false,
+            |a| if a == target { value } else { 0.0 },
+            deadzone,
+        )
     }
 
     /// The face-button and Start rows of [`BUTTON_MAP`]: West/South/East → A/B/C, Start → Start, and the
@@ -357,6 +380,24 @@ mod tests {
         );
     }
 
+    /// The deadzone is per-instance now (config-fed); the const is only the default. A tighter
+    /// deadzone turns the same axis magnitude into a press that the default would ignore.
+    #[test]
+    fn deadzone_is_configurable_per_instance() {
+        // At the default deadzone (0.5), a 0.4 deflection is inside it — not a press.
+        assert_eq!(
+            pad_from_axis_deadzone(Axis::LeftStickX, 0.4, 0.5),
+            Pad::default()
+        );
+        assert_eq!(
+            pad_from_axis_deadzone(Axis::LeftStickX, -0.4, 0.5),
+            Pad::default()
+        );
+        // At a tighter instance deadzone (0.3), the same 0.4 deflection clears it — a press.
+        assert!(pad_from_axis_deadzone(Axis::LeftStickX, 0.4, 0.3).right);
+        assert!(pad_from_axis_deadzone(Axis::LeftStickX, -0.4, 0.3).left);
+    }
+
     /// Merging is a per-button OR, and merging with an all-released pad is the identity — i.e. an idle
     /// controller can never suppress a held key, which is the "keyboard must keep working" requirement.
     #[test]
@@ -417,7 +458,7 @@ mod tests {
     /// under test is that initialisation never panics and always yields a usable decision.
     #[test]
     fn gamepads_new_never_panics() {
-        let pads = Gamepads::new();
+        let pads = Gamepads::new(STICK_DEADZONE);
         // And polling a live context (if we got one) is likewise panic-free with nothing plugged in.
         if let Some(mut g) = pads {
             let [p1, p2] = g.poll();

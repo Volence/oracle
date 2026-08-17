@@ -325,8 +325,13 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
 
 /// The gamepad module's default deadzone, visible regardless of the `gamepad` feature so the
 /// config file round-trips it identically in every build.
+#[cfg(feature = "gamepad")]
 pub(crate) fn gamepad_default_deadzone() -> f32 {
-    0.5
+    gamepad::STICK_DEADZONE
+}
+#[cfg(not(feature = "gamepad"))]
+pub(crate) fn gamepad_default_deadzone() -> f32 {
+    0.5 // gamepad module absent from this build; the file still round-trips the key
 }
 
 /// Say something to **both** audiences: the terminal log (which scripts, the tests and a developer read) and
@@ -850,7 +855,7 @@ fn main() {
     // below). `Some` with no controller attached is normal — one plugged in later is picked up by `poll`.
     // Detected controllers are announced by `Gamepads::new` itself, one line per pad.
     #[cfg(feature = "gamepad")]
-    let mut gamepads = gamepad::Gamepads::new();
+    let mut gamepads = gamepad::Gamepads::new(gamepad_default_deadzone());
 
     // Start the host audio stream (Phase SY-5b). `None` = no device / build failure → video-only, never a
     // panic (the default in a headless, /dev/snd-less environment). When present, its persistent AudioSink is
