@@ -81,6 +81,15 @@ impl LensId {
     }
 }
 
+/// [`LensSet`] is a `u8`, so a ninth lens would shift past the end: `1u8 << 8` panics in debug but
+/// **wraps in release**, silently aliasing bit 0 — a shipped build where toggling the ninth lens
+/// also toggles the first. Widen `LensSet`'s field before adding one. Six are here and the audio
+/// meters are gated rather than cancelled, so the seventh is already spoken for.
+const _: () = assert!(
+    LensId::ALL.len() <= 8,
+    "LensSet is a u8: widen it before adding a ninth lens"
+);
+
 /// Which lenses are on. A bitset because it is `Copy` and `PartialEq` — `config::Config`'s
 /// quit-write diff compares whole configs, so a heap set here would allocate on every frame's
 /// clone and compare by pointer-chasing for nothing.
@@ -104,13 +113,19 @@ impl LensSet {
 }
 
 /// Parse the config file's `lenses` value: a comma-separated list of [`LensId::key`] spellings.
-/// Unknown names warn and are dropped rather than failing the line — a newer build's lens must
-/// not cost an older build its whole setting (the same forward-compatibility rule the config's
-/// unknown *keys* follow). Empty items are skipped silently so `a,,b` and a trailing comma are
-/// both fine.
+///
+/// Returns the recognised set plus the names this build does not know, **kept rather than
+/// dropped** — the same forward-compatibility rule the config's unknown *keys* follow
+/// (F-CONFIG-UNKNOWN-KEYS), applied one level down. S4 and S5 are the slices that add lenses, so
+/// "an older build reads a newer build's file" is the next two slices, not a hypothetical: without
+/// this, launching this build once would delete every lens it had not heard of.
+///
+/// The remnant is returned for [`config::Config`](crate::config::Config) to hold rather than
+/// stored in [`LensSet`], which stays `Copy` and allocation-free for the run loop.
+/// Empty items are skipped silently so `a,,b` and a trailing comma are both fine.
 pub fn parse_set(value: &str) -> (LensSet, Vec<String>) {
     let mut set = LensSet::default();
-    let mut warnings = Vec::new();
+    let mut unrecognised = Vec::new();
     for name in value.split(',') {
         let name = name.trim();
         if name.is_empty() {
@@ -118,19 +133,21 @@ pub fn parse_set(value: &str) -> (LensSet, Vec<String>) {
         }
         match LensId::ALL.iter().find(|id| id.key() == name) {
             Some(id) => set.set(*id, true),
-            None => warnings.push(format!("config: ignored lens `{name}` (unknown lens)")),
+            None => unrecognised.push(name.to_string()),
         }
     }
-    (set, warnings)
+    (set, unrecognised)
 }
 
-/// The inverse, in [`LensId::ALL`] order so the file is stable across saves (an unstable order
-/// would rewrite the file — and wake the debounce — on every launch).
-pub fn format_set(set: LensSet) -> String {
+/// The inverse: known lenses in [`LensId::ALL`] order so the file is stable across saves (an
+/// unstable order would rewrite the file — and wake the debounce — on every launch), followed by
+/// the names this build did not recognise in file order, written back verbatim.
+pub fn format_set(set: LensSet, unrecognised: &[String]) -> String {
     LensId::ALL
         .iter()
         .filter(|id| set.is_on(**id))
-        .map(|id| id.key())
+        .map(|id| id.key().to_string())
+        .chain(unrecognised.iter().cloned())
         .collect::<Vec<_>>()
         .join(",")
 }
@@ -144,11 +161,14 @@ mod tests {
         let mut set = LensSet::default();
         set.set(LensId::Watch, true);
         set.set(LensId::Cram, true);
-        let text = format_set(set);
+        let text = format_set(set, &[]);
         assert_eq!(text, "watch,cram", "stable order, ALL order");
-        let (back, warnings) = parse_set(&text);
+        let (back, unrecognised) = parse_set(&text);
         assert_eq!(back, set);
-        assert!(warnings.is_empty(), "own output warned: {warnings:?}");
+        assert!(
+            unrecognised.is_empty(),
+            "own output was not understood: {unrecognised:?}"
+        );
     }
 
     #[test]
@@ -156,31 +176,49 @@ mod tests {
         for id in LensId::ALL {
             let mut set = LensSet::default();
             set.set(id, true);
-            let (back, warnings) = parse_set(&format_set(set));
+            let (back, unrecognised) = parse_set(&format_set(set, &[]));
             assert_eq!(back, set, "{} did not round-trip", id.key());
-            assert!(warnings.is_empty());
+            assert!(unrecognised.is_empty());
         }
-        assert_eq!(format_set(LensSet::default()), "");
+        assert_eq!(format_set(LensSet::default(), &[]), "");
         assert_eq!(parse_set("").0, LensSet::default());
         assert!(
             parse_set("").1.is_empty(),
-            "an empty value is not a warning"
+            "an empty value is not an unknown lens"
         );
     }
 
+    /// The lens-level half of F-CONFIG-UNKNOWN-KEYS: a name this build does not know is handed
+    /// back to the caller to store, not discarded, and the known names around it are unaffected.
+    /// The padding sits on a **known** name on purpose — on the unknown one it proves nothing,
+    /// since an untrimmed unknown name is unknown either way.
     #[test]
-    fn an_unknown_lens_warns_and_leaves_the_rest_alone() {
-        let (set, warnings) = parse_set("watch, from_the_future ,cram");
-        assert!(set.is_on(LensId::Watch) && set.is_on(LensId::Cram));
-        assert_eq!(warnings.len(), 1);
+    fn an_unknown_lens_is_kept_and_leaves_the_rest_alone() {
+        let (set, unrecognised) = parse_set("watch, cram , from_the_future");
         assert!(
-            warnings[0].contains("from_the_future"),
-            "the warning names it"
+            set.is_on(LensId::Watch) && set.is_on(LensId::Cram),
+            "a padded known name still parses"
         );
+        assert_eq!(unrecognised, vec!["from_the_future".to_string()]);
+    }
+
+    /// The whole point of keeping unknown names: they must come back out of `format_set`, after
+    /// the known ones, so the next save writes them back instead of deleting them.
+    #[test]
+    fn an_unknown_lens_survives_a_format_parse_cycle() {
+        let (set, unrecognised) = parse_set("heatmap,watch,audio_meters");
+        let text = format_set(set, &unrecognised);
+        assert_eq!(
+            text, "watch,heatmap,audio_meters",
+            "known first in ALL order, unknown after in file order"
+        );
+        let (set2, unrecognised2) = parse_set(&text);
+        assert_eq!(set2, set, "a second cycle is a fixed point");
+        assert_eq!(unrecognised2, unrecognised);
     }
 
     /// `any()` (the run loop's draw guard) lands with its first caller in the lens-draw task, so
-    /// this pins only what exists here: toggle is its own inverse, and agrees with `is_on`.
+    /// this pins only what exists here: `set` in both directions, and toggle as its own inverse.
     #[test]
     fn toggle_agrees_with_is_on() {
         let mut set = LensSet::default();
@@ -189,6 +227,46 @@ mod tests {
         assert!(set.is_on(LensId::Hover));
         set.toggle(LensId::Hover);
         assert!(!set.is_on(LensId::Hover), "toggle is its own inverse");
+        // `set(id, false)` must actually clear — S4's view presets assign rather than toggle, and
+        // a no-op clear-branch would leave a preset unable to turn anything off.
+        set.set(LensId::Hover, true);
+        set.set(LensId::Cram, true);
+        set.set(LensId::Hover, false);
+        assert!(!set.is_on(LensId::Hover), "set(id, false) must clear");
+        assert!(set.is_on(LensId::Cram), "and must clear only that lens");
+    }
+
+    /// A variant can be added to `LensId` — forcing `key`/`title`/`label` edits — and still be
+    /// left out of `ALL`, where it would get no bit-uniqueness check, no config spelling and no
+    /// palette command. The match below is exhaustive, so a new variant fails to *compile* until
+    /// it is handled here; the assertions then fail until it is in `ALL` too.
+    #[test]
+    fn all_lists_every_variant_exactly_once() {
+        // `seen` is sized by VARIANTS, deliberately NOT by `ALL.len()`: sizing it by `ALL` makes
+        // the test vacuous for the one bug it exists to catch, because a variant missing from
+        // `ALL` also shrinks the thing you are checking against.
+        const VARIANTS: usize = 6;
+        fn slot(id: LensId) -> usize {
+            match id {
+                LensId::Watch => 0,
+                LensId::Cpu => 1,
+                LensId::CpuRegs => 2,
+                LensId::Sprites => 3,
+                LensId::Cram => 4,
+                LensId::Hover => 5,
+            }
+        }
+        let mut seen = [false; VARIANTS];
+        for id in LensId::ALL {
+            let s = slot(id);
+            assert!(!seen[s], "{} appears in ALL twice", id.key());
+            seen[s] = true;
+        }
+        assert!(
+            seen.iter().all(|s| *s),
+            "a LensId variant is missing from ALL"
+        );
+        assert_eq!(LensId::ALL.len(), VARIANTS, "ALL and VARIANTS disagree");
     }
 
     /// Each lens must own a distinct bit — two sharing one would make toggling either flip both,

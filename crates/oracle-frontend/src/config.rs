@@ -4,10 +4,12 @@
 //! Failure model (spec §7): a file that is STRUCTURALLY corrupt (unreadable bytes, a line
 //! that is not `key = value`, a comment, or blank) is renamed to `.bak` and defaults load —
 //! never a crash, never a silent overwrite of evidence. A value that doesn't parse is a per-key
-//! warning and the default for that key. A **key** we don't know is a warning and is then kept
-//! verbatim and written back out on the next save (F-CONFIG-UNKNOWN-KEYS): forward compatibility
-//! that survives writing, not only reading — otherwise launching an older build once would warn
-//! politely and then delete every setting a newer build wrote.
+//! warning and the default for that key. Anything we don't recognise — a **key**, or a lens name
+//! inside `lenses` — is kept verbatim and written back out on the next save
+//! (F-CONFIG-UNKNOWN-KEYS): forward compatibility that survives writing, not only reading, or
+//! else launching an older build once would warn politely and then delete every setting a newer
+//! build wrote. Those remnants warn **once per category, not once per name**: they recur on every
+//! launch forever, and the overlay only holds five toasts.
 
 use crate::present::Aspect;
 
@@ -33,11 +35,55 @@ pub struct Config {
     /// Which lenses are on (spec §5). One flat key rather than one per lens: six booleans in six
     /// keys would be six chances for a stale file to disagree with itself.
     pub lenses: crate::lens::LensSet,
+    /// Lens names inside `lenses` that this build does not recognise, kept in file order and
+    /// written back into the same key. Lives here rather than in [`crate::lens::LensSet`] so the
+    /// set stays `Copy` and allocation-free for the run loop.
+    pub unknown_lenses: Vec<String>,
     /// Keys this build does not recognise, kept verbatim and written back out (F-CONFIG-UNKNOWN-KEYS).
     /// Order is file order, so a save is a fixed point rather than a reshuffle. This is what makes
     /// "warn and continue" honest: without it, an older build reading a newer build's file warns
     /// politely and then deletes the setting at the next autosave.
     pub unknown: Vec<(String, String)>,
+}
+
+/// Every key [`serialize`] emits and [`parse`] understands. Its one production use is filtering
+/// [`Config::unknown`] on the way out, so a remnant can never shadow a real key; `known_keys_are_
+/// all_parsed_and_all_emitted` is what stops it drifting from `parse`'s match arms.
+pub const KNOWN_KEYS: [&str; 7] = [
+    "volume",
+    "muted",
+    "aspect",
+    "scale",
+    "status_line",
+    "deadzone",
+    "lenses",
+];
+
+/// How many unrecognised names a collapsed warning lists before it gives up and says "…".
+const UNKNOWN_PREVIEW: usize = 3;
+
+/// One toast for a whole category of unrecognised things, rather than one per thing. The overlay
+/// keeps only `MAX_TOASTS` (5) at a time and these warn on *every* launch, forever — a user who
+/// ran one S4 build and came back would otherwise lose the corner to a permanent wall of notices
+/// about settings that are, by construction, being handled correctly. Bad values under keys we
+/// *do* know stay per-key: those are few and each one is individually actionable.
+fn kept_warning(singular: &str, plural: &str, names: &[String]) -> String {
+    let noun = if names.len() == 1 { singular } else { plural };
+    let shown = names
+        .iter()
+        .take(UNKNOWN_PREVIEW)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = if names.len() > UNKNOWN_PREVIEW {
+        ", …"
+    } else {
+        ""
+    };
+    format!(
+        "config: kept {} {noun} this build does not understand ({shown}{more}) — written back unchanged",
+        names.len()
+    )
 }
 
 pub const VOLUME_MAX: u8 = 10;
@@ -53,6 +99,7 @@ impl Default for Config {
             deadzone: crate::gamepad_default_deadzone(),
             // Every lens off: a fresh install stays pixel-identical to pre-S3.
             lenses: crate::lens::LensSet::default(),
+            unknown_lenses: Vec::new(),
             unknown: Vec::new(),
         }
     }
@@ -124,17 +171,20 @@ pub fn parse(text: &str) -> Result<Parsed, usize> {
                 )),
             },
             "lenses" => {
-                let (set, mut w) = crate::lens::parse_set(value);
+                let (set, unrecognised) = crate::lens::parse_set(value);
                 c.lenses = set;
-                warnings.append(&mut w);
+                c.unknown_lenses = unrecognised;
             }
-            _ => {
-                warnings.push(format!(
-                    "config: kept {key} (unknown key, preserved on save)"
-                ));
-                c.unknown.push((key.to_string(), value.to_string()));
-            }
+            _ => c.unknown.push((key.to_string(), value.to_string())),
         }
+    }
+    // One collapsed line per category, after the per-key value warnings above.
+    if !c.unknown.is_empty() {
+        let names: Vec<String> = c.unknown.iter().map(|(k, _)| k.clone()).collect();
+        warnings.push(kept_warning("setting", "settings", &names));
+    }
+    if !c.unknown_lenses.is_empty() {
+        warnings.push(kept_warning("lens name", "lens names", &c.unknown_lenses));
     }
     Ok(Parsed {
         config: c,
@@ -145,7 +195,13 @@ pub fn parse(text: &str) -> Result<Parsed, usize> {
 /// Renders every field as one `key = value` line, plus the two `#` header lines whose wording
 /// must stay in sync with the module doc's failure-model description above, plus any keys this
 /// build did not recognise, verbatim and last.
+///
+/// An `unknown` entry whose key we *do* know is dropped rather than emitted: it would land after
+/// the real line and win on re-parse, so a stale remnant could quietly overwrite a live setting.
+/// `parse` cannot produce one — known keys never reach the `_` arm — but a hand-built `Config`
+/// can, and this is the cheap place to make that harmless.
 pub fn serialize(c: &Config) -> String {
+    use std::fmt::Write as _;
     let on_off = |b: bool| if b { "on" } else { "off" };
     let mut out = format!(
         "# oracle player settings — edited in-app. Hand edits are fine; keys this build does not\n\
@@ -157,10 +213,14 @@ pub fn serialize(c: &Config) -> String {
         c.scale,
         on_off(c.status_line),
         c.deadzone,
-        crate::lens::format_set(c.lenses),
+        crate::lens::format_set(c.lenses, &c.unknown_lenses),
     );
-    for (k, v) in &c.unknown {
-        out.push_str(&format!("{k} = {v}\n"));
+    for (k, v) in c
+        .unknown
+        .iter()
+        .filter(|(k, _)| !KNOWN_KEYS.contains(&k.as_str()))
+    {
+        let _ = writeln!(out, "{k} = {v}");
     }
     out
 }
@@ -267,17 +327,23 @@ mod tests {
                 l.set(crate::lens::LensId::Sprites, true);
                 l
             },
+            unknown_lenses: vec!["heatmap".to_string()],
             unknown: vec![("kept".to_string(), "value".to_string())],
         };
         let p = parse(&serialize(&c)).expect("own output must parse");
         assert_eq!(p.config, c);
-        // The fixture carries a preserved unknown key, and a preserved key stays unknown — so it
-        // warns again on every load, by design (the user should keep being told). That is the one
-        // warning permitted here; pinning it exactly is stricter than the pre-S3 `is_empty()`,
-        // which no longer states a true property once unknown keys survive the save.
+        // The fixture carries a preserved unknown key and a preserved unknown lens name, and both
+        // stay unknown — so each warns again on every load, by design (the user should keep being
+        // told). Those are the two warnings permitted here; pinning them exactly is stricter than
+        // the pre-S3 `is_empty()`, which no longer states a true property once unknowns survive.
         assert_eq!(
             p.warnings,
-            vec!["config: kept kept (unknown key, preserved on save)".to_string()],
+            vec![
+                "config: kept 1 setting this build does not understand (kept) — written back unchanged"
+                    .to_string(),
+                "config: kept 1 lens name this build does not understand (heatmap) — written back unchanged"
+                    .to_string(),
+            ],
             "own output warned about a known key"
         );
     }
@@ -322,11 +388,66 @@ mod tests {
             out.contains("view.heatmap.dock = right"),
             "all of them, not just the first"
         );
+        // "Verbatim **and last**": every known key is written before the remnant, so a stale
+        // unknown line can never sit above — and therefore never be overridden by — a real one.
+        let last_known = out
+            .find("lenses = ")
+            .expect("the last known key is emitted");
+        assert!(
+            out.find("lens_from_2027 = ").expect("remnant emitted") > last_known,
+            "unknown keys must follow every known key"
+        );
         let again = parse(&out).expect("our own output parses");
         assert_eq!(again.config, p.config, "a second cycle is a fixed point");
         assert_eq!(again.config.unknown.len(), 2);
-        // The keys stay unknown, so the user keeps being told — one warning each, every load.
-        assert_eq!(again.warnings.len(), 2);
+        // The keys stay unknown, so the user keeps being told — but as ONE collapsed line naming
+        // both, not one toast per key (the overlay only holds five).
+        assert_eq!(again.warnings.len(), 1);
+        assert!(again.warnings[0].contains("lens_from_2027"));
+        assert!(again.warnings[0].contains("view.heatmap.dock"));
+        assert!(again.warnings[0].contains('2'), "the count is named");
+    }
+
+    /// A remnant that shadows a real key would be written after it and win on re-parse, silently
+    /// reverting a live setting to whatever stale text was carried along.
+    #[test]
+    fn a_remnant_can_never_shadow_a_known_key() {
+        let c = Config {
+            volume: 4,
+            unknown: vec![("volume".to_string(), "9".to_string())],
+            ..Config::default()
+        };
+        let out = serialize(&c);
+        assert_eq!(out.matches("volume = ").count(), 1, "emitted exactly once");
+        assert_eq!(parse(&out).expect("parses").config.volume, 4);
+    }
+
+    /// `KNOWN_KEYS` is a second list of the keys `parse` matches and `serialize` writes, and a
+    /// second list is a list to forget. This pins both directions: everything in it is understood
+    /// and emitted, and nothing is emitted that is not in it.
+    #[test]
+    fn known_keys_are_all_parsed_and_all_emitted() {
+        let emitted = serialize(&Config::default());
+        for key in KNOWN_KEYS {
+            assert!(emitted.contains(&format!("{key} = ")), "not emitted: {key}");
+            // An empty value is fine — a recognised key never reaches the `_` arm, whatever its
+            // value, so `unknown` staying empty is exactly "parse knows this key".
+            let p = parse(&format!("{key} = \n")).expect("not corruption");
+            assert!(
+                p.config.unknown.is_empty(),
+                "not understood by parse: {key}"
+            );
+        }
+        let emitted_keys = emitted
+            .lines()
+            .filter(|l| !l.starts_with('#') && l.contains('='))
+            .count();
+        assert_eq!(
+            emitted_keys,
+            KNOWN_KEYS.len(),
+            "serialize emits a key that KNOWN_KEYS does not list"
+        );
+        assert!(parse(&emitted).expect("parses").warnings.is_empty());
     }
 
     #[test]
@@ -349,6 +470,56 @@ mod tests {
         assert!(p.config.lenses.is_on(crate::lens::LensId::Watch));
         assert_eq!(p.warnings.len(), 1);
         assert!(p.warnings[0].contains("not_a_lens"));
+    }
+
+    /// F-CONFIG-UNKNOWN-KEYS one level down: the *names* inside `lenses` need the same protection
+    /// the keys around them got, and they need it now — S4 and S5 are the slices that add lenses,
+    /// so "this build reads a file a later build wrote" is the next two slices. Without this,
+    /// `lenses = watch,heatmap` loses `heatmap` the moment anything triggers an autosave.
+    #[test]
+    fn an_unknown_lens_name_survives_a_save() {
+        let p = parse("lenses = heatmap,watch,audio_meters\n").expect("not corruption");
+        assert!(p.config.lenses.is_on(crate::lens::LensId::Watch));
+        assert_eq!(
+            p.config.unknown_lenses,
+            vec!["heatmap".to_string(), "audio_meters".to_string()]
+        );
+        let out = serialize(&p.config);
+        assert!(
+            out.contains("lenses = watch,heatmap,audio_meters"),
+            "known first, unknown after, all in one key: {out}"
+        );
+        let again = parse(&out).expect("our own output parses");
+        assert_eq!(again.config, p.config, "a second cycle is a fixed point");
+        // One collapsed line for both names, not one per name.
+        assert_eq!(again.warnings.len(), 1);
+        assert!(
+            again.warnings[0].contains("heatmap") && again.warnings[0].contains("audio_meters")
+        );
+    }
+
+    /// The collapse must stay readable when a much newer file shows up: name a few, count them
+    /// all, and never grow without bound.
+    #[test]
+    fn many_unknowns_collapse_to_one_bounded_line() {
+        let text = (0..9).fold(String::new(), |mut acc, i| {
+            use std::fmt::Write as _;
+            let _ = writeln!(acc, "future_{i} = {i}");
+            acc
+        });
+        let p = parse(&text).expect("not corruption");
+        assert_eq!(p.config.unknown.len(), 9);
+        assert_eq!(p.warnings.len(), 1, "nine keys, one toast");
+        assert!(p.warnings[0].contains('9'), "the count is named");
+        assert!(
+            p.warnings[0].contains("future_0"),
+            "the first few are named"
+        );
+        assert!(p.warnings[0].contains('…'), "and the rest are elided");
+        assert!(
+            !p.warnings[0].contains("future_8"),
+            "the line does not grow without bound"
+        );
     }
 
     #[test]

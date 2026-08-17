@@ -77,10 +77,11 @@
 //!
 //! A file that is structurally corrupt is renamed to `.bak` and defaults load in its place — the evidence
 //! is kept, nothing crashes, and the toast on screen says which. A value out of range costs only that key
-//! at *load*: it warns once and the default stands. An unknown **key** warns and is then carried through
-//! — kept verbatim and written back out by the next save (`F-CONFIG-UNKNOWN-KEYS`, reversed here now that
-//! the key set has widened past six), so launching an older build once can no longer delete what a newer
-//! build wrote. Key bindings are not stored yet (a later slice).
+//! at *load*: it warns once and the default stands. Anything unrecognised — a **key**, or a lens name
+//! inside `lenses` — is carried through instead: kept verbatim and written back out by the next save
+//! (`F-CONFIG-UNKNOWN-KEYS`, reversed now that the key set has widened past six), so launching an older
+//! build once can no longer delete what a newer build wrote. That is one collapsed toast per category
+//! rather than one per name, because these recur on every launch. Key bindings are not stored yet.
 //!
 //! ## Pixels — why the window is painted from the per-scanline seam
 //!
@@ -960,8 +961,6 @@ fn main() {
     // pushed here (see `notify`), because the window is where the user is looking.
     let mut ov = Overlay::new();
     ov.status_line = cfg.status_line;
-    // Lenses come back on exactly as they were left (spec §5).
-    let mut lenses = cfg.lenses;
     let mut slots_on_disk = probe_slots(&args.rom_path);
 
     // The per-scanline pixel path (`F-SCANLINE-CAPTURE`). Attached to **every** run below so the window shows
@@ -1150,18 +1149,20 @@ fn main() {
                     cfg.status_line = ov.status_line;
                     config_save_countdown = Some(CONFIG_AUTOSAVE_DEBOUNCE_FRAMES);
                 }
-                // The lens set is the frontend's own state, persisted through the same debounce as
-                // every other setting. Nothing draws yet — the lenses themselves land next; the
-                // toast is what tells you the toggle took.
+                // `cfg.lenses` **is** the live lens set, not a copy of one: unlike `ov.status_line`
+                // (where the Overlay owns the flag and the duplicate is forced), nothing here owns
+                // a lens set, `LensSet` is `Copy`, and a second writer for the value the picture
+                // will depend on would be an invariant nothing enforces. Persisted through the
+                // same debounce as every other setting. Nothing draws yet — the lenses themselves
+                // land next; the toast is what tells you the toggle took.
                 commands::Cmd::ToggleLens(id) => {
-                    lenses.toggle(id);
-                    cfg.lenses = lenses;
+                    cfg.lenses.toggle(id);
                     config_save_countdown = Some(CONFIG_AUTOSAVE_DEBOUNCE_FRAMES);
                     ov.push(
                         format!(
                             "{} {}",
                             id.label(),
-                            if lenses.is_on(id) { "ON" } else { "OFF" }
+                            if cfg.lenses.is_on(id) { "ON" } else { "OFF" }
                         ),
                         INFO,
                     );
