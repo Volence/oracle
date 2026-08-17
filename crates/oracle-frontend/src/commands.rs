@@ -224,6 +224,17 @@ pub fn registry() -> Vec<CommandInfo> {
     reg
 }
 
+/// Case-insensitive subsequence match: every char of `query`, in order, appears in `title`
+/// ("ssl" hits "Save state to current slot"). Hand-rolled on purpose — no fuzzy-rank crate
+/// (spec §4). ASCII-lowercase is enough: titles are ASCII by construction.
+pub fn subseq_match(query: &str, title: &str) -> bool {
+    let mut t = title.chars().map(|c| c.to_ascii_lowercase());
+    query
+        .chars()
+        .map(|c| c.to_ascii_lowercase())
+        .all(|q| t.any(|c| c == q))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,6 +289,22 @@ mod tests {
                     .any(|c| c.cmd == Cmd::SlotSelect(n) && c.hidden && c.hotkey.is_some()),
                 "missing hidden SlotSelect({n})"
             );
+        }
+    }
+
+    #[test]
+    fn subseq_match_cases() {
+        // (query, title, expected)
+        let cases = [
+            ("", "Pause / resume", true), // empty matches everything
+            ("wat", "Dump watch hits to terminal", true),
+            ("WAT", "dump watch hits", true), // case-insensitive both sides
+            ("ssl", "Save state to current slot", true), // subsequence, not substring
+            ("xyz", "Pause / resume", false),
+            ("pausex", "Pause / resume", false), // exhausted title before query
+        ];
+        for (q, t, want) in cases {
+            assert_eq!(subseq_match(q, t), want, "query {q:?} vs {t:?}");
         }
     }
 }
