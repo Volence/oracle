@@ -7,10 +7,87 @@ use crate::present::Rect;
 use crate::{font, MAX_SYMBOL_DISPLACEMENT};
 use oracle_core::m68000::registers::Registers;
 use oracle_core::symbols::SymbolTable;
+use std::borrow::Cow;
 
 /// The compact head — `PC`, `SR`, frame. Everything [`model`] appends past it is the expanded
 /// register block, and [`form`] degrades to exactly this head when the block will not fit.
 const COMPACT_LINES: usize = 3;
+
+/// The chip's content width, in **glyph columns**: the register block's own line format,
+/// `D0 D0000000  D4 D4000004`, is exactly 24 glyphs wide.
+///
+/// **Not the widest line.** That is what shipped first, and on the owner's screen it made the chip
+/// eat 41% of the picture: the PC line carries a symbol name of unbounded length — their ROM
+/// produces `GAMESTATE_OJZSCROLL.UPDATE.SKIP_ENTITY_SCAN+$…`, some fifty glyphs — so the panel grew
+/// to fit it, clamped to the full width of the picture, and drew straight over the CRAM strip. The
+/// truncation logic was never wrong; it was simply never asked, because the panel expanded before
+/// [`overlay::fit`] could shrink anything.
+///
+/// **The same constant in both forms**, compact and expanded, for two reasons. Toggling `cpu_regs`
+/// then changes the panel's height and nothing else, instead of making it jump width — the same
+/// don't-shove-things-around rule the panel was already sized by. And the compact chip is the one
+/// whose whole purpose is the PC (spec §5.3), so sizing it to `SR $2700 S7` would leave the symbol
+/// five readable characters.
+const CHIP_COLUMNS: usize = 24;
+
+/// [`CHIP_COLUMNS`] in device pixels of ink. `n` glyphs are `ADVANCE * n - 1` wide: the trailing
+/// inter-glyph gap is not ink.
+fn chip_width(px: usize) -> usize {
+    (CHIP_COLUMNS * font::ADVANCE - 1) * px
+}
+
+/// The leading-truncation marker. Three full stops rather than `…`, which the 5x7 font has no
+/// glyph for — it would draw as the missing-glyph box (`font.rs:26`).
+const ELLIPSIS: &str = "...";
+
+/// Fit `text` into `avail` device pixels by dropping characters from the **front**.
+///
+/// The opposite of [`overlay::fit`], and only the PC line uses it. When you are watching the PC
+/// move, the leading module path is the least informative part of a symbol: every frame it reads
+/// `GAMESTATE_OJZSCROLL.UPDATE.…`, and the part that actually changes is the tail. Head-truncation
+/// shows you the half that never moves.
+///
+/// Borrowed and untouched when the whole thing already fits, so the common short-symbol and
+/// no-symbol-table cases allocate nothing.
+fn fit_tail(text: &str, avail: usize, px: usize) -> Cow<'_, str> {
+    if font::text_width(text) * px <= avail {
+        return Cow::Borrowed(text);
+    }
+    // Walk in from the end, keeping the longest suffix that still leaves room for the marker.
+    let marker = ELLIPSIS.chars().count();
+    let mut start = text.len();
+    for (i, _) in text.char_indices().rev() {
+        let glyphs = marker + text[i..].chars().count();
+        if (font::ADVANCE * glyphs - 1) * px > avail {
+            break;
+        }
+        start = i;
+    }
+    if start == text.len() {
+        // Not even the marker plus one character fits. Say "there is more here" rather than
+        // showing a single arbitrary character as if it were the whole answer.
+        return Cow::Borrowed(overlay::fit(ELLIPSIS, avail, px));
+    }
+    Cow::Owned(format!("{ELLIPSIS}{}", &text[start..]))
+}
+
+/// The font scale a chip of `n` lines draws at: **the expanded block drops one step.**
+///
+/// Eleven lines at the owner's `px = 3` stand 276 device pixels tall, which is 41% of a 672-pixel
+/// picture before the width is even counted; one scale down that is 184. Dense data at smaller type
+/// is ordinary for a debugger, and it is the axis with room to give — the alternative of four
+/// registers to a line spends 850 device pixels of width to save height, and width is the scarcer
+/// of the two here.
+///
+/// The compact head keeps the full scale: it is three lines, it costs nothing, and it is what the
+/// chip shows when it appears on its own at a pause.
+fn scale_for(n: usize, px: usize) -> usize {
+    if n > COMPACT_LINES {
+        px.saturating_sub(1).max(1)
+    } else {
+        px
+    }
+}
 
 /// What the chip draws: already-formatted lines, top to bottom, plus why it is on screen.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -102,11 +179,18 @@ fn fixed_width(lines: &[String], px: usize) -> usize {
 /// bailing would instead have meant truncated register values. So the form degrades one step, to
 /// the three lines that always fit if anything does, and only then gives up.
 fn form(lines: &[String], area: Rect, px: usize) -> usize {
-    let pad = 2 * px;
-    let margin = (2 * px).max(4);
     let fits = |n: usize| {
+        // Each candidate form is measured at the scale it would actually be drawn at, or the
+        // expanded block would be rejected for a height it never asks for.
+        let px = scale_for(n, px);
+        let pad = 2 * px;
+        let margin = (2 * px).max(4);
         n > 0
             && n * font::LINE_H * px + 2 * pad + margin <= area.h
+            // `fixed_width`, not `chip_width`: this clause exists to stop a register value being
+            // truncated into a plausible-looking wrong number, and that is a question about the
+            // lines themselves. A picture too narrow for `chip_width` is fine — the panel simply
+            // comes out narrower and the PC's tail gets shorter.
             && fixed_width(&lines[..n], px) + 2 * pad + 2 * margin <= area.w
     };
     let head = COMPACT_LINES.min(lines.len());
@@ -127,21 +211,23 @@ pub fn draw(c: &mut font::Canvas, area: Rect, px: usize, chip: &Chip) {
     if n == 0 {
         return;
     }
+    let px = scale_for(n, px);
     let lines = &chip.lines[..n];
     let pad = 2 * px;
     let margin = (2 * px).max(4);
     let line_h = font::LINE_H * px;
     let panel_h = n * line_h + 2 * pad;
-    let widest = lines
-        .iter()
-        .map(|l| font::text_width(l) * px)
-        .max()
-        .unwrap_or(0);
+    // **Sized to [`CHIP_COLUMNS`], never to the widest line** — the PC's symbol name is unbounded,
+    // and letting it set the width is what made the chip eat the picture. `fixed_width` still has a
+    // say so that a hypothetical over-wide fixed line (a 20-digit frame counter) is not truncated
+    // into a wrong number; today it never wins, and the test above pins that.
+    //
     // `form` returning non-zero is what makes both of these safe: it guarantees
     // `2 * pad + 2 * margin <= area.w`, so the subtraction below cannot underflow, and
     // `panel_w <= area.w - 2 * margin`, so `area.w - margin - panel_w >= margin` (the
     // `draw_narrow_panel_does_not_underflow` hazard class).
-    let panel_w = (widest + 2 * pad).min(area.w - 2 * margin);
+    let content = chip_width(px).max(fixed_width(lines, px));
+    let panel_w = (content + 2 * pad).min(area.w - 2 * margin);
     let left = (area.x + area.w - margin - panel_w) as i32;
     let top = (area.y + margin) as i32;
     c.fill_rect(left, top, panel_w, panel_h, 0x0000_0000, font::PANEL_ALPHA);
@@ -150,12 +236,19 @@ pub fn draw(c: &mut font::Canvas, area: Rect, px: usize, chip: &Chip) {
     // Amber while stopped: the chip shows itself when the machine pauses, so it has to say so.
     let color = if chip.paused { ACCENT } else { INFO };
     for (i, l) in lines.iter().enumerate() {
+        // Line 0 is the PC and truncates from the **front**; every other line either fits by
+        // construction or is short enough that it does.
+        let text = if i == 0 {
+            fit_tail(l, avail, px)
+        } else {
+            Cow::Borrowed(overlay::fit(l, avail, px))
+        };
         c.text(
             left + pad as i32,
             top + pad as i32 + (i * line_h) as i32,
             px,
             color,
-            overlay::fit(l, avail, px),
+            &text,
         );
     }
 }
@@ -540,9 +633,24 @@ mod tests {
             "ink reached the bottom half — this is a top chip, not a bottom one (last ink on row \
              {bottom})"
         );
-        assert!(
-            left >= area.x + area.w / 2,
-            "ink reached the left half — this is a right-hand chip (first ink at column {left})"
+        // **Position and width together, by equality.** This used to read
+        // `left >= area.x + area.w / 2` — a width claim wearing an anchoring costume, and one the
+        // right-gutter equality above already implies the useful half of. It is replaced rather
+        // than dropped, and by something strictly stronger: the panel's left edge and its width are
+        // both pinned to the pixel, so a chip that grew, shrank or slid fails here.
+        //
+        // 147 is `CHIP_COLUMNS` at `px = 1`: 24 glyphs of 6 px less the trailing gap, plus 2 px of
+        // pad either side. Written out, never computed from `chip_width`.
+        const PANEL_W_PX1: usize = 147;
+        assert_eq!(
+            right - left + 1,
+            PANEL_W_PX1,
+            "the panel is not {PANEL_W_PX1} px wide (it runs {left}..={right})"
+        );
+        assert_eq!(
+            left,
+            area.x + area.w - margin - PANEL_W_PX1,
+            "the panel's left edge is not one margin plus its own width in from the right"
         );
     }
 
@@ -663,5 +771,201 @@ mod tests {
         let stopped = render(w, h, area, 1, &model(&regs(), None, 7, true, false));
         assert!(has(&stopped, ACCENT), "a paused chip is drawn amber");
         assert!(!has(&stopped, INFO), "and none of it stays INFO");
+    }
+
+    // --- The chip stops eating the picture -----------------------------------------------------
+
+    /// A symbol from the owner's ROM, near enough — long enough that no sane panel holds it whole.
+    const LONG_PC: &str = "GAMESTATE.SKIP_ENTITY_SCAN+$4";
+
+    /// **The truncation keeps the end, not the beginning.** When you are watching the PC move, the
+    /// leading module path is the half that never changes; head-truncation shows you exactly that
+    /// half and hides the part that does.
+    ///
+    /// Exact strings, not "contains" or "is shorter than": a `fit_tail` that truncated from the end
+    /// like [`overlay::fit`] produces a string of the right length, inside the right width, made of
+    /// characters from the right input — and is the bug. The two widths differ by one glyph, so the
+    /// boundary is pinned rather than merely landed in, and the `px = 2` row proves the scale is
+    /// applied to the budget rather than ignored.
+    #[test]
+    fn fit_tail_keeps_the_end_of_the_symbol_not_the_beginning() {
+        // A glyph is 6 px of advance and the trailing gap is not ink, so `n` glyphs need
+        // `6n - 1` px: 17 glyphs need 101, 18 need 107. Written out, never computed from `font`.
+        assert_eq!(
+            fit_tail(LONG_PC, 101, 1),
+            "...ENTITY_SCAN+$4",
+            "17 glyphs: the marker plus the last fourteen characters"
+        );
+        assert_eq!(
+            fit_tail(LONG_PC, 106, 1),
+            "...ENTITY_SCAN+$4",
+            "one px short of the eighteenth glyph, so still seventeen"
+        );
+        assert_eq!(
+            fit_tail(LONG_PC, 107, 1),
+            "..._ENTITY_SCAN+$4",
+            "eighteen glyphs fit at 107"
+        );
+        assert_eq!(
+            fit_tail(LONG_PC, 202, 2),
+            "...ENTITY_SCAN+$4",
+            "px 2 doubles the cost of every glyph, so 202 buys the same seventeen"
+        );
+
+        // Anything that already fits is handed back untouched and unmarked.
+        assert_eq!(fit_tail("PC $00FF00", 1000, 1), "PC $00FF00");
+        assert!(
+            matches!(fit_tail("PC $00FF00", 1000, 1), Cow::Borrowed(_)),
+            "a line that fits must not allocate"
+        );
+
+        // The marker plus one character is four glyphs, or 23 px, so 22 is one short of it: then
+        // say "there is more here" rather than showing one arbitrary character as the answer.
+        assert_eq!(
+            fit_tail(LONG_PC, 23, 1),
+            "...4",
+            "four glyphs is marker plus one"
+        );
+        assert_eq!(
+            fit_tail(LONG_PC, 22, 1),
+            "...",
+            "one px less leaves only the marker"
+        );
+        // Below even the marker it clips honestly. `overlay::fit` charges the first glyph 5 px and
+        // every later one 6, so 16 buys two dots and 4 buys none at all.
+        assert_eq!(fit_tail(LONG_PC, 16, 1), "..");
+        assert_eq!(fit_tail(LONG_PC, 4, 1), "");
+    }
+
+    /// **The panel's width does not depend on the PC symbol's length.** That dependency is the whole
+    /// bug: the owner's chip grew to fit a fifty-glyph symbol, clamped to the full width of the
+    /// picture, and covered the CRAM strip.
+    ///
+    /// Two chips differing *only* in the PC line — one short, one absurd — must produce pixel-
+    /// identical panel geometry. An assertion that the panel is merely "not full width" would pass
+    /// on a panel that still grew, just less; comparing two renders pins the independence itself,
+    /// and it needs no number written out to do it.
+    ///
+    /// The expanded form is the one under test because that is where the collision happened, and
+    /// the `expected` bound is stated separately so the test also fails if *neither* render is the
+    /// right size.
+    #[test]
+    fn the_panel_width_does_not_depend_on_the_pc_symbols_length() {
+        let (w, h) = (960usize, 720usize);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            w: 896,
+            h: 672,
+        };
+        let px = 3; // the owner's window: 672 / 224
+        let with = |pc: &str| {
+            let mut chip = model(&regs(), None, 7, false, true);
+            chip.lines[0] = format!("PC {pc}");
+            let buf = render(w, h, area, px, &chip);
+            ink_bounds(&buf, w, BG).expect("draw painted nothing")
+        };
+        let short = with("$00FF00");
+        let long = with(&LONG_PC.repeat(3));
+        assert_eq!(
+            short, long,
+            "the panel moved or resized when the PC symbol got longer"
+        );
+
+        // And it is the size it should be: 24 glyphs at px 2 (the expanded block drops a scale) is
+        // `24 * 6 - 1 = 143`, doubled to 286, plus 2 * (2 * 2) of pad = 294.
+        let (_, _, left, right) = short;
+        assert_eq!(
+            right - left + 1,
+            294,
+            "the expanded panel is not CHIP_COLUMNS wide"
+        );
+        assert!(
+            right - left + 1 < area.w / 2,
+            "the chip still takes more than half the picture's width"
+        );
+    }
+
+    /// **The drawn PC line really is the symbol's tail**, measured on the glass rather than in
+    /// [`fit_tail`] alone.
+    ///
+    /// `fit_tail`'s own test pins the function; this pins that `draw` *calls* it. Deleting the call
+    /// and truncating the PC like every other line — the state this fix replaced — leaves the
+    /// panel's geometry pixel-identical, so every other test in this module stays green. (Measured:
+    /// it survived `the_panel_width_does_not_depend_on_the_pc_symbols_length` outright.)
+    ///
+    /// Two pairs, each differing by a single character, and neither needs a glyph shape or a
+    /// pixel offset written out. Changing the **last** character must change the render, or the
+    /// tail is not what reaches the glass. Changing the **first** must not, or the head is still on
+    /// screen and nothing was truncated from the front. Head-truncation fails both, in opposite
+    /// directions.
+    #[test]
+    fn the_drawn_pc_line_is_the_symbols_tail() {
+        let (w, h) = (960usize, 720usize);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            w: 896,
+            h: 672,
+        };
+        let with = |pc: &str| {
+            let mut chip = model(&regs(), None, 7, false, true);
+            chip.lines[0] = format!("PC {pc}");
+            render(w, h, area, 3, &chip)
+        };
+        assert_ne!(
+            with(&format!("{LONG_PC}A")),
+            with(&format!("{LONG_PC}B")),
+            "the last character of the symbol never reached the glass — the PC is being \
+             truncated from the wrong end"
+        );
+        assert_eq!(
+            with(&format!("A{LONG_PC}")),
+            with(&format!("B{LONG_PC}")),
+            "the first character of the symbol is still on screen, so nothing was dropped from \
+             the front"
+        );
+    }
+
+    /// **The expanded block draws one font scale smaller.** Eleven lines at the owner's `px = 3`
+    /// stand 276 px tall in a 672 px picture — 41% of it before width is counted. One scale down
+    /// they stand 184.
+    ///
+    /// Heights are pinned by equality at two scales, and the compact head is pinned alongside to
+    /// show the drop is *conditional*: a `scale_for` that shrank everything would halve the compact
+    /// chip too, and a `scale_for` that shrank nothing gives 276. Both numbers are written out —
+    /// `11 * 8 * 2 + 2 * (2 * 2)` and `3 * 8 * 3 + 2 * (2 * 3)` — never taken from the function.
+    #[test]
+    fn the_expanded_block_draws_one_font_scale_smaller() {
+        let (w, h) = (960usize, 720usize);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            w: 896,
+            h: 672,
+        };
+        let tall = |px: usize, expanded: bool| {
+            let buf = render(w, h, area, px, &model(&regs(), None, 7, false, expanded));
+            let (top, bottom, _, _) = ink_bounds(&buf, w, BG).expect("draw painted nothing");
+            bottom - top + 1
+        };
+        assert_eq!(
+            tall(3, true),
+            184,
+            "the expanded block at px 3 draws at px 2"
+        );
+        assert_eq!(tall(3, false), 84, "the compact head keeps px 3");
+        // px 2 drops to px 1: `11 * 8 * 1 + 2 * (2 * 1)`. Undropped it would be 184 — the same
+        // number the px-3 row demands, which is what makes these two rows rule each other's bug out.
+        assert_eq!(
+            tall(2, true),
+            92,
+            "the expanded block at px 2 draws at px 1"
+        );
+        assert_eq!(
+            tall(1, true),
+            92,
+            "px 1 has nowhere to drop to, so it matches px 2's dropped height exactly"
+        );
     }
 }

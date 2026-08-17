@@ -1299,6 +1299,80 @@ mod tests {
         );
     }
 
+    /// **The collision the owner actually saw.** At their 896x672 window the font scale is 3, and
+    /// the expanded CPU chip — sized to a fifty-glyph PC symbol — clamped to the full width of the
+    /// picture and drew straight over the CRAM strip in the opposite corner.
+    ///
+    /// This is the regression test for that, at exactly that geometry, driven end to end through
+    /// [`models`] and [`draw`] so it covers the sizing, the scale drop and the anchoring together.
+    /// The two panels own opposite corners, so the claim is simply that their ink never shares a
+    /// column — an assertion that is false for a full-width panel however tall it is.
+    ///
+    /// The long symbol is placed at the machine's own PC so it genuinely resolves, and the model's
+    /// first line is checked before anything is drawn: without that, a fixture whose symbol quietly
+    /// failed to resolve would leave a short `$00FF00` PC line, no collision, and a test that
+    /// passed against the bug it is named for.
+    #[test]
+    fn the_expanded_chip_clears_the_cram_strip_at_the_owners_geometry() {
+        const BG: u32 = 0x0012_3456;
+        let (w, h) = (896usize, 672usize);
+        let area = Rect { x: 0, y: 0, w, h };
+        let sys = System::new(0x5EED);
+        let wp = Watchpoints::new(8);
+        let pc = sys.cpu_regs().pc;
+        let symbols = oracle_core::symbols::SymbolTable::parse(&format!(
+            "  Symbol Table (* = unused):\n  --------------------------\n\n \
+             GAMESTATE_OJZSCROLL.UPDATE.SKIP_ENTITY_SCAN_THEN_KEEP_GOING : {pc:X} C |\n\n    \
+             1 symbols\n    0 unused symbols\n"
+        ))
+        .expect("the fixture listing parses");
+
+        let render = |id: LensId| {
+            let mut set = LensSet::default();
+            set.set(id, true);
+            let m = models(
+                set,
+                &FrameCtx {
+                    sys: &sys,
+                    wp: &wp,
+                    symbols: Some(&symbols),
+                    frame: 7,
+                    paused: false,
+                    hover: None,
+                },
+            );
+            if id == LensId::CpuRegs {
+                let line = &m.cpu.as_ref().expect("the chip is on").lines[0];
+                // Long enough that sizing the panel to it would still reach across the picture
+                // *after* the expanded block's scale drop — otherwise this test would only ever
+                // fail when both halves of the fix were reverted at once, and would be blind to
+                // either on its own. Measured: at 46 glyphs it was.
+                assert!(
+                    line.chars().count() >= 60,
+                    "the fixture symbol did not resolve, or is too short to have collided: \
+                     {line:?}"
+                );
+            }
+            let mut buf = vec![BG; w * h];
+            draw(&mut buf, w, h, area, (320, 224), &m);
+            ink_bounds(&buf, w, BG).unwrap_or_else(|| panic!("{} painted nothing", id.key()))
+        };
+
+        let (_, _, strip_left, strip_right) = render(LensId::Cram);
+        let (_, _, chip_left, chip_right) = render(LensId::CpuRegs);
+        assert!(
+            chip_left > strip_right,
+            "the CPU chip (columns {chip_left}..={chip_right}) overlaps the CRAM strip (columns \
+             {strip_left}..={strip_right})"
+        );
+        // And it is a right-hand panel that got smaller, not one that moved away by growing off
+        // the left: it must still hug the right edge.
+        assert!(
+            chip_right > area.x + area.w - 16,
+            "the chip stopped hugging the right edge (last ink at column {chip_right})"
+        );
+    }
+
     /// A variant can be added to `LensId` — forcing `key`/`title`/`label` edits — and still be
     /// left out of `ALL`, where it would get no bit-uniqueness check, no config spelling and no
     /// palette command. The match below is exhaustive, so a new variant fails to *compile* until
