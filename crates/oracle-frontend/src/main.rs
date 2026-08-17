@@ -1154,7 +1154,8 @@ fn main() {
                 // a lens set, `LensSet` is `Copy`, and a second writer for the value the picture
                 // will depend on would be an invariant nothing enforces. Persisted through the
                 // same debounce as every other setting. The toast is what tells you a toggle took
-                // for the lenses that do not draw yet — the watch ticker and the CPU chip do so far.
+                // for the lenses that do not draw yet — the watch ticker, the CPU chip and the
+                // CRAM strip do so far.
                 commands::Cmd::ToggleLens(id) => {
                     cfg.lenses.toggle(id);
                     config_save_countdown = Some(CONFIG_AUTOSAVE_DEBOUNCE_FRAMES);

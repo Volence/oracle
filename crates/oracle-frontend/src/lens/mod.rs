@@ -14,6 +14,7 @@
 //! arrives; a placeholder file would be dead weight the gate would rightly flag.
 
 pub mod cpu;
+pub mod video;
 pub mod watch;
 
 use crate::present::Rect;
@@ -150,6 +151,10 @@ pub struct FrameCtx<'a> {
 pub struct Models {
     pub ticker: Option<watch::Ticker>,
     pub cpu: Option<cpu::Chip>,
+    /// The 64 live CRAM entries, already packed for the window buffer. An `[u32; 64]` by value
+    /// because that is 256 bytes on the stack against a heap allocation every frame, and because
+    /// `cram_decoded` hands back an owned array anyway — there is nothing to borrow.
+    pub cram: Option<[u32; 64]>,
 }
 
 /// Build the models for whatever is on. Called once per frame, immediately before drawing, and
@@ -171,13 +176,21 @@ pub fn models(set: LensSet, cx: &FrameCtx<'_>) -> Models {
                 set.is_on(LensId::CpuRegs),
             )
         }),
+        // `cram_decoded` walks all 64 entries and returns an owned array, so it is a read the
+        // `then` guard genuinely saves when the lens is off — the same reason every other model
+        // here is built lazily.
+        cram: set
+            .is_on(LensId::Cram)
+            .then(|| video::swatches(&cx.sys.vdp().cram_decoded())),
     }
 }
 
 /// Draw every built model, in a fixed back-to-front order — [`LensId::ALL`] order, so a later lens
-/// draws over an earlier one. The ticker (bottom) and the chip (top-right) only meet on a picture
-/// short enough for the chip's panel to reach the bottom strip, where the chip wins; that is the
-/// same overlap `watch.rs` already accepts against the toasts, and for the same reason.
+/// draws over an earlier one. The ticker (bottom), the chip (top-right) and the CRAM strip
+/// (top-left, one text row down) each own a different corner, so on an ordinary picture nothing
+/// overlaps at all; the ticker and the chip meet only on a picture short enough for the chip's
+/// panel to reach the bottom strip, where the chip wins — the same overlap `watch.rs` already
+/// accepts against the toasts, and for the same reason.
 ///
 /// Anchored to `area` (the picture), never
 /// the window: the letterbox stays black, and a tall window with a narrow picture must not make
@@ -190,6 +203,9 @@ pub fn draw(buf: &mut [u32], w: usize, h: usize, area: Rect, m: &Models) {
     }
     if let Some(chip) = &m.cpu {
         cpu::draw(&mut c, area, px, chip);
+    }
+    if let Some(sw) = &m.cram {
+        video::draw_cram(&mut c, area, px, sw);
     }
 }
 
@@ -449,6 +465,72 @@ mod tests {
             lines(&[], true),
             COMPACT,
             "the paused auto-show is the compact chip"
+        );
+    }
+
+    /// The CRAM strip end to end: its model is built for its own lens and no other, and [`draw`]
+    /// actually puts it on the glass.
+    ///
+    /// The second half is the one worth the pixels. `video.rs` tests `draw_cram` directly and would
+    /// stay green with the `if let Some(sw) = &m.cram` arm deleted outright — a lens that toasts
+    /// ON, persists to the config file, builds its model every frame and draws nothing. Every
+    /// branch of this dispatch needs a caller-side witness, and this is the strip's.
+    ///
+    /// `BG` is `0x0012_3456` for the reason every lens draw test says: the panel is black
+    /// alpha-blended, invisible over a zero buffer. Here the swatches are black too — an unrun
+    /// machine's CRAM is all zeroes — so over zeroes *nothing at all* would be visible and the
+    /// assertion would be entirely vacuous.
+    #[test]
+    fn the_cram_strip_is_built_for_its_own_lens_and_reaches_the_glass() {
+        const BG: u32 = 0x0012_3456;
+        let sys = System::new(0x5EED);
+        let wp = Watchpoints::new(8);
+
+        assert!(
+            models(LensSet::default(), &ctx(&sys, &wp, false))
+                .cram
+                .is_none(),
+            "a strip was built with every lens off"
+        );
+        let mut other = LensSet::default();
+        other.set(LensId::Watch, true);
+        assert!(
+            models(other, &ctx(&sys, &wp, false)).cram.is_none(),
+            "the strip model keyed off the wrong lens"
+        );
+
+        let mut set = LensSet::default();
+        set.set(LensId::Cram, true);
+        let m = models(set, &ctx(&sys, &wp, false));
+        assert_eq!(
+            m.cram
+                .expect("the strip did not build for its own lens")
+                .len(),
+            64,
+            "the strip carries all 64 CRAM entries"
+        );
+        assert!(
+            m.ticker.is_none() && m.cpu.is_none(),
+            "only the strip is on, so only the strip may draw below"
+        );
+
+        let (w, h) = (320usize, 224usize);
+        let mut buf = vec![BG; w * h];
+        draw(
+            &mut buf,
+            w,
+            h,
+            Rect {
+                x: 0,
+                y: 0,
+                w,
+                h: 224,
+            },
+            &m,
+        );
+        assert!(
+            buf.iter().any(|p| *p != BG),
+            "the strip's model was built and then dropped on the floor by draw"
         );
     }
 
