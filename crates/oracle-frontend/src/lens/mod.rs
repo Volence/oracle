@@ -471,18 +471,12 @@ mod tests {
     /// The CRAM strip end to end: its model is built for its own lens and no other, and [`draw`]
     /// actually puts it on the glass.
     ///
-    /// The second half is the one worth the pixels. `video.rs` tests `draw_cram` directly and would
-    /// stay green with the `if let Some(sw) = &m.cram` arm deleted outright — a lens that toasts
-    /// ON, persists to the config file, builds its model every frame and draws nothing. Every
-    /// branch of this dispatch needs a caller-side witness, and this is the strip's.
-    ///
-    /// `BG` is `0x0012_3456` for the reason every lens draw test says: the panel is black
-    /// alpha-blended, invisible over a zero buffer. Here the swatches are black too — an unrun
-    /// machine's CRAM is all zeroes — so over zeroes *nothing at all* would be visible and the
-    /// assertion would be entirely vacuous.
+    /// The parallel of `models_are_built_only_for_lenses_that_are_on` (the ticker) and
+    /// `the_cpu_chip_is_built_for_either_of_its_lenses_and_while_paused` (the chip), for the strip.
+    /// Whether the model then *reaches the glass* is
+    /// [`every_lens_with_a_draw_arm_reaches_the_glass`]'s job, for every lens at once.
     #[test]
-    fn the_cram_strip_is_built_for_its_own_lens_and_reaches_the_glass() {
-        const BG: u32 = 0x0012_3456;
+    fn the_cram_strip_model_is_built_for_its_own_lens_only() {
         let sys = System::new(0x5EED);
         let wp = Watchpoints::new(8);
 
@@ -511,26 +505,88 @@ mod tests {
         );
         assert!(
             m.ticker.is_none() && m.cpu.is_none(),
-            "only the strip is on, so only the strip may draw below"
+            "the strip's lens dragged another model on with it"
         );
+    }
 
+    /// Whether `id` has an arm in [`draw`] yet, declared **per variant** rather than counted.
+    ///
+    /// Exhaustive on purpose: a seventh lens cannot compile until its author says here whether it
+    /// draws, which is the point — the bug this whole test exists for is a lens nobody remembered
+    /// to wire into the dispatch. And it is a literal declaration, never derived from
+    /// [`LensId::ALL`] or from `Models`' fields: an expectation computed from the same iteration
+    /// the production code uses moves with the bug and cancels itself out (the trap
+    /// `all_lists_every_variant_exactly_once` documents for `ALL.len()`).
+    fn draws_yet(id: LensId) -> bool {
+        match id {
+            LensId::Watch | LensId::Cpu | LensId::CpuRegs | LensId::Cram => true,
+            // No arm in `draw` yet — the sprite outlines and the hover callout are still to come.
+            // When they land, flipping these to `true` is what the test below demands of them.
+            LensId::Sprites | LensId::Hover => false,
+        }
+    }
+
+    /// **Every lens that builds a model must reach the glass**, driven end to end:
+    /// `models()` → [`draw`] with that one lens on, asserting ink.
+    ///
+    /// Each lens's own module already pixel-tests its `draw` fn directly, and every one of those
+    /// tests stays green with the lens's arm in [`draw`] deleted outright. The resulting bug is
+    /// nasty precisely because it looks like it works: the lens toasts ON, persists to the config
+    /// across relaunch, rebuilds its model every frame — and never paints. A user-visible dead
+    /// feature with a fully green suite.
+    ///
+    /// Table-driven over [`LensId::ALL`] rather than one test per lens, so lens seven is covered by
+    /// arithmetic rather than by somebody remembering. The lenses need no per-lens fixtures for
+    /// this: an unrun machine and an unarmed watchpoint set are enough, because the question is
+    /// "did any ink land", not "was it the right ink" (their own modules answer that).
+    ///
+    /// Exactly one lens is on per iteration, so the ink is unambiguously that lens's — a shared
+    /// buffer with several on would let one lens cover for another's missing arm.
+    ///
+    /// `BG` is `0x0012_3456` and not `0` for the reason every lens draw test states: the panels are
+    /// black alpha-blended, invisible over a zero buffer — and an unrun machine's CRAM is all
+    /// zeroes, so its swatches are black too. Over zeroes this test would assert nothing at all.
+    #[test]
+    fn every_lens_with_a_draw_arm_reaches_the_glass() {
+        const BG: u32 = 0x0012_3456;
+        const ARMS_TODAY: usize = 4;
         let (w, h) = (320usize, 224usize);
-        let mut buf = vec![BG; w * h];
-        draw(
-            &mut buf,
-            w,
-            h,
-            Rect {
-                x: 0,
-                y: 0,
-                w,
-                h: 224,
-            },
-            &m,
-        );
-        assert!(
-            buf.iter().any(|p| *p != BG),
-            "the strip's model was built and then dropped on the floor by draw"
+        let area = Rect { x: 0, y: 0, w, h };
+        let sys = System::new(0x5EED);
+        let wp = Watchpoints::new(8);
+
+        let mut witnessed = 0;
+        for id in LensId::ALL {
+            let mut set = LensSet::default();
+            set.set(id, true);
+            let m = models(set, &ctx(&sys, &wp, false));
+            let mut buf = vec![BG; w * h];
+            draw(&mut buf, w, h, area, &m);
+            let painted = buf.iter().any(|p| *p != BG);
+            if draws_yet(id) {
+                assert!(
+                    painted,
+                    "{} builds a model every frame and never reaches the glass — its arm in \
+                     `draw` is missing",
+                    id.key()
+                );
+                witnessed += 1;
+            } else {
+                assert!(
+                    !painted,
+                    "{} drew without being declared in `draws_yet` — say so there, so the arm \
+                     stays witnessed",
+                    id.key()
+                );
+            }
+        }
+        // Without this, a `draws_yet` that answered `false` everywhere would skip every positive
+        // assertion and pass having checked nothing. The count is written out, never taken from
+        // `ALL` or from a filter over `draws_yet` itself.
+        assert_eq!(
+            witnessed, ARMS_TODAY,
+            "expected {ARMS_TODAY} lenses to paint; a lens gained or lost an arm without this \
+             test being told"
         );
     }
 
