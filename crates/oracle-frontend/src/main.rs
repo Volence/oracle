@@ -212,6 +212,9 @@ mod symbol_file;
 // On-screen output: a self-contained bitmap font, and the notification / status / paused overlay it draws.
 // Nothing in a window ever reads stdout, which is where every message used to go.
 mod commands;
+// Slice S2 — the player's persistent settings file (spec §7): pure parse/serialize plus
+// load-with-recovery and atomic save.
+mod config;
 mod font;
 mod overlay;
 mod palette;
@@ -318,6 +321,12 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
         aspect,
         socket,
     })
+}
+
+/// The gamepad module's default deadzone, visible regardless of the `gamepad` feature so the
+/// config file round-trips it identically in every build.
+pub(crate) fn gamepad_default_deadzone() -> f32 {
+    0.5
 }
 
 /// Say something to **both** audiences: the terminal log (which scripts, the tests and a developer read) and
