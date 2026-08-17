@@ -145,6 +145,12 @@ impl Palette {
     /// Feed one key. Returns what the caller should do. Selection is clamped to Item rows;
     /// Enter on an Item runs it (recording MRU) and closes; Esc closes (picker first).
     pub fn handle(&mut self, key: PaletteKey, reg: &[CommandInfo]) -> PaletteAction {
+        // A closed palette ignores keys outright. The main loop feeds a whole frame's key batch in one
+        // go, and the command that *ran* closes the palette part-way through it — the keys behind it in
+        // that batch must not type into, reopen, or re-run anything on a palette that is already gone.
+        if !self.open {
+            return PaletteAction::None;
+        }
         // Picker mode intercepts everything.
         if let Some(pk) = self.picker.as_mut() {
             match key {
@@ -294,9 +300,22 @@ impl Palette {
         canvas.text(text_x, y, px, ACCENT, overlay::fit(&q, inner_w, px));
         y += (line_h + margin / 2) as i32;
 
-        for (ri, row) in self.rows(reg).iter().enumerate() {
+        // Scroll to the selection. `move_sel` walks the *whole* list, so a list taller than the panel
+        // (at scale 3 with a populated RECENT section it already is) can put `sel` below the fold —
+        // and Enter would then run a command the user cannot see. The selection is deliberately NOT
+        // clamped to what fits: that would make the tail commands unreachable from the keyboard. The
+        // painted window moves instead, pinning `sel` to the last visible line once it passes the
+        // bottom. A fuller scroll UI (truncation indicator, page keys) is a registered follow-up.
+        let rows = self.rows(reg);
+        let max_rows = (panel_y + panel_h).saturating_sub(y as usize) / line_h;
+        let first_visible = self.sel.saturating_sub(max_rows.saturating_sub(1));
+
+        // `enumerate` runs before `skip`, so `ri` stays the ABSOLUTE row index — the one `sel` is
+        // expressed in. Comparing the painted loop's own counter instead would highlight the wrong row
+        // (or none) the moment the list scrolls.
+        for (ri, row) in rows.iter().enumerate().skip(first_visible) {
             if (y as usize + line_h) > panel_y + panel_h {
-                break; // capped rows; scrolling arrives with a taller list than fits (none yet)
+                break; // below the fold — and `first_visible` guarantees `sel` was not down here
             }
             match row {
                 Row::Header(hdr) => {
@@ -743,6 +762,87 @@ mod tests {
             h: 1000,
         };
         p.draw(&mut buf, w, h, area, &reg);
+        for (i, px) in buf.iter().enumerate() {
+            if *px != 0 {
+                let (x, y) = (i % w, i / w);
+                assert!(
+                    x >= area.x && x < area.x + area.w && y >= area.y && y < area.y + area.h,
+                    "painted outside area at ({x},{y})"
+                );
+            }
+        }
+    }
+
+    /// A closed palette ignores keys. The main loop hands `handle` a whole frame's worth of keys, and
+    /// the one that ran a command closed the palette mid-batch — anything still queued behind it must
+    /// not type into (or reopen) what is no longer there.
+    #[test]
+    fn a_closed_palette_ignores_keys() {
+        let reg = registry();
+        let mut p = Palette::new();
+        for k in [
+            PaletteKey::Char('q'),
+            PaletteKey::Down,
+            PaletteKey::Enter,
+            PaletteKey::Esc,
+        ] {
+            assert_eq!(
+                p.handle(k, &reg),
+                PaletteAction::None,
+                "{k:?} on a closed palette"
+            );
+        }
+        assert!(!p.is_open(), "a key must never reopen a closed palette");
+        assert!(p.query.is_empty(), "and must never accumulate a query");
+    }
+
+    /// Regression: the selection must always be *painted*. `move_sel` walks the whole list while `draw`
+    /// stops at the panel's bottom edge, so a list taller than the panel used to let Down carry the
+    /// selection below the fold — Enter then ran a command nobody could see. `draw` scrolls to the
+    /// selection instead of clamping it (clamping would make the tail commands unreachable).
+    ///
+    /// Asserted on pixels: the highlight bar's colour is opaque (alpha 255 replaces), so its presence in
+    /// the buffer is direct evidence that the selected row was inside the painted window.
+    #[test]
+    fn draw_scrolls_to_keep_the_selection_visible() {
+        const HIGHLIGHT: u32 = 0x0012_3A46;
+        let (mut p, reg) = open_palette();
+        // A panel far shorter than the list: at h=224 the font is 1x (8px lines), so a 60px-tall
+        // picture rect leaves room for only a handful of rows out of the full grouped list.
+        let (w, h) = (320usize, 224usize);
+        let area = crate::present::Rect {
+            x: 0,
+            y: 0,
+            w: 320,
+            h: 60,
+        };
+        let total_rows = p.rows(&reg).len();
+
+        // Control: with the selection at the top it is trivially on screen.
+        let mut buf = vec![0u32; w * h];
+        p.draw(&mut buf, w, h, area, &reg);
+        assert!(
+            buf.contains(&HIGHLIGHT),
+            "the highlight must be painted even before scrolling"
+        );
+
+        // Drive the selection to the last Item row — well past what the panel can show.
+        for _ in 0..total_rows * 2 {
+            p.handle(PaletteKey::Down, &reg);
+        }
+        assert!(
+            p.sel > 6,
+            "test is vacuous unless the selection moved past the visible rows (sel={})",
+            p.sel
+        );
+        let mut buf = vec![0u32; w * h];
+        p.draw(&mut buf, w, h, area, &reg);
+        assert!(
+            buf.contains(&HIGHLIGHT),
+            "selection at row {} of {total_rows} was never painted — the list did not scroll",
+            p.sel
+        );
+        // Containment still holds while scrolled.
         for (i, px) in buf.iter().enumerate() {
             if *px != 0 {
                 let (x, y) = (i % w, i / w);

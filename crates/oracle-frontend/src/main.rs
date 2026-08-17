@@ -30,7 +30,7 @@
 //! | Enter             | Start (P1)     |
 //! | Space             | pause / resume |
 //! | `.` (period)      | single-frame step (pauses first if running) |
-//! | `` ` `` (backtick) or Ctrl+P | open the command palette |
+//! | `` ` `` (backtick) or Ctrl+P | open the command palette (backtick again, or Esc, closes it) |
 //! | Tab (or F1)       | soft-reset the console (SRAM contents preserved, as on real hardware) |
 //! | F5                | re-read the ROM file from disk and reset — the edit-assemble-test loop |
 //! | F2                | save state to the current slot |
@@ -378,6 +378,19 @@ fn poll_pad(window: &Window) -> Pad {
         c: window.is_key_down(Key::D),
         start: window.is_key_down(Key::Enter),
     }
+}
+
+/// Next value of the "these keys were typed at the palette, not at the game" latch.
+///
+/// The palette closes **mid-iteration** — Esc, or Enter running a command — and the keys that closed it are
+/// still physically held when the pad is polled further down the same iteration. Without a latch, `Enter`
+/// (the key that ran the command) reads straight through as Start, so every palette command handed the game
+/// several frames of Start — an in-game pause in Sonic — and a held A/S/D or arrow leaked the same way.
+///
+/// So the keyboard half of Player 1 stays released until the user has let go of *every* game key: a press
+/// that began as text can never finish as gameplay. Gamepads are unaffected; they were never typing.
+fn release_latch(latch: bool, any_game_key_down: bool) -> bool {
+    latch && any_game_key_down
 }
 
 /// Hard ceiling on the [`ScanlineCapture`]'s per-delivery bookkeeping before it is released unconditionally.
@@ -900,6 +913,8 @@ fn main() {
     let reg = commands::registry();
     let mut palette = palette::Palette::new();
     let mut running = true;
+    // Set when the palette closes under a still-held key; see [`release_latch`].
+    let mut swallow_keys_until_release = false;
     ov.push("PRESS ` FOR COMMANDS", INFO); // discoverability layer 1 (spec §4)
 
     // Esc no longer quits (spec §3): it closes the palette. Quitting is the window's close button or the
@@ -964,9 +979,13 @@ fn main() {
         // scanned. Every case funnels into `pending`, dispatched once below. ---
         let mut pending: Vec<commands::Cmd> = Vec::new();
         let mut step = false;
+        let was_open = palette.is_open();
         if palette.is_open() {
             for k in window.get_keys_pressed(KeyRepeat::Yes) {
                 let pk = match k {
+                    // Backtick toggles: the key that opened the palette closes it again (Quake muscle
+                    // memory). `key_char` deliberately never types it, so this is its only meaning here.
+                    Key::Backquote => Some(palette::PaletteKey::Esc),
                     Key::Backspace => Some(palette::PaletteKey::Backspace),
                     Key::Up => Some(palette::PaletteKey::Up),
                     Key::Down => Some(palette::PaletteKey::Down),
@@ -1304,17 +1323,31 @@ fn main() {
                 }
             }
         }
+        // Did that batch close the palette? Checked after dispatch, not inside routing, because a command
+        // may reopen it in the same iteration (SlotPicker does exactly that) — and a palette that is still
+        // up needs no latch, its keys are swallowed anyway.
+        if was_open && !palette.is_open() {
+            swallow_keys_until_release = true;
+        }
 
         // Inputs are sampled live every frame; set_pad is the sole, deterministic input path into the core.
         // Player 1 = keyboard OR gamepad 1 (merged per button, so neither source can suppress the other);
         // Player 2 = gamepad 2 only, and an all-released Pad when there is none — which is exactly the state
         // port 1 already had before that slice, so a one-player session is unaffected.
         // Palette open = the keyboard is typing text, not playing (spec §3), so the keyboard half of P1 is
-        // swallowed for as long as it is up. Gamepads are untouched and always reach the game.
-        let p1 = if palette.is_open() {
+        // swallowed for as long as it is up — and, via the latch, until the keys that dismissed it are let
+        // go (see `release_latch`). Gamepads are untouched and always reach the game.
+        //
+        // `poll_pad` is read unconditionally: an all-released `Pad` is exactly "no game key is down", so the
+        // latch's release condition comes from the very same key list the pad is built from and cannot
+        // drift from it.
+        let keys = poll_pad(&window);
+        swallow_keys_until_release =
+            release_latch(swallow_keys_until_release, keys != Pad::default());
+        let p1 = if palette.is_open() || swallow_keys_until_release {
             Pad::default()
         } else {
-            poll_pad(&window)
+            keys
         };
         // `mut` is used only by the `gamepad` arm below; a no-gamepad build never writes it.
         #[allow(unused_mut)]
@@ -1805,6 +1838,27 @@ mod tests {
             !sys.sram_used() && !sys.sram_dirty(),
             "and clears both flags"
         );
+    }
+
+    /// The keyboard-swallow latch (`release_latch`). Closing the palette arms it while the key that did
+    /// the closing is still down; it clears only once every game key is released, so `Enter` — the key
+    /// that ran the command — can never arrive at the game as Start.
+    #[test]
+    fn the_swallow_latch_clears_only_on_full_release() {
+        // (latch now, any game key still held, latch next)
+        let cases = [
+            (false, false, false), // idle: nothing to suppress
+            (false, true, false),  // ordinary gameplay never arms it
+            (true, true, true),    // still holding the key that dismissed the palette
+            (true, false, false),  // let go — the keyboard plays again from here
+        ];
+        for (latch, down, want) in cases {
+            assert_eq!(
+                release_latch(latch, down),
+                want,
+                "release_latch(latch={latch}, any_down={down})"
+            );
+        }
     }
 
     /// Slot stepping wraps in both directions and never leaves `0..SLOT_COUNT`.
