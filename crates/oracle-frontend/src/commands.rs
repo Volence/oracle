@@ -235,6 +235,89 @@ pub fn subseq_match(query: &str, title: &str) -> bool {
         .all(|q| t.any(|c| c == q))
 }
 
+/// Short display name for the palette's hotkey column. Only keys the registry actually uses
+/// need names; anything else renders "?" (and the test above keeps the registry inside the
+/// named set).
+pub fn key_name(k: Key) -> &'static str {
+    match k {
+        Key::Space => "Space",
+        Key::Period => ".",
+        Key::Tab => "Tab",
+        Key::Enter => "Enter",
+        Key::Minus => "-",
+        Key::Equal => "=",
+        Key::F1 => "F1",
+        Key::F2 => "F2",
+        Key::F3 => "F3",
+        Key::F4 => "F4",
+        Key::F5 => "F5",
+        Key::F6 => "F6",
+        Key::F7 => "F7",
+        Key::W => "W",
+        Key::C => "C",
+        Key::M => "M",
+        Key::Key0 => "0",
+        Key::Key1 => "1",
+        Key::Key2 => "2",
+        Key::Key3 => "3",
+        Key::Key4 => "4",
+        Key::Key5 => "5",
+        Key::Key6 => "6",
+        Key::Key7 => "7",
+        Key::Key8 => "8",
+        Key::Key9 => "9",
+        _ => "?",
+    }
+}
+
+/// The typable subset for palette filtering: a-z, 0-9, space. Anything else (F-keys, the
+/// backtick that opened the palette, punctuation) is not text. Lowercase only — the matcher
+/// is case-insensitive so shift adds nothing.
+pub fn key_char(k: Key) -> Option<char> {
+    use Key::*;
+    let c = match k {
+        A => 'a',
+        B => 'b',
+        C => 'c',
+        D => 'd',
+        E => 'e',
+        F => 'f',
+        G => 'g',
+        H => 'h',
+        I => 'i',
+        J => 'j',
+        K => 'k',
+        L => 'l',
+        M => 'm',
+        N => 'n',
+        O => 'o',
+        P => 'p',
+        Q => 'q',
+        R => 'r',
+        S => 's',
+        T => 't',
+        U => 'u',
+        V => 'v',
+        W => 'w',
+        X => 'x',
+        Y => 'y',
+        Z => 'z',
+        Key0 => '0',
+        Key1 => '1',
+        Key2 => '2',
+        Key3 => '3',
+        Key4 => '4',
+        Key5 => '5',
+        Key6 => '6',
+        Key7 => '7',
+        Key8 => '8',
+        Key9 => '9',
+        Space => ' ',
+        _ => return None,
+    };
+    Some(c)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,5 +389,27 @@ mod tests {
         for (q, t, want) in cases {
             assert_eq!(subseq_match(q, t), want, "query {q:?} vs {t:?}");
         }
+    }
+
+    #[test]
+    fn key_names_for_all_registry_hotkeys() {
+        // Every default hotkey must render something readable in the palette's right column.
+        for c in registry() {
+            if let Some(k) = c.hotkey {
+                assert!(!key_name(k).is_empty(), "no name for {:?}", k);
+                assert_ne!(key_name(k), "?", "unnamed key {:?}", k);
+            }
+        }
+    }
+
+    #[test]
+    fn key_char_covers_typing() {
+        assert_eq!(key_char(Key::A), Some('a'));
+        assert_eq!(key_char(Key::Z), Some('z'));
+        assert_eq!(key_char(Key::Key0), Some('0'));
+        assert_eq!(key_char(Key::Key9), Some('9'));
+        assert_eq!(key_char(Key::Space), Some(' '));
+        assert_eq!(key_char(Key::F5), None); // function keys never type
+        assert_eq!(key_char(Key::Backquote), None); // the open key must not self-insert
     }
 }
