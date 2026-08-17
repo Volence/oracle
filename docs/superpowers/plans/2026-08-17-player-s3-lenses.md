@@ -57,7 +57,7 @@ Config→render-path init happens once before the loop at main.rs:960 (`ov.statu
 - `cargo test -p oracle-frontend` **never** piped through `tail`/`head` (it hides failures *and* returns the wrong exit code).
 - **Every evidence-bearing test is mutation-verified at writing time**: break the production line the test exists to protect, watch that exact test fail, restore, and record one line in the commit body (`mutation: <change> → <test> FAILED`). Measured base rate for vacuous tests here is 3-for-3 past green gates.
 - No `#[allow(dead_code)]`. No `Co-Authored-By` trailers. `ls` is aliased to eza — use `command ls`.
-- Per-task gates: `cargo fmt --all -- --check`; `cargo clippy --all-targets -- -D warnings` **and** `cargo clippy --all-targets --no-default-features -- -D warnings`; `cargo test -p oracle-frontend` **and** `cargo test -p oracle-frontend --no-default-features`.
+- Per-task gates: `cargo fmt --all -- --check`; `cargo clippy --all-targets -- -D warnings` **and** `cargo clippy --all-targets --no-default-features -- -D warnings`; `cargo test -p oracle-frontend` **and** `cargo test -p oracle-frontend --no-default-features`. **Every commit passes them — there is no "it goes green two tasks from now" allowance.** `oracle-frontend` is bin-only, so an uncalled `pub fn` is a hard `dead_code` error: land production code and a non-test caller in the same commit. (This is not hypothetical; it is why Task 1 is void.)
 - **`git diff m68000-microop-framework..HEAD -- crates/oracle-core/` must stay EMPTY for the whole slice.** This slice adds no core capability; every read it needs already exists. If a lens seems to need a new core accessor, STOP and report rather than adding one.
 - Work in the worktree `/home/volence/sonic_hacks/oracle-next/.worktrees/player-s1-palette` on branch **`player-s3-lenses`**, which is cut from `743a5b5`. **Base check before touching anything:** `git log --oneline -1` must show `743a5b5 docs: S2 handoff — persistence shipped, smoke checklist extended, F-CONFIG-UNKNOWN-KEYS` (or a descendant of it), and `crates/oracle-frontend/src/config.rs` must exist. If either fails, stop — you have a stale worktree.
 
@@ -67,7 +67,7 @@ Config→render-path init happens once before the loop at main.rs:960 (`ov.statu
 
 | File | Responsibility |
 |---|---|
-| `crates/oracle-frontend/src/present.rs` (modify) | `native_rect_to_window` — the forward map, inverse of `window_to_native` |
+| `crates/oracle-frontend/src/present.rs` (modify, **in Task 8**) | `native_rect_to_window` — the forward map, inverse of `window_to_native` |
 | `crates/oracle-frontend/src/lens/mod.rs` (create) | `LensId`, `LensSet`, `parse_set`/`format_set`, `Models`, `models()`, `draw()` — the one call the run loop makes |
 | `crates/oracle-frontend/src/lens/watch.rs` (create) | Watch ticker: `Ticker` model + `line()` formatting + `draw` |
 | `crates/oracle-frontend/src/lens/cpu.rs` (create) | CPU chip: `Chip` model (compact + expanded) + `draw` |
@@ -78,10 +78,27 @@ Config→render-path init happens once before the loop at main.rs:960 (`ov.statu
 
 ---
 
-### Task 1: `present::native_rect_to_window` — the forward map
+### Task 1: VOID — folded into Task 8
 
-**Files:**
-- Modify: `crates/oracle-frontend/src/present.rs` (add after `window_to_native`, which ends at :222)
+**Measured on 2026-08-17, after this task was built once and reverted.** `oracle-frontend` is a
+**bin-only crate** (no `[lib]` target — `main.rs` is the crate root), so `pub` does not exempt an
+uncalled function from `dead_code`: shipping `native_rect_to_window` before its first caller makes
+`cargo clippy --all-targets -- -D warnings` fail with `error: function native_rect_to_window is
+never used`, and it stays failing for the **seven** commits until Task 8 lands. That is precisely
+the pressure that produces the `#[allow(dead_code)]` this plan forbids.
+
+So the forward map ships **inside Task 8**, its first consumer, and Task 8 opens with it. The
+built-and-reverted implementation — which was correct, and whose tests were each killed by a
+distinct targeted mutation — is saved as a patch at
+`/tmp/claude-1000/-home-volence-sonic-hacks-oracle-next/6c6660c8-9c88-40d2-b140-7e63c2e0a455/scratchpad/forward-map.patch`
+and is reproduced in full in Task 8. Tasks 2-7 are unaffected and keep their numbering.
+
+**The general rule this establishes for the rest of the slice:** in this crate, a commit that adds
+a function without a caller cannot pass its own gate. Every task must land its production code and
+at least one non-test caller together.
+
+<details>
+<summary>Original Task 1 text (kept for reference; do not execute)</summary>
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -217,6 +234,29 @@ is off by one on most non-integer scales.
 
 mutation: div_ceil -> / in edge() → the_forward_map_is_the_inverse_of_the_click_map FAILED"
 ```
+
+</details>
+
+---
+
+### ⚠ Tasks 2, 3 and 4 are ONE commit — "the lens spine"
+
+The same bin-only `dead_code` rule that voided Task 1 binds these three, and the dependency chain
+is why: `LensId::key` gets its caller from the config (Task 3), `title` from the registry and
+`label` from the dispatch toast (Task 4), `toggle`/`set`/`is_on` from both. Committed separately,
+each of the three fails its own clippy gate on the symbols the *next* one uses.
+
+So: implement Tasks 2, 3 and 4 in order, run the gates **once** at the end, and make **one**
+commit with the message given at the end of Task 4. Two adjustments follow from the merge:
+
+- **Do not create placeholder `lens/watch.rs`, `cpu.rs`, `video.rs` files, and do not declare
+  `pub mod watch/cpu/video` yet.** Each submodule is declared by the task that fills it (5, 6,
+  7-9). An empty placeholder is dead weight the gate would rightly flag.
+- **Leave `LensSet::any()` out of this commit.** Its only caller is the run loop's draw guard,
+  which lands in Task 5 — add the method there, with its test.
+
+Everything else in the three task texts stands as written, including every test and every
+mutation check.
 
 ---
 
@@ -462,19 +502,12 @@ Expected: PASS, 5 tests.
 
 Give `LensId::CpuRegs` the same `bit()` as `LensId::Cpu` (e.g. `LensId::CpuRegs => 1 << 1`) — but note `bit()` is derived from the discriminant, so instead reorder `ALL` to list `LensId::Cpu` twice; confirm `every_lens_has_its_own_bit_and_its_own_spellings` FAILS, restore. Then change `format_set`'s order to `.rev()` and confirm `set_round_trips_through_the_file_spelling` FAILS on the literal `"watch,cram"`. Record both lines.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Do NOT commit — continue to Task 3**
 
-```bash
-git add crates/oracle-frontend/src/lens crates/oracle-frontend/src/main.rs
-git commit -m "feat(frontend): lens ids and the toggle set
-
-A bitset rather than a heap set because config's quit-write diff compares
-whole configs every frame; the file spelling is stable in ALL order so a
-launch never rewrites the file for ordering alone.
-
-mutation: duplicate entry in ALL → every_lens_has_its_own_bit... FAILED
-mutation: format_set order reversed → set_round_trips... FAILED"
-```
+Record the two mutation lines; they go in the merged spine commit's body. Note that
+`cargo clippy` will still be red here (nothing calls `key`/`title`/`label` yet) — that is
+expected and is exactly why the three tasks share a commit. The gate runs once, at the end of
+Task 4.
 
 ---
 
@@ -642,11 +675,18 @@ Expected: PASS both, 14 tests (11 existing, one renamed, +3).
 
 Restore after each; record three lines.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Do NOT commit — continue to Task 4**
 
-```bash
-git add crates/oracle-frontend/src/config.rs
-git commit -m "feat(frontend): lenses persist, and unknown keys survive the save
+Record the three mutation lines for the merged commit body. The three config tests above must be
+**green now** even though the overall clippy gate is not; run
+`cargo test -p oracle-frontend config::` and `... --no-default-features config::` here, because a
+config bug found after the registry lands is a bug found in the wrong file.
+
+<details>
+<summary>The commit message this task would have carried alone (folded into Task 4's)</summary>
+
+```
+feat(frontend): lenses persist, and unknown keys survive the save
 
 The seventh key arrives, so F-CONFIG-UNKNOWN-KEYS reverses in the same
 commit as S2's adjudication required: an unrecognised key is now kept
@@ -656,8 +696,10 @@ settings — the failure the warn-and-continue parse path exists to prevent.
 
 mutation: unknown loop removed from serialize → an_unknown_key_survives_a_save FAILED
 mutation: _ arm warns without keeping → unknown_key_warns_and_is_preserved FAILED
-mutation: lenses key dropped from serialize → 2 tests FAILED"
+mutation: lenses key dropped from serialize → 2 tests FAILED
 ```
+
+</details>
 
 ---
 
@@ -801,16 +843,33 @@ Expected: PASS. `lenses` is read by the toast and by `cfg`, so there is no dead-
 
 Drop one entry from `LensId::ALL`'s registration by filtering it out of the loop → `every_lens_registers_a_visible_command` FAILS. Give one lens `Some(Key::W)` → `hotkeys_unique` FAILS (the existing invariant catches the collision unaided — record that, it is the point of the no-hotkey decision). Restore.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Commit — the whole spine, Tasks 2+3+4 together**
 
 ```bash
-git add crates/oracle-frontend/src/commands.rs crates/oracle-frontend/src/main.rs
-git commit -m "feat(frontend): a LENSES group, one toggle per lens, persisted
+git add crates/oracle-frontend/src/lens crates/oracle-frontend/src/config.rs \
+        crates/oracle-frontend/src/commands.rs crates/oracle-frontend/src/main.rs
+git commit -m "feat(frontend): the lens spine — ids, persistence, toggles
 
-Generated from LensId::ALL for the reason the slot keys are: a lens
-without a command is a compile error, not a missing row. Palette-only
-bindings — every obvious key is taken and S5 owns rebinding.
+Lens ids and a toggle bitset; the seventh config key; a LENSES palette
+group with one auto-registered toggle per lens. One commit because each
+piece supplies the next one's callers, and a bin-only crate has no way to
+hold a caller-less pub fn past its own clippy gate.
 
+The seventh key means F-CONFIG-UNKNOWN-KEYS reverses here, as S2's
+adjudication required: an unrecognised key is now kept verbatim and
+written back, and the file header says so. Without it, launching an older
+build once would silently delete a newer build's settings — the failure
+the warn-and-continue parse path exists to prevent.
+
+Commands are generated from LensId::ALL for the reason the slot keys are:
+a lens without a command is a compile error, not a missing row.
+Palette-only bindings — every obvious key is taken, and S5 owns rebinding.
+
+mutation: duplicate entry in ALL → every_lens_has_its_own_bit... FAILED
+mutation: format_set order reversed → set_round_trips... FAILED
+mutation: unknown loop removed from serialize → an_unknown_key_survives_a_save FAILED
+mutation: _ arm warns without keeping → unknown_key_warns_and_is_preserved FAILED
+mutation: lenses key dropped from serialize → 2 tests FAILED
 mutation: one lens filtered out of the loop → every_lens_registers... FAILED
 mutation: lens bound to W → hotkeys_unique FAILED (existing invariant)"
 ```
@@ -1042,6 +1101,10 @@ mod tests {
 **If any import above does not resolve** (`oracle_core::Size`, `oracle_core::bus::BusOp`), fix the path rather than the test — check `main.rs`'s existing `use oracle_core::watchpoints::{WatchOp, WatchSpace, WatchVia, Watchpoints};` (main.rs:260) for the house spelling.
 
 - [ ] **Step 2: Add the spine to `lens/mod.rs`**
+
+This task also adds the two things the merged spine commit deliberately left out because they had
+no caller there: `pub mod watch;` and `LensSet::any()` (plus its test, from Task 2's
+`toggle_and_any_agree_with_is_on` — move that test here if it was not carried).
 
 ```rust
 use crate::present::Rect;
@@ -1515,10 +1578,61 @@ mutation: one palette row dropped → the_strip_draws_all_sixty_four... FAILED"
 
 ---
 
-### Task 8: the sprite outline lens
+### Task 8: the forward map + the sprite outline lens
 
 **Files:**
+- Modify: `crates/oracle-frontend/src/present.rs` (the forward map — void Task 1, folded here)
 - Modify: `crates/oracle-frontend/src/lens/video.rs`, `lens/mod.rs`, `main.rs`
+
+This task lands `present::native_rect_to_window` **and** its first caller in one commit, because a
+function without a caller fails this bin-only crate's clippy gate (see void Task 1).
+
+- [ ] **Step 0: Apply the forward map**
+
+Apply the saved patch — it is the built, gate-run, mutation-verified implementation, reverted only
+for the ordering reason above:
+
+```bash
+git am /tmp/claude-1000/-home-volence-sonic-hacks-oracle-next/6c6660c8-9c88-40d2-b140-7e63c2e0a455/scratchpad/forward-map.patch
+```
+
+If the patch does not apply, take the code from void Task 1's collapsed section above instead.
+**Then `git reset --soft HEAD~1`** so the map lands in *this* task's single commit rather than a
+separate one that would fail its own gate.
+
+Three findings from that first build, all carried forward:
+
+1. The mutation `div_ceil` → `/` kills `the_forward_map_is_the_inverse_of_the_click_map` with
+   `(0,37) -> window (0,79) -> Some((0, 36))`. Re-run it; it is the evidence that the ceiling form
+   is the right one.
+2. **The round-trip contract holds only when the picture is upscaled** (`rect.w >= src_w`, the
+   normal case). `dest_rect` really can downscale — a 200×150 window in `Tv` mode gives
+   `rect.w = 200 < 320` — and there several game pixels share one window pixel, so
+   `window_to_native` on the returned span names a *different* game pixel. The `.max(1)` floor
+   exists for that regime and no test reaches it. **Fix the doc comment** to say the inverse
+   property is an upscale property, and add this test:
+   ```rust
+       /// Below 1:1 the map cannot be an inverse — several game pixels share one window pixel —
+       /// but it must still answer a non-empty rect inside the picture rather than a zero-width
+       /// one that would draw nothing.
+       #[test]
+       fn the_forward_map_still_places_a_rect_when_the_picture_is_downscaled() {
+           let rect = dest_rect(200, 150, 320, 224, Aspect::Tv);
+           assert!(rect.w < 320, "this geometry really does downscale");
+           for gx in [0usize, 1, 159, 319] {
+               let out = native_rect_to_window(Rect { x: gx, y: 100, w: 1, h: 1 }, rect, 320, 224)
+                   .expect("a visible game pixel always places");
+               assert!(out.w >= 1 && out.h >= 1, "never a zero-area rect");
+               assert!(out.x >= rect.x && out.x + out.w <= rect.x + rect.w, "inside the picture");
+           }
+       }
+   ```
+   Mutation-verify it by deleting the two `.max(1)` calls.
+3. The returned rect is clipped to the **picture**, not to the **window**: `dest_rect` can return a
+   rect larger than the window (`Aspect::Integer` clamps its scale at 1, so a window smaller than
+   320×224 still gets a 320×224 rect). `font::Canvas` clips at the buffer edge and never panics, so
+   drawing is safe — but say so in the doc comment, since "inside `area`" and "inside the window"
+   are not the same claim.
 
 - [ ] **Step 1: Write the outline half with tests**
 
@@ -1701,18 +1815,23 @@ Restore; record three.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add crates/oracle-frontend/src/lens
-git commit -m "feat(frontend): the sprite outline lens
+git add crates/oracle-frontend/src/present.rs crates/oracle-frontend/src/lens
+git commit -m "feat(frontend): the blit's forward map and the sprite outline lens
 
 Boxes in game pixels, clipped per edge so a sprite entering from the left
 keeps the half that is visible, mapped to the window through the blit's
-own forward map. Slots past parsed_sprite_max are skipped rather than
-outlined — the hardware never parses them, and the count is the core's to
-report, not ours to re-derive.
+own forward map — which lands here rather than alone, because a bin-only
+crate has no way to hold a caller-less pub fn past its own clippy gate.
+The ceiling form is the only one that round-trips; the floor form is off
+by one on most non-integer scales. Slots past parsed_sprite_max are
+skipped rather than outlined — the hardware never parses them, and the
+count is the core's to report, not ours to re-derive.
 
 mutation: take(80) instead of parsed_max → slots_past_parsed_max... FAILED
 mutation: drop instead of clip → a_partly_offscreen_sprite... FAILED
-mutation: cells x 16 → a_box_is_the_sprites_cells_in_pixels FAILED"
+mutation: cells x 16 → a_box_is_the_sprites_cells_in_pixels FAILED
+mutation: div_ceil -> / in edge() → the_forward_map_is_the_inverse... FAILED
+mutation: .max(1) removed → the_forward_map_still_places_a_rect... FAILED"
 ```
 
 ---
