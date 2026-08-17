@@ -187,10 +187,24 @@ pub fn models(set: LensSet, cx: &FrameCtx<'_>) -> Models {
 
 /// Draw every built model, in a fixed back-to-front order — [`LensId::ALL`] order, so a later lens
 /// draws over an earlier one. The ticker (bottom), the chip (top-right) and the CRAM strip
-/// (top-left, one text row down) each own a different corner, so on an ordinary picture nothing
-/// overlaps at all; the ticker and the chip meet only on a picture short enough for the chip's
-/// panel to reach the bottom strip, where the chip wins — the same overlap `watch.rs` already
-/// accepts against the toasts, and for the same reason.
+/// (top-left, one text row down) each own a different corner, and on an ordinary picture none of
+/// them meet. Two pairs can, and both resolve by draw order rather than by geometry:
+///
+/// - **Ticker vs chip.** Only on a picture short enough for the chip's panel to reach the bottom
+///   strip, where the chip wins — the same overlap `watch.rs` already accepts against the toasts,
+///   and for the same reason.
+/// - **Strip vs chip.** These two share a band *vertically at every size*: the strip's rows sit
+///   inside the compact chip's panel exactly (at `px = 1`, rows 16..32 against the chip's 4..32).
+///   All that separates them is horizontal, so they collide once the picture is narrower than
+///   `2 * margin + strip_w + chip_w` — 207 device pixels at `px = 1` with the register block
+///   showing, which a 200-wide picture is already inside: measured, they overlap by 112 pixels
+///   there. The **strip wins**, being later in [`LensId::ALL`]. That is the right way round — the
+///   strip is 64 fixed cells whose whole meaning is positional, so clipping it would misreport
+///   CRAM, while the chip loses a few glyphs off one end of two lines and stays readable.
+///
+/// Both are accepted rather than resolved: a picture that small has no arrangement where five
+/// panels fit, and moving one lens under another by size would make the layout jump around while
+/// a window is dragged.
 ///
 /// Anchored to `area` (the picture), never
 /// the window: the letterbox stays black, and a tall window with a narrow picture must not make
@@ -563,6 +577,28 @@ mod tests {
             let mut buf = vec![BG; w * h];
             draw(&mut buf, w, h, area, &m);
             let painted = buf.iter().any(|p| *p != BG);
+
+            // **Built implies drawn.** Asking only "did ink land" leaves one escape hatch wide
+            // open: a lens whose model `models()` builds every frame, whose arm in `draw` nobody
+            // wrote, and whose author dutifully declared `draws_yet => false`. That passes — it was
+            // built and demonstrated on this very test — and it is exactly the dead-feature bug the
+            // test exists to catch. Tying the two together closes it without retiring `draws_yet`,
+            // which still forces an author to state intent.
+            //
+            // The destructure is the load-bearing part: a new `Models` field is a **compile error**
+            // here, so Tasks 8 and 9 cannot add a model without being sent to this line. Counting
+            // `Some`s through anything generic over the struct would quietly absorb the new field
+            // and hand the escape hatch straight back.
+            let Models { ticker, cpu, cram } = &m;
+            let has_model = ticker.is_some() || cpu.is_some() || cram.is_some();
+            assert_eq!(
+                has_model,
+                painted,
+                "{}: a model was built and no ink landed (a missing arm in `draw`), or ink landed \
+                 with no model behind it",
+                id.key()
+            );
+
             if draws_yet(id) {
                 assert!(
                     painted,

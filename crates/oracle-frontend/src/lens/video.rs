@@ -18,8 +18,8 @@ use crate::present::Rect;
 /// The CRAM shape: four palette lines of sixteen colours, in CRAM order. The strip is laid out the
 /// way the hardware is indexed — entry `n` at row `n / 16`, column `n % 16` — so a tile's palette
 /// line is a row and a colour index is a column.
-pub const PALETTES: usize = 4;
-pub const COLOURS: usize = 16;
+const PALETTES: usize = 4;
+const COLOURS: usize = 16;
 
 /// The grid and the array must agree. `draw_cram` indexes a `[u32; 64]` by `line * COLOURS + col`,
 /// so raising either constant on its own turns a layout tweak into an out-of-bounds panic in the
@@ -397,26 +397,60 @@ mod tests {
         );
     }
 
-    /// The font scale must actually scale the strip: at `px = 2` every swatch is twice the edge and
-    /// the panel twice the size. A `draw_cram` that ignored `px` would pass every `px = 1` test
-    /// above and then draw a postage stamp in a 4x window.
+    /// The font scale must scale the strip **and carry its anchor with it** — position at three
+    /// scales, not just size at two.
+    ///
+    /// Every other geometric assertion in this module is pinned at `px = 1`, which left the
+    /// vertical anchor unpinned above it, and this test used to compare only the panel's *size*.
+    /// `status_row` does not affect size at all, so it was unmeasured at every scale: writing it as
+    /// `LINE_H * px + 4` instead of `+ 2 * pad` shipped green. That one is not academic — at
+    /// `px = 4`, an ordinary 4x window, the correct offset is 48 device pixels, the mutant gives 36,
+    /// and the F3 status line stands 44 tall. **The strip lands on top of the status line**, which
+    /// is the exact collision the offset exists to prevent and the thing the anchor test above is
+    /// named after.
+    ///
+    /// The `px = 4` row is the other half: `margin = (2 * px).max(4)` is 4 at both px 1 and px 2, so
+    /// hardcoding `margin = 4` was identity everywhere this module looked. It first diverges at
+    /// px 4, where the correct margin is 8.
     #[test]
-    fn the_strip_scales_with_the_font_scale() {
+    fn the_strip_anchors_and_scales_at_every_font_scale() {
+        // Non-zero origin, so an anchor that ignored `area` entirely cannot pass.
         let (w, h) = (400usize, 400usize);
         let area = Rect {
-            x: 0,
-            y: 0,
-            w: 400,
-            h: 400,
+            x: 16,
+            y: 12,
+            w: 380,
+            h: 380,
         };
         let sw = ramp();
-        let (t1, b1, l1, r1) = ink_bounds(&render(w, h, area, 1, &sw), w).expect("px 1 painted");
-        let (t2, b2, l2, r2) = ink_bounds(&render(w, h, area, 2, &sw), w).expect("px 2 painted");
-        assert_eq!((r1 - l1 + 1, b1 - t1 + 1), (PANEL_W_PX1, PANEL_H_PX1));
+        // (px, left, top, panel_w, panel_h), every number written out. Derived by hand from the
+        // house idiom — `margin = (2 * px).max(4)`, `pad = 2 * px`, `cell = 3 * px`,
+        // `status_row = LINE_H * px + 2 * pad` — precisely so no assertion here can be recomputed
+        // from the code it is checking. Note `margin` is 4 at both px 1 and px 2 (the `.max(4)`
+        // floor still binds) and only starts tracking `2 * px` at px 4: that is why the third row
+        // exists.
+        for (px, left, top, panel_w, panel_h) in [
+            (1usize, 20usize, 28usize, 52usize, 16usize),
+            (2, 20, 40, 104, 32),
+            (4, 24, 68, 208, 64),
+        ] {
+            let (t, b, l, r) = ink_bounds(&render(w, h, area, px, &sw), w)
+                .unwrap_or_else(|| panic!("px {px} painted nothing"));
+            assert_eq!(
+                (l, t),
+                (left, top),
+                "px {px}: the strip is anchored at ({l},{t}), not ({left},{top})"
+            );
+            assert_eq!(
+                (r - l + 1, b - t + 1),
+                (panel_w, panel_h),
+                "px {px}: the strip did not scale"
+            );
+        }
         assert_eq!(
-            (r2 - l2 + 1, b2 - t2 + 1),
-            (2 * PANEL_W_PX1, 2 * PANEL_H_PX1),
-            "the strip did not scale with px"
+            (PANEL_W_PX1, PANEL_H_PX1, STATUS_ROW_PX1),
+            (52, 16, 12),
+            "the px-1 constants the other tests use must agree with the table above"
         );
     }
 }
