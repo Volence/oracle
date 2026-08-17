@@ -22,6 +22,8 @@ use crate::font;
 use crate::present::Rect;
 use oracle_core::render::SpriteDecoded;
 
+// --- The CRAM strip (spec 5.2) -----------------------------------------------------------------
+
 /// The CRAM shape: four palette lines of sixteen colours, in CRAM order. The strip is laid out the
 /// way the hardware is indexed — entry `n` at row `n / 16`, column `n % 16` — so a tile's palette
 /// line is a row and a colour index is a column.
@@ -91,6 +93,8 @@ pub fn draw_cram(c: &mut font::Canvas, area: Rect, px: usize, sw: &[u32; 64]) {
         }
     }
 }
+
+// --- The sprite outlines (spec 5.2) ------------------------------------------------------------
 
 /// One outline, already clipped to the display and expressed in **game pixels** — the mapping to
 /// window pixels is [`present::native_rect_to_window`](crate::present::native_rect_to_window)'s
@@ -207,7 +211,10 @@ pub fn draw_sprites(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lens::ink_bounds;
     use crate::present::Aspect;
+
+    // --- The sprite outlines: the model -------------------------------------------------------
 
     /// A decoded sprite with everything but geometry at its default. `x`/`y` are **signed screen**
     /// coordinates — the 128 bias is already off both axes by the time the core hands them over —
@@ -402,6 +409,8 @@ mod tests {
         assert_eq!(boxes(&sprites, 80, (320, 224)).len(), 80, "H40 parses 80");
     }
 
+    // --- The sprite outlines: the draw --------------------------------------------------------
+
     /// Render `bx` into a `w * h` buffer over [`BG`] and hand back the buffer.
     fn render_sprites(
         w: usize,
@@ -481,7 +490,7 @@ mod tests {
             ),
         ] {
             let buf = render_sprites(w, h, area, px, (320, 224), &bx);
-            let got = ink_bounds(&buf, w).unwrap_or_else(|| panic!("{label}: painted nothing"));
+            let got = ink_bounds(&buf, w, BG).unwrap_or_else(|| panic!("{label}: painted nothing"));
             assert_eq!(
                 got,
                 (top, bottom, left, right),
@@ -515,6 +524,18 @@ mod tests {
         let (midx, midy) = (bl + (br - bl) / 2, bt + (bb - bt) / 2);
         let at = |x: usize, y: usize| buf[y * w + x];
 
+        // Translucent, not opaque — and this is the only guard on that. `OUTLINE_ALPHA` at 255
+        // passes every other assertion in this module, because they all ask "is this pixel BG?".
+        // An opaque stroke would hide the sprite's own edge pixels, which are exactly what you are
+        // looking at when you ask where a sprite's box really is. Pinned as an inequality against
+        // the *unblended* colour, which is what an alpha of 255 would deposit; the blend itself is
+        // never recomputed here, since an expected value computed from `Canvas` could not catch a
+        // bug in the alpha handed to it.
+        assert_ne!(
+            at(midx, bt),
+            crate::overlay::INFO,
+            "the outline is fully opaque — it should be blended, so the sprite shows through"
+        );
         for d in 0..px {
             assert_ne!(at(midx, bt + d), BG, "the top bar is thinner than px");
             assert_ne!(
@@ -641,6 +662,8 @@ mod tests {
         }
     }
 
+    // --- The CRAM strip: its fixtures, then its model, then its draw ---------------------------
+
     /// The buffer fill every draw test below starts from, and **the reason it is not `0`** — the
     /// same constant and the same reason as `lens/watch.rs` and `lens/cpu.rs`. The panel is
     /// `fill_rect(..., 0x0000_0000, PANEL_ALPHA)`, black alpha-blended, which over a black buffer
@@ -675,22 +698,6 @@ mod tests {
             draw_cram(&mut c, area, px, sw);
         }
         buf
-    }
-
-    /// The (top, bottom, left, right) extremes of everything `draw_cram` changed.
-    fn ink_bounds(buf: &[u32], w: usize) -> Option<(usize, usize, usize, usize)> {
-        let mut b: Option<(usize, usize, usize, usize)> = None;
-        for (i, p) in buf.iter().enumerate() {
-            if *p == BG {
-                continue;
-            }
-            let (x, y) = (i % w, i / w);
-            b = Some(match b {
-                None => (y, y, x, x),
-                Some((t, bo, l, r)) => (t.min(y), bo.max(y), l.min(x), r.max(x)),
-            });
-        }
-        b
     }
 
     /// The panel's size and the row it clears, written out rather than imported from the module:
@@ -827,7 +834,7 @@ mod tests {
         let px = 1;
         let margin = margin_of(px);
         let buf = render(w, h, area, px, &ramp());
-        let (top, bottom, left, right) = ink_bounds(&buf, w).expect("draw painted nothing");
+        let (top, bottom, left, right) = ink_bounds(&buf, w, BG).expect("draw painted nothing");
 
         assert_eq!(
             left,
@@ -923,7 +930,7 @@ mod tests {
                 },
             ] {
                 let buf = render(w, h, area, px, &sw);
-                let Some((top, bottom, left, right)) = ink_bounds(&buf, w) else {
+                let Some((top, bottom, left, right)) = ink_bounds(&buf, w, BG) else {
                     continue; // too small for the strip: the test above owns that case
                 };
                 sizes_that_drew += 1;
@@ -986,7 +993,7 @@ mod tests {
             (2, 20, 40, 104, 32),
             (4, 24, 68, 208, 64),
         ] {
-            let (t, b, l, r) = ink_bounds(&render(w, h, area, px, &sw), w)
+            let (t, b, l, r) = ink_bounds(&render(w, h, area, px, &sw), w, BG)
                 .unwrap_or_else(|| panic!("px {px} painted nothing"));
             assert_eq!(
                 (l, t),

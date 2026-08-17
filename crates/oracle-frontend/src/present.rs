@@ -737,9 +737,26 @@ mod tests {
 
     /// A rect running past the right/bottom edge is clipped to the picture, not dropped: a sprite
     /// half off-screen must still show the half that is on-screen.
+    ///
+    /// Run on an **inset** picture, and pinned by equality rather than by the two `<=` bounds it
+    /// used to carry. On the zero-offset geometry it used before, the `rect.x +` and `rect.y +`
+    /// terms were invisible — and `<=` cannot see them even when they are not, since dropping an
+    /// offset only ever moves the result *further* inside the bound. `Aspect::Integer` at 700x520
+    /// takes the picture to `{30, 36, 640, 448}`, a 2x scale inset on both axes, so every term in
+    /// the map appears in the answer below.
     #[test]
     fn the_forward_map_clips_a_rect_that_overruns_the_picture() {
-        let rect = dest_rect(640, 480, 320, 224, Aspect::Tv);
+        let rect = dest_rect(700, 520, 320, 224, Aspect::Integer);
+        assert_eq!(
+            rect,
+            Rect {
+                x: 30,
+                y: 36,
+                w: 640,
+                h: 448
+            },
+            "inset on both axes, or the offsets below are unmeasured"
+        );
         let out = native_rect_to_window(
             Rect {
                 x: 300,
@@ -752,13 +769,21 @@ mod tests {
             224,
         )
         .expect("a partly-visible rect still maps");
-        assert!(
-            out.x + out.w <= rect.x + rect.w,
-            "clipped to the picture's right edge"
+        // Hand-computed at 2x: columns 300..320 of the source survive the clip, so 600..640 of the
+        // picture, plus its 30-pixel left inset; rows 210..224 likewise give 420..448 plus 36.
+        assert_eq!(
+            out,
+            Rect {
+                x: 630,
+                y: 456,
+                w: 40,
+                h: 28
+            }
         );
-        assert!(
-            out.y + out.h <= rect.y + rect.h,
-            "clipped to the picture's bottom edge"
+        assert_eq!(
+            (out.x + out.w, out.y + out.h),
+            (rect.x + rect.w, rect.y + rect.h),
+            "an overrunning rect stops exactly at the picture's far corner"
         );
     }
 

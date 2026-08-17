@@ -165,6 +165,26 @@ pub struct Models {
 /// Build the models for whatever is on. Called once per frame, immediately before drawing, and
 /// skipped entirely when nothing is on and the machine is running.
 pub fn models(set: LensSet, cx: &FrameCtx<'_>) -> Models {
+    // One decode per frame, held as a local so there is exactly one place for the hover callout to
+    // join. `sprites_decoded` walks all 80 slots and allocates ~1.3 KB every call, so no lens may
+    // call it a second time; `boxes` derives from *this* vec rather than making its own.
+    //
+    // **The hover callout's share of it cannot land before the hover callout does.** It wants the
+    // raw slots — `tile` and `palette`, which a `SpriteBox` does not carry — and it can be on with
+    // the outlines off, so the natural shape is a `Models` field holding this vec with the guard
+    // widened to `|| set.is_on(LensId::Hover)`. Attempted here and reverted, measured: a bin-only
+    // crate has no reader for that field until hover exists, so `clippy --all-targets -D warnings`
+    // fails with `field decoded_sprites is never read` — the same rule that voided Task 1, and the
+    // pressure that produces the `#[allow(dead_code)]` this slice forbids. Task 9 hoists this local
+    // into `Models` in the same commit as the code that reads it; the shape it needs is already
+    // here, and the change is a `let` moving three lines.
+    let decoded = set
+        .is_on(LensId::Sprites)
+        .then(|| cx.sys.vdp().sprites_decoded());
+    let sprites = decoded.as_deref().map(|decoded| {
+        let vdp = cx.sys.vdp();
+        video::boxes(decoded, vdp.parsed_sprite_max(), vdp.active_display())
+    });
     Models {
         ticker: set
             .is_on(LensId::Watch)
@@ -187,24 +207,24 @@ pub fn models(set: LensSet, cx: &FrameCtx<'_>) -> Models {
         cram: set
             .is_on(LensId::Cram)
             .then(|| video::swatches(&cx.sys.vdp().cram_decoded())),
-        // `sprites_decoded` decodes all 80 slots and allocates ~1.3 KB every call, so it is called
-        // **once**, here, behind the lens guard — never per sprite and never again in the draw path.
-        sprites: set.is_on(LensId::Sprites).then(|| {
-            let vdp = cx.sys.vdp();
-            video::boxes(
-                &vdp.sprites_decoded(),
-                vdp.parsed_sprite_max(),
-                vdp.active_display(),
-            )
-        }),
+        sprites,
     }
 }
 
-/// Draw every built model, in a fixed back-to-front order — [`LensId::ALL`] order, so a later lens
-/// draws over an earlier one. The ticker (bottom), the chip (top-right) and the CRAM strip
+/// Draw every built model, in a fixed back-to-front order, so a later lens draws over an earlier
+/// one.
+///
+/// **Draw order is not [`LensId::ALL`] order, and the difference is deliberate.** `ALL` is the
+/// *registration* order: it fixes the palette rows, the bit each lens owns, and the order lens
+/// names are written into the config file's `lenses` value — an order `all_lists_every_variant_`
+/// `exactly_once` pins and which must stay stable, because rewriting it would churn a user's file
+/// on every launch. Layering is a question about pixels, and the two answers are allowed to differ.
+/// Reorder the arms below to change layering; never reorder `ALL` to do it.
+///
+/// The order is: **outlines, ticker, chip, strip.** The ticker (bottom), the chip (top-right) and
+/// the CRAM strip
 /// (top-left, one text row down) each own a different corner, and on an ordinary picture none of
 /// them meet. Two pairs can, and both resolve by draw order rather than by geometry:
-///
 /// - **Ticker vs chip.** Only on a picture short enough for the chip's panel to reach the bottom
 ///   strip, where the chip wins — the same overlap `watch.rs` already accepts against the toasts,
 ///   and for the same reason.
@@ -213,22 +233,26 @@ pub fn models(set: LensSet, cx: &FrameCtx<'_>) -> Models {
 ///   All that separates them is horizontal, so they collide once the picture is narrower than
 ///   `2 * margin + strip_w + chip_w` — 207 device pixels at `px = 1` with the register block
 ///   showing, which a 200-wide picture is already inside: measured, they overlap by 112 pixels
-///   there. The **strip wins**, being later in [`LensId::ALL`]. That is the right way round — the
-///   strip is 64 fixed cells whose whole meaning is positional, so clipping it would misreport
-///   CRAM, while the chip loses a few glyphs off one end of two lines and stays readable.
+///   there. The **strip wins**, being drawn later. That is the right way round — the strip is 64
+///   fixed cells whose whole meaning is positional, so clipping it would misreport CRAM, while the
+///   chip loses a few glyphs off one end of two lines and stays readable.
 ///
 /// Both are accepted rather than resolved: a picture that small has no arrangement where five
 /// panels fit, and moving one lens under another by size would make the layout jump around while
 /// a window is dragged.
 ///
-/// The sprite outlines are the exception to all of that: they are drawn *on* the picture rather
-/// than in a corner of it, so they own no corner and can cross any panel. [`LensId::ALL`] puts them
-/// after the ticker and the chip and before the strip, so they draw **over** those two and **under**
-/// the strip — and that is the same principle the strip-vs-chip call above uses, not an accident of
-/// ordering. An outline means nothing except *where it is*: move it and it is wrong, so it is the
-/// one thing here that must never be displaced by something that can afford to lose a few glyphs.
-/// The strip still wins over the outlines for the same reason it wins over the chip — 64 fixed
-/// cells whose meaning is equally positional, and which a hairline through them would misreport.
+/// **The sprite outlines go first, underneath everything.** They are drawn *on* the picture rather
+/// than in a corner of it, so they own no corner and can cross any panel — and the reason they lose
+/// every one of those crossings is that the two kinds of damage are not comparable. A panel's
+/// content is opaque *on purpose*: the strip's swatches must be the CRAM entry exactly ("a swatch
+/// blended over the picture would be a different colour from the entry it is reporting"), and the
+/// chip's and ticker's glyphs are text. A hairline over any of them is **interference, not
+/// occlusion**: a missing glyph is visibly missing, but a `$3F` with a stroke through it reads as
+/// `$8F`, and a swatch with one blended row reports a colour CRAM never held. Silent wrongness in a
+/// readout is the failure this whole slice keeps guarding against, and it beats the outline's own
+/// claim on the pixels. The outline pays almost nothing for losing: the panels are only
+/// `PANEL_ALPHA = 190`, so an outline underneath one is dimmed rather than erased, and its
+/// *position* — the only thing an outline conveys — survives intact.
 ///
 /// Anchored to `area` (the picture), never
 /// the window: the letterbox stays black, and a tall window with a narrow picture must not make
@@ -242,14 +266,16 @@ pub fn models(set: LensSet, cx: &FrameCtx<'_>) -> Models {
 pub fn draw(buf: &mut [u32], w: usize, h: usize, area: Rect, native: (usize, usize), m: &Models) {
     let px = crate::overlay::Overlay::font_scale(area.h.max(1));
     let mut c = crate::font::Canvas::new(buf, w, h);
+    // Back to front. The outlines are first because every panel above them is opaque on purpose;
+    // see the layering note above, and `the_panels_draw_over_the_sprite_outlines` for its witness.
+    if let Some(bx) = &m.sprites {
+        video::draw_sprites(&mut c, area, px, native, bx);
+    }
     if let Some(t) = &m.ticker {
         watch::draw(&mut c, area, px, t);
     }
     if let Some(chip) = &m.cpu {
         cpu::draw(&mut c, area, px, chip);
-    }
-    if let Some(bx) = &m.sprites {
-        video::draw_sprites(&mut c, area, px, native, bx);
     }
     if let Some(sw) = &m.cram {
         video::draw_cram(&mut c, area, px, sw);
@@ -296,9 +322,33 @@ pub fn format_set(set: LensSet, unrecognised: &[String]) -> String {
         .join(",")
 }
 
+/// The `(top, bottom, left, right)` extremes of everything a draw fn changed, or `None` if it
+/// painted nothing — every lens's pixel tests measure where the ink landed, and this was three
+/// verbatim copies before the outlines wanted a fourth.
+///
+/// `bg` is a parameter rather than a module constant because each lens module owns its own `BG`
+/// (all `0x0012_3456` today, all for the same reason: an alpha-blended black panel over a zero
+/// buffer is a no-op and invisible to every assertion).
+#[cfg(test)]
+pub(crate) fn ink_bounds(buf: &[u32], w: usize, bg: u32) -> Option<(usize, usize, usize, usize)> {
+    let mut b: Option<(usize, usize, usize, usize)> = None;
+    for (i, p) in buf.iter().enumerate() {
+        if *p == bg {
+            continue;
+        }
+        let (x, y) = (i % w, i / w);
+        b = Some(match b {
+            None => (y, y, x, x),
+            Some((t, bo, l, r)) => (t.min(y), bo.max(y), l.min(x), r.max(x)),
+        });
+    }
+    b
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oracle_core::vdp::Vdp;
 
     #[test]
     fn set_round_trips_through_the_file_spelling() {
@@ -573,8 +623,9 @@ mod tests {
         }
     }
 
-    /// A machine with exactly one visible sprite, and the only fixture in this module that puts
-    /// anything into the VDP at all.
+    /// A machine with `slots` written into the SAT from slot 0 up, as `(x_field, y_field, size)`
+    /// straight off the hardware layout — the only fixture in this module that puts anything into
+    /// the VDP at all, and the reason it exists is that a power-on machine has no sprites.
     ///
     /// It has to: a power-on SAT cache is all zeroes, so every one of the 80 slots decodes as
     /// `y == -128` — the parked idiom — and the outline lens correctly draws nothing. Run against
@@ -583,9 +634,8 @@ mod tests {
     ///
     /// Written through the VDP's own ports rather than by poking VRAM, because the Y/size/link half
     /// of a sprite comes from the **SAT cache**, which only the write-through on a VRAM port write
-    /// fills (`vram_mut` would leave the cache at zero and the sprite parked). Slot 0 at the
-    /// power-on reg-5 base (VRAM `$0000`), 2x2 cells, at game (16, 16) — the fields are biased by
-    /// 128, so `$90` is 16.
+    /// fills (`vram_mut` would leave the cache at zero and the sprite parked). The SAT sits at the
+    /// power-on reg-5 base, VRAM `$0000`. Every slot not listed stays parked.
     ///
     /// **Mode 5 has to be turned on first.** A power-on VDP has reg 1 bit 2 (M5) clear, which is
     /// Mode 4, and there `write_register` discards every register above 10 — including reg $0F, the
@@ -593,18 +643,27 @@ mod tests {
     /// byte never reaches the cache, and the sprite decodes 1x1 at whatever `System::new`'s seeded
     /// VRAM happens to hold in the X word. That is not a hypothetical; it is what this fixture did
     /// on its first run.
-    fn sys_with_a_visible_sprite() -> System {
+    fn sys_with_sprites(slots: &[(u16, u16, u16, u16)]) -> System {
         let mut sys = System::new(0x5EED);
-        let v = sys.vdp_mut();
+        let v: &mut Vdp = sys.vdp_mut();
         v.control_write(0x8104, 0); // reg $01 = M5: leave Mode 4, where regs above 10 are discarded
+        v.control_write(0x8C81, 0); // reg $0C RS0+RS1 = H40: a 320-dot display, all 80 slots parsed
         v.control_write(0x8F02, 0); // reg $0F: auto-increment 2 bytes per data write
-        v.control_write(0x4000, 0); // VRAM write ...
-        v.control_write(0x0000, 0); // ... at address $0000, the SAT base
-        v.data_write(0x0090); // Y field 144 -> screen y = 16
-        v.data_write(0x0500); // size = 2x2 cells (bits 3-2 width-1, 1-0 height-1); link 0
-        v.data_write(0x0000); // tile / attributes
-        v.data_write(0x0090); // X field 144 -> screen x = 16
+        for (slot, (x_field, y_field, size, attr)) in slots.iter().enumerate() {
+            let addr = (slot * 8) as u16;
+            v.control_write(0x4000 | (addr & 0x3FFF), 0); // VRAM write ...
+            v.control_write(0x0000, 0); // ... at the SAT base + slot * 8
+            v.data_write(*y_field);
+            v.data_write(*size); // size in the high byte, link in the low
+            v.data_write(*attr); // tile / attributes; bit 15 is the priority flag
+            v.data_write(*x_field);
+        }
         sys
+    }
+
+    /// Slot 0 only, 2x2 cells at game (16, 16). `$90` is 16 once the 128 bias comes off.
+    fn sys_with_a_visible_sprite() -> System {
+        sys_with_sprites(&[(0x0090, 0x0090, 0x0500, 0x0000)])
     }
 
     /// The fixture is only worth anything if the sprite really came through, so pin it here rather
@@ -650,7 +709,6 @@ mod tests {
             models(other, &ctx(&sys, &wp, false)).sprites.is_none(),
             "the outline model keyed off the wrong lens"
         );
-
         let mut set = LensSet::default();
         set.set(LensId::Sprites, true);
         let m = models(set, &ctx(&sys, &wp, false));
@@ -761,6 +819,132 @@ mod tests {
             "expected {ARMS_TODAY} lenses to paint; a lens gained or lost an arm without this \
              test being told"
         );
+    }
+
+    /// **The layering witness.** Wherever a panel puts down an *opaque* pixel — a CRAM swatch, a
+    /// glyph — the sprite outlines never change it: the outlines draw first and the panel covers
+    /// them. Under the panels' translucent bodies the outlines survive, dimmed, which is the other
+    /// half of the same decision.
+    ///
+    /// Without this the whole ordering is unpinned — swapping any two arms in [`draw`] leaves the
+    /// suite green, because every other test here turns on one lens at a time. And the gap is worse
+    /// than an ordinary untested-doc gap for the CRAM strip: its swatches are deliberately
+    /// **opaque** so that a swatch is the palette entry exactly ("a swatch blended over the picture
+    /// would be a different colour from the entry it is reporting"), so a 200-alpha hairline
+    /// through one reports a colour CRAM never held. Same class for the chip and the ticker, whose
+    /// glyphs are text: a stroke through `$3F` reads as `$8F`.
+    ///
+    /// **Opacity is measured, not assumed.** Rendering the panel alone over two different
+    /// backgrounds identifies exactly the pixels whose value does not depend on what was underneath
+    /// — that is what opaque *means*, and it needs no knowledge of any panel's geometry, alpha or
+    /// glyph shapes, so it cannot go stale when one moves. The claim is then made over all of them
+    /// at once rather than at a hand-picked probe, and no alpha blend is ever recomputed here:
+    /// every assertion compares renders of the same buffer against each other.
+    ///
+    /// Three vacuity traps are closed explicitly. The outlines must **cross** each panel's opaque
+    /// pixels, or "they agree there" is a statement about nothing. They must have **drawn** in the
+    /// combined render, or a deleted arm in [`draw`] satisfies every equality. And at least one
+    /// translucent panel pixel must **differ**, or a panel that had gone fully opaque would pass
+    /// while quietly erasing the outlines the doc promises it only dims.
+    #[test]
+    fn the_panels_draw_over_the_sprite_outlines() {
+        const BG: u32 = 0x0012_3456;
+        const BG2: u32 = 0x0065_4321;
+        let (w, h) = (320usize, 224usize);
+        let area = Rect { x: 0, y: 0, w, h };
+        // A 32-pixel grid of 4x4-cell sprites across the whole picture, so the outline bars cross
+        // every panel wherever the panels happen to sit — 70 of the 80 slots, all inside H40's
+        // 320x224 display. Hand-placing one sprite per panel would re-derive each panel's geometry
+        // here and go stale the moment a panel moved.
+        //
+        // `$8000` sets each sprite's **priority** bit, so the strokes are `ACCENT` rather than
+        // `INFO`. That is load-bearing, not decoration: the ticker's and chip's glyphs are `INFO`
+        // too, and white blended over white at any alpha is white — so with ordinary sprites this
+        // test passed with the outlines drawn *over* the ticker, blind to exactly the reordering it
+        // exists to catch. Measured, not reasoned: moving the arm one line down survived.
+        let slots: Vec<(u16, u16, u16, u16)> = (0..7u16)
+            .flat_map(|row| {
+                (0..10u16).map(move |col| (col * 32 + 128, row * 32 + 128, 0x0F00, 0x8000))
+            })
+            .collect();
+        assert_eq!(slots.len(), 70, "inside the 80 the SAT holds");
+        let sys = sys_with_sprites(&slots);
+        let wp = Watchpoints::new(8);
+
+        let render = |set: LensSet, bg: u32| {
+            let m = models(set, &ctx(&sys, &wp, false));
+            let mut buf = vec![bg; w * h];
+            draw(&mut buf, w, h, area, (w, h), &m);
+            buf
+        };
+        let only = |id: LensId| {
+            let mut s = LensSet::default();
+            s.set(id, true);
+            s
+        };
+        let outlines = render(only(LensId::Sprites), BG);
+        assert!(
+            outlines.iter().any(|p| *p != BG),
+            "the outline fixture painted nothing, so nothing below is measuring anything"
+        );
+
+        for id in [LensId::Watch, LensId::Cpu, LensId::CpuRegs, LensId::Cram] {
+            let panel = render(only(id), BG);
+            let panel_on_other = render(only(id), BG2);
+            let mut with_sprites = only(id);
+            with_sprites.set(LensId::Sprites, true);
+            let both = render(with_sprites, BG);
+
+            let mut opaque = 0usize;
+            let mut crossings = 0usize;
+            let mut dimmed = 0usize;
+            for i in 0..w * h {
+                // Opaque here means "the same whatever was underneath" — which is precisely what
+                // the two backgrounds measure, and it also implies the panel drew at all (BG and
+                // BG2 differ, so an untouched pixel can never agree).
+                if panel[i] == panel_on_other[i] {
+                    opaque += 1;
+                    if outlines[i] != BG {
+                        crossings += 1;
+                    }
+                    assert_eq!(
+                        both[i], panel[i],
+                        "{}: an outline changed an opaque panel pixel at ({}, {}) — the panel must \
+                         win every crossing, or it reports something the machine never held",
+                        id.key(),
+                        i % w,
+                        i / w
+                    );
+                } else if panel[i] != BG && both[i] != panel[i] {
+                    // `panel[i] != BG` is what makes this the *translucent panel* branch rather
+                    // than "everywhere else": a pixel the panel never touched is BG here and BG2
+                    // there, so it fails the opacity test above and lands in this arm too. Without
+                    // the guard `dimmed` just counts outline pixels out in the open, which the last
+                    // assertion already covers — measured: with it missing, turning every panel
+                    // opaque left this clause green.
+                    dimmed += 1;
+                }
+            }
+            assert!(opaque > 0, "{}: the panel drew nothing opaque", id.key());
+            assert!(
+                crossings > 0,
+                "{}: the outlines never cross this panel's opaque pixels, so the equality above \
+                 checked nothing",
+                id.key()
+            );
+            assert!(
+                dimmed > 0,
+                "{}: no outline survives under the panel's translucent body — it is erasing them, \
+                 not dimming them, and the position an outline exists to convey is lost",
+                id.key()
+            );
+            assert!(
+                (0..w * h).any(|i| panel[i] == BG && both[i] != BG),
+                "{}: the outlines left no mark at all beside the panel — a deleted arm in `draw` \
+                 would pass every assertion above",
+                id.key()
+            );
+        }
     }
 
     /// A variant can be added to `LensId` — forcing `key`/`title`/`label` edits — and still be

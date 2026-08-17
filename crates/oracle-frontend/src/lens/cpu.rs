@@ -163,6 +163,7 @@ pub fn draw(c: &mut font::Canvas, area: Rect, px: usize, chip: &Chip) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lens::ink_bounds;
 
     /// `Registers` has no `Default` (it derives `Clone, Debug, PartialEq, Eq` and the bincode
     /// pair only), so the fixture is an explicit literal — the same shape `registers.rs`'s own
@@ -339,22 +340,6 @@ mod tests {
         buf
     }
 
-    /// The (row, column) extremes of everything `draw` changed.
-    fn ink_bounds(buf: &[u32], w: usize) -> Option<(usize, usize, usize, usize)> {
-        let mut b: Option<(usize, usize, usize, usize)> = None;
-        for (i, p) in buf.iter().enumerate() {
-            if *p == BG {
-                continue;
-            }
-            let (x, y) = (i % w, i / w);
-            b = Some(match b {
-                None => (y, y, x, x),
-                Some((t, bo, l, r)) => (t.min(y), bo.max(y), l.min(x), r.max(x)),
-            });
-        }
-        b
-    }
-
     #[test]
     fn draw_paints_inside_area_only() {
         let (w, h) = (320usize, 224usize);
@@ -456,7 +441,7 @@ mod tests {
             ),
         ] {
             let buf = render(w, h, area, px, &chip);
-            let (top, bottom, _, _) = ink_bounds(&buf, w)
+            let (top, bottom, _, _) = ink_bounds(&buf, w, BG)
                 .unwrap_or_else(|| panic!("{label}: the chip vanished instead of degrading"));
             assert_eq!(
                 bottom - top + 1,
@@ -501,7 +486,8 @@ mod tests {
             }
             widths_showing_the_block += 1;
             let buf = render(bw, bh, area, px, &chip);
-            let (_, _, left, right) = ink_bounds(&buf, bw).expect("the block should have drawn");
+            let (_, _, left, right) =
+                ink_bounds(&buf, bw, BG).expect("the block should have drawn");
             let panel_w = right - left + 1;
             assert!(
                 panel_w >= REGISTER_LINE + 2 * pad,
@@ -537,7 +523,7 @@ mod tests {
         let margin = margin_of(px);
         let chip = model(&regs(), None, 7, false, false);
         let buf = render(w, h, area, px, &chip);
-        let (top, bottom, left, right) = ink_bounds(&buf, w).expect("draw painted nothing");
+        let (top, bottom, left, right) = ink_bounds(&buf, w, BG).expect("draw painted nothing");
 
         assert_eq!(
             top,
@@ -575,8 +561,9 @@ mod tests {
         let px = 1;
         let compact = render(w, h, area, px, &model(&regs(), None, 7, false, false));
         let expanded = render(w, h, area, px, &model(&regs(), None, 7, false, true));
-        let (ct, cb, _, _) = ink_bounds(&compact, w).expect("the compact chip painted nothing");
-        let (et, eb, _, _) = ink_bounds(&expanded, w).expect("the expanded chip painted nothing");
+        let (ct, cb, _, _) = ink_bounds(&compact, w, BG).expect("the compact chip painted nothing");
+        let (et, eb, _, _) =
+            ink_bounds(&expanded, w, BG).expect("the expanded chip painted nothing");
         assert_eq!(ct, et, "both forms hang from the same top edge");
         assert!(
             eb > cb + 7 * font::LINE_H * px,
@@ -604,7 +591,7 @@ mod tests {
         };
         let buf = render(w, h, area, px, &chip);
         let margin = margin_of(px);
-        let (_, _, left, right) = ink_bounds(&buf, w).expect("draw painted nothing");
+        let (_, _, left, right) = ink_bounds(&buf, w, BG).expect("draw painted nothing");
         assert!(
             left >= area.x + margin,
             "ink escaped the panel's left edge ({}) at x={left}",
