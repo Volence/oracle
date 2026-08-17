@@ -56,6 +56,7 @@ Config→render-path init happens once before the loop at main.rs:960 (`ov.statu
 
 - `cargo test -p oracle-frontend` **never** piped through `tail`/`head` (it hides failures *and* returns the wrong exit code).
 - **Every evidence-bearing test is mutation-verified at writing time**: break the production line the test exists to protect, watch that exact test fail, restore, and record one line in the commit body (`mutation: <change> → <test> FAILED`). Measured base rate for vacuous tests here is 3-for-3 past green gates.
+- **Lens draw tests fill the scratch buffer with `0x0012_3456`, never `0`, and compare against that.** Measured in Task 5: a translucent black panel (`fill_rect(…, 0x0000_0000, PANEL_ALPHA)`) blended over a zero buffer is a **no-op**, so an all-zero fill makes the panel invisible to every assertion — a panel spanning the whole window, straight through the letterbox, *passed* `draw_paints_inside_area_only`. Copying `palette.rs:691` does **not** protect you: that test presses a key first so its **opaque** highlight bar draws, and a lens panel has no opaque element. Copy `lens/watch.rs`'s reworked tests instead (`const BG`, `!= BG` throughout, plus an `assert!(painted >= panel_w * panel_h)` that text alone can never satisfy — so a future invisible panel fails rather than passing quietly). **Every lens with a panel also needs one test pinning where it is anchored**; containment alone does not distinguish a bottom strip from a top one.
 - No `#[allow(dead_code)]`. No `Co-Authored-By` trailers. `ls` is aliased to eza — use `command ls`.
 - Per-task gates: `cargo fmt --all -- --check`; `cargo clippy --all-targets -- -D warnings` **and** `cargo clippy --all-targets --no-default-features -- -D warnings`; `cargo test -p oracle-frontend` **and** `cargo test -p oracle-frontend --no-default-features`. **Every commit passes them — there is no "it goes green two tasks from now" allowance.** `oracle-frontend` is bin-only, so an uncalled `pub fn` is a hard `dead_code` error: land production code and a non-test caller in the same commit. (This is not hypothetical; it is why Task 1 is void.)
 - **`git diff m68000-microop-framework..HEAD -- crates/oracle-core/` must stay EMPTY for the whole slice.** This slice adds no core capability; every read it needs already exists. If a lens seems to need a new core accessor, STOP and report rather than adding one.
@@ -1196,8 +1197,31 @@ mutation: \$ dropped from addr → a_line_reads_like_the_terminal_log FAILED"
 ### Task 6: the CPU chip lens
 
 **Files:**
-- Rewrite: `crates/oracle-frontend/src/lens/cpu.rs`
+- Create: `crates/oracle-frontend/src/lens/cpu.rs`
 - Modify: `crates/oracle-frontend/src/lens/mod.rs`, `crates/oracle-frontend/src/main.rs`
+
+**Also in this task: collapse `models()`'s parameter list into a context struct.** Task 5 shipped
+`models(set, wp, symbols)` — correctly dropping an unused `&System` rather than carrying it for a
+future task. But Task 6 needs `&System`, Task 7 the `Vdp`, Task 8 the forward map, Task 9 the mouse
+position: `models()` is heading for six positional parameters, and the third and fourth `&`-args of
+the same shape are where call sites start silently transposing. Introduce it here, while it is two
+fields, not at Task 9 when it is six:
+
+```rust
+/// Everything the enabled lenses may read this frame, borrowed once. Grouped rather than passed
+/// positionally because the list only grows: by the last lens this is six arguments, several of
+/// them same-typed references, which is where a transposed call site stops being a compile error.
+pub struct FrameCtx<'a> {
+    pub sys: &'a oracle_core::System,
+    pub wp: &'a oracle_core::watchpoints::Watchpoints,
+    pub symbols: Option<&'a oracle_core::symbols::SymbolTable>,
+    pub frame: u64,
+    pub paused: bool,
+}
+```
+`models(set: LensSet, cx: &FrameCtx<'_>) -> Models`. Update the Task 5 call site and its
+`models_are_built_only_for_lenses_that_are_on` test with it. Tasks 7-9 then add a field each rather
+than a parameter each.
 
 - [ ] **Step 1: Write `cpu.rs` with its tests**
 
