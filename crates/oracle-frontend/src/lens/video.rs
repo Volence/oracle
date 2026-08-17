@@ -27,7 +27,7 @@
 
 use crate::font;
 use crate::present::Rect;
-use oracle_core::render::{sprite_tile_at, Layer, PixelAttribution, SpriteDecoded};
+use oracle_core::render::{sprite_tile_at, Layer, PixelAttribution, SpriteDecoded, SpriteEval};
 
 // --- The CRAM strip (spec 5.2) -----------------------------------------------------------------
 
@@ -117,13 +117,25 @@ pub struct SpriteBox {
     pub priority: bool,
 }
 
-/// Outline every sprite the hardware actually parses, clipped to the active display.
+/// Outline every sprite the hardware actually **walks**, clipped to the active display.
 ///
-/// Three rules, each earning its place:
-/// * slots at or past `parsed_max` are **skipped** — they are decoded but never parsed (64 in
-///   H32, 80 in H40), and outlining them would draw boxes around things the VDP never shows.
-///   `parsed_max` is passed in because a consumer is forbidden to re-derive `if h40 {80} else
-///   {64}` (render.rs:543-547): the number is the core's to report.
+/// **`walk` is the link-list walk, not the table**, and that distinction is the whole bug this
+/// signature exists to prevent. `Vdp::sprites_decoded()` returns all 80 SAT entries; the hardware
+/// only ever displays the sprites reachable by following `link` from slot 0 until a link of 0, so
+/// every unreachable slot holds whatever bytes were last written there — a *ghost*, drawing
+/// nothing, at coordinates that were real some frames ago. Outlining the table put amber boxes on
+/// empty picture, which is what the owner saw on the glass. The reachable list is
+/// `Vdp::render_line_report(line).sprites`.
+///
+/// Four rules, each earning its place:
+/// * **reachability is the only filter — never `SpriteEval::outcome`.** A sprite that is `OffLine`
+///   on the sampled line is simply not on *that* line; it is a real sprite drawing elsewhere on the
+///   frame and it must keep its box. Narrowing to `Rendered` would make nearly every box vanish
+///   the moment you sampled a line the sprite does not touch, and `DroppedLineLimit` /
+///   `DroppedPixelBudget` are per-line facts in exactly the same way.
+/// * the parse cap needs no filtering here: the walk itself stops at 80 (H40) / 64 (H32) and says
+///   so with `SpriteWalkEnd::MaxCount`, so the old `parsed_max` argument would now be a second,
+///   redundant place for the same rule to be got wrong.
 /// * a sprite is **clipped per edge, not dropped** — `x`/`y` are signed screen coordinates with
 ///   the 128 bias already off both axes, and a sprite entering from the left is exactly the case
 ///   an outline lens is for. Dropping anything that pokes over an edge would blank the lens at the
@@ -131,11 +143,23 @@ pub struct SpriteBox {
 /// * a sprite entirely outside the display contributes nothing, which silently handles the
 ///   parked-sprite idiom (`y == -128`) without naming it as a special case.
 ///
-/// Slot order is preserved, so box `n` is slot `n`'s among the visible ones.
-pub fn boxes(sprites: &[SpriteDecoded], parsed_max: u8, display: (u16, u16)) -> Vec<SpriteBox> {
+/// `decoded` is the frame's `sprites_decoded()`, and it is here for **one field**: `SpriteEval`
+/// carries no priority bit, and priority is what picks the outline's colour. It is looked up by
+/// `index` — the SAT slot, which is what both lists are keyed by — never by position, since the
+/// walk visits slots in link order and its third entry is very rarely slot 2. The geometry
+/// deliberately comes from the walk even though the two agree by construction today
+/// (`render.rs:648-653` and `render.rs:1141-1148` compute `x`/`y`/`width_cells`/`height_cells`
+/// from the same fields): one source per record beats two that happen to match.
+///
+/// Walk order is preserved, so box `n` is the `n`th sprite the hardware would have evaluated.
+pub fn boxes(
+    walk: &[SpriteEval],
+    decoded: &[SpriteDecoded],
+    display: (u16, u16),
+) -> Vec<SpriteBox> {
     let (dw, dh) = (i32::from(display.0), i32::from(display.1));
     let mut out = Vec::new();
-    for s in sprites.iter().take(usize::from(parsed_max)) {
+    for s in walk {
         let left = i32::from(s.x);
         let top = i32::from(s.y);
         let right = left + i32::from(s.width_cells) * 8; // exclusive
@@ -155,7 +179,13 @@ pub fn boxes(sprites: &[SpriteDecoded], parsed_max: u8, display: (u16, u16)) -> 
                 w: (cr - cl) as usize,
                 h: (cb - ct) as usize,
             },
-            priority: s.priority,
+            // Both lists are keyed by SAT slot, so a walked index always has a decoded entry; if
+            // the two ever disagreed, the box still belongs on the glass — position is what an
+            // outline conveys — and the ordinary colour is the honest default for a bit we did not
+            // read.
+            priority: decoded
+                .get(usize::from(s.index))
+                .is_some_and(|d| d.priority),
         });
     }
     out
@@ -367,14 +397,32 @@ mod tests {
     use super::*;
     use crate::lens::ink_bounds;
     use crate::present::Aspect;
-    use oracle_core::render::{Cell, PixelState};
+    use oracle_core::render::{Cell, PixelState, SpriteOutcome};
 
     // --- The sprite outlines: the model -------------------------------------------------------
 
-    /// A decoded sprite with everything but geometry at its default. `x`/`y` are **signed screen**
-    /// coordinates — the 128 bias is already off both axes by the time the core hands them over —
-    /// so a negative value here is an ordinary sprite entering from the left or the top, not an
-    /// error.
+    /// One entry of the **link walk**, with everything but geometry at a default. `x`/`y` are
+    /// **signed screen** coordinates — the 128 bias is already off both axes by the time the core
+    /// hands them over — so a negative value here is an ordinary sprite entering from the left or
+    /// the top, not an error.
+    ///
+    /// `outcome` defaults to `OffLine`, which is the *awkward* default on purpose: it is what a
+    /// perfectly ordinary sprite reports on a line it does not happen to touch, and a `boxes` that
+    /// filtered by outcome would drop every fixture in this module rather than a hand-picked one.
+    fn walked(index: u8, x: i16, y: i16, wc: u8, hc: u8) -> SpriteEval {
+        SpriteEval {
+            index,
+            y,
+            x,
+            width_cells: wc,
+            height_cells: hc,
+            link: 0,
+            outcome: SpriteOutcome::OffLine,
+        }
+    }
+
+    /// A decoded SAT slot, geometry and all. Still needed by the hover callout, which reads `tile`
+    /// and `palette` off the table rather than off the walk.
     fn sprite(index: u8, x: i16, y: i16, wc: u8, hc: u8) -> SpriteDecoded {
         SpriteDecoded {
             index,
@@ -392,9 +440,20 @@ mod tests {
         }
     }
 
+    /// Eighty ordinary decoded slots for the outline tests, which read exactly one field out of
+    /// this table — `priority`.
+    ///
+    /// The geometry is deliberately **wrong on purpose**: every slot claims to be a 1x1 sprite at
+    /// (-100, -100), which is entirely off screen. A `boxes` that took its rectangles from the
+    /// table instead of from the walk therefore produces no boxes at all, rather than plausible
+    /// ones — the fixture cannot quietly agree with the bug.
+    fn plain_table() -> Vec<SpriteDecoded> {
+        (0..80u8).map(|i| sprite(i, -100, -100, 1, 1)).collect()
+    }
+
     #[test]
     fn a_box_is_the_sprites_cells_in_pixels() {
-        let b = boxes(&[sprite(3, 100, 50, 4, 2)], 80, (320, 224));
+        let b = boxes(&[walked(3, 100, 50, 4, 2)], &plain_table(), (320, 224));
         assert_eq!(b.len(), 1);
         assert_eq!(b[0].index, 3);
         assert_eq!(
@@ -409,8 +468,60 @@ mod tests {
         );
     }
 
-    /// **The pairing test for the model.** Boxes come back in slot order, and box `n` must carry
-    /// slot `n`'s own index, own geometry and own priority bit.
+    /// **Reachability is the only filter.** Every outcome the core can report must still get a box:
+    /// `OffLine` is the ordinary state of a sprite on a line it does not touch, and the two
+    /// `Dropped*` outcomes plus `Masked` are per-line facts about *this* line only. Since the
+    /// outlines sample one line per frame, filtering by outcome would blank almost every box.
+    ///
+    /// This is the guard against the tempting wrong fix for the ghost-box bug — "only outline what
+    /// actually rendered" — which looks more correct and is much worse.
+    #[test]
+    fn every_walked_outcome_still_gets_a_box() {
+        for outcome in [
+            SpriteOutcome::Rendered,
+            SpriteOutcome::OffLine,
+            SpriteOutcome::DroppedLineLimit,
+            SpriteOutcome::DroppedPixelBudget,
+            SpriteOutcome::Masked,
+        ] {
+            let mut e = walked(4, 100, 50, 2, 2);
+            e.outcome = outcome;
+            assert_eq!(
+                boxes(&[e], &plain_table(), (320, 224)).len(),
+                1,
+                "{outcome:?} lost its box — outcome is a per-line fact, not a reachability one"
+            );
+        }
+    }
+
+    /// **The pairing test for the priority lookup.** `SpriteEval` carries no priority bit, so the
+    /// colour is fetched out of the decoded table — and it must be fetched by **SAT index**, never
+    /// by position in the walk, because the walk visits slots in link order.
+    ///
+    /// The fixture makes those two orders disagree on every entry: the walk is slots 5, 2, 9 and
+    /// the priority bits sit on slots 2 and 9. Indexing by position would read slots 0, 1, 2 and
+    /// produce the wrong colour on all three boxes — while still producing three boxes in the right
+    /// places, which is exactly the bug a count or a geometry assertion cannot see.
+    #[test]
+    fn priority_is_looked_up_by_sat_index_not_by_walk_position() {
+        let mut table = plain_table();
+        table[2].priority = true;
+        table[9].priority = true;
+        let walk = [
+            walked(5, 10, 10, 1, 1),
+            walked(2, 30, 10, 1, 1),
+            walked(9, 50, 10, 1, 1),
+        ];
+        let b = boxes(&walk, &table, (320, 224));
+        assert_eq!(
+            b.iter().map(|s| (s.index, s.priority)).collect::<Vec<_>>(),
+            vec![(5, false), (2, true), (9, true)],
+            "the priority bit did not follow the SAT slot the walk named"
+        );
+    }
+
+    /// **The pairing test for the model.** Boxes come back in walk order, and box `n` must carry
+    /// the `n`th walked sprite's own index, own geometry and own priority bit.
     ///
     /// Counting boxes, or checking that the set of rectangles is right, cannot see the bug that
     /// matters here: a `boxes` that paired every rectangle with the *next* sprite's index or
@@ -420,12 +531,18 @@ mod tests {
     /// so a transposition shows up in the geometry too.
     #[test]
     fn each_box_carries_its_own_sprites_index_size_and_priority() {
-        let mut s0 = sprite(7, 10, 20, 1, 4);
-        let mut s2 = sprite(41, 200, 100, 3, 1);
-        s0.priority = true;
-        s2.priority = true;
-        let s1 = sprite(19, 60, 70, 2, 2); // priority stays false
-        let b = boxes(&[s0, s1, s2], 80, (320, 224));
+        let mut table = plain_table();
+        table[7].priority = true;
+        table[41].priority = true;
+        let b = boxes(
+            &[
+                walked(7, 10, 20, 1, 4),
+                walked(19, 60, 70, 2, 2), // priority stays false
+                walked(41, 200, 100, 3, 1),
+            ],
+            &table,
+            (320, 224),
+        );
         assert_eq!(
             b,
             vec![
@@ -472,7 +589,7 @@ mod tests {
         for (label, s, want) in [
             (
                 "entering from the left",
-                sprite(0, -8, 40, 2, 2),
+                walked(0, -8, 40, 2, 2),
                 Rect {
                     x: 0,
                     y: 40,
@@ -482,7 +599,7 @@ mod tests {
             ),
             (
                 "entering from the top",
-                sprite(0, 40, -4, 2, 2),
+                walked(0, 40, -4, 2, 2),
                 Rect {
                     x: 40,
                     y: 0,
@@ -492,7 +609,7 @@ mod tests {
             ),
             (
                 "leaving to the right",
-                sprite(0, 312, 40, 2, 2),
+                walked(0, 312, 40, 2, 2),
                 Rect {
                     x: 312,
                     y: 40,
@@ -502,7 +619,7 @@ mod tests {
             ),
             (
                 "leaving through the bottom",
-                sprite(0, 40, 220, 2, 2),
+                walked(0, 40, 220, 2, 2),
                 Rect {
                     x: 40,
                     y: 220,
@@ -511,12 +628,12 @@ mod tests {
                 },
             ),
         ] {
-            let b = boxes(&[s], 80, (320, 224));
+            let b = boxes(&[s], &plain_table(), (320, 224));
             assert_eq!(b.len(), 1, "{label}: the sprite was dropped");
             assert_eq!(b[0].rect, want, "{label}");
         }
         // Both axes at once, since the two clips are independent code.
-        let b = boxes(&[sprite(0, -8, -4, 2, 2)], 80, (320, 224));
+        let b = boxes(&[walked(0, -8, -4, 2, 2)], &plain_table(), (320, 224));
         assert_eq!(b.len(), 1);
         assert_eq!(
             b[0].rect,
@@ -534,35 +651,35 @@ mod tests {
     #[test]
     fn a_sprite_entirely_outside_the_display_contributes_nothing() {
         assert!(
-            boxes(&[sprite(0, 0, -128, 4, 4)], 80, (320, 224)).is_empty(),
+            boxes(&[walked(0, 0, -128, 4, 4)], &plain_table(), (320, 224)).is_empty(),
             "the parked idiom"
         );
         assert!(
-            boxes(&[sprite(0, 320, 40, 4, 4)], 80, (320, 224)).is_empty(),
+            boxes(&[walked(0, 320, 40, 4, 4)], &plain_table(), (320, 224)).is_empty(),
             "flush past the right edge"
         );
         assert!(
-            boxes(&[sprite(0, 40, 224, 4, 4)], 80, (320, 224)).is_empty(),
+            boxes(&[walked(0, 40, 224, 4, 4)], &plain_table(), (320, 224)).is_empty(),
             "flush past the bottom edge"
         );
         // H32's display is narrower, so a sprite visible in H40 can be entirely outside it.
         assert!(
-            boxes(&[sprite(0, 260, 40, 1, 1)], 64, (256, 224)).is_empty(),
+            boxes(&[walked(0, 260, 40, 1, 1)], &plain_table(), (256, 224)).is_empty(),
             "outside H32's 256-dot display"
         );
     }
 
-    /// Slots at or past `parsed_max` are decoded but never parsed by the hardware — outlining them
-    /// would draw boxes around things the VDP never shows. H32 parses 64, H40 80, and the number is
-    /// the core's to report (`Vdp::parsed_sprite_max`), never ours to re-derive.
-    #[test]
-    fn slots_past_parsed_max_are_not_outlined() {
-        let sprites: Vec<SpriteDecoded> = (0..80u8).map(|i| sprite(i, 10, 10, 1, 1)).collect();
-        let h32 = boxes(&sprites, 64, (256, 224));
-        assert_eq!(h32.len(), 64, "H32 parses 64");
-        assert_eq!(h32[63].index, 63, "and stops at slot 63");
-        assert_eq!(boxes(&sprites, 80, (320, 224)).len(), 80, "H40 parses 80");
-    }
+    // **`slots_past_parsed_max_are_not_outlined` was removed here, deliberately, and this note is
+    // its receipt.** It asserted that `boxes` stopped at the 64/80 parse cap, which it enforced
+    // with a `.take(parsed_max)` over the whole SAT. `boxes` no longer sees the table: it is handed
+    // the link walk, and the walk stops at the cap itself (`render.rs:1091` iterates `0..cap` from
+    // `sprite_limits`, reporting `SpriteWalkEnd::MaxCount`). Re-asserting the cap against a
+    // hand-written `Vec<SpriteEval>` would test the fixture's length, not the production rule —
+    // the test would pass with the cap deleted from the core.
+    //
+    // The behaviour is not left unguarded: `the_walk_stops_at_the_parse_cap_in_h32` in `lens/mod.rs`
+    // drives it end to end through a real VDP, where the cap is genuinely in play, and it is
+    // mutation-verified there.
 
     // --- The sprite outlines: the draw --------------------------------------------------------
 
@@ -598,7 +715,7 @@ mod tests {
     #[test]
     fn an_outline_lands_exactly_on_the_sprite_at_every_scale() {
         let (w, h) = (700usize, 520usize);
-        let bx = boxes(&[sprite(0, 100, 50, 4, 2)], 80, (320, 224));
+        let bx = boxes(&[walked(0, 100, 50, 4, 2)], &plain_table(), (320, 224));
         // (label, area, px, left, top, right, bottom) — the ink's four extremes, inclusive.
         for (label, area, px, left, top, right, bottom) in [
             (
@@ -672,7 +789,7 @@ mod tests {
             h: 448,
         };
         let px = 2;
-        let bx = boxes(&[sprite(0, 100, 50, 4, 2)], 80, (320, 224));
+        let bx = boxes(&[walked(0, 100, 50, 4, 2)], &plain_table(), (320, 224));
         let buf = render_sprites(w, h, area, px, (320, 224), &bx);
         // The window box is (200,100)..(264,132) — see the scale test above, same fixture.
         let (bl, bt, br, bb) = (200usize, 100usize, 264usize, 132usize);
@@ -740,21 +857,20 @@ mod tests {
     fn the_priority_colour_follows_the_sprite_not_the_slot() {
         let (w, h) = (640usize, 448usize);
         let area = Rect { x: 0, y: 0, w, h };
-        let mut lo = sprite(0, 10, 10, 2, 2);
-        let mut hi = sprite(1, 100, 100, 2, 2);
-        let render = |first: SpriteDecoded, second: SpriteDecoded| {
-            let bx = boxes(&[first, second], 80, (320, 224));
+        // Two sprites, fixed; only which of them owns the priority bit moves between renders.
+        let walk = [walked(0, 10, 10, 2, 2), walked(1, 100, 100, 2, 2)];
+        let render = |flag_on: usize| {
+            let mut table = plain_table();
+            table[flag_on].priority = true;
+            let bx = boxes(&walk, &table, (320, 224));
             assert_eq!(bx.len(), 2, "both sprites are on screen");
             render_sprites(w, h, area, 1, (320, 224), &bx)
         };
         // At 2x the boxes' top-left corners are (20,20) and (200,200).
         let (p0, p1) = (20 * w + 20, 200 * w + 200);
 
-        hi.priority = true;
-        let a = render(lo, hi); // slot 0 ordinary, slot 1 high priority
-        hi.priority = false;
-        lo.priority = true;
-        let b = render(lo, hi); // the flag moved to slot 0
+        let a = render(1); // slot 0 ordinary, slot 1 high priority
+        let b = render(0); // the flag moved to slot 0
 
         for (label, buf, p) in [("a", &a, p0), ("a", &a, p1), ("b", &b, p0), ("b", &b, p1)] {
             assert_ne!(buf[p], BG, "render {label}: no outline at index {p}");
@@ -791,12 +907,12 @@ mod tests {
         );
         let bx = boxes(
             &[
-                sprite(0, -8, -8, 4, 4),
-                sprite(1, 0, 0, 4, 4),
-                sprite(2, 300, 210, 4, 4),
-                sprite(3, 316, 220, 1, 1),
+                walked(0, -8, -8, 4, 4),
+                walked(1, 0, 0, 4, 4),
+                walked(2, 300, 210, 4, 4),
+                walked(3, 316, 220, 1, 1),
             ],
-            80,
+            &plain_table(),
             (320, 224),
         );
         assert_eq!(

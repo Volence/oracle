@@ -201,12 +201,29 @@ pub fn models(set: LensSet, cx: &FrameCtx<'_>) -> Models {
     // the point; carrying it in `Models` never was.
     let decoded = (set.is_on(LensId::Sprites) || set.is_on(LensId::Hover))
         .then(|| cx.sys.vdp().sprites_decoded());
+    // The outlines follow the **link walk**, not the SAT: `render_line_report(_).sprites` is
+    // "every walked sprite, in link-walk order", and everything past the walk is a slot the
+    // hardware never looks at, holding whatever was last written there. Outlining those drew boxes
+    // on empty picture (see [`video::boxes`]).
+    //
+    // **One line is enough, and line 0 will do.** Reachability is a property of the link *fields*,
+    // which are frame-level state: every line walks the same chain from slot 0 and produces the
+    // same set of `index`es. Only the per-sprite `outcome` is a per-line fact, and `boxes`
+    // discards outcomes entirely — a sprite that is `OffLine` on line 0 still gets its box. (The
+    // R10 dot-overflow carry can differ at line 0 too; it likewise only moves outcomes.)
+    //
+    // The cost is one line resolve, the same order as the hover callout's `pixel_attribution` and
+    // paid only when the lens is on.
     let sprites = decoded
         .as_deref()
         .filter(|_| set.is_on(LensId::Sprites))
         .map(|decoded| {
             let vdp = cx.sys.vdp();
-            video::boxes(decoded, vdp.parsed_sprite_max(), vdp.active_display())
+            video::boxes(
+                &vdp.render_line_report(0).sprites,
+                decoded,
+                vdp.active_display(),
+            )
         });
     // Hover **explains**; click **arms** (spec §5.2) — this reads and nothing else. Three things
     // must all hold: the lens is on, the run loop found a dot under the cursor, and the decode
@@ -702,11 +719,18 @@ mod tests {
     /// byte never reaches the cache, and the sprite decodes 1x1 at whatever `System::new`'s seeded
     /// VRAM happens to hold in the X word. That is not a hypothetical; it is what this fixture did
     /// on its first run.
-    fn sys_with_sprites(slots: &[(u16, u16, u16, u16)]) -> System {
+    /// **The link byte in `size` is load-bearing since the outlines started following the walk.**
+    /// The low byte of the size word is the sprite's `link` — the next slot the hardware visits —
+    /// and the walk always starts at slot 0 and stops when a link is 0. So a fixture whose slot 0
+    /// links to 0 is a **one-sprite list** no matter how many slots it wrote, and every later slot
+    /// is unreachable. Each caller therefore spells its own chain out; `h40` picks the parse cap
+    /// (80 vs 64) as well as the display width.
+    fn sys_with_sprites_in(h40: bool, slots: &[(u16, u16, u16, u16)]) -> System {
         let mut sys = System::new(0x5EED);
         let v: &mut Vdp = sys.vdp_mut();
         v.control_write(0x8104, 0); // reg $01 = M5: leave Mode 4, where regs above 10 are discarded
-        v.control_write(0x8C81, 0); // reg $0C RS0+RS1 = H40: a 320-dot display, all 80 slots parsed
+                                    // reg $0C RS0+RS1: H40 is a 320-dot display parsing 80 slots, H32 256 dots and 64.
+        v.control_write(if h40 { 0x8C81 } else { 0x8C00 }, 0);
         v.control_write(0x8F02, 0); // reg $0F: auto-increment 2 bytes per data write
         for (slot, (x_field, y_field, size, attr)) in slots.iter().enumerate() {
             let addr = (slot * 8) as u16;
@@ -720,7 +744,28 @@ mod tests {
         sys
     }
 
-    /// Slot 0 only, 2x2 cells at game (16, 16). `$90` is 16 once the 128 bias comes off.
+    /// The H40 case, which is what almost every test here wants.
+    fn sys_with_sprites(slots: &[(u16, u16, u16, u16)]) -> System {
+        sys_with_sprites_in(true, slots)
+    }
+
+    /// `slots` written from slot 0 up and **chained**: each links to the next, the last links to 0
+    /// to terminate the walk. That makes every slot listed reachable, which is what a fixture that
+    /// means "these sprites are on screen" has to say now.
+    fn sys_with_chained_sprites(h40: bool, slots: &[(u16, u16, u16, u16)]) -> System {
+        let chained: Vec<(u16, u16, u16, u16)> = slots
+            .iter()
+            .enumerate()
+            .map(|(i, (x, y, size, attr))| {
+                let next = if i + 1 < slots.len() { i as u16 + 1 } else { 0 };
+                (*x, *y, (size & 0xFF00) | next, *attr)
+            })
+            .collect();
+        sys_with_sprites_in(h40, &chained)
+    }
+
+    /// Slot 0 only, 2x2 cells at game (16, 16). `$90` is 16 once the 128 bias comes off, and the
+    /// link byte is 0 — a one-sprite list, which is exactly what this fixture claims to be.
     fn sys_with_a_visible_sprite() -> System {
         sys_with_sprites(&[(0x0090, 0x0090, 0x0500, 0x0000)])
     }
@@ -732,8 +777,8 @@ mod tests {
         let sys = sys_with_a_visible_sprite();
         let vdp = sys.vdp();
         let bx = video::boxes(
+            &vdp.render_line_report(0).sprites,
             &vdp.sprites_decoded(),
-            vdp.parsed_sprite_max(),
             vdp.active_display(),
         );
         assert_eq!(bx.len(), 1, "the other 79 slots stay parked");
@@ -747,6 +792,100 @@ mod tests {
                 h: 16
             }
         );
+    }
+
+    /// Every lens set with the outlines on, for the two tests below.
+    fn outlines_on() -> LensSet {
+        let mut s = LensSet::default();
+        s.set(LensId::Sprites, true);
+        s
+    }
+
+    /// The slots a model outlined, in order.
+    fn outlined(sys: &System) -> Vec<u8> {
+        let wp = Watchpoints::new(8);
+        models(outlines_on(), &ctx(sys, &wp, false))
+            .sprites
+            .expect("the outline lens is on")
+            .iter()
+            .map(|b| b.index)
+            .collect()
+    }
+
+    /// **The ghost-box regression.** The SAT holds 80 entries; the hardware only displays the ones
+    /// reachable by walking `link` from slot 0 until a link of 0. Every other slot keeps whatever
+    /// bytes were last written there, so outlining the *table* drew amber boxes over empty picture
+    /// — which is what the owner saw on the glass.
+    ///
+    /// The chain here is 0 -> 2 -> 7 -> 0, and the six slots it skips are loaded with perfectly
+    /// plausible on-screen sprites. Only three boxes may come back, and they must be those three
+    /// slots in walk order: a fix that took the first three table entries, or that sorted by index,
+    /// would produce three boxes too.
+    ///
+    /// The `decoded` assertion is the vacuity guard. If the ghosts were parked — as every slot of
+    /// an unrun machine is — there would be nothing to wrongly outline and this test would pass
+    /// against the very bug it is named for.
+    #[test]
+    fn unreachable_sat_slots_are_not_outlined() {
+        // (x_field, y_field, size|link, attr). `$0500` is 2x2 cells; the low byte is the link.
+        let mut slots: Vec<(u16, u16, u16, u16)> = (0..10u16)
+            .map(|i| (128 + 10 + i * 20, 128 + 10, 0x0500, 0x0000))
+            .collect();
+        slots[0].2 = 0x0500 | 2; // 0 -> 2
+        slots[2].2 = 0x0500 | 7; // 2 -> 7
+        slots[7].2 = 0x0500; //     7 -> 0, end of the list
+        let sys = sys_with_sprites_in(true, &slots);
+
+        // Every one of the ten is a real, on-screen sprite as far as the *table* is concerned.
+        let table = sys.vdp().sprites_decoded();
+        for (slot, entry) in table.iter().take(10).enumerate() {
+            assert!(
+                entry.y == 10 && entry.x >= 10,
+                "slot {slot} is not on screen, so it could never have been a ghost box"
+            );
+        }
+
+        assert_eq!(
+            outlined(&sys),
+            vec![0, 2, 7],
+            "the outlines followed the SAT rather than the link walk — the six unreachable slots \
+             between them are ghosts the hardware never draws"
+        );
+    }
+
+    /// The parse cap, end to end — the replacement for `slots_past_parsed_max_are_not_outlined`,
+    /// which used to live in `lens/video.rs` and could not survive `boxes` losing its `parsed_max`
+    /// argument (see the receipt there).
+    ///
+    /// **The fixture is a link *cycle*: 0 -> 1 -> 2 -> 1 -> 2 ...**, and only three slots hold any
+    /// data at all. Nothing but the cap can stop that walk, and the hardware genuinely
+    /// re-evaluates the same slots as it goes — which is the whole reason the cap exists. So the
+    /// walk reports 80 entries in H40 and 64 in H32 from three sprites, a count no source but the
+    /// walk can produce: reading the SAT table instead yields 3.
+    ///
+    /// **The obvious fixture — 80 chained visible slots — is vacuous, measured.** In H32 the SAT
+    /// cache write-through only mirrors 64 entries (`vdp.rs:707`), so slots 64-79 stay parked and
+    /// get clipped anyway. The whole-table mutation survived that version of this test while
+    /// producing exactly the 64 it asserted, for entirely the wrong reason.
+    #[test]
+    fn the_walk_stops_at_the_parse_cap() {
+        // (x_field, y_field, size|link, attr). Size byte $00 = 1x1 cell; the low byte is the link.
+        let slots = [
+            (128 + 10, 128 + 10, 0x0001, 0x0000), // slot 0 -> 1
+            (128 + 30, 128 + 10, 0x0002, 0x0000), // slot 1 -> 2
+            (128 + 50, 128 + 10, 0x0001, 0x0000), // slot 2 -> 1, and round again
+        ];
+
+        let h40 = outlined(&sys_with_sprites_in(true, &slots));
+        assert_eq!(
+            &h40[..5],
+            &[0, 1, 2, 1, 2],
+            "the walk is not following the link cycle, so the count below means nothing"
+        );
+        assert_eq!(h40.len(), 80, "H40 parses 80 slots before giving up");
+
+        let h32 = outlined(&sys_with_sprites_in(false, &slots));
+        assert_eq!(h32.len(), 64, "H32 parses only 64");
     }
 
     /// The sprite outlines end to end: the model is built for its own lens and no other, and it
@@ -996,7 +1135,8 @@ mod tests {
             })
             .collect();
         assert_eq!(slots.len(), 70, "inside the 80 the SAT holds");
-        let sys = sys_with_sprites(&slots);
+        // Chained: the walk follows links, so an unchained grid would be a one-sprite list.
+        let sys = sys_with_chained_sprites(true, &slots);
         let wp = Watchpoints::new(8);
 
         // A dot near the top-left, so the callout is on screen and the outline grid crosses it.
