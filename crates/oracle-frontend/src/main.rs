@@ -1766,11 +1766,23 @@ fn main() {
         #[cfg(not(feature = "audio"))]
         let (vol, filt) = (None, None);
         // Lenses: under the palette and the toasts, over the picture (spec §5). Models are built only for
-        // what is on — with everything off this is one bitset test and no reads at all — and only into the
-        // *window* buffer. `buf`, the retained framebuffer, is re-presented every iteration while paused, so
-        // ink there would accumulate (the lesson `draw_crosshair` records above).
-        if cfg.lenses.any() {
-            let models = lens::models(cfg.lenses, bus.watchpoints_mut(), symbols.as_ref());
+        // what is on — with everything off and the machine running this is two bools and no reads at all —
+        // and only into the *window* buffer. `buf`, the retained framebuffer, is re-presented every
+        // iteration while paused, so ink there would accumulate (the lesson `draw_crosshair` records above).
+        //
+        // `|| paused` because the CPU chip auto-shows while stopped (spec §5.3): the guard is about skipping
+        // work nobody asked for, and a pause is itself the ask.
+        if cfg.lenses.any() || paused {
+            let models = lens::models(
+                cfg.lenses,
+                &lens::FrameCtx {
+                    sys: &sys,
+                    wp: bus.watchpoints_mut(),
+                    symbols: symbols.as_ref(),
+                    frame,
+                    paused,
+                },
+            );
             lens::draw(&mut screen, win_w, win_h, present_view, &models);
         }
         // Under the toasts, over the picture: drawn first so `ov.draw` still lands on top (a notification

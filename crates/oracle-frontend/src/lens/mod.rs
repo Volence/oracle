@@ -13,10 +13,12 @@
 //! [`models`]/[`draw`] pair the run loop calls. Each lens is its own submodule, declared as it
 //! arrives; a placeholder file would be dead weight the gate would rightly flag.
 
+pub mod cpu;
 pub mod watch;
 
 use crate::present::Rect;
 use oracle_core::symbols::SymbolTable;
+use oracle_core::system::System;
 use oracle_core::watchpoints::Watchpoints;
 
 /// Every lens, in registration and display order.
@@ -115,26 +117,60 @@ impl LensSet {
     pub fn toggle(&mut self, id: LensId) {
         self.0 ^= id.bit();
     }
-    /// Whether anything is on. The run loop's draw guard: with everything off it skips [`models`]
-    /// entirely, so a lens that is not on costs nothing — not even the reads its model would make.
+    /// Whether anything is on. Half of the run loop's draw guard: with everything off *and the
+    /// machine running* it skips [`models`] entirely, so a lens that is not on costs nothing — not
+    /// even the reads its model would make. The other half is `paused`, because the CPU chip shows
+    /// itself when the machine stops (see [`models`]).
     pub fn any(self) -> bool {
         self.0 != 0
     }
+}
+
+/// Everything the enabled lenses may read this frame, borrowed once.
+///
+/// Grouped rather than passed positionally because the list only grows — the remaining lenses add
+/// the VDP, the blit's forward map and the mouse position — and several of them are same-typed
+/// references, which is the point at which a transposed call site stops being a compile error.
+/// Collected here while it is five fields rather than at the last lens, when it would be eight.
+pub struct FrameCtx<'a> {
+    pub sys: &'a System,
+    pub wp: &'a Watchpoints,
+    pub symbols: Option<&'a SymbolTable>,
+    /// The run loop's own frame counter — the one the title bar and the status line already show.
+    /// `System` has no `frame()`, and inventing a second count that could disagree with the
+    /// window title would make the chip worse than useless while stepping.
+    pub frame: u64,
+    /// The run loop's `paused`, likewise authoritative for the UI: `System` has no `is_paused()`
+    /// because pausing is a frontend idea, not a machine one.
+    pub paused: bool,
 }
 
 /// Everything the enabled lenses need to draw this frame, extracted once. Absent = that lens is
 /// off, so [`draw`] never has to know the set.
 pub struct Models {
     pub ticker: Option<watch::Ticker>,
+    pub cpu: Option<cpu::Chip>,
 }
 
 /// Build the models for whatever is on. Called once per frame, immediately before drawing, and
-/// skipped entirely when nothing is on.
-pub fn models(set: LensSet, wp: &Watchpoints, symbols: Option<&SymbolTable>) -> Models {
+/// skipped entirely when nothing is on and the machine is running.
+pub fn models(set: LensSet, cx: &FrameCtx<'_>) -> Models {
     Models {
         ticker: set
             .is_on(LensId::Watch)
-            .then(|| watch::model(wp, symbols, watch::ROWS)),
+            .then(|| watch::model(cx.wp, cx.symbols, watch::ROWS)),
+        // Three ways in: either CPU lens, or a paused machine. The auto-show is the reason the run
+        // loop guards on `any() || paused` — a pause with every lens off must still produce a
+        // chip, because "where did it stop?" is the first question pausing asks.
+        cpu: (set.is_on(LensId::Cpu) || set.is_on(LensId::CpuRegs) || cx.paused).then(|| {
+            cpu::model(
+                cx.sys.cpu_regs(),
+                cx.symbols,
+                cx.frame,
+                cx.paused,
+                set.is_on(LensId::CpuRegs),
+            )
+        }),
     }
 }
 
@@ -146,6 +182,9 @@ pub fn draw(buf: &mut [u32], w: usize, h: usize, area: Rect, m: &Models) {
     let mut c = crate::font::Canvas::new(buf, w, h);
     if let Some(t) = &m.ticker {
         watch::draw(&mut c, area, px, t);
+    }
+    if let Some(chip) = &m.cpu {
+        cpu::draw(&mut c, area, px, chip);
     }
 }
 
@@ -289,27 +328,105 @@ mod tests {
         }
     }
 
+    /// A frame's worth of borrows over a machine nobody has run — every model under test here is
+    /// keyed off the lens set, not off what the machine happens to contain.
+    fn ctx<'a>(sys: &'a System, wp: &'a Watchpoints, paused: bool) -> FrameCtx<'a> {
+        FrameCtx {
+            sys,
+            wp,
+            symbols: None,
+            frame: 0,
+            paused,
+        }
+    }
+
     /// The guard that keeps a lens that is off from costing anything: no model is built for it, so
     /// the reads its model would make never happen.
     #[test]
     fn models_are_built_only_for_lenses_that_are_on() {
+        let sys = System::new(0x5EED);
         let wp = Watchpoints::new(8);
         let mut set = LensSet::default();
         assert!(
-            models(set, &wp, None).ticker.is_none(),
+            models(set, &ctx(&sys, &wp, false)).ticker.is_none(),
             "a model was built for a lens that is off"
         );
         set.set(LensId::Watch, true);
         assert!(
-            models(set, &wp, None).ticker.is_some(),
+            models(set, &ctx(&sys, &wp, false)).ticker.is_some(),
             "no model was built for a lens that is on"
         );
         // A different lens must not switch the ticker on — the models are keyed per id.
         let mut other = LensSet::default();
         other.set(LensId::Cram, true);
         assert!(
-            models(other, &wp, None).ticker.is_none(),
+            models(other, &ctx(&sys, &wp, false)).ticker.is_none(),
             "the ticker model keyed off the wrong lens"
+        );
+    }
+
+    /// The CPU chip is the one model with three ways in: either of its two lenses, **or** a paused
+    /// machine with every lens off (spec §5.3 — it auto-shows while stopped, which is why the run
+    /// loop's draw guard is `any() || paused` rather than `any()`).
+    #[test]
+    fn the_cpu_chip_is_built_for_either_of_its_lenses_and_while_paused() {
+        let sys = System::new(0x5EED);
+        let wp = Watchpoints::new(8);
+        assert!(
+            models(LensSet::default(), &ctx(&sys, &wp, false))
+                .cpu
+                .is_none(),
+            "a chip was built for a running machine with every lens off"
+        );
+        for id in [LensId::Cpu, LensId::CpuRegs] {
+            let mut set = LensSet::default();
+            set.set(id, true);
+            assert!(
+                models(set, &ctx(&sys, &wp, false)).cpu.is_some(),
+                "{} did not build the chip",
+                id.key()
+            );
+        }
+        let auto = models(LensSet::default(), &ctx(&sys, &wp, true))
+            .cpu
+            .expect("the chip auto-shows while paused");
+        assert!(auto.paused, "and it knows it is the paused one");
+        // An unrelated lens must not drag the chip on with it.
+        let mut other = LensSet::default();
+        other.set(LensId::Cram, true);
+        assert!(
+            models(other, &ctx(&sys, &wp, false)).cpu.is_none(),
+            "the chip keyed off the wrong lens"
+        );
+    }
+
+    /// Only `CpuRegs` expands it. `Cpu` alone — and the paused auto-show — get the compact chip,
+    /// which is the whole distinction between the two ids.
+    #[test]
+    fn only_cpu_regs_expands_the_chip() {
+        let sys = System::new(0x5EED);
+        let wp = Watchpoints::new(8);
+        let lines = |set: LensSet, paused: bool| {
+            models(set, &ctx(&sys, &wp, paused))
+                .cpu
+                .expect("a chip was expected")
+                .lines
+                .len()
+        };
+        let mut compact = LensSet::default();
+        compact.set(LensId::Cpu, true);
+        assert_eq!(lines(compact, false), 3, "Cpu alone is the compact chip");
+        assert_eq!(
+            lines(LensSet::default(), true),
+            3,
+            "and so is the paused auto-show"
+        );
+        let mut expanded = LensSet::default();
+        expanded.set(LensId::CpuRegs, true);
+        assert_eq!(
+            lines(expanded, false),
+            11,
+            "CpuRegs is the full register block"
         );
     }
 
