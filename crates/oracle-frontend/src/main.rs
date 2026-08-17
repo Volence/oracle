@@ -207,8 +207,10 @@ mod symbol_file;
 
 // On-screen output: a self-contained bitmap font, and the notification / status / paused overlay it draws.
 // Nothing in a window ever reads stdout, which is where every message used to go.
+mod commands;
 mod font;
 mod overlay;
+// mod palette; // Task 4
 // The Aether capability layer, hosted in this process (`--aether` / `--socket`). Two implementations with
 // one surface: the real one when the `aether` feature is on, a set of no-ops when it is not — so the run
 // loop below has a single shape and no `#[cfg]` of its own. See `bus.rs`'s module docs for the design and
