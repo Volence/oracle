@@ -17,3 +17,4 @@
 # Python tool bytecode
 __pycache__/
 .superpowers/
+.worktrees/
