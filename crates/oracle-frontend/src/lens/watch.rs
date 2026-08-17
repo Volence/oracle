@@ -230,16 +230,35 @@ mod tests {
         );
     }
 
+    /// The buffer fill every draw test below starts from, and **the reason it is not `0`**.
+    ///
+    /// The panel is `fill_rect(..., 0x0000_0000, PANEL_ALPHA)` — black alpha-blended. Over a black
+    /// buffer that is a *no-op*, so a `!= 0` test cannot see the largest thing `draw` paints: a
+    /// panel spanning the whole window used to pass containment untouched. `palette.rs:691` looks
+    /// like the same test but presses a key first so its **opaque** highlight bar draws; this
+    /// module has no opaque element, so the shape alone yields no coverage. Filling with a
+    /// distinctive colour and asserting changed-vs-untouched is what makes the panel visible, and
+    /// it is the pattern every lens draw test must copy.
+    const BG: u32 = 0x0012_3456;
+
+    /// The house margin idiom, re-derived so the assertions below can name the panel's own edges
+    /// rather than the area's — the two differ by exactly this, and that difference is the bug
+    /// class (ink in the letterbox) these tests exist to catch.
+    fn margin_of(px: usize) -> usize {
+        (2 * px).max(4)
+    }
+
     #[test]
     fn draw_paints_inside_area_only() {
         let (w, h) = (320usize, 224usize);
-        let mut buf = vec![0u32; w * h];
+        let mut buf = vec![BG; w * h];
         let area = Rect {
             x: 40,
             y: 20,
             w: 240,
             h: 180,
         };
+        let px = 1;
         let t = Ticker {
             lines: vec!["w0 vram $4A00 3F->12 @f811 Sonic_Move+$1C".to_string(); ROWS],
             armed: 2,
@@ -247,12 +266,20 @@ mod tests {
         };
         {
             let mut c = font::Canvas::new(&mut buf, w, h);
-            draw(&mut c, area, 1, &t);
+            draw(&mut c, area, px, &t);
         }
-        let painted = buf.iter().filter(|p| **p != 0).count();
-        assert!(painted > 0, "draw painted nothing");
+        // The panel alone is `panel_w * panel_h` pixels; text could never reach that. If this ever
+        // fails, the panel has gone invisible against BG again and every assertion below is blind.
+        let margin = margin_of(px);
+        let panel_w = area.w - 2 * margin;
+        let panel_h = (ROWS + 1) * font::LINE_H * px + 2 * (2 * px);
+        let painted = buf.iter().filter(|p| **p != BG).count();
+        assert!(
+            painted >= panel_w * panel_h,
+            "the panel left no mark: {painted} changed, panel is {panel_w}x{panel_h}"
+        );
         for (i, p) in buf.iter().enumerate() {
-            if *p != 0 {
+            if *p != BG {
                 let (x, y) = (i % w, i / w);
                 assert!(
                     x >= area.x && x < area.x + area.w && y >= area.y && y < area.y + area.h,
@@ -262,18 +289,68 @@ mod tests {
         }
     }
 
+    /// It is a **bottom** strip: it hugs the bottom edge of the picture (which is why toasts, which
+    /// stack from the same edge, can briefly cover it) and leaves the picture above it alone. Both
+    /// halves are asserted — an anchor that drifted to the top would otherwise pass every other
+    /// test in this module.
+    #[test]
+    fn the_strip_hugs_the_bottom_of_the_area() {
+        let (w, h) = (320usize, 224usize);
+        let mut buf = vec![BG; w * h];
+        let area = Rect {
+            x: 40,
+            y: 20,
+            w: 240,
+            h: 180,
+        };
+        let px = 1;
+        let t = Ticker {
+            lines: vec!["w0 vram $4A00 3F->12 @f811 $00ABCD".to_string(); ROWS],
+            armed: 1,
+            dropped: 0,
+        };
+        {
+            let mut c = font::Canvas::new(&mut buf, w, h);
+            draw(&mut c, area, px, &t);
+        }
+        let rows: Vec<usize> = buf
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| **p != BG)
+            .map(|(i, _)| i / w)
+            .collect();
+        assert!(!rows.is_empty(), "draw painted nothing");
+        // Row-major enumeration is row-ascending, so the ends of `rows` are the ink's extremes.
+        let (top_row, bottom_row) = (rows[0], rows[rows.len() - 1]);
+        let bottom_edge = area.y + area.h;
+        assert!(
+            bottom_edge - (bottom_row + 1) <= margin_of(px),
+            "the strip is not anchored to the bottom: last ink on row {bottom_row}, area ends at \
+             {bottom_edge}"
+        );
+        assert!(
+            top_row >= area.y + area.h / 2,
+            "ink reached the top half of the picture — this is a bottom strip, not a top one \
+             (first ink on row {top_row})"
+        );
+    }
+
     /// A very long symbol name must be truncated, not allowed to run past the panel — `Canvas`
     /// clips at the buffer edge only, so an unfitted string would paint over the whole window.
+    ///
+    /// The bound is the **panel's** right edge, not the area's: those differ by `margin`, and text
+    /// that stopped at the area edge would still have escaped the panel it is supposed to sit in.
     #[test]
     fn a_long_line_stays_inside_a_narrow_panel() {
         let (w, h) = (200usize, 400usize);
-        let mut buf = vec![0u32; w * h];
+        let mut buf = vec![BG; w * h];
         let area = Rect {
             x: 0,
             y: 0,
             w: 60,
             h: 400,
         };
+        let px = 2;
         let t = Ticker {
             lines: vec!["w0 vram $4A00 3F->12 @f811 ".to_string() + &"X".repeat(400)],
             armed: 1,
@@ -281,11 +358,18 @@ mod tests {
         };
         {
             let mut c = font::Canvas::new(&mut buf, w, h);
-            draw(&mut c, area, 2, &t);
+            draw(&mut c, area, px, &t);
         }
+        // left + panel_w == area.x + margin + (area.w - 2 * margin).
+        let panel_right = area.x + area.w - margin_of(px);
+        assert!(buf.iter().any(|p| *p != BG), "draw painted nothing");
         for (i, p) in buf.iter().enumerate() {
-            if *p != 0 {
-                assert!(i % w < area.w, "ink escaped the panel at x={}", i % w);
+            if *p != BG {
+                assert!(
+                    i % w < panel_right,
+                    "ink escaped the panel (right edge {panel_right}) at x={}",
+                    i % w
+                );
             }
         }
     }
@@ -293,11 +377,11 @@ mod tests {
     /// An area too short to hold the panel draws **nothing** — and, just as important, does not
     /// underflow computing where the panel's top would be (`area.y + area.h - margin - panel_h` is
     /// `usize` arithmetic; this is the hazard class `draw_narrow_panel_does_not_underflow` pins for
-    /// the palette).
+    /// the palette). The area is comfortably **wide** enough, so only the height clause can fire.
     #[test]
     fn a_short_area_draws_nothing_and_does_not_underflow() {
         let (w, h) = (64usize, 64usize);
-        let mut buf = vec![0u32; w * h];
+        let mut buf = vec![BG; w * h];
         let t = Ticker {
             lines: vec!["w0 bus $0100 0->1 @f811 $00ABCD".to_string(); ROWS],
             armed: 1,
@@ -318,20 +402,55 @@ mod tests {
             );
         }
         assert!(
-            buf.iter().all(|p| *p == 0),
+            buf.iter().all(|p| *p == BG),
             "a panel was drawn into an area too short to hold it"
         );
     }
 
-    /// The header turns amber once the ring has dropped hits: the strip is then knowingly
-    /// incomplete, and a reader who cannot see that reads the gap as quiet.
+    /// The other half of the guard: an area with all the height in the world but too narrow to hold
+    /// a legible line draws nothing either. Nothing underflows here — `panel_w` merely saturates to
+    /// 0 and `fit` yields nothing — but the guard reads as load-bearing, so it is held to that.
     #[test]
-    fn a_dropped_hit_recolours_the_header() {
+    fn a_narrow_area_draws_nothing() {
+        let (w, h) = (64usize, 240usize);
+        let mut buf = vec![BG; w * h];
+        let t = Ticker {
+            lines: vec!["w0 bus $0100 0->1 @f811 $00ABCD".to_string(); ROWS],
+            armed: 1,
+            dropped: 0,
+        };
+        {
+            let mut c = font::Canvas::new(&mut buf, w, h);
+            draw(
+                &mut c,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 20,
+                    h: 240,
+                },
+                2,
+                &t,
+            );
+        }
+        assert!(
+            buf.iter().all(|p| *p == BG),
+            "a panel was drawn into an area too narrow to hold a line"
+        );
+    }
+
+    /// The header turns amber once the ring has dropped hits: the strip is then knowingly
+    /// incomplete, and a reader who cannot see that reads the gap as quiet. The **body** lines stay
+    /// `INFO` throughout — the amber means "this list is a sample", so amber on the list itself
+    /// would say the opposite. Rendered with a line present so both can be told apart, and asserted
+    /// by row order rather than fixed coordinates: the amber must sit *above* the INFO body.
+    #[test]
+    fn a_dropped_hit_recolours_the_header_but_not_the_lines() {
+        let (w, h) = (320usize, 224usize);
         let render = |dropped: u64| {
-            let (w, h) = (320usize, 224usize);
-            let mut buf = vec![0u32; w * h];
+            let mut buf = vec![BG; w * h];
             let t = Ticker {
-                lines: Vec::new(),
+                lines: vec!["w0 bus $0100 0->1 @f811 $00ABCD".to_string()],
                 armed: 1,
                 dropped,
             };
@@ -341,11 +460,36 @@ mod tests {
             }
             buf
         };
+        let rows_of = |buf: &[u32], color: u32| -> Vec<usize> {
+            buf.iter()
+                .enumerate()
+                .filter(|(_, p)| **p == color)
+                .map(|(i, _)| i / w)
+                .collect()
+        };
         let clean = render(0);
+        assert!(
+            rows_of(&clean, ACCENT).is_empty(),
+            "nothing is amber while nothing has been dropped"
+        );
+        assert!(
+            !rows_of(&clean, INFO).is_empty(),
+            "a clean strip is drawn in INFO"
+        );
+
         let lossy = render(1);
-        assert!(clean.contains(&INFO), "a clean header is drawn in INFO");
-        assert!(!clean.contains(&ACCENT), "and never in ACCENT");
-        assert!(lossy.contains(&ACCENT), "a lossy header is drawn in ACCENT");
-        assert!(!lossy.contains(&INFO), "and not also in INFO");
+        let amber = rows_of(&lossy, ACCENT);
+        let white = rows_of(&lossy, INFO);
+        assert!(!amber.is_empty(), "a dropped hit draws the header amber");
+        assert!(!white.is_empty(), "and leaves the body line INFO");
+        assert!(
+            amber.iter().max() < white.iter().min(),
+            "the amber must be the header, above the INFO body line (amber rows \
+             {:?}..{:?}, INFO rows {:?}..{:?})",
+            amber.iter().min(),
+            amber.iter().max(),
+            white.iter().min(),
+            white.iter().max()
+        );
     }
 }
