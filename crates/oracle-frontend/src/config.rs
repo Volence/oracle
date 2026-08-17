@@ -132,6 +132,90 @@ pub fn serialize(c: &Config) -> String {
     )
 }
 
+/// Where the file lives: `$XDG_CONFIG_HOME/oracle/player.conf`, else
+/// `$HOME/.config/oracle/player.conf`, else nowhere (a system with neither var set gets an
+/// in-memory-only session — settings simply don't persist, nothing errors).
+pub fn config_path() -> Option<std::path::PathBuf> {
+    config_path_with(|k| std::env::var_os(k))
+}
+
+/// The testable half: same logic over an arbitrary environment lookup.
+fn config_path_with(
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Option<std::path::PathBuf> {
+    let base = match lookup("XDG_CONFIG_HOME") {
+        Some(x) => std::path::PathBuf::from(x),
+        None => std::path::PathBuf::from(lookup("HOME")?).join(".config"),
+    };
+    Some(base.join("oracle").join("player.conf"))
+}
+
+/// A load never fails: the worst outcomes are defaults. `recovered` = the file was corrupt and
+/// has been renamed to `.bak` (spec §7 — evidence preserved, never silently overwritten).
+pub struct Loaded {
+    pub config: Config,
+    pub warnings: Vec<String>,
+    pub recovered: bool,
+}
+
+pub fn load(path: &std::path::Path) -> Loaded {
+    let defaults = || Loaded {
+        config: Config::default(),
+        warnings: Vec::new(),
+        recovered: false,
+    };
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return defaults(),
+        // Unreadable-but-present (permissions, invalid UTF-8, ...) is corruption too.
+        Err(e) => return back_up(path, format!("config: {} unreadable ({e})", path.display())),
+    };
+    match parse(&text) {
+        Ok(p) => Loaded {
+            config: p.config,
+            warnings: p.warnings,
+            recovered: false,
+        },
+        Err(line) => back_up(
+            path,
+            format!("config: {} line {line} malformed", path.display()),
+        ),
+    }
+}
+
+fn back_up(path: &std::path::Path, why: String) -> Loaded {
+    let bak = path.with_extension("conf.bak");
+    let warnings = vec![if bak.exists() {
+        // First evidence wins: never clobber an existing backup with a second corruption.
+        // The live corrupt file stays put — the next in-session save overwrites it with a
+        // good config, and the original backup remains intact.
+        format!(
+            "{why} — a previous backup already exists at {}; using defaults, file left in place",
+            bak.display()
+        )
+    } else if std::fs::rename(path, &bak).is_ok() {
+        format!("{why} — backed up to {} and using defaults", bak.display())
+    } else {
+        format!("{why} — could not back it up; using defaults, file left in place")
+    }];
+    Loaded {
+        config: Config::default(),
+        warnings,
+        recovered: true,
+    }
+}
+
+/// Atomic save: temp file in the same directory, then rename — a crash mid-write can never
+/// leave a half-written config (the `.srm` writer's rule). Creates the directory on first save.
+pub fn save(path: &std::path::Path, c: &Config) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("conf.tmp");
+    std::fs::write(&tmp, serialize(c))?;
+    std::fs::rename(&tmp, path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,5 +293,134 @@ mod tests {
         ] {
             assert!(s.contains(key), "serialize dropped `{key}`");
         }
+    }
+
+    #[test]
+    fn path_prefers_xdg_then_home() {
+        let lookup = |k: &str| match k {
+            "XDG_CONFIG_HOME" => Some(std::ffi::OsString::from("/xdg")),
+            "HOME" => Some(std::ffi::OsString::from("/home/u")),
+            _ => None,
+        };
+        assert_eq!(
+            config_path_with(lookup),
+            Some(std::path::PathBuf::from("/xdg/oracle/player.conf"))
+        );
+        let no_xdg = |k: &str| (k == "HOME").then(|| std::ffi::OsString::from("/home/u"));
+        assert_eq!(
+            config_path_with(no_xdg),
+            Some(std::path::PathBuf::from(
+                "/home/u/.config/oracle/player.conf"
+            ))
+        );
+        assert_eq!(config_path_with(|_| None), None);
+    }
+
+    #[test]
+    fn load_missing_is_clean_defaults() {
+        let dir = scratch_dir("load_missing");
+        let out = load(&dir.join("player.conf"));
+        assert_eq!(out.config, Config::default());
+        assert!(out.warnings.is_empty());
+        assert!(!out.recovered);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_then_load_round_trips_on_disk() {
+        let dir = scratch_dir("save_load");
+        let path = dir.join("player.conf");
+        let c = Config {
+            volume: 2,
+            deadzone: 0.25,
+            ..Default::default()
+        };
+        save(&path, &c).expect("save must succeed");
+        let out = load(&path);
+        assert_eq!(out.config, c);
+        assert!(out.warnings.is_empty() && !out.recovered);
+        // Atomicity leaves no droppings on the happy path.
+        assert!(!path.with_extension("conf.tmp").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupt_file_is_backed_up_and_defaults_load() {
+        let dir = scratch_dir("corrupt");
+        let path = dir.join("player.conf");
+        std::fs::write(&path, "volume = 4\nthis line is not a setting\n").unwrap();
+        let out = load(&path);
+        assert_eq!(
+            out.config,
+            Config::default(),
+            "corruption must not half-apply"
+        );
+        assert!(out.recovered);
+        assert!(
+            out.warnings.iter().any(|w| w.contains(".bak")),
+            "toast names the backup"
+        );
+        let bak = path.with_extension("conf.bak");
+        assert!(bak.exists(), "evidence preserved");
+        assert!(std::fs::read_to_string(bak)
+            .unwrap()
+            .contains("not a setting"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn second_corruption_never_overwrites_first_backup() {
+        let dir = scratch_dir("corrupt_twice");
+        let path = dir.join("player.conf");
+        let bak = path.with_extension("conf.bak");
+
+        std::fs::write(&path, "volume = 4\nfirst corruption\n").unwrap();
+        let first = load(&path);
+        assert!(first.recovered);
+        assert!(bak.exists(), "first backup created");
+        assert!(std::fs::read_to_string(&bak)
+            .unwrap()
+            .contains("first corruption"));
+
+        std::fs::write(&path, "volume = 4\nsecond corruption\n").unwrap();
+        let second = load(&path);
+        assert!(second.recovered);
+        assert_eq!(
+            second.config,
+            Config::default(),
+            "second corruption must still yield defaults"
+        );
+        let bak_contents = std::fs::read_to_string(&bak).unwrap();
+        assert!(
+            bak_contents.contains("first corruption"),
+            "the original evidence must survive a second corruption"
+        );
+        assert!(
+            !bak_contents.contains("second corruption"),
+            "the backup must not be clobbered"
+        );
+        assert!(
+            second.warnings.iter().any(|w| w.contains(".bak")),
+            "warning mentions the existing backup"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A scratch **directory** these IO tests own outright, matching the house pattern in
+    /// `sram_file.rs`'s `unique_temp_dir`: OS temp dir + tag + nanos + thread id, so parallel
+    /// test runs never collide. The caller removes it.
+    fn scratch_dir(tag: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        p.push(format!(
+            "oracle_config_{tag}_{nanos}_{:?}",
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&p).expect("create the scratch directory");
+        p
     }
 }
