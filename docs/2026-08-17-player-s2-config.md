@@ -35,11 +35,11 @@ Everything from the S1 checklist (`docs/2026-08-17-player-s1-palette.md`), plus:
 
 ## Registered follow-ups
 
-- **F-CONFIG-UNKNOWN-KEYS** (ruled DEFER, adjudicated): parse warns-and-ignores unknown keys but
-  save drops them. **Mechanical reversal: the first commit widening the key set past six (S3's
-  `lens.*` etc.) MUST land unknown-key preservation + round-trip test in that same commit.**
-  Anchor: `crates/oracle-frontend/src/config.rs` (`Parsed`/`serialize`). The emitted file header
-  already tells the truth about the drop (`b1d217c`).
+- ~~**F-CONFIG-UNKNOWN-KEYS**~~ **CLOSED in S3's lens-spine commit.** The reversal fired exactly as
+  adjudicated: the seventh key (`lenses`) landed together with `Config::unknown`, a `serialize` that
+  writes unrecognised keys back verbatim, a truthful file header and main.rs banner, and
+  `an_unknown_key_survives_a_save` (plus a strengthened `round_trip_is_identity`, whose fixture now
+  carries a preserved key). Anchor: `crates/oracle-frontend/src/config.rs`.
 - Non-gamepad builds carry a bare `0.5` deadzone default literal in `main.rs` with no
   compile-time tie to `gamepad::STICK_DEADZONE` (feature-variant drift risk; commented).
 - Spec-§7 residue: no palette commands for aspect/scale exist yet (lands with the settings-UI

@@ -66,21 +66,21 @@
 //!
 //! ## Settings
 //!
-//! Six values persist between runs in a flat `key = value` file at
+//! Seven values persist between runs in a flat `key = value` file at
 //! `$XDG_CONFIG_HOME/oracle/player.conf` (falling back to `$HOME/.config/oracle/player.conf`; a system
 //! with neither variable set runs fine and simply does not persist): `volume`, `muted`,
-//! `aspect`, `scale`, `status_line` and `deadzone` — see [`config`]. **A CLI flag beats the file**, which
-//! beats the built-in default, so `--scale 4` is a one-run override and never rewrites what is stored.
-//! Changing the volume, the mute toggle or the F3 status line saves automatically: the write is debounced
-//! by two seconds (a held volume ramp is one write, not ten) and flushed again on quit if anything is
-//! still outstanding. A session that changed nothing writes nothing.
+//! `aspect`, `scale`, `status_line`, `deadzone` and `lenses` — see [`config`]. **A CLI flag beats the
+//! file**, which beats the built-in default, so `--scale 4` is a one-run override and never rewrites what
+//! is stored. Changing the volume, the mute toggle, the F3 status line or any lens saves automatically:
+//! the write is debounced by two seconds (a held volume ramp is one write, not ten) and flushed again on
+//! quit if anything is still outstanding. A session that changed nothing writes nothing.
 //!
 //! A file that is structurally corrupt is renamed to `.bak` and defaults load in its place — the evidence
-//! is kept, nothing crashes, and the toast on screen says which. An unknown key, or a value out of range,
-//! costs only that key at *load*: it warns once and the default stands, so reading a file is never
-//! destructive. Writing one is: the saver emits exactly the six keys it knows, so the next autosave drops
-//! an unknown key rather than carrying it through. Preserving them is deferred (`F-CONFIG-UNKNOWN-KEYS`)
-//! until the key set actually widens. Key bindings are not stored yet (a later slice).
+//! is kept, nothing crashes, and the toast on screen says which. A value out of range costs only that key
+//! at *load*: it warns once and the default stands. An unknown **key** warns and is then carried through
+//! — kept verbatim and written back out by the next save (`F-CONFIG-UNKNOWN-KEYS`, reversed here now that
+//! the key set has widened past six), so launching an older build once can no longer delete what a newer
+//! build wrote. Key bindings are not stored yet (a later slice).
 //!
 //! ## Pixels — why the window is painted from the per-scanline seam
 //!
@@ -235,6 +235,8 @@ mod commands;
 // load-with-recovery and atomic save.
 mod config;
 mod font;
+// Lenses: read-only overlays over the picture, each its own toggle command (spec §5).
+mod lens;
 mod overlay;
 mod palette;
 // The Aether capability layer, hosted in this process (`--aether` / `--socket`). Two implementations with
@@ -958,6 +960,8 @@ fn main() {
     // pushed here (see `notify`), because the window is where the user is looking.
     let mut ov = Overlay::new();
     ov.status_line = cfg.status_line;
+    // Lenses come back on exactly as they were left (spec §5).
+    let mut lenses = cfg.lenses;
     let mut slots_on_disk = probe_slots(&args.rom_path);
 
     // The per-scanline pixel path (`F-SCANLINE-CAPTURE`). Attached to **every** run below so the window shows
@@ -1145,6 +1149,22 @@ fn main() {
                     ov.status_line = !ov.status_line;
                     cfg.status_line = ov.status_line;
                     config_save_countdown = Some(CONFIG_AUTOSAVE_DEBOUNCE_FRAMES);
+                }
+                // The lens set is the frontend's own state, persisted through the same debounce as
+                // every other setting. Nothing draws yet — the lenses themselves land next; the
+                // toast is what tells you the toggle took.
+                commands::Cmd::ToggleLens(id) => {
+                    lenses.toggle(id);
+                    cfg.lenses = lenses;
+                    config_save_countdown = Some(CONFIG_AUTOSAVE_DEBOUNCE_FRAMES);
+                    ov.push(
+                        format!(
+                            "{} {}",
+                            id.label(),
+                            if lenses.is_on(id) { "ON" } else { "OFF" }
+                        ),
+                        INFO,
+                    );
                 }
                 // W dumps the recorded hits; C disarms the watch (dropping it back out of the run's sink).
                 commands::Cmd::DumpHits => {

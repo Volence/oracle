@@ -1,17 +1,19 @@
 //! The player's persistent settings (spec §7). One flat `key = value` file, hand-parsed —
-//! deliberately not TOML/serde: six typed keys need ~60 lines, not a dependency tree.
+//! deliberately not TOML/serde: a handful of typed keys need ~60 lines, not a dependency tree.
 //!
 //! Failure model (spec §7): a file that is STRUCTURALLY corrupt (unreadable bytes, a line
 //! that is not `key = value`, a comment, or blank) is renamed to `.bak` and defaults load —
-//! never a crash, never a silent overwrite of evidence. A key we don't know, or a value that
-//! doesn't parse, is a per-key warning and the default for that key: an older build reading a
-//! newer build's file must not nuke it (forward compatibility).
+//! never a crash, never a silent overwrite of evidence. A value that doesn't parse is a per-key
+//! warning and the default for that key. A **key** we don't know is a warning and is then kept
+//! verbatim and written back out on the next save (F-CONFIG-UNKNOWN-KEYS): forward compatibility
+//! that survives writing, not only reading — otherwise launching an older build once would warn
+//! politely and then delete every setting a newer build wrote.
 
 use crate::present::Aspect;
 
 /// Everything the file can hold, always fully typed with the built-in default in place.
-/// Fields deliberately mirror the runtime locals they feed; bindings/lenses/views arrive with
-/// their own slices (S3-S5), not here.
+/// Fields deliberately mirror the runtime locals they feed; bindings/views arrive with their own
+/// slices (S4-S5), not here.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Config {
     /// Output volume step, clamped 0..=10 (the audio module's step count; stored plainly so a
@@ -28,6 +30,14 @@ pub struct Config {
     /// Analog stick deadzone, clamped 0.05..=0.95 (0.0 would make drift into input; 1.0 would
     /// make sticks dead).
     pub deadzone: f32,
+    /// Which lenses are on (spec §5). One flat key rather than one per lens: six booleans in six
+    /// keys would be six chances for a stale file to disagree with itself.
+    pub lenses: crate::lens::LensSet,
+    /// Keys this build does not recognise, kept verbatim and written back out (F-CONFIG-UNKNOWN-KEYS).
+    /// Order is file order, so a save is a fixed point rather than a reshuffle. This is what makes
+    /// "warn and continue" honest: without it, an older build reading a newer build's file warns
+    /// politely and then deletes the setting at the next autosave.
+    pub unknown: Vec<(String, String)>,
 }
 
 pub const VOLUME_MAX: u8 = 10;
@@ -41,14 +51,19 @@ impl Default for Config {
             scale: 3,
             status_line: false,
             deadzone: crate::gamepad_default_deadzone(),
+            // Every lens off: a fresh install stays pixel-identical to pre-S3.
+            lenses: crate::lens::LensSet::default(),
+            unknown: Vec::new(),
         }
     }
 }
 
 /// A parsed file: the config plus one human line per ignored key/value (shown as toasts once
-/// at load). Loading never rewrites the file, so an unknown key survives a read-only session
-/// intact — but [`serialize`] emits only the six keys it knows, so the next *save* does drop it.
-/// That is the deliberate trade: forward compatibility for reading, one flat writer for writing.
+/// at load). Loading never rewrites the file, and [`serialize`] writes unrecognised keys back
+/// out from `Config::unknown`, so a key this build has never heard of survives a full
+/// load-edit-save cycle unchanged (F-CONFIG-UNKNOWN-KEYS). A *value* that fails to parse under a
+/// key we do know is still replaced by that key's default — we know what the key means, so the
+/// typed default is the honest answer.
 pub struct Parsed {
     pub config: Config,
     pub warnings: Vec<String>,
@@ -108,7 +123,17 @@ pub fn parse(text: &str) -> Result<Parsed, usize> {
                     "config: ignored {key} (want 0.05..=0.95, got `{value}`)"
                 )),
             },
-            _ => warnings.push(format!("config: ignored {key} (unknown key)")),
+            "lenses" => {
+                let (set, mut w) = crate::lens::parse_set(value);
+                c.lenses = set;
+                warnings.append(&mut w);
+            }
+            _ => {
+                warnings.push(format!(
+                    "config: kept {key} (unknown key, preserved on save)"
+                ));
+                c.unknown.push((key.to_string(), value.to_string()));
+            }
         }
     }
     Ok(Parsed {
@@ -118,20 +143,26 @@ pub fn parse(text: &str) -> Result<Parsed, usize> {
 }
 
 /// Renders every field as one `key = value` line, plus the two `#` header lines whose wording
-/// must stay in sync with the module doc's failure-model description above.
+/// must stay in sync with the module doc's failure-model description above, plus any keys this
+/// build did not recognise, verbatim and last.
 pub fn serialize(c: &Config) -> String {
     let on_off = |b: bool| if b { "on" } else { "off" };
-    format!(
-        "# oracle player settings — edited in-app. Hand edits are fine, but keys this build does\n\
-         # not know are warned about at load and DROPPED by the next in-app save (a malformed line backs the file up to .bak).\n\
-         volume = {}\nmuted = {}\naspect = {}\nscale = {}\nstatus_line = {}\ndeadzone = {}\n",
+    let mut out = format!(
+        "# oracle player settings — edited in-app. Hand edits are fine; keys this build does not\n\
+         # know are warned about at load and written back unchanged (a malformed line backs the file up to .bak).\n\
+         volume = {}\nmuted = {}\naspect = {}\nscale = {}\nstatus_line = {}\ndeadzone = {}\nlenses = {}\n",
         c.volume,
         on_off(c.muted),
         c.aspect.name(),
         c.scale,
         on_off(c.status_line),
         c.deadzone,
-    )
+        crate::lens::format_set(c.lenses),
+    );
+    for (k, v) in &c.unknown {
+        out.push_str(&format!("{k} = {v}\n"));
+    }
+    out
 }
 
 /// Where the file lives: `$XDG_CONFIG_HOME/oracle/player.conf`, else
@@ -231,10 +262,24 @@ mod tests {
             scale: 5,
             status_line: true,
             deadzone: 0.35,
+            lenses: {
+                let mut l = crate::lens::LensSet::default();
+                l.set(crate::lens::LensId::Sprites, true);
+                l
+            },
+            unknown: vec![("kept".to_string(), "value".to_string())],
         };
         let p = parse(&serialize(&c)).expect("own output must parse");
         assert_eq!(p.config, c);
-        assert!(p.warnings.is_empty(), "own output warned: {:?}", p.warnings);
+        // The fixture carries a preserved unknown key, and a preserved key stays unknown — so it
+        // warns again on every load, by design (the user should keep being told). That is the one
+        // warning permitted here; pinning it exactly is stricter than the pre-S3 `is_empty()`,
+        // which no longer states a true property once unknown keys survive the save.
+        assert_eq!(
+            p.warnings,
+            vec!["config: kept kept (unknown key, preserved on save)".to_string()],
+            "own output warned about a known key"
+        );
     }
 
     #[test]
@@ -245,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_key_warns_and_is_ignored() {
+    fn unknown_key_warns_and_is_preserved() {
         let p = parse("future_key = 7\nvolume = 4\n").expect("unknown keys are not corruption");
         assert_eq!(p.config.volume, 4);
         assert_eq!(p.warnings.len(), 1);
@@ -253,6 +298,57 @@ mod tests {
             p.warnings[0].contains("future_key"),
             "warning names the key"
         );
+        assert_eq!(
+            p.config.unknown,
+            vec![("future_key".to_string(), "7".to_string())],
+            "an unknown key is kept, not dropped"
+        );
+    }
+
+    /// F-CONFIG-UNKNOWN-KEYS, the reversal S2 registered: a key this build does not know must
+    /// survive a full load-save cycle byte-for-byte. Without this, launching an older build once
+    /// silently deletes every setting a newer build wrote — the failure mode the whole
+    /// warn-and-continue parse path exists to prevent.
+    #[test]
+    fn an_unknown_key_survives_a_save() {
+        let text = "volume = 4\nlens_from_2027 = spectacular\nview.heatmap.dock = right\n";
+        let p = parse(text).expect("unknown keys are not corruption");
+        let out = serialize(&p.config);
+        assert!(
+            out.contains("lens_from_2027 = spectacular"),
+            "value preserved verbatim"
+        );
+        assert!(
+            out.contains("view.heatmap.dock = right"),
+            "all of them, not just the first"
+        );
+        let again = parse(&out).expect("our own output parses");
+        assert_eq!(again.config, p.config, "a second cycle is a fixed point");
+        assert_eq!(again.config.unknown.len(), 2);
+        // The keys stay unknown, so the user keeps being told — one warning each, every load.
+        assert_eq!(again.warnings.len(), 2);
+    }
+
+    #[test]
+    fn the_lens_set_round_trips_through_the_file() {
+        let mut lenses = crate::lens::LensSet::default();
+        lenses.set(crate::lens::LensId::Watch, true);
+        lenses.set(crate::lens::LensId::Hover, true);
+        let c = Config {
+            lenses,
+            ..Config::default()
+        };
+        let p = parse(&serialize(&c)).expect("own output must parse");
+        assert_eq!(p.config.lenses, lenses);
+        assert!(p.warnings.is_empty(), "own output warned: {:?}", p.warnings);
+    }
+
+    #[test]
+    fn an_unknown_lens_name_warns_without_losing_the_known_ones() {
+        let p = parse("lenses = watch,not_a_lens\n").expect("not corruption");
+        assert!(p.config.lenses.is_on(crate::lens::LensId::Watch));
+        assert_eq!(p.warnings.len(), 1);
+        assert!(p.warnings[0].contains("not_a_lens"));
     }
 
     #[test]
@@ -292,6 +388,7 @@ mod tests {
             "scale",
             "status_line",
             "deadzone",
+            "lenses",
         ] {
             assert!(s.contains(key), "serialize dropped `{key}`");
         }
