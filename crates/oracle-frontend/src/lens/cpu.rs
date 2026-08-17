@@ -8,6 +8,10 @@ use crate::{font, MAX_SYMBOL_DISPLACEMENT};
 use oracle_core::m68000::registers::Registers;
 use oracle_core::symbols::SymbolTable;
 
+/// The compact head — `PC`, `SR`, frame. Everything [`model`] appends past it is the expanded
+/// register block, and [`form`] degrades to exactly this head when the block will not fit.
+const COMPACT_LINES: usize = 3;
+
 /// What the chip draws: already-formatted lines, top to bottom, plus why it is on screen.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Chip {
@@ -73,29 +77,71 @@ pub fn model(
     Chip { lines, paused }
 }
 
+/// The width the fixed-width lines need in device pixels.
+///
+/// Line 0 — the PC — is **exempt**: a symbol name has no bound, so truncating it is expected, and
+/// `Sonic_Move_Some…` still reads as an approximation of where you are. Every other line is
+/// fixed-width, and there truncation is a different thing entirely: `D0 DEADBE` is not a partial
+/// answer, it is a plausible-looking wrong 32-bit value. So the register block is only ever drawn
+/// at a width that holds it whole.
+fn fixed_width(lines: &[String], px: usize) -> usize {
+    lines
+        .iter()
+        .skip(1)
+        .map(|l| font::text_width(l) * px)
+        .max()
+        .unwrap_or(0)
+}
+
+/// How many of `lines` to draw: all of them, the compact head, or none.
+///
+/// **Turning on more information must never remove all of it.** At `px = 1` the expanded block
+/// needs 96 rows where the compact chip needs 32, so on a picture between the two, bailing outright
+/// would make switching `cpu_regs` *on* hide the chip — and, because the chip auto-shows when the
+/// machine stops, it would take the paused readout with it. The same reasoning covers width, where
+/// bailing would instead have meant truncated register values. So the form degrades one step, to
+/// the three lines that always fit if anything does, and only then gives up.
+fn form(lines: &[String], area: Rect, px: usize) -> usize {
+    let pad = 2 * px;
+    let margin = (2 * px).max(4);
+    let fits = |n: usize| {
+        n > 0
+            && n * font::LINE_H * px + 2 * pad + margin <= area.h
+            && fixed_width(&lines[..n], px) + 2 * pad + 2 * margin <= area.w
+    };
+    let head = COMPACT_LINES.min(lines.len());
+    if fits(lines.len()) {
+        lines.len()
+    } else if fits(head) {
+        head
+    } else {
+        0
+    }
+}
+
 /// Top-right of `area`, sized to its widest line so the expanded block does not shove the compact
 /// one around — and clamped to the picture, so a long symbol name cannot push the panel out into
 /// the letterbox.
 pub fn draw(c: &mut font::Canvas, area: Rect, px: usize, chip: &Chip) {
+    let n = form(&chip.lines, area, px);
+    if n == 0 {
+        return;
+    }
+    let lines = &chip.lines[..n];
     let pad = 2 * px;
     let margin = (2 * px).max(4);
     let line_h = font::LINE_H * px;
-    let panel_h = chip.lines.len() * line_h + 2 * pad;
-    let widest = chip
-        .lines
+    let panel_h = n * line_h + 2 * pad;
+    let widest = lines
         .iter()
         .map(|l| font::text_width(l) * px)
         .max()
         .unwrap_or(0);
-    let panel_w = (widest + 2 * pad).min(area.w.saturating_sub(2 * margin));
-    // Too small to say anything honestly — and the `panel_w == 0` clause is also what makes the
-    // `left` below safe. An `area.w` under `2 * margin` saturates `panel_w` to 0 and returns here;
-    // past that point `panel_w <= area.w - 2 * margin`, so `area.w - margin - panel_w >= margin`
-    // and the `usize` arithmetic cannot underflow (the
+    // `form` returning non-zero is what makes both of these safe: it guarantees
+    // `2 * pad + 2 * margin <= area.w`, so the subtraction below cannot underflow, and
+    // `panel_w <= area.w - 2 * margin`, so `area.w - margin - panel_w >= margin` (the
     // `draw_narrow_panel_does_not_underflow` hazard class).
-    if area.w < 16 * px || panel_w == 0 || area.h < panel_h + margin {
-        return;
-    }
+    let panel_w = (widest + 2 * pad).min(area.w - 2 * margin);
     let left = (area.x + area.w - margin - panel_w) as i32;
     let top = (area.y + margin) as i32;
     c.fill_rect(left, top, panel_w, panel_h, 0x0000_0000, font::PANEL_ALPHA);
@@ -103,7 +149,7 @@ pub fn draw(c: &mut font::Canvas, area: Rect, px: usize, chip: &Chip) {
     let avail = panel_w.saturating_sub(2 * pad);
     // Amber while stopped: the chip shows itself when the machine pauses, so it has to say so.
     let color = if chip.paused { ACCENT } else { INFO };
-    for (i, l) in chip.lines.iter().enumerate() {
+    for (i, l) in lines.iter().enumerate() {
         c.text(
             left + pad as i32,
             top + pad as i32 + (i * line_h) as i32,
@@ -122,10 +168,33 @@ mod tests {
     /// pair only), so the fixture is an explicit literal — the same shape `registers.rs`'s own
     /// tests use. `usp` and `ssp` are deliberately *different* and both recognisable, because the
     /// whole point of `addr_reg(7)` is choosing between them.
+    ///
+    /// **Every register holds a distinct value that names itself** (`D5` holds `D5000005`). That is
+    /// not decoration: with sixteen zeros, or with two registers sharing a value, a `model` that
+    /// paired every label with the *wrong* register's value would print a set of lines containing
+    /// all the right numbers and all the right names, and no assertion over either set alone could
+    /// tell. The pairing is the thing under test.
     fn regs() -> Registers {
         Registers {
-            d: [0; 8],
-            a: [0; 7],
+            d: [
+                0xD000_0000,
+                0xD100_0001,
+                0xD200_0002,
+                0xD300_0003,
+                0xD400_0004,
+                0xD500_0005,
+                0xD600_0006,
+                0xD700_0007,
+            ],
+            a: [
+                0xA000_0000,
+                0xA100_0001,
+                0xA200_0002,
+                0xA300_0003,
+                0xA400_0004,
+                0xA500_0005,
+                0xA600_0006,
+            ],
             usp: 0x0000_0BAD,
             ssp: 0x00FF_F000,
             pc: 0x00_1234,
@@ -147,7 +216,7 @@ mod tests {
     #[test]
     fn without_symbols_the_pc_is_raw_hex() {
         let c = model(&regs(), None, 42, false, false);
-        assert_eq!(c.lines.len(), 3, "compact is three lines");
+        assert_eq!(c.lines.len(), COMPACT_LINES, "compact is three lines");
         assert_eq!(c.lines[0], "PC $001234");
         assert_eq!(c.lines[1], "SR $2700 S7", "supervisor, mask 7");
         assert_eq!(c.lines[2], "F 42", "the frame counter is shown");
@@ -182,50 +251,68 @@ mod tests {
         assert_eq!(c.lines[1], "SR $0300 U3");
     }
 
-    /// A7 must come from `addr_reg(7)`, which picks ssp/usp by the supervisor bit — `regs.a[7]`
-    /// would panic (the array is 7 wide), and printing `usp` unconditionally would be wrong in
-    /// supervisor mode. **Both** modes are pinned: a hardcoded `ssp` passes the supervisor half on
-    /// its own, which is exactly the half-right bug the accessor exists to prevent.
+    /// Every register printed **against its own value**, asserted line by whole line.
+    ///
+    /// Membership assertions (`joined.contains("D0")`, `joined.contains("DEADBEEF")`) check the
+    /// labels as a set and the values as a set and never check the *pairing*, so a `model` that
+    /// printed `D0`'s label beside `D4`'s value — every register wrong under the right name, the
+    /// worst output a debugger readout can produce — passed all of them. Whole lines are the only
+    /// form that pins it, and they subsume the label, value and ordering checks besides.
+    ///
+    /// A7 comes from `addr_reg(7)`, which picks ssp/usp by the supervisor bit: `regs.a[7]` would
+    /// panic (the array is 7 wide), and printing `usp` unconditionally would be wrong in supervisor
+    /// mode. **Both** modes are pinned — a hardcoded `ssp` passes the supervisor half on its own,
+    /// which is exactly the half-right bug the accessor exists to prevent.
     #[test]
     fn expanded_shows_all_sixteen_registers_and_a7_follows_the_supervisor_bit() {
         let mut r = regs();
-        r.d[0] = 0xDEAD_BEEF;
-        r.d[7] = 0x0000_0007;
-        r.a[0] = 0x00C0_FFEE;
-        r.a[6] = 0x0000_00A6;
+        let block = |c: &Chip| -> Vec<String> { c.lines[COMPACT_LINES..].to_vec() };
+
         let c = model(&r, None, 0, false, true);
-        assert_eq!(c.lines.len(), 11, "3 + 4 D-lines + 4 A-lines");
-        let joined = c.lines.join("\n");
-        for name in ["D0", "D1", "D2", "D3", "D4", "D5", "D6", "D7"] {
-            assert!(joined.contains(name), "{name} missing");
-        }
-        for name in ["A0", "A1", "A2", "A3", "A4", "A5", "A6", "A7"] {
-            assert!(joined.contains(name), "{name} missing");
-        }
-        assert!(joined.contains("DEADBEEF"), "D0's value is shown");
-        assert!(joined.contains("00000007"), "D7's value is shown");
-        assert!(joined.contains("00C0FFEE"), "A0's value is shown");
-        assert!(joined.contains("000000A6"), "A6's value is shown");
-        assert!(
-            joined.contains("00FFF000"),
-            "A7 is the SSP in supervisor mode: {joined}"
+        assert_eq!(
+            c.lines.len(),
+            COMPACT_LINES + 8,
+            "3 + 4 D-lines + 4 A-lines"
+        );
+        assert_eq!(
+            block(&c),
+            [
+                "D0 D0000000  D4 D4000004",
+                "D1 D1000001  D5 D5000005",
+                "D2 D2000002  D6 D6000006",
+                "D3 D3000003  D7 D7000007",
+                "A0 A0000000  A4 A4000004",
+                "A1 A1000001  A5 A5000005",
+                "A2 A2000002  A6 A6000006",
+                "A3 A3000003  A7 00FFF000", // supervisor: A7 is the SSP
+            ]
         );
         assert!(
-            !joined.contains("00000BAD"),
-            "the USP is not A7 in supervisor mode: {joined}"
+            !c.lines.iter().any(|l| l.contains("00000BAD")),
+            "the USP leaked into supervisor-mode output: {:?}",
+            c.lines
         );
 
-        // The other half. Same registers, S clear: A7 must swap to the USP.
+        // The other half. Same registers, S clear: A7 — and only A7 — swaps to the USP.
         r.sr = 0x0000;
         let c = model(&r, None, 0, false, true);
-        let joined = c.lines.join("\n");
-        assert!(
-            joined.contains("00000BAD"),
-            "A7 is the USP in user mode: {joined}"
+        assert_eq!(
+            block(&c),
+            [
+                "D0 D0000000  D4 D4000004",
+                "D1 D1000001  D5 D5000005",
+                "D2 D2000002  D6 D6000006",
+                "D3 D3000003  D7 D7000007",
+                "A0 A0000000  A4 A4000004",
+                "A1 A1000001  A5 A5000005",
+                "A2 A2000002  A6 A6000006",
+                "A3 A3000003  A7 00000BAD", // user: A7 is the USP
+            ]
         );
         assert!(
-            !joined.contains("00FFF000"),
-            "the SSP is not A7 in user mode: {joined}"
+            !c.lines.iter().any(|l| l.contains("00FFF000")),
+            "the SSP leaked into user-mode output: {:?}",
+            c.lines
         );
     }
 
@@ -308,10 +395,135 @@ mod tests {
         }
     }
 
+    /// The degradation ladder, pinned at the layer that decides it. At `px = 1` the compact chip
+    /// needs 32 rows and 77 columns; the register block needs 96 and 155. Between the two, the
+    /// chip must **shrink, never vanish** — a lens toggle that removes the readout is the opposite
+    /// of what turning it on asked for, and it would take the paused auto-show down with it.
+    #[test]
+    fn the_form_degrades_to_the_compact_head_rather_than_vanishing() {
+        let px = 1;
+        let lines = model(&regs(), None, 7, false, true).lines;
+        assert_eq!(lines.len(), COMPACT_LINES + 8);
+        let at = |w: usize, h: usize| form(&lines, Rect { x: 0, y: 0, w, h }, px);
+
+        assert_eq!(at(320, 224), lines.len(), "a whole picture holds the block");
+        assert_eq!(
+            at(320, 60),
+            COMPACT_LINES,
+            "too short for the block is not too short for the chip"
+        );
+        assert_eq!(
+            at(120, 224),
+            COMPACT_LINES,
+            "too narrow for the block is not too narrow for the chip"
+        );
+        assert_eq!(
+            at(120, 60),
+            COMPACT_LINES,
+            "short and narrow, still the chip"
+        );
+        assert_eq!(at(320, 12), 0, "too short for even the compact chip");
+        assert_eq!(at(40, 224), 0, "too narrow for even the compact chip");
+    }
+
+    /// The same ladder in pixels, because `form` being right is no use if `draw` ignores it: on a
+    /// picture too small for the register block the chip still appears, and appears as exactly the
+    /// three compact lines.
+    #[test]
+    fn a_picture_too_small_for_the_register_block_still_draws_the_chip() {
+        let (w, h) = (400usize, 240usize);
+        let px = 1;
+        let chip = model(&regs(), None, 7, true, true);
+        let compact_h = COMPACT_LINES * font::LINE_H * px + 2 * (2 * px);
+        for (label, area) in [
+            (
+                "too short for the block",
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 320,
+                    h: 60,
+                },
+            ),
+            (
+                "too narrow for the block",
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 120,
+                    h: 224,
+                },
+            ),
+        ] {
+            let buf = render(w, h, area, px, &chip);
+            let (top, bottom, _, _) = ink_bounds(&buf, w)
+                .unwrap_or_else(|| panic!("{label}: the chip vanished instead of degrading"));
+            assert_eq!(
+                bottom - top + 1,
+                compact_h,
+                "{label}: drew something other than the compact three lines"
+            );
+        }
+    }
+
+    /// When the register block *is* drawn, it is drawn whole. `overlay::fit` truncating
+    /// `D0 D0000000` to `D0 D00000` would not be a partial answer, it would be a plausible-looking
+    /// wrong 32-bit value — which is why width, not just height, chooses the form.
+    ///
+    /// `REGISTER_LINE` is written out rather than derived from `fixed_width`: a bound computed from
+    /// the function under test moves with the bug and cannot catch it.
+    ///
+    /// Swept across **every** picture width rather than probed at one, which is the difference
+    /// between catching this and not. Checked at the single width where the block exactly fits,
+    /// a `fixed_width` stubbed to 0 still drew a wide-enough panel and the test passed against
+    /// precisely the bug it was written for; the truncation only appears at the widths *below*
+    /// that, which are the ones a boundary probe never visits.
+    #[test]
+    fn the_register_block_is_never_drawn_truncated() {
+        let px = 1;
+        let pad = 2 * px;
+        let (bw, bh) = (280usize, 240usize);
+        let chip = model(&regs(), None, 7, false, true);
+        // `D0 D0000000  D4 D4000004` — 24 glyphs.
+        assert_eq!(chip.lines[COMPACT_LINES].chars().count(), 24);
+        const REGISTER_LINE: usize = 24 * font::ADVANCE - 1; // 143 device px at px = 1
+
+        let mut widths_showing_the_block = 0;
+        for w in 0..bw - 40 {
+            let area = Rect {
+                x: 0,
+                y: 0,
+                w,
+                h: 224,
+            };
+            if form(&chip.lines, area, px) != chip.lines.len() {
+                continue; // degraded to the compact head, or absent: nothing to check here
+            }
+            widths_showing_the_block += 1;
+            let buf = render(bw, bh, area, px, &chip);
+            let (_, _, left, right) = ink_bounds(&buf, bw).expect("the block should have drawn");
+            let panel_w = right - left + 1;
+            assert!(
+                panel_w >= REGISTER_LINE + 2 * pad,
+                "at picture width {w} the block drew into a {panel_w}px panel, too narrow to hold \
+                 a whole register line ({})",
+                REGISTER_LINE + 2 * pad
+            );
+        }
+        assert!(
+            widths_showing_the_block > 0,
+            "the sweep never drew the block at all, so it checked nothing"
+        );
+    }
+
     /// It is a **top-right** chip. Containment alone cannot tell that from a bottom-left one — the
     /// watch ticker's own tests passed for a while with the strip anchored to the wrong edge — so
-    /// both axes are pinned from both sides: hard against the top-right corner (within one margin)
+    /// both axes are pinned from both sides: exactly one margin's gutter from the top-right corner,
     /// and nowhere near the opposite half of the picture.
+    ///
+    /// The gutters are pinned by **equality**, not `<= margin`: zero satisfies `<=`, so the looser
+    /// form let `top = area.y` through, and a chip flush against the picture's edge is the
+    /// untidiness anchoring to the picture was meant to avoid.
     #[test]
     fn the_chip_hugs_the_top_right_of_the_area() {
         let (w, h) = (320usize, 224usize);
@@ -327,15 +539,15 @@ mod tests {
         let buf = render(w, h, area, px, &chip);
         let (top, bottom, left, right) = ink_bounds(&buf, w).expect("draw painted nothing");
 
-        assert!(
-            top - area.y <= margin,
-            "not anchored to the top: first ink on row {top}, area starts at {}",
-            area.y
+        assert_eq!(
+            top,
+            area.y + margin,
+            "the top gutter is not exactly one margin (first ink on row {top})"
         );
-        assert!(
-            (area.x + area.w) - (right + 1) <= margin,
-            "not anchored to the right: last ink at column {right}, area ends at {}",
-            area.x + area.w
+        assert_eq!(
+            right + 1,
+            area.x + area.w - margin,
+            "the right gutter is not exactly one margin (last ink at column {right})"
         );
         assert!(
             bottom < area.y + area.h / 2,

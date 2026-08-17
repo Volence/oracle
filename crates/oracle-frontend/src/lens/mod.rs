@@ -174,7 +174,12 @@ pub fn models(set: LensSet, cx: &FrameCtx<'_>) -> Models {
     }
 }
 
-/// Draw every built model, in a fixed back-to-front order. Anchored to `area` (the picture), never
+/// Draw every built model, in a fixed back-to-front order — [`LensId::ALL`] order, so a later lens
+/// draws over an earlier one. The ticker (bottom) and the chip (top-right) only meet on a picture
+/// short enough for the chip's panel to reach the bottom strip, where the chip wins; that is the
+/// same overlap `watch.rs` already accepts against the toasts, and for the same reason.
+///
+/// Anchored to `area` (the picture), never
 /// the window: the letterbox stays black, and a tall window with a narrow picture must not make
 /// the font wider than the panel (the `draw_narrow_panel_does_not_underflow` hazard class).
 pub fn draw(buf: &mut [u32], w: usize, h: usize, area: Rect, m: &Models) {
@@ -400,33 +405,50 @@ mod tests {
         );
     }
 
-    /// Only `CpuRegs` expands it. `Cpu` alone — and the paused auto-show — get the compact chip,
-    /// which is the whole distinction between the two ids.
+    /// Only `CpuRegs` expands it — and it expands it **whether or not the machine is paused**.
+    ///
+    /// That second half is not a formality: pausing is the moment the register block exists for, so
+    /// a model that consulted `paused` when choosing the form would collapse the block to the
+    /// compact chip exactly when it was wanted. Every combination of the two CPU lenses against
+    /// both run states is covered, because with only the running rows tested that collapse passed.
     #[test]
     fn only_cpu_regs_expands_the_chip() {
+        const COMPACT: usize = 3;
+        const EXPANDED: usize = 11;
         let sys = System::new(0x5EED);
         let wp = Watchpoints::new(8);
-        let lines = |set: LensSet, paused: bool| {
+        let lines = |ids: &[LensId], paused: bool| {
+            let mut set = LensSet::default();
+            for id in ids {
+                set.set(*id, true);
+            }
             models(set, &ctx(&sys, &wp, paused))
                 .cpu
                 .expect("a chip was expected")
                 .lines
                 .len()
         };
-        let mut compact = LensSet::default();
-        compact.set(LensId::Cpu, true);
-        assert_eq!(lines(compact, false), 3, "Cpu alone is the compact chip");
+        for paused in [false, true] {
+            assert_eq!(
+                lines(&[LensId::Cpu], paused),
+                COMPACT,
+                "Cpu alone is the compact chip (paused={paused})"
+            );
+            assert_eq!(
+                lines(&[LensId::CpuRegs], paused),
+                EXPANDED,
+                "CpuRegs is the full register block (paused={paused})"
+            );
+            assert_eq!(
+                lines(&[LensId::Cpu, LensId::CpuRegs], paused),
+                EXPANDED,
+                "both on is still the register block (paused={paused})"
+            );
+        }
         assert_eq!(
-            lines(LensSet::default(), true),
-            3,
-            "and so is the paused auto-show"
-        );
-        let mut expanded = LensSet::default();
-        expanded.set(LensId::CpuRegs, true);
-        assert_eq!(
-            lines(expanded, false),
-            11,
-            "CpuRegs is the full register block"
+            lines(&[], true),
+            COMPACT,
+            "the paused auto-show is the compact chip"
         );
     }
 
