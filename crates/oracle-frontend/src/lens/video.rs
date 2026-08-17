@@ -1,5 +1,12 @@
-//! Video lenses (spec §5.2) — the things drawn *on* the picture rather than beside it. The CRAM
-//! strip and the sprite outlines so far; the hover callout joins them in the task after this one.
+//! Video lenses (spec §5.2) — the things drawn *on* the picture rather than beside it: the CRAM
+//! strip, the sprite outlines, and the hover callout.
+//!
+//! **Hover explains, click arms.** The callout only ever *reads*: clicking still arms a watch
+//! (main.rs:1046-1082, `pick.rs`), and nothing here touches that path. The two answer different
+//! questions about the same dot, which is why they do not share code — `pick::resolve` builds three
+//! `String`s and decodes the whole SAT a second time to describe a watch it is about to arm, and
+//! paying that every frame to label a pixel would be the tail wagging the dog. [`hover_text`] reads
+//! `Vdp::pixel_attribution` directly instead.
 //!
 //! The outlines are the first thing in the frontend anchored to a pixel *inside* the picture rather
 //! than to one of its corners, which is why they arrive together with
@@ -20,7 +27,7 @@
 
 use crate::font;
 use crate::present::Rect;
-use oracle_core::render::SpriteDecoded;
+use oracle_core::render::{sprite_tile_at, Layer, PixelAttribution, SpriteDecoded};
 
 // --- The CRAM strip (spec 5.2) -----------------------------------------------------------------
 
@@ -208,11 +215,159 @@ pub fn draw_sprites(
     }
 }
 
+// --- The hover callout (spec 5.2) --------------------------------------------------------------
+
+/// What the callout says, and the game pixel it says it about.
+///
+/// The text is assembled in the model rather than in the draw, like every other lens here: the draw
+/// path gets no `&System`, and the whole point of the split is that `pixel_attribution` — the one
+/// expensive read this lens makes — happens once, where it can be skipped when the lens is off.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Hover {
+    /// The callout text, already assembled.
+    pub text: String,
+    /// The game pixel it describes — the callout is drawn beside it.
+    pub at: (u16, u16),
+}
+
+/// The **panel body** behind the callout: a dark blue-grey rather than the other lenses' black.
+///
+/// The callout is the only lens that moves, so it is also the only one a reader has to *find*; a
+/// tint the other panels never use is what tells you at a glance that this is the thing following
+/// the cursor rather than a corner readout that happens to have drifted.
+const CALLOUT_PANEL: u32 = 0x000A_1418;
+
+/// How far the panel sits from the dot, in font-scale units — far enough that the callout does not
+/// sit on top of the pixel it is describing, close enough to read as attached to it.
+const CALLOUT_GAP: usize = 4;
+
+/// `slot 12 | tile $4A0 | pal 2 | pri 1` for a sprite, the plane's cell for a plane or the window,
+/// the CRAM entry for the backdrop.
+///
+/// **The separator is `|`, not the spec's `·`.** The 5x7 font has no middle dot (`font.rs:31-98`),
+/// and an unmapped character draws as a hollow box — so the spec's spelling would put three empty
+/// rectangles in the middle of every callout.
+///
+/// `sprites` is the frame's one `sprites_decoded()`, indexed by SAT slot, exactly as `pick.rs`
+/// indexes it. Nothing here allocates beyond the returned string.
+pub fn hover_text(attr: &PixelAttribution, sprites: &[SpriteDecoded]) -> String {
+    match attr.winner {
+        Layer::Sprite(index) => match sprites.get(usize::from(index)) {
+            // The decode is `parsed_sprite_max()` long at most; a winner past its end would mean
+            // the two disagreed, and naming a palette and a priority we did not read would be the
+            // same lie as inventing a tile.
+            None => format!("slot {index} | out of range"),
+            Some(s) => {
+                let pri = u8::from(s.priority);
+                match sprite_tile_at(s, attr.x, attr.y) {
+                    Some(t) => {
+                        format!(
+                            "slot {index} | tile ${t:03X} | pal {} | pri {pri}",
+                            s.palette
+                        )
+                    }
+                    // The SAT can move between the frame being drawn and this read (the same
+                    // one-frame skew the click path documents at main.rs:1044-1047), and then the
+                    // winning sprite's box no longer contains the dot. Say so rather than
+                    // inventing a tile — `pick.rs:131-133` makes exactly this distinction.
+                    None => format!("slot {index} | tile ? | pal {} | pri {pri}", s.palette),
+                }
+            }
+        },
+        Layer::Backdrop => format!(
+            "backdrop | cram {} (pal {} col {})",
+            attr.cram_index,
+            attr.cram_index / 16,
+            attr.cram_index % 16
+        ),
+        Layer::PlaneA | Layer::PlaneB | Layer::Window => {
+            let plane = match attr.winner {
+                Layer::PlaneA => "plane A",
+                Layer::PlaneB => "plane B",
+                _ => "window",
+            };
+            match &attr.cell {
+                Some(cell) => format!(
+                    "{plane} | tile ${:03X} | pal {} | pri {}",
+                    cell.tile,
+                    cell.palette,
+                    u8::from(cell.priority)
+                ),
+                // `PixelAttribution::cell` is `None` for a blanked line (display off, or the
+                // leftmost-column blank), where there is a winning *layer* but no nametable cell
+                // behind it.
+                None => format!("{plane} | no cell"),
+            }
+        }
+    }
+}
+
+/// Drawn beside the dot, **flipped to the other side of it** when the panel would otherwise run off
+/// the picture — a callout that leaves the picture is worse than one on the wrong side of the
+/// cursor, and the letterbox has to stay black.
+///
+/// The flips are independent per axis, because the two edges are reached independently: a dot in
+/// the bottom-left corner flips vertically and not horizontally. Each flipped edge is then held
+/// inside `area` (`.max(area.x)` / `.max(area.y)`), which is what a picture narrower than twice the
+/// panel needs — there the flip alone would put the panel out the *other* side.
+///
+/// `native` is the blitted frame's source size, the same pair [`draw_sprites`] takes and for the
+/// same reason: the callout has to land where the picture is.
+pub fn draw_hover(c: &mut font::Canvas, area: Rect, px: usize, native: (usize, usize), hv: &Hover) {
+    let pad = 2 * px;
+    let gap = CALLOUT_GAP * px;
+    let text_w = font::text_width(&hv.text) * px;
+    // Clamped to the picture, so a long callout never widens past the picture and into the
+    // letterbox; `fit` below then truncates the text to whatever survived.
+    let panel_w = (text_w + 2 * pad).min(area.w);
+    let panel_h = font::GLYPH_H * px + 2 * pad;
+    // A picture too short to hold one line of text draws nothing rather than a panel hanging out of
+    // the bottom of it: `Canvas` clips at the *buffer* edge, not at `area`, so without this the
+    // callout would paint into the letterbox on a window dragged very short. There is no
+    // corresponding width guard because `panel_w` is already clamped above.
+    if area.h < panel_h {
+        return;
+    }
+    let anchor = Rect {
+        x: usize::from(hv.at.0),
+        y: usize::from(hv.at.1),
+        w: 1,
+        h: 1,
+    };
+    let Some(a) = crate::present::native_rect_to_window(anchor, area, native.0, native.1) else {
+        return;
+    };
+    let mut left = a.x + gap;
+    if left + panel_w > area.x + area.w {
+        left = a.x.saturating_sub(panel_w + gap).max(area.x);
+    }
+    let mut top = a.y + gap;
+    if top + panel_h > area.y + area.h {
+        top = a.y.saturating_sub(panel_h + gap).max(area.y);
+    }
+    c.fill_rect(
+        left as i32,
+        top as i32,
+        panel_w,
+        panel_h,
+        CALLOUT_PANEL,
+        font::PANEL_ALPHA,
+    );
+    c.text(
+        (left + pad) as i32,
+        (top + pad) as i32,
+        px,
+        crate::overlay::INFO,
+        crate::overlay::fit(&hv.text, panel_w.saturating_sub(2 * pad), px),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::lens::ink_bounds;
     use crate::present::Aspect;
+    use oracle_core::render::{Cell, PixelState};
 
     // --- The sprite outlines: the model -------------------------------------------------------
 
@@ -1010,6 +1165,430 @@ mod tests {
             (PANEL_W_PX1, PANEL_H_PX1, STATUS_ROW_PX1),
             (52, 16, 12),
             "the px-1 constants the other tests use must agree with the table above"
+        );
+    }
+
+    // --- The hover callout: its model ----------------------------------------------------------
+
+    /// An attribution with everything the formatter does not read left at a default. The two
+    /// coordinates are read (they are what `sprite_tile_at` resolves against), so they are
+    /// parameters rather than constants.
+    fn attr(winner: Layer, x: u16, y: u16) -> PixelAttribution {
+        PixelAttribution {
+            x,
+            y,
+            winner,
+            cram_index: 0,
+            rgb: (0, 0, 0),
+            state: PixelState::Normal,
+            cell: None,
+            candidates: Vec::new(),
+        }
+    }
+
+    fn cell(tile: u16, palette: u8, priority: bool) -> Cell {
+        Cell {
+            tile,
+            palette,
+            hflip: false,
+            vflip: false,
+            priority,
+        }
+    }
+
+    /// The whole string, not a substring. Membership — "it mentions $4A0 somewhere" — is blind to
+    /// the pairing bugs that matter: a callout that printed the palette where the priority goes,
+    /// or that named plane B while reading plane A's cell, contains every expected token and is
+    /// still a readout that lies.
+    ///
+    /// All three cell-bearing layers are checked with the *same* cell, so a transposed match arm
+    /// cannot hide behind a different fixture, and `pri`/`pal` are given distinct values so a
+    /// swapped pair shows up.
+    #[test]
+    fn a_plane_pixel_names_its_tile_palette_and_priority() {
+        for (layer, want) in [
+            (Layer::PlaneA, "plane A | tile $4A0 | pal 2 | pri 1"),
+            (Layer::PlaneB, "plane B | tile $4A0 | pal 2 | pri 1"),
+            (Layer::Window, "window | tile $4A0 | pal 2 | pri 1"),
+        ] {
+            let mut a = attr(layer, 10, 10);
+            a.cell = Some(cell(0x4A0, 2, true));
+            assert_eq!(hover_text(&a, &[]), want, "{layer:?}");
+        }
+
+        // A low tile is zero-padded to three digits, matching every other `$`-hex spelling in the
+        // frontend, and `pri 0` is a different glyph from `pri 1`.
+        let mut a = attr(Layer::PlaneA, 10, 10);
+        a.cell = Some(cell(0x00B, 0, false));
+        assert_eq!(hover_text(&a, &[]), "plane A | tile $00B | pal 0 | pri 0");
+
+        // A blanked line has a winning layer and no nametable cell behind it. Saying so beats
+        // printing `tile $000`, which is a real tile.
+        assert_eq!(
+            hover_text(&attr(Layer::PlaneB, 10, 10), &[]),
+            "plane B | no cell"
+        );
+    }
+
+    /// The sprite branch, including the case the branch exists for: the SAT moved between the frame
+    /// being drawn and this read, the winner's box no longer contains the dot, and there is no
+    /// honest tile to name.
+    ///
+    /// The tile is resolved **per cell**, not read off the sprite's base, so the second probe sits
+    /// one cell to the right and must come back one column of the pattern further on — a formatter
+    /// that printed `s.tile` would pass the first probe and fail here.
+    #[test]
+    fn a_sprite_pixel_names_its_slot_and_says_so_when_the_tile_moved() {
+        let mut s = sprite(12, 100, 50, 4, 2);
+        s.tile = 0x120;
+        s.palette = 3;
+        s.priority = true;
+        // Indexed by SAT slot, as `sprites_decoded` hands them over — so slot 12 must be at 12.
+        let mut sat = vec![sprite(0, -128, -128, 1, 1); 13];
+        sat[12] = s;
+
+        assert_eq!(
+            hover_text(&attr(Layer::Sprite(12), 100, 50), &sat),
+            "slot 12 | tile $120 | pal 3 | pri 1",
+            "the top-left dot is the sprite's base pattern"
+        );
+        assert_eq!(
+            hover_text(&attr(Layer::Sprite(12), 108, 50), &sat),
+            "slot 12 | tile $122 | pal 3 | pri 1",
+            "one cell right is one column of the pattern on (column-major, 2 cells tall)"
+        );
+        // The dot is nowhere near the sprite: the SAT moved since the frame was drawn.
+        assert_eq!(
+            hover_text(&attr(Layer::Sprite(12), 10, 10), &sat),
+            "slot 12 | tile ? | pal 3 | pri 1",
+            "a tile was invented for a dot the winning sprite does not cover"
+        );
+        // A winner past the end of the decode: no tile, and no palette or priority either.
+        assert_eq!(
+            hover_text(&attr(Layer::Sprite(70), 100, 50), &sat),
+            "slot 70 | out of range"
+        );
+    }
+
+    /// The backdrop has no cell and no sprite — the only thing behind it is the CRAM entry reg $07
+    /// selects, so that is what the callout names, in the same `(pal, col)` decomposition
+    /// `pick.rs` prints.
+    ///
+    /// 37 is chosen so the three numbers are all different (37, 2, 5): with an entry like 32 the
+    /// palette and the colour would both be readable as the wrong field.
+    #[test]
+    fn the_backdrop_names_its_cram_entry() {
+        let mut a = attr(Layer::Backdrop, 10, 10);
+        a.cram_index = 37;
+        assert_eq!(hover_text(&a, &[]), "backdrop | cram 37 (pal 2 col 5)");
+        // Entry 0 is the common case and must not collapse into something else.
+        assert_eq!(
+            hover_text(&attr(Layer::Backdrop, 10, 10), &[]),
+            "backdrop | cram 0 (pal 0 col 0)"
+        );
+        // The last entry, where `/16` and `%16` are both at their maximum.
+        let mut a = attr(Layer::Backdrop, 10, 10);
+        a.cram_index = 63;
+        assert_eq!(hover_text(&a, &[]), "backdrop | cram 63 (pal 3 col 15)");
+    }
+
+    // --- The hover callout: its draw -----------------------------------------------------------
+
+    /// Render one callout into a `w * h` buffer over [`BG`] and hand back the buffer.
+    fn render_hover(
+        w: usize,
+        h: usize,
+        area: Rect,
+        px: usize,
+        native: (usize, usize),
+        hv: &Hover,
+    ) -> Vec<u32> {
+        let mut buf = vec![BG; w * h];
+        {
+            let mut c = font::Canvas::new(&mut buf, w, h);
+            draw_hover(&mut c, area, px, native, hv);
+        }
+        buf
+    }
+
+    /// The picture the placement tests below anchor to: a 2x blit of a 320x224 frame, offset on
+    /// both axes so an anchor that ignored `area` and measured from the window corner cannot pass.
+    const HOVER_AREA: Rect = Rect {
+        x: 30,
+        y: 20,
+        w: 640,
+        h: 448,
+    };
+
+    /// **Where the callout lands, on both axes, in all four flip combinations.**
+    ///
+    /// Containment is not enough here and never was: a callout pinned only to be "inside the
+    /// picture" is satisfied by one that never flips at all, as long as it is clipped — and by one
+    /// that flips both axes always. Every expected number is written out by hand rather than taken
+    /// from `native_rect_to_window` or from the panel arithmetic, so no expectation moves with the
+    /// bug it is supposed to catch.
+    ///
+    /// The two axes are exercised **independently**, which is the point of having four rows rather
+    /// than two: a flip written as `if either edge would overflow, flip both` produces the right
+    /// answer for the corner case and the wrong one for each edge on its own.
+    ///
+    /// Derivation, once, for the reader: at 2x, game dot `g` occupies window columns
+    /// `[30 + 2g, 30 + 2g + 2)`. `"AB"` is 11 unscaled ink pixels, so at `px = 2` the panel is
+    /// `11 * 2 + 2 * (2 * 2) = 30` wide and `7 * 2 + 2 * (2 * 2) = 22` tall, and the gap is
+    /// `4 * 2 = 8`. The picture spans columns 30..670 and rows 20..468.
+    #[test]
+    fn the_callout_flips_rather_than_leaving_the_picture() {
+        let (w, h) = (700usize, 520usize);
+        let px = 2;
+        // (label, dot, left, top) — the panel is always 30x22, so its far edges follow.
+        for (label, at, left, top) in [
+            (
+                "neither edge is near: down and to the right",
+                (10u16, 10u16),
+                58usize,
+                48usize,
+            ),
+            (
+                "the right edge: the panel goes to the left of the dot",
+                (315, 10),
+                622,
+                48,
+            ),
+            (
+                "the bottom edge: the panel goes above the dot",
+                (10, 220),
+                58,
+                430,
+            ),
+            ("the bottom-right corner: both flip", (315, 220), 622, 430),
+        ] {
+            let hv = Hover {
+                text: "AB".to_string(),
+                at,
+            };
+            let buf = render_hover(w, h, HOVER_AREA, px, (320, 224), &hv);
+            let got = ink_bounds(&buf, w, BG).unwrap_or_else(|| panic!("{label}: painted nothing"));
+            assert_eq!(
+                got,
+                (top, top + 21, left, left + 29),
+                "{label}: the callout is at (top,bottom,left,right) {got:?}, not \
+                 ({top},{},{left},{})",
+                top + 21,
+                left + 29
+            );
+        }
+    }
+
+    /// The callout stays inside the picture **at every dot, every scale, and every picture size** —
+    /// the letterbox must stay black.
+    ///
+    /// A four-corner probe cannot stand in for this. The flip's two clamps only bind on a picture
+    /// narrower (or shorter) than twice the panel, where flipping alone would push the panel out
+    /// the *opposite* edge; that is a range no single comfortable geometry ever visits, so the
+    /// third and fourth rows below exist to visit it. The `wide` rows do the same job for the
+    /// width clamp, with a callout longer than the whole picture.
+    ///
+    /// [`Aspect::Integer`] for the two full-size rows rather than the house-default `Tv`: `Tv` fits
+    /// a 4:3 picture into the window's larger axis, so one of `area.x`/`area.y` is always 0, and a
+    /// containment sweep against a zero offset degenerates into `x >= 0` — which every pixel
+    /// satisfies. At 700x520 the integer scale is 2 and the picture is inset on both axes.
+    #[test]
+    fn the_callout_stays_inside_the_picture_at_every_dot() {
+        let (w, h) = (700usize, 520usize);
+        let big = crate::present::dest_rect(w, h, 320, 224, Aspect::Integer);
+        assert!(
+            big.x > 0 && big.y > 0,
+            "this window must letterbox on both axes or the sweep checks nothing: {big:?}"
+        );
+        let wide = "SLOT 12 | TILE $4A0 | PAL 2 | PRI 1 | AND THEN SOME MORE WORDS AGAIN";
+        for (label, area, px, text) in [
+            ("2x picture, short callout", big, 2usize, "AB"),
+            ("2x picture, callout wider than the picture", big, 2, wide),
+            ("4x text in a 2x picture", big, 4, "SLOT 12 | TILE $4A0"),
+            (
+                "a picture barely wider and taller than the callout",
+                Rect {
+                    x: 10,
+                    y: 10,
+                    w: 100,
+                    h: 20,
+                },
+                1,
+                wide,
+            ),
+        ] {
+            let mut drew = 0usize;
+            for gy in (0..224u16).step_by(5) {
+                for gx in (0..320u16).step_by(7) {
+                    let hv = Hover {
+                        text: text.to_string(),
+                        at: (gx, gy),
+                    };
+                    let buf = render_hover(w, h, area, px, (320, 224), &hv);
+                    let mut any = false;
+                    for (i, p) in buf.iter().enumerate() {
+                        if *p == BG {
+                            continue;
+                        }
+                        any = true;
+                        let (x, y) = (i % w, i / w);
+                        assert!(
+                            x >= area.x
+                                && x < area.x + area.w
+                                && y >= area.y
+                                && y < area.y + area.h,
+                            "{label}: the callout for dot ({gx},{gy}) escaped the picture at \
+                             ({x},{y}) — the letterbox must stay black"
+                        );
+                    }
+                    drew += usize::from(any);
+                }
+            }
+            assert!(drew > 0, "{label}: the sweep never drew anything at all");
+        }
+    }
+
+    /// The panel and the text both reach the glass.
+    ///
+    /// The floor is the invisible-ink guard every lens draw test carries: text alone can never
+    /// account for `panel_w * panel_h` changed pixels, so a panel that had gone invisible — drawn
+    /// in a colour that happens to match, or not drawn at all — fails here rather than passing the
+    /// containment sweep above untouched. The [`overlay::INFO`](crate::overlay::INFO) probe is the
+    /// other half: the glyphs are drawn at alpha 255, so they land on the buffer *exactly*, and
+    /// deleting the `c.text` call leaves the floor satisfied by the panel on its own.
+    ///
+    /// Both numbers are written out by hand: `"AB"` is 11 unscaled ink pixels, so at `px = 2` the
+    /// panel is 30 x 22.
+    #[test]
+    fn the_callout_paints_both_its_panel_and_its_text() {
+        let (w, h) = (700usize, 520usize);
+        let hv = Hover {
+            text: "AB".to_string(),
+            at: (10, 10),
+        };
+        let buf = render_hover(w, h, HOVER_AREA, 2, (320, 224), &hv);
+        let painted = buf.iter().filter(|p| **p != BG).count();
+        assert!(
+            painted >= 30 * 22,
+            "the panel left no mark: {painted} changed, the panel is 30x22"
+        );
+        assert!(
+            buf.contains(&crate::overlay::INFO),
+            "no glyph reached the glass — the callout is a blank panel"
+        );
+    }
+
+    /// The font scale must scale the panel **and carry its anchor with it**.
+    ///
+    /// One scale is not enough, and `px = 1` is the worst single choice available: `pad = 2 * px`
+    /// and the `CALLOUT_GAP` are both 4 device pixels there, and `GLYPH_H * px + 2 * pad` is 11 —
+    /// the same 11 that `GLYPH_H * px + 4` and `GLYPH_H + 2 * pad` also give. Three of the four
+    /// ways to write the panel's height are identity at `px = 1` and diverge at `px = 2`.
+    ///
+    /// Every number below is derived by hand from the house idiom (`pad = 2 * px`,
+    /// `gap = 4 * px`, ink width `6 * chars - 1` scaled by `px`) against [`HOVER_AREA`], whose 2x
+    /// blit puts game dot 10 at window column `30 + 20 = 50` and row `20 + 20 = 40` at every font
+    /// scale — the font scale moves the panel relative to the dot, never the dot itself.
+    ///
+    /// **The glyphs are measured separately from the panel**, and that is not belt and braces:
+    /// the panel's own bounds are blind to where the text sits inside it, because the text is
+    /// strictly within the panel either way. Drawing the run at the panel's corner instead of one
+    /// `pad` in survived every other assertion in this module — measured — leaving the words
+    /// jammed against the panel edge at every scale. The glyphs are alpha-255 `INFO`, so they can
+    /// be located exactly, with no blend to recompute: `"AB"` inks columns 0..4 of both cells, so
+    /// the run is `11 * px` by `GLYPH_H * px`, at `pad` in from the panel's top-left.
+    #[test]
+    fn the_callout_anchors_and_scales_at_every_font_scale() {
+        let (w, h) = (700usize, 520usize);
+        let hv = Hover {
+            text: "AB".to_string(),
+            at: (10, 10),
+        };
+        // (px, left, top, panel_w, panel_h)
+        for (px, left, top, panel_w, panel_h) in [
+            (1usize, 54usize, 44usize, 15usize, 11usize),
+            (2, 58, 48, 30, 22),
+            (4, 66, 56, 60, 44),
+        ] {
+            let buf = render_hover(w, h, HOVER_AREA, px, (320, 224), &hv);
+            let (t, b, l, r) =
+                ink_bounds(&buf, w, BG).unwrap_or_else(|| panic!("px {px} painted nothing"));
+            assert_eq!(
+                (l, t),
+                (left, top),
+                "px {px}: the callout is anchored at ({l},{t}), not ({left},{top})"
+            );
+            assert_eq!(
+                (r - l + 1, b - t + 1),
+                (panel_w, panel_h),
+                "px {px}: the callout did not scale"
+            );
+
+            // The glyph run, located by its own colour rather than by "not BG".
+            let mut glyphs: Option<(usize, usize, usize, usize)> = None;
+            for (i, p) in buf.iter().enumerate() {
+                if *p != crate::overlay::INFO {
+                    continue;
+                }
+                let (x, y) = (i % w, i / w);
+                glyphs = Some(match glyphs {
+                    None => (y, y, x, x),
+                    Some((gt, gb, gl, gr)) => (gt.min(y), gb.max(y), gl.min(x), gr.max(x)),
+                });
+            }
+            let (gt, gb, gl, gr) =
+                glyphs.unwrap_or_else(|| panic!("px {px}: no glyph reached the glass"));
+            let pad = 2 * px;
+            assert_eq!(
+                (gl, gt),
+                (left + pad, top + pad),
+                "px {px}: the text starts at ({gl},{gt}), not one pad in from the panel's corner"
+            );
+            assert_eq!(
+                (gr - gl + 1, gb - gt + 1),
+                (11 * px, font::GLYPH_H * px),
+                "px {px}: the text did not scale with the panel"
+            );
+        }
+    }
+
+    /// A picture too short for one line of text draws **nothing**, rather than a panel hanging out
+    /// of the bottom of it: `Canvas` clips at the buffer edge, not at `area`, so there is no free
+    /// containment here — the guard is the only thing keeping ink out of the letterbox.
+    ///
+    /// The comfortable row is the vacuity guard: without it a `draw_hover` that had stopped drawing
+    /// altogether would pass this test outright.
+    #[test]
+    fn a_picture_too_short_for_the_callout_draws_nothing() {
+        let (w, h) = (320usize, 240usize);
+        let hv = Hover {
+            text: "AB".to_string(),
+            at: (10, 10),
+        };
+        for short in 0..11usize {
+            let area = Rect {
+                x: 0,
+                y: 0,
+                w: 320,
+                h: short,
+            };
+            let buf = render_hover(w, h, area, 1, (320, 224), &hv);
+            assert!(
+                buf.iter().all(|p| *p == BG),
+                "a callout was drawn into a picture {short} rows tall, which cannot hold its 11"
+            );
+        }
+        let area = Rect {
+            x: 0,
+            y: 0,
+            w: 320,
+            h: 11,
+        };
+        assert!(
+            render_hover(w, h, area, 1, (320, 224), &hv)
+                .iter()
+                .any(|p| *p != BG),
+            "a picture exactly as tall as the callout must still draw it"
         );
     }
 }

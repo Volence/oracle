@@ -1774,6 +1774,22 @@ fn main() {
         // `|| paused` because the CPU chip auto-shows while stopped (spec §5.3): the guard is about skipping
         // work nobody asked for, and a pause is itself the ask.
         if cfg.lenses.any() || paused {
+            // Hover **explains**, click **arms** (spec §5.2): this resolves a dot to label it and
+            // never touches a watch. Three guards, all cheap: the lens has to be on, the palette
+            // must not be eating the mouse (the same rule the click follows above — a cursor over
+            // the panel is pointing at the panel), and the pointer has to be over the picture,
+            // which `window_to_native` answers by returning `None`.
+            //
+            // Resolved against `present_view` and the width just blitted rather than the `view` the
+            // click uses, and that is deliberate: `lens::draw` maps the callout back onto the glass
+            // through exactly this pair, so on the one frame an H32<->H40 switch makes them
+            // disagree, the hit test and the placement still agree with each other.
+            let hover_at = (cfg.lenses.is_on(lens::LensId::Hover) && !palette.is_open())
+                .then(|| window.get_mouse_pos(MouseMode::Discard))
+                .flatten()
+                .and_then(|(mx, my)| {
+                    present::window_to_native(mx, my, present_view, width, HEIGHT)
+                });
             let models = lens::models(
                 cfg.lenses,
                 &lens::FrameCtx {
@@ -1782,6 +1798,7 @@ fn main() {
                     symbols: symbols.as_ref(),
                     frame,
                     paused,
+                    hover: hover_at,
                 },
             );
             // `(width, HEIGHT)` is the frame that was just blitted into `present_view` — the pair

@@ -129,10 +129,14 @@ impl LensSet {
 
 /// Everything the enabled lenses may read this frame, borrowed once.
 ///
-/// Grouped rather than passed positionally because the list only grows — the remaining lenses add
-/// the VDP, the blit's forward map and the mouse position — and several of them are same-typed
-/// references, which is the point at which a transposed call site stops being a compile error.
-/// Collected here while it is five fields rather than at the last lens, when it would be eight.
+/// Grouped rather than passed positionally because the list grew — five fields at the first lens,
+/// six at the last — and several of them are same-typed, which is the point at which a transposed
+/// call site stops being a compile error. Collecting them early is what made the hover callout's
+/// arrival one field rather than one more positional argument at every call site.
+///
+/// What is *not* here: the blit's forward map, and anything else in window pixels. A model built
+/// from window coordinates would have to be rebuilt on every resize and could not be tested without
+/// a window; the mapping happens in [`draw`], which is handed the picture's rect instead.
 pub struct FrameCtx<'a> {
     pub sys: &'a System,
     pub wp: &'a Watchpoints,
@@ -144,6 +148,18 @@ pub struct FrameCtx<'a> {
     /// The run loop's `paused`, likewise authoritative for the UI: `System` has no `is_paused()`
     /// because pausing is a frontend idea, not a machine one.
     pub paused: bool,
+    /// The **game dot under the mouse**, or `None` when the cursor is outside the picture, the
+    /// palette is eating the mouse, or there is no cursor at all.
+    ///
+    /// Genuine frontend state with no home in core — where the pointer is is a question about the
+    /// window — so it rides here rather than being read inside [`models`], which has no `Window`.
+    /// It is already in *game* coordinates: `present::window_to_native` is the hit test (it answers
+    /// `None` outside the picture, which is exactly the test wanted), and it belongs to the run
+    /// loop because only there is the rect the frame was actually blitted into.
+    ///
+    /// **Not** the window pixel. A model that knew window pixels would have stopped being a model,
+    /// which is the same reason the blit's forward map stays a [`draw`] parameter.
+    pub hover: Option<(u16, u16)>,
 }
 
 /// Everything the enabled lenses need to draw this frame, extracted once. Absent = that lens is
@@ -160,31 +176,50 @@ pub struct Models {
     /// [`draw`] is handed, so mapping there keeps this a model. A model that knew window pixels
     /// would have to be rebuilt on every window resize, and would be untestable without one.
     pub sprites: Option<Vec<video::SpriteBox>>,
+    /// The callout for the dot under the cursor, text already assembled, anchored in **game
+    /// pixels** for the same reason the outlines are. Absent when the lens is off or the cursor is
+    /// not over the picture.
+    pub hover: Option<video::Hover>,
 }
 
 /// Build the models for whatever is on. Called once per frame, immediately before drawing, and
 /// skipped entirely when nothing is on and the machine is running.
 pub fn models(set: LensSet, cx: &FrameCtx<'_>) -> Models {
-    // One decode per frame, held as a local so there is exactly one place for the hover callout to
-    // join. `sprites_decoded` walks all 80 slots and allocates ~1.3 KB every call, so no lens may
-    // call it a second time; `boxes` derives from *this* vec rather than making its own.
+    // **One decode per frame, shared by the two lenses that want it.** `sprites_decoded` walks all
+    // 80 slots and allocates ~1.3 KB every call, so neither lens may call it a second time: the
+    // outlines' `boxes` and the hover callout's `hover_text` both read *this* vec.
     //
-    // **The hover callout's share of it cannot land before the hover callout does.** It wants the
-    // raw slots — `tile` and `palette`, which a `SpriteBox` does not carry — and it can be on with
-    // the outlines off, so the natural shape is a `Models` field holding this vec with the guard
-    // widened to `|| set.is_on(LensId::Hover)`. Attempted here and reverted, measured: a bin-only
-    // crate has no reader for that field until hover exists, so `clippy --all-targets -D warnings`
-    // fails with `field decoded_sprites is never read` — the same rule that voided Task 1, and the
-    // pressure that produces the `#[allow(dead_code)]` this slice forbids. Task 9 hoists this local
-    // into `Models` in the same commit as the code that reads it; the shape it needs is already
-    // here, and the change is a `let` moving three lines.
-    let decoded = set
-        .is_on(LensId::Sprites)
+    // The guard is the union rather than the outlines alone because the callout wants the raw slots
+    // — `tile` and `palette`, which a `SpriteBox` does not carry — and it can be on with the
+    // outlines off.
+    //
+    // It stays a **local**, not a `Models` field. Task 8 tried the field and measured the failure:
+    // a bin-only crate has no production reader for it, so `clippy --all-targets -D warnings` fails
+    // with `field decoded_sprites is never read`. That is still true here — both readers are in
+    // this function, and a field nothing outside it reads would reintroduce exactly the error, and
+    // with it the pressure for the `#[allow(dead_code)]` this slice forbids. Sharing the decode was
+    // the point; carrying it in `Models` never was.
+    let decoded = (set.is_on(LensId::Sprites) || set.is_on(LensId::Hover))
         .then(|| cx.sys.vdp().sprites_decoded());
-    let sprites = decoded.as_deref().map(|decoded| {
-        let vdp = cx.sys.vdp();
-        video::boxes(decoded, vdp.parsed_sprite_max(), vdp.active_display())
-    });
+    let sprites = decoded
+        .as_deref()
+        .filter(|_| set.is_on(LensId::Sprites))
+        .map(|decoded| {
+            let vdp = cx.sys.vdp();
+            video::boxes(decoded, vdp.parsed_sprite_max(), vdp.active_display())
+        });
+    // Hover **explains**; click **arms** (spec §5.2) — this reads and nothing else. Three things
+    // must all hold: the lens is on, the run loop found a dot under the cursor, and the decode
+    // above therefore happened. `pixel_attribution` is one extra scanline resolve — about 1/224 of
+    // the render this loop already does every frame, and skipped outright by the `is_on` guard the
+    // rest of the time.
+    let hover = match (set.is_on(LensId::Hover), cx.hover, decoded.as_deref()) {
+        (true, Some((x, y)), Some(decoded)) => Some(video::Hover {
+            text: video::hover_text(&cx.sys.vdp().pixel_attribution(x, y), decoded),
+            at: (x, y),
+        }),
+        _ => None,
+    };
     Models {
         ticker: set
             .is_on(LensId::Watch)
@@ -208,6 +243,7 @@ pub fn models(set: LensSet, cx: &FrameCtx<'_>) -> Models {
             .is_on(LensId::Cram)
             .then(|| video::swatches(&cx.sys.vdp().cram_decoded())),
         sprites,
+        hover,
     }
 }
 
@@ -221,8 +257,8 @@ pub fn models(set: LensSet, cx: &FrameCtx<'_>) -> Models {
 /// on every launch. Layering is a question about pixels, and the two answers are allowed to differ.
 /// Reorder the arms below to change layering; never reorder `ALL` to do it.
 ///
-/// The order is: **outlines, ticker, chip, strip.** The ticker (bottom), the chip (top-right) and
-/// the CRAM strip
+/// The order is: **outlines, ticker, chip, strip, callout.** The ticker (bottom), the chip
+/// (top-right) and the CRAM strip
 /// (top-left, one text row down) each own a different corner, and on an ordinary picture none of
 /// them meet. Two pairs can, and both resolve by draw order rather than by geometry:
 /// - **Ticker vs chip.** Only on a picture short enough for the chip's panel to reach the bottom
@@ -254,6 +290,12 @@ pub fn models(set: LensSet, cx: &FrameCtx<'_>) -> Models {
 /// `PANEL_ALPHA = 190`, so an outline underneath one is dimmed rather than erased, and its
 /// *position* — the only thing an outline conveys — survives intact.
 ///
+/// **The hover callout goes last, over everything.** It is the only lens the user is *pointing at*:
+/// it exists for the half-second between putting the cursor somewhere and reading the answer, and
+/// an answer half-hidden under a panel that was already on screen is no answer. Nothing pays much
+/// for losing to it either — it is one line of text following the cursor, so whatever it covers is
+/// uncovered again by moving the mouse, which is not true of any fixed panel covering another.
+///
 /// Anchored to `area` (the picture), never
 /// the window: the letterbox stays black, and a tall window with a narrow picture must not make
 /// the font wider than the panel (the `draw_narrow_panel_does_not_underflow` hazard class).
@@ -279,6 +321,10 @@ pub fn draw(buf: &mut [u32], w: usize, h: usize, area: Rect, native: (usize, usi
     }
     if let Some(sw) = &m.cram {
         video::draw_cram(&mut c, area, px, sw);
+    }
+    // Last, so the thing the user is pointing at is never underneath something they are not.
+    if let Some(hv) = &m.hover {
+        video::draw_hover(&mut c, area, px, native, hv);
     }
 }
 
@@ -455,6 +501,17 @@ mod tests {
             symbols: None,
             frame: 0,
             paused,
+            hover: None,
+        }
+    }
+
+    /// The same frame with the cursor parked on a game dot. Separate from [`ctx`] rather than an
+    /// extra parameter on it, because "no cursor over the picture" is the state most of these tests
+    /// are about and spelling it out at every call site would bury the two that are not.
+    fn ctx_hovering<'a>(sys: &'a System, wp: &'a Watchpoints, at: (u16, u16)) -> FrameCtx<'a> {
+        FrameCtx {
+            hover: Some(at),
+            ..ctx(sys, wp, false)
         }
     }
 
@@ -616,10 +673,12 @@ mod tests {
     /// `all_lists_every_variant_exactly_once` documents for `ALL.len()`).
     fn draws_yet(id: LensId) -> bool {
         match id {
-            LensId::Watch | LensId::Cpu | LensId::CpuRegs | LensId::Sprites | LensId::Cram => true,
-            // No arm in `draw` yet — the hover callout is still to come. When it lands, flipping
-            // this to `true` is what the test below demands of it.
-            LensId::Hover => false,
+            LensId::Watch
+            | LensId::Cpu
+            | LensId::CpuRegs
+            | LensId::Sprites
+            | LensId::Cram
+            | LensId::Hover => true,
         }
     }
 
@@ -721,8 +780,67 @@ mod tests {
             "the one visible sprite"
         );
         assert!(
-            m.ticker.is_none() && m.cpu.is_none() && m.cram.is_none(),
+            m.ticker.is_none() && m.cpu.is_none() && m.cram.is_none() && m.hover.is_none(),
             "the outline lens dragged another model on with it"
+        );
+    }
+
+    /// The hover callout end to end: built for its own lens and no other, **and only when the run
+    /// loop found a dot**. The parallel of the two tests above, with the extra input the other
+    /// lenses do not have.
+    ///
+    /// The no-dot case is the half that would rot silently: a `models` that ignored `cx.hover` and
+    /// resolved some default dot would draw a callout in the corner of a window the mouse is
+    /// nowhere near, and every other test here would stay green.
+    ///
+    /// The last assertion is the shared-decode obligation, from the reader's side: hover is on and
+    /// the outlines are **off**, so `sprites_decoded` had to run for hover alone. A decode still
+    /// gated on `Sprites` would leave `decoded` as `None` and no callout would be built at all.
+    #[test]
+    fn the_hover_callout_model_is_built_for_its_own_lens_and_only_with_a_dot() {
+        let sys = sys_with_a_visible_sprite();
+        let wp = Watchpoints::new(8);
+        let only_hover = {
+            let mut s = LensSet::default();
+            s.set(LensId::Hover, true);
+            s
+        };
+
+        assert!(
+            models(only_hover, &ctx(&sys, &wp, false)).hover.is_none(),
+            "a callout was built with the cursor off the picture"
+        );
+        assert!(
+            models(LensSet::default(), &ctx_hovering(&sys, &wp, (24, 24)))
+                .hover
+                .is_none(),
+            "a callout was built with every lens off"
+        );
+        let mut other = LensSet::default();
+        other.set(LensId::Sprites, true);
+        assert!(
+            models(other, &ctx_hovering(&sys, &wp, (24, 24)))
+                .hover
+                .is_none(),
+            "the callout model keyed off the wrong lens"
+        );
+
+        let m = models(only_hover, &ctx_hovering(&sys, &wp, (24, 25)));
+        let hv = m
+            .hover
+            .expect("the callout did not build for its own lens with a dot");
+        assert_eq!(
+            hv.at,
+            (24, 25),
+            "the callout describes the dot it was given"
+        );
+        assert!(
+            !hv.text.is_empty(),
+            "the callout says nothing about the dot"
+        );
+        assert!(
+            m.ticker.is_none() && m.cpu.is_none() && m.cram.is_none() && m.sprites.is_none(),
+            "the hover lens dragged another model on with it"
         );
     }
 
@@ -746,10 +864,16 @@ mod tests {
     /// `BG` is `0x0012_3456` and not `0` for the reason every lens draw test states: the panels are
     /// black alpha-blended, invisible over a zero buffer — and an unrun machine's CRAM is all
     /// zeroes, so its swatches are black too. Over zeroes this test would assert nothing at all.
+    ///
+    /// The context **hovers a dot**, for the same class of reason the sprite fixture exists: the
+    /// hover callout builds no model at all without one, so with `hover: None` this table would
+    /// find hover building nothing, painting nothing, and passing `has_model == painted` while
+    /// telling us precisely nothing about its arm. Supplying a dot is the honest fix; excusing
+    /// hover from the table would hand back the escape hatch the table exists to close.
     #[test]
     fn every_lens_with_a_draw_arm_reaches_the_glass() {
         const BG: u32 = 0x0012_3456;
-        const ARMS_TODAY: usize = 5;
+        const ARMS_TODAY: usize = 6;
         let (w, h) = (320usize, 224usize);
         let area = Rect { x: 0, y: 0, w, h };
         // Not `System::new` on its own: an unrun machine has every sprite parked, so the outline
@@ -762,7 +886,7 @@ mod tests {
         for id in LensId::ALL {
             let mut set = LensSet::default();
             set.set(id, true);
-            let m = models(set, &ctx(&sys, &wp, false));
+            let m = models(set, &ctx_hovering(&sys, &wp, (24, 24)));
             let mut buf = vec![BG; w * h];
             draw(&mut buf, w, h, area, (w, h), &m);
             let painted = buf.iter().any(|p| *p != BG);
@@ -783,9 +907,13 @@ mod tests {
                 cpu,
                 cram,
                 sprites,
+                hover,
             } = &m;
-            let has_model =
-                ticker.is_some() || cpu.is_some() || cram.is_some() || sprites.is_some();
+            let has_model = ticker.is_some()
+                || cpu.is_some()
+                || cram.is_some()
+                || sprites.is_some()
+                || hover.is_some();
             assert_eq!(
                 has_model,
                 painted,
@@ -871,8 +999,9 @@ mod tests {
         let sys = sys_with_sprites(&slots);
         let wp = Watchpoints::new(8);
 
+        // A dot near the top-left, so the callout is on screen and the outline grid crosses it.
         let render = |set: LensSet, bg: u32| {
-            let m = models(set, &ctx(&sys, &wp, false));
+            let m = models(set, &ctx_hovering(&sys, &wp, (24, 24)));
             let mut buf = vec![bg; w * h];
             draw(&mut buf, w, h, area, (w, h), &m);
             buf
@@ -888,7 +1017,13 @@ mod tests {
             "the outline fixture painted nothing, so nothing below is measuring anything"
         );
 
-        for id in [LensId::Watch, LensId::Cpu, LensId::CpuRegs, LensId::Cram] {
+        for id in [
+            LensId::Watch,
+            LensId::Cpu,
+            LensId::CpuRegs,
+            LensId::Cram,
+            LensId::Hover,
+        ] {
             let panel = render(only(id), BG);
             let panel_on_other = render(only(id), BG2);
             let mut with_sprites = only(id);
@@ -945,6 +1080,83 @@ mod tests {
                 id.key()
             );
         }
+    }
+
+    /// **The other end of the layering order: the hover callout wins over every fixed panel.**
+    ///
+    /// The outlines lose every crossing because a hairline through a readout is silent wrongness
+    /// (see above). The callout is the opposite case and gets the opposite answer: it is the one
+    /// lens the user is actively pointing at, and half of it hidden under a strip that was already
+    /// on screen is not an answer. Neither half of that order is pinned by anything else — with one
+    /// lens on at a time every other test in this module is blind to it, and moving the callout's
+    /// arm up two lines leaves the suite green.
+    ///
+    /// The CRAM strip is the panel to test it against, and not an arbitrary choice: it is the only
+    /// one whose ink is deliberately **opaque** (a swatch must be the palette entry exactly), so it
+    /// is the panel that would obliterate rather than dim, and it owns the top-left corner where a
+    /// dot near the origin puts the callout.
+    ///
+    /// Opacity is measured rather than assumed, the same way as above: rendering the callout over
+    /// two different backgrounds identifies the pixels whose value does not depend on what was
+    /// underneath, with no knowledge of glyph shapes or alphas, so it cannot go stale.
+    #[test]
+    fn the_hover_callout_draws_over_the_other_panels() {
+        const BG: u32 = 0x0012_3456;
+        const BG2: u32 = 0x0065_4321;
+        let (w, h) = (320usize, 224usize);
+        let area = Rect { x: 0, y: 0, w, h };
+        let sys = System::new(0x5EED);
+        let wp = Watchpoints::new(8);
+        // A 1:1 picture, so game dot (16,16) is window (16,16) and the callout — 4 px down and to
+        // the right of it, one text row tall — lands across the strip's rows.
+        let render = |set: LensSet, bg: u32| {
+            let m = models(set, &ctx_hovering(&sys, &wp, (16, 16)));
+            let mut buf = vec![bg; w * h];
+            draw(&mut buf, w, h, area, (w, h), &m);
+            buf
+        };
+        let only = |id: LensId| {
+            let mut s = LensSet::default();
+            s.set(id, true);
+            s
+        };
+
+        let callout = render(only(LensId::Hover), BG);
+        let callout_on_other = render(only(LensId::Hover), BG2);
+        let strip = render(only(LensId::Cram), BG);
+        let mut both_on = only(LensId::Hover);
+        both_on.set(LensId::Cram, true);
+        let both = render(both_on, BG);
+
+        let mut opaque = 0usize;
+        let mut crossings = 0usize;
+        for i in 0..w * h {
+            if callout[i] != callout_on_other[i] {
+                continue; // translucent, or never touched: the panel body is allowed to blend
+            }
+            opaque += 1;
+            if strip[i] != BG {
+                crossings += 1;
+            }
+            assert_eq!(
+                both[i],
+                callout[i],
+                "a panel covered an opaque callout pixel at ({}, {}) — the callout draws last",
+                i % w,
+                i / w
+            );
+        }
+        assert!(opaque > 0, "the callout drew nothing opaque");
+        assert!(
+            crossings > 0,
+            "the callout never overlaps the strip, so the equality above checked nothing"
+        );
+        // And the strip really did draw underneath, or a `draw` that had lost the CRAM arm
+        // entirely would satisfy every equality above.
+        assert!(
+            (0..w * h).any(|i| callout[i] == BG && both[i] != BG),
+            "the strip left no mark beside the callout"
+        );
     }
 
     /// A variant can be added to `LensId` — forcing `key`/`title`/`label` edits — and still be
