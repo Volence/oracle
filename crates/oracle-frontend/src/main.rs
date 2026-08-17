@@ -258,8 +258,11 @@ const WATCH_CAP: usize = 8192;
 /// Aether bus.
 struct Args {
     rom_path: String,
-    scale: usize,
-    aspect: Aspect,
+    /// `None` = the flag was not typed — the config file (falling back to the built-in default) fills it in
+    /// via [`resolve_scale`]. `Some(v)` = the CLI wins regardless of what the config file says.
+    scale: Option<usize>,
+    /// `None` = the flag was not typed; resolved the same way as `scale`, via [`resolve_aspect`].
+    aspect: Option<Aspect>,
     /// `None` = do not serve (the default — no socket is created at all). `Some(None)` = serve on the
     /// contract's default path; `Some(Some(p))` = serve on `p`.
     socket: Option<Option<std::path::PathBuf>>,
@@ -275,8 +278,8 @@ fn parse_args() -> Result<Args, String> {
 /// The testable half of [`parse_args`], over an arbitrary argument sequence.
 fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
     let mut rom_path: Option<String> = None;
-    let mut scale: usize = 3;
-    let mut aspect = Aspect::default();
+    let mut scale: Option<usize> = None;
+    let mut aspect: Option<Aspect> = None;
     // Serving is **opt-in**, and the default is "no socket exists". `ORACLE_AETHER` is read here rather than
     // deep in the bus so that `--aether` and the environment are one decision with one spelling, and so the
     // usage text can be truthful about both.
@@ -295,16 +298,19 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             }
             "--scale" => {
                 let v = it.next().ok_or("--scale needs a value")?;
-                scale = v
-                    .parse::<usize>()
-                    .ok()
-                    .filter(|&s| (1..=8).contains(&s))
-                    .ok_or_else(|| format!("--scale must be an integer 1..=8, got `{v}`"))?;
+                scale = Some(
+                    v.parse::<usize>()
+                        .ok()
+                        .filter(|&s| (1..=8).contains(&s))
+                        .ok_or_else(|| format!("--scale must be an integer 1..=8, got `{v}`"))?,
+                );
             }
             "--aspect" => {
                 let v = it.next().ok_or("--aspect needs a value")?;
-                aspect = Aspect::from_name(&v)
-                    .ok_or_else(|| format!("--aspect must be tv, square or integer, got `{v}`"))?;
+                aspect =
+                    Some(Aspect::from_name(&v).ok_or_else(|| {
+                        format!("--aspect must be tv, square or integer, got `{v}`")
+                    })?);
             }
             other if other.starts_with("--") => return Err(format!("unknown flag `{other}`")),
             other => {
@@ -332,6 +338,16 @@ pub(crate) fn gamepad_default_deadzone() -> f32 {
 #[cfg(not(feature = "gamepad"))]
 pub(crate) fn gamepad_default_deadzone() -> f32 {
     0.5 // gamepad module absent from this build; the file still round-trips the key
+}
+
+/// CLI beats config beats built-in default (spec §7). Two tiny fns rather than one struct so each call site
+/// reads as what it is. For this commit `cfg` is always `config::Config::default()` — Task 5 wires in the
+/// loaded file, at which point these fns and every call site are already correct.
+fn resolve_scale(cli: Option<usize>, cfg: &config::Config) -> usize {
+    cli.unwrap_or(cfg.scale)
+}
+fn resolve_aspect(cli: Option<Aspect>, cfg: &config::Config) -> Aspect {
+    cli.unwrap_or(cfg.aspect)
 }
 
 /// Say something to **both** audiences: the terminal log (which scripts, the tests and a developer read) and
@@ -738,7 +754,9 @@ fn main() {
                  integer = square pixels at a whole scale\n  \
                  --aether  serve the Aether control bus from this process (also: ORACLE_AETHER=1). \
                  Off by default — no socket is created.\n  \
-                 --socket  serve on PATH instead of the contract's default; implies --aether"
+                 --socket  serve on PATH instead of the contract's default; implies --aether\n  \
+                 An unset --scale/--aspect falls back to ~/.config/oracle/player.conf (or \
+                 $XDG_CONFIG_HOME/oracle/player.conf), then to the defaults above."
             );
             std::process::exit(2);
         }
@@ -795,7 +813,15 @@ fn main() {
     // to the window manager, which `resize: true` is what enables. All the geometry — aspect, letterboxing,
     // and the exact inverse a click needs — is [`present`]'s, so it stays correct at any size the user drags
     // the window to. The initial size is `--scale` applied to the frame's height, widened per `--aspect`.
-    let (win_w, win_h) = present::initial_window_size(args.scale, MAX_WIDTH, HEIGHT, args.aspect);
+    // Persistent settings (spec §7): CLI beats config beats built-in default. Task 5 loads the real config
+    // file here; for this commit we resolve against `Config::default()` so behavior is unchanged and this
+    // commit stands alone. Resolved ONCE — every site below reads `scale`/`aspect`, never `args.scale`/
+    // `args.aspect` directly, so there is exactly one precedence decision per run.
+    let cfg = config::Config::default();
+    let scale = resolve_scale(args.scale, &cfg);
+    let aspect = resolve_aspect(args.aspect, &cfg);
+
+    let (win_w, win_h) = present::initial_window_size(scale, MAX_WIDTH, HEIGHT, aspect);
     let mut window = Window::new(
         "oracle-next",
         win_w,
@@ -815,7 +841,7 @@ fn main() {
 
     println!(
         "window {win_w}x{win_h}, resizable, aspect {} — keyboard (P1): arrows=D-pad, A/S/D=A/B/C, Enter=Start; Space=pause, .=step, click=watch, W=dump, C=clear, F3=status line, Tab=reset, `=command palette (the full list)",
-        args.aspect.name()
+        aspect.name()
     );
     println!(
         "save states: F2=save, F4=load, F6/F7=prev/next slot, 0-9=pick slot ({} slots, written next to the ROM as `{}`)",
@@ -937,7 +963,7 @@ fn main() {
         // The window is resizable, so its geometry is re-derived every iteration rather than assumed. The
         // click inverse below and the present at the bottom both use this same rectangle.
         let (win_w, win_h) = window.get_size();
-        let view = present::dest_rect(win_w, win_h, width, HEIGHT, args.aspect);
+        let view = present::dest_rect(win_w, win_h, width, HEIGHT, aspect);
 
         // A left-click edge maps the clicked window pixel to a native dot and asks the VDP who is showing
         // there; a plane/window tile winner arms a watch on that tile's 32-byte VRAM range (replacing any
@@ -1604,7 +1630,7 @@ fn main() {
         // Re-derived rather than reusing `view`: the frames run above can have switched H32↔H40, and the
         // picture must be fitted to the width actually being presented. `view` stays what it was — the
         // geometry of the frame the user was looking at when they clicked.
-        let present_view = present::dest_rect(win_w, win_h, width, HEIGHT, args.aspect);
+        let present_view = present::dest_rect(win_w, win_h, width, HEIGHT, aspect);
         present::scale_into(
             &mut screen,
             win_w,
@@ -1641,7 +1667,7 @@ fn main() {
                 occupied: slots_on_disk,
                 volume: vol,
                 filter: filt,
-                aspect: args.aspect.name(),
+                aspect: aspect.name(),
                 native: (width, HEIGHT),
             },
         );
@@ -1677,15 +1703,17 @@ mod tests {
         let a = |v: &[&str]| parse_args_from(v.iter().map(|s| s.to_string()));
         let ok = a(&["rom.bin"]).expect("a bare ROM path is enough");
         assert_eq!(ok.rom_path, "rom.bin");
-        assert_eq!(ok.scale, 3);
         assert_eq!(
-            ok.aspect,
-            Aspect::Tv,
-            "a player defaults to the console's own 4:3"
+            ok.scale, None,
+            "unset — the built-in default now lives in resolve_scale/config::Config"
+        );
+        assert_eq!(
+            ok.aspect, None,
+            "unset — a player defaults to the console's own 4:3 only after resolve_aspect"
         );
 
         let both = a(&["--scale", "2", "--aspect", "integer", "rom.bin"]).unwrap();
-        assert_eq!((both.scale, both.aspect), (2, Aspect::Integer));
+        assert_eq!((both.scale, both.aspect), (Some(2), Some(Aspect::Integer)));
 
         assert!(a(&[]).is_err(), "no ROM path");
         assert!(a(&["a.bin", "b.bin"]).is_err(), "two ROM paths");
@@ -1701,6 +1729,45 @@ mod tests {
         );
         assert!(a(&["--aspect"]).is_err());
         assert!(a(&["--nope", "rom.bin"]).is_err(), "unknown flag");
+    }
+
+    /// Config precedence (spec §7) needs to know whether a flag was actually typed, not just what value it
+    /// would take — an unset `--scale` must read as `None` so `resolve_scale` can fall through to the config
+    /// file, not as the numeric default `3` (which would make the config file's own `scale` unreachable).
+    #[test]
+    fn args_report_explicitness_for_config_precedence() {
+        let a = parse_args_from(["rom.bin".to_string()]).unwrap();
+        assert_eq!(
+            a.scale, None,
+            "unset scale must be None so config can fill it"
+        );
+        assert_eq!(a.aspect, None);
+        let a =
+            parse_args_from(["rom.bin", "--scale", "5", "--aspect", "integer"].map(String::from))
+                .unwrap();
+        assert_eq!(a.scale, Some(5));
+        assert_eq!(a.aspect, Some(Aspect::from_name("integer").unwrap()));
+    }
+
+    /// The precedence rule itself (spec §7): CLI beats config beats built-in default. `resolve_scale`/
+    /// `resolve_aspect` are the pure fns every call site goes through instead of reading `args.scale`/
+    /// `args.aspect` directly.
+    #[test]
+    fn resolve_prefers_cli_then_config() {
+        let cfg = config::Config {
+            scale: 6,
+            aspect: Aspect::from_name("square").unwrap(),
+            ..config::Config::default()
+        };
+        // CLI silent -> config wins.
+        assert_eq!(resolve_scale(None, &cfg), 6);
+        assert_eq!(resolve_aspect(None, &cfg), cfg.aspect);
+        // CLI explicit -> CLI wins.
+        assert_eq!(resolve_scale(Some(2), &cfg), 2);
+        assert_eq!(
+            resolve_aspect(Some(Aspect::default()), &cfg),
+            Aspect::default()
+        );
     }
 
     /// Serving the Aether bus is **opt-in**, and the default really is "no socket exists" — the whole
