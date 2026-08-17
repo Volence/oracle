@@ -1153,8 +1153,8 @@ fn main() {
                 // (where the Overlay owns the flag and the duplicate is forced), nothing here owns
                 // a lens set, `LensSet` is `Copy`, and a second writer for the value the picture
                 // will depend on would be an invariant nothing enforces. Persisted through the
-                // same debounce as every other setting. Nothing draws yet — the lenses themselves
-                // land next; the toast is what tells you the toggle took.
+                // same debounce as every other setting. The toast is what tells you a toggle took
+                // for the lenses that do not draw yet — only the watch ticker does so far.
                 commands::Cmd::ToggleLens(id) => {
                     cfg.lenses.toggle(id);
                     config_save_countdown = Some(CONFIG_AUTOSAVE_DEBOUNCE_FRAMES);
@@ -1765,6 +1765,14 @@ fn main() {
         );
         #[cfg(not(feature = "audio"))]
         let (vol, filt) = (None, None);
+        // Lenses: under the palette and the toasts, over the picture (spec §5). Models are built only for
+        // what is on — with everything off this is one bitset test and no reads at all — and only into the
+        // *window* buffer. `buf`, the retained framebuffer, is re-presented every iteration while paused, so
+        // ink there would accumulate (the lesson `draw_crosshair` records above).
+        if cfg.lenses.any() {
+            let models = lens::models(cfg.lenses, bus.watchpoints_mut(), symbols.as_ref());
+            lens::draw(&mut screen, win_w, win_h, present_view, &models);
+        }
         // Under the toasts, over the picture: drawn first so `ov.draw` still lands on top (a notification
         // must stay readable while the palette is open). Same buffer, same rect the present uses.
         palette.draw(&mut screen, win_w, win_h, present_view, &reg);

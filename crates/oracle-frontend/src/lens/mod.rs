@@ -9,10 +9,15 @@
 //! native framebuffer: a paused frontend re-presents that buffer every iteration, so ink there
 //! accumulates (the lesson `draw_crosshair` records at main.rs:1700-1710).
 //!
-//! This module is currently the spine only — ids, the toggle bitset, and the config-file
-//! spelling. The lenses themselves (`watch`, `cpu`, `video`) arrive in the following tasks, each
-//! declaring its own submodule; a placeholder file here would be dead weight the gate would
-//! rightly flag.
+//! This module holds the spine — ids, the toggle bitset, the config-file spelling, and the one
+//! [`models`]/[`draw`] pair the run loop calls. Each lens is its own submodule, declared as it
+//! arrives; a placeholder file would be dead weight the gate would rightly flag.
+
+pub mod watch;
+
+use crate::present::Rect;
+use oracle_core::symbols::SymbolTable;
+use oracle_core::watchpoints::Watchpoints;
 
 /// Every lens, in registration and display order.
 ///
@@ -109,6 +114,38 @@ impl LensSet {
     }
     pub fn toggle(&mut self, id: LensId) {
         self.0 ^= id.bit();
+    }
+    /// Whether anything is on. The run loop's draw guard: with everything off it skips [`models`]
+    /// entirely, so a lens that is not on costs nothing — not even the reads its model would make.
+    pub fn any(self) -> bool {
+        self.0 != 0
+    }
+}
+
+/// Everything the enabled lenses need to draw this frame, extracted once. Absent = that lens is
+/// off, so [`draw`] never has to know the set.
+pub struct Models {
+    pub ticker: Option<watch::Ticker>,
+}
+
+/// Build the models for whatever is on. Called once per frame, immediately before drawing, and
+/// skipped entirely when nothing is on.
+pub fn models(set: LensSet, wp: &Watchpoints, symbols: Option<&SymbolTable>) -> Models {
+    Models {
+        ticker: set
+            .is_on(LensId::Watch)
+            .then(|| watch::model(wp, symbols, watch::ROWS)),
+    }
+}
+
+/// Draw every built model, in a fixed back-to-front order. Anchored to `area` (the picture), never
+/// the window: the letterbox stays black, and a tall window with a narrow picture must not make
+/// the font wider than the panel (the `draw_narrow_panel_does_not_underflow` hazard class).
+pub fn draw(buf: &mut [u32], w: usize, h: usize, area: Rect, m: &Models) {
+    let px = crate::overlay::Overlay::font_scale(area.h.max(1));
+    let mut c = crate::font::Canvas::new(buf, w, h);
+    if let Some(t) = &m.ticker {
+        watch::draw(&mut c, area, px, t);
     }
 }
 
@@ -217,16 +254,20 @@ mod tests {
         assert_eq!(unrecognised2, unrecognised);
     }
 
-    /// `any()` (the run loop's draw guard) lands with its first caller in the lens-draw task, so
-    /// this pins only what exists here: `set` in both directions, and toggle as its own inverse.
     #[test]
-    fn toggle_agrees_with_is_on() {
+    fn toggle_and_any_agree_with_is_on() {
         let mut set = LensSet::default();
+        assert!(!set.any(), "the default set is empty");
         assert!(!set.is_on(LensId::Hover));
         set.toggle(LensId::Hover);
         assert!(set.is_on(LensId::Hover));
+        assert!(set.any(), "one lens on is enough for any()");
         set.toggle(LensId::Hover);
         assert!(!set.is_on(LensId::Hover), "toggle is its own inverse");
+        assert!(
+            !set.any(),
+            "and turning the last one off empties the set again"
+        );
         // `set(id, false)` must actually clear — S4's view presets assign rather than toggle, and
         // a no-op clear-branch would leave a preset unable to turn anything off.
         set.set(LensId::Hover, true);
@@ -234,6 +275,42 @@ mod tests {
         set.set(LensId::Hover, false);
         assert!(!set.is_on(LensId::Hover), "set(id, false) must clear");
         assert!(set.is_on(LensId::Cram), "and must clear only that lens");
+        assert!(set.any(), "one still on");
+    }
+
+    /// `any()` must answer for **every** lens, not just the low bits: it is the draw guard, and a
+    /// lens it read as "nothing on" would be a toggle that toasts and then draws nothing.
+    #[test]
+    fn any_sees_every_lens_on_its_own() {
+        for id in LensId::ALL {
+            let mut set = LensSet::default();
+            set.set(id, true);
+            assert!(set.any(), "{} alone did not register as on", id.key());
+        }
+    }
+
+    /// The guard that keeps a lens that is off from costing anything: no model is built for it, so
+    /// the reads its model would make never happen.
+    #[test]
+    fn models_are_built_only_for_lenses_that_are_on() {
+        let wp = Watchpoints::new(8);
+        let mut set = LensSet::default();
+        assert!(
+            models(set, &wp, None).ticker.is_none(),
+            "a model was built for a lens that is off"
+        );
+        set.set(LensId::Watch, true);
+        assert!(
+            models(set, &wp, None).ticker.is_some(),
+            "no model was built for a lens that is on"
+        );
+        // A different lens must not switch the ticker on — the models are keyed per id.
+        let mut other = LensSet::default();
+        other.set(LensId::Cram, true);
+        assert!(
+            models(other, &wp, None).ticker.is_none(),
+            "the ticker model keyed off the wrong lens"
+        );
     }
 
     /// A variant can be added to `LensId` — forcing `key`/`title`/`label` edits — and still be
