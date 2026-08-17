@@ -46,7 +46,9 @@ impl Default for Config {
 }
 
 /// A parsed file: the config plus one human line per ignored key/value (shown as toasts once
-/// at load — the file is not rewritten to drop them).
+/// at load). Loading never rewrites the file, so an unknown key survives a read-only session
+/// intact — but [`serialize`] emits only the six keys it knows, so the next *save* does drop it.
+/// That is the deliberate trade: forward compatibility for reading, one flat writer for writing.
 pub struct Parsed {
     pub config: Config,
     pub warnings: Vec<String>,

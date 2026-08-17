@@ -59,9 +59,28 @@
 //! `PAUSED` banner is load-bearing rather than decorative: since the render path started retaining the last
 //! good framebuffer, a paused frontend and a hung one are otherwise pixel-identical.
 //!
-//! The gamepad layout (face buttons → A/B/C, Start, d-pad and left stick → directions, analog deadzone) lives
-//! in one place — the mapping tables at the top of the `gamepad` module — so remapping means editing those
-//! tables.
+//! The gamepad layout (face buttons → A/B/C, Start, d-pad and left stick → directions) lives in one place —
+//! the mapping tables at the top of the `gamepad` module — so remapping means editing those tables. The
+//! analog deadzone is no longer one of them: it is a per-`Gamepads` value fed from the config file, with
+//! `gamepad::STICK_DEADZONE` as its built-in default.
+//!
+//! ## Settings
+//!
+//! Six values persist between runs in a flat `key = value` file at
+//! `$XDG_CONFIG_HOME/oracle/player.conf` (falling back to `$HOME/.config/oracle/player.conf`; a system
+//! with neither variable set runs fine and simply does not persist): `volume`, `muted`,
+//! `aspect`, `scale`, `status_line` and `deadzone` — see [`config`]. **A CLI flag beats the file**, which
+//! beats the built-in default, so `--scale 4` is a one-run override and never rewrites what is stored.
+//! Changing the volume, the mute toggle or the F3 status line saves automatically: the write is debounced
+//! by two seconds (a held volume ramp is one write, not ten) and flushed again on quit if anything is
+//! still outstanding. A session that changed nothing writes nothing.
+//!
+//! A file that is structurally corrupt is renamed to `.bak` and defaults load in its place — the evidence
+//! is kept, nothing crashes, and the toast on screen says which. An unknown key, or a value out of range,
+//! costs only that key at *load*: it warns once and the default stands, so reading a file is never
+//! destructive. Writing one is: the saver emits exactly the six keys it knows, so the next autosave drops
+//! an unknown key rather than carrying it through. Preserving them is deferred (`F-CONFIG-UNKNOWN-KEYS`)
+//! until the key set actually widens. Key bindings are not stored yet (a later slice).
 //!
 //! ## Pixels — why the window is painted from the per-scanline seam
 //!
@@ -330,7 +349,9 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
 }
 
 /// The gamepad module's default deadzone, visible regardless of the `gamepad` feature so the
-/// config file round-trips it identically in every build.
+/// config file round-trips it identically in every build. This is only the **default**: the live
+/// value each `Gamepads` polls with comes from the loaded config's `deadzone`, and this fn is what
+/// fills that field in when the file says nothing.
 #[cfg(feature = "gamepad")]
 pub(crate) fn gamepad_default_deadzone() -> f32 {
     gamepad::STICK_DEADZONE
@@ -341,8 +362,9 @@ pub(crate) fn gamepad_default_deadzone() -> f32 {
 }
 
 /// CLI beats config beats built-in default (spec §7). Two tiny fns rather than one struct so each call site
-/// reads as what it is. For this commit `cfg` is always `config::Config::default()` — Task 5 wires in the
-/// loaded file, at which point these fns and every call site are already correct.
+/// reads as what it is. `cfg` is the config file as loaded (itself defaults when there is no file), so an
+/// unset flag falls through to what was stored and a set one overrides it for this run only — a `--scale`
+/// override is never written back.
 fn resolve_scale(cli: Option<usize>, cfg: &config::Config) -> usize {
     cli.unwrap_or(cfg.scale)
 }
@@ -813,11 +835,26 @@ fn main() {
     // to the window manager, which `resize: true` is what enables. All the geometry — aspect, letterboxing,
     // and the exact inverse a click needs — is [`present`]'s, so it stays correct at any size the user drags
     // the window to. The initial size is `--scale` applied to the frame's height, widened per `--aspect`.
-    // Persistent settings (spec §7): CLI beats config beats built-in default. Task 5 loads the real config
-    // file here; for this commit we resolve against `Config::default()` so behavior is unchanged and this
-    // commit stands alone. Resolved ONCE — every site below reads `scale`/`aspect`, never `args.scale`/
-    // `args.aspect` directly, so there is exactly one precedence decision per run.
-    let cfg = config::Config::default();
+    // Persistent settings (spec §7): CLI beats config beats built-in default. Resolved ONCE — every site
+    // below reads `scale`/`aspect`, never `args.scale`/`args.aspect` directly, so there is exactly one
+    // precedence decision per run. A missing file is silently defaults; a corrupt one was backed up to
+    // `.bak` (the load's warnings say so on the glass, once, as soon as the overlay exists).
+    let cfg_path = config::config_path();
+    let loaded = match &cfg_path {
+        Some(p) => config::load(p),
+        None => config::Loaded {
+            config: config::Config::default(),
+            warnings: vec![
+                "config: no $XDG_CONFIG_HOME or $HOME — settings will not persist".into(),
+            ],
+            recovered: false,
+        },
+    };
+    let mut cfg = loaded.config.clone();
+    // What is believed to be ON DISK right now — not what loaded. Every successful save advances it, so the
+    // quit write can tell "nothing changed" from "changed and already flushed" from "changed but the flush
+    // FAILED" (that last one clears the countdown, so only this baseline can catch it and retry).
+    let mut cfg_saved = loaded.config.clone();
     let scale = resolve_scale(args.scale, &cfg);
     let aspect = resolve_aspect(args.aspect, &cfg);
 
@@ -852,10 +889,20 @@ fn main() {
         "machine: F1=soft reset, F5=reload the ROM from disk (re-read {} and reset)",
         args.rom_path
     );
+    // The restored volume step, read once so the banner below and the loop's `volume` local cannot
+    // disagree. No clamp is needed: `config::parse` rejects anything above `VOLUME_MAX`, and this assert
+    // pins `VOLUME_MAX` to the step count the audio module actually uses — change either and the build
+    // stops here rather than a saved level silently rescaling.
+    #[cfg(feature = "audio")]
+    const _: () = assert!(audio::VOLUME_STEPS == config::VOLUME_MAX);
+    #[cfg(feature = "audio")]
+    let restored_volume: u8 = cfg.volume;
     #[cfg(feature = "audio")]
     println!(
-        "audio: -/= volume down/up ({} steps, starts at full), M=mute",
-        audio::VOLUME_STEPS
+        "audio: -/= volume down/up (starting at {}/{}{}, remembered between runs), M=mute",
+        restored_volume,
+        audio::VOLUME_STEPS,
+        if cfg.muted { " [MUTED]" } else { "" }
     );
 
     // The Aether capability layer, hosted here. **Opt-in**: with no `--aether`/`--socket`/`ORACLE_AETHER`
@@ -881,7 +928,7 @@ fn main() {
     // below). `Some` with no controller attached is normal — one plugged in later is picked up by `poll`.
     // Detected controllers are announced by `Gamepads::new` itself, one line per pad.
     #[cfg(feature = "gamepad")]
-    let mut gamepads = gamepad::Gamepads::new(gamepad_default_deadzone());
+    let mut gamepads = gamepad::Gamepads::new(cfg.deadzone);
 
     // Start the host audio stream (Phase SY-5b). `None` = no device / build failure → video-only, never a
     // panic (the default in a headless, /dev/snd-less environment). When present, its persistent AudioSink is
@@ -910,6 +957,7 @@ fn main() {
     // On-screen notifications, status line and the paused banner. Everything the loop `println!`s is also
     // pushed here (see `notify`), because the window is where the user is looking.
     let mut ov = Overlay::new();
+    ov.status_line = cfg.status_line;
     let mut slots_on_disk = probe_slots(&args.rom_path);
 
     // The per-scanline pixel path (`F-SCANLINE-CAPTURE`). Attached to **every** run below so the window shows
@@ -923,6 +971,11 @@ fn main() {
     // writing the `.srm`, so a burst of saves coalesces into one file write (~2 s at 60 fps).
     const SRAM_AUTOSAVE_DEBOUNCE_FRAMES: u32 = 120;
     let mut sram_save_countdown: Option<u32> = None;
+
+    // Config autosave: same debounce shape as the `.srm`, so a volume ramp held down coalesces into one
+    // write instead of one per step.
+    const CONFIG_AUTOSAVE_DEBOUNCE_FRAMES: u32 = 120;
+    let mut config_save_countdown: Option<u32> = None;
 
     // The pixel-attribution watch. **The instrument now lives on the bus** (`bus.watchpoints_mut()`) rather
     // than here, and that is the whole of contract §8 item 19 for this capability: the player owns the run
@@ -941,12 +994,13 @@ fn main() {
     let mut state_slot: usize = 0;
 
     // Output volume (audio builds only — with no audio there is nothing to attenuate, and the state would be
-    // dead code). `volume` is a step in `0..=audio::VOLUME_STEPS`, defaulting to full so behaviour is
-    // unchanged until the user touches it; `muted` is an independent toggle so unmuting restores the level.
+    // dead code). `volume` is a step in `0..=audio::VOLUME_STEPS`, restored from the config file (which
+    // defaults to full, so behaviour is unchanged until the user touches it); `muted` is an independent
+    // toggle so unmuting restores the level. Both come from the single clamp done at the banner above.
     #[cfg(feature = "audio")]
-    let mut volume: u8 = audio::VOLUME_STEPS;
+    let mut volume: u8 = restored_volume;
     #[cfg(feature = "audio")]
-    let mut muted = false;
+    let mut muted = cfg.muted;
 
     // The command registry + palette (spec §4). The registry is the single source of truth for actions;
     // dispatch happens in ONE `match cmd` below so the actions keep borrowing the loop's state directly.
@@ -956,6 +1010,17 @@ fn main() {
     // Set when the palette closes under a still-held key; see [`release_latch`].
     let mut swallow_keys_until_release = false;
     ov.push("PRESS ` FOR COMMANDS", INFO); // discoverability layer 1 (spec §4)
+
+    // Whatever the settings load had to say, said once, on the glass. A file that was structurally corrupt
+    // and got moved aside is a failure like any other, so it takes the failure path — red toast *and*
+    // stderr. A merely ignored key, or a location that cannot persist, is worth noticing but is not damage.
+    for w in &loaded.warnings {
+        if loaded.recovered {
+            notify_err(&mut ov, w.clone());
+        } else {
+            notify(&mut ov, ACCENT, w.clone());
+        }
+    }
 
     // Esc no longer quits (spec §3): it closes the palette. Quitting is the window's close button or the
     // Quit command, which clears `running`.
@@ -1076,7 +1141,11 @@ fn main() {
                     paused = true;
                     step = true;
                 }
-                commands::Cmd::ToggleStatusLine => ov.status_line = !ov.status_line,
+                commands::Cmd::ToggleStatusLine => {
+                    ov.status_line = !ov.status_line;
+                    cfg.status_line = ov.status_line;
+                    config_save_countdown = Some(CONFIG_AUTOSAVE_DEBOUNCE_FRAMES);
+                }
                 // W dumps the recorded hits; C disarms the watch (dropping it back out of the run's sink).
                 commands::Cmd::DumpHits => {
                     // **The panel side of the item-19 parity.** This reads the same ring
@@ -1360,6 +1429,9 @@ fn main() {
                         format!("volume: {volume}/{}", audio::VOLUME_STEPS)
                     };
                     notify(&mut ov, INFO, line);
+                    cfg.volume = volume;
+                    cfg.muted = muted;
+                    config_save_countdown = Some(CONFIG_AUTOSAVE_DEBOUNCE_FRAMES);
                 }
             }
         }
@@ -1603,6 +1675,26 @@ fn main() {
             }
         }
 
+        // The settings twin of the above: armed by whichever dispatch arm changed a persisted value, and
+        // written once the user has stopped changing it. A failed write is a toast, not a crash — the
+        // session keeps running with the setting live in memory.
+        if let Some(n) = config_save_countdown {
+            config_save_countdown = if n == 0 {
+                if let Some(p) = &cfg_path {
+                    match config::save(p, &cfg) {
+                        Ok(()) => cfg_saved = cfg.clone(),
+                        Err(e) => notify_err(
+                            &mut ov,
+                            format!("config: save to {} failed: {e}", p.display()),
+                        ),
+                    }
+                }
+                None
+            } else {
+                Some(n - 1)
+            };
+        }
+
         // Optional debug marker: a contrasting crosshair at the watched pixel so the live driver can confirm
         // the click landed where intended (bounds-guarded against an H40→H32 mode switch since the click).
         // Drawn into a scratch copy, never into `buf`: the crosshair is an XOR, and a paused frontend
@@ -1691,6 +1783,24 @@ fn main() {
     // pending debounce never reached), so a save made just before closing the window is never lost. The helper
     // is gated on `sram_used()` (S4) so only a cart that actually saved writes a file.
     flush_pending_srm(&sys, &srm_path, sram_save_countdown, "on quit");
+
+    // Settings on quit (spec §7). The rule, against `cfg_saved` (what is believed to be on disk) rather
+    // than what loaded: write when the live config differs from disk, OR when a debounced write was still
+    // pending as the window closed. Three consequences, all wanted — a session that changed nothing writes
+    // nothing; a change already flushed by the debounce is not written a second time; and a mid-session
+    // save that FAILED is retried here, because the failure cleared the countdown but left the baseline
+    // behind. A same-bytes rewrite remains possible (a setting toggled back with its countdown still
+    // armed) and is harmless: the save is atomic.
+    if let Some(p) = &cfg_path {
+        // No `cfg_saved` update on success here: nothing runs after this, so the compiler rightly calls
+        // that assignment dead. The baseline is advanced at the in-loop save, which is the only site whose
+        // result a later iteration can observe.
+        if cfg != cfg_saved || config_save_countdown.is_some() {
+            if let Err(e) = config::save(p, &cfg) {
+                eprintln!("config: save on quit to {} failed: {e}", p.display());
+            }
+        }
+    }
 }
 
 #[cfg(test)]
