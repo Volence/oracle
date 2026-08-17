@@ -26,8 +26,14 @@ pub enum Cmd {
     DumpHits,
     ClearWatch,
     ToggleStatusLine,
+    // Audio-only, and absent — not merely unbound — from a no-audio build: with nothing to attenuate
+    // the command genuinely *cannot* exist (spec §4), which is also what keeps the main loop's
+    // dispatch exhaustive without a dead catch-all arm.
+    #[cfg(feature = "audio")]
     VolumeUp,
+    #[cfg(feature = "audio")]
     VolumeDown,
+    #[cfg(feature = "audio")]
     MuteToggle,
 }
 
@@ -159,8 +165,12 @@ pub fn registry() -> Vec<CommandInfo> {
         repeat: false,
         hidden: true,
     });
-    // Number keys 0-9 -> direct slot select, hidden (SLOT_KEYS order, main.rs:358).
-    const SLOT_TITLES: [&str; 10] = [
+    // Number keys 0-9 -> direct slot select, hidden. This table is the only place that mapping lives —
+    // the main loop's old `SLOT_KEYS` array is gone, so a slot key and its command cannot drift apart.
+    // Both arrays are typed by `SLOT_COUNT` on purpose (the guarantee the deleted const carried): adding a
+    // slot without adding its key and title is a *compile* error here, never a runtime index panic on
+    // `slots_on_disk[n]` in the main loop.
+    const SLOT_TITLES: [&str; crate::save_state::SLOT_COUNT] = [
         "Select slot 0",
         "Select slot 1",
         "Select slot 2",
@@ -172,7 +182,7 @@ pub fn registry() -> Vec<CommandInfo> {
         "Select slot 8",
         "Select slot 9",
     ];
-    let slot_keys = [
+    let slot_keys: [Key; crate::save_state::SLOT_COUNT] = [
         Key::Key0,
         Key::Key1,
         Key::Key2,
@@ -236,7 +246,7 @@ pub fn subseq_match(query: &str, title: &str) -> bool {
 }
 
 /// Short display name for the palette's hotkey column. Only keys the registry actually uses
-/// need names; anything else renders "?" (and the test above keeps the registry inside the
+/// need names; anything else renders "?" (and the test below keeps the registry inside the
 /// named set).
 pub fn key_name(k: Key) -> &'static str {
     match k {

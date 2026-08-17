@@ -89,12 +89,6 @@ impl Palette {
         self.open = false;
         self.picker = None;
     }
-    pub fn query(&self) -> &str {
-        &self.query
-    }
-    pub fn picker(&self) -> Option<&Picker> {
-        self.picker.as_ref()
-    }
     /// Open a secondary pick list (the main loop builds the items — occupancy etc. lives there).
     /// Clears the query too, mirroring `open()`: otherwise Esc-ing back out of the picker would
     /// reveal the main list still filtered by whatever the user had typed before opening it.
@@ -239,10 +233,6 @@ impl Palette {
         self.recents.retain(|c| *c != cmd);
         self.recents.insert(0, cmd);
         self.recents.truncate(MRU_CAP);
-    }
-
-    pub fn sel(&self) -> usize {
-        self.sel
     }
 
     /// Paint the palette into the presentation buffer, inside the picture rect only (the same
@@ -557,7 +547,7 @@ mod tests {
         assert_eq!(p.handle(PaletteKey::Down, &reg), PaletteAction::None);
         let rows = p.rows(&reg);
         assert!(
-            matches!(rows[p.sel()], Row::Item(_)),
+            matches!(rows[p.sel], Row::Item(_)),
             "selection sits on an item"
         );
         p.handle(PaletteKey::Up, &reg);
@@ -604,7 +594,7 @@ mod tests {
         );
         p.handle(PaletteKey::Esc, &reg);
         assert!(p.is_open(), "esc closes the picker, not the palette");
-        assert!(p.picker().is_none());
+        assert!(p.picker.is_none());
 
         // Fix 2: open_picker clears a stale query. The main loop can invoke it directly
         // (SlotPicker is intercepted before it ever reaches `handle`), including while the
@@ -613,7 +603,7 @@ mod tests {
         for c in "quit".chars() {
             p.handle(PaletteKey::Char(c), &reg);
         }
-        assert_eq!(p.query(), "quit");
+        assert_eq!(p.query, "quit");
         p.open_picker(
             "SELECT SLOT".into(),
             vec![("slot 0".into(), Cmd::SlotSelect(0))],
@@ -621,11 +611,8 @@ mod tests {
         );
         p.handle(PaletteKey::Esc, &reg);
         assert!(p.is_open());
-        assert!(p.picker().is_none());
-        assert!(
-            p.query().is_empty(),
-            "open_picker must clear the stale query"
-        );
+        assert!(p.picker.is_none());
+        assert!(p.query.is_empty(), "open_picker must clear the stale query");
         assert!(
             p.rows(&reg).iter().any(|r| matches!(r, Row::Header(_))),
             "esc from the picker shows the full grouped list, not a filtered one"
@@ -640,7 +627,7 @@ mod tests {
     fn sel_always_on_item_row() {
         let (mut p, reg) = open_palette();
         assert!(
-            matches!(p.rows(&reg)[p.sel()], Row::Item(_)),
+            matches!(p.rows(&reg)[p.sel], Row::Item(_)),
             "sel must sit on an Item row immediately after open(), before any key"
         );
 
@@ -650,7 +637,7 @@ mod tests {
             p.handle(PaletteKey::Down, &reg);
         }
         assert!(
-            matches!(p.rows(&reg)[p.sel()], Row::Item(_)),
+            matches!(p.rows(&reg)[p.sel], Row::Item(_)),
             "clamped-at-bottom sel is an Item"
         );
 
@@ -659,7 +646,7 @@ mod tests {
             p.handle(PaletteKey::Up, &reg);
         }
         assert!(
-            matches!(p.rows(&reg)[p.sel()], Row::Item(_)),
+            matches!(p.rows(&reg)[p.sel], Row::Item(_)),
             "clamped-at-top sel is an Item"
         );
 
@@ -673,7 +660,7 @@ mod tests {
         }
         assert!(!p.rows(&reg).is_empty(), "backspace restored the list");
         assert!(
-            matches!(p.rows(&reg)[p.sel()], Row::Item(_)),
+            matches!(p.rows(&reg)[p.sel], Row::Item(_)),
             "sel sits on an Item after backspace restores the list"
         );
     }

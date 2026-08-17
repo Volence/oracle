@@ -29,8 +29,9 @@
 //! | A / S / D         | A / B / C (P1) |
 //! | Enter             | Start (P1)     |
 //! | Space             | pause / resume |
-//! | `.` (period)      | single-frame step (while paused) |
-//! | F1                | soft-reset the console (SRAM contents preserved, as on real hardware) |
+//! | `.` (period)      | single-frame step (pauses first if running) |
+//! | `` ` `` (backtick) or Ctrl+P | open the command palette |
+//! | Tab (or F1)       | soft-reset the console (SRAM contents preserved, as on real hardware) |
 //! | F5                | re-read the ROM file from disk and reset — the edit-assemble-test loop |
 //! | F2                | save state to the current slot |
 //! | F4                | load state from the current slot |
@@ -42,7 +43,10 @@
 //! | Left mouse click  | watch what is under the clicked pixel — plane tile, **sprite**, or backdrop |
 //! | W                 | dump recorded watch hits (seq/frame/pc/addr/old→new/via, PC symbolised) + drop count |
 //! | C                 | clear the watch (stop recording write hits) |
-//! | Esc / window-close| quit           |
+//! | Esc               | close the palette / picker (quit = window close button or the Quit command) |
+//!
+//! Every action lives in the command registry ([`commands`]); the palette lists them grouped, with hotkeys
+//! shown — the list is the cheat-sheet.
 //!
 //! The window is **resizable** (so the window manager's own maximise / fullscreen works), and `--aspect`
 //! chooses how the picture is fitted into it — see [`present`].
@@ -354,21 +358,6 @@ fn bus_machine_info(rom_path: &str, symbols: Option<SymbolTable>) -> bus::Machin
         symbols_path,
     }
 }
-
-/// Number keys 0-9, in slot order: pressing one selects that save-state slot directly. Indexed by slot, so
-/// the array length must stay equal to [`save_state::SLOT_COUNT`] (asserted in the tests below).
-const SLOT_KEYS: [Key; save_state::SLOT_COUNT] = [
-    Key::Key0,
-    Key::Key1,
-    Key::Key2,
-    Key::Key3,
-    Key::Key4,
-    Key::Key5,
-    Key::Key6,
-    Key::Key7,
-    Key::Key8,
-    Key::Key9,
-];
 
 /// Step the save-state slot by `delta`, wrapping over `0..SLOT_COUNT` in both directions (F6 = -1, F7 = +1).
 fn next_slot(slot: usize, delta: isize) -> usize {
@@ -798,7 +787,7 @@ fn main() {
     window.set_target_fps(60);
 
     println!(
-        "window {win_w}x{win_h}, resizable, aspect {} — keyboard (P1): arrows=D-pad, A/S/D=A/B/C, Enter=Start; Space=pause, .=step, click=watch, W=dump, C=clear, F3=status line, Esc=quit",
+        "window {win_w}x{win_h}, resizable, aspect {} — keyboard (P1): arrows=D-pad, A/S/D=A/B/C, Enter=Start; Space=pause, .=step, click=watch, W=dump, C=clear, F3=status line, Tab=reset, `=command palette (the full list)",
         args.aspect.name()
     );
     println!(
@@ -906,31 +895,32 @@ fn main() {
     #[cfg(feature = "audio")]
     let mut muted = false;
 
-    while window.is_open() && !window.is_key_down(Key::Escape) {
+    // The command registry + palette (spec §4). The registry is the single source of truth for actions;
+    // dispatch happens in ONE `match cmd` below so the actions keep borrowing the loop's state directly.
+    let reg = commands::registry();
+    let mut palette = palette::Palette::new();
+    let mut running = true;
+    ov.push("PRESS ` FOR COMMANDS", INFO); // discoverability layer 1 (spec §4)
+
+    // Esc no longer quits (spec §3): it closes the palette. Quitting is the window's close button or the
+    // Quit command, which clears `running`.
+    while window.is_open() && running {
         // The window is resizable, so its geometry is re-derived every iteration rather than assumed. The
         // click inverse below and the present at the bottom both use this same rectangle.
         let (win_w, win_h) = window.get_size();
         let view = present::dest_rect(win_w, win_h, width, HEIGHT, args.aspect);
 
-        // Edge-triggered controls (fire once per physical press, not every frame held).
-        if window.is_key_pressed(Key::Space, KeyRepeat::No) {
-            paused = !paused;
-            // No toast: the PAUSED banner is the feedback, and it stays up for as long as the state lasts.
-            println!("{}", if paused { "paused" } else { "resumed" });
-        }
-        if window.is_key_pressed(Key::F3, KeyRepeat::No) {
-            ov.status_line = !ov.status_line;
-        }
-        let step = window.is_key_pressed(Key::Period, KeyRepeat::No);
-
         // A left-click edge maps the clicked window pixel to a native dot and asks the VDP who is showing
         // there; a plane/window tile winner arms a watch on that tile's 32-byte VRAM range (replacing any
         // prior watch). Width is the *currently displayed* frame's width (pre-step), so the click resolves
         // against what the user is actually looking at.
+        // The palette eats input while it is up (spec §3), and that includes the mouse: a click meant for the
+        // panel must not arm a watch on whatever tile is behind it. The edge is still *tracked* either way, so
+        // a press that started under the palette cannot re-fire as a fresh click once it closes.
         let mouse_down = window.get_mouse_down(MouseButton::Left);
         let clicked = mouse_down && !prev_mouse_down;
         prev_mouse_down = mouse_down;
-        if clicked {
+        if clicked && !palette.is_open() {
             // `view` is the rectangle the frame *currently on screen* occupies, derived from the width the
             // last successful blit reported — not a fresh `render_line` query, which would answer for the
             // mode the VDP is in *now* (a post-hoc read; see `blit_capture`). `window_to_native` is the exact
@@ -968,92 +958,175 @@ fn main() {
             }
         }
 
-        // W dumps the recorded hits; C disarms the watch (dropping it back out of the run's sink).
-        if window.is_key_pressed(Key::W, KeyRepeat::No) {
-            // **The panel side of the item-19 parity.** This reads the same ring `emulator/watchpoint_hits`
-            // serves, through the same non-destructive `hits()` — never `take_hits()`, which would let this
-            // key press delete a socket client's evidence.
-            let n = {
-                let wp = bus.watchpoints_mut();
-                let n = wp.hits().len();
-                dump_hits(wp, symbols.as_ref());
-                n
-            };
-            // The hits themselves are far too wide for the glass; the toast just confirms the key landed and
-            // says how much went to the terminal — which is where the answer actually is.
-            ov.push(format!("DUMPED {n} WATCH HITS TO STDOUT"), INFO);
-        }
-        if window.is_key_pressed(Key::C, KeyRepeat::No) {
-            let wp = bus.watchpoints_mut();
-            for id in panel_watches.drain(..) {
-                wp.remove(id);
-            }
-            watched_pixel = None;
-            notify(&mut ov, INFO, "watch cleared — no longer recording writes");
-        }
-
-        // --- Save states (edge-triggered like every control above; usable while paused too). ---
-        // Slot selection: F6/F7 step, 0-9 pick directly.
-        let mut slot_changed = false;
-        if window.is_key_pressed(Key::F6, KeyRepeat::No) {
-            state_slot = next_slot(state_slot, -1);
-            slot_changed = true;
-        }
-        if window.is_key_pressed(Key::F7, KeyRepeat::No) {
-            state_slot = next_slot(state_slot, 1);
-            slot_changed = true;
-        }
-        for (n, key) in SLOT_KEYS.iter().enumerate() {
-            if window.is_key_pressed(*key, KeyRepeat::No) {
-                state_slot = n;
-                slot_changed = true;
-            }
-        }
-        if slot_changed {
-            // Re-probe on every slot move: another process (or an earlier session) can have written a state
-            // file since we last looked, and the strip is only useful if it is telling the truth.
-            slots_on_disk = probe_slots(&args.rom_path);
-            ov.flash(); // put the slot strip on screen without needing F3 first
-            notify(
-                &mut ov,
-                ACCENT,
-                format!(
-                    "slot {state_slot} selected ({})",
-                    if slots_on_disk[state_slot] {
-                        "occupied"
-                    } else {
-                        "empty"
+        // --- Input routing (spec §3), three cases. Palette open: it eats every key, and no binding fires.
+        // The frame the palette *opens*: the opening chord is consumed too, so backtick/Ctrl+P can never
+        // also trigger whatever else those keys are bound to. Otherwise: the registry's bindings are
+        // scanned. Every case funnels into `pending`, dispatched once below. ---
+        let mut pending: Vec<commands::Cmd> = Vec::new();
+        let mut step = false;
+        if palette.is_open() {
+            for k in window.get_keys_pressed(KeyRepeat::Yes) {
+                let pk = match k {
+                    Key::Backspace => Some(palette::PaletteKey::Backspace),
+                    Key::Up => Some(palette::PaletteKey::Up),
+                    Key::Down => Some(palette::PaletteKey::Down),
+                    Key::Enter => Some(palette::PaletteKey::Enter),
+                    Key::Escape => Some(palette::PaletteKey::Esc),
+                    _ => commands::key_char(k).map(palette::PaletteKey::Char),
+                };
+                if let Some(pk) = pk {
+                    if let palette::PaletteAction::Run(cmd) = palette.handle(pk, &reg) {
+                        pending.push(cmd);
                     }
-                ),
-            );
-        }
-
-        // F2 = save, F4 = load, both on the currently selected slot. The path is built inside each arm so the
-        // idle loop allocates nothing.
-        if window.is_key_pressed(Key::F2, KeyRepeat::No) {
-            let state_path =
-                save_state::state_path_for(std::path::Path::new(&args.rom_path), state_slot);
-            match save_state::save(&state_path, &sys, rom_fp) {
-                Ok(n) => {
-                    slots_on_disk[state_slot] = true;
-                    println!(
-                        "state: saved {n} bytes to slot {state_slot} ({})",
-                        state_path.display()
-                    );
-                    ov.push(format!("SAVED SLOT {state_slot}"), ACCENT);
-                    ov.flash();
                 }
-                Err(e) => {
-                    eprintln!("state: save to {} failed: {e}", state_path.display());
-                    ov.push(format!("SAVE SLOT {state_slot} FAILED: {e}"), ERROR);
+            }
+        } else {
+            let ctrl = window.is_key_down(Key::LeftCtrl) || window.is_key_down(Key::RightCtrl);
+            if window.is_key_pressed(Key::Backquote, KeyRepeat::No)
+                || (ctrl && window.is_key_pressed(Key::P, KeyRepeat::No))
+            {
+                palette.open(&reg);
+            } else {
+                for c in &reg {
+                    let Some(key) = c.hotkey else { continue };
+                    let rep = if c.repeat {
+                        KeyRepeat::Yes
+                    } else {
+                        KeyRepeat::No
+                    };
+                    if window.is_key_pressed(key, rep) {
+                        pending.push(c.cmd);
+                    }
                 }
             }
         }
-        if window.is_key_pressed(Key::F4, KeyRepeat::No) {
-            let state_path =
-                save_state::state_path_for(std::path::Path::new(&args.rom_path), state_slot);
-            match save_state::load(&state_path, rom_fp) {
-                Ok(loaded) => {
+
+        // --- Dispatch: the one match, with every action's body moved verbatim from the hotkey chain it
+        // replaced. It lives inside the loop, not in handler functions, because that is what lets each arm
+        // keep borrowing the loop's own state (`sys`, `ov`, `bus`, the slot and volume locals) directly. ---
+        for cmd in pending {
+            match cmd {
+                commands::Cmd::Pause => {
+                    paused = !paused;
+                    // No toast: the PAUSED banner is the feedback, and it stays up for as long as the state
+                    // lasts.
+                    println!("{}", if paused { "paused" } else { "resumed" });
+                }
+                commands::Cmd::Step => {
+                    // DWIM (spec §4): stepping while unpaused pauses AND steps, rather than doing nothing.
+                    paused = true;
+                    step = true;
+                }
+                commands::Cmd::ToggleStatusLine => ov.status_line = !ov.status_line,
+                // W dumps the recorded hits; C disarms the watch (dropping it back out of the run's sink).
+                commands::Cmd::DumpHits => {
+                    // **The panel side of the item-19 parity.** This reads the same ring
+                    // `emulator/watchpoint_hits` serves, through the same non-destructive `hits()` — never
+                    // `take_hits()`, which would let this key press delete a socket client's evidence.
+                    let n = {
+                        let wp = bus.watchpoints_mut();
+                        let n = wp.hits().len();
+                        dump_hits(wp, symbols.as_ref());
+                        n
+                    };
+                    // The hits themselves are far too wide for the glass; the toast just confirms the key
+                    // landed and says how much went to the terminal — which is where the answer actually is.
+                    ov.push(format!("DUMPED {n} WATCH HITS TO STDOUT"), INFO);
+                }
+                commands::Cmd::ClearWatch => {
+                    let wp = bus.watchpoints_mut();
+                    for id in panel_watches.drain(..) {
+                        wp.remove(id);
+                    }
+                    watched_pixel = None;
+                    notify(&mut ov, INFO, "watch cleared — no longer recording writes");
+                }
+                // --- Save states (usable while paused too). Slot selection: F6/F7 step, 0-9 pick directly,
+                // and the palette's picker runs the same `SlotSelect`. ---
+                commands::Cmd::SlotPrev
+                | commands::Cmd::SlotNext
+                | commands::Cmd::SlotSelect(_) => {
+                    match cmd {
+                        commands::Cmd::SlotPrev => state_slot = next_slot(state_slot, -1),
+                        commands::Cmd::SlotNext => state_slot = next_slot(state_slot, 1),
+                        commands::Cmd::SlotSelect(n) => state_slot = n,
+                        // Contract: the outer or-pattern lists exactly the variants matched here —
+                        // extend both together, or this becomes reachable.
+                        _ => unreachable!(),
+                    }
+                    // Reaching here *is* the slot change, so what used to sit behind `if slot_changed` runs
+                    // unconditionally. Re-probe on every slot move: another process (or an earlier session)
+                    // can have written a state file since we last looked, and the strip is only useful if it
+                    // is telling the truth.
+                    slots_on_disk = probe_slots(&args.rom_path);
+                    ov.flash(); // put the slot strip on screen without needing F3 first
+                    notify(
+                        &mut ov,
+                        ACCENT,
+                        format!(
+                            "slot {state_slot} selected ({})",
+                            if slots_on_disk[state_slot] {
+                                "occupied"
+                            } else {
+                                "empty"
+                            }
+                        ),
+                    );
+                }
+                commands::Cmd::SlotPicker => {
+                    // Items carry occupancy, exactly what the slot toast says today.
+                    let items: Vec<(String, commands::Cmd)> = (0..save_state::SLOT_COUNT)
+                        .map(|n| {
+                            let occ = if slots_on_disk[n] {
+                                "occupied"
+                            } else {
+                                "empty"
+                            };
+                            (format!("slot {n} ({occ})"), commands::Cmd::SlotSelect(n))
+                        })
+                        .collect();
+                    palette.open_picker("SELECT SLOT".into(), items, &reg);
+                }
+                // F2 = save, F4 = load, both on the currently selected slot. The path is built inside each
+                // arm so the idle loop allocates nothing.
+                commands::Cmd::SaveState => {
+                    let state_path = save_state::state_path_for(
+                        std::path::Path::new(&args.rom_path),
+                        state_slot,
+                    );
+                    match save_state::save(&state_path, &sys, rom_fp) {
+                        Ok(n) => {
+                            slots_on_disk[state_slot] = true;
+                            println!(
+                                "state: saved {n} bytes to slot {state_slot} ({})",
+                                state_path.display()
+                            );
+                            ov.push(format!("SAVED SLOT {state_slot}"), ACCENT);
+                            ov.flash();
+                        }
+                        Err(e) => {
+                            eprintln!("state: save to {} failed: {e}", state_path.display());
+                            ov.push(format!("SAVE SLOT {state_slot} FAILED: {e}"), ERROR);
+                        }
+                    }
+                }
+                commands::Cmd::LoadState => {
+                    let state_path = save_state::state_path_for(
+                        std::path::Path::new(&args.rom_path),
+                        state_slot,
+                    );
+                    // Refusal first, so the long restore below reads at one level instead of three. A stale or
+                    // corrupt file leaves the running machine untouched, which is the whole contract of
+                    // `save_state::load` returning `Err` rather than a half-built `System`.
+                    let loaded = match save_state::load(&state_path, rom_fp) {
+                        Ok(loaded) => loaded,
+                        Err(e) => {
+                            eprintln!("state: load of slot {state_slot} failed: {e}");
+                            ov.push(format!("LOAD SLOT {state_slot} FAILED: {e}"), ERROR);
+                            continue;
+                        }
+                    };
+
                     // SRAM rides the snapshot, so the restore is about to roll the battery buffer backwards.
                     // Flush any battery data the guest has written but the debounce has not yet persisted
                     // *first*, exactly like the quit path — otherwise a state load would silently destroy a
@@ -1104,49 +1177,48 @@ fn main() {
                     ov.push(format!("LOADED SLOT {state_slot}"), ACCENT);
                     ov.flash();
                 }
-                Err(e) => {
-                    eprintln!("state: load of slot {state_slot} failed: {e}");
-                    ov.push(format!("LOAD SLOT {state_slot} FAILED: {e}"), ERROR);
-                }
-            }
-        }
 
-        // --- Machine control: F1 soft-resets, F5 re-reads the ROM from disk and resets (module doc). ---
-        if window.is_key_pressed(Key::F1, KeyRepeat::No) {
-            // `System::reset` keeps the SRAM *contents* but clears `sram_dirty`, so an in-flight save would
-            // lose the only signal that it still needs writing. Persist it first; if that fails the bytes
-            // survive the reset unchanged, so re-arming the debounce retries with exactly the right image.
-            if flush_pending_srm(&sys, &srm_path, sram_save_countdown, "before the reset") {
-                sram_save_countdown = None;
-            } else {
-                sram_save_countdown = Some(SRAM_AUTOSAVE_DEBOUNCE_FRAMES);
-            }
-            sys.reset();
-            frame = 0; // the machine's own clock restarts, so the displayed counter follows it
-            cap.clear(); // the line stream restarts from the reset vector — drop the pre-reset frame
-            #[cfg(feature = "audio")]
-            resync_audio(audio.as_mut());
-            notify(
-                &mut ov,
-                ACCENT,
-                "reset: soft reset — SRAM contents preserved, as on real hardware",
-            );
-        }
-        if window.is_key_pressed(Key::F5, KeyRepeat::No) {
-            // Read the file first: a rebuild that failed (or is still being written) must leave the running
-            // machine — and its battery data — completely untouched.
-            match std::fs::read(&args.rom_path) {
-                Err(e) => notify_err(
-                    &mut ov,
-                    format!(
-                        "reload: cannot read ROM {} ({e}) — still running the previous image",
-                        args.rom_path
-                    ),
-                ),
-                Ok(bytes) => {
-                    // Unlike a reset, `load_rom` re-provisions a *zeroed* SRAM buffer from the new header and
-                    // clears `sram_used`/`sram_dirty` — unflushed battery data would be destroyed outright,
-                    // with nothing left to retry from. So a failed flush aborts the reload.
+                // --- Machine control: Reset (Tab / F1) soft-resets, ReloadRom (F5) re-reads the ROM from
+                // disk and resets (module doc). ---
+                commands::Cmd::Reset => {
+                    // `System::reset` keeps the SRAM *contents* but clears `sram_dirty`, so an in-flight save would
+                    // lose the only signal that it still needs writing. Persist it first; if that fails the bytes
+                    // survive the reset unchanged, so re-arming the debounce retries with exactly the right image.
+                    if flush_pending_srm(&sys, &srm_path, sram_save_countdown, "before the reset") {
+                        sram_save_countdown = None;
+                    } else {
+                        sram_save_countdown = Some(SRAM_AUTOSAVE_DEBOUNCE_FRAMES);
+                    }
+                    sys.reset();
+                    frame = 0; // the machine's own clock restarts, so the displayed counter follows it
+                    cap.clear(); // the line stream restarts from the reset vector — drop the pre-reset frame
+                    #[cfg(feature = "audio")]
+                    resync_audio(audio.as_mut());
+                    notify(
+                        &mut ov,
+                        ACCENT,
+                        "reset: soft reset — SRAM contents preserved, as on real hardware",
+                    );
+                }
+                commands::Cmd::ReloadRom => {
+                    // Read the file first: a rebuild that failed (or is still being written) must leave
+                    // the running machine — and its battery data — completely untouched.
+                    let bytes = match std::fs::read(&args.rom_path) {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            notify_err(
+                                &mut ov,
+                                format!(
+                                    "reload: cannot read ROM {} ({e}) — still running the previous image",
+                                    args.rom_path
+                                ),
+                            );
+                            continue;
+                        }
+                    };
+                    // Unlike a reset, `load_rom` re-provisions a *zeroed* SRAM buffer from the new header
+                    // and clears `sram_used`/`sram_dirty` — unflushed battery data would be destroyed
+                    // outright, with nothing left to retry from. So a failed flush aborts the reload.
                     if !flush_pending_srm(
                         &sys,
                         &srm_path,
@@ -1161,80 +1233,75 @@ fn main() {
                                 srm_path.display()
                             ),
                         );
-                    } else {
-                        notify(
-                            &mut ov,
-                            ACCENT,
-                            format!(
-                                "reload: re-read {} bytes from {}",
-                                bytes.len(),
-                                args.rom_path
-                            ),
-                        );
-                        // The cartridge identity changes with its bytes. Re-deriving it makes every state
-                        // written against the previous build fail with `StateError::Rom` — which is the point:
-                        // a state carries the whole machine, so restoring one would put the old ROM back.
-                        rom_fp = save_state::rom_fingerprint(&bytes);
-                        // Re-read the listing too. This is the whole reason symbol resolution is a
-                        // primitive rather than a lookup the user does once: a rebuild moves symbols, and a
-                        // table cached across it names the *previous* build's addresses while looking
-                        // perfectly healthy (the suite contract's D7 incident — every symbol shifted +$24
-                        // mid-session and a "verified" literal rotted). Re-validated against the new bytes,
-                        // so a listing that stopped matching is dropped rather than carried forward.
-                        symbols =
-                            symbol_file::load_symbols(std::path::Path::new(&args.rom_path), &bytes);
-                        // …and re-point the bus at the same pair, for the same reason. A hosted client
-                        // resolving `read_memory {symbol}` against the previous build's listing reads a
-                        // wrong address and reports success — the D7 incident, exactly.
-                        if serving {
-                            bus.set_machine_info(bus_machine_info(&args.rom_path, symbols.clone()));
-                        }
-                        sys.load_rom(bytes);
-                        // `load_rom` zeroed the buffer it just sized from the new header, so re-apply the
-                        // on-disk battery image. The `.srm` path comes from the ROM *path*, unchanged here.
-                        if let Some(saved) = sram_file::load_srm(&srm_path) {
-                            sys.load_sram(&saved);
-                            println!(
-                                "SRAM: re-loaded {} bytes from {}",
-                                saved.len(),
-                                srm_path.display()
-                            );
-                        }
-                        sram_save_countdown = None; // the fresh buffer is clean and matches disk
-                        sys.reset(); // `load_rom` only swaps the cartridge; this runs the /RESET sequence
-                        frame = 0;
-                        cap.clear(); // a different cartridge draws a different frame — drop the old one
-                        #[cfg(feature = "audio")]
-                        resync_audio(audio.as_mut());
+                        continue;
                     }
+                    notify(
+                        &mut ov,
+                        ACCENT,
+                        format!(
+                            "reload: re-read {} bytes from {}",
+                            bytes.len(),
+                            args.rom_path
+                        ),
+                    );
+                    // The cartridge identity changes with its bytes. Re-deriving it makes every state
+                    // written against the previous build fail with `StateError::Rom` — which is the point:
+                    // a state carries the whole machine, so restoring one would put the old ROM back.
+                    rom_fp = save_state::rom_fingerprint(&bytes);
+                    // Re-read the listing too. This is the whole reason symbol resolution is a
+                    // primitive rather than a lookup the user does once: a rebuild moves symbols, and a
+                    // table cached across it names the *previous* build's addresses while looking
+                    // perfectly healthy (the suite contract's D7 incident — every symbol shifted +$24
+                    // mid-session and a "verified" literal rotted). Re-validated against the new bytes,
+                    // so a listing that stopped matching is dropped rather than carried forward.
+                    symbols =
+                        symbol_file::load_symbols(std::path::Path::new(&args.rom_path), &bytes);
+                    // …and re-point the bus at the same pair, for the same reason. A hosted client
+                    // resolving `read_memory {symbol}` against the previous build's listing reads a
+                    // wrong address and reports success — the D7 incident, exactly.
+                    if serving {
+                        bus.set_machine_info(bus_machine_info(&args.rom_path, symbols.clone()));
+                    }
+                    sys.load_rom(bytes);
+                    // `load_rom` zeroed the buffer it just sized from the new header, so re-apply the
+                    // on-disk battery image. The `.srm` path comes from the ROM *path*, unchanged here.
+                    if let Some(saved) = sram_file::load_srm(&srm_path) {
+                        sys.load_sram(&saved);
+                        println!(
+                            "SRAM: re-loaded {} bytes from {}",
+                            saved.len(),
+                            srm_path.display()
+                        );
+                    }
+                    sram_save_countdown = None; // the fresh buffer is clean and matches disk
+                    sys.reset(); // `load_rom` only swaps the cartridge; this runs the /RESET sequence
+                    frame = 0;
+                    cap.clear(); // a different cartridge draws a different frame — drop the old one
+                    #[cfg(feature = "audio")]
+                    resync_audio(audio.as_mut());
                 }
-            }
-        }
-
-        // --- Output volume (audio builds only). Repeat-on-hold for the level so `-`/`=` ramp smoothly; the
-        // mute toggle is edge-only so holding M does not flap it. ---
-        #[cfg(feature = "audio")]
-        {
-            let mut changed = false;
-            if window.is_key_pressed(Key::Minus, KeyRepeat::Yes) {
-                volume = volume.saturating_sub(1);
-                changed = true;
-            }
-            if window.is_key_pressed(Key::Equal, KeyRepeat::Yes) {
-                volume = (volume + 1).min(audio::VOLUME_STEPS);
-                changed = true;
-            }
-            if window.is_key_pressed(Key::M, KeyRepeat::No) {
-                muted = !muted;
-                changed = true;
-            }
-            if changed {
-                let line = if muted {
-                    format!("volume: {volume}/{}  [MUTED]", audio::VOLUME_STEPS)
-                } else {
-                    format!("volume: {volume}/{}", audio::VOLUME_STEPS)
-                };
-                notify(&mut ov, INFO, line);
+                commands::Cmd::Quit => running = false,
+                // --- Output volume (audio builds only). The registry marks `-`/`=` as repeat-on-hold so the
+                // level ramps smoothly; the mute toggle is edge-only so holding M does not flap it. A
+                // no-audio build needs no arm at all here: `Cmd`'s volume variants are themselves
+                // `#[cfg(feature = "audio")]`, so the match stays exhaustive without a dead one. ---
+                #[cfg(feature = "audio")]
+                commands::Cmd::VolumeUp | commands::Cmd::VolumeDown | commands::Cmd::MuteToggle => {
+                    match cmd {
+                        commands::Cmd::VolumeUp => volume = (volume + 1).min(audio::VOLUME_STEPS),
+                        commands::Cmd::VolumeDown => volume = volume.saturating_sub(1),
+                        commands::Cmd::MuteToggle => muted = !muted,
+                        // Contract: the outer or-pattern lists exactly the variants matched here —
+                        // extend both together, or this becomes reachable.
+                        _ => unreachable!(),
+                    }
+                    let line = if muted {
+                        format!("volume: {volume}/{}  [MUTED]", audio::VOLUME_STEPS)
+                    } else {
+                        format!("volume: {volume}/{}", audio::VOLUME_STEPS)
+                    };
+                    notify(&mut ov, INFO, line);
+                }
             }
         }
 
@@ -1242,9 +1309,16 @@ fn main() {
         // Player 1 = keyboard OR gamepad 1 (merged per button, so neither source can suppress the other);
         // Player 2 = gamepad 2 only, and an all-released Pad when there is none — which is exactly the state
         // port 1 already had before that slice, so a one-player session is unaffected.
+        // Palette open = the keyboard is typing text, not playing (spec §3), so the keyboard half of P1 is
+        // swallowed for as long as it is up. Gamepads are untouched and always reach the game.
+        let p1 = if palette.is_open() {
+            Pad::default()
+        } else {
+            poll_pad(&window)
+        };
         // `mut` is used only by the `gamepad` arm below; a no-gamepad build never writes it.
         #[allow(unused_mut)]
-        let mut player = [poll_pad(&window), Pad::default()];
+        let mut player = [p1, Pad::default()];
         #[cfg(feature = "gamepad")]
         if let Some(g) = gamepads.as_mut() {
             let pads = g.poll();
@@ -1505,6 +1579,9 @@ fn main() {
         );
         #[cfg(not(feature = "audio"))]
         let (vol, filt) = (None, None);
+        // Under the toasts, over the picture: drawn first so `ov.draw` still lands on top (a notification
+        // must stay readable while the palette is open). Same buffer, same rect the present uses.
+        palette.draw(&mut screen, win_w, win_h, present_view, &reg);
         ov.draw(
             &mut screen,
             win_w,
@@ -1730,10 +1807,9 @@ mod tests {
         );
     }
 
-    /// Slot stepping wraps in both directions and never leaves `0..SLOT_COUNT`, and every slot has a
-    /// distinct number key.
+    /// Slot stepping wraps in both directions and never leaves `0..SLOT_COUNT`.
     #[test]
-    fn slot_stepping_wraps_and_covers_every_key() {
+    fn slot_stepping_wraps_and_reaches_every_slot() {
         let last = save_state::SLOT_COUNT - 1;
         assert_eq!(next_slot(0, 1), 1);
         assert_eq!(
@@ -1752,13 +1828,8 @@ mod tests {
             s = next_slot(s, 1);
         }
         assert_eq!(s, 0);
-
-        let keys: std::collections::BTreeSet<_> = SLOT_KEYS.iter().map(|k| *k as u32).collect();
-        assert_eq!(
-            keys.len(),
-            save_state::SLOT_COUNT,
-            "each slot needs its own distinct number key"
-        );
+        // The number-key half of this used to live here; the registry owns those bindings now, and
+        // `commands::tests::slot_selects_cover_all_slots` (plus `hotkeys_unique`) asserts it there.
     }
 
     /// Build a fixture ROM whose **only** interesting behaviour is changing CRAM *continuously, mid-frame*.
