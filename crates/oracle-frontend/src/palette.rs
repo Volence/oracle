@@ -4,6 +4,9 @@
 //! behind it (dev-first: the watch ticker stays live while you type).
 
 use crate::commands::{self, Cmd, CommandInfo, Group};
+use crate::font::{self, Canvas};
+use crate::overlay::{self, ACCENT, INFO};
+use crate::present::Rect;
 
 /// Keys the palette understands, already translated from minifb by the caller
 /// (`commands::key_char` for the typable set).
@@ -48,6 +51,13 @@ pub struct Palette {
     /// Most-recently-used commands, newest first, capped at MRU_CAP, visible-only.
     recents: Vec<Cmd>,
     picker: Option<Picker>,
+}
+
+/// The selection highlight bar behind the current row, shared by the item list and the picker
+/// list. `inner_w` must already be the saturating `panel_w - 2 * margin` computed once in
+/// `draw` — never recompute that subtraction here (a narrow panel can make it underflow).
+fn draw_selected_bar(canvas: &mut Canvas, text_x: i32, y: i32, inner_w: usize, line_h: usize) {
+    canvas.fill_rect(text_x - 2, y - 1, inner_w, line_h, 0x00123A46, 255);
 }
 
 pub const MRU_CAP: usize = 3;
@@ -233,6 +243,115 @@ impl Palette {
 
     pub fn sel(&self) -> usize {
         self.sel
+    }
+
+    /// Paint the palette into the presentation buffer, inside the picture rect only (the same
+    /// rule the overlay obeys — never the retained native framebuffer, spec §10). Scale follows
+    /// the overlay's: `Overlay::font_scale`.
+    pub fn draw(&self, buf: &mut [u32], w: usize, h: usize, area: Rect, reg: &[CommandInfo]) {
+        if !self.open || area.w == 0 || area.h == 0 {
+            return;
+        }
+        // Deliberately scales off the window height `h`, not `area.h` (unlike `Overlay::draw`) —
+        // the palette is a UI surface anchored to the picture but not obliged to shrink with a
+        // small picture in a large window. That decouples panel size from font size, so every
+        // width computed below (panel_w, inner_w, the hotkey column, ...) must saturate: a tall
+        // window with a narrow picture can make the font bigger than the panel is wide.
+        let px = overlay::Overlay::font_scale(h);
+        let line_h = font::LINE_H * px;
+        let margin = 4 * px;
+        // Panel: inset from the picture rect, top-anchored, tall enough for the query line
+        // plus what fits.
+        let panel_x = area.x + area.w / 10;
+        let panel_w = area.w - 2 * (area.w / 10);
+        let panel_y = area.y + area.h / 12;
+        let panel_h = (area.h - 2 * (area.h / 12)).min(area.h);
+        let mut canvas = Canvas::new(buf, w, h);
+        canvas.fill_rect(
+            panel_x as i32,
+            panel_y as i32,
+            panel_w,
+            panel_h,
+            0x000A1418,
+            font::PANEL_ALPHA,
+        );
+
+        let text_x = (panel_x + margin) as i32;
+        let mut y = (panel_y + margin) as i32;
+        // Every text run below is clipped to this inner width so nothing can paint past the
+        // panel's right edge (and therefore past `area`) — Canvas only clips at buffer edges,
+        // not at an arbitrary rect. `overlay::fit` truncates on whole-glyph boundaries.
+        let inner_w = panel_w.saturating_sub(2 * margin);
+
+        if let Some(pk) = &self.picker {
+            canvas.text(text_x, y, px, ACCENT, overlay::fit(&pk.title, inner_w, px));
+            y += (line_h + margin / 2) as i32;
+            for (i, (label, _)) in pk.items.iter().enumerate() {
+                if (y as usize + line_h) > panel_y + panel_h {
+                    break;
+                }
+                if i == pk.sel {
+                    draw_selected_bar(&mut canvas, text_x, y, inner_w, line_h);
+                }
+                canvas.text(text_x, y, px, INFO, overlay::fit(label, inner_w, px));
+                y += line_h as i32;
+            }
+            return;
+        }
+
+        // Query line: "> query_" (static underscore cursor; append-only editing needs no more).
+        let q = format!("> {}_", self.query);
+        canvas.text(text_x, y, px, ACCENT, overlay::fit(&q, inner_w, px));
+        y += (line_h + margin / 2) as i32;
+
+        for (ri, row) in self.rows(reg).iter().enumerate() {
+            if (y as usize + line_h) > panel_y + panel_h {
+                break; // capped rows; scrolling arrives with a taller list than fits (none yet)
+            }
+            match row {
+                Row::Header(hdr) => {
+                    canvas.text(text_x, y, px, ACCENT, overlay::fit(hdr, inner_w, px));
+                }
+                Row::Item(i) => {
+                    let c = &reg[*i];
+                    if ri == self.sel {
+                        draw_selected_bar(&mut canvas, text_x, y, inner_w, line_h);
+                    }
+                    let indent = 2 * font::ADVANCE * px;
+                    // Reserve room for the hotkey column (its width plus a margin-wide gap) so
+                    // a long title can never run into or past it.
+                    let hotkey_reserved = c
+                        .hotkey
+                        .map(|k| font::text_width(commands::key_name(k)) * px + margin)
+                        .unwrap_or(0);
+                    let title_avail = inner_w
+                        .saturating_sub(indent)
+                        .saturating_sub(hotkey_reserved);
+                    canvas.text(
+                        text_x + indent as i32,
+                        y,
+                        px,
+                        INFO,
+                        overlay::fit(c.title, title_avail, px),
+                    );
+                    if let Some(k) = c.hotkey {
+                        let name = commands::key_name(k);
+                        let kw = font::text_width(name) * px;
+                        // Right-aligned to the panel's inner edge. Only draw it if it actually
+                        // fits `inner_w` — a saturating subtraction alone would still let a
+                        // too-wide name collapse to kx=0 and paint past the panel (and area) on
+                        // a panel too narrow for its own margins.
+                        if kw <= inner_w {
+                            let kx = (panel_x + panel_w)
+                                .saturating_sub(margin)
+                                .saturating_sub(kw) as i32;
+                            canvas.text(kx, y, px, 0x007AA0BB, name);
+                        }
+                    }
+                }
+            }
+            y += line_h as i32;
+        }
     }
 }
 
@@ -557,5 +676,115 @@ mod tests {
             matches!(p.rows(&reg)[p.sel()], Row::Item(_)),
             "sel sits on an Item after backspace restores the list"
         );
+    }
+
+    /// Rendering smoke: the palette paints its panel into the buffer (some pixels change) and
+    /// stays inside the given area. Pixel-exactness is not asserted — layout is free to evolve;
+    /// what must hold is "drew something, only inside the picture rect".
+    #[test]
+    fn draw_paints_inside_area_only() {
+        let (mut p, reg) = open_palette();
+        p.handle(PaletteKey::Down, &reg);
+        let (w, h) = (320usize, 224usize);
+        let mut buf = vec![0u32; w * h];
+        let area = crate::present::Rect {
+            x: 40,
+            y: 20,
+            w: 240,
+            h: 180,
+        };
+        p.draw(&mut buf, w, h, area, &reg);
+        let painted = buf.iter().filter(|px| **px != 0).count();
+        assert!(painted > 0, "draw painted nothing");
+        for (i, px) in buf.iter().enumerate() {
+            if *px != 0 {
+                let (x, y) = (i % w, i / w);
+                assert!(
+                    x >= area.x && x < area.x + area.w && y >= area.y && y < area.y + area.h,
+                    "painted outside area at ({x},{y})"
+                );
+            }
+        }
+    }
+
+    /// Regression for a real containment escape a spec-review probe found: a long enough query
+    /// pushed the query line's text past the panel's right edge and out of `area` — `Canvas`
+    /// only clips at buffer edges, never at an arbitrary rect, so an unclipped text run can
+    /// paint anywhere in the whole buffer. Every text run `draw` emits must be clipped to the
+    /// panel's inner width via `overlay::fit`.
+    #[test]
+    fn draw_contains_long_query() {
+        let (mut p, reg) = open_palette();
+        for _ in 0..60 {
+            p.handle(PaletteKey::Char('a'), &reg);
+        }
+        let (w, h) = (320usize, 224usize);
+        let mut buf = vec![0u32; w * h];
+        let area = crate::present::Rect {
+            x: 40,
+            y: 20,
+            w: 240,
+            h: 180,
+        };
+        p.draw(&mut buf, w, h, area, &reg);
+        for (i, px) in buf.iter().enumerate() {
+            if *px != 0 {
+                let (x, y) = (i % w, i / w);
+                assert!(
+                    x >= area.x && x < area.x + area.w && y >= area.y && y < area.y + area.h,
+                    "painted outside area at ({x},{y})"
+                );
+            }
+        }
+    }
+
+    /// Regression for a reproducible panic a quality review found: a tall window against a very
+    /// narrow picture (`h=1000` -> `px=4` -> `margin=16`, `area.w=34` -> `panel_w=28`) made the
+    /// selection-highlight bar's old unguarded `panel_w - 2 * margin` underflow — a debug panic
+    /// ("attempt to subtract with overflow") and a release wraparound to ~`usize::MAX` (a
+    /// hanging fill loop). `draw` must not panic here, and containment must still hold.
+    #[test]
+    fn draw_narrow_panel_does_not_underflow() {
+        let (mut p, reg) = open_palette();
+        p.handle(PaletteKey::Down, &reg); // a selection is on-screen, so the highlight bar draws
+        let (w, h) = (100usize, 1000usize);
+        let mut buf = vec![0u32; w * h];
+        let area = crate::present::Rect {
+            x: 0,
+            y: 0,
+            w: 34,
+            h: 1000,
+        };
+        p.draw(&mut buf, w, h, area, &reg);
+        for (i, px) in buf.iter().enumerate() {
+            if *px != 0 {
+                let (x, y) = (i % w, i / w);
+                assert!(
+                    x >= area.x && x < area.x + area.w && y >= area.y && y < area.y + area.h,
+                    "painted outside area at ({x},{y})"
+                );
+            }
+        }
+    }
+
+    /// Closed palette draws nothing.
+    #[test]
+    fn draw_noop_when_closed() {
+        let p = Palette::new();
+        let reg = registry();
+        let mut buf = vec![0u32; 320 * 224];
+        p.draw(
+            &mut buf,
+            320,
+            224,
+            crate::present::Rect {
+                x: 0,
+                y: 0,
+                w: 320,
+                h: 224,
+            },
+            &reg,
+        );
+        assert!(buf.iter().all(|px| *px == 0));
     }
 }
