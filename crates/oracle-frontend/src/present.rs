@@ -221,6 +221,67 @@ pub fn window_to_native(
     Some((sx as u16, sy as u16))
 }
 
+/// The **forward** map — game-pixel rect to the window pixels that show it, the inverse of
+/// [`window_to_native`] wherever an inverse can exist. Lenses that mark things *in the picture*
+/// (sprite outlines, a hover callout anchored to a dot) need this; nothing needed it before,
+/// because everything drawn so far was anchored to the picture's corners rather than to a pixel
+/// inside it.
+///
+/// Derived from [`scale_into`]'s blit rather than guessed: that maps window column `dx` to source
+/// column `floor(dx * src_w / rect.w)`, so the window columns showing game column `gx` are
+/// `[ceil(gx * rect.w / src_w), ceil((gx + 1) * rect.w / src_w))`. **The ceiling is not
+/// cosmetic** — the floor form is off by one on most non-integer scales, which is one column of
+/// outline sitting beside the sprite instead of on it.
+///
+/// **The round-trip is an *upscale* property.** It holds when the picture is at least 1:1
+/// (`rect.w >= src_w`, `rect.h >= src_h`) — the normal case, and the one
+/// `the_forward_map_is_the_inverse_of_the_click_map` pins. [`dest_rect`] really can go the other
+/// way: a 200x150 window in [`Aspect::Tv`] gives `rect.w = 200 < 320`, and there several game
+/// pixels share one window pixel, so [`window_to_native`] on the returned span names whichever of
+/// them the blit kept. Below 1:1 the guarantee is weaker and deliberate: a non-empty rect **inside
+/// the picture**, near the right place, rather than nothing. The `min`/`max` clamps below are what
+/// deliver it — without them a whole sprite maps to a zero-width rect and vanishes, and widening
+/// that back to one pixel without also pulling the start edge in puts the last game column's
+/// hairline one pixel into the letterbox.
+///
+/// `g` is in game pixels and must be non-negative (callers clip against `active_display` first).
+/// Returns `None` when the rect is empty, the geometry is degenerate, or `g` starts outside the
+/// picture; the result is always at least 1x1 so a hairline never vanishes at small scales.
+///
+/// The result is clipped to the **picture**, not to the **window** — those are different claims.
+/// [`dest_rect`] can hand back a rect larger than the window ([`Aspect::Integer`] clamps its scale
+/// at 1, so a window smaller than 320x224 still gets a 320x224 rect, anchored at 0 and cropped by
+/// the blit), and then a returned rect runs off the window edge too. Drawing is still safe:
+/// [`font::Canvas`](crate::font::Canvas) clips at the buffer edge and never panics.
+pub fn native_rect_to_window(g: Rect, rect: Rect, src_w: usize, src_h: usize) -> Option<Rect> {
+    if rect.w == 0 || rect.h == 0 || src_w == 0 || src_h == 0 || g.w == 0 || g.h == 0 {
+        return None;
+    }
+    if g.x >= src_w || g.y >= src_h {
+        return None;
+    }
+    let gx1 = (g.x + g.w).min(src_w);
+    let gy1 = (g.y + g.h).min(src_h);
+    let edge = |n: usize, dst: usize, src: usize| (n * dst).div_ceil(src);
+    // The near edge is clamped one short of the far side, and the far edge is then held at least one
+    // past it. Both clamps are identity while the picture is at least 1:1 — every span is non-empty
+    // there and the last game column's span starts at `rect.w - 1` at the latest — and both bind
+    // below 1:1, where several game pixels share a window pixel and the last column's span is
+    // *empty*, starting exactly at `rect.w`. Widening that to one pixel without first pulling the
+    // start back would put the hairline in the letterbox, one column outside the picture it is
+    // supposed to be marking.
+    let x0 = edge(g.x, rect.w, src_w).min(rect.w - 1);
+    let y0 = edge(g.y, rect.h, src_h).min(rect.h - 1);
+    let x1 = edge(gx1, rect.w, src_w).max(x0 + 1);
+    let y1 = edge(gy1, rect.h, src_h).max(y0 + 1);
+    Some(Rect {
+        x: rect.x + x0,
+        y: rect.y + y0,
+        w: x1 - x0,
+        h: y1 - y0,
+    })
+}
+
 /// The window size to open for `scale` (an integer multiple of the native frame's *height*) under `aspect`.
 /// The height is always `src_h * scale`; only the width differs, because that is the axis the aspect choice
 /// is about — so `--scale 3` gives the same picture size vertically in every mode.
@@ -519,6 +580,185 @@ mod tests {
             last,
             Some((319, 223)),
             "the bottom-right is the last native dot"
+        );
+    }
+
+    /// The forward map must be the exact inverse of the click map: every window pixel inside the
+    /// returned span must resolve back to the game pixel that produced it. This is the same
+    /// property `the_click_inverse_matches_the_blit_pixel_for_pixel` pins from the other side —
+    /// an off-by-one here would draw sprite outlines one column off the sprite.
+    #[test]
+    fn the_forward_map_is_the_inverse_of_the_click_map() {
+        for (win_w, win_h, src_w, aspect) in [
+            (640usize, 480usize, 320usize, Aspect::Tv),
+            (777, 501, 320, Aspect::Tv),
+            (640, 448, 256, Aspect::Square),
+            (900, 700, 320, Aspect::Integer),
+        ] {
+            let rect = dest_rect(win_w, win_h, src_w, 224, aspect);
+            for gx in 0..src_w {
+                for gy in (0..224usize).step_by(37) {
+                    let g = Rect {
+                        x: gx,
+                        y: gy,
+                        w: 1,
+                        h: 1,
+                    };
+                    let out = native_rect_to_window(g, rect, src_w, 224)
+                        .expect("an in-range game pixel always maps");
+                    for wy in out.y..out.y + out.h {
+                        for wx in out.x..out.x + out.w {
+                            let back = window_to_native(wx as f32, wy as f32, rect, src_w, 224);
+                            assert_eq!(
+                                back,
+                                Some((gx as u16, gy as u16)),
+                                "({gx},{gy}) -> window ({wx},{wy}) -> {back:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Out-of-range and degenerate inputs answer `None` rather than producing a rect that would
+    /// paint outside the picture (the letterbox must stay black).
+    #[test]
+    fn the_forward_map_refuses_what_it_cannot_place() {
+        let rect = dest_rect(640, 480, 320, 224, Aspect::Tv);
+        assert_eq!(
+            native_rect_to_window(
+                Rect {
+                    x: 320,
+                    y: 0,
+                    w: 1,
+                    h: 1
+                },
+                rect,
+                320,
+                224
+            ),
+            None
+        );
+        assert_eq!(
+            native_rect_to_window(
+                Rect {
+                    x: 0,
+                    y: 224,
+                    w: 1,
+                    h: 1
+                },
+                rect,
+                320,
+                224
+            ),
+            None
+        );
+        assert_eq!(
+            native_rect_to_window(
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 0,
+                    h: 1
+                },
+                rect,
+                320,
+                224
+            ),
+            None
+        );
+        let degenerate = Rect {
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+        };
+        assert_eq!(
+            native_rect_to_window(
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1,
+                    h: 1
+                },
+                degenerate,
+                320,
+                224
+            ),
+            None
+        );
+    }
+
+    /// Below 1:1 the map cannot be an inverse — several game pixels share one window pixel —
+    /// but it must still answer a non-empty rect inside the picture rather than a zero-width
+    /// one that would draw nothing.
+    ///
+    /// This is the regime `the_forward_map_is_the_inverse_of_the_click_map` cannot reach: every
+    /// geometry it sweeps upscales, so both clamps in the map are identity there and could be
+    /// deleted with the whole suite green. A 200x150 window is not hypothetical — it is what a
+    /// window manager hands out while somebody drags a corner in.
+    ///
+    /// The containment half is the load-bearing one, and it caught a real bug the first time it
+    /// ran: with only a `w >= 1` floor, game column 319 mapped to window column 200 of a 200-wide
+    /// picture, one pixel out into the letterbox.
+    #[test]
+    fn the_forward_map_still_places_a_rect_when_the_picture_is_downscaled() {
+        let rect = dest_rect(200, 150, 320, 224, Aspect::Tv);
+        assert!(rect.w < 320, "this geometry really does downscale");
+        assert!(
+            rect.h < 224,
+            "on both axes, so the height floor is measured too"
+        );
+        for gx in [0usize, 1, 159, 319] {
+            let out = native_rect_to_window(
+                Rect {
+                    x: gx,
+                    y: 100,
+                    w: 1,
+                    h: 1,
+                },
+                rect,
+                320,
+                224,
+            )
+            .expect("a visible game pixel always places");
+            assert!(out.w >= 1 && out.h >= 1, "never a zero-area rect at {gx}");
+            assert!(
+                out.x >= rect.x && out.x + out.w <= rect.x + rect.w,
+                "inside the picture horizontally at {gx}: {out:?} vs {rect:?}"
+            );
+            assert!(
+                out.y >= rect.y && out.y + out.h <= rect.y + rect.h,
+                "inside the picture vertically at {gx}: {out:?} vs {rect:?}"
+            );
+        }
+    }
+
+    /// A rect running past the right/bottom edge is clipped to the picture, not dropped: a sprite
+    /// half off-screen must still show the half that is on-screen.
+    #[test]
+    fn the_forward_map_clips_a_rect_that_overruns_the_picture() {
+        let rect = dest_rect(640, 480, 320, 224, Aspect::Tv);
+        let out = native_rect_to_window(
+            Rect {
+                x: 300,
+                y: 210,
+                w: 32,
+                h: 32,
+            },
+            rect,
+            320,
+            224,
+        )
+        .expect("a partly-visible rect still maps");
+        assert!(
+            out.x + out.w <= rect.x + rect.w,
+            "clipped to the picture's right edge"
+        );
+        assert!(
+            out.y + out.h <= rect.y + rect.h,
+            "clipped to the picture's bottom edge"
         );
     }
 

@@ -1784,7 +1784,17 @@ fn main() {
                     paused,
                 },
             );
-            lens::draw(&mut screen, win_w, win_h, present_view, &models);
+            // `(width, HEIGHT)` is the frame that was just blitted into `present_view` — the pair
+            // the sprite outlines need to place a game-pixel rect on the glass, and the same pair
+            // the status line reports.
+            lens::draw(
+                &mut screen,
+                win_w,
+                win_h,
+                present_view,
+                (width, HEIGHT),
+                &models,
+            );
         }
         // Under the toasts, over the picture: drawn first so `ov.draw` still lands on top (a notification
         // must stay readable while the palette is open). Same buffer, same rect the present uses.

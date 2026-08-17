@@ -155,6 +155,11 @@ pub struct Models {
     /// because that is 256 bytes on the stack against a heap allocation every frame, and because
     /// `cram_decoded` hands back an owned array anyway — there is nothing to borrow.
     pub cram: Option<[u32; 64]>,
+    /// The visible sprites' outlines, in **game pixels**. Deliberately not in window pixels: the
+    /// blit's forward map is a pure function of the view rect and the source size, both of which
+    /// [`draw`] is handed, so mapping there keeps this a model. A model that knew window pixels
+    /// would have to be rebuilt on every window resize, and would be untestable without one.
+    pub sprites: Option<Vec<video::SpriteBox>>,
 }
 
 /// Build the models for whatever is on. Called once per frame, immediately before drawing, and
@@ -182,6 +187,16 @@ pub fn models(set: LensSet, cx: &FrameCtx<'_>) -> Models {
         cram: set
             .is_on(LensId::Cram)
             .then(|| video::swatches(&cx.sys.vdp().cram_decoded())),
+        // `sprites_decoded` decodes all 80 slots and allocates ~1.3 KB every call, so it is called
+        // **once**, here, behind the lens guard — never per sprite and never again in the draw path.
+        sprites: set.is_on(LensId::Sprites).then(|| {
+            let vdp = cx.sys.vdp();
+            video::boxes(
+                &vdp.sprites_decoded(),
+                vdp.parsed_sprite_max(),
+                vdp.active_display(),
+            )
+        }),
     }
 }
 
@@ -206,10 +221,25 @@ pub fn models(set: LensSet, cx: &FrameCtx<'_>) -> Models {
 /// panels fit, and moving one lens under another by size would make the layout jump around while
 /// a window is dragged.
 ///
+/// The sprite outlines are the exception to all of that: they are drawn *on* the picture rather
+/// than in a corner of it, so they own no corner and can cross any panel. [`LensId::ALL`] puts them
+/// after the ticker and the chip and before the strip, so they draw **over** those two and **under**
+/// the strip — and that is the same principle the strip-vs-chip call above uses, not an accident of
+/// ordering. An outline means nothing except *where it is*: move it and it is wrong, so it is the
+/// one thing here that must never be displaced by something that can afford to lose a few glyphs.
+/// The strip still wins over the outlines for the same reason it wins over the chip — 64 fixed
+/// cells whose meaning is equally positional, and which a hairline through them would misreport.
+///
 /// Anchored to `area` (the picture), never
 /// the window: the letterbox stays black, and a tall window with a narrow picture must not make
 /// the font wider than the panel (the `draw_narrow_panel_does_not_underflow` hazard class).
-pub fn draw(buf: &mut [u32], w: usize, h: usize, area: Rect, m: &Models) {
+///
+/// `native` is the size of the frame that was blitted into `area` — `(width, HEIGHT)` in the run
+/// loop, the same pair the status line reports. It is a parameter rather than a [`Models`] field
+/// because it is not a model: it describes the picture on the glass, not the machine, and it is
+/// exactly what [`present::native_rect_to_window`](crate::present::native_rect_to_window) needs
+/// alongside `area` to place a game-pixel rect.
+pub fn draw(buf: &mut [u32], w: usize, h: usize, area: Rect, native: (usize, usize), m: &Models) {
     let px = crate::overlay::Overlay::font_scale(area.h.max(1));
     let mut c = crate::font::Canvas::new(buf, w, h);
     if let Some(t) = &m.ticker {
@@ -217,6 +247,9 @@ pub fn draw(buf: &mut [u32], w: usize, h: usize, area: Rect, m: &Models) {
     }
     if let Some(chip) = &m.cpu {
         cpu::draw(&mut c, area, px, chip);
+    }
+    if let Some(bx) = &m.sprites {
+        video::draw_sprites(&mut c, area, px, native, bx);
     }
     if let Some(sw) = &m.cram {
         video::draw_cram(&mut c, area, px, sw);
@@ -533,11 +566,106 @@ mod tests {
     /// `all_lists_every_variant_exactly_once` documents for `ALL.len()`).
     fn draws_yet(id: LensId) -> bool {
         match id {
-            LensId::Watch | LensId::Cpu | LensId::CpuRegs | LensId::Cram => true,
-            // No arm in `draw` yet — the sprite outlines and the hover callout are still to come.
-            // When they land, flipping these to `true` is what the test below demands of them.
-            LensId::Sprites | LensId::Hover => false,
+            LensId::Watch | LensId::Cpu | LensId::CpuRegs | LensId::Sprites | LensId::Cram => true,
+            // No arm in `draw` yet — the hover callout is still to come. When it lands, flipping
+            // this to `true` is what the test below demands of it.
+            LensId::Hover => false,
         }
+    }
+
+    /// A machine with exactly one visible sprite, and the only fixture in this module that puts
+    /// anything into the VDP at all.
+    ///
+    /// It has to: a power-on SAT cache is all zeroes, so every one of the 80 slots decodes as
+    /// `y == -128` — the parked idiom — and the outline lens correctly draws nothing. Run against
+    /// that, [`every_lens_with_a_draw_arm_reaches_the_glass`] would assert a model was built and no
+    /// ink landed, and read as a missing arm in [`draw`] when the arm was there and right.
+    ///
+    /// Written through the VDP's own ports rather than by poking VRAM, because the Y/size/link half
+    /// of a sprite comes from the **SAT cache**, which only the write-through on a VRAM port write
+    /// fills (`vram_mut` would leave the cache at zero and the sprite parked). Slot 0 at the
+    /// power-on reg-5 base (VRAM `$0000`), 2x2 cells, at game (16, 16) — the fields are biased by
+    /// 128, so `$90` is 16.
+    ///
+    /// **Mode 5 has to be turned on first.** A power-on VDP has reg 1 bit 2 (M5) clear, which is
+    /// Mode 4, and there `write_register` discards every register above 10 — including reg $0F, the
+    /// auto-increment. Without this line all four data writes land on address `$0000`, the size
+    /// byte never reaches the cache, and the sprite decodes 1x1 at whatever `System::new`'s seeded
+    /// VRAM happens to hold in the X word. That is not a hypothetical; it is what this fixture did
+    /// on its first run.
+    fn sys_with_a_visible_sprite() -> System {
+        let mut sys = System::new(0x5EED);
+        let v = sys.vdp_mut();
+        v.control_write(0x8104, 0); // reg $01 = M5: leave Mode 4, where regs above 10 are discarded
+        v.control_write(0x8F02, 0); // reg $0F: auto-increment 2 bytes per data write
+        v.control_write(0x4000, 0); // VRAM write ...
+        v.control_write(0x0000, 0); // ... at address $0000, the SAT base
+        v.data_write(0x0090); // Y field 144 -> screen y = 16
+        v.data_write(0x0500); // size = 2x2 cells (bits 3-2 width-1, 1-0 height-1); link 0
+        v.data_write(0x0000); // tile / attributes
+        v.data_write(0x0090); // X field 144 -> screen x = 16
+        sys
+    }
+
+    /// The fixture is only worth anything if the sprite really came through, so pin it here rather
+    /// than discovering a silently-parked sprite as a confusing failure two tests down.
+    #[test]
+    fn the_sprite_fixture_really_puts_one_sprite_on_screen() {
+        let sys = sys_with_a_visible_sprite();
+        let vdp = sys.vdp();
+        let bx = video::boxes(
+            &vdp.sprites_decoded(),
+            vdp.parsed_sprite_max(),
+            vdp.active_display(),
+        );
+        assert_eq!(bx.len(), 1, "the other 79 slots stay parked");
+        assert_eq!(bx[0].index, 0);
+        assert_eq!(
+            bx[0].rect,
+            Rect {
+                x: 16,
+                y: 16,
+                w: 16,
+                h: 16
+            }
+        );
+    }
+
+    /// The sprite outlines end to end: the model is built for its own lens and no other, and it
+    /// carries the visible sprites. The parallel of `the_cram_strip_model_is_built_for_its_own_lens_only`.
+    #[test]
+    fn the_sprite_outline_model_is_built_for_its_own_lens_only() {
+        let sys = sys_with_a_visible_sprite();
+        let wp = Watchpoints::new(8);
+
+        assert!(
+            models(LensSet::default(), &ctx(&sys, &wp, false))
+                .sprites
+                .is_none(),
+            "outlines were built with every lens off"
+        );
+        let mut other = LensSet::default();
+        other.set(LensId::Cram, true);
+        assert!(
+            models(other, &ctx(&sys, &wp, false)).sprites.is_none(),
+            "the outline model keyed off the wrong lens"
+        );
+
+        let mut set = LensSet::default();
+        set.set(LensId::Sprites, true);
+        let m = models(set, &ctx(&sys, &wp, false));
+        assert_eq!(
+            m.sprites
+                .as_deref()
+                .expect("the outlines did not build for their own lens")
+                .len(),
+            1,
+            "the one visible sprite"
+        );
+        assert!(
+            m.ticker.is_none() && m.cpu.is_none() && m.cram.is_none(),
+            "the outline lens dragged another model on with it"
+        );
     }
 
     /// **Every lens that builds a model must reach the glass**, driven end to end:
@@ -563,10 +691,13 @@ mod tests {
     #[test]
     fn every_lens_with_a_draw_arm_reaches_the_glass() {
         const BG: u32 = 0x0012_3456;
-        const ARMS_TODAY: usize = 4;
+        const ARMS_TODAY: usize = 5;
         let (w, h) = (320usize, 224usize);
         let area = Rect { x: 0, y: 0, w, h };
-        let sys = System::new(0x5EED);
+        // Not `System::new` on its own: an unrun machine has every sprite parked, so the outline
+        // lens would build a model and correctly paint nothing, and this test would read that as a
+        // missing arm. See `sys_with_a_visible_sprite`.
+        let sys = sys_with_a_visible_sprite();
         let wp = Watchpoints::new(8);
 
         let mut witnessed = 0;
@@ -575,7 +706,7 @@ mod tests {
             set.set(id, true);
             let m = models(set, &ctx(&sys, &wp, false));
             let mut buf = vec![BG; w * h];
-            draw(&mut buf, w, h, area, &m);
+            draw(&mut buf, w, h, area, (w, h), &m);
             let painted = buf.iter().any(|p| *p != BG);
 
             // **Built implies drawn.** Asking only "did ink land" leaves one escape hatch wide
@@ -589,8 +720,14 @@ mod tests {
             // here, so Tasks 8 and 9 cannot add a model without being sent to this line. Counting
             // `Some`s through anything generic over the struct would quietly absorb the new field
             // and hand the escape hatch straight back.
-            let Models { ticker, cpu, cram } = &m;
-            let has_model = ticker.is_some() || cpu.is_some() || cram.is_some();
+            let Models {
+                ticker,
+                cpu,
+                cram,
+                sprites,
+            } = &m;
+            let has_model =
+                ticker.is_some() || cpu.is_some() || cram.is_some() || sprites.is_some();
             assert_eq!(
                 has_model,
                 painted,
