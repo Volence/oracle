@@ -122,8 +122,8 @@ pub fn parse(text: &str) -> Result<Parsed, usize> {
 pub fn serialize(c: &Config) -> String {
     let on_off = |b: bool| if b { "on" } else { "off" };
     format!(
-        "# oracle player settings — edited in-app; hand edits are fine (unknown keys are kept\n\
-         # out of harm's way with a warning, a malformed line backs the file up to .bak)\n\
+        "# oracle player settings — edited in-app. Hand edits are fine, but keys this build does\n\
+         # not know are warned about at load and DROPPED by the next in-app save (a malformed line backs the file up to .bak).\n\
          volume = {}\nmuted = {}\naspect = {}\nscale = {}\nstatus_line = {}\ndeadzone = {}\n",
         c.volume,
         on_off(c.muted),
