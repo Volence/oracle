@@ -101,13 +101,24 @@ is work this repo owes regardless of the switchover, and it belongs in the same 
 - **Absolute band-edge claims keep `oracle` as the reference instrument** until this core's
   instruction-granularity slop closes: A/B gates cancel the slop, absolute measurements do not.
   Consistent with this repo's own cycle-granularity record; no argument.
-- **The S/H exhibit.** ⚠ **Possibly already explained — needs disambiguation before anyone files it
-  as a renderer bug.** If they mean the shadow/highlight divergence surfaced in this session, it is
-  diagnosed and documented: the CRAM strip lens reads `Vdp::cram_decoded()` (the Normal ramp), while
-  the renderer's S/H-aware `cram_rgb_state` is **private**, so the two agree everywhere except
-  shadow/highlight regions — pinned by the core's own `cram_rgb_matches_cram_decoded`. The only open
-  question is whether to export the private conversion. **If they mean a different exhibit, we need
-  the specifics.**
+- **The S/H exhibit.** ⚠ **Still needs disambiguation — but my first guess now looks wrong, and it is
+  recorded here so nobody inherits it as fact.**
+
+  I initially assumed they meant the shadow/highlight divergence from the *lens* work: the CRAM strip
+  reads `Vdp::cram_decoded()` (the Normal ramp) while the renderer's S/H-aware `cram_rgb_state` is
+  **private**, so the two agree everywhere except S/H regions — pinned by the core's own
+  `cram_rgb_matches_cram_decoded`, and open only on whether to export the private conversion.
+
+  **Evidence now points elsewhere.** A concurrent session landed `2c210e8` (HINT bookkeeping moves to
+  the H anchor) and `2275b82` (`sh_probe` — a HInt raster **and S/H** diagnostic), out of an
+  owner-reported OJZ water-line bug where the line rendered as binary whole-screen shadow. That work
+  also flagged a **stale Aeon-side comment** (`ojz_effects.emp` — "S/H has nothing to dim", false
+  because plane B is all low-priority). An S/H exhibit "from your session" much more plausibly means
+  *that* session than the lens one.
+
+  **Do not file either as a renderer bug until the Aeon side names the exhibit.** The two candidates
+  have nothing to do with each other: one is an introspection instrument deliberately showing the
+  Normal ramp, the other is raster-timing behaviour that has just been changed.
 
 ## Three-surface parity (owner rule, 2026-08-17)
 
