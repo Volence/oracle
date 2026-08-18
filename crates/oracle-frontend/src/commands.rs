@@ -26,6 +26,9 @@ pub enum Cmd {
     DumpHits,
     ClearWatch,
     ToggleStatusLine,
+    /// Turn one lens on or off (spec §5). Payload-carrying like `SlotSelect`, so one arm and one
+    /// registration loop cover every lens.
+    ToggleLens(crate::lens::LensId),
     // Audio-only, and absent — not merely unbound — from a no-audio build: with nothing to attenuate
     // the command genuinely *cannot* exist (spec §4), which is also what keeps the main loop's
     // dispatch exhaustive without a dead catch-all arm.
@@ -43,14 +46,16 @@ pub enum Group {
     Game,
     SaveStates,
     Watch,
+    Lenses,
     Settings,
 }
 
 impl Group {
-    pub const ALL: [Group; 4] = [
+    pub const ALL: [Group; 5] = [
         Group::Game,
         Group::SaveStates,
         Group::Watch,
+        Group::Lenses,
         Group::Settings,
     ];
     pub fn title(self) -> &'static str {
@@ -58,6 +63,7 @@ impl Group {
             Group::Game => "GAME",
             Group::SaveStates => "SAVE STATES",
             Group::Watch => "WATCH",
+            Group::Lenses => "LENSES",
             Group::Settings => "SETTINGS",
         }
     }
@@ -203,6 +209,18 @@ pub fn registry() -> Vec<CommandInfo> {
             repeat: false,
             hidden: true,
         });
+    }
+    // One toggle per lens, generated from `LensId::ALL` for the reason the slot loop is generated:
+    // a lens that exists without a command, or a command naming a lens that no longer exists, is a
+    // compile error rather than a row nobody notices is missing. Palette-only — every obvious key
+    // is already taken and `hotkeys_unique` would catch a collision; S5 owns binding.
+    for id in crate::lens::LensId::ALL {
+        reg.push(CommandInfo::new(
+            Cmd::ToggleLens(id),
+            id.title(),
+            Group::Lenses,
+            None,
+        ));
     }
     // Audio-only commands: absent from a no-audio build entirely (spec §4 "a command is absent
     // only when it cannot exist").
@@ -382,6 +400,36 @@ mod tests {
                     .any(|c| c.cmd == Cmd::SlotSelect(n) && c.hidden && c.hotkey.is_some()),
                 "missing hidden SlotSelect({n})"
             );
+        }
+    }
+
+    /// Every lens must reach the palette, or a toggle exists with no way to reach it.
+    #[test]
+    fn every_lens_registers_a_visible_command() {
+        let reg = registry();
+        for id in crate::lens::LensId::ALL {
+            let row = reg
+                .iter()
+                .find(|c| c.cmd == Cmd::ToggleLens(id))
+                .unwrap_or_else(|| panic!("no command for lens {}", id.key()));
+            assert!(!row.hidden, "{} is unreachable from the palette", id.key());
+            assert_eq!(row.group, Group::Lenses);
+            assert_eq!(
+                row.title,
+                id.title(),
+                "the row and the lens must not drift apart"
+            );
+        }
+    }
+
+    /// Lens toggles are palette-only this slice (S5 owns rebinding); a default hotkey added here
+    /// without thought would collide silently with the game keys.
+    #[test]
+    fn lens_toggles_bind_no_keys_yet() {
+        for c in registry() {
+            if matches!(c.cmd, Cmd::ToggleLens(_)) {
+                assert_eq!(c.hotkey, None, "{} bound a key", c.title);
+            }
         }
     }
 

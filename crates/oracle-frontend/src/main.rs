@@ -64,23 +64,49 @@
 //! analog deadzone is no longer one of them: it is a per-`Gamepads` value fed from the config file, with
 //! `gamepad::STICK_DEADZONE` as its built-in default.
 //!
+//! ## Lenses
+//!
+//! Five read-only overlays ([`lens`]), rebuilt from live machine state every frame and drawn over
+//! the picture but beneath the palette and the toasts: a **watch ticker** along the bottom (the
+//! newest hits plus the armed and dropped counts, read non-destructively so switching a lens on can
+//! never delete a socket client's evidence); a **CPU chip** top-right (PC as a symbol, SR, frame
+//! counter), which `cpu_regs` expands into the full D0-D7/A0-A7 block one font scale smaller; a
+//! **CRAM strip** top-left (the 64 live palette entries, 4x16); **sprite outlines** around the
+//! sprites the hardware actually link-walks, not the 80 raw attribute-table slots, most of which
+//! hold whatever was last written there; and a **hover callout** naming what is under the cursor.
+//! Hover *explains*, a click still *arms* — the two never trade jobs.
+//!
+//! They are **palette-only this slice**: no default hotkeys, because every obvious key is already
+//! taken and rebinding belongs to a later slice. Six toggle rows (the register block registers its
+//! own) sit in the palette's LENSES group, and the set that is on persists between runs under the
+//! `lenses` key. The CPU chip is the one exception to "off means absent": it **shows itself while
+//! the machine is paused**, in amber, even with every lens off — "where did it stop?" is the first
+//! question a pause asks.
+//!
+//! One divergence worth knowing before reading a colour off the glass: the strip is built from
+//! `Vdp::cram_decoded()`, which a core test pins to the renderer's own decode at
+//! `PixelState::Normal`, and the shadow/highlight-aware conversion is private. Inside a shadowed or
+//! highlighted region the picture is drawn at half or upper intensity while the strip still shows
+//! the Normal ramp — a swatch is the palette *entry*, not the pixel it produced there.
+//!
 //! ## Settings
 //!
-//! Six values persist between runs in a flat `key = value` file at
+//! Seven values persist between runs in a flat `key = value` file at
 //! `$XDG_CONFIG_HOME/oracle/player.conf` (falling back to `$HOME/.config/oracle/player.conf`; a system
 //! with neither variable set runs fine and simply does not persist): `volume`, `muted`,
-//! `aspect`, `scale`, `status_line` and `deadzone` — see [`config`]. **A CLI flag beats the file**, which
-//! beats the built-in default, so `--scale 4` is a one-run override and never rewrites what is stored.
-//! Changing the volume, the mute toggle or the F3 status line saves automatically: the write is debounced
-//! by two seconds (a held volume ramp is one write, not ten) and flushed again on quit if anything is
-//! still outstanding. A session that changed nothing writes nothing.
+//! `aspect`, `scale`, `status_line`, `deadzone` and `lenses` — see [`config`]. **A CLI flag beats the
+//! file**, which beats the built-in default, so `--scale 4` is a one-run override and never rewrites what
+//! is stored. Changing the volume, the mute toggle, the F3 status line or any lens saves automatically:
+//! the write is debounced by two seconds (a held volume ramp is one write, not ten) and flushed again on
+//! quit if anything is still outstanding. A session that changed nothing writes nothing.
 //!
 //! A file that is structurally corrupt is renamed to `.bak` and defaults load in its place — the evidence
-//! is kept, nothing crashes, and the toast on screen says which. An unknown key, or a value out of range,
-//! costs only that key at *load*: it warns once and the default stands, so reading a file is never
-//! destructive. Writing one is: the saver emits exactly the six keys it knows, so the next autosave drops
-//! an unknown key rather than carrying it through. Preserving them is deferred (`F-CONFIG-UNKNOWN-KEYS`)
-//! until the key set actually widens. Key bindings are not stored yet (a later slice).
+//! is kept, nothing crashes, and the toast on screen says which. A value out of range costs only that key
+//! at *load*: it warns once and the default stands. Anything unrecognised — a **key**, or a lens name
+//! inside `lenses` — is carried through instead: kept verbatim and written back out by the next save
+//! (`F-CONFIG-UNKNOWN-KEYS`, reversed now that the key set has widened past six), so launching an older
+//! build once can no longer delete what a newer build wrote. That is one collapsed toast per category
+//! rather than one per name, because these recur on every launch. Key bindings are not stored yet.
 //!
 //! ## Pixels — why the window is painted from the per-scanline seam
 //!
@@ -235,6 +261,8 @@ mod commands;
 // load-with-recovery and atomic save.
 mod config;
 mod font;
+// Lenses: read-only overlays over the picture, each its own toggle command (spec §5).
+mod lens;
 mod overlay;
 mod palette;
 // The Aether capability layer, hosted in this process (`--aether` / `--socket`). Two implementations with
@@ -877,7 +905,7 @@ fn main() {
     window.set_target_fps(60);
 
     println!(
-        "window {win_w}x{win_h}, resizable, aspect {} — keyboard (P1): arrows=D-pad, A/S/D=A/B/C, Enter=Start; Space=pause, .=step, click=watch, W=dump, C=clear, F3=status line, Tab=reset, `=command palette (the full list)",
+        "window {win_w}x{win_h}, resizable, aspect {} — keyboard (P1): arrows=D-pad, A/S/D=A/B/C, Enter=Start; Space=pause, .=step, click=watch, W=dump, C=clear, F3=status line, Tab=reset, `=command palette (the full list); lenses in the palette's LENSES group",
         aspect.name()
     );
     println!(
@@ -1145,6 +1173,27 @@ fn main() {
                     ov.status_line = !ov.status_line;
                     cfg.status_line = ov.status_line;
                     config_save_countdown = Some(CONFIG_AUTOSAVE_DEBOUNCE_FRAMES);
+                }
+                // `cfg.lenses` **is** the live lens set, not a copy of one: unlike `ov.status_line`
+                // (where the Overlay owns the flag and the duplicate is forced), nothing here owns
+                // a lens set, `LensSet` is `Copy`, and a second writer for the value the picture
+                // will depend on would be an invariant nothing enforces. Persisted through the
+                // same debounce as every other setting. The toast names the lens because the
+                // bindings are palette-only: with no key to feel under a finger, the toast is the
+                // whole confirmation that a toggle took — and a lens can legitimately draw nothing
+                // on the frame it is switched on (no watch hits yet, no sprites walked, a picture
+                // too small for the strip), so "it appeared" is not a reliable substitute.
+                commands::Cmd::ToggleLens(id) => {
+                    cfg.lenses.toggle(id);
+                    config_save_countdown = Some(CONFIG_AUTOSAVE_DEBOUNCE_FRAMES);
+                    ov.push(
+                        format!(
+                            "{} {}",
+                            id.label(),
+                            if cfg.lenses.is_on(id) { "ON" } else { "OFF" }
+                        ),
+                        INFO,
+                    );
                 }
                 // W dumps the recorded hits; C disarms the watch (dropping it back out of the run's sink).
                 commands::Cmd::DumpHits => {
@@ -1744,6 +1793,53 @@ fn main() {
         );
         #[cfg(not(feature = "audio"))]
         let (vol, filt) = (None, None);
+        // Lenses: under the palette and the toasts, over the picture (spec §5). Models are built only for
+        // what is on — with everything off and the machine running this is two bools and no reads at all —
+        // and only into the *window* buffer. `buf`, the retained framebuffer, is re-presented every
+        // iteration while paused, so ink there would accumulate (the lesson `draw_crosshair` records above).
+        //
+        // `|| paused` because the CPU chip auto-shows while stopped (spec §5.3): the guard is about skipping
+        // work nobody asked for, and a pause is itself the ask.
+        if cfg.lenses.any() || paused {
+            // Hover **explains**, click **arms** (spec §5.2): this resolves a dot to label it and
+            // never touches a watch. Three guards, all cheap: the lens has to be on, the palette
+            // must not be eating the mouse (the same rule the click follows above — a cursor over
+            // the panel is pointing at the panel), and the pointer has to be over the picture,
+            // which `window_to_native` answers by returning `None`.
+            //
+            // Resolved against `present_view` and the width just blitted rather than the `view` the
+            // click uses, and that is deliberate: `lens::draw` maps the callout back onto the glass
+            // through exactly this pair, so on the one frame an H32<->H40 switch makes them
+            // disagree, the hit test and the placement still agree with each other.
+            let hover_at = (cfg.lenses.is_on(lens::LensId::Hover) && !palette.is_open())
+                .then(|| window.get_mouse_pos(MouseMode::Discard))
+                .flatten()
+                .and_then(|(mx, my)| {
+                    present::window_to_native(mx, my, present_view, width, HEIGHT)
+                });
+            let models = lens::models(
+                cfg.lenses,
+                &lens::FrameCtx {
+                    sys: &sys,
+                    wp: bus.watchpoints_mut(),
+                    symbols: symbols.as_ref(),
+                    frame,
+                    paused,
+                    hover: hover_at,
+                },
+            );
+            // `(width, HEIGHT)` is the frame that was just blitted into `present_view` — the pair
+            // the sprite outlines need to place a game-pixel rect on the glass, and the same pair
+            // the status line reports.
+            lens::draw(
+                &mut screen,
+                win_w,
+                win_h,
+                present_view,
+                (width, HEIGHT),
+                &models,
+            );
+        }
         // Under the toasts, over the picture: drawn first so `ov.draw` still lands on top (a notification
         // must stay readable while the palette is open). Same buffer, same rect the present uses.
         palette.draw(&mut screen, win_w, win_h, present_view, &reg);
