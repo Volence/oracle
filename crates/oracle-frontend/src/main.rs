@@ -64,6 +64,31 @@
 //! analog deadzone is no longer one of them: it is a per-`Gamepads` value fed from the config file, with
 //! `gamepad::STICK_DEADZONE` as its built-in default.
 //!
+//! ## Lenses
+//!
+//! Five read-only overlays ([`lens`]), rebuilt from live machine state every frame and drawn over
+//! the picture but beneath the palette and the toasts: a **watch ticker** along the bottom (the
+//! newest hits plus the armed and dropped counts, read non-destructively so switching a lens on can
+//! never delete a socket client's evidence); a **CPU chip** top-right (PC as a symbol, SR, frame
+//! counter), which `cpu_regs` expands into the full D0-D7/A0-A7 block one font scale smaller; a
+//! **CRAM strip** top-left (the 64 live palette entries, 4x16); **sprite outlines** around the
+//! sprites the hardware actually link-walks, not the 80 raw attribute-table slots, most of which
+//! hold whatever was last written there; and a **hover callout** naming what is under the cursor.
+//! Hover *explains*, a click still *arms* — the two never trade jobs.
+//!
+//! They are **palette-only this slice**: no default hotkeys, because every obvious key is already
+//! taken and rebinding belongs to a later slice. Six toggle rows (the register block registers its
+//! own) sit in the palette's LENSES group, and the set that is on persists between runs under the
+//! `lenses` key. The CPU chip is the one exception to "off means absent": it **shows itself while
+//! the machine is paused**, in amber, even with every lens off — "where did it stop?" is the first
+//! question a pause asks.
+//!
+//! One divergence worth knowing before reading a colour off the glass: the strip is built from
+//! `Vdp::cram_decoded()`, which a core test pins to the renderer's own decode at
+//! `PixelState::Normal`, and the shadow/highlight-aware conversion is private. Inside a shadowed or
+//! highlighted region the picture is drawn at half or upper intensity while the strip still shows
+//! the Normal ramp — a swatch is the palette *entry*, not the pixel it produced there.
+//!
 //! ## Settings
 //!
 //! Seven values persist between runs in a flat `key = value` file at
@@ -880,7 +905,7 @@ fn main() {
     window.set_target_fps(60);
 
     println!(
-        "window {win_w}x{win_h}, resizable, aspect {} — keyboard (P1): arrows=D-pad, A/S/D=A/B/C, Enter=Start; Space=pause, .=step, click=watch, W=dump, C=clear, F3=status line, Tab=reset, `=command palette (the full list)",
+        "window {win_w}x{win_h}, resizable, aspect {} — keyboard (P1): arrows=D-pad, A/S/D=A/B/C, Enter=Start; Space=pause, .=step, click=watch, W=dump, C=clear, F3=status line, Tab=reset, `=command palette (the full list); lenses in the palette's LENSES group",
         aspect.name()
     );
     println!(
@@ -1153,9 +1178,11 @@ fn main() {
                 // (where the Overlay owns the flag and the duplicate is forced), nothing here owns
                 // a lens set, `LensSet` is `Copy`, and a second writer for the value the picture
                 // will depend on would be an invariant nothing enforces. Persisted through the
-                // same debounce as every other setting. The toast is what tells you a toggle took
-                // for the lenses that do not draw yet — the watch ticker, the CPU chip and the
-                // CRAM strip do so far.
+                // same debounce as every other setting. The toast names the lens because the
+                // bindings are palette-only: with no key to feel under a finger, the toast is the
+                // whole confirmation that a toggle took — and a lens can legitimately draw nothing
+                // on the frame it is switched on (no watch hits yet, no sprites walked, a picture
+                // too small for the strip), so "it appeared" is not a reliable substitute.
                 commands::Cmd::ToggleLens(id) => {
                     cfg.lenses.toggle(id);
                     config_save_countdown = Some(CONFIG_AUTOSAVE_DEBOUNCE_FRAMES);
