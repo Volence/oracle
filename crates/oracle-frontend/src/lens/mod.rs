@@ -277,7 +277,7 @@ pub fn models(set: LensSet, cx: &FrameCtx<'_>) -> Models {
 /// The order is: **outlines, ticker, chip, strip, callout.** The ticker (bottom), the chip
 /// (top-right) and the CRAM strip
 /// (top-left, one text row down) each own a different corner, and on an ordinary picture none of
-/// them meet. Two pairs can, and both resolve by draw order rather than by geometry:
+/// them meet. **Three pairs can**, and the first two resolve by draw order rather than by geometry:
 /// - **Ticker vs chip.** Only on a picture short enough for the chip's panel to reach the bottom
 ///   strip, where the chip wins — the same overlap `watch.rs` already accepts against the toasts,
 ///   and for the same reason.
@@ -289,10 +289,17 @@ pub fn models(set: LensSet, cx: &FrameCtx<'_>) -> Models {
 ///   there. The **strip wins**, being drawn later. That is the right way round — the strip is 64
 ///   fixed cells whose whole meaning is positional, so clipping it would misreport CRAM, while the
 ///   chip loses a few glyphs off one end of two lines and stays readable.
+/// - **Chip vs strip vs the *overlay*, at the default window size.** The third pair is not between
+///   two lenses at all, and it is the reason `the_overlay_never_extinguishes_a_lens_glyph` exists:
+///   the F3 status line and the `PAUSED` banner are drawn *after* every lens, so draw order cannot
+///   arbitrate them and geometry has to. Both are resolved in `cpu::top_of` by stepping the chip
+///   out of the way, not by layering. At 320x224 — the **default** window — the status line used to
+///   render `PC $001234` as `PC $00_234`, and the banner rendered `D0 D0000000` as `D0 D00_0000`.
 ///
-/// Both are accepted rather than resolved: a picture that small has no arrangement where five
-/// panels fit, and moving one lens under another by size would make the layout jump around while
-/// a window is dragged.
+/// The first two are accepted rather than resolved: a picture that small has no arrangement where
+/// five panels fit, and moving one lens under another by size would make the layout jump around
+/// while a window is dragged. The third is not accepted, because it happens at the size everybody
+/// starts at.
 ///
 /// **The sprite outlines go first, underneath everything.** They are drawn *on* the picture rather
 /// than in a corner of it, so they own no corner and can cross any panel — and the reason they lose
@@ -1344,9 +1351,15 @@ mod tests {
             if id == LensId::CpuRegs {
                 let line = &m.cpu.as_ref().expect("the chip is on").lines[0];
                 // Long enough that sizing the panel to it would still reach across the picture
-                // *after* the expanded block's scale drop — otherwise this test would only ever
-                // fail when both halves of the fix were reverted at once, and would be blind to
-                // either on its own. Measured: at 46 glyphs it was.
+                // *after* the expanded block's scale drop. Measured: at 46 glyphs it did not, and
+                // this test then only failed when both halves of the fix were reverted together.
+                //
+                // **It still only catches one half.** At 60 glyphs, reverting the panel's sizing
+                // alone fails this test; reverting the *scale drop* alone leaves 287 px of
+                // clearance and it passes. That is honest — the scale drop's own guard is
+                // `the_expanded_block_draws_one_font_scale_smaller`, which pins it by equality at
+                // three scales — but an earlier version of this comment claimed both halves failed
+                // here, and they do not.
                 assert!(
                     line.chars().count() >= 60,
                     "the fixture symbol did not resolve, or is too short to have collided: \
@@ -1370,6 +1383,217 @@ mod tests {
         assert!(
             chip_right > area.x + area.w - 16,
             "the chip stopped hugging the right edge (last ink at column {chip_right})"
+        );
+    }
+
+    // --- The cross-layer harness ---------------------------------------------------------------
+    //
+    // **Nothing on this branch drew a lens and the overlay into the same buffer.** Every test above
+    // renders lenses alone; `overlay.rs`'s tests render the overlay alone. The run loop draws both,
+    // lenses first (main.rs:1776-1817), and the overlay's panels are only `PANEL_ALPHA` opaque — so
+    // a lens glyph underneath one is dimmed to about a quarter and reads as *missing* next to its
+    // undimmed neighbours. Two real instances shipped through a fully green suite because no test
+    // could see across the seam. This is that test.
+
+    /// Render the enabled lenses, then [`Overlay::draw`] on top, exactly in the run loop's order,
+    /// and hand back `(lenses over bg, lenses over bg2, lenses then overlay over bg)`.
+    ///
+    /// The two backgrounds are how the **opaque** lens pixels are identified — the pixels whose
+    /// value does not depend on what was underneath. That needs no knowledge of any lens's colours,
+    /// alphas or glyph shapes, so it cannot go stale when one of them moves, and it is the same
+    /// technique `the_panels_draw_over_the_sprite_outlines` already uses one layer down.
+    fn lenses_then_overlay(
+        set: LensSet,
+        area: Rect,
+        w: usize,
+        h: usize,
+        sys: &System,
+        paused: bool,
+        hover: Option<(u16, u16)>,
+    ) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+        const BG: u32 = 0x0012_3456;
+        const BG2: u32 = 0x0065_4321;
+        let wp = Watchpoints::new(8);
+        let mut ov = crate::overlay::Overlay::new();
+        ov.status_line = true; // F3 is on by default in the run loop
+        let st = crate::overlay::Status {
+            paused,
+            frame: 1234,
+            slot: 3,
+            occupied: [false; crate::save_state::SLOT_COUNT],
+            volume: Some((7, 10, false)),
+            filter: Some("VA0-VA2"),
+            aspect: "4:3",
+            native: (320, 224),
+        };
+        let lenses = |bg: u32| {
+            let m = models(
+                set,
+                &FrameCtx {
+                    sys,
+                    wp: &wp,
+                    symbols: None,
+                    frame: 1234,
+                    paused,
+                    hover,
+                },
+            );
+            let mut buf = vec![bg; w * h];
+            draw(&mut buf, w, h, area, (320, 224), &m);
+            buf
+        };
+        let a = lenses(BG);
+        let b = lenses(BG2);
+        let mut both = lenses(BG);
+        ov.draw(&mut both, w, h, area, &st);
+        (a, b, both)
+    }
+
+    /// **The overlay must not touch a single opaque lens pixel.**
+    ///
+    /// Not "must not cover it" — must not *change* it. The overlay's panels are translucent, so a
+    /// covered glyph is not blanked, it is dimmed; and a dimmed glyph beside undimmed ones does not
+    /// read as damaged, it reads as **absent**. `PC $001234` became `PC $00_234`, which is a
+    /// perfectly plausible `$00234`. That is the same "a `$3F` with a stroke through it reads as
+    /// `$8F`" argument this module already used to put the sprite outlines *beneath* the lens
+    /// panels — applied, at last, to the layer above the lenses instead of only to the one below.
+    ///
+    /// Swept over the geometries that matter rather than one: the **default** 320x224 window (where
+    /// both instances were measured), the owner's 896x672, and a letterboxed picture whose origin
+    /// is non-zero, so an offset that ignored `area` cannot pass. Paused and running are both run,
+    /// because the chip auto-shows when the machine stops — the banner and the chip are on screen
+    /// together **by design** every time the user hits Space, not by coincidence.
+    ///
+    /// **The hover callout is deliberately given a dot in the lower half**, and that is a limitation
+    /// worth stating rather than hiding: it follows the cursor, so with the cursor in the top-left
+    /// it lands under the status line and *is* dimmed. It is left in the same accepted class as the
+    /// toasts covering the watch ticker — transient, user-driven, and gone the moment the mouse
+    /// moves — where a fixed panel silently misreporting a register is not. Registered as a
+    /// follow-up rather than fixed here.
+    /// Whether `id` puts any **opaque** ink on the glass, declared per variant so a seventh lens
+    /// cannot compile until its author says.
+    ///
+    /// Only the sprite outlines do not, and that is deliberate rather than an oversight:
+    /// `OUTLINE_ALPHA` is 200, sheer enough that the sprite's own edge pixels stay visible under the
+    /// stroke, which is the whole point of an outline. So the "must not be changed" sweep below has
+    /// nothing to bite on for them — and it should not, because what an outline conveys is its
+    /// *position*, which a dimming survives intact. That is the same reasoning that lets the lens
+    /// panels draw over the outlines one layer down.
+    fn has_opaque_ink(id: LensId) -> bool {
+        match id {
+            LensId::Watch | LensId::Cpu | LensId::CpuRegs | LensId::Cram | LensId::Hover => true,
+            LensId::Sprites => false,
+        }
+    }
+
+    #[test]
+    fn the_overlay_never_extinguishes_a_lens_glyph() {
+        const BG: u32 = 0x0012_3456;
+        let sys = sys_with_a_visible_sprite();
+        let mut checked = 0usize;
+        for (label, w, h, area) in [
+            (
+                "the default window",
+                320usize,
+                224usize,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 320,
+                    h: 224,
+                },
+            ),
+            (
+                "the owner's window",
+                896,
+                672,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 896,
+                    h: 672,
+                },
+            ),
+            (
+                "a letterboxed picture with a non-zero origin",
+                700,
+                520,
+                crate::present::dest_rect(700, 520, 320, 224, crate::present::Aspect::Integer),
+            ),
+        ] {
+            for paused in [false, true] {
+                for id in LensId::ALL {
+                    let mut set = LensSet::default();
+                    set.set(id, true);
+                    // Low and left of centre: clear of the status line's row and of the banner's
+                    // band, so this test measures the *fixed* panels. See the doc above.
+                    let hover = Some((40u16, 180u16));
+                    let (a, b, both) = lenses_then_overlay(set, area, w, h, &sys, paused, hover);
+
+                    let mut opaque = 0usize;
+                    for i in 0..w * h {
+                        // Equal over two different backgrounds = opaque lens ink. An untouched
+                        // pixel is BG in one and BG2 in the other, so it can never qualify.
+                        if a[i] != b[i] {
+                            continue;
+                        }
+                        opaque += 1;
+                        assert_eq!(
+                            both[i],
+                            a[i],
+                            "{label}, {} , paused={paused}: the overlay changed an opaque lens \
+                             pixel at ({}, {}) — a dimmed glyph beside bright ones reads as \
+                             missing, not as damaged",
+                            id.key(),
+                            i % w,
+                            i / w
+                        );
+                    }
+                    // Vacuity guards. Every lens must have drawn *something*, or the sweep above
+                    // ran over an empty buffer; and every lens that has opaque ink must have put
+                    // some down, or its half of the sweep asserted nothing at all.
+                    assert!(
+                        a.iter().any(|p| *p != BG),
+                        "{label}, {}, paused={paused}: the lens drew nothing",
+                        id.key()
+                    );
+                    // `|| paused` because the CPU chip auto-shows whenever the machine stops, so
+                    // every paused row draws the chip's opaque glyphs no matter which lens is on.
+                    // That is not noise — it is why all six paused rows exercise the banner case.
+                    assert_eq!(
+                        opaque > 0,
+                        has_opaque_ink(id) || paused,
+                        "{label}, {}, paused={paused}: opaque ink disagrees with has_opaque_ink \
+                         ({opaque} opaque pixels)",
+                        id.key()
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 3 * 2 * 6, "the sweep did not cover every case");
+
+        // And the overlay really is drawing into these buffers — otherwise every equality above is
+        // satisfied by a no-op `Overlay::draw` and this whole test is theatre.
+        let mut none = LensSet::default();
+        none.set(LensId::Watch, true);
+        let (a, _, both) = lenses_then_overlay(
+            none,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 320,
+                h: 224,
+            },
+            320,
+            224,
+            &sys,
+            true,
+            None,
+        );
+        assert!(
+            (0..320 * 224).any(|i| a[i] == BG && both[i] != BG),
+            "the overlay left no mark of its own, so it could not have damaged anything either"
         );
     }
 

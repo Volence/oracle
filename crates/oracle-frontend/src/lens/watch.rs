@@ -241,13 +241,6 @@ mod tests {
     /// it is the pattern every lens draw test must copy.
     const BG: u32 = 0x0012_3456;
 
-    /// The house margin idiom, re-derived so the assertions below can name the panel's own edges
-    /// rather than the area's — the two differ by exactly this, and that difference is the bug
-    /// class (ink in the letterbox) these tests exist to catch.
-    fn margin_of(px: usize) -> usize {
-        (2 * px).max(4)
-    }
-
     #[test]
     fn draw_paints_inside_area_only() {
         let (w, h) = (320usize, 224usize);
@@ -270,7 +263,8 @@ mod tests {
         }
         // The panel alone is `panel_w * panel_h` pixels; text could never reach that. If this ever
         // fails, the panel has gone invisible against BG again and every assertion below is blind.
-        let margin = margin_of(px);
+        // `(2 * px).max(4)` is 4 at px 1 — written out, not re-derived from production.
+        let margin = 4;
         let panel_w = area.w - 2 * margin;
         let panel_h = (ROWS + 1) * font::LINE_H * px + 2 * (2 * px);
         let painted = buf.iter().filter(|p| **p != BG).count();
@@ -289,50 +283,74 @@ mod tests {
         }
     }
 
-    /// It is a **bottom** strip: it hugs the bottom edge of the picture (which is why toasts, which
-    /// stack from the same edge, can briefly cover it) and leaves the picture above it alone. Both
-    /// halves are asserted — an anchor that drifted to the top would otherwise pass every other
-    /// test in this module.
+    /// It is a **bottom** strip, hugging the bottom edge of the picture (which is why toasts, which
+    /// stack from the same edge, can briefly cover it) — **at every font scale**.
+    ///
+    /// All four edges by equality against hand-written coordinates, rather than the
+    /// `bottom_edge - bottom_row <= margin` inequality this used to carry. That form was doubly
+    /// weak: an inequality lets the strip drift *inward* freely, and its bound came from a
+    /// test-local copy of the production margin formula, so it moved with the very bug it was
+    /// supposed to catch.
+    ///
+    /// **Three scales, because `margin = (2 * px).max(4)` is 4 at both px 1 and px 2** — the floor
+    /// still binds — so hardcoding `margin = 4` was the identity everywhere this module looked, and
+    /// shipped green. It first diverges at px 4, where the correct margin is 8. `video.rs` closed
+    /// this exact gap in `1407d07`; `watch.rs` and `cpu.rs` never got the same treatment.
+    ///
+    /// Derivation, once: `margin = (2 * px).max(4)`, `pad = 2 * px`, five rows (four hits plus the
+    /// header) of `LINE_H * px` make the panel `44 * px` tall, and it spans the picture's width less
+    /// a margin either side.
     #[test]
-    fn the_strip_hugs_the_bottom_of_the_area() {
-        let (w, h) = (320usize, 224usize);
-        let mut buf = vec![BG; w * h];
+    fn the_strip_hugs_the_bottom_at_every_scale() {
+        let (w, h) = (760usize, 560usize);
+        // A non-zero origin, so an anchor that measured from the window corner cannot pass.
         let area = Rect {
-            x: 40,
-            y: 20,
-            w: 240,
-            h: 180,
+            x: 16,
+            y: 12,
+            w: 700,
+            h: 500,
         };
-        let px = 1;
         let t = Ticker {
             lines: vec!["w0 vram $4A00 3F->12 @f811 $00ABCD".to_string(); ROWS],
             armed: 1,
             dropped: 0,
         };
-        {
-            let mut c = font::Canvas::new(&mut buf, w, h);
-            draw(&mut c, area, px, &t);
+        // (px, top, bottom, left, right) — every number written out by hand.
+        for (px, want) in [
+            (1usize, (464usize, 507usize, 20usize, 711usize)),
+            (2, (420, 507, 20, 711)),
+            (4, (328, 503, 24, 707)),
+        ] {
+            let mut buf = vec![BG; w * h];
+            {
+                let mut c = font::Canvas::new(&mut buf, w, h);
+                draw(&mut c, area, px, &t);
+            }
+            let got = crate::lens::ink_bounds(&buf, w, BG)
+                .unwrap_or_else(|| panic!("px {px}: draw painted nothing"));
+            assert_eq!(
+                got, want,
+                "px {px}: the strip is at (top,bottom,left,right) {got:?}, not {want:?}"
+            );
+            // The claims the tuple encodes, named so a failure says which one broke. Not how `want`
+            // was derived — `want` is hand-written; these are assertions about it.
+            let (top, bottom, left, _) = got;
+            assert_eq!(
+                bottom + 1 + (2 * px).max(4),
+                area.y + area.h,
+                "px {px}: the bottom gutter is not exactly one margin"
+            );
+            assert_eq!(
+                left,
+                area.x + (2 * px).max(4),
+                "px {px}: the left gutter is not exactly one margin"
+            );
+            assert!(
+                top >= area.y + area.h / 2,
+                "px {px}: ink reached the top half — this is a bottom strip (first ink on row \
+                 {top})"
+            );
         }
-        let rows: Vec<usize> = buf
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| **p != BG)
-            .map(|(i, _)| i / w)
-            .collect();
-        assert!(!rows.is_empty(), "draw painted nothing");
-        // Row-major enumeration is row-ascending, so the ends of `rows` are the ink's extremes.
-        let (top_row, bottom_row) = (rows[0], rows[rows.len() - 1]);
-        let bottom_edge = area.y + area.h;
-        assert!(
-            bottom_edge - (bottom_row + 1) <= margin_of(px),
-            "the strip is not anchored to the bottom: last ink on row {bottom_row}, area ends at \
-             {bottom_edge}"
-        );
-        assert!(
-            top_row >= area.y + area.h / 2,
-            "ink reached the top half of the picture — this is a bottom strip, not a top one \
-             (first ink on row {top_row})"
-        );
     }
 
     /// A very long symbol name must be truncated, not allowed to run past the panel — `Canvas`
@@ -361,7 +379,8 @@ mod tests {
             draw(&mut c, area, px, &t);
         }
         // left + panel_w == area.x + margin + (area.w - 2 * margin).
-        let panel_right = area.x + area.w - margin_of(px);
+        // px is 2 here, where `(2 * px).max(4)` is still 4.
+        let panel_right = area.x + area.w - 4;
         assert!(buf.iter().any(|p| *p != BG), "draw painted nothing");
         for (i, p) in buf.iter().enumerate() {
             if *p != BG {

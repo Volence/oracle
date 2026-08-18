@@ -72,12 +72,11 @@ pub fn draw_cram(c: &mut font::Canvas, area: Rect, px: usize, sw: &[u32; 64]) {
     let cell = SWATCH * px;
     let panel_w = COLOURS * cell + 2 * pad;
     let panel_h = PALETTES * cell + 2 * pad;
-    // Sit clear of the status line (F3), which owns the top-left text row: `overlay` puts it at
-    // `area.y + margin` and it stands `GLYPH_H * px + 2 * pad` tall, so dropping a whole `LINE_H`
-    // row clears it with the font's own leading to spare. The offset is unconditional — the status
-    // line latches and flashes on its own schedule, and a strip that jumped a row whenever a save
-    // slot flashed would be worse than one sitting a row lower than it strictly needs to.
-    let status_row = font::LINE_H * px + 2 * pad;
+    // Sit clear of the status line (F3), which owns the top-left text row. The band is `overlay`'s
+    // to report rather than ours to re-derive: this used to be a local `LINE_H * px + 2 * pad`, and
+    // the CPU chip's not having its own copy of it is exactly how the chip ended up drawing under
+    // the status line. One definition, two readers.
+    let status_row = crate::overlay::status_row_height(px);
     if area.w < panel_w + 2 * margin || area.h < panel_h + status_row + 2 * margin {
         return;
     }
@@ -158,7 +157,9 @@ pub fn boxes(
     display: (u16, u16),
 ) -> Vec<SpriteBox> {
     let (dw, dh) = (i32::from(display.0), i32::from(display.1));
-    let mut out = Vec::new();
+    // The walk is the upper bound: every entry yields at most one box, and on an ordinary frame
+    // most of them do.
+    let mut out = Vec::with_capacity(walk.len());
     for s in walk {
         let left = i32::from(s.x);
         let top = i32::from(s.y);

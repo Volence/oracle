@@ -341,10 +341,16 @@ pub fn draw_slot_strip(
     }
 }
 
-/// The centered `PAUSED` banner. Since a paused frontend re-presents the retained framebuffer forever, this
-/// is the only thing that tells a paused emulator apart from a hung one.
-fn draw_paused_banner(c: &mut font::Canvas, area: Rect, px: usize) {
-    const WORD: &str = "PAUSED";
+/// The word the banner shows. A `const` because [`paused_banner_rect`] measures it and
+/// [`draw_paused_banner`] draws it: two copies of `"PAUSED"` would be two things that could
+/// disagree about how wide the banner is, and the whole point of the accessor is that they cannot.
+const PAUSED_WORD: &str = "PAUSED";
+
+/// The banner's geometry: where it lands, at what font scale, with what padding — or `None` when
+/// the picture cannot hold it.
+///
+/// Split out of the draw so that a *reader* can ask where it is. See [`paused_banner_rect`].
+fn banner_layout(area: Rect, px: usize) -> Option<(Rect, usize, usize)> {
     // A twelfth of the way down the picture, so it clears the game's own top-of-screen HUD.
     let y_off = area.h / 12;
     let head_room = area.h - y_off;
@@ -353,19 +359,73 @@ fn draw_paused_banner(c: &mut font::Canvas, area: Rect, px: usize) {
     // not a pause indicator. A picture with no room for it at 1x gets nothing rather than a leak into the
     // letterbox, which at that size is a handful of pixels nobody could read anyway.
     let pad_for = |p: usize| 3 * p;
-    let Some(px) = (1..=px * 2).rev().find(|&p| {
-        font::text_width(WORD) * p + 2 * pad_for(p) <= area.w
+    let px = (1..=px * 2).rev().find(|&p| {
+        font::text_width(PAUSED_WORD) * p + 2 * pad_for(p) <= area.w
             && font::GLYPH_H * p + 2 * pad_for(p) <= head_room
-    }) else {
+    })?;
+    let pad = pad_for(px);
+    let w = font::text_width(PAUSED_WORD) * px + 2 * pad;
+    let h = font::GLYPH_H * px + 2 * pad;
+    Some((
+        Rect {
+            x: area.x + area.w.saturating_sub(w) / 2,
+            y: area.y + y_off,
+            w,
+            h,
+        },
+        px,
+        pad,
+    ))
+}
+
+/// **Where the `PAUSED` banner lands**, in the same window coordinates a lens draws in, or `None`
+/// when the picture is too small for it to appear at all.
+///
+/// Exported because the overlay is drawn *after* the lenses (main.rs:1776-1817) and its panels are
+/// only `PANEL_ALPHA` opaque: a white lens glyph underneath one drops to about 65/255 and reads as
+/// **absent**, while its neighbours stay bright. That is not occlusion, it is interference — the
+/// same argument that put the sprite outlines beneath the lens panels, one layer up — and a
+/// register that renders `D0 D00_0000` is a plausible wrong 32-bit value rather than a visibly
+/// missing one.
+///
+/// The CPU chip is the caller: it auto-shows whenever the machine stops, so it and the banner are
+/// on screen together **by design** every time the user hits Space, and it uses this to step out of
+/// the way. Exposing the band rather than moving the banner keeps the banner where it is meant to
+/// be — centred, unmissable, clear of the game's HUD — and puts the avoidance in the thing that has
+/// somewhere else to go.
+pub fn paused_banner_rect(area: Rect, px: usize) -> Option<Rect> {
+    banner_layout(area, px).map(|(r, _, _)| r)
+}
+
+/// **The vertical space the F3 status line reserves** at the top of the picture, in device pixels:
+/// a whole line box plus the panel's padding, measured at the *overlay's* font scale.
+///
+/// A whole `LINE_H` rather than the `GLYPH_H` the panel actually stands, so a lens clearing it has
+/// the font's own leading to spare. The status line latches and flashes on its own schedule, so
+/// callers offset by this **unconditionally** — a panel that jumped a row whenever a save slot
+/// flashed would be worse than one sitting a row lower than it strictly needs to.
+///
+/// Unlike the banner there is no width to report: the status line spans from the left margin and
+/// its width depends on what it currently says, so the only safe answer for a lens is "start below
+/// it".
+pub fn status_row_height(px: usize) -> usize {
+    font::LINE_H * px + 2 * (2 * px)
+}
+
+/// The centered `PAUSED` banner. Since a paused frontend re-presents the retained framebuffer forever, this
+/// is the only thing that tells a paused emulator apart from a hung one.
+fn draw_paused_banner(c: &mut font::Canvas, area: Rect, px: usize) {
+    let Some((r, px, pad)) = banner_layout(area, px) else {
         return;
     };
-    let pad = pad_for(px);
-    let panel_w = font::text_width(WORD) * px + 2 * pad;
-    let panel_h = font::GLYPH_H * px + 2 * pad;
-    let x = (area.x + area.w.saturating_sub(panel_w) / 2) as i32;
-    let y = (area.y + y_off) as i32;
-    c.fill_rect(x, y, panel_w, panel_h, 0x0000_0000, 210);
-    c.text(x + pad as i32, y + pad as i32, px, ACCENT, WORD);
+    c.fill_rect(r.x as i32, r.y as i32, r.w, r.h, 0x0000_0000, 210);
+    c.text(
+        (r.x + pad) as i32,
+        (r.y + pad) as i32,
+        px,
+        ACCENT,
+        PAUSED_WORD,
+    );
 }
 
 #[cfg(test)]

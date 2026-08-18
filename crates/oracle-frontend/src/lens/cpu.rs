@@ -178,20 +178,23 @@ fn fixed_width(lines: &[String], px: usize) -> usize {
 /// machine stops, it would take the paused readout with it. The same reasoning covers width, where
 /// bailing would instead have meant truncated register values. So the form degrades one step, to
 /// the three lines that always fit if anything does, and only then gives up.
-fn form(lines: &[String], area: Rect, px: usize) -> usize {
+fn form(lines: &[String], area: Rect, px: usize, paused: bool) -> usize {
     let fits = |n: usize| {
         // Each candidate form is measured at the scale it would actually be drawn at, or the
         // expanded block would be rejected for a height it never asks for.
-        let px = scale_for(n, px);
-        let pad = 2 * px;
-        let margin = (2 * px).max(4);
+        let chip_px = scale_for(n, px);
+        let pad = 2 * chip_px;
+        let margin = (2 * chip_px).max(4);
+        // The top is not `area.y + margin` any more — it steps clear of the overlay — so the height
+        // budget is what is left *below* wherever the chip actually starts.
+        let used = top_of(lines, area, px, n, paused) - area.y;
         n > 0
-            && n * font::LINE_H * px + 2 * pad + margin <= area.h
+            && used + n * font::LINE_H * chip_px + 2 * pad + margin <= area.h
             // `fixed_width`, not `chip_width`: this clause exists to stop a register value being
             // truncated into a plausible-looking wrong number, and that is a question about the
             // lines themselves. A picture too narrow for `chip_width` is fine — the panel simply
             // comes out narrower and the PC's tail gets shorter.
-            && fixed_width(&lines[..n], px) + 2 * pad + 2 * margin <= area.w
+            && fixed_width(&lines[..n], chip_px) + 2 * pad + 2 * margin <= area.w
     };
     let head = COMPACT_LINES.min(lines.len());
     if fits(lines.len()) {
@@ -203,17 +206,64 @@ fn form(lines: &[String], area: Rect, px: usize) -> usize {
     }
 }
 
-/// Top-right of `area`, sized to its widest line so the expanded block does not shove the compact
-/// one around — and clamped to the picture, so a long symbol name cannot push the panel out into
-/// the letterbox.
+/// The panel's width for a form drawn at `px`. Shared by [`top_of`] and [`draw`] so the banner
+/// test below and the rectangle actually painted can never be measuring different panels.
+fn panel_width(lines: &[String], area: Rect, px: usize, margin: usize) -> usize {
+    let content = chip_width(px).max(fixed_width(lines, px));
+    (content + 2 * pad_of(px)).min(area.w.saturating_sub(2 * margin))
+}
+
+fn pad_of(px: usize) -> usize {
+    2 * px
+}
+
+/// **The chip's top row, stepped clear of the overlay.**
+///
+/// The overlay draws *after* every lens and its panels are only `PANEL_ALPHA` opaque, so anything
+/// of ours underneath one is dimmed to about a quarter and reads as **missing** beside its
+/// undimmed neighbours. For a readout that is not occlusion but interference: a `PC $001234` with
+/// its fifth glyph extinguished reads as `$00234`, and a `D0 D0000000` reads as a different, wholly
+/// plausible 32-bit number. Both were measured on screen; neither is detectable from inside this
+/// module, which is why `lens/mod.rs` now renders the two layers into one buffer.
+///
+/// Two things to clear, and they need different answers:
+/// * **The F3 status line** shares this exact corner and is offset **unconditionally**, the way the
+///   CRAM strip already does it ([`overlay::status_row_height`] — the strip learned this in
+///   `1407d07` and the chip never did). Its width depends on what it currently says, so "start
+///   below it" is the only safe rule. Measured at the *overlay's* `px`, not the chip's reduced one:
+///   the status line does not shrink when the register block does.
+/// * **The `PAUSED` banner** is centred, so whether it is in the way depends on the picture's
+///   width — at 320x224 it overlaps the chip's columns, at the owner's 896x672 it clears them by
+///   27 px. So this one is **conditional on an actual column overlap**, and the chip stays put
+///   when there is none. Dropping 78 px at every pause on a large window, to avoid a collision
+///   that is not happening, would be its own kind of wrong.
+fn top_of(lines: &[String], area: Rect, px: usize, n: usize, paused: bool) -> usize {
+    let chip_px = scale_for(n, px);
+    let margin = (2 * chip_px).max(4);
+    let mut top = area.y + margin + overlay::status_row_height(px);
+    if paused {
+        if let Some(b) = overlay::paused_banner_rect(area, px) {
+            let panel_w = panel_width(lines, area, chip_px, margin);
+            let left = area.x + area.w.saturating_sub(margin + panel_w);
+            if left < b.x + b.w && b.x < left + panel_w {
+                top = top.max(b.y + b.h);
+            }
+        }
+    }
+    top
+}
+
+/// Top-right of `area`, one status row down and clear of the `PAUSED` banner ([`top_of`]), sized to
+/// [`CHIP_COLUMNS`] so an unbounded symbol name cannot push the panel out into the letterbox.
 pub fn draw(c: &mut font::Canvas, area: Rect, px: usize, chip: &Chip) {
-    let n = form(&chip.lines, area, px);
+    let n = form(&chip.lines, area, px, chip.paused);
     if n == 0 {
         return;
     }
+    let top = top_of(&chip.lines, area, px, n, chip.paused) as i32;
     let px = scale_for(n, px);
     let lines = &chip.lines[..n];
-    let pad = 2 * px;
+    let pad = pad_of(px);
     let margin = (2 * px).max(4);
     let line_h = font::LINE_H * px;
     let panel_h = n * line_h + 2 * pad;
@@ -222,14 +272,12 @@ pub fn draw(c: &mut font::Canvas, area: Rect, px: usize, chip: &Chip) {
     // say so that a hypothetical over-wide fixed line (a 20-digit frame counter) is not truncated
     // into a wrong number; today it never wins, and the test above pins that.
     //
-    // `form` returning non-zero is what makes both of these safe: it guarantees
-    // `2 * pad + 2 * margin <= area.w`, so the subtraction below cannot underflow, and
-    // `panel_w <= area.w - 2 * margin`, so `area.w - margin - panel_w >= margin` (the
-    // `draw_narrow_panel_does_not_underflow` hazard class).
-    let content = chip_width(px).max(fixed_width(lines, px));
-    let panel_w = (content + 2 * pad).min(area.w - 2 * margin);
+    // `form` returning non-zero is what makes this safe: it guarantees
+    // `2 * pad + 2 * margin <= area.w`, so `panel_w <= area.w - 2 * margin` and therefore
+    // `area.w - margin - panel_w >= margin` (the `draw_narrow_panel_does_not_underflow` hazard
+    // class). `panel_width` saturates anyway, so a caller that skipped `form` cannot panic here.
+    let panel_w = panel_width(lines, area, px, margin);
     let left = (area.x + area.w - margin - panel_w) as i32;
-    let top = (area.y + margin) as i32;
     c.fill_rect(left, top, panel_w, panel_h, 0x0000_0000, font::PANEL_ALPHA);
 
     let avail = panel_w.saturating_sub(2 * pad);
@@ -416,13 +464,6 @@ mod tests {
     /// same constant, as `lens/watch.rs`.
     const BG: u32 = 0x0012_3456;
 
-    /// The house margin idiom, re-derived so the assertions below can name the panel's own edges
-    /// rather than the area's — the two differ by exactly this, and that difference is the bug
-    /// class (ink in the letterbox) these tests exist to catch.
-    fn margin_of(px: usize) -> usize {
-        (2 * px).max(4)
-    }
-
     /// Render `chip` into a `w * h` buffer over [`BG`] and hand back the buffer.
     fn render(w: usize, h: usize, area: Rect, px: usize, chip: &Chip) -> Vec<u32> {
         let mut buf = vec![BG; w * h];
@@ -456,7 +497,8 @@ mod tests {
             .map(|l| font::text_width(l) * px)
             .max()
             .expect("the chip always has lines");
-        let panel_w = (widest + 2 * pad).min(area.w - 2 * margin_of(px));
+        // `margin` is 4 at px 1 — written out, not re-derived from the production formula.
+        let panel_w = (widest + 2 * pad).min(area.w - 2 * 4);
         let painted = buf.iter().filter(|p| **p != BG).count();
         assert!(
             painted >= panel_w * panel_h,
@@ -482,7 +524,7 @@ mod tests {
         let px = 1;
         let lines = model(&regs(), None, 7, false, true).lines;
         assert_eq!(lines.len(), COMPACT_LINES + 8);
-        let at = |w: usize, h: usize| form(&lines, Rect { x: 0, y: 0, w, h }, px);
+        let at = |w: usize, h: usize| form(&lines, Rect { x: 0, y: 0, w, h }, px, false);
 
         assert_eq!(at(320, 224), lines.len(), "a whole picture holds the block");
         assert_eq!(
@@ -515,12 +557,16 @@ mod tests {
         let compact_h = COMPACT_LINES * font::LINE_H * px + 2 * (2 * px);
         for (label, area) in [
             (
+                // 80 rather than 60: the chip now starts below the F3 status line, and below the
+                // PAUSED banner too (this fixture is a *paused* chip, which is when the banner is
+                // up). Both bands come out of the height budget, so the window in which the block
+                // does not fit but the compact head does has moved down the page, not vanished.
                 "too short for the block",
                 Rect {
                     x: 0,
                     y: 0,
                     w: 320,
-                    h: 60,
+                    h: 80,
                 },
             ),
             (
@@ -574,7 +620,7 @@ mod tests {
                 w,
                 h: 224,
             };
-            if form(&chip.lines, area, px) != chip.lines.len() {
+            if form(&chip.lines, area, px, false) != chip.lines.len() {
                 continue; // degraded to the compact head, or absent: nothing to check here
             }
             widths_showing_the_block += 1;
@@ -595,63 +641,71 @@ mod tests {
         );
     }
 
-    /// It is a **top-right** chip. Containment alone cannot tell that from a bottom-left one — the
-    /// watch ticker's own tests passed for a while with the strip anchored to the wrong edge — so
-    /// both axes are pinned from both sides: exactly one margin's gutter from the top-right corner,
-    /// and nowhere near the opposite half of the picture.
+    /// It is a **top-right** chip, one status row down, **at every font scale**.
     ///
-    /// The gutters are pinned by **equality**, not `<= margin`: zero satisfies `<=`, so the looser
-    /// form let `top = area.y` through, and a chip flush against the picture's edge is the
-    /// untidiness anchoring to the picture was meant to avoid.
+    /// Containment alone cannot tell that from a bottom-left one — the watch ticker's own tests
+    /// passed for a while with the strip anchored to the wrong edge — so all four edges are pinned
+    /// by equality against hand-written coordinates.
+    ///
+    /// **Three scales, because one is not enough and `px = 1` is the worst single choice.**
+    /// `margin = (2 * px).max(4)` is 4 at both px 1 and px 2 — the floor still binds — so
+    /// hardcoding `margin = 4` was the identity everywhere this module looked, and did so through a
+    /// fully green suite. It first diverges at px 4, where the correct margin is 8. The same is true
+    /// of the status-row offset, which is `12 * px`: at px 1 it is indistinguishable from a dozen
+    /// other spellings. That gap is exactly what `1407d07` closed for `video.rs`, and it was never
+    /// applied here.
+    ///
+    /// The test-local `margin_of(px)` helper this used to lean on is **gone**, deliberately: it was
+    /// a second copy of the production formula, so it moved with the bug and could never catch it —
+    /// the "bound derived from the thing being mutated" trap wearing a helper's clothing. Every
+    /// number below is written out by hand instead.
+    ///
+    /// Derivation, once: `margin = (2 * px).max(4)`, `pad = 2 * px`, the status row is
+    /// `LINE_H * px + 2 * pad = 12 * px`, the panel is `CHIP_COLUMNS` (24 glyphs = 143 px) plus
+    /// `2 * pad` wide and `3 * LINE_H * px + 2 * pad = 28 * px` tall. The picture is 700 wide, so
+    /// even at px 4 the panel is not clamped.
     #[test]
-    fn the_chip_hugs_the_top_right_of_the_area() {
-        let (w, h) = (320usize, 224usize);
+    fn the_chip_hugs_the_top_right_one_status_row_down_at_every_scale() {
+        let (w, h) = (760usize, 560usize);
+        // A non-zero origin, so an anchor that measured from the window corner cannot pass.
         let area = Rect {
-            x: 40,
-            y: 20,
-            w: 240,
-            h: 180,
+            x: 16,
+            y: 12,
+            w: 700,
+            h: 500,
         };
-        let px = 1;
-        let margin = margin_of(px);
         let chip = model(&regs(), None, 7, false, false);
-        let buf = render(w, h, area, px, &chip);
-        let (top, bottom, left, right) = ink_bounds(&buf, w, BG).expect("draw painted nothing");
-
-        assert_eq!(
-            top,
-            area.y + margin,
-            "the top gutter is not exactly one margin (first ink on row {top})"
-        );
-        assert_eq!(
-            right + 1,
-            area.x + area.w - margin,
-            "the right gutter is not exactly one margin (last ink at column {right})"
-        );
-        assert!(
-            bottom < area.y + area.h / 2,
-            "ink reached the bottom half — this is a top chip, not a bottom one (last ink on row \
-             {bottom})"
-        );
-        // **Position and width together, by equality.** This used to read
-        // `left >= area.x + area.w / 2` — a width claim wearing an anchoring costume, and one the
-        // right-gutter equality above already implies the useful half of. It is replaced rather
-        // than dropped, and by something strictly stronger: the panel's left edge and its width are
-        // both pinned to the pixel, so a chip that grew, shrank or slid fails here.
-        //
-        // 147 is `CHIP_COLUMNS` at `px = 1`: 24 glyphs of 6 px less the trailing gap, plus 2 px of
-        // pad either side. Written out, never computed from `chip_width`.
-        const PANEL_W_PX1: usize = 147;
-        assert_eq!(
-            right - left + 1,
-            PANEL_W_PX1,
-            "the panel is not {PANEL_W_PX1} px wide (it runs {left}..={right})"
-        );
-        assert_eq!(
-            left,
-            area.x + area.w - margin - PANEL_W_PX1,
-            "the panel's left edge is not one margin plus its own width in from the right"
-        );
+        // (px, top, bottom, left, right) — every number written out by hand.
+        for (px, want) in [
+            (1usize, (28usize, 55usize, 565usize, 711usize)),
+            (2, (40, 95, 418, 711)),
+            (4, (68, 179, 120, 707)),
+        ] {
+            let got = ink_bounds(&render(w, h, area, px, &chip), w, BG)
+                .unwrap_or_else(|| panic!("px {px}: draw painted nothing"));
+            assert_eq!(
+                got, want,
+                "px {px}: the chip is at (top,bottom,left,right) {got:?}, not {want:?}"
+            );
+            // The two properties the tuple encodes, said out loud so a failure names which one
+            // broke rather than making the reader do the arithmetic at 3 a.m. Deliberately *not*
+            // how `want` was derived — `want` is hand-written, these are the claims about it.
+            let (top, _, _, right) = got;
+            assert_eq!(
+                right + 1,
+                area.x + area.w - (2 * px).max(4),
+                "px {px}: the right gutter is not exactly one margin"
+            );
+            assert_eq!(
+                top,
+                area.y + (2 * px).max(4) + 12 * px,
+                "px {px}: the chip is not exactly one status row below the top margin"
+            );
+            // No `left > area.x + area.w / 2` clause here. At px 4 the panel is 588 px of a 700 px
+            // picture, so that inequality is false for a chip that is anchored perfectly — it is a
+            // *width* claim wearing an anchoring costume, which is the same mistake this file
+            // already removed once. The equalities above pin the anchor without it.
+        }
     }
 
     /// `CpuRegs` has to *do* something visible: the expanded block is eight rows taller than the
@@ -698,7 +752,8 @@ mod tests {
             paused: false,
         };
         let buf = render(w, h, area, px, &chip);
-        let margin = margin_of(px);
+        // `(2 * px).max(4)` is 4 at px 2 — written out, not re-derived.
+        let margin = 4;
         let (_, _, left, right) = ink_bounds(&buf, w, BG).expect("draw painted nothing");
         assert!(
             left >= area.x + margin,
