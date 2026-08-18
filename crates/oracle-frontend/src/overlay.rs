@@ -412,6 +412,26 @@ pub fn status_row_height(px: usize) -> usize {
     font::LINE_H * px + 2 * (2 * px)
 }
 
+/// **Where the F3 status line lands**, as a band spanning the picture's full width.
+///
+/// Full width on purpose, and wider than the panel actually painted: the status line's width
+/// depends on what it currently says (slot strip, volume, filter, aspect, native size, frame), so a
+/// lens asking "may I draw here?" cannot be told a truthful column range that will still be true a
+/// frame later. The honest answer is a band, and a lens either clears it or does not draw.
+///
+/// The `y` is the overlay's own margin — **not** the caller's, which is the trap this replaces: the
+/// CPU chip computed `area.y + margin + status_row_height(px)` with *its* margin, which is smaller
+/// than the overlay's whenever the register block drops a font scale, so its panel overlapped the
+/// band by two rows and only the panel's padding kept a glyph out of it.
+pub fn status_band(area: Rect, px: usize) -> Rect {
+    Rect {
+        x: area.x,
+        y: area.y + (2 * px).max(4),
+        w: area.w,
+        h: status_row_height(px),
+    }
+}
+
 /// The centered `PAUSED` banner. Since a paused frontend re-presents the retained framebuffer forever, this
 /// is the only thing that tells a paused emulator apart from a hung one.
 fn draw_paused_banner(c: &mut font::Canvas, area: Rect, px: usize) {

@@ -234,6 +234,7 @@ pub fn models(set: LensSet, cx: &FrameCtx<'_>) -> Models {
         (true, Some((x, y)), Some(decoded)) => Some(video::Hover {
             text: video::hover_text(&cx.sys.vdp().pixel_attribution(x, y), decoded),
             at: (x, y),
+            paused: cx.paused,
         }),
         _ => None,
     };
@@ -1464,12 +1465,13 @@ mod tests {
     /// because the chip auto-shows when the machine stops — the banner and the chip are on screen
     /// together **by design** every time the user hits Space, not by coincidence.
     ///
-    /// **The hover callout is deliberately given a dot in the lower half**, and that is a limitation
-    /// worth stating rather than hiding: it follows the cursor, so with the cursor in the top-left
-    /// it lands under the status line and *is* dimmed. It is left in the same accepted class as the
-    /// toasts covering the watch ticker — transient, user-driven, and gone the moment the mouse
-    /// moves — where a fixed panel silently misreporting a register is not. Registered as a
-    /// follow-up rather than fixed here.
+    /// **The hover callout is swept in the top-left as well as the lower half**, and the top-left dot
+    /// is the load-bearing one: the cursor there puts the callout squarely under the status line.
+    /// An earlier version of this test hovered low and *documented why*, which pinned the hole open
+    /// rather than closing it. Transience was no excuse — a covered ticker line is visibly covered,
+    /// but a callout reading `tile $0_3` reads as a perfectly valid `$03`, and it is summoned to
+    /// answer one question, read once, and acted on. `draw_hover` now flips clear of the band the
+    /// same way it already flips off the picture's edge.
     /// Whether `id` puts any **opaque** ink on the glass, declared per variant so a seventh lens
     /// cannot compile until its author says.
     ///
@@ -1525,20 +1527,22 @@ mod tests {
                 for id in LensId::ALL {
                     let mut set = LensSet::default();
                     set.set(id, true);
-                    // Low and left of centre: clear of the status line's row and of the banner's
-                    // band, so this test measures the *fixed* panels. See the doc above.
-                    let hover = Some((40u16, 180u16));
-                    let (a, b, both) = lenses_then_overlay(set, area, w, h, &sys, paused, hover);
+                    // Both halves of the picture. `(4, 2)` is the adversarial one: at every
+                    // geometry here it puts the cursor inside the status line's own band, which is
+                    // precisely where the callout used to be garbled.
+                    for hover in [Some((4u16, 2u16)), Some((40u16, 180u16))] {
+                        let (a, b, both) =
+                            lenses_then_overlay(set, area, w, h, &sys, paused, hover);
 
-                    let mut opaque = 0usize;
-                    for i in 0..w * h {
-                        // Equal over two different backgrounds = opaque lens ink. An untouched
-                        // pixel is BG in one and BG2 in the other, so it can never qualify.
-                        if a[i] != b[i] {
-                            continue;
-                        }
-                        opaque += 1;
-                        assert_eq!(
+                        let mut opaque = 0usize;
+                        for i in 0..w * h {
+                            // Equal over two different backgrounds = opaque lens ink. An untouched
+                            // pixel is BG in one and BG2 in the other, so it can never qualify.
+                            if a[i] != b[i] {
+                                continue;
+                            }
+                            opaque += 1;
+                            assert_eq!(
                             both[i],
                             a[i],
                             "{label}, {} , paused={paused}: the overlay changed an opaque lens \
@@ -1548,30 +1552,31 @@ mod tests {
                             i % w,
                             i / w
                         );
-                    }
-                    // Vacuity guards. Every lens must have drawn *something*, or the sweep above
-                    // ran over an empty buffer; and every lens that has opaque ink must have put
-                    // some down, or its half of the sweep asserted nothing at all.
-                    assert!(
-                        a.iter().any(|p| *p != BG),
-                        "{label}, {}, paused={paused}: the lens drew nothing",
-                        id.key()
-                    );
-                    // `|| paused` because the CPU chip auto-shows whenever the machine stops, so
-                    // every paused row draws the chip's opaque glyphs no matter which lens is on.
-                    // That is not noise — it is why all six paused rows exercise the banner case.
-                    assert_eq!(
+                        }
+                        // Vacuity guards. Every lens must have drawn *something*, or the sweep above
+                        // ran over an empty buffer; and every lens that has opaque ink must have put
+                        // some down, or its half of the sweep asserted nothing at all.
+                        assert!(
+                            a.iter().any(|p| *p != BG),
+                            "{label}, {}, paused={paused}: the lens drew nothing",
+                            id.key()
+                        );
+                        // `|| paused` because the CPU chip auto-shows whenever the machine stops, so
+                        // every paused row draws the chip's opaque glyphs no matter which lens is on.
+                        // That is not noise — it is why all six paused rows exercise the banner case.
+                        assert_eq!(
                         opaque > 0,
                         has_opaque_ink(id) || paused,
                         "{label}, {}, paused={paused}: opaque ink disagrees with has_opaque_ink \
                          ({opaque} opaque pixels)",
                         id.key()
                     );
-                    checked += 1;
+                        checked += 1;
+                    }
                 }
             }
         }
-        assert_eq!(checked, 3 * 2 * 6, "the sweep did not cover every case");
+        assert_eq!(checked, 3 * 2 * 6 * 2, "the sweep did not cover every case");
 
         // And the overlay really is drawing into these buffers — otherwise every equality above is
         // satisfied by a no-op `Overlay::draw` and this whole test is theatre.

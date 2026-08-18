@@ -39,10 +39,10 @@ preserved now, warnings collapse to one line per category, and a remnant can nev
 key on re-parse.
 
 Gates at merge: fmt clean; clippy `-D warnings` **0 in both feature variants**; frontend
-**225 passed / 0 failed** (default) and **197 passed / 0 failed** (`--no-default-features`), 1
+**227 passed / 0 failed** (default) and **199 passed / 0 failed** (`--no-default-features`), 1
 ignored in each (`write_presentation_screenshots`, needs `ORACLE_SHOT_ROM`); **full workspace suite
 EXIT=0 — 36 legs, 1549 passed, 0 failed, 4 ignored**; release build clean; core diff
-`743a5b5..HEAD -- crates/oracle-core/` **0 bytes**. (Figures as of `da62d42`; the pre-review
+`743a5b5..HEAD -- crates/oracle-core/` **0 bytes**. (Figures as of the hover fix; the pre-review
 figures were 224/196 across 18 commits.)
 
 > Note for whoever repeats the gate: the plan's literal `git diff m68000-microop-framework..HEAD --
@@ -60,7 +60,9 @@ still owed. The owner has now seen the lenses on real glass **once** and reporte
 boxes over empty picture, and the register block eating 41% of the screen — both fixed here
 (`cd6a145`, `8384c45`). A third, of the same family, came out of the whole-branch review rather than
 the owner's screen: the overlay was **erasing glyphs from the CPU chip** at the default window size
-(`da62d42`). The list below is partly exercised but nowhere near complete.
+(`da62d42`). A fourth — the same seam again, this time the status line and the `PAUSED` banner
+garbling the *hover callout* — was closed straight after. The list below is partly exercised but
+nowhere near complete.
 
 - toggle each of the five lenses from the palette's LENSES group → each appears, and the toast names
   it (there are **no default hotkeys** — the palette is the only way in this slice);
@@ -83,7 +85,11 @@ the owner's screen: the overlay was **erasing glyphs from the CPU chip** at the 
   terminal's own watch log → every glyph is there. The bug this replaces rendered `PC $001234` as
   `PC $00_234`, which is not a visibly damaged readout, it is a *plausible wrong one*;
 - pause with the register block expanded at the default window size → the `PAUSED` banner and the
-  chip do not touch, and every `D`/`A` register reads as eight hex digits.
+  chip do not touch, and every `D`/`A` register reads as eight hex digits;
+- **with the F3 status line up, hover a tile with the cursor in the top-left corner** → the callout
+  steps below the status line rather than under it, and every glyph of the tile number is there.
+  Then pause and do it again → it steps below the `PAUSED` banner too, but only when it would
+  otherwise land on it.
 
 ## Registered follow-ups
 
@@ -118,13 +124,14 @@ the owner's screen: the overlay was **erasing glyphs from the CPU chip** at the 
   command. The unknown-*key* preservation this slice shipped is the same problem's other half, and
   the same seam solves it. Anchors: `config.rs`'s `parse` (comment lines skipped) and `serialize`
   (writes known keys plus `unknown`).
-- **F-HOVER-UNDER-STATUS (new, accepted for now).** The hover callout follows the cursor, so with the
-  pointer in the top-left it lands under the F3 status line and is dimmed the same way the CPU chip
-  used to be. Left in the accepted class with the toasts covering the watch ticker — transient,
-  user-driven, gone the moment the mouse moves — where a *fixed* panel silently misreporting a
-  register is not. `the_overlay_never_extinguishes_a_lens_glyph` deliberately hovers a dot in the
-  lower half and says so; if a successor disagrees, the fix is `cpu::top_of`'s shape applied to
-  `video::draw_hover`. Anchor: the hover arm of `lens::draw`.
+- ~~**F-HOVER-UNDER-STATUS**~~ **CLOSED** the moment it was registered, and the classification that
+  registered it was wrong. It was filed as "accepted, same class as toasts covering the ticker".
+  That is the wrong class: a covered ticker line is **occlusion** — visibly covered, and the reader
+  knows they are not seeing it — whereas a callout reading `tile $0_3` is **interference**, and
+  `$03` is a perfectly valid answer. Transience makes it *worse*, not better: a callout is summoned
+  deliberately to answer one question, read once, and acted on, so nobody re-reads it to catch the
+  lie. `draw_hover` now flips clear of the band the same way it already flips off the picture's
+  edge, keeping the callout beside its dot wherever it can.
 - ~~**F-CONFIG-UNKNOWN-KEYS**~~ **CLOSED** in this slice, at both levels. Do not carry it forward.
 
 ## Rulings a successor must not silently reverse
@@ -199,12 +206,28 @@ the owner's screen: the overlay was **erasing glyphs from the CPU chip** at the 
   arm and an author who dutifully declared `draws_yet => false`; and a test passing for an unrelated
   reason — the H32 SAT cache mirrors only 64 entries, so an 80-slot "parse cap" fixture was measuring
   clipping, not the cap.
+- **A green suite cannot distinguish a passing test from a test that asserts a value against
+  itself.** Binding measured ink bounds to the same names as the expected tuple turned an assertion
+  into `assert_eq!(got, got)`; it was caught by **clippy's unused-variable error, not by the test
+  run**, and the scale row it was supposed to verify had until then never been verified at all.
+  Every anti-vacuity technique on this branch — hand-written expectations, two-background opacity
+  detection, opportunity counters — assumes the assertion compares two *independently derived*
+  things, and **that assumption is itself unchecked**. Nothing in a test suite verifies it. Read new
+  assertions for it explicitly.
+- **A removed vacuous assertion can come back in the next edit.** A `left > area.x + area.w / 2`
+  clause — a width claim wearing an anchoring costume — was identified and deleted on this branch,
+  and then *reintroduced by the same author* three commits later in a new anchoring test, where it
+  was again false for a correctly-anchored panel (at px 4 the chip is 588 px of a 700 px picture).
+  Deleting an instance does not teach the shape; only writing the shape down does, which is what
+  this list is for.
 - **Test the *seam*, not just the layers.** Nothing on this branch drew a lens and the overlay into
   the same buffer — no test under `lens/` constructed an `Overlay` at all — so two real bugs shipped
   through a fully green suite, one of them at the **default** window size. Layer-local tests cannot
   see a layer-crossing bug however good they are, and every module involved was individually
   well-tested. `the_overlay_never_extinguishes_a_lens_glyph` closes it; the one-line offsets it
-  forced are the cheap part.
+  forced are the cheap part. It earned its keep immediately: the *first* run after the status-line
+  fix, with the sweep extended to a top-left hover dot, found a third instance nobody had predicted
+  — the `PAUSED` banner garbling the hover callout — in the same run that confirmed the fix.
 - **A follow-up ledger's line anchors rot silently.** Both `main.rs` anchors in this document were
   correct when S2 wrote them and were pushed ~25 lines down by the spine, then carried forward
   unchecked. Same lesson as the provenance one in a new place: **re-resolve an anchor when you copy
@@ -237,6 +260,14 @@ helpers that were second copies of the production formula, so they moved with th
 supposed to catch. A self-inflicted tautology was also caught mid-fix — binding the measured ink
 bounds to the same names as the expected tuple made `assert_eq!(got, got)` — by **clippy's
 unused-variable error, not by the suite**, which is worth remembering about what a green run proves.
+Then, from the reversal round: F-HOVER-UNDER-STATUS re-classified from "accepted" to a bug and
+fixed, on the argument that occlusion and interference are not the same risk; a *fourth* instance of
+the overlay seam surfaced by the extended harness within a minute of the third being fixed; a
+vacuity guard that counted the wrong thing (callouts still sharing the banner's rows — zero by
+construction once the fix landed, so it fired on correct code and had to be re-pointed at *dots
+inside the banner*, an opportunity measure that owes nothing to the code under test); and two
+anchoring tests whose fixtures were too small to exercise what they claimed, so a px-3 leg silently
+measured a degraded chip instead of the register block.
 
 Every evidence-bearing test in the slice carries a mutation line in its commit body — **153 of them**
 across the code commits, including several recorded as *survivors found and closed* rather than as

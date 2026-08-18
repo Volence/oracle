@@ -72,16 +72,16 @@ pub fn draw_cram(c: &mut font::Canvas, area: Rect, px: usize, sw: &[u32; 64]) {
     let cell = SWATCH * px;
     let panel_w = COLOURS * cell + 2 * pad;
     let panel_h = PALETTES * cell + 2 * pad;
-    // Sit clear of the status line (F3), which owns the top-left text row. The band is `overlay`'s
-    // to report rather than ours to re-derive: this used to be a local `LINE_H * px + 2 * pad`, and
-    // the CPU chip's not having its own copy of it is exactly how the chip ended up drawing under
-    // the status line. One definition, two readers.
-    let status_row = crate::overlay::status_row_height(px);
-    if area.w < panel_w + 2 * margin || area.h < panel_h + status_row + 2 * margin {
+    // Sit clear of the status line (F3), which owns the top-left text row. Where that band is, is
+    // `overlay`'s to report rather than ours to re-derive: this used to be a local
+    // `LINE_H * px + 2 * pad`, and the CPU chip's not having its own copy of it is exactly how the
+    // chip ended up drawing *under* the status line. One definition, three readers.
+    let band = crate::overlay::status_band(area, px);
+    if area.w < panel_w + 2 * margin || area.h < panel_h + band.h + 2 * margin {
         return;
     }
     let left = (area.x + margin) as i32;
-    let top = (area.y + margin + status_row) as i32;
+    let top = (band.y + band.h) as i32;
     c.fill_rect(left, top, panel_w, panel_h, 0x0000_0000, font::PANEL_ALPHA);
     for line in 0..PALETTES {
         for col in 0..COLOURS {
@@ -259,6 +259,13 @@ pub struct Hover {
     pub text: String,
     /// The game pixel it describes — the callout is drawn beside it.
     pub at: (u16, u16),
+    /// Whether the overlay's `PAUSED` banner is on screen, which the callout has to draw clear of.
+    ///
+    /// A layout input rather than a fact about the dot, carried on the model for the same reason
+    /// [`cpu::Chip`](crate::lens::cpu::Chip) carries its own `paused`: the draw path has no
+    /// `&System` and no `FrameCtx`, and the alternative is threading a bool through
+    /// [`lens::draw`](crate::lens::draw) that only one arm reads.
+    pub paused: bool,
 }
 
 /// The **panel body** behind the callout: a dark blue-grey rather than the other lenses' black.
@@ -372,10 +379,61 @@ pub fn draw_hover(c: &mut font::Canvas, area: Rect, px: usize, native: (usize, u
     if left + panel_w > area.x + area.w {
         left = a.x.saturating_sub(panel_w + gap).max(area.x);
     }
-    let mut top = a.y + gap;
-    if top + panel_h > area.y + area.h {
-        top = a.y.saturating_sub(panel_h + gap).max(area.y);
-    }
+    // **Vertical placement: near the dot, inside the picture, and clear of the F3 status line.**
+    //
+    // The third clause is not cosmetic. The overlay draws after every lens and its panels are only
+    // `PANEL_ALPHA` opaque, so a callout glyph under the status line is dimmed to about a quarter
+    // and reads as *absent*: `plane A | tile $0A3` becomes `tile $0_3`, which is a perfectly valid
+    // `$03`. That is **interference, not occlusion** — the reader is not told they are missing
+    // something — and it is the same silent wrongness that put the sprite outlines beneath the lens
+    // panels and pushed the CPU chip out of this very band.
+    //
+    // Transience is no defence here, and it is worth saying why the toasts-over-ticker precedent
+    // does not apply: a covered ticker line is *visibly* covered, whereas a callout is summoned
+    // deliberately to answer one question, read once, and acted on. Nobody re-reads a hover tag to
+    // check it against itself.
+    //
+    // Three candidates in order of preference, first fit wins — below the dot, above it, then just
+    // below the band. The first two keep the callout attached to the pixel it describes, which is
+    // the whole point of a callout; the third is the fallback for a dot *inside* the band, where
+    // there is no "near" left and 12 device pixels away beats being unreadable. A picture with room
+    // for none of them draws nothing rather than something wrong, exactly as [`draw_cram`] does.
+    //
+    // **Two things to clear, not one.** The F3 status line is a full-width band; the `PAUSED`
+    // banner is a centred block, and it is only up while the machine is stopped — which is exactly
+    // when somebody is hovering a frozen frame to read it. The banner instance was found by the
+    // cross-layer harness the moment the status-line one was fixed and the sweep reached a
+    // top-left dot, which is the whole argument for having built the harness.
+    let band = crate::overlay::status_band(area, px);
+    let banner = hv
+        .paused
+        .then(|| crate::overlay::paused_banner_rect(area, px))
+        .flatten();
+    // A full rectangle test, not a row test: the banner is centred, so a callout can legitimately
+    // share its rows as long as it does not share its columns. (For the status band `w == area.w`,
+    // so the horizontal clause never separates them and this reduces to the row test it needs.)
+    let clear_of = |top: usize, r: Rect| {
+        left + panel_w <= r.x || r.x + r.w <= left || top + panel_h <= r.y || r.y + r.h <= top
+    };
+    let fits = |top: usize| {
+        top >= area.y
+            && top + panel_h <= area.y + area.h
+            && clear_of(top, band)
+            && banner.is_none_or(|b| clear_of(top, b))
+    };
+    let below_band = band.y + band.h;
+    let below_banner = banner.map_or(below_band, |b| b.y + b.h);
+    let Some(top) = [
+        a.y + gap,
+        a.y.saturating_sub(panel_h + gap),
+        below_band,
+        below_banner,
+        below_band.max(below_banner),
+    ]
+    .into_iter()
+    .find(|t| fits(*t)) else {
+        return;
+    };
     c.fill_rect(
         left as i32,
         top as i32,
@@ -1482,6 +1540,7 @@ mod tests {
             let hv = Hover {
                 text: "AB".to_string(),
                 at,
+                paused: false,
             };
             let buf = render_hover(w, h, HOVER_AREA, px, (320, 224), &hv);
             let got = ink_bounds(&buf, w, BG).unwrap_or_else(|| panic!("{label}: painted nothing"));
@@ -1523,12 +1582,17 @@ mod tests {
             ("2x picture, callout wider than the picture", big, 2, wide),
             ("4x text in a 2x picture", big, 4, "SLOT 12 | TILE $4A0"),
             (
-                "a picture barely wider and taller than the callout",
+                // Narrow enough that a callout wider than the picture clamps and always flips, so
+                // the flipped-left clamp is exercised at every dot — that is what this row is for.
+                // 60 rows rather than 20: the status band claims rows 14..26, and 20 rows cannot
+                // hold the band *and* an 11-row callout anywhere, so at 20 the callout correctly
+                // drew nothing and the row measured nothing.
+                "a narrow picture, callout wider than it is",
                 Rect {
                     x: 10,
                     y: 10,
                     w: 100,
-                    h: 20,
+                    h: 60,
                 },
                 1,
                 wide,
@@ -1540,6 +1604,7 @@ mod tests {
                     let hv = Hover {
                         text: text.to_string(),
                         at: (gx, gy),
+                        paused: false,
                     };
                     let buf = render_hover(w, h, area, px, (320, 224), &hv);
                     let mut any = false;
@@ -1565,6 +1630,205 @@ mod tests {
         }
     }
 
+    /// **The callout never lands in the F3 status line's band, at any dot.**
+    ///
+    /// The overlay draws after every lens and its panels are only `PANEL_ALPHA` opaque, so a glyph
+    /// under the status line is dimmed to about a quarter and reads as *absent* rather than as
+    /// damaged: `plane A | tile $0A3` becomes `tile $0_3`, a perfectly valid `$03`. Interference,
+    /// not occlusion — and a callout is summoned to answer one question, read once, and acted on,
+    /// so nobody catches it.
+    ///
+    /// Swept over every dot rather than probed at a few, because the failure is positional and the
+    /// dots that trigger it are exactly the ones a corner-probe would miss. The counters are the
+    /// vacuity guards: dots whose own row is *inside* the band have to exist, or the band clause is
+    /// never exercised, and something has to have been drawn at all.
+    ///
+    /// `lens/mod.rs`'s cross-layer harness proves the same property end to end against a real
+    /// `Overlay`; this one pins the geometry directly, so a failure says *where* rather than
+    /// *that*.
+    #[test]
+    fn the_callout_never_lands_in_the_status_band() {
+        // The buffer is sized per geometry below (`bw`/`bh`), since these pictures differ in size.
+        for (label, area, px) in [
+            (
+                "the default window",
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 320,
+                    h: 224,
+                },
+                1usize,
+            ),
+            (
+                "the owner's window",
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 896,
+                    h: 672,
+                },
+                3,
+            ),
+            (
+                "a letterboxed picture with a non-zero origin",
+                crate::present::dest_rect(700, 520, 320, 224, Aspect::Integer),
+                2,
+            ),
+        ] {
+            let band = crate::overlay::status_band(area, px);
+            let banner = crate::overlay::paused_banner_rect(area, px);
+            let (bw, bh) = (area.x + area.w + 64, area.y + area.h + 64);
+            let mut drew = 0usize;
+            let mut dots_in_the_band = 0usize;
+            let mut dots_in_the_banner = 0usize;
+            for paused in [false, true] {
+                for gy in 0..224u16 {
+                    for gx in (0..320u16).step_by(31) {
+                        let hv = Hover {
+                            text: "PLANE A | TILE $0A3 | PAL 2 | PRI 1".to_string(),
+                            at: (gx, gy),
+                            paused,
+                        };
+                        let buf = render_hover(bw, bh, area, px, (320, 224), &hv);
+                        let Some((top, bottom, _, _)) = ink_bounds(&buf, bw, BG) else {
+                            continue;
+                        };
+                        drew += 1;
+                        let dot = crate::present::native_rect_to_window(
+                            Rect {
+                                x: usize::from(gx),
+                                y: usize::from(gy),
+                                w: 1,
+                                h: 1,
+                            },
+                            area,
+                            320,
+                            224,
+                        )
+                        .expect("an in-range dot always maps");
+                        if dot.y >= band.y && dot.y < band.y + band.h {
+                            dots_in_the_band += 1;
+                        }
+                        assert!(
+                        bottom < band.y || top >= band.y + band.h,
+                        "{label}, paused={paused}: the callout for dot ({gx},{gy}) sits at rows \
+                         {top}..={bottom}, inside the status band {}..{}",
+                        band.y,
+                        band.y + band.h
+                    );
+                        // The banner is only up while stopped, and it is centred rather than
+                        // full-width, so this is a *rows and columns* claim.
+                        if paused {
+                            if let Some(b) = banner {
+                                let (_, _, left, right) =
+                                    ink_bounds(&buf, bw, BG).expect("it drew, checked above");
+                                let rows = top < b.y + b.h && b.y <= bottom;
+                                let cols = left < b.x + b.w && b.x <= right;
+                                // A dot *inside* the banner is one whose callout certainly had to
+                                // be displaced: the opportunity measure, and a property of the
+                                // fixture rather than of the code under test. Counting callouts
+                                // that still share the banner's rows measures nothing — the fix
+                                // moves them clear of its rows entirely, so that counter was zero
+                                // by construction and this guard fired.
+                                if dot.y >= b.y
+                                    && dot.y < b.y + b.h
+                                    && dot.x >= b.x
+                                    && dot.x < b.x + b.w
+                                {
+                                    dots_in_the_banner += 1;
+                                }
+                                assert!(
+                                    !(rows && cols),
+                                    "{label}: the callout for dot ({gx},{gy}) overlaps the PAUSED \
+                                 banner"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            assert!(drew > 0, "{label}: the sweep never drew a callout at all");
+            assert!(
+                dots_in_the_band > 0,
+                "{label}: no dot in this sweep was inside the band, so the clause above never bit"
+            );
+            assert!(
+                dots_in_the_banner > 0,
+                "{label}: no dot in this sweep landed inside the PAUSED banner, so its clause \
+                 never had anything to displace"
+            );
+        }
+    }
+
+    /// **The callout dodges the `PAUSED` banner only when it would actually hit it**, and only
+    /// while the machine is stopped.
+    ///
+    /// The banner is *centred*, not full width, so a callout beside a dot near the left edge shares
+    /// its rows and none of its columns and has no reason to move. Treating the banner as a
+    /// full-width band — the obvious simplification — would teleport that callout 62 rows away from
+    /// the pixel it describes, which is the one thing a callout must not do. The same goes for
+    /// dodging it while the machine is running, when there is no banner on screen at all.
+    ///
+    /// Both directions are pinned in one fixture: two dots on the same row, one whose columns clear
+    /// the banner and one whose columns do not. The first must stay beside its dot at every run
+    /// state; the second must be pushed below the banner while paused, and stay put while running.
+    /// Without that second half this test would pass on a `draw_hover` that had stopped dodging
+    /// altogether.
+    ///
+    /// Geometry, by hand: at 896x672 the overlay scale is 3, so the banner is 246x78 at (325, 56)
+    /// and the status band is rows 6..42. The blit is 2.8x, so game dot 20 is window row 60 and the
+    /// callout prefers `60 + 4 * 3 = 72`.
+    #[test]
+    fn the_callout_dodges_the_banner_only_when_it_would_hit_it() {
+        let (bw, bh) = (960usize, 720usize);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            w: 896,
+            h: 672,
+        };
+        let px = 3;
+        let banner = crate::overlay::paused_banner_rect(area, px).expect("the banner fits here");
+        assert_eq!(
+            (banner.x, banner.y, banner.w, banner.h),
+            (325, 56, 246, 78),
+            "the fixture's hand-derived banner geometry has moved"
+        );
+
+        let top_of = |gx: u16, paused: bool| {
+            let hv = Hover {
+                text: "AB".to_string(),
+                at: (gx, 20),
+                paused,
+            };
+            let buf = render_hover(bw, bh, area, px, (320, 224), &hv);
+            ink_bounds(&buf, bw, BG)
+                .unwrap_or_else(|| panic!("dot {gx} paused={paused} painted nothing"))
+                .0
+        };
+
+        // Game x 10 -> window column 28; a 45 px callout at 40..85 is nowhere near the banner.
+        for paused in [false, true] {
+            assert_eq!(
+                top_of(10, paused),
+                72,
+                "paused={paused}: a callout clear of the banner's columns left its dot anyway"
+            );
+        }
+        // Game x 120 -> window column 336, squarely inside the banner's 325..571.
+        assert_eq!(
+            top_of(120, false),
+            72,
+            "a callout dodged a banner that is not on screen"
+        );
+        assert_eq!(
+            top_of(120, true),
+            banner.y + banner.h,
+            "a callout that would land on the banner was not pushed below it"
+        );
+    }
+
     /// The panel and the text both reach the glass.
     ///
     /// The floor is the invisible-ink guard every lens draw test carries: text alone can never
@@ -1582,6 +1846,7 @@ mod tests {
         let hv = Hover {
             text: "AB".to_string(),
             at: (10, 10),
+            paused: false,
         };
         let buf = render_hover(w, h, HOVER_AREA, 2, (320, 224), &hv);
         let painted = buf.iter().filter(|p| **p != BG).count();
@@ -1620,12 +1885,16 @@ mod tests {
         let hv = Hover {
             text: "AB".to_string(),
             at: (10, 10),
+            paused: false,
         };
         // (px, left, top, panel_w, panel_h)
         for (px, left, top, panel_w, panel_h) in [
             (1usize, 54usize, 44usize, 15usize, 11usize),
             (2, 58, 48, 30, 22),
-            (4, 66, 56, 60, 44),
+            // px 4's status band is `[area.y + 8, area.y + 56)` and the dot's own row is inside
+            // it, so this row places at the band's bottom edge instead of beside the dot — the
+            // fallback candidate, and the only row here that exercises it.
+            (4, 66, 76, 60, 44),
         ] {
             let buf = render_hover(w, h, HOVER_AREA, px, (320, 224), &hv);
             let (t, b, l, r) =
@@ -1681,8 +1950,14 @@ mod tests {
         let hv = Hover {
             text: "AB".to_string(),
             at: (10, 10),
+            paused: false,
         };
-        for short in 0..11usize {
+        // 27, not 11. The callout's own 11 rows are no longer the whole requirement: at px 1 the
+        // status band owns rows 4..16, and the callout must clear it, so the shortest picture that
+        // can hold one is `16 + 11`. Below that there is nowhere to put a callout that is both
+        // inside the picture and out of the band, and nothing is the right answer — the same call
+        // `draw_cram` makes, and the only one that cannot produce a misread readout.
+        for short in 0..27usize {
             let area = Rect {
                 x: 0,
                 y: 0,
@@ -1692,20 +1967,23 @@ mod tests {
             let buf = render_hover(w, h, area, 1, (320, 224), &hv);
             assert!(
                 buf.iter().all(|p| *p == BG),
-                "a callout was drawn into a picture {short} rows tall, which cannot hold its 11"
+                "a callout was drawn into a picture {short} rows tall, which cannot hold the \
+                 status band's 16 plus its own 11"
             );
         }
+        // The vacuity guard: without it a `draw_hover` that had stopped drawing altogether would
+        // pass the sweep above outright.
         let area = Rect {
             x: 0,
             y: 0,
             w: 320,
-            h: 11,
+            h: 27,
         };
         assert!(
             render_hover(w, h, area, 1, (320, 224), &hv)
                 .iter()
                 .any(|p| *p != BG),
-            "a picture exactly as tall as the callout must still draw it"
+            "a picture with exactly enough room for the band and the callout must draw it"
         );
     }
 }

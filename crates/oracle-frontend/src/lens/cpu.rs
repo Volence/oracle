@@ -240,7 +240,12 @@ fn pad_of(px: usize) -> usize {
 fn top_of(lines: &[String], area: Rect, px: usize, n: usize, paused: bool) -> usize {
     let chip_px = scale_for(n, px);
     let margin = (2 * chip_px).max(4);
-    let mut top = area.y + margin + overlay::status_row_height(px);
+    // The band's own bottom, not `area.y + our margin + its height`. Those two differ whenever the
+    // register block drops a font scale — the chip's margin is then smaller than the overlay's — and
+    // the panel used to overlap the band by two rows at px 3, with only the panel's padding keeping
+    // a glyph out of it. Slack is not a guarantee.
+    let band = overlay::status_band(area, px);
+    let mut top = band.y + band.h;
     if paused {
         if let Some(b) = overlay::paused_banner_rect(area, px) {
             let panel_w = panel_width(lines, area, chip_px, margin);
@@ -720,17 +725,55 @@ mod tests {
             w: 320,
             h: 224,
         };
-        let px = 1;
-        let compact = render(w, h, area, px, &model(&regs(), None, 7, false, false));
-        let expanded = render(w, h, area, px, &model(&regs(), None, 7, false, true));
-        let (ct, cb, _, _) = ink_bounds(&compact, w, BG).expect("the compact chip painted nothing");
-        let (et, eb, _, _) =
-            ink_bounds(&expanded, w, BG).expect("the expanded chip painted nothing");
-        assert_eq!(ct, et, "both forms hang from the same top edge");
-        assert!(
-            eb > cb + 7 * font::LINE_H * px,
-            "the expanded block is not eight rows taller (compact ends {cb}, expanded {eb})"
-        );
+        // **Two scales, and px 3 is the one that bites.** The expanded block draws one font scale
+        // smaller, so its own margin is smaller than the overlay's — and a `top_of` that re-derived
+        // the status band's bottom as `area.y + <its own margin> + status_row_height(px)` then put
+        // the two forms at *different* tops, with the expanded one two rows higher and its panel
+        // reaching back into the band. At px 1 both margins are 4 and the bug is invisible, which
+        // is exactly why this test used to run only there. Measured: it survived.
+        //
+        // Each scale needs a picture that can hold the block at it — at px 3 the expanded form
+        // wants 230 rows, and a 224-row picture correctly degrades to the compact head, which would
+        // make the comparison meaningless rather than wrong.
+        //
+        // The bottoms are written out per row rather than expressed as "eight rows taller": the two
+        // forms are drawn at *different* font scales now, so their heights are
+        // `3 * LINE_H * px + 4 * px` and `11 * LINE_H * (px-1) + 4 * (px-1)`, and the difference is
+        // 64 rows at px 1 but 100 at px 3. A single formula would have to re-derive `scale_for` to
+        // say that, which is the trap this file already learned about helpers.
+        for (px, w, h, area, want_cb, want_eb) in [
+            (1usize, w, h, area, 43usize, 107usize),
+            (
+                3,
+                960,
+                720,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 896,
+                    h: 672,
+                },
+                125,
+                225,
+            ),
+        ] {
+            let compact = render(w, h, area, px, &model(&regs(), None, 7, false, false));
+            let expanded = render(w, h, area, px, &model(&regs(), None, 7, false, true));
+            let (ct, cb, _, _) =
+                ink_bounds(&compact, w, BG).expect("the compact chip painted nothing");
+            let (et, eb, _, _) =
+                ink_bounds(&expanded, w, BG).expect("the expanded chip painted nothing");
+            assert_eq!(ct, et, "px {px}: both forms hang from the same top edge");
+            assert_eq!(
+                (cb, eb),
+                (want_cb, want_eb),
+                "px {px}: the two forms end at ({cb}, {eb}), not ({want_cb}, {want_eb})"
+            );
+            assert!(
+                eb > cb,
+                "px {px}: turning the register block on made the chip no taller"
+            );
+        }
     }
 
     /// A very long symbol name must be truncated, not allowed to run past the panel — `Canvas`
