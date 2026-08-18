@@ -1,6 +1,6 @@
 # Player S3 shipped — five read-only lenses (2026-08-17, overnight)
 
-Branch `player-s3-lenses`, 18 commits `6b54d2b..HEAD` (14 code, 4 plan/handoff docs) on top of S2
+Branch `player-s3-lenses`, 19 commits `6b54d2b^..da62d42` (15 code, 4 plan/handoff docs) on top of S2
 (`docs/2026-08-17-player-s2-config.md`), cut from `743a5b5`.
 Spec: `docs/superpowers/specs/2026-08-16-player-buildout-design.md` §5, §9, §11.
 Plan: `docs/superpowers/plans/2026-08-17-player-s3-lenses.md`.
@@ -39,10 +39,11 @@ preserved now, warnings collapse to one line per category, and a remnant can nev
 key on re-parse.
 
 Gates at merge: fmt clean; clippy `-D warnings` **0 in both feature variants**; frontend
-**224 passed / 0 failed** (default) and **196 passed / 0 failed** (`--no-default-features`), 1
+**225 passed / 0 failed** (default) and **197 passed / 0 failed** (`--no-default-features`), 1
 ignored in each (`write_presentation_screenshots`, needs `ORACLE_SHOT_ROM`); **full workspace suite
 EXIT=0 — 36 legs, 1549 passed, 0 failed, 4 ignored**; release build clean; core diff
-`743a5b5..HEAD -- crates/oracle-core/` **0 bytes**.
+`743a5b5..HEAD -- crates/oracle-core/` **0 bytes**. (Figures as of `da62d42`; the pre-review
+figures were 224/196 across 18 commits.)
 
 > Note for whoever repeats the gate: the plan's literal `git diff m68000-microop-framework..HEAD --
 > crates/oracle-core/` stopped being the right command mid-slice, because `m68000-microop-framework`
@@ -57,12 +58,16 @@ EXIT=0 — 36 legs, 1549 passed, 0 failed, 4 ignored**; release build clean; cor
 Everything in `docs/2026-08-17-player-s1-palette.md` and `docs/2026-08-17-player-s2-config.md` is
 still owed. The owner has now seen the lenses on real glass **once** and reported two bugs — amber
 boxes over empty picture, and the register block eating 41% of the screen — both fixed here
-(`cd6a145`, `8384c45`), so the list below is partly exercised but nowhere near complete.
+(`cd6a145`, `8384c45`). A third, of the same family, came out of the whole-branch review rather than
+the owner's screen: the overlay was **erasing glyphs from the CPU chip** at the default window size
+(`da62d42`). The list below is partly exercised but nowhere near complete.
 
 - toggle each of the five lenses from the palette's LENSES group → each appears, and the toast names
   it (there are **no default hotkeys** — the palette is the only way in this slice);
-- quit and relaunch → the same lens set returns. ✔ **Confirmed working once already** — observed
-  restoring `lenses = cpu_regs,sprites,cram`;
+- quit and relaunch → the same lens set returns. ✔ **Observed firsthand in a live session** by
+  the reviewer, who saw `lenses = cpu_regs,sprites,cram` in `~/.config/oracle/player.conf` after a
+  relaunch. Recorded as an observation with its provenance rather than a bare ✔, so a later reader
+  can tell it from an assumption — the rest of this list has no such artifact behind it;
 - hand-add a junk key to `~/.config/oracle/player.conf`, launch, toggle a lens to force a save, quit
   → **the junk key is still there**. This is the F-CONFIG-UNKNOWN-KEYS reversal on real glass and
   the one item here that protects a user's file rather than a pixel;
@@ -73,7 +78,12 @@ boxes over empty picture, and the register block eating 41% of the screen — bo
 - drag the window to a deliberately **non-integer** size → outlines still land *on* their sprites.
   This is the forward map's entire reason for existing and the one thing no unit test can settle;
 - hover a plane tile, a sprite and the backdrop → the callout names each;
-- pause with every lens off → the CPU chip appears on its own, in amber.
+- pause with every lens off → the CPU chip appears on its own, in amber;
+- **at the default window size**, read the chip's `PC` line character by character against the
+  terminal's own watch log → every glyph is there. The bug this replaces rendered `PC $001234` as
+  `PC $00_234`, which is not a visibly damaged readout, it is a *plausible wrong one*;
+- pause with the register block expanded at the default window size → the `PAUSED` banner and the
+  chip do not touch, and every `D`/`A` register reads as eight hex digits.
 
 ## Registered follow-ups
 
@@ -94,13 +104,27 @@ boxes over empty picture, and the register block eating 41% of the screen — bo
 - **F-PALETTE-SCROLL** (S1, still open) — full scroll UI: truncation indicator, page keys; the
   picker list still paints top-down without scroll. Anchors: `palette.rs` draw break vs `move_sel`,
   and the picker branch of `draw`.
-- **F-PALETTE-HINT** (S1, still open) — the startup banner string is hardcoded (`main.rs:883`);
+- **F-PALETTE-HINT** (S1, still open) — the startup banner string is hardcoded (`main.rs:908`);
   spec §4 wants it derived from the registry. Needs a decision, not just a refactor: the palette's
   own open key is not a registry row.
-- **The non-gamepad deadzone literal** (S2, still open) — a bare `0.5` at `main.rs:364` with no
+- **The non-gamepad deadzone literal** (S2, still open) — a bare `0.5` at `main.rs:389` with no
   compile-time tie to `gamepad::STICK_DEADZONE`. Feature-variant drift risk; commented in place.
 - **Spec-§7 residue** (S2, still open) — no palette commands for aspect/scale yet; in-session hand
   edits to the config file are overwritten by any autosave.
+- **F-CONFIG-COMMENTS (new, registered not fixed).** `Config::serialize` drops comment lines, while
+  the file header it writes says hand edits are fine. Pre-existing S2 behaviour and *not* a
+  regression — but S3 made it far more reachable, because **every lens toggle now schedules a save**,
+  so a user who annotates their config loses the annotations the first time they press a lens
+  command. The unknown-*key* preservation this slice shipped is the same problem's other half, and
+  the same seam solves it. Anchors: `config.rs`'s `parse` (comment lines skipped) and `serialize`
+  (writes known keys plus `unknown`).
+- **F-HOVER-UNDER-STATUS (new, accepted for now).** The hover callout follows the cursor, so with the
+  pointer in the top-left it lands under the F3 status line and is dimmed the same way the CPU chip
+  used to be. Left in the accepted class with the toasts covering the watch ticker — transient,
+  user-driven, gone the moment the mouse moves — where a *fixed* panel silently misreporting a
+  register is not. `the_overlay_never_extinguishes_a_lens_glyph` deliberately hovers a dot in the
+  lower half and says so; if a successor disagrees, the fix is `cpu::top_of`'s shape applied to
+  `video::draw_hover`. Anchor: the hover arm of `lens::draw`.
 - ~~**F-CONFIG-UNKNOWN-KEYS**~~ **CLOSED** in this slice, at both levels. Do not carry it forward.
 
 ## Rulings a successor must not silently reverse
@@ -175,8 +199,22 @@ boxes over empty picture, and the register block eating 41% of the screen — bo
   arm and an author who dutifully declared `draws_yet => false`; and a test passing for an unrelated
   reason — the H32 SAT cache mirrors only 64 entries, so an 80-slot "parse cap" fixture was measuring
   clipping, not the cap.
+- **Test the *seam*, not just the layers.** Nothing on this branch drew a lens and the overlay into
+  the same buffer — no test under `lens/` constructed an `Overlay` at all — so two real bugs shipped
+  through a fully green suite, one of them at the **default** window size. Layer-local tests cannot
+  see a layer-crossing bug however good they are, and every module involved was individually
+  well-tested. `the_overlay_never_extinguishes_a_lens_glyph` closes it; the one-line offsets it
+  forced are the cheap part.
+- **A follow-up ledger's line anchors rot silently.** Both `main.rs` anchors in this document were
+  correct when S2 wrote them and were pushed ~25 lines down by the spine, then carried forward
+  unchecked. Same lesson as the provenance one in a new place: **re-resolve an anchor when you copy
+  it**, or cite a symbol name instead of a line number.
 - **Provenance claims need checking as carefully as behavioural ones.** Three subagent reports
-  carried an attribution that failed on inspection.
+  carried an attribution that failed on inspection, and one over-claim survived into a commit
+  message: `8384c45`'s prose said each half of the CPU-chip fix failed the collision test alone.
+  Reverting only the scale drop leaves 287 px of clearance and it passes. The commit's mutation
+  *table* was right; the sentence around it was not, and the in-code comment has been corrected in
+  place (`da62d42`) rather than the history rewritten.
 
 ## Review-loop record (this slice)
 
@@ -191,11 +229,18 @@ false`) closed by destructuring `Models` so a new field is a compile error at th
 sprite-outline source (SAT → link walk) and its first cap fixture, which was vacuous and produced
 exactly the number it asserted; a PC truncated from the wrong end, invisible to every geometry test;
 and a collision fixture whose symbol was too short, so the test only failed when both halves of the
-fix were reverted together.
+fix were reverted together. Then, from the whole-branch review: the overlay erasing CPU-chip glyphs
+at two window sizes, with no test anywhere able to see it; `margin = (2*px).max(4)` unpinned in
+`cpu.rs` *and* `watch.rs` (hardcoding 4 left all 224 tests green in both), the lesson `1407d07` had
+already learned for `video.rs` and applied to one module of three; and two test-local `margin_of(px)`
+helpers that were second copies of the production formula, so they moved with the bug they were
+supposed to catch. A self-inflicted tautology was also caught mid-fix — binding the measured ink
+bounds to the same names as the expected tuple made `assert_eq!(got, got)` — by **clippy's
+unused-variable error, not by the suite**, which is worth remembering about what a green run proves.
 
 Every evidence-bearing test in the slice carries a mutation line in its commit body — **153 of them**
 across the code commits, including several recorded as *survivors found and closed* rather than as
-clean kills, plus two recorded contamination sweeps re-running earlier commits' mutations with
+clean kills, plus **three** recorded contamination sweeps re-running earlier commits' mutations with
 explicit mtime bumps (all still failed; none had regressed to vacuous).
 
 ## Next
