@@ -1338,12 +1338,17 @@ impl Vdp {
         self.sprite_collision |= collision;
     }
 
-    /// Per-line HINT-counter bookkeeping (recon R7), driven at each line start by the Scanline event.
-    /// Returns `true` on HINT-counter underflow (the caller schedules an HInt for this line):
+    /// Per-line HINT-counter bookkeeping (recon R7), driven at the HInt H anchor (~79% through the
+    /// line, H = $A6 in H40 / $86 in H32 — see [`Vdp::hint_offset`]) by the HInt event, NOT at line
+    /// start. The phase is load-bearing: reg-10 writes earlier in the same line must be visible to
+    /// this line's reload ("writing reg 10 does not load the live counter; the value takes effect at
+    /// the next reload"), which is exactly the S3K/aeon HInt-handler arm-chain idiom — the handler
+    /// re-arms reg 10 mid-line and the reload at this line's anchor must pick it up.
+    /// Returns `true` on HINT-counter underflow (the caller raises the HINT pending latch):
     /// - vblank lines 225..=261 reload the counter from reg 10 (no decrement, no HINT);
     /// - active lines 0..=224 decrement; on underflow the counter reloads from reg 10 and HINT fires
     ///   (so reg10 = N → HINT on lines N, 2N+1, 3N+2, …; reg10 = 0 → every line 0..=224, incl. line 224).
-    pub fn on_line_start(&mut self, line: u16) -> bool {
+    pub fn hint_anchor_tick(&mut self, line: u16) -> bool {
         if (225..=261).contains(&line) {
             self.hint_counter = self.regs[0x0A];
             false
@@ -2077,13 +2082,13 @@ mod tests {
     }
 
     /// Which active lines (0..=224) raise a HINT for a given reg-10 value, using the per-line bookkeeping
-    /// (mirrors the Scanline chain: reload during vblank 225..=261, then step lines 0..=224).
+    /// (mirrors the HInt anchor chain: reload during vblank 225..=261, then step lines 0..=224).
     fn hint_lines(reg10: u8) -> Vec<u16> {
         let mut v = fresh();
         v.regs[0x0A] = reg10;
         // Reload during a vblank line so we enter line 0 with the counter = reg10 (as the chain does).
-        v.on_line_start(261);
-        (0..=224).filter(|&line| v.on_line_start(line)).collect()
+        v.hint_anchor_tick(261);
+        (0..=224).filter(|&line| v.hint_anchor_tick(line)).collect()
     }
 
     #[test]
@@ -2106,16 +2111,46 @@ mod tests {
     fn hint_counter_reloads_during_vblank() {
         let mut v = fresh();
         v.regs[0x0A] = 7;
-        v.on_line_start(261); // vblank reload → counter = 7 entering line 0
+        v.hint_anchor_tick(261); // vblank reload → counter = 7 entering line 0
         assert_eq!(v.hint_counter, 7);
         // Step three active lines to draw the counter down…
         for line in 0..3 {
-            v.on_line_start(line);
+            v.hint_anchor_tick(line);
         }
         assert_eq!(v.hint_counter, 4, "7 → decremented three times");
         // …then a vblank line reloads it from reg 10.
-        v.on_line_start(230);
+        v.hint_anchor_tick(230);
         assert_eq!(v.hint_counter, 7, "reloaded from reg 10 during vblank");
+    }
+
+    /// The underflow reload reads reg 10 live at call time (recon R7: "writing reg 10 does not load the
+    /// live counter; the value takes effect at the next reload") — a reg-10 rewrite between ticks is
+    /// picked up by the next reload, not deferred further. This pins the reload-reads-live-reg10 half of
+    /// the arm-chain contract; the other half — that the tick itself runs at the H anchor (~79% through
+    /// the line), so a mid-line write from an HInt handler lands before this line's reload — is a
+    /// scheduler-phase property pinned at the System level
+    /// (`system::tests::hint_reg10_rewrite_after_line_start_is_seen_by_that_lines_anchor_reload`).
+    #[test]
+    fn hint_reg10_write_before_anchor_is_seen_by_this_lines_reload() {
+        let mut v = fresh();
+        v.regs[0x0A] = 0;
+        v.hint_anchor_tick(261); // vblank reload → counter = 0 entering line 0
+        assert_eq!(v.hint_counter, 0);
+        // Mid-line (before this line's anchor) the HInt handler re-arms reg 10 = K…
+        const K: u8 = 5;
+        v.regs[0x0A] = K;
+        // …then the anchor tick fires (counter was 0 → underflow) AND reloads the fresh K.
+        assert!(v.hint_anchor_tick(0), "underflow fires on this line");
+        assert_eq!(v.hint_counter, K, "reload sees the freshly-written reg 10");
+        // The following K ticks must not fire…
+        for line in 1..=u16::from(K) {
+            assert!(!v.hint_anchor_tick(line), "no fire while counting down");
+        }
+        // …and the (K+1)-th fires (reg10 = K → next fire K+1 lines later).
+        assert!(
+            v.hint_anchor_tick(u16::from(K) + 1),
+            "fires again after K quiet lines"
+        );
     }
 
     #[test]

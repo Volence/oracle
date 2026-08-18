@@ -1016,9 +1016,12 @@ impl System {
     }
 
     /// Deliver a fired scheduler event (recon R7/R12). `deadline` is the event's absolute scheduled mclk (its
-    /// line start, for the Scanline chain). The **Scanline** event self-reschedules every line and drives the
-    /// per-line VDP housekeeping: HINT-counter bookkeeping (an underflow schedules an `HInt` at the pinned H
-    /// anchor), and line 224 schedules the `VInt`. `HInt`/`VInt` delivery sets the VDP's pending latches; the
+    /// line start, for the Scanline chain). The **Scanline** event self-reschedules every line, drives the
+    /// per-line VDP housekeeping, schedules an `HInt` at the pinned H anchor **unconditionally every line**,
+    /// and line 224 schedules the `VInt`. The `HInt` event runs the HINT-counter bookkeeping *at the anchor*
+    /// (recon R7 — the decrement/underflow/reload phase is ~79% through the line, so a reg-10 write earlier
+    /// in the same line is visible to this line's reload; the S3K/aeon arm-chain idiom depends on this) and
+    /// sets the HINT pending latch only on underflow. `VInt` delivery sets the VINT pending latch; the
     /// IPL the CPU sees is always recomputed from `vdp.ipl()` (gated by the enable bits). `FrameEnd` is
     /// housekeeping. The `sink` only matters to a scanline-capture consumer
     /// ([`BusEventSink::wants_scanlines`]); every other sink (including `&mut ()`) leaves this the untouched
@@ -1027,10 +1030,11 @@ impl System {
         match kind {
             EventKind::Scanline => {
                 let line = (deadline / MCLK_PER_LINE) % LINES_PER_FRAME;
-                if self.vdp.on_line_start(line as u16) {
-                    let off = self.vdp.hint_offset();
-                    self.scheduler.schedule(deadline + off, EventKind::HInt);
-                }
+                // Schedule the HInt anchor event unconditionally every line: the counter bookkeeping
+                // itself runs at the anchor (recon R7), not here, so that mid-line reg-10 writes from an
+                // HInt handler are visible to this line's reload (the S3K/aeon arm-chain idiom).
+                self.scheduler
+                    .schedule(deadline + self.vdp.hint_offset(), EventKind::HInt);
                 // Render active lines (0..=223) so the sprite overflow/collision status bits + the R10 masking
                 // carry evolve during normal runs (games poll them). Currency-safe: the sprite flags/carry are
                 // in neither frozen currency, and render output is discarded here — unless the sink opts in
@@ -1066,7 +1070,16 @@ impl System {
                 self.scheduler
                     .schedule(deadline + MCLK_PER_LINE, EventKind::Scanline);
             }
-            EventKind::HInt => self.vdp.raise_hint(),
+            // The HINT-counter decrement/underflow/reload runs HERE, at the pinned H anchor (recon R7) —
+            // NOT at line start — so a reg-10 write earlier in this same line lands before the reload.
+            // The anchor offset is < MCLK_PER_LINE, so dividing the event's own deadline still recovers
+            // the line the anchor belongs to.
+            EventKind::HInt => {
+                let line = (deadline / MCLK_PER_LINE) % LINES_PER_FRAME;
+                if self.vdp.hint_anchor_tick(line as u16) {
+                    self.vdp.raise_hint();
+                }
+            }
             // VInt raises the 68000's vblank IPL *and* asserts the Z80's `/INT` line (ZC14): on the Genesis the
             // same vblank drives both CPUs' vblank interrupts. The Z80 accepts it if its driver has run `EI`.
             EventKind::VInt => {
@@ -1509,6 +1522,53 @@ mod tests {
             s.vdp().vint_pending(),
             "the VInt latch was set by the auto Scanline chain"
         );
+    }
+
+    /// The anchor-phase discriminator for the HINT arm-chain (recon R7, TmEE reload-on-event), pinned
+    /// through the real scheduler: the counter bookkeeping runs at the H anchor (~79% through the line),
+    /// NOT at line start, so a reg-10 rewrite that lands after line L's start but before its anchor is
+    /// visible to line L's underflow reload — the S3K/aeon HInt-handler idiom (the handler re-arms reg 10
+    /// mid-line). Line-start phasing fails exactly here: it reloads the stale 0 at line L's start before
+    /// the write lands, so the pending latch re-fires on every following line instead of staying quiet
+    /// for K lines. (The reload-reads-live-reg10 half of the contract is pinned separately at the Vdp
+    /// level: `vdp::tests::hint_reg10_write_before_anchor_is_seen_by_this_lines_reload`.)
+    #[test]
+    fn hint_reg10_rewrite_after_line_start_is_seen_by_that_lines_anchor_reload() {
+        let mut s = booted(0x0A26);
+        s.vdp_mut().control_write(0x8A00, 0); // reg 10 = 0 → underflow (and reload) every active line
+        let anchor = s.vdp().hint_offset(); // in-line mclk offset of the H anchor (~79% of the line)
+        const L: u64 = 50; // an active line well below 224; L+K+1 stays inside frame 0
+        const K: u16 = 5;
+        // Run into line L: past its start, and provably before its anchor even at worst-case overshoot.
+        s.run_until(L * MCLK_PER_LINE + 100);
+        assert!(
+            100 + OVERSHOOT_SLACK_MCLK < anchor,
+            "test premise: the CPU stopped before line L's anchor"
+        );
+        // Clear the latch set by earlier lines' underflows (the enables are off, so it only latched),
+        // then re-arm reg 10 = K mid-line — the arm-chain write the anchor phase must make visible.
+        s.vdp_mut().acknowledge(4);
+        assert!(
+            !s.vdp().hint_pending(),
+            "latch clear before line L's anchor"
+        );
+        s.vdp_mut().control_write(0x8A00 | K, 0);
+        // Past line L's anchor: the counter was 0 → the underflow fires…
+        s.run_until(L * MCLK_PER_LINE + anchor + 300);
+        assert!(
+            s.vdp().hint_pending(),
+            "line L's anchor fired (counter was 0 at the tick)"
+        );
+        s.vdp_mut().acknowledge(4);
+        // …and the reload picked up the freshly-written K, so lines L+1 ..= L+K stay quiet.
+        s.run_until((L + u64::from(K)) * MCLK_PER_LINE + anchor + 300);
+        assert!(
+            !s.vdp().hint_pending(),
+            "no HINT for K lines after the mid-line re-arm to K"
+        );
+        // The (K+1)-th line after L underflows again (reg10 = K → next fire K+1 lines later).
+        s.run_until((L + u64::from(K) + 1) * MCLK_PER_LINE + anchor + 300);
+        assert!(s.vdp().hint_pending(), "fires again on line L+K+1");
     }
 
     #[test]
