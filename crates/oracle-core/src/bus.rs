@@ -3265,6 +3265,7 @@ mod tests {
             new: 1,
             size: 1,
             via: crate::vdp::VdpVia::Direct,
+            mclk: 0,
         }
     }
 

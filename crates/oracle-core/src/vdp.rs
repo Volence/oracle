@@ -65,6 +65,15 @@ pub enum VdpVia {
 /// 0..80). `size` is 1 for a VRAM byte (VRAM is captured byte-granular, at its single `write_vram_byte`
 /// choke) or 2 for a CRAM/VSRAM word. `old`/`new` are the pre/post values in that width. `via` distinguishes a
 /// direct CPU write from a DMA step.
+///
+/// `mclk` is the instant **the VDP performed this write**, read from the clock its entry point carried (the
+/// [`now_mclk`](Vdp#structfield.now_mclk) shadow). It retires `F-TRACE-VDPWRITE-MCLK`, whose whole content
+/// was that a captured write had no clock of its own and had to borrow the draining CPU step's. Two limits
+/// travel with it, both inherited from the bus rather than introduced here: it is **instruction-granular**
+/// (`MegaDriveBus` freezes the clock for one 68000 instruction — follow-up F-SUBLINE-ACCESSMCLK), and every
+/// word of one DMA burst shares the **transfer's** instant (decision C-6 — follow-up F-SUBLINE-DMASPREAD).
+/// A write driven through an untimed entry point ([`Vdp::data_write`], hand-driven fixtures) carries the
+/// last clock the VDP was given.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, bincode::Encode, bincode::Decode)]
 pub struct VdpWrite {
     pub target: VdpTarget,
@@ -73,6 +82,7 @@ pub struct VdpWrite {
     pub new: u32,
     pub size: u8,
     pub via: VdpVia,
+    pub mclk: u64,
 }
 
 #[derive(Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
@@ -924,6 +934,8 @@ impl Vdp {
                 new,
                 size,
                 via,
+                // The write's own instant, not the draining step's — F-TRACE-VDPWRITE-MCLK (slice 1b).
+                mclk: self.now_mclk,
             });
         }
     }
@@ -3412,6 +3424,7 @@ mod tests {
                 new: 0xBE,
                 size: 1,
                 via: VdpVia::Direct,
+                mclk: 0, // this fixture drives every port at mclk 0
             }
         );
         assert_eq!(
@@ -3423,6 +3436,7 @@ mod tests {
                 new: 0xEF,
                 size: 1,
                 via: VdpVia::Direct,
+                mclk: 0,
             }
         );
         assert!(
@@ -3452,6 +3466,7 @@ mod tests {
                 new: 0x0EEE,
                 size: 2,
                 via: VdpVia::Direct,
+                mclk: 0, // this fixture drives every port at mclk 0
             }
         );
     }
@@ -3583,6 +3598,55 @@ mod tests {
         assert!(
             caps.iter().all(|c| c.target == VdpTarget::Cram),
             "at the CRAM choke, which is the one the sub-line arc needs timed: {caps:?}"
+        );
+    }
+
+    // --- F-TRACE-VDPWRITE-MCLK (slice 1b): the capture carries the write's own instant --------------------
+
+    /// A captured CRAM write reports the clock **it** was performed at, not the clock of whatever the VDP
+    /// last did. The fixture arms at one instant and writes at another, so borrowing the wrong one fails.
+    #[test]
+    fn a_captured_cram_write_carries_the_writes_own_mclk() {
+        const ARMED_AT: u64 = 40 * MCLK_PER_LINE;
+        const WRITTEN_AT: u64 = 100 * MCLK_PER_LINE + 1775;
+
+        let mut v = fresh();
+        arm_cram_write(&mut v, ARMED_AT);
+        v.set_write_capture(true);
+        v.data_write_at(0x0EEE, WRITTEN_AT);
+
+        let caps = v.take_write_captures();
+        assert_eq!(caps.len(), 1, "one word capture for CRAM");
+        assert_eq!(
+            caps[0].mclk, WRITTEN_AT,
+            "the capture carries the write's own instant"
+        );
+        assert_ne!(
+            caps[0].mclk, ARMED_AT,
+            "and not the arming command's, which is the clock it would have borrowed before"
+        );
+    }
+
+    /// **Decision C-6, now visible to a consumer.** Every captured word of one 68k→VDP burst reports the
+    /// transfer's instant — one boundary per burst, not one per word and not an advancing clock.
+    #[test]
+    fn every_captured_dma_word_reports_the_transfers_instant() {
+        const ARMED_AT: u64 = 40 * MCLK_PER_LINE;
+        const TRANSFER_AT: u64 = 100 * MCLK_PER_LINE + 1775;
+
+        let mut v = fresh();
+        arm_cram_write(&mut v, ARMED_AT);
+        v.set_write_capture(true);
+        for w in [0x0EEEu16, 0x0AAA, 0x0666, 0x0222] {
+            v.dma_write_word(w, TRANSFER_AT);
+        }
+
+        let caps = v.take_write_captures();
+        assert_eq!(caps.len(), 4);
+        assert_eq!(
+            caps.iter().map(|c| c.mclk).collect::<Vec<_>>(),
+            vec![TRANSFER_AT; 4],
+            "one burst, one instant (C-6; F-SUBLINE-DMASPREAD is the follow-up that would smear it)"
         );
     }
 }
