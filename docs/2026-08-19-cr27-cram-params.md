@@ -1,6 +1,27 @@
 # CR-27 — the last schematized-and-unserved row gets a shape it can be served against, and params stop being ignored
 
-**Status: DRAFT, unadjudicated, raised 2026-08-19.** Raised against `empyrean/contract/protocol.md` — the two
+**Status: ADJUDICATED 2026-08-19 — ADOPT WITH CHANGES, and the changes are applied.** The ruling is
+`docs/2026-08-19-ruling-cr27.md` (four MUSTs, four SHOULDs; the params-closure centerpiece stressed and
+**HELD**, both inherited corrections verified in both directions, the 48-message harness and the ten-message
+control both reproduced independently). M1 and M4 plus S1 and S2 edited the empyrean amendment; M2, M3, S3
+and S4 edited this document. The §3-§5 blocks below were **re-extracted and re-byte-compared** against the
+amended branch afterwards — CR-25's D-M1 lesson, which CR-26 inherited: a block labelled verbatim stops
+being verbatim the moment its source is edited — and every coordinate in this document was recomputed with
+them rather than adjusted by hand.
+
+**★ One correction changes what this document previously asserted, and it is named rather than quietly
+overwritten.** The CR's §1.2 defect 1, the §6 blockquote's fifth bullet, the `write_cram` fragment
+`$comment` and the §11.17 defect cell all said that a server answering **`{}`** would have passed every gate
+this catalog has. That is **false**, and it was falsifiable by this CR's own control: a literal `{}` is
+refused at **both** revisions, because the result pulls `replyFields` in through its `allOf` (requiring
+`droppedEvents`) and the stamp requires `frame`/`mclk`/`running`. What actually passed is a reply carrying
+**the envelope fields and nothing else** — no `cramAddr`, no `value` — which is precisely what harness case
+16 sent all along, so the execution was right and only the prose was wrong. The underlying defect is
+untouched and still the reason for 27a: the result declared no `required`, so the two keys the row exists to
+carry were optional. In a register whose named failure mode is true-sounding claims cited later as settled
+fact, that sentence could not stand in normative text.
+
+**Originally raised 2026-08-19 as DRAFT, unadjudicated.** Raised against `empyrean/contract/protocol.md` — the two
 CRAM rows at `protocol.md:1049-1050`, catalogued in the commit that introduced that file and never served —
 and lands as amendment **§11.17**. Three parts, one sitting. Two of them are a **specification pass on rows
 that already exist**: no method is invented, no key is renamed, no shape is redesigned. The third is a
@@ -113,7 +134,7 @@ The fragment, verbatim from `bus-protocol.schema.json:723-742` at `d72513c`:
 
 | # | Defect | Why it is load-bearing |
 |---|---|---|
-| 1 | **The result declares no `required`.** | §8 item 20's closure is `unevaluatedProperties: false`, which catches a **surplus** key and says nothing about a **missing** one. A `write_cram` returning `{}` passed the gate — on the one row whose entire job is to confirm where the write landed. Verified by execution, not by reading: the empty reply is **accepted** by the pre-amendment fragment and **refused** by the amended one (§6's control). Every CR-era result fragment declares `required` — `read`'s at `:637`, `write_memory`'s at `:716`, `pixel_attribution`'s, `sprites`', `scanlines`'. |
+| 1 | **The result declares no `required`.** | §8 item 20's closure is `unevaluatedProperties: false`, which catches a **surplus** key and says nothing about a **missing** one — so a `write_cram` reply carrying **the envelope fields and nothing else**, with no `cramAddr` and no `value`, passed the gate, on the one row whose entire job is to confirm where the write landed. Verified by execution, not by reading: that reply is **accepted** by the pre-amendment fragment and **refused** by the amended one (§6's control, case 16). *(A **literal** `{}` was refused at both revisions — the result pulls `replyFields` in through its `allOf`, which requires `droppedEvents`, and the stamp requires `frame`/`mclk`/`running`. An earlier draft of this CR, and of the amendment, said `{}`; that sentence was falsifiable by this CR's own control and is corrected here and at all three contract sites per ruling M1. The defect is unchanged: the two keys the row exists to carry were optional.)* Every CR-era result fragment declares `required` — `read`'s at `:637`, `write_memory`'s at `:716`, `pixel_attribution`'s, `sprites`', `scanlines`'. |
 | 2 | **`raw` is an unbounded integer.** | CRAM holds a 9-bit colour; the core masks with `0x0EEE` (`crates/oracle-core/src/vdp.rs:819`). The fragment permitted `raw: 70000`, which a server must then either refuse by a rule the schema did not carry, or silently mask — and silent mutation is the exact shape of the defect §2.5 exists to close. |
 | 3 | **The `r`/`g`/`b`-versus-`raw` alternation is enforced nowhere.** | The §6 row spells it as an alternation and the fragment expressed none of it: both at once passed, a lone `r` passed, and neither-of-the-two passed. `write_memory`'s fragment is the house precedent for exactly this shape and spells it mechanically (`:699-704`: a `oneOf` over `bytes`/`value` plus a `dependentRequired` tying `value`↔`width`), with CR-24 setting the standard in as many words: the tie is *"enforced mechanically by an `if`/`then` in `result.allOf` rather than left to prose"* (`protocol.md:2547`). |
 
@@ -227,10 +248,10 @@ not advertise the methods. The demand doc draws the conclusion this CR adopts as
 ## 3. The proposed §6 text (verbatim, as it landed on the branch)
 
 Four edits, all in §6. **Every block below was extracted mechanically from `cram-params-amendment` at
-`39628e2` and never retyped** — CR-25's D-M1 lesson, which CR-26 inherited: a block labelled verbatim stops
+`d710012` and never retyped** — CR-25's D-M1 lesson, which CR-26 inherited: a block labelled verbatim stops
 being verbatim the moment its source is edited.
 
-**(a) The two rows** — `contract/protocol.md:1113-1114` on the branch:
+**(a) The two rows** — `contract/protocol.md:1117-1118` on the branch:
 
 ```markdown
 | `emulator/read_cram` | `line`? (0–3) | `line`?, `palette[]{line,index,cramAddr,raw,r,g,b}` |
@@ -238,7 +259,7 @@ being verbatim the moment its source is edited.
 ```
 
 **(b) A normative blockquote for the pair**, inserted directly after the `emulator/scanlines` blockquote and
-before `### object / player decoders` — `contract/protocol.md:1283-1345`:
+before `### object / player decoders` — `contract/protocol.md:1287-1349`:
 
 ```markdown
 > **`emulator/read_cram` / `emulator/write_cram` — the palette, read and poked** *(specified
@@ -285,9 +306,9 @@ before `### object / player decoders` — `contract/protocol.md:1283-1345`:
 >
 > - **The reply echoes `line` and `index` beside `cramAddr` and `value`, and all four are REQUIRED.**
 >   `value` is the word **actually stored**. Before this amendment the fragment required nothing at all,
->   and §8 item 20's closure catches a surplus key while saying nothing about a missing one — so a server
->   answering `{}` would have passed every gate this catalog has, on the one row whose entire purpose is
->   confirming where a write went.
+>   and §8 item 20's closure catches a surplus key while saying nothing about a missing one — so a reply
+>   carrying nothing beyond the envelope fields, with no `cramAddr` and no `value`, passed every gate this
+>   catalog has, on the one row whose entire purpose is confirming where a write went.
 >
 > - **`write_cram` requires a paused machine; `read_cram` is a pure read.** The write is named in §6's
 >   run-control state rule (`-32005`, `data.reason = "machineRunning"`). The read is not, and a server
@@ -306,7 +327,7 @@ before `### object / player decoders` — `contract/protocol.md:1283-1345`:
 >   §11.15's own reason for putting a permanent property in this document instead.
 ```
 
-**(c) The run-control state rule gains `write_cram`** — `contract/protocol.md:840-854`, the changed list and
+**(c) The run-control state rule gains `write_cram`** — `contract/protocol.md:844-858`, the changed list and
 the added sentences shown whole so the reason travels with the name:
 
 ```markdown
@@ -327,13 +348,13 @@ the added sentences shown whole so the reason travels with the name:
 > which is a better argument for the gate than symmetry.
 ```
 
-**(d) `emulator/write_memory` gains `disp`** — the row at `contract/protocol.md:900`:
+**(d) `emulator/write_memory` gains `disp`** — the row at `contract/protocol.md:904`:
 
 ```markdown
 | `emulator/write_memory` ← `write` | `addr`\|`symbol`, `disp`? (≥0, `symbol` only); `bytes`\|(`value`+`width` 1\|2\|4); payload ≤ `limits.maxWriteLen` bytes | `addr`, `len` |
 ```
 
-and a paragraph appended to that method's existing blockquote — `contract/protocol.md:963-974`:
+and a paragraph appended to that method's existing blockquote — `contract/protocol.md:967-978`:
 
 ```markdown
 > **`disp`** *(added 2026-08-19, §11.17)* is an optional non-negative byte displacement added to the
@@ -358,7 +379,7 @@ This is the CR's one new rule, and it is the item most likely to attract a rulin
 mechanical fragment fixes deliberately, on the recon's §2 recommendation (A): they are one sitting's work,
 they all come from one client's report, and bundling gets 27c read.
 
-**§2.5**, inserted after §2.4 and before §3 — `contract/protocol.md:561-606`:
+**§2.5**, inserted after §2.4 and before §3 — `contract/protocol.md:561-610`:
 
 ```markdown
 ### 2.5 Request params are closed
@@ -372,7 +393,11 @@ method accepts, so the refusal is also the fix — the shape §5 already asks fo
 and name the fix"*). `error.data.unknownParams` carries the offending keys as an array of strings, because
 a client acting on *which* key was rejected needs a typed field rather than prose (§2.4 rule 3: any
 consequence a client must act on needs its own typed key). The refusal **precedes any effect**: a write
-refused for an unknown param has written nothing.
+refused for an unknown param has written nothing. The closure binds against the fragment **at the revision
+the server implements**, so a server part-way through §9's mechanical completion — serving a catalogued
+method whose fragment is not yet written — has nothing to close against and this rule does not reach it;
+that method is already outside §8 item 20 for the same reason, and the fragment is what brings both rules
+with it.
 
 **The closure is at the top level of `params`** — item 20's own scope, for its reason — and the schema
 carries it mechanically: every `methods.<name>.params` object in
@@ -409,7 +434,7 @@ unknown flags"* keeps its full meaning there.
 > it silently succeeded.
 ```
 
-**§8 item 22** — `contract/protocol.md:1670-1681`:
+**§8 item 22** — `contract/protocol.md:1674-1685`:
 
 ```markdown
 Added by the 2026-08-19 amendment (§11.17):
@@ -431,11 +456,11 @@ Added by the 2026-08-19 amendment (§11.17):
 ## 5. The §11.17 entry (verbatim)
 
 Appended at end of `protocol.md`, which is 2724 lines on `main` at `d72513c`. §3's and §4's insertions push
-everything below them down by **141** lines — counted mechanically against the amended branch (§11.15's own
-heading moves `:2627` → `:2768`), not adjusted by hand — which is why the entry begins at `:2867` in a file
-that is 2977 lines there.
+everything below them down by **145** lines — counted mechanically against the amended branch (§11.15's own
+heading moves `:2627` → `:2772`), not adjusted by hand — which is why the entry begins at `:2871` in a file
+that is 2988 lines there.
 
-**Byte-identical to `contract/protocol.md:2867-2977` on `cram-params-amendment` at `39628e2`.**
+**Byte-identical to `contract/protocol.md:2871-2988` on `cram-params-amendment` at `d710012`.**
 
 ```markdown
 ### 11.17 — 2026-08-19: the last schematized-and-unserved row, and the params dropped on the floor
@@ -459,7 +484,7 @@ different halves and only the second is a footgun.
 
 | Item | The defect | What this amendment changed |
 |---|---|---|
-| **CR-27a — `emulator/write_cram`'s fragment** | The fragment is from the **original Phase-1 contract commit** and no change request had touched it since, so it predates §11.5's result-key pass, §2.4's conventions and §8 item 20's closure — and it showed. Its `result` declared **no `required`**, and item 20's `unevaluatedProperties: false` catches a *surplus* key while saying nothing about a *missing* one: a server answering `{}` passed every gate this catalog has, on the one row whose entire job is to report where a write landed. `raw` was an **unbounded integer** against a chip that holds nine bits, so the fragment permitted a value the server must then either refuse by a rule the schema did not carry or silently mask. And the `r`/`g`/`b`-versus-`raw` alternation the §6 row states as an alternation was enforced **nowhere**: both at once passed, and so did a lone `r`. | The `result` requires **all four** keys — `line` and `index` **echoed** beside `cramAddr` and `value`, on the `read` echo precedent, because `cramAddr` alone makes a client recompute its own request to confirm it. `raw` is bounded to `0x0EEE` in the schema, with the exact-mask rule in prose and the `$comment`: bits outside the mask are **`-32602`, refused and never masked**, the coarser mechanical bound standing in the same relation to it as `write_memory`'s `value` bound does to must-fit-`width`. The alternation becomes mechanical — a `oneOf` over the triple and `raw` plus a `dependentRequired` tying `r`/`g`/`b` to each other — which refuses all four bad spellings (both, neither, partial triple, partial triple beside `raw`) without a sentence being consulted. The fragment gains its `$comment`, and declares `caveat` **absent** on the `sprites`/`write_memory` precedent. No key is renamed and no shape is redesigned: `line`/`index`/`r`/`g`/`b`/`raw` → `cramAddr`/`value` was the right surface and remains it. |
+| **CR-27a — `emulator/write_cram`'s fragment** | The fragment is from the **original Phase-1 contract commit** and no change request had touched it since, so it predates §11.5's result-key pass, §2.4's conventions and §8 item 20's closure — and it showed. Its `result` declared **no `required`**, and item 20's `unevaluatedProperties: false` catches a *surplus* key while saying nothing about a *missing* one: a reply carrying nothing beyond the envelope fields — no `cramAddr`, no `value` — passed every gate this catalog has, on the one row whose entire job is to report where a write landed. (A literal `{}` was refused at both revisions, by `replyFields` and the stamp; what was optional were the two keys the row exists to carry.) `raw` was an **unbounded integer** against a chip that holds nine bits, so the fragment permitted a value the server must then either refuse by a rule the schema did not carry or silently mask. And the `r`/`g`/`b`-versus-`raw` alternation the §6 row states as an alternation was enforced **nowhere**: both at once passed, and so did a lone `r`. | The `result` requires **all four** keys — `line` and `index` **echoed** beside `cramAddr` and `value`, on the `read` echo precedent, because `cramAddr` alone makes a client recompute its own request to confirm it. `raw` is bounded to `0x0EEE` in the schema, with the exact-mask rule in prose and the `$comment`: bits outside the mask are **`-32602`, refused and never masked**, the coarser mechanical bound standing in the same relation to it as `write_memory`'s `value` bound does to must-fit-`width`. The alternation becomes mechanical — a `oneOf` over the triple and `raw` plus a `dependentRequired` tying `r`/`g`/`b` to each other — which refuses all four bad spellings (both, neither, partial triple, partial triple beside `raw`) without a sentence being consulted. The fragment gains its `$comment`, and declares `caveat` **absent** on the `sprites`/`write_memory` precedent. No key is renamed and no shape is redesigned: `line`/`index`/`r`/`g`/`b`/`raw` → `cramAddr`/`value` was the right surface and remains it. |
 | **CR-27b — `emulator/read_cram`'s first fragment** | The row was catalogued one column wide — `line`? (0–3) → `palette[]` — and **had no schema fragment at all**, which the requester did not know: they read both methods as schematized, and the practical consequence is that this half cost a fragment and the other did not. The row did not say what an element of `palette[]` **is** — a hex CRAM word, an `{r,g,b}` of stored components, or a displayed 0–255 triple are three different answers, and `pixel_attribution`'s fragment already warns about confusing the last two — nor what omitting `line` returns. | A fragment, **33 → 34**, and a row that answers both questions. An element is `{line, index, cramAddr, raw, r, g, b}`: the **stored** colour, in `write_cram`'s own spelling, so a read entry hands straight back — never the displayed one, which is `pixel_attribution`'s `rgb` and differs whenever shadow/highlight is not `normal`. **No 8-bit expansion is emitted**, deliberately: this catalog has never pinned an intensity ramp and the two servers that compute one disagree at three of the eight levels. Omitting `line` returns all 64 entries with `line` **absent** from the reply; giving it returns 16 with `line` **echoed**; the echo and the length are tied in both directions by the fragment (`read`'s region-present-iff-`bus` precedent). `palette` is **structurally** bounded and therefore takes neither a truncation flag nor a cursor (§2.4 clause (d)). A pure read, ungated. |
 | **CR-27c — the params policy** | `emulator/write_memory` accepted `{symbol: "Player_1", offset: 2, …}` and `{symbol: "Player_1", disp: 2, …}`, **succeeded both times**, wrote `Player_1`+0 both times, and answered with an address the caller had not asked for; `{symbol: "Player_1+2"}` was correctly refused. Unknown top-level params were dropped on the floor bus-wide — no `params` fragment set `additionalProperties: false`, and no handler on the bus checked a key set — so the published schema *permitted* the surplus on every method and a server that refused one would have been stricter than the artifact D14 makes the wire authority. The requester's own framing is what reshaped the fix: a `disp` param and reject-unknowns answer **different halves**, and the footgun half is what bit them. | **§2.5** (new) makes the rejection normative bus-wide: an undeclared top-level `params` key is `-32602`, naming the offending key **and** the accepted set in `message`, with `error.data.unknownParams` carrying the keys as a typed array, and refused **before any effect**. **§8 item 22** puts it on the conformance checklist. The closure is spelled mechanically in the **published** schema — every `methods.<name>.params` gains `unevaluatedProperties: false` — which is where this differs from item 20, and the reasoning is item 20's own with the subjects reversed. **`initialize` is exempt**, deliberately. And the ergonomic half ships beside it: `emulator/write_memory` gains an optional **`disp`**, non-negative, valid only with `symbol`, mirroring the `{symbol, symbolDisp}` pair a read reply already returns — D7's round trip made literal — with `{addr, disp}` refused mechanically. |
 
@@ -497,11 +522,13 @@ it on glass with nothing stepping on it — which is exactly the shape the gate 
 requester asked for.
 
 **★ What does not change.** The six param names and the two reply keys `write_cram` was catalogued with: no
-rename, no redesign, and the legacy MCP's two tool rows keep their existing parameter schemas, which already
-match this row. The count of methods a server advertises is a server's business (D4), and this document
-still maintains none. `read_cram`'s `line` param, its range and its optionality. `pixel_attribution`'s
-`rgb`, `cramIndex` and `cramAddr`, and `emulator/read`'s `space: "cram"`, which remain the other ways to ask
-about a palette entry and are unmoved. Every result closure in §8 item 20, which is untouched by §2.5 —
+rename, no redesign, and the legacy MCP's two tool rows keep their existing parameter schemas, whose **key
+names and JSON types** already match this row — though not its new constraints, so that client will forward
+an over-mask `raw` or a partial triple and receive the bus's `-32602` rather than refusing them itself,
+which is graceful and is not the same as matching. The count of methods a server advertises is a server's
+business (D4), and this document still maintains none. `read_cram`'s `line` param, its range and its
+optionality. `pixel_attribution`'s `rgb`, `cramIndex` and `cramAddr`, and `emulator/read`'s
+`space: "cram"`, which remain the other ways to ask about a palette entry and are unmoved. Every result closure in §8 item 20, which is untouched by §2.5 —
 results stay open in the published artifact for D5's reason. And **§11.10's postscript sentence recording
 the count mismatch stays as written**: an amendment log is a record, not live text, which is the treatment
 §11.14 gave the same class of sentence.
@@ -541,10 +568,15 @@ hits and `seen` unmoved — which is the direct pin of the standing property abo
 catch a later simplification into the guest write path; and **(6)** the two methods read back through each
 other and through a third instrument — `write_cram`'s `cramAddr`/`value` agree with the same entry from
 `read_cram` **and** with `emulator/read` at `space: "cram"` — against a CRAM state the test itself
-established, since an assertion that still passes when the handler returns a fixed palette is vacuous.
-Clauses 1–6 are executable in the reference repo. The demand-side protocol is the requester's own offer,
-taken: **they point their probe at the branch before it merges**, and the property under test is the one
-they named — *"advertising a method is shipping it"*. Their client's feature detection runs off the
+established, since an assertion that still passes when the handler returns a fixed palette is vacuous; and
+**(7)** the schema's top-level `description` states a fragment count **re-derived by parsing the merged
+`methods` object**, in the same run as clause 1 — never carried over from either amendment branch, and 37
+once §11.16 has landed beside this entry. This clause exists because two amendment branches recount the same
+sentence in the same window: git conflicts at that line, but the *resolution* is a human choosing a number,
+and this register's founding count defect (§11.10, *"a schema count wrong on both ends"*) is exactly that
+shape. A count is parsed or it is wrong. Clauses 1–7 are executable in the reference repo. The demand-side
+protocol is the requester's own offer, taken: **they point their probe at the branch before it merges**,
+and the property under test is the one they named — *"advertising a method is shipping it"*. Their client's feature detection runs off the
 advertised list **live**, so the acceptance is that both methods appear in `initialize`'s `methods` and light
 up in their editor with **no coordination**, that the probe which succeeded silently now refuses by name, and
 that a symbol-relative write lands where they meant it to. That protocol is not a suite gate — the client is
@@ -614,7 +646,7 @@ the reason CR-26 gave: a transcribed count is a third answer that has to be kept
 
 ```json
     "emulator/write_cram": {
-      "$comment": "protocol.md §6 (VRAM / CRAM / layers), amended 2026-08-19 by §11.17 (CR-27). This fragment came from the ORIGINAL Phase-1 contract commit and no CR had touched it since: it predates §11.5's result-key pass, §2.4's conventions and §8 item 20's closure, and it showed. Three defects are now mechanical. (1) The result declared no `required`, and item 20's closure catches a SURPLUS key while saying nothing about a MISSING one — so a reply of {} passed the gate, on a row whose whole job is to confirm where the write landed. (2) `raw` was an unbounded integer against a 9-bit chip. (3) The r/g/b-vs-raw alternation the §6 row states was enforced nowhere: both at once passed, and so did a lone `r`. The alternation is now a oneOf plus a dependentRequired over the triple (emulator/write_memory's bytes-XOR-value+width precedent), and the result requires all four keys, `line`/`index` echoed so a reply is self-describing — cramAddr alone makes a client recompute its own request to confirm it (the `read` echo precedent). Requires a paused machine per the §6 run-control state rule (-32005 machineRunning). Prose-only, because JSON Schema's integer keywords cannot express it: a `raw` carrying bits outside the 0x0EEE mask is -32602, REFUSED and never masked — the coarser bound below is the mechanical half, exactly as write_memory's `value` is bounded 0..2^32-1 with must-fit-`width` left to the server. caveat is declared ABSENT, not omitted by accident (the sprites and write_memory precedent): the poke's two standing properties — never offered to the watch surface, and no repaint of an already-drawn frame — are stated once in §6 rather than repeated on every reply (§2.4's advisory against the constant caveat, and §11.15's own reason for stating a standing property in the document).",
+      "$comment": "protocol.md §6 (VRAM / CRAM / layers), amended 2026-08-19 by §11.17 (CR-27). This fragment came from the ORIGINAL Phase-1 contract commit and no CR had touched it since: it predates §11.5's result-key pass, §2.4's conventions and §8 item 20's closure, and it showed. Three defects are now mechanical. (1) The result declared no `required`, and item 20's closure catches a SURPLUS key while saying nothing about a MISSING one — so a reply carrying nothing beyond the envelope fields, with no cramAddr and no value, passed the gate, on a row whose whole job is to confirm where the write landed. (A LITERAL {} was refused by both revisions, since replyFields and the stamp are required through the allOf; the defect was that the two write-confirming keys were optional.) (2) `raw` was an unbounded integer against a 9-bit chip. (3) The r/g/b-vs-raw alternation the §6 row states was enforced nowhere: both at once passed, and so did a lone `r`. The alternation is now a oneOf plus a dependentRequired over the triple (emulator/write_memory's bytes-XOR-value+width precedent), and the result requires all four keys, `line`/`index` echoed so a reply is self-describing — cramAddr alone makes a client recompute its own request to confirm it (the `read` echo precedent). Requires a paused machine per the §6 run-control state rule (-32005 machineRunning). Prose-only, because JSON Schema's integer keywords cannot express it: a `raw` carrying bits outside the 0x0EEE mask is -32602, REFUSED and never masked — the coarser bound below is the mechanical half, exactly as write_memory's `value` is bounded 0..2^32-1 with must-fit-`width` left to the server. caveat is declared ABSENT, not omitted by accident (the sprites and write_memory precedent): the poke's two standing properties — never offered to the watch surface, and no repaint of an already-drawn frame — are stated once in §6 rather than repeated on every reply (§2.4's advisory against the constant caveat, and §11.15's own reason for stating a standing property in the document).",
       "params": {
         "type": "object",
         "unevaluatedProperties": false,
@@ -660,6 +692,15 @@ the reason CR-26 gave: a transcribed count is a third answer that has to be kept
 - **`caveat` is declared ABSENT on both rows**, not omitted by accident — the `sprites` and `write_memory`
   precedent, and §7 decision 1 for why this departs from the recon.
 
+**One thing the closure does not do, stated because this CR first got it wrong.** `unevaluatedProperties:
+false` catches a surplus key and is blind to a missing one — that is the whole reason defect 1 exists — but
+it does **not** follow that a pre-amendment `write_cram` could return a literal `{}`. It could not: the
+result pulls `replyFields` in through its `allOf`, so `droppedEvents` and the stamp's three fields are
+required at both revisions. What passed was a reply carrying **those envelope fields and nothing else**,
+which is exactly what harness case 16 sends and what the control shows flipping. The distinction is the
+difference between a claim that survives execution and one that does not, and ruling M1 rejected the
+weaker sentence from normative text before it could be cited as settled fact.
+
 **And one bound the schema cannot express, disclosed rather than glossed.** `raw` is bounded `0 … 3822`
 (`0x0EEE`), which is the mechanical half; the exact rule is that **bits outside the mask are `-32602`,
 refused and never masked**, and JSON Schema's integer keywords cannot say that. It is carried in the row
@@ -686,7 +727,7 @@ validated against the fragments — **19 accepts, 29 refusals, 0 mismatches**:
 | 10-11 | a component over 7; a missing `line` | **refuse** ×2 |
 | 12 | an unknown key (`offset`) — §2.5's closure on this fragment | **refuse** |
 | 13 | `raw: 1` — inside the bound, outside the mask: the schema accepts and the **server** refuses (the disclosed gap, tested in the direction it actually behaves) | accept |
-| 14-16 | `write_cram` result: happy; missing `value`; the pre-amendment hole, an empty reply | accept, **refuse**, **refuse** |
+| 14-16 | `write_cram` result: happy; missing `value`; **the pre-amendment hole — a reply carrying the envelope fields and nothing else** | accept, **refuse**, **refuse** |
 | 17-18 | §8 item 20's test-time closure over `write_cram`'s result: happy; happy + one surplus key | accept, **refuse** |
 | 19-22 | `read_cram` params: omitted `line`; `line: 2`; `line: 4`; an unknown key | accept, accept, **refuse**, **refuse** |
 | 23-24 | `read_cram` result: one line echoed with 16 entries; four lines, no echo, 64 entries | accept, accept |
@@ -705,7 +746,7 @@ validated against the fragments — **19 accepts, 29 refusals, 0 mismatches**:
 **And an anti-vacuity control, because a gate nobody has watched reject is a gate nobody has tested.** Ten of
 those messages were replayed against the **pre-amendment** schema at `d72513c`. **All ten were accepted
 there.** Nine flip to refusal under the amendment — the four bad colour spellings, `raw` over range, the
-unknown key, the empty result, the `pause` surplus, the `read` misspelling, and the probe itself — and the
+unknown key, the envelope-only result, the `pause` surplus, the `read` misspelling, and the probe itself — and the
 tenth, `{symbol, disp, …}`, stays accepted: before, it was accepted **by silence**; now it is accepted **by
 declaration**. That single pair is the whole of 27c's argument in two lines.
 
@@ -796,8 +837,18 @@ engine's name; the recon's phrasing is cited as the recon's.
 1. **The six param names and the two reply keys `write_cram` was catalogued with.** No rename, no redesign.
    The legacy MCP's two tool rows keep their parameter schemas — `read_cram`: `line` only; `write_cram`:
    `line`,`index`,`r`,`g`,`b`,`raw`, required `["line","index"]` (`oracle_mcp.py:801-847`) — and they match
-   this row after the amendment exactly as they matched it before, which is a **test obligation** for the
-   implementation slice: the MCP must not accept a call the bus refuses.
+   this row's **key names and JSON types** exactly as they did before. *Qualified per ruling S1, because
+   "match" was doing quiet work:* they do **not** carry the amended fragment's constraints. That tool
+   declares `raw` as an unbounded integer (`:841-844`) and expresses no `r`/`g`/`b`↔`raw` alternation, and
+   the forwarder passes arguments verbatim (`args = dict(arguments or {})` at `:931`, forwarded at `:967`),
+   so after the amendment it will happily forward an over-mask `raw` or a partial triple and the refusal
+   arrives as the bus's `-32602` rather than client-side. Graceful, and not the same as matching. The
+   **test obligation this leaves the implementation slice** is therefore mechanical rather than a reading:
+   sweep **every** MCP tool's declared property set against its method's fragment key set **by parse** —
+   both sides are machine-readable — which catches any tool prop the bus would now newly refuse and, in the
+   same pass, discharges 27c's blast-radius claim for the thirty non-CRAM methods **by enumeration** rather
+   than by the recon's `write_memory`-only spot check. It is an implementation obligation and not an
+   adoption clause because it runs against `oracle/`'s Python, not the reference repo.
 2. **`read_cram`'s `line` param**, its range and its optionality.
 3. **Every result closure in §8 item 20.** §2.5 governs params only; results stay open in the published
    artifact, for D5's reason, and item 20's harness-side closure is untouched.
@@ -856,7 +907,16 @@ entry's closing paragraph is the normative text; this is the same six clauses wi
    passes when the handler returns a fixed palette is vacuous (the `cram_rgb_matches_cram_decoded`
    cross-instrument precedent, `render.rs:1917`).
 
-Clauses 1–6 are executable in the reference repo. Two consequences ride with them and are checkable in the
+7. **The schema's fragment count is re-derived by parsing, not carried across the merge.** The top-level
+   `description`'s number is recomputed from the merged `methods` object in the same run as clause 1 — **37**
+   once §11.16 has landed beside §11.17, and never the 34 or the 36 either amendment branch states on its
+   own. *Why this is a gate and not a note (ruling M4):* the two branches edit the same sentence and the same
+   end of file, so git conflicts at both coordinates and the mis-merge cannot be textually silent — but
+   resolving a conflict is a human choosing a number, and nothing in either repo parses that number today.
+   §11.10's founding defect was *"a schema count wrong on both ends"*. One `json.load` and a string compare,
+   run last and not trusted first.
+
+Clauses 1–7 are executable in the reference repo. Two consequences ride with them and are checkable in the
 same run: the advertised count moves **32 → 34**, and the harness's schematized-but-not-advertised set
 (`schema_conformance.rs:162-168`) becomes **empty**, which closes §11.10's count-mismatch sentence in fact
 while leaving it standing as a record.
@@ -902,7 +962,8 @@ Five items, named rather than folded in.
   is unpinned — and the finding is bigger than the row that surfaced it: **`pixel_attribution.rgb` and
   `emulator/scanlines`' `rgb` are already on the wire and already depend on it.** The catalog names the ramp
   exactly once, in `pixel_attribution`'s own description (*"run through the intensity ramp"*,
-  `bus-protocol.schema.json:922`), and pins no value anywhere — verified by grep across both contract files.
+  `bus-protocol.schema.json:922`), and pins no value anywhere — verified by grep: `ramp` hits that one
+  string, and `protocol.md` names it nowhere at all.
   Two conformant servers can therefore answer different bytes for the same palette entry on two shipped
   rows. Folding a ramp pin into this CR would smuggle a second amendment under one entry, and the pin needs
   a hardware reference this CR has not measured; **revival condition:** a client comparing two servers' RGB,
@@ -955,8 +1016,8 @@ Five items, named rather than folded in.
 | The `SUN_LEN` string is Rust std's, propagated unmodified | `crates/oracle-aether/src/server.rs:344` |
 | `write_memory`'s poke-is-not-a-guest-access rule and its reason, in the server's own docstring | `crates/oracle-aether/src/engine.rs:1278-1285` |
 | §11.15's standing-property-stated-once reasoning, applied to a VDP-space write | `protocol.md:1030-1033` |
-| The demand's quoted sentences — the different-halves framing, the withdrawal, *"advertising a method is shipping it"* | `oracle-next/docs/2026-08-19-aurora-client-demand.md:112-113`, `:45-67`, `:190` |
-| `protocol.md` is 2724 lines on `main`; §11.15 is the last entry at `:2627`; the amended file is 2973 lines with §11.17 at `:2867` | `wc -l` on both revisions; counted mechanically |
+| The demand's quoted sentences — the different-halves framing, the withdrawal, *"advertising a method is shipping it"* | `oracle-next/docs/2026-08-19-aurora-client-demand.md:109-110`, `:45-67`, `:190` |
+| `protocol.md` is 2724 lines on `main`; §11.15 is the last entry at `:2627`; the amended file is 2988 lines with §11.17 at `:2871` | `wc -l` on both revisions; counted mechanically |
 
 **One anchor drift in the recon, recorded rather than repeated.** Recon §4.2 cites `vdp.rs:817-827` for the
 `Target::Cram` arm and quotes it as a block. At the revision read today the arm is `:818-826`; `:817` is the
@@ -1005,7 +1066,7 @@ has no §5.2. See §7 decision 1.
 so per the standing rule no `cargo test --workspace` run was required and **none is claimed**; none was
 possible either, and the reason is recorded above rather than implied. In `empyrean`, two files
 (`contract/protocol.md`, `contract/schema/bus-protocol.schema.json`) on branch `cram-params-amendment`, cut
-from `main` at `d72513c`, one commit, **not merged**.
+from `main` at `d72513c`, **two** commits — the draft, then ruling-cr27's M1/M4/S1/S2 — **not merged**.
 
 The vendored copy at `crates/oracle-aether/tests/contract/bus-protocol.schema.json` is deliberately
 **untouched**: it re-vendors from the empyrean source at the arc's merge window, and editing it now would
@@ -1017,3 +1078,16 @@ CR-26 both recorded the same reasoning, and the recon's slice plan puts the re-v
 document, a standalone compile of all 68 fragments, 48 message validations against the new and amended
 fragments, and a 10-message control against the pre-amendment schema. **Not executed:** anything at all in
 Rust, and any emulator tooling.
+
+**Re-executed after the ruling.** M1 was settled by running both fragments against both payloads rather than
+by reading them: a literal `{}` refuses at `d72513c` **and** at the amendment, while an envelope-only reply
+accepts at the first and refuses at the second — which is the correction, demonstrated in the direction that
+falsified the old sentence. The `$defs` are byte-equal across the two revisions, so the requireds that refuse
+`{}` are the same object in both. M1 and S1 touch only `$comment` and prose text, and that was **proved**
+rather than asserted: stripping every `$comment` and `description` from both schema revisions leaves them
+**deep-equal**, so no keyword, key, bound or shape moved. `check_schema` passes again, the fragment count is
+unmoved at **34**, all **34** params objects are still closed, `initialize` is still open, and the harness is
+unchanged at **48 for 48** (19 accepts, 29 refusals). All nine verbatim blocks were re-extracted from the
+post-ruling commit and re-byte-compared, and every coordinate this document cites was recomputed from that
+extraction — which is how the block ranges moved from `:1113-1114`/`:2867-2977` to `:1117-1118`/`:2871-2988`
+without a number being adjusted by hand. Still no cargo, and still no emulator tooling.
