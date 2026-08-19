@@ -329,6 +329,11 @@ fn adler32(data: &[u8]) -> u32 {
 }
 
 /// The CRC-32 PNG specifies (IEEE 802.3, reflected, `0xEDB88320`).
+///
+/// The same algorithm as [`crate::crc32`], kept separate on purpose: this one streams (a chunk's CRC
+/// spans its type *and* its data), and this module owns its deflate and `adler32` privately for the
+/// same reason — a self-contained encoder is easier to trust than one wired through three modules.
+/// Both are pinned to the published check value below, so the duplication cannot drift.
 struct Crc32(u32);
 
 impl Crc32 {

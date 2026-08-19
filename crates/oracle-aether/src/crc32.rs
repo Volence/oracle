@@ -4,6 +4,13 @@
 //!
 //! NOT in `oracle-core::state_hash`: that module is byte-compatible with Oracle's `OpStateHash`
 //! and carries a do-not-touch warning; this is a bus convenience with a different job.
+//!
+//! [`crate::png`] deliberately keeps its own private streaming `Crc32` rather than calling this one,
+//! and that is a decision rather than an oversight: it privately owns its deflate and its `adler32`
+//! too, because a self-contained encoder is easier to trust than one wired through three modules —
+//! and it needs an incremental `update` across chunk type + data, which this one-shot signature does
+//! not offer. Both are pinned to the same outside-world check value (`0xCBF43926`), so they cannot
+//! drift apart silently. Consolidate only if a third consumer appears.
 
 const fn table() -> [u32; 256] {
     let mut t = [0u32; 256];
