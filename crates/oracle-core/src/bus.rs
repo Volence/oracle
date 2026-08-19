@@ -89,7 +89,8 @@ pub trait BusEventSink {
     fn on_vdp_write(&mut self, _write: crate::vdp::VdpWrite) {}
 
     /// Whether this sink wants rendered scanlines delivered (conformance Limitation L1: mid-frame CRAM /
-    /// palette effects are invisible to an after-the-run capture). The `Scanline` event queries this per
+    /// palette effects are invisible to an after-the-run capture — including, since `F-SCANLINE-SUBLINE`,
+    /// mid-*scanline* ones). The `Scanline` event queries this per
     /// active line and, only when `true`, **retains** the already-built line report + that line's CRAM; the
     /// run loop decodes it to RGB at the next line's event and hands the finished slice to
     /// [`on_scanline`](BusEventSink::on_scanline). The default `false` keeps the null-sink path exactly the
@@ -116,12 +117,22 @@ pub trait BusEventSink {
     /// The default is a no-op.
     ///
     /// **When, exactly (`F-SCANLINE-SUBLINE`).** Row N is *resolved* at line N's `Scanline` event and
-    /// *emitted* at line N+1's, from the retained report and a CRAM snapshot taken at line N's start; row
-    /// 223 is emitted at the line-224 event, before
-    /// [`on_frame_boundary`](BusEventSink::on_frame_boundary). Row indices, row order and row bytes are all
-    /// exactly what an emit-at-line-N implementation produced — only the instant moves, which is what buys
-    /// the emitter a whole line's worth of CRAM writes to place *inside* the row. The one caller-visible
-    /// consequence: a run that stops between line N's event and line N+1's has not yet delivered row N.
+    /// *emitted* at line N+1's, from the retained report, a CRAM snapshot taken at line N's start, and the
+    /// journal of CRAM writes that landed inside line N; row 223 is emitted at the line-224 event, before
+    /// [`on_frame_boundary`](BusEventSink::on_frame_boundary). Row indices and row order are unchanged, and
+    /// the row is always **complete** — the decode is internally segmented, but a sink never sees a span.
+    /// The one other caller-visible consequence: a run that stops between line N's event and line N+1's has
+    /// not yet delivered row N.
+    ///
+    /// **What a row now samples.** A CRAM write that lands during line N's active display changes row N
+    /// **from its landing pixel onward** — the row carries the palette as it evolved across its own width,
+    /// which is what makes a mid-scanline palette effect (the 1536-colour trick, an HBlank gradient)
+    /// expressible here at all. Everything else is still a line-start sample: registers, VSRAM, the
+    /// h-scroll table and VRAM are *resolve*-stage inputs, and the resolve is not segmented (decisions C-2,
+    /// C-3, C-5). A non-CRAM write during line N therefore still cannot change row N, and its first
+    /// affected row is N+1 — the old rule, now true of everything except CRAM. Landing resolution is
+    /// instruction-granular (the write is stamped at the start of the instruction that drove it), and one
+    /// DMA burst lands at one pixel rather than smeared across the slots it really occupies (C-6).
     fn on_scanline(&mut self, _line: u16, _rgb: &[(u8, u8, u8)]) {}
 
     /// **Frame structure.** Called by the sink-generic run loop **exactly once per emulated frame**, at the

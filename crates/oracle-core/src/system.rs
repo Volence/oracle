@@ -11,10 +11,10 @@
 use crate::bus::{BusEventSink, MegaDriveBus, SramMap, StopWhen, Z80_RAM_SIZE};
 use crate::m68000::microop::Cpu68000;
 use crate::m68000::registers::Registers;
-use crate::render::{report_rgb_with_cram, ScanlineScaffold};
+use crate::render::ScanlineScaffold;
 use crate::scheduler::{EventKind, Scheduler};
 use crate::state_hash::{StateHash, CRAM_SIZE, REG_COUNT, VRAM_SIZE, VSRAM_SIZE};
-use crate::vdp::{Vdp, LINES_PER_FRAME, MCLK_PER_LINE};
+use crate::vdp::{Vdp, VdpTarget, LINES_PER_FRAME, MCLK_PER_LINE};
 use crate::ym2612::Ym2612;
 use crate::z80::{Z80Bus, Z80};
 
@@ -987,7 +987,13 @@ impl System {
         // Arm the VDP write-capture buffer for this run only if the sink wants VDP-internal writes
         // (watchpoints v2). Disarmed, the choke points are byte-for-byte the old hot path — this single query
         // is the whole cost when no VDP watch is attached. Restored to off on return.
-        let capture = sink.wants_vdp_writes();
+        // The VDP write-capture buffer now has **two** consumers, and is armed for either: watchpoints v2
+        // wants every write on the wire, and the deferred scanline emitter wants the CRAM subset so it can
+        // place each landing inside the row it lands in (`F-SCANLINE-SUBLINE` slice 4). Disarmed — neither
+        // consumer attached — the choke points are byte-for-byte the old hot path. Restored to off on return.
+        let wants_writes = sink.wants_vdp_writes();
+        let wants_rows = sink.wants_scanlines();
+        let capture = wants_writes || wants_rows;
         self.vdp.set_write_capture(capture);
         // The deferred scanline emitter (`F-SCANLINE-SUBLINE`) has **no armed flag** — deliberately: the
         // per-line stash re-consults `wants_scanlines()` and the flush consults only whether a row is
@@ -996,7 +1002,7 @@ impl System {
         // retained, rather than leaving it to be handed to whatever sink shows up next. An armed run
         // inherits it (decision D-2). Unarmed, this is one extra `wants_scanlines()` per run and nothing
         // else. `wants_scanlines()` must not change answer during a run — see the trait's contract.
-        if !sink.wants_scanlines() {
+        if !wants_rows {
             self.scanline_scaffold.clear();
         }
         let mut reason = StopReason::DeadlineReached;
@@ -1023,7 +1029,19 @@ impl System {
             // instruction that triggered it. Empty at every instruction boundary (the `dma_pending` precedent).
             if capture {
                 for w in self.vdp.take_write_captures() {
-                    sink.on_vdp_write(w);
+                    // Route CRAM writes into the retained row's journal, at their own in-line offset
+                    // (`F-SCANLINE-SUBLINE` slice 4). `w.mclk` is the write's own stamp (slice 1b), so a
+                    // burst sharing one instruction shares one landing pixel — decision C-6.
+                    if wants_rows && w.target == VdpTarget::Cram {
+                        self.scanline_scaffold.journal_cram(
+                            w.mclk % MCLK_PER_LINE,
+                            w.addr as usize,
+                            w.new as u16,
+                        );
+                    }
+                    if wants_writes {
+                        sink.on_vdp_write(w);
+                    }
                 }
             }
             self.scheduler.advance(cycles as u64 * MCLK_PER_CPU_CYCLE);
@@ -1057,9 +1075,11 @@ impl System {
     /// the retained `PixelResolution` vector through the snapshot reproduces exactly the bytes
     /// `Vdp::report_rgb` produced at line start.
     ///
-    /// The journal is **empty in this slice** — slice 3 lands the mechanism and the currency-neutrality
-    /// claim, and nothing else; slice 4 fills the journal at the VDP's CRAM choke and splits the decode into
-    /// per-landing segments here.
+    /// A CRAM write journalled inside the row's own line **splits the decode**:
+    /// [`crate::render::row_rgb`] walks a working CRAM copy from the snapshot, decoding each span against
+    /// the colours that were live while those pixels were emitted. The segments partition the row, so every
+    /// pixel is decoded exactly once and the sink still receives **one complete row** — segments are
+    /// internal to this function and never reach the interface.
     ///
     /// `#[inline]` because the *unarmed* path calls this once per `Scanline` event (262/frame) and must stay
     /// effectively free: with nothing retained the whole body is one `Option` discriminant test.
@@ -1068,16 +1088,20 @@ impl System {
         let Some(row) = self.scanline_scaffold.take() else {
             return;
         };
-        // A **tripwire for slice 4, not a tested invariant.** The journal has exactly one constructor
-        // (`ScanlineScaffold::stash`) and it hard-codes `Vec::new()`, so nothing in this slice can make this
-        // fire and no test exercises it failing. Its whole job is to break loudly the moment slice 4 starts
-        // filling the journal without also teaching this function to segment the decode.
-        debug_assert!(
-            row.journal.is_empty(),
-            "slice 3 keeps the sub-line journal empty — a landing here would mean the row's bytes moved \
-             before the slice that is allowed to move them"
+        let (rgb, working) = crate::render::row_rgb(&row);
+        // **The missed-journal-path guard.** The emitter's own walk must land on the CRAM the machine
+        // actually has. This replaces slice 3's `journal.is_empty()` tripwire — which was honestly
+        // unfalsifiable (one constructor, hard-coded empty) — with a statement a real bug breaks: drop a
+        // landing, mis-address one, or add a CRAM write path this drain does not see (the Z80 mirror of
+        // decision C-7, a new DMA arm) and the two differ. It covers the empty-journal case too: no writes
+        // in the line means live CRAM is still the snapshot.
+        debug_assert_eq!(
+            &working[..],
+            self.vdp.cram(),
+            "row {}: the journal did not account for every CRAM write of its line — the emitter's working \
+             copy and the machine's CRAM have diverged",
+            row.report.line
         );
-        let rgb = report_rgb_with_cram(&row.cram, &row.report);
         sink.on_scanline(row.report.line, &rgb);
     }
 

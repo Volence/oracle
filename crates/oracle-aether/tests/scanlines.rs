@@ -285,19 +285,22 @@ fn a1_determinism_three_boots_byte_identical() {
 // -------------------------------------------------------------------------------------------------
 
 /// **Acceptance A2, and the adoption condition's suite gate (i).** Two ROMs identical but for the scanline
-/// at which they repaint the backdrop. Three things are asserted, and each closes a different way of
-/// passing vacuously:
+/// at which they repaint the backdrop. Four things are asserted, and each closes a different way of passing
+/// vacuously:
 ///
 /// * `source == "raster"` — a `stateRender` reply passes every shape check in this file and is
 ///   structurally blind to mid-frame effects, so the fragment makes this check a MUST for liveness gates.
 /// * **within one frame**, a row above the boundary differs from a row below it — a post-hoc render draws
 ///   the whole frame in the last colour written, so this alone fails a blind server.
+/// * **the landing row is SPLIT** — uniform colour-A prefix, uniform colour-B suffix, exactly one
+///   transition, at a column inside a band derived below. This is the `F-SCANLINE-SUBLINE` poison: a
+///   line-atomic renderer draws that row wholly in one colour and cannot pass it, whichever colour it picks.
 /// * **between the two ROMs**, the rows in the band between the two boundaries are swapped — so a server
 ///   that somehow captured *a* raster but ignored the timing still fails.
 ///
-/// The boundary is at `line + 1`, not `line`: the Scanline event renders line N at N's start, so the write
-/// the fixture makes *during* line N first shows on N+1. That exactness is deliberate — an off-by-one in
-/// the handler's row slicing shows up here as a boundary in the wrong place.
+/// The first **fully** recoloured row is `line + 1`: the write lands part-way across line `line`, which has
+/// already been resolved, so that row splits and the next is the first wholly-B one. An off-by-one in the
+/// handler's row slicing still shows up here as a boundary in the wrong place.
 #[test]
 fn a2_two_timings_differ_and_the_boundary_moves() {
     let (_ha, mut a) = booted("sl-a2-a", oracle_core::testrom::build_cram_midframe(50), 6);
@@ -323,22 +326,42 @@ fn a2_two_timings_differ_and_the_boundary_moves() {
         rgb_of(&ra, 160),
         "one frame must carry both backdrops — a post-hoc render carries only the last one"
     );
-    // The boundary, to the row. Above it colour A, at and below it colour B.
-    assert_eq!(
-        rgb_of(&ra, 50),
-        black,
-        "ROM 50: line 50 still draws colour A"
-    );
+
+    // The landing rows are split, and the first FULLY recoloured row is line + 1.
+    let xa = assert_split_row(&rgb_of(&ra, 50), width, "ROM 50, line 50");
+    let xb = assert_split_row(&rgb_of(&rb, 150), width, "ROM 150, line 150");
     assert_eq!(
         rgb_of(&ra, 51),
         white,
-        "ROM 50: the boundary is line 51 — the write lands during line 50, which is already drawn"
+        "ROM 50: line 51 is the first WHOLLY colour-B row"
     );
-    assert_eq!(rgb_of(&rb, 150), black, "ROM 150: line 150 draws colour A");
-    assert_eq!(rgb_of(&rb, 151), white, "ROM 150: boundary at line 151");
+    assert_eq!(
+        rgb_of(&rb, 151),
+        white,
+        "ROM 150: first wholly-B row at 151"
+    );
+    assert_eq!(
+        rgb_of(&ra, 49),
+        black,
+        "ROM 50: line 49 is still wholly colour A"
+    );
+    assert_eq!(rgb_of(&rb, 149), black, "ROM 150: line 149 wholly A");
 
-    // Between the ROMs: every row in the band between the two boundaries is swapped.
-    for line in 51..=150 {
+    // The transition column sits inside the band the fixture's own instruction stream implies (see
+    // `landing_band`). Both ROMs run the identical poll loop, so both land in the same band.
+    let (lo, hi) = landing_band(width);
+    for (tag, x) in [("ROM 50", xa), ("ROM 150", xb)] {
+        assert!(
+            (lo..=hi).contains(&x),
+            "{tag}: the backdrop write landed at pixel {x}, outside the derived band {lo}..={hi}. \
+             That band comes from the fixture's own instruction stream, so a miss means either the \
+             mclk -> pixel mapping or the poll-loop derivation is wrong — do NOT widen the band to fit."
+        );
+    }
+
+    // Between the ROMs: every row in the band between the two boundaries is swapped. Line 150 is excluded —
+    // it is ROM 150's own split row — so the band runs 51..=149 and line 150 is covered by the split checks.
+    for line in 51..=149 {
         assert_eq!(
             rgb_of(&ra, line),
             white,
@@ -351,14 +374,87 @@ fn a2_two_timings_differ_and_the_boundary_moves() {
         );
     }
     // Outside the band the two agree, which is what makes the disagreement inside it a *timing* difference
-    // rather than two unrelated pictures.
-    for line in [0usize, 25, 50, 151, 200, 223] {
+    // rather than two unrelated pictures. Line 50 is ROM A's split row and line 150 is ROM B's, so neither
+    // belongs in an equality list; 49 and 151 are their wholly-uniform neighbours and do.
+    for line in [0usize, 25, 49, 151, 200, 223] {
         assert_eq!(
             rgb_of(&ra, line),
             rgb_of(&rb, line),
             "line {line} is outside the band and must match"
         );
     }
+}
+
+/// Assert `row` is a **split row** — a uniform prefix, a uniform suffix, exactly one transition — and
+/// return the transition column. The three facts together are what a line-atomic renderer cannot produce:
+/// it emits a uniform row, which has zero transitions.
+fn assert_split_row(row: &str, width: usize, tag: &str) -> usize {
+    let px: Vec<&str> = row
+        .strip_prefix("0x")
+        .expect("rgb starts 0x")
+        .as_bytes()
+        .chunks(6)
+        .map(|c| std::str::from_utf8(c).expect("hex"))
+        .collect();
+    assert_eq!(px.len(), width, "{tag}: row width");
+    assert_eq!(px[0], BLACK, "{tag}: the row opens on colour A");
+    assert_eq!(px[width - 1], WHITE, "{tag}: and closes on colour B");
+    let transitions: Vec<usize> = (1..width).filter(|&i| px[i] != px[i - 1]).collect();
+    assert_eq!(
+        transitions.len(),
+        1,
+        "{tag}: EXACTLY one A->B transition — {} found. More than one means the journal was applied \
+         out of order or more than once; zero means the row is uniform, i.e. line-atomic.",
+        transitions.len()
+    );
+    let x = transitions[0];
+    assert!(
+        px[..x].iter().all(|&p| p == BLACK) && px[x..].iter().all(|&p| p == WHITE),
+        "{tag}: uniform colour-A prefix and uniform colour-B suffix"
+    );
+    x
+}
+
+/// The band the backdrop write's landing column must fall in — **derived from the fixture's own source, not
+/// from a measurement or the design note's estimate** (ruling Q5).
+///
+/// `build_cram_midframe`'s poll block is four instructions, and the 68000 costs are:
+///
+/// | instruction | cycles |
+/// |---|---|
+/// | `move.w (a3),d0`  — read the HV counter | 8 |
+/// | `lsr.w #8,d0`     — V into the low byte | 6 + 2x8 = 22 |
+/// | `cmpi.b #line,d0` | 8 |
+/// | `bcs .top`        — taken 10 / not taken 8 | 10 / 8 |
+///
+/// So one *spinning* iteration is `POLL_ITERATION` = 48 cycles, and the iteration that finally sees
+/// `V >= line` costs 46 before falling through. The previous read saw `V = line - 1` exactly one iteration
+/// earlier, so **the successful read begins somewhere in the first `POLL_ITERATION` cycles of the line** —
+/// that jitter is the band's width. From that read to the start of the CRAM data write is `POST_POLL`: the
+/// 46 above plus the 20-cycle `move.l #cmd,(a0)` control write that precedes it.
+///
+/// The write is stamped at its instruction **start** (follow-up F-SUBLINE-ACCESSMCLK), so the landing offset
+/// into the line is `[POST_POLL, POST_POLL + POLL_ITERATION)` CPU cycles, converted at
+/// `MCLK_PER_CPU_CYCLE` and divided by this mode's mclk-per-pixel.
+///
+/// Pinning an exact column instead would be a flake: a frame is `896_040 / 7 = 128_005.71` CPU cycles, not
+/// an integer, so the loop's phase relative to the line drifts frame to frame. Determinism of the column
+/// *within* one boot is covered by the A1 gate, which is where it belongs.
+///
+/// **What this band does and does not discriminate**, recorded so nobody over-reads it. It bites on the
+/// pixel axis being the row's own (feeding H40's 8 mclk/px to this H32 row moves the band off the measured
+/// column — decision B-2) and on the landing being genuinely mid-row rather than at either edge. It does
+/// **not** discriminate decision B-1, the 8/10-mclk axis versus `h_counter`'s 422/342 grid: at H32 those two
+/// agree exactly (`3420 / 342 == 2560 / 256 == 10`), which is why B-1's ~33-mclk disagreement is an H40-only
+/// question and is carried as follow-up F-SUBLINE-HGRID rather than gated here.
+fn landing_band(width: usize) -> (usize, usize) {
+    const POLL_ITERATION: u64 = 8 + 22 + 8 + 10;
+    const POST_POLL: u64 = (8 + 22 + 8 + 8) + 20;
+    let mclk_per_pixel = oracle_core::vdp::MCLK_PER_ACTIVE / width as u64;
+    let lo = POST_POLL * oracle_core::system::MCLK_PER_CPU_CYCLE / mclk_per_pixel;
+    let hi =
+        (POST_POLL + POLL_ITERATION) * oracle_core::system::MCLK_PER_CPU_CYCLE / mclk_per_pixel;
+    (lo as usize, hi as usize)
 }
 
 // -------------------------------------------------------------------------------------------------

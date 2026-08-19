@@ -59,9 +59,6 @@ pub const MCLK_PER_ACTIVE: u64 = 2560;
 /// ±1 px it decides is two orders of magnitude below the resolution limit the stamp itself carries — writes
 /// are located to the start of the driving instruction (see the [`now_mclk`](Vdp#structfield.now_mclk) field;
 /// follow-up F-SUBLINE-ACCESSMCLK).
-// Slice 2 lands the mapping ahead of its consumer (the segmented emitter of slices 3-4), so the table tests
-// in this module are its only caller today. The allow goes when the emitter calls it.
-#[allow(dead_code)]
 pub(crate) fn subline_x(d_mclk: u64, h40: bool) -> usize {
     // The renderer's own active widths — held to `Vdp::active_display` by the test below, so the two cannot
     // drift into disagreeing about how wide the row they are describing is.

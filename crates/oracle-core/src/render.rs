@@ -375,14 +375,29 @@ pub(crate) struct RetainedRow {
     /// [`CRAM_SIZE`]-byte image, so the array shape makes a wrong-length snapshot unrepresentable and costs
     /// no allocation on the per-active-line stash path.
     pub(crate) cram: [u8; CRAM_SIZE],
-    /// The sub-line CRAM journal for this row: `(mclk, CRAM byte address, written word)` per landing, in
-    /// write order.
+    /// The sub-line CRAM journal for this row: every CRAM write that landed inside the row's own line, in
+    /// write order, each already resolved to the pixel it takes effect at.
     ///
-    /// **Always empty in this slice** (`F-SCANLINE-SUBLINE` slice 3, the neutrality slice): the emitter
-    /// decodes the whole row against `cram` alone, which is byte-for-byte what `report_rgb` produced at line
-    /// start. Slice 4 fills it from the VDP's CRAM choke and splits the row at each landing's
-    /// [`crate::vdp::subline_x`] pixel.
-    pub(crate) journal: Vec<(u64, usize, u16)>,
+    /// Empty ⇒ the row decodes whole against `cram`, which is byte-for-byte what `report_rgb` produced at
+    /// line start — the identity slice 3 exists to guarantee and slice 4 must not disturb.
+    pub(crate) journal: Vec<CramLanding>,
+}
+
+/// One CRAM write that landed inside a row's own scanline (`F-SCANLINE-SUBLINE` slice 4).
+///
+/// `x` is resolved at journal time by [`crate::vdp::subline_x`] from the write's own master clock and the
+/// **resolved row's** H40 flag (decision B-2 — a mid-line mode switch must not place the landing on a grid
+/// the row was never drawn on). Pixels `0..x` keep the pre-write colour; `x..width` show the new one. A
+/// landing in the line's blanking tail resolves to `x == width`: it colours no pixel of this row, but it is
+/// still journalled, because the working-CRAM guard at emit time accounts for **every** write of the line.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct CramLanding {
+    /// First active-display pixel that shows the new colour (`0..=width`).
+    pub(crate) x: usize,
+    /// CRAM byte address of the written word — even, `0..CRAM_SIZE`.
+    pub(crate) addr: usize,
+    /// The 9-bit-masked colour word, as the VDP stored it.
+    pub(crate) word: u16,
 }
 
 /// The deferred-emission scaffolding for the opt-in per-scanline capture (`F-SCANLINE-SUBLINE`,
@@ -447,6 +462,41 @@ impl ScanlineScaffold {
     /// Take the retained row, if any.
     pub(crate) fn take(&mut self) -> Option<RetainedRow> {
         self.pending.take()
+    }
+
+    /// Journal one CRAM write against the row currently retained, at the pixel `d_mclk` places it
+    /// (`F-SCANLINE-SUBLINE` slice 4). A no-op when no row is retained — CRAM writes on non-active lines
+    /// simply carry into the next line-start snapshot, which is exactly today's behaviour.
+    ///
+    /// **Coalescing by pixel is mandatory, not an optimisation.** `direct_color_dma` pushes 44,352 CRAM
+    /// words inside a single instruction, and under decision C-6 they all share one master clock and so one
+    /// `x`. Without this, that is a ~700 KB per-line journal and 44 k zero-length decode spans. Landings at
+    /// the same pixel are one segment, and within a segment a later write to the same CRAM address simply
+    /// **replaces** the earlier one — the pixel can only ever show the last colour written at it — so the
+    /// burst above collapses to a single entry.
+    ///
+    /// The scan walks backwards only over the current pixel's group: `x` is non-decreasing (master clocks
+    /// are, within a line), so equal-`x` entries are contiguous at the tail.
+    pub(crate) fn journal_cram(&mut self, d_mclk: u64, addr: usize, word: u16) {
+        let Some(row) = self.pending.as_mut() else {
+            return;
+        };
+        let x = crate::vdp::subline_x(d_mclk, row.report.h40);
+        debug_assert!(
+            row.journal.last().is_none_or(|l| l.x <= x),
+            "landings arrive in pixel order — the coalescing tail-scan and the segmented decode both rely \
+             on it, and a backwards x means a write was stamped outside the row's own line"
+        );
+        for l in row.journal.iter_mut().rev() {
+            if l.x != x {
+                break;
+            }
+            if l.addr == addr {
+                l.word = word;
+                return;
+            }
+        }
+        row.journal.push(CramLanding { x, addr, word });
     }
 
     /// Drop the retained row.
@@ -635,6 +685,47 @@ pub(crate) fn report_rgb_with_cram(cram: &[u8], report: &LineReport) -> Vec<(u8,
         .iter()
         .map(|p| cram_rgb_state_from(cram, p.cram_index, p.state))
         .collect()
+}
+
+/// Decode a retained row to RGB, **segmented at each of its CRAM landings** (`F-SCANLINE-SUBLINE` slice 4)
+/// — the emitter proper. Returns the finished row *and* the CRAM image the walk ended on, which the caller
+/// checks against live CRAM: that equality is the guard that every write of the line reached the journal.
+///
+/// The segments partition `0..width`, so **each pixel is decoded exactly once** — this is not a re-render
+/// and not a re-resolve (re-resolving would reseed the R10 masking carry, see [`Vdp::report_rgb`]). The
+/// resolve stage is index-domain and never reads CRAM (recon §0), so splitting the *decode* is the whole of
+/// the mechanism.
+///
+/// With an empty journal this is exactly [`report_rgb_with_cram`] against the line-start snapshot — the
+/// same bytes a line-atomic emitter produced, by construction rather than by measurement.
+pub(crate) fn row_rgb(row: &RetainedRow) -> (Vec<(u8, u8, u8)>, [u8; CRAM_SIZE]) {
+    if row.journal.is_empty() {
+        return (report_rgb_with_cram(&row.cram, &row.report), row.cram);
+    }
+    let px = &row.report.pixels;
+    let mut cram = row.cram;
+    let mut out = Vec::with_capacity(px.len());
+    let mut k = 0usize;
+    while k < row.journal.len() {
+        // Decode the span that still shows the CRAM in force, up to this landing's pixel...
+        let x = row.journal[k].x.min(px.len());
+        while out.len() < x {
+            let p = &px[out.len()];
+            out.push(cram_rgb_state_from(&cram, p.cram_index, p.state));
+        }
+        // ...then apply every landing at that same pixel (one segment, decision C-6 / the coalescing rule).
+        let at = row.journal[k].x;
+        while let Some(l) = row.journal.get(k).filter(|l| l.x == at) {
+            cram[l.addr] = (l.word >> 8) as u8;
+            cram[l.addr | 1] = (l.word & 0xFF) as u8;
+            k += 1;
+        }
+    }
+    while out.len() < px.len() {
+        let p = &px[out.len()];
+        out.push(cram_rgb_state_from(&cram, p.cram_index, p.state));
+    }
+    (out, cram)
 }
 
 /// Decode a raw 16-bit nametable entry word into a [`Cell`] (recon RR1).
@@ -1854,6 +1945,143 @@ mod tests {
             report_rgb_with_cram(&snapshot, &report),
             live,
             "and the snapshot decode is unmoved — this is why the one-line emission lag is invisible"
+        );
+    }
+
+    /// `build_cram_midframe`'s scene, at core level: every plane pixel transparent and the backdrop pointed
+    /// at CRAM entry 1, so **every pixel of every row samples index 1** and the colour *is* the picture.
+    /// That is what makes a split row unmistakable — and it is the same trap-free shape the fixture ROM uses.
+    fn backdrop_fixture() -> Vdp {
+        let mut v = pb_fixture(false); // H32: 256 px at 10 mclk/px
+        set_reg(&mut v, 0x07, 0x01); // backdrop = CRAM entry 1
+        v
+    }
+
+    /// Build a retained row from `v`'s line 0 plus a journal, the way the run loop does: resolve the row,
+    /// snapshot CRAM, then feed landings through the coalescing push.
+    fn retained(v: &Vdp, landings: &[(u64, usize, u16)]) -> RetainedRow {
+        let mut sc = ScanlineScaffold::default();
+        sc.stash(v.render_line_report(0), v.cram());
+        for &(d_mclk, addr, word) in landings {
+            sc.journal_cram(d_mclk, addr, word);
+        }
+        sc.take().expect("a row was stashed")
+    }
+
+    /// **The behaviour slice, at core level** (`F-SCANLINE-SUBLINE` slice 4): a CRAM write inside the row's
+    /// own line splits it — colour A up to the landing pixel, colour B from it on, with **exactly one**
+    /// transition. This is the poison a line-atomic emitter cannot pass in either direction: it renders the
+    /// row wholly A (today's behaviour) or, if it lazily read live CRAM, wholly B.
+    #[test]
+    fn a_cram_landing_inside_the_line_splits_the_row_at_its_pixel() {
+        let mut v = backdrop_fixture();
+        write_cram(&mut v, 1, 0x000E); // colour A = red
+        let a = v.cram_rgb(1);
+
+        // A write 1000 mclk into the line lands at pixel 100 (1000 / 10), inside the active window.
+        const D_MCLK: u64 = 1000;
+        const B_WORD: u16 = 0x0E00; // colour B = blue
+        let row = retained(&v, &[(D_MCLK, 2, B_WORD)]);
+        let width = row.report.pixels.len();
+        let (rgb, _) = row_rgb(&row);
+
+        let b = rgb[width - 1];
+        assert_eq!(
+            rgb[0], a,
+            "the row opens on the colour that was live at its line start"
+        );
+        assert_ne!(
+            b, a,
+            "and closes on the colour the mid-line write installed"
+        );
+        let x = crate::vdp::subline_x(D_MCLK, false);
+        assert_eq!(x, 100, "the mapping places this write at pixel 100 of 256");
+        assert!(
+            rgb[..x].iter().all(|&p| p == a) && rgb[x..].iter().all(|&p| p == b),
+            "uniform A prefix, uniform B suffix"
+        );
+        assert_eq!(
+            rgb.windows(2).filter(|w| w[0] != w[1]).count(),
+            1,
+            "EXACTLY one transition — a smeared or double-applied journal shows up here"
+        );
+        // And the sink still gets one whole row: segments are internal.
+        assert_eq!(rgb.len(), width, "one complete row, not a list of spans");
+    }
+
+    /// The zero-mid-line-write case, re-proven under the segmented emitter (CR-25 adoption clause 2 / the
+    /// slice-3 poison, re-run). Landings outside the active window must leave the row **bit-identical** to
+    /// the line-atomic answer: `d = 0` is the whole row (the write precedes any pixel being consumed) and
+    /// `d >= MCLK_PER_ACTIVE` is the blanking tail, which colours nothing here and first shows in row N+1.
+    #[test]
+    fn a_row_with_no_landing_inside_the_active_window_is_bit_identical_to_the_line_atomic_answer() {
+        let mut v = backdrop_fixture();
+        write_cram(&mut v, 1, 0x000E);
+        let atomic = report_rgb_with_cram(v.cram(), &v.render_line_report(0));
+
+        let empty = retained(&v, &[]);
+        assert_eq!(
+            row_rgb(&empty).0,
+            atomic,
+            "no journal: the slice-3 identity, untouched"
+        );
+
+        for d in [crate::vdp::MCLK_PER_ACTIVE, crate::vdp::MCLK_PER_LINE - 1] {
+            let row = retained(&v, &[(d, 2, 0x0E00)]);
+            let (rgb, working) = row_rgb(&row);
+            assert_eq!(
+                rgb, atomic,
+                "a landing at d={d} is in blanking — row N is untouched"
+            );
+            assert_ne!(
+                &working[..],
+                v.cram(),
+                "…but it IS applied to the working copy, or the emit-time guard would not see it"
+            );
+        }
+        // `d = 0` is the other boundary: x = 0, so the whole row takes the new colour.
+        let whole = retained(&v, &[(0, 2, 0x0E00)]);
+        let (rgb, _) = row_rgb(&whole);
+        assert!(
+            rgb.iter().all(|&p| p == rgb[0]) && rgb[0] != atomic[0],
+            "d = 0 recolours the entire row"
+        );
+    }
+
+    /// **Coalescing by pixel is mandatory** (decision C-6 + the design's own "must include, or it is
+    /// wrong"). `direct_color_dma` pushes 44,352 CRAM words inside one instruction, so they share one master
+    /// clock and one landing pixel. Journal them naively and that is a ~700 KB per-line `Vec` and 44 k
+    /// zero-length decode spans.
+    #[test]
+    fn a_forty_thousand_write_burst_at_one_clock_collapses_to_one_segment() {
+        let v = backdrop_fixture();
+        const BURST: usize = 44_352;
+        let landings: Vec<(u64, usize, u16)> =
+            (0..BURST).map(|i| (1000, 2, (i % 0x0EEE) as u16)).collect();
+        let row = retained(&v, &landings);
+        assert_eq!(
+            row.journal.len(),
+            1,
+            "one pixel, one CRAM address ⇒ ONE journal entry, however many words the burst carried"
+        );
+        // The surviving entry is the LAST word written — the pixel shows the last colour written at it.
+        let last = ((BURST - 1) % 0x0EEE) as u16 & 0x0EEE;
+        assert_eq!(row.journal[0].word & 0x0EEE, last & 0x0EEE);
+
+        // Distinct addresses at one pixel stay distinct (they are different colours, not overwrites), and
+        // distinct pixels stay distinct segments.
+        let mixed = retained(
+            &v,
+            &[(1000, 2, 1), (1000, 4, 2), (1000, 2, 3), (2000, 2, 4)],
+        );
+        assert_eq!(
+            mixed.journal.len(),
+            3,
+            "two addresses at pixel 100 (the second write to entry 1 replacing the first) + one at pixel 200"
+        );
+        assert_eq!(
+            mixed.journal[0].word, 3,
+            "the later write to the same address won"
         );
     }
 

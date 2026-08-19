@@ -126,8 +126,19 @@ const BASELINE: &[(&str, &str)] = &[
         // the capture on 2026-08-03 and is the ONE case where the blindness had already been recognised (as
         // Limitation L1, for this ROM alone). Its agreement here is a cross-check that this file's byte layout
         // and run shape match the existing harness's.
+        //
+        // RE-PINNED 2026-08-19, F-SCANLINE-SUBLINE slice 4 (was 0x917371f07409cb25). MECHANISM, measured on
+        // this branch: in the hashed frame (119) this ROM performs **515 value-changing CRAM writes inside
+        // the active-display window** — indices 4, 5, 6 and 7, ~129 each — spread over 131 active lines from
+        // 48 to 221, and those four indices are among the six the picture samples (0,1,4,5,6,7). Until this
+        // slice each row decoded against ONE snapshot of those entries; now each row is decoded in segments
+        // and shows them evolving across its own width. That is not an incidental side effect — a row that
+        // changes colour part-way across IS the 1536-colour trick, so this hash is the first one this corpus
+        // has held that actually contains the effect the ROM exists to demonstrate. The colour count is
+        // unchanged in kind (still ~1400 vs the post-hoc 4); the gradient is now correct *within* each row
+        // as well as between rows.
         "color_1536",
-        "LIVE-DIFFERS frame_hash=0x917371f07409cb25",
+        "LIVE-DIFFERS frame_hash=0x9ae4acc58d2a382d",
     ),
     ("cram_flicker", "IDENTICAL-TO-POST-HOC"),
     ("direct_color_dma", "IDENTICAL-TO-POST-HOC"),
