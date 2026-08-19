@@ -298,6 +298,11 @@ pub const METHODS: &[MethodSpec] = &[
         handler: Engine::write_memory,
         summary: "poke bytes into the work-RAM window (paused machine only; refused never clipped)",
     },
+    MethodSpec {
+        name: "emulator/reset",
+        handler: Engine::reset,
+        summary: "drive the /RESET sequence — back to the power-on anchor, SRAM and symbols kept",
+    },
 ];
 
 /// The events this server actually emits. Advertised verbatim as `capabilities.events`, which
@@ -2064,6 +2069,23 @@ impl Engine {
             out["caveat"] = json!(c);
         }
         Ok(out)
+    }
+
+    /// `emulator/reset` — drive the /RESET sequence against the current cartridge (§6 run-control,
+    /// result defined by CR-22 / §11.13).
+    ///
+    /// Deliberately NOT `require_paused`: a reset replaces the machine wholesale between frames —
+    /// it advances nothing and cannot fight the free-run loop — and the contract forbids changing
+    /// the run state here (paused stays paused, free-running keeps running). Symbols are KEPT: the
+    /// image is unchanged, so the binding that survived boot survives this (contrast `reload_rom`,
+    /// which re-validates). The generation bump is `restore`'s precedent — the timeline jumped, and
+    /// a hosted player resyncs off `PumpReport::rom_changed`.
+    fn reset(&mut self, _params: &Value) -> Result<Value, RpcError> {
+        self.sys.reset();
+        self.held = [Pad::default(); 2];
+        self.invalidate_screen();
+        self.rom_generation += 1;
+        Ok(json!({ "deferred": false }))
     }
 
     fn reload_rom(&mut self, params: &Value) -> Result<Value, RpcError> {
