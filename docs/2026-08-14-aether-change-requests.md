@@ -1067,34 +1067,47 @@ ruling by pinning both algorithms — the ruling's R2 made the FNV pin real (off
 fold order), since the family name alone was not a pin. Adopted with changes
 (`docs/2026-08-18-ruling-cr21-23.md`).
 
-## CR-24 — `emulator/scanlines`, the readback the HBlank-window sweep is waiting on (proposed 2026-08-18)
+## CR-24 — `emulator/scanlines`, the readback the HBlank-window sweep is waiting on (ruled: adopt with changes, 2026-08-18)
 
-Full text in `docs/2026-08-18-cr24-scanlines.md`. No row anywhere is keyed by a scanline, and the
-contract names the gap in its own voice — `pixel_attribution`'s prose closes with *"a client that
-needs the two to agree needs a per-scanline capability, which this catalog does not yet have"*
-(`protocol.md:1066-1067`); the amendment edits that sentence to name this method. Demand source:
-Aeon's second demand-side statement (`docs/2026-08-18-aeon-scanline-readback-demand.md`, Ask 1 —
-ranked by them above stepping), with a ready-made acceptance fixture
-(`aeon/docs/benchmarks/scanline-p2/HBLANK-WINDOW-SWEEP-SPEC.md`, aeon `1fb982f7`). Proposed: row
-range (`startLine`/`count`, bounds structural 0–223, `-32602` refused never clipped, neither flag
-nor cursor per §2.4) of the retained last completed frame's rendered rows — RGB with S/H applied as
-the normative content (pre-palette indices are *"structurally blind"* to the mid-scanline CRAM
-defect class, their words), `source: raster|stateRender` on the `screenshot` precedent with
-A2-gates MUST-check-raster, a pure read (no `-32005` free-running), no frame param (drive to F and
+Full text in `docs/2026-08-18-cr24-scanlines.md`; **ruled ADOPT WITH CHANGES 2026-08-18
+(`docs/2026-08-18-ruling-cr24.md`) — 7 required changes (R1–R7) and 3 adopted recommendations, all
+applied the same day.** No row anywhere is keyed by a scanline, and the contract names the gap in
+its own voice — `pixel_attribution`'s prose closes with *"a client that needs the two to agree
+needs a per-scanline capability, which this catalog does not yet have"* (`protocol.md:1066-1067`);
+the amendment edits that sentence to name this method (edit APPROVED by the ruling, with its
+replacement text pinned). Demand source: Aeon's second demand-side statement
+(`docs/2026-08-18-aeon-scanline-readback-demand.md`, Ask 1 — ranked by them above stepping), with a
+ready-made acceptance fixture (`aeon/docs/benchmarks/scanline-p2/HBLANK-WINDOW-SWEEP-SPEC.md`, aeon
+`2cf267a9` — refreshed from `1fb982f7` per adopted recommendation (c)). Adopted shape: row range
+(`startLine`/`count`, bounds structural 0–223 NTSC V28 — the scope and the `-32602`-vs-`-32004`
+contrast now in contract text per R6 — refused never clipped, neither flag nor cursor per §2.4) of
+the retained last completed frame's rendered rows — RGB with S/H applied as the normative content
+(pre-palette indices are *"structurally blind"* to the mid-scanline CRAM defect class, their
+words), `source: raster|stateRender` on the `screenshot` precedent with A2-gates
+MUST-check-raster and the invalidation pin (R4: `reset`/`reload_rom`/`restore` drop the retained
+frame; stateRender recurs, never a frame from a machine that is no longer there), the
+mode↔width↔rgb-length tie mechanical in the fragment (R2), crop direction stated (R3), `mode`'s
+stateRender reading (R5), a pure read (no `-32005` free-running), no frame param (drive to F and
 read; the stamp is the identity). Recon verified the handler is a **pure read of existing engine
 state** — the `Retain::LastFrame` capture already rides every run path (`engine.rs:447/510`,
 `640-642`, `673-676`, `715-718`, hosted `publish_capture` `:611`) and `framebuffer()` already
-carries the raster/stateRender split (`:1061-1073`, `:1731`); zero core changes. One pin bent to
-tree-truth: `mode` is top-level, not per-row — a mid-frame H32↔H40 switch is normalized by the one
-shared frame reader to the frame-end width, black-padded (`engine.rs:3454-3456`), so per-row mode
-would promise a distinction no reply can carry. Follow-ups registered, not built: F-SCANLINE-INDEX
-and F-SCANLINE-SH (renderer→sink extension = a core change with its own scrutiny; the demand side's
-own ruling — *"fields 2–3 must NOT hold it up"*). Adoption condition = fragment closed + the sweep
-spec's A1 (≥3 runs byte-identical) + **A2 liveness (N=0 vs N=17 MUST differ on row 99 — a
-post-frame-state implementation passes every shape check and fails exactly this)**; the
-disagreement-discriminator anchors run unconditionally as the sweep's first two data points. MCP: a
-new tool row (grep-verified: the legacy MCP has only `run_to_scanline`, a stop not a readback);
-player GUI: no new surface, decided per parity — the window already renders every line through the
-same capture (`blit_capture`, `main.rs:503`). Fragment count 32 → 33; `initialize.limits` gains
-nothing (every bound is structural).
+carries the raster/stateRender split (`:1061-1073`, `:1731`); per R1's consequence the slice is
+**zero core MACHINE changes plus one test-fixture builder in `testrom.rs`**
+(`build_cram_midframe`-shaped, precedented by `build_trap_on_frame`), no longer literally "zero
+core changes". One pin bent to tree-truth: `mode` is top-level, not per-row — a mid-frame H32↔H40
+switch is normalized to the frame-end width (shorter lines black-padded, longer cropped) by
+`store_from_capture` (`engine.rs:3454-3456`) and its twinned `blit_capture` (`main.rs:503` — "one
+shared reader" corrected per R7), so per-row mode would promise a distinction no reply can carry.
+Follow-ups registered, not built: F-SCANLINE-INDEX and F-SCANLINE-SH (renderer→sink extension = a
+core change with its own scrutiny; the demand side's own ruling — *"fields 2–3 must NOT hold it
+up"*). Adoption condition restated executable per R1: fragment closed + A1 (≥3 runs
+byte-identical) + **liveness as two suite gates** — (i) the `build_cram_midframe` two-timings
+poison (different `rows[].rgb` at the boundary row, `source=="raster"` only), (ii) `color_1536`
+raster-vs-stateRender rows MUST differ (LIVE-DIFFERS pin, `scanline_goldens.rs:129-130`;
+`cram_flicker` is IDENTICAL-TO-POST-HOC and no substitute) — with the verbatim A1/A2 sweep against
+the Aeon fixture as the acceptance protocol when that branch's ROM is in hand, discriminator
+anchors first. MCP: a new tool row (grep-verified: the legacy MCP has only `run_to_scanline`, a
+stop not a readback); player GUI: no new surface, decided per parity — the window already renders
+every line through the same capture. Fragment count 32 → 33; `initialize.limits` gains nothing
+(every bound is structural).
 

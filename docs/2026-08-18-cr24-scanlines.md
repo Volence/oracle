@@ -1,18 +1,30 @@
 # CR-24 — `emulator/scanlines`: the readback the sweep is waiting on
 
-**Status: PROPOSED 2026-08-18.** Raised against `empyrean/contract/protocol.md` §6 (VRAM / CRAM /
-layers) and `contract/schema/bus-protocol.schema.json`; would land as amendment **§11.14** and take
-the vendored schema's method fragments **32 → 33**. The demand source is
+**Status: RULED 2026-08-18 — ADOPT WITH CHANGES; all 7 required changes (R1–R7) and 3 adopted
+recommendations applied below.** Ruling recorded in `docs/2026-08-18-ruling-cr24.md`; every amended
+block below is marked *(amended per ruling R-N)*. Raised against `empyrean/contract/protocol.md`
+§6 (VRAM / CRAM / layers) and `contract/schema/bus-protocol.schema.json`; lands as amendment
+**§11.14** and takes the vendored schema's method fragments **32 → 33**. The demand source is
 `docs/2026-08-18-aeon-scanline-readback-demand.md` (Aeon's second demand-side statement, Ask 1 with
 its two follow-ups and closing addition); the acceptance fixture is
-`aeon/docs/benchmarks/scanline-p2/HBLANK-WINDOW-SWEEP-SPEC.md` (aeon commit `1fb982f7`, branch
-`parcel/raster-substrate-byte-moving`), read firsthand for this CR.
+`aeon/docs/benchmarks/scanline-p2/HBLANK-WINDOW-SWEEP-SPEC.md` (aeon commit `2cf267a9`, branch
+`parcel/raster-substrate-byte-moving`), read firsthand for this CR *(commit refreshed per adopted
+recommendation (c) — originally cited at `1fb982f7`; the A1/A2 text quoted below was re-verified
+byte-identical at `2cf267a9` before the refresh)*.
+
+> **What the adjudication caught.** Five peripheral evidence defects, none design-load-bearing
+> (R7 — each corrected below with the correction left visible); an adoption condition whose third
+> clause was unexecutable in this repo's suite as written (R1); and five normalization/invalidation
+> behaviours the prose implied but did not pin (R2–R6). The central claim — a pure read of engine
+> state the tree already maintains — was verified TRUE end to end, with one honest narrowing forced
+> by R1's suite gate (see "What exists today").
 
 **Sequencing.** Contract-first, per the 2026-08-17 owner ruling CR-21/22/23 cite: §6 row and schema
-fragment before any handler. §8's first must-not is *"invent new ops not in this spec"*
-(`protocol.md:1440`), and no row for any pixel readback exists anywhere in `empyrean` — this document
-is the raising. Every line anchor below was read in the file it names on 2026-08-18; every quoted
-sentence exists verbatim at its anchor.
+fragment before any handler. §8's must-not is *"invent new ops not in this spec"*
+(`protocol.md:1495` — *amended per ruling R7: an earlier draft anchored this at `:1440`, which is
+§8 item 21's tail; the verbatim sentence lives at `:1495`*), and no row for any pixel readback
+exists anywhere in `empyrean` — this document is the raising. Every line anchor below was read in
+the file it names on 2026-08-18; every quoted sentence exists verbatim at its anchor.
 
 **The contract has already named this gap, in its own voice.** `emulator/pixel_attribution`'s prose —
 the paragraph §6 itself calls *"the single most misreadable property of the method"* — closes its
@@ -23,8 +35,13 @@ first normative bullet with (`protocol.md:1066-1067`):
 
 CR-24 is that capability. The amendment must also edit that sentence to name `emulator/scanlines` as
 the reconciliation path — leaving it reading "does not yet have" beside a row that exists would be a
-live prose/catalog contradiction of exactly the kind D14 files as a spec bug. (The §11.13 amendment
-log's own echo of the sentence at `protocol.md:1775-1777` is a historical record and stays untouched.)
+live prose/catalog contradiction of exactly the kind D14 files as a spec bug. The edit is APPROVED by
+the ruling, with this replacement: *"…a client that needs the two to agree needs a per-scanline
+capability — `emulator/scanlines` (added 2026-08-18, §11.14), which reads the drawn rows back"* —
+and the §11.14 log entry must record the edit. (The **§11.3** amendment log's own echo of the
+sentence at `protocol.md:1775-1777` is a historical record and stays untouched — *amended per ruling
+R7: an earlier draft attributed the echo to §11.13; §11.3 spans `:1742-1806` and §11.13 begins
+`:2364`, so the echo is §11.3's.*)
 
 ---
 
@@ -33,7 +50,8 @@ log's own echo of the sentence at `protocol.md:1775-1777` is a historical record
 ### In the contract: nothing
 
 No §6 row is keyed by a scanline. The *VRAM / CRAM / layers* table (`protocol.md:1039-1051`) holds
-nine rows; the only coordinate-shaped one is `pixel_attribution` (one winning dot, resolved from
+**ten** rows *(amended per ruling R7 — an earlier draft said nine; counted at `:1042-1051`)*; the
+only coordinate-shaped one is `pixel_attribution` (one winning dot, resolved from
 **current** VDP state — its prose at `protocol.md:1059-1067` is explicit that it *"MUST NOT read a
 framebuffer"* and may therefore legitimately disagree with the drawn picture). `emulator/screenshot`
 returns a PNG file path, not bytes a gate can assert on. `run_to_scanline` (`protocol.md:788`) is a
@@ -51,7 +69,13 @@ is therefore a **new tool row**, written against the contract row below rather t
 
 This is the CR's central claim, and it was verified by recon rather than transcribed, because it
 decides whether the handler is a pure read or a plumbing project. **It is a pure read of existing
-engine state. Zero core changes; zero new capture plumbing.** The anchors, each read at its line:
+engine state: zero core MACHINE changes; zero new capture plumbing. One test-fixture builder is
+added to `crates/oracle-core/src/testrom.rs` for the adoption condition's suite gate (i) —
+`build_cram_midframe(line)`-shaped, precedented by the existing parameterized
+`build_trap_on_frame(frame)` (`testrom.rs:213`) — so the slice is no longer literally "zero core
+changes", and this claim is stated in that honest form** *(amended per ruling R1's suite-gate
+consequence; the adjudicator verified the pure-read claim itself end to end, including the hosted
+wiring `oracle-frontend/src/bus.rs:164` → `host.rs:346-348`)*. The anchors, each read at its line:
 
 1. **The engine already owns a live per-line capture, attached to every run.**
    `crates/oracle-aether/src/engine.rs:447` — `screen: ScanlineCapture` — constructed at `:510` as
@@ -67,8 +91,12 @@ engine state. Zero core changes; zero new capture plumbing.** The anchors, each 
    frames the capture does not see.
 3. **The raster-vs-state-render split is already normative on this server's own wire.**
    `Engine::framebuffer` (`engine.rs:1061-1073`) prefers the latched raster frame
-   (`from_raster = true`) and falls back to a post-hoc `render_line` sweep of current VDP state only
-   when no whole frame has ever completed. Its doc comment (`:1050-1055`) records the measured reason:
+   (`from_raster = true`) and falls back to a post-hoc `render_line` sweep of current VDP state
+   whenever no completed frame is retained — before the first frame, and again after `reset`,
+   `reload_rom` or `restore` drop the retained frame (`invalidate_screen`, `engine.rs:750`, called
+   at `:2120`/`:2148`/`:2293`) *(amended per ruling R4 — an earlier draft said "only when no whole
+   frame has ever completed", which missed the recurrence)*. Its doc comment (`:1050-1055`) records
+   the measured reason:
    the fallback renders from end-of-frame state, *"by which point a game has already rewritten CRAM
    for the next frame"* — S3K's underwater split came out *"bright red instead of slate blue"*, and
    the window hit the same bug over 6 of 17 conformance ROMs before being fixed the same way.
@@ -87,12 +115,18 @@ engine state. Zero core changes; zero new capture plumbing.** The anchors, each 
    (320) vs H32 (256) with it.
 5. **Heterogeneous widths exist in the stream but are NOT representable in the retained frame** —
    the one recon answer that bends a pin, recorded in "Pins" below. `store_from_capture`
-   (`engine.rs:3462-3491`, doc at `:3445-3461`) is the single reader both the bus and the player's
-   `blit_capture` (`crates/oracle-frontend/src/main.rs:503`) use, and its doc states: *"A frame is
-   not guaranteed rectangular. A game can switch H32↔H40 part-way down (S3K does exactly that on the
-   first frame after a soft reset), so the width is the width the frame **ended** on — what the VDP
-   is actually scanning out by V-Blank — and short lines are padded with black to reach it."* The
-   retained frame is rectangular **by construction**: one width, frame-end, black-padded.
+   (`engine.rs:3462-3491`, doc at `:3445-3461`) is the bus's frame reader; the player's
+   `blit_capture` (`crates/oracle-frontend/src/main.rs:503`) is its **twin — two twinned
+   implementations kept aligned by cross-reference and tests, not one shared function** *(amended
+   per ruling R7 — an earlier draft called it "the single reader both the bus and the player's
+   blit_capture use"; `blit_capture` does not call `store_from_capture`, though the normalization
+   substance is identical)*. The bus reader's doc states: *"A frame is not guaranteed rectangular.
+   A game can switch H32↔H40 part-way down (S3K does exactly that on the first frame after a soft
+   reset), so the width is the width the frame **ended** on — what the VDP is actually scanning out
+   by V-Blank — and short lines are padded with black to reach it."* The retained frame is
+   rectangular **by construction**: one width, frame-end, shorter lines black-padded **and longer
+   lines cropped to it** (the loop at `engine.rs:3483-3489` reads only `0..width` of each line —
+   *crop direction added per ruling R3*).
 
 So the handler is: slice `framebuffer()`'s rows `[startLine .. startLine+count]`, spell them per D9,
 attach the `source` the tuple already carries. The determinism the demand calls *"the whole
@@ -106,8 +140,12 @@ demand doc's assessment says so and nothing in recon contradicts it.
 In §6's *VRAM / CRAM / layers* table, directly under `emulator/sprites` (`protocol.md:1051`):
 
 ```markdown
-| `emulator/scanlines` | `startLine`? (0–223, def 0), `count`? (≥1; `startLine`+`count` ≤ 224, def: through line 223) | `startLine`, `mode`, `source`, `rows[]{line,width,rgb}`, `caveat`? |
+| `emulator/scanlines` | `startLine`? (0–223, def 0), `count`? (≥1; `startLine`+`count` ≤ 224, def: through line 223) | `startLine`, `mode`, `source`, `rows[]{line,width,rgb}` |
 ```
+
+*(`caveat`? dropped from the row's result column per adopted recommendation (b) — symmetry with
+`emulator/screenshot`'s row at `protocol.md:1208`, which lists no `caveat` either; the fragment
+still declares it.)*
 
 and, as its **own blockquote block** after the `sprites` blockquote (the CR-21 R4 placement rule —
 never a new bullet inside a sibling's closed enumeration):
@@ -130,30 +168,56 @@ never a new bullet inside a sibling's closed enumeration):
 >   `startLine`.
 > - **`source` names which instrument answered**, with `emulator/screenshot`'s spellings and
 >   semantics: `"raster"` — the live per-line capture, the normative content; `"stateRender"` — the
->   pre-first-frame fallback, rendered from VDP state as it stands now. A stateRender reply is still
->   an answer (a machine that has never completed a frame has no raster to show) and carries
->   `caveat`; but a post-hoc render is structurally blind to mid-frame effects — the exact blindness
->   this method exists to see past — so **a gate that depends on mid-frame liveness MUST check
->   `source == "raster"`**. A row whose provenance is unstated is worse than a wrong one.
+>   fallback when no completed frame is retained, rendered from VDP state as it stands now. A
+>   stateRender reply is still an answer (a machine that has never completed a frame has no raster
+>   to show) and carries `caveat`; but a post-hoc render is structurally blind to mid-frame effects
+>   — the exact blindness this method exists to see past — so **a gate that depends on mid-frame
+>   liveness MUST check `source == "raster"`**. A row whose provenance is unstated is worse than a
+>   wrong one. `reset`, `reload_rom`, and `restore` drop the retained frame — the machine under it
+>   was replaced — so the first call after any of them answers stateRender + `caveat` until a new
+>   frame completes. A server MUST NOT serve a frame drawn by a machine that is no longer there.
 > - **A pure read**: §6's run-control state rule does not apply and a server MUST NOT refuse it on a
 >   free-running machine, exactly as `read`, `pixel_attribution` and `sprites` are. The envelope's
 >   `running: true` is the whole answer to a torn sample.
-> - **Bounds are structural, and refused.** Active display is lines 0–223 (NTSC V28). `startLine`
->   past 223, `count` under 1, or `startLine`+`count` past 224 is `-32602` — refused, never clipped.
->   The row list takes neither a truncation flag nor a cursor: §2.4's dichotomy, structural bound →
->   neither. `mode` names the answering frame's width class — `"h40"` (320) or `"h32"` (256). A
->   frame is not guaranteed rectangular (a game can switch width mid-frame); the answer is
->   normalized to the width the frame **ended** on — what the VDP was scanning out by V-Blank —
->   short lines black-padded, so every `rows[].width` in one reply equals `mode`'s width. `width` is
->   carried per row anyway so each `rgb` is mechanically checkable (`width` × 6 hex digits) without
->   consulting `mode`.
+> - **Bounds are structural, and refused.** Active display is lines 0–223: this catalog's slice is
+>   the NTSC V28 display (the reference core is region-hardcoded); a V30-capable server needs a §11
+>   amendment raising the bound. `startLine` past 223, `count` under 1, or `startLine`+`count` past
+>   224 is `-32602` — refused, never clipped. (`-32602` here where `pixel_attribution` refuses
+>   `-32004` is a decision, not drift: this bound is a constant of the catalog, enforced
+>   mechanically by the fragment itself, while `pixel_attribution`'s refusal is mode-dependent —
+>   the H40/H32 width — and must carry `width`/`height` in `error.data`, which no static schema can
+>   express.) The row list takes neither a truncation flag nor a cursor: §2.4's dichotomy,
+>   structural bound → neither. `mode` names the answering frame's width class — `"h40"` (320) or
+>   `"h32"` (256). A frame is not guaranteed rectangular (a game can switch width mid-frame); the
+>   answer is normalized to the width the frame ended on — what the VDP was scanning out by V-Blank
+>   — shorter lines black-padded and longer lines cropped to it, so every `rows[].width` in one
+>   reply equals `mode`'s width. (A stateRender reply's `mode` is the width the VDP would draw
+>   now.) `width` is carried per row anyway so each `rgb` is mechanically checkable (`width` × 6
+>   hex digits) without consulting `mode`.
 ```
+
+*(Blockquote amended per rulings R3 — the crop direction, previously "short lines black-padded"
+alone; R4 — the invalidation interaction and the fallback no longer described as pre-first-frame
+only; R5 — `mode`'s stateRender reading, matching the handler design (`render_line(0).len()`); and
+R6 — the NTSC-V28 scope sentence and the `-32602`-vs-`-32004` contrast now land in contract text
+rather than only in this CR's pin commentary.)*
 
 ## The proposed schema fragment (verbatim, as it would land)
 
+*(Fragment amended per ruling R2 — the mode↔width↔rgb-length tie is now mechanical, in the `read`
+precedent's spirit ("enforced in the schema, in both directions, rather than left to prose",
+`protocol.md:864-866`), with the loose whole-pixel pattern kept on the property as the floor; per
+R4 — the fallback and `caveat` descriptions no longer read pre-first-frame-only; per R5 — `mode`'s
+stateRender reading; per R6 — the V28 scope and refusal-contrast decisions recorded in the
+$comment; and per adopted recommendations (a) — the caveat⇔source tie deliberately left
+mechanically unenforced, matching `screenshot`'s fragment, the decision recorded in the $comment
+rather than silently taken — and (d) — the garbled caveat sentence reworded to the write_memory
+precedent's actual phrasing. Remains prose-only, correctly, because JSON Schema cannot express
+them: `startLine`+`count` ≤ 224; rows contiguous/ascending; `rows.length == count`.)*
+
 ```json
 "emulator/scanlines": {
-  "$comment": "protocol.md §6 (VRAM/CRAM/layers), added 2026-08-18 by §11.14 (CR-24). Row-range readback of the most recently completed frame's rendered active display — the live raster, S/H applied, mid-frame effects included — never a post-hoc state render when a completed frame exists. A pure read: a server MUST NOT refuse it on a free-running machine, exactly as read and sprites. No frame param: drive the machine to F and read; the envelope stamp is the frame identity. Bounds are structural (active lines 0-223, NTSC V28): startLine+count past 224 is -32602, refused never clipped, and the list takes neither truncated nor cursor (§2.4: structural bound -> neither). source carries screenshot's spellings ('raster'|'stateRender'); a liveness-dependent gate MUST check source=='raster' — a stateRender row passes every shape check and is structurally blind to mid-frame effects. caveat is emitted on stateRender only, declared here so its absence elsewhere is a decision (the sprites precedent).",
+  "$comment": "protocol.md §6 (VRAM/CRAM/layers), added 2026-08-18 by §11.14 (CR-24). Row-range readback of the most recently completed frame's rendered active display — the live raster, S/H applied, mid-frame effects included — never a post-hoc state render when a completed frame exists. A pure read: a server MUST NOT refuse it on a free-running machine, exactly as read and sprites. No frame param: drive the machine to F and read; the envelope stamp is the frame identity. Bounds are structural (active lines 0-223 — this catalog's slice is the NTSC V28 display; a V30-capable server needs a §11 amendment raising the bound): startLine+count past 224 is -32602, refused never clipped — a decision, not drift, versus pixel_attribution's -32004, whose bound is mode-dependent and not schema-expressible — and the list takes neither truncated nor cursor (§2.4: structural bound -> neither). source carries screenshot's spellings ('raster'|'stateRender'), where stateRender is the fallback when no completed frame is retained — before the first frame, and again after reset/reload_rom/restore drop it; a liveness-dependent gate MUST check source=='raster' — a stateRender row passes every shape check and is structurally blind to mid-frame effects. caveat is emitted on stateRender only — declared, not omitted by accident (the sprites precedent). The caveat<->source tie is deliberately left mechanically unenforced, matching screenshot's fragment, the direct precedent (CR-24 ruling disposition (a)). Prose-only, since JSON Schema cannot express them: startLine+count <= 224; rows contiguous and line-ascending; rows.length == count.",
   "params": {
     "type": "object",
     "properties": {
@@ -162,12 +226,23 @@ never a new bullet inside a sibling's closed enumeration):
     }
   },
   "result": {
-    "allOf": [{ "$ref": "#/$defs/replyFields" }],
+    "allOf": [
+      { "$ref": "#/$defs/replyFields" },
+      {
+        "if": { "properties": { "mode": { "const": "h40" } }, "required": ["mode"] },
+        "then": { "properties": { "rows": { "items": { "properties": {
+          "width": { "const": 320 },
+          "rgb": { "pattern": "^0x[0-9A-Fa-f]{1920}$" } } } } } },
+        "else": { "properties": { "rows": { "items": { "properties": {
+          "width": { "const": 256 },
+          "rgb": { "pattern": "^0x[0-9A-Fa-f]{1536}$" } } } } } }
+      }
+    ],
     "required": ["startLine", "mode", "source", "rows"],
     "properties": {
       "startLine": { "type": "integer", "minimum": 0, "maximum": 223, "description": "Echoed (or defaulted) first line." },
-      "mode": { "enum": ["h40", "h32"], "description": "The answering frame's width class: h40 = 320 px, h32 = 256 px. A mid-frame width switch is normalized to the width the frame ended on, short lines black-padded." },
-      "source": { "enum": ["raster", "stateRender"], "description": "Which instrument answered — screenshot's spellings. raster: the retained live per-line capture (the normative content). stateRender: the pre-first-frame fallback, rendered from current VDP state; structurally blind to mid-frame effects, so liveness gates MUST check for raster." },
+      "mode": { "enum": ["h40", "h32"], "description": "The answering frame's width class: h40 = 320 px, h32 = 256 px. A mid-frame width switch is normalized to the width the frame ended on — shorter lines black-padded, longer lines cropped. A stateRender reply's mode is the width the VDP would draw now. The mode<->width<->rgb-length tie is enforced by the result's if/then." },
+      "source": { "enum": ["raster", "stateRender"], "description": "Which instrument answered — screenshot's spellings. raster: the retained live per-line capture (the normative content). stateRender: the fallback when no completed frame is retained — before the first frame, or after reset/reload_rom/restore dropped it — rendered from current VDP state; structurally blind to mid-frame effects, so liveness gates MUST check for raster." },
       "rows": {
         "type": "array",
         "minItems": 1,
@@ -177,13 +252,13 @@ never a new bullet inside a sibling's closed enumeration):
           "required": ["line", "width", "rgb"],
           "properties": {
             "line": { "type": "integer", "minimum": 0, "maximum": 223, "description": "Active-display line number (D9 category 2)." },
-            "width": { "type": "integer", "enum": [256, 320], "description": "Pixels in this row. Equals mode's width for every row of one reply; carried per row so rgb is checkable in place." },
-            "rgb": { "type": "string", "pattern": "^0x([0-9A-Fa-f]{6})+$", "description": "width x 3 bytes, pixels left to right, r,g,b per pixel — the S/H-applied output values (D9 category 1). The pattern enforces whole-pixel granularity." }
+            "width": { "type": "integer", "enum": [256, 320], "description": "Pixels in this row. Equals mode's width for every row of one reply (enforced by the result's if/then); carried per row so rgb is checkable in place." },
+            "rgb": { "type": "string", "pattern": "^0x([0-9A-Fa-f]{6})+$", "description": "width x 3 bytes, pixels left to right, r,g,b per pixel — the S/H-applied output values (D9 category 1). This pattern is the whole-pixel floor; the exact per-mode length (1920 or 1536 hex digits) is enforced by the result's if/then." }
           }
         },
         "description": "The requested rows, line-ascending, contiguous from startLine."
       },
-      "caveat": { "type": "string", "description": "Present only when source is stateRender: no frame has completed, and the rows are rendered from VDP state as it stands now — mid-frame effects a real raster would show are NOT reproduced." }
+      "caveat": { "type": "string", "description": "Present only when source is stateRender: no completed frame is retained — the machine has not completed one, or reset/reload_rom/restore dropped it — and the rows are rendered from VDP state as it stands now; mid-frame effects a real raster would show are NOT reproduced." }
     }
   }
 },
@@ -210,7 +285,8 @@ stated so nobody re-derives it as an objection.
   whose fix needs the HBlank window located in cycle space — a delay-value sweep that is ~20 manual
   screenshot analyses today and becomes an automated, permanently-protective gate with this method.
 - **The acceptance fixture already exists and was read for this CR**:
-  `aeon/docs/benchmarks/scanline-p2/HBLANK-WINDOW-SWEEP-SPEC.md` (`1fb982f7`) — prediction
+  `aeon/docs/benchmarks/scanline-p2/HBLANK-WINDOW-SWEEP-SPEC.md` (`2cf267a9`; refreshed per
+  adopted recommendation (c), A1/A2 re-verified byte-identical there) — prediction
   (clean N ∈ [15, 19], centre 17), one-poke fixture (`write_memory` at `Raster_Buf_A + 20`, under
   our own `-32005` paused-poke gate, *"enforced rather than remembered"*), classification, and §8's
   acceptance criteria A1–A5. Its A3–A5 are satisfied by this row's shape directly: row range in one
@@ -236,8 +312,10 @@ stated so nobody re-derives it as an objection.
 2. **Semantics: the retained last completed frame; no frame parameter.** The bus's read model is
    whole-frame — a client drives the machine to the frame it cares about (`run_frames`, `run_to`)
    and reads, and the §2.2 stamp on the reply is the frame identity. The demand side declined
-   sub-frame addressing in as many words (*"no sub-frame addressing needed; the deterministic frame
-   counter is fine"*). A `frame` parameter would imply a frame archive no engine keeps
+   sub-frame addressing in as many words — *"'As of frame F' against the deterministic frame
+   counter is fine — no sub-frame addressing needed"* (demand doc `:62-63`; *requoted per ruling R7
+   — an earlier draft presented a resequenced paraphrase of this sentence as verbatim*). A `frame`
+   parameter would imply a frame archive no engine keeps
    (`Retain::LastFrame` holds exactly one completed frame — `scanline_capture.rs:29-35`) and would
    be the D12 silent-wrong-answer trap the moment a client asked for a frame the server no longer
    had.
@@ -250,8 +328,13 @@ stated so nobody re-derives it as an objection.
    deliberate contrast is `pixel_attribution`'s `-32004`: its refusal is coordinate-shaped and
    mode-dependent (H40 vs H32 width, carried back as `width`/`height` in `error.data` —
    `protocol.md:1073-1080`), which a static schema cannot express; a line bound of 224 has no such
-   escape hatch to need. Row RANGE in one call, per the demand ruling ("assertions are always about
-   a boundary; a single-row call would just be called N times") and the fixture's A3.
+   escape hatch to need. *(Amended per ruling R6: this contrast now also lands in the contract
+   text itself — the proposed blockquote and $comment carry the decision-not-drift sentence — so a
+   contract reader finds it without this CR.)* The V28 scope is likewise now contract text: active
+   display 0–223 is this catalog's NTSC V28 slice (the reference core is region-hardcoded), and a
+   V30-capable server needs a §11 amendment raising the bound. Row RANGE in one call, per the
+   demand ruling ("assertions are always about a boundary; a single-row call would just be called N
+   times") and the fixture's A3.
 4. **Result `startLine`, `mode`, `source`, `rows[]{line,width,rgb}`, `caveat`?; neither `truncated`
    nor `cursor`.** §2.4(d)'s dichotomy verbatim: *"policy bound → flag it, and cursor it only where
    continuation is supported; structural bound → neither"* (`protocol.md:540-546`). 224 is the
@@ -260,9 +343,11 @@ stated so nobody re-derives it as an objection.
    `protocol.md:110-112`). **`mode` is a single top-level value, not per-row — the pin that bent to
    tree-truth**: the dispatch pin allowed per-row width "if recon shows heterogeneity is
    representable", and recon showed the opposite — heterogeneity exists in the raw line stream but
-   is *normalized away* by the one shared frame reader (`store_from_capture`, `engine.rs:3454-3456`:
-   frame-end width, black-padded), identically for the bus, the player, and a hosted publish. A
-   per-row `mode` would promise a distinction no reply can ever carry. Per-row `width` is kept
+   is *normalized away* by the frame readers (`store_from_capture`, `engine.rs:3454-3456`:
+   frame-end width, shorter lines black-padded, longer cropped; the player's twinned
+   `blit_capture`, `main.rs:503`, normalizes identically — *"one shared reader" corrected to two
+   twinned implementations per ruling R7*), the same way for the bus, the player, and a hosted
+   publish. A per-row `mode` would promise a distinction no reply can ever carry. Per-row `width` is kept
    anyway — every row's `rgb` is mechanically checkable in place (`width` × 6 hex digits), the
    §2.4 "checkable against each other rather than individually plausible" spirit — with the prose
    pinning it equal to `mode`'s width.
@@ -305,15 +390,19 @@ stated so nobody re-derives it as an objection.
    three-surface parity rule requires the gap to be decided: the MCP gains a `scanlines` tool
    written against this row (no legacy row exists — grep-verified above); the player already
    renders every line of every frame through the very capture this method reads (`blit_capture`,
-   `crates/oracle-frontend/src/main.rs:503`, consuming the same `store_from_capture` reader), so a
-   GUI scanline panel would re-present what the window *is*. Recorded here per D15's discipline.
+   `crates/oracle-frontend/src/main.rs:503` — `store_from_capture`'s twinned implementation, not
+   its caller; *corrected per ruling R7*), so a GUI scanline panel would re-present what the window
+   *is*. Recorded here per D15's discipline (grounding verified by the adjudicator at
+   `protocol.md:237-242`).
 10. **The handler reads `framebuffer()`'s source — no new engine state.** Implementation placement,
     recorded so the adjudicator sees the whole design (it changes no wire shape): slice the same
     `(width, frame, from_raster)` tuple `screenshot` consumes (`engine.rs:1061-1073`), rows
     `[startLine .. startLine+count]`, spell per D9. Nothing new is captured, latched, cleared, or
     invalidated; every existing invariant (`latch_screen`'s release discipline, `invalidate_screen`
     on machine replacement, hosted `publish_capture`) covers this method for free because it owns
-    no state of its own.
+    no state of its own. *(Amended per ruling R1's consequence: the handler stays state-free, but
+    the SLICE adds one test-fixture builder to `crates/oracle-core/src/testrom.rs` for suite gate
+    (i) — see the central claim and the adoption condition.)*
 
 ---
 
@@ -330,19 +419,44 @@ requires. **Registered when:**
    > matters most: three prior capture protocols in Aeon failed their own controls on exactly this,
    > which is why raster landing has never been gateable here."*
 
-3. **A2 — liveness — holds**, quoted verbatim from the same section:
+3. **A2 — liveness — holds, in executable form** *(clause restated per ruling R1: as first
+   written, this clause quoted A2 verbatim and gated registration on it directly — but A2's
+   verbatim fixture is Aeon's, from the unmerged branch `parcel/raster-substrate-byte-moving` (the
+   spin word at `Raster_Buf_A + 20` exists only post-item-1a) plus sweep-spec §5's game-state
+   ritual (Camera_Y=144, three live-pointer pokes), none of which is in this repo's suite — tests
+   boot only `oracle_core::testrom::build()`, and no testrom builder (`build`,
+   `build_vint_counter`, `build_pad_log`, `build_trap_on_frame`, `build_vram_poke`,
+   `build_pad_poll`) writes CRAM mid-frame. "Registration gated on an unexecutable clause is a
+   condition that gets waived silently." The clause is therefore split into two suite gates this
+   repo can run, plus the acceptance protocol the verbatim A2 remains)*:
 
-   > *"**A2 — Liveness (the non-vacuity check).** **N = 0 and N = 17 MUST produce different content
-   > on row 99.** A capture that reports post-frame state would show them identical, because by end
-   > of frame the CRAM value is the same either way — the whole question is *when* it changed. If
-   > A2 fails, the surface is structurally blind to this defect class in the same way a post-hoc
-   > frame dump is, regardless of how good the pixels look."*
+   - **Suite gate (i), the two-timings poison**: a new testrom builder — e.g.
+     `build_cram_midframe(line: u16)` — that polls the HV counter (`$C00008`) until the target
+     line, then writes one CRAM entry the drawn art references (the content trap, inherited). Two
+     builder arguments MUST yield different `rows[].rgb` at the boundary row, asserted against
+     replies whose `source == "raster"`. This is the sweep fixture's SHAPE ported — what the
+     demand doc's synthetic-fixture clause anticipates.
+   - **Suite gate (ii), executable today**: `color_1536` (vendored; pinned LIVE-DIFFERS
+     `frame_hash=0x917371f07409cb25` at `crates/oracle-core/tests/scanline_goldens.rs:129-130`) —
+     a raster reply's rows MUST differ from the same machine point's stateRender rows.
+     (`cram_flicker` is pinned IDENTICAL-TO-POST-HOC at `:132` and is NOT a liveness
+     discriminator — do not substitute it.)
+   - **Acceptance protocol, not a suite gate**: the verbatim A1/A2 sweep against the Aeon fixture,
+     client-driven per sweep-spec §5 when that branch's ROM is in hand, with the two discriminator
+     anchors as the first two data points. A2 verbatim, which the protocol executes:
 
-A post-frame-state implementation passes clause 1 in full and fails clause 3 — **that is the
-point**. The sweep spec's own gloss earns A2 its permanence: *"It is a poison in the Aeon sense —
-it perturbs the subject (the spin value) and requires the instrument to notice, rather than
-asserting that the instrument returned something."* A2 lives in this repo's suite permanently, and
-per pin 7 the harness asserts it against replies whose `source == "raster"`.
+     > *"**A2 — Liveness (the non-vacuity check).** **N = 0 and N = 17 MUST produce different
+     > content on row 99.** A capture that reports post-frame state would show them identical,
+     > because by end of frame the CRAM value is the same either way — the whole question is
+     > *when* it changed. If A2 fails, the surface is structurally blind to this defect class in
+     > the same way a post-hoc frame dump is, regardless of how good the pixels look."*
+
+Clauses 1 and 2 are executable as written and stand (the ruling's own finding). A post-frame-state
+implementation passes clause 1 in full and fails clause 3's gates — **that is the point**. The
+sweep spec's own gloss earns A2 its permanence: *"It is a poison in the Aeon sense — it perturbs
+the subject (the spin value) and requires the instrument to notice, rather than asserting that the
+instrument returned something."* A2's shape lives in this repo's suite permanently as gate (i),
+and per pin 7 every liveness assertion runs against replies whose `source == "raster"`.
 
 One inherited constraint for any synthetic A1/A2 fixture, from the demand doc's content trap: the
 tinted CRAM entry must be one the art at the measured rows actually references (Aeon's R1 got a
@@ -391,9 +505,13 @@ again.
 widths 256/320 fixed by the video hardware). There is no policy number a client would otherwise
 discover by being refused, so advertising one would misfile a hardware constant as server taste.
 
-**The `pixel_attribution` prose edit** (`protocol.md:1066-1067`): *"needs a per-scanline
-capability, which this catalog does not yet have"* → names `emulator/scanlines` as that capability.
-The §11.13 log's echo of the old sentence stays — amendment logs are records, not live text.
+**The `pixel_attribution` prose edit** (`protocol.md:1066-1067`) — **APPROVED by the ruling**,
+precedented (§11.13's run-control append; §11.12's deprecation marks; D14 makes the stale sentence
+a live bug), with this replacement text: *"…a client that needs the two to agree needs a
+per-scanline capability — `emulator/scanlines` (added 2026-08-18, §11.14), which reads the drawn
+rows back."* The §11.14 log entry must record this edit. The **§11.3** log's echo of the old
+sentence stays — amendment logs are records, not live text *(amended per ruling R7: an earlier
+draft attributed the echo to §11.13; §11.3 spans `:1742-1806`, §11.13 begins `:2364`)*.
 
 **Two follow-ups registered**: **F-SCANLINE-INDEX** and **F-SCANLINE-SH** (pin 6, with the
 attribution rationale attached there). Both are additive per D5, both require the renderer→sink
