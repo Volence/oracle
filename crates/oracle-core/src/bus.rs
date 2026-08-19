@@ -75,9 +75,13 @@ pub trait BusEventSink {
     fn on_step_boundary(&mut self, _pc: u32, _frame: u64) {}
 
     /// Whether this sink wants VDP-internal writes delivered (watchpoints v2). The sink-generic run loop calls
-    /// this **once per run** and, only if it returns `true`, arms the VDP's write-capture buffer for the run —
-    /// so the currency-sensitive capture path stays byte-for-byte off unless a consumer opts in. The default is
-    /// `false`, so `()` / `Vec<BusEvent>` never arm capture.
+    /// this **once per run**; the VDP's write-capture buffer is armed for the run if this returns `true`
+    /// **or** if the sink wants rendered rows — the deferred scanline emitter reads the CRAM subset of the
+    /// same capture to place each landing inside its row (`F-SCANLINE-SUBLINE`). So the buffer being armed no
+    /// longer implies this method said yes; what it does still imply is that some consumer opted in, and with
+    /// neither attached the currency-sensitive capture path stays byte-for-byte off. The default is `false`,
+    /// so `()` / `Vec<BusEvent>` never arm capture on their own account, and a captured write is delivered to
+    /// [`on_vdp_write`](BusEventSink::on_vdp_write) only for a sink that asked for it here.
     fn wants_vdp_writes(&self) -> bool {
         false
     }
@@ -89,19 +93,50 @@ pub trait BusEventSink {
     fn on_vdp_write(&mut self, _write: crate::vdp::VdpWrite) {}
 
     /// Whether this sink wants rendered scanlines delivered (conformance Limitation L1: mid-frame CRAM /
-    /// palette effects are invisible to an after-the-run capture). The `Scanline` event queries this per
-    /// active line and, only when `true`, decodes the already-built line report to RGB for
-    /// [`on_scanline`](BusEventSink::on_scanline) — the default `false` keeps the null-sink path exactly the
-    /// discard-the-render hot path (no decode, no allocation).
+    /// palette effects are invisible to an after-the-run capture — including, since `F-SCANLINE-SUBLINE`,
+    /// mid-*scanline* ones). The `Scanline` event queries this per
+    /// active line and, only when `true`, **retains** the already-built line report + that line's CRAM; the
+    /// run loop decodes it to RGB at the next line's event and hands the finished slice to
+    /// [`on_scanline`](BusEventSink::on_scanline). The default `false` keeps the null-sink path exactly the
+    /// discard-the-render hot path (no retain, no decode, no allocation).
+    ///
+    /// It is queried **once more, at the start of each run** — not to set an armed flag (there is none),
+    /// but for a single negative action: a run whose sink does not want rows drops any row a previous run
+    /// left retained, so a stale row is never handed to a sink that did not resolve it. A run whose sink
+    /// does want rows inherits it.
+    ///
+    /// **Contract: the answer must not change for the duration of a run.** This is a capability query, not
+    /// a per-line filter — the run-start query and the per-line queries are assumed to agree, and a sink
+    /// that flips mid-run gets neither the "every active line" guarantee nor the drop-on-unarmed one. Every
+    /// sink in this tree answers a constant.
     fn wants_scanlines(&self) -> bool {
         false
     }
 
-    /// One rendered active line (0..=223), delivered **during** the run at the moment the self-rescheduling
-    /// `Scanline` event renders it — so the RGB reflects the VDP state (CRAM included) live at that line, not
-    /// the end-of-frame state. `rgb` is a borrow of the line just rendered (length = the active width, 256
-    /// H32 / 320 H40); copy out whatever must outlive the call. Only called when
-    /// [`wants_scanlines`](BusEventSink::wants_scanlines) returned `true`. The default is a no-op.
+    /// One rendered active line (0..=223), delivered **during** the run, carrying the VDP state (CRAM
+    /// included) live at that line — not the end-of-frame state. `rgb` is a borrow (length = the active
+    /// width, 256 H32 / 320 H40); copy out whatever must outlive the call. Called only for a sink whose
+    /// [`wants_scanlines`](BusEventSink::wants_scanlines) answers `true` — which that method requires to be
+    /// constant for a run, so a sink that flips mid-run may still be handed a row it resolved while armed.
+    /// The default is a no-op.
+    ///
+    /// **When, exactly (`F-SCANLINE-SUBLINE`).** Row N is *resolved* at line N's `Scanline` event and
+    /// *emitted* at line N+1's, from the retained report, a CRAM snapshot taken at line N's start, and the
+    /// journal of CRAM writes that landed inside line N; row 223 is emitted at the line-224 event, before
+    /// [`on_frame_boundary`](BusEventSink::on_frame_boundary). Row indices and row order are unchanged, and
+    /// the row is always **complete** — the decode is internally segmented, but a sink never sees a span.
+    /// The one other caller-visible consequence: a run that stops between line N's event and line N+1's has
+    /// not yet delivered row N.
+    ///
+    /// **What a row now samples.** A CRAM write that lands during line N's active display changes row N
+    /// **from its landing pixel onward** — the row carries the palette as it evolved across its own width,
+    /// which is what makes a mid-scanline palette effect (the 1536-colour trick, an HBlank gradient)
+    /// expressible here at all. Everything else is still a line-start sample: registers, VSRAM, the
+    /// h-scroll table and VRAM are *resolve*-stage inputs, and the resolve is not segmented (decisions C-2,
+    /// C-3, C-5). A non-CRAM write during line N therefore still cannot change row N, and its first
+    /// affected row is N+1 — the old rule, now true of everything except CRAM. Landing resolution is
+    /// instruction-granular (the write is stamped at the start of the instruction that drove it), and one
+    /// DMA burst lands at one pixel rather than smeared across the slots it really occupies (C-6).
     fn on_scanline(&mut self, _line: u16, _rgb: &[(u8, u8, u8)]) {}
 
     /// **Frame structure.** Called by the sink-generic run loop **exactly once per emulated frame**, at the
@@ -132,8 +167,9 @@ pub trait BusEventSink {
     /// n+2, …` across a DMA stall. Load-bearing — do not "simplify" it to `scheduler.now()`.
     ///
     /// **Sharp edge — "exactly once per frame" is a LIFETIME invariant, not a per-run one.** A run that ends
-    /// inside the ~one-line window between line 223's `on_scanline` and the line-224 event delivers a full
-    /// 224 scanlines and **zero** boundaries; that boundary is deferred into the next run (verified in
+    /// inside the ~one-line window between line 223's render and the line-224 event delivers **zero**
+    /// boundaries — and, under deferred emission, 223 scanlines rather than 224: row 223 is emitted *by*
+    /// that same line-224 event. Both are deferred into the next run (verified in
     /// `tests/scanline_capture.rs`). So a caller who reads a frame-accumulating sink right after such a run
     /// gets the *previous* frame back, with nothing to distinguish it — and `run_frames(0)` delivers no
     /// boundary at all. Only runs whose end lands on a frame-boundary mclk (`run_frames(n >= 1)`, the
@@ -993,7 +1029,9 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             let lo = self
                 .mapped_byte(src.wrapping_add(1) & ADDR_MASK)
                 .unwrap_or((*self.last_bus_word & 0xFF) as u8);
-            self.vdp.dma_write_word(((hi as u16) << 8) | lo as u16);
+            // Every word carries the transfer's own `now` (decision C-6): `now_mclk` is frozen for the
+            // instruction that triggered the DMA, so there is no finer clock to hand it here.
+            self.vdp.dma_write_word(((hi as u16) << 8) | lo as u16, now);
             src = src.wrapping_add(2);
         }
         let slots_per_word = if target == Target::Vram { 2 } else { 1 };
@@ -2370,6 +2408,43 @@ mod tests {
         );
     }
 
+    /// F-SCANLINE-SUBLINE slice 1, the bus half: a 68k→CRAM transfer hands the VDP the **transfer's own**
+    /// instant, so the palette words the sub-line arc has to locate are timed rather than merely ordered.
+    ///
+    /// `now_mclk` is frozen for the instruction that triggered the DMA (`MegaDriveBus` takes it by value), so
+    /// the transfer's instant *is* the trigger's instant and every word shares it — decision **C-6**, with
+    /// **F-SUBLINE-DMASPREAD** registered for the smearing this deliberately does not model. Started at a
+    /// non-zero clock so a dropped or zeroed stamp is visible rather than accidentally right.
+    #[test]
+    fn a_68k_to_cram_dma_carries_the_transfers_own_mclk_to_the_choke() {
+        let mut rom = vec![0u8; 0x1000];
+        // Four already-9-bit-masked colour words, big-endian at ROM $0400 = word address $000200.
+        rom[0x400..0x408].copy_from_slice(&[0x0E, 0xEE, 0x0A, 0xAA, 0x06, 0x66, 0x02, 0x22]);
+        let mut mem = MdMem::new(rom);
+        mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE; // vblank: the fast slot rate, and a non-zero clock
+
+        // reg 1 = $54 (display on + M1/DMA enable + M5), reg 15 = autoinc 2, regs 19/20 = 4 words,
+        // regs 21/22/23 = source word address $000200 with reg 23 bit 7 clear (Mem mode).
+        for w in [0x8154u16, 0x8F02, 0x9304, 0x9400, 0x9500, 0x9602, 0x9700] {
+            vdp_port_write(&mut mem, 0xC0_0004, w, MOVE_IMM_TO_ABS_W);
+        }
+        // CD = 100011 (CRAM write + CD5) @ CRAM $0000. The *second* word completes the command and fires it.
+        vdp_port_write(&mut mem, 0xC0_0004, 0xC000, MOVE_IMM_TO_ABS_W);
+        let triggered_at = mem.now_mclk;
+        vdp_port_write(&mut mem, 0xC0_0004, 0x0080, MOVE_IMM_TO_ABS_W);
+
+        assert_eq!(
+            &mem.vdp.cram()[0..8],
+            &[0x0E, 0xEE, 0x0A, 0xAA, 0x06, 0x66, 0x02, 0x22],
+            "the four payload words reached CRAM through the choke"
+        );
+        assert_eq!(
+            mem.vdp.now_mclk(),
+            triggered_at,
+            "and the VDP performed them at the transfer's own instant"
+        );
+    }
+
     #[test]
     fn vdpfifo_t4_fill_trigger_and_byte_placement() {
         // VDPFIFOTesting test 4 "DMA Fill FIFO Usage" (`vendor/TestRoms/vdp_port_access.bin`; name string
@@ -3226,6 +3301,7 @@ mod tests {
             new: 1,
             size: 1,
             via: crate::vdp::VdpVia::Direct,
+            mclk: 0,
         }
     }
 

@@ -313,8 +313,13 @@ fn last_frame_resyncs_after_a_reset_that_interrupts_a_frame() {
     s.run_until_with_sink(PARTIAL_LINES * oracle_core::vdp::MCLK_PER_LINE, &mut sink);
     assert_eq!(
         sink.lines().len(),
-        PARTIAL_LINES as usize,
-        "the first run ended mid-frame, with a torn partial frame buffered"
+        PARTIAL_LINES as usize - 1,
+        "the first run ended mid-frame, with a torn partial frame buffered. `- 1`: the run saw \
+         {PARTIAL_LINES} line events, but under deferred emission (`F-SCANLINE-SUBLINE` slice 3) each row \
+         is handed to the sink at the NEXT line's event, so the last line resolved is still retained in the \
+         machine. Same audited consequence as \
+         `a_run_ending_between_the_last_active_line_and_the_boundary_defers_it_to_the_next_run` \
+         (`docs/2026-08-19-subline-recon.md` §D); the resync contract this test is about is untouched"
     );
     assert!(
         sink.pixels().is_empty(),
@@ -326,7 +331,7 @@ fn last_frame_resyncs_after_a_reset_that_interrupts_a_frame() {
     assert_eq!(
         sink.pixels().len(),
         256 * 224,
-        "exactly one complete frame — NOT one frame plus the 100 orphaned lines"
+        "exactly one complete frame — NOT one frame plus the 99 orphaned lines"
     );
     assert_eq!(sink.frames_completed(), 1);
 
@@ -340,9 +345,9 @@ fn last_frame_resyncs_after_a_reset_that_interrupts_a_frame() {
 }
 
 /// Documented sharp edge 1: "exactly once per frame" is a **lifetime** invariant, not a per-run one. A run
-/// that ends inside the ~3420-mclk window between line 223's delivery and the line-224 event delivers a full
-/// 224 scanlines and ZERO boundaries; the boundary is deferred into the next run. A caller that reads
-/// `pixels()` right after such a run gets the PREVIOUS frame, with no signal that it did.
+/// that ends inside the ~3420-mclk window between line 223's render and the line-224 event delivers ZERO
+/// boundaries; the boundary is deferred into the next run. A caller that reads `pixels()` right after such a
+/// run gets the PREVIOUS frame, with no signal that it did.
 #[test]
 fn a_run_ending_between_the_last_active_line_and_the_boundary_defers_it_to_the_next_run() {
     let mut s = booted(0x1234_5678);
@@ -353,8 +358,12 @@ fn a_run_ending_between_the_last_active_line_and_the_boundary_defers_it_to_the_n
             .iter()
             .filter(|d| matches!(d, Delivery::Line(_)))
             .count(),
-        224,
-        "every active line of the frame was delivered"
+        223,
+        "223, not 224: under deferred emission (`F-SCANLINE-SUBLINE` slice 3) a row is handed to the sink at \
+         the NEXT line's Scanline event, so line 223's row is still retained when a run stops one mclk short \
+         of the line-224 event. The deferral this test is about is therefore one row deeper than it was — \
+         the thesis (a whole frame drawn, no boundary, completed by the next run) is unchanged. Audited \
+         consequence, `docs/2026-08-19-subline-recon.md` §D"
     );
     assert!(
         !sink.log.iter().any(|d| matches!(d, Delivery::Boundary(_))),
@@ -372,6 +381,97 @@ fn a_run_ending_between_the_last_active_line_and_the_boundary_defers_it_to_the_n
             .collect::<Vec<_>>(),
         vec![0],
         "the deferred boundary arrives in the NEXT run, still carrying frame 0"
+    );
+}
+
+/// The deferred-emission rule itself (`F-SCANLINE-SUBLINE` slice 3), stated once rather than inferred from
+/// the two run-length tests that happen to observe it: **row N is handed to the sink at line N+1's
+/// `Scanline` event**, never at its own. So a run stopped just short of line K's event has delivered rows
+/// `0..=K-2`, i.e. `K - 1` of them.
+///
+/// The row *index* is unchanged — `on_scanline(N, …)` still means line N — and so is the delivery order;
+/// only the instant moves, which is what buys the emitter a whole line's worth of CRAM writes to place
+/// inside the row (slice 4). A line-atomic emitter delivers `K` rows here and fails every row of the table.
+///
+/// The exact counts assume no single instruction of `testrom::build()` spans a whole scanline (3420 mclk);
+/// one that did would let several `Scanline` events drain in one burst and shift them. True today by a wide
+/// margin — recorded so a future test-ROM change reads as a fixture change, not a regression.
+#[test]
+fn a_row_is_emitted_at_the_next_lines_event_not_at_its_own() {
+    for stop_line in [1u64, 2, 57, 100, 224] {
+        let mut s = booted(0x1234_5678);
+        let mut sink = BoundaryLog::default();
+        // One mclk short of line `stop_line`'s event, so exactly the events for lines `0..stop_line` fired.
+        s.run_until_with_sink(stop_line * oracle_core::vdp::MCLK_PER_LINE - 1, &mut sink);
+        let lines: Vec<u16> = sink
+            .log
+            .iter()
+            .filter_map(|d| match d {
+                Delivery::Line(l) => Some(*l),
+                Delivery::Boundary(_) => None,
+            })
+            .collect();
+        let last_resolved = stop_line - 1; // the highest line whose event fired
+        assert_eq!(
+            lines,
+            (0..last_resolved as u16).collect::<Vec<_>>(),
+            "{stop_line} line events fired (lines 0..={last_resolved}), so every row EXCEPT {last_resolved} \
+             has been emitted — row {last_resolved} is still retained, waiting for the next line's event"
+        );
+    }
+}
+
+/// **The whole slice-4 plumbing, end to end, without a server** (`F-SCANLINE-SUBLINE`): boot the mid-frame
+/// CRAM fixture through the ordinary run loop and check the row it writes during actually splits.
+///
+/// `crates/oracle-aether/tests/scanlines.rs`'s a2 gate asserts the same shape over the wire, which is the
+/// right place for the *contract*; this asserts it at the seam where the mechanism lives, so a break in the
+/// mclk reduction, the CRAM-target filter, or which row a landing is filed against fails here — with a core
+/// stack trace and no spawned process to read it through.
+#[test]
+fn the_row_a_mid_line_cram_write_lands_on_is_the_row_that_splits() {
+    const LINE: usize = 50;
+    let mut s = System::new(0x1234_5678);
+    s.load_rom(oracle_core::testrom::build_cram_midframe(LINE as u8));
+    s.reset();
+    let mut cap = ScanlineCapture::new(Retain::LastFrame);
+    s.run_frames_with_sink(6, &mut cap); // frame 0 is wholly colour A; read a later one
+
+    let width = 256usize; // the fixture programs H32
+    let px = cap.pixels();
+    assert_eq!(px.len(), width * 224, "one complete H32 frame");
+    let row = |n: usize| &px[n * width..(n + 1) * width];
+    let transitions = |n: usize| row(n).windows(2).filter(|w| w[0] != w[1]).count();
+
+    assert_eq!(
+        transitions(LINE),
+        1,
+        "line {LINE} carries the write, so it splits — EXACTLY once. Zero means the emitter is still \
+         line-atomic (or the write never reached the journal); more than one means it was applied out of \
+         order or more than once."
+    );
+    for n in [LINE - 1, LINE + 1] {
+        assert_eq!(
+            transitions(n),
+            0,
+            "line {n} is uniform — the landing is filed against line {LINE} alone, not smeared across \
+             its neighbours"
+        );
+    }
+    assert_eq!(
+        row(LINE)[0],
+        row(LINE - 1)[0],
+        "the split row opens on the colour its predecessor is wholly painted in"
+    );
+    assert_eq!(
+        row(LINE)[width - 1],
+        row(LINE + 1)[0],
+        "and closes on the colour its successor is wholly painted in"
+    );
+    assert_ne!(
+        row(LINE - 1)[0],
+        row(LINE + 1)[0],
+        "which are two different colours"
     );
 }
 

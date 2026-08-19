@@ -34,9 +34,9 @@ Harness facts, so a reader can reproduce a row by hand:
 | `m68k_memory_test` (`memtest_68k`) | Reads every non-lockup address range twice; prints what it read **and** the ROM's own built-in real-hardware reference (`?` = wildcard nibble) | **Yes** — per-row compare, font base `$100`, 30 frames | **13 / 13 rows match** since the 2026-08-02 status-low-byte fixes (K4 slices took it 4/13 → 12/13; the row-11 residual was ODD-outside-interlace + VBlank-forced-while-display-disabled, both reference-corroborated semantics bugs — see the K4 ledger addendum) | **K4 — RESOLVED & FIXED**; row-11 status low byte also RESOLVED (adjudicated semantics, not timing — see below). |
 | `vdp_port_access` (`VDPFIFOTesting`) | 16 VDP port-access tests over two pages: FIFO size/behaviour, DMA-via-FIFO, byteswapping, partial CP writes, register-write masking, read-target switching, FIFO wait states | **Yes** — scrapes the on-screen `Results: ( P/ F/ T)` line; page 1 auto-runs (settles ~frame 42), `Start` advances to page 2 (~480 more frames) | **page 1 = 9 pass / 0 fail / 9 (complete)**; **pages 1+2 cumulative = 16 pass / 0 fail / 16 — this ROM is COMPLETE** (was 9/7/16 — slice A2 flipped T13 and T10, slice A3a flipped T3, slice A3b flipped T4, slice A4 flipped T6, slice T12 flipped T12, slices T16/S1 + T16/S2 flipped T16; Test 16's byte matrix had already improved 54→18 red cells with the A1 live FIFO flags — see notes below) | The harness remains non-gating on this ROM (the CHARTER line stands, and `conformance_roms.rs`'s header still states it); what changed on 2026-08-03 is that the owner asked for this ROM's rows to be worked, so they are now being fixed slice-by-slice (A1 = live FIFO EMPTY/FULL flags; A2 = control-port / code-register edges; A3a = DMA payload words through the FIFO ring; A3b = the DMA-fill trigger write + `address ^ 1` fill bytes; A4 = the 8-bit VRAM read target, all 2026-08-03). Per-test today — page 1: **T1-T9 all pass**; page 2: **T10-T16 all pass**. **A4 flipped T6 "8-bit VRAM Read target 01100"** — CD `%001100` returns `vram[address ^ 1]` in the low byte and the next-available FIFO entry's high byte in the high byte (see the A4 addendum below); it is currency-neutral and changed no existing test. **A3a flipped T3 "DMA Transfer using FIFO"** and **A3b flipped T4 "DMA Fill FIFO Usage"** (see the A3a/A3b notes below). A3b was expected to move `export_state_v1::GOLDEN_HASH` and **does not** — the design note's §4.1 mis-identified the golden fixture (it is `testrom::build`, which never touches the VDP; the DMA-filling ROM is `testrom::build_pad_poll`, used only by the io/watchpoint tests). Every currency gate is byte-identical across A3b. **A2 flipped T13 "Register Writes and Code Reg" and T10 "Partial CP Writes"** (see the A2 note below), and left **T12 "Register Write Mode4 Mask"** as a named residual, **which slice T12 has now FIXED (2026-08-03)**: in Mode 4 (reg 1 bit 2 = M5 clear) only the eleven SMS registers 0–10 are writable, and writes above 10 are discarded (one line in `Vdp::write_register`). **CORRECTION — the reason this was held was false.** The claim that the fix "moves `export_state_v1::GOLDEN_HASH` and the `golden_frames` scenes" rested on the *same* fixture mis-identification as A3b's: it cited `testrom.rs`'s `reg 1 = $8150`, which lives in `testrom::build_pad_poll` (used only by `io_controllers`, `watchpoints` and the `pad_probe` example — no frozen currency), whereas `export_state_v1` loads `testrom::build`, which drives no VDP port at all. Re-measured: **no frozen constant moves.** 66 tests did go red, every one the same fixture defect — fixtures that write `reg 1 = $40` (M5 clear) and then program registers 11+, i.e. they intend Mode 5 but never declare it, a machine state that cannot exist on hardware. Declaring M5 in them (test-only, 8 sites) brought all frozen hashes back **byte-identical**. See `docs/2026-08-03-decision2-premise-recheck.md` and the T12 addendum below. The spec test `vdp::tests::mode4_ignores_register_writes_above_ten` is no longer `#[ignore]`d. **Evidence caveat:** the `> 10` boundary is extrapolated from a hedged source — follow-up **F-M4REGS**. **T16 "FIFO Wait States" PASSES — all 80/80 verdict bytes green (was 26/80, then 62/80, then 72/80).** Two independent causes, fixed in two slices, and *neither* was the "Phase 3 per-line DMA cost" deferral this residual had been filed under. **T16/S1** gave the FIFO drain the *positions* of the external access slots within an active display line instead of a uniform per-line rate, flipping groups 2/3/5/6/8 [62→72]. **T16/S2** made a finished 68k→VDP DMA leave words **pending** in the FIFO — the DMA unit's job ends when the last word is pushed into the FIFO, not when it reaches VRAM — flipping groups 9/10 [72→**80**]; that reverses A3a's deliberate ring-store-only choice and answers design question Q1 of `docs/2026-08-03-a3-dma-fifo-design.md`, which A3a had explicitly deferred to here. (**A3a landed DMA-through-FIFO ring *contents* and left T16 unmoved at 62/80** — which is exactly what identified groups 9/10 as needing *occupancy* rather than contents.) See the S1 and S2 addenda below. |
 | `vdp_sprite_masking` (`SpriteMaskingTestRom`) | 9 sprite masking / per-line / per-frame / dot-overflow tests | **Yes** — verdict is a 32×8 glyph at the right edge, classified by **rendered-pixel hash** (its nametable cells are identical for the tick and cross cases, so only the framebuffer discriminates). **Stop condition** (2026-08-14): runs until the VDP port block has been idle for 8 consecutive frames, bounded at 300 and asserting the stop fired — measured over the full 300, every VDP access is on frames 0-7 and there is none on 8-299, so it stops at 15 | `1=TICK/TICK 2=TICK/TICK 3=TICK/CROSS 4=PASS 5=PASS 6=FAIL 7=PASS 8=PASS 9=TICK/TICK` — **2 failures**: test 3's second sub-case (MAX SPRITE DOTS – COMPLEX) and test 6 (MASK S1 ON DOT OVERFLOW) | Expected: both are the **mid-sprite pixel-budget cut** interim model, ledger row **P1** in `docs/2026-07-16-vdp-pixel-known-differences.md` (we spend budget per whole sprite; hardware cuts mid-sprite at the exact dot). Open question **Q1** below on the H32/H40 toggle. |
-| `color_1536` (`TEST1536.BIN`) | 1536-colour trick — CRAM rewritten mid-scanline | Frame hash only — **per-scanline capture** (the only row that uses it) | `frame_hash=0x917371f07409cb25` (per-scanline capture; was `0x96b9c93c4f3dd325` end-of-frame, re-pinned 2026-08-03) | **Limitation L1 — NARROWED**: the row now hashes the picture the ROM actually draws. Still a regression pin, not a verdict (the ROM prints none). |
+| `color_1536` (`TEST1536.BIN`) | 1536-colour trick — CRAM rewritten mid-scanline | Frame hash only — **per-scanline capture** (the only row that uses it) | `frame_hash=0x9ae4acc58d2a382d` (per-scanline capture, **sub-line CRAM**; re-pinned 2026-08-19. Was `0x917371f07409cb25` per-scanline/line-atomic from 2026-08-03; before that `0x96b9c93c4f3dd325` end-of-frame) | **Limitation L1 — NARROWED TWICE**: 2026-08-03 gave the row the picture the ROM draws *between* lines; 2026-08-19 (`F-SCANLINE-SUBLINE` slice 4) gives it the picture *within* a line. Measured mechanism: 515 value-changing CRAM writes per hashed frame inside the active-display window, to indices 4–7, over active lines 48–221 — all four sampled by the picture. Still a regression pin, not a verdict (the ROM prints none). |
 | `cram_flicker` (`cram flicker.bin`) | The artefact from writing CRAM during active display | **NOT-RENDERABLE** — the artefact is the write itself appearing at the beam position, which we do not model | `frame_hash=0x815bb645bc46a325` (unchanged; re-adjudicated 2026-08-03) | Structural: **CRAM-write artefact, sub-scanline** — reason narrowed from "border-only rendering", which the evidence disproved (see **L1a**). Follow-up **F-CRAMDOT**. |
-| `direct_color_dma` (`Direct-Color-DMA.bin`) | Direct-colour DMA — CRAM streamed per pixel during active display | **NOT-RENDERABLE** — sub-scanline CRAM | `frame_hash=0xed40dc4a6c4fc325` (unchanged; re-adjudicated 2026-08-03) | Structural: needs a per-pixel CRAM timeline — writes carry no h-position, and the mclk is instruction-granular (see **L1b**). Follow-up **F-CRAMDOT**. |
+| `direct_color_dma` (`Direct-Color-DMA.bin`) | Direct-colour DMA — CRAM streamed per pixel during active display | **NOT-RENDERABLE** — the CRAM *dot*, not sub-scanline CRAM | `frame_hash=0xed40dc4a6c4fc325` (unchanged; re-adjudicated 2026-08-03, re-measured 2026-08-19) | Structural, and the reason **changed on 2026-08-19**: CRAM writes now carry an h-position and rows do split (`F-SCANLINE-SUBLINE`), so blocker 1 of L1b is gone. What remains is the *other* half — a DMA body advances no clock, so the whole burst lands at one pixel (decision C-6), and the dot painted at the beam position regardless of the resolved index is still unmodelled. See **L1b**. Follow-up **F-CRAMDOT**. |
 | `shadow_highlight` (`Shadow-Highlight Test Program #2`) | Shadow / highlight operator output | Frame hash only (visual judgment) | `frame_hash=0x428e03aa61cc0285` | Ledger row **P8** (S/H DAC calibration) governs any pixel-level divergence. |
 | `window_test` (`Window Test by Fonzie`) | Window plane placement / clipping | Frame hash only | `frame_hash=0x4efcfda475af0d12` | — |
 | `window_distortion` (`Window distortion bug.BIN`) | The hardware window-plane distortion bug (left window + fine h-scroll) | Frame hash only | `frame_hash=0x5102219d295b4e2c` | Ledger row **P5** (R9 window-bug sub-tile alignment) governs the exact reused-tile offset. |
@@ -765,10 +765,16 @@ framebuffers were dumped as PPM and inspected by eye:
   patterned backdrop with a rectangle in the middle that is flat black on the left ~2/3 and flat grey on
   the right ~1/3. CRAM at end-of-frame holds only the *last* of the ROM's mid-scanline rewrites, so the
   rectangle collapses to two solid blocks.
-* **Per-scanline** (`0x917371f07409cb25`): **~1400 distinct colours** — the rectangle is the ROM's actual
+* **Per-scanline** (`0x917371f07409cb25`, the 2026-08-03 line-atomic capture): **~1400 distinct colours** — the rectangle is the ROM's actual
   colour field: twelve vertical colour columns (dark red / olive / indigo / teal, then red / green / cyan /
   violet, then pastel peach / lavender / mint / white) each ramping through many horizontal bands, and the
   whole ramp repeated twice down the frame. This is the 1536-colour trick.
+* **Per-scanline, sub-line CRAM** (`0x9ae4acc58d2a382d`, 2026-08-19, `F-SCANLINE-SUBLINE` slice 4): the
+  same colour field, now correct *within* each row as well as between rows. Until this slice each row
+  decoded against one snapshot of CRAM 4–7; it now decodes in segments split at each landing's pixel, so a
+  row that changes colour part-way across — which is what the 1536-colour trick *is* — is expressible. The
+  hash is re-pinned in `scanline_goldens.rs` and `conformance_roms.rs` together, and the cross-check
+  between them is preserved.
 
 **What remains.** The two NOT-RENDERABLE rows are *not* fixed by per-line capture. Both were probed under
 the capture sink on 2026-08-03 and re-adjudicated below (L1a, L1b): they share **one** root, and it is not a
@@ -813,11 +819,27 @@ Probed the same way:
 * In our model **all 44,352 of a frame's writes land inside a single inter-line window** (they bucket into
   one `Scanline` boundary), so there is nothing for a per-line sampler to sample.
 
-The two blockers, precisely:
+> **SUPERSEDED 2026-08-19 (`F-SCANLINE-SUBLINE` slice 4).** That third bullet, and blocker 1 below, were
+> retired by the sub-line arc — and this row was the arc's own TAGged "cannot tell statically, must be
+> measured", because its stated justification *was* the assumption the arc removes. Measured: the writes no
+> longer land in an inter-line window; they land inside line 1 and are resolved to **pixel 82**, so the row
+> does split. **The hash still does not move**, for a reason that had to be measured rather than assumed:
+> the whole burst shares one master clock (decision C-6 — a DMA body advances no clock), the journal
+> coalesces it to a single landing, and that landing's surviving word is the value CRAM index 0 **already
+> held** at line 1's start — net effect over the line, in the hashed frame, `0x0000 → 0x0000`. Both spans
+> decode to the same colour. So the row is `NOT-RENDERABLE` for a narrower and now-accurate reason: not
+> "sub-scanline CRAM" (we model that), but the **CRAM dot** plus the DMA-body clock advance. The load-bearing
+> measurement is `scanline_goldens.rs`'s live-vs-post-hoc verdict (still `IDENTICAL-TO-POST-HOC`); this
+> row's own hash is a post-hoc `render_line` sweep and is structurally immune to the arc either way.
 
-1. **CRAM writes carry no h-position.** `Vdp::write_target`'s CRAM arm (`crates/oracle-core/src/vdp.rs`,
-   the `Target::Cram` branch) stores the masked word and captures a `VdpWrite` — target, address, old, new,
-   size, via — and **no time**. A write leaves no record of *when* inside the line it happened.
+The two blockers as they stood in 2026-08-03 — **blocker 1 is now fixed, blocker 2 stands**:
+
+1. ~~**CRAM writes carry no h-position.**~~ **FIXED 2026-08-19.** `VdpWrite` carries its own `mclk`
+   (slice 1b, retiring `F-TRACE-VDPWRITE-MCLK`), and `vdp::subline_x` maps that to the pixel the write
+   first shows at (slice 2, decision B-1: 8 mclk/px at H40, 10 at H32). The original text follows for the
+   record: *`Vdp::write_target`'s CRAM arm stores the masked word and captures a `VdpWrite` — target,
+   address, old, new, size, via — and no time. A write leaves no record of when inside the line it
+   happened.*
 2. **Even a timestamp would be instruction-granular.** `System::step_cpu`
    (`crates/oracle-core/src/system.rs`) samples `let now = self.scheduler.now()` **once**, before
    `cpu.step`, and hands that single value to `MegaDriveBus` as `now_mclk`; every VDP access the
@@ -827,6 +849,12 @@ The two blockers, precisely:
 
 Rendering this ROM therefore needs a per-pixel (not per-line) CRAM timeline, which means a timestamped CRAM
 write **and** sub-instruction clock advance through a DMA. That is a real engine change, not a harness one.
+
+**Status after `F-SCANLINE-SUBLINE` (2026-08-19):** the timestamped CRAM write is done; the sub-instruction
+clock advance is not, and is registered as **F-SUBLINE-DMASPREAD** (a DMA burst lands at one pixel rather
+than smeared across the slots it really occupies). F-CRAMDOT — the value painted at the beam position
+regardless of which index the pixel resolved to — is untouched by the arc and is the other half. So this
+row got **cheaper**, not fixed: half of what it needs now exists.
 
 ### L1c — the limitation is general, and it has three mechanisms (2026-08-15)
 

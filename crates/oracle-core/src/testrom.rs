@@ -419,12 +419,20 @@ pub const CRAM_MIDFRAME_B: u16 = 0x0EEE;
 /// 3. polls the HV counter at `$C00008` until the beam reaches `line` (V is the high byte), and
 /// 4. sets CRAM entry 1 = [`CRAM_MIDFRAME_B`], then loops.
 ///
-/// So **every completed frame after the first** carries the split — rows above the boundary in A, rows at
-/// and below it in B — rather than only the one frame a write-once fixture would mark, which would make the
-/// assertion depend on the exact frame count the reader happened to stop at. Frame 0 draws entirely in
+/// So **every completed frame after the first** carries the split — rows above `line` wholly in A, rows
+/// below it wholly in B — rather than only the one frame a write-once fixture would mark, which would make
+/// the assertion depend on the exact frame count the reader happened to stop at. Frame 0 draws entirely in
 /// colour A: the poll begins after the frame-0 vblank arm, so the first B write lands in frame 1. Read at
-/// any frame ≥ 1. The line the write lands on has already been rendered (the Scanline event renders line N
-/// at N's *start*), so the boundary sits at `line + 1`.
+/// any frame ≥ 1.
+///
+/// **Row `line` itself is split, and the first *fully* recoloured row is `line + 1`.** The row is resolved
+/// at its own line start, before the write; the write then lands part-way across it and recolours it from
+/// that pixel on (`F-SCANLINE-SUBLINE`). So the picture is: `..line-1` uniform A, `line` A-then-B with one
+/// transition, `line+1..` uniform B. The `+1` claim this fixture has always carried survives, restated as
+/// "the first **fully** B row" — and the split row is now the sharper poison, because a line-atomic
+/// renderer draws it uniform in one colour or the other and cannot produce a transition at all. The landing
+/// column is a function of the poll loop's own instruction timing; `crates/oracle-aether/tests/scanlines.rs`
+/// derives the band it must fall in rather than pinning a number.
 ///
 /// Nothing draws over the backdrop, so the content trap the golden fixtures set — a tinted palette entry
 /// no pixel samples — cannot bite: the colour *is* the picture. **Two different `line` arguments must

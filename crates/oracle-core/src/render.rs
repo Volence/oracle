@@ -12,7 +12,7 @@
 //! transparency-based layer compositing. Sprites (push 4), the priority-bit ordering + shadow/highlight
 //! (push 5), and DMA/FIFO (push 6) are out — see the plan `docs/plans/2026-07-16-vdp-planes.md`.
 
-use crate::state_hash::VRAM_SIZE;
+use crate::state_hash::{CRAM_SIZE, VRAM_SIZE};
 use crate::vdp::{DmaRecord, Vdp};
 
 /// One of the three plane-stage nametables (design §4 `plane_decoded`). Sprites are a separate push.
@@ -360,6 +360,212 @@ pub struct LineReport {
     pub pixels: Vec<PixelResolution>,
 }
 
+/// One row held back for deferred emission: the [`LineReport`] `render_scanline` already built, the CRAM as
+/// it stood at that row's own line start, and the sub-line write journal for the row.
+///
+/// Retained by [`ScanlineScaffold`]; see its docs for why none of this is machine state.
+#[derive(Clone)]
+pub(crate) struct RetainedRow {
+    /// The resolved row, exactly as `render_scanline` returned it — never re-resolved (re-resolving after
+    /// the sprite latch commit would reseed the R10 masking carry and could change the sprites, see
+    /// [`Vdp::report_rgb`]).
+    pub(crate) report: LineReport,
+    /// CRAM as of this row's line start — the image [`report_rgb_with_cram`] decodes the row against, and
+    /// the base the journal's landings are replayed on top of. Inline and fixed-size: CRAM *is* a
+    /// [`CRAM_SIZE`]-byte image, so the array shape makes a wrong-length snapshot unrepresentable and costs
+    /// no allocation on the per-active-line stash path.
+    pub(crate) cram: [u8; CRAM_SIZE],
+    /// The sub-line CRAM journal for this row: every CRAM write that landed inside the row's own line, in
+    /// write order, each already resolved to the pixel it takes effect at.
+    ///
+    /// Empty ⇒ the row decodes whole against `cram`, which is byte-for-byte what `report_rgb` produced at
+    /// line start — the identity slice 3 exists to guarantee and slice 4 must not disturb.
+    pub(crate) journal: Vec<CramLanding>,
+}
+
+/// One CRAM write that landed inside a row's own scanline (`F-SCANLINE-SUBLINE` slice 4).
+///
+/// `x` is resolved at journal time by [`crate::vdp::subline_x`] from the write's own master clock and the
+/// **resolved row's** H40 flag (decision B-2 — a mid-line mode switch must not place the landing on a grid
+/// the row was never drawn on). Pixels `0..x` keep the pre-write colour; `x..width` show the new one. A
+/// landing in the line's blanking tail resolves to `x == width`: it colours no pixel of this row, but it is
+/// still journalled, because the working-CRAM guard at emit time accounts for **every** write of the line.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct CramLanding {
+    /// First active-display pixel that shows the new colour (`0..=width`).
+    pub(crate) x: usize,
+    /// CRAM byte address of the written word — even, `0..CRAM_SIZE`.
+    pub(crate) addr: usize,
+    /// The 9-bit-masked colour word, as the VDP stored it.
+    pub(crate) word: u16,
+}
+
+/// The deferred-emission scaffolding for the opt-in per-scanline capture (`F-SCANLINE-SUBLINE`,
+/// **decision D-1**): at most one [`RetainedRow`], held from the instant its line was resolved until the
+/// next line's `Scanline` event emits it.
+///
+/// # This is render scaffolding, not machine state — and the type enforces it
+///
+/// [`crate::system::System`] derives `PartialEq`/`Eq` **and** `bincode::Encode`/`Decode`, and the tree's
+/// whole-machine neutrality claims (`tests/scanline_capture.rs`'s `frame_boundary_is_state_neutral`, the
+/// determinism gate, every `assert_eq!(plain, tapped)`) compare the machine *with* an attached capture
+/// against one without. A plain field would make an armed run that ends mid-frame leave residue and quietly
+/// falsify all of them. So, exactly as `vdp.rs` already rules for render output (*"the rendering output
+/// stays derived, not state — nothing render-related serializes"*):
+///
+/// - [`PartialEq`] is **constant true**, so two machines are never unequal because of a retained row;
+/// - [`bincode::Encode`] writes **zero bytes** and [`bincode::Decode`] reads none, so the checkpoint byte
+///   format is unchanged and a snapshot taken before this type existed still restores;
+/// - `System::reset` drops it (it rebuilds the whole struct from `System::new`), matching
+///   `Engine::invalidate_screen`'s rule that reset/reload/restore drop the retained frame.
+///
+/// It must nonetheless live in `System` and **persist across runs** (decision D-2): a `run_until` that ends
+/// mid-frame would otherwise drop the pending row, leaving the frame one row short with no signal. The
+/// converse of D-2 is a real property of the public API: a caller who interleaves an *unarmed* run between
+/// two armed ones loses exactly the one row the first armed run was still holding, because the unarmed run
+/// drops it. Nothing in this tree does that (every run-driver that carries a capture carries it on every
+/// run), but a caller alternating `run_frames` with `run_frames_with_sink(…, capture)` mid-frame would see
+/// a one-row gap.
+///
+/// # The blindness is **one-directional** — this is the part that is easy to misread
+///
+/// "A retained row cannot make two machines unequal" does **not** mean two equal machines produce the same
+/// rows. It means exactly the reverse implication and no more:
+///
+/// - Two machines that compare `==`, hash the same under `state_hash`, and serialize to identical snapshot
+///   bytes may still emit **different row streams** from the same future run — one may be holding a row the
+///   other is not, and that row is emitted at the next `Scanline` event.
+/// - Therefore `snapshot`/`restore` is **not** row-stream-neutral: a restore drops at most one pending row,
+///   so a run resumed from a checkpoint taken mid-frame emits one fewer row than the run it was cut from.
+///   Accepted by design — the alternative is putting render output in the checkpoint, which is the thing
+///   `vdp.rs` rules out — and bounded at one row, which no whole-frame consumer can observe (`run_frames`
+///   ends on a boundary, where nothing is pending).
+#[derive(Clone, Default)]
+pub(crate) struct ScanlineScaffold {
+    pending: Option<RetainedRow>,
+}
+
+impl ScanlineScaffold {
+    /// Hold `report` back for emission at the next line's event, alongside the CRAM image live right now
+    /// (this row's line start) and an empty journal.
+    ///
+    /// Panics if `cram` is not a whole [`CRAM_SIZE`] image — the only caller passes `Vdp::cram()`, which is
+    /// that by construction.
+    pub(crate) fn stash(&mut self, report: LineReport, cram: &[u8]) {
+        self.pending = Some(RetainedRow {
+            report,
+            cram: cram.try_into().expect("CRAM is a whole CRAM_SIZE image"),
+            journal: Vec::new(),
+        });
+    }
+
+    /// Take the retained row, if any.
+    pub(crate) fn take(&mut self) -> Option<RetainedRow> {
+        self.pending.take()
+    }
+
+    /// Journal one CRAM write against the row currently retained, at the pixel `d_mclk` places it
+    /// (`F-SCANLINE-SUBLINE` slice 4). A no-op when no row is retained — CRAM writes on non-active lines
+    /// simply carry into the next line-start snapshot, which is exactly today's behaviour.
+    ///
+    /// **Coalescing by pixel is mandatory, not an optimisation.** `direct_color_dma` pushes 44,352 CRAM
+    /// words inside a single instruction, and under decision C-6 they all share one master clock and so one
+    /// `x`. Without this, that is a ~700 KB per-line journal and 44 k zero-length decode spans. Landings at
+    /// the same pixel are one segment, and within a segment a later write to the same CRAM address simply
+    /// **replaces** the earlier one — the pixel can only ever show the last colour written at it — so the
+    /// burst above collapses to a single entry.
+    ///
+    /// The scan walks backwards only over the current pixel's group: `x` is non-decreasing (master clocks
+    /// are, within a line), so equal-`x` entries are contiguous at the tail.
+    ///
+    /// Takes the write's **absolute** master clock, not a pre-reduced in-line offset, so this can check the
+    /// one thing neither the pixel-order assert nor the emit-time working-CRAM guard can see: that the write
+    /// belongs to the row it is being journalled against. A write stamped on a *different* line but reduced
+    /// mod `MCLK_PER_LINE` lands at a plausible-looking `x` in the wrong row — the working-CRAM guard still
+    /// passes (every write is accounted for, just filed under the wrong row) and the picture is silently
+    /// wrong. Doing the reduction here is what makes that class visible.
+    pub(crate) fn journal_cram(&mut self, mclk: u64, addr: usize, word: u16) {
+        let Some(row) = self.pending.as_mut() else {
+            return;
+        };
+        debug_assert_eq!(
+            (mclk / crate::vdp::MCLK_PER_LINE) % crate::vdp::LINES_PER_FRAME,
+            u64::from(row.report.line),
+            "a CRAM write stamped on one line was journalled against another row's decode — reducing the \
+             clock mod the line would have hidden it at a plausible x"
+        );
+        let d_mclk = mclk % crate::vdp::MCLK_PER_LINE;
+        let x = crate::vdp::subline_x(d_mclk, row.report.h40);
+        debug_assert!(
+            row.journal.last().is_none_or(|l| l.x <= x),
+            "landings arrive in pixel order — the coalescing tail-scan and the segmented decode both rely \
+             on it, and a backwards x means a write was stamped outside the row's own line"
+        );
+        for l in row.journal.iter_mut().rev() {
+            if l.x != x {
+                break;
+            }
+            if l.addr == addr {
+                l.word = word;
+                return;
+            }
+        }
+        row.journal.push(CramLanding { x, addr, word });
+    }
+
+    /// Drop the retained row.
+    ///
+    /// Called at the start of a run whose sink does **not** want rows, so such a run drops whatever a
+    /// previous run left retained. Note what that does *not* say: two different scanline-wanting sinks run
+    /// back to back **do** hand the row across, because the second run is armed and D-2 says an armed run
+    /// inherits. That is reachable in this tree — the aether engine runs its own `Fanout` capture while the
+    /// player's loop runs `cap` — and is accepted: the row is a faithful render of the machine both sinks
+    /// are watching, and its line number is carried with it.
+    pub(crate) fn clear(&mut self) {
+        self.pending = None;
+    }
+
+    /// The line number of the retained row, if one is held — the non-vacuity handle for the neutrality
+    /// tests (a "retained state is invisible" claim is worth nothing if nothing was retained). Test-only on
+    /// purpose: no *machine* state may be derived from whether a row is pending (the emitter's own
+    /// "is there one to flush?" test is sink-facing and changes nothing the machine can see).
+    #[cfg(test)]
+    pub(crate) fn pending_line(&self) -> Option<u16> {
+        self.pending.as_ref().map(|r| r.report.line)
+    }
+}
+
+/// Constant-true: a retained row is not machine state, so it can never make two machines unequal (D-1).
+impl PartialEq for ScanlineScaffold {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for ScanlineScaffold {}
+
+/// Encodes as **zero bytes** (D-1) — the checkpoint byte format is unchanged by this field's existence.
+impl bincode::Encode for ScanlineScaffold {
+    fn encode<E: bincode::enc::Encoder>(
+        &self,
+        _encoder: &mut E,
+    ) -> Result<(), bincode::error::EncodeError> {
+        Ok(())
+    }
+}
+
+/// Decodes from **zero bytes** (D-1) — a snapshot taken before this field existed still restores, and the
+/// restored machine starts with no retained row (the same state `reset` leaves).
+impl<Ctx> bincode::Decode<Ctx> for ScanlineScaffold {
+    fn decode<D: bincode::de::Decoder<Context = Ctx>>(
+        _decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        Ok(Self::default())
+    }
+}
+
+bincode::impl_borrow_decode!(ScanlineScaffold);
+
 /// The per-frame introspection rollup (design §4 `frame_report`; recon R4). This push lands the **DMA
 /// section** — the most recent transfer performed (source / dest / length / mode / target). The design's full
 /// frame_report also rolls up dropped-sprites-per-line, overflow/collision lines, and HINT/VINT lines fired;
@@ -451,6 +657,89 @@ fn intensity(level: u8, state: PixelState) -> u8 {
         PixelState::Highlight => level + 7, // 7..14  → ½Max..Max
     };
     (step as u16 * 255 / 14) as u8
+}
+
+/// Decode one CRAM index (0..=63) to RGB at `state`, against an **explicit CRAM byte image** rather than a
+/// live [`Vdp`]. The 9-bit colour is three 3-bit channels (`B<<9 | G<<5 | R<<1`, big-endian); each is run
+/// through [`intensity`].
+///
+/// This is the single CRAM decode in the tree: `Vdp::cram_rgb_state` passes its own live CRAM, and
+/// [`report_rgb_with_cram`] passes a retained line-start snapshot (`F-SCANLINE-SUBLINE` deferred emission).
+/// One arithmetic, so the live path and the snapshot path cannot drift — the same reason
+/// [`Vdp::render_line`] and [`Vdp::report_rgb`] share `pixels_rgb`.
+fn cram_rgb_state_from(cram: &[u8], index: u8, state: PixelState) -> (u8, u8, u8) {
+    let i = (index as usize & 0x3F) * 2;
+    let word = ((cram[i] as u16) << 8) | cram[i + 1] as u16;
+    (
+        intensity(((word >> 1) & 0x07) as u8, state),
+        intensity(((word >> 5) & 0x07) as u8, state),
+        intensity(((word >> 9) & 0x07) as u8, state),
+    )
+}
+
+/// Decode an already-built [`LineReport`]'s pixels to RGB against `cram` — [`Vdp::report_rgb`]'s exact map
+/// (`cram_rgb_state_from` per winning index/state), but reading a caller-supplied CRAM image instead of the
+/// VDP's live one.
+///
+/// This is what lets the row be *emitted* one line after it was *resolved* without the emitted bytes moving:
+/// the resolve stage is index-domain and never reads CRAM, so decoding the retained pixels against the CRAM
+/// that was live at the row's own line start reproduces `report_rgb`'s answer byte for byte
+/// (`docs/2026-08-19-subline-recon.md` §0, §A(ii)).
+pub(crate) fn report_rgb_with_cram(cram: &[u8], report: &LineReport) -> Vec<(u8, u8, u8)> {
+    // A short-but-nonempty CRAM would decode low indices silently and only panic on a high one, so the
+    // whole-image contract is asserted rather than left to the index bounds. `RetainedRow.cram` is a
+    // `[u8; CRAM_SIZE]` and so cannot violate it; this covers the `&[u8]` seam itself.
+    debug_assert_eq!(
+        cram.len(),
+        CRAM_SIZE,
+        "the decode reads a whole CRAM image, not a fragment"
+    );
+    report
+        .pixels
+        .iter()
+        .map(|p| cram_rgb_state_from(cram, p.cram_index, p.state))
+        .collect()
+}
+
+/// Decode a retained row to RGB, **segmented at each of its CRAM landings** (`F-SCANLINE-SUBLINE` slice 4)
+/// — the emitter proper. Returns the finished row *and* the CRAM image the walk ended on, which the caller
+/// checks against live CRAM: that equality is the guard that every write of the line reached the journal.
+///
+/// The segments partition `0..width`, so **each pixel is decoded exactly once** — this is not a re-render
+/// and not a re-resolve (re-resolving would reseed the R10 masking carry, see [`Vdp::report_rgb`]). The
+/// resolve stage is index-domain and never reads CRAM (recon §0), so splitting the *decode* is the whole of
+/// the mechanism.
+///
+/// With an empty journal this is exactly [`report_rgb_with_cram`] against the line-start snapshot — the
+/// same bytes a line-atomic emitter produced, by construction rather than by measurement.
+pub(crate) fn row_rgb(row: &RetainedRow) -> (Vec<(u8, u8, u8)>, [u8; CRAM_SIZE]) {
+    if row.journal.is_empty() {
+        return (report_rgb_with_cram(&row.cram, &row.report), row.cram);
+    }
+    let px = &row.report.pixels;
+    let mut cram = row.cram;
+    let mut out = Vec::with_capacity(px.len());
+    let mut k = 0usize;
+    while k < row.journal.len() {
+        // Decode the span that still shows the CRAM in force, up to this landing's pixel...
+        let x = row.journal[k].x.min(px.len());
+        while out.len() < x {
+            let p = &px[out.len()];
+            out.push(cram_rgb_state_from(&cram, p.cram_index, p.state));
+        }
+        // ...then apply every landing at that same pixel (one segment, decision C-6 / the coalescing rule).
+        let at = row.journal[k].x;
+        while let Some(l) = row.journal.get(k).filter(|l| l.x == at) {
+            cram[l.addr] = (l.word >> 8) as u8;
+            cram[l.addr | 1] = (l.word & 0xFF) as u8;
+            k += 1;
+        }
+    }
+    while out.len() < px.len() {
+        let p = &px[out.len()];
+        out.push(cram_rgb_state_from(&cram, p.cram_index, p.state));
+    }
+    (out, cram)
 }
 
 /// Decode a raw 16-bit nametable entry word into a [`Cell`] (recon RR1).
@@ -762,16 +1051,11 @@ impl Vdp {
         self.cell_pixel(cell, px, py)
     }
 
-    /// Decode one CRAM index (0..=63) to RGB at the given shadow/highlight `state` (recon R11.5). The 9-bit
-    /// colour is three 3-bit channels (B<<9 | G<<5 | R<<1, big-endian); each is run through `intensity`.
+    /// Decode one CRAM index (0..=63) to RGB at the given shadow/highlight `state` (recon R11.5), against
+    /// this VDP's **live** CRAM. Thin wrapper over [`cram_rgb_state_from`] so the live decode and the
+    /// snapshot decode are the same arithmetic and cannot drift.
     fn cram_rgb_state(&self, index: u8, state: PixelState) -> (u8, u8, u8) {
-        let i = (index as usize & 0x3F) * 2;
-        let word = ((self.cram()[i] as u16) << 8) | self.cram()[i + 1] as u16;
-        (
-            intensity(((word >> 1) & 0x07) as u8, state),
-            intensity(((word >> 5) & 0x07) as u8, state),
-            intensity(((word >> 9) & 0x07) as u8, state),
-        )
+        cram_rgb_state_from(self.cram(), index, state)
     }
 
     /// Decode one CRAM index (0..=63) to RGB at `Normal` intensity — the same layout/ramp as
@@ -1423,8 +1707,19 @@ impl Vdp {
     /// already produced, so a caller holding that report (the `Scanline` event's opt-in capture sink) does
     /// not re-resolve the line. Re-resolving after `render_scanline` would be wrong as well as wasteful: the
     /// committed dot-overflow carry would reseed the R10 masking and could change the sprites.
+    ///
+    /// Deliberately expressed as [`report_rgb_with_cram`] against this VDP's live CRAM rather than as a
+    /// second call site of `pixels_rgb`: the deferred emitter (`F-SCANLINE-SUBLINE`) calls the same function
+    /// with a retained line-start snapshot, so "decoding later against the snapshot equals decoding now
+    /// against live CRAM" is one function applied to two arguments, not two functions that agree today.
+    ///
+    /// **Do not call this on a *retained* report.** Since the emitter defers a row by one line, "live CRAM"
+    /// at flush time is a line too late, and this method would decode the row against it — measurably: that
+    /// substitution is exactly the mutation that moves the `scanline_goldens` scorecard. It has no
+    /// production caller left; it exists as the live-decode companion for callers holding a report they
+    /// resolved *now* (tests, `render_line_report` users).
     pub fn report_rgb(&self, report: &LineReport) -> Vec<(u8, u8, u8)> {
-        self.pixels_rgb(&report.pixels)
+        report_rgb_with_cram(self.cram(), report)
     }
 
     /// Render one scanline **and commit** its sprite latches (recon R10) — the stateful per-line advance that
@@ -1628,6 +1923,224 @@ mod tests {
         for (i, want) in dec.iter().enumerate() {
             assert_eq!(v.cram_rgb(i as u8), *want, "entry {i}");
         }
+    }
+
+    /// The deferred emitter's whole neutrality argument, at the decode seam (`F-SCANLINE-SUBLINE` slice 3):
+    /// decoding a row against a **retained CRAM snapshot** yields the same bytes as decoding it against live
+    /// CRAM at the instant the snapshot was taken — and, crucially, a *different* answer once CRAM has moved
+    /// on. The second half is what makes the snapshot load-bearing rather than decoration: an emitter that
+    /// lazily read live CRAM one line later would pass the first assertion and fail the second.
+    #[test]
+    fn a_retained_cram_snapshot_decodes_a_row_exactly_as_live_cram_did() {
+        let mut v = pb_fixture(false);
+        for i in 0..4 {
+            v.vram_mut()[2 * 32 + i] = 0x12;
+        }
+        write_cram(&mut v, 1, 0x000E); // red
+        write_cram(&mut v, 2, 0x0E00); // blue
+        put_cell(&mut v, 0xE000, 0x0002);
+        let report = v.render_line_report(0);
+        let live = v.report_rgb(&report);
+        let snapshot = v.cram().to_vec();
+        assert_eq!(
+            report_rgb_with_cram(&snapshot, &report),
+            live,
+            "the snapshot decode IS the live decode at the instant it was taken"
+        );
+
+        // CRAM moves on, as it would between the row's line start and the next line's event.
+        write_cram(&mut v, 2, 0x00E0); // green
+        assert_ne!(
+            v.report_rgb(&report),
+            live,
+            "non-vacuity: live CRAM really did change the row's colours"
+        );
+        assert_eq!(
+            report_rgb_with_cram(&snapshot, &report),
+            live,
+            "and the snapshot decode is unmoved — this is why the one-line emission lag is invisible"
+        );
+    }
+
+    /// `build_cram_midframe`'s scene, at core level: every plane pixel transparent and the backdrop pointed
+    /// at CRAM entry 1, so **every pixel of every row samples index 1** and the colour *is* the picture.
+    /// That is what makes a split row unmistakable — and it is the same trap-free shape the fixture ROM uses.
+    fn backdrop_fixture() -> Vdp {
+        let mut v = pb_fixture(false); // H32: 256 px at 10 mclk/px
+        set_reg(&mut v, 0x07, 0x01); // backdrop = CRAM entry 1
+        v
+    }
+
+    /// Build a retained row from `v`'s line 0 plus a journal, the way the run loop does: resolve the row,
+    /// snapshot CRAM, then feed landings through the coalescing push.
+    fn retained(v: &Vdp, landings: &[(u64, usize, u16)]) -> RetainedRow {
+        let mut sc = ScanlineScaffold::default();
+        sc.stash(v.render_line_report(0), v.cram());
+        for &(d_mclk, addr, word) in landings {
+            sc.journal_cram(d_mclk, addr, word); // line 0, so the absolute clock IS the in-line offset
+        }
+        sc.take().expect("a row was stashed")
+    }
+
+    /// **The behaviour slice, at core level** (`F-SCANLINE-SUBLINE` slice 4): a CRAM write inside the row's
+    /// own line splits it — colour A up to the landing pixel, colour B from it on, with **exactly one**
+    /// transition. This is the poison a line-atomic emitter cannot pass in either direction: it renders the
+    /// row wholly A (today's behaviour) or, if it lazily read live CRAM, wholly B.
+    #[test]
+    fn a_cram_landing_inside_the_line_splits_the_row_at_its_pixel() {
+        let mut v = backdrop_fixture();
+        write_cram(&mut v, 1, 0x000E); // colour A = red
+        let a = v.cram_rgb(1);
+
+        // A write 1000 mclk into the line lands at pixel 100 (1000 / 10), inside the active window.
+        const D_MCLK: u64 = 1000;
+        const B_WORD: u16 = 0x0E00; // colour B = blue
+        let row = retained(&v, &[(D_MCLK, 2, B_WORD)]);
+        let width = row.report.pixels.len();
+        let (rgb, _) = row_rgb(&row);
+
+        let b = rgb[width - 1];
+        assert_eq!(
+            rgb[0], a,
+            "the row opens on the colour that was live at its line start"
+        );
+        assert_ne!(
+            b, a,
+            "and closes on the colour the mid-line write installed"
+        );
+        let x = crate::vdp::subline_x(D_MCLK, false);
+        assert_eq!(x, 100, "the mapping places this write at pixel 100 of 256");
+        assert!(
+            rgb[..x].iter().all(|&p| p == a) && rgb[x..].iter().all(|&p| p == b),
+            "uniform A prefix, uniform B suffix"
+        );
+        assert_eq!(
+            rgb.windows(2).filter(|w| w[0] != w[1]).count(),
+            1,
+            "EXACTLY one transition — a smeared or double-applied journal shows up here"
+        );
+        // And the sink still gets one whole row: segments are internal.
+        assert_eq!(rgb.len(), width, "one complete row, not a list of spans");
+    }
+
+    /// The zero-mid-line-write case, re-proven under the segmented emitter (CR-25 adoption clause 2 / the
+    /// slice-3 poison, re-run). Landings outside the active window must leave the row **bit-identical** to
+    /// the line-atomic answer: `d = 0` is the whole row (the write precedes any pixel being consumed) and
+    /// `d >= MCLK_PER_ACTIVE` is the blanking tail, which colours nothing here and first shows in row N+1.
+    #[test]
+    fn a_row_with_no_landing_inside_the_active_window_is_bit_identical_to_the_line_atomic_answer() {
+        let mut v = backdrop_fixture();
+        write_cram(&mut v, 1, 0x000E);
+        let atomic = report_rgb_with_cram(v.cram(), &v.render_line_report(0));
+
+        let empty = retained(&v, &[]);
+        assert_eq!(
+            row_rgb(&empty).0,
+            atomic,
+            "no journal: the slice-3 identity, untouched"
+        );
+
+        for d in [crate::vdp::MCLK_PER_ACTIVE, crate::vdp::MCLK_PER_LINE - 1] {
+            let row = retained(&v, &[(d, 2, 0x0E00)]);
+            let (rgb, working) = row_rgb(&row);
+            assert_eq!(
+                rgb, atomic,
+                "a landing at d={d} is in blanking — row N is untouched"
+            );
+            assert_ne!(
+                &working[..],
+                v.cram(),
+                "…but it IS applied to the working copy, or the emit-time guard would not see it"
+            );
+        }
+        // `d = 0` is the other boundary: x = 0, so the whole row takes the new colour.
+        let whole = retained(&v, &[(0, 2, 0x0E00)]);
+        let (rgb, _) = row_rgb(&whole);
+        assert!(
+            rgb.iter().all(|&p| p == rgb[0]) && rgb[0] != atomic[0],
+            "d = 0 recolours the entire row"
+        );
+    }
+
+    /// **Coalescing by pixel is mandatory** (decision C-6 + the design's own "must include, or it is
+    /// wrong"). `direct_color_dma` pushes 44,352 CRAM words inside one instruction, so they share one master
+    /// clock and one landing pixel. Journal them naively and that is a ~700 KB per-line `Vec` and 44 k
+    /// zero-length decode spans.
+    #[test]
+    fn a_forty_thousand_write_burst_at_one_clock_collapses_to_one_segment() {
+        let v = backdrop_fixture();
+        const BURST: usize = 44_352;
+        let landings: Vec<(u64, usize, u16)> =
+            (0..BURST).map(|i| (1000, 2, (i % 0x0EEE) as u16)).collect();
+        let row = retained(&v, &landings);
+        assert_eq!(
+            row.journal.len(),
+            1,
+            "one pixel, one CRAM address ⇒ ONE journal entry, however many words the burst carried"
+        );
+        // The surviving entry is the LAST word written — the pixel shows the last colour written at it.
+        let last = ((BURST - 1) % 0x0EEE) as u16 & 0x0EEE;
+        assert_eq!(row.journal[0].word & 0x0EEE, last & 0x0EEE);
+
+        // Distinct addresses at one pixel stay distinct (they are different colours, not overwrites), and
+        // distinct pixels stay distinct segments.
+        let mixed = retained(
+            &v,
+            &[(1000, 2, 1), (1000, 4, 2), (1000, 2, 3), (2000, 2, 4)],
+        );
+        assert_eq!(
+            mixed.journal.len(),
+            3,
+            "two addresses at pixel 100 (the second write to entry 1 replacing the first) + one at pixel 200"
+        );
+        assert_eq!(
+            mixed.journal[0].word, 3,
+            "the later write to the same address won"
+        );
+    }
+
+    /// **The emit-time guard's predicate, tested both ways.** `System::flush_pending_row` asserts that the
+    /// CRAM `row_rgb` ends its walk on equals the machine's live CRAM; this pins the property that assert
+    /// rests on — the fold over the journal reproduces the line's net CRAM effect, and **fails to** the
+    /// moment a landing is missing.
+    ///
+    /// The `debug_assert_eq!` itself is not reachable from a test without mutating the run loop (there is no
+    /// production path that skips a landing, which is the point), so it is covered by a recorded mutation
+    /// instead; what is covered *here* is that the predicate it checks can actually be false.
+    #[test]
+    fn the_emit_time_guard_predicate_holds_only_when_every_landing_is_journalled() {
+        let mut v = backdrop_fixture();
+        write_cram(&mut v, 1, 0x000E);
+        let report = v.render_line_report(0);
+        let snapshot = *v.cram().first_chunk::<CRAM_SIZE>().expect("CRAM image");
+
+        // Two CRAM writes during the line, as the machine would perform them.
+        let writes = [(1000u64, 2usize, 0x0E00u16), (2000, 4, 0x00E0)];
+        for &(_, addr, word) in &writes {
+            write_cram(&mut v, addr / 2, word);
+        }
+        let live = v.cram();
+
+        let build = |journal: &[(u64, usize, u16)]| {
+            let mut sc = ScanlineScaffold::default();
+            sc.stash(report.clone(), &snapshot);
+            for &(d, addr, word) in journal {
+                sc.journal_cram(d, addr, word);
+            }
+            row_rgb(&sc.take().expect("stashed")).1
+        };
+
+        assert_eq!(
+            &build(&writes)[..],
+            live,
+            "every landing journalled ⇒ the walk ends on the machine's own CRAM — the guard's happy case"
+        );
+        assert_ne!(
+            &build(&writes[..1])[..],
+            live,
+            "NON-VACUITY: drop one landing and the predicate is false. Without this the guard could be \
+             asserting something no bug can break."
+        );
     }
 
     #[test]

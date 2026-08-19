@@ -19,6 +19,53 @@ pub const MCLK_PER_LINE: u64 = 3420;
 pub const LINES_PER_FRAME: u64 = 262;
 /// Master-clock ticks per NTSC frame (`MCLK_PER_LINE * LINES_PER_FRAME` = 896_040).
 pub const MCLK_PER_FRAME: u64 = MCLK_PER_LINE * LINES_PER_FRAME;
+/// Master-clock ticks the **active display** occupies inside a line — the same 2560 in both modes, because
+/// H40 draws 320 pixels at 8 mclk each and H32 draws 256 at 10 mclk each: `320 × 8 = 256 × 10 = 2560`. The
+/// remaining `MCLK_PER_LINE − MCLK_PER_ACTIVE` = 860 mclk (122.9 CPU cycles) is horizontal blanking, which is
+/// the figure the demand side derives its whole HBlank window from (`3420/7 − 320*8/7`,
+/// `aeon/docs/benchmarks/scanline-p2/HBLANK-WINDOW-SWEEP-RESULTS.md:368`).
+///
+/// **Decision B-1** (`docs/2026-08-19-subline-recon.md` §B). This pixel axis deliberately does **not** reuse
+/// [`Vdp::h_counter`]'s grid, which divides the line uniformly into 422 (H40) / 342 (H32) positions. That
+/// divide is exact for H32 (3420 / 342 = 10) but an approximation for H40 (3420 / 422 = 8.104, the EDCLK
+/// mix — the same class of approximation the tree already names as F-SLOTGRID); carried onto the pixel axis
+/// it would put active-display end at 2593 mclk instead of 2560, i.e. up to ~4 px of error at the right edge,
+/// with no evidence behind it.
+///
+/// That leaves a knowingly inconsistent pair of in-line clocks: an HV read says active display ends at H
+/// `$9F` ≈ 2593 mclk, while this axis says 2560. Registered as follow-up **F-SUBLINE-HGRID** — re-derive
+/// `h_counter`'s H40 grid from this same anchor. Explicitly **out** of the F-SCANLINE-SUBLINE arc:
+/// `h_counter` feeds `$C00008` reads, [`Vdp::hblank`], `hint_offset` and `vint_offset`, so moving it is an
+/// observable behaviour change on every ROM, which is a different currency conversation from an opt-in
+/// capture change.
+pub const MCLK_PER_ACTIVE: u64 = 2560;
+
+/// The first active-display pixel that shows the **new** value of a VDP write performed `d_mclk` into its own
+/// scanline (`d_mclk = mclk % MCLK_PER_LINE`, so 0..3419) — the mclk → pixel-x mapping of
+/// `docs/2026-08-19-subline-recon.md` §B. Pixels `0..x` still show the pre-write value.
+///
+/// `h40` is the **resolved row's own** mode, not a live register read (decision **B-2**): a mid-line H40→H32
+/// switch would otherwise place `x` on a grid the row was never drawn on. The result is clamped to that
+/// mode's active width, which is what makes the two out-of-active cases fall out as the identity this arc has
+/// to preserve:
+///
+/// - `d_mclk = 0` → `x = 0`, the whole row takes the new value. Correct: scheduler events drain before the
+///   CPU step, so a write at exactly `N × MCLK_PER_LINE` happens after line N resolved but before any of its
+///   pixels are consumed.
+/// - `d_mclk >= MCLK_PER_ACTIVE` → `x = width`, the row is untouched and the write first shows in row N+1 —
+///   exactly today's line-atomic behaviour. **Nothing outside `[0, MCLK_PER_ACTIVE)` moves.**
+///
+/// `floor` rather than `ceil`, for consistency with [`Vdp::h_counter`]'s own derivation style and because the
+/// ±1 px it decides is two orders of magnitude below the resolution limit the stamp itself carries — writes
+/// are located to the start of the driving instruction (see the [`now_mclk`](Vdp#structfield.now_mclk) field;
+/// follow-up F-SUBLINE-ACCESSMCLK).
+pub(crate) fn subline_x(d_mclk: u64, h40: bool) -> usize {
+    // The renderer's own active widths — held to `Vdp::active_display` by the test below, so the two cannot
+    // drift into disagreeing about how wide the row they are describing is.
+    let width: u64 = if h40 { 320 } else { 256 };
+    let mclk_per_pixel = MCLK_PER_ACTIVE / width; // 8 (H40) / 10 (H32)
+    (d_mclk / mclk_per_pixel).min(width) as usize
+}
 
 /// The V-counter value at which the vertical-blank status flag sets — line 224 (the `0xDF`→`0xE0`
 /// transition, recon R2). Also the first non-active line.
@@ -65,6 +112,15 @@ pub enum VdpVia {
 /// 0..80). `size` is 1 for a VRAM byte (VRAM is captured byte-granular, at its single `write_vram_byte`
 /// choke) or 2 for a CRAM/VSRAM word. `old`/`new` are the pre/post values in that width. `via` distinguishes a
 /// direct CPU write from a DMA step.
+///
+/// `mclk` is the instant **the VDP performed this write**, read from the clock its entry point carried (the
+/// [`now_mclk`](Vdp#structfield.now_mclk) shadow). It retires `F-TRACE-VDPWRITE-MCLK`, whose whole content
+/// was that a captured write had no clock of its own and had to borrow the draining CPU step's. Two limits
+/// travel with it, both inherited from the bus rather than introduced here: it is **instruction-granular**
+/// (`MegaDriveBus` freezes the clock for one 68000 instruction — follow-up F-SUBLINE-ACCESSMCLK), and every
+/// word of one DMA burst shares the **transfer's** instant (decision C-6 — follow-up F-SUBLINE-DMASPREAD).
+/// A write driven through an untimed entry point ([`Vdp::data_write`], hand-driven fixtures) carries the
+/// last clock the VDP was given.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, bincode::Encode, bincode::Decode)]
 pub struct VdpWrite {
     pub target: VdpTarget,
@@ -73,6 +129,7 @@ pub struct VdpWrite {
     pub new: u32,
     pub size: u8,
     pub via: VdpVia,
+    pub mclk: u64,
 }
 
 #[derive(Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
@@ -192,16 +249,45 @@ pub struct Vdp {
     /// **neither** frozen currency (`state_hash`/`export_state` read only VRAM/CRAM/VSRAM/regs, never this).
     /// Power-on = empty.
     write_captures: Vec<VdpWrite>,
-    /// Whether the write-capture buffer is armed (watchpoints v2). Arming is **opt-in and zero-cost when off**:
-    /// each choke-point guard is a single cheap `if self.capture_armed` test with no behavioral effect, so a
-    /// run with no VDP watch (or a null sink) is byte-for-byte identical to today. Set per-run by the
-    /// sink-generic run loop iff the sink wants VDP writes; false at power-on and between runs. In neither
-    /// frozen currency.
+    /// Whether the write-capture buffer is armed (watchpoints v2, and since `F-SCANLINE-SUBLINE` the deferred
+    /// scanline emitter too). Arming is **opt-in and zero-cost when off**: each choke-point guard is a single
+    /// cheap `if self.capture_armed` test with no behavioral effect, so a run with no VDP watch and no
+    /// scanline sink (or a null sink) is byte-for-byte identical to today. Set per-run by the sink-generic
+    /// run loop iff the sink wants VDP writes **or** wants rendered rows; false at power-on and between runs.
+    /// In neither frozen currency. See [`Vdp::capture_cram_only`] for the narrowed mode a rows-only consumer
+    /// arms.
     capture_armed: bool,
+    /// Narrows an armed capture to **CRAM writes only** (`F-SCANLINE-SUBLINE`). The deferred scanline
+    /// emitter needs the CRAM subset and nothing else, so a run that carries a scanline sink but no VDP
+    /// watch sets this: a 64 KiB VRAM fill DMA then pushes **zero** entries instead of 65,536 that would be
+    /// built, drained and dropped every frame. A run that also wants writes on the wire clears it, so the
+    /// watchpoints path records exactly what it always did.
+    ///
+    /// A transient run flag exactly like [`Vdp::capture_armed`] and `in_dma` — false at power-on and
+    /// between runs, in neither frozen currency. It does ride the bincode snapshot (as they do), which is
+    /// the one byte this costs.
+    capture_cram_only: bool,
     /// Transient "this write is a DMA step" tag (watchpoints v2): raised around `run_fill`/`run_copy`/
     /// `dma_write_word` so the choke points stamp `via = Dma`; otherwise `via = Direct`. Always false at an
     /// instruction boundary (a DMA runs to completion within one bus access). In neither frozen currency.
     in_dma: bool,
+    /// The master clock the VDP is currently working at — a **shadow** of the `now` its timed entry points
+    /// already receive ([`Vdp::control_write`], [`Vdp::data_write_at`], [`Vdp::run_fill`], [`Vdp::run_copy`],
+    /// [`Vdp::dma_write_word`]), carried down to the write choke points so a write can be located in time and
+    /// not merely in order (F-SCANLINE-SUBLINE slice 1, design `docs/2026-08-19-subline-recon.md` §B).
+    ///
+    /// Two honest limits, both of them properties of the clock the bus hands us rather than of this field:
+    ///
+    /// - **Instruction-granular.** `MegaDriveBus` freezes `now_mclk` for the duration of one 68000
+    ///   instruction, so every word of a `movem` shares one stamp (follow-up **F-SUBLINE-ACCESSMCLK**).
+    /// - **One DMA burst = one stamp** (decision **C-6**): every word of a 68k→VDP transfer carries the
+    ///   transfer's own `now`, not an advancing per-word clock (follow-up **F-SUBLINE-DMASPREAD**).
+    ///
+    /// Untimed entry points ([`Vdp::data_write`], the hand-driven unit fixtures) leave it at its previous
+    /// value, exactly as `Watchpoints`' own untimed-event rule does. Serialized like the other transient VDP
+    /// fields; in **neither** frozen currency (`state_hash`/`export_state` read only VRAM/CRAM/VSRAM/regs).
+    /// Power-on = 0.
+    now_mclk: u64,
 }
 
 impl std::fmt::Debug for Vdp {
@@ -256,7 +342,9 @@ impl Vdp {
             last_dma: None,
             write_captures: Vec::new(),
             capture_armed: false,
+            capture_cram_only: false,
             in_dma: false,
+            now_mclk: 0,
         }
     }
 
@@ -778,6 +866,7 @@ impl Vdp {
     /// a `$8xxx` register write (top bits `10`, never arms the toggle); a first command word (top bits set
     /// CD1-CD0 + A13-A0 immediately, arm the toggle); or a second command word (CD5-CD2 + A15-A14, disarm).
     pub fn control_write(&mut self, w: u16, mclk: u64) {
+        self.now_mclk = mclk; // the write choke points read it from here (slice 1)
         if !self.pending {
             // A first control word ALWAYS latches CD1-CD0 from bits 15-14 — including the `$8xxx` register
             // form, whose bits 15-14 are `10`. CD3-CD0 = `xx10` names no target in the code table, so after
@@ -870,10 +959,24 @@ impl Vdp {
         self.last_dma
     }
 
+    /// The master clock the VDP last performed work at — see the [`now_mclk`](Vdp#structfield.now_mclk)
+    /// field for what "last" means at each entry point and for the two granularity limits it inherits.
+    pub fn now_mclk(&self) -> u64 {
+        self.now_mclk
+    }
+
     /// Arm or disarm the VDP-write capture buffer (watchpoints v2). The sink-generic run loop arms it for a
     /// run whose sink wants VDP writes and disarms it after; disarmed is byte-for-byte the old hot path.
     pub fn set_write_capture(&mut self, on: bool) {
         self.capture_armed = on;
+        self.capture_cram_only = false;
+    }
+
+    /// Arm the write-capture buffer for **CRAM writes only** — what a run with a scanline sink but no VDP
+    /// watch needs (`F-SCANLINE-SUBLINE`). See [`Vdp::capture_cram_only`] for why the narrowing matters.
+    pub fn set_write_capture_cram_only(&mut self, on: bool) {
+        self.capture_armed = on;
+        self.capture_cram_only = on;
     }
 
     /// Drain the VDP writes captured since the last drain (watchpoints v2), leaving the buffer empty. The
@@ -886,7 +989,7 @@ impl Vdp {
     /// branch is the whole cost when disarmed — it inlines to one predictable test in the DMA-fill hot path.
     #[inline]
     fn capture(&mut self, target: VdpTarget, addr: u32, old: u32, new: u32, size: u8) {
-        if self.capture_armed {
+        if self.capture_armed && (!self.capture_cram_only || target == VdpTarget::Cram) {
             let via = if self.in_dma {
                 VdpVia::Dma
             } else {
@@ -899,6 +1002,8 @@ impl Vdp {
                 new,
                 size,
                 via,
+                // The write's own instant, not the draining step's — F-TRACE-VDPWRITE-MCLK (slice 1b).
+                mclk: self.now_mclk,
             });
         }
     }
@@ -931,7 +1036,14 @@ impl Vdp {
     /// 10 (expected table ROM `$ED10` words 33-40, `0200 0100 0000 0200` / `0000 0100 0000 0200`) fire a
     /// DMA between their two probes and require the resuming 68k to see **FULL → partial → EMPTY**; with a
     /// bare ring store it sees EMPTY throughout and both groups report `$ffff`.
-    pub fn dma_write_word(&mut self, w: u16) {
+    ///
+    /// `now` is the **transfer's** instant, not this word's: the bus passes the same value for every word of
+    /// the burst (decision C-6 — a 32-word palette DMA is located at the pixel the DMA started on, not
+    /// smeared across the slots it really occupies; follow-up F-SUBLINE-DMASPREAD). It is a parameter rather
+    /// than a shadow set once around the loop because this is a **public** entry point the bus drives
+    /// directly, bypassing every timed one — a caller that has to supply the time cannot forget to.
+    pub fn dma_write_word(&mut self, w: u16, now: u64) {
+        self.now_mclk = now; // C-6: the transfer's instant, per word (slice 1)
         self.in_dma = true; // watchpoints v2: this word's captures attribute to the triggering DMA
         self.fifo_enqueue(w);
         self.write_target(w);
@@ -1093,6 +1205,7 @@ impl Vdp {
     /// routes through the SAT write-through (R5 rider: fill steps hit the window compare like any VRAM write).
     /// Length is in bytes (RD2); regs 19/20 → 0 after the transfer (recon R4).
     pub fn run_fill(&mut self, len: u16, fill: u16, now: u64) {
+        self.now_mclk = now; // C-6: every step of the fill carries the transfer's own instant (slice 1)
         let count = if len == 0 { 0x1_0000u32 } else { len as u32 };
         let target = self.target();
         // The address register the fill engine starts from. Since A3b this is the *post-trigger* value
@@ -1147,6 +1260,7 @@ impl Vdp {
     /// time. Each write routes through the SAT write-through (R5 rider). Length is in bytes (RD2); regs 19/20
     /// → 0 after the transfer (recon R4).
     pub fn run_copy(&mut self, source: u16, len: u16, now: u64) {
+        self.now_mclk = now; // C-6: every step of the copy carries the transfer's own instant (slice 1)
         let count = if len == 0 { 0x1_0000u32 } else { len as u32 };
         let dest = self.addr;
         let mut src = source as usize;
@@ -1176,6 +1290,8 @@ impl Vdp {
     /// instruction cost; `FlatBus` never reaches this path so the SST corpus is untouched), then apply the
     /// write. A 5th write while all 4 slots are pending waits for the oldest to drain (official /DTACK stall).
     pub fn data_write_at(&mut self, w: u16, now: u64) -> u32 {
+        // Slice 1: the write choke points read the instant from here.
+        self.now_mclk = now;
         // A DMA command's data write is not FIFO-timed here (the DMA slices own it); no stall, apply as before.
         if self.code & 0x20 != 0 {
             self.apply_data_write(w);
@@ -2947,7 +3063,7 @@ mod tests {
             v.data_write(w); // six marker words fill (and wrap) the ring
         }
         for w in [0xAAAAu16, 0xBBBB, 0xCCCC, 0xDDDD, 0xEEEE, 0xFFFF] {
-            v.dma_write_word(w);
+            v.dma_write_word(w, 0);
         }
         assert_eq!(
             v.fifo_snoop_word(),
@@ -2981,7 +3097,7 @@ mod tests {
         command(&mut v, 0x01, 0x8000);
         assert_eq!(v.fifo_len(), 0, "an idle FIFO before the transfer");
         for w in [0xAAAAu16, 0xBBBB, 0xCCCC, 0xDDDD, 0xEEEE, 0xFFFF] {
-            v.dma_write_word(w);
+            v.dma_write_word(w, 0);
         }
         assert_eq!(
             v.fifo_len(),
@@ -3003,7 +3119,7 @@ mod tests {
         command(&mut v, 0x01, 0x8000);
         let start = 100 * MCLK_PER_LINE;
         for w in [0xAAAAu16, 0xBBBB, 0xCCCC, 0xDDDD] {
-            v.dma_write_word(w);
+            v.dma_write_word(w, start);
         }
         let end = start + 4_000; // a plausible transfer window; the exact cost is `Vdp::dma_cost`'s job
         v.dma_complete(
@@ -3376,6 +3492,7 @@ mod tests {
                 new: 0xBE,
                 size: 1,
                 via: VdpVia::Direct,
+                mclk: 0, // this fixture drives every port at mclk 0
             }
         );
         assert_eq!(
@@ -3387,6 +3504,7 @@ mod tests {
                 new: 0xEF,
                 size: 1,
                 via: VdpVia::Direct,
+                mclk: 0,
             }
         );
         assert!(
@@ -3416,6 +3534,7 @@ mod tests {
                 new: 0x0EEE,
                 size: 2,
                 via: VdpVia::Direct,
+                mclk: 0, // this fixture drives every port at mclk 0
             }
         );
     }
@@ -3463,5 +3582,205 @@ mod tests {
         ref_vdp.data_write(0xBEEF);
         assert_eq!(v.vram(), ref_vdp.vram(), "capture never perturbs VRAM");
         assert_eq!(v, ref_vdp, "drained capture buffer leaves the VDP equal");
+    }
+
+    // --- F-SCANLINE-SUBLINE slice 1: the mclk reaches the write chokes ------------------------------------
+
+    /// Arm a CRAM word write at CRAM byte address 0, autoincrement 2, at mclk `arm`.
+    fn arm_cram_write(v: &mut Vdp, arm: u64) {
+        v.control_write(0x8F02, arm); // reg 15 = autoinc 2
+        v.control_write(0xC000, arm); // CRAM write (code 0x03), A13-A0 = 0
+        v.control_write(0x0000, arm); // high half, disarm the toggle
+    }
+
+    /// A bus-timed CRAM data-port write carries its own instant into the VDP: `data_write_at(w, m)` leaves
+    /// the VDP's notion of "now" at `m`, which is the clock the CRAM choke runs under. The write is checked
+    /// to have actually landed, so the stamp is the stamp of a write that happened.
+    #[test]
+    fn a_cram_data_write_stamps_the_vdps_now_with_the_writes_own_mclk() {
+        let mut v = fresh();
+        arm_cram_write(&mut v, 0);
+        assert_eq!(v.now_mclk(), 0, "the arming control writes were at mclk 0");
+
+        // A landing well inside line 100's active display — the shape §B of the subline recon maps to a pixel.
+        let m = 100 * MCLK_PER_LINE + 1775;
+        v.data_write_at(0x0EEE, m);
+        assert_eq!(
+            v.now_mclk(),
+            m,
+            "the data write's own instant reached the VDP"
+        );
+        assert_eq!(
+            ((v.cram()[0] as u16) << 8) | v.cram()[1] as u16,
+            0x0EEE,
+            "and it is the instant of a write that really landed in CRAM"
+        );
+
+        // It tracks, rather than latching once: a second write at a later instant re-stamps.
+        let m2 = m + 3 * MCLK_PER_LINE;
+        v.data_write_at(0x0AAA, m2);
+        assert_eq!(v.now_mclk(), m2, "each timed write re-stamps");
+    }
+
+    /// The other three timed entry points stamp too, so no write choke can be reached under a stale clock:
+    /// a control write (which can itself write a register), a fill body and a copy body.
+    #[test]
+    fn every_timed_entry_point_stamps_the_vdps_now() {
+        let mut v = fresh();
+        v.control_write(0x8F02, 11_111);
+        assert_eq!(v.now_mclk(), 11_111, "control_write stamps");
+
+        arm_vram_write(&mut v, 0x0200);
+        v.run_fill(4, 0xAB00, 22_222);
+        assert_eq!(v.now_mclk(), 22_222, "run_fill stamps");
+
+        v.run_copy(0x0200, 4, 33_333);
+        assert_eq!(v.now_mclk(), 33_333, "run_copy stamps");
+    }
+
+    /// **Decision C-6, pinned as a decision rather than left an accident.** Every word of a 68k→VDP burst
+    /// carries the *transfer's* instant — not the instant the transfer was armed, and not a per-word clock.
+    /// The shadow is checked after **each** word (a single post-burst check could not tell "every word" from
+    /// "the last word"), and the burst is armed at a deliberately different mclk so an unstamped word would
+    /// be visibly stale rather than accidentally right.
+    #[test]
+    fn a_mem_dma_burst_stamps_every_word_with_the_transfers_own_now() {
+        const ARMED_AT: u64 = 40 * MCLK_PER_LINE;
+        const TRANSFER_AT: u64 = 100 * MCLK_PER_LINE + 1775;
+
+        let mut v = fresh();
+        arm_cram_write(&mut v, ARMED_AT);
+        assert_eq!(v.now_mclk(), ARMED_AT, "armed under the earlier clock");
+        v.set_write_capture(true);
+
+        for (i, w) in [0x0EEEu16, 0x0AAA, 0x0666, 0x0222].into_iter().enumerate() {
+            v.dma_write_word(w, TRANSFER_AT);
+            assert_eq!(
+                v.now_mclk(),
+                TRANSFER_AT,
+                "word {i} of the burst carries the transfer's own now, not the arming clock"
+            );
+        }
+        let caps = v.take_write_captures();
+        assert_eq!(caps.len(), 4, "all four words reached the CRAM choke");
+        assert!(
+            caps.iter().all(|c| c.target == VdpTarget::Cram),
+            "at the CRAM choke, which is the one the sub-line arc needs timed: {caps:?}"
+        );
+    }
+
+    // --- F-SCANLINE-SUBLINE slice 2: the mclk -> pixel-x mapping ------------------------------------------
+
+    /// The pixel axis end to end in both modes: the first pixel of the line, the pixel-clock boundary, the
+    /// last active pixel, and the blanking cases that must stay line-atomic.
+    #[test]
+    fn subline_x_maps_the_active_window_onto_the_pixel_axis() {
+        // H40: 8 mclk per pixel, 320 pixels.
+        for (d, x) in [(0u64, 0usize), (7, 0), (8, 1), (2552, 319), (2559, 319)] {
+            assert_eq!(subline_x(d, true), x, "H40 d={d}");
+        }
+        // H32: 10 mclk per pixel, 256 pixels.
+        for (d, x) in [(0u64, 0usize), (9, 0), (10, 1), (2550, 255), (2559, 255)] {
+            assert_eq!(subline_x(d, false), x, "H32 d={d}");
+        }
+        // Blanking: the write misses this row entirely and lands whole on the next one — today's behaviour,
+        // which the mapping must not disturb.
+        for d in [MCLK_PER_ACTIVE, MCLK_PER_ACTIVE + 1, MCLK_PER_LINE - 1] {
+            assert_eq!(subline_x(d, true), 320, "H40 blanking d={d}");
+            assert_eq!(subline_x(d, false), 256, "H32 blanking d={d}");
+        }
+    }
+
+    /// **The evidence check.** The mapping reproduces a landing pixel the *demand side* derived
+    /// independently, from their own measurement rather than from anything in this tree.
+    ///
+    /// Aeon's HBlank sweep places the shipped `SPIN_CRAM = 4` burst's first CRAM write *"253.6 cycles into
+    /// line 100, at pixel ≈ 222 of 320"*
+    /// (`aeon/docs/benchmarks/scanline-p2/HBLANK-WINDOW-SWEEP-RESULTS.md:410-413`), a figure they compute
+    /// from the measured N = 27.5 crossing plus H40 line geometry and describe as *"independent of any
+    /// emulator-internal constant"* (`:403-404`).
+    ///
+    /// This case is also what **discriminates the two candidate grids** (decision B-1): the 422-position
+    /// H-counter grid answers 219 for the same instant, and only the 8-mclk pixel reproduces the measurement.
+    #[test]
+    fn subline_x_reproduces_the_demand_sides_measured_landing_pixel() {
+        // 253.6 CPU cycles, carried in tenths so the conversion stays integer. MCLK_PER_CPU_CYCLE is the
+        // tree's one CPU-cycle -> mclk constant, so the derivation reads from source rather than a literal.
+        let d = 2536 * crate::system::MCLK_PER_CPU_CYCLE / 10;
+        assert_eq!(d, 1775, "253.6 CPU cycles into the line, in mclk");
+        assert_eq!(
+            subline_x(d, true),
+            221,
+            "the mapping lands where Aeon measured, to within its own rounding (they report ~222)"
+        );
+    }
+
+    /// The width `subline_x` clamps to is the width the renderer actually draws — one anchor, no drift.
+    #[test]
+    fn subline_x_clamps_to_the_width_the_renderer_reports() {
+        let mut v = fresh();
+        v.control_write(0x8C81, 0); // reg 12 bits 7+0 -> H40
+        assert!(v.h40(), "the fixture really is in H40");
+        assert_eq!(
+            subline_x(MCLK_PER_ACTIVE, true) as u16,
+            v.active_display().0,
+            "H40 clamp == the renderer's H40 width"
+        );
+        v.control_write(0x8C00, 0); // reg 12 = 0 -> H32
+        assert!(!v.h40(), "and really is in H32");
+        assert_eq!(
+            subline_x(MCLK_PER_ACTIVE, false) as u16,
+            v.active_display().0,
+            "H32 clamp == the renderer's H32 width"
+        );
+    }
+
+    // --- F-TRACE-VDPWRITE-MCLK (slice 1b): the capture carries the write's own instant --------------------
+
+    /// A captured CRAM write reports the clock **it** was performed at, not the clock of whatever the VDP
+    /// last did. The fixture arms at one instant and writes at another, so borrowing the wrong one fails.
+    #[test]
+    fn a_captured_cram_write_carries_the_writes_own_mclk() {
+        const ARMED_AT: u64 = 40 * MCLK_PER_LINE;
+        const WRITTEN_AT: u64 = 100 * MCLK_PER_LINE + 1775;
+
+        let mut v = fresh();
+        arm_cram_write(&mut v, ARMED_AT);
+        v.set_write_capture(true);
+        v.data_write_at(0x0EEE, WRITTEN_AT);
+
+        let caps = v.take_write_captures();
+        assert_eq!(caps.len(), 1, "one word capture for CRAM");
+        assert_eq!(
+            caps[0].mclk, WRITTEN_AT,
+            "the capture carries the write's own instant"
+        );
+        assert_ne!(
+            caps[0].mclk, ARMED_AT,
+            "and not the arming command's, which is the clock it would have borrowed before"
+        );
+    }
+
+    /// **Decision C-6, now visible to a consumer.** Every captured word of one 68k→VDP burst reports the
+    /// transfer's instant — one boundary per burst, not one per word and not an advancing clock.
+    #[test]
+    fn every_captured_dma_word_reports_the_transfers_instant() {
+        const ARMED_AT: u64 = 40 * MCLK_PER_LINE;
+        const TRANSFER_AT: u64 = 100 * MCLK_PER_LINE + 1775;
+
+        let mut v = fresh();
+        arm_cram_write(&mut v, ARMED_AT);
+        v.set_write_capture(true);
+        for w in [0x0EEEu16, 0x0AAA, 0x0666, 0x0222] {
+            v.dma_write_word(w, TRANSFER_AT);
+        }
+
+        let caps = v.take_write_captures();
+        assert_eq!(caps.len(), 4);
+        assert_eq!(
+            caps.iter().map(|c| c.mclk).collect::<Vec<_>>(),
+            vec![TRANSFER_AT; 4],
+            "one burst, one instant (C-6; F-SUBLINE-DMASPREAD is the follow-up that would smear it)"
+        );
     }
 }

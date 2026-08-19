@@ -28,9 +28,12 @@
 //! overrides it to latch the timestamp and then delegates, so a hit's [`WatchHit::mclk`] is the access's own
 //! clock. Two honest caveats, both reported by [`Watchpoints::caveats`] rather than hidden:
 //!
-//! - A **VDP-internal** hit ([`WatchSpace::Vram`]/`Cram`/`Vsram`) is drained *after* the driving CPU step, so
-//!   it is stamped with the latest timestamped bus access of that step, not with the write's own time. Treat
-//!   it as step-granular (`F-TRACE-VDPWRITE-MCLK`).
+//! - A **VDP-internal** hit ([`WatchSpace::Vram`]/`Cram`/`Vsram`) carries the clock the **VDP** performed the
+//!   write at ([`crate::vdp::VdpWrite::mclk`]), not the draining step's — it is still drained after the CPU
+//!   step, but it no longer borrows that step's timestamp (`F-TRACE-VDPWRITE-MCLK`, retired). What is left is
+//!   **instruction granularity**: the bus freezes its clock for one 68000 instruction, so a write is located
+//!   to the start of the instruction that drove it, and every word of one DMA burst shares the transfer's
+//!   instant (`F-SUBLINE-ACCESSMCLK`, `F-SUBLINE-DMASPREAD`).
 //! - Events fed to [`BusEventSink::on_event`] directly (the phase-0 synthetic `SystemBus`, hand-written unit
 //!   tests) carry no clock at all, so `mclk` holds the last latched value — `0` if none was ever supplied.
 //!
@@ -279,7 +282,7 @@ pub struct Stamp {
     pub pc: u32,
     /// Emulated frame index.
     pub frame: u64,
-    /// Absolute emulated master clock (step-granular for VDP-internal hits — see the module docs).
+    /// Absolute emulated master clock (instruction-granular for VDP-internal hits — see the module docs).
     pub mclk: u64,
     /// The monotonic id of the matched access ([`WatchHit::seq`]).
     pub seq: u64,
@@ -816,9 +819,10 @@ impl Watchpoints {
         }
         if self.vdp_matched > 0 {
             out.push(format!(
-                "{} VDP-internal hit(s): `mclk` is the driving CPU step's clock, not the write's own \
-                 (VDP writes are drained after the step). Treat it as step-granular \
-                 (F-TRACE-VDPWRITE-MCLK).",
+                "{} VDP-internal hit(s): `mclk` is the write's own instant, but it is \
+                 instruction-granular — the bus clock is frozen for one 68000 instruction, so a write is \
+                 located to the start of the instruction that drove it, and every word of one DMA burst \
+                 shares the transfer's instant (F-SUBLINE-ACCESSMCLK, F-SUBLINE-DMASPREAD).",
                 self.vdp_matched
             ));
         }
@@ -937,9 +941,11 @@ impl BusEventSink for Watchpoints {
             },
             pc: self.cur_pc,
             frame: self.cur_frame,
-            // Step-granular: the write is drained after the driving CPU step, so this is that step's clock.
-            // Reported as a caveat rather than dressed up as precision.
-            mclk: self.cur_mclk,
+            // The write's own instant, carried down from the VDP entry point that performed it
+            // (F-TRACE-VDPWRITE-MCLK, slice 1b) — NOT `self.cur_mclk`, which is the draining step's clock.
+            // The residual instruction granularity is reported as a caveat rather than dressed up as
+            // precision.
+            mclk: w.mclk,
             seq: 0, // assigned by `dispatch`
         };
         if !self.any_match(&hit) {
@@ -1164,21 +1170,40 @@ mod tests {
         assert_eq!(mclks, vec![12_345, 12_567, 12_567]);
     }
 
-    /// A VDP-internal hit is stamped with the driving step's clock (the latest timestamped bus access), and
-    /// that approximation is reported as a caveat rather than presented as the write's own time.
+    /// A VDP-internal hit carries the **write's own** instant, not the draining step's — the whole of
+    /// `F-TRACE-VDPWRITE-MCLK`, retired in slice 1b. The two clocks are deliberately different here, so a
+    /// regression to the old borrow-the-step's-clock behaviour is a failure rather than a coincidence, and
+    /// the caveat that travels with the numbers now names what is actually left (instruction granularity).
     #[test]
-    fn vdp_hits_carry_the_step_clock_and_say_so() {
+    fn vdp_hits_carry_the_writes_own_clock_and_say_what_is_left() {
         let mut wp = Watchpoints::new(16);
         wp.add_vdp_watch(WatchSpace::Vram, 0..=0xFF, WatchOp::Any, "vram");
-        wp.on_event_at(ev(BusOp::Write, 0xC0_0000, 0), 900_000);
-        wp.on_vdp_write(vw(VdpTarget::Vram, 0x10, 0, 1, 1, VdpVia::Direct));
-        assert_eq!(wp.hits()[0].mclk, 900_000, "the driving step's clock");
+        wp.on_event_at(ev(BusOp::Write, 0xC0_0000, 0), 900_000); // the driving step's clock
+        wp.on_vdp_write(vw_at(
+            912_345,
+            VdpTarget::Vram,
+            0x10,
+            0,
+            1,
+            1,
+            VdpVia::Direct,
+        ));
+        assert_eq!(wp.hits()[0].mclk, 912_345, "the write's own clock");
+        assert_ne!(
+            wp.hits()[0].mclk,
+            900_000,
+            "and specifically not the draining step's, which is what it used to report"
+        );
+        let caveats = wp.caveats();
         assert!(
-            wp.caveats()
+            caveats
                 .iter()
-                .any(|c| c.contains("step-granular") && c.contains("VDP")),
-            "the approximation travels with the numbers: {:?}",
-            wp.caveats()
+                .any(|c| c.contains("instruction-granular") && c.contains("VDP-internal")),
+            "the residual approximation travels with the numbers: {caveats:?}"
+        );
+        assert!(
+            !caveats.iter().any(|c| c.contains("F-TRACE-VDPWRITE-MCLK")),
+            "and the retired follow-up is no longer advertised as an open gap: {caveats:?}"
         );
     }
 
@@ -1886,7 +1911,21 @@ mod tests {
 
     use crate::vdp::{VdpTarget, VdpVia, VdpWrite};
 
+    /// A captured VDP write at mclk 0 — for the cases that are about *what* was written, not *when*.
     fn vw(target: VdpTarget, addr: u32, old: u32, new: u32, size: u8, via: VdpVia) -> VdpWrite {
+        vw_at(0, target, addr, old, new, size, via)
+    }
+
+    /// The same, with the write's own instant supplied — the clock the VDP performed it at (slice 1b).
+    fn vw_at(
+        mclk: u64,
+        target: VdpTarget,
+        addr: u32,
+        old: u32,
+        new: u32,
+        size: u8,
+        via: VdpVia,
+    ) -> VdpWrite {
         VdpWrite {
             target,
             addr,
@@ -1894,6 +1933,7 @@ mod tests {
             new,
             size,
             via,
+            mclk,
         }
     }
 
