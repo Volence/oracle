@@ -313,10 +313,14 @@ fn a_call_straddling_a_frame_boundary_is_one_call() {
     // holds one invocation per counted frame — less the one still in flight, because this leaf is
     // *always* mid-call when a boundary passes. Never two per frame, which is what a shadow stack torn
     // down and rebuilt at each boundary would produce.
+    // The `- 1` is this FIXTURE'S PHASE, not a rule of the accountant: because the leaf is always
+    // mid-call when a boundary passes, exactly one invocation is perpetually in flight and so has not
+    // been recorded when the sample closes. A fixture whose calls complete inside their own frame reports
+    // one per frame with no subtraction — see `a_routine_called_k_times_reports_calls_equal_to_k`.
     assert_eq!(
         raw.calls,
         r.frame_count - 1,
-        "one invocation per counted frame, minus the one open across the closing boundary \
+        "one invocation per counted frame, less the one still open at the close \
          (frames {}, calls {})",
         r.frame_count,
         raw.calls
@@ -412,11 +416,16 @@ fn two_identical_runs_produce_identical_output() {
         ProfilerShape::CallsLeaf { k: 3 },
         ProfilerShape::TwoLevel,
         ProfilerShape::Recursive { depth: 3 },
+        ProfilerShape::Dispatch,
+        ProfilerShape::IdleInRoutine,
         ProfilerShape::Interrupts {
             hint: true,
             vint: true,
         },
         ProfilerShape::ModeSwitch,
+        ProfilerShape::Stall {
+            kind: StallKind::Dma,
+        },
     ] {
         let a = profile(shape, 4);
         let b = profile(shape, 4);
@@ -793,6 +802,45 @@ fn the_shadow_stack_is_capped_and_says_so() {
     );
 }
 
+/// **The cross-mode coincidence.** `sp` is mode-selected, and the user and supervisor stacks are
+/// independent — so a user-mode frame and a supervisor-mode return can meet at the same numeric stack
+/// pointer while having nothing whatever to do with each other. Matching on the pointer alone closes the
+/// user frame on the supervisor's return: the wrong routine's invocation ends, its cycles stop, and the
+/// rest of it is charged to whatever was underneath. Nothing about that is visible in the output.
+///
+/// Constructed synthetically because it must be: the coincidence needs `usp` and `ssp` to line up to the
+/// byte, which a ROM cannot be asked to arrange on demand — the `ModeSwitch` fixture exercises the mode
+/// change but never the collision.
+#[test]
+fn a_supervisor_return_cannot_close_a_user_mode_frame_that_merely_shares_its_pointer() {
+    const USER_ROUTINE: u32 = 0x0000_2000;
+    let user = |pc: u32, opcode: u16, sp: u32| StepRetire {
+        supervisor: false,
+        ..step(pc, opcode, sp, S)
+    };
+    let mut p = Profiler::new();
+    p.on_frame_boundary(0);
+    // In USER mode, on the user stack, which happens to sit at the same address as the supervisor stack.
+    p.on_step_retire(user(0x1000, OP_NOP, S));
+    p.on_step_retire(user(0x1002, OP_JSR_ABS_W, S - 4));
+    p.on_step_retire(user(USER_ROUTINE, OP_NOP, S - 4)); // entry_sp = S-4, user
+                                                         // A SUPERVISOR return whose stack pointer is exactly what would close that user frame.
+    p.on_step_retire(step(0x9000, OP_RTS, S, S)); // supervisor: true
+    p.on_frame_boundary(1);
+
+    assert_eq!(
+        p.sample_routines().get(&USER_ROUTINE).map(|c| c.calls),
+        Some(0),
+        "the user routine has NOT completed — a supervisor return is not its return; rows: {:#06X?}",
+        p.sample_routines().keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        p.open_frames(),
+        2,
+        "and it is still open, under the root, exactly where it was"
+    );
+}
+
 // --- The exception rules, driven synthetically ------------------------------------------------------
 //
 // The accumulator is a pure function of three inputs — the acknowledge event, the retire stream and the
@@ -824,6 +872,9 @@ fn step(pc: u32, opcode: u16, sp: u32, ssp: u32) -> StepRetire {
         cycles: STEP_CYCLES as u32,
         stall_cycles: 0,
         executed: true,
+        // Supervisor unless a test says otherwise: that is where a 68000 boots, and where every handler
+        // and every exception frame lives.
+        supervisor: true,
     }
 }
 

@@ -122,6 +122,8 @@ fn the_retired_fields_are_the_real_step() {
             stall_cycles: 0,
             // The first instruction runs: no exception is pending at the reset anchor.
             executed: true,
+            // The 68000 boots supervisor, and the ROM's first instruction has not left it.
+            supervisor: twin.cpu_regs().supervisor(),
         }
     };
 
@@ -193,24 +195,38 @@ fn the_step_cancelled_by_an_early_stop_never_retires() {
 /// The subset relation, per step rather than in aggregate: no step can wait longer than it took. This is
 /// what makes `cycles - stall_cycles` meaningful at every level the figure is reported at, and it is the
 /// property that keeps the clock identity above true.
+///
+/// Run on a ROM that ACTUALLY STALLS — a 68k→VDP DMA holds the bus — because a subset assertion over a
+/// stall-free run says only that `0 <= cycles`, which is true of any implementation including one that
+/// never reports a stall at all. The stall-free ROM is kept as the other half of the pair: together they
+/// say the figure appears when it should and not when it shouldn't.
 #[test]
 fn the_stall_figure_is_a_subset_of_the_cycle_figure() {
-    let mut s = booted(0x1234_5678);
-    let mut sink = RetireLog::default();
-    s.run_frames_with_sink(2, &mut sink);
-
-    for r in &sink.retires {
+    let stalling = retires_of(
+        oracle_core::testrom::build_profiler(oracle_core::testrom::ProfilerShape::Stall {
+            kind: oracle_core::testrom::StallKind::Dma,
+        }),
+        3,
+    );
+    let stalled: u64 = stalling.iter().map(|r| u64::from(r.stall_cycles)).sum();
+    assert!(
+        stalled > 0,
+        "the DMA fixture must actually stall, or the subset check below is vacuous"
+    );
+    for r in &stalling {
         assert!(
             r.stall_cycles <= r.cycles,
             "a step cannot spend more time waiting than it took: {r:?}"
         );
     }
-    // The built-in ROM only stirs work RAM — it never touches a VDP port — so nothing here can stall. A
-    // non-zero total would mean the accumulator was picking up something that is not one of the three
-    // enumerated conditions.
-    let stalled: u32 = sink.retires.iter().map(|r| r.stall_cycles).sum();
+
+    // The other half: the built-in ROM only stirs work RAM and never touches a VDP port, so nothing can
+    // hold it off. A non-zero total there would mean the accumulator was picking up something that is not
+    // one of the three enumerated conditions.
+    let quiet = retires_of(oracle_core::testrom::build(), 2);
+    let quiet_stall: u32 = quiet.iter().map(|r| r.stall_cycles).sum();
     assert_eq!(
-        stalled, 0,
+        quiet_stall, 0,
         "the stirring ROM drives no VDP access, so it has nothing to be held off by"
     );
 }

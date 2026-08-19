@@ -113,6 +113,14 @@ pub struct StepRetire {
     /// the active A7 is the user stack and the frame it just popped is nowhere in view. Carrying both
     /// makes the match mode-independent instead of accidentally correct.
     pub ssp: u32,
+    /// Whether the CPU was in **supervisor** mode when the step finished.
+    ///
+    /// Needed because [`sp`](StepRetire::sp) is mode-selected and the two stacks are independent: a user
+    /// routine's frame and a supervisor routine's frame can sit at the *same numeric* stack pointer while
+    /// having nothing to do with each other. Matching a return on the pointer alone would then close the
+    /// wrong frame on a coincidence, which is a silent mis-attribution rather than a visible error. A
+    /// consumer pairing returns with entries must require the mode to agree as well.
+    pub supervisor: bool,
     /// The step's exact CPU-cycle cost, as returned by `Cpu68000::step`. Stall-inclusive: our clock bills
     /// bus/VDP/DMA waits to the instruction that incurred them.
     pub cycles: u32,
@@ -169,8 +177,15 @@ pub trait BusEventSink {
     /// resumed run retires it then.
     ///
     /// The default is a no-op, so the null-sink hot path (`()`) and the recording sink (`Vec<BusEvent>`) are
-    /// unchanged **by construction**: the loop gains one call with an empty body over values it already
-    /// holds, which can neither reorder a bus access nor move the clock.
+    /// unchanged **by construction**: the loop gains one call with an empty body, which can neither reorder
+    /// a bus access nor move the clock.
+    ///
+    /// One honest caveat about "for free". Most of what [`StepRetire`] carries was already computed —
+    /// `pc`, `opcode`, the stack pointers, `cycles`. [`stall_cycles`](StepRetire::stall_cycles) was **not**:
+    /// the bus now sums every wait it returns, on every access, whether or not anything is listening. That
+    /// is a genuine addition to the unarmed path — an add per VDP-port access — and it is worth naming
+    /// rather than filing under a claim of zero cost. It cannot change behaviour (the sum is read and
+    /// dropped), which is the property the neutrality gate proves; it is simply not free.
     fn on_step_retire(&mut self, _retire: StepRetire) {}
 
     /// Whether this sink wants VDP-internal writes delivered (watchpoints v2). The sink-generic run loop calls
@@ -3453,6 +3468,7 @@ mod tests {
             opcode: 0x4E75,
             sp: 0x00FF_FFF0,
             ssp: 0x00FF_FFF0,
+            supervisor: true,
             cycles: 16,
             stall_cycles: 4,
             executed: true,

@@ -1059,6 +1059,7 @@ impl System {
                 opcode: step_opcode,
                 sp: self.cpu.regs.a7(),
                 ssp: self.cpu.regs.ssp,
+                supervisor: self.cpu.regs.supervisor(),
                 cycles,
                 stall_cycles,
                 executed: outcome.executed,

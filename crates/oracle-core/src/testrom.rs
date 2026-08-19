@@ -1127,7 +1127,8 @@ mod tests {
     #[should_panic(expected = "outside the signed-byte window")]
     #[cfg(debug_assertions)]
     fn short_disp_rejects_a_body_grown_past_the_window() {
-        // -129: one byte too far backwards. `as i8` would yield 0x7F — a +127 FORWARD branch.
+        // -131 (`0x100 - (0x181 + 2)`): past the window. `as i8` would yield 0x7D — a +125 FORWARD
+        // branch, which is a perfectly valid instruction to a completely wrong place.
         short_disp(0x100, 0x181);
     }
 

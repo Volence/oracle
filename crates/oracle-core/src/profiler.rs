@@ -25,6 +25,10 @@
 //!    "return" to it — leaves `sp == entry_sp`, which does not match, so it correctly does *not* close the
 //!    caller. A tolerant "stack unwound past here" rule would silently close it and merge two routines.
 //!
+//!    The match also requires the **privilege mode** to agree. The user and supervisor stacks are
+//!    independent, so a user frame and a supervisor frame can sit at the same numeric pointer while having
+//!    nothing to do with each other; closing one on the other's return is a coincidence with no symptom.
+//!
 //! 2. **An interrupt is keyed by its cause, never by its handler's address.** The bucket opens on the
 //!    fc = 7 interrupt-acknowledge that [`BusEventSink::on_event`] already carries — the level is encoded
 //!    in the acknowledge address — and never on a guess about where a vector points. An address heuristic
@@ -164,6 +168,10 @@ struct Frame {
     /// The active A7 immediately after entry — what a return must restore, exactly, to close this frame.
     /// Unused for [`FrameKind::Interrupt`], which matches on the supervisor stack instead.
     entry_sp: u32,
+    /// The privilege mode this frame was entered in. A return must match it as well as the pointer: the
+    /// user and supervisor stacks are independent, so two unrelated frames can share a numeric `entry_sp`,
+    /// and closing one on the other's return would be a mis-attribution with no visible symptom.
+    supervisor: bool,
     /// Cycles retired directly in this frame.
     self_cycles: u64,
     /// The stall part of `self_cycles`.
@@ -370,11 +378,12 @@ impl Profiler {
     /// unreturned frame — `calls: 0`, because nothing was observed to call it and nothing completes it —
     /// which is the honest signal that this row was inferred rather than seen. Flagging it as such on the
     /// wire is a question for the surface that publishes these rows, not for the accumulator.
-    fn charge(&mut self, pc: u32, sp: u32, cycles: u64, stall: u64) {
+    fn charge(&mut self, pc: u32, sp: u32, supervisor: bool, cycles: u64, stall: u64) {
         if self.stack.is_empty() {
             self.push_frame(Frame {
                 kind: FrameKind::Routine { addr: pc },
                 entry_sp: sp,
+                supervisor,
                 self_cycles: 0,
                 self_stall: 0,
                 child_cycles: 0,
@@ -486,14 +495,16 @@ impl Profiler {
     /// only find a frame the top-only search would have missed, and everything above that frame is then
     /// unwound as ABANDONED — cycles kept, calls not, and counted in [`Report::abandoned_frames`] so the
     /// recovery is visible rather than silent.
-    fn close_routine(&mut self, opcode: u16, sp_after: u32) {
+    fn close_routine(&mut self, opcode: u16, sp_after: u32, supervisor: bool) {
         let pop = if opcode == OPCODE_RTR {
             RTR_POP
         } else {
             RTS_POP
         };
         let target = self.stack.iter().rposition(|f| {
-            matches!(f.kind, FrameKind::Routine { .. }) && f.entry_sp.wrapping_add(pop) == sp_after
+            matches!(f.kind, FrameKind::Routine { .. })
+                && f.entry_sp.wrapping_add(pop) == sp_after
+                && f.supervisor == supervisor
         });
         let Some(idx) = target else {
             return; // A return that matches nothing closes nothing.
@@ -618,6 +629,7 @@ impl BusEventSink for Profiler {
             self.push_frame(Frame {
                 kind: FrameKind::Routine { addr: r.pc },
                 entry_sp,
+                supervisor: r.supervisor,
                 self_cycles: 0,
                 self_stall: 0,
                 child_cycles: 0,
@@ -648,6 +660,7 @@ impl BusEventSink for Profiler {
                     frame_ssp: r.ssp,
                 },
                 entry_sp: r.sp,
+                supervisor: r.supervisor,
                 self_cycles: 0,
                 self_stall: 0,
                 child_cycles: 0,
@@ -660,7 +673,13 @@ impl BusEventSink for Profiler {
             self.pending_call = Some(r.sp);
         }
         // 3. The entry cost belongs to the frame it opened, so charge after pushing.
-        self.charge(r.pc, r.sp, u64::from(r.cycles), u64::from(r.stall_cycles));
+        self.charge(
+            r.pc,
+            r.sp,
+            r.supervisor,
+            u64::from(r.cycles),
+            u64::from(r.stall_cycles),
+        );
         // 4. Classify — but ONLY if the instruction at `pc` actually ran. Exception entries are dispatched
         //    before decode, idle slices retire a stale `pc` over and over, and an aborted instruction
         //    retires its own opcode having done nothing; on every one of those paths the opcode names an
@@ -671,7 +690,7 @@ impl BusEventSink for Profiler {
         }
         match control_flow_of(r.opcode) {
             ControlFlow::Call => self.pending_call = Some(r.sp),
-            ControlFlow::Return => self.close_routine(r.opcode, r.sp),
+            ControlFlow::Return => self.close_routine(r.opcode, r.sp, r.supervisor),
             ControlFlow::InterruptReturn => self.close_interrupt(r.ssp),
             ControlFlow::Jump | ControlFlow::None => {}
         }
