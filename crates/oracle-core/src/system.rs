@@ -9,7 +9,7 @@
 //! at their fixed hardware sizes by [`System::new`].
 
 use crate::bus::{BusEventSink, MegaDriveBus, SramMap, StepRetire, StopWhen, Z80_RAM_SIZE};
-use crate::m68000::microop::Cpu68000;
+use crate::m68000::microop::{Cpu68000, StepOutcome};
 use crate::m68000::registers::Registers;
 use crate::render::ScanlineScaffold;
 use crate::scheduler::{EventKind, Scheduler};
@@ -1046,7 +1046,8 @@ impl System {
                 reason = StopReason::SinkRequested;
                 break;
             }
-            let (cycles, stall_cycles) = self.step_cpu_stalled(sink);
+            let (outcome, stall_cycles) = self.step_cpu_stalled(sink);
+            let cycles = outcome.cycles;
             // Retire it: the step's identity plus the one number that did not exist at the boundary — what it
             // COST. `cycles` is `step_cpu`'s return value, the exact per-instruction (or per-exception-entry)
             // CPU-cycle count that the clock advance below is computed from, and until this hook existed it
@@ -1060,6 +1061,7 @@ impl System {
                 ssp: self.cpu.regs.ssp,
                 cycles,
                 stall_cycles,
+                executed: outcome.executed,
             });
             // Drain the VDP writes this step produced (empty unless armed) and deliver each to the sink, paired
             // with the step-boundary PC/frame it just stamped — this is where a DMA write learns the
@@ -1250,7 +1252,7 @@ impl System {
     /// The `sink` consumes the bus event stream (pass `&mut ()` for no instrumentation). `self` is
     /// destructured so the CPU field and the memory fields borrow disjointly (the CPU holds no bus).
     pub fn step_cpu<S: BusEventSink>(&mut self, sink: &mut S) -> u32 {
-        self.step_cpu_stalled(sink).0
+        self.step_cpu_stalled(sink).0.cycles
     }
 
     /// [`step_cpu`](Self::step_cpu) plus the **stall** half of the answer: `(cycles, stall_cycles)`, where
@@ -1259,7 +1261,7 @@ impl System {
     /// Private, and `step_cpu` delegates to it, so the public signature is unchanged: a stall figure is
     /// something the run loop threads to a sink, not a new obligation on every caller that steps the CPU.
     /// The bus is built fresh here for every step, so its accumulator starts at zero without being cleared.
-    fn step_cpu_stalled<S: BusEventSink>(&mut self, sink: &mut S) -> (u32, u32) {
+    fn step_cpu_stalled<S: BusEventSink>(&mut self, sink: &mut S) -> (StepOutcome, u32) {
         let now = self.scheduler.now();
         let sram_map = self.sram_present.then_some(SramMap {
             base: self.sram_base,
@@ -1305,8 +1307,8 @@ impl System {
             fm,
             sink,
         );
-        let cycles = cpu.step(&mut bus);
-        (cycles, bus.stall_cycles())
+        let outcome = cpu.step_reporting(&mut bus);
+        (outcome, bus.stall_cycles())
     }
 
     /// Chase the Z80 frontier up to the 68000's current `now` (ZC4/ZC5) — the parallel of the 68000's clock

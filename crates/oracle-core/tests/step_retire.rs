@@ -15,10 +15,23 @@ use oracle_core::system::{System, MCLK_PER_CPU_CYCLE};
 /// A booted machine: the built-in test ROM loaded and the power-on reset driven (the `scanline_capture.rs`
 /// idiom).
 fn booted(seed: u64) -> System {
+    boot(oracle_core::testrom::build(), seed)
+}
+
+/// Boot an arbitrary image.
+fn boot(rom: Vec<u8>, seed: u64) -> System {
     let mut s = System::new(seed);
-    s.load_rom(oracle_core::testrom::build());
+    s.load_rom(rom);
     s.reset();
     s
+}
+
+/// Run `rom` for `frames` frames and hand back every retirement.
+fn retires_of(rom: Vec<u8>, frames: u64) -> Vec<StepRetire> {
+    let mut s = boot(rom, 0x1234_5678);
+    let mut sink = RetireLog::default();
+    s.run_frames_with_sink(frames, &mut sink);
+    sink.retires
 }
 
 /// Records both halves of a step: the boundary stamp and the retirement. Keeping both in one sink is what
@@ -107,6 +120,8 @@ fn the_retired_fields_are_the_real_step() {
             // have been held off the bus. `step_instruction` does not report a stall of its own, so this
             // is pinned from what the instruction IS rather than from a measurement.
             stall_cycles: 0,
+            // The first instruction runs: no exception is pending at the reset anchor.
+            executed: true,
         }
     };
 
@@ -197,5 +212,40 @@ fn the_stall_figure_is_a_subset_of_the_cycle_figure() {
     assert_eq!(
         stalled, 0,
         "the stirring ROM drives no VDP access, so it has nothing to be held off by"
+    );
+}
+
+/// **`executed` is wired to the machine, not asserted about it.** A ROM that only stirs work RAM takes no
+/// exceptions and never stops, so every step runs the instruction at its own `pc`. Turn VBlank interrupts
+/// on and entries start appearing — steps that cost cycles while executing nothing.
+///
+/// The difference is the test: a flag hardcoded either way fails one half of it. This matters because the
+/// consumer that reads the flag (a call graph) has no other way to tell an entry from an instruction, and
+/// the opcode it would otherwise trust is, on exactly these steps, one that never ran.
+#[test]
+fn an_exception_entry_reports_that_it_did_not_execute() {
+    let quiet = retires_of(oracle_core::testrom::build(), 2);
+    assert!(
+        !quiet.is_empty() && quiet.iter().all(|r| r.executed),
+        "a ROM that takes no exceptions executes every step it retires ({} of {} did not)",
+        quiet.iter().filter(|r| !r.executed).count(),
+        quiet.len()
+    );
+
+    let interrupted = retires_of(
+        oracle_core::testrom::build_profiler(oracle_core::testrom::ProfilerShape::Interrupts {
+            hint: false,
+            vint: true,
+        }),
+        3,
+    );
+    let entries = interrupted.iter().filter(|r| !r.executed).count();
+    assert!(
+        entries >= 2,
+        "one VBlank entry per frame at least, and each retires having executed nothing (saw {entries})"
+    );
+    assert!(
+        interrupted.iter().any(|r| r.executed),
+        "and the ordinary instructions in between still report that they ran"
     );
 }

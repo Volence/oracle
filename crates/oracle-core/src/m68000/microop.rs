@@ -3210,6 +3210,27 @@ impl Cpu68000 {
     /// transition to [`CpuState::Stopped`]. Async events (trace, interrupt) and the `Stopped`/`Halted` wake
     /// slot into a `begin_next` decision point as A3/A4 land.
     pub fn step(&mut self, bus: &mut impl Bus68k) -> u32 {
+        self.step_reporting(bus).cycles
+    }
+
+    /// [`step`](Cpu68000::step) plus the one bit a consumer cannot recover afterwards: **whether the
+    /// instruction at `pc` actually executed**.
+    ///
+    /// It did not, on every one of these paths, and each retires with `pc`/`prefetch[0]` still pointing at
+    /// an instruction that never ran:
+    ///
+    /// - a **reset**, **trace** or **interrupt** exception entry, all dispatched *before* decode;
+    /// - a `Stopped` or `Halted` idle slice, which retires the same stale `pc` over and over;
+    /// - a **decode-time exception** (illegal / privilege / line-A / line-F) or an **execution-time
+    ///   address- or bus-error abort**, which is exactly what [`MicroState::suppresses_trace`] already
+    ///   means — "this instruction was not executed / was aborted".
+    ///
+    /// Deliberately NOT included: `TRAP` / `TRAPV` / `CHK` / division by zero. Those *do* execute and then
+    /// trap, so their opcode is a real, executed instruction.
+    ///
+    /// A consumer that classifies the retired opcode — anything building a call graph — must consult this,
+    /// because an unexecuted `JSR` would otherwise arm a call the CPU never made.
+    pub fn step_reporting(&mut self, bus: &mut impl Bus68k) -> StepOutcome {
         // begin_next priority dispatch. RESET is group 0 — the highest priority, above everything, and the
         // ONLY exit from `Stopped`/`Halted` (M68000UM §6.3.1). Serviced FIRST: run the power-on reset
         // sequence and return to `Normal` from any state.
@@ -3220,13 +3241,13 @@ impl Cpu68000 {
             // A garbage reset vector (odd SSP/PC) faults during the vector fetch / first prefetch, and the
             // resulting group-0 frame's own stacking faults again → a double bus fault halts the CPU here
             // (M68000UM §5.4.4) rather than spinning `cycles` to a u32 overflow.
-            return self.run_terminal(recipe, bus);
+            return StepOutcome::not_executed(self.run_terminal(recipe, bus));
         }
         // A Halted CPU (double bus fault) executes nothing — only reset (serviced above, the sole exit) wakes
         // it. Consume a nominal idle so `run_until` still advances; the halt cadence is not pinned (Yacht's
         // HALTED STATE is `?(0/0)` `(n-)*`, explicitly unbounded).
         if self.state == CpuState::Halted {
-            return STOPPED_IDLE_SLICE;
+            return StepOutcome::not_executed(STOPPED_IDLE_SLICE);
         }
         // Trace (a boundary event pended by the PREVIOUS instruction) outranks decoding the next instruction
         // (M68000UM §6.2.3 group-1 order; the interrupt arm joins here in A4). A `Stopped` CPU (after `STOP`)
@@ -3242,20 +3263,20 @@ impl Cpu68000 {
             } else {
                 // Remain stopped, consuming a nominal idle slice so `run_until` (Push C) makes progress. This
                 // per-poll idle cost is NOT pinned (no Yacht STOP-wait entry) — a progress device, not timing.
-                return STOPPED_IDLE_SLICE;
+                return StepOutcome::not_executed(STOPPED_IDLE_SLICE);
             }
         }
         if self.trace_pending {
             self.trace_pending = false;
             let recipe = crate::m68000::decode::trace_exception_recipe();
-            return self.run_terminal(recipe, bus);
+            return StepOutcome::not_executed(self.run_terminal(recipe, bus));
         }
         // Interrupt (a boundary event): taken when the request level STRICTLY exceeds the SR mask (§6.3.2).
         // Ranked below trace, above decode. (Level-7 nonmaskable / the `ipl == mask == 7` edge is docketed.)
         if self.ipl > self.regs.int_mask() {
             let level = self.ipl;
             let recipe = crate::m68000::decode::interrupt_exception_recipe(level);
-            return self.run_terminal(recipe, bus);
+            return StepOutcome::not_executed(self.run_terminal(recipe, bus));
         }
         // Latch T at the START of the instruction (before it can change SR) — §6.3.8.
         let trace_armed = self.regs.sr & SR_TRACE != 0;
@@ -3289,7 +3310,33 @@ impl Cpu68000 {
             // so their trace correctly sequences after the trap.
             self.trace_pending = true;
         }
-        cycles
+        // `suppresses_trace` IS the "did not execute / was aborted" predicate — the same one the trace
+        // dispatch consults — so the two readings can never disagree.
+        StepOutcome {
+            cycles,
+            executed: !suppresses_trace,
+        }
+    }
+}
+
+/// What one turn of the CPU crank produced: its cost, and whether it ran the instruction at `pc`.
+/// See [`Cpu68000::step_reporting`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StepOutcome {
+    /// CPU cycles consumed.
+    pub cycles: u32,
+    /// `false` when the instruction at `pc` did not execute — an exception entry, an idle slice, or an
+    /// aborted instruction.
+    pub executed: bool,
+}
+
+impl StepOutcome {
+    /// The step cost `cycles` but ran no instruction.
+    fn not_executed(cycles: u32) -> Self {
+        Self {
+            cycles,
+            executed: false,
+        }
     }
 }
 

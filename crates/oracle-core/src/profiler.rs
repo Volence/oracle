@@ -152,6 +152,12 @@ pub struct Report {
     pub routines: BTreeMap<u32, Counts>,
     /// Per-cause interrupt buckets, keyed by level (4 = HInt, 6 = VInt), each divided by `frame_count`.
     pub interrupts: BTreeMap<u8, Counts>,
+    /// Frames torn off the shadow stack without completing, over the whole sample — a routine an `RTE`
+    /// unwound past, or one displaced by a stack the profiler could not follow. Their **cycles are still
+    /// reported** (they ran); their `calls` are not (they never finished). Non-zero means some row's
+    /// `calls` understates its invocations, which is the kind of thing a reader is entitled to know rather
+    /// than have smoothed away. Undivided: it is a count of events, not a per-frame rate.
+    pub abandoned_frames: u64,
 }
 
 /// The exact per-invocation CPU-cycle accountant. See the module documentation.
@@ -181,6 +187,8 @@ pub struct Profiler {
     /// Set by an fc = 7 interrupt acknowledge seen during the step currently executing; consumed by that
     /// step's retirement.
     pending_iack: Option<u8>,
+    /// Frames torn off the stack without completing. See [`Report::abandoned_frames`].
+    abandoned: u64,
 }
 
 impl Profiler {
@@ -192,6 +200,16 @@ impl Profiler {
     /// Whole frames counted so far — the divisor a report will use.
     pub fn frames(&self) -> u64 {
         self.frames
+    }
+
+    /// How many frames are open on the shadow stack right now.
+    ///
+    /// The depth is observable state, not a diagnostic afterthought: a frame that opens and never closes
+    /// is invisible in the rows (a row is written when its invocation ends), so the only way to see one
+    /// arrive is to look at the stack. A phantom call armed from an opcode the CPU never executed shows up
+    /// here and nowhere else.
+    pub fn open_frames(&self) -> usize {
+        self.stack.len()
     }
 
     /// Distinct routine rows in the committed sample.
@@ -248,10 +266,13 @@ impl Profiler {
     /// a consumer gating with `==` cannot detect. The interrupt's cost is reported in its own bucket and in
     /// its handler's own row instead. The consequence, stated so nobody has to rediscover it: for a routine
     /// row, `cycles == cyclesSelf + (inclusive cycles of its callees)`, and preemption is in neither term.
-    fn pop_frame(&mut self) {
+    fn pop_frame(&mut self, completed: bool) {
         let Some(frame) = self.stack.pop() else {
             return;
         };
+        if !completed {
+            self.abandoned += 1;
+        }
         let inclusive = frame.inclusive();
         let inclusive_stall = frame.inclusive_stall();
         let row = match frame.kind {
@@ -261,7 +282,13 @@ impl Profiler {
         row.cycles += inclusive;
         row.self_cycles += frame.self_cycles;
         row.stall_cycles += inclusive_stall;
-        row.calls += 1;
+        // `calls` counts COMPLETED invocations. A frame torn off the stack without its own return — one an
+        // `RTE` unwound past, or one abandoned by a longjmp-style stack reset — really did run, so its
+        // cycles are recorded; but it never completed, so counting it would report an invocation that has
+        // no end. The cycles are the honest half; the call is the half that would be a fiction.
+        if completed {
+            row.calls += 1;
+        }
         if matches!(frame.kind, FrameKind::Routine { .. }) {
             if let Some(parent) = self.stack.last_mut() {
                 parent.child_cycles += inclusive;
@@ -282,8 +309,13 @@ impl Profiler {
         let Some(idx) = target else {
             return; // An RTE that matches no open bucket closes nothing.
         };
+        // Unwind to the bucket. Two of the frames coming off completed and the rest did not: the bucket
+        // itself (the interrupt ran to its `RTE`) and the **handler routine directly above it**, whose
+        // return IS that `RTE` — a handler does not `rts`. Anything stacked above the handler is a
+        // subroutine it entered and never returned from, which the `RTE` has just discarded.
         while self.stack.len() > idx {
-            self.pop_frame();
+            let completed = self.stack.len() <= idx + 2;
+            self.pop_frame(completed);
         }
     }
 
@@ -298,6 +330,7 @@ impl Profiler {
         if n == 0 {
             return Report {
                 per_frame_exact: true,
+                abandoned_frames: self.abandoned,
                 ..Report::default()
             };
         }
@@ -339,6 +372,7 @@ impl Profiler {
             })
             .collect();
         Report {
+            abandoned_frames: self.abandoned,
             frame_count: n,
             sample_cycles: self.committed_cycles,
             total_cycles,
@@ -382,7 +416,17 @@ impl BusEventSink for Profiler {
         // 2. An acknowledge seen during this step means this step IS the interrupt entry. `calls` counts
         //    the times an interrupt was TAKEN, so a raised-but-masked request appears nowhere: it never
         //    reaches an acknowledge.
-        let was_interrupt_entry = if let Some(level) = self.pending_iack.take() {
+        //
+        //    Opening the bucket also **arms a call**, so the next retire's `pc` — the handler's entry
+        //    address — opens a routine frame nested inside it. A handler is code, and code gets a row: the
+        //    contract requires the interrupt split to be *additive* to per-routine rows rather than a
+        //    replacement, and the handler's own row is the load-bearing one for a consumer measuring, say,
+        //    an HBlank trampoline. The bucket's inclusive total is unchanged, because the routine's
+        //    inclusive folds into the bucket's child time when it closes.
+        //
+        //    Note where that arming comes FROM: the acknowledge, never the retired opcode. The phantom
+        //    guard below is therefore untouched by it — this row is opened by a signal the CPU really drove.
+        if let Some(level) = self.pending_iack.take() {
             self.stack.push(Frame {
                 kind: FrameKind::Interrupt {
                     level,
@@ -394,17 +438,16 @@ impl BusEventSink for Profiler {
                 child_cycles: 0,
                 child_stall: 0,
             });
-            true
-        } else {
-            false
-        };
+            self.pending_call = Some(r.sp);
+        }
         // 3. The entry cost belongs to the frame it opened, so charge after pushing.
         self.charge(r.pc, r.sp, u64::from(r.cycles), u64::from(r.stall_cycles));
-        // 4. Classify — but NOT on an exception entry. An entry is dispatched before decode, so `opcode`
-        //    is the instruction that did NOT run; treating it as executed would arm a phantom call from a
-        //    `JSR` the CPU never reached. The same reasoning is why interrupts are keyed off the
-        //    acknowledge and never off this field.
-        if was_interrupt_entry {
+        // 4. Classify — but ONLY if the instruction at `pc` actually ran. Exception entries are dispatched
+        //    before decode, idle slices retire a stale `pc` over and over, and an aborted instruction
+        //    retires its own opcode having done nothing; on every one of those paths the opcode names an
+        //    instruction the CPU never executed, and classifying it would arm a call that was never made
+        //    and will never return. `executed` is the one flag that covers all of them.
+        if !r.executed {
             return;
         }
         match control_flow_of(r.opcode) {
@@ -421,7 +464,7 @@ impl BusEventSink for Profiler {
                         && f.entry_sp.wrapping_add(pop) == r.sp
                 });
                 if matches {
-                    self.pop_frame();
+                    self.pop_frame(true);
                 }
             }
             ControlFlow::InterruptReturn => self.close_interrupt(r.ssp),

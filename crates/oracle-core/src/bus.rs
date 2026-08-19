@@ -70,12 +70,12 @@ pub struct BusEvent {
 /// - `sp` / `cycles`: read **after** it — the active A7 (`Registers::a7`, supervisor- or user-selected as the
 ///   step left it) and the exact CPU-cycle cost `step_cpu` returned.
 ///
-/// **Sharp edge — on an exception entry, `opcode` is the instruction that did NOT run.** Trace / interrupt /
-/// reset entries are dispatched *before* decode, so the prefetch queue still holds the pending instruction's
-/// word and this struct reports it while `cycles` is the exception's own cost. An accountant must not infer
-/// "an interrupt was taken" from `opcode`; the fc = 7 interrupt-acknowledge access on the event stream is the
-/// signal for that (it arrives, within the same step, through [`on_event`](BusEventSink::on_event)).
-/// The same caveat covers the `Stopped`/`Halted` idle slices, which retire the same `pc`/`opcode` repeatedly.
+/// **Sharp edge — the opcode is not always an instruction that ran.** Exception entries are dispatched
+/// before decode, idle slices retire a stale `pc` repeatedly, and an aborted instruction retires its own
+/// opcode having done nothing. [`executed`](StepRetire::executed) is the flag that distinguishes all of
+/// them, and a consumer that classifies the opcode must consult it. Note also that "an interrupt was taken"
+/// is never inferable from the opcode at all: the fc = 7 interrupt-acknowledge on the event stream is the
+/// signal for that, and it carries the cause the opcode could not.
 ///
 /// **Why a new struct and not fields on [`BusEvent`]**: the `bus.rs` standing rule (see
 /// [`on_frame_boundary`](BusEventSink::on_frame_boundary)) — extend the trait, never the event struct, which
@@ -85,8 +85,18 @@ pub struct BusEvent {
 pub struct StepRetire {
     /// The PC the retired step started at — the same value `on_step_boundary` stamped for it.
     pub pc: u32,
-    /// The opcode word at `pc` (`regs.prefetch[0]`, read before the step). See the exception-entry caveat.
+    /// The opcode word at `pc` (`regs.prefetch[0]`, read before the step). Meaningful only when
+    /// [`executed`](StepRetire::executed) is `true` — see that field.
     pub opcode: u16,
+    /// Whether the step **ran the instruction at `pc`**. `false` for an exception entry (reset, trace,
+    /// interrupt), for a `Stopped`/`Halted` idle slice, and for an instruction aborted by a decode-time
+    /// exception or an address/bus error.
+    ///
+    /// A consumer that classifies [`opcode`](StepRetire::opcode) MUST check this first. On every one of
+    /// those paths the opcode is an instruction that did **not** run, and treating it as executed arms
+    /// consequences the CPU never caused — a call graph would open a frame for a `JSR` that was preempted
+    /// before it decoded, and never close it.
+    pub executed: bool,
     /// The active stack pointer (A7) **after** the step committed — what a shadow stack matches a return
     /// against, and what makes an `RTS` distinguishable from a `move.l/rts` dispatch that never pushed.
     ///
@@ -3445,6 +3455,7 @@ mod tests {
             ssp: 0x00FF_FFF0,
             cycles: 16,
             stall_cycles: 4,
+            executed: true,
         }
     }
 

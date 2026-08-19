@@ -11,7 +11,7 @@ use oracle_core::profiler::{Counts, Profiler, Report};
 use oracle_core::system::System;
 use oracle_core::testrom::{
     self, ProfilerShape, StallKind, PROF_DISPATCH, PROF_LEAF, PROF_MID, PROF_MID_CALLS_LEAF,
-    PROF_REC, PROF_STALL, PROF_TARGET,
+    PROF_REC, PROF_STALL, PROF_TARGET, PROF_VINT_H,
 };
 
 /// Interrupt levels, as the 68000 numbers them.
@@ -242,6 +242,22 @@ fn a_vint_only_run_puts_nothing_in_hint() {
         !r.interrupts.contains_key(&HINT),
         "HBlank was disabled, so its bucket must not exist at all; buckets: {:?}",
         r.interrupts
+    );
+    // The bucket is ADDITIVE to per-routine rows, not a replacement: a handler is code, and it gets its own
+    // row keyed by its entry address. This is the row a consumer measuring the handler itself reads, and
+    // the reason it exists is that the acknowledge armed it — nothing in the opcode stream could have.
+    let handler = row(&r, PROF_VINT_H);
+    assert_eq!(
+        handler.calls,
+        1,
+        "the handler's own row, entered once per frame; rows: {:#06X?}",
+        r.routines.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        handler.cycles > 0 && handler.cycles <= vint.cycles,
+        "and its cost is part of the bucket's, never more ({} vs {})",
+        handler.cycles,
+        vint.cycles
     );
 }
 
@@ -497,6 +513,16 @@ fn step(pc: u32, opcode: u16, sp: u32, ssp: u32) -> StepRetire {
         ssp,
         cycles: STEP_CYCLES as u32,
         stall_cycles: 0,
+        executed: true,
+    }
+}
+
+/// A step that did **not** execute the instruction at `pc` — an exception entry, an idle slice, or an
+/// aborted instruction. Its `opcode` names something the CPU never ran.
+fn entry_step(pc: u32, opcode: u16, sp: u32, ssp: u32) -> StepRetire {
+    StepRetire {
+        executed: false,
+        ..step(pc, opcode, sp, ssp)
     }
 }
 
@@ -511,36 +537,69 @@ const OP_RTE: u16 = 0x4E73;
 /// are `S`, `S - 6` and `S - 12`.
 const S: u32 = 0x00FF_FF00;
 
-/// **The not-executed opcode.** An exception entry is dispatched before the instruction at `pc` decodes,
-/// so the retirement carries the opcode of an instruction that did **not** run. Here that instruction is
-/// a `JSR`. Classifying it would arm a call the CPU never made, and the handler's first instruction would
-/// then be recorded as a routine nobody invoked — a row for code that was never called.
+/// **The not-executed opcode, as a difference.** An exception entry is dispatched before the instruction
+/// at `pc` decodes, an idle slice retires a stale `pc`, and an aborted instruction retires its own opcode
+/// having done nothing — on all of them `executed` is false and the opcode names something that never ran.
+/// Here that something is a `JSR`.
 ///
-/// This is why an interrupt is keyed off the acknowledge and never off the opcode field.
+/// The two streams below are IDENTICAL except for the acknowledge. With it, the handler's entry gets a row
+/// because the acknowledge armed one (a handler is code, and code gets a row). Without it, nothing may open
+/// a frame there — the only remaining candidate is the unexecuted `JSR`, and classifying that would arm a
+/// call the CPU never made and that will never return.
+///
+/// Asserting the difference rather than the absence is what keeps this honest: an implementation that
+/// simply never opened handler rows would pass an absence test while failing the contract.
 #[test]
-fn the_not_executed_opcode_of_an_exception_entry_is_not_classified() {
-    const PHANTOM: u32 = 0x0000_3000;
-    let mut p = Profiler::new();
-    p.on_frame_boundary(0); // open the sample
-    p.on_step_retire(step(0x1000, OP_NOP, S, S));
-    // The interrupt preempts a JSR: the acknowledge arrives during the step, and the step retires with
-    // the JSR's opcode even though the JSR never executed.
-    p.on_event(iack(VINT));
-    p.on_step_retire(step(0x2000, OP_JSR_ABS_W, S - 6, S - 6));
-    // The handler's first instruction. If the phantom call had been armed, THIS pc becomes a routine.
-    p.on_step_retire(step(PHANTOM, OP_NOP, S - 6, S - 6));
-    p.on_step_retire(step(PHANTOM + 2, OP_RTE, S, S));
-    p.on_frame_boundary(1);
+fn a_handler_row_comes_from_the_acknowledge_and_never_from_the_unexecuted_opcode() {
+    const HANDLER: u32 = 0x0000_3000;
 
+    // With the acknowledge: the bucket opens and arms the handler's own row.
+    let mut with_ack = Profiler::new();
+    with_ack.on_frame_boundary(0);
+    with_ack.on_step_retire(step(0x1000, OP_NOP, S, S));
+    with_ack.on_event(iack(VINT));
+    with_ack.on_step_retire(entry_step(0x2000, OP_JSR_ABS_W, S - 6, S - 6));
+    with_ack.on_step_retire(step(HANDLER, OP_NOP, S - 6, S - 6));
+    with_ack.on_step_retire(step(HANDLER + 2, OP_RTE, S, S));
+    with_ack.on_frame_boundary(1);
+
+    // Without it: the same steps, the same unexecuted `JSR`, no acknowledge.
+    let mut without_ack = Profiler::new();
+    without_ack.on_frame_boundary(0);
+    without_ack.on_step_retire(step(0x1000, OP_NOP, S, S));
+    without_ack.on_step_retire(entry_step(0x2000, OP_JSR_ABS_W, S - 6, S - 6));
+    without_ack.on_step_retire(step(HANDLER, OP_NOP, S - 6, S - 6));
+    without_ack.on_step_retire(step(HANDLER + 2, OP_RTE, S, S));
+    without_ack.on_frame_boundary(1);
+
+    assert_eq!(
+        with_ack.sample_routines().get(&HANDLER).map(|c| c.calls),
+        Some(1),
+        "the acknowledge opens the handler's own row, once per entry; rows: {:#06X?}",
+        with_ack.sample_routines().keys().collect::<Vec<_>>()
+    );
     assert!(
-        !p.sample_routines().contains_key(&PHANTOM),
-        "the handler's entry must not be recorded as a called routine; rows: {:#06X?}",
-        p.sample_routines().keys().collect::<Vec<_>>()
+        !without_ack.sample_routines().contains_key(&HANDLER),
+        "with no acknowledge the unexecuted JSR must arm NOTHING; rows: {:#06X?}",
+        without_ack.sample_routines().keys().collect::<Vec<_>>()
     );
     assert_eq!(
-        p.sample_interrupts()[&VINT].calls,
+        with_ack.sample_interrupts()[&VINT].calls,
         1,
-        "and the interrupt itself was still counted, from its acknowledge"
+        "and the interrupt was counted from its acknowledge"
+    );
+    assert!(
+        without_ack.sample_interrupts().is_empty(),
+        "no acknowledge, no bucket"
+    );
+    // And the stack is left in the same shape by both streams — one synthesized root, nothing else.
+    // A frame opened and never closed writes no row (a row is recorded when its invocation ends), so the
+    // depth is the ONLY place a phantom call is visible at all. Without this, a classified `JSR` that
+    // pushed a frame nothing ever returns from would leak silently.
+    assert_eq!(
+        (with_ack.open_frames(), without_ack.open_frames()),
+        (1, 1),
+        "neither stream may leave a frame behind: the unexecuted JSR pushed nothing"
     );
 }
 
@@ -555,9 +614,9 @@ fn an_rte_inside_a_handler_closes_the_trap_and_not_the_bucket() {
     let mut p = Profiler::new();
     p.on_frame_boundary(0);
     p.on_event(iack(VINT));
-    p.on_step_retire(step(0x2000, OP_NOP, S - 6, S - 6)); // entry: the bucket's frame sits at S-6
+    p.on_step_retire(entry_step(0x2000, OP_NOP, S - 6, S - 6)); // entry: the bucket's frame sits at S-6
     p.on_step_retire(step(0x3000, OP_NOP, S - 6, S - 6)); // handler
-    p.on_step_retire(step(0x3002, OP_NOP, S - 12, S - 12)); // a TRAP entry: a second frame, at S-12
+    p.on_step_retire(entry_step(0x3002, OP_NOP, S - 12, S - 12)); // a TRAP entry: a second frame, at S-12
     p.on_step_retire(step(0x4000, OP_NOP, S - 12, S - 12)); // the trap's handler
     p.on_step_retire(step(0x4002, OP_RTE, S - 6, S - 6)); // the trap's RTE: back to S-6, NOT to S
     p.on_step_retire(step(0x3004, OP_NOP, S - 6, S - 6)); // still inside the interrupt handler
@@ -615,10 +674,10 @@ fn a_nested_hint_inside_a_vint_charges_the_inner_bucket_alone() {
     let mut p = Profiler::new();
     p.on_frame_boundary(0);
     p.on_event(iack(VINT));
-    p.on_step_retire(step(0x2000, OP_NOP, S - 6, S - 6)); // VInt entry, frame at S-6
+    p.on_step_retire(entry_step(0x2000, OP_NOP, S - 6, S - 6)); // VInt entry, frame at S-6
     p.on_step_retire(step(0x3000, OP_NOP, S - 6, S - 6)); // VInt handler
     p.on_event(iack(HINT));
-    p.on_step_retire(step(0x3002, OP_NOP, S - 12, S - 12)); // HInt entry, frame at S-12
+    p.on_step_retire(entry_step(0x3002, OP_NOP, S - 12, S - 12)); // HInt entry, frame at S-12
     p.on_step_retire(step(0x5000, OP_NOP, S - 12, S - 12)); // HInt handler
     p.on_step_retire(step(0x5002, OP_RTE, S - 6, S - 6)); // HInt's RTE: S-12 + 6
     p.on_step_retire(step(0x3004, OP_NOP, S - 6, S - 6)); // back in the VInt handler
@@ -628,17 +687,32 @@ fn a_nested_hint_inside_a_vint_charges_the_inner_bucket_alone() {
     let hint = p.sample_interrupts()[&HINT];
     let vint = p.sample_interrupts()[&VINT];
     assert_eq!((hint.calls, vint.calls), (1, 1), "each taken exactly once");
-    // Three steps ran with the HInt open — its entry, its handler, its RTE.
+    // Three steps ran with the HInt open — its entry, its handler, its RTE — so its INCLUSIVE total is 30.
+    // Only the entry is the bucket's own time: the acknowledge armed a routine row for the handler, so the
+    // handler's two steps are the bucket's CHILD time. That split is the whole point of the additive rule.
     assert_eq!(
         (hint.self_cycles, hint.cycles),
-        (3 * STEP_CYCLES, 3 * STEP_CYCLES),
-        "the inner bucket's own time, and it called nothing"
+        (STEP_CYCLES, 3 * STEP_CYCLES),
+        "the inner bucket: its own entry, plus its handler as a child"
     );
     // The other four are the VInt's, and its inclusive is NOT inflated by the bucket that preempted it —
     // an interrupt is not a callee of the interrupt it interrupted.
     assert_eq!(
         (vint.self_cycles, vint.cycles),
-        (4 * STEP_CYCLES, 4 * STEP_CYCLES),
+        (STEP_CYCLES, 4 * STEP_CYCLES),
         "the outer bucket accrued nothing while the inner one was open"
+    );
+    // Both handlers have rows of their own, which is what makes the buckets additive rather than a
+    // replacement — a consumer measuring the HBlank routine itself reads this, not the bucket.
+    assert_eq!(
+        p.sample_routines().get(&0x5000).map(|c| c.calls),
+        Some(1),
+        "the HBlank handler's own row; rows: {:#06X?}",
+        p.sample_routines().keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        p.sample_routines().get(&0x3000).map(|c| c.calls),
+        Some(1),
+        "and the VBlank handler's"
     );
 }
