@@ -16,7 +16,8 @@
 //! # The input format (verified against the emitter, not guessed)
 //!
 //! The producer is `sigil/crates/sigil-link/src/listing.rs::emit_listing`. It writes **two** views of the
-//! same address-sorted symbol list, because two different consumers each read one half:
+//! same address-sorted symbol list, because two different consumers each read one half, and then a third
+//! section that is not a symbol list at all:
 //!
 //! ```text
 //! (0) 1971/FFFF8CFA :        Player_1:            <- body line   ("(depth) idx/HEXADDR :        Name:")
@@ -28,11 +29,31 @@
 //!  ...
 //!    2129 symbols                                 <- footer
 //!     0 unused symbols
+//!
+//!   Equate Table (name = value; values, not addresses):   <- section header (sigil 0df77f83, 2026-08-19)
+//!   ---------------------------------------------------
+//!
+//! EQU AF_BACK = $000000FE                                 <- equate row ("EQU <name> = $<hex>")
+//!  ...
+//!    682 equates                                          <- footer
 //! ```
 //!
 //! We prefer the **table rows**: they are the richer half, carrying the `*` unused marker and the
 //! `C`(code)/`-`(equate) type marker that the body lines drop. Body lines are parsed only as a fallback,
 //! for a listing that has no `Symbol Table` section at all. See [`TableSource`].
+//!
+//! # The `Equate Table` is recognised and deliberately **not** ingested
+//!
+//! Sigil began emitting the third section on 2026-08-19. Its rows are **values, not addresses** — sigil's
+//! own debugger-map test enforces that they never resolve as code or RAM locations — so folding them into
+//! the symbol table would change what [`SymbolTable::address_of`] means and let a constant answer an
+//! addr→name query. Whether equates become addressable at all, and how a same-named equate/label collision
+//! resolves, is a **ruled decision** (registered as `F-EQUATES-NAMESPACE` in
+//! `docs/2026-08-19-cram-serve-recon.md` §6.3), not a parser change. Until it is ruled, [`SymbolTable::parse`]
+//! **consumes** the section — header, rule, rows and `N equates` trailer — without counting it as damage,
+//! and stores nothing but the two counts. Before this was deliberate the rows merely happened to be
+//! rejected by the five-token row shape, which cost 684 phantom `skipped_lines` on the real `s4.lst` and
+//! made [`SymbolTable::is_intact`] wrong about a healthy file.
 //!
 //! ## Four traps, each of which silently produces wrong answers
 //!
@@ -46,8 +67,9 @@
 //!    [`addr`](Symbol::addr) (masked to 24 bits); **all lookups use the 24-bit form**, and mask the query
 //!    too, so a caller may pass either spelling.
 //! 3. **The type column does not discriminate code from RAM.** The emitter supports `-` for equates, but
-//!    Aeon dumps no EQUs, so all 2,129 rows of the real `s4.lst` are `C` — including every RAM variable.
-//!    Code and RAM are separable only by *address range*, which is what [`AddrSpace`] does.
+//!    Aeon's equates arrive in a section of their own (below) rather than in the type column, so every
+//!    `Symbol Table` row of the real `s4.lst` is `C` — including every RAM variable. Code and RAM are
+//!    separable only by *address range*, which is what [`AddrSpace`] does.
 //! 4. **Symbols bind per-game AND per-build-shape.** `if DEBUG == 1 @shape_divergent` blocks in the
 //!    engine's `ram.emp` shift the RAM layout between shapes: of the symbols `s4.lst` and `s4.debug.lst`
 //!    share, **92.6% resolve to a different address**, with divergence starting at `BootData` (`$3A0` vs
@@ -85,7 +107,9 @@ pub const BUS_ADDR_MASK: u32 = 0x00FF_FFFF;
 pub enum SymbolKind {
     /// `C` — an address in the assembled image's address space (the only kind Aeon currently emits).
     Code,
-    /// `-` — an equate/constant. Supported by the emitter, never seen in a real Aeon listing.
+    /// `-` — an equate/constant, as spelled in the `Symbol Table`'s **type column**. Supported by the
+    /// emitter, never seen in a real Aeon listing: Aeon's equates arrive in the separate `Equate Table`
+    /// section instead, which this module recognises but does not ingest.
     Equate,
 }
 
@@ -317,53 +341,121 @@ pub struct SymbolTable {
     declared_count: Option<usize>,
     declared_unused: Option<usize>,
     skipped_lines: usize,
+    /// `None` when the listing carries no `Equate Table` section at all — every listing sigil emitted
+    /// before 2026-08-19, and every AS listing.
+    equates: Option<EquateSection>,
+}
+
+/// What we keep of the `Equate Table`: the two counts, and nothing else. Deliberately not the values —
+/// see the module docs on `F-EQUATES-NAMESPACE`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct EquateSection {
+    /// Rows matching `EQU <name> = $<hex>` that we recognised and consumed.
+    rows: usize,
+    /// The section's own `N equates` trailer, when it is there at all.
+    declared: Option<usize>,
+}
+
+/// Everything [`SymbolTable::parse`] learns that is not a [`Symbol`]. Bundled so [`SymbolTable::build`]
+/// keeps a readable signature as the format grows sections.
+struct ParseCounts {
+    declared_count: Option<usize>,
+    declared_unused: Option<usize>,
+    skipped_lines: usize,
+    equates: Option<EquateSection>,
+}
+
+/// Which of the listing's three regions the line cursor is in.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Section {
+    /// Before any section header — the `(depth) idx/HEXADDR : Name:` body lines.
+    Body,
+    /// Inside `Symbol Table (* = unused):`.
+    SymbolTable,
+    /// Inside `Equate Table (name = value; values, not addresses):`.
+    EquateTable,
 }
 
 impl SymbolTable {
     /// Parse a sigil/AS `.lst` listing. Pure: no filesystem access — the caller supplies the text.
     ///
     /// Prefers the `Symbol Table` section and falls back to the body lines when no section header is
-    /// present (see [`TableSource`]). Unrecognised lines are skipped and counted, never fatal; the only
+    /// present (see [`TableSource`]). The `Equate Table` section is recognised and consumed but never
+    /// ingested (see the module docs). Unrecognised lines are skipped and counted, never fatal; the only
     /// hard failure is finding no symbols at all.
     pub fn parse(text: &str) -> Result<Self, SymbolParseError> {
         let mut table_syms: Vec<Symbol> = Vec::new();
         let mut body_syms: Vec<Symbol> = Vec::new();
-        let mut in_table = false;
+        let mut section = Section::Body;
         let mut declared_count = None;
         let mut declared_unused = None;
         let mut skipped_lines = 0usize;
+        let mut equates: Option<EquateSection> = None;
 
         for line in text.lines() {
             let t = line.trim_end();
             if t.trim().is_empty() {
                 continue;
             }
-            if !in_table && t.trim_start().starts_with("Symbol Table") {
-                in_table = true;
+            let head = t.trim_start();
+            if section == Section::Body && head.starts_with("Symbol Table") {
+                section = Section::SymbolTable;
                 continue;
             }
-            if in_table {
-                // The `-----` rule under the header, and the two footer counts.
-                if t.trim_start().starts_with('-') && t.trim().chars().all(|c| c == '-') {
-                    continue;
+            if section != Section::EquateTable && head.starts_with("Equate Table") {
+                section = Section::EquateTable;
+                equates = Some(EquateSection {
+                    rows: 0,
+                    declared: None,
+                });
+                continue;
+            }
+            match section {
+                Section::SymbolTable => {
+                    // The `-----` rule under the header, and the two footer counts.
+                    if is_rule_line(t) {
+                        continue;
+                    }
+                    if let Some(n) = parse_footer(t, "unused symbols") {
+                        declared_unused = Some(n);
+                        continue;
+                    }
+                    if let Some(n) = parse_footer(t, "symbols") {
+                        declared_count = Some(n);
+                        continue;
+                    }
+                    match parse_table_row(t) {
+                        Some(s) => table_syms.push(s),
+                        None => skipped_lines += 1,
+                    }
                 }
-                if let Some(n) = parse_footer(t, "unused symbols") {
-                    declared_unused = Some(n);
-                    continue;
+                Section::EquateTable => {
+                    // Recognised, never ingested. `equates` is `Some` for the whole arm — the header set
+                    // it — but express that with the option rather than an `unwrap`.
+                    let Some(e) = equates.as_mut() else { continue };
+                    if is_rule_line(t) {
+                        continue;
+                    }
+                    if let Some(n) = parse_footer(t, "equates") {
+                        e.declared = Some(n);
+                        continue;
+                    }
+                    // Recognising the section is not swallowing it: a row that does not match the
+                    // `EQU <name> = $<hex>` shape is format drift and still counts as damage.
+                    if is_equate_row(t) {
+                        e.rows += 1;
+                    } else {
+                        skipped_lines += 1;
+                    }
                 }
-                if let Some(n) = parse_footer(t, "symbols") {
-                    declared_count = Some(n);
-                    continue;
+                Section::Body => {
+                    // Body lines are only a fallback, and a real AS listing's body is full of source text
+                    // that is not a label — a non-match there is normal, so it is not counted as skipped
+                    // (that count is about the authoritative half).
+                    if let Some(s) = parse_body_line(t) {
+                        body_syms.push(s);
+                    }
                 }
-                match parse_table_row(t) {
-                    Some(s) => table_syms.push(s),
-                    None => skipped_lines += 1,
-                }
-            } else if let Some(s) = parse_body_line(t) {
-                // Body lines are only a fallback, and a real AS listing's body is full of source text
-                // that is not a label — a non-match there is normal, so it is not counted as skipped
-                // (that count is about the authoritative half).
-                body_syms.push(s);
             }
         }
 
@@ -378,19 +470,16 @@ impl SymbolTable {
         Ok(Self::build(
             syms,
             source,
-            declared_count,
-            declared_unused,
-            skipped_lines,
+            ParseCounts {
+                declared_count,
+                declared_unused,
+                skipped_lines,
+                equates,
+            },
         ))
     }
 
-    fn build(
-        mut syms: Vec<Symbol>,
-        source: TableSource,
-        declared_count: Option<usize>,
-        declared_unused: Option<usize>,
-        skipped_lines: usize,
-    ) -> Self {
+    fn build(mut syms: Vec<Symbol>, source: TableSource, counts: ParseCounts) -> Self {
         // Sort on the 24-bit address so nearest-preceding search matches what the bus sees; `name` breaks
         // ties so the ordering (and therefore every lookup answer) is deterministic across runs.
         syms.sort_by(|a, b| a.addr.cmp(&b.addr).then_with(|| a.name.cmp(&b.name)));
@@ -429,9 +518,10 @@ impl SymbolTable {
             by_demangled,
             by_module,
             source,
-            declared_count,
-            declared_unused,
-            skipped_lines,
+            declared_count: counts.declared_count,
+            declared_unused: counts.declared_unused,
+            skipped_lines: counts.skipped_lines,
+            equates: counts.equates,
         }
     }
 
@@ -466,10 +556,30 @@ impl SymbolTable {
         self.declared_unused
     }
 
-    /// Lines inside the `Symbol Table` section that did not parse as a row. Non-zero means the file is
-    /// truncated or the format drifted — worth surfacing, never fatal.
+    /// Lines inside the `Symbol Table` or `Equate Table` sections that did not parse as a row of that
+    /// section. Non-zero means the file is truncated or the format drifted — worth surfacing, never fatal.
     pub fn skipped_lines(&self) -> usize {
         self.skipped_lines
+    }
+
+    /// How many `EQU <name> = $<hex>` rows the `Equate Table` held, or `None` when the listing has no such
+    /// section. The count only — the names and values are deliberately not kept (`F-EQUATES-NAMESPACE`),
+    /// so no equate can ever answer a lookup.
+    pub fn equate_rows(&self) -> Option<usize> {
+        self.equates.map(|e| e.rows)
+    }
+
+    /// The count the `Equate Table`'s own `N equates` trailer declares. `None` when there is no such
+    /// section, **or** when the section is there but its trailer is not — which is what truncation looks
+    /// like, and why [`is_intact`](Self::is_intact) treats the two the same.
+    pub fn declared_equates(&self) -> Option<usize> {
+        self.equates.and_then(|e| e.declared)
+    }
+
+    /// Did the `Equate Table` trailer agree with the rows we recognised? `None` when the listing has no
+    /// `Equate Table` at all — which is not a failure, just nothing to check.
+    pub fn matches_declared_equates(&self) -> Option<bool> {
+        self.equates.map(|e| e.declared == Some(e.rows))
     }
 
     /// Did we parse exactly as many symbols as the footer promised? `None` when there is no footer to
@@ -480,7 +590,13 @@ impl SymbolTable {
     }
 
     /// Does this listing look like a whole, undamaged file? True only when it has the `Symbol Table`
-    /// section, its `N symbols` footer, a count that matches what we parsed, and no unrecognised rows.
+    /// section, its `N symbols` footer, a count that matches what we parsed, no unrecognised rows, and —
+    /// if it carries an `Equate Table` at all — an `N equates` trailer that agrees with the rows we saw.
+    ///
+    /// That last condition is what makes consuming the equate rows silently safe. The trailer is the
+    /// section's own checksum; without checking it, a truncated tail or a drifted row shape would vanish
+    /// into the same silence that hides real damage. A listing with **no** `Equate Table` is unaffected —
+    /// the condition is vacuous, not failed — which covers every listing sigil emitted before 2026-08-19.
     ///
     /// Truncation is the case this exists for, and it is nastier than it looks. A half-written listing
     /// usually loses its footer *along with* its tail, so `matches_declared_count()` returns `None` rather
@@ -498,6 +614,7 @@ impl SymbolTable {
         self.source == TableSource::SymbolTable
             && self.matches_declared_count() == Some(true)
             && self.skipped_lines == 0
+            && self.matches_declared_equates() != Some(false)
     }
 
     /// Exact lookup by the **raw** mangled name (`$engine.boot$EntryPoint$wait_dma`).
@@ -664,7 +781,32 @@ where
     out
 }
 
-/// Parse `   2129 symbols` / `    0 unused symbols`. `suffix` is matched on the whole remainder so
+/// The `-----` rule the emitter draws under each section header.
+fn is_rule_line(line: &str) -> bool {
+    let t = line.trim();
+    t.starts_with('-') && t.chars().all(|c| c == '-')
+}
+
+/// Is this an `Equate Table` row — `EQU <name> = $<hex>`?
+///
+/// Recognition only: **nothing is returned**, because an equate is a value and this module answers
+/// questions about addresses. Folding these into the symbol table would let a constant win an addr→name
+/// query and would silently pick a winner for an equate/label name collision; that is the ruled decision
+/// `F-EQUATES-NAMESPACE`, not a parser change. Shape verified against the real `s4.lst`: all 682 rows are
+/// exactly four whitespace tokens, and the value always carries the `$`.
+fn is_equate_row(line: &str) -> bool {
+    let tok: Vec<&str> = line.split_whitespace().collect();
+    tok.len() == 4
+        && tok[0] == "EQU"
+        && !tok[1].is_empty()
+        && tok[2] == "="
+        && tok[3]
+            .strip_prefix('$')
+            .is_some_and(|h| !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// Parse `   2129 symbols` / `    0 unused symbols` / `   682 equates`. `suffix` is matched on the whole
+/// remainder so
 /// `"symbols"` does not swallow the `"unused symbols"` line (the caller tries the longer one first).
 fn parse_footer(line: &str, suffix: &str) -> Option<usize> {
     let t = line.trim();
@@ -838,9 +980,10 @@ fn make_symbol(name: String, raw_addr: u32, kind: SymbolKind, unused: bool) -> S
 mod tests {
     use super::*;
 
-    /// A miniature but format-faithful listing: both sections, mangled and plain names, an `__align`
-    /// pad, an `asm<N>` block scope, an aliased address, an 8-hex `FFFFxxxx` RAM block, an unused `*`
-    /// row, an `-` equate, and the two footers.
+    /// A miniature but format-faithful listing: all three sections, mangled and plain names, an
+    /// `__align` pad, an `asm<N>` block scope, an aliased address, an 8-hex `FFFFxxxx` RAM block, an
+    /// unused `*` row, an `-` equate, the two symbol footers, and an `Equate Table` whose names include
+    /// one (`Player_1`) that deliberately collides with a real label.
     const FIXTURE: &str = "\
 (0) 1/200 :        EntryPoint:
 (0) 2/214 :        $engine.boot$EntryPoint$wait_dma:
@@ -868,10 +1011,126 @@ mod tests {
 
    10 symbols
     1 unused symbols
+
+  Equate Table (name = value; values, not addresses):
+  ---------------------------------------------------
+
+EQU AF_BACK = $000000FE
+EQU Player_1 = $00000001
+EQU zone_count = $0000000C
+
+    3 equates
 ";
 
     fn table() -> SymbolTable {
         SymbolTable::parse(FIXTURE).expect("fixture parses")
+    }
+
+    /// The `Equate Table` sigil started emitting on 2026-08-19 is a **known** section, not damage: its
+    /// header, rule, rows and trailer are all consumed, so a healthy listing still reports zero skipped
+    /// lines and stays [`SymbolTable::is_intact`]. Negative control for deleting the section recognition.
+    #[test]
+    fn equate_table_is_recognised_and_costs_no_damage() {
+        let t = table();
+        assert_eq!(t.skipped_lines(), 0, "the Equate Table is not damage");
+        assert!(t.is_intact(), "a listing with equates is still whole");
+        assert_eq!(t.len(), 10, "equates must not inflate the symbol count");
+        assert_eq!(t.declared_count(), Some(10));
+        assert_eq!(t.equate_rows(), Some(3));
+        assert_eq!(t.declared_equates(), Some(3));
+        assert_eq!(t.matches_declared_equates(), Some(true));
+    }
+
+    /// Equates are **values, not addresses** (sigil's own pin) and this repo has not ruled on the
+    /// equate/label namespace yet, so they must resolve to nothing in **both** directions. Negative
+    /// control for "fixing" the skip by folding equate rows into the symbol table.
+    #[test]
+    fn equates_are_not_addressable_in_either_direction() {
+        let t = table();
+        // name → address: absent entirely.
+        for name in ["AF_BACK", "zone_count"] {
+            assert!(t.by_name(name).is_none(), "{name} leaked into by_name");
+            assert!(
+                t.by_demangled(name).is_empty(),
+                "{name} leaked into by_demangled"
+            );
+            assert_eq!(t.address_of(name), None, "{name} resolved to an address");
+            assert!(
+                t.with_prefix(name).is_empty(),
+                "{name} leaked into prefixes"
+            );
+            assert!(
+                t.with_demangled_prefix(name).is_empty(),
+                "{name} leaked into demangled prefixes"
+            );
+        }
+        // A name shared by an equate and a real label still answers with the *label*, untouched.
+        assert_eq!(t.address_of("Player_1"), Some(0x00FF_8CFA));
+        assert_eq!(t.by_demangled("Player_1").len(), 1);
+        // address → name: an equate's *value* is not a location. `$FE` and `$C` sit below every real
+        // symbol, so nearest-preceding must find nothing rather than inventing a name for a constant.
+        for value in [0x0000_00FEu32, 0x0000_0001, 0x0000_000C] {
+            assert!(
+                t.symbols_at(value).is_empty(),
+                "a symbol landed on ${value:X}"
+            );
+            assert!(
+                t.resolve(value).is_none(),
+                "${value:X} resolved to a name — an equate value became an address"
+            );
+        }
+        // And nothing in the table carries an equate name, whatever its address.
+        for s in t.symbols() {
+            assert!(
+                !["AF_BACK", "zone_count"].contains(&s.name.as_str()),
+                "{} is an equate masquerading as a symbol",
+                s.name
+            );
+        }
+    }
+
+    /// The `N equates` trailer is the section's own checksum. Consuming the rows silently is only safe
+    /// while that check holds, so a trailer that disagrees with the rows we recognised — or one that is
+    /// missing entirely, which is what truncation looks like — makes the listing not-intact.
+    #[test]
+    fn an_equate_trailer_that_disagrees_with_the_rows_seen_is_damage() {
+        let wrong = FIXTURE.replace("    3 equates", "    4 equates");
+        let t = SymbolTable::parse(&wrong).expect("still parses");
+        assert_eq!(t.equate_rows(), Some(3));
+        assert_eq!(t.declared_equates(), Some(4));
+        assert_eq!(t.matches_declared_equates(), Some(false));
+        assert!(!t.is_intact(), "a miscounted Equate Table is damage");
+        // The symbol half is untouched — the anomaly is reported, not spread.
+        assert_eq!(t.len(), 10);
+        assert_eq!(t.skipped_lines(), 0);
+
+        let truncated = FIXTURE.replace("    3 equates\n", "");
+        let t = SymbolTable::parse(&truncated).expect("still parses");
+        assert_eq!(t.declared_equates(), None);
+        assert_eq!(t.matches_declared_equates(), Some(false));
+        assert!(!t.is_intact(), "a trailer-less Equate Table is damage");
+
+        // A listing with no Equate Table at all is unaffected: the condition is vacuous, not failed.
+        let none = FIXTURE.split("  Equate Table").next().unwrap();
+        let t = SymbolTable::parse(none).expect("pre-2026-08-19 listing parses");
+        assert_eq!(t.equate_rows(), None);
+        assert_eq!(t.matches_declared_equates(), None);
+        assert!(t.is_intact(), "a listing without equates is still whole");
+    }
+
+    /// Recognising the section is not the same as swallowing it. A row inside the Equate Table that does
+    /// not match `EQU <name> = $<hex>` is format drift and is still counted as a skipped line.
+    #[test]
+    fn an_unrecognised_row_inside_the_equate_table_is_still_skipped() {
+        let drifted = FIXTURE.replace(
+            "EQU zone_count = $0000000C",
+            "EQUATE zone_count -> 0000000C",
+        );
+        let t = SymbolTable::parse(&drifted).expect("still parses");
+        assert_eq!(t.skipped_lines(), 1, "drifted equate row must be reported");
+        assert_eq!(t.equate_rows(), Some(2));
+        assert!(!t.is_intact());
+        assert_eq!(t.len(), 10, "the symbol half is unharmed");
     }
 
     #[test]
