@@ -12,7 +12,7 @@
 //! transparency-based layer compositing. Sprites (push 4), the priority-bit ordering + shadow/highlight
 //! (push 5), and DMA/FIFO (push 6) are out — see the plan `docs/plans/2026-07-16-vdp-planes.md`.
 
-use crate::state_hash::VRAM_SIZE;
+use crate::state_hash::{CRAM_SIZE, VRAM_SIZE};
 use crate::vdp::{DmaRecord, Vdp};
 
 /// One of the three plane-stage nametables (design §4 `plane_decoded`). Sprites are a separate push.
@@ -371,8 +371,10 @@ pub(crate) struct RetainedRow {
     /// [`Vdp::report_rgb`]).
     pub(crate) report: LineReport,
     /// CRAM as of this row's line start — the image [`report_rgb_with_cram`] decodes the row against, and
-    /// the base the journal's landings are replayed on top of.
-    pub(crate) cram: Vec<u8>,
+    /// the base the journal's landings are replayed on top of. Inline and fixed-size: CRAM *is* a
+    /// [`CRAM_SIZE`]-byte image, so the array shape makes a wrong-length snapshot unrepresentable and costs
+    /// no allocation on the per-active-line stash path.
+    pub(crate) cram: [u8; CRAM_SIZE],
     /// The sub-line CRAM journal for this row: `(mclk, CRAM byte address, written word)` per landing, in
     /// write order.
     ///
@@ -403,7 +405,26 @@ pub(crate) struct RetainedRow {
 ///   `Engine::invalidate_screen`'s rule that reset/reload/restore drop the retained frame.
 ///
 /// It must nonetheless live in `System` and **persist across runs** (decision D-2): a `run_until` that ends
-/// mid-frame would otherwise drop the pending row, leaving the frame one row short with no signal.
+/// mid-frame would otherwise drop the pending row, leaving the frame one row short with no signal. The
+/// converse of D-2 is a real property of the public API: a caller who interleaves an *unarmed* run between
+/// two armed ones loses exactly the one row the first armed run was still holding, because the unarmed run
+/// drops it. Nothing in this tree does that (every run-driver that carries a capture carries it on every
+/// run), but a caller alternating `run_frames` with `run_frames_with_sink(…, capture)` mid-frame would see
+/// a one-row gap.
+///
+/// # The blindness is **one-directional** — this is the part that is easy to misread
+///
+/// "A retained row cannot make two machines unequal" does **not** mean two equal machines produce the same
+/// rows. It means exactly the reverse implication and no more:
+///
+/// - Two machines that compare `==`, hash the same under `state_hash`, and serialize to identical snapshot
+///   bytes may still emit **different row streams** from the same future run — one may be holding a row the
+///   other is not, and that row is emitted at the next `Scanline` event.
+/// - Therefore `snapshot`/`restore` is **not** row-stream-neutral: a restore drops at most one pending row,
+///   so a run resumed from a checkpoint taken mid-frame emits one fewer row than the run it was cut from.
+///   Accepted by design — the alternative is putting render output in the checkpoint, which is the thing
+///   `vdp.rs` rules out — and bounded at one row, which no whole-frame consumer can observe (`run_frames`
+///   ends on a boundary, where nothing is pending).
 #[derive(Clone, Default)]
 pub(crate) struct ScanlineScaffold {
     pending: Option<RetainedRow>,
@@ -412,10 +433,13 @@ pub(crate) struct ScanlineScaffold {
 impl ScanlineScaffold {
     /// Hold `report` back for emission at the next line's event, alongside the CRAM image live right now
     /// (this row's line start) and an empty journal.
+    ///
+    /// Panics if `cram` is not a whole [`CRAM_SIZE`] image — the only caller passes `Vdp::cram()`, which is
+    /// that by construction.
     pub(crate) fn stash(&mut self, report: LineReport, cram: &[u8]) {
         self.pending = Some(RetainedRow {
             report,
-            cram: cram.to_vec(),
+            cram: cram.try_into().expect("CRAM is a whole CRAM_SIZE image"),
             journal: Vec::new(),
         });
     }
@@ -425,15 +449,22 @@ impl ScanlineScaffold {
         self.pending.take()
     }
 
-    /// Drop the retained row. Used when a run carries no scanline-wanting sink, so a capture can never be
-    /// handed a row resolved during somebody else's run.
+    /// Drop the retained row.
+    ///
+    /// Called at the start of a run whose sink does **not** want rows, so such a run drops whatever a
+    /// previous run left retained. Note what that does *not* say: two different scanline-wanting sinks run
+    /// back to back **do** hand the row across, because the second run is armed and D-2 says an armed run
+    /// inherits. That is reachable in this tree — the aether engine runs its own `Fanout` capture while the
+    /// player's loop runs `cap` — and is accepted: the row is a faithful render of the machine both sinks
+    /// are watching, and its line number is carried with it.
     pub(crate) fn clear(&mut self) {
         self.pending = None;
     }
 
     /// The line number of the retained row, if one is held — the non-vacuity handle for the neutrality
     /// tests (a "retained state is invisible" claim is worth nothing if nothing was retained). Test-only on
-    /// purpose: nothing in the machine may branch on whether a row is pending.
+    /// purpose: no *machine* state may be derived from whether a row is pending (the emitter's own
+    /// "is there one to flush?" test is sink-facing and changes nothing the machine can see).
     #[cfg(test)]
     pub(crate) fn pending_line(&self) -> Option<u16> {
         self.pending.as_ref().map(|r| r.report.line)
@@ -591,6 +622,14 @@ fn cram_rgb_state_from(cram: &[u8], index: u8, state: PixelState) -> (u8, u8, u8
 /// that was live at the row's own line start reproduces `report_rgb`'s answer byte for byte
 /// (`docs/2026-08-19-subline-recon.md` §0, §A(ii)).
 pub(crate) fn report_rgb_with_cram(cram: &[u8], report: &LineReport) -> Vec<(u8, u8, u8)> {
+    // A short-but-nonempty CRAM would decode low indices silently and only panic on a high one, so the
+    // whole-image contract is asserted rather than left to the index bounds. `RetainedRow.cram` is a
+    // `[u8; CRAM_SIZE]` and so cannot violate it; this covers the `&[u8]` seam itself.
+    debug_assert_eq!(
+        cram.len(),
+        CRAM_SIZE,
+        "the decode reads a whole CRAM image, not a fragment"
+    );
     report
         .pixels
         .iter()
@@ -1568,6 +1607,12 @@ impl Vdp {
     /// second call site of `pixels_rgb`: the deferred emitter (`F-SCANLINE-SUBLINE`) calls the same function
     /// with a retained line-start snapshot, so "decoding later against the snapshot equals decoding now
     /// against live CRAM" is one function applied to two arguments, not two functions that agree today.
+    ///
+    /// **Do not call this on a *retained* report.** Since the emitter defers a row by one line, "live CRAM"
+    /// at flush time is a line too late, and this method would decode the row against it — measurably: that
+    /// substitution is exactly the mutation that moves the `scanline_goldens` scorecard. It has no
+    /// production caller left; it exists as the live-decode companion for callers holding a report they
+    /// resolved *now* (tests, `render_line_report` users).
     pub fn report_rgb(&self, report: &LineReport) -> Vec<(u8, u8, u8)> {
         report_rgb_with_cram(self.cram(), report)
     }

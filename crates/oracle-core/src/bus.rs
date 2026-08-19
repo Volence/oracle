@@ -90,19 +90,30 @@ pub trait BusEventSink {
 
     /// Whether this sink wants rendered scanlines delivered (conformance Limitation L1: mid-frame CRAM /
     /// palette effects are invisible to an after-the-run capture). The `Scanline` event queries this per
-    /// active line and, only when `true`, retains the already-built line report + that line's CRAM for
-    /// [`on_scanline`](BusEventSink::on_scanline) to decode at the next line's event — the default `false`
-    /// keeps the null-sink path exactly the discard-the-render hot path (no retain, no decode, no
-    /// allocation). It is also queried once per run to arm the deferred emitter; an unarmed run drops any
-    /// row a previous run left retained.
+    /// active line and, only when `true`, **retains** the already-built line report + that line's CRAM; the
+    /// run loop decodes it to RGB at the next line's event and hands the finished slice to
+    /// [`on_scanline`](BusEventSink::on_scanline). The default `false` keeps the null-sink path exactly the
+    /// discard-the-render hot path (no retain, no decode, no allocation).
+    ///
+    /// It is queried **once more, at the start of each run** — not to set an armed flag (there is none),
+    /// but for a single negative action: a run whose sink does not want rows drops any row a previous run
+    /// left retained, so a stale row is never handed to a sink that did not resolve it. A run whose sink
+    /// does want rows inherits it.
+    ///
+    /// **Contract: the answer must not change for the duration of a run.** This is a capability query, not
+    /// a per-line filter — the run-start query and the per-line queries are assumed to agree, and a sink
+    /// that flips mid-run gets neither the "every active line" guarantee nor the drop-on-unarmed one. Every
+    /// sink in this tree answers a constant.
     fn wants_scanlines(&self) -> bool {
         false
     }
 
     /// One rendered active line (0..=223), delivered **during** the run, carrying the VDP state (CRAM
     /// included) live at that line — not the end-of-frame state. `rgb` is a borrow (length = the active
-    /// width, 256 H32 / 320 H40); copy out whatever must outlive the call. Only called when
-    /// [`wants_scanlines`](BusEventSink::wants_scanlines) returned `true`. The default is a no-op.
+    /// width, 256 H32 / 320 H40); copy out whatever must outlive the call. Called only for a sink whose
+    /// [`wants_scanlines`](BusEventSink::wants_scanlines) answers `true` — which that method requires to be
+    /// constant for a run, so a sink that flips mid-run may still be handed a row it resolved while armed.
+    /// The default is a no-op.
     ///
     /// **When, exactly (`F-SCANLINE-SUBLINE`).** Row N is *resolved* at line N's `Scanline` event and
     /// *emitted* at line N+1's, from the retained report and a CRAM snapshot taken at line N's start; row

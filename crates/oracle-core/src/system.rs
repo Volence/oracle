@@ -283,9 +283,12 @@ pub struct System {
     /// **Not machine state, and the type is what guarantees it** — [`ScanlineScaffold`]'s `PartialEq` is
     /// constant true and its `Encode`/`Decode` move zero bytes, so this field is invisible to
     /// `System: PartialEq`, to the bincode checkpoint format, and (being render output) to `state_hash` and
-    /// `export_state` alike. It is deliberately **absent from the hand-written [`std::fmt::Debug`]** above,
+    /// `export_state` alike. It is deliberately **absent from the hand-written [`std::fmt::Debug`]** below,
     /// which mirrors the machine. It lives here rather than in `run_until_with_sink` because it must survive
     /// a run that ends mid-frame (decision D-2); `reset` clears it via the `Self::new` rebuild.
+    ///
+    /// That blindness runs one way only: equal machines may still emit different *row streams*, because one
+    /// can be holding a row the other is not. See [`ScanlineScaffold`] for the full statement.
     scanline_scaffold: ScanlineScaffold,
 }
 
@@ -693,12 +696,21 @@ impl System {
     }
 
     /// Serialize the entire machine to a bincode snapshot. O(struct) with no pointer fixup.
+    ///
+    /// **Not row-stream-neutral.** The deferred scanline emitter's retained row encodes as zero bytes, so
+    /// the snapshot format is unchanged and byte-equal snapshots stay byte-equal — but a `restore` of a
+    /// checkpoint taken mid-frame therefore drops at most one pending row, and the resumed run emits one
+    /// fewer row than the run it was cut from. Bounded at one row and invisible to whole-frame consumers
+    /// (`run_frames` ends on a boundary, where nothing is pending). See `render::ScanlineScaffold`.
     pub fn snapshot(&self) -> Vec<u8> {
         bincode::encode_to_vec(self, bincode::config::standard())
             .expect("System is infallibly encodable")
     }
 
     /// Restore a machine from a snapshot produced by [`System::snapshot`].
+    ///
+    /// The restored machine holds **no** deferred scanline row (the retained row round-trips as nothing —
+    /// see [`snapshot`](Self::snapshot)), so restoring a mid-frame checkpoint costs the resumed run one row.
     pub fn restore(bytes: &[u8]) -> Result<Self, bincode::error::DecodeError> {
         let (system, _len) = bincode::decode_from_slice(bytes, bincode::config::standard())?;
         Ok(system)
@@ -977,11 +989,13 @@ impl System {
         // is the whole cost when no VDP watch is attached. Restored to off on return.
         let capture = sink.wants_vdp_writes();
         self.vdp.set_write_capture(capture);
-        // Arm the deferred scanline emitter for this run (`F-SCANLINE-SUBLINE`), off the same capability
-        // query that already gates the RGB decode. A row retained by a previous run survives into this one
-        // (decision D-2) — but only while a scanline-wanting sink is still attached: an unarmed run drops it
-        // rather than leave a stale row to be handed to whatever sink shows up next. Unarmed, this is one
-        // extra `wants_scanlines()` per run and nothing else.
+        // The deferred scanline emitter (`F-SCANLINE-SUBLINE`) has **no armed flag** — deliberately: the
+        // per-line stash re-consults `wants_scanlines()` and the flush consults only whether a row is
+        // pending, so there is no second source of truth to keep in sync. This run-start query does exactly
+        // one thing: a run whose sink does not want rows **drops** whatever row a previous run left
+        // retained, rather than leaving it to be handed to whatever sink shows up next. An armed run
+        // inherits it (decision D-2). Unarmed, this is one extra `wants_scanlines()` per run and nothing
+        // else. `wants_scanlines()` must not change answer during a run — see the trait's contract.
         if !sink.wants_scanlines() {
             self.scanline_scaffold.clear();
         }
@@ -1046,10 +1060,18 @@ impl System {
     /// The journal is **empty in this slice** — slice 3 lands the mechanism and the currency-neutrality
     /// claim, and nothing else; slice 4 fills the journal at the VDP's CRAM choke and splits the decode into
     /// per-landing segments here.
+    ///
+    /// `#[inline]` because the *unarmed* path calls this once per `Scanline` event (262/frame) and must stay
+    /// effectively free: with nothing retained the whole body is one `Option` discriminant test.
+    #[inline]
     fn flush_pending_row<S: BusEventSink>(&mut self, sink: &mut S) {
         let Some(row) = self.scanline_scaffold.take() else {
             return;
         };
+        // A **tripwire for slice 4, not a tested invariant.** The journal has exactly one constructor
+        // (`ScanlineScaffold::stash`) and it hard-codes `Vec::new()`, so nothing in this slice can make this
+        // fire and no test exercises it failing. Its whole job is to break loudly the moment slice 4 starts
+        // filling the journal without also teaching this function to segment the decode.
         debug_assert!(
             row.journal.is_empty(),
             "slice 3 keeps the sub-line journal empty — a landing here would mean the row's bytes moved \
@@ -1681,6 +1703,13 @@ mod tests {
     /// One mclk short of line 100's event: the events for lines 0..=99 have fired, so rows 0..=98 are out
     /// and row 99 is retained. The instant an armed run is allowed to end holding a row is exactly the
     /// instant decision D-1 has to be true at.
+    ///
+    /// **Fixture assumption behind the exact counts below.** The two tests using this pin `99` and
+    /// `Some(99)` literally, which is only right while no single instruction of `testrom::build()` spans a
+    /// whole scanline (3420 mclk = ~489 CPU cycles). One that did would let `pop_due` drain several
+    /// `Scanline` events in a burst and shift both numbers. True today by a wide margin (the fixture's
+    /// longest instruction is tens of cycles), and recorded here so a future test-ROM change reads as a
+    /// fixture change rather than a mystery.
     const MID_FRAME_MCLK: u64 = 100 * MCLK_PER_LINE - 1;
 
     /// **Decision D-1, executed.** A retained row is render scaffolding, not machine state: an armed run

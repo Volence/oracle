@@ -392,6 +392,10 @@ fn a_run_ending_between_the_last_active_line_and_the_boundary_defers_it_to_the_n
 /// The row *index* is unchanged — `on_scanline(N, …)` still means line N — and so is the delivery order;
 /// only the instant moves, which is what buys the emitter a whole line's worth of CRAM writes to place
 /// inside the row (slice 4). A line-atomic emitter delivers `K` rows here and fails every row of the table.
+///
+/// The exact counts assume no single instruction of `testrom::build()` spans a whole scanline (3420 mclk);
+/// one that did would let several `Scanline` events drain in one burst and shift them. True today by a wide
+/// margin — recorded so a future test-ROM change reads as a fixture change, not a regression.
 #[test]
 fn a_row_is_emitted_at_the_next_lines_event_not_at_its_own() {
     for stop_line in [1u64, 2, 57, 100, 224] {
