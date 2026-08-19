@@ -39,6 +39,40 @@ gate with this capability.
   handler. Not built in the Tier 1 slice; queued for the owner's next-slice pick with Aeon's
   explicit ranking attached: **"asks 1 and 2 are worth more to Aeon than stepping is."**
 
+## Ask 1 follow-up — the SHAPE, ruled by the demand side (same evening)
+
+Their answer to the RGB-vs-index question, with rationale worth preserving verbatim in the CR:
+
+1. **Rendered RGB with S/H applied is REQUIRED** — "not a preference": the defect class is a
+   mid-scanline CRAM *write*, so every pixel in the row references the same CRAM entry before
+   and after; **pre-palette indices are identical either side of the landing point and are
+   structurally blind to the bug** — exactly as our post-hoc frame dumps were blind to
+   mid-frame raster effects. The boundary x in rendered RGB *is* the measurement.
+2. **Per-pixel CRAM index ranked SECOND, not zero** — for attribution ("pixels at row 99,
+   x>170 use index $4A and that entry changed mid-row" — a gate that detects *their* change,
+   not *a* change), and to separate two failure modes they have actually shipped: Aeon
+   toggles S/H (reg $0C bit 3) as a separate op from the palette write, and a recorded bug
+   shipped the palette half without the register half ("tinted but visibly lighter", found in
+   play). In RGB alone that reads as slightly-wrong colour, not a missing op.
+3. **Per-pixel S/H state (shadow/normal/highlight) THIRD, if cheap.**
+4. **Row RANGE, not single row** (assertions are always about a boundary; a single-row call
+   would just be called N times). **Active-only 320 px is sufficient and cleaner** — a write
+   landing correctly in blanking is invisible by definition, and shows up in active-only
+   capture as the clean pass condition. Mode-aware width (H40 320 / H32 256) if free; Aeon is
+   H40 throughout. "As of frame F" against the deterministic frame counter is fine — no
+   sub-frame addressing needed.
+
+**Feasibility facts, verified against `crates/oracle-core/src/scanline_capture.rs` (2026-08-18):**
+the sink interface receives `(line, &[(r,g,b)])` — the LIVE rendered line, S/H applied. So
+**field 1 (rendered RGB) is free today**: the capture already holds exactly the required
+bytes, and only the bus surface is missing. **Fields 2–3 (per-pixel index / S/H state) require
+extending the renderer→sink interface** — the renderer resolves indices and S/H internally
+and hands the sink only RGB (the S/H-aware `cram_rgb_state` conversion is private, a fact the
+S3 lens work already recorded). That extension is a core change and gets the standard
+currency-neutrality scrutiny; the CR should scope field 1 as the first slice and fields 2–3
+as a named follow-up with their attribution rationale attached, unless the extension proves
+trivial at design time.
+
 ## Ask 2 — does oracle-next separate HInt from VInt (profiler conflation)? ANSWERED
 
 Their finding about **oracle** (the C++ reference): `interrupts.hint` buckets by comparing
@@ -105,3 +139,13 @@ core is expected to pass absolutely.
 - **Stepping is not on Aeon's critical path** — their ranking puts asks 1–2 above it. The
   Tier 2 item 4 keep-dead collision still needs an owner ruling before any build; this makes
   the ruling less urgent, not resolved.
+- **Their P2 measurement plan corrected off our answer**: Scanline P2 Phase 0 now runs on
+  oracle (full stop); oracle-next is not a candidate for it until a profiler surface exists.
+  They endorsed the A/B-not-absolute framing and will not assert oracle-next cycle parity
+  while the instruction-granularity slop is open. They also asked that the HInt/VInt-by-cause
+  design pin STAY pinned — their sharpened statement of why: entry-PC bucketing mis-buckets
+  for ANY ROM whose vector points where the heuristic didn't anticipate, producing a silent
+  wrong number rather than a missing one, "which is the worse kind."
+- **Their read of write_memory's -32005 gate**: converting the silent-corrupted-measurement
+  race into an unrepresentable state "is worth more than the zero-cycle window itself" —
+  worth remembering as evidence next time strict-first refusal semantics are argued.
