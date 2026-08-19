@@ -29,7 +29,7 @@ than silently continued.*
 
 ### What this re-vendor adopted — §11.13 (CR-21, CR-22, CR-23)
 
-Three new method fragments, taking the schema from 26 method fragments to 29 (method count in the
+Three new method fragments, taking the schema from 29 method fragments to 32 (method count in the
 description string goes from 23 advertised-with-result to 32 schematized total, recounted 2026-08-18):
 
 - **`emulator/write_memory` (CR-21).** The poke primitive. Work-RAM window `$E00000-$FFFFFF` only, refused

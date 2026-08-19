@@ -1,7 +1,8 @@
 # Tier 1 shipped — the pixel-gate blockers are on the bus (2026-08-18)
 
-Branch `aeon-tier1`, 9 commits `bdecbf6..9e60c6f` (4 code/test, 1 schema re-vendor, 4 CR/ruling/plan
-docs), cut on top of the S3 lens merge (`docs/2026-08-17-player-s3-lenses.md`).
+Branch `aeon-tier1`, 12 commits `bdecbf6..HEAD` (4 code/test, 1 schema re-vendor, 4 CR/ruling/plan
+docs, plus the plan and handoff commits), cut on top of the S3 lens merge
+(`docs/2026-08-17-player-s3-lenses.md`).
 Demand statement: `docs/2026-08-17-aeon-switchover-gap-list.md` — Tier 1, items 1-3.
 Change requests: `docs/2026-08-18-cr21-23-tier1-rows.md`. Ruling: `docs/2026-08-18-ruling-cr21-23.md`.
 
@@ -202,7 +203,12 @@ symbol arm — the realistic form of this bug — and the new test is its **sole
   (`crates/oracle-aether/src/engine.rs:981-995`) silently **prefers** `symbol` instead of refusing
   with `-32602`. This is engine-wide — `read_memory`, `run_to`, `lookup_symbol`, `watchpoint_add`,
   and now both new rows share the helper — so it wants one consistency pass with its own tests, not a
-  local patch here.
+  local patch here. `hex::parse_bytes`/`strip_prefix` also accept `$`/`0X` where the fragment's
+  `bytes` pattern is `^0x`-only — same leniency class, fold into the same consistency pass.
+- **F-RESET-SURVIVE-PINS** — §11.13's three normative sentences on `emulator/reset` survival (SRAM
+  contents survive, symbols survive, held pads clear) are structurally true but untested at any
+  layer. The pin wants an SRAM-carrying fixture plus a reset round-trip, with assertions on symbols
+  and held-pad state — candidate for the next test-touching change.
 - **F-STATE-HASH-PROBE** — record the measured lesson as a house rule: **`state_hash` alone is not a
   "the machine moved" probe against RAM-only activity.** It fingerprints VDP state; a fixture that
   stirs work RAM and never touches the VDP leaves it constant, so any test using it that way asserts

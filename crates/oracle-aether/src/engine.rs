@@ -1005,9 +1005,11 @@ impl Engine {
     ///
     /// Bypassing is the right call for an inspection API (no side effects, no open-bus latch churn, no
     /// FIFO), but it means the value can differ from what a CPU read at the same address would return —
-    /// so every reply built on this carries a `caveat` saying so. That is exactly the landmine the recon
-    /// found in the sibling's `write_vram`, which bypasses the VDP port path and *"nothing in its
-    /// docstring says so"*.
+    /// so the read-shaped replies built on this (`read`, `read_memory`, `read_vram`) each carry a
+    /// `caveat` saying so. That is exactly the landmine the recon found in the sibling's `write_vram`,
+    /// which bypasses the VDP port path and *"nothing in its docstring says so"*. Not every caller wants
+    /// that caveat, though: `memory_hash` is also built on this and deliberately carries none — a
+    /// fingerprint's provenance note lives in its own contract row, not in the reply envelope.
     fn debug_read(&self, addr: u32, len: usize) -> Result<(Vec<u8>, &'static str), RpcError> {
         let end = (addr as u64) + (len as u64) - 1;
         if (WORK_RAM_LO..=WORK_RAM_HI).contains(&addr) {
