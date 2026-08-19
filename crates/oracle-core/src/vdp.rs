@@ -202,6 +202,23 @@ pub struct Vdp {
     /// `dma_write_word` so the choke points stamp `via = Dma`; otherwise `via = Direct`. Always false at an
     /// instruction boundary (a DMA runs to completion within one bus access). In neither frozen currency.
     in_dma: bool,
+    /// The master clock the VDP is currently working at — a **shadow** of the `now` its timed entry points
+    /// already receive ([`Vdp::control_write`], [`Vdp::data_write_at`], [`Vdp::run_fill`], [`Vdp::run_copy`],
+    /// [`Vdp::dma_write_word`]), carried down to the write choke points so a write can be located in time and
+    /// not merely in order (F-SCANLINE-SUBLINE slice 1, design `docs/2026-08-19-subline-recon.md` §B).
+    ///
+    /// Two honest limits, both of them properties of the clock the bus hands us rather than of this field:
+    ///
+    /// - **Instruction-granular.** `MegaDriveBus` freezes `now_mclk` for the duration of one 68000
+    ///   instruction, so every word of a `movem` shares one stamp (follow-up **F-SUBLINE-ACCESSMCLK**).
+    /// - **One DMA burst = one stamp** (decision **C-6**): every word of a 68k→VDP transfer carries the
+    ///   transfer's own `now`, not an advancing per-word clock (follow-up **F-SUBLINE-DMASPREAD**).
+    ///
+    /// Untimed entry points ([`Vdp::data_write`], the hand-driven unit fixtures) leave it at its previous
+    /// value, exactly as `Watchpoints`' own untimed-event rule does. Serialized like the other transient VDP
+    /// fields; in **neither** frozen currency (`state_hash`/`export_state` read only VRAM/CRAM/VSRAM/regs).
+    /// Power-on = 0.
+    now_mclk: u64,
 }
 
 impl std::fmt::Debug for Vdp {
@@ -257,6 +274,7 @@ impl Vdp {
             write_captures: Vec::new(),
             capture_armed: false,
             in_dma: false,
+            now_mclk: 0,
         }
     }
 
@@ -778,6 +796,7 @@ impl Vdp {
     /// a `$8xxx` register write (top bits `10`, never arms the toggle); a first command word (top bits set
     /// CD1-CD0 + A13-A0 immediately, arm the toggle); or a second command word (CD5-CD2 + A15-A14, disarm).
     pub fn control_write(&mut self, w: u16, mclk: u64) {
+        self.now_mclk = mclk; // the write choke points read it from here (slice 1)
         if !self.pending {
             // A first control word ALWAYS latches CD1-CD0 from bits 15-14 — including the `$8xxx` register
             // form, whose bits 15-14 are `10`. CD3-CD0 = `xx10` names no target in the code table, so after
@@ -870,6 +889,12 @@ impl Vdp {
         self.last_dma
     }
 
+    /// The master clock the VDP last performed work at — see the [`now_mclk`](Vdp#structfield.now_mclk)
+    /// field for what "last" means at each entry point and for the two granularity limits it inherits.
+    pub fn now_mclk(&self) -> u64 {
+        self.now_mclk
+    }
+
     /// Arm or disarm the VDP-write capture buffer (watchpoints v2). The sink-generic run loop arms it for a
     /// run whose sink wants VDP writes and disarms it after; disarmed is byte-for-byte the old hot path.
     pub fn set_write_capture(&mut self, on: bool) {
@@ -931,7 +956,14 @@ impl Vdp {
     /// 10 (expected table ROM `$ED10` words 33-40, `0200 0100 0000 0200` / `0000 0100 0000 0200`) fire a
     /// DMA between their two probes and require the resuming 68k to see **FULL → partial → EMPTY**; with a
     /// bare ring store it sees EMPTY throughout and both groups report `$ffff`.
-    pub fn dma_write_word(&mut self, w: u16) {
+    ///
+    /// `now` is the **transfer's** instant, not this word's: the bus passes the same value for every word of
+    /// the burst (decision C-6 — a 32-word palette DMA is located at the pixel the DMA started on, not
+    /// smeared across the slots it really occupies; follow-up F-SUBLINE-DMASPREAD). It is a parameter rather
+    /// than a shadow set once around the loop because this is a **public** entry point the bus drives
+    /// directly, bypassing every timed one — a caller that has to supply the time cannot forget to.
+    pub fn dma_write_word(&mut self, w: u16, now: u64) {
+        self.now_mclk = now; // C-6: the transfer's instant, per word (slice 1)
         self.in_dma = true; // watchpoints v2: this word's captures attribute to the triggering DMA
         self.fifo_enqueue(w);
         self.write_target(w);
@@ -1093,6 +1125,7 @@ impl Vdp {
     /// routes through the SAT write-through (R5 rider: fill steps hit the window compare like any VRAM write).
     /// Length is in bytes (RD2); regs 19/20 → 0 after the transfer (recon R4).
     pub fn run_fill(&mut self, len: u16, fill: u16, now: u64) {
+        self.now_mclk = now; // C-6: every step of the fill carries the transfer's own instant (slice 1)
         let count = if len == 0 { 0x1_0000u32 } else { len as u32 };
         let target = self.target();
         // The address register the fill engine starts from. Since A3b this is the *post-trigger* value
@@ -1147,6 +1180,7 @@ impl Vdp {
     /// time. Each write routes through the SAT write-through (R5 rider). Length is in bytes (RD2); regs 19/20
     /// → 0 after the transfer (recon R4).
     pub fn run_copy(&mut self, source: u16, len: u16, now: u64) {
+        self.now_mclk = now; // C-6: every step of the copy carries the transfer's own instant (slice 1)
         let count = if len == 0 { 0x1_0000u32 } else { len as u32 };
         let dest = self.addr;
         let mut src = source as usize;
@@ -1176,6 +1210,8 @@ impl Vdp {
     /// instruction cost; `FlatBus` never reaches this path so the SST corpus is untouched), then apply the
     /// write. A 5th write while all 4 slots are pending waits for the oldest to drain (official /DTACK stall).
     pub fn data_write_at(&mut self, w: u16, now: u64) -> u32 {
+        // Slice 1: the write choke points read the instant from here.
+        self.now_mclk = now;
         // A DMA command's data write is not FIFO-timed here (the DMA slices own it); no stall, apply as before.
         if self.code & 0x20 != 0 {
             self.apply_data_write(w);
@@ -2947,7 +2983,7 @@ mod tests {
             v.data_write(w); // six marker words fill (and wrap) the ring
         }
         for w in [0xAAAAu16, 0xBBBB, 0xCCCC, 0xDDDD, 0xEEEE, 0xFFFF] {
-            v.dma_write_word(w);
+            v.dma_write_word(w, 0);
         }
         assert_eq!(
             v.fifo_snoop_word(),
@@ -2981,7 +3017,7 @@ mod tests {
         command(&mut v, 0x01, 0x8000);
         assert_eq!(v.fifo_len(), 0, "an idle FIFO before the transfer");
         for w in [0xAAAAu16, 0xBBBB, 0xCCCC, 0xDDDD, 0xEEEE, 0xFFFF] {
-            v.dma_write_word(w);
+            v.dma_write_word(w, 0);
         }
         assert_eq!(
             v.fifo_len(),
@@ -3003,7 +3039,7 @@ mod tests {
         command(&mut v, 0x01, 0x8000);
         let start = 100 * MCLK_PER_LINE;
         for w in [0xAAAAu16, 0xBBBB, 0xCCCC, 0xDDDD] {
-            v.dma_write_word(w);
+            v.dma_write_word(w, start);
         }
         let end = start + 4_000; // a plausible transfer window; the exact cost is `Vdp::dma_cost`'s job
         v.dma_complete(
@@ -3463,5 +3499,90 @@ mod tests {
         ref_vdp.data_write(0xBEEF);
         assert_eq!(v.vram(), ref_vdp.vram(), "capture never perturbs VRAM");
         assert_eq!(v, ref_vdp, "drained capture buffer leaves the VDP equal");
+    }
+
+    // --- F-SCANLINE-SUBLINE slice 1: the mclk reaches the write chokes ------------------------------------
+
+    /// Arm a CRAM word write at CRAM byte address 0, autoincrement 2, at mclk `arm`.
+    fn arm_cram_write(v: &mut Vdp, arm: u64) {
+        v.control_write(0x8F02, arm); // reg 15 = autoinc 2
+        v.control_write(0xC000, arm); // CRAM write (code 0x03), A13-A0 = 0
+        v.control_write(0x0000, arm); // high half, disarm the toggle
+    }
+
+    /// A bus-timed CRAM data-port write carries its own instant into the VDP: `data_write_at(w, m)` leaves
+    /// the VDP's notion of "now" at `m`, which is the clock the CRAM choke runs under. The write is checked
+    /// to have actually landed, so the stamp is the stamp of a write that happened.
+    #[test]
+    fn a_cram_data_write_stamps_the_vdps_now_with_the_writes_own_mclk() {
+        let mut v = fresh();
+        arm_cram_write(&mut v, 0);
+        assert_eq!(v.now_mclk(), 0, "the arming control writes were at mclk 0");
+
+        // A landing well inside line 100's active display — the shape §B of the subline recon maps to a pixel.
+        let m = 100 * MCLK_PER_LINE + 1775;
+        v.data_write_at(0x0EEE, m);
+        assert_eq!(
+            v.now_mclk(),
+            m,
+            "the data write's own instant reached the VDP"
+        );
+        assert_eq!(
+            ((v.cram()[0] as u16) << 8) | v.cram()[1] as u16,
+            0x0EEE,
+            "and it is the instant of a write that really landed in CRAM"
+        );
+
+        // It tracks, rather than latching once: a second write at a later instant re-stamps.
+        let m2 = m + 3 * MCLK_PER_LINE;
+        v.data_write_at(0x0AAA, m2);
+        assert_eq!(v.now_mclk(), m2, "each timed write re-stamps");
+    }
+
+    /// The other three timed entry points stamp too, so no write choke can be reached under a stale clock:
+    /// a control write (which can itself write a register), a fill body and a copy body.
+    #[test]
+    fn every_timed_entry_point_stamps_the_vdps_now() {
+        let mut v = fresh();
+        v.control_write(0x8F02, 11_111);
+        assert_eq!(v.now_mclk(), 11_111, "control_write stamps");
+
+        arm_vram_write(&mut v, 0x0200);
+        v.run_fill(4, 0xAB00, 22_222);
+        assert_eq!(v.now_mclk(), 22_222, "run_fill stamps");
+
+        v.run_copy(0x0200, 4, 33_333);
+        assert_eq!(v.now_mclk(), 33_333, "run_copy stamps");
+    }
+
+    /// **Decision C-6, pinned as a decision rather than left an accident.** Every word of a 68k→VDP burst
+    /// carries the *transfer's* instant — not the instant the transfer was armed, and not a per-word clock.
+    /// The shadow is checked after **each** word (a single post-burst check could not tell "every word" from
+    /// "the last word"), and the burst is armed at a deliberately different mclk so an unstamped word would
+    /// be visibly stale rather than accidentally right.
+    #[test]
+    fn a_mem_dma_burst_stamps_every_word_with_the_transfers_own_now() {
+        const ARMED_AT: u64 = 40 * MCLK_PER_LINE;
+        const TRANSFER_AT: u64 = 100 * MCLK_PER_LINE + 1775;
+
+        let mut v = fresh();
+        arm_cram_write(&mut v, ARMED_AT);
+        assert_eq!(v.now_mclk(), ARMED_AT, "armed under the earlier clock");
+        v.set_write_capture(true);
+
+        for (i, w) in [0x0EEEu16, 0x0AAA, 0x0666, 0x0222].into_iter().enumerate() {
+            v.dma_write_word(w, TRANSFER_AT);
+            assert_eq!(
+                v.now_mclk(),
+                TRANSFER_AT,
+                "word {i} of the burst carries the transfer's own now, not the arming clock"
+            );
+        }
+        let caps = v.take_write_captures();
+        assert_eq!(caps.len(), 4, "all four words reached the CRAM choke");
+        assert!(
+            caps.iter().all(|c| c.target == VdpTarget::Cram),
+            "at the CRAM choke, which is the one the sub-line arc needs timed: {caps:?}"
+        );
     }
 }

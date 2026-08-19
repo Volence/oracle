@@ -993,7 +993,9 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             let lo = self
                 .mapped_byte(src.wrapping_add(1) & ADDR_MASK)
                 .unwrap_or((*self.last_bus_word & 0xFF) as u8);
-            self.vdp.dma_write_word(((hi as u16) << 8) | lo as u16);
+            // Every word carries the transfer's own `now` (decision C-6): `now_mclk` is frozen for the
+            // instruction that triggered the DMA, so there is no finer clock to hand it here.
+            self.vdp.dma_write_word(((hi as u16) << 8) | lo as u16, now);
             src = src.wrapping_add(2);
         }
         let slots_per_word = if target == Target::Vram { 2 } else { 1 };
@@ -2367,6 +2369,43 @@ mod tests {
                 0xf800, 0xf800, 0xf111, 0xf111, // snoop = $FFFF
             ],
             "VDPFIFOTesting test 3's expected table (ROM $5E0C)"
+        );
+    }
+
+    /// F-SCANLINE-SUBLINE slice 1, the bus half: a 68k→CRAM transfer hands the VDP the **transfer's own**
+    /// instant, so the palette words the sub-line arc has to locate are timed rather than merely ordered.
+    ///
+    /// `now_mclk` is frozen for the instruction that triggered the DMA (`MegaDriveBus` takes it by value), so
+    /// the transfer's instant *is* the trigger's instant and every word shares it — decision **C-6**, with
+    /// **F-SUBLINE-DMASPREAD** registered for the smearing this deliberately does not model. Started at a
+    /// non-zero clock so a dropped or zeroed stamp is visible rather than accidentally right.
+    #[test]
+    fn a_68k_to_cram_dma_carries_the_transfers_own_mclk_to_the_choke() {
+        let mut rom = vec![0u8; 0x1000];
+        // Four already-9-bit-masked colour words, big-endian at ROM $0400 = word address $000200.
+        rom[0x400..0x408].copy_from_slice(&[0x0E, 0xEE, 0x0A, 0xAA, 0x06, 0x66, 0x02, 0x22]);
+        let mut mem = MdMem::new(rom);
+        mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE; // vblank: the fast slot rate, and a non-zero clock
+
+        // reg 1 = $54 (display on + M1/DMA enable + M5), reg 15 = autoinc 2, regs 19/20 = 4 words,
+        // regs 21/22/23 = source word address $000200 with reg 23 bit 7 clear (Mem mode).
+        for w in [0x8154u16, 0x8F02, 0x9304, 0x9400, 0x9500, 0x9602, 0x9700] {
+            vdp_port_write(&mut mem, 0xC0_0004, w, MOVE_IMM_TO_ABS_W);
+        }
+        // CD = 100011 (CRAM write + CD5) @ CRAM $0000. The *second* word completes the command and fires it.
+        vdp_port_write(&mut mem, 0xC0_0004, 0xC000, MOVE_IMM_TO_ABS_W);
+        let triggered_at = mem.now_mclk;
+        vdp_port_write(&mut mem, 0xC0_0004, 0x0080, MOVE_IMM_TO_ABS_W);
+
+        assert_eq!(
+            &mem.vdp.cram()[0..8],
+            &[0x0E, 0xEE, 0x0A, 0xAA, 0x06, 0x66, 0x02, 0x22],
+            "the four payload words reached CRAM through the choke"
+        );
+        assert_eq!(
+            mem.vdp.now_mclk(),
+            triggered_at,
+            "and the VDP performed them at the transfer's own instant"
         );
     }
 
