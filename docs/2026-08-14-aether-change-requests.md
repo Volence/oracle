@@ -1018,3 +1018,43 @@ leaving a silent lie in the field.
 > whether anything executed at all before its watch fired. Widening a minimum cannot break a conformant
 > reply or a client, so the adoption costs nothing but the exactness promise it adds.
 
+---
+
+## CR-21 — `emulator/write_memory` needs the specification its row never had (proposed 2026-08-18)
+
+Full text in `docs/2026-08-18-cr21-23-tier1-rows.md` (one document, three CRs — the §11.5 multi-entry
+precedent). The row at `protocol.md:825` is legacy vintage: no prose, no schema fragment, untyped
+`width`, a bound with no refusal code, and unnamed in the run-control state rule. Proposed: work-RAM
+window `$E00000–$FFFFFF` refused-never-clipped (`-32004`), exactly one payload spelling (`bytes` XOR
+`value`+`width` ∈ 1|2|4, big-endian), `-32005` paused-machine gate named in the rule, `len ≤
+limits.maxWriteLen`, writes via the bus path.
+
+**This CR supersedes this file's own `write_memory` deferral** (the *"`write_memory` / `write_vram` —
+read-only for now"* bullet under "What this slice did NOT implement"), by the owner ruling of
+2026-08-17 (`docs/2026-08-17-aeon-switchover-gap-list.md`, §"Assessment": ADOPT, scoped — the
+keep-dead "register-write op" entry covers register writes only, and `write_memory` is built
+contract-first). **The `write_vram`/`poke_vram` landmine note in that same bullet stands untouched** —
+VRAM writing is not covered by this CR or this slice, and whoever adds it still owes the `poke_vram`
+rename and the `bypassesVdpPort: true` flag.
+
+## CR-22 — `emulator/reset`'s `deferred` is a result key two servers share and no text defines (proposed 2026-08-18)
+
+Full text in `docs/2026-08-18-cr21-23-tier1-rows.md`. The row at `protocol.md:783` returns `deferred`,
+a key defined nowhere — while Oracle's `ControlSocket.cpp` emits both truthful values today
+(`deferred: false` at `:469`, `deferred: true` at `:492`) and our own books called `reset` *"the
+conspicuous absence"* from a 25-method control surface. The player has had it on Tab/F1 the whole time
+(`commands.rs:102-108`, `main.rs:1369`) — a live D15 parity gap. Proposed: prose defining `deferred`
+as *when the reset landed* (both values conformant), not run-state gated (the checkpoint precedent),
+with the survival set pinned (SRAM, symbols, checkpoints, watchpoints survive; held pads clear; stamps
+restart at 0).
+
+## CR-23 — `emulator/memory_hash`, the genuinely new row, raised before it is built (proposed 2026-08-18)
+
+Full text in `docs/2026-08-18-cr21-23-tier1-rows.md`. No row exists anywhere in `empyrean` (grep
+verified), so §8's ban on inventing ops applies and the row comes first. De-facto spec is the legacy
+MCP row (`oracle_mcp.py:239-254`, socket op `1c54004` 2026-08-01): FNV-1a-64 + IEEE/zlib CRC-32, no
+4096 cap (`len` ≤ 4194304, advertised as `limits.maxHashLen`), RAM/ROM auto-route, refuse-never-clip.
+A pure read. Explicitly NOT a lift of §9's `frame_hash` deferral (that is a picture hash, already
+served by `state_hash includeFramebuffer`); discharges CR-20 question 3's struck-with-obligations
+ruling by pinning both algorithms.
+
