@@ -3,8 +3,11 @@
 **Status: DRAFT, unadjudicated (raised 2026-08-19).** Raised against `empyrean/contract/protocol.md`
 §6 (VRAM / CRAM / layers) — specifically the `emulator/scanlines` blockquote's row-content
 clarification at `protocol.md:1165-1189`, merged **this morning** as `112d683` — and lands as
-amendment **§11.15**. It changes **no schema fragment**: the vendored `bus-protocol.schema.json`
+amendment **§11.15**. It **adds and removes no schema fragment**: the vendored `bus-protocol.schema.json`
 `methods` object stays at **33** fragments (counted mechanically today, see "What does not change").
+*(Precision, added post-adjudication: one **existing** fragment's `description` string is corrected — no
+key, no shape, no validation and no count moves with it. See "Delta (post-adjudication)" at the end,
+which is the only part of this document written after the ruling.)*
 
 This CR is the vehicle the controller ruled for the F-SCANLINE-SUBLINE arc. It does **not** redesign
 anything: the design is `docs/2026-08-19-subline-recon.md` (adopted as written) and the ruling is
@@ -211,9 +214,18 @@ prose/catalog contradiction CR-24 fixed in the other direction.
 
 ---
 
-## 4. The proposed §11.15 entry (verbatim, as it would land)
+## 4. The §11.15 entry (verbatim as adjudicated, landed at empyrean `a8766b9`)
 
-Appended at end of `protocol.md` (currently 2597 lines; §11.14 spans `:2503-2597`).
+Appended at end of `protocol.md` (2597 lines when this was written; §11.14 spans `:2503-2597`).
+
+**This block is byte-identical to the §11.15 that landed on `subline-amendment` at `a8766b9`** — the
+text the adjudicator extracted and diffed (`docs/2026-08-19-ruling-cr25.md:105`) — and it is
+deliberately frozen there rather than re-edited, so that correspondence stays audited. **It is no
+longer the whole of the landing text.** The post-adjudication delta below adds the ★ watch-hit item
+(**(c)**), *replaces* this block's table-cell closing sentence (**(d)**) and appends a fourth clause
+to the adoption condition (**(e)**). **Read this block plus items (c), (d) and (e) of the Delta
+section as the current §11.15** — which is what `subline-amendment` holds; each of the three is
+quoted there in full and byte-verified against that branch.
 
 ```markdown
 ### 11.15 — 2026-08-19: the row stops being atomic, for CRAM only
@@ -302,10 +314,14 @@ Stated explicitly, because the cheapness of this CR is entirely a function of th
    a hard interface constraint of the adopted design, not an incidental property
    (`docs/2026-08-19-subline-recon.md:546-550`; ruling `:3-6` adopts it as one of the two hard
    implementation constraints).
-2. **No schema fragment, and no count.** `contract/schema/bus-protocol.schema.json`'s `methods`
-   object holds **33** fragments and contains `emulator/scanlines` — counted mechanically today by
-   parsing the file, not transcribed. This CR adds none and removes none. §11.14's `mode` ↔
+2. **No schema fragment added or removed, and no count.** `contract/schema/bus-protocol.schema.json`'s
+   `methods` object holds **33** fragments and contains `emulator/scanlines` — counted mechanically today
+   by parsing the file, not transcribed. This CR adds none and removes none. §11.14's `mode` ↔
    `rows[].width` ↔ `rgb`-length `if`/`then` tie is unaffected: widths and lengths are unchanged.
+   **Post-adjudication precision:** the delta at the end of this document corrects **one `description`
+   string** inside an existing fragment (`watchpoint_hits`'s `hits[].mclk`). That is the only schema
+   movement in the whole CR, and it is not a fragment change in the sense this list means — a leaf-by-leaf
+   walk of the parsed schema before and after yields exactly one difference, and it is that string.
 3. **No `initialize.limits` entry.** Same reasoning §11.14 recorded: every bound here is structural.
    The new numbers (2560 mclk, 8/10 mclk per pixel) are video-hardware constants, not server policy;
    advertising one would misfile a hardware constant as taste.
@@ -434,9 +450,23 @@ acceptance protocol — and mirroring CR-24's ruling R1 split, which exists prec
      different step: at step 1 the pre-amendment count would be at most a few more, since the
      surface's quantum is a whole line. Anything near 4 at step 1 means the arc did not land.
 
+4. **Suite gate — the watch-hit clock** (`crates/oracle-core/src/watchpoints.rs`,
+   `vdp_hits_carry_the_writes_own_clock_and_say_what_is_left`, in-tree and passing since slice 1b,
+   oracle-next `01866a7`). *Added by the post-adjudication delta below (item **(e)**), per the delta
+   ruling's D-M2: after the delta, §11.15 makes behavioural claims about two surfaces and this
+   condition gated only one.* A VDP-space hit's `mclk` equals the instant of the write that produced
+   it and **not** the clock of the CPU step that drained it. The fixture drives the two deliberately
+   apart — step clock `900_000`, write instant `912_345` — and asserts against the instant it handed
+   the write, so the expectation comes from the fixture's own inputs rather than from any recorded
+   number; the same test asserts the residual **instruction-granular** caveat still travels with the
+   numbers and that the retired **F-TRACE-VDPWRITE-MCLK** no longer does. Mutation-checked in the
+   delta adjudication: `mclk: w.mclk` → `mclk: self.cur_mclk` was applied and the gate failed
+   (`docs/2026-08-19-ruling-cr25.md:240-242`).
+
 Clause 3 is deliberately external, exactly as §11.14's verbatim A1/A2 sweep is: the fixture ROM, the
 driver and the game-state ritual are the demand side's, and the same-session re-run was offered
-(`docs/2026-08-19-ruling-subline-recon.md:73-74`).
+(`docs/2026-08-19-ruling-subline-recon.md:73-74`). Clauses 1, 2 and 4 are executable in this repo;
+clause 4 is the only one already passing today.
 
 ---
 
@@ -508,3 +538,235 @@ regenerated, because none changes.
 **No emulator MCP tooling was used, at any point, for any purpose.** No live boot was required and
 none was performed. Every measurement quoted from the demand side is theirs; every contract and
 source statement is from a file read in this session at the commit named beside it.
+
+---
+
+## Delta (post-adjudication): the watch-hit `mclk`
+
+**Everything above this line is the CR as adjudicated** (`docs/2026-08-19-ruling-cr25.md`, ADOPT WITH
+CHANGES; M1–M3 and S1–S5 applied, merged at `bf530b5`), except the two precision notes in §1 and §5
+item 2 that point here, §4's corrected label, and §7's clause 4. This section is a **delta**, not a
+re-opening: it adds one item to §11.15, corrects two sentences of standing contract text, and — per
+the delta ruling's **D-M2** — appends a fourth clause to the adoption condition so the second surface
+it moves is gated too. No design decision above changes and no pin moves.
+
+### The finding
+
+Slice 1b of this arc — oracle-next branch `subline-s1`, commit `01866a7`,
+*"feat(vdp,watchpoints): slice 1b — a captured VDP write carries its own clock"* — changed what the
+served `mclk` of a **VDP-space watchpoint hit** means. It was the **driving CPU step's clock**: a
+VDP-internal write drains after the step, and the hit borrowed the step's timestamp. It is now the
+**write's own instant**, taken from the same write-choke stamp this CR's row convention is built on.
+The commit says so in its own words — `Watchpoints::on_vdp_write` *"stamps the hit from **the write**
+instead of from `self.cur_mclk`, the draining CPU step's clock it used to borrow"* — and it was ruled
+in-arc as its own slice by `docs/2026-08-19-ruling-subline-recon.md` **Q4**, *"In-arc, as **slice 1b**
+with its own tests and its own commit (never smuggled into slice 1's diff)"* (`:44-45`).
+
+**No field, no shape, no key moves.** The same integer, in the same place, now tells the truth at
+finer resolution — which is the same sentence §11.15 already uses about the rows themselves, and not
+a coincidence: it is the same mechanism.
+
+**It rides CR-25 rather than resembling it,** which is why this is a delta to §11.15 and not CR-26.
+The write-choke stamp that gives a CRAM landing its pixel is the stamp that gives a captured write its
+clock; and the residue is *this arc's own limit*, not a second one — **instruction-granular**, because
+the bus freezes its clock for one 68000 instruction, so a write is located to the start of the
+instruction that drove it and every word of one DMA burst shares the transfer's instant. That is
+verbatim the bound the row convention carries (§3's third bullet, decision 4 in §6), and
+**F-SUBLINE-ACCESSMCLK** is the same registered follow-up that refines both.
+
+Slice 1b flagged the consequence rather than acting on it, correctly: *"It is vendored contract text,
+so it is not edited here; it belongs to the Q1 CR alongside the `emulator/scanlines` §6 correction."*
+This is that fold.
+
+### The contract text that is now false
+
+Two sentences, saying the same thing in two places, and both call the old behaviour **permanent**.
+**Anchors in this table are against `a8766b9`, the pre-delta tip** — the §6 paragraph is five lines
+longer after the correction, so post-delta it spans `:1024-1033`; the schema line number is unchanged:
+
+| Where | Text (verbatim) |
+|---|---|
+| `empyrean/contract/protocol.md:1024-1028` (§6, watchpoint blockquote) | *"**A VDP-internal hit's `mclk` is step-granular.** The write is drained after the driving CPU step and carries that step's clock, so it locates the hit to an instruction rather than to a cycle. This is a **permanent property** of a VDP-space hit and is stated here, once, rather than repeated as a per-reply `caveat` — §2.4's advisory: a caveat that is always present is one clients learn to ignore, including on the one reply where it would have mattered."* |
+| `empyrean/contract/schema/bus-protocol.schema.json:1288` (SOURCE; the vendored copy is `oracle-next/crates/oracle-aether/tests/contract/bus-protocol.schema.json:1288`, same line number) | *"Emulated master clock of this hit. STEP-GRANULAR whenever `space` is not 'bus' — a VDP-internal write is drained after the driving CPU step and carries that step's clock. That is a PERMANENT property of a VDP hit and is stated in §6 rather than repeated as a per-reply caveat (§2.4's advisory: a caveat that is always present is one clients learn to ignore)."* |
+
+**The §6 cross-reference was verified, and it holds — there is no pre-existing false cross-reference
+to report.** The schema description asserts the property *"is stated in §6"*. It is: the paragraph in
+the table above is §6's `watchpoint_hits` blockquote at `protocol.md:1024-1028`, read firsthand. The
+dispatch raised the possibility that the cross-reference pointed at nothing; it does not. That is the
+reason both had to be corrected in one commit rather than one of them.
+
+**Two further mentions were found and deliberately left alone.** `protocol.md:2214` and `:2234` at
+`a8766b9` (`:2219` and `:2239` after the delta's five-line §6 growth) describe *"the step-granular
+`mclk`"* and *"a VDP hit's step-granular `mclk`"* respectively, and both sit inside **§11.8**
+(`:2203-2278` pre-delta, `:2208-2283` after), the amendment-log entry for CR-12. An amendment log records what was decided
+then, not live text — the discipline §11.14 applied to §11.3's echo, and the same reasoning the
+adjudicator endorsed for this CR's own supersession handling (`docs/2026-08-19-ruling-cr25.md:163-169`).
+Rewriting them would falsify the record of CR-12. The new §11.15 item says this in as many words.
+
+### The empyrean edits, as committed
+
+Branch `subline-amendment`, one commit on top of `a8766b9`
+(*"contract: CR-25 delta — the VDP watch-hit mclk stops being step-granular"*). **DRAFT, unmerged.**
+
+**(a) §6 `protocol.md:1024`, replacing the paragraph quoted above:**
+
+```markdown
+> **A VDP-internal hit's `mclk` is instruction-granular** *(corrected 2026-08-19 by §11.15, which supersedes
+> this paragraph's earlier reading — that the stamp is step-granular, and that this is a permanent
+> property).* The write is still drained after the driving CPU step, but it no longer borrows that step's
+> clock: it carries the clock the VDP performed the write at. What remains is instruction granularity — the
+> bus freezes its clock for one 68000 instruction, so a write is located to the **start of the instruction
+> that drove it**, and every word of one DMA burst shares the transfer's instant. That bound is a
+> **standing property** of a VDP-space hit and is stated here, once, rather than repeated as a per-reply
+> `caveat` — §2.4's advisory: a caveat that is always present is one clients learn to ignore, including on
+> the one reply where it would have mattered. Narrowing it further is a registered follow-up
+> (**F-SUBLINE-ACCESSMCLK**), not a defect.
+```
+
+**(b) The SOURCE schema, `contract/schema/bus-protocol.schema.json:1288` — the `description` string
+only:**
+
+```
+Emulated master clock of this hit. INSTRUCTION-GRANULAR whenever `space` is not 'bus' — a
+VDP-internal write is still drained after the driving CPU step, but it carries the clock the VDP
+performed the write at rather than borrowing that step's (corrected by §11.15). What remains is
+instruction granularity: the bus freezes its clock for one 68000 instruction, so a write is located
+to the start of the instruction that drove it, and every word of one DMA burst shares the transfer's
+instant. That bound is a standing property of a VDP hit and is stated in §6 rather than repeated as a
+per-reply caveat (§2.4's advisory: a caveat that is always present is one clients learn to ignore);
+narrowing it further is the registered follow-up F-SUBLINE-ACCESSMCLK.
+```
+
+(One JSON string, wrapped here for reading; it is a single line in the file.) The §2.4
+no-constant-caveat reasoning is **kept**, because it is still the right reasoning: the property is
+still always present, so it still belongs in §6 once rather than on every reply. Only the word
+*permanent* — the claim the arc falsified — is retired, for *standing*.
+
+**Verified mechanically, not asserted:** parsing the schema before and after and walking both trees
+leaf by leaf yields **exactly one** difference,
+`/methods/emulator/watchpoint_hits/result/properties/hits/items/properties/mclk/description`. Key sets
+identical at every level, 34 top-level `methods` keys before and after (33 method fragments plus
+`$comment`, the same accounting §5 item 2 uses). No validation keyword moves, so every reply that
+validated before validates after.
+
+**(c) §11.15 gains the watch-hit item,** a new `★` paragraph in the entry's own style, placed after
+*"★ What the wire looks like: unchanged."* and before *"★ What it does not carry."*:
+
+```markdown
+**★ A second surface starts telling the truth at finer resolution: a VDP watchpoint hit's `mclk`.**
+Folded in after this CR was adjudicated, because it rides this amendment's own mechanism rather than
+resembling it. §6 pinned that *"A VDP-internal hit's `mclk` is step-granular"* — *"drained after the
+driving CPU step and carries that step's clock"* — and called that *"a **permanent property** of a
+VDP-space hit"*; the schema's `hits[].mclk` description said the same thing in its own words, calling
+it *"a PERMANENT property of a VDP hit"*. Neither is true after the arc. The write-choke stamp this
+amendment introduces — the one that gives a CRAM landing its pixel — also gives a **captured write
+its own clock**, so a VDP hit is now stamped from the write instead of borrowing the draining step's
+timestamp. Both statements are corrected, in §6 and in the schema description. The bound that
+replaces them is **this amendment's own bound, not a second one**: instruction-granular, because the
+bus freezes its clock for one 68000 instruction, so a write is located to the start of the
+instruction that drove it and every word of one DMA burst shares the transfer's instant — the same
+limit the row convention above carries, and **F-SUBLINE-ACCESSMCLK** is the same follow-up that
+refines both. Nothing schematized moves: the field is the same field, holding the same integer type
+at the same key, and every reply that validated before validates after — only the sentence describing
+what the integer *means* was wrong, and only that sentence changed. §11.8's log entries still
+describe the old step-granular property in their own record of CR-12, and are deliberately left
+alone: an amendment log is a record of what was decided then, not live text.
+```
+
+**(d) The falsified sentence in §11.15's own table cell, restated.** The entry ended its "what
+changed" column with *"**No wire shape, no fragment, no count moves — the schema's `methods` object
+stays at 33.**"* This delta moves a `description` string, so that sentence would be false as written.
+It now reads:
+
+```markdown
+**No wire shape and no count moves — the schema's `methods` object stays at 33.** The one piece of schema movement anywhere in this entry is a single corrected `description` string on `watchpoint_hits`'s `hits[].mclk`, described in the watch-hit item below: no key, no shape and no validation changes with it.
+```
+
+The neighbouring **★ What the wire looks like: unchanged** paragraph was checked and needed **no**
+change: *"No new field, no new fragment, no changed cardinality"* stays literally true (nothing is
+added or removed), and *"A conformance suite written against §11.14's fragment passes unchanged,
+before and after"* is still true — a `description` is not a validation keyword, and the fragment in
+question is `watchpoint_hits`, not `emulator/scanlines`. Restating a sentence that is still accurate
+would have been the opposite error.
+
+**(e) The adoption condition gains a fourth clause — the second surface gets gated.** Required by the
+delta ruling's **D-M2**: post-delta the entry makes behavioural claims about two surfaces while its
+condition gated only the rows, so the watch-hit correction would have registered on gates that never
+exercise `watchpoint_hits` — the dual of the defect the catalog's own precedent names
+(*"registration gated on an unexecutable clause is a condition that gets waived silently"*,
+`protocol.md:2553-2554`). The new clause is written in clause 1's style, behaviour first and fixture
+named, and it is the cheapest clause in the entry: the gate is already in-tree and already passing
+(slice 1b, `01866a7`). Clause 3's leading *and* moves to the new clause and the closing sentence now
+says which clauses are executable here; §11.15's **closing paragraph now reads, in full**:
+
+```markdown
+*Adoption condition, per §11.6 / §11.8 / §11.10 / §11.11 / §11.14, in CR-24's two-part structure —
+suite gates executable in the reference repo, plus a demand-side acceptance protocol:* registered
+when **(1)** the rewritten two-timings suite gate holds — for `build_cram_midframe(L)`, rows below
+`L` uniformly colour A and rows above `L` uniformly colour B, **row `L` split** with a colour-A first
+pixel, a colour-B last pixel and exactly one transition, the transition column inside a band
+**derived in the test from source constants** (poll-loop cycle cost × mclk per CPU cycle ÷ mclk per
+pixel) rather than copied from any measurement, and the two-ROM band swap retained — asserted against
+replies whose `source == "raster"`; **(2)** the zero-mid-line-CRAM-write case stays **byte-identical**
+to the pre-amendment rows — checkable by a third party without a pre-amendment binary, because those
+rows are frozen inline goldens: every `scanline_goldens` pin for a ROM that makes no active-display
+CRAM write stays unchanged, and only the two named `color_1536` literals (ruling Q2) plus any
+per-row-justified flips (ruling Q3) may move — which is the amendment's neutrality claim and the
+reason a line-atomic client sees no change where no such write exists; **(3)** the demand side
+re-runs its sweep unchanged in form, reporting **`flipX` as a measurement rather than the constant
+`{0}`** (predicted ≈ 222 on their row-100 fixture — a prediction bounded by the
+instruction-granularity limit, roughly [205, 225], not a pin; `0` or `319` falsifies the model) and a
+**restated-A2 distinct-picture count of ≥ ~30 over N ∈ 0..57 step 1**, against 4 over N ∈ 0..57
+step 3 measured before the change — a different step, and at step 1 the pre-amendment count would be
+at most a few more than 4, since the surface's quantum is a whole line; and **(4)** the watch-hit
+suite gate holds — a VDP-space hit's `mclk` equals the instant of the write that produced it and
+**not** the clock of the CPU step that drained it, in a fixture that drives the two deliberately
+apart and takes its expectation from the instant it handed the write rather than from any recorded
+number (`vdp_hits_carry_the_writes_own_clock_and_say_what_is_left`, in the reference repo since
+oracle-next `01866a7`, and mutation-checked: stamping from the draining step's clock again fails it).
+Clauses 1, 2 and 4 are executable in the reference repo; clause 3 is an acceptance protocol, not a
+suite gate — the fixture and the driver are the demand side's — exactly as §11.14's verbatim A1/A2
+sweep is.
+```
+
+Everything before *"; and **(4)**"* is §4's block unchanged — the clause is an append, plus the two
+one-word/one-sentence joins the append forces. **§7 states the same clause in the CR's own body
+style** (clause 4 there), with the fixture's two clocks (`900_000` step, `912_345` write) and the
+adjudicator's mutation check spelled out; the contract text keeps the one-sentence form the ruling
+asked for.
+
+### What this delta does **not** do
+
+- **It does not edit the vendored schema in this repo.** `crates/oracle-aether/tests/contract/bus-protocol.schema.json`
+  is untouched here, deliberately. The vendored copy re-vendors from the empyrean source by the
+  standing `cp`-sync at the arc's merge window — the same window the ruling's sequencing already pins
+  for the empyrean prose merge (`docs/2026-08-19-ruling-subline-recon.md:20-24`, `:65-74`), so the
+  vendored copy and the source are never out of step on `main` in either direction. Editing it here
+  would fork the vendored artifact from its source between now and then.
+- **It does not restate §3 or §4's fenced blocks.** The adjudicator diffed them mechanically against
+  the empyrean draft — *"HELD — byte-identical by diff (pixel sentence identical modulo line wrap)"*
+  (`docs/2026-08-19-ruling-cr25.md:105`). They are the text as adjudicated at `a8766b9`; the empyrean
+  additions this delta makes on top of them are quoted in full above, in (a)–(e), rather than folded
+  back into those blocks where they would silently break that verified correspondence. §4's label now
+  says exactly that, per the delta ruling's **D-M1** — §3's needed nothing, since the delta does not
+  touch the §6 rewrite. **Read §4's block plus (c), (d) and (e) of this section as the current
+  §11.15.**
+- **It does not claim the reference server's row behaviour has shipped.** Unchanged from §8: slice 4
+  is still the slice that changes row content. Slice 1b, the watch-hit change this delta documents,
+  **has** shipped on `subline-s1` — that is the one behavioural statement in this document that is
+  present tense, and it is scoped to the watch hit, not to the rows.
+- **It moves no currency.** Slice 1b's own commit message records *"Currency movement: **none**. No
+  golden, hash literal or pinned assertion moved"*, with `cargo test --workspace` at **1594 passed /
+  0 failed / 4 ignored**. Not re-run here — this delta is docs-only and claims no test run of its own.
+
+### Verification note for this delta
+
+**Docs-only, both sides.** In `oracle-next`, one existing file under `docs/` edited, nothing under
+`crates/` — no `cargo` was run and **none is claimed**. In `empyrean`, two files on the existing
+branch `subline-amendment` (`contract/protocol.md`, `contract/schema/bus-protocol.schema.json`),
+first as one commit on top of `a8766b9` (`8f9f7e7`, items (a)–(d)) and then one prose-only commit
+applying the delta ruling's D-M2 (item (e), `contract/protocol.md` alone), DRAFT and **not merged**.
+No emulator MCP tooling was used. Every sentence quoted above was read at the anchor it names, in the
+tree it names, in this session; the one-difference schema claim was produced by parsing both
+revisions, not by reading the diff, and item (e)'s fenced block was byte-compared against the branch
+after it landed there.
