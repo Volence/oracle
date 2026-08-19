@@ -528,9 +528,13 @@ questions sent: walker-fit field, stall-gate handling, `perFrame[]` interest)"*
 message from the Aeon overseer, relayed into this session by the controller and **controller-attested**.
 
 **This section is a transcription of that relay, not a quotation from a file in `aeon`.** Everything else in
-this document is anchored `file:line` into the consumer's own source; these three are not, and cannot be
-until the answers land in an aeon-side artifact. That is the same discipline §8 applies to the parity
-corpus: **an aeon-side anchor is PENDING**, and none is invented here. What *is* independently verifiable is
+this document is anchored `file:line` into the consumer's own source; these three were not at the time of
+writing. **CLOSED 2026-08-19 (controller): the aeon-side anchor landed — aeon master `e0913e79`,
+`docs/superpowers/2026-08-19-profiler-shape-answers.md`** — carrying the three answers as given, the
+mid-session Task-5 correction, the migration-breakage notes (the `frames`-param removal flagged as the
+first-run trap), and the CR-26 shape-check **PASS** with its verification basis (reviewed at oracle-next
+`4cf7db5` against the probe's real consumption). The transcription below stands as written; the aeon file
+is now the authoritative cross-check. (The §8 parity-corpus SHA remains separately PENDING.) What *is* independently verifiable is
 the effect: every pin below is present in the amendment text and in the schema fragments, where an
 adjudicator has checked it (`docs/2026-08-19-ruling-cr26.md`, HELD rows).
 
