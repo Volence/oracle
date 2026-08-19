@@ -92,6 +92,18 @@ differ and which must not). **No change is proposed to it.** The one thing it do
 literal pair's original intent — sub-quantum discrimination — and nothing on this surface can cover that;
 see the follow-up below.
 
+## CR-24's adoption condition — where it now stands
+
+Status only; `docs/2026-08-18-cr24-scanlines.md` is the CR's record and is not edited.
+
+| Clause | State |
+|---|---|
+| 1 — a conformant reply passes the fragment closed, plus one refusal per catalogued bound | green since the shipping slice (`docs/2026-08-19-scanline-readback.md` §Gates) |
+| 2 — **A1 determinism**, verbatim | **discharged 2026-08-19** by the demand-side run above: three separate processes, byte-identical |
+| 3, suite gate (i) — the two-timings poison | green, unchanged, and re-verified as fit for purpose above |
+| 3, suite gate (ii) — `color_1536` raster ≠ stateRender | green, unchanged |
+| 3, acceptance protocol — the verbatim A1/A2 sweep against the Aeon fixture | **run 2026-08-19.** A1 verbatim held. **A2 verbatim did not discriminate** and is superseded by the restated form above — the surface is coarse, not blind, and the run proved which by measurement rather than by argument |
+
 ## The row-indexing question: the `+1` is our sampling convention, not a latency bug
 
 The demand side observed the tint boundary at **authored line + 1** on every fixture here, where the GUI
