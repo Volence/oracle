@@ -19,6 +19,56 @@ pub const MCLK_PER_LINE: u64 = 3420;
 pub const LINES_PER_FRAME: u64 = 262;
 /// Master-clock ticks per NTSC frame (`MCLK_PER_LINE * LINES_PER_FRAME` = 896_040).
 pub const MCLK_PER_FRAME: u64 = MCLK_PER_LINE * LINES_PER_FRAME;
+/// Master-clock ticks the **active display** occupies inside a line — the same 2560 in both modes, because
+/// H40 draws 320 pixels at 8 mclk each and H32 draws 256 at 10 mclk each: `320 × 8 = 256 × 10 = 2560`. The
+/// remaining `MCLK_PER_LINE − MCLK_PER_ACTIVE` = 860 mclk (122.9 CPU cycles) is horizontal blanking, which is
+/// the figure the demand side derives its whole HBlank window from (`3420/7 − 320*8/7`,
+/// `aeon/docs/benchmarks/scanline-p2/HBLANK-WINDOW-SWEEP-RESULTS.md:368`).
+///
+/// **Decision B-1** (`docs/2026-08-19-subline-recon.md` §B). This pixel axis deliberately does **not** reuse
+/// [`Vdp::h_counter`]'s grid, which divides the line uniformly into 422 (H40) / 342 (H32) positions. That
+/// divide is exact for H32 (3420 / 342 = 10) but an approximation for H40 (3420 / 422 = 8.104, the EDCLK
+/// mix — the same class of approximation the tree already names as F-SLOTGRID); carried onto the pixel axis
+/// it would put active-display end at 2593 mclk instead of 2560, i.e. up to ~4 px of error at the right edge,
+/// with no evidence behind it.
+///
+/// That leaves a knowingly inconsistent pair of in-line clocks: an HV read says active display ends at H
+/// `$9F` ≈ 2593 mclk, while this axis says 2560. Registered as follow-up **F-SUBLINE-HGRID** — re-derive
+/// `h_counter`'s H40 grid from this same anchor. Explicitly **out** of the F-SCANLINE-SUBLINE arc:
+/// `h_counter` feeds `$C00008` reads, [`Vdp::hblank`], `hint_offset` and `vint_offset`, so moving it is an
+/// observable behaviour change on every ROM, which is a different currency conversation from an opt-in
+/// capture change.
+pub const MCLK_PER_ACTIVE: u64 = 2560;
+
+/// The first active-display pixel that shows the **new** value of a VDP write performed `d_mclk` into its own
+/// scanline (`d_mclk = mclk % MCLK_PER_LINE`, so 0..3419) — the mclk → pixel-x mapping of
+/// `docs/2026-08-19-subline-recon.md` §B. Pixels `0..x` still show the pre-write value.
+///
+/// `h40` is the **resolved row's own** mode, not a live register read (decision **B-2**): a mid-line H40→H32
+/// switch would otherwise place `x` on a grid the row was never drawn on. The result is clamped to that
+/// mode's active width, which is what makes the two out-of-active cases fall out as the identity this arc has
+/// to preserve:
+///
+/// - `d_mclk = 0` → `x = 0`, the whole row takes the new value. Correct: scheduler events drain before the
+///   CPU step, so a write at exactly `N × MCLK_PER_LINE` happens after line N resolved but before any of its
+///   pixels are consumed.
+/// - `d_mclk >= MCLK_PER_ACTIVE` → `x = width`, the row is untouched and the write first shows in row N+1 —
+///   exactly today's line-atomic behaviour. **Nothing outside `[0, MCLK_PER_ACTIVE)` moves.**
+///
+/// `floor` rather than `ceil`, for consistency with [`Vdp::h_counter`]'s own derivation style and because the
+/// ±1 px it decides is two orders of magnitude below the resolution limit the stamp itself carries — writes
+/// are located to the start of the driving instruction (see the [`now_mclk`](Vdp#structfield.now_mclk) field;
+/// follow-up F-SUBLINE-ACCESSMCLK).
+// Slice 2 lands the mapping ahead of its consumer (the segmented emitter of slices 3-4), so the table tests
+// in this module are its only caller today. The allow goes when the emitter calls it.
+#[allow(dead_code)]
+pub(crate) fn subline_x(d_mclk: u64, h40: bool) -> usize {
+    // The renderer's own active widths — held to `Vdp::active_display` by the test below, so the two cannot
+    // drift into disagreeing about how wide the row they are describing is.
+    let width: u64 = if h40 { 320 } else { 256 };
+    let mclk_per_pixel = MCLK_PER_ACTIVE / width; // 8 (H40) / 10 (H32)
+    (d_mclk / mclk_per_pixel).min(width) as usize
+}
 
 /// The V-counter value at which the vertical-blank status flag sets — line 224 (the `0xDF`→`0xE0`
 /// transition, recon R2). Also the first non-active line.
@@ -3598,6 +3648,72 @@ mod tests {
         assert!(
             caps.iter().all(|c| c.target == VdpTarget::Cram),
             "at the CRAM choke, which is the one the sub-line arc needs timed: {caps:?}"
+        );
+    }
+
+    // --- F-SCANLINE-SUBLINE slice 2: the mclk -> pixel-x mapping ------------------------------------------
+
+    /// The pixel axis end to end in both modes: the first pixel of the line, the pixel-clock boundary, the
+    /// last active pixel, and the blanking cases that must stay line-atomic.
+    #[test]
+    fn subline_x_maps_the_active_window_onto_the_pixel_axis() {
+        // H40: 8 mclk per pixel, 320 pixels.
+        for (d, x) in [(0u64, 0usize), (7, 0), (8, 1), (2552, 319), (2559, 319)] {
+            assert_eq!(subline_x(d, true), x, "H40 d={d}");
+        }
+        // H32: 10 mclk per pixel, 256 pixels.
+        for (d, x) in [(0u64, 0usize), (9, 0), (10, 1), (2550, 255), (2559, 255)] {
+            assert_eq!(subline_x(d, false), x, "H32 d={d}");
+        }
+        // Blanking: the write misses this row entirely and lands whole on the next one — today's behaviour,
+        // which the mapping must not disturb.
+        for d in [MCLK_PER_ACTIVE, MCLK_PER_ACTIVE + 1, MCLK_PER_LINE - 1] {
+            assert_eq!(subline_x(d, true), 320, "H40 blanking d={d}");
+            assert_eq!(subline_x(d, false), 256, "H32 blanking d={d}");
+        }
+    }
+
+    /// **The evidence check.** The mapping reproduces a landing pixel the *demand side* derived
+    /// independently, from their own measurement rather than from anything in this tree.
+    ///
+    /// Aeon's HBlank sweep places the shipped `SPIN_CRAM = 4` burst's first CRAM write *"253.6 cycles into
+    /// line 100, at pixel ≈ 222 of 320"*
+    /// (`aeon/docs/benchmarks/scanline-p2/HBLANK-WINDOW-SWEEP-RESULTS.md:410-413`), a figure they compute
+    /// from the measured N = 27.5 crossing plus H40 line geometry and describe as *"independent of any
+    /// emulator-internal constant"* (`:403-404`).
+    ///
+    /// This case is also what **discriminates the two candidate grids** (decision B-1): the 422-position
+    /// H-counter grid answers 219 for the same instant, and only the 8-mclk pixel reproduces the measurement.
+    #[test]
+    fn subline_x_reproduces_the_demand_sides_measured_landing_pixel() {
+        // 253.6 CPU cycles, carried in tenths so the conversion stays integer. MCLK_PER_CPU_CYCLE is the
+        // tree's one CPU-cycle -> mclk constant, so the derivation reads from source rather than a literal.
+        let d = 2536 * crate::system::MCLK_PER_CPU_CYCLE / 10;
+        assert_eq!(d, 1775, "253.6 CPU cycles into the line, in mclk");
+        assert_eq!(
+            subline_x(d, true),
+            221,
+            "the mapping lands where Aeon measured, to within its own rounding (they report ~222)"
+        );
+    }
+
+    /// The width `subline_x` clamps to is the width the renderer actually draws — one anchor, no drift.
+    #[test]
+    fn subline_x_clamps_to_the_width_the_renderer_reports() {
+        let mut v = fresh();
+        v.control_write(0x8C81, 0); // reg 12 bits 7+0 -> H40
+        assert!(v.h40(), "the fixture really is in H40");
+        assert_eq!(
+            subline_x(MCLK_PER_ACTIVE, true) as u16,
+            v.active_display().0,
+            "H40 clamp == the renderer's H40 width"
+        );
+        v.control_write(0x8C00, 0); // reg 12 = 0 -> H32
+        assert!(!v.h40(), "and really is in H32");
+        assert_eq!(
+            subline_x(MCLK_PER_ACTIVE, false) as u16,
+            v.active_display().0,
+            "H32 clamp == the renderer's H32 width"
         );
     }
 
