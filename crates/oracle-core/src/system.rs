@@ -11,6 +11,7 @@
 use crate::bus::{BusEventSink, MegaDriveBus, SramMap, StopWhen, Z80_RAM_SIZE};
 use crate::m68000::microop::Cpu68000;
 use crate::m68000::registers::Registers;
+use crate::render::{report_rgb_with_cram, ScanlineScaffold};
 use crate::scheduler::{EventKind, Scheduler};
 use crate::state_hash::{StateHash, CRAM_SIZE, REG_COUNT, VRAM_SIZE, VSRAM_SIZE};
 use crate::vdp::{Vdp, LINES_PER_FRAME, MCLK_PER_LINE};
@@ -276,6 +277,16 @@ pub struct System {
     /// all-zero → status reads `0x00`, byte-identical to the old stub until a timer is programmed. See
     /// `docs/2026-07-22-fm-timer-design.md`.
     fm: Ym2612,
+    /// The deferred per-scanline emission scaffolding (`F-SCANLINE-SUBLINE`, decision D-1): the row resolved
+    /// at the previous line's `Scanline` event, held until this line's event hands it to the sink.
+    ///
+    /// **Not machine state, and the type is what guarantees it** — [`ScanlineScaffold`]'s `PartialEq` is
+    /// constant true and its `Encode`/`Decode` move zero bytes, so this field is invisible to
+    /// `System: PartialEq`, to the bincode checkpoint format, and (being render output) to `state_hash` and
+    /// `export_state` alike. It is deliberately **absent from the hand-written [`std::fmt::Debug`]** above,
+    /// which mirrors the machine. It lives here rather than in `run_until_with_sink` because it must survive
+    /// a run that ends mid-frame (decision D-2); `reset` clears it via the `Self::new` rebuild.
+    scanline_scaffold: ScanlineScaffold,
 }
 
 impl std::fmt::Debug for System {
@@ -429,6 +440,7 @@ impl System {
             z80_frontier_mclk: 0,
             z80_bank: 0,
             fm: Ym2612::new(),
+            scanline_scaffold: ScanlineScaffold::default(),
         }
     }
 
@@ -965,6 +977,14 @@ impl System {
         // is the whole cost when no VDP watch is attached. Restored to off on return.
         let capture = sink.wants_vdp_writes();
         self.vdp.set_write_capture(capture);
+        // Arm the deferred scanline emitter for this run (`F-SCANLINE-SUBLINE`), off the same capability
+        // query that already gates the RGB decode. A row retained by a previous run survives into this one
+        // (decision D-2) — but only while a scanline-wanting sink is still attached: an unarmed run drops it
+        // rather than leave a stale row to be handed to whatever sink shows up next. Unarmed, this is one
+        // extra `wants_scanlines()` per run and nothing else.
+        if !sink.wants_scanlines() {
+            self.scanline_scaffold.clear();
+        }
         let mut reason = StopReason::DeadlineReached;
         while self.scheduler.now() < deadline_mclk {
             // Deliver any events whose deadline has arrived (instruction-boundary granularity, consistent
@@ -1015,6 +1035,30 @@ impl System {
         }
     }
 
+    /// Emit the row retained by the previous line's `Scanline` event, if there is one
+    /// (`F-SCANLINE-SUBLINE`, §A(ii)).
+    ///
+    /// The row is decoded against **its own line-start CRAM snapshot**, not against live CRAM, which is what
+    /// makes the one-line lag invisible: `resolve_line` is index-domain and never reads CRAM, so replaying
+    /// the retained `PixelResolution` vector through the snapshot reproduces exactly the bytes
+    /// `Vdp::report_rgb` produced at line start.
+    ///
+    /// The journal is **empty in this slice** — slice 3 lands the mechanism and the currency-neutrality
+    /// claim, and nothing else; slice 4 fills the journal at the VDP's CRAM choke and splits the decode into
+    /// per-landing segments here.
+    fn flush_pending_row<S: BusEventSink>(&mut self, sink: &mut S) {
+        let Some(row) = self.scanline_scaffold.take() else {
+            return;
+        };
+        debug_assert!(
+            row.journal.is_empty(),
+            "slice 3 keeps the sub-line journal empty — a landing here would mean the row's bytes moved \
+             before the slice that is allowed to move them"
+        );
+        let rgb = report_rgb_with_cram(&row.cram, &row.report);
+        sink.on_scanline(row.report.line, &rgb);
+    }
+
     /// Deliver a fired scheduler event (recon R7/R12). `deadline` is the event's absolute scheduled mclk (its
     /// line start, for the Scanline chain). The **Scanline** event self-reschedules every line, drives the
     /// per-line VDP housekeeping, schedules an `HInt` at the pinned H anchor **unconditionally every line**,
@@ -1026,10 +1070,21 @@ impl System {
     /// housekeeping. The `sink` only matters to a scanline-capture consumer
     /// ([`BusEventSink::wants_scanlines`]); every other sink (including `&mut ()`) leaves this the untouched
     /// hot path.
+    ///
+    /// The `Scanline` arm also **emits the previous line's row** to an opted-in sink, before anything else it
+    /// does (`F-SCANLINE-SUBLINE`) — see [`flush_pending_row`](Self::flush_pending_row).
     fn deliver_event<S: BusEventSink>(&mut self, deadline: u64, kind: EventKind, sink: &mut S) {
         match kind {
             EventKind::Scanline => {
                 let line = (deadline / MCLK_PER_LINE) % LINES_PER_FRAME;
+                // **Flush first** (`F-SCANLINE-SUBLINE`, §A(ii)). The row resolved at the *previous* line's
+                // event is emitted here, decoded against the CRAM that was live at its own line start. The
+                // flush must precede everything else in this arm — in particular it must precede line 224's
+                // `on_frame_boundary` — or a frame-accumulating sink's buffer is one row short at the
+                // boundary and the exact `[Line(0)..Line(223), Boundary(f)]` interleaving breaks. That
+                // ordering is a hard requirement of the design, not an implementation detail, and
+                // `tests/scanline_capture.rs` pins it.
+                self.flush_pending_row(sink);
                 // Schedule the HInt anchor event unconditionally every line: the counter bookkeeping
                 // itself runs at the anchor (recon R7), not here, so that mid-line reg-10 writes from an
                 // HInt handler are visible to this line's reload (the S3K/aeon arm-chain idiom).
@@ -1038,13 +1093,16 @@ impl System {
                 // Render active lines (0..=223) so the sprite overflow/collision status bits + the R10 masking
                 // carry evolve during normal runs (games poll them). Currency-safe: the sprite flags/carry are
                 // in neither frozen currency, and render output is discarded here — unless the sink opts in
-                // (conformance Limitation L1), in which case the already-built report is decoded to RGB and
-                // handed out as a borrow. The sink is the caller's; `System` never stores it.
+                // (conformance Limitation L1), in which case the already-built report is retained and decoded
+                // to RGB at the next line's event. The sink is the caller's; `System` never stores it.
                 if line < 224 {
                     let report = self.vdp.render_scanline(line as u16);
                     if sink.wants_scanlines() {
-                        let rgb = self.vdp.report_rgb(&report);
-                        sink.on_scanline(line as u16, &rgb);
+                        // Retain the resolved row + a 128-byte CRAM snapshot instead of decoding it now.
+                        // `render_scanline` itself has NOT moved — same instant, same inputs, same sprite
+                        // latch commit — so the unarmed hot path and every ROM's timing are untouched; only
+                        // the instant the sink is handed the bytes moves, by one line.
+                        self.scanline_scaffold.stash(report, self.vdp.cram());
                     }
                 }
                 if line == 224 {
@@ -1603,6 +1661,111 @@ mod tests {
         assert!(
             s.vdp().sprite_dot_overflow_carry(),
             "render_scanline committed the dot-overflow carry on line 223 during the run"
+        );
+    }
+
+    /// A sink that opts into rows and counts them — the minimum needed to arm the deferred emitter.
+    #[derive(Default)]
+    struct RowCounter(usize);
+
+    impl BusEventSink for RowCounter {
+        fn on_event(&mut self, _event: BusEvent) {}
+        fn wants_scanlines(&self) -> bool {
+            true
+        }
+        fn on_scanline(&mut self, _line: u16, _rgb: &[(u8, u8, u8)]) {
+            self.0 += 1;
+        }
+    }
+
+    /// One mclk short of line 100's event: the events for lines 0..=99 have fired, so rows 0..=98 are out
+    /// and row 99 is retained. The instant an armed run is allowed to end holding a row is exactly the
+    /// instant decision D-1 has to be true at.
+    const MID_FRAME_MCLK: u64 = 100 * MCLK_PER_LINE - 1;
+
+    /// **Decision D-1, executed.** A retained row is render scaffolding, not machine state: an armed run
+    /// that ends mid-frame while holding a row reaches a machine that is equal — as a whole struct, as a
+    /// `state_hash`, as an `export_state`, and byte-for-byte as a bincode checkpoint — to an unarmed run of
+    /// the same length. The checkpoint claim is the load-bearing one: zero encoded bytes is what lets a
+    /// snapshot taken before this field existed still restore.
+    #[test]
+    fn a_retained_row_is_invisible_to_the_machine_and_to_the_checkpoint() {
+        let mut plain = booted(0x5EED);
+        let mut tapped = booted(0x5EED);
+        plain.run_until(MID_FRAME_MCLK);
+        let mut sink = RowCounter::default();
+        tapped.run_until_with_sink(MID_FRAME_MCLK, &mut sink);
+
+        // Non-vacuity: "the retained row is invisible" says nothing unless a row is actually retained.
+        assert_eq!(
+            tapped.scanline_scaffold.pending_line(),
+            Some(99),
+            "the armed run ended holding line 99's row — without this the comparisons below are vacuous"
+        );
+        assert_eq!(sink.0, 99, "and had already emitted rows 0..=98");
+        assert_eq!(
+            plain.scanline_scaffold.pending_line(),
+            None,
+            "the unarmed run retained nothing — the two machines really do differ in the field"
+        );
+
+        assert_eq!(
+            plain, tapped,
+            "the WHOLE machine is equal: ScanlineScaffold's PartialEq is constant true (D-1)"
+        );
+        assert_eq!(plain.state_hash(), tapped.state_hash());
+        assert_eq!(plain.export_state(), tapped.export_state());
+        let (plain_bytes, tapped_bytes) = (plain.snapshot(), tapped.snapshot());
+        assert_eq!(
+            plain_bytes, tapped_bytes,
+            "the checkpoint is byte-identical: the retained row encodes as ZERO bytes, so the snapshot \
+             format is unchanged and a pre-slice snapshot still decodes"
+        );
+        let restored = System::restore(&tapped_bytes).expect("the snapshot round-trips");
+        assert_eq!(
+            restored.scanline_scaffold.pending_line(),
+            None,
+            "a restored machine holds no row — the same state reset leaves"
+        );
+        assert_eq!(restored, tapped, "and is equal to the machine it came from");
+    }
+
+    /// The scaffolding's lifetime rules: it **persists across runs** (decision D-2 — a run that ends
+    /// mid-frame must not drop the row, or the frame is silently one row short), it is **dropped by an
+    /// unarmed run** (so a stale row can never be handed to a sink that did not resolve it), and it is
+    /// **cleared by `reset`**.
+    #[test]
+    fn a_retained_row_crosses_a_run_boundary_but_not_an_unarmed_run_or_a_reset() {
+        let mut s = booted(0x5EED);
+        let mut sink = RowCounter::default();
+        s.run_until_with_sink(MID_FRAME_MCLK, &mut sink);
+        assert_eq!(s.scanline_scaffold.pending_line(), Some(99));
+        assert_eq!(sink.0, 99);
+
+        // D-2: the next armed run delivers the row the previous one resolved. The deadline is a whole line
+        // further on because the first run overshot line 100's event by up to one instruction — a shorter
+        // one would return without the loop body ever running.
+        s.run_until_with_sink(101 * MCLK_PER_LINE, &mut sink);
+        assert_eq!(
+            sink.0, 100,
+            "line 100's event flushed the row retained by the previous RUN, not merely the previous line"
+        );
+        assert_eq!(s.scanline_scaffold.pending_line(), Some(100));
+
+        // `reset` drops it, matching the rule that reset/reload/restore drop the retained frame.
+        s.reset();
+        assert_eq!(s.scanline_scaffold.pending_line(), None);
+
+        // An unarmed run drops it rather than carrying it to whatever sink attaches next.
+        let mut s2 = booted(0x5EED);
+        let mut sink2 = RowCounter::default();
+        s2.run_until_with_sink(MID_FRAME_MCLK, &mut sink2);
+        assert_eq!(s2.scanline_scaffold.pending_line(), Some(99));
+        s2.run_until(101 * MCLK_PER_LINE);
+        assert_eq!(
+            s2.scanline_scaffold.pending_line(),
+            None,
+            "an unarmed run drops the retained row at arming time"
         );
     }
 

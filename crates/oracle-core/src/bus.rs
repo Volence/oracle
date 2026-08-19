@@ -90,18 +90,27 @@ pub trait BusEventSink {
 
     /// Whether this sink wants rendered scanlines delivered (conformance Limitation L1: mid-frame CRAM /
     /// palette effects are invisible to an after-the-run capture). The `Scanline` event queries this per
-    /// active line and, only when `true`, decodes the already-built line report to RGB for
-    /// [`on_scanline`](BusEventSink::on_scanline) — the default `false` keeps the null-sink path exactly the
-    /// discard-the-render hot path (no decode, no allocation).
+    /// active line and, only when `true`, retains the already-built line report + that line's CRAM for
+    /// [`on_scanline`](BusEventSink::on_scanline) to decode at the next line's event — the default `false`
+    /// keeps the null-sink path exactly the discard-the-render hot path (no retain, no decode, no
+    /// allocation). It is also queried once per run to arm the deferred emitter; an unarmed run drops any
+    /// row a previous run left retained.
     fn wants_scanlines(&self) -> bool {
         false
     }
 
-    /// One rendered active line (0..=223), delivered **during** the run at the moment the self-rescheduling
-    /// `Scanline` event renders it — so the RGB reflects the VDP state (CRAM included) live at that line, not
-    /// the end-of-frame state. `rgb` is a borrow of the line just rendered (length = the active width, 256
-    /// H32 / 320 H40); copy out whatever must outlive the call. Only called when
+    /// One rendered active line (0..=223), delivered **during** the run, carrying the VDP state (CRAM
+    /// included) live at that line — not the end-of-frame state. `rgb` is a borrow (length = the active
+    /// width, 256 H32 / 320 H40); copy out whatever must outlive the call. Only called when
     /// [`wants_scanlines`](BusEventSink::wants_scanlines) returned `true`. The default is a no-op.
+    ///
+    /// **When, exactly (`F-SCANLINE-SUBLINE`).** Row N is *resolved* at line N's `Scanline` event and
+    /// *emitted* at line N+1's, from the retained report and a CRAM snapshot taken at line N's start; row
+    /// 223 is emitted at the line-224 event, before
+    /// [`on_frame_boundary`](BusEventSink::on_frame_boundary). Row indices, row order and row bytes are all
+    /// exactly what an emit-at-line-N implementation produced — only the instant moves, which is what buys
+    /// the emitter a whole line's worth of CRAM writes to place *inside* the row. The one caller-visible
+    /// consequence: a run that stops between line N's event and line N+1's has not yet delivered row N.
     fn on_scanline(&mut self, _line: u16, _rgb: &[(u8, u8, u8)]) {}
 
     /// **Frame structure.** Called by the sink-generic run loop **exactly once per emulated frame**, at the
@@ -132,8 +141,9 @@ pub trait BusEventSink {
     /// n+2, …` across a DMA stall. Load-bearing — do not "simplify" it to `scheduler.now()`.
     ///
     /// **Sharp edge — "exactly once per frame" is a LIFETIME invariant, not a per-run one.** A run that ends
-    /// inside the ~one-line window between line 223's `on_scanline` and the line-224 event delivers a full
-    /// 224 scanlines and **zero** boundaries; that boundary is deferred into the next run (verified in
+    /// inside the ~one-line window between line 223's render and the line-224 event delivers **zero**
+    /// boundaries — and, under deferred emission, 223 scanlines rather than 224: row 223 is emitted *by*
+    /// that same line-224 event. Both are deferred into the next run (verified in
     /// `tests/scanline_capture.rs`). So a caller who reads a frame-accumulating sink right after such a run
     /// gets the *previous* frame back, with nothing to distinguish it — and `run_frames(0)` delivers no
     /// boundary at all. Only runs whose end lands on a frame-boundary mclk (`run_frames(n >= 1)`, the
