@@ -260,3 +260,38 @@ Their design point travels with it and is recorded as theirs: equates are a genu
 different **namespace**, and a same-named equate/label collision should be resolved
 deliberately rather than by insertion order. If we ever ingest equates as a feature, that
 is a decision for a ruling, not a parser accident.
+
+## 11. Addendum — the priority call, answered (relayed 2026-08-19, later)
+
+*The recon's Q6 answer put the stock-S1 viability decision in Aurora's hands. Their answer, relayed
+by the controller (cross-session, controller-attested; same provenance discipline as §10 of the
+profiler demand doc):*
+
+**"I want both changes, they are NOT blocking me, and please do not let them jump CRAM."** Ordering
+confirmed: CRAM first (its value to them is the paused inspect-and-tweak case; their feature
+detection lights it up with zero coordination), then the equates fix (a bug on our side regardless),
+then the classic-symbols path whenever it lands.
+
+Three substantive points, each the controller's to weigh in the coming ruling:
+
+1. **The latent equates bug and the classic-bind path are likely ONE code path.** The
+   accepted-unverified route (cleanly parsed, footer-complete, no usable `EndOfRom`) is exactly
+   where a `|`-read stock-classic listing wants to land — and it is exactly what the skipped-line
+   accounting bug now threatens. "Fix the skipped-line accounting" and "let classic bind" may be
+   substantially the same slice, with the ruling confirming intent rather than inventing policy.
+2. **The `|`-splitting reader is a bug on its own merits.** A parser accepting 2.7% of rows is not
+   limited format support — it is silently wrong for every AS listing in the workspace (s1/s2/sk
+   disasms, pre-sigil s4), guarded only by an accident. Wanted independent of Aurora.
+3. **★ The sharpest point — S1 lands on the REFUSE side, not the unverified side.** S1 *has* the
+   `EndOfRom` name and *fails* the `$DEB2` magic (`RomEndLoc: dc.l EndOfRom-1` → padded = no magic,
+   unpadded = out of range). Under the current split (positive mismatch → refuse; absent name →
+   intactness-dependent), a fixed reader still refuses S1. **The actual policy question is how a
+   positive mismatch (wrong listing for this ROM — the guard's real prey, the 92.6% case) is
+   distinguished from a ROM that legitimately has no debugger appendix while its listing names
+   `EndOfRom` at ROM end.** Any ruling that softens the mismatch-refusal to admit S1 must not
+   weaken the mismatch guard; that tension is the ruling's whole content.
+
+**Their fallback, disclosed:** Aurora parsing AS listings itself and passing computed `addr` —
+works, and they don't want it (duplicates the parser in the editor, gives up addr→name). A
+preference with a workaround, not a blocker. Their classic Build & Run increment 1
+(save → build → `reload_rom`) needs no symbols at all and proceeds now.
