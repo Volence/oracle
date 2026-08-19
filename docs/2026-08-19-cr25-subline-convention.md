@@ -12,10 +12,13 @@ anything: the design is `docs/2026-08-19-subline-recon.md` (adopted as written) 
 plain prose"* (`:15-24`). Q6's one-sentence `pixel_attribution` divergence note rides this CR, per the
 same ruling (`:59-63`).
 
-> **What is unusual about this CR, said up front.** It is the first amendment in this catalog that
-> makes an existing, *deliberately merged* passage of live contract prose **false** — a passage
-> merged eight hours before the recon that superseded it, by the same controller, in the same arc.
-> That is not a defect in `112d683`: the clarification stated the convention the reference server
+> **What is unusual about this CR, said up front.** It is not the first amendment in this catalog to
+> make an existing, *deliberately merged* passage of live contract prose **false**: CR-24/§11.14
+> edited the standing `pixel_attribution` sentence (*"…which this catalog does not yet have"*) for
+> exactly that reason, and recorded the edit rather than leave *"the live prose/catalog contradiction
+> D14 files as a spec bug"* (`protocol.md:2519`). What is distinctive here is the **speed** — the
+> passage this CR supersedes was merged *seven hours* (7h09m) before the recon that superseded it, by
+> the same controller, in the same arc. That is not a defect in `112d683`: the clarification stated the convention the reference server
 > then had, and it stated it because the demand side had just measured it. The right reading is that
 > the arc moved faster than the prose, and the amendment log is where that gets recorded rather than
 > quietly overwritten. §11.15's own entry says so.
@@ -66,9 +69,12 @@ acceptance sweep against `emulator/scanlines` passed A1 (determinism) and the re
 this CR removes:
 
 - **`flipX` was `{0}` at all 201 sampled N** — the set of distinct flip-x values across the whole
-  sweep is exactly `{0}` and `atLeft` is `True` at every N, *"because a partial row cannot exist"* on
-  this surface (`aeon/docs/benchmarks/scanline-p2/HBLANK-WINDOW-SWEEP-RESULTS.md:311-320`, at aeon
-  `d113e088`). Their own heading: *"`flipX` is 0 at every single N — that is the finding"* (`:311`).
+  sweep is exactly `{0}` and `atLeft` is `True` at every N, because in their own words *"the
+  partial-row landing … is not expressible here"*
+  (`aeon/docs/benchmarks/scanline-p2/HBLANK-WINDOW-SWEEP-RESULTS.md:314-316`, at aeon `d113e088`;
+  the block spans `:311-320`). Their own heading: *"`flipX` is 0 at every single N — that is the
+  finding"* (`:311`). The shorter gloss *"because a partial row cannot exist"* is **this repo's**
+  registration prose, not theirs (`docs/2026-08-19-aeon-acceptance-results.md:187`).
 - **The HBlank window could be bracketed from one side only.** Their §6 procedure **measured** the
   upper edge (N = 21.5) and had to **derive** the lower one (15.21) from blanking width
   (`HBLANK-WINDOW-SWEEP-RESULTS.md:364-372`).
@@ -199,7 +205,7 @@ closing parenthetical:
 One sentence, as ruled (`docs/2026-08-19-ruling-subline-recon.md:59-63`: *"document only"*,
 *"one sentence, folded into the Q1 CR"*). It is placed on `pixel_attribution` rather than on
 `scanlines` because that bullet is where the catalog already owns the disagreement claim — it is the
-paragraph §6 itself calls *"the single most misreadable property of the method"* (`:1058`), and
+paragraph §6 itself calls *"the single most misreadable property of the method"* (`:1069`), and
 leaving a now-narrower disagreement described only in its older, coarser form is the same D14
 prose/catalog contradiction CR-24 fixed in the other direction.
 
@@ -223,7 +229,7 @@ records the supersession rather than overwriting it, which is what an amendment 
 
 | Item | The defect | What this amendment changed |
 |---|---|---|
-| **CR-25 — sub-line CRAM landings** | The row-content clarification at `protocol.md:1165-1189` pinned three statements about the reference server: a row is an **atomic** line-start sample; *"a write that lands during line N cannot change row N"*; *"a mid-row landing is not expressible."* The last is the one that mattered to a client — Aeon's acceptance sweep found `flipX` was the constant `{0}` across all 201 sampled N *"because a partial row cannot exist"*, so their HBlank window could be bracketed from one side and never closed. The gap was registered as **F-SCANLINE-SUBLINE** and priced as a core renderer change; recon found it is not one, because `resolve_line` never reads CRAM — CRAM enters only at the RGB **decode** stage, so a mid-line landing re-decodes already-resolved indices and re-times nothing. | The clarification block is **rewritten**. A row remains one complete RGB row per line, but its content is **segmented by mid-line CRAM landings**: a CRAM write at offset `d` master clocks into line N's 2560-mclk active window is visible from pixel `floor(d / p)` of row N onward (`p` = 8 mclk/px at H40, 10 at H32); a pre-active-blanking write recolours the whole row; a write at or past `d = 2560` first appears in row N+1, as before. Three limits are pinned with it: **only CRAM is sub-line** (scroll, VSRAM, VRAM, mode registers and sprite latches stay line-start samples; the CRAM *dot* artefact is not modelled), landing resolution is **instruction-granular** (the write carries its instruction's start clock, so a multi-word burst shares one landing pixel), and the first **wholly** recoloured row is still N+1. `pixel_attribution`'s first bullet gains **one sentence**: it can now disagree with `emulator/scanlines` within a row as well as between rows, and closing that is **F-SCANLINE-INDEX**, not a defect. **No wire shape, no fragment, no count moves — the schema's `methods` object stays at 33.** |
+| **CR-25 — sub-line CRAM landings** | The row-content clarification at `protocol.md:1165-1189` pinned three statements about the reference server: a row is an **atomic** line-start sample; *"a write that lands during line N cannot change row N"*; *"a mid-row landing is not expressible."* The last is the one that mattered to a client — Aeon's acceptance sweep found `flipX` was the constant `{0}` across all 201 sampled N — the partial-row landing their procedure exists to detect being, in their own words, *"not expressible here"* (`HBLANK-WINDOW-SWEEP-RESULTS.md:314-316`, aeon `d113e088`) — so their HBlank window could be bracketed from one side and never closed. The gap was registered as **F-SCANLINE-SUBLINE** and priced as a core renderer change; recon found it is not one, because `resolve_line` never reads CRAM — CRAM enters only at the RGB **decode** stage, so a mid-line landing re-decodes already-resolved indices and re-times nothing. | The clarification block is **rewritten**. A row remains one complete RGB row per line, but its content is **segmented by mid-line CRAM landings**: a CRAM write at offset `d` master clocks into line N's 2560-mclk active window is visible from pixel `floor(d / p)` of row N onward (`p` = 8 mclk/px at H40, 10 at H32); a pre-active-blanking write recolours the whole row; a write at or past `d = 2560` first appears in row N+1, as before. Three limits are pinned with it: **only CRAM is sub-line** (scroll, VSRAM, VRAM, mode registers and sprite latches stay line-start samples; the CRAM *dot* artefact is not modelled), landing resolution is **instruction-granular** (the write carries its instruction's start clock, so a multi-word burst shares one landing pixel), and the first **wholly** recoloured row is still N+1. `pixel_attribution`'s first bullet gains **one sentence**: it can now disagree with `emulator/scanlines` within a row as well as between rows, and closing that is **F-SCANLINE-INDEX**, not a defect. **No wire shape, no fragment, no count moves — the schema's `methods` object stays at 33.** |
 
 **★ Nothing about conformance changed, and that is the reason this is an amendment and not a break.**
 The clarification's final paragraph — *"This catalog does **not** pin the intra-line sampling point
@@ -270,11 +276,17 @@ pixel, a colour-B last pixel and exactly one transition, the transition column i
 **derived in the test from source constants** (poll-loop cycle cost × mclk per CPU cycle ÷ mclk per
 pixel) rather than copied from any measurement, and the two-ROM band swap retained — asserted against
 replies whose `source == "raster"`; **(2)** the zero-mid-line-CRAM-write case stays **byte-identical**
-to the pre-amendment rows, which is the amendment's neutrality claim and the reason a line-atomic
-client sees no change where no such write exists; and **(3)** the demand side re-runs its sweep
-unchanged in form, reporting **`flipX` as a measurement rather than the constant `{0}`** (predicted
-≈ 222 on their row-100 fixture) and a **restated-A2 distinct-picture count of ≥ ~30 over N ∈ 0..57
-step 1**, against 4 over N ∈ 0..57 step 3 measured before the change. Clause 3 is an acceptance
+to the pre-amendment rows — checkable by a third party without a pre-amendment binary, because those
+rows are frozen inline goldens: every `scanline_goldens` pin for a ROM that makes no active-display
+CRAM write stays unchanged, and only the two named `color_1536` literals (ruling Q2) plus any
+per-row-justified flips (ruling Q3) may move — which is the amendment's neutrality claim and the
+reason a line-atomic client sees no change where no such write exists; and **(3)** the demand side
+re-runs its sweep unchanged in form, reporting **`flipX` as a measurement rather than the constant
+`{0}`** (predicted ≈ 222 on their row-100 fixture — a prediction bounded by the
+instruction-granularity limit, roughly [205, 225], not a pin; `0` or `319` falsifies the model) and a
+**restated-A2 distinct-picture count of ≥ ~30 over N ∈ 0..57 step 1**, against 4 over N ∈ 0..57
+step 3 measured before the change — a different step, and at step 1 the pre-amendment count would be
+at most a few more than 4, since the surface's quantum is a whole line. Clause 3 is an acceptance
 protocol, not a suite gate — the fixture and the driver are the demand side's — exactly as §11.14's
 verbatim A1/A2 sweep is.
 ```
@@ -441,7 +453,7 @@ driver and the game-state ritual are the demand side's, and the same-session re-
 | `112d683`'s merge message gives *"adds no behaviour"* as the prose-only rationale; `ba6ca8e` is prose-only, 26 insertions, one file | `git log -1 112d683`; `git show --stat ba6ca8e` |
 | The schema `methods` object holds 33 fragments and contains `emulator/scanlines` | `contract/schema/bus-protocol.schema.json`, parsed |
 | `pixel_attribution`'s first bullet, and CR-24's edit naming `emulator/scanlines` | `protocol.md:1054-1072`, `:1067-1068` |
-| `flipX` = `{0}` at all 201 sampled N, with the demand side's own reason | `aeon/…/HBLANK-WINDOW-SWEEP-RESULTS.md:311-320` (aeon `d113e088`) |
+| `flipX` = `{0}` at all 201 sampled N; the demand side's own reason is *"the partial-row landing … is not expressible here"* at `:314-316` — the *"because a partial row cannot exist"* gloss is **this repo's** prose, not theirs | `aeon/…/HBLANK-WINDOW-SWEEP-RESULTS.md:311-320` (aeon `d113e088`); `docs/2026-08-19-aeon-acceptance-results.md:187` |
 | Blanking window 122.9 cycles from `3420/7 − 320*8/7`; upper edge measured 21.5, lower edge derived 15.21 | same file `:364-372` |
 | Landing at 253.6 cycles into line 100, *"pixel ≈ 222 of 320"* | same file `:413` |
 | 30.0 cycles per burst word over 8 intervals, three `move.w (a1)+, VDP_DATA` | same file `:339`, `:346-349` |
@@ -450,8 +462,9 @@ driver and the game-state ritual are the demand side's, and the same-session re-
 | Adopted design, every decision cited above | `oracle-next/docs/2026-08-19-subline-recon.md` (branch merged at `5ca74df`) |
 | Ruling Q1 (vehicle), Q5 (band), Q6 (one sentence), execution order | `oracle-next/docs/2026-08-19-ruling-subline-recon.md:15-24`, `:49-57`, `:59-63`, `:65-74` |
 
-**Anchors that moved, recorded rather than repeated.** The demand-side results file has been
-appended to twice since the acceptance-results doc cited it: that doc cites aeon `810b6d90`
+**Anchors that moved, recorded rather than repeated.** The demand-side results file has grown across
+**three commits** since the acceptance-results doc cited it — `8f629a69` (475→491), `deaff54a`
+(491→558), `d113e088` (558→640): that doc cites aeon `810b6d90`
 (`docs/2026-08-19-aeon-acceptance-results.md:17`), and the file is now at `d113e088` and 640 lines
 against 475. Every quoted claim survives, at shifted anchors — e.g. the `flipX` heading is `:295` at
 `810b6d90` and `:311` today, the 122.9-cycle figure `:352` → `:368`, the ≈222 landing `:397` →
