@@ -308,6 +308,11 @@ pub const METHODS: &[MethodSpec] = &[
         handler: Engine::memory_hash,
         summary: "fingerprint a byte range (FNV-1a-64 + CRC-32) without moving it — the hash state_hash cannot give",
     },
+    MethodSpec {
+        name: "emulator/scanlines",
+        handler: Engine::scanlines,
+        summary: "read the drawn rows back — the live raster when a frame is retained, and the reply says which",
+    },
 ];
 
 /// The events this server actually emits. Advertised verbatim as `capabilities.events`, which
@@ -1700,6 +1705,77 @@ impl Engine {
         out.insert("satBase".into(), json!(hex::addr(sat_base)));
         out.insert("parsedMax".into(), json!(parsed_max));
         Ok(Value::Object(out))
+    }
+
+    /// `emulator/scanlines` — read the drawn rows back (§6 VRAM/CRAM/layers, CR-24 / §11.14).
+    ///
+    /// A pure read of the retained frame [`Engine::framebuffer`] already serves `screenshot` from: the live
+    /// per-line raster when a completed frame is retained, the state render otherwise — and the answering
+    /// `source` says which, because a row whose provenance is unstated is structurally blind to exactly the
+    /// mid-frame effects this row exists to see. No `require_paused`, exactly as `read`, `sprites` and
+    /// `pixel_attribution`: the envelope's `running` is the contract's whole answer to a torn sample.
+    ///
+    /// The bounds are **refused, never clipped** (`-32602`). A clipped range hands back fewer rows than were
+    /// asked for with nothing on the wire saying so, which is the failure mode `hex::parse_count` exists to
+    /// rule out; the sum bound is checked here because no static schema can see it.
+    fn scanlines(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let lines = u64::from(ACTIVE_LINES);
+        let start = match params.get("startLine") {
+            None => 0,
+            Some(v) => hex::parse_count("startLine", v, 0, lines - 1)?,
+        };
+        // The default is "through line 223" — the whole active display from wherever the caller started, so
+        // that `{}` means the picture and a caller need not know 224 to ask for it.
+        let count = match params.get("count") {
+            None => lines - start,
+            Some(v) => hex::parse_count("count", v, 1, lines)?,
+        };
+        if start + count > lines {
+            return Err(RpcError::invalid_params(format!(
+                "`startLine` {start} + `count` {count} runs past the active display \
+                 (lines 0..={}) — refused, never clipped",
+                lines - 1
+            )));
+        }
+
+        let (width, fb, from_raster) = self.framebuffer();
+        // `mode` is derived from the answering frame's own width rather than from a VDP register read: the
+        // frame readers normalize a mid-frame width switch to the width the frame ended on, and a `mode`
+        // taken from the register could name a width the rows do not have. The fragment ties
+        // mode <-> width <-> rgb length with an if/then, so a disagreement here is a rejected reply.
+        let mode = if width == 320 { "h40" } else { "h32" };
+        let rows: Vec<Value> = (start..start + count)
+            .map(|line| {
+                let off = line as usize * width;
+                // D9 category 1: `0x` + `RR``GG``BB` per pixel, left to right, S/H already applied by the
+                // renderer that produced these values.
+                let flat: Vec<u8> = fb[off..off + width]
+                    .iter()
+                    .flat_map(|&(r, g, b)| [r, g, b])
+                    .collect();
+                json!({"line": line, "width": width, "rgb": hex::bytes(&flat)})
+            })
+            .collect();
+
+        let mut out = json!({
+            "startLine": start,
+            "mode": mode,
+            "source": if from_raster { "raster" } else { "stateRender" },
+            "rows": rows,
+        });
+        if !from_raster {
+            // Declared, not omitted by accident, and only on the fallback — `screenshot`'s precedent. The
+            // caveat's tie to `source` is left mechanically unenforced in the fragment (the CR-24 ruling's
+            // disposition (a), matching `screenshot`), which makes emitting it correctly here the only
+            // thing standing between a caller and a silently post-hoc answer.
+            out["caveat"] = json!(
+                "no completed frame is retained — the machine has not drawn one yet, or reset/reload_rom/\
+                 restore dropped it — so these rows are rendered from the VDP state as it stands right \
+                 now. Mid-frame CRAM/scroll changes that a real raster would show on different lines are \
+                 NOT reproduced — run at least one frame for a scanline-accurate readback."
+            );
+        }
+        Ok(out)
     }
 
     fn screenshot(&mut self, params: &Value) -> Result<Value, RpcError> {
