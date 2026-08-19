@@ -14,13 +14,44 @@ an explicit re-vendor commit. That commit is the auditable record of "we adopted
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo commit (`HEAD` at vendor time) | `34a1993` — *"contract: CR-17 — the watchpoint amendment made a 0-frame advance reachable and illegal"* (2026-08-15) |
-| Last commit that touched the schema | `34a1993` — same commit |
-| SHA-256 | `2c6af3f49ad8703e983c783b1570ce62ebdecd05f9ee7ce3778748786c73d783` |
-| Bytes | 89562 |
-| Vendored on | 2026-08-15 |
+| Contract repo commit (`HEAD` at vendor time) | `37f547c` — *"contract: §11.13 — a poke with a fence, a reset with a defined answer, and the hash state_hash cannot give"* (2026-08-18) |
+| Last commit that touched the schema | `37f547c` — same commit |
+| SHA-256 | `b0fd21e091fc20a436101656d313658ec3d4ad91bc42519b7d2e62ce5663d8db` |
+| Bytes | 109632 |
+| Vendored on | 2026-08-18 |
 
-### What this re-vendor adopted — CR-9, CR-11 and CR-12
+*Note: the rows between `34a1993` and this one rotted — three intervening commits (`05a8068`, `193906a`,
+`2d5dac9`) touched the schema and were never recorded here, and the vendored file was refreshed at least
+once (to 103086 bytes, matching later upstream) without a matching table update. The byte-identity test in
+`tests/schema_conformance.rs` guarded the file itself throughout, so the copy never actually drifted from
+upstream — only this table's record of *which* upstream commit it matched went stale. Recorded here rather
+than silently continued.*
+
+### What this re-vendor adopted — §11.13 (CR-21, CR-22, CR-23)
+
+Three new method fragments, taking the schema from 26 method fragments to 29 (method count in the
+description string goes from 23 advertised-with-result to 32 schematized total, recounted 2026-08-18):
+
+- **`emulator/write_memory` (CR-21).** The poke primitive. Work-RAM window `$E00000-$FFFFFF` only, refused
+  (`-32004`) never clipped; exactly one payload spelling (`bytes` XOR `value`+`width`, else `-32602`);
+  requires a paused machine per the §6 run-control state rule (`-32005 machineRunning`). Values land
+  big-endian. Never offered to the watch surface (a poke has no `pc` to name). New `limits.maxWriteLen`.
+- **`emulator/reset` (CR-22).** A result was finally defined for a row that predated the schema. NOT subject
+  to the run-control state rule — it replaces state wholesale between frames rather than advancing it, so it
+  cannot fight the free-run loop, and MUST NOT change the machine's run state. New `deferred` boolean:
+  `false` if applied before the reply was composed, `true` if handed off and bounded to land later (a server
+  that cannot bound it answers `-32010` instead). The master clock restarts at 0.
+- **`emulator/memory_hash` (CR-23).** Fingerprints a byte range without moving it — the gap `state_hash`
+  leaves (its five hashes cover VDP state only). A pure read, never refused on a free-running machine.
+  Two regions: work RAM (mirror-masked) or cartridge ROM; `-32004` for a base in neither or a range crossing
+  out of its region. Returns both `fnv1a64` (`$defs/hash64`) and a new `crc32` (`$defs/hash32`, new
+  `^0x[0-9A-Fa-f]{8}$` primitive) so a cartridge-window hash equals CRC32 over the same ROM-file slice. New
+  `limits.maxHashLen`. Distinct from §9's deferred `frame_hash`.
+
+All three are schematized-but-not-yet-advertised by the reference server — `tests/schema_conformance.rs`'s
+`UNCOVERED_METHODS` stays empty (that list is for advertised methods missing a fragment, the opposite gap).
+
+### What the previous re-vendor adopted — CR-9, CR-11 and CR-12
 
 Two contract commits, both ruled in `docs/2026-08-15-fable-ruling-cr9-cr11-cr12.md`, taking the schema from
 22 method fragments to **26** (62,434 → 89,020 bytes). *(`methods` holds 27 keys; one of them is a
