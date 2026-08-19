@@ -107,6 +107,17 @@ const RTS_POP: u32 = 4;
 const RTR_POP: u32 = 6;
 /// The bytes an `RTE` pops: the 68000's standard exception frame (SR word + 32-bit PC).
 const RTE_POP: u32 = 6;
+/// The deepest the shadow stack may go, **derived rather than picked**: the 68000's work RAM is 64 KiB
+/// (`$FF0000-$FFFFFF`) and the smallest frame a call can push is a 4-byte return address, so no program
+/// whose stack lives in RAM can nest more than this many calls without overrunning it. A correct program
+/// stays orders of magnitude below; anything at this depth has already lost track of its own stack.
+///
+/// The cap exists because the shadow stack is driven by *observation*, and an observation can be missed —
+/// a return the profiler could not match leaves its frame wedged, and every subsequent call stacks on top
+/// of it. Unbounded, that is a slow memory leak whose only symptom is that the report quietly empties out.
+/// Bounded, it is a number in [`Report::depth_exceeded`].
+pub const MAX_DEPTH: usize = 0x1_0000 / 4;
+
 /// The `RTR` opcode — the one return whose frame is 6 bytes rather than 4.
 const OPCODE_RTR: u16 = 0x4E77;
 
@@ -242,6 +253,12 @@ pub struct Report {
     /// Normally `0`. Non-zero is the ordinary phase for a ROM whose VBlank handler straddles the opening
     /// boundary, which is most of them, so it is information rather than an alarm.
     pub unattributed_cycles: u64,
+    /// Calls the accountant declined to track because the shadow stack was already at its bound, over the
+    /// whole sample. Their cycles are charged to the innermost frame that IS tracked, so nothing is lost
+    /// from the totals — but those routines get no rows of their own, and the frame they charge to is
+    /// overstated. Non-zero means the profiler lost the thread of the program's stack, which is a fact
+    /// about the measurement rather than about the program, and the reader should be told. Undivided.
+    pub depth_exceeded: u64,
     /// Frames torn off the shadow stack without completing, over the whole sample — a routine an `RTE`
     /// unwound past, or one displaced by a stack the profiler could not follow. Their **cycles are still
     /// reported** (they ran); their `calls` are not (they never finished). Non-zero means some row's
@@ -281,6 +298,8 @@ pub struct Profiler {
     pending_iack: Option<u8>,
     /// Frames torn off the stack without completing. See [`Report::abandoned_frames`].
     abandoned: u64,
+    /// Pushes refused because the stack was already [`MAX_DEPTH`] deep. See [`Report::depth_exceeded`].
+    depth_exceeded: u64,
 }
 
 impl Profiler {
@@ -325,6 +344,19 @@ impl Profiler {
         &self.committed_buckets
     }
 
+    /// Push a frame, unless the stack is already at [`MAX_DEPTH`].
+    ///
+    /// Refusing is the conservative failure: the callee's cycles then charge to its caller, which
+    /// overstates one row, where growing without bound would eventually consume all memory and — long
+    /// before that — bury every real row under a stack that never unwinds.
+    fn push_frame(&mut self, frame: Frame) {
+        if self.stack.len() >= MAX_DEPTH {
+            self.depth_exceeded += 1;
+            return;
+        }
+        self.stack.push(frame);
+    }
+
     /// Charge `cycles` to the innermost open frame, and to the sample total.
     ///
     /// With no frame open — the sample armed in the middle of straight-line code that has not been called
@@ -340,7 +372,7 @@ impl Profiler {
     /// wire is a question for the surface that publishes these rows, not for the accumulator.
     fn charge(&mut self, pc: u32, sp: u32, cycles: u64, stall: u64) {
         if self.stack.is_empty() {
-            self.stack.push(Frame {
+            self.push_frame(Frame {
                 kind: FrameKind::Routine { addr: pc },
                 entry_sp: sp,
                 self_cycles: 0,
@@ -353,7 +385,14 @@ impl Profiler {
                 suppressed: false,
             });
         }
-        let top = self.stack.last_mut().expect("just ensured non-empty");
+        let Some(top) = self.stack.last_mut() else {
+            // The root push was refused (the stack is capped). The cycles still happened, so they stay in
+            // the sample total and are reported as belonging to no row.
+            self.pending_cycles += cycles;
+            self.pending_stall += stall;
+            self.pending_unattributed += cycles;
+            return;
+        };
         top.self_cycles += cycles;
         top.self_stall += stall;
         self.pending_cycles += cycles;
@@ -430,6 +469,42 @@ impl Profiler {
         // Deliberately no parent.child_cycles for an Interrupt frame. See the doc comment.
     }
 
+    /// Close the routine frame this return unwound, if the stack still knows which one that is.
+    ///
+    /// The match is **exact** — a frame entered at `entry_sp` closes on a return leaving `entry_sp + 4`
+    /// (or `+ 6` for `RTR`) — and that exactness is load-bearing: the `move.l #target,-(sp)` / `rts`
+    /// dispatch idiom leaves the stack exactly where it started, so it matches nothing and correctly does
+    /// not close its caller.
+    ///
+    /// The search runs **innermost-first through the whole stack**, not just the top. If a frame in the
+    /// middle got wedged — a return the accountant could not match, so its frame was never popped — then
+    /// every later return finds a stranger on top and, matching only the top, would give up forever: the
+    /// stack grows without bound and every subsequent row is buried under a frame that never closes. One
+    /// wedged frame silently emptying the rest of the report is a much worse failure than the wedge.
+    ///
+    /// Scanning deeper cannot loosen the rule, because what it looks for is the *same* exact match. It can
+    /// only find a frame the top-only search would have missed, and everything above that frame is then
+    /// unwound as ABANDONED — cycles kept, calls not, and counted in [`Report::abandoned_frames`] so the
+    /// recovery is visible rather than silent.
+    fn close_routine(&mut self, opcode: u16, sp_after: u32) {
+        let pop = if opcode == OPCODE_RTR {
+            RTR_POP
+        } else {
+            RTS_POP
+        };
+        let target = self.stack.iter().rposition(|f| {
+            matches!(f.kind, FrameKind::Routine { .. }) && f.entry_sp.wrapping_add(pop) == sp_after
+        });
+        let Some(idx) = target else {
+            return; // A return that matches nothing closes nothing.
+        };
+        // Everything above the match was left behind by a return we never saw.
+        while self.stack.len() > idx + 1 {
+            self.pop_frame(false);
+        }
+        self.pop_frame(true);
+    }
+
     /// Close the innermost **interrupt** frame whose exception frame sits where this `RTE` just unwound
     /// from, if any. Frames inside it (a subroutine the handler called and never returned from) are
     /// discarded with it, which is the only sane reading of an `RTE` crossing them.
@@ -463,6 +538,7 @@ impl Profiler {
             return Report {
                 per_frame_exact: true,
                 abandoned_frames: self.abandoned,
+                depth_exceeded: self.depth_exceeded,
                 unattributed_cycles: self.committed_unattributed,
                 ..Report::default()
             };
@@ -506,6 +582,7 @@ impl Profiler {
             .collect();
         Report {
             abandoned_frames: self.abandoned,
+            depth_exceeded: self.depth_exceeded,
             unattributed_cycles: self.committed_unattributed,
             frame_count: n,
             sample_cycles: self.committed_cycles,
@@ -538,7 +615,7 @@ impl BusEventSink for Profiler {
     fn on_step_retire(&mut self, r: StepRetire) {
         // 1. A call armed by the PREVIOUS retirement lands here: this step's PC is the callee's entry.
         if let Some(entry_sp) = self.pending_call.take() {
-            self.stack.push(Frame {
+            self.push_frame(Frame {
                 kind: FrameKind::Routine { addr: r.pc },
                 entry_sp,
                 self_cycles: 0,
@@ -565,7 +642,7 @@ impl BusEventSink for Profiler {
         //    Note where that arming comes FROM: the acknowledge, never the retired opcode. The phantom
         //    guard below is therefore untouched by it — this row is opened by a signal the CPU really drove.
         if let Some(level) = self.pending_iack.take() {
-            self.stack.push(Frame {
+            self.push_frame(Frame {
                 kind: FrameKind::Interrupt {
                     level,
                     frame_ssp: r.ssp,
@@ -594,21 +671,7 @@ impl BusEventSink for Profiler {
         }
         match control_flow_of(r.opcode) {
             ControlFlow::Call => self.pending_call = Some(r.sp),
-            ControlFlow::Return => {
-                let pop = if r.opcode == OPCODE_RTR {
-                    RTR_POP
-                } else {
-                    RTS_POP
-                };
-                // Exact match only — the dispatch idiom depends on it (rule 1 in the module docs).
-                let matches = self.stack.last().is_some_and(|f| {
-                    matches!(f.kind, FrameKind::Routine { .. })
-                        && f.entry_sp.wrapping_add(pop) == r.sp
-                });
-                if matches {
-                    self.pop_frame(true);
-                }
-            }
+            ControlFlow::Return => self.close_routine(r.opcode, r.sp),
             ControlFlow::InterruptReturn => self.close_interrupt(r.ssp),
             ControlFlow::Jump | ControlFlow::None => {}
         }

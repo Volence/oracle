@@ -7,7 +7,7 @@
 //! same bar the consumers of this surface hold it to.
 
 use oracle_core::bus::{BusEvent, BusEventSink, BusOp, Size, StepRetire};
-use oracle_core::profiler::{Counts, Profiler, Report};
+use oracle_core::profiler::{Counts, Profiler, Report, MAX_DEPTH};
 use oracle_core::system::System;
 use oracle_core::testrom::{
     self, ProfilerShape, StallKind, PROF_DISPATCH, PROF_LEAF, PROF_MID, PROF_MID_CALLS_LEAF,
@@ -695,6 +695,101 @@ fn a_suppressed_buckets_own_time_is_reported_as_unattributed() {
         "and the identity closes: rows {rows} + unattributed {} == sample {}",
         r.unattributed_cycles,
         r.sample_cycles
+    );
+}
+
+// --- Bounding the damage ----------------------------------------------------------------------------
+
+/// **One frame the accountant loses track of must not empty the rest of the report.** If a return goes
+/// unmatched its frame stays on the stack, and a search that only ever looks at the top will never match
+/// again: every later call piles on, the stack grows without bound, and every row after the wedge silently
+/// disappears. The failure is far worse than the wedge that caused it.
+///
+/// Searching innermost-first through the whole stack recovers, and it cannot loosen anything, because what
+/// it looks for is the SAME exact `entry_sp` match. Frames above the one it finds are unwound as abandoned
+/// — cycles kept, calls not — and counted, so the recovery is visible.
+#[test]
+fn an_unmatched_return_deeper_in_the_stack_is_still_found() {
+    const OUTER: u32 = 0x0000_2000;
+    const INNER: u32 = 0x0000_3000;
+    let mut p = Profiler::new();
+    p.on_frame_boundary(0);
+    p.on_step_retire(step(0x1000, OP_NOP, S, S)); // the root
+    p.on_step_retire(step(0x1002, OP_JSR_ABS_W, S - 4, S - 4));
+    p.on_step_retire(step(OUTER, OP_NOP, S - 4, S - 4)); // OUTER, entry_sp = S-4
+    p.on_step_retire(step(OUTER + 2, OP_JSR_ABS_W, S - 8, S - 8));
+    p.on_step_retire(step(INNER, OP_NOP, S - 8, S - 8)); // INNER, entry_sp = S-8
+                                                         // INNER leaves by a route the accountant cannot match — its stack pointer lands somewhere no frame
+                                                         // was entered at — so its frame is WEDGED on top of OUTER's.
+    p.on_step_retire(step(INNER + 2, OP_RTS, S - 6, S - 6));
+    assert_eq!(p.open_frames(), 3, "the unmatched return left INNER wedged");
+    // OUTER now returns properly. The top of the stack is a stranger; the match is one deeper.
+    p.on_step_retire(step(OUTER + 4, OP_RTS, S, S));
+    p.on_frame_boundary(1);
+
+    assert_eq!(
+        p.open_frames(),
+        1,
+        "the wedge is cleared and only the root remains"
+    );
+    assert_eq!(
+        p.sample_routines().get(&OUTER).map(|c| c.calls),
+        Some(1),
+        "OUTER's return was found and its invocation completed"
+    );
+    assert_eq!(
+        p.sample_routines().get(&INNER).map(|c| c.calls),
+        Some(0),
+        "INNER ran, so it has cycles — but it never completed, so it has no call"
+    );
+    assert!(
+        p.sample_routines()[&INNER].self_cycles > 0,
+        "and those cycles are real, not a placeholder row"
+    );
+    assert_eq!(
+        p.report().abandoned_frames,
+        1,
+        "the recovery is reported, not silent"
+    );
+}
+
+/// **The stack is bounded, and the bound is derived.** 64 KiB of work RAM divided by the 4-byte return
+/// address a call pushes is the deepest any program whose stack lives in RAM could nest; past that the
+/// accountant is certainly following something that is not a call stack. Refusing the push keeps the
+/// damage to one overstated row instead of unbounded memory, and the refusals are counted.
+#[test]
+fn the_shadow_stack_is_capped_and_says_so() {
+    const OVERSHOOT: usize = 5;
+    let mut p = Profiler::new();
+    p.on_frame_boundary(0);
+    // Drive strictly more calls than the cap allows, none of them returning.
+    let mut sp = 0x00FF_FFFC_u32;
+    for i in 0..(MAX_DEPTH + OVERSHOOT) as u32 {
+        p.on_step_retire(step(0x1_0000 + i * 8, OP_JSR_ABS_W, sp, sp));
+        sp = sp.wrapping_sub(4);
+        p.on_step_retire(step(0x2_0000 + i * 8, OP_NOP, sp, sp));
+    }
+    p.on_frame_boundary(1);
+
+    assert_eq!(
+        p.open_frames(),
+        MAX_DEPTH,
+        "the stack stops growing at the bound"
+    );
+    let r = p.report();
+    assert_eq!(
+        r.depth_exceeded,
+        OVERSHOOT as u64 + 1,
+        "every refused call is counted, so the reader knows rows are missing — one more than the \
+         overshoot because the synthesized root holds a slot of its own"
+    );
+    // The refused calls' cycles are not lost — they charge to the deepest frame still tracked, which the
+    // identity below proves is still whole.
+    let rows: u64 = p.sample_routines().values().map(|c| c.self_cycles).sum();
+    assert_eq!(
+        rows + r.unattributed_cycles,
+        r.sample_cycles,
+        "the totals still reconcile at the bound"
     );
 }
 
