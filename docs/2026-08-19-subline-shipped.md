@@ -241,3 +241,13 @@ column within one boot lives.
 
 The ordering matters in one direction only: `contract/protocol.md` must not describe a server that no longer
 exists, so the empyrean merge must not lag the oracle-next one.
+
+## 9. Owner-visible consequence: pre-arc save states invalidate cleanly
+
+The N1 capture-mode field grows `System`'s bincode layout by one byte, so
+`save_state::layout_fingerprint()` changes and every save state written before this arc is **refused on
+load** with the container's own *"stale save state: written by a build with a different machine layout"*
+error — detected by design (magic + `FORMAT_VERSION` + layout fingerprint), never silently mis-decoded.
+Standard emulator behaviour on a core layout change; noted here because it is the arc's one user-facing
+cost outside the feature itself. (Controller-verified: the fingerprint derives from a canonical power-on
+snapshot, `save_state.rs:104-106`, so the one-byte growth necessarily moves it.)
