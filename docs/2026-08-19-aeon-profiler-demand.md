@@ -310,6 +310,16 @@ else. **No gate in Phases 1-2 may reference a row Phase 0 did not measure.**"*
 | **4 — walker fitted cost model** | `:184-210` | Per-routine rows for parallax procs across one-variable-at-a-time fixtures; *"The residual is the deliverable, not a footnote"* (`:199`) with a 0-residual target. |
 | **5 — max contiguous DMA stall (awareness row)** | `:212-240` | *"Measure the longest contiguous DMA stall in a frame at both camera states"* (`:219`) — **explicitly non-gating** this phase (`:214`, `:225`). **No profiler surface, old or new, provides this today**; see the design doc's better-approach pass. |
 
+**One property of the floor that Tasks 2 and 4 silently inherit:** the old instrument's
+`cycles` are **inclusive of callees** — the shadow stack charges a routine's whole span to
+that routine and subtracts nothing for its children
+(`oracle/linux-port/gui/ControlSocket.cpp:1989-1991`), so its `pct` column sums well past
+100%. For the HBlank trampoline (Task 1/3) that is harmless — it is effectively a leaf. For
+`Parallax_Update` and the walker fit (Tasks 2/4) it is **load-bearing and undeclared**: a
+fitted per-layer slope taken from inclusive rows is a slope over the whole call tree. Our
+design can offer self *and* inclusive; §4 of the design doc prices that, and the demand side
+should be asked which one their fit wants before the corpus A/B is read.
+
 Task 2 also carries a standing methodological warning worth honouring in any acceptance
 protocol we write (`:123`): *"A baseline whose state is not reproducible is not a baseline.
 The P2 baseline rows in `effects-p3` went camera-stale exactly this way."*
@@ -332,6 +342,16 @@ This has a direct design consequence and it is stated here so the design cannot 
 **a profiler that reports our own cycle accounting inherits our cycle accounting.** The
 migration acceptance is therefore an **A/B against the old instrument on the same ROM**,
 with any delta owed a mechanism — not a claim of absolute parity. See §8.
+
+**And the caveat cuts the other way too, which they do not yet know.** The old instrument's
+cycle base is `M68000::_currentCycle`, advanced only by the static per-opcode cycle table;
+bus wait states and VDP/DMA contention go into a *separate* real-time accumulator and
+**never into the profiler's clock** (`oracle/Devices/M68000/M68000.cpp:1029-1031`, found in
+the recon — see the design doc §B). So **every figure in the corpus of §8 is a
+stall-free figure**, and Task 5's max-contiguous-DMA-stall row is measuring a quantity the
+same instrument's cycle counter excludes by construction. Our scheduler-derived cycles
+include stalls. **This is a first-order, expected A/B disagreement and it must be reported
+to the demand side as a finding, not absorbed as a tolerance.**
 
 ---
 
@@ -380,18 +400,27 @@ explicitly that arm/disarm/read are synchronous with respect to the command**, s
 can delete both sleeps — that is ~0.8 s × 10 fixtures × N boots of pure latency removed
 from a 900-second merge gate, and one race removed.
 
-### 7.2 ⚠ `frames: sample - 1` is a workaround of unknown mechanism, not a semantic
+### 7.2 ⚠ `frames: sample - 1` is a workaround, not a semantic — mechanism now identified
 
 Relay: *"get_profiler_frames{frames: sample-1, top: 200}"* — accurate as transcription
 (`:535`, `sample` defaults to 31 → `frames: 30`). But **the probe never explains the
 `- 1`**, and it prints its header as *"sample {args.sample - 1} frames"* (`:618`), i.e. it
 believes it measured 30 frames after running 31.
 
-Read together with §7.1 (the tail of the run is still in the ring when the read lands), the
-most likely reading is that **the last frame is not reliably drained**, and `- 1` is the
-compensation. That is a hypothesis, not a finding — the old-oracle recon in the design doc
-settles the mechanism. Flagged here because **whatever our surface does about the last
-frame must be a stated semantic, not a number the consumer has to guess.**
+**The old-oracle recon settles it** (see the design doc, `docs/2026-08-19-profiler-recon.md`
+§B): the frame ring is indexed newest-first (`oracle/Devices/M68000/ProfileTypes.h:89-94`,
+`get(0)` = newest) and `numFrames` walks back from newest
+(`oracle/linux-port/gui/ControlSocket.cpp:1966-1968`). A snapshot's span is
+`first-event → V-INT`, not V-INT → V-INT
+(`oracle/linux-port/gui/main_gui.cpp:2006-2012`), so **the first frame after `set_profiler`
+is arbitrarily short**. Asking for `count − 1` walks back from the newest and drops exactly
+the oldest — the runt. **`- 1` is a hand-compensation for a partial first frame.**
+
+Flagged here because it is demand-relevant twice over: **whatever our surface does about a
+non-frame-aligned enable must be a stated semantic, not a number the consumer has to guess**
+— and if our enable is frame-aligned by construction, the `- 1` deletes itself and their
+sample becomes `sample` frames instead of `sample − 1`, which is a (small) change in what
+their fixtures measure. That must be called out at migration, not discovered.
 
 ### 7.3 `top: 200` — a bound the consumer already supplies
 
