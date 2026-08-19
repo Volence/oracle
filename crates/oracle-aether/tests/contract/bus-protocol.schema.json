@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://empyrean/contract/bus-protocol.schema.json",
   "title": "Empyrean / Aether Bus Protocol (Phase 1 thin slice)",
-  "description": "Source-of-truth message schema for the Aether bus (the Empyrean suite's shared protocol). PARTIAL, and precisely so as of 2026-08-15 (protocol.md §11.5/§11.6): the envelope, the handshake, every event, the symbol primitive, and 32 of §6's ~60 catalogued methods are schematized here (23 as of that date; recounted 2026-08-18, §11.13) — which is EVERY method the reference server advertises, both params and result. The rest of §6 (breakpoints, Z80, VGM, profiler, object decoders, and the other deferred families) is completed as each is implemented, per §8 item 20: a server's suite closes every result against its fragment, so a method without one cannot ship a result nobody has checked. The authoritative live method set is whatever `initialize` advertises. PRECEDENCE (protocol.md D14): this file is NORMATIVE for wire shapes — which keys exist, their JSON types and ranges, whether they are required — while protocol.md is normative for semantics and behaviour. A disagreement between the two is a spec bug to be fixed by amendment in the pass that finds it; until amended, this file governs what goes on the wire. It is not a place to introduce behaviour: a shape here with no counterpart in protocol.md is an un-specced field, and §8's ban on unilateral invention applies. The two are amended together.",
+  "description": "Source-of-truth message schema for the Aether bus (the Empyrean suite's shared protocol). PARTIAL, and precisely so as of 2026-08-15 (protocol.md §11.5/§11.6): the envelope, the handshake, every event, the symbol primitive, and 33 of §6's ~60 catalogued methods are schematized here (23 as of that date; recounted 2026-08-18, §11.13; recounted again 2026-08-18, §11.14) — which is EVERY method the reference server advertises, both params and result. The rest of §6 (breakpoints, Z80, VGM, profiler, object decoders, and the other deferred families) is completed as each is implemented, per §8 item 20: a server's suite closes every result against its fragment, so a method without one cannot ship a result nobody has checked. The authoritative live method set is whatever `initialize` advertises. PRECEDENCE (protocol.md D14): this file is NORMATIVE for wire shapes — which keys exist, their JSON types and ranges, whether they are required — while protocol.md is normative for semantics and behaviour. A disagreement between the two is a spec bug to be fixed by amendment in the pass that finds it; until amended, this file governs what goes on the wire. It is not a place to introduce behaviour: a shape here with no counterpart in protocol.md is an un-specced field, and §8's ban on unilateral invention applies. The two are amended together.",
   "$defs": {
     "hex": {
       "type": "string",
@@ -1059,6 +1059,52 @@
               }
             }
           }
+        }
+      }
+    },
+    "emulator/scanlines": {
+      "$comment": "protocol.md §6 (VRAM/CRAM/layers), added 2026-08-18 by §11.14 (CR-24). Row-range readback of the most recently completed frame's rendered active display — the live raster, S/H applied, mid-frame effects included — never a post-hoc state render when a completed frame exists. A pure read: a server MUST NOT refuse it on a free-running machine, exactly as read and sprites. No frame param: drive the machine to F and read; the envelope stamp is the frame identity. Bounds are structural (active lines 0-223 — this catalog's slice is the NTSC V28 display; a V30-capable server needs a §11 amendment raising the bound): startLine+count past 224 is -32602, refused never clipped — a decision, not drift, versus pixel_attribution's -32004, whose bound is mode-dependent and not schema-expressible — and the list takes neither truncated nor cursor (§2.4: structural bound -> neither). source carries screenshot's spellings ('raster'|'stateRender'), where stateRender is the fallback when no completed frame is retained — before the first frame, and again after reset/reload_rom/restore drop it; a liveness-dependent gate MUST check source=='raster' — a stateRender row passes every shape check and is structurally blind to mid-frame effects. caveat is emitted on stateRender only — declared, not omitted by accident (the sprites precedent). The caveat<->source tie is deliberately left mechanically unenforced, matching screenshot's fragment, the direct precedent (CR-24 ruling disposition (a)). Prose-only, since JSON Schema cannot express them: startLine+count <= 224; rows contiguous and line-ascending; rows.length == count.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "startLine": { "type": "integer", "minimum": 0, "maximum": 223, "description": "First active-display line to return. Default 0. D9 category 2." },
+          "count": { "type": "integer", "minimum": 1, "maximum": 224, "description": "Rows to return. Default: through line 223. startLine+count must not exceed 224 — refused (-32602), never clipped." }
+        }
+      },
+      "result": {
+        "allOf": [
+          { "$ref": "#/$defs/replyFields" },
+          {
+            "if": { "properties": { "mode": { "const": "h40" } }, "required": ["mode"] },
+            "then": { "properties": { "rows": { "items": { "properties": {
+              "width": { "const": 320 },
+              "rgb": { "pattern": "^0x[0-9A-Fa-f]{1920}$" } } } } } },
+            "else": { "properties": { "rows": { "items": { "properties": {
+              "width": { "const": 256 },
+              "rgb": { "pattern": "^0x[0-9A-Fa-f]{1536}$" } } } } } }
+          }
+        ],
+        "required": ["startLine", "mode", "source", "rows"],
+        "properties": {
+          "startLine": { "type": "integer", "minimum": 0, "maximum": 223, "description": "Echoed (or defaulted) first line." },
+          "mode": { "enum": ["h40", "h32"], "description": "The answering frame's width class: h40 = 320 px, h32 = 256 px. A mid-frame width switch is normalized to the width the frame ended on — shorter lines black-padded, longer lines cropped. A stateRender reply's mode is the width the VDP would draw now. The mode<->width<->rgb-length tie is enforced by the result's if/then." },
+          "source": { "enum": ["raster", "stateRender"], "description": "Which instrument answered — screenshot's spellings. raster: the retained live per-line capture (the normative content). stateRender: the fallback when no completed frame is retained — before the first frame, or after reset/reload_rom/restore dropped it — rendered from current VDP state; structurally blind to mid-frame effects, so liveness gates MUST check for raster." },
+          "rows": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 224,
+            "items": {
+              "type": "object",
+              "required": ["line", "width", "rgb"],
+              "properties": {
+                "line": { "type": "integer", "minimum": 0, "maximum": 223, "description": "Active-display line number (D9 category 2)." },
+                "width": { "type": "integer", "enum": [256, 320], "description": "Pixels in this row. Equals mode's width for every row of one reply (enforced by the result's if/then); carried per row so rgb is checkable in place." },
+                "rgb": { "type": "string", "pattern": "^0x([0-9A-Fa-f]{6})+$", "description": "width x 3 bytes, pixels left to right, r,g,b per pixel — the S/H-applied output values (D9 category 1). This pattern is the whole-pixel floor; the exact per-mode length (1920 or 1536 hex digits) is enforced by the result's if/then." }
+              }
+            },
+            "description": "The requested rows, line-ascending, contiguous from startLine."
+          },
+          "caveat": { "type": "string", "description": "Present only when source is stateRender: no completed frame is retained — the machine has not completed one, or reset/reload_rom/restore dropped it — and the rows are rendered from VDP state as it stands now; mid-frame effects a real raster would show are NOT reproduced." }
         }
       }
     },

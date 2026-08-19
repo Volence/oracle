@@ -399,6 +399,149 @@ pub fn build_pad_poll() -> Vec<u8> {
     rom
 }
 
+/// The two backdrop colours [`build_cram_midframe`] alternates between — black and white, the widest
+/// contrast the 9-bit CRAM word offers, so a boundary row is unmistakable in a hex dump.
+#[doc(hidden)]
+pub const CRAM_MIDFRAME_A: u16 = 0x0000;
+/// See [`CRAM_MIDFRAME_A`].
+#[doc(hidden)]
+pub const CRAM_MIDFRAME_B: u16 = 0x0EEE;
+
+/// Build the **mid-frame CRAM fixture ROM** — a ROM that changes the backdrop colour *while the beam is
+/// drawing*, at a chosen scanline.
+///
+/// The scene is [`build_pad_poll`]'s: VRAM zeroed by a fill DMA, so every plane and sprite pixel is
+/// transparent and the whole screen is the backdrop (reg 7 = CRAM entry 1). What this one adds is timing.
+/// Every frame it
+///
+/// 1. waits for vblank (V counter ≥ `$E0`) and sets CRAM entry 1 = [`CRAM_MIDFRAME_A`],
+/// 2. waits for active display to resume (V < `$E0`, i.e. line 0),
+/// 3. polls the HV counter at `$C00008` until the beam reaches `line` (V is the high byte), and
+/// 4. sets CRAM entry 1 = [`CRAM_MIDFRAME_B`], then loops.
+///
+/// So **every completed frame after the first** carries the split — rows above the boundary in A, rows at
+/// and below it in B — rather than only the one frame a write-once fixture would mark, which would make the
+/// assertion depend on the exact frame count the reader happened to stop at. Frame 0 draws entirely in
+/// colour A: the poll begins after the frame-0 vblank arm, so the first B write lands in frame 1. Read at
+/// any frame ≥ 1. The line the write lands on has already been rendered (the Scanline event renders line N
+/// at N's *start*), so the boundary sits at `line + 1`.
+///
+/// Nothing draws over the backdrop, so the content trap the golden fixtures set — a tinted palette entry
+/// no pixel samples — cannot bite: the colour *is* the picture. **Two different `line` arguments must
+/// yield different rendered rows**; that is the whole point of the fixture, and the acceptance gate for
+/// `emulator/scanlines` (CR-24's adoption condition, suite gate (i)) is built on it. A reader that
+/// re-renders the frame from end-of-frame VDP state instead of capturing the raster sees only whichever
+/// colour was last written, identically for both arguments — which is exactly the blindness the gate exists
+/// to catch.
+///
+/// `line` is best kept above the handful of lines the VDP/VRAM init costs and below 223; step 3 exits at the
+/// first line ≥ `line`, so a `line` the machine has already passed fires late rather than hanging.
+///
+/// [`build`] is left byte-identical (the golden fixture depends on it), as every builder here does.
+#[doc(hidden)]
+pub fn build_cram_midframe(line: u8) -> Vec<u8> {
+    let mut rom = vec![0u8; 0x8];
+    rom[0..4].copy_from_slice(&INITIAL_SSP.to_be_bytes()); // reset SSP
+    rom[4..8].copy_from_slice(&MAIN.to_be_bytes()); // reset PC = $200
+    rom.resize(0x200, 0);
+
+    fn w(rom: &mut Vec<u8>, word: u16) {
+        rom.push((word >> 8) as u8);
+        rom.push((word & 0xFF) as u8);
+    }
+    fn l(rom: &mut Vec<u8>, long: u32) {
+        w(rom, (long >> 16) as u16);
+        w(rom, (long & 0xFFFF) as u16);
+    }
+    fn vdp_cmd(code: u8, addr: u16) -> u32 {
+        let word1 = (((code & 0x03) as u32) << 14) | (addr as u32 & 0x3FFF);
+        let word2 = ((((code >> 2) & 0x0F) as u32) << 4) | (addr as u32 >> 14);
+        (word1 << 16) | word2
+    }
+    let ctrl = |rom: &mut Vec<u8>, word: u16| {
+        w(rom, 0x30BC);
+        w(rom, word);
+    }; // move.w #word,(a0)
+    let data = |rom: &mut Vec<u8>, word: u16| {
+        w(rom, 0x32BC);
+        w(rom, word);
+    }; // move.w #word,(a1)
+    let cmd = |rom: &mut Vec<u8>, c: u32| {
+        w(rom, 0x20BC);
+        l(rom, c);
+    }; // move.l #cmd,(a0)
+    /// One "spin until the V counter satisfies a condition" block, 10 bytes: read the HV counter word,
+    /// shift V (the high byte) down, compare it against `value`, and branch back on `branch` — `$6500`
+    /// (BCS/`blo`, "keep waiting while V is below") or `$6400` (BCC/`bhs`, "while V is at or above").
+    fn wait_v(rom: &mut Vec<u8>, value: u8, branch: u16) {
+        let top = rom.len() as u32;
+        w(rom, 0x3013); // move.w (a3),d0     ; HV counter: V<<8 | H
+        w(rom, 0xE048); // lsr.w #8,d0        ; d0.b = V
+        w(rom, 0x0C00); // cmpi.b #imm,d0
+        w(rom, u16::from(value));
+        let at = rom.len() as u32;
+        let disp = (top as i32 - (at as i32 + 2)) as i8 as u8;
+        w(rom, branch | u16::from(disp)); // bcs/bcc .top
+    }
+    // The CRAM entry the backdrop points at, rewritten twice a frame.
+    let backdrop_write = |rom: &mut Vec<u8>, colour: u16| {
+        cmd(rom, vdp_cmd(0x03, 0x0002)); // CRAM write @ entry 1
+        data(rom, colour);
+    };
+
+    // a0 = VDP control ($C00004), a1 = VDP data ($C00000), a3 = HV counter ($C00008).
+    w(&mut rom, 0x41F9);
+    l(&mut rom, 0x00C0_0004);
+    w(&mut rom, 0x43F9);
+    l(&mut rom, 0x00C0_0000);
+    w(&mut rom, 0x47F9);
+    l(&mut rom, 0x00C0_0008);
+
+    // VDP registers: display + DMA enable + M5, plane/sprite bases, H32, autoinc 2, backdrop = CRAM 1.
+    for word in [
+        0x8154u16, // reg 1  display + DMA enable + M5
+        0x8230,    // reg 2  plane A $C000
+        0x8407,    // reg 4  plane B $E000
+        0x8558,    // reg 5  SAT $B000
+        0x8701,    // reg 7  backdrop = CRAM entry 1 — the entry the loop rewrites
+        0x8B00,    // reg 11 full scroll
+        0x8C00,    // reg 12 H32, no shadow/highlight
+        0x8D20,    // reg 13 h-scroll table $8000
+        0x8F02,    // reg 15 autoinc 2 (CRAM entries are 2 bytes)
+        0x9000,    // reg 16 32x32 planes
+    ] {
+        ctrl(&mut rom, word);
+    }
+
+    // CRAM entries 0 and 1: transparent-black, then colour A. Frame 0 draws entirely in A (the loop's first
+    // B write lands in frame 1), which is fine — every later frame carries the split.
+    cmd(&mut rom, vdp_cmd(0x03, 0x0000));
+    data(&mut rom, 0x0000);
+    data(&mut rom, CRAM_MIDFRAME_A);
+
+    // Zero VRAM with a fill DMA, exactly as [`build_pad_poll`] does: all plane/sprite pixels transparent, so
+    // every visible dot is the backdrop.
+    ctrl(&mut rom, 0x8F01); // reg 15 autoinc 1
+    ctrl(&mut rom, 0x93FF); // reg 19 fill length low
+    ctrl(&mut rom, 0x94FF); // reg 20 fill length high -> $FFFF bytes
+    ctrl(&mut rom, 0x9780); // reg 23 DMA fill mode
+    cmd(&mut rom, vdp_cmd(0x21, 0x0000)); // VRAM write @ $0000 + CD5
+    data(&mut rom, 0x0000); // the data-port write triggers the fill (fill byte $00)
+
+    // The raster loop. Re-arming in vblank is what makes every frame carry the split.
+    let outer = rom.len() as u32;
+    wait_v(&mut rom, 0xE0, 0x6500); // spin while V < $E0  -> exits in vblank
+    backdrop_write(&mut rom, CRAM_MIDFRAME_A);
+    wait_v(&mut rom, 0xE0, 0x6400); // spin while V >= $E0 -> exits on line 0
+    wait_v(&mut rom, line, 0x6500); // spin while V < line -> exits on the target line
+    backdrop_write(&mut rom, CRAM_MIDFRAME_B);
+    let bra_at = rom.len() as u32;
+    let disp = (outer as i32 - (bra_at as i32 + 2)) as i8 as u8;
+    w(&mut rom, 0x6000 | disp as u16); // bra.s outer
+
+    rom
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

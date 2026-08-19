@@ -14,10 +14,10 @@ an explicit re-vendor commit. That commit is the auditable record of "we adopted
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo commit (`HEAD` at vendor time) | `37f547c` — *"contract: §11.13 — a poke with a fence, a reset with a defined answer, and the hash state_hash cannot give"* (2026-08-18) |
-| Last commit that touched the schema | `37f547c` — same commit |
-| SHA-256 | `b0fd21e091fc20a436101656d313658ec3d4ad91bc42519b7d2e62ce5663d8db` |
-| Bytes | 109632 |
+| Contract repo commit (`HEAD` at vendor time) | `46e0567` — *"contract: §11.14 — the drawn rows come back: emulator/scanlines"* (2026-08-18) |
+| Last commit that touched the schema | `46e0567` — same commit |
+| SHA-256 | `63cb068c80cb5c33c747a61afd8300a68bcbbaa99a9627ff8af2f1b90e03163d` |
+| Bytes | 114886 |
 | Vendored on | 2026-08-18 |
 
 *Note: the rows between `34a1993` and this one rotted — three intervening commits (`05a8068`, `193906a`,
@@ -27,7 +27,28 @@ once (to 103086 bytes, matching later upstream) without a matching table update.
 upstream — only this table's record of *which* upstream commit it matched went stale. Recorded here rather
 than silently continued.*
 
-### What this re-vendor adopted — §11.13 (CR-21, CR-22, CR-23)
+### What this re-vendor adopted — §11.14 (CR-24)
+
+One new method fragment, taking the schema from **32 method fragments to 33** (the description string's
+count is recounted again, 2026-08-18, §11.14; `methods` now holds 34 keys, one of them a `$comment`).
+
+- **`emulator/scanlines` (CR-24).** Row-range readback of the most recently **completed** frame's rendered
+  active display — the live raster with S/H applied and mid-frame CRAM/scroll effects included, never a
+  post-hoc state render when a completed frame exists. Params `startLine`? (0–223, def 0) and `count`?
+  (≥1, def: through line 223); `startLine`+`count` past 224 is `-32602`, refused never clipped, and the
+  bound is structural (NTSC V28 active lines) so the list takes neither `truncated` nor a cursor. Result
+  carries `startLine`, `mode` (`h40`/`h32`), `source` (`raster`/`stateRender`, `screenshot`'s spellings)
+  and `rows[]{line,width,rgb}`, with `caveat` on the stateRender fallback only. The `mode` ↔ `rows[].width`
+  ↔ `rgb`-length tie is **mechanical**: an `if`/`then`/`else` in `result.allOf` pins 320 px / 1920 hex
+  digits against 256 px / 1536, with the loose `^0x([0-9A-Fa-f]{6})+$` whole-pixel pattern kept on the
+  property as the floor. The `caveat` ⇔ `source` tie is deliberately left mechanically unenforced, matching
+  `screenshot`'s fragment; the decision is recorded in the fragment's `$comment` rather than silently taken.
+
+Schematized but not yet advertised by the reference server *at vendor time* (the handler landed two commits
+later, so on the merged tree the method IS advertised), like §11.13's three: `tests/schema_conformance.rs`'s
+`UNCOVERED_METHODS` stays empty (that list is for advertised methods missing a fragment, the opposite gap).
+
+### What the previous re-vendor adopted — §11.13 (CR-21, CR-22, CR-23)
 
 Three new method fragments, taking the schema from 29 method fragments to 32 (method count in the
 description string goes from 23 advertised-with-result to 32 schematized total, recounted 2026-08-18):
@@ -51,7 +72,7 @@ description string goes from 23 advertised-with-result to 32 schematized total, 
 All three are schematized-but-not-yet-advertised by the reference server — `tests/schema_conformance.rs`'s
 `UNCOVERED_METHODS` stays empty (that list is for advertised methods missing a fragment, the opposite gap).
 
-### What the previous re-vendor adopted — CR-9, CR-11 and CR-12
+### What the re-vendor before that adopted — CR-9, CR-11 and CR-12
 
 Two contract commits, both ruled in `docs/2026-08-15-fable-ruling-cr9-cr11-cr12.md`, taking the schema from
 22 method fragments to **26** (62,434 → 89,020 bytes). *(`methods` holds 27 keys; one of them is a

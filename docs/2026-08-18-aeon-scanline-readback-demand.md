@@ -38,6 +38,10 @@ gate with this capability.
   capability → CR (candidate CR-24 or CR-25, alongside F-WM-ECHO) → §6 row + fragment →
   handler. Not built in the Tier 1 slice; queued for the owner's next-slice pick with Aeon's
   explicit ranking attached: **"asks 1 and 2 are worth more to Aeon than stepping is."**
+- **SHIPPED 2026-08-19** as `emulator/scanlines` (CR-24 → ruling → §11.14 → handler), field 1
+  exactly as scoped here — rendered RGB, S/H applied, row range, active-only, mode-aware width, no
+  sub-frame addressing. Handoff, including the A1/A2 acceptance protocol handed back to Aeon:
+  `docs/2026-08-19-scanline-readback.md`.
 
 ## Ask 1 follow-up — the SHAPE, ruled by the demand side (same evening)
 
