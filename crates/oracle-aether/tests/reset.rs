@@ -25,6 +25,17 @@ fn client(h: &oracle_aether::server::ServerHandle) -> Client {
     c
 }
 
+/// The "which machine is this?" probe used throughout this file: 64 bytes off the top of work RAM,
+/// which the fixture ROM stirs every frame. See [`reset_restores_the_power_on_anchor`] for why this
+/// and not `state_hash`.
+fn ram(c: &mut Client) -> serde_json::Value {
+    c.ok(
+        "emulator/read_memory",
+        json!({"addr": "0xFF0000", "len": 64}),
+    )["bytes"]
+        .clone()
+}
+
 /// The reset restores the deterministic power-on anchor: the machine after run-frames + reset is
 /// byte-for-byte the machine captured at first boot — two independently derived values.
 ///
@@ -37,13 +48,6 @@ fn client(h: &oracle_aether::server::ServerHandle) -> Client {
 fn reset_restores_the_power_on_anchor() {
     let h = spawn_system("rs-anchor", machine(), 64);
     let mut c = client(&h);
-    let ram = |c: &mut Client| {
-        c.ok(
-            "emulator/read_memory",
-            json!({"addr": "0xFF0000", "len": 64}),
-        )["bytes"]
-            .clone()
-    };
     let boot_ram = ram(&mut c);
     let boot_hash = c.ok("emulator/state_hash", json!({}))["combined"].clone();
     c.ok("emulator/run_frames", json!({"frames": 5}));
@@ -110,6 +114,13 @@ fn run_state_is_preserved_both_ways() {
 }
 
 /// Watchpoints and checkpoints survive a reset (contract: they survive).
+///
+/// The checkpoint is taken **four frames in, not at the anchor**, and that is the whole design of this
+/// test. A checkpoint captured at the anchor describes the same machine the reset produces, so the
+/// closing `restore` would move nothing and a restore that silently did nothing would pass — the
+/// surviving-handle assertions would carry the test on their own. Capturing a machine the reset
+/// destroys makes the restore observable: the RAM probe has to come *back* to a value the reset had
+/// already thrown away.
 #[test]
 fn watch_and_checkpoint_surfaces_survive() {
     let h = spawn_system("rs-survive", machine(), 64);
@@ -119,12 +130,24 @@ fn watch_and_checkpoint_surfaces_survive() {
         json!({"addr": SENTINEL, "write": true}),
     );
     let handle = w["watch"].clone();
+
+    // Move off the anchor first, so the captured machine and the post-reset machine differ.
+    let anchor_ram = ram(&mut c);
+    c.ok("emulator/run_frames", json!({"frames": 4}));
+    let captured_ram = ram(&mut c);
+    assert_ne!(
+        anchor_ram, captured_ram,
+        "sanity: the checkpoint is being taken somewhere the reset cannot land"
+    );
     let cp = c.ok("emulator/checkpoint", json!({}));
     let cp_id = cp["id"]
         .as_str()
         .expect("a checkpoint id is a string")
         .to_string();
+
     c.ok("emulator/reset", json!({}));
+    assert_eq!(anchor_ram, ram(&mut c), "the reset really did land");
+
     let list = c.ok("emulator/watchpoint_list", json!({}));
     assert!(
         list["watches"]
@@ -141,10 +164,18 @@ fn watch_and_checkpoint_surfaces_survive() {
             .unwrap()
             .iter()
             .any(|x| x["id"] == json!(cp_id)),
-        "the checkpoint survives and is restorable"
+        "the checkpoint survives the reset"
     );
-    // And it IS restorable after the reset:
-    c.ok("emulator/restore", json!({ "id": &cp_id }));
+
+    // …and it is still a *usable* checkpoint, not merely a surviving row: restoring it brings back the
+    // machine the reset discarded.
+    let r = c.ok("emulator/restore", json!({ "id": &cp_id }));
+    assert_eq!(r["frame"], json!(4), "restored to the capture coordinate");
+    assert_eq!(
+        captured_ram,
+        ram(&mut c),
+        "the pre-reset machine came back byte-for-byte"
+    );
 }
 
 /// §8 item 20 closure, asserted locally: the key set is exact.

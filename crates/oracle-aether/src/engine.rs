@@ -2082,6 +2082,10 @@ impl Engine {
     /// a hosted player resyncs off `PumpReport::rom_changed`.
     fn reset(&mut self, _params: &Value) -> Result<Value, RpcError> {
         self.sys.reset();
+        // Held pads clear because a reset is a cold start and a cold start has nobody holding anything:
+        // the debugger's injected input is the debugger's state, not the machine's, and a `hold` left
+        // armed across a reset would silently steer the boot sequence — the exact preamble a scene
+        // reproduction depends on being deterministic. (`reload_rom` clears them for the same reason.)
         self.held = [Pad::default(); 2];
         self.invalidate_screen();
         self.rom_generation += 1;
