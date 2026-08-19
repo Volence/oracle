@@ -1297,9 +1297,11 @@ impl Engine {
                 d
             }
             (None, Some(v)) => {
+                // D9 category 2: a count/width-bearing number is a JSON number, never a hex string. The
+                // citation stays here rather than in the message — the client has no D9 to look up.
                 let Some(value) = v.as_u64() else {
                     return Err(RpcError::invalid_params(
-                        "`value` must be a non-negative integer (D9 category 2)",
+                        "`value` must be a non-negative integer",
                     ));
                 };
                 let width = match params.get("width").and_then(Value::as_u64) {

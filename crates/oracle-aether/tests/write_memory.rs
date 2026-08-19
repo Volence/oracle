@@ -83,29 +83,48 @@ fn the_mirror_window_is_writable_and_aliases() {
     );
 }
 
-/// Exactly one payload spelling — all wrong shapes are -32602, before any write happens.
+/// Exactly one payload spelling — all wrong shapes are -32602, **before any write happens**.
+///
+/// The probe cell is load-bearing rather than decorative, and getting it there took two steps. Every
+/// refusal below carries a `0x00`/`0x01`/`0x05`-shaped payload, and a leaked byte of that shape is
+/// **indistinguishable from reset RAM** — so the cell is first poked with a sentinel through the
+/// legitimate path, and the post-loop assertion is that the sentinel *survived*. A handler that wrote
+/// before it refused would have overwritten it with the very payload it was refusing.
 #[test]
 fn payload_spelling_is_exactly_one_of_two() {
+    const PROBE: &str = "0xFF0000";
     let h = spawn_system("wm-spelling", machine(), 64);
     let mut c = client(&h);
+    c.ok(
+        "emulator/write_memory",
+        json!({"addr": PROBE, "bytes": "0xA5"}),
+    );
+    let baseline = c.ok("emulator/read", json!({"addr": PROBE, "len": 1}));
+    assert_eq!(
+        baseline["bytes"],
+        json!("0xA5"),
+        "the sentinel is in place before a single refusal is issued"
+    );
+
     for bad in [
-        json!({"addr": "0xFF0000", "bytes": "0x00", "value": 1, "width": 1}), // both
-        json!({"addr": "0xFF0000"}),                                          // neither
-        json!({"addr": "0xFF0000", "bytes": "0x00", "width": 1}),             // width with bytes
-        json!({"addr": "0xFF0000", "value": 5}),                              // value sans width
-        json!({"addr": "0xFF0000", "value": 256, "width": 1}), // value overflows width
-        json!({"addr": "0xFF0000", "bytes": "0xABC"}),         // odd digit count
-        json!({"addr": "0xFF0000", "bytes": "0x"}),            // empty payload
+        json!({"addr": PROBE, "bytes": "0x00", "value": 1, "width": 1}), // both
+        json!({"addr": PROBE}),                                          // neither
+        json!({"addr": PROBE, "bytes": "0x00", "width": 1}),             // width with bytes
+        json!({"addr": PROBE, "value": 5}),                              // value sans width
+        json!({"addr": PROBE, "value": 256, "width": 1}),                // value overflows width
+        json!({"addr": PROBE, "bytes": "0xABC"}),                        // odd digit count
+        json!({"addr": PROBE, "bytes": "0x"}),                           // empty payload
     ] {
         let e = c.err("emulator/write_memory", bad.clone());
         assert_eq!(e["code"], json!(-32602), "refused: {bad}");
     }
-    // Nothing above wrote anything:
-    let back = c.ok("emulator/read", json!({"addr": "0xFF0000", "len": 1}));
-    assert_ne!(
-        back["bytes"],
-        json!("0x5A"),
-        "sanity: probe cell untouched by refusals"
+
+    // Not one of them touched the cell — and a leak would be visible, because the sentinel is a byte
+    // none of the refused payloads carries.
+    let back = c.ok("emulator/read", json!({"addr": PROBE, "len": 1}));
+    assert_eq!(
+        back["bytes"], baseline["bytes"],
+        "a refusal that wrote first would have clobbered the sentinel"
     );
 }
 
@@ -149,9 +168,10 @@ fn a_free_running_machine_refuses_the_poke() {
     assert_eq!(e["data"]["reason"], json!("machineRunning"));
 }
 
-/// Symbol addressing refusals: no table loaded is -32012.
+/// Symbol addressing refusals: no table loaded is -32012. The resolving half is deliberately not
+/// re-exercised here — `resolve_target` is shared machinery, already pinned where it was introduced.
 #[test]
-fn symbol_paths_resolve_and_refuse() {
+fn symbol_addressing_refuses_without_a_table() {
     let h = spawn_system("wm-sym", machine(), 64);
     let mut c = client(&h);
     let e = c.err(
