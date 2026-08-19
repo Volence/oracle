@@ -511,3 +511,74 @@ old-instrument spread: PENDING (five boots per state)
 9. **A stated last-frame semantic**, so `frames: sample - 1` stops being folklore (§7.2).
 10. **A/B against the Phase-0 corpus** as the primary acceptance, with the interrupt buckets
     expected to disagree and the disagreement explained rather than tolerated (§8).
+
+---
+
+## 10. Addendum — the three shape-check answers (relayed 2026-08-19)
+
+*Added 2026-08-19 after CR-26's adjudication, which recorded these answers as **COULD NOT VERIFY** —
+*"relayed, exist in no committed artifact"* (`docs/2026-08-19-ruling-cr26.md:184-186`, ruling S3). They are
+committed here so the CR can cite an artifact instead of a transcript, and so the provenance is on the
+record with its limits stated rather than implied.*
+
+**Provenance, and what kind of source this is.** Three questions were sent to the Aeon overseer on
+2026-08-19, at the controller ruling's direction — *"Demand-side shape-check runs in parallel (three
+questions sent: walker-fit field, stall-gate handling, `perFrame[]` interest)"*
+(`docs/2026-08-19-ruling-profiler-recon.md:88-89`). The answers came back the same day in a cross-session
+message from the Aeon overseer, relayed into this session by the controller and **controller-attested**.
+
+**This section is a transcription of that relay, not a quotation from a file in `aeon`.** Everything else in
+this document is anchored `file:line` into the consumer's own source; these three are not, and cannot be
+until the answers land in an aeon-side artifact. That is the same discipline §8 applies to the parity
+corpus: **an aeon-side anchor is PENDING**, and none is invented here. What *is* independently verifiable is
+the effect: every pin below is present in the amendment text and in the schema fragments, where an
+adjudicator has checked it (`docs/2026-08-19-ruling-cr26.md`, HELD rows).
+
+### 10.1 Which cycle field the walker fit wants — **inclusive**
+
+> Every consumer they have reads rows **inclusively**. Their F-series measurement takes the HBlank
+> trampoline's row as the whole fire *including callees*, and their Task-4 marginal method prices callees
+> inside the caller by construction. `cyclesSelf` is welcome and changes nothing they do today.
+
+Closes the question ruling Q3 left open (*"Which one the parallax-walker fit actually needs is **asked of
+the demand side**"*, `docs/2026-08-19-ruling-profiler-recon.md:31-34`). It confirms the shape rather than
+changing it: `cycles` stays inclusive and floor-compatible, `cyclesSelf` ships beside it. It also sharpens
+§4's warning above — the inclusive-vs-self hazard on Tasks 2 and 4 is now a *known* property of their fit,
+not an undeclared one.
+
+### 10.2 What form the stall-gate subtraction takes — **`cycles - stallCycles`, with two pins**
+
+> Their gates would reconcile stall-inclusive truth against their `.emp`-derived ideal constants as
+> `cycles - stallCycles == constant`. Two things are asked for explicitly:
+>
+> **(a)** `stallCycles` keyed **identically** to `cycles` on the same row — same routine keying, same
+> divided-inside exactness — because a stall figure with different aggregation semantics would poison the
+> subtraction rather than enable it.
+>
+> **(b)** a **normative one-line definition of what counts as a stall**, pinned in the contract, so that a
+> future stall source is a visible schema and amendment event rather than a silent semantic drift under
+> green gates.
+
+Both pins are in the amendment: (a) as the *"subset of `cycles` on the same row, keyed identically to it"*
+wording in the §6 blockquote and in `stallCycles`'s own schema description, and (b) as the three enumerated
+stall conditions in the same two places.
+
+### 10.3 Whether they want per-frame rows — **record-and-later**
+
+> Not consumed now. Worth recording for later lag and famine analysis.
+
+Unchanged from ruling Q1: `perFrame` ships **opt-in and default-off**, bounded. The answer is also what
+makes CR-26's migration delta 2 load-bearing — with no ring armed, a `frames` parameter is refused, so the
+probe drops the parameter rather than the `- 1` alone.
+
+### 10.4 The Task-5 correction they made mid-session
+
+Relayed with the answers, and it is a change on *their* side rather than a request on ours: on receiving the
+stall finding (§5 above, and the design doc's §A.3), their in-flight Phase-0 measurement **corrected its
+DMA-stall task mid-session**. That row now records the old instrument's blindness as the finding — loud on
+unmeasurable, citing the recon — instead of shipping a confident undercount, and every row of the parity
+corpus is to carry an *"ideal-cycle by construction"* caveat naming what its cycles do and do not include.
+
+**Why that matters to the acceptance protocol rather than merely being good news:** the corpus will state
+its own basis. A delta on a stall-touching row then starts from a documented difference between two
+instruments instead of an argued one, which is exactly the difference between a finding and a tolerance.
