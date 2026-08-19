@@ -44,6 +44,16 @@ not, and `space` already covers `bus`/`vram`/`cram`/`vsram`. The missing half is
 With those three, their `ab_runner` re-points at `oracle-next` and their screenshot gate closes
 "without the C++ surgery".
 
+> **Tier 1 SHIPPED 2026-08-18.** All three methods are live on the bus, contract-first (§11.13 in
+> `empyrean`, schema re-vendored, handlers after). The MCP coverage sweep runs **31-for-31** through
+> the real `call_tool` path against `aeon/s4.debug.bin`. Handoff:
+> `docs/2026-08-18-tier1-bus-methods.md`. **The `ab_runner` re-point is now unblocked** — and running
+> it is the finish line nobody has crossed yet; the sweep proves our server answers, not that their
+> gate closes.
+>
+> Tier 2 item 4 (instruction stepping) is **still unruled** and the collision below still stands:
+> do not build it without a ruling.
+
 ### Tier 2 — their daily debugging loop
 
 4. **Instruction stepping** — `step`, `step_over`, `step_out`. **See the collision below.**

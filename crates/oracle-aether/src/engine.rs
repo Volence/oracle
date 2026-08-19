@@ -33,6 +33,9 @@ use crate::outbound::Subscribers;
 use crate::rpc::{self, code, RpcError};
 use oracle_core::bus::{Fanout, Observe, StopWhen};
 use oracle_core::io::Pad;
+// The 68000's own bus trait, brought in for `emulator/write_memory`: a poke travels the same `write8`
+// the CPU drives, so the hardware mirror masking and the region decode are the machine's, not ours.
+use oracle_core::m68000::bus68k::Bus68k;
 use oracle_core::render::{CandidateVerdict, Layer, PixelState};
 use oracle_core::scanline_capture::{Retain, ScanlineCapture};
 use oracle_core::symbols::{BindingFault, RomBinding, SymbolTable};
@@ -53,6 +56,8 @@ const WORK_RAM_LO: u32 = 0x00E0_0000;
 const WORK_RAM_HI: u32 = 0x00FF_FFFF;
 /// The 68000 drives 24 address lines; anything above this cannot be a bus address.
 const BUS_ADDR_MAX: u32 = 0x00FF_FFFF;
+/// Function code for the debug poke path: supervisor data, matching what the replay runner arms with.
+const FC_SUPERVISOR_DATA: u8 = 5;
 /// Active display height in lines (the region `render_line` covers).
 const ACTIVE_LINES: u16 = 224;
 
@@ -65,6 +70,16 @@ pub struct EngineConfig {
     pub max_run_frames: u64,
     /// Ceiling for one memory/VRAM read, per `protocol.md` §6 (`len`? ≤ 4096).
     pub max_read_len: u64,
+    /// Ceiling for one `emulator/write_memory` payload, per `protocol.md` §6 / §11.13. Advertised as
+    /// `limits.maxWriteLen`, which the schema makes REQUIRED for any server advertising the method — and
+    /// over it the poke is **refused, never truncated**: a truncating write reports a success the caller
+    /// cannot distinguish from a complete one.
+    pub max_write_len: u64,
+    /// Ceiling for one `emulator/memory_hash` range, per `protocol.md` §6 / §11.13. Advertised as
+    /// `limits.maxHashLen`. Far larger than `max_read_len` on purpose: a hash returns a fixed-size answer,
+    /// so the ceiling here bounds work rather than reply size, and hashing a whole 4 MiB cartridge window
+    /// is the row's headline use.
+    pub max_hash_len: u64,
     /// Ceiling for one `emulator/play_input` timeline (`protocol.md` §6, §11.11). Advertised as
     /// `limits.maxInputRows` because a client that must hit a limit to learn it loses the work it was
     /// doing when it found out.
@@ -102,6 +117,12 @@ impl Default for EngineConfig {
         Self {
             max_run_frames: 3600,
             max_read_len: 4096,
+            // The schema's own `len` maximum for the row (4096 bytes), which is also the house read
+            // ceiling: a poke and a read-back should be able to name the same length.
+            max_write_len: 4096,
+            // The schema's own `len` maximum for `emulator/memory_hash` (4 MiB) — one whole cartridge
+            // window in a single call.
+            max_hash_len: 4_194_304,
             max_input_rows: 256,
             max_symbol_matches: 5,
             // The contract's own advertised example (`"checkpoints":{"supported":true,"cap":8}`). A
@@ -271,6 +292,21 @@ pub const METHODS: &[MethodSpec] = &[
         name: "emulator/reload_rom",
         handler: Engine::reload_rom,
         summary: "reload the ROM from disk and reset (emits romReloaded)",
+    },
+    MethodSpec {
+        name: "emulator/write_memory",
+        handler: Engine::write_memory,
+        summary: "poke bytes into the work-RAM window (paused machine only; refused never clipped)",
+    },
+    MethodSpec {
+        name: "emulator/reset",
+        handler: Engine::reset,
+        summary: "drive the /RESET sequence — back to the power-on anchor, SRAM and symbols kept",
+    },
+    MethodSpec {
+        name: "emulator/memory_hash",
+        handler: Engine::memory_hash,
+        summary: "fingerprint a byte range (FNV-1a-64 + CRC-32) without moving it — the hash state_hash cannot give",
     },
 ];
 
@@ -829,6 +865,8 @@ impl Engine {
                 "maxReadLen": self.config.max_read_len,
                 "maxLineBytes": rpc::MAX_LINE_BYTES,
                 "maxInputRows": self.config.max_input_rows,
+                "maxWriteLen": self.config.max_write_len,
+                "maxHashLen": self.config.max_hash_len,
             },
             // What the `frame` in every stamp actually *means* (`F-TRACE-PAL`). Advertised once, here,
             // rather than repeated on every reply: it is a property of the machine, not of the answer.
@@ -967,9 +1005,11 @@ impl Engine {
     ///
     /// Bypassing is the right call for an inspection API (no side effects, no open-bus latch churn, no
     /// FIFO), but it means the value can differ from what a CPU read at the same address would return —
-    /// so every reply built on this carries a `caveat` saying so. That is exactly the landmine the recon
-    /// found in the sibling's `write_vram`, which bypasses the VDP port path and *"nothing in its
-    /// docstring says so"*.
+    /// so the read-shaped replies built on this (`read`, `read_memory`, `read_vram`) each carry a
+    /// `caveat` saying so. That is exactly the landmine the recon found in the sibling's `write_vram`,
+    /// which bypasses the VDP port path and *"nothing in its docstring says so"*. Not every caller wants
+    /// that caveat, though: `memory_hash` is also built on this and deliberately carries none — a
+    /// fingerprint's provenance note lives in its own contract row, not in the reply envelope.
     fn debug_read(&self, addr: u32, len: usize) -> Result<(Vec<u8>, &'static str), RpcError> {
         let end = (addr as u64) + (len as u64) - 1;
         if (WORK_RAM_LO..=WORK_RAM_HI).contains(&addr) {
@@ -1228,6 +1268,90 @@ impl Engine {
             out["symbolDisp"] = json!(disp);
         }
         Ok(out)
+    }
+
+    /// `emulator/write_memory` — the poke primitive (§6 memory, CR-21 / §11.13).
+    ///
+    /// Work-RAM window only, refused never clipped; exactly one payload spelling; requires a paused
+    /// machine (named in §6's run-control state rule for `press`'s reason — a poke mid-free-run
+    /// mutates the timeline just as surely). Bytes travel the bus path, so hardware mirror masking
+    /// applies and no `ram_mut` debug back door exists on core. The sink is `()` on purpose: a poke
+    /// is a debugger access, not a guest access — it is never offered to the watch surface, because
+    /// a hit's `pc` names the instruction that drove the access and a poke has none to name.
+    fn write_memory(&mut self, params: &Value) -> Result<Value, RpcError> {
+        self.require_paused("emulator/write_memory")?;
+        let addr = self.resolve_target(params)?;
+        let data: Vec<u8> = match (params.get("bytes"), params.get("value")) {
+            (Some(_), Some(_)) => {
+                return Err(RpcError::invalid_params(
+                    "`bytes` and `value` are alternatives — pass exactly one",
+                ))
+            }
+            (Some(b), None) => {
+                if params.get("width").is_some() {
+                    return Err(RpcError::invalid_params(
+                        "`width` goes with `value`; a `bytes` payload carries its own length",
+                    ));
+                }
+                let d = hex::parse_bytes("bytes", b)?;
+                if d.is_empty() {
+                    return Err(RpcError::invalid_params(
+                        "`bytes` is empty — nothing to write",
+                    ));
+                }
+                if d.len() as u64 > self.config.max_write_len {
+                    return Err(RpcError::invalid_params(format!(
+                        "`bytes` is {} bytes; the ceiling is limits.maxWriteLen = {} — refused, never truncated",
+                        d.len(),
+                        self.config.max_write_len
+                    )));
+                }
+                d
+            }
+            (None, Some(v)) => {
+                // D9 category 2: a count/width-bearing number is a JSON number, never a hex string. The
+                // citation stays here rather than in the message — the client has no D9 to look up.
+                let Some(value) = v.as_u64() else {
+                    return Err(RpcError::invalid_params(
+                        "`value` must be a non-negative integer",
+                    ));
+                };
+                let width = match params.get("width").and_then(Value::as_u64) {
+                    Some(w @ (1 | 2 | 4)) => w as usize,
+                    Some(_) => return Err(RpcError::invalid_params("`width` must be 1, 2 or 4")),
+                    None => {
+                        return Err(RpcError::invalid_params(
+                            "`value` requires `width` (1, 2 or 4)",
+                        ))
+                    }
+                };
+                if value >= 1u64 << (width * 8) {
+                    return Err(RpcError::invalid_params(format!(
+                        "`value` {value} does not fit width {width}"
+                    )));
+                }
+                // Big-endian, as the 68000 stores.
+                value.to_be_bytes()[8 - width..].to_vec()
+            }
+            (None, None) => {
+                return Err(RpcError::invalid_params(
+                    "one of `bytes` (hex string) or `value`+`width` is required",
+                ))
+            }
+        };
+        let end = u64::from(addr) + data.len() as u64 - 1;
+        if !(WORK_RAM_LO..=WORK_RAM_HI).contains(&addr) || end > u64::from(WORK_RAM_HI) {
+            return Err(out_of_range(
+                addr,
+                "only the work-RAM window ($E00000-$FFFFFF) is writable; ROM and I/O writes are refused",
+            ));
+        }
+        let mut sink = ();
+        let mut bus = self.sys.mega_bus(&mut sink);
+        for (i, b) in data.iter().enumerate() {
+            bus.write8(addr + i as u32, FC_SUPERVISOR_DATA, *b);
+        }
+        Ok(json!({ "addr": hex::addr(addr), "len": data.len() }))
     }
 
     /// `emulator/read` — one byte read across the four address spaces (§6 memory, added by §11.12 / CR-20).
@@ -1493,6 +1617,29 @@ impl Engine {
             out["framebufferSource"] = json!(if from_raster { "raster" } else { "stateRender" });
         }
         Ok(out)
+    }
+
+    /// `emulator/memory_hash` — fingerprint a byte range without moving it (§6 memory, CR-23 /
+    /// §11.13). A pure read: no `require_paused`, answered at the engine thread's single coherent
+    /// point like every other handler. Routes via `debug_read` (the two-region rule the contract
+    /// spells out); the FNV is `state_hash`'s family with the contract's pinned parameters, the
+    /// CRC-32 is IEEE/zlib so a cart-window hash matches the ROM file.
+    fn memory_hash(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let addr = self.resolve_target(params)?;
+        let Some(l) = params.get("len") else {
+            return Err(RpcError::invalid_params(
+                "`len` is required — a hash without a length hashes nothing",
+            ));
+        };
+        let len = hex::parse_count("len", l, 1, self.config.max_hash_len)?;
+        let (data, region) = self.debug_read(addr, len as usize)?;
+        Ok(json!({
+            "addr": hex::addr(addr),
+            "len": data.len(),
+            "region": region,
+            "fnv1a64": oracle_core::state_hash::hex(oracle_core::state_hash::fnv1a_bytes(&data)),
+            "crc32": format!("0x{:08X}", crate::crc32::crc32(&data)),
+        }))
     }
 
     /// `emulator/sprites` — the sprite attribute table as a table (§6, added by §11.10 / CR-18).
@@ -1952,6 +2099,27 @@ impl Engine {
             out["caveat"] = json!(c);
         }
         Ok(out)
+    }
+
+    /// `emulator/reset` — drive the /RESET sequence against the current cartridge (§6 run-control,
+    /// result defined by CR-22 / §11.13).
+    ///
+    /// Deliberately NOT `require_paused`: a reset replaces the machine wholesale between frames —
+    /// it advances nothing and cannot fight the free-run loop — and the contract forbids changing
+    /// the run state here (paused stays paused, free-running keeps running). Symbols are KEPT: the
+    /// image is unchanged, so the binding that survived boot survives this (contrast `reload_rom`,
+    /// which re-validates). The generation bump is `restore`'s precedent — the timeline jumped, and
+    /// a hosted player resyncs off `PumpReport::rom_changed`.
+    fn reset(&mut self, _params: &Value) -> Result<Value, RpcError> {
+        self.sys.reset();
+        // Held pads clear because a reset is a cold start and a cold start has nobody holding anything:
+        // the debugger's injected input is the debugger's state, not the machine's, and a `hold` left
+        // armed across a reset would silently steer the boot sequence — the exact preamble a scene
+        // reproduction depends on being deterministic. (`reload_rom` clears them for the same reason.)
+        self.held = [Pad::default(); 2];
+        self.invalidate_screen();
+        self.rom_generation += 1;
+        Ok(json!({ "deferred": false }))
     }
 
     fn reload_rom(&mut self, params: &Value) -> Result<Value, RpcError> {

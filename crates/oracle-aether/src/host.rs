@@ -131,8 +131,21 @@ pub struct PumpReport {
     /// reload) — in which case there is nothing to present and the caller keeps what it has until its own
     /// next frame.
     pub screen_changed: bool,
-    /// The cartridge was replaced (`emulator/reload_rom`, or an `emulator/restore` that may have). Anything
-    /// the caller derives from the ROM bytes — a save-state fingerprint, a symbol listing — is now stale.
+    /// **The machine was replaced wholesale under the caller** — not advanced, replaced — so anything it
+    /// derives from that machine rather than reading back out of it is now stale: a save-state fingerprint,
+    /// a symbol listing, a cached ROM header, an audio clock keyed to the old timeline.
+    ///
+    /// Three producers raise it, and the name is narrower than the meaning because the first two came first:
+    ///
+    /// - `emulator/reload_rom` — different cartridge bytes.
+    /// - `emulator/restore` — a checkpoint carries its whole machine, ROM included (D13 rule 2), so it *may*
+    ///   have brought a different cartridge back; the flag moves unconditionally rather than guessing.
+    /// - `emulator/reset` — the same cartridge, back at its power-on anchor. The bytes did not change, but
+    ///   everything clocked to the machine did, and a caller that resynchronised for the other two and not
+    ///   for this one would be holding an audio clock and a frame counter from a timeline that no longer
+    ///   exists.
+    ///
+    /// Read it as "resynchronise", not as "re-read the ROM".
     pub rom_changed: bool,
     /// The drain ended on [`HostConfig::pump_budget`] rather than on an empty queue. Anything still queued
     /// is taken next iteration; nothing is ever lost. Note it does **not** promise that something *was*

@@ -15,7 +15,7 @@ use oracle_core::system::System;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -129,9 +129,15 @@ struct Client {
 
 impl Client {
     fn connect(p: &Player) -> Self {
+        Self::connect_path(&p.socket)
+    }
+
+    /// The same connect against a bare socket path — for the one test that runs the host loop itself
+    /// rather than handing it to [`Player`], because what it has to observe is the `PumpReport`.
+    fn connect_path(socket: &Path) -> Self {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            match UnixStream::connect(&p.socket) {
+            match UnixStream::connect(socket) {
                 Ok(s) => {
                     s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
                     return Self {
@@ -397,4 +403,53 @@ fn a_client_that_never_reads_cannot_stall_the_player() {
         .as_u64()
         .is_some());
     drop(dead);
+}
+
+/// **A client-driven `emulator/reset` reaches the player as `rom_changed`.** The machine a hosted
+/// player is holding was replaced under it between two of its own frames, so everything it derives
+/// from that machine — a symbol listing, a save-state fingerprint, its audio clock — is stale. That
+/// is the same signal `restore` and `reload_rom` raise, and it is the whole reason the reset handler
+/// bumps the ROM generation.
+///
+/// This test runs the host loop in the test thread rather than through [`Player`], because the thing
+/// under test is the `PumpReport` itself and only the loop sees one.
+#[test]
+fn a_client_reset_reaches_the_player_as_a_rom_change() {
+    let socket = temp_socket("reset-report");
+    let mut sys = System::new(0x5EED);
+    sys.load_rom(oracle_core::testrom::build());
+    sys.reset();
+
+    let mut host = Host::new(HostConfig::default());
+    host.set_machine_info(MachineInfo {
+        rom_path: Some("testrom".into()),
+        ..MachineInfo::default()
+    });
+    host.serve(Some(socket.clone())).expect("bind the socket");
+
+    let client = std::thread::spawn(move || {
+        let mut c = Client::connect_path(&socket);
+        c.handshake(false);
+        c.ok("emulator/reset", json!({}))
+    });
+
+    // Drain until the reset lands. A handler that did not bump the generation never sets the flag, and
+    // this fails on the deadline rather than hanging the suite.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut rom_changed = false;
+    let mut calls = 0;
+    while !rom_changed {
+        assert!(
+            Instant::now() < deadline,
+            "the reset never surfaced as rom_changed"
+        );
+        let r = host.pump(&mut sys);
+        calls += r.calls;
+        rom_changed = r.rom_changed;
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    let result = client.join().expect("the client thread");
+    assert_eq!(result["deferred"], json!(false));
+    assert!(calls >= 2, "initialize and the reset were both answered");
 }
