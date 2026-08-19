@@ -483,6 +483,221 @@ fn a_fill_or_copy_costs_cycles_but_no_stall() {
     }
 }
 
+// --- The sample window ------------------------------------------------------------------------------
+
+/// **The reconciliation identity.** Every cycle the sample retired is charged to exactly one frame, and
+/// every frame's accrual reaches its row — at a boundary while it is still running, at its pop for the
+/// remainder. So the rows account for the sample exactly, with no tolerance:
+///
+/// ```text
+/// Σ routines.self + Σ interrupts.self + unattributed == sample_cycles
+/// ```
+///
+/// This is the assertion that makes every other number here trustworthy: a leak anywhere — a frame whose
+/// cycles never reach a row, a checkpoint that double-counts, an interrupt suppressed without being
+/// accounted for — shows up as a mismatch in one line. It is checked across shapes deliberately, because
+/// each one stresses a different path (nested calls, recursion, preemption, a stalled DMA, a routine that
+/// is always mid-call at the boundary).
+#[test]
+fn the_rows_account_for_the_sample_exactly() {
+    for shape in [
+        ProfilerShape::CallsLeaf { k: 3 },
+        ProfilerShape::TwoLevel,
+        ProfilerShape::Recursive { depth: 3 },
+        ProfilerShape::Dispatch,
+        ProfilerShape::IdleInRoutine,
+        ProfilerShape::Interrupts {
+            hint: true,
+            vint: true,
+        },
+        ProfilerShape::ModeSwitch,
+        ProfilerShape::Stall {
+            kind: StallKind::Dma,
+        },
+    ] {
+        let prof = profiler_of(shape, 4);
+        let r = prof.report();
+        let rows: u64 = prof.sample_routines().values().map(|c| c.self_cycles).sum();
+        let buckets: u64 = prof
+            .sample_interrupts()
+            .values()
+            .map(|c| c.self_cycles)
+            .sum();
+        assert_eq!(
+            rows + buckets + r.unattributed_cycles,
+            r.sample_cycles,
+            "{shape:?}: rows {rows} + buckets {buckets} + unattributed {} must equal the sample {}",
+            r.unattributed_cycles,
+            r.sample_cycles
+        );
+        assert!(
+            r.sample_cycles > 0,
+            "{shape:?}: a sample of nothing proves nothing"
+        );
+    }
+}
+
+/// **A routine that never returns still gets a row.** The outer loop of any real program is exactly this:
+/// entered once (or never observed being entered at all) and running when the sample closes. Reporting
+/// nothing for it while its cycles inflate the total is the worst of both — the reader sees a large
+/// `totalCycles` and rows that do not add up to it.
+///
+/// `calls` stays `0`, which is the honest signal: cycles were observed, a completed invocation was not.
+#[test]
+fn a_routine_still_running_at_the_close_reports_cycles_with_no_completed_call() {
+    let prof = profiler_of(ProfilerShape::CallsLeaf { k: 3 }, 4);
+    let r = prof.report();
+
+    // The fixture's outer loop was never called from anywhere the profiler saw, so it is the synthesized
+    // root: a row at whatever address retired first, which is somewhere inside the loop rather than its
+    // entry. It is the only row with no completed call.
+    let open: Vec<(u32, u64)> = prof
+        .sample_routines()
+        .iter()
+        .filter(|(_, c)| c.calls == 0)
+        .map(|(&a, c)| (a, c.self_cycles))
+        .collect();
+    assert_eq!(
+        open.len(),
+        1,
+        "exactly one never-completed row — the loop the sample opened inside; saw {open:#06X?}"
+    );
+    assert!(
+        open[0].1 > 0,
+        "and it carries the cycles it actually burned, not a placeholder"
+    );
+    // It dominates: the leaf is three short calls, the loop is the rest of the frame.
+    assert!(
+        open[0].1 > row(&r, PROF_LEAF).self_cycles,
+        "the loop outweighs the leaf it calls ({} vs {})",
+        open[0].1,
+        row(&r, PROF_LEAF).self_cycles
+    );
+}
+
+/// **Nothing from before the sample leaks into it.** Arming mid-run leaves frames open whose accrued time
+/// is however long the machine had already been running — unbounded, and nothing to do with the frames
+/// being measured. The opening boundary forgets it, keeping the frame itself (a call in flight is still one
+/// call, and its return must still match) while discarding what it accrued.
+///
+/// Stated exactly, which a ROM cannot do: a real fixture's per-frame cost jitters by a few cycles depending
+/// where in its wait loop the sample opens, so "the same to the cycle" is not a claim a ROM can support.
+/// Here the stream is the specification.
+#[test]
+fn cycles_from_before_the_opening_boundary_do_not_leak_in() {
+    let mut p = Profiler::new();
+    // Three steps BEFORE the sample opens: 30 cycles the sample must never see.
+    for i in 0..3 {
+        p.on_step_retire(step(0x1000 + i * 2, OP_NOP, S, S));
+    }
+    p.on_frame_boundary(0); // the sample opens here
+    p.on_step_retire(step(0x1006, OP_NOP, S, S));
+    p.on_step_retire(step(0x1008, OP_NOP, S, S));
+    p.on_frame_boundary(1);
+
+    let r = p.report();
+    assert_eq!(
+        r.sample_cycles,
+        2 * STEP_CYCLES,
+        "only the two in-sample steps count; the three before the opening boundary are gone"
+    );
+    // The frame that straddled the boundary is the same frame — kept, not rebuilt — carrying only its
+    // post-boundary accrual.
+    assert_eq!(
+        p.sample_routines().get(&0x1000).map(|c| c.self_cycles),
+        Some(2 * STEP_CYCLES),
+        "the straddling frame reports what it did INSIDE the sample, not what it did before; \
+         rows: {:#06X?}",
+        p.sample_routines().keys().collect::<Vec<_>>()
+    );
+    assert_eq!(p.open_frames(), 1, "and it is still the same open frame");
+}
+
+/// **An interrupt in flight across the opening boundary opens no bucket.** Its acknowledge happened before
+/// the sample, so counting it would report a cost whose entry the sample never saw — the contract's
+/// explicit MUST NOT. This is the ordinary phase, not a corner: a VBlank fires at line 224, which is the
+/// boundary line, so a handler is very often mid-flight exactly here.
+///
+/// Note what is NOT suppressed. The handler's own routine frame is ordinary code that demonstrably ran, so
+/// its post-boundary cycles land in its row as usual; only the *cause* accounting is retroactive-sensitive.
+/// That is why the `unattributed_cycles` escape hatch is normally zero — with a handler row absorbing the
+/// work, a suppressed bucket's own self time is just its entry step, which the boundary already discarded.
+/// The second half below constructs the case where it is not zero, so the identity is closed there too.
+#[test]
+fn an_interrupt_straddling_the_opening_boundary_is_not_bucketed_retroactively() {
+    let mut p = Profiler::new();
+    // Before the sample: an interrupt is taken and its handler starts running.
+    p.on_event(iack(VINT));
+    p.on_step_retire(entry_step(0x2000, OP_NOP, S - 6, S - 6));
+    p.on_step_retire(step(0x3000, OP_NOP, S - 6, S - 6));
+    // The sample opens with that handler still on the stack.
+    p.on_frame_boundary(0);
+    p.on_step_retire(step(0x3002, OP_NOP, S - 6, S - 6));
+    p.on_step_retire(step(0x3004, OP_RTE, S, S)); // it finishes INSIDE the sample
+    p.on_step_retire(step(0x1000, OP_NOP, S, S));
+    p.on_frame_boundary(1);
+
+    assert!(
+        p.sample_interrupts().is_empty(),
+        "the bucket must not be opened after the fact; buckets: {:?}",
+        p.sample_interrupts()
+    );
+    assert_eq!(
+        p.sample_routines().get(&0x3000).map(|c| c.self_cycles),
+        Some(2 * STEP_CYCLES),
+        "but the handler's own code still gets its row: it ran, and the sample watched it run"
+    );
+    // A LATER interrupt, whose acknowledge the sample DID see, is bucketed normally — so this is the
+    // suppression of one unobserved entry, not the bucket machinery being broken.
+    p.on_event(iack(VINT));
+    p.on_step_retire(entry_step(0x2000, OP_NOP, S - 6, S - 6));
+    p.on_step_retire(step(0x3000, OP_RTE, S, S));
+    p.on_frame_boundary(2);
+    assert_eq!(
+        p.sample_interrupts()[&VINT].calls,
+        1,
+        "the interrupt the sample DID see taken is counted"
+    );
+}
+
+/// The `unattributed_cycles` escape hatch, on the one shape that produces it: a suppressed bucket that
+/// accrues time of its OWN inside the sample, because its handler routine has already returned and the
+/// bucket itself is what is left on the stack. Deliberately constructed — the point is not that this is
+/// common (it is not), but that the reconciliation identity stays closed when it happens instead of
+/// quietly losing the cycles.
+#[test]
+fn a_suppressed_buckets_own_time_is_reported_as_unattributed() {
+    let mut p = Profiler::new();
+    p.on_event(iack(VINT));
+    p.on_step_retire(entry_step(0x2000, OP_NOP, S - 6, S - 6)); // bucket, frame at S-6
+    p.on_step_retire(step(0x3000, OP_NOP, S - 6, S - 6)); // the handler's routine frame opens
+    p.on_step_retire(step(0x3002, OP_RTS, S - 2, S - 2)); // ...and returns, leaving the bucket on top
+    p.on_frame_boundary(0); // the sample opens: the bucket is suppressed
+    p.on_step_retire(step(0x3004, OP_NOP, S - 2, S - 2)); // 10 cycles charged to the bucket itself
+    p.on_step_retire(step(0x3006, OP_RTE, S, S)); // 10 more, then it closes
+    p.on_frame_boundary(1);
+
+    let r = p.report();
+    assert!(
+        p.sample_interrupts().is_empty(),
+        "still no retroactive bucket; buckets: {:?}",
+        p.sample_interrupts()
+    );
+    assert_eq!(
+        r.unattributed_cycles,
+        2 * STEP_CYCLES,
+        "the suppressed bucket's own in-sample time is reported, not dropped"
+    );
+    let rows: u64 = p.sample_routines().values().map(|c| c.self_cycles).sum();
+    assert_eq!(
+        rows + r.unattributed_cycles,
+        r.sample_cycles,
+        "and the identity closes: rows {rows} + unattributed {} == sample {}",
+        r.unattributed_cycles,
+        r.sample_cycles
+    );
+}
+
 // --- The exception rules, driven synthetically ------------------------------------------------------
 //
 // The accumulator is a pure function of three inputs — the acknowledge event, the retire stream and the
@@ -532,6 +747,7 @@ const STEP_CYCLES: u64 = 10;
 const OP_NOP: u16 = 0x4E71;
 const OP_JSR_ABS_W: u16 = 0x4EB8;
 const OP_RTE: u16 = 0x4E73;
+const OP_RTS: u16 = 0x4E75;
 
 /// A stack pointer to hang the arithmetic off. Exception frames are six bytes, so the interesting values
 /// are `S`, `S - 6` and `S - 12`.
@@ -654,10 +870,20 @@ fn an_orphan_rte_closes_nothing() {
     // Nor may it close anything else. The frame underneath is whatever was running when the sample
     // opened; an unmatched RTE that popped it would end that span early and attribute the rest of the
     // frame to whatever happened to be beneath.
-    assert!(
-        p.sample_routines().is_empty(),
-        "an unmatched RTE closes NOTHING, not merely no bucket; rows: {:#06X?}",
+    //
+    // "Closed nothing" is visible in two places at once, and both are needed. The frame is still OPEN —
+    // it has a row, because a running routine's cycles are reported as they accrue, but `calls` is zero
+    // because nothing completed it. And the stack still holds it.
+    assert_eq!(
+        p.sample_routines().get(&0x1000).map(|c| c.calls),
+        Some(0),
+        "the frame the RTE crossed is still running: cycles yes, a completed call no; rows: {:#06X?}",
         p.sample_routines().keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        p.open_frames(),
+        1,
+        "and it is still on the stack — the unmatched RTE popped nothing"
     );
     assert_eq!(
         p.report().frame_count,

@@ -48,6 +48,49 @@
 //! boundaries observed *after* the one that opened the sample: *n* boundaries delimit **n − 1** frames, and
 //! an instrument that has seen one boundary and no more reports `0`.
 //!
+//! The opening boundary does two things beyond starting the clock. It **forgets what every live frame had
+//! accrued** — a call in flight keeps its identity and its `entry_sp`, so its return still matches, but the
+//! arbitrary stretch of execution before the sample does not land in the first reported frame. And it
+//! **suppresses** any interrupt frame that is already open, because that bucket's entry was never observed
+//! and the contract forbids opening one retroactively. That is the normal phase rather than a corner case:
+//! a VBlank fires at line 224, which is the boundary line.
+//!
+//! # The reconciliation identity
+//!
+//! Every cycle the sample retired is charged to exactly one frame, and every frame's accrual reaches its
+//! row — at a boundary checkpoint while it is still running, and at its pop for the remainder. So, over the
+//! committed (undivided) sample:
+//!
+//! ```text
+//! Σ routines[*].self_cycles  +  Σ interrupts[*].self_cycles  +  unattributed_cycles  ==  sample_cycles
+//! ```
+//!
+//! exactly, with no tolerance. `unattributed_cycles` is the one escape hatch and it has exactly one source:
+//! a suppressed pre-sample interrupt, whose cycles are real but belong to no bucket. Reporting it keeps the
+//! identity **closed** rather than leaving a silent shortfall for a reader to discover.
+//!
+//! Two consequences worth stating plainly, because they are what a reader of a row needs to know:
+//!
+//! - **A routine still running when the sample closes has a row**, carrying the cycles it has accrued, with
+//!   `calls: 0`. A main loop that never returns is the normal case, and reporting nothing for it while its
+//!   cycles inflated the total would be the worst of both.
+//! - **`calls` counts completed invocations only.** A frame that never returned, and one torn off the stack
+//!   by an `RTE` that unwound past it, contribute cycles but no call — see
+//!   [`Report::abandoned_frames`] for the latter, which is reported so the understatement is visible.
+//!
+//! Inclusive `cycles` is exact **in total** for every completed invocation. Its distribution *across*
+//! frames lags where a callee straddles a boundary: the parent's checkpoint cannot see time still in flight
+//! beneath it, and catches up when the callee pops. `self_cycles` has no such lag, which is why the
+//! identity above is stated on self.
+//!
+//! # A note for the acceptance protocol
+//!
+//! A single 68k→VDP DMA can hold the bus across **more than one** frame boundary. When that happens the
+//! frames it spans each receive a share of a cost that was, from the program's point of view, one
+//! indivisible act — so a per-frame figure covering such a sample is diluted rather than wrong, and a
+//! consumer comparing it against a per-frame ideal should read `sample_cycles` and `frame_count` instead of
+//! the divided row. This is a property of dividing by frames at all, not of the accounting.
+//!
 //! # Cost when detached
 //!
 //! The profiler is caller-owned and attached per-run like every other instrument here; `System` never
@@ -119,6 +162,21 @@ struct Frame {
     child_cycles: u64,
     /// The stall part of `child_cycles`, carried alongside it so the subset relation survives the fold.
     child_stall: u64,
+    /// How much of this frame's totals has already been written into its row by a boundary checkpoint.
+    /// The eventual pop writes only the remainder, so nothing is counted twice and nothing is lost.
+    reported_self: u64,
+    reported_inclusive: u64,
+    reported_inclusive_stall: u64,
+    /// Set on an **interrupt** frame that was already open when the sample opened. Its entry was never
+    /// observed, so it records neither calls nor cycles: the contract forbids retroactively opening a
+    /// bucket, "since a bucket whose entry was never observed would report a cost the sample cannot
+    /// account for". Its cycles are reported as [`Report::unattributed_cycles`] instead of being silently
+    /// dropped — the sample really did spend them.
+    ///
+    /// Routine frames open across the boundary are NOT suppressed: a subroutine that was already running
+    /// and then returns inside the sample completed inside the sample, and its post-boundary cycles are
+    /// honestly its own. Only the bucket rule is retroactive-entry-sensitive.
+    suppressed: bool,
 }
 
 impl Frame {
@@ -127,6 +185,30 @@ impl Frame {
     }
     fn inclusive_stall(&self) -> u64 {
         self.self_stall + self.child_stall
+    }
+    /// What this frame has accrued since its last checkpoint: `(self, inclusive, inclusive stall)`.
+    fn unreported(&self) -> (u64, u64, u64) {
+        (
+            self.self_cycles - self.reported_self,
+            self.inclusive() - self.reported_inclusive,
+            self.inclusive_stall() - self.reported_inclusive_stall,
+        )
+    }
+    /// Mark everything accrued so far as written.
+    fn mark_reported(&mut self) {
+        self.reported_self = self.self_cycles;
+        self.reported_inclusive = self.inclusive();
+        self.reported_inclusive_stall = self.inclusive_stall();
+    }
+    /// Forget everything accrued so far — the sample did not see it.
+    fn zero_accrual(&mut self) {
+        self.self_cycles = 0;
+        self.self_stall = 0;
+        self.child_cycles = 0;
+        self.child_stall = 0;
+        self.reported_self = 0;
+        self.reported_inclusive = 0;
+        self.reported_inclusive_stall = 0;
     }
 }
 
@@ -152,6 +234,14 @@ pub struct Report {
     pub routines: BTreeMap<u32, Counts>,
     /// Per-cause interrupt buckets, keyed by level (4 = HInt, 6 = VInt), each divided by `frame_count`.
     pub interrupts: BTreeMap<u8, Counts>,
+    /// Cycles the sample retired that belong to **no row** — undivided. Today there is exactly one source:
+    /// an interrupt that was already in flight when the sample opened, whose bucket may not be opened
+    /// retroactively. The cycles are real and are counted in `sample_cycles`, so reporting them separately
+    /// is what keeps the reconciliation identity closed instead of leaving an unexplained shortfall.
+    ///
+    /// Normally `0`. Non-zero is the ordinary phase for a ROM whose VBlank handler straddles the opening
+    /// boundary, which is most of them, so it is information rather than an alarm.
+    pub unattributed_cycles: u64,
     /// Frames torn off the shadow stack without completing, over the whole sample — a routine an `RTE`
     /// unwound past, or one displaced by a stack the profiler could not follow. Their **cycles are still
     /// reported** (they ran); their `calls` are not (they never finished). Non-zero means some row's
@@ -177,6 +267,8 @@ pub struct Profiler {
     pending_cycles: u64,
     committed_stall: u64,
     pending_stall: u64,
+    committed_unattributed: u64,
+    pending_unattributed: u64,
     /// Whole frames counted: boundaries seen after the one that opened the sample.
     frames: u64,
     /// Whether the opening boundary has been seen. Until it has, everything accrued is discarded.
@@ -236,9 +328,16 @@ impl Profiler {
     /// Charge `cycles` to the innermost open frame, and to the sample total.
     ///
     /// With no frame open — the sample armed in the middle of straight-line code that has not been called
-    /// from anywhere the accountant saw — a **root frame keyed by the retiring PC** is opened first. That
-    /// is honest rather than synthetic: the address is where execution actually was, and without it the
-    /// cycles would belong to no row and the totals would not reconcile.
+    /// from anywhere the accountant saw — a **root frame keyed by the retiring PC** is opened first,
+    /// without which those cycles would belong to no row and the totals would not reconcile.
+    ///
+    /// **Be honest about what that key is.** It is the address of whatever instruction happened to retire
+    /// first, which is somewhere in the MIDDLE of a routine, not its entry. So the row is real cycles under
+    /// an address that is not an entry point, and a symbol lookup will resolve it to "some label + a
+    /// displacement" rather than to the routine a reader has in mind. It falls under the same rule as any
+    /// unreturned frame — `calls: 0`, because nothing was observed to call it and nothing completes it —
+    /// which is the honest signal that this row was inferred rather than seen. Flagging it as such on the
+    /// wire is a question for the surface that publishes these rows, not for the accumulator.
     fn charge(&mut self, pc: u32, sp: u32, cycles: u64, stall: u64) {
         if self.stack.is_empty() {
             self.stack.push(Frame {
@@ -248,6 +347,10 @@ impl Profiler {
                 self_stall: 0,
                 child_cycles: 0,
                 child_stall: 0,
+                reported_self: 0,
+                reported_inclusive: 0,
+                reported_inclusive_stall: 0,
+                suppressed: false,
             });
         }
         let top = self.stack.last_mut().expect("just ensured non-empty");
@@ -266,33 +369,62 @@ impl Profiler {
     /// a consumer gating with `==` cannot detect. The interrupt's cost is reported in its own bucket and in
     /// its handler's own row instead. The consequence, stated so nobody has to rediscover it: for a routine
     /// row, `cycles == cyclesSelf + (inclusive cycles of its callees)`, and preemption is in neither term.
-    fn pop_frame(&mut self, completed: bool) {
-        let Some(frame) = self.stack.pop() else {
+    /// Move whatever `self.stack[idx]` has accrued since its last checkpoint into its row.
+    ///
+    /// This is the **checkpoint**, and it runs at every frame boundary as well as at the pop. Attributing
+    /// a frame's cycles to the frames they were retired in — rather than banking them all against whichever
+    /// frame the invocation happened to end in — is what makes two things true at once: a routine still
+    /// running at the close of the sample has an honest row (its cycles are already in it, its `calls`
+    /// still zero because it has not finished), and the totals add up exactly, because nothing waits on a
+    /// completion that may never come.
+    fn checkpoint(&mut self, idx: usize) {
+        let frame = &mut self.stack[idx];
+        let (d_self, d_incl, d_incl_stall) = frame.unreported();
+        frame.mark_reported();
+        let suppressed = frame.suppressed;
+        let key = frame.kind;
+        if suppressed {
+            self.pending_unattributed += d_self;
             return;
-        };
-        if !completed {
-            self.abandoned += 1;
         }
-        let inclusive = frame.inclusive();
-        let inclusive_stall = frame.inclusive_stall();
-        let row = match frame.kind {
+        let row = match key {
             FrameKind::Routine { addr } => self.pending.entry(addr).or_default(),
             FrameKind::Interrupt { level, .. } => self.pending_buckets.entry(level).or_default(),
         };
-        row.cycles += inclusive;
-        row.self_cycles += frame.self_cycles;
-        row.stall_cycles += inclusive_stall;
+        row.self_cycles += d_self;
+        row.cycles += d_incl;
+        row.stall_cycles += d_incl_stall;
+    }
+
+    fn pop_frame(&mut self, completed: bool) {
+        if self.stack.is_empty() {
+            return;
+        }
+        // Flush the remainder through the same path a boundary uses, so the two can never disagree.
+        self.checkpoint(self.stack.len() - 1);
+        let frame = self.stack.pop().expect("just checked non-empty");
+        if !completed {
+            self.abandoned += 1;
+        }
         // `calls` counts COMPLETED invocations. A frame torn off the stack without its own return — one an
-        // `RTE` unwound past, or one abandoned by a longjmp-style stack reset — really did run, so its
-        // cycles are recorded; but it never completed, so counting it would report an invocation that has
-        // no end. The cycles are the honest half; the call is the half that would be a fiction.
-        if completed {
-            row.calls += 1;
+        // `RTE` unwound past, or one displaced by a stack the profiler could not follow — really did run,
+        // so its cycles are recorded; but it never completed, so counting it would report an invocation
+        // that has no end. The cycles are the honest half; the call is the half that would be a fiction.
+        if completed && !frame.suppressed {
+            match frame.kind {
+                FrameKind::Routine { addr } => self.pending.entry(addr).or_default().calls += 1,
+                FrameKind::Interrupt { level, .. } => {
+                    self.pending_buckets.entry(level).or_default().calls += 1
+                }
+            }
         }
         if matches!(frame.kind, FrameKind::Routine { .. }) {
             if let Some(parent) = self.stack.last_mut() {
-                parent.child_cycles += inclusive;
-                parent.child_stall += inclusive_stall;
+                // The parent gets the child's FULL lifetime inclusive, not just the unreported remainder:
+                // the parent's own checkpoints could not see time that was still in flight beneath it, and
+                // this is where they catch up.
+                parent.child_cycles += frame.inclusive();
+                parent.child_stall += frame.inclusive_stall();
             }
         }
         // Deliberately no parent.child_cycles for an Interrupt frame. See the doc comment.
@@ -331,6 +463,7 @@ impl Profiler {
             return Report {
                 per_frame_exact: true,
                 abandoned_frames: self.abandoned,
+                unattributed_cycles: self.committed_unattributed,
                 ..Report::default()
             };
         }
@@ -373,6 +506,7 @@ impl Profiler {
             .collect();
         Report {
             abandoned_frames: self.abandoned,
+            unattributed_cycles: self.committed_unattributed,
             frame_count: n,
             sample_cycles: self.committed_cycles,
             total_cycles,
@@ -411,6 +545,10 @@ impl BusEventSink for Profiler {
                 self_stall: 0,
                 child_cycles: 0,
                 child_stall: 0,
+                reported_self: 0,
+                reported_inclusive: 0,
+                reported_inclusive_stall: 0,
+                suppressed: false,
             });
         }
         // 2. An acknowledge seen during this step means this step IS the interrupt entry. `calls` counts
@@ -437,6 +575,10 @@ impl BusEventSink for Profiler {
                 self_stall: 0,
                 child_cycles: 0,
                 child_stall: 0,
+                reported_self: 0,
+                reported_inclusive: 0,
+                reported_inclusive_stall: 0,
+                suppressed: false,
             });
             self.pending_call = Some(r.sp);
         }
@@ -478,7 +620,27 @@ impl BusEventSink for Profiler {
     fn on_frame_boundary(&mut self, _frame: u64) {
         if !self.opened {
             self.opened = true;
+            // **The sample starts here, and it starts clean.** Frames open across this boundary keep their
+            // identity and their `entry_sp` — a call in flight is still one call, and its return must still
+            // match — but everything they accrued BEFORE the sample is forgotten. Without this the first
+            // reported frame is inflated by however long the machine had been running, which is unbounded.
+            //
+            // An interrupt in flight here is additionally SUPPRESSED: its acknowledge happened before the
+            // sample, so opening a bucket for it now would be exactly the retroactive entry the contract
+            // forbids. This is the ordinary phase, not a corner: a VBlank fires at line 224, which is the
+            // boundary line.
+            for frame in &mut self.stack {
+                frame.zero_accrual();
+                if matches!(frame.kind, FrameKind::Interrupt { .. }) {
+                    frame.suppressed = true;
+                }
+            }
         } else {
+            // Every live frame reports what it accrued during the frame just ended, so a routine that has
+            // not returned still has an honest row.
+            for idx in 0..self.stack.len() {
+                self.checkpoint(idx);
+            }
             for (addr, c) in std::mem::take(&mut self.pending) {
                 self.committed.entry(addr).or_default().add(c);
             }
@@ -487,11 +649,13 @@ impl BusEventSink for Profiler {
             }
             self.committed_cycles += self.pending_cycles;
             self.committed_stall += self.pending_stall;
+            self.committed_unattributed += self.pending_unattributed;
             self.frames += 1;
         }
         self.pending.clear();
         self.pending_buckets.clear();
         self.pending_cycles = 0;
         self.pending_stall = 0;
+        self.pending_unattributed = 0;
     }
 }
