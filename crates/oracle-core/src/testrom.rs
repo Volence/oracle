@@ -68,8 +68,43 @@ fn put_long(rom: &mut [u8], at: u32, l: u32) {
 /// The 16-bit displacement of a `Bcc.w`/`BRA.w`/`DBcc` that reaches `target` from an extension word at
 /// `ext_addr`. The 68000 adds the displacement to the PC pointing at the *extension word* (instruction
 /// address + 2), so `disp = target - ext_addr`.
+///
+/// Guarded for the same reason as [`short_disp`] (`F-TESTROM-DISP-GUARD`), with a far wider window: an
+/// out-of-range delta truncated by `as i16` assembles into a *different valid branch* rather than failing.
 fn disp16(target: u32, ext_addr: u32) -> u16 {
-    (target as i32 - ext_addr as i32) as i16 as u16
+    let delta = target as i64 - ext_addr as i64;
+    debug_assert!(
+        (-32768..=32767).contains(&delta),
+        "testrom word branch to {target:#X} from extension word at {ext_addr:#X}: displacement {delta} \
+         is outside the signed-word window (-32768..=32767). `as i16` would truncate it into a different \
+         VALID branch and the fixture would boot and measure the wrong thing."
+    );
+    delta as i16 as u16
+}
+
+/// The signed 8-bit displacement of a short branch (`BRA.s`/`Bcc.s`) whose **opcode word** sits at byte
+/// offset `at` and which must reach `to`. The 68000 adds the displacement to `at + 2`.
+///
+/// **Why this is a function and not four open-coded casts** (`F-TESTROM-DISP-GUARD`). Truncating an
+/// out-of-range delta with `as i8` does not fail to assemble — it silently produces a **different valid
+/// branch**, so a builder whose loop body grows past the window yields a fixture that boots, runs, and
+/// measures the wrong thing. That failure is invisible at every layer above it: the ROM is well-formed, the
+/// emulator is correct, and only the *expectation* is wrong. Every computed short branch in this file
+/// routes through here, so the failure mode is a loud debug panic naming both endpoints instead.
+///
+/// `0` is rejected for a neighbouring reason: `0x6000 | 0` is the **word**-displacement encoding, which
+/// consumes the following word as its displacement. Every caller here emits a one-word branch, so a zero
+/// displacement would silently execute the next instruction as branch data.
+fn short_disp(to: u32, at: u32) -> u8 {
+    let delta = to as i64 - (at as i64 + 2);
+    debug_assert!(
+        (-128..=127).contains(&delta) && delta != 0,
+        "testrom short branch at {at:#X} -> {to:#X}: displacement {delta} is outside the signed-byte \
+         window (-128..=127, and 0 is the word-displacement encoding). `as i8` would truncate it into a \
+         different VALID branch and the fixture would boot and measure the wrong thing — shorten the loop \
+         body, or emit a word branch via `disp16`."
+    );
+    delta as i8 as u8
 }
 
 /// Build the test ROM image.
@@ -190,7 +225,7 @@ pub fn build_pad_log() -> Vec<u8> {
         }
     }
     let bra_at = rom.len() as u32;
-    let disp = (loop_top as i32 - (bra_at as i32 + 2)) as i8 as u8;
+    let disp = short_disp(loop_top, bra_at);
     w(&mut rom, 0x6000 | disp as u16); // bra.s loop_top
     rom
 }
@@ -393,7 +428,7 @@ pub fn build_pad_poll() -> Vec<u8> {
     w(&mut rom, 0x9240); // sub.w d0,d1        d1 = $8701 released / $8702 held
     w(&mut rom, 0x3081); // move.w d1,(a0)     reg 7 ← backdrop select
     let bra_at = rom.len() as u32;
-    let disp = (loop_top as i32 - (bra_at as i32 + 2)) as i8 as u8;
+    let disp = short_disp(loop_top, bra_at);
     w(&mut rom, 0x6000 | disp as u16); // bra.s loop_top
 
     rom
@@ -488,7 +523,7 @@ pub fn build_cram_midframe(line: u8) -> Vec<u8> {
         w(rom, 0x0C00); // cmpi.b #imm,d0
         w(rom, u16::from(value));
         let at = rom.len() as u32;
-        let disp = (top as i32 - (at as i32 + 2)) as i8 as u8;
+        let disp = short_disp(top, at);
         w(rom, branch | u16::from(disp)); // bcs/bcc .top
     }
     // The CRAM entry the backdrop points at, rewritten twice a frame.
@@ -544,7 +579,7 @@ pub fn build_cram_midframe(line: u8) -> Vec<u8> {
     wait_v(&mut rom, line, 0x6500); // spin while V < line -> exits on the target line
     backdrop_write(&mut rom, CRAM_MIDFRAME_B);
     let bra_at = rom.len() as u32;
-    let disp = (outer as i32 - (bra_at as i32 + 2)) as i8 as u8;
+    let disp = short_disp(outer, bra_at);
     w(&mut rom, 0x6000 | disp as u16); // bra.s outer
 
     rom
@@ -715,5 +750,68 @@ mod tests {
             !stop.fired(),
             "the stock ROM must NOT reach the handler — otherwise the positive half proves nothing"
         );
+    }
+
+    // --- F-TESTROM-DISP-GUARD -----------------------------------------------------------------------
+
+    /// The positive control: an in-range backward branch still assembles to the byte the 68000 wants, so
+    /// the guard has not changed what any existing fixture emits. `bra.s` at `at` reaching `to` encodes
+    /// `to - (at + 2)`; the two ends of the legal window are checked alongside a representative middle.
+    #[test]
+    fn short_disp_encodes_the_window_it_admits() {
+        // A backward branch of -2 (the `bra.s *` self-spin) and the extreme reachable ends.
+        assert_eq!(short_disp(0x100, 0x100), 0xFE, "-2 -> 0xFE");
+        assert_eq!(
+            short_disp(0x082, 0x100),
+            0x80,
+            "-128, the far end backwards"
+        );
+        assert_eq!(
+            short_disp(0x17F, 0x100),
+            0x7D,
+            "a forward branch inside the window"
+        );
+        assert_eq!(short_disp(0x181, 0x100), 0x7F, "+127, the far end forwards");
+    }
+
+    /// **The guard fires.** A loop body grown past the signed-byte window is the failure this exists for,
+    /// and without the `debug_assert` it is silent: `as i8` turns -129 into +127, which is a perfectly
+    /// valid branch to a perfectly wrong place. Proven red-first — the assertion below fails if the guard
+    /// is removed, because the truncation would simply return a byte.
+    #[test]
+    #[should_panic(expected = "outside the signed-byte window")]
+    #[cfg(debug_assertions)]
+    fn short_disp_rejects_a_body_grown_past_the_window() {
+        // -129: one byte too far backwards. `as i8` would yield 0x7F — a +127 FORWARD branch.
+        short_disp(0x100, 0x181);
+    }
+
+    /// Zero is rejected too: `0x6000 | 0` is the word-displacement encoding, so a caller emitting a
+    /// one-word branch would have the following instruction eaten as branch data.
+    #[test]
+    #[should_panic(expected = "word-displacement encoding")]
+    #[cfg(debug_assertions)]
+    fn short_disp_rejects_the_zero_that_means_word_displacement() {
+        short_disp(0x102, 0x100);
+    }
+
+    /// The word-branch helper carries the same guard, with the wider window. `disp16` is measured from the
+    /// EXTENSION word, not the opcode, which is why the in-range case here has no `+2`.
+    #[test]
+    fn disp16_encodes_and_guards_its_own_window() {
+        assert_eq!(
+            disp16(0x0204, 0x021A),
+            0xFFEA,
+            "the stock ROM's own bra.w reload"
+        );
+        assert_eq!(disp16(0x7FFF, 0x0000), 0x7FFF, "+32767, the far end");
+        assert_eq!(disp16(0x0000, 0x8000), 0x8000, "-32768, the other far end");
+    }
+
+    #[test]
+    #[should_panic(expected = "outside the signed-word window")]
+    #[cfg(debug_assertions)]
+    fn disp16_rejects_a_target_past_its_window() {
+        disp16(0x8000, 0x0000); // +32768: `as i16` would yield -32768, a branch BACKWARDS
     }
 }
