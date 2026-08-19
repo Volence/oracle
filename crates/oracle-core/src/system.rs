@@ -1046,7 +1046,7 @@ impl System {
                 reason = StopReason::SinkRequested;
                 break;
             }
-            let cycles = self.step_cpu(sink);
+            let (cycles, stall_cycles) = self.step_cpu_stalled(sink);
             // Retire it: the step's identity plus the one number that did not exist at the boundary — what it
             // COST. `cycles` is `step_cpu`'s return value, the exact per-instruction (or per-exception-entry)
             // CPU-cycle count that the clock advance below is computed from, and until this hook existed it
@@ -1059,6 +1059,7 @@ impl System {
                 sp: self.cpu.regs.a7(),
                 ssp: self.cpu.regs.ssp,
                 cycles,
+                stall_cycles,
             });
             // Drain the VDP writes this step produced (empty unless armed) and deliver each to the sink, paired
             // with the step-boundary PC/frame it just stamped — this is where a DMA write learns the
@@ -1249,6 +1250,16 @@ impl System {
     /// The `sink` consumes the bus event stream (pass `&mut ()` for no instrumentation). `self` is
     /// destructured so the CPU field and the memory fields borrow disjointly (the CPU holds no bus).
     pub fn step_cpu<S: BusEventSink>(&mut self, sink: &mut S) -> u32 {
+        self.step_cpu_stalled(sink).0
+    }
+
+    /// [`step_cpu`](Self::step_cpu) plus the **stall** half of the answer: `(cycles, stall_cycles)`, where
+    /// the second is the part of the first the CPU spent held off the bus (see [`StepRetire::stall_cycles`]).
+    ///
+    /// Private, and `step_cpu` delegates to it, so the public signature is unchanged: a stall figure is
+    /// something the run loop threads to a sink, not a new obligation on every caller that steps the CPU.
+    /// The bus is built fresh here for every step, so its accumulator starts at zero without being cleared.
+    fn step_cpu_stalled<S: BusEventSink>(&mut self, sink: &mut S) -> (u32, u32) {
         let now = self.scheduler.now();
         let sram_map = self.sram_present.then_some(SramMap {
             base: self.sram_base,
@@ -1294,7 +1305,8 @@ impl System {
             fm,
             sink,
         );
-        cpu.step(&mut bus)
+        let cycles = cpu.step(&mut bus);
+        (cycles, bus.stall_cycles())
     }
 
     /// Chase the Z80 frontier up to the 68000's current `now` (ZC4/ZC5) — the parallel of the 68000's clock

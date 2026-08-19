@@ -609,6 +609,9 @@ pub const PROF_DISPATCH: u32 = 0x0000_0380;
 pub const PROF_TARGET: u32 = 0x0000_03C0;
 /// A self-recursive routine driven by a counter in `d6`.
 pub const PROF_REC: u32 = 0x0000_0400;
+/// A routine that provokes a bus stall — see [`ProfilerShape::Stall`]. Its whole purpose is to be the row
+/// the stall lands on.
+pub const PROF_STALL: u32 = 0x0000_0440;
 /// How many times [`PROF_MID`] calls [`PROF_LEAF`] per invocation.
 pub const PROF_MID_CALLS_LEAF: u64 = 2;
 /// The user-mode stack [`ProfilerShape::ModeSwitch`] installs before dropping privilege — well below the
@@ -640,6 +643,25 @@ pub enum ProfilerShape {
     /// Call [`PROF_LEAF`] once per frame, where the leaf `stop`s until a VBlank interrupt wakes it — so a
     /// long run of `Stopped` idle slices retires while a routine frame is open.
     IdleInRoutine,
+    /// Call [`PROF_STALL`] once per frame, where it provokes one of the VDP's bus-hold conditions. The
+    /// caller does nothing else, so any stall in the sample can only have come from that routine.
+    Stall { kind: StallKind },
+}
+
+/// Which bus-hold condition [`ProfilerShape::Stall`] provokes.
+///
+/// The first is the one that matters most to a consumer (it is the only mechanism that halts the 68000 for
+/// a long, measurable window); the other two are the controls that pin the boundary of what counts. A VRAM
+/// fill and a VRAM copy leave the 68000 running, so they must contribute **nothing** — and they do so
+/// because `run_pending_dma` returns `0` for them, not because anything filters them out afterwards.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StallKind {
+    /// A 68k->VDP DMA: the bus is held for the whole transfer.
+    Dma,
+    /// A VRAM fill — the 68000 keeps running, so this must cost no stall at all.
+    Fill,
+    /// A VRAM copy — likewise.
+    Copy,
 }
 
 /// The V-counter value at which vblank starts (line 224 in the 224-line mode these fixtures run in).
@@ -761,6 +783,66 @@ pub fn build_profiler(shape: ProfilerShape) -> Vec<u8> {
     put_word(&mut rom, PROF_REC + 10, PROF_REC as u16);
     put_word(&mut rom, PROF_REC + 12, 0x4E75); // .done: rts
 
+    // STALL: program and trigger one VDP transfer through the control port in a1, then return. The word
+    // sequences are the ones `bus.rs`'s own DMA/fill/copy tests drive, so the trigger is the same trigger.
+    if let ProfilerShape::Stall { kind } = shape {
+        // Source for the Mem DMA: 68k word address of $000400 (inside this ROM). Length in WORDS.
+        const DMA_SRC_WORD: u32 = 0x0000_0400 >> 1;
+        const DMA_LEN_WORDS: u16 = 64;
+        let setup: &[u16] = match kind {
+            StallKind::Dma => &[
+                0x8114, // reg 1: DMA enable (bit4) + mode5, display off
+                0x8F02, // reg 15: autoinc 2
+                0x9300 | (DMA_LEN_WORDS & 0xFF),
+                0x9400 | (DMA_LEN_WORDS >> 8),
+                0x9500 | (DMA_SRC_WORD as u16 & 0xFF),
+                0x9600 | ((DMA_SRC_WORD >> 8) as u16 & 0xFF),
+                0x9700 | ((DMA_SRC_WORD >> 16) as u16 & 0x7F), // bit7 = 0 -> Mem mode
+                0x4000, // VRAM-write command word 1, dest $0000
+                0x0080, // word 2: CD5 set -> code $21, the trigger
+            ],
+            StallKind::Fill => &[
+                0x8114,
+                0x8F01,      // autoinc 1
+                0x9300 | 64, // reg 19: length low
+                0x9400,      // reg 20: length high
+                0x9780,      // reg 23: bits 7-6 = 10 -> VRAM fill
+                0x4000,
+                0x0080, // VRAM write @ $0000 with CD5 -> arms the fill
+            ],
+            StallKind::Copy => &[
+                0x8114,
+                0x8F01,
+                0x9300 | 64,
+                0x9400,
+                0x9500,
+                0x9600, // source $0000
+                0x97C0, // reg 23: bits 7-6 = 11 -> VRAM copy
+                0x4000,
+                0x00C0, // CD5+CD4 -> the copy trigger
+            ],
+        };
+        let mut at = PROF_STALL;
+        for &word in setup {
+            put_word(&mut rom, at, 0x33FC); // move.w #imm,(xxx).l
+            put_word(&mut rom, at + 2, word);
+            put_long(&mut rom, at + 4, 0x00C0_0004); //   the VDP control port
+            at += 8;
+        }
+        // A fill is armed by a control write but TRIGGERED by a data-port write.
+        if kind == StallKind::Fill {
+            put_word(&mut rom, at, 0x33FC);
+            put_word(&mut rom, at + 2, 0x7700); // the fill byte, in the high half
+            put_long(&mut rom, at + 4, 0x00C0_0000); //   the VDP data port
+            at += 8;
+        }
+        assert!(
+            at + 2 <= PROF_ROM_LEN as u32,
+            "the stall routine overran the image"
+        );
+        put_word(&mut rom, at, 0x4E75); // rts
+    }
+
     // ILLEGAL: park.
     put_word(&mut rom, PROF_ILLEGAL, 0x60FE); // bra.s *
 
@@ -831,6 +913,7 @@ pub fn build_profiler(shape: ProfilerShape) -> Vec<u8> {
             prof_jsr(&mut code, PROF_REC);
         }
         ProfilerShape::ModeSwitch | ProfilerShape::IdleInRoutine => prof_jsr(&mut code, PROF_LEAF),
+        ProfilerShape::Stall { .. } => prof_jsr(&mut code, PROF_STALL),
         ProfilerShape::Interrupts { .. } => {}
     }
     // bra.w outer — the word form, because a body can be longer than a short branch reaches.

@@ -10,8 +10,8 @@ use oracle_core::bus::{BusEvent, BusEventSink, BusOp, Size, StepRetire};
 use oracle_core::profiler::{Counts, Profiler, Report};
 use oracle_core::system::System;
 use oracle_core::testrom::{
-    self, ProfilerShape, PROF_DISPATCH, PROF_LEAF, PROF_MID, PROF_MID_CALLS_LEAF, PROF_REC,
-    PROF_TARGET,
+    self, ProfilerShape, StallKind, PROF_DISPATCH, PROF_LEAF, PROF_MID, PROF_MID_CALLS_LEAF,
+    PROF_REC, PROF_STALL, PROF_TARGET,
 };
 
 /// Interrupt levels, as the 68000 numbers them.
@@ -408,6 +408,65 @@ fn two_identical_runs_produce_identical_output() {
     }
 }
 
+// --- Stall attribution ------------------------------------------------------------------------------
+
+/// A 68k→VDP DMA halts the CPU for the whole transfer, and that halt belongs to the routine that armed it
+/// — not to the frame at large and not to whatever ran next. `stallCycles` is keyed identically to
+/// `cycles`: same routine, same inclusive span, same division, which is what makes `cycles - stallCycles`
+/// a well-formed subtraction rather than the difference of two differently-aggregated numbers.
+#[test]
+fn a_dma_stall_lands_on_the_routine_that_armed_it() {
+    let r = profile(
+        ProfilerShape::Stall {
+            kind: StallKind::Dma,
+        },
+        3,
+    );
+    let stall_routine = row(&r, PROF_STALL);
+    assert!(
+        stall_routine.stall_cycles > 0,
+        "the DMA held the bus, so the routine that triggered it carries stall time"
+    );
+    assert!(
+        stall_routine.stall_cycles <= stall_routine.cycles,
+        "and the stall is a SUBSET of the routine's cycles, never a quantity beside them ({} > {})",
+        stall_routine.stall_cycles,
+        stall_routine.cycles
+    );
+    assert_eq!(
+        r.total_stall_cycles, stall_routine.stall_cycles,
+        "nothing else in the frame stalled, so the routine's share is the whole frame's"
+    );
+    assert!(
+        r.total_stall_cycles < r.total_cycles,
+        "a stall is part of the frame, not the whole of it"
+    );
+}
+
+/// **The boundary of the field.** A VRAM fill and a VRAM copy let the 68000 keep running, so a routine
+/// that triggers one costs cycles but stalls for none. Without this, `stallCycles` could quietly become
+/// "time the VDP was busy", which is a different and much less useful number — and one a consumer
+/// subtracting it to recover an ideal-cycle figure would be actively misled by.
+#[test]
+fn a_fill_or_copy_costs_cycles_but_no_stall() {
+    for kind in [StallKind::Fill, StallKind::Copy] {
+        let r = profile(ProfilerShape::Stall { kind }, 3);
+        let stall_routine = row(&r, PROF_STALL);
+        assert!(
+            stall_routine.cycles > 0,
+            "{kind:?}: the routine ran and cost something"
+        );
+        assert_eq!(
+            stall_routine.stall_cycles, 0,
+            "{kind:?}: but the 68000 never waited, so it stalled for nothing"
+        );
+        assert_eq!(
+            r.total_stall_cycles, 0,
+            "{kind:?}: and neither did anything else in the frame"
+        );
+    }
+}
+
 // --- The exception rules, driven synthetically ------------------------------------------------------
 //
 // The accumulator is a pure function of three inputs — the acknowledge event, the retire stream and the
@@ -437,6 +496,7 @@ fn step(pc: u32, opcode: u16, sp: u32, ssp: u32) -> StepRetire {
         sp,
         ssp,
         cycles: STEP_CYCLES as u32,
+        stall_cycles: 0,
     }
 }
 

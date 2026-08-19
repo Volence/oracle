@@ -72,6 +72,12 @@ fn retire_hook_is_state_neutral() {
     //    single conversion site is the only thing that moves mclk, and the loop calls it once per step with
     //    the very `cycles` handed to this hook — so the sum is not "close to" the elapsed time, it IS the
     //    elapsed time. A hook that reported a plausible-looking but wrong cost fails here.
+    //
+    //    **This identity survived the stall slice unchanged, deliberately.** `stall_cycles` is a SUBSET of
+    //    `cycles` — the part of the same number the CPU spent held off the bus, not an addition to it — so
+    //    the clock still equals the sum of `cycles` alone. Had stall been threaded as a separate quantity
+    //    beside the cost, this assertion would have started failing, and that failure would have been the
+    //    correct alarm rather than a test to relax.
     let retired: u64 = sink.retires.iter().map(|r| u64::from(r.cycles)).sum();
     assert_eq!(
         retired * MCLK_PER_CPU_CYCLE,
@@ -97,6 +103,10 @@ fn the_retired_fields_are_the_real_step() {
             sp: twin.cpu_regs().a7(),
             ssp: twin.cpu_regs().ssp,
             cycles,
+            // The boot ROM's first instruction is `move.w #imm,SR` — it touches no VDP port, so it cannot
+            // have been held off the bus. `step_instruction` does not report a stall of its own, so this
+            // is pinned from what the instruction IS rather than from a measurement.
+            stall_cycles: 0,
         }
     };
 
@@ -162,5 +172,30 @@ fn the_step_cancelled_by_an_early_stop_never_retires() {
         log.retires.len(),
         19,
         "the stamped-but-cancelled step retired nothing — the retirement follows the commit"
+    );
+}
+
+/// The subset relation, per step rather than in aggregate: no step can wait longer than it took. This is
+/// what makes `cycles - stall_cycles` meaningful at every level the figure is reported at, and it is the
+/// property that keeps the clock identity above true.
+#[test]
+fn the_stall_figure_is_a_subset_of_the_cycle_figure() {
+    let mut s = booted(0x1234_5678);
+    let mut sink = RetireLog::default();
+    s.run_frames_with_sink(2, &mut sink);
+
+    for r in &sink.retires {
+        assert!(
+            r.stall_cycles <= r.cycles,
+            "a step cannot spend more time waiting than it took: {r:?}"
+        );
+    }
+    // The built-in ROM only stirs work RAM — it never touches a VDP port — so nothing here can stall. A
+    // non-zero total would mean the accumulator was picking up something that is not one of the three
+    // enumerated conditions.
+    let stalled: u32 = sink.retires.iter().map(|r| r.stall_cycles).sum();
+    assert_eq!(
+        stalled, 0,
+        "the stirring ROM drives no VDP access, so it has nothing to be held off by"
     );
 }

@@ -75,6 +75,11 @@ pub struct Counts {
     pub cycles: u64,
     /// Cycles retired directly by this routine, callees excluded.
     pub self_cycles: u64,
+    /// The part of [`cycles`](Counts::cycles) spent held off the bus rather than executing — a **subset**
+    /// of it, keyed identically to it: same routine, same inclusive span, same division. That is what makes
+    /// `cycles - stall_cycles` a well-formed subtraction rather than the difference of two quantities that
+    /// were aggregated differently.
+    pub stall_cycles: u64,
     /// Actual invocations.
     pub calls: u64,
 }
@@ -83,6 +88,7 @@ impl Counts {
     fn add(&mut self, other: Counts) {
         self.cycles += other.cycles;
         self.self_cycles += other.self_cycles;
+        self.stall_cycles += other.stall_cycles;
         self.calls += other.calls;
     }
 }
@@ -106,14 +112,21 @@ struct Frame {
     entry_sp: u32,
     /// Cycles retired directly in this frame.
     self_cycles: u64,
+    /// The stall part of `self_cycles`.
+    self_stall: u64,
     /// Inclusive cycles of everything this frame **called**. Preemption is deliberately not included —
     /// see [`Profiler::pop_frame`].
     child_cycles: u64,
+    /// The stall part of `child_cycles`, carried alongside it so the subset relation survives the fold.
+    child_stall: u64,
 }
 
 impl Frame {
     fn inclusive(&self) -> u64 {
         self.self_cycles + self.child_cycles
+    }
+    fn inclusive_stall(&self) -> u64 {
+        self.self_stall + self.child_stall
     }
 }
 
@@ -127,6 +140,11 @@ pub struct Report {
     pub sample_cycles: u64,
     /// `sample_cycles` divided by `frame_count`.
     pub total_cycles: u64,
+    /// The undivided stall total for the whole sample — the subset of `sample_cycles` spent held off the
+    /// bus.
+    pub sample_stall_cycles: u64,
+    /// `sample_stall_cycles` divided by `frame_count`.
+    pub total_stall_cycles: u64,
     /// `true` if and only if **every** divided figure in this report divided without remainder. A client
     /// gating with `==` must check it: when it is `false` every divided figure is floored, one-sided low.
     pub per_frame_exact: bool,
@@ -151,6 +169,8 @@ pub struct Profiler {
     pending_buckets: BTreeMap<u8, Counts>,
     committed_cycles: u64,
     pending_cycles: u64,
+    committed_stall: u64,
+    pending_stall: u64,
     /// Whole frames counted: boundaries seen after the one that opened the sample.
     frames: u64,
     /// Whether the opening boundary has been seen. Until it has, everything accrued is discarded.
@@ -201,18 +221,22 @@ impl Profiler {
     /// from anywhere the accountant saw — a **root frame keyed by the retiring PC** is opened first. That
     /// is honest rather than synthetic: the address is where execution actually was, and without it the
     /// cycles would belong to no row and the totals would not reconcile.
-    fn charge(&mut self, pc: u32, sp: u32, cycles: u64) {
+    fn charge(&mut self, pc: u32, sp: u32, cycles: u64, stall: u64) {
         if self.stack.is_empty() {
             self.stack.push(Frame {
                 kind: FrameKind::Routine { addr: pc },
                 entry_sp: sp,
                 self_cycles: 0,
+                self_stall: 0,
                 child_cycles: 0,
+                child_stall: 0,
             });
         }
         let top = self.stack.last_mut().expect("just ensured non-empty");
         top.self_cycles += cycles;
+        top.self_stall += stall;
         self.pending_cycles += cycles;
+        self.pending_stall += stall;
     }
 
     /// Retire the innermost frame: fold its totals into its row, and its inclusive total into its parent's
@@ -229,16 +253,19 @@ impl Profiler {
             return;
         };
         let inclusive = frame.inclusive();
+        let inclusive_stall = frame.inclusive_stall();
         let row = match frame.kind {
             FrameKind::Routine { addr } => self.pending.entry(addr).or_default(),
             FrameKind::Interrupt { level, .. } => self.pending_buckets.entry(level).or_default(),
         };
         row.cycles += inclusive;
         row.self_cycles += frame.self_cycles;
+        row.stall_cycles += inclusive_stall;
         row.calls += 1;
         if matches!(frame.kind, FrameKind::Routine { .. }) {
             if let Some(parent) = self.stack.last_mut() {
                 parent.child_cycles += inclusive;
+                parent.child_stall += inclusive_stall;
             }
         }
         // Deliberately no parent.child_cycles for an Interrupt frame. See the doc comment.
@@ -280,6 +307,7 @@ impl Profiler {
             v / n
         };
         let total_cycles = div(self.committed_cycles);
+        let total_stall_cycles = div(self.committed_stall);
         let routines = self
             .committed
             .iter()
@@ -289,6 +317,7 @@ impl Profiler {
                     Counts {
                         cycles: div(c.cycles),
                         self_cycles: div(c.self_cycles),
+                        stall_cycles: div(c.stall_cycles),
                         calls: div(c.calls),
                     },
                 )
@@ -303,6 +332,7 @@ impl Profiler {
                     Counts {
                         cycles: div(c.cycles),
                         self_cycles: div(c.self_cycles),
+                        stall_cycles: div(c.stall_cycles),
                         calls: div(c.calls),
                     },
                 )
@@ -312,6 +342,8 @@ impl Profiler {
             frame_count: n,
             sample_cycles: self.committed_cycles,
             total_cycles,
+            sample_stall_cycles: self.committed_stall,
+            total_stall_cycles,
             per_frame_exact: exact,
             routines,
             interrupts,
@@ -342,7 +374,9 @@ impl BusEventSink for Profiler {
                 kind: FrameKind::Routine { addr: r.pc },
                 entry_sp,
                 self_cycles: 0,
+                self_stall: 0,
                 child_cycles: 0,
+                child_stall: 0,
             });
         }
         // 2. An acknowledge seen during this step means this step IS the interrupt entry. `calls` counts
@@ -356,14 +390,16 @@ impl BusEventSink for Profiler {
                 },
                 entry_sp: r.sp,
                 self_cycles: 0,
+                self_stall: 0,
                 child_cycles: 0,
+                child_stall: 0,
             });
             true
         } else {
             false
         };
         // 3. The entry cost belongs to the frame it opened, so charge after pushing.
-        self.charge(r.pc, r.sp, u64::from(r.cycles));
+        self.charge(r.pc, r.sp, u64::from(r.cycles), u64::from(r.stall_cycles));
         // 4. Classify — but NOT on an exception entry. An entry is dispatched before decode, so `opcode`
         //    is the instruction that did NOT run; treating it as executed would arm a phantom call from a
         //    `JSR` the CPU never reached. The same reasoning is why interrupts are keyed off the
@@ -407,10 +443,12 @@ impl BusEventSink for Profiler {
                 self.committed_buckets.entry(level).or_default().add(c);
             }
             self.committed_cycles += self.pending_cycles;
+            self.committed_stall += self.pending_stall;
             self.frames += 1;
         }
         self.pending.clear();
         self.pending_buckets.clear();
         self.pending_cycles = 0;
+        self.pending_stall = 0;
     }
 }

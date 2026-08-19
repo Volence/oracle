@@ -106,6 +106,21 @@ pub struct StepRetire {
     /// The step's exact CPU-cycle cost, as returned by `Cpu68000::step`. Stall-inclusive: our clock bills
     /// bus/VDP/DMA waits to the instruction that incurred them.
     pub cycles: u32,
+    /// How much of [`cycles`](StepRetire::cycles) the CPU spent **held off the bus** rather than executing
+    /// — a subset of it, never a separate quantity beside it, so `cycles - stall_cycles` is a well-formed
+    /// subtraction.
+    ///
+    /// Exactly three conditions produce it, and they are enumerated rather than described so that a fourth
+    /// is a visible amendment and never a silent widening: a 68000 write to the VDP data port held off
+    /// while the write FIFO is full; a 68000 read of that port waiting for the FIFO to drain; and the whole
+    /// bus-hold window of a 68k->VDP DMA, billed to the instruction that armed it. A VRAM fill and a VRAM
+    /// copy contribute nothing, because the 68000 keeps running through both.
+    ///
+    /// **Why it is worth carrying.** Our clock includes these waits and the reference instrument's did not,
+    /// so per-routine cycle figures legitimately differ wherever the bus stalls. Reporting the stall
+    /// separately is what lets a consumer reconcile the two — `cycles - stall_cycles` against an
+    /// ideal-cycle constant — instead of seeing an unexplained delta.
+    pub stall_cycles: u32,
 }
 
 /// A consumer of the bus event stream (watchpoints, recorders, decoders, the profiler...).
@@ -764,9 +779,29 @@ pub struct MegaDriveBus<'a, S: BusEventSink> {
     /// `docs/2026-07-22-fm-timer-design.md`.
     fm: &'a mut Ym2612,
     sink: &'a mut S,
+    /// CPU wait cycles this bus has billed to the instruction currently executing — the **stall** figure
+    /// (CR-26 `stallCycles`). A `MegaDriveBus` is built fresh for every `System::step_cpu`, so this is
+    /// per-step by construction and needs no clearing.
+    ///
+    /// Every nonzero wait the whole bus can return flows through
+    /// [`vdp_read_word`](MegaDriveBus::vdp_read_word) or
+    /// [`vdp_write_word`](MegaDriveBus::vdp_write_word) — every other arm of `read16`/`write16`/`read8`/
+    /// `write8`/`tas` returns a literal `0` — so accumulating at those two points is complete by
+    /// construction rather than by having remembered every site. That is also exactly the CR's enumerated
+    /// list: a data-port write held off by a full FIFO, a data-port read waiting for it to drain, and the
+    /// bus-hold window of a 68k->VDP DMA. A VRAM fill and a VRAM copy return `0` from `run_pending_dma`
+    /// because the 68000 keeps running through both, so they contribute nothing here — not by a filter,
+    /// but because there is nothing to add.
+    stall_cycles: u32,
 }
 
 impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
+    /// The CPU wait cycles this bus has billed so far — see [`MegaDriveBus::stall_cycles`] the field.
+    /// Read by `System::step_cpu` once the step is complete; the bus is then dropped.
+    pub fn stall_cycles(&self) -> u32 {
+        self.stall_cycles
+    }
+
     /// Build an adapter over the given memory regions, the VDP + the master-clock reading, the I/O block,
     /// the open-bus latch, the FM chip, and an event sink.
     #[allow(clippy::too_many_arguments)]
@@ -809,6 +844,7 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             sram_map,
             fm,
             sink,
+            stall_cycles: 0,
         }
     }
 
@@ -1043,6 +1079,14 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
     /// A whole-word VDP port read (recon R1/R3). Returns the value plus the CPU wait cycles the access costs
     /// (a data-port read stalls while the write FIFO drains — recon R3). Status / HV reads never stall.
     fn vdp_read_word(&mut self, a: u32) -> (u16, u32) {
+        let (value, wait) = self.vdp_read_word_inner(a);
+        self.stall_cycles += wait;
+        (value, wait)
+    }
+
+    /// The read itself. Split from [`MegaDriveBus::vdp_read_word`] only so the stall accumulator has one
+    /// place to sit rather than one per arm.
+    fn vdp_read_word_inner(&mut self, a: u32) -> (u16, u32) {
         match a {
             0xC0_0000 | 0xC0_0002 => {
                 let open_bus = *self.last_bus_word;
@@ -1064,6 +1108,13 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
     /// access costs (recon R3: a data-port write to a full FIFO stalls the 68k via /DTACK) — folded into the
     /// instruction cost through the `Bus68k` wait channel. Control-port writes never stall.
     fn vdp_write_word(&mut self, a: u32, value: u16) -> u32 {
+        let wait = self.vdp_write_word_inner(a, value);
+        self.stall_cycles += wait;
+        wait
+    }
+
+    /// The write itself. Split from [`MegaDriveBus::vdp_write_word`] for the same reason as the read.
+    fn vdp_write_word_inner(&mut self, a: u32, value: u16) -> u32 {
         match a {
             0xC0_0000 | 0xC0_0002 => {
                 // A data-port write may also trigger a VRAM fill (recon R4(b)); run any armed DMA after it.
@@ -3393,6 +3444,7 @@ mod tests {
             sp: 0x00FF_FFF0,
             ssp: 0x00FF_FFF0,
             cycles: 16,
+            stall_cycles: 4,
         }
     }
 
@@ -3660,5 +3712,104 @@ mod tests {
             !w.stop_requested(),
             "a sink written before the signal existed"
         );
+    }
+
+    // --- The stall accumulator (CR-26 `stallCycles`) -------------------------------------------------
+    //
+    // The bus bills CPU wait cycles into every access's cost, and `stall_cycles` is the running total of
+    // exactly those waits. These tests pin it against the SAME situations the wait tests above construct,
+    // one per condition the contract enumerates, so that the accumulator and the thing it accumulates
+    // cannot drift apart. The two zero cases are not decoration: they are the boundary of what the field
+    // is allowed to mean.
+
+    /// Condition (i): a data-port write held off because the write FIFO is full. Whatever the access
+    /// reports as wait is exactly what the accumulator gains — not "roughly", not "at least".
+    #[test]
+    fn stall_accumulates_a_full_fifo_write() {
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.now_mclk = 100 * crate::vdp::MCLK_PER_LINE + 500; // active line, mid-line
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        vdp_setup_vram_write(&mut bus);
+        assert_eq!(
+            bus.stall_cycles(),
+            0,
+            "setup writes are control-port: no stall"
+        );
+        for _ in 0..4 {
+            bus.write16(0xC0_0000, 5, 0xBEEF); // fills the 4-entry FIFO, no stall yet
+        }
+        assert_eq!(
+            bus.stall_cycles(),
+            0,
+            "a FIFO that is merely full has not stalled anyone"
+        );
+        let wait = bus.write16(0xC0_0000, 5, 0xBEEF); // the fifth write stalls
+        assert!(wait > 0, "the fifth write to a full FIFO stalls the 68k");
+        assert_eq!(
+            bus.stall_cycles(),
+            wait,
+            "and the accumulator gained exactly that wait, no more and no less"
+        );
+    }
+
+    /// Condition (ii): a data-port read waiting for the write FIFO to drain.
+    #[test]
+    fn stall_accumulates_a_read_waiting_for_the_write_fifo() {
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.now_mclk = 100 * crate::vdp::MCLK_PER_LINE + 500;
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        vdp_setup_vram_write(&mut bus);
+        for _ in 0..3 {
+            bus.write16(0xC0_0000, 5, 0xBEEF);
+        }
+        bus.write16(0xC0_0004, 5, 0x0000); // switch to a VRAM read command @ $0000
+        bus.write16(0xC0_0004, 5, 0x0000);
+        assert_eq!(bus.stall_cycles(), 0, "nothing has stalled yet");
+        let (_v, wait) = bus.read16(0xC0_0000, 5);
+        assert!(wait > 0, "the read waits for the pending writes to drain");
+        assert_eq!(bus.stall_cycles(), wait, "and that wait is the whole stall");
+    }
+
+    /// Condition (iii): the bus-hold window of a 68k→VDP DMA, billed to the instruction that armed it.
+    /// This is the one a consumer most wants separated out, because it is the only mechanism here that
+    /// halts the 68000 for a long, measurable stretch.
+    #[test]
+    fn stall_accumulates_the_whole_mem_dma_hold() {
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE; // vblank: the fast transfer rate
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        let wait = run_mem_dma_to_vram(&mut bus, 0x000400, 16, 0x0000);
+        assert!(wait > 0, "the 68k is halted for the whole transfer");
+        assert_eq!(
+            bus.stall_cycles(),
+            wait,
+            "the accumulator holds the entire hold window"
+        );
+    }
+
+    /// **The boundary.** A VRAM fill and a VRAM copy leave the 68000 running, so they contribute nothing —
+    /// and they do so *by construction*, because `run_pending_dma` returns `0` for both, not because
+    /// anything downstream filters them out. A server whose bus stalled the CPU for a fourth reason would
+    /// have to amend the contract rather than quietly widen this number, and these two are what make that
+    /// boundary testable rather than merely stated.
+    #[test]
+    fn a_fill_and_a_copy_add_no_stall_at_all() {
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE;
+        {
+            let mut sink = Vec::new();
+            let mut bus = mem.bus(&mut sink);
+            let wait = run_vram_fill(&mut bus, 0x0000, 64, 0x77AA);
+            assert_eq!(wait, 0, "fill: the 68k keeps running through it");
+            assert_eq!(bus.stall_cycles(), 0, "fill: so it contributes no stall");
+        }
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        let wait = run_vram_copy(&mut bus, 0x0200, 64, 0x0100);
+        assert_eq!(wait, 0, "copy: the 68k keeps running through it");
+        assert_eq!(bus.stall_cycles(), 0, "copy: so it contributes no stall");
     }
 }
