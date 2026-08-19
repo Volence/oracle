@@ -24,8 +24,7 @@
 
 mod common;
 
-use common::{spawn_system, spawn_with, Client};
-use oracle_core::system::System;
+use common::{spawn_with, Client};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -41,13 +40,6 @@ fn vendored(name: &str) -> Option<Vec<u8>> {
     std::fs::read(p).ok()
 }
 
-fn machine(rom: Vec<u8>) -> System {
-    let mut sys = System::new(0x5EED);
-    sys.load_rom(rom);
-    sys.reset();
-    sys
-}
-
 fn client(h: &oracle_aether::server::ServerHandle) -> Client {
     let mut c = Client::connect(h);
     c.handshake(false);
@@ -58,7 +50,7 @@ fn client(h: &oracle_aether::server::ServerHandle) -> Client {
 /// a *drawn* frame goes through here: without at least one completed frame the answer is `stateRender`, and
 /// a gate that accepted that would be measuring the wrong instrument (the fragment's own MUST).
 fn booted(tag: &str, rom: Vec<u8>, frames: u64) -> (oracle_aether::server::ServerHandle, Client) {
-    let h = spawn_system(tag, machine(rom), 1024);
+    let h = spawn_with(tag, rom, 1024);
     let mut c = client(&h);
     c.ok("emulator/run_frames", json!({ "frames": frames }));
     (h, c)
@@ -116,10 +108,7 @@ fn method_keys(result: &Value) -> BTreeSet<String> {
 /// The requested rows come back, contiguous and ascending from `startLine`, each one a full row of pixels.
 #[test]
 fn the_happy_path_returns_the_requested_rows() {
-    let h = spawn_with("sl-happy", oracle_core::testrom::build(), 1024);
-    let mut c = client(&h);
-    c.ok("emulator/run_frames", json!({"frames": 3}));
-
+    let (_h, mut c) = booted("sl-happy", oracle_core::testrom::build(), 3);
     let r = c.ok("emulator/scanlines", json!({"startLine": 10, "count": 3}));
     assert_eq!(r["startLine"], json!(10), "the reply echoes its start line");
     let width = match r["mode"].as_str().expect("mode") {
@@ -155,10 +144,7 @@ fn the_happy_path_returns_the_requested_rows() {
 /// "the picture" gets without having to know 224.
 #[test]
 fn defaults_cover_the_whole_active_display() {
-    let h = spawn_with("sl-defaults", oracle_core::testrom::build(), 1024);
-    let mut c = client(&h);
-    c.ok("emulator/run_frames", json!({"frames": 2}));
-
+    let (_h, mut c) = booted("sl-defaults", oracle_core::testrom::build(), 2);
     let r = c.ok("emulator/scanlines", json!({}));
     assert_eq!(r["startLine"], json!(0), "startLine defaults to 0");
     let rows = rows_of(&r);
@@ -176,10 +162,7 @@ fn defaults_cover_the_whole_active_display() {
 /// bounds and prose-only for the sum (no static schema can see it), so the server must enforce all three.
 #[test]
 fn bounds_are_refused_never_clipped() {
-    let h = spawn_with("sl-bounds", oracle_core::testrom::build(), 1024);
-    let mut c = client(&h);
-    c.ok("emulator/run_frames", json!({"frames": 2}));
-
+    let (_h, mut c) = booted("sl-bounds", oracle_core::testrom::build(), 2);
     for (params, why) in [
         (
             json!({"startLine": 224}),
@@ -207,6 +190,29 @@ fn bounds_are_refused_never_clipped() {
     assert!(
         v.get("result").is_none(),
         "a refused range must carry no result — clipping to 24 rows would be silent data loss"
+    );
+}
+
+/// **A pure read**: §6's run-control state rule does not apply, and a server MUST NOT refuse this on a
+/// free-running machine — exactly as `read`, `sprites` and `pixel_attribution` are, and mirroring
+/// `memory_hash.rs`'s test of the same pin. The envelope's `running: true` is the contract's whole answer
+/// to a torn sample, so it is asserted here too: a reply that answered by quietly pausing first would
+/// satisfy the call and violate the rule (§8 item 12 — never pause or resume implicitly to make a call
+/// succeed), and `running` is what tells the two apart.
+#[test]
+fn it_answers_a_free_running_machine() {
+    let (_h, mut c) = booted(
+        "sl-freerun",
+        oracle_core::testrom::build_cram_midframe(100),
+        4,
+    );
+    c.ok("emulator/resume", json!({}));
+    let r = c.ok("emulator/scanlines", json!({"startLine": 0, "count": 4}));
+    assert_eq!(rows_of(&r).len(), 4, "a free-running machine still answers");
+    assert_eq!(
+        r["running"],
+        json!(true),
+        "the machine is still running — the read must not have paused it to succeed"
     );
 }
 

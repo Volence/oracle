@@ -417,10 +417,12 @@ pub const CRAM_MIDFRAME_B: u16 = 0x0EEE;
 /// 3. polls the HV counter at `$C00008` until the beam reaches `line` (V is the high byte), and
 /// 4. sets CRAM entry 1 = [`CRAM_MIDFRAME_B`], then loops.
 ///
-/// So **every** completed frame carries the split — rows above the boundary in A, rows at and below it in
-/// B — rather than only the one frame a write-once fixture would mark, which would make the assertion
-/// depend on the exact frame count the reader happened to stop at. The line the write lands on has already
-/// been rendered (the Scanline event renders line N at N's *start*), so the boundary sits at `line + 1`.
+/// So **every completed frame after the first** carries the split — rows above the boundary in A, rows at
+/// and below it in B — rather than only the one frame a write-once fixture would mark, which would make the
+/// assertion depend on the exact frame count the reader happened to stop at. Frame 0 draws entirely in
+/// colour A: the poll begins after the frame-0 vblank arm, so the first B write lands in frame 1. Read at
+/// any frame ≥ 1. The line the write lands on has already been rendered (the Scanline event renders line N
+/// at N's *start*), so the boundary sits at `line + 1`.
 ///
 /// Nothing draws over the backdrop, so the content trap the golden fixtures set — a tinted palette entry
 /// no pixel samples — cannot bite: the colour *is* the picture. **Two different `line` arguments must
