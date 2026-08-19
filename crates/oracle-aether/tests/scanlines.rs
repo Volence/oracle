@@ -216,11 +216,12 @@ fn it_answers_a_free_running_machine() {
     );
 }
 
-/// The exact key set (no surplus), and `caveat` **absent** on a raster reply. The schema's `result` has no
-/// `additionalProperties: false` — an envelope stamp is merged into it — so a surplus key sails through the
-/// validator; this is the assertion that catches it. `caveat`'s tie to `source` is deliberately left
-/// mechanically unenforced in the fragment (ruling disposition (a)), which makes asserting it here the only
-/// check there is.
+/// The exact key set (no surplus), and `caveat` **absent** on a raster reply. The harness already closes
+/// every result at the TOP level (`common::schema` applies `unevaluatedProperties: false` in `Client::recv`),
+/// so a stray top-level key is rejected on the wire before this runs. What this test alone covers: the
+/// `caveat` ⇔ `source` tie (deliberately left mechanically unenforced in the fragment, ruling disposition
+/// (a) — `caveat` is a declared property, so the validator admits it on a raster reply) and the per-row
+/// key sets inside `rows[]`, which the top-level closure does not descend into.
 #[test]
 fn the_key_set_is_exact() {
     let (_h, mut c) = booted("sl-keys", oracle_core::testrom::build_cram_midframe(100), 4);

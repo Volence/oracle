@@ -44,7 +44,8 @@ count is recounted again, 2026-08-18, §11.14; `methods` now holds 34 keys, one 
   property as the floor. The `caveat` ⇔ `source` tie is deliberately left mechanically unenforced, matching
   `screenshot`'s fragment; the decision is recorded in the fragment's `$comment` rather than silently taken.
 
-Schematized but not yet advertised by the reference server, like §11.13's three: `tests/schema_conformance.rs`'s
+Schematized but not yet advertised by the reference server *at vendor time* (the handler landed two commits
+later, so on the merged tree the method IS advertised), like §11.13's three: `tests/schema_conformance.rs`'s
 `UNCOVERED_METHODS` stays empty (that list is for advertised methods missing a fragment, the opposite gap).
 
 ### What the previous re-vendor adopted — §11.13 (CR-21, CR-22, CR-23)

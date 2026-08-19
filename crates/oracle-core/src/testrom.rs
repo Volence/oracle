@@ -401,8 +401,10 @@ pub fn build_pad_poll() -> Vec<u8> {
 
 /// The two backdrop colours [`build_cram_midframe`] alternates between — black and white, the widest
 /// contrast the 9-bit CRAM word offers, so a boundary row is unmistakable in a hex dump.
+#[doc(hidden)]
 pub const CRAM_MIDFRAME_A: u16 = 0x0000;
 /// See [`CRAM_MIDFRAME_A`].
+#[doc(hidden)]
 pub const CRAM_MIDFRAME_B: u16 = 0x0EEE;
 
 /// Build the **mid-frame CRAM fixture ROM** — a ROM that changes the backdrop colour *while the beam is
