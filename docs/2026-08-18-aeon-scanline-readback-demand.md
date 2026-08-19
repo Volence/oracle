@@ -73,6 +73,34 @@ currency-neutrality scrutiny; the CR should scope field 1 as the first slice and
 as a named follow-up with their attribution rationale attached, unless the extension proves
 trivial at design time.
 
+## Ask 1 second follow-up — the acceptance fixture EXISTS (same evening, verified)
+
+`aeon/docs/benchmarks/scanline-p2/HBLANK-WINDOW-SWEEP-SPEC.md`, aeon commit `1fb982f7`
+(branch `parcel/raster-substrate-byte-moving`) — **existence and structure verified firsthand**
+(prediction, one-poke fixture, classification, acceptance criteria all present as described).
+The future CR inherits a worked example and its acceptance tests ready-made:
+
+- **Field 1 ALONE unblocks the sweep completely** — their explicit planning answer. RGB +
+  row-range + active-only + mode-aware width is a sufficient first slice; fields 2–3 must NOT
+  hold it up. The split proposed above is confirmed as the right call by the demand side.
+- The sweep is one `write_memory` poke per value (`Raster_Buf_A + 20`), paused-poke discipline
+  enforced by our own `-32005` gate ("enforced rather than remembered" — their words), a
+  falsifiable prediction (clean N ∈ [15, 19], centre 17) with a §7 rule that a disagreeing
+  measurement is the FINDING and the fixture must not be tuned until it agrees.
+- **★ A2 is the capability's own non-vacuity check and should live in OUR suite permanently:
+  N = 0 and N = 17 MUST produce different content on row 99.** By end of frame the CRAM value
+  is identical either way; only the mid-frame landing time differs. A capture reporting
+  post-frame state — however clean and deterministic — returns identical rows for both and is
+  structurally blind to the defect class. This is the two-background-opacity-harness idea in
+  raster form: an assertion that cannot go stale because it tests the instrument's
+  discriminating power, not a pinned value.
+- **A1 (determinism, ≥3 runs byte-identical)** is the criterion three prior Aeon capture
+  protocols failed on their own controls.
+- **Content trap for any synthetic fixture:** the tinted CRAM entry must be one the art at the
+  measured rows actually references (their R1 got a null result from near-unused entries;
+  the spec pins line 2 with Camera_Y frozen at 144). A synthetic test ROM inherits this
+  constraint or its A1 passes while meaning nothing.
+
 ## Ask 2 — does oracle-next separate HInt from VInt (profiler conflation)? ANSWERED
 
 Their finding about **oracle** (the C++ reference): `interrupts.hint` buckets by comparing
