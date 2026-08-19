@@ -8,7 +8,7 @@
 //! the relevant fields per step (split-borrow). Memory regions are owned byte buffers, always allocated
 //! at their fixed hardware sizes by [`System::new`].
 
-use crate::bus::{BusEventSink, MegaDriveBus, SramMap, StopWhen, Z80_RAM_SIZE};
+use crate::bus::{BusEventSink, MegaDriveBus, SramMap, StepRetire, StopWhen, Z80_RAM_SIZE};
 use crate::m68000::microop::Cpu68000;
 use crate::m68000::registers::Registers;
 use crate::render::ScanlineScaffold;
@@ -977,8 +977,17 @@ impl System {
     /// during a step (from `on_event` / `on_vdp_write`) is honoured at the *next* boundary, i.e. after the
     /// triggering instruction has fully committed.
     ///
+    /// **Retirement.** Immediately after the step commits it calls [`BusEventSink::on_step_retire`] with that
+    /// step's PC, opcode, post-step A7 and **exact CPU-cycle cost** — the number the clock advance below is
+    /// computed from, which no other hook carries. It is the exact counterpart of the boundary stamp and
+    /// shares its placement: the boot-time reset step (driven outside this loop by
+    /// [`reset_with_sink`](Self::reset_with_sink)) gets neither, and a step skipped by an early stop retires
+    /// nothing.
+    ///
     /// With no sink overriding `stop_requested` the added code is `if false { break }`: the instruction
     /// stream, the bus traffic and the clock are unchanged **by construction**, not merely by optimisation.
+    /// The same holds for the retirement — the default body is empty and every value it carries was already
+    /// computed.
     pub fn run_until_with_sink<S: BusEventSink>(
         &mut self,
         deadline_mclk: u64,
@@ -1022,9 +1031,14 @@ impl System {
             while let Some((deadline, kind)) = self.scheduler.pop_due(now) {
                 self.deliver_event(deadline, kind, sink);
             }
+            // Latch the identity of the step about to run. Both values MUST be read here, before it: after
+            // the step `pc` has moved on and `prefetch[0]` holds the NEXT instruction's word. `step_pc` is
+            // the same value the boundary stamp below publishes, read once and shared.
+            let step_pc = self.cpu.regs.pc;
+            let step_opcode = self.cpu.regs.prefetch[0];
             // Stamp the instruction about to execute (its PC) + the current frame, so a sink that attributes
             // accesses to their driving instruction (watchpoints) has that context. No-op for `&mut ()`.
-            sink.on_step_boundary(self.cpu.regs.pc, self.scheduler.now() / MCLK_PER_FRAME);
+            sink.on_step_boundary(step_pc, self.scheduler.now() / MCLK_PER_FRAME);
             // The stop signal. Asked here — after the stamp, before the instruction commits — so the run
             // always ends on an instruction boundary with `pc` on the not-yet-executed instruction. With the
             // trait default this is `if false`, so the no-predicate path is unchanged by construction.
@@ -1033,6 +1047,18 @@ impl System {
                 break;
             }
             let cycles = self.step_cpu(sink);
+            // Retire it: the step's identity plus the one number that did not exist at the boundary — what it
+            // COST. `cycles` is `step_cpu`'s return value, the exact per-instruction (or per-exception-entry)
+            // CPU-cycle count that the clock advance below is computed from, and until this hook existed it
+            // never reached the sink at all. `sp` is the ACTIVE A7 (`regs.a7()`, supervisor/user as the step
+            // left it) — A7 is not in `regs.a[]`, which holds A0-A6 only. Placed before the VDP-write drain so
+            // the ordering is boundary → accesses → retirement → writes → clock. No-op for `&mut ()`.
+            sink.on_step_retire(StepRetire {
+                pc: step_pc,
+                opcode: step_opcode,
+                sp: self.cpu.regs.a7(),
+                cycles,
+            });
             // Drain the VDP writes this step produced (empty unless armed) and deliver each to the sink, paired
             // with the step-boundary PC/frame it just stamped — this is where a DMA write learns the
             // instruction that triggered it. Empty at every instruction boundary (the `dma_pending` precedent).

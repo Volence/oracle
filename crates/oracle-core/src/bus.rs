@@ -54,6 +54,47 @@ pub struct BusEvent {
     pub value: u32,
 }
 
+/// One retired CPU step, delivered to [`BusEventSink::on_step_retire`] immediately after the step commits.
+///
+/// A *step* is one turn of the run loop's CPU crank: normally one instruction, but also a reset / trace /
+/// interrupt exception **entry**, and the nominal idle slice a `Stopped` or `Halted` CPU consumes
+/// (`Cpu68000::step`). All four shapes retire here, because all four cost cycles and a cycle accountant that
+/// skipped any of them would not add up to the clock.
+///
+/// The fields are the pair a per-routine accountant needs — *who* ran and *what it cost* — and every one of
+/// them is a value the run loop already holds or a plain register read:
+///
+/// - `pc` / `opcode`: read **before** the step, so they identify the instruction that was *about to* run.
+///   `pc` is byte-identical to the stamp [`on_step_boundary`](BusEventSink::on_step_boundary) just made, and
+///   `opcode` is `regs.prefetch[0]`, the word at that `pc`.
+/// - `sp` / `cycles`: read **after** it — the active A7 (`Registers::a7`, supervisor- or user-selected as the
+///   step left it) and the exact CPU-cycle cost `step_cpu` returned.
+///
+/// **Sharp edge — on an exception entry, `opcode` is the instruction that did NOT run.** Trace / interrupt /
+/// reset entries are dispatched *before* decode, so the prefetch queue still holds the pending instruction's
+/// word and this struct reports it while `cycles` is the exception's own cost. An accountant must not infer
+/// "an interrupt was taken" from `opcode`; the fc = 7 interrupt-acknowledge access on the event stream is the
+/// signal for that (it arrives, within the same step, through [`on_event`](BusEventSink::on_event)).
+/// The same caveat covers the `Stopped`/`Halted` idle slices, which retire the same `pc`/`opcode` repeatedly.
+///
+/// **Why a new struct and not fields on [`BusEvent`]**: the `bus.rs` standing rule (see
+/// [`on_frame_boundary`](BusEventSink::on_frame_boundary)) — extend the trait, never the event struct, which
+/// derives `Eq` and is recorded into `Vec<BusEvent>` by tests asserting exact event sequences. A retirement
+/// is also not an access: it has no `op`/`addr`/`size`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StepRetire {
+    /// The PC the retired step started at — the same value `on_step_boundary` stamped for it.
+    pub pc: u32,
+    /// The opcode word at `pc` (`regs.prefetch[0]`, read before the step). See the exception-entry caveat.
+    pub opcode: u16,
+    /// The active stack pointer (A7) **after** the step committed — what a shadow stack matches a return
+    /// against, and what makes an `RTS` distinguishable from a `move.l/rts` dispatch that never pushed.
+    pub sp: u32,
+    /// The step's exact CPU-cycle cost, as returned by `Cpu68000::step`. Stall-inclusive: our clock bills
+    /// bus/VDP/DMA waits to the instruction that incurred them.
+    pub cycles: u32,
+}
+
 /// A consumer of the bus event stream (watchpoints, recorders, decoders, the profiler...).
 pub trait BusEventSink {
     fn on_event(&mut self, event: BusEvent);
@@ -73,6 +114,26 @@ pub trait BusEventSink {
     /// stamp is where the instruction identity enters the stream. The default is a no-op, so the null-sink
     /// hot path (`()`) and the recording sink (`Vec<BusEvent>`) are behaviorally unchanged.
     fn on_step_boundary(&mut self, _pc: u32, _frame: u64) {}
+
+    /// The other end of [`on_step_boundary`](BusEventSink::on_step_boundary): called by the sink-generic run
+    /// loop immediately **after** each CPU step commits, carrying that step's identity and its exact
+    /// CPU-cycle cost (see [`StepRetire`]).
+    ///
+    /// This is the one number the step-boundary stamp cannot carry, because it does not exist yet when the
+    /// stamp is made: `cycles` is `step_cpu`'s return value. Without it a consumer can see *which*
+    /// instructions ran but not what any of them cost, and per-routine cycle accounting is impossible; with
+    /// it, a profiler is a pure accumulator over this callback.
+    ///
+    /// **Ordering within a step.** `on_step_boundary` → (`stop_requested`) → the step's own
+    /// [`on_event`](BusEventSink::on_event) accesses → **`on_step_retire`** → the step's
+    /// [`on_vdp_write`](BusEventSink::on_vdp_write) drain → the clock advance. It fires once per step, for
+    /// every step that actually ran — so the step skipped by a `stop_requested` break retires nothing, and a
+    /// resumed run retires it then.
+    ///
+    /// The default is a no-op, so the null-sink hot path (`()`) and the recording sink (`Vec<BusEvent>`) are
+    /// unchanged **by construction**: the loop gains one call with an empty body over values it already
+    /// holds, which can neither reorder a bus access nor move the clock.
+    fn on_step_retire(&mut self, _retire: StepRetire) {}
 
     /// Whether this sink wants VDP-internal writes delivered (watchpoints v2). The sink-generic run loop calls
     /// this **once per run**; the VDP's write-capture buffer is armed for the run if this returns `true`
@@ -227,6 +288,9 @@ impl<S: BusEventSink + ?Sized> BusEventSink for &mut S {
     fn on_step_boundary(&mut self, pc: u32, frame: u64) {
         (**self).on_step_boundary(pc, frame);
     }
+    fn on_step_retire(&mut self, retire: StepRetire) {
+        (**self).on_step_retire(retire);
+    }
     fn wants_vdp_writes(&self) -> bool {
         (**self).wants_vdp_writes()
     }
@@ -264,6 +328,11 @@ impl<S: BusEventSink> BusEventSink for Option<S> {
     fn on_step_boundary(&mut self, pc: u32, frame: u64) {
         if let Some(s) = self {
             s.on_step_boundary(pc, frame);
+        }
+    }
+    fn on_step_retire(&mut self, retire: StepRetire) {
+        if let Some(s) = self {
+            s.on_step_retire(retire);
         }
     }
     fn wants_vdp_writes(&self) -> bool {
@@ -318,6 +387,9 @@ impl<S: BusEventSink> BusEventSink for Observe<S> {
     }
     fn on_step_boundary(&mut self, pc: u32, frame: u64) {
         self.0.on_step_boundary(pc, frame);
+    }
+    fn on_step_retire(&mut self, retire: StepRetire) {
+        self.0.on_step_retire(retire);
     }
     fn wants_vdp_writes(&self) -> bool {
         self.0.wants_vdp_writes()
@@ -385,6 +457,10 @@ impl<A: BusEventSink, B: BusEventSink> BusEventSink for Fanout<A, B> {
     fn on_step_boundary(&mut self, pc: u32, frame: u64) {
         self.a.on_step_boundary(pc, frame);
         self.b.on_step_boundary(pc, frame);
+    }
+    fn on_step_retire(&mut self, retire: StepRetire) {
+        self.a.on_step_retire(retire);
+        self.b.on_step_retire(retire);
     }
     fn wants_vdp_writes(&self) -> bool {
         self.a.wants_vdp_writes() || self.b.wants_vdp_writes()
@@ -3244,6 +3320,7 @@ mod tests {
         events: Vec<BusEvent>,
         timed: Vec<(BusEvent, u64)>,
         boundaries: Vec<(u32, u64)>,
+        retires: Vec<StepRetire>,
         frame_boundaries: Vec<u64>,
         vdp_writes: usize,
         scanlines: Vec<u16>,
@@ -3262,6 +3339,9 @@ mod tests {
         }
         fn on_step_boundary(&mut self, pc: u32, frame: u64) {
             self.boundaries.push((pc, frame));
+        }
+        fn on_step_retire(&mut self, retire: StepRetire) {
+            self.retires.push(retire);
         }
         fn wants_vdp_writes(&self) -> bool {
             self.want_vdp
@@ -3293,6 +3373,15 @@ mod tests {
         }
     }
 
+    fn retire_probe(pc: u32) -> StepRetire {
+        StepRetire {
+            pc,
+            opcode: 0x4E75,
+            sp: 0x00FF_FFF0,
+            cycles: 16,
+        }
+    }
+
     fn vdp_write_probe() -> crate::vdp::VdpWrite {
         crate::vdp::VdpWrite {
             target: crate::vdp::VdpTarget::Vram,
@@ -3315,6 +3404,7 @@ mod tests {
             f.on_event(ev(1));
             f.on_event_at(ev(2), 4242);
             f.on_step_boundary(0x400, 7);
+            f.on_step_retire(retire_probe(0x400));
             f.on_vdp_write(vdp_write_probe());
             f.on_scanline(99, &[(1, 2, 3)]);
             f.on_frame_boundary(11);
@@ -3331,6 +3421,12 @@ mod tests {
                 "{name}: the mclk is preserved"
             );
             assert_eq!(s.boundaries, vec![(0x400, 7)], "{name}: step boundary");
+            assert_eq!(
+                s.retires,
+                vec![retire_probe(0x400)],
+                "{name}: step retirement — a composite that dropped it would leave a cycle accountant \
+                 silently short by everything the other half's steps cost"
+            );
             assert_eq!(s.vdp_writes, 1, "{name}: VDP write");
             assert_eq!(s.scanlines, vec![99], "{name}: scanline");
             assert_eq!(
@@ -3405,6 +3501,7 @@ mod tests {
             o.on_event(ev(1));
             o.on_event_at(ev(2), 5);
             o.on_step_boundary(0x200, 3);
+            o.on_step_retire(retire_probe(0x200));
             o.on_vdp_write(vdp_write_probe());
             o.on_scanline(0, &[]);
             o.on_frame_boundary(3);
@@ -3416,6 +3513,11 @@ mod tests {
             );
         }
         assert_eq!(spy.events.len(), 2, "both event hooks landed");
+        assert_eq!(
+            spy.retires,
+            vec![retire_probe(0x200)],
+            "the retirement is an observation, so `Observe` forwards it"
+        );
         assert!(spy.stop, "and the inner sink still WANTS to stop");
 
         // Composed, it is what stops one half's stop condition from ending somebody else's run.
@@ -3443,6 +3545,7 @@ mod tests {
         none.on_event(ev(1));
         none.on_event_at(ev(2), 5);
         none.on_step_boundary(0, 0);
+        none.on_step_retire(retire_probe(0));
         none.on_vdp_write(vdp_write_probe());
         none.on_scanline(0, &[]);
         assert!(!none.wants_vdp_writes());
@@ -3473,10 +3576,16 @@ mod tests {
             let mut armed = Fanout::new(&mut audio, Some(&mut watch));
             assert!(armed.wants_vdp_writes(), "the armed half's opt-in wins");
             armed.on_event(ev(3));
+            armed.on_step_retire(retire_probe(0x300));
             armed.on_frame_boundary(5);
         }
         assert_eq!(audio.events.len(), 1);
         assert_eq!(watch.events.len(), 1);
+        assert_eq!(
+            (audio.retires.as_slice(), watch.retires.as_slice()),
+            (&[retire_probe(0x300)][..], &[retire_probe(0x300)][..]),
+            "the retirement reaches through BOTH the &mut and the Option forwarder"
+        );
         assert_eq!(
             (
                 audio.frame_boundaries.as_slice(),
