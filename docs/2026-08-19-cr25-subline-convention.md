@@ -214,9 +214,18 @@ prose/catalog contradiction CR-24 fixed in the other direction.
 
 ---
 
-## 4. The proposed §11.15 entry (verbatim, as it would land)
+## 4. The §11.15 entry (verbatim as adjudicated, landed at empyrean `a8766b9`)
 
-Appended at end of `protocol.md` (currently 2597 lines; §11.14 spans `:2503-2597`).
+Appended at end of `protocol.md` (2597 lines when this was written; §11.14 spans `:2503-2597`).
+
+**This block is byte-identical to the §11.15 that landed on `subline-amendment` at `a8766b9`** — the
+text the adjudicator extracted and diffed (`docs/2026-08-19-ruling-cr25.md:105`) — and it is
+deliberately frozen there rather than re-edited, so that correspondence stays audited. **It is no
+longer the whole of the landing text.** The post-adjudication delta below adds the ★ watch-hit item
+(**(c)**), *replaces* this block's table-cell closing sentence (**(d)**) and appends a fourth clause
+to the adoption condition (**(e)**). **Read this block plus items (c), (d) and (e) of the Delta
+section as the current §11.15** — which is what `subline-amendment` holds; each of the three is
+quoted there in full and byte-verified against that branch.
 
 ```markdown
 ### 11.15 — 2026-08-19: the row stops being atomic, for CRAM only
@@ -441,9 +450,23 @@ acceptance protocol — and mirroring CR-24's ruling R1 split, which exists prec
      different step: at step 1 the pre-amendment count would be at most a few more, since the
      surface's quantum is a whole line. Anything near 4 at step 1 means the arc did not land.
 
+4. **Suite gate — the watch-hit clock** (`crates/oracle-core/src/watchpoints.rs`,
+   `vdp_hits_carry_the_writes_own_clock_and_say_what_is_left`, in-tree and passing since slice 1b,
+   oracle-next `01866a7`). *Added by the post-adjudication delta below (item **(e)**), per the delta
+   ruling's D-M2: after the delta, §11.15 makes behavioural claims about two surfaces and this
+   condition gated only one.* A VDP-space hit's `mclk` equals the instant of the write that produced
+   it and **not** the clock of the CPU step that drained it. The fixture drives the two deliberately
+   apart — step clock `900_000`, write instant `912_345` — and asserts against the instant it handed
+   the write, so the expectation comes from the fixture's own inputs rather than from any recorded
+   number; the same test asserts the residual **instruction-granular** caveat still travels with the
+   numbers and that the retired **F-TRACE-VDPWRITE-MCLK** no longer does. Mutation-checked in the
+   delta adjudication: `mclk: w.mclk` → `mclk: self.cur_mclk` was applied and the gate failed
+   (`docs/2026-08-19-ruling-cr25.md:240-242`).
+
 Clause 3 is deliberately external, exactly as §11.14's verbatim A1/A2 sweep is: the fixture ROM, the
 driver and the game-state ritual are the demand side's, and the same-session re-run was offered
-(`docs/2026-08-19-ruling-subline-recon.md:73-74`).
+(`docs/2026-08-19-ruling-subline-recon.md:73-74`). Clauses 1, 2 and 4 are executable in this repo;
+clause 4 is the only one already passing today.
 
 ---
 
@@ -522,9 +545,10 @@ source statement is from a file read in this session at the commit named beside 
 
 **Everything above this line is the CR as adjudicated** (`docs/2026-08-19-ruling-cr25.md`, ADOPT WITH
 CHANGES; M1–M3 and S1–S5 applied, merged at `bf530b5`), except the two precision notes in §1 and §5
-item 2 that point here. This section is a **delta**, not a re-opening: it adds one item to §11.15 and
-corrects two sentences of standing contract text. No design decision above changes, no pin moves, and
-the adoption condition is untouched.
+item 2 that point here, §4's corrected label, and §7's clause 4. This section is a **delta**, not a
+re-opening: it adds one item to §11.15, corrects two sentences of standing contract text, and — per
+the delta ruling's **D-M2** — appends a fourth clause to the adoption condition so the second surface
+it moves is gated too. No design decision above changes and no pin moves.
 
 ### The finding
 
@@ -665,6 +689,52 @@ before and after"* is still true — a `description` is not a validation keyword
 question is `watchpoint_hits`, not `emulator/scanlines`. Restating a sentence that is still accurate
 would have been the opposite error.
 
+**(e) The adoption condition gains a fourth clause — the second surface gets gated.** Required by the
+delta ruling's **D-M2**: post-delta the entry makes behavioural claims about two surfaces while its
+condition gated only the rows, so the watch-hit correction would have registered on gates that never
+exercise `watchpoint_hits` — the dual of the defect the catalog's own precedent names
+(*"registration gated on an unexecutable clause is a condition that gets waived silently"*,
+`protocol.md:2553-2554`). The new clause is written in clause 1's style, behaviour first and fixture
+named, and it is the cheapest clause in the entry: the gate is already in-tree and already passing
+(slice 1b, `01866a7`). Clause 3's leading *and* moves to the new clause and the closing sentence now
+says which clauses are executable here; §11.15's **closing paragraph now reads, in full**:
+
+```markdown
+*Adoption condition, per §11.6 / §11.8 / §11.10 / §11.11 / §11.14, in CR-24's two-part structure —
+suite gates executable in the reference repo, plus a demand-side acceptance protocol:* registered
+when **(1)** the rewritten two-timings suite gate holds — for `build_cram_midframe(L)`, rows below
+`L` uniformly colour A and rows above `L` uniformly colour B, **row `L` split** with a colour-A first
+pixel, a colour-B last pixel and exactly one transition, the transition column inside a band
+**derived in the test from source constants** (poll-loop cycle cost × mclk per CPU cycle ÷ mclk per
+pixel) rather than copied from any measurement, and the two-ROM band swap retained — asserted against
+replies whose `source == "raster"`; **(2)** the zero-mid-line-CRAM-write case stays **byte-identical**
+to the pre-amendment rows — checkable by a third party without a pre-amendment binary, because those
+rows are frozen inline goldens: every `scanline_goldens` pin for a ROM that makes no active-display
+CRAM write stays unchanged, and only the two named `color_1536` literals (ruling Q2) plus any
+per-row-justified flips (ruling Q3) may move — which is the amendment's neutrality claim and the
+reason a line-atomic client sees no change where no such write exists; **(3)** the demand side
+re-runs its sweep unchanged in form, reporting **`flipX` as a measurement rather than the constant
+`{0}`** (predicted ≈ 222 on their row-100 fixture — a prediction bounded by the
+instruction-granularity limit, roughly [205, 225], not a pin; `0` or `319` falsifies the model) and a
+**restated-A2 distinct-picture count of ≥ ~30 over N ∈ 0..57 step 1**, against 4 over N ∈ 0..57
+step 3 measured before the change — a different step, and at step 1 the pre-amendment count would be
+at most a few more than 4, since the surface's quantum is a whole line; and **(4)** the watch-hit
+suite gate holds — a VDP-space hit's `mclk` equals the instant of the write that produced it and
+**not** the clock of the CPU step that drained it, in a fixture that drives the two deliberately
+apart and takes its expectation from the instant it handed the write rather than from any recorded
+number (`vdp_hits_carry_the_writes_own_clock_and_say_what_is_left`, in the reference repo since
+oracle-next `01866a7`, and mutation-checked: stamping from the draining step's clock again fails it).
+Clauses 1, 2 and 4 are executable in the reference repo; clause 3 is an acceptance protocol, not a
+suite gate — the fixture and the driver are the demand side's — exactly as §11.14's verbatim A1/A2
+sweep is.
+```
+
+Everything before *"; and **(4)**"* is §4's block unchanged — the clause is an append, plus the two
+one-word/one-sentence joins the append forces. **§7 states the same clause in the CR's own body
+style** (clause 4 there), with the fixture's two clocks (`900_000` step, `912_345` write) and the
+adjudicator's mutation check spelled out; the contract text keeps the one-sentence form the ruling
+asked for.
+
 ### What this delta does **not** do
 
 - **It does not edit the vendored schema in this repo.** `crates/oracle-aether/tests/contract/bus-protocol.schema.json`
@@ -673,12 +743,14 @@ would have been the opposite error.
   for the empyrean prose merge (`docs/2026-08-19-ruling-subline-recon.md:20-24`, `:65-74`), so the
   vendored copy and the source are never out of step on `main` in either direction. Editing it here
   would fork the vendored artifact from its source between now and then.
-- **It does not restate §3 or §4's fenced blocks.** Those are labelled *"verbatim, as it would land"*
-  and the adjudicator diffed them mechanically against the empyrean draft — *"HELD — byte-identical by
-  diff (pixel sentence identical modulo line wrap)"* (`docs/2026-08-19-ruling-cr25.md:105`). They are the text as adjudicated at `a8766b9`; the empyrean
-  additions this delta makes on top of them are quoted in full above, in (a)–(d), rather than folded
-  back into those blocks where they would silently break that verified correspondence. **Read §4's
-  block plus (c) and (d) of this section as the current §11.15.**
+- **It does not restate §3 or §4's fenced blocks.** The adjudicator diffed them mechanically against
+  the empyrean draft — *"HELD — byte-identical by diff (pixel sentence identical modulo line wrap)"*
+  (`docs/2026-08-19-ruling-cr25.md:105`). They are the text as adjudicated at `a8766b9`; the empyrean
+  additions this delta makes on top of them are quoted in full above, in (a)–(e), rather than folded
+  back into those blocks where they would silently break that verified correspondence. §4's label now
+  says exactly that, per the delta ruling's **D-M1** — §3's needed nothing, since the delta does not
+  touch the §6 rewrite. **Read §4's block plus (c), (d) and (e) of this section as the current
+  §11.15.**
 - **It does not claim the reference server's row behaviour has shipped.** Unchanged from §8: slice 4
   is still the slice that changes row content. Slice 1b, the watch-hit change this delta documents,
   **has** shipped on `subline-s1` — that is the one behavioural statement in this document that is
@@ -691,7 +763,10 @@ would have been the opposite error.
 
 **Docs-only, both sides.** In `oracle-next`, one existing file under `docs/` edited, nothing under
 `crates/` — no `cargo` was run and **none is claimed**. In `empyrean`, two files on the existing
-branch `subline-amendment` (`contract/protocol.md`, `contract/schema/bus-protocol.schema.json`), one
-commit on top of `a8766b9`, DRAFT and **not merged**. No emulator MCP tooling was used. Every sentence
-quoted above was read at the anchor it names, in the tree it names, in this session; the one-difference
-schema claim was produced by parsing both revisions, not by reading the diff.
+branch `subline-amendment` (`contract/protocol.md`, `contract/schema/bus-protocol.schema.json`),
+first as one commit on top of `a8766b9` (`8f9f7e7`, items (a)–(d)) and then one prose-only commit
+applying the delta ruling's D-M2 (item (e), `contract/protocol.md` alone), DRAFT and **not merged**.
+No emulator MCP tooling was used. Every sentence quoted above was read at the anchor it names, in the
+tree it names, in this session; the one-difference schema claim was produced by parsing both
+revisions, not by reading the diff, and item (e)'s fenced block was byte-compared against the branch
+after it landed there.
