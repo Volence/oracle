@@ -188,6 +188,14 @@ twice at one machine point: once with a frame retained, once after `restore` dro
 doubles as the R4 invalidation pin. (`cram_flicker` is pinned IDENTICAL-TO-POST-HOC and is **not** a
 liveness discriminator — do not substitute it.)
 
+> **Re-checked 2026-08-19 against `F-SCANLINE-SUBLINE` slice 4, and the sentence stands.** That slice was
+> the obvious candidate to overturn it: `cram_flicker` writes CRAM 16× per active line, so once landings
+> resolve to a pixel its rows really do split. Measured — 2,692 value-changing in-active-window writes in
+> the hashed frame — and it **stayed IDENTICAL-TO-POST-HOC**, because every one of those writes is to index
+> 4 or 36 and the picture samples only index 0. So each segment decodes the same colour and the ROM remains
+> a non-discriminator, now for a proven reason rather than a predicted one. `color_1536` remains the gate;
+> its hash moved to `0x9ae4acc58d2a382d` in that slice.
+
 ## What the process caught this slice
 
 - **The adjudication caught an unexecutable adoption condition.** The CR gated registration on the

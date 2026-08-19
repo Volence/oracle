@@ -421,6 +421,60 @@ fn a_row_is_emitted_at_the_next_lines_event_not_at_its_own() {
     }
 }
 
+/// **The whole slice-4 plumbing, end to end, without a server** (`F-SCANLINE-SUBLINE`): boot the mid-frame
+/// CRAM fixture through the ordinary run loop and check the row it writes during actually splits.
+///
+/// `crates/oracle-aether/tests/scanlines.rs`'s a2 gate asserts the same shape over the wire, which is the
+/// right place for the *contract*; this asserts it at the seam where the mechanism lives, so a break in the
+/// mclk reduction, the CRAM-target filter, or which row a landing is filed against fails here — with a core
+/// stack trace and no spawned process to read it through.
+#[test]
+fn the_row_a_mid_line_cram_write_lands_on_is_the_row_that_splits() {
+    const LINE: usize = 50;
+    let mut s = System::new(0x1234_5678);
+    s.load_rom(oracle_core::testrom::build_cram_midframe(LINE as u8));
+    s.reset();
+    let mut cap = ScanlineCapture::new(Retain::LastFrame);
+    s.run_frames_with_sink(6, &mut cap); // frame 0 is wholly colour A; read a later one
+
+    let width = 256usize; // the fixture programs H32
+    let px = cap.pixels();
+    assert_eq!(px.len(), width * 224, "one complete H32 frame");
+    let row = |n: usize| &px[n * width..(n + 1) * width];
+    let transitions = |n: usize| row(n).windows(2).filter(|w| w[0] != w[1]).count();
+
+    assert_eq!(
+        transitions(LINE),
+        1,
+        "line {LINE} carries the write, so it splits — EXACTLY once. Zero means the emitter is still \
+         line-atomic (or the write never reached the journal); more than one means it was applied out of \
+         order or more than once."
+    );
+    for n in [LINE - 1, LINE + 1] {
+        assert_eq!(
+            transitions(n),
+            0,
+            "line {n} is uniform — the landing is filed against line {LINE} alone, not smeared across \
+             its neighbours"
+        );
+    }
+    assert_eq!(
+        row(LINE)[0],
+        row(LINE - 1)[0],
+        "the split row opens on the colour its predecessor is wholly painted in"
+    );
+    assert_eq!(
+        row(LINE)[width - 1],
+        row(LINE + 1)[0],
+        "and closes on the colour its successor is wholly painted in"
+    );
+    assert_ne!(
+        row(LINE - 1)[0],
+        row(LINE + 1)[0],
+        "which are two different colours"
+    );
+}
+
 /// Documented sharp edge 2: the frame index is `mclk / MCLK_PER_FRAME`, and `System::reset` zeroes mclk, so
 /// the index REPEATS across a reset while `frames_completed` keeps climbing. Consumers must not treat it as
 /// monotonic.

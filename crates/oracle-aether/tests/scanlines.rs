@@ -373,6 +373,22 @@ fn a2_two_timings_differ_and_the_boundary_moves() {
             "ROM 150: line {line} is before its boundary"
         );
     }
+    // The two rows the equality list below has to drop are each ROM's *other* row: line 150 is ROM B's
+    // split row but is wholly uniform in ROM A, and line 50 is the mirror. Dropping them from the equality
+    // list without asserting them anywhere would leave a hole exactly where the split lives, so they are
+    // pinned here as uniform — which is also a second, independent statement that only ONE row per ROM
+    // splits.
+    assert_eq!(
+        rgb_of(&ra, 150),
+        white,
+        "ROM 50: line 150 is far past its boundary and wholly colour B — only ROM 150 splits there"
+    );
+    assert_eq!(
+        rgb_of(&rb, 50),
+        black,
+        "ROM 150: line 50 is far above its boundary and wholly colour A — only ROM 50 splits there"
+    );
+
     // Outside the band the two agree, which is what makes the disagreement inside it a *timing* difference
     // rather than two unrelated pictures. Line 50 is ROM A's split row and line 150 is ROM B's, so neither
     // belongs in an equality list; 49 and 151 are their wholly-uniform neighbours and do.
@@ -441,12 +457,20 @@ fn assert_split_row(row: &str, width: usize, tag: &str) -> usize {
 /// an integer, so the loop's phase relative to the line drifts frame to frame. Determinism of the column
 /// *within* one boot is covered by the A1 gate, which is where it belongs.
 ///
-/// **What this band does and does not discriminate**, recorded so nobody over-reads it. It bites on the
-/// pixel axis being the row's own (feeding H40's 8 mclk/px to this H32 row moves the band off the measured
-/// column — decision B-2) and on the landing being genuinely mid-row rather than at either edge. It does
-/// **not** discriminate decision B-1, the 8/10-mclk axis versus `h_counter`'s 422/342 grid: at H32 those two
-/// agree exactly (`3420 / 342 == 2560 / 256 == 10`), which is why B-1's ~33-mclk disagreement is an H40-only
-/// question and is carried as follow-up F-SUBLINE-HGRID rather than gated here.
+/// **What this band does and does not discriminate**, measured rather than assumed — an earlier draft of
+/// this note claimed more than the arithmetic supports and is corrected here. The measured column is 53 and
+/// the band is 46..=79, so the band catches a **gross** error in the mclk→pixel derivation: forgetting
+/// `MCLK_PER_CPU_CYCLE` entirely, a factor-of-two axis mistake, or a landing that drifts out of the poll
+/// loop's own window. It does **not** discriminate either named pixel-axis decision at this fixture's mode:
+///
+/// * **B-1** (the 8/10-mclk axis versus `h_counter`'s 422/342 grid) — at H32 the two agree *exactly*
+///   (`3420 / 342 == 2560 / 256 == 10`), so no H32 fixture can tell them apart. B-1's ~33-mclk disagreement
+///   is an H40-only question, carried as follow-up **F-SUBLINE-HGRID**.
+/// * **B-2** (the axis coming from the resolved row's own mode, not a live register read) — substituting
+///   H40's 8 mclk/px here maps column 53 to 66, which is still inside 46..=79, and every other assertion in
+///   this gate is column-agnostic. Discriminating B-2 would need a landing past roughly px 136, i.e. an
+///   H40 fixture or a mid-line mode switch. **Named gap**, alongside F-SUBLINE-HGRID: B-2 is implemented
+///   and unit-tested at core level, but no wire-level gate pins it.
 fn landing_band(width: usize) -> (usize, usize) {
     const POLL_ITERATION: u64 = 8 + 22 + 8 + 10;
     const POST_POLL: u64 = (8 + 22 + 8 + 8) + 20;

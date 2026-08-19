@@ -75,9 +75,13 @@ pub trait BusEventSink {
     fn on_step_boundary(&mut self, _pc: u32, _frame: u64) {}
 
     /// Whether this sink wants VDP-internal writes delivered (watchpoints v2). The sink-generic run loop calls
-    /// this **once per run** and, only if it returns `true`, arms the VDP's write-capture buffer for the run —
-    /// so the currency-sensitive capture path stays byte-for-byte off unless a consumer opts in. The default is
-    /// `false`, so `()` / `Vec<BusEvent>` never arm capture.
+    /// this **once per run**; the VDP's write-capture buffer is armed for the run if this returns `true`
+    /// **or** if the sink wants rendered rows — the deferred scanline emitter reads the CRAM subset of the
+    /// same capture to place each landing inside its row (`F-SCANLINE-SUBLINE`). So the buffer being armed no
+    /// longer implies this method said yes; what it does still imply is that some consumer opted in, and with
+    /// neither attached the currency-sensitive capture path stays byte-for-byte off. The default is `false`,
+    /// so `()` / `Vec<BusEvent>` never arm capture on their own account, and a captured write is delivered to
+    /// [`on_vdp_write`](BusEventSink::on_vdp_write) only for a sink that asked for it here.
     fn wants_vdp_writes(&self) -> bool {
         false
     }

@@ -104,6 +104,10 @@ const BASELINE: &[(&str, &str)] = &[
         // to indices 4 and 36, and the picture samples only index 0, so every segment decodes the same
         // colour. Sub-scanline CRAM is now modelled; the CRAM *dot* (the value painted at the beam position
         // regardless of the resolved index) still is not, and that is what this ROM tests. F-CRAMDOT stands.
+        //
+        // Same caveat as `direct_color_dma` above: the load-bearing measurement is
+        // **`scanline_goldens.rs`'s live-vs-post-hoc verdict**, which stayed IDENTICAL-TO-POST-HOC. This
+        // row's own hash is a post-hoc `render_line` sweep and is structurally immune to the slice.
         "cram_flicker",
         "NOT-RENDERABLE (CRAM-write artefact, sub-scanline) frame_hash=0x815bb645bc46a325",
     ),
@@ -117,6 +121,11 @@ const BASELINE: &[(&str, &str)] = &[
         // journal coalesces it to a single landing at pixel 82, and that surviving landing's word is the
         // value index 0 **already held** at line 1's start — net effect over the line, in the hashed frame,
         // is 0x0000 -> 0x0000. So the row does split, and both spans decode to the same colour.
+        //
+        // Which measurement carries that claim: **`scanline_goldens.rs`'s live-vs-post-hoc verdict for this
+        // ROM** (still IDENTICAL-TO-POST-HOC after the slice), not the hash on this row. This row is scraped
+        // through `scrape_visual` -> post-hoc `render_line`, which is structurally blind to anything
+        // sub-frame — it could not have moved whatever the emitter did, so it is evidence of nothing here.
         "direct_color_dma",
         "NOT-RENDERABLE (sub-scanline CRAM) frame_hash=0xed40dc4a6c4fc325",
     ),

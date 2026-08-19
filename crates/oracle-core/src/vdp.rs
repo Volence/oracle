@@ -249,12 +249,24 @@ pub struct Vdp {
     /// **neither** frozen currency (`state_hash`/`export_state` read only VRAM/CRAM/VSRAM/regs, never this).
     /// Power-on = empty.
     write_captures: Vec<VdpWrite>,
-    /// Whether the write-capture buffer is armed (watchpoints v2). Arming is **opt-in and zero-cost when off**:
-    /// each choke-point guard is a single cheap `if self.capture_armed` test with no behavioral effect, so a
-    /// run with no VDP watch (or a null sink) is byte-for-byte identical to today. Set per-run by the
-    /// sink-generic run loop iff the sink wants VDP writes; false at power-on and between runs. In neither
-    /// frozen currency.
+    /// Whether the write-capture buffer is armed (watchpoints v2, and since `F-SCANLINE-SUBLINE` the deferred
+    /// scanline emitter too). Arming is **opt-in and zero-cost when off**: each choke-point guard is a single
+    /// cheap `if self.capture_armed` test with no behavioral effect, so a run with no VDP watch and no
+    /// scanline sink (or a null sink) is byte-for-byte identical to today. Set per-run by the sink-generic
+    /// run loop iff the sink wants VDP writes **or** wants rendered rows; false at power-on and between runs.
+    /// In neither frozen currency. See [`Vdp::capture_cram_only`] for the narrowed mode a rows-only consumer
+    /// arms.
     capture_armed: bool,
+    /// Narrows an armed capture to **CRAM writes only** (`F-SCANLINE-SUBLINE`). The deferred scanline
+    /// emitter needs the CRAM subset and nothing else, so a run that carries a scanline sink but no VDP
+    /// watch sets this: a 64 KiB VRAM fill DMA then pushes **zero** entries instead of 65,536 that would be
+    /// built, drained and dropped every frame. A run that also wants writes on the wire clears it, so the
+    /// watchpoints path records exactly what it always did.
+    ///
+    /// A transient run flag exactly like [`Vdp::capture_armed`] and `in_dma` — false at power-on and
+    /// between runs, in neither frozen currency. It does ride the bincode snapshot (as they do), which is
+    /// the one byte this costs.
+    capture_cram_only: bool,
     /// Transient "this write is a DMA step" tag (watchpoints v2): raised around `run_fill`/`run_copy`/
     /// `dma_write_word` so the choke points stamp `via = Dma`; otherwise `via = Direct`. Always false at an
     /// instruction boundary (a DMA runs to completion within one bus access). In neither frozen currency.
@@ -330,6 +342,7 @@ impl Vdp {
             last_dma: None,
             write_captures: Vec::new(),
             capture_armed: false,
+            capture_cram_only: false,
             in_dma: false,
             now_mclk: 0,
         }
@@ -956,6 +969,14 @@ impl Vdp {
     /// run whose sink wants VDP writes and disarms it after; disarmed is byte-for-byte the old hot path.
     pub fn set_write_capture(&mut self, on: bool) {
         self.capture_armed = on;
+        self.capture_cram_only = false;
+    }
+
+    /// Arm the write-capture buffer for **CRAM writes only** — what a run with a scanline sink but no VDP
+    /// watch needs (`F-SCANLINE-SUBLINE`). See [`Vdp::capture_cram_only`] for why the narrowing matters.
+    pub fn set_write_capture_cram_only(&mut self, on: bool) {
+        self.capture_armed = on;
+        self.capture_cram_only = on;
     }
 
     /// Drain the VDP writes captured since the last drain (watchpoints v2), leaving the buffer empty. The
@@ -968,7 +989,7 @@ impl Vdp {
     /// branch is the whole cost when disarmed — it inlines to one predictable test in the DMA-fill hot path.
     #[inline]
     fn capture(&mut self, target: VdpTarget, addr: u32, old: u32, new: u32, size: u8) {
-        if self.capture_armed {
+        if self.capture_armed && (!self.capture_cram_only || target == VdpTarget::Cram) {
             let via = if self.in_dma {
                 VdpVia::Dma
             } else {

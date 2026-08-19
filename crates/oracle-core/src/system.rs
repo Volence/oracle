@@ -994,7 +994,16 @@ impl System {
         let wants_writes = sink.wants_vdp_writes();
         let wants_rows = sink.wants_scanlines();
         let capture = wants_writes || wants_rows;
-        self.vdp.set_write_capture(capture);
+        // Narrow the capture to CRAM when only the emitter is listening: the rows path reads no other
+        // target, and an unnarrowed arm would build and drop 65,536 `VdpWrite`s for every 64 KiB VRAM fill
+        // DMA on the player's own hot loop. A sink that also wants writes on the wire gets the full,
+        // unchanged capture. (The scratch-buffer half of that saving — reusing the drained `Vec` instead of
+        // `mem::take`ing a fresh one each step — is registered as follow-up F-SUBLINE-CAPTURE-SCRATCH.)
+        if wants_writes {
+            self.vdp.set_write_capture(capture);
+        } else {
+            self.vdp.set_write_capture_cram_only(capture);
+        }
         // The deferred scanline emitter (`F-SCANLINE-SUBLINE`) has **no armed flag** — deliberately: the
         // per-line stash re-consults `wants_scanlines()` and the flush consults only whether a row is
         // pending, so there is no second source of truth to keep in sync. This run-start query does exactly
@@ -1032,12 +1041,18 @@ impl System {
                     // Route CRAM writes into the retained row's journal, at their own in-line offset
                     // (`F-SCANLINE-SUBLINE` slice 4). `w.mclk` is the write's own stamp (slice 1b), so a
                     // burst sharing one instruction shares one landing pixel — decision C-6.
+                    //
+                    // ORDERING HAZARD, for whoever lands decision C-7 (Z80 CRAM writes through the
+                    // `$C00000` mirror). This drain runs *before* `catch_up_z80` below, so a CRAM write the
+                    // Z80 performs during the catch-up sits in the buffer until the NEXT step's drain — by
+                    // which time a line boundary may have moved the retained row on, and the write would be
+                    // journalled against the wrong one. The `journal_cram` line check turns that into a
+                    // loud debug assert rather than a silently wrong picture, and no corpus ROM writes CRAM
+                    // from the Z80 today; a C-7 slice must either drain again after the catch-up or file
+                    // late landings by their own stamped line.
                     if wants_rows && w.target == VdpTarget::Cram {
-                        self.scanline_scaffold.journal_cram(
-                            w.mclk % MCLK_PER_LINE,
-                            w.addr as usize,
-                            w.new as u16,
-                        );
+                        self.scanline_scaffold
+                            .journal_cram(w.mclk, w.addr as usize, w.new as u16);
                     }
                     if wants_writes {
                         sink.on_vdp_write(w);
@@ -1095,6 +1110,13 @@ impl System {
         // landing, mis-address one, or add a CRAM write path this drain does not see (the Z80 mirror of
         // decision C-7, a new DMA arm) and the two differ. It covers the empty-journal case too: no writes
         // in the line means live CRAM is still the snapshot.
+        //
+        // Coverage, stated so nobody over-reads it: no production path skips a landing, so this assert
+        // firing is reachable only by mutating the loop, and it is covered that way (recorded mutation:
+        // filter one write out of the drain -> this fires, naming the row). The *predicate* it rests on —
+        // that the journal fold reproduces the line's net CRAM effect, and is false when a landing is
+        // missing — is covered directly by
+        // `render::tests::the_emit_time_guard_predicate_holds_only_when_every_landing_is_journalled`.
         debug_assert_eq!(
             &working[..],
             self.vdp.cram(),

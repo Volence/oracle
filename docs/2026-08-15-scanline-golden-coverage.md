@@ -31,7 +31,7 @@ from the post-hoc re-render, in an identical FNV-1a byte layout.
 
 | ROM | live vs post-hoc | lines differing | measured cause |
 |---|---|---|---|
-| `color_1536` | **DIFFERS** | 224/224 | mech. 1 — 645 VDP-port writes per frame during active display (387 register, rest CRAM), from line 48. Live picture ~1400 colours; post-hoc 4. |
+| `color_1536` | **DIFFERS** | 224/224 | mech. 1 — 645 VDP-port writes per frame during active display (387 register, rest CRAM), from line 48. Live picture ~1400 colours; post-hoc 4. **2026-08-19:** verdict unchanged, hash re-pinned to `0x9ae4acc58d2a382d` — the live rows are now segmented at each CRAM landing (515 value-changing in-active-window writes per hashed frame, indices 4–7, active lines 48–221), so the picture is correct *within* a row as well as between rows. |
 | `shadow_highlight` | **DIFFERS** | 224/224 | mech. 3 — **zero** active-display writes, 18 vblank writes per frame; 4-frame animation cycle. |
 | `window_distortion` | **DIFFERS** | 112/224 | mech. 1 — **exactly one** active-display write per frame: R17 (window H position) → `$00` at line 111, restored to `$07` in vblank. |
 | `io_sample` | **DIFFERS** | 14/224 | mech. 1 — 328 active-display VRAM writes per frame; the ROM redraws its nametable behind the beam. |
@@ -154,7 +154,7 @@ the scorecard —
 
 | ROM | pinned | with one bit flipped |
 |---|---|---|
-| `color_1536` | `0x917371f07409cb25` | `0x60cc41b2e871b204` |
+| `color_1536` | `0x917371f07409cb25` † | `0x60cc41b2e871b204` |
 | `io_sample` | `0xe5e133a2b8f9fe93` | `0x26dbf0aacccf8e6a` |
 | `m68k_opcode_sizes` | `0xfb9783a5ab564eb4` | `0x9e09d3469fa45e55` |
 | `shadow_highlight` | `0xfd6f02e7574d67f5` | `0xc5b0baf26cb2fd40` |
@@ -162,6 +162,14 @@ the scorecard —
 | `window_distortion` | `0xdf5bae342cc03667` | `0x13720bb63ffcf066` |
 
 That experiment is retained permanently, in-tree, as `the_live_hash_depends_on_the_pixels`.
+
+† **`color_1536` was re-pinned to `0x9ae4acc58d2a382d` on 2026-08-19** (`F-SCANLINE-SUBLINE` slice 4 — CRAM
+landings are now resolved to a pixel *inside* the row, so the row shows the palette evolving across its own
+width). The pair above is the **2026-08-15 measurement against the then-current pin** and is kept as the
+historical record; the flipped-bit column has deliberately **not** been re-derived, because inventing a
+number nobody measured is exactly what this table exists to prevent. The property the table demonstrates —
+that a pinned hash depends on the pixels — is unchanged, and is the one still enforced in-tree by
+`the_live_hash_depends_on_the_pixels` (which perturbs `window_distortion`, whose pin did not move).
 
 **Capture-shape guard.** `live_frame_hash` asserts the capture handed back exactly one complete frame of active
 lines and that the run delivered every frame boundary. This is not a hypothetical failure mode: an early draft
@@ -175,7 +183,9 @@ turn into a vacuous green.
 **Coverage guard.** `the_baseline_actually_pins_live_coverage` requires at least six `LIVE-DIFFERS` rows, so the
 file cannot silently decay into pure cost.
 
-**Independent cross-check.** `color_1536`'s live hash computed here — `0x917371f07409cb25` — equals the value
+**Independent cross-check** (values as of 2026-08-15; both literals moved together to `0x9ae4acc58d2a382d`
+on 2026-08-19 and the cross-check was preserved, which is the whole point of it). `color_1536`'s live hash
+computed here — `0x917371f07409cb25` — equals the value
 `conformance_roms.rs` independently pins for that ROM through a separate code path. The byte layout and run
 shape of the new instrument agree with the existing one.
 

@@ -477,10 +477,24 @@ impl ScanlineScaffold {
     ///
     /// The scan walks backwards only over the current pixel's group: `x` is non-decreasing (master clocks
     /// are, within a line), so equal-`x` entries are contiguous at the tail.
-    pub(crate) fn journal_cram(&mut self, d_mclk: u64, addr: usize, word: u16) {
+    ///
+    /// Takes the write's **absolute** master clock, not a pre-reduced in-line offset, so this can check the
+    /// one thing neither the pixel-order assert nor the emit-time working-CRAM guard can see: that the write
+    /// belongs to the row it is being journalled against. A write stamped on a *different* line but reduced
+    /// mod `MCLK_PER_LINE` lands at a plausible-looking `x` in the wrong row — the working-CRAM guard still
+    /// passes (every write is accounted for, just filed under the wrong row) and the picture is silently
+    /// wrong. Doing the reduction here is what makes that class visible.
+    pub(crate) fn journal_cram(&mut self, mclk: u64, addr: usize, word: u16) {
         let Some(row) = self.pending.as_mut() else {
             return;
         };
+        debug_assert_eq!(
+            (mclk / crate::vdp::MCLK_PER_LINE) % crate::vdp::LINES_PER_FRAME,
+            u64::from(row.report.line),
+            "a CRAM write stamped on one line was journalled against another row's decode — reducing the \
+             clock mod the line would have hidden it at a plausible x"
+        );
+        let d_mclk = mclk % crate::vdp::MCLK_PER_LINE;
         let x = crate::vdp::subline_x(d_mclk, row.report.h40);
         debug_assert!(
             row.journal.last().is_none_or(|l| l.x <= x),
@@ -1963,7 +1977,7 @@ mod tests {
         let mut sc = ScanlineScaffold::default();
         sc.stash(v.render_line_report(0), v.cram());
         for &(d_mclk, addr, word) in landings {
-            sc.journal_cram(d_mclk, addr, word);
+            sc.journal_cram(d_mclk, addr, word); // line 0, so the absolute clock IS the in-line offset
         }
         sc.take().expect("a row was stashed")
     }
@@ -2082,6 +2096,50 @@ mod tests {
         assert_eq!(
             mixed.journal[0].word, 3,
             "the later write to the same address won"
+        );
+    }
+
+    /// **The emit-time guard's predicate, tested both ways.** `System::flush_pending_row` asserts that the
+    /// CRAM `row_rgb` ends its walk on equals the machine's live CRAM; this pins the property that assert
+    /// rests on — the fold over the journal reproduces the line's net CRAM effect, and **fails to** the
+    /// moment a landing is missing.
+    ///
+    /// The `debug_assert_eq!` itself is not reachable from a test without mutating the run loop (there is no
+    /// production path that skips a landing, which is the point), so it is covered by a recorded mutation
+    /// instead; what is covered *here* is that the predicate it checks can actually be false.
+    #[test]
+    fn the_emit_time_guard_predicate_holds_only_when_every_landing_is_journalled() {
+        let mut v = backdrop_fixture();
+        write_cram(&mut v, 1, 0x000E);
+        let report = v.render_line_report(0);
+        let snapshot = *v.cram().first_chunk::<CRAM_SIZE>().expect("CRAM image");
+
+        // Two CRAM writes during the line, as the machine would perform them.
+        let writes = [(1000u64, 2usize, 0x0E00u16), (2000, 4, 0x00E0)];
+        for &(_, addr, word) in &writes {
+            write_cram(&mut v, addr / 2, word);
+        }
+        let live = v.cram();
+
+        let build = |journal: &[(u64, usize, u16)]| {
+            let mut sc = ScanlineScaffold::default();
+            sc.stash(report.clone(), &snapshot);
+            for &(d, addr, word) in journal {
+                sc.journal_cram(d, addr, word);
+            }
+            row_rgb(&sc.take().expect("stashed")).1
+        };
+
+        assert_eq!(
+            &build(&writes)[..],
+            live,
+            "every landing journalled ⇒ the walk ends on the machine's own CRAM — the guard's happy case"
+        );
+        assert_ne!(
+            &build(&writes[..1])[..],
+            live,
+            "NON-VACUITY: drop one landing and the predicate is false. Without this the guard could be \
+             asserting something no bug can break."
         );
     }
 
