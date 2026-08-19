@@ -1057,6 +1057,7 @@ impl System {
                 pc: step_pc,
                 opcode: step_opcode,
                 sp: self.cpu.regs.a7(),
+                ssp: self.cpu.regs.ssp,
                 cycles,
             });
             // Drain the VDP writes this step produced (empty unless armed) and deliver each to the sink, paired

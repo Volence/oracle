@@ -89,7 +89,20 @@ pub struct StepRetire {
     pub opcode: u16,
     /// The active stack pointer (A7) **after** the step committed — what a shadow stack matches a return
     /// against, and what makes an `RTS` distinguishable from a `move.l/rts` dispatch that never pushed.
+    ///
+    /// **Mode-selected**: this is `Registers::a7`, so it is the user stack in user mode and the supervisor
+    /// stack in supervisor mode. That is the right pointer for a *subroutine* frame, which lives on
+    /// whichever stack its caller was using — and the wrong one for an *exception* frame, which is why
+    /// [`ssp`](StepRetire::ssp) exists.
     pub sp: u32,
+    /// The **supervisor** stack pointer after the step, regardless of the mode the step left the CPU in.
+    ///
+    /// Exception frames always live here, so this is what an accountant matches an `RTE` against. Reading
+    /// [`sp`](StepRetire::sp) instead would work only while the CPU stays supervisor across the return: an
+    /// interrupt taken from user code is unwound by an `RTE` that *restores user mode first*, after which
+    /// the active A7 is the user stack and the frame it just popped is nowhere in view. Carrying both
+    /// makes the match mode-independent instead of accidentally correct.
+    pub ssp: u32,
     /// The step's exact CPU-cycle cost, as returned by `Cpu68000::step`. Stall-inclusive: our clock bills
     /// bus/VDP/DMA waits to the instruction that incurred them.
     pub cycles: u32,
@@ -3378,6 +3391,7 @@ mod tests {
             pc,
             opcode: 0x4E75,
             sp: 0x00FF_FFF0,
+            ssp: 0x00FF_FFF0,
             cycles: 16,
         }
     }

@@ -95,6 +95,7 @@ fn the_retired_fields_are_the_real_step() {
             pc,
             opcode,
             sp: twin.cpu_regs().a7(),
+            ssp: twin.cpu_regs().ssp,
             cycles,
         }
     };

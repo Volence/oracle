@@ -585,6 +585,268 @@ pub fn build_cram_midframe(line: u8) -> Vec<u8> {
     rom
 }
 
+// --- Profiler fixtures (`crates/oracle-core/src/profiler.rs`) --------------------------------------
+
+/// Entry addresses in every [`build_profiler`] image. The profiler keys its rows by routine entry
+/// address, so these ARE the expectations its tests assert against — which is why they are constants of
+/// the builder rather than numbers copied into a test file.
+pub const PROF_MAIN: u32 = 0x0000_0200;
+/// The illegal-instruction handler: a self-spin, so a fixture that faults parks visibly instead of
+/// running away into whatever follows.
+pub const PROF_ILLEGAL: u32 = 0x0000_0280;
+/// The level-4 (HBlank) autovector handler.
+pub const PROF_HINT_H: u32 = 0x0000_02C0;
+/// The level-6 (VBlank) autovector handler.
+pub const PROF_VINT_H: u32 = 0x0000_02E0;
+/// A leaf routine: two `nop`s and an `rts`. Called, never calls.
+pub const PROF_LEAF: u32 = 0x0000_0300;
+/// A middle routine that calls [`PROF_LEAF`] exactly [`PROF_MID_CALLS_LEAF`] times, then returns.
+pub const PROF_MID: u32 = 0x0000_0340;
+/// The `move.l #target,-(sp)` / `rts` **dispatch idiom** — a "return" to a pushed address, which is a
+/// jump wearing a return's clothes. Nothing here pushed a frame for the target.
+pub const PROF_DISPATCH: u32 = 0x0000_0380;
+/// Where [`PROF_DISPATCH`] dispatches to. Its own `rts` unwinds the DISPATCH invocation.
+pub const PROF_TARGET: u32 = 0x0000_03C0;
+/// A self-recursive routine driven by a counter in `d6`.
+pub const PROF_REC: u32 = 0x0000_0400;
+/// How many times [`PROF_MID`] calls [`PROF_LEAF`] per invocation.
+pub const PROF_MID_CALLS_LEAF: u64 = 2;
+/// The user-mode stack [`ProfilerShape::ModeSwitch`] installs before dropping privilege — well below the
+/// supervisor stack so the two never collide and a frame match cannot succeed by accident.
+pub const PROF_USER_SP: u32 = 0x00FF_7FFE;
+
+/// Which fixture [`build_profiler`] emits. Every shape shares one skeleton — vectors, VDP setup, and an
+/// outer loop gated on the V counter so the body runs **exactly once per frame** — and differs only in
+/// its body. The frame gate is what makes a per-frame expectation a constant rather than "however many
+/// passes happened to fit", which is the whole reason these fixtures can be `==`-asserted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProfilerShape {
+    /// Call [`PROF_LEAF`] `k` times per frame.
+    CallsLeaf { k: u16 },
+    /// Call [`PROF_MID`] once per frame, which calls [`PROF_LEAF`] twice — a two-level tree with a known
+    /// shape, so `self + children == inclusive` has something to be true of.
+    TwoLevel,
+    /// Call [`PROF_DISPATCH`] once per frame (the W3 regression).
+    Dispatch,
+    /// Call [`PROF_REC`] once per frame with `d6 = depth`, yielding `depth + 1` nested invocations of one
+    /// routine.
+    Recursive { depth: u16 },
+    /// No body at all — just the frame gate. The interrupts enabled here are the whole content, which is
+    /// what makes the bucket assertions unambiguous.
+    Interrupts { hint: bool, vint: bool },
+    /// Drop to **user mode** and call [`PROF_LEAF`] there with VBlank interrupts live, so a supervisor
+    /// exception frame is pushed and popped in the middle of a user-mode routine's lifetime.
+    ModeSwitch,
+    /// Call [`PROF_LEAF`] once per frame, where the leaf `stop`s until a VBlank interrupt wakes it — so a
+    /// long run of `Stopped` idle slices retires while a routine frame is open.
+    IdleInRoutine,
+}
+
+/// The V-counter value at which vblank starts (line 224 in the 224-line mode these fixtures run in).
+const PROF_VBLANK_LINE: u8 = 0xE0;
+
+/// Image size for [`build_profiler`]: enough for the vectors, the handler block and the routines.
+const PROF_ROM_LEN: usize = 0x500;
+
+/// Append a big-endian word.
+fn pw(rom: &mut Vec<u8>, word: u16) {
+    rom.push((word >> 8) as u8);
+    rom.push((word & 0xFF) as u8);
+}
+
+/// Append a big-endian long.
+fn pl(rom: &mut Vec<u8>, long: u32) {
+    pw(rom, (long >> 16) as u16);
+    pw(rom, (long & 0xFFFF) as u16);
+}
+
+/// Emit "spin until the V counter satisfies a condition", the [`build_cram_midframe`] idiom, reading the
+/// HV counter through `a3`. `branch` is `$6500` (BCS — keep waiting while V is below `value`) or `$6400`
+/// (BCC — while V is at or above it).
+///
+/// Deliberately a second copy of `build_cram_midframe`'s nested helper rather than a hoist of it: that
+/// builder backs the scanline goldens, and moving code out of it to share with a new fixture would put a
+/// frozen currency at risk to save a few bytes of duplication.
+fn prof_wait_v(rom: &mut Vec<u8>, value: u8, branch: u16) {
+    let top = rom.len() as u32;
+    pw(rom, 0x3013); // move.w (a3),d0   ; HV counter: V<<8 | H
+    pw(rom, 0xE048); // lsr.w #8,d0      ; d0.b = V
+    pw(rom, 0x0C00); // cmpi.b #imm,d0
+    pw(rom, u16::from(value));
+    let at = rom.len() as u32;
+    pw(rom, branch | u16::from(short_disp(top, at)));
+}
+
+/// `jsr (addr).w` — a two-word absolute-short call. Short-form absolute is a **control** addressing mode,
+/// so this is a `JSR` the decoder's own control-flow classifier admits.
+fn prof_jsr(rom: &mut Vec<u8>, addr: u32) {
+    debug_assert!(
+        addr < 0x8000,
+        "jsr (addr).w sign-extends its operand: {addr:#X} would not address itself"
+    );
+    pw(rom, 0x4EB8);
+    pw(rom, addr as u16);
+}
+
+/// Build one profiler fixture. See [`ProfilerShape`] for what each one is for.
+#[doc(hidden)]
+pub fn build_profiler(shape: ProfilerShape) -> Vec<u8> {
+    let mut rom = vec![0u8; PROF_ROM_LEN];
+
+    // --- Vectors ---
+    put_long(&mut rom, 0x0, INITIAL_SSP);
+    put_long(&mut rom, 0x4, PROF_MAIN);
+    put_long(&mut rom, 0x10, PROF_ILLEGAL); // vector 4  (illegal instruction)
+    put_long(&mut rom, 0x78, PROF_VINT_H); // vector 30 (autovector, level 6 / VInt)
+                                           // **When BOTH interrupts are enabled, both vectors point at ONE handler.** That is the sharpest form
+                                           // of the conflation regression: an accountant that keys an interrupt by where its handler lives sees a
+                                           // single address and *cannot* split HBlank from VBlank, however carefully it compares. Only keying by
+                                           // the acknowledged cause can pass. With one of them enabled the handlers stay distinct, so the
+                                           // single-cause fixtures still say something about addresses too.
+    let shared_handler = matches!(
+        shape,
+        ProfilerShape::Interrupts {
+            hint: true,
+            vint: true
+        }
+    );
+    put_long(
+        &mut rom,
+        0x70, // vector 28 (autovector, level 4 / HInt)
+        if shared_handler {
+            PROF_VINT_H
+        } else {
+            PROF_HINT_H
+        },
+    );
+
+    // --- The fixed-address routines, placed by absolute offset so the tests can name them ---
+    // LEAF: two nops then rts. `IdleInRoutine` replaces the nops with a `stop`.
+    if shape == ProfilerShape::IdleInRoutine {
+        put_word(&mut rom, PROF_LEAF, 0x4E72); // stop #imm
+        put_word(&mut rom, PROF_LEAF + 2, 0x2000); //   #$2000 — supervisor, mask 0, so a VInt wakes it
+    } else {
+        put_word(&mut rom, PROF_LEAF, 0x4E71); // nop
+        put_word(&mut rom, PROF_LEAF + 2, 0x4E71); // nop
+    }
+    put_word(&mut rom, PROF_LEAF + 4, 0x4E75); // rts
+
+    // MID: call LEAF twice, then return. The two-level tree.
+    put_word(&mut rom, PROF_MID, 0x4EB8);
+    put_word(&mut rom, PROF_MID + 2, PROF_LEAF as u16);
+    put_word(&mut rom, PROF_MID + 4, 0x4EB8);
+    put_word(&mut rom, PROF_MID + 6, PROF_LEAF as u16);
+    put_word(&mut rom, PROF_MID + 8, 0x4E75); // rts
+
+    // DISPATCH: push a target address and "return" to it. The stack pointer this leaves is the whole
+    // point of the W3 regression — it does NOT match the frame DISPATCH was entered on.
+    put_word(&mut rom, PROF_DISPATCH, 0x2F3C); // move.l #imm,-(sp)
+    put_long(&mut rom, PROF_DISPATCH + 2, PROF_TARGET);
+    put_word(&mut rom, PROF_DISPATCH + 6, 0x4E75); // rts  -> jumps to PROF_TARGET
+
+    // TARGET: calls LEAF, then its rts unwinds the ORIGINAL return address and closes the DISPATCH
+    // invocation. The call to LEAF is what makes the W3 regression *observable*: the leaf's cost can only
+    // land in DISPATCH's child time if DISPATCH is still open when the target runs, which is exactly what
+    // a return matched loosely rather than exactly would have destroyed.
+    put_word(&mut rom, PROF_TARGET, 0x4EB8); // jsr (LEAF).w
+    put_word(&mut rom, PROF_TARGET + 2, PROF_LEAF as u16);
+    put_word(&mut rom, PROF_TARGET + 4, 0x4E75); // rts
+
+    // REC: `if d6 == 0 return; d6 -= 1; REC(); return` — one routine, `depth + 1` invocations.
+    put_word(&mut rom, PROF_REC, 0x4A46); // tst.w d6
+    put_word(&mut rom, PROF_REC + 2, 0x6700); // beq.w .done
+    put_word(&mut rom, PROF_REC + 4, disp16(PROF_REC + 12, PROF_REC + 4));
+    put_word(&mut rom, PROF_REC + 6, 0x5346); // subq.w #1,d6
+    put_word(&mut rom, PROF_REC + 8, 0x4EB8); // jsr (REC).w
+    put_word(&mut rom, PROF_REC + 10, PROF_REC as u16);
+    put_word(&mut rom, PROF_REC + 12, 0x4E75); // .done: rts
+
+    // ILLEGAL: park.
+    put_word(&mut rom, PROF_ILLEGAL, 0x60FE); // bra.s *
+
+    // Both handlers are a bare `rte`: the fc=7 acknowledge already cleared the pending latch, so nothing
+    // else is needed to keep the machine running — and a handler that does nothing else keeps the bucket
+    // totals unambiguous.
+    put_word(&mut rom, PROF_HINT_H, 0x4E73); // rte
+    put_word(&mut rom, PROF_VINT_H, 0x4E73); // rte
+
+    // --- main ---
+    let (hint_on, vint_on) = match shape {
+        ProfilerShape::Interrupts { hint, vint } => (hint, vint),
+        ProfilerShape::ModeSwitch | ProfilerShape::IdleInRoutine => (false, true),
+        _ => (false, false),
+    };
+    let mut code: Vec<u8> = Vec::new();
+    // Supervisor. Interrupt mask 0 when anything is enabled (so both levels can be taken), else 7.
+    pw(&mut code, 0x46FC); // move.w #imm,SR
+    pw(&mut code, if hint_on || vint_on { 0x2000 } else { 0x2700 });
+    // a0 = VDP control ($C00004), a3 = HV counter ($C00008).
+    pw(&mut code, 0x41F9);
+    pl(&mut code, 0x00C0_0004);
+    pw(&mut code, 0x47F9);
+    pl(&mut code, 0x00C0_0008);
+    // VDP registers, written through a0. Reg 1 bit 6 = display on, bit 5 = IE0 (VInt enable);
+    // reg 0 bit 4 = IE1 (HInt enable); reg 10 = the HInt line-counter reload (0 = every line).
+    for (reg, val) in [
+        (0u8, if hint_on { 0x14u8 } else { 0x04 }),
+        (1, if vint_on { 0x64 } else { 0x44 }),
+        (10, 0x00),
+    ] {
+        pw(&mut code, 0x30BC); // move.w #imm,(a0)
+        pw(&mut code, 0x8000 | (u16::from(reg) << 8) | u16::from(val));
+    }
+    // ModeSwitch installs a user stack and drops privilege before entering the loop, so every call the
+    // body makes is a USER-mode call whose frames live on the user stack while the interrupt frames that
+    // interleave with them live on the supervisor stack.
+    if shape == ProfilerShape::ModeSwitch {
+        pw(&mut code, 0x207C); // move.l #imm,a0   (a0 is free again; the VDP writes are done)
+        pl(&mut code, PROF_USER_SP);
+        pw(&mut code, 0x4E60); // move.l a0,usp
+        pw(&mut code, 0x46FC); // move.w #imm,SR
+        pw(&mut code, 0x0000); //   user mode, mask 0 — a VInt is still taken, now switching modes to do it
+    }
+
+    // --- outer: one pass per frame ---
+    let outer = PROF_MAIN + code.len() as u32;
+    // Into vblank, then out of it: the pass therefore begins at the top of a fresh frame and ends well
+    // before that frame's line-224 boundary, so the body lands wholly inside one counted frame.
+    prof_wait_v(&mut code, PROF_VBLANK_LINE, 0x6500); // spin while V < $E0  -> exits in vblank
+    prof_wait_v(&mut code, PROF_VBLANK_LINE, 0x6400); // spin while V >= $E0 -> exits on line 0
+    match shape {
+        ProfilerShape::CallsLeaf { k } => {
+            debug_assert!(k >= 1, "a zero-call fixture proves nothing");
+            pw(&mut code, 0x3E3C); // move.w #imm,d7
+            pw(&mut code, k - 1); //   dbra runs count+1 times
+            let loop_top = PROF_MAIN + code.len() as u32;
+            prof_jsr(&mut code, PROF_LEAF);
+            pw(&mut code, 0x51CF); // dbra d7,.loop
+            let ext = PROF_MAIN + code.len() as u32;
+            pw(&mut code, disp16(loop_top, ext));
+        }
+        ProfilerShape::TwoLevel => prof_jsr(&mut code, PROF_MID),
+        ProfilerShape::Dispatch => prof_jsr(&mut code, PROF_DISPATCH),
+        ProfilerShape::Recursive { depth } => {
+            pw(&mut code, 0x3C3C); // move.w #imm,d6
+            pw(&mut code, depth);
+            prof_jsr(&mut code, PROF_REC);
+        }
+        ProfilerShape::ModeSwitch | ProfilerShape::IdleInRoutine => prof_jsr(&mut code, PROF_LEAF),
+        ProfilerShape::Interrupts { .. } => {}
+    }
+    // bra.w outer — the word form, because a body can be longer than a short branch reaches.
+    pw(&mut code, 0x6000);
+    let ext = PROF_MAIN + code.len() as u32;
+    pw(&mut code, disp16(outer, ext));
+
+    assert!(
+        PROF_MAIN as usize + code.len() <= PROF_ILLEGAL as usize,
+        "profiler fixture main ({} bytes) ran into the handler block at {PROF_ILLEGAL:#X}",
+        code.len()
+    );
+    rom[PROF_MAIN as usize..PROF_MAIN as usize + code.len()].copy_from_slice(&code);
+    rom
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
