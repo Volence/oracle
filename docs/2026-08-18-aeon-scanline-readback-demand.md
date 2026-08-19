@@ -101,6 +101,30 @@ The future CR inherits a worked example and its acceptance tests ready-made:
   the spec pins line 2 with Camera_Y frozen at 144). A synthetic test ROM inherits this
   constraint or its A1 passes while meaning nothing.
 
+## Ask 1 closing addition — the disagreement DISCRIMINATOR (run unconditionally)
+
+If the capture disagrees with the predicted clean range, two already-measured anchors assign
+the fault — both observed CLEAN on oracle, both buildable by the same `raster_cost_probe.py`
+encoder as the sweep fixture (two extra poke-and-capture runs on the same harness):
+
+- the **row-119 fixture** (`reg_set` + `stream_cram`, CRAM op second) — measured 1 px spill → 0,
+  boundary on the authored line;
+- **R1 §7.3** (`pal_restore` alone, dispatch depth 4) — row 139 fully tinted, 140+ fully base,
+  OFF edge exactly on the authored line.
+
+The anchors **bracket** the disagreement — same handler, same burst, same window, differing
+only in preamble cycles ahead of the write:
+
+| Anchors | Sweep vs [15,19] | Verdict |
+|---|---|---|
+| both CLEAN | disagrees | our raster timing agrees with oracle's → **Aeon's §3 arithmetic**; they own it and re-derive |
+| either DIRTY | — | the capture disagrees with a landing oracle measured clean on an untouched shape → **our raster timing or the capture's sampling point** |
+| both DIRTY | — | almost certainly fixture/harness — check the **content trap** first (is the art actually sampling the tinted entry) |
+
+**Run the two anchors unconditionally as the sweep's first two data points**, not only on
+disagreement — they give the sweep two known-good calibration rows before it ventures into
+the unmeasured shape. This belongs in the CR as its verification protocol, not as an appendix.
+
 ## Ask 2 — does oracle-next separate HInt from VInt (profiler conflation)? ANSWERED
 
 Their finding about **oracle** (the C++ reference): `interrupts.hint` buckets by comparing
