@@ -185,6 +185,9 @@ git commit -m "docs: ruling on CR-21/22/23 — applied"
   `initialize.limits` two keys, top-level `description` count)
 
 > Text below is the pre-ruling draft; apply Task 2's required changes before landing.
+>
+> NOTE: Task 3's draft text below is SUPERSEDED — land the post-ruling text from
+> `docs/2026-08-18-cr21-23-tier1-rows.md` as amended, per `docs/2026-08-18-ruling-cr21-23.md`.
 
 - [ ] **Step 1: Amend the `reset` row's surroundings.** The row at `protocol.md:783`
   (`| \`emulator/reset\` | — | \`deferred\` |`) stays as-is. In the run-control table's blockquote
@@ -778,6 +781,11 @@ fn the_key_set_is_exact() {
     assert_eq!(got, want);
 }
 ```
+
+Additionally, per the ruling's cross-CR finding 6 (reset's adoption condition asserts run-state
+preservation both ways): add a run-state-preservation test — a reset issued on a paused machine
+leaves `running: false` on the next `status` reply; a reset issued on a free-running machine leaves
+`running: true`.
 
 - [ ] **Step 2: Run — must fail with `-32601`**
 

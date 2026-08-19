@@ -1026,8 +1026,10 @@ Full text in `docs/2026-08-18-cr21-23-tier1-rows.md` (one document, three CRs �
 precedent). The row at `protocol.md:825` is legacy vintage: no prose, no schema fragment, untyped
 `width`, a bound with no refusal code, and unnamed in the run-control state rule. Proposed: work-RAM
 window `$E00000–$FFFFFF` refused-never-clipped (`-32004`), exactly one payload spelling (`bytes` XOR
-`value`+`width` ∈ 1|2|4, big-endian), `-32005` paused-machine gate named in the rule, `len ≤
-limits.maxWriteLen`, writes via the bus path.
+`value`+`width` ∈ 1|2|4, big-endian), `-32005` paused-machine gate named in the rule, payload ≤
+`limits.maxWriteLen` bytes (the ruling's R1 struck the draft's phantom `len` param spelling), writes
+via the bus path, never offered to the watch surface (ruling R5). Adopted with changes
+(`docs/2026-08-18-ruling-cr21-23.md`).
 
 **This CR supersedes this file's own `write_memory` deferral** (the *"`write_memory` / `write_vram` —
 read-only for now"* bullet under "What this slice did NOT implement"), by the owner ruling of
@@ -1040,13 +1042,18 @@ rename and the `bypassesVdpPort: true` flag.
 ## CR-22 — `emulator/reset`'s `deferred` is a result key two servers share and no text defines (proposed 2026-08-18)
 
 Full text in `docs/2026-08-18-cr21-23-tier1-rows.md`. The row at `protocol.md:783` returns `deferred`,
-a key defined nowhere — while Oracle's `ControlSocket.cpp` emits both truthful values today
-(`deferred: false` at `:469`, `deferred: true` at `:492`) and our own books called `reset` *"the
-conspicuous absence"* from a 25-method control surface. The player has had it on Tab/F1 the whole time
-(`commands.rs:102-108`, `main.rs:1369`) — a live D15 parity gap. Proposed: prose defining `deferred`
-as *when the reset landed* (both values conformant), not run-state gated (the checkpoint precedent),
-with the survival set pinned (SRAM, symbols, checkpoints, watchpoints survive; held pads clear; stamps
-restart at 0).
+a key defined nowhere — Oracle's `ControlSocket.cpp` emits both values today (`deferred: false` at
+`:469`, `deferred: true` at `:492`), but the ruling (`docs/2026-08-18-ruling-cr21-23.md`) found its
+`true` is a mechanism report: the main path completes the reset before composing the reply, so under
+the adopted when-it-landed definition Oracle's honest answer would be `false` — it stays a legacy
+non-conformant peer. *(This entry originally said Oracle "emits both truthful values today";
+corrected per the ruling's cross-CR finding 1 — the register's recorded failure mode, recurring
+once.)* Our own books called `reset` *"the conspicuous absence"* from a 25-method control surface.
+The player has had it on Tab/F1 the whole time (`commands.rs:102-108`, `main.rs:1369`) — a live D15
+parity gap. Adopted with changes: prose defining `deferred` as *when the reset landed relative to
+the reply* (both values conformant), not run-state gated with the reason stated in full (ruling R3),
+run state preserved across the reset (ruling R2), and the survival set pinned (SRAM, symbols,
+checkpoints, watchpoints survive; held pads clear; stamps restart at 0).
 
 ## CR-23 — `emulator/memory_hash`, the genuinely new row, raised before it is built (proposed 2026-08-18)
 
@@ -1056,5 +1063,7 @@ MCP row (`oracle_mcp.py:239-254`, socket op `1c54004` 2026-08-01): FNV-1a-64 + I
 4096 cap (`len` ≤ 4194304, advertised as `limits.maxHashLen`), RAM/ROM auto-route, refuse-never-clip.
 A pure read. Explicitly NOT a lift of §9's `frame_hash` deferral (that is a picture hash, already
 served by `state_hash includeFramebuffer`); discharges CR-20 question 3's struck-with-obligations
-ruling by pinning both algorithms.
+ruling by pinning both algorithms — the ruling's R2 made the FNV pin real (offset basis, prime,
+fold order), since the family name alone was not a pin. Adopted with changes
+(`docs/2026-08-18-ruling-cr21-23.md`).
 
