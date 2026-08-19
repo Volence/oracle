@@ -303,6 +303,11 @@ pub const METHODS: &[MethodSpec] = &[
         handler: Engine::reset,
         summary: "drive the /RESET sequence — back to the power-on anchor, SRAM and symbols kept",
     },
+    MethodSpec {
+        name: "emulator/memory_hash",
+        handler: Engine::memory_hash,
+        summary: "fingerprint a byte range (FNV-1a-64 + CRC-32) without moving it — the hash state_hash cannot give",
+    },
 ];
 
 /// The events this server actually emits. Advertised verbatim as `capabilities.events`, which
@@ -1610,6 +1615,29 @@ impl Engine {
             out["framebufferSource"] = json!(if from_raster { "raster" } else { "stateRender" });
         }
         Ok(out)
+    }
+
+    /// `emulator/memory_hash` — fingerprint a byte range without moving it (§6 memory, CR-23 /
+    /// §11.13). A pure read: no `require_paused`, answered at the engine thread's single coherent
+    /// point like every other handler. Routes via `debug_read` (the two-region rule the contract
+    /// spells out); the FNV is `state_hash`'s family with the contract's pinned parameters, the
+    /// CRC-32 is IEEE/zlib so a cart-window hash matches the ROM file.
+    fn memory_hash(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let addr = self.resolve_target(params)?;
+        let Some(l) = params.get("len") else {
+            return Err(RpcError::invalid_params(
+                "`len` is required — a hash without a length hashes nothing",
+            ));
+        };
+        let len = hex::parse_count("len", l, 1, self.config.max_hash_len)?;
+        let (data, region) = self.debug_read(addr, len as usize)?;
+        Ok(json!({
+            "addr": hex::addr(addr),
+            "len": data.len(),
+            "region": region,
+            "fnv1a64": oracle_core::state_hash::hex(oracle_core::state_hash::fnv1a_bytes(&data)),
+            "crc32": format!("0x{:08X}", crate::crc32::crc32(&data)),
+        }))
     }
 
     /// `emulator/sprites` — the sprite attribute table as a table (§6, added by §11.10 / CR-18).

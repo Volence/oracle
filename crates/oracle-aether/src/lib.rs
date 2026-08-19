@@ -63,6 +63,10 @@
 #![forbid(unsafe_code)]
 #![cfg(unix)]
 
+// Public, not `pub(crate)`, for the reason `oracle_core::state_hash` exports its primitives: the tests
+// derive their expectations by running the algorithm themselves, and a hash a test cannot recompute
+// independently is a hash only its own implementation vouches for.
+pub mod crc32;
 pub mod engine;
 pub mod hex;
 pub mod host;
