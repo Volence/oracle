@@ -47,3 +47,29 @@ standard error and re-opening their parked 4-word-burst question with a better i
 | 4 — watch-hit clock gate | green in-suite since `01866a7`, mutation-checked |
 
 **CR-25's adoption condition is fully satisfied. The arc is closed.**
+
+## Follow-up (2026-08-19, later): the upgraded instrument closes their raster chain — five-quantity corroboration
+
+Aeon's sweep driver gained its sub-line mode (aeon `6a9ba181`) and immediately closed their entire
+raster-timing chain by direct measurement. Every figure below is also a precision statement about
+this renderer's landing model — independent physical quantities recovered through §11.15's
+`x = floor(d/p)` convention:
+
+| quantity | measured | reference | agreement |
+|---|---|---|---|
+| blanking early edge | N = 16.028 ± 0.070 | — | **first observation on any instrument** |
+| blanking late edge | N = 28.267 ± 0.076 | — | — |
+| window width | 122.39 ± 1.07 cyc | arithmetic 122.86 | 0.44 s.e. |
+| px/cyc | 0.8740 ± 0.0027 | 0.875 (the definition) | sub-cycle |
+| line period | 488.51 ± 0.25 cyc | 488.57 | sub-cycle |
+
+Their shipped anchor confirmed at 0.88 s.e.; their parked 4-word-burst ceiling CLOSED as a clean
+refusal (early slack −0.28 cyc against a 1.41 bar, consistent across four sweeps) — "the better
+instrument turned a marginal maybe into a verdict."
+
+Two instrument notes, recorded not asked: a multi-word burst's flipX brackets the FIRST entry's
+landing (consistent with the instruction-granular one-landing pin; their edge fixtures now use
+single-word bursts; `F-SUBLINE-ACCESSMCLK` remains the refinement for the residual ~1-cycle
+art-sampling bias they midpoint-correct); and their five atomic-era anchor fixtures reproduce
+their verdicts to the pixel across the convention change — the amendment was backward-compatible
+exactly as CR-25 argued.

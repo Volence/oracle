@@ -9,7 +9,9 @@
 //!
 //! **The pause indicator is a correctness matter, not decoration.** Since the render path started retaining
 //! the last good framebuffer, a paused frontend and a hung one look identical — the same picture, forever.
-//! The `PAUSED` banner is the only thing that distinguishes them.
+//! The `PAUSED` banner is the only thing that distinguishes them. It waits out a short **dwell** first (see
+//! `PAUSED_BANNER_DWELL_FRAMES`), because the machine is now paused and resumed by clients as well as by
+//! the person at the keyboard, and a banner that strobes through a write burst is worse than no banner.
 //!
 //! **Where things go.** Everything is anchored to the **picture**, not the window: toasts stack up from the
 //! picture's bottom-left corner, the status line sits at its top-left, and the paused banner is centred
@@ -34,6 +36,25 @@ const FADE_FRAMES: u32 = 30;
 
 /// How many toasts are shown at once. Older ones are dropped from the top when a burst overflows this.
 pub const MAX_TOASTS: usize = 5;
+
+/// How long the machine must have been **continuously** paused before the `PAUSED` banner appears, in
+/// presented frames (~200 ms at 60 fps NTSC).
+///
+/// **Why a dwell at all.** The banner used to key straight off "is it paused right now", which was fine
+/// while the only thing that paused the machine was a person pressing Space. It is not the only thing any
+/// more: `write_memory` is `require_paused`, so an Aurora palette drag at 10 Hz pauses and resumes the
+/// machine dozens of times a second and the banner strobed for the length of the drag. The owner's words:
+/// *"can we have it not write PAUSE/UNPAUSE on the screen when we do something that causes a change."*
+///
+/// **Why this number.** Under about a fifth of a second a human reads a real pause as instantaneous, so
+/// nothing is lost from the Space-bar case; and it is far longer than any sub-frame client write burst,
+/// each of which resets the count on the very next present. The two constraints leave a wide gap and 12
+/// frames sits in it.
+///
+/// **Deliberately stateless about the pause's origin.** There is no player-vs-bus distinction here, and
+/// that is the point: the rule is about *duration*, which is the thing the viewer actually experiences,
+/// so it covers clients this frontend has not met yet without either side having to declare itself.
+const PAUSED_BANNER_DWELL_FRAMES: u32 = 12;
 
 /// Text colours. Deliberately few: white for ordinary confirmations, amber for state the user is steering,
 /// red for refusals.
@@ -93,6 +114,9 @@ pub struct Overlay {
     /// Frames left of a *temporary* status line ([`Overlay::flash`]). Save-state work shows the slot strip
     /// without the user having to know F3 exists, then gets out of the way again.
     status_flash: u32,
+    /// Presented frames the machine has been *continuously* paused for, saturating. Reset to 0 the moment
+    /// a present sees it running, which is what makes the banner's dwell a dwell and not a delay.
+    paused_frames: u32,
 }
 
 impl Overlay {
@@ -133,10 +157,15 @@ impl Overlay {
         self.status_line || self.status_flash > 0
     }
 
-    /// Age every toast by one presented frame and retire the expired ones. Driven from the present, not the
-    /// emulated frame, so notifications last the same wall-clock time whether the audio pacer asked for 0, 1
-    /// or 2 emulated frames this iteration — and so they still expire while paused.
-    pub fn tick(&mut self) {
+    /// Age every toast by one presented frame and retire the expired ones, and advance (or reset) the paused
+    /// banner's dwell. Driven from the present, not the emulated frame, so notifications last the same
+    /// wall-clock time whether the audio pacer asked for 0, 1 or 2 emulated frames this iteration — and so
+    /// they still expire while paused.
+    ///
+    /// `paused` is the machine's state for the frame *about to be drawn*, which is why the dwell lives here
+    /// rather than in [`draw`](Self::draw): the banner's rule is about elapsed presented time, and the
+    /// present is the only thing that knows time has passed.
+    pub fn tick(&mut self, paused: bool) {
         for t in &mut self.toasts {
             t.ttl = t.ttl.saturating_sub(1);
         }
@@ -144,6 +173,19 @@ impl Overlay {
         // queue is not necessarily ordered by remaining life and the expired one can be anywhere in it.
         self.toasts.retain(|t| t.ttl > 0);
         self.status_flash = self.status_flash.saturating_sub(1);
+        // Reset, not decay: one running frame in the middle of a pause means the machine was *not*
+        // continuously paused, which is exactly the client-write-burst shape the dwell exists to swallow.
+        self.paused_frames = if paused {
+            self.paused_frames.saturating_add(1)
+        } else {
+            0
+        };
+    }
+
+    /// Has the machine been paused long enough for the banner to be worth showing? See
+    /// `PAUSED_BANNER_DWELL_FRAMES` for why the answer is not simply "is it paused".
+    fn banner_due(&self) -> bool {
+        self.paused_frames >= PAUSED_BANNER_DWELL_FRAMES
     }
 
     /// The live toasts, oldest first.
@@ -168,7 +210,10 @@ impl Overlay {
         if self.showing_status() {
             self.draw_status_line(&mut c, area, st, px, margin);
         }
-        if st.paused {
+        // Both halves, and both are load-bearing: `st.paused` is this frame's truth, `banner_due` is the
+        // dwell the presented frames have accumulated. A resume clears the counter on the next `tick`, so
+        // the two can only disagree for the frames a pause has not yet earned.
+        if st.paused && self.banner_due() {
             draw_paused_banner(&mut c, area, px);
         }
         self.draw_toasts(&mut c, area, px, margin);
@@ -457,6 +502,40 @@ mod tests {
         Rect { x: 0, y: 0, w, h }
     }
 
+    /// A background that is **not** zero. The banner's panel is black at alpha 210 and the overlay's other
+    /// panels are translucent too, so over a zeroed buffer a panel is indistinguishable from bare
+    /// background and an "it drew something" assertion passes for a draw that drew nothing.
+    const GROUND: u32 = 0x0012_3456;
+
+    /// Hold the machine in one pause state for `n` presented frames. The frontend calls `tick` once per
+    /// present (`main.rs`), immediately before `draw`, so this is that loop.
+    fn present_frames(o: &mut Overlay, paused: bool, n: u32) {
+        for _ in 0..n {
+            o.tick(paused);
+        }
+    }
+
+    /// Pixels inside the banner's rectangle that differ from `GROUND`. The banner is the only thing that
+    /// draws there — the status line is a margin above it and the toasts are at the bottom — so this is
+    /// the banner's ink, counted rather than merely detected.
+    fn banner_ink(buf: &[u32], w: usize, area: Rect) -> usize {
+        let px = Overlay::font_scale(area.h.max(1));
+        let Some(r) = paused_banner_rect(area, px) else {
+            return 0;
+        };
+        (r.y..r.y + r.h)
+            .flat_map(|y| (r.x..r.x + r.w).map(move |x| (x, y)))
+            .filter(|&(x, y)| buf[y * w + x] != GROUND)
+            .count()
+    }
+
+    /// Draw one frame over a `GROUND` field and report the banner's ink.
+    fn ink_after(o: &Overlay, w: usize, h: usize, st: &Status) -> usize {
+        let mut buf = vec![GROUND; w * h];
+        o.draw(&mut buf, w, h, whole(w, h), st);
+        banner_ink(&buf, w, whole(w, h))
+    }
+
     fn status() -> Status {
         Status {
             paused: false,
@@ -477,10 +556,10 @@ mod tests {
         o.push("SAVED SLOT 3", INFO);
         assert_eq!(o.toasts().count(), 1);
         for _ in 0..TOAST_FRAMES - 1 {
-            o.tick();
+            o.tick(false);
         }
         assert_eq!(o.toasts().count(), 1, "still up one frame before expiry");
-        o.tick();
+        o.tick(false);
         assert_eq!(o.toasts().count(), 0, "and gone on the frame it expires");
     }
 
@@ -491,7 +570,7 @@ mod tests {
         let mut o = Overlay::new();
         o.push("VOLUME 5/10", INFO);
         for _ in 0..100 {
-            o.tick();
+            o.tick(false);
         }
         o.push("VOLUME 5/10", INFO);
         assert_eq!(o.toasts().count(), 1, "no duplicate");
@@ -534,12 +613,12 @@ mod tests {
             "opaque while fresh"
         );
         for _ in 0..TOAST_FRAMES - FADE_FRAMES + 1 {
-            o.tick();
+            o.tick(false);
         }
         let a = o.toasts().next().unwrap().alpha();
         assert!(a < 255, "it has started fading, got {a}");
         for _ in 0..FADE_FRAMES - 3 {
-            o.tick();
+            o.tick(false);
         }
         assert!(o.toasts().next().unwrap().alpha() < 40, "nearly gone");
     }
@@ -578,6 +657,8 @@ mod tests {
         st.paused = true;
         st.occupied[3] = true;
         st.occupied[7] = true;
+        // Long enough paused that the banner is up too — this test is about *everything* the overlay draws.
+        present_frames(&mut o, true, PAUSED_BANNER_DWELL_FRAMES);
 
         let source = vec![0x0012_3456u32; w * h];
         let mut present = source.clone();
@@ -601,8 +682,8 @@ mod tests {
     #[test]
     fn the_paused_banner_appears_only_while_paused() {
         let (w, h) = (640usize, 480usize);
-        let o = Overlay::new();
-        let base = vec![0u32; w * h];
+        let mut o = Overlay::new();
+        let base = vec![GROUND; w * h];
 
         let mut running = base.clone();
         o.draw(&mut running, w, h, whole(w, h), &status());
@@ -613,14 +694,107 @@ mod tests {
 
         let mut paused_st = status();
         paused_st.paused = true;
+        present_frames(&mut o, true, PAUSED_BANNER_DWELL_FRAMES);
         let mut paused = base.clone();
         o.draw(&mut paused, w, h, whole(w, h), &paused_st);
         assert_ne!(paused, base, "the paused banner is on screen");
         // …and it is near the top center, where it is drawn.
         let band = h / 12;
-        let centre_inked =
-            (band..band + 40).any(|y| (w / 2 - 40..w / 2 + 40).any(|x| paused[y * w + x] != 0));
+        let centre_inked = (band..band + 40)
+            .any(|y| (w / 2 - 40..w / 2 + 40).any(|x| paused[y * w + x] != GROUND));
         assert!(centre_inked, "the banner sits top-centre");
+    }
+
+    /// **The dwell.** `write_memory` is `require_paused`, so a client editing the palette pauses and
+    /// resumes the machine faster than a person can read; the banner used to strobe for the whole drag.
+    /// It now appears only after the machine has been *continuously* paused for
+    /// `PAUSED_BANNER_DWELL_FRAMES` presented frames — and the frame before that, it is not there at all.
+    #[test]
+    fn the_paused_banner_waits_out_the_dwell_before_it_appears() {
+        let (w, h) = (640usize, 480usize);
+        let mut st = status();
+        st.paused = true;
+        let mut o = Overlay::new();
+
+        present_frames(&mut o, true, PAUSED_BANNER_DWELL_FRAMES - 1);
+        assert_eq!(
+            ink_after(&o, w, h, &st),
+            0,
+            "one frame short of the dwell, the banner must not be on screen"
+        );
+
+        o.tick(true);
+        let ink = ink_after(&o, w, h, &st);
+        assert!(
+            ink > 500,
+            "on the dwell frame the banner must be up; only {ink} pixels differ from the ground"
+        );
+        // A long pause keeps it up — the dwell is a threshold, not a flash.
+        present_frames(&mut o, true, 300);
+        assert_eq!(ink_after(&o, w, h, &st), ink, "and it stays up");
+    }
+
+    /// **The strobe case, which is the bug.** A client write burst pauses for a frame and resumes, over and
+    /// over. Every one of those pauses is real, and none of them may ever put the banner on screen.
+    #[test]
+    fn a_burst_of_one_frame_pauses_never_shows_the_banner() {
+        let (w, h) = (640usize, 480usize);
+        let mut st = status();
+        st.paused = true;
+        let mut o = Overlay::new();
+
+        // Far more single-frame pauses than the dwell is long: if the counter did not reset, or were not
+        // consulted at all, the banner would be up long before this loop ended.
+        for i in 0..8 * PAUSED_BANNER_DWELL_FRAMES {
+            o.tick(true);
+            assert_eq!(
+                ink_after(&o, w, h, &st),
+                0,
+                "the banner flashed during a write burst, at pause {i}"
+            );
+            o.tick(false);
+        }
+    }
+
+    /// Resuming resets the dwell rather than pausing it: eleven paused frames, one running frame, eleven
+    /// more paused frames is **not** a pause worth announcing, however the frames add up.
+    #[test]
+    fn resuming_resets_the_dwell_rather_than_banking_it() {
+        let (w, h) = (640usize, 480usize);
+        let mut st = status();
+        st.paused = true;
+        let mut o = Overlay::new();
+
+        present_frames(&mut o, true, PAUSED_BANNER_DWELL_FRAMES - 1);
+        o.tick(false);
+        present_frames(&mut o, true, PAUSED_BANNER_DWELL_FRAMES - 1);
+        assert_eq!(
+            ink_after(&o, w, h, &st),
+            0,
+            "22 paused frames split by one running frame is not a 12-frame pause"
+        );
+        // …and from there the dwell completes normally, so the reset delays the banner, never suppresses it.
+        o.tick(true);
+        assert!(
+            ink_after(&o, w, h, &st) > 500,
+            "the banner must still arrive once the pause actually lasts"
+        );
+    }
+
+    /// A resume takes the banner down on the very next present — the dwell governs when it *appears*, and
+    /// must not turn into a trailing delay on the way out.
+    #[test]
+    fn the_banner_goes_down_on_the_frame_the_machine_resumes() {
+        let (w, h) = (640usize, 480usize);
+        let mut st = status();
+        st.paused = true;
+        let mut o = Overlay::new();
+
+        present_frames(&mut o, true, PAUSED_BANNER_DWELL_FRAMES);
+        assert!(ink_after(&o, w, h, &st) > 500, "the banner is up");
+        o.tick(false);
+        st.paused = false;
+        assert_eq!(ink_after(&o, w, h, &st), 0, "and gone the moment it runs");
     }
 
     /// A tiny window clips the overlay rather than panicking — the window is resizable now, and a user can
@@ -634,6 +808,8 @@ mod tests {
         }
         let mut st = status();
         st.paused = true;
+        // Past the dwell, so the banner is one of the things being clipped rather than a no-op.
+        present_frames(&mut o, true, PAUSED_BANNER_DWELL_FRAMES);
         for (w, h) in [(1usize, 1usize), (16, 8), (60, 40), (200, 30)] {
             let mut buf = vec![0u32; w * h];
             o.draw(&mut buf, w, h, whole(w, h), &st);
@@ -665,6 +841,9 @@ mod tests {
         o.push("A MUCH LONGER MESSAGE THAN ANY PICTURE HERE IS WIDE", INFO);
         let mut st = status();
         st.paused = true;
+        // Past the dwell: the banner is the widest fixed-size element here, so it must be on screen for
+        // this test to be testing anything about the letterbox.
+        present_frames(&mut o, true, PAUSED_BANNER_DWELL_FRAMES);
 
         // A comfortable picture, a pillarboxed one, a letterboxed one, and two so narrow that neither the
         // status line nor the banner can fit at their natural size — the sizes at which a fixed-width element
@@ -762,17 +941,17 @@ mod tests {
         o.flash();
         assert!(o.showing_status());
         for _ in 0..TOAST_FRAMES - 1 {
-            o.tick();
+            o.tick(false);
         }
         assert!(o.showing_status(), "still up one frame before it lapses");
-        o.tick();
+        o.tick(false);
         assert!(!o.showing_status(), "and gone after that");
 
         // F3 latches it independently: a lapsed flash must not switch off a deliberately-enabled line.
         o.status_line = true;
         o.flash();
         for _ in 0..TOAST_FRAMES * 2 {
-            o.tick();
+            o.tick(false);
         }
         assert!(o.showing_status(), "F3 stays on after the flash lapses");
     }

@@ -1417,6 +1417,13 @@ mod tests {
         let wp = Watchpoints::new(8);
         let mut ov = crate::overlay::Overlay::new();
         ov.status_line = true; // F3 is on by default in the run loop
+
+        // Hold the overlay in this pause state well past the PAUSED banner's dwell. Without this the
+        // paused rows would draw no banner at all and the sweep would quietly stop covering the widest
+        // opaque overlay element there is — the one the CPU chip exists to step aside for.
+        for _ in 0..64 {
+            ov.tick(paused);
+        }
         let st = crate::overlay::Status {
             paused,
             frame: 1234,

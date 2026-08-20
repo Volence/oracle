@@ -481,14 +481,38 @@ protocol (§7 there) builds the comparison, including which rows are comparable 
 must legitimately disagree (the interrupt buckets — our split cannot match their summed
 `interrupts.hint`, by construction), and the rule that a spread is not a tolerance.
 
-**Placeholder to fill on their signal:**
+**Placeholder FILLED 2026-08-19 (controller, verified against the landed aeon tree, not the relay):**
 
 ```
-aeon merge SHA:      PENDING
+aeon merge SHA:      bc048e2a ("Merge measure/scanline-p2-phase0 — P2 Phase 0: every budget
+                     denominator measured")
 evidence files:      docs/benchmarks/scanline-p2/{ENGINE-BASELINE,WALKER-MODEL,INSTRUMENT-PARITY}.md
-camera states:       PENDING (transcribe the two definitions verbatim when they land)
-old-instrument spread: PENDING (five boots per state)
+                     (all three confirmed present at bc048e2a)
+camera states:       ENGINE-BASELINE.md §1 ("The two camera states, defined", :22 — e.g.
+                     Camera_X = 96, Camera_Y = 144, stationary, :35; read the section, do not
+                     re-transcribe it here and let it rot)
+old-instrument spread: 0 — "31 video frames per state, 5 independent boots per state, spread 0 on
+                     every [row]" (ENGINE-BASELINE.md:8); per-routine rows matched on low 24 bits
+                     (:118)
 ```
+
+**Comparison-design notes from the landing (theirs, verified at the anchors):**
+
+- **Compare per-VIDEO-FRAME rows.** Every max-diagonal row in ENGINE-BASELINE.md carries TWO
+  denominators — per-video-frame and per-logic-tick — because that state measured 15 ticks per 31
+  frames (`:85`). The tick split is their engine-side bookkeeping; our A/B reads the per-frame rows.
+- **INSTRUMENT-PARITY.md caveat 0** states the ideal-cycle property normatively on every row — the
+  corpus declares what its own cycles mean, which is what lets our stall-inclusive rows reconcile
+  through `stallCycles` instead of a tolerance.
+- **The Task-5 row is recorded UNMEASURABLE-ON-THIS-INSTRUMENT** (ENGINE-BASELINE.md:335-353,
+  "never `0` and never green") with our `stallCycles` named as the migration path — the first row
+  our implementation turns from a blindness note into a number. That is an acceptance moment, not
+  just a comparison row.
+- **Two booked anomalies our exact attribution might adjudicate for free** (bonus corroboration
+  beyond row-matching, not gates): a shipped-vs-fixture dense-program gap of exactly one fire /
+  242 cyc, and the walker anchor's two cost regimes (WALKER-MODEL.md). Their probe's decoder
+  self-test (nine programs, encode→decode→cost round trip) also ships in the corpus for our
+  comparison harness to reuse.
 
 ---
 

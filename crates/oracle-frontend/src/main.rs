@@ -1785,7 +1785,9 @@ fn main() {
             0x0000_0000,
             &mut xmap,
         );
-        ov.tick();
+        // `paused` is the same value the `Status` below carries — the overlay needs it here too, because
+        // the PAUSED banner's dwell counts presented frames and this is the tick that counts them.
+        ov.tick(paused);
         #[cfg(feature = "audio")]
         let (vol, filt) = (
             Some((volume, audio::VOLUME_STEPS, muted)),
@@ -2602,6 +2604,11 @@ mod tests {
         ov.push("STATE: SAVED SLOT 3", ACCENT);
         ov.push("WATCH SPRITE 12 TILE $2A0 + SAT $F080", INFO);
         ov.push("VOLUME 7/10", INFO);
+        // The `after-tv-wide` shot below is the paused one, and the banner has a dwell now — hold the
+        // machine paused long enough that the screenshot shows what a real paused session looks like.
+        for _ in 0..32 {
+            ov.tick(true);
+        }
         let mut occupied = [false; save_state::SLOT_COUNT];
         occupied[0] = true;
         occupied[3] = true;
