@@ -1529,6 +1529,49 @@ impl Vdp {
         }
         out
     }
+
+    /// **Debug poke of one CRAM entry** (`emulator/write_cram`, `protocol.md` §11.17 / CR-27).
+    ///
+    /// `entry` is `line × 16 + index`, 0–63; `word` is the colour to store. Returns the word **actually
+    /// stored** — masked to the chip's nine bits — so the caller can report what the hardware holds
+    /// without re-deriving the mask, which is how `emulator/write_cram`'s `value` stays truthful.
+    ///
+    /// # Two deliberate departures from the port path, both of which are the point
+    ///
+    /// This **bypasses the VDP port path** — no FIFO, no autoincrement, no DMA, no control-port state —
+    /// and writes the array directly. `emulator/write_cram` requires a paused machine, which blunts the
+    /// fidelity objection to nearly nothing: stopped, there is no FIFO in flight, no DMA in progress and
+    /// no active raster, so the port path's side effects are exactly the ones a paused poke has no
+    /// business producing.
+    ///
+    /// And it deliberately **does NOT [`capture`](Self::capture) to the watch surface**, which is the
+    /// half that could not be gotten any other way. A hit's `pc` names the instruction that drove the
+    /// access and a debugger poke has none to name (`emulator/write_memory`'s standing rule); worse,
+    /// since §11.15 a captured CRAM write also carries the landing clock its instruction supplies, and an
+    /// instruction-less write would either fabricate one or silently take whatever `mclk` is current.
+    /// `tests/cram.rs::a_poke_is_never_offered_to_the_watch_surface` is the direct pin, and it exists to
+    /// catch a later "simplification" of this function into [`write_target`](Self::write_target).
+    ///
+    /// # Why the arithmetic is duplicated rather than shared
+    ///
+    /// The `0x0EEE` mask and the big-endian byte layout are lifted verbatim from `write_target`'s
+    /// `Target::Cram` arm. Factoring the two into a shared helper would be an edit to a function on the
+    /// **currency path** — every frozen golden depends on guest-driven CRAM writes — so the duplication
+    /// is the conservative choice, and `cram_poke_matches_the_port_path` is the test that stops the two
+    /// from drifting.
+    ///
+    /// # Panics
+    ///
+    /// If `entry > 63`. Callers on the bus refuse an out-of-range `line`/`index` with `-32602` long
+    /// before this, so reaching it is a server bug rather than a client one.
+    pub fn poke_cram(&mut self, entry: u8, word: u16) -> u16 {
+        assert!(entry < 64, "CRAM entry {entry} is outside 0-63");
+        let masked = word & 0x0EEE; // 9-bit colour (---- BBB- GGG- RRR-)
+        let b = (entry as usize) * 2;
+        self.cram[b] = (masked >> 8) as u8;
+        self.cram[b | 1] = (masked & 0xFF) as u8;
+        masked
+    }
 }
 
 /// The fixed introspection colour ramp: a 3-bit channel level (`0..=7`) → 8-bit, linear (`level × 255 / 7`).
@@ -2385,6 +2428,80 @@ mod tests {
         assert_eq!(dec[0], (255, 255, 255), "max colour → white");
         assert_eq!(dec[1], (255, 0, 0), "R=7, G=B=0 → red");
         assert_eq!(dec[2], (0, 0, 0), "zero → black");
+    }
+
+    /// `poke_cram` must agree with the port path **byte for byte**, because the two are duplicated
+    /// arithmetic rather than a shared helper (deliberately — `write_target` is on the currency path).
+    /// This is the test that stops them drifting: the same colour driven through the real control/data
+    /// port sequence and through the poke must leave CRAM identical, over every bit position that
+    /// matters plus the mask's own edges.
+    #[test]
+    fn cram_poke_matches_the_port_path() {
+        for word in [
+            0x0000, 0x0EEE, 0x000E, 0x0E00, 0x0AAA, 0x0246, 0xFFFF, 0x1111,
+        ] {
+            for entry in [0u8, 1, 17, 63] {
+                let mut port = fresh();
+                // The real path: control port sets CRAM-write at the entry's byte address, data port writes.
+                let addr = u32::from(entry) * 2;
+                port.control_write((0xC000 | (addr & 0x3FFF)) as u16, 0);
+                port.control_write((addr >> 14) as u16, 0);
+                port.data_write(word);
+
+                let mut poke = fresh();
+                let stored = poke.poke_cram(entry, word);
+
+                assert_eq!(
+                    poke.cram(),
+                    port.cram(),
+                    "entry {entry}, word {word:#06X}: the poke and the port path disagree"
+                );
+                assert_eq!(
+                    stored,
+                    word & 0x0EEE,
+                    "the returned word is the STORED word"
+                );
+                let b = entry as usize * 2;
+                assert_eq!(
+                    ((poke.cram()[b] as u16) << 8) | poke.cram()[b | 1] as u16,
+                    stored,
+                    "big-endian layout"
+                );
+            }
+        }
+    }
+
+    /// The mask is not cosmetic: bits outside `0x0EEE` must not survive the store. (The bus refuses such
+    /// a `raw` with `-32602` rather than reaching here, but a core primitive that silently kept the bits
+    /// would make the reply's `value` a lie the moment anything else called it.)
+    #[test]
+    fn cram_poke_masks_to_nine_bits() {
+        let mut v = fresh();
+        assert_eq!(
+            v.poke_cram(5, 0xFFFF),
+            0x0EEE,
+            "every out-of-mask bit dropped"
+        );
+        assert_eq!(
+            v.poke_cram(5, 0x0111),
+            0x0000,
+            "only out-of-mask bits set → black"
+        );
+        assert_eq!(v.cram()[10..12], [0x00, 0x00]);
+    }
+
+    /// A poke writes ONE entry. A neighbour-clobbering off-by-one in the byte index would be invisible to
+    /// a single-entry assertion, so the two adjacent entries are pinned unchanged.
+    #[test]
+    fn cram_poke_touches_exactly_one_entry() {
+        let mut v = fresh();
+        v.poke_cram(0, 0x0EEE);
+        v.poke_cram(1, 0x0EEE);
+        v.poke_cram(2, 0x0EEE);
+        v.poke_cram(1, 0x000E);
+        assert_eq!(v.cram()[0..2], [0x0E, 0xEE], "entry 0 untouched");
+        assert_eq!(v.cram()[2..4], [0x00, 0x0E], "entry 1 rewritten");
+        assert_eq!(v.cram()[4..6], [0x0E, 0xEE], "entry 2 untouched");
     }
 
     #[test]

@@ -272,6 +272,16 @@ pub const METHODS: &[MethodSpec] = &[
         summary: "debug read of VDP VRAM",
     },
     MethodSpec {
+        name: "emulator/read_cram",
+        handler: Engine::read_cram,
+        summary: "the palette as STORED: one line's 16 entries or all 64, with the cramAddr join key",
+    },
+    MethodSpec {
+        name: "emulator/write_cram",
+        handler: Engine::write_cram,
+        summary: "poke one palette entry (paused machine only; one colour spelling, refused never masked)",
+    },
+    MethodSpec {
         name: "emulator/pixel_attribution",
         handler: Engine::pixel_attribution,
         summary: "why the dot at (x,y) is the colour it is: winner, cell/sprite, and the losing candidates",
@@ -1544,6 +1554,165 @@ impl Engine {
             }
         }
         Ok(Value::Object(out))
+    }
+
+    /// `emulator/read_cram` — the palette, read (§6 VRAM/CRAM/layers, specified by §11.17 / CR-27b).
+    ///
+    /// **The entry is the STORED colour, never the displayed one.** `raw` is the 9-bit word the chip
+    /// holds and `r`/`g`/`b` its 3-bit components — `emulator/write_cram`'s own spelling, so a read entry
+    /// hands straight back to a write. The colour a dot is actually *shown* in is
+    /// [`pixel_attribution`](Self::pixel_attribution)'s `rgb`, which runs these components through an
+    /// intensity ramp at the resolved shadow/highlight state and differs whenever that state is not
+    /// `normal`. **No 8-bit expansion is emitted here**, deliberately: the catalog has never pinned a
+    /// ramp, the two servers that compute one disagree at three of the eight levels (`F-CRAM-RAMP`), and
+    /// a number two conformant servers answer differently is worse than an absent one.
+    ///
+    /// `cramAddr` rides on every entry although it is derivable, because it is the **join key** three
+    /// other surfaces speak and `(line, index)` is not: `pixel_attribution.cramAddr`, the `space`+`addr`
+    /// pair a `cram` watch hit reports, and `emulator/read` with `space: "cram"`. `pixel_attribution`'s
+    /// `cramIndex` is deliberately not carried — that method emits it only because it has no
+    /// `(line, index)` pair to give.
+    ///
+    /// A **pure read**: no `require_paused`, on the `read`/`sprites`/`pixel_attribution`/`scanlines`
+    /// precedent. D11's stamp is the whole answer to a torn palette sample.
+    fn read_cram(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let line = match params.get("line") {
+            None => None,
+            Some(v) => Some(parse_cram_line(v)?),
+        };
+        let cram = self.sys.vdp().cram();
+        // Entries are line-ascending then index-ascending and contiguous, and the range is fixed by the
+        // request: one line's 16 or the whole 64. `palette` is bounded by the video hardware, so §2.4
+        // clause (d) gives it neither a truncation flag nor a cursor — a partial palette is not
+        // expressible, and there is nothing for a client to page through.
+        let entries: Vec<Value> = match line {
+            Some(l) => (0..16).map(|i| cram_entry(cram, l, i)).collect(),
+            None => (0..4)
+                .flat_map(|l| (0..16).map(move |i| (l, i)))
+                .map(|(l, i)| cram_entry(cram, l, i))
+                .collect(),
+        };
+        let mut out = Map::new();
+        // Echoed IFF the param was given — its presence is what tells a client which of the two answers
+        // it is holding, and the fragment ties the echo to the array's length in BOTH directions.
+        if let Some(l) = line {
+            out.insert("line".into(), json!(l));
+        }
+        out.insert("palette".into(), Value::Array(entries));
+        Ok(Value::Object(out))
+    }
+
+    /// `emulator/write_cram` — one palette entry, poked (§6, specified by §11.17 / CR-27a).
+    ///
+    /// **Requires a paused machine** (`-32005`, `data.reason = "machineRunning"`). That gate is
+    /// *demand-side confirmation*, not symmetry with `write_memory`: the requester established that the
+    /// unpaused case fails for engine reasons anyway — a composed-per-frame palette pipeline overwrites a
+    /// direct CRAM write within the frame — and that where this method earns its keep is the paused
+    /// machine, inspecting a colour and tweaking it with nothing stepping on it.
+    ///
+    /// **Exactly one colour spelling**: all three of `r`/`g`/`b`, or `raw`. Both, neither, a partial
+    /// triple, and a partial triple beside `raw` are each `-32602`. A `raw` carrying bits outside the
+    /// chip's `$0EEE` mask is `-32602` too — **refused, never masked** — because the reply's whole job is
+    /// to say where the write landed, and a reply reporting a value the caller did not send is exactly
+    /// the silent mutation this bus refuses everywhere else. `line`/`index` out of range are refused,
+    /// never clipped.
+    ///
+    /// The two **standing properties** of a poke (stated in §6 rather than as a `caveat` on every reply,
+    /// per §2.4's advisory — and the fragment declares `caveat` absent, so emitting one would fail item
+    /// 20's closure): it is **never offered to the watch surface**, and it does **not repaint a frame
+    /// already drawn**. Both fall out of [`Vdp::poke_cram`], which is where the reasoning lives.
+    fn write_cram(&mut self, params: &Value) -> Result<Value, RpcError> {
+        self.require_paused("emulator/write_cram")?;
+        let line =
+            parse_cram_line(params.get("line").ok_or_else(|| {
+                RpcError::invalid_params("`line` is required (palette line, 0-3)")
+            })?)?;
+        let index = match params.get("index") {
+            None => {
+                return Err(RpcError::invalid_params(
+                    "`index` is required (entry within the line, 0-15)",
+                ))
+            }
+            Some(v) => match v.as_u64() {
+                Some(n) if n <= 15 => n as u8,
+                Some(n) => {
+                    return Err(RpcError::invalid_params(format!(
+                        "`index` {n} is outside 0-15 — refused, never clipped"
+                    )))
+                }
+                None => {
+                    return Err(RpcError::invalid_params(
+                        "`index` must be an integer 0-15 (D9 category 2)",
+                    ))
+                }
+            },
+        };
+
+        // The alternation, refused in all four bad spellings before anything is written.
+        let triple = ["r", "g", "b"].map(|k| params.get(k));
+        let any_component = triple.iter().any(Option::is_some);
+        let word = match (any_component, params.get("raw")) {
+            (true, Some(_)) => {
+                return Err(RpcError::invalid_params(
+                    "`r`/`g`/`b` and `raw` are alternatives — pass exactly one spelling",
+                ))
+            }
+            (false, None) => return Err(RpcError::invalid_params(
+                "a colour is required: all three of `r`/`g`/`b` (0-7 each), or `raw` (<= 0x0EEE)",
+            )),
+            (true, None) => {
+                let mut c = [0u16; 3];
+                for (slot, (name, v)) in c.iter_mut().zip(["r", "g", "b"].iter().zip(triple)) {
+                    let Some(v) = v else {
+                        return Err(RpcError::invalid_params(format!(
+                            "`{name}` is missing — `r`, `g` and `b` travel together; a partial triple \
+                             is refused"
+                        )));
+                    };
+                    match v.as_u64() {
+                        Some(n) if n <= 7 => *slot = n as u16,
+                        Some(n) => {
+                            return Err(RpcError::invalid_params(format!(
+                                "`{name}` {n} is outside 0-7 — a stored component is 3-bit"
+                            )))
+                        }
+                        None => {
+                            return Err(RpcError::invalid_params(format!(
+                                "`{name}` must be an integer 0-7 (D9 category 2)"
+                            )))
+                        }
+                    }
+                }
+                // `---- BBB- GGG- RRR-`, the layout `Vdp::cram_decoded` reads back.
+                (c[0] << 1) | (c[1] << 5) | (c[2] << 9)
+            }
+            (false, Some(v)) => {
+                let Some(n) = v.as_u64() else {
+                    return Err(RpcError::invalid_params(
+                        "`raw` must be a non-negative integer (D9 category 2)",
+                    ));
+                };
+                // Refused, never masked. The schema's `maximum: 3822` is the coarse mechanical half; this
+                // is the exact-mask rule it cannot express, and it stands to that bound exactly as
+                // `write_memory`'s must-fit-`width` stands to its `value` bound.
+                if n & !0x0EEE != 0 {
+                    return Err(RpcError::invalid_params(format!(
+                        "`raw` {n:#06X} carries bits outside the chip's 0x0EEE mask \
+                         (---- BBB- GGG- RRR-) — refused, never masked"
+                    )));
+                }
+                n as u16
+            }
+        };
+
+        let entry = line * 16 + index;
+        let stored = self.sys.vdp_mut().poke_cram(entry, word);
+        Ok(json!({
+            "line": line,
+            "index": index,
+            "cramAddr": hex::addr(u32::from(entry) * 2),
+            "value": hex::u16_hex(stored),
+        }))
     }
 
     fn read_vram(&mut self, params: &Value) -> Result<Value, RpcError> {
@@ -3725,6 +3894,41 @@ fn layer_json(layer: Layer) -> Value {
 /// A pattern is 32 bytes and 65536 is a multiple of 32, so a pattern never straddles the wrap.
 fn tile_addr(tile: u16) -> u32 {
     (u32::from(tile) * 32) & 0xFFFF
+}
+
+/// Parse a `line` param for either CRAM method. Out of range is `-32602` — **refused, never clipped** —
+/// and shared by both so the two rows cannot drift on the bound or on the wording.
+fn parse_cram_line(v: &Value) -> Result<u8, RpcError> {
+    match v.as_u64() {
+        Some(n) if n <= 3 => Ok(n as u8),
+        Some(n) => Err(RpcError::invalid_params(format!(
+            "`line` {n} is outside 0-3 — refused, never clipped"
+        ))),
+        // D9 category 2: an index is a JSON number, never a hex string.
+        None => Err(RpcError::invalid_params(
+            "`line` must be an integer 0-3 (D9 category 2)",
+        )),
+    }
+}
+
+/// One `emulator/read_cram` palette entry: the stored word and its three stored components, plus the
+/// `(line, index)` pair a write takes back and the `cramAddr` join key.
+fn cram_entry(cram: &[u8], line: u8, index: u8) -> Value {
+    let entry = usize::from(line) * 16 + usize::from(index);
+    let b = entry * 2;
+    // Masked on the way out as well as on the way in: `write_target` and `poke_cram` both store masked
+    // words, so this is belt-and-braces — but `raw` is contractually "the stored word masked to the 9-bit
+    // colour", and a component derived from an unmasked bit would be outside its declared 0-7.
+    let raw = ((u16::from(cram[b]) << 8) | u16::from(cram[b | 1])) & 0x0EEE;
+    json!({
+        "line": line,
+        "index": index,
+        "cramAddr": hex::addr(entry as u32 * 2),
+        "raw": hex::u16_hex(raw),
+        "r": (raw >> 1) & 0x07,
+        "g": (raw >> 5) & 0x07,
+        "b": (raw >> 9) & 0x07,
+    })
 }
 
 fn out_of_range(addr: u32, why: &str) -> RpcError {
