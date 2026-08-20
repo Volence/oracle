@@ -29,7 +29,11 @@ with tools that then exist).
    repo's path (`oracle/linux-port/...` — aeon's 13 probe/gate tools, our MCP config) got a path
    that resolves into the WRONG repo, not a dead one; aeon hotfixed theirs to `oracle-old/`
    (aeon `17bcd111`), ours was updated at rename time. Lesson: renaming A→B while B's old name
-   goes to C breaks C's consumers silently — cover BOTH sides of a swap.
+   goes to C breaks C's consumers silently — cover BOTH sides of a swap. Completed taxonomy
+   (round 2, aeon's oracle_gui font-path segfault): a swap breaks THREE consumer classes —
+   live paths (compat symlink), old-name references (grep-and-fix), and compile-time-frozen
+   paths (invisible until the binary runs; fix = reconfigure/rebuild in the new home, done
+   2026-08-20 for oracle-old, verified via strings over the binary).
 2. **CRAM handlers** (CR-27 fully adjudicated; empyrean `cram-params-amendment` parked) — serve
    `write_cram` (require_paused, demand-confirmed) + `read_cram`; then that merge window (+ §11.17,
    + the parse-derived merged-count check, + Aurora's branch-probe acceptance).
