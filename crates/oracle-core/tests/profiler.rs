@@ -7,11 +7,14 @@
 //! same bar the consumers of this surface hold it to.
 
 use oracle_core::bus::{BusEvent, BusEventSink, BusOp, Size, StepRetire};
+use oracle_core::m68000::bus68k::Bus68k;
 use oracle_core::profiler::{Counts, Profiler, Report, MAX_DEPTH};
 use oracle_core::system::System;
 use oracle_core::testrom::{
-    self, ProfilerShape, StallKind, PROF_DISPATCH, PROF_LEAF, PROF_MID, PROF_MID_CALLS_LEAF,
-    PROF_REC, PROF_STALL, PROF_TARGET, PROF_VINT_H,
+    self, ProfilerShape, StallKind, PROF_CPU_CYCLES_PER_FRAME, PROF_DISPATCH, PROF_LEAF, PROF_MID,
+    PROF_MID_CALLS_LEAF, PROF_PREEMPT_CA, PROF_PREEMPT_CB, PROF_PREEMPT_FLAG, PROF_PREEMPT_R,
+    PROF_PREEMPT_VINT_LIVE, PROF_PREEMPT_VINT_MASKED, PROF_REC, PROF_STALL, PROF_TARGET,
+    PROF_VINT_H,
 };
 
 /// Interrupt levels, as the 68000 numbers them.
@@ -43,6 +46,16 @@ fn row(r: &Report, addr: u32) -> Counts {
         panic!(
             "no row for {addr:#06X}; rows present: {:#06X?}",
             r.routines.keys().collect::<Vec<_>>()
+        )
+    })
+}
+
+/// The row for `addr` on the **undivided** sample, or a failure naming what rows there were.
+fn raw(p: &Profiler, addr: u32) -> Counts {
+    *p.sample_routines().get(&addr).unwrap_or_else(|| {
+        panic!(
+            "no row for {addr:#06X}; rows present: {:#06X?}",
+            p.sample_routines().keys().collect::<Vec<_>>()
         )
     })
 }
@@ -1179,5 +1192,223 @@ fn a_nested_hint_inside_a_vint_charges_the_inner_bucket_alone() {
         p.sample_routines().get(&0x3000).map(|c| c.calls),
         Some(1),
         "and the VBlank handler's"
+    );
+}
+
+// --- C1: attribution under preemption ---------------------------------------------------------------
+//
+// The witness for `docs/2026-08-19-streaming-asks-recon.md` §2.5. The instrument this replaces loses
+// **20.6%** of a frame when a tick straddles a VBlank, because its shadow stack is declared inside a
+// per-frame loop (`ControlSocket.cpp:1972`) and cycles are charged only at an exit event
+// (`:1986-1990`): a routine entered in frame N and returning in frame N+1 meets a stack that never saw
+// its entry, so its whole post-boundary segment reaches no row while still counting toward the total.
+//
+// Our accumulator charges continuously and never tears the stack down, so the defect is not expressible
+// here. That is a claim until something checks it — which is what this fixture is for, and why its M1
+// mutation (`self.stack.clear()` at the boundary: a faithful reproduction of the defect, applied to OUR
+// accumulator) is the one that must turn it red.
+
+/// How long the witness runs. R starts at line 0 of frame 1 — `main` synchronises on the V counter, so
+/// the sample's opening boundary (frame 0, line 224) is already behind it — and R's delay is sized for
+/// `testrom::PROF_PREEMPT_DELAY_FRAMES` frames, so a run of this length closes the sample several whole
+/// frames after R returned. **Both ends are load-bearing:** R's invocation must lie strictly INSIDE the
+/// sample, or the opening boundary would forget part of its accrual and the money assertion below would
+/// be comparing two truncations rather than two measurements.
+const PREEMPT_FRAMES: u64 = 8;
+
+/// The 68000 function code for a supervisor data access — what a write made on the guest's behalf
+/// carries.
+const FC_SUPERVISOR_DATA: u8 = 5;
+
+/// One run of the preemption witness. `flag` is the single byte that decides whether R lowers the
+/// interrupt mask; the ROM image, the run length and the VDP arming are identical between the two.
+fn preemption_run(flag: u8) -> Profiler {
+    let mut sys = System::new(0x1234_5678);
+    sys.load_rom(testrom::build_profiler(ProfilerShape::Preempted));
+    sys.reset();
+    // Written through the machine's own bus, after the reset (which does not touch work RAM) and before
+    // the first instruction retires. This is what keeps "one ROM, run twice" literal: the two runs load
+    // byte-identical images and differ by one byte of RAM.
+    let mut sink = ();
+    let mut bus = sys.mega_bus(&mut sink);
+    bus.write8(PROF_PREEMPT_FLAG, FC_SUPERVISOR_DATA, flag);
+    let mut prof = Profiler::new();
+    sys.run_frames_with_sink(PREEMPT_FRAMES, &mut prof);
+    prof
+}
+
+/// **★ C1, in one equality: a routine's own cost does not depend on interrupt load.**
+///
+/// One ROM, run twice — VBlank live, VBlank masked — and `cyclesSelf` for the preempted routine must be
+/// **exactly** equal between them. That is precisely the property the old instrument violated by 20.6%,
+/// and it is asserted as an equality rather than a tolerance because the consumers of this surface gate
+/// with `==`.
+///
+/// Everything else here is the scaffolding that keeps the equality from being vacuous:
+///
+/// - **The liveness control.** Run A must actually have been preempted (a VBlank bucket, more than once)
+///   and run B must not have been (no bucket at all). Without it the equality is two identical
+///   unpreempted runs agreeing with each other, which is a test that cannot fail.
+/// - **The sizing check, derived.** R's own retired cycles must exceed two whole frames — computed from
+///   `MCLK_PER_FRAME / MCLK_PER_CPU_CYCLE`, the machine's own constants, never from a passing run —
+///   because a single invocation that outlasts two frames of CPU time necessarily spanned at least two
+///   frame boundaries, which is what makes the mid-invocation checkpoint fold the thing under test.
+/// - **`calls == 1`.** The L3 regression: the old instrument's end-of-frame flush increments `calls`, so
+///   one invocation open across *k* boundaries books *k + 1* calls there.
+///
+/// The mutation record (recon §2.5, each run against this test before it was recorded):
+/// **M1** — `self.stack.clear()` in the `else` branch of `on_frame_boundary`, i.e. the per-frame stack —
+/// breaks the money assertion, `calls == 1` and the inclusive relation. Its breaking the *money*
+/// assertion is the proof that R really does span a boundary; a fixture whose delay were too short would
+/// leave it green. **M2** — dropping `pop_frame`'s `FrameKind::Routine` guard so an interrupt folds into
+/// its parent — breaks the inclusive relation ALONE and leaves the money assertion green, which is
+/// exactly the discrimination §2.5 asks for (a fold moves inclusive time, never self time). **M3** —
+/// checkpointing the frame's full accrual instead of `unreported()` — breaks the inclusive relation and
+/// the identity.
+#[test]
+fn a_routines_own_cycles_are_identical_whether_or_not_an_interrupt_preempts_it() {
+    let a = preemption_run(PROF_PREEMPT_VINT_LIVE);
+    let b = preemption_run(PROF_PREEMPT_VINT_MASKED);
+    let a_r = raw(&a, PROF_PREEMPT_R);
+    let b_r = raw(&b, PROF_PREEMPT_R);
+
+    // --- The fixture is live: R spans boundaries, and only run A was preempted ---------------------
+    let two_frames = 2 * PROF_CPU_CYCLES_PER_FRAME;
+    for (tag, r) in [("A (VInt live)", a_r), ("B (VInt masked)", b_r)] {
+        assert!(
+            r.self_cycles > two_frames,
+            "{tag}: R's own retired cycles ({}) must outlast two whole frames ({two_frames}), or its \
+             single invocation never spanned two boundaries and everything below is vacuous",
+            r.self_cycles
+        );
+    }
+    let a_vint = a
+        .sample_interrupts()
+        .get(&VINT)
+        .copied()
+        .unwrap_or_default();
+    assert!(
+        a_vint.calls >= 2,
+        "run A must really have been preempted, more than once, INSIDE R — `main` runs masked and R \
+         lowers the mask only between its two child calls, so every interrupt this run took was taken \
+         there; buckets: {:?}",
+        a.sample_interrupts()
+    );
+    assert!(
+        b.sample_interrupts().is_empty(),
+        "run B must NOT have been preempted at all — otherwise the equality below compares two \
+         preempted runs and says nothing; buckets: {:?}",
+        b.sample_interrupts()
+    );
+
+    // --- ★ The money assertion ---------------------------------------------------------------------
+    assert_eq!(
+        a_r.self_cycles, b_r.self_cycles,
+        "R's OWN cycles must not move when {} VBlanks preempt it: {} preempted vs {} not",
+        a_vint.calls, a_r.self_cycles, b_r.self_cycles
+    );
+    // And its inclusive figure too, because this fixture's children are unpreemptible by construction
+    // (they run with the mask raised). Two equalities, not one, and they fail for different reasons: the
+    // first breaks if preemption leaks into R's own accrual, the second if it leaks into the child fold.
+    assert_eq!(
+        a_r.cycles, b_r.cycles,
+        "and neither does its inclusive figure: {} vs {}",
+        a_r.cycles, b_r.cycles
+    );
+
+    // --- One invocation, not one per boundary crossed (the L3 regression) --------------------------
+    assert_eq!(
+        (a_r.calls, b_r.calls),
+        (1, 1),
+        "R is called exactly once by construction, and a boundary crossed mid-invocation must not \
+         fabricate a second call"
+    );
+
+    // --- The exact inclusive relation, in BOTH runs ------------------------------------------------
+    // The real gate, and an EQUALITY rather than an inequality precisely because of the non-folding
+    // rule: preemption is in neither term, so there is no interrupt cost to leave room for.
+    for (tag, p, r) in [("A (VInt live)", &a, a_r), ("B (VInt masked)", &b, b_r)] {
+        let ca = raw(p, PROF_PREEMPT_CA);
+        let cb = raw(p, PROF_PREEMPT_CB);
+        assert_eq!(
+            (ca.calls, cb.calls),
+            (1, 1),
+            "{tag}: each child is called once, by R's one invocation"
+        );
+        assert!(
+            ca.cycles > 0 && cb.cycles > 0,
+            "{tag}: both children must have cost something or the relation below is vacuous"
+        );
+        assert_eq!(
+            r.cycles,
+            r.self_cycles + ca.cycles + cb.cycles,
+            "{tag}: R's inclusive time is its own work plus exactly its two children — nothing the \
+             interrupt did is in either term (self {}, Ca {}, Cb {}, inclusive {})",
+            r.self_cycles,
+            ca.cycles,
+            cb.cycles,
+            r.cycles
+        );
+        // The direct negation of aeon's impossibility signature: a boundary-spanning parent reported
+        // SMALLER than the children that complete inside one frame.
+        assert!(
+            r.cycles >= ca.cycles + cb.cycles,
+            "{tag}: the parent cannot cost less than the children it contains ({} < {} + {})",
+            r.cycles,
+            ca.cycles,
+            cb.cycles
+        );
+    }
+
+    // --- The reconciliation identity closes in BOTH runs -------------------------------------------
+    for (tag, p) in [("A (VInt live)", &a), ("B (VInt masked)", &b)] {
+        let report = p.report();
+        let rows: u64 = p.sample_routines().values().map(|c| c.self_cycles).sum();
+        let buckets: u64 = p.sample_interrupts().values().map(|c| c.self_cycles).sum();
+        assert_eq!(
+            rows + buckets + report.unattributed_cycles,
+            report.sample_cycles,
+            "{tag}: rows {rows} + buckets {buckets} + unattributed {} must equal the sample {}",
+            report.unattributed_cycles,
+            report.sample_cycles
+        );
+        assert_eq!(
+            report.unattributed_cycles, 0,
+            "{tag}: nothing may escape into the hatch here — `main` runs masked, so no interrupt can \
+             be in flight across the opening boundary and there is nothing to suppress"
+        );
+        assert_eq!(
+            (report.abandoned_frames, report.depth_exceeded),
+            (0, 0),
+            "{tag}: and no frame was torn off or refused — either would mean some row understates"
+        );
+    }
+
+    // --- Where the difference went, stated ---------------------------------------------------------
+    // R's row is identical across the two runs; run A additionally carries a VBlank bucket and a handler
+    // row that run B has no key for at all. So the whole cost of the preemption IS the bucket: it did
+    // not come out of R (the 20.6% loss) and it did not go into R (the W5 conflation). Both directions
+    // are stated, because our `cycles` differs from the old instrument's in BOTH of them — so a row that
+    // happened to agree with it would be evidence of nothing.
+    assert!(
+        a_vint.cycles > 0,
+        "the preemption cost something, and that something is in the bucket"
+    );
+    let a_handler = raw(&a, PROF_VINT_H);
+    assert!(
+        a_handler.cycles > 0 && a_handler.cycles <= a_vint.cycles,
+        "the handler's own row is part of the bucket's inclusive total, never more ({} vs {})",
+        a_handler.cycles,
+        a_vint.cycles
+    );
+    assert!(
+        !b.sample_routines().contains_key(&PROF_VINT_H),
+        "and run B never entered the handler at all; rows: {:#06X?}",
+        b.sample_routines().keys().collect::<Vec<_>>()
+    );
+    assert!(
+        !a.sample_interrupts().contains_key(&HINT),
+        "only VBlank was armed, in both runs; buckets: {:?}",
+        a.sample_interrupts()
     );
 }
