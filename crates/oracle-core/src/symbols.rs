@@ -55,21 +55,73 @@
 //! rejected by the five-token row shape, which cost 684 phantom `skipped_lines` on the real `s4.lst` and
 //! made [`SymbolTable::is_intact`] wrong about a healthy file.
 //!
+//! # The other dialect: stock AS listings (`sonic.lst`, the classic disassemblies)
+//!
+//! Sigil's emitter is one producer of this format; the **AS macro assembler itself** is the other, and the
+//! classic Sonic disassemblies (`s1disasm`, `s2disasm`, `skdisasm`) are what Aurora's classic loop loads.
+//! AS writes the same `Symbol Table` section with three differences, each of which silently drops symbols
+//! if it is not handled. All three were measured against the real `s1disasm/sonic.lst` (12,410 symbols):
+//!
+//! 1. **Two symbols per line, `|`-separated.** AS packs the table two columns wide —
+//!    `Sym : ADDR C |  Sym2 : ADDR C |` — so a row-per-line reader sees a ten-token line and rejects it.
+//!    Measured: 4,174 of `sonic.lst`'s rows are the two-symbol shape. The fix is to **split on `|` before
+//!    tokenising**, which subsumes sigil's one-per-line form (its trailing `|` yields one entry and one
+//!    empty tail) rather than branching on a per-file dialect flag. There is no per-file signal worth
+//!    keying on: the shape is decidable per row, and a producer that ever mixed the two would still parse.
+//! 2. **RAM addresses are 48-bit sign-extended** — `f_debugmode : FFFFFFFFFFFFFFFA C`, sixteen hex digits,
+//!    which overflows `u32` and is skipped. Measured: 932 such rows in `sonic.lst`, **and every address the
+//!    classic loop needs is one of them** (all of RAM). Values are therefore parsed as `u64` and masked
+//!    with [`BUS_ADDR_MASK`], which lands `FFFFFFFFFFFFD000` on the bus address `$FFD000` exactly as it
+//!    lands sigil's `FFFF8CFA` on `$FF8CFA` — the same trap 2 rule, one width wider.
+//! 3. **Not every row carries an address.** AS emits its own build metadata as pseudo-symbols whose value
+//!    is a quoted string or a float (`ARCHITECTURE : "x86_64-unknown-linux" -`, `CONSTPI :
+//!    3.141592653589793 -`, and `TIME : "11:35:59 PM" -`, whose value even contains a space). These are
+//!    **recognised and consumed, never ingested** — counted in [`SymbolTable::non_address_rows`] rather
+//!    than in [`SymbolTable::skipped_lines`], for exactly the reason the `Equate Table` is: five rows of
+//!    normal, healthy output must not make [`SymbolTable::is_intact`] report a whole file as damaged.
+//!    Measured on `sonic.lst`: 12,405 addresses + 5 non-address rows == the footer's 12,410, and
+//!    1,568 + 5 starred == the footer's 1,573 unused, so both of the file's own checksums close.
+//!
+//! ## The type column, per dialect — and why the two are handled differently
+//!
+//! An AS `-` row is an **equate**, and in AS land a RAM address is legitimately equ-defined: `sonic.lst`
+//! spells `v_player : FFFFFFFFFFFFD000 -`. But the same `-` also covers genuine constants — 2,158 of
+//! `sonic.lst`'s 2,231 `-` rows are not RAM addresses at all, and 1,236 of them hold values below `$100`.
+//! Ingesting them wholesale would put `AniArt_MZ_Lava.size = 8` into nearest-preceding reverse lookup;
+//! skipping them wholesale would lose `v_player`. So the ruling is **forward-only**:
+//!
+//! - **name → value resolves** ([`by_name`](SymbolTable::by_name), [`address_of`](SymbolTable::address_of),
+//!   the prefix searches). This is the primary use — poking RAM by symbol.
+//! - **value → name does not** ([`resolve`](SymbolTable::resolve), [`symbols_at`](SymbolTable::symbols_at)).
+//!   A constant answering an addr→name query is the confidently-wrong answer this module exists to avoid,
+//!   and it is the exact failure shape the ROM-binding guard is built against.
+//!
+//! [`Symbol::resolves_in_reverse`] is that predicate, and it is a property of the **row**, not of the file.
+//!
+//! **This is NOT the `Equate Table` rule and must not be unified with it.** Sigil's equates arrive in their
+//! own section, and sigil's own emitter pins them as values-never-addresses (its debugger-map test enforces
+//! it), while sigil RAM labels arrive as ordinary type-`C` `Symbol Table` rows. So for the sigil dialect
+//! there is nothing an equate could legitimately answer, and the never-resolvable rule below stays exactly
+//! as shipped. Two dialects, two contracts; the `-` type column and the `Equate Table` section are
+//! different things that happen to share a word.
+//!
 //! ## Four traps, each of which silently produces wrong answers
 //!
-//! 1. **RAM addresses are plain 8-hex `FFFFxxxx`** — *not* the 48-bit sign-extended `FFFFFFFFFFFFxxxx`
-//!    older AS tooling emitted. (Aeon's own `tools/s4budget.py::_is_ram_addr_str` still tests for the old
-//!    form and consequently reports `RAM: 0 bytes` — a live bug in their tree, deliberately not copied.)
+//! 1. **Sigil's RAM addresses are plain 8-hex `FFFFxxxx`** — *not* the 48-bit sign-extended
+//!    `FFFFFFFFFFFFxxxx` AS emits (both are accepted; see the dialect section above). (Aeon's own
+//!    `tools/s4budget.py::_is_ram_addr_str` still tests only for the sign-extended form and consequently
+//!    reports `RAM: 0 bytes` on a sigil listing — a live bug in their tree, deliberately not copied.)
 //! 2. **`FFFFxxxx` is a 32-bit spelling of a 24-bit bus address.** The 68000 drives 24 address lines, and
 //!    this core decodes work RAM at `$E00000–$FFFFFF` (`bus.rs`), so the listing's `FFFF8CFA` *is* the
 //!    machine's `$FF8CFA`. Matching a PC or a bus address against the raw value finds nothing, every time.
 //!    Each [`Symbol`] therefore carries both [`raw_addr`](Symbol::raw_addr) (as written in the file) and
 //!    [`addr`](Symbol::addr) (masked to 24 bits); **all lookups use the 24-bit form**, and mask the query
 //!    too, so a caller may pass either spelling.
-//! 3. **The type column does not discriminate code from RAM.** The emitter supports `-` for equates, but
-//!    Aeon's equates arrive in a section of their own (below) rather than in the type column, so every
-//!    `Symbol Table` row of the real `s4.lst` is `C` — including every RAM variable. Code and RAM are
-//!    separable only by *address range*, which is what [`AddrSpace`] does.
+//! 3. **The type column does not discriminate code from RAM.** Aeon's equates arrive in a section of their
+//!    own (below) rather than in the type column, so every `Symbol Table` row of the real `s4.lst` is `C` —
+//!    including every RAM variable. AS uses `-` for equates, but an AS equate is just as likely to *be* a
+//!    RAM address (`v_player`). Either way code and RAM are separable only by *address range*, which is
+//!    what [`AddrSpace`] does — never by the type column.
 //! 4. **Symbols bind per-game AND per-build-shape.** `if DEBUG == 1 @shape_divergent` blocks in the
 //!    engine's `ram.emp` shift the RAM layout between shapes: of the symbols `s4.lst` and `s4.debug.lst`
 //!    share, **92.6% resolve to a different address**, with divergence starting at `BootData` (`$3A0` vs
@@ -107,9 +159,12 @@ pub const BUS_ADDR_MASK: u32 = 0x00FF_FFFF;
 pub enum SymbolKind {
     /// `C` — an address in the assembled image's address space (the only kind Aeon currently emits).
     Code,
-    /// `-` — an equate/constant, as spelled in the `Symbol Table`'s **type column**. Supported by the
-    /// emitter, never seen in a real Aeon listing: Aeon's equates arrive in the separate `Equate Table`
-    /// section instead, which this module recognises but does not ingest.
+    /// `-` — an equate, as spelled in the `Symbol Table`'s **type column**. Never seen in a real Aeon
+    /// listing (sigil's equates arrive in the separate `Equate Table` section instead, which this module
+    /// recognises but does not ingest); ubiquitous in stock AS listings, where 2,231 of `sonic.lst`'s
+    /// 12,410 rows carry it and a handful of them — `v_player` among them — are genuine RAM addresses.
+    ///
+    /// These rows are ingested **forward-only**: see [`Symbol::resolves_in_reverse`] and the module docs.
     Equate,
 }
 
@@ -173,10 +228,16 @@ pub struct Symbol {
     pub demangled: String,
     /// The address as written in the file, unmasked (`0xFFFF_8CFA`). Kept so a caller can round-trip a
     /// value back to the listing's own spelling.
+    ///
+    /// **Low 32 bits.** AS's 48-bit sign-extended spelling (`FFFFFFFFFFFFD000`) is parsed as `u64` and
+    /// truncated here, which yields exactly the conventional 32-bit form (`0xFFFF_D000`) — the same value
+    /// sigil would have written for the same location. The invariant `addr == raw_addr & BUS_ADDR_MASK`
+    /// therefore holds at both widths.
     pub raw_addr: u32,
     /// The 24-bit bus address (`0xFF_8CFA`) — **what every lookup here matches against** (trap 2).
     pub addr: u32,
-    /// `C` or `-`. Does not discriminate code from RAM (trap 3) — use [`AddrSpace::of`] for that.
+    /// `C` or `-`. Does not discriminate code from RAM (trap 3) — use [`AddrSpace::of`] for that. It
+    /// **does** decide reverse-lookup eligibility: see [`resolves_in_reverse`](Symbol::resolves_in_reverse).
     pub kind: SymbolKind,
     /// The listing's `*` marker. Always `false` in practice: real Aeon listings end `0 unused symbols`.
     pub unused: bool,
@@ -201,6 +262,21 @@ impl Symbol {
     /// Which region of the bus map this symbol lives in.
     pub fn space(&self) -> AddrSpace {
         AddrSpace::of(self.addr)
+    }
+
+    /// May this symbol answer an **addr → name** query ([`SymbolTable::resolve`],
+    /// [`SymbolTable::symbols_at`])?
+    ///
+    /// True for [`SymbolKind::Code`], false for [`SymbolKind::Equate`] — the forward-only ruling in the
+    /// module docs. An AS `-` row may be a RAM address (`v_player`) or a bare constant (`…​.size = 8`), and
+    /// the row carries nothing that tells the two apart; forward resolution serves the address case with no
+    /// downside, while admitting the constants into nearest-preceding search would invent confident names
+    /// for low addresses. Name → value is unaffected in both directions of that trade.
+    ///
+    /// Every symbol from a sigil listing is `Code`, so this is `true` for all of them and the reverse
+    /// direction is unchanged for the dialect this module was written against.
+    pub fn resolves_in_reverse(&self) -> bool {
+        self.kind == SymbolKind::Code
     }
 }
 
@@ -292,6 +368,11 @@ pub enum BindingFault {
 pub enum Indeterminate {
     /// The listing declares no `EndOfRom` symbol, so there is no offset to probe.
     NoEndOfRomSymbol,
+    /// `EndOfRom` is **exactly** the image length: the listing describes a ROM with no appendix after it.
+    /// A symbol one past the last byte cannot carry the magic and cannot be a mismatched in-range offset,
+    /// so there is nothing to probe and nothing to contradict. See
+    /// [`SymbolTable::validate_against_rom`].
+    EndOfRomIsImageEnd { rom_len: usize },
 }
 
 /// Magic at the head of the `deb2` symbol appendix every sigil-built Aeon ROM carries at `EndOfRom`.
@@ -330,6 +411,11 @@ pub fn rom_declared_end(rom: &[u8]) -> Option<u32> {
 pub struct SymbolTable {
     /// Sorted by `(addr, name)`. The sort key is the **24-bit** address (trap 2).
     syms: Vec<Symbol>,
+    /// Indexes into [`syms`](Self::syms), in the same `(addr, name)` order, restricted to the symbols that
+    /// may answer an addr→name query ([`Symbol::resolves_in_reverse`]). **Every** reverse lookup binary
+    /// searches this and never `syms`, which is what makes the forward-only ruling structural rather than
+    /// a filter each call site has to remember. Identical to `0..syms.len()` for any sigil listing.
+    rev: Vec<usize>,
     /// Raw mangled name → index. `BTreeMap`, not `HashMap`: ordered iteration makes prefix search a range
     /// query, and the crate bans `HashMap` in anything that might be hashed or serialized.
     by_name: BTreeMap<String, usize>,
@@ -344,6 +430,23 @@ pub struct SymbolTable {
     /// `None` when the listing carries no `Equate Table` section at all — every listing sigil emitted
     /// before 2026-08-19, and every AS listing.
     equates: Option<EquateSection>,
+    non_address: NonAddressRows,
+}
+
+/// `Symbol Table` rows that are well-formed but carry no address — AS's own build metadata
+/// (`ARCHITECTURE`, `CONSTPI`, `DATE`, `MOMCPUNAME`, `TIME`), whose "value" is a quoted string or a float.
+///
+/// Recognised and consumed rather than skipped, and counted here rather than in `skipped_lines`, so that
+/// the file's own two checksums still close: the `N symbols` footer counts these rows, and so does
+/// `N unused symbols` (all five are `*`-marked on `sonic.lst`). Without the accounting a perfectly healthy
+/// AS listing reports as damaged, [`SymbolTable::is_intact`] goes false, and the frontend's load policy
+/// **refuses** it — the same failure the `Equate Table` recognition was added to prevent, one dialect over.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct NonAddressRows {
+    /// How many such rows were seen.
+    rows: usize,
+    /// How many of them carried the `*` unused marker.
+    unused: usize,
 }
 
 /// What we keep of the `Equate Table`: the two counts, and nothing else. Deliberately not the values —
@@ -363,6 +466,7 @@ struct ParseCounts {
     declared_unused: Option<usize>,
     skipped_lines: usize,
     equates: Option<EquateSection>,
+    non_address: NonAddressRows,
 }
 
 /// Which of the listing's three regions the line cursor is in.
@@ -372,6 +476,12 @@ enum Section {
     Body,
     /// Inside `Symbol Table (* = unused):`.
     SymbolTable,
+    /// Past the symbol table's own `N symbols` footer. Nothing here is a symbol row — a stock AS listing
+    /// continues with page headers, a `Defined Macros:` list (`|`-packed, exactly like the symbol table)
+    /// and an assembly-statistics block, 734 lines of it on `sonic.lst`. Reading rows to end-of-file
+    /// counted all of it as damage; the footer is where the section ends, so that is where row parsing
+    /// stops. The `N unused symbols` footer is still collected here, because AS emits it after the count.
+    AfterSymbolTable,
     /// Inside `Equate Table (name = value; values, not addresses):`.
     EquateTable,
 }
@@ -391,6 +501,7 @@ impl SymbolTable {
         let mut declared_unused = None;
         let mut skipped_lines = 0usize;
         let mut equates: Option<EquateSection> = None;
+        let mut non_address = NonAddressRows::default();
 
         for line in text.lines() {
             let t = line.trim_end();
@@ -422,11 +533,34 @@ impl SymbolTable {
                     }
                     if let Some(n) = parse_footer(t, "symbols") {
                         declared_count = Some(n);
+                        // The footer is the section's end. Everything after it belongs to some other
+                        // part of the listing and must not be judged as a malformed row.
+                        section = Section::AfterSymbolTable;
                         continue;
                     }
-                    match parse_table_row(t) {
-                        Some(s) => table_syms.push(s),
-                        None => skipped_lines += 1,
+                    // Split on `|` FIRST: AS packs the table two columns wide and sigil terminates its
+                    // single column with the same character, so one splitter reads both dialects (see
+                    // the module docs). An empty segment is the tail after a trailing `|`, not damage.
+                    for part in t.split('|') {
+                        if part.trim().is_empty() {
+                            continue;
+                        }
+                        match parse_table_entry(part) {
+                            TableEntry::Symbol(s) => table_syms.push(s),
+                            TableEntry::NonAddress { unused } => {
+                                non_address.rows += 1;
+                                non_address.unused += usize::from(unused);
+                            }
+                            TableEntry::Unrecognised => skipped_lines += 1,
+                        }
+                    }
+                }
+                Section::AfterSymbolTable => {
+                    // Only the trailing count is still ours; the rest of the listing's tail is not a
+                    // symbol list and is neither ingested nor counted as damage. (The `Equate Table`
+                    // header is matched above this `match`, so a sigil listing still enters it here.)
+                    if let Some(n) = parse_footer(t, "unused symbols") {
+                        declared_unused = Some(n);
                     }
                 }
                 Section::EquateTable => {
@@ -475,6 +609,7 @@ impl SymbolTable {
                 declared_unused,
                 skipped_lines,
                 equates,
+                non_address,
             },
         ))
     }
@@ -512,8 +647,18 @@ impl SymbolTable {
             }
         }
 
+        // The reverse-lookup index: same order, forward-only rows removed (see `rev`). Built once here so
+        // no lookup can forget the rule.
+        let rev = syms
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.resolves_in_reverse())
+            .map(|(i, _)| i)
+            .collect();
+
         Self {
             syms,
+            rev,
             by_name,
             by_demangled,
             by_module,
@@ -522,6 +667,7 @@ impl SymbolTable {
             declared_unused: counts.declared_unused,
             skipped_lines: counts.skipped_lines,
             equates: counts.equates,
+            non_address: counts.non_address,
         }
     }
 
@@ -562,6 +708,22 @@ impl SymbolTable {
         self.skipped_lines
     }
 
+    /// `Symbol Table` rows that were well-formed but carried no address — AS's `ARCHITECTURE`, `DATE`,
+    /// `TIME` and friends, whose value is a string or a float. Recognised and consumed, never ingested;
+    /// **not** damage, so they are excluded from [`skipped_lines`](Self::skipped_lines) and included in the
+    /// footer reconciliation ([`matches_declared_count`](Self::matches_declared_count)). Always 0 on a
+    /// sigil listing.
+    pub fn non_address_rows(&self) -> usize {
+        self.non_address.rows
+    }
+
+    /// How many [`non_address_rows`](Self::non_address_rows) carried the `*` unused marker. Needed to
+    /// reconcile the `N unused symbols` footer, which counts them: on `sonic.lst` all five are starred, so
+    /// 1,568 ingested + 5 here == the declared 1,573.
+    pub fn non_address_unused(&self) -> usize {
+        self.non_address.unused
+    }
+
     /// How many `EQU <name> = $<hex>` rows the `Equate Table` held, or `None` when the listing has no such
     /// section. The count only — the names and values are deliberately not kept (`F-EQUATES-NAMESPACE`),
     /// so no equate can ever answer a lookup.
@@ -582,11 +744,16 @@ impl SymbolTable {
         self.equates.map(|e| e.declared == Some(e.rows))
     }
 
-    /// Did we parse exactly as many symbols as the footer promised? `None` when there is no footer to
+    /// Did we account for exactly as many rows as the footer promised? `None` when there is no footer to
     /// check against — which is itself a damage signal, so prefer [`is_intact`](Self::is_intact) for a
     /// yes/no verdict.
+    ///
+    /// The comparison is against ingested symbols **plus** [`non_address_rows`](Self::non_address_rows),
+    /// because AS's footer counts its string and float pseudo-symbols as symbols. On a sigil listing the
+    /// second term is 0 and this is the plain count it always was.
     pub fn matches_declared_count(&self) -> Option<bool> {
-        self.declared_count.map(|n| n == self.syms.len())
+        self.declared_count
+            .map(|n| n == self.syms.len() + self.non_address.rows)
     }
 
     /// Does this listing look like a whole, undamaged file? True only when it has the `Symbol Table`
@@ -648,11 +815,15 @@ impl SymbolTable {
     /// Every symbol whose address is exactly `addr` (masked to 24 bits). More than one is normal — sigil
     /// emits a label per source line, so two consecutive labels with no code between them share an address
     /// (`$engine.boot$EntryPoint$wait_dma` and `…$warm_boot` are both `$214`).
-    pub fn symbols_at(&self, addr: u32) -> &[Symbol] {
+    ///
+    /// This is the addr→name direction, so forward-only symbols are excluded
+    /// ([`Symbol::resolves_in_reverse`]) — an exact hit on a constant is the most confident wrong answer of
+    /// all. Address-sorted, and empty when nothing matches.
+    pub fn symbols_at(&self, addr: u32) -> Vec<&Symbol> {
         let a = addr & BUS_ADDR_MASK;
-        let lo = self.syms.partition_point(|s| s.addr < a);
-        let hi = self.syms.partition_point(|s| s.addr <= a);
-        &self.syms[lo..hi]
+        let lo = self.rev.partition_point(|&i| self.syms[i].addr < a);
+        let hi = self.rev.partition_point(|&i| self.syms[i].addr <= a);
+        self.rev[lo..hi].iter().map(|&i| &self.syms[i]).collect()
     }
 
     /// **The workhorse.** Nearest symbol at or before `addr`, plus the displacement — "PC is at
@@ -665,10 +836,14 @@ impl SymbolTable {
     ///
     /// When several symbols share the winning address, the last in `(addr, name)` order is returned —
     /// deterministic, and [`symbols_at`](Self::symbols_at) exposes the full set of aliases.
+    ///
+    /// Forward-only symbols never answer here ([`Symbol::resolves_in_reverse`]): an AS `-` row may hold a
+    /// bare constant, and nearest-preceding search over constants is how a low address acquires a
+    /// confident, wrong name.
     pub fn resolve(&self, addr: u32) -> Option<Resolution<'_>> {
         let a = addr & BUS_ADDR_MASK;
-        let idx = self.syms.partition_point(|s| s.addr <= a);
-        let sym = &self.syms[idx.checked_sub(1)?];
+        let idx = self.rev.partition_point(|&i| self.syms[i].addr <= a);
+        let sym = &self.syms[self.rev[idx.checked_sub(1)?]];
         if AddrSpace::of(sym.addr) != AddrSpace::of(a) {
             return None;
         }
@@ -736,11 +911,43 @@ impl SymbolTable {
     /// `convsym`; closing it properly wants a producer-side change in sigil (emit the built image's
     /// checksum, or a hash, into a sidecar beside the `.lst`). Callers should treat [`RomBinding::Match`]
     /// as "not obviously wrong", not as "proven right".
+    ///
+    /// # Listings that describe an appendix-less ROM
+    ///
+    /// A stock AS disassembly has no `deb2` appendix at all, and ends with `RomEndLoc: dc.l EndOfRom-1` —
+    /// which puts `EndOfRom` at **exactly** the image length (verified: `s1disasm`'s `$86978` == its built
+    /// ROM's 551,288 bytes). That exact equality is treated as a no-appendix marker and answers
+    /// [`Indeterminate::EndOfRomIsImageEnd`], not [`BindingFault::EndOfRomOutOfRange`]: a symbol one past
+    /// the last byte cannot carry the magic and cannot be a mismatched in-range offset, so there is
+    /// genuinely nothing to check rather than something that failed a check.
+    ///
+    /// **The wrong-listing guard is untouched.** An `EndOfRom` that lands *inside* the image without the
+    /// magic there is still `Mismatch(NoAppendixMagic)` — the check that catches the build-shape cross
+    /// where 92.6% of shared symbols resolve to a different address — and so is one past the end, or one
+    /// byte short of it with no room for the two magic bytes. Only the exact `EndOfRom == rom.len()` case
+    /// moved, and it moved from a fault to "cannot tell", never to a match.
     pub fn validate_against_rom(&self, rom: &[u8]) -> RomBinding {
         let Some(end) = self.address_of(END_OF_ROM_SYMBOL) else {
             return RomBinding::Indeterminate(Indeterminate::NoEndOfRomSymbol);
         };
         let off = end as usize;
+        // The no-appendix marker (ruled 2026-08-19). A stock AS disassembly ends `RomEndLoc: dc.l
+        // EndOfRom-1`, which puts `EndOfRom` at exactly the image length — measured on `s1disasm`:
+        // `EndOfRom = $86978 = 551,288 = sonic.bin's size to the byte`. That is not a fault, it is a
+        // listing that describes a ROM with no appendix, and it is safe to distinguish from one *because*
+        // the equality is exact: an offset one past the last byte can carry no magic to check, and it
+        // cannot be an in-range offset whose magic came out wrong. So it downgrades to Indeterminate —
+        // "accepted unverified, with the caveat" under the frontend's existing load policy.
+        //
+        // Everything else is UNCHANGED, and deliberately: an in-range `EndOfRom` with no `de b2` at it is
+        // still a positive `Mismatch`, which is the guard that catches the shape cross where 92.6% of
+        // shared symbols resolve to a different address. `off > rom.len()`, and `off == rom.len() - 1`
+        // (one byte, no room for the magic), both stay faults too — only the exact equality is the marker.
+        if off == rom.len() {
+            return RomBinding::Indeterminate(Indeterminate::EndOfRomIsImageEnd {
+                rom_len: rom.len(),
+            });
+        }
         let Some(head) = rom.get(off..off + DEB2_MAGIC.len()) else {
             return RomBinding::Mismatch(BindingFault::EndOfRomOutOfRange {
                 end_of_rom: end,
@@ -814,31 +1021,68 @@ fn parse_footer(line: &str, suffix: &str) -> Option<usize> {
     rest.trim_end().parse::<usize>().ok()
 }
 
-/// Parse one `Symbol Table` row: `[*]NAME : HEXADDR <C|-> |`.
+/// What one `|`-delimited segment of a `Symbol Table` line turned out to be.
+enum TableEntry {
+    /// A symbol with an address.
+    Symbol(Symbol),
+    /// A well-formed row whose value is not an address — AS metadata like `DATE : "08/19/2026" -`.
+    /// Consumed and counted, never ingested; see [`NonAddressRows`].
+    NonAddress { unused: bool },
+    /// Not a row of this section at all. Counted as damage.
+    Unrecognised,
+}
+
+/// Parse one `|`-delimited segment of a `Symbol Table` line: `[*]NAME : VALUE <C|->`.
 ///
-/// The `*` is emitted in the leading column (no separating space) when a symbol is unused; a used symbol
-/// gets a space there instead. Tokenising on whitespace after peeling the marker tolerates any column
-/// alignment while still rejecting anything that is not exactly a five-token row — which is what keeps a
-/// real AS listing's source text from being mistaken for symbols.
-fn parse_table_row(line: &str) -> Option<Symbol> {
-    let t = line.trim_start();
+/// The caller has already split the line on `|`, which is what makes one parser read both dialects — AS's
+/// two-per-line packing and sigil's one-per-line-with-a-trailing-bar (see the module docs). The `*` is
+/// emitted in the leading column (no separating space) when a symbol is unused; a used symbol gets a space
+/// there instead. Tokenising on whitespace after peeling the marker tolerates any column alignment.
+///
+/// The shape is `NAME`, `:`, one-or-more value tokens, then the type letter — the value is allowed to span
+/// tokens because AS quotes strings that contain spaces (`TIME : "11:35:59 PM" -`). A value is an
+/// **address** only when it is a single all-hex token that fits in `u64`. Requiring the terminating type
+/// letter is what keeps a real AS listing's source text from being mistaken for symbols now that the token
+/// count is no longer fixed.
+///
+/// **The type letter decides what an unparseable value means**, and the asymmetry is the whole point. A
+/// `-` row is an equate, and an equate is legitimately a string or a float, so a non-address there is
+/// normal output ([`TableEntry::NonAddress`]). A `C` row is an address in the assembled image by
+/// definition, so a value that is not one is corruption and stays damage — which is what keeps
+/// `EndOfRom : ZZZZ C` a detected truncation rather than a silently-tolerated row.
+fn parse_table_entry(part: &str) -> TableEntry {
+    let t = part.trim_start();
     let (unused, rest) = match t.strip_prefix('*') {
         Some(r) => (true, r),
         None => (false, t),
     };
     let tok: Vec<&str> = rest.split_whitespace().collect();
-    if tok.len() != 5 || tok[1] != ":" || tok[4] != "|" {
-        return None;
+    // NAME, ':', at least one value token, and the type letter.
+    if tok.len() < 4 || tok[1] != ":" {
+        return TableEntry::Unrecognised;
     }
-    let kind = match tok[3] {
+    let kind = match tok[tok.len() - 1] {
         "C" => SymbolKind::Code,
         "-" => SymbolKind::Equate,
-        _ => return None,
+        _ => return TableEntry::Unrecognised,
     };
-    // A string equate (`NAME : "text" - |`) is legal in AS listings and has no address; sigil never emits
-    // one, and there is nothing useful we could do with it, so it is skipped like any unparseable row.
-    let raw_addr = u32::from_str_radix(tok[2], 16).ok()?;
-    Some(make_symbol(tok[0].to_string(), raw_addr, kind, unused))
+    // A value that is not an address: normal output on an equate row, corruption on a code row.
+    let not_an_address = || match kind {
+        SymbolKind::Equate => TableEntry::NonAddress { unused },
+        SymbolKind::Code => TableEntry::Unrecognised,
+    };
+    let [v] = &tok[2..tok.len() - 1] else {
+        return not_an_address();
+    };
+    // `u64`, not `u32`: AS spells a RAM address sign-extended to 48 bits (`FFFFFFFFFFFFD000`).
+    // `from_str_radix` would also accept a leading `+`, so the digits are checked explicitly.
+    if v.is_empty() || !v.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return not_an_address();
+    }
+    let Ok(raw) = u64::from_str_radix(v, 16) else {
+        return not_an_address();
+    };
+    TableEntry::Symbol(make_symbol(tok[0].to_string(), raw, kind, unused))
 }
 
 /// Parse one body line: `(depth) IDX/HEXADDR :        NAME:`.
@@ -855,7 +1099,8 @@ fn parse_body_line(line: &str) -> Option<Symbol> {
         return None;
     }
     let (_idx, hex) = tok[1].split_once('/')?;
-    let raw_addr = u32::from_str_radix(hex, 16).ok()?;
+    // `u64` for the same reason the table rows use it: an AS body line spells RAM sign-extended.
+    let raw_addr = u64::from_str_radix(hex, 16).ok()?;
     let name = tok[3].strip_suffix(':')?;
     if name.is_empty() {
         return None;
@@ -959,15 +1204,19 @@ fn demangle(name: &str) -> String {
 
 /// Build a [`Symbol`], deriving the demangled name, the 24-bit address, and the synthetic flag.
 /// `demangled_ambiguous` is not knowable per-symbol and is filled in later by [`SymbolTable::build`].
-fn make_symbol(name: String, raw_addr: u32, kind: SymbolKind, unused: bool) -> Symbol {
+///
+/// `raw` is the listing's value at full width. [`Symbol::raw_addr`] keeps its low 32 bits (which turns AS's
+/// sign-extended `FFFFFFFFFFFFD000` into the conventional `0xFFFF_D000`) and [`Symbol::addr`] masks to the
+/// 24 lines the 68000 actually drives — so `addr == raw_addr & BUS_ADDR_MASK` regardless of the spelling.
+fn make_symbol(name: String, raw: u64, kind: SymbolKind, unused: bool) -> Symbol {
     let parts: Vec<&str> = name.split('$').filter(|p| !p.is_empty()).collect();
     // `parts.first()`, not `name.starts_with` — a plain symbol called `__alignment` is a real name.
     let is_synthetic =
         parts.first() == Some(&"__align") || parts.iter().copied().any(is_asm_block_scope);
     Symbol {
         demangled: demangle(&name),
-        raw_addr,
-        addr: raw_addr & BUS_ADDR_MASK,
+        raw_addr: raw as u32,
+        addr: (raw & BUS_ADDR_MASK as u64) as u32,
         kind,
         unused,
         is_synthetic,
@@ -1422,6 +1671,12 @@ EQU zone_count = $0000000C
         assert_eq!(t.address_of("$a.mod$Foo$bar"), Some(0x100));
     }
 
+    /// Damaged rows are counted, never fatal — and a row that is merely *address-less* is not damage.
+    ///
+    /// The split is decided by the type letter (see [`parse_table_entry`]): a `C` row promises an address,
+    /// so `NOTHEX` there is corruption; a `-` row is an equate, so a quoted string there is the ordinary
+    /// output AS emits for `ARCHITECTURE`/`DATE`/`TIME`. Both are accounted for, in different buckets,
+    /// and the footer reconciliation counts the second — which is what the two parses below pin.
     #[test]
     fn malformed_rows_are_skipped_and_counted_not_fatal() {
         let src = "\
@@ -1438,8 +1693,21 @@ EQU zone_count = $0000000C
         let t = SymbolTable::parse(src).unwrap();
         assert_eq!(t.len(), 1);
         assert_eq!(t.by_name("Good").unwrap().addr, 0x100);
-        assert_eq!(t.skipped_lines(), 4);
-        assert_eq!(t.matches_declared_count(), Some(true));
+        // `Bad` (a C row with a non-hex value), `AlsoBad` (an unknown type letter) and `Truncated` (no
+        // type column at all) are damage. `StringEquate` is not.
+        assert_eq!(t.skipped_lines(), 3);
+        assert_eq!(t.non_address_rows(), 1);
+        assert_eq!(t.non_address_unused(), 0);
+        // AS's footer counts its string pseudo-symbols, so a footer of 1 no longer reconciles against
+        // 1 symbol + 1 address-less row…
+        assert_eq!(t.matches_declared_count(), Some(false));
+        // …and a footer of 2 does. Both directions, so the accounting cannot be vacuous.
+        let two = SymbolTable::parse(&src.replace("   1 symbols", "   2 symbols")).unwrap();
+        assert_eq!(two.matches_declared_count(), Some(true));
+        assert!(
+            !two.is_intact(),
+            "the three damaged rows still make it not-intact"
+        );
     }
 
     #[test]
@@ -1531,6 +1799,206 @@ EQU zone_count = $0000000C
             }
             other => panic!("expected too-small, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // The stock-AS dialect (`s1disasm/sonic.lst`) — see the module docs.
+    // -----------------------------------------------------------------------------------------------
+
+    /// A miniature stock-AS `Symbol Table`, transcribed from real `sonic.lst` rows rather than invented:
+    /// two symbols per line separated by `|`, 48-bit sign-extended RAM addresses, `v_player` equ-defined
+    /// (type `-`) while `f_debugmode` is a label (type `C`), a genuine `-` constant with a tiny value, and
+    /// AS's own starred string/float metadata rows. `EndOfRom` is the image length exactly, as
+    /// `RomEndLoc: dc.l EndOfRom-1` makes it.
+    const AS_FIXTURE: &str = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ AddPLC :                      1578 C |  AddPLC.findspace :            1590 C |
+*ARCHITECTURE :                                      \"x86_64-unknown-linux\" - |
+*CONSTPI :        3.141592653589793 - |
+*DATE :                \"08/19/2026\" - |
+*TIME :               \"11:35:59 PM\" - |
+ AniArt_MZ_Lava.size :            8 - |  ArtTile_Level :                  0 - |
+ EndOfRom :                   86978 C |  RomEndLoc :                    1A4 C |
+ f_debugmode :     FFFFFFFFFFFFFFFA C |  v_palette_line_2 : FFFFFFFFFFFFFB20 C |
+ v_player :        FFFFFFFFFFFFD000 - |
+
+   13 symbols
+    4 unused symbols
+";
+
+    fn as_table() -> SymbolTable {
+        SymbolTable::parse(AS_FIXTURE).expect("the AS fixture parses")
+    }
+
+    /// AS packs the table two columns wide. Splitting on `|` is what recovers the second column — without
+    /// it every one of these lines is a ten-token row that matches nothing, which is how 4,174 of
+    /// `sonic.lst`'s rows used to vanish. Negative control: the same content one-per-line must give the
+    /// same table, so the splitter cannot be reading the second column *instead* of the first.
+    #[test]
+    fn as_packs_two_symbols_per_line_and_both_are_read() {
+        let t = as_table();
+        assert_eq!(t.address_of("AddPLC"), Some(0x1578));
+        assert_eq!(t.address_of("AddPLC.findspace"), Some(0x1590));
+        assert_eq!(t.address_of("EndOfRom"), Some(0x8_6978));
+        assert_eq!(t.address_of("RomEndLoc"), Some(0x1A4));
+        assert_eq!(t.address_of("f_debugmode"), Some(0xFF_FFFA));
+        assert_eq!(t.address_of("v_palette_line_2"), Some(0xFF_FB20));
+
+        let one_per_line = AS_FIXTURE.replace(" |  ", " |\n ");
+        let split = SymbolTable::parse(&one_per_line).expect("parses one-per-line too");
+        assert_eq!(split.len(), t.len(), "the two spellings must agree");
+        for s in t.symbols() {
+            assert_eq!(
+                split.address_of(&s.name),
+                Some(s.addr),
+                "{} differs between the packed and unpacked spellings",
+                s.name
+            );
+        }
+    }
+
+    /// The 48-bit sign-extended RAM spelling. Every address the classic loop needs is one of these, and
+    /// each overflows `u32` — parsed as `u64` and masked, `FFFFFFFFFFFFD000` is the bus address `$FFD000`.
+    /// The `addr == raw_addr & BUS_ADDR_MASK` invariant must survive the widening.
+    #[test]
+    fn as_sign_extended_ram_addresses_mask_to_the_bus_address() {
+        let t = as_table();
+        let p = t.by_name("v_player").expect("v_player is in the table");
+        assert_eq!(
+            p.addr, 0x00FF_D000,
+            "the 24 lines the 68000 actually drives"
+        );
+        assert_eq!(p.raw_addr, 0xFFFF_D000, "the conventional 32-bit spelling");
+        assert_eq!(p.addr, p.raw_addr & BUS_ADDR_MASK);
+        assert_eq!(p.space(), AddrSpace::Ram);
+        // The most-negative one in the file, where a truncation bug would be least visible.
+        assert_eq!(t.address_of("f_debugmode"), Some(0x00FF_FFFA));
+        // A caller may pass either spelling to the reverse direction.
+        let r = t.resolve(0xFFFF_FFFA).expect("f_debugmode resolves");
+        assert_eq!(r.symbol.name, "f_debugmode");
+        assert_eq!(r.displacement, 0);
+    }
+
+    /// **The forward-only ruling.** An AS `-` row may be a RAM address (`v_player`) or a bare constant
+    /// (`AniArt_MZ_Lava.size = 8`), and the row says nothing that tells them apart — so both resolve
+    /// name→value and neither answers value→name.
+    ///
+    /// The constant is the reason for the rule: `$8` and `$0` sit below every real label, so admitting them
+    /// to nearest-preceding search would hand a confident name to any low address. The RAM label is the
+    /// reason it is forward-*only* rather than skip-wholesale: `v_player` is exactly the symbol the classic
+    /// warp path pokes by name.
+    #[test]
+    fn as_equ_rows_resolve_forward_only() {
+        let t = as_table();
+
+        // Forward: both kinds resolve, to their masked value.
+        assert_eq!(t.address_of("v_player"), Some(0x00FF_D000));
+        assert_eq!(t.address_of("AniArt_MZ_Lava.size"), Some(0x8));
+        assert_eq!(t.address_of("ArtTile_Level"), Some(0x0));
+        assert!(t.by_name("v_player").is_some());
+        assert_eq!(
+            t.with_prefix("v_pl").len(),
+            1,
+            "prefix search sees them too"
+        );
+        for n in ["v_player", "AniArt_MZ_Lava.size", "ArtTile_Level"] {
+            assert_eq!(
+                t.by_name(n).unwrap().kind,
+                SymbolKind::Equate,
+                "{n} must be kind-tagged as equ-derived"
+            );
+            assert!(!t.by_name(n).unwrap().resolves_in_reverse());
+        }
+
+        // Reverse: none of them, ever — not as an exact hit and not as a nearest-preceding answer.
+        for (name, value) in [
+            ("v_player", 0x00FF_D000u32),
+            ("AniArt_MZ_Lava.size", 0x8),
+            ("ArtTile_Level", 0x0),
+        ] {
+            assert!(
+                t.symbols_at(value).iter().all(|s| s.name != name),
+                "{name} answered an exact addr->name query at ${value:X}"
+            );
+            if let Some(r) = t.resolve(value) {
+                assert_ne!(
+                    r.symbol.name, name,
+                    "{name} answered nearest-preceding at ${value:X}"
+                );
+            }
+        }
+        // The constants are below every label, so those two addresses must name nothing at all — the
+        // confidently-wrong answer the rule exists to prevent.
+        assert!(t.resolve(0x0).is_none());
+        assert!(t.resolve(0x8).is_none());
+        // And the RAM address the equ row *does* describe still names nothing, rather than naming the
+        // nearest code label across the address-space boundary.
+        assert!(t.resolve(0x00FF_D000).is_none());
+        // A real label in the same space is unaffected — the exclusion is per-row, not per-file.
+        assert_eq!(
+            t.resolve(0x00FF_FB20).map(|r| r.symbol.name.as_str()),
+            Some("v_palette_line_2")
+        );
+    }
+
+    /// AS's build metadata (`ARCHITECTURE`, `CONSTPI`, `DATE`, `TIME`) is well-formed output, not damage:
+    /// consumed, counted separately, and reconciled against **both** of the file's own footers, which count
+    /// these rows. Without that the listing reports as truncated and the frontend's load policy refuses it.
+    #[test]
+    fn as_metadata_rows_are_consumed_and_reconcile_both_footers() {
+        let t = as_table();
+        assert_eq!(t.skipped_lines(), 0, "AS metadata is not damage");
+        assert_eq!(t.non_address_rows(), 4);
+        assert_eq!(t.non_address_unused(), 4, "all four are `*`-marked");
+        assert_eq!(t.len(), 9, "…and none of them became a symbol");
+        for n in ["ARCHITECTURE", "CONSTPI", "DATE", "TIME"] {
+            assert!(t.by_name(n).is_none(), "{n} leaked into the table");
+            assert_eq!(t.address_of(n), None);
+        }
+        // Both footers close: 9 + 4 == 13 symbols, 0 + 4 == 4 unused.
+        assert_eq!(t.matches_declared_count(), Some(true));
+        assert_eq!(
+            t.declared_unused(),
+            Some(t.symbols().iter().filter(|s| s.unused).count() + t.non_address_unused())
+        );
+        assert!(t.is_intact(), "a healthy AS listing must read as whole");
+    }
+
+    /// **The binding ruling (2026-08-19).** `RomEndLoc: dc.l EndOfRom-1` puts `EndOfRom` at exactly the
+    /// image length, so a stock AS listing has no appendix to probe. That exact equality is the
+    /// no-appendix marker and downgrades to `Indeterminate` — accepted-unverified under the caller's
+    /// existing policy, since `is_intact` is true.
+    ///
+    /// The three assertions after it are the guard this must not have weakened, and they are the point of
+    /// the test: one byte either side of the equality is still a positive `Mismatch`.
+    #[test]
+    fn end_of_rom_at_exactly_the_image_length_is_a_no_appendix_marker() {
+        let t = as_table();
+        let len = 0x8_6978usize;
+        assert_eq!(
+            t.validate_against_rom(&vec![0u8; len]),
+            RomBinding::Indeterminate(Indeterminate::EndOfRomIsImageEnd { rom_len: len }),
+            "an appendix-less ROM is unverifiable, not wrong"
+        );
+        assert!(t.is_intact(), "so the caller accepts it with the caveat");
+
+        // One byte shorter: `EndOfRom` is now past the end. Still a fault.
+        assert!(matches!(
+            t.validate_against_rom(&vec![0u8; len - 1]),
+            RomBinding::Mismatch(BindingFault::EndOfRomOutOfRange { .. })
+        ));
+        // One byte longer: in range, but with no room for the two magic bytes. Still a fault.
+        assert!(matches!(
+            t.validate_against_rom(&vec![0u8; len + 1]),
+            RomBinding::Mismatch(BindingFault::EndOfRomOutOfRange { .. })
+        ));
+        // Comfortably in range with the wrong bytes there — the 92.6% wrong-listing guard, untouched.
+        assert!(matches!(
+            t.validate_against_rom(&vec![0u8; len + 0x4000]),
+            RomBinding::Mismatch(BindingFault::NoAppendixMagic { .. })
+        ));
     }
 
     #[test]
