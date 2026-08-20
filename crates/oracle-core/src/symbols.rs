@@ -289,6 +289,28 @@ pub struct Resolution<'a> {
     pub displacement: u32,
 }
 
+impl Resolution<'_> {
+    /// The symbol's **identifying** spelling, with no displacement suffix — the one a caller may hand
+    /// back to [`SymbolTable::address_of`] and get this symbol again.
+    ///
+    /// This is [`Display`](fmt::Display)'s name half without its `+$hex` tail, and the two are
+    /// deliberately different things. Display is for a human reading a disassembly line; this is for any
+    /// consumer that must round-trip the name, which on the Aether bus is every `symbol` field — the wire
+    /// schema's `$defs/symbolName` rejects a `+$hex` suffix *by pattern*, and `protocol.md` §4 puts the
+    /// displacement in its own number so it never has to be parsed back out of a string.
+    ///
+    /// Falls back to the raw mangled name when the readable one is
+    /// [ambiguous](Symbol::demangled_ambiguous), for Display's reason: a name several addresses share
+    /// does not identify one, and the raw name always does.
+    pub fn name(&self) -> &str {
+        if self.symbol.demangled_ambiguous {
+            &self.symbol.name
+        } else {
+            &self.symbol.demangled
+        }
+    }
+}
+
 impl fmt::Display for Resolution<'_> {
     /// `EntryPoint.wait_dma` for an exact hit, `EntryPoint.wait_dma+$1A` otherwise — the form a
     /// disassembly listing or a watch-hit dump wants.
@@ -1455,6 +1477,37 @@ EQU zone_count = $0000000C
         assert_eq!(r.to_string(), "EntryPoint.warm_boot+$6");
         // Exact hit prints bare.
         assert_eq!(t.resolve(0x200).unwrap().to_string(), "EntryPoint");
+    }
+
+    /// `name()` and `Display` are different products for different consumers, and conflating them is a
+    /// bug that hides at every address that happens to land exactly on a label.
+    ///
+    /// `Display` is the disassembly form a human reads; `name()` is the **identifying** spelling that
+    /// must round-trip. The Aether bus's `$defs/symbolName` rejects a `+$hex` suffix by pattern, so a
+    /// wire field fed from `Display` is conformant only when the displacement is zero — which is exactly
+    /// how the server shipped it until a test finally read at a displaced address.
+    #[test]
+    fn a_resolutions_name_is_the_round_tripping_spelling_never_the_display_form() {
+        let t = table();
+        for (addr, name) in [
+            (0x0000_021Au32, "EntryPoint.warm_boot"),
+            (0x200, "EntryPoint"),
+        ] {
+            let r = t.resolve(addr).unwrap();
+            assert_eq!(
+                r.name(),
+                name,
+                "no displacement suffix, at any displacement"
+            );
+            assert!(!r.name().contains("+$"));
+            // The round trip the wire rule exists for: the name resolves back to the symbol it named.
+            assert_eq!(t.address_of(r.name()), Some(r.symbol.addr));
+        }
+        // Display still carries the suffix — this is a split, not a rename.
+        assert_eq!(
+            t.resolve(0x0000_021A).unwrap().to_string(),
+            "EntryPoint.warm_boot+$6"
+        );
     }
 
     #[test]

@@ -459,11 +459,17 @@ fn ids_are_server_assigned_never_client_proposed_and_labels_are_carried_verbatim
     let mut c = Client::connect(&h);
     c.handshake(false);
 
-    // A client-proposed id is ignored: the server assigns, so two clients cannot collide.
-    let a = c.ok("emulator/checkpoint", json!({"id": "4242"}))["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    // A client-proposed id is REFUSED — and it used to be silently ignored, which is the change §2.5
+    // exists to make. `emulator/checkpoint` accepts `label` and nothing else, so `id` is now `-32602`
+    // naming the key. That is strictly better than the old behaviour: a client that proposed an id and
+    // got a success reply carrying a *different* id had been quietly overruled, which is the same shape
+    // as the `write_memory` `offset:`/`disp:` misexecution that prompted the rule.
+    let refused = c.err("emulator/checkpoint", json!({"id": "4242"}));
+    assert_eq!(refused["code"], json!(-32602));
+    assert_eq!(refused["data"]["unknownParams"], json!(["id"]));
+
+    // The server still assigns, and its ids are unique.
+    let a = take(&mut c, None);
     let b = take(&mut c, None);
     assert_ne!(
         a, "4242",

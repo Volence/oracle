@@ -161,11 +161,23 @@ impl Default for EngineConfig {
     }
 }
 
-/// One method: its wire name, its handler, and a one-line summary reported by `initialize`.
+/// One method: its wire name, its handler, a one-line summary reported by `initialize`, and the set of
+/// top-level `params` keys it accepts.
 pub struct MethodSpec {
     pub name: &'static str,
     pub handler: fn(&mut Engine, &Value) -> Result<Value, RpcError>,
     pub summary: &'static str,
+    /// **The closed top-level params key set** (`protocol.md` §2.5 / §8 item 22, added 2026-08-19 by
+    /// §11.17). [`Engine::dispatch`] refuses any request carrying a key that is not here, with `-32602`,
+    /// **before the handler runs** — so a write refused for an unknown param has written nothing.
+    ///
+    /// This list is not hand-maintained prose: the schema fragment is the wire authority (D14), and
+    /// `tests/params_closure.rs::every_advertised_method_declares_exactly_its_fragments_params` derives
+    /// each set by **parsing** the vendored schema and compares. A key added to a fragment without being
+    /// added here — or the reverse — turns that suite red, which is what keeps the two from drifting the
+    /// way §11.10's founding count defect did. The initial 37 rows were *generated* from the schema for
+    /// the same reason: the table starts life equal to the authority rather than transcribed from it.
+    pub params: &'static [&'static str],
 }
 
 /// **The dispatch table and the advertised method list, as one object.** Every name here is a
@@ -175,186 +187,223 @@ pub const METHODS: &[MethodSpec] = &[
         name: "emulator/set_profiler",
         handler: Engine::set_profiler,
         summary: "arm or disarm the per-invocation cycle accountant (arming resets it)",
+        params: &["enabled", "perFrame"],
     },
     MethodSpec {
         name: "emulator/get_profiler",
         handler: Engine::get_profiler,
         summary: "the accountant's state: armed, frames recorded, rows accumulated",
+        params: &[],
     },
     MethodSpec {
         name: "emulator/get_profiler_frames",
         handler: Engine::get_profiler_frames,
         summary: "the accumulated sample: per-routine rows, interrupt buckets by cause, per-frame ring",
+        params: &["frames", "top"],
     },
     MethodSpec {
         name: "emulator/status",
         handler: Engine::status,
         summary: "run state, PC/SP/SR, symbol at PC, loaded ROM",
+        params: &[],
     },
     MethodSpec {
         name: "emulator/registers",
         handler: Engine::registers,
         summary: "the 68000 architectural register file",
+        params: &[],
     },
     MethodSpec {
         name: "emulator/run_frames",
         handler: Engine::run_frames,
         summary: "advance N whole frames, then stop (emits resumed + stopped)",
+        params: &["frames"],
     },
     MethodSpec {
         name: "emulator/run_to",
         handler: Engine::run_to,
         summary: "run until PC reaches an address or symbol, bounded (emits resumed + stopped)",
+        params: &["addr", "maxFrames", "symbol"],
     },
     MethodSpec {
         name: "emulator/pause",
         handler: Engine::pause,
         summary: "leave free-running mode (emits stopped)",
+        params: &[],
     },
     MethodSpec {
         name: "emulator/resume",
         handler: Engine::resume,
         summary: "enter free-running mode (emits resumed)",
+        params: &[],
     },
     MethodSpec {
         name: "emulator/checkpoint",
         handler: Engine::checkpoint,
         summary: "capture the whole machine into a volatile in-memory slot and return its server-assigned id",
+        params: &["label"],
     },
     MethodSpec {
         name: "emulator/restore",
         handler: Engine::restore,
         summary: "restore the entire machine, ROM included, from a checkpoint",
+        params: &["id"],
     },
     MethodSpec {
         name: "emulator/checkpoint_list",
         handler: Engine::checkpoint_list,
         summary: "the live checkpoints, bounded and cursored",
+        params: &["cursor", "limit"],
     },
     MethodSpec {
         name: "emulator/checkpoint_drop",
         handler: Engine::checkpoint_drop,
         summary: "drop one checkpoint by id, or all of them, and report how many went",
+        params: &["all", "id"],
     },
     MethodSpec {
         name: "emulator/watchpoint_add",
         handler: Engine::watchpoint_add,
         summary: "arm a recording watch over an address range in one of the four spaces, and return its handle",
+        params: &["addr", "censusKey", "label", "len", "mode", "read", "space", "stopAfter", "symbol", "write"],
     },
     MethodSpec {
         name: "emulator/watchpoint_clear",
         handler: Engine::watchpoint_clear,
         summary: "retire one watch by handle, or all of them, and report how many went",
+        params: &["all", "watch"],
     },
     MethodSpec {
         name: "emulator/watchpoint_list",
         handler: Engine::watchpoint_list,
         summary: "the armed watches and what each has observed, bounded and cursored",
+        params: &["cursor", "limit"],
     },
     MethodSpec {
         name: "emulator/watchpoint_hits",
         handler: Engine::watchpoint_hits,
         summary: "the recorded hit log — polled, non-destructive, with dropped/seen/matched beside it",
+        params: &["cursor", "limit", "watch"],
     },
     MethodSpec {
         name: "emulator/read",
         handler: Engine::read,
         summary: "one byte read across the bus/vram/cram/vsram spaces — the read half of the watch surface",
+        params: &["addr", "len", "space", "symbol"],
     },
     MethodSpec {
         name: "emulator/read_memory",
         handler: Engine::read_memory,
         summary: "debug read of ROM or work RAM by address or symbol",
+        params: &["addr", "len", "symbol"],
     },
     MethodSpec {
         name: "emulator/read_vram",
         handler: Engine::read_vram,
         summary: "debug read of VDP VRAM",
+        params: &["addr", "len"],
     },
     MethodSpec {
         name: "emulator/read_cram",
         handler: Engine::read_cram,
         summary: "the palette as STORED: one line's 16 entries or all 64, with the cramAddr join key",
+        params: &["line"],
     },
     MethodSpec {
         name: "emulator/write_cram",
         handler: Engine::write_cram,
         summary: "poke one palette entry (paused machine only; one colour spelling, refused never masked)",
+        params: &["b", "g", "index", "line", "r", "raw"],
     },
     MethodSpec {
         name: "emulator/pixel_attribution",
         handler: Engine::pixel_attribution,
         summary: "why the dot at (x,y) is the colour it is: winner, cell/sprite, and the losing candidates",
+        params: &["x", "y"],
     },
     MethodSpec {
         name: "emulator/sprites",
         handler: Engine::sprites,
         summary: "the sprite attribute table in slot order, with the parse cap and the stale-cache flag",
+        params: &["limit"],
     },
     MethodSpec {
         name: "emulator/state_hash",
         handler: Engine::state_hash,
         summary: "FNV-1a fingerprints of the VDP state regions",
+        params: &["includeFramebuffer"],
     },
     MethodSpec {
         name: "emulator/screenshot",
         handler: Engine::screenshot,
         summary: "render the active display to a binary PPM file",
+        params: &["path"],
     },
     MethodSpec {
         name: "emulator/press",
         handler: Engine::press,
         summary: "tap buttons for N frames, then restore the held set",
+        params: &["buttons", "frames", "port"],
     },
     MethodSpec {
         name: "emulator/play_input",
         handler: Engine::play_input,
         summary: "play a pad timeline: the pad each frame is a pure function of the rows, nothing else",
+        params: &["maxFrames", "rows"],
     },
     MethodSpec {
         name: "emulator/hold",
         handler: Engine::hold,
         summary: "set or clear buttons in the held set (set semantics, never additive)",
+        params: &["buttons", "down", "port"],
     },
     MethodSpec {
         name: "emulator/release_all",
         handler: Engine::release_all,
         summary: "clear the held set on both pads",
+        params: &[],
     },
     MethodSpec {
         name: "emulator/lookup_symbol",
         handler: Engine::lookup_symbol,
         summary: "name -> address, or address -> nearest preceding label + displacement",
+        params: &["addr", "name"],
     },
     MethodSpec {
         name: "emulator/load_symbols",
         handler: Engine::load_symbols,
         summary: "load a sigil/AS .lst listing, refusing one that does not bind to the loaded ROM",
+        params: &["path"],
     },
     MethodSpec {
         name: "emulator/reload_rom",
         handler: Engine::reload_rom,
         summary: "reload the ROM from disk and reset (emits romReloaded)",
+        params: &["path", "reset", "wait"],
     },
     MethodSpec {
         name: "emulator/write_memory",
         handler: Engine::write_memory,
         summary: "poke bytes into the work-RAM window (paused machine only; refused never clipped)",
+        params: &["addr", "bytes", "disp", "symbol", "value", "width"],
     },
     MethodSpec {
         name: "emulator/reset",
         handler: Engine::reset,
         summary: "drive the /RESET sequence — back to the power-on anchor, SRAM and symbols kept",
+        params: &[],
     },
     MethodSpec {
         name: "emulator/memory_hash",
         handler: Engine::memory_hash,
         summary: "fingerprint a byte range (FNV-1a-64 + CRC-32) without moving it — the hash state_hash cannot give",
+        params: &["addr", "len", "symbol"],
     },
     MethodSpec {
         name: "emulator/scanlines",
         handler: Engine::scanlines,
         summary: "read the drawn rows back — the live raster when a frame is retained, and the reply says which",
+        params: &["count", "startLine"],
     },
 ];
 
@@ -896,7 +945,8 @@ impl Engine {
     // ---------------------------------------------------------------- dispatch
 
     /// Look a method up in [`METHODS`]. This is the *only* dispatch path, which is what makes the
-    /// advertised list and the implemented set the same set by construction.
+    /// advertised list and the implemented set the same set by construction — and, since §11.17, the one
+    /// place §2.5's params closure has to live for it to bind bus-wide.
     pub fn dispatch(&mut self, method: &str, params: &Value) -> Result<Value, RpcError> {
         let Some(spec) = METHODS.iter().find(|m| m.name == method) else {
             return Err(
@@ -904,6 +954,17 @@ impl Engine {
                     .with_data(json!({"method": method})),
             );
         };
+        // §2.5: request params are closed. Checked here rather than in each handler, so the rule cannot
+        // be forgotten by the next method and so the refusal **precedes any effect** — a write refused
+        // for an unknown param has written nothing.
+        //
+        // `initialize` is exempt and is exempt *structurally*: it is the handshake, handled before
+        // dispatch and absent from METHODS, so the closure's own spelling cannot reach it. That is the
+        // one place on this bus where a client describes itself, and a version-skewed negotiation must
+        // survive the step whose job is surviving skew.
+        if let Some(unknown) = unknown_params(spec, params) {
+            return Err(unknown);
+        }
         (spec.handler)(self, params)
     }
 
@@ -1098,15 +1159,74 @@ impl Engine {
 
     /// Nearest preceding symbol for an address, plus displacement. `None` when no table is loaded or the
     /// address precedes every symbol in its address space.
+    ///
+    /// **The name is the bare identifying spelling; the displacement is the number beside it.** That is
+    /// §4's rule — *"the displacement lives in this number and NEVER inside the name string"* — and the
+    /// schema enforces it by pattern: every `symbol`/`symbolAtPc` field on this bus is
+    /// `$defs/symbolName`, which rejects a `+$hex` suffix outright, because those fields MUST round-trip
+    /// back through a `symbol` param.
+    ///
+    /// This used `Resolution`'s `Display`, which appends `+$hex` for a human reading a disassembly line,
+    /// and so emitted `Probe+$2` at any displaced address — conformant only by accident, at every
+    /// address that happened to land exactly on a label. Every caller here feeds a wire field, so every
+    /// caller wanted [`Resolution::name`].
     fn symbol_at(&self, addr: u32) -> Option<(String, u32)> {
         let table = self.symbols.as_ref()?;
         let r = table.resolve(addr)?;
-        Some((r.to_string(), r.displacement))
+        Some((r.name().to_string(), r.displacement))
     }
 
     /// Resolve an `addr`-or-`symbol` parameter pair. Symbol-first addressing is D7: clients resolve,
     /// they never hardcode a RAM literal — the contract records a session in which a "verified" literal
     /// went stale within the session because a 36-byte insertion slid the whole RAM block by +$24.
+    /// [`resolve_target`](Self::resolve_target) plus `emulator/write_memory`'s optional **`disp`**
+    /// (§2.5, added 2026-08-19 by §11.17).
+    ///
+    /// `disp` is the ergonomic half of the same change request whose other half is the params closure,
+    /// and the two answer **different halves** of one complaint: a client wanting to write `Player_1`+2
+    /// had no way to say so, reached for a parameter name, and was silently obeyed at `Player_1`+0.
+    /// Closing params stops the silence; this gives the request somewhere to go.
+    ///
+    /// Three properties, each of which the fragment also enforces:
+    ///
+    /// - **Valid only with `symbol`.** With `addr` it is arithmetic the caller has already done, and
+    ///   `{addr, disp}` is `-32602` (the fragment's `dependentRequired`).
+    /// - **Non-negative**, because it mirrors the `symbolDisp` a read reply hands back — a displacement
+    ///   from the *nearest preceding* symbol, which cannot be negative. `{symbol, symbolDisp}` out,
+    ///   `{symbol, disp}` in: D7's round trip made literal.
+    /// - The **displaced** address is the one that must land in the work-RAM window, and the one the
+    ///   reply echoes. Both fall out of returning it here, before the caller's bounds check.
+    ///
+    /// Kept on this method rather than folded into `resolve_target`, deliberately: `read`/`read_memory`
+    /// share that helper and do not declare `disp`, and a helper that quietly honoured a key those
+    /// fragments do not carry would put the server back on the wrong side of the rule above it.
+    fn resolve_displaced_target(&self, params: &Value) -> Result<u32, RpcError> {
+        let base = self.resolve_target(params)?;
+        let Some(v) = params.get("disp") else {
+            return Ok(base);
+        };
+        if params.get("symbol").is_none() {
+            return Err(RpcError::invalid_params(
+                "`disp` is valid only with `symbol` — with `addr` it is arithmetic the caller has \
+                 already done",
+            ));
+        }
+        let Some(d) = v.as_u64() else {
+            return Err(RpcError::invalid_params(
+                "`disp` must be a non-negative integer — it mirrors `symbolDisp`, a displacement from \
+                 the nearest preceding symbol, which cannot be negative",
+            ));
+        };
+        let sum = u64::from(base) + d;
+        if sum > u64::from(BUS_ADDR_MAX) {
+            return Err(out_of_range(
+                base,
+                "`symbol` + `disp` runs past the end of the 24-bit bus",
+            ));
+        }
+        Ok(sum as u32)
+    }
+
     fn resolve_target(&self, params: &Value) -> Result<u32, RpcError> {
         if let Some(name) = params.get("symbol") {
             let Some(name) = name.as_str() else {
@@ -1409,7 +1529,7 @@ impl Engine {
     /// a hit's `pc` names the instruction that drove the access and a poke has none to name.
     fn write_memory(&mut self, params: &Value) -> Result<Value, RpcError> {
         self.require_paused("emulator/write_memory")?;
-        let addr = self.resolve_target(params)?;
+        let addr = self.resolve_displaced_target(params)?;
         let data: Vec<u8> = match (params.get("bytes"), params.get("value")) {
             (Some(_), Some(_)) => {
                 return Err(RpcError::invalid_params(
@@ -3894,6 +4014,52 @@ fn layer_json(layer: Layer) -> Value {
 /// A pattern is 32 bytes and 65536 is a multiple of 32, so a pattern never straddles the wrap.
 fn tile_addr(tile: u16) -> u32 {
     (u32::from(tile) * 32) & 0xFFFF
+}
+
+/// §2.5's closure, as one check: any top-level `params` key the method's fragment does not declare.
+///
+/// The refusal names the offending key **and** lists the keys the method accepts, so it is also the fix
+/// (§5's *"Refuse, name the reason, and name the fix"*), and `error.data.unknownParams` carries the keys
+/// as a typed array because a client acting on *which* key was rejected needs a field rather than prose
+/// (§2.4 rule 3). Every unknown key is reported, not just the first — a client that guessed two names
+/// should not have to round-trip twice to learn both.
+///
+/// **Why this is worth the cost.** An optional param added in a later amendment stops being invisible to
+/// older servers: they refuse it, by name. That is the trade, made on purpose. The case that prompted it
+/// is measured, not hypothetical — a client wanting to write `Player_1`+2 reached for `offset:`, then for
+/// `disp:`, and was told OK both times while this server wrote `Player_1`+0 and answered with an address
+/// the client had never asked for. Guessing a parameter name only resembled a discovery mechanism while
+/// it silently succeeded.
+///
+/// Non-object params are not this function's business: a non-object is either absent (fine — every
+/// required key is the handler's own check) or a type error the handler reports in its own words.
+fn unknown_params(spec: &MethodSpec, params: &Value) -> Option<RpcError> {
+    let obj = params.as_object()?;
+    let unknown: Vec<&str> = obj
+        .keys()
+        .map(String::as_str)
+        .filter(|k| !spec.params.contains(k))
+        .collect();
+    if unknown.is_empty() {
+        return None;
+    }
+    let accepted = if spec.params.is_empty() {
+        "none — this method takes no params".to_string()
+    } else {
+        spec.params.join(", ")
+    };
+    Some(
+        RpcError::invalid_params(format!(
+            "{} does not accept {}; accepted params: {accepted}",
+            spec.name,
+            unknown
+                .iter()
+                .map(|k| format!("`{k}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ))
+        .with_data(json!({"unknownParams": unknown})),
+    )
 }
 
 /// Parse a `line` param for either CRAM method. Out of range is `-32602` — **refused, never clipped** —
