@@ -53,9 +53,21 @@ sub-line arc), F-CRAMDOT, F-SUBLINE-{HGRID, ACCESSMCLK, DMASPREAD, CAPTURE-SCRAT
 the a2 B-2 gate gap (needs an H40/mode-switch fixture), F-HOSTED-RESET-SRM (**hosted reset bypasses
 the player's .srm flush — warn clients off hosted reset until closed**), F-EQUATES-NAMESPACE,
 F-CRAM-RAMP, F-PROF-TOTALS (superseded by delta 3), F-PALETTE-DRAG-PACE (evidence filed, rated
-minor by its own filer), stock-S1 symbols (the `|`-reader + the mismatch-vs-no-appendix ruling —
-Aurora wants it, not blocking, must not jump CRAM), plus the Tier-1 carry-forwards in
+minor by its own filer), ~~stock-S1 symbols~~ (**CLOSED 2026-08-20** — the `|`-reader, the 48-bit
+addresses, the forward-only equ ruling and the no-appendix binding all shipped; F-LST-AS-COLUMNS and
+F-LST-NONDEB2-BINDING retire with it), plus the Tier-1 carry-forwards in
 `docs/2026-08-18-tier1-bus-methods.md`.
+
+**Registered by the CR-27 serve review (2026-08-20), all contract-side or cosmetic, none blocking:**
+
+| id | what | revival condition |
+|---|---|---|
+| **F-PLAYINPUT-ITEMS-OPEN** | `emulator/play_input`'s `rows[]` **items** are not closed — §8 item 20's closure is applied at the result's top level, so a surplus key *inside* a row passes. The one array-of-objects on the bus whose item shape is unguarded; `read_cram`'s `palette[]` items and `watchpoint_hits`' `hits[]` items both close theirs. | Contract-side: an `additionalProperties: false` on the item subschema, next time `play_input`'s fragment is opened. No server change. |
+| **F-ONEOF-COMBINATIONS** | The `oneOf`/`dependentRequired` alternations (`write_cram`'s triple-vs-`raw`, `write_memory`'s `bytes`-vs-`value`+`width`) are enforced per-fragment but nothing sweeps **every combination** of a fragment's declared keys against its own rules. Today each is hand-tested; the sweep would be mechanical and would cover the ones nobody thought to write. | A third alternation lands, or a hand-written combination test is found wrong. |
+| **F-REVIEW-N12**, **F-REVIEW-N14** | Recorded by id from the CR-27 serve review; their content is in the review itself, not restated here — the implementing agent was given the ids without the text and is not inventing a description for them. | Whoever holds the review restates them; then they get a real row. |
+
+*(N9 — the `Resolution::name`/`Display` duplication — was **taken**, not registered: `Display` now calls
+`name()`. It was two lines.)*
 
 ## The bars (house methods — each earned by a measured failure; do not thin)
 

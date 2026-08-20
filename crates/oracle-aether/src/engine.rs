@@ -39,7 +39,7 @@ use oracle_core::m68000::bus68k::Bus68k;
 use oracle_core::profiler::{Counts, Profiler};
 use oracle_core::render::{CandidateVerdict, Layer, PixelState};
 use oracle_core::scanline_capture::{Retain, ScanlineCapture};
-use oracle_core::symbols::{BindingFault, RomBinding, SymbolTable};
+use oracle_core::symbols::{BindingFault, Indeterminate, RomBinding, SymbolTable};
 use oracle_core::system::{
     StopRecord, System, TimingBasis, MCLK_PER_CPU_CYCLE, MCLK_PER_FRAME, RAM_SIZE,
 };
@@ -161,11 +161,23 @@ impl Default for EngineConfig {
     }
 }
 
-/// One method: its wire name, its handler, and a one-line summary reported by `initialize`.
+/// One method: its wire name, its handler, a one-line summary reported by `initialize`, and the set of
+/// top-level `params` keys it accepts.
 pub struct MethodSpec {
     pub name: &'static str,
     pub handler: fn(&mut Engine, &Value) -> Result<Value, RpcError>,
     pub summary: &'static str,
+    /// **The closed top-level params key set** (`protocol.md` §2.5 / §8 item 22, added 2026-08-19 by
+    /// §11.17). [`Engine::dispatch`] refuses any request carrying a key that is not here, with `-32602`,
+    /// **before the handler runs** — so a write refused for an unknown param has written nothing.
+    ///
+    /// This list is not hand-maintained prose: the schema fragment is the wire authority (D14), and
+    /// `tests/params_closure.rs::every_advertised_method_declares_exactly_its_fragments_params` derives
+    /// each set by **parsing** the vendored schema and compares. A key added to a fragment without being
+    /// added here — or the reverse — turns that suite red, which is what keeps the two from drifting the
+    /// way §11.10's founding count defect did. The initial 37 rows were *generated* from the schema for
+    /// the same reason: the table starts life equal to the authority rather than transcribed from it.
+    pub params: &'static [&'static str],
 }
 
 /// **The dispatch table and the advertised method list, as one object.** Every name here is a
@@ -175,176 +187,223 @@ pub const METHODS: &[MethodSpec] = &[
         name: "emulator/set_profiler",
         handler: Engine::set_profiler,
         summary: "arm or disarm the per-invocation cycle accountant (arming resets it)",
+        params: &["enabled", "perFrame"],
     },
     MethodSpec {
         name: "emulator/get_profiler",
         handler: Engine::get_profiler,
         summary: "the accountant's state: armed, frames recorded, rows accumulated",
+        params: &[],
     },
     MethodSpec {
         name: "emulator/get_profiler_frames",
         handler: Engine::get_profiler_frames,
         summary: "the accumulated sample: per-routine rows, interrupt buckets by cause, per-frame ring",
+        params: &["frames", "top"],
     },
     MethodSpec {
         name: "emulator/status",
         handler: Engine::status,
         summary: "run state, PC/SP/SR, symbol at PC, loaded ROM",
+        params: &[],
     },
     MethodSpec {
         name: "emulator/registers",
         handler: Engine::registers,
         summary: "the 68000 architectural register file",
+        params: &[],
     },
     MethodSpec {
         name: "emulator/run_frames",
         handler: Engine::run_frames,
         summary: "advance N whole frames, then stop (emits resumed + stopped)",
+        params: &["frames"],
     },
     MethodSpec {
         name: "emulator/run_to",
         handler: Engine::run_to,
         summary: "run until PC reaches an address or symbol, bounded (emits resumed + stopped)",
+        params: &["addr", "maxFrames", "symbol"],
     },
     MethodSpec {
         name: "emulator/pause",
         handler: Engine::pause,
         summary: "leave free-running mode (emits stopped)",
+        params: &[],
     },
     MethodSpec {
         name: "emulator/resume",
         handler: Engine::resume,
         summary: "enter free-running mode (emits resumed)",
+        params: &[],
     },
     MethodSpec {
         name: "emulator/checkpoint",
         handler: Engine::checkpoint,
         summary: "capture the whole machine into a volatile in-memory slot and return its server-assigned id",
+        params: &["label"],
     },
     MethodSpec {
         name: "emulator/restore",
         handler: Engine::restore,
         summary: "restore the entire machine, ROM included, from a checkpoint",
+        params: &["id"],
     },
     MethodSpec {
         name: "emulator/checkpoint_list",
         handler: Engine::checkpoint_list,
         summary: "the live checkpoints, bounded and cursored",
+        params: &["cursor", "limit"],
     },
     MethodSpec {
         name: "emulator/checkpoint_drop",
         handler: Engine::checkpoint_drop,
         summary: "drop one checkpoint by id, or all of them, and report how many went",
+        params: &["all", "id"],
     },
     MethodSpec {
         name: "emulator/watchpoint_add",
         handler: Engine::watchpoint_add,
         summary: "arm a recording watch over an address range in one of the four spaces, and return its handle",
+        params: &["addr", "censusKey", "label", "len", "mode", "read", "space", "stopAfter", "symbol", "write"],
     },
     MethodSpec {
         name: "emulator/watchpoint_clear",
         handler: Engine::watchpoint_clear,
         summary: "retire one watch by handle, or all of them, and report how many went",
+        params: &["all", "watch"],
     },
     MethodSpec {
         name: "emulator/watchpoint_list",
         handler: Engine::watchpoint_list,
         summary: "the armed watches and what each has observed, bounded and cursored",
+        params: &["cursor", "limit"],
     },
     MethodSpec {
         name: "emulator/watchpoint_hits",
         handler: Engine::watchpoint_hits,
         summary: "the recorded hit log — polled, non-destructive, with dropped/seen/matched beside it",
+        params: &["cursor", "limit", "watch"],
     },
     MethodSpec {
         name: "emulator/read",
         handler: Engine::read,
         summary: "one byte read across the bus/vram/cram/vsram spaces — the read half of the watch surface",
+        params: &["addr", "len", "space", "symbol"],
     },
     MethodSpec {
         name: "emulator/read_memory",
         handler: Engine::read_memory,
         summary: "debug read of ROM or work RAM by address or symbol",
+        params: &["addr", "len", "symbol"],
     },
     MethodSpec {
         name: "emulator/read_vram",
         handler: Engine::read_vram,
         summary: "debug read of VDP VRAM",
+        params: &["addr", "len"],
+    },
+    MethodSpec {
+        name: "emulator/read_cram",
+        handler: Engine::read_cram,
+        summary: "the palette as STORED: one line's 16 entries or all 64, with the cramAddr join key",
+        params: &["line"],
+    },
+    MethodSpec {
+        name: "emulator/write_cram",
+        handler: Engine::write_cram,
+        summary: "poke one palette entry (paused machine only; one colour spelling, refused never masked)",
+        params: &["b", "g", "index", "line", "r", "raw"],
     },
     MethodSpec {
         name: "emulator/pixel_attribution",
         handler: Engine::pixel_attribution,
         summary: "why the dot at (x,y) is the colour it is: winner, cell/sprite, and the losing candidates",
+        params: &["x", "y"],
     },
     MethodSpec {
         name: "emulator/sprites",
         handler: Engine::sprites,
         summary: "the sprite attribute table in slot order, with the parse cap and the stale-cache flag",
+        params: &["limit"],
     },
     MethodSpec {
         name: "emulator/state_hash",
         handler: Engine::state_hash,
         summary: "FNV-1a fingerprints of the VDP state regions",
+        params: &["includeFramebuffer"],
     },
     MethodSpec {
         name: "emulator/screenshot",
         handler: Engine::screenshot,
         summary: "render the active display to a binary PPM file",
+        params: &["path"],
     },
     MethodSpec {
         name: "emulator/press",
         handler: Engine::press,
         summary: "tap buttons for N frames, then restore the held set",
+        params: &["buttons", "frames", "port"],
     },
     MethodSpec {
         name: "emulator/play_input",
         handler: Engine::play_input,
         summary: "play a pad timeline: the pad each frame is a pure function of the rows, nothing else",
+        params: &["maxFrames", "rows"],
     },
     MethodSpec {
         name: "emulator/hold",
         handler: Engine::hold,
         summary: "set or clear buttons in the held set (set semantics, never additive)",
+        params: &["buttons", "down", "port"],
     },
     MethodSpec {
         name: "emulator/release_all",
         handler: Engine::release_all,
         summary: "clear the held set on both pads",
+        params: &[],
     },
     MethodSpec {
         name: "emulator/lookup_symbol",
         handler: Engine::lookup_symbol,
         summary: "name -> address, or address -> nearest preceding label + displacement",
+        params: &["addr", "name"],
     },
     MethodSpec {
         name: "emulator/load_symbols",
         handler: Engine::load_symbols,
         summary: "load a sigil/AS .lst listing, refusing one that does not bind to the loaded ROM",
+        params: &["path"],
     },
     MethodSpec {
         name: "emulator/reload_rom",
         handler: Engine::reload_rom,
         summary: "reload the ROM from disk and reset (emits romReloaded)",
+        params: &["path"],
     },
     MethodSpec {
         name: "emulator/write_memory",
         handler: Engine::write_memory,
         summary: "poke bytes into the work-RAM window (paused machine only; refused never clipped)",
+        params: &["addr", "bytes", "disp", "symbol", "value", "width"],
     },
     MethodSpec {
         name: "emulator/reset",
         handler: Engine::reset,
         summary: "drive the /RESET sequence — back to the power-on anchor, SRAM and symbols kept",
+        params: &[],
     },
     MethodSpec {
         name: "emulator/memory_hash",
         handler: Engine::memory_hash,
         summary: "fingerprint a byte range (FNV-1a-64 + CRC-32) without moving it — the hash state_hash cannot give",
+        params: &["addr", "len", "symbol"],
     },
     MethodSpec {
         name: "emulator/scanlines",
         handler: Engine::scanlines,
         summary: "read the drawn rows back — the live raster when a frame is retained, and the reply says which",
+        params: &["count", "startLine"],
     },
 ];
 
@@ -886,7 +945,8 @@ impl Engine {
     // ---------------------------------------------------------------- dispatch
 
     /// Look a method up in [`METHODS`]. This is the *only* dispatch path, which is what makes the
-    /// advertised list and the implemented set the same set by construction.
+    /// advertised list and the implemented set the same set by construction — and, since §11.17, the one
+    /// place §2.5's params closure has to live for it to bind bus-wide.
     pub fn dispatch(&mut self, method: &str, params: &Value) -> Result<Value, RpcError> {
         let Some(spec) = METHODS.iter().find(|m| m.name == method) else {
             return Err(
@@ -894,6 +954,17 @@ impl Engine {
                     .with_data(json!({"method": method})),
             );
         };
+        // §2.5: request params are closed. Checked here rather than in each handler, so the rule cannot
+        // be forgotten by the next method and so the refusal **precedes any effect** — a write refused
+        // for an unknown param has written nothing.
+        //
+        // `initialize` is exempt and is exempt *structurally*: it is the handshake, handled before
+        // dispatch and absent from METHODS, so the closure's own spelling cannot reach it. That is the
+        // one place on this bus where a client describes itself, and a version-skewed negotiation must
+        // survive the step whose job is surviving skew.
+        if let Some(unknown) = unknown_params(spec, params) {
+            return Err(unknown);
+        }
         (spec.handler)(self, params)
     }
 
@@ -1088,15 +1159,81 @@ impl Engine {
 
     /// Nearest preceding symbol for an address, plus displacement. `None` when no table is loaded or the
     /// address precedes every symbol in its address space.
+    ///
+    /// **The name is the bare identifying spelling; the displacement is the number beside it.** That is
+    /// §4's rule — *"the displacement lives in this number and NEVER inside the name string"* — and the
+    /// schema enforces it by pattern: every `symbol`/`symbolAtPc` field on this bus is
+    /// `$defs/symbolName`, which rejects a `+$hex` suffix outright, because those fields MUST round-trip
+    /// back through a `symbol` param.
+    ///
+    /// This used `Resolution`'s `Display`, which appends `+$hex` for a human reading a disassembly line,
+    /// and so emitted `Probe+$2` at any displaced address — conformant only by accident, at every
+    /// address that happened to land exactly on a label. Every caller here feeds a wire field, so every
+    /// caller wanted [`Resolution::name`].
     fn symbol_at(&self, addr: u32) -> Option<(String, u32)> {
         let table = self.symbols.as_ref()?;
         let r = table.resolve(addr)?;
-        Some((r.to_string(), r.displacement))
+        Some((r.name().to_string(), r.displacement))
     }
 
     /// Resolve an `addr`-or-`symbol` parameter pair. Symbol-first addressing is D7: clients resolve,
     /// they never hardcode a RAM literal — the contract records a session in which a "verified" literal
     /// went stale within the session because a 36-byte insertion slid the whole RAM block by +$24.
+    /// [`resolve_target`](Self::resolve_target) plus `emulator/write_memory`'s optional **`disp`**
+    /// (§2.5, added 2026-08-19 by §11.17).
+    ///
+    /// `disp` is the ergonomic half of the same change request whose other half is the params closure,
+    /// and the two answer **different halves** of one complaint: a client wanting to write `Player_1`+2
+    /// had no way to say so, reached for a parameter name, and was silently obeyed at `Player_1`+0.
+    /// Closing params stops the silence; this gives the request somewhere to go.
+    ///
+    /// Three properties, each of which the fragment also enforces:
+    ///
+    /// - **Valid only with `symbol`.** With `addr` it is arithmetic the caller has already done, and
+    ///   `{addr, disp}` is `-32602` (the fragment's `dependentRequired`).
+    /// - **Non-negative**, because it mirrors the `symbolDisp` a read reply hands back — a displacement
+    ///   from the *nearest preceding* symbol, which cannot be negative. `{symbol, symbolDisp}` out,
+    ///   `{symbol, disp}` in: D7's round trip made literal.
+    /// - The **displaced** address is the one that must land in the work-RAM window, and the one the
+    ///   reply echoes. Both fall out of returning it here, before the caller's bounds check.
+    ///
+    /// Kept on this method rather than folded into `resolve_target`, deliberately: `read`/`read_memory`
+    /// share that helper and do not declare `disp`, and a helper that quietly honoured a key those
+    /// fragments do not carry would put the server back on the wrong side of the rule above it.
+    fn resolve_displaced_target(&self, params: &Value) -> Result<u32, RpcError> {
+        let base = self.resolve_target(params)?;
+        let Some(v) = params.get("disp") else {
+            return Ok(base);
+        };
+        if params.get("symbol").is_none() {
+            return Err(RpcError::invalid_params(
+                "`disp` is valid only with `symbol` — with `addr` it is arithmetic the caller has \
+                 already done",
+            ));
+        }
+        let Some(d) = v.as_u64() else {
+            return Err(RpcError::invalid_params(
+                "`disp` must be a non-negative integer — it mirrors `symbolDisp`, a displacement from \
+                 the nearest preceding symbol, which cannot be negative",
+            ));
+        };
+        let sum = u64::from(base) + d;
+        if sum > u64::from(BUS_ADDR_MAX) {
+            // `data.addr` carries the SUM, not the base: the message complains about `symbol` + `disp`,
+            // and a data field naming a different number than the sentence beside it is the join a
+            // client cannot make. Formatted here rather than through `out_of_range` because the sum can
+            // exceed `u32` — reporting a truncated version of the value we are refusing for being too
+            // large would be its own small lie.
+            let addr = format!("0x{sum:08X}");
+            return Err(RpcError::new(
+                code::ADDRESS_OUT_OF_RANGE,
+                format!("{addr}: `symbol` + `disp` runs past the end of the 24-bit bus"),
+            )
+            .with_data(json!({"addr": addr})));
+        }
+        Ok(sum as u32)
+    }
+
     fn resolve_target(&self, params: &Value) -> Result<u32, RpcError> {
         if let Some(name) = params.get("symbol") {
             let Some(name) = name.as_str() else {
@@ -1399,7 +1536,7 @@ impl Engine {
     /// a hit's `pc` names the instruction that drove the access and a poke has none to name.
     fn write_memory(&mut self, params: &Value) -> Result<Value, RpcError> {
         self.require_paused("emulator/write_memory")?;
-        let addr = self.resolve_target(params)?;
+        let addr = self.resolve_displaced_target(params)?;
         let data: Vec<u8> = match (params.get("bytes"), params.get("value")) {
             (Some(_), Some(_)) => {
                 return Err(RpcError::invalid_params(
@@ -1544,6 +1681,165 @@ impl Engine {
             }
         }
         Ok(Value::Object(out))
+    }
+
+    /// `emulator/read_cram` — the palette, read (§6 VRAM/CRAM/layers, specified by §11.17 / CR-27b).
+    ///
+    /// **The entry is the STORED colour, never the displayed one.** `raw` is the 9-bit word the chip
+    /// holds and `r`/`g`/`b` its 3-bit components — `emulator/write_cram`'s own spelling, so a read entry
+    /// hands straight back to a write. The colour a dot is actually *shown* in is
+    /// [`pixel_attribution`](Self::pixel_attribution)'s `rgb`, which runs these components through an
+    /// intensity ramp at the resolved shadow/highlight state and differs whenever that state is not
+    /// `normal`. **No 8-bit expansion is emitted here**, deliberately: the catalog has never pinned a
+    /// ramp, the two servers that compute one disagree at three of the eight levels (`F-CRAM-RAMP`), and
+    /// a number two conformant servers answer differently is worse than an absent one.
+    ///
+    /// `cramAddr` rides on every entry although it is derivable, because it is the **join key** three
+    /// other surfaces speak and `(line, index)` is not: `pixel_attribution.cramAddr`, the `space`+`addr`
+    /// pair a `cram` watch hit reports, and `emulator/read` with `space: "cram"`. `pixel_attribution`'s
+    /// `cramIndex` is deliberately not carried — that method emits it only because it has no
+    /// `(line, index)` pair to give.
+    ///
+    /// A **pure read**: no `require_paused`, on the `read`/`sprites`/`pixel_attribution`/`scanlines`
+    /// precedent. D11's stamp is the whole answer to a torn palette sample.
+    fn read_cram(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let line = match params.get("line") {
+            None => None,
+            Some(v) => Some(parse_cram_line(v)?),
+        };
+        let cram = self.sys.vdp().cram();
+        // Entries are line-ascending then index-ascending and contiguous, and the range is fixed by the
+        // request: one line's 16 or the whole 64. `palette` is bounded by the video hardware, so §2.4
+        // clause (d) gives it neither a truncation flag nor a cursor — a partial palette is not
+        // expressible, and there is nothing for a client to page through.
+        let entries: Vec<Value> = match line {
+            Some(l) => (0..16).map(|i| cram_entry(cram, l, i)).collect(),
+            None => (0..4)
+                .flat_map(|l| (0..16).map(move |i| (l, i)))
+                .map(|(l, i)| cram_entry(cram, l, i))
+                .collect(),
+        };
+        let mut out = Map::new();
+        // Echoed IFF the param was given — its presence is what tells a client which of the two answers
+        // it is holding, and the fragment ties the echo to the array's length in BOTH directions.
+        if let Some(l) = line {
+            out.insert("line".into(), json!(l));
+        }
+        out.insert("palette".into(), Value::Array(entries));
+        Ok(Value::Object(out))
+    }
+
+    /// `emulator/write_cram` — one palette entry, poked (§6, specified by §11.17 / CR-27a).
+    ///
+    /// **Requires a paused machine** (`-32005`, `data.reason = "machineRunning"`). That gate is
+    /// *demand-side confirmation*, not symmetry with `write_memory`: the requester established that the
+    /// unpaused case fails for engine reasons anyway — a composed-per-frame palette pipeline overwrites a
+    /// direct CRAM write within the frame — and that where this method earns its keep is the paused
+    /// machine, inspecting a colour and tweaking it with nothing stepping on it.
+    ///
+    /// **Exactly one colour spelling**: all three of `r`/`g`/`b`, or `raw`. Both, neither, a partial
+    /// triple, and a partial triple beside `raw` are each `-32602`. A `raw` carrying bits outside the
+    /// chip's `$0EEE` mask is `-32602` too — **refused, never masked** — because the reply's whole job is
+    /// to say where the write landed, and a reply reporting a value the caller did not send is exactly
+    /// the silent mutation this bus refuses everywhere else. `line`/`index` out of range are refused,
+    /// never clipped.
+    ///
+    /// The two **standing properties** of a poke (stated in §6 rather than as a `caveat` on every reply,
+    /// per §2.4's advisory — and the fragment declares `caveat` absent, so emitting one would fail item
+    /// 20's closure): it is **never offered to the watch surface**, and it does **not repaint a frame
+    /// already drawn**. Both fall out of [`Vdp::poke_cram`], which is where the reasoning lives.
+    fn write_cram(&mut self, params: &Value) -> Result<Value, RpcError> {
+        self.require_paused("emulator/write_cram")?;
+        let line =
+            parse_cram_line(params.get("line").ok_or_else(|| {
+                RpcError::invalid_params("`line` is required (palette line, 0-3)")
+            })?)?;
+        let index = match params.get("index") {
+            None => {
+                return Err(RpcError::invalid_params(
+                    "`index` is required (entry within the line, 0-15)",
+                ))
+            }
+            Some(v) => match v.as_u64() {
+                Some(n) if n <= 15 => n as u8,
+                Some(n) => {
+                    return Err(RpcError::invalid_params(format!(
+                        "`index` {n} is outside 0-15 — refused, never clipped"
+                    )))
+                }
+                None => {
+                    return Err(RpcError::invalid_params(
+                        "`index` must be an integer 0-15 (D9 category 2)",
+                    ))
+                }
+            },
+        };
+
+        // The alternation, refused in all four bad spellings before anything is written.
+        let triple = ["r", "g", "b"].map(|k| params.get(k));
+        let any_component = triple.iter().any(Option::is_some);
+        let word = match (any_component, params.get("raw")) {
+            (true, Some(_)) => {
+                return Err(RpcError::invalid_params(
+                    "`r`/`g`/`b` and `raw` are alternatives — pass exactly one spelling",
+                ))
+            }
+            (false, None) => return Err(RpcError::invalid_params(
+                "a colour is required: all three of `r`/`g`/`b` (0-7 each), or `raw` (<= 0x0EEE)",
+            )),
+            (true, None) => {
+                let mut c = [0u16; 3];
+                for (slot, (name, v)) in c.iter_mut().zip(["r", "g", "b"].iter().zip(triple)) {
+                    let Some(v) = v else {
+                        return Err(RpcError::invalid_params(format!(
+                            "`{name}` is missing — `r`, `g` and `b` travel together; a partial triple \
+                             is refused"
+                        )));
+                    };
+                    match v.as_u64() {
+                        Some(n) if n <= 7 => *slot = n as u16,
+                        Some(n) => {
+                            return Err(RpcError::invalid_params(format!(
+                                "`{name}` {n} is outside 0-7 — a stored component is 3-bit"
+                            )))
+                        }
+                        None => {
+                            return Err(RpcError::invalid_params(format!(
+                                "`{name}` must be an integer 0-7 (D9 category 2)"
+                            )))
+                        }
+                    }
+                }
+                // `---- BBB- GGG- RRR-`, the layout `Vdp::cram_decoded` reads back.
+                (c[0] << 1) | (c[1] << 5) | (c[2] << 9)
+            }
+            (false, Some(v)) => {
+                let Some(n) = v.as_u64() else {
+                    return Err(RpcError::invalid_params(
+                        "`raw` must be a non-negative integer (D9 category 2)",
+                    ));
+                };
+                // Refused, never masked. The schema's `maximum: 3822` is the coarse mechanical half; this
+                // is the exact-mask rule it cannot express, and it stands to that bound exactly as
+                // `write_memory`'s must-fit-`width` stands to its `value` bound.
+                if n & !0x0EEE != 0 {
+                    return Err(RpcError::invalid_params(format!(
+                        "`raw` {n:#06X} carries bits outside the chip's 0x0EEE mask \
+                         (---- BBB- GGG- RRR-) — refused, never masked"
+                    )));
+                }
+                n as u16
+            }
+        };
+
+        let entry = line * 16 + index;
+        let stored = self.sys.vdp_mut().poke_cram(entry, word);
+        Ok(json!({
+            "line": line,
+            "index": index,
+            "cramAddr": hex::addr(u32::from(entry) * 2),
+            "value": hex::u16_hex(stored),
+        }))
     }
 
     fn read_vram(&mut self, params: &Value) -> Result<Value, RpcError> {
@@ -2554,7 +2850,8 @@ impl Engine {
                 true,
                 Some(
                     "the deb2 appendix probe is a filter, not a proof: Match means \"not obviously \
-                     wrong\", never \"proven right\" (two demo shapes can declare the same EndOfRom).",
+                     wrong\", never \"proven right\" (two demo shapes can declare the same EndOfRom)."
+                        .to_string(),
                 ),
             ),
             RomBinding::Mismatch(fault) => {
@@ -2574,11 +2871,25 @@ impl Engine {
                 ))
                 .with_data(json!({"path": path, "binding": "indeterminate-and-damaged"})));
             }
-            RomBinding::Indeterminate(_) => (
+            // The two Indeterminate shapes are NOT the same finding and must not share a sentence. One
+            // listing gave us no offset to probe; the other gave us one and it says "there is no
+            // appendix here" — which is a fact about the image, not a gap in the listing.
+            RomBinding::Indeterminate(Indeterminate::EndOfRomIsImageEnd { rom_len }) => (
+                true,
+                Some(format!(
+                    "this listing declares EndOfRom at exactly the image's end (${rom_len:X} bytes), \
+                     which is the no-appendix shape a stock AS disassembly has — `RomEndLoc: dc.l \
+                     EndOfRom-1` puts the symbol one past the last byte, so there is nothing to probe \
+                     rather than a probe that failed. Accepted unverified because it is internally \
+                     intact.",
+                )),
+            ),
+            RomBinding::Indeterminate(Indeterminate::NoEndOfRomSymbol) => (
                 true,
                 Some(
                     "this listing declares no EndOfRom, so it could not be checked against the loaded \
-                     ROM at all. Accepted unverified because it is internally intact.",
+                     ROM at all. Accepted unverified because it is internally intact."
+                        .to_string(),
                 ),
             ),
         };
@@ -2586,6 +2897,33 @@ impl Engine {
 
         let count = table.len();
         let modules = table.modules().len();
+        // **Why `symbolCount` can be smaller than the listing's own footer**, answered where the consumer
+        // meets the discrepancy rather than only in a doc they would have to know to look for.
+        //
+        // A stock AS listing emits its own build metadata as pseudo-symbols whose value is a string or a
+        // float — `ARCHITECTURE : "x86_64-unknown-linux" -`, `DATE`, `TIME`, `MOMCPUNAME`, `CONSTPI` —
+        // and the `N symbols` footer counts them. They carry no address, so they are consumed rather
+        // than ingested (`SymbolTable::non_address_rows`) and `symbolCount` is the number of rows that
+        // can actually answer a lookup. On `s1disasm`'s `sonic.lst` that is 12,405 against a declared
+        // 12,410, and the five are exactly these. Carried in the EXISTING `caveat` string, deliberately:
+        // a new reply key is contract surface and this is an explanation, not a datum a client branches
+        // on.
+        let addressless = table.non_address_rows();
+        let caveat = match (caveat, addressless) {
+            (c, 0) => c,
+            (c, n) => {
+                let note = format!(
+                    "{n} row(s) in this listing declare a value that is not an address (AS emits its \
+                     build metadata — ARCHITECTURE, DATE, TIME — as pseudo-symbols), so they are \
+                     counted by the file's own `N symbols` footer but cannot answer a lookup and are \
+                     not in symbolCount."
+                );
+                Some(match c {
+                    Some(existing) => format!("{existing} {note}"),
+                    None => note,
+                })
+            }
+        };
         self.symbols = Some(Arc::new(table));
         self.symbols_path = Some(path.clone());
         let mut out = json!({
@@ -3725,6 +4063,87 @@ fn layer_json(layer: Layer) -> Value {
 /// A pattern is 32 bytes and 65536 is a multiple of 32, so a pattern never straddles the wrap.
 fn tile_addr(tile: u16) -> u32 {
     (u32::from(tile) * 32) & 0xFFFF
+}
+
+/// §2.5's closure, as one check: any top-level `params` key the method's fragment does not declare.
+///
+/// The refusal names the offending key **and** lists the keys the method accepts, so it is also the fix
+/// (§5's *"Refuse, name the reason, and name the fix"*), and `error.data.unknownParams` carries the keys
+/// as a typed array because a client acting on *which* key was rejected needs a field rather than prose
+/// (§2.4 rule 3). Every unknown key is reported, not just the first — a client that guessed two names
+/// should not have to round-trip twice to learn both.
+///
+/// **Why this is worth the cost.** An optional param added in a later amendment stops being invisible to
+/// older servers: they refuse it, by name. That is the trade, made on purpose. The case that prompted it
+/// is measured, not hypothetical — a client wanting to write `Player_1`+2 reached for `offset:`, then for
+/// `disp:`, and was told OK both times while this server wrote `Player_1`+0 and answered with an address
+/// the client had never asked for. Guessing a parameter name only resembled a discovery mechanism while
+/// it silently succeeded.
+///
+/// Non-object params are not this function's business: a non-object is either absent (fine — every
+/// required key is the handler's own check) or a type error the handler reports in its own words.
+fn unknown_params(spec: &MethodSpec, params: &Value) -> Option<RpcError> {
+    let obj = params.as_object()?;
+    let unknown: Vec<&str> = obj
+        .keys()
+        .map(String::as_str)
+        .filter(|k| !spec.params.contains(k))
+        .collect();
+    if unknown.is_empty() {
+        return None;
+    }
+    let accepted = if spec.params.is_empty() {
+        "none — this method takes no params".to_string()
+    } else {
+        spec.params.join(", ")
+    };
+    Some(
+        RpcError::invalid_params(format!(
+            "{} does not accept {}; accepted params: {accepted}",
+            spec.name,
+            unknown
+                .iter()
+                .map(|k| format!("`{k}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ))
+        .with_data(json!({"unknownParams": unknown})),
+    )
+}
+
+/// Parse a `line` param for either CRAM method. Out of range is `-32602` — **refused, never clipped** —
+/// and shared by both so the two rows cannot drift on the bound or on the wording.
+fn parse_cram_line(v: &Value) -> Result<u8, RpcError> {
+    match v.as_u64() {
+        Some(n) if n <= 3 => Ok(n as u8),
+        Some(n) => Err(RpcError::invalid_params(format!(
+            "`line` {n} is outside 0-3 — refused, never clipped"
+        ))),
+        // D9 category 2: an index is a JSON number, never a hex string.
+        None => Err(RpcError::invalid_params(
+            "`line` must be an integer 0-3 (D9 category 2)",
+        )),
+    }
+}
+
+/// One `emulator/read_cram` palette entry: the stored word and its three stored components, plus the
+/// `(line, index)` pair a write takes back and the `cramAddr` join key.
+fn cram_entry(cram: &[u8], line: u8, index: u8) -> Value {
+    let entry = usize::from(line) * 16 + usize::from(index);
+    let b = entry * 2;
+    // Masked on the way out as well as on the way in: `write_target` and `poke_cram` both store masked
+    // words, so this is belt-and-braces — but `raw` is contractually "the stored word masked to the 9-bit
+    // colour", and a component derived from an unmasked bit would be outside its declared 0-7.
+    let raw = ((u16::from(cram[b]) << 8) | u16::from(cram[b | 1])) & 0x0EEE;
+    json!({
+        "line": line,
+        "index": index,
+        "cramAddr": hex::addr(entry as u32 * 2),
+        "raw": hex::u16_hex(raw),
+        "r": (raw >> 1) & 0x07,
+        "g": (raw >> 5) & 0x07,
+        "b": (raw >> 9) & 0x07,
+    })
 }
 
 fn out_of_range(addr: u32, why: &str) -> RpcError {

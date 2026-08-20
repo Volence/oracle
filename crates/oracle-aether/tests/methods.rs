@@ -669,6 +669,105 @@ fn a_listing_that_does_not_bind_to_the_loaded_rom_is_refused() {
     assert_eq!(c.ok("emulator/status", json!({}))["symbolCount"], json!(0));
 }
 
+/// **The two `Indeterminate` shapes are different findings and must not share a sentence.**
+///
+/// Reported from a real session: a listing accepted on the new `EndOfRomIsImageEnd` path was told *"this
+/// listing declares no EndOfRom"* — when `EndOfRom` is precisely what it does declare, and declaring it
+/// at the image's last byte is the whole content of the finding. A caveat that describes the wrong shape
+/// is worse than none, because a client reads it as a defect in their listing rather than as a fact
+/// about their ROM.
+///
+/// Both paths are asserted in one test on purpose: the mutation this guards against is *swapping* the
+/// two messages, which a test of either alone would pass.
+#[test]
+fn the_two_unverified_bindings_are_caveated_as_the_different_findings_they_are() {
+    let h = spawn("caveat-binding");
+    let mut c = Client::connect(&h);
+    c.handshake(false);
+
+    // (a) EndOfRom at exactly the image's end — a stock AS disassembly's `RomEndLoc: dc.l EndOfRom-1`.
+    // Derived from the fixture rather than hardcoded, so the test cannot rot into a Mismatch silently.
+    let end = oracle_core::testrom::build().len();
+    let at_end = format!(
+        "  Symbol Table (* = unused):\n  --------------------------\n\n \
+         EntryPoint : 200 C |\n EndOfRom : {end:X} C |\n\n    2 symbols\n    0 unused symbols\n"
+    );
+    let lst = write_lst("caveat-end", &at_end);
+    let r = c.ok(
+        "emulator/load_symbols",
+        json!({"path": lst.display().to_string()}),
+    );
+    assert_eq!(r["binding"], json!("indeterminate"), "accepted, unverified");
+    let cav = r["caveat"].as_str().expect("a caveat").to_string();
+    assert!(
+        cav.contains("declares EndOfRom at exactly the image's end"),
+        "the caveat must name the shape it actually found: {cav}"
+    );
+    assert!(
+        !cav.contains("declares no EndOfRom"),
+        "…and must NOT claim the listing declares none — it declares one: {cav}"
+    );
+
+    // (b) No EndOfRom row at all — the original path, whose sentence must be left alone.
+    let lst = write_lst("caveat-none", LST_UNBOUND);
+    let r = c.ok(
+        "emulator/load_symbols",
+        json!({"path": lst.display().to_string()}),
+    );
+    assert_eq!(r["binding"], json!("indeterminate"));
+    let cav = r["caveat"].as_str().expect("a caveat").to_string();
+    assert!(
+        cav.contains("declares no EndOfRom"),
+        "the no-EndOfRom path keeps its own sentence: {cav}"
+    );
+    assert!(
+        !cav.contains("at exactly the image's end"),
+        "…and must not borrow the other one: {cav}"
+    );
+}
+
+/// **Why `symbolCount` can be smaller than the listing's own `N symbols` footer**, answered where a
+/// consumer meets the discrepancy. A stock AS listing emits its build metadata as pseudo-symbols with a
+/// string or float value; the footer counts them, they carry no address, and so they cannot answer a
+/// lookup. Carried in the **existing** `caveat` string — a new reply key would be contract surface, and
+/// this is an explanation rather than a datum a client branches on.
+#[test]
+fn address_less_rows_are_accounted_for_where_the_count_looks_wrong() {
+    let h = spawn("caveat-addressless");
+    let mut c = Client::connect(&h);
+    c.handshake(false);
+
+    // Three real symbols and two of AS's metadata rows; the footer counts all five.
+    let text = "  Symbol Table (* = unused):\n  --------------------------\n\n \
+                EntryPoint : 200 C |  Player_1 : FFFF8CFA C |\n\
+                *ARCHITECTURE :        \"x86_64-unknown-linux\" - |\n\
+                *DATE :                \"08/19/2026\" - |\n \
+                v_player :        FFFFFFFFFFFFD000 - |\n\n    5 symbols\n    2 unused symbols\n";
+    let lst = write_lst("caveat-al", text);
+    let r = c.ok(
+        "emulator/load_symbols",
+        json!({"path": lst.display().to_string()}),
+    );
+    assert_eq!(r["symbolCount"], json!(3), "only the rows with addresses");
+    let cav = r["caveat"].as_str().expect("a caveat").to_string();
+    assert!(
+        cav.contains("2 row(s)") && cav.contains("not an address"),
+        "the caveat must account for the gap between 3 and the footer's 5: {cav}"
+    );
+
+    // A listing with no such rows must not carry the note — otherwise it is boilerplate, not accounting.
+    let lst = write_lst("caveat-al-none", LST_UNBOUND);
+    let r = c.ok(
+        "emulator/load_symbols",
+        json!({"path": lst.display().to_string()}),
+    );
+    let cav = r["caveat"].as_str().unwrap_or("");
+    assert!(
+        !cav.contains("not an address"),
+        "the note must appear only when there is something to account for: {cav}"
+    );
+}
+
 // ------------------------------------------------------------------ run-state discipline
 
 #[test]
