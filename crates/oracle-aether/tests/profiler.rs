@@ -583,6 +583,23 @@ fn the_per_frame_ring_is_opt_in_undivided_and_bounded() {
         );
         assert_eq!(u64_of(row, "hintCycles"), 0, "and no HBlank: {row}");
     }
+    // **The window is the most-recent TAIL, and the wire says which frames those are.** Asserted against
+    // the full reply's own rows rather than against a computed number: a `take(frames)` in place of the
+    // `skip(len - frames)` would serve the OLDEST two and pass every count assertion above and below it.
+    let full_frames: Vec<u64> = rows.iter().map(|r| u64_of(r, "frame")).collect();
+    let two_frames: Vec<u64> = c.ok("emulator/get_profiler_frames", json!({"frames": 2}))
+        ["perFrame"]["items"]
+        .as_array()
+        .expect("perFrame.items")
+        .iter()
+        .map(|r| u64_of(r, "frame"))
+        .collect();
+    assert_eq!(
+        two_frames,
+        full_frames[full_frames.len() - 2..].to_vec(),
+        "a bounded window is the LAST rows of the ring, not the first: full {full_frames:?}"
+    );
+
     // Bounded by `frames`, refused-not-clipped above the cap.
     let two = c.ok("emulator/get_profiler_frames", json!({"frames": 2}));
     assert_eq!(two["perFrame"]["returned"], json!(2));
@@ -595,6 +612,140 @@ fn the_per_frame_ring_is_opt_in_undivided_and_bounded() {
         e["code"],
         json!(-32602),
         "refused above the ring depth: {e}"
+    );
+}
+
+/// **A sample longer than the ring says so.** The ring is bounded by `limits.maxProfilerFrames`, so a
+/// longer sample has already dropped its oldest rows — and `total` taken from the ring's own occupancy
+/// would then equal `returned` and report `truncated: false` on a reply missing most of the sample. The
+/// honest denominator is the sample's frame count, which is what makes the pair answer §2.4 clause (a)'s
+/// question: *does the client have everything?*
+#[test]
+fn a_sample_longer_than_the_ring_reports_the_frames_it_dropped() {
+    let (_h, mut c, init) = booted("prof-ring-overflow", default_shape());
+    let cap = init["limits"]["maxProfilerFrames"]
+        .as_u64()
+        .expect("the cap is advertised");
+
+    let r = arm_run_read(&mut c, cap + 5, true);
+    let n = u64_of(&r, "frameCount");
+    assert!(n > cap, "the sample must outrun the ring: {n} vs {cap}");
+
+    let ring = &r["perFrame"];
+    assert_eq!(
+        ring["total"].as_u64(),
+        Some(n),
+        "`total` is the sample's frames, not the ring's occupancy: {ring}"
+    );
+    assert_eq!(
+        ring["returned"].as_u64(),
+        Some(cap),
+        "the ring held its bound and no more: {ring}"
+    );
+    assert_eq!(
+        ring["truncated"],
+        json!(true),
+        "and the reply says the client does NOT have everything: {ring}"
+    );
+    // The rows it kept are the most recent ones — the same tail rule the bounded window follows.
+    let items = ring["items"].as_array().expect("perFrame.items");
+    let last = u64_of(items.last().expect("a row"), "frame");
+    let first = u64_of(&items[0], "frame");
+    assert_eq!(
+        last - first + 1,
+        cap,
+        "the kept rows are one contiguous run of the ring's depth: {first}..={last}"
+    );
+}
+
+/// **A timeline jump drops the sample and keeps the arming** (the N4 ruling).
+///
+/// `restore` is the case that proves the rule rather than merely illustrating it: the checkpoint's machine
+/// has its own stack, so an in-flight shadow stack would be waiting for returns that can never come and
+/// would mis-attribute the restored machine's returns to the old machine's frames. The measurement
+/// therefore restarts — while `enabled`/`perFrame`, which are the *client's instruction* and not the
+/// machine's state, survive, because a client that rewinds to a checkpoint wants to measure what happens
+/// next and has no way to predict a silent disarm.
+#[test]
+fn a_restore_restarts_the_sample_and_keeps_the_arming() {
+    let (_h, mut c, _init) = booted("prof-restore", default_shape());
+    let cp = c.ok("emulator/checkpoint", json!({}));
+    let id = cp["id"].as_str().expect("an id").to_string();
+
+    let before = arm_run_read(&mut c, 6, true);
+    assert!(
+        u64_of(&before, "frameCount") > 0 && u64_of(&before, "sampleCycles") > 0,
+        "there is a real sample to lose: {before}"
+    );
+
+    c.ok("emulator/restore", json!({"id": id}));
+
+    let state = c.ok("emulator/get_profiler", json!({}));
+    assert_eq!(
+        state["enabled"],
+        json!(true),
+        "the arming is the client's instruction and survives the jump: {state}"
+    );
+    assert_eq!(
+        state["perFrame"],
+        json!(true),
+        "including the ring, so the next sample has the shape that was asked for: {state}"
+    );
+    assert_eq!(
+        u64_of(&state, "framesRecorded"),
+        0,
+        "but the measurement restarts: {state}"
+    );
+
+    let after = c.ok("emulator/get_profiler_frames", json!({}));
+    assert_eq!(u64_of(&after, "frameCount"), 0);
+    assert_eq!(u64_of(&after, "sampleCycles"), 0);
+    assert_eq!(
+        after["routines"]["total"],
+        json!(0),
+        "and no rows survive it"
+    );
+    assert!(
+        after.get("perFrame").is_some(),
+        "the ring is still armed, and therefore still present: {after}"
+    );
+
+    // And it measures again from the new timeline, so the reset is a restart rather than a stop.
+    c.ok("emulator/run_frames", json!({"frames": 4}));
+    let again = c.ok("emulator/get_profiler_frames", json!({}));
+    assert!(
+        u64_of(&again, "frameCount") > 0 && u64_of(&again, "sampleCycles") > 0,
+        "the restored timeline is being measured: {again}"
+    );
+}
+
+/// The same rule for the other two timeline jumps, because "replaces the machine" is the property that
+/// matters and `reset` has it too — it is not a run and the sample it would keep is the previous
+/// machine's.
+#[test]
+fn a_reset_restarts_the_sample_and_keeps_the_arming() {
+    let (_h, mut c, _init) = booted("prof-reset-jump", default_shape());
+    let before = arm_run_read(&mut c, 5, false);
+    assert!(
+        u64_of(&before, "frameCount") > 0,
+        "a sample to lose: {before}"
+    );
+
+    c.ok("emulator/reset", json!({}));
+
+    let state = c.ok("emulator/get_profiler", json!({}));
+    assert_eq!(state["enabled"], json!(true), "still armed: {state}");
+    assert_eq!(u64_of(&state, "framesRecorded"), 0, "restarted: {state}");
+    let after = c.ok("emulator/get_profiler_frames", json!({}));
+    assert_eq!(u64_of(&after, "sampleCycles"), 0, "{after}");
+
+    c.ok("emulator/run_frames", json!({"frames": 3}));
+    assert!(
+        u64_of(
+            &c.ok("emulator/get_profiler_frames", json!({})),
+            "sampleCycles"
+        ) > 0,
+        "and the machine after the reset is measured"
     );
 }
 

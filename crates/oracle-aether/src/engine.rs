@@ -1805,6 +1805,39 @@ impl Engine {
         }))
     }
 
+    /// **A timeline jump drops the sample and keeps the arming** (§6, CR-26; the N4 ruling).
+    ///
+    /// `emulator/reset`, `emulator/reload_rom` and `emulator/restore` do not advance the machine — they
+    /// *replace* it. The measurement that was in flight belongs to the machine that is no longer here, and
+    /// the rule this follows is the one the rest of this surface follows: **never serve a dead machine's
+    /// data**. Keeping it would let a client divide cycles from two unrelated timelines by one frame count
+    /// and get a per-frame figure of nothing at all.
+    ///
+    /// `restore` is the case that proves it rather than merely illustrating it: a checkpoint's machine has
+    /// its own stack, so the profiler's **shadow stack** — open frames keyed by the `entry_sp` they were
+    /// entered at — is describing returns that will now never come. Carrying it across would not just
+    /// blend two samples; it would mis-attribute the new machine's returns to the old machine's frames.
+    ///
+    /// **The arming survives.** `enabled` and `perFrame` are the client's *instruction*, not the machine's
+    /// state: a client that armed the accountant and then rewound to a checkpoint wants to measure what
+    /// happens next, and silently disarming would answer its next read with an empty sample it had no way
+    /// to predict. So the instrument is rebuilt in the pose it was armed in and measurement restarts from
+    /// the new timeline's first boundary. The basis is re-latched for the same reason it is latched at the
+    /// arm: the machine it describes has just been replaced.
+    fn restart_profiler_sample(&mut self) {
+        if !self.profiler_armed && self.profiler.frames() == 0 {
+            return; // nothing armed and nothing held: rebuilding would be a no-op with a cost
+        }
+        self.profiler = if self.profiler.per_frame_armed() {
+            Profiler::with_per_frame(self.config.max_profiler_frames)
+        } else {
+            Profiler::new()
+        };
+        if self.profiler_armed {
+            self.profiler_basis = Some(self.sys.timing_basis());
+        }
+    }
+
     /// `emulator/get_profiler` — the instrument's state, not its data (§6, §11.16). A pure read that
     /// clears nothing and is never refused for run state.
     fn get_profiler(&mut self, _params: &Value) -> Result<Value, RpcError> {
@@ -1867,23 +1900,33 @@ impl Engine {
         let report = self.profiler.report();
         let n = report.frame_count;
 
-        // Rows, ordered by `cycles` descending so a truncated list is the expensive end rather than an
-        // arbitrary slice. Ties broken by address so the order is total and two identical runs cannot
-        // disagree — a spread of 0 across boots is this surface's bar.
-        let mut rows: Vec<(u32, Counts)> = report.routines.into_iter().collect();
-        rows.sort_by(|a, b| b.1.cycles.cmp(&a.1.cycles).then(a.0.cmp(&b.0)));
-        let total_rows = rows.len();
         // The undivided partners come from the very map `report()` divided, read back through the
         // accessor rather than recomputed — so a row's `cyclesTotal` cannot be a second measurement that
         // disagrees with the `cycles` beside it. Keyed identically by construction; `unwrap_or_default`
         // is the type's requirement, not a fallback anything is expected to take.
         let sample_rows = self.profiler.sample_routines();
+        // Rows, ordered by `cycles` descending so a truncated list is the expensive end rather than an
+        // arbitrary slice.
+        //
+        // **Then by `cyclesTotal` descending, and only then by address.** The divided figure is floored,
+        // so on a long sample many genuinely different rows share one `cycles` value — and with the
+        // address as the only tie-break, `top` would then keep the *lowest-addressed* of them rather than
+        // the most expensive, which is the one thing this ordering exists to prevent. The undivided
+        // partner separates them exactly (it is the same accumulator, unfloored), so this is a strict
+        // refinement: it can only reorder rows the old comparator called equal. The address stays last,
+        // so the order is still total and two identical boots cannot disagree — a spread of 0 across
+        // boots is this surface's bar.
+        let mut rows: Vec<(u32, Counts, Counts)> = report
+            .routines
+            .into_iter()
+            .map(|(addr, c)| (addr, c, sample_rows.get(&addr).copied().unwrap_or_default()))
+            .collect();
+        rows.sort_by(profiler_row_order);
+        let total_rows = rows.len();
         let items: Vec<Value> = rows
             .into_iter()
             .take(top)
-            .map(|(addr, c)| {
-                self.profiler_row(addr, c, sample_rows.get(&addr).copied().unwrap_or_default())
-            })
+            .map(|(addr, c, t)| self.profiler_row(addr, c, t))
             .collect();
 
         let sample_buckets = self.profiler.sample_interrupts();
@@ -1921,6 +1964,15 @@ impl Engine {
 
         // `budgetPct` is DERIVED from the basis this same server advertises — never a hardcoded NTSC
         // constant, which is wrong by ~16% the moment the machine is PAL. Exactly one of the two keys.
+        //
+        // **The omitted arm is currently unreachable, and that is recorded rather than removed.** The
+        // basis can only *change* if the machine can hold more than one, and today `TimingBasis` has a
+        // single NTSC value — so `budget_pct` never answers `None` and no test can drive this branch
+        // honestly. It stays because the day a second basis exists (PAL) the branch is the difference
+        // between an omitted figure and a wrong one, and three design notes belong with it for that day:
+        // the basis is latched at the ARM (`set_profiler`), the comparison is against the basis *now*,
+        // and a sample that straddled a change has no single budget to be a percentage of — which is why
+        // the answer is an omission with a reason and not an average of two bases.
         match self.budget_pct(report.total_cycles) {
             Some(pct) => out["budgetPct"] = json!(pct),
             None => out["budgetPctOmitted"] = json!("timingBasisChanged"),
@@ -1928,10 +1980,10 @@ impl Engine {
 
         if self.profiler.per_frame_armed() {
             let ring = self.profiler.per_frame();
-            let total = ring.len();
+            let held = ring.len();
             let rows: Vec<Value> = ring
                 .iter()
-                .skip(total.saturating_sub(frames)) // the most recent `frames`
+                .skip(held.saturating_sub(frames)) // the most recent `frames`
                 .map(|f| {
                     json!({
                         "frame": f.frame,
@@ -1947,7 +1999,14 @@ impl Engine {
             // `returned < total`, which is what an offset of 0 computes. Passing the tail's real start
             // would make a 2-of-4 reply claim `truncated: false`, i.e. the exact confusion §2.4 clause (a)
             // requires the key to prevent.
-            out["perFrame"] = rpc::bounded_array(rows, total, 0, frames);
+            //
+            // **`total` is the sample's frame count, not the ring's occupancy**, and the difference is the
+            // whole point of the key. The ring is bounded (`limits.maxProfilerFrames`), so a sample longer
+            // than it has already *dropped* its oldest rows — and a `total` taken from `ring.len()` would
+            // equal `returned`, making `truncated: false` on a reply that is missing hundreds of frames.
+            // Answering with the frames the sample actually has makes the shortfall visible, which is what
+            // §2.4 clause (a) asks the pair to say.
+            out["perFrame"] = rpc::bounded_array(rows, n as usize, 0, frames);
         }
 
         // §2.4's advisory, applied: a caveat present on every reply is one clients learn to ignore, so it
@@ -2555,6 +2614,8 @@ impl Engine {
         // reproduction depends on being deterministic. (`reload_rom` clears them for the same reason.)
         self.held = [Pad::default(); 2];
         self.invalidate_screen();
+        // The sample measured the machine this reset just replaced — see `restart_profiler_sample`.
+        self.restart_profiler_sample();
         self.rom_generation += 1;
         Ok(json!({ "deferred": false }))
     }
@@ -2583,6 +2644,7 @@ impl Engine {
         // game's. Dropped rather than kept, which puts `framebuffer` back on its honest fallback until the
         // new image has drawn a frame of its own.
         self.invalidate_screen();
+        self.restart_profiler_sample();
         self.rom_generation += 1;
 
         // A reload can invalidate the loaded symbols — that is D7's whole point. Re-run the binding
@@ -2728,6 +2790,9 @@ impl Engine {
         // may or may not have swapped the image, and a host that has to guess which is a host that will
         // eventually guess wrong.
         self.invalidate_screen();
+        // …and so does the profiler's sample, whose shadow stack is now describing a machine whose
+        // returns will never come. Arming survives; the measurement restarts.
+        self.restart_profiler_sample();
         self.rom_generation += 1;
         // The symbol table travels with the cartridge it was bound to (D7). It is deliberately *not*
         // re-validated here: the listing and the ROM were checked against each other when the listing was
@@ -3945,4 +4010,83 @@ fn held_names(pad: &Pad) -> Vec<&'static str> {
         }
     }
     v
+}
+
+/// The order `emulator/get_profiler_frames` puts routine rows in: **most expensive first, and the tie-break
+/// is the undivided figure before the address.**
+///
+/// Each row is `(entry address, divided counts, undivided counts)`.
+///
+/// Extracted from the handler so the tie-break has a witness. The primary key is exercised by every wire
+/// test that reads a sample, but a *tie* on the divided figure is not reachable from the fixture ROMs —
+/// every routine in them runs a fixed number of times per frame, so its divided cycles scale with the
+/// sample instead of flooring together — and an ordering rule whose interesting case no test can reach is
+/// an ordering rule nothing checks.
+///
+/// Why the second key exists at all: `cycles` is floored, so on a long sample many genuinely different rows
+/// share one value, and with the address as the only tie-break `top` would keep the **lowest-addressed** of
+/// them rather than the most expensive — the exact confusion the ordering exists to prevent. The undivided
+/// partner separates them without truncation, which makes this a strict refinement: it can only reorder
+/// rows the address-only comparator called equal. The address stays last so the order is still **total**,
+/// and two identical boots cannot disagree.
+fn profiler_row_order(a: &(u32, Counts, Counts), b: &(u32, Counts, Counts)) -> std::cmp::Ordering {
+    b.1.cycles
+        .cmp(&a.1.cycles)
+        .then(b.2.cycles.cmp(&a.2.cycles))
+        .then(a.0.cmp(&b.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(addr: u32, divided: u64, total: u64) -> (u32, Counts, Counts) {
+        (
+            addr,
+            Counts {
+                cycles: divided,
+                ..Counts::default()
+            },
+            Counts {
+                cycles: total,
+                ..Counts::default()
+            },
+        )
+    }
+
+    /// **A floored tie is broken by the undivided figure, and only then by the address.**
+    ///
+    /// The middle two rows are what the ruling is about: both report `cycles: 7` because integer division
+    /// floored them together, and they are *not* equally expensive — one really cost 799 cycles and the
+    /// other 700. Ordering them by address would put a cheaper row above a dearer one and, under `top`,
+    /// keep the wrong one.
+    #[test]
+    fn the_row_order_breaks_a_floored_tie_by_the_undivided_figure() {
+        let mut rows = [
+            row(0x0000_1000, 7, 700),
+            row(0x0000_0400, 9, 900),
+            row(0x0000_0800, 7, 799),
+            row(0x0000_0100, 7, 700), // a genuine tie with the first row, on both figures
+        ];
+        rows.sort_by(profiler_row_order);
+        assert_eq!(
+            rows.iter().map(|r| r.0).collect::<Vec<_>>(),
+            vec![0x0000_0400, 0x0000_0800, 0x0000_0100, 0x0000_1000],
+            "expensive first; the 7/799 row outranks both 7/700 rows; the two identical rows fall back \
+             to ascending address, which is what keeps the order total"
+        );
+    }
+
+    /// The refinement is **strict**: it never reorders rows the primary key already separates, whichever
+    /// way the undivided figures happen to sit. A total that disagrees with its divided partner cannot
+    /// promote a row past a genuinely more expensive one.
+    #[test]
+    fn the_undivided_tie_break_never_overrides_the_divided_order() {
+        let mut rows = [row(0x0000_0200, 5, 5_000_000), row(0x0000_0300, 6, 6)];
+        rows.sort_by(profiler_row_order);
+        assert_eq!(
+            rows[0].0, 0x0000_0300,
+            "`cycles` decides first, always: the second key is a tie-break and not a second opinion"
+        );
+    }
 }
