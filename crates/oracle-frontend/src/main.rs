@@ -1817,15 +1817,26 @@ fn main() {
                 .and_then(|(mx, my)| {
                     present::window_to_native(mx, my, present_view, width, HEIGHT)
                 });
+            // **One call, three borrows.** The watch instrument and the profiler both come from
+            // `read_instruments`, because `watchpoints_mut` is `&mut self` and the two could not be
+            // live in the same `FrameCtx` — the same reason `run_sinks` hands back a pair. Shared
+            // borrows, which is also the guarantee: a panel cannot move a number a client is gating
+            // on. The armed flag rides along because it is not derivable from the accumulator —
+            // disarming RETAINS the sample, so rows exist whether or not anything is recording.
+            let (wp, prof, prof_armed) = bus.read_instruments();
             let models = lens::models(
                 cfg.lenses,
                 &lens::FrameCtx {
                     sys: &sys,
-                    wp: bus.watchpoints_mut(),
+                    wp,
                     symbols: symbols.as_ref(),
                     frame,
                     paused,
                     hover: hover_at,
+                    profiler: lens::profile::View {
+                        prof,
+                        armed: prof_armed,
+                    },
                 },
             );
             // `(width, HEIGHT)` is the frame that was just blitted into `present_view` — the pair

@@ -159,6 +159,21 @@ impl Bus {
         self.host.run_sinks()
     }
 
+    /// **What the lens layer reads, from one call** — the watch instrument, the profiler, and whether a
+    /// client has the profiler armed.
+    ///
+    /// One call rather than three accessors because the draw pass needs all of them live at once inside a
+    /// single `FrameCtx`, and `watchpoints_mut` is `&mut self`: the two borrows could not coexist. Shared
+    /// borrows throughout, which also states the guarantee — a panel cannot move a number a client is
+    /// gating on.
+    ///
+    /// The armed flag is not derivable from the accumulator: disarming RETAINS the sample, so rows exist
+    /// whether or not anything is still recording, and a panel that showed only the rows could not tell
+    /// the two apart.
+    pub fn read_instruments(&self) -> (&Watchpoints, &Profiler, bool) {
+        self.host.read_instruments()
+    }
+
     /// Conflict 1, outbound: the player's pause state becomes the bus's free-run state.
     pub fn set_paused(&mut self, paused: bool) {
         self.host.set_paused(paused);

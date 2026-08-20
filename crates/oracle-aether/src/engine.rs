@@ -828,6 +828,25 @@ impl Engine {
         )
     }
 
+    /// **The read half of [`run_sinks`](Engine::run_sinks)** — both instruments, plus whether the profiler
+    /// is armed, for a host that wants to *show* what it has been feeding.
+    ///
+    /// One call for the same reason `run_sinks` is one call: a caller assembling a per-frame view needs
+    /// both borrows live at once, and two separate accessors on `&mut self` cannot be. These are shared
+    /// borrows, so this one does not even need `&mut` — which is itself the point, because a panel that
+    /// could mutate the instrument it is drawing would be able to move a number a client is gating on.
+    ///
+    /// The `bool` is the ARMED flag and it is not derivable from the [`Profiler`]: a disarmed instrument
+    /// **retains** its sample (§11.16 — arming resets, disarming retains, reading never clears), so an
+    /// accumulator holding rows says nothing about whether it is still recording. Reporting the two
+    /// separately is what lets a reader tell "measuring now" from "here is what was measured".
+    ///
+    /// Safe outside a drain window, like [`watchpoints_mut`](Engine::watchpoints_mut): both are engine
+    /// state rather than `System` state, so neither answers for the placeholder machine.
+    pub fn read_instruments(&self) -> (&Watchpoints, &Profiler, bool) {
+        (&self.watchpoints, &self.profiler, self.profiler_armed)
+    }
+
     /// Advance the machine `frames` whole frames through the screen capture **and the watch instrument**,
     /// then latch whatever frame the run completed.
     ///
