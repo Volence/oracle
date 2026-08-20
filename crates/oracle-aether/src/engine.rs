@@ -39,7 +39,7 @@ use oracle_core::m68000::bus68k::Bus68k;
 use oracle_core::profiler::{Counts, Profiler};
 use oracle_core::render::{CandidateVerdict, Layer, PixelState};
 use oracle_core::scanline_capture::{Retain, ScanlineCapture};
-use oracle_core::symbols::{BindingFault, RomBinding, SymbolTable};
+use oracle_core::symbols::{BindingFault, Indeterminate, RomBinding, SymbolTable};
 use oracle_core::system::{
     StopRecord, System, TimingBasis, MCLK_PER_CPU_CYCLE, MCLK_PER_FRAME, RAM_SIZE,
 };
@@ -2843,7 +2843,8 @@ impl Engine {
                 true,
                 Some(
                     "the deb2 appendix probe is a filter, not a proof: Match means \"not obviously \
-                     wrong\", never \"proven right\" (two demo shapes can declare the same EndOfRom).",
+                     wrong\", never \"proven right\" (two demo shapes can declare the same EndOfRom)."
+                        .to_string(),
                 ),
             ),
             RomBinding::Mismatch(fault) => {
@@ -2863,11 +2864,25 @@ impl Engine {
                 ))
                 .with_data(json!({"path": path, "binding": "indeterminate-and-damaged"})));
             }
-            RomBinding::Indeterminate(_) => (
+            // The two Indeterminate shapes are NOT the same finding and must not share a sentence. One
+            // listing gave us no offset to probe; the other gave us one and it says "there is no
+            // appendix here" — which is a fact about the image, not a gap in the listing.
+            RomBinding::Indeterminate(Indeterminate::EndOfRomIsImageEnd { rom_len }) => (
+                true,
+                Some(format!(
+                    "this listing declares EndOfRom at exactly the image's end (${rom_len:X} bytes), \
+                     which is the no-appendix shape a stock AS disassembly has — `RomEndLoc: dc.l \
+                     EndOfRom-1` puts the symbol one past the last byte, so there is nothing to probe \
+                     rather than a probe that failed. Accepted unverified because it is internally \
+                     intact.",
+                )),
+            ),
+            RomBinding::Indeterminate(Indeterminate::NoEndOfRomSymbol) => (
                 true,
                 Some(
                     "this listing declares no EndOfRom, so it could not be checked against the loaded \
-                     ROM at all. Accepted unverified because it is internally intact.",
+                     ROM at all. Accepted unverified because it is internally intact."
+                        .to_string(),
                 ),
             ),
         };
@@ -2875,6 +2890,33 @@ impl Engine {
 
         let count = table.len();
         let modules = table.modules().len();
+        // **Why `symbolCount` can be smaller than the listing's own footer**, answered where the consumer
+        // meets the discrepancy rather than only in a doc they would have to know to look for.
+        //
+        // A stock AS listing emits its own build metadata as pseudo-symbols whose value is a string or a
+        // float — `ARCHITECTURE : "x86_64-unknown-linux" -`, `DATE`, `TIME`, `MOMCPUNAME`, `CONSTPI` —
+        // and the `N symbols` footer counts them. They carry no address, so they are consumed rather
+        // than ingested (`SymbolTable::non_address_rows`) and `symbolCount` is the number of rows that
+        // can actually answer a lookup. On `s1disasm`'s `sonic.lst` that is 12,405 against a declared
+        // 12,410, and the five are exactly these. Carried in the EXISTING `caveat` string, deliberately:
+        // a new reply key is contract surface and this is an explanation, not a datum a client branches
+        // on.
+        let addressless = table.non_address_rows();
+        let caveat = match (caveat, addressless) {
+            (c, 0) => c,
+            (c, n) => {
+                let note = format!(
+                    "{n} row(s) in this listing declare a value that is not an address (AS emits its \
+                     build metadata — ARCHITECTURE, DATE, TIME — as pseudo-symbols), so they are \
+                     counted by the file's own `N symbols` footer but cannot answer a lookup and are \
+                     not in symbolCount."
+                );
+                Some(match c {
+                    Some(existing) => format!("{existing} {note}"),
+                    None => note,
+                })
+            }
+        };
         self.symbols = Some(Arc::new(table));
         self.symbols_path = Some(path.clone());
         let mut out = json!({

@@ -2490,6 +2490,50 @@ mod tests {
         assert_eq!(v.cram()[10..12], [0x00, 0x00]);
     }
 
+    /// **`poke_cram` must not capture — pinned with the recorder ARMED**, which is the only arrangement
+    /// in which the assertion means anything.
+    ///
+    /// This test exists because the bus-level version of it was **vacuous and looked airtight**. On the
+    /// wire, `emulator/write_cram` requires a paused machine, and `capture_armed` is set only for the
+    /// duration of a run (`System::run`, *"leave the VDP as the run found it"*) — so a paused poke cannot
+    /// reach the watch surface no matter what this function does, and `tests/cram.rs`'s watch test went on
+    /// passing when `poke_cram` was mutated to call `capture`. The property belongs to the primitive, so
+    /// it is pinned on the primitive, with the recorder explicitly armed.
+    ///
+    /// The control beneath it is the point: the same armed recorder must catch the *port* path's write to
+    /// the same entry. Without that, a `set_write_capture` that silently did nothing would satisfy the
+    /// first half.
+    #[test]
+    fn poke_cram_never_captures_even_with_the_recorder_armed() {
+        let mut v = fresh();
+        v.set_write_capture(true);
+        v.poke_cram(3, 0x0EEE);
+        assert!(
+            v.take_write_captures().is_empty(),
+            "a debug poke reached the watch surface — it has no instruction to name, and since \
+             §11.15 no landing clock to supply"
+        );
+
+        // The control: the armed recorder is live, and the port path to the same entry proves it.
+        let addr = 3u32 * 2;
+        v.control_write((0xC000 | (addr & 0x3FFF)) as u16, 0);
+        v.control_write((addr >> 14) as u16, 0);
+        v.data_write(0x0EEE);
+        let caps = v.take_write_captures();
+        assert_eq!(
+            caps.len(),
+            1,
+            "the recorder was armed and did catch the guest write"
+        );
+        assert_eq!(caps[0].target, VdpTarget::Cram);
+        assert_eq!(caps[0].addr, addr);
+
+        // And the CRAM-only narrowing arms the same way, so neither spelling of "armed" lets a poke through.
+        v.set_write_capture_cram_only(true);
+        v.poke_cram(3, 0x0246);
+        assert!(v.take_write_captures().is_empty());
+    }
+
     /// A poke writes ONE entry. A neighbour-clobbering off-by-one in the byte index would be invisible to
     /// a single-entry assertion, so the two adjacent entries are pinned unchanged.
     #[test]

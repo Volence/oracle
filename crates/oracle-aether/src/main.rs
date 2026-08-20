@@ -12,7 +12,7 @@
 //! build shape is not degraded information, it is confidently wrong information.
 
 use oracle_aether::server::{default_socket_path, Machine, Server, ServerConfig};
-use oracle_core::symbols::{RomBinding, SymbolTable};
+use oracle_core::symbols::{Indeterminate, RomBinding, SymbolTable};
 use oracle_core::system::System;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -94,7 +94,24 @@ fn main() -> ExitCode {
     machine.symbols_path = table_path;
     let handle = server.spawn(machine);
 
-    // Park forever; the handle's Drop unlinks the socket if this ever unwinds.
+    // Park forever.
+    //
+    // **The socket file outlives this process, and that is a known limitation rather than an
+    // oversight.** `ServerHandle::drop` unlinks it, but nothing here ever unwinds: a `SIGINT` or
+    // `SIGTERM` kills the process outright, so the path is left behind and the next client to connect
+    // gets `ECONNREFUSED` from a dead file rather than `ENOENT` from an absent one. That is confusing —
+    // it reads as "the server is broken" rather than "the server is not running" — and it has been
+    // reported from a real session.
+    //
+    // Catching those signals needs either `signal-hook` or `unsafe` `libc`, and this crate's runtime
+    // dependency set is deliberately `oracle-core` + `serde_json` and documented as not growing (see
+    // `Cargo.toml`), while the library half is `forbid(unsafe_code)`. So the fix is not free and is not
+    // taken unilaterally here.
+    //
+    // What *is* handled, and is what keeps a stale file from being fatal: [`Server::bind`] probes the
+    // path before binding — it connects, refuses with `AddrInUse` if a live server answers, and unlinks
+    // if nothing does. A stale socket therefore never blocks a restart, which is the half that matters
+    // for recovery. `tests/socket_lifecycle.rs` pins both directions.
     loop {
         std::thread::sleep(std::time::Duration::from_secs(3600));
         std::hint::black_box(&handle);
@@ -138,8 +155,13 @@ fn load_symbols(path: &Path, rom: &[u8]) -> (Option<SymbolTable>, Option<String>
                 "symbols: {} symbols from {} ({})",
                 table.len(),
                 path.display(),
+                // The two unverified shapes are different findings and must not share a line: one
+                // listing gave us no offset to probe, the other gave us one that says "no appendix
+                // here". Same split as `Engine::load_symbols`' caveat.
                 match binding {
                     RomBinding::Match { .. } => "bound to this image",
+                    RomBinding::Indeterminate(Indeterminate::EndOfRomIsImageEnd { .. }) =>
+                        "UNVERIFIED — EndOfRom is the image's end, the no-appendix shape",
                     _ => "UNVERIFIED — no EndOfRom to probe",
                 }
             );

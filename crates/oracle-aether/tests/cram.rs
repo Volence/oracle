@@ -406,16 +406,27 @@ fn write_cram_needs_a_paused_machine() {
 // The two standing properties of a poke (§6, stated there rather than as a per-reply caveat)
 // ---------------------------------------------------------------------------------------------------
 
-/// **A poke is never offered to the watch surface.** A hit's `pc` names the instruction that drove the
-/// access and a poke has none to name; since §11.15 a captured CRAM write also carries a landing clock a
-/// poke cannot supply. This is the direct pin of `Vdp::poke_cram`'s design choice and the one test that
-/// would catch a later "simplification" into `write_target`.
+/// **A poke is never offered to the watch surface** — the end-to-end half of that property.
 ///
-/// The anti-vacuity control is the whole point of the arrangement: a watch that never matched anything
-/// would pass a "no new hits" assertion trivially, so the same watch is first shown catching **real**
-/// guest-driven CRAM writes, and only then is the poke shown not to move it. That is why the fixture is
-/// `build_cram_midframe` rather than the plain test ROM — the plain one never writes CRAM at all
-/// (measured: `seen` 89,604, `matched` 0), so the control would have been the vacuity it exists to catch.
+/// A hit's `pc` names the instruction that drove the access and a poke has none to name; since §11.15 a
+/// captured CRAM write also carries a landing clock a poke cannot supply.
+///
+/// # What this test does NOT prove, and where the real pin lives
+///
+/// It cannot distinguish the seam's design from the run lifecycle, and it took a mutation to notice.
+/// `capture_armed` is set only for the duration of a `System::run` and cleared at the end, while
+/// `write_cram` requires a **paused** machine — so on the wire a poke cannot reach a watch recorder no
+/// matter what `Vdp::poke_cram` does. Mutating that function to call `capture` leaves this test green.
+///
+/// The property is therefore pinned on the primitive, with the recorder explicitly armed, by
+/// `oracle_core::vdp::tests::poke_cram_never_captures_even_with_the_recorder_armed` — *that* is the test
+/// which catches a later "simplification" into `write_target`. This one pins the composite a client
+/// actually observes, which is worth having and is not the same claim.
+///
+/// The anti-vacuity control below is still doing work: it establishes that the watch is live and
+/// matching real guest CRAM writes, so "the counters did not move" is a statement about the poke rather
+/// than about a watch that never matched anything. That is why the fixture is `build_cram_midframe` — the
+/// plain test ROM never writes CRAM at all (measured: `seen` 89,604, `matched` 0).
 #[test]
 fn a_poke_is_never_offered_to_the_watch_surface() {
     let h = spawn_system(
