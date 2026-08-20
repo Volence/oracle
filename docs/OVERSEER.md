@@ -109,7 +109,7 @@ F-LST-NONDEB2-BINDING retire with it), plus the Tier-1 carry-forwards in
 under a live agent). Fresh worktrees: `ln -s <repo>/vendor vendor`, verify 17 TestRoms entries, and
 open every dispatch with a base check (commit-message string + a file that must exist). Exact-path
 `git add` only; `git show --stat` per commit; no Co-Authored-By trailers. Never `cargo test | tail`.
-`pkill -f` self-matches. Aether sockets live under `$XDG_RUNTIME_DIR`. `/tmp` is quota'd —
+`pkill -f`/`pgrep -f` self-match (the waiting shell's own command line contains the pattern) — bracket the first character: `pgrep -f "[c]argo test"`. Aether sockets live under `$XDG_RUNTIME_DIR`. `/tmp` is quota'd —
 free space is not the signal. The frontend is bin-only (`pub fn` with no caller = hard error).
 `ls` is aliased to eza. Owner tests run `aeon/s4.debug.bin`.
 
