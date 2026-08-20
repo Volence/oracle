@@ -1,5 +1,5 @@
-//! The profiler surface — `protocol.md` §6 (profiler), adopted as CR-26 (§11.16) with the two adjudicated
-//! deltas.
+//! The profiler surface — `protocol.md` §6 (profiler), adopted as CR-26 (§11.16) with its three
+//! adjudicated deltas.
 //!
 //! Every test here is a **wire round trip**, so each reply is validated against the vendored contract
 //! fragments on the way past — open, and then closed with `unevaluatedProperties: false` per §8 item 20.
@@ -8,12 +8,18 @@
 //! `anyOf` + `not`, and require `cyclesSelf` on an interrupt bucket — a key added by the delta ruling
 //! precisely so the reconciliation identity §6 tells a client to compute is *computable from a reply*.
 //!
-//! The two gates the adoption condition names live here:
+//! The gates the adoption condition names live here:
 //!
 //! * **The reconciliation identity, computed from a reply** —
 //!   [`the_identity_closes_when_computed_from_the_wire`]. Not from the internal `Report`, which is how the
 //!   in-tree gate closed while the fragment still refused the key the sum needs; from the JSON, using only
-//!   keys a client can see.
+//!   keys a client can see. Since delta 3 its primary form is asserted with `==` and **no condition
+//!   attached**, over the undivided `*Total` figures.
+//! * **The pair invariant** — [`every_divided_figure_has_an_undivided_partner_that_bounds_it`]: each of the
+//!   four divided figures equals its `*Total` partner over `frameCount`, on every row and both buckets,
+//!   which is what makes a total one accumulator read twice rather than a second measurement.
+//! * **The negative control** — [`the_undivided_set_is_refused_on_a_per_frame_row`]: the one place in this
+//!   file that checks a field did *not* arrive.
 //! * **Determinism, three boots byte-identical** — [`three_boots_are_byte_identical`]. Aeon's spread-0 bar
 //!   expressed as this suite's gate.
 
@@ -58,12 +64,10 @@ fn u64_of(v: &Value, key: &str) -> u64 {
 /// Sum one numeric key across every routine row **and** both interrupt buckets — the left-hand side of the
 /// reconciliation identity, over whichever spelling of "self cycles" is being reconciled.
 ///
-/// Factored out because there are two spellings and the second is coming: today the wire carries only the
-/// DIVIDED `cyclesSelf`, so the identity needs a `× frameCount` and a `perFrameExact` branch. CR-26's
-/// delta 3 adds undivided `*Total` figures to rows and buckets, at which point the exact form is this same
-/// call with `"cyclesSelfTotal"` and no reconstruction arithmetic at all. Keeping the traversal in one
-/// place means adding that assertion is one line rather than a second copy of this walk that can drift
-/// from the first.
+/// Factored out because there are two spellings, and delta 3 landed the second: `"cyclesSelfTotal"` is the
+/// undivided term the identity closes on exactly and unconditionally, `"cyclesSelf"` the divided one whose
+/// reconstruction needs a `× frameCount` and a `perFrameExact` branch. One traversal serves both, so the
+/// exact assertion is one line rather than a second copy of this walk that can drift from the first.
 fn sum_over_rows_and_buckets(r: &Value, key: &str) -> u64 {
     let rows: u64 = r["routines"]["items"]
         .as_array()
@@ -207,27 +211,31 @@ fn arming_resets_and_disarming_retains() {
 
 /// **The reconciliation identity, computed from a reply.**
 ///
-/// §6 states it over the undivided sample, and gives the client-side form because the wire carries the row
-/// and bucket figures divided:
+/// The primary form, since delta 3, needs no caveat and no arithmetic:
+///
+/// ```text
+/// Σ routines[].cyclesSelfTotal + Σ interrupts[].cyclesSelfTotal + unattributedCycles == sampleCycles
+/// ```
+///
+/// — asserted **unconditionally**, with `==`, on whatever sample the fixture happens to produce. No
+/// `× frameCount`, no `perFrameExact` branch, and every term a REQUIRED key of the reply. That is the whole
+/// point of the undivided set: before it, a suite could only gate the identity on a fixture engineered to
+/// divide evenly.
+///
+/// The divided view's reconstruction is kept beneath it as the **secondary** check, because it is still
+/// what a client reading only the per-frame figures can compute, and its weakness is worth pinning:
 ///
 /// ```text
 /// (Σ routines[].cyclesSelf + Σ interrupts[].cyclesSelf) × frameCount + unattributedCycles == sampleCycles
 /// ```
 ///
+/// exact when `perFrameExact`, and otherwise floored per summed figure — short by at most `frameCount − 1`
+/// each and NEVER over. Both directions are asserted.
+///
 /// This is the D-M1 lesson made executable. The in-tree gate closed while the fragment still refused
 /// `cyclesSelf` on a bucket, because that gate reads the internal `Report` — whose buckets always carried
 /// the field. The contract told a client to compute a sum and then rejected every reply that permitted it,
 /// and nothing noticed, because nothing computed it *from a reply*. This does.
-///
-/// Guaranteed exact when `perFrameExact`; when not, floored per summed figure, so it may fall short by at
-/// most `frameCount − 1` each and NEVER over. Both directions are asserted.
-///
-/// **The branch below is temporary, by design of the contract rather than of this test.** CR-26's delta 3
-/// adds undivided `*Total` figures to rows and buckets, at which point the identity has an
-/// unconditionally exact wire form — `Σ cyclesSelfTotal + unattributedCycles == sampleCycles`, with no
-/// `× frameCount` and no dependence on `perFrameExact` at all. When that lands, the assertion is
-/// `sum_over_rows_and_buckets(&r, "cyclesSelfTotal") + unattributed == sample` and this branch becomes the
-/// legacy half rather than the only half.
 #[test]
 fn the_identity_closes_when_computed_from_the_wire() {
     let (_h, mut c, _init) = booted("prof-identity", default_shape());
@@ -250,6 +258,17 @@ fn the_identity_closes_when_computed_from_the_wire() {
         "this sample must fit in one reply or the sum below is not the sample's"
     );
 
+    // PRIMARY: the undivided identity, exact, with no condition attached to it at all.
+    let exact_self = sum_over_rows_and_buckets(&r, "cyclesSelfTotal");
+    assert_eq!(
+        exact_self + unattributed,
+        sample,
+        "the undivided identity closes exactly and unconditionally (perFrameExact is {}): \
+         {exact_self} + {unattributed} vs {sample}",
+        r["perFrameExact"]
+    );
+
+    // SECONDARY: what a client reading only the divided figures can reconstruct, and its bound.
     let reconstructed = divided_self * frame_count + unattributed;
     if r["perFrameExact"] == json!(true) {
         assert_eq!(
@@ -288,6 +307,180 @@ fn an_empty_sample_is_a_reply_and_not_an_error() {
     );
     assert_eq!(r["routines"]["total"], json!(0));
     assert_eq!(r["routines"]["items"].as_array().map(Vec::len), Some(0));
+
+    // There are no rows here, but **both buckets are always present**, so an empty sample does have
+    // carriers for the undivided set — they carry all-zero pairs. That is why the pair invariant is scoped
+    // by `frameCount > 0` rather than by an absence of carriers that is not true of buckets.
+    for k in ["hint", "vint"] {
+        for f in UNDIVIDED {
+            assert_eq!(
+                u64_of(&r["interrupts"][k], f),
+                0,
+                "an empty sample's {k} bucket carries {f} as 0, not as an absence: {}",
+                r["interrupts"][k]
+            );
+        }
+    }
+    assert_eq!(
+        sum_over_rows_and_buckets(&r, "cyclesSelfTotal") + u64_of(&r, "unattributedCycles"),
+        u64_of(&r, "sampleCycles"),
+        "the degenerate identity, in the same unconditional form: 0 + 0 == 0"
+    );
+}
+
+// --- the undivided set (delta 3) -------------------------------------------------------------------------
+
+/// The four undivided fields, and the divided partner each one bounds.
+const PAIRS: [(&str, &str); 4] = [
+    ("cycles", "cyclesTotal"),
+    ("cyclesSelf", "cyclesSelfTotal"),
+    ("stallCycles", "stallCyclesTotal"),
+    ("calls", "callsTotal"),
+];
+
+/// Just the undivided half of [`PAIRS`], for the places that only need the names.
+const UNDIVIDED: [&str; 4] = [
+    "cyclesTotal",
+    "cyclesSelfTotal",
+    "stallCyclesTotal",
+    "callsTotal",
+];
+
+/// **Every divided figure has an undivided partner, and the partner bounds its truncation.**
+///
+/// `divided == total / frameCount` under integer division whenever `frameCount > 0`, equivalently
+///
+/// ```text
+/// divided × frameCount ≤ total < (divided + 1) × frameCount
+/// ```
+///
+/// Checked for all four pairs on every routine row **and** on both interrupt buckets, across three fixture
+/// shapes — a leaf called three times a frame, a VBlank-only sample, and a DMA stall, the last so the
+/// `stallCycles` pair is not checked only against zeroes. Asserted in both spellings: the division and the
+/// two-sided bound are the same statement, and a server that satisfied one without the other would be
+/// emitting a partner that is not the number it was divided from.
+///
+/// The relation is what makes a total more than a second number on the wire: it says the pair came from one
+/// accumulator, so a client may mix the two views in one calculation.
+#[test]
+fn every_divided_figure_has_an_undivided_partner_that_bounds_it() {
+    let shapes = [
+        ("prof-pairs-leaf", default_shape()),
+        (
+            "prof-pairs-vint",
+            oracle_core::testrom::ProfilerShape::Interrupts {
+                hint: false,
+                vint: true,
+            },
+        ),
+        (
+            "prof-pairs-stall",
+            oracle_core::testrom::ProfilerShape::Stall {
+                kind: oracle_core::testrom::StallKind::Dma,
+            },
+        ),
+    ];
+
+    // Anti-vacuity: a walk over rows that are all zero would pass every assertion below without testing
+    // anything, so the pairs actually exercised are counted and the count is asserted.
+    let mut non_zero_pairs = 0_u32;
+    let mut truncated_pairs = 0_u32;
+
+    for (tag, shape) in shapes {
+        let (_h, mut c, _init) = booted(tag, shape);
+        let r = arm_run_read(&mut c, 6, false);
+        let n = u64_of(&r, "frameCount");
+        assert!(n > 0, "{tag}: a sample of no frames proves nothing: {r}");
+
+        let mut carriers: Vec<(String, &Value)> = vec![
+            ("interrupts.hint".to_string(), &r["interrupts"]["hint"]),
+            ("interrupts.vint".to_string(), &r["interrupts"]["vint"]),
+        ];
+        let rows = r["routines"]["items"].as_array().expect("routines.items");
+        for (i, row) in rows.iter().enumerate() {
+            carriers.push((format!("routines[{i}] {}", row["addr"]), row));
+        }
+
+        for (what, carrier) in carriers {
+            for (divided_key, total_key) in PAIRS {
+                let divided = u64_of(carrier, divided_key);
+                let total = u64_of(carrier, total_key);
+                assert_eq!(
+                    divided,
+                    total / n,
+                    "{tag} {what}: {divided_key} must be {total_key} / frameCount ({total} / {n}), \
+                     not a separately accumulated figure: {carrier}"
+                );
+                assert!(
+                    divided * n <= total && total < (divided + 1) * n,
+                    "{tag} {what}: {total_key} must bound {divided_key}'s truncation — \
+                     {divided} x {n} <= {total} < {} : {carrier}",
+                    (divided + 1) * n
+                );
+                if total > 0 {
+                    non_zero_pairs += 1;
+                }
+                if divided * n != total {
+                    truncated_pairs += 1;
+                }
+            }
+        }
+    }
+
+    assert!(
+        non_zero_pairs >= 8,
+        "the walk must have had real figures to check, not a table of zeroes: {non_zero_pairs}"
+    );
+    assert!(
+        truncated_pairs > 0,
+        "and at least one pair must actually have been truncated by the division — otherwise the bound \
+         is only ever checked at its equality case, which is the case a bug would not break"
+    );
+}
+
+/// **The negative control: the undivided set is refused on a `perFrame[]` row.**
+///
+/// Every other assertion in this file checks that a field *arrived*. This one checks that it did not arrive
+/// where it does not belong — the bound delta 3 states in prose (per-frame rows are whole-frame totals with
+/// no per-routine breakdown, so they are already undivided and a total there would be a second spelling of
+/// the same number) and which the fragment enforces with `additionalProperties: false` on the row shape.
+///
+/// Proven by validation rather than by inspection: a **real** reply, doctored four ways, one field at a
+/// time, must be rejected by the same closed fragment `Client::recv` puts every line through.
+#[test]
+fn the_undivided_set_is_refused_on_a_per_frame_row() {
+    let (_h, mut c, _init) = booted("prof-negctl", default_shape());
+    let r = arm_run_read(&mut c, 4, true);
+    assert!(
+        !r["perFrame"]["items"]
+            .as_array()
+            .expect("perFrame.items")
+            .is_empty(),
+        "the control needs a row to doctor: {r}"
+    );
+
+    // The reply as it came off the wire already passed; that is this control's positive half, and it is
+    // re-asserted here so a validator that stopped rejecting anything could not hide behind it.
+    let envelope = |result: &Value| json!({"jsonrpc": "2.0", "id": 1, "result": result});
+    common::schema::check_incoming(&envelope(&r), Some("emulator/get_profiler_frames"))
+        .expect("the undoctored reply is conformant");
+
+    for f in UNDIVIDED {
+        let mut doctored = r.clone();
+        doctored["perFrame"]["items"][0][f] = json!(1);
+        let failures = common::schema::check_incoming(
+            &envelope(&doctored),
+            Some("emulator/get_profiler_frames"),
+        )
+        .expect_err(&format!(
+            "a perFrame[] row carrying {f} must be REFUSED — the four undivided fields belong to the \
+             routine row and the interrupt bucket only"
+        ));
+        assert!(
+            failures.iter().any(|m| m.contains(f)),
+            "the refusal must name {f} rather than failing for some unrelated reason: {failures:?}"
+        );
+    }
 }
 
 // --- the containers and their refusals -----------------------------------------------------------------
