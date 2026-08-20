@@ -219,18 +219,40 @@ fragments out of 22 were left behind by a large amendment. Registered, not silen
 
 ## Re-vendoring
 
-When the freshness test goes red:
+> ### ⚠ While `TRACKED_REVISION` is `Some`, copy from the OBJECT STORE, never from the checkout
+>
+> The sibling `empyrean/` working tree is on whatever branch someone last checked out — normally the
+> default branch, which while a draft is being tracked holds the **pre-amendment** schema. A `cp` from it
+> therefore *downgrades* the vendored copy, and the downgrade is quiet: the freshness test's plain compare
+> sees vendored == upstream working tree and returns early, so **it goes green on the wrong file**. What
+> actually goes red is some unrelated suite, whose obvious "fix" is to change the server to match a schema
+> that has silently gone backwards. Take the bytes from the revision by name instead.
+
+When the freshness test goes red, while a draft revision is tracked (`TRACKED_REVISION` is `Some` in
+`tests/schema_conformance.rs`, and the ⚠ box near the top of this file is present):
+
+```sh
+REV=<the contract revision this copy should track>
+git -C /home/volence/sonic_hacks/empyrean show "$REV:contract/schema/bus-protocol.schema.json" \
+   > crates/oracle-aether/tests/contract/bus-protocol.schema.json
+sha256sum crates/oracle-aether/tests/contract/bus-protocol.schema.json
+# The revision the copy tracks, and the last commit that actually moved the schema — record BOTH, they
+# differ whenever a prose-only ruling round lands on top of a schema change.
+git -C /home/volence/sonic_hacks/empyrean log -1 --format='%H %s' "$REV"
+git -C /home/volence/sonic_hacks/empyrean log -1 --format='%H %s' "$REV" -- contract/schema/bus-protocol.schema.json
+```
+
+Once the draft has merged and `TRACKED_REVISION` is back to `None`, the checkout *is* the authority and the
+plain copy is correct again:
 
 ```sh
 cp /home/volence/sonic_hacks/empyrean/contract/schema/bus-protocol.schema.json \
    crates/oracle-aether/tests/contract/bus-protocol.schema.json
-sha256sum crates/oracle-aether/tests/contract/bus-protocol.schema.json
-git -C /home/volence/sonic_hacks/empyrean log -1 --format='%H %s' -- contract/schema/bus-protocol.schema.json
 ```
 
-Update the table above with the new commit and hash, then run `cargo test -p oracle-aether`. If the new
-schema rejects messages the server sends, **that is the point** — contract §8 item 15: where a server's
-shape and the schema disagree, the server changes. Never the wire silently.
+Either way: update the table above with the new commit and hash, then run `cargo test -p oracle-aether`. If
+the new schema rejects messages the server sends, **that is the point** — contract §8 item 15: where a
+server's shape and the schema disagree, the server changes. Never the wire silently.
 
 ## Locating the upstream copy
 
