@@ -24,7 +24,12 @@ with tools that then exist).
 
 1. ~~Profiler slice 4 + merge window~~ **DONE 2026-08-19 late** — merged oracle `f7a8d54` /
    empyrean `5232574` (CR-26 + 3 deltas; the branch is now `main`; the repo folder is now
-   `oracle/`, the legacy C++ one is `oracle-old/`).
+   `oracle/`, the legacy C++ one is `oracle-old/`). Rename fallout note: the compat symlink
+   (`oracle-next` → `oracle`) protected consumers of THIS repo's paths, but consumers of the OLD
+   repo's path (`oracle/linux-port/...` — aeon's 13 probe/gate tools, our MCP config) got a path
+   that resolves into the WRONG repo, not a dead one; aeon hotfixed theirs to `oracle-old/`
+   (aeon `17bcd111`), ours was updated at rename time. Lesson: renaming A→B while B's old name
+   goes to C breaks C's consumers silently — cover BOTH sides of a swap.
 2. **CRAM handlers** (CR-27 fully adjudicated; empyrean `cram-params-amendment` parked) — serve
    `write_cram` (require_paused, demand-confirmed) + `read_cram`; then that merge window (+ §11.17,
    + the parse-derived merged-count check, + Aurora's branch-probe acceptance).
