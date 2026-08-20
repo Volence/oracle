@@ -11,6 +11,7 @@
 //! [`push_frame`]s it into the [`AudioProd`] whose paired [`AudioCons`] is popped by the cpal callback.
 
 use oracle_core::bus::{Fanout, Observe};
+use oracle_core::profiler::Profiler;
 use oracle_core::synth::AudioSink;
 use oracle_core::watchpoints::Watchpoints;
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
@@ -299,9 +300,20 @@ pub fn fill_output(cons: &mut AudioCons, out: &mut [f32], channels: usize, flush
 /// asked to pause. `Observe` forwards every observation (so `seen` still means "the recorder rode this run")
 /// and drops only the halt, which belongs to the runs a client bounded.
 ///
-/// Construct it with `AudioAndWatch::new(&mut audio_sink, armed.then(|| bus.watch_sink()))`; the two halves
-/// are the public fields `a` (audio) and `b` (watch).
-pub type AudioAndWatch<'a> = Fanout<&'a mut AudioSink, Option<Observe<&'a mut Watchpoints>>>;
+/// Construct it with `AudioAndWatch::new(&mut audio_sink, Fanout::new(watch, prof))` over the pair
+/// `bus.run_sinks()` returns; the two halves are the public fields `a` (audio) and `b` (the instruments).
+///
+/// **The second half is now a pair, and the name is kept for the same reason as before: it says what this
+/// composite *is*.** CR-26 gave the bus a second lent instrument — the profiler — and it needs this run for
+/// exactly the reason the watch does: a client arms it over the socket while the window is playing, and a
+/// loop that fed only the watch would report `frameCount: 0` for frames the player really ran. Both halves
+/// are `Option`s because "not armed" is the ordinary case, and both arrive already wrapped in [`Observe`],
+/// so the stop signal a `stopAfter` watch raises on a *level* cannot end this loop's 1-frame runs.
+pub type Instruments<'a> =
+    Fanout<Option<Observe<&'a mut Watchpoints>>, Option<Observe<&'a mut Profiler>>>;
+
+/// The audio sink and the bus's lent instruments, riding one run. See [`Instruments`].
+pub type AudioAndWatch<'a> = Fanout<&'a mut AudioSink, Instruments<'a>>;
 
 #[cfg(test)]
 mod tests {
@@ -782,7 +794,12 @@ mod tests {
         let mut watch = Watchpoints::new(64);
         watch.add_watch(watched, WatchOp::Write, "ref");
         {
-            let mut sink = AudioAndWatch::new(&mut audio, Some(Observe(&mut watch)));
+            // The instruments half is the pair the bus lends (CR-26); this test drives the watch, so the
+            // profiler half is the ordinary `None`.
+            let mut sink = AudioAndWatch::new(
+                &mut audio,
+                Fanout::new(Some(Observe(&mut watch)), None::<Observe<&mut Profiler>>),
+            );
             sink.on_step_boundary(0x1234, 0); // latches audio's first frame + stamps the watch
             sink.on_event(write_event(0xFF_0100, 0xAB));
             sink.on_event(write_event(0xFF_0200, 0xCD));
@@ -811,7 +828,13 @@ mod tests {
     #[test]
     fn composite_without_watch_drives_audio_only() {
         let mut audio = AudioSink::new(44_100);
-        let mut sink = AudioAndWatch::new(&mut audio, None);
+        let mut sink = AudioAndWatch::new(
+            &mut audio,
+            Fanout::new(
+                None::<Observe<&mut Watchpoints>>,
+                None::<Observe<&mut Profiler>>,
+            ),
+        );
         assert!(
             !sink.wants_vdp_writes(),
             "audio-only composite wants no VDP writes"

@@ -323,17 +323,22 @@ impl Host {
         self.engine.watchpoints_mut()
     }
 
-    /// The same instrument, wrapped for **attaching to the host's own run** — see [`watchpoints_mut`] for
-    /// what it is and [`Observe`](oracle_core::bus::Observe) for what the wrapper drops.
+    /// **Both instruments, wrapped for attaching to the host's own run** — the watch and, since CR-26, the
+    /// profiler. See [`Engine::run_sinks`](crate::engine::Engine::run_sinks) for the whole argument: why
+    /// they are lent rather than owned by the run driver, why the arming conditions live down there rather
+    /// than in the host's loop, why both are wrapped in [`Observe`](oracle_core::bus::Observe), and why the
+    /// pair comes from one call rather than two accessors.
     ///
-    /// A host must put *this* in its per-frame sink and never the bare instrument. A watch armed with
-    /// `stopAfter` raises `stop_requested` on a level (`matched >= n`, permanently), so a shared instrument
-    /// attached bare would end every one of the host's 1-frame runs before it began — a client's stop
-    /// condition turned into a frozen window, on a machine nobody asked to pause. The observations still
-    /// land, so `seen` still means "the recorder rode this run"; only the halt, which belongs to the runs a
-    /// client bounded, is dropped.
-    pub fn watch_sink(&mut self) -> Observe<&mut oracle_core::watchpoints::Watchpoints> {
-        Observe(self.engine.watchpoints_mut())
+    /// A host puts *these* in the per-frame sink it already builds for the scanline capture, and never the
+    /// bare instruments. `None` means "not armed, attach nothing" — which is a live case on nearly every
+    /// frame and is why the halves are `Option`s rather than always-on sinks.
+    pub fn run_sinks(
+        &mut self,
+    ) -> (
+        Option<Observe<&mut oracle_core::watchpoints::Watchpoints>>,
+        Option<Observe<&mut oracle_core::profiler::Profiler>>,
+    ) {
+        self.engine.run_sinks()
     }
 
     // ---------------------------------------------------------------- the picture (conflict 3)
@@ -655,8 +660,14 @@ mod tests {
     /// the run. `armed` mirrors the loop's own attach condition.
     fn player_frame(h: &mut Host, sys: &mut System, cap: &mut ScanlineCapture, armed: bool) {
         if armed {
-            // `watch_sink`, never `watchpoints_mut`: the bare instrument would halt this loop.
-            let mut sink = oracle_core::bus::Fanout::new(&mut *cap, h.watch_sink());
+            // `run_sinks`, never the bare instruments: an unwrapped watch would halt this loop. Both
+            // halves ride, exactly as `oracle-frontend/src/main.rs` attaches them — a loop that took only
+            // the watch is the M1 defect, and it is what the negative controls below run without.
+            let (watch, prof) = h.run_sinks();
+            let mut sink = oracle_core::bus::Fanout::new(
+                &mut *cap,
+                oracle_core::bus::Fanout::new(watch, prof),
+            );
             sys.run_frames_with_sink(1, &mut sink);
         } else {
             sys.run_frames_with_sink(1, &mut *cap);
@@ -778,6 +789,99 @@ mod tests {
             "the bus sees the panel's watch too"
         );
         assert_eq!(list["watches"][1]["label"], json!("panel"));
+    }
+
+    /// ## ★ The same claim for the PROFILER (CR-26): a sample armed over the bus measures the frames the
+    /// PLAYER ran.
+    ///
+    /// The watch test above is the pattern; this is the second instrument, and it had the same hole. A
+    /// profiler attached only to the engine's own runs answers a hosted client with `frameCount: 0` and no
+    /// rows — indistinguishable from *"the game did nothing"*, about frames that really happened, on the
+    /// one machine anybody actually plays. The fix is the same seam ([`Host::run_sinks`]), so the witness
+    /// is the same shape:
+    ///
+    /// 1. **The negative control first**, while it is unambiguous: frames the instruments are not lent to
+    ///    advance the machine and leave the sample empty. That is precisely what an unattached profiler
+    ///    does on EVERY frame of a hosted session.
+    /// 2. **Then the real loop**: the player runs the machine, lends both instruments, and the sample the
+    ///    wire serves has those frames in it — with rows, and with the reconciliation identity closing over
+    ///    a sample that only the player's runs produced.
+    /// 3. **And arming is invisible to the loop's shape**: the same `player_frame` call is what feeds it,
+    ///    so nothing here depends on the player knowing a profiler exists.
+    #[test]
+    fn a_profiler_armed_over_the_bus_measures_the_players_own_frames() {
+        let mut h = Host::new(HostConfig::default());
+        let mut sys = booted_with_vint();
+        let mut cap = ScanlineCapture::new(Retain::LastFrame);
+
+        let armed = call_ok(
+            &mut h,
+            &mut sys,
+            "emulator/set_profiler",
+            json!({"enabled": true}),
+        );
+        assert_eq!(armed["enabled"], json!(true));
+
+        // --- The negative control. Frames without the instruments: the machine moves, the sample does not.
+        let mclk = sys.scheduler().now();
+        for _ in 0..3 {
+            player_frame(&mut h, &mut sys, &mut cap, false);
+        }
+        assert!(sys.scheduler().now() > mclk, "the machine really advanced");
+        let unlent = call_ok(&mut h, &mut sys, "emulator/get_profiler_frames", json!({}));
+        assert_eq!(
+            unlent["frameCount"],
+            json!(0),
+            "an unlent profiler reports frames it never saw as no frames at all — the M1 defect: {unlent}"
+        );
+
+        // --- The real loop.
+        for _ in 0..4 {
+            player_frame(&mut h, &mut sys, &mut cap, true);
+        }
+        let s = call_ok(&mut h, &mut sys, "emulator/get_profiler_frames", json!({}));
+        let frames = s["frameCount"].as_u64().expect("a count");
+        // Not `== 4`: a sample is delimited by frame boundaries at both ends, so the frame in flight when
+        // it opened and the one in flight when it is read are not whole frames of it. The claim being
+        // made is that the player's frames landed in a sample that was empty a moment ago.
+        assert!(
+            frames >= 3,
+            "the bus's profiler rode the PLAYER's runs: {s}"
+        );
+        assert!(
+            s["sampleCycles"].as_u64().is_some_and(|c| c > 0),
+            "and measured them: {s}"
+        );
+        assert!(
+            s["routines"]["items"]
+                .as_array()
+                .is_some_and(|r| !r.is_empty()),
+            "the fixture's VInt handler and its callees are rows: {s}"
+        );
+
+        // The identity, over a sample no engine-driven run contributed to. Undivided, so this needs no
+        // `perFrameExact` branch — see `tests/profiler.rs`.
+        let sum = |v: &Value| -> u64 {
+            let rows: u64 = v["routines"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["cyclesSelfTotal"].as_u64().unwrap())
+                .sum();
+            rows + ["hint", "vint"]
+                .iter()
+                .map(|k| v["interrupts"][*k]["cyclesSelfTotal"].as_u64().unwrap())
+                .sum::<u64>()
+        };
+        assert_eq!(
+            sum(&s) + s["unattributedCycles"].as_u64().unwrap(),
+            s["sampleCycles"].as_u64().unwrap(),
+            "the hosted sample reconciles exactly, like any other: {s}"
+        );
+
+        // …and `get_profiler`'s count is the same number, from a sample the player produced.
+        let state = call_ok(&mut h, &mut sys, "emulator/get_profiler", json!({}));
+        assert_eq!(state["framesRecorded"], json!(frames));
     }
 
     /// The other consequence of one shared instrument: the panel can arm a census by a key this **bus** does

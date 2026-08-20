@@ -27,6 +27,7 @@
 use oracle_aether::host::{Host, HostConfig};
 use oracle_core::bus::Observe;
 use oracle_core::io::Pad;
+use oracle_core::profiler::Profiler;
 use oracle_core::scanline_capture::ScanlineCapture;
 use oracle_core::symbols::SymbolTable;
 use oracle_core::system::System;
@@ -138,14 +139,24 @@ impl Bus {
         self.host.watchpoints_mut()
     }
 
-    /// The same instrument, wrapped for **attaching to this loop's run** — see
-    /// [`Observe`](oracle_core::bus::Observe). A watch armed over the socket with `stopAfter` raises
-    /// `stop_requested` on a level, not an edge, so attaching the bare instrument would end every one of
-    /// this loop's 1-frame runs before it began: a client's stop condition turned into a frozen window on a
-    /// machine nobody asked to pause. The observations still land; only the halt, which belongs to the runs
-    /// a client bounded, is dropped.
-    pub fn watch_sink(&mut self) -> Observe<&mut Watchpoints> {
-        Observe(self.watchpoints_mut())
+    /// **Both instruments the player's run loop must feed** — the watch, and since CR-26 the profiler.
+    ///
+    /// The whole argument lives in [`Engine::run_sinks`](oracle_aether::engine::Engine::run_sinks): the
+    /// arming conditions, the [`Observe`](oracle_core::bus::Observe) wrappers, and why the pair comes from
+    /// one call (one run needs both, and two `&mut self` accessors cannot both be live in the sink
+    /// expression the run requires). The player's job is only to put what comes back into the per-frame
+    /// sink it already builds for the scanline capture.
+    ///
+    /// A profiler is the case that made this a pair: a client arms it over the socket while the window is
+    /// playing, and a loop that fed only the watch would answer that client `frameCount: 0` with no rows —
+    /// "the game did nothing" — about the frames it was watching go past.
+    pub fn run_sinks(
+        &mut self,
+    ) -> (
+        Option<Observe<&mut Watchpoints>>,
+        Option<Observe<&mut Profiler>>,
+    ) {
+        self.host.run_sinks()
     }
 
     /// Conflict 1, outbound: the player's pause state becomes the bus's free-run state.
@@ -197,5 +208,195 @@ impl Bus {
     /// stale-symbol hazard D7 exists to prevent.
     pub fn set_machine_info(&mut self, info: MachineInfo) {
         self.host.set_machine_info(info.into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oracle_core::bus::Fanout;
+    use oracle_core::scanline_capture::Retain;
+    use serde_json::{json, Value};
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    use std::time::{Duration, Instant};
+
+    /// A minimal NDJSON client over the socket this bus really binds — the one thing no in-process
+    /// shortcut can stand in for, because arming the profiler is something only a *client* can do.
+    ///
+    /// It interleaves reads with [`Bus::pump`] because that is the hosted arrangement: the engine answers
+    /// nothing until the player drains it, so a test that blocked on the socket without pumping would
+    /// deadlock exactly as a player that forgot to pump would.
+    struct Peer {
+        w: UnixStream,
+        r: BufReader<UnixStream>,
+        id: u64,
+    }
+
+    impl Peer {
+        fn connect(path: &std::path::Path) -> Self {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match UnixStream::connect(path) {
+                    Ok(s) => {
+                        s.set_read_timeout(Some(Duration::from_millis(20)))
+                            .expect("a read timeout, so the pump gets a turn");
+                        let r = BufReader::new(s.try_clone().expect("clone the stream"));
+                        return Self { w: s, r, id: 1 };
+                    }
+                    Err(e) if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(5));
+                        let _ = e;
+                    }
+                    Err(e) => panic!("connect: {e}"),
+                }
+            }
+        }
+
+        fn send(&mut self, line: &Value) {
+            writeln!(self.w, "{line}").expect("write");
+            self.w.flush().expect("flush");
+        }
+
+        /// Send a request and pump until its reply comes back. The pump is the player's own loop doing
+        /// its one bounded drain per iteration.
+        fn call(&mut self, bus: &mut Bus, sys: &mut System, method: &str, params: Value) -> Value {
+            let id = self.id;
+            self.id += 1;
+            self.send(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}));
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                bus.pump(sys);
+                let mut line = String::new();
+                match self.r.read_line(&mut line) {
+                    Ok(0) => panic!("the server closed the connection"),
+                    Ok(_) => {
+                        let v: Value = serde_json::from_str(&line).expect("NDJSON");
+                        if v["id"] == json!(id) {
+                            assert!(v.get("error").is_none(), "{method}: {}", v["error"]);
+                            return v["result"].clone();
+                        }
+                        // An event or another reply — keep going.
+                    }
+                    Err(_) if Instant::now() < deadline => {}
+                    Err(e) => panic!("{method}: no reply ({e})"),
+                }
+            }
+        }
+    }
+
+    /// One iteration of the **player's** run loop, in exactly the shape `main.rs` uses it: the machine is
+    /// advanced through the scanline capture and whatever [`Bus::run_sinks`] lends it.
+    fn player_frame(bus: &mut Bus, sys: &mut System, cap: &mut ScanlineCapture, lend: bool) {
+        if lend {
+            let (watch, prof) = bus.run_sinks();
+            let mut sink = Fanout::new(&mut *cap, Fanout::new(watch, prof));
+            sys.run_frames_with_sink(1, &mut sink);
+        } else {
+            sys.run_frames_with_sink(1, &mut *cap);
+        }
+        cap.clear();
+    }
+
+    /// ## ★ The player's loop feeds a profiler a CLIENT armed (CR-26 / M1).
+    ///
+    /// This is the frontend half of `oracle_aether::host`'s hosted-profiler witness, and it exists because
+    /// the defect it guards was a defect **of this file's caller**: the loop attached the watch and not the
+    /// profiler, so a client that armed the accountant on a *playing* machine — the only machine anybody
+    /// plays — got `frameCount: 0` and no rows back, which reads as "the game did nothing" and is about
+    /// frames that really happened.
+    ///
+    /// Nothing here is simulated: the bus binds its real socket, a real NDJSON client does the handshake
+    /// and arms the profiler over it, and the sample is read back the same way. The only thing standing in
+    /// for the window is [`player_frame`], which is the loop's sink expression and nothing else.
+    #[test]
+    fn the_players_run_feeds_a_profiler_a_client_armed() {
+        let path = std::env::temp_dir().join(format!(
+            "oracle-prof-seam-{}-{:?}.sock",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let mut sys = System::new(0x5EED);
+        sys.load_rom(oracle_core::testrom::build_profiler(
+            oracle_core::testrom::ProfilerShape::CallsLeaf { k: 3 },
+        ));
+        sys.reset();
+        let mut cap = ScanlineCapture::new(Retain::LastFrame);
+        let mut bus = Bus::start(Some(Some(path.clone())), MachineInfo::default());
+
+        let mut peer = Peer::connect(&path);
+        peer.call(
+            &mut bus,
+            &mut sys,
+            "initialize",
+            json!({
+                "clientId": "frontend-test",
+                "clientName": "bus seam",
+                "clientVersion": "0",
+                "protocolVersion": 1,
+                "clientCapabilities": {"events": false},
+            }),
+        );
+        peer.send(&json!({"jsonrpc":"2.0","method":"initialized"}));
+
+        let armed = peer.call(
+            &mut bus,
+            &mut sys,
+            "emulator/set_profiler",
+            json!({"enabled": true}),
+        );
+        assert_eq!(armed["enabled"], json!(true));
+
+        // The negative control, first: frames the loop does not lend the instruments to. The machine moves
+        // and the sample stays empty — the M1 defect, reproduced deliberately so the assertion below is
+        // known to be measuring the attach and not the fixture.
+        for _ in 0..3 {
+            player_frame(&mut bus, &mut sys, &mut cap, false);
+        }
+        let unlent = peer.call(
+            &mut bus,
+            &mut sys,
+            "emulator/get_profiler_frames",
+            json!({}),
+        );
+        assert_eq!(
+            unlent["frameCount"],
+            json!(0),
+            "an unlent profiler reports the player's frames as no frames at all: {unlent}"
+        );
+
+        // Now the loop as it actually runs.
+        for _ in 0..6 {
+            player_frame(&mut bus, &mut sys, &mut cap, true);
+        }
+        let s = peer.call(
+            &mut bus,
+            &mut sys,
+            "emulator/get_profiler_frames",
+            json!({}),
+        );
+        // `>= 4` rather than `== 6`, and the slack is the sample's own edges: a sample is delimited by
+        // frame boundaries, so the frame in flight when it opened and the one in flight when it was read
+        // are not whole frames of it. What is being asserted is that the player's frames landed in a
+        // sample that was empty three frames ago, which no off-by-one can fake.
+        assert!(
+            s["frameCount"].as_u64().is_some_and(|n| n >= 4),
+            "the client's profiler rode the PLAYER's frames: {s}"
+        );
+        assert!(
+            s["sampleCycles"].as_u64().is_some_and(|c| c > 0),
+            "and measured them: {s}"
+        );
+        assert!(
+            s["routines"]["items"]
+                .as_array()
+                .is_some_and(|r| !r.is_empty()),
+            "the fixture calls a leaf three times a frame, so there are rows: {s}"
+        );
+
+        drop(peer);
+        let _ = std::fs::remove_file(&path);
     }
 }

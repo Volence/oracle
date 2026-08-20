@@ -722,6 +722,53 @@ impl Engine {
         &mut self.watchpoints
     }
 
+    /// **Both run instruments, borrowed for ONE run of a host's own loop.**
+    ///
+    /// This is the seam the hosted arrangement turns on, and since CR-26 there are two instruments behind
+    /// it, not one. There are **two run drivers**: standalone, this engine advances the machine itself and
+    /// [`advance`](Engine::advance) attaches both; hosted, the player owns the loop and the engine only
+    /// borrows the machine inside [`Host::pump`](crate::host::Host::pump). An instrument attached only to
+    /// the engine's own runs therefore sees **nothing** while the player is running the game — the watch
+    /// reports `seen == 0` and the profiler reports `frameCount: 0` with no rows, each of them honest ("the
+    /// recorder was never attached to the run") and useless, about frames that really happened.
+    ///
+    /// **Why one call and not two accessors.** One run needs both, and two `&mut self` accessors cannot
+    /// both be live in one sink expression — the borrow checker forbids exactly the arrangement the run
+    /// requires. Splitting the borrow is only possible here, where the two are separate fields, so the
+    /// split happens once, at the bottom, and every layer above forwards the pair verbatim.
+    ///
+    /// **The arming conditions live here too**, so a host cannot get them subtly wrong: the watch is
+    /// attached when the shared instrument holds any watch at all (a watch a socket client armed is as real
+    /// as one the panel armed, and asking the instrument how many it holds is the one question that covers
+    /// both sources), and the profiler when a client has armed it — which is engine state a host has no
+    /// other way to see. An unarmed instrument attached anyway would still count every bus event, which
+    /// costs the unarmed path something for nothing and makes `seen > 0` mean less than it should.
+    ///
+    /// **Both halves are wrapped in [`Observe`], and for the watch that is load-bearing.** A watch armed
+    /// with `stopAfter` raises `stop_requested` on a *level* (`matched >= n`, permanently), so a shared
+    /// instrument attached bare would end every one of a host's 1-frame runs before it began — a client's
+    /// stop condition turned into a frozen window on a machine nobody asked to pause. The observations
+    /// still land, so `seen` still means "the recorder rode this run"; only the halt, which belongs to the
+    /// runs a client bounded, is dropped. The profiler declares no stop of its own, so its wrapper is
+    /// belt-and-braces rather than load-bearing — kept because a reader should not have to check which
+    /// halves can reach back into the run.
+    ///
+    /// Safe to call outside a drain window, like [`watchpoints_mut`](Engine::watchpoints_mut): both are
+    /// engine state rather than `System` state, so neither answers for the placeholder machine.
+    pub fn run_sinks(
+        &mut self,
+    ) -> (
+        Option<Observe<&mut Watchpoints>>,
+        Option<Observe<&mut Profiler>>,
+    ) {
+        let watch_armed = self.watchpoints.watch_count() > 0;
+        let profiler_armed = self.profiler_armed;
+        (
+            watch_armed.then_some(Observe(&mut self.watchpoints)),
+            profiler_armed.then_some(Observe(&mut self.profiler)),
+        )
+    }
+
     /// Advance the machine `frames` whole frames through the screen capture **and the watch instrument**,
     /// then latch whatever frame the run completed.
     ///

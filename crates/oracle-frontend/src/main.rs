@@ -1570,20 +1570,22 @@ fn main() {
             // optional armed watch), then drain that frame's PCM and push it into the ring for the cpal
             // callback. The composite borrows `sink` for the run and is dropped before the drain re-borrow.
             //
-            // **The attach condition is the instrument's own count, and there is no longer a panel flag
-            // beside it.** A `watch_armed` boolean would say only "the *click* armed something"; a watch a
-            // socket client armed with
-            // `emulator/watchpoint_add` is just as real, and a loop that skipped the sink for it would hand
-            // that client a `seen == 0` reply — "the recorder was never attached to the run" — about frames
-            // that really happened. Asking the shared instrument how many watches it holds is the one
-            // question that covers both sources.
-            let armed = bus.watchpoints_mut().watch_count() > 0;
+            // **Both of the bus's instruments ride this run, and the attach conditions are the bus's own.**
+            // A `watch_armed` boolean here would say only "the *click* armed something"; a watch a socket
+            // client armed with `emulator/watchpoint_add`, or a profiler it armed with
+            // `emulator/set_profiler`, is just as real — and a loop that skipped the sink for either would
+            // hand that client a `seen == 0` / `frameCount: 0` reply ("the recorder was never attached to
+            // the run") about frames that really happened. So the question is asked of the shared
+            // instruments rather than of this loop's state, and it is asked ONCE: one run needs both, and
+            // two `&mut bus` accessors cannot both be live in the expression below. See
+            // `Engine::run_sinks` for the arming rules and for what the `Observe` wrappers drop.
+            let (watch, prof) = bus.run_sinks();
+            let instruments = Fanout::new(watch, prof);
             #[cfg(feature = "audio")]
             {
                 if let Some(a) = audio.as_mut() {
                     {
-                        let audio_and_watch =
-                            audio::AudioAndWatch::new(&mut a.sink, armed.then(|| bus.watch_sink()));
+                        let audio_and_watch = audio::AudioAndWatch::new(&mut a.sink, instruments);
                         let mut sink = Fanout::new(&mut cap, audio_and_watch);
                         sys.run_frames_with_sink(1, &mut sink);
                     }
@@ -1591,24 +1593,20 @@ fn main() {
                     // The volume/mute setting is applied here, on the producer side, so the real-time
                     // callback stays a pure copy (see `audio::push_frame`).
                     audio::push_frame(&mut a.prod, &pcm, audio::gain_for(volume, muted));
-                } else if armed {
-                    // Audio disabled at runtime (no device): same video-only path as a no-audio build. Only
-                    // pay for the recording watch sink when a watch is armed.
-                    let mut sink = Fanout::new(&mut cap, bus.watch_sink());
-                    sys.run_frames_with_sink(1, &mut sink);
                 } else {
-                    sys.run_frames_with_sink(1, &mut cap);
+                    // Audio disabled at runtime (no device): same video-only path as a no-audio build. The
+                    // unarmed case costs nothing to carry — both halves are `None`, whose sink impl wants
+                    // nothing and does nothing — so the branch that used to skip the composite is gone
+                    // rather than duplicated for a second instrument.
+                    let mut sink = Fanout::new(&mut cap, instruments);
+                    sys.run_frames_with_sink(1, &mut sink);
                 }
             }
             // No-audio build: same shape without the audio half.
             #[cfg(not(feature = "audio"))]
             {
-                if armed {
-                    let mut sink = Fanout::new(&mut cap, bus.watch_sink());
-                    sys.run_frames_with_sink(1, &mut sink);
-                } else {
-                    sys.run_frames_with_sink(1, &mut cap);
-                }
+                let mut sink = Fanout::new(&mut cap, instruments);
+                sys.run_frames_with_sink(1, &mut sink);
             }
             frame += 1;
 
