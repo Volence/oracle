@@ -1,12 +1,12 @@
-# OVERSEER.md — booting an oracle-next overseer session
+# OVERSEER.md — booting an oracle overseer session
 
 > **Boot prompt (paste into a fresh session):**
-> You are the oracle-next overseer. Read `docs/OVERSEER.md` in full, then the newest dated
+> You are the oracle overseer. Read `docs/OVERSEER.md` in full, then the newest dated
 > handoff/recon docs it names. You orchestrate subagents (dispatch → verify firsthand → merge);
 > you do not implement directly. Work the queue top-down; keep this file current at merge windows.
 
 Companion: the suite-wide protocol at `empyrean/docs/OVERSEER-PROTOCOL.md` (shared patterns; this
-file is the oracle-next-specific half). Repo ground rules: the workspace `CLAUDE.md`. **Solo-first:**
+file is the oracle-specific half). Repo ground rules: the workspace `CLAUDE.md`. **Solo-first:**
 everything below is workable with no peer sessions up — the queue, the follow-up register, and every
 demand are committed artifacts in this repo; peers accelerate, they are never prerequisites.
 
@@ -22,22 +22,20 @@ with tools that then exist).
 
 ## The queue (2026-08-19 end of day — reorder only with cause, record the cause)
 
-1. **Profiler slice 4** (bus surface) — in flight on `profiler-s1`. Contract = empyrean branch
-   `profiler-amendment` (settled through delta 2; **delta 3 in flight** — four undivided REQUIRED
-   totals; slice 4 re-vendors once more and the merge window WAITS for delta 3).
-2. **Profiler merge window** — oracle-next arc merge + empyrean `profiler-amendment` + re-vendor
-   cp-sync, one window; §11.16 must land **before** §11.17 (the fragment-count guard assumes it).
-3. **CRAM handlers** (CR-27 fully adjudicated; empyrean `cram-params-amendment` parked) — serve
+1. ~~Profiler slice 4 + merge window~~ **DONE 2026-08-19 late** — merged oracle `f7a8d54` /
+   empyrean `5232574` (CR-26 + 3 deltas; the branch is now `main`; the repo folder is now
+   `oracle/`, the legacy C++ one is `oracle-old/`).
+2. **CRAM handlers** (CR-27 fully adjudicated; empyrean `cram-params-amendment` parked) — serve
    `write_cram` (require_paused, demand-confirmed) + `read_cram`; then that merge window (+ §11.17,
    + the parse-derived merged-count check, + Aurora's branch-probe acceptance).
-4. **Profiler slice 5** (MCP verify + player lens; the lens takes the last `LensSet` bit and the
+3. **Profiler slice 5** (MCP verify + player lens; the lens takes the last `LensSet` bit and the
    same slice widens to `u16`).
-5. **C1 witness fixture** (spec in `docs/2026-08-19-streaming-asks-recon.md` §2.5) — before the
+4. **C1 witness fixture** (spec in `docs/2026-08-19-streaming-asks-recon.md` §2.5) — before the
    corpus A/B; it licenses publishing exact rows where the old instrument was "indicative".
-6. **Corpus A/B** (profiler slice 7) — vs aeon `bc048e2a`; **compare `cyclesSelf`, never
+5. **Corpus A/B** (profiler slice 7) — vs aeon `bc048e2a`; **compare `cyclesSelf`, never
    inclusive**; **record a ROM CRC per row** (their fix ladder moves the ROM); their summed `hint`
    ≈ our `hint + vint` is a falsifiable equation, not a tolerance; spread must be exactly 0.
-7. **CR-28** (per-routine `callers[]`, opt-in) — recon'd in `docs/2026-08-19-streaming-asks-recon.md`
+6. **CR-28** (per-routine `callers[]`, opt-in) — recon'd in `docs/2026-08-19-streaming-asks-recon.md`
    §4; needs no pre-release window; shape check goes to aeon before build.
 
 **Follow-up register** (each named where registered; deferrals here are unaudited estimates —
