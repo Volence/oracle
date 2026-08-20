@@ -14,6 +14,7 @@
 //! arrives; a placeholder file would be dead weight the gate would rightly flag.
 
 pub mod cpu;
+pub mod profile;
 pub mod video;
 pub mod watch;
 
@@ -36,16 +37,21 @@ pub enum LensId {
     Sprites,
     Cram,
     Hover,
+    /// The profiler panel. Appended, never inserted: [`LensSet`] derives each lens's bit from its
+    /// declaration order (`1 << (self as u16)`), so putting a variant in the middle would renumber every
+    /// bit below it and silently reinterpret a user's saved `lenses` line as a different set of lenses.
+    Profile,
 }
 
 impl LensId {
-    pub const ALL: [LensId; 6] = [
+    pub const ALL: [LensId; 7] = [
         LensId::Watch,
         LensId::Cpu,
         LensId::CpuRegs,
         LensId::Sprites,
         LensId::Cram,
         LensId::Hover,
+        LensId::Profile,
     ];
 
     /// The config-file spelling. Stable: changing one silently drops a user's setting.
@@ -57,6 +63,7 @@ impl LensId {
             LensId::Sprites => "sprites",
             LensId::Cram => "cram",
             LensId::Hover => "hover",
+            LensId::Profile => "profile",
         }
     }
 
@@ -69,6 +76,7 @@ impl LensId {
             LensId::Sprites => "Toggle sprite outlines",
             LensId::Cram => "Toggle CRAM strip",
             LensId::Hover => "Toggle hover callout",
+            LensId::Profile => "Toggle profiler panel",
         }
     }
 
@@ -81,28 +89,33 @@ impl LensId {
             LensId::Sprites => "SPRITE OUTLINES",
             LensId::Cram => "CRAM STRIP",
             LensId::Hover => "HOVER CALLOUT",
+            LensId::Profile => "PROFILER PANEL",
         }
     }
 
-    fn bit(self) -> u8 {
-        1 << (self as u8)
+    fn bit(self) -> u16 {
+        1 << (self as u16)
     }
 }
 
-/// [`LensSet`] is a `u8`, so a ninth lens would shift past the end: `1u8 << 8` panics in debug but
-/// **wraps in release**, silently aliasing bit 0 — a shipped build where toggling the ninth lens
-/// also toggles the first. Widen `LensSet`'s field before adding one. Six are here and the audio
-/// meters are gated rather than cancelled, so the seventh is already spoken for.
+/// [`LensSet`] is a `u16`, so a seventeenth lens would shift past the end: `1u16 << 16` panics in
+/// debug but **wraps in release**, silently aliasing bit 0 — a shipped build where toggling the
+/// seventeenth lens also toggles the first. Widen `LensSet`'s field before adding one.
+///
+/// It was a `u8` until the profiler panel, which was the seventh of eight and would have left exactly
+/// one bit for the audio meters, and then a ruling for whoever wanted the ninth. Ruling Q8 spent that
+/// bit and widened in the same slice instead: a `u16` costs one byte per `Config` and buys nine spare
+/// lenses, so the next one after this costs nobody a decision.
 const _: () = assert!(
-    LensId::ALL.len() <= 8,
-    "LensSet is a u8: widen it before adding a ninth lens"
+    LensId::ALL.len() <= 16,
+    "LensSet is a u16: widen it before adding a seventeenth lens"
 );
 
 /// Which lenses are on. A bitset because it is `Copy` and `PartialEq` — `config::Config`'s
 /// quit-write diff compares whole configs, so a heap set here would allocate on every frame's
 /// clone and compare by pointer-chasing for nothing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub struct LensSet(u8);
+pub struct LensSet(u16);
 
 impl LensSet {
     pub fn is_on(self, id: LensId) -> bool {
@@ -160,6 +173,13 @@ pub struct FrameCtx<'a> {
     /// **Not** the window pixel. A model that knew window pixels would have stopped being a model,
     /// which is the same reason the blit's forward map stays a [`draw`] parameter.
     pub hover: Option<(u16, u16)>,
+    /// The CPU profiler the run loop feeds, and whether a client has it armed — the read half of the
+    /// pair the loop already attaches to every frame (`Bus::read_instruments`).
+    ///
+    /// Not an `Option`: both builds have a profiler. In the `--no-default-features` build it is an
+    /// empty, permanently-disarmed one, which is the honest picture of a frontend with no bus to arm it
+    /// from — and it keeps the panel one code path rather than two.
+    pub profiler: profile::View<'a>,
 }
 
 /// Everything the enabled lenses need to draw this frame, extracted once. Absent = that lens is
@@ -180,6 +200,10 @@ pub struct Models {
     /// pixels** for the same reason the outlines are. Absent when the lens is off or the cursor is
     /// not over the picture.
     pub hover: Option<video::Hover>,
+    /// The profiler readout's lines. Absent = the lens is off, and that is what keeps
+    /// `Profiler::report` — which divides the sample and builds two fresh maps — off the frame path
+    /// the rest of the time.
+    pub profile: Option<profile::Panel>,
 }
 
 /// Build the models for whatever is on. Called once per frame, immediately before drawing, and
@@ -262,6 +286,11 @@ pub fn models(set: LensSet, cx: &FrameCtx<'_>) -> Models {
             .then(|| video::swatches(&cx.sys.vdp().cram_decoded())),
         sprites,
         hover,
+        // `report()` divides the sample and builds two fresh maps, so this is a read the `then` guard
+        // genuinely saves — the same reason `cram_decoded` and `sprites_decoded` are behind theirs.
+        profile: set
+            .is_on(LensId::Profile)
+            .then(|| profile::model(cx.profiler, cx.symbols, cx.paused, profile::ROWS)),
     }
 }
 
@@ -275,10 +304,12 @@ pub fn models(set: LensSet, cx: &FrameCtx<'_>) -> Models {
 /// on every launch. Layering is a question about pixels, and the two answers are allowed to differ.
 /// Reorder the arms below to change layering; never reorder `ALL` to do it.
 ///
-/// The order is: **outlines, ticker, chip, strip, callout.** The ticker (bottom), the chip
-/// (top-right) and the CRAM strip
-/// (top-left, one text row down) each own a different corner, and on an ordinary picture none of
-/// them meet. **Three pairs can**, and the first two resolve by draw order rather than by geometry:
+/// The order is: **outlines, ticker, chip, profile, strip, callout.** The ticker (bottom), the chip
+/// (top-right), the CRAM strip
+/// (top-left, one text row down) and the profile panel (left, stacked above the ticker's reserved strip)
+/// each own a different part of the picture, and on an ordinary one none of them meet. **Four pairs
+/// can**, and the first three resolve by draw order rather than by geometry; the fourth, which is not
+/// between two lenses at all, has to be resolved by geometry:
 /// - **Ticker vs chip.** Only on a picture short enough for the chip's panel to reach the bottom
 ///   strip, where the chip wins — the same overlap `watch.rs` already accepts against the toasts,
 ///   and for the same reason.
@@ -290,16 +321,22 @@ pub fn models(set: LensSet, cx: &FrameCtx<'_>) -> Models {
 ///   there. The **strip wins**, being drawn later. That is the right way round — the strip is 64
 ///   fixed cells whose whole meaning is positional, so clipping it would misreport CRAM, while the
 ///   chip loses a few glyphs off one end of two lines and stays readable.
-/// - **Chip vs strip vs the *overlay*, at the default window size.** The third pair is not between
+/// - **Profile vs strip.** These share the picture's left column. The panel stacks above the ticker's
+///   reserved strip and the strip sits under the status band, so on an ordinary picture there is a gap
+///   between them; a picture short enough to close it brings them together. The **strip wins**, being
+///   drawn later, and for the reason it wins against the chip: 64 fixed cells whose whole meaning is
+///   positional cannot be clipped without misreporting CRAM, while the profile panel loses a row of text
+///   off one end and stays readable.
+/// - **Chip vs strip vs the *overlay*, at the default window size.** The fourth pair is not between
 ///   two lenses at all, and it is the reason `the_overlay_never_extinguishes_a_lens_glyph` exists:
 ///   the F3 status line and the `PAUSED` banner are drawn *after* every lens, so draw order cannot
 ///   arbitrate them and geometry has to. Both are resolved in `cpu::top_of` by stepping the chip
 ///   out of the way, not by layering. At 320x224 — the **default** window — the status line used to
 ///   render `PC $001234` as `PC $00_234`, and the banner rendered `D0 D0000000` as `D0 D00_0000`.
 ///
-/// The first two are accepted rather than resolved: a picture that small has no arrangement where
-/// five panels fit, and moving one lens under another by size would make the layout jump around
-/// while a window is dragged. The third is not accepted, because it happens at the size everybody
+/// The first three are accepted rather than resolved: a picture that small has no arrangement where
+/// six panels fit, and moving one lens under another by size would make the layout jump around
+/// while a window is dragged. The fourth is not accepted, because it happens at the size everybody
 /// starts at.
 ///
 /// **The sprite outlines go first, underneath everything.** They are drawn *on* the picture rather
@@ -343,6 +380,15 @@ pub fn draw(buf: &mut [u32], w: usize, h: usize, area: Rect, native: (usize, usi
     }
     if let Some(chip) = &m.cpu {
         cpu::draw(&mut c, area, px, chip);
+    }
+    // Under the CRAM strip. The two share the picture's left column — the panel stacks directly beneath
+    // the strip's footprint, so on an ordinary picture they do not meet — but a picture short enough for
+    // the panel to be pushed around the `PAUSED` banner can bring them together. The strip wins, and for
+    // the reason it already wins against the chip: it is 64 fixed cells whose whole meaning is positional,
+    // so a clipped strip misreports CRAM, while the profile panel loses a row of text off one end and
+    // stays readable.
+    if let Some(p) = &m.profile {
+        profile::draw(&mut c, area, px, p);
     }
     if let Some(sw) = &m.cram {
         video::draw_cram(&mut c, area, px, sw);
@@ -517,6 +563,65 @@ mod tests {
         }
     }
 
+    /// An empty, disarmed profiler for the fixtures that are not about it — the same thing the
+    /// `--no-default-features` build hands the run loop, so this is the shipped shape rather than a
+    /// convenience.
+    ///
+    /// A `thread_local` because [`FrameCtx`] borrows it and the fixtures below build a ctx inline; an
+    /// owned one per call site would need a `let` at every one of them, which is exactly the noise
+    /// `ctx` exists to remove.
+    fn idle_profiler() -> &'static oracle_core::profiler::Profiler {
+        use std::sync::OnceLock;
+        static P: OnceLock<oracle_core::profiler::Profiler> = OnceLock::new();
+        P.get_or_init(oracle_core::profiler::Profiler::new)
+    }
+
+    /// **The widened bitset, pinned by its width** — because nothing else can pin it.
+    ///
+    /// Seven lenses still fit a `u8`, so every behavioural test passes either way: the toggles, `any()`,
+    /// the config round-trip and the bit-uniqueness sweep are all identical at eight bits and at sixteen.
+    /// The width is what ruling Q8 actually decided — spend the last free bit on the profiler panel and
+    /// widen in the same slice, so the next lens costs nobody a ruling — so it is asserted directly,
+    /// which is the only *behavioural* witness available until a ninth lens exists to fall off the end.
+    ///
+    /// Narrowing the field straight back is caught one step earlier, at compile time: `seen` in
+    /// `every_lens_has_its_own_bit_and_its_own_spellings` is a `u16` and `bit()` no longer fits it.
+    /// Measured — reverting the field to `u8` does not fail this test, it fails the build. What this one
+    /// still catches is the case that compiles: a field that keeps its name and loses its meaning.
+    ///
+    /// The second half is what makes the first half load-bearing rather than a tautology: it states how
+    /// much headroom the widening bought, so shrinking the field back is a failure with a reason attached
+    /// rather than a number somebody changed to match.
+    #[test]
+    fn the_lens_bitset_is_two_bytes_wide_with_room_to_spare() {
+        assert_eq!(
+            std::mem::size_of::<LensSet>(),
+            2,
+            "LensSet must be a u16 (ruling Q8): the const-assert above only fires at the SEVENTEENTH \
+             lens, so a narrowed field would go unnoticed until one wrapped onto bit 0 in release"
+        );
+        assert!(
+            LensId::ALL.len() < 16,
+            "and there must be room left: {} of 16 bits are spoken for",
+            LensId::ALL.len()
+        );
+        // The highest bit in use really is reachable — a widening that left the shift on `u8` would
+        // still compile and still pass every test above.
+        let mut set = LensSet::default();
+        let last = *LensId::ALL.last().expect("ALL is non-empty");
+        set.set(last, true);
+        assert!(
+            set.any() && set.is_on(last),
+            "{} did not survive",
+            last.key()
+        );
+        for id in LensId::ALL {
+            if id != last {
+                assert!(!set.is_on(id), "{} aliased onto {}", last.key(), id.key());
+            }
+        }
+    }
+
     /// A frame's worth of borrows over a machine nobody has run — every model under test here is
     /// keyed off the lens set, not off what the machine happens to contain.
     fn ctx<'a>(sys: &'a System, wp: &'a Watchpoints, paused: bool) -> FrameCtx<'a> {
@@ -527,6 +632,10 @@ mod tests {
             frame: 0,
             paused,
             hover: None,
+            profiler: profile::View {
+                prof: idle_profiler(),
+                armed: false,
+            },
         }
     }
 
@@ -688,6 +797,51 @@ mod tests {
         );
     }
 
+    /// The profile panel builds for its own lens and for nothing else — and, unlike the CPU chip, it
+    /// does **not** auto-show on a pause. A pause asks "where did it stop?", which the chip answers; it
+    /// does not ask for a cycle budget, and a panel that appeared every time somebody hit Space would be
+    /// a lens nobody chose.
+    #[test]
+    fn the_profile_panel_builds_for_its_own_lens_only() {
+        let sys = System::new(0x5EED);
+        let wp = Watchpoints::new(8);
+        assert!(
+            models(LensSet::default(), &ctx(&sys, &wp, false))
+                .profile
+                .is_none(),
+            "a panel was built with every lens off"
+        );
+        assert!(
+            models(LensSet::default(), &ctx(&sys, &wp, true))
+                .profile
+                .is_none(),
+            "and a pause is not a request for one — that auto-show belongs to the CPU chip alone"
+        );
+        let mut other = LensSet::default();
+        other.set(LensId::Cram, true);
+        assert!(
+            models(other, &ctx(&sys, &wp, false)).profile.is_none(),
+            "the panel model keyed off the wrong lens"
+        );
+
+        let mut set = LensSet::default();
+        set.set(LensId::Profile, true);
+        let m = models(set, &ctx(&sys, &wp, false));
+        let panel = m.profile.expect("the panel did not build for its own lens");
+        assert!(
+            !panel.lines.is_empty(),
+            "an empty model would draw nothing, which is indistinguishable from a missing arm"
+        );
+        assert!(
+            !panel.armed,
+            "the test context hands it a disarmed instrument, and the flag rides through"
+        );
+        assert!(
+            m.ticker.is_none() && m.cram.is_none() && m.sprites.is_none(),
+            "the panel's lens dragged another model on with it"
+        );
+    }
+
     /// Whether `id` has an arm in [`draw`] yet, declared **per variant** rather than counted.
     ///
     /// Exhaustive on purpose: a seventh lens cannot compile until its author says here whether it
@@ -703,7 +857,8 @@ mod tests {
             | LensId::CpuRegs
             | LensId::Sprites
             | LensId::Cram
-            | LensId::Hover => true,
+            | LensId::Hover
+            | LensId::Profile => true,
         }
     }
 
@@ -1020,7 +1175,7 @@ mod tests {
     #[test]
     fn every_lens_with_a_draw_arm_reaches_the_glass() {
         const BG: u32 = 0x0012_3456;
-        const ARMS_TODAY: usize = 6;
+        const ARMS_TODAY: usize = 7;
         let (w, h) = (320usize, 224usize);
         let area = Rect { x: 0, y: 0, w, h };
         // Not `System::new` on its own: an unrun machine has every sprite parked, so the outline
@@ -1055,12 +1210,14 @@ mod tests {
                 cram,
                 sprites,
                 hover,
+                profile,
             } = &m;
             let has_model = ticker.is_some()
                 || cpu.is_some()
                 || cram.is_some()
                 || sprites.is_some()
-                || hover.is_some();
+                || hover.is_some()
+                || profile.is_some();
             assert_eq!(
                 has_model,
                 painted,
@@ -1171,6 +1328,7 @@ mod tests {
             LensId::CpuRegs,
             LensId::Cram,
             LensId::Hover,
+            LensId::Profile,
         ] {
             let panel = render(only(id), BG);
             let panel_on_other = render(only(id), BG2);
@@ -1347,6 +1505,10 @@ mod tests {
                     frame: 7,
                     paused: false,
                     hover: None,
+                    profiler: profile::View {
+                        prof: idle_profiler(),
+                        armed: false,
+                    },
                 },
             );
             if id == LensId::CpuRegs {
@@ -1403,6 +1565,26 @@ mod tests {
     /// value does not depend on what was underneath. That needs no knowledge of any lens's colours,
     /// alphas or glyph shapes, so it cannot go stale when one of them moves, and it is the same
     /// technique `the_panels_draw_over_the_sprite_outlines` already uses one layer down.
+    /// A profiler carrying a real sample — rows, a VBlank bucket, several frames — so the sweep below
+    /// measures the panel at the height it actually stands at. An empty instrument would give it a
+    /// two-line header and quietly stop covering the case this harness exists for.
+    ///
+    /// Built once and shared: it is a four-frame emulator run, and the sweep renders 84 times.
+    fn sampled_profiler() -> &'static oracle_core::profiler::Profiler {
+        use std::sync::OnceLock;
+        static P: OnceLock<oracle_core::profiler::Profiler> = OnceLock::new();
+        P.get_or_init(|| {
+            let mut sys = System::new(0x1234_5678);
+            sys.load_rom(oracle_core::testrom::build_profiler(
+                oracle_core::testrom::ProfilerShape::ModeSwitch,
+            ));
+            sys.reset();
+            let mut prof = oracle_core::profiler::Profiler::new();
+            sys.run_frames_with_sink(4, &mut prof);
+            prof
+        })
+    }
+
     fn lenses_then_overlay(
         set: LensSet,
         area: Rect,
@@ -1444,6 +1626,10 @@ mod tests {
                     frame: 1234,
                     paused,
                     hover,
+                    profiler: profile::View {
+                        prof: sampled_profiler(),
+                        armed: true,
+                    },
                 },
             );
             let mut buf = vec![bg; w * h];
@@ -1490,7 +1676,12 @@ mod tests {
     /// panels draw over the outlines one layer down.
     fn has_opaque_ink(id: LensId) -> bool {
         match id {
-            LensId::Watch | LensId::Cpu | LensId::CpuRegs | LensId::Cram | LensId::Hover => true,
+            LensId::Watch
+            | LensId::Cpu
+            | LensId::CpuRegs
+            | LensId::Cram
+            | LensId::Hover
+            | LensId::Profile => true,
             LensId::Sprites => false,
         }
     }
@@ -1583,7 +1774,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(checked, 3 * 2 * 6 * 2, "the sweep did not cover every case");
+        assert_eq!(checked, 3 * 2 * 7 * 2, "the sweep did not cover every case");
 
         // And the overlay really is drawing into these buffers — otherwise every equality above is
         // satisfied by a no-op `Overlay::draw` and this whole test is theatre.
@@ -1618,7 +1809,7 @@ mod tests {
         // `seen` is sized by VARIANTS, deliberately NOT by `ALL.len()`: sizing it by `ALL` makes
         // the test vacuous for the one bug it exists to catch, because a variant missing from
         // `ALL` also shrinks the thing you are checking against.
-        const VARIANTS: usize = 6;
+        const VARIANTS: usize = 7;
         fn slot(id: LensId) -> usize {
             match id {
                 LensId::Watch => 0,
@@ -1627,6 +1818,7 @@ mod tests {
                 LensId::Sprites => 3,
                 LensId::Cram => 4,
                 LensId::Hover => 5,
+                LensId::Profile => 6,
             }
         }
         let mut seen = [false; VARIANTS];
@@ -1646,7 +1838,7 @@ mod tests {
     /// and a bitset makes that a silent aliasing bug rather than a compile error.
     #[test]
     fn every_lens_has_its_own_bit_and_its_own_spellings() {
-        let mut seen = 0u8;
+        let mut seen = 0u16;
         for id in LensId::ALL {
             assert_eq!(seen & id.bit(), 0, "{} reuses a bit", id.key());
             seen |= id.bit();

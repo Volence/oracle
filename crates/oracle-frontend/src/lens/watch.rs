@@ -75,6 +75,21 @@ pub fn model(wp: &Watchpoints, symbols: Option<&SymbolTable>, rows: usize) -> Ti
     }
 }
 
+/// **The height the ticker's strip reserves at the bottom edge**, in device pixels, at its full
+/// [`ROWS`] — panel and padding, not just the text.
+///
+/// Exported for the same reason [`overlay::status_band`] is: the ticker owns the bottom edge, another lens
+/// has to stack above it, and the alternative is that lens re-deriving `ROWS`, `LINE_H` and the padding for
+/// itself. A second copy of a geometry is correct only on the day it is written — which is exactly how the
+/// CPU chip once ended up drawing *under* the status line. One definition, two readers.
+///
+/// It reports what the strip *would* stand at, unconditionally, whether or not this lens is on and however
+/// many hits it currently holds. A neighbour that jumped five rows whenever a watch fired, or whenever the
+/// ticker was toggled, would be worse than one sitting five rows higher than it strictly needs to.
+pub fn strip_height(px: usize) -> usize {
+    (ROWS + 1) * font::LINE_H * px + 2 * (2 * px)
+}
+
 /// Bottom strip of `area`. Toasts stack from the same edge and are drawn later, so a burst of
 /// toasts covers the ticker briefly — accepted: toasts are transient and the ticker is not.
 pub fn draw(c: &mut font::Canvas, area: Rect, px: usize, t: &Ticker) {
@@ -83,6 +98,10 @@ pub fn draw(c: &mut font::Canvas, area: Rect, px: usize, t: &Ticker) {
     let line_h = font::LINE_H * px;
     let rows = t.lines.len() + 1; // + the header
     let panel_h = rows * line_h + 2 * pad;
+    debug_assert!(
+        panel_h <= strip_height(px),
+        "the strip stands taller than the height it reserves, so a lens stacking above it overlaps"
+    );
     // Too small to say anything honestly — and the `top` below is `usize` arithmetic, so this is
     // also what stops a short area underflowing rather than drawing off the top of the world.
     if area.w < 16 * px || area.h < panel_h + margin {

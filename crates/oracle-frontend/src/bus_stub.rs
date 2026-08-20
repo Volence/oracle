@@ -50,6 +50,13 @@ pub struct Bus {
     /// instrument and here is simply the panel's. Nothing is exposed and nothing is served; the panel that
     /// arms it is the only thing that ever reads it.
     watchpoints: Watchpoints,
+    /// **A profiler that is real, empty, and permanently disarmed.** Nothing in this build can arm it —
+    /// the profiler is armed only over the bus (§6's `emulator/set_profiler`), and there is no bus here —
+    /// so it never accumulates. It exists rather than being an `Option` so that
+    /// [`read_instruments`](Bus::read_instruments) has the served build's exact signature and the profiler
+    /// panel has the same shape in both builds: a header saying it is off, over a sample with no frames in
+    /// it. That is the honest picture of this build, and it is one code path rather than two.
+    profiler: oracle_core::profiler::Profiler,
 }
 
 impl Default for Bus {
@@ -57,6 +64,7 @@ impl Default for Bus {
         Self {
             paused: false,
             watchpoints: Watchpoints::new(crate::WATCH_CAP),
+            profiler: oracle_core::profiler::Profiler::new(),
         }
     }
 }
@@ -99,6 +107,13 @@ impl Bus {
     ) {
         let armed = self.watchpoints.watch_count() > 0;
         (armed.then_some(Observe(&mut self.watchpoints)), None)
+    }
+
+    /// What the lens layer reads, in the served build's shape. The profiler is the empty one above and the
+    /// armed flag is unconditionally `false` — not a stub's shrug, but the truth about a build with no bus
+    /// to arm it from.
+    pub fn read_instruments(&self) -> (&Watchpoints, &oracle_core::profiler::Profiler, bool) {
+        (&self.watchpoints, &self.profiler, false)
     }
 
     pub fn set_paused(&mut self, paused: bool) {

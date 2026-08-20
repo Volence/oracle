@@ -341,6 +341,23 @@ impl Host {
         self.engine.run_sinks()
     }
 
+    /// **The read half of [`run_sinks`](Host::run_sinks)**, forwarded: both instruments and the profiler's
+    /// armed flag, from one shared borrow. See
+    /// [`Engine::read_instruments`](crate::engine::Engine::read_instruments) for why it is one call, why
+    /// the flag is separate from the accumulator, and why nothing here needs `&mut`.
+    ///
+    /// A host draws its panels from *these* — the same instruments its loop feeds and the bus serves, so a
+    /// local readout and a client's reply cannot disagree.
+    pub fn read_instruments(
+        &self,
+    ) -> (
+        &oracle_core::watchpoints::Watchpoints,
+        &oracle_core::profiler::Profiler,
+        bool,
+    ) {
+        self.engine.read_instruments()
+    }
+
     // ---------------------------------------------------------------- the picture (conflict 3)
 
     /// Hand the bus the frame the host's own run loop just drew, so `emulator/screenshot` and

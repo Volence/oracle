@@ -618,6 +618,65 @@ pub const PROF_MID_CALLS_LEAF: u64 = 2;
 /// supervisor stack so the two never collide and a frame match cannot succeed by accident.
 pub const PROF_USER_SP: u32 = 0x00FF_7FFE;
 
+// --- The preemption witness (`ProfilerShape::Preempted`) -------------------------------------------
+//
+// One routine, two children, and a delay between them long enough to outlast several frame boundaries.
+// The subject is R: what its OWN cycles cost, measured once with VBlank interrupts live and once with
+// them masked. See `crates/oracle-core/tests/profiler.rs`.
+
+/// **R** — the routine whose own cost must not move when an interrupt preempts it.
+pub const PROF_PREEMPT_R: u32 = 0x0000_0500;
+/// **Ca** — the child R calls *before* the delay, while the CPU is still masked.
+pub const PROF_PREEMPT_CA: u32 = 0x0000_0540;
+/// **Cb** — the child R calls *after* the delay, with the CPU masked again.
+pub const PROF_PREEMPT_CB: u32 = 0x0000_0580;
+
+/// The work-RAM byte R reads to decide whether the CPU runs masked.
+///
+/// **This is the only difference between the fixture's two runs, and it is DATA rather than code.** Both
+/// runs load the identical ROM image and execute the identical instruction stream — R shifts this byte
+/// into the status register rather than branching on it — so the two runs are cycle-for-cycle the same
+/// machine except for the interrupts one of them takes. Anything that moves between them moved because a
+/// preemption happened, and for no other reason available to the fixture.
+pub const PROF_PREEMPT_FLAG: u32 = 0x00FF_0000;
+/// Written into [`PROF_PREEMPT_FLAG`] for the run whose VBlank is **live**: `lsl.w #8` makes it SR
+/// `$2000` — supervisor, interrupt mask 0, so a VInt is taken.
+pub const PROF_PREEMPT_VINT_LIVE: u8 = 0x20;
+/// ...and for the **masked** run: SR `$2700`, supervisor, mask 7. The VDP is armed identically either
+/// way; only the acknowledge differs.
+pub const PROF_PREEMPT_VINT_MASKED: u8 = 0x27;
+
+/// CPU cycles in one whole frame, **derived** from the machine's own frame constants rather than picked:
+/// `MCLK_PER_FRAME / MCLK_PER_CPU_CYCLE`, the same two numbers `System`'s scheduler divides.
+pub const PROF_CPU_CYCLES_PER_FRAME: u64 =
+    crate::system::MCLK_PER_FRAME / crate::system::MCLK_PER_CPU_CYCLE;
+
+/// How many whole frames R's delay is **sized** to outlast. The witness needs at least two — a single
+/// invocation must span at least two frame boundaries, so the mid-invocation checkpoint fold runs more
+/// than once — and three is that requirement with 50% of headroom, which is what keeps the fixture from
+/// going quietly vacuous if an instruction's cost is ever retimed.
+pub const PROF_PREEMPT_DELAY_FRAMES: u64 = 3;
+
+/// What one taken `DBcc` iteration costs on the 68000. Not a measurement: it is the vendored
+/// single-step corpus's own length for the taken branch (`decode.rs`'s `DBcc` arm records 10/12/52 —
+/// 10 taken, 12 fallen through, 52 for the word-branch expiry).
+const PROF_DBRA_TAKEN_CYCLES: u64 = 10;
+
+/// The `dbra` count R's delay loop runs, derived from the two constants above.
+///
+/// The derivation is one-sided-safe in the direction that matters: it assumes the loop costs
+/// [`PROF_DBRA_TAKEN_CYCLES`] per pass, and if an iteration were ever cheaper than that the fixture
+/// would cover fewer frames than intended — which is why the test asserts the frames-covered property
+/// on the *measured* self cycles rather than trusting this number.
+pub const PROF_PREEMPT_DELAY_ITERS: u16 =
+    ((PROF_PREEMPT_DELAY_FRAMES * PROF_CPU_CYCLES_PER_FRAME) / PROF_DBRA_TAKEN_CYCLES) as u16;
+
+const _: () = assert!(
+    (PROF_PREEMPT_DELAY_FRAMES * PROF_CPU_CYCLES_PER_FRAME) / PROF_DBRA_TAKEN_CYCLES
+        <= u16::MAX as u64,
+    "the delay loop's iteration count must fit the word `dbra` counts in"
+);
+
 /// Which fixture [`build_profiler`] emits. Every shape shares one skeleton — vectors, VDP setup, and an
 /// outer loop gated on the V counter so the body runs **exactly once per frame** — and differs only in
 /// its body. The frame gate is what makes a per-frame expectation a constant rather than "however many
@@ -646,6 +705,18 @@ pub enum ProfilerShape {
     /// Call [`PROF_STALL`] once per frame, where it provokes one of the VDP's bus-hold conditions. The
     /// caller does nothing else, so any stall in the sample can only have come from that routine.
     Stall { kind: StallKind },
+    /// **The preemption witness.** Call [`PROF_PREEMPT_R`] **exactly once** — the skeleton's per-frame
+    /// loop is replaced by a park, so one invocation is what the sample contains — and let R decide from
+    /// [`PROF_PREEMPT_FLAG`] whether the CPU runs masked. R calls [`PROF_PREEMPT_CA`], lowers the mask,
+    /// spins a `dbra` loop sized to outlast [`PROF_PREEMPT_DELAY_FRAMES`] whole frames, raises the mask
+    /// again, calls [`PROF_PREEMPT_CB`] and returns.
+    ///
+    /// Three properties of that arrangement are what the witness rests on. The mask is raised everywhere
+    /// **outside** R, so every interrupt the run takes is taken inside R's body, between its two child
+    /// calls — an assertion rather than an inference. The delay is a **counter**, not a wait on the V
+    /// counter, so R executes the identical instruction stream however long the wall clock takes. And the
+    /// VDP is armed the same way in both runs, so the two images are the same bytes.
+    Preempted,
 }
 
 /// Which bus-hold condition [`ProfilerShape::Stall`] provokes.
@@ -667,8 +738,9 @@ pub enum StallKind {
 /// The V-counter value at which vblank starts (line 224 in the 224-line mode these fixtures run in).
 const PROF_VBLANK_LINE: u8 = 0xE0;
 
-/// Image size for [`build_profiler`]: enough for the vectors, the handler block and the routines.
-const PROF_ROM_LEN: usize = 0x500;
+/// Image size for [`build_profiler`]: enough for the vectors, the handler block and the routines —
+/// including the preemption witness's three, which sit above the block [`ProfilerShape::Stall`] fills.
+const PROF_ROM_LEN: usize = 0x600;
 
 /// Append a big-endian word.
 fn pw(rom: &mut Vec<u8>, word: u16) {
@@ -843,6 +915,44 @@ pub fn build_profiler(shape: ProfilerShape) -> Vec<u8> {
         put_word(&mut rom, at, 0x4E75); // rts
     }
 
+    // R / Ca / Cb: the preemption witness. Emitted unconditionally, like every other fixed-address
+    // routine here — nothing reaches them unless `main` calls them.
+    //
+    // Note what R does NOT do: it never branches on the flag. `move.b` / `lsl.w #8` / `move.w d0,sr`
+    // turns the flag byte straight into the status register, so the masked run and the live run execute
+    // the same instructions in the same order for the same cycles. A `beq` here would have made the two
+    // runs differ by a branch as well as by an interrupt, and the money assertion is an EQUALITY.
+    let mut r_at = PROF_PREEMPT_R;
+    put_word(&mut rom, r_at, 0x4EB8); // jsr (Ca).w
+    put_word(&mut rom, r_at + 2, PROF_PREEMPT_CA as u16);
+    put_word(&mut rom, r_at + 4, 0x1039); // move.b (FLAG).l,d0
+    put_long(&mut rom, r_at + 6, PROF_PREEMPT_FLAG);
+    put_word(&mut rom, r_at + 10, 0xE148); // lsl.w #8,d0    -> $2000 or $2700
+    put_word(&mut rom, r_at + 12, 0x46C0); // move.w d0,sr   -> the mask drops HERE, and only here
+    put_word(&mut rom, r_at + 14, 0x3E3C); // move.w #imm,d7
+    put_word(&mut rom, r_at + 16, PROF_PREEMPT_DELAY_ITERS - 1); //   dbra runs count+1 times
+    r_at += 18;
+    // The delay: a bare `dbra` branching to itself. A COUNTER, deliberately — a wait on the V counter
+    // would run for a different number of instructions in the two runs and there would be nothing left
+    // to compare. One word of body also keeps `F-TESTROM-DISP-GUARD` off the critical path entirely: the
+    // loop cannot grow past a branch window it does not use.
+    put_word(&mut rom, r_at, 0x51CF); // .top: dbra d7,.top
+    put_word(&mut rom, r_at + 2, disp16(r_at, r_at + 2));
+    put_word(&mut rom, r_at + 4, 0x46FC); // move.w #imm,sr
+    put_word(&mut rom, r_at + 6, 0x2700); //   mask 7 again: nothing past here is preemptible
+    put_word(&mut rom, r_at + 8, 0x4EB8); // jsr (Cb).w
+    put_word(&mut rom, r_at + 10, PROF_PREEMPT_CB as u16);
+    put_word(&mut rom, r_at + 12, 0x4E75); // rts
+    assert!(
+        r_at + 14 <= PROF_PREEMPT_CA,
+        "R overran the child that follows it"
+    );
+    for child in [PROF_PREEMPT_CA, PROF_PREEMPT_CB] {
+        put_word(&mut rom, child, 0x4E71); // nop
+        put_word(&mut rom, child + 2, 0x4E71); // nop
+        put_word(&mut rom, child + 4, 0x4E75); // rts
+    }
+
     // ILLEGAL: park.
     put_word(&mut rom, PROF_ILLEGAL, 0x60FE); // bra.s *
 
@@ -855,13 +965,26 @@ pub fn build_profiler(shape: ProfilerShape) -> Vec<u8> {
     // --- main ---
     let (hint_on, vint_on) = match shape {
         ProfilerShape::Interrupts { hint, vint } => (hint, vint),
-        ProfilerShape::ModeSwitch | ProfilerShape::IdleInRoutine => (false, true),
+        // `Preempted` arms the VDP's VBlank in BOTH of its runs — the difference lives in the CPU mask,
+        // which R sets from a RAM byte, so the two runs load the identical image.
+        ProfilerShape::ModeSwitch | ProfilerShape::IdleInRoutine | ProfilerShape::Preempted => {
+            (false, true)
+        }
         _ => (false, false),
     };
+    // The mask `main` itself runs with. Normally "0 whenever anything is armed", so the fixture takes
+    // the interrupts it enabled. `Preempted` is the exception and it is load-bearing: `main` stays
+    // MASKED, and R lowers the mask for the span between its two child calls. Every interrupt the run
+    // takes is therefore taken inside R's body, which is what turns "a VInt fired in there" from an
+    // inference about timing into a bucket the test can count.
+    let main_sr = if shape != ProfilerShape::Preempted && (hint_on || vint_on) {
+        0x2000
+    } else {
+        0x2700
+    };
     let mut code: Vec<u8> = Vec::new();
-    // Supervisor. Interrupt mask 0 when anything is enabled (so both levels can be taken), else 7.
     pw(&mut code, 0x46FC); // move.w #imm,SR
-    pw(&mut code, if hint_on || vint_on { 0x2000 } else { 0x2700 });
+    pw(&mut code, main_sr);
     // a0 = VDP control ($C00004), a3 = HV counter ($C00008).
     pw(&mut code, 0x41F9);
     pl(&mut code, 0x00C0_0004);
@@ -914,12 +1037,21 @@ pub fn build_profiler(shape: ProfilerShape) -> Vec<u8> {
         }
         ProfilerShape::ModeSwitch | ProfilerShape::IdleInRoutine => prof_jsr(&mut code, PROF_LEAF),
         ProfilerShape::Stall { .. } => prof_jsr(&mut code, PROF_STALL),
+        ProfilerShape::Preempted => prof_jsr(&mut code, PROF_PREEMPT_R),
         ProfilerShape::Interrupts { .. } => {}
     }
-    // bra.w outer — the word form, because a body can be longer than a short branch reaches.
-    pw(&mut code, 0x6000);
-    let ext = PROF_MAIN + code.len() as u32;
-    pw(&mut code, disp16(outer, ext));
+    if shape == ProfilerShape::Preempted {
+        // **Park, do not loop.** The witness asserts `calls == 1` on the undivided sample, so the one
+        // thing `main` must not do is call R again next frame. The park runs masked, which is also what
+        // keeps the run's whole interrupt total inside R.
+        let at = PROF_MAIN + code.len() as u32;
+        pw(&mut code, 0x6000 | u16::from(short_disp(at, at))); // bra.s *
+    } else {
+        // bra.w outer — the word form, because a body can be longer than a short branch reaches.
+        pw(&mut code, 0x6000);
+        let ext = PROF_MAIN + code.len() as u32;
+        pw(&mut code, disp16(outer, ext));
+    }
 
     assert!(
         PROF_MAIN as usize + code.len() <= PROF_ILLEGAL as usize,

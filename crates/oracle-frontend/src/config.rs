@@ -464,6 +464,46 @@ mod tests {
         assert!(p.warnings.is_empty(), "own output warned: {:?}", p.warnings);
     }
 
+    /// **The new lens's own spelling, by name.** `every_lens_round_trips_and_the_empty_set_is_empty`
+    /// sweeps `LensId::ALL`, which covers this one too — but a sweep derived from `ALL` cannot tell a
+    /// stable spelling from a renamed one, and a renamed key silently drops a user's setting on the
+    /// first launch that reads their file. Writing `profile` out here is what pins it.
+    ///
+    /// It also pins the widening: `Profile` is the seventh lens, so its bit is the first one a `u8`
+    /// `LensSet` could not have carried alongside a spare, and a set that lost it on the way through
+    /// the file would look exactly like a set that was never on.
+    #[test]
+    fn the_profiler_lens_round_trips_under_its_own_name() {
+        let p = parse("lenses = profile\n").expect("not corruption");
+        assert!(
+            p.config.lenses.is_on(crate::lens::LensId::Profile),
+            "`profile` is the profiler panel's config spelling"
+        );
+        assert!(
+            p.warnings.is_empty(),
+            "it is a known name: {:?}",
+            p.warnings
+        );
+        let out = serialize(&p.config);
+        assert!(
+            out.contains("lenses = profile"),
+            "and it is written back under the same name: {out}"
+        );
+        // With every lens on at once, so the widened bitset is exercised at its full width rather than
+        // one bit at a time — a `u8` would have room for seven and this would still pass at six.
+        let mut all = crate::lens::LensSet::default();
+        for id in crate::lens::LensId::ALL {
+            all.set(id, true);
+        }
+        let c = Config {
+            lenses: all,
+            ..Config::default()
+        };
+        let round = parse(&serialize(&c)).expect("own output must parse");
+        assert_eq!(round.config.lenses, all, "every lens survives one cycle");
+        assert!(round.warnings.is_empty());
+    }
+
     #[test]
     fn an_unknown_lens_name_warns_without_losing_the_known_ones() {
         let p = parse("lenses = watch,not_a_lens\n").expect("not corruption");
