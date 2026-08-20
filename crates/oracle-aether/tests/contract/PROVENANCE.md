@@ -14,8 +14,8 @@ an explicit re-vendor commit. That commit is the auditable record of "we adopted
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo revision | **`1b05dc1`** on branch **`profiler-amendment`** — *"contract: apply delta3 ruling D3-M1 + D3-S1..S3 — the reversal recorded; CONTRACT FINAL for the merge window"* (2026-08-19) |
-| Last commit that touched the schema | `4fc1915` — *"contract: CR-26 delta 3 — the undivided set, and an identity with no caveat left"*. The delta-3 ruling round that follows it is **prose-only**: `4fc1915` and `1b05dc1` carry byte-identical schemas, verified from the contract repo's object store, so no keyword, key or description moved underneath the validator. |
+| Contract repo revision | **`e7ac228`** on **`main`** — *"Merge cram-params-amendment — §11.17 lands beside §11.16; the closure gap the merge itself found"* (2026-08-20). Both amendment branches are MERGED; `TRACKED_REVISION` is retired to `None`. 37 fragments; every params object closed (handshake exempt). |
+| Last commit that touched the schema | `e7ac228` — the merge itself (conflict-resolved description re-derived at 37; the three profiler params objects closed per §11.17's bus-wide rule, the gap the pre-merge experiment found). |
 | SHA-256 | `c77a7245bf2bcc17031922389354eb67a3e4aad08e1d7973bcb15cd8da4a83a1` |
 | Bytes | 146406 |
 | Vendored on | 2026-08-19 |
