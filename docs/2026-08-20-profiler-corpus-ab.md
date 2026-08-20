@@ -67,6 +67,12 @@ Corpus documents read in full at that revision:
 | listing | `s4.debug.lst`, same build, 5162 lines, **2578 symbols** as counted by `emulator/status` |
 | binding | the server's own listing↔ROM binding check passed (`initialize` → `capabilities.symbolsLoaded: true`); a listing from a different build is refused, not silently accepted |
 
+> ⚠ **Re-runner's fork warning:** two CRCs exist in this arc's papers. The STREAMING packet
+> (aeon `3469c920`) pins `06af0010` — a later, pre-parcel ROM. THE CORPUS'S OWN FILES pin
+> **`d22dda85`** (713,295 bytes), and that is the only ROM these rows compare against. When the
+> two pins disagree, the corpus files govern — this run's original brief carried the wrong one
+> and was corrected here.
+
 > **The brief's CRC was wrong and this is the correction.** The dispatch brief pinned `06af0010`.
 > That value is real but is a *different* ROM: it is the **pre-parcel identity from the streaming
 > diagnosis packet** at aeon `3469c920` — *"`crc=06af0010` (debug, **713863 B**)"*
