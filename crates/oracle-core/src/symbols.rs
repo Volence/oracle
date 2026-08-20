@@ -368,6 +368,11 @@ pub enum BindingFault {
 pub enum Indeterminate {
     /// The listing declares no `EndOfRom` symbol, so there is no offset to probe.
     NoEndOfRomSymbol,
+    /// `EndOfRom` is **exactly** the image length: the listing describes a ROM with no appendix after it.
+    /// A symbol one past the last byte cannot carry the magic and cannot be a mismatched in-range offset,
+    /// so there is nothing to probe and nothing to contradict. See
+    /// [`SymbolTable::validate_against_rom`].
+    EndOfRomIsImageEnd { rom_len: usize },
 }
 
 /// Magic at the head of the `deb2` symbol appendix every sigil-built Aeon ROM carries at `EndOfRom`.
@@ -906,11 +911,43 @@ impl SymbolTable {
     /// `convsym`; closing it properly wants a producer-side change in sigil (emit the built image's
     /// checksum, or a hash, into a sidecar beside the `.lst`). Callers should treat [`RomBinding::Match`]
     /// as "not obviously wrong", not as "proven right".
+    ///
+    /// # Listings that describe an appendix-less ROM
+    ///
+    /// A stock AS disassembly has no `deb2` appendix at all, and ends with `RomEndLoc: dc.l EndOfRom-1` —
+    /// which puts `EndOfRom` at **exactly** the image length (verified: `s1disasm`'s `$86978` == its built
+    /// ROM's 551,288 bytes). That exact equality is treated as a no-appendix marker and answers
+    /// [`Indeterminate::EndOfRomIsImageEnd`], not [`BindingFault::EndOfRomOutOfRange`]: a symbol one past
+    /// the last byte cannot carry the magic and cannot be a mismatched in-range offset, so there is
+    /// genuinely nothing to check rather than something that failed a check.
+    ///
+    /// **The wrong-listing guard is untouched.** An `EndOfRom` that lands *inside* the image without the
+    /// magic there is still `Mismatch(NoAppendixMagic)` — the check that catches the build-shape cross
+    /// where 92.6% of shared symbols resolve to a different address — and so is one past the end, or one
+    /// byte short of it with no room for the two magic bytes. Only the exact `EndOfRom == rom.len()` case
+    /// moved, and it moved from a fault to "cannot tell", never to a match.
     pub fn validate_against_rom(&self, rom: &[u8]) -> RomBinding {
         let Some(end) = self.address_of(END_OF_ROM_SYMBOL) else {
             return RomBinding::Indeterminate(Indeterminate::NoEndOfRomSymbol);
         };
         let off = end as usize;
+        // The no-appendix marker (ruled 2026-08-19). A stock AS disassembly ends `RomEndLoc: dc.l
+        // EndOfRom-1`, which puts `EndOfRom` at exactly the image length — measured on `s1disasm`:
+        // `EndOfRom = $86978 = 551,288 = sonic.bin's size to the byte`. That is not a fault, it is a
+        // listing that describes a ROM with no appendix, and it is safe to distinguish from one *because*
+        // the equality is exact: an offset one past the last byte can carry no magic to check, and it
+        // cannot be an in-range offset whose magic came out wrong. So it downgrades to Indeterminate —
+        // "accepted unverified, with the caveat" under the frontend's existing load policy.
+        //
+        // Everything else is UNCHANGED, and deliberately: an in-range `EndOfRom` with no `de b2` at it is
+        // still a positive `Mismatch`, which is the guard that catches the shape cross where 92.6% of
+        // shared symbols resolve to a different address. `off > rom.len()`, and `off == rom.len() - 1`
+        // (one byte, no room for the magic), both stay faults too — only the exact equality is the marker.
+        if off == rom.len() {
+            return RomBinding::Indeterminate(Indeterminate::EndOfRomIsImageEnd {
+                rom_len: rom.len(),
+            });
+        }
         let Some(head) = rom.get(off..off + DEB2_MAGIC.len()) else {
             return RomBinding::Mismatch(BindingFault::EndOfRomOutOfRange {
                 end_of_rom: end,
@@ -1927,6 +1964,41 @@ EQU zone_count = $0000000C
             Some(t.symbols().iter().filter(|s| s.unused).count() + t.non_address_unused())
         );
         assert!(t.is_intact(), "a healthy AS listing must read as whole");
+    }
+
+    /// **The binding ruling (2026-08-19).** `RomEndLoc: dc.l EndOfRom-1` puts `EndOfRom` at exactly the
+    /// image length, so a stock AS listing has no appendix to probe. That exact equality is the
+    /// no-appendix marker and downgrades to `Indeterminate` — accepted-unverified under the caller's
+    /// existing policy, since `is_intact` is true.
+    ///
+    /// The three assertions after it are the guard this must not have weakened, and they are the point of
+    /// the test: one byte either side of the equality is still a positive `Mismatch`.
+    #[test]
+    fn end_of_rom_at_exactly_the_image_length_is_a_no_appendix_marker() {
+        let t = as_table();
+        let len = 0x8_6978usize;
+        assert_eq!(
+            t.validate_against_rom(&vec![0u8; len]),
+            RomBinding::Indeterminate(Indeterminate::EndOfRomIsImageEnd { rom_len: len }),
+            "an appendix-less ROM is unverifiable, not wrong"
+        );
+        assert!(t.is_intact(), "so the caller accepts it with the caveat");
+
+        // One byte shorter: `EndOfRom` is now past the end. Still a fault.
+        assert!(matches!(
+            t.validate_against_rom(&vec![0u8; len - 1]),
+            RomBinding::Mismatch(BindingFault::EndOfRomOutOfRange { .. })
+        ));
+        // One byte longer: in range, but with no room for the two magic bytes. Still a fault.
+        assert!(matches!(
+            t.validate_against_rom(&vec![0u8; len + 1]),
+            RomBinding::Mismatch(BindingFault::EndOfRomOutOfRange { .. })
+        ));
+        // Comfortably in range with the wrong bytes there — the 92.6% wrong-listing guard, untouched.
+        assert!(matches!(
+            t.validate_against_rom(&vec![0u8; len + 0x4000]),
+            RomBinding::Mismatch(BindingFault::NoAppendixMagic { .. })
+        ));
     }
 
     #[test]
