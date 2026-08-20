@@ -39,12 +39,13 @@ with tools that then exist).
    + the parse-derived merged-count check, + Aurora's branch-probe acceptance).
 3. **Profiler slice 5** (MCP verify + player lens; the lens takes the last `LensSet` bit and the
    same slice widens to `u16`).
-4. **C1 witness fixture** (spec in `docs/2026-08-19-streaming-asks-recon.md` §2.5) — before the
-   corpus A/B; it licenses publishing exact rows where the old instrument was "indicative".
-5. **Corpus A/B** (profiler slice 7) — vs aeon `bc048e2a`; **compare `cyclesSelf`, never
-   inclusive**; **record a ROM CRC per row** (their fix ladder moves the ROM); their summed `hint`
-   ≈ our `hint + vint` is a falsifiable equation, not a tolerance; spread must be exactly 0.
-6. **CR-28** (per-routine `callers[]`, opt-in) — recon'd in `docs/2026-08-19-streaming-asks-recon.md`
+4. ~~C1 witness + corpus A/B~~ **DONE 2026-08-20** — witness demonstrated (M1 red at predicted
+   counts); A/B PASSED (`docs/2026-08-20-profiler-corpus-ab.md`: reference row to-the-cycle,
+   spread exactly 0, their dense anomaly explained as their instrument's straddle loss, K.3's
+   21.55-point dropped-work finding, Task 5 measurable). Migration flip is aeon's call (K.4).
+   Open residue: the five-short-rows 11–40% disagreement (unexplained, settling experiment in
+   the doc §11.5); the walker fixture leg (not re-driven).
+5. **CR-28** (per-routine `callers[]`, opt-in) — recon'd in `docs/2026-08-19-streaming-asks-recon.md`
    §4; needs no pre-release window; shape check goes to aeon before build.
 
 **Follow-up register** (each named where registered; deferrals here are unaudited estimates —
