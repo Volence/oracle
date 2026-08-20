@@ -682,6 +682,13 @@ and it is about four times the size their document states.
    real open question and the honest word for it is *unexplained*. The settling experiment is a
    paired event-level trace of one invocation on both instruments, which needs the reference running.
 
+> ⚠ **Scope note (2026-08-20, from the partition's first production use):** the tick/lag
+> partition by `vintCycles` threshold held EXACTLY on this document's own data (corpus-era
+> states) and **does not generalize** — at the current-ROM max-diagonal state no threshold
+> separates the two series (aeon TICK-VARIANCE.md §5.1, which marks the method do-not-use and
+> adopts Logic_Tick-at-frame-boundary as ground truth). Valid for these tables; not a general
+> method.
+
 ---
 
 ## 12. Per-frame material — the pull shape

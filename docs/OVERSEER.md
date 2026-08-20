@@ -56,7 +56,15 @@ the player's .srm flush — warn clients off hosted reset until closed**), F-EQU
 F-CRAM-RAMP, F-PROF-TOTALS (superseded by delta 3), F-PALETTE-DRAG-PACE (evidence filed, rated
 minor by its own filer), ~~stock-S1 symbols~~ (**CLOSED 2026-08-20** — the `|`-reader, the 48-bit
 addresses, the forward-only equ ruling and the no-appendix binding all shipped; F-LST-AS-COLUMNS and
-F-LST-NONDEB2-BINDING retire with it), plus the Tier-1 carry-forwards in
+F-LST-NONDEB2-BINDING retire with it), **F-TICK-BOUNDARY-DIVERGENCE** (2026-08-20, from aeon's spike hunt, TICK-VARIANCE.md): over one
+31-frame max-diagonal window on byte-identical ROM bytes, oracle-old runs 26 logic ticks where we
+run 29 — exact agreement at the corpus-era state, one-tick difference at idle, divergence only
+where a tick sits near the frame boundary: the two emulators disagree how much work fits in a
+frame. Settling experiment (theirs): a single-tick trace at the first divergent boundary (frames
+~7-8; states in TICK-VARIANCE §1.2) on both instruments. Corroborating fossil: the 2026-07-23
+RT-3 finding — oracle-old OVER-drops ~8 startup ticks via `ClampHandshakeTimeDeterministic`'s
+over-conservative bus-arb clamp, and ours was the tick-accurate side then too. Unresolved, not
+urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
 `docs/2026-08-18-tier1-bus-methods.md`.
 
 **Registered by the CR-27 serve review (2026-08-20), all contract-side or cosmetic, none blocking:**
