@@ -1774,16 +1774,22 @@ impl Engine {
 
     /// `emulator/get_profiler_frames` — the accumulated sample (§6, §11.16).
     ///
-    /// Division happens **here**, in the server, over a sample delimited by frame boundaries at both ends;
-    /// `sampleCycles` carries the undivided total so a consumer that wants exactness can reconstruct. The
-    /// reconciliation identity every reply satisfies, and which the wire test computes from a reply:
+    /// Division happens **here**, in the server, over a sample delimited by frame boundaries at both ends.
+    /// Every row figure and both buckets are therefore emitted **twice**: divided, and undivided as a
+    /// `*Total` partner (§11.16 delta 3). The pair is tied — `divided == total / frameCount` when
+    /// `frameCount > 0` — so a total bounds its partner's truncation rather than being a second reading.
+    ///
+    /// The reconciliation identity every reply satisfies, in the form a client should check:
     ///
     /// ```text
-    /// (Σ routines[].cyclesSelf + Σ interrupts[].cyclesSelf) × frameCount + unattributedCycles
-    ///     == sampleCycles
+    /// Σ routines[].cyclesSelfTotal + Σ interrupts[].cyclesSelfTotal + unattributedCycles == sampleCycles
     /// ```
     ///
-    /// exact when `perFrameExact`, and short by at most `frameCount − 1` per summed figure when not.
+    /// — **exact, unconditionally**: no `× frameCount`, no `perFrameExact` branch, every term a REQUIRED
+    /// key. The divided view reconstructs the same identity as
+    /// `(Σ cyclesSelf) × frameCount + unattributedCycles`, which closes on the nose when `perFrameExact`
+    /// and otherwise falls short by at most `frameCount − 1` per summed figure and never over. That
+    /// hedging is a property of the divided view alone.
     fn get_profiler_frames(&mut self, params: &Value) -> Result<Value, RpcError> {
         // `top` bounds the rows. Refused above the cap, never clamped: the legacy surface clamped, so a
         // caller could not tell a full list from a clipped one.
@@ -1820,19 +1826,34 @@ impl Engine {
         let mut rows: Vec<(u32, Counts)> = report.routines.into_iter().collect();
         rows.sort_by(|a, b| b.1.cycles.cmp(&a.1.cycles).then(a.0.cmp(&b.0)));
         let total_rows = rows.len();
+        // The undivided partners come from the very map `report()` divided, read back through the
+        // accessor rather than recomputed — so a row's `cyclesTotal` cannot be a second measurement that
+        // disagrees with the `cycles` beside it. Keyed identically by construction; `unwrap_or_default`
+        // is the type's requirement, not a fallback anything is expected to take.
+        let sample_rows = self.profiler.sample_routines();
         let items: Vec<Value> = rows
             .into_iter()
             .take(top)
-            .map(|(addr, c)| self.profiler_row(addr, c))
+            .map(|(addr, c)| {
+                self.profiler_row(addr, c, sample_rows.get(&addr).copied().unwrap_or_default())
+            })
             .collect();
 
+        let sample_buckets = self.profiler.sample_interrupts();
         let bucket = |level: u8| {
             let c = report.interrupts.get(&level).copied().unwrap_or_default();
+            // A bucket is emitted for both causes whether or not the sample has one, so the default here
+            // is a real case: an all-zero pair, which the pair invariant is satisfied by.
+            let t = sample_buckets.get(&level).copied().unwrap_or_default();
             json!({
                 "cycles": c.cycles,
                 "cyclesSelf": c.self_cycles,
                 "stallCycles": c.stall_cycles,
                 "calls": c.calls,
+                "cyclesTotal": t.cycles,
+                "cyclesSelfTotal": t.self_cycles,
+                "stallCyclesTotal": t.stall_cycles,
+                "callsTotal": t.calls,
             })
         };
 
@@ -1901,13 +1922,23 @@ impl Engine {
     /// both directions (`oracle_core::symbols`'s
     /// `equates_are_not_addressable_in_either_direction`), so a `.lst` full of `EQU` constants cannot put a
     /// non-address symbol on a row keyed by an address.
-    fn profiler_row(&self, addr: u32, c: Counts) -> Value {
+    ///
+    /// `c` is the divided row and `t` its **undivided partner** over the whole sample (§11.16 delta 3).
+    /// The two are the same four quantities, not two measurements: `t` is the accumulator `report()`
+    /// divided to get `c`, so `divided == total / frameCount` holds by construction rather than by
+    /// agreement. `callsTotal` is the field the ask was raised for — a per-frame count is the one figure
+    /// here that division destroys rather than truncates.
+    fn profiler_row(&self, addr: u32, c: Counts, t: Counts) -> Value {
         let mut row = json!({
             "addr": hex::addr(addr),
             "cycles": c.cycles,
             "cyclesSelf": c.self_cycles,
             "stallCycles": c.stall_cycles,
             "calls": c.calls,
+            "cyclesTotal": t.cycles,
+            "cyclesSelfTotal": t.self_cycles,
+            "stallCyclesTotal": t.stall_cycles,
+            "callsTotal": t.calls,
         });
         if let Some(table) = self.symbols.as_ref() {
             if let Some(r) = table.resolve(addr) {

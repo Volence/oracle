@@ -127,7 +127,7 @@ fn the_vendored_schema_is_byte_identical_to_the_upstream_contract() {
 /// It retires itself: the moment the draft merges, upstream's working tree matches the vendored bytes,
 /// the early return above fires, and none of this code runs.
 const TRACKED_REVISION: Option<(&str, &str)> = Some((
-    "6d5cb4b17e795e9e0869aa1ed341fe6ff721af81",
+    "1b05dc1a29ca8d4cca1ac74b56fb4bb30702415c",
     "profiler-amendment",
 ));
 
