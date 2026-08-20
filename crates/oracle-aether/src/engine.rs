@@ -36,10 +36,13 @@ use oracle_core::io::Pad;
 // The 68000's own bus trait, brought in for `emulator/write_memory`: a poke travels the same `write8`
 // the CPU drives, so the hardware mirror masking and the region decode are the machine's, not ours.
 use oracle_core::m68000::bus68k::Bus68k;
+use oracle_core::profiler::{Counts, Profiler};
 use oracle_core::render::{CandidateVerdict, Layer, PixelState};
 use oracle_core::scanline_capture::{Retain, ScanlineCapture};
 use oracle_core::symbols::{BindingFault, RomBinding, SymbolTable};
-use oracle_core::system::{StopRecord, System, MCLK_PER_FRAME, RAM_SIZE};
+use oracle_core::system::{
+    StopRecord, System, TimingBasis, MCLK_PER_CPU_CYCLE, MCLK_PER_FRAME, RAM_SIZE,
+};
 use oracle_core::watchpoints::{
     CensusKey, Stamp, Watch, WatchHit, WatchId, WatchMode, WatchOp, WatchReport, WatchSpace,
     WatchVia, Watchpoints,
@@ -80,6 +83,15 @@ pub struct EngineConfig {
     /// so the ceiling here bounds work rather than reply size, and hashing a whole 4 MiB cartridge window
     /// is the row's headline use.
     pub max_hash_len: u64,
+    /// Ceiling on `emulator/get_profiler_frames`' `top` — the most expensive routine rows it will return
+    /// in one reply (`protocol.md` §6, §11.16). Advertised as `limits.maxProfilerRoutines` and **refused,
+    /// never clamped**: the legacy surface clamped, so a caller could not tell a full list from a clipped
+    /// one.
+    pub max_profiler_routines: usize,
+    /// Depth of the opt-in per-frame ring, and the ceiling on `get_profiler_frames`' `frames`
+    /// (`protocol.md` §6, §11.16). Advertised as `limits.maxProfilerFrames`. A ring, so a profiler left
+    /// armed across a long session keeps the frames nearest the symptom rather than growing without bound.
+    pub max_profiler_frames: usize,
     /// Ceiling for one `emulator/play_input` timeline (`protocol.md` §6, §11.11). Advertised as
     /// `limits.maxInputRows` because a client that must hit a limit to learn it loses the work it was
     /// doing when it found out.
@@ -123,6 +135,12 @@ impl Default for EngineConfig {
             // The schema's own `len` maximum for `emulator/memory_hash` (4 MiB) — one whole cartridge
             // window in a single call.
             max_hash_len: 4_194_304,
+            // Enough that a real ROM's hot set arrives whole — a Sonic-scale frame touches a few hundred
+            // routines — while still bounding one reply.
+            max_profiler_routines: 512,
+            // Two seconds of NTSC frames: long enough to see a stutter in context, short enough that the
+            // ring is a rounding error next to the machine it profiles.
+            max_profiler_frames: 120,
             max_input_rows: 256,
             max_symbol_matches: 5,
             // The contract's own advertised example (`"checkpoints":{"supported":true,"cap":8}`). A
@@ -153,6 +171,21 @@ pub struct MethodSpec {
 /// **The dispatch table and the advertised method list, as one object.** Every name here is a
 /// `protocol.md` §6 catalog entry verbatim.
 pub const METHODS: &[MethodSpec] = &[
+    MethodSpec {
+        name: "emulator/set_profiler",
+        handler: Engine::set_profiler,
+        summary: "arm or disarm the per-invocation cycle accountant (arming resets it)",
+    },
+    MethodSpec {
+        name: "emulator/get_profiler",
+        handler: Engine::get_profiler,
+        summary: "the accountant's state: armed, frames recorded, rows accumulated",
+    },
+    MethodSpec {
+        name: "emulator/get_profiler_frames",
+        handler: Engine::get_profiler_frames,
+        summary: "the accumulated sample: per-routine rows, interrupt buckets by cause, per-frame ring",
+    },
     MethodSpec {
         name: "emulator/status",
         handler: Engine::status,
@@ -442,6 +475,22 @@ pub struct Engine {
     /// engine-owned and are **not** auto-cleared (§6), because a watch with `stopAfter` changes how the
     /// machine runs and disarming one nobody asked to disarm is a machine-state change §5 forbids.
     watchpoints: Watchpoints,
+    /// **The profiler (§6, CR-26), owned here and attached to every run this engine drives.**
+    ///
+    /// Engine-owned for the same reason as [`watchpoints`](Engine::watchpoints): there are two run
+    /// drivers (this engine's own handlers and, hosted, the player's loop), and an instrument attached to
+    /// one of them measures nothing while the other runs. One instrument, both drivers.
+    ///
+    /// Retained across a disarm, because §11.16 makes disarm a *stop recording*, not a *discard*: a client
+    /// arms, runs, disarms and reads. It is arming that resets, and there is no resume in this revision.
+    profiler: Profiler,
+    /// Whether the profiler rides the runs. Distinct from "has a sample": a disarmed instrument keeps
+    /// everything it accumulated and can still be read.
+    profiler_armed: bool,
+    /// The timing basis at the moment the sample was armed. `budgetPct` is derived from the basis, so a
+    /// basis that changed mid-sample makes the derivation ambiguous and the contract requires omitting the
+    /// key rather than averaging over the change.
+    profiler_basis: Option<TimingBasis>,
     /// How many watch handles this engine has ever issued. Equal to the core facility's own next id — this
     /// engine is its only caller — and used for exactly one thing: telling a handle that was **never
     /// issued** (a typo) from one that was issued and has since been cleared (a retired watch, whose hits
@@ -512,6 +561,9 @@ impl Engine {
             next_checkpoint_id: 1,
             watchpoints,
             watches_issued: 0,
+            profiler: Profiler::new(),
+            profiler_armed: false,
+            profiler_basis: None,
             screen: ScanlineCapture::new(Retain::LastFrame),
             last_frame: None,
             screen_generation: 0,
@@ -642,7 +694,13 @@ impl Engine {
         // `stopAfter` watch on a free-running machine "is answered by attribution rather than by a gate",
         // and the attribution lands on the runs a client actually bounded.
         let armed = (self.watchpoints.watch_count() > 0).then_some(&mut self.watchpoints);
-        let mut sink = Fanout::new(&mut self.screen, Observe(armed));
+        // The profiler rides here for the same reason the watch does: free-running is still the machine
+        // running, and a sample that skipped these frames would report a per-frame cost for frames it never
+        // saw. It has no stop signal of its own, so the `Observe` around it is belt-and-braces rather than
+        // load-bearing — but it is the same shape, and a reader should not have to check which halves can
+        // reach back into the run.
+        let prof = self.profiler_armed.then_some(&mut self.profiler);
+        let mut sink = Fanout::new(&mut self.screen, Fanout::new(Observe(armed), Observe(prof)));
         self.sys.run_frames_with_sink(1, &mut sink);
         self.latch_screen();
         self.config.free_run_pace
@@ -675,7 +733,8 @@ impl Engine {
     fn advance(&mut self, frames: u64) -> Advanced {
         let record = {
             let armed = (self.watchpoints.watch_count() > 0).then_some(&mut self.watchpoints);
-            let mut sink = Fanout::new(&mut self.screen, armed);
+            let prof = self.profiler_armed.then_some(&mut self.profiler);
+            let mut sink = Fanout::new(&mut self.screen, Fanout::new(armed, prof));
             self.sys.run_frames_with_sink(frames, &mut sink)
         };
         self.latch_screen();
@@ -717,7 +776,11 @@ impl Engine {
         // `BusEventSink` is what expresses "only sometimes attached" without a second code path.
         let record = {
             let armed = (self.watchpoints.watch_count() > 0).then_some(&mut self.watchpoints);
-            let mut sink = Fanout::new(&mut self.screen, Fanout::new(&mut stop, armed));
+            let prof = self.profiler_armed.then_some(&mut self.profiler);
+            let mut sink = Fanout::new(
+                &mut self.screen,
+                Fanout::new(&mut stop, Fanout::new(armed, prof)),
+            );
             self.sys.run_frames_with_sink(max_frames, &mut sink)
         };
         self.latch_screen();
@@ -831,7 +894,7 @@ impl Engine {
                 "z80": false,
                 "vgm": false,
                 "objectDecoders": false,
-                "profiler": false,
+                "profiler": true,
                 "breakpoints": false,
                 "batch": false,
                 // A 6-button pad is not modelled by the core, so x/y/z/mode are refused rather than
@@ -872,6 +935,10 @@ impl Engine {
                 "maxInputRows": self.config.max_input_rows,
                 "maxWriteLen": self.config.max_write_len,
                 "maxHashLen": self.config.max_hash_len,
+                // REQUIRED once the profiler methods are advertised — a cap a client can only discover by
+                // hitting it is a cap that costs work to learn.
+                "maxProfilerRoutines": self.config.max_profiler_routines,
+                "maxProfilerFrames": self.config.max_profiler_frames,
             },
             // What the `frame` in every stamp actually *means* (`F-TRACE-PAL`). Advertised once, here,
             // rather than repeated on every reply: it is a property of the machine, not of the answer.
@@ -1645,6 +1712,222 @@ impl Engine {
             "fnv1a64": oracle_core::state_hash::hex(oracle_core::state_hash::fnv1a_bytes(&data)),
             "crc32": format!("0x{:08X}", crate::crc32::crc32(&data)),
         }))
+    }
+
+    // ---------------------------------------------------------------- the profiler (§6, CR-26)
+
+    /// `emulator/set_profiler` — arm or disarm the accountant (§6, §11.16).
+    ///
+    /// **Arming RESETS**; disarming RETAINS. There is no resume in this revision, so a second arm discards
+    /// an in-flight sample — which is why `enabled: true` builds a fresh `Profiler` rather than flipping a
+    /// flag. Disarm only stops the feed: a client arms, runs, disarms and reads, and the read must still
+    /// answer.
+    ///
+    /// **Synchronous, and never refused for run state.** No `require_paused` here: the sample's edges are
+    /// frame boundaries, not the instant this command landed, so a free-running arm is exactly as well
+    /// defined as a paused one. The arm takes effect on the very next run, because it is engine state and
+    /// the run reads it when it builds its sink.
+    fn set_profiler(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let Some(enabled) = params.get("enabled").and_then(Value::as_bool) else {
+            return Err(RpcError::invalid_params(
+                "`enabled` is required and must be a boolean",
+            ));
+        };
+        let per_frame = match params.get("perFrame") {
+            None => false,
+            Some(v) => v.as_bool().ok_or_else(|| {
+                RpcError::invalid_params("`perFrame` must be a boolean when present")
+            })?,
+        };
+        if enabled {
+            self.profiler = if per_frame {
+                Profiler::with_per_frame(self.config.max_profiler_frames)
+            } else {
+                Profiler::new()
+            };
+            // Latched at the arm, so a basis that changes mid-sample is detectable at the read rather
+            // than silently averaged over.
+            self.profiler_basis = Some(self.sys.timing_basis());
+        }
+        self.profiler_armed = enabled;
+        Ok(json!({
+            "enabled": self.profiler_armed,
+            // Echoed rather than assumed: it is the key that decides whether `get_profiler_frames`
+            // answers a `frames` param or refuses it.
+            "perFrame": self.profiler.per_frame_armed(),
+        }))
+    }
+
+    /// `emulator/get_profiler` — the instrument's state, not its data (§6, §11.16). A pure read that
+    /// clears nothing and is never refused for run state.
+    fn get_profiler(&mut self, _params: &Value) -> Result<Value, RpcError> {
+        Ok(json!({
+            "enabled": self.profiler_armed,
+            "perFrame": self.profiler.per_frame_armed(),
+            // The SAME number `get_profiler_frames` reports as `frameCount`. The legacy surface had two
+            // counts that could differ — one echoed the request, one counted pushes — and only one of them
+            // was ever the divisor.
+            "framesRecorded": self.profiler.frames(),
+            "routineCount": self.profiler.routine_count(),
+        }))
+    }
+
+    /// `emulator/get_profiler_frames` — the accumulated sample (§6, §11.16).
+    ///
+    /// Division happens **here**, in the server, over a sample delimited by frame boundaries at both ends;
+    /// `sampleCycles` carries the undivided total so a consumer that wants exactness can reconstruct. The
+    /// reconciliation identity every reply satisfies, and which the wire test computes from a reply:
+    ///
+    /// ```text
+    /// (Σ routines[].cyclesSelf + Σ interrupts[].cyclesSelf) × frameCount + unattributedCycles
+    ///     == sampleCycles
+    /// ```
+    ///
+    /// exact when `perFrameExact`, and short by at most `frameCount − 1` per summed figure when not.
+    fn get_profiler_frames(&mut self, params: &Value) -> Result<Value, RpcError> {
+        // `top` bounds the rows. Refused above the cap, never clamped: the legacy surface clamped, so a
+        // caller could not tell a full list from a clipped one.
+        let top = match params.get("top") {
+            None => self.config.max_profiler_routines,
+            Some(v) => {
+                hex::parse_count("top", v, 1, self.config.max_profiler_routines as u64)? as usize
+            }
+        };
+        // `frames` bounds the per-frame list — and cannot affect an answer that has no per-frame list, so
+        // it is REFUSED rather than ignored. This refusal is about the INSTRUMENT's state, which is why the
+        // run-state exemption above does not reach it.
+        let frames = match params.get("frames") {
+            None => self.config.max_profiler_frames,
+            Some(v) => {
+                if !self.profiler.per_frame_armed() {
+                    return Err(RpcError::new(
+                        code::INVALID_STATE,
+                        "`frames` bounds the per-frame list, and this sample was not armed with \
+                         set_profiler{perFrame:true} — arm it and re-run, or drop the param",
+                    )
+                    .with_data(json!({"reason": "perFrameNotArmed"})));
+                }
+                hex::parse_count("frames", v, 1, self.config.max_profiler_frames as u64)? as usize
+            }
+        };
+
+        let report = self.profiler.report();
+        let n = report.frame_count;
+
+        // Rows, ordered by `cycles` descending so a truncated list is the expensive end rather than an
+        // arbitrary slice. Ties broken by address so the order is total and two identical runs cannot
+        // disagree — a spread of 0 across boots is this surface's bar.
+        let mut rows: Vec<(u32, Counts)> = report.routines.into_iter().collect();
+        rows.sort_by(|a, b| b.1.cycles.cmp(&a.1.cycles).then(a.0.cmp(&b.0)));
+        let total_rows = rows.len();
+        let items: Vec<Value> = rows
+            .into_iter()
+            .take(top)
+            .map(|(addr, c)| self.profiler_row(addr, c))
+            .collect();
+
+        let bucket = |level: u8| {
+            let c = report.interrupts.get(&level).copied().unwrap_or_default();
+            json!({
+                "cycles": c.cycles,
+                "cyclesSelf": c.self_cycles,
+                "stallCycles": c.stall_cycles,
+                "calls": c.calls,
+            })
+        };
+
+        let mut out = json!({
+            "frameCount": n,
+            "sampleCycles": report.sample_cycles,
+            "totalCycles": report.total_cycles,
+            "unattributedCycles": report.unattributed_cycles,
+            "abandonedFrames": report.abandoned_frames,
+            "depthExceeded": report.depth_exceeded,
+            "perFrameExact": report.per_frame_exact,
+            "routines": rpc::bounded_array(items, total_rows, 0, top),
+            "interrupts": {
+                "hint": bucket(oracle_core::profiler::LEVEL_HINT),
+                "vint": bucket(oracle_core::profiler::LEVEL_VINT),
+            },
+        });
+
+        // `budgetPct` is DERIVED from the basis this same server advertises — never a hardcoded NTSC
+        // constant, which is wrong by ~16% the moment the machine is PAL. Exactly one of the two keys.
+        match self.budget_pct(report.total_cycles) {
+            Some(pct) => out["budgetPct"] = json!(pct),
+            None => out["budgetPctOmitted"] = json!("timingBasisChanged"),
+        }
+
+        if self.profiler.per_frame_armed() {
+            let ring = self.profiler.per_frame();
+            let total = ring.len();
+            let rows: Vec<Value> = ring
+                .iter()
+                .skip(total.saturating_sub(frames)) // the most recent `frames`
+                .map(|f| {
+                    json!({
+                        "frame": f.frame,
+                        "cycles": f.cycles,
+                        "stallCycles": f.stall_cycles,
+                        "hintCycles": f.hint_cycles,
+                        "vintCycles": f.vint_cycles,
+                    })
+                })
+                .collect();
+            // Offset `0`, deliberately: this window is the most-recent TAIL of the ring, not a forward
+            // page of it, so the question `truncated` answers — "does the client have everything?" — is
+            // `returned < total`, which is what an offset of 0 computes. Passing the tail's real start
+            // would make a 2-of-4 reply claim `truncated: false`, i.e. the exact confusion §2.4 clause (a)
+            // requires the key to prevent.
+            out["perFrame"] = rpc::bounded_array(rows, total, 0, frames);
+        }
+
+        // §2.4's advisory, applied: a caveat present on every reply is one clients learn to ignore, so it
+        // appears only when there is something to say.
+        if report.abandoned_frames > 0 || report.depth_exceeded > 0 {
+            out["caveat"] = json!(format!(
+                "the shadow stack lost {} frame(s) and declined {} call(s) at its depth bound; those \
+                 cycles are reported but the affected rows' `calls` understate their invocations",
+                report.abandoned_frames, report.depth_exceeded
+            ));
+        }
+        Ok(out)
+    }
+
+    /// One `routines[]` row. `addr` is canonical 24-bit; `name`/`disp` travel together or not at all.
+    ///
+    /// **The name is the BARE label**, never a `name+$hex` composite — §4's rule, which `$defs/symbolName`
+    /// enforces by pattern. And it comes from the loaded `SymbolTable`, whose lookups refuse equate rows in
+    /// both directions (`oracle_core::symbols`'s
+    /// `equates_are_not_addressable_in_either_direction`), so a `.lst` full of `EQU` constants cannot put a
+    /// non-address symbol on a row keyed by an address.
+    fn profiler_row(&self, addr: u32, c: Counts) -> Value {
+        let mut row = json!({
+            "addr": hex::addr(addr),
+            "cycles": c.cycles,
+            "cyclesSelf": c.self_cycles,
+            "stallCycles": c.stall_cycles,
+            "calls": c.calls,
+        });
+        if let Some(table) = self.symbols.as_ref() {
+            if let Some(r) = table.resolve(addr) {
+                row["name"] = json!(r.symbol.name);
+                row["disp"] = json!(r.displacement);
+            }
+        }
+        row
+    }
+
+    /// `totalCycles` as a percentage of one frame's CPU-cycle budget, or `None` when the basis changed
+    /// inside the sample and no single budget describes it.
+    fn budget_pct(&self, total_cycles: u64) -> Option<f64> {
+        let now = self.sys.timing_basis();
+        match self.profiler_basis {
+            Some(armed) if armed != now => return None,
+            _ => {}
+        }
+        let cycles_per_frame = now.mclk_per_frame / MCLK_PER_CPU_CYCLE;
+        (cycles_per_frame > 0).then(|| total_cycles as f64 * 100.0 / cycles_per_frame as f64)
     }
 
     /// `emulator/sprites` — the sprite attribute table as a table (§6, added by §11.10 / CR-18).
