@@ -839,6 +839,185 @@ fn rows_are_canonical_addresses_and_name_and_disp_travel_together() {
     );
 }
 
+/// **`name`/`disp` on the wire, from a real listing.** Every other test here boots symbol-less, which
+/// pins only the absent half of "present together, absent together" — and a rule with one half tested is a
+/// rule half tested.
+///
+/// The listing names the fixture's leaf at its exact entry address and puts the entry point a few bytes
+/// **below** the main routine, so one row resolves at displacement 0 and the other at a real non-zero
+/// offset — which is what makes `disp` a computed figure here rather than a constant that happens to be
+/// right. Both halves are asserted:
+/// the name is the **bare label** (§4's rule — `$defs/symbolName` refuses a `+$hex` composite by pattern,
+/// so a composite would fail validation on the way in rather than reach this assertion), and `disp` is an
+/// integer beside it rather than baked into the string.
+#[test]
+fn a_row_carries_its_bare_label_and_an_integer_displacement() {
+    let (_h, mut c, _init) = booted("prof-symbols", default_shape());
+
+    // Written per-test rather than shared: the path carries the tag, so two tests cannot race on one file.
+    let lst = std::env::temp_dir().join(format!(
+        "ae-prof-symbols-{}-{:?}.lst",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::write(
+        &lst,
+        "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ EntryPoint : 1FC C |
+ Prof_Leaf : 300 C |
+
+    2 symbols
+    0 unused symbols
+",
+    )
+    .expect("write the listing");
+    c.ok(
+        "emulator/load_symbols",
+        json!({"path": lst.to_str().expect("utf-8")}),
+    );
+
+    let r = arm_run_read(&mut c, 6, false);
+    let rows = r["routines"]["items"].as_array().expect("routines.items");
+    assert!(!rows.is_empty(), "need rows: {r}");
+
+    let mut named = 0;
+    for row in rows {
+        assert_eq!(
+            row.get("name").is_some(),
+            row.get("disp").is_some(),
+            "name and disp travel together: {row}"
+        );
+        let Some(name) = row.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        named += 1;
+        assert!(
+            ["EntryPoint", "Prof_Leaf"].contains(&name),
+            "the label comes from the listing, not from the address: {row}"
+        );
+        assert!(
+            !name.contains('+') && !name.contains('$'),
+            "the BARE label — a `name+$hex` composite is a different field's job: {row}"
+        );
+        assert!(
+            row["disp"].is_u64(),
+            "`disp` is an integer beside the name, not baked into it: {row}"
+        );
+    }
+    assert!(named >= 2, "both listed labels should have resolved: {r}");
+
+    // The leaf's row is keyed by its exact entry address, so it resolves at displacement 0 — the case that
+    // proves the displacement is computed rather than defaulted.
+    let leaf = rows
+        .iter()
+        .find(|r| r["addr"] == json!("0x00000300"))
+        .unwrap_or_else(|| panic!("the fixture's leaf is a row: {r}"));
+    assert_eq!(leaf["name"], json!("Prof_Leaf"), "{leaf}");
+    assert_eq!(leaf["disp"], json!(0), "exactly on the label: {leaf}");
+
+    // …and the main-loop row sits inside `EntryPoint`, so its displacement is real and non-zero.
+    let inside = rows
+        .iter()
+        .find(|r| r["name"] == json!("EntryPoint"))
+        .unwrap_or_else(|| panic!("the main loop resolves to the entry point: {r}"));
+    assert!(
+        u64_of(inside, "disp") > 0,
+        "a row inside a routine carries the offset it is at: {inside}"
+    );
+
+    let _ = std::fs::remove_file(&lst);
+}
+
+// --- the small witnesses ---------------------------------------------------------------------------------
+
+/// **`get_profiler.routineCount` is the number `get_profiler_frames` puts in `routines.total`.** Two counts
+/// of one thing is how the legacy surface got its divisor wrong, and §11.16 already pins the frame count
+/// this way; the row count is the other pair and it costs one assertion to keep honest.
+#[test]
+fn the_two_row_counts_are_one_number() {
+    let (_h, mut c, _init) = booted("prof-rowcount", default_shape());
+    let sample = arm_run_read(&mut c, 6, false);
+    let state = c.ok("emulator/get_profiler", json!({}));
+    assert_eq!(
+        state["routineCount"], sample["routines"]["total"],
+        "the instrument's row count and the sample's are the same number: {state} vs {}",
+        sample["routines"]
+    );
+    assert!(
+        u64_of(&state, "routineCount") > 0,
+        "and it is not vacuously zero: {state}"
+    );
+
+    // `total` is the sample's, not the page's: bounding the list must not move it.
+    let one = c.ok("emulator/get_profiler_frames", json!({"top": 1}));
+    assert_eq!(
+        one["routines"]["total"], sample["routines"]["total"],
+        "a bounded page still reports how many rows the sample has"
+    );
+}
+
+/// **A clean sample carries no `caveat`** — §2.4's advisory, on the wire, in the direction the fixtures can
+/// reach. The other direction (a caveat that appears, naming only the counter that fired) is unreachable
+/// from any fixture ROM — both counters are stack-recovery events, and probing all eight `ProfilerShape`s
+/// including 30,000-deep recursion produced zero of each — so it is pinned as a unit test on the sentence
+/// itself, `engine::tests::the_caveat_appears_only_when_there_is_something_to_say_and_names_only_that`.
+#[test]
+fn a_clean_sample_carries_no_caveat() {
+    let (_h, mut c, _init) = booted("prof-clean", default_shape());
+    let r = arm_run_read(&mut c, 6, true);
+    assert_eq!(
+        u64_of(&r, "abandonedFrames"),
+        0,
+        "the fixture is clean: {r}"
+    );
+    assert_eq!(u64_of(&r, "depthExceeded"), 0, "…in both counters: {r}");
+    assert!(
+        r.get("caveat").is_none(),
+        "so there is nothing to say, and nothing is said: {r}"
+    );
+}
+
+/// **A server nobody has armed answers both reads**, and answers them with the degenerate state rather than
+/// an error or a silence. This is the first thing any client does, and it is the one call sequence no other
+/// test here performs: every other test arms first.
+#[test]
+fn a_never_armed_server_answers_both_reads() {
+    let (_h, mut c, _init) = booted("prof-fresh", default_shape());
+
+    let state = c.ok("emulator/get_profiler", json!({}));
+    assert_eq!(state["enabled"], json!(false), "nothing armed it: {state}");
+    assert_eq!(state["perFrame"], json!(false), "{state}");
+    assert_eq!(u64_of(&state, "framesRecorded"), 0, "{state}");
+    assert_eq!(u64_of(&state, "routineCount"), 0, "{state}");
+
+    let r = c.ok("emulator/get_profiler_frames", json!({}));
+    assert_eq!(u64_of(&r, "frameCount"), 0);
+    assert_eq!(u64_of(&r, "sampleCycles"), 0);
+    assert_eq!(
+        r["perFrameExact"],
+        json!(true),
+        "nothing was divided, so nothing was lost: {r}"
+    );
+    assert_eq!(r["routines"]["total"], json!(0), "{r}");
+    assert!(
+        r.get("perFrame").is_none(),
+        "the ring was never armed, so it is absent rather than empty: {r}"
+    );
+    // And running the machine changes none of it: an unarmed instrument records nothing.
+    c.ok("emulator/run_frames", json!({"frames": 3}));
+    assert_eq!(
+        u64_of(
+            &c.ok("emulator/get_profiler_frames", json!({})),
+            "frameCount"
+        ),
+        0,
+        "a disarmed profiler is not a quietly-armed one"
+    );
+}
+
 // --- determinism -----------------------------------------------------------------------------------------
 
 /// **Three boots, byte-identical.** Aeon's spread-0 bar expressed as this suite's gate: the consumer this

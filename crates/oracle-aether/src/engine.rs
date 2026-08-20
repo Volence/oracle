@@ -2011,12 +2011,8 @@ impl Engine {
 
         // §2.4's advisory, applied: a caveat present on every reply is one clients learn to ignore, so it
         // appears only when there is something to say.
-        if report.abandoned_frames > 0 || report.depth_exceeded > 0 {
-            out["caveat"] = json!(format!(
-                "the shadow stack lost {} frame(s) and declined {} call(s) at its depth bound; those \
-                 cycles are reported but the affected rows' `calls` understate their invocations",
-                report.abandoned_frames, report.depth_exceeded
-            ));
+        if let Some(c) = profiler_caveat(report.abandoned_frames, report.depth_exceeded) {
+            out["caveat"] = json!(c);
         }
         Ok(out)
     }
@@ -2028,6 +2024,13 @@ impl Engine {
     /// both directions (`oracle_core::symbols`'s
     /// `equates_are_not_addressable_in_either_direction`), so a `.lst` full of `EQU` constants cannot put a
     /// non-address symbol on a row keyed by an address.
+    ///
+    /// **Bounded by [`MAX_SYMBOL_DISPLACEMENT`], like every other symbolised address in this house.** An
+    /// unbounded `resolve` answers with the nearest *preceding* label however far back it is, so a row whose
+    /// entry sits in data, in a gap, or past the end of the listing's coverage would be named after a
+    /// routine thousands of bytes earlier — legal, plausible, and wrong, which is the worst of the three.
+    /// Beyond the bound the row carries **no name at all**, and the address it is keyed by is still there:
+    /// the symbol was always an annotation on the address, never a replacement for it.
     ///
     /// `c` is the divided row and `t` its **undivided partner** over the whole sample (§11.16 delta 3).
     /// The two are the same four quantities, not two measurements: `t` is the accumulator `report()`
@@ -2047,7 +2050,7 @@ impl Engine {
             "callsTotal": t.calls,
         });
         if let Some(table) = self.symbols.as_ref() {
-            if let Some(r) = table.resolve(addr) {
+            if let Some(r) = table.resolve_within(addr, MAX_SYMBOL_DISPLACEMENT) {
                 row["name"] = json!(r.symbol.name);
                 row["disp"] = json!(r.displacement);
             }
@@ -4012,6 +4015,48 @@ fn held_names(pad: &Pad) -> Vec<&'static str> {
     v
 }
 
+/// The `caveat` `emulator/get_profiler_frames` carries when the accountant lost the thread of the
+/// program's stack, or `None` when it did not.
+///
+/// §2.4's advisory, applied: a caveat present on every reply is one clients learn to ignore, so this
+/// answers `None` on the ordinary sample. **And it names only the counter that is actually non-zero** —
+/// "lost 0 frame(s) and declined 3 call(s)" sends a reader looking for the zero half, which is a sentence
+/// about the message format rather than about their sample.
+///
+/// A free function with its own tests because neither non-zero case is reachable from the fixture ROMs:
+/// both counters are recovery events (a return the shadow stack could not match, a call past its depth
+/// bound), the fixtures are well-behaved by construction, and probing all eight `ProfilerShape`s — plus
+/// recursion 30,000 deep — produced zero of each. The *counting* is pinned in `oracle_core::profiler`;
+/// what is pinned here is the sentence a client reads.
+fn profiler_caveat(abandoned_frames: u64, depth_exceeded: u64) -> Option<String> {
+    let mut said: Vec<String> = Vec::new();
+    if abandoned_frames > 0 {
+        said.push(format!("the shadow stack lost {abandoned_frames} frame(s)"));
+    }
+    if depth_exceeded > 0 {
+        said.push(format!(
+            "the shadow stack declined {depth_exceeded} call(s) at its depth bound"
+        ));
+    }
+    (!said.is_empty()).then(|| {
+        format!(
+            "{}; those cycles are reported but the affected rows' `calls` understate their invocations",
+            said.join(" and ")
+        )
+    })
+}
+
+/// How far past a symbol an address may sit before the name stops being useful — the same bound the
+/// player's own lenses use (`oracle-frontend`'s `MAX_SYMBOL_DISPLACEMENT`), and for the same reason.
+///
+/// Aeon's listings are dense, so an address more than 4 KiB past the nearest label is almost certainly in
+/// data or off the end of the image, where naming the previous routine is actively misleading rather than
+/// merely imprecise. Past this the answer is no name; the raw address is always there either way.
+///
+/// The filter itself is `SymbolTable::resolve_within`, whose refusal is pinned by
+/// `oracle_core::symbols`'s `resolve_within_rejects_an_implausibly_distant_answer`.
+const MAX_SYMBOL_DISPLACEMENT: u32 = 0x1000;
+
 /// The order `emulator/get_profiler_frames` puts routine rows in: **most expensive first, and the tie-break
 /// is the undivided figure before the address.**
 ///
@@ -4075,6 +4120,45 @@ mod tests {
             "expensive first; the 7/799 row outranks both 7/700 rows; the two identical rows fall back \
              to ascending address, which is what keeps the order total"
         );
+    }
+
+    /// **Both directions of the caveat's MUST-NOT, and the wording nit that came with them.** A clean
+    /// sample says nothing; a dirty one says exactly what happened and mentions **only** the counter that
+    /// fired.
+    #[test]
+    fn the_caveat_appears_only_when_there_is_something_to_say_and_names_only_that() {
+        assert_eq!(
+            profiler_caveat(0, 0),
+            None,
+            "the ordinary sample carries no caveat at all"
+        );
+
+        let lost = profiler_caveat(2, 0).expect("a lost frame is worth saying");
+        assert!(lost.contains("lost 2 frame(s)"), "{lost}");
+        assert!(
+            !lost.contains("depth bound"),
+            "the counter that did not fire is not mentioned: {lost}"
+        );
+
+        let declined = profiler_caveat(0, 3).expect("a declined call is worth saying");
+        assert!(declined.contains("declined 3 call(s)"), "{declined}");
+        assert!(
+            !declined.contains("lost"),
+            "…and not in this direction either: {declined}"
+        );
+
+        let both = profiler_caveat(2, 3).expect("both");
+        assert!(
+            both.contains("lost 2 frame(s)") && both.contains("declined 3 call(s)"),
+            "{both}"
+        );
+        // Whatever the combination, the consequence a reader needs is always there.
+        for c in [&lost, &declined, &both] {
+            assert!(
+                c.contains("understate their invocations"),
+                "the caveat says what it means for the numbers: {c}"
+            );
+        }
     }
 
     /// The refinement is **strict**: it never reorders rows the primary key already separates, whichever
