@@ -103,7 +103,7 @@
 
 use crate::bus::{BusEvent, BusEventSink, BusOp, StepRetire};
 use crate::m68000::decode::{control_flow_of, ControlFlow};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 /// The bytes an `RTS` pops: the 32-bit return address a `JSR`/`BSR` pushed.
 const RTS_POP: u32 = 4;
@@ -121,6 +121,12 @@ const RTE_POP: u32 = 6;
 /// of it. Unbounded, that is a slow memory leak whose only symptom is that the report quietly empties out.
 /// Bounded, it is a number in [`Report::depth_exceeded`].
 pub const MAX_DEPTH: usize = 0x1_0000 / 4;
+
+/// The 68000 interrupt levels the VDP drives, named because a bucket key is a cause and not a number
+/// somebody has to look up.
+pub const LEVEL_HINT: u8 = 4;
+/// Level 6 — VBlank.
+pub const LEVEL_VINT: u8 = 6;
 
 /// The `RTR` opcode — the one return whose frame is 6 bytes rather than 4.
 const OPCODE_RTR: u16 = 0x4E77;
@@ -231,6 +237,25 @@ impl Frame {
     }
 }
 
+/// One whole frame's totals, as recorded by the opt-in per-frame ring.
+///
+/// Undivided by construction — a per-frame row is already per frame — and carrying no per-routine
+/// breakdown, which is what keeps the ring cheap enough to leave running across a long sample.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameRow {
+    /// The machine's own frame index at this row's closing boundary — a position on a clock `reset`
+    /// restarts, so a consumer correlates with it and never subtracts two of them to count frames.
+    pub frame: u64,
+    /// CPU cycles the machine retired in this one frame.
+    pub cycles: u64,
+    /// Of those, the ones spent held off the bus.
+    pub stall_cycles: u64,
+    /// What this frame's level-4 (HBlank) interrupts cost, inclusive of everything their handlers called.
+    pub hint_cycles: u64,
+    /// What this frame's level-6 (VBlank) interrupt cost, likewise.
+    pub vint_cycles: u64,
+}
+
 /// The accumulated sample, divided into per-frame figures.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Report {
@@ -308,12 +333,39 @@ pub struct Profiler {
     abandoned: u64,
     /// Pushes refused because the stack was already [`MAX_DEPTH`] deep. See [`Report::depth_exceeded`].
     depth_exceeded: u64,
+    /// The opt-in per-frame ring, oldest first, capped at [`Profiler::per_frame_depth`]. Empty and never
+    /// written when the ring was not armed — the absence is the signal, so a consumer cannot mistake "not
+    /// recording" for "recorded nothing".
+    per_frame: VecDeque<FrameRow>,
+    /// Ring depth; `0` means the ring is not armed at all.
+    per_frame_depth: usize,
 }
 
 impl Profiler {
-    /// A detached, empty accountant.
+    /// A detached, empty accountant, with the per-frame ring **off**.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A detached, empty accountant that also records a bounded ring of whole-frame totals.
+    ///
+    /// Opt-in because a per-frame record costs memory across a long sample while the aggregate does not —
+    /// the aggregate accumulates in place. `depth` of `0` is the same as [`Profiler::new`].
+    pub fn with_per_frame(depth: usize) -> Self {
+        Self {
+            per_frame_depth: depth,
+            ..Self::default()
+        }
+    }
+
+    /// Whether the per-frame ring is armed.
+    pub fn per_frame_armed(&self) -> bool {
+        self.per_frame_depth > 0
+    }
+
+    /// The per-frame rows, oldest first. Empty when the ring is not armed.
+    pub fn per_frame(&self) -> &VecDeque<FrameRow> {
+        &self.per_frame
     }
 
     /// Whole frames counted so far — the divisor a report will use.
@@ -394,14 +446,16 @@ impl Profiler {
                 suppressed: false,
             });
         }
-        let Some(top) = self.stack.last_mut() else {
-            // The root push was refused (the stack is capped). The cycles still happened, so they stay in
-            // the sample total and are reported as belonging to no row.
-            self.pending_cycles += cycles;
-            self.pending_stall += stall;
-            self.pending_unattributed += cycles;
-            return;
-        };
+        // UNCONDITIONAL, and that is a proof rather than an optimism: the only way to reach here with an
+        // empty stack is for the push above to have been refused, and `push_frame` refuses only at
+        // `MAX_DEPTH` — which an empty stack is, by definition, below. The branch that once handled a
+        // refused root was dead code carrying a second `pending_unattributed` write, i.e. a second source
+        // of truth for a number whose whole job is to make one sum close. It is gone; the impossibility is
+        // stated here instead.
+        let top = self
+            .stack
+            .last_mut()
+            .expect("a root push is never refused: an empty stack is below MAX_DEPTH");
         top.self_cycles += cycles;
         top.self_stall += stall;
         self.pending_cycles += cycles;
@@ -699,7 +753,7 @@ impl BusEventSink for Profiler {
     /// The sample's frame clock. The **first** boundary opens the sample and is never counted: the span
     /// before it is not a frame the accountant saw whole, so whatever accrued during it is discarded
     /// rather than reported as a runt.
-    fn on_frame_boundary(&mut self, _frame: u64) {
+    fn on_frame_boundary(&mut self, frame: u64) {
         if !self.opened {
             self.opened = true;
             // **The sample starts here, and it starts clean.** Frames open across this boundary keep their
@@ -722,6 +776,27 @@ impl BusEventSink for Profiler {
             // not returned still has an honest row.
             for idx in 0..self.stack.len() {
                 self.checkpoint(idx);
+            }
+            // The ring row is cut from the SAME pending figures the sample is about to commit, so a
+            // per-frame row and the aggregate can never describe different frames. It MUST be cut here —
+            // after the checkpoints have flushed every live frame into `pending_*`, and before the drains
+            // below empty them.
+            if self.per_frame_depth > 0 {
+                let bucket = |level: u8| {
+                    self.pending_buckets
+                        .get(&level)
+                        .map_or(0, |c: &Counts| c.cycles)
+                };
+                if self.per_frame.len() == self.per_frame_depth {
+                    self.per_frame.pop_front();
+                }
+                self.per_frame.push_back(FrameRow {
+                    frame,
+                    cycles: self.pending_cycles,
+                    stall_cycles: self.pending_stall,
+                    hint_cycles: bucket(LEVEL_HINT),
+                    vint_cycles: bucket(LEVEL_VINT),
+                });
             }
             for (addr, c) in std::mem::take(&mut self.pending) {
                 self.committed.entry(addr).or_default().add(c);

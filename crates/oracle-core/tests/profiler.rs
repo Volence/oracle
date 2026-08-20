@@ -841,6 +841,99 @@ fn a_supervisor_return_cannot_close_a_user_mode_frame_that_merely_shares_its_poi
     );
 }
 
+// --- The opt-in per-frame ring ----------------------------------------------------------------------
+
+/// The ring records **one row per counted frame**, cut from the same figures the aggregate commits, so a
+/// per-frame row and the sample can never describe different frames. It is undivided by construction — a
+/// per-frame row is already per frame — which is what lets a consumer see variance *inside* a sample
+/// instead of inferring it from repeated whole-boot runs.
+#[test]
+fn the_per_frame_ring_records_one_row_per_counted_frame() {
+    let mut sys = System::new(0x1234_5678);
+    sys.load_rom(testrom::build_profiler(ProfilerShape::Interrupts {
+        hint: false,
+        vint: true,
+    }));
+    sys.reset();
+    let mut prof = Profiler::with_per_frame(64);
+    sys.run_frames_with_sink(5, &mut prof);
+    let r = prof.report();
+
+    assert!(prof.per_frame_armed(), "the ring is armed");
+    assert_eq!(
+        prof.per_frame().len() as u64,
+        r.frame_count,
+        "one row per counted frame — the same divisor, not a second count of its own"
+    );
+    // The rows are the sample, decomposed: their cycles sum to it exactly.
+    let summed: u64 = prof.per_frame().iter().map(|f| f.cycles).sum();
+    assert_eq!(
+        summed, r.sample_cycles,
+        "the per-frame rows ARE the sample: {summed} vs {}",
+        r.sample_cycles
+    );
+    // Every frame of this fixture takes exactly one VBlank and no HBlank, which is what makes the ring's
+    // cause split checkable rather than merely present. The bucket is INCLUSIVE of the handler it armed a
+    // row for, so it is the entry plus the bare `rte` — small, and decidedly not zero.
+    for row in prof.per_frame() {
+        assert!(row.vint_cycles > 0, "each frame took its VBlank: {row:?}");
+        assert_eq!(row.hint_cycles, 0, "and no HBlank was enabled: {row:?}");
+        assert!(
+            row.vint_cycles < row.cycles,
+            "the interrupt is part of the frame, not the whole of it: {row:?}"
+        );
+    }
+    // Frame indices advance by one and are the machine's own coordinate, not a tally.
+    let frames: Vec<u64> = prof.per_frame().iter().map(|f| f.frame).collect();
+    for w in frames.windows(2) {
+        assert_eq!(w[1], w[0] + 1, "consecutive boundaries: {frames:?}");
+    }
+}
+
+/// **Off by default, and its absence is the signal.** A ring that silently recorded nothing would be
+/// indistinguishable from one that recorded a sample with no frames in it, so the unarmed instrument
+/// reports an empty ring AND says it is unarmed.
+#[test]
+fn the_ring_is_off_unless_asked_for() {
+    let prof = profiler_of(ProfilerShape::CallsLeaf { k: 3 }, 4);
+    assert!(!prof.per_frame_armed(), "not armed unless asked");
+    assert!(prof.per_frame().is_empty(), "and it recorded nothing");
+    // The aggregate is unaffected — the ring is additive, not a mode.
+    assert!(prof.report().frame_count > 0, "the sample still ran");
+}
+
+/// The ring is **bounded**, keeping the most recent frames. A profiler left armed across a long session
+/// must not grow without limit, and the frames a consumer wants are the ones nearest the symptom.
+#[test]
+fn the_ring_keeps_the_most_recent_frames_and_no_more() {
+    const DEPTH: usize = 2;
+    let mut sys = System::new(0x1234_5678);
+    sys.load_rom(testrom::build_profiler(ProfilerShape::CallsLeaf { k: 1 }));
+    sys.reset();
+    let mut prof = Profiler::with_per_frame(DEPTH);
+    sys.run_frames_with_sink(6, &mut prof);
+    let r = prof.report();
+
+    assert!(
+        r.frame_count > DEPTH as u64,
+        "the run must outlast the ring or this proves nothing ({} frames)",
+        r.frame_count
+    );
+    assert_eq!(
+        prof.per_frame().len(),
+        DEPTH,
+        "capped at the depth asked for"
+    );
+    // Most-recent, not first: the last row's frame index is the sample's last boundary.
+    let last = prof.per_frame().back().expect("non-empty").frame;
+    let first = prof.per_frame().front().expect("non-empty").frame;
+    assert_eq!(
+        last - first,
+        DEPTH as u64 - 1,
+        "the rows are the final {DEPTH} frames, contiguous"
+    );
+}
+
 // --- The exception rules, driven synthetically ------------------------------------------------------
 //
 // The accumulator is a pure function of three inputs — the acknowledge event, the retire stream and the
