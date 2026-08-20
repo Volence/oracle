@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://empyrean/contract/bus-protocol.schema.json",
   "title": "Empyrean / Aether Bus Protocol (Phase 1 thin slice)",
-  "description": "Source-of-truth message schema for the Aether bus (the Empyrean suite's shared protocol). PARTIAL, and precisely so as of 2026-08-15 (protocol.md §11.5/§11.6): the envelope, the handshake, every event, the symbol primitive, and 33 of §6's ~60 catalogued methods are schematized here (23 as of that date; recounted 2026-08-18, §11.13; recounted again 2026-08-18, §11.14) — which is EVERY method the reference server advertises, both params and result. The rest of §6 (breakpoints, Z80, VGM, profiler, object decoders, and the other deferred families) is completed as each is implemented, per §8 item 20: a server's suite closes every result against its fragment, so a method without one cannot ship a result nobody has checked. The authoritative live method set is whatever `initialize` advertises. PRECEDENCE (protocol.md D14): this file is NORMATIVE for wire shapes — which keys exist, their JSON types and ranges, whether they are required — while protocol.md is normative for semantics and behaviour. A disagreement between the two is a spec bug to be fixed by amendment in the pass that finds it; until amended, this file governs what goes on the wire. It is not a place to introduce behaviour: a shape here with no counterpart in protocol.md is an un-specced field, and §8's ban on unilateral invention applies. The two are amended together.",
+  "description": "Source-of-truth message schema for the Aether bus (the Empyrean suite's shared protocol). PARTIAL, and precisely so as of 2026-08-15 (protocol.md §11.5/§11.6): the envelope, the handshake, every event, the symbol primitive, and 36 of §6's ~60 catalogued methods are schematized here (23 as of that date; recounted 2026-08-18, §11.13; recounted again 2026-08-18, §11.14; recounted again 2026-08-19, §11.16, which added the profiler family's first three fragments AHEAD of the handler that will serve them, so `profiler` is no longer a deferred family here) — which is every method the reference server advertises plus the three the profiler amendment specifies, both params and result. The rest of §6 (breakpoints, Z80, VGM, object decoders, and the other deferred families) is completed as each is implemented, per §8 item 20: a server's suite closes every result against its fragment, so a method without one cannot ship a result nobody has checked. The authoritative live method set is whatever `initialize` advertises. PRECEDENCE (protocol.md D14): this file is NORMATIVE for wire shapes — which keys exist, their JSON types and ranges, whether they are required — while protocol.md is normative for semantics and behaviour. A disagreement between the two is a spec bug to be fixed by amendment in the pass that finds it; until amended, this file governs what goes on the wire. It is not a place to introduce behaviour: a shape here with no counterpart in protocol.md is an un-specced field, and §8's ban on unilateral invention applies. The two are amended together.",
   "$defs": {
     "hex": {
       "type": "string",
@@ -239,7 +239,9 @@
               "maxLineBytes": { "type": "integer", "minimum": 1, "description": "Largest single NDJSON line this server accepts (protocol.md §7.1) before refusing it." },
           "maxInputRows": { "type": "integer", "minimum": 1, "description": "Largest `rows` count `emulator/play_input` accepts. Discoverable for the reason the checkpoint cap is: a client that must hit a limit to learn it is a client that loses the work it was doing when it found out." },
               "maxWriteLen": { "type": "integer", "minimum": 1, "description": "Byte ceiling for one emulator/write_memory payload. REQUIRED when the server advertises emulator/write_memory." },
-              "maxHashLen": { "type": "integer", "minimum": 1, "description": "Byte ceiling for one emulator/memory_hash range. REQUIRED when the server advertises emulator/memory_hash." }
+              "maxHashLen": { "type": "integer", "minimum": 1, "description": "Byte ceiling for one emulator/memory_hash range. REQUIRED when the server advertises emulator/memory_hash." },
+              "maxProfilerRoutines": { "type": "integer", "minimum": 1, "description": "Largest `top` emulator/get_profiler_frames accepts, and the ceiling it applies to routines.items. REQUIRED when the server advertises emulator/get_profiler_frames (added 2026-08-19, §11.16, on the maxWriteLen/maxHashLen precedent). A POLICY bound, so it is advertised rather than discovered by refusal — the bound itself is refused, never clamped (§6's profiler blockquote)." },
+              "maxProfilerFrames": { "type": "integer", "minimum": 1, "description": "Depth of the per-frame ring: the largest `frames` emulator/get_profiler_frames accepts and the most per-frame rows it retains while armed with set_profiler{perFrame:true}. REQUIRED when the server advertises emulator/get_profiler_frames (added 2026-08-19, §11.16). Bounding the ring is what keeps an opt-in per-frame record from growing without limit across a long sample; the aggregate figures are unaffected by it, since they accumulate in place rather than out of the ring." }
             },
             "description": "REQUIRED (protocol.md §2.1, §11.5). THIS SERVER's ceilings, not the catalog's: §6's parenthetical defaults describe the catalog, while a server hosted inside a player window legitimately runs a far lower maxRunFrames and REFUSES above it rather than clamping (§5). A client has no other way to discover that number, and discovering it by being refused is discovering it too late. The values MUST be the ones the server's own parameter checks actually enforce."
           },
@@ -1308,6 +1310,138 @@
           "seen": { "type": "integer", "minimum": 0, "description": "THE STRUCTURAL NEGATIVE CONTROL. Every access offered to the recorder, matched or not. seen > 0 with matched == 0 is a live instrument that found nothing; seen == 0 is an instrument that was never attached to the run, and a zero from it means nothing at all. REQUIRED so a client cannot mistake the second for the first — and REQUIRED as a typed number rather than carried in prose, per §2.4 rule 3." },
           "matched": { "type": "integer", "minimum": 0, "description": "Accesses that matched at least one watch, across all modes. matched - total - dropped is what the non-recording watches absorbed. A count of accesses, not a measure of change." },
           "caveat": { "type": "string", "description": "§2.4: OPTIONAL, singular, handler-emitted, surfaced verbatim and never parsed. Every machine-actionable warning this instrument can raise already has a typed key — `seen`, `keysCapped`, `censusOverflow` — and the one permanent property (a VDP hit's step-granular `mclk`) is stated in §6 instead, because §2.4's advisory is that an always-present caveat is one clients learn to ignore." }
+        }
+      }
+    },
+    "emulator/set_profiler": {
+      "$comment": "protocol.md §6 (profiler), re-specified 2026-08-19 by §11.16 (CR-26) — an AMENDMENT to a row catalogued since this table's first draft, and the family's first fragment. Arms or disarms an exact per-invocation CPU-cycle accountant. Arming RESETS the accumulators (there is no resume in this revision, so a second arm discards an in-flight sample); disarming RETAINS the sample so it can still be read. The arm is SYNCHRONOUS with this reply — no sleep, no poll and no extra frame may be needed for it to take effect — and it MUST NOT be refused with -32005 for the machine's run state, because the sample's edges are frame boundaries and not the instant this command landed (a refusal about the INSTRUMENT's state, such as get_profiler_frames' perFrameNotArmed, is a different thing and is unaffected). The sample opens at the first frame boundary AFTER arming and closes at the most recent one, so a partial first frame is inexpressible. Prose-only, since JSON Schema cannot express them: the reset-on-arm, the retain-on-disarm and the boundary-delimited sample.",
+      "params": {
+        "type": "object",
+        "required": ["enabled"],
+        "properties": {
+          "enabled": { "type": "boolean", "description": "true arms the instrument (resetting it), false disarms it and retains what was accumulated. D9 category 2." },
+          "perFrame": { "type": "boolean", "description": "OPT-IN per-frame recording, default false. When true the server also retains a bounded ring of whole-frame totals, readable as get_profiler_frames.perFrame; when false that key is absent from every reply and `frames` there is refused. Opt-in because a per-frame record costs memory across a long sample while the aggregate does not — the aggregate accumulates in place." }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["enabled", "perFrame"],
+        "properties": {
+          "enabled": { "type": "boolean", "description": "The state the instrument is in after this call." },
+          "perFrame": { "type": "boolean", "description": "Whether the per-frame ring is armed after this call. Echoed rather than assumed: it is the key that decides whether get_profiler_frames answers a `frames` param or refuses it." }
+        }
+      }
+    },
+    "emulator/get_profiler": {
+      "$comment": "protocol.md §6 (profiler), re-specified 2026-08-19 by §11.16 (CR-26). The instrument's state, not its data — a pure read, never refused with -32005 for run state, and it clears nothing. framesRecorded is the SAME number get_profiler_frames reports as frameCount, and the two MUST agree when no frames were run between the calls: the legacy surface had two counts that could differ (one echoed the request, one counted pushes) and only one of them was ever the divisor.",
+      "params": { "type": "object", "properties": {} },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["enabled", "perFrame", "framesRecorded", "routineCount"],
+        "properties": {
+          "enabled": { "type": "boolean", "description": "Whether the instrument is armed right now." },
+          "perFrame": { "type": "boolean", "description": "Whether the per-frame ring is armed." },
+          "framesRecorded": { "type": "integer", "minimum": 0, "description": "Whole frames in the sample — COUNTED at each frame boundary observed while armed AFTER the one that opened the sample (that opening boundary is never counted, so n boundaries observed delimit n-1 whole frames), never derived by subtracting frame indices, which are positions on a clock `reset` restarts (§2.2). REQUIRED, not optional: 0 is a real answer (nothing recorded yet) and absence would be a second way to say it. Equals get_profiler_frames.frameCount." },
+          "routineCount": { "type": "integer", "minimum": 0, "description": "Distinct routine rows accumulated, before any `top` bound is applied — the same number get_profiler_frames reports as routines.total. A client can see the sample has content without asking for the content." }
+        }
+      }
+    },
+    "emulator/get_profiler_frames": {
+      "$comment": "protocol.md §6 (profiler), re-specified 2026-08-19 by §11.16 (CR-26). The accumulated sample: per-routine rows keyed by ENTRY ADDRESS, plus interrupt buckets keyed by CAUSE. A pure read — never refused with -32005 for run state, and it clears nothing, so two clients on one bus cannot consume each other's sample. DIVISION HAPPENS HERE: every row figure, both buckets and totalCycles are per-frame figures over the sample (the exact total divided by frameCount), with sampleCycles carrying the undivided whole-sample total and perFrameExact reporting whether any division truncated. Nothing is fabricated: no count is floored UP, no zero denominator is substituted, and an empty sample is frameCount 0 with empty lists rather than an error. Prose-only, since JSON Schema cannot express them: routines ordered by `cycles` descending; stallCycles <= cycles on every row; sampleCycles == frameCount * totalCycles exactly when perFrameExact is true; frameCount 0 implies every divided figure is 0 and perFrameExact is true; THE RECONCILIATION IDENTITY (added 2026-08-19 by \u00a711.16's delta) \u2014 over the undivided sample, sum of routines' cyclesSelf + sum of interrupts' cyclesSelf + unattributedCycles == sampleCycles, exactly, which on the wire reconstructs as (that sum) * frameCount + unattributedCycles \u2014 every term of it a key of this reply, which is why cyclesSelf is REQUIRED on an interrupt bucket and not only on a row \u2014 and is GUARANTEED to close exactly when perFrameExact is true, may fall SHORT by at most frameCount-1 per summed figure when it is false and never over, and may still close exactly then, because that flag reports truncation in EVERY divided figure and not only in the ones this sum touches; calls counts COMPLETED invocations, so a routine still running at the close has a row carrying its accrued cycles with calls 0; and the caveat is emitted for abandonedFrames/depthExceeded only when one of them is non-zero, never constantly.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "frames": { "type": "integer", "minimum": 1, "description": "Bound on the per-frame list only: return at most this many of the most recent per-frame rows. It does NOT select the aggregate window — the aggregate is always the whole sample, which is what retires the legacy divisor-by-request-window. REFUSED with -32005 (data.reason = 'perFrameNotArmed') when the sample was not armed with set_profiler{perFrame:true}, because a parameter that cannot affect the answer is worse than one that is rejected. Above maxProfilerFrames it is refused with -32602, never clamped." },
+          "top": { "type": "integer", "minimum": 1, "description": "Bound on routines.items — the N most expensive rows by `cycles`. Above the server's advertised maxProfilerRoutines it is REFUSED with -32602, never silently clamped to the cap (the legacy surface clamped, so a caller could not tell a full list from a clipped one). D9 category 2." }
+        }
+      },
+      "result": {
+        "allOf": [
+          { "$ref": "#/$defs/replyFields" },
+          { "anyOf": [{ "required": ["budgetPct"] }, { "required": ["budgetPctOmitted"] }] },
+          { "not": { "required": ["budgetPct", "budgetPctOmitted"] } }
+        ],
+        "required": ["frameCount", "sampleCycles", "totalCycles", "unattributedCycles", "abandonedFrames", "depthExceeded", "perFrameExact", "routines", "interrupts"],
+        "properties": {
+          "frameCount": { "type": "integer", "minimum": 0, "description": "Whole frames in the sample, counted at each boundary observed while armed AFTER the one that opened the sample (n boundaries observed delimit n-1 whole frames) — the divisor every per-frame figure in this reply was produced with. Read it; do not assume it equals the frames you ran, since that depends on where in the frame the instrument was armed. Equals get_profiler.framesRecorded." },
+          "sampleCycles": { "type": "integer", "minimum": 0, "description": "The UNDIVIDED total: CPU cycles the machine retired across the whole sample. Exact, always. When perFrameExact is true this equals frameCount * totalCycles, which is what lets a client recover every row's exact total by multiplication instead of being handed both." },
+          "totalCycles": { "type": "integer", "minimum": 0, "description": "CPU cycles the machine retired in ONE frame of the sample — sampleCycles divided by frameCount. The denominator a share is taken against, and the numerator budgetPct is derived from. Not the sum of the routine rows: rows are inclusive of callees, so they sum past it by construction." },
+          "unattributedCycles": { "type": "integer", "minimum": 0, "description": "Added 2026-08-19 by \u00a711.16's delta. UNDIVIDED cycles the sample retired that belong to no row and no bucket, and the term that keeps the reconciliation identity closed: sum of routines' cyclesSelf + sum of interrupts' cyclesSelf + this == sampleCycles, over the undivided sample, exactly. Exactly one source: the in-sample time of an interrupt already in flight when the sample opened, whose bucket may not be opened retroactively (\u00a76). Those cycles are real and are inside sampleCycles, so reporting them is what prevents a silent shortfall. Normally 0; non-zero is the ordinary phase for a ROM whose VBlank handler straddles the opening boundary, so it is information rather than an alarm. REQUIRED even when 0." },
+          "abandonedFrames": { "type": "integer", "minimum": 0, "description": "Added 2026-08-19 by \u00a711.16's delta. UNDIVIDED count of frames torn off the shadow stack without completing \u2014 a routine an RTE unwound past, or one displaced by a stack the server could not follow. Their CYCLES are still reported (they ran); their CALLS are not (they never finished), so non-zero means some row's calls understates its invocations. A fact about the MEASUREMENT rather than about the program, typed rather than left to prose because a client reconciling rows wants it machine-readable. REQUIRED even when 0 (\u00a72.3's reason: absence and zero must not both mean 'nothing happened'), and the conditional caveat mentions it only when non-zero." },
+          "depthExceeded": { "type": "integer", "minimum": 0, "description": "Added 2026-08-19 by \u00a711.16's delta. UNDIVIDED count of calls the server declined to track because its shadow stack was already at its bound. Their cycles are charged to the innermost tracked frame, so nothing leaves the totals and the identity still closes \u2014 but those routines get no rows of their own and the frame they charge to is overstated. Non-zero means the server lost the thread of the program's stack: a measurement fact, reported rather than inferred from rows that do not add up. REQUIRED even when 0; the conditional caveat mentions it only when non-zero." },
+          "perFrameExact": { "type": "boolean", "description": "TYPED, not a caveat (§2.4 rule 3), and REQUIRED even when true. True iff EVERY divided figure in this reply divided without remainder. When false, each divided figure is floored — one-sided low, bounded by one unit per figure — and a client gating with == must act on that. It is also what makes `cycles - stallCycles` exact arithmetic rather than the difference of two truncations, which is the subtraction the ideal-cycle gates on the other side of this bus are built on. With frameCount 0 there was nothing to divide, so it is true." },
+          "budgetPct": { "type": "number", "minimum": 0, "description": "totalCycles as a percentage of one frame's CPU-cycle budget, DERIVED from the timingBasis this same server advertises (§2.1, D16) — mclkPerFrame over the master clocks per CPU cycle — never a hardcoded constant, which is wrong by ~16% the moment the machine is PAL. A sanity check on the accounting rather than a measure of load: on a machine whose CPU is never halted it sits near 100. Present unless budgetPctOmitted is." },
+          "budgetPctOmitted": { "type": "string", "enum": ["timingBasisChanged"], "description": "Present INSTEAD of budgetPct when the derivation is ambiguous, naming the condition rather than averaging over it: the machine's timing basis changed inside the sample, so no single frame budget describes it. Exactly one of budgetPct / budgetPctOmitted is present, enforced by the result's anyOf + not." },
+          "routines": {
+            "allOf": [{ "$ref": "#/$defs/boundedList" }],
+            "$comment": "§2.4's NESTED container spelling, because this list is a FIELD of a larger result rather than the whole of it (the flat spelling belongs to emulator/checkpoint_list, whose result IS its list). A POLICY bound — the server picks the cap, `top` is the client's hint — so total/returned/truncated are mandatory and truncated is required even when false. NO cursor: this method accepts no continuation param, and §2.4 clause (b) forbids emitting a token that can never be handed back.",
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["addr", "cycles", "cyclesSelf", "stallCycles", "calls"],
+                  "properties": {
+                    "addr": { "allOf": [{ "$ref": "#/$defs/hex" }], "description": "The routine's ENTRY address, masked to the 24 address lines the 68000 drives, so a row key and a listing address compare directly instead of through a client-side mask. The row's identity: rows are keyed by entry address, never by symbol." },
+                    "name": { "allOf": [{ "$ref": "#/$defs/symbolName" }], "description": "The BARE label at `addr` — §4's naming rule, which binds every symbol field on this bus. Never a `name+$hex` composite: the displacement is `disp`, and a rendering like 'Parallax_Update+$1A' is the two fields concatenated by a client that wants it. Absent, together with `disp`, when nothing resolves — a server MUST NOT fall back to the address string, because a client cannot tell a symbol spelled like an address from a lookup that failed." },
+                    "disp": { "type": "integer", "minimum": 0, "description": "Bytes past `name`; 0 is an exact hit, which is the normal case here because a row key IS an entry address. Travels with `name` in both directions (dependentRequired)." },
+                    "cycles": { "type": "integer", "minimum": 0, "description": "Per-frame CPU cycles attributed to this routine, INCLUSIVE of everything it called — the meaning the legacy rows had in practice, kept so a migrating consumer's arithmetic does not change. Inclusive rows sum past totalCycles by construction; that is not an error, it is what inclusive means." },
+                    "cyclesSelf": { "type": "integer", "minimum": 0, "description": "The same span with callee time subtracted — the additive half of the pair, and the one that sums to at most totalCycles across all rows. A client wanting a share of frame time divides THIS by totalCycles; the legacy `pct` divided the inclusive figure and summed far past 100%, which is why no pct key is emitted here." },
+                    "stallCycles": { "type": "integer", "minimum": 0, "description": "The part of `cycles` the CPU spent held off the bus rather than executing — a SUBSET of `cycles`, keyed identically to it (same routine key, same inclusive span, same in-server division), so `cycles - stallCycles` is a well-formed subtraction rather than two quantities with different aggregation glued together. Exactly three conditions count, enumerated so that a fourth is a visible amendment and never a silent widening: a 68000 write to the VDP data port held off while the write FIFO is full; a 68000 read of that port waiting for the FIFO to drain; and the whole bus-hold window of a 68k->VDP DMA, billed to the instruction that armed it. A VRAM fill and a VRAM copy contribute nothing (the 68000 keeps running through both)." },
+                    "calls": { "type": "integer", "minimum": 0, "description": "Per-frame invocations of this routine — a COUNT, never floored up. A routine invoked fewer times than the sample has frames reports 0 here; the legacy surface substituted 1, which fabricated a call that never happened. It is the consumer's free correctness check: a fixture that failed to install shows the wrong count before any cycle figure is read." }
+                  },
+                  "additionalProperties": false,
+                  "dependentRequired": { "name": ["disp"], "disp": ["name"] },
+                  "description": "ONE row shape. Ordered by `cycles` descending, so a truncated list is the expensive end rather than an arbitrary slice."
+                }
+              }
+            }
+          },
+          "interrupts": {
+            "type": "object",
+            "required": ["hint", "vint"],
+            "$comment": "Keyed by interrupt CAUSE — hint is level 4 (HBlank), vint is level 6 (VBlank) — and never by handler address. The legacy instrument classified on the handler's entry PC tested against vector-table constants, so on a ROM whose handlers live anywhere else `hint` was HBlank PLUS VBlank and `vint` was structurally 0: a silently wrong number rather than a missing one. Both buckets are always present, including when a run took neither interrupt, so a zero means 'measured zero' and not 'not reported'.",
+            "properties": {
+              "hint": { "$ref": "#/methods/emulator~1get_profiler_frames/result/$defs/interruptBucket" },
+              "vint": { "$ref": "#/methods/emulator~1get_profiler_frames/result/$defs/interruptBucket" }
+            },
+            "additionalProperties": false
+          },
+          "perFrame": {
+            "allOf": [{ "$ref": "#/$defs/boundedList" }],
+            "$comment": "OPT-IN: present if and only if the sample was armed with set_profiler{perFrame:true}. Whole-frame totals only — no per-routine breakdown — and NOT divided, since a per-frame row is already per frame. Bounded by maxProfilerFrames (a policy bound, so total/returned/truncated are mandatory) and by the `frames` param; no cursor, per §2.4 clause (b). This is what makes the method's name true: the legacy get_profiler_frames returned one averaged object and no way to see variance within a sample at all.",
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["frame", "cycles", "stallCycles", "hintCycles", "vintCycles"],
+                  "properties": {
+                    "frame": { "type": "integer", "minimum": 0, "description": "The machine's own frame index at this row's closing boundary — the same coordinate §2.2 stamps. A position on a clock `reset` restarts, so a client CORRELATES with it and does not subtract two of them to count frames; frameCount is the count." },
+                    "cycles": { "type": "integer", "minimum": 0, "description": "CPU cycles the machine retired in this one frame. Undivided — there is nothing to divide." },
+                    "stallCycles": { "type": "integer", "minimum": 0, "description": "Of those cycles, the ones spent held off the bus — the same three conditions the row field enumerates." },
+                    "hintCycles": { "type": "integer", "minimum": 0, "description": "Cycles this frame's level-4 (HBlank) interrupts cost, inclusive of everything their handlers called." },
+                    "vintCycles": { "type": "integer", "minimum": 0, "description": "Cycles this frame's level-6 (VBlank) interrupt cost, inclusive of everything its handler called." }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "caveat": { "type": "string", "description": "§2.4: OPTIONAL, singular, handler-emitted, surfaced verbatim and never parsed. CONDITIONAL, as §2.4's advisory requires — an empty sample is the case it exists for. Every machine-actionable consequence here already has a typed key (perFrameExact, budgetPctOmitted, truncated), and declaring the field is §2.4 rule 4, not an intention to emit it on every reply." }
+        },
+        "$defs": {
+          "interruptBucket": {
+            "type": "object",
+            "required": ["cycles", "cyclesSelf", "stallCycles", "calls"],
+            "properties": {
+              "cycles": { "type": "integer", "minimum": 0, "description": "Per-frame cycles this bucket cost, INCLUSIVE of everything the handler called — entry, the handler, its callees and the RTE. The bucket opens when the interrupt is TAKEN (the acknowledge cycle, not the raise) and closes at the matching RTE — the one that unwinds that interrupt's own exception frame, so the RTE of an exception taken INSIDE the handler (a TRAP, an address error) closes that exception and not the bucket, and an RTE that finds no open bucket closes nothing. An interrupt taken before the sample opened accrues to no bucket: a server MUST NOT retroactively open one. Nesting is by depth and never double-counted: cycles retired while a nested HBlank runs inside a VBlank handler belong to hint alone, and the suspended vint bucket accrues nothing until the nested one closes." },
+              "cyclesSelf": { "type": "integer", "minimum": 0, "description": "Added 2026-08-19 by \u00a711.16's delta ruling. The bucket's cycles with the time of everything it called subtracted \u2014 the same self/inclusive pair a routine row carries, keyed identically to `cycles` and divided by the same frameCount, so the two are summable. REQUIRED because the reconciliation identity sums it: an interrupt handler's own code gets a routines[] row of its own, so the bucket's SELF figure is the interrupt cost that belongs to no row (entry, the span before the handler's first instruction, and the RTE). Without it on the wire the identity in \u00a76 would name a term no client could read, which is the defect the delta ruling caught." },
+              "stallCycles": { "type": "integer", "minimum": 0, "description": "Of those cycles, the ones spent held off the bus — same definition, same keying and same division as the routine row's field, so the same subtraction works here." },
+              "calls": { "type": "integer", "minimum": 0, "description": "Per-frame times this interrupt was TAKEN, not the times it was raised: a raised-but-masked HBlank appears nowhere in this reply. A count, never floored up." }
+            },
+            "additionalProperties": false
+          }
         }
       }
     }

@@ -14,20 +14,72 @@ an explicit re-vendor commit. That commit is the auditable record of "we adopted
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo commit (`HEAD` at vendor time) | `46e0567` — *"contract: §11.14 — the drawn rows come back: emulator/scanlines"* (2026-08-18) |
-| Last commit that touched the schema | `46e0567` — same commit |
-| SHA-256 | `63cb068c80cb5c33c747a61afd8300a68bcbbaa99a9627ff8af2f1b90e03163d` |
-| Bytes | 114886 |
-| Vendored on | 2026-08-18 |
+| Contract repo revision | **`6d5cb4b`** on branch **`profiler-amendment`** — *"contract: apply delta2 ruling D-M1..D-M3 + D-S2 — the identity becomes computable"* (2026-08-19) |
+| Last commit that touched the schema | `6d5cb4b` — same commit |
+| SHA-256 | `190ed14e0ba30ccc3d02f3a49a84098032c728bd0559807b1000b32b4e29ae8f` |
+| Bytes | 139421 |
+| Vendored on | 2026-08-19 |
 
-*Note: the rows between `34a1993` and this one rotted — three intervening commits (`05a8068`, `193906a`,
-`2d5dac9`) touched the schema and were never recorded here, and the vendored file was refreshed at least
-once (to 103086 bytes, matching later upstream) without a matching table update. The byte-identity test in
-`tests/schema_conformance.rs` guarded the file itself throughout, so the copy never actually drifted from
-upstream — only this table's record of *which* upstream commit it matched went stale. Recorded here rather
-than silently continued.*
+> ### ⚠ This copy tracks an UNMERGED contract revision
+>
+> `profiler-amendment` is a three-commit draft branch off `d72513c`; `6d5cb4b` is **not** an ancestor of the
+> contract repo's default branch, whose schema is still the pre-amendment 115,285-byte file. It was
+> adjudicated and is the normative text for the profiler surface, so the server implements against it —
+> but the ordinary "vendored copy == upstream working tree" check cannot hold until it merges.
+>
+> The freshness test was **not** turned off for this. It got stricter instead: `TRACKED_REVISION` in
+> `tests/schema_conformance.rs` names the revision, and when the working-tree compare fails the test
+> demands (a) the vendored bytes are a verbatim copy of that revision, read from the contract repo's own
+> object store, **and** (b) the checked-out branch has not touched the schema since that revision branched.
+> Condition (b) is what preserves the original guarantee: a contract edit on the default branch still turns
+> this suite red while we track a draft.
+>
+> **It retires itself.** When `profiler-amendment` merges, upstream's working tree matches these bytes, the
+> plain compare passes, and none of the tracked-revision code runs. At that point `TRACKED_REVISION` should
+> be set back to `None` and this box deleted — but nothing breaks if that is forgotten, because the early
+> return fires first.
 
-### What this re-vendor adopted — §11.14 (CR-24)
+### What this re-vendor adopted — §11.16 (CR-26) and its two deltas
+
+The profiler family's **first three fragments — 33 → 36** — plus two `initialize.limits` keys. This is an
+**amendment** to three rows the catalog had carried since its first draft, not a new family: the methods
+were advertised in prose with summarised results and no fragment at all, which is exactly the gap §8 item
+20 exists to close.
+
+- **`emulator/set_profiler`.** Arms or disarms the accountant. Arming **resets** the accumulators (no
+  resume in this revision, so a second arm discards an in-flight sample); disarming **retains** the sample
+  so it can still be read. The arm is synchronous with the reply, and none of the three methods may be
+  refused `-32005` **for the machine's run state** — the sample's edges are frame boundaries, not the
+  instant the command landed. `perFrame` is the opt-in per-frame ring.
+- **`emulator/get_profiler`.** The instrument's state, not its data. `framesRecorded` is the SAME number
+  `get_profiler_frames` calls `frameCount`, and the two MUST agree when no frames ran between the calls —
+  the legacy surface had two counts that could differ and only one was ever the divisor.
+- **`emulator/get_profiler_frames`.** The sample. Nine REQUIRED result keys (`frameCount`, `sampleCycles`,
+  `totalCycles`, `unattributedCycles`, `abandonedFrames`, `depthExceeded`, `perFrameExact`, `routines`,
+  `interrupts`), `budgetPct` **XOR** `budgetPctOmitted` enforced by an `anyOf` + `not` on the result, and
+  the opt-in `perFrame` container. `routines` and `perFrame` take §2.4's **nested** container spelling and
+  carry **no cursor** (clause (b)); `top` and `frames` are **refused, never clipped**, and `frames` without
+  the ring armed is `-32005 perFrameNotArmed` — a refusal about the *instrument's* state, which the run-state
+  exemption above does not touch.
+
+**The delta the second commit added** (`64fc3f8`, `6d5cb4b`): `unattributedCycles`, `abandonedFrames` and
+`depthExceeded` become REQUIRED result fields, and `cyclesSelf` becomes the interrupt bucket's fourth
+REQUIRED field. That last one is the D-M1 fix and it is worth reading twice: §6 told a client to sum
+`interrupts[].cyclesSelf` to check the reconciliation identity, while the bucket shape was closed and did
+not carry the key — the contract directed a computation and then rejected every reply that permitted it.
+**The fragment count does not move** (36 before and after); no other fragment is touched.
+
+### One harness change this re-vendor forced
+
+`get_profiler_frames` is the first fragment to define a **fragment-local `$defs`** (`interruptBucket`, so
+`hint` and `vint` are provably one shape rather than two that can drift) and to reference it by an
+**absolute in-document pointer**. Both are correct in the document they were written for; both break the
+harness's lift-a-fragment-and-compile-it strategy, which clobbered the local `$defs` with the root's and
+left the pointer with nothing to resolve against. `tests/common/schema.rs::with_defs` now merges root
+`$defs` **under** a fragment's own and, only for fragments that use such a pointer, carries `methods` along
+as an inert data key for the pointer to land on. The contract was not changed to suit the harness.
+
+### What the previous re-vendor adopted — §11.14 (CR-24)
 
 One new method fragment, taking the schema from **32 method fragments to 33** (the description string's
 count is recounted again, 2026-08-18, §11.14; `methods` now holds 34 keys, one of them a `$comment`).
