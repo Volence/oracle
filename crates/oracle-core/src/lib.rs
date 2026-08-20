@@ -12,6 +12,9 @@
 pub mod bus;
 pub mod io;
 pub mod m68000;
+/// The CPU profiler (`CR-26`): an exact per-invocation cycle accountant driven by the retire hook.
+/// Caller-owned like every other instrument here — never part of `System` / `state_hash` / `export_state`.
+pub mod profiler;
 pub mod render;
 pub mod rng;
 /// Per-scanline capture (`F-SCANLINE-CAPTURE`): one configurable [`scanline_capture::ScanlineCapture`] sink

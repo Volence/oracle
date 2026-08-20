@@ -153,7 +153,34 @@ fn with_defs(fragment: &Value) -> Value {
         "$schema".into(),
         Value::String("https://json-schema.org/draft/2020-12/schema".into()),
     );
-    o.insert("$defs".into(), schema_root()["$defs"].clone());
+    // Root `$defs` MERGED UNDER the fragment's own, never over it. A fragment may carry a `$defs` of its
+    // own for a shape only it uses — `get_profiler_frames` defines `interruptBucket` there so `hint` and
+    // `vint` are provably the same shape rather than two copies that can drift. Clobbering the key would
+    // delete that definition and leave its `$ref` dangling, which is a failure that looks like a contract
+    // error and is not one.
+    let mut defs: Map<String, Value> = schema_root()["$defs"]
+        .as_object()
+        .cloned()
+        .expect("root $defs is an object");
+    if let Some(local) = fragment.get("$defs").and_then(Value::as_object) {
+        for (k, v) in local {
+            defs.insert(k.clone(), v.clone());
+        }
+    }
+    o.insert("$defs".into(), Value::Object(defs));
+
+    // A fragment-local `$defs` is referenced from within the WHOLE document, so its `$ref` is an absolute
+    // pointer (`#/methods/emulator~1get_profiler_frames/result/$defs/...`). Lifting the fragment to be its
+    // own root breaks that path — the pointer is correct in the document it was written for and
+    // unresolvable in ours. So when a fragment uses one, carry `methods` along: it is a plain data key
+    // rather than a schema keyword (which is the same reason the document needs lifting at all), so it is
+    // inert for validation and exists purely to give the pointer something to land on.
+    //
+    // Done conditionally, and cheaply, because splicing a copy of every method into every fragment would
+    // multiply the compile input by the size of the document for the benefit of one fragment.
+    if fragment.to_string().contains("\"#/methods/") {
+        o.insert("methods".into(), schema_root()["methods"].clone());
+    }
     Value::Object(o)
 }
 

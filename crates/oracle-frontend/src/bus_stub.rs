@@ -83,11 +83,22 @@ impl Bus {
         &mut self.watchpoints
     }
 
-    /// The same instrument as a run sink. Nothing here can arm `stopAfter` — there is no bus to arm it from
-    /// — but the wrapper is kept so the two builds are the same shape at the one place a difference would
-    /// mean the loop behaved differently depending on how it was compiled.
-    pub fn watch_sink(&mut self) -> Observe<&mut Watchpoints> {
-        Observe(&mut self.watchpoints)
+    /// The instruments the run loop feeds, in the served build's shape. The watch half is the panel's own
+    /// and is attached on the same condition; the **profiler half is always `None`**, and that is a fact
+    /// about this build rather than a stub's shrug — the profiler is armed only over the bus (§6's
+    /// `emulator/set_profiler`), and this build has no bus to arm it from, so there is never a sample for
+    /// the loop to feed.
+    ///
+    /// Nothing here can arm `stopAfter` either, for the same reason, but the [`Observe`] wrapper is kept:
+    /// the one place the two builds must not differ is the shape of what the loop attaches to its run.
+    pub fn run_sinks(
+        &mut self,
+    ) -> (
+        Option<Observe<&mut Watchpoints>>,
+        Option<Observe<&mut oracle_core::profiler::Profiler>>,
+    ) {
+        let armed = self.watchpoints.watch_count() > 0;
+        (armed.then_some(Observe(&mut self.watchpoints)), None)
     }
 
     pub fn set_paused(&mut self, paused: bool) {

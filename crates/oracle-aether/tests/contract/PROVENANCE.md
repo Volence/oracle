@@ -14,20 +14,103 @@ an explicit re-vendor commit. That commit is the auditable record of "we adopted
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo commit (`HEAD` at vendor time) | `46e0567` — *"contract: §11.14 — the drawn rows come back: emulator/scanlines"* (2026-08-18) |
-| Last commit that touched the schema | `46e0567` — same commit |
-| SHA-256 | `63cb068c80cb5c33c747a61afd8300a68bcbbaa99a9627ff8af2f1b90e03163d` |
-| Bytes | 114886 |
-| Vendored on | 2026-08-18 |
+| Contract repo revision | **`1b05dc1`** on branch **`profiler-amendment`** — *"contract: apply delta3 ruling D3-M1 + D3-S1..S3 — the reversal recorded; CONTRACT FINAL for the merge window"* (2026-08-19) |
+| Last commit that touched the schema | `4fc1915` — *"contract: CR-26 delta 3 — the undivided set, and an identity with no caveat left"*. The delta-3 ruling round that follows it is **prose-only**: `4fc1915` and `1b05dc1` carry byte-identical schemas, verified from the contract repo's object store, so no keyword, key or description moved underneath the validator. |
+| SHA-256 | `c77a7245bf2bcc17031922389354eb67a3e4aad08e1d7973bcb15cd8da4a83a1` |
+| Bytes | 146406 |
+| Vendored on | 2026-08-19 |
 
-*Note: the rows between `34a1993` and this one rotted — three intervening commits (`05a8068`, `193906a`,
-`2d5dac9`) touched the schema and were never recorded here, and the vendored file was refreshed at least
-once (to 103086 bytes, matching later upstream) without a matching table update. The byte-identity test in
-`tests/schema_conformance.rs` guarded the file itself throughout, so the copy never actually drifted from
-upstream — only this table's record of *which* upstream commit it matched went stale. Recorded here rather
-than silently continued.*
+> ### ⚠ This copy tracks an UNMERGED contract revision
+>
+> `profiler-amendment` is a six-commit draft branch off `d72513c`; `1b05dc1` is **not** an ancestor of the
+> contract repo's default branch, whose schema is still the pre-amendment 115,285-byte file. It was
+> adjudicated and is the normative text for the profiler surface, so the server implements against it —
+> but the ordinary "vendored copy == upstream working tree" check cannot hold until it merges.
+>
+> The freshness test was **not** turned off for this. It got stricter instead: `TRACKED_REVISION` in
+> `tests/schema_conformance.rs` names the revision, and when the working-tree compare fails the test
+> demands (a) the vendored bytes are a verbatim copy of that revision, read from the contract repo's own
+> object store, **and** (b) the checked-out branch has not touched the schema since that revision branched.
+> Condition (b) is what preserves the original guarantee: a contract edit on the default branch still turns
+> this suite red while we track a draft.
+>
+> **It retires itself.** When `profiler-amendment` merges, upstream's working tree matches these bytes, the
+> plain compare passes, and none of the tracked-revision code runs. At that point `TRACKED_REVISION` should
+> be set back to `None` and this box deleted — but nothing breaks if that is forgotten, because the early
+> return fires first.
 
-### What this re-vendor adopted — §11.14 (CR-24)
+### What this re-vendor adopted — §11.16 (CR-26) delta 3, the undivided set
+
+`4fc1915` adds **four REQUIRED integers to the routine row and four to the interrupt bucket** —
+`cyclesTotal`, `cyclesSelfTotal`, `stallCyclesTotal`, `callsTotal` — the same four quantities the divided
+figures report, over the whole sample, **undivided**. The divided figures stay REQUIRED and unchanged;
+division-inside remains a pinned property of this surface. **The fragment count does not move** (36 before
+and after), and no `initialize.limits` key is added.
+
+Two consequences, and the second is the headline:
+
+- **Each pair is tied**: when `frameCount > 0`, `divided == total / frameCount` under integer division, so
+  `divided × frameCount ≤ total < (divided + 1) × frameCount` — a total *bounds* its partner's truncation.
+- **The reconciliation identity gets a wire form that is unconditionally exact**:
+  Σ `routines[].cyclesSelfTotal` + Σ `interrupts[].cyclesSelfTotal` + `unattributedCycles` ==
+  `sampleCycles`, with no `perFrameExact` condition, no `× frameCount` and no floor bound. Delta 2 could
+  only offer the divided reconstruction, hedged three ways; that hedging is now a property of the divided
+  *view* alone. `tests/profiler.rs::the_identity_closes_when_computed_from_the_wire` asserts the exact form
+  unconditionally and keeps the divided bound beneath it as the secondary check.
+
+**And the four are carried on the routine row and the interrupt bucket only** — never on `perFrame[]` rows,
+which are whole-frame totals with no per-routine breakdown and are already undivided. That bound is a
+negative control here rather than trusted prose:
+`tests/profiler.rs::the_undivided_set_is_refused_on_a_per_frame_row` doctors a real reply four ways and
+asserts the fragment rejects each.
+
+The ask this answers is the demand side's C2 — a per-frame `calls` is the one figure division routinely
+*destroys* rather than merely truncates (4.53 invocations a frame reports `2`, one invocation across the
+sample reports `0`), so no rate in their packet could be gated with `==` against it. The controller took
+the whole undivided set rather than `callsTotal` alone because the pre-release window shuts once, and a
+field registered for later can only come back optional-forever or in a v2.
+
+### What the previous re-vendor adopted — §11.16 (CR-26) and its first two deltas
+
+The profiler family's **first three fragments — 33 → 36** — plus two `initialize.limits` keys. This is an
+**amendment** to three rows the catalog had carried since its first draft, not a new family: the methods
+were advertised in prose with summarised results and no fragment at all, which is exactly the gap §8 item
+20 exists to close.
+
+- **`emulator/set_profiler`.** Arms or disarms the accountant. Arming **resets** the accumulators (no
+  resume in this revision, so a second arm discards an in-flight sample); disarming **retains** the sample
+  so it can still be read. The arm is synchronous with the reply, and none of the three methods may be
+  refused `-32005` **for the machine's run state** — the sample's edges are frame boundaries, not the
+  instant the command landed. `perFrame` is the opt-in per-frame ring.
+- **`emulator/get_profiler`.** The instrument's state, not its data. `framesRecorded` is the SAME number
+  `get_profiler_frames` calls `frameCount`, and the two MUST agree when no frames ran between the calls —
+  the legacy surface had two counts that could differ and only one was ever the divisor.
+- **`emulator/get_profiler_frames`.** The sample. Nine REQUIRED result keys (`frameCount`, `sampleCycles`,
+  `totalCycles`, `unattributedCycles`, `abandonedFrames`, `depthExceeded`, `perFrameExact`, `routines`,
+  `interrupts`), `budgetPct` **XOR** `budgetPctOmitted` enforced by an `anyOf` + `not` on the result, and
+  the opt-in `perFrame` container. `routines` and `perFrame` take §2.4's **nested** container spelling and
+  carry **no cursor** (clause (b)); `top` and `frames` are **refused, never clipped**, and `frames` without
+  the ring armed is `-32005 perFrameNotArmed` — a refusal about the *instrument's* state, which the run-state
+  exemption above does not touch.
+
+**The delta the second commit added** (`64fc3f8`, `6d5cb4b`): `unattributedCycles`, `abandonedFrames` and
+`depthExceeded` become REQUIRED result fields, and `cyclesSelf` becomes the interrupt bucket's fourth
+REQUIRED field. That last one is the D-M1 fix and it is worth reading twice: §6 told a client to sum
+`interrupts[].cyclesSelf` to check the reconciliation identity, while the bucket shape was closed and did
+not carry the key — the contract directed a computation and then rejected every reply that permitted it.
+**The fragment count does not move** (36 before and after); no other fragment is touched.
+
+### One harness change that re-vendor forced
+
+`get_profiler_frames` is the first fragment to define a **fragment-local `$defs`** (`interruptBucket`, so
+`hint` and `vint` are provably one shape rather than two that can drift) and to reference it by an
+**absolute in-document pointer**. Both are correct in the document they were written for; both break the
+harness's lift-a-fragment-and-compile-it strategy, which clobbered the local `$defs` with the root's and
+left the pointer with nothing to resolve against. `tests/common/schema.rs::with_defs` now merges root
+`$defs` **under** a fragment's own and, only for fragments that use such a pointer, carries `methods` along
+as an inert data key for the pointer to land on. The contract was not changed to suit the harness.
+
+### What the previous re-vendor adopted — §11.14 (CR-24)
 
 One new method fragment, taking the schema from **32 method fragments to 33** (the description string's
 count is recounted again, 2026-08-18, §11.14; `methods` now holds 34 keys, one of them a `$comment`).
@@ -136,18 +219,40 @@ fragments out of 22 were left behind by a large amendment. Registered, not silen
 
 ## Re-vendoring
 
-When the freshness test goes red:
+> ### ⚠ While `TRACKED_REVISION` is `Some`, copy from the OBJECT STORE, never from the checkout
+>
+> The sibling `empyrean/` working tree is on whatever branch someone last checked out — normally the
+> default branch, which while a draft is being tracked holds the **pre-amendment** schema. A `cp` from it
+> therefore *downgrades* the vendored copy, and the downgrade is quiet: the freshness test's plain compare
+> sees vendored == upstream working tree and returns early, so **it goes green on the wrong file**. What
+> actually goes red is some unrelated suite, whose obvious "fix" is to change the server to match a schema
+> that has silently gone backwards. Take the bytes from the revision by name instead.
+
+When the freshness test goes red, while a draft revision is tracked (`TRACKED_REVISION` is `Some` in
+`tests/schema_conformance.rs`, and the ⚠ box near the top of this file is present):
+
+```sh
+REV=<the contract revision this copy should track>
+git -C /home/volence/sonic_hacks/empyrean show "$REV:contract/schema/bus-protocol.schema.json" \
+   > crates/oracle-aether/tests/contract/bus-protocol.schema.json
+sha256sum crates/oracle-aether/tests/contract/bus-protocol.schema.json
+# The revision the copy tracks, and the last commit that actually moved the schema — record BOTH, they
+# differ whenever a prose-only ruling round lands on top of a schema change.
+git -C /home/volence/sonic_hacks/empyrean log -1 --format='%H %s' "$REV"
+git -C /home/volence/sonic_hacks/empyrean log -1 --format='%H %s' "$REV" -- contract/schema/bus-protocol.schema.json
+```
+
+Once the draft has merged and `TRACKED_REVISION` is back to `None`, the checkout *is* the authority and the
+plain copy is correct again:
 
 ```sh
 cp /home/volence/sonic_hacks/empyrean/contract/schema/bus-protocol.schema.json \
    crates/oracle-aether/tests/contract/bus-protocol.schema.json
-sha256sum crates/oracle-aether/tests/contract/bus-protocol.schema.json
-git -C /home/volence/sonic_hacks/empyrean log -1 --format='%H %s' -- contract/schema/bus-protocol.schema.json
 ```
 
-Update the table above with the new commit and hash, then run `cargo test -p oracle-aether`. If the new
-schema rejects messages the server sends, **that is the point** — contract §8 item 15: where a server's
-shape and the schema disagree, the server changes. Never the wire silently.
+Either way: update the table above with the new commit and hash, then run `cargo test -p oracle-aether`. If
+the new schema rejects messages the server sends, **that is the point** — contract §8 item 15: where a
+server's shape and the schema disagree, the server changes. Never the wire silently.
 
 ## Locating the upstream copy
 

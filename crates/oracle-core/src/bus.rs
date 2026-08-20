@@ -54,6 +54,93 @@ pub struct BusEvent {
     pub value: u32,
 }
 
+/// One retired CPU step, delivered to [`BusEventSink::on_step_retire`] immediately after the step commits.
+///
+/// A *step* is one turn of the run loop's CPU crank: normally one instruction, but also a reset / trace /
+/// interrupt exception **entry**, and the nominal idle slice a `Stopped` or `Halted` CPU consumes
+/// (`Cpu68000::step`). All four shapes retire here, because all four cost cycles and a cycle accountant that
+/// skipped any of them would not add up to the clock.
+///
+/// The fields are the pair a per-routine accountant needs — *who* ran and *what it cost* — and every one of
+/// them is a value the run loop already holds or a plain register read:
+///
+/// - `pc` / `opcode`: read **before** the step, so they identify the instruction that was *about to* run.
+///   `pc` is byte-identical to the stamp [`on_step_boundary`](BusEventSink::on_step_boundary) just made, and
+///   `opcode` is `regs.prefetch[0]`, the word at that `pc`.
+/// - `sp` / `cycles`: read **after** it — the active A7 (`Registers::a7`, supervisor- or user-selected as the
+///   step left it) and the exact CPU-cycle cost `step_cpu` returned.
+///
+/// **Sharp edge — the opcode is not always an instruction that ran.** Exception entries are dispatched
+/// before decode, idle slices retire a stale `pc` repeatedly, and an aborted instruction retires its own
+/// opcode having done nothing. [`executed`](StepRetire::executed) is the flag that distinguishes all of
+/// them, and a consumer that classifies the opcode must consult it. Note also that "an interrupt was taken"
+/// is never inferable from the opcode at all: the fc = 7 interrupt-acknowledge on the event stream is the
+/// signal for that, and it carries the cause the opcode could not.
+///
+/// **Why a new struct and not fields on [`BusEvent`]**: the `bus.rs` standing rule (see
+/// [`on_frame_boundary`](BusEventSink::on_frame_boundary)) — extend the trait, never the event struct, which
+/// derives `Eq` and is recorded into `Vec<BusEvent>` by tests asserting exact event sequences. A retirement
+/// is also not an access: it has no `op`/`addr`/`size`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StepRetire {
+    /// The PC the retired step started at — the same value `on_step_boundary` stamped for it.
+    pub pc: u32,
+    /// The opcode word at `pc` (`regs.prefetch[0]`, read before the step). Meaningful only when
+    /// [`executed`](StepRetire::executed) is `true` — see that field.
+    pub opcode: u16,
+    /// Whether the step **ran the instruction at `pc`**. `false` for an exception entry (reset, trace,
+    /// interrupt), for a `Stopped`/`Halted` idle slice, and for an instruction aborted by a decode-time
+    /// exception or an address/bus error.
+    ///
+    /// A consumer that classifies [`opcode`](StepRetire::opcode) MUST check this first. On every one of
+    /// those paths the opcode is an instruction that did **not** run, and treating it as executed arms
+    /// consequences the CPU never caused — a call graph would open a frame for a `JSR` that was preempted
+    /// before it decoded, and never close it.
+    pub executed: bool,
+    /// The active stack pointer (A7) **after** the step committed — what a shadow stack matches a return
+    /// against, and what makes an `RTS` distinguishable from a `move.l/rts` dispatch that never pushed.
+    ///
+    /// **Mode-selected**: this is `Registers::a7`, so it is the user stack in user mode and the supervisor
+    /// stack in supervisor mode. That is the right pointer for a *subroutine* frame, which lives on
+    /// whichever stack its caller was using — and the wrong one for an *exception* frame, which is why
+    /// [`ssp`](StepRetire::ssp) exists.
+    pub sp: u32,
+    /// The **supervisor** stack pointer after the step, regardless of the mode the step left the CPU in.
+    ///
+    /// Exception frames always live here, so this is what an accountant matches an `RTE` against. Reading
+    /// [`sp`](StepRetire::sp) instead would work only while the CPU stays supervisor across the return: an
+    /// interrupt taken from user code is unwound by an `RTE` that *restores user mode first*, after which
+    /// the active A7 is the user stack and the frame it just popped is nowhere in view. Carrying both
+    /// makes the match mode-independent instead of accidentally correct.
+    pub ssp: u32,
+    /// Whether the CPU was in **supervisor** mode when the step finished.
+    ///
+    /// Needed because [`sp`](StepRetire::sp) is mode-selected and the two stacks are independent: a user
+    /// routine's frame and a supervisor routine's frame can sit at the *same numeric* stack pointer while
+    /// having nothing to do with each other. Matching a return on the pointer alone would then close the
+    /// wrong frame on a coincidence, which is a silent mis-attribution rather than a visible error. A
+    /// consumer pairing returns with entries must require the mode to agree as well.
+    pub supervisor: bool,
+    /// The step's exact CPU-cycle cost, as returned by `Cpu68000::step`. Stall-inclusive: our clock bills
+    /// bus/VDP/DMA waits to the instruction that incurred them.
+    pub cycles: u32,
+    /// How much of [`cycles`](StepRetire::cycles) the CPU spent **held off the bus** rather than executing
+    /// — a subset of it, never a separate quantity beside it, so `cycles - stall_cycles` is a well-formed
+    /// subtraction.
+    ///
+    /// Exactly three conditions produce it, and they are enumerated rather than described so that a fourth
+    /// is a visible amendment and never a silent widening: a 68000 write to the VDP data port held off
+    /// while the write FIFO is full; a 68000 read of that port waiting for the FIFO to drain; and the whole
+    /// bus-hold window of a 68k->VDP DMA, billed to the instruction that armed it. A VRAM fill and a VRAM
+    /// copy contribute nothing, because the 68000 keeps running through both.
+    ///
+    /// **Why it is worth carrying.** Our clock includes these waits and the reference instrument's did not,
+    /// so per-routine cycle figures legitimately differ wherever the bus stalls. Reporting the stall
+    /// separately is what lets a consumer reconcile the two — `cycles - stall_cycles` against an
+    /// ideal-cycle constant — instead of seeing an unexplained delta.
+    pub stall_cycles: u32,
+}
+
 /// A consumer of the bus event stream (watchpoints, recorders, decoders, the profiler...).
 pub trait BusEventSink {
     fn on_event(&mut self, event: BusEvent);
@@ -73,6 +160,33 @@ pub trait BusEventSink {
     /// stamp is where the instruction identity enters the stream. The default is a no-op, so the null-sink
     /// hot path (`()`) and the recording sink (`Vec<BusEvent>`) are behaviorally unchanged.
     fn on_step_boundary(&mut self, _pc: u32, _frame: u64) {}
+
+    /// The other end of [`on_step_boundary`](BusEventSink::on_step_boundary): called by the sink-generic run
+    /// loop immediately **after** each CPU step commits, carrying that step's identity and its exact
+    /// CPU-cycle cost (see [`StepRetire`]).
+    ///
+    /// This is the one number the step-boundary stamp cannot carry, because it does not exist yet when the
+    /// stamp is made: `cycles` is `step_cpu`'s return value. Without it a consumer can see *which*
+    /// instructions ran but not what any of them cost, and per-routine cycle accounting is impossible; with
+    /// it, a profiler is a pure accumulator over this callback.
+    ///
+    /// **Ordering within a step.** `on_step_boundary` → (`stop_requested`) → the step's own
+    /// [`on_event`](BusEventSink::on_event) accesses → **`on_step_retire`** → the step's
+    /// [`on_vdp_write`](BusEventSink::on_vdp_write) drain → the clock advance. It fires once per step, for
+    /// every step that actually ran — so the step skipped by a `stop_requested` break retires nothing, and a
+    /// resumed run retires it then.
+    ///
+    /// The default is a no-op, so the null-sink hot path (`()`) and the recording sink (`Vec<BusEvent>`) are
+    /// unchanged **by construction**: the loop gains one call with an empty body, which can neither reorder
+    /// a bus access nor move the clock.
+    ///
+    /// One honest caveat about "for free". Most of what [`StepRetire`] carries was already computed —
+    /// `pc`, `opcode`, the stack pointers, `cycles`. [`stall_cycles`](StepRetire::stall_cycles) was **not**:
+    /// the bus now sums every wait it returns, on every access, whether or not anything is listening. That
+    /// is a genuine addition to the unarmed path — an add per VDP-port access — and it is worth naming
+    /// rather than filing under a claim of zero cost. It cannot change behaviour (the sum is read and
+    /// dropped), which is the property the neutrality gate proves; it is simply not free.
+    fn on_step_retire(&mut self, _retire: StepRetire) {}
 
     /// Whether this sink wants VDP-internal writes delivered (watchpoints v2). The sink-generic run loop calls
     /// this **once per run**; the VDP's write-capture buffer is armed for the run if this returns `true`
@@ -227,6 +341,9 @@ impl<S: BusEventSink + ?Sized> BusEventSink for &mut S {
     fn on_step_boundary(&mut self, pc: u32, frame: u64) {
         (**self).on_step_boundary(pc, frame);
     }
+    fn on_step_retire(&mut self, retire: StepRetire) {
+        (**self).on_step_retire(retire);
+    }
     fn wants_vdp_writes(&self) -> bool {
         (**self).wants_vdp_writes()
     }
@@ -264,6 +381,11 @@ impl<S: BusEventSink> BusEventSink for Option<S> {
     fn on_step_boundary(&mut self, pc: u32, frame: u64) {
         if let Some(s) = self {
             s.on_step_boundary(pc, frame);
+        }
+    }
+    fn on_step_retire(&mut self, retire: StepRetire) {
+        if let Some(s) = self {
+            s.on_step_retire(retire);
         }
     }
     fn wants_vdp_writes(&self) -> bool {
@@ -318,6 +440,9 @@ impl<S: BusEventSink> BusEventSink for Observe<S> {
     }
     fn on_step_boundary(&mut self, pc: u32, frame: u64) {
         self.0.on_step_boundary(pc, frame);
+    }
+    fn on_step_retire(&mut self, retire: StepRetire) {
+        self.0.on_step_retire(retire);
     }
     fn wants_vdp_writes(&self) -> bool {
         self.0.wants_vdp_writes()
@@ -385,6 +510,10 @@ impl<A: BusEventSink, B: BusEventSink> BusEventSink for Fanout<A, B> {
     fn on_step_boundary(&mut self, pc: u32, frame: u64) {
         self.a.on_step_boundary(pc, frame);
         self.b.on_step_boundary(pc, frame);
+    }
+    fn on_step_retire(&mut self, retire: StepRetire) {
+        self.a.on_step_retire(retire);
+        self.b.on_step_retire(retire);
     }
     fn wants_vdp_writes(&self) -> bool {
         self.a.wants_vdp_writes() || self.b.wants_vdp_writes()
@@ -675,9 +804,29 @@ pub struct MegaDriveBus<'a, S: BusEventSink> {
     /// `docs/2026-07-22-fm-timer-design.md`.
     fm: &'a mut Ym2612,
     sink: &'a mut S,
+    /// CPU wait cycles this bus has billed to the instruction currently executing — the **stall** figure
+    /// (CR-26 `stallCycles`). A `MegaDriveBus` is built fresh for every `System::step_cpu`, so this is
+    /// per-step by construction and needs no clearing.
+    ///
+    /// Every nonzero wait the whole bus can return flows through
+    /// [`vdp_read_word`](MegaDriveBus::vdp_read_word) or
+    /// [`vdp_write_word`](MegaDriveBus::vdp_write_word) — every other arm of `read16`/`write16`/`read8`/
+    /// `write8`/`tas` returns a literal `0` — so accumulating at those two points is complete by
+    /// construction rather than by having remembered every site. That is also exactly the CR's enumerated
+    /// list: a data-port write held off by a full FIFO, a data-port read waiting for it to drain, and the
+    /// bus-hold window of a 68k->VDP DMA. A VRAM fill and a VRAM copy return `0` from `run_pending_dma`
+    /// because the 68000 keeps running through both, so they contribute nothing here — not by a filter,
+    /// but because there is nothing to add.
+    stall_cycles: u32,
 }
 
 impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
+    /// The CPU wait cycles this bus has billed so far — see [`MegaDriveBus::stall_cycles`] the field.
+    /// Read by `System::step_cpu` once the step is complete; the bus is then dropped.
+    pub fn stall_cycles(&self) -> u32 {
+        self.stall_cycles
+    }
+
     /// Build an adapter over the given memory regions, the VDP + the master-clock reading, the I/O block,
     /// the open-bus latch, the FM chip, and an event sink.
     #[allow(clippy::too_many_arguments)]
@@ -720,6 +869,7 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             sram_map,
             fm,
             sink,
+            stall_cycles: 0,
         }
     }
 
@@ -954,6 +1104,14 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
     /// A whole-word VDP port read (recon R1/R3). Returns the value plus the CPU wait cycles the access costs
     /// (a data-port read stalls while the write FIFO drains — recon R3). Status / HV reads never stall.
     fn vdp_read_word(&mut self, a: u32) -> (u16, u32) {
+        let (value, wait) = self.vdp_read_word_inner(a);
+        self.stall_cycles += wait;
+        (value, wait)
+    }
+
+    /// The read itself. Split from [`MegaDriveBus::vdp_read_word`] only so the stall accumulator has one
+    /// place to sit rather than one per arm.
+    fn vdp_read_word_inner(&mut self, a: u32) -> (u16, u32) {
         match a {
             0xC0_0000 | 0xC0_0002 => {
                 let open_bus = *self.last_bus_word;
@@ -975,6 +1133,13 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
     /// access costs (recon R3: a data-port write to a full FIFO stalls the 68k via /DTACK) — folded into the
     /// instruction cost through the `Bus68k` wait channel. Control-port writes never stall.
     fn vdp_write_word(&mut self, a: u32, value: u16) -> u32 {
+        let wait = self.vdp_write_word_inner(a, value);
+        self.stall_cycles += wait;
+        wait
+    }
+
+    /// The write itself. Split from [`MegaDriveBus::vdp_write_word`] for the same reason as the read.
+    fn vdp_write_word_inner(&mut self, a: u32, value: u16) -> u32 {
         match a {
             0xC0_0000 | 0xC0_0002 => {
                 // A data-port write may also trigger a VRAM fill (recon R4(b)); run any armed DMA after it.
@@ -3244,6 +3409,7 @@ mod tests {
         events: Vec<BusEvent>,
         timed: Vec<(BusEvent, u64)>,
         boundaries: Vec<(u32, u64)>,
+        retires: Vec<StepRetire>,
         frame_boundaries: Vec<u64>,
         vdp_writes: usize,
         scanlines: Vec<u16>,
@@ -3262,6 +3428,9 @@ mod tests {
         }
         fn on_step_boundary(&mut self, pc: u32, frame: u64) {
             self.boundaries.push((pc, frame));
+        }
+        fn on_step_retire(&mut self, retire: StepRetire) {
+            self.retires.push(retire);
         }
         fn wants_vdp_writes(&self) -> bool {
             self.want_vdp
@@ -3293,6 +3462,19 @@ mod tests {
         }
     }
 
+    fn retire_probe(pc: u32) -> StepRetire {
+        StepRetire {
+            pc,
+            opcode: 0x4E75,
+            sp: 0x00FF_FFF0,
+            ssp: 0x00FF_FFF0,
+            supervisor: true,
+            cycles: 16,
+            stall_cycles: 4,
+            executed: true,
+        }
+    }
+
     fn vdp_write_probe() -> crate::vdp::VdpWrite {
         crate::vdp::VdpWrite {
             target: crate::vdp::VdpTarget::Vram,
@@ -3315,6 +3497,7 @@ mod tests {
             f.on_event(ev(1));
             f.on_event_at(ev(2), 4242);
             f.on_step_boundary(0x400, 7);
+            f.on_step_retire(retire_probe(0x400));
             f.on_vdp_write(vdp_write_probe());
             f.on_scanline(99, &[(1, 2, 3)]);
             f.on_frame_boundary(11);
@@ -3331,6 +3514,12 @@ mod tests {
                 "{name}: the mclk is preserved"
             );
             assert_eq!(s.boundaries, vec![(0x400, 7)], "{name}: step boundary");
+            assert_eq!(
+                s.retires,
+                vec![retire_probe(0x400)],
+                "{name}: step retirement — a composite that dropped it would leave a cycle accountant \
+                 silently short by everything the other half's steps cost"
+            );
             assert_eq!(s.vdp_writes, 1, "{name}: VDP write");
             assert_eq!(s.scanlines, vec![99], "{name}: scanline");
             assert_eq!(
@@ -3405,6 +3594,7 @@ mod tests {
             o.on_event(ev(1));
             o.on_event_at(ev(2), 5);
             o.on_step_boundary(0x200, 3);
+            o.on_step_retire(retire_probe(0x200));
             o.on_vdp_write(vdp_write_probe());
             o.on_scanline(0, &[]);
             o.on_frame_boundary(3);
@@ -3416,6 +3606,11 @@ mod tests {
             );
         }
         assert_eq!(spy.events.len(), 2, "both event hooks landed");
+        assert_eq!(
+            spy.retires,
+            vec![retire_probe(0x200)],
+            "the retirement is an observation, so `Observe` forwards it"
+        );
         assert!(spy.stop, "and the inner sink still WANTS to stop");
 
         // Composed, it is what stops one half's stop condition from ending somebody else's run.
@@ -3443,6 +3638,7 @@ mod tests {
         none.on_event(ev(1));
         none.on_event_at(ev(2), 5);
         none.on_step_boundary(0, 0);
+        none.on_step_retire(retire_probe(0));
         none.on_vdp_write(vdp_write_probe());
         none.on_scanline(0, &[]);
         assert!(!none.wants_vdp_writes());
@@ -3473,10 +3669,16 @@ mod tests {
             let mut armed = Fanout::new(&mut audio, Some(&mut watch));
             assert!(armed.wants_vdp_writes(), "the armed half's opt-in wins");
             armed.on_event(ev(3));
+            armed.on_step_retire(retire_probe(0x300));
             armed.on_frame_boundary(5);
         }
         assert_eq!(audio.events.len(), 1);
         assert_eq!(watch.events.len(), 1);
+        assert_eq!(
+            (audio.retires.as_slice(), watch.retires.as_slice()),
+            (&[retire_probe(0x300)][..], &[retire_probe(0x300)][..]),
+            "the retirement reaches through BOTH the &mut and the Option forwarder"
+        );
         assert_eq!(
             (
                 audio.frame_boundaries.as_slice(),
@@ -3537,5 +3739,104 @@ mod tests {
             !w.stop_requested(),
             "a sink written before the signal existed"
         );
+    }
+
+    // --- The stall accumulator (CR-26 `stallCycles`) -------------------------------------------------
+    //
+    // The bus bills CPU wait cycles into every access's cost, and `stall_cycles` is the running total of
+    // exactly those waits. These tests pin it against the SAME situations the wait tests above construct,
+    // one per condition the contract enumerates, so that the accumulator and the thing it accumulates
+    // cannot drift apart. The two zero cases are not decoration: they are the boundary of what the field
+    // is allowed to mean.
+
+    /// Condition (i): a data-port write held off because the write FIFO is full. Whatever the access
+    /// reports as wait is exactly what the accumulator gains — not "roughly", not "at least".
+    #[test]
+    fn stall_accumulates_a_full_fifo_write() {
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.now_mclk = 100 * crate::vdp::MCLK_PER_LINE + 500; // active line, mid-line
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        vdp_setup_vram_write(&mut bus);
+        assert_eq!(
+            bus.stall_cycles(),
+            0,
+            "setup writes are control-port: no stall"
+        );
+        for _ in 0..4 {
+            bus.write16(0xC0_0000, 5, 0xBEEF); // fills the 4-entry FIFO, no stall yet
+        }
+        assert_eq!(
+            bus.stall_cycles(),
+            0,
+            "a FIFO that is merely full has not stalled anyone"
+        );
+        let wait = bus.write16(0xC0_0000, 5, 0xBEEF); // the fifth write stalls
+        assert!(wait > 0, "the fifth write to a full FIFO stalls the 68k");
+        assert_eq!(
+            bus.stall_cycles(),
+            wait,
+            "and the accumulator gained exactly that wait, no more and no less"
+        );
+    }
+
+    /// Condition (ii): a data-port read waiting for the write FIFO to drain.
+    #[test]
+    fn stall_accumulates_a_read_waiting_for_the_write_fifo() {
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.now_mclk = 100 * crate::vdp::MCLK_PER_LINE + 500;
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        vdp_setup_vram_write(&mut bus);
+        for _ in 0..3 {
+            bus.write16(0xC0_0000, 5, 0xBEEF);
+        }
+        bus.write16(0xC0_0004, 5, 0x0000); // switch to a VRAM read command @ $0000
+        bus.write16(0xC0_0004, 5, 0x0000);
+        assert_eq!(bus.stall_cycles(), 0, "nothing has stalled yet");
+        let (_v, wait) = bus.read16(0xC0_0000, 5);
+        assert!(wait > 0, "the read waits for the pending writes to drain");
+        assert_eq!(bus.stall_cycles(), wait, "and that wait is the whole stall");
+    }
+
+    /// Condition (iii): the bus-hold window of a 68k→VDP DMA, billed to the instruction that armed it.
+    /// This is the one a consumer most wants separated out, because it is the only mechanism here that
+    /// halts the 68000 for a long, measurable stretch.
+    #[test]
+    fn stall_accumulates_the_whole_mem_dma_hold() {
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE; // vblank: the fast transfer rate
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        let wait = run_mem_dma_to_vram(&mut bus, 0x000400, 16, 0x0000);
+        assert!(wait > 0, "the 68k is halted for the whole transfer");
+        assert_eq!(
+            bus.stall_cycles(),
+            wait,
+            "the accumulator holds the entire hold window"
+        );
+    }
+
+    /// **The boundary.** A VRAM fill and a VRAM copy leave the 68000 running, so they contribute nothing —
+    /// and they do so *by construction*, because `run_pending_dma` returns `0` for both, not because
+    /// anything downstream filters them out. A server whose bus stalled the CPU for a fourth reason would
+    /// have to amend the contract rather than quietly widen this number, and these two are what make that
+    /// boundary testable rather than merely stated.
+    #[test]
+    fn a_fill_and_a_copy_add_no_stall_at_all() {
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE;
+        {
+            let mut sink = Vec::new();
+            let mut bus = mem.bus(&mut sink);
+            let wait = run_vram_fill(&mut bus, 0x0000, 64, 0x77AA);
+            assert_eq!(wait, 0, "fill: the 68k keeps running through it");
+            assert_eq!(bus.stall_cycles(), 0, "fill: so it contributes no stall");
+        }
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        let wait = run_vram_copy(&mut bus, 0x0200, 64, 0x0100);
+        assert_eq!(wait, 0, "copy: the 68k keeps running through it");
+        assert_eq!(bus.stall_cycles(), 0, "copy: so it contributes no stall");
     }
 }

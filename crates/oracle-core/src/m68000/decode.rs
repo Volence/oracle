@@ -176,6 +176,75 @@ pub fn imm_class(opcode: u16) -> Option<(AluOp, Size)> {
     Some((op, size))
 }
 
+/// The control-flow class of an opcode word — what a call-graph consumer needs to know about it and
+/// nothing else. A **pure function of the opcode**: no registers, no memory, no condition codes.
+///
+/// This is deliberately a mirror of six guards inside [`decode_dispatch`], because a shadow stack must
+/// classify a step *without* re-deriving its recipe. A mirror that can drift silently is the defect this
+/// project keeps finding, so it lives here — next to the dispatch it mirrors — and is pinned by
+/// `control_flow_of_agrees_with_the_dispatch_over_every_opcode`, which walks **all 65 536 opcodes** and
+/// asserts agreement with the recipe `decode_dispatch` actually selects for each one.
+///
+/// **Not classified, on purpose.** `Bcc` / `BRA` / `DBcc` are [`ControlFlow::None`]: a PC-relative branch
+/// neither enters nor leaves a frame, and a consumer that treated `BRA` as an entry would split every loop
+/// into a routine of its own. `TRAP` / `CHK` / `TRAPV` and the decode-time exception frames are `None` too —
+/// an exception *entry* is not an opcode class, and its cause is read off the fc = 7 acknowledge on the bus
+/// event stream instead (which is also the only way to key an interrupt by cause rather than by address).
+///
+/// **The one mode-dependent edge.** `RTE` is privileged (M68000UM §6.3.7), so in **user** mode the dispatch
+/// routes `0x4E73` to the privilege-violation frame and never to `rte_recipe`. This classifier still calls
+/// it [`ControlFlow::InterruptReturn`] — the architectural meaning of the word does not depend on the mode,
+/// and a classifier that took the SR would no longer be a pure opcode predicate. A consumer must therefore
+/// read a class as "what this word means", not "what this step did". The divergence is pinned exhaustively
+/// (`RTE` is the only opcode in the whole space where it happens) by
+/// `user_mode_diverges_from_the_classifier_for_rte_and_nothing_else`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControlFlow {
+    /// `JSR` / `BSR` — pushes a 32-bit return address, then transfers control. The callee's entry address is
+    /// not decodable here (the target is assembled into private scratch slots at run time); it is simply the
+    /// PC of the **next** step to retire.
+    Call,
+    /// `RTS` / `RTR` — pops a return address and transfers control back to it. `RTR` additionally restores
+    /// the CCR, which does not change its call-graph meaning.
+    Return,
+    /// `RTE` — unwinds an **exception** frame (SR + PC), not a subroutine frame. Kept distinct from
+    /// [`ControlFlow::Return`] because an interrupt bucket closes at the matching `RTE` and at nothing else.
+    InterruptReturn,
+    /// `JMP` — transfers control **without** pushing: the tail-call and jump-table form. It enters a routine
+    /// that no `RTS` will pair with the caller's frame, which is precisely the case a naive call graph
+    /// mis-attributes.
+    Jump,
+    /// Everything else, conditional branches included.
+    None,
+}
+
+/// Classify `opcode`. See [`ControlFlow`] for what each class means and what is deliberately excluded.
+#[inline]
+pub fn control_flow_of(opcode: u16) -> ControlFlow {
+    // The three single-point returns. All live inside the 0x4Exx block and are disjoint from the JSR/JMP EA
+    // blocks tested below (0x4E80.. and 0x4EC0..), so the order here is documentation, not disambiguation.
+    match opcode {
+        0x4E75 | 0x4E77 => return ControlFlow::Return, // RTS / RTR
+        0x4E73 => return ControlFlow::InterruptReturn, // RTE
+        _ => {}
+    }
+    // BSR (`0110 0001 dddddddd`) — the `cc == 1` encoding the Bcc arm excludes.
+    if opcode & 0xFF00 == 0x6100 {
+        return ControlFlow::Call;
+    }
+    // JSR / JMP `<control ea>`. The `is_control_mode` guard is LOAD-BEARING, and it is the dispatch's own
+    // predicate rather than a copy of it: a non-control EA is an illegal JSR/JMP that decodes to the ILLEGAL
+    // frame, and calling that a call would put a frame on the shadow stack that nothing ever pushed.
+    let (mode, reg) = ((opcode >> 3) & 7, opcode & 7);
+    if opcode & 0xFFC0 == 0x4E80 && is_control_mode(mode, reg) {
+        return ControlFlow::Call;
+    }
+    if opcode & 0xFFC0 == 0x4EC0 && is_control_mode(mode, reg) {
+        return ControlFlow::Jump;
+    }
+    ControlFlow::None
+}
+
 /// Decode the opcode currently in `regs.prefetch[0]` into its micro-op recipe, latching the original opcode
 /// into the recipe ([`MicroState::set_opcode`]) so the address-error abort (E3) can stack it as the IR /
 /// SSW fields after the prefetch shifts have overwritten `regs.prefetch`.
@@ -15323,5 +15392,100 @@ mod tests {
         assert_executes(0xE0D0, 0x4E71, "ASR.w (A0)"); // memory shift (bit 11 clear) stays legal
         assert_executes(0xE1D0, 0x4E71, "ASL.w (A0)");
         assert_executes(0xE7D0, 0x4E71, "ROL.w (A0)"); // bits 10-9 = 3, bit 11 clear — legal RO shift
+    }
+
+    // --- control_flow_of: the whole-domain pin ------------------------------------------------------
+
+    /// Registers for a decode-only walk: fixed, unremarkable, and `supervisor`-selectable so the privilege
+    /// gate can be exercised from both sides. `prefetch[0]` is overwritten per opcode.
+    fn classifier_probe_regs(supervisor: bool) -> Registers {
+        Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0x0100_0000,
+            ssp: 0x0100_0000,
+            pc: 0x0000_1000,
+            sr: if supervisor { 0x2700 } else { 0x0700 },
+            prefetch: [0x4E71, 0x0000],
+        }
+    }
+
+    /// **The expectation, derived from the dispatch itself.** Decode `opcode` and ask which control-flow
+    /// recipe — if any — came back, by comparing the decoded `MicroState` with the recipe each builder
+    /// produces for that same opcode. Nothing here is a hand-written opcode table: the answer is whatever
+    /// `decode_dispatch` chose, read off by identity.
+    ///
+    /// `jsr_recipe`/`jmp_recipe` are only *constructible* for a control-mode EA (they `unreachable!`
+    /// otherwise), which is the same guard the dispatch applies — so a non-control EA cannot have selected
+    /// them, and if the dispatch ever did, the `decode_dispatch` call below would panic before this does.
+    fn dispatch_control_flow(opcode: u16, regs: &Registers) -> ControlFlow {
+        let actual = decode_dispatch(regs);
+        let mut hits: Vec<ControlFlow> = Vec::new();
+        if actual == bsr_recipe(opcode) {
+            hits.push(ControlFlow::Call);
+        }
+        if is_control_mode((opcode >> 3) & 7, opcode & 7) {
+            if actual == jsr_recipe(opcode) {
+                hits.push(ControlFlow::Call);
+            }
+            if actual == jmp_recipe(opcode) {
+                hits.push(ControlFlow::Jump);
+            }
+        }
+        if actual == rts_recipe() {
+            hits.push(ControlFlow::Return);
+        }
+        if actual == rtr_recipe() {
+            hits.push(ControlFlow::Return);
+        }
+        if actual == rte_recipe() {
+            hits.push(ControlFlow::InterruptReturn);
+        }
+        // Two matches would mean two builders are byte-identical and the expectation is ambiguous. Asserted
+        // rather than assumed, because the whole pin rests on the recipes being distinguishable.
+        assert!(
+            hits.len() <= 1,
+            "{opcode:#06X}: ambiguous dispatch identity, matched {hits:?}"
+        );
+        hits.first().copied().unwrap_or(ControlFlow::None)
+    }
+
+    /// **The whole-domain pin.** [`control_flow_of`] mirrors six guards in [`decode_dispatch`]; a mirror that
+    /// can drift silently is exactly the defect this project keeps finding, so it is checked over its ENTIRE
+    /// domain — all 65 536 opcode words — against what the dispatch actually selects. Supervisor mode, so
+    /// the privilege gate does not pre-empt `RTE` (its user-mode behaviour is pinned separately, below).
+    #[test]
+    fn control_flow_of_agrees_with_the_dispatch_over_every_opcode() {
+        let mut regs = classifier_probe_regs(true);
+        for opcode in 0..=u16::MAX {
+            regs.prefetch[0] = opcode;
+            assert_eq!(
+                control_flow_of(opcode),
+                dispatch_control_flow(opcode, &regs),
+                "opcode {opcode:#06X}: the classifier and the dispatch disagree"
+            );
+        }
+    }
+
+    /// The one mode-dependent edge, pinned EXHAUSTIVELY rather than described. `RTE` is privileged, so in
+    /// user mode the dispatch routes it to the privilege-violation frame; [`control_flow_of`] sees only the
+    /// opcode and still calls it an interrupt return. That is the right answer for a pure classifier and a
+    /// trap for its consumer — so this asserts that `0x4E73` is the **only** opcode in the whole space where
+    /// the two part company. A new privileged control-flow opcode, or a widened privilege gate, lands here.
+    #[test]
+    fn user_mode_diverges_from_the_classifier_for_rte_and_nothing_else() {
+        let mut regs = classifier_probe_regs(false);
+        let mut diverged: Vec<u16> = Vec::new();
+        for opcode in 0..=u16::MAX {
+            regs.prefetch[0] = opcode;
+            if control_flow_of(opcode) != dispatch_control_flow(opcode, &regs) {
+                diverged.push(opcode);
+            }
+        }
+        assert_eq!(
+            diverged,
+            vec![0x4E73],
+            "only RTE is classified as control flow yet privilege-trapped in user mode"
+        );
     }
 }
