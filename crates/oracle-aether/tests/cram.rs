@@ -319,8 +319,10 @@ fn an_out_of_mask_raw_is_refused_not_masked() {
     let mut c = client(&h);
     poke(&mut c, 0, 1, json!({"raw": 0x0246}));
 
-    // Each of these has at least one bit outside 0x0EEE; the first three are *within* the schema's
-    // numeric maximum, so only the exact-mask rule catches them.
+    // Each of these has at least one bit outside 0x0EEE. The first TWO are also within the schema's
+    // numeric `maximum: 3822`, so nothing mechanical catches them and only the exact-mask rule does —
+    // which is precisely the bound the fragment cannot express. (0x0EEF is 3823 and so is one over the
+    // maximum; the last two are far over. They are kept as the coarse half's own controls.)
     for bad in [0x0001u64, 0x0010, 0x0EEF, 0x1000, 0xFFFF] {
         let e = c.err(
             "emulator/write_cram",

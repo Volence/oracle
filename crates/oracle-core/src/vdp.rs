@@ -2430,11 +2430,17 @@ mod tests {
         assert_eq!(dec[2], (0, 0, 0), "zero → black");
     }
 
-    /// `poke_cram` must agree with the port path **byte for byte**, because the two are duplicated
-    /// arithmetic rather than a shared helper (deliberately — `write_target` is on the currency path).
-    /// This is the test that stops them drifting: the same colour driven through the real control/data
-    /// port sequence and through the poke must leave CRAM identical, over every bit position that
-    /// matters plus the mask's own edges.
+    /// `poke_cram` must agree with the port path **byte for byte in CRAM**, because the two are
+    /// duplicated arithmetic rather than a shared helper (deliberately — `write_target` is on the
+    /// currency path). This is the test that stops them drifting: the same colour driven through the real
+    /// control/data port sequence and through the poke must leave CRAM identical, over every bit position
+    /// that matters plus the mask's own edges.
+    ///
+    /// **The comparison is `cram()` only, and that is the intended scope rather than a shortcut.** The
+    /// port path also advances the address register by the autoincrement, consumes the control-port
+    /// latch, and moves FIFO state; the poke does none of that, by design (see [`Vdp::poke_cram`]). A
+    /// whole-VDP comparison would therefore fail for exactly the reasons the seam exists, so what is
+    /// pinned here is the one thing the two must agree on — the bytes that land in the colour array.
     #[test]
     fn cram_poke_matches_the_port_path() {
         for word in [

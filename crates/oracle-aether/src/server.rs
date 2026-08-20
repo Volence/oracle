@@ -338,7 +338,24 @@ impl Server {
                         ),
                     ))
                 }
-                Err(_) => std::fs::remove_file(path)?,
+                Err(_) => {
+                    // Nothing answered, so the path is a corpse — but only unlink it if it is a SOCKET.
+                    // `bind` is given a path from a config file or `--socket`, and a typo that names a
+                    // real file (a ROM, a listing, `~/.bashrc`) would otherwise be silently deleted by a
+                    // server that never even started serving. Refusing is recoverable; deleting is not.
+                    let ft = std::fs::metadata(path)?.file_type();
+                    if !std::os::unix::fs::FileTypeExt::is_socket(&ft) {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::AlreadyExists,
+                            format!(
+                                "{} exists and is not a socket ({ft:?}) — refusing to delete it. \
+                                 Point --socket somewhere else, or remove the file yourself.",
+                                path.display()
+                            ),
+                        ));
+                    }
+                    std::fs::remove_file(path)?
+                }
             }
         }
         let listener = UnixListener::bind(path)?;

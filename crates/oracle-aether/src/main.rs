@@ -155,17 +155,61 @@ fn load_symbols(path: &Path, rom: &[u8]) -> (Option<SymbolTable>, Option<String>
                 "symbols: {} symbols from {} ({})",
                 table.len(),
                 path.display(),
-                // The two unverified shapes are different findings and must not share a line: one
-                // listing gave us no offset to probe, the other gave us one that says "no appendix
-                // here". Same split as `Engine::load_symbols`' caveat.
-                match binding {
-                    RomBinding::Match { .. } => "bound to this image",
-                    RomBinding::Indeterminate(Indeterminate::EndOfRomIsImageEnd { .. }) =>
-                        "UNVERIFIED — EndOfRom is the image's end, the no-appendix shape",
-                    _ => "UNVERIFIED — no EndOfRom to probe",
-                }
+                binding_note(&binding)
             );
             (Some(table), Some(path.display().to_string()))
         }
+    }
+}
+
+/// How the startup line describes a binding verdict.
+///
+/// **Extracted so it can be tested, and matched EXHAUSTIVELY so the compiler flags the next variant.**
+/// Both are the same lesson from the same bug: this line said *"no EndOfRom to probe"* on a listing whose
+/// whole finding was that it declares `EndOfRom` at the image's end. A `_` arm is what let a new
+/// `Indeterminate` shape inherit an older shape's sentence silently, and an inline `match` inside a
+/// `println!` is what kept the mistake out of reach of a test. The same split lives in
+/// `Engine::load_symbols`' caveat, which has its own wire-level test.
+fn binding_note(binding: &RomBinding) -> &'static str {
+    match binding {
+        RomBinding::Match { .. } => "bound to this image",
+        RomBinding::Indeterminate(Indeterminate::EndOfRomIsImageEnd { .. }) => {
+            "UNVERIFIED — EndOfRom is the image's end, the no-appendix shape"
+        }
+        RomBinding::Indeterminate(Indeterminate::NoEndOfRomSymbol) => {
+            "UNVERIFIED — no EndOfRom to probe"
+        }
+        // Not reachable from the caller (a Mismatch returns before this), but spelled out rather than
+        // wildcarded so adding a BindingFault cannot quietly land here.
+        RomBinding::Mismatch(_) => "REFUSED — does not describe this image",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each verdict gets its own sentence, and no two share one. The mutation this guards is a swap,
+    /// which asserting any single arm would pass.
+    #[test]
+    fn every_binding_verdict_has_its_own_note() {
+        let notes = [
+            binding_note(&RomBinding::Match {
+                appendix_offset: 0x1000,
+                appendix_len: 0x3000,
+            }),
+            binding_note(&RomBinding::Indeterminate(
+                Indeterminate::EndOfRomIsImageEnd { rom_len: 0x1000 },
+            )),
+            binding_note(&RomBinding::Indeterminate(Indeterminate::NoEndOfRomSymbol)),
+        ];
+        let unique: std::collections::BTreeSet<_> = notes.iter().collect();
+        assert_eq!(unique.len(), notes.len(), "two verdicts share a sentence");
+
+        // And the specific confusion that prompted this: the image-end shape must NOT claim the listing
+        // declares no EndOfRom, because declaring one is the entire finding.
+        assert!(notes[1].contains("EndOfRom is the image's end"));
+        assert!(!notes[1].contains("no EndOfRom"));
+        assert!(notes[2].contains("no EndOfRom"));
     }
 }

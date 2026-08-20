@@ -476,14 +476,12 @@
       }
     },
     "emulator/reload_rom": {
-      "$comment": "protocol.md §6 (run-control). Named in §6's run-control state rule — it swaps the cartridge out from under whatever is executing — so it requires a paused machine. Emits emulator/romReloaded.",
+      "$comment": "protocol.md §6 (run-control). Named in §6's run-control state rule — it swaps the cartridge out from under whatever is executing — so it requires a paused machine. Emits emulator/romReloaded. `wait` and `reset` were STRUCK 2026-08-20 (§11.17 postscript): both were carried from the legacy catalog as bare undescribed booleans, neither ever had a specified meaning, and the closure sweep that §2.5 made possible found that no server had ever read either. Serving a key whose semantics this document never stated would have been §8's invention ban; declaring one no handler reads is the silent-ignore §2.5 exists to end. They are now refused by name like any other undeclared key.",
       "params": {
         "type": "object",
         "unevaluatedProperties": false,
         "properties": {
-          "path": { "type": "string", "description": "Omit to reload the image already loaded." },
-          "wait": { "type": "boolean" },
-          "reset": { "type": "boolean" }
+          "path": { "type": "string", "description": "Omit to reload the image already loaded." }
         }
       },
       "result": {

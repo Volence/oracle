@@ -379,7 +379,7 @@ pub const METHODS: &[MethodSpec] = &[
         name: "emulator/reload_rom",
         handler: Engine::reload_rom,
         summary: "reload the ROM from disk and reset (emits romReloaded)",
-        params: &["path", "reset", "wait"],
+        params: &["path"],
     },
     MethodSpec {
         name: "emulator/write_memory",
@@ -1219,10 +1219,17 @@ impl Engine {
         };
         let sum = u64::from(base) + d;
         if sum > u64::from(BUS_ADDR_MAX) {
-            return Err(out_of_range(
-                base,
-                "`symbol` + `disp` runs past the end of the 24-bit bus",
-            ));
+            // `data.addr` carries the SUM, not the base: the message complains about `symbol` + `disp`,
+            // and a data field naming a different number than the sentence beside it is the join a
+            // client cannot make. Formatted here rather than through `out_of_range` because the sum can
+            // exceed `u32` — reporting a truncated version of the value we are refusing for being too
+            // large would be its own small lie.
+            let addr = format!("0x{sum:08X}");
+            return Err(RpcError::new(
+                code::ADDRESS_OUT_OF_RANGE,
+                format!("{addr}: `symbol` + `disp` runs past the end of the 24-bit bus"),
+            )
+            .with_data(json!({"addr": addr})));
         }
         Ok(sum as u32)
     }

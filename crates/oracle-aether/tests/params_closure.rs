@@ -126,7 +126,86 @@ fn every_params_object_in_the_vendored_schema_is_closed() {
         }
     }
     assert!(open.is_empty(), "params objects left open: {open:?}");
-    assert_eq!(seen, 37, "the fragment count moved — recount deliberately");
+    assert!(seen >= 37, "only {seen} fragments — did the schema shrink?");
+
+    // §11.17 adoption clause 7, our side of it: the top-level `description`'s fragment count is
+    // **re-derived by parsing** and compared, never trusted as a literal. §11.10's founding defect was a
+    // count wrong on both ends, and a hardcoded expectation here reproduces exactly that failure — it
+    // agrees with whatever the last person typed. The floor above is a floor; this is the gate.
+    let desc = schema["description"].as_str().expect("a description");
+    let claimed = desc
+        .split_whitespace()
+        .zip(desc.split_whitespace().skip(1))
+        .zip(desc.split_whitespace().skip(2))
+        .find_map(|((a, b), c)| {
+            (b == "of" && c.starts_with("§6")).then(|| a.parse::<usize>().ok())?
+        })
+        .expect("the description must state its fragment count as `N of §6's ... methods`");
+    assert_eq!(
+        claimed, seen,
+        "the description claims {claimed} fragments and the document holds {seen} — a count is parsed \
+         or it is wrong (§11.17 clause 7)"
+    );
+}
+
+/// **The closure is at the TOP level of `params`, and only there** (§2.5: *"objects nested inside a
+/// params payload are closed only where their own subschema closes them"*).
+///
+/// The guard this needs is not about nesting, though — it is about **applicators**. A key contributed
+/// from inside an `if`/`then`, `allOf` or `oneOf` branch is a declared key that
+/// `params.properties.keys()` does not see, so `MethodSpec.params` would be missing it and the server
+/// would refuse a param the contract declares. Today exactly one fragment contributes a property inside
+/// an applicator (`watchpoint_add`'s `mode` const) and it is *also* declared at the parent, which is why
+/// the authority test's simple key-set compare is sound. This asserts that premise instead of relying on
+/// it: any `properties` object appearing below the top level of a params object must contribute no key
+/// the parent does not already declare.
+#[test]
+fn no_params_key_is_declared_only_inside_an_applicator() {
+    fn collect(v: &Value, out: &mut BTreeSet<String>) {
+        match v {
+            Value::Object(o) => {
+                if let Some(Value::Object(p)) = o.get("properties") {
+                    out.extend(p.keys().cloned());
+                }
+                for (k, child) in o {
+                    // `properties`' own children are property *schemas*, not more params keys.
+                    if k != "properties" {
+                        collect(child, out);
+                    }
+                }
+            }
+            Value::Array(a) => a.iter().for_each(|c| collect(c, out)),
+            _ => {}
+        }
+    }
+
+    let schema = schema();
+    let mut checked = 0;
+    for m in METHODS {
+        let params = &schema["methods"][m.name]["params"];
+        let top: BTreeSet<String> = params["properties"]
+            .as_object()
+            .map(|o| o.keys().cloned().collect())
+            .unwrap_or_default();
+        // Everything except the top-level `properties` object.
+        let mut nested = BTreeSet::new();
+        if let Value::Object(o) = params {
+            for (k, child) in o {
+                if k != "properties" {
+                    collect(child, &mut nested);
+                }
+            }
+        }
+        let hidden: Vec<&String> = nested.difference(&top).collect();
+        assert!(
+            hidden.is_empty(),
+            "{}: {hidden:?} are declared only inside an applicator, so the accepted key set derived \
+             from `params.properties` would refuse a param the contract declares",
+            m.name
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, METHODS.len());
 }
 
 /// **`initialize` is exempt, and exempt structurally.** It is the handshake: handled before dispatch and
@@ -262,6 +341,47 @@ fn every_advertised_method_refuses_a_key_it_does_not_declare() {
     }
 }
 
+/// **The two keys the closure's own sweep found the CATALOG blessing** (§11.17 postscript, 2026-08-20).
+///
+/// `emulator/reload_rom` declared `wait` and `reset` — bare undescribed booleans inherited from the
+/// legacy catalog — and no server had ever read either; ours reads `path` and nothing else. That is the
+/// silent-ignore §2.5 exists to end, wearing the schema's clothes instead of a handler's, and it was
+/// invisible until the closure arrived: while every other key was tolerated, a key nobody read looked
+/// exactly like a key nobody had sent yet.
+///
+/// Struck rather than implemented, because their meaning was never stated anywhere and inventing one to
+/// justify a declaration is §8's invention ban pointed backwards. So the assertion is that they are now
+/// ordinary unknown keys — including `reset: false`, which is the shape most likely to be "obviously
+/// harmless" to a future reader and is exactly as unspecified as `reset: true`.
+#[test]
+fn reload_rom_refuses_the_two_struck_keys() {
+    let h = spawn_system("pc-reload", machine(), 64);
+    let mut c = client(&h);
+
+    for bad in [
+        json!({"reset": false}),
+        json!({"reset": true}),
+        json!({"wait": true}),
+    ] {
+        let key = bad.as_object().unwrap().keys().next().unwrap().clone();
+        let e = c.err("emulator/reload_rom", bad.clone());
+        assert_eq!(e["code"], json!(-32602), "reload_rom accepted {bad}");
+        assert_eq!(e["data"]["unknownParams"], json!([key]));
+    }
+    // Both at once, and the surviving key alongside them — the refusal is about the struck pair, not
+    // about `path` having company.
+    let e = c.err(
+        "emulator/reload_rom",
+        json!({"path": "/nonexistent", "reset": true, "wait": false}),
+    );
+    assert_eq!(e["data"]["unknownParams"], json!(["reset", "wait"]));
+
+    // And the fragment really has stopped declaring them — the table check above would pass if BOTH
+    // sides had kept them, so the schema is asserted directly.
+    let declared = fragment_params(&schema(), "emulator/reload_rom").expect("a fragment");
+    assert_eq!(declared, ["path".to_string()].into_iter().collect());
+}
+
 /// Several unknown keys are reported together. A client that guessed two names should learn both in one
 /// round trip, not discover them one refusal at a time.
 #[test]
@@ -394,6 +514,60 @@ fn disp_is_refused_with_addr_and_when_negative() {
         "the refusal must say why, not just that: {}",
         e["message"]
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **The displaced address is the one that must land in the work-RAM window** (adoption gate 4, clause
+/// 3). `disp` is not a way to reach past the window a bare `addr` cannot reach — the bound is applied
+/// after resolution, not before it.
+///
+/// Two different refusals, and they are different on purpose: a displacement that leaves the writable
+/// window is `-32004` (the address is real, it is just not writable), while one that leaves the 24-bit
+/// bus entirely is also `-32004` but must report the **sum** it is complaining about rather than the
+/// base — a `data.addr` naming a different number than the sentence beside it is a join a client cannot
+/// make.
+#[test]
+fn a_displaced_target_outside_the_work_ram_window_is_refused() {
+    let h = spawn_system("pc-disp-window", machine(), 64);
+    let mut c = client(&h);
+    let dir = load_probe(&mut c, "disp-window");
+
+    // `Probe` is at $FF0600; the window ends at $FFFFFF. A displacement past the end leaves it.
+    let past = 0x00FF_FFFF - 0x00FF_0600 + 1;
+    let e = c.err(
+        "emulator/write_memory",
+        json!({"symbol": "Probe", "disp": past, "bytes": "0xAA"}),
+    );
+    assert_eq!(
+        e["code"],
+        json!(-32004),
+        "the DISPLACED address is bounds-checked"
+    );
+    assert_eq!(
+        e["data"]["addr"],
+        json!("0x01000000"),
+        "and the refusal names the displaced address, not the symbol's own"
+    );
+
+    // Far enough to leave the 24-bit bus: the sum is reported, un-truncated.
+    let e = c.err(
+        "emulator/write_memory",
+        json!({"symbol": "Probe", "disp": 0xFFFF_FFFFu64, "bytes": "0xAA"}),
+    );
+    assert_eq!(e["code"], json!(-32004));
+    assert_eq!(
+        e["data"]["addr"],
+        json!("0x100FF05FF"),
+        "the sum the message complains about, not a truncation of it"
+    );
+    assert!(e["message"].as_str().unwrap().contains("0x100FF05FF"));
+
+    // The control: one byte short of the edge still works, so the bound is a bound and not a blanket.
+    let ok = c.ok(
+        "emulator/write_memory",
+        json!({"symbol": "Probe", "disp": past - 1, "bytes": "0xAA"}),
+    );
+    assert_eq!(ok["addr"], json!("0x00FFFFFF"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

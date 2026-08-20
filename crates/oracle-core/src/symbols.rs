@@ -320,11 +320,10 @@ impl fmt::Display for Resolution<'_> {
     /// identify a location, and printing it anyway is precisely the confidently-wrong output this module
     /// exists to avoid. The raw name is unique, so the answer stays exact even when it is uglier.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let name = if self.symbol.demangled_ambiguous {
-            &self.symbol.name
-        } else {
-            &self.symbol.demangled
-        };
+        // The name half is `name()`, not a second copy of its ambiguity rule: the two spellings differ
+        // only by the displacement suffix, and letting them derive the name independently is how they
+        // would come to disagree about which name a colliding symbol gets.
+        let name = self.name();
         if self.displacement == 0 {
             write!(f, "{name}")
         } else {

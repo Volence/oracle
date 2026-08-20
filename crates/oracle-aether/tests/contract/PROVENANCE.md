@@ -14,32 +14,44 @@ an explicit re-vendor commit. That commit is the auditable record of "we adopted
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo revision | **`e7ac228`** on **`main`** — *"Merge cram-params-amendment — §11.17 lands beside §11.16; the closure gap the merge itself found"* (2026-08-20). Both amendment branches are MERGED; `TRACKED_REVISION` is retired to `None`. 37 fragments; every params object closed (handshake exempt). |
-| Last commit that touched the schema | `e7ac228` — the merge itself (conflict-resolved description re-derived at 37; the three profiler params objects closed per §11.17's bus-wide rule, the gap the pre-merge experiment found). |
-| SHA-256 | `c77a7245bf2bcc17031922389354eb67a3e4aad08e1d7973bcb15cd8da4a83a1` |
-| Bytes | 146406 |
-| Vendored on | 2026-08-19 |
+| Contract repo revision | **`44573f9`** on **`main`** — *"contract: §11.17 postscript — strike reload_rom's `wait` and `reset`, two keys this catalog never described"* (2026-08-20). Merged, not a draft; `TRACKED_REVISION` is `None`. 37 fragments; every params object closed (handshake exempt). |
+| Last commit that touched the schema | `44573f9` — the same commit. |
+| SHA-256 | `cda09a533e209f16e740c207ca4e63b4e93028f2dd61e41024da6c8473620858` |
+| Bytes | 158632 |
+| Vendored on | 2026-08-20 |
 
-> ### ⚠ This copy tracks an UNMERGED contract revision
->
-> `profiler-amendment` is a six-commit draft branch off `d72513c`; `1b05dc1` is **not** an ancestor of the
-> contract repo's default branch, whose schema is still the pre-amendment 115,285-byte file. It was
-> adjudicated and is the normative text for the profiler surface, so the server implements against it —
-> but the ordinary "vendored copy == upstream working tree" check cannot hold until it merges.
->
-> The freshness test was **not** turned off for this. It got stricter instead: `TRACKED_REVISION` in
-> `tests/schema_conformance.rs` names the revision, and when the working-tree compare fails the test
-> demands (a) the vendored bytes are a verbatim copy of that revision, read from the contract repo's own
-> object store, **and** (b) the checked-out branch has not touched the schema since that revision branched.
-> Condition (b) is what preserves the original guarantee: a contract edit on the default branch still turns
-> this suite red while we track a draft.
->
-> **It retires itself.** When `profiler-amendment` merges, upstream's working tree matches these bytes, the
-> plain compare passes, and none of the tracked-revision code runs. At that point `TRACKED_REVISION` should
-> be set back to `None` and this box deleted — but nothing breaks if that is forgotten, because the early
-> return fires first.
+*(The ⚠ box that stood here while `profiler-amendment` was an unmerged draft is gone: both amendment
+branches merged, `TRACKED_REVISION` is `None`, and the plain byte-compare is the whole freshness test
+again. It retired exactly as it said it would.)*
 
-### What this re-vendor adopted — §11.16 (CR-26) delta 3, the undivided set
+### What this re-vendor adopted — the §11.17 postscript
+
+**Two properties struck from one fragment: `emulator/reload_rom`'s `wait` and `reset`.** The fragment
+count does not move (37 before and after) and no other shape changes.
+
+Both were bare `{"type": "boolean"}` entries with **no description at all**, inherited from the legacy
+catalog and never specified. **We** read `path` and nothing else, so here they were the silent-ignore
+§2.5 exists to end — but the *legacy socket server* implements both for real
+(`ControlSocket.cpp:1363`/`:1374`). Two servers, one with a behaviour, and a catalog describing neither:
+a client could not have learned what to send, and one that guessed right on one server guessed wrong on
+the other.
+
+Struck rather than specified — writing the semantics down would adopt one implementation's choices as
+normative on the strength of that implementation, which is a change request and not a postscript. They
+are now refused by name like any other undeclared key
+(`tests/params_closure.rs::reload_rom_refuses_the_two_struck_keys`).
+
+**Our first draft of this said "no server had ever read either", which was false** — true of the
+reference server, false of the legacy one. Caught by grepping the legacy source rather than by reasoning
+about it, and corrected in the contract before the postscript settled. The register's own standing rule:
+a claim falsifiable by execution does not belong in normative text.
+
+**This is also the first re-vendor the authority test forced.** `params_closure.rs::every_advertised_
+method_declares_exactly_its_fragments_params` compares `MethodSpec.params` against the fragment by parse,
+so striking the keys upstream turned the suite red until the table matched. Table and schema cannot move
+independently, which is the property that test exists for.
+
+### What the previous re-vendor adopted — §11.16 (CR-26) delta 3, the undivided set
 
 `4fc1915` adds **four REQUIRED integers to the routine row and four to the interrupt bucket** —
 `cyclesTotal`, `cyclesSelfTotal`, `stallCyclesTotal`, `callsTotal` — the same four quantities the divided

@@ -335,6 +335,24 @@ fn the_schema_covers_every_method_we_advertise_and_the_uncovered_list_is_pinned_
         advertised.len(),
         "every advertised method is in exactly one bucket"
     );
+
+    // **The other direction, pinned now that it is finally earnable.** For most of this file's life
+    // `schema_only` was non-empty by design — fragments landed ahead of their handlers, which is the
+    // order §8 item 20 wants — so it was printed and not asserted. Serving the CRAM pair emptied it, and
+    // an empty list that is only printed goes back to non-empty silently on the next re-vendor.
+    //
+    // What this now catches: a fragment arriving for a method we never serve. That is not a conformance
+    // failure — D4 makes the advertised list authoritative and a schematized-but-unserved method harms
+    // nobody — but it IS the shape of work we have accepted and not done, and it is exactly how
+    // §11.13's and §11.14's rows sat unserved for days without anything saying so. Adding a fragment
+    // ahead of its handler is still fine; it just has to be a decision, taken in the commit that
+    // re-vendors, rather than something noticed later.
+    assert!(
+        schema_only.is_empty(),
+        "the schema has fragments for methods this server does not advertise: {schema_only:?}.\n\
+         Not a conformance failure — but advertising a method IS shipping it, so either serve them in \
+         this cycle or record the deferral deliberately by relaxing this assertion with the reason."
+    );
 }
 
 // ---------------------------------------------------------------------------------------------------

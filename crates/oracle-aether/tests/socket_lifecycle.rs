@@ -147,6 +147,38 @@ fn a_live_server_refuses_a_second_bind_on_the_same_path() {
     drop(first);
 }
 
+/// **The unlink is bounded to actual sockets.** `--socket` takes a path from a human or a config file,
+/// and the corpse-removal above is a `remove_file` on whatever is there. A typo naming a real file — a
+/// ROM, a listing, a dotfile — must be refused, not deleted: refusing is recoverable and deleting is not,
+/// and a server that had not even started serving would have done it.
+#[test]
+fn bind_refuses_to_delete_a_path_that_is_not_a_socket() {
+    let path = socket_path("notasocket");
+    let _ = std::fs::remove_file(&path);
+    std::fs::write(&path, b"this is a precious file, not a socket").unwrap();
+
+    let e = match Server::bind(ServerConfig {
+        socket_path: path.clone(),
+        ..ServerConfig::default()
+    }) {
+        Ok(_) => panic!("binding over a regular file must fail"),
+        Err(e) => e,
+    };
+    assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists);
+    assert!(
+        e.to_string().contains("not a socket"),
+        "the refusal must say why: {e}"
+    );
+
+    // The point of the test: the file is still there.
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"this is a precious file, not a socket",
+        "bind deleted a file it did not create"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
 /// The ordinary spawn helper cleans up too, so the suite does not litter `$TMPDIR` with sockets — and a
 /// leak here would eventually make `a_stale_socket_file_does_not_block_a_restart` pass for the wrong
 /// reason on a shared path.
