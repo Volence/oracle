@@ -10,6 +10,12 @@ transcription on all three positions, the declined per-edge stall, and the floor
 > ("docs(demand): CR-28 anchor — in-row callers, symmetric tuple, absence carries entryKind"),
 > pushed. Where the two documents could ever disagree, theirs governs — it is the consumer's own
 > source.
+>
+> **Adjudication accepted by the demand side (2026-08-21, verified firsthand):** aeon **`ff01881f`**
+> adds an addendum to the same file accepting the CR-28 ruling in full, including the one departure
+> from this anchor — `entryKind` re-spelled `"hint" | "vint" | "root" | "depthCap"` — as exceeding
+> their stated floor. Their words: the anchor stands as history; the ruling
+> (`docs/2026-08-21-ruling-cr28.md`) governs the shape.
 
 ## What was asked
 
