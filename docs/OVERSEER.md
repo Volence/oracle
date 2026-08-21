@@ -55,6 +55,13 @@ with tools that then exist).
    in-row vs single-routine method, per-edge `callsTotal`, absence-means-interrupt-entry).
    Their answer gets committed as the demand-side anchor before adjudication.
 
+**Incoming (registered 2026-08-21, no action until triggered):** the wiki-emulator PoC — empyrean's
+spec `adfb0f1` (`docs/superpowers/specs/2026-08-19-wiki-emulator-poc-design.md`, updated `04c35cb`)
+proposes a thin `oracle-wasm` crate over an UNTOUCHED `oracle-core` plus a pad-reactive fixture ROM.
+Awaiting the owner's review on empyrean's side; the implementation dispatch arrives from the
+empyrean overseer when approved. Also: the session-rotation protocol rule (empyrean `ae9e4ef`)
+rides their next push.
+
 **Follow-up register** (each named where registered; deferrals here are unaudited estimates —
 measured 3-for-3 cheaper than documented): F-SCANLINE-INDEX / F-SCANLINE-SH (priced down by the
 sub-line arc), F-CRAMDOT, F-SUBLINE-{HGRID, ACCESSMCLK, DMASPREAD, CAPTURE-SCRATCH}, F-VCOUNT-PHASE,
