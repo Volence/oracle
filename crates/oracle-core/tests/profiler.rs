@@ -8,7 +8,7 @@
 
 use oracle_core::bus::{BusEvent, BusEventSink, BusOp, Size, StepRetire};
 use oracle_core::m68000::bus68k::Bus68k;
-use oracle_core::profiler::{Counts, Profiler, Report, MAX_DEPTH};
+use oracle_core::profiler::{CallerKey, Counts, EdgeCounts, Profiler, Report, MAX_DEPTH};
 use oracle_core::system::System;
 use oracle_core::testrom::{
     self, ProfilerShape, StallKind, PROF_CPU_CYCLES_PER_FRAME, PROF_DISPATCH, PROF_LEAF, PROF_MID,
@@ -944,6 +944,311 @@ fn the_ring_keeps_the_most_recent_frames_and_no_more() {
         last - first,
         DEPTH as u64 - 1,
         "the rows are the final {DEPTH} frames, contiguous"
+    );
+}
+
+// --- The caller lens (§11.18 / CR-28) ---------------------------------------------------------------
+
+/// As [`profiler_of`], but with the **caller lens** armed.
+fn profiler_with_callers(shape: ProfilerShape, frames: u64) -> Profiler {
+    let mut sys = System::new(0x1234_5678);
+    sys.load_rom(testrom::build_profiler(shape));
+    sys.reset();
+    let mut prof = Profiler::with_lenses(0, true);
+    sys.run_frames_with_sink(frames, &mut prof);
+    prof
+}
+
+/// Every committed edge whose **callee** is `addr`, undivided.
+fn edges_of(p: &Profiler, addr: u32) -> Vec<(CallerKey, EdgeCounts)> {
+    p.sample_callers()
+        .iter()
+        .filter(|((callee, _), _)| *callee == addr)
+        .map(|((_, caller), e)| (*caller, *e))
+        .collect()
+}
+
+/// **The two normative sums, in the accumulator that produces them.**
+///
+/// Every invocation has exactly one caller, so a callee's edges *partition* its row: their `self_cycles`
+/// sum to the row's and their `calls` to the row's, **undivided on both sides**. Asserted with `==` rather
+/// than a bound, which is the whole reason the wire carries undivided partners on the edge — a divided sum
+/// would fall short by up to one unit per edge and read exactly like agreement.
+///
+/// Two fixtures, because one of them alone would prove less than it looks. `TwoLevel` gives a leaf reached
+/// through a middle routine — a single edge, where a partition is trivially true — while `CallsLeaf` has
+/// the leaf reached repeatedly from the frame the sample opened on. The `inclusive` figure is deliberately
+/// **not** summed: it double-counts by construction, which is why the contract states the sum on self.
+#[test]
+fn a_rows_edges_partition_it_exactly() {
+    for (shape, callee) in [
+        (ProfilerShape::TwoLevel, PROF_LEAF),
+        (ProfilerShape::CallsLeaf { k: 3 }, PROF_LEAF),
+        (ProfilerShape::TwoLevel, PROF_MID),
+    ] {
+        let p = profiler_with_callers(shape, 6);
+        let r = raw(&p, callee);
+        let edges = edges_of(&p, callee);
+        assert!(
+            !edges.is_empty(),
+            "{shape:?}: an armed row always acquires at least one edge — an empty list is a defect in \
+             the accountant, not an ordinary answer"
+        );
+        assert!(
+            r.calls > 0 && r.self_cycles > 0,
+            "{shape:?}: the partition must have something to partition: {r:?}"
+        );
+        assert_eq!(
+            edges.iter().map(|(_, e)| e.calls).sum::<u64>(),
+            r.calls,
+            "{shape:?}: the edges' calls sum EXACTLY to the row's: {edges:?} vs {r:?}"
+        );
+        assert_eq!(
+            edges.iter().map(|(_, e)| e.self_cycles).sum::<u64>(),
+            r.self_cycles,
+            "{shape:?}: and their self cycles likewise: {edges:?} vs {r:?}"
+        );
+    }
+}
+
+/// **An interrupt-entered edge is keyed by CAUSE, and the two causes stay apart** — even when the two
+/// vectors point at one handler, which is exactly when an accountant keying by handler address cannot tell
+/// them apart at all.
+///
+/// This fixture is the sharpest form of the conflation regression, one level down: `PROF_VINT_H` is the
+/// handler for both levels, so its row is one row — and its edge list must still be **two** edges, one per
+/// acknowledged cause. A single collapsing `interrupt` value would make this assertion unwritable, which is
+/// why the contract ships four enum values rather than the three the demand side asked for.
+#[test]
+fn a_handler_reached_from_two_causes_has_two_edges_keyed_by_cause() {
+    let p = profiler_with_callers(
+        ProfilerShape::Interrupts {
+            hint: true,
+            vint: true,
+        },
+        6,
+    );
+    let edges = edges_of(&p, PROF_VINT_H);
+    let kinds: Vec<CallerKey> = edges.iter().map(|(k, _)| *k).collect();
+    assert!(
+        kinds.contains(&CallerKey::Interrupt(HINT)) && kinds.contains(&CallerKey::Interrupt(VINT)),
+        "one handler address, two acknowledged causes, two distinct edges: {edges:?}"
+    );
+    for (kind, e) in &edges {
+        assert!(
+            e.calls > 0 && e.self_cycles > 0,
+            "neither cause is a vacuous zero row: {kind:?} {e:?}"
+        );
+    }
+    // And the handler is never given a fabricated calling address: its caller IS a bucket.
+    assert!(
+        !kinds.iter().any(|k| matches!(k, CallerKey::Routine(_))),
+        "an interrupt handler has no calling routine — a routine key here would be an invention: {edges:?}"
+    );
+}
+
+/// **The frame the sample opened on is `Root`, and the routines it calls carry its address.**
+///
+/// Both halves of the one shape that carries two senses of the word *root*: the opening frame's own edge is
+/// `Root` (nothing was ever observed calling it), while an edge *from* it carries a real `callerAddr` that
+/// is mid-routine and is **not** an entry point. A client that assumes every caller address resolves like a
+/// row key mis-renders exactly this edge.
+#[test]
+fn the_opening_frame_is_root_and_its_callees_carry_its_mid_routine_address() {
+    let p = profiler_with_callers(ProfilerShape::CallsLeaf { k: 3 }, 6);
+    let roots: Vec<(u32, CallerKey)> = p
+        .sample_callers()
+        .keys()
+        .copied()
+        .filter(|(_, caller)| *caller == CallerKey::Root)
+        .collect();
+    assert_eq!(
+        roots.len(),
+        1,
+        "exactly one frame was opened on rather than called into: {roots:#06X?}"
+    );
+    let (root_addr, _) = roots[0];
+
+    let leaf_callers: Vec<CallerKey> = edges_of(&p, PROF_LEAF).iter().map(|(k, _)| *k).collect();
+    assert_eq!(
+        leaf_callers,
+        vec![CallerKey::Routine(root_addr)],
+        "the leaf is reached from the opening frame, by its real address: {leaf_callers:#06X?}"
+    );
+    assert_ne!(
+        root_addr, PROF_LEAF,
+        "and that address is the main loop's, not the leaf's"
+    );
+}
+
+/// **The lens is off unless asked for, and off means the second map was never populated.**
+///
+/// The aggregate is asserted **byte-identical** between an armed and an unarmed run of the same fixture —
+/// the accumulator-level form of the amendment's central claim, that a client which never arms the lens
+/// reads exactly the reply this surface already sent. An always-on accumulator would break this first.
+#[test]
+fn the_lens_is_off_unless_asked_for_and_changes_nothing_when_it_is_on() {
+    let off = profiler_of(ProfilerShape::CallsLeaf { k: 3 }, 6);
+    assert!(!off.callers_armed(), "not armed unless asked");
+    assert!(
+        off.sample_callers().is_empty(),
+        "and the second map was never populated: {:?}",
+        off.sample_callers()
+    );
+    assert!(
+        off.report().callers.is_empty(),
+        "so the report carries no edges either"
+    );
+
+    let on = profiler_with_callers(ProfilerShape::CallsLeaf { k: 3 }, 6);
+    assert!(on.callers_armed() && !on.sample_callers().is_empty());
+    let (mut a, mut b) = (off.report(), on.report());
+    assert!(
+        !b.callers.is_empty(),
+        "the armed run really produced edges, or the comparison below is vacuous"
+    );
+    // Compare everything EXCEPT the two fields arming is *allowed* to move. Cleared and normalised rather
+    // than skipped field-by-field, so a field added to `Report` later is caught by this `==` rather than
+    // quietly excluded from it.
+    //
+    // `per_frame_exact` is the documented exception and the only one: arming ADDS divided figures, so a
+    // sample that divided evenly without the lens may not with it. Nothing became less exact — more figures
+    // are being reported on — and the direction it may move is asserted immediately below rather than
+    // waved past.
+    assert!(
+        !b.per_frame_exact || a.per_frame_exact,
+        "arming the lens may only ever turn perFrameExact true->false, never false->true: {} -> {}",
+        a.per_frame_exact,
+        b.per_frame_exact
+    );
+    a.callers.clear();
+    b.callers.clear();
+    b.per_frame_exact = a.per_frame_exact;
+    assert_eq!(
+        a, b,
+        "arming the lens moved an aggregate figure — it is a second lens on the same rows, not a mode"
+    );
+}
+
+/// **Arming the lens can turn `perFrameExact` from `true` to `false`, and that is not a defect.**
+///
+/// The one behaviour a client could reasonably have assumed was unaffected, so it is pinned rather than
+/// described. Driven synthetically because it has to be *constructed*: the property needs a sample where
+/// every row and aggregate figure divides evenly while an **edge** figure does not, and no ROM fixture can
+/// be asked to arrange that on demand.
+///
+/// The construction, with a divisor of **2** (three boundaries, the first of which opens the sample):
+/// `A` calls both `B1` and `B2` in **every** frame — so their rows' counts are even — but only *one* of
+/// them calls the leaf in each frame, alternating. The leaf's row is therefore `calls: 2` (exact) while
+/// each of its two edges is `calls: 1` (not). Every other figure is arranged to be even, so the flag can
+/// only move for the reason under test.
+#[test]
+fn arming_the_lens_can_turn_per_frame_exact_from_true_to_false() {
+    const A: u32 = 0x0001_0000;
+    const B1: u32 = 0x0002_0000;
+    const B2: u32 = 0x0003_0000;
+    const CALLEE: u32 = 0x0004_0000;
+
+    let drive = |p: &mut Profiler| {
+        // Establish the root frame BEFORE the sample opens, so the two frames below are step-for-step
+        // identical and every aggregate divides evenly.
+        p.on_step_retire(step(A, OP_NOP, S, S));
+        p.on_frame_boundary(0);
+        for frame in 0..2u64 {
+            for b in [B1, B2] {
+                let calls_leaf = (b == B1) == (frame == 0);
+                p.on_step_retire(step(A + 2, OP_JSR_ABS_W, S - 4, S - 4)); // charged to the root
+                p.on_step_retire(step(b, OP_NOP, S - 4, S - 4)); // b's frame opens
+                if calls_leaf {
+                    p.on_step_retire(step(b + 2, OP_JSR_ABS_W, S - 8, S - 8));
+                    p.on_step_retire(step(CALLEE, OP_NOP, S - 8, S - 8)); // the leaf, from b
+                    p.on_step_retire(step(CALLEE + 2, OP_RTS, S - 4, S - 4));
+                } else {
+                    // A no-op in b's place, so both arms cost b the same three steps and its ROW divides
+                    // evenly however the leaf's edges fall.
+                    p.on_step_retire(step(b + 2, OP_NOP, S - 4, S - 4));
+                }
+                p.on_step_retire(step(b + 4, OP_RTS, S, S));
+            }
+            p.on_frame_boundary(frame + 1);
+        }
+    };
+
+    let mut off = Profiler::new();
+    drive(&mut off);
+    let mut on = Profiler::with_lenses(0, true);
+    drive(&mut on);
+
+    let (a, b) = (off.report(), on.report());
+    assert_eq!(a.frame_count, 2, "the divisor this rests on: {a:?}");
+    assert_eq!(
+        raw(&off, CALLEE).calls,
+        2,
+        "the row is called twice across the sample, so it divides evenly"
+    );
+    let edges = edges_of(&on, CALLEE);
+    assert_eq!(
+        edges.len(),
+        2,
+        "…once from each of two callers, so each edge does NOT: {edges:?}"
+    );
+    assert!(
+        edges.iter().all(|(_, e)| e.calls == 1),
+        "each edge saw exactly one invocation: {edges:?}"
+    );
+    assert!(
+        a.per_frame_exact,
+        "without the lens this sample divides without remainder: {a:?}"
+    );
+    assert!(
+        !b.per_frame_exact,
+        "and arming it reports on figures that do not — one flag, ranging over every divided figure \
+         in the reply: {b:?}"
+    );
+}
+
+/// **The depth cap never becomes a caller we really did track.**
+///
+/// `CallerKey::DepthCap` says *the calling frame was one the accountant declined to track*. That is a
+/// claim about a frame we lost, and the failure mode worth guarding is the opposite one: attributing it to
+/// a call whose caller was sitting on the stack all along. Driving strictly more calls than
+/// [`MAX_DEPTH`] allows produces the refusals — `depth_exceeded` proves it — and **no edge may carry
+/// `DepthCap`**, because the only way below the cap is a pop, and a pop means the frame on top is one we
+/// tracked.
+///
+/// That makes the arm unreachable from this accumulator today, which is stated in `Profiler::depth_capped`
+/// rather than hidden: the value exists on the wire and in the enum, the latch is cleared in the one
+/// direction that could make it wrong, and this is the negative half.
+#[test]
+fn the_depth_cap_is_never_attributed_to_a_caller_we_did_track() {
+    const OVERSHOOT: usize = 5;
+    let mut p = Profiler::with_lenses(0, true);
+    p.on_frame_boundary(0);
+    let mut sp = 0x00FF_FFFC_u32;
+    for i in 0..(MAX_DEPTH + OVERSHOOT) as u32 {
+        p.on_step_retire(step(0x1_0000 + i * 8, OP_JSR_ABS_W, sp, sp));
+        sp = sp.wrapping_sub(4);
+        p.on_step_retire(step(0x2_0000 + i * 8, OP_NOP, sp, sp));
+    }
+    p.on_frame_boundary(1);
+
+    assert!(
+        p.report().depth_exceeded > 0,
+        "the cap must actually have been hit or this proves nothing"
+    );
+    assert!(
+        !p.sample_callers().is_empty(),
+        "…and edges must have been recorded, or the check below is vacuous"
+    );
+    let capped: Vec<_> = p
+        .sample_callers()
+        .keys()
+        .filter(|(_, caller)| *caller == CallerKey::DepthCap)
+        .collect();
+    assert!(
+        capped.is_empty(),
+        "a frame pushed after a refusal can only be pushed once the stack has unwound, and then its \
+         caller is one we tracked: {capped:#06X?}"
     );
 }
 
