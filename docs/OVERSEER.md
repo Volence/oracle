@@ -13,7 +13,9 @@ demand are committed artifacts in this repo; peers accelerate, they are never pr
 ## The role
 
 Dispatch Opus subagents for implementation and recon; adjudicate contracts un-framed (a fresh
-Fable agent, no steer); verify every gate firsthand before accepting a slice; make the design
+Fable agent, no steer — the cost was questioned and RATIFIED by the owner 2026-08-21: the ruling
+is where one judgment becomes permanent contract text, so the smartest model sits there and
+nowhere in the bulk work); verify every gate firsthand before accepting a slice; make the design
 rulings (delegated by the owner — pick best, record why); merge and push. The owner's standing
 directives: **a legacy surface or demand spec is the compatibility floor, never the design
 ceiling** (run a visible better-approach pass on every request), and **instrument co-development
