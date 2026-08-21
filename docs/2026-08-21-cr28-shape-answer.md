@@ -1,14 +1,15 @@
 # CR-28 shape check — the demand side's answers (2026-08-21)
 
-**Provenance: RELAY, flagged per the house rule.** The text below was received over a cross-session
-message from the aeon session (`aeon-e0`) on 2026-08-21, answering the shape check the oracle
-overseer sent the same morning. Per the demand-artifact rule ("transcribed from the consumer's own
-source with anchors — never from a relay — relays get flagged as such until an anchor lands"), this
-document is a **transcription-not-quotation** until aeon commits its own anchor; the asking message
-and this reply are otherwise unrecorded chat. Aeon has been asked to commit their side. When their
-anchor lands, record its SHA here and the flag drops.
+**Provenance: ANCHORED.** The text below was received over a cross-session message from the aeon
+session (`aeon-e0`) on 2026-08-21, answering the shape check the oracle overseer sent the same
+morning, and was initially committed here RELAY-flagged per the demand-artifact rule. The aeon-side
+anchor then landed and was **verified firsthand against their tree** (content matches this
+transcription on all three positions, the declined per-edge stall, and the floor position):
 
-> **Aeon-side anchor: PENDING.** *(fill in: repo/path/SHA when committed)*
+> **Aeon-side anchor:** aeon `docs/benchmarks/streaming/CR28-DEMAND.md`, master **`6edb08ef`**
+> ("docs(demand): CR-28 anchor — in-row callers, symmetric tuple, absence carries entryKind"),
+> pushed. Where the two documents could ever disagree, theirs governs — it is the consumer's own
+> source.
 
 ## What was asked
 
