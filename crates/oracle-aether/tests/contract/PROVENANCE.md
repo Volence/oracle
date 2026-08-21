@@ -14,17 +14,84 @@ an explicit re-vendor commit. That commit is the auditable record of "we adopted
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo revision | **`44573f9`** on **`main`** — *"contract: §11.17 postscript — strike reload_rom's `wait` and `reset`, two keys this catalog never described"* (2026-08-20). Merged, not a draft; `TRACKED_REVISION` is `None`. 37 fragments; every params object closed (handshake exempt). |
-| Last commit that touched the schema | `44573f9` — the same commit. |
-| SHA-256 | `cda09a533e209f16e740c207ca4e63b4e93028f2dd61e41024da6c8473620858` |
-| Bytes | 158632 |
-| Vendored on | 2026-08-20 |
+| Contract repo revision | **`7c4b9fc`** on branch **`callers-amendment`** — *"contract: CR-28 ruling applied — M1-M5, S2-S4 on the empyrean side"* (2026-08-21). An **unmerged draft branch**; `TRACKED_REVISION` is `Some`. 37 fragments; every params object closed (handshake exempt) — both figures **re-derived by parsing this copy**, never carried over. |
+| Last commit that touched the schema | `7c4b9fc` — the same commit. |
+| SHA-256 | `f038672daf6eb2b844abce7e7d0196c9aff3354ca230afe09e3abb2d7a745516` |
+| Bytes | 177743 |
+| Vendored on | 2026-08-21 |
 
-*(The ⚠ box that stood here while `profiler-amendment` was an unmerged draft is gone: both amendment
-branches merged, `TRACKED_REVISION` is `None`, and the plain byte-compare is the whole freshness test
-again. It retired exactly as it said it would.)*
+> ### ⚠ This copy tracks an UNMERGED contract revision
+>
+> `callers-amendment` is a draft branch off `2735ac7`; `7c4b9fc` is **not** an ancestor of the contract
+> repo's default branch, whose schema is still the pre-amendment 158,632-byte file. It was adjudicated and
+> is the normative text for the caller lens, so the server implements against it — but the ordinary
+> "vendored copy == upstream working tree" check cannot hold until it merges.
+>
+> The freshness test was **not** turned off for this. It got stricter instead: `TRACKED_REVISION` in
+> `tests/schema_conformance.rs` names the revision, and when the working-tree compare fails the test
+> demands (a) the vendored bytes are a verbatim copy of that revision, read from the contract repo's own
+> object store, **and** (b) the checked-out branch has not touched the schema since that revision branched.
+> Condition (b) is what preserves the original guarantee: a contract edit on the default branch still turns
+> this suite red while we track a draft.
+>
+> **It retires itself.** When `callers-amendment` merges, upstream's working tree matches these bytes, the
+> plain compare passes, and none of the tracked-revision code runs. At that point `TRACKED_REVISION` should
+> be set back to `None` and this box deleted — but nothing breaks if that is forgotten, because the early
+> return fires first.
+>
+> This is the second time this mechanism has carried a profiler amendment (the first was
+> `profiler-amendment` at §11.16), and the recipe below is the one to follow: **copy from the object store,
+> never from the checkout**, because the sibling working tree is on `main` and a `cp` from it would
+> silently downgrade this file.
 
-### What this re-vendor adopted — the §11.17 postscript
+### What this re-vendor adopted — §11.18 (CR-28), the caller lens
+
+**No fragment is added and none is removed: 37 before and 37 after**, re-derived by parsing both revisions
+rather than carried forward (§11.17 clause 7). The movement is **nineteen newly declared properties** inside
+three fragments that already existed, plus the `initialize.limits` key that signals the lens exists.
+
+- **`initialize.limits.maxProfilerCallers`** — the largest `topCallers` accepted and the ceiling applied to
+  each row's `callers` list. **Its presence IS the capability signal**: a server implementing the lens MUST
+  advertise it, a server without the lens MUST omit it. A **reply** bound, not a retention bound — the
+  accumulator keeps every observed edge, which is what makes a row's `callersTotal` the true count of
+  distinct callers rather than the count that survived a ceiling. Refused above, never clamped.
+- **`emulator/set_profiler`** gains the `callers` param (opt-in, default false, resets with every arm) and a
+  `callers` echo in the result. The echo is **conditional, not REQUIRED**: §11.16's pre-release licence
+  expired when the profiler arc merged and this server shipped `"profiler": true`, so absence means *this
+  server has no caller lens* and `false` means *the lens exists and is off*.
+- **`emulator/get_profiler`** gains the same conditional `callers` echo — the third arming fact. It reports
+  the instrument's **state** and carries no rows, so `callersNotArmed` is structurally unreachable there.
+- **`emulator/get_profiler_frames`** gains the `topCallers` param and four row keys that arrive **as a
+  set** — `callers`, `callersTotal`, `callersReturned`, `callersTruncated` — tied by `dependentRequired` so
+  a half-served lens cannot pass the fragment. An edge is
+  `{callerAddr?, callerName?, callerDisp?, entryKind?, cycles, cyclesSelf, calls, cyclesTotal,
+  cyclesSelfTotal, callsTotal}` with `additionalProperties: false`, so **`stallCycles` on an edge is barred
+  outright** — the requesting client declined one on measured grounds, and the fragment records the decision
+  rather than leaving the key undeclared.
+
+Three things about that shape are structural rather than stylistic, and each is pinned by a test here:
+
+- **The `entryKind` biconditional** — REQUIRED exactly when `callerAddr` is absent, forbidden when it is
+  present — is enforced by an `if`/`then`/`else` on the edge shape, not by prose. The enum is
+  **four** values (`hint`, `vint`, `root`, `depthCap`); the collapsing spelling `"interrupt"` the demand side
+  asked for was overruled and is refused by the enum. `tests/profiler.rs::the_entry_kind_biconditional_
+  is_enforced_in_both_directions` and `::each_entry_kind_is_accepted_and_the_collapsing_spelling_is_not`.
+- **Two normative sums**, both `==` and both guarded by `callersTruncated: false`: the edges' `callsTotal`
+  sum to the row's, and their `cyclesSelfTotal` sum to the row's. Undivided on both sides of both, which is
+  what makes them assertable with `==` rather than relaxable to a bound — §11.16's *quiet gap* argument at a
+  smaller denominator. The undivided partners on the edge (`cyclesTotal`, `cyclesSelfTotal`, `callsTotal`)
+  were **folded in at adjudication** rather than deferred, which is why `F-PROFILER-EDGE-UNDIVIDED` is
+  retired and carries no debt.
+- **The §2.4 spelling is FLAT, scoped to the item.** `callers` is not a nested `{items,total,…}` container:
+  §2.4 gained a third case at this amendment for a list that is a field of an *item* of a container, and
+  `routines.items[].callers` is its registered example. The three companions ride as **prefixed siblings**
+  of the row.
+
+**And the reply a client never armed is byte-identical to the pre-amendment one** — the entry's central
+claim, and the one an always-on accumulator would break first. Pinned by
+`tests/profiler.rs::an_unarmed_reply_is_byte_identical_to_a_never_armed_servers`.
+
+### What the previous re-vendor adopted — the §11.17 postscript
 
 **Two properties struck from one fragment: `emulator/reload_rom`'s `wait` and `reset`.** The fragment
 count does not move (37 before and after) and no other shape changes.
