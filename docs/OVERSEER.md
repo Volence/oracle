@@ -34,11 +34,13 @@ with tools that then exist).
    live paths (compat symlink), old-name references (grep-and-fix), and compile-time-frozen
    paths (invisible until the binary runs; fix = reconfigure/rebuild in the new home, done
    2026-08-20 for oracle-old, verified via strings over the binary).
-2. **CRAM handlers** (CR-27 fully adjudicated; empyrean `cram-params-amendment` parked) — serve
-   `write_cram` (require_paused, demand-confirmed) + `read_cram`; then that merge window (+ §11.17,
-   + the parse-derived merged-count check, + Aurora's branch-probe acceptance).
-3. **Profiler slice 5** (MCP verify + player lens; the lens takes the last `LensSet` bit and the
-   same slice widens to `u16`).
+2. ~~CRAM handlers~~ **DONE 2026-08-20** — merged oracle `e8421f5` (CRAM pair served, params
+   closure at the single dispatch choke, advertised 35→37 with the schematized-vs-advertised gap
+   ZERO for the first time) / empyrean `e0467f7`+`d340205` (§11.17 + reload_rom postscript), both
+   pushed. Controller-verified 48/1738/0/4, zero currency movement.
+3. ~~Profiler slice 5~~ **DONE 2026-08-20** — merged in `018612a` (lens half `c0dab78`:
+   `LensId::Profile` closes D15's fourth surface, `LensSet` u8→u16 per Q8; MCP tool rows shed
+   three dead legacy claims and gain disp/perFrame). 48/1754/0/4.
 4. ~~C1 witness + corpus A/B~~ **DONE 2026-08-20** — witness demonstrated (M1 red at predicted
    counts); A/B PASSED (`docs/2026-08-20-profiler-corpus-ab.md`: reference row to-the-cycle,
    spread exactly 0, their dense anomaly explained as their instrument's straddle loss, K.3's
@@ -46,7 +48,10 @@ with tools that then exist).
    Open residue: the five-short-rows 11–40% disagreement (unexplained, settling experiment in
    the doc §11.5); the walker fixture leg (not re-driven).
 5. **CR-28** (per-routine `callers[]`, opt-in) — recon'd in `docs/2026-08-19-streaming-asks-recon.md`
-   §4; needs no pre-release window; shape check goes to aeon before build.
+   §4; needs no pre-release window; shape check goes to aeon before build. **Shape check SENT to
+   aeon 2026-08-21** (in-row `callers[]` per recon (ii), fallback (iii) stated, three questions:
+   in-row vs single-routine method, per-edge `callsTotal`, absence-means-interrupt-entry).
+   Their answer gets committed as the demand-side anchor before adjudication.
 
 **Follow-up register** (each named where registered; deferrals here are unaudited estimates —
 measured 3-for-3 cheaper than documented): F-SCANLINE-INDEX / F-SCANLINE-SH (priced down by the
