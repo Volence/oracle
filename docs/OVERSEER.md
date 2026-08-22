@@ -122,8 +122,23 @@ with tools that then exist).
    (plain dir, outside any git tree): `s4.debug.bin` (`d22dda85`/713295, sha256 `ad289eae947b2dd4`),
    `s4.debug.lst` (5162 lines / 2578 symbols), and `PROVENANCE.md` carrying the byte-identity
    binding proof, the rebuild recipe, **both snags aeon will hit**, and every address the doc names.
-   All four re-verified firsthand here. **Live ask out to aeon:** raw `calls` for `Parallax_Update`
-   and `BgAnim_Update` at idle — it would confirm Part B **from their own instrument**.
+   All four re-verified firsthand here. ~~**Live ask out to aeon:** raw `calls`~~ **ASK WITHDRAWN
+   same day (`0f05501`)** — aeon argued the published `1` carries a lower bound (`30/31 == 0` under
+   the consumer's integer division at `ControlSocket.cpp:2042`, so a `1` implies ≥31 raw calls =
+   an excess). **Refuted by the line below the one cited:** `:2043` is `if (avgCalls < 1) avgCalls
+   = 1;` — a computed `0` is clamped up, so the table **cannot** print `0` and a displayed `1`
+   means `[0, 61]` with **no lower bound at all**. Their dependency (30 ticks, once-per-tick) was
+   correct and independently verified; it never becomes load-bearing because the clamp destroys the
+   low end first. This is the `max(1, floor(total/31))` our own §5.4 already stated, reached from
+   the other direction and refuted by it. **Durable finding, sharper than "coarse":** the one
+   diagnostic value — `0`, the normal reading for *every* tick-driven routine at idle — is exactly
+   what the code refuses to emit, so the column cannot represent the true state; worth removing the
+   clamp if that consumer is ever opened for the identity-pairing fix. Raw `st.calls` is unreachable
+   from their side by construction (division happens in the consumer before the response is built).
+   **Part B stands on the conservation derivation alone, which is where it always did its work.**
+   ⚠ Method note: this one nearly landed on trust — it arrived with a line number, a mechanism, an
+   independently-verified call site, and a stated dependency that *looked* like the weak part. **The
+   line that killed it was the next one down.**
    **§9 of the doc lists six proposed edits to the corpus A/B**, incl. §9.5: the *"the walker agrees
    to 0.17%"* line **cannot** carry the weight the A/B put on it (it is Part B's other half, hidden
    by a 20,000-cycle divisor); what can: Stage B's hand derivations, and the display-driven
