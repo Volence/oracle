@@ -14,35 +14,15 @@ an explicit re-vendor commit. That commit is the auditable record of "we adopted
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo revision | **`7c4b9fc`** on branch **`callers-amendment`** — *"contract: CR-28 ruling applied — M1-M5, S2-S4 on the empyrean side"* (2026-08-21). An **unmerged draft branch**; `TRACKED_REVISION` is `Some`. 37 fragments; every params object closed (handshake exempt) — both figures **re-derived by parsing this copy**, never carried over. |
+| Contract repo revision | **`70c7bb4`** on **`main`** — *"Merge callers-amendment — §11.18 lands: the caller lens specified, the two-shapes bound amended honestly"* (2026-08-21). The amendment's own tip was `7c4b9fc`; the merge carried its schema bytes through unchanged. `TRACKED_REVISION` is `None`. 37 fragments; every params object closed (handshake exempt) — both figures **re-derived by parsing this copy**, never carried over. |
 | Last commit that touched the schema | `7c4b9fc` — the same commit. |
 | SHA-256 | `f038672daf6eb2b844abce7e7d0196c9aff3354ca230afe09e3abb2d7a745516` |
 | Bytes | 177743 |
 | Vendored on | 2026-08-21 |
 
-> ### ⚠ This copy tracks an UNMERGED contract revision
->
-> `callers-amendment` is a draft branch off `2735ac7`; `7c4b9fc` is **not** an ancestor of the contract
-> repo's default branch, whose schema is still the pre-amendment 158,632-byte file. It was adjudicated and
-> is the normative text for the caller lens, so the server implements against it — but the ordinary
-> "vendored copy == upstream working tree" check cannot hold until it merges.
->
-> The freshness test was **not** turned off for this. It got stricter instead: `TRACKED_REVISION` in
-> `tests/schema_conformance.rs` names the revision, and when the working-tree compare fails the test
-> demands (a) the vendored bytes are a verbatim copy of that revision, read from the contract repo's own
-> object store, **and** (b) the checked-out branch has not touched the schema since that revision branched.
-> Condition (b) is what preserves the original guarantee: a contract edit on the default branch still turns
-> this suite red while we track a draft.
->
-> **It retires itself.** When `callers-amendment` merges, upstream's working tree matches these bytes, the
-> plain compare passes, and none of the tracked-revision code runs. At that point `TRACKED_REVISION` should
-> be set back to `None` and this box deleted — but nothing breaks if that is forgotten, because the early
-> return fires first.
->
-> This is the second time this mechanism has carried a profiler amendment (the first was
-> `profiler-amendment` at §11.16), and the recipe below is the one to follow: **copy from the object store,
-> never from the checkout**, because the sibling working tree is on `main` and a `cp` from it would
-> silently downgrade this file.
+*(The unmerged-branch tracking box that stood here retired itself 2026-08-21 when `callers-amendment`
+merged as `70c7bb4` — its third profiler-amendment carry, per its own recipe: copy from the object
+store, never from the checkout.)*
 
 ### What this re-vendor adopted — §11.18 (CR-28), the caller lens
 

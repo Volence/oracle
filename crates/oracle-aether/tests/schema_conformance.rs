@@ -126,10 +126,7 @@ fn the_vendored_schema_is_byte_identical_to_the_upstream_contract() {
 ///
 /// It retires itself: the moment the draft merges, upstream's working tree matches the vendored bytes,
 /// the early return above fires, and none of this code runs.
-const TRACKED_REVISION: Option<(&str, &str)> = Some((
-    "7c4b9fcf9854c202bbaff1cf183d02d75c83325d",
-    "callers-amendment",
-));
+const TRACKED_REVISION: Option<(&str, &str)> = None;
 
 /// Verify the vendored bytes against [`TRACKED_REVISION`] using the contract repo's own object store.
 fn tracked_revision_check(upstream: &std::path::Path, vendored: &[u8]) -> Result<String, String> {
