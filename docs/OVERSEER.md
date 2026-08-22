@@ -592,6 +592,82 @@ with tools that then exist).
    to empyrean as one lane's proposal with a second's endorsement, not two independent findings.
    Theirs to phrase or reject; the protocol changes in empyrean and is never forked into a repo copy.
 
+   **CR-A DRAFTED + MERGED `1265995`** (`docs/2026-08-22-cr-a-breakpoints.md`, 953 lines + a 14th
+   §, docs-only). **Un-framed adjudication DISPATCHED** (`ruling-cr-a`, fresh Fable, no steer).
+   Shapes proposed: opaque-string handle in a field named `breakpoint` (not `watch`'s abbreviation —
+   argued, not diverged silently); `breakpoint_add {addr|symbol, label?}` → `{breakpoint, addr,
+   stopPrecision, label?}`; `clear {breakpoint|all}` → `{removed}`; `wait_for_break {timeoutMs?}` →
+   `{pc?, …, timeoutReached?, cancelled?, waitedMs?}`; a **new** `wait_cancel` keyed on the JSON-RPC
+   **request id** (under a non-blocking wait there is no reply to carry a handle, so the id is the
+   only identifier the client holds), same-connection-only *or one client can end another's wait —
+   the address-keyed-clear hazard rebuilt on the wait surface*. 58 → 59 fragments.
+   **Four drafter departures from my rulings, all argued at the point of use** — `stopped` carries a
+   **plural** `breakpoints` array (duplicate adds create distinct breakpoints, so a singular field
+   would force the server to name one as *the* cause; `watch` has the same latent multiplicity and
+   was deliberately **not** changed); `breakpoint_set_enabled` **rejected** and `enabled` struck;
+   **D-12 ruled AGAINST the audit's recommendation** (the idempotent reading was reasoned inside an
+   address-keyed model, and under handles collapsing duplicates rebuilds the very two-subscriber
+   hazard the CR exists to fix); a third reading of D-14 neither of its two offered.
+   **Ruling 3's sub-question answered by inspection and verified here: §3's `reason` enum ALREADY
+   contains `breakpoint`** (first member; `["breakpoint","watchpoint","step","runTo",
+   "runToScanline","runFrames","pause","entry"]`). No new reason value needed — the same situation
+   §11.8 found with `watchpoint`: an enum member no catalogued method could produce.
+   **⚑ THE DRAFT'S BEST FINDING, verified verbatim at `contract/protocol.md:158-160` — D12 reaches
+   this method by name** (*"any future `wait_for_break`-shaped op … MUST accept a `maxFrames` bound"*)
+   **and cannot do the job.** A `maxFrames` bound is a bound in **emulated** time; a wedge is the
+   state in which emulated time stops advancing — so it cannot trip in exactly the failure it exists
+   to catch. Not a weak bound on a wedge; **structurally incapable of being one.** D12's second
+   mandate misfits too: `reached` is specified *"beside its echo of the target"* and a wait for any
+   breakpoint has no target. **The precedent the draft missed and I added (bar 12 again — the rule
+   was in the contract we already owned): `protocol.md:1432-1433` already scopes D12 out of
+   `play_input`** (*"D12 does not apply — the stop condition is an exhausted count, not a predicate"*),
+   so the ask is the **second instance of an established pattern**, not a novel exception.
+   **§14 addendum added by me before adjudication** (so the adjudicator rules on the strongest
+   version): (1) **the prior question RESOLVES — CR-A is in order.** The drafter flagged that the
+   audit's *"for D-10, D-13 and D-17 the answer belongs to the legacy server"* might reserve ruling
+   authority, and called its own narrower reading self-serving. It resolves on the audit's **own
+   text**: D-13's Recommendation at `:193-195` literally says *"raise a change request that brings
+   the breakpoint surface up to the watchpoint surface's shape"* — **the audit commissions this CR
+   by name** — and `:481` presupposes *"the eventual amendment"*. The clause is a binding on
+   **scope** (nothing we rule binds the legacy server), not a reservation of authority. ⚠ Flagged
+   for the adjudicator: §7.2 rejects `breakpoint_set_enabled`, which is **named in the very
+   Recommendation that authorises the CR** — declining a commissioned item is a higher bar than an
+   open design choice. (2) the D12 precedent above. (3) currency + a correction.
+   **Currency checked AT TIP** (the correct direction for a drift question): the CR anchors empyrean
+   at `9d6ab1f` — real, ancestor of `origin/main`, and **zero commits have touched
+   `contract/protocol.md` since**, so every protocol citation is current even though their tip has
+   moved to `56f469b` (churn elsewhere in their tree).
+   ⚠ **Third overseer brief-fact corrected by its own agent today.** I told the drafter the handle
+   migration costs aeon *"a trivial rewrite"*; the correct answer is **nothing at all** — both gates
+   clear only with `{all: true}`, never pass an address to clear, `breakpoint_add`'s params are
+   unchanged, and its new reply key is simply ignored. My weaker claim was underived; theirs was
+   derived. **Owed to aeon as a correction.**
+
+   ⏸ **ADJUDICATION BLOCKED — PARKED FOR THE OWNER, 2026-08-22 evening.** The un-framed Fable
+   adjudicator was dispatched (`ruling-cr-a`) and **died immediately on the Fable 5 account limit**.
+   No ruling exists; the CR is drafted, merged and pushed but **UNADJUDICATED**, and per the
+   standing bar (*"a ruling authorizes the change; adjudication is what authorizes the TEXT"*)
+   **nothing in it may be implemented yet.**
+   **Deliberately NOT silently substituted.** Swapping in another model is exactly the quiet
+   degradation the protocol bars, and here the overseer would be the one doing it — the owner
+   **ratified** the Fable seat on 2026-08-21 with the cost questioned and answered (*the smartest
+   model sits at the ruling and nowhere in the bulk work*), so re-spending that decision is the
+   owner's, not mine.
+   **The two properties of the seat are separable, and that is what makes a substitution
+   defensible if the owner wants one:** *un-framed* (no drafting participation, no steer) is the
+   load-bearing half and is preserved by any fresh agent; *Fable-tier* is the second half. An Opus
+   adjudication would keep the first and lose the second. **If substituted, the ruling doc must
+   name the model that ruled**, so a later reader knows which standard was applied rather than
+   assuming the ratified one.
+   Options for the owner: (a) top up Fable credits and re-dispatch unchanged; (b) authorise a
+   **named** Opus substitution; (c) hold CR-A unadjudicated — costs nothing, since the stepping
+   trio explicitly does not depend on it and the acceptance ordering puts breakpoints fifth.
+   **(c) is the honest default and blocks no other work.**
+   **Tagged for FOREGROUND runtime follow-up (never a subagent):** §6.5's claim that our core stops
+   exactly *by construction* is read off `bus.rs:305-318` **only** — it must NOT be asserted in a
+   handshake capability until something has actually been run. That is the `stopPrecision` field's
+   whole credibility.
+
    **NEXT (not yet dispatched):** CR-B (D-10 `z80_write` width/byte-order/`len`) — contract work,
    un-framed adjudication, docs-only. Also open from the survey and **not lost**: `resolve_target`
    does not enforce the `addr`/`symbol` `oneOf` (a **live** unregistered request-side divergence on
