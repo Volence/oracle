@@ -104,7 +104,14 @@ fn the_handshake_advertises_the_profiler_and_its_limits() {
         json!(true),
         "the capability a client branches on (D5), not the version integer"
     );
-    for k in ["maxProfilerRoutines", "maxProfilerFrames"] {
+    // `maxProfilerCallers` rides with the other two, and its PRESENCE is doing more work than theirs: it
+    // is the caller lens's capability signal (§11.18), so a client branches on it rather than on a version
+    // integer. A server without the lens omits it and refuses `set_profiler{callers:true}` by name.
+    for k in [
+        "maxProfilerRoutines",
+        "maxProfilerFrames",
+        "maxProfilerCallers",
+    ] {
         assert!(
             init["limits"][k].as_u64().is_some_and(|n| n > 0),
             "{k} is REQUIRED once the methods are advertised — a cap a client can only learn by hitting \
@@ -1016,6 +1023,690 @@ fn a_never_armed_server_answers_both_reads() {
         0,
         "a disarmed profiler is not a quietly-armed one"
     );
+}
+
+// --- the caller lens (§11.18 / CR-28) --------------------------------------------------------------------
+
+/// Arm with the lens, run, read.
+fn arm_run_read_callers(c: &mut Client, frames: u64) -> Value {
+    c.ok(
+        "emulator/set_profiler",
+        json!({"enabled": true, "callers": true}),
+    );
+    c.ok("emulator/run_frames", json!({"frames": frames}));
+    c.ok("emulator/get_profiler_frames", json!({}))
+}
+
+/// The four row keys the lens adds, which arrive **as a set** or not at all.
+const CALLER_KEYS: [&str; 4] = [
+    "callers",
+    "callersTotal",
+    "callersReturned",
+    "callersTruncated",
+];
+
+/// A fixture whose VBlank handler is reached from **both** interrupt causes, so at least one row has more
+/// than one edge — without which every "sum of edges" assertion below would be a sum of one term.
+fn two_cause_shape() -> oracle_core::testrom::ProfilerShape {
+    oracle_core::testrom::ProfilerShape::Interrupts {
+        hint: true,
+        vint: true,
+    }
+}
+
+fn envelope(result: &Value) -> Value {
+    json!({"jsonrpc": "2.0", "id": 1, "result": result})
+}
+
+/// **Arming, echoing, and the one refusal a lens-implementing server may NOT make.**
+///
+/// The echo is capability-conditional rather than REQUIRED, which is the shape §11.16's expired
+/// pre-release licence forced: this server advertises `limits.maxProfilerCallers`, so it MUST carry the
+/// echo, and a server that does not advertise the cap MUST omit it — absence therefore means *no caller
+/// lens on this server* and never *the lens is off*. Adoption clause 1's third bound is the last assertion
+/// here: `set_profiler{callers: false}` is **accepted**, not refused, on a server that has the lens.
+#[test]
+fn the_lens_arms_and_is_echoed_on_both_state_replies() {
+    let (_h, mut c, _init) = booted("prof-callers-arm", default_shape());
+
+    // Off unless asked, on both replies.
+    let plain = c.ok("emulator/set_profiler", json!({"enabled": true}));
+    assert_eq!(
+        plain["callers"],
+        json!(false),
+        "the lens exists and is off — `false`, not an absence: {plain}"
+    );
+    assert_eq!(
+        c.ok("emulator/get_profiler", json!({}))["callers"],
+        json!(false),
+        "and the state read agrees"
+    );
+
+    let armed = c.ok(
+        "emulator/set_profiler",
+        json!({"enabled": true, "callers": true}),
+    );
+    assert_eq!(armed["callers"], json!(true), "{armed}");
+    assert_eq!(
+        armed["perFrame"],
+        json!(false),
+        "one lens, not both: {armed}"
+    );
+    let state = c.ok("emulator/get_profiler", json!({}));
+    assert_eq!(
+        state["callers"],
+        json!(true),
+        "the third arming fact, on the state read: {state}"
+    );
+
+    // **Every arming flag resets together.** A second arm starts a fresh sample under exactly the lenses
+    // that call names, so arming without `callers` turns the lens off rather than leaving it running.
+    c.ok("emulator/run_frames", json!({"frames": 4}));
+    let re = c.ok("emulator/set_profiler", json!({"enabled": true}));
+    assert_eq!(
+        re["callers"],
+        json!(false),
+        "a second arm discards the in-flight sample AND its lenses: {re}"
+    );
+
+    // Adoption clause 1: `callers: false` is ACCEPTED on a server that implements the lens. It is only an
+    // undeclared key — and only then a -32602 — on a server that does not.
+    let off = c.ok(
+        "emulator/set_profiler",
+        json!({"enabled": true, "callers": false}),
+    );
+    assert_eq!(off["callers"], json!(false), "accepted, not refused: {off}");
+
+    // Disarming RETAINS, and the echo keeps describing the sample that is still readable.
+    c.ok(
+        "emulator/set_profiler",
+        json!({"enabled": true, "callers": true}),
+    );
+    c.ok("emulator/run_frames", json!({"frames": 4}));
+    let disarmed = c.ok("emulator/set_profiler", json!({"enabled": false}));
+    assert_eq!(
+        disarmed["callers"],
+        json!(true),
+        "the retained sample still has caller data, so the echo still says so: {disarmed}"
+    );
+    let after = c.ok("emulator/get_profiler_frames", json!({}));
+    assert!(
+        after["routines"]["items"][0].get("callers").is_some(),
+        "…and reading it after the disarm still serves the edges: {after}"
+    );
+}
+
+/// **THE CENTRAL CLAIM: a reply nobody armed the lens for is BYTE-IDENTICAL to a never-armed server's.**
+///
+/// The adoption condition's clause 5, and the one an always-on accumulator would break first. Two servers,
+/// same fixture, same frame count, armed the same way except that one names `callers: false` explicitly
+/// and the other has never heard of the key — serialised and compared as **bytes**, not field by field,
+/// because a field-by-field comparison only checks the fields somebody thought to list.
+///
+/// Beneath it, the direct half: no row carries any of the four keys, asserted against the pre-amendment
+/// row key set spelled out here rather than against "no key starting with callers".
+#[test]
+fn an_unarmed_reply_is_byte_identical_to_a_never_armed_servers() {
+    let sample = |tag: &str, arm: Value| -> Value {
+        let (_h, mut c, _init) = booted(tag, default_shape());
+        c.ok("emulator/set_profiler", arm);
+        c.ok("emulator/run_frames", json!({"frames": 6}));
+        c.ok("emulator/get_profiler_frames", json!({}))
+    };
+    let never = sample("prof-bytes-never", json!({"enabled": true}));
+    let explicit = sample(
+        "prof-bytes-false",
+        json!({"enabled": true, "callers": false}),
+    );
+
+    assert!(
+        u64_of(&never, "sampleCycles") > 0
+            && !never["routines"]["items"]
+                .as_array()
+                .expect("items")
+                .is_empty(),
+        "the comparison must be over a reply with content: {never}"
+    );
+    assert_eq!(
+        serde_json::to_string(&never).expect("serialise"),
+        serde_json::to_string(&explicit).expect("serialise"),
+        "naming the lens and declining it must produce the same bytes as never naming it"
+    );
+
+    // The pre-amendment row shape, spelled out. A key added to a row later shows up here as a failure
+    // rather than as a silent widening of "everything else".
+    const PRE_AMENDMENT_ROW_KEYS: [&str; 9] = [
+        "addr",
+        "cycles",
+        "cyclesSelf",
+        "stallCycles",
+        "calls",
+        "cyclesTotal",
+        "cyclesSelfTotal",
+        "stallCyclesTotal",
+        "callsTotal",
+    ];
+    for row in never["routines"]["items"].as_array().expect("items") {
+        let keys: Vec<&str> = row
+            .as_object()
+            .expect("a row is an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        for k in &keys {
+            assert!(
+                PRE_AMENDMENT_ROW_KEYS.contains(k) || ["name", "disp"].contains(k),
+                "an unarmed row carries only what it carried before the lens: {k} in {row}"
+            );
+        }
+    }
+}
+
+/// **The two normative sums, with `==`, guarded by `callersTruncated: false`.**
+///
+/// Every invocation has exactly one caller, so a row's edges *partition* it: their `callsTotal` sum to the
+/// row's `callsTotal` and their `cyclesSelfTotal` to the row's `cyclesSelfTotal`. Both sides undivided,
+/// which is the whole reason the edge carries undivided partners — a divided sum falls short by up to one
+/// unit per edge and reads exactly like agreement (§11.16's *quiet gap*, one level down).
+///
+/// The inclusive figure is deliberately **not** summed: it double-counts by construction, which is why the
+/// contract states the cycle sum on self.
+///
+/// Anti-vacuity is explicit. A reply whose every row has exactly one edge would satisfy both sums without
+/// testing anything, so the fixture is the two-cause one and the test asserts that at least one row really
+/// carried more than one edge.
+#[test]
+fn a_rows_edges_sum_to_it_exactly_in_both_normative_figures() {
+    let mut multi_edge_rows = 0;
+    for (tag, shape) in [
+        ("prof-sums-two-cause", two_cause_shape()),
+        ("prof-sums-leaf", default_shape()),
+        (
+            "prof-sums-tree",
+            oracle_core::testrom::ProfilerShape::TwoLevel,
+        ),
+    ] {
+        let (_h, mut c, _init) = booted(tag, shape);
+        let r = arm_run_read_callers(&mut c, 6);
+        let rows = r["routines"]["items"].as_array().expect("routines.items");
+        assert!(!rows.is_empty(), "{tag}: need rows: {r}");
+
+        for row in rows {
+            for k in CALLER_KEYS {
+                assert!(
+                    row.get(k).is_some(),
+                    "{tag}: the four keys arrive as a SET on an armed row — {k} missing: {row}"
+                );
+            }
+            let edges = row["callers"].as_array().expect("callers is an array");
+            assert_eq!(
+                u64_of(row, "callersReturned"),
+                edges.len() as u64,
+                "{tag}: `callersReturned` restates the array's length: {row}"
+            );
+            assert!(
+                !edges.is_empty(),
+                "{tag}: every armed row acquires at least one edge — an empty list is a defect in the \
+                 accountant, not an ordinary answer: {row}"
+            );
+            if edges.len() > 1 {
+                multi_edge_rows += 1;
+            }
+            assert_eq!(
+                row["callersTruncated"],
+                json!(false),
+                "{tag}: this fixture must fit under the cap or the sums below are only bounds: {row}"
+            );
+            for key in ["callsTotal", "cyclesSelfTotal"] {
+                assert_eq!(
+                    edges.iter().map(|e| u64_of(e, key)).sum::<u64>(),
+                    u64_of(row, key),
+                    "{tag}: the edges' {key} sum EXACTLY to the row's — undivided on both sides, so \
+                     this is an == and not a bound: {row}"
+                );
+            }
+            // Ordered by `cycles` descending, one level down from the rows' own rule.
+            let cycles: Vec<u64> = edges.iter().map(|e| u64_of(e, "cycles")).collect();
+            let mut sorted = cycles.clone();
+            sorted.sort_unstable_by(|a, b| b.cmp(a));
+            assert_eq!(
+                cycles, sorted,
+                "{tag}: a bounded edge list must be the expensive end: {row}"
+            );
+        }
+    }
+    assert!(
+        multi_edge_rows > 0,
+        "at least one row must have had MORE THAN ONE edge, or both sums are sums of one term"
+    );
+}
+
+/// **An interrupt-entered edge is keyed by CAUSE, on the wire, and the two causes stay apart.**
+///
+/// The fixture points *both* vectors at one handler, which is exactly when an accountant keying by handler
+/// address cannot tell the causes apart at all — so one row, two edges, `hint` and `vint`. That is the
+/// property the four-value enum exists for and the one a single collapsing `interrupt` value could not
+/// express: these two spellings **join the edge to the bucket it came from by name**.
+///
+/// The demand side's own acceptance is the last assertion: an interrupt-entered edge is distinguishable
+/// from a mainline one without asking us — a two-value membership test, which is what the split cost them
+/// in place of one equality.
+#[test]
+fn interrupt_entered_edges_are_keyed_hint_and_vint_distinctly() {
+    let (_h, mut c, _init) = booted("prof-callers-cause", two_cause_shape());
+    let r = arm_run_read_callers(&mut c, 8);
+    let rows = r["routines"]["items"].as_array().expect("routines.items");
+
+    let kinds: Vec<String> = rows
+        .iter()
+        .flat_map(|row| row["callers"].as_array().expect("callers"))
+        .filter_map(|e| e.get("entryKind").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect();
+    assert!(
+        kinds.iter().any(|k| k == "hint") && kinds.iter().any(|k| k == "vint"),
+        "one handler address, two acknowledged causes, two distinctly keyed edges: {kinds:?} in {r}"
+    );
+
+    // …and a MAINLINE edge to be distinguishable from, which is the branch this lens was built for. It
+    // needs a second fixture: the two-cause shape has no body at all, which is exactly what makes its
+    // bucket assertions unambiguous. The membership test the demand side is left with — `entryKind` in
+    // {hint, vint} — is the one they named as their acceptance, and it runs without asking us anything.
+    let (_h2, mut c2, _i2) = booted("prof-callers-mainline", default_shape());
+    let m = arm_run_read_callers(&mut c2, 6);
+    let mainline: Vec<&Value> = m["routines"]["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .flat_map(|row| row["callers"].as_array().expect("callers"))
+        .filter(|e| e.get("callerAddr").is_some())
+        .collect();
+    assert!(
+        !mainline.is_empty(),
+        "a mainline edge names its caller and carries no kind: {m}"
+    );
+    for e in &mainline {
+        assert!(
+            e.get("entryKind").is_none(),
+            "…and is therefore NOT in {{hint, vint}} by a plain membership test: {e}"
+        );
+    }
+    // The bucket a `hint`/`vint` edge names is on the same reply, by the same word — which is the join a
+    // collapsing value could not offer.
+    for cause in ["hint", "vint"] {
+        assert!(
+            r["interrupts"][cause].is_object(),
+            "the edge's kind names a bucket that is right there: {}",
+            r["interrupts"]
+        );
+    }
+}
+
+/// **`entryKind` is REQUIRED exactly when `callerAddr` is absent, and FORBIDDEN when it is present.**
+///
+/// A biconditional the fragment enforces with `if`/`then`/`else`, so it is proven the way a closure has to
+/// be proven — by messages that **fail**. Both directions, doctored out of a real reply that passed on the
+/// way in, because a closure nobody has watched reject is a closure nobody has tested.
+#[test]
+fn the_entry_kind_biconditional_is_enforced_in_both_directions() {
+    // `CallsLeaf` is the one fixture that produces BOTH shapes in one reply: the leaf's edge names its
+    // caller, and the row that IS the frame the sample opened on carries `entryKind: "root"` with no
+    // address. Doctoring one reply rather than two keeps the control (it passed on the way in) shared.
+    let (_h, mut c, _init) = booted("prof-callers-bicond", default_shape());
+    let r = arm_run_read_callers(&mut c, 8);
+    common::schema::check_incoming(&envelope(&r), Some("emulator/get_profiler_frames"))
+        .expect("the undoctored reply is conformant");
+
+    // Find one edge of each kind to doctor — asserted rather than assumed, so a reply that stopped
+    // producing one of them fails here instead of silently skipping half the test.
+    let (mut with_addr, mut with_kind) = (None, None);
+    for (i, row) in r["routines"]["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .enumerate()
+    {
+        for (j, e) in row["callers"]
+            .as_array()
+            .expect("callers")
+            .iter()
+            .enumerate()
+        {
+            if e.get("callerAddr").is_some() {
+                with_addr.get_or_insert((i, j));
+            } else {
+                with_kind.get_or_insert((i, j));
+            }
+        }
+    }
+    let (ai, aj) = with_addr.expect("a mainline edge to doctor");
+    let (ki, kj) = with_kind.expect("an interrupt-entered edge to doctor");
+
+    // Direction 1: an edge that names its caller may NOT also carry a kind.
+    let mut both = r.clone();
+    both["routines"]["items"][ai]["callers"][aj]["entryKind"] = json!("root");
+    let failures =
+        common::schema::check_incoming(&envelope(&both), Some("emulator/get_profiler_frames"))
+            .expect_err("an edge carrying BOTH callerAddr and entryKind must be refused");
+    assert!(
+        !failures.is_empty(),
+        "the refusal must say something: {failures:?}"
+    );
+
+    // Direction 2: an edge with no caller address may NOT omit the kind — that is the absence meaning
+    // three things again, which is the defect this key was added to end.
+    let mut neither = r.clone();
+    neither["routines"]["items"][ki]["callers"][kj]
+        .as_object_mut()
+        .expect("an edge is an object")
+        .remove("entryKind");
+    common::schema::check_incoming(&envelope(&neither), Some("emulator/get_profiler_frames"))
+        .expect_err("an edge with neither callerAddr nor entryKind must be refused");
+}
+
+/// **Each of the four enum values is accepted on its own, and the collapsing spelling is refused.**
+///
+/// `"interrupt"` is the value this amendment **declined**, and it is the one a later drafter is likeliest
+/// to reintroduce — so it is pinned as a refusal rather than left to prose. `depthCap` is checked here and
+/// only here: the accumulator cannot reach it (a push is refused only *at* the depth cap, and the only way
+/// back below the cap is a pop, after which the frame on top is one that really was tracked — see
+/// `oracle_core::profiler::Profiler`'s `depth_capped`), so this is the one place its wire spelling can be
+/// exercised at all.
+#[test]
+fn each_entry_kind_is_accepted_and_the_collapsing_spelling_is_not() {
+    let (_h, mut c, _init) = booted("prof-callers-enum", two_cause_shape());
+    let r = arm_run_read_callers(&mut c, 8);
+
+    // An interrupt-entered edge — the one shape that legally carries a kind and no address.
+    let (ri, ei) = r["routines"]["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .enumerate()
+        .find_map(|(i, row)| {
+            row["callers"]
+                .as_array()
+                .expect("callers")
+                .iter()
+                .position(|e| e.get("entryKind").is_some())
+                .map(|j| (i, j))
+        })
+        .expect("an edge with an entryKind to re-spell");
+
+    for kind in ["hint", "vint", "root", "depthCap"] {
+        let mut doctored = r.clone();
+        doctored["routines"]["items"][ri]["callers"][ei]["entryKind"] = json!(kind);
+        common::schema::check_incoming(&envelope(&doctored), Some("emulator/get_profiler_frames"))
+            .unwrap_or_else(|f| panic!("{kind} is one of the four this contract ships: {f:?}"));
+    }
+    let mut collapsed = r.clone();
+    collapsed["routines"]["items"][ri]["callers"][ei]["entryKind"] = json!("interrupt");
+    common::schema::check_incoming(&envelope(&collapsed), Some("emulator/get_profiler_frames"))
+        .expect_err(
+            "`interrupt` is the collapsing spelling this amendment overruled — widening the enum later \
+             is not additive, so the value a ruling removed must be refused now",
+        );
+}
+
+/// **The four `callers*` keys arrive as a SET, and a half-served lens is refused.**
+///
+/// Adoption clause 2, proven in both directions by messages that fail: a row carrying `callers` without
+/// `callersTruncated`, a row carrying `callersTotal` alone, and — the direction that matters for an
+/// unarmed reply — **each** of the four doctored one at a time onto a reply that was never armed for the
+/// lens. `dependentRequired` ties all four together, so any one of them alone is a refusal.
+#[test]
+fn the_arming_set_is_all_four_keys_or_none() {
+    let (_h, mut c, _init) = booted("prof-callers-set", default_shape());
+
+    // Armed: dropping one of the four out of a passing reply must be refused.
+    let armed = arm_run_read_callers(&mut c, 6);
+    common::schema::check_incoming(&envelope(&armed), Some("emulator/get_profiler_frames"))
+        .expect("the undoctored armed reply is conformant");
+    for drop in CALLER_KEYS {
+        let mut doctored = armed.clone();
+        doctored["routines"]["items"][0]
+            .as_object_mut()
+            .expect("a row is an object")
+            .remove(drop);
+        let failures = common::schema::check_incoming(
+            &envelope(&doctored),
+            Some("emulator/get_profiler_frames"),
+        )
+        .expect_err(&format!(
+            "a row serving the lens without {drop} is a half-served lens and must be refused"
+        ));
+        assert!(
+            failures.iter().any(|m| m.contains(drop)),
+            "the refusal must name {drop} rather than failing for an unrelated reason: {failures:?}"
+        );
+    }
+
+    // Unarmed: adding any ONE of the four to a reply that carries none of them must be refused too.
+    c.ok("emulator/set_profiler", json!({"enabled": true}));
+    c.ok("emulator/run_frames", json!({"frames": 6}));
+    let unarmed = c.ok("emulator/get_profiler_frames", json!({}));
+    common::schema::check_incoming(&envelope(&unarmed), Some("emulator/get_profiler_frames"))
+        .expect("the unarmed reply is conformant");
+    for (key, value) in [
+        ("callers", json!([])),
+        ("callersTotal", json!(0)),
+        ("callersReturned", json!(0)),
+        ("callersTruncated", json!(false)),
+    ] {
+        let mut doctored = unarmed.clone();
+        doctored["routines"]["items"][0][key] = value;
+        common::schema::check_incoming(
+            &envelope(&doctored),
+            Some("emulator/get_profiler_frames"),
+        )
+        .expect_err(&format!(
+            "{key} alone on an unarmed row must be refused — absence and a lone key must not both be \
+             ways of saying the lens is off"
+        ));
+    }
+}
+
+/// **A per-edge `stallCycles` is refused by the closed fragment.**
+///
+/// The requesting client *declined* a per-edge stall figure on measured grounds, so its absence is a
+/// demand-side decision rather than an oversight — and the fragment records the decision by **barring** the
+/// key (`additionalProperties: false` on the edge shape) rather than by merely not declaring it. A
+/// negative control, because every other assertion in this file checks that something arrived.
+#[test]
+fn a_per_edge_stall_figure_is_refused() {
+    let (_h, mut c, _init) = booted("prof-callers-nostall", default_shape());
+    let r = arm_run_read_callers(&mut c, 6);
+    common::schema::check_incoming(&envelope(&r), Some("emulator/get_profiler_frames"))
+        .expect("the undoctored reply is conformant");
+    assert!(
+        r["routines"]["items"][0]["callers"][0]
+            .get("stallCycles")
+            .is_none(),
+        "the server does not emit one: {}",
+        r["routines"]["items"][0]
+    );
+
+    for key in ["stallCycles", "stallCyclesTotal"] {
+        let mut doctored = r.clone();
+        doctored["routines"]["items"][0]["callers"][0][key] = json!(0);
+        let failures = common::schema::check_incoming(
+            &envelope(&doctored),
+            Some("emulator/get_profiler_frames"),
+        )
+        .expect_err(&format!(
+            "an edge carrying {key} must be REFUSED, not tolerated"
+        ));
+        assert!(
+            failures.iter().any(|m| m.contains(key)),
+            "the refusal must name {key}: {failures:?}"
+        );
+    }
+}
+
+/// **`topCallers` bounds each row's list independently, is refused above the cap, and is refused when the
+/// lens is not armed.**
+///
+/// The refusal pair adoption clause 1 names. Above `limits.maxProfilerCallers` it is `-32602`, **refused
+/// and not clamped** — the `top` precedent, which exists because the legacy surface clamped and a caller
+/// could not tell a full list from a clipped one. Against a sample not armed for callers it is `-32005`
+/// (`callersNotArmed`), the `frames`/`perFrameNotArmed` rule with the lens changed and nothing else: a
+/// parameter that cannot affect the answer is worse than one that is rejected.
+///
+/// And `callersTotal` does **not** move when the list is clipped, which is what makes it the true count of
+/// distinct callers rather than the count that survived a ceiling — the cap is a reply bound, not a
+/// retention bound.
+#[test]
+fn top_callers_bounds_refuses_above_the_cap_and_refuses_when_unarmed() {
+    let (_h, mut c, init) = booted("prof-topcallers", two_cause_shape());
+    let full = arm_run_read_callers(&mut c, 8);
+
+    // The row with more than one edge is the only one a bound can say anything about.
+    let (idx, total) = full["routines"]["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .enumerate()
+        .find_map(|(i, row)| {
+            let n = u64_of(row, "callersTotal");
+            (n > 1).then_some((i, n))
+        })
+        .unwrap_or_else(|| panic!("need a row with more than one caller to bound: {full}"));
+
+    let one = c.ok("emulator/get_profiler_frames", json!({"topCallers": 1}));
+    let row = &one["routines"]["items"][idx];
+    assert_eq!(row["callersReturned"], json!(1), "bounded to one: {row}");
+    assert_eq!(
+        u64_of(row, "callersTotal"),
+        total,
+        "…and the TOTAL is unmoved: the cap decides how many are sent, not how many were kept: {row}"
+    );
+    assert_eq!(
+        row["callersTruncated"],
+        json!(true),
+        "and it says so: {row}"
+    );
+    assert!(
+        row["callers"].get("cursor").is_none() && row.get("callersCursor").is_none(),
+        "no cursor: this method accepts no continuation param (§2.4 clause b): {row}"
+    );
+    assert!(
+        row.get("callersLimit").is_none(),
+        "and no per-row limit: the applied ceiling is one number for the whole reply: {row}"
+    );
+    // The kept edge is the expensive end.
+    assert_eq!(
+        row["callers"][0]["cycles"], full["routines"]["items"][idx]["callers"][0]["cycles"],
+        "a truncated edge list keeps the most expensive edges"
+    );
+
+    // Refused above the cap, never clamped.
+    let cap = init["limits"]["maxProfilerCallers"]
+        .as_u64()
+        .expect("the cap is advertised");
+    let e = c.err(
+        "emulator/get_profiler_frames",
+        json!({"topCallers": cap + 1}),
+    );
+    assert_eq!(e["code"], json!(-32602), "refused, never clamped: {e}");
+
+    // Refused with a reason when the sample was not armed for callers.
+    c.ok("emulator/set_profiler", json!({"enabled": true}));
+    c.ok("emulator/run_frames", json!({"frames": 4}));
+    let e = c.err("emulator/get_profiler_frames", json!({"topCallers": 2}));
+    assert_eq!(e["code"], json!(-32005), "{e}");
+    assert_eq!(
+        e["data"]["reason"],
+        json!("callersNotArmed"),
+        "the discriminant a client branches on, not the message: {e}"
+    );
+    // …and the sample itself still answers. The refusal is about the parameter, not the read.
+    c.ok("emulator/get_profiler_frames", json!({}));
+}
+
+/// **A caller's name is the bare label and its displacement an integer beside it** — §4's rule, one level
+/// down, with the caveat that makes this field different from the row's.
+///
+/// The edge whose caller is the frame the sample *opened* on is keyed at whatever PC retired first, which
+/// is **mid-routine**. Its `callerAddr` is real and is where the call came from, but it is not an entry
+/// point — so it resolves at a **non-zero `callerDisp`**, which is the ordinary answer here rather than a
+/// failed lookup. A client that assumes every caller address resolves like a row key mis-renders exactly
+/// this one edge per sample, which is why the contract states it and why this test pins it.
+#[test]
+fn a_caller_carries_its_bare_label_and_the_inferred_root_carries_a_displacement() {
+    let (_h, mut c, _init) = booted("prof-callers-symbols", default_shape());
+    let lst = std::env::temp_dir().join(format!(
+        "ae-prof-callers-{}-{:?}.lst",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::write(
+        &lst,
+        "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ EntryPoint : 1FC C |
+ Prof_Leaf : 300 C |
+
+    2 symbols
+    0 unused symbols
+",
+    )
+    .expect("write the listing");
+    c.ok(
+        "emulator/load_symbols",
+        json!({"path": lst.to_str().expect("utf-8")}),
+    );
+
+    let r = arm_run_read_callers(&mut c, 6);
+    let leaf = r["routines"]["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|row| row["addr"] == json!("0x00000300"))
+        .unwrap_or_else(|| panic!("the fixture's leaf is a row: {r}"));
+    let edge = &leaf["callers"][0];
+
+    assert_eq!(
+        edge["callerName"],
+        json!("EntryPoint"),
+        "the leaf is called from the main loop, named by the listing: {edge}"
+    );
+    let name = edge["callerName"].as_str().expect("a name");
+    assert!(
+        !name.contains('+') && !name.contains('$'),
+        "the BARE label — the composite is the client's to render: {edge}"
+    );
+    assert!(
+        u64_of(edge, "callerDisp") > 0,
+        "the sample opened mid-routine, so its address is real and is NOT an entry point: {edge}"
+    );
+    assert!(
+        edge.get("entryKind").is_none(),
+        "it names a caller, so it carries no kind — the biconditional, on the wire: {edge}"
+    );
+
+    // The other sense of *root*, on the same reply and not the same fact: the row that IS the opening
+    // frame has an edge saying no call into it was ever observed.
+    let root_edges: Vec<&Value> = r["routines"]["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .flat_map(|row| row["callers"].as_array().expect("callers"))
+        .filter(|e| e["entryKind"] == json!("root"))
+        .collect();
+    assert_eq!(
+        root_edges.len(),
+        1,
+        "exactly one frame was opened on rather than called into: {root_edges:?}"
+    );
+    assert!(
+        root_edges[0].get("callerAddr").is_none(),
+        "and `root` means there is no address to give, never a fabricated 0x0: {}",
+        root_edges[0]
+    );
+
+    let _ = std::fs::remove_file(&lst);
 }
 
 // --- determinism -----------------------------------------------------------------------------------------
