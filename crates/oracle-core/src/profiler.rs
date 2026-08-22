@@ -122,15 +122,16 @@
 //! loop's retire hook is the empty default.
 
 use crate::bus::{BusEvent, BusEventSink, BusOp, StepRetire};
-use crate::m68000::decode::{control_flow_of, ControlFlow};
+use crate::m68000::decode::{control_flow_of, return_pop_bytes, ControlFlow};
 use std::collections::{BTreeMap, VecDeque};
 
-/// The bytes an `RTS` pops: the 32-bit return address a `JSR`/`BSR` pushed.
-const RTS_POP: u32 = 4;
-/// The bytes an `RTR` pops: the saved CCR word plus the 32-bit return address.
-const RTR_POP: u32 = 6;
+// The bytes each return opcode pops now come from [`return_pop_bytes`], next to the `control_flow_of`
+// classifier whose classes select them. They were three private constants here until the Aether server's
+// `step_over`/`step_out` became a second consumer of the same shadow-stack rule: one definition, or two that
+// can drift silently while both look right. `RTE_POP` keeps a name because the interrupt path matches a
+// constant frame rather than a variable opcode.
 /// The bytes an `RTE` pops: the 68000's standard exception frame (SR word + 32-bit PC).
-const RTE_POP: u32 = 6;
+const RTE_POP: u32 = return_pop_bytes(0x4E73);
 /// The deepest the shadow stack may go, **derived rather than picked**: the 68000's work RAM is 64 KiB
 /// (`$FF0000-$FFFFFF`) and the smallest frame a call can push is a 4-byte return address, so no program
 /// whose stack lives in RAM can nest more than this many calls without overrunning it. A correct program
@@ -148,8 +149,8 @@ pub const LEVEL_HINT: u8 = 4;
 /// Level 6 — VBlank.
 pub const LEVEL_VINT: u8 = 6;
 
-/// The `RTR` opcode — the one return whose frame is 6 bytes rather than 4.
-const OPCODE_RTR: u16 = 0x4E77;
+// `OPCODE_RTR` lived here to select the 6-byte frame from the 4-byte one. `return_pop_bytes` makes that
+// selection itself, from the opcode, so the constant no longer had a reader.
 
 /// One accumulator's worth of counters. Every field is a raw, undivided sample total; the division into
 /// per-frame figures happens once, in [`Profiler::report`].
@@ -745,11 +746,7 @@ impl Profiler {
     /// unwound as ABANDONED — cycles kept, calls not, and counted in [`Report::abandoned_frames`] so the
     /// recovery is visible rather than silent.
     fn close_routine(&mut self, opcode: u16, sp_after: u32, supervisor: bool) {
-        let pop = if opcode == OPCODE_RTR {
-            RTR_POP
-        } else {
-            RTS_POP
-        };
+        let pop = return_pop_bytes(opcode);
         let target = self.stack.iter().rposition(|f| {
             matches!(f.kind, FrameKind::Routine { .. })
                 && f.entry_sp.wrapping_add(pop) == sp_after
