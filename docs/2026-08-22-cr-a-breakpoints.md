@@ -1051,13 +1051,17 @@ they had given us. That was still short. Enumerated firsthand across **all** of 
 | `raster_source_gate.py` | `:161` | `:131`, `:173` |
 | `snapshot_poison_gate.py` | `:62` | `:68` |
 
-**17 call sites across 5 files — 6 adds, 11 clears** — against the "2 files, 3 sites" both lanes were
-working from. Three consequences, and the first is the one that matters for adoption:
+**Adds (6): `:85`, `:557`, `:220`, `:221`, `:161`, `:62`. Clears (10): `:100`, `:548`, `:567`, `:571`,
+`:573`, `:219`, `:258`, `:131`, `:173`, `:68`.** Sixteen call sites across five files, against the
+"2 files, 3 sites" both lanes were working from — a 5.3× widening of the evidence base. *(Totals are
+written with their elements adjacent deliberately; see the method note below for why this paragraph in
+particular earned that.)* Three consequences, and the first is the one that matters for adoption:
 
 1. **The zero-cost finding holds, and now across the whole consumer surface rather than two files.**
-   **11 of 11 clears are `{all: true}`. 6 of 6 adds pass `{addr}` and nothing else. There is not one
-   address-keyed clear anywhere in `tools/`.** §2.2's conclusion was reached from a 3-site sample and
-   survives a 17-site census unchanged — which is a much stronger basis than it had.
+   **Every one of the 10 clears listed above passes `{all: true}`; every one of the 6 adds passes
+   `{addr}` and nothing else. There is not one address-keyed clear anywhere in `tools/`.** §2.2's
+   conclusion was reached from a 3-site sample and survives the full census unchanged — a much
+   stronger basis than it had.
 
 2. **`raster_frame_epoch_probe.py:220-221` arms TWO breakpoints at once**, then clears all at `:258`.
    This is the **first identified multi-breakpoint consumer**, and neither lane knew it existed while
@@ -1066,6 +1070,12 @@ working from. Three consequences, and the first is the one that matters for adop
    the conflation §5.2 argues against. §5.2 was adopted on a hypothetical; it now has an instance.
    It also raises the stakes on the REQUIRED fired-handle field (ruling 3): at two armed breakpoints,
    *"wrong breakpoint"* versus *"right breakpoint, wrong PC"* stops being diagnostic nicety.
+   **The consumer lane's own addition, and it is the sharpest point in this section: the two
+   breakpoints sit on DIFFERENT HANDLERS.** So a misattribution there does not yield a nonsense answer
+   that a reader would question — it yields **a plausible one, in the other handler's frame.** That is
+   the same failure class as the det-mode false-pass in §6.4, arriving from the attribution side
+   rather than the precision side, and it is the strongest single argument in this CR for why the
+   fired handle is REQUIRED rather than optional.
 
 3. **`parallax_hscroll_probe.py` calls clear-all five times against a single add**, at `:548` before
    arming and at `:567`/`:571`/`:573` on what read as exit and error paths. That is **direct empirical
@@ -1077,8 +1087,28 @@ working from. Three consequences, and the first is the one that matters for adop
 enumerated over *"the two gate scripts"* — the files the conversation had been about — while phrasing
 the result as a fact about `tools/`. Neither was careless; the scope was inherited from the discussion
 and never restated as a choice, so **it was never a parameter either side could think to vary.** The
-correcting command was one loop over `git ls-tree` and it changed the evidence base by 5.7×. This is
-precisely the shared-frame pattern proposed upstream to empyrean the same afternoon, caught here by a
-consumer choosing to re-derive a claim made about their own code instead of accepting a flattering
-correction. **Recorded because the adjudicator should know the CR's consumer evidence was wrong twice
-before it was right, and should weigh §2.2 as a census rather than as testimony.**
+correcting command was one loop over `git ls-tree`. This is precisely the shared-frame pattern proposed
+upstream to empyrean the same afternoon, caught here by a consumer choosing to re-derive a claim made
+about their own code instead of accepting a flattering correction.
+
+**The consumer lane's refinement, which is the part that generalizes: verifying a claim ADOPTS ITS FRAME
+unless you deliberately widen it.** They re-derived our claim and reproduced our scope anyway, because
+they checked *whether the statement about their code was true* rather than *whether it was complete*.
+Those are different questions and only the first is what verification naturally asks — so **a
+verification pass is not a frame change, and the shared-frame bar is not discharged by having someone
+check your work.**
+
+**A third error, arithmetic, recorded because it happened inside the correction whose own subject was
+census rigor.** This section first read "17 call sites… 11 clears" while the table beside it enumerated
+10. The table was right. The cause was not drift: **the 17 was a count of `grep` output rows**, one of
+which — `raster_source_gate.py:33` — is a **prose comment** mentioning `breakpoint_add`, not a call
+site. That is the same error the requesting overseer made in this arc's predecessor, where a fragment
+count included a `$comment` key: *enumerating the rows a tool printed rather than the things those rows
+represent.* Twice in two days, same seat, same shape — which makes it a mechanism problem, not a
+care problem. **The guard is applied above: a count whose elements are enumerated beside it cannot
+drift**, so this section's totals are written with their line numbers listed. A later edit wanting a
+bare total here should delete the total instead.
+
+**Recorded because the adjudicator should know this CR's consumer evidence was wrong THREE times before
+it was right — twice on scope, once on arithmetic — and should weigh §2.2 as a census rather than as
+testimony.**
