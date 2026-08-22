@@ -294,10 +294,28 @@ fn every_mcp_tool_property_is_declared_by_its_contract_fragment() {
     //
     // **The ruling is direction-only.** camelCase is the stated convention and D14 makes the schema
     // normative for wire shapes, so §6 does not move. The load-bearing half is the migration constraint:
-    // server and client move together or not at all, via a dual-accept transition, and the scheduling is
-    // the owner's call. `eecce95`'s own words: *"Nothing in the ruling changes code today."* That is why
-    // this is registered rather than fixed here — neither artifact is ours, and unilaterally renaming
-    // either half is the breakage the inversion was caught to prevent.
+    // server and client move together or not at all, and the scheduling is the owner's call. `eecce95`'s
+    // own words: *"Nothing in the ruling changes code today."* That is why this is registered rather than
+    // fixed here — neither artifact is ours, and unilaterally renaming either half is the breakage the
+    // inversion was caught to prevent.
+    //
+    // **The migration mechanism was REVISED after the above was written, and the revision is the part
+    // that matters — do not restore the earlier wording from a stale doc.** The first ruling said
+    // *dual-accept first, retire the alias last*. Measuring both servers inverted it, because they have
+    // opposite failure modes for a stale spelling. Ours **refuses** an unknown param with `-32602`
+    // naming the key and listing the accepted set, at the single dispatch choke *before the handler runs*
+    // (`engine.rs:4290`, called from `:999`). The legacy server **ignores** it: `ControlSocket.cpp:127`
+    // `getInt(k, d = 0)` and `:149` `getU32` are defaulting accessors with no closure anywhere. So
+    // retiring the alias *on the legacy server* silently hands `30000` to every caller still sending
+    // `timeout_ms` — an aeon gate that believes it waits 120s waits 30, and still pastes a verdict into
+    // merge evidence. **Revised ruling (empyrean, bar 15): never retire the alias on the legacy server —
+    // retire it by REPLACING the server**, where closure turns each stale caller into a named error at
+    // its own call site. Generalised: *when two implementations of one contract disagree about unknown
+    // keys, sequence the cutover onto the strict one* — a permissive implementation can only ever report
+    // success. Corollary, found the same day: **dual-accept does not exist on the SEND side.** You cannot
+    // accept both spellings of a key you are *sending*, so it covers exactly zero of the param sites
+    // pinned below; it is a remedy for *results* only. That is why the mechanism clause above is now
+    // silent on dual-accept rather than recommending it.
     //
     // **Registered, not silenced**, and the registry is anti-rot in both directions by using `assert_eq!`
     // on the whole set rather than subtracting an allowlist:
