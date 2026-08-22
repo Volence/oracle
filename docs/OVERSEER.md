@@ -55,6 +55,19 @@ with tools that then exist).
    in-row vs single-routine method, per-edge `callsTotal`, absence-means-interrupt-entry).
    Their answer gets committed as the demand-side anchor before adjudication.
 
+**⏸ CR-28 IMPLEMENTATION PAUSED MID-FLIGHT (2026-08-21 afternoon, owner's usage limit, resets
+7pm ET):** the implementer died on the API limit after committing 2 of ~5 stages on branch
+`cr28-serve`: `07eb724` (schema re-vendor from empyrean `callers-amendment` `7c4b9fc`) +
+`b096370` (core accumulator: second map keyed (callee, caller)). Uncommitted `engine.rs` WIP
+(the Aether surface, mid-edit — last words "profiler_row and the edge emitter") lives in its
+worktree `.claude/worktrees/agent-ab2d0e3a4885815cb` — **do not prune that worktree**. Resume
+path A (preferred, this session only): SendMessage the same agent after the reset — it keeps
+its context and its worktree. Resume path B (any session): commit the worktree's engine.rs
+diff as WIP on `cr28-serve`, then fresh-dispatch from the branch + the CR (`cr28-callers`
+`22d57ca`) + ruling (`ruling-cr28` `52ddf03`) + amendment (empyrean `7c4b9fc`). Contract side
+is FINAL and fully committed — only server code remains. Then: merge window (code + amendment
++ CR + ruling, both repos, one window), ship notice to aeon.
+
 **Incoming (registered 2026-08-21, no action until triggered):** the wiki-emulator PoC — empyrean's
 spec `adfb0f1` (`docs/superpowers/specs/2026-08-19-wiki-emulator-poc-design.md`, updated `04c35cb`)
 proposes a thin `oracle-wasm` crate over an UNTOUCHED `oracle-core` plus a pad-reactive fixture ROM.
