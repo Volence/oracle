@@ -765,3 +765,315 @@ string echoed is **the caller's spelling, not normalised**, so `set_layer_enable
 `{"layer":"a"}`. If the rows adopt the canonical-only enum, that echo becomes a non-issue; if they adopt the
 aliases, the echo needs a normalisation rule or the reply teaches clients that `a` is a layer name.
 
+
+---
+
+# SECONDARY — observed implementation shape, offered as transcription material
+
+## NOT a proposed fragment and NOT a spec claim
+
+**Read this paragraph before the tables.** What follows is a **transcription of what a handler emits**,
+nothing more. It is offered as raw material for the contract steward, who decides what becomes spec. It is
+**not** a fragment, **not** a proposal, and **not** an assertion that any of these shapes is correct,
+intended, or worth preserving. Several of the shapes below are ones we would argue against carrying forward,
+and where that is true this document says so — but the decision is the steward's, not ours.
+
+**And the eight are not our server's.** None of `z80_registers`, `read_vdp_registers`, `read_vsram`,
+`object_slot`, `object_list`, `player_state`, `call_stack` or `log_tail` is in the reference server's
+`METHODS` (`crates/oracle-aether/src/engine.rs:200-423`); all eight answer `-32601`. The shapes below are
+read from the **legacy C++ server** in `/home/volence/sonic_hacks/oracle-old`, which is the implementation
+the §6 rows were transcribed from. All anchors in this section are relative to that tree. `ok` is stripped
+from every reply before it reaches the wire (`linux-port/gui/ControlSocket.cpp:205` and `:2823`), so the key
+sets below are post-strip; success is signalled by the presence of JSON-RPC `result`.
+
+### Two of the eight do not exist at all
+
+**`emulator/read_vdp_registers`** and **`emulator/read_vsram`** are **absent from the legacy server too**.
+A repo-wide search for either literal returns zero hits in any file type. Neither is in `Handlers()`
+(`linux-port/gui/ControlSocket.cpp:2632-2685`), so `AdvertisedMethods()` never lists them and `RunMethod`
+answers `-32601` (`linux-port/gui/ControlSocket.cpp:2800`).
+
+**So §6 lines 1137 and 1138 describe methods that no implementation on this bus has ever served.** They are
+not "unfragmented because the server is deferred" — they are unfragmented because **there is nothing anywhere
+to transcribe**. The steward should know that before treating them as a transcription backlog item: they are
+a design task, not a documentation task.
+
+VSRAM *is* reachable on the legacy server, but never as bytes and never as its own method: `state_hash`
+folds it into an FNV-1a digest (`linux-port/gui/ControlSocket.cpp:2393-2406`, emitting a `vsram` **hash**
+key at `:2406`) and the GUI memory editor exposes it as a panel region
+(`linux-port/gui/main_gui.cpp:4755`). The VDP-memory methods that do exist are
+`read_vram`/`write_vram`/`read_cram`/`write_cram` (`linux-port/gui/ControlSocket.cpp:2655-2658`). There is
+no register-file read of any kind on either server.
+
+**On the reference server the same information is already reachable** — `emulator/read` with
+`space: "vsram"` (`crates/oracle-aether/src/engine.rs:1663`, spaces parsed at `engine.rs:3998-4006`), a
+live, fragmented method. So `read_vsram` may be a row to **retire** rather than write; that is the steward's
+call, and it is raised here because writing a fragment for it would otherwise be the default.
+
+### 1. `emulator/z80_registers` — `linux-port/gui/ControlSocket.cpp:662-686`
+
+Takes no params (the signature discards the `JsonObj`, `:662`). Flat object, **17 keys, all unconditional**
+once the handler proceeds.
+
+| keys | type | format | anchor |
+|---|---|---|---|
+| `pc`, `sp`, `af`, `bc`, `de`, `hl`, `ix`, `iy`, `af2`, `bc2`, `de2`, `hl2` | string | `0x%04X` | `:668-679` |
+| `i`, `r` | string | `0x%02X` | `:680-681` |
+| `im` | number | unsigned | `:682` |
+| `iff1`, `iff2` | boolean | | `:683-684` |
+
+Every register is a **hex string**; `im` is the only numeric register field. No flags decomposition, no
+nested structure. Only failure path: `"no Z80"` (`:665`) → `-32000`. **Note it has no `rom loading` guard**,
+unlike `z80_read`/`z80_write` — it will answer mid-load.
+
+### 2–3. `read_vdp_registers`, `read_vsram` — do not exist. See above.
+
+### 4. `emulator/object_slot` — `linux-port/gui/ControlSocket.cpp:966-1083`
+
+**Params:** `slot` (int, default 0, `:973`). Range is engine-dependent — `0-65` for `s4_engine`, `0-107`
+otherwise (`:972`); out of range → `-32004` (`:974-980`).
+
+**The shape depends on an auto-detected engine (`DetectSST`, called at `:972`) and THERE IS NO `engine` KEY
+IN THE REPLY.** A client must discriminate on the presence of `pool`/`code_addr` (s4) versus `id`
+(sonic_hack). This is the worst property in the secondary set and we would argue against transcribing it
+as-is: it makes the reply's own shape undiscoverable from the reply. It is also **inconsistent with
+`player_state` below**, which emits `engine` on one branch and not the other — so the two decoder methods do
+not even agree with each other on how to signal the engine.
+
+**Branch A — s4, inactive** (early return `:993`), **4 keys**: `slot` (number, `:990`), `addr` (string
+`0x%08X`, `:990`), `pool` (string, `:991`), `active` (bool `false`, `:992`).
+
+**Branch B — s4, active.** The 4 above with `active: true`, plus:
+
+| key | type | presence | anchor |
+|---|---|---|---|
+| `code_addr` | string `0x%04X` | always in-branch | `:995` |
+| `class` | string | **conditional** — only if `S4ClassName(ctx, codeAddr)` is non-empty | `:997` |
+| `mapping_symbol` | string | **conditional** — symbols loaded **and** `mapPtr != 0` **and** `mapPtr < 0x400000` **and** a nearest symbol within `0x10000` found | `:1019-1023` |
+| `mapping_ptr` | string `0x%08X` | always | `:1024` |
+| `art_tile` | string `0x%04X` | always | `:1025` |
+| `priority` | number | always | `:1026` |
+| `render_flags` | **string** `0x%02X` | always | `:1027` |
+| `collision_response` | string `0x%02X` | always | `:1028` |
+| `width`, `height` | number | always | `:1029` |
+| `x`, `y` | number, signed | always | `:1030` |
+| `xvel`, `yvel` | number, signed | always | `:1031` |
+| `anim`, `anim_frame` | number | always | `:1032` |
+| `mapping_frame` | number | always | `:1033` |
+| `subtype` | number | always | `:1034` |
+| `status` | **string** `0x%02X` | always | `:1035` |
+
+**Branch C — sonic_hack, inactive** (early return `:1058`), **4 keys**: `slot` (number), `addr` (string
+`0x%08X`), `id` (number), `active` (bool `false`) — `:1056-1057`. **No `pool` key**; that absence is the
+discriminator.
+
+**Branch D — sonic_hack, active.** The 4 above with `active: true`, plus `class` and `mapping_symbol`
+(**both conditional on the same gate and emitted in one statement, so both-or-neither**, `:1066-1069`; note
+`class` here is a **trimmed** symbol with a leading `Map_`/`Obj_` stripped, unlike branch B's raw
+`S4ClassName`), then `mapping_ptr` (`:1072`), `art_tile` (`:1073`), `render_flags` (`:1074`),
+`collision_response` (`:1075`), `width`/`height` (`:1076`), `x`/`y` (`:1077`), `xvel`/`yvel` (`:1078`),
+`anim`/`anim_frame` (`:1079`), `subtype` (`:1080`).
+
+**Branch-only keys.** s4 only: `pool`, `code_addr`, `priority`, `mapping_frame`, `status`. sonic_hack only:
+`id`. Everything else is common — but **`class` means two different things across the branches** (raw vs
+trimmed) under one key name.
+
+Errors: `"rom loading"` (`:968`) → `-32010`; `"slot out of range"` (`:974-980`) → `-32004`; **`"no 68k RAM"`
+(`:970`) → `-32602`**, because that string matches none of `CodeForMessage`'s substrings — in particular it
+does **not** match `"no 68000"`. A missing-device condition is reported as invalid-params. That is a bug in
+the legacy server, reported rather than smoothed.
+
+### 5. `emulator/object_list` — `linux-port/gui/ControlSocket.cpp:1085-1142`
+
+**Params: none** (the signature discards the `JsonObj`, `:1085`). No `limit`, no `cursor`, no filter.
+
+**Top level: exactly ONE key** (`:1141`): `objects` — array, always present, possibly empty. **No `count`,
+no `engine`, no `maxSlots`, and none of §2.4 clause (a)'s `total`/`returned`/`truncated`.** The array is
+unbounded by construction (≤ 66 or ≤ 108 entries; only active slots appear, `continue` on `codeAddr == 0` at
+`:1104` or `id == 0` at `:1127`, so slot numbers are sparse and **presence *is* activity** — there is no
+`active` key here).
+
+**Per-item: 5 keys, engine-dependent, again with no `engine` key to say which:**
+
+- s4 (`:1110-1112`): `slot` (number), `pool` (string), `x`, `y` (numbers, signed), `class` (string).
+- sonic_hack (`:1134-1136`): `slot` (number), `id` (number), `x`, `y` (numbers, signed), `class` (string).
+
+**`class` is always present but may be `""`** — unlike `object_slot`, where the same fact is spelled as an
+*omitted key*. One datum, two absence conventions, on two methods in the same family. If these rows are ever
+written that inconsistency should be resolved, not transcribed.
+
+Errors: `"rom loading"` (`:1087`) → `-32010`; `"no 68k RAM"` (`:1089`) → `-32602`, same misclassification.
+
+### 6. `emulator/player_state` — `linux-port/gui/ControlSocket.cpp:1147-1286`
+
+**Params: none** (`:1147`). **The top-level key set differs by engine, and this is the biggest shape hazard
+in the eight:**
+
+- **s4 branch** (`:1219-1220`), 3 keys: `engine` (string, literal `"s4_engine"`), `player_1` (object),
+  `player_2` (object).
+- **sonic_hack branch** (`:1285`), 2 keys: `main` (object), `sidekick` (object). **There is NO `engine` key
+  on this branch.**
+
+So `engine` is present on one branch and absent on the other, and a client that branches on `engine` will
+mis-handle every sonic_hack reply. The only reliable discriminator is `player_1` vs `main`. We would flag
+this as a defect rather than a shape to preserve.
+
+**Nested player object — s4, inactive** (`renderS4`, early return `:1171`), 2 keys: `active` (bool `false`),
+`addr` (string `0x%08X`).
+
+**Nested player object — s4, active** (`:1194-1206`), **12 keys, all unconditional in-branch**: `active`
+(bool `true`), `addr` (string), `class` (string — **always present, possibly `""`**), `x`, `y`, `xvel`,
+`yvel` (numbers, signed), `anim` (number), `mapping_frame` (number), `subtype` (number), `render_flags`
+(**number, decimal `%u` — not a hex string, unlike `object_slot.render_flags` at `:1027` on the same
+engine**), `status` (object).
+
+`status` sub-object: exactly 2 keys, `raw` (number) and `bits` (array of string) (`:1204`). `bits` lists
+only set bits (`bitsList`, `:1154-1164`), so it is frequently empty. Bit names (`stBits`, `:1188-1191`,
+index 0–7): `b0`, `xflip`, `yflip`, `in_air`, `rolling`, `on_object`, `pushing`, `underwater`.
+
+**Nested player object — sonic_hack, inactive** (`renderPlayer`, early return `:1227-1232`), 2 keys:
+`active` (bool `false`), `addr` (string `0x%08X`).
+
+**Nested player object — sonic_hack, active** (`:1257-1272`), **22 keys, all unconditional in-branch**:
+`active` (bool `true`), `addr` (string), `id` (number), `x`, `y`, `xvel`, `yvel` (numbers, signed),
+`inertia` (number, signed), `angle` (number), `flip_angle` (number), `status`, `status2`, `status3`
+(objects), `air_left`, `move_lock`, `invulnerable_time`, `invincibility_time`, `speedshoes_time`,
+`spindash`, `shield`, `layer` (numbers).
+
+Each status object has the same 2-key `{raw, bits}` shape. Bit-name tables (`:1250-1252`):
+
+- `status`: `left`, `air`, `ball`, `onobject`, `rolljump`, `pushing`, `water`, `bit7`
+- `status2`: `s2b0`, `s2b1`, `s2b2`, `s2b3`, `s2b4`, `doublejump`, `speedshoes`, `nofriction`
+- `status3`: `lock_motion`, `lock_jumping`, `flip_turned`, `stick_convex`, `spindash`, `jumping`, `b6`, `b7`
+
+**The s4 and sonic_hack bit names do not match spelling-for-spelling** (`in_air`/`air`,
+`on_object`/`onobject`), so cross-engine bit-name comparison is unsafe. Under §11.18 these are emitted
+enums and cannot be widened later — a reason to think hard before any of them becomes contract, and a reason
+`status2`'s placeholder names (`s2b0`…`s2b4`) should not be frozen at all.
+
+Errors: `"rom loading"` (`:1149`) → `-32010`; `"no 68k RAM"` (`:1151`) → `-32602`, same misclassification.
+
+### 7. `emulator/call_stack` — `linux-port/gui/ControlSocket.cpp:1291-1347`
+
+**Params:** `max_bytes` (int, **default 256**, `:1297`), `max_frames` (int, **default 24**, `:1298`).
+Neither is validated or clamped. `max_bytes` is read unsigned, so a **negative value becomes ~4 billion** and
+the scan runs until `max_frames` is satisfied, reading far past the stack.
+
+**Note the parameter names.** §6 line 1373 spells them `maxBytes`/`maxFrames`; the implementation reads
+`max_bytes`/`max_frames`. **The row and the only implementation disagree on the parameter names** — a
+divergence the audit did not catch, and one that §2.5's params closure would turn from a silently-ignored
+param into a hard `-32602`.
+
+**Top level: exactly 3 keys, all always present** (`:1344-1346`): `pc` — **string** `0x%08X` (`:1342`,
+emitted `:1344`); `sp` — **string** `0x%08X` (`:1343`, emitted `:1345`); `frames` — array, may be empty
+(`:1346`).
+
+**Per-frame: exactly 4 keys, all always present** (`:1338-1340`):
+
+| key | type | note |
+|---|---|---|
+| `sp_offset` | number | byte offset from SP, always even (the loop steps `off += 2`, `:1330`) |
+| `return` | string, `0x%06X` | **six** hex digits — **inconsistent with `pc`/`sp`'s eight in the same reply** |
+| `symbol` | string | **always present, possibly `""`** when no symbols are loaded or nothing lies within `0x1000` (`:1334-1336`) |
+| `disp` | number | displacement from `symbol`; `0` when `symbol` is `""` |
+
+**The frames are heuristic, not an unwind.** `looksLikeReturn` (`:1300-1326`) keeps a stack word only if it
+is even, non-zero, below `romBytes`, and preceded 2/4/6 bytes earlier by something decoding as `BSR`
+(`0x61xx`) or `JSR` (`0x4Exx`). Frames may be spurious or missing, `sp_offset` is not a frame-chain link,
+and **there is no confidence field and no `caveat`**. This is §2.4's exact use case — an answer weaker than
+its shape suggests — and the method emits nothing to say so. If this row is ever fragmented we would argue
+it needs `caveat` declared *and* emitted.
+
+Errors: `"rom loading"` (`:1293`) → `-32010`; `"missing 68k/cart/ram"` (`:1295`) → `-32602`, the same
+classifier miss as `object_slot`'s.
+
+### 8. `emulator/log_tail` — `linux-port/gui/ControlSocket.cpp:1838-1887`
+
+**Params:** `since` (uint, default 0, `:1842`), `limit` (uint, **default 100**, `:1843`). **No upper clamp
+on `limit`** — `limit: 1000000` is accepted and returns the whole ring.
+
+**Top level: exactly 2 keys, both always present:** `token` — number (`:1841`, emitted `:1852`, from
+`GetEventLogLastModifiedToken()`, intended to be handed back as the next call's `since`); `entries` — array,
+**newest-first** (comment `:1854-1856`), possibly empty (`:1885`).
+
+**Per-entry: exactly 4 keys, all strings, all always present** (`:1878-1883`):
+
+| key | type | note |
+|---|---|---|
+| `level` | string | **exact value set `debug`, `info`, `warning`, `error`, `critical`** (switch `:1869-1877`). `"info"` is both the initialiser (`:1868`) and the `default:` fallthrough, so **an unmapped level silently reports as `info`** |
+| `source` | string | wide→ASCII via `wToStr` (`:1858-1862`) |
+| `text` | string | same |
+| `time` | string | same; a formatted string, **not** a numeric timestamp |
+
+`wToStr` **replaces every character outside `[0x20, 0x7F)` with `?`**. Non-ASCII log text is lossily
+mangled, not escaped. A row pinning these as strings without saying so would be pinning a lossy channel.
+
+**This bears directly on §10's open `token`/`since` question** (`contract/protocol.md:2188`, `:2295`,
+`:2592`). Two findings:
+
+1. **`since` is a count heuristic, not a watermark.** The arithmetic at `:1844-1849` narrows `want` to
+   `currentToken - since` when `0 < since <= currentToken`, but the loop then takes the **first `want`
+   entries of the newest-first list** (`:1866`) — it never filters per-entry by token. If entries were
+   evicted from the ring between polls, the result can **skip or repeat** entries, and the caller cannot
+   tell.
+2. **There is no `dropped`, `truncated` or `total` key**, so that gap is silent. The only signal is `token`
+   jumping by more than the number of entries returned. That is §2.4 clause (a)'s failure mode exactly — a
+   partial list a client can mistake for a complete one.
+
+**The source does not settle** exactly how `GetEventLogLastModifiedToken` relates to ring eviction; that
+would need the Exodus `System` class's event-log ring implementation, which was not opened. Naming it
+matters because the answer decides whether `since` can be repaired into a real watermark or whether the row
+needs a different continuation design.
+
+Error: `"system not wired"` (`:1840`) → `-32000` (matches `"not wired"`).
+
+### Cross-cutting properties of the legacy replies, for whoever transcribes them
+
+1. **Four of these methods return hand-built raw JSON strings** rather than `JsonWriter` output:
+   `breakpoint_list` (`:831`), `object_list` (`:1141`), `player_state` (`:1219`, `:1285`), `call_stack`
+   (`:1344`). They are re-parsed by `json::parse` in the dispatcher (`:2822`), so a malformed fragment
+   surfaces as a **`-32603`** from the transport rather than as a handler error. Items are formatted into
+   fixed buffers — `char entry[256]` (`:1108`, `:1337`), `char out[512]` (`:1193`), `char out[1024]`
+   (`:1256`) — so a pathologically long `class` symbol could truncate mid-JSON. Not reachable with ordinary
+   symbol lengths, and **the source does not bound `class`'s length**, so it cannot be ruled out from source
+   alone.
+2. **Hex-versus-number typing is inconsistent for the same concept across handlers**: `render_flags` is a
+   hex **string** in `object_slot` (`:1027`, `:1074`) and a decimal **number** in `player_state` (`:1204`);
+   `call_stack.return` is `0x%06X` while `pc`/`sp` in the same reply are `0x%08X`. Any fragment written from
+   these replies would freeze the inconsistency.
+3. **`"no 68k RAM"` and `"missing 68k/cart/ram"` both fall through `CodeForMessage` to `-32602`**
+   (`:211-222`), although they are wiring/availability failures that belong with the `-32000` family. If a
+   client switches on error codes, this is a live misclassification on three of the six methods above.
+4. **`z80_read`'s reply echoes `bytes`; `z80_write`'s does not** — it returns only `addr` and `len`
+   (`:748`). Noted because D-10 is about that pair and the asymmetry is not in the row.
+
+---
+
+## Where the source does not settle things
+
+Recorded honestly rather than filled in:
+
+1. **`breakpoint_list`'s ordering across calls.** `GetBreakpointList`
+   (`oracle-old/ExodusSDK/Processor/Processor.cpp:371-376`) copies the `std::vector` into a `std::list` in
+   vector order, and `DeleteBreakpoint` erases from the middle
+   (`oracle-old/ExodusSDK/Processor/Processor.cpp:503`), so order is *incidentally* insertion order — but
+   nothing promises it, and `LockBreakpoint`'s `continue`
+   (`oracle-old/linux-port/gui/ControlSocket.cpp:821`) can silently skip an entry under concurrent GUI
+   access with no indication in the reply. Since replies carry no id, index-as-identity is unusable anyway.
+   **The source does not settle this**; a stated ordering guarantee in the row would.
+2. **Which engine `DetectSST` picks for a given ROM.** The reply-shape consequences are catalogued above,
+   but the detection predicate itself was not read. **The source does not settle this** from what was
+   examined; reading `DetectSST`, `S4ClassName` and `S4PoolName` in
+   `oracle-old/linux-port/gui/ControlSocket.cpp` would.
+3. **Whether `breakpoint_clear` can race a concurrent GUI delete.** At
+   `oracle-old/linux-port/gui/ControlSocket.cpp:851-856` the code locks, reads, unlocks, and only then calls
+   `DeleteBreakpoint(bp)` outside the lock. **The source does not settle** whether `Processor`'s debug mutex
+   makes that safe; the full `DeleteBreakpoint` body plus `Processor.cpp`'s locking discipline would.
+4. **How `log_tail`'s token relates to ring eviction** — see §8 above.
+5. **What the reference server will do when these families land.** Nothing here predicts it. Every "(A)"
+   answer in this document is an absence, and an absence constrains nothing.
+
+Nothing in this document was checked against a running emulator, and no `mcp__oracle__*` tool was called. It
+is a source reading end to end, on the same discipline the audit itself adopted — *"nothing in this pass was
+checked against a running Oracle, deliberately"*
+(`empyrean/docs/2026-08-22-protocol-schema-audit.md` §5, blob `864276db`).
