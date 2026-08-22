@@ -223,7 +223,36 @@ with tools that then exist).
    SHA has a class, this one says a **path has a time**; both failures look like a competent lookup
    returning a clean answer.
 
-7. **⏳ PARTLY DONE (opened 2026-08-22 afternoon) — the peer schema-fragment arc.**
+7. **✅ DONE 2026-08-22 evening — the peer schema-fragment arc. Merged + PUSHED, `3b2cade`.**
+   **THE 58-FRAGMENT SCHEMA IS ADOPTED**: vendored blob `9d8cc3c36cf2d77f`, sha256
+   `8cc08be1b73b9093`, **verified byte-identical to empyrean `origin/main` by BLOB ID** (content-
+   addressed — it cannot be talked into agreeing; the implementing agent had reported a red-first
+   restore that pulled from a previously-doctored file and was caught only by its own hash check, so
+   this was the load-bearing check of the parcel). 37→58 fragments, 21 added, **0 removed, 0
+   pre-existing fragments changed content** — re-derived by parse here, not carried forward.
+   Aggregate on the merged tree, run firsthand: **`LEGS=49 PASSED=1770 FAILED=0 IGNORED=6`, exit 0**;
+   fmt + clippy green with real exit codes. All three failures were **class (c)** (tests encoding
+   assumptions the new set legitimately invalidates); **class (a) = 0** — no reply this server emits
+   was refused by any fragment; **class (b) = 0**, so nothing was worked around.
+   **The sequencing call ran its full course and was vindicated**: dry run first, adopt second. The
+   red that appeared was the currency gate demanding exactly this commit.
+   **F2 decided:** the schematized-but-unadvertised list is a **pinned set of the 21**, not a count
+   and not `is_empty()`. A count reports `22` and stays green on the next arrival — the original
+   failure — and *both* a count and `is_empty()` are satisfied by a schema that failed to load: `0`
+   and `not checked` are the same observation. **Overseer-mutated firsthand** (dropped one pinned
+   name → red naming both sets; restored **from git**, not from a copy, green control re-run).
+   **D-33 registered, not silenced**, in `mcp_tool_sweep.rs`: `assert_eq!` on the whole set, so a NEW
+   undeclared property is red *and* a registered one going away is red (the entry dies with its
+   divergence). The 4th conflict, `call_stack.max_frames`, is structurally invisible to that sweep —
+   `call_stack` is one of the eight unschematized rows — and the comment pre-explains its future
+   arrival so it is not read as a regression.
+   ⚠ **Caught at landing:** the agent's brief predated empyrean's ruling revision, so the superseded
+   *dual-accept first, retire last* advice was hardening inside a test comment. Corrected in
+   `3b2cade`. **The bar is durable; the narrative around it is perishable** — and a stale ruling
+   inside a test file outlives every doc that recorded it.
+   *(Historical detail of the arc follows.)*
+
+   **⏳ PARTLY DONE (opened 2026-08-22 afternoon) — the peer schema-fragment arc.**
    **HALF ONE MERGED + PUSHED: `ec3f822`** (`docs/2026-08-22-peer-schema-defect-answers.md`, 1,079
    lines, docs-only, one file; `ls-remote`-verified). **D-30 RULED by empyrean, on the merits, our
    way** — clause 4 stands, §2.4 rule 1 narrows to match; **ruled, NOT yet applied** (they held the
