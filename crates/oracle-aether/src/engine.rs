@@ -36,7 +36,7 @@ use oracle_core::io::Pad;
 // The 68000's own bus trait, brought in for `emulator/write_memory`: a poke travels the same `write8`
 // the CPU drives, so the hardware mirror masking and the region decode are the machine's, not ours.
 use oracle_core::m68000::bus68k::Bus68k;
-use oracle_core::profiler::{Counts, Profiler};
+use oracle_core::profiler::{CallerKey, Counts, EdgeCounts, Profiler};
 use oracle_core::render::{CandidateVerdict, Layer, PixelState};
 use oracle_core::scanline_capture::{Retain, ScanlineCapture};
 use oracle_core::symbols::{BindingFault, Indeterminate, RomBinding, SymbolTable};
@@ -92,6 +92,16 @@ pub struct EngineConfig {
     /// (`protocol.md` §6, §11.16). Advertised as `limits.maxProfilerFrames`. A ring, so a profiler left
     /// armed across a long session keeps the frames nearest the symptom rather than growing without bound.
     pub max_profiler_frames: usize,
+    /// Ceiling on `emulator/get_profiler_frames`' `topCallers` — the most expensive **call edges** it will
+    /// return per routine row (`protocol.md` §6, §11.18). Advertised as `limits.maxProfilerCallers`, whose
+    /// **presence is the capability signal** for the caller lens, and refused above rather than clamped.
+    ///
+    /// **A reply bound, not a retention bound**, and the distinction is the difference between a true count
+    /// and a misleading one: the accumulator keeps every observed edge and this decides how many are
+    /// *sent*, which is what makes a row's `callersTotal` the number of distinct callers rather than the
+    /// number that survived a ceiling. `max_profiler_frames` is the opposite — a real ring depth, where
+    /// rows beyond it are gone.
+    pub max_profiler_callers: usize,
     /// Ceiling for one `emulator/play_input` timeline (`protocol.md` §6, §11.11). Advertised as
     /// `limits.maxInputRows` because a client that must hit a limit to learn it loses the work it was
     /// doing when it found out.
@@ -141,6 +151,11 @@ impl Default for EngineConfig {
             // Two seconds of NTSC frames: long enough to see a stutter in context, short enough that the
             // ring is a rounding error next to the machine it profiles.
             max_profiler_frames: 120,
+            // A routine's distinct callers are a far smaller set than the routines themselves — a hot leaf
+            // is reached from a handful of sites, not from hundreds — so this is sized to carry a real
+            // row's edge list WHOLE rather than to page it, which is what keeps `callersTruncated: false`
+            // the ordinary case and the two normative sums assertable with `==`.
+            max_profiler_callers: 64,
             max_input_rows: 256,
             max_symbol_matches: 5,
             // The contract's own advertised example (`"checkpoints":{"supported":true,"cap":8}`). A
@@ -187,7 +202,7 @@ pub const METHODS: &[MethodSpec] = &[
         name: "emulator/set_profiler",
         handler: Engine::set_profiler,
         summary: "arm or disarm the per-invocation cycle accountant (arming resets it)",
-        params: &["enabled", "perFrame"],
+        params: &["callers", "enabled", "perFrame"],
     },
     MethodSpec {
         name: "emulator/get_profiler",
@@ -199,7 +214,7 @@ pub const METHODS: &[MethodSpec] = &[
         name: "emulator/get_profiler_frames",
         handler: Engine::get_profiler_frames,
         summary: "the accumulated sample: per-routine rows, interrupt buckets by cause, per-frame ring",
-        params: &["frames", "top"],
+        params: &["frames", "top", "topCallers"],
     },
     MethodSpec {
         name: "emulator/status",
@@ -1076,6 +1091,13 @@ impl Engine {
                 // hitting it is a cap that costs work to learn.
                 "maxProfilerRoutines": self.config.max_profiler_routines,
                 "maxProfilerFrames": self.config.max_profiler_frames,
+                // **The caller lens's capability signal** (§11.18). Its PRESENCE is what tells a client the
+                // lens exists at all — a server without the lens omits this key and refuses
+                // `set_profiler{callers:true}` as an undeclared param — so it is advertised here rather
+                // than added to `capabilities`, on the `maxWriteLen`/`maxHashLen` precedent applied to one
+                // lens rather than to one method. This server implements the lens, so the key is always
+                // present and the no-lens direction has no branch here to go stale.
+                "maxProfilerCallers": self.config.max_profiler_callers,
             },
             // What the `frame` in every stamp actually *means* (`F-TRACE-PAL`). Advertised once, here,
             // rather than repeated on every reply: it is a property of the machine, not of the answer.
@@ -2101,12 +2123,24 @@ impl Engine {
                 RpcError::invalid_params("`perFrame` must be a boolean when present")
             })?,
         };
+        // **Every arming flag resets together** (§11.18). A second arm starts a fresh sample under exactly
+        // the lenses *this* call names, so a client arming `callers` on an already-armed instrument gets
+        // caller data for a new sample and not for the one it was watching.
+        let callers = match params.get("callers") {
+            None => false,
+            Some(v) => v.as_bool().ok_or_else(|| {
+                RpcError::invalid_params("`callers` must be a boolean when present")
+            })?,
+        };
         if enabled {
-            self.profiler = if per_frame {
-                Profiler::with_per_frame(self.config.max_profiler_frames)
-            } else {
-                Profiler::new()
-            };
+            self.profiler = Profiler::with_lenses(
+                if per_frame {
+                    self.config.max_profiler_frames
+                } else {
+                    0
+                },
+                callers,
+            );
             // Latched at the arm, so a basis that changes mid-sample is detectable at the read rather
             // than silently averaged over.
             self.profiler_basis = Some(self.sys.timing_basis());
@@ -2117,6 +2151,11 @@ impl Engine {
             // Echoed rather than assumed: it is the key that decides whether `get_profiler_frames`
             // answers a `frames` param or refuses it.
             "perFrame": self.profiler.per_frame_armed(),
+            // The same, for the lens (§11.18). Present because THIS server implements it and advertises
+            // `limits.maxProfilerCallers`; a server without the lens omits both, so absence means *no
+            // caller lens here* and never *the lens is off*. Read off the instrument rather than from
+            // `callers` above, so a disarm reports what the retained sample actually holds.
+            "callers": self.profiler.callers_armed(),
         }))
     }
 
@@ -2143,11 +2182,15 @@ impl Engine {
         if !self.profiler_armed && self.profiler.frames() == 0 {
             return; // nothing armed and nothing held: rebuilding would be a no-op with a cost
         }
-        self.profiler = if self.profiler.per_frame_armed() {
-            Profiler::with_per_frame(self.config.max_profiler_frames)
-        } else {
-            Profiler::new()
-        };
+        self.profiler = Profiler::with_lenses(
+            if self.profiler.per_frame_armed() {
+                self.config.max_profiler_frames
+            } else {
+                0
+            },
+            // The lens is the client's instruction too, so it survives the jump with the rest of the pose.
+            self.profiler.callers_armed(),
+        );
         if self.profiler_armed {
             self.profiler_basis = Some(self.sys.timing_basis());
         }
@@ -2159,6 +2202,10 @@ impl Engine {
         Ok(json!({
             "enabled": self.profiler_armed,
             "perFrame": self.profiler.per_frame_armed(),
+            // The third arming fact (§11.18), on the same conditional-presence rule `set_profiler`'s echo
+            // takes. This method reports the instrument's STATE and carries no rows, so a caller LIST — and
+            // the `callersNotArmed` refusal that goes with it — cannot appear here at all.
+            "callers": self.profiler.callers_armed(),
             // The SAME number `get_profiler_frames` reports as `frameCount`. The legacy surface had two
             // counts that could differ — one echoed the request, one counted pushes — and only one of them
             // was ever the divisor.
@@ -2211,6 +2258,25 @@ impl Engine {
                 hex::parse_count("frames", v, 1, self.config.max_profiler_frames as u64)? as usize
             }
         };
+        // `topCallers` narrows an armed row's edge list and never conjures one — presence is decided by the
+        // ARM, exactly as the per-frame list's is. So the same two refusals apply, in the same order:
+        // -32005 when the lens is not armed (a parameter that cannot affect the answer is worse than one
+        // that is rejected), -32602 above the advertised cap, refused and never clamped.
+        let top_callers = match params.get("topCallers") {
+            None => self.config.max_profiler_callers,
+            Some(v) => {
+                if !self.profiler.callers_armed() {
+                    return Err(RpcError::new(
+                        code::INVALID_STATE,
+                        "`topCallers` bounds each routine row's caller list, and this sample was not \
+                         armed with set_profiler{callers:true} — arm it and re-run, or drop the param",
+                    )
+                    .with_data(json!({"reason": "callersNotArmed"})));
+                }
+                hex::parse_count("topCallers", v, 1, self.config.max_profiler_callers as u64)?
+                    as usize
+            }
+        };
 
         let report = self.profiler.report();
         let n = report.frame_count;
@@ -2220,6 +2286,26 @@ impl Engine {
         // disagrees with the `cycles` beside it. Keyed identically by construction; `unwrap_or_default`
         // is the type's requirement, not a fallback anything is expected to take.
         let sample_rows = self.profiler.sample_routines();
+        // **The call edges, indexed by callee**, so a row's list is a lookup rather than a scan of the whole
+        // edge map per row. Divided and undivided are paired here for the row's own reason: the undivided
+        // partner is read back out of the very accumulator `report()` divided, so an edge's `cyclesTotal`
+        // cannot be a second measurement that disagrees with the `cycles` beside it.
+        //
+        // Empty unless the lens is armed, which is what makes an unarmed reply byte-identical to the one
+        // this surface sent before the lens existed: nothing below has a set to emit.
+        let sample_edges = self.profiler.sample_callers();
+        let mut edges: std::collections::BTreeMap<u32, Vec<(CallerKey, EdgeCounts, EdgeCounts)>> =
+            std::collections::BTreeMap::new();
+        for (&(callee, caller), &c) in &report.callers {
+            let t = sample_edges
+                .get(&(callee, caller))
+                .copied()
+                .unwrap_or_default();
+            edges.entry(callee).or_default().push((caller, c, t));
+        }
+        for list in edges.values_mut() {
+            list.sort_by(profiler_edge_order);
+        }
         // Rows, ordered by `cycles` descending so a truncated list is the expensive end rather than an
         // arbitrary slice.
         //
@@ -2241,7 +2327,17 @@ impl Engine {
         let items: Vec<Value> = rows
             .into_iter()
             .take(top)
-            .map(|(addr, c, t)| self.profiler_row(addr, c, t))
+            .map(|(addr, c, t)| {
+                self.profiler_row(
+                    addr,
+                    c,
+                    t,
+                    self.profiler
+                        .callers_armed()
+                        .then(|| edges.get(&addr).map(Vec::as_slice).unwrap_or_default()),
+                    top_callers,
+                )
+            })
             .collect();
 
         let sample_buckets = self.profiler.sample_interrupts();
@@ -2352,7 +2448,19 @@ impl Engine {
     /// divided to get `c`, so `divided == total / frameCount` holds by construction rather than by
     /// agreement. `callsTotal` is the field the ask was raised for — a per-frame count is the one figure
     /// here that division destroys rather than truncates.
-    fn profiler_row(&self, addr: u32, c: Counts, t: Counts) -> Value {
+    ///
+    /// `edges` is `Some` **exactly when the caller lens is armed** (§11.18), and the four `callers*` keys
+    /// then arrive **as a set** — the fragment ties them with `dependentRequired`, so a half-served lens
+    /// cannot pass validation. `None` emits none of them, which is what keeps an unarmed reply byte-
+    /// identical to the one this surface sent before the lens existed.
+    fn profiler_row(
+        &self,
+        addr: u32,
+        c: Counts,
+        t: Counts,
+        edges: Option<&[(CallerKey, EdgeCounts, EdgeCounts)]>,
+        top_callers: usize,
+    ) -> Value {
         let mut row = json!({
             "addr": hex::addr(addr),
             "cycles": c.cycles,
@@ -2370,7 +2478,85 @@ impl Engine {
                 row["disp"] = json!(r.displacement);
             }
         }
+        if let Some(edges) = edges {
+            // §2.4's FLAT spelling scoped to an ITEM (§11.18 widened that section for exactly this case):
+            // the three companions ride as PREFIXED siblings of the row rather than as a nested
+            // `{items,total,…}` container, because a container inside an item of a container makes a client
+            // reach an element through three levels of `.items` and read the word `total` at two scopes.
+            //
+            // **`callersTotal` is the count before bounding**, which is what makes it the true number of
+            // distinct callers: the cap is a REPLY bound, not a retention bound, so nothing was thrown away
+            // to produce it. No `callersLimit` sibling — the applied ceiling is one number for the whole
+            // reply, and repeating it per row would be a constant field wearing signal's clothes. No cursor
+            // either: this method accepts no continuation param (§2.4 clause b).
+            let items: Vec<Value> = edges
+                .iter()
+                .take(top_callers)
+                .map(|(caller, c, t)| self.profiler_caller_edge(*caller, *c, *t))
+                .collect();
+            row["callersReturned"] = json!(items.len());
+            row["callersTruncated"] = json!(items.len() < edges.len());
+            row["callersTotal"] = json!(edges.len());
+            row["callers"] = Value::Array(items);
+        }
         row
+    }
+
+    /// One `callers[]` entry: **one call edge**, symmetric with the routine row wherever the two describe
+    /// the same quantity (§11.18).
+    ///
+    /// Every divided figure carries its undivided partner, which is the row's own discipline at a smaller
+    /// denominator — and a smaller denominator is where division does *more* damage, not less. **No
+    /// `stallCycles`**: the requesting client declined a per-edge stall figure on measured grounds, and the
+    /// fragment bars the key outright rather than leaving it undeclared.
+    ///
+    /// `callerAddr` is **absent rather than fabricated** when there is no calling routine to name, and
+    /// `entryKind` then says which of the three genuinely different absences it is. The two are a
+    /// biconditional the fragment enforces with `if`/`then`/`else`, so a reply that carried both, or
+    /// neither, would fail validation on the way out rather than reach a client.
+    fn profiler_caller_edge(&self, caller: CallerKey, c: EdgeCounts, t: EdgeCounts) -> Value {
+        let mut edge = json!({
+            "cycles": c.cycles,
+            "cyclesSelf": c.self_cycles,
+            "calls": c.calls,
+            "cyclesTotal": t.cycles,
+            "cyclesSelfTotal": t.self_cycles,
+            "callsTotal": t.calls,
+        });
+        match caller {
+            CallerKey::Routine(addr) => {
+                edge["callerAddr"] = json!(hex::addr(addr));
+                // The BARE label and an integer displacement beside it, on the row's own rule — and with
+                // the row's caveat sharpened: when the caller is the frame the sample OPENED on, this
+                // address is real but is not an entry point, so a non-zero `callerDisp` here is the
+                // ordinary answer rather than a failed lookup.
+                if let Some(table) = self.symbols.as_ref() {
+                    if let Some(r) = table.resolve_within(addr, MAX_SYMBOL_DISPLACEMENT) {
+                        edge["callerName"] = json!(r.symbol.name);
+                        edge["callerDisp"] = json!(r.displacement);
+                    }
+                }
+            }
+            CallerKey::Interrupt(level) => {
+                // Split BY CAUSE, never collapsed into one `interrupt` value: this family keys interrupt
+                // accounting by the acknowledged level everywhere else, and these two spellings join the
+                // edge to the bucket it came from by name.
+                debug_assert!(
+                    level == oracle_core::profiler::LEVEL_HINT
+                        || level == oracle_core::profiler::LEVEL_VINT,
+                    "this machine's VDP drives levels 4 and 6 only (`Vdp::ipl`) and the wire enum carries \
+                     exactly those two causes; level {level} has no spelling"
+                );
+                edge["entryKind"] = json!(if level == oracle_core::profiler::LEVEL_VINT {
+                    "vint"
+                } else {
+                    "hint"
+                });
+            }
+            CallerKey::Root => edge["entryKind"] = json!("root"),
+            CallerKey::DepthCap => edge["entryKind"] = json!("depthCap"),
+        }
+        edge
     }
 
     /// `totalCycles` as a percentage of one frame's CPU-cycle budget, or `None` when the basis changed
@@ -4513,6 +4699,23 @@ const MAX_SYMBOL_DISPLACEMENT: u32 = 0x1000;
 /// rows the address-only comparator called equal. The address stays last so the order is still **total**,
 /// and two identical boots cannot disagree.
 fn profiler_row_order(a: &(u32, Counts, Counts), b: &(u32, Counts, Counts)) -> std::cmp::Ordering {
+    b.1.cycles
+        .cmp(&a.1.cycles)
+        .then(b.2.cycles.cmp(&a.2.cycles))
+        .then(a.0.cmp(&b.0))
+}
+
+/// The same ordering one level down, for a row's `callers[]` (§11.18): `cycles` descending, so a bounded
+/// edge list is the expensive end rather than an arbitrary slice.
+///
+/// The undivided partner is the tie-break for the reason it is on the rows — the divided figure is floored,
+/// so on a long sample genuinely different edges share one `cycles` value, and with the caller key as the
+/// only tie-break `topCallers` would keep the *lowest-keyed* of them rather than the most expensive. The
+/// key stays last so the order is total and two identical boots cannot disagree.
+fn profiler_edge_order(
+    a: &(CallerKey, EdgeCounts, EdgeCounts),
+    b: &(CallerKey, EdgeCounts, EdgeCounts),
+) -> std::cmp::Ordering {
     b.1.cycles
         .cmp(&a.1.cycles)
         .then(b.2.cycles.cmp(&a.2.cycles))
