@@ -290,7 +290,7 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
 ## The bars (house methods — each earned by a measured failure; do not thin)
 
 > The shared protocol gained review bars 8–10 and two SHA-citation rules on 2026-08-22 (empyrean
-> `dc629a5`, `c2c81e2`, `00334b6`, `43fbfc9`, `9b604f0`+`e650b96`+`aadf63f`). **Not transcribed here — read them there**; the
+> `dc629a5`, `c2c81e2`, `00334b6`, `43fbfc9`, `9b604f0`+`e650b96`+`aadf63f`, `20a8e81`). **Not transcribed here — read them there**; the
 > protocol is changed in empyrean and never forked into a repo copy. Two bear directly on this
 > lane: **bar 9** (never change the subject to suit the instrument — an instrumented run reported
 > as the uninstrumented number is the named failure) governs every profiler measurement we take,
@@ -305,6 +305,18 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
 > while a **currency** check ("has the contract moved?") must run at TIP or it is vacuous, because
 > a pinned blob equals itself by construction. Both operations look identical at the call site:
 > **name the question before choosing the revision.**
+>
+> **Bar 11** (`20a8e81`, out of this lane — aeon's formulation): *a confidently-offered weak point is
+> a misdirection, even in good faith*; the operational line is that **a citation is a pointer into
+> code that keeps executing past the line you were shown**. Read the lines *around* a cited line
+> before accepting what it proves. It is **not** a rule against caveats — the flag must keep doing
+> its job, and a session hedging less to avoid aiming scrutiny is this bar's own failure mode.
+> **Placement note worth inheriting:** empyrean put it in the review bars rather than beside
+> verify-firsthand, over my suggestion, because **the bars are what agent briefs inherit and an
+> agent's report carries the identical shape** — "my weak assumption is X" steers an overseer's
+> review exactly as a peer's message does. In this lane that is the *more* common case: we review
+> agent reports far more often than peer claims, and both of 2026-08-22's agents delivered reports
+> with volunteered open items. Apply it to returned work, not just to cross-session mail.
 >
 > **Our currency check, run at tip 2026-08-22** (the operation `aadf63f` names): the vendored
 > `crates/oracle-aether/tests/contract/bus-protocol.schema.json` is `f038672daf6eb2b8`, and
