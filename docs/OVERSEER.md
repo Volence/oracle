@@ -73,7 +73,13 @@ diff as WIP on `cr28-serve`, then fresh-dispatch from the branch + the CR (`cr28
 is FINAL and fully committed — only server code remains. Then: merge window (code + amendment
 + CR + ruling, both repos, one window), ship notice to aeon.
 
-**Incoming (registered 2026-08-21, no action until triggered):** the wiki-emulator PoC — empyrean's
+**Incoming (registered 2026-08-21, no action until triggered):** aeon's CR-28 **consumption
+verdict** — their staging-lifetime settling probe (TICK-VARIANCE §3's successor) arms `callers`
+on the Tile_Cache_Fill/S4LZ rows and exercises `topCallers` + both normative `==` sums against
+live data; stalled on their usage limit until ~7pm ET 2026-08-21, verdict (and any wire
+surprises, which come back as asks) after that. depthCap-unreachable: booked their side as a
+known caveat, follow-up explicitly NOT requested. F-TICK-BOUNDARY-DIVERGENCE ping stands on the
+joint ledger. Also: the wiki-emulator PoC — empyrean's
 spec `adfb0f1` (`docs/superpowers/specs/2026-08-19-wiki-emulator-poc-design.md`, updated `04c35cb`)
 proposes a thin `oracle-wasm` crate over an UNTOUCHED `oracle-core` plus a pad-reactive fixture ROM.
 Awaiting the owner's review on empyrean's side; the implementation dispatch arrives from the
