@@ -403,6 +403,45 @@ with tools that then exist).
    contract genuinely had not moved *at the remote*, which is the only place a consumer can look,
    while sixteen commits sat unpushed locally. Not a defect in the check; a limit of it.
 
+8. **▶ OPEN — THE ACCEPTANCE CONTRACT: the 21 methods. Opened 2026-08-22 evening.** Item 7's real
+   deliverable becomes the queue's front. The 21 fragments that describe methods our Rust server
+   does not serve **are** the definite list of what the successor must serve before it replaces the
+   legacy C++ server — an item open since 2026-07-01 that has never had a membership until now.
+   The list is in item 7; **re-derive it, never transcribe it.**
+   **Baseline re-derived firsthand at boot** (`0fa34f1`): the schema carries **58** fragments —
+   note `schema["methods"]` maps method → fragment **directly**, with no `properties` sub-object,
+   which is the shape my earlier `$comment` miscount came from. `engine.rs` carries **39**
+   `"emulator/*"` string literals = **37 methods + 2 events** (`stopped`, `resumed`) — the two
+   events must not contaminate either count. Core spot-checks: `system.rs:828 step_instruction`
+   and `z80/mod.rs:412 Z80::step` exist; `breakpoint` appears in `oracle-core/src/` **only** in
+   `bus.rs`, so the breakpoint surface is genuinely unbuilt and the served watchpoint quartet
+   (add/list/clear/hits) is its nearest house precedent.
+   **Two agents dispatched off `0fa34f1`:**
+   - `acceptance-survey` (**no cargo**) — price all 21: fragment requirements, core readiness
+     (ready/partial/absent), cost + whether serving as-written needs a CR, and a real consumer
+     sweep across sibling trees (both identifier and quoted-key greps, worktrees excluded).
+     Deliverable `docs/2026-08-22-acceptance-21-survey.md` + a proposed parcel ordering.
+   - `serve-step-trio` (**holds the cargo lane**) — serve `step`/`step_over`/`step_out`.
+   **Why the trio was dispatched WITHOUT waiting for the survey** (recorded because it is the kind
+   of call the survey exists to prevent): their fragments are already **final and landed upstream**,
+   so it is pure conformance with no contract fork to adjudicate, and the survey cannot make them
+   the wrong first parcel — only reorder what follows. The survey's job is pricing the other 18.
+   **Two contract defects ride this parcel and are to be served as-written, then flagged:**
+   **D-02** — `step`'s `count` has no default, no minimum above 0 and **no upper bound**, so an
+   unbounded step is contractually legal; **D-03** — `step` returns `pc` while `step_over`/
+   `step_out` declare **no result keys at all**, an asymmetry §6 owns and the fragment authors
+   deliberately preserved. Both become CR text to empyrean, never a unilateral server deviation.
+   ⚠ The named failure mode for this parcel, stated in the brief: **a `step_over` that silently
+   behaves like `step`** is worse than an unimplemented one. BLOCKED on the pair is a good outcome.
+   **AEON OBLIGATION — DELIBERATELY HELD, not forgotten.** Item 7 owes aeon a **dated** heads-up
+   before we serve `emulator/wait_for_break` (their `raster_source_gate.py` and
+   `snapshot_poison_gate.py` both send `timeout_ms`; ours refuses unknown params with `-32602`,
+   the legacy server silently defaults). The date is a function of when that parcel lands, which
+   is exactly what the survey is pricing. Sending "no date yet" now would be **bar 18's own
+   failure** — a pin with no live reader — so the message goes out when the survey returns a
+   number. If this session ends first, **the next one sends it**: the obligation is real and the
+   only open question is the date.
+
 **~~⏸ CR-28 implementation paused~~ RESOLVED same day** — the same agent was resumed after the
 7pm reset with context and worktree intact (resume path A worked as written) and finished clean.
 Kept for the pattern: *(original note follows)* the implementer died on the API limit after committing 2 of ~5 stages on branch
