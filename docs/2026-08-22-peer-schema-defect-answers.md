@@ -9,11 +9,37 @@ separated secondary section on eight unfragmented methods.
 spec text is proposed here. Where the source does not settle a question this document says so and names what
 would. Where our implementation appears to contradict the spec it says so plainly.
 
-**Empyrean-side artifacts cited.** `docs/2026-08-22-protocol-schema-audit.md` at commit **`62b8050`**,
-merged by **`fe5a238`**, banked by **`ceef822`**; the new fragments at
-`contract/schema/bus-protocol.schema.json` on the same merge. **`fe5a238` and `ceef822` are UNPUSHED local
-commits on empyrean's `main` at the time of writing** — read from their working tree, not from any remote.
-The authoritative spec text quoted is `empyrean/contract/protocol.md` at that same tree.
+### Provenance of the empyrean-side artifacts — revision for lineage, hash for identity
+
+`docs/2026-08-22-protocol-schema-audit.md` at commit **`62b8050`**, merged by **`fe5a238`**, banked by
+**`ceef822`**; the new fragments at `contract/schema/bus-protocol.schema.json` on the same merge.
+
+An earlier draft of this document recorded `fe5a238`/`ceef822` as **unpushed local commits**. That was true
+when the work started and is **now stale** — corrected here rather than left standing. Verified firsthand at
+the time of writing:
+
+| fact | value |
+|---|---|
+| `empyrean origin/main` | **`baf15c28540866dcc41c51e4d4f065c63a06dbaf`** |
+| `fe5a238` ancestor of `origin/main` | YES (`git merge-base --is-ancestor`) |
+| `ceef822` ancestor of `origin/main` | YES |
+| `62b8050` ancestor of `origin/main` | YES |
+| `contract/protocol.md` blob at `origin/main` | **`1e832b1d671992a8a41e2101b886b1e0c9ad1967`** |
+| `contract/schema/bus-protocol.schema.json` blob at `origin/main` | **`bb252a4d1381e1cd9f20f93d6a5f2a160f9796dc`** |
+| `docs/2026-08-22-protocol-schema-audit.md` blob at `origin/main` | **`864276db42f4bda0f8a13254e099f625c3822ad7`** |
+
+**Why the blob hashes are here and not just the revisions.** Their `main` moves several times a day — it had
+already advanced past the tip named in the request that prompted this check by the time it was run — so a
+future reader resolving `main:<path>` gets whatever is current, not what was read. The blob hash names the
+exact bytes this document was written against.
+
+**Working-tree-versus-committed check, run because a sibling repo's directory is that peer's live tree.**
+Every quotation below was originally taken by path from `/home/volence/sonic_hacks/empyrean`, which names
+"whatever is on disk right now" rather than a revision. All three files were re-checked against
+`origin/main`: `git diff --stat origin/main --` on all three produced **no output**, i.e. the working tree is
+byte-identical to the committed version for each. **Every quotation therefore matches the committed text and
+no difference had to be reported.** Line numbers cited against `contract/protocol.md` are valid at blob
+`1e832b1d`.
 
 ---
 
@@ -308,7 +334,7 @@ Read as evidence about the rows, not as a statement of what the reference server
   `linux-port/gui/ControlSocket.cpp:2822-2823`. Key sets below are post-strip.
 - **Error codes are inferred from message substrings.** `ErrorReply` throws
   (`linux-port/gui/ControlSocket.cpp:226-229`) and `CodeForMessage`
-  (`linux-port/gui/ControlSocket.cpp:209-222`) picks the numeric code by matching substrings of the
+  (`linux-port/gui/ControlSocket.cpp:211-222`) picks the numeric code by matching substrings of the
   free-text message — `-32012` on "no symbols", `-32013` on "symbol not found", `-32000` on "not
   wired"/"not available"/"no 68000"/"no Z80", `-32010` on "loading"/"timed out", `-32004` on "out
   of"/"range"/"only"/"rejected"/"supported", default `-32602`. **This is worth the contract's attention on
@@ -324,7 +350,7 @@ calls `CreateBreakpoint()` (`ExodusSDK/Processor/Processor.cpp:379-386`, an unbo
 `{addr}` plus a conditional `note` — **no id, no handle** (`:808-810`).
 
 `breakpoint_clear` (`linux-port/gui/ControlSocket.cpp:834-859`) walks the whole list and matches on
-`bp->GetLocationConditionData1() == addr` (`linux-port/gui/ControlSocket.cpp:853`). **The condition *kind*
+`bp->GetLocationConditionData1() == addr` (`linux-port/gui/ControlSocket.cpp:854`). **The condition *kind*
 is never checked**, so a range breakpoint (`Greater`, `Less`) created in the GUI still carries a `Data1` and
 will be deleted by an address-equality clear that was never aimed at it. That is a second, sharper form of
 the cross-client hazard than the one D-13 names.
@@ -333,42 +359,90 @@ Params: `breakpoint_add` takes `addr` **or** `symbol` (`:796`), neither ⇒ `-32
 `breakpoint_list` takes **none** — the params object is unnamed and unread (`:813`); no filter, no limit, no
 cursor. `breakpoint_clear` takes `all` (checked first, `:838`), else `addr` or `symbol` (`:847`).
 
-**(b) `breakpoint_list` emits `enabled`, and the audit's claim needs one refinement.** Emit site, verbatim:
+**(b) `breakpoint_list` emits `enabled`. Emit site, verbatim:**
 
 ```
-linux-port/gui/ControlSocket.cpp:822-826
+linux-port/gui/ControlSocket.cpp:824-826
         std::snprintf(entry, sizeof(entry),
                       "{\"addr\":\"0x%08X\",\"enabled\":%s,\"hits\":%u}",
                       a, bp->GetEnabled() ? "true" : "false", bp->GetHitCounter());
 ```
 
-The audit says *"no catalogued method can write it"* — **correct, and it is precisely the right wording**,
-because uncatalogued paths *do* write it. The complete set of writes to `Breakpoint::_enabled` (setter
-`ExodusSDK/Processor/Breakpoint.cpp:32-35`, member `ExodusSDK/Processor/Breakpoint.h:74`):
+**The writer enumeration, done as an enumeration.** "Nothing can write this" is a claim about *every*
+writer, so the question was not settled by checking the catalogued methods and reporting their silence. The
+closure taken was: the **field** (`_enabled`), the **mutator** (`SetEnabled`) repo-wide, every
+**constructor** of the owning type, every **deserializer**, and every **copier**. C++ has no
+struct-update or `Default::default()` analogue, so the constructor set *is* the implicit-initialisation set.
+Each step and its result:
 
-| # | writer | value | on the bus? |
+| step | search | result |
+|---|---|---|
+| the field itself | `_enabled` in `Breakpoint.{h,cpp,inl}` | **6 hits, all accounted for**: getter `Breakpoint.cpp:28`, setter `:34`, `LoadState` `:251`, `SaveState` `:271`, declaration `Breakpoint.h:74`, ctor init `Breakpoint.inl:11` |
+| direct field access from outside the class | `_enabled` repo-wide, excluding `Breakpoint.*`/`Watchpoint.*` | **zero.** No friend access, no `memcpy`, no reinterpret |
+| the mutator | `SetEnabled` repo-wide | **21 matches across 11 files**; after removing the `Watchpoint` family and the pure declarations/definitions, **9 breakpoint call sites in 6 files** |
+| constructors | `new Breakpoint` / `CreateBreakpoint` repo-wide | **2 construction sites**, both routed through the single ctor at `Breakpoint.h:10`: `Processor.cpp:385` (`CreateBreakpoint`) and `Processor.cpp:~4466` (inside `LoadState`) |
+| copy / assignment | `operator=`, copy-ctor in `Breakpoint.h` | **none declared.** Objects are heap-allocated and held by raw pointer; nothing copies one |
+| deserialization | `LoadState` / `ExtractAttribute` | **one**, `Breakpoint.cpp:251`, already in the field list |
+| test-only paths | — | the tree has no unit tests touching this type |
+
+**11 writers total, in 6 files**, and here is the verdict **per path**:
+
+| # | writer | value written | reachable over the bus? |
 |---|---|---|---|
-| 1 | constructor initialiser, `ExodusSDK/Processor/Breakpoint.inl:11` | `true` | — |
-| 2 | savestate/config load, `ExodusSDK/Processor/Breakpoint.cpp:251` (reached from `Processor.cpp:4460-4479`) | from XML | no |
-| 3 | `breakpoint_add`, `linux-port/gui/ControlSocket.cpp:805` | **hard-coded `true`** | yes, but write-only-`true` |
-| 4 | Linux GUI add paths, `linux-port/gui/main_gui.cpp:5874`, `:5991` | `true` | no |
-| 5 | **Linux GUI per-row checkbox**, `linux-port/gui/main_gui.cpp:6047` | either | no |
-| 6 | generic data source, `ExodusSDK/Processor/Processor.cpp:4956` | either | no |
-| 7 | enable-all / disable-all commands, `ExodusSDK/Processor/Processor.cpp:5115`, `:5127` | either | no |
-| 8 | Windows disassembly view, `Extensions/ProcessorMenus/DisassemblyView.cpp:914`, `:933` | either | no (not in the Linux build) |
+| 1 | ctor initialiser, `ExodusSDK/Processor/Breakpoint.inl:11` | **`true`**, always | indirectly — every `breakpoint_add` runs it |
+| 2 | `LoadState`, `ExodusSDK/Processor/Breakpoint.cpp:251` (`ExtractAttribute(L"Enabled", _enabled)`; reached from `Processor.cpp:4460-4479`) | either, from XML | **no** |
+| 3 | `breakpoint_add`, `linux-port/gui/ControlSocket.cpp:805` | **hard-coded `true`** | **yes — and this is the only bus path** |
+| 4 | Linux GUI create, `linux-port/gui/main_gui.cpp:5874` | `true` | no |
+| 5 | Linux GUI create, `linux-port/gui/main_gui.cpp:5991` | `true` | no |
+| 6 | **Linux GUI per-row checkbox**, `linux-port/gui/main_gui.cpp:6047` | either | no |
+| 7 | generic-access data source, `ExodusSDK/Processor/Processor.cpp:4956` | either | no |
+| 8 | `BreakpointEnableAll`, `ExodusSDK/Processor/Processor.cpp:5115` | `true` | no |
+| 9 | `BreakpointDisableAll`, `ExodusSDK/Processor/Processor.cpp:5127` | `false` | no |
+| 10 | Windows disassembly view toggle, `Extensions/ProcessorMenus/DisassemblyView.cpp:914` | either | no (not in the Linux build) |
+| 11 | Windows disassembly view, `Extensions/ProcessorMenus/DisassemblyView.cpp:933` | `true` | no |
 
-**So over the JSON-RPC surface `enabled` is a constant `true`.** It can only ever read back `false` if a
-human ticked the GUI checkbox (#5) or a savestate carried a disabled breakpoint in (#2). This is exactly the
-shape §11.5 struck `run_to.stoppedAtFrame` for — a field wearing a variable's clothes — with the twist that
-its one non-constant writer is off-bus. Contrast D-14, which asks whether `breakpoint_list` needs §2.4's
-bounded-list companions: it has no `limit`, no `cursor`, and emits every entry in one reply, so it is
-"complete by construction" **only in the sense that nothing bounds it**, which is not the same as safe.
+**Verdict.** The audit's wording — *"no catalogued method can write it"* — survives the enumeration and is
+**precisely the right wording**, because the enumeration shows uncatalogued paths that *do* write it. The
+stronger claim "nothing can write it" would have been **false**: paths 2, 6, 7 and 9 all set it `false`.
+What is true is narrower and worth stating exactly: **exactly one of eleven writers is reachable over the
+JSON-RPC surface (path 3), and it writes the constant `true`.** So `enabled` reads back `false` only when a
+human ticked the GUI checkbox, a savestate carried a disabled breakpoint in, or an Exodus command ran — none
+of which a bus client can cause, observe the cause of, or undo. That is the field's real defect: not "dead",
+but **read-only-and-externally-mutable**, which is worse than either, because a client sees it change and has
+no way to act on it.
 
-**(c) No cap, no quota, no refusal.** `OpBreakpointAdd` (`:792-811`) has no count check;
-`Processor::CreateBreakpoint` (`ExodusSDK/Processor/Processor.cpp:379-386`) unconditionally `new`s and
-`push_back`s. There is no maximum constant anywhere. The cost is on the hot path — `CheckExecution` walks
-the whole vector per instruction — which is the mechanism by which a forgotten breakpoint becomes the
-1,691,410-hit contaminant rather than merely a stale entry.
+**One contradiction found inside the enumeration.** `Processor::CreateBreakpoint`'s own comment
+(`ExodusSDK/Processor/Processor.cpp:381-382`) reads *"Note that the breakpoint is disabled by default, so it
+will not trigger until it is modified"* — while the constructor it calls sets `_enabled = true`
+(`ExodusSDK/Processor/Breakpoint.inl:11`). **Construction is enabled.** The comment is wrong, and it is
+exactly the kind of single-path reasoning that makes "nothing enables this" feel settled.
+
+Contrast D-14, which asks whether `breakpoint_list` needs §2.4's bounded-list companions: it has no `limit`,
+no `cursor`, and emits every entry in one reply, so it is "complete by construction" **only in the sense
+that nothing bounds it**, which is not the same as safe.
+
+**(c) No cap, no quota, no refusal — enumerated by where a cap could live, not by one grep's silence.**
+A cap on this surface could live in any of six places. Each was checked and each is **absent**:
+
+| # | where a cap could live | checked | finding |
+|---|---|---|---|
+| 1 | the handler | `OpBreakpointAdd`, `linux-port/gui/ControlSocket.cpp:792-812` — read in full | **no count check of any kind.** It goes straight from `ResolveAddr` to `CreateBreakpoint` |
+| 2 | the core create path | `Processor::CreateBreakpoint`, `ExodusSDK/Processor/Processor.cpp:379-388` — read in full | unconditional `new Breakpoint` + `_breakpoints.push_back`. **No `if (size() >= N)`**, no early return |
+| 3 | the collection's own capacity | `std::vector<Breakpoint*> _breakpoints`, `ExodusSDK/Processor/Processor.h:389` | a plain `std::vector`. No fixed capacity, no `reserve`, no bounded container type |
+| 4 | a named constant or config | `max_breakpoint` / `breakpoint.{cap,limit,max}` / the reverse, case-insensitive, repo-wide excluding docs | **zero hits.** No constant, no config key, no capability advertisement |
+| 5 | the reply/message layer | `breakpoint_list`, `linux-port/gui/ControlSocket.cpp:813-832` — read in full; plus a search for a socket line/reply size ceiling | **no `limit` param, no `cursor`, no truncation, and no message-size cap in `ControlSocket.cpp`.** The only fixed buffer is `char entry[160]` (`:822`), which is **per entry** and cannot truncate a ~52-char row — so it bounds nothing |
+| 6 | the MCP bridge | `linux-port/mcp/oracle_mcp.py` breakpoint tool definitions | the tools pass `all`/`addr`/`symbol` through; **no client-side cap** |
+
+**Six places a cap would live; six checked; six absent.** Adding breakpoints grows `_breakpoints` without
+bound and grows `breakpoint_list`'s reply array without bound. The cost lands on the hot path —
+`CheckExecution` walks the whole vector per instruction (`ExodusSDK/Processor/Processor.cpp:532-535`) —
+which is the mechanism by which a forgotten breakpoint becomes a 1,691,410-hit contaminant rather than
+merely a stale entry.
+
+The error-classification detail matters here too: even if a refusal were added, `CodeForMessage`
+(`linux-port/gui/ControlSocket.cpp:211-222`) would pick its code by substring, so a message like
+`"breakpoint cap reached"` would land on the default `-32602` rather than `-32005`. Any cap added to this
+server needs a message engineered to hit the right substring, or the classifier replaced.
 
 **(d) Duplicates and unknown addresses.** No dedup check whatsoever: two `breakpoint_add` calls at one
 address create two distinct `Breakpoint` objects, both enabled, both rendered as identical
@@ -546,6 +620,35 @@ The audit's candidates are correct, verified in `empyrean/contract/protocol.md`:
 
 These are the only two setter rows in §6 with an enum-valued parameter and no vocabulary in the document.
 Both are among the 21 fragments added this pass, and both are among the methods this server does not serve.
+
+### Checking the "no vocabulary written anywhere in the spec" claim before inheriting it
+
+A universally-quantified rule binds every actor it describes, so "the row is silent" is a much weaker
+finding if a general clause elsewhere in `protocol.md` already answers the case. That phrasing is the
+audit's, and confirming it is part of the job. `contract/protocol.md` (blob `1e832b1d`) was searched for a
+general setter/enum/vocabulary clause: `every (setter|enum|method|request)`, `enum` near
+`vocabular|value set|closed`, and `vocabular` alone.
+
+**Result: the audit's claim stands. There is no general clause that supplies a vocabulary**, and no
+"every setter…" or "every enum…" rule anywhere in the document. What the search returned is method-specific:
+`lookup_symbol` as *"the shared-vocabulary op"* (`:696`), `stopped.reason` as *"a small closed vocabulary"*
+(`:2662`), and the `read.space` ruling at `:925`/`:933`. So the finding is confirmed, not merely inherited.
+
+**But the search turned up something that strengthens D-17's recommendation, which is why it was worth
+running.** The rule the audit proposes — that a setter's enum *is* its sibling's key set, so the two cannot
+drift — **is not a new invention. It is already a ruled precedent on this bus, for a different pair.**
+`contract/protocol.md:925`: `emulator/read` takes *"`watchpoint_add`'s `space` vocabulary **unchanged** —
+`bus`, `vram`, `cram`, `vsram`"*, and `:933` gives the reason in terms that transfer word for word:
+
+> a read enum holding a value the watch enum refuses would be **two vocabularies wearing one name**
+
+That is D-17's own argument, already adopted, already in the document, and already implemented on our
+server — `emulator/read` and `emulator/watchpoint_add` share one parser, `parse_watch_space`
+(`crates/oracle-aether/src/engine.rs:3998-4006`), called from `read` at `engine.rs:1664` and from
+`watchpoint_add` at `engine.rs:3511` — one parser, two methods, so the two vocabularies **cannot** drift.
+That is the mechanical form of the same rule, and it is what D-17 would be asking the layer/channel pair to
+adopt. **So D-17's recommendation is the second application of an
+existing house rule rather than a new one**, and the ruling can cite `:933` rather than argue from scratch.
 
 ### (A) The reference Rust server: neither method exists, and neither getter does
 
