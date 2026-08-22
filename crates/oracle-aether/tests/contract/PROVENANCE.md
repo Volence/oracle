@@ -14,15 +14,81 @@ an explicit re-vendor commit. That commit is the auditable record of "we adopted
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo revision | **`70c7bb4`** on **`main`** — *"Merge callers-amendment — §11.18 lands: the caller lens specified, the two-shapes bound amended honestly"* (2026-08-21). The amendment's own tip was `7c4b9fc`; the merge carried its schema bytes through unchanged. `TRACKED_REVISION` is `None`. 37 fragments; every params object closed (handshake exempt) — both figures **re-derived by parsing this copy**, never carried over. |
-| Last commit that touched the schema | `7c4b9fc` — the same commit. |
-| SHA-256 | `f038672daf6eb2b844abce7e7d0196c9aff3354ca230afe09e3abb2d7a745516` |
-| Bytes | 177743 |
-| Vendored on | 2026-08-21 |
+| Contract repo revision | `origin/main` at **`9b46a2350ee2dcec609b05aad2c567e632cf378a`** (2026-08-22), the tip at the moment the bytes were taken. `TRACKED_REVISION` is `None`. 58 fragments; every params object closed (handshake exempt) — both figures **re-derived by parsing this copy**, never carried over. |
+| Last commit that touched the schema | **`eecce95a9b6207eb872243731a4a03150311d538`** — *"contract: drop the stale count from the schema description; record D-33, the four-param wire-spelling divergence, with its reach measured"* (2026-08-22). **This is the pointer that matters**; see the note below. |
+| Git blob | `9d8cc3c36cf2d77fdb9a4aed124f31c95f2de028` |
+| SHA-256 | `8cc08be1b73b909341c6a3eef94b347a521966608c9e71cedd6decc5f6c7529d` |
+| Bytes | 219725 |
+| Vendored on | 2026-08-22 |
+
+> **Record the BLOB, not only the branch tip.** `origin/main` moved *twice while this re-vendor was
+> running* — `7dad1e6a` when the source was first inspected, `9b46a235` twenty minutes later when the
+> bytes were written — and at both tips `origin/main:contract/schema/bus-protocol.schema.json` resolves
+> to the same blob `9d8cc3c3…`. A later reader re-resolving the *branch* gets whatever is current; a
+> reader re-resolving the *blob* or `eecce95` gets what was actually adopted. The revision row above is a
+> timestamp; the blob and sha256 rows are the artifact.
 
 *(The unmerged-branch tracking box that stood here retired itself 2026-08-21 when `callers-amendment`
 merged as `70c7bb4` — its third profiler-amendment carry, per its own recipe: copy from the object
 store, never from the checkout.)*
+
+### What this re-vendor adopted — the §9 mechanical-completion pass, 37 → 58 fragments
+
+**Twenty-one fragments added, none removed, and not one existing fragment changed content.** All three
+figures re-derived by parse rather than carried from the upstream commit message: the 37 pre-existing
+fragments, plus `$defs`, `anyMessage`, `events` and `handshake`, compare **structurally identical**
+between the two revisions by parsed-JSON equality. The adopted surface is **purely additive**, and the
+whole of the addition is methods this server does not serve.
+
+The 21 — `ping`, `step`, `step_over`, `step_out`, `run_to_scanline`, `wait_for_break`, `z80_read`,
+`z80_write`, `breakpoint_add`/`_list`/`_clear`, `write_vram`, `set_layer_enabled`, `get_layer_states`,
+`set_channel_enabled`, `get_channel_states`, `vgm_start`/`_stop`/`_status`, `audio_spectrum`,
+`log_clear` — are **§6 catalog rows, every one written from its row and none from a server's replies**,
+which is §8's required direction. Eight §6 rows remain deliberately unschematized (`z80_registers`,
+`read_vdp_registers`, `read_vsram`, `object_slot`, `object_list`, `player_state`, `call_stack`,
+`log_tail`), each because its result is stated too loosely to transcribe without inventing.
+
+**None of the 21 is reachable in this process.** `oracle-next` advertises 37 methods; every one of the 21
+answers `-32601 no such method` on every route — there is no `METHODS` row, no handler symbol, no cargo
+feature (this crate has no `[features]` section), and no runtime toggle. Eight are governed by a
+capability flag this server already publishes as `false`. The 2026-08-22 dry run
+(`docs/2026-08-22-schema-fragment-dryrun.md`) enumerated all seven routes that could otherwise produce a
+reply and named the blocker on each; the adoption's own findings are in
+`docs/2026-08-22-revendor-58.md`.
+
+**Adopting it moved no verdict on the surface we serve.** The whole 24-leg aether suite ran with these
+bytes in place and **not one reply this server emits was refused by any fragment** — measured, not
+inferred, since every server→client line funnels through `Client::recv` and is validated against
+`methods.<name>.result` closed with `unevaluatedProperties: false` (§8 item 20).
+
+**Three checks in this repo went red, and all three were tests encoding assumptions the 58-fragment set
+legitimately invalidates.** Each was reshaped on its merits and each reshape was proven by making it fail
+on purpose first:
+
+- **The decision this re-vendor owed** (`schema_conformance.rs`). `assert!(schema_only.is_empty())` was
+  written with the rule that a fragment landing ahead of its handler "has to be a decision, taken in the
+  commit that re-vendors". This is that commit. **Ruled: schematized-but-unadvertised is a legitimate
+  steady state, and these 21 are not deferred work** — §8 item 20 makes the fragment the precondition for
+  a handler and not its record, and §6 is the suite catalog rather than our backlog. The assertion became
+  a **pinned set of the 21**, not a printed count: a count reports `22` and stays green on the next
+  arrival, and both a bare count and `is_empty()` are satisfied by a schema that failed to load. A pin of
+  21 names fails on an unparsed document, on a 22nd arrival, and on one of the 21 becoming served.
+- **The description's fragment count** (`params_closure.rs`). Upstream did not repair `37` to `58`; it
+  **deleted the number** and pointed the prose at its own parsing gate, on the reasoning that a correction
+  carrying the coordinate inherits the defect. Our check demanded a count exist and read the *first* of
+  several. It now checks **every** stated count (the pre-fix candidate stated two, `37` and `58`, and a
+  last-match parser would have gone green on a self-contradicting document), and where none is stated it
+  requires the document's own deliberate-omission disclaimer — so "no count" is measured rather than
+  assumed.
+- **D-33, the wire-spelling divergence** (`mcp_tool_sweep.rs`). The new `audio_spectrum` and
+  `wait_for_break` fragments made a latent conflict measurable for the first time: the legacy MCP client
+  sends `fft_size`, `max_hz`, `timeout_ms` where §6 spells `fftSize`, `maxHz`, `timeoutMs`. The legacy
+  *server* reads the snake_case spellings too, so client and server agree with each other and both diverge
+  from §6 — "fix the client" would have broken working tooling. empyrean ruled direction only (camelCase
+  stands, §6 does not move) and left the migration, which must move server and client together, as the
+  owner's call: *"Nothing in the ruling changes code today."* Registered here rather than fixed, with the
+  registry's own claim — that each entry is a *respelling* whose camelCase partner the fragment declares —
+  re-derived from the schema, so the registry cannot be used to hide a genuine client bug.
 
 ### What this re-vendor adopted — §11.18 (CR-28), the caller lens
 
@@ -301,13 +367,33 @@ git -C /home/volence/sonic_hacks/empyrean log -1 --format='%H %s' "$REV"
 git -C /home/volence/sonic_hacks/empyrean log -1 --format='%H %s' "$REV" -- contract/schema/bus-protocol.schema.json
 ```
 
-Once the draft has merged and `TRACKED_REVISION` is back to `None`, the checkout *is* the authority and the
-plain copy is correct again:
+Once the draft has merged and `TRACKED_REVISION` is back to `None`, the freshness test compares against
+the checkout again — but **copy from the object store even then**, and record the blob:
 
 ```sh
-cp /home/volence/sonic_hacks/empyrean/contract/schema/bus-protocol.schema.json \
-   crates/oracle-aether/tests/contract/bus-protocol.schema.json
+git -C /home/volence/sonic_hacks/empyrean fetch -q origin
+git -C /home/volence/sonic_hacks/empyrean show origin/main:contract/schema/bus-protocol.schema.json \
+   > crates/oracle-aether/tests/contract/bus-protocol.schema.json
+# Re-verify what you WROTE, not what you read, and record all three coordinates.
+sha256sum crates/oracle-aether/tests/contract/bus-protocol.schema.json
+git hash-object crates/oracle-aether/tests/contract/bus-protocol.schema.json
+git -C /home/volence/sonic_hacks/empyrean log -1 --format='%H %s' origin/main \
+   -- contract/schema/bus-protocol.schema.json
 ```
+
+> **`empyrean/` is a live working tree, not an archive.** An earlier version of this section said that
+> with `TRACKED_REVISION` at `None` "the checkout *is* the authority and the plain copy is correct
+> again". That is true of the *freshness comparison* and false of the *copy*: another session edits that
+> tree, so `cp` means "whatever is on disk at this instant", and the instant is not recorded anywhere. On
+> 2026-08-22 the two happened to agree and the `cp` would have been harmless — which is exactly how the
+> habit survives to the day they disagree. Take the bytes by name; the extra keystrokes buy an auditable
+> pointer.
+
+The same hazard has a second face inside a re-vendor, and it drew blood on 2026-08-22: a red-first script
+backed the vendored file up with `cp` before doctoring it, and an earlier aborted run had already left
+that file doctored, so the "pristine" backup was the corrupted copy. The restore reported success and the
+sha did not match. **Restore from the object store by blob id, and check the sha of the restored file**
+— a backup taken from a file you have been mutating is not a baseline.
 
 Either way: update the table above with the new commit and hash, then run `cargo test -p oracle-aether`. If
 the new schema rejects messages the server sends, **that is the point** — contract §8 item 15: where a

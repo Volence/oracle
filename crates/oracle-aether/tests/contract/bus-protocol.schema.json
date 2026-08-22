@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://empyrean/contract/bus-protocol.schema.json",
   "title": "Empyrean / Aether Bus Protocol (Phase 1 thin slice)",
-  "description": "Source-of-truth message schema for the Aether bus (the Empyrean suite's shared protocol). PARTIAL, and precisely so as of 2026-08-15 (protocol.md §11.5/§11.6): the envelope, the handshake, every event, the symbol primitive, and 37 of §6's ~60 catalogued methods are schematized here (23 as of that date; recounted 2026-08-18, §11.13; recounted again 2026-08-18, §11.14; recounted again 2026-08-19 by §11.16, which added the profiler family's first three fragments ahead of their handler; recounted again 2026-08-19 by §11.17; recounted again 2026-08-21 by §11.18, which added NO fragment — the caller lens is new surface inside three existing ones, so the count is unmoved and was re-derived by parse anyway, because a count carried forward is a count nobody checked) — which covers every method the reference server advertises, both params and result, plus the two the CRAM pair adds ahead of being served: emulator/read_cram and emulator/write_cram are schematized first on purpose, because §8 item 20 makes the fragment the precondition for the handler and not its record. The rest of §6 (breakpoints, Z80, VGM, object decoders, and the other deferred families) is completed as each is implemented, per §8 item 20: a server's suite closes every result against its fragment, so a method without one cannot ship a result nobody has checked. The authoritative live method set is whatever `initialize` advertises. REQUEST PARAMS ARE CLOSED HERE (protocol.md §2.5, §8 item 22, added 2026-08-19 by §11.17): every methods.<name>.params object declares `unevaluatedProperties: false`, and unlike item 20's RESULT closure — which is deliberately kept out of this file, so a stale copy cannot reject a conformant server — that keyword IS published, because on the request path the party validating is the party publishing what it supports. handshake.initialize.params is deliberately exempt: closing the handshake would make a version-skewed negotiation fail at the one step whose job is to survive it. PRECEDENCE (protocol.md D14): this file is NORMATIVE for wire shapes — which keys exist, their JSON types and ranges, whether they are required — while protocol.md is normative for semantics and behaviour. A disagreement between the two is a spec bug to be fixed by amendment in the pass that finds it; until amended, this file governs what goes on the wire. It is not a place to introduce behaviour: a shape here with no counterpart in protocol.md is an un-specced field, and §8's ban on unilateral invention applies. The two are amended together.",
+  "description": "Source-of-truth message schema for the Aether bus (the Empyrean suite's shared protocol). PARTIAL, and precisely so as of 2026-08-15 (protocol.md §11.5/§11.6): the envelope, the handshake, every event, the symbol primitive, and a growing subset of §6's catalogued methods are schematized here. THE COUNT IS DELIBERATELY NOT STATED IN THIS PROSE (2026-08-22): it was hand-maintained across six recounts and was STILL wrong, this sentence reading '37' while the file held 58, which is the very defect its own later clause names, that a count carried forward is a count nobody checked. Repairing the number would only reset that clock, so the number is gone instead. The gate at schema/tests/validate_contract_schema.py derives every count BY PARSING this file and prints them on each run; that output is the only authority, and the eight BLOCKED rows print there too. Every fragment is written FROM ITS §6 ROW and none from a server's replies, which is §8's required direction) — which covers every method the reference server advertises, both params and result, plus the two the CRAM pair adds ahead of being served: emulator/read_cram and emulator/write_cram are schematized first on purpose, because §8 item 20 makes the fragment the precondition for the handler and not its record. EIGHT §6 ROWS REMAIN UNSCHEMATIZED AND DELIBERATELY SO — z80_registers, read_vdp_registers, read_vsram, object_slot, object_list, player_state, call_stack, log_tail — because each states its result too loosely to transcribe without inventing (a literal `…` in a key set, an array with no item type, a decode §9 defers to Phase 5, or, for log_tail, a question §10 leaves openly undecided). A PARTIAL fragment would be worse than none: item 20's closure would then refuse the conformant server that emits the keys the fragment omitted, while §2.5 already reads an ABSENT fragment correctly as 'not yet transcribed'. Each is itemized, with what would unblock it, in docs/2026-08-22-protocol-schema-audit.md, and the gate at schema/tests/validate_contract_schema.py prints all eight on every run so none goes quiet. The authoritative live method set is whatever `initialize` advertises. REQUEST PARAMS ARE CLOSED HERE (protocol.md §2.5, §8 item 22, added 2026-08-19 by §11.17): every methods.<name>.params object declares `unevaluatedProperties: false`, and unlike item 20's RESULT closure — which is deliberately kept out of this file, so a stale copy cannot reject a conformant server — that keyword IS published, because on the request path the party validating is the party publishing what it supports. handshake.initialize.params is deliberately exempt: closing the handshake would make a version-skewed negotiation fail at the one step whose job is to survive it. PRECEDENCE (protocol.md D14): this file is NORMATIVE for wire shapes — which keys exist, their JSON types and ranges, whether they are required — while protocol.md is normative for semantics and behaviour. A disagreement between the two is a spec bug to be fixed by amendment in the pass that finds it; until amended, this file governs what goes on the wire. It is not a place to introduce behaviour: a shape here with no counterpart in protocol.md is an un-specced field, and §8's ban on unilateral invention applies. The two are amended together.",
   "$defs": {
     "hex": {
       "type": "string",
@@ -1570,6 +1570,367 @@
           }
         }
       }
+    },
+    "emulator/ping": {
+      "$comment": "protocol.md §6 (run-control), row at §6 line 847: `— | version`, annotated 'kept for liveness; superseded by initialize'. FIRST FRAGMENT, transcribed 2026-08-22 by the §9 mechanical-completion pass. `version` is typed as a JSON number on the ONLY typed evidence this document carries for it — §10 decision 2's `ping → {\"version\":2}` — and that decision simultaneously says the value is 'pre-bus' and 'not part of bus versioning', so WHAT a conformant Aether server puts there is undefined by this catalog: not protocolVersion (§2.1 owns that, and D4 makes initialize the discovery surface), not the legacy 2 by any stated rule. The type is transcribed; the value space is a registered defect (docs/2026-08-22-protocol-schema-audit.md, D-01) and is deliberately NOT closed here by inventing a constant. caveat is declared ABSENT (the sprites precedent): a liveness probe has no weaker-answer condition to warn about.",
+      "params": { "type": "object", "unevaluatedProperties": false },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["version"],
+        "properties": {
+          "version": { "type": "integer", "minimum": 0, "description": "A JSON number, per §10 decision 2's `{\"version\":2}` — the only instance of this field in the document. NOT protocolVersion: §10 decision 2 rules the legacy ping version 'pre-bus' and outside bus versioning, and D4 makes initialize the discovery surface. A client MUST NOT branch on this value; use initialize." }
+        }
+      }
+    },
+    "emulator/step": {
+      "$comment": "protocol.md §6 (run-control), row at §6 line 851: `count? | pc, symbol?, symbolDisp?`. FIRST FRAGMENT, transcribed 2026-08-22. Named in §6's run-control state rule via 'step*', so it requires a PAUSED machine and MUST fail -32005 (data.reason 'machineRunning') on a free-running one. Emits emulator/stopped with reason 'step' (§3, which pins `step` as the reason for step/step_over/step_out alike — one stop condition, three methods). WHAT THIS FRAGMENT DELIBERATELY DOES NOT CONSTRAIN: `count` carries no lower bound above 0, no upper bound and no default, because §6's row states none — every other bounded count in this catalog spells its bound out (run_frames `frames? (≥1, def 1)`, press `frames? (1–1000, def 2)`, run_to `maxFrames? (≥1, def 600)`), and inventing one here would make the schema, which D14 says governs the wire, the author of a constraint the contract never agreed. Registered as a defect (audit D-02). caveat is declared ABSENT (the sprites precedent): a step has no weaker-answer condition §6 names.",
+      "params": {
+        "type": "object",
+        "unevaluatedProperties": false,
+        "properties": {
+          "count": { "type": "integer", "minimum": 0, "description": "Instructions to step. §6 states no default, no minimum above non-negativity and no ceiling; the floor here is definitional for a count and not a policy this fragment chose. See audit D-02." }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["pc"],
+        "properties": {
+          "pc": { "$ref": "#/$defs/hex", "description": "Program counter after the step. D9 category 1." },
+          "symbol": { "$ref": "#/$defs/symbolName", "$comment": "The BARE label at `pc` — §4's naming rule, which binds every symbol field on this bus. Absent when nothing resolves; a server MUST NOT fall back to the address string." },
+          "symbolDisp": { "type": "integer", "minimum": 0, "description": "Bytes past `symbol`; 0 is an exact hit. Non-negative because it is a displacement from the NEAREST PRECEDING symbol (§4)." }
+        }
+      }
+    },
+    "emulator/step_over": {
+      "$comment": "protocol.md §6 (run-control), row at §6 line 852: `— | — (emits stopped when done)`. FIRST FRAGMENT, transcribed 2026-08-22. NO RESULT KEYS, and that is the row rather than an omission: §6 writes `—` in both columns and the stop is reported on the event channel, whose `stopped` params carry `pc`, `symbol?` and `symbolDisp?` (§3). Contrast emulator/step, whose row DOES carry pc — that asymmetry is §6's and is registered as a defect (audit D-03) rather than smoothed over here, because smoothing it would mean this fragment inventing result keys for a row that has none. Named in §6's run-control state rule via 'step*': requires a paused machine, -32005 otherwise. Its stopped `reason` is 'step', not a value of its own (§3 pins this explicitly).",
+      "params": { "type": "object", "unevaluatedProperties": false },
+      "result": { "$ref": "#/$defs/replyFields" }
+    },
+    "emulator/step_out": {
+      "$comment": "protocol.md §6 (run-control), row at §6 line 853: `— | — (emits stopped when done)`. FIRST FRAGMENT, transcribed 2026-08-22. Identical treatment to emulator/step_over, for identical reasons: no result keys because the row has none, the answer arrives on the `stopped` event, `reason` is 'step' (§3), and §6's run-control state rule reaches it through 'step*'. See audit D-03.",
+      "params": { "type": "object", "unevaluatedProperties": false },
+      "result": { "$ref": "#/$defs/replyFields" }
+    },
+    "emulator/run_to_scanline": {
+      "$comment": "protocol.md §6 (run-control) and D12, row at §6 line 855: `line (0–511), maxFrames? (≥1, def 600) | line, reached, maxFrames, caveat?`. FIRST FRAGMENT, transcribed 2026-08-22. The emulator/run_to fragment is the direct precedent and this row is its sibling: bounded, and it says whether it fired. Named in §6's run-control state rule, so it requires a PAUSED machine and MUST fail -32005 machineRunning otherwise. `reached` is the caller's answer and `deadlineReached` on the `stopped` event is its complement for stream consumers; they are never both true (§6). caveat is DECLARED here, unlike most rows, because §6's row spells it out and D12 gives it SHOULD force: a `reached: false` reply SHOULD say in words that nothing about the machine's state follows from where it stopped. NOTE the asymmetry with run_to, transcribed rather than corrected: run_to's result carries `pc` (and symbol?/symbolDisp?) and this row's does not, so a caller that ran to a scanline cannot learn where the 68000 stopped without a second call. Registered as audit D-04.",
+      "params": {
+        "type": "object",
+        "unevaluatedProperties": false,
+        "required": ["line"],
+        "properties": {
+          "line": { "type": "integer", "minimum": 0, "maximum": 511, "description": "Target scanline. D9 category 2 (a line number). The 0–511 span is §6's and deliberately wider than emulator/scanlines' 0–223 active-display bound: a raster target may legitimately sit in blanking, which is not a drawable row." },
+          "maxFrames": { "type": "integer", "minimum": 1, "default": 600, "description": "Bound (D12). Without it an unreachable line is an unbounded run, and a hang in the debug transport destroys evidence." }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["line", "reached", "maxFrames"],
+        "properties": {
+          "line": { "type": "integer", "minimum": 0, "maximum": 511, "description": "Echoed target." },
+          "reached": { "type": "boolean", "description": "True = the condition fired. False = the run ended on maxFrames; NOTHING about the machine state follows from where it stopped (D12)." },
+          "maxFrames": { "type": "integer", "minimum": 1, "description": "The bound actually applied." },
+          "caveat": { "type": "string", "description": "§2.4. SHOULD be present when `reached` is false — the one discharge D12 asks for in words. §2.4 clause 4 exempts most rows from enumerating caveat; this row is one of the two that keep it explicitly (run_to being the other), because here it is a specific obligation and not a general warning." }
+        }
+      }
+    },
+    "emulator/wait_for_break": {
+      "$comment": "protocol.md §6 (run-control), row at §6 line 857: `timeoutMs? | running, pc?, symbol?, timeoutReached?, waitedMs?`. FIRST FRAGMENT, transcribed 2026-08-22. DEPRECATED by the emulator/stopped event (§3, §8 item 9, D6) and RETAINED for one transition window: clients without the `events` capability may still poll it, and a server MUST keep answering it. `running` is NOT declared here — it is the machine stamp's (§2.2, D11), applied envelope-level after the handler returns and arriving through replyFields; §6's row lists it because the row predates D11, and declaring it twice would invite a handler to think it owns the value. That is emulator/status's ruling applied to the second row that repeats a stamp field, and it is registered as audit D-05 because §6 still prints it. THE ROW HAS NO REQUIRED HANDLER KEY: every one of the remaining four is optional in §6, so a conformant reply can be the envelope alone. §5 spells this method's flag `timeout_reached` while §6 spells it `timeoutReached`; §3's camelCase-fields convention makes §6's the one true spelling and §5's a stale snake_case survival — audit D-06. caveat is declared ABSENT: `timeoutReached` is the typed key §2.4 rule 3 asks for, so the weak answer here already has a machine-readable discriminant.",
+      "params": {
+        "type": "object",
+        "unevaluatedProperties": false,
+        "properties": {
+          "timeoutMs": { "type": "integer", "minimum": 0, "description": "How long to wait. §6 states no default and no ceiling; an unbounded default would be the hang D12 exists to prevent, but this row predates D12 and is deprecated, so no bound is invented here. See audit D-07." }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "properties": {
+          "pc": { "$ref": "#/$defs/hex", "description": "Program counter where the machine stopped. Optional in §6's row: absent when the wait timed out with the machine still running." },
+          "symbol": { "$ref": "#/$defs/symbolName", "$comment": "The BARE label at `pc` — §4's naming rule. §6's row carries NO symbolDisp companion here, alone among the symbol-bearing rows in this catalog, so a non-zero displacement is unreportable on this reply: audit D-08." },
+          "timeoutReached": { "type": "boolean", "description": "Whether the wait ended on its timeout rather than on a halt. The typed discriminant §2.4 rule 3 requires for a consequence a client acts on. §5 calls this field `timeout_reached`; §3's camelCase convention makes THIS the spelling (audit D-06)." },
+          "waitedMs": { "type": "integer", "minimum": 0, "description": "Wall-clock milliseconds actually waited. The one wall-clock quantity in this catalog, and legitimately so: it measures the WAIT, which is a host-side fact, not a machine coordinate — D11's emulated-clocks rule governs the stamp beside it, not this." }
+        }
+      }
+    },
+    "emulator/z80_read": {
+      "$comment": "protocol.md §6 (memory & Z80), row at §6 line 996: `addr (0–$3FFF), len? (≤$2000) | addr, len, bytes`. FIRST FRAGMENT, transcribed 2026-08-22. The Z80's address space is deliberately NOT a member of emulator/read's `space` enum (§6's read note is explicit: 'a read enum holding a value the watch enum refuses would be two vocabularies wearing one name'), so this row keeps its own bounds. Those bounds are stated on a HEX STRING and so cannot be expressed as minimum/maximum — the emulator/read precedent, which likewise carries its space sizes in prose — and live in the descriptions below. A pure read by the same reasoning that exempts emulator/read: it advances nothing, so §6's run-control state rule does not reach it. `len` has NO stated default, which is the one thing a client cannot work around (audit D-09). caveat is declared ABSENT (the sprites precedent).",
+      "params": {
+        "type": "object",
+        "unevaluatedProperties": false,
+        "required": ["addr"],
+        "properties": {
+          "addr": { "$ref": "#/$defs/hex", "description": "First byte to read in the Z80's 16-bit space. §6 bounds it to 0–0x3FFF (the 8 KB of Z80 RAM); a base outside that is a refusal, not a wrap. D9 category 1, so the bound is prose here rather than a numeric maximum." },
+          "len": { "type": "integer", "minimum": 0, "maximum": 8192, "description": "Bytes to read. §6's ceiling is 0x2000 (8192). §6 states NO default and no minimum above non-negativity; see audit D-09." }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["addr", "len", "bytes"],
+        "properties": {
+          "addr": { "$ref": "#/$defs/hex", "description": "Echoed base." },
+          "len": { "type": "integer", "minimum": 0, "maximum": 8192, "description": "Bytes actually returned." },
+          "bytes": { "$ref": "#/$defs/hex", "description": "The byte payload. D9 category 1." }
+        }
+      }
+    },
+    "emulator/z80_write": {
+      "$comment": "protocol.md §6 (memory & Z80), row at §6 line 997: `addr; bytes|value | addr, len`. FIRST FRAGMENT, transcribed 2026-08-22. The exactly-one-payload-spelling shape is emulator/write_memory's and is enforced mechanically here for write_memory's reason (both, or neither, is -32602). TWO THINGS THIS ROW LACKS THAT ITS 68000 SIBLING HAS, transcribed rather than repaired: (1) `value` carries NO `width` companion, so how many bytes a numeric write lands, and in what order, is undefined — write_memory pins both (width 1|2|4, big-endian) and this row pins neither, which also leaves the reply's `len` underdetermined (audit D-10); (2) the row is NOT named in §6's run-control state rule, though write_memory and write_cram both are and the stated reason for naming them — 'a poke mid-free-run mutates the timeline just as surely' — applies here word for word (audit D-11). No address bound is stated on this row either, though the read row beside it bounds 0–$3FFF. caveat is declared ABSENT (the write_memory precedent).",
+      "params": {
+        "type": "object",
+        "unevaluatedProperties": false,
+        "required": ["addr"],
+        "oneOf": [{ "required": ["bytes"] }, { "required": ["value"] }],
+        "properties": {
+          "addr": { "$ref": "#/$defs/hex", "description": "First byte to write in the Z80's space. §6 states no bound on THIS row; the read row beside it bounds 0–0x3FFF. See audit D-10." },
+          "bytes": { "type": "string", "pattern": "^0x([0-9A-Fa-f]{2})+$", "description": "Byte payload — hex string, even digit count enforced by the pattern (D9 category 1). Alternative to `value`; passing both is -32602." },
+          "value": { "type": "integer", "minimum": 0, "description": "Numeric payload. NO `width` companion exists on this row (contrast write_memory), so this fragment states no maximum: bounding it would be choosing a width the contract has not chosen. See audit D-10." }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["addr", "len"],
+        "properties": {
+          "addr": { "$ref": "#/$defs/hex", "description": "Echoed base." },
+          "len": { "type": "integer", "minimum": 0, "description": "Bytes written. Determinate for a `bytes` payload; underdetermined for a `value` one until §6 pins a width (audit D-10)." }
+        }
+      }
+    },
+    "emulator/breakpoint_add": {
+      "$comment": "protocol.md §6 (breakpoints & watchpoints), row at §6 line 1015: `addr|symbol | addr`. FIRST FRAGMENT, transcribed 2026-08-22. The addr-XOR-symbol shape is emulator/run_to's and emulator/write_memory's, enforced mechanically here for their reason. NOT subject to §6's run-control state rule: §6 rules that arming and clearing a WATCH mutate an observer rather than the timeline, and a breakpoint is the same kind of object. The reply is a single echo, which is all the row gives — no handle, unlike a watch, which is why breakpoint_clear addresses breakpoints by address (audit D-13 records what that costs). caveat is declared ABSENT (the sprites precedent). Two behaviours §6 leaves open are registered rather than decided here: whether adding a breakpoint at an address that already has one is an error or an idempotent success, and what `-32005`/`-32602` refusals this row can produce at all. See audit D-12.",
+      "params": {
+        "type": "object",
+        "unevaluatedProperties": false,
+        "oneOf": [{ "required": ["addr"] }, { "required": ["symbol"] }],
+        "properties": {
+          "addr": { "$ref": "#/$defs/hex", "description": "Where to break. D9 category 1." },
+          "symbol": { "$ref": "#/$defs/symbolName", "$comment": "Resolved to an address (D7); alternative to addr. §4's naming rule binds this field as it binds every symbol field on this bus." }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["addr"],
+        "properties": {
+          "addr": { "$ref": "#/$defs/hex", "description": "The RESOLVED address the breakpoint was set at — the answer, not merely an echo, when the request named a symbol." }
+        }
+      }
+    },
+    "emulator/breakpoint_list": {
+      "$comment": "protocol.md §6 (breakpoints & watchpoints), row at §6 line 1016: `— | breakpoints[]{addr,enabled,hits}`. FIRST FRAGMENT, transcribed 2026-08-22. THE ROW IS TRANSCRIBED AS IT STANDS, WHICH MEANS THIS LIST CARRIES NONE OF §2.4's COMPANIONS — no total, no returned, no truncated, no limit, no cursor — and that is a deviation from the bounded-list rule reported rather than repaired: every other list-shaped result in this catalog (checkpoint_list, watchpoint_list, watchpoint_hits, sprites, lookup_symbol's otherMatches, the profiler's routines) carries clause (a)'s field set, and this one predates §2.4. §2.4 offers exactly one reading under which the row is already correct — the list is COMPLETE by construction, bounded by nothing the server chose — but §6 never says so, and clause (a) is a MUST the moment a server caps it. Adding the companions here would be this fragment writing the contract; leaving them undeclared makes any server that emits them fail §8 item 20's closure. Audit D-14. caveat is declared ABSENT.",
+      "params": { "type": "object", "unevaluatedProperties": false },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["breakpoints"],
+        "properties": {
+          "breakpoints": {
+            "type": "array",
+            "description": "Every breakpoint the server holds. Carries no §2.4 clause (a) companions because §6's row gives none — see this fragment's $comment and audit D-14. Order is unspecified by §6 (contrast emulator/sprites, whose slot order is pinned precisely because the alternative reading was defensible).",
+            "items": {
+              "type": "object",
+              "required": ["addr", "enabled", "hits"],
+              "additionalProperties": false,
+              "properties": {
+                "addr": { "$ref": "#/$defs/hex", "description": "Where it breaks. The row's identity: §6 gives breakpoints no opaque handle, unlike watches." },
+                "enabled": { "type": "boolean", "description": "Whether it is armed. D9 category 2 (an enable). NOTE that no catalogued method sets this — see audit D-13." },
+                "hits": { "type": "integer", "minimum": 0, "description": "How many times it has fired. A count, so a JSON number (D9 category 2). §6 does not say what resets it." }
+              }
+            }
+          }
+        }
+      }
+    },
+    "emulator/breakpoint_clear": {
+      "$comment": "protocol.md §6 (breakpoints & watchpoints), row at §6 line 1017: `all|addr|symbol | removed`. FIRST FRAGMENT, transcribed 2026-08-22. A three-way exactly-one choice, enforced mechanically (emulator/checkpoint_drop's two-way `id|all` is the precedent, and `removed` is that row's field with that row's meaning: how many actually went). NOT subject to §6's run-control state rule, on breakpoint_add's reasoning. WHAT §6 DOES NOT SAY, and this fragment therefore does not: whether clearing an address that holds no breakpoint SUCCEEDS with removed 0 or refuses. §6.1 pins the idempotent reading for checkpoint_drop and §6 pins it again for watchpoint_clear, both with the same argument ('an error a client must learn to swallow teaches clients to swallow errors'), so the precedent is unanimous — but a precedent is not the row, and two conformant servers can still answer this call differently today. Audit D-15. caveat is declared ABSENT.",
+      "params": {
+        "type": "object",
+        "unevaluatedProperties": false,
+        "oneOf": [{ "required": ["all"] }, { "required": ["addr"] }, { "required": ["symbol"] }],
+        "properties": {
+          "all": { "type": "boolean", "description": "Clear every breakpoint. D9 category 2 (an enable)." },
+          "addr": { "$ref": "#/$defs/hex", "description": "Clear the breakpoint at this address." },
+          "symbol": { "$ref": "#/$defs/symbolName", "$comment": "Resolved to an address (D7); alternative to addr, and bound by §4's naming rule." }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["removed"],
+        "properties": {
+          "removed": { "type": "integer", "minimum": 0, "description": "How many breakpoints actually went, so a client can tell a clear that found something from one that found nothing — the checkpoint_drop field with the checkpoint_drop meaning." }
+        }
+      }
+    },
+    "emulator/write_vram": {
+      "$comment": "protocol.md §6 (VRAM / CRAM / layers), row at §6 line 1132: `addr, bytes | addr, len`. FIRST FRAGMENT, transcribed 2026-08-22. THREE ABSENCES ARE TRANSCRIBED RATHER THAN REPAIRED, and each is registered: (1) the row is NOT named in §6's run-control state rule, though write_memory and write_cram both are and §11.17's stated reason for naming write_cram — a game that composes its own state every frame overwrites a direct write inside the frame it lands in — is if anything stronger for VRAM (audit D-16); (2) no address bound is stated, though emulator/read's note fixes VRAM at 0xFFFF and every other write row in this catalog says what it refuses (audit D-16); (3) there is no `value`+`width` spelling, so unlike write_memory and z80_write this row takes a byte payload only — which is arguably right for a tile blit and is recorded as an asymmetry rather than a defect. A poke is a debugger access: on write_memory's and write_cram's standing rule it is never offered to the watch surface, and watchpoint_hits.seen does not move for it. caveat is declared ABSENT (the write_memory precedent).",
+      "params": {
+        "type": "object",
+        "unevaluatedProperties": false,
+        "required": ["addr", "bytes"],
+        "properties": {
+          "addr": { "$ref": "#/$defs/hex", "description": "First VRAM byte to write. D9 category 1. §6's row states no bound; emulator/read's note gives the space size as 0xFFFF. See audit D-16." },
+          "bytes": { "type": "string", "pattern": "^0x([0-9A-Fa-f]{2})+$", "description": "Byte payload — hex string, even digit count enforced by the pattern (D9 category 1). The only payload spelling this row has." }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["addr", "len"],
+        "properties": {
+          "addr": { "$ref": "#/$defs/hex", "description": "Echoed base." },
+          "len": { "type": "integer", "minimum": 0, "description": "Bytes written." }
+        }
+      }
+    },
+    "emulator/set_layer_enabled": {
+      "$comment": "protocol.md §6 (VRAM / CRAM / layers), row at §6 line 1135: `layer, enabled | layer, enabled`. FIRST FRAGMENT, transcribed 2026-08-22. `layer` IS DELIBERATELY LEFT AS A BARE STRING AND NOT GIVEN AN ENUM, which is the one judgement call in this fragment and is made in the direction the catalog's own rules point. §6 states no vocabulary for it anywhere. The obvious candidate — planeA | planeB | window | sprites, read off emulator/get_layer_states' result keys one row below — is very probably right, but emitting an enum is NOT additive: §11.18 records the rule explicitly ('widening an emitted enum later is NOT additive, since a client or vendored validator closed over the old value set refuses the new member'), and the same applies to a REQUEST enum a server validates against under §2.5. Guessing four members and being wrong about one spelling would refuse a conformant call by name. Registered as audit D-17, with the four-member enum as the recommendation for the amendment that closes it. This is a display MASK, not machine state: it does not advance the timeline, so §6's run-control state rule does not reach it. caveat is declared ABSENT.",
+      "params": {
+        "type": "object",
+        "unevaluatedProperties": false,
+        "required": ["layer", "enabled"],
+        "properties": {
+          "layer": { "type": "string", "minLength": 1, "description": "Which layer to mask. NO ENUM: §6 states no vocabulary — see this fragment's $comment and audit D-17. The four spellings emulator/get_layer_states answers with (planeA, planeB, window, sprites) are the recommended value set." },
+          "enabled": { "type": "boolean", "description": "Whether the layer is drawn. D9 category 2 (an enable)." }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["layer", "enabled"],
+        "properties": {
+          "layer": { "type": "string", "minLength": 1, "description": "Echoed, so a reply is self-describing." },
+          "enabled": { "type": "boolean", "description": "The state the layer is in AFTER this call." }
+        }
+      }
+    },
+    "emulator/get_layer_states": {
+      "$comment": "protocol.md §6 (VRAM / CRAM / layers), row at §6 line 1136: `— | planeA, planeB, window, sprites`. FIRST FRAGMENT, transcribed 2026-08-22. The row ENUMERATES its four keys with no ellipsis, which is what makes it schematizable at all where its neighbours read_vdp_registers and read_vsram are not (audit D-20, D-21). All four are REQUIRED: a mask a reply omits reads exactly like a mask that is off, and §2.3's reason — absence and false must not both mean the same thing — governs here as it governs droppedEvents. Booleans by D9 category 2 (enables). A pure read: it does not mutate the timeline, so §6's run-control state rule does not reach it. caveat is declared ABSENT.",
+      "params": { "type": "object", "unevaluatedProperties": false },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["planeA", "planeB", "window", "sprites"],
+        "properties": {
+          "planeA": { "type": "boolean", "description": "Whether plane A is drawn." },
+          "planeB": { "type": "boolean", "description": "Whether plane B is drawn." },
+          "window": { "type": "boolean", "description": "Whether the window plane is drawn." },
+          "sprites": { "type": "boolean", "description": "Whether sprites are drawn." }
+        }
+      }
+    },
+    "emulator/set_channel_enabled": {
+      "$comment": "protocol.md §6 (audio / VGM), row at §6 line 1383: `channel, enabled | channel, enabled`. FIRST FRAGMENT, transcribed 2026-08-22. `channel` is left a bare string for emulator/set_layer_enabled's reason, in full: §6 states no vocabulary, the candidate set is readable off emulator/get_channel_states one row below (fm1–fm6, dac, psg1–psg3, psgNoise), and a request enum a server validates under §2.5 refuses by NAME every call that spells a member differently — so guessing eleven members is eleven chances to refuse a conformant client. Registered as audit D-17 alongside its sibling. A channel mask is a mixer setting, not machine state: it does not advance the timeline, so §6's run-control state rule does not reach it. caveat is declared ABSENT.",
+      "params": {
+        "type": "object",
+        "unevaluatedProperties": false,
+        "required": ["channel", "enabled"],
+        "properties": {
+          "channel": { "type": "string", "minLength": 1, "description": "Which channel to mask. NO ENUM: §6 states no vocabulary — see audit D-17. The eleven spellings emulator/get_channel_states answers with (fm1–fm6, dac, psg1–psg3, psgNoise) are the recommended value set." },
+          "enabled": { "type": "boolean", "description": "Whether the channel is mixed. D9 category 2 (an enable)." }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["channel", "enabled"],
+        "properties": {
+          "channel": { "type": "string", "minLength": 1, "description": "Echoed, so a reply is self-describing." },
+          "enabled": { "type": "boolean", "description": "The state the channel is in AFTER this call." }
+        }
+      }
+    },
+    "emulator/get_channel_states": {
+      "$comment": "protocol.md §6 (audio / VGM), row at §6 line 1384: `— | fm1–fm6, dac, psg1–psg3, psgNoise`. FIRST FRAGMENT, transcribed 2026-08-22. The row's `fm1–fm6` and `psg1–psg3` are RANGES rather than an ellipsis — they name their endpoints and their step, so the eleven keys are fully determined and this row is schematizable where read_vdp_registers' `{…}` is not. All eleven are REQUIRED, on emulator/get_layer_states' reasoning: an omitted mask reads exactly like a mask that is off. Booleans by D9 category 2. A pure read. caveat is declared ABSENT.",
+      "params": { "type": "object", "unevaluatedProperties": false },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["fm1", "fm2", "fm3", "fm4", "fm5", "fm6", "dac", "psg1", "psg2", "psg3", "psgNoise"],
+        "properties": {
+          "fm1": { "type": "boolean", "description": "YM2612 FM channel 1." },
+          "fm2": { "type": "boolean", "description": "YM2612 FM channel 2." },
+          "fm3": { "type": "boolean", "description": "YM2612 FM channel 3." },
+          "fm4": { "type": "boolean", "description": "YM2612 FM channel 4." },
+          "fm5": { "type": "boolean", "description": "YM2612 FM channel 5." },
+          "fm6": { "type": "boolean", "description": "YM2612 FM channel 6." },
+          "dac": { "type": "boolean", "description": "The DAC (FM channel 6 in DAC mode)." },
+          "psg1": { "type": "boolean", "description": "SN76489 square channel 1." },
+          "psg2": { "type": "boolean", "description": "SN76489 square channel 2." },
+          "psg3": { "type": "boolean", "description": "SN76489 square channel 3." },
+          "psgNoise": { "type": "boolean", "description": "SN76489 noise channel." }
+        }
+      }
+    },
+    "emulator/vgm_start": {
+      "$comment": "protocol.md §6 (audio / VGM), row at §6 line 1385: `path? | path`. FIRST FRAGMENT, transcribed 2026-08-22. `path` names a file on the machine the SERVER runs on, which §6's paths note (D8) settles rather than apologises for: this is a trusted local-developer API, loopback-only, serving a process that pokes arbitrary memory. Absolute paths SHOULD be reported. The param is optional and the result key is not, so a server that chooses the path answers with the one it chose — which is the whole point, since a caller who did not name a path otherwise cannot find the capture. WHAT §6 DOES NOT SAY: what a start does when a capture is already running (restart, refuse with -32005, or succeed as a no-op). Audit D-18. caveat is declared ABSENT.",
+      "params": {
+        "type": "object",
+        "unevaluatedProperties": false,
+        "properties": {
+          "path": { "type": "string", "minLength": 1, "description": "Where to write the capture, on the SERVER's filesystem (§6's paths note, D8). Omitted: the server chooses, and the reply says what it chose." }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["path"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1, "description": "The path being written. REQUIRED even when the client supplied it, because a caller who did not supply one has no other way to find the capture." }
+        }
+      }
+    },
+    "emulator/vgm_stop": {
+      "$comment": "protocol.md §6 (audio / VGM), row at §6 line 1386: `— | path, samples, durationSec, bytes`. FIRST FRAGMENT, transcribed 2026-08-22. All four keys are unmarked in the row and so all four are REQUIRED. `bytes` is the size written, on the emulator/checkpoint and emulator/screenshot precedent, and it is how a caller knows the write COMPLETED rather than merely that a path was chosen — §11.5's argument for screenshot's `bytes`, which this row's field shares. `durationSec` is the one non-integer number in this family: it is a duration in seconds derived from `samples` at the capture's sample rate, so it is fractional by construction. WHAT §6 DOES NOT SAY: what a stop answers when nothing is running (audit D-18). caveat is declared ABSENT.",
+      "params": { "type": "object", "unevaluatedProperties": false },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["path", "samples", "durationSec", "bytes"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1, "description": "The file written, on the SERVER's filesystem (§6's paths note, D8)." },
+          "samples": { "type": "integer", "minimum": 0, "description": "VGM samples captured. A count (D9 category 2)." },
+          "durationSec": { "type": "number", "minimum": 0, "description": "Capture length in seconds. Fractional by construction — samples over the capture's sample rate — which is why this is a JSON number and not an integer." },
+          "bytes": { "type": "integer", "minimum": 0, "description": "Size of the file written. How a caller knows the write completed and not merely that a path was chosen (the screenshot.bytes argument, §11.5)." }
+        }
+      }
+    },
+    "emulator/vgm_status": {
+      "$comment": "protocol.md §6 (audio / VGM), row at §6 line 1387: `— | active, samples, durationSec, bytes`. FIRST FRAGMENT, transcribed 2026-08-22. All four unmarked, so all four REQUIRED — including `samples`/`durationSec`/`bytes` when `active` is false, where they describe whatever the last capture reached; §2.3's reason applies (absence and zero must not both mean 'nothing has been captured'). A pure read: it does not advance the timeline. NOTE that this row carries NO `path`, though its two siblings both do, so a client polling status cannot learn which file is being written without having called vgm_start on this connection — audit D-19. caveat is declared ABSENT.",
+      "params": { "type": "object", "unevaluatedProperties": false },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["active", "samples", "durationSec", "bytes"],
+        "properties": {
+          "active": { "type": "boolean", "description": "Whether a capture is running now. D9 category 2." },
+          "samples": { "type": "integer", "minimum": 0, "description": "VGM samples captured so far." },
+          "durationSec": { "type": "number", "minimum": 0, "description": "Capture length so far, in seconds. Fractional by construction (see vgm_stop)." },
+          "bytes": { "type": "integer", "minimum": 0, "description": "Bytes written so far." }
+        }
+      }
+    },
+    "emulator/audio_spectrum": {
+      "$comment": "protocol.md §6 (audio / VGM), row at §6 line 1388: `source? (fm|psg, def fm), fftSize? (256–32768, def 4096, →pow2), maxHz? | source, sampleRate, fftSize, binHz, dominantHz, samplesAvailable, magnitudes[]`. FIRST FRAGMENT, transcribed 2026-08-22. The row is unusually complete for an unschematized one: both param enums, the range and the default are all spelled out. ONE READING IS APPLIED AND FLAGGED: the row's '→pow2' annotation is read as the server COERCING the request to a power of two, so the RESULT's fftSize is enumerated over the eight powers of two in 256–32768 while the PARAM accepts the whole range — which is why the two are typed differently on purpose. §6 does not say whether the coercion rounds up, down or to nearest, and it need not for this enum to hold. `magnitudes` is STRUCTURALLY bounded (its length follows from the echoed fftSize, narrowed by maxHz), so per §2.4 clause (d) it takes neither a truncation flag nor a cursor — pixel_attribution's `candidates` is the exemplar. A pure read: it reads an audio buffer and advances nothing, so §6's run-control state rule does not reach it. WHAT §6 DOES NOT SAY, all registered as audit D-22: `maxHz` is not echoed although it determines the array's length; `magnitudes`' UNIT is unstated (linear amplitude or decibels), which two conformant servers can answer differently with identically-shaped replies; and `samplesAvailable` below fftSize has no stated consequence. caveat is declared ABSENT because §6's row declares none — but `samplesAvailable` under `fftSize` is exactly the weaker-answer condition §2.4 exists for, which is part of D-22.",
+      "params": {
+        "type": "object",
+        "unevaluatedProperties": false,
+        "properties": {
+          "source": { "enum": ["fm", "psg"], "default": "fm", "description": "Which chip's output to analyse. An unknown value is -32602." },
+          "fftSize": { "type": "integer", "minimum": 256, "maximum": 32768, "default": 4096, "description": "Requested transform size. §6 accepts the whole 256–32768 range and marks the field '→pow2', so a non-power-of-two request is COERCED rather than refused; the reply's `fftSize` is the size actually used. D9 category 2." },
+          "maxHz": { "type": "number", "minimum": 0, "description": "Ceiling on the frequency range returned, narrowing `magnitudes` to the bins at or below it. NOT echoed in the reply, though it determines the array's length — audit D-22." }
+        }
+      },
+      "result": {
+        "allOf": [{ "$ref": "#/$defs/replyFields" }],
+        "required": ["source", "sampleRate", "fftSize", "binHz", "dominantHz", "samplesAvailable", "magnitudes"],
+        "properties": {
+          "source": { "enum": ["fm", "psg"], "description": "Echoed, so a reply is self-describing: a spectrum means nothing without the chip it came from." },
+          "sampleRate": { "type": "integer", "minimum": 0, "description": "Sample rate of the analysed buffer, in Hz. The basis binHz is derived from." },
+          "fftSize": { "enum": [256, 512, 1024, 2048, 4096, 8192, 16384, 32768], "description": "The transform size ACTUALLY used, which is the request coerced to a power of two ('→pow2' in §6's row) and so is one of the eight powers of two inside 256–32768. Enumerated rather than left an open integer because a client sizing its own arithmetic off this number needs the coercion's result, not its request." },
+          "binHz": { "type": "number", "minimum": 0, "description": "Width of one bin in Hz — sampleRate over fftSize. Fractional by construction, hence a JSON number." },
+          "dominantHz": { "type": "number", "minimum": 0, "description": "Centre frequency of the largest-magnitude bin, in Hz." },
+          "samplesAvailable": { "type": "integer", "minimum": 0, "description": "How many samples the analysed buffer actually held. The honesty field of this row: below `fftSize` the transform was taken over a short buffer, and §6 states no consequence for that — audit D-22." },
+          "magnitudes": {
+            "type": "array",
+            "items": { "type": "number" },
+            "description": "Per-bin magnitudes, bin-ascending from DC. STRUCTURALLY bounded — the length follows from the echoed fftSize, narrowed by the request's maxHz — so it takes neither a truncation flag nor a cursor (§2.4 clause (d), pixel_attribution's `candidates` being the exemplar). THE UNIT IS UNSTATED by §6 (linear amplitude or dB): audit D-22."
+          }
+        }
+      }
+    },
+    "emulator/log_clear": {
+      "$comment": "protocol.md §6 (status / misc), row at §6 line 1767: `— | —`. FIRST FRAGMENT, transcribed 2026-08-22. NO RESULT KEYS, and that is the row rather than an omission — emulator/release_all's precedent, including its reasoning: a hardcoded constant that can never be false carries zero bits and is not registered. NOTE what this row does NOT carry, and what its neighbour's open question makes non-trivial: no `removed`/`cleared` count, so a caller cannot tell a clear that discarded a thousand entries from one that discarded nothing — the fact emulator/checkpoint_drop and emulator/breakpoint_clear both report through `removed`. Registered as audit D-23, together with the question of what a clear does to the `token`/`since` continuation emulator/log_tail hands out (§10, still open). caveat is declared ABSENT.",
+      "params": { "type": "object", "unevaluatedProperties": false },
+      "result": { "$ref": "#/$defs/replyFields" }
     }
   }
 }

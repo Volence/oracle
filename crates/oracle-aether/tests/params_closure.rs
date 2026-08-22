@@ -132,20 +132,56 @@ fn every_params_object_in_the_vendored_schema_is_closed() {
     // **re-derived by parsing** and compared, never trusted as a literal. §11.10's founding defect was a
     // count wrong on both ends, and a hardcoded expectation here reproduces exactly that failure — it
     // agrees with whatever the last person typed. The floor above is a floor; this is the gate.
+    //
+    // **Reshaped at the 58-fragment re-vendor (2026-08-22), and the reshape is the point of the gate
+    // rather than a retreat from it.** The previous spelling demanded exactly one count and read the
+    // FIRST `N of §6's …` triple it found. Two things were wrong with that, and the candidate exposed
+    // both at once:
+    //
+    //  * **It read one of several.** The pre-fix candidate carried *two* numeric triples, `37` (the stale
+    //    headline) and `58` (a parenthetical correction 1,200 characters later). Taking the first caught
+    //    the defect here by luck of position; taking the last would have gone green on a document that
+    //    states its own size twice and disagrees with itself. Every numeric triple is now checked, so
+    //    neither position is privileged and a self-contradicting document is red whichever half is true.
+    //  * **It required a count to exist.** empyrean's fix (`eecce95`) was not to repair `37` to `58` — it
+    //    **deleted the number**, on the reasoning that a correction carrying the coordinate inherits the
+    //    defect, and pointed the prose at their gate, which parses. That is a better artifact and our
+    //    check must not punish it. But "no count present" is exactly the unmeasurable condition that must
+    //    not read as a pass: it is indistinguishable from a parse that silently found nothing.
+    //
+    // So the check is total over the two states and vacuous in neither. Either the document states counts
+    // — and every one of them must equal the parsed truth — or it states, in as many words, that it
+    // deliberately states none, and that disclaimer is itself read out of the document. There is no third
+    // branch, and no branch that asserts nothing.
     let desc = schema["description"].as_str().expect("a description");
-    let claimed = desc
-        .split_whitespace()
-        .zip(desc.split_whitespace().skip(1))
-        .zip(desc.split_whitespace().skip(2))
-        .find_map(|((a, b), c)| {
-            (b == "of" && c.starts_with("§6")).then(|| a.parse::<usize>().ok())?
-        })
-        .expect("the description must state its fragment count as `N of §6's ... methods`");
-    assert_eq!(
-        claimed, seen,
-        "the description claims {claimed} fragments and the document holds {seen} — a count is parsed \
-         or it is wrong (§11.17 clause 7)"
-    );
+    let words: Vec<&str> = desc.split_whitespace().collect();
+    let claims: Vec<usize> = words
+        .windows(3)
+        .filter(|w| w[1] == "of" && w[2].starts_with("§6"))
+        .filter_map(|w| w[0].parse::<usize>().ok())
+        .collect();
+    // The disclaimer, quoted from `eecce95`'s description. Matching prose is fragile on purpose: if
+    // upstream reworks this sentence away without restoring a count, this goes red and a human looks,
+    // which is the correct outcome for "the document no longer says either thing".
+    const NO_COUNT_DISCLAIMER: &str = "THE COUNT IS DELIBERATELY NOT STATED IN THIS PROSE";
+    if claims.is_empty() {
+        assert!(
+            desc.contains(NO_COUNT_DISCLAIMER),
+            "the description states no fragment count as `N of §6's …` AND does not carry the \
+             deliberate-omission disclaimer ({NO_COUNT_DISCLAIMER:?}).\n\
+             The document holds {seen} fragments. This is NOT a pass: an absent count and a count this \
+             parser failed to find look identical from here, so the artifact must say which it is."
+        );
+    } else {
+        for claimed in &claims {
+            assert_eq!(
+                *claimed, seen,
+                "the description claims {claimed} fragments and the document holds {seen} — a count is \
+                 parsed or it is wrong (§11.17 clause 7). All {} stated counts: {claims:?}",
+                claims.len()
+            );
+        }
+    }
 }
 
 /// **The closure is at the TOP level of `params`, and only there** (§2.5: *"objects nested inside a
