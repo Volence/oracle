@@ -59,6 +59,38 @@ with tools that then exist).
    `"hint"|"vint"|"root"|"depthCap"` — the consumer's literal spelling adjudicated over, accepted
    by them as exceeding their floor. TRACKED_REVISION retired to None (`d95bf59`).
 
+6. **§11.5 short-routine residual — OPEN 2026-08-22, owner's pick from an empty queue.** The one
+   unexplained item left by the profiler corpus A/B: five ungated short rows (`Tile_Cache_Fill`
+   idle, `EntityWindow_Scan` maxdiag, `Section_UpdateColumns`, `Palette_Compose`, `BgAnim_Update`)
+   disagree 11–40% with aeon's instrument at W4 straddle exposure under 4%; W2 and state-phase
+   already tested and rejected. Two agents dispatched in parallel off `a27e4d2`:
+   `profiler-shortrow-residual` (measurement + an instrument-independent hand-derivation of the
+   two constant rows) and `profiler-attribution-audit` (source-side: what each instrument's cycle
+   figure actually *includes*, both codebases).
+   **The registered settling experiment was deliberately NOT taken as written.** §11.5 says "a
+   paired event-level trace, which needs the reference running"; two cheaper and stronger
+   experiments come first — (a) partition count-vs-cost against the corpus's own four-column
+   tables, since their `cyc/logic-tick` is **derived** (`cyc/video-frame × frames-per-tick`), not
+   measured, and their `calls` is per-video-frame integer, so ours and theirs may not be the same
+   quantity at all; (b) hand-derive true 68000 cycles for `Palette_Compose` (ours exactly 180.0)
+   and `BgAnim_Update` (ours exactly 154.0) from the listing + `docs/reference/` tables — a third
+   party neither emulator authored. Paired trace is held as stage C, dispatchable only if these
+   leave it open. Named hypotheses under falsification: H1 denominator/lag-scaling artifact, H2
+   cycle-attribution/port-cost asymmetry (their caveat 0 is ideal-cycles-only; our `stallCycles:0`
+   may mean "no DMA halt", not "no stall"), H3 bracket convention (JSR 20 / RTS 16 on a 154-cycle
+   routine is up to 23%).
+   **Sharpest lead, called out by name in both briefs:** `BgAnim_Update` agrees at maxdiag (theirs
+   153 / ours 154) and disagrees 21% at idle (theirs 187 / ours 154) for a routine that is a hard
+   constant on ours at both states — and theirs reads HIGH there while the other four read LOW, so
+   no lose-only mechanism covers the class. Control is `Parallax_Update` at 0.17% over 20k cycles.
+   **Setup cost collapsed at dispatch time:** the corpus ROM needs no toolchain rebuild — sigil's
+   committed golden at `7b46f075` (`crates/sigil-harness/golden/s4.debug.bin`, blob `633f5f88`) is
+   byte-identical to the corpus pin `d22dda85`/713295, verified firsthand here. Only the `.lst`
+   still needs the §1.3 pinned-toolchain recipe, and it self-checks: a rebuild that reproduces
+   those bytes proves the listing beside it is the corpus listing. ⚠ The **live**
+   `aeon/s4.debug.{bin,lst}` are a different ROM (`f8a1c567`/715010) — the server's binding check
+   refuses the mismatched pair, and that refusal is a safety net, never to be defeated.
+
 **~~⏸ CR-28 implementation paused~~ RESOLVED same day** — the same agent was resumed after the
 7pm reset with context and worktree intact (resume path A worked as written) and finished clean.
 Kept for the pattern: *(original note follows)* the implementer died on the API limit after committing 2 of ~5 stages on branch
@@ -124,6 +156,14 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
 `name()`. It was two lines.)*
 
 ## The bars (house methods — each earned by a measured failure; do not thin)
+
+> The shared protocol gained review bars 8–10 and two SHA-citation rules on 2026-08-22 (empyrean
+> `dc629a5`, `c2c81e2`, `00334b6`, `43fbfc9`). **Not transcribed here — read them there**; the
+> protocol is changed in empyrean and never forked into a repo copy. Two bear directly on this
+> lane: **bar 9** (never change the subject to suit the instrument — an instrumented run reported
+> as the uninstrumented number is the named failure) governs every profiler measurement we take,
+> and **bar 8** (enumerate by what TOUCHES the data, not what defines it) governs state/snapshot
+> field sweeps. Both were written into the 2026-08-22 §11.5 dispatches.
 
 - **Contract-first, always**: CR → un-framed adjudication → apply fixes → the code and its
   amendment merge in one window so `protocol.md` never describes a server that does not exist.
