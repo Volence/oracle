@@ -48,7 +48,11 @@ use std::collections::BTreeSet;
 
 /// Methods this server serves and BOTH schemas cover. The instrument's own control: these must be
 /// MEASURED, or the table's UNMEASURED rows describe this file rather than the server.
-const POSITIVE_CONTROLS: &[&str] = &["emulator/status", "emulator/registers", "emulator/read_cram"];
+const POSITIVE_CONTROLS: &[&str] = &[
+    "emulator/status",
+    "emulator/registers",
+    "emulator/read_cram",
+];
 
 /// Params for a control, chosen so the call succeeds on a freshly reset test ROM.
 fn control_params(method: &str) -> Value {
@@ -119,7 +123,10 @@ fn closed_fragment(doc: &Value, method: &str) -> Value {
         }
     }
     o.insert("$defs".into(), Value::Object(defs));
-    if Value::Object(o.clone()).to_string().contains("\"#/methods/") {
+    if Value::Object(o.clone())
+        .to_string()
+        .contains("\"#/methods/")
+    {
         o.insert("methods".into(), doc["methods"].clone());
     }
     o.insert("unevaluatedProperties".into(), json!(false));
