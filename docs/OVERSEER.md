@@ -527,12 +527,28 @@ with tools that then exist).
       **client-side timeout unenforceable — destroying the property the call exists for.** Their
       120 s is a *wedge detector*, not a performance budget. *A wedge detector that cannot give up
       is not a detector.* Connection stays usable during an outstanding wait; cancel available.
-   ⚠ **One aeon citation NOT confirmed and reported back as such:** a "documented oracle MCP press
-   deadlock". Our `docs/` has no such note — the only deadlock reference
-   (`2026-08-14-tooling-frontier-recon.md:272`) describes a hunt *now fixed*. Recorded as **did not
-   find**, never "does not exist" (a failing search and an empty tree look identical). Their
-   transport argument stands on the wedge-detector logic alone, so the CR must **not** carry the
-   unverified citation. Their own answer also self-corrected: they had enumerated by **key
+   ⚠ **One aeon citation NOT confirmed → RESOLVED, and the resolution is the interesting part.**
+   Their "documented oracle MCP press deadlock" is **not in our docs** (the only deadlock reference,
+   `2026-08-14-tooling-frontier-recon.md:272`, describes a hunt *now fixed*). Reported back as
+   **did not find**, never "does not exist" — and that phrasing is why it got resolved instead of
+   quietly dropped. **It exists in THEIR tree**: aeon `docs/superpowers/2026-08-14-next-session-
+   handoff.md:122`, *"`emulator_press` wedges intermittently (StopSystem race) and blocks ALL MCP
+   until…"*, last touched by `54089d8c`. **Verified firsthand: commit exists and
+   `--is-ancestor origin/master` = YES.** Their citation was defective in a way our search could
+   not have resolved — *"a documented oracle MCP press deadlock"* never said **whose**
+   documentation, and it is an aeon-side observation **of** oracle's behaviour. Durable form:
+   **name the tree, not just the document** — a cross-repo citation that omits whose docs it lives
+   in sends the receiver to search the wrong tree, where a correct search returns a correctly empty
+   result.
+   **STILL EXCLUDED FROM CR-A, at their own argument and with our agreement.** It is dated
+   2026-08-14, describes a wedge class **neither lane has re-tested**, and their
+   `docs/research/phase_harness/phase_notes.md` marks adjacent wedge/park classes as later fixed
+   (the reload-park drain workflow is OBSOLETE outright). Honest status is **unknown-today, not
+   live**. *Putting an unverified historical hazard into a contract document as motivation is how a
+   stale caveat outlives the defect it described* — the precedent-perishability failure, twice hit
+   in this workspace today. Ruling 5 stands on the wedge-detector logic, which needs no emulator
+   archaeology. **The CR-A brief never carried the citation, so no correction was needed** — checked
+   rather than assumed. Their own answer also self-corrected: they had enumerated by **key
    spelling**, which found `timeout_ms` and so found the method carrying the key rather than the
    flow it belonged to — the same family as my `[a-z_]` class, one by the wrong attribute and one
    by the wrong alphabet.
@@ -551,6 +567,30 @@ with tools that then exist).
    *Method note: this surfaced only because a peer's transport citation sent me into an old recon
    doc for an unrelated reason. Grep the repo's own history before pricing a parcel — this one had
    been sitting in `docs/` for eight days and no session had looked.*
+   aeon's addition, adopted: **the reply flag is the part that protects an agent; the name only
+   helps someone who already suspects something.**
+
+   ⚑ **PROPOSED UPSTREAM (sent to empyrean 2026-08-22): a DISCRIMINATOR for shared-frame
+   convergence — bar 8's missing half.** Bar 8 says mutual verification cannot catch a shared frame,
+   only a changed frame can; it does **not** say how to tell a genuine convergence from a
+   shared-frame one, and the two are indistinguishable from inside. Today gave four instances —
+   three negative (my `[a-z_]` class; aeon's enumerate-by-key-spelling; empyrean's file-presence
+   inference) and **one positive** (the `write_vram` convergence above). aeon's framing of the pair,
+   which is the sharp part: **theirs enumerated by the wrong ATTRIBUTE, mine by the wrong ALPHABET**,
+   and in both cases *the enumeration parameter was too small to be recorded as a choice at all* —
+   nobody writes down "I chose a character class". **An unrecorded choice cannot be varied on a
+   re-check, which is exactly why running the check twice cannot help.**
+   **Proposed test: the discriminator is not independence of AGENTS, it is independence of the
+   ENUMERATION PARAMETER.** Before treating agreement as corroboration, name the parameter each
+   derivation enumerated over and check they differ; if you cannot name it, the agreement is
+   untested. **Delegation corollary, directly load-bearing for this role: two agents given the same
+   brief share its frame BY CONSTRUCTION**, so a second agent confirming the first mostly re-measures
+   the brief — today's most valuable agent result was the one that **contradicted** its brief on nine
+   points, three of them facts I had supplied with confidence.
+   ⚠ Sent with its own weakness stated: **the proposal is itself an agreement between two lanes who
+   talked before writing it down**, i.e. a shared frame by the very mechanism it describes — flagged
+   to empyrean as one lane's proposal with a second's endorsement, not two independent findings.
+   Theirs to phrase or reject; the protocol changes in empyrean and is never forked into a repo copy.
 
    **NEXT (not yet dispatched):** CR-B (D-10 `z80_write` width/byte-order/`len`) — contract work,
    un-framed adjudication, docs-only. Also open from the survey and **not lost**: `resolve_target`
