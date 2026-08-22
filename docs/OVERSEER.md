@@ -346,6 +346,34 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
 
 ## The bars (house methods — each earned by a measured failure; do not thin)
 
+> ⚠ **READ THE PROTOCOL AT A COMMITTED REVISION, NOT THROUGH THE PATH** (seraph's rule, empyrean
+> `origin/main` — the most upstream rule in that document): `../empyrean/docs/OVERSEER-PROTOCOL.md`
+> is **one peer's live working tree**, so booting by path delivers the suite's shared contract by
+> reading somebody's uncommitted directory. Use
+> `git -C ../empyrean fetch -q origin && git -C ../empyrean show origin/main:docs/OVERSEER-PROTOCOL.md`.
+> Correct citation discipline applied to a bad source produces a **more** convincing artifact, not a
+> less convincing one. **This session's own boot is the measured case**: it read the file by path
+> while empyrean held sixteen unpushed commits, and got the right bytes only because their worktree
+> happened to be clean at that minute — 59 lines landed in that path minutes later, and the file
+> reached **422 lines by day's end against the 245-line snapshot the session booted on**. Right
+> answer, by timing luck, with nothing in the output saying so.
+>
+> As of 2026-08-22 evening the protocol also carries **bar 12** (a doc's universally-quantified
+> rules bind every actor they describe, not just the party in its title — grep the contract you own
+> before treating a cross-tool question as an open fork), **bar 13** (a reachability argument is an
+> enumeration problem — "this can never be live when that fires" is a claim about *every* caller;
+> phrase it as a discipline both sides run, never as "the overseer checks reachability"), a
+> **precedent-perishability preamble** (the bar is durable, its narrative is not — precedents cite
+> recently-churned code, which is the likeliest thing in the repo to be refactored next; when
+> narrative and bar disagree, **the bar wins**), bar 8's cheap frame-changer (**find the load-bearing
+> step nobody cited and check that** — the shared frame lives in the uncited joint), and bar 4's
+> converse from aeon (**on a byte-neutral parcel a matching CRC cannot witness that the build RAN** —
+> directly load-bearing here, since zero-file-diff is our default expectation for bus work, so that
+> expectation now needs a witness that the run happened, not an unchanged hash).
+> **Our own sequencing call became bar 9's corollary** (*validate first, adopt second*) with the
+> declining-to-vendor above as its precedent, and "**the tell is not the red build, it is who is
+> expected to move**" is in the protocol verbatim in substance.
+>
 > The shared protocol gained review bars 8–10 and two SHA-citation rules on 2026-08-22 (empyrean
 > `dc629a5`, `c2c81e2`, `00334b6`, `43fbfc9`, `9b604f0`+`e650b96`+`aadf63f`, `20a8e81`). **Not transcribed here — read them there**; the
 > protocol is changed in empyrean and never forked into a repo copy. Two bear directly on this
