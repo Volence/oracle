@@ -251,6 +251,42 @@ with tools that then exist).
    `vgm_{start,status,stop}`, `wait_for_break`, `write_vram`, `z80_{read,write}`.
    **Binding consequence:** D-10/D-13/D-17 have **two implementers** and must never be adjudicated
    as if one speaks for both.
+   **⚑ STANDING OBLIGATION TO AEON — carry this across session boundaries.** The two servers spell
+   some wire keys differently: legacy C++ uses `snake_case` in places, the contract and our Rust
+   server use `camelCase` (25 known conflicts — **4 param**: `fftSize`, `maxHz`, `timeoutMs`,
+   `maxFrames`; **21 result** across 11 methods, incl. `frameToken`, `symbolCount`, `symbolAtPc`,
+   `romLoading`, `otherMatches`). empyrean ruled camelCase, **direction only**. Our server is
+   **already fully camelCase** — zero snake_case wire keys in `crates/oracle-aether/src/` (swept,
+   with the grep validated against `ControlSocket.cpp` first so the empty result is a measurement,
+   not a broken pattern) — so this costs the acceptance work nothing.
+   **THE OBLIGATION: message aeon with a DATE before the successor serves `emulator/wait_for_break`**,
+   so they pre-migrate `tools/raster_source_gate.py` and `tools/snapshot_poison_gate.py` (both send
+   `timeout_ms`) instead of debugging a red nightly at 04:17. Promised 2026-08-22; banked here
+   because a promise living only in a chat log dies at the next `/clear`.
+   **Sequencing, revised (now empyrean's bar 15):** *never retire the alias on the legacy server —
+   retire it by REPLACING the server.* Our server refuses unknown params with `-32602` naming the
+   key and listing the accepted set, at the single dispatch choke **before the handler runs**
+   (`engine.rs:4290` / `:999` / doc `:186-187`). The legacy server **ignores** them —
+   `ControlSocket.cpp:127` `getInt(k, d=0)`, `:149` `getU32` — so retiring the alias there hands
+   `30000` to every caller still sending `timeout_ms`, and a gate that believes it waits 120s waits
+   30 and still pastes a verdict into merge evidence. **When two implementations of one contract
+   disagree about unknown keys, sequence the cutover onto the STRICT one** — a permissive
+   implementation can only ever report success. Corollary: **dual-accept does not exist on the SEND
+   side** (you cannot accept both spellings of a key you are *sending*), so it covers zero param
+   sites; fail-loudly-on-absence is for *results*.
+   **Two peer-claim corrections logged against this session, both mine:** (1) I cited four aeon
+   files as diverging-key clients; **three were refuted** — `boot_override_gate.py:193` is a helper
+   *named* `frame_token` whose body at `:197` reads `["frameToken"]` (already camelCase, already a
+   subscript that fails loudly), and `raster_frame_epoch_probe`'s `frame_token` mentions are a
+   comment and two docstrings while the executing code keys off `Frame_Counter` via `read_memory`.
+   Bar 11 exactly: a citation points into code that keeps executing past the line you were shown.
+   (2) Worse — I **endorsed empyrean's `.aeon-nightly` inference and ranked it above my own findings
+   without checking any of it**. Refuted by aeon: `.aeon-nightly` is a clean *build* tree; systemd
+   runs the MAIN tree's script; that script invokes one tool with zero diverging keys. **Carrying is
+   not running.** The scariest item in the set — an inverted stall detector in an unattended loop —
+   **does not exist**; `repro_wedge3` is hand-run. A second session endorsing an unverified
+   inference adds no evidence and makes it look corroborated. Now a clause on empyrean's bar 14:
+   **trace the invocation chain; never infer exposure from a file existing in a tree.**
    **Carried findings worth acting on** (all anchored in the merged doc): D-13's framing is
    backwards — the watch surface was rebuilt on the new server and **breakpoints were never carried
    across** (legacy watchpoints are the worse surface: add-only, no list/clear/hits); the stale-
