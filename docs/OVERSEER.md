@@ -410,9 +410,18 @@ with tools that then exist).
    The list is in item 7; **re-derive it, never transcribe it.**
    **Baseline re-derived firsthand at boot** (`0fa34f1`): the schema carries **58** fragments —
    note `schema["methods"]` maps method → fragment **directly**, with no `properties` sub-object,
-   which is the shape my earlier `$comment` miscount came from. `engine.rs` carries **39**
-   `"emulator/*"` string literals = **37 methods + 2 events** (`stopped`, `resumed`) — the two
-   events must not contaminate either count. Core spot-checks: `system.rs:828 step_instruction`
+   which is the shape my earlier `$comment` miscount came from. ~~`engine.rs` carries **39**
+   `"emulator/*"` string literals = **37 methods + 2 events** (`stopped`, `resumed`).~~
+   **⚠ CORRECTED by the survey, verified firsthand — 40 literals = 37 methods + THREE events.**
+   The third is **`emulator/romReloaded`**, and my boot grep's character class `[a-z_]` **hid it
+   behind the capital R**. The method count 37 was right, but *for a reason that could as easily
+   have gone the other way*: had the hidden literal been a method rather than an event, I would
+   have silently lost one from the acceptance list and the two "independent" derivations would
+   have agreed on a wrong number, because **both were fed by the same character class**. Durable
+   form: **a regex character class is an unstated assumption about the data, and it fails silently
+   and identically in every derivation that shares it.** Use `[A-Za-z0-9_]` on wire names —
+   `camelCase` is the contract's own spelling rule, so a lowercase-only class contradicts a rule
+   this repo already enforces everywhere else. Core spot-checks: `system.rs:828 step_instruction`
    and `z80/mod.rs:412 Z80::step` exist; `breakpoint` appears in `oracle-core/src/` **only** in
    `bus.rs`, so the breakpoint surface is genuinely unbuilt and the served watchpoint quartet
    (add/list/clear/hits) is its nearest house precedent.
@@ -433,14 +442,81 @@ with tools that then exist).
    deliberately preserved. Both become CR text to empyrean, never a unilateral server deviation.
    ⚠ The named failure mode for this parcel, stated in the brief: **a `step_over` that silently
    behaves like `step`** is worse than an unimplemented one. BLOCKED on the pair is a good outcome.
-   **AEON OBLIGATION — DELIBERATELY HELD, not forgotten.** Item 7 owes aeon a **dated** heads-up
-   before we serve `emulator/wait_for_break` (their `raster_source_gate.py` and
-   `snapshot_poison_gate.py` both send `timeout_ms`; ours refuses unknown params with `-32602`,
-   the legacy server silently defaults). The date is a function of when that parcel lands, which
-   is exactly what the survey is pricing. Sending "no date yet" now would be **bar 18's own
-   failure** — a pin with no live reader — so the message goes out when the survey returns a
-   number. If this session ends first, **the next one sends it**: the obligation is real and the
-   only open question is the date.
+
+   **SURVEY LANDED `610aa0d`** (`docs/2026-08-22-acceptance-21-survey.md`, 1257 lines, docs-only —
+   so aggregate and currency are unmoved *by construction*, recorded as reasoning rather than a
+   skipped run; the trio agent held the cargo lane throughout). **The 21-item list is CONFIRMED
+   correct** — derived − briefed = ∅ in both directions, by two derivations (the literal grep and a
+   structural parse of the `METHODS` dispatch table, both 37), with
+   `SCHEMATIZED_NOT_ADVERTISED` (`schema_conformance.rs:388`, item 7's D-33 pin) matching
+   name-for-name as corroboration. The agent correctly declined to call that a third derivation: it
+   is a hand-written list, so agreement means the pin is current, not that the parse is right.
+   **Nine of the brief's facts came back wrong. I verified five firsthand; all five held:**
+   (1) the `romReloaded` event above; (2) **`docs/protocol.md` does not exist at empyrean
+   `origin/main` — it is `contract/protocol.md`**, so the read command I put in *both* briefs
+   fails; (3) **`system.rs:828 step_instruction` is NOT the stepping primitive** — zero callers in
+   any `src/`, only `tests/step_retire.rs` and `examples/differential_trace.rs`, and I named it as
+   the starting point in both briefs (the survey adds that it does not advance the master clock —
+   *not* independently confirmed here, flagged as a claim); (4) the three-method aeon scope above;
+   (5) **no fragment declares any error condition — all 58 carry only `$comment`/`params`/`result`**,
+   so every error obligation (`-32005` machineRunning, `-32602` unknown-param) lives in **prose**
+   and cannot be validated against a fragment. Conformance tests for error shapes must derive from
+   `contract/protocol.md`, and a suite that only validates replies against fragments is **blind to
+   the entire error surface** — worth a named gate.
+   Unverified here, carried as the agent's claims: `vram_mut` is a pub-ised test hatch that bypasses
+   the SAT-cache write-through (so `write_vram` is not the freebie it looks like); the synth tree is
+   `#[cfg(feature = "synth")]`, default-off, and **not compiled into the Aether server at all**,
+   while `vgm.rs` is ungated — which is what separates the VGM parcel from the audio ones;
+   `run_to_scanline`'s contractual 0–511 is unreachable above 261 (`LINES_PER_FRAME = 262`,
+   confirmed present); sigil's 14 hits use the **bare method name with no `emulator/` prefix**, so a
+   prefixed grep cannot see them. Two claims are tagged for foreground runtime follow-up (the `step`
+   frame-budget truncation and the `write_vram` SAT desync) — **not** to be settled by a subagent.
+   **Consumer sweep: 14 of 21 have no consumer of any kind**; three are reached by aeon's nightly
+   systemd chain; four are manual-only; aurora and seraph have **zero code hits** (prose only).
+   **Proposed ordering, adopted:** trio → `run_to_scanline` → `write_vram` (via a new `poke_vram`,
+   **not** `vram_mut`) → `z80_read`/`z80_write` → **breakpoints + `wait_for_break` together**
+   (gated on CR-A) → VGM → channel masks → `audio_spectrum` → layer masks. `ping` and `log_clear`
+   **parked**: `ping`'s only consumer already guards on `hasMethod`, and no log exists for
+   `log_clear` to clear — serving it alone would advertise a capability that does nothing.
+   Stepping leads rather than cheapest-first because **stepping and breakpoints are one mechanism**;
+   building breakpoints first designs the run-stop surface twice, under a blocked contract question.
+   **Only 3 of 21 are contract-blocked.** The real bottlenecks are `wait_for_break`'s blocking-
+   transport question (unanswered, and it dominates the aeon date) and three genuinely absent core
+   capabilities: FFT, channel mask, layer mask.
+   **Two fixes found and deliberately NOT taken** (correct — surveying is not implementing):
+   `resolve_target` does not enforce the `addr`/`symbol` `oneOf`, which is a **live unregistered
+   request-side divergence on `run_to` today**; and `schema_conformance.rs:6,222` carries stale
+   prose ("9 of the 21 we advertise", "all 25"). Both are queued, not lost.
+   ⚠ **Method note, and the reason the survey paid for itself:** it was dispatched to price work and
+   its most valuable output was **correcting the overseer's own boot derivation**. Three of the
+   nine wrong facts were pointers *I* supplied with confidence. A brief's stated facts get
+   transcription-grade trust from the agent receiving them — the same failure the protocol's
+   provenance cluster names — so **an agent that checks its brief instead of executing it is doing
+   the job right**, and briefs should say so explicitly.
+
+   **NEXT (not yet dispatched):** CR-A (D-13 breakpoint handle discipline) and CR-B (D-10
+   `z80_write` width/byte-order/`len`) — both are contract work, both go to un-framed adjudication,
+   and **CR-A must consult aeon before drafting**, per the obligation above.
+   **AEON OBLIGATION — SCOPE WAS WRONG, and the correction makes it bigger.** Item 7 recorded it
+   as a dated heads-up before serving `emulator/wait_for_break`, because their gates send
+   `timeout_ms`. **The survey found it covers THREE methods, not one, and I verified it firsthand
+   at `origin/master` (not their working tree):** both scripts run an **arm → wait → clear** flow —
+   `raster_source_gate.py:161/168/173` and `snapshot_poison_gate.py:62/64/68` call
+   `emulator/breakpoint_add {addr}` → `emulator/wait_for_break {timeout_ms}` →
+   `emulator/breakpoint_clear {all:true}`.
+   **Consequence, and it is the load-bearing one: the migration CANNOT be piecemeal.** Serving
+   `wait_for_break` alone would leave their flow with nothing to arm — so `wait_for_break` and the
+   breakpoint trio ship as ONE parcel or the notice is worthless. The `timeout_ms` spelling was
+   never the whole exposure; it was the part visible from a param grep.
+   **This also gives the obligation a live reader BEFORE any date exists.** Their call sites bet on
+   a specific breakpoint shape — `{addr: "0x…"}` to arm, `{all: true}` to clear, i.e. **address-
+   keyed, no handles** — and **CR-A (D-13) is about to decide exactly that handle discipline.**
+   Their input window is *now, before adjudication*, not when we ship. Note also
+   `raster_source_gate.py:33`: under `deterministic=True` the legacy server answers `breakpoint_add`
+   with a "det-mode stop" behaviour — a documented interaction our fragments say nothing about.
+   The **date** still waits on the survey's pricing of that parcel; the **design consultation**
+   does not, and holding it until a date existed would have consulted them after the ruling.
+   If this session ends first, **the next one owes both**.
 
 **~~⏸ CR-28 implementation paused~~ RESOLVED same day** — the same agent was resumed after the
 7pm reset with context and worktree intact (resume path A worked as written) and finished clean.
