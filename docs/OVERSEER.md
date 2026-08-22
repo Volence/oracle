@@ -668,6 +668,82 @@ with tools that then exist).
    handshake capability until something has actually been run. That is the `stopPrecision` field's
    whole credibility.
 
+   **▶ TRIO SERVED — merged `56cc545`. THE ACCEPTANCE CONTRACT MOVED FOR THE FIRST TIME: 21 → 18.**
+   (`schematized-but-unadvertised` pin dropped by exactly three; that pin is item 7's D-33 guard, so
+   the count is enforced, not asserted.) Commits: `da7c1a5` core (`return_pop_bytes` — RTS/RTR/RTE
+   frame sizes as one `const fn` beside `control_flow_of`, pinned exhaustively over all 65,536
+   opcodes; the profiler's 3 private constants folded into it rather than left as a drifting
+   mirror), `a05e34c` aether (three handlers + a `StepStop` shadow-stack sink; `advance_until`'s
+   Fanout **factored** into `advance_with`/`attribute` rather than copied), `f737f94` tests
+   (`crates/oracle-aether/tests/step.rs`, 16 tests).
+   **⚑ BOTH OF MY BAD POINTERS WERE CAUGHT BY THE AGENT INDEPENDENTLY, BEFORE MY CORRECTION
+   ARRIVED.** It found `contract/protocol.md` via `git ls-tree` when `docs/protocol.md` failed, and
+   it **rejected `step_instruction` on the function's own doc** — *"it does **not** advance the
+   master clock (the caller owns time)"* — building instead on `System::run_frames_with_sink`, which
+   is also the only path that re-anchors the frame grid (bypassing it would corrupt every later
+   `run_frames`).
+   **THE WARNED-OF FAILURE IS NOW PINNED, NOT ARGUED.** Mutation **M3** rebuilt the server on
+   `step_instruction` and failed with **`mclk moved by 0`** — a step that advances the PC and not the
+   machine, which is exactly the plausible-looking wrong answer the brief named. Mutation **M1**
+   pins the parcel's other named failure: `step_over` silently degraded to `step` lands at
+   `768`(PROF_LEAF) where the caller's next instruction is `836`. **16 mutations, 16 named failing
+   assertions.** Three were killed **by the contract rather than by the test file** — a `symbol` of
+   `"Leaf+$2"` and a stray `pc` on a no-result-key row both died in `common/schema.rs` on
+   `$defs/symbolName` and item 20's closure.
+   **Two self-corrections the agent made from reading the core, both real:** count **retires**, not
+   boundaries (the boundary hook double-fires on the stopping PC, so a boundary counter is off by
+   one *exactly when a caller resumes*); and never `sp >= sp0` (the `move.l/rts` dispatch idiom
+   returns while leaving the stack where it found it, and a user-mode interrupt switches A7 to a
+   different stack entirely). Returns are matched on the profiler's **exact** rule.
+
+   **OVERSEER RULINGS on the returned work:**
+   - **`deadlineReached` on a `step` stop — RATIFIED.** §3 scopes it to the run-shaped reasons in
+     *prose*; the schema permits it unconditionally. The agent emits it because silence when the
+     bound was hit is a **believable wrong answer** — which is aeon's ruling-4 property (*either the
+     answer is exact or the server says it isn't*) arriving on a different surface. Ratified, and
+     **registered as a CR item** so §3's scope is made explicit rather than left as our reading.
+   - **`capabilities` left unchanged — RATIFIED.** The schema has no step-related capability key, so
+     adding one is §8's invention ban. `breakpoints` correctly stays `false`; this parcel built none.
+   - **`lookup_symbol` caveat overwrite — confirmed, correctly NOT fixed** (`engine.rs` ~`:2932-2944`;
+     the displacement and ambiguity `if`s are independent, so at `Macro+$6` with an ambiguous
+     readable name the second assignment discards the more load-bearing warning). Stays registered;
+     `step` uses `symbol_at` and touches no caveat, so the pattern was not propagated.
+   - **F-STEP-FRAME-BOUND registered:** the 600-frame bound is **server policy and undiscoverable** —
+     no contract key exists for it. Rides the D-02 CR below.
+   - **Untested paths, named honestly and accepted as such:** the `lost_track` suppression (needs
+     16,384 nested calls; suppresses the stop rather than guessing, degrading to `deadlineReached`),
+     and `step_out` outside any subroutine (correctly runs to the bound).
+   **CR TEXT BANKED FOR D-02/D-03 — both improve on the audit, which is the point of serving a
+   fragment you think is imperfect rather than bending it:**
+   - **D-02:** `count? (≥0, def 1, ≤ maxStepCount)`, **refused** above the ceiling on `press.frames`'
+     pattern rather than clamped, ceiling advertised as `initialize.limits.maxStepCount`. **Floor
+     stays 0, against the audit's `≥1`** — zero is definitional for a count, is a useful *where am I
+     without moving the machine* probe, and raising it would break a client already using it.
+     **The half the audit misses:** a bounded `step` needs somewhere to report a **short** one — add
+     `reached` to the result and lift the `caveat` prohibition when it is false. Today the one case a
+     caller most needs the truth (*did my 10,000 steps happen?*) is the case the result **cannot
+     express** — §11.5's `run_to.stoppedAtFrame` defect, inverted.
+   - **D-03:** give `step_over`/`step_out` `step`'s `pc`/`symbol?`/`symbolDisp?`. **Implementation
+     evidence the audit did not have:** because these two must be frame-bounded (no param can carry a
+     budget), the caller's key question is *did the frame return, or did the run hit its bound?* —
+     and today that answer exists **only on the event channel**, so a conformant client that did not
+     negotiate `events` cannot obtain it at all. The asymmetry is not inelegance; for one class of
+     conformant client it makes the method **unanswerable**.
+   ✅ **VERIFIED FIRSTHAND ON THE MERGED TREE, all four gates with real exit codes** (not the
+   branch-side run, and not the agent's report — which matched exactly, as they always have):
+   `cargo fmt --check` **exit 0**; aggregate **`LEGS=50 PASSED=1787 FAILED=0 IGNORED=6`, exit 0**;
+   `cargo clippy --workspace --all-targets` cached **exit 0 / 0 warnings**; fresh after
+   `cargo clean -p oracle-core -p oracle-aether` (33,933 files, 8.3 GiB removed, so it genuinely
+   rebuilt) **exit 0 / 0 warnings**. Baseline was `49/1770/0/6`: **+1 leg, +17 passed, fully
+   accounted** — 16 in the new `step.rs` leg + 1 in oracle-core's lib leg
+   (`return_pop_bytes_is_non_zero_on_exactly_the_return_classes`). Currency: **zero-file-diff on
+   `crates/oracle-core/tests/`**, the default expectation for bus work, met without a named exception.
+   *Ops note re-earned: a `pgrep` for the cargo lane returned a hit that was **my own shell's command
+   line**, and a second returned a stale hit from the just-finishing run — the lane check is racy at
+   an agent's tail. Check exit status (`pgrep` exit 1 = clean) rather than reading output presence.*
+   **TAGGED for FOREGROUND runtime follow-up (never a subagent):** drive the three against a real ROM
+   through the live server. Nothing in this parcel has touched a running machine.
+
    **NEXT (not yet dispatched):** CR-B (D-10 `z80_write` width/byte-order/`len`) — contract work,
    un-framed adjudication, docs-only. Also open from the survey and **not lost**: `resolve_target`
    does not enforce the `addr`/`symbol` `oneOf` (a **live** unregistered request-side divergence on
