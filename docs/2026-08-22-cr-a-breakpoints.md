@@ -951,3 +951,87 @@ departs from the brief that commissioned it — the plural `breakpoints` array (
 departure is argued at the point of use and listed again in §11.
 
 No emulator was contacted and no build was run in preparing this document.
+
+---
+
+## 14. Overseer addendum — added at merge, 2026-08-22
+
+Three items the drafting agent did not have. Added by the oracle overseer *before* adjudication so the
+adjudicator rules on the strongest version of the argument, not a weaker one. Everything below was
+verified firsthand at the revisions named.
+
+### 14.1 The prior question in §12 is RESOLVED — this CR is in order
+
+The draft flags a question prior to its own merit: the audit says *"for D-10, D-13 and D-17 the answer
+belongs to the legacy server, not to the lane that owns the successor"*, which if it reserved **ruling
+authority** would put CR-A out of order regardless of quality. The agent proceeded on the narrower
+reading and — correctly and to its credit — called that reading **self-serving** and asked for it to be
+decided first.
+
+**It resolves against the worry, on the audit's own text.** Read at empyrean `origin/main`,
+`docs/2026-08-22-protocol-schema-audit.md`:
+
+- **D-13's own Recommendation, lines 193–195:** *"raise a change request that brings the breakpoint
+  surface up to the watchpoint surface's shape — handle, `breakpoint_set_enabled`,
+  `capabilities.breakpoints.maxBreakpoints` with `-32005 {reason:"breakpointCapReached"}`."* The audit
+  does not merely permit this CR; **it commissions it by name.**
+- **Line 481 speaks of *"the eventual amendment"*** as a presupposition, which only parses if a
+  forward-shape change was always contemplated.
+
+So the clause at lines 31–32 governs **whose behaviour the observed facts describe** — those fragments
+describe the legacy C++ server — and its operative instruction is *"do not adjudicate those three as if
+one implementer speaks for both."* That is a **binding on scope, not a reservation of authority**:
+nothing ruled here binds the legacy server, which remains what `mcp__oracle__*` reaches. The agent's
+narrower reading was right, and it is worth recording that it reached the right answer while
+distrusting its own motive for reaching it.
+
+**One consequence the drafter should not absorb silently:** §7.2 rejects `breakpoint_set_enabled`, which
+is **named in the very Recommendation that authorises this CR**. That rejection is argued well (a
+constant-true field is a pure function of list membership; §11.10/§11.13 struck per-entry flags for that
+reason) and its reopening condition is named. But the adjudicator should see it as *declining a specific
+item the commissioning text asked for*, which is a higher bar than an open design choice, and should
+weigh it as such.
+
+### 14.2 The D12 finding is correct, and there is a precedent for the carve-out the draft did not cite
+
+Verified verbatim at empyrean `origin/main`, `contract/protocol.md:158-160` — D12 does explicitly reach
+this method: *"Any method that runs the machine until a condition — `emulator/run_to`,
+`emulator/run_to_scanline`, and **any future `wait_for_break`-shaped op** — MUST accept a `maxFrames`
+bound (default 600) and MUST return `reached`."*
+
+The draft's objection stands and understates itself. **A `maxFrames` bound is a bound in EMULATED time;
+a wedge is the state in which emulated time stops advancing.** So the bound cannot trip in precisely the
+failure it would need to catch — it is not a weak bound on a wedge, it is structurally incapable of
+being one. Only a wall-clock bound detects a wedge, which is exactly why the sole automated consumer's
+`timeout_ms` is a wedge detector rather than a performance budget. D12's own stated rationale (*"a hang
+in the debug transport destroys evidence"*) is therefore an argument the frame bound **cannot deliver**
+for this method, and D12's second mandate fits no better: `reached` is specified *"beside its echo of the
+target"*, and a wait for any breakpoint has no target to echo.
+
+**The precedent the draft missed, and it materially strengthens the ask** — D12 has already been scoped
+out of a method in the contract's own text. `contract/protocol.md:1432-1433`, on `play_input`:
+*"**D12 does not apply** — the stop condition is an exhausted count, not a predicate, so there is no
+`reached`."* So the request is not for a novel exception; it is for **the second instance of an
+established pattern**, and the reasoning is the same shape: D12 assumes a predicate over an advancing
+machine, and a method that does not fit that assumption is scoped out rather than contorted.
+This is bar 12 arriving again — *the rule was in the contract we already owned.*
+
+Accordingly the ask should be put to empyrean as **more than a one-sentence carve-out**: either D12
+distinguishes emulated-time from wall-clock bounds for wait-shaped ops, or `wait_for_break` is scoped out
+on the `play_input` precedent. The adjudicator may prefer either; the draft's framing offered only one.
+
+### 14.3 Currency, and one correction to the record
+
+The draft anchors empyrean at `9d6ab1f`. Checked **at tip**, which is the correct direction for a
+currency question: `9d6ab1f` is a real commit, an ancestor of `origin/main`, and **zero commits have
+touched `contract/protocol.md` since it** — so every protocol citation in this document is current, even
+though empyrean's tip has since moved (that churn is elsewhere in their tree). The anchor is good.
+
+**Correction to §2.2, in the requesting overseer's own favour and therefore worth stating plainly:** the
+brief told the drafter that migrating the consumer to handles costs them *"a trivial rewrite"*. The
+drafter found the stronger and correct result — **it costs them nothing at all**: both gate scripts clear
+only with `{all: true}` and never pass an address to clear, `breakpoint_add`'s params are unchanged, and
+its new reply key is simply ignored by a client that does not read it. The brief's weaker claim came from
+me and was not derived; the drafter's stronger one was. Recorded because a brief's stated facts get
+transcription-grade trust, and this is the third time today a commissioning fact of mine has been
+corrected by the agent it was given to.
