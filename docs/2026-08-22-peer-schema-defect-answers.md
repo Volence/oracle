@@ -212,3 +212,453 @@ at `engine.rs:2925-2926`), and because the audit is the right forum for it. **No
 here.**
 
 ---
+
+## D-13 — the breakpoint surface: no handle, no enable/disable, no cap
+
+### (A) The reference Rust server: there is no breakpoint surface at all
+
+Every part of D-13 (a), (b), (c) and (d) is **unanswerable against this server, because the thing being
+described does not exist here**:
+
+- No `breakpoint_add`, `breakpoint_clear` or `breakpoint_list` in `METHODS`
+  (`crates/oracle-aether/src/engine.rs:200-423`), and `Engine::dispatch` (`engine.rs:984-1003`) has no
+  other route in — an uncatalogued method is `-32601` before any handler is reached.
+- No breakpoint store anywhere in `crates/*/src`. The word appears twice in the whole `src` tree and
+  neither is code: the capability flag `"breakpoints": false` (`engine.rs:1050`) and a doc-comment analogy
+  about sink semantics (`crates/oracle-core/src/bus.rs:312`).
+- Consequently there is **no `enabled` field**, nothing that writes one, and nothing to cap.
+
+So on (a): identity is neither address-based nor handle-based, because there is no identity. On (b): the
+field does not exist. On (c): there is nothing to cap. On (d): see below.
+
+**This is the honest answer and it should not be smoothed.** The reference server's stop-on-condition surface
+is `run_to` + the watchpoint family, and the design record says that was a deliberate substitution rather than
+a deferral — see the incident section below.
+
+### (d) The contrast with the watchpoint surface, concretely
+
+The watchpoint family is the shape D-13 recommends the breakpoint family be brought up to, and it is already
+built. Point for point:
+
+| discipline | watchpoints, as implemented | anchor |
+|---|---|---|
+| **Opaque handle, not an address** | `watchpoint_add` returns `watch: "w<N>"`, a server-assigned opaque string. `resolve_watch_handle` accepts **only** that spelling — no bare-number fallback, so `{"watch": 3}` is refused rather than blessed | `engine.rs:3579-3585`, `watch_wire_id` `engine.rs:3965-3967`, `resolve_watch_handle` `engine.rs:3974-3976` |
+| **…and the reason is exactly D-13's** | The source states it: *"a watch id is precisely the value §6 says cannot be an address or an index — **one address may carry several watches**, and the same number names four different things across the four spaces"* | `engine.rs:3960-3964` |
+| **Ids monotonic and never reused** | `watches_issued` only ever rises (`self.watches_issued.max(id.0 + 1)`), so a cleared handle's number is never re-issued and a stale cursor cannot step over a live watch | `engine.rs:3580`, `engine.rs:3641-3644` |
+| **A never-issued handle is refused, loudly** | `resolve_issued_handle` filters on `id.0 < self.watches_issued` and returns `-32602` naming the handle. A typo cannot be answered with a plausible-looking empty page | `engine.rs:3824-3833` |
+| **A retired handle still answers** | `watchpoint_hits` keeps working for a cleared watch — clearing does not delete evidence, so *"one client [cannot] erase another's evidence on a shared bus"* | `engine.rs:3631-3634`, `engine.rs:3700-3703` |
+| **An advertised cap** | `capabilities.watchpoints.maxWatches` in the handshake, default 32 | `engine.rs:1071`, `engine.rs:124`, `engine.rs:167` |
+| **…enforced with a loud, named refusal** | `-32005 {reason:"watchCapReached", cap, count}`. *"Never grow past the number, never evict a handle a client is still holding."* Checked **last**, so a malformed request is told about the malformation instead | `engine.rs:3553-3568`, `engine.rs:119` |
+| **Idempotent clear** | `watchpoint_clear` of a retired, never-issued or unspellable handle is `removed: 0`, not an error — §6.1's *"an error a client must learn to swallow teaches clients to swallow errors"* | `engine.rs:3622-3635` |
+
+The one discipline the watchpoint surface **also** lacks is enable/disable: there is no
+`watchpoint_set_enabled`, and `watch_report_json` (`engine.rs:4181-4226`) emits no `enabled` key at all. So
+on that specific sub-point the two surfaces are *not* asymmetric — the watch surface simply declined the
+field rather than emitting an unwritable one. Worth stating, because D-13(a)'s remedy
+(`breakpoint_set_enabled`) would be the first enable/disable on this bus, not a copy of an existing one.
+
+### Has this actually bitten us? Yes — and the primary record is in this repo
+
+Not a hypothetical. `docs/2026-07-23-timing-ground-truth-fable.md:162-165`, written by the agent that hit
+it, under a heading called "Session hygiene":
+
+> Oracle left **paused**, VGM logging stopped, **all breakpoints cleared**. Note: 7 breakpoints
+> pre-existed this session (not mine) and were removed to keep the free-run captures clean:
+> `0x5CAC8` (×2), `0x5CAB0`, `0x5E5C2`, `0x5E5AA`, `0x9C44`, `0x3C46` (1,691,410 hits). Restore if
+> another workflow needs them.
+
+That paragraph is D-13 (b) happening, in the field, in one sentence: **one client silently disarmed another
+client's breakpoints by address, could not tell whose they were, and had no way to put them back** — hence
+"Restore if another workflow needs them", an instruction it could not carry out itself. Ownership was not
+recoverable because identity was the address and nothing else.
+
+Three further things that record settles, beyond what was asked:
+
+1. **`0x5CAC8` (×2) is a duplicate at one address.** The legacy server permitted two breakpoint entries on
+   the same address, and they were legible as two. That is empirical evidence on **D-12** (which asks what a
+   duplicate `breakpoint_add` does), and it argues *against* the idempotent reading D-12 recommends — at
+   least as the legacy server behaves. D-12 should be ruled knowing this.
+2. **The clear was total, not selective.** With no handle and no ownership there was no selective option; the
+   only available move was "clear everything and hope".
+3. **The measured harm is corroborated three ways in our tree**, all first-party:
+   `docs/2026-08-14-tooling-frontier-recon.md:156-163` (the three independent statements of harm, of which
+   the stale breakpoint is #2), `docs/2026-08-14-aether-change-requests.md:973-975`, and
+   `docs/2026-08-15-watchpoint-bus-surface.md:271`, `:681`.
+
+### The one correction we owe the record
+
+`docs/2026-08-15-handoff-capability-layer.md:114-125` revisits the "breakpoints were never used" claim and
+**narrows it**: that claim came from `oracle-next`'s hunt record only, and breakpoints *"paid off in ten
+executed `aeon` episodes, three where nothing else would have worked."* The defensible finding it lands on is
+
+> **breakpoint-as-deterministic-anchor is proven; breakpoint-as-interactive-session is proven harmful.**
+
+That is why this server has `run_to` and a recording watch surface and no breakpoints: the anchor half was
+built under different names, the interactive half was declined. It bears on D-13's disposition — the
+recommendation to bring the breakpoint surface up to the watchpoint surface's shape is *not* in tension with
+our design record, but "add breakpoints" as an interactive session surface would be.
+
+### (B) The legacy C++ server — where the §6 rows came from
+
+Read as evidence about the rows, not as a statement of what the reference server will do. All anchors are in
+`/home/volence/sonic_hacks/oracle-old`. Two structural facts colour every reply below:
+
+- **`ok` never reaches the wire.** Handlers build `{"ok":true,...}` and it is stripped twice —
+  `linux-port/gui/ControlSocket.cpp:205` (`finish()` does `obj.erase("ok")`) and again in the dispatcher at
+  `linux-port/gui/ControlSocket.cpp:2822-2823`. Key sets below are post-strip.
+- **Error codes are inferred from message substrings.** `ErrorReply` throws
+  (`linux-port/gui/ControlSocket.cpp:226-229`) and `CodeForMessage`
+  (`linux-port/gui/ControlSocket.cpp:209-222`) picks the numeric code by matching substrings of the
+  free-text message — `-32012` on "no symbols", `-32013` on "symbol not found", `-32000` on "not
+  wired"/"not available"/"no 68000"/"no Z80", `-32010` on "loading"/"timed out", `-32004` on "out
+  of"/"range"/"only"/"rejected"/"supported", default `-32602`. **This is worth the contract's attention on
+  its own:** a code is a function of prose, so rewording a message silently changes the wire code, and a
+  message that matches no substring lands on `-32602` regardless of what went wrong (see `"no 68k RAM"`
+  below, which is a missing-device condition reported as invalid-params).
+
+**(a) Identity is the ADDRESS, and it is worse than "keyed by address".**
+`breakpoint_add` (`linux-port/gui/ControlSocket.cpp:792-811`) inserts into no server-side map at all; it
+calls `CreateBreakpoint()` (`ExodusSDK/Processor/Processor.cpp:379-386`, an unbounded
+`_breakpoints.push_back`) and stores the address as a *location condition*:
+`SetLocationCondition(Condition::Equal)` (`:802`), `SetLocationConditionData1(addr)` (`:803`). Its reply is
+`{addr}` plus a conditional `note` — **no id, no handle** (`:808-810`).
+
+`breakpoint_clear` (`linux-port/gui/ControlSocket.cpp:834-859`) walks the whole list and matches on
+`bp->GetLocationConditionData1() == addr` (`linux-port/gui/ControlSocket.cpp:853`). **The condition *kind*
+is never checked**, so a range breakpoint (`Greater`, `Less`) created in the GUI still carries a `Data1` and
+will be deleted by an address-equality clear that was never aimed at it. That is a second, sharper form of
+the cross-client hazard than the one D-13 names.
+
+Params: `breakpoint_add` takes `addr` **or** `symbol` (`:796`), neither ⇒ `-32602 "need addr or symbol"`.
+`breakpoint_list` takes **none** — the params object is unnamed and unread (`:813`); no filter, no limit, no
+cursor. `breakpoint_clear` takes `all` (checked first, `:838`), else `addr` or `symbol` (`:847`).
+
+**(b) `breakpoint_list` emits `enabled`, and the audit's claim needs one refinement.** Emit site, verbatim:
+
+```
+linux-port/gui/ControlSocket.cpp:822-826
+        std::snprintf(entry, sizeof(entry),
+                      "{\"addr\":\"0x%08X\",\"enabled\":%s,\"hits\":%u}",
+                      a, bp->GetEnabled() ? "true" : "false", bp->GetHitCounter());
+```
+
+The audit says *"no catalogued method can write it"* — **correct, and it is precisely the right wording**,
+because uncatalogued paths *do* write it. The complete set of writes to `Breakpoint::_enabled` (setter
+`ExodusSDK/Processor/Breakpoint.cpp:32-35`, member `ExodusSDK/Processor/Breakpoint.h:74`):
+
+| # | writer | value | on the bus? |
+|---|---|---|---|
+| 1 | constructor initialiser, `ExodusSDK/Processor/Breakpoint.inl:11` | `true` | — |
+| 2 | savestate/config load, `ExodusSDK/Processor/Breakpoint.cpp:251` (reached from `Processor.cpp:4460-4479`) | from XML | no |
+| 3 | `breakpoint_add`, `linux-port/gui/ControlSocket.cpp:805` | **hard-coded `true`** | yes, but write-only-`true` |
+| 4 | Linux GUI add paths, `linux-port/gui/main_gui.cpp:5874`, `:5991` | `true` | no |
+| 5 | **Linux GUI per-row checkbox**, `linux-port/gui/main_gui.cpp:6047` | either | no |
+| 6 | generic data source, `ExodusSDK/Processor/Processor.cpp:4956` | either | no |
+| 7 | enable-all / disable-all commands, `ExodusSDK/Processor/Processor.cpp:5115`, `:5127` | either | no |
+| 8 | Windows disassembly view, `Extensions/ProcessorMenus/DisassemblyView.cpp:914`, `:933` | either | no (not in the Linux build) |
+
+**So over the JSON-RPC surface `enabled` is a constant `true`.** It can only ever read back `false` if a
+human ticked the GUI checkbox (#5) or a savestate carried a disabled breakpoint in (#2). This is exactly the
+shape §11.5 struck `run_to.stoppedAtFrame` for — a field wearing a variable's clothes — with the twist that
+its one non-constant writer is off-bus. Contrast D-14, which asks whether `breakpoint_list` needs §2.4's
+bounded-list companions: it has no `limit`, no `cursor`, and emits every entry in one reply, so it is
+"complete by construction" **only in the sense that nothing bounds it**, which is not the same as safe.
+
+**(c) No cap, no quota, no refusal.** `OpBreakpointAdd` (`:792-811`) has no count check;
+`Processor::CreateBreakpoint` (`ExodusSDK/Processor/Processor.cpp:379-386`) unconditionally `new`s and
+`push_back`s. There is no maximum constant anywhere. The cost is on the hot path — `CheckExecution` walks
+the whole vector per instruction — which is the mechanism by which a forgotten breakpoint becomes the
+1,691,410-hit contaminant rather than merely a stale entry.
+
+**(d) Duplicates and unknown addresses.** No dedup check whatsoever: two `breakpoint_add` calls at one
+address create two distinct `Breakpoint` objects, both enabled, both rendered as identical
+`{"addr":...,"enabled":true,"hits":0}` rows with nothing to tell them apart, and both `add` calls return the
+same `{addr}` reply. **This is the empirical answer to D-12**, and it matches the field record above
+(`0x5CAC8` ×2). The clear is a **match-all, not match-first** (`:849-857`), so clearing that address removes
+both and reports `removed: 2`. An unknown address is not an error: the loop matches nothing and the handler
+returns `{"removed": 0}` successfully (`linux-port/gui/ControlSocket.cpp:858`) — which is already the
+idempotent reading D-15 recommends pinning.
+
+**(e) The legacy watchpoint surface is *worse*, and this inverts the audit's framing.** D-13 reads the
+breakpoint surface *"against the watchpoint surface directly below it"*. On the legacy server there is no
+such surface to read against: `Handlers()` registers exactly one watch method,
+`{"watchpoint_add", OpWatchpointAdd}` (`linux-port/gui/ControlSocket.cpp:2651`), and **no `watchpoint_list`,
+no `watchpoint_clear`, no `watchpoint_hits`**. `OpWatchpointAdd`
+(`linux-port/gui/ControlSocket.cpp:861-886`) returns `{addr}` only (`:881`) — no handle — creates via an
+unbounded `CreateWatchpoint` (`ExodusSDK/Processor/Processor.cpp:638-646`), and hard-codes
+`SetEnabled(true)` (`:879`). **Once added, a legacy watchpoint cannot be removed or inspected over the bus
+at all** — a one-way door until process exit, savestate load, or GUI intervention.
+
+The handle discipline D-13 wants the breakpoints to inherit therefore does **not** exist on the
+implementation the rows describe. It exists only on the reference Rust server, where it was designed from
+first principles as CR-11/CR-12 (`docs/2026-08-15-watchpoint-bus-surface.md`) explicitly *because* of the
+stale-breakpoint incident. **The correct framing of D-13 is not "breakpoints never caught up with
+watchpoints" but "the watch surface was rebuilt on a new server and the breakpoint surface was never carried
+across."** That matters for the disposition: there is no legacy shape to preserve compatibility with.
+
+One more thing the agent found that bears on the audit: the legacy repo's own MCP bridge
+(`linux-port/mcp/oracle_mcp.py:414-449`) *defines* handle-based `watchpoint_list`/`watchpoint_hits`/
+`watchpoint_clear` tools — with `"Watchpoint handle, e.g. 'w0'"` and cursor pagination — and filters them
+out against the handshake's advertised method set (`linux-port/mcp/oracle_mcp.py:961-985`, whose comment
+reads *"34 of 50 against oracle-next"*). Those are the **reference server's** surface, shipped in the legacy
+repo's bridge. The two implementations are already being served through one client.
+
+---
+
+## D-10 — `z80_write`'s `value` has no width, so its own `len` is undefined
+
+### (A) The reference Rust server: neither method exists
+
+`emulator/z80_read` and `emulator/z80_write` are absent from `METHODS`
+(`crates/oracle-aether/src/engine.rs:200-423`), and `capabilities.z80` is advertised `false`
+(`engine.rs:1046`). Both are `-32601`. **We cannot report an accepted width, a byte order, a `len`
+computation, or an out-of-range behaviour, because there is no handler.** The source does not settle
+D-10 on this server, and only implementing the row would.
+
+The absence is deliberate and recorded at the one place a reader would look — `emulator/read`'s doc comment,
+which explains why the unified read surface has four spaces and not five:
+
+> *"The Z80's space is deliberately absent — `emulator/z80_read` keeps its own row and its own catalogued
+> bounds."* — `crates/oracle-aether/src/engine.rs:1661-1662`
+
+### What the core would give a future handler, offered as constraint rather than as behaviour
+
+This is not an answer to D-10. It is the material a `z80_read`/`z80_write` handler on this server would have
+to be built from, and two facts in it bear directly on the row as written:
+
+1. **The Z80 RAM is 8 KiB, not 16.** `Z80_RAM_SIZE = 0x2000` (`crates/oracle-core/src/bus.rs:704`), and the
+   only accessor the core exposes is `System::z80_ram() -> &[u8]` of that length
+   (`crates/oracle-core/src/system.rs:837-840`), read-only.
+2. **`$2000-$3FFF` MIRRORS `$0000-$1FFF`.** The 68000-side Z80 window masks: `self.z80_ram[z as usize &
+   (Z80_RAM_SIZE - 1)]` on read (`crates/oracle-core/src/bus.rs:929`) and the same mask on write
+   (`crates/oracle-core/src/bus.rs:1020`). This is correct hardware behaviour.
+
+   **This bears on the row and the audit did not name it.** §6 line 996 bounds `z80_read.addr` at `0–$3FFF`
+   with `len ≤ $2000` — which is the *address space*, but only the bottom half is distinct storage. A read at
+   `$3000` for `$2000` bytes is inside both stated bounds and would wrap the array twice. A server can answer
+   it (mirrored bytes are the truthful answer) but the row does not say so, and a client cannot tell a
+   mirrored read from a distinct one. Whatever D-10 rules about `value`, the `addr`/`len` pair on **both**
+   Z80 rows needs the mirror stated or the bound tightened to `0–$1FFF`. Registered here as an observation,
+   not a proposed amendment.
+
+### `write_memory`'s machinery, for the symmetry comparison D-10 asks about
+
+The audit's reading (b) is "take `write_memory`'s width machinery with little-endian order". Here is exactly
+what that machinery is on this server, so the comparison is against code rather than against the row:
+
+| | `emulator/write_memory`, as implemented | anchor |
+|---|---|---|
+| payload spellings | exactly one of `bytes` (hex string) **or** `value`+`width`; both, neither, or `value` without `width` is `-32602` | `engine.rs:1586-1637` |
+| `width` domain | `1 \| 2 \| 4` only; anything else `-32602` *"`width` must be 1, 2 or 4"* | `engine.rs:1616-1624` |
+| `value` fit | `value >= 1u64 << (width * 8)` is `-32602` *"`value` {value} does not fit width {width}"* — **refused, never truncated** | `engine.rs:1625-1629` |
+| byte order | `value.to_be_bytes()[8 - width..]` — **big-endian**, with the comment *"Big-endian, as the 68000 stores."* | `engine.rs:1630-1631` |
+| out-of-range | `-32004` for a base outside `$E00000-$FFFFFF` **or** an `end` past it — refused, never clipped | `engine.rs:1639-1645` |
+| reply `len` | `data.len()` — the count of bytes actually placed, i.e. `width` on the `value` spelling and the hex payload length on the `bytes` spelling | `engine.rs:1651` |
+
+So a `z80_write` built symmetrically here would take `len = data.len()`, and the **only** thing reading (b)
+changes is line 1630's `to_be_bytes` → `to_le_bytes`. The audit's point that symmetry would be *actively
+wrong* on byte order is correct and is a one-line difference in this implementation; nothing else in the
+machinery has an endianness opinion.
+
+**We take no position on (a) vs (b)** — that is the contract's call, and we have no shipped behaviour that
+would be broken by either. If it helps the ruling: we would implement whichever is written, and (b) costs us
+nothing beyond that one line.
+
+### `z80_read`'s symmetry, treated in one paragraph as asked
+
+Same answer: not implemented, `-32601`, `capabilities.z80: false`. The sibling it would be modelled on is
+`emulator/read` (`engine.rs:1663-1725`), whose shape is `space`, `addr`, `len`, `bytes` with `len` defaulting
+to 1 and ceilinged at `limits.maxReadLen`, `region`/`symbol`/`symbolDisp` present **iff** the space is `bus`
+(`engine.rs:1709-1723`), and an out-of-range read refused with `-32004` rather than clipped
+(`engine.rs:1696-1704`). A `z80_read` on the `read` pattern would therefore answer `{addr, len, bytes}` with
+no symbol companions — which is exactly the §6 row at line 996 — and its `len` default would be 1, which is
+the gap D-09 names. D-09 and D-10 are the same missing paragraph seen from two sides, and pinning `len`'s
+default on the read row settles the reply's `len` on the write row too if `value` is given a width.
+
+### (B) The legacy C++ server — and it has already chosen reading (a), in writing
+
+This is the most directly decision-relevant finding in the whole document, because **the implementation the
+row was transcribed from does not merely fail to specify the width — it deliberately refused to have one,
+and left a comment saying why.** Verbatim, `oracle-old/linux-port/gui/ControlSocket.cpp:732-737`:
+
+```
+    else if (req.has("value"))
+    {
+        // Single byte — the Z80 bus is 8-bit. For multi-byte sequences use
+        // `bytes` (written low-address-first, no endianness guesswork).
+        bytes.push_back((uint8_t)(req.getInt("value") & 0xFF));
+    }
+```
+
+**`value` is always exactly one byte.** There is no loop, no shift, and **`width` is never read by this
+handler** — passing `width: 2` is silently ignored and you get a one-byte write of the low byte. So D-10's
+byte-order question has no answer on this implementation *because the case it asks about was declined on
+purpose*, with "no endianness guesswork" as the stated reason. That is reading (a), authored, shipped, and
+justified.
+
+For the contrast the audit draws: the 68000 `emulator/write` on the **same** legacy server *does* take
+`width` and *is* big-endian —
+`oracle-old/linux-port/gui/ControlSocket.cpp:612-618`, whose descending loop
+(`for (int i = width - 1; i >= 0; --i)`) pushes the most significant byte first. So the legacy server already
+implements the asymmetry the audit is asking the contract to bless: width-bearing big-endian on the 68000
+row, width-free single-byte on the Z80 row.
+
+**Everything else `z80_write` does** (`oracle-old/linux-port/gui/ControlSocket.cpp:718-749`):
+
+| question | answer | anchor |
+|---|---|---|
+| params | `addr`, and one of `bytes` (hex pairs) or `value`; **`bytes` wins if both given**; neither ⇒ `-32602 "need bytes or value"` | `:723`, `:727-731`, `:732-737`, `:740` |
+| **missing `addr`** | **silently writes to `$0000`** — `getU32("addr")` defaults to 0 with no required-check | `:723` |
+| **malformed hex `addr`** | **silently becomes `$0000`** — `JsonObj::getInt`'s `catch (...) { return d; }` swallows it | `:145` |
+| reply `len` | `bytes.size()` — decoded bytes actually written: `strlen/2` on the `bytes` path, always `1` on the `value` path | `:748` |
+| reply keys | `{addr: hex string, 4 digits; len: number}`, both always present | `:748` |
+| out-of-range **value** | **silently truncated**, `& 0xFF`. `value: 300` writes `0x2C`; `value: -1` writes `0xFF`. No warning | `:736` |
+| out-of-range **addr** | refused, `-32004` (via the `"only"` substring), message names `$0000-$1FFF` *and its `$2000-$3FFF` mirror* | `:724`, `:690-692` |
+| **the bound is start-only** | `addr=0x3FFF` with a 16-byte payload writes one byte then **wraps to `$0000` and clobbers the bottom of sound RAM**, reporting `len:16` and success. `WriteRamByte` folds modulo the device size | `:743-747`, `:298-317`, `:306` |
+| odd-length / non-hex `bytes` | refused, `-32602` | `:730`, `:385-398` |
+| partial write on failure | bytes `0..i-1` are already committed when it bails with `-32602 "write failed at offset N"` | `:745-746` |
+
+**`z80_read`** (`oracle-old/linux-port/gui/ControlSocket.cpp:694-716`): `addr` (same silent-`$0000`
+default), `len` **default 1** and **silently clamped** to `0x2000` with no error and no flag —
+`std::min<uint32_t>((uint32_t)req.getInt("len", 1), 0x2000)` (`:701`), which also means **`len: -1` returns
+8192 bytes** rather than erroring. Same start-only `$3FFF` bound (`:700`, `-32004`) and the same modulo-fold
+on the tail (`:710`). Reply keys `{addr: hex string 4 digits, len: number, bytes: uppercase hex, no prefix,
+2*len chars}`, all three always present (`:714`).
+
+**What this adds to the ruling.** Our core independently confirms the mirror the legacy message names: the
+Z80 RAM is `0x2000` bytes and the 68000-side window masks `& (Z80_RAM_SIZE - 1)`
+(`crates/oracle-core/src/bus.rs:704`, `:929`, `:1020`). So two independent implementations agree that
+`0–$3FFF` is an address space with 8 KiB of distinct storage behind it, and **neither bounds the tail of a
+multi-byte access**. If D-10 is being ruled anyway, the tail bound and the mirror belong in the same
+paragraph — a wrap that silently clobbers `$0000` while reporting success is the silent-wrong-answer class
+this bus exists to prevent, and it is live in the only running implementation today.
+
+---
+
+## D-17 — the two setter enums
+
+### The two methods, confirmed from §6 rather than assumed
+
+The audit's candidates are correct, verified in `empyrean/contract/protocol.md`:
+
+- `emulator/set_layer_enabled` — `contract/protocol.md:1135`, row `| layer, enabled | layer, enabled |`
+- `emulator/set_channel_enabled` — `contract/protocol.md:1383`, row `| channel, enabled | channel, enabled |`
+
+These are the only two setter rows in §6 with an enum-valued parameter and no vocabulary in the document.
+Both are among the 21 fragments added this pass, and both are among the methods this server does not serve.
+
+### (A) The reference Rust server: neither method exists, and neither getter does
+
+`set_layer_enabled`, `set_channel_enabled`, `get_layer_states` and `get_channel_states` are all absent from
+`METHODS` (`crates/oracle-aether/src/engine.rs:200-423`). All four are `-32601`. **There is no parsing site,
+so there is no accepted value set to report and no unrecognised-value behaviour to report.** The source does
+not settle D-17 on this server; only implementing the rows would.
+
+**One piece of adjacent ground truth that is real and that the ruling should have.** The layer vocabulary
+already exists on this bus — not on a setter, but on `emulator/pixel_attribution`, which reports which layer
+won a dot. Its wire spellings come from `layer_json` (`crates/oracle-aether/src/engine.rs:4257-4267`), and
+they are the same four the audit reads off `get_layer_states`. If D-17 adopts the getter's key set as the
+setter's enum, it should confirm it also matches `pixel_attribution`'s — three surfaces naming the same four
+layers must not drift, and §11.18's rule that an emitted enum cannot be widened later applies to the one we
+have already shipped.
+
+### (B) The legacy C++ server — the exact accepted sets, and which members are contract
+
+**`set_layer_enabled`** (`oracle-old/linux-port/gui/ControlSocket.cpp:1516-1526`). The matching site is
+`LayerMuteFlag`, verbatim:
+
+```
+oracle-old/linux-port/gui/ControlSocket.cpp:1507-1514
+static bool* LayerMuteFlag(const Context& ctx, const std::string& layer)
+{
+    if (layer == "plane_a" || layer == "planea" || layer == "a") return ctx.mutePlaneA;
+    if (layer == "plane_b" || layer == "planeb" || layer == "b") return ctx.mutePlaneB;
+    if (layer == "window")                                        return ctx.muteWindow;
+    if (layer == "sprites" || layer == "sprite")                  return ctx.muteSprites;
+    return nullptr;
+}
+```
+
+**Accepted: 9 strings** — `plane_a`, `planea`, `a`, `plane_b`, `planeb`, `b`, `window`, `sprites`, `sprite`.
+**Case-sensitive**: raw `std::string ==` with no `tolower`, so `"Plane_A"`, `"PLANE_A"`, `"Sprites"` are all
+rejected. (This is a deliberate local decision, not an oversight — the button-name path on the same server
+*is* case-folded, `oracle-old/linux-port/gui/ControlSocket.cpp:1687-1688`.)
+
+**`set_channel_enabled`** (`oracle-old/linux-port/gui/ControlSocket.cpp:1560-1570`). The matcher is
+character arithmetic rather than a literal chain (`AudioMuteFlag`,
+`oracle-old/linux-port/gui/ControlSocket.cpp:1542-1558`): `dac`; any 3-char `f`,`m`,digit `1`–`6`; any
+4-char `psg`+digit `1`–`3`; and `psg_noise` or `noise`.
+
+**Accepted: 12 strings** — `dac`, `fm1`–`fm6`, `psg1`–`psg3`, `psg_noise`, `noise`. Case-sensitive for the
+same reason (`ch[0]=='f' && ch[1]=='m'` is a literal lowercase test). Note `psg4` is **rejected** by
+`ch[3] <= '3'` even though `mutePsg[3]` exists and *is* the noise channel — so the noise channel is
+reachable only by name.
+
+**Unrecognised value: a loud error, not a silent ignore.** Both setters refuse:
+
+```
+oracle-old/linux-port/gui/ControlSocket.cpp:1522
+    if (!flag) return ErrorReply("unknown layer: " + layer + " (valid: plane_a, plane_b, window, sprites)");
+oracle-old/linux-port/gui/ControlSocket.cpp:1566
+    if (!flag) return ErrorReply("unknown channel: " + ch + " (valid: fm1..fm6, dac, psg1..psg3, psg_noise)");
+```
+
+Neither message matches any `CodeForMessage` substring, so both land on the **default `-32602`**. The intent
+is stated in the source: *"Unknown layer names return an error rather than silently ignoring so the agent
+notices typos"* (`oracle-old/linux-port/gui/ControlSocket.cpp:1503-1506`).
+
+**Which accepted values were intended as contract — D-17 asks this explicitly, and the source answers it.**
+The refusal messages are the server telling you its own intended vocabulary, and they name **only the
+canonical spellings**: `plane_a, plane_b, window, sprites` and `fm1..fm6, dac, psg1..psg3, psg_noise`. The
+other 5 layer spellings (`planea`, `a`, `planeb`, `b`, `sprite`) and the 1 channel spelling (`noise`) are
+**typing conveniences that the server does not advertise, does not echo back normalised, and does not list
+when it refuses**. They are accepted; they were not intended as contract.
+
+**Recommendation for the ruling, stated as a preference and not a demand:** adopt the canonical sets only —
+4 layers, 11 channels — matching the audit's reading. Under §11.18 an emitted enum cannot be widened later,
+but a **request** enum can always be *widened* additively; it is narrowing that breaks clients. So writing
+the 4 and the 11 into the rows is the safe direction, and the aliases can be added later by amendment if
+anyone turns out to depend on them. Writing 9 and 12 into the contract would permanently bless spellings the
+implementation itself declines to name.
+
+**Getter key sets, for the "setter enum *is* the getter key set" tie the audit proposes:**
+
+- `get_layer_states` (`oracle-old/linux-port/gui/ControlSocket.cpp:1528-1537`) emits **exactly 4 keys, all
+  bool, all always present**: `plane_a` (`:1532`), `plane_b` (`:1533`), `window` (`:1534`), `sprites`
+  (`:1535`). Top-level siblings, no wrapper.
+- `get_channel_states` (`oracle-old/linux-port/gui/ControlSocket.cpp:1797-1821`) emits **exactly 11 keys,
+  all bool, all always present**: `fm1`–`fm6` (built by `"fm%d"`, `:1811-1812`), `dac` (`:1814`),
+  `psg1`–`psg3` (`"psg%d"`, `:1818-1819`), `psg_noise` (`:1821`).
+
+**Verdict: they match, canonical-for-canonical, with one asymmetry each.** Layers: the 4 getter keys are
+exactly the 4 canonical setter spellings; the 5 aliases have no getter key. Channels: the 11 getter keys are
+a strict subset of the 12 accepted setter values, the only orphan being the alias `noise`. **So the audit's
+proposed tie is sound**, and adopting it would be a *narrowing* to the canonical set on both rows.
+
+**Three hazards the tie does not close, reported because D-17 would otherwise ship on top of them:**
+
+1. **The getters are not the setters' inverse for channels.** `set_channel_enabled` writes a pure *mute*
+   flag; `get_channel_states` reports **audibility**, folding solo state in
+   (`oracle-old/linux-port/gui/ControlSocket.cpp:1801-1808`). So `set_channel_enabled(fm1, true)` followed
+   by `get_channel_states()` can legitimately answer `fm1: false` when some other channel is soloed from the
+   GUI. There is no solo setter on the bus, so a client can observe this state and never cause or clear it.
+   If the two rows are formally tied, this asymmetry should be stated, or a client will read the tie as a
+   round-trip guarantee it is not.
+2. **An unwired layer reports "unknown".** `LayerMuteFlag` returns the `Context` pointer directly, and those
+   pointers default to `nullptr` (`oracle-old/linux-port/gui/ControlSocket.h:117`). A correctly-spelled
+   `plane_a` on a server whose GUI never wired the flag produces `"unknown layer: plane_a"` — a
+   **not-implemented condition reported as a spelling error**, and classified `-32602` rather than `-32000`.
+   The same conflation applies to channels via `ctx.muteFm` (`:1546`, `:1566`). A client cannot distinguish
+   "you typed it wrong" from "this server cannot do that", which is precisely the distinction §5's
+   refuse-and-name pattern exists to preserve.
+3. **`enabled` is not validated.** Both setters call `req.getBool("enabled")` with default `false`
+   (`:1523`, `:1567`), and `JsonObj::getBool` (`:153-165`) accepts a string as true only for `"true"`,
+   `"1"`, `"yes"`. So `enabled: "on"`, `enabled: "True"`, or an array **silently disables** the layer or
+   channel. The reply echoes what was applied so it is self-consistent, but there is no refusal. If the rows
+   are being written anyway, `enabled` should be pinned to a JSON boolean.
+
+**Reply shapes of the two setters** (`:1525`, `:1569`): `{layer|channel: string, enabled: bool}` — and the
+string echoed is **the caller's spelling, not normalised**, so `set_layer_enabled{layer:"a"}` answers
+`{"layer":"a"}`. If the rows adopt the canonical-only enum, that echo becomes a non-issue; if they adopt the
+aliases, the echo needs a normalisation rule or the reply teaches clients that `a` is a layer name.
+
