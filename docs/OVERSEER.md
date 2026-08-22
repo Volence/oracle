@@ -223,6 +223,63 @@ with tools that then exist).
    SHA has a class, this one says a **path has a time**; both failures look like a competent lookup
    returning a clean answer.
 
+7. **⏳ IN FLIGHT (opened 2026-08-22 afternoon) — the peer schema-fragment arc.** empyrean landed
+   per-method JSON-Schema fragments for the bus protocol (`origin/main` `3bbfeb18`; the merge
+   carrying code is **`fe5a238`**, `--stat`-verified as a real code merge: 5 files / +1160 —
+   fragments, a gate `contract/schema/tests/validate_contract_schema.py`, 52 pass + 64 proven-red
+   vectors, and the audit `docs/2026-08-22-protocol-schema-audit.md`). Coverage **37 → 58 of §6's
+   66 methods**; the schema blob is sha256 `82dde99ef8c62d41…` (unchanged across `415eb18` →
+   `3bbfeb18`, re-verified). **Eight methods deliberately carry NO fragment** — `z80_registers`,
+   `read_vdp_registers`, `read_vsram`, `object_slot`, `object_list`, `player_state`, `call_stack`,
+   `log_tail` — because under §8 item 20's closure a *half* fragment actively refuses a conformant
+   server while §2.5 reads an absent one correctly as "not yet transcribed". **Absence is not
+   latitude**: do not shape those replies freely, do not fill them unilaterally.
+   **Two agents dispatched off `3ca8521`:** `peer-schema-answers` (source-side, no cargo — the four
+   defects empyrean asked the *implementer* to settle before they rule: **D-30** the §2.4
+   caveat self-contradiction, **D-13** the breakpoint surface's missing handle discipline, **D-10**
+   `z80_write` width/byte-order/`len`, **D-17** the two setter enums with no vocabulary in the spec;
+   plus the observed reply shapes of the eight absent-fragment methods, labelled transcription
+   material, NOT proposed fragments) and `schema-dryrun` (holds the cargo lane — their 58 fragments
+   run against the replies our server actually emits).
+   **THE SEQUENCING CALL (do not reorder without cause): validate first, adopt second.** The
+   vendored `crates/oracle-aether/tests/contract/bus-protocol.schema.json` **stays at
+   `f038672daf6eb2b8…` (37 fragments) until the dry run reports.** Reason: once an unvalidated
+   contract is a gate in our suite, a *fragment* defect and a *server* defect are indistinguishable
+   from inside the gate — the red presents as ours and the whole gradient pushes toward changing the
+   server to satisfy a wrong fragment. That is **bar 9 with the causation hidden** (nobody decides to
+   bend the subject; the red build just makes bending it cheapest). empyrean adopted this as a
+   corollary to bar 9 with our declining-to-vendor as the precedent. Order: dry run → split class (a)
+   ours / (b) theirs / (c) unreached → they rule on (b) → then vendor, so the green means something.
+   **Dry-run classes are never merged, and class (c) is reported loudly as unmeasured** — a silently
+   skipped method read as a pass is the single most dangerous output of that task.
+   **D-30 pushback, accepted by them as a standing CR-flow rule:** "which sentence has Oracle been
+   built against" is the right question and the wrong thing to *decide on* — it is evidence about our
+   history, not an argument on the merits. Otherwise "the spec is the source of truth" quietly
+   inverts into ratifying whatever shipped, i.e. that principle failing while appearing to be
+   followed. We supply the count; they rule. **If it rules against us we take the conformance work.**
+   **Anchor hygiene, five faces in one afternoon** (empyrean `6459f92`, reachable from `3bbfeb18`):
+   their missing push; **ours — measuring an UNPUSHED preview** (our dry run began against a
+   working-tree copy; the blob turned out identical so it anchored retroactively, but that was **luck
+   confirmed by a check, not a property of the method** — re-anchor with `git merge-base
+   --is-ancestor` *and* hashing the pushed blob against the bytes actually measured); seraph's
+   receiver side (a rewritten history dangles a cited anchor and **only the citing side can warn
+   them**); aurora's, which needs nobody to forget anything — **on this shared machine, reading the
+   sibling *directory* measures a peer's live working tree**, so `cd ../empyrean && git rev-parse
+   HEAD` answers cleanly and confidently about an uncommitted mid-edit tree (⚠ **this session did
+   exactly that** when hashing their schema file — it happened to equal their local `main`; prefer
+   `git show <rev>:<path>` over reading a sibling's working file); and aeon's fifth, outside anchors
+   entirely — **on a byte-neutral parcel a matching CRC cannot witness that the build RAN**, since a
+   stale ROM and a correctly rebuilt one are byte-identical exactly when no bytes moved. Unifying
+   line: **every one is a competent lookup returning a clean answer about the wrong object, and none
+   is visible from inside the session that made it** — bar 8's shared-frame conclusion arriving from
+   a different direction. New peer-protocol rule from their side: **push before you cite, and verify
+   `origin/<branch>` actually moved** — a *positive act* against the remote, never the absence of an
+   error.
+   **Currency note:** our previous "vendored == empyrean tip" check (booked in the bars section
+   below, run at tip 2026-08-22 morning) **passed for the wrong reason and is now superseded** — the
+   contract genuinely had not moved *at the remote*, which is the only place a consumer can look,
+   while sixteen commits sat unpushed locally. Not a defect in the check; a limit of it.
+
 **~~⏸ CR-28 implementation paused~~ RESOLVED same day** — the same agent was resumed after the
 7pm reset with context and worktree intact (resume path A worked as written) and finished clean.
 Kept for the pattern: *(original note follows)* the implementer died on the API limit after committing 2 of ~5 stages on branch
