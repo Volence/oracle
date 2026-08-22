@@ -1035,3 +1035,50 @@ its new reply key is simply ignored by a client that does not read it. The brief
 me and was not derived; the drafter's stronger one was. Recorded because a brief's stated facts get
 transcription-grade trust, and this is the third time today a commissioning fact of mine has been
 corrected by the agent it was given to.
+
+### 14.4 The consumer enumeration was wrong in BOTH lanes — and the true set strengthens two clauses
+
+Added after a round-trip with the consumer lane. Both sides had been reasoning about **two** gate
+scripts. The consumer then checked their own tree and reported **three** call sites rather than the two
+they had given us. That was still short. Enumerated firsthand across **all** of `tools/` at aeon
+`origin/master` — every file, not the files under discussion:
+
+| file | `breakpoint_add` | `breakpoint_clear` |
+|---|---|---|
+| `evict_witness.py` | `:85` | `:100` |
+| `parallax_hscroll_probe.py` | `:557` | `:548`, `:567`, `:571`, `:573` |
+| `raster_frame_epoch_probe.py` | `:220`, `:221` | `:219`, `:258` |
+| `raster_source_gate.py` | `:161` | `:131`, `:173` |
+| `snapshot_poison_gate.py` | `:62` | `:68` |
+
+**17 call sites across 5 files — 6 adds, 11 clears** — against the "2 files, 3 sites" both lanes were
+working from. Three consequences, and the first is the one that matters for adoption:
+
+1. **The zero-cost finding holds, and now across the whole consumer surface rather than two files.**
+   **11 of 11 clears are `{all: true}`. 6 of 6 adds pass `{addr}` and nothing else. There is not one
+   address-keyed clear anywhere in `tools/`.** §2.2's conclusion was reached from a 3-site sample and
+   survives a 17-site census unchanged — which is a much stronger basis than it had.
+
+2. **`raster_frame_epoch_probe.py:220-221` arms TWO breakpoints at once**, then clears all at `:258`.
+   This is the **first identified multi-breakpoint consumer**, and neither lane knew it existed while
+   debating §5.2. It is the concrete case for the plural `breakpoints` array: with two armed, *"which
+   one fired"* is a live question the consumer can answer today **only from the PC**, which is exactly
+   the conflation §5.2 argues against. §5.2 was adopted on a hypothetical; it now has an instance.
+   It also raises the stakes on the REQUIRED fired-handle field (ruling 3): at two armed breakpoints,
+   *"wrong breakpoint"* versus *"right breakpoint, wrong PC"* stops being diagnostic nicety.
+
+3. **`parallax_hscroll_probe.py` calls clear-all five times against a single add**, at `:548` before
+   arming and at `:567`/`:571`/`:573` on what read as exit and error paths. That is **direct empirical
+   support for keeping `clear {all: true}` as a distinct teardown primitive** (§4.2 / ruling 2), which
+   until now rested on the consumer's stated reasoning about crashed gates rather than on observed
+   code. Teardown-shaped clear-all outnumbers arming here 5:1.
+
+**Method note, and it is this document's own instance of the failure it cites elsewhere.** Both lanes
+enumerated over *"the two gate scripts"* — the files the conversation had been about — while phrasing
+the result as a fact about `tools/`. Neither was careless; the scope was inherited from the discussion
+and never restated as a choice, so **it was never a parameter either side could think to vary.** The
+correcting command was one loop over `git ls-tree` and it changed the evidence base by 5.7×. This is
+precisely the shared-frame pattern proposed upstream to empyrean the same afternoon, caught here by a
+consumer choosing to re-derive a claim made about their own code instead of accepting a flattering
+correction. **Recorded because the adjudicator should know the CR's consumer evidence was wrong twice
+before it was right, and should weigh §2.2 as a census rather than as testimony.**
