@@ -494,9 +494,73 @@ with tools that then exist).
    provenance cluster names — so **an agent that checks its brief instead of executing it is doing
    the job right**, and briefs should say so explicitly.
 
-   **NEXT (not yet dispatched):** CR-A (D-13 breakpoint handle discipline) and CR-B (D-10
-   `z80_write` width/byte-order/`len`) — both are contract work, both go to un-framed adjudication,
-   and **CR-A must consult aeon before drafting**, per the obligation above.
+   **CR-A DISPATCHED (`cr-a-breakpoints`, off `6ad68ac`, docs-only/no cargo) — aeon consulted
+   FIRST and answered decisively. Five rulings, banked here because they are contract-shaping and
+   must survive a session boundary even if the draft never lands.** aeon's claims were verified
+   firsthand at *their* `origin/master` before use, not taken on trust:
+   1. **Handles are the addressing primitive.** Their argument, adopted with attribution:
+      address-keyed clear is ambiguous the moment two subscribers arm the same PC and **silently
+      kills another subscriber's breakpoint**; the workspace trends toward more concurrent lanes
+      against fewer emulators. Load-bearing check: they claim no dependence on breakpoint identity
+      (only on **stop-PC** identity, asserted separately) — **verified present in BOTH gates**,
+      `raster_source_gate.py:176` and `snapshot_poison_gate.py:70`, mismatch = SETUP FAILURE exit 2.
+      That assertion is the whole reason handles are cheap for them.
+   2. **`clear {all: true}` SURVIVES as a distinct teardown primitive** — theirs, and the half we
+      would not have reached alone. **A gate that crashed mid-flow cannot enumerate what it armed**,
+      so teardown must not require handle tracking. *Clear-all is the teardown primitive; handles
+      are the addressing primitive; collapsing them breaks crash-path cleanup.* Recorded with its
+      reason precisely because a future editor will try to simplify it away.
+   3. **The `stopped` event names the fired handle — PROMOTED to REQUIRED** over their
+      nice-to-have. The pre-release window for REQUIRED additions shuts at first ship and an event
+      field is materially harder to add later; and without it *"wrong breakpoint fired"* and
+      *"right breakpoint, wrong PC"* are one indistinguishable failure message.
+   4. **Stop precision — the clause that generalizes past breakpoints.** Their property, adopted:
+      **either the stop PC is exact, or the server says it isn't.** The failure that hurts is
+      *imprecise stops presenting as precise*. Concrete precedent, verified verbatim at
+      `raster_source_gate.py:32-40`: the legacy server under `deterministic=True` stops at commit
+      granularity, landing one instruction early — *before* an `adda.w` — so a register still holds
+      a plausible unmodified value that would make their gate **PASS on code that never applied the
+      offset**. A false PASS, not a crash, which is strictly worse. Ours offers exact stops; any
+      imprecise mode needs explicit opt-in **and** must carry granularity in the reply.
+   5. **`wait_for_break` resolves against an EVENT; it must not block the connection.** Decisive
+      argument: a blocking call lets a wedged emulator take the socket with it, making the
+      **client-side timeout unenforceable — destroying the property the call exists for.** Their
+      120 s is a *wedge detector*, not a performance budget. *A wedge detector that cannot give up
+      is not a detector.* Connection stays usable during an outstanding wait; cancel available.
+   ⚠ **One aeon citation NOT confirmed and reported back as such:** a "documented oracle MCP press
+   deadlock". Our `docs/` has no such note — the only deadlock reference
+   (`2026-08-14-tooling-frontier-recon.md:272`) describes a hunt *now fixed*. Recorded as **did not
+   find**, never "does not exist" (a failing search and an empty tree look identical). Their
+   transport argument stands on the wedge-detector logic alone, so the CR must **not** carry the
+   unverified citation. Their own answer also self-corrected: they had enumerated by **key
+   spelling**, which found `timeout_ms` and so found the method carrying the key rather than the
+   flow it belonged to — the same family as my `[a-z_]` class, one by the wrong attribute and one
+   by the wrong alphabet.
+
+   ⚑ **INDEPENDENT CORROBORATION OF THE `write_vram` HAZARD, from a changed frame — worth more
+   than the finding itself.** `docs/2026-08-14-tooling-frontier-recon.md:274-277` (ours, eight days
+   old, a legacy-C++ recon) already flags `write_vram` as *"a genuine landmine to fix if ported"*:
+   it writes straight into the VRAM buffer, **bypassing the VDP port path, autoincrement, FIFO and
+   DMA**, with nothing in its docstring saying so — *"an agent will 'verify' tile data and conclude
+   the bug is elsewhere having proven nothing about the real path."* Today's survey, reading the
+   **Rust** source via `vram_mut` with no knowledge of that doc, found the same hazard and
+   independently proposed **the same name, `poke_vram`.** Two derivations, different frames, same
+   identifier — this is the agreement that counts, as against the shared-frame kind that burned
+   both lanes today. **The recon is strictly ahead of the survey on one point: it requires the reply
+   to flag `bypasses_vdp_port: true`.** Folded into the `write_vram` parcel as a requirement.
+   *Method note: this surfaced only because a peer's transport citation sent me into an old recon
+   doc for an unrelated reason. Grep the repo's own history before pricing a parcel — this one had
+   been sitting in `docs/` for eight days and no session had looked.*
+
+   **NEXT (not yet dispatched):** CR-B (D-10 `z80_write` width/byte-order/`len`) — contract work,
+   un-framed adjudication, docs-only. Also open from the survey and **not lost**: `resolve_target`
+   does not enforce the `addr`/`symbol` `oneOf` (a **live** unregistered request-side divergence on
+   `run_to` today), stale prose at `schema_conformance.rs:6,222`, and a proposed **error-surface
+   gate** — since no fragment declares error conditions, a suite validating only replies is blind
+   to every error obligation.
+   **Two claims tagged for FOREGROUND runtime follow-up, never a subagent** (the emulator MCP
+   deadlocks from background agents): the `step` frame-budget truncation, and the `write_vram`
+   SAT-cache desync.
    **AEON OBLIGATION — SCOPE WAS WRONG, and the correction makes it bigger.** Item 7 recorded it
    as a dated heads-up before serving `emulator/wait_for_break`, because their gates send
    `timeout_ms`. **The survey found it covers THREE methods, not one, and I verified it firsthand
