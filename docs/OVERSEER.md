@@ -158,12 +158,16 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
 ## The bars (house methods — each earned by a measured failure; do not thin)
 
 > The shared protocol gained review bars 8–10 and two SHA-citation rules on 2026-08-22 (empyrean
-> `dc629a5`, `c2c81e2`, `00334b6`, `43fbfc9`). **Not transcribed here — read them there**; the
+> `dc629a5`, `c2c81e2`, `00334b6`, `43fbfc9`, `9b604f0`). **Not transcribed here — read them there**; the
 > protocol is changed in empyrean and never forked into a repo copy. Two bear directly on this
 > lane: **bar 9** (never change the subject to suit the instrument — an instrumented run reported
 > as the uninstrumented number is the named failure) governs every profiler measurement we take,
 > and **bar 8** (enumerate by what TOUCHES the data, not what defines it) governs state/snapshot
-> field sweeps. Both were written into the 2026-08-22 §11.5 dispatches.
+> field sweeps. Both were written into the 2026-08-22 §11.5 dispatches. `9b604f0` — *prefer the
+> committed artifact to the recipe that recreates it, and verify by hashing the extracted bytes* —
+> came OUT of this lane the same morning (the corpus-ROM find below is its precedent): a recovery
+> recipe carried in prose is a standing claim that it still reproduces the artifact, and nobody
+> re-tests that claim until it fails silently.
 
 - **Contract-first, always**: CR → un-framed adjudication → apply fixes → the code and its
   amendment merge in one window so `protocol.md` never describes a server that does not exist.
