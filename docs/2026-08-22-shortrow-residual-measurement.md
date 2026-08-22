@@ -667,6 +667,40 @@ the rounded `1` as evidence either way would be reading past the rounding.
 an excess on `BgAnim_Update` and none on `Parallax_Update`; a raw 30/30 would weaken it, a raw ~36/30
 would confirm it from their own instrument.
 
+> **Postscript (2026-08-22, after the ask went out — the ask is WITHDRAWN and the `max(1, …)` above is
+> the reason.** Recorded because the rescue was well-argued and nearly landed.)
+>
+> aeon replied that the published `1` *does* carry information: the normalization is integer division
+> in the consumer (`ControlSocket.cpp:2042`, `int avgCalls = st.calls / numFrames;`) with `numFrames`
+> = 31, so a displayed `1` would require `st.calls >= 31`, whereas a healthy tick-driven routine at 30
+> invocations gives `30 / 31 == 0`. Their table reads `1`, so — the argument runs — the row shows an
+> excess invocation count from their own instrument, exactly the flush-victim signature §5.2 predicts.
+>
+> **It does not, and the refutation is the very next line:**
+>
+> ```cpp
+> int avgCalls = st.calls / numFrames;   // :2042  <- cited
+> if (avgCalls < 1) avgCalls = 1;        // :2043  <- the clamp
+> ```
+>
+> A computed `0` is forced to `1` before serialisation, so the table **cannot** print `0` and a
+> displayed `1` means `st.calls` ∈ **[0, 61]** — `[31, 61]` by the division, `[0, 30]` by the clamp.
+> No lower bound survives. Their dependency (30 ticks, once-per-tick) is correct and was verified
+> independently; it simply never becomes load-bearing, because the clamp destroys the low end first.
+> This is the `max(1, …)` already stated above, arrived at from the other direction and refuted by it.
+>
+> **The consequence is worse than "coarse", and it is the durable finding here:** the one value that
+> would have been diagnostic — `0`, the normal reading for *every* tick-driven routine at idle, meaning
+> "fewer invocations than frames" — is the exact value the code refuses to emit. The column is not
+> merely uninformative about this question; it is structurally unable to represent the true state. If
+> that consumer is opened for the identity-pairing fix, the clamp is worth removing in the same pass.
+>
+> **The ask is withdrawn rather than left standing.** Raw `st.calls` is unreachable from the aeon side
+> by construction — the division happens in the consumer before the response is built, so their probe
+> never sees the total; it lives in `routineMap[…].calls` (`:1991`, `:2012`), inside the very code
+> carrying the defect. And with the clamp there is no longer a predicted excess for it to confirm, so
+> §5.2 stands on the conservation derivation alone, which is where it always did its work.
+
 ---
 
 ## 6. The hypotheses — verdicts, each with its killing or supporting test
