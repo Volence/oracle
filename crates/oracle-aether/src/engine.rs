@@ -31,11 +31,15 @@
 use crate::hex;
 use crate::outbound::Subscribers;
 use crate::rpc::{self, code, RpcError};
-use oracle_core::bus::{Fanout, Observe, StopWhen};
+use oracle_core::bus::{BusEvent, BusEventSink, Fanout, Observe, StepRetire, StopWhen};
 use oracle_core::io::Pad;
 // The 68000's own bus trait, brought in for `emulator/write_memory`: a poke travels the same `write8`
 // the CPU drives, so the hardware mirror masking and the region decode are the machine's, not ours.
 use oracle_core::m68000::bus68k::Bus68k;
+// The control-flow classifier and the return-frame sizes, for the `step*` shadow stack. Both are pure
+// functions of the opcode word, and both are the profiler's — a second copy of either is a mirror that can
+// drift while both halves look right.
+use oracle_core::m68000::decode::{control_flow_of, return_pop_bytes, ControlFlow};
 use oracle_core::profiler::{CallerKey, Counts, EdgeCounts, Profiler};
 use oracle_core::render::{CandidateVerdict, Layer, PixelState};
 use oracle_core::scanline_capture::{Retain, ScanlineCapture};
@@ -226,6 +230,27 @@ pub const METHODS: &[MethodSpec] = &[
         name: "emulator/registers",
         handler: Engine::registers,
         summary: "the 68000 architectural register file",
+        params: &[],
+    },
+    // The three `step*` rows (§6 lines 851-853), in catalog order. All three require a paused machine
+    // through §6's run-control state rule, and all three emit `stopped` with `reason: "step"` — §3 pins one
+    // stop condition across the three, so `step_over` and `step_out` get no reason of their own.
+    MethodSpec {
+        name: "emulator/step",
+        handler: Engine::step,
+        summary: "retire N instructions, then stop (emits resumed + stopped)",
+        params: &["count"],
+    },
+    MethodSpec {
+        name: "emulator/step_over",
+        handler: Engine::step_over,
+        summary: "step one instruction, running any call it makes to completion (emits resumed + stopped)",
+        params: &[],
+    },
+    MethodSpec {
+        name: "emulator/step_out",
+        handler: Engine::step_out,
+        summary: "run until the current subroutine returns (emits resumed + stopped)",
         params: &[],
     },
     MethodSpec {
@@ -604,6 +629,181 @@ struct Advanced {
     stopped_by: Option<WatchId>,
 }
 
+/// One subroutine frame a step-shaped run watched open, in the only two terms a return is matched on.
+///
+/// Both fields are load-bearing and neither is sufficient alone — this is the profiler's rule
+/// ([`Profiler::close_routine`](oracle_core::profiler::Profiler), `profiler.rs`), reused rather than
+/// re-invented: a user routine's frame and a supervisor routine's frame can sit at the *same numeric* stack
+/// pointer while having nothing to do with each other, so matching on the pointer alone closes the wrong
+/// frame on a coincidence.
+#[derive(Clone, Copy, Debug)]
+struct OpenFrame {
+    /// The active A7 immediately after the `JSR`/`BSR` pushed — i.e. pointing at the return address. The
+    /// matching return leaves `entry_sp + return_pop_bytes(opcode)` behind, and **exactly** that.
+    entry_sp: u32,
+    /// The mode the call retired in. [`StepRetire::sp`](oracle_core::bus::StepRetire) is mode-selected, so
+    /// a frame is only comparable to a return taken in the same mode.
+    supervisor: bool,
+}
+
+/// What a step-shaped run is waiting for.
+enum StepGoal {
+    /// `emulator/step` — retire this many more instructions, then stop. Counted down on **retires**, never
+    /// on step boundaries: `BusEventSink`'s own doc records that the boundary hook fires for an instruction
+    /// that does not run on the stopping iteration and fires again for that same PC when the caller
+    /// resumes, so a boundary counter is off by one exactly when a caller resumes a step.
+    Instructions(u64),
+    /// `emulator/step_over` across a `JSR`/`BSR` — stop when the frame that call opens closes again.
+    ///
+    /// The frame is not known when the run starts: the callee's entry is not decodable from the opcode, and
+    /// the entry SP is whatever the push left behind. So the first retire of the run *is* the call, and it
+    /// is what seeds [`StepStop::opened`].
+    OverCall,
+    /// `emulator/step_out` — stop on the first return that closes a frame this run never watched open, i.e.
+    /// a return out of the frame that was already live when the caller asked.
+    ///
+    /// `sp0`/`supervisor` are the machine's own coordinates at that moment. They are a **guard, not the
+    /// match**: the frame's entry SP is unknowable from here (however many locals the routine has already
+    /// pushed is not recoverable), so what identifies the return is that it matched nothing we opened —
+    /// and `sp0` is what stops the `move.l addr,-(sp)` / `rts` dispatch idiom from counting as one.
+    OutOfFrame { sp0: u32, supervisor: bool },
+}
+
+/// The sink behind the three `step*` rows (§6 lines 851-853) — the run-control methods whose stop condition
+/// is *instruction-shaped* rather than a PC (`run_to`) or a frame count (`run_frames`).
+///
+/// It raises its flag from [`on_step_retire`](oracle_core::bus::BusEventSink::on_step_retire), which is what
+/// gives all three the semantics a debugger means by "step": the run ends at the **next** instruction
+/// boundary, with the instruction that satisfied the condition fully committed, and the reported `pc` is the
+/// instruction about to execute rather than the one that just did.
+///
+/// **Why it walks a shadow stack instead of comparing stack depth.** A tolerant `sp >= sp0` rule is wrong in
+/// both directions and the core already documents why: the `move.l addr,-(sp)` / `rts` dispatch idiom
+/// "returns" to a pushed target while leaving the stack exactly where it found it, and an interrupt taken in
+/// user mode switches A7 to a different stack entirely, where any numeric comparison against the user stack
+/// is meaningless. So a return closes a frame only on the profiler's exact rule — `entry_sp + pop == sp` and
+/// the modes agree — and a return that matches nothing closes nothing.
+struct StepStop {
+    goal: StepGoal,
+    /// The frames this run has watched open, innermost last. Empty at the start of every run: it records
+    /// what *this* run saw, never the machine's real call stack, which nothing in the core can enumerate.
+    opened: Vec<OpenFrame>,
+    /// Set when [`opened`](StepStop::opened) hit its cap and a frame went untracked, after which a return
+    /// matching nothing is no longer evidence of anything. **Suppresses the stop rather than guessing**: the
+    /// run then ends on its frame bound and says so with `deadlineReached`, which is a worse answer than the
+    /// right one and a far better answer than a confident wrong `pc`.
+    lost_track: bool,
+    fired: bool,
+}
+
+impl StepStop {
+    fn new(goal: StepGoal) -> Self {
+        // `count: 0` is a legal request (the fragment's `minimum` is 0) and it means what it says: retire
+        // nothing. Firing before the first boundary is how "nothing" is spelled, and it is a real answer —
+        // a caller establishing where the machine already is, without moving it.
+        let fired = matches!(goal, StepGoal::Instructions(0));
+        Self {
+            goal,
+            opened: Vec::new(),
+            lost_track: false,
+            fired,
+        }
+    }
+
+    fn push_frame(&mut self, frame: OpenFrame) {
+        if self.opened.len() >= oracle_core::profiler::MAX_DEPTH {
+            self.lost_track = true;
+            return;
+        }
+        self.opened.push(frame);
+    }
+
+    /// Close the innermost frame this run opened that the return at `sp_after` actually unwinds, if any.
+    /// Returns whether one was found.
+    ///
+    /// Searches the whole stack innermost-first rather than the top alone, for the profiler's reason: one
+    /// frame left wedged by a return we could not match would otherwise bury every frame under it forever.
+    /// Everything above a match was abandoned by a return this run never saw, and is dropped with it.
+    fn close_frame(&mut self, opcode: u16, sp_after: u32, supervisor: bool) -> bool {
+        let pop = return_pop_bytes(opcode);
+        let Some(idx) = self
+            .opened
+            .iter()
+            .rposition(|f| f.entry_sp.wrapping_add(pop) == sp_after && f.supervisor == supervisor)
+        else {
+            return false;
+        };
+        self.opened.truncate(idx);
+        true
+    }
+}
+
+impl BusEventSink for StepStop {
+    fn on_event(&mut self, _event: BusEvent) {}
+
+    fn on_step_retire(&mut self, r: StepRetire) {
+        if self.fired {
+            return;
+        }
+        if let StepGoal::Instructions(remaining) = &mut self.goal {
+            // Every retire counts, executed or not. An exception entry retires without running the
+            // instruction at `pc`, and a caller who steps into an interrupt has stepped — §3's unit is "one
+            // instruction, or one instruction-shaped unit", and the alternative (skip it, keep stepping)
+            // would silently run the whole handler for a caller who asked for one step.
+            *remaining = remaining.saturating_sub(1);
+            self.fired = *remaining == 0;
+            return;
+        }
+        // Everything below classifies the opcode, so it must first know the CPU ran it. On an exception
+        // entry, an idle slice, or an aborted instruction the opcode names something that did not execute,
+        // and classifying it would open a frame nothing pushed or close one nothing returned from.
+        if !r.executed {
+            // ... with one exception. `OverCall` was told by the *pending* opcode that this first step is a
+            // call; if that step did not execute, the call never happened and there is no frame coming. The
+            // honest answer is the step that did happen, not a wait for a return that will never arrive.
+            if matches!(self.goal, StepGoal::OverCall) && self.opened.is_empty() {
+                self.fired = true;
+            }
+            return;
+        }
+        match control_flow_of(r.opcode) {
+            ControlFlow::Call => self.push_frame(OpenFrame {
+                entry_sp: r.sp,
+                supervisor: r.supervisor,
+            }),
+            ControlFlow::Return => {
+                let closed = self.close_frame(r.opcode, r.sp, r.supervisor);
+                match &self.goal {
+                    StepGoal::OverCall => {
+                        // The call this run stepped over is the bottom frame, so the run ends when the
+                        // stack it opened drains — not on the first return, which may be a callee's.
+                        self.fired = closed && self.opened.is_empty();
+                    }
+                    StepGoal::OutOfFrame { sp0, supervisor } => {
+                        // A return that closed one of our own frames is a nested call coming back, not our
+                        // exit. A return that closed nothing left a frame we never saw opened — ours — but
+                        // only if it actually unwound past where we started, which is what rules out the
+                        // dispatch idiom (it lands exactly on `sp0`, never above it).
+                        self.fired = !closed
+                            && !self.lost_track
+                            && r.supervisor == *supervisor
+                            && r.sp > *sp0;
+                    }
+                    StepGoal::Instructions(_) => unreachable!("returned above"),
+                }
+            }
+            // An `RTE` unwinds an exception frame off the supervisor stack, which is not a frame this run
+            // ever opened and not one it can be waiting for. The handler's own calls and returns balance
+            // inside it, so ignoring it is what keeps an interrupt from moving the count.
+            ControlFlow::InterruptReturn | ControlFlow::Jump | ControlFlow::None => {}
+        }
+    }
+
+    fn stop_requested(&self) -> bool {
+        self.fired
+    }
+}
+
 /// One pixel, in the core's own line-delivery spelling.
 pub type Rgb = (u8, u8, u8);
 
@@ -911,25 +1111,55 @@ impl Engine {
         predicate: F,
     ) -> Advanced {
         let mut stop = StopWhen::new(predicate);
-        // The instrument rides here too, and it has to: a run that does not feed it produces a `seen == 0`
-        // reading — "the recorder was never attached" — from a run that really happened. The `Option` arm of
-        // `BusEventSink` is what expresses "only sometimes attached" without a second code path.
+        let record = self.advance_with(max_frames, &mut stop);
+        self.attribute(record, stop.fired())
+    }
+
+    /// [`advance_until`](Engine::advance_until) for the three `step*` rows (§6 lines 851-853): the same run,
+    /// the same instruments, a [`StepStop`] where the PC predicate would be.
+    ///
+    /// It goes through `run_frames_with_sink` like every other advance here, and that is not incidental.
+    /// `System::step_instruction` looks like the primitive a `step` wants and is not one: it drives the CPU
+    /// **without advancing the master clock**, delivering no scheduler events, no Z80 catch-up and no IPL
+    /// re-derive, so a step built on it would move the PC while the machine around it stood still — an
+    /// interrupt that can never arrive, and a `frame`/`mclk` stamp frozen against a PC that moved. It has no
+    /// caller in any `src/` for that reason. `run_frames_with_sink` is additionally the only entry point
+    /// that maintains the private frame anchor an early stop has to re-anchor, so bypassing it would corrupt
+    /// every subsequent `run_frames`.
+    fn advance_stepping(&mut self, max_frames: u64, goal: StepGoal) -> Advanced {
+        let mut stop = StepStop::new(goal);
+        let record = self.advance_with(max_frames, &mut stop);
+        let fired = stop.fired;
+        self.attribute(record, fired)
+    }
+
+    /// The instrumented run every advancing method shares: the caller's stop condition, the screen capture,
+    /// the watch instrument and the profiler in one [`Fanout`], for `max_frames` frames.
+    ///
+    /// The instrument rides here and it has to: a run that does not feed it produces a `seen == 0` reading —
+    /// "the recorder was never attached" — from a run that really happened. The `Option` arm of
+    /// `BusEventSink` is what expresses "only sometimes attached" without a second code path.
+    fn advance_with<S: BusEventSink>(&mut self, max_frames: u64, stop: &mut S) -> StopRecord {
         let record = {
             let armed = (self.watchpoints.watch_count() > 0).then_some(&mut self.watchpoints);
             let prof = self.profiler_armed.then_some(&mut self.profiler);
             let mut sink = Fanout::new(
                 &mut self.screen,
-                Fanout::new(&mut stop, Fanout::new(armed, prof)),
+                Fanout::new(stop, Fanout::new(armed, prof)),
             );
             self.sys.run_frames_with_sink(max_frames, &mut sink)
         };
         self.latch_screen();
-        // **Two things can now end this run, and the caller must not confuse them.** `StopRecord::fired`
-        // says only that *the sink* asked to stop — and with a watch in the Fanout that sink is an OR of
-        // two. `StopWhen::fired` is the predicate's own answer, which is the one `run_to` reports as
-        // `reached`; anything else that ended the run early was a `stopAfter` watch, and is attributed
-        // rather than mislabelled as the target having been reached.
-        let predicate_fired = stop.fired();
+        record
+    }
+
+    /// **Two things can end an instrumented run, and the caller must not confuse them.**
+    /// `StopRecord::fired` says only that *the sink* asked to stop — and with a watch in the Fanout that
+    /// sink is an OR of two. `predicate_fired` is the caller's own condition, which is what `run_to` reports
+    /// as `reached` and what a `step*` reports by emitting its `stopped`; anything else that ended the run
+    /// early was a `stopAfter` watch, and is attributed rather than mislabelled as the caller's condition
+    /// having been met.
+    fn attribute(&self, record: StopRecord, predicate_fired: bool) -> Advanced {
         let stopped_by = (record.fired() && !predicate_fired)
             .then(|| self.watch_wanting_stop())
             .flatten();
@@ -1530,6 +1760,132 @@ impl Engine {
             );
         }
         Ok(out)
+    }
+
+    /// **§6 line 851 — `emulator/step`.** `count`? → `pc`, `symbol`?, `symbolDisp`?
+    ///
+    /// `count` is served **exactly as the fragment writes it**: `integer, minimum 0`, no default, no
+    /// ceiling. Every sibling count in the catalog states its bounds (`run_frames.frames? (≥1, def 1)`,
+    /// `press.frames? (1-1000, def 2)`, `run_to.maxFrames? (≥1, def 600)`); this one states none, and the
+    /// fragment says so deliberately — inventing a bound here would make the schema the author of a
+    /// constraint the contract never agreed. It is registered upstream as **audit D-02**, and this server
+    /// reports the defect rather than repairing it locally.
+    ///
+    /// Two consequences of that, both visible from here and neither hidden:
+    ///
+    /// * **The default is this server's invention, because the contract has none.** An omitted `count` has
+    ///   to mean *something*, and `1` is the only reading that matches what every sibling spells out and
+    ///   what the word "step" means. But it is a choice, so two conformant servers could disagree about
+    ///   `{}` — which is the half of D-02 a client hits first.
+    /// * **A step still runs inside a frame bound**, because an unbounded count is an unbounded run wearing
+    ///   a different name, and the core refuses those on principle (*"an unbounded `run_until` that silently
+    ///   hangs is strictly worse than a hand-tuned frame budget"*). A count too large to retire inside the
+    ///   bound stops early — and `step`'s result has **no key that can say so**, no `reached`, and a
+    ///   `caveat` the fragment declares absent. The `stopped` event carries `deadlineReached` and is the
+    ///   only place the shortfall is visible. That is the CR this method's experience argues for.
+    fn step(&mut self, params: &Value) -> Result<Value, RpcError> {
+        self.require_paused("emulator/step")?;
+        // `minimum: 0` is the fragment's floor and `u64::MAX` is its stated absence of a ceiling. Neither is
+        // a policy this server chose; both are transcribed.
+        let count = match params.get("count") {
+            None => 1,
+            Some(v) => hex::parse_count("count", v, 0, u64::MAX)?,
+        };
+        let pc = self.run_step(StepGoal::Instructions(count));
+        let mut out = json!({ "pc": hex::addr(pc) });
+        // §4: the BARE label plus the number beside it. `symbol_at` returns exactly that pair, and the
+        // fragment's `$defs/symbolName` rejects a `+$hex` suffix outright. **Absent when nothing resolves**
+        // — a server MUST NOT fall back to the address string, so there is no `else` here on purpose.
+        if let Some((name, disp)) = self.symbol_at(pc) {
+            out["symbol"] = json!(name);
+            out["symbolDisp"] = json!(disp);
+        }
+        // No `caveat`, and that is the fragment's word rather than an omission: it declares the key ABSENT
+        // (the `sprites` precedent) because a step has no weaker-answer condition §6 names. §8 item 20's
+        // closure would reject one, and the suite applies that closure to every reply.
+        Ok(out)
+    }
+
+    /// **§6 line 852 — `emulator/step_over`.** No params, and **no result keys at all**.
+    ///
+    /// The empty result is §6's row (`—` in both columns), not an omission: the answer arrives on the event
+    /// channel, whose `stopped` params carry `pc`, `symbol?` and `symbolDisp?`. That `emulator/step` *does*
+    /// return `pc` while this returns nothing is an asymmetry §6 owns and the fragments deliberately
+    /// preserved — **audit D-03** — so it is served as written and reported, never smoothed over here.
+    ///
+    /// **What it actually does, and why it is not a `step` in disguise.** The pending opcode is classified
+    /// before the run. If it is not a `JSR`/`BSR` there is nothing to step over and this is one instruction,
+    /// which is the correct answer rather than a fallback — including for `JMP`, which enters a routine no
+    /// `RTS` will pair with this frame, so "over" it is meaningless. If it *is* a call, the run continues
+    /// until the frame that call opens closes again, matched on the profiler's exact rule.
+    fn step_over(&mut self, _params: &Value) -> Result<Value, RpcError> {
+        self.require_paused("emulator/step_over")?;
+        // `prefetch[0]` is the opcode word about to execute — the same value `StepRetire::opcode` reports
+        // for this step, read from the same place before it runs.
+        let pending = self.sys.cpu_regs().prefetch[0];
+        let goal = match control_flow_of(pending) {
+            ControlFlow::Call => StepGoal::OverCall,
+            _ => StepGoal::Instructions(1),
+        };
+        self.run_step(goal);
+        Ok(json!({}))
+    }
+
+    /// **§6 line 853 — `emulator/step_out`.** No params, no result keys. Identical treatment to
+    /// [`step_over`](Engine::step_over), for identical reasons (audit D-03).
+    ///
+    /// Runs until the frame that was already live returns. The frame's entry SP is **not** knowable from
+    /// here — however many locals the routine has already pushed is not recoverable, and nothing in the core
+    /// enumerates live frames — so what identifies the exit is a return that closes nothing this run watched
+    /// open, guarded by having actually unwound past the stack pointer the caller asked from.
+    fn step_out(&mut self, _params: &Value) -> Result<Value, RpcError> {
+        self.require_paused("emulator/step_out")?;
+        let regs = self.sys.cpu_regs();
+        let goal = StepGoal::OutOfFrame {
+            sp0: regs.a7(),
+            supervisor: regs.supervisor(),
+        };
+        self.run_step(goal);
+        Ok(json!({}))
+    }
+
+    /// The run all three `step*` rows share: advance under a [`StepGoal`], then report the halt.
+    ///
+    /// Returns the PC the machine stopped at, which is `emulator/step`'s whole result and is what the
+    /// `stopped` event carries for all three.
+    ///
+    /// **The `stopped` reason is `step` for all three methods.** §3 pins that explicitly — *"`step` covers
+    /// `step`, `step_over` and `step_out` because those three share one stop condition"* — so neither
+    /// `step_over` nor `step_out` gets a reason of its own, and `reason` names the condition rather than the
+    /// method that drove it.
+    ///
+    /// **Unless a watch ended it first.** A `stopAfter` watch can halt this run as it can halt any other,
+    /// and when it does the step's condition was *not* met. Calling that a completed `step` would be the
+    /// knowing mislabel §8 item 13 names, so the halt is attributed to the watch exactly as `run_to` and
+    /// `run_frames` attribute theirs.
+    fn run_step(&mut self, goal: StepGoal) -> u32 {
+        // The bound is a server policy and it has to be: none of the three rows takes a param that could
+        // carry one, and their params objects are closed, so there is nowhere for a caller to put a budget.
+        // `run_to`'s own default is the precedent for the number.
+        let max_frames = self.config.max_run_frames.min(600);
+        self.running = true;
+        self.emit_resumed();
+        let run = self.advance_stepping(max_frames, goal);
+        self.running = false;
+        let pc = self.sys.cpu_regs().pc;
+        let mut extra = Map::new();
+        if let Some(id) = run.stopped_by {
+            extra.insert("deadlineReached".into(), json!(false));
+            extra.insert("watch".into(), json!(watch_wire_id(id)));
+            self.emit_stopped("watchpoint", pc, extra);
+        } else {
+            // `true` when the run ended on its frame bound rather than on the step condition (D12) — the
+            // only channel on which a short step is visible at all, since none of the three results has a
+            // key for it. `run_to` spells its complement the same way.
+            extra.insert("deadlineReached".into(), json!(!run.predicate_fired));
+            self.emit_stopped("step", pc, extra);
+        }
+        pc
     }
 
     // `pause`/`resume` are the wire spelling of exactly one state change, so they share

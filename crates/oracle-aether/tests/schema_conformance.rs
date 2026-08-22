@@ -347,19 +347,24 @@ fn the_schema_covers_every_method_we_advertise_and_the_uncovered_list_is_pinned_
     // decision. It is written down here rather than in a doc because this is the assertion that will ask
     // the question again.
     //
-    // **The decision: schematized-but-unadvertised is a legitimate steady state here, and these 21 are
-    // not deferred work.** Three grounds, in order of weight.
+    // **The decision: schematized-but-unadvertised is a legitimate steady state here, and the ones listed
+    // below are not deferred work.** Three grounds, in order of weight.
     //
     //  1. **The contract says the fragment comes first.** §8 item 20 makes a fragment the *precondition*
     //     for a handler and not its record; the schema's own description says the CRAM pair was
     //     "schematized first on purpose" for exactly that reason. A gate that turns the contract's
     //     required order into a failure is punishing the artifact for being correct.
-    //  2. **These 21 are not this server's rows.** §6 is the suite catalog, not our backlog. Every one of
-    //     the 21 is served today by `oracle-old` and by no route in this process — no `METHODS` entry, no
-    //     handler symbol, no cargo feature (this crate has no `[features]` at all), no runtime toggle.
-    //     The 2026-08-22 dry run enumerated all seven routes that could produce a reply and found the
-    //     blocker on each. Eight of the 21 are governed by a capability flag this server publishes as
-    //     `false`, which is the contract's own way of saying "not here".
+    //  2. **They are not this server's rows — yet.** §6 is the suite catalog, not our backlog. Every name
+    //     still listed is served today by `oracle-old` and by no route in this process — no `METHODS`
+    //     entry, no handler symbol, no cargo feature (this crate has no `[features]` at all), no runtime
+    //     toggle. The 2026-08-22 dry run enumerated all seven routes that could produce a reply and found
+    //     the blocker on each. Eight are governed by a capability flag this server publishes as `false`,
+    //     which is the contract's own way of saying "not here".
+    //
+    //     *"Yet" is now load-bearing.* These 21 became this repo's acceptance contract — what the successor
+    //     must serve before it can replace the legacy server — and the `step*` trio has since been served
+    //     and removed from the list below. So the ground is "not served here today", never "never ours",
+    //     and the set is expected to shrink one shipped handler at a time.
     //  3. **The failure it was written to catch is a different failure.** It was aimed at *our* rows
     //     sitting unserved after we accepted them (§11.13's, §11.14's). Nothing about these 21 was
     //     accepted here.
@@ -373,11 +378,12 @@ fn the_schema_covers_every_method_we_advertise_and_the_uncovered_list_is_pinned_
     // So it becomes a **pinned set**, the shape `UNCOVERED_METHODS` above already uses, and it is
     // strictly louder than what it replaces in all three directions:
     //
-    //   * a fragment arriving for a 22nd unserved method → red (the original purpose, kept);
-    //   * one of these 21 becoming served → red, forcing its removal in the commit that ships it, which
-    //     is the half `is_empty()` could never have caught;
-    //   * an empty or unparsed schema → red, because the expectation is 21 names and not zero. This is
-    //     the property the brief demands: the check cannot be satisfied by not running.
+    //   * a fragment arriving for one more unserved method → red (the original purpose, kept);
+    //   * one of the listed names becoming served → red, forcing its removal in the commit that ships it,
+    //     which is the half `is_empty()` could never have caught — and which is exactly what happened to
+    //     the `step*` trio on 2026-08-22;
+    //   * an empty or unparsed schema → red, because the expectation is a literal set of names and not
+    //     zero. This is the property the brief demands: the check cannot be satisfied by not running.
     //
     // The list is a *decision record*, so it is literal on purpose — the same reasoning as
     // `UNCOVERED_METHODS`, where the point is that the number cannot quietly improve. What must not be
@@ -396,9 +402,11 @@ fn the_schema_covers_every_method_we_advertise_and_the_uncovered_list_is_pinned_
         "emulator/run_to_scanline",
         "emulator/set_channel_enabled",
         "emulator/set_layer_enabled",
-        "emulator/step",
-        "emulator/step_out",
-        "emulator/step_over",
+        // `emulator/step`, `emulator/step_out` and `emulator/step_over` were here until 2026-08-22 — the
+        // first three of the 21 to leave the set by being SERVED, which is the direction the pin's second
+        // bullet was written for and the one `is_empty()` could never have caught. Their removal was forced
+        // by this assertion going red on the commit that shipped the handlers, not remembered afterwards.
+        // Eighteen remain, and the three grounds above still hold for every one of them.
         "emulator/vgm_start",
         "emulator/vgm_status",
         "emulator/vgm_stop",
