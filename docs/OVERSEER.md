@@ -202,7 +202,7 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
 ## The bars (house methods — each earned by a measured failure; do not thin)
 
 > The shared protocol gained review bars 8–10 and two SHA-citation rules on 2026-08-22 (empyrean
-> `dc629a5`, `c2c81e2`, `00334b6`, `43fbfc9`, `9b604f0`+`e650b96`). **Not transcribed here — read them there**; the
+> `dc629a5`, `c2c81e2`, `00334b6`, `43fbfc9`, `9b604f0`+`e650b96`+`aadf63f`). **Not transcribed here — read them there**; the
 > protocol is changed in empyrean and never forked into a repo copy. Two bear directly on this
 > lane: **bar 9** (never change the subject to suit the instrument — an instrumented run reported
 > as the uninstrumented number is the named failure) governs every profiler measurement we take,
@@ -211,7 +211,19 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
 > committed artifact to the recipe that recreates it, and verify by hashing the extracted bytes* —
 > came OUT of this lane the same morning (the corpus-ROM find below is its precedent): a recovery
 > recipe carried in prose is a standing claim that it still reproduces the artifact, and nobody
-> re-tests that claim until it fails silently.
+> re-tests that claim until it fails silently. Its `e650b96` amendment (a path has a TIME — find a
+> vintage artifact at the revision that pinned it) came out of this lane too, and `aadf63f`
+> (aurora's correction) scopes it: that clause governs **recovery** — reaching a known artifact —
+> while a **currency** check ("has the contract moved?") must run at TIP or it is vacuous, because
+> a pinned blob equals itself by construction. Both operations look identical at the call site:
+> **name the question before choosing the revision.**
+>
+> **Our currency check, run at tip 2026-08-22** (the operation `aadf63f` names): the vendored
+> `crates/oracle-aether/tests/contract/bus-protocol.schema.json` is `f038672daf6eb2b8`, and
+> empyrean `origin/main` `aadf63f`:`contract/schema/bus-protocol.schema.json` is the same
+> `f038672daf6eb2b8` — byte-identical, with **zero commits touching that path** since our CR-28
+> vendor at `70c7bb4`. The day's seven empyrean commits are all `OVERSEER-PROTOCOL.md`, not the bus
+> contract, which is why. TRACKED_REVISION stays retired at None.
 
 - **Contract-first, always**: CR → un-framed adjudication → apply fixes → the code and its
   amendment merge in one window so `protocol.md` never describes a server that does not exist.
