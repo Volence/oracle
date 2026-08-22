@@ -223,7 +223,65 @@ with tools that then exist).
    SHA has a class, this one says a **path has a time**; both failures look like a competent lookup
    returning a clean answer.
 
-7. **⏳ IN FLIGHT (opened 2026-08-22 afternoon) — the peer schema-fragment arc.** empyrean landed
+7. **⏳ PARTLY DONE (opened 2026-08-22 afternoon) — the peer schema-fragment arc.**
+   **HALF ONE MERGED + PUSHED: `ec3f822`** (`docs/2026-08-22-peer-schema-defect-answers.md`, 1,079
+   lines, docs-only, one file; `ls-remote`-verified). **D-30 RULED by empyrean, on the merits, our
+   way** — clause 4 stands, §2.4 rule 1 narrows to match; **ruled, NOT yet applied** (they held the
+   §2.4 edit rather than append spec text every consumer reads at the end of a long session).
+   Our answer: **15 caveat-emission sites across 11 methods, all in `engine.rs`, zero in any other
+   `src/`**; **all 11 emitters are declared, so the strict reading refuses us nothing**; we
+   *over*-declare (16 declare / 11 emit against their set). I verified the **declaration side**
+   firsthand against their landed bytes — that, not the count, is the joint the ruling rests on.
+   Five emitters are unconditional-in-practice, four of which §2.4's own advisory already names as
+   the bad shape; reported against our own interest, not defended.
+   **⚑ THE FINDING, AND THE REAL DELIVERABLE — `oracle-next`'s ACCEPTANCE CONTRACT NOW HAS A
+   DEFINITE LIST.** All **21** newly-added fragments describe methods **our Rust server does not
+   serve** (verified two independent ways: our dispatch table outward, and the added-fragment set
+   intersected against every `emulator/*` string in `engine.rs` — **intersection ZERO**; capabilities
+   already say so, `"z80": false` `engine.rs:1046`, `"breakpoints": false` `:1050`). They describe
+   the **legacy C++ server** (`oracle-old`), which is what `mcp__oracle__*` reaches today.
+   **empyrean's correction, accepted and better than my framing: this is NOT a defect in the
+   fragments** — Aether exists to be the stable contract while the core is swapped underneath, so a
+   fragment describing a method the successor has not built is the transition working as designed.
+   What the finding changes is what the **gap means**: the 21 are a concrete enumeration of the
+   acceptance contract, an item open since 2026-07-01 that has never had a definite membership.
+   **THE LIST** (take as a work item; owner picks priority): `audio_spectrum`,
+   `breakpoint_{add,clear,list}`, `get_{channel,layer}_states`, `log_clear`, `ping`,
+   `run_to_scanline`, `set_{channel,layer}_enabled`, `step`, `step_out`, `step_over`,
+   `vgm_{start,status,stop}`, `wait_for_break`, `write_vram`, `z80_{read,write}`.
+   **Binding consequence:** D-10/D-13/D-17 have **two implementers** and must never be adjudicated
+   as if one speaks for both.
+   **Carried findings worth acting on** (all anchored in the merged doc): D-13's framing is
+   backwards — the watch surface was rebuilt on the new server and **breakpoints were never carried
+   across** (legacy watchpoints are the worse surface: add-only, no list/clear/hits); the stale-
+   breakpoint harm is **ours on the record** (`docs/2026-07-23-timing-ground-truth-fable.md:162-165`
+   — an agent cleared 7 breakpoints "not mine", one at 1,691,410 hits, promising a restore it could
+   not perform); **§6 lines 1137/1138 (`read_vdp_registers`, `read_vsram`) describe methods NO
+   implementation has ever served** (design task, not transcription backlog; `read_vsram` may want
+   retiring since `emulator/read {space:"vsram"}` covers it); **`call_stack` params are
+   `max_bytes`/`max_frames` in code vs `maxBytes`/`maxFrames` in §6:1373** — §2.5's closure turns
+   that into a hard `-32602`; **legacy error codes are inferred from message SUBSTRINGS**
+   (`ControlSocket.cpp:211-222`) so rewording a message changes the wire code; **`lookup_symbol` can
+   silently discard a caveat** (`engine.rs:2940` overwrites `:2933`, no `else` — conformant, real
+   loss, no fix applied); legacy Z80 rows bound only the start address (multi-byte wraps mod 8 KiB
+   and clobbers `$0000` reporting success).
+   **Bar 12 payoff:** D-17's proposed remedy is **already a ruled precedent in `protocol.md` itself**
+   (`:925`/`:933`, *"two vocabularies wearing one name"*), enforced here by one shared parser
+   (`engine.rs:3998` from `:1664` and `:3511`). The rule was in the contract we already owned.
+   **Two self-corrections banked** (both mine, both against my own report): our vendored count is
+   **37→58, not 38→59** — my enumerator counted `methods.properties` keys and one is `$comment`,
+   which cancels in the diff, so the added set matched and the error looked inert (**I enumerated the
+   container's keys rather than the things the container holds**); and `git diff --name-only A..B`
+   compares **tips**, so on a branch whose base has moved it reports the base's newer commits back as
+   branch *deletions*, listing files the branch never opened — it reads as "what does this branch
+   change" and answers something else (harmless at merge time, which uses three-dot semantics;
+   dangerous in review, where it gets quoted as evidence a branch touched what it did not). Both are
+   now in empyrean's anchor cluster.
+   **STILL OPEN: the dry run** (`schema-dryrun`, holds the cargo lane). Its class (c) is to be
+   reported as **the acceptance delta**, never as an unmeasured coverage column, and it needs a
+   **witness that the run happened** rather than an unchanged hash (bar 4's converse).
+
+   *(Original dispatch record follows — the setup, before any result was in.)* empyrean landed
    per-method JSON-Schema fragments for the bus protocol (`origin/main` `3bbfeb18`; the merge
    carrying code is **`fe5a238`**, `--stat`-verified as a real code merge: 5 files / +1160 —
    fragments, a gate `contract/schema/tests/validate_contract_schema.py`, 52 pass + 64 proven-red
