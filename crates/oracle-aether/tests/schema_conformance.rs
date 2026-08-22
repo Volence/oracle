@@ -336,22 +336,151 @@ fn the_schema_covers_every_method_we_advertise_and_the_uncovered_list_is_pinned_
         "every advertised method is in exactly one bucket"
     );
 
-    // **The other direction, pinned now that it is finally earnable.** For most of this file's life
-    // `schema_only` was non-empty by design — fragments landed ahead of their handlers, which is the
-    // order §8 item 20 wants — so it was printed and not asserted. Serving the CRAM pair emptied it, and
-    // an empty list that is only printed goes back to non-empty silently on the next re-vendor.
+    // **The other direction — and the decision the 58-fragment re-vendor owed it.**
     //
-    // What this now catches: a fragment arriving for a method we never serve. That is not a conformance
-    // failure — D4 makes the advertised list authoritative and a schematized-but-unserved method harms
-    // nobody — but it IS the shape of work we have accepted and not done, and it is exactly how
-    // §11.13's and §11.14's rows sat unserved for days without anything saying so. Adding a fragment
-    // ahead of its handler is still fine; it just has to be a decision, taken in the commit that
-    // re-vendors, rather than something noticed later.
+    // For most of this file's life `schema_only` was non-empty by design — fragments landed ahead of
+    // their handlers, which is the order §8 item 20 wants — so it was printed and not asserted. Serving
+    // the CRAM pair emptied it, and `assert!(schema_only.is_empty())` was written to stop an empty list
+    // going back to non-empty silently. Its own comment said the rule was that a fragment ahead of its
+    // handler "has to be a decision, taken in the commit that re-vendors". empyrean's §9
+    // mechanical-completion pass added 21 such fragments, so this is that commit, and this is that
+    // decision. It is written down here rather than in a doc because this is the assertion that will ask
+    // the question again.
+    //
+    // **The decision: schematized-but-unadvertised is a legitimate steady state here, and these 21 are
+    // not deferred work.** Three grounds, in order of weight.
+    //
+    //  1. **The contract says the fragment comes first.** §8 item 20 makes a fragment the *precondition*
+    //     for a handler and not its record; the schema's own description says the CRAM pair was
+    //     "schematized first on purpose" for exactly that reason. A gate that turns the contract's
+    //     required order into a failure is punishing the artifact for being correct.
+    //  2. **These 21 are not this server's rows.** §6 is the suite catalog, not our backlog. Every one of
+    //     the 21 is served today by `oracle-old` and by no route in this process — no `METHODS` entry, no
+    //     handler symbol, no cargo feature (this crate has no `[features]` at all), no runtime toggle.
+    //     The 2026-08-22 dry run enumerated all seven routes that could produce a reply and found the
+    //     blocker on each. Eight of the 21 are governed by a capability flag this server publishes as
+    //     `false`, which is the contract's own way of saying "not here".
+    //  3. **The failure it was written to catch is a different failure.** It was aimed at *our* rows
+    //     sitting unserved after we accepted them (§11.13's, §11.14's). Nothing about these 21 was
+    //     accepted here.
+    //
+    // **What it does NOT become: a printed count.** A report says "21" and goes green forever; a 22nd
+    // fragment for a method we never serve — the exact original failure — would then print `22` and pass.
+    // Worse, a bare `is_empty()` and a bare count share the vacuous shape this repo has been bitten by:
+    // both are satisfied by a schema that failed to load, parsed to nothing, or was silently empty. `0`
+    // and `not checked` are the same observation.
+    //
+    // So it becomes a **pinned set**, the shape `UNCOVERED_METHODS` above already uses, and it is
+    // strictly louder than what it replaces in all three directions:
+    //
+    //   * a fragment arriving for a 22nd unserved method → red (the original purpose, kept);
+    //   * one of these 21 becoming served → red, forcing its removal in the commit that ships it, which
+    //     is the half `is_empty()` could never have caught;
+    //   * an empty or unparsed schema → red, because the expectation is 21 names and not zero. This is
+    //     the property the brief demands: the check cannot be satisfied by not running.
+    //
+    // The list is a *decision record*, so it is literal on purpose — the same reasoning as
+    // `UNCOVERED_METHODS`, where the point is that the number cannot quietly improve. What must not be
+    // literal is any claim about the names, so the two claims the pin implies are re-derived below from
+    // the schema and from `METHODS` rather than trusted: each pinned name has a fragment, and each is
+    // genuinely unadvertised. A typo or a stale entry cannot survive that.
+    const SCHEMATIZED_NOT_ADVERTISED: &[&str] = &[
+        "emulator/audio_spectrum",
+        "emulator/breakpoint_add",
+        "emulator/breakpoint_clear",
+        "emulator/breakpoint_list",
+        "emulator/get_channel_states",
+        "emulator/get_layer_states",
+        "emulator/log_clear",
+        "emulator/ping",
+        "emulator/run_to_scanline",
+        "emulator/set_channel_enabled",
+        "emulator/set_layer_enabled",
+        "emulator/step",
+        "emulator/step_out",
+        "emulator/step_over",
+        "emulator/vgm_start",
+        "emulator/vgm_status",
+        "emulator/vgm_stop",
+        "emulator/wait_for_break",
+        "emulator/write_vram",
+        "emulator/z80_read",
+        "emulator/z80_write",
+    ];
+
+    let mut expected_schema_only = SCHEMATIZED_NOT_ADVERTISED.to_vec();
+    expected_schema_only.sort_unstable();
+    let mut schema_only_sorted = schema_only.clone();
+    schema_only_sorted.sort_unstable();
+    assert_eq!(
+        schema_only_sorted, expected_schema_only,
+        "the set of schematized-but-unadvertised methods changed.\n\
+         A fragment ARRIVED for a method we do not serve: decide it in the re-vendor commit — serve it, \
+         or add it here with the reason, exactly as the 21 above were decided.\n\
+         A method LEFT the set because we now serve it: remove it here in the same commit that ships the \
+         handler.\n\
+         Neither is a conformance failure (D4 makes the advertised list authoritative); both are \
+         decisions that must be taken deliberately rather than noticed later."
+    );
+
+    // The two claims the pin implies, re-derived rather than trusted — so a typo or a stale name in the
+    // list above cannot sit there looking like a decision.
+    for m in SCHEMATIZED_NOT_ADVERTISED {
+        assert!(
+            schematized.contains(m),
+            "{m} is pinned as schematized-but-unadvertised, but the vendored schema has no fragment for \
+             it — the pin names something that does not exist"
+        );
+        assert!(
+            !advertised.contains(m),
+            "{m} is pinned as UNadvertised but appears in engine::METHODS — this server serves it, so \
+             the pin is stale and must be removed in the commit that shipped the handler"
+        );
+    }
+
+    // **Every fragment in the document reaches the coverage split — the one blind spot the pins leave.**
+    //
+    // The first thing written here was `covered.len() + schema_only.len() == schematized.len()`, and it
+    // was deleted for being **tautological**: those two sets partition `schematized` by construction, so
+    // the identity holds however few fragments `schematized` contains. An assertion that cannot fail is
+    // worse than no assertion, because it reads like coverage.
+    //
+    // The real gap is one level further back. `schematized` is built from fragments that declare a
+    // `result`, and every bucket in this test derives from it — so a fragment **without** a `result` is
+    // invisible to all of them. Trace it: it is not in `schematized`, therefore not in `covered`, not in
+    // `uncovered` and not in `schema_only`, so the UNCOVERED pin, the schematized-but-unadvertised pin
+    // and the per-name checks above are all satisfied while a fragment nobody has looked at sits in the
+    // document. That is exactly the arrival this test exists to make loud.
+    //
+    // The other routes into `schematized` shrinking are already covered earlier and this check is
+    // deliberately not a second guard on them: an *advertised* method losing its `result` trips the
+    // UNCOVERED pin, and a *pinned* one losing it trips the pin — both were confirmed by making them
+    // fail. What is left, and what this catches, is a fragment that is neither advertised nor pinned and
+    // carries no `result`. Proven red by adding exactly that fragment to a scratch copy of the schema and
+    // watching every assertion above stay green.
+    //
+    // The population is re-derived straight off the raw document — every non-`$` key under `methods` —
+    // on every run, never a literal.
+    let fragment_names: Vec<&str> = common::schema::schema_root()["methods"]
+        .as_object()
+        .expect("the vendored schema has a methods object")
+        .keys()
+        .filter(|k| !k.starts_with('$'))
+        .map(String::as_str)
+        .collect();
+    let unsplit: Vec<&str> = fragment_names
+        .iter()
+        .copied()
+        .filter(|n| !schematized.contains(n))
+        .collect();
     assert!(
-        schema_only.is_empty(),
-        "the schema has fragments for methods this server does not advertise: {schema_only:?}.\n\
-         Not a conformance failure — but advertising a method IS shipping it, so either serve them in \
-         this cycle or record the deferral deliberately by relaxing this assertion with the reason."
+        unsplit.is_empty(),
+        "{} fragments in the vendored schema declare no `result` and so reach neither bucket of this \
+         coverage split: {unsplit:?}.\n\
+         Every assertion in this test — the UNCOVERED pin and the schematized-but-unadvertised pin \
+         alike — is blind to them. Either the fragment is incomplete upstream, or `methods_with_result` \
+         is not reading the whole document.",
+        unsplit.len()
     );
 }
 

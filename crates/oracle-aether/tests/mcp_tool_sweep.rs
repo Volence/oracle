@@ -277,10 +277,110 @@ fn every_mcp_tool_property_is_declared_by_its_contract_fragment() {
         assert!(surplus(write_cram, &declared).is_empty());
     }
 
-    assert!(
-        undeclared.is_empty(),
-        "these MCP tool properties are declared by no contract fragment: {undeclared:?}.\n\
-         Since §2.5 the bus refuses an undeclared top-level param BY NAME, so each one is a call this \
-         client will compose and the server will refuse — a client-side bug that surfaces at runtime."
+    // **D-33, registered — the divergence the 58-fragment schema made visible.**
+    //
+    // Until 2026-08-22 this list was empty and asserted empty, because the two methods below had no
+    // fragment to disagree with: `audio_spectrum` and `wait_for_break` were §6 rows nobody had
+    // schematized. empyrean's §9 mechanical-completion pass wrote both fragments FROM THEIR §6 ROWS, and
+    // a spelling conflict that had been latent since the legacy client was written became measurable for
+    // the first time. **Nothing regressed; an instrument arrived.**
+    //
+    // The dry run that found this concluded "the fragments are right and the client is wrong". empyrean
+    // checked the other half and **inverted it** (`eecce95`): the legacy *server* reads `fft_size`,
+    // `max_hz` and `timeout_ms` too — `req.getU32("fft_size")` into a variable named `fftSize`, which is
+    // why it hid so long — so client and server agree with each other and both diverge from §6. "Fix the
+    // client" would have broken the owner's working MCP tooling, since the server reads what the client
+    // sends.
+    //
+    // **The ruling is direction-only.** camelCase is the stated convention and D14 makes the schema
+    // normative for wire shapes, so §6 does not move. The load-bearing half is the migration constraint:
+    // server and client move together or not at all, via a dual-accept transition, and the scheduling is
+    // the owner's call. `eecce95`'s own words: *"Nothing in the ruling changes code today."* That is why
+    // this is registered rather than fixed here — neither artifact is ours, and unilaterally renaming
+    // either half is the breakage the inversion was caught to prevent.
+    //
+    // **Registered, not silenced**, and the registry is anti-rot in both directions by using `assert_eq!`
+    // on the whole set rather than subtracting an allowlist:
+    //
+    //   * a NEW undeclared property — a genuine client bug of the kind this file exists to catch — is red,
+    //     because it is not in the pin;
+    //   * a registered one going away, because the migration happened or a fragment was amended, is ALSO
+    //     red, so the entry is deleted by the commit that resolves it instead of outliving its divergence.
+    //     (That failure mode is not hypothetical here: `schema_conformance.rs` records an allowance that
+    //     outlived its divergence and started *causing* the failure it was written to suppress.)
+    //   * and it cannot pass vacuously — the expectation is three names, so a sweep that compared nothing
+    //     produces an empty set and fails, where `is_empty()` would have called that success.
+    //
+    // **Bound, and the bound is not ours to state loosely.** empyrean measured the divergence across the
+    // whole legacy surface — 38 wire keys the server reads, against 49 param names in the fragments — and
+    // found **four** genuine conflicts, not three: `fftSize`, `maxHz`, `timeoutMs`, and `maxFrames`. The
+    // fourth is `call_stack.max_frames`, and it is invisible to *this* sweep for a reason worth writing
+    // down rather than leaving as a discrepancy: `call_stack` is one of the eight §6 rows the contract
+    // leaves deliberately unschematized, so it has no fragment and this loop reports it as
+    // `unschematized` and moves on. It will appear here, as a fourth entry, on the day that eighth row is
+    // schematized — and this comment is what stops that arrival being read as a new defect.
+    const D33_WIRE_SPELLING: &[&str] = &[
+        "audio_spectrum.fft_size",
+        "audio_spectrum.max_hz",
+        "wait_for_break.timeout_ms",
+    ];
+
+    let mut expected = D33_WIRE_SPELLING
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
+    expected.sort();
+    let mut found = undeclared.clone();
+    found.sort();
+    assert_eq!(
+        found, expected,
+        "the set of MCP tool properties no contract fragment declares changed.\n\
+         A NEW entry is a real client-side bug: since §2.5 the bus refuses an undeclared top-level param \
+         BY NAME, so it is a call this client will compose and the server will refuse, at runtime, on \
+         someone else's machine.\n\
+         A MISSING entry means a registered D-33 divergence was resolved — delete it here in the same \
+         commit, because an allowance that outlives its divergence starts causing failures of its own."
     );
+
+    // **The registry's own claim, re-derived from the schema rather than trusted.** Each entry above
+    // asserts something specific and falsifiable: *this is a spelling divergence, not an unknown
+    // parameter* — the fragment declares the same field under its camelCase name. Checking that is what
+    // separates D-33 from a general-purpose amnesty: a genuinely undeclared param smuggled into the list
+    // has no camelCase partner in the fragment and is rejected here, so the pin cannot be used to hide
+    // the very bug this file was written to find.
+    for entry in D33_WIRE_SPELLING {
+        let (op, snake) = entry
+            .split_once('.')
+            .expect("registry entries are `op.property`");
+        // snake_case -> camelCase, derived from the entry rather than tabulated beside it.
+        let mut camel = String::new();
+        let mut upper_next = false;
+        for ch in snake.chars() {
+            if ch == '_' {
+                upper_next = true;
+            } else if upper_next {
+                camel.extend(ch.to_uppercase());
+                upper_next = false;
+            } else {
+                camel.push(ch);
+            }
+        }
+        assert_ne!(
+            camel, *snake,
+            "{entry} is registered as a *spelling* divergence but has no underscore to respell — if it \
+             is a genuinely undeclared param it is a client bug and does not belong in this registry"
+        );
+        let declared: BTreeSet<String> = methods[&format!("emulator/{op}")]["params"]["properties"]
+            .as_object()
+            .unwrap_or_else(|| panic!("emulator/{op} declares params properties"))
+            .keys()
+            .cloned()
+            .collect();
+        assert!(
+            declared.contains(&camel),
+            "{entry} is registered as a D-33 wire-spelling divergence, which claims the fragment \
+             declares the same field as `{camel}` — it does not. emulator/{op} declares {declared:?}. \
+             Either the registry entry is wrong or this is an undeclared param, i.e. a real client bug."
+        );
+    }
 }
