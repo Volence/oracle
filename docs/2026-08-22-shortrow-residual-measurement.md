@@ -18,9 +18,18 @@ better characterised than it was.** Nothing in any of the three is on our side o
 
 | part | what it is | status |
 |---|---|---|
-| **A** | **A denominator artifact in their DERIVED `cyc/logic-tick` column.** Compared the honest way — total cycles against total cycles over the same 31 video frames — **nine of fourteen rows fall inside one invocation** of each other, which is the window-phase slack two independently-started samples must have. `EntityWindow_Scan` at idle, published as −0.11%, is really **+1.03 invocations**; `VSync_Wait` goes 2.5% → **0.9%**; `Camera_Update` 2.4% → **1.0%**. Two rows the corpus A/B's §6.2 omitted, `Raster_VBlank` and `Enqueue_Dirty_Buffers`, are **+101%** and **+95%** wrong at maxdiag by pure construction — they are frame-driven and were multiplied by 2.067 anyway. | **CLOSED** (§3, §6.1) |
-| **B** | **`BgAnim_Update` at idle — the one row in the whole set that reads HIGH — is a conserved TRANSFER across one call boundary.** Its excess (**+991 cycles**) is matched by `Parallax_Update`'s deficit (**−1039**) to within **[−48, +14] cycles over the whole sample, an interval containing zero.** The two are called back-to-back with **one instruction between them** (`jsr $941C.l`, `$0A194A`). Conservation independently *derives* the invocation count as **N = 29.998 ≈ 30**, the tick count, which was not assumed. | **CLOSED** (§5.2) |
-| **C** | **Four rows still read LOW by far more than the W4 straddle ceiling allows** — `Palette_Compose` (−30/inv against a 0.07% ceiling), `Section_UpdateColumns` (−103/inv), `Tile_Cache_Fill` idle (−3169/inv), `EntityWindow_Scan` maxdiag (−356/inv). Sign-consistent with a positional-pop defect closing victims early; **not quantitatively pinned.** | **OPEN, characterised** (§8) |
+| **A** | **A denominator artifact in their DERIVED `cyc/logic-tick` column.** Compared the honest way — total cycles against total cycles over the same 31 video frames — **13 of the 28 row-state cells fall inside one invocation** of each other, which is the window-phase slack two independently-started samples must have. `VSync_Wait` goes 2.5% → **0.9%**; `Camera_Update` 2.4% → **~1.0%**; `EntityWindow_Scan` idle, published as −0.11%, is really **+1.02…+1.04 invocations**. Two rows the corpus A/B's §6.2 omitted, `Raster_VBlank` and `Enqueue_Dirty_Buffers`, are **+101%** and **+95%** wrong at maxdiag by pure construction — they are frame-driven and were multiplied by 2.067 anyway. | **CLOSED** (§3, §6.1) |
+| **B** | **`BgAnim_Update` at idle — the one row in the whole set that reads HIGH — is a near-conserved TRANSFER across one call boundary.** Its excess (**+975.5 … +1006.5**) is matched by `Parallax_Update`'s deficit (**−1054.5 … −1023.5**): each row alone is off by 21% and 0.17%, the pair by **0.003–0.013%**. The two are called back-to-back with **one instruction between them** (`jsr $941C.l`, `$0A194A`). Near-conservation independently *derives* the invocation count as **N = 29.998 ≈ 30**, the tick count, which was not assumed. **It is not exact: the pair is short by 17–79 cycles**, and that shortfall is the same quantity as the transfer's ~1–3-cycle gap to the structural boundary — one open number, measured two ways (§5.2). | **CLOSED, with one named residual** (§5.2) |
+| **C** | **Four rows still read LOW by far more than the W4 straddle ceiling allows** — `Palette_Compose` (**242×** the ceiling), `Section_UpdateColumns` (**28×**), `EntityWindow_Scan` maxdiag (**17×**), `Tile_Cache_Fill` idle (**13×**). Sign-consistent with a positional-pop defect closing victims early; **not quantitatively pinned.** | **OPEN, characterised** (§8) |
+
+> **A correction landed after first commit and is recorded rather than quietly folded in.** The first
+> version of this document read their published integer as a **floor**. It is **round-to-nearest** —
+> re-derived here from their own two columns, which check their formatter: **26/26 for round against
+> 15/26 for truncation, with 11 discriminating rows going 11–0** (§3.1a). Every band is now `31c ± 15.5`.
+> The consequences are itemised where they land: part B no longer conserves exactly (above, §5.2), one
+> row in §3.3 moved from inside to marginally outside ±1 invocation (§3.4), and **parts A, C, the §5.1
+> impossibility bound, and every H1/H2/H3 verdict survive unchanged** — stated explicitly so a reader
+> need not re-derive them to find out.
 
 **And the arc's central question is answered by a third party.** Hand-derived from the ROM and the Yacht
 v1.1 tables, on a bracket pinned from our source *before* counting: `Palette_Compose` costs **exactly
@@ -31,9 +40,10 @@ neither (§4).
 Four further results, each from a measurement neither side had:
 
 - **`BgAnim_Update` at idle is not merely wrong on their instrument — it is ARITHMETICALLY IMPOSSIBLE.**
-  Tick-driven, 30 ticks in the window, hand-derived constant cost 154 → ceiling `31 × 154 = 4774`. They
-  publish **≥ 5611**. At least **837 cycles that are not `BgAnim_Update`'s** are inside that row. No
-  instrument comparison is involved. (§5.1)
+  Tick-driven, 30 ticks in the window, hand-derived constant cost 154 → ceiling `31 × 154 = 4774`. Their
+  band is **[5595.5, 5626.5)**, implying **36.33–36.54 invocations of a routine that ran 30 times**. At
+  least **821.5 cycles that are not `BgAnim_Update`'s** are inside that row. No instrument comparison is
+  involved. (§5.1)
 - **The end-of-frame-FLUSH route is REFUTED on magnitude.** The flush charges `endCycle − start`, so it
   can only deliver ~1000 cycles if the victim opened ~1000 cycles before the frame end. Measured by
   `run_to` clock timestamps: `BgAnim_Update` enters at **19.3% into the video frame, with 103,286 CPU
@@ -107,6 +117,18 @@ SIGIL_BUILD=…/release/sigil SIGIL_EMIT=…/release/emit_sound_blob DEBUG=1 ./b
    why sigil is pinned to `7b46f075` rather than to its current head.
 5. Both throwaway worktrees were removed at the end of this run. Neither checkout, branch, nor daemon in
    `aeon` or `sigil` was touched.
+
+**The pair is staged for reuse, outside any git tree, so nobody has to repeat step 2:**
+
+```
+/home/volence/sonic_hacks/corpus-rom-d22dda85/
+    s4.debug.bin     713295 B, crc d22dda85, sha256 ad289eae947b2dd4…
+    s4.debug.lst     286414 B, 5162 lines, 2578 symbols
+    PROVENANCE.md    the binding proof above, the rebuild recipe, the two build snags,
+                     and the addresses this document names
+```
+
+It is a plain staging directory, not anyone's checkout — copy it, do not work in it.
 
 ### 1.4 Wall clock
 
@@ -210,6 +232,47 @@ So their only measured quantity is `cyc/video-frame`, and it is an average over 
 in which the routine never ran**. Ours is a true per-invocation figure. The commensurable comparison is
 neither: it is **TOTAL cycles over the same 31 video frames**, which is what both instruments watched.
 
+### 3.1a The rounding band — DERIVED from their own two columns, not assumed
+
+Their `cyc/video-frame` column is an integer, so every comparison below turns on what that integer
+means. The two candidates give different bands, and the difference is not cosmetic — it decides whether
+§5.2's pair conserves exactly or not:
+
+| convention | band on the true total |
+|---|---|
+| truncation (floor) | `[31c, 31c + 31)` |
+| **round-to-nearest** | **`[31c − 15.5, 31c + 15.5)`** |
+
+**Their own data settles it, because `cyc/logic-tick` is derived from `cyc/video-frame` by a known
+factor** (31/30 idle, 31/15 maxdiag) — so the published pair is a test of their formatter. Applying both
+conventions to the 26 published row-states:
+
+```
+round-to-nearest reproduces the published cyc/logic-tick:  26 / 26
+truncation       reproduces it:                            15 / 26
+
+11 discriminating rows (the two conventions disagree), 11 for ROUND, 0 for TRUNC:
+  idle    GameState_OJZScroll_Update  36295.83 -> published  36296   (trunc 36295)
+  idle    VInt_Lag                      171.53 -> published    172   (trunc   171)
+  idle    Palette_Compose               149.83 -> published    150   (trunc   149)
+  idle    Camera_Update                 583.83 -> published    584   (trunc   583)
+  idle    EntityWindow_Scan            1855.87 -> published   1856   (trunc  1855)
+  maxdiag VInt_Level                  12641.80 -> published  12642   (trunc 12641)
+  maxdiag VInt_Lag                     6001.60 -> published   6002   (trunc  6001)
+  maxdiag Parallax_Update             25190.60 -> published  25191   (trunc 25190)
+  maxdiag BgAnim_Update                 152.93 -> published    153   (trunc   152)
+  maxdiag EntityWindow_Scan            1969.53 -> published   1970   (trunc  1969)
+  maxdiag Tile_Cache_Fill            106162.60 -> published 106163   (trunc 106162)
+```
+
+**Eleven discriminating rows, eleven for ROUND, zero for TRUNC.** Every band in this document is
+therefore `31c ± 15.5`.
+
+> **This corrects an earlier draft of this document**, which used the truncation band and consequently
+> reported §5.2's pair as conserving to *"an interval containing zero"*. It does not. Under the correct,
+> narrower band the pair is **short by 17–79 cycles**, and §5.2 now says so — which turns out to make the
+> finding sharper rather than weaker (§5.2's closing paragraphs).
+
 ### 3.2 Frame-driven or tick-driven — measured, not assumed
 
 This decides, per row, whether their number is even the same kind of thing as ours. Read straight off
@@ -238,69 +301,81 @@ that got 14 are the ones it had not reached. **A free correctness check on the c
 
 ### 3.3 The reconciliation — total against total, with the rounding band shown
 
-Their `cyc/video-frame` column is an integer, so their total over 31 frames is the interval
-`[c × 31, (c+1) × 31)`. `Δ TOTAL` is computed against the **low** end (the interval is 31 cycles wide).
-`Δ / ourInv` expresses the delta in **our** invocations of that routine — the unit that answers
-count-or-cost, because a window-phase difference between two independently-started samples can move a row
-by **at most one invocation**.
+Their total over 31 frames is the interval `[31c − 15.5, 31c + 15.5)` (§3.1a). `Δ TOTAL` is carried as
+that whole interval. `Δ / ourInv` expresses it in **our** invocations of that routine — the unit that
+answers count-or-cost, because a window-phase difference between two independently-started samples can
+move a row by **at most one invocation**. A row is marked ✓ only if the **entire interval** lies within
+±1.00.
 
 #### idle — 31 video frames, 30 logic ticks
 
-| routine | ourN | our/inv | our TOTAL | thr c/vf | thr TOTAL (band) | Δ TOTAL | Δ %ours | **Δ / ourInv** | verdict |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|:--|
-| `HBlank_Vector_Slot` | 124 | 469.5 | 58218 | 1878 | 58218–58249 | **+0** | **+0.0%** | **+0.00** | exact |
-| `VInt_Level` | 29 | 8780.8 | 254642 | 8280 | 256680–256711 | +2038 | +0.8% | +0.23 | count/phase |
-| `VSync_Wait` | 29 | 84301.4 | 2444740 | 79595 | 2467445–2467476 | +22705 | +0.9% | +0.27 | count/phase |
-| `Camera_Update` | 29 | 598.0 | 17342 | 565 | 17515–17546 | +173 | +1.0% | +0.29 | count/phase |
-| `Raster_VBlank` | 31 | 1521.8 | 47176 | 1482 | 45942–45973 | −1234 | −2.6% | −0.81 | count/phase |
-| `Parallax_Update` | 29 | 20196.0 | 585684 | 19511 | 604841–604872 | +19157 | +3.3% | +0.95 | count/phase |
-| `EntityWindow_Scan` | 29 | 1854.0 | 53766 | 1796 | 55676–55707 | +1910 | +3.6% | +1.03 | count/phase |
-| `Enqueue_Dirty_Buffers` | 31 | 1416.6 | 43916 | 1356 | 42036–42067 | −1880 | −4.3% | −1.33 | **cost** |
-| `GameState_OJZScroll_Update` | 29 | 40175.6 | 1165092 | 35125 | 1088875–1088906 | −76217 | −6.5% | −1.90 | **cost** (W4 covers) |
-| **`Section_UpdateColumns`** | 29 | 978.0 | 28362 | 847 | 26257–26288 | **−2105** | **−7.4%** | **−2.15** | **COST** |
-| **`Palette_Compose`** | 29 | 180.0 | 5220 | 145 | 4495–4526 | **−725** | **−13.9%** | **−4.03** | **COST** |
-| **`BgAnim_Update`** | 29 | 154.0 | 4466 | 181 | 5611–5642 | **+1145** | **+25.6%** | **+7.44** | **COST** |
-| **`Tile_Cache_Fill`** | 29 | 7952.5 | 230622 | 4629 | 143499–143530 | **−87123** | **−37.8%** | **−10.96** | **COST** |
-| `VInt_Lag` | 2 | 7520.0 | 15040 | 166 | 5146–5177 | −9894 | −65.8% | −1.32 | not the same quantity |
+| routine | ourN | our/inv | our TOTAL | thr c/vf | thr TOTAL (band) | Δ TOTAL | **Δ / ourInv** | ≤1 inv | verdict |
+|---|---:|---:|---:|---:|---:|---:|---:|:-:|:--|
+| `HBlank_Vector_Slot` | 124 | 469.5 | 58218 | 1878 | 58202.5–58233.5 | −15.5 … +15.5 | **−0.03 … +0.03** | ✓ | exact |
+| `VInt_Level` | 29 | 8780.8 | 254642 | 8280 | 256664.5–256695.5 | +2022.5 … +2053.5 | +0.23 | ✓ | count/phase |
+| `VSync_Wait` | 29 | 84301.4 | 2444740 | 79595 | 2467429.5–2467460.5 | +22689.5 … +22720.5 | +0.27 | ✓ | count/phase |
+| `Camera_Update` | 29 | 598.0 | 17342 | 565 | 17499.5–17530.5 | +157.5 … +188.5 | +0.26 … +0.32 | ✓ | count/phase |
+| `Raster_VBlank` | 31 | 1521.8 | 47176 | 1482 | 45926.5–45957.5 | −1249.5 … −1218.5 | −0.82 … −0.80 | ✓ | count/phase |
+| `Parallax_Update` | 29 | 20196.0 | 585684 | 19511 | 604825.5–604856.5 | +19141.5 … +19172.5 | +0.95 | ✓ | **see §5.2 — this is Part B's other half** |
+| `EntityWindow_Scan` | 29 | 1854.0 | 53766 | 1796 | 55660.5–55691.5 | +1894.5 … +1925.5 | **+1.02 … +1.04** | **✗ marginal** | ≈30 invocations **plus ~62 cycles** |
+| `Enqueue_Dirty_Buffers` | 31 | 1416.6 | 43916 | 1356 | 42020.5–42051.5 | −1895.5 … −1864.5 | −1.34 … −1.32 | ✗ | **cost** |
+| `GameState_OJZScroll_Update` | 29 | 40175.6 | 1165092 | 35125 | 1088859.5–1088890.5 | −76232.5 … −76201.5 | −1.90 | ✗ | **cost** (W4 covers) |
+| **`Section_UpdateColumns`** | 29 | 978.0 | 28362 | 847 | 26241.5–26272.5 | **−2120.5 … −2089.5** | **−2.17 … −2.14** | ✗ | **COST — part C** |
+| **`Palette_Compose`** | 29 | 180.0 | 5220 | 145 | 4479.5–4510.5 | **−740.5 … −709.5** | **−4.11 … −3.94** | ✗ | **COST — part C** |
+| **`BgAnim_Update`** | 29 | 154.0 | 4466 | 181 | 5595.5–5626.5 | **+1129.5 … +1160.5** | **+7.33 … +7.54** | ✗ | **COST — part B** |
+| **`Tile_Cache_Fill`** | 29 | 7952.5 | 230622 | 4629 | 143483.5–143514.5 | **−87138.5 … −87107.5** | **−10.96 … −10.95** | ✗ | **COST — part C** |
+| `VInt_Lag` | 2 | 7520.0 | 15040 | 166 | 5130.5–5161.5 | −9909.5 … −9878.5 | −1.32 … −1.31 | ✗ | not the same quantity |
+
+**6 of 14 entirely within ±1 invocation**, plus `EntityWindow_Scan` marginally outside.
 
 #### max-diagonal — 31 video frames, 15 logic ticks
 
-| routine | ourN | our/inv | our TOTAL | thr c/vf | thr TOTAL (band) | Δ TOTAL | Δ %ours | **Δ / ourInv** | verdict |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|:--|
-| `HBlank_Vector_Slot` | 124 | 469.5 | 58218 | 1878 | 58218–58249 | **+0** | **+0.0%** | **+0.00** | exact |
-| `Camera_Update` | 15 | 674.0 | 10110 | 319 | 9889–9920 | −221 | −2.2% | −0.33 | count/phase |
-| `Parallax_Update` | 14 | 26269.6 | 367774 | 12189 | 377859–377890 | +10085 | +2.7% | +0.38 | count/phase |
-| `BgAnim_Update` | 14 | 154.0 | 2156 | 74 | 2294–2325 | +138 | +6.4% | **+0.90** | **reconciles at exactly 15 invocations: 15 × 154 = 2310, inside the band** |
-| `VSync_Wait` | 15 | 67550.1 | 1013252 | 34371 | 1065501–1065532 | +52249 | +5.2% | +0.77 | count/phase |
-| `VInt_Level` | 15 | 13484.0 | 202260 | 6117 | 189627–189658 | −12633 | −6.2% | −0.94 | count/phase |
-| `Raster_VBlank` | 31 | 1527.8 | 47362 | 1488 | 46128–46159 | −1234 | −2.6% | −0.81 | count/phase |
-| `Enqueue_Dirty_Buffers` | 31 | 1307.3 | 40526 | 1236 | 38316–38347 | −2210 | −5.5% | −1.69 | **cost** |
-| **`EntityWindow_Scan`** | 15 | 2326.0 | 34890 | 953 | 29543–29574 | **−5347** | **−15.3%** | **−2.30** | **COST** |
-| `Tile_Cache_Fill` | 15 | 125928.7 | 1888930 | 51369 | 1592439–1592470 | −296491 | −15.7% | −2.35 | **cost** (W4 covers) |
-| **`Palette_Compose`** | 14 | 180.0 | 2520 | 67 | 2077–2108 | **−443** | **−17.6%** | **−2.46** | **COST** |
-| **`Section_UpdateColumns`** | 15 | 9499.2 | 142488 | 3621 | 112251–112282 | **−30237** | **−21.2%** | **−3.18** | **COST** |
-| `VInt_Lag` | 16 | 7449.2 | 119188 | 2904 | 90024–90055 | −29164 | −24.5% | −3.92 | not the same quantity |
-| `GameState_OJZScroll_Update` | 14 | 182033.3 | 2548466 | 55144 | 1709464–1709495 | −839002 | −32.9% | −4.61 | **cost** (W4 covers) |
+| routine | ourN | our/inv | our TOTAL | thr c/vf | thr TOTAL (band) | Δ TOTAL | **Δ / ourInv** | ≤1 inv | verdict |
+|---|---:|---:|---:|---:|---:|---:|---:|:-:|:--|
+| `HBlank_Vector_Slot` | 124 | 469.5 | 58218 | 1878 | 58202.5–58233.5 | −15.5 … +15.5 | **−0.03 … +0.03** | ✓ | exact |
+| `Camera_Update` | 15 | 674.0 | 10110 | 319 | 9873.5–9904.5 | −236.5 … −205.5 | −0.35 … −0.30 | ✓ | count/phase |
+| `Parallax_Update` | 14 | 26269.6 | 367774 | 12189 | 377843.5–377874.5 | +10069.5 … +10100.5 | +0.38 | ✓ | count/phase |
+| `BgAnim_Update` | 14 | 154.0 | 2156 | 74 | 2278.5–2309.5 | +122.5 … +153.5 | **+0.80 … +1.00** | ✓ | **reconciles at 15 invocations: 15 × 154 = 2310, at the band's top edge** |
+| `VSync_Wait` | 15 | 67550.1 | 1013252 | 34371 | 1065485.5–1065516.5 | +52233.5 … +52264.5 | +0.77 | ✓ | count/phase |
+| `VInt_Level` | 15 | 13484.0 | 202260 | 6117 | 189611.5–189642.5 | −12648.5 … −12617.5 | −0.94 | ✓ | count/phase |
+| `Raster_VBlank` | 31 | 1527.8 | 47362 | 1488 | 46112.5–46143.5 | −1249.5 … −1218.5 | −0.82 … −0.80 | ✓ | count/phase |
+| `Enqueue_Dirty_Buffers` | 31 | 1307.3 | 40526 | 1236 | 38300.5–38331.5 | −2225.5 … −2194.5 | −1.70 … −1.68 | ✗ | **cost** |
+| **`EntityWindow_Scan`** | 15 | 2326.0 | 34890 | 953 | 29527.5–29558.5 | **−5362.5 … −5331.5** | **−2.31 … −2.29** | ✗ | **COST — part C** |
+| `Tile_Cache_Fill` | 15 | 125928.7 | 1888930 | 51369 | 1592423.5–1592454.5 | −296506.5 … −296475.5 | −2.35 | ✗ | **cost** (W4 covers) |
+| **`Palette_Compose`** | 14 | 180.0 | 2520 | 67 | 2061.5–2092.5 | **−458.5 … −427.5** | **−2.55 … −2.38** | ✗ | **COST — part C** |
+| **`Section_UpdateColumns`** | 15 | 9499.2 | 142488 | 3621 | 112235.5–112266.5 | **−30252.5 … −30221.5** | **−3.18** | ✗ | **COST — part C** |
+| `VInt_Lag` | 16 | 7449.2 | 119188 | 2904 | 90008.5–90039.5 | −29179.5 … −29148.5 | −3.92 … −3.91 | ✗ | not the same quantity |
+| `GameState_OJZScroll_Update` | 14 | 182033.3 | 2548466 | 55144 | 1709448.5–1709479.5 | −839017.5 … −838986.5 | −4.61 | ✗ | **cost** (W4 covers) |
+
+**7 of 14 entirely within ±1 invocation. 13 of the 28 row-state cells across both tables.**
 
 ### 3.4 Stage A's answer
 
 **For all five §11.5 rows the disagreement is in COST/ATTRIBUTION, not in COUNT.** Every one exceeds one
-invocation — `Section_UpdateColumns` −2.15, `Palette_Compose` −4.03, `BgAnim_Update` +7.44,
-`Tile_Cache_Fill` −10.96, `EntityWindow_Scan` (maxdiag) −2.30 — so no window-phase story reaches any of
-them. Meanwhile **nine rows the per-tick basis made look like 0.1–5% disagreements are inside one
-invocation** on the honest basis, i.e. they are not disagreements at all.
+invocation — `Section_UpdateColumns` −2.17…−2.14, `Palette_Compose` −4.11…−3.94, `BgAnim_Update`
++7.33…+7.54, `Tile_Cache_Fill` −10.96…−10.95, `EntityWindow_Scan` (maxdiag) −2.31…−2.29 — so no
+window-phase story reaches any of them. Meanwhile **13 of the 28 row-state cells the per-tick basis made
+look like 0.1–5% disagreements are inside one invocation** on the honest basis, i.e. they are not
+disagreements at all.
 
-**And the sharpest lead resolves, both halves.** `BgAnim_Update` reconciles **exactly** at maxdiag —
-their band `[2294, 2325)` contains `15 × 154 = 2310`, the tick count, to the cycle — and is
-**irreconcilable at idle**, where their band `[5611, 5642)` implies **36.44–36.64 invocations of a routine
-that ran 30 times**. The asymmetry is not the routine and not the state: one of the two samples has extra
-cycles in that row.
+**And the sharpest lead resolves, both halves.** `BgAnim_Update` reconciles at maxdiag — their band
+`[2278.5, 2309.5)` reaches `15 × 154 = 2310`, the tick count, at its top edge — and is **irreconcilable
+at idle**, where their band `[5595.5, 5626.5)` implies **36.33–36.54 invocations of a routine that ran 30
+times**. The asymmetry is not the routine and not the state: one of the two samples has extra cycles in
+that row.
+
+> **One row moved when the band was corrected, and it is flagged rather than left silent.**
+> `EntityWindow_Scan` at idle sat at +1.03 invocations under the (wrong) truncation band and was counted
+> as window phase. Under the correct band it is **+1.02 … +1.04 — marginally OUTSIDE ±1**. Read
+> concretely: their row is ≈30 invocations **plus about 62 cycles** (2 cyc/video-frame). It is 60×
+> smaller than any part-C row and 20× smaller than part B's transfer, so it changes no conclusion, but it
+> is no longer clean window phase and is not reported as such.
 
 **One direction fact worth naming, because §5 rests on it.** Re-scored against the tick count (`N = 30`)
 rather than against our own 29, **`BgAnim_Update` is the only significant GAINER in the entire idle set**:
 
 ```
-theirs_total − 30 × ours_per_invocation, idle:
+theirs_total − 30 × ours_per_invocation, idle   (band CENTRES, i.e. 31c; each carries ±15.5):
   BgAnim_Update          +991        <- the only significant positive
   EntityWindow_Scan       +56
   Camera_Update          −425
@@ -475,12 +550,14 @@ cannot vary). Therefore:
 ```
 even allowing a 31st invocation:    31 × 154 = 4774 cycles
 the honest tick ceiling:            30 × 154 = 4620 cycles
-they publish (181 cyc/video-frame): 181 × 31 = 5611 cycles, band [5611, 5642)
+they publish (181 cyc/video-frame): band [5595.5, 5626.5)        (§3.1a)
 ```
 
-**Excess over the generous ceiling: ≥ 837 cycles. Over the honest one: 991–1022.** No instrument
-comparison is involved. At least that many cycles inside their `BgAnim_Update` row belong to something
-that is not `BgAnim_Update`.
+**Excess over the generous ceiling: ≥ 821.5 cycles. Over the honest one: 975.5–1006.5.** Their row
+implies **36.33–36.54 invocations of a routine that ran 30 times.** No instrument comparison is involved.
+At least that many cycles inside their `BgAnim_Update` row belong to something that is not
+`BgAnim_Update`. *(The conclusion is insensitive to §3.1a: under the truncation band the excess was
+≥837, and the row is impossible either way.)*
 
 ### 5.2 Where they came from: a conserved transfer across one call boundary
 
@@ -488,33 +565,57 @@ that is not `BgAnim_Update`.
 before it**, with **exactly one instruction in between** (`jsr $941C.l` at `$0A194A`, §4.5), is
 `Parallax_Update` — and `Parallax_Update` loses very nearly the same amount.
 
-| | true, at N invocations | theirs (band) | Δ |
+| | true, at N=30 | theirs (band, §3.1a) | Δ |
 |---|---:|---:|---:|
-| `BgAnim_Update` (N=30) | 4620 | 5611–5642 | **+991 … +1022** |
-| `Parallax_Update` (N=30) | 605880 | 604841–604872 | **−1039 … −1008** |
-| **the pair** | **610500** | **610452 … 610514** | **−48 … +14** |
+| `BgAnim_Update` | 4620 | 5595.5 … 5626.5 | **excess +975.5 … +1006.5** |
+| `Parallax_Update` | 605880 | 604825.5 … 604856.5 | **deficit −1054.5 … −1023.5** |
+| **the pair** | **610500** | **610421 … 610483** | **short by 17 … 79** |
 
-**The pair conserves. The interval contains zero.** Meanwhile each row alone is off by 21% and 0.17%
-respectively — a mechanism that *adds* cycles cannot do that; one that *moves a boundary between two
-adjacent brackets* does exactly that.
+**The pair very nearly conserves — but not exactly, and the shortfall is itself the finding.** Each row
+alone is off by 21% and 0.17%; together they are off by **0.003–0.013%**. A mechanism that *adds* cycles cannot
+produce that; one that *moves a boundary between two adjacent brackets* does exactly that, and the 17–79
+cycles it fails to conserve are quantified below rather than absorbed.
 
-**N was not fitted — conservation derives it.** Setting `BgAnim_excess == Parallax_deficit` and solving
-for the invocation count:
+**N was not fitted — near-conservation derives it.** Setting `BgAnim_excess == Parallax_deficit` and
+solving for the invocation count:
 
 ```
 (theirs_BgAnim + theirs_Parallax) / N == 154 + 20196 == 20350
-N == 610452 / 20350 == 29.998
+N == 610452 / 20350 == 29.9976        band [29.9961, 29.9992)
 ```
 
 **29.998** — the tick count, to four significant figures, recovered from their published numbers and our
 two per-invocation figures with no free parameter. That is the check that keeps this from being a
-coincidence fitted after the fact.
+coincidence fitted after the fact. (The next plausible integers are refuted by orders of magnitude: at
+N=29 the pair is short by 20,271–20,333 and at N=31 by 20,367–20,429.)
 
-**The size is one call boundary, and the 2–3 cycles it is not are reported.** The per-invocation transfer
-is `theirs_BgAnim / 30 − 154` = **+33.03 … +34.07**, matched by `20196 − theirs_Parallax / 30` =
-**+33.60 … +34.63**. The boundary between the two brackets is `Parallax_Update`'s own `rts` (16) plus
-`jsr $941C.l` (20) = **36** — the right order of magnitude and the right structure, but **2–3 cycles
-above the measured transfer.** That gap is not explained here and is not absorbed.
+#### The size of the transfer, and the ONE quantity that is left over
+
+Measured on each side separately, per invocation at N=30:
+
+| | measured transfer | vs the structural boundary `rts`(16) + `jsr (xxx).L`(20) = **36** |
+|---|---|---|
+| gaining side, `BgAnim_Update` = `theirs/30 − 154` | **+32.52 … +33.55** | short by 2.45 … 3.48 |
+| losing side, `Parallax_Update` = `20196 − theirs/30` | **+34.12 … +35.15** | short by 0.85 … 1.88 |
+| **the two sides disagree by** | **0.57 … 2.63 cyc/inv** | |
+
+**Those are not two loose ends — they are one, measured twice.** The two sides' disagreement of
+0.57–2.63 cycles per invocation, over 30 invocations, is **17–79 cycles — exactly the pair's shortfall in
+the table above.** The non-conservation and the "not quite 36" are the same quantity seen from two
+directions, and stating it once is both more honest and more falsifiable than the earlier draft's
+"conserves exactly, plus an unexplained 2–3 cycles beside it".
+
+**So the single open quantity in part B is ~1–3 cycles per invocation**, and this run cannot name where
+it goes. Two things are worth recording about it for whoever does:
+
+- **Both sides fall short of 36, and both straddle 34 without containing it** — 34 being
+  `rts`(16) + `jsr (xxx).W`(18), the call form used one instruction earlier, at `$0A1946` into
+  `Parallax_Update`. The losing side misses 34 by only 0.12 cyc/inv. That is suggestive of which
+  instruction the boundary actually lands between, and it is **not** claimed as the answer: neither
+  structural value lies inside either measured interval.
+- It is ~0.01% of `Parallax_Update`'s invocation and ~2% of `BgAnim_Update`'s, so it is invisible on the
+  long row and visible only because the short row magnifies it — the same asymmetry that hid the whole
+  transfer from the corpus A/B (§9.5).
 
 **Two independent routes, one conclusion.** A parallel source audit read
 `oracle-old/…/ControlSocket.cpp` and reports a shadow stack rebuilt empty each frame whose Exit arm pops
@@ -549,8 +650,9 @@ event. The observed excess is **30 small transfers of ~34**, not one large flush
 
 **Per review bar 5, this is the check that keeps §5.2 from being a confound.** The transfer's magnitude
 was not fitted: it is a single call boundary, read out of the ROM and costed from Yacht, and the
-conservation independently recovers the tick count. Where the model does *not* predict exactly (the 2–3
-cycles, §5.2) that is stated rather than tuned away.
+near-conservation independently recovers the tick count. Where the model does *not* predict exactly —
+the ~1–3 cycles per invocation, which is simultaneously the pair's shortfall and the gap to 36 — that is
+stated as one open quantity rather than tuned away.
 
 ### 5.4 The `calls` fingerprint: unavailable in the published form
 
@@ -572,17 +674,21 @@ would confirm it from their own instrument.
 ### 6.1 H1 — denominator / lag-scaling artifact: **SUPPORTED, and it does about half the work**
 
 **Supporting test.** Recomputing every row on TOTAL cycles over the same 31 frames rather than on their
-derived per-tick column (§3.3) moves nine of fourteen rows to inside **one invocation** — the maximum a
-window-phase difference can produce. Rows the corpus A/B published as disagreements which are not:
-`EntityWindow_Scan` idle (published −0.11%, actually +1.03 invocations), `VSync_Wait` (+2.5% → +0.9%),
-`Camera_Update` (+2.4% → +1.0%), `VInt_Level` (+2.6% → +0.8%), `Parallax_Update` (+0.17% → +0.95
-invocations). The purest cases are `Raster_VBlank` and `Enqueue_Dirty_Buffers` at maxdiag: **+101%** and
-**+95%** wrong by construction (§3.2).
+derived per-tick column (§3.3) moves **13 of the 28 row-state cells** to inside **one invocation** — the
+maximum a window-phase difference can produce. Rows the corpus A/B published as disagreements which are
+not: `VSync_Wait` (+2.5% → +0.9%), `Camera_Update` (+2.4% → ~+1.0%), `VInt_Level` (+2.6% → +0.8%),
+`Parallax_Update` (+0.17% → +0.95 invocations — though see §5.2, that one is Part B's other half). The
+purest cases are `Raster_VBlank` and `Enqueue_Dirty_Buffers` at maxdiag: **+101%** and **+95%** wrong by
+construction (§3.2).
 
 **But H1 cannot reach the class.** All five §11.5 rows exceed one invocation on the total basis (§3.4),
 and the sharpest of them, `BgAnim_Update` at idle, is 21% high **in the measured per-video-frame number,
 before any derivation touches it** (154/1.033 = 149.1 predicted against 181 measured). The artifact is
 downstream of the divergence and cannot be its cause.
+
+**This verdict is unchanged by the §3.1a band correction** — the narrower band moves the individual
+figures by ≤0.03 invocations and moves exactly one cell across the ±1 line (`EntityWindow_Scan` idle,
+§3.4), which is called out there rather than absorbed here.
 
 ### 6.2 H2 — cycle-attribution / port-cost asymmetry: **REJECTED, by an inverted partition**
 
@@ -631,19 +737,24 @@ cycles/invocation**. Per-invocation deltas at the tick count:
 
 | row | Δ per invocation | inside ±36? |
 |---|---:|:--|
-| `Palette_Compose` idle | −30.17 … −29.13 | yes |
-| `BgAnim_Update` idle | +33.03 … +34.07 | yes |
-| `Camera_Update` idle | −14.17 … −13.13 | yes |
-| `Section_UpdateColumns` idle | −102.77 … −101.73 | **no** |
-| `EntityWindow_Scan` maxdiag | −356.47 … −354.40 | **no** |
-| `Section_UpdateColumns` maxdiag | −2015.80 … −2013.73 | **no** |
-| `Tile_Cache_Fill` idle | −3169.20 … −3168.17 | **no** |
+| `Palette_Compose` idle | −30.68 … −29.65 | yes |
+| `BgAnim_Update` idle | +32.52 … +33.55 | yes |
+| `Camera_Update` idle | −14.68 … −13.65 | yes |
+| `Parallax_Update` idle | −35.15 … −34.12 | yes (barely) |
+| `Palette_Compose` maxdiag | −42.57 … −40.50 | **no** |
+| `Section_UpdateColumns` idle | −103.28 … −102.25 | **no** |
+| `EntityWindow_Scan` maxdiag | −357.50 … −355.43 | **no** |
+| `Section_UpdateColumns` maxdiag | −2016.83 … −2014.77 | **no** |
+| `Tile_Cache_Fill` idle | −3169.70 … −3168.67 | **no** |
 
 H3's sharp prediction — a fixed offset, hence a delta vanishing in percentage terms on long rows — is
 also contradicted: `Parallax_Update` (20,196 cyc/inv) carries −34 while `Tile_Cache_Fill` (7,952) carries
 −3,169, and `Camera_Update` (598) carries −14. **And the consistency check the brief demanded is
-satisfied**: no fixed convention can put `BgAnim_Update` at +34 and `Palette_Compose` at −30 at idle and
-both at ~0 at maxdiag.
+satisfied**: no fixed convention can put `BgAnim_Update` at +33 and `Palette_Compose` at −30 at idle and
+both within a few cycles of 0 at maxdiag.
+
+**Unchanged by the §3.1a band correction** — the band moves each interval by about ±1 cycle, and the four
+rows that break the ±36 ceiling break it by 3× to 88×.
 
 ### 6.4 Controller test 1 — the `$FFB452` entry form: **the relayed model is REFUTED on that row**
 
@@ -688,10 +799,11 @@ server has no method for (§8, TAG-1).
 - **Their instrument was not re-run.** Every "theirs" figure is a quotation from `bc048e2a`. Their side
   carries their spread and their caveats, and this document cannot detect an error in their transcription.
 - **The §5.2 mechanism is inferred from our side of the pair.** What is *measured* is that
-  `Parallax_Update`'s deficit and `BgAnim_Update`'s excess conserve to an interval containing zero, that
-  conservation recovers the tick count with no free parameter, that the transfer is one call boundary in
-  size (to within 2–3 cycles), and that the flush route is magnitude-wrong. Which line of their consumer
-  produces it is **not pinned here**, and §5.2 says so rather than picking one.
+  `Parallax_Update`'s deficit and `BgAnim_Update`'s excess conserve to within 0.003–0.013% of the pair total, that the
+  near-conservation recovers the tick count with no free parameter, that the transfer is one call
+  boundary in size, and that the flush route is magnitude-wrong. **It is not exact** — the residual
+  ~1–3 cycles per invocation is reported as part B's one open number (§5.2, §8.2). Which line of their
+  consumer produces any of it is **not pinned here**, and §5.2 says so rather than picking one.
 - **Part C is not adjudicated** (§8). Four rows still read low by more than any mechanism measured here
   accounts for.
 - **Two states, one act, one section.** OJZ act 1 section 0. `dense` was not run — it is not in §11.5's
@@ -709,16 +821,21 @@ server has no method for (§8, TAG-1).
 
    | row | Δ/inv | Δ % | W4 ceiling | outside by |
    |---|---:|---:|---:|---:|
-   | `Palette_Compose` idle | −30.2 … −29.1 | −16.8% | 0.07% | **240×** |
-   | `Section_UpdateColumns` idle | −102.8 … −101.7 | −10.5% | 0.4% | **26×** |
-   | `EntityWindow_Scan` maxdiag | −356.5 … −354.4 | −15.3% | 0.9% | **17×** |
-   | `Tile_Cache_Fill` idle | −3169.2 … −3168.2 | −39.9% | 3.1% | **13×** |
+   | `Palette_Compose` idle | −30.68 … −29.65 | −17.0% | 0.07% | **242×** |
+   | `Palette_Compose` maxdiag | −42.57 … −40.50 | −23.6% | 0.07% | **336×** |
+   | `Section_UpdateColumns` idle | −103.28 … −102.25 | −10.6% | 0.38% | **28×** |
+   | `Section_UpdateColumns` maxdiag | −2016.83 … −2014.77 | −21.2% | 3.71% | **6×** |
+   | `EntityWindow_Scan` maxdiag | −357.50 … −355.43 | −15.4% | 0.91% | **17×** |
+   | `Tile_Cache_Fill` idle | −3169.70 … −3168.67 | −39.9% | 3.11% | **13×** |
 
-   All four are **losses**, which is the sign a positionally-matched pop produces when it closes a victim
-   early, and none of them has an identified counterpart gainer in the published set. **Sign-consistent,
-   magnitude-unpinned. This is the honest remainder of §11.5.**
-2. **The 2–3 cycles part B does not predict** (§5.2). The transfer measures 33.0–34.6 where the boundary's
-   instructions sum to 36.
+   All are **losses**, which is the sign a positionally-matched pop produces when it closes a victim
+   early, and none has an identified counterpart gainer in the published set. **Sign-consistent,
+   magnitude-unpinned. This is the honest remainder of §11.5**, and it is **unchanged by the §3.1a band
+   correction** — the narrower band moves each figure by ~1 cycle against overruns of 6× to 336×.
+2. **The ~1–3 cycles per invocation part B does not predict** (§5.2) — **one quantity, not two**: the
+   pair's 17–79-cycle shortfall and the transfer's 0.85–3.48-cycle gap to the structural
+   `rts`+`jsr (xxx).L` = 36 boundary are the same number seen from two directions. Both sides straddle
+   `rts`+`jsr (xxx).W` = 34 without containing it, the losing side by only 0.12 cyc/inv.
 3. **W2 (unhooked `JMP`) is reopened and untested** (§6.5).
 4. **The raw `calls` ask** (§5.4) — cheap and decisive, available from aeon's side alone.
 5. **TAG-1 — no instruction trace on this server.** `emulator/step` and breakpoints do not exist in this
@@ -738,7 +855,7 @@ If part C must be closed, this is the experiment. It needs the reference running
 | **Our expected event list** | `$941C` → `$9420` → `$9426` → `$942A` → `$942C` → `$942E` → `$9432` (`bls.w`, taken) → `$948C` → `$948E` (`beq.w`, taken) → `$9562` → `$9566` (`rts`). **11 instructions, 154 cycles**, per §4.2 |
 | **The two events that decide it** | their `SubroutineEntry` for `$941C` and the `SubroutineExit` their consumer pops against it. **Prediction: the Exit paired with that Entry is not the `rts` at `$9566`**, and correspondingly their `Parallax_Update` bracket (`$007406`, called by `jsr $7406.w` at `$0A1946`) closes ~34 cycles early |
 | **The falsifier** | if their Entry/Exit pair brackets exactly `$941C … $9566` *and* `Parallax_Update`'s brackets exactly `$7406 … its rts`, §5.2 is wrong and the excess is elsewhere |
-| **The part-C leg** | the same trace on `Palette_Compose`, entry **`$007DF6`**, called by `bsr.w` at **`$0026C4`**, expected **15 instructions, 180 cycles** (§4.3); and on `Section_UpdateColumns` (`$006E78`) and `Tile_Cache_Fill` (`$005D60`), where the loss is 26×–240× the straddle ceiling and no gainer is identified |
+| **The part-C leg** | the same trace on `Palette_Compose`, entry **`$007DF6`**, called by `bsr.w` at **`$0026C4`**, expected **15 instructions, 180 cycles** (§4.3); and on `Section_UpdateColumns` (`$006E78`) and `Tile_Cache_Fill` (`$005D60`), where the loss is 6×–336× the straddle ceiling and no gainer is identified |
 | **The two builds** | theirs at aeon `bc048e2a` / oracle-old; ours at `oracle` `profiler-shortrow-residual` (this branch) |
 
 ### 8.2 A note on the fix, with its caveat
@@ -765,11 +882,25 @@ Offered as edits to `docs/2026-08-20-profiler-corpus-ab.md`, not applied here.
 3. **§6.3's W2 rejection should be downgraded to UNTESTED** — the `4EF9`-containment partition is the
    wrong partition for a non-local desync (§6.5).
 4. **§6.3's W4 straddle ceiling is sound but was applied to the wrong class.** It covers the long rows
-   correctly; the short rows are not straddle at all, and part C is 13×–240× outside it.
-5. **§6.3's "one row where the two instruments essentially agree is the walker" needs a footnote.**
-   `Parallax_Update`'s 0.17% at idle is not agreement — on the total basis it is a **−1039-cycle deficit
-   that is the counterpart of `BgAnim_Update`'s +991 excess** (§5.2). It agrees in percentage because it
-   is a 20,000-cycle routine, which is exactly why a small transfer hides in it.
+   correctly; the short rows are not straddle at all, and part C is 6×–336× outside it.
+5. **★ §6.3's "the one row where the two instruments essentially agree is the walker" must be footnoted,
+   and this is the most load-bearing edit in the list.** That line is currently cited as *"the best
+   evidence here that our nominal 68000 timings and theirs are the same timings — which is what makes the
+   §5.1 exact matches meaningful rather than lucky."* It cannot carry that weight. On the total basis
+   `Parallax_Update`'s 0.17% is **not agreement**: it is a **−1054.5 … −1023.5-cycle deficit that is the
+   counterpart of `BgAnim_Update`'s +975.5 … +1006.5 excess** (§5.2). It *reads* as agreement only because
+   it is a 20,000-cycle routine — which is precisely why a ~34-cycle-per-invocation transfer hides in it.
+   The agreement was an artifact of the divisor, not evidence about timings.
+
+   **What still carries that evidential weight, and carries it far better:** §4's hand derivations. Two
+   routines, costed instruction by instruction from the ROM bytes (capstone, an independent decoder) and
+   the Yacht v1.1 tables, landing **exactly** on our 180.0 and 154.0 — with a third, independent
+   confirmation from `run_to` clock timestamps (§4.5) that touches no profiler figure at all. That is a
+   direct check of our nominal timings against the published 68000 tables, where the walker was only ever
+   an indirect check of ours against theirs. And the `HBlank_Vector_Slot` row — 1878 against 1878 at both
+   states, `stallCycles` 0, on the one row with no straddle and no preemption exposure (§6.2) — remains a
+   genuine instrument-to-instrument agreement, because it is display-driven and so has no lag denominator
+   to hide anything in.
 6. **A new claim for their side:** their published idle `BgAnim_Update` row (181 cyc/video-frame) is
    **arithmetically impossible** for that routine (§5.1) — worth a retraction rather than a tolerance. The
    corpus author has said in writing they will retract rather than defend if the hand-derivation rules
