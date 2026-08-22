@@ -1236,9 +1236,59 @@ fn the_depth_cap_is_never_attributed_to_a_caller_we_did_track() {
         p.report().depth_exceeded > 0,
         "the cap must actually have been hit or this proves nothing"
     );
+    assert_eq!(p.open_frames(), MAX_DEPTH, "and the stack is at its bound");
+
+    // **The step that makes this test bite.** Refusals alone prove nothing: no frame can be pushed while
+    // the stack is at the cap, so the attribution is never exercised. So unwind ONE frame with a matched
+    // return and call again. The new frame's caller is the routine that really is beneath it — the latch
+    // was cleared by the pop — and attributing it to a caller the accountant *declined to track* would be
+    // inventing a lost frame for a call whose caller was on the stack all along.
+    let innermost_entry_sp = 0x00FF_FFFC_u32.wrapping_sub(4 * (MAX_DEPTH as u32 - 2));
+    let after_return = innermost_entry_sp.wrapping_add(4);
+    p.on_step_retire(step(0x3_0000, OP_RTS, after_return, after_return));
+    assert_eq!(
+        p.open_frames(),
+        MAX_DEPTH - 1,
+        "the matched return really popped a frame, or nothing below is exercised"
+    );
+    const NEW_CALLEE: u32 = 0x0005_0000;
+    p.on_step_retire(step(
+        0x3_0002,
+        OP_JSR_ABS_W,
+        innermost_entry_sp,
+        innermost_entry_sp,
+    ));
+    p.on_step_retire(step(
+        NEW_CALLEE,
+        OP_NOP,
+        innermost_entry_sp - 4,
+        innermost_entry_sp - 4,
+    ));
+    assert_eq!(
+        p.open_frames(),
+        MAX_DEPTH,
+        "…and the call after it WAS tracked, so it has an edge to get wrong"
+    );
+    p.on_frame_boundary(2);
+
     assert!(
         !p.sample_callers().is_empty(),
-        "…and edges must have been recorded, or the check below is vacuous"
+        "edges must have been recorded, or the check below is vacuous"
+    );
+    let new_edges: Vec<_> = p
+        .sample_callers()
+        .keys()
+        .filter(|(callee, _)| *callee == NEW_CALLEE)
+        .collect();
+    assert_eq!(
+        new_edges.len(),
+        1,
+        "the post-unwind call has exactly one edge: {new_edges:#06X?}"
+    );
+    assert!(
+        matches!(new_edges[0].1, CallerKey::Routine(_)),
+        "its caller is the routine really beneath it, not a frame we declined to track: {:#06X?}",
+        new_edges[0]
     );
     let capped: Vec<_> = p
         .sample_callers()
