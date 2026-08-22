@@ -59,7 +59,80 @@ with tools that then exist).
    `"hint"|"vint"|"root"|"depthCap"` — the consumer's literal spelling adjudicated over, accepted
    by them as exceeding their floor. TRACKED_REVISION retired to None (`d95bf59`).
 
-6. **§11.5 short-routine residual — OPEN 2026-08-22, owner's pick from an empty queue.** The one
+6. ~~§11.5 short-routine residual~~ **DONE 2026-08-22, merged `d778dec`+`c6a1ac6`** —
+   `docs/2026-08-22-shortrow-residual-measurement.md` (`fff9cc2`+`c942864`) and
+   `docs/2026-08-22-cycle-attribution-audit.md` (`b4a78c9`). **Whole arc is docs-only** (zero
+   non-docs files across `a27e4d2..c6a1ac6`, verified by `git diff --name-only`), so the aggregate
+   and currency are unmoved *by construction* — no cargo run, recorded as reasoning rather than
+   skipped silently (aurora held a cargo lane at the time).
+   **VERDICT: three parts, two closed, one characterised — and NONE of it is on our side.**
+   - **Stage B decided it with a third party neither emulator authored.** Hand-derived from ROM
+     bytes (capstone, an independent decoder) + Yacht v1.1, on a bracket pinned from OUR source
+     *before* counting: `Palette_Compose` = **exactly 180**, `BgAnim_Update` = **exactly 154**. Ours
+     reads 180.0/154.0; theirs ~150/~187. **Matches ours on both, theirs on neither.** Free third
+     confirmation from `run_to` clock timestamps: the two entries sit 188 cycles apart = 154 +
+     `rts`(16) + `bsr.w`(18), touching no profiler figure. **This — not the walker — is now the
+     evidence that the two instruments share nominal timings** (see §9.5 below).
+   - **Part A CLOSED (H1 SUPPORTED, ~half the spread).** The denominator artifact. Purest
+     demonstration: `Raster_VBlank` and `Enqueue_Dirty_Buffers` are **+101%** and **+95%** wrong at
+     maxdiag *by pure construction* — frame-driven routines scaled by 2.067 anyway — and the corpus
+     A/B's §6.2 **silently omitted both**.
+   - **Part B CLOSED — a conserved transfer across ONE call boundary.** `BgAnim_Update` (+991) is
+     matched by `Parallax_Update` (−1039); they are called back-to-back with **one instruction
+     between them** (`jsr $941C.l` at `$0A194A`). Conservation independently **derives N = 29.998**
+     against a `Logic_Tick` ground truth of 30, **with no free parameter** — that is what keeps it
+     from being a coincidence fitted after the fact. **Two agents converged from opposite
+     directions with no contact**: one reading their C++ (a shadow stack popping by position, never
+     comparing addresses), one measuring and never reading their source.
+   - **Part C OPEN, far better characterised.** Four rows low by **6×–336×** the W4 straddle
+     ceiling (`Palette_Compose` maxdiag 336×; `Tile_Cache_Fill` idle −39.9% vs a 3.1% ceiling).
+     Sign-consistent with a positional-pop defect; **magnitude unpinned.**
+   - **A hard bound worth keeping**: their idle `BgAnim_Update` is **arithmetically impossible**,
+     not merely different — 30 ticks × 154 caps it at 4620 and they publish ≥5611, implying
+     36.3–36.5 invocations of a routine that ran 30 times. Holds under either rounding convention.
+   **Hypothesis verdicts:** H1 SUPPORTED (~half). **H2 REJECTED by an INVERTED partition** — a
+   complete VDP-port census (2050 hits, 0 dropped) puts the heaviest port-toucher
+   (`HBlank_Vector_Slot`, 384 writes) at the **most exact agreement in the set, 0.000%**, while all
+   five §11.5 rows **write to no port at all**: exactly backwards from H2's prediction. **H3
+   REJECTED and our bracket independently VALIDATED** (bounded ±36 cyc/inv; no fixed convention can
+   put BgAnim at +34 and Palette at −30 at idle and both at ~0 at maxdiag). **My own relayed
+   flush-route hypothesis REFUTED on magnitude** — BgAnim enters 19.3% into the frame with 103,286
+   cycles still to run, so a flush would deliver ~103,000 where 34 was measured: **wrong by
+   ~3,000×**. Good outcome; the brief asked for falsification and got it.
+   **W2 is UNTESTED, not dead** — the §6.3 rejection asked which routines *contain* a `4EF9`, but a
+   desync is not local (it mis-pairs every subsequent Exit in the frame), so it was the wrong
+   partition. Fuel confirmed present: live call chain across their seam every frame, static `RTR` 7,
+   `TRAP` 78, `JMP` 347.
+   **Two overseer catches, both material** (recorded because firsthand verification earned its cost
+   twice in one arc): (a) **the rounding band was the wrong convention** — the agent carried their
+   published integers as truncated; their probe **rounds to nearest**, proven **26/26 vs 15/26 with
+   11 discriminating rows, 0 for TRUNC** (re-derived independently by me *and* by them over all 26
+   published row-states). This **deleted the headline "the pair conserves, the interval contains
+   zero"**: the pair is **short by 17–79 cycles**. It also **unified two loose ends into one** — that
+   shortfall IS the separately-flagged "2–3 cycles above the measured transfer" gap, ×30
+   invocations. One open quantity measured two ways, ~1–3 cyc/inv, **unexplained and not absorbed**;
+   lead recorded without claiming it (both sides straddle `rts`+`jsr (xxx).W` = 34 without either
+   containing it). (b) The **`calls`-fingerprint** idea I sent is **unavailable in the published
+   form** — their column only reaches `2` at ≥62 raw calls, so `1` bounds it at ≤61 and carries no
+   information. Also self-corrected by the agent: "nine of fourteen" was stale **and** mis-counted
+   (true figure **13 of 28 cells**), and `EntityWindow_Scan` idle flipped marginally **outside** ±1
+   invocation (≈30 invocations + ~62 cycles; 60× smaller than any Part C row, changes no conclusion,
+   but no longer clean window phase).
+   **Artifacts relocated out of the dying worktree** to `/home/volence/sonic_hacks/corpus-rom-d22dda85/`
+   (plain dir, outside any git tree): `s4.debug.bin` (`d22dda85`/713295, sha256 `ad289eae947b2dd4`),
+   `s4.debug.lst` (5162 lines / 2578 symbols), and `PROVENANCE.md` carrying the byte-identity
+   binding proof, the rebuild recipe, **both snags aeon will hit**, and every address the doc names.
+   All four re-verified firsthand here. **Live ask out to aeon:** raw `calls` for `Parallax_Update`
+   and `BgAnim_Update` at idle — it would confirm Part B **from their own instrument**.
+   **§9 of the doc lists six proposed edits to the corpus A/B**, incl. §9.5: the *"the walker agrees
+   to 0.17%"* line **cannot** carry the weight the A/B put on it (it is Part B's other half, hidden
+   by a 20,000-cycle divisor); what can: Stage B's hand derivations, and the display-driven
+   `HBlank_Vector_Slot` row at 1878-vs-1878, which has no lag denominator to hide anything in.
+   **Stage C (paired trace) NOT taken and not needed for parts A/B**; §8.1 specifies it concretely
+   enough to dispatch if Part C is ever pursued.
+
+   *(Item 6's dispatch record follows, kept for the method — how the arc was framed before any
+   result was in. Read it as the setup, not as open work.)* The one
    unexplained item left by the profiler corpus A/B: five ungated short rows (`Tile_Cache_Fill`
    idle, `EntityWindow_Scan` maxdiag, `Section_UpdateColumns`, `Palette_Compose`, `BgAnim_Update`)
    disagree 11–40% with aeon's instrument at W4 straddle exposure under 4%; W2 and state-phase
