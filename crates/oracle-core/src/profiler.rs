@@ -17,6 +17,26 @@
 //! `JSR`/`BSR`. `cycles` is **inclusive** of everything the routine called; `cyclesSelf` is the same span
 //! with callee time subtracted; `calls` is the number of actual invocations.
 //!
+//! # The caller lens (§11.18 / CR-28)
+//!
+//! Armed with [`Profiler::with_lenses`], the accountant also keeps a second map keyed
+//! `(callee entry address, caller)` — one entry per distinct **call edge**. The caller is read **once, at
+//! the push**, from the frame directly beneath, so the added cost is proportional to *calls* rather than
+//! to instructions and `charge` — the hot path — is untouched.
+//!
+//! Two properties follow from every invocation having exactly one caller, and they are what the wire's
+//! `==` gates rest on: a callee's edges **partition** its row, so their `self_cycles` sum to the row's
+//! `self_cycles` and their `calls` sum to the row's `calls`, undivided on both sides. They hold because the
+//! edge is folded from the *same* checkpoint delta and incremented from the *same* branch as the row, never
+//! from a second tally that could drift.
+//!
+//! An absence of caller address is never a fabricated zero: [`CallerKey`] enumerates the three ways a call
+//! edge can have no calling *routine* — an interrupt context (split by cause, never collapsed), the frame
+//! the sample opened on, and a frame the depth cap declined.
+//!
+//! The lens is opt-in for the **reply's** sake and not the accumulator's, which is the opposite of why the
+//! per-frame ring is opt-in. See [`Profiler::with_lenses`].
+//!
 //! # The three attribution rules that are easy to get wrong
 //!
 //! 1. **A return only closes a frame whose stack pointer matches exactly.** `RTS` pops 4 bytes and `RTR`
@@ -157,6 +177,61 @@ impl Counts {
     }
 }
 
+/// **Who called a routine**, as the accountant observed it at the push (§11.18 / CR-28).
+///
+/// One value per *genuinely different fact*, which is the whole reason this is an enum rather than an
+/// `Option<u32>`: interrupt-entered, root-entered and depth-capped are three different things and a single
+/// absence would make them one. The interrupt case is split **by cause** — this family keys interrupt
+/// accounting by the acknowledged level everywhere else, and collapsing `hint` and `vint` here would be the
+/// one place in the surface where the two are indistinguishable.
+///
+/// The derived `Ord` is what makes an edge list's tie-break total and reproducible boot to boot: routines
+/// first (by address), then the two interrupt causes (by level), then root, then the depth cap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CallerKey {
+    /// The **entry address** of the calling routine — the same key space a row uses, so an edge joins to
+    /// its caller's row by equality.
+    ///
+    /// One caveat that is a property of the accountant rather than of the program: when the caller is the
+    /// frame the sample *opened* on, this address is whatever PC retired first, which is mid-routine. It is
+    /// real and it is where the call came from, but it is **not** an entry point.
+    Routine(u32),
+    /// Reached from inside an interrupt's context, keyed by the acknowledged **level** (4 = HBlank,
+    /// 6 = VBlank). There is no calling routine address to give: the caller is a *bucket*.
+    Interrupt(u8),
+    /// No call into this routine was ever observed — it **is** the frame the sample opened on.
+    Root,
+    /// The calling frame was one [`Profiler::push_frame`] declined at [`MAX_DEPTH`], the same event
+    /// [`Report::depth_exceeded`] counts.
+    DepthCap,
+}
+
+/// One **call edge**'s worth of counters: what a routine cost when reached from one particular caller.
+///
+/// Three figures rather than the row's four, and the missing one is deliberate: **there is no per-edge
+/// stall figure**. The client this lens was built for declined one on measured grounds (flat and
+/// VBlank-owned at every state they took), and the wire fragment bars the key outright rather than leaving
+/// it undeclared — so a type that could carry it would be an invitation to publish something the contract
+/// refuses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EdgeCounts {
+    /// Cycles inclusive of everything called from here, on invocations reached from this caller.
+    pub cycles: u64,
+    /// The same span with callee time subtracted. **This** is the figure that partitions the row: every
+    /// invocation has exactly one caller, so a row's edges' `self_cycles` sum to the row's exactly.
+    pub self_cycles: u64,
+    /// Completed invocations made from this caller, on the row field's own rule.
+    pub calls: u64,
+}
+
+impl EdgeCounts {
+    fn add(&mut self, other: EdgeCounts) {
+        self.cycles += other.cycles;
+        self.self_cycles += other.self_cycles;
+        self.calls += other.calls;
+    }
+}
+
 /// What a live shadow-stack frame is: a called routine, or a taken interrupt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FrameKind {
@@ -171,6 +246,14 @@ enum FrameKind {
 #[derive(Clone, Copy, Debug)]
 struct Frame {
     kind: FrameKind,
+    /// **Who called this frame**, read once at the push from the frame directly beneath it — an `O(1)`
+    /// look at `stack.last()`, not a walk and not a per-instruction key. That is what keeps the per-caller
+    /// cost proportional to **calls** rather than to instructions: the hot path (`charge`) never touches
+    /// it, and the fold happens at the invocation boundaries that already exist.
+    ///
+    /// Captured on every frame whether or not the lens is armed, because it is one enum copy at a push; the
+    /// thing that is allocated only when armed is the edge *map*, which is what actually costs memory.
+    caller: CallerKey,
     /// The active A7 immediately after entry — what a return must restore, exactly, to close this frame.
     /// Unused for [`FrameKind::Interrupt`], which matches on the supervisor stack instead.
     entry_sp: u32,
@@ -205,6 +288,27 @@ struct Frame {
 }
 
 impl Frame {
+    /// A freshly entered frame: nothing accrued, nothing reported, not suppressed.
+    ///
+    /// `caller` is a **placeholder** here and is overwritten unconditionally by
+    /// [`Profiler::push_frame`], which is the only place that can see what sits beneath this frame. It is
+    /// not a default anything is expected to observe.
+    fn opened(kind: FrameKind, entry_sp: u32, supervisor: bool) -> Self {
+        Self {
+            kind,
+            caller: CallerKey::Root,
+            entry_sp,
+            supervisor,
+            self_cycles: 0,
+            self_stall: 0,
+            child_cycles: 0,
+            child_stall: 0,
+            reported_self: 0,
+            reported_inclusive: 0,
+            reported_inclusive_stall: 0,
+            suppressed: false,
+        }
+    }
     fn inclusive(&self) -> u64 {
         self.self_cycles + self.child_cycles
     }
@@ -278,6 +382,14 @@ pub struct Report {
     pub routines: BTreeMap<u32, Counts>,
     /// Per-cause interrupt buckets, keyed by level (4 = HInt, 6 = VInt), each divided by `frame_count`.
     pub interrupts: BTreeMap<u8, Counts>,
+    /// **Call edges**, keyed `(callee entry address, caller)`, each divided by `frame_count`. Empty unless
+    /// the caller lens was armed (§11.18 / CR-28).
+    ///
+    /// Arming the lens **adds divided figures to the report**, so `per_frame_exact` ranges over these too:
+    /// a sample that reported `true` without the lens may report `false` with it, and nothing became less
+    /// exact — more figures are being reported on. Their undivided partners are
+    /// [`Profiler::sample_callers`].
+    pub callers: BTreeMap<(u32, CallerKey), EdgeCounts>,
     /// Cycles the sample retired that belong to **no row** — undivided. Today there is exactly one source:
     /// an interrupt that was already in flight when the sample opened, whose bucket may not be opened
     /// retroactively. The cycles are real and are counted in `sample_cycles`, so reporting them separately
@@ -339,6 +451,27 @@ pub struct Profiler {
     per_frame: VecDeque<FrameRow>,
     /// Ring depth; `0` means the ring is not armed at all.
     per_frame_depth: usize,
+    /// Whether the **caller lens** is armed (§11.18 / CR-28). The two maps below are populated only while
+    /// it is, which is what makes an unarmed sample byte-identical to one taken before the lens existed.
+    callers_armed: bool,
+    /// Call edges accrued since the last frame boundary, keyed `(callee entry address, caller)`.
+    pending_callers: BTreeMap<(u32, CallerKey), EdgeCounts>,
+    /// Call edges merged from whole frames only — the same commit discipline the rows follow, for the same
+    /// reason: the tail of a partial frame is never reported.
+    committed_callers: BTreeMap<(u32, CallerKey), EdgeCounts>,
+    /// **A push was refused at [`MAX_DEPTH`] and nothing has come off the stack since.**
+    ///
+    /// Set by the refusal, consumed by the next successful push (which then carries
+    /// [`CallerKey::DepthCap`]), and **cleared by any pop** — because once the stack has unwound, the frame
+    /// on top is one the accountant really did track and naming it a lost caller would be a lie.
+    ///
+    /// **Not reachable today, and that is stated rather than hidden.** A refusal implies the stack is *at*
+    /// the cap, so the next push is refused too, and the only way to get below the cap is a pop — which
+    /// clears the latch. So the honest reading is that this arm exists for correctness rather than for
+    /// coverage: it is the shape the wire enumerates, it is cleared in the one direction that could make it
+    /// wrong, and `depth_cap_is_never_attributed_to_a_caller_we_did_track` pins the negative half. If a
+    /// later change ever makes a push refusable *below* the cap, the attribution is already right.
+    depth_capped: bool,
 }
 
 impl Profiler {
@@ -352,8 +485,21 @@ impl Profiler {
     /// Opt-in because a per-frame record costs memory across a long sample while the aggregate does not —
     /// the aggregate accumulates in place. `depth` of `0` is the same as [`Profiler::new`].
     pub fn with_per_frame(depth: usize) -> Self {
+        Self::with_lenses(depth, false)
+    }
+
+    /// A detached, empty accountant in a named **lens** pose: the per-frame ring at `per_frame_depth`
+    /// (`0` = off) and the caller lens on or off.
+    ///
+    /// The two lenses are opt-in for **opposite** reasons, and the distinction is worth keeping straight
+    /// because it decides which half a later optimisation may touch. The ring costs *memory across a long
+    /// sample* while the aggregate accumulates in place. Per-caller accounting costs almost nothing to
+    /// accumulate — the work is proportional to calls, not to instructions — and is opt-in because the
+    /// **reply** grows by rows × edges.
+    pub fn with_lenses(per_frame_depth: usize, callers: bool) -> Self {
         Self {
-            per_frame_depth: depth,
+            per_frame_depth,
+            callers_armed: callers,
             ..Self::default()
         }
     }
@@ -361,6 +507,11 @@ impl Profiler {
     /// Whether the per-frame ring is armed.
     pub fn per_frame_armed(&self) -> bool {
         self.per_frame_depth > 0
+    }
+
+    /// Whether the caller lens is armed (§11.18 / CR-28).
+    pub fn callers_armed(&self) -> bool {
+        self.callers_armed
     }
 
     /// The per-frame rows, oldest first. Empty when the ring is not armed.
@@ -404,16 +555,43 @@ impl Profiler {
         &self.committed_buckets
     }
 
+    /// The committed **call edges**, undivided — keyed `(callee entry address, caller)`. Empty when the
+    /// lens was not armed, which is the signal: an armed row always acquires at least one edge, so an empty
+    /// edge list under an armed lens is a defect in the accountant rather than an ordinary answer.
+    ///
+    /// This is the term the two normative sums are stated on. Every invocation has exactly one caller, so
+    /// the edges of one callee **partition** its row: their `self_cycles` sum to the row's `self_cycles`
+    /// and their `calls` to the row's `calls`, undivided on both sides.
+    pub fn sample_callers(&self) -> &BTreeMap<(u32, CallerKey), EdgeCounts> {
+        &self.committed_callers
+    }
+
     /// Push a frame, unless the stack is already at [`MAX_DEPTH`].
     ///
     /// Refusing is the conservative failure: the callee's cycles then charge to its caller, which
     /// overstates one row, where growing without bound would eventually consume all memory and — long
     /// before that — bury every real row under a stack that never unwinds.
-    fn push_frame(&mut self, frame: Frame) {
+    fn push_frame(&mut self, mut frame: Frame) {
         if self.stack.len() >= MAX_DEPTH {
             self.depth_exceeded += 1;
+            // The frame we just declined is a caller we will not be able to name if anything is pushed
+            // beneath it before the stack unwinds. See `depth_capped`.
+            self.depth_capped = true;
             return;
         }
+        // **The caller, read once, here.** This is the `O(1)` look the whole lens rests on: one glance at
+        // the frame beneath, at the moment of entry, rather than a key derived per retired instruction.
+        frame.caller = match self.stack.last() {
+            _ if self.depth_capped => {
+                self.depth_capped = false;
+                CallerKey::DepthCap
+            }
+            None => CallerKey::Root,
+            Some(f) => match f.kind {
+                FrameKind::Routine { addr } => CallerKey::Routine(addr),
+                FrameKind::Interrupt { level, .. } => CallerKey::Interrupt(level),
+            },
+        };
         self.stack.push(frame);
     }
 
@@ -432,19 +610,11 @@ impl Profiler {
     /// wire is a question for the surface that publishes these rows, not for the accumulator.
     fn charge(&mut self, pc: u32, sp: u32, supervisor: bool, cycles: u64, stall: u64) {
         if self.stack.is_empty() {
-            self.push_frame(Frame {
-                kind: FrameKind::Routine { addr: pc },
-                entry_sp: sp,
+            self.push_frame(Frame::opened(
+                FrameKind::Routine { addr: pc },
+                sp,
                 supervisor,
-                self_cycles: 0,
-                self_stall: 0,
-                child_cycles: 0,
-                child_stall: 0,
-                reported_self: 0,
-                reported_inclusive: 0,
-                reported_inclusive_stall: 0,
-                suppressed: false,
-            });
+            ));
         }
         // UNCONDITIONAL, and that is a proof rather than an optimism: the only way to reach here with an
         // empty stack is for the push above to have been refused, and `push_frame` refuses only at
@@ -485,6 +655,7 @@ impl Profiler {
         frame.mark_reported();
         let suppressed = frame.suppressed;
         let key = frame.kind;
+        let caller = frame.caller;
         if suppressed {
             self.pending_unattributed += d_self;
             return;
@@ -496,6 +667,16 @@ impl Profiler {
         row.self_cycles += d_self;
         row.cycles += d_incl;
         row.stall_cycles += d_incl_stall;
+        // The **same** delta, through the same checkpoint, into the edge — so a row's figure and the sum
+        // of its edges' figures cannot be two measurements that disagree. Interrupt buckets take no edge:
+        // a bucket is keyed by cause and what it preempted is not a call.
+        if self.callers_armed {
+            if let FrameKind::Routine { addr } = key {
+                let edge = self.pending_callers.entry((addr, caller)).or_default();
+                edge.self_cycles += d_self;
+                edge.cycles += d_incl;
+            }
+        }
     }
 
     fn pop_frame(&mut self, completed: bool) {
@@ -505,6 +686,9 @@ impl Profiler {
         // Flush the remainder through the same path a boundary uses, so the two can never disagree.
         self.checkpoint(self.stack.len() - 1);
         let frame = self.stack.pop().expect("just checked non-empty");
+        // The stack has unwound, so whatever `push_frame` last declined is no longer plausibly the caller
+        // of the next thing pushed. See `Profiler::depth_capped`.
+        self.depth_capped = false;
         if !completed {
             self.abandoned += 1;
         }
@@ -514,7 +698,18 @@ impl Profiler {
         // that has no end. The cycles are the honest half; the call is the half that would be a fiction.
         if completed && !frame.suppressed {
             match frame.kind {
-                FrameKind::Routine { addr } => self.pending.entry(addr).or_default().calls += 1,
+                FrameKind::Routine { addr } => {
+                    self.pending.entry(addr).or_default().calls += 1;
+                    // Counted on the edge from the same branch as the row's, so the two counts can only
+                    // ever move together — which is what makes "the edges' calls sum to the row's calls"
+                    // a property of the code rather than an agreement between two tallies.
+                    if self.callers_armed {
+                        self.pending_callers
+                            .entry((addr, frame.caller))
+                            .or_default()
+                            .calls += 1;
+                    }
+                }
                 FrameKind::Interrupt { level, .. } => {
                     self.pending_buckets.entry(level).or_default().calls += 1
                 }
@@ -645,6 +840,22 @@ impl Profiler {
                 )
             })
             .collect();
+        // Divided through the SAME `div`, so `per_frame_exact` covers the edge figures as well — the one
+        // consequence of arming the lens that a client has to be told rather than left to discover.
+        let callers = self
+            .committed_callers
+            .iter()
+            .map(|(&key, e)| {
+                (
+                    key,
+                    EdgeCounts {
+                        cycles: div(e.cycles),
+                        self_cycles: div(e.self_cycles),
+                        calls: div(e.calls),
+                    },
+                )
+            })
+            .collect();
         Report {
             abandoned_frames: self.abandoned,
             depth_exceeded: self.depth_exceeded,
@@ -657,6 +868,7 @@ impl Profiler {
             per_frame_exact: exact,
             routines,
             interrupts,
+            callers,
         }
     }
 
@@ -680,19 +892,11 @@ impl BusEventSink for Profiler {
     fn on_step_retire(&mut self, r: StepRetire) {
         // 1. A call armed by the PREVIOUS retirement lands here: this step's PC is the callee's entry.
         if let Some(entry_sp) = self.pending_call.take() {
-            self.push_frame(Frame {
-                kind: FrameKind::Routine { addr: r.pc },
+            self.push_frame(Frame::opened(
+                FrameKind::Routine { addr: r.pc },
                 entry_sp,
-                supervisor: r.supervisor,
-                self_cycles: 0,
-                self_stall: 0,
-                child_cycles: 0,
-                child_stall: 0,
-                reported_self: 0,
-                reported_inclusive: 0,
-                reported_inclusive_stall: 0,
-                suppressed: false,
-            });
+                r.supervisor,
+            ));
         }
         // 2. An acknowledge seen during this step means this step IS the interrupt entry. `calls` counts
         //    the times an interrupt was TAKEN, so a raised-but-masked request appears nowhere: it never
@@ -708,22 +912,14 @@ impl BusEventSink for Profiler {
         //    Note where that arming comes FROM: the acknowledge, never the retired opcode. The phantom
         //    guard below is therefore untouched by it — this row is opened by a signal the CPU really drove.
         if let Some(level) = self.pending_iack.take() {
-            self.push_frame(Frame {
-                kind: FrameKind::Interrupt {
+            self.push_frame(Frame::opened(
+                FrameKind::Interrupt {
                     level,
                     frame_ssp: r.ssp,
                 },
-                entry_sp: r.sp,
-                supervisor: r.supervisor,
-                self_cycles: 0,
-                self_stall: 0,
-                child_cycles: 0,
-                child_stall: 0,
-                reported_self: 0,
-                reported_inclusive: 0,
-                reported_inclusive_stall: 0,
-                suppressed: false,
-            });
+                r.sp,
+                r.supervisor,
+            ));
             self.pending_call = Some(r.sp);
         }
         // 3. The entry cost belongs to the frame it opened, so charge after pushing.
@@ -804,6 +1000,9 @@ impl BusEventSink for Profiler {
             for (level, c) in std::mem::take(&mut self.pending_buckets) {
                 self.committed_buckets.entry(level).or_default().add(c);
             }
+            for (key, e) in std::mem::take(&mut self.pending_callers) {
+                self.committed_callers.entry(key).or_default().add(e);
+            }
             self.committed_cycles += self.pending_cycles;
             self.committed_stall += self.pending_stall;
             self.committed_unattributed += self.pending_unattributed;
@@ -811,6 +1010,7 @@ impl BusEventSink for Profiler {
         }
         self.pending.clear();
         self.pending_buckets.clear();
+        self.pending_callers.clear();
         self.pending_cycles = 0;
         self.pending_stall = 0;
         self.pending_unattributed = 0;
