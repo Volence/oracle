@@ -245,6 +245,37 @@ pub fn control_flow_of(opcode: u16) -> ControlFlow {
     ControlFlow::None
 }
 
+/// How many bytes a **return** opcode pops off the stack it unwinds — the number a shadow stack adds to a
+/// frame's entry SP to predict the stack pointer the matching return will leave behind.
+///
+/// A pure function of the opcode, like [`control_flow_of`], and meaningful only for the opcodes that
+/// classifier calls [`ControlFlow::Return`] or [`ControlFlow::InterruptReturn`]. Everything else answers
+/// `0`: a word that pops no return frame has no pop to report, and `0` is that fact rather than a default.
+///
+/// The three frames (M68000UM §4, the `RTS`/`RTR`/`RTE` entries):
+///
+/// * `RTS` pops **4** — the 32-bit return address a `JSR`/`BSR` pushed.
+/// * `RTR` pops **6** — a saved CCR word *plus* that return address. It is the one subroutine return whose
+///   frame is not 4 bytes, and a shadow stack that assumed 4 would fail to match every `RTR` in the image.
+/// * `RTE` pops **6** — the 68000's standard exception frame (SR word + 32-bit PC). Matched against the
+///   *supervisor* stack, never the mode-selected one; see [`crate::bus::StepRetire::ssp`].
+///
+/// **This function exists so there is exactly one copy of these three numbers.** They were previously
+/// private constants in [`crate::profiler`], which is where the only consumer lived; the moment a second
+/// consumer needed them (the Aether server's `step_over`/`step_out`, which walk the same shadow stack) the
+/// choice was one definition here or two definitions that can drift silently — and a mirror that can drift
+/// is the defect [`control_flow_of`] is written the way it is to avoid. So the numbers live next to the
+/// classifier whose classes select them, and the profiler reads them from here.
+#[inline]
+pub const fn return_pop_bytes(opcode: u16) -> u32 {
+    match opcode {
+        0x4E75 => 4, // RTS — the return address alone.
+        0x4E77 => 6, // RTR — CCR word + return address.
+        0x4E73 => 6, // RTE — SR word + return address.
+        _ => 0,
+    }
+}
+
 /// Decode the opcode currently in `regs.prefetch[0]` into its micro-op recipe, latching the original opcode
 /// into the recipe ([`MicroState::set_opcode`]) so the address-error abort (E3) can stack it as the IR /
 /// SSW fields after the prefetch shifts have overwritten `regs.prefetch`.
@@ -15486,6 +15517,42 @@ mod tests {
             diverged,
             vec![0x4E73],
             "only RTE is classified as control flow yet privilege-trapped in user mode"
+        );
+    }
+
+    /// **[`return_pop_bytes`] is non-zero on exactly the returns, over all 65 536 opcodes.**
+    ///
+    /// Exhaustive rather than three spot checks, and tied to [`control_flow_of`] rather than to a list
+    /// retyped here, because the two are one rule read from two directions: a shadow stack asks the
+    /// classifier *whether* a word unwinds a frame and asks this function *how big* that frame is. If a
+    /// return ever answered `0` the frame it should have closed would go unmatched forever — the wedge
+    /// `Profiler::close_routine` documents — and if a non-return answered non-zero a consumer could close a
+    /// frame on a word that pops nothing. Neither failure is visible in a report; both are visible here.
+    #[test]
+    fn return_pop_bytes_is_non_zero_on_exactly_the_return_classes() {
+        let mut popping: Vec<(u16, u32)> = Vec::new();
+        for opcode in 0..=u16::MAX {
+            let pop = return_pop_bytes(opcode);
+            let unwinds = matches!(
+                control_flow_of(opcode),
+                ControlFlow::Return | ControlFlow::InterruptReturn
+            );
+            assert_eq!(
+                pop != 0,
+                unwinds,
+                "opcode {opcode:#06X}: pop {pop} disagrees with {:?}",
+                control_flow_of(opcode)
+            );
+            if pop != 0 {
+                popping.push((opcode, pop));
+            }
+        }
+        // The whole set, spelled out: three opcodes and the M68000UM §4 frame each pops. A fourth arriving
+        // here is an amendment somebody has to look at, never a silent widening.
+        assert_eq!(
+            popping,
+            vec![(0x4E73, 6), (0x4E75, 4), (0x4E77, 6)],
+            "RTE pops SR+PC, RTS pops PC, RTR pops CCR+PC — and nothing else pops at all"
         );
     }
 }
