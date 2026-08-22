@@ -49,14 +49,19 @@ with tools that then exist).
    21.55-point dropped-work finding, Task 5 measurable). Migration flip is aeon's call (K.4).
    Open residue: the five-short-rows 11–40% disagreement (unexplained, settling experiment in
    the doc §11.5); the walker fixture leg (not re-driven).
-5. **CR-28** (per-routine `callers[]`, opt-in) — recon'd in `docs/2026-08-19-streaming-asks-recon.md`
-   §4; needs no pre-release window; shape check goes to aeon before build. **Shape check SENT to
-   aeon 2026-08-21** (in-row `callers[]` per recon (ii), fallback (iii) stated, three questions:
-   in-row vs single-routine method, per-edge `callsTotal`, absence-means-interrupt-entry).
-   Their answer gets committed as the demand-side anchor before adjudication.
+5. ~~CR-28~~ **DONE 2026-08-21, full arc in one day** — shape check → aeon's answers anchored both
+   sides (their `6edb08ef`+`ff01881f`, ours `docs/2026-08-21-cr28-shape-answer.md`) → draft →
+   un-framed Fable adjudication (ADOPT WITH CHANGES, 7 M / 4 S; `docs/2026-08-21-ruling-cr28.md`)
+   → applied → served. Merged: oracle (docs + `cr28-serve`; aggregate 48/1770/0/4, +16, zero
+   currency movement, 15 recorded mutations) / empyrean `70c7bb4` (§11.18 + the amended §11.16
+   two-shapes bound + the §2.4 flat-spelling rule; 37 fragments unmoved, closure 0 open, both
+   re-derived at the merge) / oracle-old `d629771` (MCP tool rows). `entryKind` is
+   `"hint"|"vint"|"root"|"depthCap"` — the consumer's literal spelling adjudicated over, accepted
+   by them as exceeding their floor. TRACKED_REVISION retired to None (`d95bf59`).
 
-**⏸ CR-28 IMPLEMENTATION PAUSED MID-FLIGHT (2026-08-21 afternoon, owner's usage limit, resets
-7pm ET):** the implementer died on the API limit after committing 2 of ~5 stages on branch
+**~~⏸ CR-28 implementation paused~~ RESOLVED same day** — the same agent was resumed after the
+7pm reset with context and worktree intact (resume path A worked as written) and finished clean.
+Kept for the pattern: *(original note follows)* the implementer died on the API limit after committing 2 of ~5 stages on branch
 `cr28-serve`: `07eb724` (schema re-vendor from empyrean `callers-amendment` `7c4b9fc`) +
 `b096370` (core accumulator: second map keyed (callee, caller)). Uncommitted `engine.rs` WIP
 (the Aether surface, mid-edit — last words "profiler_row and the edge emitter") lives in its
