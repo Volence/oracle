@@ -91,6 +91,50 @@ with tools that then exist).
    `aeon/s4.debug.{bin,lst}` are a different ROM (`f8a1c567`/715010) — the server's binding check
    refuses the mismatched pair, and that refusal is a safety net, never to be defeated.
 
+   **H1 CONFIRMED same morning by the corpus's own author** (aeon overseer, arithmetic against
+   their own table, five routines × both states): their `cyc/logic-tick` is derived
+   (`cyc/video-frame × frames-per-tick`, rounded) — *"treat it as a reconstruction, not a
+   measurement"* — and their `calls` column is per-video-frame integer, so for a **tick-driven**
+   routine at non-integer frames-per-tick it cannot represent the true rate (idle true rate 0.968,
+   column reads 1; maxdiag 0.484, column still reads 1). Their per-frame figure averages over
+   frames the routine never ran in; ours is per-invocation. **Commensurability is therefore a
+   per-row property** — tick-driven vs frame-driven, determined per routine, never assumed.
+   **But H1 does NOT cover the class, and their own data is what kills it:** BgAnim is tick-driven,
+   so 154/2.067 = 74.5 vs their measured 74 — the scaling round-trips, and H1 explains the maxdiag
+   *agreement*, not a disagreement; while 154/1.033 = 149.1 vs their **measured** 181 is 21% high
+   **before any derivation touches it**. The artifact is downstream of the idle divergence.
+   **Class split deliberately into four low rows + BgAnim-at-idle** (the only theirs-HIGH row,
+   needing its own mechanism) — two honestly-bounded mechanisms beat one stretched over five. Mind
+   the sign: theirs-HIGH is the opposite of what the naive attribution story predicts, so the
+   sign-correct candidate is their W4 shadow-stack re-init attributing a foreign entry's cycles to
+   a victim (adds to a victim rather than losing) — under test, not assumed. **Stage B
+   (hand-derivation) is now the arc's centre**: aeon has stated in writing they will **retract**
+   the affected numbers rather than defend them if it rules against them — the number sits in a doc
+   other parcels have quoted — and the same prominence is promised here if it rules against our
+   180.0/154.0. An adjudicator neither side authored is only worth using if it may rule against you.
+
+   **Stage C: reachable but not free.** aeon hit `ModuleNotFoundError: No module named 'launcher'`
+   rebuilding at `bc048e2a` — the **identical** failure §1.3 already root-caused, refined by them
+   to `bc048e2a:tools/raster_cost_probe.py:55` hardcoding the PRE-rename
+   `oracle/linux-port/harness`; **current aeon master is already fine** (points at
+   `oracle-old/...`), so this is vintage-tree archaeology, not a live defect in their tooling.
+   Resolution `--no-lint` (the lint stage emits no bytes), with `[map.undeclared-island] at 0x99F0`
+   waiting behind it — **both halves of the blocker are the one pinned revision `7b46f075`**. They
+   stood down from a parallel sigil build; our agent's listing + binding proof gets handed to them.
+
+   ⚠ **Peer-claim correction — a bar-paying instance, logged because it nearly cost a parcel.**
+   aeon reported no committed `d22dda85` blob existed, having checked sigil's golden at **master**
+   (`0dbaa80f`/715010): a correct measurement of the opposite fact. **A golden path is a MOVING
+   POINTER** — `master:<path>` answers "what is the golden *now*", never "does this artifact exist
+   in history", and the tip is the one revision guaranteed not to hold a vintage artifact. Find it
+   at the revision that PINNED it, named in the refreeze commit that paired them (`7b46f075`), and
+   confirm with `git merge-base --is-ancestor`. They verified by hashing the extracted bytes and
+   corrected their tree at `77caeefd` rather than dropping it quietly. Relayed to empyrean as a
+   proposed **amendment to `9b604f0`** (not a separate bar — without it the rule reads as satisfied
+   by exactly the check that failed). Composes with `43fbfc9` from the other side: that one says a
+   SHA has a class, this one says a **path has a time**; both failures look like a competent lookup
+   returning a clean answer.
+
 **~~⏸ CR-28 implementation paused~~ RESOLVED same day** — the same agent was resumed after the
 7pm reset with context and worktree intact (resume path A worked as written) and finished clean.
 Kept for the pattern: *(original note follows)* the implementer died on the API limit after committing 2 of ~5 stages on branch
@@ -158,7 +202,7 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
 ## The bars (house methods — each earned by a measured failure; do not thin)
 
 > The shared protocol gained review bars 8–10 and two SHA-citation rules on 2026-08-22 (empyrean
-> `dc629a5`, `c2c81e2`, `00334b6`, `43fbfc9`, `9b604f0`). **Not transcribed here — read them there**; the
+> `dc629a5`, `c2c81e2`, `00334b6`, `43fbfc9`, `9b604f0`+`e650b96`). **Not transcribed here — read them there**; the
 > protocol is changed in empyrean and never forked into a repo copy. Two bear directly on this
 > lane: **bar 9** (never change the subject to suit the instrument — an instrumented run reported
 > as the uninstrumented number is the named failure) governs every profiler measurement we take,
