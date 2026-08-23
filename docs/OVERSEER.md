@@ -1007,7 +1007,27 @@ that degrades to a plausible answer poisons it.
   socket returns to empty). The **config/session correction is the OWNER'S** — a peer relaying an
   owner instruction never authorises this seat to edit `~/.claude.json` or a session's MCP config.
 
-**⚠ HARD PRECONDITION — REBUILD BEFORE CUTOVER. Found by the aurora lane, and it would have shipped
+**✅ PRECONDITION MET 2026-08-22 21:52 — REBUILT AND VERIFIED BY RUNNING IT, NOT BY GREPPING SOURCE.**
+Foreground, on a private socket, nothing shared disturbed; server stopped and socket removed after.
+**Over the wire, from `initialize`: `methods` = 41**, with `step`/`step_over`/`step_out`/
+`run_to_scanline` all present and `write_vram`/`breakpoint_add` absent. Server banner agrees
+(*"aether: 41 methods advertised"*). **Five items tagged ⟨RUNTIME⟩ and unrun in CR-C are now RUN:**
+- `serverName` = `"oracle-next"` **on the wire** — the config default, exactly as CR-C argues.
+- `serverVersion` = `"0.0.0"` **on the wire** — confirming it is a pinned literal, not a slow-moving
+  version. CR-C's P1 demonstration is now measured rather than reasoned.
+- `status.romPath` = `"../aeon/s4.debug.bin"` — **relative, confirming BOTH aurora's observation and
+  our own `protocol.md:1799` SHOULD-violation**, firsthand and on the wire.
+- **An unserved method returns `-32601` naming it** (`"no such method: emulator/write_vram"`). **The
+  loud-failure property the cutover ruling depends on is now demonstrated, not asserted.**
+- Bonus, unplanned: my first handshake was malformed and the server **refused it by name with the
+  reason** — *"`protocolVersion` must be an integer (D5)"* — at the dispatch choke. The strictness
+  argued in bar 15 caught its own overseer within a minute of being pointed at it.
+*Method note: my first two attempts returned `0 methods` and `serverName: None`, which looked exactly
+like a broken server. It was a malformed request. **An empty result is not a finding** — printing the
+raw reply instead of inferring from the empty parse is what separated the two, and that is bar 16(d)
+paid for a third time today.*
+
+**⚠ HARD PRECONDITION — ~~REBUILD BEFORE CUTOVER~~ (MET ABOVE; kept for the reasoning). Found by the aurora lane, and it would have shipped
 a lie to every consumer.** `target/release/oracle-aether` is dated **21 Aug 22:11** while
 `engine.rs` is **22 Aug 20:31**; aurora ran the binary and it **banners "37 methods advertised"**.
 Source serves **41**. So the built artifact **predates the step trio AND `run_to_scanline`** and would
