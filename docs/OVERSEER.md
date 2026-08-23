@@ -1053,6 +1053,34 @@ owner confirmation requested in-session; replace this flag with the confirmation
   (never from a relay — relays get flagged as such until an anchor lands), corrections recorded
   supersession-style (original visible, correction over it), gap triage into
   satisfied / composable-today / genuinely-new.
+- **⚑ A CONFIDENT MECHANISM FROM THIS SEAT IS A HYPOTHESIS, AND THE RECEIVER'S OWN ALREADY-RUN
+  COMMAND OUTRANKS IT** *(2026-08-22, found by the sigil lane against themselves; proposed upstream
+  to empyrean, which is where it belongs — do not treat this entry as the rule's home)*. I sent a
+  peer a confident mechanism for why three stale citations survived (*"they resolve into a different
+  real repo and hand you a plausible wrong file"*). It was **wrong** — the leaves 404. My error was
+  reusing a real lesson on an instance I had not measured. **Theirs was worse and is the durable
+  half: they had ALREADY RUN the refuting command in the same session** — a directory listing and a
+  probe that printed `No such file or directory` — **read the output, used it to conclude the cite
+  was stale, and then wrote a row asserting my mechanism anyway**, because mine was a better-sounding
+  story and arrived with a post-mortem attached.
+  **Why this is a bar and not an anecdote: the second failure does not need a peer to be wrong — it
+  only needs a peer to supply the frame.** A confident mechanism overwrites a measurement the
+  receiver already holds, silently, and nothing in either session looks like a conflict because the
+  measurement was never re-read.
+  **▶ THE DELEGATION COROLLARY, which is the operative half for this seat and is strictly worse than
+  the peer case.** A peer has standing to push back; **an agent has almost none.** Four of my stated
+  facts were corrected today by agents who checked them — and every one of those was a *fact*, which
+  is checkable. **A stated MECHANISM is far more dangerous than a stated fact**, because it explains
+  the evidence rather than competing with it: an agent that measures something inconsistent with my
+  mechanism will tend to reconcile the measurement *to* the story instead of reporting the conflict.
+  **So: state mechanisms as hypotheses in briefs, explicitly labelled, and say in every dispatch that
+  the agent's own command output outranks anything I asserted.** The instance that saved us here is
+  the shape to demand — the README agent verified all three targets **individually before writing**,
+  rather than performing the search-and-replace my framing implied.
+  **Second clause, sigil's, and it prevents the over-correction:** when a correction lands, **check
+  which half of the claim actually moved before discarding the whole thing.** The rename shape and
+  the code-comment rule both survived my wrong mechanism intact, and retracting them along with it
+  would have destroyed two sound rules to fix one bad sentence.
 - **Dispatch ahead of a survey only when you can name what the survey could change ABOUT THAT
   PARCEL** — never on the argument that it changes nothing downstream *(2026-08-22; I asked
   empyrean to challenge the step-trio call and they ratified the instance, rejected the
