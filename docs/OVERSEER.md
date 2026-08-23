@@ -1299,6 +1299,18 @@ far worse here than one that refuses.**
 - **Better-than-the-floor** on every request; improvements additive so the migrating consumer
   loses nothing; the pre-release window for REQUIRED additions shuts at first ship — spend it
   deliberately, once.
+- **A gate described for someone else to carry must name its ASSERTION, not its shape.** Earned
+  2026-08-23 with aeon, on both sides in one exchange. Our reconciliation identity is a **loss**
+  detector, not a correctness proof: a suppressed interrupt bucket *conserves* its cycles into
+  `unattributedCycles`, so **the identity closes with that term arbitrarily large** and closure alone
+  is satisfied by exactly the case the gate exists to catch — only the explicit `== 0` assertion
+  fires. A peer booked the requirement as *"carries the identity check"*, having read the proof, and
+  would have shipped a **correctly-described gate whose teeth were gone**: not a wrong gate, not a
+  missing one, a gate whose shape a porter inherits with no reason to look under it. Note where this
+  bit: inside the very booking written to argue that a mechanism beats a remembered rule. **The
+  mechanism only beats the rule if the assertion survives transcription** — so when writing a gate
+  into prose for a consumer, name the thing that fails, and re-derive rather than paraphrase when
+  carrying someone else's.
 
 ## Ops (each line is a paid-for lesson)
 
