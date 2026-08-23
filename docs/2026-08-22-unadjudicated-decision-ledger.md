@@ -1,0 +1,150 @@
+# The unadjudicated-decision ledger
+
+**What this is.** Every design decision this repo has taken **without un-framed adjudication**,
+recorded so it can be re-examined cold. Created 2026-08-22 on an owner ruling relayed via the
+empyrean lane (see the provenance note below): *hold* the Fable adjudicator seat, and
+
+> "keep careful record of what's done without fable so when our limit is no longer up the first
+> thing it can do is make sure we made the correct decisions without it."
+
+So this file is **Fable's first work item when the limit lifts**, not a confession. The ruling
+converts the adjudication gap from a hole into a queue.
+
+**⚠ PROVENANCE — READ BEFORE ACTING ON THIS FILE'S PREMISE.** The ruling above reached this lane as
+a **relay** (empyrean-73, 2026-08-22, quoting the owner in their session). It is quoted words with a
+named source, which is far stronger than a status field, and **it is not a granting act this lane
+witnessed.** Flagged per this repo's own rule — *never record an approval whose granting act you
+have not seen* — which was written hours earlier, today, after exactly this shape failed twice in
+one day across two lanes. Owner confirmation requested directly in-session; this note gets replaced
+by the confirmation, not quietly deleted.
+
+**The self-referential hazard, stated because it is real:** this ledger's own existence rests on a
+relayed approval. If the relay is wrong, the ledger is still correct to keep — a list of
+unadjudicated decisions costs nothing and is useful regardless of who asked for it — so nothing
+downstream depends on resolving the provenance. That is why it was written before confirmation
+rather than after.
+
+## How to read an entry
+
+Each entry must be adjudicable **cold, months later, by someone who was not here.** That means:
+what was decided, who decided it, what the alternatives were, what evidence existed at the time, and
+**what would have to be true for the decision to be wrong.** An entry that only records the verdict
+is useless to the audit this file exists for.
+
+Status values: `UNADJUDICATED` (no ruling of any kind), `PEER-RULED` (a peer lane ruled; not the
+un-framed seat), `SELF-RULED` (the overseer ruled on returned work).
+
+---
+
+## L-01 — CR-A, the breakpoint surface · `UNADJUDICATED`
+
+**Artifact:** `docs/2026-08-22-cr-a-breakpoints.md` (1114 lines), merged `1265995`.
+**Why unadjudicated:** the un-framed Fable adjudicator was dispatched and died immediately on the
+Fable 5 account limit. No ruling of any kind exists.
+**Standing bar it violates:** *a ruling authorizes the change; adjudication is what authorizes the
+TEXT.* Nothing in CR-A may be implemented until this entry clears.
+
+**Decisions inside it, each separately adjudicable:**
+1. **Handles are the addressing primitive** (not addresses). Adopted from aeon's argument:
+   address-keyed clear silently kills another subscriber's breakpoint when two lanes arm the same
+   PC. *Wrong if:* the concurrency premise is false — if in practice only one subscriber ever arms
+   a given PC, handles are cost with no benefit.
+2. **`clear {all: true}` survives as a distinct teardown primitive.** aeon's, and the half this lane
+   would not have reached alone: a gate that crashed mid-flow cannot enumerate what it armed.
+   *Wrong if:* crash-path teardown can be served some other way. Recorded with its reason precisely
+   because a future editor will try to simplify it away.
+3. **The `stopped` event names the fired handle — PROMOTED to REQUIRED** over aeon's nice-to-have,
+   on the grounds that the pre-release window for REQUIRED additions shuts at first ship. *Wrong
+   if:* the promotion costs a consumer more than the ambiguity it removes.
+4. **Stop precision: either the stop PC is exact, or the server says it isn't.** *Wrong if:* no
+   imprecise mode ever ships, making the field dead weight.
+5. **`wait_for_break` resolves against an EVENT and must not block the connection.** *Wrong if:*
+   the transport can guarantee liveness some cheaper way.
+6. **Four drafter departures from my rulings**, each argued at the point of use and each ratified by
+   me rather than by the seat: plural `breakpoints` array on `stopped`; `breakpoint_set_enabled`
+   rejected (⚠ **this one is a higher bar than an open design choice — it declines an item named in
+   the very audit Recommendation that authorises the CR**); D-12 ruled against the audit's
+   recommendation; a third reading of D-14 neither of its two offered.
+
+**Strongest finding in it, and the one most worth a second opinion:** D12 mandates a `maxFrames`
+bound on any `wait_for_break`-shaped op and is **structurally incapable** of the job — a frame bound
+is a bound in emulated time, and a wedge is the state where emulated time stops advancing.
+
+---
+
+## L-02 — CR-B, the Z80 pair · `UNADJUDICATED`
+
+**Artifact:** `docs/2026-08-22-cr-b-z80.md` (1028 lines), merged `37a06f9`.
+**Why unadjudicated:** same seat, same block. Drafted after the block was known, deliberately — a
+drafted CR costs nothing while the seat is held and is strictly ahead when it lifts.
+
+**Decisions inside it:**
+1. **All three defects (D-09/D-10/D-11) in one CR, B4 severable.** *Wrong if:* the audit's own
+   pairing of D-11 with D-16 is the better split — handed over as Q4 rather than settled.
+2. **D-10 shaped as optional `width` ∈ {1,2}, default 1, little-endian** — (a)'s default with (b)'s
+   ceiling, against the audit's (b) verbatim. Evidence the audit did not have: **the legacy server
+   declined to have a width on purpose and left a comment saying why**, so (b) verbatim refuses
+   every bare-`value` invocation on record. *Wrong if:* the domain should be {1,2,4} (Q2).
+3. **Byte order little-endian**, argued from the rule rather than the sibling's consequence
+   (`write_memory` says "big-endian, *as the 68000 stores*" — the clause after the comma is the
+   rule). *Wrong if:* consistency across rows outranks correctness per machine. It does not.
+4. **Bound kept at `0–$3FFF`, not narrowed to `$1FFF`** — narrowing was already proposed and ruled
+   against in this repo (`docs/2026-08-16-ruling-cr20.md`).
+5. **Six items listed as SETTLED** inside the CR so an adjudicator can object to the settling
+   itself. Those six are part of this entry's audit surface, not exempt from it.
+
+**Carries a live defect finding, not just contract text:** legacy `z80_write` bounds only the start
+address and `WriteRamByte` returns `true` unconditionally, so a write at `$3FFF` clobbers `$0000`
+and reports success. **Source-derived, NOT yet demonstrated at runtime** (see the foreground
+follow-ups in `docs/OVERSEER.md` item 8) — an adjudicator should know which half is which.
+
+---
+
+## L-03 — The step trio's serve rulings · `SELF-RULED`
+
+**Artifact:** merged `56cc545`, rulings recorded at `490dd31`. The code **is shipped**, which makes
+this entry materially different from L-01/L-02: those are text nobody has built to, this is
+behaviour in the tree.
+
+1. **`deadlineReached` emitted on a `step` stop — RATIFIED.** §3 scopes it to run-shaped reasons in
+   *prose*; the schema permits it unconditionally. Ratified because silence when the bound was hit
+   is a believable wrong answer. *Wrong if:* the prose scope is normative, in which case we emit a
+   field on a reason §3 did not intend. **Registered as a CR item** rather than left as our reading.
+2. **`capabilities` left unchanged — RATIFIED** on §8's invention ban (no step-related capability
+   key exists in the schema).
+3. **`lookup_symbol` caveat overwrite confirmed and deliberately NOT fixed** — conformant, real
+   loss. *Wrong if:* "conformant" is the wrong bar for a known information loss.
+4. **F-STEP-FRAME-BOUND:** the 600-frame bound is **server policy and undiscoverable** — no contract
+   key exists for it. Rides the D-02 CR.
+
+---
+
+## L-04 — D-02 / D-03 CR text · `UNADJUDICATED` (not yet drafted as a CR)
+
+Banked at `490dd31`, improving on the audit in both cases. **D-02:** `count? (≥0, def 1, ≤
+maxStepCount)`, refused above the ceiling rather than clamped; **floor stays 0 against the audit's
+`≥1`** (zero is definitional for a count and is a useful *where am I without moving the machine*
+probe); plus `reached` on the result, because today the one case a caller most needs the truth —
+*did my 10,000 steps happen?* — is the case the result cannot express. **D-03:** give
+`step_over`/`step_out` `step`'s `pc`/`symbol?`/`symbolDisp?`; the asymmetry makes the method
+**unanswerable** for a conformant client that did not negotiate `events`.
+
+---
+
+## L-05 — `run_to_scanline`: lines 262–511 · `SELF-RULED`, in flight
+
+The fragment bounds `line` at 0–511; this core runs 262 lines per frame, so 262–511 are
+contractually legal and physically unreachable. **Ruled: accept them, run the `maxFrames` bound,
+return `reached: false` with a caveat saying the line cannot occur in this video mode** — rather
+than refusing a value the fragment declares legal (§8's invention ban). *Wrong if:* burning a
+600-frame budget on a statically-impossible target is worse for callers than an early refusal.
+The implementing agent was explicitly invited to refute this; its verdict belongs in this entry when
+the parcel lands.
+
+---
+
+## L-06 — Dispatching the step trio ahead of the pricing survey · `PEER-RULED`
+
+Ruled by the **empyrean lane, not the un-framed seat**: instance ratified, generalisation rejected.
+Recorded here because a peer ruling is not adjudication, and this file is the list of things that
+did not get the seat.

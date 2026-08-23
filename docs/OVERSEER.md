@@ -918,6 +918,49 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
 *(N9 — the `Resolution::name`/`Display` duplication — was **taken**, not registered: `Display` now calls
 `name()`. It was two lines.)*
 
+## ⚑ FOUR OWNER RULINGS, 2026-08-22 — **RELAYED, NOT WITNESSED BY THIS LANE**
+
+Reached us via empyrean-73, quoting the owner's own words in their session. **Flagged as a relay
+per this repo's own rule** (*never record an approval whose granting act you have not seen*) — which
+was written earlier the same day, after that shape failed twice across two lanes. Quoted words with
+a named source are far stronger than a status field and are still not a witnessed act. **Direct
+owner confirmation requested in-session; replace this flag with the confirmation, do not delete it.**
+
+1. **Wiki-emulator spike: APPROVED, and my flagged divergence resolved — in the direction that
+   corrects empyrean, not us.** The approval was **real all along**; the spec's self-declared
+   "Approved design" was factually correct, and empyrean's correction to me was wrong on the fact.
+   ⚠ **Keep both halves:** an unverifiable claim turning out true does **not** retroactively make
+   recording it without a citation correct — *we got away with one.* Owner: *"Yes I did but I was
+   trying to save fable use so I never had an agent start. I can now if it wants with opus but just
+   be careful and if we get stuck don't push."* **Authorised on Opus, with two conditions in his own
+   words** — a spike, not a commitment: **report the wall rather than engineering around it.**
+   Escalate to empyrean rather than burning a week proving feasibility that was meant to be cheap.
+   **Not reprioritised above the acceptance parcels.**
+2. **Fable seat: HOLD — with a new obligation that is better than either option I offered.** Owner:
+   *"keep careful record of what's done without fable so when our limit is no longer up the first
+   thing it can do is make sure we made the correct decisions without it."* **Fable's FIRST job when
+   the limit lifts is auditing exactly those decisions**, so the gap becomes a queue rather than a
+   hole. ▶ **Ledger created: `docs/2026-08-22-unadjudicated-decision-ledger.md`** (L-01…L-06). Each
+   entry must be adjudicable **cold** — verdict, alternatives, evidence at the time, and *what would
+   have to be true for it to be wrong.* An entry recording only the verdict is useless to the audit
+   it exists for. **Every future unadjudicated call gets an entry at the moment it is made**, not
+   reconstructed later. Note: this supersedes the unwitnessed 2026-08-21 ratification audited above
+   — there is now a live cited ruling on the seat, so that correction stands as *correct and
+   superseded*.
+3. **▶ THE MOST CONSEQUENTIAL, and it is aimed at this lane.** Owner: *"Oracle - let's make sure
+   anything not going for the new oracle does and tell it to make sure to tell the oracle agent to
+   build out any tools these other suite items/agents might need, that's how we're getting robust."*
+   Two halves: **(a)** anything still pointed at the legacy C++ server should be moving to the new
+   core — **the acceptance contract is the vehicle and is effectively blessed as the priority**;
+   **(b) this lane is the SUITE'S TOOL-BUILDER.** empyrean is telling every lane to send named
+   instrument asks here rather than working around gaps. **Inbound capability asks are first-class
+   queue items, not interruptions** — his stated reason is *"that's how we're getting robust"*. This
+   extends the existing aeon co-development lane from one peer to all of them.
+4. **READMEs: make every suite repo's README accurate.** *"Doesn't have to be super in depth."*
+   Ours must say plainly that **the MCP surface still reaches the legacy C++ server** — the fact
+   most likely to mislead a reader, and the one this lane independently flagged in the status
+   roll-up before the directive arrived.
+
 ## The bars (house methods — each earned by a measured failure; do not thin)
 
 > ⚠ **READ THE PROTOCOL AT A COMMITTED REVISION, NOT THROUGH THE PATH** (seraph's rule, empyrean
