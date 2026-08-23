@@ -146,5 +146,18 @@ inherit that rule exactly as `vintCycles` does today — it is the documented re
 not a new hole, but it means the first frames of a sample armed mid-handler under-report on both
 fields alike.
 
+**The caveat has a detector on the consumer side, and it is the `== 0` half.** aeon checked their
+tree rather than filing the caveat: `tools/tick_variance_probe.py` gates the reconciliation identity
+at every prefix rung *and* asserts `unattributedCycles == 0` at the states it samples. That second
+assertion is the whole protection, and the distinction matters — a suppressed bucket **conserves**
+cycles, routing its self time to `unattributedCycles` (`:660-663`), so **the identity still closes**
+with the term large. This is §3.3(c) of the asks doc restated from the other side: the identity is a
+loss detector, not a correctness proof. A porter who carries the closure check and drops the `== 0`
+assertion has kept the shape of the gate and thrown away the part that fires.
+
+They have banked "every remaining port carries the identity check" as a MUST for exactly this
+reason, preferring it to an arming rule because a rule has to be remembered while the identity fails
+loudly. Same family as the suite's `updatedAt`-from-the-shell ruling: mechanism over vigilance.
+
 **Status: registered, not started.** Queue item `PROF-RING-SELF`. Unpriced beyond the above until
 the owner picks it, and a refusal remains a live and complete answer.
