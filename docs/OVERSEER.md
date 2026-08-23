@@ -968,6 +968,11 @@ owner confirmation requested in-session; replace this flag with the confirmation
    most likely to mislead a reader, and the one this lane independently flagged in the status
    roll-up before the directive arrived.
 
+> ▶ **BOOTING INTO THE CUTOVER? READ `docs/2026-08-22-cutover-handoff.md` FIRST.** It is written for
+> the session that boots *after* the owner flips the config and relaunches every lane — what the
+> rebuilt binary at `12cc17e` guarantees, the 17 remaining, why a `-32601` is a success signal, and
+> what to do first when lanes report gaps. This section is the record; that file is the instructions.
+
 ## ⚑ THE CUTOVER — ruled 2026-08-22 (RELAYED, see the flag above), mechanism determined firsthand
 
 **The ruling** (owner, via empyrean, quoted): *"I say do it now and when something is needed have it
