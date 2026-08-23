@@ -838,6 +838,36 @@ can conditionally refuse, or **invent the gated-discovery mechanism §7.5 reject
 dangerous one — **a server that under-advertises to stay conformant breaks the warranty by satisfying
 it**, and it does so silently, because a shrunken `methods` array looks exactly like a smaller server.
 
+#### 9.4.2 The legitimate case with the identical wire signature — and why it ties C4 to C2
+
+*Contributed by the aurora lane extending its review; the tree-check below is this lane's, because they
+flagged that they had not run it.*
+
+**A build with compile-time-optional surfaces genuinely has no handler for the omitted names.** Such a
+build **omits them from `methods` and answers `-32601` if called — and that is CONFORMANT, not a
+violation**, because **`methods` is a per-BUILD warranty, not a per-CONTRACT inventory.**
+
+Two cases produce an **identical wire signature** and are **opposite in conformance**:
+
+| | in `methods`? | handler in the build? | verdict |
+|---|---|---|---|
+| **Optional surface not compiled** | absent | **no** | conformant — the warranty is honest |
+| **Under-advertising (§9.4.1's hazard)** | absent | **yes**, merely able to refuse | breaks the warranty by satisfying it |
+
+**The discriminator is whether the handler exists in that build — which is precisely what `serverBuild`
+makes checkable.** So **item 23 alone cannot separate these two cases, and C2 is what makes the
+separation possible.** That is a tighter coupling between C4 and C2 than §7 currently argues, and it is
+an argument *for* both.
+
+**⚑ THIS IS LIVE IN THIS TREE, NOT A FUTURE HAZARD — verified here after aurora flagged the gap in
+their own claim.** `crates/oracle-core/Cargo.toml:8-12` declares `synth = []`, **default OFF**, gating
+`oracle-core/src/synth` (`lib.rs:32`), and `crates/oracle-aether` depends on `oracle-core` **without
+enabling it**. The audio surface among the 17 unserved methods — `audio_spectrum`,
+`get_channel_states`, `set_channel_enabled` — lands exactly here: **a default build will legitimately
+have no handler for them, and must omit them rather than advertise-and-refuse.** Without this clause a
+future implementer reads §9.4.1's under-advertising warning as barring the correct behaviour, and the
+likely reaction — advertise it anyway and refuse — is the **one thing item 23 actually forbids.**
+
 **Precedent already in the contract, which is why this costs nothing:** `require_paused` is this
 pattern today — those rows dispatch and refuse `-32005` on machine state, are advertised
 unconditionally, and no one reads that as a violation. The clause names an existing practice rather
