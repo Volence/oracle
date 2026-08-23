@@ -1,6 +1,6 @@
 //! `state_hash` — FNV-1a-64 fingerprints of VDP memory + registers.
 //!
-//! **Byte-compatible with Oracle's `OpStateHash`** (`../oracle/linux-port/gui/ControlSocket.cpp`,
+//! **Byte-compatible with Oracle's `OpStateHash`** (`../oracle-old/linux-port/gui/ControlSocket.cpp`,
 //! cross-checked 2026-06-24). This compatibility is a hard requirement and a known footgun: the
 //! differential harness and the determinism gate both compare these values. Do not change the byte
 //! order, the masking, the region sizes, or the output format without re-verifying against Oracle.

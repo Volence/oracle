@@ -1,113 +1,140 @@
-# oracle-next
+# oracle
 
-The **next-generation Oracle engine** — a from-scratch, **agent-first** Sega Genesis /
-Mega Drive debugging emulator core in **Rust**. Not a separate product: when finished it
-*becomes* Oracle (Exodus engine retires; the MCP / bus protocol / harness carry over
-unchanged). "oracle-next" is the dev name; shipped, it's just **Oracle**.
+A **ground-up Rust Sega Genesis / Mega Drive emulation core**, plus **Aether** — a JSON-RPC 2.0
+control surface over an `AF_UNIX` socket that lets agents and tools drive and inspect the machine.
 
-Side project — the **current Oracle (Exodus) stays the daily driver** for the Sonic-4 hack
-until oracle-next earns the role. (Don't confuse this with `megaforge`/`empyrean` — that's
-the bus connector between tools, a separate thing.)
+It is being built to replace the legacy C++ engine (an Exodus port) that still lives in the sibling
+checkout **`../oracle-old/`**. That replacement has **not** happened yet. Read the next section
+before you assume anything about what is in production.
 
-> **New session? Start here.** Everything needed to continue lives in these files + the
-> project memory — this does not depend on the originating conversation.
+## ⚠ The `mcp__oracle__*` MCP tools do NOT reach this repo
 
-## Read first (in order)
+The MCP server registered as `oracle` is the **legacy C++ one**. Its command is
+`/home/volence/sonic_hacks/oracle-old/linux-port/mcp/oracle-mcp` — a different repository, a
+different emulator core. Every `mcp__oracle__emulator_*` call you make lands there.
 
-1. **`CHARTER.md`** — vision, the decision (fresh agent-first core, not Ares/not a fork),
-   the four non-negotiables, the staged path, honest effort/risk, the relationship to Oracle.
-2. **`docs/foundations.md`** — the settled language (**Rust**) + core architecture + the
-   MCP/bus integration + the validation ladder + the ordered build steps.
-3. **`docs/2026-07-01-plan-audit.md`** — the full plan audit (Fable, pre-Opus handoff):
-   verdict + 8 findings + the recommended build sequence. Its fixups:
-   **`docs/2026-07-01-vdp-design.md`** (the VDP model + the frozen render-decode
-   introspection API) and **`docs/decisions/2026-07-01-audit-policies.md`** (standing
-   policies incl. the agent clean-room rule).
-4. **`docs/decisions/`** + **`docs/plans/`** — the resolved cycle-granularity call, and one
-   data-grounded plan per instruction-family push (the running build record).
-5. **`docs/research-digest.md`** — the evidence base (emulator landscape, the from-scratch
-   synthesis, license-tiered reuse).
+So "the oracle MCP works" is **not** evidence that this repo's core works. Nothing in this
+repository is on the MCP surface today. The Python MCP client has never been ported onto the Rust
+server; the cross-checking test `crates/oracle-aether/tests/mcp_tool_sweep.rs` reads
+`oracle-old/linux-port/mcp/oracle_mcp.py` off disk precisely because it is a foreign artifact.
 
-## Status (2026-06-28) — Phase 0, deep into the 68000 core
+**Where the Rust server actually stands:** the shared bus contract
+(`empyrean/contract/protocol.md`, vendored here as
+`crates/oracle-aether/tests/contract/bus-protocol.schema.json`) defines **58 methods**. This
+server serves **40**. The remaining **18 are unserved**, and that list *is* the acceptance
+contract for the cutover:
 
-The foundation is built and the **68000 CPU core is most of the way through its grind**;
-the rest of the machine (VDP, Z80, audio, MCP wiring) is not started yet.
+| Group | Unserved methods |
+|---|---|
+| Breakpoints (`capabilities.breakpoints: false`) | `breakpoint_add`, `breakpoint_clear`, `breakpoint_list`, `wait_for_break` |
+| Sound (`capabilities.vgm: false`) | `audio_spectrum`, `get_channel_states`, `set_channel_enabled`, `vgm_start`, `vgm_status`, `vgm_stop` |
+| Layer toggles | `get_layer_states`, `set_layer_enabled` |
+| Z80 (`capabilities.z80: false`) | `z80_read`, `z80_write` |
+| Other | `run_to_scanline`, `write_vram`, `log_clear`, `ping` |
 
-**Done & gate-green:**
-- **Core skeleton** — `Scheduler` (the sole master clock + one seeded RNG + an event heap),
-  `System` (owns RAM/VRAM/CRAM/VSRAM/VDP-regs + the scheduler; `Clone` + bincode
-  `snapshot`/`restore`), a typed `Bus` + `BusEvent` stream via a split-borrow `SystemBus`,
-  and an FNV-1a `state_hash` **byte-compatible with Oracle's `ControlSocket.cpp`**.
-- **Determinism gate** (the gating CI job) + property tests: `run_frames(N) ==
-  N×run_frames(1)`, and snapshot/restore == identical hash.
-- **Cycle-granularity call resolved** (`docs/decisions/2026-06-24-cycle-granularity.md`):
-  the single-definition hybrid — each opcode is one resumable micro-op sequence with a
-  run-to-completion fast path and a step-one-micro-op quiesce; default quiesce granularity
-  = bus access.
-- **68000 micro-op core** — the framework (`m68000::{microop, ea, decode, bus68k,
-  exception}`) is proven. The arithmetic, logic, shift/rotate, bit, **multiply/divide**,
-  compare/move, flow-control, and exception instruction families are implemented and
-  validated against the pinned **SingleStepTests/680x0** suite: **752,523 covered test
-  cases**, each run through **both drivers** (run-to-completion *and* cycle-stepped),
-  checked on registers/SR/RAM/prefetch/cycles **and** the per-cycle bus-transaction stream,
-  with snapshot/restore exercised at every bus boundary.
+All names are `emulator/`-prefixed on the wire. The list is pinned as
+`SCHEMATIZED_NOT_ADVERTISED` in `crates/oracle-aether/tests/schema_conformance.rs`, which fails if
+a method enters or leaves it without a deliberate edit. The served list is
+`engine::METHODS` in `crates/oracle-aether/src/engine.rs` — one table that is simultaneously the
+dispatch table and the `initialize` reply's advertised methods, so the two cannot drift.
 
-**Not yet:**
-- The real `Cpu68000` isn't wired into `System` yet (still a `StubCpu` placeholder) — that
-  integration is the next inflection after the remaining 68000 families.
-- VDP, Z80, audio, and the Oracle MCP/bus wiring are unstarted.
+Two of those capability flags are about **the bus surface, not the core**, and the distinction
+matters when reading them:
 
-> **⚠ The status block above is dated 2026-06-28 and several of its "not yet" items have since
-> shipped** — the CPU is wired in, and the VDP, Z80 and audio stacks are built and gate-green.
-> Most relevant to the last bullet: **the bus layer exists as of 2026-08-14.**
-> `crates/oracle-aether` implements the Aether control surface (`empyrean/contract/protocol.md`):
-> JSON-RPC 2.0 over NDJSON on an `AF_UNIX` socket at mode 0600, the `initialize`/`initialized`
-> handshake with a generated method list, and server-push events — with a thin 16-method subset of
-> the 53-method catalog. Run it with `cargo run -p oracle-aether -- <rom.bin>`. The Python MCP has
-> **not** been ported onto it (it still speaks the legacy flat envelope). See
-> `docs/2026-08-14-aether-change-requests.md`. Treat the rest of this section as history until it
-> is rewritten.
+- `"z80": false` — the core *has* a Z80 (`crates/oracle-core/src/z80/`) with the whole documented
+  instruction set implemented and graded against SingleStepTests/z80; only the undocumented
+  opcodes remain. What is missing is the *bus methods* to read and write it.
+- `"vgm": false` — the core *has* VGM capture (`crates/oracle-core/src/vgm.rs`, and the
+  `vgm_capture` example). What is missing is the bus methods to start and stop it.
 
-## Build & test
+`"breakpoints": false` is literal: there is no breakpoint engine. Watchpoints are a separate,
+working surface (`capabilities.watchpoints`, four served methods).
+
+## Layout
+
+Four crates in one workspace (`Cargo.toml`):
+
+- **`crates/oracle-core`** — the emulator. Deterministic and I/O-free by charter; one dependency
+  (`bincode`), `#![forbid(unsafe_code)]`, no threads. One `System` owns all memory and chips and a
+  single `Scheduler` that holds the sole master clock and one seeded RNG. 68000, Z80, VDP, YM2612,
+  SN76489, I/O, symbols, watchpoints, profiler.
+- **`crates/oracle-aether`** — the Aether server. JSON-RPC 2.0 as NDJSON over an `AF_UNIX` socket
+  at mode 0600, with an `initialize`/`initialized` handshake and server-pushed events. Sockets,
+  threads and JSON live here so the core's charter stays intact. Two arrangements over one engine:
+  `server` (the bus owns the machine on its own thread) and `host` (something else owns the run
+  loop and pumps the bus).
+- **`crates/oracle-frontend`** — a windowed player (minifb) over the same core: keyboard + gamepad,
+  audio, save states, a command palette, and debug lenses. Can host the Aether bus in-process with
+  `--aether`.
+- **`crates/oracle-replay`** — `replay_runner`, a headless gate binary that boots Aeon's debug ROM,
+  replays a recorded input fixture, and exits PASS / DESYNC / FAULT / TIMEOUT.
+
+## Build and test
+
+CI (`.github/workflows/ci.yml`) pins Rust **1.96.0** and runs exactly this, determinism first:
 
 ```sh
-# Build
-cargo build
+# The gating job — nothing else runs unless determinism holds.
+cargo test -p oracle-core --test determinism_gate --test proptests -- --nocapture
 
-# Fetch the pinned SingleStepTests vectors (gitignored; pinned to commit e0d5ece, sha256-verified).
-# Needed for the 68000 SST integration tests; the runner skips cleanly if they are absent.
-tools/fetch-tests.sh
-
-# The determinism gate (the most-guarded job) + property tests
-cargo test -p oracle-core --test determinism_gate --test proptests
-
-# Lint + format (CI runs these with -D warnings)
-cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
 
-# Full gate — includes the SingleStepTests sweep through both drivers (~500s; be patient, it is not hung)
-cargo test --workspace
+# Pinned external test data. Gitignored; the runners skip cleanly (and loudly) when absent,
+# except under CI where a guard test turns a missing corpus into a hard failure.
+./tools/fetch-tests.sh        # SingleStepTests/680x0
+./tools/fetch-z80-tests.sh    # SingleStepTests/z80
+./tools/fetch-testroms.sh     # Mega Drive test-ROM corpus (conformance_roms.rs)
+
+cargo test --workspace        # includes the SST sweep; it takes minutes, it is not hung
 ```
 
-## What's next
+Run the bus server, or the player:
 
-1. **Finish the 68000 instruction set** — the load/store/misc cluster (MOVEM, LEA/PEA,
-   LINK/UNLK/EXG/NOP), the privileged moves, ABCD/SBCD/NBCD, ADDX/SUBX, MOVEP; the remaining
-   exceptions (illegal/line-A/line-F, trace) and async-interrupt delivery. Same proven
-   cadence each push: data-grounded recon → plan → gated build (impl agent → adversarial
-   verifier per commit) → self-verified full gate.
-2. **Integration pivot** — retire `StubCpu`, wire `Cpu68000` into `System` (reset + a memory
-   map + graceful illegal-instruction handling). This is the step that lets the core execute
-   a real ROM.
-3. **Z80 + VDP** — a tick-stepped Z80, then a scanline-first VDP (planes, scroll, sprites
-   with dual per-line limits, priority, H/V interrupts, DMA) toward the **Phase-1 MVP**:
-   boots and renders the Sonic-4 hack, fully introspectable. The VDP timing model is the long
-   pole and the #1 schedule risk (see `CHARTER.md`).
+```sh
+cargo run -p oracle-aether -- <rom.bin> [--socket PATH] [--symbols PATH] [--no-pace]
+cargo run --release -p oracle-frontend -- <rom.bin> [--scale N] [--aether]
+```
 
-## Key references
+With `--socket` omitted the path resolves `$ORACLE_SOCKET` → `$EXODUS_SOCKET` →
+`$XDG_RUNTIME_DIR/oracle.sock` → `/tmp/oracle.sock`. Symbols are opt-in by presence: a `<rom>.lst`
+beside the ROM is loaded if it exists, and **refused** if it does not bind to the image.
 
-- **Architecture proof (study, do NOT fork — GPL-3):** jgenesis.
-- **Differential-test oracles:** BlastEm (accuracy), Exodus (VDP).
-- **Black-box component:** ymfm (BSD) for FM audio. Nuked-OPN2 (LGPL) isolated, optional.
-- **The Oracle repo** (`../oracle/`) is the reference op surface + bus protocol, the
-  source of the MIT 68000/Z80 cores to bootstrap, and the differential-test harness.
+## What is and isn't true today
+
+- **Works:** the 68000 core (graded case-by-case against SingleStepTests/680x0 through both a
+  run-to-completion and a cycle-stepped driver, including the per-cycle bus-transaction stream);
+  the Z80's documented instruction set; VDP planes/sprites/scroll/DMA and a render path; FM and PSG
+  synthesis with real-time audio in the player; snapshot/restore; watchpoints; the CPU profiler;
+  and 40 of the 58 bus methods.
+- **Not done:** the 18 bus methods above; the MCP port onto this server; the undocumented Z80
+  opcodes; a breakpoint engine; six-button pads (`capabilities.sixButtonPad: false` — refused
+  rather than silently ignored); batch requests; object decoders; PAL timing (the core is NTSC-only
+  and says so in every reply's `timingBasis`).
+- **Deliberately not a pass/fail gate:** `crates/oracle-core/tests/conformance_roms.rs` boots a
+  corpus of public test ROMs and compares the *whole scorecard* against a pinned baseline. Several
+  ROMs fail today for reasons written up in `docs/2026-07-25-testrom-conformance.md`. The baseline
+  is a photograph of the present, not a claim of correctness; the test fires on movement in either
+  direction.
+- **Accuracy is an asymptote, not a launch bar.** `CHARTER.md` sets the target at
+  MVP-debuggable, explicitly not "passes VDPFIFOTesting".
+
+Do not quote a built binary's size or a frame count from a doc — check the artifact.
+
+## Where the real documentation lives
+
+`README.md` is the front door and nothing more. The substance is:
+
+- **`CHARTER.md`** — why this exists, what was chosen over what, and the honest risk list. Note
+  that it still uses the old dev name `oracle-next` throughout; this repo is now `oracle/` and the
+  legacy C++ one is `oracle-old/`.
+- **`docs/OVERSEER.md`** — the working queue and the session boot prompt. **Start here** for what
+  is actually being worked on.
+- **`docs/`** — dated arc records: recon documents, designs, plans, change requests, adjudicated
+  rulings, and handoffs, one file per push, newest names carrying the newest state.
+- **`docs/decisions/`** and **`docs/plans/`** — the standing policies and the per-slice build record.
+- **`crates/oracle-aether/tests/contract/`** — the vendored wire schema and its provenance.
+
+The bus protocol itself is **not** owned here. It lives in the `empyrean` repo
+(`empyrean/contract/protocol.md`) and is normative: this server conforms to it, and any place it
+could not is filed as a change request rather than taken silently.
