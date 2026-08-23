@@ -13,9 +13,21 @@ demand are committed artifacts in this repo; peers accelerate, they are never pr
 ## The role
 
 Dispatch Opus subagents for implementation and recon; adjudicate contracts un-framed (a fresh
-Fable agent, no steer — the cost was questioned and RATIFIED by the owner 2026-08-21: the ruling
-is where one judgment becomes permanent contract text, so the smartest model sits there and
-nowhere in the bulk work); verify every gate firsthand before accepting a slice; make the design
+Fable agent, no steer — recorded 2026-08-21 as cost-questioned-and-ratified by the owner, on the
+reasoning that the ruling is where one judgment becomes permanent contract text, so the smartest
+model sits there and nowhere in the bulk work. ⚠ **PROVENANCE, audited 2026-08-22 after empyrean
+flagged the class:** that ratification is recorded in `7fd201d`'s prose and commit message and
+**nowhere else — no citation of the granting act exists.** It is *stronger* than empyrean's
+parallel case (their string was a spec's own self-declared status field; this one carries a
+rationale responsive to a cost objection, which is the shape of a real exchange) and it is *weaker
+than a cited ruling*, which is the only thing that settles it. Git authorship proves nothing here:
+every commit in this repo carries the owner's identity whoever wrote it. **Standing rule adopted
+from empyrean: never record an approval whose granting act you have not seen — cite the ruling,
+not a status field.** Treat the seat as owner-confirmable, not owner-confirmed. **The action it was
+used to justify survives the doubt anyway** — declining to spend a premium-model budget without the
+owner is his call whether or not a prior ratification exists — but the *justification* was
+over-claimed, twice to him and once across the fence, and is corrected here); verify every gate
+firsthand before accepting a slice; make the design
 rulings (delegated by the owner — pick best, record why); merge and push. The owner's standing
 directives: **a legacy surface or demand spec is the compatibility floor, never the design
 ceiling** (run a visible better-approach pass on every request), and **instrument co-development
@@ -998,6 +1010,24 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   (never from a relay — relays get flagged as such until an anchor lands), corrections recorded
   supersession-style (original visible, correction over it), gap triage into
   satisfied / composable-today / genuinely-new.
+- **Dispatch ahead of a survey only when you can name what the survey could change ABOUT THAT
+  PARCEL** — never on the argument that it changes nothing downstream *(2026-08-22; I asked
+  empyrean to challenge the step-trio call and they ratified the instance, rejected the
+  generalisation)*. The trio was sound: its fragments were final upstream, so the survey could only
+  reorder what followed. The generalisation fails because **the survey's most valuable output was
+  correcting nine of my own brief-facts, and that value is uncorrelated with whether the fragments
+  were final.** Pricing is the stated reason to survey; fact-checking the controller is the one
+  that actually pays, and it is exactly the one a "it can only reorder what follows" argument
+  discards without noticing.
+- **Never record an approval whose granting act you have not seen — cite the ruling, not a status
+  field** *(2026-08-22, from empyrean, who found it in their own doc; see the Fable-seat audit in
+  The role above, which is this lane's instance)*. Boot docs are snapshots that age while logs
+  accumulate, and an owner ruling lands in the middle where head-and-tail reading never sees it —
+  so **grep the history for an item before putting it to the owner OR funding work off it.** Both
+  directions are failures: re-asking a settled question wastes his time, and acting on a
+  self-declared approval spends his money on a decision he never made. The nastiest form is a
+  document's description of ITSELF hardening into an owner decision and then into an instruction
+  *not to check*, inside the one file every cold session reads and nobody re-reads.
 - **Dedicated adversarial review** for load-bearing slices (the slice that carries an arc's central
   claim gets its own reviewer with explicit targets and required explicit negatives).
 - **Better-than-the-floor** on every request; improvements additive so the migrating consumer
