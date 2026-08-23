@@ -106,8 +106,10 @@ fn method_summaries_are_derived_from_the_same_registry_and_their_key_set_equals_
         summarised.difference(&methods).collect::<Vec<_>>(),
         methods.difference(&summarised).collect::<Vec<_>>(),
     );
-    // Rule 3 makes the values non-normative, so nothing is asserted about their wording. Empty is a
-    // different matter: a key with no summary is a key that failed to derive.
+    // Rule 3 makes the values non-normative, so nothing *general* is asserted about their wording —
+    // but non-normative is not the same as free to lie, and one summary is checked against its own
+    // reply by `a_summary_that_names_a_format_must_name_the_format_the_reply_returns` below. Empty is
+    // a different matter: a key with no summary is a key that failed to derive.
     for (name, summary) in summaries {
         let s = summary.as_str().expect("a summary is a string");
         assert!(!s.trim().is_empty(), "{name} has an empty summary");
@@ -119,6 +121,137 @@ fn method_summaries_are_derived_from_the_same_registry_and_their_key_set_equals_
         METHODS.iter().map(|m| m.name).collect::<BTreeSet<&str>>(),
         "the advertised set must be the dispatch table (D4)"
     );
+}
+
+/// **A summary that names a file format must name the format the handler actually emits.**
+///
+/// This exists because it already went wrong: `emulator/screenshot` advertised "render the active
+/// display to a binary PPM file" for six days after the handler switched to PNG, and the change was
+/// recorded only in a code comment five lines above the encoder — the one place nobody re-reads. The
+/// wrong string shipped over the wire in every `initialize`, and it was a downstream consumer, not
+/// this suite, that noticed: their capture harness had been silently writing nothing.
+///
+/// The assertion is deliberately *relational* rather than a ban on the word "PPM". It reads the
+/// format out of the handler's own reply and requires the advertised summary to name that value, so
+/// it stays live if the encoder is swapped again for something neither word covers. Nothing here is
+/// copied from the source or from a pin — both sides of the comparison come off the wire.
+///
+/// Scope, stated so the guard is not mistaken for a general one: `emulator/screenshot` is the only
+/// method that returns a `format` today, so this checks one row. If another method grows a `format`,
+/// add it to `cases` — the loop is already shaped for it.
+///
+/// Two of the rows below exist because planting a violation cannot find every way a test goes green:
+/// the empty-`format` stop closes a comparison that would have passed VACUOUSLY (the schema permits
+/// `""`, and `contains("")` is always true), and `names_token` makes the match measure "the summary
+/// names this format" rather than "these letters occur somewhere in it".
+#[test]
+fn a_summary_that_names_a_format_must_name_the_format_the_reply_returns() {
+    // (method, params to invoke it with). Extend as more methods report a `format`.
+    let cases = [(
+        "emulator/screenshot",
+        json!({"path": std::env::temp_dir()
+            .join(format!("ae-summary-fmt-{}.png", std::process::id()))
+            .display()
+            .to_string()}),
+    )];
+
+    // Every image container this project could plausibly emit or has emitted. Used only for the
+    // second, weaker assertion below; it is a heuristic list, not a derived one, and it is the one
+    // part of this test that a genuinely novel format would need updating for.
+    const IMAGE_FORMATS: &[&str] = &[
+        "png", "ppm", "pgm", "pbm", "pnm", "bmp", "gif", "tga", "tiff", "webp", "jpeg", "jpg",
+        "qoi",
+    ];
+
+    let h = spawn("summary-format");
+    let mut c = Client::connect(&h);
+    let init = c.handshake(false);
+
+    for (method, params) in &cases {
+        let summary = init["methodSummaries"][method]
+            .as_str()
+            .unwrap_or_else(|| {
+                panic!("no advertised summary for {method} — cannot check it against anything")
+            })
+            .to_ascii_lowercase();
+
+        let reply = c.ok(method, params.clone());
+        // Loud on unmeasurable: a reply with no `format` is not a pass, it is a test that lost its
+        // subject and must say so. Verified to be belt-and-braces rather than the live path — with
+        // `format` deleted from the handler, `Client::ok`'s contract-schema validation fires first
+        // ("`format` is a required property"), so the schema is what actually holds the key's
+        // presence. This branch is what would catch it if the schema ever made `format` optional.
+        let actual = reply["format"].as_str().unwrap_or_else(|| {
+            panic!(
+                "{method} returned no string `format`, so this guard has nothing to compare the \
+                 advertised summary against; reply was {reply}"
+            )
+        });
+        let actual = actual.to_ascii_lowercase();
+
+        // **The vacuity stop, and it is not theoretical.** The contract schema types `format` as an
+        // unconstrained `"type": "string"` with no const, enum or minLength, so `""` is a
+        // schema-VALID reply — and `summary.contains("")` is unconditionally true. Without this
+        // line the primary assertion below would report GREEN for a server that had stopped naming
+        // its format at all, which is a worse failure than the one this test was written for.
+        // Planting a wrong format could never have surfaced that; only asking what else could make
+        // the row pass could.
+        assert!(
+            !actual.trim().is_empty(),
+            "{method} reported an empty `format`, so there is no format name for the advertised \
+             summary to be checked against — the comparison below would pass vacuously. An empty \
+             format is a defect in the handler, not a pass here.",
+        );
+
+        assert!(
+            names_token(&summary, &actual),
+            "advertised summary for {method} does not name the format its own reply reports: the \
+             reply says format={actual:?} but the summary reads {summary:?}. The summary ships to \
+             every client in initialize.methodSummaries, so a summary that disagrees with the \
+             reply misinforms every client. Fix the summary in engine::METHODS.",
+        );
+
+        // Weaker, heuristic half: a summary that names the right format AND a stale one is still a
+        // summary a reader can act on wrongly. This is the shape a half-finished edit leaves behind.
+        let strays: Vec<&&str> = IMAGE_FORMATS
+            .iter()
+            .filter(|f| **f != actual && names_token(&summary, f))
+            .collect();
+        assert!(
+            strays.is_empty(),
+            "advertised summary for {method} names image format(s) {strays:?} that its reply does \
+             not emit (reply says format={actual:?}); a one-line summary should name exactly the \
+             one format the handler writes. Summary reads {summary:?}.",
+        );
+
+        if let Some(p) = reply["path"].as_str() {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+}
+
+/// Does `haystack` name `token` as a WORD, rather than merely contain its letters?
+///
+/// A bare `contains` measures the wrong quantity: a three-letter format token is short enough to
+/// fall inside an ordinary English word by accident, and the accident reads as a pass. "raw" sits
+/// inside "drawn"; "tga" would sit inside a hypothetical "tgap". The summary this guard protects
+/// already contains the word "display", and a future token "spl" or "isp" would match it. Requiring
+/// non-alphanumeric neighbours makes the assertion measure "the summary names this format" instead
+/// of "these letters occur somewhere", which is the property the rule is actually about.
+///
+/// Both callers use it, so the stray-format half tightens in the same direction: a summary saying
+/// "compressed" no longer counts as naming "pgm"-like tokens by coincidence.
+fn names_token(haystack: &str, token: &str) -> bool {
+    if token.is_empty() {
+        return false;
+    }
+    let bytes = haystack.as_bytes();
+    haystack.match_indices(token).any(|(i, _)| {
+        let before_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
+        let end = i + token.len();
+        let after_ok = end == bytes.len() || !bytes[end].is_ascii_alphanumeric();
+        before_ok && after_ok
+    })
 }
 
 #[test]
