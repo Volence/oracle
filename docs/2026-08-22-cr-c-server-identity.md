@@ -993,6 +993,27 @@ by a wire change, but by being told it was always wrong.
 
 ---
 
+## 11.9 Scope of the consumer review — read this before citing it
+
+**The aurora lane's consumer review covers blob `9a64d1eacd0453b898fe0f5fa173f13ebe01e974`**
+(= `e93571b:docs/2026-08-22-cr-c-server-identity.md`; both re-derived here with `git rev-parse`, and
+`e93571b` confirmed reachable at `origin/main` — it survived the push unrewritten, **which was luck
+confirmed by a check, not a property of the method**).
+
+**They have NOT reviewed the current text** (`d364edd67d09f1359ea6ace688057f9c25610863`, +43/−1 —
+§9.4.1 and this section). **Raised by them, against their own sign-off**, and adopted here verbatim in
+effect: the delta consists of *their own contributions* plus framing, so nothing about it is
+adversarial — **and the general form bites regardless of content.** Once *"Aurora reviewed CR-C"*
+hardens into prose without the blob, a later reader takes a consumer sign-off as covering text the
+consumer never saw. They **declined to wave it through unread** on the grounds that the delta was
+theirs, because *"the change was small and I know what was in it"* is precisely how a review's scope
+silently expands.
+
+**Adjudicator: treat the consumer verdict in §12.1 item 5 as attached to the blob above, not to this
+document.** An extension to the current blob has been requested and will be recorded here if it lands.
+*This is the anchor family applied to a review rather than to a citation — a review has a **subject**,
+and the subject moves.*
+
 ## 12. Questions for the adjudicator
 
 ### 12.1 Handed over undecided
