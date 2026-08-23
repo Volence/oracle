@@ -961,6 +961,66 @@ owner confirmation requested in-session; replace this flag with the confirmation
    most likely to mislead a reader, and the one this lane independently flagged in the status
    roll-up before the directive arrived.
 
+## ⚑ THE CUTOVER — ruled 2026-08-22 (RELAYED, see the flag above), mechanism determined firsthand
+
+**The ruling** (owner, via empyrean, quoted): *"I say do it now and when something is needed have it
+built out, no?"* — cut `mcp__oracle__*` over to the Rust server **now**, and close the remaining
+methods **on demand** rather than in enumeration order. empyrean recommended registering alongside
+the legacy server; **he overruled it** and they now agree, as do I: it converts the acceptance
+contract from a catalogue into demand-driven work.
+
+**MECHANISM, measured — three of the relayed observations were wrong:**
+- `/run/user/1000/oracle.sock` **does not exist**. `oracle-aether` is **not running** (binary exists;
+  the reported pid did not). The **only** listening oracle socket is
+  `/tmp/oracle-harness-4av2i47x/oracle.sock`, held by the **legacy GUI** under a **private
+  `XDG_RUNTIME_DIR`** — harness-local, not on any normal session's chain. **There is no incumbent to
+  displace; the shared socket is empty**, so nothing is reachable at `mcp__oracle__*` today at all.
+- **The registration is not only `~/.claude.json`.** Live sessions carry `--mcp-config` on their own
+  command line, which **overrides it**, and they disagree: the user config points at
+  `oracle-old/...` (correct), while at least one live session points at
+  **`oracle/linux-port/mcp/oracle-mcp`, a path that does not exist.** **This is the rename fallout's
+  FOURTH consumer class and it is invisible to a config audit** — the file is correct while a
+  session started under a pre-rename override is permanently broken. *This session is one of them*:
+  my `emulator_status` returned `Errno 2` and I first read it as "no emulator running".
+- **Split of hands:** running the server is **ours** (cheap, and reversible by stopping it — the
+  socket returns to empty). The **config/session correction is the OWNER'S** — a peer relaying an
+  owner instruction never authorises this seat to edit `~/.claude.json` or a session's MCP config.
+
+**⚠ HARD PRECONDITION — REBUILD BEFORE CUTOVER. Found by the aurora lane, and it would have shipped
+a lie to every consumer.** `target/release/oracle-aether` is dated **21 Aug 22:11** while
+`engine.rs` is **22 Aug 20:31**; aurora ran the binary and it **banners "37 methods advertised"**.
+Source serves **41**. So the built artifact **predates the step trio AND `run_to_scanline`** and would
+present four served methods as absent. **A consumer measuring our surface against an installed binary
+gets the old answer with nothing announcing it** — bar 4's converse arriving from the opposite side:
+there the artifact could not witness its own freshness, here it cannot witness its own staleness.
+*Corroborates the 37→40→41 correction from an enumeration parameter neither source-side derivation
+had: stale RUNTIME behaviour rather than a grep.*
+
+**DAY-ONE BREAKAGE — measured, replacing the "breakpoints and Z80" guess:**
+- **Breakpoints: YES, and it is the whole exposure.** aeon's `raster_source_gate.py` and
+  `snapshot_poison_gate.py` run **arm → wait → clear** (`breakpoint_add` → `wait_for_break` →
+  `breakpoint_clear{all}`) — three of the 17, one flow, **at least one path an unattended nightly**.
+  Cannot migrate piecemeal: serving `wait_for_break` alone leaves them nothing to arm.
+- **Z80: NO.** CR-B's sweep found **zero programmatic consumers**; 48 mentions, all prose.
+- **`ping`/`log_clear`: no impact.** The remaining 12 have no consumer of any kind.
+
+**SEQUENCING (my call, stated to empyrean):** cut over now; the breakpoint trio + `wait_for_break`
+ship as **ONE parcel** alongside it. **The collision to see clearly:** that parcel's design is
+**CR-A, which is UNADJUDICATED** because the Fable seat is held — so cutting over now means building
+to an unadjudicated contract. **Resolution: build it and BOOK it.** The hold ruling arrived *with*
+the ledger obligation precisely so such decisions are auditable when the limit lifts; L-01 is already
+CR-A. Building under an unadjudicated CR **and recording it** honours both rulings — building it and
+not recording it honours neither.
+
+**THE HAZARD TO ENFORCE, and it is this seat's job:** once the new server is the only one reachable,
+every failure presents as *the consumer* being broken and the gradient pushes lanes to engineer
+around gaps instead of reporting them — **bar 9's corollary with the causation hidden.** Counter-
+measure: **an unserved method must fail LOUDLY and BY NAME, never degrade to a plausible answer.**
+Ours already does (`-32601` unknown method; `-32602` naming the key at the dispatch choke *before*
+the handler); the legacy server silently defaults unknown params, which is exactly why bar 15 says
+sequence a cutover onto the STRICT implementation. **A missing capability that returns something is
+far worse here than one that refuses.**
+
 ## The bars (house methods — each earned by a measured failure; do not thin)
 
 > ⚠ **READ THE PROTOCOL AT A COMMITTED REVISION, NOT THROUGH THE PATH** (seraph's rule, empyrean
