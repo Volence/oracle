@@ -1012,6 +1012,35 @@ the ledger obligation precisely so such decisions are auditable when the limit l
 CR-A. Building under an unadjudicated CR **and recording it** honours both rulings — building it and
 not recording it honours neither.
 
+**⚑ THE SCOPING CHANGES AGAIN — the aurora lane, and this one is a suite-wide correctness hazard, not
+a cutover detail.** **The MCP shim and the Aether server are INDEPENDENT, and only the shim is
+config.** `mcp__oracle__*` runs **oracle-old's Python shim**, which is a **client**: it dials the same
+socket chain everything else does. So **a legacy shim has been driving our Rust core, end to end,
+today, unknowingly** — nobody had ever tested that pairing and it works.
+**Their proof, which is the good kind:** they launched our Rust binary with a **relative** argv
+(`../aeon/s4.debug.bin`) and `emulator/status` echoed `romPath: "../aeon/s4.debug.bin"`, while the
+C++ `oracle_gui` on this machine carries the **absolute** path. Only one process could have produced
+that reply. *That also certifies their two other reports as genuinely OUR binary's behaviour: the
+`write_vram → -32601` and the "37 methods" banner.*
+**In our favour:** the client half may already be done — the cutover's client-side cost is not "swap
+every lane's shim".
+**⚠ AGAINST IT, AND THIS IS THE ONE TO CARRY: WHICH SERVER ANSWERS IS DECIDED BY WHOEVER LAUNCHED ON
+THE SOCKET CHAIN FIRST — NOT BY ANY CONFIG.** So **a session can silently change which
+implementation it is talking to, with no config change and no signal.** Aurora's own framing, against
+their earlier one: they had assumed a swap required somebody to change something. It does not. Every
+measurement any lane takes carries an unstated assumption about which implementation answered, and
+**nothing in the transport makes that assumption checkable.**
+**▶ NEXT PARCEL, and it is the counter-measure: SERVER IDENTITY + BUILD PROVENANCE in `initialize`.**
+Today we advertise `serverName` (**config-supplied**, so it proves nothing an impostor could not
+claim) and `server_version` = `CARGO_PKG_VERSION` (**a crate version that does not move per commit**,
+so the 21-Aug binary and the 22-Aug binary are indistinguishable by it — which is exactly the pair
+that differed by four served methods). The advertised `methods` list *is* currently the only real
+discriminator, and reading it requires a repo to diff against. **Embed the git SHA + build timestamp
+at compile time and surface them**, so staleness and identity are **self-announcing rather than
+inferable**. This single parcel closes BOTH of today's independent findings — the silent-swap hazard
+and the stale-binary hazard — and it is the handshake record aurora raised with empyrean. Needs a CR
+(new `initialize` keys are contract surface; **do not invent them unilaterally**).
+
 **THE HAZARD TO ENFORCE, and it is this seat's job:** once the new server is the only one reachable,
 every failure presents as *the consumer* being broken and the gradient pushes lanes to engineer
 around gaps instead of reporting them — **bar 9's corollary with the causation hidden.** Counter-
