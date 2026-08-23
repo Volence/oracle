@@ -657,6 +657,11 @@ our M1 mutation reproduces and our gate refuses.
 
 ### 3.3 ★ Where OUR instrument is weak — three findings, reported against ourselves
 
+> ⚠ **CORRECTED 2026-08-23** — "ENTIRE cost" is an overstatement: boundary checkpoints run for live
+> *interrupt* frames too, so only time held in a callee open **across** the boundary is displaced.
+> See `docs/2026-08-23-prof-straddle-mechanism.md`, which also records aeon's empirical corroboration
+> and the finding that the per-frame ring exposes no self-only bucket figure.
+
 **(a) `perFrame[].vintCycles` / `hintCycles` displace a boundary-straddling handler's ENTIRE cost into
 the frame it returns in.** This matters because the per-frame ring is exactly the surface aeon's spike
 hunt reads (`docs/2026-08-20-profiler-corpus-ab.md:704-717`). The chain, all in `profiler.rs`:
