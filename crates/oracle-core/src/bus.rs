@@ -253,6 +253,39 @@ pub trait BusEventSink {
     /// DMA burst lands at one pixel rather than smeared across the slots it really occupies (C-6).
     fn on_scanline(&mut self, _line: u16, _rgb: &[(u8, u8, u8)]) {}
 
+    /// **Raster position, every line, no opt-in** — called at the instant line `line` of frame `frame`
+    /// begins, for **every** line of the frame (`0..LINES_PER_FRAME`), blanking included.
+    ///
+    /// This is the only hook that carries the raster's position, and it is deliberately not
+    /// [`on_scanline`](BusEventSink::on_scanline) wearing a different name. That one exists to deliver
+    /// *pixels* and is three different things away from a position: it fires only for the active rows
+    /// (`line < 224`, `system.rs`'s render gate), it lags one line (the deferred emitter flushes the
+    /// *previous* row), and it is delivered only to a sink whose
+    /// [`wants_scanlines`](BusEventSink::wants_scanlines) opted in, which retains a row and a 128-byte CRAM
+    /// snapshot per line to do it. A consumer that wants to know *where the beam is* — a raster stop, a
+    /// mid-frame probe — needs the blanking lines most of all, needs them on time, and needs none of the
+    /// pixels. Deriving the line from the frame index instead is impossible by construction:
+    /// [`on_step_boundary`](BusEventSink::on_step_boundary) carries `mclk / mclk_per_frame`, and the
+    /// integer division discards exactly the intra-frame remainder a line number is.
+    ///
+    /// **When, relative to the other hooks.** It fires from the same `Scanline` event that drives the VDP's
+    /// per-line housekeeping, *after* that event has flushed the previous row to `on_scanline` and *before*
+    /// this line is rendered — so the row ordering `[Line(0)..Line(223), Boundary(f)]` that
+    /// `tests/scanline_capture.rs` pins is untouched, and line 224 delivers `on_line_start(224)` and then
+    /// [`on_frame_boundary`](BusEventSink::on_frame_boundary).
+    ///
+    /// **Stopping from here stops at the line's first instruction boundary.** The run loop pops due events
+    /// (this hook) and *then* asks [`stop_requested`](BusEventSink::stop_requested), before stepping — so a
+    /// sink that raises its flag here ends the run with **no** instruction of the new line executed, which is
+    /// the tightest stop the sync-on-demand model admits.
+    ///
+    /// `frame` comes from the event's own deadline rather than `now()`, for
+    /// [`on_frame_boundary`](BusEventSink::on_frame_boundary)'s reason: one `step_cpu` can advance the clock
+    /// past several frames, after which the whole backlog of line events drains in a burst at a `now()`
+    /// already past all of them. The default is a no-op, so `()` and `Vec<BusEvent>` are unchanged by
+    /// construction.
+    fn on_line_start(&mut self, _line: u16, _frame: u64) {}
+
     /// **Frame structure.** Called by the sink-generic run loop **exactly once per emulated frame**, at the
     /// instant that frame's active display ends — the start of vblank (the line-224 `Scanline` event), which
     /// is *after* [`on_scanline`](BusEventSink::on_scanline) for line 223 and *before* any line of the next
@@ -356,6 +389,9 @@ impl<S: BusEventSink + ?Sized> BusEventSink for &mut S {
     fn on_scanline(&mut self, line: u16, rgb: &[(u8, u8, u8)]) {
         (**self).on_scanline(line, rgb);
     }
+    fn on_line_start(&mut self, line: u16, frame: u64) {
+        (**self).on_line_start(line, frame);
+    }
     fn on_frame_boundary(&mut self, frame: u64) {
         (**self).on_frame_boundary(frame);
     }
@@ -402,6 +438,11 @@ impl<S: BusEventSink> BusEventSink for Option<S> {
     fn on_scanline(&mut self, line: u16, rgb: &[(u8, u8, u8)]) {
         if let Some(s) = self {
             s.on_scanline(line, rgb);
+        }
+    }
+    fn on_line_start(&mut self, line: u16, frame: u64) {
+        if let Some(s) = self {
+            s.on_line_start(line, frame);
         }
     }
     fn on_frame_boundary(&mut self, frame: u64) {
@@ -455,6 +496,9 @@ impl<S: BusEventSink> BusEventSink for Observe<S> {
     }
     fn on_scanline(&mut self, line: u16, rgb: &[(u8, u8, u8)]) {
         self.0.on_scanline(line, rgb);
+    }
+    fn on_line_start(&mut self, line: u16, frame: u64) {
+        self.0.on_line_start(line, frame);
     }
     fn on_frame_boundary(&mut self, frame: u64) {
         self.0.on_frame_boundary(frame);
@@ -528,6 +572,10 @@ impl<A: BusEventSink, B: BusEventSink> BusEventSink for Fanout<A, B> {
     fn on_scanline(&mut self, line: u16, rgb: &[(u8, u8, u8)]) {
         self.a.on_scanline(line, rgb);
         self.b.on_scanline(line, rgb);
+    }
+    fn on_line_start(&mut self, line: u16, frame: u64) {
+        self.a.on_line_start(line, frame);
+        self.b.on_line_start(line, frame);
     }
     fn on_frame_boundary(&mut self, frame: u64) {
         self.a.on_frame_boundary(frame);

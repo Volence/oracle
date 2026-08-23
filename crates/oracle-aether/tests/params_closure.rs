@@ -618,3 +618,157 @@ fn disp_is_not_a_bus_wide_param() {
         assert_eq!(e["data"]["unknownParams"], json!(["disp"]), "{method}");
     }
 }
+
+// ---------------------------------------------------------------------------------------------------
+// The `addr` XOR `symbol` alternation — the other half of "closed params" (registered 2026-08-22)
+// ---------------------------------------------------------------------------------------------------
+
+/// Every advertised method whose fragment spells `oneOf [{required:[addr]}, {required:[symbol]}]`,
+/// **derived by parsing** rather than listed. A row that gains the alternation upstream joins this set on
+/// the next re-vendor and is checked without anyone remembering to add it.
+fn rows_declaring_addr_xor_symbol(schema: &Value) -> Vec<&'static str> {
+    let wanted: BTreeSet<String> = [
+        json!({"required": ["addr"]}).to_string(),
+        json!({"required": ["symbol"]}).to_string(),
+    ]
+    .into_iter()
+    .collect();
+    METHODS
+        .iter()
+        .map(|m| m.name)
+        .filter(|name| {
+            let Some(alts) = schema["methods"][*name]["params"].get("oneOf") else {
+                return false;
+            };
+            let got: BTreeSet<String> = alts
+                .as_array()
+                .map(|a| a.iter().map(Value::to_string).collect())
+                .unwrap_or_default();
+            got == wanted
+        })
+        .collect()
+}
+
+/// The params a row needs *besides* the alternation, so a refusal below can only be the alternation's.
+fn fill_required(method: &str, base: &mut serde_json::Map<String, Value>) {
+    let declared = METHODS.iter().find(|m| m.name == method).unwrap().params;
+    for (k, v) in [("len", json!(2)), ("bytes", json!("0xAA"))] {
+        if declared.contains(&k) {
+            base.insert(k.into(), v);
+        }
+    }
+}
+
+/// **`addr` and `symbol` are alternatives, and both together is `-32602`.**
+///
+/// A JSON-Schema `oneOf` over two required-key branches means *exactly* one: `{addr, symbol}` matches both
+/// and therefore fails it. `Engine::resolve_target` checked `symbol` first and returned, so a request the
+/// contract refuses was being **answered** — about the symbol, with the caller's `addr` dropped in silence,
+/// which is the same class of defect §11.17 closed for unknown keys one level up. Registered as a live
+/// request-side divergence by the 2026-08-22 acceptance survey and closed here.
+///
+/// The set is derived from the vendored fragments, so this test grows with the contract. `emulator/read` is
+/// deliberately absent from it — see [`the_one_row_without_the_alternation_still_accepts_both`].
+#[test]
+fn both_addr_and_symbol_is_refused_by_every_row_that_declares_the_alternation() {
+    let schema = schema();
+    let rows = rows_declaring_addr_xor_symbol(&schema);
+    assert!(
+        rows.len() >= 5,
+        "the alternation should reach at least run_to, read_memory, write_memory, memory_hash and \
+         watchpoint_add — the derived set was {rows:?}"
+    );
+    assert!(
+        rows.contains(&"emulator/run_to"),
+        "run_to is the row the divergence was registered against: {rows:?}"
+    );
+    let h = spawn_system("pc-xor", machine(), 64);
+    let mut c = client(&h);
+    for method in rows {
+        let mut params = serde_json::Map::new();
+        params.insert("addr".into(), json!("0xFF0000"));
+        params.insert("symbol".into(), json!("Probe"));
+        fill_required(method, &mut params);
+        let e = c.err(method, Value::Object(params));
+        assert_eq!(
+            e["code"],
+            json!(-32602),
+            "{method} accepts both alternatives its fragment forbids: {e}"
+        );
+        assert_eq!(
+            e["data"]["conflictingParams"],
+            json!(["addr", "symbol"]),
+            "{method}: the refusal must name the offending COMBINATION machine-readably — an unknown-key \
+             message would name neither, and a bare -32602 tells the caller nothing: {e}"
+        );
+        assert!(
+            e["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("pass exactly one"),
+            "{method}: the message must say what to do instead: {e}"
+        );
+    }
+}
+
+/// The anti-vacuity control: each alternative **alone** still resolves, on every row above.
+///
+/// Without it a `resolve_target` that refused everything would satisfy the test before it. `Probe` is the
+/// loaded listing's only symbol, so both spellings name the same real place.
+#[test]
+fn either_alternative_alone_still_resolves() {
+    let schema = schema();
+    let h = spawn_system("pc-xor-solo", machine(), 64);
+    let mut c = client(&h);
+    let dir = load_probe(&mut c, "pc-xor-solo");
+    for method in rows_declaring_addr_xor_symbol(&schema) {
+        for only in [json!({"addr": "0xFF0600"}), json!({"symbol": "Probe"})] {
+            let mut params = only.as_object().unwrap().clone();
+            fill_required(method, &mut params);
+            let v = c.call(method, Value::Object(params.clone()));
+            assert!(
+                v.get("error").is_none(),
+                "{method} with only {params:?} must still work: {}",
+                v["error"]
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **`emulator/read` declares no alternation, and is served as written.**
+///
+/// It is the only `addr`-or-`symbol` row in the catalog without the `oneOf`, so `{addr, symbol}` is a
+/// request the contract *permits* — and refusing it would be this server narrowing a shape a second
+/// conformant server accepts, §8's invention ban read the other way round. The omission looks like a
+/// transcription gap rather than a decision and is reported upward; until the contract moves, this row keeps
+/// its symbol-first resolution. Pinned so the exemption stays a decision on record rather than turning back
+/// into an oversight.
+#[test]
+fn the_one_row_without_the_alternation_still_accepts_both() {
+    let schema = schema();
+    assert!(
+        schema["methods"]["emulator/read"]["params"]
+            .get("oneOf")
+            .is_none(),
+        "emulator/read has gained the alternation upstream — route it through the exclusive resolver and \
+         delete this exemption"
+    );
+    assert!(
+        !rows_declaring_addr_xor_symbol(&schema).contains(&"emulator/read"),
+        "the derived set must agree with the fragment"
+    );
+    let h = spawn_system("pc-xor-read", machine(), 64);
+    let mut c = client(&h);
+    let dir = load_probe(&mut c, "pc-xor-read");
+    let r = c.ok(
+        "emulator/read",
+        json!({"addr": "0xFF0000", "symbol": "Probe", "len": 2}),
+    );
+    assert_eq!(
+        r["addr"],
+        json!("0x00FF0600"),
+        "symbol-first, unchanged: the fragment permits both and this row resolves the symbol"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

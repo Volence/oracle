@@ -3,11 +3,15 @@
 //! Four jobs, and only the first is the obvious one:
 //!
 //! 1. **Freshness.** The vendored schema is byte-identical to the contract's copy.
-//! 2. **Coverage, reported and pinned.** The schema used to be a SEED, covering 9 of the 21 methods we
-//!    advertise; since the 2026-08-15 re-vendors (`empyrean` `f309cc8`, then `af434a2`) it covers all 25 —
-//!    the four watchpoint methods arrived already schematized, which is the direction that counts. The pin
-//!    stays, now guarding the one direction that is left: a newly advertised method joining the unchecked
-//!    pile silently.
+//! 2. **Coverage, reported and pinned.** The schema began as a SEED covering a minority of what this
+//!    server advertised; it now has a `result` fragment for **every** advertised method, which is what
+//!    `UNCOVERED_METHODS` being pinned *empty* says. The document's fragments therefore split exactly two
+//!    ways, and both halves are named rather than counted: the ones this server advertises
+//!    (`engine::METHODS`, derived) and the ones it does not (`SCHEMATIZED_NOT_ADVERTISED`, enumerated
+//!    below). No number appears in this file that is not the length of a list printed beside it — the
+//!    counts in the prose here went stale twice while every assertion stayed green, which is the whole
+//!    argument for enumerating instead. The pins guard the two silent directions: a newly advertised
+//!    method joining the unchecked pile, and a fragment arriving for a method nobody serves.
 //! 3. **The divergence registry, reported and kept live.** Shapes where the server and the schema
 //!    disagree are registered rather than silenced, each with its CR number, and the report prints
 //!    beside the coverage split so nobody reads a green suite as "fully conformant". An entry that stops
@@ -224,6 +228,12 @@ fn tracked_revision_check(upstream: &std::path::Path, vendored: &[u8]) -> Result
 /// for the same reason, when CR-11/CR-12's four fragments were ruled into the contract before a line of
 /// handler was written.
 ///
+/// **Those four numbers are a record of two moves in 2026-08, not a claim about today.** The advertised
+/// list has grown well past 25 since, and every fragment that arrived with it arrived the same way round;
+/// what the file asserts about the present is the *empty list* below and the enumerated one further down,
+/// never a total. A count in a comment is exactly what went stale here twice — the second time while this
+/// very paragraph sat beside a green assertion saying otherwise.
+///
 /// The pin stays, and it now guards the one remaining direction: a **newly advertised** method would join
 /// this list silently, arriving on the wire with nothing checking its result shape and nothing saying so.
 /// An empty expectation makes that failure loud on the first run.
@@ -399,14 +409,14 @@ fn the_schema_covers_every_method_we_advertise_and_the_uncovered_list_is_pinned_
         "emulator/get_layer_states",
         "emulator/log_clear",
         "emulator/ping",
-        "emulator/run_to_scanline",
         "emulator/set_channel_enabled",
         "emulator/set_layer_enabled",
-        // `emulator/step`, `emulator/step_out` and `emulator/step_over` were here until 2026-08-22 — the
-        // first three of the 21 to leave the set by being SERVED, which is the direction the pin's second
-        // bullet was written for and the one `is_empty()` could never have caught. Their removal was forced
-        // by this assertion going red on the commit that shipped the handlers, not remembered afterwards.
-        // Eighteen remain, and the three grounds above still hold for every one of them.
+        // `emulator/step`, `emulator/step_out` and `emulator/step_over` were here until 2026-08-22, and
+        // `emulator/run_to_scanline` left the same day — the first four of the 21 to leave the set by being
+        // SERVED, which is the direction the pin's second bullet was written for and the one `is_empty()`
+        // could never have caught. Each removal was forced by this assertion going red on the commit that
+        // shipped the handler, not remembered afterwards. Seventeen remain — the names in this literal,
+        // which is the only count worth having — and the three grounds above still hold for every one.
         "emulator/vgm_start",
         "emulator/vgm_status",
         "emulator/vgm_stop",
