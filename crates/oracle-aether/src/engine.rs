@@ -1547,8 +1547,46 @@ impl Engine {
     /// Kept on this method rather than folded into `resolve_target`, deliberately: `read`/`read_memory`
     /// share that helper and do not declare `disp`, and a helper that quietly honoured a key those
     /// fragments do not carry would put the server back on the wrong side of the rule above it.
+    /// [`resolve_target`](Self::resolve_target) under the **`oneOf` the fragments actually declare**:
+    /// `addr` XOR `symbol`, both present is `-32602`.
+    ///
+    /// `resolve_target` checks `symbol` first and returns, so `{addr, symbol}` silently ignored the `addr`
+    /// and answered about the symbol. Five fragments spell `oneOf [{required:[addr]}, {required:[symbol]}]`
+    /// — `run_to`, `read_memory`, `write_memory`, `memory_hash`, `watchpoint_add` — and a JSON-Schema
+    /// `oneOf` over two required-key branches means *exactly* one: both present matches both branches and
+    /// fails. So a request the contract refuses was being answered, with the caller's other key dropped on
+    /// the floor. Registered as a live request-side divergence on 2026-08-22 (the acceptance-21 survey,
+    /// §2.2) and closed here.
+    ///
+    /// **Why it is not the flat params closure's job.** [`unknown_params`] is method-agnostic and knows only
+    /// which keys are *legal*; an alternation is about which are legal *together*. Hoisting it to
+    /// [`dispatch`](Self::dispatch) would need the alternation on every [`MethodSpec`] row, and would then
+    /// preempt four hand-written refusals — `checkpoint_drop`'s `id`/`all`, `watchpoint_clear`'s
+    /// `watch`/`all`, `write_memory`'s `bytes`/`value`, `write_cram`'s `r,g,b`/`raw` — each of which names
+    /// its own two alternatives in words. A generic refusal that replaced those with a worse message would
+    /// be a regression wearing a refactor's clothes. In-handler, before any effect, is what those four
+    /// already do and is the house shape.
+    ///
+    /// **`emulator/read` is deliberately NOT routed through here.** Alone among this helper's callers its
+    /// fragment declares no `oneOf`, so `{addr, symbol}` is a request the contract *permits* and refusing it
+    /// would be the invention ban read the other way round — this server narrowing a shape a second
+    /// conformant server would accept. The omission looks like a transcription gap rather than a decision
+    /// (every other addr-or-symbol row in the catalog carries the alternation), and it is reported upward
+    /// rather than repaired locally.
+    fn resolve_exclusive_target(&self, params: &Value) -> Result<u32, RpcError> {
+        if params.get("addr").is_some() && params.get("symbol").is_some() {
+            return Err(RpcError::invalid_params(
+                "`addr` and `symbol` are alternatives — pass exactly one. Both were given, and the two \
+                 can name different places: resolving one and dropping the other would answer a question \
+                 that was not asked",
+            )
+            .with_data(json!({"conflictingParams": ["addr", "symbol"]})));
+        }
+        self.resolve_target(params)
+    }
+
     fn resolve_displaced_target(&self, params: &Value) -> Result<u32, RpcError> {
-        let base = self.resolve_target(params)?;
+        let base = self.resolve_exclusive_target(params)?;
         let Some(v) = params.get("disp") else {
             return Ok(base);
         };
@@ -1772,7 +1810,7 @@ impl Engine {
 
     fn run_to(&mut self, params: &Value) -> Result<Value, RpcError> {
         self.require_paused("emulator/run_to")?;
-        let target = self.resolve_target(params)?;
+        let target = self.resolve_exclusive_target(params)?;
         // `maxFrames` is an *additive optional* param on a catalogued method, not a new op. Without a
         // bound, a target that is never reached is an unbounded run — i.e. exactly the transport hang
         // that destroyed a frozen repro frame in `aeon/docs/BUGS.md:494-551`.
@@ -2089,7 +2127,7 @@ impl Engine {
     }
 
     fn read_memory(&mut self, params: &Value) -> Result<Value, RpcError> {
-        let addr = self.resolve_target(params)?;
+        let addr = self.resolve_exclusive_target(params)?;
         let len = match params.get("len") {
             None => 1,
             Some(v) => hex::parse_count("len", v, 1, self.config.max_read_len)?,
@@ -2215,6 +2253,11 @@ impl Engine {
                 space_name(space)
             )));
         }
+        // **The permissive resolver, and that is a decision.** Every other `addr`-or-`symbol` row in the
+        // catalog declares `oneOf [{required:[addr]}, {required:[symbol]}]` and this one does not, so
+        // `{addr, symbol}` is a request this fragment permits — and `resolve_exclusive_target` would refuse
+        // what a second conformant server accepts. Reported upward as a probable transcription gap rather
+        // than repaired here; until it moves, this row keeps the symbol-first resolution it has always had.
         let addr = self.resolve_target(params)?;
         let len = match params.get("len") {
             None => 1,
@@ -2624,7 +2667,7 @@ impl Engine {
     /// spells out); the FNV is `state_hash`'s family with the contract's pinned parameters, the
     /// CRC-32 is IEEE/zlib so a cart-window hash matches the ROM file.
     fn memory_hash(&mut self, params: &Value) -> Result<Value, RpcError> {
-        let addr = self.resolve_target(params)?;
+        let addr = self.resolve_exclusive_target(params)?;
         let Some(l) = params.get("len") else {
             return Err(RpcError::invalid_params(
                 "`len` is required — a hash without a length hashes nothing",
@@ -4061,7 +4104,7 @@ impl Engine {
                 space_name(space)
             )));
         }
-        let addr = self.resolve_target(params)?;
+        let addr = self.resolve_exclusive_target(params)?;
         let len = match params.get("len") {
             None => 1,
             Some(v) => hex::parse_count("len", v, 1, MAX_WATCH_LEN)?,
