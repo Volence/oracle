@@ -813,7 +813,35 @@ Add two keys to the example object, immediately after `serverVersion`:
 
 ### 9.4 `contract/protocol.md` §8, new item 23 (after line 2007)
 
-Text as given in §7.3 above.
+Text as given in §7.3 above, **plus the dispatch-not-succeed clause added at consumer review
+(§9.4.1)**, which is not optional decoration: without it the item is likely to be read backwards.
+
+#### 9.4.1 Added at consumer review — **item 23 requires a method to DISPATCH, not to SUCCEED**
+
+*Contributed by the aurora lane reviewing as the consumer; adopted by the overseer and folded in
+before adjudication so the adjudicator rules on the version that survives contact.*
+
+**Normative text to accompany item 23:**
+
+> Item 23 governs **name resolution only**. A method named in `methods` MUST resolve to a handler and
+> be dispatched to it; `-32601` in reply to an advertised name is a server defect. **It does NOT
+> require the call to succeed.** A handler that dispatches and then refuses on its own domain terms —
+> no ROM loaded, machine running where the row requires paused, no symbol table, a bound exceeded —
+> is **conformant and is answering truthfully**. `-32601` means *"I do not have this name"*; a domain
+> refusal means *"I have this name and here is why I will not do it now"*. These are different
+> answers and only the first is barred.
+
+**Why the clause is load-bearing rather than clarifying.** A future implementer reading *"every
+advertised method MUST dispatch"* without it will hear *"you may only advertise what you can always
+do"*, and will then take one of two bad paths: **drop a legitimate method from `methods`** whenever it
+can conditionally refuse, or **invent the gated-discovery mechanism §7.5 rejects**. The first is the
+dangerous one — **a server that under-advertises to stay conformant breaks the warranty by satisfying
+it**, and it does so silently, because a shrunken `methods` array looks exactly like a smaller server.
+
+**Precedent already in the contract, which is why this costs nothing:** `require_paused` is this
+pattern today — those rows dispatch and refuse `-32005` on machine state, are advertised
+unconditionally, and no one reads that as a violation. The clause names an existing practice rather
+than creating an exception.
 
 ### 9.5 `contract/protocol.md` §6, `emulator/ping` row and D-01
 
