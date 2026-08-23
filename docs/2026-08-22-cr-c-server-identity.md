@@ -1007,6 +1007,20 @@ by a wire change, but by being told it was always wrong.
 5. **Item 23's spelling.** *"A `-32601` for an advertised name is a server defect"* is the version here.
    An adjudicator may prefer the softer *"SHOULD dispatch"*, which would leave aurora's dual-route client
    permanently justified — that is the cost of the softer form and it should be paid knowingly.
+   **⚑ CONSUMER VERDICT RECEIVED, and it is evidence rather than a decision — the ruling is still
+   yours.** The aurora lane, reviewing as the consumer this clause exists to serve, answers **MUST,
+   unambiguously**, with an argument the drafter did not make: **SHOULD does not merely cost a client a
+   second code path — it makes the cheap pre-check permanently UNSOUND.** If advertised-but-not-
+   dispatching is *permitted*, then no client may ever treat membership as sufficient, so the pre-check
+   is not an option they declined to take, it is **an option that does not exist**; every consumer then
+   pays the round trip *and* the state-change hazard forever. Under MUST, `methods` is a warranty and the
+   check is sound; under SHOULD it is an advertisement and the check is a guess that happens to work.
+   **The asymmetry they name is the decisive part: §2.4 shows both implementations already satisfy item
+   23 structurally, so MUST costs nothing today — choosing SHOULD pays a permanent price to preserve a
+   freedom nobody is using.** That is this suite's own recurring shape, *the cautious-sounding option is
+   the one where nobody is told to move* (protocol bars 9 and 15). They are keeping their `'rpc-error'`
+   route under MUST with its meaning changed to a **defect detector** rather than a discovery mechanism,
+   which §7.5 had already anticipated.
 6. **Does `implementation` belong in the schema's `enum`, or only in `protocol.md`'s registry?** An
    `enum` in the published schema makes an unregistered value a validation failure, which is stronger —
    and also means every new implementation needs a schema release before it can pass its own suite.
