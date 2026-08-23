@@ -1,0 +1,63 @@
+{
+  "focus": "Serving the Aether methods aeon still cannot call — breakpoints first, so their nightly gates run.",
+  "inFlight": [],
+  "blockedOnOwner": [
+    {
+      "what": "CR-A and CR-B are merged but unadjudicated — Fable died on the account limit and you ruled hold. Work continues and every decision is being booked for Fable's first pass.",
+      "since": "2026-08-22"
+    }
+  ],
+  "nextBoundary": "Breakpoint trio + wait_for_break landed with its ledger entry, so aeon's unattended gates stop being day-one breakage.",
+  "queue": [
+    {
+      "id": "CR-A",
+      "title": "Breakpoints + wait_for_break as one parcel — aeon's nightly gates break on day one without it",
+      "state": "next",
+      "size": "L",
+      "blockedBy": null
+    },
+    {
+      "id": "Q-PROF-STRADDLE",
+      "title": "Profiler may bill a whole frame's cost to the wrong frame — aeon has held their migration on it",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null
+    },
+    {
+      "id": "CR-C",
+      "title": "The server cannot say which server it is, so a session can swap implementations with no signal",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null
+    },
+    {
+      "id": "ROMPATH",
+      "title": "status reports the ROM path relative, which the protocol says it should not",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null
+    },
+    {
+      "id": "SIGIL-DUMP",
+      "title": "Per-instruction cycle dumper sigil asked for — cheap, and nothing in the contract changes",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null
+    },
+    {
+      "id": "Z80",
+      "title": "z80_read / z80_write — nothing calls them yet, and the legacy write silently corrupts on overrun",
+      "state": "blocked",
+      "size": "M",
+      "blockedBy": "no programmatic consumer found — demand has not ordered it"
+    },
+    {
+      "id": "WIKI-SPIKE",
+      "title": "The wiki-emulator spike you approved twice",
+      "state": "open",
+      "size": "L",
+      "blockedBy": "sits behind the acceptance parcels"
+    }
+  ],
+  "updatedAt": "2026-08-23T08:04:59Z"
+}
