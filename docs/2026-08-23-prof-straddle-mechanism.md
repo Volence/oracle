@@ -103,3 +103,48 @@ all of it, and `row.vint_cycles < row.cycles` — which the existing core assert
 No machine needed. aeon's banked condition discharges **either way** — a fix with this test, or a
 reasoned conclusion that it is not a defect. Their stated scar tissue is holds nobody revisits, so
 the closing note matters as much as the fix.
+
+## 6. aeon's named ask — per-frame bucket SELF cycles on the ring
+
+**Filed 2026-08-23** after they verified §1–§3 firsthand at this repo's `origin/main`, anchored by
+symbol rather than line. Sorted by them under the protocol's gap rule, and the sort is correct:
+
+- **Genuinely-new:** `vintSelfCycles` / `hintSelfCycles` on the `perFrame[]` row.
+- **Composable today, explicitly NOT part of the ask:** aggregate bucket self via
+  `interrupts[].cyclesSelfTotal`. Whole-sample questions are already answerable.
+
+**Their condition, and it is the right one.** Advice to "use `cyclesSelf`" with no field to use
+means a porter reaches `perFrame[]`, finds only the inclusive bucket figures, and either uses them
+silently or invents a workaround — the permissive-stale failure mode. On their workloads a tick is
+190,931 cycles against a ~128,000-cycle frame, so **straddling is their normal case** and the wrong
+number would look plausible every time. Their booking: do not port a per-frame bucket consumer until
+the field exists **or the ask is refused**. A refusal discharges it as cleanly as a fix — they would
+build the consumer differently rather than argue. No date wanted, and **explicitly no reordering**;
+the breakpoint parcel stays `next` because that one does gate their unattended gates and this gates
+nothing of theirs today.
+
+### 6.1 Price — the accounting is already there; the cost is contract surface
+
+They asked whether it falls out of the straddle fix for free. **On the core, effectively yes.**
+
+`pending_buckets` is a `BTreeMap<u8, Counts>` (`:428`) and `Counts` already carries `self_cycles`
+alongside `cycles` (`:162`). The ring's `bucket` closure (`:978-982`) reads `.cycles` from exactly
+that struct; a sibling closure reading `.self_cycles` needs **no new accounting, no new call site and
+no change to when anything is charged**. It is also correct at that point by construction: the row is
+cut *after* `checkpoint()` has flushed every live frame into `pending_*` and *before* the drains
+empty them (`:969-976`), and `self_cycles` carries no in-flight lag — so the figure would be the
+**exact** per-frame answer rather than a mitigation for the inclusive one.
+
+The real cost is the contract, not the code: two `FrameRow` fields, two wire keys
+(`engine.rs:2996-3001`), a schema fragment, the conformance pin, and a protocol section. That is a
+CR, and it should be priced as one rather than smuggled in beside a bugfix.
+
+**One caveat to state before anyone consumes it**, so it is not discovered as a surprise: a bucket
+already open when the sample opened is `suppressed`, and its self cycles go to
+`unattributed_cycles` rather than to the bucket row (`:279-286`, `:660-663`). `vintSelfCycles` would
+inherit that rule exactly as `vintCycles` does today — it is the documented retroactive-entry rule,
+not a new hole, but it means the first frames of a sample armed mid-handler under-report on both
+fields alike.
+
+**Status: registered, not started.** Queue item `PROF-RING-SELF`. Unpriced beyond the above until
+the owner picks it, and a refusal remains a live and complete answer.
