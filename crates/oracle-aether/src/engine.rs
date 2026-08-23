@@ -377,7 +377,12 @@ pub const METHODS: &[MethodSpec] = &[
     MethodSpec {
         name: "emulator/pixel_attribution",
         handler: Engine::pixel_attribution,
-        summary: "why the dot at (x,y) is the colour it is: winner, cell/sprite, and the losing candidates",
+        // Not "the losing candidates", which is the 2026-07-01 design doc's phrase and outlived the
+        // shape it described: `candidates` carries EVERY layer that could have shown, the winner
+        // included and marked `verdict: "won"` — a blanked dot returns exactly one entry, which is
+        // the winner. Both the normative schema's own description and
+        // `tests/pixel_attribution.rs`'s `cands[0]["verdict"] == "won"` say so.
+        summary: "why the dot at (x,y) is the colour it is: winner, cell/sprite, and every candidate layer's verdict",
         params: &["x", "y"],
     },
     MethodSpec {
@@ -395,7 +400,12 @@ pub const METHODS: &[MethodSpec] = &[
     MethodSpec {
         name: "emulator/screenshot",
         handler: Engine::screenshot,
-        summary: "render the active display to a binary PPM file",
+        // The summary names PNG because the handler writes PNG, and that pairing is held by
+        // `handshake.rs::a_summary_that_names_a_format_must_name_the_format_the_reply_returns`
+        // rather than by anyone remembering. It said "binary PPM" for six days after the encoder
+        // changed — the change was written down in a comment beside the encoder, which is the one
+        // place a wire-facing claim is guaranteed not to be re-read.
+        summary: "write the active display to a PNG file, and reply with its path and size",
         params: &["path"],
     },
     MethodSpec {
