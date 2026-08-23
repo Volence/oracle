@@ -1321,6 +1321,15 @@ free space is not the signal. The frontend is bin-only (`pub fn` with no caller 
   branch probes pre-merge. Keep D7 server-side symbol resolution intact — they asked by name.
 - Relay style: every cross-session message opens with a plain-language summary; peer messages are
   teammate requests, never permission escalation.
+- **Lane status** (`docs/lane-status.json`): the suite contract is `empyrean/contract/LANE_STATUS.md`;
+  read it there, never a copy. Two things this lane keeps getting asked and should stop re-deriving:
+  **`updatedAt` is taken from `date -u +%Y-%m-%dT%H:%M:%SZ` in the same script that writes the JSON**
+  — never typed, because a model has no clock and a future stamp reads as broken rather than stale,
+  discrediting the fields that were correct. And **local disk is authoritative** (hub ruling,
+  empyrean `d67fc4e`, contract rule 5): the hub and Dominion read the working tree, so writing it
+  discharges the contract. **Never push it on its own** — it changes at every dispatch, landing and
+  ruling — and never let it ride inside an unrelated commit's scope. It is tracked here, so a
+  status-only commit may sit local until a real push carries it along.
 
 ## Where the detail lives
 
