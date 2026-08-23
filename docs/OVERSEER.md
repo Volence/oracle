@@ -744,15 +744,83 @@ with tools that then exist).
    **TAGGED for FOREGROUND runtime follow-up (never a subagent):** drive the three against a real ROM
    through the live server. Nothing in this parcel has touched a running machine.
 
-   **NEXT (not yet dispatched):** CR-B (D-10 `z80_write` width/byte-order/`len`) — contract work,
-   un-framed adjudication, docs-only. Also open from the survey and **not lost**: `resolve_target`
-   does not enforce the `addr`/`symbol` `oneOf` (a **live** unregistered request-side divergence on
-   `run_to` today), stale prose at `schema_conformance.rs:6,222`, and a proposed **error-surface
-   gate** — since no fragment declares error conditions, a suite validating only replies is blind
-   to every error obligation.
-   **Two claims tagged for FOREGROUND runtime follow-up, never a subagent** (the emulator MCP
-   deadlocks from background agents): the `step` frame-budget truncation, and the `write_vram`
-   SAT-cache desync.
+   **✅ CR-B DRAFTED + MERGED + PUSHED `37a06f9`** (`docs/2026-08-22-cr-b-z80.md`, 1028 lines,
+   docs-only — **zero non-docs files across `HEAD~1...cr-b-z80`, three-dot**, so aggregate and
+   currency are unmoved *by construction*; no cargo run because the `run_to_scanline` agent held
+   the lane, recorded as reasoning rather than skipped silently). **UNADJUDICATED** — the Fable
+   seat is still parked, so **two** CRs now stack behind that owner decision, which is the first
+   time the park has had a cost.
+   **Scope ruling: all three defects in one CR, B4 severable.** D-09 (`z80_read`'s `len` has no
+   default) and D-10 (`z80_write`'s `value` has no width/order, leaving the reply's `len`
+   underdetermined) are provably **one missing paragraph** — `len`-in and `len`-out. D-11 (the row
+   is absent from §6's run-control state rule) earned inclusion on a different argument: *a server
+   decides the run-state gate in the handler's first ten lines, so leaving the contract silent does
+   not defer the question — it answers it in unreviewed code.* But the audit pairs D-11 with D-16,
+   so B4 is written severable and the split is handed over as Q4.
+   **⚑ THE FINDING THE QUEUE DID NOT ASK FOR, and the CR's highest severity — verified firsthand
+   at `oracle-old d629771`, reading the lines around every cite.** Both legacy Z80 handlers bound
+   **only the start address** (`ControlSocket.cpp:700`/`:724` refuse `addr > 0x3FFF`, then loop
+   `addr + i` with no end check), and `WriteRamByte` (`:298-320`) folds `off = addr & (bytes-1)`
+   over an 8 KiB device and **returns `true` unconditionally**. So `z80_write {addr:"0x3FFF",
+   bytes:<16>}` clobbers `$0000` and replies `len:16`, success. **The refinement matters and the
+   agent stated it against its own headline:** folding `$2000→$0000` is the **hardware mirror and
+   correct** (the read handler's own comment says so); only the fold *past* `$3FFF` is wrong,
+   because `$4000` is the YM2612, not RAM. Recorded as a *silent wrong answer in a running
+   implementation*, which is the class that outranks every under-specification in the CR.
+   **⚑ D-10 RESHAPED BY EVIDENCE — the legacy server did not fail to pick a width, it declined to
+   have one ON PURPOSE and left a comment saying why** (`:732-737`: *"Single byte — the Z80 bus is
+   8-bit… no endianness guesswork"*, verified verbatim). **Consequence the brief did not have and
+   the audit does not state: adopting the audit's (b) verbatim — `width` REQUIRED — refuses every
+   bare-`value` invocation on record.** Proposal is (a)'s default with (b)'s ceiling: optional
+   `width` ∈ {1,2}, default 1, little-endian.
+   **The load-bearing joint, checked because nobody cited it (bar 8's cheap frame-changer):
+   byte order.** It is argued from the RULE, not the sibling's consequence — `write_memory` says
+   *"big-endian, **as the 68000 stores**"*, so the clause after the comma is the rule and
+   big-endian is its consequence on that machine; the Z80 stores low byte first, so **copying
+   `write_memory`'s consequence would land a pointer backwards**. Symmetry with the 68000 row is
+   the one thing that would be actively wrong here.
+   **Precedent-before-invention paid out again (bar 12, third time in two days):** narrowing the
+   Z80 bound to `$1FFF` **was already proposed and ruled AGAINST in this repo**
+   (`docs/2026-08-16-ruling-cr20.md`, whose §"the factual error" is precisely a CR narrowing a
+   catalogued bound *twice*). The agent kept `0–$3FFF` and stated the mirror instead — i.e. our own
+   history stopped us repeating a mistake we had already paid for.
+   **Consumer sweep: ZERO programmatic consumers** (quoted-key form exits 1 on all four non-empyrean
+   trees; sigil's 32 hits are its own assembler identifiers). **48 written-down mentions** across
+   aeon/seraph/empyrean, all prose. **The honesty that makes it usable: the doc asserts no call-site
+   count at all** — *"a mention is not an invocation, and no grep separates them reliably"* — and
+   asserts instead the **form** of every invocation that appears: single-byte `value` or `bytes`,
+   **no `width`, no `value` above `0xFF`, every address in `$0000–$1FFF`**. That form claim, not a
+   count, is what makes "default 1 preserves every recorded meaning" true. Three spellings live
+   (`emulator/z80_write`, `emulator_z80_write`, bare), so a prefixed grep would have missed ~half.
+   **THREE MORE BRIEF-FACTS OF MINE CORRECTED, all confirmed here** (that is now nine in one day,
+   across two agents): CR-A is **1114 lines, not 953** (it grew the §14 addendum I wrote myself);
+   substantial prior legacy analysis of D-10 already existed at
+   `docs/2026-08-22-peer-schema-defect-answers.md:482-608` and I did not mention it (the agent
+   re-derived at `d629771` rather than inheriting, and cites it as corroboration); and I presented
+   the audit's (b) as its position without flagging that it contradicts the shipping implementation.
+   The agent also self-corrected an aggregation it could not defend ("26 call sites") **before**
+   reporting — the count-the-rows-a-tool-printed error, caught on its own side this time.
+   **Adjudicator questions Q1–Q7 stated, plus six items listed as SETTLED so the adjudicator can
+   object to the settling too** — the right shape; a CR that hides its own closed questions
+   forecloses them silently.
+
+   **NEXT (not yet dispatched):** open from the survey and **not lost**: stale prose at
+   `schema_conformance.rs:6,222` and the `resolve_target` `oneOf` divergence (**both folded into
+   the in-flight `run_to_scanline` parcel** — remove from here once that lands), and a proposed
+   **error-surface gate** — since no fragment declares error conditions, a suite validating only
+   replies is blind to every error obligation.
+   **FOREGROUND runtime follow-ups, never a subagent** (the emulator MCP deadlocks from background
+   agents): the `step` frame-budget truncation; the `write_vram` SAT-cache desync; and **two new
+   ones from CR-B** — the tail wrap (`z80_write {addr:"0x3FFC", bytes:<8>}` then read `$0000`;
+   predicted from source: bytes 5–8 land at `$0000–$0003`) and the silent `len` clamp
+   (`z80_read {len:10000}` → `8192`, no error). ⚠ **ATTEMPTED 2026-08-22 evening and correctly
+   ABANDONED, not deferred for convenience:** my MCP client found no socket in my own
+   `$XDG_RUNTIME_DIR` (`Errno 2` — a *failing lookup*, which says nothing about the world, bar
+   16(d)). A `pgrep` showed an emulator IS live, but it is **another lane's harness** with its own
+   `XDG_RUNTIME_DIR=/tmp/oracle-harness-4av2i47x` running `aeon/s4.debug.bin`. Writing into a
+   peer's harness Z80 RAM to demonstrate a wrap bug is the shared-machine hazard itself. These stay
+   open until a lane-owned instance exists; **the CR does not depend on them** — it stands on the
+   source read, and the runtime pass would only upgrade it from derived to demonstrated.
    **AEON OBLIGATION — SCOPE WAS WRONG, and the correction makes it bigger.** Item 7 recorded it
    as a dated heads-up before serving `emulator/wait_for_break`, because their gates send
    `timeout_ms`. **The survey found it covers THREE methods, not one, and I verified it firsthand
