@@ -936,7 +936,14 @@ owner confirmation requested in-session; replace this flag with the confirmation
    words** — a spike, not a commitment: **report the wall rather than engineering around it.**
    Escalate to empyrean rather than burning a week proving feasibility that was meant to be cheap.
    **Not reprioritised above the acceptance parcels.**
-2. **Fable seat: HOLD — with a new obligation that is better than either option I offered.** Owner:
+2. **Fable seat: HOLD — with a new obligation that is better than either option I offered.**
+   ⚠ **CLOSED AS AN OWNER ITEM 2026-08-22 — STOP LISTING IT AS PARKED.** Asked whether to fund the
+   seat long-term he answered *"Idk what you want for this"*, and the asking lane recorded that as
+   **their badly-formed question, not his indecision** — the right way round. **No decision is needed
+   today: hold stands, the ledger IS the mechanism, and the question returns naturally when the limit
+   lifts.** Note this also retires the provenance worry above by superseding it: there is now a live
+   cited ruling on the seat, so the unwitnessed 2026-08-21 ratification is **correct and moot**.
+   Owner:
    *"keep careful record of what's done without fable so when our limit is no longer up the first
    thing it can do is make sure we made the correct decisions without it."* **Fable's FIRST job when
    the limit lifts is auditing exactly those decisions**, so the gap becomes a queue rather than a
@@ -968,6 +975,20 @@ built out, no?"* — cut `mcp__oracle__*` over to the Rust server **now**, and c
 methods **on demand** rather than in enumeration order. empyrean recommended registering alongside
 the legacy server; **he overruled it** and they now agree, as do I: it converts the acceptance
 contract from a catalogue into demand-driven work.
+
+**✅ RULED PROCEED (relayed, with the full measured cost disclosed to him first — aeon's two gates
+down ~a day, Z80 no real consumers, binary needs rebuilding). His words:** *"Yeah just proceed. We fix
+when we come across it, if we don't we build later but this is really just to start building out the
+tooling."*
+**⚑ THE LAST CLAUSE IS THE GOVERNING ONE, AND IT REFRAMES THE WHOLE ACCEPTANCE CONTRACT.** The cutover
+is **not** happening because the successor is ready — it is happening **because being reachable is what
+generates the demand that builds it out.** So the remaining 17 are **not a checklist to burn down
+before the switch; they are a queue the switch POPULATES in priority order.**
+**▶ CONSEQUENCE FOR EVERY BRIEF FROM HERE: an early gap is a SUCCESS SIGNAL, not an embarrassment.**
+State it explicitly to agents — the instinct will be to treat every `-32601` as a failure that should
+have been prevented, and under this ruling it is the mechanism working. **This does NOT relax the
+loud-failure requirement**; it is the reason for it. A gap that refuses by name feeds the queue; a gap
+that degrades to a plausible answer poisons it.
 
 **MECHANISM, measured — three of the relayed observations were wrong:**
 - `/run/user/1000/oracle.sock` **does not exist**. `oracle-aether` is **not running** (binary exists;
