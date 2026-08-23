@@ -1040,6 +1040,33 @@ at compile time and surface them**, so staleness and identity are **self-announc
 inferable**. This single parcel closes BOTH of today's independent findings — the silent-swap hazard
 and the stale-binary hazard — and it is the handshake record aurora raised with empyrean. Needs a CR
 (new `initialize` keys are contract surface; **do not invent them unilaterally**).
+**THREE REQUIRED PROPERTIES, to be written into the CR as PROPERTIES rather than mechanisms** (the
+third is aurora's and is the one a later refactor will quietly break):
+1. **`implementation` distinct from `build`** — they fail independently. The 21-Aug and 22-Aug
+   binaries differ by four served methods and are **identical** under `CARGO_PKG_VERSION`.
+2. **Unforgeable-by-config** — `serverName` is config-supplied today and proves nothing an impostor
+   could not also claim, so a value read from config would reproduce the exact defect it fixes.
+3. **⚑ STRUCTURALLY EMITTED, NEVER SELF-REPORTED.** The check that actually worked today made two
+   candidate processes **emit different observable output** — a *relative* argv echoed back through
+   `status.romPath`, which a server can neither fake nor be wrong about **because it never chose the
+   value**. A *reported* build identity is a self-report again, merely better-sourced. Compile-time
+   embedding is right precisely because **the binary cannot have an opinion about it** — so state the
+   property, or a later "read it from a generated config at startup" refactor reads as a tidy-up
+   instead of the regression it is. **Aurora reviews this CR as the consumer; ping them when drafted.**
+**▶ ALSO OPEN, and it points INWARD at our own docs (aurora ran it on theirs and it drew blood).**
+Their split: **engine facts** (properties of aeon, seen through a window — unaffected) vs **server
+facts** (properties of ONE implementation). Their worked example is the one to internalise: they
+re-derived the `require_paused` set **from our Rust source**, banked it as a correction — and wrote it
+into a section that had always called these properties of *"the bus"*. **It is a property of one
+implementation and the correction did not say so** — a defect created *while applying every other bar
+correctly, in the act of fixing a different staleness.* **We have the same exposure and more of it:**
+this repo's recon, demand and CR docs describe "the server" throughout, and D-10/D-13/D-17 are already
+booked as having **two implementers**. A sweep is owed — every claim about server behaviour either
+names its implementation or is a latent two-implementer conflation.
+*Durable formulation from the same thread, worth more than its instance:* **freshness is not
+transitive across a document, and proximity reads as verification** — a stale figure beside a
+freshly-updated one is read as cross-checked, which is how my own 37 survived hours next to a correct
+18.
 
 **THE HAZARD TO ENFORCE, and it is this seat's job:** once the new server is the only one reachable,
 every failure presents as *the consumer* being broken and the gradient pushes lanes to engineer
