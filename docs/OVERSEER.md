@@ -1177,6 +1177,14 @@ far worse here than one that refuses.**
   (3) **the row measuring the WRONG OBSERVABLE** — the fixture left the thing resolvable, so the
   catch site the test was *named after* was never entered. **Planting a violation could not have
   revealed the third; only asking whether it measured the right quantity could.**
+  **⚑ THE TEST FOR WHETHER A SPLIT LIKE THIS IS REAL — aurora's, and it generalises past poisons:
+  do the two classes have DIFFERENT FIXES?** A matcher collision is repaired by re-pointing at wording
+  only that rule uses. Two-paths-one-observable **is not repaired by touching the matcher at all** —
+  the matcher can be perfectly precise and the row still worthless; it is repaired by asserting
+  **which path ran**. *A bar that cannot tell them apart sends you to the wrong repair*, which is the
+  cost of collapsing them. **Their tell for the confusable pair: is the observable UNIQUE to the
+  rule?** Unique → the assertion is too loose (matcher). Not unique → the assertion may be exact and
+  still prove nothing (two paths).
   **Operational form, to be asked per assertion:** *if this row went green for a reason OTHER than
   the rule holding, what would that reason be?* — then check that specific reason, and report the
   alternative green-path considered and how it was ruled out. **A `None`/absent/empty on either side
