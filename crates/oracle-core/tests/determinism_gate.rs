@@ -1,7 +1,7 @@
 //! The determinism gate — the most-guarded CI job.
 //!
 //! Native Rust port of the *logic* of Oracle's `determinism_gate.py`
-//! (`../oracle/linux-port/harness/determinism_gate.py`): two fresh instances, reset to the stopped
+//! (`../oracle-old/linux-port/harness/determinism_gate.py`): two fresh instances, reset to the stopped
 //! power-on anchor, then a 120-frame loop capturing `state_hash.combined` after each frame; the two
 //! sequences must be byte-identical.
 //!
