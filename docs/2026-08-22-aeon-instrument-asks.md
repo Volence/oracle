@@ -12,15 +12,25 @@ settled by running a machine, it is TAGGED rather than guessed.
 
 ## 0. The headline
 
-Three of the four asks are **already served by this repo's Rust Aether server**. What aeon and sigil need
-is mostly a **migration date, not a work order**.
+**Three of the five asks are already served by this repo's Rust Aether server.** What aeon needs is a
+**migration date, not a work order**. The two genuinely-new asks generate work — but the smaller one
+(sigil's) needs no contract change at all, and the larger one (aurora's) needs a contract decision before
+any code, and the shape they asked for would not have delivered what they wanted.
+
+**The single most useful output is the corrections, not the prices.** Twenty brief-facts are corrected in
+§9, including two of my own drafting errors; the sharpest finding against ourselves is Q-PROF-STRADDLE
+(§3.3), a real weakness in the very surface a peer is about to migrate onto.
 
 | | ask | triage | what it actually needs |
 |---|---|---|---|
 | **1** | deterministic framebuffer capture | **composable-today** + one genuinely-new sliver | cutover + a cross-process pixel determinism gate |
 | **2** | per-frame union of live DMA enqueues | **composable-today** | cutover + a script; a better core surface is optional |
 | **3** | cycle attribution across VBlank preemption | **satisfied-by-in-flight** | cutover only — the defect they describe is the legacy instrument's, and ours is tested against it by name |
-| **4** | queryable per-instruction 68000 cycle figure | *(see §5)* | *(see §5)* |
+| **4** | queryable per-instruction 68000 cycle figure (sigil) | **genuinely-new**, cheap, contract-free | a dumper in `examples/` — and it does **nothing** for the Part C item that motivated it |
+| **5** | VDP plane geometry readback (aurora) | **genuinely-new** — never served by anything, not on the 18 | a contract CR first; and the shape they asked for will not deliver their stated goal |
+
+Asks 1-3 are from **aeon** (the game engine), 4 from **sigil** (the assembler), 5 from **aurora** (the
+editor). Ask 5 arrived already self-triaged, so §5 audits their triage rather than redoing it.
 
 ### 0.1 The structural fact, verified firsthand
 
@@ -999,14 +1009,436 @@ empyrean fragment and is both barred unilaterally and unnecessary.
 
 ---
 
-## 5. Proposed ordering
+## 5. ASK 5 — VDP plane geometry readback (aurora)
+
+### Triage: **genuinely-new**, and correctly so — never served by anything, not on the acceptance 18
+
+This one arrived **already triaged by the asking lane**, so the job is to audit their triage rather than
+redo it. Verified at aurora `origin/master` = **`7c59c11e`**, `docs/reviews/2026-08-22-oracle-instrument-gaps.md`.
+
+**Their code facts are current; their premise is not.** They read us at `e484ace`; our base is
+`b2be928`. `git diff --stat e484ace b2be928` is **two docs files, 193 insertions, zero code, zero schema,
+zero tests** — so every served/unserved fact in their survey is still true at HEAD.
+
+> **★ But the one commit between those revisions is aimed at this exact document, and it changes how it
+> should be received.** `b2be928`'s **ruling 3** (`docs/OVERSEER.md`, the block after `:918`) makes this
+> lane **the suite's tool-builder**: empyrean is telling every lane to send named instrument asks here
+> rather than work around gaps, and **inbound capability asks are first-class queue items, not
+> interruptions**.
+>
+> Aurora's survey is written under the opposite premise. Its opening sorts items *"so that only the last
+> bucket generates work across the fence"*; §2.5 declines an ask because *"it would cost oracle a
+> contract amendment … for zero capability"*; §4 declines because *"filing it now would cost another
+> lane real work on a hypothesis."* **Cost-to-the-other-lane is no longer a valid ground for withholding
+> a named ask.** That does not make any individual refusal wrong, but it removes the stated reason for at
+> least three of them, and they should be re-scored on merit alone. This is the single most consequential
+> thing they could not have known, and it goes back to them first.
+
+Also worth relaying: `docs/2026-08-22-unadjudicated-decision-ledger.md:134` (L-05) shows
+`emulator/run_to_scanline` is **in flight now**. Their §1.2 verdict on it ("plausibly, P5, not needed for
+anything shipping") is fine, but the method is being built this week.
+
+### 5.1 Audit of their self-triage: the membership is clean, the arithmetic is not
+
+**First, the check that mattered most, and it passes.** I re-derived our served set independently rather
+than accepting their §0.1 reconciliation: 58 fragments, 40 served, 18 unserved, and the difference is
+byte-identical to `SCHEMATIZED_NOT_ADVERTISED`. **Nothing they call satisfied is actually unserved, and
+nothing they call composable-today is actually not composable** (one exception, item 4 below). Their
+§1.2 rows cover 1+1+2+4+8+2 = **all 18 acceptance methods, none missed, none duplicated.**
+
+**Four defects in the count, none of them dishonest:**
+
+1. **§1.1 rows 3 and 4 are one item counted twice.** Row 3 already states *"Both halves fixed"* — the
+   params closure **and** `disp`. Row 4 ("a ruling on reject-unknown-params vs an explicit `disp` is
+   pending" → "Ruled and shipped — both, not either") adds no distinct instrument, gap or action. The
+   honest §1.1 count is **3**, so the honest section-level total is **18, not 19**.
+2. **The buckets are counted in different units.** §1.2 contributes *six table rows* standing for
+   *eighteen methods*; §2 contributes *eight distinct instruments*. They disclose this in §7 ("6
+   acceptance-list rows"), so it is not deceptive — but "19 gaps" is not 19 comparable things. Under a
+   method count the total is 30 (3 + 18 + 8 + 1). Either unit is defensible; mixing them in one headline
+   is not.
+3. **`read_cram` is counted in two buckets** — S2 (now served, correct a stale doc) and C4 (use it for
+   palette verification). Different claims about the same method, so defensible, but it inflates by one.
+4. **§2.8 (hosted vs headless) is misfiled.** Its own title says *"**inferable**, and currently
+   unexercised"*, and its body concedes the discriminator (`limits.maxRunFrames` 3600 standalone vs
+   `HOSTED_MAX_RUN_FRAMES = 120`, `crates/oracle-aether/src/host.rs:79`) *"is a heuristic on a tunable,
+   and it would lie silently if either number ever changed."* Inferable-from-a-tunable is not
+   composable-today; that belongs in §4. **And see §5.2 refusal 4 — this one is our defect, not theirs.**
+
+**One stale claim on their own side.** §2.1 and §6 report a live bug in their own harness — *"three
+guesses at a field that does not exist"* on `emulator/screenshot`. At `7c59c11e`,
+`scratchpad/warp-tearing-harness.mjs:161-171` **already carries the fix** (*"…This read
+`r.png ?? r.data ?? r.image` until 2026-08-22"*). The diagnosis was right; the document was not re-read
+after the fix landed in the same commit.
+
+### 5.2 ★ Audit of their REFUSALS — one rests on a misreading, and one is our defect they filed as theirs
+
+**Refusal 1 — `write_vram`. CORRECT, and unusually well-argued.** They refuse to file it until a
+falsifiable question is measured: does a poked VRAM tile survive on a running aeon machine, under (a) a
+stationary and (b) a scrolling camera? The precedent they cite is their own: on 2026-08-19 they filed
+`emulator/write_cram` as BLOCKING and **withdrew the blocking claim the same day** after finding aeon
+composes `Palette_Buffer` once per frame, so a direct CRAM write is overwritten inside the frame it lands
+in (`docs/2026-08-19-aurora-client-demand.md` §1). They cite our own fragment's registered doubt, and
+**I verified that citation verbatim** — the `write_vram` `$comment` in
+`crates/oracle-aether/tests/contract/bus-protocol.schema.json` really does record three transcribed
+absences (audit D-16), the first being that the row is not named in §6's run-control state rule *"though
+`write_memory` and `write_cram` both are, and §11.17's stated reason for naming `write_cram` … is if
+anything stronger for VRAM."*
+
+**But their reading of what that doubt IS is wrong, and it weakens their own case.** D-16 argues the row
+*should be named in §6's run-control state rule* — i.e. that `write_vram` should be `require_paused`.
+Aurora reads it as our registered doubt about whether the method is worth having. It is not. And a
+`require_paused` `write_vram` is exactly what a live tile push wants anyway (pause → blit → resume), so
+the D-16 doubt, if resolved, resolves **in favour** of the feature.
+
+**The CRAM analogy is also weaker than their headline states.** CRAM overwrite in aeon is unconditional
+and per-frame (`Palette_Buffer` → CRAM every frame). VRAM tile art is **not** recomposed per frame — it
+is DMA'd on demand by a camera-driven, act-paged tile cache, so a poked tile in a resident slot survives
+until that slot is *evicted*, which is a lifetime rather than a guaranteed one-frame death. Their §1.2
+body concedes this (*"whether a poked tile survives, **and for how long**"*); the headline "the identical
+question" overstates it. Their (a)/(b) split isolates exactly the right variable, so the experiment is
+well-designed — but **the stationary arm will probably come back positive**, and nobody should be
+surprised into reading a positive as a reversal.
+
+**And a refusal to *ask* is not a reason not to *build*.** `emulator/write_vram` is one of the 18
+regardless: it is fragment-complete and must be served before the Rust server can replace the legacy one.
+Aurora's "no consumer yet" changes our **ordering signal within the 18**, not our obligation. Under
+ruling 3 the useful move is the opposite of restraint — if the measurement comes back positive they
+should say so **loudly**, because that is precisely the input that reorders our queue, which is their
+document's stated purpose.
+
+**Refusal 2 — the `require_paused` pause-storm. CORRECT, and arguably already moot.** They note
+`write_memory` is `require_paused`, so every live-palette push is pause → write → resume and every
+transition broadcasts `emulator/stopped` + `emulator/resumed` to **every** subscriber; their answer is a
+100 ms throttle, and they decline to ask because *"it has not looked laggy and no measurement has been
+taken."* That is the right call on our own bar (an unmeasured hypothesis is not a demand). Worth adding:
+the direction they would want is **already the house default for reads** — `require_paused` gates
+exactly ten sites, and every pure read (`read`, `read_cram`, `sprites`, `pixel_attribution`, `scanlines`,
+`memory_hash`, `state_hash`, the profiler getters) deliberately skips it with a stated rationale
+(`engine.rs:2932-2933`: *"the envelope's `running` is the contract's answer to a torn sample"*). So if
+the measurement ever comes back, the precedent for relaxing a *bounded write* is closer than their note
+assumes.
+
+**★ Refusal 3 — `disp` on `read_memory` (§2.5). THE ONE THEY GOT WRONG.** They decline with: *"filing
+'add `disp` to `read_memory`' would be padding: it is pure ergonomics, the workaround is one addition,
+and it would cost oracle a contract amendment for zero capability"*, citing `resolve_displaced_target`'s
+doc comment as evidence the asymmetry is deliberate.
+
+**The doc comment does not say that.** `engine.rs:1471-1473` reads: *"Kept on this method rather than
+folded into `resolve_target`, deliberately: `read`/`read_memory` share that helper and do not declare
+`disp`, and a helper that **quietly honoured a key those fragments do not carry** would put the server
+back on the wrong side of the rule above it."* That refuses a *silent* implementation, not the feature.
+If the fragments declared `disp`, the stated objection evaporates by its own terms.
+
+**And the round trip is literally half-closed.** The same doc comment (`:1466-1468`) justifies `disp` on
+the write path as *"`{symbol, symbolDisp}` out, `{symbol, disp}` in: D7's round trip made literal."* But
+`emulator/read` **emits** `symbolDisp` (`engine.rs:2077-2078`) and **cannot accept** `disp`. So the one
+method that produces the coordinate is the one that will not take it back — which is exactly the shape
+CR-20 named as the defect worth fixing (*"a client is handed a coordinate it cannot use"*,
+`docs/2026-08-16-ruling-cr20.md:50-52`).
+
+**Verdict: not "build it now", but the refusal's stated ground does not hold**, and under ruling 3 its
+other ground ("it would cost another lane an amendment") is no longer valid either. Low value, low cost,
+real symmetry argument. **It should be an explicit contract decision on our side, not a lane declining
+to mention it.** Queued as **Q-READ-DISP** (§7).
+
+**Refusal 4 — hosted vs headless (§2.8). Correct *for them*, but it is OUR defect and they filed it as
+not-our-problem-yet.** Verified: `serverName` is `"oracle-next"` for both builds (the only assignment,
+`engine.rs:177`, emitted `:1268`), capability flags are identical, and the sole discriminator is
+`limits.maxRunFrames` (3600 standalone vs `HOSTED_MAX_RUN_FRAMES = 120`, `host.rs:79`). They decline
+because they call `emulator/reset` zero times, so the constraint is vacuous for them — which is a fair
+demand-side call. **But a presentation mode discoverable only by sniffing a tunable will lie silently the
+day either number changes**, and `docs/OVERSEER.md` already records that `emulator/reset` is off-limits
+on the hosted build (F-HOSTED-RESET-SRM). That is a defect in our surface whether or not a client trips
+it today. **Recommend picking it up as a capability flag independent of aurora's demand.** Queued as
+**Q-HOSTED-FLAG** (§7). This is the most useful thing in their §2 *for us*, and it is the one item they
+filed as someone else's problem.
+
+**Refusals 5+ — the remaining composable-today items. Correct.** Spot-audited §2.1 (pixels via
+`scanlines`), §2.2 (mailbox acks via a watchpoint), §2.3 (`memory_hash` for reload verification), §2.6
+(client-side object decoding), §2.7 (`pixel_attribution` over layer toggles). All composable from served
+methods. Two are better than they claim:
+
+- **§2.6 is an argument we should reuse.** Their case against a server-side object decoder — it would be
+  a second copy of aurora's domain knowledge that can drift while both halves look right, and aurora
+  would keep its own regardless — is exactly the argument this repo will need when the legacy MCP's
+  `object_slot`/`object_list`/`player_state` come up for cutover. Four of the eight deliberately
+  unschematized §6 rows are that family.
+- **§2.7 is more right than they knew.** Layer toggling is not merely unserved, it is **unimplemented in
+  core**: `rg -i 'layer_enabled|set_layer|layer_states'` over `oracle-core/src`, `oracle-aether/src` and
+  `oracle-frontend/src` returns **exit 1, no match**. So `get_layer_states` and `set_layer_enabled` are
+  two of the 18 that are *core work, not serving work*, and now have a peer on record saying the editor
+  has no use for them. That is a real input to the acceptance-18 build order.
+
+**Verdict overall: their refusals are honest and mostly correct, but two need action from us** — the
+`disp` asymmetry (their ground misreads our comment) and the hosted-vs-headless flag (ours, not theirs).
+I was told the highest-value outcome would be catching a peer talking themselves out of something we
+should build; that is refusal 3, and refusal 4 is the same failure in the other direction.
+
+### 5.3 The ask itself: core readiness is **PARTIAL** — every decode exists, almost none is reachable
+
+Everything GN-1 asks for is already modelled, recon-cited, with the mode-dependent quirks handled. What
+is missing is not hardware understanding but **visibility**: four decodes are private methods, and three
+more exist only as expressions inlined mid-function with no accessor at all. Enumerated with exact sites,
+and with reachability-from-the-bus called out, because that is the whole of the work:
+
+| fact | where it already lives | reachable from the bus today? |
+|---|---|---|
+| plane A nametable base | `crates/oracle-core/src/render.rs:842` `fn plane_a_base` — `(reg $02 & 0x38) << 10` (recon RR3) | **no** — private |
+| plane B nametable base | `render.rs:847` `fn plane_b_base` — `(reg $04 & 0x07) << 13` | **no** — private |
+| window nametable base | `render.rs:853` `fn window_base` — `(reg $03 & mask) << 10`, mask `0x3C` H40 / `0x3E` H32 | **no** — private |
+| combined `(base, cols, rows)` per plane | `render.rs:983` `fn plane_geometry` | **no** — private |
+| plane size (cells) | `render.rs:760` `pub fn plane_size(reg10)`, with the invalid `0b10` code deterministically clamped | **yes** — public free function |
+| H40 / H32 | `render.rs:826` `pub fn active_display()`; also private `render_h40` `:809`, `vdp.rs:404` `h40` | **yes**, via `active_display` |
+| raw register file | `vdp.rs:367` `pub fn regs(&self) -> &[u8; REG_COUNT]` | **yes** — raw only, undecoded |
+| **hscroll table base (`reg $0D`)** | **inlined**, `render.rs:1001` — `(regs[0x0D] & 0x3F) << 10` | **no — no accessor exists** |
+| **hscroll mode (`reg $0B` bits 1-0)** | **inlined**, `render.rs:1002-1007` | **no — no accessor exists** |
+| **vscroll mode (`reg $0B` bit 2)** | **inlined**, `render.rs:1018` and `:1340` | **no — no accessor exists** |
+| effective per-plane, per-line scroll | `render.rs:209-215` `pub struct PlaneScroll`; `render.rs:1338` private `fn plane_scroll`; surfaced only inside `pub fn render_line_report` (`:1508`) → `LineReport` (`:334-360`) | **no** — nothing in `oracle-aether` calls `render_line_report` |
+
+**So: four visibility changes, three new one-line accessors lifted from expressions that already exist,
+and zero new hardware derivation.** The chip work is done; the plumbing is not.
+
+**The template is `emulator/sprites`' `satBase`, and their reading of that precedent is correct.**
+`Vdp::sat_base()` is a `pub fn` at `crates/oracle-core/src/vdp.rs:387` decoding a base register with its
+mode-dependent mask; the handler surfaces it as a named scalar at `engine.rs:2985`. **And the handler
+carries the house rule this parcel must obey**, stated at `engine.rs:2941-2943`: *"`parsedMax` comes from
+core, never from a local `if h40 { 80 } else { 64 }`: the contract forbids this handler deriving it, so
+that the number can never drift from the one the sprite walk uses."* So the work is **not** "read
+`vdp.regs()` in the aether layer and shift some bits" — it is: promote the four private decodes to
+`pub fn`s on `Vdp` beside `sat_base()`, and have the handler read those.
+
+Their schematizability claim also checks out: the `get_layer_states` fragment `$comment` says the row
+*"ENUMERATES its four keys with no ellipsis, which is what makes it schematizable at all where its
+neighbours `read_vdp_registers` and `read_vsram` are not (audit D-20, D-21)."*
+
+Their status claim checks out in all three halves: `emulator/read_vdp_registers` has **no fragment**
+(one of eight §6 rows deliberately unschematized because its result carries a literal `decoded{…}`
+ellipsis), **no handler here**, and **no handler in the legacy server either**
+(`docs/2026-08-22-peer-schema-defect-answers.md:791`). It is therefore **not on the 18** — this is
+net-new surface, not cutover work, which is the one thing that distinguishes ASK 5 from ASKs 1-3.
+
+### 5.4 ★ The `source` discriminant — their fourth condition, and the answer splits the ask
+
+This is the load-bearing question, and the honest answer is **no — our model cannot supply that
+discriminant for a register read**. The ask needs reshaping, and saying so precisely is worth more than a
+cost estimate.
+
+**The existing `source` flag is a property of the FRAMEBUFFER, not of machine state.**
+`Engine::framebuffer()` (`engine.rs:1588-1600`) has exactly two branches — return the retained
+`last_frame`, or re-render every line from current VDP state — and `scanlines`/`screenshot`/`state_hash`
+report which branch they took. Registers have no such split, and **there is nothing on the bus side to
+build one from:**
+
+- `CapturedFrame` is `struct { width: usize, rgb: Vec<Rgb> }` (`engine.rs:812-815`) — **pixels only.**
+  No registers, no scroll, no CRAM snapshot.
+- `Vdp::render_line_report` and its `LineReport` **have zero references anywhere in
+  `crates/oracle-aether/src/`** (`rg 'render_line_report|LineReport'` over that directory returns exit 1,
+  no match). Core computes the per-line semantics and the bus layer never asks for them.
+- Core *does* retain the right thing internally — `RetainedRow` (`crates/oracle-core/src/render.rs:366-383`)
+  holds a full `LineReport` (with `plane_a`/`plane_b: PlaneScroll`, `h40`, `backdrop`, `window`) plus a
+  per-row CRAM snapshot and sub-line journal — but it is `pub(crate)`, owned by `ScanlineScaffold` for
+  deferred row emission *during* rendering, and is unreachable from `oracle-aether`.
+- `emulator/read {space:"cram"|"vsram"|"vram"}` reads live committed chip state with no latch and emits
+  no `source`; `pixel_attribution` is a live re-resolve and emits none either.
+
+So a register read can only ever answer the equivalent of `"stateRender"`. **Emitting a discriminant
+whose other value can never occur is worse than emitting none** — it invites `if (source === "raster")`
+on a branch that is dead by construction, which is the precise shape of vacuous gate this repo keeps
+refusing.
+
+**And the underlying question has no scalar answer.** "If a register is written mid-frame, which value
+is the one the frame was drawn with?" — for scroll, *neither*, because scroll is not sampled once per
+frame. `plane_hscroll` (`render.rs:1000-1013`) reads reg `$0D`, reg `$0B` **and the HSCROLL table**
+afresh *per line*; `plane_vscroll` (`:1017-1031`) resolves **per 16-px column** in two-cell mode. "The
+scroll the frame was drawn with" is a 224-entry vector per plane, not a number.
+
+**The decisive precedent is already in our tree and it points the other way.** `emulator/scanlines`
+deliberately does **not** take a frame-descriptive field from a register (`engine.rs:3021-3025`):
+
+> *"`mode` is derived from the answering frame's own width **rather than from a VDP register read**: the
+> frame readers normalize a mid-frame width switch to the width the frame ended on, and a `mode` taken
+> from the register could name a width the rows do not have."*
+
+That is aurora's exact hazard, already met once, and the established resolution is **not** to bolt a
+`source` onto a register — it is to derive frame-descriptive fields **from the frame**.
+
+**So the honest shape is two things, not one:**
+
+1. **A live geometry read with `source` declared ABSENT.** Plane A/B/window bases, plane size in cells,
+   hscroll-table base, hscroll mode, vscroll mode, H40/H32 — a pure read of current state, no pause gate,
+   no discriminant. Declare the absence **in the fragment, with its reason**, exactly as `emulator/sprites`
+   declares `caveat` absent (*"declared absent, not omitted by accident"*, §2.4 rule 4). Cheap, and it is
+   what "where does plane A live right now" actually needs.
+2. **Per-line geometry attached to `emulator/scanlines`' rows** — `planeA{hscroll,vscroll}`,
+   `planeB{…}`, `window`, `displayEnabled` per row, carrying **the same `source` the pixels already
+   carry**, because then the discriminant is honest: it is the frame's. Core already computes exactly
+   this; the engine's capture path throws it away, so this requires retaining a geometry subset in
+   `CapturedFrame`.
+
+**★ And this is where their ask under-delivers on its own stated goal.** They want the harness's fixed
+40×28 sample to become "the actual visible window". **Shape (1) cannot do that on a Sonic-family game.**
+The visible window at line *L* depends on plane A's hscroll *at line L*, and per-line HScroll is the norm
+for water lines, parallax and raster bands — the core implements all four `$0B` modes
+(`render.rs:1002-1007`) with a dedicated test (`hscroll_line_mode_is_per_line`, `render.rs:2178`). A
+frame-level scroll scalar gives them the window for **one** line and silently misrepresents the other
+223. **The instrument their harness actually needs is shape (2), which they did not ask for.** That is
+the most useful thing to tell them: it is the difference between "0 wrong in a fixed sample" and "0 wrong
+in what the player sees", and the latter is the claim their mailbox result rests on.
+
+**Their other three conditions are all satisfiable, two of them trivially:**
+
+- **headless** — yes; `crates/oracle-aether/Cargo.toml` runtime deps are `oracle-core` + `serde_json`,
+  no windowing, no audio, and `oracle-frontend` depends on *aether*, not the reverse.
+- **no `require_paused`** — yes, and it is the house default for pure reads (§5.2, refusal 2).
+- **re-reads across `reload_rom`** — yes, provided the handler reads live core state and caches nothing.
+  `reload_rom` (`engine.rs:3525-3551`) does `load_rom` + `sys.reset()` + `invalidate_screen()` +
+  `rom_generation += 1`, and `System::reset` rebuilds via `*self = Self::new(self.seed)` preserving only
+  ROM and SRAM — so VDP registers return to power-on and a live read is correct by construction. Note
+  the interaction with the discriminant: `invalidate_screen()` means any per-line half would honestly
+  report `stateRender` until the new image draws a frame.
+
+### 5.5 Their two reported defects — both confirmed firsthand, and one is a live wire bug
+
+**Defect 1 — `emulator/screenshot`'s advertised summary is stale. CONFIRMED, and it is worse than
+cosmetic.** `crates/oracle-aether/src/engine.rs:379` advertises *"render the active display to a binary
+PPM file"*; the handler encodes **PNG** and returns `format: "png"` (`:3073`, `:3083`). **That string
+ships over the wire** in `initialize`'s `methodSummaries` (`engine.rs:1312`), so every client reading our
+advertised surface is told the wrong format by the server itself. Queued as **Q-SCREENSHOT-SUMMARY**.
+A one-word fix, found by a peer reading our tree.
+
+**Defect 2 — `docs/OVERSEER.md`'s `require_paused` list is incomplete. CONFIRMED by independent grep.**
+They report it names six methods where the real set is ten. My own `rg 'require_paused'` over
+`engine.rs` returns exactly the ten call sites they list — `run_frames` `:1671`, `run_to` `:1698`,
+`step` `:1787`, `step_over` `:1822`, `step_out` `:1842`, `write_memory` `:1935`, `write_cram` `:2149`,
+`press` `:3103`, `play_input` `:3161`, `reload_rom` `:3526` — i.e. the six plus `step`, `step_over`,
+`step_out`, `write_cram`. Their "NOT paused" half is also correct. They did not edit `OVERSEER.md`
+because other lanes are editing it concurrently; queued as **Q-OVERSEER-PAUSED**.
+
+### 5.6 A question they tagged for runtime that source already answers
+
+Their §5 item 3 tags for foreground: *"Does `emulator/scanlines {}` return a whole frame in one reply?
+224 × 320 × 3 hex-encodes to ~430 KB against a 1 MiB `MAX_LINE_BYTES`, so it should — but the margin is
+under 2.5×."*
+
+**Their arithmetic is right — and the margin is not the right worry anyway, because the cap does not
+apply in that direction.** 224 rows × 960 bytes of hex plus per-row JSON is ~440 KB against 1 MiB, so
+~2.3× as they estimated. But `rpc::MAX_LINE_BYTES` (`crates/oracle-aether/src/rpc.rs:315`) has exactly
+one enforcement site: `server.rs:521`, `read_line_capped` on the **inbound** request reader. The outbound
+path is a bare `write_all(line)` + `\n` (`server.rs:502-503`) with **no length cap at all**. So the
+server will emit the whole 224-row reply regardless of size; `maxLineBytes` bounds what a client may
+*send*. The residual risk is entirely **client-side** — a client that reuses the advertised
+`maxLineBytes` as its own read cap on replies will truncate — and it is worth telling both aurora and
+aeon, since both are about to lean on this call.
+
+*(This also de-risks §1.5's recommendation to aeon, which rests on the same call.)*
+
+### 5.7 Composition with ASK 1, and what it means for ordering
+
+**They compose, and the composition is the strongest argument for building this.** ASK 1's finding is
+that `emulator/scanlines {}` already returns a full, deterministic, raster-honest frame. ASK 5's finding
+is that aurora's harness cannot say *which part of the plane the player is looking at*. Put together:
+
+- a pixel capture without plane geometry can prove **tearing** (broad, position-independent) but not
+  **cleanliness** (needs the visible window) — which is exactly the limitation aurora's own harness
+  confesses at `warp-tearing-harness.mjs:144-150`, verified firsthand: *"the window number is a fixed
+  SAMPLE of the plane, not the view … a fine tearing detector and weak evidence of cleanliness"*;
+- so a 0-of-1120 result today means "0 in a fixed sample"; with geometry it becomes "0 in what the
+  player sees".
+
+**So yes — a pixel capture that cannot be related to plane geometry is half an instrument**, and both
+halves are aimed at the same arc (aeon's P5 raster/parallax preview). That raises ASK 5 above where its
+own author put it. Aurora explicitly marks it *"not urgent — nothing Aurora has shipped is blocked"*,
+and they are right about *their* exposure; they are under-rating it about the *arc's*, because the same
+three facts are what P5 would need to check a preview against ground truth rather than against its own
+model.
+
+### 5.8 Cost, and what the CR must decide
+
+**Core readiness: partial** — see §5.3. Decodes all exist; four are private, three have no accessor.
+
+**Cost, in our tree only:**
+
+- **Shape (1)** (live geometry read): four `fn`s to `pub` plus three one-line accessors, ~half a day;
+  handler mirroring `emulator/sprites`, ~half a day; tests, ~half a day. **~1-2 days**, plus contract
+  lead time.
+- **Shape (2)** (per-line geometry on `scanlines` rows): retain a geometry subset of `LineReport` per
+  line in `CapturedFrame` — **a design call with a real memory cost**, not plumbing.
+  `crates/oracle-core/src/scanline_capture.rs:44-56` already flags that the line bookkeeping alone runs
+  ~215 KB per emulated second, and a `VScroll::TwoCell(Vec<u16>)` of 20 entries × 2 planes × 224 lines is
+  materially more. **Several days.**
+
+**The gating cost is the contract**, and this is the first item in the survey that genuinely requires a
+CR before anything can ship.
+
+**Drafting a fragment here is barred**, so this survey does not. What the CR must **decide** — each a
+real open question, not a formality:
+
+1. **Retire or rewrite.** Does §6's `read_vdp_registers` row get *replaced* by a narrow geometry row, or
+   retained with its `decoded{…}` ellipsis expanded into an explicit key list? The same steward question
+   is already open for its sibling: `docs/2026-08-22-peer-schema-defect-answers.md:810` notes
+   *"`read_vsram` may be a row to **retire** rather than write; that is the steward's call"*, because
+   `emulator/read {space:"vsram"}` already serves it. Answering it for one row and not the other leaves
+   the catalog inconsistent.
+2. **The ellipsis must become an explicit key list** if the row is kept. That literal `{…}` is the sole
+   documented reason `read_vdp_registers` is unschematized; no fragment can exist until §6's row names
+   its keys.
+3. **One method or two — and they are not alternatives.** Three candidates: a new narrow row; fields on
+   `emulator/sprites` (wrong — CR-18 fought to keep that row flat and about the SAT); per-line geometry
+   on `emulator/scanlines`' rows. Per §5.4, the first and third answer **different questions** ("where is
+   plane A now" vs "where was plane A on line 137"), and only the third delivers aurora's stated goal.
+   The CR must decide whether it wants one or both, and if one, which question it is answering.
+4. **Whether `raw[]` accompanies the decode — two live precedents disagree.**
+   `docs/2026-08-16-ruling-cr20.md:56` records as accurate ground that all three unbuilt read rows carry
+   raw content alongside the decode (`read_vsram.raw[]`, `read_vdp_registers.raw[]`, `read_cram`'s raw
+   words). But `emulator/sprites` carries `satBase` with **no** raw register beside it, and
+   `emulator/read {space:"vram"}` already serves raw bytes to anyone who wants them. The CR must pick.
+5. **Whether `source` is expressible.** My answer from source is **no** for a register read (§5.4). The
+   CR should either declare it ABSENT with the reason recorded — the `emulator/sprites` declared-absent
+   precedent — or move the geometry onto the frame path where the discriminant is honest. **What it must
+   not do is carry a `source` that can only ever hold one value.**
+6. **`require_paused`: no** — and this needs stating *explicitly*, because §6's run-control state rule is
+   a named list and D-16 already shows that a row merely *omitted* from it reads as an accident.
+7. **Types.** Bases as D9-category-1 hex strings (the `satBase` precedent); plane size in **cells** as
+   numbers (matching `render.rs:760`, which returns cells). The CR should say cells-vs-pixels out loud —
+   the harness needs cells and the renderer works in both.
+
+### 5.9 What must go back to aurora
+
+1. **★ Ruling 3 landed one commit after they read us** — this lane is the suite's tool-builder and
+   inbound asks are first-class queue items. Cost-to-us is no longer a ground for withholding an ask.
+   Three of their refusals rest on it and should be re-scored on merit.
+2. **★ §5.4 is the reply that matters**: their fourth condition is right about the hazard and wrong
+   about the fix. We cannot honestly put `source` on a register read, and — more importantly — **the
+   frame-level geometry they asked for will not make their harness's sample "the visible window"**,
+   because hscroll is per-line. The instrument they need is per-line geometry beside the pixels, which
+   they did not ask for. Do they want it?
+3. **§5.2 refusal 3**: their reason for declining `disp` on `read_memory` misreads our doc comment,
+   which refuses a *silent* implementation, not the feature. We are taking it up as a contract question.
+4. **§5.6**: `maxLineBytes` is inbound-only; the risk they tagged is client-side, not server-side.
+5. **§5.2 refusal 1**: the D-16 doubt they cite is about the *pause gate*, not about survivability, and
+   it resolves in the feature's favour. Their `write_vram` experiment is well-designed and the
+   stationary-camera arm will probably come back positive — either way `write_vram` stays on our 18.
+6. **§5.1**: their §1.1 rows 3 and 4 are one item, so the honest total is 18, not 19; and their §2.1/§6
+   report of a live screenshot bug in their own harness is stale — it was fixed in the same commit.
+7. Both of their reported defects are confirmed and queued (§7), and one of them —
+   `emulator/screenshot`'s advertised summary — is a live wire bug they found in our tree. Thank them.
+
+---
+
+## 6. Proposed ordering
 
 Ordered by *value per unit of our work*, with the cutover work aeon owns separated from the parcels we
 owe. Reasons, not just a rank.
 
 **Tier 0 — costs us nothing and unblocks the most. Do this first, today.**
 
-**0. Send aeon the cutover packet.** Three of the four asks resolve to facts they do not currently have:
+**0a. Send aurora the four corrections in §5.9.** Cheapest item on the list and the most time-sensitive:
+ruling 3 changes the premise their whole survey was written under, and §5.4 tells them the shape they
+asked for will not do what they want. Left unsent, they may build a harness on a frame-level scroll
+scalar that misreports 223 of 224 lines.
+
+**0b. Send aeon the cutover packet.** Three of the four asks resolve to facts they do not currently have:
 `emulator/scanlines {}` is a full-frame readback; `screenshot`/`state_hash` carry provenance; the profiler
 is served, tested against their exact 20.6% signature, and buckets by acknowledged level; the five
 shape-breaks in §3.4 and the composition in §2.2/§2.3. **Zero engineering, and it retires ASK 1, ASK 2
@@ -1033,6 +1465,12 @@ and ASK 3's headline.** Nothing else on this list beats it.
 5. **Per-frame VDP/DMA write-volume accounting in core** (§2.7). The genuinely better instrument, and the
    one that survives aeon's refactors. Needs a contract CR for its bus surface, so it is the first item
    here that leaves this repo.
+6. **Open the VDP-geometry CR** (§5.8) — the *decisions*, not the code. Ranked here rather than lower
+   because the contract lead time is the long pole and the seven decisions in §5.8 can be settled while
+   Tier 1 runs. **Shape (1) is 1-2 days once the fragment exists; shape (2) is a design call.** Aurora
+   marks it "not urgent" and is right about *their* exposure, but under-rates the *arc's*: §5.7 shows a
+   pixel capture without plane geometry is half an instrument, and ASK 1 and ASK 5 are the two halves of
+   the same thing.
 
 **Tier 3 — do not start without a reason.**
 
@@ -1052,7 +1490,7 @@ weakness we are about to ship to a peer would be ranking novelty over exposure.
 
 ---
 
-## 6. Queued items (recorded, not taken — surveying is not implementing)
+## 7. Queued items (recorded, not taken — surveying is not implementing)
 
 For the follow-up register in `docs/OVERSEER.md`. Each is a real finding from this survey; none was fixed
 here.
@@ -1066,10 +1504,16 @@ here.
 | **Q-DIV-DOCRANGE** | `divu_cycles`/`divs_cycles` doc comments state ranges 88..130 and 126..152; true ranges are **76..136** and **122..156**. **sigil has copied the DIVS figure into their own assertion** (`m68k_cycles.rs:289-290`, "<= 152"; it is <= 156). | `microop.rs:882`, `:914` | Immediately — a peer is carrying it as a fact. Wants one foreground `cargo test` first (derived by transcription; cargo was barred). |
 | **Q-PNG-STALEREF** | `crates/oracle-aether/src/png.rs:23` points at `tests/png_roundtrip.rs`, which **does not exist** (`git ls-files` shows only `src/png.rs`). The round trip was really performed and its result is locked in as a byte-literal golden at `:421-444` — but a reader chasing `:23` finds nothing and could reasonably conclude the encoder is unverified. | `png.rs:23` | Next time `png.rs` is opened. One line. |
 | **Q-AEON-STALEPATH** | Five aeon tools point at `oracle-next/target/release/oracle-aether`, the **pre-rename** path; only `tick_variance_probe.py` uses the current `oracle/`. Theirs to fix, ours to report. | aeon `33cbcf5`: `boot_override_gate.py:76`, `hblank_window_sweep.py:139`, `sh_probe.py:16`, `vsplit_landing_gate.py:99`, `warp_mailbox_gate.py:116` | Send with the cutover packet. |
+| **Q-SCREENSHOT-SUMMARY** | `emulator/screenshot`'s advertised summary says *"render the active display to a binary **PPM** file"*; the handler encodes **PNG** and returns `format: "png"`. The string **ships over the wire** in `initialize`'s `methodSummaries`, so clients are told the wrong format by the server. Found by aurora reading our tree. | `engine.rs:379` vs `:3073`, `:3083`; advertised at `:1312` | Immediately — one word, and it is actively wrong on the wire. |
+| **Q-OVERSEER-PAUSED** | `docs/OVERSEER.md`'s `require_paused` list names six methods; the real set is **ten** — the six plus `step`, `step_over`, `step_out`, `write_cram`. Confirmed by independent grep of all ten call sites. | `engine.rs:1671, 1698, 1787, 1822, 1842, 1935, 2149, 3103, 3161, 3526` | Next `OVERSEER.md` edit. Aurora did not fix it because other lanes are editing that file concurrently. |
+| **Q-READ-DISP** | `emulator/read` **emits** `symbolDisp` but cannot **accept** `disp`, while `write_memory` accepts it — the D7 round trip is half-closed, which is the shape CR-20 named as worth fixing. Aurora declined to ask, on a misreading of our own doc comment (which refuses a *silent* implementation, not the feature). | `engine.rs:2077-2078` vs `:1466-1473`; `docs/2026-08-16-ruling-cr20.md:50-52` | Contract question, not a build. Fold into the next fragment pass. |
+| **Q-HOSTED-FLAG** | The hosted and standalone servers are indistinguishable on the wire except by sniffing `limits.maxRunFrames` (3600 vs 120). `serverName` is `"oracle-next"` for both. A presentation mode discoverable only from a tunable will lie silently the day either number changes — and `emulator/reset` is already off-limits on the hosted build (F-HOSTED-RESET-SRM). | `engine.rs:177`, `:1268`; `host.rs:79` | Ours regardless of demand. Aurora filed it as not-their-problem; it is our defect. |
 
 ---
 
-## 7. What must go back to aeon and sigil
+## 8. What must go back to aeon, sigil and aurora
+
+*(Aurora's list is §5.9 and is not repeated here.)*
 
 **To aeon:**
 
@@ -1095,7 +1539,7 @@ here.
 
 ---
 
-## 8. Where the briefs were wrong
+## 9. Where the briefs were wrong
 
 Recorded because this is the survey's most reliable output, and several of these would have propagated.
 
@@ -1141,10 +1585,28 @@ Recorded because this is the survey's most reliable output, and several of these
     straight-line?" needs a real disassembler over `s4.debug.bin`, not that file. (§4.7)
 16. **Minor:** oracle-old has no git remote (sole local branch `main`), and sigil's default branch is
     `master`. The brief's warning not to assume `master` was right in spirit and inverted in this pair.
+17. **ASK 5: "audit their refusals; if any is wrong that is worth more than pricing GN-1."** Right, and
+    it paid — but **my own first draft of §5.2 said none was wrong, and that draft was wrong.** Refusal 3
+    (`disp` on `read_memory`) rests on a misreading of our own doc comment, and refusal 4
+    (hosted-vs-headless) is our defect that they filed as not-yet-theirs. Recorded because I made the
+    error the brief warned about, in the section written to catch it.
+18. **ASK 5: the `source` discriminant.** My draft said our model could supply it for the scroll half
+    because `LineReport` retains per-line `PlaneScroll`. **Wrong at the bus layer**: `CapturedFrame` is
+    `{width, rgb}` — pixels only — and `render_line_report`/`LineReport` have **zero references** in
+    `crates/oracle-aether/src/`. Core computes it and the bus throws it away, so shape (2) is a design
+    call with a real memory cost, not free plumbing. The conclusion (split the ask) survived; the reason
+    did not. (§5.4)
+19. **ASK 5: "10 + 8 + 1 = 19".** The membership is clean but the arithmetic is not: §1.1 rows 3 and 4
+    are one item, `read_cram` appears in two buckets, §2.8 is misfiled, and the buckets are counted in
+    two different units (rows vs methods). Honest section-level total **18**; method-level **30**. (§5.1)
+20. **The premise under which ASK 5 was written is superseded.** `b2be928`'s ruling 3 makes this lane the
+    suite's tool-builder and inbound asks first-class queue items — so "it would cost another lane work"
+    is no longer a ground for withholding an ask. That commit post-dates aurora's read of our tree by one
+    commit, and it is the finding that most changes how their document should be received. (§5.1)
 
 ---
 
-## 9. BLOCKED / TAGGED — what this survey could not settle
+## 10. BLOCKED / TAGGED — what this survey could not settle
 
 **Nothing is BLOCKED in the sense of "unanswerable".** Every triage verdict above is derived from source.
 Two classes of confirmation were out of reach by constraint and are tagged for the foreground lane:
