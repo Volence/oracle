@@ -1046,6 +1046,18 @@ third is aurora's and is the one a later refactor will quietly break):
    binaries differ by four served methods and are **identical** under `CARGO_PKG_VERSION`.
 2. **Unforgeable-by-config** — `serverName` is config-supplied today and proves nothing an impostor
    could not also claim, so a value read from config would reproduce the exact defect it fixes.
+**⚑ BOTH EXISTING IDENTITY FIELDS ARE CONFIG-OVERRIDABLE — verified at HEAD, and this is the CR's
+working demonstration rather than a hypothetical.** `server_name` is a **config struct field**
+(`engine.rs:150`) with a **hardcoded default** `"oracle-next"` (`:190`); `:1344`/`:1345` ship
+`self.config.server_name` **and** `self.config.server_version`. aurora's agent called it a hardcoded
+literal and I called it config-supplied; **both readings are true and the reconciliation is the
+point** — *it is already a config value that happens to be unset.* Today it discriminates the two
+servers perfectly (legacy answers `"oracle"`/`"2.1-linux"`), **which is exactly what makes it
+dangerous**: a lane testing `serverName == "oracle-next"` stays green for months and **inverts
+silently the day anyone sets that config.** So `serverName` must NOT be the identity field however
+well it would pass today's tests, and `serverVersion` cannot rescue it (`CARGO_PKG_VERSION` does not
+move per commit). *aurora's client leans on `methodCount` and stores `capabilities` raw rather than
+branching — a workaround for precisely the gap this parcel closes.*
 3. **⚑ STRUCTURALLY EMITTED, NEVER SELF-REPORTED.** The check that actually worked today made two
    candidate processes **emit different observable output** — a *relative* argv echoed back through
    `status.romPath`, which a server can neither fake nor be wrong about **because it never chose the
@@ -1156,6 +1168,19 @@ far worse here than one that refuses.**
   isolated-worktree runs while any agent runs cargo (measured: legs truncate with a spurious
   failure, three data points). Queue acceptance gates; verify BEFORE resuming an implementer.
   Short release builds for an owner-facing unblock are the recorded exception (nice -19, logged).
+- **⚑ RED-FIRST IS NECESSARY AND NOT SUFFICIENT — a poison can come back GREEN with the guard
+  perfectly sound** *(2026-08-22, aurora; three green poisons in one parcel, none of them a bad
+  guard)*. The three classes: (1) the row aimed at a branch **a pre-check makes unreachable**;
+  (2) the row proving only *"it refused"*, which **two independent code paths** both satisfy — so
+  deleting the guard under test leaves the *other* mechanism holding it green (the matcher clause,
+  but the collision is two **paths** producing one observable, not two messages sharing a phrase);
+  (3) **the row measuring the WRONG OBSERVABLE** — the fixture left the thing resolvable, so the
+  catch site the test was *named after* was never entered. **Planting a violation could not have
+  revealed the third; only asking whether it measured the right quantity could.**
+  **Operational form, to be asked per assertion:** *if this row went green for a reason OTHER than
+  the rule holding, what would that reason be?* — then check that specific reason, and report the
+  alternative green-path considered and how it was ruled out. **A `None`/absent/empty on either side
+  of a comparison must be LOUD, never green**; that is where all three hid, each reading as healthy.
 - **Mutation discipline**: every evidence-bearing test carries a recorded mutation (edit → touch →
   observe "Compiling" → named FAIL → revert → green; cargo's fingerprint is MTIME-based). A
   mutation that catches nothing is strengthened BEFORE recording, never recorded hollow. When an
