@@ -918,6 +918,35 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
 *(N9 — the `Resolution::name`/`Display` duplication — was **taken**, not registered: `Display` now calls
 `name()`. It was two lines.)*
 
+## ⚑ OWNER RULING, 2026-08-23 — PUSH AUTHORIZATION — **RELAYED, NOT WITNESSED BY THIS LANE**
+
+**STANDING APPROVAL, OWN REPO ONLY: a lane may push its own repo's master without asking each
+time.** Reached us via empyrean-18, banked by the hub at empyrean `2bd72a03` — **verified firsthand
+here: the object exists, is an ancestor of their `origin/main`, and is a docs commit carrying a docs
+ruling, so its SHA class matches what it anchors.** Flagged as a relay per this lane's own standing
+rule; **direct owner confirmation requested in-session — replace this flag with the confirmation, do
+not delete it.**
+
+**The granting act is named, which is why this relay is usable at all.** The hub consolidated a
+question two lanes had stopped on separately (sigil asked outright; aeon was sitting on three
+finished docs commits for the same reason, neither able to see the other asking), put three options
+to him — own-repo standing / standing-for-docs-ask-for-code / per-push — and he chose the widest.
+That is a granting act described, not a status field quoted, which is the distinction the
+never-record-an-unwitnessed-approval bar exists to draw.
+
+**The conditions ride with the grant and are part of it**, transcribed rather than paraphrased:
+- **verify `origin` actually moved — the push is not the act, the remote moving is.** This is the
+  protocol's own push-before-you-cite rule arriving as an owner condition;
+- **never rewrite already-pushed history**;
+- **never push another lane's repo**;
+- **publication to the public wiki site stays a separate explicit ask** — not a concern in this
+  tree today, but it becomes one the moment the wiki-emulator spike produces anything shippable.
+
+**Scope, stated by the hub because this is the class of grant that gets restated wider: it
+authorizes PUSHING, not the work being pushed.** It does not release this lane's boot stop, it is
+not approval to dispatch or to land a parcel, and **it does not touch the CR-A/CR-B adjudication
+hold**, which remains a separately parked owner item.
+
 ## ⚑ FOUR OWNER RULINGS, 2026-08-22 — **RELAYED, NOT WITNESSED BY THIS LANE**
 
 Reached us via empyrean-73, quoting the owner's own words in their session. **Flagged as a relay

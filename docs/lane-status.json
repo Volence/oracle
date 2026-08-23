@@ -1,10 +1,14 @@
 {
-  "focus": "Serving the Aether methods aeon still cannot call — breakpoints first, so their nightly gates run.",
+  "focus": "Booted and holding for your word. Front of the queue is breakpoints, which is what unblocks aeon's nightly gates.",
   "inFlight": [],
   "blockedOnOwner": [
     {
-      "what": "CR-A and CR-B are merged but unadjudicated — Fable died on the account limit and you ruled hold. Work continues and every decision is being booked for Fable's first pass.",
+      "what": "CR-A and CR-B are merged but unadjudicated — Fable died on the account limit and you ruled hold. Work continues and every decision is booked for Fable's first pass.",
       "since": "2026-08-22"
+    },
+    {
+      "what": "The MCP cutover to the Rust server needs your config flip — running the server is ours, editing a session's MCP binding is yours. Both aeon and aurora are sitting on queue items that wait on it.",
+      "since": "2026-08-23"
     }
   ],
   "nextBoundary": "Breakpoint trio + wait_for_break landed with its ledger entry, so aeon's unattended gates stop being day-one breakage.",
@@ -14,6 +18,13 @@
       "title": "Breakpoints + wait_for_break as one parcel — aeon's nightly gates break on day one without it",
       "state": "next",
       "size": "L",
+      "blockedBy": null
+    },
+    {
+      "id": "PUSH",
+      "title": "Seven docs commits from last night are still local, including a bar earned jointly with aeon — nothing they cite is fetchable",
+      "state": "open",
+      "size": "S",
       "blockedBy": null
     },
     {
@@ -66,5 +77,5 @@
       "blockedBy": "sits behind the acceptance parcels"
     }
   ],
-  "updatedAt": "2026-08-23T08:16:57Z"
+  "updatedAt": "2026-08-23T14:45:11Z"
 }
