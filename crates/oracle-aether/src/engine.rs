@@ -47,6 +47,10 @@ use oracle_core::symbols::{BindingFault, Indeterminate, RomBinding, SymbolTable}
 use oracle_core::system::{
     StopRecord, System, TimingBasis, MCLK_PER_CPU_CYCLE, MCLK_PER_FRAME, RAM_SIZE,
 };
+// The frame's line count, for `emulator/run_to_scanline`'s unreachable-target caveat. Read from the VDP's
+// own constant rather than written down here: 262 is a property of the machine, and a second copy of it
+// would be a number that looks authoritative while the timing basis moved underneath it.
+use oracle_core::vdp::LINES_PER_FRAME;
 use oracle_core::watchpoints::{
     CensusKey, Stamp, Watch, WatchHit, WatchId, WatchMode, WatchOp, WatchReport, WatchSpace,
     WatchVia, Watchpoints,
@@ -67,6 +71,15 @@ const BUS_ADDR_MAX: u32 = 0x00FF_FFFF;
 const FC_SUPERVISOR_DATA: u8 = 5;
 /// Active display height in lines (the region `render_line` covers).
 const ACTIVE_LINES: u16 = 224;
+/// The largest `line` `emulator/run_to_scanline` accepts — **the contract's number, not this core's**.
+///
+/// §6's row spells the span `0-511`, deliberately wider than `emulator/scanlines`' 0-223 because a raster
+/// target may legitimately sit in blanking; the fragment's `maximum` transcribes it. It is *not* a video
+/// mode: this core runs [`LINES_PER_FRAME`](oracle_core::vdp::LINES_PER_FRAME) = 262 lines, so 262-511 are
+/// accepted and answered `reached: false` with a caveat rather than refused — see
+/// [`Engine::run_to_scanline`]. `tests/run_to_scanline.rs` re-derives this bound by parsing the vendored
+/// fragment, so a contract that widens or narrows it cannot leave this constant behind.
+const MAX_SCANLINE_TARGET: u64 = 511;
 
 /// Tunables. Every bound here is a **loud refusal** when exceeded, never a silent clamp: a clamped `len`
 /// returns fewer bytes than asked for and the caller has no way to notice.
@@ -264,6 +277,12 @@ pub const METHODS: &[MethodSpec] = &[
         handler: Engine::run_to,
         summary: "run until PC reaches an address or symbol, bounded (emits resumed + stopped)",
         params: &["addr", "maxFrames", "symbol"],
+    },
+    MethodSpec {
+        name: "emulator/run_to_scanline",
+        handler: Engine::run_to_scanline,
+        summary: "run until the raster reaches a scanline, bounded (emits resumed + stopped)",
+        params: &["line", "maxFrames"],
     },
     MethodSpec {
         name: "emulator/pause",
@@ -738,6 +757,46 @@ impl StepStop {
     }
 }
 
+/// The sink behind `emulator/run_to_scanline` (§6 line 855) — the run-control method whose stop condition
+/// is *raster-shaped* rather than a PC (`run_to`), a frame count (`run_frames`) or an instruction
+/// (`step*`).
+///
+/// It raises its flag from [`on_line_start`](oracle_core::bus::BusEventSink::on_line_start), which the core
+/// delivers for **every** line of the frame — blanking included — and which the run loop pops before it asks
+/// [`stop_requested`](oracle_core::bus::BusEventSink::stop_requested). So the run ends with the target
+/// line's first instruction not yet executed, and the machine is parked at the top of the line rather than
+/// somewhere inside it.
+///
+/// **The condition is the NEXT start of the line, never "the raster is already there".** `run_to`'s
+/// predicate is evaluated at the first step boundary of its own run, so `run_to` at the parked PC fires
+/// without advancing; transcribing that here would be wrong, because a line is a *recurring* condition and
+/// a PC is a point in a program. A caller stepping frame by frame with the same target — the obvious use,
+/// and the one a raster debugger writes first — would get a no-op forever on the second call: the
+/// level-versus-edge freeze [`Observe`](oracle_core::bus::Observe) exists to prevent, rebuilt in a handler.
+/// Firing on the next line start makes each call advance at most one frame and land at a *reproducible*
+/// position, which is the whole point of stopping on a raster coordinate.
+struct LineStop {
+    /// The wanted line. Held as `u32` because the fragment's range (0-511) is wider than this core's frame
+    /// (`LINES_PER_FRAME`), so a target that never matches is a legal request rather than an impossible
+    /// value — see [`Engine::run_to_scanline`].
+    target: u32,
+    fired: bool,
+}
+
+impl BusEventSink for LineStop {
+    fn on_event(&mut self, _event: BusEvent) {}
+
+    fn on_line_start(&mut self, line: u16, _frame: u64) {
+        // Latches: once fired the run is ending, and a second line event in the same drained backlog must
+        // not un-fire it.
+        self.fired |= u32::from(line) == self.target;
+    }
+
+    fn stop_requested(&self) -> bool {
+        self.fired
+    }
+}
+
 impl BusEventSink for StepStop {
     fn on_event(&mut self, _event: BusEvent) {}
 
@@ -1128,6 +1187,23 @@ impl Engine {
     /// every subsequent `run_frames`.
     fn advance_stepping(&mut self, max_frames: u64, goal: StepGoal) -> Advanced {
         let mut stop = StepStop::new(goal);
+        let record = self.advance_with(max_frames, &mut stop);
+        let fired = stop.fired;
+        self.attribute(record, fired)
+    }
+
+    /// [`advance_until`](Engine::advance_until) for `emulator/run_to_scanline` (§6 line 855): the same run,
+    /// the same instruments, a [`LineStop`] where the PC predicate would be.
+    ///
+    /// It shares `advance_with`/`attribute` with the other three advancing shapes rather than growing a
+    /// fourth Fanout, so the raster run carries the screen capture, the watch instrument and the profiler
+    /// like every other advance — and so a `stopAfter` watch that ends this run is *attributed* rather than
+    /// reported as the line having been reached.
+    fn advance_to_line(&mut self, max_frames: u64, target: u32) -> Advanced {
+        let mut stop = LineStop {
+            target,
+            fired: false,
+        };
         let record = self.advance_with(max_frames, &mut stop);
         let fired = stop.fired;
         self.attribute(record, fired)
@@ -1758,6 +1834,117 @@ impl Engine {
                 "the target PC was never reached within maxFrames — the run ended on its bound, so \
                  NOTHING about the machine state follows from where it stopped"
             );
+        }
+        Ok(out)
+    }
+
+    /// **§6 line 855 — `emulator/run_to_scanline`.** `line` (0-511), `maxFrames`? (≥1, def 600) → `line`,
+    /// `reached`, `maxFrames`, `caveat`? *(D12)*
+    ///
+    /// `run_to`'s sibling: bounded, and it says whether it fired. Everything structural is shared with it —
+    /// [`require_paused`](Self::require_paused) for §6's run-control state rule, the `maxFrames` bound and
+    /// its 600 default, `advance_with`/`attribute` for the instrumented run, watch attribution when a
+    /// `stopAfter` watch ended the run instead. What differs is the condition and two things the fragment
+    /// says about the answer.
+    ///
+    /// **D-04, transcribed rather than repaired: the result carries no `pc`.** `run_to`'s does (plus
+    /// `symbol`/`symbolDisp`), so a caller that ran to a scanline cannot learn where the 68000 stopped
+    /// without a second call. The fragment's own `$comment` registers the asymmetry as a defect and this
+    /// server reports it rather than fixing it locally — adding `pc` here would be a key on the wire that no
+    /// contract text describes, which is CR-13's whole subject. The `emulator/stopped` event this call emits
+    /// *does* carry `pc` (§3 requires it), so the information is on the bus for a stream consumer; it is only
+    /// the caller's own reply that lacks it. That is the CR this method's experience argues for.
+    ///
+    /// **Lines 262-511 are contractually legal and physically unreachable, and are run rather than
+    /// refused.** This core is NTSC V28: [`LINES_PER_FRAME`](oracle_core::vdp::LINES_PER_FRAME) is 262, so
+    /// `on_line_start` never delivers a line above 261 and no run can ever reach one. The fragment's range is
+    /// §6's and is deliberately wider than `emulator/scanlines`' 0-223 because *"a raster target may
+    /// legitimately sit in blanking"*; it is not video-mode-aware. Three reasons this answers rather than
+    /// refuses:
+    ///
+    /// * **Refusing a value the fragment declares legal is a unilateral divergence** — §8's invention ban
+    ///   read the other way round. The 0-511 span is the contract's, and narrowing it to this core's timing
+    ///   basis would make one conformant server refuse what another accepts, which is the failure the closed
+    ///   catalog exists to prevent. (Refusing *outside* 0-511 is a different thing and is still `-32602`,
+    ///   refused never clipped: that bound is the fragment's own.)
+    /// * **`caveat` is declared on this row**, unusually — one of only two in the catalog — precisely because
+    ///   D12 gives it SHOULD force here. This is what it is for: the reply says *in words* that the line
+    ///   cannot occur in this video mode, which is strictly more than `reached: false` alone carries.
+    /// * **The house property holds either way**: the answer is exact, or the server says it is not.
+    ///
+    /// The cost is honest and worth naming: `{line: 300}` burns the whole `maxFrames` budget to answer a
+    /// question that was decidable at parse time. Short-circuiting it would be cheaper and would make an
+    /// unreachable line observably *different* from a reachable line that simply never came round —
+    /// different frames advanced, a different machine at the end — for a caller who cannot tell the two
+    /// cases apart from the contract. Uniform behaviour under one bound is the better trade, and the caveat
+    /// pays for it.
+    fn run_to_scanline(&mut self, params: &Value) -> Result<Value, RpcError> {
+        self.require_paused("emulator/run_to_scanline")?;
+        // D9 category 2 — a line number is a JSON integer, never a hex string — and the 0-511 bound is the
+        // fragment's own. Out of range is `-32602`, refused and never clipped, the same shape
+        // `parse_cram_line` uses: a clipped raster target stops somewhere the caller did not ask for and
+        // says it succeeded.
+        let line = match params.get("line") {
+            None => {
+                return Err(RpcError::invalid_params(
+                    "`line` is required — the scanline to run to (integer 0-511)",
+                ))
+            }
+            Some(v) => hex::parse_count("line", v, 0, MAX_SCANLINE_TARGET)?,
+        } as u32;
+        let max_frames = match params.get("maxFrames") {
+            None => self.config.max_run_frames.min(600),
+            Some(v) => hex::parse_count("maxFrames", v, 1, self.config.max_run_frames)?,
+        };
+        self.running = true;
+        self.emit_resumed();
+        let run = self.advance_to_line(max_frames, line);
+        let record = run.record;
+        self.running = false;
+        let mut extra = Map::new();
+        if let Some(id) = run.stopped_by {
+            extra.insert("deadlineReached".into(), json!(false));
+            extra.insert("watch".into(), json!(watch_wire_id(id)));
+            self.emit_stopped("watchpoint", record.pc, extra);
+        } else {
+            // **No `line` key on the event, deliberately.** §3's `stopped` row lists no coordinate for this
+            // reason, and `runToScanline` already names the condition; a new undeclared key would be exactly
+            // the unregistered surplus CR-13 spent a ruling on. (`run_to`'s `target` predates that ruling and
+            // is not a licence to add a second one.) The caller's own reply echoes `line`; a stream consumer
+            // gets the reason, the `pc` and `deadlineReached`.
+            extra.insert("deadlineReached".into(), json!(!run.predicate_fired));
+            self.emit_stopped("runToScanline", record.pc, extra);
+        }
+        // `reached` is the LineStop's own verdict, never the sink's: with a `stopAfter` watch in the Fanout
+        // `StopRecord::fired` means only "something asked to stop", and reading it here would report a line
+        // as reached because an unrelated watch halted the run.
+        let mut out = json!({
+            "line": line,
+            "reached": run.predicate_fired,
+            "maxFrames": max_frames,
+        });
+        if let Some(id) = run.stopped_by {
+            out["caveat"] = json!(format!(
+                "scanline {line} was never reached — watch {} hit its stopAfter threshold and ended the \
+                 run first, so NOTHING about the machine state follows from where it stopped",
+                watch_wire_id(id)
+            ));
+        } else if !run.predicate_fired {
+            // Two ways not to fire, and they are not the same fact. Saying "the budget ran out" about a line
+            // that cannot exist would send a caller to raise `maxFrames` forever.
+            out["caveat"] = json!(if line >= LINES_PER_FRAME as u32 {
+                format!(
+                    "scanline {line} cannot occur in this video mode — the frame is {LINES_PER_FRAME} \
+                     lines (0-{}), so the run ended on its maxFrames bound and NOTHING about the machine \
+                     state follows from where it stopped",
+                    LINES_PER_FRAME - 1
+                )
+            } else {
+                format!(
+                    "scanline {line} was never reached within maxFrames — the run ended on its bound, so \
+                     NOTHING about the machine state follows from where it stopped"
+                )
+            });
         }
         Ok(out)
     }

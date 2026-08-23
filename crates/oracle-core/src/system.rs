@@ -1184,6 +1184,15 @@ impl System {
                 // ordering is a hard requirement of the design, not an implementation detail, and
                 // `tests/scanline_capture.rs` pins it.
                 self.flush_pending_row(sink);
+                // **The raster's position, to any sink, for every line of the frame** — after the flush so
+                // the pinned `[Line(0)..Line(223), Boundary(f)]` row interleaving above is untouched, and
+                // before the render so a sink stopping here stops with this line's first instruction not yet
+                // executed. Blanking lines included: they are the half `on_scanline` structurally cannot
+                // deliver, and they are exactly what a raster stop in vblank is asking for. `line` is
+                // `0..LINES_PER_FRAME`; the index is the event's own deadline for `on_frame_boundary`'s
+                // reason (a DMA-stalled step drains the backlog at a `now()` past all of them). Defaulted
+                // to a no-op, so `&mut ()` is byte-for-byte the old hot path.
+                sink.on_line_start(line as u16, deadline / MCLK_PER_FRAME);
                 // Schedule the HInt anchor event unconditionally every line: the counter bookkeeping
                 // itself runs at the anchor (recon R7), not here, so that mid-line reg-10 writes from an
                 // HInt handler are visible to this line's reload (the S3K/aeon arm-chain idiom).

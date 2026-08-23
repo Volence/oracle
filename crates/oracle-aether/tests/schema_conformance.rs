@@ -399,14 +399,14 @@ fn the_schema_covers_every_method_we_advertise_and_the_uncovered_list_is_pinned_
         "emulator/get_layer_states",
         "emulator/log_clear",
         "emulator/ping",
-        "emulator/run_to_scanline",
         "emulator/set_channel_enabled",
         "emulator/set_layer_enabled",
-        // `emulator/step`, `emulator/step_out` and `emulator/step_over` were here until 2026-08-22 — the
-        // first three of the 21 to leave the set by being SERVED, which is the direction the pin's second
-        // bullet was written for and the one `is_empty()` could never have caught. Their removal was forced
-        // by this assertion going red on the commit that shipped the handlers, not remembered afterwards.
-        // Eighteen remain, and the three grounds above still hold for every one of them.
+        // `emulator/step`, `emulator/step_out` and `emulator/step_over` were here until 2026-08-22, and
+        // `emulator/run_to_scanline` left the same day — the first four of the 21 to leave the set by being
+        // SERVED, which is the direction the pin's second bullet was written for and the one `is_empty()`
+        // could never have caught. Each removal was forced by this assertion going red on the commit that
+        // shipped the handler, not remembered afterwards. Seventeen remain — the names in this literal,
+        // which is the only count worth having — and the three grounds above still hold for every one.
         "emulator/vgm_start",
         "emulator/vgm_status",
         "emulator/vgm_stop",
