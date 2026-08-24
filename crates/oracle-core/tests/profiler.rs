@@ -1767,3 +1767,146 @@ fn a_routines_own_cycles_are_identical_whether_or_not_an_interrupt_preempts_it()
         a.sample_interrupts()
     );
 }
+
+// --- The per-frame ring across a boundary the interrupt straddles (Q-PROF-STRADDLE) -----------------
+//
+// Every fixture above closes its bucket between two boundaries, so nothing here was ever put across one.
+// These two streams do exactly that, and they are synthetic for the reason the section above gives: a
+// boundary has to land on one chosen instruction, which no ROM can be asked to arrange.
+//
+// The expectations are counted off the streams themselves — *n* steps at [`STEP_CYCLES`] each — and never
+// read back off a run. Each stream states, next to every step, which frame it retires in and whether the
+// bucket is open over it, so the two figures below are a transcription of the fixture rather than an
+// observation of the code under test.
+
+/// **A VBlank handler that straddles a frame boundary must be charged to the frames it ran in.**
+///
+/// The handler here calls nothing at all, which is the whole point of this first case: the profiler opens
+/// a *routine* frame for the handler's entry address beneath the bucket (the acknowledge arms one), so the
+/// bucket's own `self_cycles` is the **exception entry alone** and every cycle the handler retires is
+/// already child time. A bucket therefore straddles badly whether or not a callee is in flight — which is
+/// the case a "only an in-flight callee is displaced" reading would miss entirely.
+///
+/// The stream: 4 steps in frame 1 (three of them under the bucket), 3 in frame 2 (two under it).
+#[test]
+fn a_straddling_vblank_handler_is_charged_to_the_frames_it_ran_in() {
+    const HANDLER: u32 = 0x0000_3000;
+    let mut p = Profiler::with_per_frame(8);
+    p.on_frame_boundary(0); // opens the sample; the span before it is not a frame
+
+    // --- frame 1: 4 steps, of which 3 are under the bucket ---
+    p.on_step_retire(step(0x1000, OP_NOP, S, S)); // main
+    p.on_event(iack(VINT));
+    p.on_step_retire(entry_step(0x2000, OP_NOP, S - 6, S - 6)); // entry     — bucket
+    p.on_step_retire(step(HANDLER, OP_NOP, S - 6, S - 6)); //      handler   — bucket
+    p.on_step_retire(step(HANDLER + 2, OP_NOP, S - 6, S - 6)); //  handler   — bucket
+    p.on_frame_boundary(1); // <<< the boundary lands mid-handler
+
+    // --- frame 2: 3 steps, of which 2 are under the bucket ---
+    p.on_step_retire(step(HANDLER + 4, OP_NOP, S - 6, S - 6)); //  handler   — bucket
+    p.on_step_retire(step(HANDLER + 6, OP_RTE, S, S)); //          rte       — bucket, and closes it
+    p.on_step_retire(step(0x1002, OP_NOP, S, S)); //               main
+    p.on_frame_boundary(2);
+
+    let rows: Vec<_> = p.per_frame().iter().copied().collect();
+    assert_eq!(rows.len(), 2, "two counted frames: {rows:?}");
+    assert_eq!(
+        (rows[0].cycles, rows[1].cycles),
+        (4 * STEP_CYCLES, 3 * STEP_CYCLES),
+        "the frames themselves are 4 steps and 3 steps: {rows:?}"
+    );
+    assert_eq!(
+        (rows[0].vint_cycles, rows[1].vint_cycles),
+        (3 * STEP_CYCLES, 2 * STEP_CYCLES),
+        "the bucket ran 3 steps in frame 1 and 2 in frame 2, and each frame is charged its own: {rows:?}"
+    );
+    // The ring's own stated invariant, which a displaced row breaks: an interrupt is part of a frame.
+    for r in &rows {
+        assert!(
+            r.vint_cycles <= r.cycles,
+            "a bucket cannot cost more than the frame that contains it: {r:?}"
+        );
+    }
+    // Displacement, not loss: the ring still decomposes the sample exactly.
+    let ring_vint: u64 = rows.iter().map(|r| r.vint_cycles).sum();
+    assert_eq!(
+        ring_vint,
+        p.sample_interrupts()[&VINT].cycles,
+        "the per-frame bucket figures sum to the undivided bucket — redistributed, never invented"
+    );
+    let ring_cycles: u64 = rows.iter().map(|r| r.cycles).sum();
+    assert_eq!(
+        ring_cycles,
+        p.report().sample_cycles,
+        "and the rows are still the sample"
+    );
+}
+
+/// **The §5 shape: a callee still open beneath the handler when the boundary lands.** The handler `jsr`s,
+/// the boundary falls inside the callee, the callee `rts`es and only then does the `RTE` arrive — so the
+/// displaced span is a whole subroutine's lifetime rather than the handler's own retirement.
+///
+/// The stream: 6 steps in frame 1 (five under the bucket), 5 in frame 2 (four under it).
+#[test]
+fn a_callee_straddling_a_boundary_beneath_a_handler_is_charged_to_the_frames_it_ran_in() {
+    const HANDLER: u32 = 0x0000_3000;
+    const CALLEE: u32 = 0x0000_4000;
+    let mut p = Profiler::with_per_frame(8);
+    p.on_frame_boundary(0);
+
+    // --- frame 1: 6 steps, of which 5 are under the bucket ---
+    p.on_step_retire(step(0x1000, OP_NOP, S, S)); // main
+    p.on_event(iack(VINT));
+    p.on_step_retire(entry_step(0x2000, OP_NOP, S - 6, S - 6)); // entry   — bucket
+    p.on_step_retire(step(HANDLER, OP_NOP, S - 6, S - 6)); //      handler — bucket
+    p.on_step_retire(step(HANDLER + 2, OP_JSR_ABS_W, S - 10, S - 10)); // jsr, pushing 4 — bucket
+    p.on_step_retire(step(CALLEE, OP_NOP, S - 10, S - 10)); //     callee  — bucket
+    p.on_step_retire(step(CALLEE + 2, OP_NOP, S - 10, S - 10)); // callee  — bucket
+    p.on_frame_boundary(1); // <<< the boundary lands inside the callee
+
+    // --- frame 2: 5 steps, of which 4 are under the bucket ---
+    p.on_step_retire(step(CALLEE + 4, OP_NOP, S - 10, S - 10)); // callee  — bucket
+    p.on_step_retire(step(CALLEE + 6, OP_RTS, S - 6, S - 6)); //   rts: S-10 + 4 closes the callee
+    p.on_step_retire(step(HANDLER + 4, OP_NOP, S - 6, S - 6)); //  handler — bucket
+    p.on_step_retire(step(HANDLER + 6, OP_RTE, S, S)); //          rte: S-6 + 6 closes the bucket
+    p.on_step_retire(step(0x1002, OP_NOP, S, S)); //               main
+    p.on_frame_boundary(2);
+
+    // The callee really did straddle: one invocation, four steps, spanning both frames.
+    let callee = p.sample_routines()[&CALLEE];
+    assert_eq!(
+        (callee.calls, callee.cycles),
+        (1, 4 * STEP_CYCLES),
+        "one call, four steps — the straddle is the fixture, not an accident of matching"
+    );
+
+    let rows: Vec<_> = p.per_frame().iter().copied().collect();
+    assert_eq!(rows.len(), 2, "two counted frames: {rows:?}");
+    assert_eq!(
+        (rows[0].cycles, rows[1].cycles),
+        (6 * STEP_CYCLES, 5 * STEP_CYCLES),
+        "the frames themselves are 6 steps and 5 steps: {rows:?}"
+    );
+    assert_eq!(
+        (rows[0].vint_cycles, rows[1].vint_cycles),
+        (5 * STEP_CYCLES, 4 * STEP_CYCLES),
+        "frame 1 keeps the two callee steps it retired; frame 2 gets only its own four: {rows:?}"
+    );
+    for r in &rows {
+        assert!(
+            r.vint_cycles <= r.cycles,
+            "a bucket cannot cost more than the frame that contains it: {r:?}"
+        );
+    }
+    let ring_vint: u64 = rows.iter().map(|r| r.vint_cycles).sum();
+    assert_eq!(
+        ring_vint,
+        p.sample_interrupts()[&VINT].cycles,
+        "the per-frame bucket figures sum to the undivided bucket — redistributed, never invented"
+    );
+    assert_eq!(
+        p.per_frame().iter().map(|r| r.hint_cycles).sum::<u64>(),
+        0,
+        "no HBlank was acknowledged anywhere in this stream"
+    );
+}
