@@ -896,6 +896,17 @@ fn the_per_frame_ring_records_one_row_per_counted_frame() {
             "the interrupt is part of the frame, not the whole of it: {row:?}"
         );
     }
+    // And the cause split decomposes the aggregate bucket exactly, on a booted machine rather than a
+    // synthetic stream. The ring's figure is accumulated separately from the bucket's own inclusive total
+    // (see `Profiler::pending_bucket_retired`), so this is the cross-check that the two cannot drift —
+    // the straddle tests at the foot of this file pin the DISTRIBUTION, and this pins the SUM through the
+    // real retire path, where entries, `rte`s and boundaries arrive on the machine's schedule.
+    let ring_vint: u64 = prof.per_frame().iter().map(|f| f.vint_cycles).sum();
+    assert_eq!(
+        ring_vint,
+        prof.sample_interrupts()[&VINT].cycles,
+        "the ring's VBlank column sums to the undivided bucket"
+    );
     // Frame indices advance by one and are the machine's own coordinate, not a tally.
     let frames: Vec<u64> = prof.per_frame().iter().map(|f| f.frame).collect();
     for w in frames.windows(2) {
