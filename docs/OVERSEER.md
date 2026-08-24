@@ -1371,6 +1371,28 @@ so there is no sigil-side consumer this week either.
 
 ## The bars (house methods — each earned by a measured failure; do not thin)
 
+**▶ NEW BAR, 2026-08-24 — ANCHOR A CLAIM TO A SHA THAT CAN CARRY IT. A docs commit cannot vouch for
+code.** Caught by aeon against this seat, same day. I reported the straddle fix to them anchored to
+`7bdb75f` — which is a **one-line `docs/lane-log.jsonl` commit**. Every claim I made was true, and
+the anchor could not carry any of it: the code is `4111c88` under merge `51143a5`, tests `68461a7`.
+They cited the code SHAs in their booking instead. **The failure mode is that it hardens invisibly** —
+a peer transcribes the anchor into their prose, and a later reader who checks it finds a docs diff
+where a guarantee was promised. This is the same family as the provenance audit above (*cite the
+ruling, not a status field*): the citation must be the artifact that actually contains the thing.
+Practical check before sending: `git show --stat <sha>` and confirm the files named are the ones the
+claim is about.
+
+**▶ AND THE SCOPE-MARKING BAR IT ARRIVED WITH, which is aeon's and is the more reusable half.** Their
+mis-filed ask traced back to a sentence **in our own module docs** — *"`self_cycles` has no such
+lag"* — that is true of routine rows and false of interrupt buckets and **did not mark which it
+meant**. They carried it across the boundary; the sentence let them. Their framing, worth keeping
+verbatim: *"a relayed premise inherits no more scrutiny than the claim it supports."* **A rule that
+is true of one kind and silently false of another must say which at the point it is stated**, not in
+a later paragraph a reader may never reach. Fixed at source in `profiler.rs`. Also theirs, and
+sharp: they sorted the gap **from our wire schema** (no such key, therefore genuinely-new) rather
+than **from the quantity they needed measured** — and a schema can only tell you whether a *name*
+exists, so sorting from it lands in the expensive bucket by construction.
+
 **▶ NEW BAR, 2026-08-24 — `docs/lane-status.json` is the OVERSEER'S file. Never let a dispatched
 agent edit it, and say so in the brief.** Earned the same day: the Q-PROF-STRADDLE agent did
 excellent work and, closing out, marked its queue item `"state": "done"` — an enum the suite

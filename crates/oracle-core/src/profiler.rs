@@ -107,6 +107,14 @@
 //! beneath it, and catches up when the callee pops. `self_cycles` has no such lag, which is why the
 //! identity above is stated on self.
 //!
+//! ⚠ **That last sentence is about ROUTINE rows, and it does not reach an interrupt bucket.** The scope is
+//! marked here because leaving it unmarked has already cost something real: a consumer lane read
+//! "`self_cycles` is the lag-free one" as a general rule, carried it across to buckets, and filed a
+//! cross-repo request for a wire field that would have shipped them the exception entry cost. For a
+//! **routine**, `self_cycles` genuinely is cost-minus-callees and the advice holds. For a **bucket** it is
+//! the entry alone — see the paragraph below for why. A rule that is true of one row kind and silently
+//! false of the other has to say which it means at the point it is stated, not two paragraphs later.
+//!
 //! **The per-frame ring does not inherit that lag**, and could not be allowed to: a per-frame row whose
 //! interrupt figure exceeds the frame's own `cycles` is not a per-frame quantity at all. Its cause split is
 //! cut from a separate accumulator charged on the `self` side as the cycles retire — see
