@@ -1179,7 +1179,28 @@ normal login `XDG_RUNTIME_DIR=/run/user/1000` and that directory always exists, 
 **returns `/run/user/1000/oracle.sock` and stops. `/tmp/oracle.sock` is unreachable dead code for
 every lane.** There is no chain and no walk; there is one path, chosen on a directory test.
 
-**⚠ THE DOCSTRING DIRECTLY ABOVE IT IS WRONG, and it is the source of the whole evening's confusion.**
+**⚠ ~~THE DOCSTRING DIRECTLY ABOVE IT IS WRONG~~ — INVERTED BY EMPYREAN, AND THEY ARE RIGHT.
+Correction kept visible over the original per this repo's supersession rule.** I reported the
+docstring as a stale comment using fallback vocabulary for code with no fallback. **The docstring is
+FAITHFUL; the CODE is the divergence.** Verified firsthand at empyrean `origin/main` `21af8b3`,
+`contract/protocol.md:1896` §7.1: *"path `$XDG_RUNTIME_DIR/oracle.sock` → `/tmp/oracle.sock`, client
+override `$ORACLE_SOCKET` (the legacy `$EXODUS_SOCKET` / `exodus.sock` are still honored as a
+**transitional fallback**)"*. The arrow is a fallback arrow **in a sentence that uses the word
+"fallback" explicitly** for the legacy pair, so the reading is not strained. **The spec specifies a
+chain and the reference client never implemented one.** That makes it a **conformance gap**, not a
+stale comment, and it inverts who owes the fix: under this repo's own rule tools conform to the spec
+and never the reverse. *My error was the exact class I spent the evening correcting in others — a
+correct observation with the wrong cause attached — and it was load-bearing, because "wrong comment"
+gets a one-line fix while "unimplemented spec clause" gets a CR.*
+
+**⚑ AND THE FIX WAS CORRECTLY NOT TAKEN TONIGHT, on evidence from this lane.** Making the resolver
+actually walk would hand every consumer **ECONNREFUSED off the stale `/tmp/oracle.sock` corpse** where
+they currently get a clean **ENOENT** — silently inverting the very discriminator that explained this
+session's `Errno 2`. A live behaviour change to the transport all six lanes' tooling sits on. empyrean
+landed docstring honesty with a **KNOWN DIVERGENCE** block and queued **which side moves as a CR**.
+Correct call: either direction is a contract change.
+
+**~~The original finding, retained because the observation was sound and only its cause was wrong:~~**
 `aether.py:39-40` and the shim's own header (`oracle_mcp.py:17-19`) both read *"…then
 `$XDG_RUNTIME_DIR/oracle.sock`, then `/tmp/oracle.sock`"* — the vocabulary of a **fallback chain**,
 which is what all three lanes then reasoned about. The code has no fallback. **This is a live defect
