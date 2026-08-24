@@ -264,8 +264,10 @@ cost. It is not "the bucket's cost with callees subtracted", because for a bucke
 after subtracting callees: the handler *is* the callee. So:
 
 - **§3's aggregate answer is void.** `interrupts[].cyclesSelfTotal` is not a fallback for
-  `cyclesTotal`; it is a different quantity, and a consumer who substituted one for the other would
-  read a number roughly two orders of magnitude too small and shaped like a constant.
+  `cyclesTotal`; it is a different quantity. A consumer who substituted one for the other would read a
+  near-constant a *long* way below the figure they wanted — the ratio is the whole handler over one
+  exception entry, which on the corpus in `docs/2026-08-20-profiler-corpus-ab.md:727-810` means a
+  `vintCycles` of 6,212–21,472 collapsing to the entry alone.
 - **§6's ask, as specified, must not be built.** `vintSelfCycles` on `perFrame[]` would be a new wire
   column reporting the entry cost per frame. It would be exact, lag-free, cheap, and would not answer
   the question it was filed to answer — the worst kind of field to ship, because it looks like the
@@ -335,6 +337,14 @@ broke), `hint_cycles + vint_cycles <= cycles` on the nested one (the two causes 
 nest), and that the per-frame figures sum to the undivided bucket — displacement was never loss, and
 the fix must not make it one.
 
+A fifth assertion went into the **ROM-driven** ring test that was already there,
+`the_per_frame_ring_records_one_row_per_counted_frame`: the ring's VBlank column sums to
+`interrupts[VINT].cycles` on a booted machine. The four above pin the distribution and are synthetic
+by necessity; this pins the sum through the real retire path, where entries, `rte`s and boundaries
+arrive on the machine's schedule. Two accumulators of one quantity is the shape that drifts, so the
+cross-check is not optional. Red when the interrupt frame's own delta is dropped from the accumulator:
+80 reported against the bucket's 256, with no other assertion in that test moving.
+
 **The gap this closes, stated as the asks-doc stated it:** *no test in either suite put an interrupt
 bucket across a mid-sample frame boundary.* Every synthetic bucket opened and closed between two
 boundaries and every ROM fixture's VBlank handler is a bare `rte`. That is why an assertion that looks
@@ -347,10 +357,11 @@ like it would have caught this (`row.vint_cycles < row.cycles`) never fired.
   workload is unmeasured here — deliberately, per the no-emulator rule this work ran under.
   **TAGGED for foreground follow-up:** re-run aeon's `perFrame[]` capture (the corpus in
   `docs/2026-08-20-profiler-corpus-ab.md:727-810` is the natural control) and confirm the bimodal
-  `vintCycles` histogram is unchanged. It should be: those handlers complete inside their frame, so
-  nothing there straddles. A *changed* histogram would mean some of them do straddle, which is itself
-  the answer to "is it live in practice" — a question §3.3(a) could only answer "no evidence at the
-  states already measured".
+  `vintCycles` histogram is unchanged. It should be: those tables carry no near-zero row and no
+  doubled row, which is what a straddle would look like, so nothing at those states straddles and the
+  fix should move nothing. A *changed* histogram would mean some of them do straddle — itself the
+  answer to "is it live in practice", which §3.3(a) could only answer "no evidence at the states
+  already measured". Either outcome is worth having; both are cheap.
 - **The aggregate keeps a smaller version of the same lag, and it was left alone.** A bucket (or any
   frame) still open at the sample's **closing** boundary has not folded its in-flight children into
   its inclusive figure, so `interrupts[].cyclesTotal` under-reports by one straddle's worth at the end
