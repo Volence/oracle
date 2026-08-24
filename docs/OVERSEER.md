@@ -1155,6 +1155,56 @@ transitive across a document, and proximity reads as verification** — a stale 
 freshly-updated one is read as cross-checked, which is how my own 37 survived hours next to a correct
 18.
 
+## ⚑ THE SHIM HALF DOES NOT NEED HIM EITHER — measured 2026-08-24, and it closes the cutover question
+
+**empyrean raised the right challenge and it failed.** Their caution, carrying aurora's split: the
+cutover is *two* changes, the server half is a socket-chain race needing nobody, but **the shim half
+is config on the process command line and needs a full session restart, not a `/clear`** — so a card
+telling the owner "it needs nothing" would be wrong in the direction that costs most, because he
+stops looking and the half that needs him never gets done. **The principle is correct and is kept.
+It does not trigger here, and that is now measured rather than argued.**
+
+**A shim swap is only needed if the shim cannot reach something the server serves.** Diffed the two
+surfaces directly:
+
+- **Our served set = 41** (`[A-Za-z0-9_]` class on `"emulator/*"` literals in `engine.rs`: 44 hits
+  minus the three events `stopped`/`resumed`/`romReloaded`). Matches the over-the-wire 41 at
+  `12cc17e` exactly, from a different enumeration parameter than the handshake used.
+- **The legacy shim exposes 63 MCP tools.**
+- **`comm -23 served shim` = EMPTY.** Every one of our 41 is reachable through the shim already.
+- `comm -13` = **22 tools that will return `-32601`**: the 16 schematized-unserved the shim carries
+  (`ping` is the 17th and the shim exposes no tool for it) plus the 6 unschematized
+  (`call_stack`, `log_tail`, `object_list`, `object_slot`, `player_state`, `z80_registers`).
+
+**So the shim needs no swap, therefore no restart, therefore the shim half needs him no more than the
+server half does.** The three-way decomposition, all four legs measured this session: (1) which server
+answers — a race, and **the chain is empty**, so no contest; (2) which shim runs — config needing a
+restart **in general**, moot here because the installed shim already covers our whole surface;
+(3) broken shim paths from the rename — real, but the only live offender is a session in `~/work`
+from 08-19, **not a suite lane**.
+
+**⚠ CORRECTION TO THIS DOCUMENT, made against its own text.** The cutover section above says *"This
+session is one of them"* — a Dominion-launched lane whose `emulator_status` returned `Errno 2`, read
+as a broken `--mcp-config` shim path. **Wrong for a console-launched lane.** This session (PID
+1905622) carries **no `--mcp-config` override at all**, inherits `~/.claude.json`, and that shim file
+is **present**. The `Errno 2` is the **absent socket** (`/run/user/1000/oracle.sock` does not exist,
+no `oracle-aether` running). A process sweep found exactly two overrides live: one correct
+(`oracle-old/...`, empyrean, 08-21), one broken (`oracle/linux-port/mcp/oracle-mcp`, `~/work`, 08-19,
+not a lane). *The original reading was a correct observation with the wrong cause attached, and it
+was one turn from being repeated to the owner as fact.*
+
+**Residue, stated rather than glossed:** name-for-name coverage is not param-for-param coverage. The
+shim sends legacy `snake_case` on the 4 known param conflicts (`fftSize`, `maxHz`, `timeoutMs`,
+`maxFrames`) — and **all four sit on methods we do not serve** (`audio_spectrum`, `wait_for_break`,
+`call_stack`), so none can bite today. That leans on the 25-conflict enumeration being complete; if it
+missed one on a served method the call fails `-32602` **naming the key**, which is loud. **Worst case
+is a loud failure, which is the property the whole cutover ruling rests on.**
+
+*Method note: this is what the challenge was for. empyrean neither adjudicated nor relayed it as
+settled, and said so; the finding is stronger for having been attacked than it was when I first
+reported it, and I could have been wrong — a single method in `comm -23` would have handed the shim
+half straight back to him.*
+
 **THE HAZARD TO ENFORCE, and it is this seat's job:** once the new server is the only one reachable,
 every failure presents as *the consumer* being broken and the gradient pushes lanes to engineer
 around gaps instead of reporting them — **bar 9's corollary with the causation hidden.** Counter-
