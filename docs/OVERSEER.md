@@ -1233,6 +1233,26 @@ stale-but-present socket would have raised **ECONNREFUSED**. The error code was 
 along, and it points at link 3 — which is why the reachable-but-dead `/tmp/oracle.sock` was never
 implicated.
 
+**▶ F-CHAIN-QUOTED registered, from aurora turning the derived-never-copied bar on themselves.** They
+found their own `OVERSEER.md` and session memory both publishing the four-step chain **in the
+docstring's exact vocabulary**, with nobody having read their own resolver — so the chain this lane
+has been quoting to peers for months may be a quotation rather than a measurement. **This tree has
+the same exposure and it is registered, not audited tonight**: `docs/2026-08-14-tooling-frontier-recon.md`
+and `docs/plans/2026-08-14-tooling-track2-overnight.md` both name the socket paths and neither was
+written from the resolver. Revival condition: before any doc here is cited to a peer as the transport's
+behaviour. *Scope note, honestly: I am declining to sweep two historical recon docs at 2am rather than
+pretending they are clean.*
+
+⚠ **And one instance against this seat, caught by the same check.** I called aurora's client a **Rust**
+client in a message tonight. It is **TypeScript** (`src/main/aether/`, Electron main), and **this repo
+already knew** — `docs/2026-08-22-cr-c-server-identity.md:143` names their `socket-path.ts` by file,
+written six days ago. *I had the correct fact in my own tree and asserted from memory instead of
+reading it.* Nothing in the tree needed correcting, which is the part that makes it worth recording:
+the error existed only in outbound mail, where no later reader would ever meet the contradiction.
+**That line also settles a real question:** aurora resolves through **their own** `socket-path.ts`, not
+through empyrean's Python reference client, so tonight's finding does **not** transfer to them and
+their item 36 is genuinely open.
+
 **OPERATIONAL CONSEQUENCE for the d-4 parcel: start the server on `/run/user/1000/oracle.sock`.** That
 is what every lane resolves to. Unlinking the stale `/tmp/oracle.sock` (aurora's suggestion) is **not
 required** for any consumer using the reference client, since it is unreachable; it may still matter
