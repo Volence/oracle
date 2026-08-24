@@ -1,5 +1,5 @@
 {
-  "focus": "Measured it: the cutover needs nothing from you. One command is left and it is mine, so I am asking before I run it.",
+  "focus": "All three lanes now agree: the cutover needs nothing from you. One command is left and it is mine.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -18,11 +18,11 @@
       "since": "2026-08-24"
     }
   ],
-  "nextBoundary": "The new emulator started on the shared connection and confirmed from this session, or his word that it stays stopped.",
+  "nextBoundary": "The emulator started on the shared connection and confirmed from this session, or your word that it stays stopped.",
   "queue": [
     {
       "id": "CUTOVER-MECH",
-      "title": "SETTLED by measurement: the socket chain is empty, every lane's shim is correct, nobody needs a restart. Only starting the server is left, and it is mine",
+      "title": "SETTLED and reconciled across three lanes. There is no socket chain: every lane resolves to one path and nothing is on it. Only starting the server is left, and it is mine",
       "state": "next",
       "size": "S",
       "blockedBy": "d-4"
@@ -84,5 +84,5 @@
       "blockedBy": "sits behind the acceptance parcels"
     }
   ],
-  "updatedAt": "2026-08-24T01:44:01Z"
+  "updatedAt": "2026-08-24T01:50:28Z"
 }
