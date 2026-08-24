@@ -60,7 +60,7 @@
     },
     {
       "id": "SIGIL-DUMP",
-      "title": "Per-instruction cycle dumper for sigil. Nobody filed the ask, its consumer is deferred, and my own doc says the differential needs a join we cannot supply",
+      "title": "Per-instruction cycle dumper for sigil. They own the join after all; it needs branch outcomes per execution, and its consumer is deferred",
       "state": "blocked",
       "size": "S",
       "blockedBy": "no filed ask exists; sigil offered to write one"
@@ -80,5 +80,5 @@
       "blockedBy": "sits behind the acceptance parcels"
     }
   ],
-  "updatedAt": "2026-08-24T02:09:42Z"
+  "updatedAt": "2026-08-24T02:12:36Z"
 }
