@@ -1,8 +1,8 @@
 {
-  "focus": "The shared emulator is back up for every lane, and I am on the timing fix you picked.",
+  "focus": "He wants emulators opened on demand and closed after. The tools we all click cannot do that yet, so I am scoping it.",
   "inFlight": [
     {
-      "what": "The emulator, running on the shared connection for every lane. Detached from this session, so clearing or rotating me does not stop it",
+      "what": "The shared emulator, still up on purpose tonight \u2014 the tools cannot open their own yet, so stopping it would just take the emulator away from everyone",
       "where": "process 29281, reparented to user systemd",
       "agent": false
     },
@@ -23,9 +23,16 @@
       "blockedBy": null
     },
     {
+      "id": "EPHEMERAL-SPAWN",
+      "title": "His ruling: things open their own emulator and close it after. Automation already does; the tools we click by hand cannot open one at all",
+      "state": "next",
+      "size": "M",
+      "blockedBy": null
+    },
+    {
       "id": "CR-C",
       "title": "The server cannot say which server it is, so a session can swap implementations with no signal",
-      "state": "next",
+      "state": "open",
       "size": "M",
       "blockedBy": null
     },
@@ -72,5 +79,5 @@
       "blockedBy": "sits behind the acceptance parcels"
     }
   ],
-  "updatedAt": "2026-08-24T04:15:58Z"
+  "updatedAt": "2026-08-24T04:46:18Z"
 }
