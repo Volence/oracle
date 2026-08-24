@@ -107,6 +107,15 @@
 //! beneath it, and catches up when the callee pops. `self_cycles` has no such lag, which is why the
 //! identity above is stated on self.
 //!
+//! **The per-frame ring does not inherit that lag**, and could not be allowed to: a per-frame row whose
+//! interrupt figure exceeds the frame's own `cycles` is not a per-frame quantity at all. Its cause split is
+//! cut from a separate accumulator charged on the `self` side as the cycles retire — see
+//! [`Profiler::pending_bucket_retired`] and [`FrameRow::hint_cycles`]. Note why the aggregate's advice
+//! ("read `cyclesSelf` for a lag-free figure") does **not** transfer to a bucket: the acknowledge arms a
+//! routine frame for the handler's own entry address, so an interrupt bucket's `self_cycles` is the
+//! **exception entry alone** and every cycle its handler retires is already child time. A bucket's self
+//! figure is therefore not a smaller measure of what the interrupt cost — it is a different quantity.
+//!
 //! # A note for the acceptance protocol
 //!
 //! A single 68k→VDP DMA can hold the bus across **more than one** frame boundary. When that happens the
@@ -286,14 +295,27 @@ struct Frame {
     /// and then returns inside the sample completed inside the sample, and its post-boundary cycles are
     /// honestly its own. Only the bucket rule is retroactive-entry-sensitive.
     suppressed: bool,
+    /// **The index on this stack of the innermost interrupt frame this one sits inside**, or `None` if it
+    /// sits under no bucket. Read once at the push from the frame directly beneath — the same `O(1)` glance
+    /// [`Frame::caller`] takes, and valid for the frame's whole life because the stack is strictly LIFO:
+    /// nothing below a live frame can be popped or moved while it is still open.
+    ///
+    /// It is an **index rather than a level** so the suppression rule can be honoured at the point of use:
+    /// a bucket whose entry was never observed may not be credited retroactively, and only the frame itself
+    /// knows whether it was suppressed. It names the innermost bucket, so a nested HInt inside a VInt takes
+    /// the HInt — the same split [`Profiler::pop_frame`] already makes by declining to fold an interrupt
+    /// into its parent.
+    ///
+    /// This exists for the per-frame ring alone; see [`Profiler::pending_bucket_retired`].
+    enclosing_bucket: Option<usize>,
 }
 
 impl Frame {
     /// A freshly entered frame: nothing accrued, nothing reported, not suppressed.
     ///
-    /// `caller` is a **placeholder** here and is overwritten unconditionally by
-    /// [`Profiler::push_frame`], which is the only place that can see what sits beneath this frame. It is
-    /// not a default anything is expected to observe.
+    /// `caller` and `enclosing_bucket` are **placeholders** here and are overwritten unconditionally by
+    /// [`Profiler::push_frame`], which is the only place that can see what sits beneath this frame. They
+    /// are not defaults anything is expected to observe.
     fn opened(kind: FrameKind, entry_sp: u32, supervisor: bool) -> Self {
         Self {
             kind,
@@ -308,6 +330,7 @@ impl Frame {
             reported_inclusive: 0,
             reported_inclusive_stall: 0,
             suppressed: false,
+            enclosing_bucket: None,
         }
     }
     fn inclusive(&self) -> u64 {
@@ -356,8 +379,21 @@ pub struct FrameRow {
     /// Of those, the ones spent held off the bus.
     pub stall_cycles: u64,
     /// What this frame's level-4 (HBlank) interrupts cost, inclusive of everything their handlers called.
+    ///
+    /// **Charged to the frame the cycles retired in**, not to the frame the handler returned in. That is a
+    /// distinction with teeth for a handler that outlasts a boundary: the bucket's *inclusive* figure only
+    /// acquires its handler's time when the handler pops, so cutting this row from it would hand frame *N*
+    /// nothing and frame *N + 1* the whole span — a row that can exceed its own [`cycles`](FrameRow::cycles).
+    /// This is cut from a per-frame accumulator instead, so `hint_cycles + vint_cycles <= cycles` always,
+    /// and the rows still sum to the undivided bucket totals exactly.
+    ///
+    /// One inherited caveat, which is the ordinary phase rather than a corner: a bucket already open when
+    /// the sample opened is suppressed — its entry was never observed and the contract forbids opening one
+    /// retroactively — so its cycles appear in [`Report::unattributed_cycles`] and in **neither** of these
+    /// two fields.
     pub hint_cycles: u64,
-    /// What this frame's level-6 (VBlank) interrupt cost, likewise.
+    /// What this frame's level-6 (VBlank) interrupt cost, likewise — and charged to the frames it ran in
+    /// on the same rule. See [`hint_cycles`](FrameRow::hint_cycles).
     pub vint_cycles: u64,
 }
 
@@ -426,6 +462,25 @@ pub struct Profiler {
     pending: BTreeMap<u32, Counts>,
     committed_buckets: BTreeMap<u8, Counts>,
     pending_buckets: BTreeMap<u8, Counts>,
+    /// **Cycles retired beneath each bucket during the frame now in progress** — the figure the per-frame
+    /// ring cuts its cause split from, and the reason it is a second accumulator rather than a read of
+    /// `pending_buckets`.
+    ///
+    /// `pending_buckets[level].cycles` is the bucket's *inclusive* delta, and inclusive time only reaches a
+    /// parent when its callee **pops**. The acknowledge arms a routine frame for the handler's entry
+    /// address, so a bucket's whole cost is child time and none of it reaches the bucket until the `RTE` —
+    /// which lands a straddling handler's entire run in the frame it returned in, where the row can exceed
+    /// that frame's own `cycles`. Exact in total, wrong per frame, and per frame is the only thing a ring
+    /// row is.
+    ///
+    /// This map is charged from the **same** checkpoint delta, on the `self_cycles` side, which carries no
+    /// in-flight lag: every cycle lands in the frame it retired in. Summed over the sample it equals the
+    /// bucket's inclusive total exactly — a bucket's inclusive is the self time of everything beneath it —
+    /// so the two are the same quantity distributed differently, never two measurements that can disagree.
+    ///
+    /// Accumulated **only while the ring is armed**, so an unarmed sample does exactly the work, and
+    /// produces exactly the figures, it did before this existed.
+    pending_bucket_retired: BTreeMap<u8, u64>,
     committed_cycles: u64,
     pending_cycles: u64,
     committed_stall: u64,
@@ -593,6 +648,16 @@ impl Profiler {
                 FrameKind::Interrupt { level, .. } => CallerKey::Interrupt(level),
             },
         };
+        // **The enclosing bucket, read once, here** — the same glance, for the same reason. A frame
+        // directly beneath that IS an interrupt is the bucket; otherwise this frame inherits whatever
+        // bucket that frame was under, which is `None` for ordinary code.
+        frame.enclosing_bucket = match self.stack.last() {
+            None => None,
+            Some(f) => match f.kind {
+                FrameKind::Interrupt { .. } => Some(self.stack.len() - 1),
+                FrameKind::Routine { .. } => f.enclosing_bucket,
+            },
+        };
         self.stack.push(frame);
     }
 
@@ -657,9 +722,37 @@ impl Profiler {
         let suppressed = frame.suppressed;
         let key = frame.kind;
         let caller = frame.caller;
+        let enclosing_bucket = frame.enclosing_bucket;
         if suppressed {
             self.pending_unattributed += d_self;
             return;
+        }
+        // **The per-frame cause split, charged as the cycles retire.** See
+        // [`Profiler::pending_bucket_retired`] for why this cannot be read off `pending_buckets` instead.
+        // The bucket this delta belongs to is this frame itself when it IS an interrupt, and otherwise the
+        // innermost interrupt it sits inside — which may be `None`, and which may be one whose entry the
+        // sample never observed. A suppressed bucket takes nothing here for the same reason it takes
+        // nothing in the aggregate: opening it retroactively is exactly what the contract forbids, and its
+        // subtree's cycles are already accounted as `unattributed_cycles`.
+        if self.per_frame_depth > 0 {
+            let bucket_idx = match key {
+                FrameKind::Interrupt { .. } => Some(idx),
+                FrameKind::Routine { .. } => enclosing_bucket,
+            };
+            if let Some(b) = bucket_idx {
+                let bucket = self.stack[b];
+                // Stated rather than silently skipped: an `else` arm here would swallow a stale index,
+                // which is the one way this could go wrong and the one way it would leave no trace.
+                // `push_frame` writes `enclosing_bucket` only from a frame it has just matched as an
+                // interrupt, and the stack is strictly LIFO, so nothing below a live frame can be
+                // replaced while it is open.
+                let FrameKind::Interrupt { level, .. } = bucket.kind else {
+                    unreachable!("enclosing_bucket names an interrupt frame or it names nothing")
+                };
+                if !bucket.suppressed {
+                    *self.pending_bucket_retired.entry(level).or_default() += d_self;
+                }
+            }
         }
         let row = match key {
             FrameKind::Routine { addr } => self.pending.entry(addr).or_default(),
@@ -975,10 +1068,14 @@ impl BusEventSink for Profiler {
             // after the checkpoints have flushed every live frame into `pending_*`, and before the drains
             // below empty them.
             if self.per_frame_depth > 0 {
+                // Cut from `pending_bucket_retired`, NOT from `pending_buckets[level].cycles`: the latter
+                // is an inclusive figure, and inclusive time reaches a bucket only when its handler pops,
+                // which would hand a straddling handler's whole run to the frame it returned in.
                 let bucket = |level: u8| {
-                    self.pending_buckets
+                    self.pending_bucket_retired
                         .get(&level)
-                        .map_or(0, |c: &Counts| c.cycles)
+                        .copied()
+                        .unwrap_or(0)
                 };
                 if self.per_frame.len() == self.per_frame_depth {
                     self.per_frame.pop_front();
@@ -1007,6 +1104,7 @@ impl BusEventSink for Profiler {
         }
         self.pending.clear();
         self.pending_buckets.clear();
+        self.pending_bucket_retired.clear();
         self.pending_callers.clear();
         self.pending_cycles = 0;
         self.pending_stall = 0;

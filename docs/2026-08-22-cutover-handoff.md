@@ -109,12 +109,16 @@ params are unchanged, and the new reply key is ignored by a caller that does not
 
 ## Highest-value open finding
 
-**Q-PROF-STRADDLE** — `perFrame[].vintCycles` may displace a boundary-straddling handler's entire cost
-into the frame it returns in, and **no test in either suite puts a bucket across a mid-sample
-boundary**. **LOCATED, NOT CONFIRMED** (reasoned from source; no cargo run). **aeon has HELD their
-profiler migration on this.** For their streaming workloads a tick costs 190,931 cycles against a
-128,000-cycle frame, so **straddling is their normal case, not an edge case.** Needs a test before
-anyone migrates. Detail: `docs/2026-08-22-aeon-instrument-asks.md`.
+~~**Q-PROF-STRADDLE**~~ — **CONFIRMED AND FIXED 2026-08-24.** `perFrame[].vintCycles` displaced a
+boundary-straddling handler's entire cost into the frame it returned in, where the row could exceed
+that frame's own `cycles` (measured on synthetic fixtures: 40 against a 30-cycle frame, 80 against a
+50-cycle one). It is now charged to the frame the cycles retired in; aggregate, wire schema and
+conformance untouched. The test gap — *no test in either suite put a bucket across a mid-sample
+boundary* — is closed by four. **The "aeon has HELD their profiler migration on this" framing was
+refuted by aeon and must not be repeated:** their probes are held on the legacy harness, the migration
+itself is open and partly landed, and nothing on their queue in flight waited on it. Closing argument,
+and the two retractions the work forced against our own records:
+`docs/2026-08-23-prof-straddle-mechanism.md` §7.
 
 ## Contracts in flight
 

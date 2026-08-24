@@ -896,6 +896,17 @@ fn the_per_frame_ring_records_one_row_per_counted_frame() {
             "the interrupt is part of the frame, not the whole of it: {row:?}"
         );
     }
+    // And the cause split decomposes the aggregate bucket exactly, on a booted machine rather than a
+    // synthetic stream. The ring's figure is accumulated separately from the bucket's own inclusive total
+    // (see `Profiler::pending_bucket_retired`), so this is the cross-check that the two cannot drift —
+    // the straddle tests at the foot of this file pin the DISTRIBUTION, and this pins the SUM through the
+    // real retire path, where entries, `rte`s and boundaries arrive on the machine's schedule.
+    let ring_vint: u64 = prof.per_frame().iter().map(|f| f.vint_cycles).sum();
+    assert_eq!(
+        ring_vint,
+        prof.sample_interrupts()[&VINT].cycles,
+        "the ring's VBlank column sums to the undivided bucket"
+    );
     // Frame indices advance by one and are the machine's own coordinate, not a tally.
     let frames: Vec<u64> = prof.per_frame().iter().map(|f| f.frame).collect();
     for w in frames.windows(2) {
@@ -1765,5 +1776,256 @@ fn a_routines_own_cycles_are_identical_whether_or_not_an_interrupt_preempts_it()
         !a.sample_interrupts().contains_key(&HINT),
         "only VBlank was armed, in both runs; buckets: {:?}",
         a.sample_interrupts()
+    );
+}
+
+// --- The per-frame ring across a boundary the interrupt straddles (Q-PROF-STRADDLE) -----------------
+//
+// Every fixture above closes its bucket between two boundaries, so nothing here was ever put across one.
+// These two streams do exactly that, and they are synthetic for the reason the section above gives: a
+// boundary has to land on one chosen instruction, which no ROM can be asked to arrange.
+//
+// The expectations are counted off the streams themselves — *n* steps at [`STEP_CYCLES`] each — and never
+// read back off a run. Each stream states, next to every step, which frame it retires in and whether the
+// bucket is open over it, so the two figures below are a transcription of the fixture rather than an
+// observation of the code under test.
+
+/// **A VBlank handler that straddles a frame boundary must be charged to the frames it ran in.**
+///
+/// The handler here calls nothing at all, which is the whole point of this first case: the profiler opens
+/// a *routine* frame for the handler's entry address beneath the bucket (the acknowledge arms one), so the
+/// bucket's own `self_cycles` is the **exception entry alone** and every cycle the handler retires is
+/// already child time. A bucket therefore straddles badly whether or not a callee is in flight — which is
+/// the case a "only an in-flight callee is displaced" reading would miss entirely.
+///
+/// The stream: 4 steps in frame 1 (three of them under the bucket), 3 in frame 2 (two under it).
+#[test]
+fn a_straddling_vblank_handler_is_charged_to_the_frames_it_ran_in() {
+    const HANDLER: u32 = 0x0000_3000;
+    let mut p = Profiler::with_per_frame(8);
+    p.on_frame_boundary(0); // opens the sample; the span before it is not a frame
+
+    // --- frame 1: 4 steps, of which 3 are under the bucket ---
+    p.on_step_retire(step(0x1000, OP_NOP, S, S)); // main
+    p.on_event(iack(VINT));
+    p.on_step_retire(entry_step(0x2000, OP_NOP, S - 6, S - 6)); // entry     — bucket
+    p.on_step_retire(step(HANDLER, OP_NOP, S - 6, S - 6)); //      handler   — bucket
+    p.on_step_retire(step(HANDLER + 2, OP_NOP, S - 6, S - 6)); //  handler   — bucket
+    p.on_frame_boundary(1); // <<< the boundary lands mid-handler
+
+    // --- frame 2: 3 steps, of which 2 are under the bucket ---
+    p.on_step_retire(step(HANDLER + 4, OP_NOP, S - 6, S - 6)); //  handler   — bucket
+    p.on_step_retire(step(HANDLER + 6, OP_RTE, S, S)); //          rte       — bucket, and closes it
+    p.on_step_retire(step(0x1002, OP_NOP, S, S)); //               main
+    p.on_frame_boundary(2);
+
+    let rows: Vec<_> = p.per_frame().iter().copied().collect();
+    assert_eq!(rows.len(), 2, "two counted frames: {rows:?}");
+    assert_eq!(
+        (rows[0].cycles, rows[1].cycles),
+        (4 * STEP_CYCLES, 3 * STEP_CYCLES),
+        "the frames themselves are 4 steps and 3 steps: {rows:?}"
+    );
+    assert_eq!(
+        (rows[0].vint_cycles, rows[1].vint_cycles),
+        (3 * STEP_CYCLES, 2 * STEP_CYCLES),
+        "the bucket ran 3 steps in frame 1 and 2 in frame 2, and each frame is charged its own: {rows:?}"
+    );
+    // The ring's own stated invariant, which a displaced row breaks: an interrupt is part of a frame.
+    for r in &rows {
+        assert!(
+            r.vint_cycles <= r.cycles,
+            "a bucket cannot cost more than the frame that contains it: {r:?}"
+        );
+    }
+    // Displacement, not loss: the ring still decomposes the sample exactly.
+    let ring_vint: u64 = rows.iter().map(|r| r.vint_cycles).sum();
+    assert_eq!(
+        ring_vint,
+        p.sample_interrupts()[&VINT].cycles,
+        "the per-frame bucket figures sum to the undivided bucket — redistributed, never invented"
+    );
+    let ring_cycles: u64 = rows.iter().map(|r| r.cycles).sum();
+    assert_eq!(
+        ring_cycles,
+        p.report().sample_cycles,
+        "and the rows are still the sample"
+    );
+}
+
+/// **The §5 shape: a callee still open beneath the handler when the boundary lands.** The handler `jsr`s,
+/// the boundary falls inside the callee, the callee `rts`es and only then does the `RTE` arrive — so the
+/// displaced span is a whole subroutine's lifetime rather than the handler's own retirement.
+///
+/// The stream: 6 steps in frame 1 (five under the bucket), 5 in frame 2 (four under it).
+#[test]
+fn a_callee_straddling_a_boundary_beneath_a_handler_is_charged_to_the_frames_it_ran_in() {
+    const HANDLER: u32 = 0x0000_3000;
+    const CALLEE: u32 = 0x0000_4000;
+    let mut p = Profiler::with_per_frame(8);
+    p.on_frame_boundary(0);
+
+    // --- frame 1: 6 steps, of which 5 are under the bucket ---
+    p.on_step_retire(step(0x1000, OP_NOP, S, S)); // main
+    p.on_event(iack(VINT));
+    p.on_step_retire(entry_step(0x2000, OP_NOP, S - 6, S - 6)); // entry   — bucket
+    p.on_step_retire(step(HANDLER, OP_NOP, S - 6, S - 6)); //      handler — bucket
+    p.on_step_retire(step(HANDLER + 2, OP_JSR_ABS_W, S - 10, S - 10)); // jsr, pushing 4 — bucket
+    p.on_step_retire(step(CALLEE, OP_NOP, S - 10, S - 10)); //     callee  — bucket
+    p.on_step_retire(step(CALLEE + 2, OP_NOP, S - 10, S - 10)); // callee  — bucket
+    p.on_frame_boundary(1); // <<< the boundary lands inside the callee
+
+    // --- frame 2: 5 steps, of which 4 are under the bucket ---
+    p.on_step_retire(step(CALLEE + 4, OP_NOP, S - 10, S - 10)); // callee  — bucket
+    p.on_step_retire(step(CALLEE + 6, OP_RTS, S - 6, S - 6)); //   rts: S-10 + 4 closes the callee
+    p.on_step_retire(step(HANDLER + 4, OP_NOP, S - 6, S - 6)); //  handler — bucket
+    p.on_step_retire(step(HANDLER + 6, OP_RTE, S, S)); //          rte: S-6 + 6 closes the bucket
+    p.on_step_retire(step(0x1002, OP_NOP, S, S)); //               main
+    p.on_frame_boundary(2);
+
+    // The callee really did straddle: one invocation, four steps, spanning both frames.
+    let callee = p.sample_routines()[&CALLEE];
+    assert_eq!(
+        (callee.calls, callee.cycles),
+        (1, 4 * STEP_CYCLES),
+        "one call, four steps — the straddle is the fixture, not an accident of matching"
+    );
+
+    let rows: Vec<_> = p.per_frame().iter().copied().collect();
+    assert_eq!(rows.len(), 2, "two counted frames: {rows:?}");
+    assert_eq!(
+        (rows[0].cycles, rows[1].cycles),
+        (6 * STEP_CYCLES, 5 * STEP_CYCLES),
+        "the frames themselves are 6 steps and 5 steps: {rows:?}"
+    );
+    assert_eq!(
+        (rows[0].vint_cycles, rows[1].vint_cycles),
+        (5 * STEP_CYCLES, 4 * STEP_CYCLES),
+        "frame 1 keeps the two callee steps it retired; frame 2 gets only its own four: {rows:?}"
+    );
+    for r in &rows {
+        assert!(
+            r.vint_cycles <= r.cycles,
+            "a bucket cannot cost more than the frame that contains it: {r:?}"
+        );
+    }
+    let ring_vint: u64 = rows.iter().map(|r| r.vint_cycles).sum();
+    assert_eq!(
+        ring_vint,
+        p.sample_interrupts()[&VINT].cycles,
+        "the per-frame bucket figures sum to the undivided bucket — redistributed, never invented"
+    );
+    assert_eq!(
+        p.per_frame().iter().map(|r| r.hint_cycles).sum::<u64>(),
+        0,
+        "no HBlank was acknowledged anywhere in this stream"
+    );
+}
+
+/// **Nesting survives the split.** An HBlank taken inside a VBlank handler, with the boundary landing
+/// inside the HBlank's own handler: the inner bucket takes every cycle beneath it and the outer takes
+/// none of them, in **both** frames. An interrupt is not a callee of the interrupt it preempted, so the
+/// two figures partition rather than nest — which is what makes `hint_cycles + vint_cycles <= cycles` a
+/// property of the split rather than a coincidence of this fixture.
+///
+/// The stream is symmetric on purpose: 5 steps per frame, 2 under each bucket in each frame. A rule that
+/// charged the inner bucket's time to the outer as well would double one of the columns.
+#[test]
+fn a_nested_hint_straddling_a_boundary_is_charged_to_the_inner_bucket_alone() {
+    const VINT_H: u32 = 0x0000_3000;
+    const HINT_H: u32 = 0x0000_5000;
+    let mut p = Profiler::with_per_frame(8);
+    p.on_frame_boundary(0);
+
+    // --- frame 1: 5 steps — 1 main, 2 under the VInt, 2 under the HInt ---
+    p.on_step_retire(step(0x1000, OP_NOP, S, S)); // main
+    p.on_event(iack(VINT));
+    p.on_step_retire(entry_step(0x2000, OP_NOP, S - 6, S - 6)); // VInt entry     — vint
+    p.on_step_retire(step(VINT_H, OP_NOP, S - 6, S - 6)); //       VInt handler   — vint
+    p.on_event(iack(HINT));
+    p.on_step_retire(entry_step(VINT_H + 2, OP_NOP, S - 12, S - 12)); // HInt entry   — hint
+    p.on_step_retire(step(HINT_H, OP_NOP, S - 12, S - 12)); //         HInt handler — hint
+    p.on_frame_boundary(1); // <<< the boundary lands inside the INNER handler
+
+    // --- frame 2: 5 steps — 2 under the HInt, 2 under the VInt, 1 main ---
+    p.on_step_retire(step(HINT_H + 2, OP_NOP, S - 12, S - 12)); //  HInt handler — hint
+    p.on_step_retire(step(HINT_H + 4, OP_RTE, S - 6, S - 6)); //    HInt rte: S-12 + 6 closes it
+    p.on_step_retire(step(VINT_H + 4, OP_NOP, S - 6, S - 6)); //    VInt handler — vint
+    p.on_step_retire(step(VINT_H + 6, OP_RTE, S, S)); //            VInt rte: S-6 + 6 closes it
+    p.on_step_retire(step(0x1002, OP_NOP, S, S)); //                main
+    p.on_frame_boundary(2);
+
+    let rows: Vec<_> = p.per_frame().iter().copied().collect();
+    assert_eq!(rows.len(), 2, "two counted frames: {rows:?}");
+    for r in &rows {
+        assert_eq!(
+            (r.cycles, r.hint_cycles, r.vint_cycles),
+            (5 * STEP_CYCLES, 2 * STEP_CYCLES, 2 * STEP_CYCLES),
+            "each frame ran 5 steps, 2 under each bucket: {rows:?}"
+        );
+        assert!(
+            r.hint_cycles + r.vint_cycles <= r.cycles,
+            "the two causes partition part of the frame; they cannot overrun it: {r:?}"
+        );
+    }
+    // And the halves still sum to the undivided buckets, which the nesting rule keeps disjoint.
+    assert_eq!(
+        (
+            rows.iter().map(|r| r.hint_cycles).sum::<u64>(),
+            rows.iter().map(|r| r.vint_cycles).sum::<u64>()
+        ),
+        (
+            p.sample_interrupts()[&HINT].cycles,
+            p.sample_interrupts()[&VINT].cycles
+        ),
+        "each column sums to its own bucket — redistributed, never invented and never shared"
+    );
+}
+
+/// **The ring inherits the retroactive-entry rule, and must.** A bucket already open when the sample
+/// opened is suppressed: its acknowledge was never observed, so the contract forbids opening it. The
+/// frames *beneath* it are not suppressed — a handler that ran inside the sample really did run — so the
+/// per-frame accumulator has to check the bucket rather than the frame it is charging, or it would credit
+/// a bucket the sample is not allowed to have.
+///
+/// The handler's own row is asserted alongside, because "the ring shows nothing" would also be satisfied
+/// by an accountant that had simply stopped counting.
+#[test]
+fn the_ring_credits_no_bucket_for_an_interrupt_the_sample_never_saw_entered() {
+    const HANDLER: u32 = 0x0000_3000;
+    let mut p = Profiler::with_per_frame(8);
+    // Before the sample: the interrupt is taken and its handler starts running.
+    p.on_event(iack(VINT));
+    p.on_step_retire(entry_step(0x2000, OP_NOP, S - 6, S - 6));
+    p.on_step_retire(step(HANDLER, OP_NOP, S - 6, S - 6));
+    p.on_frame_boundary(0); // the sample opens with that handler still on the stack
+
+    // --- frame 1: 1 step, inside the suppressed handler ---
+    p.on_step_retire(step(HANDLER + 2, OP_NOP, S - 6, S - 6));
+    p.on_frame_boundary(1);
+
+    // --- frame 2: 2 steps, one of them the `rte` that finishes it inside the sample ---
+    p.on_step_retire(step(HANDLER + 4, OP_RTE, S, S));
+    p.on_step_retire(step(0x1000, OP_NOP, S, S));
+    p.on_frame_boundary(2);
+
+    let rows: Vec<_> = p.per_frame().iter().copied().collect();
+    assert_eq!(
+        rows.iter().map(|r| (r.cycles, r.hint_cycles, r.vint_cycles)).collect::<Vec<_>>(),
+        vec![(STEP_CYCLES, 0, 0), (2 * STEP_CYCLES, 0, 0)],
+        "the frames ran, and not one of their cycles may be credited to a bucket the sample never saw \
+         entered: {rows:?}"
+    );
+    assert!(
+        p.sample_interrupts().is_empty(),
+        "the aggregate says the same thing, which is where this rule was already pinned: {:?}",
+        p.sample_interrupts()
+    );
+    assert_eq!(
+        p.sample_routines().get(&HANDLER).map(|c| c.self_cycles),
+        Some(2 * STEP_CYCLES),
+        "but the handler's own code still gets its row for the two steps it retired in the sample; \
+         rows: {:#06X?}",
+        p.sample_routines().keys().collect::<Vec<_>>()
     );
 }

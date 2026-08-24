@@ -5,23 +5,11 @@
       "what": "The shared emulator, still up on purpose tonight \u2014 the tools cannot open their own yet, so stopping it would just take the emulator away from everyone",
       "where": "process 29281, reparented to user systemd",
       "agent": false
-    },
-    {
-      "what": "An agent settling the timing fix you picked \u2014 either correcting it, or proving it works as designed",
-      "where": "branch prof-straddle, isolated worktree",
-      "agent": true
     }
   ],
   "blockedOnOwner": [],
-  "nextBoundary": "The timing fix settled \u2014 either corrected with the straddle test, or a reasoned finding that it is working as designed.",
+  "nextBoundary": "The on-demand emulator scoped, so the tools can open their own instead of relying on one I started.",
   "queue": [
-    {
-      "id": "Q-PROF-STRADDLE",
-      "title": "Profiler can bill a routine's cost to the wrong frame \u2014 aeon measured it too, so it is real",
-      "state": "doing",
-      "size": "M",
-      "blockedBy": null
-    },
     {
       "id": "EPHEMERAL-SPAWN",
       "title": "His ruling: things open their own emulator and close it after. Automation already does; the tools we click by hand cannot open one at all",
@@ -45,7 +33,7 @@
     },
     {
       "id": "PROF-RING-SELF",
-      "title": "Per-frame interrupt self-cycles aeon asked for \u2014 without it their porters read a plausible wrong number",
+      "title": "Per-frame interrupt self-cycles aeon asked for \u2014 but the fix found the field as specified would carry only the exception entry cost, so refusing it may serve them better",
       "state": "open",
       "size": "S",
       "blockedBy": null
@@ -79,5 +67,5 @@
       "blockedBy": "sits behind the acceptance parcels"
     }
   ],
-  "updatedAt": "2026-08-24T04:46:18Z"
+  "updatedAt": "2026-08-24T13:42:41Z"
 }
