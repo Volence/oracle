@@ -1371,6 +1371,18 @@ so there is no sigil-side consumer this week either.
 
 ## The bars (house methods — each earned by a measured failure; do not thin)
 
+**▶ NEW BAR, 2026-08-24 — `docs/lane-status.json` is the OVERSEER'S file. Never let a dispatched
+agent edit it, and say so in the brief.** Earned the same day: the Q-PROF-STRADDLE agent did
+excellent work and, closing out, marked its queue item `"state": "done"` — an enum the suite
+contract does not define. The Dominion console **rejects the whole document on one bad enum**, so
+that single word would have made this lane invisible on the owner's board for the second time in
+one night. The agent could not have known: the valid states live in `empyrean/contract/LANE_STATUS.md`,
+not in this repo, and nothing it could read locally would have told it. **The fix is structural, not
+educational** — a live operational file that the console parses is not part of any work product, and
+handing it to an agent puts a contract the agent cannot see in the path of a commit it must make.
+Agents report their queue outcome *in their report*; the overseer transcribes it. Related: a
+finished item **leaves** the queue — `done` is not a state, it is an absence.
+
 > ⚠ **READ THE PROTOCOL AT A COMMITTED REVISION, NOT THROUGH THE PATH** (seraph's rule, empyrean
 > `origin/main` — the most upstream rule in that document): `../empyrean/docs/OVERSEER-PROTOCOL.md`
 > is **one peer's live working tree**, so booting by path delivers the suite's shared contract by
