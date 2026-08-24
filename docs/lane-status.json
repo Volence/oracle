@@ -1,5 +1,5 @@
 {
-  "focus": "The new emulator is live and every lane reaches it. Next call is yours: which tooling I build first.",
+  "focus": "I got the urgency wrong and the engine lane caught it. Nothing is broken, so the next pick is about value.",
   "inFlight": [
     {
       "what": "The emulator, running on the shared connection for every lane. Detached from this session, so clearing or rotating me does not stop it",
@@ -9,8 +9,8 @@
   ],
   "blockedOnOwner": [
     {
-      "id": "d-3",
-      "what": "Which tooling I build first now that the emulator is live. Only one of the seventeen missing abilities breaks something that works today.",
+      "id": "d-5",
+      "what": "Which tooling I build first. My earlier reasoning was wrong: nothing is broken by the switch, so I have re-ranked on who is actually waiting and now recommend the timing fix.",
       "since": "2026-08-24"
     }
   ],
@@ -25,8 +25,8 @@
     },
     {
       "id": "CR-A",
-      "title": "Breakpoints + wait_for_break as one parcel — aeon's nightly gates break on day one of the cutover without it",
-      "state": "next",
+      "title": "Breakpoints + wait_for_break. NO consumer after all: aeon's gates spawn their own legacy emulator, so nothing breaks without it",
+      "state": "open",
       "size": "L",
       "blockedBy": null
     },
@@ -39,8 +39,8 @@
     },
     {
       "id": "Q-PROF-STRADDLE",
-      "title": "Profiler can bill a routine's cost to the wrong frame — aeon has held their migration on it",
-      "state": "open",
+      "title": "Profiler can bill a routine's cost to the wrong frame. aeon has held their profiler migration on it, so it is the only blocked consumer",
+      "state": "next",
       "size": "M",
       "blockedBy": null
     },
@@ -80,5 +80,5 @@
       "blockedBy": "sits behind the acceptance parcels"
     }
   ],
-  "updatedAt": "2026-08-24T02:12:36Z"
+  "updatedAt": "2026-08-24T02:41:01Z"
 }

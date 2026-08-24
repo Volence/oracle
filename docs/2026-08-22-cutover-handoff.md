@@ -54,7 +54,28 @@ stale `37` survived hours *because it sat beside a freshly-updated `18`*.
 
 ## What to do first when lanes report gaps
 
-1. **Breakpoints + `wait_for_break` is the only known day-one breakage, and it is already priced.**
+1. ~~**Breakpoints + `wait_for_break` is the only known day-one breakage.**~~ **⚠ REFUTED 2026-08-24 BY
+   AEON, VERIFIED FIRSTHAND HERE. THERE IS NO DAY-ONE BREAKAGE AT ALL.** Every one of aeon's gates
+   **spawns its own emulator on its own private socket** and never dials the shared path:
+   `oracle-old/linux-port/harness/launcher.py:11` launches `linux-port/build/oracle_gui` (**the
+   legacy C++ binary, which serves breakpoints**) into a `mkdtemp(prefix="oracle-harness-")` with
+   `sock = tmp / "oracle.sock"` and an isolated `XDG_RUNTIME_DIR`, and both named gates take their
+   socket from it (`raster_source_gate.py:288`, `snapshot_poison_gate.py:184`, each passing
+   `socket_path=sock`). Swept: **9 gate files spawn their own, 0 dial a shared socket, and no
+   `BusClient()` anywhere in `aeon/tools/` is constructed without an explicit `socket_path`.**
+   *(This also explains the stray live `oracle_gui` under `/tmp/oracle-harness-4av2i47x`: it is an
+   uncleaned harness instance from 19 Aug, not a deliberate server.)*
+   **HOW THE WRONG CLAIM WAS BUILT, because the shape matters more than the fact:** exposure was
+   inferred from *the gates calling `breakpoint_add`*, and the step in between — **which server
+   answers them** — is the one nobody had cause to check. **This repo booked that exact joint on
+   2026-08-22** (*"trace the invocation chain; never infer exposure from a file existing in a
+   tree"*, and *"carrying is not running"*), then broke it four days later on its own flagship
+   claim, while labelling it **measured**. The label is what made it un-re-checkable: three lanes,
+   two CRs and a queue ordering were built on top of it and nobody looked again.
+   **CONSEQUENCE: breakpoints have NO consumer today.** They may still be the right build, on their
+   own merits; they are no longer *urgent*, and any brief saying otherwise is repeating this error.
+   *(Original text follows, retained per this repo's supersession rule.)*
+   ~~**Breakpoints + `wait_for_break` is the only known day-one breakage, and it is already priced.**~~
    aeon's `raster_source_gate.py` and `snapshot_poison_gate.py` run **arm → wait → clear**
    (`breakpoint_add` → `wait_for_break{timeout_ms}` → `breakpoint_clear{all:true}`), and at least one
    path is an **unattended nightly**. They **cannot migrate piecemeal** — serving `wait_for_break`

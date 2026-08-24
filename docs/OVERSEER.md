@@ -1083,7 +1083,13 @@ there the artifact could not witness its own freshness, here it cannot witness i
 had: stale RUNTIME behaviour rather than a grep.*
 
 **DAY-ONE BREAKAGE — measured, replacing the "breakpoints and Z80" guess:**
-- **Breakpoints: YES, and it is the whole exposure.** aeon's `raster_source_gate.py` and
+- ~~**Breakpoints: YES, and it is the whole exposure.**~~ **⚠ REFUTED 2026-08-24, see the
+  cutover handoff. NO day-one breakage exists.** aeon's gates spawn their **own** emulator on their
+  **own** socket (`launcher.py:11` → the **legacy C++** `oracle_gui`, `mkdtemp`, isolated
+  `XDG_RUNTIME_DIR`); 9 gate files, 0 dialing a shared socket, no default-socket `BusClient()` in
+  their tools. **Inferred from which methods the gates call, never from which server answers them** —
+  the invocation-chain joint this repo booked on 2026-08-22 and then broke on its own headline claim,
+  under the word *measured*. **Breakpoints have no consumer today.** Original retained below. aeon's `raster_source_gate.py` and
   `snapshot_poison_gate.py` run **arm → wait → clear** (`breakpoint_add` → `wait_for_break` →
   `breakpoint_clear{all}`) — three of the 17, one flow, **at least one path an unattended nightly**.
   Cannot migrate piecemeal: serving `wait_for_break` alone leaves them nothing to arm.
