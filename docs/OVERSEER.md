@@ -1155,6 +1155,68 @@ transitive across a document, and proximity reads as verification** — a stale 
 freshly-updated one is read as cross-checked, which is how my own 37 survived hours next to a correct
 18.
 
+## ⚑ THERE IS NO SOCKET CHAIN — measured 2026-08-24, and it corrects all three lanes at once
+
+**Three sessions spent an evening reasoning about "the chain". Nobody had read the function that
+defines it.** Bar 8's cheap frame-changer exactly: the load-bearing step nobody cited.
+
+`empyrean/clients/python/aether.py:36-48`, `resolve_socket_path()` — the transport **the oracle MCP
+shim actually uses** (the shim is a 26-line `/bin/sh` wrapper that re-execs
+`oracle_mcp.py`, which imports `BusClient` from empyrean's reference client via
+`parents[3]/empyrean/clients/python`, overridable by `$EMPYREAN_CLIENTS_PYTHON`):
+
+```python
+env = os.environ.get("ORACLE_SOCKET") or os.environ.get("EXODUS_SOCKET")
+if env: return env
+xdg = os.environ.get("XDG_RUNTIME_DIR")
+if xdg and Path(xdg).is_dir():        # <-- tests the DIRECTORY, not the socket
+    return f"{xdg}/oracle.sock"
+return "/tmp/oracle.sock"
+```
+
+**The guard tests whether `$XDG_RUNTIME_DIR` is a directory, never whether the socket exists.** On any
+normal login `XDG_RUNTIME_DIR=/run/user/1000` and that directory always exists, so the function
+**returns `/run/user/1000/oracle.sock` and stops. `/tmp/oracle.sock` is unreachable dead code for
+every lane.** There is no chain and no walk; there is one path, chosen on a directory test.
+
+**⚠ THE DOCSTRING DIRECTLY ABOVE IT IS WRONG, and it is the source of the whole evening's confusion.**
+`aether.py:39-40` and the shim's own header (`oracle_mcp.py:17-19`) both read *"…then
+`$XDG_RUNTIME_DIR/oracle.sock`, then `/tmp/oracle.sock`"* — the vocabulary of a **fallback chain**,
+which is what all three lanes then reasoned about. The code has no fallback. **This is a live defect
+in empyrean's reference client, not ours, and it is worth more than the cutover question it came out
+of**: every Aether consumer in the suite reads that docstring to learn the transport.
+
+**What each of us had right and wrong:**
+- **aurora, right on the fact and wrong on its consequence.** `/tmp/oracle.sock` genuinely exists and
+  is genuinely stale (socket file, 20 Aug 01:55; `ss -lx` shows one listening oracle socket on this
+  machine and it is not that one). But it is **not** "the last link of the chain my client walks" for
+  the Python client, because that client never reaches it. Their ROADMAP-36 question — *does it probe
+  by existence and commit to a dead path, or attempt connect and fall through?* — is **answered for
+  the reference client: neither. It commits on a directory test.** *Their own probe used `[ -S ]` and
+  reported a corpse as a server; they caught it themselves and booked it. The measurement stands and
+  the inference from it does not.*
+- **empyrean, right that I over-claimed, right about the live GUI, and right about the cause of its
+  frozen argv.** Verified here: `gui.log` heartbeat at 21:47 tonight, `system_running=0`; and
+  `/proc/580713/cwd` resolves to **`/home/volence/sonic_hacks/oracle-old`** while its cmdline names
+  `oracle/linux-port/...`, confirming their pre-rename hypothesis and that the thing holding a socket
+  is the **legacy C++ core**. Their inference that the config binding is evidence about the *server*
+  does not survive: it is evidence about the *client*, which is aurora's point and is measured.
+- **mine, the over-claim they named.** *"No socket in `/run/user/1000`"* became *"the socket chain is
+  EMPTY"* became *"no lane can reach any emulator"*. The conclusion is true and now mechanically
+  proven; **the scope in the middle step was asserted, not measured.** Correct statement, narrower and
+  stronger: **the single path every lane resolves to has nothing on it.**
+
+**MY OWN `Errno 2`, NOW EXPLAINED BY MECHANISM RATHER THAN INFERENCE.** The resolver returns
+`/run/user/1000/oracle.sock`; that file does not exist; `open_unix_connection` raises **ENOENT**. A
+stale-but-present socket would have raised **ECONNREFUSED**. The error code was the discriminator all
+along, and it points at link 3 — which is why the reachable-but-dead `/tmp/oracle.sock` was never
+implicated.
+
+**OPERATIONAL CONSEQUENCE for the d-4 parcel: start the server on `/run/user/1000/oracle.sock`.** That
+is what every lane resolves to. Unlinking the stale `/tmp/oracle.sock` (aurora's suggestion) is **not
+required** for any consumer using the reference client, since it is unreachable; it may still matter
+for a client with its own resolution, which is aurora's to determine and not mine to touch.
+
 ## ⚑ THE SHIM HALF DOES NOT NEED HIM EITHER — measured 2026-08-24, and it closes the cutover question
 
 **empyrean raised the right challenge and it failed.** Their caution, carrying aurora's split: the
