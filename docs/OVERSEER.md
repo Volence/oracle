@@ -918,14 +918,25 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
 *(N9 — the `Resolution::name`/`Display` duplication — was **taken**, not registered: `Display` now calls
 `name()`. It was two lines.)*
 
-## ⚑ OWNER RULING, 2026-08-23 — PUSH AUTHORIZATION — **RELAYED, NOT WITNESSED BY THIS LANE**
+## ⚑ OWNER RULING — PUSH AUTHORIZATION — ✅ **CONFIRMED DIRECTLY BY THE OWNER, 2026-08-24, IN THIS SESSION**
 
 **STANDING APPROVAL, OWN REPO ONLY: a lane may push its own repo's master without asking each
 time.** Reached us via empyrean-18, banked by the hub at empyrean `2bd72a03` — **verified firsthand
 here: the object exists, is an ancestor of their `origin/main`, and is a docs commit carrying a docs
 ruling, so its SHA class matches what it anchors.** Flagged as a relay per this lane's own standing
-rule; **direct owner confirmation requested in-session — replace this flag with the confirmation, do
-not delete it.**
+rule; ~~direct owner confirmation requested in-session.~~
+**✅ THE CONFIRMATION ARRIVED, AND THE FLAG IS REPLACED RATHER THAN DELETED, per the rule that wrote
+it.** The owner answered decision `d-1` directly in this session on 2026-08-24, choosing **"Confirm it
+as standing permission"** from the two options put to him. **This lane may now push its own repo's
+master without asking each time**, under the four conditions below, which ride with the grant and are
+unchanged by the confirmation.
+
+*Worth keeping, because it is the only evidence the precaution was ever worth its cost: the relay was
+accurate in substance the whole time.* Holding it as unwitnessed cost this lane one evening of
+unpushed docs and cost the suite nothing, while the alternative — acting on a relayed authorization —
+is the failure this repo booked twice on 2026-08-22. **A precaution that turns out to have been
+unnecessary is the only kind that ever gets tested.** ⚠ **The 2026-08-22 four-ruling block below is a
+SEPARATE relay and STAYS FLAGGED** — he confirmed the push grant and nothing else.
 
 **The granting act is named, which is why this relay is usable at all.** The hub consolidated a
 question two lanes had stopped on separately (sigil asked outright; aeon was sitting on three
