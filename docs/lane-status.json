@@ -2,8 +2,8 @@
   "focus": "The new emulator is live and every lane reaches it. Next call is yours: which tooling I build first.",
   "inFlight": [
     {
-      "what": "The Aether server, running on the shared connection so every lane can reach it",
-      "where": "process, not a branch",
+      "what": "The emulator, running on the shared connection for every lane. Detached from this session, so clearing or rotating me does not stop it",
+      "where": "process 2837321, reparented to user systemd",
       "agent": false
     }
   ],
@@ -80,5 +80,5 @@
       "blockedBy": "sits behind the acceptance parcels"
     }
   ],
-  "updatedAt": "2026-08-24T02:03:26Z"
+  "updatedAt": "2026-08-24T02:08:24Z"
 }
