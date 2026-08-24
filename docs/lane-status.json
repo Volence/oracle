@@ -39,14 +39,14 @@
     },
     {
       "id": "Q-PROF-STRADDLE",
-      "title": "Profiler can bill a routine's cost to the wrong frame. aeon has held their profiler migration on it, so it is the only blocked consumer",
-      "state": "next",
+      "title": "DONE — the per-frame ring billed a straddling interrupt's whole cost to the frame it returned in, where the row could exceed its own cycles. Confirmed by test, fixed, aggregate and wire untouched",
+      "state": "done",
       "size": "M",
       "blockedBy": null
     },
     {
       "id": "PROF-RING-SELF",
-      "title": "Per-frame interrupt self-cycles aeon asked for — without it their porters read a plausible wrong number",
+      "title": "Per-frame interrupt self-cycles aeon asked for — but a bucket's cyclesSelf is the exception entry ALONE, so the field as specified would not answer the question. Recommend REFUSING it and telling aeon why; owner call",
       "state": "open",
       "size": "S",
       "blockedBy": null

@@ -741,9 +741,15 @@ impl Profiler {
             };
             if let Some(b) = bucket_idx {
                 let bucket = self.stack[b];
-                if let (false, FrameKind::Interrupt { level, .. }) =
-                    (bucket.suppressed, bucket.kind)
-                {
+                // Stated rather than silently skipped: an `else` arm here would swallow a stale index,
+                // which is the one way this could go wrong and the one way it would leave no trace.
+                // `push_frame` writes `enclosing_bucket` only from a frame it has just matched as an
+                // interrupt, and the stack is strictly LIFO, so nothing below a live frame can be
+                // replaced while it is open.
+                let FrameKind::Interrupt { level, .. } = bucket.kind else {
+                    unreachable!("enclosing_bucket names an interrupt frame or it names nothing")
+                };
+                if !bucket.suppressed {
                     *self.pending_bucket_retired.entry(level).or_default() += d_self;
                 }
             }

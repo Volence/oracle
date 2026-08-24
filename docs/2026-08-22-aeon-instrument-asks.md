@@ -657,10 +657,17 @@ our M1 mutation reproduces and our gate refuses.
 
 ### 3.3 ★ Where OUR instrument is weak — three findings, reported against ourselves
 
-> ⚠ **CORRECTED 2026-08-23** — "ENTIRE cost" is an overstatement: boundary checkpoints run for live
-> *interrupt* frames too, so only time held in a callee open **across** the boundary is displaced.
-> See `docs/2026-08-23-prof-straddle-mechanism.md`, which also records aeon's empirical corroboration
-> and the finding that the per-frame ring exposes no self-only bucket figure.
+> ⚠ ~~**CORRECTED 2026-08-23** — "ENTIRE cost" is an overstatement: boundary checkpoints run for live
+> *interrupt* frames too, so only time held in a callee open **across** the boundary is displaced.~~
+>
+> ⚠ **THAT CORRECTION IS ITSELF RETRACTED, 2026-08-24 — (a) as originally written was RIGHT.** The
+> acknowledge arms a *routine* frame for the handler's own entry address beneath the bucket, so a
+> bucket's `self_cycles` is the exception entry alone and the handler's whole retirement is already
+> child time. A straddling bucket displaces its entire run whether or not a callee is in flight,
+> measured. **The defect is now FIXED** (branch `prof-straddle`): the ring's cause split is charged to
+> the frame the cycles retired in. See `docs/2026-08-23-prof-straddle-mechanism.md` §7, which also
+> retracts that document's own §3 and §6 — a bucket's `cyclesSelf` is lag-free and is *not* a measure
+> of what the interrupt cost, so `PROF-RING-SELF` must not be built as specified.
 
 **(a) `perFrame[].vintCycles` / `hintCycles` displace a boundary-straddling handler's ENTIRE cost into
 the frame it returns in.** This matters because the per-frame ring is exactly the surface aeon's spike
@@ -1502,7 +1509,7 @@ here.
 
 | id | what | where | revival condition |
 |---|---|---|---|
-| **Q-PROF-STRADDLE** | `perFrame[].vintCycles`/`hintCycles` displace a boundary-straddling handler's whole cost into the frame it returns in; the per-frame row can then exceed its own `cycles`. Aggregate unaffected. Latent at all measured states. | `profiler.rs:978-992` plus `:719-726` | Before aeon migrates onto `perFrame[]`. Test is synthetic and cheap (§3.3). |
+| ~~**Q-PROF-STRADDLE**~~ **CLOSED 2026-08-24** | `perFrame[].vintCycles`/`hintCycles` displaced a boundary-straddling handler's whole cost into the frame it returns in; the per-frame row could then exceed its own `cycles` (measured: 40 > 30, 80 > 50). **Fixed** — the ring's cause split is now charged to the frame the cycles retired in, via `Frame::enclosing_bucket` + `Profiler::pending_bucket_retired`. Aggregate, wire schema and conformance untouched. | `profiler.rs`: `checkpoint`, `push_frame`, `on_frame_boundary` | Done. Closing argument, the four tests and the two retractions it forced: `docs/2026-08-23-prof-straddle-mechanism.md` §7. |
 | **Q-PROF-TRAPFRAME** | Non-interrupt exceptions (`TRAP`, `CHK`, privilege, address error, div0) open no frame, so the handler's cycles inflate the routine they preempted. Nothing on the wire flags it. | `profiler.rs:883-887`, `:935`; `decode.rs:223-246` | If aeon uses `TRAP` on a hot path. |
 | **Q-PROF-PROSE** | `profiler.rs:63-64` and `tests/profiler.rs:1442` both claim a `TRAP` pushes a frame. Nothing is opened for it. Behaviour right, prose wrong. | as cited | Batch with Q-PROF-STRADDLE's doc fix. |
 | **Q-PROF-IPLWIRE** | Core opens a bucket for any acknowledged level; `get_profiler_frames` emits only 4 and 6. Another level would be dropped from the wire and would break the wire identity. Unreachable today (`vdp.ipl()` returns 6/4/0 only). | `profiler.rs:885` vs `engine.rs:2726-2729` | If level-2/EXT is ever modelled. One contract line, no code. |
