@@ -1,26 +1,32 @@
 {
-  "focus": "I got the urgency wrong and the engine lane caught it. Nothing is broken, so the next pick is about value.",
+  "focus": "The shared emulator is back up for every lane, and I am on the timing fix you picked.",
   "inFlight": [
     {
       "what": "The emulator, running on the shared connection for every lane. Detached from this session, so clearing or rotating me does not stop it",
-      "where": "process 2837321, reparented to user systemd",
+      "where": "process 29281, reparented to user systemd",
       "agent": false
-    }
-  ],
-  "blockedOnOwner": [
+    },
     {
-      "id": "d-5",
-      "what": "Which tooling I build first. My earlier reasoning was wrong: nothing is broken by the switch, so I have re-ranked on who is actually waiting and now recommend the timing fix.",
-      "since": "2026-08-24"
+      "what": "An agent settling the timing fix you picked \u2014 either correcting it, or proving it works as designed",
+      "where": "branch prof-straddle, isolated worktree",
+      "agent": true
     }
   ],
-  "nextBoundary": "Whichever tooling you pick, built and verified against the live emulator.",
+  "blockedOnOwner": [],
+  "nextBoundary": "The timing fix settled \u2014 either corrected with the straddle test, or a reasoned finding that it is working as designed.",
   "queue": [
     {
-      "id": "CUTOVER-MECH",
-      "title": "DONE. Emulator live on the shared socket, 41 methods, verified end to end through the shim",
-      "state": "done",
-      "size": "S",
+      "id": "Q-PROF-STRADDLE",
+      "title": "Profiler can bill a routine's cost to the wrong frame \u2014 aeon measured it too, so it is real",
+      "state": "doing",
+      "size": "M",
+      "blockedBy": null
+    },
+    {
+      "id": "CR-C",
+      "title": "The server cannot say which server it is, so a session can swap implementations with no signal",
+      "state": "next",
+      "size": "M",
       "blockedBy": null
     },
     {
@@ -31,22 +37,8 @@
       "blockedBy": null
     },
     {
-      "id": "CR-C",
-      "title": "The server cannot say which server it is, so a session can swap implementations with no signal",
-      "state": "open",
-      "size": "M",
-      "blockedBy": null
-    },
-    {
-      "id": "Q-PROF-STRADDLE",
-      "title": "Profiler can bill a routine's cost to the wrong frame. aeon has held their profiler migration on it, so it is the only blocked consumer",
-      "state": "next",
-      "size": "M",
-      "blockedBy": null
-    },
-    {
       "id": "PROF-RING-SELF",
-      "title": "Per-frame interrupt self-cycles aeon asked for — without it their porters read a plausible wrong number",
+      "title": "Per-frame interrupt self-cycles aeon asked for \u2014 without it their porters read a plausible wrong number",
       "state": "open",
       "size": "S",
       "blockedBy": null
@@ -67,10 +59,10 @@
     },
     {
       "id": "Z80",
-      "title": "z80_read / z80_write — nothing calls them yet, and the legacy write silently corrupts on overrun",
+      "title": "z80_read / z80_write \u2014 nothing calls them yet, and the legacy write silently corrupts on overrun",
       "state": "blocked",
       "size": "M",
-      "blockedBy": "no programmatic consumer found — demand has not ordered it"
+      "blockedBy": "no programmatic consumer found \u2014 demand has not ordered it"
     },
     {
       "id": "WIKI-SPIKE",
@@ -80,5 +72,5 @@
       "blockedBy": "sits behind the acceptance parcels"
     }
   ],
-  "updatedAt": "2026-08-24T02:41:01Z"
+  "updatedAt": "2026-08-24T04:15:58Z"
 }
