@@ -1,5 +1,5 @@
 {
-  "focus": "Booted, holding for your word. Three lanes are all waiting on you for the same emulator cutover — and it may not be yours to do.",
+  "focus": "Measured it: the cutover needs nothing from you. One command is left and it is mine, so I am asking before I run it.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -8,24 +8,24 @@
       "since": "2026-08-23"
     },
     {
-      "id": "d-2",
-      "what": "The emulator cutover may not be yours to perform. Three lanes name you as their blocker; I think starting the server is mine, and I want your word before starting one every other lane's tools would then reach.",
+      "id": "d-4",
+      "what": "May I start the new emulator. Nothing is listening on the shared connection at all tonight, so no lane can reach any emulator; no config change and no restart is needed from you, and this is the one act left.",
       "since": "2026-08-24"
     },
     {
       "id": "d-3",
-      "what": "Which tooling I build first after the cutover. Only one of the seventeen missing abilities breaks something that works today.",
+      "what": "Which tooling I build first after that. Only one of the seventeen missing abilities breaks something that works today.",
       "since": "2026-08-24"
     }
   ],
-  "nextBoundary": "The cutover question settled in writing — either it is ours to perform, or it genuinely needs you — so aeon and aurora stop waiting on the wrong person.",
+  "nextBoundary": "The new emulator started on the shared connection and confirmed from this session, or his word that it stays stopped.",
   "queue": [
     {
       "id": "CUTOVER-MECH",
-      "title": "Settle who actually performs the emulator cutover — the MCP shim is a client, so the server that answers may be ours to start, not yours to configure",
+      "title": "SETTLED by measurement: the socket chain is empty, every lane's shim is correct, nobody needs a restart. Only starting the server is left, and it is mine",
       "state": "next",
       "size": "S",
-      "blockedBy": null
+      "blockedBy": "d-4"
     },
     {
       "id": "CR-A",
@@ -84,5 +84,5 @@
       "blockedBy": "sits behind the acceptance parcels"
     }
   ],
-  "updatedAt": "2026-08-24T01:39:42Z"
+  "updatedAt": "2026-08-24T01:44:01Z"
 }
