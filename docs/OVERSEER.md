@@ -1708,6 +1708,15 @@ wrong about whose emulator it was talking to).
   external acceptance for our instruments; shape checks go to them BEFORE build (their requested
   gate). Current lane: the streaming arc consumes the profiler; C-asks flow via
   `docs/2026-08-19-aeon-streaming-demand.md`.
+- **aurora** (editor): ⚑ **OPEN OBLIGATION FROM THIS SEAT, 2026-08-26 — they are the FIRST NAMED
+  CONSUMER of the layer pair (`get_layer_states`/`set_layer_enabled`), and we owe them a signal.** Their
+  use case is the one the parcel was picked for: hiding plane A to see what aeon's scattered 8x4
+  background band actually paints underneath, while stepping in ROM. Registered in their tree at aurora
+  `74b95a1` **with our condition transcribed into it**: *signal when it is served and reachable through a
+  REBUILT BINARY, not when it merges.* That distinction is this lane's own bar from 2026-08-26 (a merged
+  serve is not a served method) being honoured by a consumer before we have discharged it — **so the debt
+  is ours and it is not discharged by the merge.** Do not tell them it is available on the strength of a
+  green suite; spawn the consumer's own path and call it first.
 - **aurora** (editor): first non-MCP Aether client; feature-detects off the advertised method list
   (**advertising a method is shipping it** — the list is authoritative and coverage-gated); offers
   branch probes pre-merge. Keep D7 server-side symbol resolution intact — they asked by name.
