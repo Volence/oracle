@@ -48,6 +48,14 @@ the demand is named there too.
 `mcp__oracle__*` tool was touched. Nothing here is a runtime observation. Items wanting runtime
 confirmation are tagged **⟨RUNTIME⟩** and collected in §12.7.
 
+**One correction is carried in the open, and the sections it touched are marked ⚑.** A claim this CR
+first called its strongest fact was refuted at review — by a sentence inside the block quote that was
+supposed to support it. The original text is preserved in a **superseded block** at §3.2 rather than
+edited away, the replacement fact is at §2.4.1, the recommendation it partly supported was re-weighed at
+§7.5 and **survives at reduced confidence**, and §14 records the whole of it. The design did not move; one
+of its two justifications did. An adjudicator should read §3.2's superseded block before weighing §7.5 or
+Q1.
+
 ---
 
 ## 1. Summary
@@ -83,7 +91,7 @@ This CR takes **both** halves of that sentence, and argues they are one design r
 |---|---|---|
 | **D1** | A `layout` descriptor, REQUIRED on every decoder reply: what was detected, how, and the pool table it decoded against | P1, P2 |
 | **D2** | `emulator/object_list` — flat bounded list of active slots; closed core per item (`slot`, `addr`, `x`, `y`, `code`), optional resolved `name`/`nameDisp`, and a **typed-open `fields` map** for engine-declared decodes | P1, P3 |
-| **D3** | `emulator/player_state` — the same item shape under a `players[]` **array**, killing the legacy's engine-dependent top-level key set; **no invented bit names** | P1, P2 |
+| **D3** ⚑ | `emulator/player_state` — the same item shape under a `players[]` **array**, killing the legacy's engine-dependent top-level key set; **no invented bit names**. *Recommended at reduced confidence — see §7.5 and Q1.* | P1, P2 |
 | **D4** | `capabilities.objectDecoders` keeps its published boolean type and gains a pinned meaning: *this build has the handlers*, never *a layout was detected* | P2 |
 | **D5** | `emulator/object_slot` — schematized as the single-slot projection of D2. **Severable; no consumer asked for it.** | — |
 
@@ -231,11 +239,11 @@ size `$50`.** One omission, and it is the important one:
 
 > **The demand's table stops at `frame_off @ $2E` and does not carry `sst_custom: [u8; 32] @ $30`.**
 
-That is 32 of the record's 80 bytes — 40% of it — and it is precisely the part that is **not** a fixed
-layout (§3.2, §7.1). The demand table also does not mention the engine-owned tail word `SST_interact` at
-`$4E`, which `sst.emp` defines as `sizeof(Sst) - 2` via `pub comptime fn interact_off()` and describes as
+That is 32 of the record's 80 bytes — 40% of it — and it is the part whose **interpretation is not fixed**
+(§2.4.1, §3.2). The demand table also does not mention the engine-owned tail word `SST_interact` at `$4E`,
+which `sst.emp` defines as `sizeof(Sst) - 2` via `pub comptime fn interact_off()` and describes as
 *"NOT a Sst struct field, so it can't be reached by field name"* — i.e. the custom window has **30**
-game-usable bytes, not 32. Neither omission contradicts the demand; both matter to §7.
+game-usable bytes, not 32. Neither omission contradicts the demand; both matter to §3 and §7.
 
 Two further facts read from the same file, both load-bearing below:
 
@@ -286,6 +294,49 @@ tree, `tools/fixtures/s4_listing_excerpt.lst`, gives `Dynamic_Slots : FFFF8DC2`.
 `…8DC2`. One of them is from an older ROM. **That is the whole argument for D1 in one pair of numbers** —
 any address in this family is a fact about a build, and a decoder that carries one is carrying a fact
 about a build it is not looking at.
+
+### 2.4.1 ★ The custom window has TEN declared interpretations, and which one applies is a runtime fact
+
+*(Added at overseer review, 2026-08-26. This measurement replaces the finding §3.2 originally rested on —
+see §3.2's superseded block and §14's correction record. It is the CR's load-bearing layout fact.)*
+
+`sst.emp:82` calls `$30–$4F` an *"overlay window (`vars X: sst_custom`)"*, and `vars … : Sst.sst_custom`
+is a **general mechanism**, not the player's private arrangement.
+
+**Enumeration parameter:** every `vars` declaration in aeon's *source* trees — the regex
+`^[[:space:]]*(pub )?vars [A-Za-z0-9_]+[[:space:]]*:` over `engine/**` and `games/**` at `f4896139`.
+Deliberately broader than a search for `sst_custom`: it enumerates *all* overlay declarations, so it also
+answers whether anything overlays a different window. Nothing does — all ten target `Sst.sst_custom`.
+
+```
+games/sonic4/objects/dust_spindash.emp:140  vars DustV: Sst.sst_custom {
+games/sonic4/objects/path_swap.emp:49       vars PathSwapV: Sst.sst_custom {
+games/sonic4/objects/test_animated.emp:19   vars DplcV: Sst.sst_custom {
+games/sonic4/objects/test_churn.emp:33      vars TChurnV: Sst.sst_custom {
+games/sonic4/objects/test_enemy.emp:19      vars TEnemyV: Sst.sst_custom {
+games/sonic4/objects/test_helpers.emp:16    pub vars EmitterV: Sst.sst_custom {
+games/sonic4/objects/test_parent.emp:33     vars TParentV: Sst.sst_custom {
+games/sonic4/objects/test_parent.emp:42     vars TOrbitChildV: Sst.sst_custom {
+games/sonic4/objects/test_player.emp:31     vars TPlayerV: Sst.sst_custom {
+games/sonic4/player/player_common.emp:89    pub vars PlayerV: Sst.sst_custom {
+```
+
+**Ten overlays, nine files, one 32-byte window.** And they are not variations on a theme — read the first
+declared field of five of them, all of which land on the same word at `$30–$31`:
+
+| overlay | first field at `$30` | what the word means |
+|---|---|---|
+| `PlayerV` | `ground_speed: i16` | signed inertia, px/frame |
+| `DustV` | `player: u16` | an **SST pointer** to the player being tracked |
+| `TEnemyV` | `steps_remaining: u16` | pixels left before a turn |
+| `EmitterV` | `timer: u16` | a spawn countdown |
+| `PathSwapV` | `half_height: u16` | a vertical extent in pixels |
+
+**One offset, one build, one frame — five incompatible meanings, and a pointer among them.** Which applies
+to a given slot is decided by *which routine owns the slot*, i.e. by `code_addr`, at run time. No contract
+and no schema can know it; a client that knows the ROM can. That is P3 in one table, it is about **objects**
+rather than about the player, and it is why `object_list`'s `fields` map is a mechanism rather than a
+hedge.
 
 ### 2.5 The schema and catalog, enumerated — with the parameter named each time
 
@@ -531,7 +582,7 @@ fields as bus keys would be exactly the defect D-27 describes** — and it would
 says, because §2.4 shows aeon's own record changed size three weeks ago. A contract that had frozen it in
 July would today be refusing aeon.
 
-### 3.2 Why the tension is real for `player_state` in a way it is not for `object_list`
+### 3.2 Why the tension is real — and why it is NOT special to `player_state` ⚑ corrected at review
 
 `object_list`'s catalogued result is `objects[]{slot,…,x,y,class}` — a shape with a **literal ellipsis** in
 its key set, which is a transcription problem.
@@ -539,34 +590,55 @@ its key set, which is a transcription problem.
 `player_state`'s catalogued result is *"engine-dependent decoded player struct(s)"* — which is **not a
 shape at all**. There is no ellipsis to fill in; there is no key set to be partial about.
 
-And the difficulty is deeper than "two engines disagree". Reading aeon's own player overlay
-(`games/sonic4/player/player_common.emp:83-170` at `f4896139`), the decoded player struct is not stable
-**within one engine, one ROM, one frame**:
+And the difficulty is deeper than "two engines disagree" — but **not for the reason this section originally
+gave**. The correction is kept visible rather than edited away, because it is instructive and because every
+other citation in this CR held.
 
-```
-pub vars PlayerV: Sst.sst_custom {
-        ground_speed:     i16,
-        player_state:     u8,
-        …
-        // --- ABILITY SCRATCH: … These two bytes are a UNION, not Tails' private property:
-        // exactly one character is resident per slot … so Knuckles' glide/climb and any later
-        // ability re-use the same bytes under their own names …
-        fly_fuel:         u8,
-        fly_thrust:       u8,
-        glide_angle:      u8,
-        knux_step:        u8,
-        …
-}
-```
+> ### ~~SUPERSEDED — the original §3.2 claim, and why it was wrong~~
+>
+> *This CR first argued:* reading `player_common.emp:89+`, `PlayerV`'s ability-scratch fields are a
+> **union over the resident character** — *"The same bytes are `fly_fuel`/`fly_thrust` when Tails is
+> resident and `glide_angle`/`knux_step` when Knuckles is"* — so *"a fragment that enumerated `flyFuel`
+> and `glideAngle` as sibling keys would be describing a record that never exists"*. It was labelled
+> **the strongest single fact in the CR**.
+>
+> **It was wrong, and the line refuting it sat inside the block quote used to support it.** The source
+> says: *"The language cannot express the union as byte-SHARING (every overlay starts at `$30`), so the
+> fields are declared in place and this reads as a **budget principle**."* Declared in place means **four
+> distinct offsets**. `fly_fuel`, `fly_thrust`, `glide_angle` and `knux_step` do not overlap; a record
+> containing all four as siblings byte-wise **does** exist, which is the opposite of what was claimed.
+>
+> **Confirmed a second way, arithmetically, from a quantity the first reading never used.** Summing the
+> declared widths of `PlayerV`'s fields in order gives `2+1+1+2+2+1+1+1+1+1+1+1+1+1+1` = 18 through
+> `even_pad`, then `+1+1+1+1+1+1+2` = **26**. The module's own comment states *"the window has 30
+> game-usable bytes and PlayerV now spends 26."* Under genuine byte-sharing the ability scratch would
+> collapse by four and the total would be 22 — so **the source's own stated budget only balances if the
+> fields are at distinct offsets.** Two independent derivations, one textual and one arithmetic.
+>
+> *Raised by the overseer at review of `1a7ae2b7`; verified here at source before acceptance.*
 
-The same bytes are `fly_fuel`/`fly_thrust` when Tails is resident and `glide_angle`/`knux_step` when
-Knuckles is. The module says so in terms: *"The language cannot express the union as byte-SHARING … so the
-fields are declared in place and this reads as a budget principle."*
+**What survives, restated correctly — the union is about *liveness*, not layout.** Which of those fields
+carries meaning depends on the resident character: `Ability_TailsFlight` is *"reachable only through
+`CharDef_Tails.cd_ability` / `PSTATE_FLY`"*, and `Player_Init` **deliberately does not clear** the scratch,
+because *"the whole point is that Sonic's frame never touches these addresses."* So on a Sonic frame,
+`glide_angle` is a byte with a defined address, an undefined value, and a name that means nothing. That is
+still a real reason not to enumerate ability fields as always-present siblings — a reply carrying
+`glideAngle: 0` for Sonic is reporting an uninitialised byte as a datum — but it is a **semantics**
+argument, and semantics arguments do not by themselves defeat a fragment. They generate a caveat
+obligation (§7.3), not an impossibility.
 
-**So there is no such thing as "the decoded player struct" even for aeon alone.** A fragment that
-enumerated `flyFuel` and `glideAngle` as sibling keys would be describing a record that never exists. This
-is the strongest single fact in the CR and it points *away* from the shape the legacy server ships and the
-demand implies.
+**The fact that does carry the weight is §2.4.1, and it is stronger in three ways.** `vars X:
+Sst.sst_custom` is a general mechanism: **ten** distinct types declare an overlay of the same 32 bytes, and
+the word at `$30` alone is `ground_speed` (signed inertia), `player: u16` (an SST **pointer**),
+`steps_remaining`, `timer`, and `half_height` depending on which routine owns the slot. That is (i)
+**layout-level**, not merely semantic — the same bytes really are read as five incompatible types; (ii)
+**measured** by an enumeration whose parameter is stated, not inferred from a comment; and (iii) about
+**objects**, so it supports `object_list` — the row a consumer actually asked for and the row this CR is
+most confident about — rather than only the player.
+
+**So there is no such thing as "the decoded custom window", for any slot, in any engine.** A fragment that
+enumerated overlay field names as bus keys would be describing whichever occupant it was written against
+and would be wrong for the other nine. *That* is the fact this CR rests on.
 
 ### 3.3 The resolution, and why it is not a loophole
 
@@ -815,6 +887,16 @@ P3, and D-27's own sketch. Three properties make the map safe:
 The demand asks for *"the raw `sst` bytes, or at least `anim` and `mapping_frame`"*. Both halves are
 served: `fields: ["anim","mapping_frame"]` for the second, `includeBytes` for the first.
 
+**And a fourth property, which §2.4.1 turns from a nicety into the reason `code` is REQUIRED.** The
+engine block `$00–$2F` has one interpretation per layout; the custom window `$30–$4F` has **ten in one
+build**, selected by which routine owns the slot. So `code` — the identity datum at `$00` — is not merely
+"which object is this", it is **the discriminant that says how the last 32 bytes may be read**. A client
+holding `code` (or its resolved `name`) can decode the window with the overlay it already knows; a client
+without it cannot, and `bytes` alone would hand it 32 bytes it has no way to type. That is a second,
+independent argument for §6.3's ruling that `code` is required and is the item's identity, and it is the
+one place in this CR where a key earns its REQUIRED from a measured layout fact rather than from a
+convention.
+
 ### 6.5 Refusals, and one hardening
 
 | condition | code | note |
@@ -839,13 +921,31 @@ unconditionally — §2.4's advisory is explicit that a caveat on every reply is
 
 ## 7. D3 — `emulator/player_state`
 
-### 7.1 The finding this row turns on
+### 7.1 The finding this row turns on — corrected at review, and the correction matters here most
 
-§3.2 established it and it bears restating in one line, because it decides the whole design:
+*(Rewritten 2026-08-26 at overseer review. The original text asserted a byte-level union in `PlayerV`;
+§3.2's superseded block records what was claimed, why it was wrong, and the two derivations that settled
+it. §14 carries it as a checked-and-corrected item.)*
 
-> **There is no fixed "decoded player struct", not even for one engine.** aeon's `PlayerV` overlays
-> `Sst.sst_custom` and its ability-scratch bytes are a *union* over the resident character. A fragment
-> enumerating `flyFuel` and `glideAngle` as siblings would describe a record that never exists.
+Two findings, and it is worth being exact about which does what, because the first is the one that moved:
+
+> **(a) Liveness — semantic, and it survives.** aeon's `PlayerV` overlays `Sst.sst_custom`, and its
+> ability-scratch fields are meaningful only for the resident character: `Player_Init` **deliberately does
+> not clear** them, so on a Sonic frame `glide_angle` is a defined address holding an undefined value. A
+> reply enumerating it as an always-present sibling reports an uninitialised byte as a datum. This does
+> **not** make the row unschematizable — it generates the caveat obligation in §7.3.
+>
+> **(b) Layout indeterminacy — measured, and it is the load-bearing one.** `$30–$4F` carries **ten**
+> declared interpretations across aeon's source (§2.4.1), and `PlayerV` is simply one of them. The word at
+> `$30` is `ground_speed` under `PlayerV` and an SST **pointer** under `DustV`. Which applies is decided by
+> `code_addr` at run time.
+
+**The consequence for this section, stated plainly: the player is not special.** Under the original,
+incorrect footing, `player_state` looked like a uniquely hard row — the one whose record could not be
+enumerated even in principle. Under the corrected footing it is an *ordinary* slot whose window happens to
+be overlaid by `PlayerV` instead of by `DustV`, and the mechanism that handles it — `code` selects the
+overlay, `fields` carries the decode — is `object_list`'s mechanism applied unchanged. That removes the
+last thing that made this a different question from D2, and §7.5 re-weighs the recommendation accordingly.
 
 ### 7.2 The proposal
 
@@ -893,6 +993,22 @@ applies the bit names it already has — from the same source that defines them.
 legacy's `bits` array carries strictly less information than the `raw` beside it, because a set-bits list
 cannot express a clear bit.
 
+**And one obligation the liveness finding creates** *(added at overseer review; §7.1(a) is the finding)*.
+A `fields` value can be a byte that is **addressable but not live**: `Player_Init` deliberately does not
+clear the ability scratch, so on a Sonic frame `glide_angle` holds whatever was last there — an
+uninitialised byte, not a datum. A reply that returned `{"glideAngle": 0}` would be reporting a number the
+game never wrote, which is §4's *confidently wrong* shape in miniature.
+
+> **A server that knows a requested `fields` name is not live for the current occupant MUST either omit
+> the key or emit a `caveat` saying so; it MUST NOT report the byte as though it were meaningful.**
+> Omitting is preferred, on §2.4's rule that any consequence a client must act on needs its own typed key —
+> and an absent key is exactly that signal, where a caveat is prose a client may not parse.
+
+This is deliberately a **SHOULD-strength ask stated as a MUST on one narrow case**, because the server may
+not always know: liveness here is a function of the resident character, which the server can only learn by
+decoding another field. Where it cannot tell, it emits the value and says nothing — the honest default, and
+the reason this obligation is listed in §10.6 as one no fragment can express.
+
 ### 7.4 Why an array, when the legacy uses named keys
 
 Because the named keys are the defect. This repo's own transcription
@@ -916,19 +1032,41 @@ And the only in-tree bus client has written that it should not ask for this surf
 every rule this contract usually applies, the parsimonious answer is: **serve `object_list`, decline
 `player_state`, and tell a client the player pool is `pools[0]`.**
 
-**Why it is nonetheless recommended for adoption.** One fact outweighs the parsimony: **the legacy server
-serves `player_state` today and a real consumer relies on it** (§2.6 — eleven separate written records in
-aeon of a session having used the decoder pair, including one instructing itself to prefer it over its own
-docs). The
-successor is scheduled to replace that server. Declining the row does not leave a gap in a contract; it
-**removes a working surface at cutover**, which is the harm D5 exists to prevent, dressed as tidiness.
-Serving it costs one fragment that reuses D2's item shape and adds two keys.
+**⚑ Re-weighed after §3.2's correction, and the margin narrowed. Recorded rather than quietly preserved.**
+The original balance leaned partly on `player_state` being unschematizable *in principle* — the union
+finding. With that gone, two things move, and both favour declining:
 
-**The condition that would reverse this.** If the adjudicator finds that the cutover plan does not in fact
-require the successor to cover the legacy's decoder surface — the acceptance contract in this repo's
-`docs/OVERSEER.md` item 8 is built from the **schematized-and-unserved** set, and these eight rows are by
-construction *not* in it — then the D5 argument weakens sharply and declining becomes correct. **This CR
-cannot settle that; it is §13.1 Q1.**
+- **The decline case gains.** §7.1 shows the player is not a special record but an ordinary slot with one
+  of ten overlays. So `player_state` is now, without remainder, `object_list` restricted to `pools[0]` plus
+  a `role` label — precisely the derivable-surface CR-13 usually strikes.
+- **The serve case partly *undercuts itself*.** "Declining removes a working surface" is only harmful if a
+  **capability** is lost, and it is not: `object_list` + `layout.pools[0]` returns the same facts about the
+  same slots. What a consumer loses is a convenience and a tool name. And under §8 item 23 that loss is
+  **legible** — the name is simply absent from `methods`, which a client may treat as decisive without
+  issuing a call — rather than a silent failure.
+
+**Why the recommendation nonetheless stands, at reduced confidence.** Three arguments survive the
+correction untouched, and together they still outweigh the parsimony:
+
+1. **A real consumer uses it by name today** (§2.6 — eleven written records in aeon of sessions relying on
+   the decoder pair, one instructing itself to prefer `emulator_player_state` over its own documentation).
+   Migration is not free even when the capability survives.
+2. **The marginal cost is now the lowest it could be** — and this is an argument the correction *supplied*
+   rather than damaged. Because the player is not special, the fragment is pure reuse: D2's item shape plus
+   `active` and `role`. A row that costs two keys is a weak thing to decline.
+3. **Declining would muddy the BLOCKED set.** The eight exist for one stated reason — *"each states its
+   result too loosely to transcribe without inventing"*. Leaving `player_state` in it while schematizing
+   its two siblings would leave one member for a *different* reason ("it is derivable"), so the set would
+   no longer mean what its own `$comment` says. That is the same family-consistency argument §8.2 uses for
+   `object_slot`, and it cuts the same way.
+
+**The condition that would reverse this, now broader than before.** Either (a) the adjudicator finds the
+cutover plan does not require the successor to cover the legacy's decoder surface — this repo's
+`docs/OVERSEER.md` item 8 builds the acceptance contract from the **schematized-and-unserved** set, and
+these eight rows are by construction *not* in it — or (b) the adjudicator weighs argument 1 above below
+the derivability objection now that §7.1's specialness is gone. **Either reverses this to a decline, and
+this CR would not argue with either.** Q1 was already its most consequential open question; after this
+re-weighing it carries more, not less.
 
 ---
 
@@ -1078,15 +1216,19 @@ Replace the `### object / player decoders ⚙` block (rows and the ⚙ note) wit
 | `emulator/player_state` ⚙ | `fields`?, `includeBytes`? | `players[]`, `layout`, `caveat`? |
 | `emulator/call_stack` | `maxBytes`?,`maxFrames`? | `pc`,`sp`,`frames[]` |
 
-> ⚙ These decode a game's object records, so **part of each reply is engine-shaped**. The contract fixes
-> the envelope and leaves the payload open, deliberately: see §11.25. Two rules follow and both are
-> normative. **(1)** Every reply carries `layout` — what the server decoded against, and how — because an
-> unstated layout assumption is §4's *confidently wrong information* one level up. **(2)** Engine-specific
-> values travel in the per-item `fields` map, whose keys are the layout's own field names and whose values
-> are scalars; a server MUST NOT emit a `fields` key its `layout.engine` does not name, and MUST NOT emit
-> decoded bit-name enums for any field. `capabilities.objectDecoders` reports whether this **build** has
-> the handlers and never whether a layout was detected; the detect result is on the reply, because symbols
-> may load after the handshake.
+> ⚙ These decode a game's object records, so **part of each reply is engine-shaped** — and not merely
+> per-engine: an object record's tail is an overlay window whose interpretation is chosen by the slot's
+> occupant at run time, so it varies **within** one build. The contract therefore fixes the envelope and
+> leaves the payload open, deliberately: see §11.25. Three rules follow and all are normative.
+> **(1)** Every reply carries `layout` — what the server decoded against, and how — because an unstated
+> layout assumption is §4's *confidently wrong information* one level up. **(2)** Engine-specific values
+> travel in the per-item `fields` map, whose keys are the layout's own field names and whose values are
+> scalars; a server MUST NOT emit a `fields` key its `layout.engine` does not name, and MUST NOT emit
+> decoded bit-name enums for any field. **(3)** A `fields` key that is addressable but **not live** for the
+> slot's current occupant MUST be omitted or caveated, never reported as a datum — an uninitialised byte
+> returned as a number is a value the game never wrote. `capabilities.objectDecoders` reports whether this
+> **build** has the handlers and never whether a layout was detected; the detect result is on the reply,
+> because symbols may load after the handshake.
 ```
 
 *(`call_stack` is unchanged and shown only for position.)*
@@ -1207,7 +1349,7 @@ decoder-less build has no such number and must not be made to invent one.
 
 ### 10.6 ⚠ Obligations this CR creates that **no fragment can express**
 
-Four, listed because a schema green does not mean a server conforms:
+Five, listed because a schema green does not mean a server conforms:
 
 1. **`fields` key provenance.** *A server MUST NOT emit a `fields` key its `layout.engine` does not name.*
    A typed-open map cannot express this; only prose plus a server's own test can.
@@ -1218,6 +1360,9 @@ Four, listed because a schema green does not mean a server conforms:
    moment the layout changed.
 4. **The refusal ordering.** An unknown `fields` name must be refused **before** any decode, so a refused
    request has read nothing — §2.5's *"the refusal precedes any effect"*, applied one level down.
+5. **Liveness** *(added at overseer review, §7.3)*. A `fields` key that is addressable but not live for the
+   slot's current occupant must be omitted or caveated, never reported as a datum. A schema can say a value
+   is an integer; it cannot say the game never wrote it.
 
 ---
 
@@ -1321,6 +1466,27 @@ result, and leave the rows blocked.
 cannot honestly be `true` on a server that serves no decoder, so the flag alone is not servable — it would
 have to be `layout`-on-some-other-method, and there is no other method to put it on.
 
+### 12.5b The CR's load-bearing fact was replaced once, and the replacement has its own failure mode
+
+*(Added at overseer review.)* §3.2's superseded block records a claim that was labelled *"the strongest
+single fact in the CR"* and was wrong, with the refuting sentence sitting inside the block quote that was
+supposed to support it. An adjudicator is entitled to discount the replacement by however much that
+history warrants, and the honest framing of what changed is: **the CR's design never moved** — closed
+envelope, typed-open `fields`, REQUIRED `layout` — **but one of its two justifications did.**
+
+Naming the replacement's own failure mode, so it is not merely asserted more confidently than the last
+one: §2.4.1 rests on ten overlay declarations, of which **seven belong to test objects** — `DplcV`,
+`TChurnV`, `TEnemyV`, `EmitterV`, `TParentV`, `TOrbitChildV`, `TPlayerV`, all in
+`games/sonic4/objects/test_*.emp`. Three are release objects: `PlayerV`, `DustV`, and `PathSwapV` (whose
+art is *"TEST placeholders only"* by its own comment, but which is a real invisible trigger line —
+`col=COLLISION_NONE`, *"never rendered in release"* — so the overlay is production). If an adjudicator
+holds that a test-harness overlay is not evidence about a production wire shape, the count drops from ten
+to **three** — which is still more than one, and one is all the argument needs, but it is a smaller number
+than §2.4.1 leads with, and this CR should say so rather than let the ten do work three can carry. The
+five-way `$30` table is barely touched either way: three of its five rows (`PlayerV.ground_speed`,
+`DustV.player`, `PathSwapV.half_height`) are release objects, and a signed inertia, an SST **pointer** and
+a pixel extent at one offset is the whole argument.
+
 ### 12.6 The SST layout was read from one commit of one engine
 
 §2.4's table is `sst.emp` at `f4896139`. It is aeon's `master` lineage and the file pins its own offsets at
@@ -1362,12 +1528,19 @@ schema never knew we advertised"*, one instance later. **Out of scope here and d
 
 ### 13.1 Handed over undecided
 
-**Q1 — Does the successor owe the legacy's decoder surface at cutover?** §7.5's recommendation to serve
-`player_state` rests entirely on "declining removes a working surface a consumer uses". But this repo's
-acceptance contract (`docs/OVERSEER.md` item 8) is built from the **schematized-and-unserved** set, and
-these rows are by construction not in it. If cutover does not owe them, D3 should be **declined** and
-clients pointed at `object_list` + `layout.pools[0]`. *This is the CR's most consequential open question
-and it turns on a fact outside this CR's reach.*
+**Q1 — Does the successor owe the legacy's decoder surface at cutover? ⚑ weight increased at review.**
+§7.5's recommendation to serve `player_state` now rests on three arguments, of which the load-bearing one
+is "a real consumer uses it by name and migration is not free". But this repo's acceptance contract
+(`docs/OVERSEER.md` item 8) is built from the **schematized-and-unserved** set, and these rows are by
+construction not in it. If cutover does not owe them, D3 should be **declined** and clients pointed at
+`object_list` + `layout.pools[0]`.
+
+**This question got heavier when §3.2's union finding was withdrawn.** Under the original footing
+`player_state` looked unschematizable in principle, which insulated the recommendation from Q1's answer.
+It is not insulated any more: §7.1 shows the player is an ordinary slot, so D3 is a derivable convenience
+and Q1 — plus the plain derivability objection, which §7.5 now names as an independent reversal condition
+(b) — is most of what decides it. *This is the CR's most consequential open question, it turns on a fact
+outside this CR's reach, and a reversal here is expected rather than unwelcome.*
 
 **Q2 — Is `code` a hex string (D9 category 1) or a number (category 2)?** §12.4 states both readings. This
 CR proposes category 1 because the datum's width varies by layout and it is a raw record value rather than
@@ -1404,9 +1577,12 @@ consistency; the counter is scope discipline and that a CR should not schematize
 
 Listed so the adjudicator can object to what was closed as well as to what was left open.
 
-1. **A `fields` map beats an enumerated field list.** D-27 proposed it, §3.2's union finding makes an
-   enumerated list describe a record that does not exist, and `methodSummaries` is the shipping precedent
-   for a typed-open map. Settled.
+1. **A `fields` map beats an enumerated field list.** D-27 proposed it; §2.4.1 measures **ten** declared
+   overlays of one 32-byte window in one build, so an enumerated list would describe whichever occupant it
+   was written against and be wrong for the other nine; and `methodSummaries` is the shipping precedent for
+   a typed-open map. Settled. *(This settling originally cited §3.2's union finding, which was withdrawn at
+   review — see §3.2's superseded block. The settling survives on the replacement fact, which is stronger;
+   an adjudicator objecting to it should aim at §2.4.1, not at the union.)*
 2. **`layout` is REQUIRED and per-reply.** §5.2 (P2, the `binding` argument) and §5.3 (symbols load after
    the handshake, so a handshake value is stale by construction). Settled — and it is the one REQUIRED key
    this CR would defend at any cost.
@@ -1435,6 +1611,35 @@ Listed so the adjudicator can object to what was closed as well as to what was l
 
 **Written by:** the oracle lane, 2026-08-26, as a docs-only parcel on branch `cr-d-object-decoders`, based
 on `oracle` `main` at `0d7c5c21c2e92458d55de5d4a062e08d2532d610`.
+
+**Revised at overseer review of `1a7ae2b7`, same day.** One checked-and-corrected item, recorded here
+because it is the only citation in the document that did not hold and because a silent edit would have
+destroyed the instructive part:
+
+> **CORRECTION — §3.2's "strongest single fact" was wrong, and the refutation was inside the quote used to
+> support it.** The draft asserted that `PlayerV`'s ability-scratch fields (`fly_fuel`/`fly_thrust` vs
+> `glide_angle`/`knux_step`) occupy **the same bytes**, and concluded no fixed decoded player record
+> exists. The source says the opposite: *"The language cannot express the union as byte-SHARING (every
+> overlay starts at `$30`), so the fields are declared in place"* — four distinct offsets — and its own
+> stated budget (*"the window has 30 game-usable bytes and PlayerV now spends 26"*) only balances at 26 if
+> they do not share, since sharing would give 22.
+>
+> **Raised by:** the overseer, at review, explicitly as a hypothesis to check rather than a finding to
+> apply. **Verified here before acceptance**, two ways: the textual clause, and the byte-budget
+> arithmetic, which is an independent derivation because it uses a quantity (the declared field widths
+> summed against the comment's stated total) that the first reading never consulted.
+>
+> **What moved:** §3.2 (rewritten, original preserved in a superseded block), §7.1 (rewritten), §7.5 (the
+> recommendation re-weighed — it survives at reduced confidence, and the reversal conditions widened),
+> §13.1 Q1 (weight increased), §13.2 item 1 (justification replaced), §2.4/§2.4.1 (the replacement fact
+> added where derivations live), §6.4 (a strengthening the correction supplied), §12.5b (new).
+> **What did not move:** the design. Closed envelope, typed-open `fields`, REQUIRED `layout`, D1–D5, §9's
+> departures and §10's deltas are all unchanged — none of them ever cited the union, which was verified by
+> grepping the document for the premise rather than by recalling where it was used.
+>
+> **The replacement fact** (§2.4.1) is layout-level rather than semantic, measured rather than inferred,
+> and about objects rather than the player: **ten** declared overlays of one 32-byte window, with five
+> incompatible readings of the single word at `$30`. Its own weakness is named in §12.5b.
 
 **Anchors, with the class of each stated:**
 
