@@ -1021,7 +1021,9 @@ No `total`/`returned`/`truncated`: nothing is bounded by policy, so §2.4 clause
 
 Everything else — `slot`, `addr`, `x`, `y`, `code`, `name?`, `nameDisp?`, `fields?`, `bytes?` — carries D2's
 meanings unchanged. When `active` is `false`, `slot` and `addr` are still present (they are facts about the
-slot, not the object) and the rest are omitted.
+slot, not the object), `role` may still be present (it, too, is a fact about the slot — the layout's label
+for it), and the rest are omitted. *(Mandate sentence rewritten by the delta ruling's **M5**,
+`docs/2026-08-26-ruling-cr-d-delta.md`.)*
 
 **⚑ And the fragment must express that conditionally, or it refuses the reply this paragraph mandates**
 *(ruling M2, applied at adjudication)*. As first drafted, §10.5 composed the item from `decodedSlot`, whose
@@ -1034,18 +1036,23 @@ mechanical discipline `scanlines` (mode↔width), `read` (space↔region) and th
 
 - The item's unconditional `required` is **`["slot", "addr", "active"]`** — the three facts about the slot.
 - **`if` `active` is `true`, `then`** `x`, `y` and `code` are additionally required.
-- **`else`** none of `x`, `y`, `code`, `name`, `nameDisp`, `fields`, `bytes`, `role` may be present —
-  *"the rest are omitted"* stated as a schema rule rather than as prose a server may not read.
-- And `decodedSlot`'s `required` **moves to the use sites**: `object_list`'s items and `object_slot`'s
-  result require all five unconditionally, this item requires them conditionally, and the `$def` is left as
-  a **shape library** — types only. M3 needs that factoring anyway.
+- **`else`** none of `x`, `y`, `code`, `name`, `nameDisp`, `fields`, `bytes` may be present —
+  *"the rest are omitted"* stated as a schema rule rather than as prose a server may not read. (`role` was
+  in this list as first applied; the delta ruling's **M5** removed it — see below.)
+- And `decodedSlot`'s `required` **moves to the use sites**: `object_list`'s items require all five
+  unconditionally, this item and `object_slot`'s result require them conditionally *(the `object_slot` half
+  amended by the delta ruling's **M7**; as first applied that row required all five unconditionally)*, and
+  the `$def` is left as a **shape library** — types only. M3 needs that factoring anyway.
 
-*One consequence worth naming rather than discovering later:* the `else` branch forbids `role` on an
-inactive item, because §7.2's own sentence says *the rest are omitted* and `role` is in the rest. A case
-can be made that `role` is a fact about the **slot** — like `slot` and `addr` — and should survive
-inactivity, so a client can say *"the sidekick slot is empty"* without joining `layout.pools`. This CR
-applies the ruling as written and does **not** unilaterally widen it; the question is registered in §15 as
-a delta candidate for the same adjudicator.
+*One consequence worth naming rather than discovering later —* ⚑ **RESOLVED by the delta ruling's M5**
+*(`docs/2026-08-26-ruling-cr-d-delta.md`, 2026-08-26)*: as first applied, the `else` branch forbade `role`
+on an inactive item, because §7.2's own sentence said *the rest are omitted* and `role` was in the rest.
+The objection registered here — that `role` is a fact about the **slot**, like `slot` and `addr`, and
+should survive inactivity so a client can say *"the sidekick slot is empty"* without joining
+`layout.pools` — was **upheld on delta**, and on stronger ground than it was raised: `decoderLayout.pools`
+items are closed at `{name, firstSlot, slotCount}`, so the join offered as the fallback **does not exist**
+and forbidding `role` here deleted the answer rather than displacing it. `role` now survives inactivity;
+the mandate sentence above carries the rule and §10.5.3(A) carries the table row.
 
 ### 7.3 What is deliberately not served, and what a client does instead
 
@@ -1556,7 +1563,9 @@ shared. Most of the DRY benefit this CR hoped for from (a) evaporates. It is sti
 edit to a type changes one place — but a reader who expected (a) to mean "write the names once" should know
 it does not.
 
-**⚑ One precision on M3, applied and flagged** *(see §15)*. M3 says "each of the three use sites". Two of
+**⚑ One precision on M3, applied and flagged — ⚑ RATIFIED on delta (M6): the applied form is UPHELD and
+M3's own wording was amended to match it. Nothing in this paragraph needed editing, and nothing here was
+edited.** *(see §15.3 flag 2 and `docs/2026-08-26-ruling-cr-d-delta.md`.)* M3 says "each of the three use sites". Two of
 the three are nested item objects and take the four steps above verbatim. The **third is `object_slot`'s
 result top level**, where the item keys are hoisted — and there the four steps would themselves be the
 trap, because a result top level already composes `{"$ref": "#/$defs/replyFields"}` and an
@@ -1578,14 +1587,22 @@ Each `result` is `allOf: [{"$ref": "#/$defs/replyFields"}, …]` with the keys a
 §6.1 / §7.2 / §8.2. The exact JSON is in `docs/2026-08-26-cr-d-amendment-handoff.md`; the two structural
 rules a reader must not get wrong are:
 
-**(A) `object_list` items and `object_slot` require all five core keys; the player item requires them
-conditionally.** `decodedSlot` no longer carries `required`, so each use site states its own:
+**(A) `object_list` items require all five core keys; the two rows that carry `active` — the player item
+and `object_slot`'s result — require them conditionally.** `decodedSlot` no longer carries `required`, so
+each use site states its own. *(The `object_slot` row was `slot`, `addr`, `x`, `y`, `code`, `layout`,
+`active` with no conditional as first applied; the delta ruling's **M7** replaced it. The player row's
+`active: false` list dropped `role` under the same ruling's **M5**. See
+`docs/2026-08-26-ruling-cr-d-delta.md`.)*
 
 | use site | unconditional `required` | conditional |
 |---|---|---|
 | `object_list.result.objects.items` | `slot`, `addr`, `x`, `y`, `code` | — |
-| `object_slot.result` | `slot`, `addr`, `x`, `y`, `code`, `layout`, `active` | — |
-| `player_state.result.players.items` | `slot`, `addr`, `active` | `active: true` → also `x`, `y`, `code`; `active: false` → none of `x`, `y`, `code`, `name`, `nameDisp`, `fields`, `bytes`, `role` |
+| `object_slot.result` | `slot`, `addr`, `layout`, `active` | `active: true` → also `x`, `y`, `code`; `active: false` → none of `x`, `y`, `code`, `name`, `nameDisp`, `fields`, `bytes` |
+| `player_state.result.players.items` | `slot`, `addr`, `active` | `active: true` → also `x`, `y`, `code`; `active: false` → none of `x`, `y`, `code`, `name`, `nameDisp`, `fields`, `bytes` |
+
+**The two `else` lists are identical** — the same seven decoded keys — so the family has one inactive
+convention rather than two. That is the delta's own coherence argument, and it is the M5 and M7 edits
+meeting: `role` freed from the player `else`, and absent from `object_slot`'s.
 
 **(B) ⚑ M2 — the player item's conditional is not a refinement, it is a bug fix.** As drafted, the item was
 `{"allOf": [{"$ref": "#/$defs/decodedSlot"}], "properties": {"active": …, "role": …}}` — and `decodedSlot`
@@ -2136,6 +2153,15 @@ flagged** — a post-adjudication change rides a delta back to the same adjudica
 at the point of application. **Three** such flags are recorded at the foot of this section, and each is
 demonstrated mechanically in `docs/2026-08-26-cr-d-amendment-handoff.md` §9 rather than asserted.
 
+**⚑ And the delta was written, and it ruled.** `docs/2026-08-26-ruling-cr-d-delta.md` (same adjudicator,
+same standard, 2026-08-26) took all three flags: **M5** amends flag 1 (`role` survives inactivity), **M6**
+upholds flag 2 and amends M3's own wording to match the applied form, **M7** amends flag 3 (`object_slot`
+takes the M2 conditional). All three are applied — per-item at §15.3 — and the handoff's §8 validation was
+re-run over the amended fragments with the delta's four new vectors and is **ALL GREEN**, which is the
+delta's own stated condition for releasing the hold it placed on the amendment. **So the record of this
+CR is now: four MUSTs, seven SHOULDs, and a three-flag delta ruling — all applied, two of them as
+amendments to what was first ruled.**
+
 ### 15.1 MUST — all four applied
 
 | # | What the ruling asked | What changed here | Evidence it took |
@@ -2144,7 +2170,7 @@ demonstrated mechanically in `docs/2026-08-26-cr-d-amendment-handoff.md` §9 rat
 | **M1(ii)** | The landing must follow §11.17 clause 7 — fragment count re-derived by parsing, never carried | **§10.5.4** is new. It also records the wrinkle: the `description` **no longer states a count** (removed 2026-08-22 for this exact defect), so clause 7 discharges as *run the gate, quote its parsed output in §11.25's adoption condition* — and the new BLOCKED-set count of five is put under the same rule | Clause 7 read verbatim at `protocol.md:3705` (*"a count is parsed or it is wrong"*); the current `description` confirmed to contain no fragment count |
 | **M1(iii)** | Pass- and red-vectors for the new fragments, per the CR-BP M2 practice, refusals proven red-first | **§10.5.5** is new: a 15-row vector table, nine of them refusals, including the two that prove the M2 conditional bites in both directions and one that proves the typed-open map is *typed*. It also states honestly that *"accepted before, refused after"* is **unavailable** for a brand-new fragment and substitutes CR-BP's own proof — new vectors failing as `no fragment` against the pre-patch artifact | The practice read at `protocol.md:4050-4051` (*"five `no fragment` failures against the pre-patch runner"*); the gate's vacuity check read firsthand at `validate_contract_schema.py` (*"expected REJECTION, the schema accepted it (this fragment is vacuous here)"*); `vectors.json` case shape read at `origin/main` (168 cases, `{method, kind, expect, doc, why}`, result docs auto-merged with the envelope) |
 | **M2** | The player item as sketched **refuses the reply §7.2 mandates** — `decodedSlot.required` carries `x`,`y`,`code`, so `{slot, addr, active: false}` fails. Fix with an `if`/`then` on `active`, and move `required` to the use sites | **§7.2** gains the conditional stated where the mandate lives (unconditional `required` = `slot`,`addr`,`active`; `then` adds `x`,`y`,`code`; `else` forbids the rest); **§10.5.1** strips `required` from `decodedSlot` entirely; **§10.5.3(A)** gives the per-use-site `required` table and **(B)** states the bug and the fix | §7.2's sentence re-read in this document (*"the rest are omitted"*) against the drafted `required` set — the two really are incompatible. The `if`/`then` mechanism needed no invention: **eleven live `if`/`then` sites** enumerated by parsing the schema at `origin/main`, including `scanlines` (mode↔width), `read` (space↔region), `read_cram` (line↔palette length), `watchpoint_hits`, `watchpoint_add` and the `stopped` event |
-| **M3** | Q7's option (a) as worded does not work — a use-site `additionalProperties: false` beside `allOf` is blind **in both directions** and rejects the base keys. State the working mechanism precisely | **§10.5.2** is new and replaces the drafted Q7 sketch: `decodedSlot` factored unclosed; each nested-item use site re-lists **every** permitted key name in its own `properties` (inherited as `true`, additions typed), declares its own `required`, closes with `additionalProperties: false`; no `unevaluatedProperties` in the published artifact. The DRY loss is stated out loud — *(a) for the shapes, (b) for the names* | §11.5's blindness rule re-read at `protocol.md:2677-2679`; the JSON-Schema semantics are the reason the ruling is right — `additionalProperties` sees only sibling `properties`, `unevaluatedProperties` sees through `allOf`/`$ref`, which is precisely why item 20 uses the latter |
+| **M3** *(operative sentence amended on delta — **M6**)* | Q7's option (a) as worded does not work — a use-site `additionalProperties: false` beside `allOf` is blind **in both directions** and rejects the base keys. State the working mechanism precisely. **The delta ruling's M6 replaces M3's operative sentence** with one that distinguishes the two kinds of use site: *"`decodedSlot` is factored unclosed (types only, no `required`). At each use site that is a **nested item object** — `object_list`'s items and `player_state`'s items — the site re-lists every permitted key name in its own `properties` (inherited keys as `true` schemas, its additions typed), declares its own `required`, and closes with `additionalProperties: false`. At a use site that is a **result top level** — `object_slot` — the site takes the universal result form: `allOf` refs for the shapes, its own `properties` and `required`, and no `additionalProperties` at all, the closure being item 20's harness-side `unevaluatedProperties`. No `unevaluatedProperties` appears in the published artifact."* | **§10.5.2** is new and replaces the drafted Q7 sketch, in exactly the amended form: `decodedSlot` factored unclosed; each nested-item use site re-lists **every** permitted key name in its own `properties` (inherited as `true`, additions typed), declares its own `required`, closes with `additionalProperties: false`; the result top level takes the universal form with no `additionalProperties`; no `unevaluatedProperties` in the published artifact. The DRY loss is stated out loud — *(a) for the shapes, (b) for the names*. **No artifact changed under M6**: §10.5.2's precision paragraph and `decodedSlot`'s exception sentence were already the amended M3, and the delta ratifies them as its authoritative statement | §11.5's blindness rule re-read at `protocol.md:2677-2679`; the JSON-Schema semantics are the reason the ruling is right — `additionalProperties` sees only sibling `properties`, `unevaluatedProperties` sees through `allOf`/`$ref`, which is precisely why item 20 uses the latter. The delta measured the departure's necessity rather than accepting the flag's account: `additionalProperties: false` on that result refuses `'addr', 'code', 'droppedEvents', 'frame', 'mclk', 'running', 'slot', 'x', 'y'`, and **zero** of the 59 committed fragments carry the keyword on a result top level (parsed, not grepped) |
 | **M4** | Land Q6's pin in §8 item 20's own text | **§10.3** retitled and given the exact sentence to append to item 20, plus the three grounds — and the correction that §2.5 `:666-668` had **already** asserted the scope, so this CR's *"settled only by a code comment"* was wrong in its own favour | §2.5's clause read verbatim at `origin/main` (*"The closure is at the top level of `params` — item 20's own scope, for its reason"*); the harness comment read firsthand in this repo at `crates/oracle-aether/tests/common/schema.rs:126-129` |
 
 ### 15.2 SHOULD — all seven applied
@@ -2159,18 +2185,40 @@ demonstrated mechanically in `docs/2026-08-26-cr-d-amendment-handoff.md` §9 rat
 | **S6** | Carry §12.5b's discount **inline** in §2.4.1 | **§2.4.1** retitled and given a lead paragraph: ten declarations, **seven test / three release**, and the instruction to read every "ten" in the section as "three release, ten total" — with the note that three of the five `$30` rows are release | §12.5b's own accounting, promoted to where the number does its work |
 | **S7** | Four anchor nits | `OpObjectList` `:1088-1142`→**`:1088-1145`**; `S4ClassName` `:951-963`→**`:951-964`**; the ⚙ note `1500-1502`→**`1500-1503`** (two sites); and the camelCase citation rewritten — `:712-713`/`:2332` are the **event-name** rule and its §10 resolution, so §2.7 now says *"the contract's spelling convention"* rather than *"normative for fields"*, substance unaffected | Each replacement grepped back out of the file after the edit |
 
-### 15.3 Flagged: applied as ruled, objection recorded rather than acted on
+### 15.3 Flagged: applied as ruled, objection recorded rather than acted on — ⚑ ALL THREE NOW RULED ON DELTA
 
-**Neither of these was changed unilaterally. Both ride a delta to the same adjudicator if he wants them.**
+**None of these was changed unilaterally. All three rode a delta back to the same adjudicator, and it
+ruled** — `docs/2026-08-26-ruling-cr-d-delta.md` (Claude Fable 5, same standard, 2026-08-26). Two were
+**amended** and one **upheld**; every amendment is applied in this document and in the handoff, and the
+handoff's §8 validation was re-run over the amended fragments with four new vectors: **ALL GREEN**.
 
-1. **M2's `else` branch forbids `role` on an inactive player.** Applied exactly as ruled (*"require exactly
+| Flag | Outcome | Instrument | What changed here |
+|---|---|---|---|
+| 1 — `role` forbidden on an inactive player | **AMENDED** | **M5** | §7.2's mandate sentence and its ⚑ `else` bullet; the *"one consequence worth naming"* paragraph marked resolved; §10.5.3(A)'s player row |
+| 2 — M3's third use site | **UPHELD**, with M3's own operative sentence amended to match the applied form | **M6** | **No artifact change.** §15.1's M3 row now carries the amended M3; §10.5.2's precision paragraph is ratified and was not edited |
+| 3 — `object_slot` refuses the empty slot | **AMENDED** | **M7** | §10.5.3(A)'s `object_slot` row and its (A) heading; the handoff carries the replacement JSON and the ⚙ rule (3) sentence |
+
+**The delta's own words on why this mattered for flag 3:** *"this is M2's own defect surviving in the
+sibling row M2 named by hand"* — M2 diagnosed that a row carrying `active` REQUIRED must not
+unconditionally require the decoded keys, then wrote `object_slot` into the unconditional column without
+noticing §8.2 gives that row `active` too. And on flag 1, the delta found the objection stronger than it
+was raised: `decoderLayout.pools` items are closed at `{name, firstSlot, slotCount}`, so the join the flag
+offered as its fallback **does not exist**.
+
+The three flags as originally raised are left standing below, unedited, as the record of what was flagged
+and on what grounds:
+
+1. **M2's `else` branch forbids `role` on an inactive player.** — ⚑ **AMENDED on delta (M5); `role` now
+   survives inactivity.** Applied exactly as ruled (*"require exactly
    `slot`, `addr`, `active` and forbid the rest"*), because that is a faithful reading of §7.2's own *"the
    rest are omitted"*. The objection: `role` is arguably a fact about the **slot** rather than about the
    object — like `slot` and `addr`, which do survive — and a client that wants to say *"the sidekick slot
    is empty"* must otherwise join `layout.pools` to find out which slot the sidekick is. If that is right,
    the fix is one name moved out of the `else`'s forbidden list, and §7.2's sentence needs the same word
    added. Registered in §7.2 and here; **not applied**.
-2. **M3's third use site takes a different form, and this was decided rather than asked.** M3 says "each of
+2. **M3's third use site takes a different form, and this was decided rather than asked.** — ⚑ **UPHELD on
+   delta (M6): the applied form stands and M3's wording was amended to match it; zero artifact change.**
+   M3 says "each of
    the three use sites re-lists every permitted key name … and closes with `additionalProperties: false`".
    Two of the three are nested item objects and do exactly that. The third, `object_slot`'s **result top
    level**, cannot: a result top level composes `{"$ref": "#/$defs/replyFields"}`, so an
@@ -2182,7 +2230,10 @@ demonstrated mechanically in `docs/2026-08-26-cr-d-amendment-handoff.md` §9 rat
    the adjudicator can correct it if the reading is wrong. **Measured**, against the merged schema: with
    `additionalProperties: false` that result refuses `'addr', 'code', 'droppedEvents', 'frame', 'mclk',
    'running', 'slot', 'x', 'y'` — the **envelope** among them.
-3. **⚑ `object_slot` requires all five core keys unconditionally, and M2's own bug survives there.**
+3. **⚑ `object_slot` requires all five core keys unconditionally, and M2's own bug survives there.** — ⚑
+   **AMENDED on delta (M7), and this was the flag that held the amendment.** The `required` set the ruling
+   settled by name is unsettled and replaced with `["slot", "addr", "layout", "active"]` plus the player
+   item's `if`/`then`/`else`, `role` absent; `bytes` deliberately stays forbidden on an inactive reply.
    *(Found while drafting the amendment, after §15.2 was written.)* M2 names the use sites explicitly —
    *"`object_list` items and `object_slot` require all five; the player item requires them conditionally"* —
    and that is applied as written. But **M2's reasoning reaches `object_slot` too**: this row carries
