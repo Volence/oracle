@@ -415,19 +415,18 @@ fn the_schema_covers_every_method_we_advertise_and_the_uncovered_list_is_pinned_
         // first, which is the order §8 item 20 requires.
         "emulator/breakpoint_set_enabled",
         "emulator/get_channel_states",
-        "emulator/get_layer_states",
         "emulator/log_clear",
         "emulator/ping",
         "emulator/set_channel_enabled",
-        "emulator/set_layer_enabled",
         // `emulator/step`, `emulator/step_out` and `emulator/step_over` were here until 2026-08-22, and
         // `emulator/run_to_scanline` left the same day — the first four of the 21 to leave the set by being
         // SERVED, which is the direction the pin's second bullet was written for and the one `is_empty()`
-        // could never have caught. Each removal was forced by this assertion going red on the commit that
-        // shipped the handler, not remembered afterwards. The set then GREW by one on 2026-08-26 —
-        // `emulator/breakpoint_set_enabled`, above — which is the direction the pin's first bullet was
-        // written for. The names in this literal are the only count worth having, and the three grounds
-        // above still hold for every one.
+        // could never have caught. `emulator/get_layer_states` and `emulator/set_layer_enabled` left the
+        // same way on 2026-08-26, making six. Each removal was forced by this assertion going red on the
+        // commit that shipped the handler, not remembered afterwards. The set also GREW by one on
+        // 2026-08-26 — `emulator/breakpoint_set_enabled`, above — which is the direction the pin's first
+        // bullet was written for. The names in this literal are the only count worth having, and the three
+        // grounds above still hold for every one.
         "emulator/vgm_start",
         "emulator/vgm_status",
         "emulator/vgm_stop",
