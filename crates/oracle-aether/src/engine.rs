@@ -1014,8 +1014,19 @@ impl Engine {
     }
 
     /// Attach the ROM's own path so `emulator/reload_rom` and `emulator/status` can name it.
+    ///
+    /// **Absolutised here, at load** — §6's `romPath` is *"the absolute path of the loaded image"*, and
+    /// until 2026-08-26 this echoed the launch argument verbatim, so `oracle-aether ./s4.bin` put `./s4.bin`
+    /// on the wire (§12.2 item 9 of the CR-C ruling). A relative path is not a weaker answer, it is an
+    /// answer that means something different to every reader: a client, a second client, and a log read
+    /// tomorrow all resolve it against a working directory that is not this process's, and the two ways it
+    /// is used — naming the image to a human and feeding `emulator/reload_rom`'s default — both break the
+    /// moment anyone but this process resolves it.
+    ///
+    /// Done at the boundary rather than in `status` so every route agrees: the binary, the hosted
+    /// embedder, `reload_rom` and a checkpoint restore all arrive here or at an already-absolutised value.
     pub fn set_rom_path(&mut self, path: Option<String>) {
-        self.rom_path = path;
+        self.rom_path = path.map(|p| absolutise(&p));
     }
 
     /// Install an already-parsed symbol table (the binary does this at startup from the `.lst` beside
@@ -3794,6 +3805,10 @@ impl Engine {
             RpcError::invalid_params(format!("cannot read {path}: {e}"))
                 .with_data(json!({"path": path}))
         })?;
+        // Absolutised only after the read succeeded, so the *refusal* above still quotes the caller's own
+        // spelling back at them — a client debugging a bad path wants to see what it sent. §6 wants the
+        // absolute path for the image that is actually loaded, which is what everything below reports.
+        let path = absolutise(&path);
         let len = rom.len();
         self.sys.load_rom(rom);
         self.sys.reset();
@@ -4963,6 +4978,26 @@ fn cram_entry(cram: &[u8], line: u8, index: u8) -> Value {
         "g": (raw >> 5) & 0x07,
         "b": (raw >> 9) & 0x07,
     })
+}
+
+/// §6's `romPath` SHOULD be *the absolute path of the loaded image*. Make it one, or say nothing new.
+///
+/// **`canonicalize` and no fallback, deliberately.** The obvious alternative — join a relative path onto
+/// the current directory whenever it does not start with `/` — is wrong in the one case that matters
+/// here: this string is not always a filesystem path. A hosted embedder sets
+/// [`crate::host::MachineInfo::rom_path`] to whatever names its image, `"testrom"` included, and there is
+/// no file behind it. Prefixing a working directory onto that label would manufacture a path that
+/// resolves to nothing and looks authoritative — a *worse* answer than the label, and §6's rule is a
+/// SHOULD precisely so that "I cannot honestly say" stays available.
+///
+/// So: if the string names a file this process can resolve, report the resolved absolute path (symlinks
+/// and `..` included — one image, one spelling, so two clients naming the same cartridge agree). If it
+/// does not, it was never a path we could speak for, and it is passed through untouched.
+fn absolutise(path: &str) -> String {
+    match std::fs::canonicalize(path) {
+        Ok(p) => p.to_string_lossy().into_owned(),
+        Err(_) => path.to_string(),
+    }
 }
 
 fn out_of_range(addr: u32, why: &str) -> RpcError {
