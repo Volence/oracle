@@ -405,6 +405,15 @@ fn the_schema_covers_every_method_we_advertise_and_the_uncovered_list_is_pinned_
         "emulator/breakpoint_add",
         "emulator/breakpoint_clear",
         "emulator/breakpoint_list",
+        // Arrived with the 2026-08-26 re-vendor, and it is the ONLY fragment the whole 58 → 59 move
+        // added: §11.21 (CR-BP) gave the breakpoint family a handle shape and a fifth row to go with it.
+        // §11.22, §11.23 and §11.24 came in the same refresh and added no method fragment at all — they
+        // changed fourteen existing ones and the handshake. Decided here rather than served: the
+        // breakpoint family is governed by `capabilities.breakpoints`, which this server publishes
+        // `false`, so all five rows are absent from `METHODS` together and the contract's own way of
+        // saying "not here" is already on the wire. Ground 1 above applies unchanged — the fragment came
+        // first, which is the order §8 item 20 requires.
+        "emulator/breakpoint_set_enabled",
         "emulator/get_channel_states",
         "emulator/get_layer_states",
         "emulator/log_clear",
@@ -415,8 +424,10 @@ fn the_schema_covers_every_method_we_advertise_and_the_uncovered_list_is_pinned_
         // `emulator/run_to_scanline` left the same day — the first four of the 21 to leave the set by being
         // SERVED, which is the direction the pin's second bullet was written for and the one `is_empty()`
         // could never have caught. Each removal was forced by this assertion going red on the commit that
-        // shipped the handler, not remembered afterwards. Seventeen remain — the names in this literal,
-        // which is the only count worth having — and the three grounds above still hold for every one.
+        // shipped the handler, not remembered afterwards. The set then GREW by one on 2026-08-26 —
+        // `emulator/breakpoint_set_enabled`, above — which is the direction the pin's first bullet was
+        // written for. The names in this literal are the only count worth having, and the three grounds
+        // above still hold for every one.
         "emulator/vgm_start",
         "emulator/vgm_status",
         "emulator/vgm_stop",

@@ -28,6 +28,7 @@
 //! is engine-owned and **lent** — see [`Engine::watchpoints`], which is the one place the hosted
 //! arrangement's two-run-drivers problem is answered.
 
+use crate::build_info;
 use crate::hex;
 use crate::outbound::Subscribers;
 use crate::rpc::{self, code, RpcError};
@@ -1350,9 +1351,26 @@ impl Engine {
             .iter()
             .map(|m| (m.name.to_string(), json!(m.summary)))
             .collect();
+        // §2.1 (§11.23): which implementation answered, and which build of it. Both are read from
+        // `build_info` and **never** from `self.config` — §2.1 makes a config-settable value a violation
+        // rather than a supported deployment, and the check is source-level (`tests/server_build.rs`).
+        // `serverName` beside them stays a deployment label, and stops being an identity.
+        let mut server_build = json!({
+            "id": build_info::SERVER_BUILD_ID,
+            "source": build_info::SERVER_BUILD_SOURCE,
+        });
+        // `dirty` is REQUIRED under `source: "vcs"` and meaningless otherwise, which is why it is an
+        // `Option` in the generated constant rather than a `bool` with a made-up value for the tarball
+        // case: the schema's `if`/`then` is conditional on purpose, and emitting `dirty: false` from a
+        // build that never consulted a working tree would be exactly the self-report §2.1 bars.
+        if let Some(d) = build_info::SERVER_BUILD_DIRTY {
+            server_build["dirty"] = json!(d);
+        }
         Ok(json!({
             "serverName": self.config.server_name,
             "serverVersion": self.config.server_version,
+            "implementation": build_info::IMPLEMENTATION,
+            "serverBuild": server_build,
             "protocolVersion": rpc::PROTOCOL_VERSION,
             "capabilities": {
                 // The authoritative event set (D6) — exactly what this server pushes.
