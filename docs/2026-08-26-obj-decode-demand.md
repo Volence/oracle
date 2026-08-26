@@ -28,9 +28,11 @@ Empty slots (`code_addr == 0`) omitted, but a `count` so "zero effects" is a sta
 No captured legacy sample exists on aeon's side. **The Rust output is the first and only reference; do
 NOT A/B against the legacy bridge's shape.** This is the consumer's explicit instruction, not a shortcut.
 
-## Contract note for the dispatcher
-Both methods already carry schema fragments in the vendored contract (they are among the 17
-schematized-but-unserved). The consumer shape above must be reconciled with those fragments before code:
-where they agree, serve the fragment; where the consumer needs a field the fragment lacks (`pool`, `count`,
-world-pixel `x`/`y` vs 16.16), that is a CR against empyrean, adjudicated before serving, per the
-contract-first bar. The dispatch brief must include that reconciliation as its first step.
+## Contract note for the dispatcher (corrected the same hour — first draft was wrong)
+Neither method has a schema fragment at empyrean `origin/main` (`fc7d7a5`) nor in our vendored copy. Both
+are catalogued in protocol.md §6 as ⚙ engine-dependent rows (`:1496-1497`): `object_list` →
+`objects[]{slot,…,x,y,class}`, `player_state` → "engine-dependent decoded player struct(s)". So they sit
+among the 8 unschematized §6 rows, not the schematized-but-unserved set. Serving them is
+**contract-first**: a CR proposing the fragments, shaped from the consumer's list above (note `code` where
+§6's sketch says `class`, `pool`, `count`, world-pixel `x`/`y`), adjudicated, landed in empyrean, then
+served here. The dispatch brief's first deliverable is that CR.
