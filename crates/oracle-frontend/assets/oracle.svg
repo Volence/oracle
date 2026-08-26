@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-label="Oracle" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+  <title>Oracle</title>
+  <!-- shared halo -->
+  <circle cx="48" cy="48" r="42" stroke-width="1.4"/>
+  <circle cx="48" cy="48" r="38" stroke-width="1" opacity="0.22"/>
+  <!-- radiating sight-lines (the seer) -->
+  <g stroke-width="1" opacity="0.42">
+    <line x1="48" y1="6"  x2="48" y2="14"/>
+    <line x1="48" y1="82" x2="48" y2="90"/>
+    <line x1="6" y1="48" x2="14" y2="48"/>
+    <line x1="82" y1="48" x2="90" y2="48"/>
+    <line x1="18.3" y1="18.3" x2="23.9" y2="23.9"/>
+    <line x1="77.7" y1="18.3" x2="72.1" y2="23.9"/>
+    <line x1="18.3" y1="77.7" x2="23.9" y2="72.1"/>
+    <line x1="77.7" y1="77.7" x2="72.1" y2="72.1"/>
+  </g>
+  <!-- the eye: large vesica -->
+  <path d="M16 48 Q48 24 80 48 Q48 72 16 48 Z" stroke-width="1.8"/>
+  <!-- iris rings -->
+  <circle cx="48" cy="48" r="15" stroke-width="1.4"/>
+  <circle cx="48" cy="48" r="9.5" stroke-width="1" opacity="0.42"/>
+  <!-- pupil -->
+  <circle cx="48" cy="48" r="4.5" fill="currentColor" stroke="none"/>
+</svg>
