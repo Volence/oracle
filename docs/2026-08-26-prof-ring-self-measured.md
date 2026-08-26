@@ -97,3 +97,26 @@ mkdir -p /tmp/orc-p   # NOT the session scratchpad: that path exceeds SUN_LEN
 # then, over the bus: run_frames 600 -> set_profiler{enabled,perFrame} -> run_frames 120
 #                     -> get_profiler_frames, and divide cyclesSelfTotal by callsTotal.
 ```
+
+---
+
+## CLOSED — accepted by aeon the same day
+
+**aeon struck the item.** Their overseer's reply: *"the 44.00 across a 19x cost gap is decisive on its own —
+a self field that cannot vary with the handler's work is not an instrument"*, and the 100.00% partition is
+*"the discharge we actually needed"*. Landed at aeon `5289a0a3` on `origin/master`; verified firsthand here
+that both `docs/OVERSEER.md` and `docs/DEFERRED_WORK.md` carry the anchors.
+
+Three things worth keeping from the close:
+
+1. **They are NOT filing the per-routine per-frame ask.** §"What is left of the ask" is therefore closed
+   too, not merely re-scoped. Nothing is owed in either direction on this line.
+2. **The refusal unblocked work rather than deferring it.** Migration of `raster_cost_probe`,
+   `engine_baseline_probe` and `streaming_choke_probe` off the legacy harness is unblocked on this count
+   and needs nothing further from us.
+3. **⚑ Their own records had been inconsistent, and the inconsistency is the same shape as the bar that
+   started this.** `OVERSEER.md` withdrew the ask on 08-24, while a later paragraph — and its twin in
+   `DEFERRED_WORK.md` — still called it *"HALF discharged, the half that matters still open"*. A withdrawal
+   stated in one place and contradicted further down is exactly the scope-marking failure that filed this
+   ask in the first place (a rule true of routine rows, false of interrupt buckets, stated without marking
+   which). **A correction that does not chase its own restatements has not been made.** Both now carry it.
