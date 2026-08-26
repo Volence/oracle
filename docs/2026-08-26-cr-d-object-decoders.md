@@ -16,7 +16,7 @@ un-framed) — **ADOPT WITH CHANGES**: D1, D2, D4 as drafted with the M-fixes; D
 *serve*); D5 adopted (Q8 answered *travel*). Four material changes (M1–M4) and seven stylistic (S1–S7).
 **Applied in place, 2026-08-26**, on branch `cr-d-apply`; §15 is the per-item application record and §13.1's
 eight questions now carry their answers inline. Where the ruling and this CR disagreed, the ruling won —
-one precision on M3 is flagged in §15 as a delta candidate rather than applied unilaterally.
+three items are flagged in §15 as delta candidates rather than applied unilaterally.
 
 ---
 
@@ -2133,7 +2133,8 @@ reproduced rather than summarised.
 **Standing rule of this application: the ruling is authoritative over this CR.** Where they disagreed the
 ruling won. Where the ruling looked wrong or incomplete, it was **applied as written and the objection
 flagged** — a post-adjudication change rides a delta back to the same adjudicator, never a unilateral edit
-at the point of application. Two such flags are recorded at the foot of this section.
+at the point of application. **Three** such flags are recorded at the foot of this section, and each is
+demonstrated mechanically in `docs/2026-08-26-cr-d-amendment-handoff.md` §9 rather than asserted.
 
 ### 15.1 MUST — all four applied
 
@@ -2178,7 +2179,20 @@ at the point of application. Two such flags are recorded at the foot of this sec
    at all; item 20's harness-side `unevaluatedProperties` closes it, and that keyword *does* see through
    `allOf`). This is judged a **precision consistent with M3's purpose**, not a departure, and no published
    result top level in the schema carries `additionalProperties` today. Applied, and flagged in §10.5.2 so
-   the adjudicator can correct it if the reading is wrong.
+   the adjudicator can correct it if the reading is wrong. **Measured**, against the merged schema: with
+   `additionalProperties: false` that result refuses `'addr', 'code', 'droppedEvents', 'frame', 'mclk',
+   'running', 'slot', 'x', 'y'` — the **envelope** among them.
+3. **⚑ `object_slot` requires all five core keys unconditionally, and M2's own bug survives there.**
+   *(Found while drafting the amendment, after §15.2 was written.)* M2 names the use sites explicitly —
+   *"`object_list` items and `object_slot` require all five; the player item requires them conditionally"* —
+   and that is applied as written. But **M2's reasoning reaches `object_slot` too**: this row carries
+   `active`, so `active: false` is a reachable reply, and under the ruled `required` set that reply is
+   **refused** for missing `x`, `y` and `code` — measured against the merged schema, not argued. Emitting
+   those three keys for an empty slot means reporting bytes the game never wrote, which is exactly what
+   §7.3 and the ⚙ note's rule (3) forbid one level down for `fields`. The fix would be the same
+   `if`/`then`/`else` the player item now carries, `role` absent. **Not applied**, because the ruling
+   settled that `required` set by name. **This is the only one of the three flags that changes published
+   wire behaviour, and it should be settled before the amendment lands rather than after.**
 
 ### 15.4 Not applied, and why
 
