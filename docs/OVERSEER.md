@@ -1462,6 +1462,19 @@ consume this. Cheaper before the design than after.)*
    goes. Their warning is the durable part: **an index whose space is unstated is a transpose bug
    waiting to happen**; the fragment states the space in the field's own description, which is where it
    belongs. Filed as *satisfied*, not *genuinely-new* — the triage exists to catch exactly this.
+   **⚠ AND THE HAZARD ON THE OTHER SIDE OF THAT JOIN, found by aurora against this seat's own sample
+   dots — if OUR panel ever names a blob slot, it inherits this check.** The rebase can land **outside
+   the blob**, and `BG_TILE_BASE_SLOT = 1024` (verified firsthand as a literal at aurora
+   `origin/master`), so **any `tile < 1024` rebases NEGATIVE.** Worked on the two dots this lane
+   sampled: `1066 → 42`, inside their 320-tile blob; **`1456 → 432`, outside it** — and *not rescued by
+   capacity*, since 432 < 448. **Their durable formulation: in-capacity is not in-blob.** *(Base slot is
+   ours firsthand; the 448 capacity and the 320-tile blob are their measurements, not re-derived here.)*
+   Plane B can legitimately be showing engine art, another act's art, or a slot past the blob's end —
+   the corpus-ROM sample is not a defect, it is proof the class is reachable. **So a click-to-identify
+   surface must answer *"that is not part of your background"* for those — not index, and above all not
+   guess: an unchecked rebase either throws or confidently names a slot the author does not own, which
+   is indistinguishable from a correct answer.** That is point 3's loud-on-unmeasurable rule arriving on
+   the join instead of on the mask, which is what makes it a class rather than two tips.
 3. **Assert the conditional invariant rather than noting it.** A rule with an unasserted precondition is
    this workspace's recurring defect; their form is **loud-on-unmeasurable beats a plausible answer** —
    their layout harness answers *"COULD NOT MEASURE A FIT"* under a planted defect rather than "fits".
