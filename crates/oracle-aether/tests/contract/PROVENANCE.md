@@ -14,16 +14,16 @@ an explicit re-vendor commit. That commit is the auditable record of "we adopted
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo revision | `origin/main` at **`fc7d7a58ac2ab413f1a13e1ef7229a2e4702b016`** (2026-08-25), the tip at the moment the bytes were taken. `TRACKED_REVISION` is `None`. 59 fragments; all 59 declare `params` and all 59 close it with `unevaluatedProperties: false` (handshake exempt) — every figure **re-derived by parsing this copy**, never carried over. |
-| Last commit that touched the schema | **`fc7d7a58ac2ab413f1a13e1ef7229a2e4702b016`** — *"protocol §11.24: batch B1 applied (D-01/02/03/05/06/07/08/09/19); six refusals proven red-first; gate 68/100/32"* (2026-08-25). Here the tip and the last-touching commit coincide, which is not the usual case; **the blob is still the pointer that matters**, see the note below. |
-| Git blob | `7b24bcedc24f0a6aa7dd4504f4e2f9bf63e4cda7` |
-| SHA-256 | `9a8cbc47ea74df39c96ad43a390965c9051af4180427c373c601d6b18cbbcc23` |
-| Bytes | 280799 |
+| Contract repo revision | **`55d99a681fead81dbc5af6f83f873de7268214d3`** (2026-08-26), an **ancestor of** `origin/main` (which was `57e72d01` when the bytes were taken — `git merge-base --is-ancestor` checked, not assumed). `TRACKED_REVISION` is `None`. 62 fragments; all 62 declare `params`, all 62 close it with `unevaluatedProperties: false` (handshake exempt), and all 62 declare `result` — every figure **re-derived by parsing this copy**, never carried over. |
+| Last commit that touched the schema | **`55d99a681fead81dbc5af6f83f873de7268214d3`** — *"schema: drop the stale 'eight BLOCKED rows' count in the description (found by oracle after §11.25; count-free per the 2026-08-22 precedent)"* (2026-08-26). It is a one-clause follow-up to `a0c50a11`, which landed §11.25 itself; the two differ **only** in that clause. |
+| Git blob | `2310ce9b547e96d7d6c116fe315c38a7e12cf992` |
+| SHA-256 | `df5d2a3e30507e211302c4c1eb6f1c0655b75ff8f0ed4a936c3e3d1ec5e3e8b5` |
+| Bytes | 306261 |
 | Vendored on | 2026-08-26 |
 
-**Taken from the object store at a committed revision**, `git show fc7d7a5:contract/schema/bus-protocol.schema.json`, never copied out of the sibling working tree — the recipe the retired tracking box below left behind. The sibling checkout was at `8de32bb`, *ahead* of `origin/main`, and was byte-identical for this path; had it not been, the object store is what would have been adopted and the working tree would have been the thing that was wrong.
+**Taken from the object store at a committed revision**, `git show 55d99a68:contract/schema/bus-protocol.schema.json`, never copied out of the sibling working tree — the recipe the retired tracking box below left behind. The adoption was then checked **by content address**: `git hash-object` on the written file returns `2310ce9b…`, equal to `git rev-parse 55d99a68:contract/…`. That is the one check that cannot be talked into agreeing, and this repo has caught a doctored restore with it before.
 
-**The empyrean half of this parcel is already on `main` there.** §11.23 (CR-C, server identity) merged as **`45969af`**, and the audit entry that follows it is **`1352a5c`**; the tip adopted here, `fc7d7a5`, carries §11.24 on top of both.
+**A drafting miss carried in the open, because it is upstream's and not ours.** The `a0c50a11` landing left one clause of the top-level `description` reading *"the eight BLOCKED rows print there too"* when the set had just become five. It was reported rather than patched locally — a vendored copy that is hand-corrected is a copy whose blob check is worthless — and the hub landed the fix as `55d99a68`, which is why **this** revision is the one adopted rather than `a0c50a11`. `contract/protocol.md` and `contract/schema/tests/vectors.json` are byte-identical at both.
 
 > **Record the BLOB, not only the branch tip.** `origin/main` moved *twice while this re-vendor was
 > running* — `7dad1e6a` when the source was first inspected, `9b46a235` twenty minutes later when the
@@ -36,7 +36,53 @@ an explicit re-vendor commit. That commit is the auditable record of "we adopted
 merged as `70c7bb4` — its third profiler-amendment carry, per its own recipe: copy from the object
 store, never from the checkout.)*
 
-### What this re-vendor adopted — §11.21 – §11.24, 58 → 59 fragments (2026-08-26)
+### What this re-vendor adopted — §11.25, 59 → 62 fragments (2026-08-26)
+
+**Three fragments added, and this repo serves all three in the same commit.** §11.25 (CR-D) is the first
+amendment to *remove* rows from the schema's BLOCKED set rather than add rows to the catalog: it gives
+`emulator/object_list`, `emulator/player_state` and `emulator/object_slot` a shape — a closed envelope
+over a typed-open `fields` payload with a REQUIRED `layout` discriminant — and closes audit D-27 for all
+three. Both figures below are **re-derived by parsing the old copy and the new one**, never read from a
+commit message.
+
+| | 59-fragment copy | this copy | delta |
+|---|---|---|---|
+| method fragments (`methods`, `$`-keys excluded) | 59 | **62** | **+3**: `emulator/object_list`, `emulator/player_state`, `emulator/object_slot` |
+| fragments declaring `result` | 59 | **62** | +3, the same names |
+| fragments closing `params` | 59 | **62** | +3, the same names |
+| `$defs` | 15 | **17** | **+2**: `decoderLayout` (closed), `decodedSlot` (deliberately **unclosed** and carrying **no `required`** — a shape library, per M2/M3) |
+| `limits` declared keys | 10 | **11** | +1 **optional** `maxObjectSlots`; `limits.required` unchanged |
+| §6 rows the description calls BLOCKED | 8 | **5** | −3, the same names — `z80_registers`, `read_vdp_registers`, `read_vsram`, `call_stack`, `log_tail` remain |
+| `UNCOVERED_METHODS` (advertised, no `result` fragment) | 0 | **0** | unmoved — the three arrived schematized *and* advertised in one commit, so neither pin ever saw them |
+| `SCHEMATIZED_NOT_ADVERTISED` | 18 | **18** | **unmoved**, for the same reason |
+
+Both pins staying put is the finding, not an absence of one. The usual shape is a fragment landing ahead
+of its handler (`SCHEMATIZED_NOT_ADVERTISED` grows, then shrinks when the handler ships); here the
+handler and the fragment arrive together, so the set that would have held them is empty at both ends and
+the two assertions that guard it were satisfied by re-derivation rather than by editing a number.
+
+**`capabilities.objectDecoders` keeps its boolean type** and gains a pinned meaning: *this build has the
+handlers*, `true` iff **at least one** of the three rows is in `methods` (§8 item 23 keeps per-row
+servedness as `methods` membership). This server now publishes `true`, derived from `METHODS` rather
+than typed, so the flag cannot disagree with the list.
+
+**`limits.maxObjectSlots` is deliberately not emitted.** The key is optional and its absence is
+meaningful: a server that applies no policy ceiling omits it, and `object_list.limit` is then bounded
+only by `layout.slotCount` — which is what this server does, and what its `limit` refusals are measured
+against.
+
+**No deviation is outstanding at this commit.** The `step_over`/`step_out` `pc` shortfall the previous
+re-vendor recorded was closed before this one (the handlers now report the halt they compute), and the
+whole aether suite is green against these bytes: 30 legs, 360 passed, 0 failed, 2 ignored. Every
+server→client line is validated against `methods.<name>.result` closed with `unevaluatedProperties:
+false`, so that green covers the three new rows' replies — proven by mutation rather than assumed, in
+both closure forms: emitting a stranger key on an `object_list` item is refused by the item's
+`additionalProperties: false`, and the same key on the `object_slot` **result top level** is refused by
+item 20's harness-side `unevaluatedProperties`, which is flag 2's third-use-site distinction arriving on
+a real reply. The `active: false` conditional bites too: a reply carrying `x` beside `active: false` is
+refused by the `else` branch's `anyOf`, which is M2 and the delta's M7 checked against a running server.
+
+### History — the §11.21 – §11.24 re-vendor, 58 → 59 fragments (2026-08-26)
 
 Four amendments arrived together, because the vendored copy had not moved since 2026-08-22 and the
 contract had. **Exactly one method fragment was added across all four** — every other change is to an

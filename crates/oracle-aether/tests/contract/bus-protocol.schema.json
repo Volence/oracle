@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://empyrean/contract/bus-protocol.schema.json",
   "title": "Empyrean / Aether Bus Protocol (Phase 1 thin slice)",
-  "description": "Source-of-truth message schema for the Aether bus (the Empyrean suite's shared protocol). PARTIAL, and precisely so as of 2026-08-15 (protocol.md §11.5/§11.6): the envelope, the handshake, every event, the symbol primitive, and a growing subset of §6's catalogued methods are schematized here. THE COUNT IS DELIBERATELY NOT STATED IN THIS PROSE (2026-08-22): it was hand-maintained across six recounts and was STILL wrong, this sentence reading '37' while the file held 58, which is the very defect its own later clause names, that a count carried forward is a count nobody checked. Repairing the number would only reset that clock, so the number is gone instead. The gate at schema/tests/validate_contract_schema.py derives every count BY PARSING this file and prints them on each run; that output is the only authority, and the eight BLOCKED rows print there too. Every fragment is written FROM ITS §6 ROW and none from a server's replies, which is §8's required direction) — which covers every method the reference server advertises, both params and result, plus the rows schematized AHEAD OF BEING SERVED, because §8 item 20 makes the fragment the precondition for the handler and not its record: emulator/read_cram and emulator/write_cram (the CRAM pair), and since 2026-08-26 the whole BREAKPOINT family, whose four fragments were rewritten to §11.21 (CR-BP) — handle-identified, with emulator/breakpoint_set_enabled added as the one writer of `enabled`. NO SERVER SERVES THAT SHAPE TODAY and that is the intended order: the successor serves capabilities.breakpoints false, the legacy server serves the pre-amendment ADDRESS-named rows and §11.21 freezes rather than migrates it, so this file describes the surface a server implements against rather than one it has already shipped. EIGHT §6 ROWS REMAIN UNSCHEMATIZED AND DELIBERATELY SO — z80_registers, read_vdp_registers, read_vsram, object_slot, object_list, player_state, call_stack, log_tail — because each states its result too loosely to transcribe without inventing (a literal `…` in a key set, an array with no item type, a decode §9 defers to Phase 5, or, for log_tail, a question §10 leaves openly undecided). A PARTIAL fragment would be worse than none: item 20's closure would then refuse the conformant server that emits the keys the fragment omitted, while §2.5 already reads an ABSENT fragment correctly as 'not yet transcribed'. Each is itemized, with what would unblock it, in docs/2026-08-22-protocol-schema-audit.md, and the gate at schema/tests/validate_contract_schema.py prints all eight on every run so none goes quiet. The authoritative live method set is whatever `initialize` advertises. REQUEST PARAMS ARE CLOSED HERE (protocol.md §2.5, §8 item 22, added 2026-08-19 by §11.17): every methods.<name>.params object declares `unevaluatedProperties: false`, and unlike item 20's RESULT closure — which is deliberately kept out of this file, so a stale copy cannot reject a conformant server — that keyword IS published, because on the request path the party validating is the party publishing what it supports. handshake.initialize.params is deliberately exempt: closing the handshake would make a version-skewed negotiation fail at the one step whose job is to survive it. PRECEDENCE (protocol.md D14): this file is NORMATIVE for wire shapes — which keys exist, their JSON types and ranges, whether they are required — while protocol.md is normative for semantics and behaviour. A disagreement between the two is a spec bug to be fixed by amendment in the pass that finds it; until amended, this file governs what goes on the wire. It is not a place to introduce behaviour: a shape here with no counterpart in protocol.md is an un-specced field, and §8's ban on unilateral invention applies. The two are amended together.",
+  "description": "Source-of-truth message schema for the Aether bus (the Empyrean suite's shared protocol). PARTIAL, and precisely so as of 2026-08-15 (protocol.md §11.5/§11.6): the envelope, the handshake, every event, the symbol primitive, and a growing subset of §6's catalogued methods are schematized here. THE COUNT IS DELIBERATELY NOT STATED IN THIS PROSE (2026-08-22): it was hand-maintained across six recounts and was STILL wrong, this sentence reading '37' while the file held 58, which is the very defect its own later clause names, that a count carried forward is a count nobody checked. Repairing the number would only reset that clock, so the number is gone instead. The gate at schema/tests/validate_contract_schema.py derives every count BY PARSING this file and prints them on each run; that output is the only authority, and the BLOCKED rows print there too. Every fragment is written FROM ITS §6 ROW and none from a server's replies, which is §8's required direction) — which covers every method the reference server advertises, both params and result, plus the rows schematized AHEAD OF BEING SERVED, because §8 item 20 makes the fragment the precondition for the handler and not its record: emulator/read_cram and emulator/write_cram (the CRAM pair), and since 2026-08-26 the whole BREAKPOINT family, whose four fragments were rewritten to §11.21 (CR-BP) — handle-identified, with emulator/breakpoint_set_enabled added as the one writer of `enabled`. NO SERVER SERVES THAT SHAPE TODAY and that is the intended order: the successor serves capabilities.breakpoints false, the legacy server serves the pre-amendment ADDRESS-named rows and §11.21 freezes rather than migrates it, so this file describes the surface a server implements against rather than one it has already shipped. FIVE §6 ROWS REMAIN UNSCHEMATIZED AND DELIBERATELY SO — z80_registers, read_vdp_registers, read_vsram, call_stack, log_tail — because each states its result too loosely to transcribe without inventing (a literal `…` in a key set, an array with no item type, or, for log_tail, a question §10 leaves openly undecided). The set was EIGHT until 2026-08-26, when object_slot, object_list and player_state left it under §11.25: they are schematized as a CLOSED ENVELOPE over a typed-open `fields` payload with a REQUIRED `layout` discriminant, which is the audit's own D-27 unblock condition and the reason the partial-fragment objection does not reach them — a typed-open map declares its incompleteness as a type, where a partial fragment asserts a completeness it does not have. That objection stands undiminished for the five above: a PARTIAL fragment would be worse than none, because item 20's closure would then refuse the conformant server that emits the keys the fragment omitted, while §2.5 already reads an ABSENT fragment correctly as 'not yet transcribed'. Each remaining row is itemized, with what would unblock it, in docs/2026-08-22-protocol-schema-audit.md, and the gate at schema/tests/validate_contract_schema.py DERIVES the blocked set by diffing §6 against `methods` and prints it on every run so none goes quiet — that output is the authority for the count, exactly as it is for the fragment count, and this prose is not. The authoritative live method set is whatever `initialize` advertises. REQUEST PARAMS ARE CLOSED HERE (protocol.md §2.5, §8 item 22, added 2026-08-19 by §11.17): every methods.<name>.params object declares `unevaluatedProperties: false`, and unlike item 20's RESULT closure — which is deliberately kept out of this file, so a stale copy cannot reject a conformant server — that keyword IS published, because on the request path the party validating is the party publishing what it supports. handshake.initialize.params is deliberately exempt: closing the handshake would make a version-skewed negotiation fail at the one step whose job is to survive it. PRECEDENCE (protocol.md D14): this file is NORMATIVE for wire shapes — which keys exist, their JSON types and ranges, whether they are required — while protocol.md is normative for semantics and behaviour. A disagreement between the two is a spec bug to be fixed by amendment in the pass that finds it; until amended, this file governs what goes on the wire. It is not a place to introduce behaviour: a shape here with no counterpart in protocol.md is an un-specced field, and §8's ban on unilateral invention applies. The two are amended together.",
   "$defs": {
     "hex": {
       "type": "string",
@@ -307,6 +307,126 @@
       },
       "additionalProperties": false,
       "description": "A deterministic emulated coordinate for one matched access (protocol.md §6). The same shape a stop record uses, so a stop and a hit name the same kind of point. Never wall-clock. Nested rather than top-level: the envelope stamp (§2.2) overwrites same-named keys at the top level of a result."
+    },
+    "decoderLayout": {
+      "type": "object",
+      "required": [
+        "engine",
+        "detectedBy",
+        "slotBytes",
+        "slotCount",
+        "baseAddr"
+      ],
+      "properties": {
+        "engine": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The server's name for the layout it decoded against. A FREE STRING, never an enum: §11.18 makes an emitted enum unwidenable, and this value's whole job is to grow one entry per supported game. Clients compare for equality; they do not switch on a closed set."
+        },
+        "detectedBy": {
+          "type": "string",
+          "minLength": 1,
+          "description": "How the layout was chosen. Registered values: 'symbol' (a symbol table resolved the discriminant), 'configured' (an operator named it), 'fallback' (nothing resolved and the server guessed). Free string for `engine`'s reason. A server that answers 'fallback' MUST also emit `caveat`."
+        },
+        "detectedFrom": {
+          "$ref": "#/$defs/symbolName",
+          "description": "The symbol whose resolution decided the layout, when detectedBy is 'symbol'. A symbolName, so it round-trips through emulator/lookup_symbol (§4)."
+        },
+        "slotBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Stride of one record in bytes. D9 category 2."
+        },
+        "slotCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total slots the pool spans - what a full scan would cover. NOT the number of active objects, which is the reply's `total`."
+        },
+        "baseAddr": {
+          "$ref": "#/$defs/hex",
+          "description": "Bus address of slot 0 (D9 category 1). Lets a client verify every item's addr with one multiplication, which is P1: a decoder reply must be checkable against another instrument on the same bus."
+        },
+        "pools": {
+          "type": "array",
+          "description": "The pool vocabulary AS DATA rather than as a schema enum, because an enum would freeze one engine's pool structure into the bus - D-27's stated objection. Ascending firstSlot, contiguous, covering [0, slotCount) where present at all. Absent on an engine with no pool structure. There is deliberately no per-item `pool` key: it is slot vs this table, the derivable key CR-13 struck (the sprites.parsedMax precedent).",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "firstSlot",
+              "slotCount"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "firstSlot": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "slotCount": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false,
+      "description": "protocol.md §11.25 (CR-D). What the server decoded against, and how - REQUIRED on every reply from a decoder row, never in the handshake, because emulator/load_symbols may be called at any point in a session and the detect branches on whether a symbol resolves, so a handshake-time value is stale by construction. Closed here: it has no allOf for additionalProperties to be blind past (the otherMatches.items[] precedent)."
+    },
+    "decodedSlot": {
+      "type": "object",
+      "description": "protocol.md §11.25 (CR-D). One decoded object record. A SHAPE LIBRARY: types only, deliberately UNCLOSED and carrying NO `required`, because a use-site additionalProperties:false beside allOf is blind past the allOf in BOTH directions and would refuse these very keys (§11.5). Each use site re-lists every permitted key name in its own `properties` (inherited keys as `true`, its additions typed), declares its own `required`, and closes itself. The `object_slot` result is the exception: it is a RESULT top level, where the closure is item 20's harness-side unevaluatedProperties - which does see through allOf - so it declares no additionalProperties at all.",
+      "properties": {
+        "slot": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Index into the pool. D9 category 2. Sparse on object_list: empty slots are omitted, so slot numbers skip."
+        },
+        "addr": {
+          "$ref": "#/$defs/hex",
+          "description": "Bus address of the record (D9 category 1). P1: the key that makes the entry checkable with emulator/read and pokeable with emulator/write_memory. The legacy server emits this on object_slot and player_state but NOT on object_list, which is why an object_list reply is unverifiable today."
+        },
+        "x": {
+          "type": "integer",
+          "description": "World PIXELS, signed - the integer half of the record's position. Pixels rather than the engine's fixed-point word because pixels are the one value comparable ACROSS layouts; carrying a 16.16 raw would push one engine's fixed-point convention into the bus. A client wanting sub-pixels asks for the field by name or reads the bytes at addr."
+        },
+        "y": {
+          "type": "integer",
+          "description": "See x."
+        },
+        "code": {
+          "$ref": "#/$defs/hex",
+          "description": "The engine's identity datum for the slot, EXACTLY AS READ, at the offset and width the layout declares. A hex string (D9 category 1) on the sprites.satBase pattern: the representation is category 1 while the computation `ObjCodeBase + code` is what category 2 permits a client to do after parsing. Not a resolved address, because a layout whose identity datum is an object id rather than a code offset has no address to resolve, and a REQUIRED key meaningless on half the layouts is the freezing D-27 forbids. It is also the DISCRIMINANT that says how the record's overlay tail may be read."
+        },
+        "name": {
+          "$ref": "#/$defs/symbolName",
+          "description": "The BARE label the server resolved for `code`. §4's identifying spelling: it MUST round-trip through lookup_symbol, so a suffix MUST NOT be stripped for display. Omitted when nothing resolved - never the empty string."
+        },
+        "nameDisp": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Bytes past `name`. Present with `name`. §4: 'A displacement is never inside a name string.'"
+        },
+        "fields": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "number",
+              "string",
+              "boolean"
+            ]
+          },
+          "description": "TYPED-OPEN MAP. Keys are the LAYOUT's own field names, never names this contract chose; values are scalars. Present iff the request asked for fields. The openness is a declared property of the shape, not a gap the harness fails to reach - the methodSummaries pattern, where the schema pins the value type and prose pins the key provenance. Prose obligations no schema can carry (§11.25): a server MUST NOT emit a key its layout.engine does not name; MUST NOT emit decoded bit-name enums; MUST omit or caveat a key that is addressable but not LIVE for the slot's current occupant; and a value follows D9 - address-shaped fields as hex strings, counts and scalars as numbers, per the layout's own typing of the field."
+        },
+        "bytes": {
+          "$ref": "#/$defs/hex",
+          "description": "The whole record verbatim, slotBytes long. Present iff includeBytes. Off by default so the default reply's key set stays fully enumerated by this fragment."
+        }
+      }
     }
   },
   "anyMessage": {
@@ -457,7 +577,8 @@
                 "type": "boolean"
               },
               "objectDecoders": {
-                "type": "boolean"
+                "type": "boolean",
+                "description": "Whether THIS BUILD has the object-decoder handlers - never whether a layout was detected. True iff AT LEAST ONE of the §6 decoder rows (object_slot, object_list, player_state) appears in `methods`; per-row servedness is `methods` membership and nothing else (§8 item 23), which this flag never overrides or summarises. Kept a boolean rather than promoted to an object: changing a published key's JSON type is not additive (§11.18), and checkpoints/watchpoints were BORN objects, so they are precedent for new keys and not for retyping an old one. The detect result travels on every decoder reply as `layout`, because emulator/load_symbols may be called at any time and a handshake-time detect is stale by construction. A client that branched on this flag to decide whether a decode would succeed would be reading a build-time constant as a run-time fact. protocol.md §11.25."
               },
               "profiler": {
                 "type": "boolean"
@@ -598,6 +719,11 @@
                 "type": "integer",
                 "minimum": 1,
                 "description": "Largest `topCallers` emulator/get_profiler_frames accepts, and the ceiling it applies to each routine row's `callers` list (added 2026-08-21, §11.18, on the maxProfilerRoutines precedent). A REPLY bound, not a retention bound: the accumulator keeps every observed call edge, which is what makes a row's `callersTotal` the true count of distinct callers rather than the count that survived a cap — the opposite of maxProfilerFrames, which really is a ring depth. Refused, never clamped. ITS PRESENCE IS THE CAPABILITY SIGNAL for the caller lens: a server that supports set_profiler{callers:true} MUST advertise this key, and a server that does not MUST omit it, so a client branches on capability rather than on a version integer (D5). That conditional requirement is prose here for the reason maxWriteLen's is — limits.required cannot express `required iff the server implements a lens`."
+              },
+              "maxObjectSlots": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Largest `limit` emulator/object_list accepts - THIS SERVER's ceiling, not the catalog's, on the maxProfilerRoutines / maxBreakpoints precedent. A POLICY bound, so it is advertised rather than discovered by refusal, and the bound itself is refused rather than clamped (-32602). OPTIONAL, and its absence is meaningful: a server that applies no ceiling omits it and object_list.limit is then bounded only by layout.slotCount. Optional rather than required because a decoder-less build has no such number and must not be made to invent one. Added 2026-08-26, §11.25."
               }
             },
             "description": "REQUIRED (protocol.md §2.1, §11.5). THIS SERVER's ceilings, not the catalog's: §6's parenthetical defaults describe the catalog, while a server hosted inside a player window legitimately runs a far lower maxRunFrames and REFUSES above it rather than clamping (§5). A client has no other way to discover that number, and discovering it by being refused is discovering it too late. The values MUST be the ones the server's own parameter checks actually enforce."
@@ -5639,6 +5765,369 @@
       },
       "result": {
         "$ref": "#/$defs/replyFields"
+      }
+    },
+    "emulator/object_list": {
+      "$comment": "protocol.md §6 (object / player decoders), added 2026-08-26 by §11.25 (CR-D), closing audit D-27 for this row. A CLOSED ENVELOPE over an ENGINE-SHAPED payload: everything the contract owns is enumerated here, and the one part it cannot know - which named fields a given build's record has - is declared open as a typed map rather than left as a gap. §2.4's flat bounded-list spelling, as emulator/sprites uses it, with total/returned/limit/truncated as scalars beside the list. No cursor: the method accepts no continuation param, so a token it issued could never be handed back (§2.4 clause (b), lookup_symbol's ruling). A pure read: not subject to §6's run-control state rule, exactly as for read/sprites/pixel_attribution/scanlines - the envelope's `running` is the whole answer to a torn sample. One semantic divergence from sprites, deliberate: sprites pins total as {const:80} because every slot is an item there, while here an empty slot is NOT an item, so `total` counts ACTIVE objects and the table's size lives in layout.slotCount - two different facts, two homes.",
+      "params": {
+        "type": "object",
+        "unevaluatedProperties": false,
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Max entries, from the lowest slot upward. Default: all active slots. Refused, never clamped, below 1 or above limits.maxObjectSlots (-32602)."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Layout field names to decode into each item's `fields` map. A name the layout does not have is -32602 with error.data.unknownFields carrying the offending names - §2.5's unknownParams shape one level down. The refusal precedes any decode, so a refused request has read nothing."
+          },
+          "includeBytes": {
+            "type": "boolean",
+            "default": false,
+            "description": "When true, each item carries `bytes`: its whole record verbatim. Off by default because 66 records at $50 is 5,280 bytes on every call for a caller who wanted two coordinates. Kept rather than deferred to emulator/read because the pool exceeds the catalogued read cap, so 'capture the whole pool' is at minimum two reads with no per-slot slicing and no layout stamp tying the bytes to the decode."
+          }
+        }
+      },
+      "result": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/replyFields"
+          }
+        ],
+        "required": [
+          "objects",
+          "total",
+          "returned",
+          "limit",
+          "truncated",
+          "layout"
+        ],
+        "properties": {
+          "objects": {
+            "type": "array",
+            "description": "ACTIVE slots only, ascending. Presence IS activity: an empty slot is omitted rather than returned with a flag that would always be true. Slot numbers are therefore sparse.",
+            "items": {
+              "type": "object",
+              "allOf": [
+                {
+                  "$ref": "#/$defs/decodedSlot"
+                }
+              ],
+              "required": [
+                "slot",
+                "addr",
+                "x",
+                "y",
+                "code"
+              ],
+              "properties": {
+                "slot": true,
+                "addr": true,
+                "x": true,
+                "y": true,
+                "code": true,
+                "name": true,
+                "nameDisp": true,
+                "fields": true,
+                "bytes": true
+              },
+              "additionalProperties": false
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "How many ACTIVE slots exist. NOT the table's size, which is layout.slotCount. total:0 beside truncated:false is 'zero objects' as a stated fact rather than an empty list a client must interpret."
+          },
+          "returned": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "§2.4 clause (a)."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The ceiling actually applied, echoed so a caller can tell a default from its own request. May differ from the one asked for."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "REQUIRED EVEN WHEN FALSE (§2.4 clause (a))."
+          },
+          "layout": {
+            "$ref": "#/$defs/decoderLayout"
+          },
+          "caveat": {
+            "type": "string",
+            "minLength": 1,
+            "description": "§2.4 rule 4: declared because this method CAN emit one, emitted CONDITIONALLY - when layout.detectedBy is 'fallback', or when the symbol table that produced the layout was accepted with binding:'indeterminate' (§4). Never on every reply: a caveat every reply carries is one nobody reads."
+          }
+        }
+      }
+    },
+    "emulator/player_state": {
+      "$comment": "protocol.md §6 (object / player decoders), added 2026-08-26 by §11.25 (CR-D), closing audit D-27 for this row. object_list restricted to the player pool, with roles attached - the player is not a special record but an ordinary slot whose overlay window happens to be the player's. An ARRAY, never per-role keys: the legacy server's top-level key set VARIES BY ROM (player_1/player_2 on one branch, main/sidekick on the other, with an `engine` discriminant present on only one), which this repo's own transcription calls the biggest shape hazard in the eight; an array has a key set that does not vary, `role` carries the label without buying a key, and `layout` carries the discriminant on EVERY reply. No total/returned/truncated and no cursor: the player pool is structurally bounded, and §2.4 clause (d) says a structural bound takes neither. A pure read. NO DECODED BIT NAMES on any field: the legacy's names are invented, its two branches already disagree on the spelling of the same concept (in_air vs air, on_object vs onobject), §11.18 makes an emitted enum unwidenable, and a set-bits list carries strictly LESS than the raw value beside it because it cannot express a clear bit. A client asks for the raw field by name and applies the bit names it already has, from the source that defines them.",
+      "params": {
+        "type": "object",
+        "unevaluatedProperties": false,
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "As emulator/object_list."
+          },
+          "includeBytes": {
+            "type": "boolean",
+            "default": false,
+            "description": "As emulator/object_list."
+          }
+        }
+      },
+      "result": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/replyFields"
+          }
+        ],
+        "required": [
+          "players",
+          "layout"
+        ],
+        "properties": {
+          "players": {
+            "type": "array",
+            "description": "One entry per player SLOT, ascending - INACTIVE SLOTS INCLUDED, unlike object_list. 'Player 2 is not present' is the answer to the question asked, and a client must not have to infer it from an array's length against a bound it joins from elsewhere.",
+            "items": {
+              "type": "object",
+              "allOf": [
+                {
+                  "$ref": "#/$defs/decodedSlot"
+                },
+                {
+                  "if": {
+                    "required": [
+                      "active"
+                    ],
+                    "properties": {
+                      "active": {
+                        "const": true
+                      }
+                    }
+                  },
+                  "then": {
+                    "required": [
+                      "x",
+                      "y",
+                      "code"
+                    ]
+                  },
+                  "else": {
+                    "not": {
+                      "anyOf": [
+                        {
+                          "required": [
+                            "x"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "y"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "code"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "name"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "nameDisp"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "fields"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "bytes"
+                          ]
+                        }
+                      ]
+                    }
+                  }
+                }
+              ],
+              "required": [
+                "slot",
+                "addr",
+                "active"
+              ],
+              "properties": {
+                "slot": true,
+                "addr": true,
+                "x": true,
+                "y": true,
+                "code": true,
+                "name": true,
+                "nameDisp": true,
+                "fields": true,
+                "bytes": true,
+                "active": {
+                  "type": "boolean",
+                  "description": "Whether this slot holds a live player. REQUIRED, false included: false is the answer, not the absence of one."
+                },
+                "role": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The server's label for this slot, from the layout - 'player', 'sidekick', ... A free string, for the reason layout.engine is one (§11.18). May be present on an inactive slot: the label is the slot's, not the occupant's."
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "layout": {
+            "$ref": "#/$defs/decoderLayout"
+          },
+          "caveat": {
+            "type": "string",
+            "minLength": 1,
+            "description": "As emulator/object_list."
+          }
+        }
+      }
+    },
+    "emulator/object_slot": {
+      "$comment": "protocol.md §6 (object / player decoders), added 2026-08-26 by §11.25 (CR-D), closing audit D-27 for the third row of the family. The single-slot projection of emulator/object_list: the item keys hoisted to the top level, plus `active`, because this row ADDRESSES a slot and emptiness is therefore an answer rather than an omission. When active is false the reply is the slot facts and layout only - the decoded keys are omitted, never fabricated (§11.25, the M2 conditional on both rows that carry active). No consumer asked for it; it travels because leaving one row of a three-row family unschematized would leave the BLOCKED set meaning something its own reason does not say, and because a family with one absence convention is better than a family with two (the legacy emits '' for a missing name here and omits the key there). A slot past the pool is refused -32602 with the bound in error.data, on scanlines' precedent rather than pixel_attribution's -32004 - see §11.25, which records that the contract is split on this. NOTE the closure: this result declares NO additionalProperties, because a result top level composes replyFields and the closure that applies here is item 20's harness-side unevaluatedProperties, which sees through allOf.",
+      "params": {
+        "type": "object",
+        "unevaluatedProperties": false,
+        "required": [
+          "slot"
+        ],
+        "properties": {
+          "slot": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Index into the pool. Refused with -32602 at or above layout.slotCount, error.data carrying {slot, slotCount}: the fragment cannot bound it because the bound is a property of the loaded game."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "As emulator/object_list."
+          },
+          "includeBytes": {
+            "type": "boolean",
+            "default": false,
+            "description": "As emulator/object_list."
+          }
+        }
+      },
+      "result": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/replyFields"
+          },
+          {
+            "$ref": "#/$defs/decodedSlot"
+          },
+          {
+            "if": {
+              "required": [
+                "active"
+              ],
+              "properties": {
+                "active": {
+                  "const": true
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "x",
+                "y",
+                "code"
+              ]
+            },
+            "else": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "x"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "y"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "name"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "nameDisp"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "fields"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "bytes"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "required": [
+          "slot",
+          "addr",
+          "layout",
+          "active"
+        ],
+        "properties": {
+          "layout": {
+            "$ref": "#/$defs/decoderLayout"
+          },
+          "active": {
+            "type": "boolean",
+            "description": "Whether the addressed slot holds a live object. REQUIRED, false included: false is the answer, not the absence of one. When false, the decoded keys (x, y, code, name, nameDisp, fields, bytes) are FORBIDDEN - an empty slot's record is bytes the game never wrote, and reporting them would be the uninitialised-byte-as-datum shape rule (3) forbids for `fields`."
+          },
+          "caveat": {
+            "type": "string",
+            "minLength": 1,
+            "description": "As emulator/object_list."
+          }
+        }
       }
     }
   }

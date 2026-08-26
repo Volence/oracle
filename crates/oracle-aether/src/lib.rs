@@ -68,6 +68,7 @@
 // independently is a hash only its own implementation vouches for.
 pub mod build_info;
 pub mod crc32;
+pub mod decoders;
 pub mod engine;
 pub mod hex;
 pub mod host;
