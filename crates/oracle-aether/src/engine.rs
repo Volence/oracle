@@ -28,6 +28,7 @@
 //! is engine-owned and **lent** — see [`Engine::watchpoints`], which is the one place the hosted
 //! arrangement's two-run-drivers problem is answered.
 
+use crate::build_info;
 use crate::hex;
 use crate::outbound::Subscribers;
 use crate::rpc::{self, code, RpcError};
@@ -1013,8 +1014,19 @@ impl Engine {
     }
 
     /// Attach the ROM's own path so `emulator/reload_rom` and `emulator/status` can name it.
+    ///
+    /// **Absolutised here, at load** — §6's `romPath` is *"the absolute path of the loaded image"*, and
+    /// until 2026-08-26 this echoed the launch argument verbatim, so `oracle-aether ./s4.bin` put `./s4.bin`
+    /// on the wire (§12.2 item 9 of the CR-C ruling). A relative path is not a weaker answer, it is an
+    /// answer that means something different to every reader: a client, a second client, and a log read
+    /// tomorrow all resolve it against a working directory that is not this process's, and the two ways it
+    /// is used — naming the image to a human and feeding `emulator/reload_rom`'s default — both break the
+    /// moment anyone but this process resolves it.
+    ///
+    /// Done at the boundary rather than in `status` so every route agrees: the binary, the hosted
+    /// embedder, `reload_rom` and a checkpoint restore all arrive here or at an already-absolutised value.
     pub fn set_rom_path(&mut self, path: Option<String>) {
-        self.rom_path = path;
+        self.rom_path = path.map(|p| absolutise(&p));
     }
 
     /// Install an already-parsed symbol table (the binary does this at startup from the `.lst` beside
@@ -1350,9 +1362,26 @@ impl Engine {
             .iter()
             .map(|m| (m.name.to_string(), json!(m.summary)))
             .collect();
+        // §2.1 (§11.23): which implementation answered, and which build of it. Both are read from
+        // `build_info` and **never** from `self.config` — §2.1 makes a config-settable value a violation
+        // rather than a supported deployment, and the check is source-level (`tests/server_build.rs`).
+        // `serverName` beside them stays a deployment label, and stops being an identity.
+        let mut server_build = json!({
+            "id": build_info::SERVER_BUILD_ID,
+            "source": build_info::SERVER_BUILD_SOURCE,
+        });
+        // `dirty` is REQUIRED under `source: "vcs"` and meaningless otherwise, which is why it is an
+        // `Option` in the generated constant rather than a `bool` with a made-up value for the tarball
+        // case: the schema's `if`/`then` is conditional on purpose, and emitting `dirty: false` from a
+        // build that never consulted a working tree would be exactly the self-report §2.1 bars.
+        if let Some(d) = build_info::SERVER_BUILD_DIRTY {
+            server_build["dirty"] = json!(d);
+        }
         Ok(json!({
             "serverName": self.config.server_name,
             "serverVersion": self.config.server_version,
+            "implementation": build_info::IMPLEMENTATION,
+            "serverBuild": server_build,
             "protocolVersion": rpc::PROTOCOL_VERSION,
             "capabilities": {
                 // The authoritative event set (D6) — exactly what this server pushes.
@@ -2027,26 +2056,20 @@ impl Engine {
             Some(v) => hex::parse_count("count", v, 0, u64::MAX)?,
         };
         let pc = self.run_step(StepGoal::Instructions(count));
-        let mut out = json!({ "pc": hex::addr(pc) });
-        // §4: the BARE label plus the number beside it. `symbol_at` returns exactly that pair, and the
-        // fragment's `$defs/symbolName` rejects a `+$hex` suffix outright. **Absent when nothing resolves**
-        // — a server MUST NOT fall back to the address string, so there is no `else` here on purpose.
-        if let Some((name, disp)) = self.symbol_at(pc) {
-            out["symbol"] = json!(name);
-            out["symbolDisp"] = json!(disp);
-        }
         // No `caveat`, and that is the fragment's word rather than an omission: it declares the key ABSENT
         // (the `sprites` precedent) because a step has no weaker-answer condition §6 names. §8 item 20's
         // closure would reject one, and the suite applies that closure to every reply.
-        Ok(out)
+        Ok(self.halt_result(pc))
     }
 
-    /// **§6 line 852 — `emulator/step_over`.** No params, and **no result keys at all**.
+    /// **§6 — `emulator/step_over`.** No params → `pc`, `symbol`?, `symbolDisp`?
     ///
-    /// The empty result is §6's row (`—` in both columns), not an omission: the answer arrives on the event
-    /// channel, whose `stopped` params carry `pc`, `symbol?` and `symbolDisp?`. That `emulator/step` *does*
-    /// return `pc` while this returns nothing is an asymmetry §6 owns and the fragments deliberately
-    /// preserved — **audit D-03** — so it is served as written and reported, never smoothed over here.
+    /// **The empty result was the row until 2026-08-26, and §11.24 closed it.** §6 used to write `—` in
+    /// both columns while `emulator/step` returned `pc` — an asymmetry §6 owned, which the fragments
+    /// preserved on purpose and reported as **audit D-03**. The ruling went the other way: the three rows
+    /// share **one stop condition** (§3 pins their `reason` as `step` for all three), and both servers
+    /// already computed the halt PC and discarded it. So this row now returns `emulator/step`'s result,
+    /// through [`halt_result`](Engine::halt_result) rather than a second spelling of the same answer.
     ///
     /// **What it actually does, and why it is not a `step` in disguise.** The pending opcode is classified
     /// before the run. If it is not a `JSR`/`BSR` there is nothing to step over and this is one instruction,
@@ -2062,12 +2085,12 @@ impl Engine {
             ControlFlow::Call => StepGoal::OverCall,
             _ => StepGoal::Instructions(1),
         };
-        self.run_step(goal);
-        Ok(json!({}))
+        let pc = self.run_step(goal);
+        Ok(self.halt_result(pc))
     }
 
-    /// **§6 line 853 — `emulator/step_out`.** No params, no result keys. Identical treatment to
-    /// [`step_over`](Engine::step_over), for identical reasons (audit D-03).
+    /// **§6 — `emulator/step_out`.** No params → `pc`, `symbol`?, `symbolDisp`?. Identical treatment to
+    /// [`step_over`](Engine::step_over), for identical reasons (§11.24, closing audit D-03).
     ///
     /// Runs until the frame that was already live returns. The frame's entry SP is **not** knowable from
     /// here — however many locals the routine has already pushed is not recoverable, and nothing in the core
@@ -2080,8 +2103,31 @@ impl Engine {
             sp0: regs.a7(),
             supervisor: regs.supervisor(),
         };
-        self.run_step(goal);
-        Ok(json!({}))
+        let pc = self.run_step(goal);
+        Ok(self.halt_result(pc))
+    }
+
+    /// **The result all three `step*` rows return** — `pc`, plus the symbol pair when it resolves.
+    ///
+    /// One builder, because since §11.24 there is one answer: the three rows share a single stop condition
+    /// (§3), so they report the same halt, and the `stopped` event that accompanies them reports it too.
+    /// Keeping the shape in one place is what stops the reply and the event drifting apart — and that
+    /// drift is precisely what D-03 was: `emulator/step` returning a PC that `step_over` computed, held,
+    /// and threw away.
+    ///
+    /// §4: the **BARE** label plus the number beside it. [`symbol_at`](Engine::symbol_at) returns exactly
+    /// that pair — the same lookup [`emit_stopped`](Engine::emit_stopped) uses, deliberately not a second
+    /// one — and the fragment's `$defs/symbolName` rejects a `+$hex` suffix outright. **Absent when
+    /// nothing resolves**: a server MUST NOT fall back to the address string, so there is no `else` here
+    /// on purpose, and `symbolDisp` goes with it, because a displacement from a symbol that was never
+    /// reported is a number about nothing.
+    fn halt_result(&self, pc: u32) -> Value {
+        let mut out = json!({ "pc": hex::addr(pc) });
+        if let Some((name, disp)) = self.symbol_at(pc) {
+            out["symbol"] = json!(name);
+            out["symbolDisp"] = json!(disp);
+        }
+        out
     }
 
     /// The run all three `step*` rows share: advance under a [`StepGoal`], then report the halt.
@@ -3776,6 +3822,10 @@ impl Engine {
             RpcError::invalid_params(format!("cannot read {path}: {e}"))
                 .with_data(json!({"path": path}))
         })?;
+        // Absolutised only after the read succeeded, so the *refusal* above still quotes the caller's own
+        // spelling back at them — a client debugging a bad path wants to see what it sent. §6 wants the
+        // absolute path for the image that is actually loaded, which is what everything below reports.
+        let path = absolutise(&path);
         let len = rom.len();
         self.sys.load_rom(rom);
         self.sys.reset();
@@ -4945,6 +4995,26 @@ fn cram_entry(cram: &[u8], line: u8, index: u8) -> Value {
         "g": (raw >> 5) & 0x07,
         "b": (raw >> 9) & 0x07,
     })
+}
+
+/// §6's `romPath` SHOULD be *the absolute path of the loaded image*. Make it one, or say nothing new.
+///
+/// **`canonicalize` and no fallback, deliberately.** The obvious alternative — join a relative path onto
+/// the current directory whenever it does not start with `/` — is wrong in the one case that matters
+/// here: this string is not always a filesystem path. A hosted embedder sets
+/// [`crate::host::MachineInfo::rom_path`] to whatever names its image, `"testrom"` included, and there is
+/// no file behind it. Prefixing a working directory onto that label would manufacture a path that
+/// resolves to nothing and looks authoritative — a *worse* answer than the label, and §6's rule is a
+/// SHOULD precisely so that "I cannot honestly say" stays available.
+///
+/// So: if the string names a file this process can resolve, report the resolved absolute path (symlinks
+/// and `..` included — one image, one spelling, so two clients naming the same cartridge agree). If it
+/// does not, it was never a path we could speak for, and it is passed through untouched.
+fn absolutise(path: &str) -> String {
+    match std::fs::canonicalize(path) {
+        Ok(p) => p.to_string_lossy().into_owned(),
+        Err(_) => path.to_string(),
+    }
 }
 
 fn out_of_range(addr: u32, why: &str) -> RpcError {

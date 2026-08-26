@@ -14,12 +14,16 @@ an explicit re-vendor commit. That commit is the auditable record of "we adopted
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo revision | `origin/main` at **`9b46a2350ee2dcec609b05aad2c567e632cf378a`** (2026-08-22), the tip at the moment the bytes were taken. `TRACKED_REVISION` is `None`. 58 fragments; every params object closed (handshake exempt) — both figures **re-derived by parsing this copy**, never carried over. |
-| Last commit that touched the schema | **`eecce95a9b6207eb872243731a4a03150311d538`** — *"contract: drop the stale count from the schema description; record D-33, the four-param wire-spelling divergence, with its reach measured"* (2026-08-22). **This is the pointer that matters**; see the note below. |
-| Git blob | `9d8cc3c36cf2d77fdb9a4aed124f31c95f2de028` |
-| SHA-256 | `8cc08be1b73b909341c6a3eef94b347a521966608c9e71cedd6decc5f6c7529d` |
-| Bytes | 219725 |
-| Vendored on | 2026-08-22 |
+| Contract repo revision | `origin/main` at **`fc7d7a58ac2ab413f1a13e1ef7229a2e4702b016`** (2026-08-25), the tip at the moment the bytes were taken. `TRACKED_REVISION` is `None`. 59 fragments; all 59 declare `params` and all 59 close it with `unevaluatedProperties: false` (handshake exempt) — every figure **re-derived by parsing this copy**, never carried over. |
+| Last commit that touched the schema | **`fc7d7a58ac2ab413f1a13e1ef7229a2e4702b016`** — *"protocol §11.24: batch B1 applied (D-01/02/03/05/06/07/08/09/19); six refusals proven red-first; gate 68/100/32"* (2026-08-25). Here the tip and the last-touching commit coincide, which is not the usual case; **the blob is still the pointer that matters**, see the note below. |
+| Git blob | `7b24bcedc24f0a6aa7dd4504f4e2f9bf63e4cda7` |
+| SHA-256 | `9a8cbc47ea74df39c96ad43a390965c9051af4180427c373c601d6b18cbbcc23` |
+| Bytes | 280799 |
+| Vendored on | 2026-08-26 |
+
+**Taken from the object store at a committed revision**, `git show fc7d7a5:contract/schema/bus-protocol.schema.json`, never copied out of the sibling working tree — the recipe the retired tracking box below left behind. The sibling checkout was at `8de32bb`, *ahead* of `origin/main`, and was byte-identical for this path; had it not been, the object store is what would have been adopted and the working tree would have been the thing that was wrong.
+
+**The empyrean half of this parcel is already on `main` there.** §11.23 (CR-C, server identity) merged as **`45969af`**, and the audit entry that follows it is **`1352a5c`**; the tip adopted here, `fc7d7a5`, carries §11.24 on top of both.
 
 > **Record the BLOB, not only the branch tip.** `origin/main` moved *twice while this re-vendor was
 > running* — `7dad1e6a` when the source was first inspected, `9b46a235` twenty minutes later when the
@@ -32,7 +36,50 @@ an explicit re-vendor commit. That commit is the auditable record of "we adopted
 merged as `70c7bb4` — its third profiler-amendment carry, per its own recipe: copy from the object
 store, never from the checkout.)*
 
-### What this re-vendor adopted — the §9 mechanical-completion pass, 37 → 58 fragments
+### What this re-vendor adopted — §11.21 – §11.24, 58 → 59 fragments (2026-08-26)
+
+Four amendments arrived together, because the vendored copy had not moved since 2026-08-22 and the
+contract had. **Exactly one method fragment was added across all four** — every other change is to an
+existing fragment or to the handshake — and that asymmetry is the whole of the pin arithmetic below.
+Both fragment sets were re-derived by parsing the old copy and the new one, never read from a commit
+message.
+
+| | 58-fragment copy | this copy | delta |
+|---|---|---|---|
+| method fragments (`methods`, `$`-keys excluded) | 58 | **59** | **+1**: `emulator/breakpoint_set_enabled` |
+| fragments declaring `result` | 58 | **59** | +1, the same name |
+| fragments closing `params` | 58 | **59** | +1, the same name |
+| `UNCOVERED_METHODS` (advertised, no `result` fragment) | 0 | **0** | unmoved — the new fragment is for a method this server does not advertise |
+| `SCHEMATIZED_NOT_ADVERTISED` | 17 | **18** | **+1**, the same name |
+
+- **§11.21 (CR-BP, breakpoints)** is the only entry that added a row: `emulator/breakpoint_set_enabled`,
+  plus a `handle` shape on `breakpoint_add`/`_list`/`_clear`, an `unknownBreakpoint` /
+  `breakpointCapReached` pair in the `-32005` `reason` prose, and a `breakpoint` handle on the `stopped`
+  event, conditional on `reason == "breakpoint"`. This server publishes `capabilities.breakpoints:
+  false` and advertises none of the five rows, so the addition lands in `SCHEMATIZED_NOT_ADVERTISED`
+  and the pin moves 17 → 18.
+- **§11.22 (`z80_write` byte rule, setter enums)** changed `z80_read`/`z80_write`,
+  `set_layer_enabled`/`set_channel_enabled` and `vgm_status`. **No fragment added.** Every one of those
+  names was already in `SCHEMATIZED_NOT_ADVERTISED`, so no pin moves.
+- **§11.23 (CR-C, server identity)** — the entry this parcel serves — changed **only the handshake**:
+  `implementation` and `serverBuild` as new `properties`, three names appended to
+  `initialize.result.required` (`serverVersion` among them, promoted), and descriptions on `serverName`
+  and `serverVersion`. **No fragment added, no pin moved.** Its cost lands on the server instead: the
+  suite compiles `handshake.initialize.result` **closed**, so the three newly-required keys are a hard
+  red until the emission ships — which is why the emission and this re-vendor are one commit.
+- **§11.24 (audit batch B1)** changed `ping`, `step`, `step_over`, `step_out`, `wait_for_break` and
+  `breakpoint_*`. **No fragment added.** It is the only one of the four with a live consequence for a
+  row this server *does* serve — see the deviation recorded below.
+
+**A deviation this re-vendor adopts knowingly: `step_over` and `step_out` now owe `pc`.** §11.24 closed
+audit D-03 by giving both rows the same result as `emulator/step` (`pc` REQUIRED, `symbol?`,
+`symbolDisp?`); this server returns `{}` from both (`engine.rs`'s `step_over`/`step_out`), which was
+transcribed *from* the pre-amendment fragment and is now short of the contract. The handlers are **not**
+changed here: §11.24's behavioural asks are a separate parcel, and inventing the fix inside a re-vendor
+commit is how a schema quietly becomes a record of what a server does. It is recorded, not silenced, and
+it is the reason the aether suite is not fully green at this commit.
+
+### History — the §9 mechanical-completion pass, 37 → 58 fragments (2026-08-22)
 
 **Twenty-one fragments added, none removed, and not one existing fragment changed content.** All three
 figures re-derived by parse rather than carried from the upstream commit message: the 37 pre-existing
