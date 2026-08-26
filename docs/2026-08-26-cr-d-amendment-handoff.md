@@ -6,11 +6,13 @@ This document is the finished text, ready to be applied without further drafting
 
 | | |
 |---|---|
-| **Written on** | oracle branch **`cr-d-apply`**, cut from oracle `main` **`ed05ff0`** |
-| **Sources** | the CR `docs/2026-08-26-cr-d-object-decoders.md` (as amended by this parcel's first commit) and the ruling `docs/2026-08-26-ruling-cr-d.md` — verdict **ADOPT WITH CHANGES** |
+| **Written on** | oracle branch **`cr-d-apply`**, cut from oracle `main` **`ed05ff0`**; **delta ruling applied** on branch **`cr-d-delta-apply`** |
+| **Sources** | the CR `docs/2026-08-26-cr-d-object-decoders.md` (as amended by this parcel's first commit), the ruling `docs/2026-08-26-ruling-cr-d.md` — verdict **ADOPT WITH CHANGES** — and the delta ruling `docs/2026-08-26-ruling-cr-d-delta.md`, which amended two of the three items flagged at §9 (**M5** `role` survives inactivity, **M7** `object_slot` takes the M2 conditional) and upheld the third (**M6**) |
+| **Hold** | **RELEASED.** The delta held this handoff on M7 and said it releases *"by application, not by a further delta"*, on the condition that M5 and M7 are applied, §8's validation re-run over the amended fragments with the four new vectors, and its output quoted here. All three are done and §8's run is **ALL GREEN** |
 | **Targets** | empyrean `contract/protocol.md`, `contract/schema/bus-protocol.schema.json`, `contract/schema/tests/vectors.json` |
 | **Anchored at** | empyrean `origin/main` **`78d432235090ae53848f4f6725f36ac148ff1ef4`** — read after `git fetch`, through `git show <rev>:<path>`, never through the sibling directory path |
 | **Contract blobs there** | `protocol.md` **`b4776ce90000a89ee50755892f999c03e5130e99`** (4265 lines) · schema **`7b24bcedc24f0a6aa7dd4504f4e2f9bf63e4cda7`** |
+| **Re-verified at delta-apply time** | empyrean `origin/main` has moved on again, to **`4b2f3dd8462ea3f5edb1d43fddd438762a60ff8c`** — and the contract has **not** moved with it: `protocol.md` **`b4776ce90000a89ee50755892f999c03e5130e99`**, schema **`7b24bcedc24f0a6aa7dd4504f4e2f9bf63e4cda7`**, `vectors.json` **`a5051ba2b5057e8058df92498a2a60492807a775`**, every one byte-identical to its blob at the anchor `78d4322`. The single commit touching `contract/` in between (`db13224`) edits `contract/LANE_STATUS.md` alone. **§11.25 is still free**: `protocol.md` at the tip still ends at line **4265**, its last section is still **§11.24** at `:4227`, and `grep -c '^### 11.25'` returns **0** |
 | **Runtime** | none. No `cargo`, no emulator MCP tool, no server started. Nothing committed to any `main`. `docs/lane-status.json` untouched. |
 
 **Did the tip move, and did the contract move with it?** The tip **moved** — the CR anchored at `39cfaa27`
@@ -43,7 +45,7 @@ every cross-reference; the strings to change are listed in §7 below.
 | **G** | schema `methods` | Three new fragments: `emulator/object_list`, `emulator/player_state`, `emulator/object_slot` | D2, D3, D5 — Q8 answered *travel* |
 | **H** | schema `capabilities.objectDecoders` | A `description` carrying §8.1's normative sentence. Type unchanged | D4 + **S4** |
 | **I** | schema `limits` | One new **OPTIONAL** key, `maxObjectSlots` | CR §10.5 |
-| **J** | `vectors.json` | **18 new cases**: 7 accepting, 11 refusing | **M1(iii)** |
+| **J** | `vectors.json` | **22 new cases**: 9 accepting, 13 refusing — counts re-derived from §8's run, never carried | **M1(iii)**, extended by the delta ruling's **M5** and **M7** (cases 19–22) |
 
 Nothing else in either artifact is touched. No method is removed, no key is removed, no published type
 changes.
@@ -77,7 +79,9 @@ Replace `protocol.md:1492-1503` in full (the heading, the four rows, and the ⚙
 > per the layout's own typing of the field: the map's key set is unbounded, its spellings are not.
 > **(3)** A `fields` key that is addressable but **not live** for the slot's current occupant MUST be
 > omitted or caveated, never reported as a datum — an uninitialised byte returned as a number is a value
-> the game never wrote.
+> the game never wrote. The same rule one level up: on the two rows that carry `active`, an inactive reply
+> carries the slot facts (`slot`, `addr` — and `role` where declared) beside `layout`; the decoded keys are
+> omitted, never fabricated.
 > **(4)** A slot index past the pool is refused with **`-32602`**, `error.data` carrying the bound, never
 > clamped. §11.25 records that the contract is split here: `pixel_attribution` answers `-32004` for a
 > structurally identical refusal, and this family follows `scanlines` instead.
@@ -363,7 +367,7 @@ parts are load-bearing together — drop step 2 and the closure refuses the base
                   "anyOf": [
                     {"required": ["x"]}, {"required": ["y"]}, {"required": ["code"]},
                     {"required": ["name"]}, {"required": ["nameDisp"]},
-                    {"required": ["fields"]}, {"required": ["bytes"]}, {"required": ["role"]}
+                    {"required": ["fields"]}, {"required": ["bytes"]}
                   ]
                 }
               }
@@ -379,7 +383,7 @@ parts are load-bearing together — drop step 2 and the closure refuses the base
             },
             "role": {
               "type": "string", "minLength": 1,
-              "description": "The server's label for this slot, from the layout - 'player', 'sidekick', ... A free string, for the reason layout.engine is one (§11.18)."
+              "description": "The server's label for this slot, from the layout - 'player', 'sidekick', ... A free string, for the reason layout.engine is one (§11.18). May be present on an inactive slot: the label is the slot's, not the occupant's."
             }
           },
           "additionalProperties": false
@@ -404,7 +408,7 @@ palette length), `watchpoint_hits` (`space` ↔ `fc`/`old`), `watchpoint_add` (`
 
 ```json
 {
-  "$comment": "protocol.md §6 (object / player decoders), added 2026-08-26 by §11.25 (CR-D), closing audit D-27 for the third row of the family. The single-slot projection of emulator/object_list: the item keys hoisted to the top level, plus `active`, because this row ADDRESSES a slot and emptiness is therefore an answer rather than an omission. No consumer asked for it; it travels because leaving one row of a three-row family unschematized would leave the BLOCKED set meaning something its own reason does not say, and because a family with one absence convention is better than a family with two (the legacy emits '' for a missing name here and omits the key there). A slot past the pool is refused -32602 with the bound in error.data, on scanlines' precedent rather than pixel_attribution's -32004 - see §11.25, which records that the contract is split on this. NOTE the closure: this result declares NO additionalProperties, because a result top level composes replyFields and the closure that applies here is item 20's harness-side unevaluatedProperties, which sees through allOf.",
+  "$comment": "protocol.md §6 (object / player decoders), added 2026-08-26 by §11.25 (CR-D), closing audit D-27 for the third row of the family. The single-slot projection of emulator/object_list: the item keys hoisted to the top level, plus `active`, because this row ADDRESSES a slot and emptiness is therefore an answer rather than an omission. When active is false the reply is the slot facts and layout only - the decoded keys are omitted, never fabricated (§11.25, the M2 conditional on both rows that carry active). No consumer asked for it; it travels because leaving one row of a three-row family unschematized would leave the BLOCKED set meaning something its own reason does not say, and because a family with one absence convention is better than a family with two (the legacy emits '' for a missing name here and omits the key there). A slot past the pool is refused -32602 with the bound in error.data, on scanlines' precedent rather than pixel_attribution's -32004 - see §11.25, which records that the contract is split on this. NOTE the closure: this result declares NO additionalProperties, because a result top level composes replyFields and the closure that applies here is item 20's harness-side unevaluatedProperties, which sees through allOf.",
   "params": {
     "type": "object",
     "unevaluatedProperties": false,
@@ -421,12 +425,25 @@ palette length), `watchpoint_hits` (`space` ↔ `fc`/`old`), `watchpoint_add` (`
   "result": {
     "allOf": [
       {"$ref": "#/$defs/replyFields"},
-      {"$ref": "#/$defs/decodedSlot"}
+      {"$ref": "#/$defs/decodedSlot"},
+      {
+        "if": {"required": ["active"], "properties": {"active": {"const": true}}},
+        "then": {"required": ["x", "y", "code"]},
+        "else": {
+          "not": {
+            "anyOf": [
+              {"required": ["x"]}, {"required": ["y"]}, {"required": ["code"]},
+              {"required": ["name"]}, {"required": ["nameDisp"]},
+              {"required": ["fields"]}, {"required": ["bytes"]}
+            ]
+          }
+        }
+      }
     ],
-    "required": ["slot", "addr", "x", "y", "code", "layout", "active"],
+    "required": ["slot", "addr", "layout", "active"],
     "properties": {
       "layout": {"$ref": "#/$defs/decoderLayout"},
-      "active": {"type": "boolean", "description": "Whether the addressed slot holds a live object. REQUIRED, false included."},
+      "active": {"type": "boolean", "description": "Whether the addressed slot holds a live object. REQUIRED, false included: false is the answer, not the absence of one. When false, the decoded keys (x, y, code, name, nameDisp, fields, bytes) are FORBIDDEN - an empty slot's record is bytes the game never wrote, and reporting them would be the uninitialised-byte-as-datum shape rule (3) forbids for `fields`."},
       "caveat": {"type": "string", "minLength": 1, "description": "As emulator/object_list."}
     }
   }
@@ -473,8 +490,10 @@ Append after §11.24 (currently the last section, ending the file at `:4265`):
 ### 11.25 — 2026-08-26: the decoder rows get a shape — a closed envelope, an open payload, and a server that says what it assumed
 
 **CR-D**, raised by the oracle lane and adjudicated independently (**ADOPT WITH CHANGES**: 62 checkable
-claims, 60 held, 2 adjusted, none failed; four MUSTs and seven SHOULDs, all applied before this entry was
-written). It closes audit **D-27** for all three rows it names, and it is the first amendment to remove a
+claims, 60 held, 2 adjusted, none failed; four MUSTs, seven SHOULDs **and a three-flag delta ruling, all
+applied** before this entry was written — the delta amended two of the ruled items on the applier's
+objection, `role` surviving inactivity and `object_slot` taking the conditional `required`, and upheld the
+third). It closes audit **D-27** for all three rows it names, and it is the first amendment to remove a
 row from the schema's BLOCKED set rather than add one to the catalog. **No method is added or removed.**
 
 **The problem, in one sentence.** `emulator/object_list` and `emulator/player_state` are catalogued and
@@ -587,9 +606,11 @@ vectors are proven **wired** by running them against the pre-amendment artifact 
 `no fragment in the schema` — the CR-BP form, since accepted-before/refused-after cannot exist for a
 fragment that did not exist; **(3)** the accepting vectors validate **under item 20's closure**, including
 the `object_slot` result, whose top level composes `replyFields` and `decodedSlot` and would be refused by
-an `additionalProperties` there; **(4)** the one-player reply `{slot, addr, active: false}` is **accepted**
-and the same item carrying `x` is **refused**, both proven, since that pair is the whole of the structural
-fix this ruling required; and **(5)** the schema's top-level `description` names **five** BLOCKED rows and
+an `additionalProperties` there; **(4)** the structural conditional is proven in both directions on **both**
+rows that carry `active`: for `player_state`, `{slot, addr, active: false}` accepted — `role` beside it also
+accepted — and the same item carrying `x` refused; for `object_slot`, `{slot, addr, active: false, layout}`
+accepted under item 20's closure and the active reply without `x`/`y`/`code` refused; that set is the whole
+of the structural fix M2 and its delta required; and **(5)** the schema's top-level `description` names **five** BLOCKED rows and
 no longer names any row this entry schematizes.
 ```
 
@@ -602,27 +623,44 @@ strings in the schema that cite `§11.25` (`decoderLayout`, `decodedSlot`, the t
 
 ## 8. Delta J — the vectors, and the validation actually run
 
-**18 new cases: 7 accepting, 11 refusing.** They were not written and hoped for. A working copy of the real
-schema blob `7b24bced` was taken, the deltas of §6 merged into it, and the cases validated with
-`jsonschema` 4.26.0 (draft 2020-12), result docs merged with the upstream `vectors.json` envelope exactly
-as the gate does it:
+**22 new cases: 9 accepting, 13 refusing** — 18 as first drafted, plus four the delta ruling
+(`docs/2026-08-26-ruling-cr-d-delta.md`) added for M5 and M7. They were not written and hoped for. A
+working copy of the real schema blob `7b24bced` was taken, the deltas of §6 merged into it, and the cases
+validated with `jsonschema` 4.26.0 (draft 2020-12), result docs merged with the upstream `vectors.json`
+envelope exactly as the gate does it. **Every count below is read out of the run, never edited by hand**
+(M1(ii)); this is the post-delta run:
 
 ```
-G1  merged schema is a valid draft 2020-12 schema
-G2  params fragments not closed: none
-    fragments 59 -> 62 (parsed, not carried)
-G3  7 pass-vectors validated, 11 fail-vectors proven red
-G4  7 of the pass-vectors also validated under item 20 closure
-RF  18/18 vectors answer "no fragment in the schema" against the pre-amendment artifact
+== G1  merged schema is a valid draft 2020-12 schema
+  ok  (whole document + 130 fragments each checked on its own)
+== G2  §2.5 / §8 item 22 — request params are closed
+  params fragments not closed: none
+  fragments 59 -> 62 (parsed, not carried)
+== G3/G4  the 22 new vectors
+  9 pass-vectors validated, 13 fail-vectors proven red
+  7 of the pass-vectors also validated under item 20 closure
+== RF  every new vector against the PRE-amendment artifact
+  22/22 vectors answer "no fragment in the schema" against the pre-amendment artifact
 
 ALL GREEN
 ```
 
+**⚑ One number in the pre-delta record was wrong, and the recount caught it.** This document previously
+recorded `G4  7 of the pass-vectors also validated under item 20 closure` against 7 pass-vectors. The
+closure leg applies only to **server-emitted** payloads — the gate's own `emitted = kind == "result" or
+group == "events"` — and two of those 7 passes were `params` cases, so the true pre-delta figure was
+**5**, not 7. Re-running the identical harness over this document's own pre-delta text reproduces
+`7 pass-vectors validated, 11 fail-vectors proven red` and `5 of the pass-vectors also validated under
+item 20 closure`, matching every other line. The post-delta 7 is a real 7: the two new accepting cases
+(19 and 22) are both results, so the closure count moves **5 → 7** while pass moves 7 → 9. The coincidence
+of the old wrong number and the new right one is exactly why M1(ii) forbids carrying a count.
+
 The `RF` line is the red-first leg in the only form available for a brand-new fragment, and it is the form
-CR-BP used: **every one of the 18 fails as `no fragment` against the pre-amendment artifact**, which proves
+CR-BP used: **every one of the 22 fails as `no fragment` against the pre-amendment artifact**, which proves
 the cases are wired to the new fragments rather than passing vacuously somewhere else. The `G3` fail count
 is the other leg — the gate's own G3 fails a fail-vector the schema accepts, with the message *"this
-fragment is vacuous here"*, so eleven proven-red cases are eleven places the fragments demonstrably bite.
+fragment is vacuous here"*, so thirteen proven-red cases are thirteen places the fragments demonstrably
+bite.
 
 | # | method / kind | expect | what it proves |
 |---|---|---|---|
@@ -644,6 +682,16 @@ fragment is vacuous here"*, so eleven proven-red cases are eleven places the fra
 | 16 | `object_slot` params | **fail** | `{}` — `slot` is REQUIRED |
 | 17 | `object_slot` result | pass | hoisted keys beside `layout` and `active`, validated **closed** — this is the case that proves the envelope survives M3's third form |
 | 18 | `object_slot` result | **fail** | `active` missing |
+| 19 | `object_slot` result | pass | **the M7 case** — `{slot, addr, active: false, layout}`, the empty-slot reply the pre-delta fragment refused for missing `x`/`y`/`code`; validated under item 20's closure |
+| 20 | `object_slot` result | **fail** | the same doc with `active: true` — the `then` bites, so M7 loosened the empty case without loosening the occupied one |
+| 21 | `object_slot` result | **fail** | `active: false` carrying `x: 0` — the `else` bites; the uninitialised byte as a datum, one level up from rule (3) |
+| 22 | `player_state` result | pass | **the M5 case** — an active player beside `{slot, addr, active: false, role: "sidekick"}`; the pre-delta fragment forbade `role` here |
+
+Cases **19–22 are the delta ruling's**, added by M5 and M7. Two auxiliary measurements the delta names but
+deliberately does not spend a vector on, reproduced against the same merged copy: `object_slot` with
+`active: false` carrying `bytes` is **refused** (the `else`'s seventh name, and the reason `bytes` stays in
+it — an empty slot's bytes are exactly the unwritten record); and `object_slot` carrying `role` is
+**refused under item 20's closure** as an unevaluated key, `role` being declared on the player item only.
 
 **The exact cases**, to be appended to `vectors.json`'s `cases` array — the file's own
 `{method, kind, expect, doc, why}` shape. Result docs are merged with the file's `envelope` by the
@@ -1077,18 +1125,128 @@ runner, so none of them carries `frame`/`mclk`/`running`/`droppedEvents`:
       }
     },
     "why": "§11.25 - `active` missing. On a row that ADDRESSES a slot, emptiness is an answer and the flag is required, false included."
+  },
+  {
+    "method": "emulator/object_slot",
+    "kind": "result",
+    "expect": "pass",
+    "doc": {
+      "slot": 1,
+      "addr": "0x00FF8E00",
+      "active": false,
+      "layout": {
+        "engine": "aeon-sst",
+        "detectedBy": "symbol",
+        "slotBytes": 80,
+        "slotCount": 66,
+        "baseAddr": "0x00FF8DB0"
+      }
+    },
+    "why": "§11.25 M7 - THE EMPTY-SLOT REPLY. A row that addresses a slot must be able to answer 'nothing here': the slot facts and layout, with the decoded keys omitted rather than read out of a record the game never wrote. The pre-delta fragment required x/y/code unconditionally and refused this."
+  },
+  {
+    "method": "emulator/object_slot",
+    "kind": "result",
+    "expect": "fail",
+    "doc": {
+      "slot": 1,
+      "addr": "0x00FF8E00",
+      "active": true,
+      "layout": {
+        "engine": "aeon-sst",
+        "detectedBy": "symbol",
+        "slotBytes": 80,
+        "slotCount": 66,
+        "baseAddr": "0x00FF8DB0"
+      }
+    },
+    "why": "§11.25 M7 - an ACTIVE object_slot with no x/y/code. The `then` branch bites: the conditional loosens the empty case without loosening the occupied one."
+  },
+  {
+    "method": "emulator/object_slot",
+    "kind": "result",
+    "expect": "fail",
+    "doc": {
+      "slot": 1,
+      "addr": "0x00FF8E00",
+      "active": false,
+      "x": 0,
+      "layout": {
+        "engine": "aeon-sst",
+        "detectedBy": "symbol",
+        "slotBytes": 80,
+        "slotCount": 66,
+        "baseAddr": "0x00FF8DB0"
+      }
+    },
+    "why": "§11.25 M7 - an INACTIVE object_slot carrying x. The `else` branch bites. An x of 0 for an empty slot is the uninitialised byte reported as a datum, one level up from the rule (3) that forbids it for `fields`."
+  },
+  {
+    "method": "emulator/player_state",
+    "kind": "result",
+    "expect": "pass",
+    "doc": {
+      "players": [
+        {
+          "slot": 0,
+          "addr": "0x00FF8DB0",
+          "x": 96,
+          "y": 656,
+          "code": "0x0100",
+          "active": true,
+          "role": "player"
+        },
+        {
+          "slot": 1,
+          "addr": "0x00FF8E00",
+          "active": false,
+          "role": "sidekick"
+        }
+      ],
+      "layout": {
+        "engine": "aeon-sst",
+        "detectedBy": "symbol",
+        "slotBytes": 80,
+        "slotCount": 66,
+        "baseAddr": "0x00FF8DB0"
+      }
+    },
+    "why": "§11.25 M5 - `role` SURVIVES INACTIVITY. The label is the slot's, not the occupant's, and decoderLayout.pools is closed at {name, firstSlot, slotCount}, so per-slot roles are on the wire nowhere else: forbidding `role` here would have deleted the answer, not displaced it to a join. The pre-delta fragment refused this."
   }
 ]
 ```
 
 ---
 
-## 9. Flagged: applied as ruled, objection recorded — three items, each demonstrated
+## 9. Flagged: applied as ruled, objection recorded — three items, each demonstrated, all three now ruled
 
 **None of these was changed unilaterally.** A post-adjudication change rides a delta back to the same
-adjudicator; the point of this section is to make that delta cheap to write.
+adjudicator; the point of this section is to make that delta cheap to write. **It was written, and it
+ruled** — `docs/2026-08-26-ruling-cr-d-delta.md`, same adjudicator, same standard, 2026-08-26. Each flag's
+outcome is recorded at the head of its subsection below; the flag texts themselves are left standing as
+the record of what was raised and on what grounds.
+
+| Flag | Outcome | Instrument | Artifact change |
+|---|---|---|---|
+| 1 — `role` forbidden on an inactive player | **AMENDED** | **M5** — `role` survives inactivity | One name out of the player `else`, one sentence on `role`'s description, §7.2's mandate sentence, §10.5.3(A)'s player row, vector 22 |
+| 2 — M3's third use site | **UPHELD**, and M3's own wording amended to match the applied form | **M6** | **None.** §10.5.2's precision paragraph and `decodedSlot`'s exception sentence are ratified as the authoritative statement of M3 |
+| 3 — `object_slot` refuses the empty slot | **AMENDED** | **M7** — the M2 conditional, on the sibling row M2 misnamed | `object_slot.result` takes the `if`/`then`/`else` with `role` absent, `required` becomes `[slot, addr, layout, active]`, `active`'s description and the `$comment` grow, rule (3) gains a sentence, §10.5.3(A)'s row, vectors 19–21 |
+
+**The hold this document carried is released.** The delta held the amendment on M7 and set the releasing
+condition itself — M5 and M7 applied, §8's validation re-run over the amended fragments with the four new
+vectors, and its output quoted here — adding that release comes *"by application, not by a further delta"*
+and that only a non-green run returns. §8's run is **ALL GREEN**. Nothing goes back.
 
 ### Flag 1 — `role` is forbidden on an inactive player
+
+> **⚑ RULED: AMENDED (M5).** `role` survives inactivity. The delta upheld this objection on ground
+> *stronger* than the flag claimed: the flag offered "a client joins `layout.pools`" as the cost of being
+> wrong, and the delta measured that `decoderLayout.pools` items are **closed** at
+> `{name, firstSlot, slotCount}` — pool names, not per-slot roles — so **the join does not exist** and
+> forbidding `role` deleted the answer rather than displacing it. The flag's own recorded counter-cost ("a
+> key present sometimes and absent sometimes for no stated reason") did not survive inspection either:
+> `role` is already OPTIONAL on active items, and the stated reason is the one the fragment carries — the
+> label is the slot's, not the occupant's. Applied above; proven by vector 22.
 
 `player_state`'s `else` branch forbids `role`, per the ruling's *"require exactly `slot`, `addr`, `active`
 and forbid the rest"* and per §7.2's own *"the rest are omitted"*. **The objection:** `role` is arguably a
@@ -1099,6 +1257,15 @@ wrong in the current direction: a client joins a table.** Cost of being wrong th
 present sometimes and absent sometimes for no stated reason. The conservative choice was taken.
 
 ### Flag 2 — M3's third use site takes a different form, and this was decided rather than asked
+
+> **⚑ RULED: UPHELD (M6) — the applied form stands and M3's wording was amended to match it. Zero artifact
+> change.** The delta found the departure *forced, not chosen*: M3 was written for `decodedSlot`'s use
+> sites without noticing that the third is a result top level, which composes `replyFields` — so M3's own
+> four steps applied there are the §11.5 trap from a fourth direction, and re-listing the envelope's keys
+> locally to appease the keyword would fossilize `replyFields`' key set into one fragment. It also
+> measured the supporting claim rather than accepting it: **zero** of the 59 committed fragments carry
+> `additionalProperties` on a result top level (parsed, not grepped). §10.5.2's precision paragraph and
+> `decodedSlot`'s exception sentence are ratified as the authoritative statement of M3.
 
 M3 says *"each of the three use sites re-lists every permitted key name … and closes with
 `additionalProperties: false`"*. Two of the three are nested item objects and do exactly that. The third,
@@ -1131,6 +1298,19 @@ For completeness, the same run confirms M3's premise, which is why the mechanism
 ```
 
 ### Flag 3 — `object_slot` requires all five core keys unconditionally, and M2's bug survives there
+
+> **⚑ RULED: AMENDED (M7) — and this was the blocker.** The delta agreed the flag is right for the reason
+> it gives: *this is M2's own defect surviving in the sibling row M2 named by hand.* M2 diagnosed the
+> disease precisely — a row carrying `active` REQUIRED "false included" must not unconditionally require
+> the decoded keys — and then wrote `object_slot` into the unconditional column without noticing §8.2
+> gives that row `active` too. **The `required` set the original ruling settled by name is unsettled and
+> replaced**: `["slot", "addr", "layout", "active"]`, with the same `if`/`then`/`else` the player item
+> carries, `role` absent. `bytes` deliberately stays forbidden on an inactive reply — an empty slot's
+> `bytes` are exactly the unwritten record, so `includeBytes: true` against an empty slot returns
+> `active: false` and no `bytes`; a future CR wanting raw bytes of empty slots has `emulator/read`.
+> M7 is only expressible *because* flag 2 was upheld: the conditional lands as a third `allOf` member
+> beside the two `$ref`s, which the universal result form accommodates and a closed form would have
+> fought. Applied above; proven by vectors 19, 20 and 21.
 
 The ruling's M2 is explicit about the use sites: *"`object_list` items and `object_slot` require all five;
 the player item requires them conditionally."* That is applied as written. **The objection is that M2's own
@@ -1201,5 +1381,11 @@ one's. What was run instead is the equivalent validation described in §8, again
 committed blob in a scratch directory: same schema bytes, same envelope, same closure keyword, same
 draft. The gate's own G5 and G6 stages were not reproduced (G5 needs `protocol.md` amended in place; G6
 validates the spec's example payloads, which this amendment does not touch). No `cargo` was run. No server
-was started. The three flags in §9 are the only open questions, and all three are decisions for the
-adjudicator rather than blockers on the text.
+was started.
+
+**And the three flags in §9 are no longer open.** They went back to the same adjudicator as a delta, which
+ruled M5 amend / M6 uphold / M7 amend; all three are applied above, §8's validation was re-run over the
+amended fragments with the delta's four new vectors, and it is **ALL GREEN**. The delta's own releasing
+condition is therefore met and the hold on this handoff is **released**: this document is ready to hand
+over. One number was corrected in the re-run and is recorded at §8 (the pre-delta `G4` closure count was
+7 where the run says 5) — a recount finding, not a defect in any fragment.
