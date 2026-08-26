@@ -1369,6 +1369,22 @@ different proposition from one over 95%.
 consumer (Spec 2 cycle budgets, `SIGIL_SPEC2_LANGUAGE.md` S2-D7(c)) is **deferred at the spec freeze**,
 so there is no sigil-side consumer this week either.
 
+**⚑ THE COVERAGE NUMBER HAS THREE BUCKETS, NOT TWO — sigil's correction to this seat's booking,
+2026-08-26, and it changes what the dumper would be FOR.** I had booked the gate as "what fraction of a
+real ROM's instruction stream is modeled", i.e. modelled-vs-unmodelled. They corrected it against their
+own tree: because `exact: false` marks a **ceiling** rather than an equality, a routine can carry a
+`@budget(cycles: N)` bound while being permanently unable to carry `@cycles_exact`. So the honest split
+is **exact-modelled / ceiling-only / unmodelled**, and the three answer different questions — *"a corpus
+that is 80% modelled but mostly ceiling-only supports a budget checker and not an equality checker"*.
+**That distinction is precisely what decides whether either lane should build this at all**, and a
+two-bucket number would have looked like an answer while hiding it. The comparison target differs per
+bucket, so our dumper's assertion direction is per-row and not per-run — which composes with the two
+requirements already booked above rather than replacing them. They also settled, firsthand, that the
+cycle model is **entirely static** (`cycle_budget.rs` walks an evaluated `CodeBuf` against the cost
+tables and the shared `Cfg`), so the coverage measurement needs no emulator and was never blocked by
+the shim hazard above. CYCLE-ASK stays correctly gated on their owner picking the measurement up.
+
+
 ## The bars (house methods — each earned by a measured failure; do not thin)
 
 **▶ NEW BAR, 2026-08-26 — A MERGED SERVE IS NOT A SERVED METHOD. THE CONSUMER REACHES A BINARY.**
@@ -1604,6 +1620,44 @@ finished item **leaves** the queue — `done` is not a state, it is an absence.
   into prose for a consumer, name the thing that fails, and re-derive rather than paraphrase when
   carrying someone else's.
 
+**▶ NEW BAR, 2026-08-26 — CHECK THE VINTAGE OF THE PROCESS, NOT THE VERSION OF THE FILE. A long-lived
+interpreter is a stale artifact class, and no in-tree check can see it.** Found by this seat while
+reaching for an unrelated ⟨RUNTIME⟩ debt; corroborated independently by aurora, sigil, seraph and
+dominion within the hour. `oracle-old` `07314aa` (08-25 21:09) made the MCP shim spawn its own private
+`oracle-aether` and stop dialling the well-known socket. **Every suite lane's shim process started
+08-25 19:53–20:29 — before that commit — and Python reads its source at process start.** So all six
+lanes were executing the pre-ruling version, wired straight into `/run/user/1000/oracle.sock`, held by
+the OWNER'S live `oracle-frontend` player. Proven by socket-inode pairing for oracle and aeon; aeon had
+already `reload_rom`'d his running window onto a worktree build at ~18:20Z in perfect good faith,
+**on a banked note that said a fresh session gets a private instance** — a note that was true of the
+file and false of the process.
+**This is yesterday's *a merged serve is not a served method* bar on a NEW artifact class.** That one
+names compiled binaries and compile-time-frozen paths. This is neither: the file on disk is correct,
+the fix is merged AND pushed, `git log` looks finished, and the defect exists only in the memory of a
+running process. **No sweep, no audit, no cold read of the tree can reach it** — the tree is right.
+**⚑ AND THE REMEDY IS NOT THE OBVIOUS ONE: a `/clear` does NOT fix it; only a session relaunch does.**
+The shim is spawned by the session process, so clearing the conversation leaves the same interpreter
+running. Measured firsthand here, and this is the cheap corroboration worth copying: **this session was
+`/clear`ed and its shim's start time did not move** (shim 287372 at 20:29:19, one second after its own
+session process at 20:29:18). aurora reached the same conclusion from the *other* direction — that the
+shim is on the process command line — which is bar 19's genuine corroboration rather than echo, because
+neither derivation could have shared the other's parameter.
+**aurora's one-command discriminator, adopted: `pgrep -P <shim-pid>`.** A post-fix shim owns a child
+`oracle-aether` on a `/tmp/oracle-mcp-*` mkdtemp socket; a pre-fix one has no child. Both kinds appear
+in a single `ss -lxp`/`pgrep` listing, so pre- and post-fix sessions are **visibly different in one
+command** with nothing to reason about.
+**The failure that nearly happened to three separate lanes' documentation, and it is the durable half:
+aurora's own `OVERSEER.md` asserted the opposite** — *"`mcp__oracle__*` in this session SPAWNS A PRIVATE
+EMULATOR by default — it is NOT the window the owner is watching"* — written that same day, correctly,
+**from the file on disk**, and false for every interpreter older than 21:09. They fixed it at
+`83fcb64`. **A claim about RUNNING STATE banked as though it were a property of the code** is the
+perishability preamble's sharpest instance yet: the anchor was valid, the source was authoritative, and
+the sentence was still wrong the moment it was written.
+**Operational form: before trusting any tool that dials something, ask when its PROCESS started
+relative to the fix you are relying on** — and write the vintage condition into the note, never the
+conclusion alone.
+
+
 ## Ops (each line is a paid-for lesson)
 
 `cd` to the absolute repo path before ANY branch operation (a persisted cwd nearly checked out
@@ -1623,6 +1677,21 @@ wrong about whose emulator it was talking to).
 
 ## Coordination (when peers are up; all optional to progress)
 
+- **seraph** (DAW): **the first FILED DEMAND against the unserved-method list, shaped and dated
+  2026-08-26 — and it is the reason the cutover ruling works.** Their S2 verification gate
+  (`plans/2026-07-03-s2-verification-gate.md:10-16`, their anchor `9b2c5a77` on `origin/main`) builds
+  **side B entirely out of `emulator_vgm_start`/`stop` → `vgm2wav`**, so **S2 as banked is NOT
+  executable against the new core** — VGM capture is not one instrument among several there, it is the
+  whole of side B. Their triage, taken as given: **`vgm_{start,status,stop}` is the one that matters**
+  (realtime and foreground is fine; what it must be is deterministic enough to capture twice and
+  compare); **`audio_spectrum` is explicitly NOT wanted** — their compare is scripted seraph-side
+  against the rendered WAV, so do not build it on their account; **channel masks are wanted at S3, not
+  S2**, and they declined to charge us the synth-into-the-bus-server cost yet. **Firing condition: S1
+  landing**, when a compiled blob exists to capture. They deliberately did NOT file it as a dated queue
+  item today, citing bar 18 — the dependency is two packages away and a board entry for a consumer that
+  does not exist yet is a cost with no reader. **Treat VGM as demand-ordered-with-a-condition rather
+  than unqueued**: when the acceptance list is next triaged, VGM is the only one of the eighteen with a
+  named consumer, a named artifact, and a stated trigger. Do not pre-build it; do not renumber it away.
 - **aeon** (engine): demand docs in, acceptance fixtures back — their sweep/probe re-runs are the
   external acceptance for our instruments; shape checks go to them BEFORE build (their requested
   gate). Current lane: the streaming arc consumes the profiler; C-asks flow via
