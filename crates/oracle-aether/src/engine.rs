@@ -29,6 +29,7 @@
 //! arrangement's two-run-drivers problem is answered.
 
 use crate::build_info;
+use crate::decoders;
 use crate::hex;
 use crate::outbound::Subscribers;
 use crate::rpc::{self, code, RpcError};
@@ -474,6 +475,28 @@ pub const METHODS: &[MethodSpec] = &[
         handler: Engine::scanlines,
         summary: "read the drawn rows back — the live raster when a frame is retained, and the reply says which",
         params: &["count", "startLine"],
+    },
+    // §6's `object / player decoders ⚙` group, schematized 2026-08-26 by §11.25 (CR-D). All three are
+    // pure reads — no `require_paused`, exactly as `read`/`sprites`/`pixel_attribution`/`scanlines`, where
+    // the envelope's `running` is the contract's whole answer to a torn sample. Every one of them carries
+    // `layout`, and every one of them refuses `-32012` rather than decoding from a guessed base.
+    MethodSpec {
+        name: "emulator/object_list",
+        handler: Engine::object_list,
+        summary: "the live object pool: the active slots, decoded against a layout the reply names",
+        params: &["fields", "includeBytes", "limit"],
+    },
+    MethodSpec {
+        name: "emulator/player_state",
+        handler: Engine::player_state,
+        summary: "the player pool slot by slot, inactive slots included and said so",
+        params: &["fields", "includeBytes"],
+    },
+    MethodSpec {
+        name: "emulator/object_slot",
+        handler: Engine::object_slot,
+        summary: "one addressed object slot, decoded — or `active: false` when nothing lives there",
+        params: &["fields", "includeBytes", "slot"],
     },
 ];
 
@@ -1390,7 +1413,19 @@ impl Engine {
                 // on these, never on the version integer (D5).
                 "z80": false,
                 "vgm": false,
-                "objectDecoders": false,
+                // §11.25 / D4: *this build has the handlers*, never *a layout was detected*. True iff at
+                // least one of the three ⚙ rows is in `methods` — S4's pin, taken because an "all three"
+                // reading would have a build that dropped one row advertising `false` while serving two,
+                // which is the under-advertising hazard §8 item 23 names in terms. Per-row servedness
+                // stays `methods` membership and nothing else, so this flag never overrides it. The
+                // detect result travels on every reply as `layout`, because `load_symbols` may be called
+                // at any time and a handshake-time detect is stale by construction.
+                "objectDecoders": METHODS.iter().any(|m| {
+                    matches!(
+                        m.name,
+                        "emulator/object_slot" | "emulator/object_list" | "emulator/player_state"
+                    )
+                }),
                 "profiler": true,
                 "breakpoints": false,
                 "batch": false,
@@ -3344,6 +3379,196 @@ impl Engine {
         Ok(out)
     }
 
+    // ----------------------------------------------------------------------------------------------
+    // §6's object / player decoders (§11.25, CR-D)
+    // ----------------------------------------------------------------------------------------------
+
+    /// Read one whole record out of the bus, at the layout's own stride.
+    fn slot_record(
+        &self,
+        layout: &decoders::ObjectLayout,
+        slot: u32,
+    ) -> Result<(u32, Vec<u8>), RpcError> {
+        let addr = layout.slot_addr(slot);
+        let (bytes, _) = self.debug_read(addr, layout.slot_bytes() as usize)?;
+        Ok((addr, bytes))
+    }
+
+    /// Attach `name`/`nameDisp` for a decoded record, **or neither**.
+    ///
+    /// §4's identifying spelling, and §11.25's second hardening against the legacy server, which strips a
+    /// `_Main` suffix so the name it reports resolves to nothing. [`Engine::symbol_at`] returns the bare
+    /// label, which round-trips through `emulator/lookup_symbol`. The pair is omitted — never `""`, never
+    /// a displacement without a name — when `ObjCodeBase` is absent or nothing resolves at the target.
+    fn attach_code_name(&self, out: &mut Map<String, Value>, rec: &decoders::DecodedRecord<'_>) {
+        if let Some(target) = rec.code_target() {
+            if let Some((name, disp)) = self.symbol_at(target) {
+                out.insert("name".into(), json!(name));
+                out.insert("nameDisp".into(), json!(disp));
+            }
+        }
+    }
+
+    /// `emulator/object_list` — the active slots of the object pool (§6 ⚙, §11.25 D2).
+    ///
+    /// §2.4's flat bounded-list spelling, as `emulator/sprites` uses it, with one deliberate divergence
+    /// from that row: `sprites` pins `total` to the table's size because every slot there is an item,
+    /// while here an **empty slot is not an item**, so `total` counts active objects and the table's size
+    /// lives in `layout.slotCount`. Two different facts, two homes. Presence *is* activity — an empty slot
+    /// is omitted rather than returned with a flag that would always be true — so slot numbers are sparse.
+    ///
+    /// No cursor: the method accepts no continuation param, so a token it issued could never be handed
+    /// back (§2.4 clause (b)).
+    fn object_list(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let requested = decoder_fields_param(params)?;
+        let include_bytes = decoder_include_bytes_param(params)?;
+        let layout = decoders::derive(self.symbols.as_deref())?;
+        let specs = match &requested {
+            Some(names) => Some(layout.resolve_fields(names)?),
+            None => None,
+        };
+        // Bounded at the pool's own size. This server advertises no `limits.maxObjectSlots`, so the
+        // structural bound is the whole bound — which is the fragment's own account of what an absent
+        // `maxObjectSlots` means. Refused above it, never clamped.
+        let limit = match params.get("limit") {
+            None => layout.slot_count() as usize,
+            Some(v) => hex::parse_count("limit", v, 1, u64::from(layout.slot_count()))? as usize,
+        };
+
+        let mut total = 0usize;
+        let mut items: Vec<Value> = Vec::new();
+        for slot in 0..layout.slot_count() {
+            let (addr, bytes) = self.slot_record(&layout, slot)?;
+            let rec = decoders::DecodedRecord::new(&layout, slot, addr, bytes);
+            if !rec.active() {
+                continue;
+            }
+            total += 1;
+            if items.len() < limit {
+                let mut m = rec.to_json(true, specs.as_deref(), include_bytes);
+                self.attach_code_name(&mut m, &rec);
+                items.push(Value::Object(m));
+            }
+        }
+
+        let bounded = rpc::bounded_array(items, total, 0, limit);
+        let mut out = Map::new();
+        out.insert("objects".into(), bounded["items"].clone());
+        // `total: 0` beside `truncated: false` is "zero objects" as a stated fact, rather than an empty
+        // list a client has to interpret.
+        out.insert("total".into(), bounded["total"].clone());
+        out.insert("returned".into(), bounded["returned"].clone());
+        out.insert("limit".into(), bounded["limit"].clone());
+        out.insert("truncated".into(), bounded["truncated"].clone());
+        out.insert("layout".into(), layout.to_json());
+        Ok(Value::Object(out))
+    }
+
+    /// `emulator/player_state` — the player pool, slot by slot (§6 ⚙, §11.25 D3).
+    ///
+    /// An **array**, never per-role keys: the legacy server's top-level key set varies by ROM
+    /// (`player_1`/`player_2` on one branch, `main`/`sidekick` on the other, with an `engine` discriminant
+    /// present on only one), which this repo's own transcription calls the biggest shape hazard in the
+    /// eight. An array's key set does not vary, `role` carries the label without buying a key, and
+    /// `layout` carries the discriminant on every reply.
+    ///
+    /// **Inactive slots are returned**, unlike `object_list`: "player 2 is not present" is the answer to
+    /// the question asked, and a client must not have to infer it from an array's length against a bound
+    /// it joins from elsewhere. When `active` is false the decoded keys are omitted rather than zeroed —
+    /// see [`decoders::DecodedRecord::to_json`] for why that is a correctness rule and not a style.
+    fn player_state(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let requested = decoder_fields_param(params)?;
+        let include_bytes = decoder_include_bytes_param(params)?;
+        let layout = decoders::derive(self.symbols.as_deref())?;
+        let specs = match &requested {
+            Some(names) => Some(layout.resolve_fields(names)?),
+            None => None,
+        };
+        // Which slots are players is a property of the pool partition, so a listing that could not
+        // produce one cannot answer this row at all — and refusing is the same call `derive` makes about
+        // the base address. `object_list` and `object_slot` are unaffected: they need no partition.
+        let pool = layout.player_pool()?;
+        let (first, count) = (pool.first_slot, pool.slot_count);
+
+        let mut players: Vec<Value> = Vec::with_capacity(count as usize);
+        for slot in first..first + count {
+            let (addr, bytes) = self.slot_record(&layout, slot)?;
+            let rec = decoders::DecodedRecord::new(&layout, slot, addr, bytes);
+            let mut m = rec.to_json(true, specs.as_deref(), include_bytes);
+            // REQUIRED, `false` included: false is the answer, not the absence of one.
+            m.insert("active".into(), json!(rec.active()));
+            if rec.active() {
+                self.attach_code_name(&mut m, &rec);
+            }
+            // **Survives inactivity** — the delta ruling's M5. The label is the slot's, not the
+            // occupant's, and `layout.pools` carries pool names rather than per-slot roles, so forbidding
+            // it here would delete the answer rather than displace it.
+            if let Some(table) = self.symbols.as_deref() {
+                if let Some(role) = decoders::slot_role(table, addr) {
+                    m.insert("role".into(), json!(role));
+                }
+            }
+            players.push(Value::Object(m));
+        }
+
+        // No `total`/`returned`/`truncated` and no cursor: the player pool is structurally bounded, and
+        // §2.4 clause (d) says a structural bound takes neither.
+        let mut out = Map::new();
+        out.insert("players".into(), Value::Array(players));
+        out.insert("layout".into(), layout.to_json());
+        Ok(Value::Object(out))
+    }
+
+    /// `emulator/object_slot` — one addressed slot (§6 ⚙, §11.25 D5).
+    ///
+    /// The single-slot projection of `object_list`, with the item keys hoisted to the top level plus
+    /// `active` — because this row **addresses** a slot, so emptiness is an answer rather than an
+    /// omission. A slot past the pool is `-32602` with the bound in `error.data`, never clamped: the
+    /// fragment cannot bound it because the bound is a property of the loaded game. §11.25 records that
+    /// the contract is split here — `pixel_attribution` answers `-32004` for a structurally identical
+    /// refusal — and this family follows `scanlines`.
+    fn object_slot(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let requested = decoder_fields_param(params)?;
+        let include_bytes = decoder_include_bytes_param(params)?;
+        let Some(raw_slot) = params.get("slot") else {
+            return Err(RpcError::invalid_params(
+                "`slot` is required — this row addresses one slot",
+            ));
+        };
+        let layout = decoders::derive(self.symbols.as_deref())?;
+        let specs = match &requested {
+            Some(names) => Some(layout.resolve_fields(names)?),
+            None => None,
+        };
+        let slot_count = layout.slot_count();
+        // `parse_count` gives the shared `-32602` spelling for a non-number, a negative and an
+        // out-of-range value alike; the typed `error.data` below is what the fragment asks for on top.
+        let slot = hex::parse_count("slot", raw_slot, 0, u64::from(slot_count).saturating_sub(1))
+            .map_err(|e| {
+            if raw_slot.as_u64().is_some() {
+                RpcError::invalid_params(format!(
+                    "`slot` {} is past the end of the object pool — this build has {slot_count} \
+                         slots (0..={}), and the bound is refused rather than clamped",
+                    raw_slot,
+                    slot_count - 1
+                ))
+                .with_data(json!({"slot": raw_slot, "slotCount": slot_count}))
+            } else {
+                e
+            }
+        })?;
+
+        let (addr, bytes) = self.slot_record(&layout, slot as u32)?;
+        let rec = decoders::DecodedRecord::new(&layout, slot as u32, addr, bytes);
+        let mut out = rec.to_json(true, specs.as_deref(), include_bytes);
+        out.insert("active".into(), json!(rec.active()));
+        if rec.active() {
+            self.attach_code_name(&mut out, &rec);
+        }
+        out.insert("layout".into(), layout.to_json());
+        Ok(Value::Object(out))
+    }
+
     fn screenshot(&mut self, params: &Value) -> Result<Value, RpcError> {
         let path: PathBuf = match params.get("path") {
             None => std::env::temp_dir().join(format!("oracle-frame-{}.png", self.frame())),
@@ -4576,6 +4801,54 @@ fn unknown_checkpoint(id: &str) -> RpcError {
         format!("no checkpoint {id:?} — it was never taken, or it has been dropped"),
         json!({ "id": id }),
     )
+}
+
+/// The `fields` param, shape-checked **before** the layout is derived (§6 ⚙, §11.25).
+///
+/// Shape first, names second, and the order is deliberate: a malformed `fields` is a client bug that does
+/// not depend on which game is loaded, so it should not be masked by `-32012` on a session with no
+/// symbols. The *names* still cannot be checked until the layout is known — the catalogue is a property
+/// of `layout.engine` — and that check lives in
+/// [`ObjectLayout::resolve_fields`](crate::decoders::ObjectLayout::resolve_fields), which is still ahead
+/// of any read.
+///
+/// `None` means the caller did not ask for fields, and the reply then carries no `fields` key at all;
+/// `Some(vec![])` means it asked for none, which is an empty map. "Present iff the request asked for
+/// fields" is the fragment's own wording, and an empty request is still a request.
+fn decoder_fields_param(params: &Value) -> Result<Option<Vec<String>>, RpcError> {
+    let Some(v) = params.get("fields") else {
+        return Ok(None);
+    };
+    let Some(arr) = v.as_array() else {
+        return Err(RpcError::invalid_params(
+            "`fields` must be an array of layout field names",
+        ));
+    };
+    let mut out = Vec::with_capacity(arr.len());
+    for e in arr {
+        match e.as_str() {
+            Some(s) if !s.is_empty() => out.push(s.to_string()),
+            _ => {
+                return Err(RpcError::invalid_params(
+                    "every `fields` entry must be a non-empty string",
+                ))
+            }
+        }
+    }
+    Ok(Some(out))
+}
+
+/// The `includeBytes` param, defaulting to `false`.
+///
+/// Off by default so the default reply's key set is fully enumerated by the fragment, and because 66
+/// records at `$50` is 5,280 bytes on every call for a caller who wanted two coordinates.
+fn decoder_include_bytes_param(params: &Value) -> Result<bool, RpcError> {
+    match params.get("includeBytes") {
+        None => Ok(false),
+        Some(v) => v
+            .as_bool()
+            .ok_or_else(|| RpcError::invalid_params("`includeBytes` must be a boolean (D9)")),
+    }
 }
 
 fn no_symbols() -> RpcError {
