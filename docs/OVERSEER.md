@@ -1383,6 +1383,18 @@ requirements already booked above rather than replacing them. They also settled,
 cycle model is **entirely static** (`cycle_budget.rs` walks an evaluated `CodeBuf` against the cost
 tables and the shared `Cfg`), so the coverage measurement needs no emulator and was never blocked by
 the shim hazard above. CYCLE-ASK stays correctly gated on their owner picking the measurement up.
+⚠ **STATUS CORRECTED BY SIGIL THE SAME DAY, against their own contribution — the three buckets are a
+PREDICTION, not a measurement, and the paragraph above overstated them.** They have run no corpus
+measurement. The split is a *consequence of `CycleCost`'s own doc comment* (`exact: false` = "a MAXIMUM
+over a data-dependent execution — sound as a ceiling, unusable as an equality"), read while checking
+this seat's two requirements. **So it is the shape to measure IN, never a result to build on: if the
+corpus turns out to have a negligible ceiling-only middle, the sharpening was true and irrelevant, and
+the original two-bucket question was the right shape after all.** Do not let a later session cite the
+three buckets as a finding about any ROM.
+*Their framing of where the value actually came from, kept because it is the more useful lesson and it
+is narrower than the headline: a precise question about their own tree sent them to read their own type
+definition, where the answer was already written down. That is bar 12 arriving between repos —* the
+rule was in the contract they already owned.*
 
 
 ## The bars (house methods — each earned by a measured failure; do not thin)
