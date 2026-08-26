@@ -14,7 +14,11 @@
 //! (watchpoint highlights, bus-legality heatmaps — `docs/2026-07-20-diagnostic-tooling-ideas.md`) are wanted.
 //!
 //! Usage: `cargo run --release -p oracle-frontend -- <rom.bin> [--scale N] [--aspect tv|square|integer]
-//! [--aether] [--socket PATH]`
+//! [--aether] [--socket PATH] [--x11]`
+//!
+//! `--x11` opens the window under X11 (XWayland on a Wayland desktop) — the only backend where minifb lets
+//! the process set its own window icon and WM class; see the `icon` module for the measured why, and
+//! `assets/oracle.desktop` + `assets/install-desktop.sh` for the Wayland route.
 //!
 //! ## Controls
 //!
@@ -276,6 +280,8 @@ mod bus;
 mod bus;
 // Display geometry — aspect handling, the window-sized presentation blit, and the exact click inverse.
 mod present;
+// The window's desktop identity: the embedded Oracle icon and its WM class.
+mod icon;
 // Click-to-watch: resolving a clicked dot to armable VRAM/CRAM ranges, sprites included.
 mod pick;
 
@@ -313,6 +319,8 @@ struct Args {
     /// `None` = do not serve (the default — no socket is created at all). `Some(None)` = serve on the
     /// contract's default path; `Some(Some(p))` = serve on `p`.
     socket: Option<Option<std::path::PathBuf>>,
+    /// `--x11`: refuse Wayland for this process so minifb takes its X11 backend (see the `icon` module).
+    force_x11: bool,
 }
 
 /// Parse `<rom.bin> [--scale N] [--aspect tv|square|integer]`. Returns a human-readable error string on
@@ -333,12 +341,14 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
     let mut socket: Option<Option<std::path::PathBuf>> = std::env::var_os("ORACLE_AETHER")
         .is_some_and(|v| v != "0")
         .then_some(None);
+    let mut force_x11 = false;
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             // `--socket PATH` implies `--aether`: asking for a specific path and then not serving on it
             // would be a flag that does nothing.
             "--aether" => socket = Some(socket.flatten()),
+            "--x11" => force_x11 = true,
             "--socket" => {
                 let v = it.next().ok_or("--socket needs a value")?;
                 socket = Some(Some(std::path::PathBuf::from(v)));
@@ -373,6 +383,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
         scale,
         aspect,
         socket,
+        force_x11,
     })
 }
 
@@ -798,13 +809,15 @@ fn main() {
             eprintln!("error: {e}");
             eprintln!(
                 "usage: oracle-frontend <rom.bin> [--scale N] [--aspect tv|square|integer] \
-                 [--aether] [--socket PATH]\n  \
+                 [--aether] [--socket PATH] [--x11]\n  \
                  --scale   N = 1..=8 (default 3) — multiples of the 224-line frame height\n  \
                  --aspect  tv = the console's own 4:3 (default), square = square pixels, \
                  integer = square pixels at a whole scale\n  \
                  --aether  serve the Aether control bus from this process (also: ORACLE_AETHER=1). \
                  Off by default — no socket is created.\n  \
                  --socket  serve on PATH instead of the contract's default; implies --aether\n  \
+                 --x11     open the window under X11 (XWayland on Wayland) — the backend where the \
+                 window can carry its own icon and WM class\n  \
                  An unset --scale/--aspect falls back to ~/.config/oracle/player.conf (or \
                  $XDG_CONFIG_HOME/oracle/player.conf), then to the defaults above."
             );
@@ -887,8 +900,13 @@ fn main() {
     let aspect = resolve_aspect(args.aspect, &cfg);
 
     let (win_w, win_h) = present::initial_window_size(scale, MAX_WIDTH, HEIGHT, aspect);
+    if args.force_x11 {
+        // minifb tries Wayland first and only falls back to X11 when the connect fails; the connect is keyed
+        // off this variable. Nothing in this process has touched the display yet.
+        std::env::remove_var("WAYLAND_DISPLAY");
+    }
     let mut window = Window::new(
-        "oracle-next",
+        "Oracle",
         win_w,
         win_h,
         WindowOptions {
@@ -901,6 +919,15 @@ fn main() {
         eprintln!("cannot open window: {e}");
         std::process::exit(1);
     });
+    match icon::apply(&mut window) {
+        icon::Applied::X11 => {}
+        icon::Applied::Wayland => eprintln!(
+            "note: Wayland window — minifb cannot set an icon or app id here; install \
+             crates/oracle-frontend/assets/oracle.desktop (install-desktop.sh) so the desktop resolves the \
+             Oracle icon, or run with --x11"
+        ),
+        icon::Applied::Nothing => eprintln!("note: window icon not set on this backend"),
+    }
     // ~60 fps wall-clock throttle (the run loop itself is untimed; this paces presentation).
     window.set_target_fps(60);
 
@@ -1756,9 +1783,9 @@ fn main() {
             None => &buf,
         };
         let title = if paused {
-            format!("oracle-next — frame {frame} [PAUSED]")
+            format!("Oracle — frame {frame} [PAUSED]")
         } else {
-            format!("oracle-next — frame {frame}")
+            format!("Oracle — frame {frame}")
         };
         window.set_title(&title);
 

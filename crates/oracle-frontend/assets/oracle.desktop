@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Oracle
+Comment=Empyrean's Genesis / Mega Drive emulator and debugger
+# install-desktop.sh rewrites this line with the real binary path.
+Exec=oracle-frontend %f
+Icon=oracle
+Terminal=false
+Categories=Game;Emulator;
+MimeType=application/x-genesis-rom;
+# What the window reports as its class (X11 WM_CLASS via icon.rs; on Wayland minifb sets no app id and KWin
+# falls back to the executable name — measured 2026-08-26 — which is the same string). Keep in step with
+# icon::WM_CLASS.
+StartupWMClass=oracle-frontend

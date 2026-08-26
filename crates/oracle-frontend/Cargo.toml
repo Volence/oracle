@@ -8,6 +8,11 @@ description = "Live windowed frontend for the oracle-core Genesis emulation core
 [dependencies]
 oracle-core = { path = "../oracle-core" }
 minifb = "0.28"
+# Window identity (icon + WM class) — both already in the tree as minifb's own dependencies, promoted to
+# direct so `icon.rs` can match on the raw window handle and call `XSetClassHint` on minifb's Display. No new
+# crate enters the lock file.
+raw-window-handle = "0.6"
+x11-dl = "2.21"
 # Real-time audio (Phase SY-5) — frontend-only; pulls the core's opt-in synth, an SPSC ring, and the
 # host output stream. All three are optional and confined to the frontend `audio` feature.
 ringbuf = { version = "0.4", optional = true }

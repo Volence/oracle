@@ -1232,8 +1232,10 @@ dependencies = [
  "minifb",
  "oracle-aether",
  "oracle-core",
+ "raw-window-handle",
  "ringbuf",
  "serde_json",
+ "x11-dl",
 ]
 
 [[package]]
