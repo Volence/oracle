@@ -397,6 +397,7 @@ pub fn key_char(k: Key) -> Option<char> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oracle_core::render::Layer;
 
     /// Every visible title is unique — two commands with one name would be indistinguishable
     /// in the palette.
@@ -480,6 +481,77 @@ mod tests {
     fn lens_toggles_bind_no_keys_yet() {
         for c in registry() {
             if matches!(c.cmd, Cmd::ToggleLens(_)) {
+                assert_eq!(c.hotkey, None, "{} bound a key", c.title);
+            }
+        }
+    }
+
+    /// **Every mask target the bus serves is reachable from the palette, and nothing else is.**
+    ///
+    /// The expectation is [`LayerMask::targets`] — the same derivation that produces
+    /// `emulator/get_layer_states`'s key set and `emulator/set_layer_enabled`'s accepted values, which
+    /// `oracle-aether/tests/layers.rs` pins against the vendored contract fragment. So this row is not a
+    /// transcription of four names; it is "the window offers exactly what the wire accepts", and a layer
+    /// added to the contract that the palette did not grow a row for fails **here**.
+    ///
+    /// Both directions, because only one of them is the interesting failure: a missing row is a feature
+    /// nobody can reach, and an *extra* row is a toggle that would call `set_layer` with something the
+    /// mask refuses — the backdrop being the live candidate, since it is a `Layer` and is not a target.
+    #[test]
+    fn every_mask_target_gets_a_visible_toggle_and_nothing_else_does() {
+        let reg = registry();
+        let targets = LayerMask::targets();
+        assert!(
+            !targets.is_empty(),
+            "COULD NOT MEASURE: the core reports no mask targets, so this row proves nothing"
+        );
+        for (name, layer) in &targets {
+            let row = reg
+                .iter()
+                .find(|c| c.cmd == Cmd::ToggleLayer(*layer))
+                .unwrap_or_else(|| panic!("no palette row for the `{name}` layer"));
+            assert!(!row.hidden, "`{name}` is unreachable from the palette");
+            assert_eq!(row.group, Group::Layers);
+            assert_eq!(
+                row.title,
+                layer_toggle_title(name),
+                "the row and the layer's own name must not drift apart"
+            );
+            assert!(
+                row.title.contains(name),
+                "the palette must spell the layer the way the wire does, so a user can type it: {}",
+                row.title
+            );
+        }
+        // Nothing outside the target set, and in particular not the backdrop.
+        let registered: Vec<Layer> = reg
+            .iter()
+            .filter_map(|c| match c.cmd {
+                Cmd::ToggleLayer(l) => Some(l),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            registered.len(),
+            targets.len(),
+            "the palette offers {} layer toggles for {} mask targets",
+            registered.len(),
+            targets.len()
+        );
+        for l in &registered {
+            assert!(
+                l.mask_key().is_some(),
+                "{l:?} has no mask name, so `LayerMask::set` would refuse it — it must not be offered"
+            );
+        }
+    }
+
+    /// Layer toggles are palette-only, for the reason the lens toggles are: every obvious key is taken,
+    /// and `hotkeys_unique` would only catch the collision after someone shipped it.
+    #[test]
+    fn layer_toggles_bind_no_keys() {
+        for c in registry() {
+            if matches!(c.cmd, Cmd::ToggleLayer(_)) {
                 assert_eq!(c.hotkey, None, "{} bound a key", c.title);
             }
         }

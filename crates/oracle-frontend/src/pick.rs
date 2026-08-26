@@ -767,5 +767,232 @@ mod tests {
             assert_eq!(data["width"], json!(320));
             assert_eq!(data["height"], json!(224));
         }
+
+        // -----------------------------------------------------------------------------------------
+        // The same invariant, with its precondition removed
+        // -----------------------------------------------------------------------------------------
+
+        /// One dot with **four** different right answers, depending on what is hidden.
+        ///
+        /// `vdp_with_sprite` alone cannot catch a masked/unmasked split: its planes are transparent, so
+        /// hiding plane A changes nothing and an unmasked panel keeps agreeing with a masked bus by
+        /// coincidence. That is the "green poison with the guard sound" shape — the row would pass with
+        /// the rule broken — so the fixture is built for the opposite: at `(70,70)` a sprite covers an
+        /// opaque plane-A cell which covers an opaque plane-B cell over a non-zero backdrop, and every one
+        /// of the four layers is the winner under some mask.
+        ///
+        /// Returns the VDP and the two plane tiles, so the assertions read the expected answers off the
+        /// fixture rather than restating them.
+        fn vdp_with_four_answers() -> (Vdp, u16, u16) {
+            const A_TILE: u16 = 0x055;
+            const B_TILE: u16 = 0x066;
+            let mut v = vdp_with_sprite(2, 2, false, false);
+            set_reg(&mut v, 0x02, 0x30); // plane A nametable @ $C000
+            set_reg(&mut v, 0x04, 0x07); // plane B nametable @ $E000
+            set_reg(&mut v, 0x07, 0x25); // backdrop = CRAM $25, so "backdrop" is distinguishable
+                                         // Two opaque patterns, well clear of the sprite's $010-$01F block and of both
+                                         // nametables.
+            write_vram(&mut v, A_TILE * 32, &[0x3333; 16]);
+            write_vram(&mut v, B_TILE * 32, &[0x5555; 16]);
+            // The cell containing dot (70,70) in a 32x32 plane with no scroll: column 8, row 8.
+            let cell = |col: u16, row: u16| (row * 32 + col) * 2;
+            write_vram(&mut v, 0xC000 + cell(8, 8), &[(1 << 13) | A_TILE]);
+            write_vram(&mut v, 0xE000 + cell(8, 8), &[(2 << 13) | B_TILE]);
+            (v, A_TILE, B_TILE)
+        }
+
+        /// Hide layers **through the served method**, so the path under test is the one a client uses.
+        fn hide(e: &mut Engine, layers: &[&str]) {
+            for l in layers {
+                e.dispatch(
+                    "emulator/set_layer_enabled",
+                    &json!({"layer": l, "enabled": false}),
+                )
+                .unwrap_or_else(|err| panic!("set_layer_enabled({l}) refused: {err:?}"));
+            }
+        }
+
+        /// **The invariant, asserted rather than noted.** The panel and `emulator/pixel_attribution` agree
+        /// at one dot under every one of the four masks that change its winner — not only under the
+        /// default, which is the single state the guard used to run in.
+        ///
+        /// A rule with an unasserted precondition is this workspace's recurring defect, and this row is
+        /// what removes the precondition: it drives the real `emulator/set_layer_enabled`, so the engine's
+        /// mask and the panel's argument are provably the same value, and it checks the **winner** — the
+        /// thing a mask actually moves — not only an address that a coincidence could keep aligned.
+        ///
+        /// Planting the drift: change `resolve` back to `vdp.pixel_attribution(x, y)` (the unmasked call
+        /// this parcel replaced) and this fails on the `sprites` step with
+        /// *"hiding [\"sprites\"]: the bus says planeA and the panel armed a range that is not the cell's
+        /// — the two have DRIFTED"*, because the panel is still resolving the sprite the window has
+        /// stopped drawing. Verified before this row was believed.
+        #[test]
+        fn the_panel_and_the_bus_agree_under_every_mask_that_changes_the_answer() {
+            let (v, a_tile, b_tile) = vdp_with_four_answers();
+            // (layers hidden, the wire's winner, the range the panel must arm)
+            let steps: [(&[&str], &str, (u32, u32)); 4] = [
+                (&[], "sprite", (0, 0)), // the sprite's tile is computed below, not restated
+                (&["sprites"], "planeA", tile_range(a_tile)),
+                (&["sprites", "planeA"], "planeB", tile_range(b_tile)),
+                (
+                    &["sprites", "planeA", "planeB"],
+                    "backdrop",
+                    (0x25 * 2, 0x25 * 2 + 1),
+                ),
+            ];
+            for (hidden, want_layer, want_range) in steps {
+                let mut e = engine_showing(&v);
+                hide(&mut e, hidden);
+
+                // The panel's mask is the engine's, not a second one assembled here: that is the whole
+                // claim, so the test reads it back off the engine rather than building its own.
+                let mask = e.layers();
+                // Compared as sets: `hidden()` answers in `Layer::ALL` order, which is a property of the
+                // core's own enumeration and deliberately not the order a caller happened to switch
+                // things off in. What is being pinned here is *which* layers are hidden.
+                let (mut got, mut want) = (mask.hidden(), hidden.to_vec());
+                got.sort_unstable();
+                want.sort_unstable();
+                assert_eq!(
+                    got, want,
+                    "the engine's mask is not what set_layer_enabled was told to make it"
+                );
+
+                let r = attribution(&mut e, 70, 70);
+                let p = resolve(&v, 70, 70, mask);
+
+                assert_eq!(
+                    r["winner"]["layer"],
+                    json!(want_layer),
+                    "hiding {hidden:?}: the BUS's own winner is not the one this fixture was built \
+                     for — the fixture, not the panel, is wrong"
+                );
+                let want_range = if want_layer == "sprite" {
+                    tile_range(
+                        sprite_tile_at(&v.sprites_decoded()[0], 70, 70).expect("inside the sprite"),
+                    )
+                } else {
+                    want_range
+                };
+                assert_eq!(
+                    (p.targets[0].lo, p.targets[0].hi),
+                    want_range,
+                    "hiding {hidden:?}: the bus says {want_layer} and the panel armed \
+                     ${:04X}-${:04X} — the two have DRIFTED",
+                    p.targets[0].lo,
+                    p.targets[0].hi
+                );
+                // And the words, because the range alone cannot tell plane A's tile from a sprite that
+                // happened to draw from it. The panel names the layer in prose; the bus names it in an
+                // enum; a disagreement here is the "purple boxes" failure with a correct address under it.
+                let spoken = match want_layer {
+                    "sprite" => "sprite 0",
+                    "planeA" => "plane A",
+                    "planeB" => "plane B",
+                    _ => "backdrop",
+                };
+                assert!(
+                    p.headline.contains(spoken),
+                    "hiding {hidden:?}: the bus says {want_layer}, the panel's sentence says {:?}",
+                    p.headline
+                );
+            }
+        }
+
+        /// The mask **is named in the answer**, and only when there is one — the loud-on-unmeasurable half.
+        ///
+        /// Describing a masked picture without saying so is a true sentence a reader cannot help but take
+        /// as false, and it is the reason this parcel exists. The negative half matters as much: an
+        /// unmasked answer must be byte-identical to the one this panel has always given, or every reader
+        /// learns to skip the clause.
+        #[test]
+        fn the_answer_says_a_layer_is_hidden_and_says_it_only_then() {
+            let (v, _, _) = vdp_with_four_answers();
+
+            let plain = resolve(&v, 70, 70, LayerMask::ALL);
+            assert!(
+                !plain.headline.contains("hidden"),
+                "an unmasked answer must not mention a mask: {:?}",
+                plain.headline
+            );
+            assert!(
+                !plain.description.contains("hidden"),
+                "{:?}",
+                plain.description
+            );
+
+            let mut e = engine_showing(&v);
+            hide(&mut e, &["sprites", "planeA"]);
+            let masked = resolve(&v, 70, 70, e.layers());
+            // Every hidden layer, by the wire's own name — not "a mask is set", which sends the reader
+            // hunting for which one.
+            for name in ["sprites", "planeA"] {
+                assert!(
+                    masked.headline.contains(name),
+                    "the sentence must name {name}: {:?}",
+                    masked.headline
+                );
+            }
+            assert!(
+                masked.headline.contains("masked picture"),
+                "and must say what that means for what is on screen: {:?}",
+                masked.headline
+            );
+            // The clause rides on the human-facing line, not only on a wire caveat: the consumer's point 3
+            // is explicit that the human-facing line carries it.
+            assert!(
+                masked.description.starts_with(&masked.headline),
+                "the description leads with the sentence: {:?}",
+                masked.description
+            );
+        }
+
+        /// **The panel never names a slot in another tool's space, and says which space its own index is
+        /// in.** The editor rebases our index into a blob-local slot with a base constant *they* own; an
+        /// index whose space is unstated is a transpose bug waiting to happen, and a rebase this panel
+        /// performed could land outside their artwork while passing a naive capacity check — a confident
+        /// wrong slot, indistinguishable from a right one. *In-capacity is not in-blob.*
+        ///
+        /// So: every answer that names a tile says `VRAM-absolute`, and no answer uses the vocabulary of
+        /// somebody else's model.
+        #[test]
+        fn a_named_tile_states_its_space_and_never_another_models_slot() {
+            let (v, _, _) = vdp_with_four_answers();
+            let mut e = engine_showing(&v);
+            let mut seen_a_tile = false;
+            for hidden in [&[][..], &["sprites"][..], &["sprites", "planeA"][..]] {
+                let mut e2 = engine_showing(&v);
+                hide(&mut e2, hidden);
+                let p = resolve(&v, 70, 70, e2.layers());
+                assert!(
+                    p.headline.contains("tile $"),
+                    "this fixture's first three steps all name a tile: {:?}",
+                    p.headline
+                );
+                seen_a_tile = true;
+                assert!(
+                    p.headline.contains(TILE_SPACE),
+                    "a named tile must state its space: {:?}",
+                    p.headline
+                );
+                for forbidden in ["slot", "blob", "blob-local"] {
+                    assert!(
+                        !p.headline.to_ascii_lowercase().contains(forbidden),
+                        "the panel must not speak in another model's terms ({forbidden}): {:?}",
+                        p.headline
+                    );
+                }
+            }
+            assert!(
+                seen_a_tile,
+                "COULD NOT MEASURE: no step of this fixture named a tile, so the rule was never \
+                 exercised — the fixture is broken, not the rule"
+            );
+            // The backdrop names no tile, and must therefore claim no space either.
+            hide(&mut e, &["sprites", "planeA", "planeB"]);
+            let p = resolve(&v, 70, 70, e.layers());
+            assert!(!p.headline.contains("tile $"), "{:?}", p.headline);
+            assert!(!p.headline.contains(TILE_SPACE), "{:?}", p.headline);
+        }
     }
 }

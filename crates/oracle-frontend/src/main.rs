@@ -2046,6 +2046,89 @@ fn main() {
 mod tests {
     use super::*;
 
+    /// **The masked picture is the core's masked render, dot for dot** — and it is a *different* picture
+    /// from the unmasked one on a scene where the mask actually changes something.
+    ///
+    /// Both halves are load-bearing, and the second is what makes the first mean anything. A `blit_masked`
+    /// that ignored its mask entirely would still match `render_line_masked(line, ALL)` on a scene where
+    /// nothing is hidden, and would still match it on a scene where the hidden layer happened to be
+    /// transparent — the guard would be sound and the row would be green. So the fixture hides a layer that
+    /// is *opaque and winning*, and the row asserts the two pictures differ before asserting which one the
+    /// window shows.
+    ///
+    /// `emulator/screenshot` under a mask reaches the same `render_line_masked`, so this is the panel/wire
+    /// item-19 argument arriving on the picture itself: one derivation, two consumers.
+    #[test]
+    fn the_masked_picture_is_the_cores_masked_render_and_differs_from_the_unmasked_one() {
+        use oracle_core::rng::SplitMix64;
+        let mut rng = SplitMix64::new(0x5EED);
+        let mut v = oracle_core::vdp::Vdp::power_on(&mut rng);
+        v.vram_mut().fill(0);
+        let mut reg =
+            |r: u8, val: u8| v.control_write(0x8000 | (u16::from(r) << 8) | u16::from(val), 0);
+        reg(0x01, 0x74); // display on, mode 5 — before $0C, the mode-4 register mask drops it otherwise
+        reg(0x0C, 0x81); // H40
+        reg(0x02, 0x30); // plane A nametable @ $C000
+        reg(0x04, 0x07); // plane B nametable @ $E000
+        reg(0x05, 0x58); // SAT @ $B000, empty
+        reg(0x07, 0x25); // a non-black backdrop, so "hidden" is not confusable with "black"
+        reg(0x0F, 0x02);
+        reg(0x10, 0x00);
+        // Plane A: one opaque cell at (0,0), covering an opaque plane-B cell underneath it.
+        let mut write = |code: u8, addr: u16, words: &[u16]| {
+            v.control_write((u16::from(code) & 0x03) << 14 | (addr & 0x3FFF), 0);
+            v.control_write((u16::from(code) >> 2) << 4 | (addr >> 14), 0);
+            for w in words {
+                v.data_write(*w);
+            }
+        };
+        write(0x01, 0x0AA0, &[0x3333; 16]); // pattern $055, solid nibble 3
+        write(0x01, 0x0CC0, &[0x5555; 16]); // pattern $066, solid nibble 5
+        write(0x01, 0xC000, &[(1 << 13) | 0x055]); // plane A cell (0,0): pattern $055, palette 1
+        write(0x01, 0xE000, &[(2 << 13) | 0x066]); // plane B cell (0,0): pattern $066, palette 2
+                                                   // **CRAM, written on purpose.** Power-on CRAM here is all black, so without this the two pictures
+                                                   // are identical black and the `assert_ne!` below fires as a fixture failure rather than a code one
+                                                   // — which is what it is for. Plane A's dot resolves to CRAM `1*16+3 = $13`, plane B's to
+                                                   // `2*16+5 = $25`, and they are given visibly different colours (Genesis CRAM word: `0BBB0GGG0RRR0`).
+        write(0x03, 0x13 * 2, &[0x000E]); // plane A dot: red
+        write(0x03, 0x25 * 2, &[0x0E00]); // plane B dot: blue
+
+        let mut hidden = LayerMask::ALL;
+        assert!(hidden.set(oracle_core::render::Layer::PlaneA, false));
+
+        let (mut plain, mut masked) = (Vec::new(), Vec::new());
+        let w_plain = blit_masked(&v, LayerMask::ALL, &mut plain);
+        let w_masked = blit_masked(&v, hidden, &mut masked);
+        assert_eq!(
+            w_plain, w_masked,
+            "hiding a layer must not change the width"
+        );
+        assert_eq!(plain.len(), w_plain * HEIGHT);
+        // Two causes, and the message names both because the row cannot tell them apart: either the
+        // fixture's dot does not actually change under the mask (nothing was measured, so the per-dot
+        // comparison below would pass for a blit that ignored its mask entirely), or `blit_masked` really
+        // is ignoring it. Both are failures and neither may be green.
+        assert_ne!(
+            plain[0], masked[0],
+            "the masked and unmasked pictures are identical at (0,0) — either `blit_masked` ignored \
+             its mask, or the fixture's dot does not change under one and COULD NOT MEASURE anything"
+        );
+
+        // And every dot is the core's own answer — not a re-derivation of it here.
+        for line in 0..HEIGHT as u16 {
+            let want = v.render_line_masked(line, hidden);
+            for x in 0..w_masked {
+                let (r, g, b) = want[x];
+                let packed = (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b);
+                assert_eq!(
+                    masked[line as usize * w_masked + x],
+                    packed,
+                    "line {line} dot {x}: the window is not painting the core's masked render"
+                );
+            }
+        }
+    }
+
     /// The command line parses as documented, and a bad value is refused rather than silently ignored.
     #[test]
     fn the_command_line_parses_scale_and_aspect() {
