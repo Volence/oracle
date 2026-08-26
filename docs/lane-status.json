@@ -1,26 +1,26 @@
 {
-  "focus": "He wants emulators opened on demand and closed after. The tools we all click cannot do that yet, so I am scoping it.",
+  "focus": "Tools now open their own emulator (landed). Still building: the emulator window wearing the Oracle icon.",
   "inFlight": [
     {
-      "what": "The shared emulator, still up on purpose tonight \u2014 the tools cannot open their own yet, so stopping it would just take the emulator away from everyone",
-      "where": "process 29281, reparented to user systemd",
-      "agent": false
+      "what": "ICON — the window gets the Oracle name and mark; agent first measures why it showed Aurora's icon",
+      "where": "oracle worktree wt-oracle-icon, branch window-icon",
+      "agent": true
     }
   ],
   "blockedOnOwner": [],
-  "nextBoundary": "The on-demand emulator scoped, so the tools can open their own instead of relying on one I started.",
+  "nextBoundary": "The icon agent's report verified from this seat and merged.",
   "queue": [
     {
-      "id": "EPHEMERAL-SPAWN",
-      "title": "His ruling: things open their own emulator and close it after. Automation already does; the tools we click by hand cannot open one at all",
-      "state": "next",
-      "size": "M",
+      "id": "ICON",
+      "title": "Give the new emulator window the Oracle icon and name, so it does not look like Aurora or the old emulator on your desktop",
+      "state": "doing",
+      "size": "S",
       "blockedBy": null
     },
     {
       "id": "CR-C",
       "title": "The server cannot say which server it is, so a session can swap implementations with no signal",
-      "state": "open",
+      "state": "next",
       "size": "M",
       "blockedBy": null
     },
@@ -33,7 +33,7 @@
     },
     {
       "id": "PROF-RING-SELF",
-      "title": "Per-frame interrupt self-cycles aeon asked for \u2014 but the fix found the field as specified would carry only the exception entry cost, so refusing it may serve them better",
+      "title": "Per-frame interrupt self-cycles aeon asked for — but the fix found the field as specified would carry only the exception entry cost, so refusing it may serve them better",
       "state": "open",
       "size": "S",
       "blockedBy": null
@@ -54,10 +54,10 @@
     },
     {
       "id": "Z80",
-      "title": "z80_read / z80_write \u2014 nothing calls them yet, and the legacy write silently corrupts on overrun",
+      "title": "z80_read / z80_write — nothing calls them yet, and the legacy write silently corrupts on overrun",
       "state": "blocked",
       "size": "M",
-      "blockedBy": "no programmatic consumer found \u2014 demand has not ordered it"
+      "blockedBy": "no programmatic consumer found — demand has not ordered it"
     },
     {
       "id": "WIKI-SPIKE",
@@ -67,5 +67,7 @@
       "blockedBy": "sits behind the acceptance parcels"
     }
   ],
-  "updatedAt": "2026-08-24T13:42:41Z"
+  "updatedAt": "2026-08-26T01:11:27Z",
+  "awaiting": null,
+  "atBoundary": false
 }
