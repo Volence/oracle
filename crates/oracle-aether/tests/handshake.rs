@@ -30,7 +30,26 @@ fn initialize_advertises_a_generated_method_list_that_is_the_dispatch_table() {
     let r = c.handshake(true);
 
     assert_eq!(r["protocolVersion"], json!(1));
-    assert_eq!(r["serverName"], json!("oracle-next"));
+    // **This line used to read `assert_eq!(r["serverName"], json!("oracle-next"))`, and §2.1 now bars
+    // exactly that.** Since the 2026-08-26 amendment (§11.23): *"`serverName` remains a **deployment**
+    // label a config may set — two processes of the same implementation on one machine want
+    // distinguishable names — and MUST NOT be used to discriminate implementations."* `ServerConfig`
+    // really can set it, so the old pin was asserting a default and calling it an identity; it would have
+    // gone red on a rename that changed nothing about who was answering, and stayed green on a legacy
+    // server configured to answer to the same string. The identity key is `implementation`, which no
+    // config path reaches (`tests/server_build.rs` proves that at source level).
+    assert_eq!(
+        r["implementation"],
+        json!("oracle-rs"),
+        "§2.1 (§11.23): the registry value for the Rust `oracle-aether` server"
+    );
+    // `serverName` is still REQUIRED, so it is still checked — for presence, which is all a deployment
+    // label warrants. (Its default is the pre-rename `"oracle-next"`; that is a display-string question,
+    // and deliberately not this test's.)
+    assert!(
+        r["serverName"].is_string(),
+        "§2.1: `serverName` is REQUIRED — as a deployment label, not an identity"
+    );
 
     let advertised: Vec<String> = r["methods"]
         .as_array()
