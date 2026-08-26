@@ -31,7 +31,7 @@ use oracle_aether::build_info::{
     IMPLEMENTATION, SERVER_BUILD_DIRTY, SERVER_BUILD_DIRTY_SCOPE, SERVER_BUILD_ID,
     SERVER_BUILD_SOURCE,
 };
-use serde_json::{json, Value};
+use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
