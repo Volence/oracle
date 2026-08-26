@@ -1614,6 +1614,7 @@ mod tests {
             volume: Some((7, 10, false)),
             filter: Some("VA0-VA2"),
             aspect: "4:3",
+            layers: oracle_core::render::LayerMask::ALL,
             native: (320, 224),
         };
         let lenses = |bg: u32| {

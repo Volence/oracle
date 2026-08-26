@@ -57,6 +57,16 @@ pub struct Bus {
     /// panel has the same shape in both builds: a header saying it is off, over a sample with no frames in
     /// it. That is the honest picture of this build, and it is one code path rather than two.
     profiler: oracle_core::profiler::Profiler,
+    /// **The display layer mask, and in this build it is the only one that exists.** Same story as
+    /// `watchpoints` above: the window's layer toggles predate nothing and depend on no bus, so the state
+    /// they move has to exist in both builds, and owning it here is what lets the run loop have a single
+    /// shape. In the served build this same accessor pair reaches the *engine's* mask, which is what makes
+    /// a socket client and the palette move one mask rather than two.
+    ///
+    /// It is the identical `oracle_core::render::LayerMask` type in both builds — deliberately, since a
+    /// frontend-side notion of "hidden layers" that merely resembled the core's is the drift the whole
+    /// arrangement exists to prevent.
+    layers: oracle_core::render::LayerMask,
 }
 
 impl Default for Bus {
@@ -65,6 +75,7 @@ impl Default for Bus {
             paused: false,
             watchpoints: Watchpoints::new(crate::WATCH_CAP),
             profiler: oracle_core::profiler::Profiler::new(),
+            layers: oracle_core::render::LayerMask::ALL,
         }
     }
 }
@@ -82,6 +93,16 @@ impl Bus {
 
     pub fn merge_held(&self, pads: [Pad; 2]) -> [Pad; 2] {
         pads
+    }
+
+    /// The panel's and the window's mask. Same signature as the served build's, so the run loop is one
+    /// shape; there is simply no socket here for a second writer to arrive through.
+    pub fn layers(&self) -> oracle_core::render::LayerMask {
+        self.layers
+    }
+
+    pub fn set_layer(&mut self, layer: oracle_core::render::Layer, enabled: bool) -> bool {
+        self.layers.set(layer, enabled)
     }
 
     pub fn set_live_pads(&mut self, _pads: [Pad; 2]) {}

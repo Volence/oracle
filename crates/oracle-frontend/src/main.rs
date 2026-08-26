@@ -288,6 +288,7 @@ mod pick;
 use minifb::{Key, KeyRepeat, MouseButton, MouseMode, ScaleMode, Window, WindowOptions};
 use oracle_core::bus::Fanout;
 use oracle_core::io::Pad;
+use oracle_core::render::LayerMask;
 use oracle_core::scanline_capture::{Retain, ScanlineCapture};
 use oracle_core::symbols::SymbolTable;
 use oracle_core::system::System;
@@ -539,6 +540,43 @@ fn blit_capture(cap: &ScanlineCapture, buf: &mut Vec<u32>) -> Option<usize> {
         }
     }
     Some(width)
+}
+
+/// Pack the **masked** picture into `buf` at native resolution, returning its width. Used in place of
+/// [`blit_capture`] for exactly as long as a display layer is hidden, and never otherwise.
+///
+/// **A masked read cannot use the captured frame, and this is not a shortcut missed.** The capture's rows
+/// were composited line by line during the run by `Vdp::render_scanline` — the one render that commits the
+/// sprite-overflow and collision latches, which is why it takes no mask and has no masked twin. What it
+/// leaves behind is decoded colours with the losing layers *already discarded*, so "mask" applied to those
+/// bytes could only mean "paint over", and painting the backdrop over dots plane B was visible at is the
+/// believable-wrong-answer this whole surface is built to avoid. So a masked picture is re-derived from VDP
+/// state, exactly as `emulator/screenshot` does under a mask, through the same
+/// [`render_line_masked`](oracle_core::vdp::Vdp::render_line_masked).
+///
+/// **What that costs, stated because it is visible on screen.** This is a post-hoc read of whatever CRAM
+/// holds right now, so every mid-frame palette effect that [`blit_capture`] exists to preserve (S3K's
+/// underwater split is the loud one) is gone for as long as a mask is set: the water renders in the
+/// above-water palette. That is the same trade the bus makes and announces as `source: "stateRender"`, and
+/// it is one more reason the window has to say a mask is on rather than let it be inferred — the picture
+/// changes in a second way the toggle did not ask for. Clearing the mask puts the captured frame straight
+/// back on the next completed frame; nothing is discarded.
+fn blit_masked(vdp: &oracle_core::vdp::Vdp, mask: LayerMask, buf: &mut Vec<u32>) -> usize {
+    let first = vdp.render_line_masked(0, mask);
+    let width = first.len();
+    buf.clear();
+    buf.reserve(width * HEIGHT);
+    for line in 0..HEIGHT as u16 {
+        // Line 0 is rendered twice rather than held: `render_line_masked` is `&self` and pure, the cost is
+        // one line out of 224, and threading the first row through as a special case is how an off-by-one
+        // between the width probe and the blit gets written.
+        let row = vdp.render_line_masked(line, mask);
+        for x in 0..width {
+            let (r, g, b) = row.get(x).copied().unwrap_or((0, 0, 0));
+            buf.push((u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b));
+        }
+    }
+    width
 }
 
 /// How far past a symbol a PC may sit before the name stops being useful. Aeon's listings are dense (2,129
@@ -1103,8 +1141,15 @@ fn main() {
             if let Some((mx, my)) = window.get_mouse_pos(MouseMode::Discard) {
                 if let Some((x, y)) = present::window_to_native(mx, my, view, width, HEIGHT) {
                     // Resolve the dot to whatever it is — plane tile, sprite (its drawing pattern *and* its
-                    // attribute-table entry), or backdrop palette entry. A sprite dot used to arm nothing.
-                    let p = pick::resolve(sys.vdp(), x, y);
+                    // attribution-table entry), or backdrop palette entry. A sprite dot used to arm nothing.
+                    //
+                    // **Under the same mask the picture was drawn with**, which is what keeps the panel
+                    // describing the picture rather than a machine state nobody is looking at. Hiding plane
+                    // A and clicking where it used to be must arm what is *now* showing there; the panel
+                    // answering `planeA` for a dot the window is painting plane B at is the whole defect
+                    // this parcel exists to close, and `pick.rs`'s bus-parity guard now runs over masked
+                    // states so it cannot come back.
+                    let p = pick::resolve(sys.vdp(), x, y, bus.layers());
                     let wp = bus.watchpoints_mut();
                     // Retire only what this panel armed. `clear()` would take a socket client's watches
                     // with it — the shared-instrument hazard, and the one thing that made the panel's
@@ -1221,6 +1266,47 @@ fn main() {
                         ),
                         INFO,
                     );
+                }
+                // Hide / show one display layer. The state it moves is the **engine's** mask, the same one
+                // `emulator/set_layer_enabled` writes — see `bus::Bus::layers`. Nothing is kept here, and
+                // deliberately nothing is persisted to `cfg` either: a mask that survived a restart would be
+                // the "author forgot it was on" failure with no memory of it at all, and the standing badge
+                // could only reintroduce the question rather than answer it. A mask lasts for a session.
+                commands::Cmd::ToggleLayer(layer) => {
+                    let name = layer.mask_key().unwrap_or("that layer");
+                    let showing = bus.layers().shows(layer);
+                    if !bus.set_layer(layer, !showing) {
+                        // Unreachable from the registry (`LayerMask::targets()` never yields the backdrop),
+                        // and it refuses in words rather than reporting a toggle that did not happen.
+                        notify(
+                            &mut ov,
+                            ERROR,
+                            format!("{name} is not a mask target — nothing was hidden"),
+                        );
+                    } else {
+                        let hidden = bus.layers().hidden();
+                        // The sentence, not the enum: what changed, and what the picture is now. The second
+                        // half is the standing statement's transient companion — the badge says *that* a
+                        // mask is on for as long as it is, this says what just moved and what it costs.
+                        let line = if hidden.is_empty() {
+                            "every layer is drawn again — back to the captured picture".to_string()
+                        } else {
+                            format!(
+                                "hidden: {} — the picture is re-derived from VDP state, so mid-frame \
+                                 palette effects are not shown",
+                                hidden.join(", ")
+                            )
+                        };
+                        println!(
+                            "layers: {name} {} — {line}",
+                            if showing { "hidden" } else { "shown" }
+                        );
+                        notify(
+                            &mut ov,
+                            ACCENT,
+                            format!("{name} {}", if showing { "HIDDEN" } else { "SHOWN" }),
+                        );
+                    }
                 }
                 // W dumps the recorded hits; C disarms the watch (dropping it back out of the run's sink).
                 commands::Cmd::DumpHits => {
@@ -1721,6 +1807,21 @@ fn main() {
             );
         }
 
+        // --- The display layer mask, read back AFTER the drain and applied to the picture. ---
+        //
+        // Read from the bus rather than kept here, because there is exactly one mask and it lives on the
+        // engine: a client's `emulator/set_layer_enabled` and this window's palette toggles move the same
+        // field, so a mask set over the socket reaches the glass on this very iteration and the two can
+        // never describe different pictures. Read *after* `pump` for that reason — before it, a client's
+        // change would show up a frame late.
+        //
+        // `is_all()` is the whole gate: with nothing hidden, not one line of this runs and the presented
+        // picture is byte-for-byte the captured frame the loop has always shown.
+        let layers = bus.layers();
+        if !layers.is_all() {
+            width = blit_masked(sys.vdp(), layers, &mut buf);
+        }
+
         // Slice S2/S4 autosave: when the guest has dirtied SRAM, arm a debounce countdown and flush the `.srm`
         // once it elapses (coalescing a burst of saves into one write). Guarded on `sram_used()` (S4) so only
         // carts that actually saved touch the disk — the header-less fallback buffer never fabricates a file.
@@ -1895,6 +1996,10 @@ fn main() {
                 filter: filt,
                 aspect: aspect.name(),
                 native: (width, HEIGHT),
+                // The mask that drew the frame being presented, not a fresh read — the badge is a caption
+                // for the picture underneath it, and one that could describe a mask set a microsecond ago
+                // by a socket client, over a frame drawn before it, would be a caption for something else.
+                layers,
             },
         );
 
@@ -2594,7 +2699,7 @@ mod tests {
             "the scene must contain sprites to test against"
         );
         let (sx, sy, _) = a_sprite_dot.unwrap();
-        let sprite_pick = pick::resolve(sys.vdp(), sx, sy);
+        let sprite_pick = pick::resolve(sys.vdp(), sx, sy, LayerMask::ALL);
         println!("shots: click ({sx},{sy}) -> {}", sprite_pick.description);
         println!("shots:   toast: {}", sprite_pick.toast);
         for t in &sprite_pick.targets {
@@ -2684,6 +2789,7 @@ mod tests {
                     volume: Some((7, 10, false)),
                     filter: Some("VA0-VA2"),
                     aspect: aspect.name(),
+                    layers: LayerMask::ALL,
                     native: (width, HEIGHT),
                 },
             );

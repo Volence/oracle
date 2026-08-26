@@ -33,8 +33,29 @@
 //! core's sprite addressing ever changed, these tests fail rather than the picker silently naming the
 //! wrong tile.
 
-use oracle_core::render::{sprite_tile_at, Layer};
+use oracle_core::render::{sprite_tile_at, Layer, LayerMask};
 use oracle_core::vdp::Vdp;
+
+/// The clause every answer carries when a display layer is hidden, or `None` when none is.
+///
+/// **The panel must describe the picture on screen, and say so when that is not the whole machine.** A dot
+/// where plane A is hidden resolves to plane B — correctly, because plane B is what the window is painting
+/// there — and an answer that said `plane B` without saying `planeA is hidden` would be a true sentence a
+/// reader cannot help but take as false. This is `loud-on-unmeasurable` arriving on the panel: the honest
+/// answer names the lens it was taken through.
+///
+/// It reads [`LayerMask::hidden`], the same derivation the bus's screenshot caveat and the window's standing
+/// badge read, so the three cannot name different layers.
+fn mask_clause(mask: LayerMask) -> Option<String> {
+    let hidden = mask.hidden();
+    if hidden.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{} hidden, so this is the masked picture, not the machine's",
+        hidden.join(" + ")
+    ))
+}
 
 /// One armable range the click resolved to: a watch to arm, and how to describe it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,7 +80,18 @@ pub enum Space {
 /// What the clicked pixel turned out to be, ready to report and to arm.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pick {
-    /// The full human-readable line, for the terminal log — everything the click resolved.
+    /// **A sentence a person reads**, and the first thing printed. Says what was clicked, in words, before
+    /// any address or index appears.
+    ///
+    /// The rule comes from a measured failure in the editor lane, adopted here: they shipped a lens that
+    /// highlighted 1,244 cells, entirely correctly, and the reaction was *"what are the purple boxes"* — not
+    /// *that's wrong* but ***what is that***. A feature that works perfectly and communicates nothing.
+    /// `[planeB:won, backdrop:lostToPriority]` is the right data and the wrong answer. So the structured
+    /// detail keeps its place; it just stops being the top line.
+    pub headline: String,
+    /// The full human-readable line, for the terminal log — the headline, then everything the click
+    /// resolved. Kept as one string because it is what goes to stdout, and the two halves are never wanted
+    /// apart there.
     pub description: String,
     /// A short form for the on-screen toast. The overlay draws at window resolution but a 960-pixel window
     /// still only fits ~50 characters at a legible size, so the toast names *what was armed* and the terminal
@@ -85,21 +117,70 @@ fn tile_range(tile: u16) -> (u32, u32) {
     (lo, lo + TILE_BYTES - 1)
 }
 
-/// Resolve the dot at `(x, y)` into a description and the ranges worth watching.
+/// **The space a tile index is in, stated in the answer.** Every tile this module names is an index into
+/// VRAM patterns — `tileAddr == tile * 32` — and nothing else.
 ///
-/// Plane and window winners keep the behaviour they always had (the winning cell's tile). Sprite winners are
-/// the fix: the sprite's own tile for *this* dot, plus its SAT entry. A backdrop winner arms the CRAM entry
-/// the backdrop register points at.
-pub fn resolve(vdp: &Vdp, x: u16, y: u16) -> Pick {
-    let attr = vdp.pixel_attribution(x, y);
+/// It is spelled out because *an index whose space is unstated is a transpose bug waiting to happen* (the
+/// editor lane's formulation, out of their own injector). Their model rebases this index into a blob-local
+/// slot with a base constant **they** own; this panel deliberately does not do that arithmetic and does not
+/// name a slot in their space. The failure it avoids is not a throw: a rebase can land outside the artwork
+/// while still passing a naive capacity check, and what comes out is a confident wrong slot, which is
+/// indistinguishable from a correct answer. *In-capacity is not in-blob.* Naming the space we do own, and
+/// only that, is what keeps the join theirs to make.
+const TILE_SPACE: &str = "VRAM-absolute";
+
+/// Assemble the answer: the sentence, then the mask clause if there is one, then the detail.
+///
+/// One function so no caller can drop the mask clause on a path that happens not to think about masks —
+/// which is precisely how the invariant this parcel closes went unasserted in the first place.
+fn describe(headline: String, mask: LayerMask, detail: String) -> (String, String) {
+    let headline = match mask_clause(mask) {
+        Some(c) => format!("{headline} ({c})"),
+        None => headline,
+    };
+    let description = format!("{headline} — {detail}");
+    (headline, description)
+}
+
+/// Resolve the dot at `(x, y)` into a description and the ranges worth watching, **under the display mask
+/// the picture was drawn with**.
+///
+/// Plane and window winners keep the behaviour they always had (the winning cell's tile). Sprite winners
+/// name the sprite's own tile for *this* dot, plus its SAT entry. A backdrop winner arms the CRAM entry the
+/// backdrop register points at.
+///
+/// # The mask is a parameter, and there is no unmasked twin to fall into
+///
+/// The panel's whole job is to describe **the picture on screen**. Once the window could hide a layer, an
+/// unmasked `pixel_attribution` stopped doing that: hide plane A, click where it used to be, and an unmasked
+/// panel names plane A while the window paints plane B. That is not a near-miss, it is the wrong object
+/// armed for a watch, reported confidently.
+///
+/// So the mask comes in from the caller — the same `LayerMask` the engine holds and the renderer just used,
+/// never a second one — exactly as `Engine::framebuffer` takes its mask explicitly and for the same stated
+/// reason: each call site says which picture it means. [`LayerMask::ALL`] is the old behaviour precisely,
+/// because the mask reaches only `resolve_dot`'s candidate tests.
+///
+/// The bus-parity guard below now runs over masked states as well as the default, so "this panel and
+/// `emulator/pixel_attribution` never disagree" is an assertion rather than a precondition nobody checks.
+pub fn resolve(vdp: &Vdp, x: u16, y: u16, mask: LayerMask) -> Pick {
+    let attr = vdp.pixel_attribution_masked(x, y, mask);
     match attr.winner {
         Layer::Sprite(index) => {
             // `sprites_decoded` reads the same cached Y/size/link and VRAM X/attribute the renderer's walk
             // does, so the geometry here is the geometry that drew the pixel.
             let sprites = vdp.sprites_decoded();
             let Some(s) = sprites.get(usize::from(index)) else {
+                let (headline, description) = describe(
+                    format!(
+                        "That dot is a sprite, but sprite {index} is out of range — nothing to watch"
+                    ),
+                    mask,
+                    format!("pixel ({x},{y}): sprite {index} is out of range"),
+                );
                 return Pick {
-                    description: format!("pixel ({x},{y}): sprite {index} is out of range"),
+                    headline,
+                    description,
                     toast: format!("SPRITE {index}: OUT OF RANGE"),
                     targets: Vec::new(),
                 };
@@ -113,9 +194,11 @@ pub fn resolve(vdp: &Vdp, x: u16, y: u16) -> Pick {
                 label: format!("sprite {index} SAT entry"),
             }];
             let mut short_tile = "TILE ?".to_string();
+            let mut named_tile = None;
             let tile_note = match sprite_tile_at(s, x, y) {
                 Some(tile) => {
                     short_tile = format!("TILE ${tile:03X}");
+                    named_tile = Some(tile);
                     let (lo, hi) = tile_range(tile);
                     targets.insert(
                         0,
@@ -138,8 +221,21 @@ pub fn resolve(vdp: &Vdp, x: u16, y: u16) -> Pick {
                 (false, true) => " vflip",
                 (true, true) => " hflip+vflip",
             };
-            Pick {
-                description: format!(
+            // The sentence. It names the subject — *a sprite*, which one, and what it is drawn from — before
+            // any of the addressing below. `Sprite 12` is the most specific thing we can honestly say: the
+            // SAT index is the hardware's own name for it, and this panel does **not** claim to know which
+            // game object put it there (see the module docs' closing note on that).
+            let drawn_from = match named_tile {
+                Some(tile) => format!("drawn from {TILE_SPACE} tile ${tile:03X}"),
+                None => {
+                    "whose tile could not be resolved (the SAT moved since the frame was drawn)"
+                        .to_string()
+                }
+            };
+            let (headline, description) = describe(
+                format!("That dot is sprite {index}, {drawn_from}."),
+                mask,
+                format!(
                     "sprite {index} at ({},{}) {}x{} cells, base ${:03X}, pal {}{flips}{} — {tile_note}, \
                      SAT entry @ VRAM ${sat_lo:04X}-${sat_hi:04X}",
                     s.x,
@@ -150,6 +246,10 @@ pub fn resolve(vdp: &Vdp, x: u16, y: u16) -> Pick {
                     s.palette,
                     if s.priority { " hi-pri" } else { "" },
                 ),
+            );
+            Pick {
+                headline,
+                description,
                 toast: format!("WATCH SPRITE {index} {short_tile} + SAT ${sat_lo:04X}"),
                 targets,
             }
@@ -158,8 +258,14 @@ pub fn resolve(vdp: &Vdp, x: u16, y: u16) -> Pick {
             // Nothing is *drawn* at a backdrop dot — the only writable thing behind it is the palette entry
             // reg $07 selects, so that is what a "who changes this?" question means here.
             let idx = u32::from(attr.cram_index);
-            Pick {
-                description: format!(
+            let (headline, description) = describe(
+                format!(
+                    "Nothing is drawn at ({x},{y}) — you clicked the backdrop, so the colour comes \
+                     straight from palette entry {}.",
+                    attr.cram_index
+                ),
+                mask,
+                format!(
                     "backdrop at ({x},{y}) — CRAM entry {} (palette {}, colour {}) @ CRAM ${:02X}-${:02X}",
                     attr.cram_index,
                     attr.cram_index / 16,
@@ -167,6 +273,10 @@ pub fn resolve(vdp: &Vdp, x: u16, y: u16) -> Pick {
                     idx * 2,
                     idx * 2 + 1
                 ),
+            );
+            Pick {
+                headline,
+                description,
                 toast: format!("WATCH BACKDROP CRAM {}", attr.cram_index),
                 targets: vec![WatchTarget {
                     space: Space::Cram,
@@ -185,22 +295,35 @@ pub fn resolve(vdp: &Vdp, x: u16, y: u16) -> Pick {
             // `cell` is `Some` for exactly these three winners (the core returns `None` only for
             // sprite/backdrop), but the fallback keeps the picker total rather than unwrapping.
             let Some(cell) = attr.cell else {
+                let (headline, description) = describe(
+                    format!("That dot is {plane}, but the VDP reported no cell for it."),
+                    mask,
+                    format!("pixel ({x},{y}) is {plane}, but the VDP reported no cell"),
+                );
                 return Pick {
-                    description: format!(
-                        "pixel ({x},{y}) is {plane}, but the VDP reported no cell"
-                    ),
+                    headline,
+                    description,
                     toast: "NO CELL REPORTED".to_string(),
                     targets: Vec::new(),
                 };
             };
             let (lo, hi) = tile_range(cell.tile);
-            Pick {
-                description: format!(
+            let (headline, description) = describe(
+                format!(
+                    "That dot is {plane}, drawn from {TILE_SPACE} tile ${:03X}.",
+                    cell.tile
+                ),
+                mask,
+                format!(
                     "{plane} tile ${:03X} (pal {}{}) @ VRAM ${lo:04X}-${hi:04X} — click ({x},{y})",
                     cell.tile,
                     cell.palette,
                     if cell.priority { " hi-pri" } else { "" },
                 ),
+            );
+            Pick {
+                headline,
+                description,
                 toast: format!("WATCH {plane} TILE ${:03X}", cell.tile),
                 targets: vec![WatchTarget {
                     space: Space::Vram,
@@ -380,7 +503,7 @@ mod tests {
     #[test]
     fn clicking_a_sprite_arms_its_tile_and_its_sat_entry() {
         let v = vdp_with_sprite(2, 2, false, false);
-        let pick = resolve(&v, 70, 70);
+        let pick = resolve(&v, 70, 70, LayerMask::ALL);
         assert_eq!(
             pick.targets.len(),
             2,
@@ -424,7 +547,7 @@ mod tests {
     fn clicking_the_backdrop_arms_its_palette_entry() {
         let mut v = vdp_with_sprite(1, 1, false, false);
         set_reg(&mut v, 0x07, 0x25); // backdrop = CRAM entry $25
-        let pick = resolve(&v, 8, 8); // well away from the sprite at (64,64)
+        let pick = resolve(&v, 8, 8, LayerMask::ALL); // well away from the sprite at (64,64)
         assert_eq!(pick.targets.len(), 1);
         let t = &pick.targets[0];
         assert_eq!(t.space, Space::Cram);
@@ -456,7 +579,7 @@ mod tests {
         write_vram(&mut v, 0xC000, &[(1 << 13) | 0x055]);
         write_vram(&mut v, 0x055 * 32, &[0x3333; 16]);
 
-        let pick = resolve(&v, 2, 2);
+        let pick = resolve(&v, 2, 2, LayerMask::ALL);
         assert_eq!(pick.targets.len(), 1);
         assert_eq!(
             (pick.targets[0].lo, pick.targets[0].hi),
@@ -553,7 +676,7 @@ mod tests {
                         for dx in 0..usize::from(w) * 8 {
                             let (x, y) = (SPRITE_AT + dx as u16, SPRITE_AT + dy as u16);
                             let r = attribution(&mut e, x, y);
-                            let p = resolve(&v, x, y);
+                            let p = resolve(&v, x, y, LayerMask::ALL);
 
                             assert_eq!(r["winner"]["layer"], json!("sprite"), "({x},{y})");
                             assert_eq!(r["winner"]["spriteIndex"], json!(0), "({x},{y})");
@@ -604,7 +727,7 @@ mod tests {
 
             // The one opaque plane-A cell.
             let r = attribution(&mut e, 2, 2);
-            let p = resolve(&v, 2, 2);
+            let p = resolve(&v, 2, 2, LayerMask::ALL);
             assert_eq!(r["winner"]["layer"], json!("planeA"));
             assert_eq!(p.targets[0].lo, addr_of(&r["cell"]["tileAddr"]));
             assert_eq!(p.targets[0].hi, addr_of(&r["cell"]["tileAddr"]) + 31);
@@ -613,7 +736,7 @@ mod tests {
 
             // Everywhere else is backdrop.
             let r = attribution(&mut e, 200, 100);
-            let p = resolve(&v, 200, 100);
+            let p = resolve(&v, 200, 100, LayerMask::ALL);
             assert_eq!(r["winner"]["layer"], json!("backdrop"));
             assert_eq!(r["cramIndex"], json!(0x25));
             assert_eq!(p.targets[0].space, Space::Cram);

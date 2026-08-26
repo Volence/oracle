@@ -6,6 +6,8 @@
 //! the palette entry, and searchability — there is no second list to update.
 
 use minifb::Key;
+use oracle_core::render::LayerMask;
+use std::borrow::Cow;
 
 /// Every action the frontend can perform. `Copy` on purpose: dispatch passes these by value.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -29,6 +31,11 @@ pub enum Cmd {
     /// Turn one lens on or off (spec §5). Payload-carrying like `SlotSelect`, so one arm and one
     /// registration loop cover every lens.
     ToggleLens(crate::lens::LensId),
+    /// Hide or show one **display layer** — the same mask `emulator/set_layer_enabled` moves, carried as
+    /// the core's own [`Layer`](oracle_core::render::Layer) rather than a frontend enum of the same shape.
+    /// The payload is the mask *target*, so `Layer::Sprite`'s slot is the `Layer::ALL` representative and
+    /// means "the sprite layer", never one sprite.
+    ToggleLayer(oracle_core::render::Layer),
     // Audio-only, and absent — not merely unbound — from a no-audio build: with nothing to attenuate
     // the command genuinely *cannot* exist (spec §4), which is also what keeps the main loop's
     // dispatch exhaustive without a dead catch-all arm.
@@ -47,15 +54,21 @@ pub enum Group {
     SaveStates,
     Watch,
     Lenses,
+    /// The display layer mask — the same one `emulator/set_layer_enabled` moves. Its own group rather than
+    /// a corner of `Lenses`: a lens draws *over* the picture and a layer toggle changes *what the picture
+    /// is*, and a user hunting for "why is the background gone" should not have to know they are the same
+    /// kind of thing, because they are not.
+    Layers,
     Settings,
 }
 
 impl Group {
-    pub const ALL: [Group; 5] = [
+    pub const ALL: [Group; 6] = [
         Group::Game,
         Group::SaveStates,
         Group::Watch,
         Group::Lenses,
+        Group::Layers,
         Group::Settings,
     ];
     pub fn title(self) -> &'static str {
@@ -64,16 +77,29 @@ impl Group {
             Group::SaveStates => "SAVE STATES",
             Group::Watch => "WATCH",
             Group::Lenses => "LENSES",
+            Group::Layers => "DISPLAY LAYERS",
             Group::Settings => "SETTINGS",
         }
     }
+}
+
+/// The palette title for one display-layer toggle, built from the layer's own mask name.
+///
+/// One function so the registry row and any other reader cannot disagree, and it takes the **name** rather
+/// than the `Layer` so a caller cannot reach it for the backdrop — which has no mask name and no toggle.
+pub fn layer_toggle_title(mask_key: &str) -> String {
+    format!("Hide / show {mask_key}")
 }
 
 /// One registry row. `hidden` rows bind a key but do not appear in the palette list (the ten
 /// number keys would drown the list; the visible "Select slot…" picker covers them).
 pub struct CommandInfo {
     pub cmd: Cmd,
-    pub title: &'static str,
+    /// The palette row's text. A [`Cow`] rather than a `&'static str` because the display-layer rows
+    /// **build** their titles out of the core's own mask vocabulary ([`LayerMask::targets`]) instead of
+    /// transcribing four names the wire also spells — which is the whole reason that derivation moved into
+    /// `oracle-core`. Every other row is still a borrowed literal and allocates nothing.
+    pub title: Cow<'static, str>,
     pub group: Group,
     pub hotkey: Option<Key>,
     /// `true` = fire on key repeat while held (volume ramp); everything else is edge-only.
@@ -82,10 +108,15 @@ pub struct CommandInfo {
 }
 
 impl CommandInfo {
-    const fn new(cmd: Cmd, title: &'static str, group: Group, hotkey: Option<Key>) -> Self {
+    fn new(
+        cmd: Cmd,
+        title: impl Into<Cow<'static, str>>,
+        group: Group,
+        hotkey: Option<Key>,
+    ) -> Self {
         CommandInfo {
             cmd,
-            title,
+            title: title.into(),
             group,
             hotkey,
             repeat: false,
@@ -165,7 +196,7 @@ pub fn registry() -> Vec<CommandInfo> {
     // F1 = reset alias (hidden: one visible "Soft reset" row is enough).
     reg.push(CommandInfo {
         cmd: Cmd::Reset,
-        title: "Soft reset (F1 alias)",
+        title: "Soft reset (F1 alias)".into(),
         group: Group::Game,
         hotkey: Some(Key::F1),
         repeat: false,
@@ -203,7 +234,7 @@ pub fn registry() -> Vec<CommandInfo> {
     for (n, key) in slot_keys.iter().enumerate() {
         reg.push(CommandInfo {
             cmd: Cmd::SlotSelect(n),
-            title: SLOT_TITLES[n],
+            title: SLOT_TITLES[n].into(),
             group: Group::SaveStates,
             hotkey: Some(*key),
             repeat: false,
@@ -222,13 +253,30 @@ pub fn registry() -> Vec<CommandInfo> {
             None,
         ));
     }
+    // One toggle per display layer, generated from the **core's** `LayerMask::targets()` — the same
+    // derivation that produces `emulator/get_layer_states`'s key set and `emulator/set_layer_enabled`'s
+    // accepted values. Nothing here transcribes a layer name, so the palette cannot offer a layer the bus
+    // does not have, spell one differently, or miss one that is added. The backdrop is absent for free:
+    // it has no mask key, so `targets()` never yields it.
+    //
+    // Palette-only, exactly like the lens toggles and for the same reason: every obvious key is taken, and
+    // a mask is a thing you set deliberately and then leave set. The badge, not a key under a finger, is
+    // what tells you it is on.
+    for (name, layer) in LayerMask::targets() {
+        reg.push(CommandInfo::new(
+            Cmd::ToggleLayer(layer),
+            layer_toggle_title(name),
+            Group::Layers,
+            None,
+        ));
+    }
     // Audio-only commands: absent from a no-audio build entirely (spec §4 "a command is absent
     // only when it cannot exist").
     #[cfg(feature = "audio")]
     {
         reg.push(CommandInfo {
             cmd: Cmd::VolumeUp,
-            title: "Volume up",
+            title: "Volume up".into(),
             group: Group::Settings,
             hotkey: Some(Key::Equal),
             repeat: true,
@@ -236,7 +284,7 @@ pub fn registry() -> Vec<CommandInfo> {
         });
         reg.push(CommandInfo {
             cmd: Cmd::VolumeDown,
-            title: "Volume down",
+            title: "Volume down".into(),
             group: Group::Settings,
             hotkey: Some(Key::Minus),
             repeat: true,
@@ -355,7 +403,11 @@ mod tests {
     #[test]
     fn titles_unique() {
         let reg = registry();
-        let mut titles: Vec<&str> = reg.iter().filter(|c| !c.hidden).map(|c| c.title).collect();
+        let mut titles: Vec<&str> = reg
+            .iter()
+            .filter(|c| !c.hidden)
+            .map(|c| c.title.as_ref())
+            .collect();
         assert!(!titles.is_empty(), "registry must not be empty");
         titles.sort_unstable();
         let before = titles.len();
