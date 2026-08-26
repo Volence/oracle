@@ -158,6 +158,20 @@ fn client(handle: &oracle_aether::server::ServerHandle) -> Client {
     c
 }
 
+/// A private path for a screenshot. **Never the default.**
+///
+/// `emulator/screenshot` with no `path` writes `$TMPDIR/oracle-frame-{frame}.png`, which is a function of
+/// the emulated frame and of nothing else — so two tests in this binary that capture at the same frame
+/// write and read the *same* file, in parallel, and the one that loses reads the other's picture. That is
+/// not a hypothetical: it is what turned a green suite into an intermittently red one here, and it is
+/// invisible when a single test file is run alone.
+fn shot_path(tag: &str) -> String {
+    std::env::temp_dir()
+        .join(format!("lay-{tag}-{}.png", std::process::id()))
+        .display()
+        .to_string()
+}
+
 /// The vendored contract schema — the same bytes `common::schema` validates against.
 fn schema() -> Value {
     let path = concat!(
@@ -601,7 +615,7 @@ fn one_mask_is_visible_on_every_surface_that_renders() {
     }
 
     // 2. screenshot — the PNG on disk is the masked frame, encoded.
-    let shot = c.ok("emulator/screenshot", json!({}));
+    let shot = c.ok("emulator/screenshot", json!({"path": shot_path("surf")}));
     let path = shot["path"].as_str().expect("a path");
     let bytes = std::fs::read(path).expect("the screenshot exists");
     assert_eq!(
@@ -645,7 +659,7 @@ fn a_masked_read_declares_that_it_is_not_the_raster_frame() {
     let mut c = client(&h);
     c.ok("emulator/run_frames", json!({"frames": 2}));
 
-    let shot = c.ok("emulator/screenshot", json!({}));
+    let shot = c.ok("emulator/screenshot", json!({"path": shot_path("cav-a")}));
     assert_eq!(
         shot["source"],
         json!("raster"),
@@ -662,7 +676,7 @@ fn a_masked_read_declares_that_it_is_not_the_raster_frame() {
         json!({"layer": "sprites", "enabled": false}),
     );
     for (method, params) in [
-        ("emulator/screenshot", json!({})),
+        ("emulator/screenshot", json!({"path": shot_path("cav-b")})),
         ("emulator/scanlines", json!({"startLine": 0, "count": 1})),
     ] {
         let r = c.ok(method, params);
@@ -692,7 +706,7 @@ fn a_masked_read_declares_that_it_is_not_the_raster_frame() {
         "emulator/set_layer_enabled",
         json!({"layer": "sprites", "enabled": true}),
     );
-    let back = c.ok("emulator/screenshot", json!({}));
+    let back = c.ok("emulator/screenshot", json!({"path": shot_path("cav-c")}));
     assert_eq!(
         back["source"],
         json!("raster"),
@@ -736,7 +750,7 @@ fn the_mask_is_not_machine_state() {
         );
     }
     // The mask really is on — otherwise the comparison below is two identical unmasked machines.
-    let shot = c.ok("emulator/screenshot", json!({}));
+    let shot = c.ok("emulator/screenshot", json!({"path": shot_path("hash")}));
     assert_eq!(
         shot["source"],
         json!("stateRender"),
@@ -850,7 +864,7 @@ fn an_unmasked_server_renders_exactly_the_unmasked_picture() {
     let mut c = client(&h);
     let (width, height, want) = expected_frame(LayerMask::ALL);
 
-    let shot = c.ok("emulator/screenshot", json!({}));
+    let shot = c.ok("emulator/screenshot", json!({"path": shot_path("zero")}));
     assert_eq!(
         shot["source"],
         json!("stateRender"),
