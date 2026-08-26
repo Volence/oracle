@@ -111,25 +111,45 @@ fn layered_machine() -> System {
     write_cram(v, 3, 0x00E0); // green — sprite
     write_cram(v, 4, 0x0EEE); // white — backdrop
 
-    // A 4x4-cell block of each plane at the top-left, so a whole 32x32 px corner is layered.
+    // The stack: a 4x4-cell block of each plane at the top-left (x 0-31, y 0-31), one behind the other.
+    // H40's nametable row stride is 64 cells.
     for row in 0..4u16 {
         for col in 0..4u16 {
-            let off = (row * 32 + col) * 2;
+            let off = (row * 64 + col) * 2;
             write_vram(v, 0xE000 + off, &[TILE_B]);
             write_vram(v, 0xC000 + off, &[TILE_A]);
         }
     }
-    // One 4x4-cell sprite (32x32 px) at screen (0,0), every cell the same solid pattern; link 0 ends the
-    // walk. Y/X fields carry the +128 screen offset.
-    write_vram(
-        v,
-        SAT_BASE,
-        &[
-            128, 0x0F00, // size: (4-1)<<2 | (4-1) = $0F in the high byte; link 0
-            TILE_S, 128,
-        ],
-    );
+    // One 1x1-cell sprite at screen (0,0) — only `TILE_S` is filled, so a larger sprite would be
+    // transparent past its first cell and the size would be a claim the VRAM does not back. Link 0 ends
+    // the walk; the Y/X fields carry the +128 screen offset.
+    write_vram(v, SAT_BASE, &[128, 0x0000, TILE_S, 128]);
+
+    // **Somewhere each layer wins alone**, so a sweep that hides one layer at a time can actually move the
+    // picture. Without this a mask that reached nothing would still satisfy an "unmasked equals unmasked"
+    // control — the alternative green path a planted defect found in the core's own fixture.
+    set_reg(v, 0x11, 0x88); // right window from x = 8 * 16 = 128
+    for row in 0..4u16 {
+        write_vram(v, 0xC000 + (row * 64 + 8) * 2, &[TILE_A]); // plane A alone, x 64-71
+        write_vram(v, 0xE000 + (row * 64 + 12) * 2, &[TILE_B]); // plane B alone, x 96-103
+        write_vram(v, 0xA000 + (row * 64 + 16) * 2, &[TILE_S]); // window, x 128-135
+    }
     sys
+}
+
+/// Every maskable layer must be the visible winner somewhere in the frame — i.e. hiding any one of them,
+/// alone, changes the picture. The precondition any sweep over the four names needs before its comparison
+/// is evidence of anything.
+fn assert_every_layer_is_visible_somewhere() {
+    let (_, _, base) = expected_frame(LayerMask::ALL);
+    for name in ["planeA", "planeB", "window", "sprites"] {
+        let (_, _, hidden) = expected_frame(mask_without(name));
+        assert_ne!(
+            hidden, base,
+            "fixture precondition: hiding {name} must change the picture — a comparison that cannot \
+             move is not evidence"
+        );
+    }
 }
 
 fn client(handle: &oracle_aether::server::ServerHandle) -> Client {
@@ -559,6 +579,7 @@ fn one_mask_is_visible_on_every_surface_that_renders() {
     let mask = mask_without("planeA");
     let (width, height, want) = expected_frame(mask);
     let (_, _, unmasked) = expected_frame(LayerMask::ALL);
+    assert_every_layer_is_visible_somewhere();
     assert_ne!(
         want, unmasked,
         "fixture precondition: masking plane A must actually change the picture, or every \
@@ -822,6 +843,9 @@ fn the_mask_is_the_servers_not_the_connections() {
 /// answered before this feature existed — the all-on mask is the same code path, not a parallel one.
 #[test]
 fn an_unmasked_server_renders_exactly_the_unmasked_picture() {
+    // The equality below is only evidence if the picture could have differed: assert first that every one
+    // of the four layers is visible somewhere, so a server passing the wrong mask would be caught.
+    assert_every_layer_is_visible_somewhere();
     let h = spawn_system("lay-zero", layered_machine(), 1024);
     let mut c = client(&h);
     let (width, height, want) = expected_frame(LayerMask::ALL);

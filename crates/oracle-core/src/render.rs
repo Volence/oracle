@@ -3765,6 +3765,45 @@ mod tests {
         v
     }
 
+    /// [`stack_fixture`] plus a place on line 0 where **each** of the four maskable layers is the visible
+    /// winner: plane A alone at x 64-79, plane B alone at x 96-111, and a right window from x 128 with
+    /// opaque cells at x 128-143 (the stack at x 0-31 keeps the sprite).
+    ///
+    /// It exists because of a measured near-miss. The "an all-on mask is the unmasked render" control was
+    /// green under a mutation that deliberately hid plane B, for a reason that had nothing to do with the
+    /// rule: **the fixture never drew plane B anywhere visible**, so hiding it could not move the picture.
+    /// A control whose comparison cannot move is not a control, and
+    /// [`assert_layer_visibility_is_measurable`] is that discovery turned into an assertion.
+    fn all_layers_visible_fixture() -> Vdp {
+        let mut v = stack_fixture();
+        set_reg(&mut v, 0x11, 0x88); // right window from x = 8 * 16 = 128
+        put_cell(&mut v, 0xC000 + 8 * 2, 0x0002); // plane A alone, cells 8-9  (x 64-79)
+        put_cell(&mut v, 0xC000 + 9 * 2, 0x0002);
+        put_cell(&mut v, 0xE000 + 12 * 2, 0x0001); // plane B alone, cells 12-13 (x 96-111)
+        put_cell(&mut v, 0xE000 + 13 * 2, 0x0001);
+        put_cell(&mut v, 0xA000 + 16 * 2, 0x0003); // window, cells 16-17 (x 128-143)
+        put_cell(&mut v, 0xA000 + 17 * 2, 0x0003);
+        v
+    }
+
+    /// Every maskable layer must be the visible winner somewhere on line 0 — i.e. hiding any one of them,
+    /// alone, changes the line. The precondition every sweep over `Layer::ALL` needs before its equality or
+    /// its invariant means anything.
+    fn assert_layer_visibility_is_measurable(v: &Vdp) {
+        let base = v.render_line(0);
+        for l in Layer::ALL {
+            if matches!(l, Layer::Backdrop) {
+                continue;
+            }
+            assert_ne!(
+                v.render_line_masked(0, mask_off(l)),
+                base,
+                "fixture precondition: hiding {l:?} must change line 0 — a comparison that cannot \
+                 move is not evidence"
+            );
+        }
+    }
+
     /// `LayerMask::ALL` with `layer` switched off, asserting `layer` really is a target.
     fn mask_off(layer: Layer) -> LayerMask {
         let mut m = LayerMask::ALL;
@@ -4048,12 +4087,9 @@ mod tests {
                 Layer::Backdrop => 3,
             }
         }
-        let v = stack_fixture();
+        let v = all_layers_visible_fixture();
         let base = v.render_line_report(0);
-        assert!(
-            base.pixels.iter().any(|p| p.layer != Layer::Backdrop),
-            "fixture precondition: the unmasked line must draw something above the backdrop"
-        );
+        assert_layer_visibility_is_measurable(&v);
         for l in Layer::ALL {
             if matches!(l, Layer::Backdrop) {
                 continue;
@@ -4128,10 +4164,15 @@ mod tests {
 
     /// **The currency control.** `LayerMask::ALL` must leave every render byte-identical to the code that
     /// ran before the mask existed — otherwise every golden in this repo moved for a feature that is off.
+    ///
+    /// The equality is preceded by [`assert_layer_visibility_is_measurable`] because the equality alone can
+    /// be green for the wrong reason: a fixture that never draws a layer cannot notice one being dropped,
+    /// and a planted "always hide plane B" defect sailed through this test until the fixture was fixed.
     #[test]
     fn an_all_on_mask_is_the_unmasked_render_exactly() {
+        assert_layer_visibility_is_measurable(&all_layers_visible_fixture());
         for (mut v, sh_reg) in [
-            (stack_fixture(), 0x08u8),
+            (all_layers_visible_fixture(), 0x08u8),
             (pa_fixture(true), 0x89),
             (pb_fixture(false), 0x08),
         ] {
