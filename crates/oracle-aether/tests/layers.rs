@@ -788,6 +788,203 @@ fn the_mask_is_not_machine_state() {
     );
 }
 
+/// The `caveat` an unmasked `emulator/state_hash` returns. Read from the server **on a machine with no
+/// mask set**, and used as the control the three assertions below compare against.
+///
+/// It is a differential rather than a transcription of the literal in `engine.rs`, and that is deliberate:
+/// a copy of the sentence here would have to be re-typed every time the prose is reworded, and a stale copy
+/// fails for a reason that is not the rule. What the tests *do* pin about it is the property that makes the
+/// differential meaningful — it says nothing about masking (asserted at every call site below), so a
+/// caveat that grew unconditionally cannot hide inside the baseline.
+fn unmasked_state_hash_caveat(c: &mut Client, include_fb: bool) -> String {
+    let r = c.ok(
+        "emulator/state_hash",
+        if include_fb {
+            json!({"includeFramebuffer": true})
+        } else {
+            json!({})
+        },
+    );
+    let caveat = r["caveat"]
+        .as_str()
+        .expect("emulator/state_hash always carries a caveat")
+        .to_string();
+    assert!(
+        !caveat.to_lowercase().contains("mask"),
+        "baseline: an UNMASKED state_hash caveat must not mention masking — if it does, the \
+         extension is unconditional and every comparison below is measuring nothing: {caveat}"
+    );
+    caveat
+}
+
+/// ⚑ **The other half of hashing at `LayerMask::ALL`.** The hash deliberately fingerprints the unmasked
+/// picture while `emulator/screenshot` returns the masked one, so a caller who hides plane A, screenshots,
+/// and then hashes the framebuffer to pin what they are looking at is holding the digest of a *different
+/// picture*. The fragment's own reason for `framebufferSource` — *"a fingerprint whose input provenance is
+/// unstated is worse than one that is simply wrong, because two machines can disagree on it for a reason
+/// that has nothing to do with either machine"* — is exactly this case, and a set mask is exactly such a
+/// reason. The divergence is intended; being silent about it is not.
+///
+/// **What else could make this row green with the caveat logic deleted?** Three things, each ruled out here
+/// rather than assumed:
+///
+/// * the baseline already naming the layers — [`unmasked_state_hash_caveat`] asserts it contains no mask
+///   language at all, so `contains("planeA")` cannot pass on the base text;
+/// * the assertion being satisfied by the caveat merely *existing* — `caveat` is unconditional on this row,
+///   so existence proves nothing, and what is asserted instead is that the masked text **strictly extends**
+///   the unmasked one (`strip_prefix` succeeds and leaves a non-empty remainder);
+/// * the hash having moved too, which would make a green caveat a fig leaf over a real leak — so
+///   `framebuffer` and `framebufferSource` are asserted **unchanged** in the same breath. A caveat that
+///   admitted a divergence that had stopped existing would be its own defect.
+#[test]
+fn a_framebuffer_hash_taken_under_a_mask_says_that_it_is_unmasked() {
+    let h = spawn_system("lay-hcav", layered_machine(), 1024);
+    let mut c = client(&h);
+    c.ok("emulator/run_frames", json!({"frames": 2}));
+
+    let base = unmasked_state_hash_caveat(&mut c, true);
+    let before = c.ok("emulator/state_hash", json!({"includeFramebuffer": true}));
+    let fb_before = before["framebuffer"]
+        .as_str()
+        .expect("includeFramebuffer must produce a `framebuffer` digest")
+        .to_string();
+
+    c.ok(
+        "emulator/set_layer_enabled",
+        json!({"layer": "planeA", "enabled": false}),
+    );
+    c.ok(
+        "emulator/set_layer_enabled",
+        json!({"layer": "sprites", "enabled": false}),
+    );
+
+    // The mask really reached the picture — otherwise there is no divergence to disclaim and this whole
+    // row is describing a situation that is not happening.
+    let shot = c.ok("emulator/screenshot", json!({"path": shot_path("hcav")}));
+    assert_eq!(
+        shot["source"],
+        json!("stateRender"),
+        "precondition: the mask must be visible to the render surfaces"
+    );
+    let _ = std::fs::remove_file(shot["path"].as_str().unwrap());
+
+    let after = c.ok("emulator/state_hash", json!({"includeFramebuffer": true}));
+    let caveat = after["caveat"]
+        .as_str()
+        .expect("emulator/state_hash always carries a caveat");
+
+    // 1. The hash did NOT move. The caveat is a disclosure, not a substitute for the invariant.
+    assert_eq!(
+        after["framebuffer"],
+        json!(fb_before),
+        "the framebuffer digest moved under a mask — the disclosure below would be papering over a leak"
+    );
+    assert_eq!(
+        after["framebufferSource"], before["framebufferSource"],
+        "the framebuffer's provenance moved under a mask"
+    );
+
+    // 2. The caveat STRICTLY EXTENDS the unmasked one — it is not a different sentence, and not the same one.
+    let extra = caveat.strip_prefix(base.as_str()).unwrap_or_else(|| {
+        panic!(
+            "the masked caveat must extend the unmasked one, keeping it intact.\n  base: {base}\n  got:  {caveat}"
+        )
+    });
+    assert!(
+        !extra.trim().is_empty(),
+        "the masked caveat is byte-identical to the unmasked one — the divergence went unannounced"
+    );
+
+    // 3. …and it names what is hidden, and what the hash is of. Derived from the two layers actually masked,
+    //    and asserted NOT to name the two that are not: a caveat listing every layer would pass a
+    //    `contains` sweep while telling the caller nothing true.
+    for hidden in ["planeA", "sprites"] {
+        assert!(
+            extra.contains(hidden),
+            "the caveat must name the hidden layer {hidden}: {extra}"
+        );
+    }
+    for shown in ["planeB", "window"] {
+        assert!(
+            !extra.contains(shown),
+            "the caveat named {shown}, which is NOT hidden — it is listing the vocabulary, not the mask: \
+             {extra}"
+        );
+    }
+    assert!(
+        extra.contains("UNMASKED"),
+        "the caveat must say which picture the hash is of: {extra}"
+    );
+}
+
+/// The paired direction, and the one that protects every existing consumer: **with no mask set the reply is
+/// the reply this row has always returned**, and a mask alone is not enough to change it — only a mask
+/// *plus* a framebuffer in the reply, because only then is there an unmasked picture to disclaim.
+///
+/// The third case is the one that catches an over-eager extension: a mask is set, but `includeFramebuffer`
+/// is omitted, so nothing was hashed and the caveat must not have grown. The fourth is a true byte-identity
+/// pin — a no-op `set_layer_enabled` on the same machine must leave the entire reply, digest included,
+/// unchanged.
+#[test]
+fn an_unmasked_state_hash_reply_is_the_one_it_has_always_been() {
+    let h = spawn_system("lay-hbase", layered_machine(), 1024);
+    let mut c = client(&h);
+    c.ok("emulator/run_frames", json!({"frames": 2}));
+
+    // 1 + 2: no mask, with and without the framebuffer. Both must be the plain caveat, and
+    // `unmasked_state_hash_caveat` asserts neither mentions masking.
+    let with_fb = unmasked_state_hash_caveat(&mut c, true);
+    let without_fb = unmasked_state_hash_caveat(&mut c, false);
+    assert_eq!(
+        with_fb, without_fb,
+        "asking for the framebuffer must not by itself change the caveat"
+    );
+
+    // 4 (taken before the mask): a set that changes nothing must change nothing.
+    let a = c.ok("emulator/state_hash", json!({"includeFramebuffer": true}));
+    c.ok(
+        "emulator/set_layer_enabled",
+        json!({"layer": "planeA", "enabled": true}),
+    );
+    let b = c.ok("emulator/state_hash", json!({"includeFramebuffer": true}));
+    for key in [
+        "vram",
+        "cram",
+        "vsram",
+        "regs",
+        "combined",
+        "framebuffer",
+        "framebufferSource",
+        "caveat",
+    ] {
+        assert!(
+            a[key].is_string(),
+            "control: state_hash must actually report `{key}`, or the comparison below is vacuous"
+        );
+        assert_eq!(
+            a[key], b[key],
+            "a no-op set_layer_enabled moved state_hash.{key}"
+        );
+    }
+
+    // 3: a mask IS set, but nothing was hashed — so there is no unmasked picture to disclaim.
+    c.ok(
+        "emulator/set_layer_enabled",
+        json!({"layer": "window", "enabled": false}),
+    );
+    let masked_no_fb = c.ok("emulator/state_hash", json!({}));
+    assert!(
+        masked_no_fb.get("framebuffer").is_none(),
+        "control: without includeFramebuffer there must be no digest, or case 3 is not the case it names"
+    );
+    assert_eq!(
+        masked_no_fb["caveat"],
+        json!(with_fb),
+        "a mask changed the caveat on a reply that hashed no framebuffer — the extension is not scoped \
+         to the divergence it announces"
+    );
+}
+
 /// The other direction: the three calls that replace the machine must **not** take the debugger's masks
 /// with them. A session that silently lost its masks across a restore is a real failure and a quiet one.
 #[test]

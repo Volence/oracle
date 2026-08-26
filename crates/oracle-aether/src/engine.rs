@@ -1861,6 +1861,30 @@ impl Engine {
             .collect()
     }
 
+    /// The sentence `emulator/state_hash` owes when it hashed a framebuffer while a display mask was set —
+    /// or `None` when no mask is set, which is what keeps the unmasked reply byte-identical to the one this
+    /// row has always returned.
+    ///
+    /// Its subject is the opposite of [`mask_caveat`](Engine::mask_caveat)'s. That one tells a caller their
+    /// *picture* is masked; this one tells them their *hash* is not — the two halves of the deliberate
+    /// divergence between what `emulator/screenshot` shows and what this row fingerprints. Both read
+    /// [`masked_layer_names`](Engine::masked_layer_names), so neither can name a layer the mask does not
+    /// actually hide.
+    fn masked_hash_caveat(&self) -> Option<String> {
+        let masked = self.masked_layer_names();
+        if masked.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "A display layer mask is hiding {}, and `framebuffer` deliberately fingerprints the UNMASKED \
+             picture — so it does NOT match what emulator/screenshot and emulator/scanlines are currently \
+             showing you. That is on purpose: a determinism fingerprint that moved because someone hid a \
+             layer would make two identical machines disagree for a reason that has nothing to do with \
+             either machine. Clear the mask to fingerprint the picture you are looking at.",
+            masked.join(", ")
+        ))
+    }
+
     /// The `caveat` a framebuffer read owes when **a mask** is what pushed it off the raster path, or
     /// `None` when no mask is set and the row's own pre-existing caveat is the true one.
     ///
@@ -2858,6 +2882,25 @@ impl Engine {
             // fingerprint whose provenance is ambiguous is a fingerprint two machines can disagree on for a
             // reason that has nothing to do with either machine.
             out["framebufferSource"] = json!(if from_raster { "raster" } else { "stateRender" });
+            // **The other half of hashing at `LayerMask::ALL`.** A set mask is precisely one of the reasons
+            // `framebufferSource` exists to rule out — the fragment's own words for that field are that *"a
+            // fingerprint whose input provenance is unstated is worse than one that is simply wrong, because
+            // two machines can disagree on it for a reason that has nothing to do with either machine"* —
+            // and a mask is exactly such a reason. Left unsaid, a caller who hides plane A, screenshots, and
+            // then hashes the framebuffer to pin what they are looking at gets the digest of a DIFFERENT
+            // picture with nothing on the wire admitting it. The divergence is deliberate, so it is
+            // announced; the hash itself does not move.
+            //
+            // Scoped to `include_fb` on purpose: with no framebuffer in the reply there is no unmasked
+            // picture to disclaim, and a caveat that grew whenever a mask was set would change a reply that
+            // has nothing to do with the mask.
+            if let Some(extra) = self.masked_hash_caveat() {
+                let base = out["caveat"]
+                    .as_str()
+                    .expect("state_hash always carries its own caveat")
+                    .to_string();
+                out["caveat"] = json!(format!("{base} {extra}"));
+            }
         }
         Ok(out)
     }
