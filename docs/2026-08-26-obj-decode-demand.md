@@ -36,3 +36,44 @@ among the 8 unschematized §6 rows, not the schematized-but-unserved set. Servin
 **contract-first**: a CR proposing the fragments, shaped from the consumer's list above (note `code` where
 §6's sketch says `class`, `pool`, `count`, world-pixel `x`/`y`), adjudicated, landed in empyrean, then
 served here. The dispatch brief's first deliverable is that CR.
+
+## Sst layout, as relayed by aeon (read from `engine/objects/sst.emp` at aeon master `f4896139` on origin)
+
+Anchor to that SHA, not to line numbers. `pub struct Sst` size `$50`. The dispatched agent MUST re-read
+`sst.emp` at that SHA (or newer, noting drift) and derive offsets from it — this table is the demand's
+statement, not the implementation's source of truth.
+
+| field | offset | type/notes |
+|---|---|---|
+| code_addr | $00 | u16, routine offset from `ObjCodeBase`; 0 = empty slot |
+| x_pos | $02 | 16.16 |
+| y_pos | $06 | 16.16 |
+| x_vel | $0A | |
+| y_vel | $0C | |
+| render_flags | $0E | u8 |
+| collision_resp | $0F | u8 |
+| mappings | $10 | u32 |
+| art_tile | $14 | u16 |
+| width_pixels | $16 | u8 |
+| height_pixels | $17 | u8 |
+| anim | $18 | u8 |
+| subtype | $19 | u8 |
+| anim_table | $1A | u32 |
+| status | $1E | u8 |
+| angle | $1F | u8 |
+| prev_anim | $20 | |
+| anim_frame | $21 | |
+| anim_timer | $22 | |
+| mapping_frame | $23 | |
+| prev_frame | $24 | |
+| sprite_piece_count | $25 | |
+| parent_ptr | $26 | u16 |
+| sibling_ptr | $28 | u16 |
+| slot_tag | $2A | |
+| entity_section_id | $2B | u8 |
+| entity_list_index | $2C | u8 |
+| layer | $2D | u8 |
+| frame_off | $2E | u16 |
+
+Pool bounds: read `Player_1` and the pool-length constants from the `.lst`, never hard-code;
+`core.emp:207-280` (at the same SHA) documents the contiguous order Player | Dynamic | System | Effect.
