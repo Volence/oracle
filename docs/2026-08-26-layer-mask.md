@@ -16,7 +16,7 @@ Three properties fall out of that placement, and none of them could be had any o
 
 | Property | Why it holds |
 |---|---|
-| Not in `state_hash` / `memory_hash` | The mask is in no bincode snapshot and no hash input. `state_hash {includeFramebuffer}` additionally passes `LayerMask::ALL` **explicitly**, so even the picture digest is of the unmasked frame. |
+| Not in `state_hash` / `memory_hash` | The mask is in no bincode snapshot and no hash input. `state_hash {includeFramebuffer}` additionally passes `LayerMask::ALL` **explicitly**, so even the picture digest is of the unmasked frame — and, because that is a deliberate divergence from what `screenshot` shows, it is announced on the wire (see below). |
 | Survives `reset` / `reload_rom` / `restore` | All three replace `self.sys`; none touches `self.layers`. |
 | Cannot perturb emulation | `Vdp::render_scanline` — the one render that commits the sprite-overflow / collision latches and the R10 dot-overflow carry — takes **no mask argument and has no masked twin**. There is nothing to thread, so no caller can reach chip state through a mask. `System::run` is byte-for-byte unchanged. |
 
@@ -57,6 +57,34 @@ Three properties fall out of that placement, and none of them could be had any o
   means a sprite operator), and inventing one would be a unilateral contract change. `minItems: 1` already
   admits short lists.
 
+## `state_hash` hashes the unmasked picture, and says so
+
+`emulator/state_hash {includeFramebuffer: true}` passes `LayerMask::ALL` explicitly. That is right — a
+determinism fingerprint that moved because a human hid a layer would make two identical machines disagree
+for a reason that has nothing to do with either machine, which is the exact failure the hash exists to
+detect — but it means the digest and `emulator/screenshot` describe **different pictures** whenever a mask
+is set. A caller who hides plane A, screenshots, and then hashes the framebuffer to pin what they are
+looking at would be holding the digest of something else.
+
+So the divergence is announced. When `includeFramebuffer` is true **and** a mask is set, `state_hash`'s
+caveat is extended with a sentence saying the digest is of the unmasked picture and naming the hidden
+layers (from `masked_layer_names()`, the same derivation the screenshot/scanlines caveat reads). The hash
+itself does not move.
+
+The reason is the fragment's own, not taste: `framebufferSource` exists because *"a fingerprint whose input
+provenance is unstated is worse than one that is simply wrong, because two machines can disagree on it for
+a reason that has nothing to do with either machine."* A set mask is such a reason. Hashing unmasked is
+what makes the disclosure necessary rather than optional.
+
+**Contract-legal without a CR**, verified against the vendored schema: `caveat` is a declared
+`type: string` property on this row's `result` and is not in its `required` list, so emitting it
+conditionally is within the fragment.
+
+**Scoped, and pinned in both directions.** With no framebuffer in the reply there is no unmasked picture to
+disclaim, so a mask alone does not change the caveat; with no mask set the reply is byte-identical to the
+one this row has always returned, including under a no-op `set_layer_enabled`. Both are assertions, not
+intentions.
+
 ## The vocabulary is derived
 
 `mask_key` is an **exhaustive match on the core's `Layer`** — a new variant cannot compile until it
@@ -88,3 +116,11 @@ are pinned separately so they cannot be confused.
 * **Not exercised against a real ROM.** Every gate here runs on hand-posed VDP fixtures and the synthetic
   test ROM. A live pass — mask each layer on a real game frame and look at the screenshot — is foreground
   work.
+* **One intermittent `FAILED=1`, unreproduced and unnamed.** A single `cargo test --workspace` aggregate
+  during this parcel reported one failure, stopping inside the `oracle-aether` set; the output was piped
+  through `awk` and the name was lost. It did not recur: two full `--no-fail-fast` workspace runs came back
+  56 legs / 1868 passed / 0 failed, and 25 repeat runs of `tests/layers.rs` alone were clean. A real
+  collision this parcel introduced was found and fixed on the way (four tests in `layers.rs` used
+  `emulator/screenshot`'s default `$TMPDIR/oracle-frame-{frame}.png`, two of them at the same frame, and
+  tests within one binary run in parallel) — but that is **not** established as the cause. The flag stays
+  open until someone reproduces it with a name attached. Do not weaken or serialize a test to close it.
