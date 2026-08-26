@@ -540,6 +540,76 @@ mod tests {
         assert_eq!(sys.scheduler().now(), mclk, "and the caller gets it back");
     }
 
+    /// **The window's mask and the socket's mask are the same field** — the whole claim behind
+    /// [`Host::layers`], and the one thing an in-process accessor can quietly get wrong by holding a copy.
+    ///
+    /// Driven from **both ends against each other**, which is what makes it a delegation test rather than a
+    /// getter test: a `set_layer` from the window side is read back through the *served method*, and a
+    /// `emulator/set_layer_enabled` from the client side is read back through the *window accessor*. A
+    /// `Host` that kept its own `LayerMask` would pass each half against itself and fail both crossings.
+    ///
+    /// Planting the defect: make `Host::layers` answer `LayerMask::ALL` instead of `self.engine.layers()`
+    /// — a getter that holds its own idea of the mask. The **socket→window** crossing fails with *"a client
+    /// hid sprites and the window's accessor did not see it — the two are not one mask"*, `left: []`.
+    /// Measured, and worth recording precisely: the window→socket crossing stayed **green** under that
+    /// poison, because only the getter was copied and `set_layer` still reached the engine. That is exactly
+    /// why both crossings are here — either one alone passes against a half-copy.
+    #[test]
+    fn the_window_and_the_socket_move_one_mask() {
+        use oracle_core::render::Layer;
+        let mut h = Host::new(HostConfig::default());
+        let mut sys = booted();
+        assert!(
+            h.layers().is_all(),
+            "a fresh host draws every layer, or the crossings below start from an unknown state"
+        );
+
+        // Window -> socket.
+        assert!(h.set_layer(Layer::PlaneA, false), "planeA is a mask target");
+        let (tx, rx) = mpsc::channel();
+        h.tx.send(EngineMsg::Call {
+            method: "emulator/get_layer_states".into(),
+            params: serde_json::json!({}),
+            reply: tx,
+        })
+        .expect("queue the call");
+        h.pump(&mut sys);
+        let r = rx.try_recv().expect("the drain answered");
+        let v = r.result.expect("get_layer_states must answer");
+        assert_eq!(
+            v["planeA"],
+            serde_json::json!(false),
+            "the window hid planeA and the served getter did not see it — Host::layers is a copy"
+        );
+        assert_eq!(
+            v["planeB"],
+            serde_json::json!(true),
+            "and nothing else moved"
+        );
+
+        // Socket -> window.
+        let (tx, rx) = mpsc::channel();
+        h.tx.send(EngineMsg::Call {
+            method: "emulator/set_layer_enabled".into(),
+            params: serde_json::json!({"layer": "sprites", "enabled": false}),
+            reply: tx,
+        })
+        .expect("queue the call");
+        h.pump(&mut sys);
+        let r = rx.try_recv().expect("the drain answered");
+        r.result.expect("set_layer_enabled must succeed");
+        assert_eq!(
+            h.layers().hidden(),
+            vec!["planeA", "sprites"],
+            "a client hid sprites and the window's accessor did not see it — the two are not one mask"
+        );
+
+        // The backdrop is not a target, and the refusal leaves the mask alone rather than pretending.
+        let before = h.layers();
+        assert!(!h.set_layer(Layer::Backdrop, false));
+        assert_eq!(h.layers(), before, "a refused set must not move the mask");
+    }
+
     /// Put one call through the real channel the connection threads use, and drain it with a real
     /// [`Host::pump`] — so these tests exercise the seam rather than the engine behind it.
     fn call(h: &mut Host, sys: &mut System, method: &str, params: serde_json::Value) -> PumpReport {

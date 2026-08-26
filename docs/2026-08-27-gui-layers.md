@@ -124,6 +124,7 @@ Every row below was proven red first, on the poison named, with the assertion qu
 | `overlay::…::the_status_line_never_runs_under_the_badge` | the `badge_w` subtraction dropped | `320x224: the status line ran under the badge (2156 pixels in Rect { x: 97, y: 4, w: 219, h: 11 })` |
 | `commands::…::every_mask_target_gets_a_visible_toggle_and_nothing_else_does` | one layer filtered out of the registration loop | ``no palette row for the `window` layer`` |
 | `main::…::the_masked_picture_is_the_cores_masked_render_and_differs_from_the_unmasked_one` | `blit_masked` renders at `LayerMask::ALL` | `the masked and unmasked pictures are identical at (0,0) — either blit_masked ignored its mask, or the fixture's dot does not change under one and COULD NOT MEASURE anything` |
+| `host::…::the_window_and_the_socket_move_one_mask` | `Host::layers` answers `LayerMask::ALL` instead of the engine's | `a client hid sprites and the window's accessor did not see it — the two are not one mask`, `left: []` |
 
 **The green-poison question, per assertion — what else could make this pass with the rule broken:**
 
@@ -150,12 +151,43 @@ Every row below was proven red first, on the poison named, with the assertion qu
   extra row is a toggle that would call `set_layer` with something the mask refuses (the backdrop is the live
   candidate — it is a `Layer` and is not a target), and every registered payload is checked to have a
   `mask_key`.
+* *The host row.* It drives **both crossings against each other** — a window-side `set_layer` read back
+  through the served `emulator/get_layer_states`, and a client-side `emulator/set_layer_enabled` read back
+  through `Host::layers()`. Either crossing alone passes against a half-copy, and that is not a hypothetical:
+  under the poison above (getter copied, setter still delegating) the **window→socket crossing stayed green**
+  and only socket→window fired. Two crossings is what closes it. The refusal path is asserted too — a
+  `set_layer(Backdrop, …)` must return `false` *and leave the mask equal to what it was*, rather than
+  pretending to have applied.
 * *The picture row.* A `blit_masked` that ignored its mask would still match `render_line_masked(line, ALL)`
   on any scene where nothing is hidden, **and** on a scene where the hidden layer happened to be transparent.
   So the fixture hides a layer that is opaque and winning, and the row asserts the two pictures **differ**
   before asserting which one the window shows. CRAM is written explicitly, because power-on CRAM here is all
   black and the first draft of this row failed its own `COULD NOT MEASURE` guard for exactly that reason —
   the guard earned its place before the row was believed.
+
+### The numbers
+
+```
+cargo test --workspace --no-fail-fast   exit 0
+LEGS=56 PASSED=1880 FAILED=0 IGNORED=6      (baseline on main: LEGS=56 PASSED=1870 FAILED=0 IGNORED=6)
+```
+
+`+10`, accounted for one by one: the three `pick::bus_parity` rows, the three `overlay` rows, the two
+`commands` rows, the one `main` row, and the one `host` row — the ten in the table above. No leg moved, so
+no test binary appeared or vanished.
+
+The workspace aggregate runs **default features only**, so the stub build was run separately:
+`cargo test -p oracle-frontend --no-default-features` → `227 passed; 0 failed; 1 ignored` (the 32-row
+`bus_parity` module is `#[cfg(feature = "aether")]` and is correctly absent there).
+
+`cargo clippy --workspace --all-targets` and `cargo clippy -p oracle-frontend --no-default-features
+--all-targets`: zero warnings, zero errors. `cargo fmt --all` applied.
+
+**Currency: `git diff main -- crates/oracle-core/tests/` is empty.** No golden regenerated, none touched.
+
+**No socket was dialled.** `/run/user/1000/oracle.sock` was never contacted and no server was spawned —
+`Engine` and `Host` are both drivable in-process, so every bus assertion here goes through `Engine::dispatch`
+or `Host::pump` directly. No emulator MCP call was made.
 
 ## D. Click-to-identify — **BLOCKED**, on two independent grounds
 

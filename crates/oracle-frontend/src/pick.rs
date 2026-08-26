@@ -32,6 +32,27 @@
 //! it *against the core's own renderer* rather than against the arithmetic being restated — so if the
 //! core's sprite addressing ever changed, these tests fail rather than the picker silently naming the
 //! wrong tile.
+//!
+//! ## Under a display mask
+//!
+//! [`resolve`] takes a [`LayerMask`] and there is no unmasked twin to fall into. The panel describes **the
+//! picture on screen**; once the window could hide a layer, an unmasked attribution stopped doing that, and
+//! the parity guard below now runs over masked states so that is an assertion rather than a precondition.
+//! See [`resolve`] for the whole argument and `docs/2026-08-27-gui-layers.md` for the parcel.
+//!
+//! ## What this panel does NOT claim to know: which game *object* a sprite is
+//!
+//! A sprite answer names the **SAT index** — the hardware's own name for it — and stops there. It would be
+//! more useful to say *"that is the ring at slot 12"*, and the bus already decodes game objects
+//! (`emulator/object_list` / `object_slot`, reading a slot layout out of symbols). The reason this does not
+//! reach for them is not that the code lives in another crate; it is that **the join does not exist**.
+//! Nothing anywhere maps a SAT index to an object slot: an object's `sprite_piece_count` is a count, not a
+//! range, and recovering which entries an object owns means replaying the game's own sprite-building order,
+//! which this emulator does not model. Every available shortcut — nearest object, matching `art_tile`,
+//! overlapping box — is a **heuristic**, and a heuristic here does not fail loudly. It names a confident
+//! wrong object, which is indistinguishable from a right one. That is the same failure class as the
+//! blob-rebase [`TILE_SPACE`] guards against, one level up, so it gets the same answer: name what we can
+//! derive, and leave the join to whoever can make it soundly.
 
 use oracle_core::render::{sprite_tile_at, Layer, LayerMask};
 use oracle_core::vdp::Vdp;
