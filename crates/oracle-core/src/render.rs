@@ -97,6 +97,103 @@ pub enum Layer {
     Sprite(u8),
 }
 
+impl Layer {
+    /// Every variant, once. The `Sprite` representative carries slot 0 — nothing that iterates this cares
+    /// which slot, because the whole *layer* is what a mask or a name applies to.
+    ///
+    /// Exists so callers that need "the set of layers" **derive** it instead of transcribing a list; the
+    /// exhaustive matches in [`LayerMask::shows`] and [`LayerMask::set`] make a new variant a compile
+    /// error there, and `layer_all_lists_every_variant` makes a new variant missing *here* a test failure.
+    pub const ALL: [Layer; 5] = [
+        Layer::Backdrop,
+        Layer::PlaneB,
+        Layer::PlaneA,
+        Layer::Window,
+        Layer::Sprite(0),
+    ];
+}
+
+/// **A display mask: which layers are allowed to win a pixel.** Not machine state — see the module note
+/// below, and [`Vdp::resolve_line_masked`] for where it is applied.
+///
+/// # It suppresses CANDIDACY, it does not blank output
+///
+/// A masked layer is removed from the RR9 priority contest *before* a winner is chosen, so whatever is
+/// behind it shows through and the fall-through ends at the backdrop. Blanking the winner after the fact
+/// would paint backdrop over dots plane B was visible at — a wrong answer that looks right on a screenshot
+/// of a simple scene, which is why the mask lives inside [`Vdp::rr9_winner`] and nowhere downstream of it.
+///
+/// # It does not perturb the machine
+///
+/// This type is a **parameter**, never a field: no `Vdp` and no `System` holds one, so it is in no
+/// snapshot, no `state_hash`, and nothing a reset or a restore can carry or drop. The only stateful render
+/// — [`Vdp::render_scanline`], which commits the sprite-overflow / collision latches and the R10 masking
+/// carry the ROM itself polls — takes no mask and has no masked twin. Sprite *evaluation* runs identically
+/// under every mask (`resolve_line_masked` calls `sprite_line` before consulting the mask at all), so
+/// masking `sprites` hides them from the picture and changes nothing the game can observe.
+///
+/// # The backdrop is not a mask target
+///
+/// It is the floor the fall-through ends at, not a layer that can be switched off; [`LayerMask::set`]
+/// refuses it, and [`LayerMask::shows`] answers `true` for it always.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LayerMask {
+    pub plane_a: bool,
+    pub plane_b: bool,
+    pub window: bool,
+    pub sprites: bool,
+}
+
+impl Default for LayerMask {
+    fn default() -> Self {
+        Self::ALL
+    }
+}
+
+impl LayerMask {
+    /// Every layer drawn — the state that makes every render path byte-identical to an unmasked build.
+    pub const ALL: Self = LayerMask {
+        plane_a: true,
+        plane_b: true,
+        window: true,
+        sprites: true,
+    };
+
+    /// Is `layer` allowed to win a pixel? The backdrop always is.
+    ///
+    /// The match is exhaustive on purpose: a new [`Layer`] variant cannot compile until it says whether a
+    /// mask reaches it.
+    pub const fn shows(self, layer: Layer) -> bool {
+        match layer {
+            Layer::Backdrop => true,
+            Layer::PlaneB => self.plane_b,
+            Layer::PlaneA => self.plane_a,
+            Layer::Window => self.window,
+            Layer::Sprite(_) => self.sprites,
+        }
+    }
+
+    /// Set one layer's mask bit. Returns whether `layer` is a mask target at all — `false` for
+    /// [`Layer::Backdrop`], which leaves the mask untouched rather than pretending to have applied.
+    pub fn set(&mut self, layer: Layer, enabled: bool) -> bool {
+        let slot = match layer {
+            Layer::Backdrop => return false,
+            Layer::PlaneB => &mut self.plane_b,
+            Layer::PlaneA => &mut self.plane_a,
+            Layer::Window => &mut self.window,
+            Layer::Sprite(_) => &mut self.sprites,
+        };
+        *slot = enabled;
+        true
+    }
+
+    /// Is every layer drawn? The predicate every caller uses to decide whether a masked render is needed
+    /// at all, so the unmasked path stays exactly the code that ran before this type existed.
+    pub const fn is_all(self) -> bool {
+        self.plane_a && self.plane_b && self.window && self.sprites
+    }
+}
+
 /// The per-pixel shadow/highlight state (recon R11). `Normal` is the plain intensity ramp; the two enabled
 /// S/H modes shift the winning pixel's intensity (never its identity). S/H disabled ⇒ every pixel `Normal`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -1163,6 +1260,11 @@ impl Vdp {
     /// `a` (on layer `a_layer`), and the plane-B pixel `b`, over the `backdrop` floor. Order (highest first):
     /// high-sprite > high-A > high-B > low-sprite > low-A > low-B > backdrop; only opaque pixels are
     /// candidates (transparent loses by transparency). State is `Normal` here (R11 is applied afterward).
+    ///
+    /// **`mask` removes a layer from the contest, it does not blank the result.** A masked layer is skipped
+    /// exactly where a transparent one is, so the next candidate down wins and the fall-through still ends
+    /// at the backdrop — see [`LayerMask`] for why post-hoc blanking would be the wrong answer here.
+    #[allow(clippy::too_many_arguments)]
     fn rr9_winner(
         &self,
         x: usize,
@@ -1171,27 +1273,33 @@ impl Vdp {
         a: &PlanePixel,
         a_layer: Layer,
         b: &PlanePixel,
+        mask: LayerMask,
     ) -> PixelResolution {
+        let sprites = mask.sprites;
+        let a_shown = mask.shows(a_layer);
+        let b_shown = mask.shows(Layer::PlaneB);
         // High-priority tier.
         if let Some(sp) = s {
-            if sp.priority {
+            if sp.priority && sprites {
                 return sprite_px_res(x, &sp);
             }
         }
-        if a.opaque() && a.priority {
+        if a.opaque() && a.priority && a_shown {
             return px_from(x, a_layer, a);
         }
-        if b.opaque() && b.priority {
+        if b.opaque() && b.priority && b_shown {
             return px_from(x, Layer::PlaneB, b);
         }
         // Low-priority tier (sprite buffer pixels are always opaque).
         if let Some(sp) = s {
-            return sprite_px_res(x, &sp);
+            if sprites {
+                return sprite_px_res(x, &sp);
+            }
         }
-        if a.opaque() {
+        if a.opaque() && a_shown {
             return px_from(x, a_layer, a);
         }
-        if b.opaque() {
+        if b.opaque() && b_shown {
             return px_from(x, Layer::PlaneB, b);
         }
         backdrop_px(x, backdrop)
@@ -1236,6 +1344,14 @@ impl Vdp {
     /// sprite (planes + backdrop), and the operator shifts that underlying pixel's state one step (R11.3). An
     /// operator that loses RR9 (a high-priority plane over a low-priority operator) has no effect — it never
     /// becomes the winner. Ordinary winners take `sh_state`.
+    ///
+    /// **The mask reaches the winner and stops there.** `sh_state` is handed the *unmasked* `a`, `b` and `s`
+    /// deliberately: R11's default is derived from the planes' priority bits, and re-deriving it from a
+    /// masked-away plane would change the intensity of the layers still on screen. Masking plane A must
+    /// reveal plane B in the colour plane B already had, not in a darker one — the mask decides what is
+    /// drawn, never how a surviving pixel looks. A masked sprite takes its operator with it: `winner.layer`
+    /// is then never `Sprite`, so the shift below is not applied, which is the same answer as the sprite
+    /// not being there.
     #[allow(clippy::too_many_arguments)]
     fn resolve_dot(
         &self,
@@ -1246,13 +1362,14 @@ impl Vdp {
         a: &PlanePixel,
         a_layer: Layer,
         b: &PlanePixel,
+        mask: LayerMask,
     ) -> PixelResolution {
-        let winner = self.rr9_winner(x, backdrop, s, a, a_layer, b);
+        let winner = self.rr9_winner(x, backdrop, s, a, a_layer, b, mask);
         if sh {
             if let Layer::Sprite(_) = winner.layer {
                 if let Some(op) = s.and_then(|sp| sp.operator()) {
                     // The operator wins the sprite slot: display the background beneath it, shifted.
-                    let mut under = self.rr9_winner(x, backdrop, None, a, a_layer, b);
+                    let mut under = self.rr9_winner(x, backdrop, None, a, a_layer, b, mask);
                     let base = self.sh_state(sh, under.layer, a, b, None);
                     under.state = combine_operator(base, op);
                     return under;
@@ -1270,6 +1387,19 @@ impl Vdp {
     /// the plane-A-slot pixel (window/plane A with R9), and plane B. Shadow/highlight (R11) is a later pass.
     /// Returns the per-pixel composite + the sprite pipeline result (walk, status flags, buffer).
     fn resolve_line(&self, line: u16) -> ResolvedLine {
+        self.resolve_line_masked(line, LayerMask::ALL)
+    }
+
+    /// [`resolve_line`](Self::resolve_line) with a display [`LayerMask`]. `LayerMask::ALL` is that function
+    /// exactly — the mask reaches only `resolve_dot`'s candidate tests, so an all-on mask leaves every
+    /// comparison it makes true and the code path identical.
+    ///
+    /// **Sprite evaluation happens above the mask and is never gated by it.** `sprite_line` runs first and
+    /// its result — the walk, the per-sprite outcomes, `overflow`, `collision`, `dot_overflow` — is returned
+    /// whole no matter what the mask says, because those are the bits the ROM polls through the VDP status
+    /// register. Masking `sprites` may only change the picture; a mask that changed the sprite pipeline
+    /// would make the machine behave differently under the instrument watching it.
+    fn resolve_line_masked(&self, line: u16, mask: LayerMask) -> ResolvedLine {
         let h40 = self.render_h40();
         let width = if h40 { 320 } else { 256 };
         let backdrop = self.backdrop_index();
@@ -1302,7 +1432,7 @@ impl Vdp {
                 let b = self.plane_pixel(Plane::B, line, x, h40);
                 let (a, a_layer) = self.a_slot_pixel(line, x, h40, &ctx);
                 let s = sprite.buffer[x];
-                self.resolve_dot(sh, x, backdrop, s, &a, a_layer, &b)
+                self.resolve_dot(sh, x, backdrop, s, &a, a_layer, &b, mask)
             })
             .collect();
         // Leftmost-column blank (reg $00 bit 5, RR4): force the leftmost 8 px to the backdrop (an output-stage
@@ -1322,6 +1452,12 @@ impl Vdp {
     /// the fixed ramp. Length = the active width (256 H32 / 320 H40). Pure function of latched state + line.
     pub fn render_line(&self, line: u16) -> Vec<(u8, u8, u8)> {
         self.pixels_rgb(&self.resolve_line(line).pixels)
+    }
+
+    /// [`render_line`](Self::render_line) with a display [`LayerMask`] — the masked picture, composited
+    /// rather than blanked. `LayerMask::ALL` is `render_line` exactly.
+    pub fn render_line_masked(&self, line: u16, mask: LayerMask) -> Vec<(u8, u8, u8)> {
+        self.pixels_rgb(&self.resolve_line_masked(line, mask).pixels)
     }
 
     /// The one CRAM decode map from resolved pixels to RGB (winning index at the resolved shadow/highlight
@@ -1510,6 +1646,17 @@ impl Vdp {
         self.line_report_from(line, resolved)
     }
 
+    /// [`render_line_report`](Self::render_line_report) with a display [`LayerMask`].
+    ///
+    /// The split inside the returned report is the point: `pixels` is the *masked* composite, while
+    /// `sprites`, `sprite_walk_end`, `sprite_overflow` and `sprite_collision` are the unmasked pipeline's,
+    /// because a display mask must not move the bits the game reads. `mask_never_moves_the_sprite_pipeline`
+    /// pins exactly that.
+    pub fn render_line_report_masked(&self, line: u16, mask: LayerMask) -> LineReport {
+        let resolved = self.resolve_line_masked(line, mask);
+        self.line_report_from(line, resolved)
+    }
+
     /// The per-frame rollup (design §4 `frame_report`; recon R4) — DMA section: the most recent transfer
     /// performed (source / dest / length / mode / target). `None` until the first DMA runs.
     pub fn frame_report(&self) -> FrameReport {
@@ -1559,6 +1706,14 @@ impl Vdp {
     /// the displayed `winner_layer`: the winner is `Won`; an opaque layer ranked *below* the winner
     /// `LostToPriority`; a transparent layer `Transparent`; an opaque layer ranked *above* the winner but not
     /// displayed is a sprite `Operator` (it shifted the winner's state instead — recon R11.3).
+    ///
+    /// **A masked layer is not in the list at all.** The list's contract is *"every layer that could have
+    /// shown at this dot"*, and a masked layer could not: it never entered the contest `winner_layer` came
+    /// out of. Omitting it is also the only answer the closed `verdict` vocabulary admits — `won` is false,
+    /// `lostToPriority` names a reason that did not happen, `transparent` misreports opaque art, and
+    /// `operator` means a sprite operator. So the mask suppresses the candidate rather than inventing a
+    /// verdict for it, which keeps this list and [`Vdp::rr9_winner`]'s fall-through the same set of layers.
+    #[allow(clippy::too_many_arguments)]
     fn dot_candidates(
         &self,
         backdrop: u8,
@@ -1567,6 +1722,7 @@ impl Vdp {
         a_layer: Layer,
         b: &PlanePixel,
         winner_layer: Layer,
+        mask: LayerMask,
     ) -> Vec<Candidate> {
         // (rank, layer, opaque, priority, cram_index) — RR9 rank: high-sprite 0, high-A 1, high-B 2,
         // low-sprite 3, low-A 4, low-B 5, backdrop 6.
@@ -1596,6 +1752,7 @@ impl Vdp {
             b.cram_index(),
         ));
         list.push((6, Layer::Backdrop, true, false, backdrop));
+        list.retain(|c| mask.shows(c.1));
         list.sort_by_key(|c| c.0);
         let winner_rank = list.iter().find(|c| c.1 == winner_layer).map_or(6, |c| c.0);
         list.into_iter()
@@ -1625,11 +1782,22 @@ impl Vdp {
     /// RR9-ordered losing-candidate list. Derived from the same `resolve_line` `render_line` maps to RGB
     /// (attribution is the render, design §1), so `rgb == render_line(y)[x]`.
     pub fn pixel_attribution(&self, x: u16, y: u16) -> PixelAttribution {
+        self.pixel_attribution_masked(x, y, LayerMask::ALL)
+    }
+
+    /// [`pixel_attribution`](Self::pixel_attribution) under a display [`LayerMask`].
+    ///
+    /// It reports **what was drawn, never what would have won**: `winner` is the post-mask winner, `rgb`
+    /// still equals `render_line_masked(y)[x]` under the same mask, and a masked layer is absent from
+    /// `candidates` entirely (see [`Vdp::dot_candidates`]). Answering with the layer a mask suppressed
+    /// would make this method disagree with the picture every other surface shows — the one failure a
+    /// pixel-attribution surface exists to rule out.
+    pub fn pixel_attribution_masked(&self, x: u16, y: u16, mask: LayerMask) -> PixelAttribution {
         let h40 = self.render_h40();
         let width = if h40 { 320 } else { 256 };
         let xi = x as usize;
         let backdrop = self.backdrop_index();
-        let resolved = self.resolve_line(y);
+        let resolved = self.resolve_line_masked(y, mask);
         let winner = resolved
             .pixels
             .get(xi)
@@ -1667,6 +1835,7 @@ impl Vdp {
                 a_layer,
                 &b,
                 winner.layer,
+                mask,
             )
         };
         PixelAttribution {
@@ -1730,6 +1899,11 @@ impl Vdp {
     /// same [`LineReport`]. This is the hook the eventual per-frame render loop / push-5 golden-frame
     /// differential drives; it is **not** wired into `System::run` this push (so the export golden is
     /// untouched — the test ROM drives no rendering).
+    ///
+    /// **It takes no [`LayerMask`], and it deliberately has no masked twin.** This is the one render that
+    /// writes to the chip, so keeping the mask out of its signature is what makes "a display mask cannot
+    /// perturb emulation" a property of the type system rather than a promise in a comment: there is no
+    /// argument to thread, so no caller can reach the sprite-latch commit through a mask.
     pub fn render_scanline(&mut self, line: u16) -> LineReport {
         let resolved = self.resolve_line(line);
         let (dot, over, coll) = (
@@ -3505,5 +3679,480 @@ mod tests {
             SpriteOutcome::Masked,
             "the previous line's dot-overflow carry makes the first-on-line x=0 mask (R10)"
         );
+    }
+    // --- LayerMask: the display mask behind Aether's emulator/set_layer_enabled ----------------------
+
+    /// **The name set is derived, not transcribed.** `Layer::ALL` is what every caller that needs "the set
+    /// of layers" iterates — `oracle-aether` builds the wire enum by filtering it — so a variant missing
+    /// here would silently shrink that enum. The match below is exhaustive, so a NEW variant cannot compile
+    /// until it is named here; `seen` catches the other direction, a variant with an arm that never appears
+    /// in the array.
+    #[test]
+    fn layer_all_lists_every_variant() {
+        let mut seen = [false; 5];
+        for l in Layer::ALL {
+            let idx = match l {
+                Layer::Backdrop => 0,
+                Layer::PlaneB => 1,
+                Layer::PlaneA => 2,
+                Layer::Window => 3,
+                Layer::Sprite(_) => 4,
+            };
+            assert!(!seen[idx], "Layer::ALL lists {l:?} twice");
+            seen[idx] = true;
+        }
+        assert!(
+            seen.iter().all(|&b| b),
+            "Layer::ALL is missing a variant — seen = {seen:?}"
+        );
+    }
+
+    /// The backdrop is the floor the fall-through ends at, never a mask target (the contract fragment's own
+    /// `$comment` says so). `set` refuses it and *says* it refused; `shows` answers `true` for it whatever
+    /// the mask holds, so "mask everything" still leaves a picture.
+    #[test]
+    fn the_backdrop_is_not_a_mask_target() {
+        let mut m = LayerMask::ALL;
+        assert!(
+            !m.set(Layer::Backdrop, false),
+            "set(Backdrop) must report that the backdrop is not a mask target"
+        );
+        assert_eq!(m, LayerMask::ALL, "a refused set must not change the mask");
+        let none = LayerMask {
+            plane_a: false,
+            plane_b: false,
+            window: false,
+            sprites: false,
+        };
+        assert!(
+            none.shows(Layer::Backdrop),
+            "the backdrop shows under an all-off mask"
+        );
+        // …and every other layer IS a target — derived from Layer::ALL rather than listed here.
+        for l in Layer::ALL {
+            let target = !matches!(l, Layer::Backdrop);
+            let mut m = LayerMask::ALL;
+            assert_eq!(m.set(l, false), target, "set({l:?}) target-ness");
+            assert_eq!(
+                m.shows(l),
+                !target,
+                "after set({l:?}, false), shows({l:?}) must follow"
+            );
+        }
+    }
+
+    /// A fixture with three opaque layers stacked at screen (0,0) — sprites over plane A over plane B —
+    /// plus enough overlapping sprites that the pipeline's status bits are BOTH set, so a "the mask did not
+    /// move them" comparison has something it could have moved.
+    ///
+    /// Colours: plane B red (CRAM 1), plane A blue (CRAM 2), sprites green (CRAM 3), backdrop CRAM 0. All
+    /// three are low priority, so RR9 order is low-sprite > low-A > low-B > backdrop and the fall-through
+    /// visits every one of them in turn as masks are added.
+    fn stack_fixture() -> Vdp {
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x0F, 2); // autoincrement 2 — write_sprite streams four words
+        set_reg(&mut v, 0x05, 0x10); // SAT base 0x2000
+        fill_tile(&mut v, 3, 3);
+        write_cram(&mut v, 3, 0x00E0); // entry 3 = green
+        put_cell(&mut v, 0xE000, 0x0001); // plane B cell(0,0) red, low priority
+        put_cell(&mut v, 0xC000, 0x0002); // plane A cell(0,0) blue, low priority
+                                          // 18 opaque 1x1 sprites all at screen (0,0): they overlap (collision) and there are more of them
+                                          // than H32's 16-per-line count limit (overflow).
+        for i in 0..18u16 {
+            let link = if i == 17 { 0 } else { i + 1 };
+            write_sprite(&mut v, i as usize, 0x0080, link, 0x0003, 0x0080);
+        }
+        v
+    }
+
+    /// `LayerMask::ALL` with `layer` switched off, asserting `layer` really is a target.
+    fn mask_off(layer: Layer) -> LayerMask {
+        let mut m = LayerMask::ALL;
+        assert!(m.set(layer, false), "{layer:?} is a mask target");
+        m
+    }
+
+    /// Do two layers name the same *layer*? `Sprite(a)` and `Sprite(b)` do — a mask applies to the whole
+    /// sprite layer, never to one slot.
+    fn same_layer(a: Layer, b: Layer) -> bool {
+        matches!(
+            (a, b),
+            (Layer::Backdrop, Layer::Backdrop)
+                | (Layer::PlaneA, Layer::PlaneA)
+                | (Layer::PlaneB, Layer::PlaneB)
+                | (Layer::Window, Layer::Window)
+                | (Layer::Sprite(_), Layer::Sprite(_))
+        )
+    }
+
+    /// **The believable-wrong-answer control.** A mask implemented as a post-hoc blank would paint the
+    /// backdrop wherever the masked layer had won — including every dot where plane B was sitting right
+    /// behind it. So this asserts the revealed colour is plane B's, and asserts first that the fixture gives
+    /// the backdrop a *different* colour, because otherwise a blank and a fall-through are indistinguishable.
+    #[test]
+    fn a_masked_layer_falls_through_to_the_next_candidate_not_to_the_backdrop() {
+        let v = stack_fixture();
+        assert_eq!(
+            v.render_line(0)[0],
+            v.cram_rgb(3),
+            "control: unmasked, the sprite (green) wins"
+        );
+        assert_ne!(
+            v.cram_rgb(0),
+            v.cram_rgb(1),
+            "the fixture must give the backdrop and plane B different colours, or the assertions \
+             below cannot tell a fall-through from a blank"
+        );
+
+        let no_sprites = mask_off(Layer::Sprite(0));
+        assert_eq!(
+            v.render_line_masked(0, no_sprites)[0],
+            v.cram_rgb(2),
+            "sprites masked → plane A (blue), NOT the backdrop"
+        );
+        assert_eq!(
+            v.render_line_report_masked(0, no_sprites).pixels[0].layer,
+            Layer::PlaneA,
+            "…and the reported winner is plane A"
+        );
+
+        let mut no_sprites_no_a = no_sprites;
+        no_sprites_no_a.set(Layer::PlaneA, false);
+        assert_eq!(
+            v.render_line_masked(0, no_sprites_no_a)[0],
+            v.cram_rgb(1),
+            "sprites + plane A masked → plane B (red), NOT the backdrop"
+        );
+
+        let mut none = no_sprites_no_a;
+        none.set(Layer::PlaneB, false);
+        assert_eq!(
+            v.render_line_masked(0, none)[0],
+            v.cram_rgb(0),
+            "every maskable layer off → the backdrop, which is where the fall-through ends"
+        );
+        assert_eq!(
+            v.render_line_report_masked(0, none).pixels[0].layer,
+            Layer::Backdrop
+        );
+    }
+
+    /// ⚑ **The mask is a display mask: it must not move anything the ROM can read.**
+    ///
+    /// Sprite overflow and sprite collision are VDP status bits games poll, and the per-sprite outcomes
+    /// carry the R10 line-limit / pixel-budget decisions that drive the dot-overflow carry. All of them come
+    /// out of `sprite_line`, which `resolve_line_masked` runs *before* it consults the mask at all.
+    ///
+    /// The fixture sets BOTH bits and drops sprites, and that is asserted first: comparing two `false`s
+    /// across four masks would stay green with the guard removed, which is the alternative green path this
+    /// control rules out.
+    #[test]
+    fn a_mask_never_moves_the_sprite_pipeline() {
+        let v = stack_fixture();
+        let base = v.render_line_report(0);
+        assert!(
+            base.sprite_overflow,
+            "fixture precondition: 18 sprites on one H32 line must set overflow, or this test \
+             compares false to false"
+        );
+        assert!(
+            base.sprite_collision,
+            "fixture precondition: 18 overlapping sprites must set collision, or this test \
+             compares false to false"
+        );
+        assert!(
+            base.sprites
+                .iter()
+                .any(|s| s.outcome != SpriteOutcome::Rendered),
+            "fixture precondition: some sprite must be DROPPED, or the outcome comparison is vacuous"
+        );
+
+        for l in Layer::ALL {
+            if matches!(l, Layer::Backdrop) {
+                continue;
+            }
+            let m = mask_off(l);
+            let r = v.render_line_report_masked(0, m);
+            assert_eq!(
+                r.sprite_overflow, base.sprite_overflow,
+                "masking {l:?} moved sprite_overflow — a display mask changed a status bit the ROM reads"
+            );
+            assert_eq!(
+                r.sprite_collision, base.sprite_collision,
+                "masking {l:?} moved sprite_collision — a display mask changed a status bit the ROM reads"
+            );
+            assert_eq!(
+                r.sprite_walk_end, base.sprite_walk_end,
+                "masking {l:?} moved the sprite walk"
+            );
+            let (got, want): (Vec<_>, Vec<_>) = (
+                r.sprites.iter().map(|s| (s.index, s.outcome)).collect(),
+                base.sprites.iter().map(|s| (s.index, s.outcome)).collect(),
+            );
+            assert_eq!(
+                got, want,
+                "masking {l:?} moved the per-sprite outcomes (the R10 budget decisions)"
+            );
+        }
+    }
+
+    /// The other half of the same guarantee: the stateful render has no masked twin, so the latches it
+    /// commits cannot be reached through a mask. Driving every mask through the pure renders first and then
+    /// committing must land the VDP in exactly the state committing straight away does — including the R10
+    /// dot-overflow carry, which is checked on the *next* line because that is the only place it shows.
+    #[test]
+    fn masked_renders_leave_the_committed_sprite_latches_untouched() {
+        let mut plain = stack_fixture();
+        let committed = plain.render_scanline(0);
+        assert!(
+            committed.sprite_overflow,
+            "fixture precondition: the committed line must set overflow"
+        );
+
+        let mut poked = stack_fixture();
+        for l in Layer::ALL {
+            let mut m = LayerMask::ALL;
+            m.set(l, false);
+            let _ = poked.render_line_masked(0, m);
+            let _ = poked.render_line_report_masked(0, m);
+            let _ = poked.pixel_attribution_masked(0, 0, m);
+        }
+        let after = poked.render_scanline(0);
+        assert_eq!(
+            after.sprite_overflow, committed.sprite_overflow,
+            "a masked render before the commit changed the committed overflow latch"
+        );
+        assert_eq!(
+            after.sprite_collision, committed.sprite_collision,
+            "a masked render before the commit changed the committed collision latch"
+        );
+        let (got, want): (Vec<_>, Vec<_>) = (
+            poked
+                .render_line_report(1)
+                .sprites
+                .iter()
+                .map(|s| (s.index, s.outcome))
+                .collect(),
+            plain
+                .render_line_report(1)
+                .sprites
+                .iter()
+                .map(|s| (s.index, s.outcome))
+                .collect(),
+        );
+        assert_eq!(
+            got, want,
+            "line 1's R10 masking differs, so the dot-overflow carry the commit seeded differs — \
+             the mask reached chip state"
+        );
+    }
+
+    /// **The mask decides what is drawn, never how a surviving pixel looks.**
+    ///
+    /// R11's shadow/highlight default is `Shadow` iff both the A-slot and plane-B priority bits are clear —
+    /// a property of the tiles, not of what won. Re-deriving it from the post-mask pixels would darken plane
+    /// B the moment a high-priority plane A above it was masked away, so masking one layer would change the
+    /// colour of another. The `Shadow` control first proves this fixture's S/H is actually live.
+    #[test]
+    fn a_mask_does_not_change_the_shadow_highlight_of_what_remains() {
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x0C, 0x08); // shadow/highlight enable (reg $0C bit 3), H32
+        put_cell(&mut v, 0xE000, 0x0001); // plane B cell(0,0) red, LOW priority
+        put_cell(&mut v, 0xC000, 0x0002); // plane A cell(0,0) blue, LOW priority
+
+        assert_eq!(
+            v.render_line_report(0).pixels[0].state,
+            PixelState::Shadow,
+            "control: two low-priority planes must shadow, or this fixture's S/H is not enabled"
+        );
+
+        put_cell(&mut v, 0xC000, 0x8002); // plane A now HIGH priority → the default becomes Normal
+        let unmasked = v.render_line_report(0).pixels[0];
+        assert_eq!(unmasked.layer, Layer::PlaneA);
+        assert_eq!(
+            unmasked.state,
+            PixelState::Normal,
+            "control: a high-priority A-slot clears the shadow default"
+        );
+
+        let m = mask_off(Layer::PlaneA);
+        let masked = v.render_line_report_masked(0, m).pixels[0];
+        assert_eq!(
+            masked.layer,
+            Layer::PlaneB,
+            "plane A masked → plane B shows"
+        );
+        assert_eq!(
+            masked.state,
+            PixelState::Normal,
+            "plane B must keep the intensity it already had — masking plane A must not shadow it"
+        );
+        assert_eq!(
+            v.render_line_masked(0, m)[0],
+            v.cram_rgb(1),
+            "…and the revealed colour is plane B's full-intensity red"
+        );
+    }
+
+    /// The window and plane A share one rendering slot: inside the window span the hardware fetches the
+    /// window's cell and plane A is never sampled there. So masking `window` falls through to plane B, the
+    /// next RR9 candidate — it does NOT substitute plane A, which would mean *synthesising* a picture the
+    /// hardware cannot produce rather than removing one from it.
+    ///
+    /// Outside the span the A slot is plane A, so `planeA` governs there and `window` does nothing.
+    #[test]
+    fn masking_the_window_falls_through_to_plane_b_not_to_plane_a() {
+        let mut v = pa_fixture(false);
+        set_reg(&mut v, 0x11, 0x02); // left window WHP=2 → [0,32)
+        fill_tile(&mut v, 3, 3);
+        write_cram(&mut v, 3, 0x00E0); // green
+        put_cell(&mut v, 0xA000, 0x0003); // window cell(0,0) green
+        put_cell(&mut v, 0xC000, 0x0002); // plane A cell(0,0) blue — in the window's slot
+        put_cell(&mut v, 0xE000, 0x0001); // plane B cell(0,0) red
+
+        assert_eq!(
+            v.render_line_report(0).pixels[0].layer,
+            Layer::Window,
+            "control: the window owns x=0"
+        );
+        let no_window = mask_off(Layer::Window);
+        assert_eq!(
+            v.render_line_report_masked(0, no_window).pixels[0].layer,
+            Layer::PlaneB,
+            "window masked → plane B, the next RR9 candidate"
+        );
+        assert_eq!(
+            v.render_line_masked(0, no_window)[0],
+            v.cram_rgb(1),
+            "…red, not plane A's blue: the mask removes a layer, it does not put another in its place"
+        );
+        assert_eq!(
+            v.render_line_report_masked(0, mask_off(Layer::PlaneA))
+                .pixels[0]
+                .layer,
+            Layer::Window,
+            "plane A masked does not remove the window from its own slot"
+        );
+    }
+
+    /// A mask can only ever REMOVE: at every dot the masked winner ranks no *higher* in RR9 order than the
+    /// unmasked winner did, and the masked layer is never the one drawn. One invariant, swept over a whole
+    /// line, rules out the class of bug where a mask reveals something the unmasked frame never contained.
+    #[test]
+    fn a_mask_is_strictly_subtractive_at_every_dot() {
+        fn rank(l: Layer) -> u8 {
+            match l {
+                Layer::Sprite(_) => 0,
+                Layer::Window | Layer::PlaneA => 1,
+                Layer::PlaneB => 2,
+                Layer::Backdrop => 3,
+            }
+        }
+        let v = stack_fixture();
+        let base = v.render_line_report(0);
+        assert!(
+            base.pixels.iter().any(|p| p.layer != Layer::Backdrop),
+            "fixture precondition: the unmasked line must draw something above the backdrop"
+        );
+        for l in Layer::ALL {
+            if matches!(l, Layer::Backdrop) {
+                continue;
+            }
+            let r = v.render_line_report_masked(0, mask_off(l));
+            for (x, (m, b)) in r.pixels.iter().zip(base.pixels.iter()).enumerate() {
+                assert!(
+                    rank(m.layer) >= rank(b.layer),
+                    "masking {l:?} promoted dot {x} from {:?} to {:?} — a mask must never add a layer",
+                    b.layer,
+                    m.layer
+                );
+                assert!(
+                    !same_layer(m.layer, l),
+                    "masking {l:?} still drew it at dot {x}"
+                );
+            }
+        }
+    }
+
+    /// `pixel_attribution` must report what was DRAWN, not what would have won — and a masked layer is
+    /// absent from the candidate list rather than carrying a verdict the closed vocabulary has no word for.
+    #[test]
+    fn attribution_under_a_mask_reports_what_was_drawn() {
+        let v = stack_fixture();
+        let full = v.pixel_attribution(0, 0);
+        assert!(
+            matches!(full.winner, Layer::Sprite(_)),
+            "control: unmasked, a sprite wins (0,0)"
+        );
+        assert_eq!(
+            full.candidates.len(),
+            4,
+            "control: sprite + A slot + B + backdrop"
+        );
+
+        let m = mask_off(Layer::Sprite(0));
+        let masked = v.pixel_attribution_masked(0, 0, m);
+        assert_eq!(
+            masked.winner,
+            Layer::PlaneA,
+            "the winner is the layer that was drawn, not the one the mask suppressed"
+        );
+        assert!(
+            !masked
+                .candidates
+                .iter()
+                .any(|c| matches!(c.layer, Layer::Sprite(_))),
+            "a masked layer is not a candidate — it must not appear in the list at all: {:?}",
+            masked.candidates
+        );
+        assert_eq!(masked.candidates.len(), 3, "A slot + B + backdrop");
+        assert_eq!(
+            masked.candidates[0].verdict,
+            CandidateVerdict::Won,
+            "the head of the list is the drawn layer"
+        );
+        assert!(
+            masked
+                .candidates
+                .iter()
+                .all(|c| c.verdict != CandidateVerdict::Operator),
+            "no surviving candidate may be labelled a sprite operator because a sprite was masked: {:?}",
+            masked.candidates
+        );
+        assert_eq!(
+            masked.rgb,
+            v.render_line_masked(0, m)[0],
+            "attribution's rgb must equal the masked render's pixel"
+        );
+    }
+
+    /// **The currency control.** `LayerMask::ALL` must leave every render byte-identical to the code that
+    /// ran before the mask existed — otherwise every golden in this repo moved for a feature that is off.
+    #[test]
+    fn an_all_on_mask_is_the_unmasked_render_exactly() {
+        for (mut v, sh_reg) in [
+            (stack_fixture(), 0x08u8),
+            (pa_fixture(true), 0x89),
+            (pb_fixture(false), 0x08),
+        ] {
+            set_reg(&mut v, 0x0C, sh_reg); // exercise the S/H path too
+            for line in [0u16, 1, 7, 8, 63] {
+                assert_eq!(
+                    v.render_line_masked(line, LayerMask::ALL),
+                    v.render_line(line),
+                    "line {line}: an all-on mask changed the picture"
+                );
+                assert_eq!(
+                    v.render_line_report_masked(line, LayerMask::ALL).pixels,
+                    v.render_line_report(line).pixels,
+                    "line {line}: an all-on mask changed the resolved pixels"
+                );
+            }
+            assert_eq!(
+                v.pixel_attribution_masked(0, 0, LayerMask::ALL),
+                v.pixel_attribution(0, 0),
+                "an all-on mask changed the attribution"
+            );
+        }
     }
 }
