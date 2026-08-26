@@ -459,14 +459,22 @@ fn all_three_stop_for_the_reason_section_3_pins() {
     }
 }
 
-/// The two rows that return nothing return **exactly** nothing — `replyFields` and not one key more.
+/// **The two rows that returned nothing now return the halt** — `pc` on top of the envelope, and nothing
+/// else (§11.24, closing audit D-03).
 ///
-/// §6 writes `—` in both columns and the fragments carry no `properties` at all, so the whole reply is the
-/// envelope: the machine stamp (§2.2) plus `droppedEvents` (§2.3). §8 item 20's closure already rejects a
-/// surplus key on the wire; this pins the complement, that the four envelope fields are all present, so an
-/// "empty" result cannot be an *absent* one.
+/// This test used to assert the opposite, and the flip is the amendment. §6 wrote `—` in both columns for
+/// these two while `emulator/step` returned `pc`; §11.24 ruled the asymmetry away, on the ground that the
+/// three share **one stop condition** and both servers already computed the PC and discarded it. So the
+/// key set is the envelope (the machine stamp, §2.2, plus `droppedEvents`, §2.3) **plus `pc`**.
+///
+/// §8 item 20's closure already rejects a surplus key on the wire and the fragment's `required: ["pc"]`
+/// rejects its absence; what this pins is the complement neither can state — that the envelope fields are
+/// all still there, so a result carrying `pc` cannot have quietly lost the stamp.
+///
+/// No symbol pair here on purpose: `two_level` loads no listing, and the symbol fields have their own
+/// tests below. That is also why the expected key set is exact rather than a subset.
 #[test]
-fn step_over_and_step_out_return_the_envelope_and_nothing_else() {
+fn step_over_and_step_out_return_the_halt_pc_and_the_envelope() {
     let (_h, mut c) = two_level("st-empty");
     for m in ["emulator/step_over", "emulator/step_out"] {
         park_at(&mut c, PROF_LEAF);
@@ -474,8 +482,17 @@ fn step_over_and_step_out_return_the_envelope_and_nothing_else() {
         let keys: Vec<&String> = r.as_object().expect("a result object").keys().collect();
         assert_eq!(
             keys,
-            vec!["droppedEvents", "frame", "mclk", "running"],
-            "{m}'s row has no result keys: the reply is the envelope alone"
+            vec!["droppedEvents", "frame", "mclk", "pc", "running"],
+            "{m}'s row returns emulator/step's result since §11.24: pc, plus the envelope"
+        );
+        // Derived from the machine rather than pinned: the reported PC must be the one the machine
+        // actually halted at, which is the whole content of the amendment. A constant here would pass
+        // against a handler that returned a plausible-looking address it never read.
+        let regs = c.ok("emulator/registers", json!({}));
+        assert_eq!(
+            r["pc"], regs["pc"],
+            "{m} must report the PC the machine stopped at, in the same hex spelling the rest of the \
+             bus uses (D9 category 1)"
         );
     }
 }

@@ -2056,26 +2056,20 @@ impl Engine {
             Some(v) => hex::parse_count("count", v, 0, u64::MAX)?,
         };
         let pc = self.run_step(StepGoal::Instructions(count));
-        let mut out = json!({ "pc": hex::addr(pc) });
-        // §4: the BARE label plus the number beside it. `symbol_at` returns exactly that pair, and the
-        // fragment's `$defs/symbolName` rejects a `+$hex` suffix outright. **Absent when nothing resolves**
-        // — a server MUST NOT fall back to the address string, so there is no `else` here on purpose.
-        if let Some((name, disp)) = self.symbol_at(pc) {
-            out["symbol"] = json!(name);
-            out["symbolDisp"] = json!(disp);
-        }
         // No `caveat`, and that is the fragment's word rather than an omission: it declares the key ABSENT
         // (the `sprites` precedent) because a step has no weaker-answer condition §6 names. §8 item 20's
         // closure would reject one, and the suite applies that closure to every reply.
-        Ok(out)
+        Ok(self.halt_result(pc))
     }
 
-    /// **§6 line 852 — `emulator/step_over`.** No params, and **no result keys at all**.
+    /// **§6 — `emulator/step_over`.** No params → `pc`, `symbol`?, `symbolDisp`?
     ///
-    /// The empty result is §6's row (`—` in both columns), not an omission: the answer arrives on the event
-    /// channel, whose `stopped` params carry `pc`, `symbol?` and `symbolDisp?`. That `emulator/step` *does*
-    /// return `pc` while this returns nothing is an asymmetry §6 owns and the fragments deliberately
-    /// preserved — **audit D-03** — so it is served as written and reported, never smoothed over here.
+    /// **The empty result was the row until 2026-08-26, and §11.24 closed it.** §6 used to write `—` in
+    /// both columns while `emulator/step` returned `pc` — an asymmetry §6 owned, which the fragments
+    /// preserved on purpose and reported as **audit D-03**. The ruling went the other way: the three rows
+    /// share **one stop condition** (§3 pins their `reason` as `step` for all three), and both servers
+    /// already computed the halt PC and discarded it. So this row now returns `emulator/step`'s result,
+    /// through [`halt_result`](Engine::halt_result) rather than a second spelling of the same answer.
     ///
     /// **What it actually does, and why it is not a `step` in disguise.** The pending opcode is classified
     /// before the run. If it is not a `JSR`/`BSR` there is nothing to step over and this is one instruction,
@@ -2091,12 +2085,12 @@ impl Engine {
             ControlFlow::Call => StepGoal::OverCall,
             _ => StepGoal::Instructions(1),
         };
-        self.run_step(goal);
-        Ok(json!({}))
+        let pc = self.run_step(goal);
+        Ok(self.halt_result(pc))
     }
 
-    /// **§6 line 853 — `emulator/step_out`.** No params, no result keys. Identical treatment to
-    /// [`step_over`](Engine::step_over), for identical reasons (audit D-03).
+    /// **§6 — `emulator/step_out`.** No params → `pc`, `symbol`?, `symbolDisp`?. Identical treatment to
+    /// [`step_over`](Engine::step_over), for identical reasons (§11.24, closing audit D-03).
     ///
     /// Runs until the frame that was already live returns. The frame's entry SP is **not** knowable from
     /// here — however many locals the routine has already pushed is not recoverable, and nothing in the core
@@ -2109,8 +2103,31 @@ impl Engine {
             sp0: regs.a7(),
             supervisor: regs.supervisor(),
         };
-        self.run_step(goal);
-        Ok(json!({}))
+        let pc = self.run_step(goal);
+        Ok(self.halt_result(pc))
+    }
+
+    /// **The result all three `step*` rows return** — `pc`, plus the symbol pair when it resolves.
+    ///
+    /// One builder, because since §11.24 there is one answer: the three rows share a single stop condition
+    /// (§3), so they report the same halt, and the `stopped` event that accompanies them reports it too.
+    /// Keeping the shape in one place is what stops the reply and the event drifting apart — and that
+    /// drift is precisely what D-03 was: `emulator/step` returning a PC that `step_over` computed, held,
+    /// and threw away.
+    ///
+    /// §4: the **BARE** label plus the number beside it. [`symbol_at`](Engine::symbol_at) returns exactly
+    /// that pair — the same lookup [`emit_stopped`](Engine::emit_stopped) uses, deliberately not a second
+    /// one — and the fragment's `$defs/symbolName` rejects a `+$hex` suffix outright. **Absent when
+    /// nothing resolves**: a server MUST NOT fall back to the address string, so there is no `else` here
+    /// on purpose, and `symbolDisp` goes with it, because a displacement from a symbol that was never
+    /// reported is a number about nothing.
+    fn halt_result(&self, pc: u32) -> Value {
+        let mut out = json!({ "pc": hex::addr(pc) });
+        if let Some((name, disp)) = self.symbol_at(pc) {
+            out["symbol"] = json!(name);
+            out["symbolDisp"] = json!(disp);
+        }
+        out
     }
 
     /// The run all three `step*` rows share: advance under a [`StepGoal`], then report the halt.
