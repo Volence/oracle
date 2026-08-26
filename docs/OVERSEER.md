@@ -1371,6 +1371,30 @@ so there is no sigil-side consumer this week either.
 
 ## The bars (house methods — each earned by a measured failure; do not thin)
 
+**▶ NEW BAR, 2026-08-26 — A MERGED SERVE IS NOT A SERVED METHOD. THE CONSUMER REACHES A BINARY.**
+Found in the foreground pass that closed the CR-D `⟨RUNTIME⟩` debt
+(`docs/2026-08-26-runtime-decoders-check.md` §5). The object decoders merged, tested and pushed at
+`0f33c44` — and stayed **unreachable to every consumer**, because `target/release/oracle-aether` was
+still the build from the day before and **nothing in a merge rebuilds it**. The MCP shim spawns *that
+binary*; so a shim spawned any time between the merge and the check answered
+`[-32601] no such method` to the very methods we had just shipped. Reproduced firsthand on this
+session's own shim, then fixed and re-verified end to end through the consumer's own spawn path.
+**This sharpens, and does not contradict, the coordination note that *advertising a method is
+shipping it*: the advertised list is authoritative, but it is emitted BY A RUNNING BINARY, and a
+stale binary advertises a stale list with total confidence.** Practical check before telling any
+consumer a method is available: spawn the consumer's own path and call it — not `cargo test`, which
+passes against source the consumer never runs. Same family as item 1's rename fallout
+(*compile-time-frozen paths, invisible until the binary runs*); here the frozen artifact was the
+binary itself.
+
+**▶ AND THE COUNTING BAR THAT CAME WITH IT — MEASURE USE, NOT ATTACHMENT.** The same pass had to
+count whether consumers actually call these methods. `grep -c` over the transcript tree reports
+~10,000 mentions across ~4,055 files — and reports **the same ~4,055 for every tool name, including
+tools nobody has ever called**, because the MCP tool listing sits in every session's system prompt.
+Parsing `tool_use` blocks instead gives the true figure: 216 invocations. **The near-constant across
+varied inputs was the tell** — the existing bar caught it. Mentions measure attachment; only
+invocations measure use.
+
 **▶ NEW BAR, 2026-08-24 — ANCHOR A CLAIM TO A SHA THAT CAN CARRY IT. A docs commit cannot vouch for
 code.** Caught by aeon against this seat, same day. I reported the straddle fix to them anchored to
 `7bdb75f` — which is a **one-line `docs/lane-log.jsonl` commit**. Every claim I made was true, and
@@ -1589,6 +1613,13 @@ open every dispatch with a base check (commit-message string + a file that must 
 `pkill -f`/`pgrep -f` self-match (the waiting shell's own command line contains the pattern) — bracket the first character: `pgrep -f "[c]argo test"`. Aether sockets live under `$XDG_RUNTIME_DIR`. `/tmp` is quota'd —
 free space is not the signal. The frontend is bin-only (`pub fn` with no caller = hard error).
 `ls` is aliased to eza. Owner tests run `aeon/s4.debug.bin`.
+A probe socket must NOT live under the session scratchpad — that path exceeds `SUN_LEN` and the
+server refuses with `cannot bind the Aether socket: path must be shorter than SUN_LEN`; use a short
+`/tmp/<short>` dir. The MCP shim (`oracle-old/linux-port/mcp/oracle_mcp.py`) **SPAWNs its own
+`oracle-aether` by default** (private `mkdtemp` socket, `ORACLE_ROM` default `aeon/s4.debug.bin`) and
+**ATTACHes only when `$ORACLE_SOCKET`/`$EXODUS_SOCKET` is set** — it does NOT use empyrean's
+`resolve_socket_path()`, so do not reason about the shim from that resolver (this seat did, and was
+wrong about whose emulator it was talking to).
 
 ## Coordination (when peers are up; all optional to progress)
 
