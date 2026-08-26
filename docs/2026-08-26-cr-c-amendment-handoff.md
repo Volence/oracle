@@ -253,8 +253,9 @@ None of this is done here, and all of it needs `cargo`, which this parcel did no
 
 > **Served on branch `cr-c-serve`, 2026-08-26.** Items 1, 2, 3, 4, 6 and 7 are done; item 5 is the legacy
 > shim's and is not this branch's. Ticks, commits and what moved are in *The serve parcel, served* at the
-> end of this document — including one thing the list below could not have anticipated, because the
-> contract tip moved twice while the serve parcel was running.
+> end of this document — including two things the list below could not have anticipated, because the
+> contract tip moved twice while the serve parcel was running: §11.24's D-03 (served here, `66ee253`) and
+> §11.21's MCP tool row (**BLOCKED** — the file is in `oracle-old`).
 
 1. **Emit `implementation` from `engine.rs`.** The `initialize` result is built at
    `crates/oracle-aether/src/engine.rs:1353-1355` (`serverName` / `serverVersion` come off
@@ -327,6 +328,8 @@ owes. No MUST was degraded to reach green, and no vector was weakened.
 | 5 | The legacy shim's own emission | — | **not this branch.** Unchanged and unscheduled, per §11.23. |
 | 6 | Item 23's regression test | ✅ | `9fed864` |
 | 7 | `status.romPath` | ✅ | `02045fe` |
+| + | §11.24 D-03 — `step_over`/`step_out` return `pc` (arrived with the re-vendor; closed on the controller's ruling) | ✅ | `66ee253` |
+| + | §11.21 — the MCP `breakpoint_clear` tool row | **BLOCKED** | in another repository; see the deviations section |
 
 *(`0522e40` removes an import the item-23 split orphaned; fmt and clippy are commit gates here.)*
 
@@ -376,28 +379,60 @@ other. `dirty` is measured over exactly the declared source scope, so flag and i
 construction — and a modified doc, which cannot change this binary's behaviour, correctly leaves it
 `false`.
 
-## Two deviations, named and NOT fixed here
+## The two deviations: one closed here, one BLOCKED on another repository
 
-1. **§11.24 D-03 — `step_over` / `step_out` owe `pc`.** §11.24 gave both rows `emulator/step`'s result
-   (`pc` required). This server returns `{}` from both, transcribed from the *pre*-amendment fragment.
-   §11.24 says it outright: *"Both are non-conformant until they emit `pc` — the `read_cram`/`timingBasis`
-   path, taken knowingly."* **Eight** tests are red on it — the six in `step.rs`
-   (`all_three_stop_for_the_reason_section_3_pins`, `step_over_a_call_…`, `step_over_a_non_call_…`,
-   `step_over_and_step_out_return_the_envelope_and_nothing_else`, `step_out_returns_…`,
-   `step_out_is_not_fooled_…`), plus `handshake.rs`'s dispatch sweep and `methods.rs`'s stamp sweep, each
-   failing as `methods.emulator/step_over.result: $: "pc" is a required property`. **Not fixed here**:
-   §11.24's behavioural asks are a different parcel, and inventing the fix inside a re-vendor commit is
-   how a schema quietly becomes a record of what a server does. `KNOWN_CONTRACT_DIVERGENCES` is the
-   available loud mechanism if the controller wants the suite green before that parcel lands; that entry
-   is the §11.24 parcel's to take, not this one's.
-2. **§11.21 — the MCP tool for `breakpoint_clear` composes params the contract no longer declares.**
-   CR-BP reshaped the row to take an opaque handle, so `breakpoint_clear.addr` and `.symbol` join
-   `mcp_tool_sweep`'s undeclared set and its `assert_eq!` on the whole set goes red. Registering them was
-   **tried and correctly refused by the file itself**: its D-33 registry re-derives that each entry is a
-   *respelling* whose camelCase partner the fragment declares, and these are not respellings —
-   *"if it is a genuinely undeclared param it is a client bug and does not belong in this registry"*. So
-   the pin stands red and un-weakened. The MCP client is out of this parcel's scope; the fix belongs with
-   whoever serves the breakpoint family.
+Both were first reported as *named and not fixed*. The controller ruled that `main` does not go red and
+that both were small enough to close in this parcel. One was; one turned out to live outside this
+repository, which is the stated stop condition.
+
+### 1. §11.24 D-03 — CLOSED, `66ee253`
+
+§11.24 gave `emulator/step_over` and `emulator/step_out` `emulator/step`'s result (`pc` required,
+`symbol`?, `symbolDisp`?). This server returned `{}` from both, transcribed from the *pre*-amendment
+fragment, and §11.24 said outright: *"Both are non-conformant until they emit `pc`."* It now emits it,
+through a single `halt_result(pc)` builder the three rows share, reusing the `symbol_at` lookup
+`emit_stopped` already uses for the `stopped` event — deliberately one lookup, because D-03 *was* the
+drift between the reply and the event.
+
+**Red-first is the record at `0522e40`**, where eight tests failed as
+`methods.emulator/step_over.result: $: "pc" is a required property` against
+`{"id":8,"jsonrpc":"2.0","result":{"droppedEvents":0,"frame":0,"mclk":196,"running":false}}` — the six in
+`step.rs`, plus `handshake.rs`'s dispatch sweep and `methods.rs`'s stamp sweep. All eight are green now.
+`step_over_and_step_out_return_the_envelope_and_nothing_else` became
+`…_return_the_halt_pc_and_the_envelope`; it asserted the opposite before, and the flip **is** the
+amendment. Its PC is cross-checked against `emulator/registers` rather than pinned, so a handler returning
+a plausible address it never read would still fail.
+
+**Scope held.** §11.24's other asks — `step.count`'s refusal outside `1…1000000`, `wait_for_break`'s
+`timeoutMs` ceiling, `ping.version`, `z80_read.len`, `vgm_status.path` — are untouched and stay with
+CONF-11.24.
+
+### 2. §11.21 `breakpoint_clear` — **BLOCKED**: the row is in another repository
+
+The fix is agreed and is not this repo's to make. The tool row lives at
+
+```
+/home/volence/sonic_hacks/oracle-old/linux-port/mcp/oracle_mcp.py:626-635
+```
+
+which `git rev-parse --show-toplevel` confirms is the separate **`oracle-old`** repository (this parcel's
+brief stops at that boundary by name). The row declares `addr`, `symbol` and `all`; since CR-BP the
+fragment declares `breakpoint` (string) and `all` (boolean), so `addr` and `symbol` are params no fragment
+declares — and since §2.5 the bus refuses an undeclared top-level param **by name**, so it is a call the
+client will compose and the server will refuse, at runtime, on someone else's machine.
+
+**What the fix is**, for whoever owns that file: replace `addr`/`symbol` with
+`"breakpoint": {"type": "string", …}`, keep `all`, and reword the description, which still says
+*"`addr`/`symbol` to remove those matching a specific location"*. The Rust server serves none of the five
+breakpoint rows (`capabilities.breakpoints: false`), so nothing here changes with it.
+
+**Registering it instead was tried and the repo correctly refused.** `mcp_tool_sweep`'s D-33 registry
+re-derives that every entry is a *respelling* whose camelCase partner the fragment declares; these are
+not, and the assertion says so: *"if it is a genuinely undeclared param it is a client bug and does not
+belong in this registry"*. The pin therefore stands **red and un-weakened**, and
+`every_mcp_tool_property_is_declared_by_its_contract_fragment` is the one remaining failure in the
+workspace suite. It skips loudly rather than failing on a machine without the `oracle-old` checkout
+(`ORACLE_MCP_PY` overrides the path), so it is red **here** because the sibling is present, not everywhere.
 
 ## Verification
 
@@ -408,16 +443,24 @@ construction — and a modified doc, which cannot change this binary's behaviour
 `src/synth/audio_sink.rs:415`) — reproduced identically with this branch's changes stashed, and neither
 file is touched here.
 
-`cargo test --workspace --no-fail-fast`: **54 legs, 1811 passed, 9 failed, 6 ignored** (before: 51 legs,
-1811 passed, 1 failed, 6 ignored — the one being the stale-vendored-schema freshness check this branch
-resolves). The arithmetic closes: 8 tests added and green, the freshness check now green, 9 newly red and
-every one of them a named deviation above.
+`cargo test --workspace --no-fail-fast`: **54 legs, 1819 passed, 1 failed, 6 ignored.**
 
-**Currency unmoved, run and checked rather than assumed** — `conformance_roms` 3/3 (42.45s),
-`scanline_goldens` 5/5 (34.51s), `golden_frames` 7/7, `export_state_v1` 3/3, `determinism_gate` 2/2,
-`singlestep_m68000` 113/113. No hash was regenerated and no golden was touched. `vendor` is a symlink to
-the main tree's in this worktree — `vendor_data_present_when_running_in_ci` passes in both scorecards, so
-no row silently skipped.
+| run | legs | passed | failed | ignored |
+|---|---|---|---|---|
+| before this branch | 51 | 1811 | 1 (stale vendored schema) | 6 |
+| after the serve commits | 54 | 1811 | 9 | 6 |
+| after D-03 (`66ee253`) | 54 | **1819** | **1** | 6 |
+
+The arithmetic closes at every step: 8 tests added and green, the freshness check resolved, the 8 D-03
+failures closed by `66ee253`, and the **single remaining failure** is
+`every_mcp_tool_property_is_declared_by_its_contract_fragment` — the BLOCKED item above, whose fix is a
+file in `oracle-old`.
+
+**Currency unmoved, run and checked rather than assumed** — `conformance_roms` 3/3 (42.60s),
+`scanline_goldens` 5/5 (42.65s), `golden_frames` 7/7, `export_state_v1` 3/3, `determinism_gate` 2/2,
+`singlestep_m68000` 113/113 (367.67s). No hash was regenerated and no golden was touched. `vendor` is a
+symlink to the main tree's in this worktree — `vendor_data_present_when_running_in_ci` passes in both
+scorecards, so no row silently skipped.
 
 ## ⟨RUNTIME⟩ added by this parcel
 
