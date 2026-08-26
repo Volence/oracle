@@ -1691,7 +1691,9 @@ wrong about whose emulator it was talking to).
 
 - **seraph** (DAW): **the first FILED DEMAND against the unserved-method list, shaped and dated
   2026-08-26 — and it is the reason the cutover ruling works.** Their S2 verification gate
-  (`plans/2026-07-03-s2-verification-gate.md:10-16`, their anchor `9b2c5a77` on `origin/main`) builds
+  (`plans/2026-07-03-s2-verification-gate.md:10-16`; grounds anchor **`a02c77a5`**, which supersedes the
+  `9b2c5a77` first cited — both verified here as reachable ancestors of their `origin/main`; the S2
+  conclusion hardened rather than moved, so nothing banked off the earlier one needs changing) builds
   **side B entirely out of `emulator_vgm_start`/`stop` → `vgm2wav`**, so **S2 as banked is NOT
   executable against the new core** — VGM capture is not one instrument among several there, it is the
   whole of side B. Their triage, taken as given: **`vgm_{start,status,stop}` is the one that matters**
@@ -1704,6 +1706,21 @@ wrong about whose emulator it was talking to).
   does not exist yet is a cost with no reader. **Treat VGM as demand-ordered-with-a-condition rather
   than unqueued**: when the acceptance list is next triaged, VGM is the only one of the eighteen with a
   named consumer, a named artifact, and a stated trigger. Do not pre-build it; do not renumber it away.
+  ⚑ **CONFIDENCE SPLIT, corrected by seraph against this seat's own over-hedge and verified here at
+  `main`: the THAT is machine-enforced; only the WHY is a reading.** That these six are unserved is not a
+  booked opinion — `schema_conformance.rs:403` pins `SCHEMATIZED_NOT_ADVERTISED` at **18 entries** and
+  asserts the whole sorted set with `assert_eq!` (a subset check would not do it), all six audio names
+  among them; and `engine.rs:1415` independently advertises **`"vgm": false`** in the handshake
+  capabilities, which the comment tells clients to branch on instead of the version integer. Two
+  independent places. **What remains unverified is the MECHANISM** — that the channel pair is unserved
+  *because* the synth is `#[cfg(feature)]`-gated out of the bus server, and that `vgm.rs` is ungated;
+  both came from the acceptance survey's unverified batch and neither has been re-derived. Protocol bar
+  10 exactly: a gate's verdict and its stated reason are separately checkable, and this seat had hedged
+  the verdict on the strength of doubting the reason. *Bar 19 clears the agreement as corroboration
+  rather than echo: our derivation came from a survey agent reading the tree, theirs from enumerating
+  the asserted test literal and the capability block. They also declined to lean on `audio_spectrum`
+  grepping only to test files — consistent with unserved, but an absence, and the claim rests on list
+  membership instead.*
 - **aeon** (engine): demand docs in, acceptance fixtures back — their sweep/probe re-runs are the
   external acceptance for our instruments; shape checks go to them BEFORE build (their requested
   gate). Current lane: the streaming arc consumes the profiler; C-asks flow via
