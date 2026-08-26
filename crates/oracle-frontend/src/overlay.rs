@@ -24,6 +24,7 @@
 use crate::font;
 use crate::present::Rect;
 use crate::save_state::SLOT_COUNT;
+use oracle_core::render::LayerMask;
 use std::collections::VecDeque;
 
 /// How long a toast stays up, in presented frames (~2.5 s at 60 fps). Long enough to read a save
@@ -103,6 +104,10 @@ pub struct Status {
     pub aspect: &'static str,
     /// The native frame size currently being presented.
     pub native: (usize, usize),
+    /// **Which display layers are being drawn.** Not a frontend notion of hidden layers — the core's own
+    /// [`LayerMask`], the very one `emulator/set_layer_enabled` moves, so the badge cannot say a layer is
+    /// hidden that the renderer is still drawing.
+    pub layers: LayerMask,
 }
 
 /// The overlay's own state: the live toasts and whether the persistent status line is showing.
@@ -210,6 +215,9 @@ impl Overlay {
         if self.showing_status() {
             self.draw_status_line(&mut c, area, st, px, margin);
         }
+        // **Unconditional** — not behind `showing_status`, not behind a lens, not on a timer. The mask is
+        // on until someone turns it off, and so is the sentence that says so. See [`Self::layer_badge`].
+        self.draw_layer_badge(&mut c, area, st, px);
         // Both halves, and both are load-bearing: `st.paused` is this frame's truth, `banner_due` is the
         // dwell the presented frames have accumulated. A resume clears the counter on the next `tick`, so
         // the two can only disagree for the frames a pause has not yet earned.
@@ -217,6 +225,71 @@ impl Overlay {
             draw_paused_banner(&mut c, area, px);
         }
         self.draw_toasts(&mut c, area, px, margin);
+    }
+
+    /// **The standing statement that a display layer is hidden**, or `None` when every layer is drawn.
+    ///
+    /// Text and geometry in one place, so the width [`draw_status_line`](Self::draw_status_line) reserves
+    /// and the width [`draw_layer_badge`](Self::draw_layer_badge) paints cannot disagree — the same argument
+    /// that made `PAUSED_WORD` a `const`.
+    ///
+    /// # Why this is a correctness requirement and not decoration
+    ///
+    /// A mask changes what the picture *is*. With no standing statement that it is on, the person who set
+    /// it will forget, and then read a masked picture as the machine's — which is worse than not having the
+    /// toggle, because a wrong picture that looks right is indistinguishable from a right one. A toast
+    /// cannot carry this: toasts expire, and the mask does not. So this is drawn on **every** frame the mask
+    /// is non-default and on none where it is not, and it names the hidden layers rather than merely
+    /// admitting to a mask, because "something is hidden" sends you hunting and "planeB is hidden" does not.
+    ///
+    /// # Where it sits, and why nothing collides with it
+    ///
+    /// Right-aligned inside the **F3 status band** ([`status_band`]) — the one strip of the picture every
+    /// lens already clears unconditionally, so no lens has to learn about this and none can be dimmed by it
+    /// (the interference the CPU chip's dodge exists for). The only other tenant of that band is the status
+    /// line itself, which grows from the left and is handed a shortened width whenever this is showing, so
+    /// the two are exclusive by construction rather than by luck.
+    ///
+    /// The font scale steps down to 1 before the badge is dropped, and the text is **never truncated**:
+    /// `HIDDEN: plan` names a layer that does not exist. A picture with no room for it at scale 1 gets
+    /// nothing — the same call [`banner_layout`] makes, for the same reason.
+    fn layer_badge(area: Rect, px: usize, mask: LayerMask) -> Option<(String, Rect, usize, usize)> {
+        let hidden = mask.hidden();
+        if hidden.is_empty() {
+            return None;
+        }
+        let text = format!("HIDDEN: {}", hidden.join(" "));
+        let margin = (2 * px).max(4);
+        let pad_for = |p: usize| 2 * p;
+        let scale = (1..=px).rev().find(|&p| {
+            font::text_width(&text) * p + 2 * pad_for(p) + 2 * margin <= area.w
+                && font::GLYPH_H * p + 2 * pad_for(p) + 2 * margin <= area.h
+        })?;
+        let pad = pad_for(scale);
+        let w = font::text_width(&text) * scale + 2 * pad;
+        let h = font::GLYPH_H * scale + 2 * pad;
+        Some((
+            text,
+            Rect {
+                x: area.x + area.w - margin - w,
+                y: area.y + margin,
+                w,
+                h,
+            },
+            scale,
+            pad,
+        ))
+    }
+
+    /// Paint the badge described by [`layer_badge`](Self::layer_badge). Amber — the colour this overlay
+    /// already uses for "a mode is on" (the `PAUSED` banner, an occupied save slot), so it reads as a state
+    /// rather than as an error.
+    fn draw_layer_badge(&self, c: &mut font::Canvas, area: Rect, st: &Status, px: usize) {
+        let Some((text, r, scale, pad)) = Self::layer_badge(area, px, st.layers) else {
+            return;
+        };
+        c.fill_rect(r.x as i32, r.y as i32, r.w, r.h, 0x0000_0000, 210);
+        c.text((r.x + pad) as i32, (r.y + pad) as i32, scale, ACCENT, &text);
     }
 
     /// The persistent status line (F3): slot strip, volume, filter, aspect, native size, frame counter.
@@ -231,7 +304,14 @@ impl Overlay {
         let pad = 2 * px;
         let strip_w = slot_strip_width(px);
         // Everything is fitted to the picture's width, so the status line can never run into the letterbox.
-        let avail = area.w.saturating_sub(2 * margin);
+        // **Minus whatever the layer badge is standing in**, because the two share this band and the badge
+        // is the one that cannot be shortened: the status line truncates gracefully (it is a readout), and a
+        // truncated `HIDDEN: plan` names a layer that does not exist. So the reservation is one-directional
+        // by design, and it is a reservation rather than a redraw order — the badge paints last, and a
+        // status line allowed to run under it would be a wrong picture *underneath the sentence saying the
+        // picture is wrong*.
+        let badge_w = Self::layer_badge(area, px, st.layers).map_or(0, |(_, r, _, _)| r.w + pad);
+        let avail = area.w.saturating_sub(2 * margin + badge_w);
         if avail < strip_w + 4 * pad {
             // Not even the slot strip fits. The strip is drawn as fixed-width boxes rather than text, so
             // there is nothing to truncate — drop the whole line instead of letting it run off the picture.
@@ -545,7 +625,154 @@ mod tests {
             volume: Some((7, 10, false)),
             filter: Some("VA0-VA2"),
             aspect: "4:3",
+            layers: LayerMask::ALL,
             native: (320, 224),
+        }
+    }
+
+    /// A mask hiding `layers`, built through the core's own setter so the test cannot invent a layer.
+    fn masking(layers: &[&str]) -> LayerMask {
+        let mut m = LayerMask::ALL;
+        for name in layers {
+            let (_, layer) = LayerMask::targets()
+                .into_iter()
+                .find(|(n, _)| n == name)
+                .unwrap_or_else(|| panic!("{name} is not a mask target"));
+            assert!(m.set(layer, false), "{name} refused the mask");
+        }
+        m
+    }
+
+    /// Pixels inside the layer badge's rectangle that differ from `GROUND`.
+    fn badge_ink(buf: &[u32], w: usize, area: Rect, mask: LayerMask) -> usize {
+        let px = Overlay::font_scale(area.h.max(1));
+        let Some((_, r, _, _)) = Overlay::layer_badge(area, px, mask) else {
+            return 0;
+        };
+        (r.y..r.y + r.h)
+            .flat_map(|y| (r.x..r.x + r.w).map(move |x| (x, y)))
+            .filter(|&(x, y)| buf[y * w + x] != GROUND)
+            .count()
+    }
+
+    /// **The standing statement is drawn on every frame a layer is hidden, and on none where it is not.**
+    ///
+    /// This is the correctness claim, not a decoration check: a mask changes what the picture *is*, so a
+    /// picture with a mask and no statement will be read as the machine's. Toasts expire and the mask does
+    /// not, which is why this is asserted **after** every toast has aged out and with the F3 status line
+    /// off — the two states in which a "the user was told" argument is otherwise pure assertion.
+    ///
+    /// Planting the defect: make `Overlay::draw`'s `draw_layer_badge` call conditional on
+    /// `self.showing_status()` (the obvious "put it in the status line" implementation) and the masked case
+    /// below fails with *"a hidden layer must be stated on screen even with the status line off and every
+    /// toast expired"*. Verified.
+    #[test]
+    fn a_hidden_layer_is_stated_on_screen_for_as_long_as_it_is_hidden() {
+        let (w, h) = (960, 672);
+        let mut o = Overlay::new();
+        o.push("SOMETHING TRANSIENT", INFO);
+        // Age well past a toast's whole life, so nothing on screen is left from the toggle itself.
+        present_frames(&mut o, false, TOAST_FRAMES + 60);
+        assert_eq!(o.toasts().count(), 0, "the transient half must be gone");
+        assert!(!o.showing_status(), "and F3 must be off");
+
+        let mut st = status();
+        let mut buf = vec![GROUND; w * h];
+        o.draw(&mut buf, w, h, whole(w, h), &st);
+        assert_eq!(
+            badge_ink(&buf, w, whole(w, h), masking(&["planeA"])),
+            0,
+            "nothing is hidden, so nothing may be claimed — the badge must not be a permanent fixture"
+        );
+
+        st.layers = masking(&["planeA"]);
+        let mut buf = vec![GROUND; w * h];
+        o.draw(&mut buf, w, h, whole(w, h), &st);
+        assert!(
+            badge_ink(&buf, w, whole(w, h), st.layers) > 0,
+            "a hidden layer must be stated on screen even with the status line off and every toast \
+             expired"
+        );
+    }
+
+    /// The badge **names the hidden layers**, in the wire's own words, and is never truncated.
+    ///
+    /// "A mask is set" sends the reader hunting; `HIDDEN: planeB` does not. And a truncated `HIDDEN: plan`
+    /// names a layer that does not exist — the `PAUSED_WORD` rule ("PAU is not a pause indicator") applied
+    /// to a longer string, which is why the scale steps down instead of the text being cut.
+    #[test]
+    fn the_badge_names_every_hidden_layer_and_never_truncates() {
+        let area = whole(960, 672);
+        let px = Overlay::font_scale(area.h);
+        for hidden in [
+            vec!["planeA"],
+            vec!["planeB", "sprites"],
+            LayerMask::targets().iter().map(|(n, _)| *n).collect(),
+        ] {
+            let mask = masking(&hidden);
+            let (text, r, scale, pad) =
+                Overlay::layer_badge(area, px, mask).expect("a masked badge must have a form");
+            for name in &hidden {
+                assert!(text.contains(name), "{text:?} does not name {name}");
+            }
+            // Not a substring check on the joined list — the width is what a truncation would break.
+            assert_eq!(
+                r.w,
+                font::text_width(&text) * scale + 2 * pad,
+                "the rect must hold the WHOLE text: {text:?}"
+            );
+            assert!(
+                r.x + r.w <= area.x + area.w && r.y + r.h <= area.y + area.h,
+                "the badge escaped the picture: {r:?} in {area:?}"
+            );
+        }
+        assert!(
+            Overlay::layer_badge(area, px, LayerMask::ALL).is_none(),
+            "an all-on mask has nothing to state"
+        );
+    }
+
+    /// **The badge and the F3 status line share the status band and must not overlap.** They are the
+    /// band's only two tenants (every lens clears it unconditionally), the status line grows from the left
+    /// and the badge is right-aligned, and the status line is handed a shortened width whenever the badge
+    /// is showing — so this is a reservation, checked in pixels, not a redraw order.
+    ///
+    /// Planting the defect: drop the `badge_w` subtraction in `draw_status_line` and the widest case below
+    /// fails with *"the status line ran under the badge"* — the status line's ink reaching into the
+    /// badge's columns, which on screen is a wrong readout painted underneath the sentence saying the
+    /// picture is wrong. Verified at 320x224, where the two are closest.
+    #[test]
+    fn the_status_line_never_runs_under_the_badge() {
+        for (w, h) in [(320usize, 224usize), (640, 448), (960, 672)] {
+            let area = whole(w, h);
+            let px = Overlay::font_scale(h);
+            let mut o = Overlay::new();
+            o.status_line = true;
+            let mut st = status();
+            st.layers = masking(
+                &LayerMask::targets()
+                    .iter()
+                    .map(|(n, _)| *n)
+                    .collect::<Vec<_>>(),
+            );
+            let Some((_, badge, _, _)) = Overlay::layer_badge(area, px, st.layers) else {
+                // Loud rather than a silent skip: if the badge cannot form at this size the row proves
+                // nothing, and a quietly-passing row is exactly what the poison bar warns about.
+                panic!("COULD NOT MEASURE at {w}x{h}: the badge has no form, so no overlap is testable");
+            };
+            let mut buf = vec![GROUND; w * h];
+            // Draw the status line alone, over a ground, and look for its ink in the badge's columns.
+            // Drawing the badge too would paint those columns itself and hide the very thing under test.
+            let mut c = font::Canvas::new(&mut buf, w, h);
+            o.draw_status_line(&mut c, area, &st, px, (2 * px).max(4));
+            let intruders = (badge.y..badge.y + badge.h)
+                .flat_map(|y| (badge.x..badge.x + badge.w).map(move |x| (x, y)))
+                .filter(|&(x, y)| buf[y * w + x] != GROUND)
+                .count();
+            assert_eq!(
+                intruders, 0,
+                "{w}x{h}: the status line ran under the badge ({intruders} pixels in {badge:?})"
+            );
         }
     }
 

@@ -106,6 +106,27 @@ impl Bus {
         Self { host }
     }
 
+    /// **The display layer mask — the engine's, not a copy of it.**
+    ///
+    /// The window's layer toggles and a client's `emulator/set_layer_enabled` move *the same*
+    /// [`LayerMask`](oracle_core::render::LayerMask), for the reason the watch ring is shared one field up:
+    /// a second mask on this side would mean a socket client hiding plane A changed
+    /// `emulator/screenshot` and not the picture on the monitor, and the palette doing the reverse. There is
+    /// nothing here to drift apart from — this is a lend, not a mirror.
+    ///
+    /// It is the engine's for a second reason worth stating: the mask is engine state, so it survives
+    /// `reset` / `reload_rom` / `restore` (all three replace the `System`, none touches it) and appears in
+    /// no snapshot and no hash. A frontend-owned mask would have had to re-establish all of that by hand.
+    pub fn layers(&self) -> oracle_core::render::LayerMask {
+        self.host.layers()
+    }
+
+    /// Set one layer's mask bit. `false` means `layer` is not a mask target (the backdrop), and the mask is
+    /// left untouched rather than pretending to have applied.
+    pub fn set_layer(&mut self, layer: oracle_core::render::Layer, enabled: bool) -> bool {
+        self.host.set_layer(layer, enabled)
+    }
+
     /// Conflict 2 — merge the client's held set into the pads the loop is about to write. See
     /// [`Host::held`](oracle_aether::host::Host::held).
     pub fn merge_held(&self, pads: [Pad; 2]) -> [Pad; 2] {

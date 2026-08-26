@@ -111,6 +111,23 @@ impl Layer {
         Layer::Window,
         Layer::Sprite(0),
     ];
+
+    /// This layer's name as a mask target, or `None` for [`Layer::Backdrop`] — which is the floor the
+    /// fall-through ends at, not a layer that can be switched off ([`LayerMask::set`] refuses it).
+    ///
+    /// The match is exhaustive on purpose, exactly as [`LayerMask::shows`]'s is: a new variant cannot
+    /// compile until it declares whether a mask reaches it *and* what to call it. See
+    /// [`LayerMask::targets`] for why the vocabulary lives in the core rather than beside the bus handler
+    /// that first needed it.
+    pub const fn mask_key(self) -> Option<&'static str> {
+        match self {
+            Layer::Backdrop => None,
+            Layer::PlaneB => Some("planeB"),
+            Layer::PlaneA => Some("planeA"),
+            Layer::Window => Some("window"),
+            Layer::Sprite(_) => Some("sprites"),
+        }
+    }
 }
 
 /// **A display mask: which layers are allowed to win a pixel.** Not machine state — see the module note
@@ -191,6 +208,40 @@ impl LayerMask {
     /// at all, so the unmasked path stays exactly the code that ran before this type existed.
     pub const fn is_all(self) -> bool {
         self.plane_a && self.plane_b && self.window && self.sprites
+    }
+
+    /// **The mask vocabulary, derived.** Every [`Layer`] that is a mask target, paired with its name, in
+    /// [`Layer::ALL`] order.
+    ///
+    /// This is the single source for every place the four names appear, on **both** sides of the process:
+    /// the bus's `emulator/get_layer_states` key set, `emulator/set_layer_enabled`'s accepted values, its
+    /// refusal message, the screenshot/scanlines caveat — and, since the player window grew its own
+    /// toggles, the palette entries and the on-screen badge that says a mask is on. It lives here rather
+    /// than in `oracle-aether` for exactly that reason: the panel and the wire naming a layer differently
+    /// is the same drift class as the panel and the wire *resolving* a dot differently, and one of those
+    /// was already fixed by moving the derivation down here (see [`sprite_tile_at`]).
+    ///
+    /// `oracle-aether`'s `tests/layers.rs::the_mask_vocabulary_is_the_contract_fragments_own` proves what
+    /// this produces equals the vendored contract fragment's enum, in both directions — so the frontend's
+    /// vocabulary is contract-pinned by construction rather than by transcription.
+    pub fn targets() -> Vec<(&'static str, Layer)> {
+        Layer::ALL
+            .into_iter()
+            .filter_map(|l| l.mask_key().map(|n| (n, l)))
+            .collect()
+    }
+
+    /// The names of the layers this mask **hides**, in [`Layer::ALL`] order. Empty when nothing is hidden.
+    ///
+    /// One derivation for two audiences: the bus's caveat (*"you are looking at a masked picture"*) and the
+    /// player's standing on-screen badge. Neither can name a layer the mask does not actually hide, and
+    /// neither can miss one, because both read this.
+    pub fn hidden(self) -> Vec<&'static str> {
+        Self::targets()
+            .into_iter()
+            .filter(|(_, l)| !self.shows(*l))
+            .map(|(name, _)| name)
+            .collect()
     }
 }
 

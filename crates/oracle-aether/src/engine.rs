@@ -1853,12 +1853,32 @@ impl Engine {
 
     /// The masked layers' wire names, in [`Layer::ALL`] order, for a caveat that has to say *which* layers
     /// are hidden. Empty when nothing is masked.
+    ///
+    /// [`LayerMask::hidden`] is the whole body: the player's standing on-screen badge asks the identical
+    /// question of the identical mask, and two functions answering it would be free to disagree about which
+    /// layers a mask hides — in a caveat whose only job is to name them.
     fn masked_layer_names(&self) -> Vec<&'static str> {
-        mask_targets()
-            .into_iter()
-            .filter(|(_, l)| !self.layers.shows(*l))
-            .map(|(name, _)| name)
-            .collect()
+        self.layers.hidden()
+    }
+
+    /// **The mask itself**, for a caller that owns the window this engine's picture is shown in.
+    ///
+    /// The player hosts this engine (`oracle-frontend`'s `bus.rs`), draws its own window, and now has its
+    /// own layer toggles. Those toggles move *this* field — there is no second mask anywhere — which is what
+    /// makes a mask set over the socket and a mask set from the palette the same mask, and what stops the
+    /// window and `emulator/screenshot` from describing different pictures.
+    ///
+    /// Safe outside a drain window for the same reason [`watchpoints_mut`](Engine::watchpoints_mut) is: the
+    /// mask is engine state and touches no `System`.
+    pub fn layers(&self) -> LayerMask {
+        self.layers
+    }
+
+    /// Set one layer's mask bit from outside the bus, returning whether `layer` is a mask target at all
+    /// (`false` for [`Layer::Backdrop`], which leaves the mask untouched). The in-process twin of
+    /// `emulator/set_layer_enabled`, and deliberately the same one line of state.
+    pub fn set_layer(&mut self, layer: Layer, enabled: bool) -> bool {
+        self.layers.set(layer, enabled)
     }
 
     /// The sentence `emulator/state_hash` owes when it hashed a framebuffer while a display mask was set —
@@ -5454,41 +5474,33 @@ fn layer_json(layer: Layer) -> Value {
     }
 }
 
-/// The wire name of `layer` **as a mask target**, or `None` if it is not one.
+/// **The mask vocabulary, derived — and now derived in the core**, where the player window can read the
+/// same one. This is [`LayerMask::targets`] under its original local name; the name is kept because the
+/// prose below and four call sites refer to it, and because "the vocabulary this server serves" is worth
+/// having a word for even when the derivation has moved down a crate.
 ///
-/// Deliberately separate from [`layer_json`] even though four of the five names coincide: the mask enum
-/// spells the sprite layer `sprites` (plural — the whole layer) where attribution spells one dot's winner
-/// `sprite` (singular, with a `spriteIndex`). They are two vocabularies that happen to overlap, and folding
-/// them into one function would make the next name collision a silent wire change.
-///
-/// The match is **exhaustive on `Layer`**, which is the point: a new layer variant cannot compile until it
-/// declares whether a mask reaches it, so this can never fall behind the core's own idea of what a layer is.
-/// `Backdrop` is `None` because it is a pixel-attribution layer only — the floor the fall-through ends at,
-/// never something to switch off — exactly as the contract fragment's `$comment` says.
-const fn mask_key(layer: Layer) -> Option<&'static str> {
-    match layer {
-        Layer::Backdrop => None,
-        Layer::PlaneB => Some("planeB"),
-        Layer::PlaneA => Some("planeA"),
-        Layer::Window => Some("window"),
-        Layer::Sprite(_) => Some("sprites"),
-    }
-}
-
-/// **The mask vocabulary, derived.** Every `Layer` that is a mask target, paired with its wire name, in
-/// `Layer::ALL` order.
-///
-/// This one function is the single source for all four places the four names appear: the
+/// It is the single source for all four places the four names appear on the wire: the
 /// `emulator/get_layer_states` reply's key set, `emulator/set_layer_enabled`'s accepted values, the refusal
 /// message that lists them, and the caveat that names which layers are hidden. Nothing hand-transcribes the
 /// list, and `tests/layers.rs::the_mask_vocabulary_is_the_contract_fragments_own` proves what it produces
 /// equals the vendored fragment's enum — in both directions, and against **both** fragments, which is
 /// §11.22's "the setter's enum IS the getter's key set" discharged by parse rather than by reading.
+///
+/// **It moved to `oracle-core` when the player grew layer toggles**, so the window's palette entries and its
+/// on-screen "a mask is on" badge read the same four names this server does. A frontend that spelled the
+/// layer `planeA` in the palette while the wire said something else would be the item-19 drift class wearing
+/// a label's clothes — and the contract test above now pins the *core's* vocabulary as a side effect, which
+/// is strictly more coverage than it had.
+///
+/// The mask vocabulary stays deliberately separate from [`layer_json`]'s even though four of the five names
+/// coincide: the mask enum spells the sprite layer `sprites` (plural — the whole layer) where attribution
+/// spells one dot's winner `sprite` (singular, with a `spriteIndex`). Two vocabularies that happen to
+/// overlap; folding them into one function would make the next name collision a silent wire change.
+/// `Layer::mask_key`'s match is **exhaustive on `Layer`**, so neither can fall behind the core's own idea of
+/// what a layer is, and `Backdrop` is `None` because it is a pixel-attribution layer only — the floor the
+/// fall-through ends at, never something to switch off — exactly as the contract fragment's `$comment` says.
 fn mask_targets() -> Vec<(&'static str, Layer)> {
-    Layer::ALL
-        .into_iter()
-        .filter_map(|l| mask_key(l).map(|n| (n, l)))
-        .collect()
+    LayerMask::targets()
 }
 
 /// The VRAM byte address of pattern `tile`, wrapped into VRAM exactly as the core's tile addressing does.

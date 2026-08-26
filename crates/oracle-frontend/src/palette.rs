@@ -135,7 +135,7 @@ impl Palette {
             out.extend(
                 reg.iter()
                     .enumerate()
-                    .filter(|(_, c)| !c.hidden && commands::subseq_match(&self.query, c.title))
+                    .filter(|(_, c)| !c.hidden && commands::subseq_match(&self.query, &c.title))
                     .map(|(i, _)| Row::Item(i)),
             );
         }
@@ -341,7 +341,7 @@ impl Palette {
                         y,
                         px,
                         INFO,
-                        overlay::fit(c.title, title_avail, px),
+                        overlay::fit(&c.title, title_avail, px),
                     );
                     if let Some(k) = c.hotkey {
                         let name = commands::key_name(k);
@@ -421,7 +421,7 @@ mod tests {
         for r in &rows {
             if let Row::Item(i) = r {
                 assert!(
-                    commands::subseq_match("watch", reg[*i].title),
+                    commands::subseq_match("watch", &reg[*i].title),
                     "non-matching row {}",
                     reg[*i].title
                 );
@@ -438,7 +438,7 @@ mod tests {
         let query = "alias";
         let hidden_hit = reg
             .iter()
-            .find(|c| c.hidden && commands::subseq_match(query, c.title))
+            .find(|c| c.hidden && commands::subseq_match(query, &c.title))
             .unwrap_or_else(|| {
                 panic!("fixture query {query:?} must subsequence-match some hidden title")
             });
@@ -461,7 +461,7 @@ mod tests {
         // should be empty outright.
         let visible_hit = reg
             .iter()
-            .any(|c| !c.hidden && commands::subseq_match(query, c.title));
+            .any(|c| !c.hidden && commands::subseq_match(query, &c.title));
         if !visible_hit {
             assert!(
                 rows.is_empty(),
