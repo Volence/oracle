@@ -1485,6 +1485,15 @@ finished item **leaves** the queue — `done` is not a state, it is an absence.
 > declining-to-vendor above as its precedent, and "**the tell is not the red build, it is who is
 > expected to move**" is in the protocol verbatim in substance.
 >
+> **2026-08-26, out of this lane's stale-shim day: a new sentence in Shared-machine cautions** (empyrean
+> `5ad6108`, verified here as a reachable ancestor of their `origin/main` and as a docs SHA carrying docs)
+> — a shared-machine hazard goes to the lane BEARING the risk in a form it can act on, not only to
+> whoever owns the fix. **Not transcribed here; read it there.** sigil's proposal and sigil's framing (a
+> remedy ends the condition, a warning prevents the trip while the condition lasts); this lane endorsed
+> after speaking with them first, so it is one finding with a second lane's endorsement and the text says
+> `oracle endorsing` for exactly that reason. The pid/started/no-child example in the shipped sentence is
+> this lane's measurement, generalised.
+>
 > The shared protocol gained review bars 8–10 and two SHA-citation rules on 2026-08-22 (empyrean
 > `dc629a5`, `c2c81e2`, `00334b6`, `43fbfc9`, `9b604f0`+`e650b96`+`aadf63f`, `20a8e81`). **Not transcribed here — read them there**; the
 > protocol is changed in empyrean and never forked into a repo copy. Two bear directly on this
