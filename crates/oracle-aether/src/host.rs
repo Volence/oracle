@@ -323,6 +323,28 @@ impl Host {
         self.engine.watchpoints_mut()
     }
 
+    /// **The display layer mask** the engine's picture-serving rows read, lent to the process that owns the
+    /// window.
+    ///
+    /// Exactly the [`watchpoints_mut`](Host::watchpoints_mut) argument one surface over. The player draws
+    /// its own window and now has its own layer toggles; if it kept a mask of its own, a client's
+    /// `emulator/set_layer_enabled` would change `emulator/screenshot` and not the picture on the monitor,
+    /// and a palette toggle would do the reverse. There is one mask, it lives on the engine, and both the
+    /// socket and the palette move that one — so they cannot drift, because there is nothing to drift apart
+    /// *from*.
+    ///
+    /// Safe outside a drain window: the mask is engine state, never `System` state, so this never answers
+    /// for the placeholder machine.
+    pub fn layers(&self) -> oracle_core::render::LayerMask {
+        self.engine.layers()
+    }
+
+    /// Set one layer's mask bit from the window side. Returns whether `layer` is a mask target at all
+    /// (`false` for `Layer::Backdrop`). See [`layers`](Host::layers).
+    pub fn set_layer(&mut self, layer: oracle_core::render::Layer, enabled: bool) -> bool {
+        self.engine.set_layer(layer, enabled)
+    }
+
     /// **Both instruments, wrapped for attaching to the host's own run** — the watch and, since CR-26, the
     /// profiler. See [`Engine::run_sinks`](crate::engine::Engine::run_sinks) for the whole argument: why
     /// they are lent rather than owned by the run driver, why the arming conditions live down there rather
