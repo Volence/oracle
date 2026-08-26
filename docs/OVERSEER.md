@@ -1397,6 +1397,46 @@ definition, where the answer was already written down. That is bar 12 arriving b
 rule was in the contract they already owned.*
 
 
+## ▶ IN FLIGHT — LAYER-MASK parcel, resume path (written 2026-08-26 for a relaunch)
+
+**Branch `parcel/layer-mask`, tip `28a5f5f`, base `903a08f`, worktree clean — every commit is in git, so
+a killed agent costs only an unfinished gate re-run.** Serves `emulator/get_layer_states` +
+`emulator/set_layer_enabled`; both fragments were final upstream, so it is conformance with no contract
+fork. Takes the acceptance delta **18 → 16**.
+
+Commits: `311e077` core (`LayerMask` as a *parameter*, never a field) · `f565d9d` the two handlers +
+`tests/layers.rs` · `e6d61c2` fixture strengthening · `09ce88f` handoff doc · `bfa64a7` screenshot-path
+fix · `6b642e3` the state_hash disclosure (the overseer review finding) · `28a5f5f` docs.
+
+**Design calls, all RATIFIED at review** — read `docs/2026-08-26-layer-mask.md` before touching any of
+them: a masked layer is removed from **candidacy**, never blanked afterwards (blanking paints backdrop
+over dots plane B was visible at); shadow/highlight is computed from the **unmasked** pixels, so masking
+plane A reveals plane B in the colour it already had; masking `window` falls through to **plane B, not
+plane A**, because they share the slot and substituting A would synthesise a picture the hardware cannot
+produce; a masked layer is **absent** from `pixel_attribution.candidates` rather than given an invented
+verdict; `state_hash` hashes at `LayerMask::ALL` **and now discloses that in its caveat**.
+**⚑ The parcel's central safety property is structural, not tested: `render_scanline` — the one render
+that commits sprite-overflow/collision latches and the R10 carry — takes no mask and has no masked
+twin, so "a display mask cannot perturb emulation" is enforced by the type system.** Do not add a mask
+parameter to it to "finish" anything.
+
+**WHAT IS LEFT, in order.** (1) Merge to `main` and re-verify on the **merged** tree, never the branch
+side: fmt, clippy `--workspace --all-targets` ×2, and the aggregate. (2) **Run the aggregate several
+times** — the agent saw ONE unreproducible `FAILED=1` early on, lost the name to an `awk` pipe, then had
+two clean full runs and 25 clean repeats; it is an **open flag, not a closed one**, and nothing may be
+weakened or serialized to make it go away. (3) **⟨RUNTIME⟩ the parcel has never touched a running
+machine** — spawn a lane-owned `oracle-aether` on a short `/tmp/<short>` socket (never the scratchpad
+path: `SUN_LEN`) and drive both methods; **do NOT use `mcp__oracle__*` while the stale-shim hazard
+stands**, since it reaches the owner's player. (4) Rebuild `target/release/oracle-aether` — a merge does
+not rebuild it and the consumer spawns that binary. (5) **Only then tell aurora**, who registered as the
+first consumer on exactly that condition.
+
+**Known gap, named not hidden:** the player GUI has no layer-mask surface — `oracle-frontend` draws its
+own window and `pick.rs` calls `pixel_attribution` unmasked, so a bus-set mask changes the bus's answers
+and not the window's. `pick.rs`'s "this panel and `emulator/pixel_attribution` must never disagree"
+invariant is now conditional on no mask being set. A GUI toggle plus a masked `pick::resolve` is the
+follow-up, and it is the natural home for the owner's unqueued *click an object and be told what it is*.
+
 ## The bars (house methods — each earned by a measured failure; do not thin)
 
 **▶ NEW BAR, 2026-08-26 — A MERGED SERVE IS NOT A SERVED METHOD. THE CONSUMER REACHES A BINARY.**
