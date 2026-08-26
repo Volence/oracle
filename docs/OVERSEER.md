@@ -1610,7 +1610,7 @@ finished item **leaves** the queue — `done` is not a state, it is an absence.
 under a live agent). Fresh worktrees: `ln -s <repo>/vendor vendor`, verify 17 TestRoms entries, and
 open every dispatch with a base check (commit-message string + a file that must exist). Exact-path
 `git add` only; `git show --stat` per commit; no Co-Authored-By trailers. Never `cargo test | tail`.
-`pkill -f`/`pgrep -f` self-match (the waiting shell's own command line contains the pattern) — bracket the first character: `pgrep -f "[c]argo test"`. Aether sockets live under `$XDG_RUNTIME_DIR`. `/tmp` is quota'd —
+`pkill -f`/`pgrep -f` self-match (the waiting shell's own command line contains the pattern) — bracket the first character: `pgrep -f "[c]argo test"`. ⚠ **Bracketing is not enough when the SAME command carries the literal string elsewhere** — a heredoc writing a doc that quotes the socket path made `pkill -f "[o]rc-p/o.sock"` match its own shell and kill it mid-command (exit 144, 2026-08-26). Kill by the PID you recorded at launch, not by pattern, whenever the command also contains the text. Aether sockets live under `$XDG_RUNTIME_DIR`. `/tmp` is quota'd —
 free space is not the signal. The frontend is bin-only (`pub fn` with no caller = hard error).
 `ls` is aliased to eza. Owner tests run `aeon/s4.debug.bin`.
 A probe socket must NOT live under the session scratchpad — that path exceeds `SUN_LEN` and the
