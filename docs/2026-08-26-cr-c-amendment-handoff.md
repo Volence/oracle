@@ -251,6 +251,11 @@ the amendment text and cites §2.1 (§11.23) in its `why`.
 
 None of this is done here, and all of it needs `cargo`, which this parcel did not run.
 
+> **Served on branch `cr-c-serve`, 2026-08-26.** Items 1, 2, 3, 4, 6 and 7 are done; item 5 is the legacy
+> shim's and is not this branch's. Ticks, commits and what moved are in *The serve parcel, served* at the
+> end of this document — including one thing the list below could not have anticipated, because the
+> contract tip moved twice while the serve parcel was running.
+
 1. **Emit `implementation` from `engine.rs`.** The `initialize` result is built at
    `crates/oracle-aether/src/engine.rs:1353-1355` (`serverName` / `serverVersion` come off
    `self.config`). `implementation` must be a **compile-time constant** with no path through
@@ -308,3 +313,118 @@ serve list.
 Nothing was blocked. Four ruling items (M3, S1, S4, and M5's CR-document half) were **out of scope**
 rather than blocked - they correct the CR record, not the contract - and each is named above with what it
 owes. No MUST was degraded to reach green, and no vector was weakened.
+
+---
+
+# The serve parcel, served (branch `cr-c-serve`, 2026-08-26)
+
+| # | Owed | Done | Commit |
+|---|---|---|---|
+| 1 | Emit `implementation` from `engine.rs`, compile-time, no `EngineConfig` path | ✅ | `0a4313e` |
+| 2 | Emit `serverBuild` from a `build.rs`, with M2's `rerun-if-changed` and M1's fold-in | ✅ | `0a4313e` |
+| 3 | Move the identity pin off `serverName` | ✅ | `5c2d94d` |
+| 4 | Refresh the vendored schema + PROVENANCE + the pins | ✅ | `0a4313e` (with 1 and 2 — see below) |
+| 5 | The legacy shim's own emission | — | **not this branch.** Unchanged and unscheduled, per §11.23. |
+| 6 | Item 23's regression test | ✅ | `9fed864` |
+| 7 | `status.romPath` | ✅ | `02045fe` |
+
+*(`0522e40` removes an import the item-23 split orphaned; fmt and clippy are commit gates here.)*
+
+**Item 4 could not be its own commit, and the reason is structural rather than tidiness.** The suite
+compiles `handshake.initialize.result` **closed** (`tests/common/schema.rs`), so the old vendored schema
+refuses the two new keys and the new one refuses their absence: *neither* half is green alone. Items 1, 2
+and 4 are therefore one commit, and the split the serve list imagined would have shipped a red commit
+whichever order it was taken in.
+
+**The contract tip moved twice while this ran.** The serve list was written against empyrean
+`4b17949`/`be23578`; by the time the bytes were taken `origin/main` was **`fc7d7a5`**, carrying §11.21
+(CR-BP), §11.22, §11.23 (merged as `45969af`) and §11.24 (batch B1). So the refresh adopted four
+amendments, not one. **Fragments 58 → 59**, re-derived by parsing both copies: §11.21 added
+`emulator/breakpoint_set_enabled` and **nothing else added a row** — §11.22/§11.23/§11.24 changed fourteen
+existing fragments and the handshake. `SCHEMATIZED_NOT_ADVERTISED` therefore moves **17 → 18** by exactly
+that one name; `UNCOVERED_METHODS` stays pinned empty. The arithmetic and the per-entry attribution are in
+`tests/contract/PROVENANCE.md`.
+
+## What `serverBuild.id` folds in
+
+`<40-char commit>+profile=<debug|release>+target=<triple>+features=<sorted,comma-joined>`, under
+`source: "vcs"` with `dirty` beside it. The revision is first and whole (§2.1's SHOULD, so a consumer can
+resolve it back to a commit); the rest is M1's *"extended by whatever build-time selection changes the
+served surface"*, derived from what this crate actually keys off:
+
+- **profile** — `engine.rs`'s `checkpoint_restore` carries a `#[cfg(debug_assertions)] debug_assert!`, so
+  two builds of one clean commit answer `emulator/restore` differently. That is the differ-rule's own
+  case. `PROFILE` is a proxy for `debug_assertions`, not the flag; a custom profile that flips it away
+  from its `PROFILE` default is undistinguished, and `build.rs` says so rather than hiding it.
+- **target** — the crate is `#![cfg(unix)]`, so the triple gates the whole surface.
+- **features** — this crate's own `CARGO_FEATURE_*`. **Empty today, and correct rather than vestigial**:
+  `oracle-aether/src` reads zero `cfg(feature = …)`, and `tests/server_build.rs` re-derives that instead of
+  trusting the comment. A dependency's feature turned on by unification is invisible to
+  `CARGO_FEATURE_*` — that is only a gap if this crate reads such a cfg without declaring a mirror
+  feature, and the test fails, by name, if it ever does.
+
+**No git, no lie.** No usable revision → `source: "declared"`, an id beginning `no-vcs+` that cannot be
+mistaken for a hash, no `dirty` (the schema requires it only under `"vcs"`), and a `cargo:warning` so the
+fallback is on the build log rather than silent.
+
+**M2's invalidation.** `.git/HEAD`, the ref it resolves to, `packed-refs` and the index are all declared —
+every path resolved with `git rev-parse --git-path`, never spelled `.git/…` by hand, because this repo is
+routinely built from a linked worktree where `HEAD` is not at `.git/HEAD` and a hand-spelled path would be
+a `rerun-if-changed` on a file that does not exist (which Cargo accepts silently). The index covers the
+staged half of `dirty` and the declared source paths cover the working-tree half; neither covers the
+other. `dirty` is measured over exactly the declared source scope, so flag and invalidation agree by
+construction — and a modified doc, which cannot change this binary's behaviour, correctly leaves it
+`false`.
+
+## Two deviations, named and NOT fixed here
+
+1. **§11.24 D-03 — `step_over` / `step_out` owe `pc`.** §11.24 gave both rows `emulator/step`'s result
+   (`pc` required). This server returns `{}` from both, transcribed from the *pre*-amendment fragment.
+   §11.24 says it outright: *"Both are non-conformant until they emit `pc` — the `read_cram`/`timingBasis`
+   path, taken knowingly."* **Eight** tests are red on it — the six in `step.rs`
+   (`all_three_stop_for_the_reason_section_3_pins`, `step_over_a_call_…`, `step_over_a_non_call_…`,
+   `step_over_and_step_out_return_the_envelope_and_nothing_else`, `step_out_returns_…`,
+   `step_out_is_not_fooled_…`), plus `handshake.rs`'s dispatch sweep and `methods.rs`'s stamp sweep, each
+   failing as `methods.emulator/step_over.result: $: "pc" is a required property`. **Not fixed here**:
+   §11.24's behavioural asks are a different parcel, and inventing the fix inside a re-vendor commit is
+   how a schema quietly becomes a record of what a server does. `KNOWN_CONTRACT_DIVERGENCES` is the
+   available loud mechanism if the controller wants the suite green before that parcel lands; that entry
+   is the §11.24 parcel's to take, not this one's.
+2. **§11.21 — the MCP tool for `breakpoint_clear` composes params the contract no longer declares.**
+   CR-BP reshaped the row to take an opaque handle, so `breakpoint_clear.addr` and `.symbol` join
+   `mcp_tool_sweep`'s undeclared set and its `assert_eq!` on the whole set goes red. Registering them was
+   **tried and correctly refused by the file itself**: its D-33 registry re-derives that each entry is a
+   *respelling* whose camelCase partner the fragment declares, and these are not respellings —
+   *"if it is a genuinely undeclared param it is a client bug and does not belong in this registry"*. So
+   the pin stands red and un-weakened. The MCP client is out of this parcel's scope; the fix belongs with
+   whoever serves the breakpoint family.
+
+## Verification
+
+`cargo fmt --all -- --check` exit 0. `cargo clippy -p oracle-aether --all-targets -- -D warnings` exit 0
+(this crate has no `[features]`, so there is no `--no-default-features` variant of it to run).
+`cargo clippy --workspace --all-targets -- -D warnings` exits 101 on **two pre-existing** lints in
+`oracle-core` (`chunks_exact_to_as_chunks` at `examples/ab_compare.rs:180` and
+`src/synth/audio_sink.rs:415`) — reproduced identically with this branch's changes stashed, and neither
+file is touched here.
+
+`cargo test --workspace --no-fail-fast`: **54 legs, 1811 passed, 9 failed, 6 ignored** (before: 51 legs,
+1811 passed, 1 failed, 6 ignored — the one being the stale-vendored-schema freshness check this branch
+resolves). The arithmetic closes: 8 tests added and green, the freshness check now green, 9 newly red and
+every one of them a named deviation above.
+
+**Currency unmoved, run and checked rather than assumed** — `conformance_roms` 3/3 (42.45s),
+`scanline_goldens` 5/5 (34.51s), `golden_frames` 7/7, `export_state_v1` 3/3, `determinism_gate` 2/2,
+`singlestep_m68000` 113/113. No hash was regenerated and no golden was touched. `vendor` is a symlink to
+the main tree's in this worktree — `vendor_data_present_when_running_in_ci` passes in both scorecards, so
+no row silently skipped.
+
+## ⟨RUNTIME⟩ added by this parcel
+
+The four above stand. Item 1 is now sharper and item 3 is now the *negative*:
+
+5. One `initialize` against a freshly built `oracle-aether`, validated against the refreshed vendored
+   schema **closed**: confirm `implementation: "oracle-rs"` and a `serverBuild` whose `id` starts with the
+   40-character hash of the built revision. No server was started by this parcel.
+6. `emulator/status` on the Rust server launched with a **relative** ROM path: `romPath` must now come
+   back **absolute**. `tests/rom_path.rs` proves it in-process; the wire has not been checked.
