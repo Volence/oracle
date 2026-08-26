@@ -1,22 +1,9 @@
 {
-  "focus": "Tools now open their own emulator (landed). Still building: the emulator window wearing the Oracle icon.",
-  "inFlight": [
-    {
-      "what": "ICON — the window gets the Oracle name and mark; agent first measures why it showed Aurora's icon",
-      "where": "oracle worktree wt-oracle-icon, branch window-icon",
-      "agent": true
-    }
-  ],
+  "focus": "Both builds from tonight's ruling landed: tools open their own emulator, and the window is visibly Oracle.",
+  "inFlight": [],
   "blockedOnOwner": [],
-  "nextBoundary": "The icon agent's report verified from this seat and merged.",
+  "nextBoundary": "Right here — everything merged and pushed, nothing dispatched.",
   "queue": [
-    {
-      "id": "ICON",
-      "title": "Give the new emulator window the Oracle icon and name, so it does not look like Aurora or the old emulator on your desktop",
-      "state": "doing",
-      "size": "S",
-      "blockedBy": null
-    },
     {
       "id": "CR-C",
       "title": "The server cannot say which server it is, so a session can swap implementations with no signal",
@@ -67,7 +54,7 @@
       "blockedBy": "sits behind the acceptance parcels"
     }
   ],
-  "updatedAt": "2026-08-26T01:11:27Z",
-  "awaiting": null,
-  "atBoundary": false
+  "updatedAt": "2026-08-26T01:42:36Z",
+  "awaiting": "run crates/oracle-frontend/assets/install-desktop.sh once and relaunch the player, then say whether the Oracle icon shows; and a go on the next item (server identity, CR-C)",
+  "atBoundary": true
 }
