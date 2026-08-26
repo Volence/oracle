@@ -177,7 +177,9 @@ fn parse_ppm(bytes: &[u8]) -> Result<Ppm, String> {
         ));
     }
     let pixels = raster[..want]
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|c| (c[0], c[1], c[2]))
         .collect();
     Ok(Ppm {

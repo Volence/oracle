@@ -412,7 +412,7 @@ mod tests {
         );
         // Interleaved mono → L and R of each pair are identical.
         assert!(
-            pcm.chunks_exact(2).all(|p| p[0] == p[1]),
+            pcm.as_chunks::<2>().0.iter().all(|p| p[0] == p[1]),
             "PSG output must be duplicated identically to both stereo channels"
         );
     }
