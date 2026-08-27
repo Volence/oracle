@@ -1723,14 +1723,32 @@ fn main() {
             // instruments rather than of this loop's state, and it is asked ONCE: one run needs both, and
             // two `&mut bus` accessors cannot both be live in the expression below. See
             // `Engine::run_sinks` for the arming rules and for what the `Observe` wrappers drop.
-            let (watch, prof) = bus.run_sinks();
+            //
+            // **The third half is the breakpoint sink, and it is what makes a breakpoint mean the same
+            // thing against the window as against the headless server.** Until it rode here, a client that
+            // armed one and let the player run got `wait_for_break → {"timeoutReached": true}` and
+            // `hits: 0` — a reply indistinguishable from "the ROM never reached that address", about the
+            // program under test rather than about the emulator. It is attached **bare**, unlike the two
+            // instruments beside it: the halt is the entire point, and an `Observe` around it would count
+            // hits on a window that never stopped, which is the same believable wrong answer wearing the
+            // other hat. It rides in the OUTER `Fanout` beside the capture rather than inside
+            // `AudioAndWatch`, so the stop signal is composed by a plain `Fanout` in every build variant
+            // below and cannot be dropped by an intervening combinator.
+            //
+            // `sys.cpu_regs().pc` is read *before* the run because the sink suppresses a re-fire at the PC
+            // the run started on until one instruction retires — without which a machine halted at a
+            // breakpoint could never be resumed past it. The engine cannot read it for itself: outside a
+            // `pump` drain it holds a placeholder `System` whose PC is 0.
+            let resume_pc = sys.cpu_regs().pc;
+            let (watch, prof, mut brk) = bus.run_sinks(resume_pc);
             let instruments = Fanout::new(watch, prof);
             #[cfg(feature = "audio")]
             {
                 if let Some(a) = audio.as_mut() {
                     {
                         let audio_and_watch = audio::AudioAndWatch::new(&mut a.sink, instruments);
-                        let mut sink = Fanout::new(&mut cap, audio_and_watch);
+                        let mut sink =
+                            Fanout::new(&mut cap, Fanout::new(&mut brk, audio_and_watch));
                         sys.run_frames_with_sink(1, &mut sink);
                     }
                     let pcm = a.sink.drain();
@@ -1742,15 +1760,25 @@ fn main() {
                     // unarmed case costs nothing to carry — both halves are `None`, whose sink impl wants
                     // nothing and does nothing — so the branch that used to skip the composite is gone
                     // rather than duplicated for a second instrument.
-                    let mut sink = Fanout::new(&mut cap, instruments);
+                    let mut sink = Fanout::new(&mut cap, Fanout::new(&mut brk, instruments));
                     sys.run_frames_with_sink(1, &mut sink);
                 }
             }
             // No-audio build: same shape without the audio half.
             #[cfg(not(feature = "audio"))]
             {
-                let mut sink = Fanout::new(&mut cap, instruments);
+                let mut sink = Fanout::new(&mut cap, Fanout::new(&mut brk, instruments));
                 sys.run_frames_with_sink(1, &mut sink);
+            }
+            // Hand the halt back. The sink already ended the run; this is what turns that into a counted
+            // hit, a cleared pair of run flags and the `emulator/stopped` the waiting client is owed — and
+            // dropping it on the floor would be the worse of the two failures, a window that stops with
+            // nothing saying why. Consuming the sink here is also what releases its borrow of `bus`.
+            // Order against `bus.set_paused` below does not matter and deliberately so: this only latches,
+            // and `set_paused` reads the *engine's* flag, which neither of them has moved yet. What does
+            // matter is that both land before `bus.pump`, which applies them in its own fixed order.
+            if let Some(addr) = bus::break_observed(brk) {
+                bus.record_break(addr);
             }
             frame += 1;
 

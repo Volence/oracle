@@ -67,7 +67,28 @@ impl Player {
                 let mut paused = false;
                 while !t_stop.load(Ordering::SeqCst) {
                     if !paused {
-                        sys.run_frames_with_sink(1, &mut cap);
+                        // The sink expression is `oracle-frontend/src/main.rs`'s, verbatim in shape: the
+                        // capture, the two lent instruments, and the **bare** breakpoint sink in the outer
+                        // `Fanout` where nothing can drop its stop signal. `resume_pc` is read before the
+                        // run because the engine, holding its placeholder `System` outside a drain, cannot
+                        // read it for itself.
+                        let resume_pc = sys.cpu_regs().pc;
+                        let (watch, prof, mut brk) = host.run_sinks(resume_pc);
+                        {
+                            let mut sink = oracle_core::bus::Fanout::new(
+                                &mut cap,
+                                oracle_core::bus::Fanout::new(
+                                    &mut brk,
+                                    oracle_core::bus::Fanout::new(watch, prof),
+                                ),
+                            );
+                            sys.run_frames_with_sink(1, &mut sink);
+                        }
+                        // The loop's whole obligation to the breakpoint surface: hand the observation back
+                        // so the halt is counted, the run flags cleared and the `stopped` emitted.
+                        if let Some((_, addr)) = brk.and_then(|b| b.fired) {
+                            host.record_break(addr);
+                        }
                         host.publish_capture(&cap);
                         cap.clear();
                     }
@@ -125,6 +146,13 @@ struct Client {
     reader: BufReader<UnixStream>,
     writer: UnixStream,
     next_id: i64,
+    /// Every notification seen while reading for a reply, kept rather than dropped.
+    ///
+    /// `call` used to discard these, which is fine when the tests are about replies. The breakpoint halt
+    /// is about an **event**, and an event can arrive before the reply that provoked it — a `call` that
+    /// discarded it would make "the stop was announced" untestable and, worse, make "the stop was
+    /// announced 374,011 times" look identical to "once".
+    events: Vec<Value>,
 }
 
 impl Client {
@@ -144,6 +172,7 @@ impl Client {
                         reader: BufReader::new(s.try_clone().unwrap()),
                         writer: s,
                         next_id: 1,
+                        events: Vec::new(),
                     };
                 }
                 Err(e) => {
@@ -175,7 +204,19 @@ impl Client {
                 assert_eq!(v["id"], json!(id), "response id must correlate");
                 return v;
             }
+            self.events.push(v);
         }
+    }
+
+    /// Every `emulator/stopped` seen so far, params only. The **count** is load-bearing: a halt that
+    /// cleared one run flag and not the other re-broke once per frame forever, and the only thing that
+    /// tells that apart from a correct halt is how many of these there are.
+    fn stops(&self) -> Vec<&Value> {
+        self.events
+            .iter()
+            .filter(|v| v["method"] == json!("emulator/stopped"))
+            .map(|v| &v["params"])
+            .collect()
     }
 
     fn ok(&mut self, method: &str, params: Value) -> Value {
@@ -452,4 +493,269 @@ fn a_client_reset_reaches_the_player_as_a_rom_change() {
     let result = client.join().expect("the client thread");
     assert_eq!(result["deferred"], json!(false));
     assert!(calls >= 2, "initialize and the reset were both answered");
+}
+
+// ---------------------------------------------------------------------------------------------------
+// The hosted breakpoint halt (`docs/2026-08-27-bp-hosted-halt.md`).
+//
+// These are the tests the parcel exists for. Until it shipped, everything below timed out: the player's
+// loop carried no breakpoint sink, and every bounded run that does carry one is refused
+// `-32005 machineRunning` while the player plays — so `resume` -> `wait_for_break`, the documented idiom,
+// was exactly and only the broken path, and it failed by answering `{"timeoutReached": true}` with
+// `hits: 0`, which is what "the ROM never reached that address" looks like.
+// ---------------------------------------------------------------------------------------------------
+
+/// The head of the fixture ROM's inner stirring loop, which it executes constantly.
+///
+/// Not copied from a neighbouring pin: [`assert_hot_pc_is_the_stirring_loop`] reads the opcode back out
+/// of the ROM image this fixture actually loads, so the address is anchored to the *instruction* rather
+/// than to a number, and a ROM change breaks it loudly instead of silently un-arming the fixture.
+const HOT_PC: u32 = 0x0000_020E;
+
+/// The negative control, taken from the core's own public constant rather than re-typed: the
+/// illegal-instruction handler, reachable only through vector 4, which this ROM's main loop cannot take.
+const COLD_PC: u32 = oracle_core::testrom::TRAP_HANDLER_ADDR;
+
+fn hex_addr(v: u32) -> String {
+    format!("0x{v:08X}")
+}
+
+/// `HOT_PC` names `move.w (A0), D0` in the ROM [`Player`] loads (`testrom.rs`: *"$00020E  inner: move.w
+/// (A0), D0"*, encoding `$3010`). Checked rather than asserted in prose, because every test below is
+/// vacuous if this address stopped being hot.
+fn assert_hot_pc_is_the_stirring_loop() {
+    let rom = oracle_core::testrom::build();
+    let a = HOT_PC as usize;
+    assert!(a + 1 < rom.len(), "HOT_PC is outside the fixture ROM");
+    let op = u16::from_be_bytes([rom[a], rom[a + 1]]);
+    assert_eq!(
+        op, 0x3010,
+        "{} is no longer `move.w (A0),D0` — the fixture ROM moved and every breakpoint test below is \
+         armed at a dead address",
+        hex_addr(HOT_PC)
+    );
+    let c = COLD_PC as usize;
+    assert_ne!(
+        u16::from_be_bytes([rom[c], rom[c + 1]]),
+        0x3010,
+        "the cold control must not be the hot loop"
+    );
+}
+
+/// Ask the bus for the machine's clock, from a call rather than from the reply envelope, so the number
+/// comes from a handler that read the real `System`.
+fn mclk(c: &mut Client) -> u64 {
+    c.ok("emulator/status", json!({}))["mclk"]
+        .as_u64()
+        .expect("status carries mclk")
+}
+
+fn hits(c: &mut Client, handle: &str) -> u64 {
+    let l = c.ok("emulator/breakpoint_list", json!({}));
+    let row = l["breakpoints"]
+        .as_array()
+        .expect("breakpoints[]")
+        .iter()
+        .find(|b| b["breakpoint"] == json!(handle))
+        .unwrap_or_else(|| panic!("no row for {handle} in {l}"));
+    row["hits"].as_u64().expect("hits is a number")
+}
+
+/// ## ★ THE PARCEL ★ — a breakpoint armed against a **playing** window halts it, exactly, once.
+///
+/// The whole documented consumer idiom, driven over a real socket against a player that owns the machine
+/// and is free-running it: refuse a bounded run to prove the arrangement, arm, wait, and then check every
+/// way this could look right while being wrong.
+///
+/// **The four things it is built to catch**, each with the mutation that produces it:
+///
+/// 1. **`Observe`-wrapping the sink** (hits counted, machine never halts) — caught by `pc`. An `Observe`
+///    drops `stop_requested` only, so the sink still latches and the halt still lands; what changes is
+///    that the frame ran to *completion* first, so the reported PC is wherever the frame ended and not
+///    the breakpoint. `assert_eq!(pc, HOT_PC)` is the discriminator, not `timeoutReached`.
+/// 2. **Clearing one run flag and not the other** — caught by the stop *count*. `free_run` is the mode
+///    and `running` is "advancing right now"; clearing only `running` leaves the loop free-running and
+///    re-breaks once per frame (374,011 measured, §5 of the breakpoints doc). One stop is asserted after
+///    the player has been given twenty more iterations to produce a second.
+/// 3. **A stop stamped from the placeholder `System`** — caught by `frame`/`mclk`, which must be the
+///    machine's own and non-zero. Applying the halt where it is observed rather than at the top of the
+///    next drain stamps `frame 0, mclk 0` (D11).
+/// 4. **A halt that does not actually stop the window** — caught by the clock standing still across
+///    twenty *wall-clock* iterations of the player's loop. A pause the player does not follow leaves the
+///    emulated clock moving while the bus claims otherwise.
+#[test]
+fn a_breakpoint_halts_the_playing_window_exactly_once() {
+    assert_hot_pc_is_the_stirring_loop();
+    let p = Player::start("bp-halt");
+    let mut c = Client::connect(&p);
+    c.handshake(true);
+
+    // The arrangement, stated as a fact rather than assumed: the player is free-running, so the bounded
+    // runs that *always* carried a breakpoint are refused. This is the state in which the gap was total.
+    let e = c.err("emulator/run_frames", json!({"frames": 1}));
+    assert_eq!(
+        e["data"]["reason"],
+        json!("machineRunning"),
+        "the player must really be free-running, or this test proves nothing: {e}"
+    );
+
+    let bp = c.ok("emulator/breakpoint_add", json!({"addr": hex_addr(HOT_PC)}))["breakpoint"]
+        .as_str()
+        .expect("a breakpoint handle")
+        .to_string();
+
+    // The documented idiom, unchanged: arm, then wait. Before this parcel this returned
+    // `{"timeoutReached": true}` after the full timeout, with `hits: 0` corroborating it.
+    let w = c.ok("emulator/wait_for_break", json!({"timeoutMs": 10000}));
+    assert_eq!(
+        w["timeoutReached"],
+        json!(false),
+        "the wait timed out against a playing window. Two causes produce this identical reply and \
+         both are defects: the halt did not ride the player's loop at all, or it cleared `running` \
+         without clearing `free_run` — `wait_for_break` reads the free-run MODE. {w}"
+    );
+    assert_eq!(
+        w["pc"],
+        json!(hex_addr(HOT_PC)),
+        "the machine stopped somewhere other than the breakpoint: {w}"
+    );
+
+    // (4) The window really stopped. `expect_progress` proves the loop is still turning, so a frozen
+    // clock is a paused player and not a dead thread.
+    let halted_at = mclk(&mut c);
+    assert!(halted_at > 0, "the fixture never ran");
+    p.expect_progress(20, "the player must keep iterating while paused");
+    assert_eq!(
+        mclk(&mut c),
+        halted_at,
+        "the window kept emulating after a halt it was told about"
+    );
+
+    // (1)(2)(3) The event. One of them, naming this handle, at the breakpoint, stamped with the real
+    // machine, on a machine that reports itself stopped.
+    let stops = c.stops();
+    assert_eq!(
+        stops.len(),
+        1,
+        "one halt must announce itself once. More than one means the halt is being re-applied — a \
+         latch that is peeked rather than taken, or a run driver that kept going and re-broke every \
+         frame (374,011 measured, breakpoints doc §5): {stops:?}"
+    );
+    let s = stops[0];
+    assert_eq!(s["reason"], json!("breakpoint"), "{s}");
+    assert_eq!(s["breakpoint"], json!(bp), "{s}");
+
+    // The D11 stamp is checked FIRST, so the two remaining mutations name themselves rather than both
+    // landing on `pc`: a stop applied outside the drain window reads the placeholder's zeros here,
+    // while an `Observe`-wrapped sink stamps this correctly and gets `pc` wrong below. (Measured: the
+    // placeholder produces `frame 0, mclk 0, pc 0x00000000`; the `Observe` produces `pc 0x00000210`.)
+    let stamped = s["mclk"].as_u64().unwrap_or_else(|| {
+        panic!("the stop carried no numeric mclk, which is a D11 violation on its own: {s}")
+    });
+    assert_eq!(
+        stamped, halted_at,
+        "the stop was stamped from the placeholder System rather than the player's machine — the halt \
+         was applied outside a pump drain window, where the engine holds the placeholder and every \
+         clock reads 0: {s}"
+    );
+    assert!(
+        s["frame"].as_u64().is_some_and(|f| f > 0),
+        "and its frame with it: {s}"
+    );
+    assert_eq!(
+        s["pc"],
+        json!(hex_addr(HOT_PC)),
+        "the stop is not AT the breakpoint. An `Observe`-wrapped sink produces exactly this: it drops \
+         only `stop_requested`, so the hit is still counted and the halt still lands — after the frame \
+         has run to completion. {s}"
+    );
+    assert_eq!(
+        s["running"],
+        json!(false),
+        "the `running` flag must clear with `free_run`, not instead of it: {s}"
+    );
+
+    // …and the hit was counted exactly once, on the handle that stopped it.
+    assert_eq!(hits(&mut c, &bp), 1, "one halt is one hit");
+}
+
+/// **A halted window resumes and makes progress** — the re-trigger suppression, which is the entire
+/// reason `run_sinks` takes the caller's PC.
+///
+/// A machine halted *at* a breakpoint starts its next run on that same address. Without the suppression
+/// the sink fires again before a single instruction retires, the run ends having advanced nothing, and
+/// the window is unresumable: `resume` appears to work and the clock never moves. Poison this by passing
+/// anything other than `sys.cpu_regs().pc` to `run_sinks` in `Player` and the clock below stops dead.
+///
+/// The second halt is not a defect — `HOT_PC` is a tight loop, so re-entering it *is* a real second hit,
+/// and `hits: 2` is the honest count.
+#[test]
+fn a_halted_window_resumes_past_its_own_breakpoint() {
+    assert_hot_pc_is_the_stirring_loop();
+    let p = Player::start("bp-resume");
+    let mut c = Client::connect(&p);
+    c.handshake(true);
+    let bp = c.ok("emulator/breakpoint_add", json!({"addr": hex_addr(HOT_PC)}))["breakpoint"]
+        .as_str()
+        .expect("a breakpoint handle")
+        .to_string();
+
+    let w = c.ok("emulator/wait_for_break", json!({"timeoutMs": 10000}));
+    assert_eq!(w["timeoutReached"], json!(false), "first halt: {w}");
+    let first = mclk(&mut c);
+    assert_eq!(hits(&mut c, &bp), 1);
+
+    c.ok("emulator/resume", json!({}));
+    let w = c.ok("emulator/wait_for_break", json!({"timeoutMs": 10000}));
+    assert_eq!(w["timeoutReached"], json!(false), "second halt: {w}");
+    assert_eq!(
+        w["pc"],
+        json!(hex_addr(HOT_PC)),
+        "and at the same address, because the loop comes back to it: {w}"
+    );
+    let second = mclk(&mut c);
+    assert!(
+        second > first,
+        "the machine re-broke at its own resume PC without retiring an instruction — a window that can \
+         never be resumed past a breakpoint ({first} -> {second})"
+    );
+    assert_eq!(hits(&mut c, &bp), 2, "and the second halt is a second hit");
+}
+
+/// The negative control: a breakpoint the ROM cannot reach never halts the window, and the machine keeps
+/// running. Without this, everything above is also satisfied by a player that halts on any breakpoint at
+/// all — or on none of them, if `timeoutReached` were the only thing asserted.
+#[test]
+fn a_breakpoint_the_rom_never_reaches_does_not_halt_the_window() {
+    assert_hot_pc_is_the_stirring_loop();
+    let p = Player::start("bp-cold");
+    let mut c = Client::connect(&p);
+    c.handshake(true);
+    let bp = c.ok(
+        "emulator/breakpoint_add",
+        json!({"addr": hex_addr(COLD_PC)}),
+    )["breakpoint"]
+        .as_str()
+        .expect("a breakpoint handle")
+        .to_string();
+
+    let before = mclk(&mut c);
+    let w = c.ok("emulator/wait_for_break", json!({"timeoutMs": 250}));
+    assert_eq!(
+        w["timeoutReached"],
+        json!(true),
+        "a cold breakpoint must not stop the window: {w}"
+    );
+    assert!(
+        w.get("pc").is_none(),
+        "…and a PC sampled off a still-moving machine names an instruction that has gone: {w}"
+    );
+    p.expect_progress(5, "the player keeps running through a cold breakpoint");
+    assert!(mclk(&mut c) > before, "the window must still be emulating");
+    assert_eq!(hits(&mut c, &bp), 0, "and nothing was counted");
+    assert!(
+        c.stops().is_empty(),
+        "and nothing was announced: {:?}",
+        c.stops()
+    );
 }
