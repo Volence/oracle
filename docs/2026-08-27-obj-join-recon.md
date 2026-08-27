@@ -485,3 +485,51 @@ and the `sprites.emp` line numbers outside the windows I read myself.
   gates, replay hashes — `replay.emp` hashes an SST byte range that includes `$25`). The cycle and RAM figures
   in §3 are mine and are firsthand; the process cost is theirs to state.
 * **Deliberately not done:** no code was written, no split was performed, `pick.rs` is untouched.
+
+---
+
+## 7. SUPERSEDED IN PART, 2026-08-27 — aeon TOOK THE ASK AND LANDED IT. The join now exists.
+
+**§3's ask is answered.** The verdict above — *no honest join exists in the running machine* — was correct
+when written and is **no longer the live state**. `Sprite_Owner` is in aeon's engine, on their `master`.
+The original stands unedited above per this repo's supersession rule; read this section as its current status,
+not as a correction of its reasoning, which was sound and is what produced the field.
+
+**Verified firsthand at aeon `7511a440` (`origin/master`, fetched and read at that revision — not their
+working tree, not their message):**
+
+* `engine/ram.emp:1145` — `Sprite_Owner: [u16; MAX_VDP_SPRITES]`, the shape §3 asked for. 160 B / 80 slots.
+* `engine/objects/sprites.emp:235` — `lea Sprite_Owner, a6`, DEBUG-gated (`if DEBUG == 1`), `a6` held for the
+  whole render; the three SAT writers (`owner_term` via `Emit_ObjectPieces`, `InsertSpriteMasks`, `DrawRings`)
+  each stamp their own SAT index. Object slots carry the emitting object's **SST address**.
+* `engine/objects/rings.emp` — `move.w #1, (a6,d0.w)`, the `$0001` ring sentinel, DEBUG-gated.
+* `tools/sprite_owner_probe.py:66` — `OWNER_NONE, OWNER_RING, OWNER_MASK = 0x0000, 0x0001, 0x0002`.
+
+So aeon's mailed description was accurate on every value; it is recorded here because a claim that reaches us
+only in mail has no reader who would ever meet a contradiction, and this one contradicts our own committed
+verdict two sections up.
+
+**⚑ They cleared the array WHOLE rather than to `[0..Sprites_Rendered)`, and their stated reason is better than
+our ask's.** Their comment at `sprites.emp:~228`: a bound taken from *last* frame's count would leave a future
+emit path that forgets to stamp holding **a stale VALID SST address inside the live range — a confident wrong
+object name**, where a cleared array turns the same mistake into *"a visible `$0000` and an honest unknown"*.
+That is this suite's loud-on-unmeasurable rule arriving from the engine side, and it is the property our picker
+will actually lean on. Cost is theirs and stated: ~880 cycles/frame, DEBUG only.
+
+**WHAT IS NOT SETTLED, and none of it is ours to close:**
+
+1. **Their witness is three sprites wide, by their own report against their own interest.** The debug ROM boots
+   a scroll test rather than gameplay, so they could not reach a busier state from a cold boot. **The `$0002`
+   mask sentinel has never been exercised at all.** Treat the field as landed-and-thinly-witnessed.
+2. **Their byte certification came back RED** on two of their own tests (both fixes sigil-side, per aeon's
+   lane log at `7511a440`), so **the array's final form may still move.** Do not pin its address. `Sprite_Owner`
+   was `$FFFFE1EE` in one `s4.debug.bin`; that number is exactly what a re-layout slides. **Resolve by symbol,
+   never by address** — which is what our own `lookup_symbol` path already does, so this costs the picker nothing.
+3. **DEBUG only**, so any picker feature built on it must answer honestly against a RELEASE build rather than
+   reading zeros as "unknown". Their own probe already refuses on that condition
+   (`tools/sprite_owner_probe.py:212`) rather than measuring zeros — the same shape ours needs.
+
+**Consequence for the queue:** OBJ-JOIN moves from *settled-as-refusal* to *reopened*, and the shipped refusal
+in §2.2 remains correct until a picker is actually built against this field. Booked as the item after
+BP-DISCLOSE rather than a switch, on the hub's pick under the owner's overnight delegation, and for the reason
+in point 2: the thing we would build against has an open certification.
