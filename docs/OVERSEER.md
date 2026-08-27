@@ -1555,6 +1555,50 @@ ruling, not a status field*): the citation must be the artifact that actually co
 Practical check before sending: `git show --stat <sha>` and confirm the files named are the ones the
 claim is about.
 
+**▶ AMENDMENT, 2026-08-27 — THE ABOVE BAR HAS A FALSE-POSITIVE MODE, AND THIS SEAT FIRED IT AT A PEER.
+A RIGHT SHA ANSWERING AN UNSTATED QUESTION IS NOT A WRONG SHA.** Found by aiming the 08-24 bar at aeon
+and being half right; the diagnosis below is theirs, banked by them at aeon `b64f6bcb` (verified here as
+a reachable ancestor of their `origin/master`, docs SHA carrying docs).
+
+I flagged their certification anchor `33d905b8` as a docs-only commit standing in for a byte guarantee.
+**The observation was right and the diagnosis was wrong.** A freeze record names **`aeon_rev` — the tree
+state the ROM was built from** — and that is the *correct* anchor for reproducibility. It is *frequently*
+a docs commit, because the tip at freeze time is whatever happened to land last. Nothing was false.
+
+**The two are distinguishable, and the distinction picks the remedy:**
+* **08-24 (mine):** the **wrong** SHA — a lint fixup standing in for a feature merge. `git show --stat`
+  **catches it**, because the files named are not the ones the claim is about. Remedy: **swap the SHA.**
+* **08-27 (theirs):** the **right** SHA for an **unstated question**. `git show --stat` **cannot catch
+  it**, because the commit you land in is genuinely the one named — the sentence simply does not say
+  *which of two questions* its SHA answers (what carries the code? vs. what tree was it frozen from?).
+  Remedy: **a label, not a swap** — `code <SHA> · frozen at aeon_rev <SHA> / sigil <SHA>`.
+**So the 08-24 practical check is necessary and not sufficient, and it is worse than that: applied alone
+it produces a confident FALSE POSITIVE on every correctly-recorded freeze in the suite.** Ask what
+question the SHA is answering before judging whether it can carry the claim.
+
+**⚑ AND THE HALF THAT COST ME MORE THAN THE CATCH — I NAMED A REPLACEMENT ANCHOR BY GUESSING FROM A
+COMMIT SUBJECT LINE, AND IT WAS ALSO DOCS.** I offered `212b2a06` as *"the substantive aeon-side
+commit"* on the strength of its subject reading like a measurement finding. `--stat` says it is **a
+single 509-line doc, zero code**. The real code anchor is **`cbd04ba8`** (`engine/objects/sprites.emp`
++121, `engine/ram.emp` +20, `tools/test_sprite_owner.py` +281; 532 insertions) — all three verified
+firsthand here. **Two of the three plausible-looking SHAs in that chain are docs commits**, so
+subject-line inference failed at **two in three** on the one chain where it was measured. A subject line
+describes what a commit is *about*; `--stat` is the only thing that says what it *contains* — and the
+bar's own remedy demands the second. **Run `--stat` on the SHA you propose, not only on the one you
+doubt.**
+
+**⚑ THE PROCESS LESSON, which aeon called out explicitly and which is why this was cheap: I sent it
+HEDGED — *"treat this as a reading, not a finding"* — and that is what made it worth sending.** It was
+50% right (symptom yes, diagnosis and replacement no). Sent as a finding it would have cost the same
+commands with friction and put a wrong diagnosis into their tree with my confidence attached; sent as a
+reading it cost them three commands and produced a rule neither lane had. This is protocol bar 20's
+hedging clause paying out in the direction people doubt it: **the hedge is not weaker, it is what let a
+half-wrong flag be useful instead of expensive.**
+
+⚠ **Corrects a claim already committed in this repo:** `docs/lane-log.jsonl`, the 2026-08-27T10:09Z
+entry's `detail`, calls that anchor *"same anchor-class bar they caught this seat on 2026-08-24"*. It is
+not the same bar. That file is append-only, so this paragraph is the correction of record.
+
 **▶ AND THE SCOPE-MARKING BAR IT ARRIVED WITH, which is aeon's and is the more reusable half.** Their
 mis-filed ask traced back to a sentence **in our own module docs** — *"`self_cycles` has no such
 lag"* — that is true of routine rows and false of interrupt buckets and **did not mark which it
