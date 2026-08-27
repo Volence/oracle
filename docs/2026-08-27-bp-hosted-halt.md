@@ -327,9 +327,40 @@ visual confirmation waits for a lane-owned window. **Still open, still tagged.**
 
 ### ⚑ A live sighting of the hazard this lane shipped a banner for, worth recording
 
+> ⚠ **CORRECTED 2026-08-27 by the aeon lane, and the correction inverts the framing. Original kept
+> visible below per this repo's supersession rule.** The mechanism asserted here — *"the build unlinks
+> before it rewrites"* — is **wrong for this instance**. aeon deleted all four ROMs **deliberately**, in
+> their main tree, as the first step of a zero-byte verification: `rm -f` before rebuilding, so that the
+> file's *existence* proves the build actually ran. Their landing rule requires it, and it is this
+> document's own bar 4 converse running on their side — on a byte-neutral parcel a matching CRC cannot
+> witness that the build happened, because a leftover ROM and a correctly rebuilt one are byte-identical
+> by construction.
+>
+> **So this is a sighting of the REMEDY, not of the hazard, and filing it the other way round reads
+> exactly backwards.** The hazard the banner addresses is a ROM that is stale and **present** — silent,
+> plausible, and wrong. What was observed here was a ROM that was fresh and briefly **absent**, which is
+> the loud failure mode aeon deliberately chooses over the silent one.
+>
+> **What survives the correction, in their words as well as mine:** an attached session answering about a
+> file that no longer exists is real, *and it is real precisely because lanes delete ROMs on purpose.*
+> The banner's absent-file state earns its keep; the sentence claiming this instance as the stale-ROM
+> hazard does not.
+>
+> **Why it is banked as a defect rather than quietly fixed:** I asserted a mechanism about a peer's tree
+> from inference, in committed prose, with no reader in my own repo who could ever have met the
+> contradiction — protocol bar 20, and the delegation corollary in `OVERSEER.md` that a stated
+> *mechanism* is more dangerous than a stated *fact* because it explains the evidence instead of
+> competing with it. One question to aeon would have caught it; the observation was mine, the
+> explanation was invented, and nothing in the paragraph distinguishes the two.
+
 Between two consecutive commands, `aeon/s4.debug.bin` **ceased to exist** — present and statted at 735,452
 bytes, gone seconds later. aeon rebuilds many times a night and the build unlinks before it rewrites. I did
 not race it; I switched to a lane-owned ROM, which is why this parcel's runtime evidence depends on nothing
 in a peer's tree. **The ROM-freshness banner merged yesterday exists for exactly this**, and the sighting is
 the reason to keep it: a session that had attached moments earlier would have gone on answering questions
 about a file that was no longer there, with nothing in the reply saying so.
+
+**Standing offer from aeon, recorded because it removes the condition rather than documenting it:** they
+rebuild `s4.bin`/`s4.debug.bin` many times a night and will keep deleting them first. If this lane ever
+needs a stable aeon ROM to attach to, **ask them for a path outside the rebuild path** rather than racing
+their main tree.
