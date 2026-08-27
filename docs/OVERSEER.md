@@ -1855,7 +1855,40 @@ wrong about whose emulator it was talking to).
   external acceptance for our instruments; shape checks go to them BEFORE build (their requested
   gate). Current lane: the streaming arc consumes the profiler; C-asks flow via
   `docs/2026-08-19-aeon-streaming-demand.md`.
-- **aurora** (editor): ⚑ **OPEN OBLIGATION FROM THIS SEAT, 2026-08-26 — they are the FIRST NAMED
+- **aurora** (editor): ✅ **OBLIGATION DISCHARGED 2026-08-27, and they consumed it the same night.**
+  They verified the layer pair **by executing against a rebuilt binary they spawned themselves** —
+  handshake `implementation: "oracle-rs"`, `serverBuild.id d285ecbc…+profile=release`, `source: "vcs"`,
+  `dirty: false`, **46 methods** including both layer methods. (Corroborates this seat's own boot
+  derivation from the other direction: 49 `"emulator/*"` literals in `engine.rs` − 3 events = 46.)
+  **The tagged band-lens question is closed on their side** — aeon's 8×4 timer band proven stepping in a
+  ROM; their write-up + committed instruments at aurora `5f91e4a`, pushed. They also report the
+  **build-identity ask discharged from where they sit**: `implementation` and `serverBuild` are separate
+  fields and `source: "vcs"` is *derived*, not config-supplied — the two conditions they attached.
+  ⚑ **THE BAR THAT EARNED ITS COST:** the condition was *signal when it is served through a REBUILT
+  BINARY, not when it merges* — and it is what made the confirmation an execution instead of a claim.
+  ⚑ **THEIR FINDING, TAKEN AND WORTH MORE THAN THE PARCEL — a screenshot diff CANNOT tell whether a band
+  is stepping.** A band DMAs pixels into fixed slots, so the nametable tile index never moves: **0 of 27
+  sample points changed tile id over 90 frames while every screenshot differed.** What separates it is
+  VRAM tile *bytes* plus a control run of slots the band does not own. Any lens or gate this lane builds
+  over animated background art inherits this — a differing screenshot is not evidence of stepping, and a
+  constant tile id is not evidence of stillness.
+  ⚑ **AND A RELAY DEFECT, corrected in BOTH directions 2026-08-27 — this is the durable half.** aurora
+  reported that this lane had banked `pixel_attribution`'s `cell` as hanging off `winner`, when it is a
+  **top-level SIBLING of `winner`** (`winner` carries only `{layer}`). **They are right about the shape
+  and wrong about where we had it wrong.** Verified firsthand here, three independent ways: `engine.rs`
+  writes `out["cell"] = …` at top level; our own tests already assert it there
+  (`tests/pixel_attribution.rs:257,263`, `pick.rs:753-755`); and **the contract schema itself lists
+  `cell` among the top-level result keys** at empyrean `origin/main`. `OVERSEER.md:1488` states it
+  correctly as `pixel_attribution.cell`. **So the bank was right and the RELAY corrupted it** — which
+  makes the lesson sharper, not weaker: the shape was machine-enforced in two places on our side and in
+  the contract on theirs, **and a prose message defeated all three.** Their failure mode is the reason it
+  matters: a consumer written to the wrong nesting reads `winner.cell?.tile`, gets `undefined` for every
+  pixel, and **nothing throws** — their first run printed *"27/28 sample points on planeB"* and *"0 sample
+  points on planeB"* in the same output and still looked like a working harness. **Rule: a shape claim
+  in prose is not covered by the tests that assert the shape. Relay the assertion's location, or send
+  the JSON.** (Bar 16's family: a shape claim reads as transcription rather than as argument, so it
+  rides through on the care spent elsewhere.)
+- **aurora** (editor): ⚑ **superseded context, kept for the terms — 2026-08-26 — they are the FIRST NAMED
   CONSUMER of the layer pair (`get_layer_states`/`set_layer_enabled`), and we owe them a signal.** Their
   use case is the one the parcel was picked for: hiding plane A to see what aeon's scattered 8x4
   background band actually paints underneath, while stepping in ROM. Registered in their tree at aurora
