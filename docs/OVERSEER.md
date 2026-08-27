@@ -1013,6 +1013,37 @@ owner confirmation requested in-session; replace this flag with the confirmation
 > rebuilt binary at `12cc17e` guarantees, the 17 remaining, why a `-32601` is a success signal, and
 > what to do first when lanes report gaps. This section is the record; that file is the instructions.
 
+## ⚑ HUB RULING UNDER DELEGATION, 2026-08-27 — d-16 SUBSTITUTE: the reviewer seat, and the rule it creates
+
+⚑ **RELAYED, NOT WITNESSED BY THIS LANE** — same flag, same reason, as the four rulings above. The
+owner armed an overnight delegation in his own words (*"if anything needs decision that they can't
+make you make it for them"*, transcribed by the hub into empyrean `OVERSEER.md` addition (f) at
+05:39Z, banked `091ac59`) and went to bed; the hub ruled in his place and **he reviews it on return.**
+Record it as the hub's ruling. Do not upgrade it to his.
+
+**The question (d-16):** the premium independent-reviewer seat was parked days ago when it blocked
+nothing. It had come to block three items — OVERLAY-STATE and CR-A, five of the sixteen unserved
+methods among them. **Ruled: SUBSTITUTE.**
+
+**THE STANDING RULE THIS CREATES, and it outlives tonight.** Adjudications run on the ordinary model
+while the seat is parked, and **every ruling produced that way NAMES ITS OWN REVIEWER, at the top, in
+the ruling itself.** Not in a covering note, not in the dispatch record — in the artifact a later
+reader picks up cold. The reason is the whole design: Fable's first job when the owner lifts the limit
+is auditing exactly these, and an audit cannot find what does not announce itself. **Independence is
+preserved — a fresh reviewer that took no part in the drafting is still the half that catches real
+problems. Reviewer tier is what was spent.** Say it that way; do not describe a substituted ruling as
+adjudicated without qualification.
+
+**Ledger:** every substituted adjudication gets an entry in
+`docs/2026-08-22-unadjudicated-decision-ledger.md` **at the moment it is dispatched**, not
+reconstructed after — the entry must be adjudicable cold, and must name *what the audit should re-run*
+and *what would have to be true for the ruling to be wrong*. First entry is **L-07 (CR-A)**, which also
+records the cheap first cut for the audit: **re-run the material items only**, since the M/S split
+every ruling here is required to produce is the instrument that measures what the substitution cost.
+
+⚠ **Numbering collision, live:** aeon also has a card numbered `d-16` (background chunk height). The
+console shows two. **Never cross-reference a decision by number alone across lanes** — say the lane.
+
 ## ⚑ THE CUTOVER — ruled 2026-08-22 (RELAYED, see the flag above), mechanism determined firsthand
 
 **The ruling** (owner, via empyrean, quoted): *"I say do it now and when something is needed have it
