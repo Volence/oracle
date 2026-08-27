@@ -364,6 +364,15 @@ pub const METHODS: &[MethodSpec] = &[
         summary: "debug read of VDP VRAM",
         params: &["addr", "len"],
     },
+    // Served 2026-08-27 against contract revision `091ac59`. The fragment is FIRST-FRAGMENT-transcribed
+    // and carries three registered absences (audit D-16) served exactly as written — see the handler's
+    // doc comment, and `docs/2026-08-27-write-vram.md` for the CR text sent upstream.
+    MethodSpec {
+        name: "emulator/write_vram",
+        handler: Engine::write_vram,
+        summary: "poke bytes into VDP VRAM (byte payload only; refused whole before any byte lands)",
+        params: &["addr", "bytes"],
+    },
     MethodSpec {
         name: "emulator/read_cram",
         handler: Engine::read_cram,
@@ -2724,6 +2733,88 @@ impl Engine {
             "caveat": "debug read: taken straight from the VRAM array, bypassing the VDP port path, \
                        autoincrement, the FIFO and DMA.",
         }))
+    }
+
+    /// `emulator/write_vram` — bytes poked into VRAM (§6 *VRAM / CRAM / layers*, the row at line 1257).
+    ///
+    /// Served against contract revision `091ac59`. This row's fragment was **transcribed** in the
+    /// 2026-08-22 first-fragment pass rather than repaired, and it carries three absences that are
+    /// registered as audit **D-16**. All three are served **as written**, because a server that is
+    /// quietly better than its contract is a divergence no client can discover:
+    ///
+    /// 1. **No pause gate.** §6's run-control state rule names `run_to`, `run_to_scanline`,
+    ///    `run_frames`, `step*`, `press`, `play_input`, `reload_rom`, `write_memory`, `write_cram` and
+    ///    `z80_write` — and **not this row**. So this handler does *not* call
+    ///    [`require_paused`](Engine::require_paused), unlike its two sibling pokes. That is the
+    ///    conservative direction and the only reversible one: §6 itself says *"relaxing a refusal later
+    ///    is additive (D5); introducing one is not"*, so a server that invented the gate would have to
+    ///    break clients to give it up, while a server that omits it can adopt the gate the day the
+    ///    contract states it. The fragment's own `$comment` argues the rule *should* name this row —
+    ///    §11.17's reason for naming `write_cram` (a game that composes its own state every frame
+    ///    overwrites a direct write inside the frame it lands in) is if anything stronger for VRAM — and
+    ///    that argument is filed upstream as a CR, not acted on here.
+    /// 2. **No stated address bound.** §6's row states none. The bound enforced here is the one already
+    ///    in force on the read side and stated by `emulator/read`'s note — *"Space sizes: bus 24-bit,
+    ///    VRAM `$FFFF`, CRAM `$7F`, VSRAM `$4F`"* — so `read_vram` and `write_vram` refuse the same
+    ///    addresses. Some bound is physically unavoidable (64 KiB of VRAM exists and no more); adopting
+    ///    the read half's rather than inventing a second one is the smallest possible choice, and the
+    ///    refusal follows every other write row in the catalog: **`-32004`, refused whole before any
+    ///    byte lands, never clipped, never wrapped, never truncated**.
+    /// 3. **No `value`+`width` spelling.** `bytes` is the only payload this row has — recorded upstream
+    ///    as an asymmetry with `write_memory` and `z80_write` rather than a defect, since a tile blit is
+    ///    a byte payload. Passing `value` or `width` here is therefore not a payload-spelling error but
+    ///    an **undeclared param**, refused by §2.5's closure with `-32602` and the offending key named.
+    ///
+    /// Deliberately **no `len` ceiling**: `write_memory` bounds its payload by `limits.maxWriteLen` and
+    /// its result's `len` by 4096, while this row's result declares `len` with `minimum: 0` and no
+    /// maximum. The address bound caps a payload at 64 KiB on its own, so the row is not unbounded — it
+    /// is bounded by the space instead of by a limit, and inventing a second, tighter refusal would be
+    /// deviation 1's mistake in a different costume.
+    ///
+    /// The two **standing properties** of a poke, stated in §6 rather than as a `caveat` on every reply
+    /// (§2.4; and the fragment declares `caveat` **absent**, so emitting one would fail item 20's
+    /// closure): it is **never offered to the watch surface**, and it does **not repaint a frame already
+    /// drawn**. Both fall out of [`Vdp::poke_vram`], which is where the reasoning lives — and which is
+    /// also why this handler does not reach for `vram_mut`: that hook writes the bare array and would
+    /// leave the sprite-attribute cache describing a table VRAM no longer holds.
+    fn write_vram(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let addr = match params.get("addr") {
+            None => {
+                return Err(RpcError::invalid_params(
+                    "`addr` is required (first VRAM byte to write)",
+                ))
+            }
+            Some(v) => hex::parse_addr("addr", v)?,
+        };
+        let Some(b) = params.get("bytes") else {
+            return Err(RpcError::invalid_params(
+                "`bytes` is required — a hex payload is this row's only spelling",
+            ));
+        };
+        let data = hex::parse_bytes("bytes", b)?;
+        if data.is_empty() {
+            return Err(RpcError::invalid_params(
+                "`bytes` is empty — nothing to write",
+            ));
+        }
+
+        // The whole request is checked before a single byte lands: a partial write followed by a refusal
+        // leaves the caller unable to say what is in VRAM, which is the harm §11.22 named for `z80_write`
+        // ("silently corrupts on overrun") in this row's own words.
+        let size = self.sys.vram().len() as u64;
+        let end = u64::from(addr) + data.len() as u64;
+        if end > size {
+            return Err(out_of_range(
+                addr,
+                "the write would run past the end of VRAM ($0000-$FFFF) — refused whole, never clipped",
+            ));
+        }
+
+        let vdp = self.sys.vdp_mut();
+        for (i, byte) in data.iter().enumerate() {
+            vdp.poke_vram(addr as usize + i, *byte);
+        }
+        Ok(json!({ "addr": hex::addr(addr), "len": data.len() }))
     }
 
     /// **Why is the dot at (x,y) the colour it is** — `protocol.md` §6, adopted as CR-10.

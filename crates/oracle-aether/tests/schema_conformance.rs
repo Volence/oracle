@@ -422,16 +422,18 @@ fn the_schema_covers_every_method_we_advertise_and_the_uncovered_list_is_pinned_
         // `emulator/run_to_scanline` left the same day — the first four of the 21 to leave the set by being
         // SERVED, which is the direction the pin's second bullet was written for and the one `is_empty()`
         // could never have caught. `emulator/get_layer_states` and `emulator/set_layer_enabled` left the
-        // same way on 2026-08-26, making six. Each removal was forced by this assertion going red on the
-        // commit that shipped the handler, not remembered afterwards. The set also GREW by one on
-        // 2026-08-26 — `emulator/breakpoint_set_enabled`, above — which is the direction the pin's first
-        // bullet was written for. The names in this literal are the only count worth having, and the three
-        // grounds above still hold for every one.
+        // same way on 2026-08-26, making six. `emulator/write_vram` left on 2026-08-27, making seven —
+        // its fragment is FIRST-FRAGMENT-transcribed (three registered D-16 absences, served as written),
+        // and this assertion is what forced the pin to be edited in the commit that shipped the handler.
+        // Each removal was forced by this assertion going red on the commit that shipped the handler, not
+        // remembered afterwards. The set also GREW by one on 2026-08-26 —
+        // `emulator/breakpoint_set_enabled`, above — which is the direction the pin's first bullet was
+        // written for. The names in this literal are the only count worth having, and the three grounds
+        // above still hold for every one.
         "emulator/vgm_start",
         "emulator/vgm_status",
         "emulator/vgm_stop",
         "emulator/wait_for_break",
-        "emulator/write_vram",
         "emulator/z80_read",
         "emulator/z80_write",
     ];
