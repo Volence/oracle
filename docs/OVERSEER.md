@@ -1858,6 +1858,44 @@ method* — knowing a thing in the tree is not the thing reaching the process th
 
 ## Ops (each line is a paid-for lesson)
 
+**▶ NEW BAR, 2026-08-27 — A CLAIM IN OUR DOCS ABOUT A PEER'S FILE HAS A SHELF LIFE, AND NOTHING IN THIS
+REPO CAN EVER TELL YOU IT HAS EXPIRED. MEASURED SHELF LIFE: FORTY MINUTES.** Third instance in one day,
+which is what makes it a bar rather than three slips.
+
+**The instance, dated end to end because the dating is the argument.** `docs/2026-08-27-breakpoints.md`
+§7b landed at **03:11:37** stating that aeon's `evict_witness.py:97` reads snake_case
+`timeout_reached` and would silently misreport a timeout. **It was TRUE.** aeon fixed it at
+**03:51:24** (`6e4751c3`, verified here as a code commit on their `origin/master`). The claim was then
+**re-cited three times inside this repo** (`bp-disclose-recon.md` ×3, `lane-log.jsonl`) and **exported
+to aeon at ~13:00 as a live exposure**, where they *"had the brief half-written"* for an agent before
+opening the file by luck. **Not one link in that chain re-read the source.** Every re-citation was a
+faithful copy of a sentence that had been true.
+
+**The other two instances the same day**: the ROM-disappearance *mechanism* asserted about their build
+(invented, not observed), and the 52-method figure that went out from here, was banked there, and came
+back to outrank our own measurement. **Different shapes, one property: a statement about a peer's tree
+living in our tree, where no reader of ours can meet the contradiction.**
+
+**Why the existing bars do not cover it.** *Verify firsthand* is satisfied — the author did read the
+file. *Check the SHA class* is satisfied. *Re-read at send time* (protocol bar 22) is the closest and
+is written for **peer status files**, which announce their own staleness with a timestamp; **our own
+committed prose does not**, and reads as settled fact precisely because it is in our tree and we wrote
+it. **A doc has no `updatedAt`.**
+
+**The remedy, and it is cheap because it is the protocol's verified-at anchor pointed at our own
+docs:** when a doc here asserts something about a sibling repo's file, **record the peer revision it
+was read at, inline** — `(aeon `6e4751c3`, read 2026-08-27)`. That converts an unfalsifiable sentence
+into a one-command currency check for the next reader, which is exactly what the three instances above
+each lacked. **And before exporting any such claim across the fence, re-read the file at their tip** —
+not the doc that quotes it.
+
+**⚑ The sharpest form, from aeon's side of this one: a peer's warning about YOUR OWN tree is the class
+you must verify before acting on, and it is the one that feels least like it needs checking** — it
+arrives as help, about your own code, from someone with no motive to be wrong. They nearly briefed an
+agent on our stale premise. **Our confident claim about their tree almost became their agent's
+instruction**, which is the delegation corollary reaching one repo further than it was written for.
+
+
 **▶ NEW BAR, 2026-08-27 — DO NOT GREP A RELEASE BINARY FOR A SHORT STRING. THE OPTIMIZER INLINES IT AS
 AN IMMEDIATE AND IT IS SIMPLY NOT THERE AS A CONTIGUOUS SEQUENCE.** Earned by nearly reporting a
 stale-binary emergency to a peer who was about to make a decision on it.

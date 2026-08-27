@@ -276,6 +276,26 @@ handler runs — the loud outcome, and the one §11.24's own migration ruling as
 implementations of one contract disagree about unknown keys, sequence the cutover onto the strict one."*
 Pinned as a test (`the_snake_case_spelling_is_refused_rather_than_aliased`) so it stays a property.
 
+> ⚠ **STALE AS OF 2026-08-27 03:51:24Z — CORRECTED BY aeon, WHO FIXED IT 40 MINUTES AFTER THIS WAS
+> WRITTEN. The first bullet below describes a state that no longer exists.** `tools/evict_witness.py`
+> now **dual-accepts** on the receive side and makes the absence of BOTH spellings a **loud error**
+> (`raise RuntimeError(... "Refusing to guess: reading a missing key as False would report a timeout as
+> a reached breakpoint.")`). Verified firsthand at their `origin/master`: the fix is **`6e4751c3`**, a
+> code commit (`tools/evict_witness.py`, +22/−1), reachable ancestor. **The reply-side parcel this
+> bullet asked for does not exist; the rename is send-side only.**
+>
+> **⚑ The dating is the whole lesson, so it is recorded rather than smoothed:** this claim landed at
+> **03:11:37** and was **TRUE**. aeon fixed it at **03:51:24**. **It was correct for forty minutes** —
+> and was then **re-cited three more times inside this repo** (`docs/2026-08-27-bp-disclose-recon.md`
+> ×3 at 04:45 and 04:48, `docs/lane-log.jsonl` at 06:39) and finally **exported across the fence as a
+> live exposure at ~13:00**, where aeon *"had the brief half-written"* for an agent before happening to
+> open the file. **Nobody re-read the source file at any point in that chain.** Every re-citation was a
+> faithful copy of a true sentence about a file that had changed.
+>
+> **And the coordinate rotted with it:** this cites **`:97`**, which today is a **comment line**; the
+> read now sits at **`:109`**. That is the protocol's *a correction that carries a line number inherits
+> the defect it was correcting*, arriving on the original rather than on a correction.
+
 **Two further things the lane that owns those tools needs to know:**
 
 * `evict_witness.py:97` reads `r.get("timeout_reached")` — also snake_case. §11.24's D-06 rules camelCase
