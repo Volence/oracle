@@ -1851,6 +1851,16 @@ wrong about whose emulator it was talking to).
   the asserted test literal and the capability block. They also declined to lean on `audio_spectrum`
   grepping only to test files — consistent with unserved, but an absence, and the claim rests on list
   membership instead.*
+- **aeon** (engine): ⚑ **THEIR CORRECTION TO THIS SEAT'S EXPOSURE RANKING, 2026-08-27, taken.** When the
+  shim's ROM-freshness banner landed this seat reasoned about who it would reach by **condition rate** —
+  who most often runs against a rebuilt ROM — and answered "aeon". They ran the positive control and
+  **nothing in their tools goes through the MCP shim at all**: every gate reaches the emulator through
+  `tools/aether_instance.py` → `BusClient`, which spawns the Rust `oracle-aether` directly. So the lane
+  that trips the *condition* most often has **zero exposure to the change**. **Their durable form:
+  exposure needs BOTH the condition rate AND the transport — rank consumers by who parses the shim's
+  output, and do not assume nobody does.** Banked aeon `c115d98c`. This is a general defect in how this
+  seat reasons about blast radius: *who hits the condition* and *who sees the output* are different
+  populations, and the first is the one that comes to mind.
 - **aeon** (engine): demand docs in, acceptance fixtures back — their sweep/probe re-runs are the
   external acceptance for our instruments; shape checks go to them BEFORE build (their requested
   gate). Current lane: the streaming arc consumes the profiler; C-asks flow via
