@@ -16,7 +16,8 @@ This proposes a change to a **contract**, not to a server. It is written to be a
 no prior exposure to this repo. Every factual claim below is either quoted from a named source at a named
 revision, or explicitly marked as a judgement, or explicitly marked as carried on someone else's word.
 
-- §1 is the summary and §2 the evidence base, including **what was checked at second hand**.
+- §1 is the summary and §2 the evidence base, including **which server the live consumers actually talk to**
+  (§2.5) and **one error in this document's own first draft** (§2.4(b)).
 - §3 is the problem, stated for a reader who has never seen this codebase.
 - §4 is the proposal; §5 the exact textual and schema deltas; §6 the obligations no schema fragment can hold.
 - §7 is the alternatives rejected, including **the one CR-A originally proposed**, which the ruling overrode.
@@ -56,8 +57,10 @@ condition at the handshake and carried on every `emulator/stopped` event, with t
 
 **What this replaces.** Today the one imprecision this workspace has actually characterised is written in
 prose that clients are forbidden to parse — `protocol.md`:1163, quoted in §3.3 — and the one imprecision a
-server was known to *announce* announced it in a `caveat` string, which `§2.4` rule 3 says is exactly what
-a typed key is for (`protocol.md`:555, quoted in §4.6).
+server was known to *announce* announced it in an undeclared prose key named `note`, on two different
+replies, which `§2.4` rule 3 says is exactly what a typed key is for (`protocol.md`:555, quoted in §4.6).
+That server's own design doc records the imprecision as **intermittent and measured at 98 bytes** (§2.3),
+which is why §4.4 makes the declaration a commitment rather than a description.
 
 ---
 
@@ -74,7 +77,8 @@ a typed key is for (`protocol.md`:555, quoted in §4.6).
 | `oracle/docs/2026-08-27-ruling-cr-a.md` | worktree `043412b` | direct read, in full |
 | `oracle/crates/oracle-core/src/bus.rs` | worktree `043412b` | direct read |
 | `oracle/crates/oracle-aether/src/engine.rs` | worktree `043412b` | direct read |
-| `aeon/tools/raster_source_gate.py`, `aeon/tools/snapshot_poison_gate.py` | `origin/master` **`1cee167`** | `git show`, committed blobs only |
+| `aeon/tools/` — full enumeration by `git grep`, plus `raster_source_gate.py`, `snapshot_poison_gate.py`, `evict_witness.py`, `parallax_hscroll_probe.py`, `raster_frame_epoch_probe.py`, `aether_instance.py` | `origin/master` **`1cee167`** | `git show` / `git grep`, committed blobs only |
+| `oracle-old/linux-port/harness/det_mode_note_test.py`, `harness/launcher.py`, `docs/det-mode-breakpoint-granularity.md` | working tree, reference-only repo | direct read; **read, never written** |
 
 **No empyrean or aeon file was read through a working-tree path**, and nothing in either repo was written.
 Both are other lanes' live trees; every citation above is from a committed blob.
@@ -113,42 +117,120 @@ a contract that moved **the same day**, which is precisely why the paragraph abo
 and **0** against `contract/schema/bus-protocol.schema.json`. Nothing in §11.21–§11.25 touches it. This
 proposal is unlanded and has been ruled on by nobody.
 
-### 2.3 What is carried at second hand, and is therefore not this lane's evidence
+### 2.3 The legacy server's imprecision, verified firsthand — and it is worse than CR-A described
 
-1. **The legacy C++ server's own wording.** The string *"det-mode stop granularity: PC may precede the
-   breakpoint"* is quoted in CR-A §6.2 and again in `aeon/tools/raster_source_gate.py`. I verified the
-   quotation exists **in aeon's source comment** at `origin/master` `1cee167` (lines 36–38). I did **not**
-   read the legacy server, and I did not observe it emit that string. This is a quotation of a quotation and
-   is the single most load-bearing external fact in this CR. An adjudicator who wants it confirmed should
-   ask the legacy implementer, not this lane. ⟨RUNTIME⟩
-2. **The 1,691,410-hit stale-breakpoint incident** cited in CR-A §2.4 and in `protocol.md`:1169. Taken as
-   established; not re-derived here, and not load-bearing for this CR.
+CR-A quoted the legacy C++ server as answering `breakpoint_add` with *"det-mode stop granularity: PC may
+precede the breakpoint"*, and cited it at one remove (an aeon source comment). **This CR does not need to
+carry it second-hand.** The claim is pinned in the legacy repo's own regression harness and design doc, read
+firsthand at `oracle-old/` (a reference-only tree; read, not written):
 
-### 2.4 A correction to CR-A's evidence, found while preparing this one
+- `linux-port/harness/det_mode_note_test.py`:27 — `NOTE = "det-mode stop granularity: PC may precede the
+  breakpoint"`, with the test asserting the string is present in det mode and **absent** in threaded mode.
+- `linux-port/docs/det-mode-breakpoint-granularity.md` — *"Status: **known limitation, deferred**… the defect
+  itself is not fixed because a correct fix is scheduler surgery that would compromise the very thing
+  deterministic mode exists for."*
 
-**CR-A §2.3's consumer enumeration is stale, and the change cuts against this CR's urgency.** CR-A recorded
-two aeon gate scripts driving `breakpoint_add` → `wait_for_break` → `breakpoint_clear`, with
-`raster_source_gate.py` forcing a threaded launcher path *purely to obtain exact stop PCs*.
+**Three facts from that doc that change the design argument, none of which CR-A had:**
 
-At aeon `origin/master` `1cee167` **both gates have been converted**, on 2026-08-26, to a single
-`emulator/run_to` call against the Rust core:
+1. **It is intermittent, not systematic.** *"an execution breakpoint fires and the system stops, but the
+   reported stop PC occasionally lands a few instructions **before** the breakpoint address instead of
+   exactly on it. It is intermittent: most stops are exact."*
+2. **It is measured, and the magnitude is not one instruction.** *"fall-through bp @0x2470: deltas over 4
+   trials = [0, 0, 0, 0] (always exact) / jump-target bp @0x246c: deltas over 4 trials = [0, 0, -98, 0]
+   (1/4 early by 98 bytes)."* Ninety-eight bytes is many instructions, in the **`-`** direction.
+3. **The carrier is a key named `note`, not `caveat`** — on **both** `breakpoint_add` and `wait_for_break`
+   replies. `note` is a key this contract does not declare anywhere, which under §11.20's rule (*"`caveat`
+   may be emitted only where declared"*) and §8 item 20 is its own conformance defect, not raised here.
+
+Fact 1 is load-bearing for §4.4 and is the strongest single piece of evidence in this CR: **a server whose
+precision varies from stop to stop cannot be characterised by sampling.** A client that arms four
+breakpoints and sees four exact stops has learned nothing — the fifth is the one that lands 98 bytes early.
+That is why the handshake declaration must be a floor a server commits to (§4.4) rather than a description
+of typical behaviour, and it is why §4.1 spells `"approximate"` as a refusal to promise rather than a bound.
+
+Fact 3 is worth stating plainly because it **strengthens the proposal rather than the objection**: the legacy
+implementer, facing exactly this problem, independently built a two-site disclosure — arm-reply and
+wait-reply — and could only express it as an undeclared prose string. The shape was right and only the
+typing was wrong. CR-A §6.6(b) framed the alternative as *"carry the warning in `caveat`"*; that was a
+strawman, and the real precedent is better evidence for this CR than the strawman was.
+
+**Still carried at second hand, and not load-bearing:** the 1,691,410-hit stale-breakpoint incident cited in
+CR-A §2.4 and in `protocol.md`:1169. Taken as established, not re-derived.
+
+### 2.4 Two corrections to CR-A's evidence — and one to this document's own first draft
+
+**(a) CR-A §2.3's consumer enumeration is stale in one direction.** CR-A recorded two aeon *gate* scripts
+driving `breakpoint_add` → `wait_for_break` → `breakpoint_clear`. At aeon `origin/master` `1cee167` **both
+gates have been converted**, on 2026-08-26, to a single `emulator/run_to` call against the Rust core:
 
 > `snapshot_poison_gate.py`:38 — *"the breakpoint triple became one `run_to`"*
 > `raster_source_gate.py`:143 — *"No breakpoints to clear (the Rust core serves none)"*
 > `raster_source_gate.py`:38–40 — *"The Rust core has no such mode and no such caveat — `emulator/run_to`
 > parks on the exact instruction — so the knob is gone and the requirement is simply met."*
 
-Three consequences, all stated against this CR's interest:
+**(b) ⚑ And this document's first draft then generalised that to "zero automated consumers of
+`breakpoint_add`/`wait_for_break`", which is false.** A full enumeration of aeon's tools tree at `1cee167`
+— `git grep -n -E 'breakpoint_add|wait_for_break|breakpoint_clear' origin/master -- tools`, run rather than
+inferred — returns **three live callers** besides the two converted gates:
 
-- **There are now zero automated consumers of `breakpoint_add` or `wait_for_break`** in aeon's tools tree
-  that read a stop PC. The workaround CR-A cited as live cost is gone.
-- **The surviving consumers read their stop PC from a method *result*** (`run_to`'s `pc`, plus a separate
-  `emulator/registers`), **not from `emulator/stopped`.** They are not events subscribers. This is what
-  forces §4.4's binding rule: a design that puts the key only on the event is structurally blind to the
-  only consumer this surface has.
-- **The exactness the gate depends on is asserted in a Python comment**, about a Rust server, with no
-  wire-level way for the gate to check it. That is the residual harm, and it is smaller and quieter than
-  the one CR-A described. §11.1 says so plainly rather than letting it sit here.
+| Tool | Calls |
+|---|---|
+| `tools/evict_witness.py` | `breakpoint_add`:85, `wait_for_break`:96, `breakpoint_clear`:100 |
+| `tools/parallax_hscroll_probe.py` | `breakpoint_add`:584, `wait_for_break`:592, `breakpoint_clear`:575/594/598/600 |
+| `tools/raster_frame_epoch_probe.py` | `breakpoint_add`:220 and :221, `wait_for_break`:228, `breakpoint_clear`:219/258 |
+
+The two files that mention these methods only in prose about having *moved away* from them are exactly the
+two the ruling named. **The error was checking the two files a prior document named and generalising to a
+population.** It is recorded here rather than quietly fixed because it is the same shape as the defect this
+CR exists to prevent — a narrow true fact, written down as a general one, with nothing in the process
+positioned to contradict it — and because §11.1's headline weakness was built on it and had to be withdrawn.
+
+**(c) What survives from the correction, and it is the load-bearing half.** The two *converted* consumers
+read their stop PC from a method **result** (`run_to`'s `pc`, plus a separate `emulator/registers`), **not
+from `emulator/stopped`**; so do the three surviving callers, from `wait_for_break`'s `pc`. **Not one of the
+five is an events subscriber.** This is what forces §4.4's binding rule: a design that puts the key only on
+the event is structurally blind to every consumer this surface actually has.
+
+### 2.5 Which server the live consumers talk to — resolved, not assumed
+
+This matters to the CR's weight: a live consumer of the **successor** is a different argument from a
+consumer of a **frozen** server that dies with the transition window. It was resolved by following the
+imports, not by inference:
+
+- All three live callers reach the legacy C++ server. `parallax_hscroll_probe.py`:974 and
+  `raster_frame_epoch_probe.py`:89 both `from launcher import headless_emulator`, with `HARNESS =
+  "/home/volence/sonic_hacks/oracle-old/linux-port/harness"` on `sys.path`
+  (`raster_frame_epoch_probe.py`:85). That module is `oracle-old/linux-port/harness/launcher.py`, whose
+  `headless_emulator(rom_path, boot_wait=5.0, deterministic=True)` spawns
+  `linux-port/build/oracle_gui`. `evict_witness.py`:37 states it plainly: *"Requires one running
+  `oracle_gui` (socket `/run/user/1000/oracle.sock`)."*
+- **None of the three imports `aether_instance`**, the module that spawns our Rust server — and that
+  module's own docstring (line 62, at `1cee167`) says why they cannot: *"`capabilities.breakpoints` is
+  FALSE — `breakpoint_add` / `wait_for_break` do not exist."* Confirmed independently at
+  `crates/oracle-aether/src/engine.rs`:1473, `"breakpoints": false`.
+- The `timeout_ms` snake_case spelling all three use — against the contract row's `timeoutMs` — corroborates
+  it: that is the legacy alias (audit D-33), which §11.19 ruled *"dies with the binary that hosts it."*
+
+**Answer: these are consumers of `oracle-cpp`, the frozen server. They are neither broken nor dormant.**
+
+⚑ **And the workaround CR-A described as this defect's cost is still live**, in one of them.
+`raster_frame_epoch_probe.py`:397–399, verbatim:
+
+> *"`deterministic=False`: the threaded path is the only one whose breakpoints stop on the exact PC (the
+> serial scheduler rolls back to commit granularity), and this probe classifies every stop BY its PC."*
+
+and it launches that way at `:420`. The launcher's own docstring (`launcher.py`:34–38) states the same
+thing in the same terms: *"required for anything that asserts on exact breakpoint-stop PCs, since the
+deterministic serial scheduler's rollback stops at coarser (commit) granularity."*
+
+So a live consumer is **still** trading away the deterministic scheduler — the thing the state-hash gates
+depend on — to buy stop exactness, because the wire cannot tell it whether it has exactness. That is CR-A
+§6.2's cost, unretired, in a file neither CR-A nor the ruling enumerated.
+**One residual harm on the successor side, stated because it is quieter and easier to miss.** The two
+converted gates now depend on the **Rust** core's exactness, and that exactness is asserted in a Python
+comment about a Rust doc comment (`raster_source_gate.py`:38–40, quoting a property of `bus.rs`). Neither
+end of that chain is on the wire. A gate cannot check it, and this lane cannot honestly assert it either —
+see §10.2's prohibition.
 
 ---
 
@@ -311,6 +393,13 @@ The alternative — conditional on four reasons — is §7(e), rejected.
 > declare the **weakest** value it may emit. A server may emit a stronger value than it declared; it may
 > never emit a weaker one.
 
+**The "declare the weakest" clause is not defensive drafting — it is the measured case.** §2.3 quotes the
+legacy server's own design doc: the imprecision is *"intermittent: most stops are exact"*, measured at
+`[0, 0, -98, 0]` over four trials at one address. A server like that MUST declare `"approximate"` even
+though three stops in four are exact, because **no client can distinguish the two by sampling** — and a
+server that declared `"exact"` on the strength of its typical behaviour would ship precisely the confident
+wrong answer this CR exists to prevent, with the contract's blessing.
+
 **This is the clause CR-A did not have, and without it the two-level design is broken.** §2.4 established
 that the only consumers of this surface read their stop PC from a **method result** (`run_to`'s `pc`), and
 never subscribe to `emulator/stopped`. Under a bare two-level design such a client has no per-stop answer at
@@ -470,9 +559,14 @@ of it or by how much"* — would be **strictly worse than the prose it replaces*
 already promises something precise: exactly one instruction boundary later, always, by construction. A typed
 key that discards information the prose carried is not an improvement. Three members from the start.
 
-**(c) Carry the warning in `caveat`.** Rejected on `§2.4` rule 3 (`protocol.md`:553–556) and on the observed
-fact that the legacy server already does exactly this, in prose, and its consumer had to hard-code a
-launcher workaround because a prose string is not something a gate can branch on (§2.3).
+**(c) Carry the warning in prose — `caveat`, or a private key.** Rejected on `§2.4` rule 3
+(`protocol.md`:553–556) and on measured fact. CR-A framed this as *"carry it in `caveat`"*; the legacy
+server does something adjacent and more instructive (§2.3): it emits an **undeclared key named `note`**, on
+both `breakpoint_add` and `wait_for_break`, carrying the granularity warning as prose. That is a two-site
+disclosure with the right shape and the wrong type — and the outcome is the point. Its consumer could not
+branch on it, so it hard-coded a launcher workaround instead, and **that workaround is still running
+today** (§2.5). A prose carrier has been tried on this exact defect, by this exact bus's other implementer,
+and the observed result is the thing this CR proposes to fix.
 
 **(d) Put the handshake level in `limits`.** One of the two placements ruling **M-4** offered. Rejected:
 `limits` is documented as *"all JSON numbers (D9 category 2)"* (`protocol.md`:450) and every key in it at
@@ -594,19 +688,29 @@ implementations of this contract, and they are asked for different things.
 
 ### 10.1 `oracle-cpp` — the legacy C++ server: **nothing is asked of it**
 
-It is the one implementation known to have an imprecise stop mode (§2.3, at second hand). Under §11.19's
-D-33 precedent and §11.21 design choice 4 — *"Legacy is frozen, not migrated"* — it is not asked to
-implement this CR, and a `stopped` event it emits without `stopPrecision` is **not validated by this schema**
-for that event, on the disposition §11.21's M2 clarification (ii) already set for `breakpoint`
-(`protocol.md`:1140–1144). It is frozen, not conformed.
+It is the one implementation known to have an imprecise stop mode, verified firsthand in its own repo
+(§2.3), and — this is the part CR-A and the ruling both missed — **it is the server every live consumer of
+this surface is actually talking to** (§2.5). Under §11.19's D-33 precedent and §11.21 design choice 4 —
+*"Legacy is frozen, not migrated"* — it is not asked to implement this CR, and a `stopped` event it emits
+without `stopPrecision` is **not validated by this schema** for that event, on the disposition §11.21's M2
+clarification (ii) already set for `breakpoint` (`protocol.md`:1140–1144). It is frozen, not conformed.
 
-**One consequence must be said out loud rather than left implicit:** because a legacy server omits the
-handshake key, a client correctly applying §4.2 reads its absence as *"this server does not answer the
-question"* — **not** as `"approximate"` and **not** as `"exact"`. A gate that requires exactness must
-therefore refuse to run against it. That is the intended outcome and it is the behaviour the aeon gate
-hard-coded a launcher workaround to achieve (§2.3). It is also, functionally, the moment this CR becomes a
-migration pressure on a server nobody plans to migrate — which is the correct direction, but it should be
-adopted knowingly and not discovered later.
+**Two consequences must be said out loud rather than left implicit.**
+
+**(i) Absence is read as ignorance, not as a default.** Because a legacy server omits the handshake key, a
+client correctly applying §4.2 reads its absence as *"this server does not answer the question"* — **not**
+as `"approximate"` and **not** as `"exact"`. A gate that requires exactness must therefore refuse to run
+against it. That is the intended outcome, and it is what `raster_frame_epoch_probe.py` already achieves by
+hand today with `deterministic=False` (§2.5). It is also, functionally, the moment this CR becomes
+migration pressure on a server nobody plans to migrate — the correct direction, but it should be adopted
+knowingly rather than discovered later.
+
+**(ii) The three live consumers get nothing from this CR, and that is the honest accounting.** They call a
+frozen server, so they will never see a `stopPrecision` key, and their workaround stays hand-rolled until
+the successor serves breakpoints and they migrate — at which point the key is what tells them the migration
+was safe. **This CR does not improve their present situation; it makes their eventual migration
+checkable.** §11.1 is where that is argued rather than assumed, and it is the strongest objection to this
+CR.
 
 **No compatibility flag is proposed**, for D11's reason: a `stopPrecision: "unknown"` escape would let the
 defect survive negotiation forever and force every client to carry both paths. Absence already carries that
@@ -636,20 +740,59 @@ Written so an adjudicator can rule against it on the merits without having to fi
 The ruling judged CR-A's equivalent section *"both under- and over-stated in places"*, so these are ordered
 by how much they should actually worry a reader, strongest objection first.
 
-### 11.1 The motivating harm is now historical, and nothing would branch on this key today
+⚑ **This section's first draft was itself over-stated and has been corrected.** §11.1 previously claimed
+the motivating harm was historical; that rested on the false generalisation §2.4(b) records, and both the
+claim and the second-hand caveat in §11.7 are withdrawn. An adjudicator comparing this against a prior
+draft should read §2.4(b) first. Being wrong in the *self-critical* direction is still being wrong, and it
+cost this document its stated headline weakness.
 
-§2.4 is the finding that most weakens this CR, and it was found while preparing it. Both aeon gates migrated
-off the imprecise server on 2026-08-26; the launcher workaround is gone; **there is no client today that
-would read `stopPrecision`.** A reasonable adjudicator could hold that this is a rule written for a hazard
-that has already been solved by attrition, and that §7(h) — do nothing — is the right answer.
+### 11.1 The live consumers are consumers of a server that is being retired
 
-**The counter, and it is a judgement, not a derivation:** the hazard was solved by a *consumer* migrating,
-not by the *contract* learning to express the property. The property is still undeclarable, the successor's
-exactness is still asserted only in a Rust doc comment (§3.4), the successor still has **two** different
-precisions on one wire, and `protocol.md`:1163's watchpoint imprecision is still living in prose that
-clients are forbidden to parse. The next imprecise server — or the next mode of this one — arrives to the
-same silence. But an adjudicator who weights demonstrated present cost over prevented future cost should
-rule against this CR, and this section is the place to do it.
+**This section replaced a stronger claim that was falsified.** The first draft asserted that the motivating
+harm was historical and that nothing would branch on this key today. §2.4(b) shows that was an
+over-generalisation from two files to a population, and §2.5 shows three live consumers and a live
+workaround. The claim is withdrawn. What follows is the strongest objection the corrected evidence actually
+supports, which is a weaker objection than the one withdrawn.
+
+**The objection that survives:** every live consumer of this surface (§2.5) talks to `oracle-cpp`, which is
+**frozen** and which §10.1 asks to change nothing. So the three probes still paying the cost will never
+read a `stopPrecision` key, because the server they talk to will never emit one; and the two consumers on
+the successor already have exactness, they just cannot verify it. An adjudicator could hold that this CR
+therefore buys nothing for anyone **currently on the bus**, and is a rule for future servers paid for by
+present surface.
+
+**Three things weigh against that, and the first two are measured rather than argued:**
+
+1. **The workaround is live, not historical** (§2.5). `raster_frame_epoch_probe.py` is trading away the
+   deterministic scheduler today to buy stop exactness the wire cannot report. Whatever else is true, the
+   defect is still costing something.
+2. **The imprecision is intermittent and unbounded** (§2.3, measured in the legacy repo's own doc: 1 trial
+   in 4, 98 bytes early). This is what makes it a *contract* problem rather than an implementation one: no
+   amount of client-side sampling can characterise it, so nothing but a server declaration can close it.
+3. **The successor has two different precisions on one wire today** (§3.4), and neither is declarable. Its
+   watch stops land after commit by construction, and the contract already says so in prose that clients
+   are forbidden to parse (§3.3).
+
+**What I do NOT claim, and an adjudicator should hold me to it.** `parallax_hscroll_probe.py`:585–589
+documents a live consumer that refuses to trust a returned stop PC:
+
+> *"AND THE STOP PC IS VERIFIED, not assumed. `wait_for_break` can return on a stop that is not this
+> breakpoint (the `step` above emits one of its own), and a sample taken at an arbitrary mid-tick PC is a
+> TORN read that looks like a walker defect: it made the buffer read one tick older than the camera on 6 of
+> 24 sweep frames. So the loop re-resumes until the PC really is the routine's entry, and gives up loudly
+> rather than sampling elsewhere."*
+
+**That is stop *identity*, not stop *precision*** — *which* stop returned, not *how exactly* it landed —
+and this CR does not propose to fix it. `stopPrecision` would not have saved those 6 frames; the
+`breakpoint` handle §11.21 already landed is the key that addresses that one. Conflating the two would be
+a fair reason to reject this CR, so it is separated here rather than left for a reader to catch.
+
+**What the quotation does establish, and this is the whole of the claim:** a live consumer **does not trust
+a stop PC**, hand-rolls a verification loop rather than assuming, gives up loudly rather than sampling
+elsewhere, and paid a **measured** price — 6 of 24 sweep frames torn — before it learned to. A surface
+whose users have independently concluded they must verify what it tells them is not a surface where
+"nothing would branch on a trustworthiness key" is a sustainable claim. The adjacent defect is evidence
+about the neighbourhood, not about this clause.
 
 ### 11.2 `afterCommit` has exactly one producer, and the contract already says so in words
 
@@ -696,13 +839,17 @@ considered and not preferred: `postTrigger`, `nextBoundary`, `exactPlusOne`. The
 spelling to the drafters (*"spelling is the drafters'"*); this is the drafters' call and it is the weakest
 of them.
 
-### 11.7 Nothing here was verified at runtime, and one key fact is second-hand at one remove
+### 11.7 Nothing here was verified at runtime
 
-No emulator was contacted; no `cargo` command was run. §3.4's claim about this lane's core is source text.
-And the legacy server's `"det-mode stop granularity"` string — the concrete precedent the whole CR is built
-on — is quoted here from **aeon's source comment about the legacy server**, not from the legacy server
-(§2.3). If that comment is wrong, §3's motivating precedent is a legend. I judge it very unlikely to be
-wrong (it names the exact opt-out flag and the exact behaviour) and I did not verify it. ⟨RUNTIME⟩
+No emulator was contacted; no `cargo` command was run. §3.4's claim about this lane's core — that it stops
+exactly, by construction — is read off a doc comment at `bus.rs`:343–348 and is the one claim in this CR
+that a runtime check could still falsify. §10.2 turns that into a prohibition rather than a caveat.
+⟨RUNTIME⟩
+
+*(The first draft also listed the legacy server's `"det-mode stop granularity"` string here as second-hand.
+It is not: §2.3 now cites it firsthand from the legacy repo's own regression test and design doc, which
+also supplied the measured deltas. That weakness is withdrawn, and the evidence it named turned out to be
+the strongest in the document.)*
 
 ### 11.8 The key-set rule is unenforceable and might be better dropped
 
@@ -743,7 +890,12 @@ Not answered here, deliberately.
    own failure class one level up. Whether the acceptance item rides along or is raised separately is a
    sequencing call above this lane's pay grade — but the two arriving apart means a window in which the rule
    exists and nothing checks it.
-7. **Does this want a `protocolVersion` bump?** Every change here is additive under D5 except the event
+7. **The legacy server emits an undeclared key named `note` on two breakpoint replies** (§2.3), carrying
+   exactly the warning this CR types. That is a conformance defect against §11.20 (*"`caveat` may be
+   emitted only where declared"*) and §8 item 20, found while drafting this and **not raised here**. Should
+   it be raised at all against a frozen server, or does it simply die with the binary? This CR takes no
+   position; it is recorded so the finding is not lost.
+8. **Does this want a `protocolVersion` bump?** Every change here is additive under D5 except the event
    fragment's `required` array, which §5.6 disposes of on §11.21's precedent. If that precedent is judged to
    have been stretched far enough, this is the CR that should pay for the bump.
 
@@ -752,7 +904,10 @@ Not answered here, deliberately.
 ## 13. Provenance
 
 Drafted by the oracle lane, 2026-08-27, against `empyrean` `origin/main` `5625683`, `aeon`
-`origin/master` `1cee167`, and this repo at `043412b`. It is the extraction of CR-A's **A4** ordered by
+`origin/master` `1cee167`, the `oracle-old/` reference tree (read, never written), and this repo at
+`043412b`. **Revised the same day** after a coordinator review falsified §11.1's headline claim: see
+§2.4(b) for the error, §2.3 and §2.5 for the evidence that replaced it, and §11's preamble for what was
+withdrawn. It is the extraction of CR-A's **A4** ordered by
 `docs/2026-08-27-ruling-cr-a.md` **M-3**, incorporating **M-4** (re-sited handshake level), **M-5** (arm-reply
 level struck) and **M-6** (three enum members). §8 lists every place it departs from either document.
 
