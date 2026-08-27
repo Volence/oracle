@@ -226,6 +226,30 @@ plumbing has a permanent job and the sentence can at least be quantitative.
 > are free by contract, but `size_link`'s unflipped branch is holding `size<<8|pad` in `d1` at the
 > insertion point (`:588-591`). `InsertSpriteMasks` also declares `clobbers(d0-d1)`.
 >
+> ⚑ **`d0`'s freedom is a LIVE-RANGE fact, not a procedure-wide one — and this seat's first stated reason
+> for it was WRONG.** The claim relayed to aeon was *"`d0` is the flip variant, dead once the four-variant
+> dispatch has branched."* Half right and misleading: `d0` is dead **as the parameter** (the four variants
+> are `emit_piece_loop(xflip, yflip)` with **comptime** ints, so flip is resolved at assembly time and
+> never re-read from `d0`; each variant ends in `rts` at `:683`, no fall-through) — **but `d0` is then
+> reused as scratch throughout the loop body**: `y_term` builds the Y word in it (`:566-568`) and
+> `tile_term` builds the tile-attrs word in it (`:601-604`, and the other three variants likewise).
+> **What actually makes the insert safe is the local dataflow.** Loop order is `y_term` → `size_link` →
+> `tile_term` → `x_term` (`:675-679`); `y_term` **ends** by consuming `d0` into the SAT, `tile_term`
+> **begins** by reloading it from `(a3)+`. So `d0`'s live range does not span `size_link`, and the insert
+> sits in a genuine dead window — in all four variants.
+> **Therefore the register choice is bound to the PLACEMENT, not to the procedure.** Relocating the owner
+> write into `tile_term`, `x_term`, or past `tile_term`'s load makes `d0` a live-range collision that
+> **assembles cleanly and corrupts the Y or tile-attrs word** — the same shape as the `d1` defect, which
+> aeon correctly named as the dangerous kind precisely because the illegal addressing mode would have been
+> refused loudly while this one would not.
+> **Flags are safe, checked in the same pass:** `cmpi.b #MAX_VDP_SPRITES,d5` sits after `x_term` and
+> immediately before `dbeq` (`:680-681`), so it sets the condition codes the loop exit depends on *after*
+> the insert; neither `size_link` branch reads flags in between.
+> **Method note:** twice in one exchange a correct answer arrived with a wrong reason attached, and both
+> times the wrong reason was the *more general* one — "dead after dispatch" instead of "dead in this
+> window", "infeasible" instead of "undetectably divergent". **An over-general reason is the failure mode
+> to watch here: it licenses moves the narrow reason forbids.**
+>
 > **(3) Placement: at index `d5`, BEFORE the `addq.w #1,d5`.** All three writers agree — `size_link` yflip
 > (`:582-584`), `size_link` unflipped (`:588-590`), and the ring path (`rings.emp:233-234`) each increment
 > `d5` then stamp it as the link, so link = next index and **pre-increment `d5` = the current entry's
