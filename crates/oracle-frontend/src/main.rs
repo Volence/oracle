@@ -257,6 +257,9 @@ mod save_state;
 mod sram_file;
 // Opt-in `<rom>.lst` symbol loading — the file half of `oracle_core::symbols`, kept out of the no-I/O core.
 mod symbol_file;
+// Configured RAM-symbol watches: name a symbol and its values in `player.conf`, get a toast whenever the
+// value changes. Serves the person at the window — nothing armed, no client, no bus call.
+mod symbol_watch;
 
 // On-screen output: a self-contained bitmap font, and the notification / status / paused overlay it draws.
 // Nothing in a window ever reads stdout, which is where every message used to go.
@@ -1115,6 +1118,17 @@ fn main() {
         }
     }
 
+    // Configured symbol watches, armed against the listing that actually loaded and seeded from RAM as it
+    // stands right now (see `SymbolWatch::arm` for why the baseline is taken here rather than skipping the
+    // first poll). Anything that could not be armed is an ERROR toast, not a log line: a watch that
+    // silently watches nothing looks exactly like one that is working and has not fired yet, and the owner
+    // would sit there pressing the hotkey waiting for a message that can never come.
+    let (mut watches, watch_problems) =
+        symbol_watch::SymbolWatch::arm(&cfg.symbol_watches, symbols.as_ref(), sys.ram());
+    for p in watch_problems {
+        notify_err(&mut ov, p);
+    }
+
     // Esc no longer quits (spec §3): it closes the palette. Quitting is the window's close button or the
     // Quit command, which clears `running`.
     while window.is_open() && running {
@@ -1565,6 +1579,23 @@ fn main() {
                     }
                     sram_save_countdown = None; // the fresh buffer is clean and matches disk
                     sys.reset(); // `load_rom` only swaps the cartridge; this runs the /RESET sequence
+
+                    // Re-arm every watch against the *new* listing, after the reset, for the same reason
+                    // the listing itself was re-read: a rebuild moves symbols, and a watch holding the
+                    // previous build's RAM index would keep reporting confidently wrong scene names from
+                    // whatever now lives at that address (the D7 incident, one address wide). Re-arming
+                    // also re-seeds the baseline from post-reset RAM, so the first change after a reload is
+                    // measured against the machine that is actually running. A symbol that was in the old
+                    // listing and is not in the new one complains here, out loud, exactly as at startup.
+                    let (w, problems) = symbol_watch::SymbolWatch::arm(
+                        &cfg.symbol_watches,
+                        symbols.as_ref(),
+                        sys.ram(),
+                    );
+                    watches = w;
+                    for p in problems {
+                        notify_err(&mut ov, p);
+                    }
                     frame = 0;
                     cap.clear(); // a different cartridge draws a different frame — drop the old one
                     #[cfg(feature = "audio")]
@@ -1820,6 +1851,20 @@ fn main() {
         let layers = bus.layers();
         if !layers.is_all() {
             width = blit_masked(sys.vdp(), layers, &mut buf);
+        }
+
+        // --- Configured symbol watches: sample, and say what moved. ---
+        //
+        // Once per iteration, *after* both things that can advance the machine (the frame loop above and
+        // `bus.pump`), so a client-driven `run_frames` is seen exactly like a locally-run frame. An
+        // iteration that ran two frames reports only where the value ended up, which is the honest answer
+        // for a readout whose whole job is "what am I looking at now".
+        //
+        // `sys.ram()` hands out a `&[u8]`. No bus cycle is issued, no clock advances, no port is touched —
+        // the machine and its timeline cannot notice this happened, and the borrow is immutable at the type
+        // level so no future edit here can change that without changing the signature.
+        for line in watches.poll(sys.ram()) {
+            notify(&mut ov, ACCENT, line);
         }
 
         // Slice S2/S4 autosave: when the guest has dirtied SRAM, arm a debounce countdown and flush the `.srm`
