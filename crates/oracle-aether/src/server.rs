@@ -23,7 +23,7 @@
 //! `System` stays single-threaded throughout, as the core's charter requires; the channel is the only
 //! way in.
 
-use crate::engine::{Engine, EngineConfig};
+use crate::engine::{self, Engine, EngineConfig};
 use crate::outbound::{Outbound, Subscribers, DEFAULT_CAPACITY};
 use crate::rpc::{self, LineRead, RpcError};
 use crate::session::{Action, Session};
@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How often the accept loop re-checks the shutdown flag. The listener is non-blocking so that a
 /// shutdown never has to wait on a connection that may never arrive.
@@ -288,6 +288,7 @@ pub(crate) fn spawn_accept(
                                     tx,
                                     conn.subs.clone(),
                                     &conn.shared,
+                                    &conn.stop,
                                     conn.event_queue_cap,
                                 );
                                 conn.live.fetch_sub(1, Ordering::SeqCst);
@@ -487,6 +488,10 @@ pub(crate) fn connection_loop(
     engine_tx: Sender<EngineMsg>,
     subs: Subscribers,
     shared: &SharedStamp,
+    // `stop` is the server-wide shutdown flag. It is read by exactly one thing here —
+    // `wait_for_break_delay`, the only place a connection thread sleeps for longer than a socket read —
+    // because a wait must not outlive the server it is waiting on.
+    stop: &AtomicBool,
     queue_cap: usize,
 ) {
     let Ok(write_half) = stream.try_clone() else {
@@ -587,6 +592,11 @@ pub(crate) fn connection_loop(
                         Some(render(id.as_ref(), r, &mut dropped_total, &out))
                     }
                     Ok(Action::Dispatch) => {
+                        // **`emulator/wait_for_break` waits HERE, on this connection's own thread, and
+                        // never on the engine's.** See [`wait_for_break_delay`]. The engine handler that
+                        // eventually runs is a pure poll; all this does is delay the forward until the
+                        // machine has stopped or the caller's own deadline has passed.
+                        let waited = wait_for_break_delay(&msg.method, &msg.params, shared, stop);
                         let (tx, rx) = mpsc::channel();
                         if engine_tx
                             .send(EngineMsg::Call {
@@ -598,7 +608,15 @@ pub(crate) fn connection_loop(
                         {
                             break;
                         }
-                        let Ok(r) = rx.recv() else { break };
+                        let Ok(mut r) = rx.recv() else { break };
+                        // **`waitedMs` has exactly one writer, and it is this line.** It is wall-clock
+                        // time spent waiting, which is a host-side fact about the WAIT rather than a
+                        // machine coordinate (the fragment says so in as many words), so it is knowable
+                        // only here — the engine handler did not wait and would be guessing. D11's
+                        // emulated-clocks rule governs the stamp beside it, not this.
+                        if let (Some(w), Ok(Value::Object(m))) = (waited, &mut r.result) {
+                            m.insert("waitedMs".into(), json!(w.as_millis() as u64));
+                        }
                         (!is_notification).then(|| render(id.as_ref(), r, &mut dropped_total, &out))
                     }
                 }
@@ -614,6 +632,94 @@ pub(crate) fn connection_loop(
     out.close();
     if let Some(w) = writer {
         let _ = w.join();
+    }
+}
+
+/// How often [`wait_for_break_delay`] re-reads the published run state. Short enough that a break is
+/// noticed inside one emulated frame, long enough that a five-minute wait costs ~150,000 relaxed atomic
+/// loads and nothing else.
+const WAIT_POLL: Duration = Duration::from_millis(2);
+
+/// **Where `emulator/wait_for_break` actually waits — on the calling connection's thread, never the
+/// engine's.**
+///
+/// # The transport problem this solves
+///
+/// `wait_for_break` is a poll-shaped method on an asynchronous transport, and the obvious implementation —
+/// sleep inside the handler until a break arrives — is not merely rude here, it is **self-defeating**. The
+/// engine thread is the only owner of `System` and it serialises: `engine_loop` takes one `EngineMsg`,
+/// dispatches it to completion, and only then looks at the channel again. Its `None` branch — the branch
+/// that calls `Engine::free_run_step` — is what advances a free-running machine. So a handler that slept
+/// would:
+///
+/// 1. **stall every other client**, including the one that would call `emulator/pause` to end the wait, and
+/// 2. **guarantee its own timeout**, because the frames that would have reached the breakpoint are exactly
+///    the frames the sleeping thread is not running.
+///
+/// The same is true, worse, in the hosted arrangement: `Host::pump` checks its wall-clock budget *between*
+/// commands and *"one that has started always finishes"*, so a 300-second handler would freeze the player's
+/// window for 300 seconds.
+///
+/// # The answer
+///
+/// Waiting is a transport concern, not a machine concern, so it happens on the thread that is already
+/// allowed to block. This function delays the *forward* of the call; the engine handler that eventually
+/// runs does no waiting at all and simply reports the state it finds. Consequences, all of them wanted:
+///
+/// * **A concurrent request from another connection is completely unaffected** — different thread, and the
+///   engine thread stays free to serve it. Two clients can wait at once.
+/// * The machine keeps running throughout (free-run in the standalone server, the player's own loop when
+///   hosted), which is what lets the breakpoint being waited for actually fire.
+/// * A second request pipelined on the *same* connection queues behind the wait, because one connection is
+///   one reader thread reading NDJSON in order. That is the client's own pipelining choice and is
+///   unchanged by this.
+///
+/// # What it reads, and what it deliberately does not
+///
+/// The run state comes from [`SharedStamp`], published by the engine thread after every dispatch and every
+/// free-run frame, so it is at most one frame stale — which costs a wait one frame of latency and nothing
+/// else. `timeoutMs` is parsed **leniently and only as a sleep bound**: anything this function does not
+/// recognise — a missing key, the wrong type, a value past the ceiling, or the snake_case `timeout_ms` a
+/// legacy client might send — yields a zero delay, so the malformed request reaches the engine
+/// *immediately* and is refused there. The engine is the authority on what is legal; this is only the
+/// authority on how long to sleep, and it must never sleep on a request that is going to be refused.
+fn wait_for_break_delay(
+    method: &str,
+    params: &Value,
+    shared: &SharedStamp,
+    stop: &AtomicBool,
+) -> Option<Duration> {
+    // `None`, not a zero duration: the caller uses the distinction to decide whether the reply gets a
+    // `waitedMs` at all. Emitting one on some other method's reply would be an undeclared key on the wire.
+    if method != "emulator/wait_for_break" {
+        return None;
+    }
+    // Lenient by design — see the doc above. `None` (absent) takes the contract's own default; anything
+    // unrecognised takes zero, so the engine gets to refuse it without a sleep in front of the refusal.
+    let budget_ms = match params.get("timeoutMs") {
+        None => engine::DEFAULT_WAIT_TIMEOUT_MS,
+        Some(v) => match v.as_u64() {
+            Some(n) if n <= engine::MAX_WAIT_TIMEOUT_MS => n,
+            _ => 0,
+        },
+    };
+    let started = Instant::now();
+    let budget = Duration::from_millis(budget_ms);
+    loop {
+        // Already stopped is the answer, not a special case: a machine that is not running has already
+        // broken. It is also what makes `timeoutMs: 0` — §11.24's "0 polls once and returns" — fall out of
+        // this loop without a branch of its own.
+        if !shared.running.load(Ordering::Relaxed) {
+            return Some(started.elapsed());
+        }
+        if stop.load(Ordering::SeqCst) {
+            return Some(started.elapsed());
+        }
+        let elapsed = started.elapsed();
+        if elapsed >= budget {
+            return Some(elapsed);
+        }
+        std::thread::sleep(WAIT_POLL.min(budget - elapsed));
     }
 }
 

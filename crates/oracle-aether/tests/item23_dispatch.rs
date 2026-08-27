@@ -126,7 +126,7 @@ fn every_advertised_method_dispatches_and_every_unadvertised_one_does_not() {
 
     let mut undispatched = Vec::new();
     for name in &advertised {
-        let v: Value = c.call(name, json!({}));
+        let v: Value = c.call(name, common::sweep_params(name));
         if let Some(e) = v.get("error") {
             if e["code"] == json!(-32601) {
                 undispatched.push(format!("{name}: {}", e["message"]));

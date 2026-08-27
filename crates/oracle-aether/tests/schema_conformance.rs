@@ -402,18 +402,12 @@ fn the_schema_covers_every_method_we_advertise_and_the_uncovered_list_is_pinned_
     // genuinely unadvertised. A typo or a stale entry cannot survive that.
     const SCHEMATIZED_NOT_ADVERTISED: &[&str] = &[
         "emulator/audio_spectrum",
-        "emulator/breakpoint_add",
-        "emulator/breakpoint_clear",
-        "emulator/breakpoint_list",
-        // Arrived with the 2026-08-26 re-vendor, and it is the ONLY fragment the whole 58 → 59 move
-        // added: §11.21 (CR-BP) gave the breakpoint family a handle shape and a fifth row to go with it.
-        // §11.22, §11.23 and §11.24 came in the same refresh and added no method fragment at all — they
-        // changed fourteen existing ones and the handshake. Decided here rather than served: the
-        // breakpoint family is governed by `capabilities.breakpoints`, which this server publishes
-        // `false`, so all five rows are absent from `METHODS` together and the contract's own way of
-        // saying "not here" is already on the wire. Ground 1 above applies unchanged — the fragment came
-        // first, which is the order §8 item 20 requires.
-        "emulator/breakpoint_set_enabled",
+        // The five breakpoint rows LEFT this set on 2026-08-27, together, by being SERVED. They were
+        // pinned here on 2026-08-26 with the reason "the breakpoint family is governed by
+        // `capabilities.breakpoints`, which this server publishes `false`, so all five rows are absent
+        // from `METHODS` together" — that capability now publishes `true` and all five are advertised, so
+        // the reason retired with the entries. This assertion is what forced the pin to be edited in the
+        // commit that shipped the handlers, which is the direction its second bullet exists for.
         "emulator/get_channel_states",
         "emulator/log_clear",
         "emulator/ping",
@@ -427,13 +421,13 @@ fn the_schema_covers_every_method_we_advertise_and_the_uncovered_list_is_pinned_
         // and this assertion is what forced the pin to be edited in the commit that shipped the handler.
         // Each removal was forced by this assertion going red on the commit that shipped the handler, not
         // remembered afterwards. The set also GREW by one on 2026-08-26 —
-        // `emulator/breakpoint_set_enabled`, above — which is the direction the pin's first bullet was
-        // written for. The names in this literal are the only count worth having, and the three grounds
-        // above still hold for every one.
+        // `emulator/breakpoint_set_enabled` — which is the direction the pin's first bullet was written
+        // for, and it left again on 2026-08-27 with the other four when the family was served. The names
+        // in this literal are the only count worth having, and the three grounds above still hold for
+        // every one.
         "emulator/vgm_start",
         "emulator/vgm_status",
         "emulator/vgm_stop",
-        "emulator/wait_for_break",
         "emulator/z80_read",
         "emulator/z80_write",
     ];

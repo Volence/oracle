@@ -19,6 +19,27 @@ use std::time::Duration;
 
 static SEQ: AtomicU32 = AtomicU32::new(0);
 
+/// Params for a **method sweep** — a test that calls every advertised name in turn to check some
+/// property of the *reply envelope* rather than of any one handler.
+///
+/// Empty for all but one row. `emulator/wait_for_break` is the only method in the catalog whose default
+/// behaviour is to **block**: §6 gives `timeoutMs` a default of `30000` (§11.24 D-07, *"the legacy
+/// server's measured default, preserved because a retained deprecated method keeps its behaviour"*), and
+/// on a machine that is running with no breakpoint due it waits the whole of it. A sweep that has already
+/// called `emulator/resume` — which every sweep over the whole table does, because `resume` is in the
+/// table — therefore stalls for 30 seconds on that one row and trips its own read timeout.
+///
+/// `{"timeoutMs": 0}` is the contract's own non-blocking spelling (§11.24: *"`0` polls once and
+/// returns"*), so this weakens nothing: the call still dispatches, still runs the handler, and still
+/// returns a stamped reply — which is the entire subject of every sweep that uses this. What it avoids is
+/// making those sweeps depend on the order the table happens to be in.
+pub fn sweep_params(method: &str) -> Value {
+    match method {
+        "emulator/wait_for_break" => json!({"timeoutMs": 0}),
+        _ => json!({}),
+    }
+}
+
 /// A unique socket path per test. `AF_UNIX` paths are capped near 108 bytes, so this stays short.
 pub fn temp_socket(tag: &str) -> PathBuf {
     let n = SEQ.fetch_add(1, Ordering::SeqCst);
