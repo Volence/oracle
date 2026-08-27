@@ -289,6 +289,27 @@ Pinned as a test (`the_snake_case_spelling_is_refused_rather_than_aliased`) so i
 
 ---
 
+## 7b. Three in-tree method sweeps had to be told about the one blocking row
+
+Serving `wait_for_break` turned three existing tests red, and the failure was a **read timeout**, not an
+assertion: `handshake::initialize_advertises_a_generated_method_list_that_is_the_dispatch_table`,
+`item23_dispatch::every_advertised_method_dispatches_and_every_unadvertised_one_does_not`, and
+`methods::every_reply_from_every_method_carries_frame_mclk_and_running`. All three sweep the whole
+advertised table calling each name with `{}`. `emulator/resume` is in that table; once it has been called
+the machine is free-running, and `wait_for_break` with no params then waits its contractual 30-second
+default. The sweeps' own 20-second read timeouts fired.
+
+Fixed at the call site, in one shared helper (`common::sweep_params`), by passing the contract's own
+non-blocking spelling `{"timeoutMs": 0}` — §11.24: *"`0` polls once and returns."* Nothing is weakened:
+the call still dispatches, still runs the handler, still returns a stamped reply, which is the whole
+subject of all three sweeps. What it removes is their hidden dependence on the order of the table.
+
+**Worth naming as a property of the surface rather than a test wart:** `wait_for_break` is now the only
+row in the catalog whose *default* behaviour is to block the caller for thirty seconds. That is the
+contract's, deliberately (D-07 preserves the legacy default), and it is safe for other clients — the wait
+is on the caller's own thread — but any generic "call every method" tooling will need the same
+`timeoutMs: 0`. This is the fourth better-approach observation in §6 seen from the consumer's side.
+
 ## 8. Stop precision — reported, not keyed
 
 Per instruction, **no `stopPrecision` key was invented**; that question is live in

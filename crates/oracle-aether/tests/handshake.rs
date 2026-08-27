@@ -66,7 +66,7 @@ fn initialize_advertises_a_generated_method_list_that_is_the_dispatch_table() {
     // And the list is not merely equal to a constant: every advertised name must actually dispatch.
     // A name that is advertised but unwired would come back -32601.
     for name in &advertised {
-        let v = c.call(name, json!({}));
+        let v = c.call(name, common::sweep_params(name));
         if let Some(e) = v.get("error") {
             assert_ne!(
                 e["code"],

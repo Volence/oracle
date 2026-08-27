@@ -55,7 +55,7 @@ fn every_reply_from_every_method_carries_frame_mclk_and_running() {
     }
 
     for m in METHODS {
-        let v = c.call(m.name, json!({}));
+        let v = c.call(m.name, common::sweep_params(m.name));
         // Success carries it in `result`; failure carries it in `error.data`. Both are replies.
         let holder = if let Some(r) = v.get("result") {
             r.clone()
