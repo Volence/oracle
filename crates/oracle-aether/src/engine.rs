@@ -1222,10 +1222,17 @@ impl Engine {
         // observation on this path IS a firing, and is counted as one.
         let broke_at = observed.and_then(|(_, addr)| self.breakpoints.record_halt(addr));
         if let Some(id) = broke_at {
-            // The halt, and the state change that goes with it. §6's run-control state rule is what makes
-            // this necessary rather than cosmetic: a client that is told the machine stopped must find it
-            // *stopped* when it calls `status` or `registers` next, or every reading it takes is from a
-            // machine that has run on past the breakpoint.
+            // **The halt, and it must clear BOTH flags.** They are separate on purpose
+            // ([`Engine::free_run`] / [`Engine::running`]) and a halt is the one event that ends both
+            // conditions at once: the server must stop advancing the machine on its own, *and* the machine
+            // must stop reporting itself as advancing. Clearing only `running` leaves the engine loop
+            // free-running while every reply says `running: false` — the exact contradiction the two-flag
+            // split exists to prevent, and it re-breaks once per frame forever.
+            //
+            // Not [`set_free_run`](Engine::set_free_run), which is `pause`'s path and would emit
+            // `reason: "pause"` — a knowing mislabel of a stop the client armed and is waiting to be told
+            // about by name.
+            self.free_run = false;
             self.running = false;
             let pc = self.sys.cpu_regs().pc;
             let mut extra = Map::new();
@@ -5430,7 +5437,11 @@ impl Engine {
             Some(v) => hex::parse_count("timeoutMs", v, 0, MAX_WAIT_TIMEOUT_MS)?,
         };
         let mut out = Map::new();
-        if self.running {
+        // [`is_running`](Engine::is_running), i.e. the free-run MODE, not the transient `running` flag a
+        // bounded run raises around itself: that one is false at every dispatch boundary, so reading it
+        // here would report a halt on a machine that is still going — and it is also exactly the flag the
+        // transport polls, so the two halves of this method agree by construction.
+        if self.is_running() {
             // Still running at the moment the engine looked, so no halt was observed. §6 makes every
             // handler key optional, so the honest answer is the flag and nothing else: `pc` is deliberately
             // absent — *"absent when the wait timed out with the machine still running"* — because a PC

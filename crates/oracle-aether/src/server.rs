@@ -614,10 +614,8 @@ pub(crate) fn connection_loop(
                         // machine coordinate (the fragment says so in as many words), so it is knowable
                         // only here — the engine handler did not wait and would be guessing. D11's
                         // emulated-clocks rule governs the stamp beside it, not this.
-                        if let (Some(w), Ok(v)) = (waited, &mut r.result) {
-                            if let Value::Object(m) = v {
-                                m.insert("waitedMs".into(), json!(w.as_millis() as u64));
-                            }
+                        if let (Some(w), Ok(Value::Object(m))) = (waited, &mut r.result) {
+                            m.insert("waitedMs".into(), json!(w.as_millis() as u64));
                         }
                         (!is_notification).then(|| render(id.as_ref(), r, &mut dropped_total, &out))
                     }
