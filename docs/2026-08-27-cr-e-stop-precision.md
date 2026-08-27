@@ -149,7 +149,7 @@ That is why the handshake declaration must be a floor a server commits to (§4.4
 of typical behaviour, and it is why §4.1 spells `"approximate"` as a refusal to promise rather than a bound.
 
 Fact 3 is worth stating plainly because it **strengthens the proposal rather than the objection**: the legacy
-implementer, facing exactly this problem, independently built a two-site disclosure — arm-reply and
+implementer, facing exactly this problem, independently built a FOUR-site disclosure — arm-reply and
 wait-reply — and could only express it as an undeclared prose string. The shape was right and only the
 typing was wrong. CR-A §6.6(b) framed the alternative as *"carry the warning in `caveat`"*; that was a
 strawman, and the real precedent is better evidence for this CR than the strawman was.
@@ -562,7 +562,7 @@ key that discards information the prose carried is not an improvement. Three mem
 **(c) Carry the warning in prose — `caveat`, or a private key.** Rejected on `§2.4` rule 3
 (`protocol.md`:553–556) and on measured fact. CR-A framed this as *"carry it in `caveat`"*; the legacy
 server does something adjacent and more instructive (§2.3): it emits an **undeclared key named `note`**, on
-both `breakpoint_add` and `wait_for_break`, carrying the granularity warning as prose. That is a two-site
+both `breakpoint_add` and `wait_for_break`, carrying the granularity warning as prose. That is a four-site
 disclosure with the right shape and the wrong type — and the outcome is the point. Its consumer could not
 branch on it, so it hard-coded a launcher workaround instead, and **that workaround is still running
 today** (§2.5). A prose carrier has been tried on this exact defect, by this exact bus's other implementer,
@@ -917,3 +917,25 @@ at `5625683`; `CR-E` appears in neither repo. The ruling's suggested name `CR-ST
 as this document's subtitle so a reader following the ruling finds it.
 
 **No emulator was contacted, no `cargo` command was run, and nothing outside this repository was written.**
+
+---
+
+## Overseer note added at merge, 2026-08-27 — two corrections, both in this CR's favour
+
+Verified firsthand at the merge, in `oracle-old` (read-only):
+
+1. **The legacy disclosure is at FOUR sites, not two.** `gui/ControlSocket.cpp:557`, `:812`, `:915` and
+   `:3092` each emit the undeclared `note` key under `IsDeterministicMode()`. The body text above is
+   corrected from "two-site" to "four-site". This **strengthens** §7(c): an implementer who reaches for
+   the same disclosure in four places independently is stronger evidence that the disclosure is needed
+   than one who reaches for it twice — and it correspondingly widens open question 7's conformance
+   defect, since four undeclared emissions are four places a conformant client cannot anticipate.
+2. **The measurement is exactly as reported, and the path in the agent's summary was slightly off** —
+   the file is `linux-port/docs/det-mode-breakpoint-granularity.md`, not under `harness/`. Quoted
+   verbatim, `:14` — *"It is intermittent: most stops are exact"* — and `:22`:
+   `jump-target bp @0x246c: deltas over 4 trials = [0, 0, -98, 0]   (1/4 early by 98 bytes)`,
+   against a control at `:21` that is exact in all four. **This is the document's strongest fact and it
+   survives inspection.** It is what makes §4.4's *declare the weakest value you may emit* a requirement
+   rather than a preference: a precision that varies **cannot be characterised by sampling**, so a client
+   that has seen four exact stops has learned nothing about the fifth, and any design that lets a server
+   describe itself from observed behaviour is unsound on this surface.
