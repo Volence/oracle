@@ -39,6 +39,14 @@ pub struct Config {
     /// written back into the same key. Lives here rather than in [`crate::lens::LensSet`] so the
     /// set stays `Copy` and allocation-free for the run loop.
     pub unknown_lenses: Vec<String>,
+    /// Symbol watches (see [`crate::symbol_watch`]): a named RAM symbol plus an ordered label list,
+    /// reported as a toast whenever the value changes. A **list**, and the key may repeat, because one
+    /// entry per line is what a flat `key = value` file spells naturally — there is no nesting to invent.
+    ///
+    /// The labels are deliberately data rather than Rust: they are another tool's vocabulary for another
+    /// tool's feature, and a hardcoded array here would go stale the day that tool renames one, with
+    /// nothing in this repo's gates to notice.
+    pub symbol_watches: Vec<crate::symbol_watch::WatchSpec>,
     /// Keys this build does not recognise, kept verbatim and written back out (F-CONFIG-UNKNOWN-KEYS).
     /// Order is file order, so a save is a fixed point rather than a reshuffle. This is what makes
     /// "warn and continue" honest: without it, an older build reading a newer build's file warns
@@ -49,7 +57,7 @@ pub struct Config {
 /// Every key [`serialize`] emits and [`parse`] understands. Its one production use is filtering
 /// [`Config::unknown`] on the way out, so a remnant can never shadow a real key; `known_keys_are_
 /// all_parsed_and_all_emitted` is what stops it drifting from `parse`'s match arms.
-pub const KNOWN_KEYS: [&str; 7] = [
+pub const KNOWN_KEYS: [&str; 8] = [
     "volume",
     "muted",
     "aspect",
@@ -57,6 +65,7 @@ pub const KNOWN_KEYS: [&str; 7] = [
     "status_line",
     "deadzone",
     "lenses",
+    "symbol_watch",
 ];
 
 /// How many unrecognised names a collapsed warning lists before it gives up and says "…".
@@ -100,6 +109,9 @@ impl Default for Config {
             // Every lens off: a fresh install stays pixel-identical to pre-S3.
             lenses: crate::lens::LensSet::default(),
             unknown_lenses: Vec::new(),
+            // Nothing watched until someone asks. A watch is a debugging aid for a specific build, not a
+            // default anyone would want inherited.
+            symbol_watches: Vec::new(),
             unknown: Vec::new(),
         }
     }
@@ -175,6 +187,14 @@ pub fn parse(text: &str) -> Result<Parsed, usize> {
                 c.lenses = set;
                 c.unknown_lenses = unrecognised;
             }
+            // The one key that may legitimately repeat: each line is one watch, and they accumulate in
+            // file order. A blank value is how the key round-trips when nothing is configured, so it adds
+            // nothing and warns about nothing.
+            "symbol_watch" => match crate::symbol_watch::parse_spec(value) {
+                Ok(Some(spec)) => c.symbol_watches.push(spec),
+                Ok(None) => {}
+                Err(why) => warnings.push(format!("config: ignored {key} ({why})")),
+            },
             _ => c.unknown.push((key.to_string(), value.to_string())),
         }
     }
@@ -215,6 +235,20 @@ pub fn serialize(c: &Config) -> String {
         c.deadzone,
         crate::lens::format_set(c.lenses, &c.unknown_lenses),
     );
+    // One line per watch — and exactly one blank line when there are none, so the key is always present
+    // in the file (a user who has never heard of it can see it exists) and `KNOWN_KEYS`'s
+    // everything-is-emitted gate holds for the default config.
+    if c.symbol_watches.is_empty() {
+        out.push_str("symbol_watch = \n");
+    } else {
+        for w in &c.symbol_watches {
+            let _ = writeln!(
+                out,
+                "symbol_watch = {}",
+                crate::symbol_watch::format_spec(w)
+            );
+        }
+    }
     for (k, v) in c
         .unknown
         .iter()
@@ -328,6 +362,10 @@ mod tests {
                 l
             },
             unknown_lenses: vec!["heatmap".to_string()],
+            symbol_watches: vec![crate::symbol_watch::WatchSpec {
+                symbol: "Debug_Scene_Index".to_string(),
+                labels: vec!["Fire BG".to_string(), "Haze".to_string()],
+            }],
             unknown: vec![("kept".to_string(), "value".to_string())],
         };
         let p = parse(&serialize(&c)).expect("own output must parse");
@@ -562,6 +600,75 @@ mod tests {
         );
     }
 
+    /// The parcel's own key, through the file. Two entries on two lines, in order, and a second cycle is
+    /// a fixed point — a hand-edited watch list must survive every in-app autosave untouched.
+    #[test]
+    fn symbol_watches_accumulate_over_repeated_keys() {
+        let text = "symbol_watch = Debug_Scene_Index: Fire BG, Haze\nsymbol_watch = Level_Id\n";
+        let p = parse(text).expect("not corruption");
+        assert_eq!(p.config.symbol_watches.len(), 2, "the key may repeat");
+        assert_eq!(p.config.symbol_watches[0].symbol, "Debug_Scene_Index");
+        assert_eq!(p.config.symbol_watches[0].labels, vec!["Fire BG", "Haze"]);
+        assert_eq!(p.config.symbol_watches[1].symbol, "Level_Id");
+        assert!(
+            p.warnings.is_empty(),
+            "a good watch warned: {:?}",
+            p.warnings
+        );
+        let out = serialize(&p.config);
+        assert!(
+            out.contains("symbol_watch = Debug_Scene_Index: Fire BG, Haze\n"),
+            "the labels are written back verbatim: {out}"
+        );
+        assert!(out.contains("symbol_watch = Level_Id\n"));
+        assert_eq!(
+            out.matches("symbol_watch = ").count(),
+            2,
+            "one line per watch, and no stray blank one: {out}"
+        );
+        let again = parse(&out).expect("our own output parses");
+        assert_eq!(again.config, p.config, "a second cycle is a fixed point");
+    }
+
+    /// The default file must still *carry* the key — a user who has never heard of it should be able to
+    /// find it by reading their own settings — and re-reading it must add no watch and no warning.
+    #[test]
+    fn no_watches_emits_one_blank_key_that_parses_back_to_none() {
+        let out = serialize(&Config::default());
+        assert_eq!(
+            out.matches("symbol_watch = ").count(),
+            1,
+            "exactly one placeholder line: {out}"
+        );
+        let p = parse(&out).expect("parses");
+        assert!(
+            p.config.symbol_watches.is_empty(),
+            "a blank value is no watch"
+        );
+        assert!(
+            p.warnings.is_empty(),
+            "and warns about nothing: {:?}",
+            p.warnings
+        );
+    }
+
+    /// A malformed watch is a bad value under a *known* key, so it takes the existing per-key path: warn,
+    /// name the key, and keep going. It must not be corruption (which would back the whole file up) and it
+    /// must not take the other watches with it.
+    #[test]
+    fn a_malformed_watch_warns_without_losing_the_good_ones() {
+        let p = parse("symbol_watch = : no name here\nsymbol_watch = Level_Id: a\n")
+            .expect("a bad value is not structural corruption");
+        assert_eq!(p.config.symbol_watches.len(), 1, "the good one survived");
+        assert_eq!(p.config.symbol_watches[0].symbol, "Level_Id");
+        assert_eq!(p.warnings.len(), 1);
+        assert!(
+            p.warnings[0].contains("symbol_watch"),
+            "the warning names the key: {}",
+            p.warnings[0]
+        );
+    }
+
     #[test]
     fn bad_value_warns_and_keeps_default() {
         let p = parse("volume = banana\nscale = 12\ndeadzone = 2.0\n").unwrap();
@@ -600,6 +707,7 @@ mod tests {
             "status_line",
             "deadzone",
             "lenses",
+            "symbol_watch",
         ] {
             assert!(s.contains(key), "serialize dropped `{key}`");
         }
