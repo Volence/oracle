@@ -197,6 +197,60 @@ plumbing has a permanent job and the sentence can at least be quantitative.
 
 ## 3. Q3 — the ask, in sendable form
 
+> ⚑ **AMENDED 2026-08-27 AFTER aeon ANSWERED — DO NOT SEND THE CURSOR VERSION BELOW AS WRITTEN.**
+> The ask was **accepted in principle**; the register allocation carried a defect that aeon found, and
+> their proposed fix carried one of its own. Both confirmed firsthand here in their tree at `97d3ca69`.
+>
+> **(1) The `(a6)+` cursor desynchronises at the first ring.** `size_link` is a genuine choke point *for
+> object pieces* — one call site, `sprites.emp:678` — but it is **not the only writer of the SAT stream**.
+> `rings.emp:231-240` writes SAT entries on its own `(a4)+` run and **never calls `size_link`** (`grep
+> size_link engine/objects/rings.emp` → zero hits). A post-increment owner cursor advances only for object
+> pieces while `a4` advances for rings too, so it falls one entry behind at the first ring and stays behind
+> cumulatively. **This is worse than a hole and our own consistency check cannot catch it:** the SAT is
+> correct, so `Sprite_Table_Buffer[i]` still matches VRAM — only the ownership array is skewed, so the
+> proof survives intact and certifies a **wrong** object. That is the same undetectable-divergence disease
+> §2 used to disqualify the replay, arriving from the other direction. It was outside our six break paths
+> because all six concern the object walk and this one is outside it.
+>
+> **(2) The fix is an INDEXED write, not a cursor** — inherently in lockstep with the SAT index whichever
+> path emitted the entry. **But `(a6,d5.w*2)` as first proposed is not a 68000 addressing mode**: scale
+> factors on the indexed mode are 68020+. Corroborated in aeon's own tree — no scaled index exists anywhere
+> in `engine/`, while unscaled `(An,Dn.w)` is used throughout (`raster.emp:1505,1508,1670,1870`). Correct
+> form, doubling into a scratch register:
+> ```
+> move.w  d5, d0
+> add.w   d0, d0            // ×2 — no scale factor on 68000
+> move.w  a1, (a6,d0.w)
+> ```
+> **`d0` specifically, not `d1`:** `Emit_ObjectPieces` declares `clobbers(d0-d1/d4/a0/a3)` (`:709`) so both
+> are free by contract, but `size_link`'s unflipped branch is holding `size<<8|pad` in `d1` at the
+> insertion point (`:588-591`). `InsertSpriteMasks` also declares `clobbers(d0-d1)`.
+>
+> **(3) Placement: at index `d5`, BEFORE the `addq.w #1,d5`.** All three writers agree — `size_link` yflip
+> (`:582-584`), `size_link` unflipped (`:588-590`), and the ring path (`rings.emp:233-234`) each increment
+> `d5` then stamp it as the link, so link = next index and **pre-increment `d5` = the current entry's
+> index on every path**. That agreement is what makes one indexed write correct across all of them.
+>
+> **(4) Price, restated honestly: ~22 cycles/piece, worst case ≈2,000 cycles ≈1.6% of a DEBUG frame** —
+> roughly **double** the 8-cycle/≈1,200 figure below, which was priced against an instruction that does not
+> exist on this CPU. Zero in release, unchanged.
+>
+> **(5) Staleness — RULED HERE, at aeon's invitation, since this lane is the only consumer: take the clear,
+> and clear the WHOLE array at `Render_Sprites` entry.** We enforce `index < Sprites_Rendered` reader-side
+> as well, which is free and ours. **The clear is not about the bound.** Every in-range index is written
+> this frame *only if every emit path remembers to write an owner* — and a future third path that forgets
+> is precisely the class aeon just caught. A cleared array turns that mistake into a visible `$0000` and an
+> honest "unknown"; an uncleared one leaves a stale **valid** address and names the wrong object. Full-array
+> rather than `[0..Sprites_Rendered)` because that bound at frame start is last frame's value, and the
+> correctness of the clear should not depend on a stale number. ~200 cycles, DEBUG only.
+>
+> **(6) `DEBUG`-only confirmed by aeon and not to be widened.** Zero release cost is what made it cheap to
+> accept. Sequencing: queued behind their parallax byte-mover; they will signal when it lands.
+>
+> **Method note worth keeping:** the ask was checked by its recipient against the one step it did not cite,
+> and that is where the defect was. **A choke-point claim is only as strong as the enumeration of writers
+> that reaches it** — we proved `size_link` had one caller and never asked who else writes the stream.
+
 Send as-is. Priced against `sprites.emp` at aeon `353aaa49`.
 
 ---
