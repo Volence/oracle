@@ -610,7 +610,9 @@ fn a_breakpoint_halts_the_playing_window_exactly_once() {
     assert_eq!(
         w["timeoutReached"],
         json!(false),
-        "the wait timed out against a playing window — the halt did not ride the player's loop: {w}"
+        "the wait timed out against a playing window. Two causes produce this identical reply and \
+         both are defects: the halt did not ride the player's loop at all, or it cleared `running` \
+         without clearing `free_run` — `wait_for_break` reads the free-run MODE. {w}"
     );
     assert_eq!(
         w["pc"],
@@ -635,34 +637,42 @@ fn a_breakpoint_halts_the_playing_window_exactly_once() {
     assert_eq!(
         stops.len(),
         1,
-        "exactly one stop, and this is where a halt that cleared only `running` shows up as hundreds: \
-         {stops:?}"
+        "one halt must announce itself once. More than one means the halt is being re-applied — a \
+         latch that is peeked rather than taken, or a run driver that kept going and re-broke every \
+         frame (374,011 measured, breakpoints doc §5): {stops:?}"
     );
     let s = stops[0];
     assert_eq!(s["reason"], json!("breakpoint"), "{s}");
     assert_eq!(s["breakpoint"], json!(bp), "{s}");
-    assert_eq!(
-        s["pc"],
-        json!(hex_addr(HOT_PC)),
-        "an Observe-wrapped sink counts the hit and finishes the frame, and this is what that looks \
-         like: {s}"
-    );
-    assert_eq!(
-        s["running"],
-        json!(false),
-        "the `running` flag must clear with `free_run`, not instead of it: {s}"
-    );
+
+    // The D11 stamp is checked FIRST, so the two remaining mutations name themselves rather than both
+    // landing on `pc`: a stop applied outside the drain window reads the placeholder's zeros here,
+    // while an `Observe`-wrapped sink stamps this correctly and gets `pc` wrong below. (Measured: the
+    // placeholder produces `frame 0, mclk 0, pc 0x00000000`; the `Observe` produces `pc 0x00000210`.)
     let stamped = s["mclk"].as_u64().unwrap_or_else(|| {
         panic!("the stop carried no numeric mclk, which is a D11 violation on its own: {s}")
     });
     assert_eq!(
         stamped, halted_at,
-        "the stop was stamped from the placeholder System rather than the player's machine (a \
-         placeholder reads 0): {s}"
+        "the stop was stamped from the placeholder System rather than the player's machine — the halt \
+         was applied outside a pump drain window, where the engine holds the placeholder and every \
+         clock reads 0: {s}"
     );
     assert!(
         s["frame"].as_u64().is_some_and(|f| f > 0),
         "and its frame with it: {s}"
+    );
+    assert_eq!(
+        s["pc"],
+        json!(hex_addr(HOT_PC)),
+        "the stop is not AT the breakpoint. An `Observe`-wrapped sink produces exactly this: it drops \
+         only `stop_requested`, so the hit is still counted and the halt still lands — after the frame \
+         has run to completion. {s}"
+    );
+    assert_eq!(
+        s["running"],
+        json!(false),
+        "the `running` flag must clear with `free_run`, not instead of it: {s}"
     );
 
     // …and the hit was counted exactly once, on the handle that stopped it.
