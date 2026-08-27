@@ -1800,6 +1800,18 @@ relative to the fix you are relying on** — and write the vintage condition int
 conclusion alone.
 
 
+**▶ NEW BAR, 2026-08-27 — THE OPS LINE THAT IS NOT IN THE DISPATCH IS NOT IN THE DISPATCH. Carry the
+worktree `vendor` symlink into every brief that will run cargo.** The Ops section below has said *"fresh
+worktrees: `ln -s <repo>/vendor vendor`"* for weeks. It was **still missed on a dispatch this morning**,
+because the brief is composed from the invariant block and the parcel's own grounding — and an Ops line
+sitting in this file is not either of those. The agent lost time on a baseline that would not reproduce:
+eight `save_state::tests::*` rows **panic** (not skip) on the missing vendored ROM, and the resulting
+`exit 101` is indistinguishable at the aggregate line from two other causes this repo has recorded.
+**The fix is structural, not educational** — an overseer who has read this file every session still omitted
+it, so the rule is that the vendor line is part of the *brief template* for any cargo-running dispatch,
+alongside the base check. Related and already booked: the same class as *a merged serve is not a served
+method* — knowing a thing in the tree is not the thing reaching the process that needs it.
+
 ## Ops (each line is a paid-for lesson)
 
 `cd` to the absolute repo path before ANY branch operation (a persisted cwd nearly checked out
