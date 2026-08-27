@@ -1888,6 +1888,16 @@ docs-heavy and every doc wraps, so this is the common case, not the corner.
 instance twenty minutes later. **Rehearsal is not protection** — which this suite's protocol already says
 about SHAs, arriving here in a different field.*
 
+**▶ STATUS: PROPOSED, ACCEPTED, QUEUED — DO NOT RE-PROPOSE IT.** The hub ledgered all three sharpenings
+as **Q-23** in `empyrean:docs/OVERSEER.md`'s pending protocol queue, verified here firsthand on the
+pushed blob at empyrean `e27362c` (which is `origin/main` itself; `grep -c '^Q-23\.'` = 1, and the entry
+carries this lane's bar-21 self-discount as stated rather than dropping it). Per the owner's batching
+rule it lands **inside bar 23's text as an amendment, not as a new bar**, in the next batched protocol
+pass. **Nothing is owed by this lane.** The paragraph above stays as lane-local ops guidance and is
+correct whether or not the protocol pass ever runs — but a session that reads *"proposed to empyrean"*
+and re-sends it is spending a peer's attention on a closed item, which is the notify-on-the-dependency
+bar failing from the other end.
+
 
 `cd` to the absolute repo path before ANY branch operation (a persisted cwd nearly checked out
 under a live agent). Fresh worktrees: `ln -s <repo>/vendor vendor`, verify 17 TestRoms entries, and
