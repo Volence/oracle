@@ -185,6 +185,21 @@ pub struct Host {
     /// holds the placeholder, so an event emitted there would be stamped `frame 0, mclk 0` — a lie about the
     /// exact instant a client most needs the truth about.
     pending_free_run: Option<bool>,
+    /// A breakpoint halt the **host's own run** observed, applied at the top of the next drain.
+    ///
+    /// Deferred for [`pending_free_run`](Host::pending_free_run)'s reason and one more of its own.
+    /// The `emulator/stopped` this produces carries the machine stamp (D11), and the stopping `pc` is read
+    /// off the machine — outside the window the engine holds the placeholder, so applying it where the
+    /// observation is made would emit `frame 0, mclk 0, pc 0x00000000` for the one event a client most
+    /// needs the truth about.
+    ///
+    /// **And the deferral is what makes the ordering expressible.** The halt is applied *after*
+    /// `pending_free_run` in [`pump`](Host::pump), so a pause change queued in the same iteration cannot
+    /// resurrect `free_run` over it. That collision is real and reachable: a human un-pausing the window on
+    /// the very iteration whose frame hits a breakpoint queues `pending_free_run = Some(true)` from
+    /// [`set_paused`](Host::set_paused) *after* the run has already halted, and applying that second would
+    /// be a machine that pauses and instantly resumes.
+    pending_break: Option<u32>,
 }
 
 impl Host {
@@ -207,6 +222,7 @@ impl Host {
             socket_path: None,
             pump_budget: config.pump_budget,
             pending_free_run: None,
+            pending_break: None,
         }
     }
 
@@ -354,13 +370,40 @@ impl Host {
     /// A host puts *these* in the per-frame sink it already builds for the scanline capture, and never the
     /// bare instruments. `None` means "not armed, attach nothing" — which is a live case on nearly every
     /// frame and is why the halves are `Option`s rather than always-on sinks.
+    /// **The third element is the breakpoint sink, bare**, and a host that drops its observation on the
+    /// floor has a machine that stopped with nothing saying so. Hand it to
+    /// [`record_break`](Host::record_break) after the run. `resume_pc` is the machine's PC *before* the
+    /// run — see [`Engine::run_sinks`](crate::engine::Engine::run_sinks) for why the caller has to supply
+    /// it and why this one half is not wrapped in [`Observe`](oracle_core::bus::Observe).
     pub fn run_sinks(
         &mut self,
+        resume_pc: u32,
     ) -> (
         Option<Observe<&mut oracle_core::watchpoints::Watchpoints>>,
         Option<Observe<&mut oracle_core::profiler::Profiler>>,
+        Option<crate::breakpoints::BreakStop<'_>>,
     ) {
-        self.engine.run_sinks()
+        self.engine.run_sinks(resume_pc)
+    }
+
+    /// **Latch a breakpoint halt the host's own run observed**, for the top of the next
+    /// [`pump`](Host::pump).
+    ///
+    /// `addr` is the address the sink from [`run_sinks`](Host::run_sinks) stopped on. Calling this is the
+    /// whole of what a host owes the breakpoint surface: the sink already ended the run, and this is what
+    /// turns that into a counted hit, a cleared pair of run flags, and the `emulator/stopped` the client
+    /// waiting on `wait_for_break` is owed. A host that runs the sink and never calls this has the
+    /// *worse* of the two failures — a machine that halts silently.
+    ///
+    /// Nothing here touches the engine, so it is safe outside a drain window; that is the point. See
+    /// [`pending_break`](Host::pending_break) for why the apply is deferred and why it is ordered after
+    /// `pending_free_run`.
+    ///
+    /// **An unapplied latch is never overwritten.** Today exactly one frame runs between a latch and the
+    /// drain that takes it, so a second cannot arrive — but if one ever did, the *earlier* halt is the one
+    /// that stopped the machine, and silently replacing it would report the wrong address for the stop.
+    pub fn record_break(&mut self, addr: u32) {
+        self.pending_break.get_or_insert(addr);
     }
 
     /// **The read half of [`run_sinks`](Host::run_sinks)**, forwarded: both instruments and the profiler's
@@ -418,6 +461,18 @@ impl Host {
         report.mclk_before = self.engine.mclk();
         if let Some(on) = self.pending_free_run.take() {
             self.engine.set_free_run(on);
+        }
+        // **Ordered AFTER `pending_free_run`, and the order is load-bearing.** Both are deferred changes to
+        // the same pair of run flags, and they can be queued in one iteration: a human un-pausing the window
+        // on the very frame that hits a breakpoint leaves `pending_free_run = Some(true)` beside a latched
+        // halt. Applied the other way round, the un-pause would land second and put `free_run` back — a
+        // machine that pauses and instantly resumes, which is a *new* believable wrong answer rather than a
+        // missing one. A halt is the later fact and it wins.
+        //
+        // Also ordered *before* the drain below, so a `wait_for_break` or a `run_frames` answered in this
+        // very drain sees the halted machine rather than the one from before the frame.
+        if let Some(addr) = self.pending_break.take() {
+            self.engine.halt_on_breakpoint(addr);
         }
         let deadline = Instant::now() + self.pump_budget;
         loop {
@@ -769,15 +824,26 @@ mod tests {
     /// the run. `armed` mirrors the loop's own attach condition.
     fn player_frame(h: &mut Host, sys: &mut System, cap: &mut ScanlineCapture, armed: bool) {
         if armed {
-            // `run_sinks`, never the bare instruments: an unwrapped watch would halt this loop. Both
+            // `run_sinks`, never the bare instruments: an unwrapped watch would halt this loop. All three
             // halves ride, exactly as `oracle-frontend/src/main.rs` attaches them — a loop that took only
-            // the watch is the M1 defect, and it is what the negative controls below run without.
-            let (watch, prof) = h.run_sinks();
-            let mut sink = oracle_core::bus::Fanout::new(
-                &mut *cap,
-                oracle_core::bus::Fanout::new(watch, prof),
-            );
-            sys.run_frames_with_sink(1, &mut sink);
+            // the watch is the M1 defect, and it is what the negative controls below run without. The
+            // breakpoint half is bare and its observation is handed back, which is the loop's whole
+            // obligation to that surface.
+            let resume_pc = sys.cpu_regs().pc;
+            let (watch, prof, mut brk) = h.run_sinks(resume_pc);
+            {
+                let mut sink = oracle_core::bus::Fanout::new(
+                    &mut *cap,
+                    oracle_core::bus::Fanout::new(
+                        &mut brk,
+                        oracle_core::bus::Fanout::new(watch, prof),
+                    ),
+                );
+                sys.run_frames_with_sink(1, &mut sink);
+            }
+            if let Some((_, addr)) = brk.and_then(|b| b.fired) {
+                h.record_break(addr);
+            }
         } else {
             sys.run_frames_with_sink(1, &mut *cap);
         }

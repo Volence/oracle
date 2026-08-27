@@ -24,6 +24,7 @@
 //! no-ops with the same surface — which is why the run loop calls into it unconditionally and has no
 //! `#[cfg]` of its own.
 
+use oracle_aether::breakpoints::BreakStop;
 use oracle_aether::host::{Host, HostConfig};
 use oracle_core::bus::Observe;
 use oracle_core::io::Pad;
@@ -171,13 +172,27 @@ impl Bus {
     /// A profiler is the case that made this a pair: a client arms it over the socket while the window is
     /// playing, and a loop that fed only the watch would answer that client `frameCount: 0` with no rows —
     /// "the game did nothing" — about the frames it was watching go past.
+    ///
+    /// The third half is the **breakpoint sink, bare** — the halt is the one thing it is for, and an
+    /// `Observe` around it would count hits on a window that never stopped. `resume_pc` is this machine's
+    /// PC before the run, which the loop has and the engine (holding its placeholder `System` outside the
+    /// drain) does not. Feed the observation back through [`break_observed`] and [`Bus::record_break`].
     pub fn run_sinks(
         &mut self,
+        resume_pc: u32,
     ) -> (
         Option<Observe<&mut Watchpoints>>,
         Option<Observe<&mut Profiler>>,
+        Option<BreakStop<'_>>,
     ) {
-        self.host.run_sinks()
+        self.host.run_sinks(resume_pc)
+    }
+
+    /// Hand back the halt the sink from [`run_sinks`](Bus::run_sinks) observed. Applied at the top of the
+    /// next [`pump`](Bus::pump), which is what stamps its `emulator/stopped` with the real machine instead
+    /// of the bus's placeholder.
+    pub fn record_break(&mut self, addr: u32) {
+        self.host.record_break(addr);
     }
 
     /// **What the lens layer reads, from one call** — the watch instrument, the profiler, and whether a
@@ -245,6 +260,16 @@ impl Bus {
     pub fn set_machine_info(&mut self, info: MachineInfo) {
         self.host.set_machine_info(info.into());
     }
+}
+
+/// The address a breakpoint sink halted the run on, or `None` if nothing fired.
+///
+/// A free function rather than a method because the sink borrows the [`Bus`] for the length of the run, and
+/// the loop needs that borrow released before it can call [`Bus::record_break`] — consuming the sink here is
+/// what ends it. The stub build has a twin with the identical signature and a body that can only answer
+/// `None`, which is what keeps the run loop one shape.
+pub fn break_observed(brk: Option<BreakStop<'_>>) -> Option<u32> {
+    brk.and_then(|b| b.fired).map(|(_, addr)| addr)
 }
 
 #[cfg(test)]
@@ -325,9 +350,16 @@ mod tests {
     /// advanced through the scanline capture and whatever [`Bus::run_sinks`] lends it.
     fn player_frame(bus: &mut Bus, sys: &mut System, cap: &mut ScanlineCapture, lend: bool) {
         if lend {
-            let (watch, prof) = bus.run_sinks();
-            let mut sink = Fanout::new(&mut *cap, Fanout::new(watch, prof));
-            sys.run_frames_with_sink(1, &mut sink);
+            let resume_pc = sys.cpu_regs().pc;
+            let (watch, prof, mut brk) = bus.run_sinks(resume_pc);
+            {
+                let mut sink =
+                    Fanout::new(&mut *cap, Fanout::new(&mut brk, Fanout::new(watch, prof)));
+                sys.run_frames_with_sink(1, &mut sink);
+            }
+            if let Some(addr) = break_observed(brk) {
+                bus.record_break(addr);
+            }
         } else {
             sys.run_frames_with_sink(1, &mut *cap);
         }

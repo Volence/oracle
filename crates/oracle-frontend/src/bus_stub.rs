@@ -120,15 +120,28 @@ impl Bus {
     ///
     /// Nothing here can arm `stopAfter` either, for the same reason, but the [`Observe`] wrapper is kept:
     /// the one place the two builds must not differ is the shape of what the loop attaches to its run.
+    ///
+    /// **The breakpoint half is always `None`, and that too is a fact about this build rather than a
+    /// shrug**: breakpoints are armed only over the bus (§6's `emulator/breakpoint_add`), and there is no
+    /// bus here to arm one from, so there is never a halt for the loop to carry. `resume_pc` is taken and
+    /// dropped for the same reason the `MachineInfo` fields are — the surface has to be the served build's
+    /// or the run loop would need a `#[cfg]` of its own, which is how the two builds start meaning
+    /// different things.
     pub fn run_sinks(
         &mut self,
+        _resume_pc: u32,
     ) -> (
         Option<Observe<&mut Watchpoints>>,
         Option<Observe<&mut oracle_core::profiler::Profiler>>,
+        Option<()>,
     ) {
         let armed = self.watchpoints.watch_count() > 0;
-        (armed.then_some(Observe(&mut self.watchpoints)), None)
+        (armed.then_some(Observe(&mut self.watchpoints)), None, None)
     }
+
+    /// The served build's [`Bus::record_break`] twin. Unreachable here — [`run_sinks`](Bus::run_sinks)
+    /// never hands out a sink that could fire — and kept so the run loop is one shape.
+    pub fn record_break(&mut self, _addr: u32) {}
 
     /// What the lens layer reads, in the served build's shape. The profiler is the empty one above and the
     /// armed flag is unconditionally `false` — not a stub's shrug, but the truth about a build with no bus
@@ -158,4 +171,11 @@ impl Bus {
     }
 
     pub fn set_machine_info(&mut self, _info: MachineInfo) {}
+}
+
+/// The served build's [`break_observed`](crate::bus::break_observed) twin, and in this build it is a
+/// function that can only answer `None` — [`Bus::run_sinks`] never hands out a sink, so the argument is
+/// always `None` too. It exists so the run loop's call site is one shape in both builds.
+pub fn break_observed(_brk: Option<()>) -> Option<u32> {
+    None
 }

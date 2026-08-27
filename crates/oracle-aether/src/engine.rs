@@ -708,13 +708,18 @@ pub struct Engine {
     /// breakpoint, *then* `reload_rom`, then wait) work at all. §6 rules the surface *"not subject to the
     /// run-control state rule"*: arming, toggling and clearing are legal while the machine runs.
     ///
-    /// **Known gap, registered rather than hidden.** This rides every run *this engine* drives — the
-    /// standalone free-run and every bounded advance in both arrangements. It does **not** ride the hosted
-    /// player's own free-run loop, which reaches the machine through
-    /// [`run_sinks`](Engine::run_sinks) and would need the player to pause itself on a halt it does not
-    /// currently look for. So a breakpoint armed over the socket against the windowed player does not fire
-    /// while the *player* is free-running the game; it fires on `run_to`/`run_frames`/`step`/`press` there
-    /// as everywhere. Named in `docs/2026-08-27-breakpoints.md` as the follow-up.
+    /// **It rides every run either driver drives**, which is what makes the surface mean the same thing in
+    /// both arrangements: the standalone free-run ([`free_run_step`](Engine::free_run_step)), every bounded
+    /// advance ([`advance_with`](Engine::advance_with)), and — since `docs/2026-08-27-bp-hosted-halt.md` —
+    /// the hosted player's own 60 Hz loop, which takes the sink from [`run_sinks`](Engine::run_sinks) and
+    /// hands the observation back through [`Host::record_break`](crate::host::Host::record_break).
+    ///
+    /// That last one was a registered gap for exactly one day, and the shape of it is worth keeping: the
+    /// player's loop carried no sink, *and* every bounded run that does carry one is refused `-32005
+    /// machineRunning` while the player plays ([`require_paused`](Engine::require_paused)). The two halves
+    /// composed to make the gap **total** in the arrangement the owner actually uses — the documented
+    /// `resume` → `wait_for_break` idiom was exactly and only the broken path, and it failed by *timing
+    /// out*, which is indistinguishable from "the ROM never reached that address".
     breakpoints: Breakpoints,
     /// **The profiler (§6, CR-26), owned here and attached to every run this engine drives.**
     ///
@@ -1220,29 +1225,55 @@ impl Engine {
         self.latch_screen();
         // Free-running has no predicate of its own, so nothing can outrank the breakpoint here: an
         // observation on this path IS a firing, and is counted as one.
-        let broke_at = observed.and_then(|(_, addr)| self.breakpoints.record_halt(addr));
-        if let Some(id) = broke_at {
-            // **The halt, and it must clear BOTH flags.** They are separate on purpose
-            // ([`Engine::free_run`] / [`Engine::running`]) and a halt is the one event that ends both
-            // conditions at once: the server must stop advancing the machine on its own, *and* the machine
-            // must stop reporting itself as advancing. Clearing only `running` leaves the engine loop
-            // free-running while every reply says `running: false` — the exact contradiction the two-flag
-            // split exists to prevent, and it re-breaks once per frame forever.
-            //
-            // Not [`set_free_run`](Engine::set_free_run), which is `pause`'s path and would emit
-            // `reason: "pause"` — a knowing mislabel of a stop the client armed and is waiting to be told
-            // about by name.
-            self.free_run = false;
-            self.running = false;
-            let pc = self.sys.cpu_regs().pc;
-            let mut extra = Map::new();
-            // §11.21's M2 clarification (ii): `breakpoint` is REQUIRED on the handle shape whenever
-            // `reason` is `breakpoint`, and MUST NOT appear otherwise — the same if/then the schema
-            // applies to `watch`.
-            extra.insert("breakpoint".into(), json!(breakpoint_wire_id(id)));
-            self.emit_stopped("breakpoint", pc, extra);
+        if let Some((_, addr)) = observed {
+            self.halt_on_breakpoint(addr);
         }
         self.config.free_run_pace
+    }
+
+    /// **The breakpoint halt, and the only place either run driver spells it.**
+    ///
+    /// `addr` is the address a [`BreakStop`] observed a step boundary on, *after* precedence has settled —
+    /// so calling this is the statement "a breakpoint is what stopped this machine", and
+    /// [`record_halt`](Breakpoints::record_halt) counts it here rather than in the sink.
+    ///
+    /// **It must clear BOTH flags.** They are separate on purpose ([`Engine::free_run`] /
+    /// [`Engine::running`]) and a halt is the one event that ends both conditions at once: whoever is
+    /// advancing the machine must stop doing it, *and* the machine must stop reporting itself as advancing.
+    /// Clearing only `running` leaves the driver free-running while every reply says `running: false` — the
+    /// exact contradiction the two-flag split exists to prevent, and it re-breaks once per frame forever
+    /// (measured at **374,011** stops where the contract says 1, `docs/2026-08-27-breakpoints.md` §5).
+    /// That defect is why this is one function and not two copies: there are now **two** run drivers that
+    /// halt — this engine's own free-run step, and, since the hosted gap was closed, the player's loop by
+    /// way of [`Host::pump`](crate::host::Host::pump) — and a second hand-written halt is a second chance
+    /// to clear one flag.
+    ///
+    /// Not [`set_free_run`](Engine::set_free_run), which is `pause`'s path and would emit
+    /// `reason: "pause"` — a knowing mislabel of a stop the client armed and is waiting to be told about
+    /// by name.
+    ///
+    /// **Must be called inside a drain window**, like everything that touches the machine: it reads the
+    /// stopping `pc` from `self.sys` and the event it emits carries the machine stamp (D11). Outside one,
+    /// both would come from the placeholder `System` — `pc 0x00000000`, `frame 0, mclk 0`. That is why the
+    /// hosted path *latches* its observation rather than applying it where it is made; see
+    /// [`Host::record_break`](crate::host::Host::record_break).
+    ///
+    /// Returns whether a halt was recorded — `false` when no enabled breakpoint sits at `addr` any more,
+    /// which a client that cleared it between the observation and the apply can produce.
+    pub(crate) fn halt_on_breakpoint(&mut self, addr: u32) -> bool {
+        let Some(id) = self.breakpoints.record_halt(addr) else {
+            return false;
+        };
+        self.free_run = false;
+        self.running = false;
+        let pc = self.sys.cpu_regs().pc;
+        let mut extra = Map::new();
+        // §11.21's M2 clarification (ii): `breakpoint` is REQUIRED on the handle shape whenever
+        // `reason` is `breakpoint`, and MUST NOT appear otherwise — the same if/then the schema
+        // applies to `watch`.
+        extra.insert("breakpoint".into(), json!(breakpoint_wire_id(id)));
+        self.emit_stopped("breakpoint", pc, extra);
+        true
     }
 
     // ---------------------------------------------------------------- the screen path
@@ -1261,7 +1292,7 @@ impl Engine {
         &mut self.watchpoints
     }
 
-    /// **Both run instruments, borrowed for ONE run of a host's own loop.**
+    /// **Both run instruments and the breakpoint sink, borrowed for ONE run of a host's own loop.**
     ///
     /// This is the seam the hosted arrangement turns on, and since CR-26 there are two instruments behind
     /// it, not one. There are **two run drivers**: standalone, this engine advances the machine itself and
@@ -1292,19 +1323,49 @@ impl Engine {
     /// belt-and-braces rather than load-bearing — kept because a reader should not have to check which
     /// halves can reach back into the run.
     ///
-    /// Safe to call outside a drain window, like [`watchpoints_mut`](Engine::watchpoints_mut): both are
-    /// engine state rather than `System` state, so neither answers for the placeholder machine.
+    /// **The third element is the breakpoint sink, and it is NOT wrapped in `Observe`.** That asymmetry is
+    /// the whole content of this parcel. A watch's `stopAfter` is a *level* — `matched >= n` stays true
+    /// forever — so a shared watch attached bare would end every one of a host's 1-frame runs before it
+    /// began; a breakpoint's condition is an *edge*, re-evaluated per step boundary against the current PC,
+    /// which cannot latch on. And a breakpoint that observes without halting is strictly **worse than one
+    /// that is not attached at all**: it would count hits on a machine that never stopped, which is a
+    /// believable wrong answer rather than a missing one. So the watch and the profiler are wrapped and
+    /// this is bare, exactly as they are in [`free_run_step`](Engine::free_run_step).
+    ///
+    /// **`resume_pc` is the caller's, and it has to be.** [`BreakStop`] suppresses a fire at the PC the run
+    /// *started* on, until one instruction has retired — without which a machine halted at a breakpoint
+    /// could never be resumed past it. This engine cannot read that PC for itself here: outside a
+    /// [`Host::pump`](crate::host::Host::pump) drain window it holds the placeholder `System`, whose PC is
+    /// `0`. The run driver owns the real machine, so the run driver supplies it.
+    ///
+    /// The sink is attached only while some breakpoint is enabled, for [`watchpoints`](Engine::watchpoints)'
+    /// reason one field over: an unarmed sink attached anyway costs the unarmed path a per-boundary lookup
+    /// for nothing.
+    ///
+    /// **What a host owes in return**: the observation this sink latches has to come back, or the run
+    /// stopped and nothing said so. See [`Host::record_break`](crate::host::Host::record_break) for where
+    /// it goes and why it is applied at the top of the next drain rather than on the spot.
+    ///
+    /// Safe to call outside a drain window, like [`watchpoints_mut`](Engine::watchpoints_mut): all three
+    /// are engine state rather than `System` state, so none answers for the placeholder machine.
     pub fn run_sinks(
         &mut self,
+        resume_pc: u32,
     ) -> (
         Option<Observe<&mut Watchpoints>>,
         Option<Observe<&mut Profiler>>,
+        Option<BreakStop<'_>>,
     ) {
         let watch_armed = self.watchpoints.watch_count() > 0;
         let profiler_armed = self.profiler_armed;
+        let brk = self
+            .breakpoints
+            .any_enabled()
+            .then(|| BreakStop::new(&self.breakpoints, resume_pc));
         (
             watch_armed.then_some(Observe(&mut self.watchpoints)),
             profiler_armed.then_some(Observe(&mut self.profiler)),
+            brk,
         )
     }
 

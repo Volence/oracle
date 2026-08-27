@@ -67,7 +67,28 @@ impl Player {
                 let mut paused = false;
                 while !t_stop.load(Ordering::SeqCst) {
                     if !paused {
-                        sys.run_frames_with_sink(1, &mut cap);
+                        // The sink expression is `oracle-frontend/src/main.rs`'s, verbatim in shape: the
+                        // capture, the two lent instruments, and the **bare** breakpoint sink in the outer
+                        // `Fanout` where nothing can drop its stop signal. `resume_pc` is read before the
+                        // run because the engine, holding its placeholder `System` outside a drain, cannot
+                        // read it for itself.
+                        let resume_pc = sys.cpu_regs().pc;
+                        let (watch, prof, mut brk) = host.run_sinks(resume_pc);
+                        {
+                            let mut sink = oracle_core::bus::Fanout::new(
+                                &mut cap,
+                                oracle_core::bus::Fanout::new(
+                                    &mut brk,
+                                    oracle_core::bus::Fanout::new(watch, prof),
+                                ),
+                            );
+                            sys.run_frames_with_sink(1, &mut sink);
+                        }
+                        // The loop's whole obligation to the breakpoint surface: hand the observation back
+                        // so the halt is counted, the run flags cleared and the `stopped` emitted.
+                        if let Some((_, addr)) = brk.and_then(|b| b.fired) {
+                            host.record_break(addr);
+                        }
                         host.publish_capture(&cap);
                         cap.clear();
                     }
