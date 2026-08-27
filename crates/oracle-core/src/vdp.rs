@@ -1572,6 +1572,69 @@ impl Vdp {
         self.cram[b | 1] = (masked & 0xFF) as u8;
         masked
     }
+
+    /// **Debug poke of one VRAM byte** (`emulator/write_vram`, `protocol.md` §6, row at line 1257).
+    ///
+    /// `addr` is a VRAM byte address, `byte` the value to store. Byte-addressed and linear: byte *i* of a
+    /// payload lands at `addr + i`, which is what makes `write_vram` → `read_vram` an identity. The
+    /// data port's odd-address byte-swap is a property of a **word** written through the port and has no
+    /// counterpart here.
+    ///
+    /// # Why this exists rather than [`vram_mut`](Self::vram_mut)
+    ///
+    /// `vram_mut` hands out the bare array and runs **nothing else**. A write through it into the sprite
+    /// attribute table would leave the SAT cache holding the previous Y/size/link, so the emulator would
+    /// go on drawing a picture the VRAM no longer describes — `sprites`' `cacheDivergence` would report
+    /// `true` for a table nobody had actually left stale. Every VRAM byte the guest writes routes through
+    /// [`write_vram_byte`](Self::write_vram_byte), which maintains that cache; a poke that skipped it
+    /// would be a write path with a missing side effect, so this function maintains it too. It is
+    /// therefore the *only* supported write entry point for the bus; `vram_mut` stays what its own doc
+    /// comment says it is — a fixture hook for tests that perturb state.
+    ///
+    /// # Two deliberate departures from the port path, both of which are the point
+    ///
+    /// This **bypasses the VDP port path** — no FIFO, no autoincrement, no DMA, no control-port state —
+    /// exactly as [`poke_cram`](Self::poke_cram) does, and for the same reason.
+    ///
+    /// And it deliberately **does NOT [`capture`](Self::capture) to the watch surface**. A hit's `pc`
+    /// names the instruction that drove the access and a debugger poke has none to name
+    /// (`emulator/write_memory`'s standing rule, restated for this row in the fragment's `$comment`:
+    /// *"on `write_memory`'s and `write_cram`'s standing rule it is never offered to the watch surface,
+    /// and `watchpoint_hits.seen` does not move for it"*). The pin that actually catches a `capture` call
+    /// added here is [`a_vram_poke_is_never_offered_to_the_watch_surface`](tests) **below**, which arms the
+    /// buffer directly and carries the port path as its control; `oracle-aether`'s `tests/write_vram.rs`
+    /// namesake is the end-to-end contract pin and, measured, is *not* sensitive to that poison — the
+    /// capture buffer is armed only for the duration of a `System::run`, and a poke is issued between
+    /// runs. Both exist to catch a later "simplification" of this function into `write_vram_byte`.
+    ///
+    /// # Why the SAT arithmetic is duplicated rather than shared
+    ///
+    /// The window computation is lifted verbatim from `write_vram_byte`. Factoring the two into a shared
+    /// helper would be an edit to a function on the **currency path** — every frozen golden depends on
+    /// guest-driven VRAM writes, and every DMA byte routes through it — so the duplication is the
+    /// conservative choice, exactly as `poke_cram`'s own duplication of `write_target`'s CRAM arm was.
+    /// `vram_poke_matches_the_port_path` is the test that stops the two from drifting.
+    ///
+    /// # Panics
+    ///
+    /// If `addr >= VRAM_SIZE`. The bus refuses an out-of-range address with `-32004` long before this,
+    /// and masking here would turn a server bug into a silent wrap — the thing the row's whole-request
+    /// refusal exists to prevent.
+    pub fn poke_vram(&mut self, addr: usize, byte: u8) {
+        assert!(
+            addr < VRAM_SIZE,
+            "VRAM address {addr:#X} is outside the 64K space"
+        );
+        self.vram[addr] = byte;
+        let base = self.sat_base();
+        let entries = if self.h40() { 80 } else { 64 };
+        let off = addr.wrapping_sub(base);
+        let entry = off / 8;
+        let byte_in_entry = off % 8;
+        if byte_in_entry < 4 && entry < entries {
+            self.sat_cache[entry * 4 + byte_in_entry] = byte;
+        }
+    }
 }
 
 /// The fixed introspection colour ramp: a 3-bit channel level (`0..=7`) → 8-bit, linear (`level × 255 / 7`).
@@ -2628,6 +2691,83 @@ mod tests {
             &[0x34, 0x12],
             "odd-address write updates the swapped cache bytes"
         );
+    }
+
+    /// **The drift guard named in [`Vdp::poke_vram`]'s doc comment.** The poke duplicates the SAT-window
+    /// arithmetic rather than sharing `write_vram_byte`'s, because that function is on the currency path;
+    /// this is the test that stops the two copies from diverging. Two machines, the same four SAT bytes,
+    /// one written through the data port and one poked: VRAM and the cache must agree byte for byte.
+    ///
+    /// The addresses are chosen to exercise the whole window rule — the cached half (bytes 0–3), the
+    /// render-fetched half (bytes 4–7, which must NOT reach the cache), and a byte outside the window.
+    #[test]
+    fn vram_poke_matches_the_port_path() {
+        const BASE: usize = 0x2000; // reg5 0x10, H32
+        let bytes: [(usize, u8); 6] = [
+            (BASE, 0x01),     // entry 0, Y hi — cached
+            (BASE + 1, 0x42), // entry 0, Y lo — cached
+            (BASE + 3, 0x05), // entry 0, link — cached
+            (BASE + 4, 0xBE), // entry 0, tile/attr — NOT cached
+            (BASE + 8, 0x77), // entry 1, Y hi — cached
+            (0x1000, 0xAA),   // outside the window entirely
+        ];
+
+        let mut port = fresh();
+        port.regs[0x05] = 0x10;
+        for (a, b) in bytes {
+            port.write_vram_byte(a, b);
+        }
+
+        let mut poked = fresh();
+        poked.regs[0x05] = 0x10;
+        for (a, b) in bytes {
+            poked.poke_vram(a, b);
+        }
+
+        assert_eq!(port.vram, poked.vram, "VRAM must land identically");
+        assert_eq!(
+            port.sat_cache, poked.sat_cache,
+            "the SAT-cache write-through must land identically — the two copies of the window \
+             arithmetic have drifted"
+        );
+        // Not a vacuous comparison of two untouched arrays: the poke really did move the cache.
+        assert_eq!(
+            &poked.sat_cache[0..4],
+            &[0x01, 0x42, 0x00, 0x05],
+            "the cached half followed the poke"
+        );
+    }
+
+    /// A poke is a debugger access: it must not reach the watch surface, because a hit's `pc` names the
+    /// instruction that drove the access and a poke has none to name. The control is the port path, whose
+    /// identical write DOES capture — so a capture list that is empty for both would fail this test.
+    #[test]
+    fn a_vram_poke_is_never_offered_to_the_watch_surface() {
+        let mut v = fresh();
+        v.set_write_capture(true);
+        v.poke_vram(0x1234, 0x5A);
+        assert!(
+            v.take_write_captures().is_empty(),
+            "a poke must not be captured"
+        );
+
+        let mut control = fresh();
+        control.set_write_capture(true);
+        control.write_vram_byte(0x1234, 0x5A);
+        assert_eq!(
+            control.take_write_captures().len(),
+            1,
+            "the control proves capture was armed and the byte choke does capture"
+        );
+    }
+
+    /// The address is refused by the bus, never wrapped here — `poke_vram` asserts rather than masking,
+    /// so a server bug surfaces as a panic instead of a silent write to the wrong end of VRAM.
+    #[test]
+    #[should_panic(expected = "outside the 64K space")]
+    fn a_vram_poke_past_the_end_panics_rather_than_wrapping() {
+        let mut v = fresh();
+        v.poke_vram(VRAM_SIZE, 0xFF);
     }
 
     #[test]
