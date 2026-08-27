@@ -467,4 +467,138 @@ mod tests {
         drop(peer);
         let _ = std::fs::remove_file(&path);
     }
+
+    /// The head of the fixture ROM's inner stirring loop (`testrom.rs`: *"$00020E  inner: move.w (A0),
+    /// D0"*, encoding `$3010`), checked against the ROM image below rather than copied as a number.
+    const HOT_PC: u32 = 0x0000_020E;
+
+    /// One whole iteration of `main.rs`'s loop, orderings included: the frame (with the breakpoint sink
+    /// and the halt handed back), then `set_paused`, then the drain, then follow the bus's answer. This
+    /// is the shape the halt has to survive, and the only thing standing in for the window.
+    fn player_iteration(
+        bus: &mut Bus,
+        sys: &mut System,
+        cap: &mut ScanlineCapture,
+        paused: &mut bool,
+    ) {
+        if !*paused {
+            player_frame(bus, sys, cap, true);
+        }
+        bus.set_paused(*paused);
+        bus.pump(sys);
+        *paused = bus.is_paused();
+    }
+
+    /// ## ★ The frontend's own seam: a breakpoint a CLIENT armed halts the PLAYER's loop.
+    ///
+    /// The `oracle_aether::host` tests prove the halt; this proves that *this file* carries it — that
+    /// `Bus::run_sinks`'s third half, `break_observed` and `Bus::record_break` are wired to the host and
+    /// not merely present. `bus_stub.rs` has the identical surface with an always-`None` sink, so the run
+    /// loop compiles unchanged in both builds; this is the half that has something to check.
+    ///
+    /// The negative control is the first phase, and it is what makes the second mean anything: with no
+    /// breakpoint armed the same loop runs freely and the clock climbs, so a fixture that simply never
+    /// runs cannot pass.
+    #[test]
+    fn a_breakpoint_a_client_armed_halts_the_players_loop() {
+        let rom = oracle_core::testrom::build();
+        let a = HOT_PC as usize;
+        assert_eq!(
+            u16::from_be_bytes([rom[a], rom[a + 1]]),
+            0x3010,
+            "the fixture ROM moved: 0x{HOT_PC:08X} is no longer the hot loop, and this test would arm a \
+             dead address"
+        );
+
+        let path = std::env::temp_dir().join(format!(
+            "oracle-bp-seam-{}-{:?}.sock",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let mut sys = System::new(0x5EED);
+        sys.load_rom(rom);
+        sys.reset();
+        let mut cap = ScanlineCapture::new(Retain::LastFrame);
+        let mut bus = Bus::start(Some(Some(path.clone())), MachineInfo::default());
+
+        let mut peer = Peer::connect(&path);
+        peer.call(
+            &mut bus,
+            &mut sys,
+            "initialize",
+            json!({
+                "clientId": "frontend-test",
+                "clientName": "bus seam",
+                "clientVersion": "0",
+                "protocolVersion": 1,
+                "clientCapabilities": {"events": false},
+            }),
+        );
+        peer.send(&json!({"jsonrpc":"2.0","method":"initialized"}));
+
+        // Phase 1, the negative control: the window plays, nothing is armed, the clock climbs.
+        let mut paused = false;
+        for _ in 0..3 {
+            player_iteration(&mut bus, &mut sys, &mut cap, &mut paused);
+        }
+        assert!(!paused, "an unarmed window must keep playing");
+        let before = sys.scheduler().now();
+        assert!(before > 0, "…and must actually have run");
+
+        // Phase 2: a client arms one — legal while the machine runs, since the breakpoint surface is
+        // exempt from the run-control state rule.
+        let added = peer.call(
+            &mut bus,
+            &mut sys,
+            "emulator/breakpoint_add",
+            json!({"addr": format!("0x{HOT_PC:08X}")}),
+        );
+        let handle = added["breakpoint"].as_str().expect("a handle").to_string();
+
+        for _ in 0..3 {
+            player_iteration(&mut bus, &mut sys, &mut cap, &mut paused);
+        }
+        assert!(
+            paused,
+            "the client's breakpoint did not reach the player's loop through this file"
+        );
+
+        // The window really stopped: further iterations move no emulated time at all.
+        let halted_at = sys.scheduler().now();
+        for _ in 0..5 {
+            player_iteration(&mut bus, &mut sys, &mut cap, &mut paused);
+        }
+        assert_eq!(
+            sys.scheduler().now(),
+            halted_at,
+            "the loop kept emulating after the halt"
+        );
+
+        // …and the surface agrees, over the wire, at the exact address.
+        let w = peer.call(
+            &mut bus,
+            &mut sys,
+            "emulator/wait_for_break",
+            json!({"timeoutMs": 0}),
+        );
+        assert_eq!(w["timeoutReached"], json!(false), "{w}");
+        assert_eq!(
+            w["pc"],
+            json!(format!("0x{HOT_PC:08X}")),
+            "the stop must be at the breakpoint, not wherever the frame happened to end: {w}"
+        );
+        let l = peer.call(&mut bus, &mut sys, "emulator/breakpoint_list", json!({}));
+        let row = l["breakpoints"]
+            .as_array()
+            .expect("breakpoints[]")
+            .iter()
+            .find(|b| b["breakpoint"] == json!(handle))
+            .unwrap_or_else(|| panic!("no row for {handle} in {l}"));
+        assert_eq!(row["hits"], json!(1), "one halt is one hit: {l}");
+
+        drop(peer);
+        let _ = std::fs::remove_file(&path);
+    }
 }

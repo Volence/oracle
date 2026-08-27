@@ -1138,4 +1138,109 @@ mod tests {
             "a whole frame, not a fragment"
         );
     }
+
+    // ------------------------------------------------------------------ the hosted breakpoint halt
+
+    /// The head of the fixture ROM's inner stirring loop — a PC [`booted`]'s machine executes constantly.
+    /// Anchored to the instruction rather than to the number by
+    /// [`assert_hot_pc_is_the_stirring_loop`](tests::assert_hot_pc_is_the_stirring_loop).
+    const HOT_PC: u32 = 0x0000_020E;
+
+    /// `HOT_PC` names `move.w (A0), D0` (`$3010`) in the ROM [`booted`] loads. A test that armed a
+    /// breakpoint at a dead address would pass its ordering assertions vacuously, so this is checked
+    /// first in every one of them.
+    fn assert_hot_pc_is_the_stirring_loop() {
+        let rom = oracle_core::testrom::build();
+        let a = HOT_PC as usize;
+        let op = u16::from_be_bytes([rom[a], rom[a + 1]]);
+        assert_eq!(
+            op, 0x3010,
+            "the fixture ROM moved: 0x{HOT_PC:08X} is no longer the hot loop"
+        );
+    }
+
+    /// ## **A halt must outrank a pause change queued in the SAME iteration.**
+    ///
+    /// Both are deferred to the top of the next drain and both move the same pair of run flags, and there
+    /// is one real, reachable way for them to collide: a **human un-pausing the window on the very
+    /// iteration whose frame hits a breakpoint.** The frame runs and halts, then `set_paused(false)` sees
+    /// the engine still paused, and queues `pending_free_run = Some(true)` behind the latched halt.
+    ///
+    /// Applied the other way round that is a machine which pauses and instantly resumes — a *new*
+    /// believable wrong answer, and the one this parcel could most easily have shipped. Poison it by
+    /// moving the `pending_break` apply above the `pending_free_run` apply in [`Host::pump`].
+    ///
+    /// **The two pre-pump assertions are what stop this going green for the wrong reason.** If no
+    /// breakpoint fired, or if `set_paused` never queued the un-pause, the ordering is not exercised at
+    /// all and the final assertion would hold for a reason that has nothing to do with the rule. Both are
+    /// therefore checked as facts before the drain that has to resolve them.
+    #[test]
+    fn a_halt_outranks_an_unpause_queued_in_the_same_iteration() {
+        assert_hot_pc_is_the_stirring_loop();
+        let mut h = Host::new(HostConfig::default());
+        let mut sys = booted();
+        let mut cap = ScanlineCapture::new(Retain::LastFrame);
+
+        // The window is paused, which is the state a human is un-pausing *out of*.
+        h.set_paused(true);
+        h.pump(&mut sys);
+        assert!(h.is_paused(), "the fixture starts paused");
+
+        call_ok(
+            &mut h,
+            &mut sys,
+            "emulator/breakpoint_add",
+            json!({"addr": crate::hex::addr(HOT_PC)}),
+        );
+
+        // The colliding iteration: the human un-paused, so this iteration runs a frame — and that frame
+        // hits the breakpoint.
+        player_frame(&mut h, &mut sys, &mut cap, true);
+        h.set_paused(false);
+
+        assert_eq!(
+            h.pending_break,
+            Some(HOT_PC),
+            "no halt was latched, so this test would prove nothing about ordering"
+        );
+        assert_eq!(
+            h.pending_free_run,
+            Some(true),
+            "no un-pause was queued, so there is nothing for the halt to outrank"
+        );
+
+        h.pump(&mut sys);
+
+        assert!(
+            h.is_paused(),
+            "the un-pause landed after the halt and put `free_run` back — the window paused and \
+             instantly resumed"
+        );
+        // …and it stays paused across the next iteration, which is the one the *player* actually runs:
+        // it read `is_paused()` above, so it now mirrors `true` back and runs no frame. (A second
+        // `set_paused(false)` here would be a human pressing un-pause *again*, which must resume and is
+        // not what this test is about — asserting otherwise was an over-assertion this fixture caught.)
+        h.set_paused(h.is_paused());
+        h.pump(&mut sys);
+        assert!(h.is_paused(), "and it must still be paused a drain later");
+    }
+
+    /// An unapplied halt is never replaced by a later one.
+    ///
+    /// Today exactly one frame runs between a latch and the drain that takes it, so a second cannot
+    /// arrive — but the *earlier* halt is the one that stopped the machine, and silently overwriting it
+    /// would report the wrong address for the stop. Pinned so the "keep the first" reading is a property
+    /// rather than an accident of `Option::get_or_insert`.
+    #[test]
+    fn an_unapplied_halt_is_not_overwritten_by_a_later_one() {
+        let mut h = Host::new(HostConfig::default());
+        assert_eq!(h.pending_break, None, "a fresh host has nothing latched");
+        h.record_break(0x0000_1234);
+        h.record_break(0x0000_5678);
+        assert_eq!(
+            h.pending_break,
+            Some(0x0000_1234),
+            "the halt that stopped the machine is the first one, not the last"
+        );
+    }
 }
