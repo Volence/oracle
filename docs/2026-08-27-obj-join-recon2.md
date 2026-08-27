@@ -72,6 +72,42 @@ answer ***"that sprite has no object owner"*** for the rest. Never index, and ab
 per aurora's rule, an unchecked rebase either throws or confidently names something the author does not
 own, and the second is indistinguishable from a correct answer.
 
+## 3b. ⚑ ALL THREE CLOSED, 2026-08-27 11:5xZ — from source, no window, no agent
+
+**§3's list is answered. Kept above as written, corrected here, because a doc that quietly edits its own
+open questions loses the record of what was assumed at design time.**
+
+**1. The sentinel set is COMPLETE and every member is unusable as an address — which makes the guard
+trivial and total.** Read from aeon's `origin/master`:
+
+| value | meaning | writer |
+|---|---|---|
+| `$0000` | **no owner** — the cleared value every slot no writer touched this frame carries | `Render_Sprites`'s long-wise clear |
+| `$0001` | **ring** | `DrawRings` (`rings.emp:257`, *"`$0001` = ring sentinel"*) |
+| `$0002` | **X=0 mask sprite** | `InsertSpriteMasks` (`sprites.emp:862`) |
+| otherwise | the owning **SST address word** | `owner_term` via `Emit_ObjectPieces` |
+
+**2. §3's guess about `DrawRings` was WRONG, and wrong in the safe direction.** It asked whether rings
+stamp *"an SST address in the same space"*. **They do not** — `move.w #1, (a6,d0.w)`, a bare sentinel.
+So there are not three address writers and one clearer; there is **one address writer and three
+non-address values**. That is a materially easier problem than the one §2 described.
+
+**⚑ And it collapses §2's worst case.** §2 named *"a misaligned or out-of-pool address that still lands
+IN RANGE"* as the genuinely dangerous case — a confident wrong answer indistinguishable from a right
+one. With the sentinels enumerated, **the entire non-address set is `{0, 1, 2}`**, which no plausible
+`Object_RAM` base can collide with. **`value <= 2` → not an object, say so; otherwise rebase.** The
+residual risk is not gone (a corrupt or torn read is still possible, and the read must be coherent with
+the displayed frame) but it is no longer *"cannot be distinguished"*.
+
+**3. The rebase arithmetic already exists in our tree, derived and cross-checked.**
+`crates/oracle-aether/src/decoders.rs` derives **base** (`base_symbols: ["Object_RAM", "Player_1"]`),
+**stride** (`stride_pair: ("Player_1", "Player_2")`) and **`slot_count`** (*"Measured, from
+`(Object_RAM_End - base) / slot_bytes`"*) **from symbols, not from constants** — and it carries its own
+cross-check, deriving the real stride from `Player_2 - Player_1` and reporting *that*. So
+`slot_index = (sst_addr - base) / stride` needs no new derivation, only a decision about **where the
+join runs**: server-side (all three already in hand) or client-side (they would have to be exposed).
+**That is a design call for the parcel, not a missing capability.**
+
 ## 3. Open, and honestly unmeasured
 
 1. The `$0002` mask sentinel's exact value and encoding — **read from aeon's `InsertSpriteMasks`, not
