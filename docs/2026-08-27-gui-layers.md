@@ -191,6 +191,26 @@ or `Host::pump` directly. No emulator MCP call was made.
 
 ## D. Click-to-identify — **BLOCKED**, on two independent grounds
 
+> ⚑ **SETTLED 2026-08-27 by `docs/2026-08-27-obj-join-recon.md` (merged `f1e3484`), which CORRECTS this
+> section twice. Read it before acting on anything below.** The verdict — no non-heuristic derivation
+> exists — **stands**, but this section's stated *reason* is wrong and its ground-2 pricing is wrong.
+> **(1) Ground 1's reason.** This section says recovering the mapping "means replaying the engine's own
+> sprite-building order … which is game code we do not model", implying infeasibility. **A replay IS
+> feasible** — all four inputs resolve in the listing. The correct reason to refuse is that a replay
+> **cannot detect its own divergence**, so it yields a confident wrong object name with no signal. That
+> distinction matters because the wrong reason invites the cheaper partial replays somebody will propose
+> next, and the right one rules them out too. **(2) Ground 2's asymmetry does not exist.** `mod pick` and
+> `mod symbol_file` are both **ungated** in `oracle-frontend/src/main.rs` (the `#[cfg(feature = "aether")]`
+> nearby guards `mod bus`), so with the decode in `oracle-core` the bus crate is not involved at all and
+> there is no feature-gated second behaviour. Verified firsthand at the merge. **(3) Also corrected:**
+> object records are `$50` bytes, not the 64 this section's brief assumed, and `sprite_piece_count` is a
+> *pre-walk prediction* rather than "a count, not a range" — it is nonzero for objects that emitted
+> nothing, which is worse. **The killing argument for refusing a nearest-object guess is one this section
+> did not have: rings are the most-clicked sprite class in a Sonic act and rings are not objects at all**
+> — they emit from a flat buffer outside the object pool, so every nearest-object answer there is wrong,
+> silently.
+
+
 Landed: nothing. Recommendation: **its own parcel, and the cheap half is not the hard half.**
 
 **Ground 1 — the join does not exist, anywhere.** The ask is "when a *sprite* wins the dot, say what game
