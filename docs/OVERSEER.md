@@ -1858,6 +1858,37 @@ method* — knowing a thing in the tree is not the thing reaching the process th
 
 ## Ops (each line is a paid-for lesson)
 
+**▶ THE COMMIT-MESSAGE BAR NOW HAS TWO INSTANCES, AND BOTH FAILED BY THE SAME MECHANISM: A LINE WRAP.**
+Protocol bar 23 (*a commit message is a claim about a diff, and nothing checks it*) came out of this
+lane on 2026-08-23, from a scripted edit that **silently failed on a line wrap** while the shell let the
+commit run anyway. On 2026-08-27 aeon produced the second instance in their own tree, hours after
+banking the bar — a message asserting two changes, one of which *"matched nothing, because the sentence
+wraps across two lines and my pattern assumed one"* (their `c136fc3c`, corrected at `95c39449`, both
+verified here as reachable ancestors of their `origin/master`; they corrected the **record**, not the
+history, since the first was public).
+
+**Different repo, different operator, different tooling, SAME mechanism** — which by bar 19's test is
+corroboration rather than echo, because neither derivation could have shared the other's parameter. So
+the durable statement is sharper than the bar's own: **the dominant failure mode of a scripted edit in
+these repos is prose that WRAPS defeating a pattern that assumed one line.** Every lane here is
+docs-heavy and every doc wraps, so this is the common case, not the corner.
+
+**Two corrections to how the bar is stated, both from their instance:**
+1. **`;` is a rung BELOW the `&&` the bar already calls insufficient.** Bar 23 warns that `edit && commit`
+   does not protect you, since a replace matching nothing still exits zero. Theirs was weaker still —
+   the commit *"sat after the failed edit in the same block rather than behind it"*, so the exit status
+   was **never consulted at all.** When a block does both, the commit must be `&&`-behind the edit *and*
+   behind a verification, because `&&` alone is known-insufficient.
+2. **Match on a short fragment that CANNOT wrap, or read the blob back.** A multi-word prose pattern is a
+   bet that the author's wrapping matches yours. Prefer a distinctive short token, and then
+   `git show <sha>:<path> | grep -c` the committed blob before writing the message — the assertion in the
+   message and the check that earns it are separable, and the message is the cheap one.
+
+*Their framing, kept because it is the honest half: they banked the bar and produced its textbook
+instance twenty minutes later. **Rehearsal is not protection** — which this suite's protocol already says
+about SHAs, arriving here in a different field.*
+
+
 `cd` to the absolute repo path before ANY branch operation (a persisted cwd nearly checked out
 under a live agent). Fresh worktrees: `ln -s <repo>/vendor vendor`, verify 17 TestRoms entries, and
 open every dispatch with a base check (commit-message string + a file that must exist). Exact-path
