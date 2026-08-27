@@ -350,17 +350,31 @@ bounded run this bus drives, in both arrangements.*
 |---|---|
 | `cargo fmt --all` | clean (hard commit gate) |
 | `cargo clippy --workspace --all-targets` | **0 warnings, 0 errors** |
-| `cargo test --workspace --no-fail-fast` | see the report accompanying this doc — legs/passed/failed/ignored reported separately, never summed |
+| `cargo test --workspace --no-fail-fast` | **LEGS 58 · PASSED 1934 · FAILED 0 · IGNORED 6 · exit 0** |
 | `git diff main -- crates/oracle-core/tests/` | **empty**. No golden was regenerated; none was touched. |
 | `SCHEMATIZED_NOT_ADVERTISED` | forced red by serving five, and edited in the commit that shipped the handlers — the direction the pin's second bullet exists for. All five breakpoint rows plus `wait_for_break` left the set together. |
 
-**On the baseline.** The figure carried in the dispatch (LEGS 57 · PASSED 1912 · FAILED 0 · IGNORED 6) was
-re-derived rather than trusted, and the first attempt at re-deriving it was **contaminated** — it was
-launched in this worktree while edits were in flight, and cargo compiled the half-written tree into the
-doctest leg. It reported `LEGS 56 · PASSED 1911 · FAILED 0 · IGNORED 6` **and `EXIT=101`**: zero reported
-failures beside a non-zero exit, which is exactly the shape invariant 5 warns about and precisely why
-totals and exit codes are both reported here. The clean baseline was taken afterwards on the merge base at
-a detached checkout.
+**The baseline, re-derived rather than trusted**, on a detached checkout of the merge base `a3917fe`:
+**LEGS 57 · PASSED 1912 · FAILED 0 · IGNORED 6 · exit 0**. That is exactly the figure the dispatch
+carried — the hint was accurate, and is now verified rather than assumed.
+
+The *first* attempt at re-deriving it was **contaminated** and is worth recording: it was launched in this
+worktree while edits were in flight, so cargo compiled the half-written tree into the doctest leg. It
+reported `LEGS 56 · PASSED 1911 · FAILED 0 · IGNORED 6` beside **`EXIT=101`** — zero reported failures
+next to a non-zero exit, which is precisely the shape invariant 5 warns about, and precisely why totals
+and exit codes are both reported here rather than a total alone.
+
+**The delta, accounted leg by leg:**
+
+| | baseline | branch | delta |
+|---|---|---|---|
+| `oracle-aether` lib unittests | 50 | 56 | **+6** — the `breakpoints.rs` module tests |
+| `tests/breakpoints.rs` (new leg) | — | 16 | **+16**, and LEGS 57 → 58 |
+| every other leg | — | — | unchanged |
+| **total passed** | 1912 | 1934 | **+22** = 6 + 16, exactly |
+
+`FAILED` 0 → 0 and `IGNORED` 6 → 6. Three legs (`handshake`, `item23_dispatch`, `methods`) went red
+mid-parcel and were fixed at the call site — see §7b; their pass counts are unchanged from baseline.
 
 ---
 
