@@ -1858,6 +1858,86 @@ method* — knowing a thing in the tree is not the thing reaching the process th
 
 ## Ops (each line is a paid-for lesson)
 
+**▶ NEW BAR, 2026-08-27 — DO NOT GREP A RELEASE BINARY FOR A SHORT STRING. THE OPTIMIZER INLINES IT AS
+AN IMMEDIATE AND IT IS SIMPLY NOT THERE AS A CONTIGUOUS SEQUENCE.** Earned by nearly reporting a
+stale-binary emergency to a peer who was about to make a decision on it.
+
+Chasing whether `target/release/oracle-aether` was current, I grepped it for `timeoutReached`,
+`oracle-rs` and `serverBuild`. **All absent.** I re-ran it four ways — `grep -a`, `LC_ALL=C grep -a`,
+`strings | grep`, `strings -a -n 4 | grep` — plus a raw byte `bytes.find()` in Python that removes both
+tools from the question. **All five agreed on absence, with a negative control returning zero and
+positive controls returning hits.** Every check this file demands, and the conclusion was still wrong.
+
+**aeon settled it by spawning the binary and reading the wire: all three strings are served.** Then the
+mechanism, measured rather than guessed — the prediction was that an 8-byte immediate leaves the first
+eight bytes contiguous and orphans the rest:
+
+| literal | len | release, whole | release, 8-byte prefix | debug, whole |
+|---|---|---|---|---|
+| `oracle-rs` | 9 | **0** | 1 | 1 |
+| `oracle-next` | 11 | **0** | 1 | 1 |
+| `serverBuild` | 11 | **0** | 1 | 1 |
+| `timeoutReached` | 14 | **0** | 2 | 1 |
+| `profile=release` | 15 | 1 | 1 | 0 |
+
+**Short literals are materialized as 8-byte `mov` immediates in the optimized build; only the first
+eight bytes survive as a searchable run.** The 15-byte control stays whole, and **every debug build on
+this machine carries all of them** — which is the discriminator to reach for.
+
+**Why this is a bar and not a curiosity: it fails in the FALSE-ALARM direction, and it attacks this
+lane's own cheap shortcut.** Our 2026-08-26 bar — *a merged serve is not a served method; spawn the
+consumer's own path and call it* — is correct, and grepping the shipped binary is the tempting cheap
+substitute for it. **That substitute manufactures confident evidence of staleness in a binary that is
+perfectly current.** It is bar 16(d)'s absence surface with the sharpest possible teeth: an absence
+reproduced by five instruments still is not evidence, because all five shared one frame — *that a
+string literal in the source exists as that string in the artifact.* **Nobody records that as a choice,
+so re-running cannot vary it** (bar 19 exactly).
+
+**Operational form:** to ask whether a binary contains a symbol or wire key, (1) **spawn it and call
+it** — the bar already says this and it is the only answer that cannot be fooled; (2) failing that,
+grep the **debug** build, or the **8-byte prefix**; (3) never read a short-string absence in a release
+binary as staleness. And if a static read contradicts a live measurement, **the live one wins** —
+which is our own *the receiver's already-run command outranks a confident mechanism from this seat*,
+arriving with the seat on the losing side.
+
+**▶ AND THE ONE THAT COST MORE — A NUMBER OF OURS CAME BACK AS A PEER'S AND OUTRANKED OUR OWN
+MEASUREMENT. FIRSTHAND VERIFICATION DID NOT PROTECT US; IT IS WHAT LAUNDERED IT.** Found by aeon
+against this seat, same hour, and it is the reason the absence above went unbelieved for as long as it
+did.
+
+The chain: **this lane** measured *52 methods advertised, `capabilities.breakpoints: true`* and told
+aeon. aeon banked it in **their** `docs/OVERSEER.md` rung-2 note. I then **read that number firsthand
+out of their committed blob** and used it as *independent corroboration* to discount my own static
+finding — reasoning that a binary missing its handshake identity could not report 52. **The
+corroboration was our own claim wearing another lane's confidence.** Bar 19's echo-versus-corroboration
+at its purest: there were never two derivations, there was one, and it had gone round a circuit.
+
+⚠ **And the detail that makes it worse rather than better, verified at their `origin/master`:** the
+sentence beside it — the *41*-method reading — is explicitly labelled *"Measured, both binaries as
+shipped"*, i.e. **theirs**. The 52 carries **no attribution at all** (*"the same server reports 52
+methods…"*). So the number I trusted sat in a peer's tree, in a paragraph whose neighbouring figure
+announced its own provenance, silently missing its own. aeon's own account was that they had attributed
+it in their docs and dropped it only in the message; **at the revision I read, the durable record does
+not carry it either** — offered to them hedged, because it changes the remedy.
+
+**Which is the durable half: `verify firsthand` does not reach this.** Reading a committed blob
+confirms the **transcription**, never the **claim** — and this suite's primary defense is firsthand
+verification, so the failure rides in on the exact discipline meant to stop it. **Provenance does not
+survive transcription into another lane's document**, and the reader cannot recover it, because a
+faithfully-copied number looks identical to an independently-measured one. So the remedy is not only
+*say whose measurement it is when you repeat it in a message* — it is **the attribution must survive
+into the durable record**, since that is what peers read firsthand and trust.
+**Before letting any peer's figure outrank your own measurement, ask where it came from originally.**
+
+*⚑ Keep the sting, because the tidy lesson is wrong: **the laundered number was pointing at the TRUTH
+and this seat's correctly-executed measurement was pointing at a FALSEHOOD.** The binary really was
+current. Had I discounted the circular 52 and trusted my own five-instrument absence, I would have
+raised a false staleness alarm at a peer mid-decision. Two defective inputs happened to cancel. So
+resist *"trust your own measurement over a peer's number"* — the actual rule is that **a number with no
+provenance and an absence with no live control are both unfinished**, and the fix for each is the same:
+go and look at the running thing.*
+
+
 **▶ THE COMMIT-MESSAGE BAR NOW HAS TWO INSTANCES, AND BOTH FAILED BY THE SAME MECHANISM: A LINE WRAP.**
 Protocol bar 23 (*a commit message is a claim about a diff, and nothing checks it*) came out of this
 lane on 2026-08-23, from a scripted edit that **silently failed on a line wrap** while the shell let the
