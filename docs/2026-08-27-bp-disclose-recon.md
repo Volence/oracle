@@ -530,3 +530,94 @@ this is the argument that would change my mind.
 * **§11.20's own prose** was read via the sweep's quotation rather than independently by me; the four
   fragments' citations of it were confirmed verbatim.
 * **sigil's HEAD moved three times during the sweep**; its citations are a snapshot at `e9ef00b5`.
+
+---
+
+## OVERSEER REVIEW, 2026-08-27 — one correction against the headline, and two claims verified through the joint they needed
+
+Reviewed at merge. **The recommendation is RATIFIED** — close the gap, do not file a CR. The three
+brief-fact corrections against me are accepted and were the right call in each case. What follows is the
+half the agent could not have reached, and the two places I checked its reasoning rather than its result.
+
+### ⚠ CORRECTION — the headline's "silent" half is STALE, and the adjective must not travel
+
+**Claimed:** `evict_witness.py:97` reads snake_case `timeout_reached`, so on a timed-out wait it reads
+`None` and *"prints no failure at all"* — a silent false negative in a live witness tool. §§29, 223-224,
+237, 446-447, 484, 488 all rest on this.
+
+**Measured here at aeon `7511a440` (`origin/master`), with `6e4751c3` confirmed an ancestor:** that defect
+was **closed this morning, before the recon was dispatched.** The file now reads
+
+```
+for key in ("timeout_reached", "timeoutReached"):
+```
+
+and **raises a named error when neither key is present**, rather than defaulting. aeon fixed it on this
+lane's own report and told us so directly. Post-fix, a tool that falls into the gap **times out loudly and
+correctly**; it does not report success.
+
+**How the mistake was almost certainly made, because the shape is worth more than the instance:** the lines
+around `:101` are a *comment block explaining the old defect and why the fix was made* — `:103` literally
+contains the string `r.get("timeout_reached")` as a description of what the code no longer does. **A comment
+documenting a repair reads exactly like the defect it repaired.** That is bar 11 with the polarity
+inverted: not a citation whose next line refutes it, but a citation into prose *about* code rather than
+code. The agent was right that the string is at that line.
+
+**What survives, and it is still the case for closing the gap:** `:49` hardcodes
+`SOCK = "/run/user/1000/oracle.sock"` — pure attach, no env var, no `aether_instance` import — and `:85`/
+`:101`/`:121` are `breakpoint_add` → `wait_for_break` → `breakpoint_clear{all}`, the arm-wait-clear flow,
+aimed at exactly the socket `oracle-frontend --aether` binds. So the exposure is real and the tool genuinely
+cannot do its job in that arrangement. **The failure is loud, not silent — and a loud failure the tool can
+never pass is still a tool that cannot work.**
+
+**The urgency is re-dated rather than dropped, and this is better than the recon had it.** The trigger is not
+an accident waiting to happen: aeon has **deliberately** deferred the send-side `timeout_ms` → `timeoutMs`
+rename to migration time and said so in writing, on the correct reasoning that a key you SEND cannot be
+dual-spelled and must match the server it currently talks to. So the gap's trigger has a **known holder and
+a known date**, which is a better position than the recon describes — and it makes the sequencing warning
+actionable rather than hypothetical.
+
+### ✅ VERIFIED FIRSTHAND — the structural claim, and the joint nobody cited
+
+The recommendation rests on *"hosted, there is no state in which a breakpoint fires while anyone plays."*
+That is two claims, and the second was uncited.
+
+1. **The gate.** `engine.rs:2116-2124` — `require_paused` refuses with `-32005 machineRunning` whenever
+   `self.free_run`. Enumerated its call sites rather than trusting the count: **eight** advancing methods
+   (`run_frames`, `run_to`, `run_to_scanline`, `step`, `step_over`, `step_out`, `press`, `play_input`),
+   plus three non-advancing (`reload_rom`, `write_memory`, `write_cram`). The recon said seven; it is eight,
+   and the direction does not change.
+2. **⚑ The joint the claim needed and did not cite: does the PLAYER's own play state actually reach
+   `engine.free_run`?** If it did not, bounded advances would keep working while the player played and the
+   claim would collapse. **It does:** `oracle-frontend/src/main.rs:1795 bus.set_paused(paused)` →
+   `host.rs:268 set_paused` → `pending_free_run` → `host.rs:419-420 engine.set_free_run(on)`. `host.rs:261`
+   states the intent in its own words: *"`free_run` means 'something other than this client is advancing the
+   machine'", and hosted, that is the player.*
+
+**So the gap is TOTAL in the arrangement the owner actually uses**, and the two halves compose the wrong way
+for us: the player's loop carries no breakpoint sink, and every bounded run that *does* carry one is refused
+while the player is playing. The documented `resume` → `wait_for_break` idiom is exactly and only the broken
+path. **This is what makes a disclosure dishonest rather than merely incomplete** — the sentence we would be
+publishing is "breakpoints do not work while you use the debugger", and that is a defect to fix, not a scope
+to declare.
+
+### Also ratified, and recorded because the direction is unusual here
+
+**§9 of `docs/2026-08-27-breakpoints.md` is wrong on the cost and its own code comment was right.** The
+doc comment on `Engine::breakpoints` says the halt is *"a halt it does not currently look for"*; §9 said
+wiring it needs a pause channel and a `stopped` emitter that do not exist, and **both exist**
+(`Host::is_paused` → `main.rs:1827-1836`; `Engine::emit_stopped`). This lane's usual failure runs the other
+way — a stale comment outliving the doc that corrected it. Here the prose aged and the comment did not.
+**The deferral in §9 was priced on an estimate that does not survive the source**, which is exactly what
+this repo's own bar says about deferrals: they are unaudited estimates, and they keep coming back cheaper.
+
+### OPEN, and it is the right open question — TAGGED ⟨RUNTIME⟩, never a subagent
+
+The agent named its own weakest point correctly: **whether the legacy C++ `oracle_gui` has the same gap.**
+If it does, this is a general property of the hosted arrangement rather than our defect, and the framing
+changes. Not settleable without a running machine, and the only reachable one is the owner's player. Held.
+
+Second open item, and it cuts against the recommendation honestly: `capabilities.watchpoints.spaces` shows
+the contract **already treats scope-of-an-instrument as first-class**, so a declaration would have been
+legitimate rather than parochial. The recommendation stands anyway — legitimacy is not the test; what the
+declaration would *say* is.
