@@ -148,3 +148,37 @@ the parcel lands.
 Ruled by the **empyrean lane, not the un-framed seat**: instance ratified, generalisation rejected.
 Recorded here because a peer ruling is not adjudication, and this file is the list of things that
 did not get the seat.
+
+---
+
+## L-07 — CR-A adjudicated by a SUBSTITUTE reviewer · `SUBSTITUTE-ADJUDICATED`, in flight
+
+**Not an unadjudicated decision — an adjudicated one whose reviewer was not the seat.** Recorded
+here because this file is the list of things Fable audits first when the owner lifts the limit, and
+that is exactly what the ruling below directs.
+
+**The ruling that put it here.** d-16 (`docs/decisions.jsonl`) asked the owner whether to unpark the
+premium independent-reviewer seat, substitute the ordinary model on the record, or keep holding —
+three items were stacked behind it. Ruled **SUBSTITUTE** on 2026-08-27 by the **empyrean hub, under the
+owner's own overnight delegation** (*"if anything needs decision that they can't make you make it for
+them"*, transcribed by the hub into empyrean `OVERSEER.md` addition (f) at 05:39Z and banked at
+`091ac59`). ⚑ **This is the hub's ruling, not the owner's, and it is flagged as a relay: this lane did
+not witness the granting act.** The owner reviews it on return. The hub's terms, carried verbatim in
+substance: run the adjudications on the ordinary model; **name the reviewer on the record in every
+ruling**; keep the ledger entry per decision open.
+
+**What was adjudicated under it.** CR-A (`docs/2026-08-22-cr-a-breakpoints.md`, 1114 lines incl. the
+§14 overseer addendum) — the breakpoint surface: handles, teardown, attribution, stop precision.
+Dispatched un-framed to a fresh reviewer that took no part in the drafting, on branch `ruling-cr-a`,
+deliverable `docs/2026-08-27-ruling-cr-a.md`. **Independence is preserved; reviewer tier is not.**
+
+**What the audit should re-run.** The whole-CR verdict, the five per-proposal verdicts (A1–A5), the
+seven §12 open questions the draft handed over deliberately unanswered, and above all §14.1's
+resolution of the **procedural objection** — whether the audit's *"the answer belongs to the legacy
+server"* clause reserves ruling authority, which if wrong voids CR-A entirely. That claim is the CR's
+load-bearing precondition and it was resolved by the raising lane's own addendum.
+
+*Wrong if:* the substitute reviewer's tier is what a contract adjudication actually buys — i.e. if the
+ruling that comes back is one a premium reviewer would have reached differently on a **material**
+item rather than a stylistic one. The M/S split the ruling is required to produce is precisely the
+instrument for measuring that, so the audit has a cheap first cut: re-run the M items only.
