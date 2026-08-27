@@ -192,6 +192,8 @@ instruction and a ROM change breaks the fixture loudly instead of silently armin
 | lint (genuine rebuild) | `cargo clean -p oracle-core -p oracle-aether` (*"Removed 716 files, 161.8MiB"*) then the same clippy | **exit 0**, 0 warnings; `Checking oracle-core` + `Compiling oracle-aether` both present in the log, so it really rebuilt |
 | tests | `cargo test --workspace --no-fail-fast` | **LEGS 58 · PASSED 1940 · FAILED 0 · IGNORED 6 · exit 0** |
 | stub build | `cargo build -p oracle-frontend --no-default-features --all-targets` | **exit 0** |
+| stub lint | `cargo clippy -p oracle-frontend --no-default-features --all-targets` | **exit 0**, 0 warnings. Run because the workspace clippy above covers only the default feature set, so a `pub fn` with no caller in `bus_stub.rs` — which this repo treats as a hard error in a bin-only crate — would not have shown up there. |
+| stub tests | `cargo test -p oracle-frontend --no-default-features --bin oracle-frontend` | **247 passed, 0 failed, 1 ignored, exit 0** |
 | currency | `git diff main...HEAD --name-only -- crates/oracle-core/` | **0 files.** Not one file under `crates/oracle-core/` was touched, let alone `crates/oracle-core/tests/`. No golden was regenerated. |
 
 ### The baseline, and a worktree trap worth writing down
