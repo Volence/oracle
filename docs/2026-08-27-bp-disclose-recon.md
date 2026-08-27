@@ -621,3 +621,61 @@ Second open item, and it cuts against the recommendation honestly: `capabilities
 the contract **already treats scope-of-an-instrument as first-class**, so a declaration would have been
 legitimate rather than parochial. The recommendation stands anyway — legitimacy is not the test; what the
 declaration would *say* is.
+
+### EXPOSURE CORRECTED BY AEON, 2026-08-27 — my scoping held, my *migration* set was one file wide
+
+aeon enumerated their own tree against this note and separated two questions this doc had run together.
+**Verified firsthand here at aeon `7511a440` and in `oracle-old` before banking** — and deliberately so,
+because this correction *reduces* our risk estimate, which is the direction that needs checking hardest.
+
+* **Files that SEND `timeout_ms` today — three**, not one: `tools/evict_witness.py`,
+  `tools/raster_frame_epoch_probe.py:228` (arms at `:220`/`:221`), `tools/parallax_hscroll_probe.py:592`
+  (arms at `:584`). All three break on the spelling flip.
+* **Files that hit THIS gap — one.** Only `evict_witness.py` attaches to the player's socket. The other two
+  take theirs from `headless_emulator(...)` → `oracle-old/linux-port/harness/launcher.py:31`, which
+  `mkdtemp`s an isolated instance. **Confirmed by reading both call sites** (`raster_frame_epoch_probe.py:420`,
+  `parallax_hscroll_probe.py:1013`) and `launcher.py` itself.
+
+So the gap's scope in this doc is right and the *flip's* scope is three times wider. Two different questions
+that a single grep answers identically.
+
+**⚑ AND A SECOND CORROBORATION OF THE COMMENT-FALSE-POSITIVE CLASS, from aeon's own sweep.** A grep for
+`breakpoint_add|wait_for_break` across their tree returns **six** files; **three invoke**. The other three:
+`snapshot_poison_gate.py:65`, a comment saying it **replaced** the arm/resume/wait triple with `run_to`;
+`aether_instance.py:62`, documentation that those methods **do not exist** on the Rust core;
+`test_aether_instance.py:45`, a method list inside a **stub fixture**. **Two of the three false hits are
+comments describing a migration AWAY from the thing being grepped for** — the same shape that produced our
+own agent's stale headline.
+
+**The durable form, and it is sharper than the instance:** in a population undergoing migration, prose
+*about* the migration is not noise at the margin — here it is **half the hits**, and every false positive
+reads as a confident one. A method-name grep run to build a consumer set during a migration is measuring
+attachment, not use; only the invocation chain separates them.
+
+⚠ **Honest provenance, because it matters for whether this counts as corroboration:** I sent aeon the
+mechanism first and they found their instances afterwards, so this is **one lane's finding with a second
+lane's instances found under priming** — not two independent derivations. The enumeration parameters did
+differ (mine was one cited line inside one file; theirs a method-name grep across a tree), which is what
+makes it worth recording at all. Offered to the hub on that basis, as a sharpening of an existing bar
+rather than a new one.
+
+### ⚑ UNRELATED FIND, and it belongs to CR-E rather than here
+
+Reading `launcher.py` for the check above turned up direct support for **CR-E (stopPrecision)**, in the
+consumer's own docstring at `oracle-old/linux-port/harness/launcher.py:31-37`, verbatim:
+
+> *"deterministic=True (default) forces the single-threaded deterministic device schedule … Pass
+> deterministic=False to exercise the threaded execution path the user's live instance actually debugs in —
+> **required for anything that asserts on exact breakpoint-stop PCs, since the deterministic serial
+> scheduler's rollback stops at coarser (commit) granularity.**"*
+
+That is the legacy stop imprecision CR-E is built on, **written down by the harness that has to work around
+it**, and it is a different instrument from the measurement CR-E already cites. Note the live consequence:
+`raster_frame_epoch_probe` passes `deterministic=False`, while `parallax_hscroll_probe` takes the default and
+therefore runs under the coarse mode. Relayed to the hub, who holds CR-E; **not folded into this parcel.**
+
+### Commitment made to aeon, recorded here because mail does not survive a `/clear`
+
+I told aeon I would **signal when this gap is closed, on a rebuilt binary — not on the merge**. They have
+accepted the sequencing (close → flip → verify) and are holding all three spelling fixes until that signal.
+**That signal is this lane's debt and it is not discharged by merging this parcel.**
