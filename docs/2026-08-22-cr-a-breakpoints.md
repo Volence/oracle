@@ -1027,6 +1027,20 @@ currency question: `9d6ab1f` is a real commit, an ancestor of `origin/main`, and
 touched `contract/protocol.md` since it** — so every protocol citation in this document is current, even
 though empyrean's tip has since moved (that churn is elsewhere in their tree). The anchor is good.
 
+> ⚑ **THE PARAGRAPH ABOVE IS NOW FALSE, and it is the most instructive thing in this document.** Verified
+> at the 2026-08-27 adjudication: **14 commits have touched `contract/protocol.md`** since `9d6ab1f`
+> (`git log --oneline 9d6ab1f..origin/main -- contract/protocol.md | wc -l`). It was almost certainly
+> **true when written on 2026-08-22** — and that is the defect. **A currency check is a measurement with a
+> shelf life, and this one was recorded in the durable voice** (*"every protocol citation in this document
+> is current"*), so it went on asserting itself for five days after it stopped being true, in the one
+> section a later reader would consult *to decide whether to trust the citations*. Every empyrean citation
+> in this CR was **exact at `9d6ab1f`** — the adjudicator re-checked them all — and **all of them are now
+> stale.** Two things did not drift: the procedural clause §14.1 turns on, and D12. **Durable rule: a
+> currency claim must carry the revision it was true at and an instruction to re-run, never a bare
+> "current".** See `docs/2026-08-27-ruling-cr-a.md` for the full drift report and for what the drift did to
+> each proposal — in short, **A1 and A2 landed upstream in the shape this CR proposed, three things this CR
+> argued AGAINST landed anyway, and only A4 (`stopPrecision`) is still live.**
+
 **Correction to §2.2, in the requesting overseer's own favour and therefore worth stating plainly:** the
 brief told the drafter that migrating the consumer to handles costs them *"a trivial rewrite"*. The
 drafter found the stronger and correct result — **it costs them nothing at all**: both gate scripts clear
