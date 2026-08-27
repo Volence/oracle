@@ -407,3 +407,41 @@ Plus 6 unit tests in `crates/oracle-aether/src/breakpoints.rs` covering the inst
 per-handle state split, the earliest-added-names-the-stop rule, never-reused ids, the resume-PC
 suppression, the latch that stops a repeated boundary being double-counted, and the disabled negative
 control.
+
+---
+
+## 11. §10's contaminated-run diagnosis — CHALLENGED 2026-08-27, and the challenge fails on its own data
+
+The `parcel/bp-hosted-halt` agent hit a baseline that would not reproduce and root-caused it firsthand:
+**a fresh worktree has no `vendor/`**, `/vendor` is gitignored, and the eight `save_state::tests::*` rows
+**panic** (rather than skip) with *"vendored test ROM … is missing (or symlink vendor/ into this worktree)"*.
+`ln -s <repo>/vendor <worktree>/vendor` fixes it, leaves the tree clean, and re-derives the baseline exactly.
+**That diagnosis of THEIR run is certain, measured, and correct** — and it is a lesson this repo's own Ops
+section already carried, which the dispatching brief failed to pass on. **That omission is the overseer's**
+and is recorded as such.
+
+**They went one step further and proposed it as the retro-explanation for §10's contaminated run, "almost
+certainly … not edits in flight". That step does not survive their own measurement, and the refutation is
+theirs, not mine — I only had to compare the two signatures:**
+
+| run | LEGS | PASSED | FAILED | IGNORED | exit |
+|---|---|---|---|---|---|
+| §10's contaminated run | **56** | 1911 | **0** | 6 | 101 |
+| the vendor-less merge base, measured 2026-08-27 | **58** | 1926 | **8** | 6 | 101 |
+
+**Two legs are missing in the historical run and zero failures were reported; the vendor-less run keeps all
+58 legs and reports 8 failures by name.** Those are different failure modes that happen to share an exit
+code. A missing `vendor/` cannot produce §10's signature, so **§10's stated cause stands unrefuted** and
+the vendor hypothesis is a *third* way to get `exit 101` out of this suite rather than a correction.
+
+**The durable half, and it is why this is worth a section rather than a footnote:** `exit 101` is the shared
+observable of at least three distinct causes here, and the aggregate line alone cannot tell them apart —
+**one of them reports `FAILED 0` while failing.** That is precisely why this repo reports totals *and* exit
+codes and never a tail: had either run been recorded as "green, 1911 passed", nothing downstream could have
+recovered the difference. **The agent's contribution stands either way** — it turned an unexplained
+signature into a named, reproducible, one-command cause, which is more than the §10 note ever had.
+
+⚠ **Recorded against this seat: the retro-attribution nearly went into the ledger unchecked, because it
+arrived attached to a diagnosis that was certain and correct.** A confidently-offered *adjacent* claim
+inherits the credibility of the measured one beside it — the bar this repo already carries, arriving on a
+returned agent report rather than on a peer message.
