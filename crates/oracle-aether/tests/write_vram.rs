@@ -391,6 +391,23 @@ fn a_poke_into_the_sprite_table_maintains_the_sat_cache() {
 /// attached to anything, which is exactly what `seen` exists to separate out — so the watch is first
 /// proven live against a ROM that really does drive a VRAM write through the port (`build_vram_poke`
 /// pokes a word at `$0100`), and only then is the poke proven to move **neither** counter.
+///
+/// # What this test does NOT prove, said out loud
+///
+/// It is the **end-to-end** pin: the property a client can observe, over the real wire, against a watch
+/// that has demonstrably recorded something. It is **not** the guard on `Vdp::poke_vram`'s omission of
+/// `capture`, and it was measured not to be: adding a `capture` call inside `poke_vram` leaves this test
+/// **green**. The reason is structural — `System::run` arms the capture buffer for the duration of a run
+/// and disarms it on return (`system.rs`, the `wants_writes`/`capture` pair), so a poke issued *between*
+/// runs meets a disarmed buffer whatever it does. Nothing reachable from this surface can arm it around
+/// a poke.
+///
+/// The sensitive guard is therefore `oracle_core::vdp::tests::a_vram_poke_is_never_offered_to_the_watch_
+/// surface`, which arms the buffer directly and carries the port path as its control; that one was proven
+/// red against exactly this poison. The two are kept as a pair rather than one being deleted, because
+/// they answer different questions: "does the contract hold on the wire" and "does the write path
+/// capture". *(The same insensitivity is pre-existing in `cram.rs`'s namesake, which `Vdp::poke_cram`'s
+/// doc comment calls "the direct pin" — measured 2026-08-27 and reported as a follow-up, not fixed here.)*
 #[test]
 fn a_poke_is_never_offered_to_the_watch_surface() {
     let h = spawn_with("wv-watch", oracle_core::testrom::build_vram_poke(), 1024);

@@ -1600,9 +1600,12 @@ impl Vdp {
     /// names the instruction that drove the access and a debugger poke has none to name
     /// (`emulator/write_memory`'s standing rule, restated for this row in the fragment's `$comment`:
     /// *"on `write_memory`'s and `write_cram`'s standing rule it is never offered to the watch surface,
-    /// and `watchpoint_hits.seen` does not move for it"*). `tests/write_vram.rs` in `oracle-aether` is
-    /// the direct pin, with `a_vram_poke_is_never_offered_to_the_watch_surface` below as the unit-level
-    /// one, and both exist to catch a later "simplification" of this function into `write_vram_byte`.
+    /// and `watchpoint_hits.seen` does not move for it"*). The pin that actually catches a `capture` call
+    /// added here is [`a_vram_poke_is_never_offered_to_the_watch_surface`](tests) **below**, which arms the
+    /// buffer directly and carries the port path as its control; `oracle-aether`'s `tests/write_vram.rs`
+    /// namesake is the end-to-end contract pin and, measured, is *not* sensitive to that poison — the
+    /// capture buffer is armed only for the duration of a `System::run`, and a poke is issued between
+    /// runs. Both exist to catch a later "simplification" of this function into `write_vram_byte`.
     ///
     /// # Why the SAT arithmetic is duplicated rather than shared
     ///
