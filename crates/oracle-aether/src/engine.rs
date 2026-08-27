@@ -28,6 +28,7 @@
 //! is engine-owned and **lent** — see [`Engine::watchpoints`], which is the one place the hosted
 //! arrangement's two-run-drivers problem is answered.
 
+use crate::breakpoints::{BreakStop, BreakpointId, Breakpoints};
 use crate::build_info;
 use crate::decoders;
 use crate::hex;
@@ -146,6 +147,17 @@ pub struct EngineConfig {
     /// plans around it, for D13's reason: a client sweeping a hot range needs the number in advance, not
     /// after losing evidence to it.
     pub watch_ring_cap: usize,
+    /// **The breakpoint cap** (`protocol.md` §6, §11.21 design choice 3), advertised in `initialize` as
+    /// `limits.maxBreakpoints` — on `limits` and **not** inside `capabilities.breakpoints`, because that
+    /// capability is a **boolean** shipping clients already parse and §11.18 forbids widening an emitted
+    /// shape under them. At the cap `emulator/breakpoint_add` refuses with
+    /// `-32005 {reason:"breakpointCapReached", cap, count}` and *"MUST NOT silently grow past the
+    /// advertised number"*.
+    ///
+    /// 32, the watch cap's number, for the watch cap's reason: a breakpoint is a small struct, so this is a
+    /// policy bound rather than a memory one — and one instrument-shaped cap is easier for a client to hold
+    /// than two arbitrary ones. §6 pins no number.
+    pub max_breakpoints: usize,
     /// Wall-clock pacing for free-running mode, or `None` to run flat out. **Pacing only** — it never
     /// touches an emulated stamp, so determinism is unaffected (recon §5 C2). Tests use `None`.
     pub free_run_pace: Option<Duration>,
@@ -188,6 +200,7 @@ impl Default for EngineConfig {
             // writes 4,923,206 CRAM words over 120 frames — where the honest answer is never "the ring held
             // it all" but "the ring held the tail and `dropped` says how much it did not".
             watch_ring_cap: 4096,
+            max_breakpoints: 32,
             free_run_pace: Some(Duration::from_micros(16_667)),
             server_name: "oracle-next".into(),
             server_version: env!("CARGO_PKG_VERSION").into(),
@@ -321,6 +334,39 @@ pub const METHODS: &[MethodSpec] = &[
         handler: Engine::checkpoint_drop,
         summary: "drop one checkpoint by id, or all of them, and report how many went",
         params: &["all", "id"],
+    },
+    // The five §11.21 breakpoint rows, in catalog order. **None is subject to §6's run-control state
+    // rule** — arming, toggling and clearing mutate an observer, not the timeline — and the params sets
+    // here are the schema fragments', derived by `tests/params_closure.rs` rather than transcribed.
+    MethodSpec {
+        name: "emulator/breakpoint_add",
+        handler: Engine::breakpoint_add,
+        summary: "arm an execution breakpoint at an address or symbol; returns its handle",
+        params: &["addr", "enabled", "label", "symbol"],
+    },
+    MethodSpec {
+        name: "emulator/breakpoint_set_enabled",
+        handler: Engine::breakpoint_set_enabled,
+        summary: "the one writer of a breakpoint's `enabled`; carries `hits` across the toggle",
+        params: &["breakpoint", "enabled"],
+    },
+    MethodSpec {
+        name: "emulator/breakpoint_list",
+        handler: Engine::breakpoint_list,
+        summary: "one page of the breakpoints held, each with its address, arm state and hit count",
+        params: &["cursor", "limit"],
+    },
+    MethodSpec {
+        name: "emulator/breakpoint_clear",
+        handler: Engine::breakpoint_clear,
+        summary: "clear one breakpoint by handle, or every breakpoint on the server",
+        params: &["all", "breakpoint"],
+    },
+    MethodSpec {
+        name: "emulator/wait_for_break",
+        handler: Engine::wait_for_break,
+        summary: "poll where the machine halted (deprecated by the `stopped` event; see §6 D6)",
+        params: &["timeoutMs"],
     },
     MethodSpec {
         name: "emulator/watchpoint_add",
@@ -653,6 +699,23 @@ pub struct Engine {
     /// engine-owned and are **not** auto-cleared (§6), because a watch with `stopAfter` changes how the
     /// machine runs and disarming one nobody asked to disarm is a machine-state change §5 forbids.
     watchpoints: Watchpoints,
+    /// **The breakpoint instrument (§6, §11.21 — CR-BP), owned here and attached to every run this engine
+    /// drives.**
+    ///
+    /// Engine-owned for [`watchpoints`](Engine::watchpoints)'s reason, and outside `System` for the same
+    /// one: a breakpoint is an *observer*, not machine state, so it survives `swap_system`, `restore`,
+    /// `reset` and `reload_rom` untouched — which is what makes the `aeon` `evict_witness` idiom (arm a
+    /// breakpoint, *then* `reload_rom`, then wait) work at all. §6 rules the surface *"not subject to the
+    /// run-control state rule"*: arming, toggling and clearing are legal while the machine runs.
+    ///
+    /// **Known gap, registered rather than hidden.** This rides every run *this engine* drives — the
+    /// standalone free-run and every bounded advance in both arrangements. It does **not** ride the hosted
+    /// player's own free-run loop, which reaches the machine through
+    /// [`run_sinks`](Engine::run_sinks) and would need the player to pause itself on a halt it does not
+    /// currently look for. So a breakpoint armed over the socket against the windowed player does not fire
+    /// while the *player* is free-running the game; it fires on `run_to`/`run_frames`/`step`/`press` there
+    /// as everywhere. Named in `docs/2026-08-27-breakpoints.md` as the follow-up.
+    breakpoints: Breakpoints,
     /// **The profiler (§6, CR-26), owned here and attached to every run this engine drives.**
     ///
     /// Engine-owned for the same reason as [`watchpoints`](Engine::watchpoints): there are two run
@@ -728,6 +791,11 @@ struct Advanced {
     /// The watch whose `stopAfter` ended the run, when that is what ended it (§6: *"the halt always names
     /// its watch"*).
     stopped_by: Option<WatchId>,
+    /// The breakpoint that ended the run, when that is what ended it — *"the earliest-added enabled
+    /// breakpoint at that address"* (§6, §11.21). A third thing that can end one run, on the same argument
+    /// [`stopped_by`](Advanced::stopped_by) was added for: a caller reading `StopRecord::fired` alone would
+    /// report its own target as reached because an unrelated breakpoint halted the run.
+    broke_at: Option<BreakpointId>,
 }
 
 /// One subroutine frame a step-shaped run watched open, in the only two terms a return is matched on.
@@ -975,6 +1043,7 @@ impl Engine {
             checkpoints: Vec::new(),
             next_checkpoint_id: 1,
             watchpoints,
+            breakpoints: Breakpoints::new(),
             watches_issued: 0,
             profiler: Profiler::new(),
             profiler_armed: false,
@@ -1130,9 +1199,42 @@ impl Engine {
         // load-bearing — but it is the same shape, and a reader should not have to check which halves can
         // reach back into the run.
         let prof = self.profiler_armed.then_some(&mut self.profiler);
-        let mut sink = Fanout::new(&mut self.screen, Fanout::new(Observe(armed), Observe(prof)));
+        // **The breakpoint rides here BARE, and that is the whole point of the surface.** This is the only
+        // path a free-running machine executes on, so a breakpoint wrapped in [`Observe`] here would be a
+        // breakpoint that never halts anything — the `resume` → `wait_for_break` idiom every consumer uses
+        // goes through exactly this loop. The `stopAfter` watch beside it *is* wrapped, and the asymmetry is
+        // principled rather than an oversight: a watch's stop is a **level** (`matched >= n` stays true
+        // forever), so honouring it here would freeze the machine permanently, while a breakpoint's is an
+        // **edge** evaluated per step boundary against the current PC, which cannot latch on.
+        let resume_pc = self.sys.cpu_regs().pc;
+        let mut brk = self
+            .breakpoints
+            .any_enabled()
+            .then(|| BreakStop::new(&self.breakpoints, resume_pc));
+        let mut sink = Fanout::new(
+            &mut self.screen,
+            Fanout::new(&mut brk, Fanout::new(Observe(armed), Observe(prof))),
+        );
         self.sys.run_frames_with_sink(1, &mut sink);
+        let observed = brk.and_then(|b| b.fired);
         self.latch_screen();
+        // Free-running has no predicate of its own, so nothing can outrank the breakpoint here: an
+        // observation on this path IS a firing, and is counted as one.
+        let broke_at = observed.and_then(|(_, addr)| self.breakpoints.record_halt(addr));
+        if let Some(id) = broke_at {
+            // The halt, and the state change that goes with it. §6's run-control state rule is what makes
+            // this necessary rather than cosmetic: a client that is told the machine stopped must find it
+            // *stopped* when it calls `status` or `registers` next, or every reading it takes is from a
+            // machine that has run on past the breakpoint.
+            self.running = false;
+            let pc = self.sys.cpu_regs().pc;
+            let mut extra = Map::new();
+            // §11.21's M2 clarification (ii): `breakpoint` is REQUIRED on the handle shape whenever
+            // `reason` is `breakpoint`, and MUST NOT appear otherwise — the same if/then the schema
+            // applies to `watch`.
+            extra.insert("breakpoint".into(), json!(breakpoint_wire_id(id)));
+            self.emit_stopped("breakpoint", pc, extra);
+        }
         self.config.free_run_pace
     }
 
@@ -1227,20 +1329,14 @@ impl Engine {
     /// registered — an unarmed instrument would still count every bus event into `seen`, which costs the
     /// unarmed path something for nothing and, worse, makes `seen > 0` mean less than it should.
     fn advance(&mut self, frames: u64) -> Advanced {
-        let record = {
-            let armed = (self.watchpoints.watch_count() > 0).then_some(&mut self.watchpoints);
-            let prof = self.profiler_armed.then_some(&mut self.profiler);
-            let mut sink = Fanout::new(&mut self.screen, Fanout::new(armed, prof));
-            self.sys.run_frames_with_sink(frames, &mut sink)
-        };
-        self.latch_screen();
-        // Nothing else in this run could have asked to stop, so a `SinkRequested` here **is** a watch.
-        let stopped_by = record.fired().then(|| self.watch_wanting_stop()).flatten();
-        Advanced {
-            record,
-            predicate_fired: false,
-            stopped_by,
-        }
+        // A plain frame advance has no predicate of its own, so it goes through the shared
+        // `advance_with`/`attribute` pair with a null stop condition rather than building a fourth Fanout —
+        // which is what keeps the breakpoint instrument on *this* path too. It was a separate Fanout until
+        // breakpoints landed, and a separate Fanout is exactly how an instrument comes to ride four of the
+        // five advancing shapes and silently miss the fifth.
+        let mut never = StopWhen::new(|_, _| false);
+        let (record, broke_at) = self.advance_with(frames, &mut never);
+        self.attribute(record, false, broke_at)
     }
 
     /// The lowest-id armed watch that has reached its `stopAfter` threshold, if any.
@@ -1267,8 +1363,8 @@ impl Engine {
         predicate: F,
     ) -> Advanced {
         let mut stop = StopWhen::new(predicate);
-        let record = self.advance_with(max_frames, &mut stop);
-        self.attribute(record, stop.fired())
+        let (record, broke_at) = self.advance_with(max_frames, &mut stop);
+        self.attribute(record, stop.fired(), broke_at)
     }
 
     /// [`advance_until`](Engine::advance_until) for the three `step*` rows (§6 lines 851-853): the same run,
@@ -1284,9 +1380,9 @@ impl Engine {
     /// every subsequent `run_frames`.
     fn advance_stepping(&mut self, max_frames: u64, goal: StepGoal) -> Advanced {
         let mut stop = StepStop::new(goal);
-        let record = self.advance_with(max_frames, &mut stop);
+        let (record, broke_at) = self.advance_with(max_frames, &mut stop);
         let fired = stop.fired;
-        self.attribute(record, fired)
+        self.attribute(record, fired, broke_at)
     }
 
     /// [`advance_until`](Engine::advance_until) for `emulator/run_to_scanline` (§6 line 855): the same run,
@@ -1301,9 +1397,9 @@ impl Engine {
             target,
             fired: false,
         };
-        let record = self.advance_with(max_frames, &mut stop);
+        let (record, broke_at) = self.advance_with(max_frames, &mut stop);
         let fired = stop.fired;
-        self.attribute(record, fired)
+        self.attribute(record, fired, broke_at)
     }
 
     /// The instrumented run every advancing method shares: the caller's stop condition, the screen capture,
@@ -1312,18 +1408,33 @@ impl Engine {
     /// The instrument rides here and it has to: a run that does not feed it produces a `seen == 0` reading —
     /// "the recorder was never attached" — from a run that really happened. The `Option` arm of
     /// `BusEventSink` is what expresses "only sometimes attached" without a second code path.
-    fn advance_with<S: BusEventSink>(&mut self, max_frames: u64, stop: &mut S) -> StopRecord {
-        let record = {
+    fn advance_with<S: BusEventSink>(
+        &mut self,
+        max_frames: u64,
+        stop: &mut S,
+    ) -> (StopRecord, Option<(BreakpointId, u32)>) {
+        // The run's own starting PC, latched *before* the run so the breakpoint sink can suppress the
+        // re-trigger at it. See [`BreakStop`] for why that suppression is what makes a resume/wait/resume
+        // loop able to make progress.
+        let resume_pc = self.sys.cpu_regs().pc;
+        let (record, broke_at) = {
+            let mut brk = self
+                .breakpoints
+                .any_enabled()
+                .then(|| BreakStop::new(&self.breakpoints, resume_pc));
             let armed = (self.watchpoints.watch_count() > 0).then_some(&mut self.watchpoints);
             let prof = self.profiler_armed.then_some(&mut self.profiler);
-            let mut sink = Fanout::new(
-                &mut self.screen,
-                Fanout::new(stop, Fanout::new(armed, prof)),
-            );
-            self.sys.run_frames_with_sink(max_frames, &mut sink)
+            let record = {
+                let mut sink = Fanout::new(
+                    &mut self.screen,
+                    Fanout::new(stop, Fanout::new(&mut brk, Fanout::new(armed, prof))),
+                );
+                self.sys.run_frames_with_sink(max_frames, &mut sink)
+            };
+            (record, brk.and_then(|b| b.fired))
         };
         self.latch_screen();
-        record
+        (record, broke_at)
     }
 
     /// **Two things can end an instrumented run, and the caller must not confuse them.**
@@ -1332,14 +1443,41 @@ impl Engine {
     /// as `reached` and what a `step*` reports by emitting its `stopped`; anything else that ended the run
     /// early was a `stopAfter` watch, and is attributed rather than mislabelled as the caller's condition
     /// having been met.
-    fn attribute(&self, record: StopRecord, predicate_fired: bool) -> Advanced {
-        let stopped_by = (record.fired() && !predicate_fired)
+    /// **Three things can now end an instrumented run, and the order they are checked in is the answer to
+    /// "which one gets to name the stop".**
+    ///
+    /// 1. **The caller's own predicate** wins outright. A `run_to` whose target address also carries a
+    ///    breakpoint reached its target; reporting `breakpoint` there would answer a question the caller
+    ///    did not ask.
+    /// 2. **A breakpoint**, next. It halts at an instruction boundary *before* the instruction runs, which
+    ///    is the more precise of the two remaining conditions.
+    /// 3. **A `stopAfter` watch**, last — it halts *after* a triggering instruction has committed, so if a
+    ///    breakpoint fired on the same run the breakpoint is the earlier, sharper cause.
+    ///
+    /// Note that (2) is read from the sink's own latch rather than re-derived from the set, unlike (3):
+    /// `watch_wanting_stop` has to re-derive because `Watchpoints::stop_requested` is one bool over every
+    /// watch, whereas `BreakStop` already knows precisely which handle it stopped for.
+    fn attribute(
+        &mut self,
+        record: StopRecord,
+        predicate_fired: bool,
+        observed: Option<(BreakpointId, u32)>,
+    ) -> Advanced {
+        // `&mut self` because THIS is where a firing is counted — see [`Breakpoints::record_halt`] for why
+        // the count cannot happen in the sink. A breakpoint the caller's own predicate outranks did not
+        // halt the machine and does not count.
+        let broke_at = (!predicate_fired)
+            .then_some(observed)
+            .flatten()
+            .and_then(|(_, addr)| self.breakpoints.record_halt(addr));
+        let stopped_by = (record.fired() && !predicate_fired && broke_at.is_none())
             .then(|| self.watch_wanting_stop())
             .flatten();
         Advanced {
             record,
             predicate_fired,
             stopped_by,
+            broke_at,
         }
     }
 
@@ -1479,7 +1617,13 @@ impl Engine {
                     )
                 }),
                 "profiler": true,
-                "breakpoints": false,
+                // §11.21: *"`capabilities.breakpoints` stays a boolean meaning 'the family is served' and
+                // is not widened, since a boolean a client already reads cannot become an object without
+                // breaking that client"*. The cap therefore rides `limits.maxBreakpoints` below, and the
+                // HANDLE-vs-address discriminator is the presence of `emulator/breakpoint_set_enabled` in
+                // the `methods` list — which this server advertises, so a client reading that list learns
+                // it is talking to the handle shape without asking a second question.
+                "breakpoints": true,
                 "batch": false,
                 // A 6-button pad is not modelled by the core, so x/y/z/mode are refused rather than
                 // silently ignored.
@@ -1530,6 +1674,12 @@ impl Engine {
                 // lens rather than to one method. This server implements the lens, so the key is always
                 // present and the no-lens direction has no branch here to go stale.
                 "maxProfilerCallers": self.config.max_profiler_callers,
+                // **§11.21 design choice 3.** REQUIRED once the breakpoint family is advertised: §6 makes
+                // the cap normative and says the refusal at it *"MUST NOT silently grow past the advertised
+                // number"* — a number a client can only discover by hitting it is a number that costs a
+                // lost breakpoint to learn. On `limits` rather than inside `capabilities.breakpoints`
+                // because that capability is a boolean shipping clients already parse (§11.18).
+                "maxBreakpoints": self.config.max_breakpoints,
             },
             // What the `frame` in every stamp actually *means* (`F-TRACE-PAL`). Advertised once, here,
             // rather than repeated on every reply: it is a property of the machine, not of the answer.
@@ -1596,6 +1746,12 @@ impl Engine {
             extra.insert("buttons".into(), json!(buttons));
             extra.insert("port".into(), json!(port));
         }
+        if let Some(id) = run.broke_at {
+            extra.insert("deadlineReached".into(), json!(false));
+            extra.insert("breakpoint".into(), json!(breakpoint_wire_id(id)));
+            self.emit_stopped("breakpoint", pc, extra);
+            return;
+        }
         if let Some(id) = run.stopped_by {
             extra.insert("deadlineReached".into(), json!(false));
             extra.insert("watch".into(), json!(watch_wire_id(id)));
@@ -1622,7 +1778,10 @@ impl Engine {
     /// whether anything executed at all before its watch fired. That is the defect §11.5 struck
     /// `run_to.stoppedAtFrame` for, wearing a different hat.
     fn frames_advanced(&self, run: &Advanced, requested: u64, mclk_before: u64) -> u64 {
-        if run.stopped_by.is_none() {
+        // A breakpoint ends a bounded advance early exactly as a `stopAfter` watch does, and for the same
+        // reason the rounding was refused: a caller establishing whether anything executed before its
+        // breakpoint fired needs the exact count, including zero.
+        if run.stopped_by.is_none() && run.broke_at.is_none() {
             return requested;
         }
         self.sys.scheduler().now().saturating_sub(mclk_before) / MCLK_PER_FRAME
@@ -2050,7 +2209,11 @@ impl Engine {
         // its bound. §6 answers that case by attribution: the halt names its watch, and `runTo` would be a
         // knowing mislabel — the same class of error §8 item 13 names for `step` on a frame advance.
         let mut extra = Map::new();
-        if let Some(id) = run.stopped_by {
+        if let Some(id) = run.broke_at {
+            extra.insert("deadlineReached".into(), json!(false));
+            extra.insert("breakpoint".into(), json!(breakpoint_wire_id(id)));
+            self.emit_stopped("breakpoint", record.pc, extra);
+        } else if let Some(id) = run.stopped_by {
             extra.insert("deadlineReached".into(), json!(false));
             extra.insert("watch".into(), json!(watch_wire_id(id)));
             self.emit_stopped("watchpoint", record.pc, extra);
@@ -2084,7 +2247,13 @@ impl Engine {
             out["symbol"] = json!(name);
             out["symbolDisp"] = json!(disp);
         }
-        if let Some(id) = run.stopped_by {
+        if let Some(id) = run.broke_at {
+            out["caveat"] = json!(format!(
+                "the target PC was never reached — breakpoint {} halted the run first, so NOTHING about \
+                 the machine state follows from where it stopped",
+                breakpoint_wire_id(id)
+            ));
+        } else if let Some(id) = run.stopped_by {
             out["caveat"] = json!(format!(
                 "the target PC was never reached — watch {} hit its stopAfter threshold and ended the \
                  run first, so NOTHING about the machine state follows from where it stopped",
@@ -2163,7 +2332,11 @@ impl Engine {
         let record = run.record;
         self.running = false;
         let mut extra = Map::new();
-        if let Some(id) = run.stopped_by {
+        if let Some(id) = run.broke_at {
+            extra.insert("deadlineReached".into(), json!(false));
+            extra.insert("breakpoint".into(), json!(breakpoint_wire_id(id)));
+            self.emit_stopped("breakpoint", record.pc, extra);
+        } else if let Some(id) = run.stopped_by {
             extra.insert("deadlineReached".into(), json!(false));
             extra.insert("watch".into(), json!(watch_wire_id(id)));
             self.emit_stopped("watchpoint", record.pc, extra);
@@ -2184,7 +2357,13 @@ impl Engine {
             "reached": run.predicate_fired,
             "maxFrames": max_frames,
         });
-        if let Some(id) = run.stopped_by {
+        if let Some(id) = run.broke_at {
+            out["caveat"] = json!(format!(
+                "scanline {line} was never reached — breakpoint {} halted the run first, so NOTHING about \
+                 the machine state follows from where it stopped",
+                breakpoint_wire_id(id)
+            ));
+        } else if let Some(id) = run.stopped_by {
             out["caveat"] = json!(format!(
                 "scanline {line} was never reached — watch {} hit its stopAfter threshold and ended the \
                  run first, so NOTHING about the machine state follows from where it stopped",
@@ -2339,7 +2518,11 @@ impl Engine {
         self.running = false;
         let pc = self.sys.cpu_regs().pc;
         let mut extra = Map::new();
-        if let Some(id) = run.stopped_by {
+        if let Some(id) = run.broke_at {
+            extra.insert("deadlineReached".into(), json!(false));
+            extra.insert("breakpoint".into(), json!(breakpoint_wire_id(id)));
+            self.emit_stopped("breakpoint", pc, extra);
+        } else if let Some(id) = run.stopped_by {
             extra.insert("deadlineReached".into(), json!(false));
             extra.insert("watch".into(), json!(watch_wire_id(id)));
             self.emit_stopped("watchpoint", pc, extra);
@@ -5003,6 +5186,293 @@ impl Engine {
         Value::Object(e)
     }
 
+    // ------------------------------------------------------- breakpoints (§6, §11.21 — CR-BP)
+    //
+    // **None of the four is subject to §6's run-control state rule, and §6 says so in as many words:**
+    // *"arming, toggling and clearing mutate an observer, not the timeline, and are legal while running."*
+    // That is not a convenience — the whole `resume` → arm → `wait_for_break` idiom depends on it, and
+    // forcing a client to pause first would make the server change machine state on the caller's behalf,
+    // which §5 forbids.
+    //
+    // **Identity is the handle, never the address** (§11.21). The amendment was raised on a measured harm:
+    // an agent cleared seven breakpoints it judged "not mine", one of them at 1,691,410 hits. So a second
+    // add at an occupied address is a second breakpoint, `clear` takes a handle or `all`, and there is no
+    // clear-by-address anywhere on this surface.
+
+    fn breakpoint_add(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let addr = self.resolve_exclusive_target(params)?;
+        let enabled = match params.get("enabled") {
+            None | Some(Value::Null) => true,
+            Some(Value::Bool(b)) => *b,
+            Some(other) => {
+                return Err(RpcError::invalid_params(format!(
+                    "`enabled` must be a boolean (D9 category 2) — got {}",
+                    hex::kind_of(other)
+                )))
+            }
+        };
+        let label =
+            match params.get("label") {
+                None | Some(Value::Null) => String::new(),
+                Some(Value::String(s)) => s.clone(),
+                Some(_) => return Err(RpcError::invalid_params(
+                    "`label` must be a string (it is carried back verbatim and never interpreted)",
+                )),
+            };
+        // **The cap, checked last**, on `watchpoint_add`'s reasoning: a request that is *also* malformed is
+        // told about the malformation rather than about a cap it would not have reached. §11.21 makes the
+        // refusal normative — *"MUST fail with -32005 carrying {reason:'breakpointCapReached', cap, count}
+        // and MUST NOT silently grow past the advertised number"* — and it is `limits.maxBreakpoints` that
+        // a client reads to plan around it.
+        let cap = self.config.max_breakpoints;
+        let count = self.breakpoints.len();
+        if count >= cap {
+            return Err(RpcError::invalid_state(
+                "breakpointCapReached",
+                format!(
+                    "all {cap} breakpoint slots are in use; make room first: emulator/breakpoint_clear"
+                ),
+                json!({"cap": cap, "count": count}),
+            ));
+        }
+
+        let id = self.breakpoints.add(addr, enabled, label.clone());
+        let mut out = Map::new();
+        out.insert("breakpoint".into(), json!(breakpoint_wire_id(id)));
+        // The RESOLVED address — *"the answer, not merely an echo, when the request named a symbol"*.
+        out.insert("addr".into(), json!(hex::addr(addr)));
+        if let Some((name, disp)) = self.symbol_at(addr) {
+            out.insert("symbol".into(), json!(name));
+            out.insert("symbolDisp".into(), json!(disp));
+        }
+        // The arm state it ACTUALLY got, on `watchpoint_add`'s `op` precedent, so a caller that supplied
+        // nothing is told what it got rather than having to know the default.
+        out.insert("enabled".into(), json!(enabled));
+        if !label.is_empty() {
+            out.insert("label".into(), json!(label));
+        }
+        Ok(Value::Object(out))
+    }
+
+    /// **The one writer of `enabled`** (§11.21 design choice 2, audit D-13). `breakpoint_list` has reported
+    /// the field since the first row and nothing on this bus could set it.
+    ///
+    /// **Refuses an unknown handle, deliberately unlike `breakpoint_clear`, which succeeds with
+    /// `removed: 0`.** §6 states the asymmetry and its reason in one line: *"a client that thinks it is
+    /// toggling something must learn it is toggling nothing"* — a delete that finds nothing has reached its
+    /// goal; a toggle that finds nothing has not.
+    fn breakpoint_set_enabled(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let handle = parse_breakpoint_handle(params, "breakpoint")?;
+        // REQUIRED and not defaulted: *"a toggle whose argument may be omitted is a toggle whose caller
+        // cannot tell which way it went."*
+        let enabled = match params.get("enabled") {
+            Some(Value::Bool(b)) => *b,
+            None | Some(Value::Null) => return Err(RpcError::invalid_params(
+                "`enabled` is required — the state to set. A toggle whose argument may be omitted \
+                     is a toggle whose caller cannot tell which way it went",
+            )),
+            Some(other) => {
+                return Err(RpcError::invalid_params(format!(
+                    "`enabled` must be a boolean (D9 category 2) — got {}",
+                    hex::kind_of(other)
+                )))
+            }
+        };
+        let Some(bp) =
+            resolve_breakpoint_handle(&handle).and_then(|id| self.breakpoints.get_mut(id))
+        else {
+            return Err(RpcError::invalid_state(
+                "unknownBreakpoint",
+                format!(
+                    "{handle:?} is not a breakpoint this server holds — it was cleared, or never issued"
+                ),
+                json!({ "breakpoint": handle }),
+            ));
+        };
+        bp.enabled = enabled;
+        // `hits` is carried ACROSS the toggle: disabling does not reset it, and this surface never resets it
+        // at all — §6: *"a client wanting a fresh count clears and re-adds."*
+        let hits = bp.hits;
+        let id = bp.id;
+        Ok(json!({
+            "breakpoint": breakpoint_wire_id(id),
+            "enabled": enabled,
+            "hits": hits,
+        }))
+    }
+
+    fn breakpoint_list(&mut self, params: &Value) -> Result<Value, RpcError> {
+        // The cursor is a **breakpoint handle**, resolved to the id it stands for: "resume at the first id
+        // strictly greater than this". Ids are monotonic and never reused, so a breakpoint cleared under an
+        // outstanding cursor cannot make the next page step over a live one — the positional failure §2.4
+        // clause (c) forbids. `watchpoint_list`'s cursor verbatim.
+        let cursor = match params.get("cursor") {
+            None => None,
+            Some(v) => Some(self.parse_breakpoint_cursor(v)?),
+        };
+        // The default page is the cap: there can never be more live breakpoints than that, so a bigger page
+        // could not return more. The 4096 ceiling is the house one.
+        let limit = match params.get("limit") {
+            None => self.config.max_breakpoints,
+            Some(v) => hex::parse_count("limit", v, 1, MAX_PAGE)? as usize,
+        };
+        let total = self.breakpoints.len();
+        let after = cursor.map_or(0, |c| c.0 + 1);
+        let skipped = self.breakpoints.iter().filter(|b| b.id.0 < after).count();
+        let page: Vec<Value> = self
+            .breakpoints
+            .iter()
+            .filter(|b| b.id.0 >= after)
+            .take(limit)
+            .map(|b| {
+                let mut e = Map::new();
+                e.insert("breakpoint".into(), json!(breakpoint_wire_id(b.id)));
+                if !b.label.is_empty() {
+                    e.insert("label".into(), json!(b.label));
+                }
+                e.insert("addr".into(), json!(hex::addr(b.addr)));
+                if let Some((name, disp)) = self.symbol_at(b.addr) {
+                    e.insert("symbol".into(), json!(name));
+                    e.insert("symbolDisp".into(), json!(disp));
+                }
+                e.insert("enabled".into(), json!(b.enabled));
+                e.insert("hits".into(), json!(b.hits));
+                Value::Object(e)
+            })
+            .collect();
+        let next_cursor = self
+            .breakpoints
+            .iter()
+            .filter(|b| b.id.0 >= after)
+            .take(limit)
+            .last()
+            .map(|b| b.id);
+
+        let bounded = rpc::bounded_array(page, total, skipped, limit);
+        let mut out = Map::new();
+        // §2.4's **flat** spelling, the same one `watchpoint_list` and `checkpoint_list` use: the list here
+        // IS the whole result, so a `boundedList` container would buy one level of indirection and nothing
+        // else. `total`/`returned`/`truncated` are required even when the page is complete.
+        out.insert("breakpoints".into(), bounded["items"].clone());
+        out.insert("total".into(), bounded["total"].clone());
+        out.insert("returned".into(), bounded["returned"].clone());
+        out.insert("limit".into(), bounded["limit"].clone());
+        out.insert("truncated".into(), bounded["truncated"].clone());
+        if bounded["truncated"] == json!(true) {
+            if let Some(id) = next_cursor {
+                out.insert("cursor".into(), json!(breakpoint_wire_id(id)));
+            }
+        }
+        Ok(Value::Object(out))
+    }
+
+    /// **IDEMPOTENT**: an unknown handle succeeds with `removed: 0`, per §6.1's rule for `checkpoint_drop`
+    /// and §6's breakpoint prose (audit D-15 closed). `removed: 0` is a complete, machine-readable answer to
+    /// *"is it gone?"* for a handle that was retired, was never issued, or was never a handle at all.
+    ///
+    /// **`all: true` removes every breakpoint on the server, other clients' included** — §11.21 design
+    /// choice 5: *"the one deliberately shared verb, kept because a session recovering a wedged machine
+    /// needs it, and it is why `all` is a separate spelling rather than a wildcard handle."*
+    fn breakpoint_clear(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let all = match params.get("all") {
+            None => false,
+            Some(Value::Bool(b)) => *b,
+            Some(_) => return Err(RpcError::invalid_params("`all` must be a boolean (D9)")),
+        };
+        if all {
+            if params.get("breakpoint").is_some() {
+                return Err(RpcError::invalid_params(
+                    "`breakpoint` and `all` are mutually exclusive — pass one",
+                ));
+            }
+            return Ok(json!({"removed": self.breakpoints.clear()}));
+        }
+        let handle = parse_breakpoint_handle(params, "breakpoint")?;
+        let removed = match resolve_breakpoint_handle(&handle) {
+            Some(id) => usize::from(self.breakpoints.remove(id)),
+            None => 0,
+        };
+        Ok(json!({ "removed": removed }))
+    }
+
+    /// **§6 run-control — `emulator/wait_for_break`**, deprecated by `emulator/stopped` (D6) and retained
+    /// for one transition window. `timeoutMs`? → `pc`?, `symbol`?, `symbolDisp`?, `timeoutReached`?,
+    /// `waitedMs`?
+    ///
+    /// **This handler is the POLL, not the wait, and that split is the whole answer to the transport
+    /// question.** The engine thread is the only owner of `System` and it serialises: `dispatch` runs to
+    /// completion before the next queued call is taken. A handler that slept here would therefore
+    /// (a) stall every other client — *including the one that would tell it to stop* — and (b) be
+    /// self-defeating, because the same thread's free-run step is what advances the machine, so the
+    /// breakpoint being waited for could never fire and the wait could only ever time out. The waiting is
+    /// done instead on the **calling connection's own thread**, which is already the thread that blocks in
+    /// this architecture (see `server::wait_for_break_delay`); by the time this handler runs, the machine is
+    /// either stopped or the deadline has passed. Nothing here sleeps, and nothing here runs the machine.
+    ///
+    /// **It never resumes a paused machine.** A machine that is not running has already broken, and
+    /// starting one on the caller's behalf is precisely the machine-state change §5 forbids a server to
+    /// make. So a paused machine answers immediately with its `pc`, which is also what makes
+    /// `timeoutMs: 0` — §11.24's *"0 polls once and returns"* — fall out of the same code path.
+    ///
+    /// **`timeoutMs` and `timeoutReached`, not `maxFrames`/`reached`**: the named D12 exemption, ruled
+    /// 2026-08-27, *"the retained, deprecated `emulator/wait_for_break` keeps its legacy spelling …
+    /// because D-07 rules that a retained deprecated method preserves the legacy server's behaviour rather
+    /// than reinventing it."* The exemption is this method's alone.
+    ///
+    /// **No `running` key** (D-05, §11.24): it is the machine stamp's and arrives through `replyFields`.
+    /// Declaring it twice would invite this handler to think it owns the value.
+    fn wait_for_break(&mut self, params: &Value) -> Result<Value, RpcError> {
+        // Validated here even though the connection thread has already read it for its own bound: this is
+        // the authority, and it is what makes `timeoutMs: 400000` a `-32602` rather than a five-minute
+        // sleep. Refused above the ceiling, never clamped.
+        let _timeout_ms = match params.get("timeoutMs") {
+            None => DEFAULT_WAIT_TIMEOUT_MS,
+            Some(v) => hex::parse_count("timeoutMs", v, 0, MAX_WAIT_TIMEOUT_MS)?,
+        };
+        let mut out = Map::new();
+        if self.running {
+            // Still running at the moment the engine looked, so no halt was observed. §6 makes every
+            // handler key optional, so the honest answer is the flag and nothing else: `pc` is deliberately
+            // absent — *"absent when the wait timed out with the machine still running"* — because a PC
+            // sampled from a machine that is still moving names an instruction that has already gone.
+            out.insert("timeoutReached".into(), json!(true));
+            return Ok(Value::Object(out));
+        }
+        let pc = self.sys.cpu_regs().pc;
+        out.insert("pc".into(), json!(hex::addr(pc)));
+        if let Some((name, disp)) = self.symbol_at(pc) {
+            out.insert("symbol".into(), json!(name));
+            // §11.24 audit D-08: the displacement lives in this number and never inside the name string.
+            out.insert("symbolDisp".into(), json!(disp));
+        }
+        out.insert("timeoutReached".into(), json!(false));
+        Ok(Value::Object(out))
+    }
+
+    /// A `breakpoint_list` continuation token, resolved back to the breakpoint id it stands for.
+    ///
+    /// Accepts a **retired** handle, unlike `watchpoint_hits`' filter: a client paging a list while another
+    /// client clears an entry must not have its cursor refused for it. It refuses only a handle this server
+    /// could never have issued, which is a typo rather than a race.
+    fn parse_breakpoint_cursor(&self, v: &Value) -> Result<BreakpointId, RpcError> {
+        let handle = match v {
+            Value::String(s) if !s.is_empty() => s.clone(),
+            _ => {
+                return Err(RpcError::invalid_params(
+                    "`cursor` must be the non-empty opaque string this server issued",
+                ))
+            }
+        };
+        resolve_breakpoint_handle(&handle)
+            .filter(|id| self.breakpoints.was_issued(*id))
+            .ok_or_else(|| {
+                RpcError::invalid_params(format!(
+                    "`cursor`: {handle:?} is not a handle this server issued — pass back the one \
+                     emulator/breakpoint_list returned"
+                ))
+            })
+    }
+
     /// A `watchpoint_list` continuation token, resolved back to the watch id it stands for.
     fn parse_watch_cursor(&self, v: &Value) -> Result<WatchId, RpcError> {
         let handle = match v {
@@ -5197,6 +5667,13 @@ const DEFAULT_HITS_PAGE: usize = 100;
 /// Ceiling on one watched range, from the schema (`len` ≤ 16 MiB).
 const MAX_WATCH_LEN: u64 = 16_777_216;
 
+/// `emulator/wait_for_break`'s default bound, ms. **The legacy server's measured default**, preserved
+/// rather than reinvented — §11.24 audit D-07: *"a retained deprecated method preserves behaviour."*
+pub const DEFAULT_WAIT_TIMEOUT_MS: u64 = 30_000;
+
+/// `emulator/wait_for_break`'s ceiling, ms. §11.24 D-07: `≤300000`, **refused above, never clamped**.
+pub const MAX_WAIT_TIMEOUT_MS: u64 = 300_000;
+
 /// A watch id **as it goes on the wire**: an opaque string (D9 category 4, §8 item 16).
 ///
 /// The `w` prefix is not decoration. `checkpoint`'s handles are bare decimal strings and §6.1's own
@@ -5210,6 +5687,28 @@ fn watch_wire_id(id: WatchId) -> String {
     format!("w{}", id.0)
 }
 
+/// A breakpoint id **as it goes on the wire**: an opaque string (D9 category 4, §11.21).
+///
+/// `b`, for [`watch_wire_id`]'s reason and one of its own. §11.21 pins that the handle *"cannot be an
+/// address"* — an address is exactly the spelling the amendment was raised to abolish, because clearing by
+/// address is what silently disarmed another client's breakpoint at 1,691,410 hits. A prefixed non-number
+/// is what stops a client writing `{"breakpoint": "0x1234"}` and having it work by accident.
+fn breakpoint_wire_id(id: BreakpointId) -> String {
+    format!("b{}", id.0)
+}
+
+/// The inverse of [`breakpoint_wire_id`]. `None` for any string this server could not have spelled.
+///
+/// Strict, with no bare-number fallback: this handle has never had another spelling, so leniency would buy
+/// nothing and would bless the `{"breakpoint": 3}` D9 category 4 forbids.
+fn resolve_breakpoint_handle(handle: &str) -> Option<BreakpointId> {
+    handle
+        .strip_prefix('b')?
+        .parse::<u32>()
+        .ok()
+        .map(BreakpointId)
+}
+
 /// The inverse of [`watch_wire_id`]. `None` for any string this server could not have spelled.
 ///
 /// Deliberately strict about the spelling it accepts — no bare-number fallback, unlike [`parse_cursor`]'s
@@ -5217,6 +5716,26 @@ fn watch_wire_id(id: WatchId) -> String {
 /// would quietly bless the `{"watch": 3}` that D9 category 4 exists to forbid.
 fn resolve_watch_handle(handle: &str) -> Option<WatchId> {
     handle.strip_prefix('w')?.parse::<u32>().ok().map(WatchId)
+}
+
+/// A required opaque-string breakpoint handle. Strict for [`parse_watch_handle`]'s reason: this is the
+/// handle a human hand-types into the next call, and typing `{"breakpoint": 3}` *is* the arithmetic on a
+/// handle D9 category 4 forbids.
+fn parse_breakpoint_handle(params: &Value, field: &str) -> Result<String, RpcError> {
+    match params.get(field) {
+        Some(Value::String(s)) if !s.is_empty() => Ok(s.clone()),
+        Some(Value::String(_)) => Err(RpcError::invalid_params(format!(
+            "`{field}` must be a non-empty string — pass back the handle emulator/breakpoint_add returned"
+        ))),
+        None | Some(Value::Null) => Err(RpcError::invalid_params(format!(
+            "`{field}` (the opaque string handle returned by emulator/breakpoint_add) is required"
+        ))),
+        Some(other) => Err(RpcError::invalid_params(format!(
+            "`{field}` must be a JSON string — the handle is opaque and a client must not compute on it \
+             (D9 category 4); got {}",
+            hex::kind_of(other)
+        ))),
+    }
 }
 
 /// A required opaque-string handle param. Strict — a string only, for [`parse_checkpoint_id`]'s reason:
