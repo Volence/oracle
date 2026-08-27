@@ -278,3 +278,58 @@ The zero-contract-surface constraint never bound: the halt reuses `emulator/stop
 `reason: "breakpoint"`, both of which already existed, and no point in the design wanted a new key. The
 `Observe` prohibition and the ordering constraint both had in-tree precedents to copy, and the ordering
 was made safe rather than deferred.
+
+---
+
+## OVERSEER VERIFICATION, 2026-08-27 — on the merged tree, and then against the binary a consumer reaches
+
+### Gates, re-run by me on the MERGED tree (not the branch side, not the agent's report)
+
+| gate | result |
+|---|---|
+| `cargo fmt --all --check` | **exit 0** |
+| `cargo clippy --workspace --all-targets`, cached | **exit 0**, 0 warnings |
+| same, after `cargo clean -p oracle-core -p oracle-aether` (**10.4 GiB / 26,346 files removed**) | **exit 0**, 0 warnings; log shows both crates recompiling, so it genuinely rebuilt |
+| `cargo test --workspace --no-fail-fast` | **LEGS 58 · PASSED 1940 · FAILED 0 · IGNORED 6 · exit 0**, no `failures:` section |
+| currency | `git diff 4fd3cdd...HEAD --name-only -- crates/oracle-core/` → **0 files** |
+
+Baseline 1934 → 1940 = **+6**, matching the agent's leg-by-leg account (aether lib +2, `hosted.rs` +3,
+frontend bin +1). The agent's report matched my run exactly, as they always have — verified anyway, because
+the one time it doesn't is the point.
+
+### ⟨RUNTIME⟩ DEBT DISCHARGED IN PART — executed, not merged
+
+`target/release/oracle-aether` **rebuilt** (a merge does not rebuild it, and the consumer reaches *that
+binary* — this repo's own bar). Then driven firsthand on a **lane-owned** instance: a private
+`/tmp/orc-bp/o.sock`, a **lane-owned ROM** (`vendor/TestRoms/m68k_memory_test.bin`), spawned and killed by
+**recorded PID**. Nothing shared was touched; aurora's live `/tmp/oracle-aurora-trunk.sock` was confirmed
+still listening afterwards.
+
+* **52 methods advertised** (was 46 at aurora's reading yesterday, 41 before the acceptance work).
+  `capabilities.breakpoints: true`; all five breakpoint methods present in `methods`.
+* Deterministic fixture: entry `pc=0x00000200`, `step` → `0x00000204`; **reset**, arm at `0x00000204`,
+  `resume`, `wait_for_break`.
+* **Result: fired at exactly `0x00000204`; `timeoutReached: false`; `running: false`; `hits` 0 → 1;
+  `removed: 1`.**
+* **Two of the pinned failure modes are now refuted on live data, not only by test:** the machine genuinely
+  **halted** (`running: false` — the two-flag bug would have kept it advancing), and `hits` is **1**, not the
+  **374,011** that bug produced when it last shipped. `mclk` moved to **112**, so the stop carries a real
+  stamp rather than the D11 placeholder zero.
+
+### What this does NOT prove, stated plainly
+
+**This exercised the STANDALONE path. The parcel's subject is the HOSTED one.** The hosted path is covered by
+`tests/hosted.rs` (10 rows, over a real socket, in-process) — a second instrument, named rather than
+skipped — but **a windowed `oracle-frontend` end-to-end remains unrun**, because the only windowed players on
+this machine are the owner's and aurora's. That is the instrument being unavailable, not the question being
+retired: the question is *does the window actually pause*, and the fixture answers it in process while the
+visual confirmation waits for a lane-owned window. **Still open, still tagged.**
+
+### ⚑ A live sighting of the hazard this lane shipped a banner for, worth recording
+
+Between two consecutive commands, `aeon/s4.debug.bin` **ceased to exist** — present and statted at 735,452
+bytes, gone seconds later. aeon rebuilds many times a night and the build unlinks before it rewrites. I did
+not race it; I switched to a lane-owned ROM, which is why this parcel's runtime evidence depends on nothing
+in a peer's tree. **The ROM-freshness banner merged yesterday exists for exactly this**, and the sighting is
+the reason to keep it: a session that had attached moments earlier would have gone on answering questions
+about a file that was no longer there, with nothing in the reply saying so.
