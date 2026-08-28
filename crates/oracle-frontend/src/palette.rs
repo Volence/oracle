@@ -40,7 +40,29 @@ pub struct Picker {
     pub title: String,
     /// (label, command to run when chosen)
     pub items: Vec<(String, Cmd)>,
+    /// Selection as an index into [`Picker::visible`], never into `items` — the two differ the moment
+    /// anything is typed, and indexing `items` with it would run a row the user cannot see.
     pub sel: usize,
+    /// The picker's own filter text, independent of the palette's `query` (which belongs to the command
+    /// list behind it and is restored when Esc backs out).
+    pub query: String,
+}
+
+impl Picker {
+    /// Positions in `items` that match the current filter, in list order.
+    ///
+    /// Filtering earns its place here rather than being a nicety: a picker over a *folder* can hold
+    /// dozens of rows, the panel paints only what fits, and until this existed the only way to reach a
+    /// row was to arrow to it — including rows below the fold, which meant arrowing blind. Typed keys
+    /// were swallowed outright (`Char(_) => {}`), so the surface looked like a search box and was not one.
+    pub fn visible(&self) -> Vec<usize> {
+        self.items
+            .iter()
+            .enumerate()
+            .filter(|(_, (label, _))| commands::subseq_match(&self.query, label))
+            .map(|(i, _)| i)
+            .collect()
+    }
 }
 
 pub struct Palette {
@@ -98,6 +120,7 @@ impl Palette {
             title,
             items,
             sel: 0,
+            query: String::new(),
         });
         self.open = true;
         self.clamp_sel(reg);
@@ -151,20 +174,38 @@ impl Palette {
         if !self.open {
             return PaletteAction::None;
         }
-        // Picker mode intercepts everything.
+        // Picker mode intercepts everything. Every arm below works in VISIBLE coordinates: `sel` indexes
+        // the filtered view, and the one place that must not is Enter, which resolves back through
+        // `visible()` to an item. Typing resets the selection to the top, because the row that was under it
+        // is not the row that will be there after the list narrows.
         if let Some(pk) = self.picker.as_mut() {
             match key {
                 PaletteKey::Up => pk.sel = pk.sel.saturating_sub(1),
-                PaletteKey::Down => pk.sel = (pk.sel + 1).min(pk.items.len().saturating_sub(1)),
+                PaletteKey::Down => {
+                    pk.sel = (pk.sel + 1).min(pk.visible().len().saturating_sub(1));
+                }
+                PaletteKey::Char(c) => {
+                    pk.query.push(c);
+                    pk.sel = 0;
+                }
+                PaletteKey::Backspace => {
+                    pk.query.pop();
+                    pk.sel = 0;
+                }
                 PaletteKey::Enter => {
-                    if let Some((_, cmd)) = pk.items.get(pk.sel) {
-                        let cmd = *cmd;
+                    // A filter that matches nothing leaves `visible` empty, and Enter must then do
+                    // NOTHING — not run row 0, which is the row the user filtered away.
+                    if let Some(cmd) = pk
+                        .visible()
+                        .get(pk.sel)
+                        .and_then(|&i| pk.items.get(i))
+                        .map(|(_, cmd)| *cmd)
+                    {
                         self.close();
                         return PaletteAction::Run(cmd);
                     }
                 }
                 PaletteKey::Esc => self.picker = None, // back to the list, palette stays open
-                PaletteKey::Char(_) | PaletteKey::Backspace => {}
             }
             return PaletteAction::None;
         }
@@ -282,13 +323,28 @@ impl Palette {
         if let Some(pk) = &self.picker {
             canvas.text(text_x, y, px, ACCENT, overlay::fit(&pk.title, inner_w, px));
             y += (line_h + margin / 2) as i32;
-            for (i, (label, _)) in pk.items.iter().enumerate() {
+            // The picker's own filter line, in the same "> query_" shape as the command list's, so the two
+            // surfaces do not teach different things about the same keystrokes.
+            let q = format!("> {}_", pk.query);
+            canvas.text(text_x, y, px, ACCENT, overlay::fit(&q, inner_w, px));
+            y += (line_h + margin / 2) as i32;
+
+            // Scroll to the selection, for the reason the command list below does: a folder can hold more
+            // ROMs than the panel paints, `sel` walks the whole filtered list, and a selection below the
+            // fold would let Enter run a row the user cannot see.
+            let visible = pk.visible();
+            let max_rows = (panel_y + panel_h).saturating_sub(y as usize) / line_h;
+            let first_visible = pk.sel.saturating_sub(max_rows.saturating_sub(1));
+            // `enumerate` before `skip`, so `vi` stays the index `sel` is expressed in — comparing the
+            // painted loop's own counter would highlight the wrong row once the list scrolls.
+            for (vi, &item) in visible.iter().enumerate().skip(first_visible) {
                 if (y as usize + line_h) > panel_y + panel_h {
                     break;
                 }
-                if i == pk.sel {
+                if vi == pk.sel {
                     draw_selected_bar(&mut canvas, text_x, y, inner_w, line_h);
                 }
+                let label = &pk.items[item].0;
                 canvas.text(text_x, y, px, INFO, overlay::fit(label, inner_w, px));
                 y += line_h as i32;
             }
@@ -635,6 +691,89 @@ mod tests {
         assert!(
             p.rows(&reg).iter().any(|r| matches!(r, Row::Header(_))),
             "esc from the picker shows the full grouped list, not a filtered one"
+        );
+    }
+
+    /// A picker over a folder can hold more rows than the panel paints, so it has to be typeable. The
+    /// load-bearing assertion is the last one: Enter must resolve through the FILTERED view, because
+    /// `sel` counts visible rows and indexing `items` with it runs whatever happens to sit at that
+    /// position in the unfiltered list — a different game, with no way for the user to tell.
+    #[test]
+    fn picker_filters_on_typed_text_and_enter_runs_the_row_on_screen() {
+        let (mut p, reg) = open_palette();
+        let items = vec![
+            ("alpha.bin".to_string(), Cmd::SlotSelect(0)),
+            ("beta.bin".to_string(), Cmd::SlotSelect(1)),
+            ("gamma.bin".to_string(), Cmd::SlotSelect(2)),
+        ];
+        p.open_picker("OPEN ROM".into(), items, &reg);
+
+        // Unfiltered: every row is visible, in order.
+        assert_eq!(p.picker.as_ref().unwrap().visible(), vec![0, 1, 2]);
+
+        // Typing narrows it, and resets the selection to the top of what is left.
+        p.handle(PaletteKey::Down, &reg);
+        for c in "gam".chars() {
+            p.handle(PaletteKey::Char(c), &reg);
+        }
+        let pk = p.picker.as_ref().unwrap();
+        assert_eq!(pk.query, "gam");
+        assert_eq!(pk.visible(), vec![2], "only gamma.bin subsequence-matches");
+        assert_eq!(pk.sel, 0, "typing puts the selection on the first match");
+
+        // Backspacing widens the filter again — it is not one-way. "ga" still excludes both alpha.bin
+        // and beta.bin (neither contains a `g` at all), so the visible set is unchanged here; the
+        // widening is asserted below, where dropping back to "g" is checked against all three.
+        p.handle(PaletteKey::Backspace, &reg);
+        assert_eq!(p.picker.as_ref().unwrap().visible(), vec![2], "\"ga\"");
+        for _ in 0..2 {
+            p.handle(PaletteKey::Backspace, &reg);
+        }
+        assert_eq!(p.picker.as_ref().unwrap().query, "");
+        assert_eq!(
+            p.picker.as_ref().unwrap().visible(),
+            vec![0, 1, 2],
+            "an emptied filter restores every row"
+        );
+        // Re-narrow to a single row. `subseq_match` CONSUMES its title iterator as it matches, so the
+        // query has to be a genuine subsequence — "gammma" does not match "gamma.bin", which is how the
+        // first draft of this test failed against a perfectly good filter.
+        for c in "gamma".chars() {
+            p.handle(PaletteKey::Char(c), &reg);
+        }
+
+        // Enter runs the row the user can SEE. With `sel` = 0 against a filtered view holding item 2,
+        // an implementation that indexed `items` directly would run `SlotSelect(0)` — the top of the
+        // unfiltered list, which is not on screen at all.
+        assert_eq!(p.picker.as_ref().unwrap().query, "gamma");
+        assert_eq!(p.picker.as_ref().unwrap().visible(), vec![2]);
+        let act = p.handle(PaletteKey::Enter, &reg);
+        assert_eq!(act, PaletteAction::Run(Cmd::SlotSelect(2)));
+        assert!(!p.is_open());
+    }
+
+    /// A filter matching nothing must make Enter a no-op. Running row 0 there would run the row the user
+    /// just filtered AWAY, which is the worst available outcome: it looks like the picker obeyed.
+    #[test]
+    fn picker_enter_does_nothing_when_the_filter_matches_no_row() {
+        let (mut p, reg) = open_palette();
+        p.open_picker(
+            "OPEN ROM".into(),
+            vec![
+                ("alpha.bin".to_string(), Cmd::SlotSelect(0)),
+                ("beta.bin".to_string(), Cmd::SlotSelect(1)),
+            ],
+            &reg,
+        );
+        for c in "zzzz".chars() {
+            p.handle(PaletteKey::Char(c), &reg);
+        }
+        assert!(p.picker.as_ref().unwrap().visible().is_empty());
+        let act = p.handle(PaletteKey::Enter, &reg);
+        assert_eq!(act, PaletteAction::None, "no row on screen, nothing to run");
+        assert!(
+            p.is_open(),
+            "and the picker stays up so the filter can be fixed"
         );
     }
 
