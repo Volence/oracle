@@ -287,6 +287,9 @@ mod present;
 mod icon;
 // Click-to-watch: resolving a clicked dot to armable VRAM/CRAM ranges, sprites included.
 mod pick;
+// "Open ROM..." — the browsable listing behind the palette's ROM picker, so a different game can be loaded
+// without leaving the window. Model only; the swap itself is in the run loop, beside the F5 reload it shares.
+mod rom_browser;
 
 use minifb::{Key, KeyRepeat, MouseButton, MouseMode, ScaleMode, Window, WindowOptions};
 use oracle_core::bus::Fanout;
@@ -437,6 +440,53 @@ fn probe_slots(rom_path: &str) -> [bool; save_state::SLOT_COUNT] {
         *occupied = save_state::state_path_for(std::path::Path::new(rom_path), slot).exists();
     }
     out
+}
+
+/// Rebuild the ROM browser's listing for `dir` and put it up as the palette's pick list, marking the image
+/// currently in the machine.
+///
+/// **Rebuilt on every open and every descent, never cached.** A pick list describing a folder as it was ten
+/// minutes ago is the confidently-stale answer this player refuses everywhere else, and the whole cost is one
+/// `read_dir`. It is also what keeps `browser` and the `RomEntry(n)` payloads in the palette in step: they
+/// are written in the same call, so an index can only ever mean a row from the listing on screen.
+///
+/// Paths are canonicalised once here, not per row: it makes the `[loaded]` marker survive navigating away
+/// through `../` and back (where `dir/../dir/rom.bin` and `dir/rom.bin` are the same file spelled two ways),
+/// and it gives the title an absolute path, which is more use than a relative one when you are lost. A
+/// canonicalise that fails — a path that has just been removed — degrades to the spelling as given rather
+/// than refusing to browse.
+///
+/// An unreadable directory says so and **leaves the previous listing up**. An empty pick list and a folder
+/// that could not be read are the same picture on screen, and only one of them means "no games here".
+fn open_rom_picker(
+    dir: &std::path::Path,
+    current: &str,
+    browser: &mut Vec<rom_browser::Entry>,
+    palette: &mut palette::Palette,
+    reg: &[commands::CommandInfo],
+    ov: &mut Overlay,
+) {
+    let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let entries = match rom_browser::scan(&dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            notify_err(ov, format!("open ROM: cannot read {} ({e})", dir.display()));
+            return;
+        }
+    };
+    let current = std::fs::canonicalize(current).ok();
+    let items: Vec<(String, commands::Cmd)> = entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            (
+                rom_browser::picker_label(e, current.as_deref()),
+                commands::Cmd::RomEntry(i),
+            )
+        })
+        .collect();
+    *browser = entries;
+    palette.open_picker(format!("OPEN ROM - {}", dir.display()), items, reg);
 }
 
 /// What the hosted bus should know about the cartridge: the ROM's path, and the `.lst` listing bound to it.
@@ -866,14 +916,20 @@ fn main() {
         }
     };
 
-    let rom = match std::fs::read(&args.rom_path) {
+    // The image the machine is running, and the only thing every derived path is built from — the `.srm`, the
+    // save-state slots, the `.lst`, and what the bus reports as `status.romPath`. It starts at the command
+    // line and **moves**: "Open ROM..." can swap the cartridge without leaving the window, and everything
+    // downstream has to follow it or the new game writes its battery data into the old game's file.
+    let mut rom_path: String = args.rom_path.clone();
+
+    let rom = match std::fs::read(&rom_path) {
         Ok(bytes) => bytes,
         Err(e) => {
-            eprintln!("cannot read ROM {}: {e}", args.rom_path);
+            eprintln!("cannot read ROM {}: {e}", rom_path);
             std::process::exit(1);
         }
     };
-    println!("ROM {}: {} bytes", args.rom_path, rom.len());
+    println!("ROM {}: {} bytes", rom_path, rom.len());
 
     // Identity of this cartridge, computed before the ROM moves into the core. Every save state records it,
     // so a state written while running a *different* game is refused instead of silently swapping the ROM
@@ -884,7 +940,7 @@ fn main() {
     // Opt-in symbols. Loaded here, while `rom` is still ours to borrow: the binding check probes the image's
     // `deb2` appendix at the offset the listing's own `EndOfRom` names, so it needs the bytes, not the core.
     // A missing/unusable/mismatched listing is never fatal — the machine runs identically without one.
-    let mut symbols = symbol_file::load_symbols(std::path::Path::new(&args.rom_path), &rom);
+    let mut symbols = symbol_file::load_symbols(std::path::Path::new(&rom_path), &rom);
 
     let mut sys = System::new(0x5EED);
     sys.load_rom(rom);
@@ -894,7 +950,7 @@ fn main() {
     // data must be present before the game first reads it. But we only ever *write* a `.srm` for carts that
     // actually saved (`sram_used()`), so a pure-ROM cart (e.g. s4.soundtest.bin) still creates no file. Load
     // before reset — a soft reset preserves SRAM contents (S1), so ordering is free.
-    let srm_path = sram_file::srm_path_for(std::path::Path::new(&args.rom_path));
+    let mut srm_path = sram_file::srm_path_for(std::path::Path::new(&rom_path));
     if let Some(bytes) = sram_file::load_srm(&srm_path) {
         sys.load_sram(&bytes);
         println!(
@@ -979,11 +1035,11 @@ fn main() {
     println!(
         "save states: F2=save, F4=load, F6/F7=prev/next slot, 0-9=pick slot ({} slots, written next to the ROM as `{}`)",
         save_state::SLOT_COUNT,
-        save_state::state_path_for(std::path::Path::new(&args.rom_path), 0).display()
+        save_state::state_path_for(std::path::Path::new(&rom_path), 0).display()
     );
     println!(
         "machine: F1=soft reset, F5=reload the ROM from disk (re-read {} and reset)",
-        args.rom_path
+        rom_path
     );
     // The restored volume step, read once so the banner below and the loop's `volume` local cannot
     // disagree. No clamp is needed: `config::parse` rejects anything above `VOLUME_MAX`, and this assert
@@ -1014,7 +1070,7 @@ fn main() {
     let mut bus = bus::Bus::start(
         args.socket.clone(),
         if serving {
-            bus_machine_info(&args.rom_path, symbols.clone())
+            bus_machine_info(&rom_path, symbols.clone())
         } else {
             bus::MachineInfo::default()
         },
@@ -1054,7 +1110,14 @@ fn main() {
     // pushed here (see `notify`), because the window is where the user is looking.
     let mut ov = Overlay::new();
     ov.status_line = cfg.status_line;
-    let mut slots_on_disk = probe_slots(&args.rom_path);
+    let mut slots_on_disk = probe_slots(&rom_path);
+
+    // "Open ROM..." state. `browser` is the listing the palette's current pick list was built from — the
+    // `RomEntry(n)` payload indexes *this*, so the two are rebuilt together and never separately.
+    // `pending_rom` is how a dispatch arm asks for a cartridge swap: the work happens in one shared block
+    // after the dispatch loop, so F5 and the browser cannot drift apart.
+    let mut browser: Vec<rom_browser::Entry> = Vec::new();
+    let mut pending_rom: Option<String> = None;
 
     // The per-scanline pixel path (`F-SCANLINE-CAPTURE`). Attached to **every** run below so the window shows
     // what the VDP drew line by line, against the CRAM live at each line — the only way a mid-frame palette
@@ -1362,7 +1425,7 @@ fn main() {
                     // unconditionally. Re-probe on every slot move: another process (or an earlier session)
                     // can have written a state file since we last looked, and the strip is only useful if it
                     // is telling the truth.
-                    slots_on_disk = probe_slots(&args.rom_path);
+                    slots_on_disk = probe_slots(&rom_path);
                     ov.flash(); // put the slot strip on screen without needing F3 first
                     notify(
                         &mut ov,
@@ -1394,10 +1457,8 @@ fn main() {
                 // F2 = save, F4 = load, both on the currently selected slot. The path is built inside each
                 // arm so the idle loop allocates nothing.
                 commands::Cmd::SaveState => {
-                    let state_path = save_state::state_path_for(
-                        std::path::Path::new(&args.rom_path),
-                        state_slot,
-                    );
+                    let state_path =
+                        save_state::state_path_for(std::path::Path::new(&rom_path), state_slot);
                     match save_state::save(&state_path, &sys, rom_fp) {
                         Ok(n) => {
                             slots_on_disk[state_slot] = true;
@@ -1415,10 +1476,8 @@ fn main() {
                     }
                 }
                 commands::Cmd::LoadState => {
-                    let state_path = save_state::state_path_for(
-                        std::path::Path::new(&args.rom_path),
-                        state_slot,
-                    );
+                    let state_path =
+                        save_state::state_path_for(std::path::Path::new(&rom_path), state_slot);
                     // Refusal first, so the long restore below reads at one level instead of three. A stale or
                     // corrupt file leaves the running machine untouched, which is the whole contract of
                     // `save_state::load` returning `Err` rather than a half-built `System`.
@@ -1504,102 +1563,44 @@ fn main() {
                         "reset: soft reset — SRAM contents preserved, as on real hardware",
                     );
                 }
-                commands::Cmd::ReloadRom => {
-                    // Read the file first: a rebuild that failed (or is still being written) must leave
-                    // the running machine — and its battery data — completely untouched.
-                    let bytes = match std::fs::read(&args.rom_path) {
-                        Ok(bytes) => bytes,
-                        Err(e) => {
-                            notify_err(
-                                &mut ov,
-                                format!(
-                                    "reload: cannot read ROM {} ({e}) — still running the previous image",
-                                    args.rom_path
-                                ),
-                            );
-                            continue;
+                // Both ways of swapping a cartridge record their target here and let the shared block below
+                // the dispatch loop do the work: F5 aims at the image already loaded, the browser at a
+                // different one. One implementation, because "reload" and "open" are the same delicate
+                // sequence and two copies of it would drift into two half-correct ones.
+                commands::Cmd::ReloadRom => pending_rom = Some(rom_path.clone()),
+                commands::Cmd::RomPicker => {
+                    // The folder the running image came from. A bare filename has no parent, so that case
+                    // browses the working directory rather than refusing to open.
+                    let dir = std::path::Path::new(&rom_path)
+                        .parent()
+                        .filter(|p| !p.as_os_str().is_empty())
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|| std::path::PathBuf::from("."));
+                    open_rom_picker(&dir, &rom_path, &mut browser, &mut palette, &reg, &mut ov);
+                }
+                // The payload indexes the listing built when the picker was opened. Read the row out and
+                // drop the borrow before anything below can rebuild `browser` under it.
+                commands::Cmd::RomEntry(n) => {
+                    match browser.get(n).map(|e| (e.kind, e.path.clone())) {
+                        Some((rom_browser::EntryKind::Rom, path)) => {
+                            pending_rom = Some(path.to_string_lossy().into_owned());
                         }
-                    };
-                    // Unlike a reset, `load_rom` re-provisions a *zeroed* SRAM buffer from the new header
-                    // and clears `sram_used`/`sram_dirty` — unflushed battery data would be destroyed
-                    // outright, with nothing left to retry from. So a failed flush aborts the reload.
-                    if !flush_pending_srm(
-                        &sys,
-                        &srm_path,
-                        sram_save_countdown,
-                        "before the ROM reload",
-                    ) {
-                        notify_err(
+                        Some((_, dir)) => open_rom_picker(
+                            &dir,
+                            &rom_path,
+                            &mut browser,
+                            &mut palette,
+                            &reg,
                             &mut ov,
-                            format!(
-                                "reload: ABORTED — unsaved battery data could not be written to {}, and \
-                                 reloading would zero it. Fix the write error and press F5 again.",
-                                srm_path.display()
-                            ),
-                        );
-                        continue;
-                    }
-                    notify(
-                        &mut ov,
-                        ACCENT,
-                        format!(
-                            "reload: re-read {} bytes from {}",
-                            bytes.len(),
-                            args.rom_path
                         ),
-                    );
-                    // The cartridge identity changes with its bytes. Re-deriving it makes every state
-                    // written against the previous build fail with `StateError::Rom` — which is the point:
-                    // a state carries the whole machine, so restoring one would put the old ROM back.
-                    rom_fp = save_state::rom_fingerprint(&bytes);
-                    // Re-read the listing too. This is the whole reason symbol resolution is a
-                    // primitive rather than a lookup the user does once: a rebuild moves symbols, and a
-                    // table cached across it names the *previous* build's addresses while looking
-                    // perfectly healthy (the suite contract's D7 incident — every symbol shifted +$24
-                    // mid-session and a "verified" literal rotted). Re-validated against the new bytes,
-                    // so a listing that stopped matching is dropped rather than carried forward.
-                    symbols =
-                        symbol_file::load_symbols(std::path::Path::new(&args.rom_path), &bytes);
-                    // …and re-point the bus at the same pair, for the same reason. A hosted client
-                    // resolving `read_memory {symbol}` against the previous build's listing reads a
-                    // wrong address and reports success — the D7 incident, exactly.
-                    if serving {
-                        bus.set_machine_info(bus_machine_info(&args.rom_path, symbols.clone()));
+                        // Unreachable through the palette, which only ever offers rows it just built. Says
+                        // so rather than indexing, because the alternative to a message here is a panic in
+                        // the middle of someone's game.
+                        None => notify_err(
+                            &mut ov,
+                            "open ROM: that row is no longer in the listing".to_string(),
+                        ),
                     }
-                    sys.load_rom(bytes);
-                    // `load_rom` zeroed the buffer it just sized from the new header, so re-apply the
-                    // on-disk battery image. The `.srm` path comes from the ROM *path*, unchanged here.
-                    if let Some(saved) = sram_file::load_srm(&srm_path) {
-                        sys.load_sram(&saved);
-                        println!(
-                            "SRAM: re-loaded {} bytes from {}",
-                            saved.len(),
-                            srm_path.display()
-                        );
-                    }
-                    sram_save_countdown = None; // the fresh buffer is clean and matches disk
-                    sys.reset(); // `load_rom` only swaps the cartridge; this runs the /RESET sequence
-
-                    // Re-arm every watch against the *new* listing, after the reset, for the same reason
-                    // the listing itself was re-read: a rebuild moves symbols, and a watch holding the
-                    // previous build's RAM index would keep reporting confidently wrong scene names from
-                    // whatever now lives at that address (the D7 incident, one address wide). Re-arming
-                    // also re-seeds the baseline from post-reset RAM, so the first change after a reload is
-                    // measured against the machine that is actually running. A symbol that was in the old
-                    // listing and is not in the new one complains here, out loud, exactly as at startup.
-                    let (w, problems) = symbol_watch::SymbolWatch::arm(
-                        &cfg.symbol_watches,
-                        symbols.as_ref(),
-                        sys.ram(),
-                    );
-                    watches = w;
-                    for p in problems {
-                        notify_err(&mut ov, p);
-                    }
-                    frame = 0;
-                    cap.clear(); // a different cartridge draws a different frame — drop the old one
-                    #[cfg(feature = "audio")]
-                    resync_audio(audio.as_mut());
                 }
                 commands::Cmd::Quit => running = false,
                 // --- Output volume (audio builds only). The registry marks `-`/`=` as repeat-on-hold so the
@@ -1628,6 +1629,115 @@ fn main() {
                 }
             }
         }
+        // --- The cartridge swap: one sequence, two entry points (F5, and "Open ROM..."). ---
+        //
+        // Out here rather than inside a dispatch arm because the early exits must abandon *the swap*, not
+        // the frame. The arm this grew out of used `continue`, which skipped to the next command and was
+        // harmless there; the same word here would skip presenting, input and audio for the whole
+        // iteration — a failed reload would freeze the window instead of printing why.
+        if let Some(target) = pending_rom.take() {
+            // A different file is an `open`; the same one is the F5 `reload`. Only the wording and the
+            // re-derived paths differ, which is exactly why they share the rest.
+            let switching = target != rom_path;
+            let what = if switching { "open" } else { "reload" };
+            'swap: {
+                // Read the file first: a rebuild that failed (or is still being written), or a path that
+                // has gone away, must leave the running machine — and its battery data — untouched.
+                let bytes = match std::fs::read(&target) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        notify_err(
+                            &mut ov,
+                            format!(
+                                "{what}: cannot read ROM {target} ({e}) — still running {rom_path}"
+                            ),
+                        );
+                        break 'swap;
+                    }
+                };
+                // Unlike a reset, `load_rom` re-provisions a *zeroed* SRAM buffer from the new header and
+                // clears `sram_used`/`sram_dirty` — unflushed battery data would be destroyed outright,
+                // with nothing left to retry from. So a failed flush aborts the swap. Flushed against the
+                // OUTGOING `srm_path`, before it is re-derived below: the data belongs to the game being
+                // put away, not to the one arriving.
+                if !flush_pending_srm(&sys, &srm_path, sram_save_countdown, "before the ROM swap") {
+                    notify_err(
+                        &mut ov,
+                        format!(
+                            "{what}: ABORTED — unsaved battery data could not be written to {}, and \
+                             swapping would zero it. Fix the write error and try again.",
+                            srm_path.display()
+                        ),
+                    );
+                    break 'swap;
+                }
+                // Past the last refusal: the swap is going to happen, so the cartridge and everything
+                // keyed to it move together. A `.srm`, a save slot or a `.lst` still pointing at the
+                // outgoing image is the failure this whole block exists to make impossible — the new
+                // game would write its battery data into the old game's file.
+                rom_path = target;
+                srm_path = sram_file::srm_path_for(std::path::Path::new(&rom_path));
+                slots_on_disk = probe_slots(&rom_path);
+                notify(
+                    &mut ov,
+                    ACCENT,
+                    format!("{what}: {} bytes from {rom_path}", bytes.len()),
+                );
+                // The cartridge identity changes with its bytes. Re-deriving it makes every state written
+                // against the previous image fail with `StateError::Rom` — which is the point: a state
+                // carries the whole machine, so restoring one would put the old ROM back.
+                rom_fp = save_state::rom_fingerprint(&bytes);
+                // Re-read the listing too. This is the whole reason symbol resolution is a primitive
+                // rather than a lookup the user does once: a rebuild moves symbols, and a table cached
+                // across it names the *previous* build's addresses while looking perfectly healthy (the
+                // suite contract's D7 incident — every symbol shifted +$24 mid-session and a "verified"
+                // literal rotted). Re-validated against the new bytes, so a listing that stopped matching
+                // is dropped rather than carried forward.
+                symbols = symbol_file::load_symbols(std::path::Path::new(&rom_path), &bytes);
+                // ...and re-point the bus at the same pair, for the same reason. A hosted client resolving
+                // `read_memory {symbol}` against the previous image's listing reads a wrong address and
+                // reports success — the D7 incident, exactly.
+                if serving {
+                    bus.set_machine_info(bus_machine_info(&rom_path, symbols.clone()));
+                }
+                sys.load_rom(bytes);
+                // `load_rom` zeroed the buffer it just sized from the new header, so apply the on-disk
+                // battery image for the cartridge now in the machine — read through the `srm_path` set
+                // above, which is the incoming game's.
+                if let Some(saved) = sram_file::load_srm(&srm_path) {
+                    sys.load_sram(&saved);
+                    println!(
+                        "SRAM: loaded {} bytes from {}",
+                        saved.len(),
+                        srm_path.display()
+                    );
+                }
+                sram_save_countdown = None; // the fresh buffer is clean and matches disk
+                sys.reset(); // `load_rom` only swaps the cartridge; this runs the /RESET sequence
+
+                // Re-arm every watch against the *new* listing, after the reset, for the same reason the
+                // listing itself was re-read: a watch holding the previous image's RAM index would keep
+                // reporting confidently wrong scene names from whatever now lives at that address (the D7
+                // incident, one address wide). Re-arming also re-seeds the baseline from post-reset RAM,
+                // so the first change after a swap is measured against the machine actually running. A
+                // symbol that was in the old listing and is not in the new one complains here, out loud,
+                // exactly as at startup.
+                let (w, problems) = symbol_watch::SymbolWatch::arm(
+                    &cfg.symbol_watches,
+                    symbols.as_ref(),
+                    sys.ram(),
+                );
+                watches = w;
+                for p in problems {
+                    notify_err(&mut ov, p);
+                }
+                frame = 0;
+                cap.clear(); // a different cartridge draws a different frame — drop the old one
+                #[cfg(feature = "audio")]
+                resync_audio(audio.as_mut());
+            }
+        }
+
         // Did that batch close the palette? Checked after dispatch, not inside routing, because a command
         // may reopen it in the same iteration (SlotPicker does exactly that) — and a palette that is still
         // up needs no latch, its keys are swallowed anyway.

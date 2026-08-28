@@ -16,6 +16,12 @@ pub enum Cmd {
     Step,
     Reset,
     ReloadRom,
+    /// Open the ROM browser in the palette ("Open ROM…"), listing the folder the running image came from.
+    RomPicker,
+    /// Choose row `n` of the browser's current listing (hidden, and deliberately **not** in the registry:
+    /// it carries a position in a list the main loop rebuilt this frame, so it has no fixed meaning and no
+    /// hotkey could bind to it). Navigating re-opens the picker; a ROM row swaps the cartridge.
+    RomEntry(usize),
     Quit,
     SaveState,
     LoadState,
@@ -143,6 +149,9 @@ pub fn registry() -> Vec<CommandInfo> {
             Group::Game,
             Some(Key::F5),
         ),
+        // `O` for open, in the same single-letter family as `W`/`C`. It is not a game key (the pad is the
+        // arrows, A/S/D and Enter), so it costs the player nothing.
+        CommandInfo::new(Cmd::RomPicker, "Open ROM...", Group::Game, Some(Key::O)),
         CommandInfo::new(Cmd::Quit, "Quit", Group::Game, None),
         CommandInfo::new(
             Cmd::SaveState,
@@ -332,6 +341,7 @@ pub fn key_name(k: Key) -> &'static str {
         Key::W => "W",
         Key::C => "C",
         Key::M => "M",
+        Key::O => "O",
         Key::Key0 => "0",
         Key::Key1 => "1",
         Key::Key2 => "2",
