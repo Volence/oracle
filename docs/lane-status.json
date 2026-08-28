@@ -24,6 +24,14 @@
       "project": null
     },
     {
+      "id": "AETHER-SILENT",
+      "title": "The player says nothing at all when it starts without --aether, which is how you keep ending up with 'Aether offline' in Aurora. Make it say so on its own banner. Aurora's ask, a few lines",
+      "state": "open",
+      "size": "XS",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT"
+    },
+    {
       "id": "BP-WINDOW-CONFIRM",
       "title": "Watch a real player window stop on a breakpoint \u2014 proven by test, not yet by eye. This is work I can do with my own hands; it needs a window that is free, not a subagent",
       "state": "open",
@@ -75,7 +83,7 @@
       "blockedBy": null
     }
   ],
-  "awaiting": "d-18, the drag-and-drop question \u2014 and still your pick on what I start next. The picker itself is done and needs nothing from you.",
+  "awaiting": "d-18, the drag-and-drop question \u2014 plus your pick on what I start next. Two small candidates now: the silent-Aether banner (aurora asked, a few lines) and watching the new ROM picker work in a real window.",
   "atBoundary": true,
-  "updatedAt": "2026-08-28T19:47:21Z"
+  "updatedAt": "2026-08-28T23:51:45Z"
 }
