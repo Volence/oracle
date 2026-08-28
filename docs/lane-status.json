@@ -1,60 +1,81 @@
 {
-  "focus": "Both builds from tonight's ruling landed: tools open their own emulator, and the window is visibly Oracle.",
+  "focus": "Opening a ROM from inside the player is done and pushed. Drag-and-drop needs one decision from you.",
   "inFlight": [],
-  "blockedOnOwner": [],
-  "nextBoundary": "Right here — everything merged and pushed, nothing dispatched.",
+  "blockedOnOwner": [
+    {
+      "what": "whether to close the breakpoint gap or just declare it \u2014 I recommended closing and went ahead; it shipped, so this is your review rather than a block",
+      "since": "2026-08-27",
+      "id": "d-17"
+    },
+    {
+      "what": "how much to spend on drag-and-drop: your window toolkit has no file-drop support at all and your desktop is Wayland, so it is a parcel rather than a switch. I recommend the cheap middle (paste a path into the picker)",
+      "since": "2026-08-28",
+      "id": "d-18"
+    }
+  ],
+  "nextBoundary": "Now \u2014 everything is merged and pushed, origin verified moved, nothing half-applied.",
   "queue": [
     {
-      "id": "CR-C",
-      "title": "The server cannot say which server it is, so a session can swap implementations with no signal",
+      "id": "ROM-OPEN-RUNTIME",
+      "title": "Watch the new ROM picker work in a real window \u2014 it is proven by test, never by eye. Same shape as the breakpoint confirmation below, and the same need for a window that is not yours",
       "state": "next",
+      "size": "XS",
+      "blockedBy": "a lane-owned player window; I will not aim this at yours",
+      "project": null
+    },
+    {
+      "id": "BP-WINDOW-CONFIRM",
+      "title": "Watch a real player window stop on a breakpoint \u2014 proven by test, not yet by eye. This is work I can do with my own hands; it needs a window that is free, not a subagent",
+      "state": "open",
+      "size": "XS",
+      "blockedBy": "a window that is genuinely free \u2014 a breakpoint halt freezes the machine, so I will not aim it at yours or a peer's",
+      "project": null
+    },
+    {
+      "id": "OBJ-JOIN",
+      "title": "Click-an-object picker: recon COMPLETE, every open question closed, no new emulator command needed. Building it is the thing that has no route",
+      "state": "open",
+      "size": "S",
+      "blockedBy": "a ruling from you on how work gets built here: this session may not dispatch agents, and the overseer role says I should not implement"
+    },
+    {
+      "id": "OVERLAY-STATE",
+      "title": "Let a tool read the player's on-screen text \u2014 your own observation, and the item that would stop aeon asking you to eyeball things",
+      "state": "open",
       "size": "M",
       "blockedBy": null
     },
     {
-      "id": "CR-A",
-      "title": "Breakpoints + wait_for_break. NO consumer after all: aeon's gates spawn their own legacy emulator, so nothing breaks without it",
+      "id": "ACCEPT-16",
+      "title": "The acceptance delta, re-derived at boot and now 10: sound capture and channel masks (6), the Z80 pair, and two parked odds",
       "state": "open",
       "size": "L",
-      "blockedBy": null
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT"
     },
     {
-      "id": "PROF-RING-SELF",
-      "title": "Per-frame interrupt self-cycles aeon asked for — but the fix found the field as specified would carry only the exception entry cost, so refusing it may serve them better",
+      "id": "CR-STOPPREC",
+      "title": "CR-E filed with the hub \u2014 stopPrecision, awaiting adjudication; nothing here is blocked on it",
       "state": "open",
       "size": "S",
       "blockedBy": null
     },
     {
-      "id": "ROMPATH",
-      "title": "status reports the ROM path relative, which the protocol says it should not",
+      "id": "AUDIO-DULL",
+      "title": "The dull sound: aeon's board records you confirming unfiltered sounds better, which matches my prime suspect (our deliberate 3.4kHz roll-off). Needs your ruling, not your ear",
       "state": "open",
-      "size": "S",
-      "blockedBy": null
-    },
-    {
-      "id": "SIGIL-DUMP",
-      "title": "Per-instruction cycle dumper for sigil. They own the join after all; it needs branch outcomes per execution, and its consumer is deferred",
-      "state": "blocked",
-      "size": "S",
-      "blockedBy": "no filed ask exists; sigil offered to write one"
-    },
-    {
-      "id": "Z80",
-      "title": "z80_read / z80_write — nothing calls them yet, and the legacy write silently corrupts on overrun",
-      "state": "blocked",
       "size": "M",
-      "blockedBy": "no programmatic consumer found — demand has not ordered it"
+      "blockedBy": "your ruling on accuracy-pure vs. what sounds better \u2014 removing a hardware-accurate filter is the kind of taste deviation your standing rule bars"
     },
     {
       "id": "WIKI-SPIKE",
-      "title": "The wiki-emulator spike you approved twice",
+      "title": "The wiki-emulator spike you approved, on Opus, with the report-the-wall condition",
       "state": "open",
       "size": "L",
-      "blockedBy": "sits behind the acceptance parcels"
+      "blockedBy": null
     }
   ],
-  "updatedAt": "2026-08-26T01:42:36Z",
-  "awaiting": "run crates/oracle-frontend/assets/install-desktop.sh once and relaunch the player, then say whether the Oracle icon shows; and a go on the next item (server identity, CR-C)",
-  "atBoundary": true
+  "awaiting": "d-18, the drag-and-drop question \u2014 and still your pick on what I start next. The picker itself is done and needs nothing from you.",
+  "atBoundary": true,
+  "updatedAt": "2026-08-28T19:47:21Z"
 }
