@@ -907,6 +907,27 @@ over-conservative bus-arb clamp, and ours was the tick-accurate side then too. U
 urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
 `docs/2026-08-18-tier1-bus-methods.md`.
 
+**Registered 2026-08-29, from aurora's relay of the owner's R8 question:**
+
+- **F-R8-LATE-REVISION** — a *copy-of-column-0* toggle for the R8 leftmost-partial-column quirk, so a
+  fix can be seen under both hardware behaviours. **Declined as a booking, and the reason is not
+  "noise".** Under the later behaviour the leftmost column takes column 0's vscroll, so the defect
+  simply **disappears** and aeon's column-19 write becomes an inert no-op rather than something the
+  differential validates — the whole verdict is derivable without building it. Against that we have
+  **no hardware-tested rule for the late revision**, only Plutiedev/Stef descriptions, where the early
+  rule pinned at `render.rs` `plane_vscroll` (H40 `VSRAM[$4C] & VSRAM[$4E]`, H32 `0`, same value both
+  planes) matches Genesis Plus GX's *"verified on PAL MD2"*. Shipping a second model whose fidelity
+  cannot be established, and then letting a consumer validate a fix against it, is bar 9's corollary
+  exactly: an unvalidated instrument adopted as a gate returns a **confident wrong verdict**.
+  *Revival condition:* a hardware-tested rule for the later revision appears, **or** a second scene
+  turns up where the fork changes a design decision. The divergence ledger already records the fork,
+  so nothing is hidden meanwhile.
+- **F-HUD-FILTER-LABEL** — the F3 status line prints the console **audio** output stage as a bare
+  `MODEL1-VA0-VA2` with no label (`overlay.rs` `status_text`, between `VOL` and the aspect /
+  native-resolution / frame fields), so most of its neighbours are video facts. **The owner read it as
+  a VDP/board revision** — reported through aurora 2026-08-29, and the misreading is ours, not his.
+  Fix is a label. Sits next to AUDIO-DULL below, which is the same enum seen from the other end.
+
 **Registered by the CR-27 serve review (2026-08-20), all contract-side or cosmetic, none blocking:**
 
 | id | what | revival condition |

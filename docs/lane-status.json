@@ -1,9 +1,9 @@
 {
-  "focus": "Opening a ROM from inside the player is done and pushed. Drag-and-drop needs one decision from you.",
+  "focus": "Answered aurora's two relayed questions from source; the dull-sound suspect is now a ten-second test for you.",
   "inFlight": [],
   "blockedOnOwner": [
     {
-      "what": "whether to close the breakpoint gap or just declare it \u2014 I recommended closing and went ahead; it shipped, so this is your review rather than a block",
+      "what": "whether to close the breakpoint gap or just declare it — I recommended closing and went ahead; it shipped, so this is your review rather than a block",
       "since": "2026-08-27",
       "id": "d-17"
     },
@@ -13,11 +13,11 @@
       "id": "d-18"
     }
   ],
-  "nextBoundary": "Now \u2014 everything is merged and pushed, origin verified moved, nothing half-applied.",
+  "nextBoundary": "Now — nothing in flight, tree clean, origin at e23001a.",
   "queue": [
     {
       "id": "ROM-OPEN-RUNTIME",
-      "title": "Watch the new ROM picker work in a real window \u2014 it is proven by test, never by eye. Same shape as the breakpoint confirmation below, and the same need for a window that is not yours",
+      "title": "Watch the new ROM picker work in a real window — it is proven by test, never by eye. Same shape as the breakpoint confirmation below, and the same need for a window that is not yours",
       "state": "next",
       "size": "XS",
       "blockedBy": "a lane-owned player window; I will not aim this at yours",
@@ -33,10 +33,10 @@
     },
     {
       "id": "BP-WINDOW-CONFIRM",
-      "title": "Watch a real player window stop on a breakpoint \u2014 proven by test, not yet by eye. This is work I can do with my own hands; it needs a window that is free, not a subagent",
+      "title": "Watch a real player window stop on a breakpoint — proven by test, not yet by eye. This is work I can do with my own hands; it needs a window that is free, not a subagent",
       "state": "open",
       "size": "XS",
-      "blockedBy": "a window that is genuinely free \u2014 a breakpoint halt freezes the machine, so I will not aim it at yours or a peer's",
+      "blockedBy": "a window that is genuinely free — a breakpoint halt freezes the machine, so I will not aim it at yours or a peer's",
       "project": null
     },
     {
@@ -48,7 +48,7 @@
     },
     {
       "id": "OVERLAY-STATE",
-      "title": "Let a tool read the player's on-screen text \u2014 your own observation, and the item that would stop aeon asking you to eyeball things",
+      "title": "Let a tool read the player's on-screen text — your own observation, and the item that would stop aeon asking you to eyeball things",
       "state": "open",
       "size": "M",
       "blockedBy": null
@@ -63,17 +63,17 @@
     },
     {
       "id": "CR-STOPPREC",
-      "title": "CR-E filed with the hub \u2014 stopPrecision, awaiting adjudication; nothing here is blocked on it",
+      "title": "CR-E filed with the hub — stopPrecision, awaiting adjudication; nothing here is blocked on it",
       "state": "open",
       "size": "S",
       "blockedBy": null
     },
     {
       "id": "AUDIO-DULL",
-      "title": "The dull sound: aeon's board records you confirming unfiltered sounds better, which matches my prime suspect (our deliberate 3.4kHz roll-off). Needs your ruling, not your ear",
+      "title": "The dull sound: the player hard-defaults to a 3.4kHz roll-off (the core does not), which is my prime suspect and matches your recorded preference for unfiltered. You can now A/B it with no rebuild — ORACLE_CONSOLE_FILTER=off|va3. Needs your ruling, not my judgement",
       "state": "open",
       "size": "M",
-      "blockedBy": "your ruling on accuracy-pure vs. what sounds better \u2014 removing a hardware-accurate filter is the kind of taste deviation your standing rule bars"
+      "blockedBy": "your ruling on accuracy-pure vs. what sounds better — removing a hardware-accurate filter is the kind of taste deviation your standing rule bars"
     },
     {
       "id": "WIKI-SPIKE",
@@ -83,7 +83,7 @@
       "blockedBy": null
     }
   ],
-  "awaiting": "d-18, the drag-and-drop question \u2014 plus your pick on what I start next. Two small candidates now: the silent-Aether banner (aurora asked, a few lines) and watching the new ROM picker work in a real window.",
+  "awaiting": "your pick on what I start next, plus d-18 (drag-and-drop). New and cheap for you: launch the player with ORACLE_CONSOLE_FILTER=off and tell me if it sounds better — that settles AUDIO-DULL.",
   "atBoundary": true,
-  "updatedAt": "2026-08-28T23:51:45Z"
+  "updatedAt": "2026-08-29T04:13:59Z"
 }
