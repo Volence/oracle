@@ -1998,6 +1998,39 @@ method* — knowing a thing in the tree is not the thing reaching the process th
 
 ## Ops (each line is a paid-for lesson)
 
+**▶ NEW BAR, 2026-08-29 — VALIDATE AN ARTIFACT AGAINST THE SCHEMA IT TARGETS BEFORE CALLING IT READY.
+A "ready to merge" IS a completeness claim, and it is the one nobody thinks to check because it reads
+as a status rather than an assertion.** Earned against this seat, on the same submission where it was
+lecturing about unchecked residues.
+
+**The instance.** This lane authored 11 contract vectors for CR-F, verified *programmatically* that
+every case cited its clause, wrote a README handing them over as ready, and shipped them. **Nine of the
+eleven could not have passed**: every result case carried `"layout": {}` and `$defs.decoderLayout`
+requires five fields. The applying lane filled them in. One command — running the cases against the
+schema — would have caught it, and **the schema was readable at a committed revision the whole time and
+this lane had already read other parts of it.**
+
+**Why it is a bar and not a slip: the same document argued that an unrecorded residue "reads as guarded
+to everyone who sees a green schema run", while containing vectors that could not have produced a green
+run at all.** The rigour was spent entirely on the interesting half (which rules are testable, which are
+behavioural and therefore not) and none on the mechanical half. That is the failure mode of a lane that
+has been reasoning well for hours: **scrutiny follows what looks like an argument, and a field you filled
+in as a placeholder does not look like one** — the provenance-feeling-material bar arriving on your own
+output instead of on a citation.
+
+**Corrective, and it is mechanical because vigilance already failed:** an artifact authored against a
+schema is **run against that schema before it is handed over**, and the run's output is what the handover
+cites — never "these conform". If the validator cannot be run from here, say so in the handover and name
+what was not checked, rather than letting a confident cover note stand in for it.
+
+**Second defect, same submission, different class: a change introduced between two of your OWN artifacts
+needs a named delta.** CR-F as filed said `owner.raw` is served *always*; the fragment written three
+hours later makes it absent when `kind == "unavailable"`. That is the better rule and it was adopted —
+but it changed a filed artifact silently in a second one, and the receiving lane had to catch it and ask
+for it to be noted. **An improvement introduced without a flag is indistinguishable from an
+inconsistency**, and the cost lands on the reader who has to work out which it was. Name the delta at
+submission time; it costs a sentence.
+
 **▶ NEW BAR, 2026-08-29 — A TEST THAT ASSERTS WHAT YOU *ADDED* IS STRUCTURALLY BLIND TO WHAT YOU
 *DISPLACED*, AND A FIXED-SIZE SURFACE MAKES EVERY ADDITION A DISPLACEMENT.** Earned on the
 SCREEN-HONESTY parcel, against this seat's own green test.

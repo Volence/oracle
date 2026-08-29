@@ -25,7 +25,7 @@
     },
     {
       "id": "OBJECT-AT-CONFORMANCE",
-      "title": "The half a schema cannot catch: prove on a real shipped ROM that a click answers 'this build has no owner table' rather than 'nothing here is an object'. Ours, and it must land with the feature, not after",
+      "title": "Two live checks a schema structurally cannot do, both ours and both must land WITH the feature: on a shipped ROM a click must say 'this build has no owner table' rather than 'nothing here is an object'; and after a game swap, addresses must be looked up again rather than remembered",
       "state": "open",
       "size": "XS",
       "blockedBy": null,
@@ -94,5 +94,5 @@
   ],
   "awaiting": "your steer. Everything from the LIVE-OBJECTS relay is design and test material only — nothing built, and building still waits behind our own breakpoint-window check. Unchanged and still yours: d-18 (drag-and-drop), and the ten-second ORACLE_CONSOLE_FILTER=off listen. Clean /clear point whenever you want it.",
   "atBoundary": true,
-  "updatedAt": "2026-08-29T18:48:19Z"
+  "updatedAt": "2026-08-29T18:51:56Z"
 }

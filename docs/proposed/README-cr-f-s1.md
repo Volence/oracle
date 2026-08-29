@@ -1,5 +1,39 @@
 # CR-F / §11.26 — S1 fragments and vectors, proposed by the oracle lane
 
+⚑ **SUPERSEDED 2026-08-29 — APPLIED at empyrean `b5b8184` (verified an ancestor of their `origin/main`).
+The applied text is authoritative; these files are the submission, kept for the record and NOT kept in
+sync.** Vendoring anchors, verified against the remote-tracked tree rather than taken from the message:
+`contract/schema/bus-protocol.schema.json` blob `3b638be34cefdd4ecc3d83739b940576511a61fc`,
+`contract/schema/tests/vectors.json` blob `083bbfd6eb5bff8620a935f21549dc4793022798`. Gate green there:
+63 fragments, 83 pass, 118 red, 44 closure.
+
+## ⚠ TWO DEFECTS IN THIS SUBMISSION, BOTH THIS LANE'S, BOTH CAUGHT BY THE APPLYING LANE
+
+**1. Nine of my eleven vectors could not have passed the gate.** Every result case wrote
+`"layout": {}`. `$defs.decoderLayout` **requires** `engine`, `detectedBy`, `slotBytes`, `slotCount` and
+`baseAddr` — so each of those cases would have failed validation immediately, on a field I never
+checked. The applying lane filled the literals in.
+**The uncomfortable part is the shape of the error, not its size.** The README below argues at length
+that an unrecorded residue "reads as guarded to everyone who sees a green schema run" — while
+submitting vectors that **could not have produced a green run at all.** I verified programmatically
+that every case cited a clause; I never once ran them against the schema I was writing them for, which
+was readable at a committed revision the whole time and which I read other parts of. **A completeness
+claim I could have checked in one command and did not** — this repo's own bar 17, committed by the
+lane quoting it.
+
+**2. I changed the contract's substance between filing and authoring, and did not flag it as a delta.**
+CR-F §2.1 as filed said `owner.raw` is served *"always, so a caller can audit us"*. The fragment I then
+wrote makes it **absent when `kind == "unavailable"`** — which is the better rule, and is what was
+adopted, but it is a change to a filed artifact that I introduced silently in a second one. The
+applying lane caught it and asked that the serve note it. **The right form was a named delta at
+submission time**; an improvement introduced without a flag is indistinguishable from an inconsistency.
+
+**Both land on the serve as obligations rather than notes:** the served implementation follows the
+APPLIED schema (`raw` absent when `unavailable`), and no vector this lane writes again goes out without
+being run against the schema it targets.
+
+---
+
 **Date:** 2026-08-29 · **Status:** proposed, **not applied, not pushed to empyrean.**
 
 ## Why these live here and not on a branch of `contract/schema`
