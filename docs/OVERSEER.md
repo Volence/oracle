@@ -928,6 +928,28 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   a VDP/board revision** — reported through aurora 2026-08-29, and the misreading is ours, not his.
   Fix is a label. Sits next to AUDIO-DULL below, which is the same enum seen from the other end.
 
+- **F-RSP-XVFB-ORPHAN** — *audited into existence by a peer's warning, and the audit came back clean on
+  the thing they warned about.* aurora relayed their O16 finding 2026-08-29: 28 of their harnesses tore
+  down with `pkill -f '<dist path>'`, an argv pattern that matched **other sessions' processes** and had
+  killed a peer's Electron mid-run three times. **It does not apply here, and that is a measurement, not
+  an assumption.** Enumerated by what *touches process teardown* rather than by the token (protocol bar
+  8): the executable surface is 16 `.sh`/`.py` files plus every `.rs`; spawn sites are five
+  (`rsp.py:43`, and four `Command::new("git")` that are `output()`-style and never outlive the call);
+  **teardown sites are exactly one — `rsp.py:157 self.p.kill()`, on the `Popen` handle that object
+  itself spawned.** Ownership by construction: no pattern, no process name. Every `pkill`/`killall`
+  string in this repo is in **docs prose warning against it** (5 in `docs/`, plus stale copies inside
+  three dead `.claude/worktrees/`), zero in code. The control run (165 bare `kill` hits) confirms the
+  grep could see what was there, so the empty result is a measurement rather than a broken pattern.
+  ⚠ **The one residue their audit did surface here, and it is the OPPOSITE failure — sent to them
+  hedged, as a reading rather than a finding, because I have not run it.** `rsp.py` spawns through
+  `xvfb-run -a`, so `self.p` is the **wrapper's** pid, not BlastEm's. `close()` sends the RSP `k`
+  (kill) to BlastEm first and that is the normal path, but when the stub is wedged — the case the
+  watchdog exists for — the backstop `SIGKILL` lands on a shell that cannot trap it, so BlastEm and
+  Xvfb may be left **orphaned**. That endangers nobody else's session (a stranger surviving, never a
+  stranger dying), which is why it is a register entry and not a hazard notice. **Revival condition:**
+  the differential harness is run in anger again, or a stray `blastem`/`Xvfb` is found outliving it —
+  fix is a process group (`start_new_session=True` + `killpg`), not a wider pattern.
+
 **Registered by the CR-27 serve review (2026-08-20), all contract-side or cosmetic, none blocking:**
 
 | id | what | revival condition |
