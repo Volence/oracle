@@ -1,0 +1,82 @@
+{
+  "$comment": "PROPOSED vectors for CR-F / §11.26, to be merged into contract/schema/tests/vectors.json's `cases` array by the contract lane. Authored by the oracle lane 2026-08-29. EVERY CASE CITES THE §11.26 CLAUSE IT TESTS AND IS DERIVED FROM THE RULING TEXT, not from this lane's server -- the direction §8 requires. Field values are plausible literals; the shape is what is under test. Each `fail` perturbs its neighbouring `pass` in EXACTLY ONE way the cited clause forbids.",
+  "cases": [
+    {
+      "method": "emulator/object_at",
+      "kind": "result",
+      "expect": "pass",
+      "doc": { "dot": { "x": 160, "y": 112 }, "world": { "x": 256, "y": 256 }, "worldSource": "camera", "winner": { "layer": "sprite", "spriteIndex": 0 }, "owner": { "kind": "object", "slot": 0, "raw": "0x8ED6" }, "layout": {} },
+      "why": "§11.26 M1/M2/M3 — the whole-answer case: a sprite owned by a live slot, with world from the unbiased camera."
+    },
+    {
+      "method": "emulator/object_at",
+      "kind": "result",
+      "expect": "pass",
+      "doc": { "dot": { "x": 212, "y": 12 }, "world": { "x": 308, "y": 156 }, "worldSource": "camera", "winner": { "layer": "sprite", "spriteIndex": 1 }, "owner": { "kind": "ring", "raw": "0x0001" }, "layout": {} },
+      "why": "§11.26 M2 — THE RING CLICK the ruling names as a required vector. Owner word 0x0001; no slot, because a ring is not an object slot."
+    },
+    {
+      "method": "emulator/object_at",
+      "kind": "result",
+      "expect": "fail",
+      "doc": { "dot": { "x": 212, "y": 12 }, "world": { "x": 308, "y": 156 }, "worldSource": "camera", "winner": { "layer": "sprite", "spriteIndex": 1 }, "owner": { "kind": "ring", "slot": 3, "raw": "0x0001" }, "layout": {} },
+      "why": "§11.26 M2 — RED-FIRST for the ring click: `slot` is present iff kind == 'object'. This is the exact defect the method exists to prevent — rebasing the 0x0001 sentinel into a plausible slot index and naming an object that did not draw the sprite. Perturbs the pass above by adding `slot` and nothing else."
+    },
+    {
+      "method": "emulator/object_at",
+      "kind": "result",
+      "expect": "pass",
+      "doc": { "dot": { "x": 160, "y": 112 }, "world": { "x": 256, "y": 256 }, "worldSource": "camera", "winner": { "layer": "sprite", "spriteIndex": 0 }, "owner": { "kind": "unavailable" }, "layout": {} },
+      "why": "§11.26 M2 — UNRESOLVABLE OWNER TABLE, the shape half: the loaded build has no Sprite_Owner, so there is no slot and no word was read."
+    },
+    {
+      "method": "emulator/object_at",
+      "kind": "result",
+      "expect": "fail",
+      "doc": { "dot": { "x": 160, "y": 112 }, "world": { "x": 256, "y": 256 }, "worldSource": "camera", "winner": { "layer": "sprite", "spriteIndex": 0 }, "owner": { "kind": "unavailable", "raw": "0x0000" }, "layout": {} },
+      "why": "§11.26 M2/M5 — RED-FIRST: with no owner table there was no word to read, so a `raw` here is a fabricated reading of memory that was never consulted. Perturbs the pass above by adding `raw` and nothing else."
+    },
+    {
+      "method": "emulator/object_at",
+      "kind": "result",
+      "expect": "pass",
+      "doc": { "dot": { "x": 160, "y": 112 }, "worldSource": "unavailable", "winner": { "layer": "sprite", "spriteIndex": 0 }, "owner": { "kind": "object", "slot": 0, "raw": "0x8ED6" }, "layout": {} },
+      "why": "§11.26 M3 — UNRESOLVABLE CAMERA, the third vector the ruling names: worldSource is independent of the owner half, so the owner answer still stands while `world` is absent."
+    },
+    {
+      "method": "emulator/object_at",
+      "kind": "result",
+      "expect": "fail",
+      "doc": { "dot": { "x": 160, "y": 112 }, "world": { "x": 256, "y": 256 }, "worldSource": "unavailable", "winner": { "layer": "sprite", "spriteIndex": 0 }, "owner": { "kind": "object", "slot": 0, "raw": "0x8ED6" }, "layout": {} },
+      "why": "§11.26 M3 — RED-FIRST for the camera: `world` present iff worldSource == 'camera'. A world beside 'unavailable' is a coordinate nobody computed, which is the silent-wrong-place failure M3 exists to stop. Perturbs the pass above by adding `world` and nothing else."
+    },
+    {
+      "method": "emulator/object_at",
+      "kind": "result",
+      "expect": "pass",
+      "doc": { "dot": { "x": 8, "y": 8 }, "world": { "x": 104, "y": 152 }, "worldSource": "camera", "winner": { "layer": "planeB" }, "owner": { "kind": "none", "raw": "0x0000" }, "layout": {} },
+      "why": "§11.26 M1/M2 — a non-sprite winner: no spriteIndex, and the owner table answered 'no owner'. Distinguishes `none` (table read, answer no) from `unavailable` (no table) in the vector set itself."
+    },
+    {
+      "method": "emulator/object_at",
+      "kind": "result",
+      "expect": "fail",
+      "doc": { "dot": { "x": 8, "y": 8 }, "world": { "x": 104, "y": 152 }, "worldSource": "camera", "winner": { "layer": "planeB", "spriteIndex": 4 }, "owner": { "kind": "none", "raw": "0x0000" }, "layout": {} },
+      "why": "§11.26 M1 — RED-FIRST: `spriteIndex` is present iff the winner is a sprite, since it mirrors pixel_attribution's winner exactly. Perturbs the pass above by adding spriteIndex and nothing else."
+    },
+    {
+      "method": "emulator/object_at",
+      "kind": "params",
+      "expect": "pass",
+      "doc": { "x": 160, "y": 112 },
+      "why": "§11.26 M1 — params are x, y in pixel_attribution's native-dot space with the same bounds."
+    },
+    {
+      "method": "emulator/object_at",
+      "kind": "params",
+      "expect": "fail",
+      "doc": { "x": 160, "y": 112, "layers": "planeA" },
+      "why": "§2.5 / §8 item 22 — an undeclared top-level param is -32602. M1 declares x and y only."
+    }
+  ]
+}

@@ -1,0 +1,90 @@
+{
+  "$comment": "PROPOSED S1 fragments for CR-F / protocol.md §11.26 (DRAFT), authored by the oracle lane 2026-08-29 and handed to the hub to apply. NOT applied here and NOT pushed to empyrean: the owner's push grant carries the condition 'never push another lane's repo', so this lane authors content and the contract lane applies it. Shapes derived from §11.26's ruling text at empyrean origin/main (§11.26 present, cb5c789 verified an ancestor of origin/main); field VALUES are drawn from the oracle lane's measurement only where a plausible literal was needed, never to define a shape -- per vectors.json's standing rule that every case is derived from a spec row and none from a server's replies.",
+
+  "resultFragment_object_at": {
+    "$comment": "§11.26 M1/M2/M3. Reuses the existing $defs rather than restating them: layout is #/$defs/decoderLayout (the ⚙ group's field, inherited per M1), and the reply carries #/$defs/stamp like every other reply.",
+    "allOf": [
+      { "$ref": "#/$defs/stamp" },
+      {
+        "type": "object",
+        "required": ["dot", "worldSource", "winner", "owner", "layout"],
+        "properties": {
+          "dot": {
+            "$comment": "§11.26 M1 — echoed so a reply stands alone in a log.",
+            "type": "object",
+            "required": ["x", "y"],
+            "properties": { "x": { "type": "integer" }, "y": { "type": "integer" } },
+            "additionalProperties": false
+          },
+          "world": {
+            "$comment": "§11.26 M3 — act-world, UNBIASED Camera_X + dot.x / Camera_Y + dot.y. Present iff worldSource == 'camera'; the iff is enforced below, not merely stated.",
+            "type": "object",
+            "required": ["x", "y"],
+            "properties": { "x": { "type": "integer" }, "y": { "type": "integer" } },
+            "additionalProperties": false
+          },
+          "worldSource": {
+            "$comment": "§11.26 M3 — independent of the owner half, so a build that can answer one and not the other answers the one it can.",
+            "enum": ["camera", "unavailable"]
+          },
+          "winner": {
+            "$comment": "§11.26 M1 — exactly emulator/pixel_attribution's winner, so the two cannot drift apart.",
+            "type": "object",
+            "required": ["layer"],
+            "properties": {
+              "layer": { "enum": ["planeA", "planeB", "window", "sprite", "backdrop"] },
+              "spriteIndex": {
+                "$comment": "SAT slot 0..=79, present iff layer == 'sprite'. The slot, never the link-walk position.",
+                "type": "integer", "minimum": 0, "maximum": 79
+              }
+            },
+            "additionalProperties": false
+          },
+          "owner": {
+            "$comment": "§11.26 M2 — five outcomes; 'none' and 'unavailable' MUST NOT merge.",
+            "type": "object",
+            "required": ["kind", "raw"],
+            "properties": {
+              "kind": { "enum": ["object", "ring", "mask", "none", "unavailable"] },
+              "slot": { "type": "integer", "minimum": 0 },
+              "raw": {
+                "$comment": "§11.26 M5 — the owner word as read, served for AUDITING ONLY. A client MUST NOT rebase it: the whole point of this method is that the sentinel guard exists once, on the server. Absent when kind == 'unavailable', because there was no table to read a word from.",
+                "$ref": "#/$defs/hex"
+              }
+            },
+            "allOf": [
+              {
+                "$comment": "§11.26 M2 — `slot` is present iff kind == 'object'.",
+                "if": { "properties": { "kind": { "const": "object" } }, "required": ["kind"] },
+                "then": { "required": ["slot"] },
+                "else": { "not": { "required": ["slot"] } }
+              },
+              {
+                "$comment": "§11.26 M2/M5 — no owner table means no word was read; `raw` would be a fabrication.",
+                "if": { "properties": { "kind": { "const": "unavailable" } }, "required": ["kind"] },
+                "then": { "not": { "required": ["raw"] } },
+                "else": { "required": ["raw"] }
+              }
+            ],
+            "additionalProperties": false
+          },
+          "layout": { "$ref": "#/$defs/decoderLayout" },
+          "caveat": { "type": "string" }
+        },
+        "allOf": [
+          {
+            "$comment": "§11.26 M3 — `world` is present iff worldSource == 'camera'. Stated as an iff in the ruling, so enforced as one here: a `world` beside worldSource 'unavailable' is a coordinate nobody computed.",
+            "if": { "properties": { "worldSource": { "const": "camera" } }, "required": ["worldSource"] },
+            "then": { "required": ["world"] },
+            "else": { "not": { "required": ["world"] } }
+          }
+        ]
+      }
+    ]
+  },
+
+  "eventFragment_clicked": {
+    "$comment": "§11.26 M4 / §3 — emitted ONLY for the person's click at the window, never for a method call. Params are the object_at result for that dot VERBATIM, plus the stamp every event's params carries.",
+    "params": { "$ref": "#/resultFragment_object_at" }
+  }
+}
