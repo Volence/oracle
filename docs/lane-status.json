@@ -1,5 +1,5 @@
 {
-  "focus": "Answered aurora's two relayed questions from source; the dull-sound suspect is now a ten-second test for you.",
+  "focus": "Answered a peer's shared-machine warning — we are clean — and am holding for your pick.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -13,23 +13,23 @@
       "id": "d-18"
     }
   ],
-  "nextBoundary": "Now — nothing in flight, tree clean, origin at e23001a.",
+  "nextBoundary": "Now — nothing in flight, tree clean, origin at 575d4e6.",
   "queue": [
     {
-      "id": "ROM-OPEN-RUNTIME",
-      "title": "Watch the new ROM picker work in a real window — it is proven by test, never by eye. Same shape as the breakpoint confirmation below, and the same need for a window that is not yours",
+      "id": "SCREEN-HONESTY",
+      "title": "Two small fixes that stop the player misleading you on its own screen: say on the banner when it started with no bus (aurora's ask), and label the MODEL1-VA0-VA2 audio filter so it stops reading as a video setting (your own confusion, booked F-HUD-FILTER-LABEL). Proposed as the first pick",
       "state": "next",
-      "size": "XS",
-      "blockedBy": "a lane-owned player window; I will not aim this at yours",
-      "project": null
-    },
-    {
-      "id": "AETHER-SILENT",
-      "title": "The player says nothing at all when it starts without --aether, which is how you keep ending up with 'Aether offline' in Aurora. Make it say so on its own banner. Aurora's ask, a few lines",
-      "state": "open",
       "size": "XS",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT"
+    },
+    {
+      "id": "ROM-OPEN-RUNTIME",
+      "title": "Watch the new ROM picker work in a real window — it is proven by test, never by eye. Same shape as the breakpoint confirmation below, and the same need for a window that is not yours",
+      "state": "open",
+      "size": "XS",
+      "blockedBy": "a lane-owned player window; I will not aim this at yours",
+      "project": null
     },
     {
       "id": "BP-WINDOW-CONFIRM",
@@ -55,7 +55,7 @@
     },
     {
       "id": "ACCEPT-16",
-      "title": "The acceptance delta, re-derived at boot and now 10: sound capture and channel masks (6), the Z80 pair, and two parked odds",
+      "title": "The acceptance delta, still 10: sound capture and channel masks (6), the Z80 pair, and two parked odds",
       "state": "open",
       "size": "L",
       "blockedBy": null,
@@ -70,7 +70,7 @@
     },
     {
       "id": "AUDIO-DULL",
-      "title": "The dull sound: the player hard-defaults to a 3.4kHz roll-off (the core does not), which is my prime suspect and matches your recorded preference for unfiltered. You can now A/B it with no rebuild — ORACLE_CONSOLE_FILTER=off|va3. Needs your ruling, not my judgement",
+      "title": "The dull sound: the player hard-defaults to a 3.4kHz roll-off (the core does not), which is my prime suspect and matches your recorded preference for unfiltered. You can A/B it with no rebuild — ORACLE_CONSOLE_FILTER=off|va3. Needs your ruling, not my judgement",
       "state": "open",
       "size": "M",
       "blockedBy": "your ruling on accuracy-pure vs. what sounds better — removing a hardware-accurate filter is the kind of taste deviation your standing rule bars"
@@ -83,7 +83,7 @@
       "blockedBy": null
     }
   ],
-  "awaiting": "your pick on what I start next, plus d-18 (drag-and-drop). New and cheap for you: launch the player with ORACLE_CONSOLE_FILTER=off and tell me if it sounds better — that settles AUDIO-DULL.",
+  "awaiting": "your go on what I pick up. I propose SCREEN-HONESTY — the no-bus banner line plus the audio-filter label, both tiny. Still cheap and open for you: launch the player with ORACLE_CONSOLE_FILTER=off and tell me if it sounds better (settles AUDIO-DULL), plus d-18.",
   "atBoundary": true,
-  "updatedAt": "2026-08-29T04:13:59Z"
+  "updatedAt": "2026-08-29T08:50:29Z"
 }
