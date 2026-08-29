@@ -152,6 +152,27 @@ mailbox exists. Filing it now would be specifying a surface against an engine ca
 been designed. It gets its own CR when aeon's half has a shape. **Select-and-inspect stands alone and
 is useful alone** — that is the declaration's own ordering.
 
+⚑ **SCOPE REDUCED BY THE OWNER, 2026-08-29 — RELAYED, NOT WITNESSED BY THIS LANE. Read this before
+drafting that CR; it is smaller than the declaration this document was written against.** His words as
+transcribed: *"tbh the click to place is just for debug/throwaway, wasn't planned for permanent"*. The
+hub has already amended `contract/projects.json` at empyrean `origin/main` to match and dropped aurora
+from the project's lanes — **verified firsthand here**, so this note is a pointer to a corrected
+declaration and not a competing account of it.
+
+**What the spawn CR must therefore NOT contain**, since each of these was implied by the original goal
+text and is now wrong:
+* **no persistence.** A spawned object lives in the running machine and is gone on reset. Nothing is
+  written into the level's placements. The original goal said the opposite in as many words.
+* **no dependency on aurora.** The object *type* comes from a picker on **our own window**; their
+  `ObjectDef` names are a cheap read if we want them and are **not a dependency**. This is aeon's
+  *"palette supplies the type, click supplies the position"* — and it is the primary form, not a
+  fallback, because it is the only one that works when there is nothing on screen to click.
+* **debug-only is permitted.** aeon's mailbox is DEBUG-only, so the picker may be too. That removes the
+  whole question of what a shipped build does with a spawn verb.
+
+**Nothing in §11.26 as applied is affected** — this document's own §2 and §3 are the select-and-inspect
+half, which the reduction does not touch.
+
 ## 4. Open for the adjudicator
 
 0. **Confirm the withdrawn ask.** The card asked aeon for a way to detect `Sprite_Owner`'s absence;
