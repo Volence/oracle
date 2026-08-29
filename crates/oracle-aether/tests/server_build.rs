@@ -94,6 +94,22 @@ fn initialize_names_the_implementation_and_the_build() {
         "§2.1 (§11.23): this is the Rust `oracle-aether` server, and a consumer's \
          `implementation === 'oracle-rs'` must have exactly one meaning"
     );
+    // **And the wire value IS the compile-time constant** — a separate claim from the one above, kept
+    // alongside it rather than replacing it. The literal pins the *registry* value; this pins the *join*.
+    // See the block comment over `serverBuild` below for why the join needs asserting at all.
+    //
+    // ⚠ **Honest about its own strength: this row is not currently load-bearing, and cannot be shown to
+    // be.** §2.1's registry has exactly one value today, so the schema's enum already refuses any wire
+    // value that is not `"oracle-rs"` — a poison diverging this field is caught by `common/schema.rs`
+    // before reaching here (measured: it fails at `schema.rs:485`, not at this line). It is kept because
+    // it becomes load-bearing the day the registry gains a second value, at which point a wire value that
+    // is *registered but not ours* would otherwise pass everything. Do not cite it as a caught defect.
+    assert_eq!(
+        r["implementation"],
+        json!(IMPLEMENTATION),
+        "§2.1: the wire `implementation` must be `build_info::IMPLEMENTATION` itself, not a string that \
+         merely equals today's value of it"
+    );
 
     let b = &r["serverBuild"];
     assert!(
@@ -109,11 +125,46 @@ fn initialize_names_the_implementation_and_the_build() {
         ["vcs", "content", "declared"].contains(&source),
         "§2.1's `source` table has exactly three values; got {source:?}"
     );
+
+    // ⚑ **THE JOIN BETWEEN THIS FILE'S OTHER TESTS, AND FOR A WHILE NOTHING ASSERTED IT.** Found by the
+    // aurora lane 2026-08-29, reading the three checks against each other rather than any one of them:
+    //
+    //   * `_COMPILE_TIME_OR_NOTHING` proves the CONSTANTS are compile-time;
+    //   * `neither_identity_value_is_reachable_from_configuration` proves the constant NAMES appear only
+    //     in `build_info.rs` and `engine.rs`;
+    //   * `the_compiled_in_build_id_still_names_this_tree` proves the CONSTANT names this tree;
+    //   * the checks above prove the WIRE value is a non-empty string with a registered `source`.
+    //
+    // Every one of those held while the wire value was free to be something else entirely. `engine.rs` is
+    // an ALLOWED file, so an override written there — `config.something.unwrap_or(SERVER_BUILD_ID)` —
+    // keeps the constant compile-time, keeps the name inside an allowed file, and emits a valid non-empty
+    // string. **Demonstrated, not argued:** replacing the emitted `id` with the literal
+    // `"forged-not-this-tree+profile=…"` left all 5 tests in this file green and all 413 in the crate
+    // green. A test per component and none across the seam is how a chain of sound links holds nothing.
+    assert_eq!(
+        id, SERVER_BUILD_ID,
+        "§2.1: the wire `serverBuild.id` must BE the compile-time constant. A valid-looking id that is \
+         not this constant is precisely the forgery the non-forgeability rule exists to prevent, and \
+         every other check in this file passes while it happens"
+    );
+    assert_eq!(
+        source, SERVER_BUILD_SOURCE,
+        "§2.1: the wire `source` must be the compile-time constant, not merely one of the three \
+         registered spellings — `\"declared\"` reported by a `\"vcs\"` build is a lie about provenance \
+         that the table-membership check above cannot see"
+    );
     assert_eq!(
         b.get("dirty").is_some(),
         source == "vcs",
         "§2.1: `dirty` is REQUIRED when `source` is \"vcs\" and meaningless otherwise — the schema's \
          if/then is conditional on purpose, so emitting it unconditionally is as wrong as omitting it"
+    );
+    // Same join again on the last of the three fields: presence is a schema claim, VALUE is a fidelity
+    // claim, and a build that measured a dirty tree and reported `false` would satisfy the one above.
+    assert_eq!(
+        b.get("dirty").and_then(serde_json::Value::as_bool),
+        SERVER_BUILD_DIRTY,
+        "§2.1: the wire `dirty` must be the compile-time `SERVER_BUILD_DIRTY`, value and presence both"
     );
 
     // §12.1 answer 4: `serverVersion` is now REQUIRED (it was in the example and in `properties` from

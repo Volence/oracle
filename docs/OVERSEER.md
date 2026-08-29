@@ -967,6 +967,29 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   consumer at `serverBuild`, we owe them that sentence in the same breath; a pinnable identifier offered as
   the cure for a pinnable count is the same defect in better clothes.
 
+- ~~**F-IDENTITY-JOIN-UNASSERTED**~~ **FOUND AND FIXED 2026-08-29** — *found by the aurora lane by reading
+  our three identity tests AGAINST EACH OTHER, which is a thing no single test's author is positioned to do.*
+  **Every component of §2.1's non-forgeability guarantee was proven and the SEAM between them was not.**
+  `_COMPILE_TIME_OR_NOTHING` proved the constants are compile-time; the config test proved their *names*
+  appear only in `build_info.rs` and `engine.rs`; `the_compiled_in_build_id_still_names_this_tree` proved the
+  *constant* names this tree; the wire test proved the *wire* value was a non-empty string with a registered
+  `source`. **Nothing asserted the string on the wire was that constant** — and `engine.rs` is an ALLOWED
+  file, so an override written there keeps the constant compile-time, keeps the name in an allowed file, and
+  emits a perfectly valid string.
+  **Demonstrated rather than argued, which is why it was worth an hour:** replacing the emitted `id` with the
+  literal `"forged-not-this-tree+profile=…"` — an identity naming no tree in existence — left **all 5 tests
+  in that file green and all 413 in the crate green, exit 0.** Fixed by asserting the join on all three
+  fields (`id`, `source`, `dirty`), each poisoned red-first with its own message: forged id, a `vcs` build
+  reporting `source: "declared"`, and an inverted `dirty`. The `implementation` join is recorded **in the
+  test itself as not currently load-bearing** — the registry has one value, so the schema enum catches
+  divergence first (measured: it fails at `common/schema.rs:485`) — and kept for when the registry grows.
+  **The durable lesson, and it generalises past this file: a test per component and none across the seam is
+  how a chain of individually sound links holds nothing.** It is bar 8's shared frame in its most seductive
+  form, because here every individual check is genuinely strong, recently written, and correct — the
+  strength of the parts is exactly what makes nobody ask what sits between them. **A seam has no author**:
+  each test's writer was inside one component, and the gap was visible only from outside all three, which is
+  the argument for a reader who did not write any of them.
+
 - **F-SERVERNAME-PREDATES-THE-RENAME** — `EngineConfig::default()` sets `server_name: "oracle-next"`
   (`crates/oracle-aether/src/engine.rs:205`, read at `fee8f12`), so every `initialize` still answers with the
   **pre-rename** repo name; `serverVersion` is `"0.0.0"`. Spotted by aurora 2026-08-29 while assessing what on
@@ -981,6 +1004,17 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   it needs bar 14's consumer-set enumeration first — grep every sibling tree for the literal `oracle-next`
   with real client context — because the failure mode of a consumer matching on it is silent. Revival
   condition: do it as part of any deliberate handshake pass, never alone.
+  **ONE CONSUMER CLEARED, AND THEIR OWN CAVEAT IS THE REASON IT IS STILL NOT A GREEN LIGHT** *(aurora,
+  2026-08-29, asked for exactly this input)*: they grepped `src/`, `test/` and their harnesses — 40
+  references to `serverName`, **zero** comparisons/branches/`includes`/`startsWith`/`match` on its value;
+  every use is display or pass-through. **But they also volunteered that the literal `'oracle-next'` appears
+  21 times across 8 of their test files as fixture INPUT**, with assertions derived from the payload
+  (`expect(s.serverName).toBe(PAYLOAD.serverName)`) — so a rename leaves their suite green **while their
+  fixtures quietly describe a server that does not exist.** Their formulation, worth keeping verbatim in
+  spirit: *our green is not evidence your rename is safe; it is evidence we do not look.* That is the
+  clearest statement of this register's own no-consumer-broke hazard anyone has offered, and it came from
+  the consumer. **Four repos remain unenumerated** (aeon, seraph, sigil, empyrean), so the booking stands;
+  aurora has asked to be told if it moves, so they can re-point their fixtures.
 
 - **F-RSP-XVFB-ORPHAN** — *audited into existence by a peer's warning, and the audit came back clean on
   the thing they warned about.* aurora relayed their O16 finding 2026-08-29: 28 of their harnesses tore
