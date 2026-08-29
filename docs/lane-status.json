@@ -1,5 +1,5 @@
 {
-  "focus": "Scoped your click-to-select idea by proving the hard half on a live game; the design is filed and the engine lane's first-stage work is now zero.",
+  "focus": "Your click-to-select design is adjudicated and its test material is written; nothing built, and building still waits on our own check.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -13,14 +13,22 @@
       "id": "d-18"
     }
   ],
-  "nextBoundary": "Now — card and CR filed and pushed, nothing in flight, tree clean.",
+  "nextBoundary": "Now — CR adjudicated, S1 handed over, nothing in flight, tree clean.",
   "queue": [
     {
       "id": "LIVE-OBJECTS-CARD",
-      "title": "Your click-to-select-and-spawn idea: card AND the design (CR-F) filed. The hard half is proven on a live game and the engine lane needs no changes for stage one. Awaiting adjudication; building still waits behind our own breakpoint-window check",
+      "title": "Your click-to-select-and-spawn idea: design ADJUDICATED (protocol 11.26) and the schema test material written and handed to the contract lane. One residue is ours and registered: the rule that matters most cannot be tested by schema, only by a live check against a shipped ROM",
       "state": "open",
       "size": "S",
       "blockedBy": "sequencing: building waits behind aurora's band panel, and behind our own breakpoint-window confirmation",
+      "project": "LIVE-OBJECTS"
+    },
+    {
+      "id": "OBJECT-AT-CONFORMANCE",
+      "title": "The half a schema cannot catch: prove on a real shipped ROM that a click answers 'this build has no owner table' rather than 'nothing here is an object'. Ours, and it must land with the feature, not after",
+      "state": "open",
+      "size": "XS",
+      "blockedBy": null,
       "project": "LIVE-OBJECTS"
     },
     {
@@ -84,7 +92,7 @@
       "blockedBy": null
     }
   ],
-  "awaiting": "your steer. While you were away a project you declared (LIVE-OBJECTS — click to select and spawn) was relayed to me; I did scoping and design only, no building, and proved the hard half works on a live game. Still open on your side and unchanged: d-18 (drag-and-drop), and the ten-second ORACLE_CONSOLE_FILTER=off listen. This is a clean /clear point whenever you want it.",
+  "awaiting": "your steer. Everything from the LIVE-OBJECTS relay is design and test material only — nothing built, and building still waits behind our own breakpoint-window check. Unchanged and still yours: d-18 (drag-and-drop), and the ten-second ORACLE_CONSOLE_FILTER=off listen. Clean /clear point whenever you want it.",
   "atBoundary": true,
-  "updatedAt": "2026-08-29T18:43:26Z"
+  "updatedAt": "2026-08-29T18:48:19Z"
 }
