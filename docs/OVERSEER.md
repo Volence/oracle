@@ -1047,6 +1047,16 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   the differential harness is run in anger again, or a stray `blastem`/`Xvfb` is found outliving it —
   fix is a process group (`start_new_session=True` + `killpg`), not a wider pattern.
 
+**Registered 2026-08-29 by the two window checks** (`docs/2026-08-29-window-runtime-checks.md` — both
+gates discharged; the `LIVE-OBJECTS-CARD` sequencing blocker is cleared):
+
+| id | what | revival condition |
+|---|---|---|
+| **F-PICKER-FILTER-MARKER** | The ROM picker's filter matches the `[loaded]` **decoration**: `rom_browser.rs:115` bakes the marker into the label (`format!("{}   [loaded]", …)`) and `Picker::visible()` (`palette.rs:58-62`) `subseq_match`es that composed string, so every letter of `l,o,a,d,e` is free for the already-open ROM and it survives filters that should exclude it. **Cosmetic — Enter still runs the correct visible row, proven on live data.** The instructive half: this is model-level, tests already assert over those labels (`rom_browser.rs:251`), and nothing asserts the **seam between the marker feature and the filter feature** — this morning's *a test that asserts what you added is blind to what you displaced* bar, one step out. | Next open of `rom_browser.rs`; two-line fix (match `entry.label`, render the marker separately) plus the seam test. |
+| **F-ROMOPEN-C-DOC** | `docs/2026-08-28-rom-open.md` §5 promises an unreadable folder *"leaves the previous listing up"*. It **dismisses the picker** instead — `open_rom_picker` early-`return`s before `open_picker` (`main.rs:494-501`) while Enter has already closed the palette. Safe and loud (toast names the path, ROM unchanged, player alive), but the doc's own acceptance criterion is not met. | Correct the doc at the next pass; optionally re-open on the previous directory before notifying. |
+| **F-TOAST-TRUNCATES** | `notify_err` toasts cut from the right with no ellipsis and **lose the reason**: `open ROM: cannot read {dir} ({e})` rendered as `…/LOCKED (PE`, dropping `Permission denied`. The path survives, the reason does not — and the reason is the half a person needs. Today's SCREEN-HONESTY parcel fixed exactly this on the status line; toasts were out of scope. | Any parcel touching toast rendering — and assert on the **whole** rendered string, per this file's own 2026-08-29 bar. |
+| **F-WINDOW-BUS-FRAME-OFFBYONE** | Overlay and status line both read `F 12720` where the bus reported `frame: 12719` for the same breakpoint stop. A completed-vs-presenting convention difference would explain it and would not be a defect. **Registered as a lead, deliberately not diagnosed** — a consumer joining the window to the bus meets it and nobody has looked. | Any parcel correlating an on-screen frame number with bus `frame`/`frameToken`. |
+
 **Registered by the CR-27 serve review (2026-08-20), all contract-side or cosmetic, none blocking:**
 
 | id | what | revival condition |
@@ -2243,6 +2253,24 @@ correct whether or not the protocol pass ever runs — but a session that reads 
 and re-sends it is spending a peer's attention on a closed item, which is the notify-on-the-dependency
 bar failing from the other end.
 
+
+**▶ NEW BAR, 2026-08-29 — THE HEADLESS PLAYER RECIPE IN THIS FILE WAS INCOMPLETE, AND FOLLOWING IT PUTS A
+WINDOW ON THE OWNER'S DESKTOP.** Measured firsthand while discharging the two window checks; it happened on
+the first launch. The banked recipe (from the SCREEN-HONESTY parcel, above) is *"the player under `xvfb-run`
+with `XDG_CONFIG_HOME` pointed at a scratch `player.conf`"*. **`minifb` prefers Wayland when
+`WAYLAND_DISPLAY` is set, and every lane session on this box inherits `WAYLAND_DISPLAY=wayland-0`** — so
+`DISPLAY=:91` was honoured by nothing, the log said `Wayland window`, and `python-xlib` found **zero windows
+on the Xvfb**. The window was on his real screen. Killed inside the minute by recorded PID.
+**Corrected recipe — both guards, because the failure is silent and lands on somebody else's screen:**
+`env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE DISPLAY=:N target/release/oracle-frontend --x11 …`, with your
+own `Xvfb :N` whose PID you recorded. **Then verify placement before driving anything**: enumerate windows
+on the display you believe you own, and treat an empty list as the finding rather than as a slow start.
+**Why the note was wrong in a way nothing could surface:** it was correct *for its author's purpose* — they
+were reading a screenshot, and any window would do. It is the **isolation** claim that was never true, and
+the note never said which of the two it was promising. Same class as *check the vintage of the process*: a
+sentence true of the file and false of the situation. *(`xdotool` is absent on this machine; `python-xlib`
+0.33 is present and gives XTEST, which is what drove the keystrokes. `import` from ImageMagick grabs the
+screen; `scrot`/`xwd` are absent.)*
 
 `cd` to the absolute repo path before ANY branch operation (a persisted cwd nearly checked out
 under a live agent). Fresh worktrees: `ln -s <repo>/vendor vendor`, verify 17 TestRoms entries, and
