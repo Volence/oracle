@@ -63,11 +63,25 @@ collapsing any pair of them is a silent wrong answer rather than a missing featu
 | `"unavailable"` | the owner table **is not in this build at all** | absent |
 
 ⚑ **`"none"` and `"unavailable"` are the pair that must never merge, and the reason is asymmetric.**
-`Sprite_Owner` is `DEBUG`-only in the engine. On a shipped ROM the symbol is absent, so a server that
-folded the two would answer `"none"` for **every sprite on every click, forever**, which is
-*exactly what a screen full of rings legitimately looks like*. The caller cannot tell "this build
-cannot answer" from "the answer is no", and nothing about it ever looks wrong. A picker built on the
-merged shape silently reports an empty world.
+`"none"` says *the table answered, and the answer is no owner*. `"unavailable"` says *this build has no
+table to ask*. Merged, a caller cannot tell "this build cannot answer" from "the answer is no" — and
+since a screen of rings legitimately produces `none` for every sprite, the merged shape lets a picker
+silently report an empty world.
+
+⚠ **AMENDED WITHIN THE HOUR, and the amendment corrects this CR's own reasoning, not the shape.**
+As first filed this paragraph said `Sprite_Owner` is "`DEBUG`-only" and that a folding server "would
+answer `none` for every sprite forever". **aeon corrected the premise and I verified it firsthand
+against both listings: the symbol is not debug-only-and-reading-zeros, it is ABSENT from the release
+build entirely** — 0 occurrences in `s4.lst`, `FFFFE1EE` in `s4.debug.lst`.
+
+**That makes `"unavailable"` cheaper to produce, not less necessary.** A server resolving **by symbol**
+gets an unambiguous lookup failure on a shipped ROM and can emit `"unavailable"` with no new engine
+support — so the ask in the companion card ("give us a way to detect its absence") is **already
+satisfied**, and is withdrawn. What survives is that the distinction must reach the *wire*: the
+detection existing server-side is worth nothing if the result shape collapses it before the client sees
+it. **The corrected hazard is narrower and still real** — it requires resolving a debug **address**
+against a release ROM, which is a discipline failure rather than an unconditional outcome. §2.3 below
+now makes that discipline normative, because the camera half fails the same way and does it silently.
 
 `"not an object"` as a single value would collapse four of the five. The card's own measurement is the
 argument: two different non-object reasons appeared on one screen within three sprites.
@@ -88,6 +102,32 @@ value that would offset every world coordinate by 128 and be caught by nobody. A
 `worldSource: "unavailable"` (and `world` absent) when the camera symbols do not resolve — **independent
 of the `owner` half**, so a build that can answer one and not the other answers the one it can, rather
 than refusing both.
+
+### 2.3a ⚑ NORMATIVE: resolve by symbol, per shape, and never carry an address between shapes
+
+**Added by amendment, from aeon's finding, verified here against both listings.** Every address this
+method depends on is resolved **by symbol on the loaded ROM's own listing**, per build shape. A server
+or client that caches an address and reuses it against a different build is non-conformant.
+
+The reason is measured, and it is the §2.3 hazard again with worse odds:
+
+| symbol | release `s4.lst` | debug `s4.debug.lst` |
+|---|---|---|
+| `Camera_X` | `FFFFA576` | `FFFFA604` |
+| `Camera_Y` | `FFFFA57A` | `FFFFA608` |
+| `Sprite_Owner` | **absent** | `FFFFE1EE` |
+
+**`Camera_X` and `Camera_Y` survive a release build — and they MOVE.** A consumer holding the debug
+address and reading release RAM gets **no fault and a plausible number**, so click-to-world lands
+silently in the wrong place. Unlike `Sprite_Owner`, whose absence announces itself as a lookup failure,
+**the camera half has no loud failure at all** — which is why this is normative text rather than advice.
+
+*One correction back to the finding, which strengthens its rule rather than weakening it:* aeon
+described the shift as `$8E` "in the same tree". The two listings on this machine were written **two
+days apart** (`s4.lst` 08-27, `s4.debug.lst` 08-29), so they are not demonstrably one tree and the
+constant `$8E` is not established by them. **The rule does not need it.** If addresses can move between
+build *shapes* and also between build *vintages*, carrying one is less safe than the single stated
+instance implies, not more.
 
 ### 2.4 What is NOT changed
 
@@ -114,6 +154,9 @@ is useful alone** — that is the declaration's own ordering.
 
 ## 4. Open for the adjudicator
 
+0. **Confirm the withdrawn ask.** The card asked aeon for a way to detect `Sprite_Owner`'s absence;
+   symbol-lookup failure already is one, so the ask is withdrawn and no engine change is requested by
+   this CR. Nothing in `LIVE-OBJECTS` now waits on aeon for the select-and-inspect half.
 1. **Method name.** `emulator/object_at` reads as "what object is at this dot", which is the question.
    `pick_at` / `resolve_click` were considered; the first is jargon, the second names the input.
 2. **Should `owner.raw` be served?** It is the auditable form and it costs 6 bytes. Against: it invites
