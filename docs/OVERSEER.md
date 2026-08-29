@@ -953,6 +953,35 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   name-is-not-behaviour bar — a number that *correlates* with the property being tested, standing in for the
   property, and reading exactly like a real check until the correlation breaks.
 
+  ⚠ **AMENDED SAME DAY, and the amendment corrects THIS BOOKING, not the consumer** *(aurora, 2026-08-29,
+  who class-checked the SHA out of habit and found the thing I had just recommended people point at)*. The
+  paragraph above says "name `serverBuild` in the same breath as the count". **That advice is incomplete in
+  a way that walks a consumer back into the same trap from the other side.** `serverBuild.id` names whatever
+  HEAD was at build time — and the id they measured, `6031020`, is a **docs-only commit** (`lane-status.json`,
+  +10/−18). That is correct behaviour for a build identity and is exactly what staleness wants, but it means
+  **the id moves for reasons that have nothing to do with the code**: binaries built at `acf41f5` and at
+  `6031020` contain identical code and report different ids.
+  **So the field answers *"is this the same binary I measured before?"* and MUST NOT be compared for equality
+  to answer *"does this build contain feature X?"*** — that second question belongs to `capabilities` and
+  `methods` membership, which is the derived form this register already recommends. Whenever we point a
+  consumer at `serverBuild`, we owe them that sentence in the same breath; a pinnable identifier offered as
+  the cure for a pinnable count is the same defect in better clothes.
+
+- **F-SERVERNAME-PREDATES-THE-RENAME** — `EngineConfig::default()` sets `server_name: "oracle-next"`
+  (`crates/oracle-aether/src/engine.rs:205`, read at `fee8f12`), so every `initialize` still answers with the
+  **pre-rename** repo name; `serverVersion` is `"0.0.0"`. Spotted by aurora 2026-08-29 while assessing what on
+  our wire is an identity.
+  **Not a wire-correctness bug, and say so plainly:** §2.1 deliberately demotes `serverName` to a *deployment
+  label* and moves identity to `implementation` (`"oracle-rs"`) and `serverBuild`, both read from `build_info`
+  and — verified firsthand, not from the comment — **barred from configuration by a source-level test**
+  (`tests/server_build.rs::neither_identity_value_is_reachable_from_configuration`). A consumer reading
+  `serverName` for identity is reading the field the contract told it not to.
+  **But the value is still a stale name we publish on every handshake**, and "it is only a label" is exactly
+  how a wrong string survives a rename. **Changing it is wire-visible**, so it does not get a drive-by edit:
+  it needs bar 14's consumer-set enumeration first — grep every sibling tree for the literal `oracle-next`
+  with real client context — because the failure mode of a consumer matching on it is silent. Revival
+  condition: do it as part of any deliberate handshake pass, never alone.
+
 - **F-RSP-XVFB-ORPHAN** — *audited into existence by a peer's warning, and the audit came back clean on
   the thing they warned about.* aurora relayed their O16 finding 2026-08-29: 28 of their harnesses tore
   down with `pkill -f '<dist path>'`, an argv pattern that matched **other sessions' processes** and had
