@@ -932,6 +932,27 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   `Unfiltered` renders `RAW`, deliberately not `OFF` — `AUDIO OFF` reads as *there is no sound*.
   **Shorter than what it replaced**, which mattered: see the width finding below.
 
+- **F-BANNER-INVITES-A-PIN** — *found from the other end, by a consumer breaking on it (aurora's O26,
+  2026-08-29).* Our startup banner prints `aether: N methods advertised`, and `Bus::start` prints the same
+  total on the serving line. **A published total is an invitation to pin it**, and a consumer did: their
+  `classic-playtest-harness.mjs:171` pinned `methods === '35'` and *threw* `stale oracle-aether binary` on
+  anything else — so the guard written to detect staleness became the stale thing and rejected every
+  correct binary. **Measured firsthand at `6031020`, two ways: the banner says 52, and `initialize`'s
+  `methods` array has length 52** (spawned and called, not read off a schema).
+  **The defect is theirs; the surface that manufactures it is ours.** A count changes for reasons unrelated
+  to freshness and is identical across binaries that differ, so it is the wrong observable for the question
+  every consumer actually asks — *is this binary current?* We already serve the right answer and do not point
+  at it: `initialize.serverBuild` carries `{id: "<sha>+profile=…+target=…+features=…", source, dirty}`.
+  **Cheap fix, and it is a documentation-and-adjacency fix, not a removal:** name `serverBuild` in the same
+  breath as the count, so the number a reader meets first is not the only identity on offer. Do **not**
+  simply delete the total — it is genuinely useful at a glance, and aurora's lesson is about what a consumer
+  should *key on*, not about what we may print. Our own side is clean: grepped, every use is `METHODS.len()`
+  and no literal total is pinned anywhere (`crates/oracle-aether/tests/params_closure.rs` closes over
+  `METHODS.len()`, which is the derived form).
+  **The durable line, aurora's: a total was the wrong observable.** Same family as this file's own
+  name-is-not-behaviour bar — a number that *correlates* with the property being tested, standing in for the
+  property, and reading exactly like a real check until the correlation breaks.
+
 - **F-RSP-XVFB-ORPHAN** — *audited into existence by a peer's warning, and the audit came back clean on
   the thing they warned about.* aurora relayed their O16 finding 2026-08-29: 28 of their harnesses tore
   down with `pkill -f '<dist path>'`, an argv pattern that matched **other sessions' processes** and had
