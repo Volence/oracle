@@ -80,15 +80,32 @@ impl Default for Bus {
     }
 }
 
+/// This build's twin of [`crate::bus::NOT_SERVING`] — same opening words, and a reason that is a fact about
+/// the binary rather than about the command line. Printed on the *default* path here too: "no bus" is a
+/// statement this window owes its user either way, and a build that can never serve is the one case where
+/// silence would be most easily mistaken for a bus that is merely idle.
+const NOT_SERVING: &str =
+    "aether: not serving — this binary was built without the `aether` feature, \
+     so nothing can attach to this window";
+
 impl Bus {
     pub fn start(socket: Option<Option<PathBuf>>, _info: MachineInfo) -> Self {
-        if socket.is_some() {
-            eprintln!(
+        // Exhaustive for the reason `bus.rs` gives at the same place: the arm that reports the quiet state
+        // is the one whose deletion nothing else could notice.
+        match socket {
+            Some(_) => eprintln!(
                 "aether: NOT serving — this binary was built without the `aether` feature. \
                  Rebuild with it to serve the bus."
-            );
+            ),
+            None => println!("{NOT_SERVING}"),
         }
         Self::default()
+    }
+
+    /// Always `false`, and that is this build's truth rather than a stub's shrug: nothing here binds a
+    /// socket, so the status line's `AETHER` field is correct without a `#[cfg]` at its call site.
+    pub fn is_serving(&self) -> bool {
+        false
     }
 
     pub fn merge_held(&self, pads: [Pad; 2]) -> [Pad; 2] {
@@ -178,4 +195,33 @@ impl Bus {
 /// always `None` too. It exists so the run loop's call site is one shape in both builds.
 pub fn break_observed(_brk: Option<()>) -> Option<u32> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The twin of `bus.rs`'s pin. Both builds open with the same words, so a reader who sees "aether: not
+    /// serving" has learned the same thing either way and only the reason differs — the two files cannot be
+    /// compiled together, so this pairing is what stands in for a shared assertion.
+    #[test]
+    fn the_not_serving_line_matches_the_served_builds_opening() {
+        assert!(
+            NOT_SERVING.starts_with("aether: not serving"),
+            "{NOT_SERVING:?}"
+        );
+        // The reason is this build's own, and it must not claim a flag would help — nothing here can serve.
+        assert!(NOT_SERVING.contains("aether"), "{NOT_SERVING:?}");
+        assert!(
+            !NOT_SERVING.contains("--aether"),
+            "this build cannot serve, so offering the flag as a remedy would be a lie: {NOT_SERVING:?}"
+        );
+    }
+
+    /// This build never serves, and says so rather than leaving the status line to guess.
+    #[test]
+    fn is_serving_is_false_in_a_build_with_no_bus() {
+        assert!(!Bus::start(None, MachineInfo::default()).is_serving());
+        assert!(!Bus::start(Some(None), MachineInfo::default()).is_serving());
+    }
 }

@@ -922,11 +922,15 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   *Revival condition:* a hardware-tested rule for the later revision appears, **or** a second scene
   turns up where the fork changes a design decision. The divergence ledger already records the fork,
   so nothing is hidden meanwhile.
-- **F-HUD-FILTER-LABEL** — the F3 status line prints the console **audio** output stage as a bare
-  `MODEL1-VA0-VA2` with no label (`overlay.rs` `status_text`, between `VOL` and the aspect /
-  native-resolution / frame fields), so most of its neighbours are video facts. **The owner read it as
-  a VDP/board revision** — reported through aurora 2026-08-29, and the misreading is ours, not his.
-  Fix is a label. Sits next to AUDIO-DULL below, which is the same enum seen from the other end.
+- ~~**F-HUD-FILTER-LABEL**~~ **DONE 2026-08-29 (SCREEN-HONESTY parcel)** — was: the F3 status line
+  printed the console **audio** output stage as a bare `MODEL1-VA0-VA2` with no label (`overlay.rs`
+  `status_text`, between `VOL` and the aspect / native-resolution / frame fields), so most of its
+  neighbours were video facts and **the owner read it as a VDP/board revision** (through aurora
+  2026-08-29 — the misreading was ours, not his). Now `AUDIO VA0-VA2`, via a frontend-local
+  `filter_label` rather than `ConsoleModel::name`: that identifier round-trips through `from_name`
+  (it is what `ORACLE_CONSOLE_FILTER` parses) and so is not free to be shortened for a readout.
+  `Unfiltered` renders `RAW`, deliberately not `OFF` — `AUDIO OFF` reads as *there is no sound*.
+  **Shorter than what it replaced**, which mattered: see the width finding below.
 
 - **F-RSP-XVFB-ORPHAN** — *audited into existence by a peer's warning, and the audit came back clean on
   the thing they warned about.* aurora relayed their O16 finding 2026-08-29: 28 of their harnesses tore
@@ -1900,6 +1904,60 @@ alongside the base check. Related and already booked: the same class as *a merge
 method* — knowing a thing in the tree is not the thing reaching the process that needs it.
 
 ## Ops (each line is a paid-for lesson)
+
+**▶ NEW BAR, 2026-08-29 — A TEST THAT ASSERTS WHAT YOU *ADDED* IS STRUCTURALLY BLIND TO WHAT YOU
+*DISPLACED*, AND A FIXED-SIZE SURFACE MAKES EVERY ADDITION A DISPLACEMENT.** Earned on the
+SCREEN-HONESTY parcel, against this seat's own green test.
+
+**The instance.** Adding an `AETHER ON/OFF` field to the F3 status line came with a test asserting the
+field survives truncation. It passed. It was also true and useless: `fit` cuts the line from the right
+with **no ellipsis and no error**, so the test proved the new field was present while three older ones
+— aspect, native resolution, frame counter — had been pushed off the glass. Measured rather than
+reasoned about, by printing the fitted string at each real window size: **34 characters available at
+224px, 448px, 672px and 896px alike**, because the font scale tracks the picture height, so the budget
+in *characters* is very nearly constant no matter how large the window. The line wanted 51.
+
+**The part that makes it a bar rather than a slip: the surface was ALREADY over budget and nobody
+knew.** Before this parcel the line ran to 41 characters, so `F1234` had never been visible at any
+size and the resolution was being cut mid-number to `320X2`. A field that silently truncates cannot
+report its own overflow, and no test asserted on the *whole* line — every test asserted on the field
+its author had just added. That is bar 16(d)'s absence surface on a **positive** artifact: a status
+line that is present, legible, and quietly missing its right-hand third.
+
+**Correctives, in the order they are cheap.** (1) When adding to a fixed-width surface, assert on the
+**whole** rendered string, not on the field you added — `assert_eq!(rendered, full)` is the form, and
+it fails for the person who adds the *next* field too. (2) **Print it and look at it** before believing
+a boolean; the arithmetic here was mine and was wrong twice before the probe settled it. (3) Ordering
+is a design decision on any surface that truncates: the fields that answer *"is this window lying to
+me"* go first, and that ordering wants its own test with an **anti-vacuity clause** — there must exist
+a width that drops a late field while keeping an early one, or the ordering test passes on a line that
+never truncates at all.
+
+**And the fix that bought the room back is worth stealing: the status line now draws one font step
+smaller than the rest of the overlay** (`Overlay::status_font_scale`). A toast is a *message* and wants
+reading across the room; a status line is a **readout** consulted deliberately by someone who pressed
+F3. One step down roughly halves its width cost, and the whole 51-character line now fits at every size
+from 448px up — including the frame counter, which had never been visible. At 224px there is no step
+left to drop and it still truncates; that floor is **asserted in the test** rather than papered over, so
+a change that makes it worse fails instead of passing quietly.
+
+**Second finding from the same parcel, on the silent arm.** The bug being fixed was that `Bus::start`
+printed nothing when no `--aether` was given — an absence, which is why it was never noticed. **No test
+over that file could have caught its removal either**: a unit test cannot read `println!`, and a test
+that shelled out to grep its own stdout would be testing the harness. So the guard is structural — the
+`if let Some(..) else` became a `match`, and **deleting the quiet arm is now a compile error.** Where
+the observable is unreachable to a test, reach for the type system before settling for a comment. The
+wording is pinned separately as a constant, and the two builds' twins pin a shared opening so
+`bus.rs` and `bus_stub.rs` cannot start describing one state in two vocabularies.
+
+**Runtime is what closed the wiring, and it was not optional.** Poisoning `filter: filter_label(..)`
+back to the core identifier left the entire suite green — the tests call the function, and the call
+site sits inside `setup_audio`, which needs a real output device. That half was settled by running the
+player under `xvfb-run` with `XDG_CONFIG_HOME` pointed at a scratch `player.conf` carrying
+`status_line = on` (which is how you get the F3 line up with no keyboard, and without touching the
+owner's config), then reading the screenshot. All three readings confirmed on the glass: `AETHER OFF`,
+`AETHER ON` under `--socket`, and `AUDIO RAW` under `ORACLE_CONSOLE_FILTER=off`. **The test's own doc
+now says which half it does not cover**, rather than leaving a later reader to assume it covers both.
 
 **▶ NEW BAR, 2026-08-27 — A CLAIM IN OUR DOCS ABOUT A PEER'S FILE HAS A SHELF LIFE, AND NOTHING IN THIS
 REPO CAN EVER TELL YOU IT HAS EXPIRED. MEASURED SHELF LIFE: FORTY MINUTES.** Third instance in one day,

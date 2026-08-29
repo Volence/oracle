@@ -98,8 +98,22 @@ pub struct Status {
     pub occupied: [bool; SLOT_COUNT],
     /// Volume step and mute, as `Some((step, max, muted))`; `None` in a build with no audio feature.
     pub volume: Option<(u8, u8, bool)>,
-    /// The console output-filter revision in use ("VA0-VA2", "off", …), for the status line.
+    /// The console **audio** output-filter revision in use ("VA0-VA2", "RAW", …), for the status line.
+    ///
+    /// Carried already-shortened and rendered under an `AUDIO` label, because the bare revision name was read
+    /// as a *video* setting — a board revision — by the one person it is drawn for (2026-08-29,
+    /// `F-HUD-FILTER-LABEL`). Its neighbours here are the aspect mode and the native frame size, so a bare
+    /// `MODEL1-VA0-VA2` sitting among them is not merely unlabelled, it is labelled by its company.
     pub filter: Option<&'static str>,
+    /// **Whether this window is serving the Aether bus.** A fact about the window that nothing on screen used
+    /// to state, in either direction: the owner twice launched without `--aether`, went to a client, and
+    /// found it offline with the player silent about why (aurora's ask, 2026-08-28).
+    ///
+    /// Stated in both directions rather than badged only when off. The house pattern one field down — the
+    /// layer badge, which appears only for the abnormal state — is deliberately *not* followed here, because
+    /// "hidden layers" is visible in the picture itself while a bus is invisible either way, so an absent
+    /// field would leave the reader inferring from nothing. That is the defect this field exists to remove.
+    pub aether: bool,
     /// The display aspect mode's short name.
     pub aspect: &'static str,
     /// The native frame size currently being presented.
@@ -204,6 +218,25 @@ impl Overlay {
         (win_h / 224).clamp(1, 4)
     }
 
+    /// Font scale for the **status line** specifically: one step below the rest of the overlay, never below 1.
+    ///
+    /// **Why it is not [`font_scale`](Self::font_scale).** Both the text and the picture grow with the window,
+    /// so the status line's budget in *characters* is very nearly constant — measured across 224px to 896px
+    /// windows it was 34 characters at every one of them. The line wants ~51, so it was being cut from the
+    /// right with no ellipsis and no complaint, and had been for some time: before the bus and audio fields
+    /// existed it still ran to 41 characters, losing the frame counter entirely and cutting the native
+    /// resolution mid-number (`320X2`). Nothing announced that, because [`fit`] returns a shorter string
+    /// rather than an error.
+    ///
+    /// Dropping one step is the whole fix. A toast or the `PAUSED` banner is a *message* and wants to be
+    /// read across the room; the status line is a **readout** consulted deliberately by someone who pressed
+    /// F3, and one step down roughly halves its width cost while staying a crisp 5x7 bitmap at 2x or 3x. At a
+    /// 224px window there is no step to drop and the line still truncates — that floor is real and is left
+    /// visible rather than papered over.
+    pub fn status_font_scale(win_h: usize) -> usize {
+        Self::font_scale(win_h).saturating_sub(1).max(1)
+    }
+
     /// Draw the whole overlay into the `w * h` presentation buffer, anchored to `area` — the rectangle the
     /// game's picture occupies. Anything landing outside the buffer is clipped by [`font`], so a picture
     /// larger than the window (or a window smaller than the text) is safe.
@@ -213,7 +246,17 @@ impl Overlay {
         let mut c = font::Canvas::new(buf, w, h);
 
         if self.showing_status() {
-            self.draw_status_line(&mut c, area, st, px, margin);
+            // The badge reservation inside `draw_status_line` is still measured at the *overlay's* scale,
+            // which is what the badge is drawn at — the status line getting smaller must not let it creep
+            // under a badge that did not.
+            self.draw_status_line(
+                &mut c,
+                area,
+                st,
+                Self::status_font_scale(area.h.max(1)),
+                margin,
+                px,
+            );
         }
         // **Unconditional** — not behind `showing_status`, not behind a lens, not on a timer. The mask is
         // on until someone turns it off, and so is the sentence that says so. See [`Self::layer_badge`].
@@ -300,6 +343,7 @@ impl Overlay {
         st: &Status,
         px: usize,
         margin: usize,
+        badge_px: usize,
     ) {
         let pad = 2 * px;
         let strip_w = slot_strip_width(px);
@@ -310,15 +354,20 @@ impl Overlay {
         // by design, and it is a reservation rather than a redraw order — the badge paints last, and a
         // status line allowed to run under it would be a wrong picture *underneath the sentence saying the
         // picture is wrong*.
-        let badge_w = Self::layer_badge(area, px, st.layers).map_or(0, |(_, r, _, _)| r.w + pad);
+        //
+        // Measured at `badge_px`, the scale the badge is actually drawn at — which since 2026-08-29 is a step
+        // larger than this line's own `px`. Reserving at the smaller scale would reserve less room than the
+        // badge occupies, which is the one direction this reservation must never be wrong in.
+        let badge_w = Self::layer_badge(area, badge_px, st.layers)
+            .map_or(0, |(_, r, _, _)| r.w + 2 * badge_px);
         let avail = area.w.saturating_sub(2 * margin + badge_w);
-        if avail < strip_w + 4 * pad {
+        let Some(text_avail) = status_text_avail(avail, px) else {
             // Not even the slot strip fits. The strip is drawn as fixed-width boxes rather than text, so
             // there is nothing to truncate — drop the whole line instead of letting it run off the picture.
             return;
-        }
+        };
         let full = status_text(st);
-        let line = fit(&full, avail.saturating_sub(strip_w + pad + 2 * pad), px);
+        let line = fit(&full, text_avail, px);
         let panel_w = (strip_w + pad + font::text_width(line) * px + 2 * pad).min(avail.max(1));
         let panel_h = font::GLYPH_H * px + 2 * pad;
         if area.h < margin + panel_h {
@@ -406,6 +455,12 @@ fn fade(color: u32, alpha: u8) -> u32 {
 }
 
 /// The status line's text (everything except the slot strip, which is drawn as boxes).
+///
+/// **Field order is truncation order.** [`fit`] cuts this from the right and says nothing about what it
+/// removed, so the sequence below is a priority list rather than a layout: the two fields that answer *"is
+/// this window lying to me"* — whether the bus is up, and which output stage is colouring the sound — come
+/// before the three that merely describe the picture (aspect, native size, frame counter), because those
+/// three are re-derivable by looking at the window and the first two are not.
 pub fn status_text(st: &Status) -> String {
     let mut s = String::new();
     if let Some((v, max, muted)) = st.volume {
@@ -415,15 +470,32 @@ pub fn status_text(st: &Status) -> String {
             s.push_str(&format!("VOL {v}/{max} "));
         }
     }
+    s.push_str(if st.aether {
+        "AETHER ON "
+    } else {
+        "AETHER OFF "
+    });
     if let Some(f) = st.filter {
-        s.push_str(f);
-        s.push(' ');
+        s.push_str(&format!("AUDIO {f} "));
     }
     s.push_str(&format!(
         "{} {}X{} F{}",
         st.aspect, st.native.0, st.native.1, st.frame
     ));
     s
+}
+
+/// How many device pixels of the status band are left for [`status_text`] once the fixed-width slot strip and
+/// the panel's padding have taken theirs, or `None` when not even the strip fits.
+///
+/// Extracted from [`Overlay::draw_status_line`] so that a test can ask *how much text actually survives at a
+/// real window size* without restating the arithmetic — a restated copy would agree with itself while
+/// drifting from the drawing code, which is the shape this repo keeps paying for. `avail` is the band width
+/// already reduced by the margins and by any layer badge.
+pub fn status_text_avail(avail: usize, px: usize) -> Option<usize> {
+    let pad = 2 * px;
+    let strip_w = slot_strip_width(px);
+    (avail >= strip_w + 4 * pad).then(|| avail.saturating_sub(strip_w + pad + 2 * pad))
 }
 
 /// Width in device pixels of the ten-slot strip at font scale `px`: one `ADVANCE`-wide cell per slot plus a
@@ -548,6 +620,12 @@ pub fn status_row_height(px: usize) -> usize {
 /// CPU chip computed `area.y + margin + status_row_height(px)` with *its* margin, which is smaller
 /// than the overlay's whenever the register block drops a font scale, so its panel overlapped the
 /// band by two rows and only the panel's padding kept a glyph out of it.
+///
+/// **Callers pass the overlay's `px`, and since 2026-08-29 the status line itself draws one step
+/// smaller ([`Overlay::status_font_scale`]) — so this band is now taller than the panel it guards.**
+/// Deliberately left that way: an over-reservation costs a lens a few rows it did not have to yield,
+/// while an under-reservation puts a callout through the status line, and only one of those is a
+/// wrong picture. Do not "correct" it to the smaller scale without re-checking every caller.
 pub fn status_band(area: Rect, px: usize) -> Rect {
     Rect {
         x: area.x,
@@ -624,6 +702,7 @@ mod tests {
             occupied: [false; SLOT_COUNT],
             volume: Some((7, 10, false)),
             filter: Some("VA0-VA2"),
+            aether: false,
             aspect: "4:3",
             layers: LayerMask::ALL,
             native: (320, 224),
@@ -764,7 +843,17 @@ mod tests {
             // Draw the status line alone, over a ground, and look for its ink in the badge's columns.
             // Drawing the badge too would paint those columns itself and hide the very thing under test.
             let mut c = font::Canvas::new(&mut buf, w, h);
-            o.draw_status_line(&mut c, area, &st, px, (2 * px).max(4));
+            // The two scales the live `draw` uses, not one scale for both: the status line is drawn a step
+            // smaller than the badge it must stay clear of, and passing `px` for both would test a
+            // relationship that no longer exists.
+            o.draw_status_line(
+                &mut c,
+                area,
+                &st,
+                Overlay::status_font_scale(h),
+                (2 * px).max(4),
+                px,
+            );
             let intruders = (badge.y..badge.y + badge.h)
                 .flat_map(|y| (badge.x..badge.x + badge.w).map(move |x| (x, y)))
                 .filter(|&(x, y)| buf[y * w + x] != GROUND)
@@ -869,6 +958,124 @@ mod tests {
         silent.filter = None;
         let q = status_text(&silent);
         assert!(!q.contains("VOL") && !q.contains("MUTE"));
+    }
+
+    /// **The audio revision never appears without the word that says it is audio.** The bare `MODEL1-VA0-VA2`
+    /// this replaced sat between the volume and the aspect mode, and was read as a board revision by the one
+    /// person the line is drawn for. The control below is the half that keeps this from passing vacuously:
+    /// deleting the label leaves `VA0-VA2` in the string, so asserting on the revision alone would stay green.
+    #[test]
+    fn the_audio_revision_is_never_printed_bare() {
+        let s = status_text(&status());
+        assert!(
+            s.contains("AUDIO VA0-VA2"),
+            "the revision must carry its label: {s:?}"
+        );
+        // The control: the revision must not occur anywhere the label does not immediately precede it.
+        assert_eq!(
+            s.matches("VA0-VA2").count(),
+            s.matches("AUDIO VA0-VA2").count(),
+            "every occurrence of the revision is a labelled one: {s:?}"
+        );
+        // And the label is not left stranded on a build with no audio at all.
+        let mut silent = status();
+        silent.filter = None;
+        assert!(!status_text(&silent).contains("AUDIO"));
+    }
+
+    /// **The bus state is stated in both directions**, and the two readings are different strings — the whole
+    /// point being that a reader never has to infer the state from an absence.
+    #[test]
+    fn the_status_line_states_the_bus_either_way() {
+        let mut off = status();
+        off.aether = false;
+        let mut on = status();
+        on.aether = true;
+        let (o, n) = (status_text(&off), status_text(&on));
+        assert!(o.contains("AETHER OFF"), "{o:?}");
+        assert!(n.contains("AETHER ON"), "{n:?}");
+        assert_ne!(o, n);
+        // "AETHER ON" is a substring of nothing else here, but "AETHER OFF" contains no "AETHER ON" either —
+        // pin it, because a reader scanning for the ON spelling must not match the OFF line.
+        assert!(!o.contains("AETHER ON"), "the two readings must not alias");
+    }
+
+    /// **Field order is truncation order, and this is what holds it there.** [`fit`] cuts from the right with
+    /// no ellipsis and no complaint, so "the status line says AETHER OFF" is a claim about *width*, not about
+    /// [`status_text`] alone. Move the bus or audio blocks after the picture fields and this fails.
+    #[test]
+    fn the_honesty_fields_outlive_the_picture_fields_when_the_line_is_cut() {
+        let st = status();
+        let full = status_text(&st);
+        let px = 1;
+        let widest = font::text_width(&full) * px + 8;
+        let mut ever_cut_the_frame_while_keeping_the_bus = false;
+        for avail in 0..=widest {
+            let line = fit(&full, avail, px);
+            if line.contains("F1234") {
+                assert!(
+                    line.contains("AETHER OFF") && line.contains("AUDIO VA0-VA2"),
+                    "at {avail}px the frame counter survived but an honesty field did not: {line:?}"
+                );
+            }
+            if line.contains("AETHER OFF") && !line.contains("F1234") {
+                ever_cut_the_frame_while_keeping_the_bus = true;
+            }
+        }
+        // Without this the test above is vacuous: it would also pass if the line never truncated at all, or
+        // if every field always appeared together. This is the case the ordering exists to produce.
+        assert!(
+            ever_cut_the_frame_while_keeping_the_bus,
+            "no width drops the frame counter while keeping the bus state — the ordering buys nothing"
+        );
+    }
+
+    /// What the status line renders to at the **real** geometry the player runs at.
+    ///
+    /// This is the test the two above could not be: they pin `status_text`, and `status_text` is not what
+    /// reaches the glass — [`fit`] is, and it silently returns a shorter string. Adding the bus field made
+    /// the line 51 characters against a budget that was 34 at *every* window size, because text and picture
+    /// scale together; that regression was invisible to a test asserting only on the fields it added, and it
+    /// was measured rather than reasoned about. Dropping the status line one font step
+    /// ([`Overlay::status_font_scale`]) is what buys the room back.
+    ///
+    /// Every width is derived from [`status_text_avail`] and the scale functions, so this cannot drift from
+    /// the drawing code by restating its arithmetic.
+    #[test]
+    fn the_whole_status_line_survives_at_the_sizes_the_player_actually_uses() {
+        let st = status();
+        let full = status_text(&st);
+        let rendered = |win_h: usize| -> String {
+            let px = Overlay::status_font_scale(win_h);
+            let margin = (2 * Overlay::font_scale(win_h)).max(4);
+            let area_w = win_h * 4 / 3; // a 4:3 picture, the aspect the player defaults to
+            let avail = area_w.saturating_sub(2 * margin);
+            let text_avail = status_text_avail(avail, px)
+                .unwrap_or_else(|| panic!("the slot strip should fit at {win_h}"));
+            fit(&full, text_avail, px).to_string()
+        };
+        // A 2x window and everything above it: the entire line, frame counter included. Note 448 — before
+        // this change even a 4x window lost `F1234` and cut the resolution to `320X2`.
+        for win_h in [448usize, 672, 896, 1080, 1440] {
+            assert_eq!(
+                rendered(win_h),
+                full,
+                "a {win_h}px-tall picture should show the whole status line"
+            );
+        }
+        // **The floor, asserted rather than hidden.** At the native 224px height there is no step left to
+        // drop, so the line still truncates — and this row states exactly how far it gets, so that a future
+        // change which makes it *worse* fails here instead of passing quietly.
+        let smallest = rendered(224);
+        assert!(
+            smallest.contains("AETHER OFF") && smallest.contains("AUDIO VA0-VA2"),
+            "even at the floor the two honesty fields survive, being ordered first: {smallest:?}"
+        );
+        assert!(
+            !smallest.contains("F1234"),
+            "if the floor now fits the whole line, this test's premise has changed — re-measure it \
+             rather than deleting the row: {smallest:?}"
+        );
     }
 
     /// Drawing the whole overlay into a buffer marks pixels, never panics, and — the invariant that matters —

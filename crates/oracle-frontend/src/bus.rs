@@ -72,6 +72,18 @@ pub struct Pumped {
     pub frames_advanced: u64,
 }
 
+/// What a launch that was never asked to serve prints, so that "the bus is off" is a sentence somewhere
+/// rather than the absence of one.
+///
+/// It names the three ways to turn it on because the reader of this line is, by construction, someone who
+/// wanted the bus and did not get it — a message that reports a state without naming the remedy sends them
+/// to the `--help` this line could have been. [`crate::bus_stub`] carries its own twin of this constant
+/// (same opening words, a different reason), and a test in each file pins that opening so the two builds
+/// cannot start describing the same state differently.
+const NOT_SERVING: &str =
+    "aether: not serving — no --aether given, so nothing can attach to this window \
+     (pass --aether, or --socket PATH, or set ORACLE_AETHER=1)";
+
 /// The hosted capability layer, or an inert placeholder when `--aether` was not asked for.
 pub struct Bus {
     host: Host,
@@ -84,6 +96,12 @@ impl Bus {
     ///
     /// A bind failure is reported and degraded to inert, never fatal: someone who launched a game to play it
     /// should not be stopped by a stale socket file, and the message says exactly what did not happen.
+    ///
+    /// **All three outcomes say so out loud, including the default one.** Until 2026-08-29 the `None` arm
+    /// printed nothing at all, so a launch without `--aether` emitted no line about Aether anywhere — and an
+    /// absence is not a statement. The observed cost was the owner launching twice in one evening, going to a
+    /// client, and finding it offline with nothing on either side able to say why; a bus that is off is a fact
+    /// about this window, and the window is the thing that has to report it (aurora's ask, 2026-08-28).
     pub fn start(socket: Option<Option<PathBuf>>, info: MachineInfo) -> Self {
         // The hit ring is sized by the *player*, not by the headless default: this instrument is shared with
         // the pixel-attribution panel (see [`Bus::watchpoints_mut`]), and a panel that silently held fewer
@@ -93,8 +111,13 @@ impl Bus {
         config.engine.watch_ring_cap = crate::WATCH_CAP;
         let mut host = Host::new(config);
         host.set_machine_info(info.into());
-        if let Some(path) = socket {
-            match host.serve(path) {
+        // A `match` rather than `if let ... else`, so that **deleting the silent case is a compile error**
+        // rather than a silent regression. That is the defect being repaired here: the arm that says nothing
+        // is the one nothing can detect the absence of, and no test over this file's output could have caught
+        // its removal — a unit test cannot read `println!`, and a test that could would be testing the
+        // harness. The type system can, so it does.
+        match socket {
+            Some(path) => match host.serve(path) {
                 Ok(p) => println!(
                     "aether: serving on {} (mode 0600, {} methods, protocol version {})",
                     p.display(),
@@ -102,9 +125,17 @@ impl Bus {
                     oracle_aether::rpc::PROTOCOL_VERSION
                 ),
                 Err(e) => eprintln!("aether: NOT serving — cannot bind the socket ({e})"),
-            }
+            },
+            None => println!("{NOT_SERVING}"),
         }
         Self { host }
+    }
+
+    /// Whether the bus is actually bound and reachable. The status line's `AETHER` field reads this rather
+    /// than re-deriving it from the command line, so a launch that asked to serve and failed to bind reads
+    /// `AETHER OFF` — true, and the answer a flag-derived field would get wrong in the one case that matters.
+    pub fn is_serving(&self) -> bool {
+        self.host.is_serving()
     }
 
     /// **The display layer mask — the engine's, not a copy of it.**
@@ -281,6 +312,57 @@ mod tests {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
     use std::time::{Duration, Instant};
+
+    /// **The default launch says the bus is off, and says how to turn it on.** The `None` arm printed nothing
+    /// at all until 2026-08-29, and an absence is not a statement — the observable cost was a client reported
+    /// as offline with no line anywhere explaining why.
+    ///
+    /// Asserted on the constant rather than by capturing stdout: `println!` in a test binary is captured by
+    /// the harness rather than by us, and a test that shells out to grep its own output would be testing the
+    /// harness. What can go wrong here is the *wording*, and that is what this pins.
+    #[test]
+    fn the_not_serving_line_names_the_state_and_the_remedy() {
+        // The shared opening, which `bus_stub.rs` pins on its own twin so the two builds cannot describe the
+        // same state in different words.
+        assert!(
+            NOT_SERVING.starts_with("aether: not serving"),
+            "{NOT_SERVING:?}"
+        );
+        // Every way the contract offers to turn it on, so a reader is never sent to `--help`.
+        for remedy in ["--aether", "--socket", "ORACLE_AETHER"] {
+            assert!(
+                NOT_SERVING.contains(remedy),
+                "the line must name {remedy:?} as a way to serve: {NOT_SERVING:?}"
+            );
+        }
+        // The line-continuation in the literal must not have eaten the space before the parenthesis.
+        assert!(
+            !NOT_SERVING.contains("window(pass"),
+            "the continued literal lost its word break: {NOT_SERVING:?}"
+        );
+    }
+
+    /// A bus that was never asked to serve reports that it is not serving, and one that binds reports that it
+    /// is. This is what the status line's `AETHER` field reads, so it must be the *bus's* answer and not a
+    /// re-reading of the command line.
+    #[test]
+    fn is_serving_answers_for_the_socket_and_not_for_the_flag() {
+        let inert = Bus::start(None, MachineInfo::default());
+        assert!(!inert.is_serving(), "no socket was requested");
+
+        // The same shape the socket tests below use: unique per process and per thread, so a parallel run
+        // cannot have two tests fighting over one path.
+        let path = std::env::temp_dir().join(format!(
+            "oracle-is-serving-{}-{:?}.sock",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let served = Bus::start(Some(Some(path.clone())), MachineInfo::default());
+        assert!(served.is_serving(), "a bound socket is serving");
+        drop(served);
+        let _ = std::fs::remove_file(&path);
+    }
 
     /// A minimal NDJSON client over the socket this bus really binds — the one thing no in-process
     /// shortcut can stand in for, because arming the profiler is something only a *client* can do.

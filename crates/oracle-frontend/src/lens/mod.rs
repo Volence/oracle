@@ -1613,6 +1613,7 @@ mod tests {
             occupied: [false; crate::save_state::SLOT_COUNT],
             volume: Some((7, 10, false)),
             filter: Some("VA0-VA2"),
+            aether: false,
             aspect: "4:3",
             layers: oracle_core::render::LayerMask::ALL,
             native: (320, 224),

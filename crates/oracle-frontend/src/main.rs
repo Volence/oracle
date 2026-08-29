@@ -43,7 +43,7 @@
 //! | 0 – 9             | select save-state slot directly |
 //! | `-` / `=`         | output volume down / up (audio builds; repeats while held) |
 //! | M                 | mute toggle (audio builds; remembers the volume level) |
-//! | F3                | toggle the on-screen status line (slot strip, volume, filter, aspect, frame) |
+//! | F3                | toggle the on-screen status line (slot strip, volume, bus, audio filter, aspect, frame) |
 //! | Left mouse click  | watch what is under the clicked pixel — plane tile, **sprite**, or backdrop |
 //! | W                 | dump recorded watch hits (seq/frame/pc/addr/old→new/via, PC symbolised) + drop count |
 //! | C                 | clear the watch (stop recording write hits) |
@@ -424,6 +424,31 @@ fn resolve_aspect(cli: Option<Aspect>, cfg: &config::Config) -> Aspect {
 fn notify(ov: &mut Overlay, color: u32, msg: impl AsRef<str> + Into<String>) {
     println!("{}", msg.as_ref());
     ov.push(msg, color);
+}
+
+/// The console output stage's name as the **status line** shows it.
+///
+/// Short on purpose, and it is a different string from [`ConsoleModel::name`](oracle_core::synth::ConsoleModel::name)
+/// rather than a reuse of it, for two reasons. `name` is a stable identifier that
+/// [`from_name`](oracle_core::synth::ConsoleModel::from_name) round-trips — `ORACLE_CONSOLE_FILTER` parses
+/// exactly those spellings — so it is not free to be shortened for a readout. And the `MODEL1-` prefix it
+/// carries is shared by *both* real revisions, so it discriminates nothing while costing a third of the
+/// field's width in a line that truncates from the right without saying it did.
+///
+/// `Unfiltered` renders as `RAW` and deliberately not as `OFF`: `AUDIO OFF` on a status line reads as
+/// *there is no sound*, which is the one thing it does not mean. `raw` is also already a spelling
+/// `from_name` accepts for this variant, so the word is the codebase's own, not a new coinage.
+///
+/// Matched exhaustively so that adding a console revision stops the build here rather than quietly showing
+/// the new one under an old label.
+#[cfg(feature = "audio")]
+fn filter_label(model: oracle_core::synth::ConsoleModel) -> &'static str {
+    use oracle_core::synth::ConsoleModel;
+    match model {
+        ConsoleModel::Model1Va0Va2 => "VA0-VA2",
+        ConsoleModel::Model1Va3Va6 => "VA3-VA6",
+        ConsoleModel::Unfiltered => "RAW",
+    }
 }
 
 /// The same, for failures: `eprintln!` plus a red toast.
@@ -849,7 +874,18 @@ fn build_audio(device: Option<cpal::Device>) -> Option<AudioState> {
         Err(_) => oracle_core::synth::ConsoleModel::Model1Va0Va2,
     };
     let sink = oracle_core::synth::AudioSink::with_console_model(sample_rate, console_model);
-    println!("audio: console output stage = {}", console_model.name());
+    // Named *with what it does to the sound*, not just with its identity. The revision name alone is the
+    // thing that got read as a video setting on the status line, and the cutoff is the whole reason anyone
+    // asks about this line: a 3.4 kHz one-pole is audible as dullness, and a reader who is chasing that
+    // should not have to know which RC values a VA0 board shipped with to find it (2026-08-29).
+    println!(
+        "audio: console output stage = {} ({}) — set ORACLE_CONSOLE_FILTER=off|va0|va3 to change",
+        console_model.name(),
+        match console_model.cutoff_hz() {
+            Some(hz) => format!("low-pass {} Hz", hz.round()),
+            None => "no filter — the raw chip mix".to_string(),
+        }
+    );
     let (mut prod, mut cons) = audio::make_ring(sample_rate);
     // Queue a reservoir of silence *before* the stream is allowed to pop anything, so the first callbacks
     // have something to play while the first emulated frame is still being computed, and the feedback loop
@@ -888,7 +924,7 @@ fn build_audio(device: Option<cpal::Device>) -> Option<AudioState> {
         frame_samples,
         skips: 0,
         flush,
-        filter: console_model.name(),
+        filter: filter_label(console_model),
         _stream: stream,
     })
 }
@@ -2177,6 +2213,10 @@ fn main() {
                 occupied: slots_on_disk,
                 volume: vol,
                 filter: filt,
+                // Asked of the bus itself rather than of `args.socket`, so a launch that *asked* to serve and
+                // failed to bind reads `AETHER OFF` — which is the true and useful answer, and the one a
+                // command-line-derived flag would get wrong in exactly the case someone is debugging.
+                aether: bus.is_serving(),
                 aspect: aspect.name(),
                 native: (width, HEIGHT),
                 // The mask that drew the frame being presented, not a fresh read — the badge is a caption
@@ -2228,6 +2268,68 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The label the status line actually gets, checked against the line it has to fit on.**
+    ///
+    /// **What this covers, and what it does not.** It pins the labels themselves and proves each one fits the
+    /// line at the sizes the player runs at — the long `ConsoleModel::name()` identifier is 8 characters
+    /// wider and pushes the line past what an 896px-tall picture can show, silently.
+    ///
+    /// It does **not** cover the wiring. Poisoning `filter: filter_label(..)` back to `console_model.name()`
+    /// leaves this test green, because it calls the function rather than observing the call site, and the
+    /// call site sits inside `setup_audio`, which needs a real output device. That half is closed by running
+    /// the player and reading the status line, not here — recorded rather than papered over, so nobody reads
+    /// this row as proving more than it does.
+    #[cfg(feature = "audio")]
+    #[test]
+    fn every_console_revision_gets_a_label_that_fits_the_status_line() {
+        use oracle_core::synth::ConsoleModel;
+        use overlay::{fit, status_text, status_text_avail, Overlay, Status};
+
+        for model in [
+            ConsoleModel::Model1Va0Va2,
+            ConsoleModel::Model1Va3Va6,
+            ConsoleModel::Unfiltered,
+        ] {
+            let label = filter_label(model);
+            // Never the core's round-trippable identifier: that string is `from_name`'s input and is not
+            // free to be shortened, which is exactly why the status line carries its own.
+            assert!(
+                !label.eq_ignore_ascii_case(model.name()),
+                "{model:?} must not display its parse identifier"
+            );
+            // The prefix both real revisions share carries no information and costs width.
+            assert!(
+                !label.to_ascii_lowercase().contains("model1"),
+                "{model:?} label {label:?} still carries the shared prefix"
+            );
+            // `AUDIO OFF` would read as "there is no sound", which is the one thing it does not mean.
+            assert_ne!(label, "OFF", "{model:?} must not render as OFF");
+
+            // The width half, at the geometry the player runs at — the whole reason the label is short.
+            let st = Status {
+                frame: 1234,
+                volume: Some((7, 10, false)),
+                filter: Some(label),
+                aether: false,
+                aspect: "4:3",
+                native: (320, 224),
+                ..Status::default()
+            };
+            let full = status_text(&st);
+            for win_h in [448usize, 672, 896, 1080] {
+                let px = Overlay::status_font_scale(win_h);
+                let margin = (2 * Overlay::font_scale(win_h)).max(4);
+                let avail = (win_h * 4 / 3).saturating_sub(2 * margin);
+                let text_avail = status_text_avail(avail, px).expect("the slot strip fits");
+                assert_eq!(
+                    fit(&full, text_avail, px),
+                    full,
+                    "{model:?} as {label:?} does not fit a {win_h}px-tall picture"
+                );
+            }
+        }
+    }
 
     /// **The masked picture is the core's masked render, dot for dot** — and it is a *different* picture
     /// from the unmasked one on a scene where the mask actually changes something.
@@ -3054,6 +3156,9 @@ mod tests {
                     occupied,
                     volume: Some((7, 10, false)),
                     filter: Some("VA0-VA2"),
+                    // The shots run serves nothing, and `AETHER OFF` is also the longer of the two strings —
+                    // so the fixture carries the status line's worst case for width rather than its best.
+                    aether: false,
                     aspect: aspect.name(),
                     layers: LayerMask::ALL,
                     native: (width, HEIGHT),
