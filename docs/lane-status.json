@@ -1,5 +1,5 @@
 {
-  "focus": "The player no longer misleads you about its bus or its sound setting; both fixes are landed and were watched in a real window.",
+  "focus": "The two screen-honesty fixes are landed; since then a peer exchange corrected one of my own bookings.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -77,5 +77,5 @@
   ],
   "awaiting": "your pick on what is next. SCREEN-HONESTY is done and pushed, and aurora confirmed neither of my flags reaches them. I'd take the two runtime confirmations next (ROM picker, breakpoint halt) — both were blocked on needing a player window that is not yours, and this parcel proved I can run one headlessly. Still open on your side: d-18 (drag-and-drop), and the ten-second ORACLE_CONSOLE_FILTER=off listen.",
   "atBoundary": true,
-  "updatedAt": "2026-08-29T18:14:12Z"
+  "updatedAt": "2026-08-29T18:17:54Z"
 }
