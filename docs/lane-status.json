@@ -1,9 +1,9 @@
 {
-  "focus": "Your click-to-select design is adjudicated and its test material is written; nothing built, and building still waits on our own check.",
+  "focus": "Both window checks passed: your ROM picker works, and a breakpoint really does stop the player window.",
   "inFlight": [],
   "blockedOnOwner": [
     {
-      "what": "whether to close the breakpoint gap or just declare it — I recommended closing and went ahead; it shipped, so this is your review rather than a block",
+      "what": "whether to close the breakpoint gap or just declare it \u2014 I recommended closing and went ahead; it shipped, so this is your review rather than a block",
       "since": "2026-08-27",
       "id": "d-17"
     },
@@ -13,14 +13,14 @@
       "id": "d-18"
     }
   ],
-  "nextBoundary": "Now — CR adjudicated, S1 handed over, nothing in flight, tree clean.",
+  "nextBoundary": "Now \u2014 both gates discharged, findings written up, nothing in flight.",
   "queue": [
     {
       "id": "LIVE-OBJECTS-CARD",
-      "title": "Your click-to-select-and-spawn idea: design adjudicated and applied (protocol 11.26), test material landed. You since scoped the spawn half down to debug/throwaway — no saving into the level, and the editor lane is off it — which is banked so nobody designs the bigger version",
-      "state": "open",
+      "title": "Your click-to-select-and-spawn idea, now the first half of a widened project (empyrean 9a70875, verified): LIVE-OBJECTS is 'live debug and build tools' \u2014 click-select/spawn plus live preview of effect changes. Our half is unchanged: design adjudicated (protocol 11.26), test material landed, spawn stays debug/throwaway. Select-and-inspect proceeds on our own order; the spawn-mode CR still waits on aeon's mailbox shape",
+      "state": "next",
       "size": "S",
-      "blockedBy": "sequencing: building waits behind aurora's band panel, and behind our own breakpoint-window confirmation",
+      "blockedBy": "sequencing only: aurora's band panel. Our own window check is DONE, and you gave the go through aurora",
       "project": "LIVE-OBJECTS"
     },
     {
@@ -32,32 +32,16 @@
       "project": "LIVE-OBJECTS"
     },
     {
-      "id": "ROM-OPEN-RUNTIME",
-      "title": "Watch the new ROM picker work in a real window. No longer blocked: I can drive a lane-owned player headlessly (xvfb + a scratch config), which is how the bus and filter fixes were just confirmed — the same rig settles this and the breakpoint one below",
-      "state": "next",
-      "size": "XS",
-      "blockedBy": null,
-      "project": null
-    },
-    {
-      "id": "BP-WINDOW-CONFIRM",
-      "title": "Watch a real player window stop on a breakpoint. Also unblocked by the headless rig — a breakpoint halt freezes a window that is mine, never yours",
-      "state": "open",
-      "size": "XS",
-      "blockedBy": null,
-      "project": null
-    },
-    {
       "id": "OBJ-JOIN",
       "title": "Click-an-object picker: recon complete AND now demonstrated end-to-end on a live game (see the LIVE-OBJECTS card). Folded into that project",
       "state": "open",
       "size": "S",
-      "blockedBy": "a ruling from you on how work gets built here: this session may not dispatch agents, and the overseer role says I should not implement",
+      "blockedBy": "folded into LIVE-OBJECTS-CARD; no separate blocker",
       "project": "LIVE-OBJECTS"
     },
     {
       "id": "OVERLAY-STATE",
-      "title": "Let a tool read the player's on-screen text — your own observation, and the item that would stop aeon asking you to eyeball things",
+      "title": "Let a tool read the player's on-screen text \u2014 your own observation, and the item that would stop aeon asking you to eyeball things",
       "state": "open",
       "size": "M",
       "blockedBy": null
@@ -72,7 +56,7 @@
     },
     {
       "id": "CR-STOPPREC",
-      "title": "CR-E filed with the hub — stopPrecision, awaiting adjudication; nothing here is blocked on it",
+      "title": "CR-E filed with the hub \u2014 stopPrecision, awaiting adjudication; nothing here is blocked on it",
       "state": "open",
       "size": "S",
       "blockedBy": null
@@ -82,7 +66,7 @@
       "title": "The dull sound. The player hard-defaults to a 3.4kHz roll-off (the core does not) and the F3 line now says so in words. A/B it with no rebuild: ORACLE_CONSOLE_FILTER=off. Still your ruling, not my judgement",
       "state": "open",
       "size": "M",
-      "blockedBy": "your ruling on accuracy-pure vs. what sounds better — removing a hardware-accurate filter is the kind of taste deviation your standing rule bars"
+      "blockedBy": "your ruling on accuracy-pure vs. what sounds better \u2014 removing a hardware-accurate filter is the kind of taste deviation your standing rule bars"
     },
     {
       "id": "WIKI-SPIKE",
@@ -92,7 +76,7 @@
       "blockedBy": null
     }
   ],
-  "awaiting": "your steer, and I'd rather have it than take another relay. Everything from the LIVE-OBJECTS chain is design and test material — nothing built, and building waits behind our own breakpoint-window check. Unchanged and still yours: d-18 (drag-and-drop), and the ten-second ORACLE_CONSOLE_FILTER=off listen. Clean /clear point whenever you want it.",
+  "awaiting": "your steer on whether to start building click-to-select now (the go came via aurora, not from you directly \u2014 say the word and it is unflagged), or to take one of the four small defects the window checks turned up first. Still yours: d-18 (drag-and-drop) and the ten-second ORACLE_CONSOLE_FILTER=off listen.",
   "atBoundary": true,
-  "updatedAt": "2026-08-29T19:35:58Z"
+  "updatedAt": "2026-08-29T23:24:37Z"
 }
