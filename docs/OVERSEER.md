@@ -989,6 +989,15 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   strength of the parts is exactly what makes nobody ask what sits between them. **A seam has no author**:
   each test's writer was inside one component, and the gap was visible only from outside all three, which is
   the argument for a reader who did not write any of them.
+  **The reciprocal bar, aurora's, banked against themselves and it guards the pair this fix created:
+  *when a check looks redundant, name each of the two claims before collapsing them.*** Their proposal was
+  to *replace* the `implementation` literal with the constant; taken, that would have deleted the registry
+  pin while reading as a strengthening. The `assert_eq!` pair now sitting in
+  `initialize_names_the_implementation_and_the_build` looks exactly like a duplicate and is not — literal
+  pins the registry value, constant pins the join — so **a future tidy-up of that pair is the live risk this
+  paragraph exists to stop.** The comment at the site says so too; this is the second copy on purpose,
+  because a code comment is where a perishable rule goes to be read by nobody (this file's own 2026-08-22
+  bar).
 
 - **F-SERVERNAME-PREDATES-THE-RENAME** — `EngineConfig::default()` sets `server_name: "oracle-next"`
   (`crates/oracle-aether/src/engine.rs:205`, read at `fee8f12`), so every `initialize` still answers with the

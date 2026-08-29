@@ -1,5 +1,5 @@
 {
-  "focus": "The screen-honesty fixes are landed; a peer exchange then closed a real hole in how we prove which build is answering.",
+  "focus": "Screen-honesty fixes landed; the peer exchange that followed closed a real hole in our build-identity guarantee. Clean stopping point.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -13,7 +13,7 @@
       "id": "d-18"
     }
   ],
-  "nextBoundary": "Now — SCREEN-HONESTY landed and pushed, tree clean, nothing in flight.",
+  "nextBoundary": "Now — everything merged and pushed, aurora's conditions closed, nothing in flight. A good /clear point.",
   "queue": [
     {
       "id": "ROM-OPEN-RUNTIME",
@@ -77,5 +77,5 @@
   ],
   "awaiting": "your pick on what is next. SCREEN-HONESTY is done, and an unplanned but real fix came out of the aurora exchange (our build-identity guarantee had an unasserted seam — a forged identity passed all 413 tests before it). I'd take the two runtime confirmations next (ROM picker, breakpoint halt). Still open on your side: d-18 (drag-and-drop), and the ten-second ORACLE_CONSOLE_FILTER=off listen.",
   "atBoundary": true,
-  "updatedAt": "2026-08-29T18:30:48Z"
+  "updatedAt": "2026-08-29T18:32:10Z"
 }
