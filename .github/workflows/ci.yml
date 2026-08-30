@@ -41,5 +41,38 @@ jobs:
       # when_running_in_ci` guard test turns that into a hard failure under CI).
       - name: Fetch SingleStepTests vendor data
         run: ./tools/fetch-tests.sh
+      # Named FIRST and with --nocapture, because libtest swallows a passing test's stdout: without
+      # this step the frozen-pin banner would exist and never be seen on a green run, which is exactly
+      # the failure it was written to prevent. 0.06 s, and it makes the log say which aeon chain
+      # everything below was tested against.
+      - name: Name the frozen aeon pin
+        run: cargo test -p oracle-replay --test aeon_pin -- --nocapture
+
       - name: Test
         run: cargo test --workspace
+
+  # The replay net's three full playthroughs. THIS IS THE RUNNER THAT EXECUTES THEM.
+  #
+  # They are ~183 s of emulation unoptimized and ~24 s optimized, so they are skipped in the debug
+  # suite above (`#[cfg_attr(debug_assertions, ignore)]`) and run here, in release. They used to be a
+  # plain `#[ignore]` behind a `--ignored` flag nobody types — which is how the fixture pin they read
+  # was allowed to go stale while the suite stayed green.
+  #
+  # Its own job, not appended to `Test`, so a red here says "the replay net desynced" rather than
+  # hiding inside a workspace run, and so the debug suite's runtime is untouched.
+  replay-playthroughs:
+    name: Replay playthroughs (release)
+    runs-on: ubuntu-latest
+    needs: determinism-gate
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@v2
+      # Runs the same script a developer runs locally, so there is one code path and no drift between
+      # "what CI runs" and "what I ran". The pin-currency report it prints at the end is REPORT ONLY
+      # and cannot change the exit status; on CI there is no sibling sigil checkout, so it correctly
+      # prints UNMEASURABLE rather than an unearned all-clear.
+      - name: Full replay playthroughs against the frozen pin
+        run: ./tools/replay_playthroughs.sh

@@ -17,22 +17,37 @@
 //! returns early with a printed `SKIP:` note rather than failing. This mirrors
 //! `crates/oracle-core/tests/symbols_real_lst.rs` exactly.
 //!
+//! # Which chain these bytes are
+//!
+//! Printed by the suite itself, so a green here can never be read as a statement about aeon's master:
+//! `crates/oracle-replay/tests/aeon_pin.rs` hashes every frozen artifact against
+//! `fixtures/aeon/PIN.tsv` and prints the chain each one sits at. Whether aeon has moved past the pin is
+//! a separate, deliberately **non-gating** question — `tools/aeon_pin_report.py`.
+//!
 //! # What runs by default, and what does not
 //!
-//! **Measured on this machine** (unoptimized test profile, which is what `cargo test` builds):
+//! **Measured on this machine** (`cargo test` builds the unoptimized test profile; `cargo test
+//! --release` builds the optimized one):
 //!
 //! | run | frames | wall-clock (debug) | wall-clock (release) |
 //! |---|---|---|---|
 //! | negative control | 34 to arm + 36 | **0.48 s** | 0.07 s |
-//! | `ojz_fixture` green | 34 to arm + 1815 | **~34 s** | 3.7 s |
-//! | `ojz_slide_fixture` green | 34 to arm + 2628 | **~49 s** | 5.5 s |
+//! | `ojz_fixture` green | 34 to arm + 1815 | **~34 s** | ~4 s |
+//! | `ojz_slide_fixture` green | 34 to arm + 2628 | **~49 s** | ~6 s |
+//! | the one-pass restamp repair (3 playthroughs) | — | **~100 s** | ~14 s |
 //!
-//! So the two full playthroughs are `#[ignore]`d: ~83 s of unoptimized emulation does not belong in
-//! `cargo test --workspace`. Run them deliberately with
+//! ~183 s of unoptimized emulation does not belong in `cargo test --workspace`; **a suite that slow
+//! gets reverted by the first person it annoys.** So the three playthroughs carry
+//! `#[cfg_attr(debug_assertions, ignore = …)]` rather than a plain `#[ignore]`:
 //!
-//! ```text
-//! cargo test --release -p oracle-replay -- --ignored --nocapture
-//! ```
+//! * `cargo test` / `cargo test --workspace` (debug) — skipped, exactly as before.
+//! * **`cargo test --release`** — they RUN, with no `--ignored` flag to remember and no way to get a
+//!   green from that command while the net is switched off.
+//!
+//! That distinction is the whole point. A plain `#[ignore]` is opt-in by a flag nobody types, which is
+//! how the pin these tests read was allowed to go stale under a green suite. The runner that actually
+//! executes them is the `replay-playthroughs` CI job (`.github/workflows/ci.yml`), and
+//! `tools/replay_playthroughs.sh` is the same command locally.
 //!
 //! What stays in the default suite is not a thin substitute: the negative control drives the **entire**
 //! pipeline — both refusals, symbol resolution, header parse from ROM, boot, arm, poke + read-back, the
@@ -483,8 +498,9 @@ fn an_impossible_budget_times_out_rather_than_passing() {
 }
 
 // ---------------------------------------------------------------------------------------------------
-// The full playthroughs. Correct, but ~34 s and ~49 s unoptimized — see the module docs.
-//     cargo test --release -p oracle-replay -- --ignored --nocapture
+// The full playthroughs. Correct, but ~34 s and ~49 s unoptimized — see the module docs. They run under
+// `cargo test --release` and are skipped in the debug suite; there is no `--ignored` flag to remember.
+//     ./tools/replay_playthroughs.sh
 // ---------------------------------------------------------------------------------------------------
 
 fn assert_green(fixture: Fixture, expected_ticks: u32) {
@@ -516,13 +532,19 @@ fn assert_green(fixture: Fixture, expected_ticks: u32) {
 }
 
 #[test]
-#[ignore = "full playthrough: ~34 s unoptimized. cargo test --release -p oracle-replay -- --ignored"]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "full playthrough: ~34 s unoptimized. Runs under `cargo test --release` — ./tools/replay_playthroughs.sh"
+)]
 fn the_standing_fixture_runs_green() {
     assert_green(Fixture::Ojz, 1721);
 }
 
 #[test]
-#[ignore = "full playthrough: ~49 s unoptimized. cargo test --release -p oracle-replay -- --ignored"]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "full playthrough: ~49 s unoptimized. Runs under `cargo test --release` — ./tools/replay_playthroughs.sh"
+)]
 fn the_slide_fixture_runs_green() {
     assert_green(Fixture::OjzSlide, 2350);
 }
@@ -713,7 +735,10 @@ fn restamp_refuses_a_truncated_stream() {
 }
 
 #[test]
-#[ignore = "three full playthroughs: ~100 s unoptimized. cargo test --release -p oracle-replay -- --ignored"]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "three full playthroughs: ~100 s unoptimized. Runs under `cargo test --release` — ./tools/replay_playthroughs.sh"
+)]
 fn one_pass_repairs_four_stale_checkpoints_and_reproduces_the_pristine_image() {
     let Some(mut p) = prepared(Fixture::Ojz) else {
         return;
