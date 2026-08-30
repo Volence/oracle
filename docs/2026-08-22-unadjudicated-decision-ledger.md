@@ -420,3 +420,67 @@ the falsifier named, and the one that mattered was not the one I predicted. My o
 the independence would "probably hold in the dimension row-presence depends on" — it does, for a
 table-side row drop, and does not for a source-side truncation. **The prediction was half right and the
 failing half was the dangerous one.**
+
+### BUILT AND MEASURED 2026-08-30 — `parcel/lexer-independence`, `8ba020a` + `cef4d06`
+
+The ruling above was written from one hand-run census and a prediction. Both are now measurements.
+
+**The census, re-derived rather than trusted.** 53 `^static std::string Op*(` signatures plus
+`^static std::string CanonicalOp(` = **54**, every one at column 0 — an indentation-tolerant grep finds
+the same 53, i.e. there is no Op handler defined off column 0 anywhere in the file — and `Handlers()`
+dispatches exactly those 53. The ruling's "all 54" holds.
+
+**`_col0_body` replaced the brace matching, and the rewrite is inert on the file it reads.** On the clean
+source the new derivation's `pairs`, `unguarded`, `guarded` and `handlers` are **identical** to the
+brace-matched version. Nothing that was right changed; only what happens under perturbation did.
+
+**The falsifier's own row is now caught, with change (1) alone applied:**
+
+| perturbation (scratch copies; the real file was verified untouched) | before | after (1) | after (1)+(2) |
+|---|---|---|---|
+| `const char c = '{';` in `OpReset` | exit 1 (cross-check disagrees) | exit 1, same | **exit 0 — neutralised at the lexer; the table is now correct** |
+| **`const char c = '}';` in `OpZ80Read`** | **exit 0, silent, rows 75 → 73** | **exit 1, naming `emulator/z80_read.addr` AND `.len` by name, while `cross-check : AGREES` and `parse complete : yes` still print** | exit 0 — neutralised; table correct |
+| `static std::string OpZ80Read` → `static ReplyString` | exit 0, they disagree safely | exit 0, unchanged (D2 loses 2 rows, the table keeps them) | exit 0, unchanged |
+| `#if 0` / `}` / `#endif` in `OpZ80Read` — NEW | — | — | **exit 1, naming both rows** |
+
+The second row is the ruling landing. The third confirms the census assertion does **not** fire on a
+retype: that stays a safe-direction disagreement rather than becoming a false `unmeasurable`.
+
+**The `unmeasurable` falsifier ships as code, and was proven red-first.** Three raises in
+`_assert_definitions_are_at_column_zero`: an Op definition off column 0, a dispatched handler with no
+column-0 definition, and a census count that disagrees with `Handlers()`. Red-first each returned
+`AssertionError: AssertionError not raised` before the code existed. A fourth test reads the compiled
+function's reachable names (bytecode, not text — the docstring *names* `match_braces` to explain why it
+must not call it) and a fifth holds `_col0_body` itself, so the brace matching cannot simply move one
+call deeper.
+
+**⚑ The lexer fix voided the acceptance test's control, exactly as the ruling warned it must not be
+conflated.** With `'}'` correctly lexed, that perturbation no longer breaks the builder, so it no longer
+demonstrates anything about independence — and the test said so loudly instead of passing. The
+acceptance perturbation is now `#if 0 } #endif`: a brace the preprocessor removes and a brace *counter*
+cannot, which rests on no live bug and cannot be neutralised by fixing one. The character-literal case is
+kept as its own regression test asserting **both** defences. **Order confirmed empirically:** had only
+(2) shipped, every one of these perturbations would read clean and the next lexer defect would be silent
+again.
+
+**`match_braces` moved no currency.** At all 468 `{` positions, on both the raw text and the
+`blank_comments()` output, old and new return the same index — 0 differences — and the emitted table is
+identical object-for-object.
+
+**What is still shared, and what was probed rather than argued.** `blank_comments` is the one `lat`
+helper left on the second derivation's path, kept deliberately: a hand-copied second lexer written by the
+same author on the same day is two copies of one opinion, not independence. It is a narrower exposure
+than `match_braces` was — it is not a body-extent helper, so a defect in it can no longer move a body's
+boundary or attribute it to the wrong function, and it does handle character literals (read, not
+assumed). It does **not** handle C++11 raw strings. Four legal `R"(...)"` injections were run: `R"(")"`
+desynced the builder into bleeding neighbouring bodies and **the cross-check fired**; one crashed
+`parse_handlers` with a loud `ValueError`; two were harmless. **None produced the dangerous shape — both
+readings losing the same row with every check clean.** So the raw-string gap is real and the blind spot
+is **unproven**. Registered here as `F-ACCEPT-TABLE-RAWSTRING`, not claimed, and deliberately not ruled:
+whether to teach `blank_comments` raw strings is a cheap fix on its own merits, and whether the second
+derivation should stop sharing comment blanking at all is the same design question one level down.
+
+**Suite:** 61 → 73 tests, all green via `tools/run_accept_table_tests.sh` — 0.699s for the tests, ~0.7s
+for the whole runner (baseline 61/61 in 0.592s at uptime 4 days 21:27; final 73/73 at uptime 4 days
+21:39). No existing test was weakened or skipped; two stale docstrings that still carried the "shares no
+code with the table builder" over-claim were corrected.
