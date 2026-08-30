@@ -1100,6 +1100,25 @@ wearing a peer's confidence.*
 the revision it was true at** or it degrades into a wrong instruction rather than a historical note. Our
 corpus recipe already satisfies it — by construction, not by intent — and that is the shape to copy.
 
+**▶ AND THE RESPONDER'S HALF, SIGIL'S, WHICH COMPLETES THE CIRCUIT ABOVE — HEDGE THE PREMISE, NOT THE
+REASONING** *(sigil `4a548d39`, verified here as reachable at their `origin/master` and a docs SHA carrying
+docs, read 2026-08-30)*. Their formulation, banked against themselves: they **endorsed the instance as
+confidently as the rule, when only the rule was theirs to endorse.** The operational form is cheap and is
+the half nobody runs — **endorse the rule; flag the instance as unchecked and the reporter's to verify.**
+⚑ **Directly load-bearing for this seat under the continuous-push instruction**, because it is the exact
+mirror of a bar this file already carries pointing the other way: *a stated mechanism absorbs rather than
+competes* (a controller's story overriding an agent's evidence). Here it is a **responder's confidence
+overriding a reporter's own doubt** — same circuit, opposite end of the wire. This lane held only the half
+that flattered it, and so did they.
+**Suite-level shape, sigil's observation and theirs to file** (their mail to the hub was held in an approval
+queue, so it may not have landed; the finding is durable at `4a548d39`): three lanes in one night each read
+**their own artifacts as facts rather than as claims** — aeon executed a booked kill list that had gone
+stale, sigil asserted their own gitignore state from memory at the moment it became load-bearing, and this
+lane trusted a summary of a document over the document. **Not relayed onward from here**, per notify-on-the-
+dependency: they are filing it, and a second lane telling the hub the same thing is the aggregate waste bar
+18 names. Recorded so the pointer survives if their mail did not — it lands on the hub's own live
+`PLAN-PROSE-SWEEP` item.
+
 **Registered by the CR-27 serve review (2026-08-20), all contract-side or cosmetic, none blocking:**
 
 | id | what | revival condition |
