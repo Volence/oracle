@@ -1,6 +1,12 @@
 {
-  "focus": "The tool for the engine team is built, verified and merged - and it found two hazards nobody had all day.",
-  "inFlight": [],
+  "focus": "Hardening the new tool's safety net where my own sabotage test was caught for the wrong reason.",
+  "inFlight": [
+    {
+      "what": "Hardening the new tool's own safety net: one of my sabotage tests was caught by a crash rather than a proper check, which would stop working the moment someone reshuffles the tests.",
+      "where": "branch parcel/accept-table-hardening",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "the dull sound: keep the hardware-accurate filter, default it off, or let the player remember your choice. A taste call, so it is yours rather than mine \u2014 ten seconds to hear it both ways",
@@ -8,8 +14,16 @@
       "id": "d-20"
     }
   ],
-  "nextBoundary": "Now - merged, verified on the merged tree, pushed, nothing running.",
+  "nextBoundary": "When the hardening agent lands and I verify it on the merged tree.",
   "queue": [
+    {
+      "id": "ACCEPT-TABLE-HARDEN",
+      "title": "Dispatched. The engine team and I independently flagged the same weak spot: when I sabotaged the tool to silently lose its most dangerous rows, the tests noticed only because something crashed, not because anything checked. That is the exact failure the tool exists to prevent, so it needs a real check.",
+      "state": "doing",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT"
+    },
     {
       "id": "LEGACY-ACCEPT-TABLE",
       "title": "DONE and merged. The tool reads the old server's own source and writes down what it really accepts - and it found two things nobody had all day: a number written as text with junk on the end ('12abc') is read as 12, and if the whole parameter block is malformed every single value silently becomes its default. Handed to the engine team to check before they trust it.",
@@ -104,6 +118,6 @@
     }
   ],
   "awaiting": null,
-  "atBoundary": true,
-  "updatedAt": "2026-08-30T08:03:05Z"
+  "atBoundary": false,
+  "updatedAt": "2026-08-30T08:07:20Z"
 }
