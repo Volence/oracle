@@ -1,5 +1,5 @@
 {
-  "focus": "Our tests now use our own frozen copy of the game, so another team's rebuild can't break them.",
+  "focus": "Filed the contract change for reading the player's on-screen text; waiting on the hub to rule before anything is built.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -8,7 +8,7 @@
       "id": "d-20"
     }
   ],
-  "nextBoundary": "Now \u2014 freeze merged, verified on the merged tree and pushed; nothing running.",
+  "nextBoundary": "Now \u2014 recon merged, CR-H filed and pushed, nothing running.",
   "queue": [
     {
       "id": "AEON-RESTAMP-AB",
@@ -36,10 +36,10 @@
     },
     {
       "id": "OVERLAY-STATE",
-      "title": "Let a tool read the player's on-screen text \u2014 your own observation, and the item that would stop aeon asking you to eyeball things",
-      "state": "next",
+      "title": "CR-H FILED (docs/proposed/2026-08-30-cr-h-screen-text.md), awaiting hub adjudication. Recon merged 02b9388. Serves both the source and the rendered string; refuses when there is no window; carries unrenderable[] for characters the player has no glyph for. Does NOT join the window's frame counter to the bus's - they diverge without bound and that is now diagnosed.",
+      "state": "open",
       "size": "M",
-      "blockedBy": null
+      "blockedBy": "hub adjudication of CR-H"
     },
     {
       "id": "ACCEPT-16",
@@ -71,7 +71,7 @@
       "blockedBy": null
     }
   ],
-  "awaiting": "your ten-second listen on the dull sound (d-20) \u2014 still the only thing waiting on you.",
+  "awaiting": "your ten-second listen on the dull sound (d-20). The overlay work is waiting on a contract ruling from the hub, not on you.",
   "atBoundary": true,
-  "updatedAt": "2026-08-30T04:28:13Z"
+  "updatedAt": "2026-08-30T04:50:02Z"
 }
