@@ -10,7 +10,8 @@ expectations pinned against whatever that tree happened to hold.
 | `254ab9e` | the four examples: `common/rom_source.rs` (new), `vgm_capture.rs`, `diag_soundqueue.rs`, `synth_render.rs`, `k4_openbus_probe.rs` |
 | `7bb7331` | `tools/aether_smoke.py` — four stale pins derived at run time, the frozen cross, and two screenshot checks that had gone red and vacuous |
 | `ee72d16` | this report |
-| `2f5d99b` | `rustfmt` on `rom_source.rs`, and `k4_openbus_probe`'s last two raw path literals routed through `LIVE_AEON_DIR` (see §5) |
+| `97b6451` | `rustfmt` on `rom_source.rs`; `k4_openbus_probe`'s last two raw path literals routed through `LIVE_AEON_DIR`; two shadowing hazards in the smoke script; the closure note on the predecessor report (see §5) |
+| *(the tip)* | this table. The row above originally named `2f5d99b`, **a SHA that never existed** — written before the commit was made and left as a prediction. A commit cannot name its own hash, so the last row of a table like this stays unnamed rather than guessed. |
 
 `fixtures/aeon/` ended that dependency for the **tests**. It did not reach the **tools**: five files
 still resolved an absolute path into another lane's working directory, and one of them pinned four
@@ -347,7 +348,7 @@ later with a `TypeError`. Renamed to `iw, ih`, with the reason recorded at the l
 | `cargo clippy -p oracle-core --all-targets --features synth -- -D warnings` | clean |
 | `cargo build --release -p oracle-core --examples` (± `--features synth`) | clean |
 | `cargo test -p oracle-core --test symbols_real_lst -- --nocapture` | 10 passed, 0 failed (3 s) |
-| `cargo test --workspace` | **62 legs · 1992 passed · 0 failed · 6 ignored · 0 SKIP notes · exit 0**, 10 min 36 s wall (11:09:29 → 11:20:05 UTC) |
+| `cargo test --workspace` | **62 legs · 1992 passed · 0 failed · 6 ignored · 0 SKIP notes · exit 0**, 10 min 37 s wall (11:24:18 → 11:34:55 UTC), on the final Rust tree. An identical run on the intermediate tree gave the same 62/1992/0/6. |
 | `tools/aether_smoke.py` against a live `oracle-aether` on `fixtures/aeon/s4.bin` | **22 checks, 0 failures, exit 0** — was exit 1 before |
 
 No failing test names to list: the failure grep over the run's full output returns nothing
@@ -366,6 +367,12 @@ the file. Fixed in `2f5d99b`, which also routes `k4_openbus_probe`'s last two ra
 through `rom_source::live_aeon` so `LIVE_AEON_DIR` is the single place the tree is named and the row
 marker cannot drift from the paths it judges. A detail that will help the next reader: `cargo fmt`
 prints `rom_source.rs`'s diff **four times**, once per example target that includes it.
+
+**And the same reflex produced a second one, in this file.** The commit table above originally named
+`2f5d99b` for its own last row — a hash written before the commit existed, i.e. invented. A commit
+cannot contain its own hash, so that row is now marked *(the tip)* rather than guessed. Both misses
+are the same shape: **a claim written from what was about to be true rather than from what was
+checked.** Recorded because the second one arrived within an hour of writing up the first.
 
 **A worktree ops note that cost a full suite run.** The first `cargo test --workspace` came back with
 8 failures in `oracle-frontend`'s `save_state` — all of them
