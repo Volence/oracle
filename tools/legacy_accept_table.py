@@ -208,7 +208,21 @@ def line_of(text: str, offset: int) -> int:
 
 
 def match_braces(text: str, open_idx: int) -> int:
-    """Return the index just past the `}` matching the `{` at open_idx."""
+    """Return the index just past the `}` matching the `{` at open_idx.
+
+    Braces inside `"..."` and `'...'` are literal text, not structure. The
+    character-literal case was missing until 2026-08-30, and `const char c =
+    '}';` -- legal C++ -- therefore ended a function body early wherever it
+    appeared, silently. (It also used to blind the row-presence gate, because
+    its expectation called this too; that is fixed separately and properly,
+    by `_col0_body`, which counts no braces at all. Ledger L-10.)
+
+    A character literal is bounded to one line on purpose. Callers pass RAW
+    source as well as comment-blanked source, and prose is full of lone
+    apostrophes (`doesn't`, `caller's`). Since no C++ character literal
+    contains a newline, an unterminated `'` costs at most the rest of its own
+    line instead of consuming the file looking for a partner.
+    """
     depth = 0
     i, n = open_idx, len(text)
     while i < n:
@@ -223,6 +237,15 @@ def match_braces(text: str, open_idx: int) -> int:
             i += 1
             while i < n and text[i] != '"':
                 i += 2 if text[i] == "\\" else 1
+        elif c == "'":
+            j = i + 1
+            while j < n and text[j] not in ("'", "\n"):
+                j += 2 if text[j] == "\\" else 1
+            # Only a literal that actually closes on this line is skipped; an
+            # escape at end-of-line can carry `j` past the newline, so the
+            # crossing is re-checked rather than inferred from `text[j]`.
+            if j < n and text[j] == "'" and "\n" not in text[i:j]:
+                i = j
         i += 1
     return -1
 
