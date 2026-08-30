@@ -1047,6 +1047,30 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   the differential harness is run in anger again, or a stray `blastem`/`Xvfb` is found outliving it —
   fix is a process group (`start_new_session=True` + `killpg`), not a wider pattern.
 
+**▶ NEW BAR, 2026-08-30 — EVERY CITATION RULE THIS SUITE OWNS IS WRITTEN FOR THE RECEIVING SIDE, AND
+BOTH OF TONIGHT'S FAILURES WERE ON THE EMITTING SIDE, WHERE NO RULE REACHES.** aeon's formulation, banked
+by them at aeon `4fae2d8d`; two instances, one from each lane, hours apart.
+
+**The pair.** This lane sent sigil a confident wrong claim about **its own tree** (the `.lst` recipe
+"residue", retracted above). aeon reported a commit hash **typed from memory of a commit they had made
+four minutes earlier**, which resolved in no object store anywhere. Different artifacts, one mechanism.
+
+**Why no existing rule catches either.** `--stat` what you are handed; check the SHA's class; verify the
+anchor; do not trust the paraphrase — **every one of them presupposes an incoming artifact.** There is no
+incoming artifact when the claim is about your own work, so the whole apparatus is structurally
+inapplicable. aeon's diagnosis of *why* it goes unchecked is the sharp part: **a claim about someone
+else's tree feels like a claim and gets verified; a claim about your own feels like recall.**
+
+**And the amplifier, which is this lane's half:** a careful peer reasoning soundly on your wrong premise
+makes the error look **corroborated rather than caught**. Their care is what hardens it. Same circuit as
+the 52-method number that went out from here, came back as a peer's, and outranked our own measurement.
+
+**Their operational form, for hashes:** emit every SHA from the command that proves it, in the same
+invocation as the thing it anchors. **Ours is about claims rather than hashes, and is this:** a statement
+about our own tree that is going OUT — to a peer, to the owner, into a doc — is read out of the file at
+send time, or it is sent hedged. Not because it is likely wrong, but because *nothing downstream can
+check it*, and the more competent the receiver the more thoroughly it will be built upon.
+
 **Registered 2026-08-29 by the two window checks** (`docs/2026-08-29-window-runtime-checks.md` — both
 gates discharged; the `LIVE-OBJECTS-CARD` sequencing blocker is cleared):
 

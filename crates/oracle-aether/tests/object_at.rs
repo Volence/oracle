@@ -450,12 +450,7 @@ fn an_owner_word_off_a_record_boundary_is_not_named_as_a_slot() {
         &debug_rows(BASE, SPRITE_OWNER, (CAMERA_X, CAMERA_Y)),
     );
     // One byte into slot 0's record: a real-looking address that names no record.
-    arm(
-        &mut c,
-        (BASE & 0xFFFF) + 1,
-        (0, 0),
-        (CAMERA_X, CAMERA_Y),
-    );
+    arm(&mut c, (BASE & 0xFFFF) + 1, (0, 0), (CAMERA_X, CAMERA_Y));
 
     let r = at(&mut c, DOT);
     assert_eq!(
