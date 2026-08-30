@@ -235,3 +235,61 @@ ticks; both `ojz_slide_fixture` runs reached 2352 over 2350. Both listings bound
   the pin or the fixture is the side that should move. That is a call for whoever owns the pin.
 - **No runtime confirmation was attempted.** Emulator MCP tools are off-limits from background
   agents in this workspace; anything wanting live confirmation is tagged for foreground follow-up.
+
+---
+
+## Overseer verification, and the finding the measurement pass did not have
+
+Everything above was **reproduced firsthand** at `6bab943` before any of it was sent across the
+fence: the control's 9 rows byte-for-byte with identical payloads, the candidate clean on both
+fixtures (`0 of 27`, `0 of 37`), and `the_standing_fixture_runs_green` failing today with
+`expected 2798389995` / `actual 1618736836` at `logic_tick 1154` — decimal for `$A6CC0AEB` /
+`$607BF6C4`, which is row 18 to the bit.
+
+### ⚑ The candidate is clean BECAUSE it already carries the repair — and the repair is ours
+
+A byte search of the chain-189 image settles why it moved nothing:
+
+| searched for | in chain-189 ROM |
+|---|---|
+| the control's 9 **stale** payloads (`A6CC0AEB` …) | **ABSENT, all nine** |
+| the control's 9 **actual** payloads (`607BF6C4` …) | **present, all nine, at `$0A6CDC…$0A6D30`** |
+
+Those are the **same offsets** our control pass names, and the values are exactly the repair our
+runner computed from the stale side. So chain 189's fixture **has already been re-recorded**, and
+what it was re-recorded to is byte-identical to what this instrument derives independently.
+
+**Two consequences, and they pull in opposite directions.**
+
+1. **The A/B as designed could not be taken, and aeon's falsifier was not tested.** The booking
+   specified *"the ROM with the new clamps and the OLD fixture"*, because the measurement is what
+   decides what to re-record. Chain 189 is new clamps and a **new** fixture, so there is no moved
+   set in it, and **nothing here bears on their early-checkpoint prediction either way.** A clean
+   result is not a confirmation. Reporting `0 of 27` as agreement with their mechanism would be
+   precisely the confirming summary the booking forbids.
+2. **We got a stronger check than the one we planned.** Two instruments, two ROMs, no contact:
+   our runner reading chain 186 derives the nine payloads aeon's chain-189 freeze already contains.
+   That is independent corroboration that **the re-record they shipped is correct**, obtained from
+   the stale side rather than by agreeing with them.
+
+**And a third thing follows that neither lane asked for.** Chain 186's machine and chain 189's
+machine produce the **same** checkpoint hashes at 18–26 — 189's fixture holds what 186's ROM
+produces, and 189's ROM matches its own fixture. So **the clamps changed nothing observable at
+these nine checkpoints.** Stated as the bound it is, not as a general claim about the clamps.
+
+### What the stale set is, and what it is not
+
+The set is `{18–26}` — **exactly** the set aeon attributed to `fde35b2f` at chain 181. Our freeze
+at chain 186 inherited it and still carries it. This is [[REPLAY-NET-BLIND-3]] arriving as a
+measurement rather than a prediction: the pin is stale, and the one test that would say so is
+`#[ignore]`d, so the default suite is green over it.
+
+⚠ **Do not read this as evidence against aeon's clamp mechanism.** The divergence sits at the
+**late** tail (ticks 1091–1666), the opposite end from their `cam_col < 16` prediction — but it is
+**not clamp-derived**: they dated it to `fde35b2f`, five chains earlier. Same fixture, different
+divergence. Answering their question with this data would be a category error.
+
+**Precision, kept:** checkpoints fire every 64 ticks, so *"checkpoint 18 / tick 1154"* **bounds**
+the onset to ticks 1091–1154 rather than locating it, and the contiguous 18-to-end tail is what one
+divergence in that window produces once downstream hashes inherit it. **The count 9 is not nine
+independent events**, and must not be reported as nine.
