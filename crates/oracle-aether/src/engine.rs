@@ -34,7 +34,9 @@ use crate::decoders;
 use crate::hex;
 use crate::outbound::Subscribers;
 use crate::rpc::{self, code, RpcError};
-use oracle_core::bus::{BusEvent, BusEventSink, Fanout, Observe, StepRetire, StopWhen};
+use oracle_core::bus::{
+    BusEvent, BusEventSink, Fanout, Observe, StepRetire, StopWhen, Z80_RAM_SIZE,
+};
 use oracle_core::io::Pad;
 // The 68000's own bus trait, brought in for `emulator/write_memory`: a poke travels the same `write8`
 // the CPU drives, so the hardware mirror masking and the region decode are the machine's, not ours.
@@ -569,6 +571,18 @@ pub const METHODS: &[MethodSpec] = &[
         handler: Engine::object_slot,
         summary: "one addressed object slot, decoded — or `active: false` when nothing lives there",
         params: &["fields", "includeBytes", "slot"],
+    },
+    MethodSpec {
+        name: "emulator/z80_read",
+        handler: Engine::z80_read,
+        summary: "bytes from the Z80's own 0x0000-0x3FFF window, mirror included, bounded at both ends",
+        params: &["addr", "len"],
+    },
+    MethodSpec {
+        name: "emulator/z80_write",
+        handler: Engine::z80_write,
+        summary: "one byte, or a low-address-first `bytes` payload, into the Z80's window — paused only",
+        params: &["addr", "bytes", "value"],
     },
     MethodSpec {
         name: "emulator/object_at",
@@ -1676,7 +1690,11 @@ impl Engine {
                 "events": EVENTS,
                 // Method groups from the catalog that this thin slice does NOT implement. Clients branch
                 // on these, never on the version integer (D5).
-                "z80": false,
+                // Derived, never asserted: the flag is true iff both rows are in `METHODS`, so serving one
+                // of the pair cannot advertise the group (§11.28's rows are a pair, and a client that
+                // branches on this would otherwise get a half-served surface reported as whole).
+                "z80": METHODS.iter().any(|m| m.name == "emulator/z80_read")
+                    && METHODS.iter().any(|m| m.name == "emulator/z80_write"),
                 "vgm": false,
                 // §11.25 / D4: *this build has the handlers*, never *a layout was detected*. True iff at
                 // least one of the three ⚙ rows is in `methods` — S4's pin, taken because an "all three"
@@ -4067,6 +4085,101 @@ impl Engine {
         out.insert("players".into(), Value::Array(players));
         out.insert("layout".into(), layout.to_json());
         Ok(Value::Object(out))
+    }
+
+    /// The Z80 window's bounds check, shared by both rows so they cannot drift (§11.28).
+    ///
+    /// **Bounded at BOTH ends, and the end is the half that was missing.** The legacy server bounded only
+    /// the start, then looped `addr + i` with no end check — so a multi-byte write near `$3FFF` folded past
+    /// the window, clobbered `$0000`, and **replied success** (CR-B §5, read at `oracle-old d629771`).
+    /// Refused **whole, before any byte lands**, never wrapped and never clamped.
+    ///
+    /// `-32004` rather than `-32602`: §11.28 aligned this with `read`/`memory_hash`/`write_memory`, which
+    /// carry that code for the identical refusal. `-32602` stays for *shape* refusals — a `value` out of
+    /// range, two payload spellings — and the two are different failures.
+    fn z80_window(&self, addr: u32, len: usize) -> Result<(), RpcError> {
+        let end = u64::from(addr) + len as u64;
+        if addr > 0x3FFF || end > 0x4000 {
+            return Err(RpcError::new(
+                code::ADDRESS_OUT_OF_RANGE,
+                format!(
+                    "the Z80 window is 0x0000-0x3FFF and this access ends at {} — refused whole rather \
+                     than wrapped, because a wrapped write lands on 0x0000 and reports success",
+                    hex::addr(end.min(u64::from(u32::MAX)) as u32)
+                ),
+            )
+            .with_data(json!({"window": {"lo": "0x00000000", "hi": "0x00003FFF"}})));
+        }
+        Ok(())
+    }
+
+    /// `emulator/z80_read` — the Z80's own 16 KB window (§6, §11.24 D-09, §11.28).
+    ///
+    /// `len` defaults to 1 and is capped at `$2000` by the fragment; above the ceiling it is **refused,
+    /// never clamped** — the legacy server silently clamped `10000` to `8192`, which is a short read
+    /// reported as a whole one.
+    ///
+    /// The `$2000`-`$3FFF` mirror is **the machine, not a defect**: it folds exactly as `z80/bus.rs` folds
+    /// it, from the same mask, because a second implementation of the mirror here would be free to
+    /// disagree with the one the guest sees.
+    fn z80_read(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let addr = hex::parse_addr(
+            "addr",
+            params
+                .get("addr")
+                .ok_or_else(|| RpcError::invalid_params("`addr` is required"))?,
+        )?;
+        let len = match params.get("len") {
+            Some(v) => hex::parse_count("len", v, 0, 0x2000)? as usize,
+            None => 1,
+        };
+        self.z80_window(addr, len)?;
+        let ram = self.sys.z80_ram();
+        let bytes: Vec<u8> = (0..len)
+            .map(|i| ram[(addr as usize + i) & (Z80_RAM_SIZE - 1)])
+            .collect();
+        Ok(json!({"addr": hex::addr(addr), "len": len, "bytes": hex::bytes(&bytes)}))
+    }
+
+    /// `emulator/z80_write` — one byte per `value`, or a `bytes` payload laid down low-address-first.
+    ///
+    /// **There is no `width` and there will not be one** (§11.28, rejecting CR-B's B1): the Z80 bus is 8
+    /// bits wide, so a multi-byte write is spelled `bytes` and the question of endianness never arises on
+    /// the wire. Mirroring `write_memory`'s `width` was ruled against for a reason worth keeping visible —
+    /// `write_memory`'s big-endian clause is a *consequence* of "as the 68000 stores", and copying the
+    /// consequence to a little-endian CPU would land a pointer backwards.
+    ///
+    /// A **paused-machine write** under §6's run-control rule, with its siblings.
+    fn z80_write(&mut self, params: &Value) -> Result<Value, RpcError> {
+        self.require_paused("emulator/z80_write")?;
+        let addr = hex::parse_addr(
+            "addr",
+            params
+                .get("addr")
+                .ok_or_else(|| RpcError::invalid_params("`addr` is required"))?,
+        )?;
+        let payload = match (params.get("bytes"), params.get("value")) {
+            (Some(_), Some(_)) => {
+                return Err(RpcError::invalid_params(
+                    "`bytes` and `value` are two spellings of one payload — send one",
+                ))
+            }
+            (Some(b), None) => hex::parse_bytes("bytes", b)?,
+            // 0-255, refused outside rather than masked: a masked 0x1FF writing 0xFF is a wrong value
+            // reported as success, which is the class §11.28 spends its first bullet on.
+            (None, Some(v)) => vec![hex::parse_count("value", v, 0, 0xFF)? as u8],
+            (None, None) => {
+                return Err(RpcError::invalid_params(
+                    "one of `bytes` or `value` is required",
+                ))
+            }
+        };
+        self.z80_window(addr, payload.len())?;
+        let ram = self.sys.z80_ram_mut();
+        for (i, b) in payload.iter().enumerate() {
+            ram[(addr as usize + i) & (Z80_RAM_SIZE - 1)] = *b;
+        }
+        Ok(json!({"addr": hex::addr(addr), "len": payload.len()}))
     }
 
     /// `emulator/object_at` — one click, one answer, every failure named (§6 ⚙, §11.26 / CR-F).

@@ -839,6 +839,18 @@ impl System {
         &self.z80_ram
     }
 
+    /// The Z80's 8 KiB RAM, mutably — for a **debugger write**, not for the guest.
+    ///
+    /// The guest's own path is `z80/bus.rs`, which is where the `$2000`–`$3FFF` hardware mirror lives.
+    /// This accessor hands out the raw 8 KiB buffer, so a caller addressing the Z80's 16 KiB window owes
+    /// the same fold (`addr & (Z80_RAM_SIZE - 1)`) — protocol.md §11.28: *"an access inside the window
+    /// that lands on the mirror lands where the hardware puts it, and a server MUST NOT 'correct' it."*
+    /// Named `_mut` rather than given a windowed signature deliberately: a windowed setter here would be a
+    /// second implementation of the mirror, free to disagree with the bus's.
+    pub fn z80_ram_mut(&mut self) -> &mut [u8] {
+        &mut self.z80_ram
+    }
+
     /// The live Z80 BUSREQ latch (`$A11100` bit0): `true` = the 68000 has requested/been granted the Z80
     /// bus. Read-only introspection (`F-TRACE-EXPOSE-LATCHES`) — the latch is written only by the guest,
     /// through the bus (`bus.rs` `store_byte`, even byte only). Powers on `false`.

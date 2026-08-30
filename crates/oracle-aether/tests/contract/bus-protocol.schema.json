@@ -5125,7 +5125,7 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 8192,
-            "description": "Bytes to read. Default 1; ceiling 0x2000 (8192). Above the ceiling, or addr+len past 0x4000, the request is REFUSED whole with -32602, never clamped — §11.22's z80_write rule applied to its read sibling (protocol.md §6, §11.24, audit D-09 closed)."
+            "description": "Bytes to read. Default 1; ceiling 0x2000 (8192). Above the ceiling, or addr+len past 0x4000, the request is REFUSED whole with -32004 (the range code every other address-ranged row uses; §11.28 aligned it from §11.22's -32602), never clamped — §11.22's z80_write rule applied to its read sibling (protocol.md §6, §11.24, audit D-09 closed)."
           }
         }
       },

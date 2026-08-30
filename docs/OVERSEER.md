@@ -1046,6 +1046,22 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   stranger dying), which is why it is a register entry and not a hazard notice. **Revival condition:**
   the differential harness is run in anger again, or a stray `blastem`/`Xvfb` is found outliving it —
   fix is a process group (`start_new_session=True` + `killpg`), not a wider pattern.
+  ⚑ **STRENGTHENED 2026-08-30 by aurora's measurement (aurora `055bff40`), which supplies the consequence
+  this booking lacked.** `/usr/bin/xvfb-run` **has no trap**, so a SIGTERM to the wrapper skips all of its
+  cleanup — and each skipped cleanup leaks an X lock, a socket **and a tempdir**, where **every leaked lock
+  permanently burns a display number**, so every later run on the box scans longer. My entry had the
+  orphaned-process half and read the cost as "a stray process survives"; the real cost compounds across the
+  machine and outlives the session that caused it. Their portable fix: reap the wrapper's **children** by
+  PID first, then the wrapper.
+  *Two honest scope notes.* (a) aurora **retracted** the suite-wide version of this (aurora `81ebf173`) —
+  they fingerprinted the leak to their own harness, so nothing here is currently leaking; measured at the
+  time: `/tmp/.X*-lock` = 0, `/tmp/.X11-unix` = 0. (b) **This lane nearly reported "no xvfb-run here" on a
+  grep that had errored on shell globbing.** Run correctly there are four hits — `rsp.py:10`/`:41` and
+  `nightly_differential.py:145`/`:217`. Second instance in one night of bar 16(d) at this seat: **a failing
+  command and an empty world print the same thing**, and only a positive control separates them.
+  *Not applicable to the player-window fixtures* (`docs/2026-08-29-window-runtime-checks.md`): those run
+  their own `Xvfb :N` and kill it by recorded PID, so the wrapper is out of the loop entirely — which was
+  an accident of needing a known `DISPLAY` for XTEST, not foresight, and is recorded that way.
 
 **▶ NEW BAR, 2026-08-30 — EVERY CITATION RULE THIS SUITE OWNS IS WRITTEN FOR THE RECEIVING SIDE, AND
 BOTH OF TONIGHT'S FAILURES WERE ON THE EMITTING SIDE, WHERE NO RULE REACHES.** aeon's formulation, banked

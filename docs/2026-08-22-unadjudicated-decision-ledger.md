@@ -72,6 +72,50 @@ is a bound in emulated time, and a wedge is the state where emulated time stops 
 
 ---
 
+## L-02 — CR-B, the Z80 pair · ~~`UNADJUDICATED`~~ **ADJUDICATED 2026-08-30** (original kept below)
+
+**Ruled by the hub** under the owner's standing delegation, at empyrean `ec008ec` — `protocol.md` §11.28,
+plus the pair's normative blockquote in §6 and the `z80_read.len` schema description. Verified here:
+reachable from their `origin/main`, `--stat` shows `contract/protocol.md` +49 and the schema, so the SHA
+carries what it anchors. **Reviewer named per the substitution rule: the hub, which took no part in
+drafting this CR and is independent of this lane.**
+
+**Outcome, decision by decision against the five above — and one of ours was ruled AGAINST:**
+
+1. *All three defects in one CR, B4 severable* — **stood.** B3 (§11.24) and B4 (§11.22) had already been
+   adopted; B2b **declined for the CR's own reasons**, revisited with D-16.
+2. *D-10 as optional `width` ∈ {1,2}, default 1* — ⚑ **REJECTED.** §11.28: one byte per `value`, multi-byte
+   spelled `bytes` **low-address-first**, and *"there is no `width` and there will not be one"*. **The
+   ruling is better than the proposal and the reason is ours:** our own §2.4 evidence — that the legacy
+   server declined a width deliberately and said why — supports *no width at all* more than it supports a
+   defaulted one. We carried that evidence to the edge of the right conclusion and stopped one step short,
+   proposing a compatible shape where the honest reading was that the parameter should not exist.
+3. *Byte order little-endian, argued from the rule not the sibling* — **the reasoning stood and the
+   question dissolved.** With one byte per `value` and `bytes` laid down low-address-first, endianness
+   never reaches the wire. The argument was right; what it was arguing about was avoidable.
+4. *Bound kept at `0–$3FFF`* — **stood**, with the mirror sentence now normative: `$2000`–`$3FFF` is the
+   machine, a server MUST NOT correct it, and only the fold past `$3FFF` is wrong.
+5. *Six items listed as SETTLED for an adjudicator to object to* — **no objection recorded.**
+
+**And one change to the CR's own text: the overrun code is `-32004`, not `-32602`.** §11.22 had written
+`-32602`; §11.28 aligned it with `read`/`memory_hash`/`write_memory`, which carry `-32004` for the
+identical refusal. `-32602` stays for **shape** refusals — a `value` out of range, two payload spellings.
+The two are different failures and the ruling keeps them distinguishable.
+
+**The live defect finding was upgraded from source-derived to DEMONSTRATED**, which this entry flagged as
+the half an adjudicator should know: the legacy start-only bound is now reproduced as a recorded mutation
+(move the bounds check after the write → `$0000` holds `0x55667788`, bytes 5–8 of the payload, exactly as
+the CR predicted from reading `oracle-old d629771`).
+
+⚑ **THE HUB'S LESSON, AND IT IS WHY THIS ENTRY SAT UNADJUDICATED FOR A WEEK: most of CR-B was already
+ruled on 2026-08-26, by an audit pass that never named the CR.** So the contract had moved and the ledger
+could not learn it — a decision recorded as open while its answer sat in a section nobody would think to
+re-read. **Name the CR in the amendment that takes it**, or the record of what is outstanding rots in the
+safe-looking direction: it over-reports work as pending, which costs a lane a week rather than costing
+anyone a wrong answer.
+
+*(Original entry follows, unaltered.)*
+
 ## L-02 — CR-B, the Z80 pair · `UNADJUDICATED`
 
 **Artifact:** `docs/2026-08-22-cr-b-z80.md` (1028 lines), merged `37a06f9`.
