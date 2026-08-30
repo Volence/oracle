@@ -322,6 +322,12 @@ class FixtureAccessorSemantics(unittest.TestCase):
         self.assertEqual(self.acc["getInt"]["string_numeric_prefixes"], ["$"])
         self.assertEqual(self.acc["getInt"]["string_radices"], [8])
 
+    def test_trailing_garbage_in_a_numeric_string_is_not_rejected(self):
+        # Derived from the source fact that stoll's `pos` out-param is nullptr
+        # and nothing checks full consumption, so "12abc" reads 12.
+        self.assertFalse(self.acc["getInt"]["trailing_garbage_rejected"])
+        self.assertIn("stoll", FIXTURE)  # positive control: the call is present
+
     def test_delegation_is_followed(self):
         self.assertEqual(self.acc["getU32"]["delegates_to"], "getInt")
         self.assertEqual(self.acc["getU32"]["accepted_json_types"],

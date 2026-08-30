@@ -1,0 +1,6441 @@
+{
+  "schema": "oracle/legacy-accept-table/v1",
+  "generated_by": "tools/legacy_accept_table.py",
+  "description": "Per-method, per-key accept-table for the legacy C++ control server. The server validates almost no parameter: reads default silently. DESCRIPTIVE ONLY -- oracle-old is reference-only and is not patched.",
+  "envelope": {
+    "parsed": true,
+    "identifier": "params",
+    "envelope_member": "params",
+    "required_shape": "object",
+    "substituted_when_absent_or_wrong_shape": {},
+    "consequence": "a params member that is absent or of the wrong shape is replaced with an empty object; every key on every method then reads its default, with no error",
+    "line": 2873
+  },
+  "accessors": {
+    "has": {
+      "return_type": "bool",
+      "implicit_default": null,
+      "has_default_argument": false,
+      "delegates_to": null,
+      "type_predicates": [],
+      "accepted_json_types": [],
+      "string_coercion_set": null,
+      "string_branch_falls_back_to_default": null,
+      "missing_key_returns_default": false,
+      "source_line": 114,
+      "checks_type": false,
+      "rejects_null": true
+    },
+    "get": {
+      "return_type": "std::string",
+      "implicit_default": "",
+      "has_default_argument": true,
+      "delegates_to": null,
+      "type_predicates": [
+        "is_string",
+        "is_number_integer",
+        "is_number_unsigned",
+        "is_number_float",
+        "is_boolean"
+      ],
+      "accepted_json_types": [
+        "string",
+        "number(integer)",
+        "number(unsigned)",
+        "number(float)",
+        "boolean"
+      ],
+      "string_coercion_set": null,
+      "string_branch_falls_back_to_default": false,
+      "missing_key_returns_default": true,
+      "source_line": 119
+    },
+    "getInt": {
+      "return_type": "long long",
+      "implicit_default": 0,
+      "has_default_argument": true,
+      "delegates_to": null,
+      "type_predicates": [
+        "is_number_integer",
+        "is_number_unsigned",
+        "is_number_float",
+        "is_string"
+      ],
+      "accepted_json_types": [
+        "number(integer)",
+        "number(unsigned)",
+        "number(float)",
+        "string"
+      ],
+      "string_coercion_set": null,
+      "string_branch_falls_back_to_default": true,
+      "missing_key_returns_default": true,
+      "source_line": 130,
+      "string_numeric_prefixes": [
+        "0x",
+        "0X",
+        "$"
+      ],
+      "string_radices": [
+        10
+      ],
+      "empty_string_returns_default": true,
+      "parse_failure_returns_default": true,
+      "trailing_garbage_rejected": false
+    },
+    "getU32": {
+      "return_type": "uint32_t",
+      "implicit_default": 0,
+      "has_default_argument": true,
+      "delegates_to": "getInt",
+      "type_predicates": [
+        "is_number_integer",
+        "is_number_unsigned",
+        "is_number_float",
+        "is_string"
+      ],
+      "accepted_json_types": [
+        "number(integer)",
+        "number(unsigned)",
+        "number(float)",
+        "string"
+      ],
+      "string_coercion_set": null,
+      "string_branch_falls_back_to_default": true,
+      "missing_key_returns_default": false,
+      "source_line": 152,
+      "string_numeric_prefixes": [
+        "0x",
+        "0X",
+        "$"
+      ],
+      "string_radices": [
+        10
+      ],
+      "empty_string_returns_default": true,
+      "parse_failure_returns_default": true,
+      "trailing_garbage_rejected": false
+    },
+    "getBool": {
+      "return_type": "bool",
+      "implicit_default": false,
+      "has_default_argument": true,
+      "delegates_to": null,
+      "type_predicates": [
+        "is_boolean",
+        "is_number",
+        "is_string"
+      ],
+      "accepted_json_types": [
+        "boolean",
+        "number",
+        "string"
+      ],
+      "string_coercion_set": [
+        "true",
+        "1",
+        "yes"
+      ],
+      "string_branch_falls_back_to_default": false,
+      "missing_key_returns_default": true,
+      "source_line": 156
+    }
+  },
+  "method_meta": {
+    "emulator/audio_spectrum": {
+      "handler": "OpAudioSpectrum",
+      "legacy_op": "audio_spectrum",
+      "accepted_spellings": [
+        "audio_spectrum",
+        "emulator/audio_spectrum"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/breakpoint_add": {
+      "handler": "OpBreakpointAdd",
+      "legacy_op": "breakpoint_add",
+      "accepted_spellings": [
+        "breakpoint_add",
+        "emulator/breakpoint_add"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/breakpoint_clear": {
+      "handler": "OpBreakpointClear",
+      "legacy_op": "breakpoint_clear",
+      "accepted_spellings": [
+        "breakpoint_clear",
+        "emulator/breakpoint_clear"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/breakpoint_list": {
+      "handler": "OpBreakpointList",
+      "legacy_op": "breakpoint_list",
+      "accepted_spellings": [
+        "breakpoint_list",
+        "emulator/breakpoint_list"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/call_stack": {
+      "handler": "OpCallStack",
+      "legacy_op": "call_stack",
+      "accepted_spellings": [
+        "call_stack",
+        "emulator/call_stack"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/debug_arbiter": {
+      "handler": "OpDebugArbiter",
+      "legacy_op": "debug_arbiter",
+      "accepted_spellings": [
+        "debug_arbiter",
+        "emulator/debug_arbiter"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/get_channel_states": {
+      "handler": "OpGetChannelStates",
+      "legacy_op": "get_channel_states",
+      "accepted_spellings": [
+        "emulator/get_channel_states",
+        "get_channel_states"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/get_layer_states": {
+      "handler": "OpGetLayerStates",
+      "legacy_op": "get_layer_states",
+      "accepted_spellings": [
+        "emulator/get_layer_states",
+        "get_layer_states"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/get_profiler": {
+      "handler": "OpGetProfiler",
+      "legacy_op": "get_profiler",
+      "accepted_spellings": [
+        "emulator/get_profiler",
+        "get_profiler"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/get_profiler_frames": {
+      "handler": "OpGetProfilerFrames",
+      "legacy_op": "get_profiler_frames",
+      "accepted_spellings": [
+        "emulator/get_profiler_frames",
+        "get_profiler_frames"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/hold": {
+      "handler": "OpHold",
+      "legacy_op": "hold",
+      "accepted_spellings": [
+        "emulator/hold",
+        "hold"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/load_symbols": {
+      "handler": "OpLoadSymbols",
+      "legacy_op": "load_symbols",
+      "accepted_spellings": [
+        "emulator/load_symbols",
+        "load_symbols"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/log_clear": {
+      "handler": "OpLogClear",
+      "legacy_op": "log_clear",
+      "accepted_spellings": [
+        "emulator/log_clear",
+        "log_clear"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/log_tail": {
+      "handler": "OpLogTail",
+      "legacy_op": "log_tail",
+      "accepted_spellings": [
+        "emulator/log_tail",
+        "log_tail"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/lookup_symbol": {
+      "handler": "OpLookupSymbol",
+      "legacy_op": "lookup_symbol",
+      "accepted_spellings": [
+        "emulator/lookup_symbol",
+        "lookup_symbol"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/memory_hash": {
+      "handler": "OpMemoryHash",
+      "legacy_op": "memory_hash",
+      "accepted_spellings": [
+        "emulator/memory_hash",
+        "memory_hash"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/object_list": {
+      "handler": "OpObjectList",
+      "legacy_op": "object_list",
+      "accepted_spellings": [
+        "emulator/object_list",
+        "object_list"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/object_slot": {
+      "handler": "OpObjectSlot",
+      "legacy_op": "object_slot",
+      "accepted_spellings": [
+        "emulator/object_slot",
+        "object_slot"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/pause": {
+      "handler": "OpPause",
+      "legacy_op": "pause",
+      "accepted_spellings": [
+        "emulator/pause",
+        "pause"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/ping": {
+      "handler": "OpPing",
+      "legacy_op": "ping",
+      "accepted_spellings": [
+        "emulator/ping",
+        "ping"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/player_state": {
+      "handler": "OpPlayerState",
+      "legacy_op": "player_state",
+      "accepted_spellings": [
+        "emulator/player_state",
+        "player_state"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/press": {
+      "handler": "OpPress",
+      "legacy_op": "press",
+      "accepted_spellings": [
+        "emulator/press",
+        "press"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/read_memory": {
+      "handler": "OpRead",
+      "legacy_op": "read",
+      "accepted_spellings": [
+        "emulator/read",
+        "emulator/read_memory",
+        "read",
+        "read_memory"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/read_cram": {
+      "handler": "OpReadCram",
+      "legacy_op": "read_cram",
+      "accepted_spellings": [
+        "emulator/read_cram",
+        "read_cram"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/read_vram": {
+      "handler": "OpReadVram",
+      "legacy_op": "read_vram",
+      "accepted_spellings": [
+        "emulator/read_vram",
+        "read_vram"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/registers": {
+      "handler": "OpRegisters",
+      "legacy_op": "registers",
+      "accepted_spellings": [
+        "emulator/registers",
+        "registers"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/release_all": {
+      "handler": "OpReleaseAll",
+      "legacy_op": "release_all",
+      "accepted_spellings": [
+        "emulator/release_all",
+        "release_all"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/reload_rom": {
+      "handler": "OpReloadRom",
+      "legacy_op": "reload_rom",
+      "accepted_spellings": [
+        "emulator/reload_rom",
+        "reload_rom"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/reset": {
+      "handler": "OpReset",
+      "legacy_op": "reset",
+      "accepted_spellings": [
+        "emulator/reset",
+        "reset"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/resume": {
+      "handler": "OpResume",
+      "legacy_op": "resume",
+      "accepted_spellings": [
+        "emulator/resume",
+        "resume"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/run_frames": {
+      "handler": "OpRunFrames",
+      "legacy_op": "run_frames",
+      "accepted_spellings": [
+        "emulator/run_frames",
+        "run_frames"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/run_to": {
+      "handler": "OpRunTo",
+      "legacy_op": "run_to",
+      "accepted_spellings": [
+        "emulator/run_to",
+        "run_to"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/run_to_scanline": {
+      "handler": "OpRunToScanline",
+      "legacy_op": "run_to_scanline",
+      "accepted_spellings": [
+        "emulator/run_to_scanline",
+        "run_to_scanline"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/screenshot": {
+      "handler": "OpScreenshot",
+      "legacy_op": "screenshot",
+      "accepted_spellings": [
+        "emulator/screenshot",
+        "screenshot"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/set_channel_enabled": {
+      "handler": "OpSetChannelEnabled",
+      "legacy_op": "set_channel_enabled",
+      "accepted_spellings": [
+        "emulator/set_channel_enabled",
+        "set_channel_enabled"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/set_layer_enabled": {
+      "handler": "OpSetLayerEnabled",
+      "legacy_op": "set_layer_enabled",
+      "accepted_spellings": [
+        "emulator/set_layer_enabled",
+        "set_layer_enabled"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/set_profiler": {
+      "handler": "OpSetProfiler",
+      "legacy_op": "set_profiler",
+      "accepted_spellings": [
+        "emulator/set_profiler",
+        "set_profiler"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/state_hash": {
+      "handler": "OpStateHash",
+      "legacy_op": "state_hash",
+      "accepted_spellings": [
+        "emulator/state_hash",
+        "state_hash"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/status": {
+      "handler": "OpStatus",
+      "legacy_op": "status",
+      "accepted_spellings": [
+        "emulator/status",
+        "status"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/step": {
+      "handler": "OpStep",
+      "legacy_op": "step",
+      "accepted_spellings": [
+        "emulator/step",
+        "step"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/step_out": {
+      "handler": "OpStepOut",
+      "legacy_op": "step_out",
+      "accepted_spellings": [
+        "emulator/step_out",
+        "step_out"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/step_over": {
+      "handler": "OpStepOver",
+      "legacy_op": "step_over",
+      "accepted_spellings": [
+        "emulator/step_over",
+        "step_over"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/vgm_start": {
+      "handler": "OpVgmStart",
+      "legacy_op": "vgm_start",
+      "accepted_spellings": [
+        "emulator/vgm_start",
+        "vgm_start"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/vgm_status": {
+      "handler": "OpVgmStatus",
+      "legacy_op": "vgm_status",
+      "accepted_spellings": [
+        "emulator/vgm_status",
+        "vgm_status"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/vgm_stop": {
+      "handler": "OpVgmStop",
+      "legacy_op": "vgm_stop",
+      "accepted_spellings": [
+        "emulator/vgm_stop",
+        "vgm_stop"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/wait_for_break": {
+      "handler": "OpWaitForBreak",
+      "legacy_op": "wait_for_break",
+      "accepted_spellings": [
+        "emulator/wait_for_break",
+        "wait_for_break"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/watchpoint_add": {
+      "handler": "OpWatchpointAdd",
+      "legacy_op": "watchpoint_add",
+      "accepted_spellings": [
+        "emulator/watchpoint_add",
+        "watchpoint_add"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/write_memory": {
+      "handler": "OpWrite",
+      "legacy_op": "write",
+      "accepted_spellings": [
+        "emulator/write",
+        "emulator/write_memory",
+        "write",
+        "write_memory"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/write_cram": {
+      "handler": "OpWriteCram",
+      "legacy_op": "write_cram",
+      "accepted_spellings": [
+        "emulator/write_cram",
+        "write_cram"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/write_vram": {
+      "handler": "OpWriteVram",
+      "legacy_op": "write_vram",
+      "accepted_spellings": [
+        "emulator/write_vram",
+        "write_vram"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/z80_read": {
+      "handler": "OpZ80Read",
+      "legacy_op": "z80_read",
+      "accepted_spellings": [
+        "emulator/z80_read",
+        "z80_read"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/z80_registers": {
+      "handler": "OpZ80Registers",
+      "legacy_op": "z80_registers",
+      "accepted_spellings": [
+        "emulator/z80_registers",
+        "z80_registers"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "emulator/z80_write": {
+      "handler": "OpZ80Write",
+      "legacy_op": "z80_write",
+      "accepted_spellings": [
+        "emulator/z80_write",
+        "z80_write"
+      ],
+      "dispatch": "Handlers()"
+    },
+    "initialize": {
+      "handler": "HandleMessage (inline)",
+      "legacy_op": null,
+      "accepted_spellings": [
+        "initialize"
+      ],
+      "dispatch": "pre-dispatch"
+    },
+    "initialized": {
+      "handler": "HandleMessage (inline)",
+      "legacy_op": null,
+      "accepted_spellings": [
+        "initialized"
+      ],
+      "dispatch": "pre-dispatch"
+    }
+  },
+  "counts": {
+    "methods": 55,
+    "methods_via_handlers_table": 53,
+    "methods_pre_dispatch": 2,
+    "methods_parsed": 55,
+    "methods_with_no_parameters": 20,
+    "distinct_keys": 42,
+    "accessor_value_read_sites": 63,
+    "accessor_guard_sites": 15,
+    "raw_read_keys_in_handlers": 1,
+    "raw_read_keys_pre_dispatch": 3,
+    "parameter_read_sites_total": 67
+  },
+  "coverage": {
+    "unparsed_entries": [],
+    "unresolved_handlers": [],
+    "complete": true
+  },
+  "methods": {
+    "emulator/audio_spectrum": {
+      "fft_size": {
+        "accessor": "getU32",
+        "default": {
+          "value": 4096,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getU32",
+            "in_function": "OpAudioSpectrum",
+            "line": 1759,
+            "default_explicit": true,
+            "default_value": 4096,
+            "guarded_by": null
+          }
+        ]
+      },
+      "max_hz": {
+        "accessor": "getU32",
+        "default": {
+          "value": 0,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getU32",
+            "in_function": "OpAudioSpectrum",
+            "line": 1778,
+            "default_explicit": true,
+            "default_value": 0,
+            "guarded_by": null
+          }
+        ]
+      },
+      "source": {
+        "accessor": "get",
+        "default": {
+          "value": "fm",
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "OpAudioSpectrum",
+            "line": 1754,
+            "default_explicit": true,
+            "default_value": "fm",
+            "guarded_by": null
+          }
+        ]
+      }
+    },
+    "emulator/breakpoint_add": {
+      "addr": {
+        "accessor": [
+          "get",
+          "getU32"
+        ],
+        "default": {
+          "value": "",
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "if (req.has(\"addr\"))",
+          "line": 344,
+          "in_function": "ResolveAddrDetailed",
+          "kind": "block",
+          "negated_early_bail": false,
+          "guards_against": "absence",
+          "guard_checks_type": false
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "ResolveAddrDetailed",
+            "line": 346,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (req.has(\"addr\"))",
+              "line": 344,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          },
+          {
+            "accessor": "getU32",
+            "in_function": "ResolveAddrDetailed",
+            "line": 348,
+            "default_explicit": false,
+            "default_value": 0,
+            "guarded_by": {
+              "expr": "if (req.has(\"addr\"))",
+              "line": 344,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          }
+        ],
+        "multiple_readings": true
+      },
+      "symbol": {
+        "accessor": "get",
+        "default": {
+          "value": "",
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "if (req.has(\"symbol\"))",
+          "line": 351,
+          "in_function": "ResolveAddrDetailed",
+          "kind": "block",
+          "negated_early_bail": false,
+          "guards_against": "absence",
+          "guard_checks_type": false
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "ResolveAddrDetailed",
+            "line": 354,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (req.has(\"symbol\"))",
+              "line": 351,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          }
+        ]
+      }
+    },
+    "emulator/breakpoint_clear": {
+      "addr": {
+        "accessor": [
+          "get",
+          "getU32"
+        ],
+        "default": {
+          "value": "",
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "if (req.has(\"addr\"))",
+          "line": 344,
+          "in_function": "ResolveAddrDetailed",
+          "kind": "block",
+          "negated_early_bail": false,
+          "guards_against": "absence",
+          "guard_checks_type": false
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "ResolveAddrDetailed",
+            "line": 346,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (req.has(\"addr\"))",
+              "line": 344,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          },
+          {
+            "accessor": "getU32",
+            "in_function": "ResolveAddrDetailed",
+            "line": 348,
+            "default_explicit": false,
+            "default_value": 0,
+            "guarded_by": {
+              "expr": "if (req.has(\"addr\"))",
+              "line": 344,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          }
+        ],
+        "multiple_readings": true
+      },
+      "all": {
+        "accessor": "getBool",
+        "default": {
+          "value": false,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "boolean",
+            "number",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_values_accepted": [
+            "true",
+            "1",
+            "yes"
+          ],
+          "other_string_values_yield": false,
+          "other_string_values_ignore_caller_default": true,
+          "effective_value_for_unlisted_string": false,
+          "declared_default_is_not_applied_to_unlisted_strings": true,
+          "unlisted_string_inverts_declared_default": false
+        },
+        "read_sites": [
+          {
+            "accessor": "getBool",
+            "in_function": "OpBreakpointClear",
+            "line": 842,
+            "default_explicit": true,
+            "default_value": false,
+            "guarded_by": null
+          }
+        ]
+      },
+      "symbol": {
+        "accessor": "get",
+        "default": {
+          "value": "",
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "if (req.has(\"symbol\"))",
+          "line": 351,
+          "in_function": "ResolveAddrDetailed",
+          "kind": "block",
+          "negated_early_bail": false,
+          "guards_against": "absence",
+          "guard_checks_type": false
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "ResolveAddrDetailed",
+            "line": 354,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (req.has(\"symbol\"))",
+              "line": 351,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          }
+        ]
+      }
+    },
+    "emulator/breakpoint_list": {},
+    "emulator/call_stack": {
+      "max_bytes": {
+        "accessor": "getInt",
+        "default": {
+          "value": 256,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getInt",
+            "in_function": "OpCallStack",
+            "line": 1300,
+            "default_explicit": true,
+            "default_value": 256,
+            "guarded_by": null
+          }
+        ]
+      },
+      "max_frames": {
+        "accessor": "getInt",
+        "default": {
+          "value": 24,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getInt",
+            "in_function": "OpCallStack",
+            "line": 1301,
+            "default_explicit": true,
+            "default_value": 24,
+            "guarded_by": null
+          }
+        ]
+      }
+    },
+    "emulator/debug_arbiter": {},
+    "emulator/get_channel_states": {},
+    "emulator/get_layer_states": {},
+    "emulator/get_profiler": {},
+    "emulator/get_profiler_frames": {
+      "frames": {
+        "accessor": "getInt",
+        "default": {
+          "value": 0,
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "if (req.has(\"frames\")) numFrames = (int)req.getInt(\"frames\");",
+          "line": 1954,
+          "in_function": "OpGetProfilerFrames",
+          "kind": "block",
+          "negated_early_bail": false,
+          "guards_against": "absence",
+          "guard_checks_type": false
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getInt",
+            "in_function": "OpGetProfilerFrames",
+            "line": 1954,
+            "default_explicit": false,
+            "default_value": 0,
+            "guarded_by": {
+              "expr": "if (req.has(\"frames\")) numFrames = (int)req.getInt(\"frames\");",
+              "line": 1954,
+              "in_function": "OpGetProfilerFrames",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          }
+        ]
+      },
+      "top": {
+        "accessor": "getInt",
+        "default": {
+          "value": 0,
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "if (req.has(\"top\")) topN = (int)req.getInt(\"top\");",
+          "line": 1959,
+          "in_function": "OpGetProfilerFrames",
+          "kind": "block",
+          "negated_early_bail": false,
+          "guards_against": "absence",
+          "guard_checks_type": false
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getInt",
+            "in_function": "OpGetProfilerFrames",
+            "line": 1959,
+            "default_explicit": false,
+            "default_value": 0,
+            "guarded_by": {
+              "expr": "if (req.has(\"top\")) topN = (int)req.getInt(\"top\");",
+              "line": 1959,
+              "in_function": "OpGetProfilerFrames",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          }
+        ]
+      }
+    },
+    "emulator/hold": {
+      "down": {
+        "accessor": "getBool",
+        "default": {
+          "value": true,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "boolean",
+            "number",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_values_accepted": [
+            "true",
+            "1",
+            "yes"
+          ],
+          "other_string_values_yield": false,
+          "other_string_values_ignore_caller_default": true,
+          "effective_value_for_unlisted_string": false,
+          "declared_default_is_not_applied_to_unlisted_strings": true,
+          "unlisted_string_inverts_declared_default": true
+        },
+        "read_sites": [
+          {
+            "accessor": "getBool",
+            "in_function": "OpHold",
+            "line": 1710,
+            "default_explicit": true,
+            "default_value": true,
+            "guarded_by": null
+          }
+        ]
+      },
+      "buttons": {
+        "accessor": "raw_json",
+        "default": {
+          "value": [],
+          "explicit": false,
+          "source": "hand_rolled_read: a failed shape check yields an empty result and the call still SUCCEEDS"
+        },
+        "guarded_by": {
+          "expr": "contains && subscript(\"buttons\")",
+          "line": 1579,
+          "in_function": "ParseButtons",
+          "negated_early_bail": false,
+          "guard_checks_type": true,
+          "note": "type-checked but NOT error-reporting: a wrong shape is silently dropped and the method still returns success"
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "array"
+          ],
+          "element_json_types": [
+            "string"
+          ],
+          "other_json_types_yield": [],
+          "non_matching_elements": "silently dropped"
+        },
+        "read_sites": [
+          {
+            "accessor": "raw_json",
+            "in_function": "ParseButtons",
+            "line": 1579
+          },
+          {
+            "accessor": "raw_json",
+            "in_function": "ParseButtons",
+            "line": 1580
+          }
+        ]
+      }
+    },
+    "emulator/load_symbols": {
+      "buildId": {
+        "accessor": "get",
+        "default": {
+          "value": "",
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "OpLoadSymbols",
+            "line": 1494,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": null
+          }
+        ]
+      },
+      "path": {
+        "accessor": "get",
+        "default": {
+          "value": "",
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "OpLoadSymbols",
+            "line": 1463,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": null
+          }
+        ]
+      }
+    },
+    "emulator/log_clear": {},
+    "emulator/log_tail": {
+      "limit": {
+        "accessor": "getU32",
+        "default": {
+          "value": 100,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getU32",
+            "in_function": "OpLogTail",
+            "line": 1846,
+            "default_explicit": true,
+            "default_value": 100,
+            "guarded_by": null
+          }
+        ]
+      },
+      "since": {
+        "accessor": "getU32",
+        "default": {
+          "value": 0,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getU32",
+            "in_function": "OpLogTail",
+            "line": 1845,
+            "default_explicit": true,
+            "default_value": 0,
+            "guarded_by": null
+          }
+        ]
+      }
+    },
+    "emulator/lookup_symbol": {
+      "addr": {
+        "accessor": "getU32",
+        "default": {
+          "value": 0,
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "else if (req.has(\"addr\"))",
+          "line": 780,
+          "in_function": "OpLookupSymbol",
+          "kind": "block",
+          "negated_early_bail": false,
+          "guards_against": "absence",
+          "guard_checks_type": false
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getU32",
+            "in_function": "OpLookupSymbol",
+            "line": 782,
+            "default_explicit": false,
+            "default_value": 0,
+            "guarded_by": {
+              "expr": "else if (req.has(\"addr\"))",
+              "line": 780,
+              "in_function": "OpLookupSymbol",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          }
+        ]
+      },
+      "name": {
+        "accessor": "get",
+        "default": {
+          "value": "",
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "if (req.has(\"name\"))",
+          "line": 759,
+          "in_function": "OpLookupSymbol",
+          "kind": "block",
+          "negated_early_bail": false,
+          "guards_against": "absence",
+          "guard_checks_type": false
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "OpLookupSymbol",
+            "line": 762,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (req.has(\"name\"))",
+              "line": 759,
+              "in_function": "OpLookupSymbol",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          },
+          {
+            "accessor": "get",
+            "in_function": "OpLookupSymbol",
+            "line": 764,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (req.has(\"name\"))",
+              "line": 759,
+              "in_function": "OpLookupSymbol",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          },
+          {
+            "accessor": "get",
+            "in_function": "OpLookupSymbol",
+            "line": 768,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (req.has(\"name\"))",
+              "line": 759,
+              "in_function": "OpLookupSymbol",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          }
+        ]
+      }
+    },
+    "emulator/memory_hash": {
+      "addr": {
+        "accessor": [
+          "get",
+          "getU32"
+        ],
+        "default": {
+          "value": "",
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "if (req.has(\"addr\"))",
+          "line": 344,
+          "in_function": "ResolveAddrDetailed",
+          "kind": "block",
+          "negated_early_bail": false,
+          "guards_against": "absence",
+          "guard_checks_type": false
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "ResolveAddrDetailed",
+            "line": 346,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (req.has(\"addr\"))",
+              "line": 344,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          },
+          {
+            "accessor": "getU32",
+            "in_function": "ResolveAddrDetailed",
+            "line": 348,
+            "default_explicit": false,
+            "default_value": 0,
+            "guarded_by": {
+              "expr": "if (req.has(\"addr\"))",
+              "line": 344,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          }
+        ],
+        "multiple_readings": true
+      },
+      "len": {
+        "accessor": "getInt",
+        "default": {
+          "value": 0,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getInt",
+            "in_function": "OpMemoryHash",
+            "line": 2455,
+            "default_explicit": true,
+            "default_value": 0,
+            "guarded_by": null
+          }
+        ]
+      },
+      "symbol": {
+        "accessor": "get",
+        "default": {
+          "value": "",
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "if (req.has(\"symbol\"))",
+          "line": 351,
+          "in_function": "ResolveAddrDetailed",
+          "kind": "transitive",
+          "negated_early_bail": false,
+          "guards_against": "absence",
+          "guard_checks_type": false,
+          "note": "the read is in a different function of the call chain, reachable only through the guarded path"
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "ResolveAddrDetailed",
+            "line": 354,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (req.has(\"symbol\"))",
+              "line": 351,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          },
+          {
+            "accessor": "get",
+            "in_function": "ResolveAddrOrError",
+            "line": 372,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (req.has(\"symbol\"))",
+              "line": 351,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "transitive",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false,
+              "note": "the read is in a different function of the call chain, reachable only through the guarded path"
+            }
+          },
+          {
+            "accessor": "get",
+            "in_function": "ResolveAddrOrError",
+            "line": 374,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (req.has(\"symbol\"))",
+              "line": 351,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "transitive",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false,
+              "note": "the read is in a different function of the call chain, reachable only through the guarded path"
+            }
+          }
+        ]
+      }
+    },
+    "emulator/object_list": {},
+    "emulator/object_slot": {
+      "slot": {
+        "accessor": "getInt",
+        "default": {
+          "value": 0,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getInt",
+            "in_function": "OpObjectSlot",
+            "line": 977,
+            "default_explicit": true,
+            "default_value": 0,
+            "guarded_by": null
+          }
+        ]
+      }
+    },
+    "emulator/pause": {},
+    "emulator/ping": {},
+    "emulator/player_state": {},
+    "emulator/press": {
+      "frames": {
+        "accessor": "getInt",
+        "default": {
+          "value": 2,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getInt",
+            "in_function": "OpPress",
+            "line": 1671,
+            "default_explicit": true,
+            "default_value": 2,
+            "guarded_by": null
+          }
+        ]
+      },
+      "buttons": {
+        "accessor": "raw_json",
+        "default": {
+          "value": [],
+          "explicit": false,
+          "source": "hand_rolled_read: a failed shape check yields an empty result and the call still SUCCEEDS"
+        },
+        "guarded_by": {
+          "expr": "contains && subscript(\"buttons\")",
+          "line": 1579,
+          "in_function": "ParseButtons",
+          "negated_early_bail": false,
+          "guard_checks_type": true,
+          "note": "type-checked but NOT error-reporting: a wrong shape is silently dropped and the method still returns success"
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "array"
+          ],
+          "element_json_types": [
+            "string"
+          ],
+          "other_json_types_yield": [],
+          "non_matching_elements": "silently dropped"
+        },
+        "read_sites": [
+          {
+            "accessor": "raw_json",
+            "in_function": "ParseButtons",
+            "line": 1579
+          },
+          {
+            "accessor": "raw_json",
+            "in_function": "ParseButtons",
+            "line": 1580
+          }
+        ]
+      }
+    },
+    "emulator/read_memory": {
+      "addr": {
+        "accessor": [
+          "get",
+          "getU32"
+        ],
+        "default": {
+          "value": "",
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "if (req.has(\"addr\"))",
+          "line": 344,
+          "in_function": "ResolveAddrDetailed",
+          "kind": "block",
+          "negated_early_bail": false,
+          "guards_against": "absence",
+          "guard_checks_type": false
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "ResolveAddrDetailed",
+            "line": 346,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (req.has(\"addr\"))",
+              "line": 344,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          },
+          {
+            "accessor": "getU32",
+            "in_function": "ResolveAddrDetailed",
+            "line": 348,
+            "default_explicit": false,
+            "default_value": 0,
+            "guarded_by": {
+              "expr": "if (req.has(\"addr\"))",
+              "line": 344,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          }
+        ],
+        "multiple_readings": true
+      },
+      "len": {
+        "accessor": "getInt",
+        "default": {
+          "value": 1,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getInt",
+            "in_function": "OpRead",
+            "line": 567,
+            "default_explicit": true,
+            "default_value": 1,
+            "guarded_by": null
+          }
+        ]
+      },
+      "symbol": {
+        "accessor": "get",
+        "default": {
+          "value": "",
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "if (req.has(\"symbol\"))",
+          "line": 351,
+          "in_function": "ResolveAddrDetailed",
+          "kind": "transitive",
+          "negated_early_bail": false,
+          "guards_against": "absence",
+          "guard_checks_type": false,
+          "note": "the read is in a different function of the call chain, reachable only through the guarded path"
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "ResolveAddrDetailed",
+            "line": 354,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (req.has(\"symbol\"))",
+              "line": 351,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          },
+          {
+            "accessor": "get",
+            "in_function": "ResolveAddrOrError",
+            "line": 372,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (req.has(\"symbol\"))",
+              "line": 351,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "transitive",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false,
+              "note": "the read is in a different function of the call chain, reachable only through the guarded path"
+            }
+          },
+          {
+            "accessor": "get",
+            "in_function": "ResolveAddrOrError",
+            "line": 374,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (req.has(\"symbol\"))",
+              "line": 351,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "transitive",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false,
+              "note": "the read is in a different function of the call chain, reachable only through the guarded path"
+            }
+          }
+        ]
+      }
+    },
+    "emulator/read_cram": {
+      "line": {
+        "accessor": "getInt",
+        "default": {
+          "value": -1,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getInt",
+            "in_function": "OpReadCram",
+            "line": 2169,
+            "default_explicit": true,
+            "default_value": -1,
+            "guarded_by": null
+          }
+        ]
+      }
+    },
+    "emulator/read_vram": {
+      "addr": {
+        "accessor": "getU32",
+        "default": {
+          "value": 0,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getU32",
+            "in_function": "OpReadVram",
+            "line": 2110,
+            "default_explicit": true,
+            "default_value": 0,
+            "guarded_by": null
+          }
+        ]
+      },
+      "len": {
+        "accessor": "getInt",
+        "default": {
+          "value": 32,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getInt",
+            "in_function": "OpReadVram",
+            "line": 2111,
+            "default_explicit": true,
+            "default_value": 32,
+            "guarded_by": null
+          }
+        ]
+      }
+    },
+    "emulator/registers": {},
+    "emulator/release_all": {},
+    "emulator/reload_rom": {
+      "path": {
+        "accessor": "get",
+        "default": {
+          "value": "",
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "OpReloadRom",
+            "line": 1358,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": null
+          }
+        ]
+      },
+      "reset": {
+        "accessor": "getBool",
+        "default": {
+          "value": true,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "boolean",
+            "number",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_values_accepted": [
+            "true",
+            "1",
+            "yes"
+          ],
+          "other_string_values_yield": false,
+          "other_string_values_ignore_caller_default": true,
+          "effective_value_for_unlisted_string": false,
+          "declared_default_is_not_applied_to_unlisted_strings": true,
+          "unlisted_string_inverts_declared_default": true
+        },
+        "read_sites": [
+          {
+            "accessor": "getBool",
+            "in_function": "OpReloadRom",
+            "line": 1366,
+            "default_explicit": true,
+            "default_value": true,
+            "guarded_by": null
+          }
+        ]
+      },
+      "wait": {
+        "accessor": "getBool",
+        "default": {
+          "value": true,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "boolean",
+            "number",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_values_accepted": [
+            "true",
+            "1",
+            "yes"
+          ],
+          "other_string_values_yield": false,
+          "other_string_values_ignore_caller_default": true,
+          "effective_value_for_unlisted_string": false,
+          "declared_default_is_not_applied_to_unlisted_strings": true,
+          "unlisted_string_inverts_declared_default": true
+        },
+        "read_sites": [
+          {
+            "accessor": "getBool",
+            "in_function": "OpReloadRom",
+            "line": 1377,
+            "default_explicit": true,
+            "default_value": true,
+            "guarded_by": null
+          }
+        ]
+      }
+    },
+    "emulator/reset": {
+      "run": {
+        "accessor": "getBool",
+        "default": {
+          "value": true,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "boolean",
+            "number",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_values_accepted": [
+            "true",
+            "1",
+            "yes"
+          ],
+          "other_string_values_yield": false,
+          "other_string_values_ignore_caller_default": true,
+          "effective_value_for_unlisted_string": false,
+          "declared_default_is_not_applied_to_unlisted_strings": true,
+          "unlisted_string_inverts_declared_default": true
+        },
+        "read_sites": [
+          {
+            "accessor": "getBool",
+            "in_function": "OpReset",
+            "line": 465,
+            "default_explicit": true,
+            "default_value": true,
+            "guarded_by": null
+          }
+        ]
+      }
+    },
+    "emulator/resume": {},
+    "emulator/run_frames": {
+      "frames": {
+        "accessor": "getInt",
+        "default": {
+          "value": 1,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getInt",
+            "in_function": "OpRunFrames",
+            "line": 2344,
+            "default_explicit": true,
+            "default_value": 1,
+            "guarded_by": null
+          }
+        ]
+      }
+    },
+    "emulator/run_to": {
+      "addr": {
+        "accessor": [
+          "get",
+          "getU32"
+        ],
+        "default": {
+          "value": "",
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "if (req.has(\"addr\"))",
+          "line": 344,
+          "in_function": "ResolveAddrDetailed",
+          "kind": "block",
+          "negated_early_bail": false,
+          "guards_against": "absence",
+          "guard_checks_type": false
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "ResolveAddrDetailed",
+            "line": 346,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (req.has(\"addr\"))",
+              "line": 344,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          },
+          {
+            "accessor": "getU32",
+            "in_function": "ResolveAddrDetailed",
+            "line": 348,
+            "default_explicit": false,
+            "default_value": 0,
+            "guarded_by": {
+              "expr": "if (req.has(\"addr\"))",
+              "line": 344,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          }
+        ],
+        "multiple_readings": true
+      },
+      "symbol": {
+        "accessor": "get",
+        "default": {
+          "value": "",
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "if (req.has(\"symbol\"))",
+          "line": 351,
+          "in_function": "ResolveAddrDetailed",
+          "kind": "block",
+          "negated_early_bail": false,
+          "guards_against": "absence",
+          "guard_checks_type": false
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "ResolveAddrDetailed",
+            "line": 354,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (req.has(\"symbol\"))",
+              "line": 351,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          }
+        ]
+      }
+    },
+    "emulator/run_to_scanline": {
+      "line": {
+        "accessor": "getInt",
+        "default": {
+          "value": -1,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getInt",
+            "in_function": "OpRunToScanline",
+            "line": 1911,
+            "default_explicit": true,
+            "default_value": -1,
+            "guarded_by": null
+          }
+        ]
+      }
+    },
+    "emulator/screenshot": {
+      "path": {
+        "accessor": "get",
+        "default": {
+          "value": "",
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "OpScreenshot",
+            "line": 1421,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": null
+          }
+        ]
+      }
+    },
+    "emulator/set_channel_enabled": {
+      "channel": {
+        "accessor": "get",
+        "default": {
+          "value": "",
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "OpSetChannelEnabled",
+            "line": 1565,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": null
+          }
+        ]
+      },
+      "enabled": {
+        "accessor": "getBool",
+        "default": {
+          "value": false,
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "if (!req.has(\"enabled\")) return ErrorReply(\"missing 'enabled'\");",
+          "line": 1567,
+          "in_function": "OpSetChannelEnabled",
+          "kind": "early_bail",
+          "negated_early_bail": true,
+          "guards_against": "absence",
+          "guard_checks_type": false
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "boolean",
+            "number",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_values_accepted": [
+            "true",
+            "1",
+            "yes"
+          ],
+          "other_string_values_yield": false,
+          "other_string_values_ignore_caller_default": true,
+          "effective_value_for_unlisted_string": false,
+          "declared_default_is_not_applied_to_unlisted_strings": true,
+          "unlisted_string_inverts_declared_default": false
+        },
+        "read_sites": [
+          {
+            "accessor": "getBool",
+            "in_function": "OpSetChannelEnabled",
+            "line": 1570,
+            "default_explicit": false,
+            "default_value": false,
+            "guarded_by": {
+              "expr": "if (!req.has(\"enabled\")) return ErrorReply(\"missing 'enabled'\");",
+              "line": 1567,
+              "in_function": "OpSetChannelEnabled",
+              "kind": "early_bail",
+              "negated_early_bail": true,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          }
+        ]
+      }
+    },
+    "emulator/set_layer_enabled": {
+      "enabled": {
+        "accessor": "getBool",
+        "default": {
+          "value": false,
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "if (!req.has(\"enabled\")) return ErrorReply(\"missing 'enabled' (true/false)\");",
+          "line": 1523,
+          "in_function": "OpSetLayerEnabled",
+          "kind": "early_bail",
+          "negated_early_bail": true,
+          "guards_against": "absence",
+          "guard_checks_type": false
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "boolean",
+            "number",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_values_accepted": [
+            "true",
+            "1",
+            "yes"
+          ],
+          "other_string_values_yield": false,
+          "other_string_values_ignore_caller_default": true,
+          "effective_value_for_unlisted_string": false,
+          "declared_default_is_not_applied_to_unlisted_strings": true,
+          "unlisted_string_inverts_declared_default": false
+        },
+        "read_sites": [
+          {
+            "accessor": "getBool",
+            "in_function": "OpSetLayerEnabled",
+            "line": 1526,
+            "default_explicit": false,
+            "default_value": false,
+            "guarded_by": {
+              "expr": "if (!req.has(\"enabled\")) return ErrorReply(\"missing 'enabled' (true/false)\");",
+              "line": 1523,
+              "in_function": "OpSetLayerEnabled",
+              "kind": "early_bail",
+              "negated_early_bail": true,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          }
+        ]
+      },
+      "layer": {
+        "accessor": "get",
+        "default": {
+          "value": "",
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "OpSetLayerEnabled",
+            "line": 1521,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": null
+          }
+        ]
+      }
+    },
+    "emulator/set_profiler": {
+      "enabled": {
+        "accessor": "getBool",
+        "default": {
+          "value": false,
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "if (!req.has(\"enabled\"))  return ErrorReply(\"missing 'enabled' (true/false)\");",
+          "line": 1925,
+          "in_function": "OpSetProfiler",
+          "kind": "early_bail",
+          "negated_early_bail": true,
+          "guards_against": "absence",
+          "guard_checks_type": false
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "boolean",
+            "number",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_values_accepted": [
+            "true",
+            "1",
+            "yes"
+          ],
+          "other_string_values_yield": false,
+          "other_string_values_ignore_caller_default": true,
+          "effective_value_for_unlisted_string": false,
+          "declared_default_is_not_applied_to_unlisted_strings": true,
+          "unlisted_string_inverts_declared_default": false
+        },
+        "read_sites": [
+          {
+            "accessor": "getBool",
+            "in_function": "OpSetProfiler",
+            "line": 1926,
+            "default_explicit": false,
+            "default_value": false,
+            "guarded_by": {
+              "expr": "if (!req.has(\"enabled\"))  return ErrorReply(\"missing 'enabled' (true/false)\");",
+              "line": 1925,
+              "in_function": "OpSetProfiler",
+              "kind": "early_bail",
+              "negated_early_bail": true,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          }
+        ]
+      }
+    },
+    "emulator/state_hash": {
+      "includeFramebuffer": {
+        "accessor": "getBool",
+        "default": {
+          "value": false,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "boolean",
+            "number",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_values_accepted": [
+            "true",
+            "1",
+            "yes"
+          ],
+          "other_string_values_yield": false,
+          "other_string_values_ignore_caller_default": true,
+          "effective_value_for_unlisted_string": false,
+          "declared_default_is_not_applied_to_unlisted_strings": true,
+          "unlisted_string_inverts_declared_default": false
+        },
+        "read_sites": [
+          {
+            "accessor": "getBool",
+            "in_function": "OpStateHash",
+            "line": 2412,
+            "default_explicit": true,
+            "default_value": false,
+            "guarded_by": null
+          }
+        ]
+      }
+    },
+    "emulator/status": {},
+    "emulator/step": {
+      "count": {
+        "accessor": "getInt",
+        "default": {
+          "value": 1,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getInt",
+            "in_function": "OpStep",
+            "line": 502,
+            "default_explicit": true,
+            "default_value": 1,
+            "guarded_by": null
+          }
+        ]
+      }
+    },
+    "emulator/step_out": {},
+    "emulator/step_over": {},
+    "emulator/vgm_start": {
+      "path": {
+        "accessor": "get",
+        "default": {
+          "value": "",
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "OpVgmStart",
+            "line": 2267,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": null
+          }
+        ]
+      }
+    },
+    "emulator/vgm_status": {},
+    "emulator/vgm_stop": {},
+    "emulator/wait_for_break": {
+      "timeout_ms": {
+        "accessor": "getInt",
+        "default": {
+          "value": 30000,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getInt",
+            "in_function": "OpWaitForBreak",
+            "line": 894,
+            "default_explicit": true,
+            "default_value": 30000,
+            "guarded_by": null
+          }
+        ]
+      }
+    },
+    "emulator/watchpoint_add": {
+      "addr": {
+        "accessor": [
+          "get",
+          "getU32"
+        ],
+        "default": {
+          "value": "",
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "if (req.has(\"addr\"))",
+          "line": 344,
+          "in_function": "ResolveAddrDetailed",
+          "kind": "block",
+          "negated_early_bail": false,
+          "guards_against": "absence",
+          "guard_checks_type": false
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "ResolveAddrDetailed",
+            "line": 346,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (req.has(\"addr\"))",
+              "line": 344,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          },
+          {
+            "accessor": "getU32",
+            "in_function": "ResolveAddrDetailed",
+            "line": 348,
+            "default_explicit": false,
+            "default_value": 0,
+            "guarded_by": {
+              "expr": "if (req.has(\"addr\"))",
+              "line": 344,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          }
+        ],
+        "multiple_readings": true
+      },
+      "read": {
+        "accessor": "getBool",
+        "default": {
+          "value": false,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "boolean",
+            "number",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_values_accepted": [
+            "true",
+            "1",
+            "yes"
+          ],
+          "other_string_values_yield": false,
+          "other_string_values_ignore_caller_default": true,
+          "effective_value_for_unlisted_string": false,
+          "declared_default_is_not_applied_to_unlisted_strings": true,
+          "unlisted_string_inverts_declared_default": false
+        },
+        "read_sites": [
+          {
+            "accessor": "getBool",
+            "in_function": "OpWatchpointAdd",
+            "line": 870,
+            "default_explicit": true,
+            "default_value": false,
+            "guarded_by": null
+          }
+        ]
+      },
+      "symbol": {
+        "accessor": "get",
+        "default": {
+          "value": "",
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "if (req.has(\"symbol\"))",
+          "line": 351,
+          "in_function": "ResolveAddrDetailed",
+          "kind": "block",
+          "negated_early_bail": false,
+          "guards_against": "absence",
+          "guard_checks_type": false
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "ResolveAddrDetailed",
+            "line": 354,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (req.has(\"symbol\"))",
+              "line": 351,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          }
+        ]
+      },
+      "write": {
+        "accessor": "getBool",
+        "default": {
+          "value": true,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "boolean",
+            "number",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_values_accepted": [
+            "true",
+            "1",
+            "yes"
+          ],
+          "other_string_values_yield": false,
+          "other_string_values_ignore_caller_default": true,
+          "effective_value_for_unlisted_string": false,
+          "declared_default_is_not_applied_to_unlisted_strings": true,
+          "unlisted_string_inverts_declared_default": true
+        },
+        "read_sites": [
+          {
+            "accessor": "getBool",
+            "in_function": "OpWatchpointAdd",
+            "line": 871,
+            "default_explicit": true,
+            "default_value": true,
+            "guarded_by": null
+          }
+        ]
+      }
+    },
+    "emulator/write_memory": {
+      "addr": {
+        "accessor": [
+          "get",
+          "getU32"
+        ],
+        "default": {
+          "value": "",
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "if (req.has(\"addr\"))",
+          "line": 344,
+          "in_function": "ResolveAddrDetailed",
+          "kind": "block",
+          "negated_early_bail": false,
+          "guards_against": "absence",
+          "guard_checks_type": false
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "ResolveAddrDetailed",
+            "line": 346,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (req.has(\"addr\"))",
+              "line": 344,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          },
+          {
+            "accessor": "getU32",
+            "in_function": "ResolveAddrDetailed",
+            "line": 348,
+            "default_explicit": false,
+            "default_value": 0,
+            "guarded_by": {
+              "expr": "if (req.has(\"addr\"))",
+              "line": 344,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          }
+        ],
+        "multiple_readings": true
+      },
+      "bytes": {
+        "accessor": "get",
+        "default": {
+          "value": "",
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "if (req.has(\"bytes\"))",
+          "line": 608,
+          "in_function": "OpWrite",
+          "kind": "block",
+          "negated_early_bail": false,
+          "guards_against": "absence",
+          "guard_checks_type": false
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "OpWrite",
+            "line": 610,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (req.has(\"bytes\"))",
+              "line": 608,
+              "in_function": "OpWrite",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          }
+        ]
+      },
+      "symbol": {
+        "accessor": "get",
+        "default": {
+          "value": "",
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "if (req.has(\"symbol\"))",
+          "line": 351,
+          "in_function": "ResolveAddrDetailed",
+          "kind": "transitive",
+          "negated_early_bail": false,
+          "guards_against": "absence",
+          "guard_checks_type": false,
+          "note": "the read is in a different function of the call chain, reachable only through the guarded path"
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "ResolveAddrDetailed",
+            "line": 354,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (req.has(\"symbol\"))",
+              "line": 351,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          },
+          {
+            "accessor": "get",
+            "in_function": "ResolveAddrOrError",
+            "line": 372,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (req.has(\"symbol\"))",
+              "line": 351,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "transitive",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false,
+              "note": "the read is in a different function of the call chain, reachable only through the guarded path"
+            }
+          },
+          {
+            "accessor": "get",
+            "in_function": "ResolveAddrOrError",
+            "line": 374,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (req.has(\"symbol\"))",
+              "line": 351,
+              "in_function": "ResolveAddrDetailed",
+              "kind": "transitive",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false,
+              "note": "the read is in a different function of the call chain, reachable only through the guarded path"
+            }
+          }
+        ]
+      },
+      "value": {
+        "accessor": "getInt",
+        "default": {
+          "value": 0,
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "else if (req.has(\"value\"))",
+          "line": 613,
+          "in_function": "OpWrite",
+          "kind": "block",
+          "negated_early_bail": false,
+          "guards_against": "absence",
+          "guard_checks_type": false
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getInt",
+            "in_function": "OpWrite",
+            "line": 615,
+            "default_explicit": false,
+            "default_value": 0,
+            "guarded_by": {
+              "expr": "else if (req.has(\"value\"))",
+              "line": 613,
+              "in_function": "OpWrite",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          }
+        ]
+      },
+      "width": {
+        "accessor": "getInt",
+        "default": {
+          "value": 1,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getInt",
+            "in_function": "OpWrite",
+            "line": 616,
+            "default_explicit": true,
+            "default_value": 1,
+            "guarded_by": null
+          }
+        ]
+      }
+    },
+    "emulator/write_cram": {
+      "b": {
+        "accessor": "getInt",
+        "default": {
+          "value": -1,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getInt",
+            "in_function": "OpWriteCram",
+            "line": 2241,
+            "default_explicit": true,
+            "default_value": -1,
+            "guarded_by": null
+          }
+        ]
+      },
+      "g": {
+        "accessor": "getInt",
+        "default": {
+          "value": -1,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getInt",
+            "in_function": "OpWriteCram",
+            "line": 2240,
+            "default_explicit": true,
+            "default_value": -1,
+            "guarded_by": null
+          }
+        ]
+      },
+      "index": {
+        "accessor": "getInt",
+        "default": {
+          "value": -1,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getInt",
+            "in_function": "OpWriteCram",
+            "line": 2228,
+            "default_explicit": true,
+            "default_value": -1,
+            "guarded_by": null
+          }
+        ]
+      },
+      "line": {
+        "accessor": "getInt",
+        "default": {
+          "value": -1,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getInt",
+            "in_function": "OpWriteCram",
+            "line": 2227,
+            "default_explicit": true,
+            "default_value": -1,
+            "guarded_by": null
+          }
+        ]
+      },
+      "r": {
+        "accessor": "getInt",
+        "default": {
+          "value": -1,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getInt",
+            "in_function": "OpWriteCram",
+            "line": 2239,
+            "default_explicit": true,
+            "default_value": -1,
+            "guarded_by": null
+          }
+        ]
+      },
+      "raw": {
+        "accessor": "getU32",
+        "default": {
+          "value": 0,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": {
+          "expr": "if (req.has(\"raw\"))",
+          "line": 2233,
+          "in_function": "OpWriteCram",
+          "kind": "block",
+          "negated_early_bail": false,
+          "guards_against": "absence",
+          "guard_checks_type": false
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getU32",
+            "in_function": "OpWriteCram",
+            "line": 2235,
+            "default_explicit": true,
+            "default_value": 0,
+            "guarded_by": {
+              "expr": "if (req.has(\"raw\"))",
+              "line": 2233,
+              "in_function": "OpWriteCram",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          }
+        ]
+      }
+    },
+    "emulator/write_vram": {
+      "addr": {
+        "accessor": "getU32",
+        "default": {
+          "value": 0,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getU32",
+            "in_function": "OpWriteVram",
+            "line": 2140,
+            "default_explicit": true,
+            "default_value": 0,
+            "guarded_by": null
+          }
+        ]
+      },
+      "bytes": {
+        "accessor": "get",
+        "default": {
+          "value": "",
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "if (!req.has(\"bytes\")) return ErrorReply(\"missing 'bytes' (hex string)\");",
+          "line": 2141,
+          "in_function": "OpWriteVram",
+          "kind": "early_bail",
+          "negated_early_bail": true,
+          "guards_against": "absence",
+          "guard_checks_type": false
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "OpWriteVram",
+            "line": 2144,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (!req.has(\"bytes\")) return ErrorReply(\"missing 'bytes' (hex string)\");",
+              "line": 2141,
+              "in_function": "OpWriteVram",
+              "kind": "early_bail",
+              "negated_early_bail": true,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          }
+        ]
+      }
+    },
+    "emulator/z80_read": {
+      "addr": {
+        "accessor": "getU32",
+        "default": {
+          "value": 0,
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getU32",
+            "in_function": "OpZ80Read",
+            "line": 702,
+            "default_explicit": false,
+            "default_value": 0,
+            "guarded_by": null
+          }
+        ]
+      },
+      "len": {
+        "accessor": "getInt",
+        "default": {
+          "value": 1,
+          "explicit": true,
+          "source": "call_site"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getInt",
+            "in_function": "OpZ80Read",
+            "line": 704,
+            "default_explicit": true,
+            "default_value": 1,
+            "guarded_by": null
+          }
+        ]
+      }
+    },
+    "emulator/z80_registers": {},
+    "emulator/z80_write": {
+      "addr": {
+        "accessor": "getU32",
+        "default": {
+          "value": 0,
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getU32",
+            "in_function": "OpZ80Write",
+            "line": 726,
+            "default_explicit": false,
+            "default_value": 0,
+            "guarded_by": null
+          }
+        ]
+      },
+      "bytes": {
+        "accessor": "get",
+        "default": {
+          "value": "",
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "if (req.has(\"bytes\"))",
+          "line": 730,
+          "in_function": "OpZ80Write",
+          "kind": "block",
+          "negated_early_bail": false,
+          "guards_against": "absence",
+          "guard_checks_type": false
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "string",
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "boolean"
+          ],
+          "other_json_types_yield": "default"
+        },
+        "read_sites": [
+          {
+            "accessor": "get",
+            "in_function": "OpZ80Write",
+            "line": 732,
+            "default_explicit": false,
+            "default_value": "",
+            "guarded_by": {
+              "expr": "if (req.has(\"bytes\"))",
+              "line": 730,
+              "in_function": "OpZ80Write",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          }
+        ]
+      },
+      "value": {
+        "accessor": "getInt",
+        "default": {
+          "value": 0,
+          "explicit": false,
+          "source": "accessor_signature"
+        },
+        "guarded_by": {
+          "expr": "else if (req.has(\"value\"))",
+          "line": 735,
+          "in_function": "OpZ80Write",
+          "kind": "block",
+          "negated_early_bail": false,
+          "guards_against": "absence",
+          "guard_checks_type": false
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)",
+            "number(unsigned)",
+            "number(float)",
+            "string"
+          ],
+          "other_json_types_yield": "default",
+          "string_numeric_prefixes": [
+            "0x",
+            "0X",
+            "$"
+          ],
+          "string_radices": [
+            10
+          ],
+          "empty_string_yields": "default",
+          "unparsable_string_yields": "default",
+          "trailing_garbage_rejected": false,
+          "partially_numeric_string_yields": "the value of the leading numeric prefix, e.g. \"12abc\" -> 12; the trailing text is neither rejected nor reported"
+        },
+        "read_sites": [
+          {
+            "accessor": "getInt",
+            "in_function": "OpZ80Write",
+            "line": 739,
+            "default_explicit": false,
+            "default_value": 0,
+            "guarded_by": {
+              "expr": "else if (req.has(\"value\"))",
+              "line": 735,
+              "in_function": "OpZ80Write",
+              "kind": "block",
+              "negated_early_bail": false,
+              "guards_against": "absence",
+              "guard_checks_type": false
+            }
+          }
+        ]
+      }
+    },
+    "initialize": {
+      "protocolVersion": {
+        "accessor": "raw_json",
+        "default": {
+          "value": null,
+          "explicit": false,
+          "source": "hand_rolled_read in HandleMessage"
+        },
+        "guarded_by": {
+          "expr": "contains(\"protocolVersion\")",
+          "line": 2891,
+          "in_function": "HandleMessage",
+          "negated_early_bail": false,
+          "guard_checks_type": true
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "number(integer)"
+          ],
+          "other_json_types_yield": "default"
+        },
+        "read_sites": [
+          {
+            "accessor": "raw_json",
+            "in_function": "HandleMessage",
+            "line": 2891
+          },
+          {
+            "accessor": "raw_json",
+            "in_function": "HandleMessage",
+            "line": 2892
+          }
+        ]
+      },
+      "clientCapabilities": {
+        "accessor": "raw_json",
+        "default": {
+          "value": null,
+          "explicit": false,
+          "source": "hand_rolled_read in HandleMessage"
+        },
+        "guarded_by": {
+          "expr": "contains(\"clientCapabilities\")",
+          "line": 2897,
+          "in_function": "HandleMessage",
+          "negated_early_bail": false,
+          "guard_checks_type": true
+        },
+        "accepted_shapes": {
+          "json_types": [
+            "object"
+          ],
+          "other_json_types_yield": "default"
+        },
+        "read_sites": [
+          {
+            "accessor": "raw_json",
+            "in_function": "HandleMessage",
+            "line": 2897
+          },
+          {
+            "accessor": "raw_json",
+            "in_function": "HandleMessage",
+            "line": 2898
+          }
+        ]
+      },
+      "clientCapabilities.events": {
+        "accessor": "raw_json",
+        "default": {
+          "value": false,
+          "explicit": true,
+          "source": "hand_rolled_read in HandleMessage"
+        },
+        "guarded_by": null,
+        "accepted_shapes": {
+          "json_types": [
+            "any"
+          ],
+          "other_json_types_yield": "default"
+        },
+        "read_sites": [
+          {
+            "accessor": "raw_json",
+            "in_function": "HandleMessage",
+            "line": 2898
+          }
+        ]
+      }
+    },
+    "initialized": {}
+  },
+  "_claimed_lines": [
+    344,
+    346,
+    348,
+    351,
+    354,
+    372,
+    374,
+    465,
+    502,
+    567,
+    608,
+    610,
+    613,
+    615,
+    616,
+    702,
+    704,
+    726,
+    730,
+    732,
+    735,
+    739,
+    759,
+    762,
+    764,
+    768,
+    780,
+    782,
+    842,
+    870,
+    871,
+    894,
+    977,
+    1300,
+    1301,
+    1358,
+    1366,
+    1377,
+    1421,
+    1463,
+    1494,
+    1521,
+    1523,
+    1526,
+    1565,
+    1567,
+    1570,
+    1579,
+    1580,
+    1671,
+    1710,
+    1754,
+    1759,
+    1778,
+    1845,
+    1846,
+    1911,
+    1925,
+    1926,
+    1954,
+    1959,
+    2110,
+    2111,
+    2140,
+    2141,
+    2144,
+    2169,
+    2227,
+    2228,
+    2233,
+    2235,
+    2239,
+    2240,
+    2241,
+    2267,
+    2344,
+    2412,
+    2455,
+    2891,
+    2892,
+    2897,
+    2898
+  ],
+  "source": {
+    "repo": "/home/volence/sonic_hacks/oracle-old",
+    "file": "linux-port/gui/ControlSocket.cpp",
+    "revision": "58b6f81fca58a59dfb6b639700f4aaf0121e55d5",
+    "source_file_dirty": false
+  },
+  "crosscheck": {
+    "census": {
+      "method": "object-axis: every member access and string subscript on every identifier that carries request parameters, scoped to the block the identifier is live in",
+      "identifiers": [
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 342,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 366,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 381,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 462,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 498,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 544,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 561,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 594,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 697,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 721,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 754,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 795,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 837,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 864,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 891,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 969,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 1294,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 1355,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 1418,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 1460,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 1519,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 1563,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 1576,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 1665,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 1705,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 1751,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 1841,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 1906,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 1922,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 1947,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 2102,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 2132,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 2161,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 2219,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 2262,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 2295,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 2317,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 2339,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 2389,
+          "scope_resolved": true
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 2448,
+          "scope_resolved": true
+        },
+        {
+          "ident": "params",
+          "kind": "JsonObj",
+          "binding": "parameter",
+          "decl_line": 2814,
+          "scope_resolved": true
+        },
+        {
+          "ident": "params",
+          "kind": "raw_json_from_envelope",
+          "binding": "local",
+          "decl_line": 2873,
+          "scope_resolved": true
+        }
+      ],
+      "identifiers_with_unresolved_scope": [],
+      "accesses": [
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "has",
+          "line": 344
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "get",
+          "line": 346
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getU32",
+          "line": 348
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "has",
+          "line": 351
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "get",
+          "line": 354
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "get",
+          "line": 372
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "get",
+          "line": 374
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getBool",
+          "line": 465
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getInt",
+          "line": 502
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getInt",
+          "line": 567
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "has",
+          "line": 608
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "get",
+          "line": 610
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "has",
+          "line": 613
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getInt",
+          "line": 615
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getInt",
+          "line": 616
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getU32",
+          "line": 702
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getInt",
+          "line": 704
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getU32",
+          "line": 726
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "has",
+          "line": 730
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "get",
+          "line": 732
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "has",
+          "line": 735
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getInt",
+          "line": 739
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "has",
+          "line": 759
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "get",
+          "line": 762
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "get",
+          "line": 764
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "get",
+          "line": 768
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "has",
+          "line": 780
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getU32",
+          "line": 782
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getBool",
+          "line": 842
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getBool",
+          "line": 870
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getBool",
+          "line": 871
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getInt",
+          "line": 894
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getInt",
+          "line": 977
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getInt",
+          "line": 1300
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getInt",
+          "line": 1301
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "get",
+          "line": 1358
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getBool",
+          "line": 1366
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getBool",
+          "line": 1377
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "get",
+          "line": 1421
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "get",
+          "line": 1463
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "get",
+          "line": 1494
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "get",
+          "line": 1521
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "has",
+          "line": 1523
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getBool",
+          "line": 1526
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "get",
+          "line": 1565
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "has",
+          "line": 1567
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getBool",
+          "line": 1570
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "p",
+          "line": 1579
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "p",
+          "line": 1579
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "p",
+          "line": 1579
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "p",
+          "line": 1580
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getInt",
+          "line": 1671
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getBool",
+          "line": 1710
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "get",
+          "line": 1754
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getU32",
+          "line": 1759
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getU32",
+          "line": 1778
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getU32",
+          "line": 1845
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getU32",
+          "line": 1846
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getInt",
+          "line": 1911
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "has",
+          "line": 1925
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getBool",
+          "line": 1926
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "has",
+          "line": 1954
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getInt",
+          "line": 1954
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "has",
+          "line": 1959
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getInt",
+          "line": 1959
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getU32",
+          "line": 2110
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getInt",
+          "line": 2111
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getU32",
+          "line": 2140
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "has",
+          "line": 2141
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "get",
+          "line": 2144
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getInt",
+          "line": 2169
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getInt",
+          "line": 2227
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getInt",
+          "line": 2228
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "has",
+          "line": 2233
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getU32",
+          "line": 2235
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getInt",
+          "line": 2239
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getInt",
+          "line": 2240
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getInt",
+          "line": 2241
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "get",
+          "line": 2267
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getInt",
+          "line": 2344
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getBool",
+          "line": 2412
+        },
+        {
+          "ident": "req",
+          "kind": "JsonObj",
+          "member": "getInt",
+          "line": 2455
+        },
+        {
+          "ident": "params",
+          "kind": "raw_json_from_envelope",
+          "member": "contains",
+          "line": 2891
+        },
+        {
+          "ident": "params",
+          "kind": "raw_json_from_envelope",
+          "member": "[\"protocolVersion\"]",
+          "line": 2891
+        },
+        {
+          "ident": "params",
+          "kind": "raw_json_from_envelope",
+          "member": "[\"protocolVersion\"]",
+          "line": 2892
+        },
+        {
+          "ident": "params",
+          "kind": "raw_json_from_envelope",
+          "member": "contains",
+          "line": 2897
+        },
+        {
+          "ident": "params",
+          "kind": "raw_json_from_envelope",
+          "member": "[\"clientCapabilities\"]",
+          "line": 2897
+        },
+        {
+          "ident": "params",
+          "kind": "raw_json_from_envelope",
+          "member": "[\"clientCapabilities\"]",
+          "line": 2898
+        }
+      ],
+      "member_access_counts": {
+        "[\"clientCapabilities\"]": 2,
+        "[\"protocolVersion\"]": 2,
+        "contains": 2,
+        "get": 18,
+        "getBool": 11,
+        "getInt": 23,
+        "getU32": 11,
+        "has": 15,
+        "p": 4
+      },
+      "accesses_total": 88
+    },
+    "reconciliation": {
+      "axis_a_by_accessor_name": {
+        "value_read_sites": 63,
+        "guard_sites": 15
+      },
+      "axis_b_by_object_member": {
+        "value_read_sites": 63,
+        "guard_sites": 15,
+        "total_accesses": 88
+      },
+      "value_read_delta": 0,
+      "guard_delta": 0,
+      "non_accessor_accesses": 10,
+      "non_accessor_accesses_claimed_by_a_table_entry": 10,
+      "unclaimed_accesses": [],
+      "identifiers_not_measured": [],
+      "agrees": true
+    }
+  },
+  "hazards": {
+    "note": "guardedness and default-explicitness are ORTHOGONAL; each list below filters on exactly one of them",
+    "unguarded_reads": [
+      {
+        "method": "emulator/audio_spectrum",
+        "key": "fft_size",
+        "accessor": "getU32",
+        "default": 4096,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 1759
+      },
+      {
+        "method": "emulator/audio_spectrum",
+        "key": "max_hz",
+        "accessor": "getU32",
+        "default": 0,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 1778
+      },
+      {
+        "method": "emulator/audio_spectrum",
+        "key": "source",
+        "accessor": "get",
+        "default": "fm",
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 1754
+      },
+      {
+        "method": "emulator/breakpoint_clear",
+        "key": "all",
+        "accessor": "getBool",
+        "default": false,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 842
+      },
+      {
+        "method": "emulator/call_stack",
+        "key": "max_bytes",
+        "accessor": "getInt",
+        "default": 256,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 1300
+      },
+      {
+        "method": "emulator/call_stack",
+        "key": "max_frames",
+        "accessor": "getInt",
+        "default": 24,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 1301
+      },
+      {
+        "method": "emulator/hold",
+        "key": "down",
+        "accessor": "getBool",
+        "default": true,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 1710
+      },
+      {
+        "method": "emulator/load_symbols",
+        "key": "buildId",
+        "accessor": "get",
+        "default": "",
+        "default_explicit": false,
+        "partially_guarded": false,
+        "line": 1494
+      },
+      {
+        "method": "emulator/load_symbols",
+        "key": "path",
+        "accessor": "get",
+        "default": "",
+        "default_explicit": false,
+        "partially_guarded": false,
+        "line": 1463
+      },
+      {
+        "method": "emulator/log_tail",
+        "key": "limit",
+        "accessor": "getU32",
+        "default": 100,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 1846
+      },
+      {
+        "method": "emulator/log_tail",
+        "key": "since",
+        "accessor": "getU32",
+        "default": 0,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 1845
+      },
+      {
+        "method": "emulator/memory_hash",
+        "key": "len",
+        "accessor": "getInt",
+        "default": 0,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 2455
+      },
+      {
+        "method": "emulator/object_slot",
+        "key": "slot",
+        "accessor": "getInt",
+        "default": 0,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 977
+      },
+      {
+        "method": "emulator/press",
+        "key": "frames",
+        "accessor": "getInt",
+        "default": 2,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 1671
+      },
+      {
+        "method": "emulator/read_cram",
+        "key": "line",
+        "accessor": "getInt",
+        "default": -1,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 2169
+      },
+      {
+        "method": "emulator/read_memory",
+        "key": "len",
+        "accessor": "getInt",
+        "default": 1,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 567
+      },
+      {
+        "method": "emulator/read_vram",
+        "key": "addr",
+        "accessor": "getU32",
+        "default": 0,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 2110
+      },
+      {
+        "method": "emulator/read_vram",
+        "key": "len",
+        "accessor": "getInt",
+        "default": 32,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 2111
+      },
+      {
+        "method": "emulator/reload_rom",
+        "key": "path",
+        "accessor": "get",
+        "default": "",
+        "default_explicit": false,
+        "partially_guarded": false,
+        "line": 1358
+      },
+      {
+        "method": "emulator/reload_rom",
+        "key": "reset",
+        "accessor": "getBool",
+        "default": true,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 1366
+      },
+      {
+        "method": "emulator/reload_rom",
+        "key": "wait",
+        "accessor": "getBool",
+        "default": true,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 1377
+      },
+      {
+        "method": "emulator/reset",
+        "key": "run",
+        "accessor": "getBool",
+        "default": true,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 465
+      },
+      {
+        "method": "emulator/run_frames",
+        "key": "frames",
+        "accessor": "getInt",
+        "default": 1,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 2344
+      },
+      {
+        "method": "emulator/run_to_scanline",
+        "key": "line",
+        "accessor": "getInt",
+        "default": -1,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 1911
+      },
+      {
+        "method": "emulator/screenshot",
+        "key": "path",
+        "accessor": "get",
+        "default": "",
+        "default_explicit": false,
+        "partially_guarded": false,
+        "line": 1421
+      },
+      {
+        "method": "emulator/set_channel_enabled",
+        "key": "channel",
+        "accessor": "get",
+        "default": "",
+        "default_explicit": false,
+        "partially_guarded": false,
+        "line": 1565
+      },
+      {
+        "method": "emulator/set_layer_enabled",
+        "key": "layer",
+        "accessor": "get",
+        "default": "",
+        "default_explicit": false,
+        "partially_guarded": false,
+        "line": 1521
+      },
+      {
+        "method": "emulator/state_hash",
+        "key": "includeFramebuffer",
+        "accessor": "getBool",
+        "default": false,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 2412
+      },
+      {
+        "method": "emulator/step",
+        "key": "count",
+        "accessor": "getInt",
+        "default": 1,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 502
+      },
+      {
+        "method": "emulator/vgm_start",
+        "key": "path",
+        "accessor": "get",
+        "default": "",
+        "default_explicit": false,
+        "partially_guarded": false,
+        "line": 2267
+      },
+      {
+        "method": "emulator/wait_for_break",
+        "key": "timeout_ms",
+        "accessor": "getInt",
+        "default": 30000,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 894
+      },
+      {
+        "method": "emulator/watchpoint_add",
+        "key": "read",
+        "accessor": "getBool",
+        "default": false,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 870
+      },
+      {
+        "method": "emulator/watchpoint_add",
+        "key": "write",
+        "accessor": "getBool",
+        "default": true,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 871
+      },
+      {
+        "method": "emulator/write_cram",
+        "key": "b",
+        "accessor": "getInt",
+        "default": -1,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 2241
+      },
+      {
+        "method": "emulator/write_cram",
+        "key": "g",
+        "accessor": "getInt",
+        "default": -1,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 2240
+      },
+      {
+        "method": "emulator/write_cram",
+        "key": "index",
+        "accessor": "getInt",
+        "default": -1,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 2228
+      },
+      {
+        "method": "emulator/write_cram",
+        "key": "line",
+        "accessor": "getInt",
+        "default": -1,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 2227
+      },
+      {
+        "method": "emulator/write_cram",
+        "key": "r",
+        "accessor": "getInt",
+        "default": -1,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 2239
+      },
+      {
+        "method": "emulator/write_memory",
+        "key": "width",
+        "accessor": "getInt",
+        "default": 1,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 616
+      },
+      {
+        "method": "emulator/write_vram",
+        "key": "addr",
+        "accessor": "getU32",
+        "default": 0,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 2140
+      },
+      {
+        "method": "emulator/z80_read",
+        "key": "addr",
+        "accessor": "getU32",
+        "default": 0,
+        "default_explicit": false,
+        "partially_guarded": false,
+        "line": 702
+      },
+      {
+        "method": "emulator/z80_read",
+        "key": "len",
+        "accessor": "getInt",
+        "default": 1,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 704
+      },
+      {
+        "method": "emulator/z80_write",
+        "key": "addr",
+        "accessor": "getU32",
+        "default": 0,
+        "default_explicit": false,
+        "partially_guarded": false,
+        "line": 726
+      }
+    ],
+    "unguarded_reads_by_key": {
+      "addr": [
+        "emulator/read_vram",
+        "emulator/write_vram",
+        "emulator/z80_read",
+        "emulator/z80_write"
+      ],
+      "all": [
+        "emulator/breakpoint_clear"
+      ],
+      "b": [
+        "emulator/write_cram"
+      ],
+      "buildId": [
+        "emulator/load_symbols"
+      ],
+      "channel": [
+        "emulator/set_channel_enabled"
+      ],
+      "count": [
+        "emulator/step"
+      ],
+      "down": [
+        "emulator/hold"
+      ],
+      "fft_size": [
+        "emulator/audio_spectrum"
+      ],
+      "frames": [
+        "emulator/press",
+        "emulator/run_frames"
+      ],
+      "g": [
+        "emulator/write_cram"
+      ],
+      "includeFramebuffer": [
+        "emulator/state_hash"
+      ],
+      "index": [
+        "emulator/write_cram"
+      ],
+      "layer": [
+        "emulator/set_layer_enabled"
+      ],
+      "len": [
+        "emulator/memory_hash",
+        "emulator/read_memory",
+        "emulator/read_vram",
+        "emulator/z80_read"
+      ],
+      "limit": [
+        "emulator/log_tail"
+      ],
+      "line": [
+        "emulator/read_cram",
+        "emulator/run_to_scanline",
+        "emulator/write_cram"
+      ],
+      "max_bytes": [
+        "emulator/call_stack"
+      ],
+      "max_frames": [
+        "emulator/call_stack"
+      ],
+      "max_hz": [
+        "emulator/audio_spectrum"
+      ],
+      "path": [
+        "emulator/load_symbols",
+        "emulator/reload_rom",
+        "emulator/screenshot",
+        "emulator/vgm_start"
+      ],
+      "r": [
+        "emulator/write_cram"
+      ],
+      "read": [
+        "emulator/watchpoint_add"
+      ],
+      "reset": [
+        "emulator/reload_rom"
+      ],
+      "run": [
+        "emulator/reset"
+      ],
+      "since": [
+        "emulator/log_tail"
+      ],
+      "slot": [
+        "emulator/object_slot"
+      ],
+      "source": [
+        "emulator/audio_spectrum"
+      ],
+      "timeout_ms": [
+        "emulator/wait_for_break"
+      ],
+      "wait": [
+        "emulator/reload_rom"
+      ],
+      "width": [
+        "emulator/write_memory"
+      ],
+      "write": [
+        "emulator/watchpoint_add"
+      ]
+    },
+    "unguarded_reads_with_an_explicit_default": [
+      {
+        "method": "emulator/audio_spectrum",
+        "key": "fft_size",
+        "accessor": "getU32",
+        "default": 4096,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 1759
+      },
+      {
+        "method": "emulator/audio_spectrum",
+        "key": "max_hz",
+        "accessor": "getU32",
+        "default": 0,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 1778
+      },
+      {
+        "method": "emulator/audio_spectrum",
+        "key": "source",
+        "accessor": "get",
+        "default": "fm",
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 1754
+      },
+      {
+        "method": "emulator/breakpoint_clear",
+        "key": "all",
+        "accessor": "getBool",
+        "default": false,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 842
+      },
+      {
+        "method": "emulator/call_stack",
+        "key": "max_bytes",
+        "accessor": "getInt",
+        "default": 256,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 1300
+      },
+      {
+        "method": "emulator/call_stack",
+        "key": "max_frames",
+        "accessor": "getInt",
+        "default": 24,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 1301
+      },
+      {
+        "method": "emulator/hold",
+        "key": "down",
+        "accessor": "getBool",
+        "default": true,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 1710
+      },
+      {
+        "method": "emulator/log_tail",
+        "key": "limit",
+        "accessor": "getU32",
+        "default": 100,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 1846
+      },
+      {
+        "method": "emulator/log_tail",
+        "key": "since",
+        "accessor": "getU32",
+        "default": 0,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 1845
+      },
+      {
+        "method": "emulator/memory_hash",
+        "key": "len",
+        "accessor": "getInt",
+        "default": 0,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 2455
+      },
+      {
+        "method": "emulator/object_slot",
+        "key": "slot",
+        "accessor": "getInt",
+        "default": 0,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 977
+      },
+      {
+        "method": "emulator/press",
+        "key": "frames",
+        "accessor": "getInt",
+        "default": 2,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 1671
+      },
+      {
+        "method": "emulator/read_cram",
+        "key": "line",
+        "accessor": "getInt",
+        "default": -1,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 2169
+      },
+      {
+        "method": "emulator/read_memory",
+        "key": "len",
+        "accessor": "getInt",
+        "default": 1,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 567
+      },
+      {
+        "method": "emulator/read_vram",
+        "key": "addr",
+        "accessor": "getU32",
+        "default": 0,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 2110
+      },
+      {
+        "method": "emulator/read_vram",
+        "key": "len",
+        "accessor": "getInt",
+        "default": 32,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 2111
+      },
+      {
+        "method": "emulator/reload_rom",
+        "key": "reset",
+        "accessor": "getBool",
+        "default": true,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 1366
+      },
+      {
+        "method": "emulator/reload_rom",
+        "key": "wait",
+        "accessor": "getBool",
+        "default": true,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 1377
+      },
+      {
+        "method": "emulator/reset",
+        "key": "run",
+        "accessor": "getBool",
+        "default": true,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 465
+      },
+      {
+        "method": "emulator/run_frames",
+        "key": "frames",
+        "accessor": "getInt",
+        "default": 1,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 2344
+      },
+      {
+        "method": "emulator/run_to_scanline",
+        "key": "line",
+        "accessor": "getInt",
+        "default": -1,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 1911
+      },
+      {
+        "method": "emulator/state_hash",
+        "key": "includeFramebuffer",
+        "accessor": "getBool",
+        "default": false,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 2412
+      },
+      {
+        "method": "emulator/step",
+        "key": "count",
+        "accessor": "getInt",
+        "default": 1,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 502
+      },
+      {
+        "method": "emulator/wait_for_break",
+        "key": "timeout_ms",
+        "accessor": "getInt",
+        "default": 30000,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 894
+      },
+      {
+        "method": "emulator/watchpoint_add",
+        "key": "read",
+        "accessor": "getBool",
+        "default": false,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 870
+      },
+      {
+        "method": "emulator/watchpoint_add",
+        "key": "write",
+        "accessor": "getBool",
+        "default": true,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 871
+      },
+      {
+        "method": "emulator/write_cram",
+        "key": "b",
+        "accessor": "getInt",
+        "default": -1,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 2241
+      },
+      {
+        "method": "emulator/write_cram",
+        "key": "g",
+        "accessor": "getInt",
+        "default": -1,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 2240
+      },
+      {
+        "method": "emulator/write_cram",
+        "key": "index",
+        "accessor": "getInt",
+        "default": -1,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 2228
+      },
+      {
+        "method": "emulator/write_cram",
+        "key": "line",
+        "accessor": "getInt",
+        "default": -1,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 2227
+      },
+      {
+        "method": "emulator/write_cram",
+        "key": "r",
+        "accessor": "getInt",
+        "default": -1,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 2239
+      },
+      {
+        "method": "emulator/write_memory",
+        "key": "width",
+        "accessor": "getInt",
+        "default": 1,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 616
+      },
+      {
+        "method": "emulator/write_vram",
+        "key": "addr",
+        "accessor": "getU32",
+        "default": 0,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 2140
+      },
+      {
+        "method": "emulator/z80_read",
+        "key": "len",
+        "accessor": "getInt",
+        "default": 1,
+        "default_explicit": true,
+        "partially_guarded": false,
+        "line": 704
+      }
+    ],
+    "unguarded_reads_with_an_implicit_default": [
+      {
+        "method": "emulator/load_symbols",
+        "key": "buildId",
+        "accessor": "get",
+        "default": "",
+        "default_explicit": false,
+        "partially_guarded": false,
+        "line": 1494
+      },
+      {
+        "method": "emulator/load_symbols",
+        "key": "path",
+        "accessor": "get",
+        "default": "",
+        "default_explicit": false,
+        "partially_guarded": false,
+        "line": 1463
+      },
+      {
+        "method": "emulator/reload_rom",
+        "key": "path",
+        "accessor": "get",
+        "default": "",
+        "default_explicit": false,
+        "partially_guarded": false,
+        "line": 1358
+      },
+      {
+        "method": "emulator/screenshot",
+        "key": "path",
+        "accessor": "get",
+        "default": "",
+        "default_explicit": false,
+        "partially_guarded": false,
+        "line": 1421
+      },
+      {
+        "method": "emulator/set_channel_enabled",
+        "key": "channel",
+        "accessor": "get",
+        "default": "",
+        "default_explicit": false,
+        "partially_guarded": false,
+        "line": 1565
+      },
+      {
+        "method": "emulator/set_layer_enabled",
+        "key": "layer",
+        "accessor": "get",
+        "default": "",
+        "default_explicit": false,
+        "partially_guarded": false,
+        "line": 1521
+      },
+      {
+        "method": "emulator/vgm_start",
+        "key": "path",
+        "accessor": "get",
+        "default": "",
+        "default_explicit": false,
+        "partially_guarded": false,
+        "line": 2267
+      },
+      {
+        "method": "emulator/z80_read",
+        "key": "addr",
+        "accessor": "getU32",
+        "default": 0,
+        "default_explicit": false,
+        "partially_guarded": false,
+        "line": 702
+      },
+      {
+        "method": "emulator/z80_write",
+        "key": "addr",
+        "accessor": "getU32",
+        "default": 0,
+        "default_explicit": false,
+        "partially_guarded": false,
+        "line": 726
+      }
+    ],
+    "guards_that_cover_absence_but_not_type": [
+      {
+        "method": "emulator/breakpoint_add",
+        "key": "addr",
+        "accessor": [
+          "get",
+          "getU32"
+        ],
+        "guard_line": 344,
+        "malformed_value_yields": ""
+      },
+      {
+        "method": "emulator/breakpoint_add",
+        "key": "symbol",
+        "accessor": "get",
+        "guard_line": 351,
+        "malformed_value_yields": ""
+      },
+      {
+        "method": "emulator/breakpoint_clear",
+        "key": "addr",
+        "accessor": [
+          "get",
+          "getU32"
+        ],
+        "guard_line": 344,
+        "malformed_value_yields": ""
+      },
+      {
+        "method": "emulator/breakpoint_clear",
+        "key": "symbol",
+        "accessor": "get",
+        "guard_line": 351,
+        "malformed_value_yields": ""
+      },
+      {
+        "method": "emulator/get_profiler_frames",
+        "key": "frames",
+        "accessor": "getInt",
+        "guard_line": 1954,
+        "malformed_value_yields": 0
+      },
+      {
+        "method": "emulator/get_profiler_frames",
+        "key": "top",
+        "accessor": "getInt",
+        "guard_line": 1959,
+        "malformed_value_yields": 0
+      },
+      {
+        "method": "emulator/lookup_symbol",
+        "key": "addr",
+        "accessor": "getU32",
+        "guard_line": 780,
+        "malformed_value_yields": 0
+      },
+      {
+        "method": "emulator/lookup_symbol",
+        "key": "name",
+        "accessor": "get",
+        "guard_line": 759,
+        "malformed_value_yields": ""
+      },
+      {
+        "method": "emulator/memory_hash",
+        "key": "addr",
+        "accessor": [
+          "get",
+          "getU32"
+        ],
+        "guard_line": 344,
+        "malformed_value_yields": ""
+      },
+      {
+        "method": "emulator/memory_hash",
+        "key": "symbol",
+        "accessor": "get",
+        "guard_line": 351,
+        "malformed_value_yields": ""
+      },
+      {
+        "method": "emulator/read_memory",
+        "key": "addr",
+        "accessor": [
+          "get",
+          "getU32"
+        ],
+        "guard_line": 344,
+        "malformed_value_yields": ""
+      },
+      {
+        "method": "emulator/read_memory",
+        "key": "symbol",
+        "accessor": "get",
+        "guard_line": 351,
+        "malformed_value_yields": ""
+      },
+      {
+        "method": "emulator/run_to",
+        "key": "addr",
+        "accessor": [
+          "get",
+          "getU32"
+        ],
+        "guard_line": 344,
+        "malformed_value_yields": ""
+      },
+      {
+        "method": "emulator/run_to",
+        "key": "symbol",
+        "accessor": "get",
+        "guard_line": 351,
+        "malformed_value_yields": ""
+      },
+      {
+        "method": "emulator/set_channel_enabled",
+        "key": "enabled",
+        "accessor": "getBool",
+        "guard_line": 1567,
+        "malformed_value_yields": false
+      },
+      {
+        "method": "emulator/set_layer_enabled",
+        "key": "enabled",
+        "accessor": "getBool",
+        "guard_line": 1523,
+        "malformed_value_yields": false
+      },
+      {
+        "method": "emulator/set_profiler",
+        "key": "enabled",
+        "accessor": "getBool",
+        "guard_line": 1925,
+        "malformed_value_yields": false
+      },
+      {
+        "method": "emulator/watchpoint_add",
+        "key": "addr",
+        "accessor": [
+          "get",
+          "getU32"
+        ],
+        "guard_line": 344,
+        "malformed_value_yields": ""
+      },
+      {
+        "method": "emulator/watchpoint_add",
+        "key": "symbol",
+        "accessor": "get",
+        "guard_line": 351,
+        "malformed_value_yields": ""
+      },
+      {
+        "method": "emulator/write_cram",
+        "key": "raw",
+        "accessor": "getU32",
+        "guard_line": 2233,
+        "malformed_value_yields": 0
+      },
+      {
+        "method": "emulator/write_memory",
+        "key": "addr",
+        "accessor": [
+          "get",
+          "getU32"
+        ],
+        "guard_line": 344,
+        "malformed_value_yields": ""
+      },
+      {
+        "method": "emulator/write_memory",
+        "key": "bytes",
+        "accessor": "get",
+        "guard_line": 608,
+        "malformed_value_yields": ""
+      },
+      {
+        "method": "emulator/write_memory",
+        "key": "symbol",
+        "accessor": "get",
+        "guard_line": 351,
+        "malformed_value_yields": ""
+      },
+      {
+        "method": "emulator/write_memory",
+        "key": "value",
+        "accessor": "getInt",
+        "guard_line": 613,
+        "malformed_value_yields": 0
+      },
+      {
+        "method": "emulator/write_vram",
+        "key": "bytes",
+        "accessor": "get",
+        "guard_line": 2141,
+        "malformed_value_yields": ""
+      },
+      {
+        "method": "emulator/z80_write",
+        "key": "bytes",
+        "accessor": "get",
+        "guard_line": 730,
+        "malformed_value_yields": ""
+      },
+      {
+        "method": "emulator/z80_write",
+        "key": "value",
+        "accessor": "getInt",
+        "guard_line": 735,
+        "malformed_value_yields": 0
+      }
+    ],
+    "string_coercion_keys": [
+      {
+        "method": "emulator/breakpoint_clear",
+        "key": "all",
+        "declared_default": false,
+        "accepted_strings": [
+          "true",
+          "1",
+          "yes"
+        ],
+        "unlisted_string_yields": false,
+        "inverts_declared_default": false
+      },
+      {
+        "method": "emulator/hold",
+        "key": "down",
+        "declared_default": true,
+        "accepted_strings": [
+          "true",
+          "1",
+          "yes"
+        ],
+        "unlisted_string_yields": false,
+        "inverts_declared_default": true
+      },
+      {
+        "method": "emulator/reload_rom",
+        "key": "reset",
+        "declared_default": true,
+        "accepted_strings": [
+          "true",
+          "1",
+          "yes"
+        ],
+        "unlisted_string_yields": false,
+        "inverts_declared_default": true
+      },
+      {
+        "method": "emulator/reload_rom",
+        "key": "wait",
+        "declared_default": true,
+        "accepted_strings": [
+          "true",
+          "1",
+          "yes"
+        ],
+        "unlisted_string_yields": false,
+        "inverts_declared_default": true
+      },
+      {
+        "method": "emulator/reset",
+        "key": "run",
+        "declared_default": true,
+        "accepted_strings": [
+          "true",
+          "1",
+          "yes"
+        ],
+        "unlisted_string_yields": false,
+        "inverts_declared_default": true
+      },
+      {
+        "method": "emulator/set_channel_enabled",
+        "key": "enabled",
+        "declared_default": false,
+        "accepted_strings": [
+          "true",
+          "1",
+          "yes"
+        ],
+        "unlisted_string_yields": false,
+        "inverts_declared_default": false
+      },
+      {
+        "method": "emulator/set_layer_enabled",
+        "key": "enabled",
+        "declared_default": false,
+        "accepted_strings": [
+          "true",
+          "1",
+          "yes"
+        ],
+        "unlisted_string_yields": false,
+        "inverts_declared_default": false
+      },
+      {
+        "method": "emulator/set_profiler",
+        "key": "enabled",
+        "declared_default": false,
+        "accepted_strings": [
+          "true",
+          "1",
+          "yes"
+        ],
+        "unlisted_string_yields": false,
+        "inverts_declared_default": false
+      },
+      {
+        "method": "emulator/state_hash",
+        "key": "includeFramebuffer",
+        "declared_default": false,
+        "accepted_strings": [
+          "true",
+          "1",
+          "yes"
+        ],
+        "unlisted_string_yields": false,
+        "inverts_declared_default": false
+      },
+      {
+        "method": "emulator/watchpoint_add",
+        "key": "read",
+        "declared_default": false,
+        "accepted_strings": [
+          "true",
+          "1",
+          "yes"
+        ],
+        "unlisted_string_yields": false,
+        "inverts_declared_default": false
+      },
+      {
+        "method": "emulator/watchpoint_add",
+        "key": "write",
+        "declared_default": true,
+        "accepted_strings": [
+          "true",
+          "1",
+          "yes"
+        ],
+        "unlisted_string_yields": false,
+        "inverts_declared_default": true
+      }
+    ],
+    "string_coercion_keys_that_invert_their_declared_default": [
+      {
+        "method": "emulator/hold",
+        "key": "down",
+        "declared_default": true,
+        "accepted_strings": [
+          "true",
+          "1",
+          "yes"
+        ],
+        "unlisted_string_yields": false,
+        "inverts_declared_default": true
+      },
+      {
+        "method": "emulator/reload_rom",
+        "key": "reset",
+        "declared_default": true,
+        "accepted_strings": [
+          "true",
+          "1",
+          "yes"
+        ],
+        "unlisted_string_yields": false,
+        "inverts_declared_default": true
+      },
+      {
+        "method": "emulator/reload_rom",
+        "key": "wait",
+        "declared_default": true,
+        "accepted_strings": [
+          "true",
+          "1",
+          "yes"
+        ],
+        "unlisted_string_yields": false,
+        "inverts_declared_default": true
+      },
+      {
+        "method": "emulator/reset",
+        "key": "run",
+        "declared_default": true,
+        "accepted_strings": [
+          "true",
+          "1",
+          "yes"
+        ],
+        "unlisted_string_yields": false,
+        "inverts_declared_default": true
+      },
+      {
+        "method": "emulator/watchpoint_add",
+        "key": "write",
+        "declared_default": true,
+        "accepted_strings": [
+          "true",
+          "1",
+          "yes"
+        ],
+        "unlisted_string_yields": false,
+        "inverts_declared_default": true
+      }
+    ]
+  }
+}

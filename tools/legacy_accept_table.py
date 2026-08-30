@@ -372,6 +372,13 @@ def parse_accessors(clean: str) -> dict:
                 re.search(r"s\.empty\(\)\s*\)?\s*return\s+d\s*;", gib)),
             "parse_failure_returns_default": bool(
                 re.search(r"catch\s*\(\s*\.\.\.\s*\)\s*\{\s*return\s+d\s*;", gib)),
+            # Every stoll() call discards the parse-end position (`nullptr` for
+            # the `pos` out-param) and nothing checks full consumption
+            # afterwards, so a string with trailing garbage is not rejected: it
+            # yields the value of its numeric prefix. "12abc" reads 12, which is
+            # neither the intended value nor the default.
+            "trailing_garbage_rejected": not bool(
+                re.search(r"stoll\s*\([^)]*,\s*nullptr\s*,", gib)),
         }
         accessors["getInt"].update(extra)
         for other, spec in accessors.items():
@@ -404,6 +411,11 @@ def accepted_shapes_for(accessor: str, accessors: dict) -> dict:
             "default" if a.get("empty_string_returns_default") else "unknown")
         shapes["unparsable_string_yields"] = (
             "default" if a.get("parse_failure_returns_default") else "unknown")
+        shapes["trailing_garbage_rejected"] = bool(a.get("trailing_garbage_rejected"))
+        if not shapes["trailing_garbage_rejected"]:
+            shapes["partially_numeric_string_yields"] = (
+                'the value of the leading numeric prefix, e.g. "12abc" -> 12; '
+                "the trailing text is neither rejected nor reported")
     return shapes
 
 
