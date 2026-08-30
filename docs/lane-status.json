@@ -1,6 +1,12 @@
 {
-  "focus": "Filed the contract change for reading the player's on-screen text; waiting on the hub to rule before anything is built.",
-  "inFlight": [],
+  "focus": "Building the command that lets tools read the player's on-screen text; the contract for it is ruled and settled.",
+  "inFlight": [
+    {
+      "what": "Implement emulator/screen_text to the adjudicated fragment: the host-owned snapshot seam, the handler, the frontend push, and vectors derived from real replies. Held unmerged until the hub merges the vectors.",
+      "where": "branch parcel/screen-text (worktree .worktrees/screen-text, base 8aa8603)",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "the dull sound: keep the hardware-accurate filter, default it off, or let the player remember your choice. A taste call, so it is yours rather than mine \u2014 ten seconds to hear it both ways",
@@ -8,7 +14,7 @@
       "id": "d-20"
     }
   ],
-  "nextBoundary": "Now \u2014 recon merged, CR-H filed and pushed, nothing running.",
+  "nextBoundary": "After the vectors are handed to the hub and the serve is merged and pushed.",
   "queue": [
     {
       "id": "AEON-RESTAMP-AB",
@@ -36,10 +42,10 @@
     },
     {
       "id": "OVERLAY-STATE",
-      "title": "CR-H FILED (docs/proposed/2026-08-30-cr-h-screen-text.md), awaiting hub adjudication. Recon merged 02b9388. Serves both the source and the rendered string; refuses when there is no window; carries unrenderable[] for characters the player has no glyph for. Does NOT join the window's frame counter to the bus's - they diverge without bound and that is now diagnosed.",
-      "state": "open",
+      "title": "CR-H ADJUDICATED (ADOPT WITH CHANGES, empyrean 98f1b60) and BUILDING. Two binding changes: the refusal carries a typed reason string not a boolean, and unrenderable/truncated are required even when empty. Condition: the method is NOT advertised until vectors, derived from real replies and run against the fragment, land at empyrean.",
+      "state": "doing",
       "size": "M",
-      "blockedBy": "hub adjudication of CR-H"
+      "blockedBy": null
     },
     {
       "id": "ACCEPT-16",
@@ -71,7 +77,7 @@
       "blockedBy": null
     }
   ],
-  "awaiting": "your ten-second listen on the dull sound (d-20). The overlay work is waiting on a contract ruling from the hub, not on you.",
-  "atBoundary": true,
-  "updatedAt": "2026-08-30T04:50:02Z"
+  "awaiting": "your ten-second listen on the dull sound (d-20). Nothing else.",
+  "atBoundary": false,
+  "updatedAt": "2026-08-30T04:55:04Z"
 }
