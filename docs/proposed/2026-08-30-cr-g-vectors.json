@@ -1,0 +1,237 @@
+{
+ "$comment": "CR-G / protocol.md \u00a711.27 wire vectors for emulator/pixel_attribution's `caveat`, authored by the oracle lane. Ruling: empyrean 32a0041 (ADOPT WITH CHANGES). \u26a0 RESIDUE, STATED SO A GREEN RUN IS NOT READ AS COVERAGE: the substance of \u00a711.27 is an EMISSION RULE \u2014 emit iff the CRAM entry at cramIndex was written since line y of the last completed frame drew (or no frame has completed), name emulator/scanlines, never unconditional. Every one of those is SERVER BEHAVIOUR that a document schema cannot see: a reply with the caveat and one without are both valid documents, and a caveat naming nothing is a valid string. Their tests are oracle conformance rows landing with the serve, exactly as \u00a711.26's two were. What these four DO check is the declaration's type and that disclosure never displaces the datum. Provenance: the passing documents are a REAL captured reply (color_1536.bin, 30 frames, paused, dot 100,100) with only the caveat added \u2014 not hand-built, because the previous submission from this lane shipped eleven hand-built cases of which nine could not have validated.",
+ "cases": [
+  {
+   "method": "emulator/pixel_attribution",
+   "kind": "result",
+   "expect": "pass",
+   "doc": {
+    "candidates": [
+     {
+      "cramIndex": 6,
+      "layer": "planeA",
+      "opaque": true,
+      "priority": false,
+      "verdict": "won"
+     },
+     {
+      "cramIndex": 0,
+      "layer": "planeB",
+      "opaque": false,
+      "priority": false,
+      "verdict": "transparent"
+     },
+     {
+      "cramIndex": 0,
+      "layer": "backdrop",
+      "opaque": true,
+      "priority": false,
+      "verdict": "lostToPriority"
+     }
+    ],
+    "cell": {
+     "hflip": false,
+     "palette": 0,
+     "priority": false,
+     "tile": 6,
+     "tileAddr": "0x000000C0",
+     "vflip": false
+    },
+    "cramAddr": "0x0000000C",
+    "cramIndex": 6,
+    "droppedEvents": 0,
+    "frame": 30,
+    "height": 224,
+    "mclk": 26881330,
+    "rgb": {
+     "b": 0,
+     "g": 0,
+     "r": 0
+    },
+    "running": false,
+    "state": "shadow",
+    "width": 320,
+    "winner": {
+     "layer": "planeA"
+    },
+    "x": 100,
+    "y": 100,
+    "caveat": "this dot's palette entry was written after line 100 of the last completed frame was drawn, so the picture on screen may show a different colour here; read emulator/scanlines for the rows the raster actually drew"
+   },
+   "why": "\u00a711.27 \u2014 the disclosing reply. A qualifying CRAM write occurred since line y drew, so the caveat is present and names emulator/scanlines. The document body is a REAL reply captured from the server (color_1536.bin, 30 frames, paused, dot 100,100) with only the caveat added \u2014 so nothing here is a hand-built shape that could not occur."
+  },
+  {
+   "method": "emulator/pixel_attribution",
+   "kind": "result",
+   "expect": "pass",
+   "doc": {
+    "candidates": [
+     {
+      "cramIndex": 6,
+      "layer": "planeA",
+      "opaque": true,
+      "priority": false,
+      "verdict": "won"
+     },
+     {
+      "cramIndex": 0,
+      "layer": "planeB",
+      "opaque": false,
+      "priority": false,
+      "verdict": "transparent"
+     },
+     {
+      "cramIndex": 0,
+      "layer": "backdrop",
+      "opaque": true,
+      "priority": false,
+      "verdict": "lostToPriority"
+     }
+    ],
+    "cell": {
+     "hflip": false,
+     "palette": 0,
+     "priority": false,
+     "tile": 6,
+     "tileAddr": "0x000000C0",
+     "vflip": false
+    },
+    "cramAddr": "0x0000000C",
+    "cramIndex": 6,
+    "droppedEvents": 0,
+    "frame": 30,
+    "height": 224,
+    "mclk": 26881330,
+    "rgb": {
+     "b": 0,
+     "g": 0,
+     "r": 0
+    },
+    "running": false,
+    "state": "shadow",
+    "width": 320,
+    "winner": {
+     "layer": "planeA"
+    },
+    "x": 100,
+    "y": 100
+   },
+   "why": "\u00a711.27 \u2014 THE PAIR TO THE ONE ABOVE, and the reason the emission rule is a rule. No qualifying write, so the caveat is absent. Both documents are valid, which is precisely why 'emitted when and only when it can matter' is a live conformance row and not something this file can check."
+  },
+  {
+   "method": "emulator/pixel_attribution",
+   "kind": "result",
+   "expect": "fail",
+   "doc": {
+    "candidates": [
+     {
+      "cramIndex": 6,
+      "layer": "planeA",
+      "opaque": true,
+      "priority": false,
+      "verdict": "won"
+     },
+     {
+      "cramIndex": 0,
+      "layer": "planeB",
+      "opaque": false,
+      "priority": false,
+      "verdict": "transparent"
+     },
+     {
+      "cramIndex": 0,
+      "layer": "backdrop",
+      "opaque": true,
+      "priority": false,
+      "verdict": "lostToPriority"
+     }
+    ],
+    "cell": {
+     "hflip": false,
+     "palette": 0,
+     "priority": false,
+     "tile": 6,
+     "tileAddr": "0x000000C0",
+     "vflip": false
+    },
+    "cramAddr": "0x0000000C",
+    "cramIndex": 6,
+    "droppedEvents": 0,
+    "frame": 30,
+    "height": 224,
+    "mclk": 26881330,
+    "rgb": {
+     "b": 0,
+     "g": 0,
+     "r": 0
+    },
+    "running": false,
+    "state": "shadow",
+    "width": 320,
+    "winner": {
+     "layer": "planeA"
+    },
+    "x": 100,
+    "y": 100,
+    "caveat": {
+     "text": "the picture may differ"
+    }
+   },
+   "why": "RED-FIRST \u2014 `caveat` is declared `type: string`. An object here is the shape a server would produce if it tried to carry structured disclosure, and it must be refused rather than silently accepted."
+  },
+  {
+   "method": "emulator/pixel_attribution",
+   "kind": "result",
+   "expect": "fail",
+   "doc": {
+    "candidates": [
+     {
+      "cramIndex": 6,
+      "layer": "planeA",
+      "opaque": true,
+      "priority": false,
+      "verdict": "won"
+     },
+     {
+      "cramIndex": 0,
+      "layer": "planeB",
+      "opaque": false,
+      "priority": false,
+      "verdict": "transparent"
+     },
+     {
+      "cramIndex": 0,
+      "layer": "backdrop",
+      "opaque": true,
+      "priority": false,
+      "verdict": "lostToPriority"
+     }
+    ],
+    "cell": {
+     "hflip": false,
+     "palette": 0,
+     "priority": false,
+     "tile": 6,
+     "tileAddr": "0x000000C0",
+     "vflip": false
+    },
+    "cramAddr": "0x0000000C",
+    "cramIndex": 6,
+    "droppedEvents": 0,
+    "frame": 30,
+    "height": 224,
+    "mclk": 26881330,
+    "running": false,
+    "state": "shadow",
+    "width": 320,
+    "winner": {
+     "layer": "planeA"
+    },
+    "x": 100,
+    "y": 100,
+    "caveat": "this dot's palette entry was written after line 100 of the last completed frame was drawn, so the picture on screen may show a different colour here; read emulator/scanlines for the rows the raster actually drew"
+   },
+   "why": "RED-FIRST \u2014 a caveat excuses nothing. `rgb` stays REQUIRED (\u00a711.27: 'rgb's value does not change'), so a reply that discloses uncertainty INSTEAD of answering is refused. This is the failure a well-meaning implementer produces: disclosure offered in place of the datum rather than beside it."
+  }
+ ]
+}

@@ -2937,7 +2937,7 @@
       }
     },
     "emulator/pixel_attribution": {
-      "$comment": "protocol.md §6 (VRAM/CRAM/layers). Answers 'why is the dot at (x,y) the colour it is' against the VDP's CURRENT state — the server re-derives the scanline per call and reads no framebuffer, so on a free-running machine the answer is a live sample and the envelope's `running: true` is what says so (D11). A pure read: NOT subject to §6's run-control state rule.",
+      "$comment": "protocol.md §6 (VRAM/CRAM/layers). Answers 'why is the dot at (x,y) the colour it is' against the VDP's CURRENT state — the server re-derives the scanline per call and reads no framebuffer, so on a free-running machine the answer is a live sample and the envelope's `running: true` is what says so (D11). A pure read: NOT subject to §6's run-control state rule. §11.27: `caveat` declared; `rgb` stays the LIVE colour by contract, the caveat is the disclosure that the drawn picture may differ.",
       "params": {
         "type": "object",
         "unevaluatedProperties": false,
@@ -3240,6 +3240,10 @@
               },
               "additionalProperties": false
             }
+          },
+          "caveat": {
+            "type": "string",
+            "description": "protocol.md §2.4. Registered §11.27: emitted when the CRAM entry at `cramIndex` has been written since line `y` of the last completed frame was drawn, or when no frame has completed, so the picture on the glass MAY disagree with `rgb`; it names `emulator/scanlines` as the reconciliation path. Never emitted unconditionally (§2.4 advisory); absent when no such write occurred."
           }
         }
       }
