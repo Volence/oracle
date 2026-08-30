@@ -1167,6 +1167,37 @@ full:
   an active night. Pinning them keeps a dependency on their lane; what it buys over the working tree is
   that every change is **announced, attributable and dated, in the same file as the artifact.**
 
+⚑ **THE DIAGNOSIS SHARPENED BEFORE HANDOFF — IT IS NOT A STALE HASH CONSTANT, AND THAT CHANGES THE FIX.**
+`the_negative_control_trips_the_gate` pins **nothing**: it reads `was` out of the ROM (*"never pinned: it
+is the ring-0 hash of THIS build's curated state, and a re-record moves it"*) and asserts the trap reports
+that same value back. It fails because **the replay fixture is embedded IN aeon's ROM** — `Replay_OJZ_Fixture`
+is a symbol in it — so their rebuild moved the recorded stream our tests replay, not a number in our tree.
+**Consequence, and it is the good one: freezing our own ROM copy freezes the FIXTURE with it**, because the
+fixture travels inside the ROM. The plan works; it just works for a different reason than "re-pin a hash".
+*(`replay_real_artifacts.rs:190` does pin two tick counts — `Ojz` 1721, `OjzSlide` 2350 — which are
+ROM-derived and may need re-deriving once, with the cause named. That is the only genuine re-pin.)*
+
+**▶ EVERYTHING THE NEXT SESSION NEEDS, verified here 2026-08-30 — aeon sent the trigger SHAs and they check
+out** (all three reachable at their `origin/master`, subjects matching their description):
+- **aeon `ec6a4791db346ec8c6672632109f85415b873e49`** · sigil freeze **`dd371e3bab16782318f803211072f6af9e7e79bc`**
+  (*"freeze: scroll-and-section-clamps (chain 187), aeon_rev ec6a4791"*) · attest
+  **`6d665688e9161bbc22f573badeee591e009c1312`**.
+- **Take the ROMs as COMMITTED BLOBS, not from aeon's worktree**:
+  `sigil dd371e3b:crates/sigil-harness/golden/s4.debug.bin` (736315) and `s4.bin` (719315). **Verified
+  byte-identical to aeon's worktree** (`sha256 951cf9604f3249d7…` both), so freezing from the golden freezes
+  exactly the build that reddened us — the tests will not move again from the ROM side.
+- ⚠ **THE GAP THAT WILL TRIP YOU: the `.lst` listings are NOT frozen.** Only the ROMs are goldens. Our tests
+  need `s4.debug.lst`, and it lives only in aeon's working tree, where it moves. **So a ROM-only freeze
+  leaves half the coupling in place.** Solve that explicitly — freeze the listing beside the ROM as our own
+  artifact — or the parcel is not finished.
+- ⚠ **Chain 187 is FROZEN-BUT-UNATTESTED**: aeon's strict suite went **RED, 8 failures, 7 of them one
+  cross-seam symbol**, and the attest commit says so in its own subject. A **superseding freeze is coming**;
+  aeon expects the ROM bytes to be identical across it (the fix is in sigil's test compositions, not aeon
+  source) but **would not promise it**, and has promised to say so unprompted if they move. **Freeze anyway
+  — aeon's own argument, adopted: waiting for their chain to settle is depending on their cadence one last
+  time, which is the exact property the freeze exists to end.** Record the unattested status in our
+  provenance note so a later reader knows what they have.
+
 **This seat's lean, recorded as a lean and not a ruling: freeze OUR OWN copy, and use `provenance.toml`'s
 `aeon_rev` to record which revision we froze from.** That takes both properties — a pin that moves only
 when *we* decide, plus full attribution when we do — and it is the only shape where our suite's green
