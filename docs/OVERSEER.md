@@ -2381,6 +2381,38 @@ nothing — no in-tree reader could ever have met the contradiction, exactly as 
 and the recipient was the only party able to catch it. **They did, which is the argument for citing a SHA
 the receiver can actually resolve rather than one that merely exists.**
 
+
+**▶ NEW OPS LINE, 2026-08-30 — A KILLED SUITE LEAVES A LOG THAT AGGREGATES CLEAN. COUNT THE LEGS, NOT THE
+FAILURES.** Nearly quoted as a merge verdict by this seat.
+
+A merged-tree verification was **killed at 46 of 61 legs** — cause unidentified (no rotation was due, no
+peer announced a `pkill`, and this box has a recorded history of both). The log it left behind is the
+hazard: `grep -E "^test result" | awk` over it prints a **confident `LEGS=46 … FAILED=0`**, which is
+exactly the shape of a healthy result and is three quarters of a suite. **Nothing in the aggregate line
+says how many legs there should have been**, so the one number that would reveal the truncation is the
+one the house aggregate does not carry.
+
+**This is the green-log-and-absent-run bar arriving on a PARTIAL run rather than an absent one**, and it
+is worse than the absent case: an absent run leaves nothing to misread, while this leaves a page of
+genuine passes. Every one of those 46 legs really did pass. The log is not lying; it is answering a
+narrower question than the one being asked of it.
+
+**Corrective, and it is cheap because it is one more line in the same command:** a verification asserts
+its own **completeness** before its verdict —
+
+```sh
+LEGS=$(grep -cE '^test result' "$LOG")
+[ "$LEGS" -lt 61 ] && echo "INCOMPLETE: $LEGS legs, expected 61 — NOT A VERDICT"
+```
+
+and the runner prints an explicit `CARGO_EXIT=` and `COMPLETE` marker, so **the absence of the marker is
+itself readable**. Never take an aggregate from a log whose run you did not watch terminate.
+⚠ Compounding factor recorded because it hid the first instance tonight: an earlier verification of mine
+ended in `grep -c 'SKIP:'`, which **exits 1 when it finds zero matches** — the desired outcome — so the
+harness reported the whole command as failed while the suite was genuinely green. **One command reported
+failure on success, and hours later another reported success on a partial run.** A pipeline's exit status
+and its subject's verdict are different facts; make the command say which one it is reporting.
+
 ## Ops (each line is a paid-for lesson)
 
 **▶ NEW BAR, 2026-08-29 — VALIDATE AN ARTIFACT AGAINST THE SCHEMA IT TARGETS BEFORE CALLING IT READY.
