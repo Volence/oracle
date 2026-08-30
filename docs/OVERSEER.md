@@ -1057,6 +1057,24 @@ gates discharged; the `LIVE-OBJECTS-CARD` sequencing blocker is cleared):
 | **F-TOAST-TRUNCATES** | `notify_err` toasts cut from the right with no ellipsis and **lose the reason**: `open ROM: cannot read {dir} ({e})` rendered as `…/LOCKED (PE`, dropping `Permission denied`. The path survives, the reason does not — and the reason is the half a person needs. Today's SCREEN-HONESTY parcel fixed exactly this on the status line; toasts were out of scope. | Any parcel touching toast rendering — and assert on the **whole** rendered string, per this file's own 2026-08-29 bar. |
 | **F-WINDOW-BUS-FRAME-OFFBYONE** | Overlay and status line both read `F 12720` where the bus reported `frame: 12719` for the same breakpoint stop. A completed-vs-presenting convention difference would explain it and would not be a defect. **Registered as a lead, deliberately not diagnosed** — a consumer joining the window to the bus meets it and nobody has looked. | Any parcel correlating an on-screen frame number with bus `frame`/`frameToken`. |
 
+**⚑ SIGIL RELINK 2026-08-30T00:33:36Z — CHECKED AGAINST OUR CORPUS, AND WE ARE IMMUNE BY CONSTRUCTION.**
+sigil broadcast that the shared `sigil/target/release/sigil` was relinked to their master `85a5726c`
+(19 crate-commits stale beforehand), carrying a placement-path retirement (`0ab72a5a`) and a region
+end-contract change (`821cbbf1`), with the standing ask: *pin figures to the revision they were exported at
+rather than assuming they still reproduce.* **Verified here rather than assumed, because this lane does hold
+sigil-derived figures** (the §11.5 short-row work, the 180.0/154.0 hand derivations): the corpus artifacts at
+`/home/volence/sonic_hacks/corpus-rom-d22dda85/` are intact, `s4.debug.bin` still hashes to its recorded
+`ad289eae947b2dd4…`, and sigil's golden **at the PINNED revision** `7b46f075` (blob `633f5f88…`) hashes to
+the same value. A relinked binary cannot move either — **a pinned blob equals itself by construction**, which
+is the whole reason those were frozen as artifacts instead of kept as a recipe.
+⚠ **The one residue, named rather than glossed: the `.lst` REBUILD RECIPE is now unverified.** §1.3's
+pinned-toolchain recipe claims *"a rebuild that reproduces those bytes proves the listing beside it is the
+corpus listing"* — a standing claim about a binary that has just changed underneath it. Nobody needs it (the
+`.lst` is on disk and pinned, and empyrean `9b604f0` — *prefer the committed artifact to the recipe that
+recreates it*, which came out of this lane — says take the blob). **But if a future session reaches for the
+recipe and it no longer reproduces, that will present as "the corpus is wrong" rather than "the recipe
+aged."** Revival condition: anyone about to re-run the §1.3 rebuild. Take the artifact instead.
+
 **Registered by the CR-27 serve review (2026-08-20), all contract-side or cosmetic, none blocking:**
 
 | id | what | revival condition |
