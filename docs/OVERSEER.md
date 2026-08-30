@@ -1071,6 +1071,24 @@ about our own tree that is going OUT — to a peer, to the owner, into a doc —
 send time, or it is sent hedged. Not because it is likely wrong, but because *nothing downstream can
 check it*, and the more competent the receiver the more thoroughly it will be built upon.
 
+⚑ **THE INSTANCE, SAME NIGHT, AND IT IS A VERIFICATION I REPORTED AS CLEAN.** aeon found a blocker with no
+decision card; this lane ran the same check over its own board and told a peer *"no missing cards here"*.
+**That emitted claim had two independent defects, and a peer found each — neither was found here.**
+1. **Wrong enumeration parameter.** It read blockers from `blockedOnOwner` only, and `AUDIO-DULL`'s owner
+   blocker was sitting in a queue row's `blockedBy` **free text**, where the enumeration could not see it.
+   The correct form enumerates owner-blocking claims from `blockedOnOwner` **and** every `blockedBy`
+   string, because prose is where one hides. (aurora, 2026-08-30.)
+2. **Wrong data shape.** It built `{id: entry}` over `docs/decisions.jsonl` — the dict-by-id that
+   empyrean `52519fd` now forbids outright, ledger tooling being **line-addressed**. Measured here after
+   the amendment landed: 20 lines, 20 distinct ids, **0 entries dropped** — so the answer was right and
+   the method was wrong, and it was *guaranteed* to break at the first 8c closure, which appends
+   duplicate content by design. **A check that is correct by luck reports exactly like one that is
+   correct**, which is why the amendment is a shape rule rather than advice.
+**Both defects were in a claim about our OWN board, sent outward, where nothing downstream could check
+it** — the bar above, arriving on the verification written to enforce a neighbouring bar. Nothing was
+committed carrying the bad shape (only two docs mention the ledger; no scripts), so this is a habit note,
+not a repair. **Do not transcribe the contract clause itself** — read `contract/DECISIONS.md` there.
+
 **Registered 2026-08-29 by the two window checks** (`docs/2026-08-29-window-runtime-checks.md` — both
 gates discharged; the `LIVE-OBJECTS-CARD` sequencing blocker is cleared):
 
