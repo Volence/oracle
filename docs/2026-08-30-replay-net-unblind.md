@@ -452,6 +452,16 @@ grep -rn -E "fixtures/aeon|ORACLE_AEON_DIR|aeon_dir|s4\.debug\.bin|s4\.debug\.ls
 …plus the two files added here (`aeon_pin.rs`, which reads the frozen directory *directly* and
 deliberately not the override; `tools/aeon_pin_report.py`, which reads `PIN.tsv`).
 
+> **✅ CLOSED 2026-08-30 — `docs/2026-08-30-live-tree-readers.md`, branch `parcel/live-tree-readers`
+> (`254ab9e`, `7bb7331`, `ee72d16`, `2f5d99b`).** The finding below is kept as written, because the
+> caveat it ends on earned itself. **Its example list was short**: four examples read the live tree,
+> not the two named — `diag_soundqueue.rs` and `synth_render.rs` as well — and *"what this one grep
+> surfaced"* is exactly why saying so was right. **And the count was not the only stale pin**: the
+> same three lines also held `romBytes == 696836` and `Player_1 == 0x00FF8CFA / 0xFFFF8CFA`, and all
+> four were wrong, measured live. The outcome is deliberately **mixed**: `s4.bin` repoints to the
+> frozen copy, while `s4.soundtest.bin` (absent from sigil's goldens — nothing to freeze it from) and
+> `demo.bin` (freezable, declined) keep a live default that now announces itself at startup.
+
 **A finding the sweep turned up that is NOT this pin, and is left open:** `tools/aether_smoke.py` reads
 `/home/volence/sonic_hacks/aeon/s4.debug.lst` and `s4.lst` **from aeon's live working tree**, and pins
 `symbolCount == 2129` against them (line 84). That is a live-tree dependency of exactly the kind
@@ -473,7 +483,9 @@ dependencies** — it is what this one grep surfaced.
 * **Reported disagreement:** the pipeline-reachable file count in the relayed wording is three; I make
   it four (`test_support.rs`). Conclusion unaffected; enumeration corrected in `PROVENANCE.md`.
 * **Not addressed here:** the live-tree dependencies in `tools/aether_smoke.py` and
-  `crates/oracle-core/examples/*`.
+  `crates/oracle-core/examples/*`. **✅ Addressed 2026-08-30 in `parcel/live-tree-readers` —
+  `docs/2026-08-30-live-tree-readers.md`.** The enumeration there is wider than the one above; see
+  the closure note beside the finding.
 * **An ops note:** I ran `git fetch --quiet origin` once in the sibling `sigil` checkout at the start
   of this parcel, before adopting the rule that the reporter must not fetch on its own. sigil's
   `origin/master` moved twice more during the parcel (`3ad7ed02` → `05c81698` → `62691b84`) from other

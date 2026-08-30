@@ -7,8 +7,14 @@
 //! records, and the rendered VGM. It touches no `src/` state and uses only the public API.
 //!
 //! Usage: `cargo run --release -p oracle-core --example vgm_capture -- [rom.bin] [frames]`
-//!   - `[rom.bin]` — ROM path (default `/home/volence/sonic_hacks/aeon/s4.bin`).
+//!   - `[rom.bin]` — ROM path (default `fixtures/aeon/s4.bin`, this repo's own **frozen** copy).
 //!   - `[frames]` — frames to run (default 600).
+//!
+//! The default used to be an absolute path into `/home/volence/sonic_hacks/aeon` — another lane's live
+//! working tree, rebuilt without warning, so every run read whatever happened to be on disk at that
+//! moment and a stale capture was indistinguishable from a fresh one. `s4.bin` is frozen here
+//! (`fixtures/aeon/PROVENANCE.md`), so the default is now deterministic and always present. The run
+//! prints which image it read either way, so a path given on the command line still identifies itself.
 //!
 //! Sub-frame mode (SY-4b validation, opt-in via env — default behavior is untouched):
 //!   - `VGM_SUBFRAME=1` — use [`VgmLogger::with_subframe_waits`] so the rendered VGM carries mclk-derived
@@ -19,7 +25,9 @@
 use oracle_core::system::{System, MCLK_PER_FRAME};
 use oracle_core::vgm::{SoundChip, VgmLogger};
 
-const DEFAULT_ROM: &str = "/home/volence/sonic_hacks/aeon/s4.bin";
+#[path = "common/rom_source.rs"]
+mod rom_source;
+
 const DEFAULT_FRAMES: u64 = 600;
 const OUT_VGM: &str =
     "/tmp/claude-1000/-home-volence-sonic-hacks-oracle-next/scratchpad/s4_capture.vgm";
@@ -30,7 +38,8 @@ const SAMPLES_PER_FRAME: u64 = 735;
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let rom_path = args.next().unwrap_or_else(|| DEFAULT_ROM.to_string());
+    // `s4.bin` IS frozen, so the default is this repo's committed copy, not Aeon's live tree.
+    let rom_path = args.next().unwrap_or_else(|| rom_source::frozen("s4.bin"));
     let frames: u64 = args
         .next()
         .and_then(|s| s.parse().ok())
@@ -51,7 +60,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    println!("ROM {rom_path}: {} bytes", rom.len());
+    rom_source::announce(&rom_path, rom.len());
     if subframe {
         println!("mode:        SUB-FRAME (mclk-derived 0x61 waits)");
     }
