@@ -2593,6 +2593,27 @@ attached — where the only reader who could refute it happened to be the party 
 row's justification ages exactly like a precedent narrative and nothing re-reads it.** When an item's
 design lands, re-read its own queue title against what was actually built.
 
+**▶ F-ACCEPT-TABLE-CROSSCHECK-BLIND (registered 2026-08-30, emitter behaviour change, NEEDS A RULING).**
+`tools/legacy_accept_table.py`'s axis-A/axis-B reconciliation adds to `claimed_lines` **before the row is
+written**, so it is **structurally blind to a row-level drop**. Measured firsthand: with the four unguarded
+`addr` rows dropped cleanly, `--fail-on-gap` prints `cross-check : AGREES`, `parse complete : yes` and
+**exits 0**, while `UNGUARDED reads` silently falls **43 → 39**. ⚑ **So the tool's own headline safety line
+is not evidence of the thing a reader takes it for** — it witnesses that every *access* was claimed, never
+that every *row* survived. The 57-test suite catches this by named assertion; `--fail-on-gap` does not, and
+`--fail-on-gap` is what a CONSUMER would wire into a gate. **Revival: aeon wiring the table into their gate
+— they must be told the gate flag is weaker than the suite** (told 2026-08-30). Fix would be `--fail-on-gap`
+independently verifying row presence against a source-derived expectation; that is an emitter behaviour
+change and was correctly kept out of the hardening parcel.
+
+⚑ **AND THE LESSON ABOUT THE VERIFIER, WHICH IS THIS SEAT'S: A POISON THAT CRASHES IS THE EASY VERSION.**
+My dropped-row poison returned `None` from `_record`, which crashed `hazard_views` and produced
+`setUpClass` errors — I read "exit 1" as caught. The **non-crashing** form of the *same* failure
+(`continue` before the row is written) went through the pre-hardening suite with **one bare `KeyError`
+against a synthetic fixture and nothing against real source**. Both reproduced firsthand at the merge.
+**A poison must be built to survive its own blast** — if it takes the program down, you have measured that
+the program crashes, not that the suite noticed. The agent built the harder variant unprompted after being
+told the easy one, which is the deviation-with-evidence this file's bars ask for.
+
 ## Ops (each line is a paid-for lesson)
 
 **▶ `lane-status.json` — THE BOOT CURL VALIDATES THE FILE YOU WROTE AT BOOT AND NOTHING AFTER IT** (2026-08-30,
