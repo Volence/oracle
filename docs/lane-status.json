@@ -1,5 +1,5 @@
 {
-  "focus": "Click-to-select's first half is built and merged: a click now names the object that drew it.",
+  "focus": "aeon's colour bug is real and reproduces \u2014 but the fix is forbidden by the contract, so it becomes a rules change.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -8,7 +8,7 @@
       "id": "d-20"
     }
   ],
-  "nextBoundary": "Now \u2014 object_at merged, gates green on the merged tree, reachable through a real spawned binary.",
+  "nextBoundary": "Now \u2014 investigation landed, no server change, anti-fix pin and doc note in; the CR is the next piece.",
   "queue": [
     {
       "id": "LIVE-OBJECTS-CARD",
@@ -20,9 +20,9 @@
     },
     {
       "id": "ATTR-RGB-LATCH",
-      "title": "aeon's ask, confirmed at our source: when you click a pixel we tell you the right palette ENTRY but look its colour up as it stands now, not as it was on that scanline. On a screen where the game repaints colours mid-frame the two disagree silently \u2014 it cost them an hour and produced a confident wrong finding.",
-      "state": "next",
-      "size": "M",
+      "title": "aeon's colour finding: REPRODUCED (55 of 55 rows) and CLOSED as a server change \u2014 the contract says in terms that this row must resolve from live state and MUST NOT read the drawn picture, and names emulator/scanlines as the path a caller should use, which is what aeon had already found. I built the fix, it worked, and I reverted it. What is left is a rules change: the reply should SAY which moment its colour is for, and point at the path. Needs a CR (this row declares no caveat).",
+      "state": "open",
+      "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT"
     },
@@ -65,5 +65,5 @@
   ],
   "awaiting": null,
   "atBoundary": true,
-  "updatedAt": "2026-08-30T01:36:58Z"
+  "updatedAt": "2026-08-30T02:16:35Z"
 }
