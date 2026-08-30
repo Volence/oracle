@@ -320,5 +320,50 @@ falsifier is cheap and should be run when it is built: **change the file's shape
 one derivation and confirm the other still reports.** If both fail together, this ruling has bought
 less than it claims.
 
+### FALSIFIER RUN 2026-08-30 — it FIRES. Measured, not predicted.
+
+The prediction above is now a measurement. Three perturbations of a scratch copy of `ControlSocket.cpp`
+(the real file untouched), each legal C++ a compiler accepts:
+
+| perturbation | `build_table` (D1) | `direct_reads_from_source` (D2) | caught? |
+|---|---|---|---|
+| `const char c = '{';` in `OpReset` — brace **desync** | rows 75 → 113 (bodies bleed) | pairs 56 → 92 (bleeds too) | **YES** — `agrees=False`, `complete=False`, exit 1 |
+| `const char c = '}';` early in `OpZ80Read` — brace **truncation** | drops `emulator/z80_read.addr` | stops expecting `emulator/z80_read.addr` | **NO** — `agrees=True`, `complete=True`, row-presence reports 0 missing, exit 0 |
+| `static std::string OpZ80Read` → `static ReplyString OpZ80Read` | keeps the row (any-return-type regex) | loses the row (literal-signature regex) | n/a — they disagree, in the **safe** direction |
+
+Row 2 is the falsifier landing. `match_braces` does not skip character literals, and it is shared, so a
+single legal source edit truncates the same function body for **both** readings: the row leaves the
+table, the second derivation stops asking for it, and every check in the tool reports clean. The table
+then reads "`z80_read` takes no address", i.e. "this command is safe" — the exact wrong answer the
+ruling names as dangerous — with nothing firing anywhere.
+
+**So this ruling bought less than it claimed, and precisely this much less.** What it did buy is real
+and is not theatre: row 3 shows the two readings are genuinely independent in **method discovery, key
+extraction and the guard rule**, which is the dimension a table-side row drop lives in. Red-first
+proof, same commit: with the four unguarded `addr` rows dropped cleanly from the emitter and the source
+untouched, the pre-change gate exits **0** with empty stderr, and the post-change gate exits **1**
+naming all four (`row missing from table: emulator/z80_read.addr: row DROPPED (source reads it at
+line(s) [702]; the table has no such key)`), while `cross-check : AGREES` and `parse complete : yes`
+still print — which is why the old signals could never have caught it.
+
+The claim is therefore **narrowed, not withdrawn**: `--fail-on-gap` verifies row presence against a
+reading that is independent *in the dimension the check depends on*, and is **not** independent of the
+shared lexer. That narrowing is written into `direct_reads_from_source`'s docstring, replacing the
+"shares NO code path with `build_table()`" over-claim, which was false as written.
+
+**OPEN — needs a ruling, deliberately NOT decided here.** The row-2 residual is a silent blind spot in
+a shipped gate, which is the same *loud-on-unmeasurable* bar this ruling invoked to reject the
+document-it option. A cheap candidate mitigation exists and was costed but not built, because it is a
+design call the scope above does not cover: **have the second derivation refuse to run — loudly, as
+`unmeasurable`, which already fails the gate — when the comment-blanked source contains a brace inside
+a character literal.** That is an exact detector for the violated assumption (`match_braces` handles
+string literals and not character literals), it is a few lines, and it has zero false positives on the
+file today (`grep -c "'{'\|'}'"` = 0; braces appear only inside string literals, which are handled).
+Alternatives not evaluated: teach `match_braces` character literals (fixes the cause but moves a shared
+primitive under both readings at once), or give D2 its own lexer (real independence, real cost).
+
 **Reviewer:** none — self-ruled by the oracle overseer, named on the record per the substitute-seat
 terms. Bounded to one lane's own tool; not sent to the seat.
+
+**Landed:** `parcel/gap-row-presence` — `c655945` (tool + tests, 61/61 green via
+`tools/run_accept_table_tests.sh`).
