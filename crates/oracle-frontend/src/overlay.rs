@@ -270,6 +270,65 @@ impl Overlay {
         self.draw_toasts(&mut c, area, px, margin);
     }
 
+    /// **What [`draw`](Self::draw) just put on the glass, as text** — the overlay's half of
+    /// `emulator/screen_text` (contract §11.29, CR-H).
+    ///
+    /// Deliberately written directly beneath `draw` and in the same order, because it is a *reading* of that
+    /// function and the two must not be able to disagree about what is on screen. Every decision here is
+    /// delegated to the same helper the paint uses — `showing_status`, `status_line_layout`,
+    /// `visible_toasts` — so this function contains no width, no scale and no fit of its own. Anything it
+    /// computed itself would be a second opinion, and a second opinion is how a readout comes to describe a
+    /// screen that no longer exists.
+    ///
+    /// # Which surfaces are here, and which are not
+    ///
+    /// The **status line** and the **toasts** — the two surfaces whose text has no other reader on the bus.
+    /// Not the **layer badge** and not the **PAUSED banner**: the contract's `kind` enum has no value for
+    /// either, so there is nowhere on the wire to put them, and inventing one is a contract edit rather than
+    /// a handler decision. Both are already answerable structurally — `emulator/get_layer_states` for the
+    /// badge, `emulator/status`'s run state for the banner — which is why the enum can reasonably omit them.
+    /// Recorded here rather than left as an unexplained gap between what `draw` paints and what this returns.
+    ///
+    /// # Order
+    ///
+    /// Back to front, matching `draw`: the status line, then the toasts. Toasts are emitted **oldest
+    /// first** — the order they were posted, which is the order a reader wants a message log in — while
+    /// `draw_toasts` paints them newest-first from the bottom up. Neither order is the other's Z order:
+    /// toasts do not overlap each other.
+    pub fn text_surfaces(&self, area: Rect, st: &Status) -> Vec<crate::screen_text::Surface> {
+        use crate::screen_text::{Kind, Surface};
+        let px = Self::font_scale(area.h.max(1));
+        let margin = (2 * px).max(4);
+        let mut out = Vec::new();
+        if self.showing_status() {
+            if let Some(sl) = Self::status_line_layout(
+                area,
+                st,
+                Self::status_font_scale(area.h.max(1)),
+                margin,
+                px,
+            ) {
+                out.push(Surface::drawn(
+                    Kind::StatusLine,
+                    sl.full.clone(),
+                    sl.rendered().to_string(),
+                ));
+            }
+        }
+        // `visible_toasts` yields newest-first because that is the order the stack is painted in; reversed
+        // here so the wire reads oldest-first. The list is already only the toasts that reached the glass.
+        let mut toasts: Vec<crate::screen_text::Surface> = self
+            .visible_toasts(area, px, margin)
+            .into_iter()
+            .map(|(_, t, fit_len)| {
+                Surface::drawn(Kind::Toast, t.text.clone(), t.text[..fit_len].to_string())
+            })
+            .collect();
+        toasts.reverse();
+        out.append(&mut toasts);
+        out
+    }
+
     /// **The standing statement that a display layer is hidden**, or `None` when every layer is drawn.
     ///
     /// Text and geometry in one place, so the width [`draw_status_line`](Self::draw_status_line) reserves
@@ -335,18 +394,25 @@ impl Overlay {
         c.text((r.x + pad) as i32, (r.y + pad) as i32, scale, ACCENT, &text);
     }
 
-    /// The persistent status line (F3): slot strip, volume, filter, aspect, native size, frame counter.
-    fn draw_status_line(
-        &self,
-        c: &mut font::Canvas,
+    /// **What the status line will say, and how much of it survives** — or `None` when the line is not
+    /// drawn at all at this geometry.
+    ///
+    /// Extracted from [`draw_status_line`](Self::draw_status_line) so that the readout
+    /// (`emulator/screen_text`) and the paint are **one** computation rather than two that agree today.
+    /// A restated copy would agree with itself while drifting from the drawing code, which is the shape
+    /// this repo keeps paying for — the same argument that put [`status_text_avail`] in this module.
+    ///
+    /// Both `None` cases are real and neither is an error: the picture can be too narrow for even the slot
+    /// strip, and too short for a line of text to sit inside it. A reader that reported a status line in
+    /// either case would be reporting text that is not on the glass.
+    fn status_line_layout(
         area: Rect,
         st: &Status,
         px: usize,
         margin: usize,
         badge_px: usize,
-    ) {
+    ) -> Option<StatusLine> {
         let pad = 2 * px;
-        let strip_w = slot_strip_width(px);
         // Everything is fitted to the picture's width, so the status line can never run into the letterbox.
         // **Minus whatever the layer badge is standing in**, because the two share this band and the badge
         // is the one that cannot be shortened: the status line truncates gracefully (it is a readout), and a
@@ -361,18 +427,41 @@ impl Overlay {
         let badge_w = Self::layer_badge(area, badge_px, st.layers)
             .map_or(0, |(_, r, _, _)| r.w + 2 * badge_px);
         let avail = area.w.saturating_sub(2 * margin + badge_w);
-        let Some(text_avail) = status_text_avail(avail, px) else {
-            // Not even the slot strip fits. The strip is drawn as fixed-width boxes rather than text, so
-            // there is nothing to truncate — drop the whole line instead of letting it run off the picture.
+        // Not even the slot strip fits. The strip is drawn as fixed-width boxes rather than text, so there
+        // is nothing to truncate — drop the whole line instead of letting it run off the picture.
+        let text_avail = status_text_avail(avail, px)?;
+        if area.h < margin + font::GLYPH_H * px + 2 * pad {
+            return None; // the picture is too short for a line of text to sit inside it
+        }
+        let full = status_text(st);
+        let fit_len = fit(&full, text_avail, px).len();
+        Some(StatusLine {
+            full,
+            fit_len,
+            avail,
+        })
+    }
+
+    /// The persistent status line (F3): slot strip, volume, filter, aspect, native size, frame counter.
+    fn draw_status_line(
+        &self,
+        c: &mut font::Canvas,
+        area: Rect,
+        st: &Status,
+        px: usize,
+        margin: usize,
+        badge_px: usize,
+    ) {
+        let Some(sl) = Self::status_line_layout(area, st, px, margin, badge_px) else {
             return;
         };
-        let full = status_text(st);
-        let line = fit(&full, text_avail, px);
-        let panel_w = (strip_w + pad + font::text_width(line) * px + 2 * pad).min(avail.max(1));
+        let line = sl.rendered();
+        let pad = 2 * px;
+        let strip_w = slot_strip_width(px);
+        // Every width below comes from the layout above — including `sl.avail`, which already has the badge's
+        // reservation taken out of it. Nothing here re-derives a budget.
+        let panel_w = (strip_w + pad + font::text_width(line) * px + 2 * pad).min(sl.avail.max(1));
         let panel_h = font::GLYPH_H * px + 2 * pad;
-        if area.h < margin + panel_h {
-            return; // the picture is too short for a line of text to sit inside it
-        }
         let ox = (area.x + margin) as i32;
         let oy = (area.y + margin) as i32;
         c.fill_rect(ox, oy, panel_w, panel_h, 0x0000_0000, font::PANEL_ALPHA);
@@ -382,22 +471,46 @@ impl Overlay {
         c.text(x + (strip_w + pad) as i32, y, px, INFO, line);
     }
 
+    /// **The toasts that actually reach the glass**, newest first — the order [`draw_toasts`] paints them —
+    /// each with its row index in the stack and how many bytes of its text survive [`fit`].
+    ///
+    /// Extracted for the same reason [`status_line_layout`](Self::status_line_layout) was: the readout and
+    /// the paint must be one computation. Both exclusions are load-bearing and neither is an error — the
+    /// stack can run off the top of the picture, and a picture can be too narrow for even one glyph — and a
+    /// reader that reported those toasts would be reporting text that is not on screen.
+    ///
+    /// The row index is carried rather than re-derived because it is **not** the position in this list: a
+    /// toast whose text fits no glyph is skipped but still consumes its slot in the stack, so re-numbering
+    /// the survivors would slide every toast above it down one row.
+    fn visible_toasts(&self, area: Rect, px: usize, margin: usize) -> Vec<(usize, &Toast, usize)> {
+        let pad = 2 * px;
+        let row_h = font::LINE_H * px + 2 * pad;
+        let bottom = (area.y + area.h) as i32 - margin as i32;
+        let mut out = Vec::new();
+        for (i, t) in self.toasts().rev().enumerate() {
+            let y = bottom - ((i + 1) * row_h) as i32;
+            if y < area.y as i32 {
+                break; // the stack has reached the top of the picture — never spill into the letterbox
+            }
+            let fit_len = fit(&t.text, area.w.saturating_sub(2 * margin + 2 * pad), px).len();
+            if fit_len == 0 {
+                continue; // the picture is too narrow for even one glyph — draw no bare panel either
+            }
+            out.push((i, t, fit_len));
+        }
+        out
+    }
+
     /// Toasts, stacked upward from the bottom-left corner with the newest at the bottom.
     fn draw_toasts(&self, c: &mut font::Canvas, area: Rect, px: usize, margin: usize) {
         let pad = 2 * px;
         let row_h = font::LINE_H * px + 2 * pad;
         let left = (area.x + margin) as i32;
         let bottom = (area.y + area.h) as i32 - margin as i32;
-        for (i, t) in self.toasts().rev().enumerate() {
+        for (i, t, fit_len) in self.visible_toasts(area, px, margin) {
             let y = bottom - ((i + 1) * row_h) as i32;
-            if y < area.y as i32 {
-                break; // the stack has reached the top of the picture — never spill into the letterbox
-            }
             let alpha = t.alpha();
-            let text = fit(&t.text, area.w.saturating_sub(2 * margin + 2 * pad), px);
-            if text.is_empty() {
-                continue; // the picture is too narrow for even one glyph — draw no bare panel either
-            }
+            let text = &t.text[..fit_len];
             let panel_w = font::text_width(text) * px + 2 * pad;
             c.fill_rect(
                 left,
@@ -415,6 +528,27 @@ impl Overlay {
                 text,
             );
         }
+    }
+}
+
+/// The status line as it will be painted: what it says, and how much of it fits.
+///
+/// `fit_len` is a **byte** length, taken from [`fit`]'s own return rather than recomputed, so
+/// `full[..fit_len]` is guaranteed to land on a character boundary.
+struct StatusLine {
+    /// The source string [`status_text`] composed.
+    full: String,
+    /// Bytes of [`full`](StatusLine::full) that survive [`fit`] at this geometry.
+    fit_len: usize,
+    /// Device pixels the line's panel may occupy, badge reservation already deducted. Only the paint uses
+    /// it; it is carried here so `draw_status_line` does not re-derive a budget this function already knew.
+    avail: usize,
+}
+
+impl StatusLine {
+    /// What is actually on the glass — a prefix of [`full`](StatusLine::full).
+    fn rendered(&self) -> &str {
+        &self.full[..self.fit_len]
     }
 }
 
@@ -1487,6 +1621,177 @@ mod tests {
         assert_ne!(
             occupied_ink, empty_ink,
             "occupied and empty slots look different"
+        );
+    }
+
+    // ---------------------------------------------------------------- the readout (§11.29, CR-H)
+
+    /// Ink anywhere in the picture that is not the background — the whole overlay's, not one surface's.
+    fn overlay_ink(o: &Overlay, w: usize, h: usize, st: &Status) -> usize {
+        let mut buf = vec![GROUND; w * h];
+        o.draw(&mut buf, w, h, whole(w, h), st);
+        buf.iter().filter(|&&p| p != GROUND).count()
+    }
+
+    /// The one surface of a given kind, or a loud failure. "Couldn't find it" must never read as zero.
+    fn only(
+        v: &[crate::screen_text::Surface],
+        k: crate::screen_text::Kind,
+    ) -> &crate::screen_text::Surface {
+        let hits: Vec<_> = v.iter().filter(|s| s.kind == k).collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "expected exactly one {k:?} surface, got {}: {v:?}",
+            hits.len()
+        );
+        hits[0]
+    }
+
+    /// **The readout may not report text the paint did not put on the glass, and may not omit text it did.**
+    ///
+    /// This is the property the whole feature rests on, and it is checked against **pixels** rather than
+    /// against a second copy of the layout arithmetic — which would agree with itself and prove nothing.
+    /// Swept across window heights from far below the overlay's floor to well above it, so both `None`
+    /// branches of `status_line_layout` (too narrow for the strip, too short for a row) are exercised
+    /// alongside the ordinary case.
+    ///
+    /// The nothing-else-on setup is load-bearing: with no toasts, no badge and no banner, every non-ground
+    /// pixel in the picture belongs to the status line, so ink is a witness for *that* surface.
+    #[test]
+    fn the_readout_reports_the_status_line_exactly_when_the_paint_draws_one() {
+        let st = status(); // default layers, so no badge; not paused, so no banner
+        let mut o = Overlay::new();
+        o.status_line = true;
+        let mut saw_drawn = 0;
+        let mut saw_absent = 0;
+        for h in [8usize, 12, 16, 24, 32, 48, 64, 96, 128, 224, 448, 672, 896] {
+            let w = h * 4 / 3;
+            let ink = overlay_ink(&o, w, h, &st);
+            let reported = o
+                .text_surfaces(whole(w, h), &st)
+                .iter()
+                .any(|s| s.kind == crate::screen_text::Kind::StatusLine);
+            assert_eq!(
+                reported,
+                ink > 0,
+                "{w}x{h}: the readout says {reported} and the glass has {ink} ink pixels — a readout \
+                 that disagrees with the paint is exactly the lie this method exists to catch"
+            );
+            if reported {
+                saw_drawn += 1;
+            } else {
+                saw_absent += 1;
+            }
+        }
+        // Without this the row above is vacuous: a `text_surfaces` that returned nothing and a `draw` that
+        // painted nothing would agree at every size, and the sweep would be green having tested neither
+        // branch. Both must actually occur.
+        assert!(
+            saw_drawn > 0 && saw_absent > 0,
+            "the sweep never saw both states ({saw_drawn} drawn, {saw_absent} absent) — widen it rather \
+             than trusting it"
+        );
+    }
+
+    /// **The whole rendered string, not the fields this parcel added.**
+    ///
+    /// At the sizes the player actually runs at, the reported `rendered` is the *entire* status line and
+    /// `truncated` is false; at the 224px floor it is a strict, non-empty prefix and `truncated` is true.
+    /// Both halves are asserted against [`status_text`] — the composer itself — rather than against a
+    /// literal copied from a nearby pin, so a change to the line's content moves this test with it instead
+    /// of leaving it agreeing with a stale transcription.
+    #[test]
+    fn the_readout_carries_the_source_string_and_the_prefix_that_survived() {
+        let st = status();
+        let full = status_text(&st);
+        let mut o = Overlay::new();
+        o.status_line = true;
+
+        for h in [448usize, 672, 896] {
+            let v = o.text_surfaces(whole(h * 4 / 3, h), &st);
+            let s = only(&v, crate::screen_text::Kind::StatusLine);
+            assert_eq!(
+                s.text, full,
+                "{h}: the source string is what `status_text` composed"
+            );
+            assert_eq!(
+                s.rendered, full,
+                "{h}: a 2x window and above shows the whole line — if this now truncates, the player \
+                 regressed and this is where it is visible"
+            );
+        }
+
+        // The floor. The line does not fit here, and the readout must say so rather than reporting the
+        // message as though it were on screen.
+        let v = o.text_surfaces(whole(224 * 4 / 3, 224), &st);
+        let s = only(&v, crate::screen_text::Kind::StatusLine);
+        assert_eq!(
+            s.text, full,
+            "the source is the whole line even at the floor"
+        );
+        assert!(
+            !s.rendered.is_empty()
+                && s.rendered.len() < full.len()
+                && full.starts_with(&s.rendered),
+            "at 224px the line is cut: rendered must be a strict non-empty prefix of text, got \
+             {:?} against {full:?}",
+            s.rendered
+        );
+    }
+
+    /// **Toasts: only the ones that reached the glass, oldest first, each with what survived.**
+    ///
+    /// The stack bound is the interesting half. `MAX_TOASTS` live messages in a picture with room for two
+    /// rows means three of them are on no part of the screen, and a readout that listed all five would be
+    /// reporting text a human cannot see — the same defect as reporting an un-truncated string.
+    #[test]
+    fn the_readout_lists_the_toasts_that_reached_the_glass_oldest_first() {
+        let mut o = Overlay::new();
+        for n in 0..MAX_TOASTS {
+            o.push(format!("MESSAGE {n}"), INFO);
+        }
+        let area = whole(640, 480);
+        let px = Overlay::font_scale(area.h.max(1));
+        let margin = (2 * px).max(4);
+
+        let v = o.text_surfaces(area, &status());
+        let toasts: Vec<&crate::screen_text::Surface> = v
+            .iter()
+            .filter(|s| s.kind == crate::screen_text::Kind::Toast)
+            .collect();
+        assert_eq!(
+            toasts.len(),
+            o.visible_toasts(area, px, margin).len(),
+            "the readout must list exactly the toasts the paint reaches, no more"
+        );
+        assert!(
+            !toasts.is_empty(),
+            "COULD NOT MEASURE: no toast reached the glass at 640x480"
+        );
+        // Oldest first — the order they were posted, which is the reverse of the paint's bottom-up stack.
+        let texts: Vec<&str> = toasts.iter().map(|s| s.text.as_str()).collect();
+        let mut sorted = texts.clone();
+        sorted.sort_unstable();
+        assert_eq!(texts, sorted, "posted order, oldest first: {texts:?}");
+
+        // A picture with room for only the bottom two rows: the stack runs off the top, and the readout
+        // must shorten with it rather than reporting messages that are not on screen.
+        let cramped = whole(640, 32);
+        let cpx = Overlay::font_scale(cramped.h.max(1));
+        let n_paint = o.visible_toasts(cramped, cpx, (2 * cpx).max(4)).len();
+        let n_read = o
+            .text_surfaces(cramped, &status())
+            .iter()
+            .filter(|s| s.kind == crate::screen_text::Kind::Toast)
+            .count();
+        assert_eq!(
+            n_read, n_paint,
+            "the cramped stack must shorten the readout too"
+        );
+        assert!(
+            n_paint < MAX_TOASTS,
+            "COULD NOT MEASURE: 640x32 still fits every toast, so the bound was never exercised"
         );
     }
 

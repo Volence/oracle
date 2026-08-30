@@ -591,7 +591,24 @@ pub const METHODS: &[MethodSpec] = &[
                   that drew it — with each half naming its own unavailability",
         params: &["x", "y"],
     },
+    MethodSpec {
+        name: "emulator/screen_text",
+        handler: Engine::screen_text,
+        summary: "the text on the player's window — source and rendered both, per surface; refuses when \
+                  there is no window",
+        params: &[],
+    },
 ];
+
+/// The cap on how many surfaces one `emulator/screen_text` reply carries.
+///
+/// **A policy bound, and it is honest about being one.** The player's own surfaces are bounded already —
+/// one title bar, one status line, at most `MAX_TOASTS` toasts — but the palette can list one row per file
+/// in a directory, so the list is not bounded by the *design*. The reply therefore carries
+/// `total`/`returned`/`truncated` (§2.4's flat spelling) and this cap makes `truncated` mean something
+/// instead of being decorative. It is deliberately not a `cursor`: §2.4 clause (b) forbids a continuation
+/// token on a method that accepts no continuation param, and this one accepts no params at all.
+const MAX_SCREEN_SURFACES: usize = 64;
 
 /// The events this server actually emits. Advertised verbatim as `capabilities.events`, which
 /// `protocol.md` §2.1 calls *"the authoritative event set"* — so it lists what we push, not what the
@@ -801,6 +818,86 @@ pub struct Engine {
     /// declared on the wire (`source: "stateRender"` plus a caveat naming the mask) rather than silently
     /// handing back an unmasked picture in answer to a masked question.
     layers: LayerMask,
+    /// **The text a human can read on the player's window** (`emulator/screen_text`, §11.29 / CR-H).
+    ///
+    /// A snapshot of strings the frontend *already composed for drawing*, pushed once per present through
+    /// [`Host::set_screen_text`](crate::host::Host::set_screen_text) — the same seam shape as
+    /// [`set_live_pads`](Engine::set_live_pads). Never composed here: a handler that asked the frontend to
+    /// *build* the text would run UI composition at an arbitrary point in the frame, which is the one
+    /// version of this feature that could perturb anything. CR-H §7 refuses that design by name.
+    ///
+    /// It sits **here, on the engine**, for exactly the reasons [`layers`](Engine::layers) does, and the
+    /// three properties are the whole reason the placement is not a filing decision:
+    ///
+    /// * **It is not machine state.** No `System` and no `Vdp` holds it, so it is in no bincode snapshot
+    ///   and no `state_hash`/`memory_hash` input — those cannot see it even in principle.
+    /// * **`reset` / `reload_rom` / `restore` cannot touch it.** All three replace `self.sys`; the glass
+    ///   still says what it says.
+    /// * **It cannot perturb emulation.** Nothing here reaches a render. The one render that writes to the
+    ///   chip (`Vdp::render_scanline`, which commits the sprite-overflow / collision latches) is not on any
+    ///   path from this field.
+    ///
+    /// **`None` means there is no window**, and that is load-bearing rather than incidental: a windowed
+    /// player showing *no* text is the ordinary default launch state and pushes `Some(vec![])`. An empty
+    /// list and an absent display must therefore stay distinguishable, which is why the handler REFUSES
+    /// (`-32005`, `reason: "noDisplay"`) instead of serving an empty list. A headless `oracle-aether` never
+    /// leaves `None`.
+    screen_text: Option<Vec<ScreenSurface>>,
+}
+
+/// Which text surface of the player one [`ScreenSurface`] came from — the contract's closed `kind` enum
+/// (`emulator/screen_text`, §11.29).
+///
+/// Closed rather than free-form so that adding a surface is a contract edit rather than a silent drift.
+/// `TitleBar` is drawn by the **window manager**, not by the overlay, which is why the method is named
+/// `screen_text` and not `overlay_*`: an enumeration of the overlay's own draw calls misses it entirely,
+/// and so does any OCR of the presented framebuffer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScreenSurfaceKind {
+    StatusLine,
+    Toast,
+    Palette,
+    Lens,
+    TitleBar,
+}
+
+impl ScreenSurfaceKind {
+    /// The wire spelling. The `enum` in the schema fragment is the authority; this is the only place the
+    /// strings are written, so a handler cannot invent a sixth.
+    pub fn wire(self) -> &'static str {
+        match self {
+            Self::StatusLine => "statusLine",
+            Self::Toast => "toast",
+            Self::Palette => "palette",
+            Self::Lens => "lens",
+            Self::TitleBar => "titleBar",
+        }
+    }
+}
+
+/// One text surface as the player composed it, and as it actually reached the glass.
+///
+/// **Both strings, deliberately.** `rendered`-only reports the message's shadow — a caller asking *"did the
+/// player say why the ROM failed to open"* sees `…/LOCKED (PE` and cannot tell that `Permission denied` was
+/// lost. `text`-only is structurally blind to the entire truncation defect class: it would report text that
+/// is *not on screen* as though it were, which makes the readout useless for the one question it exists to
+/// answer. Serving both costs near nothing, because the player's `fit` returns a borrowed prefix of a string
+/// it composed anyway.
+///
+/// `truncated` is **not** carried here: the handler derives it from the two strings at serialisation time,
+/// so a producer cannot set a flag that disagrees with the pair it sits beside.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScreenSurface {
+    pub kind: ScreenSurfaceKind,
+    /// The SOURCE string the player composed.
+    pub text: String,
+    /// What is actually on the glass, after the player's own fit/truncation. A prefix of [`text`] today.
+    pub rendered: String,
+    /// Characters in [`text`](ScreenSurface::text) for which the player has no glyph — it draws a hollow
+    /// box where they should be. Neither `text` nor `rendered` can express that, which is why the field
+    /// exists: it turns a defect class with no observer into one a test can assert on. Empty when none,
+    /// and REQUIRED so that "absent" and "none" are not the same artifact.
+    pub unrenderable: Vec<String>,
 }
 
 /// What one advancing run did, in the terms its caller has to branch on.
@@ -1082,6 +1179,10 @@ impl Engine {
             // to the code that ran before the mask existed, so a server nobody has masked anything on
             // behaves exactly as it did.
             layers: LayerMask::ALL,
+            // `None` until a frontend pushes one, and it stays `None` for the whole life of a headless
+            // server — which is what makes `emulator/screen_text`'s refusal the truth rather than a
+            // placeholder.
+            screen_text: None,
         }
     }
 
@@ -1123,6 +1224,19 @@ impl Engine {
     /// machine, so it is safe to call outside a drain window.
     pub fn set_live_pads(&mut self, pads: [Pad; 2]) {
         self.live = pads;
+    }
+
+    /// Publish the text the player's present just put on the glass (`emulator/screen_text`).
+    ///
+    /// Pure state, exactly like [`set_live_pads`](Engine::set_live_pads): it never touches the machine, so
+    /// it is safe to call outside a drain window, and it is invisible to every frozen currency
+    /// ([`screen_text`](Engine::screen_text) explains why the field lives here rather than in `System`).
+    ///
+    /// Calling this at all is what tells the engine a window exists. **An empty `Vec` is a legitimate,
+    /// meaningful push** — a player with F3 off, no toasts and nothing else on draws no characters at all,
+    /// and that is the default launch — so it must never be elided into "do not push".
+    pub fn set_screen_text(&mut self, surfaces: Vec<ScreenSurface>) {
+        self.screen_text = Some(surfaces);
     }
 
     /// Free-run mode, set from outside. **Hosted, this is the player's own pause state**: while the player is
@@ -2241,12 +2355,75 @@ impl Engine {
             "romPath": self.rom_path.clone(),
             "romBytes": self.sys.rom().len(),
             "romLoading": false,
+            // §11.29's rider (CR-H). Always emitted, in both directions: a caller that has to *probe*
+            // `emulator/screen_text` by provoking a refusal cannot tell "no window" from "the call went
+            // wrong", and an absent key would put it right back to guessing. Derived from the one field
+            // the refusal is derived from, so the two can never disagree.
+            "display": self.screen_text.is_some(),
         });
         if let Some((name, disp)) = self.symbol_at(pc) {
             out["symbolAtPc"] = json!(name);
             out["symbolDisp"] = json!(disp);
         }
         Ok(out)
+    }
+
+    /// **`emulator/screen_text`** (§11.29 / CR-H) — the text a human can read on the player window.
+    ///
+    /// A pure read of [`screen_text`](Engine::screen_text): no composition, no render, no `System` access,
+    /// no timeline mutation. §6's run-control rule therefore does not reach it and it needs neither
+    /// `require_paused` nor a `machineRunning` refusal.
+    ///
+    /// **The refusal, and why an empty list is forbidden.** The same `METHODS` list is served by a headless
+    /// server *and* by the player, and "a window showing no text" is the default launch state — it already
+    /// means something. An empty list would make *there is no screen* and *the screen is blank* the same
+    /// artifact, which is this suite's recurring defect and the exact shape of a silent skip that reads as a
+    /// pass. So no window is `-32005` with `reason: "noDisplay"` — §5's typed discriminant, the field
+    /// clients branch on everywhere else on this bus — and `emulator/status`'s `display` lets a caller ask
+    /// rather than probe by failing.
+    ///
+    /// **`truncated` is derived here, per surface, from `rendered != text`**, rather than carried across the
+    /// seam. A producer cannot then publish a flag that disagrees with the pair beside it; a caller that
+    /// wants the honest reading compares the two strings itself, which is what the fragment says the
+    /// convenience flag is not a substitute for.
+    ///
+    /// **No number inside any of these strings is a bus field.** The status line's `F` is the window's own
+    /// presentation counter (`F-WINDOW-BUS-FRAME-OFFBYONE`): it counts run *iterations*, so a mid-frame
+    /// breakpoint stop adds a permanent +1 that never self-corrects, and a state load rewinds the clock
+    /// while leaving it alone. This method serves the window's text **as text** and makes no claim that any
+    /// number in it corresponds to `frameToken`.
+    fn screen_text(&mut self, _params: &Value) -> Result<Value, RpcError> {
+        let Some(all) = self.screen_text.as_ref() else {
+            return Err(RpcError::invalid_state(
+                "noDisplay",
+                "this server has no window; screen text exists only in a hosted player",
+                Value::Null,
+            ));
+        };
+        let total = all.len();
+        let surfaces: Vec<Value> = all
+            .iter()
+            .take(MAX_SCREEN_SURFACES)
+            .map(|s| {
+                json!({
+                    "kind": s.kind.wire(),
+                    "text": s.text,
+                    "rendered": s.rendered,
+                    // Derived, never carried. See the note above.
+                    "truncated": s.rendered != s.text,
+                    "unrenderable": s.unrenderable,
+                })
+            })
+            .collect();
+        Ok(json!({
+            "surfaces": surfaces,
+            "total": total,
+            "returned": surfaces.len(),
+            // §2.4 clause (a): REQUIRED even when false, so an absent field and a `false` one are not the
+            // same artifact. Cursor-less by §2.4 clause (b) — this method accepts no continuation, so it
+            // may not mint a token that can never be handed back.
+            "truncated": total > surfaces.len(),
+        }))
     }
 
     fn registers(&mut self, _params: &Value) -> Result<Value, RpcError> {

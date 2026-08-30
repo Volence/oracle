@@ -9,6 +9,7 @@
 
 #![cfg(unix)]
 
+use oracle_aether::engine::{ScreenSurface, ScreenSurfaceKind};
 use oracle_aether::host::{Host, HostConfig, MachineInfo, HOSTED_MAX_RUN_FRAMES};
 use oracle_core::scanline_capture::{Retain, ScanlineCapture};
 use oracle_core::system::System;
@@ -41,6 +42,15 @@ struct Player {
 
 impl Player {
     fn start(tag: &str) -> Self {
+        Self::start_with(tag, None)
+    }
+
+    /// A player that also publishes screen text once per iteration, the way the real run loop publishes it
+    /// once per present (`oracle-frontend/src/main.rs`, at the bottom of the present block).
+    ///
+    /// `None` is a player that never pushes — the state the real one is in before its first present, and
+    /// the state a `--no-default-features` build is in forever.
+    fn start_with(tag: &str, screen: Option<Vec<ScreenSurface>>) -> Self {
         let socket = temp_socket(tag);
         let stop = Arc::new(AtomicBool::new(false));
         let iterations = Arc::new(AtomicU64::new(0));
@@ -91,6 +101,11 @@ impl Player {
                         }
                         host.publish_capture(&cap);
                         cap.clear();
+                    }
+                    // **Where the real loop pushes it**: after every surface has finished drawing and
+                    // before the next drain, so what a client reads is the frame that is on the glass.
+                    if let Some(s) = &screen {
+                        host.set_screen_text(s.clone());
                     }
                     host.set_paused(paused);
                     host.pump(&mut sys);
@@ -757,5 +772,222 @@ fn a_breakpoint_the_rom_never_reaches_does_not_halt_the_window() {
         c.stops().is_empty(),
         "and nothing was announced: {:?}",
         c.stops()
+    );
+}
+
+// ------------------------------------------------------------------ screen text (§11.29, CR-H)
+
+/// The snapshot a player would push, with every honest-reading case in one screen.
+///
+/// **Not invented shapes.** Each row is a string the real frontend actually composes, so what this drives
+/// through the handler is the traffic the method exists for:
+///
+/// * the **title bar** — `main.rs`'s `format!("Oracle — frame {frame} [PAUSED]")`, drawn by the window
+///   manager and therefore invisible to any OCR of the presented framebuffer;
+/// * a **status line** that was cut by the player's own `fit`, which is the defect class
+///   (`F-TOAST-TRUNCATES`) that `rendered` exists to make visible;
+/// * the player's **very first toast**, ``PRESS ` FOR COMMANDS`` (`main.rs`), whose backtick this font has
+///   no glyph for — so the window shows a hollow box where a character should be, and `unrenderable` is
+///   the only field on the wire that can say so.
+fn a_screen() -> Vec<ScreenSurface> {
+    vec![
+        ScreenSurface {
+            kind: ScreenSurfaceKind::TitleBar,
+            text: "Oracle — frame 12720 [PAUSED]".into(),
+            rendered: "Oracle — frame 12720 [PAUSED]".into(),
+            unrenderable: vec![],
+        },
+        ScreenSurface {
+            kind: ScreenSurfaceKind::StatusLine,
+            text: "AETHER ON 4:3 320X224 F12720".into(),
+            rendered: "AETHER ON 4:3 320X2".into(),
+            unrenderable: vec![],
+        },
+        ScreenSurface {
+            kind: ScreenSurfaceKind::Toast,
+            text: "PRESS ` FOR COMMANDS".into(),
+            rendered: "PRESS ` FOR COMMANDS".into(),
+            unrenderable: vec!["`".into()],
+        },
+    ]
+}
+
+/// **A player that has published its screen serves it, whole.**
+///
+/// Asserted as the **entire** reply object rather than field by field. The status line is a fixed-width
+/// surface that truncates silently from the right, and a test that checks only the field it cares about is
+/// blind to whatever it displaced — this repo's 2026-08-29 bar. So the shape, the derived flags and the
+/// stamp keys are all pinned in one comparison, and a key that appeared or vanished fails here.
+#[test]
+fn a_player_that_published_its_screen_serves_every_surface_with_both_strings() {
+    let p = Player::start_with("screentext", Some(a_screen()));
+    let mut c = Client::connect(&p);
+    c.handshake(false);
+    // One full iteration, so the push has certainly landed before the read.
+    p.expect_progress(
+        2,
+        "the player must present at least once before its text exists",
+    );
+
+    let r = c.ok("emulator/screen_text", json!({}));
+    // Printed so the vectors handed to the hub can be shown to come from here — a real handler reached
+    // through the real seam over a real socket — rather than from a cover note claiming they do.
+    println!("REAL REPLY emulator/screen_text = {r}");
+
+    // The stamp rides on every reply (§2.2) and is not this method's business; drop it so the comparison
+    // below is about the method's own shape, and assert its presence separately rather than silently.
+    for k in ["frame", "mclk", "running", "droppedEvents"] {
+        assert!(
+            r.get(k).is_some(),
+            "the reply lost its stamp key `{k}`: {r}"
+        );
+    }
+    let mut body = r.clone();
+    let obj = body.as_object_mut().unwrap();
+    for k in ["frame", "mclk", "running", "droppedEvents"] {
+        obj.remove(k);
+    }
+
+    assert_eq!(
+        body,
+        json!({
+            "surfaces": [
+                {
+                    "kind": "titleBar",
+                    "text": "Oracle — frame 12720 [PAUSED]",
+                    "rendered": "Oracle — frame 12720 [PAUSED]",
+                    "truncated": false,
+                    "unrenderable": [],
+                },
+                {
+                    "kind": "statusLine",
+                    "text": "AETHER ON 4:3 320X224 F12720",
+                    "rendered": "AETHER ON 4:3 320X2",
+                    "truncated": true,
+                    "unrenderable": [],
+                },
+                {
+                    "kind": "toast",
+                    "text": "PRESS ` FOR COMMANDS",
+                    "rendered": "PRESS ` FOR COMMANDS",
+                    "truncated": false,
+                    "unrenderable": ["`"],
+                },
+            ],
+            "total": 3,
+            "returned": 3,
+            "truncated": false,
+        }),
+        "the whole reply, not just the fields this test added"
+    );
+
+    // The rider must agree with what the method just did. Either alone can be right while the pair is
+    // wrong, and the pair being wrong is what a caller would trust first.
+    let st = c.ok("emulator/status", json!({}));
+    assert_eq!(
+        st["display"],
+        json!(true),
+        "a hosted player has a display: {st}"
+    );
+}
+
+/// **`truncated` is DERIVED at the wire, never carried.** A producer cannot publish a flag that disagrees
+/// with the two strings beside it, because there is no flag to publish.
+///
+/// The poison this rules out is specific: a snapshot whose `rendered` equals its `text` but which *claims*
+/// truncation (or the reverse) would let a caller trust a convenience field over the honest comparison the
+/// fragment says is the real guard. Here the producer has no way to express that at all — which is the
+/// point, and this test is what makes the absence observable.
+#[test]
+fn the_truncated_flag_is_derived_from_the_two_strings_and_not_from_the_producer() {
+    let p = Player::start_with(
+        "screentext-derived",
+        Some(vec![
+            // Equal strings — must be `false`.
+            ScreenSurface {
+                kind: ScreenSurfaceKind::Toast,
+                text: "WHOLE".into(),
+                rendered: "WHOLE".into(),
+                unrenderable: vec![],
+            },
+            // A prefix — must be `true`.
+            ScreenSurface {
+                kind: ScreenSurfaceKind::Toast,
+                text: "WHOLE".into(),
+                rendered: "WHO".into(),
+                unrenderable: vec![],
+            },
+            // Empty rendered against non-empty text: the picture was too narrow for even one glyph. Still
+            // truncation, and the loudest case of it — the message is on no part of the glass.
+            ScreenSurface {
+                kind: ScreenSurfaceKind::Toast,
+                text: "WHOLE".into(),
+                rendered: String::new(),
+                unrenderable: vec![],
+            },
+        ]),
+    );
+    let mut c = Client::connect(&p);
+    c.handshake(false);
+    p.expect_progress(
+        2,
+        "the player must present at least once before its text exists",
+    );
+
+    let r = c.ok("emulator/screen_text", json!({}));
+    let s = r["surfaces"].as_array().expect("surfaces is an array");
+    assert_eq!(s.len(), 3, "all three rows must survive: {r}");
+    assert_eq!(s[0]["truncated"], json!(false), "equal strings: {}", s[0]);
+    assert_eq!(s[1]["truncated"], json!(true), "a prefix: {}", s[1]);
+    assert_eq!(
+        s[2]["truncated"],
+        json!(true),
+        "nothing survived, which is truncation at its loudest: {}",
+        s[2]
+    );
+}
+
+/// **A window showing nothing is not the same artifact as no window** — the whole reason the refusal exists.
+///
+/// The pair is the assertion. A player that has published an *empty* screen succeeds with `surfaces: []`;
+/// a player that has published nothing at all refuses. If either half changed to match the other, the two
+/// states would become indistinguishable on the wire, which is the defect §11.29 names.
+#[test]
+fn a_blank_screen_succeeds_where_no_screen_refuses() {
+    let blank = Player::start_with("screentext-blank", Some(vec![]));
+    let mut c = Client::connect(&blank);
+    c.handshake(false);
+    blank.expect_progress(2, "the player must present at least once");
+    let r = c.ok("emulator/screen_text", json!({}));
+    println!("REAL REPLY emulator/screen_text (blank screen) = {r}");
+    assert_eq!(
+        r["surfaces"],
+        json!([]),
+        "F3 off, no toasts, nothing on: the default launch, and it is a SUCCESS: {r}"
+    );
+    assert_eq!(r["total"], json!(0), "{r}");
+    assert_eq!(r["returned"], json!(0), "{r}");
+    assert_eq!(
+        r["truncated"],
+        json!(false),
+        "§2.4 clause (a): present even when false, so absent and false are not the same artifact: {r}"
+    );
+    assert_eq!(
+        c.ok("emulator/status", json!({}))["display"],
+        json!(true),
+        "the window exists; it is merely blank"
+    );
+
+    let none = Player::start("screentext-none");
+    let mut c2 = Client::connect(&none);
+    c2.handshake(false);
+    none.expect_progress(2, "the player must turn over");
+    let e = c2.err("emulator/screen_text", json!({}));
+    assert_eq!(e["code"], json!(-32005), "{e}");
+    assert_eq!(e["data"]["reason"], json!("noDisplay"), "{e}");
+    assert_eq!(
+        c2.ok("emulator/status", json!({}))["display"],
+        json!(false),
+        "a player that has never presented has nothing to report yet, and says so"
     );
 }

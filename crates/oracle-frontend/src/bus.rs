@@ -177,6 +177,37 @@ impl Bus {
         self.host.set_live_pads(pads);
     }
 
+    /// **Publish the text this present just put on the glass**, so `emulator/screen_text` can answer with
+    /// what a human can actually read on the window (contract §11.29, CR-H).
+    ///
+    /// The only place the frontend's presentation model
+    /// ([`screen_text::Surface`](crate::screen_text::Surface)) becomes the bus's, and it is a translation and
+    /// nothing else — no fitting, no composing, no filtering. The two types exist for the same reason
+    /// [`MachineInfo`] has a twin in `bus_stub`: a build without the `aether` feature does not depend on
+    /// `oracle-aether` at all, so the run loop's own vocabulary cannot be the bus's.
+    ///
+    /// `truncated` is not carried across: the engine derives it from `rendered != text`, so there is no flag
+    /// here that could disagree with the pair beside it.
+    pub fn set_screen_text(&mut self, surfaces: Vec<crate::screen_text::Surface>) {
+        use crate::screen_text::Kind;
+        use oracle_aether::engine::{ScreenSurface, ScreenSurfaceKind};
+        self.host.set_screen_text(
+            surfaces
+                .into_iter()
+                .map(|s| ScreenSurface {
+                    kind: match s.kind {
+                        Kind::TitleBar => ScreenSurfaceKind::TitleBar,
+                        Kind::StatusLine => ScreenSurfaceKind::StatusLine,
+                        Kind::Toast => ScreenSurfaceKind::Toast,
+                    },
+                    text: s.text,
+                    rendered: s.rendered,
+                    unrenderable: s.unrenderable,
+                })
+                .collect(),
+        );
+    }
+
     /// **Conflict 4: the watch instrument the player's own run loop must feed.**
     ///
     /// The player owns the loop, so a `Watchpoints` that only the bus's own runs fed would see nothing while

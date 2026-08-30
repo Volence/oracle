@@ -124,6 +124,11 @@ impl Bus {
 
     pub fn set_live_pads(&mut self, _pads: [Pad; 2]) {}
 
+    /// The screen-text seam, inert. Unreachable in practice as well as inert: the run loop only builds a
+    /// snapshot when [`is_serving`](Self::is_serving) is true, and in this build it never is. Present so the
+    /// loop keeps one shape — the whole reason this file exists.
+    pub fn set_screen_text(&mut self, _surfaces: Vec<crate::screen_text::Surface>) {}
+
     /// The panel's instrument. Same signature as the served build's, so the run loop is one shape.
     pub fn watchpoints_mut(&mut self) -> &mut Watchpoints {
         &mut self.watchpoints

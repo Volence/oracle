@@ -1,0 +1,233 @@
+{
+ "$comment": "CR-H / protocol.md §11.29 wire vectors for emulator/screen_text and its emulator/status.display rider, authored by the oracle lane. Ruling: empyrean 98f1b60 (ADOPT WITH CHANGES), vendored at origin/main tip 2ea88703. ⚠ PROVENANCE, STATED PLAINLY SO A GREEN RUN IS NOT READ AS MORE THAN IT IS: the REFUSAL case is a real end-to-end capture from a live headless oracle-aether over a real socket. The two POPULATED cases are real replies from the real handler reached through the real seam by a test harness that pushes a snapshot — NOT captures from a live window, because this lane may not launch the player. Every string in them is one the frontend genuinely composes. The four failing cases are that same real reply with exactly one field mutated each. ⚠ RESIDUE: the substance of §11.29 that a document schema CANNOT see — that the refusal is emitted iff no window exists, that `reason` is spelled `noDisplay`, that `rendered` is what the player's own `fit` returned rather than a plausible prefix, and that `unrenderable` names the characters the font really lacks — is all SERVER BEHAVIOUR. A reply with a wrong `rendered` is a valid document. Those are oracle conformance rows landing with the serve (crates/oracle-aether/tests/screen_text.rs, tests/hosted.rs, crates/oracle-frontend/src/overlay.rs, src/screen_text.rs), not something this file can check. RUN: these seven cases are executed against the vendored fragment by crates/oracle-aether/tests/screen_text.rs::the_cr_h_vectors_validate_the_way_the_file_says_they_do on every suite run, using the same check_incoming_strict every reply in that suite goes through.",
+ "cases": [
+  {
+   "method": "emulator/screen_text",
+   "kind": "result",
+   "expect": "pass",
+   "doc": {
+    "droppedEvents": 0,
+    "frame": 4,
+    "mclk": 3584196,
+    "returned": 3,
+    "running": true,
+    "surfaces": [
+     {
+      "kind": "titleBar",
+      "rendered": "Oracle — frame 12720 [PAUSED]",
+      "text": "Oracle — frame 12720 [PAUSED]",
+      "truncated": false,
+      "unrenderable": []
+     },
+     {
+      "kind": "statusLine",
+      "rendered": "AETHER ON 4:3 320X2",
+      "text": "AETHER ON 4:3 320X224 F12720",
+      "truncated": true,
+      "unrenderable": []
+     },
+     {
+      "kind": "toast",
+      "rendered": "PRESS ` FOR COMMANDS",
+      "text": "PRESS ` FOR COMMANDS",
+      "truncated": false,
+      "unrenderable": [
+       "`"
+      ]
+     }
+    ],
+    "total": 3,
+    "truncated": false
+   },
+   "why": "§11.29 — THE POPULATED REPLY, and the provenance is stated rather than implied: this document is a REAL reply from the real handler reached through the real seam (`Host::set_screen_text`) over a real socket, printed by `tests/hosted.rs::a_player_that_published_its_screen_serves_every_surface_with_both_strings`. It is NOT a capture from a live window: this lane may not launch the player, so the snapshot was pushed by a test harness standing in for the present block. Every string in it is one the frontend really composes — main.rs's window title, a status line cut by the player's own `fit`, and the player's very first toast, whose backtick this font has no glyph for."
+  },
+  {
+   "method": "emulator/screen_text",
+   "kind": "result",
+   "expect": "pass",
+   "doc": {
+    "droppedEvents": 0,
+    "frame": 4,
+    "mclk": 3584196,
+    "returned": 0,
+    "running": true,
+    "surfaces": [],
+    "total": 0,
+    "truncated": false
+   },
+   "why": "§11.29 — THE BLANK SCREEN, and it is the pair that makes the refusal mean something. A window with F3 off, no toasts and nothing else on draws no characters at all; that is the default launch, and it SUCCEEDS with an empty list. Real reply, same harness (`a_blank_screen_succeeds_where_no_screen_refuses`). Note `truncated: false` is present rather than omitted — §2.4 clause (a)."
+  },
+  {
+   "method": "emulator/screen_text",
+   "kind": "error",
+   "expect": "pass",
+   "doc": {
+    "code": -32005,
+    "data": {
+     "droppedEvents": 0,
+     "frame": 0,
+     "mclk": 0,
+     "reason": "noDisplay",
+     "running": false
+    },
+    "message": "this server has no window; screen text exists only in a hosted player"
+   },
+   "why": "§11.29 — THE REFUSAL, and this one is a genuinely end-to-end capture: a standalone `oracle-aether` has no frontend in the process, so `-32005` with `data.reason: \"noDisplay\"` is the only true answer it can give. Taken from a live server (`oracle-aether vendor/TestRoms/vcounter.bin`, debug build, real Unix socket), not from a harness. ⚠ RESIDUE: the schema types `error.data` as `replyFields` and does not constrain `reason`, so this document would validate with any reason string — the SPELLING is a live conformance row (`tests/screen_text.rs`), not something this file can check. The adjudication changed the CR here: `reason: \"noDisplay\"` per §5, NOT the boolean `noDisplay: true` the CR proposed."
+  },
+  {
+   "method": "emulator/screen_text",
+   "kind": "result",
+   "expect": "fail",
+   "doc": {
+    "droppedEvents": 0,
+    "frame": 4,
+    "mclk": 3584196,
+    "returned": 3,
+    "running": true,
+    "surfaces": [
+     {
+      "kind": "titleBar",
+      "rendered": "Oracle — frame 12720 [PAUSED]",
+      "text": "Oracle — frame 12720 [PAUSED]",
+      "truncated": false,
+      "unrenderable": []
+     },
+     {
+      "kind": "statusLine",
+      "rendered": "AETHER ON 4:3 320X2",
+      "text": "AETHER ON 4:3 320X224 F12720",
+      "truncated": true,
+      "unrenderable": []
+     },
+     {
+      "kind": "toast",
+      "rendered": "PRESS ` FOR COMMANDS",
+      "text": "PRESS ` FOR COMMANDS",
+      "truncated": false
+     }
+    ],
+    "total": 3,
+    "truncated": false
+   },
+   "why": "RED-FIRST, and it is the case the adjudication's second change exists for. The CR left `unrenderable` present-when-non-empty; the ruling made it REQUIRED even when empty, per §2.4 clause (a), because an absent field and an empty one must not be the same artifact. This document is the real reply with the toast's `unrenderable` deleted — exactly what a server that omitted empties would emit — and the fragment must refuse it."
+  },
+  {
+   "method": "emulator/screen_text",
+   "kind": "result",
+   "expect": "fail",
+   "doc": {
+    "droppedEvents": 0,
+    "frame": 4,
+    "mclk": 3584196,
+    "returned": 3,
+    "running": true,
+    "surfaces": [
+     {
+      "kind": "titleBar",
+      "rendered": "Oracle — frame 12720 [PAUSED]",
+      "text": "Oracle — frame 12720 [PAUSED]",
+      "truncated": false,
+      "unrenderable": []
+     },
+     {
+      "kind": "statusLine",
+      "rendered": "AETHER ON 4:3 320X2",
+      "text": "AETHER ON 4:3 320X224 F12720",
+      "unrenderable": []
+     },
+     {
+      "kind": "toast",
+      "rendered": "PRESS ` FOR COMMANDS",
+      "text": "PRESS ` FOR COMMANDS",
+      "truncated": false,
+      "unrenderable": [
+       "`"
+      ]
+     }
+    ],
+    "total": 3,
+    "truncated": false
+   },
+   "why": "RED-FIRST — the per-surface `truncated` is REQUIRED even when false. Deleted here from the ONE surface that was actually cut, which is the worst place to lose it: a caller reading a shortened `rendered` beside no flag has been handed the message's shadow with nothing saying so."
+  },
+  {
+   "method": "emulator/screen_text",
+   "kind": "result",
+   "expect": "fail",
+   "doc": {
+    "droppedEvents": 0,
+    "frame": 4,
+    "mclk": 3584196,
+    "returned": 3,
+    "running": true,
+    "surfaces": [
+     {
+      "kind": "titleBar",
+      "rendered": "Oracle — frame 12720 [PAUSED]",
+      "text": "Oracle — frame 12720 [PAUSED]",
+      "truncated": false,
+      "unrenderable": []
+     },
+     {
+      "kind": "statusLine",
+      "rendered": "AETHER ON 4:3 320X2",
+      "text": "AETHER ON 4:3 320X224 F12720",
+      "truncated": true,
+      "unrenderable": []
+     },
+     {
+      "kind": "toast",
+      "rendered": "PRESS ` FOR COMMANDS",
+      "text": "PRESS ` FOR COMMANDS",
+      "truncated": false,
+      "unrenderable": [
+       "`"
+      ]
+     }
+    ],
+    "total": 3
+   },
+   "why": "RED-FIRST — the RESULT-level `truncated` is REQUIRED even when false (§2.4 clause (a)). Without it a client cannot tell 'you have the whole screen' from 'this server does not say', which is the bounded-list rule's whole point and the reason the flat spelling carries total/returned/truncated at all."
+  },
+  {
+   "method": "emulator/screen_text",
+   "kind": "result",
+   "expect": "fail",
+   "doc": {
+    "droppedEvents": 0,
+    "frame": 4,
+    "mclk": 3584196,
+    "returned": 3,
+    "running": true,
+    "surfaces": [
+     {
+      "kind": "pausedBanner",
+      "rendered": "Oracle — frame 12720 [PAUSED]",
+      "text": "Oracle — frame 12720 [PAUSED]",
+      "truncated": false,
+      "unrenderable": []
+     },
+     {
+      "kind": "statusLine",
+      "rendered": "AETHER ON 4:3 320X2",
+      "text": "AETHER ON 4:3 320X224 F12720",
+      "truncated": true,
+      "unrenderable": []
+     },
+     {
+      "kind": "toast",
+      "rendered": "PRESS ` FOR COMMANDS",
+      "text": "PRESS ` FOR COMMANDS",
+      "truncated": false,
+      "unrenderable": [
+       "`"
+      ]
+     }
+    ],
+    "total": 3,
+    "truncated": false
+   },
+   "why": "RED-FIRST — `kind` is a CLOSED enum. `pausedBanner` is not an idle choice: the PAUSED banner is real text on the glass and the adjudicated enum has no value for it, so a server that decided to serve it anyway would reach for exactly this spelling. Adding a surface must be a contract edit, not a silent drift, and this is the row that makes that true."
+  }
+ ]
+}

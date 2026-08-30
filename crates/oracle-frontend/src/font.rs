@@ -98,6 +98,21 @@ fn glyph(c: char) -> Option<[u8; GLYPH_H]> {
     })
 }
 
+/// **Whether this font can draw `c` at all**, or whether [`Canvas::text`] will substitute the [`MISSING`]
+/// hollow box for it.
+///
+/// The predicate is the drawing path's own — `glyph(c.to_ascii_uppercase())`, exactly the expression at the
+/// top of [`Canvas::text`]'s loop, not a restatement of the table's contents. That matters: the table is
+/// uppercase-only and the case fold happens at draw time, so a check that skipped the fold would call every
+/// lowercase letter unrenderable.
+///
+/// It exists so `emulator/screen_text` can carry `unrenderable` — the one thing neither the source string
+/// nor the rendered string can express, because truncation shortens text and never transliterates it. A
+/// readout without it reports a string whose characters are not the ones on the glass.
+pub fn has_glyph(c: char) -> bool {
+    glyph(c.to_ascii_uppercase()).is_some()
+}
+
 /// Unscaled ink width of `text` in pixels: `ADVANCE * chars - 1` (the trailing inter-glyph gap is not ink).
 /// Zero for the empty string.
 pub fn text_width(text: &str) -> usize {

@@ -14,16 +14,16 @@ an explicit re-vendor commit. That commit is the auditable record of "we adopted
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo revision | **`55d99a681fead81dbc5af6f83f873de7268214d3`** (2026-08-26), an **ancestor of** `origin/main` (which was `57e72d01` when the bytes were taken — `git merge-base --is-ancestor` checked, not assumed). `TRACKED_REVISION` is `None`. 62 fragments; all 62 declare `params`, all 62 close it with `unevaluatedProperties: false` (handshake exempt), and all 62 declare `result` — every figure **re-derived by parsing this copy**, never carried over. |
-| Last commit that touched the schema | **`55d99a681fead81dbc5af6f83f873de7268214d3`** — *"schema: drop the stale 'eight BLOCKED rows' count in the description (found by oracle after §11.25; count-free per the 2026-08-22 precedent)"* (2026-08-26). It is a one-clause follow-up to `a0c50a11`, which landed §11.25 itself; the two differ **only** in that clause. |
-| Git blob | `2310ce9b547e96d7d6c116fe315c38a7e12cf992` |
-| SHA-256 | `df5d2a3e30507e211302c4c1eb6f1c0655b75ff8f0ed4a936c3e3d1ec5e3e8b5` |
-| Bytes | 306261 |
-| Vendored on | 2026-08-26 |
+| Contract repo revision | **`2ea88703e9df0510dc7ffa0bd37ad7091a26a3e6`** (2026-08-30) — `origin/main`'s **tip**, and `git merge-base --is-ancestor` was run against `origin/main` rather than assumed. `TRACKED_REVISION` is `None`. 64 fragments; all 64 declare `params`, all 64 close it with `unevaluatedProperties: false` (handshake exempt), and all 64 declare `result` — every figure **re-derived by parsing this copy**, never carried over. |
+| Last commit that touched the schema | **`98f1b6088d18ec89933a3a9e468a2cf11082febf`** — *"contract: 11.29 CR-H, emulator/screen_text (ADOPT WITH CHANGES), status.display rider; schematized ahead of being served"* (2026-08-30). It is an ancestor of the adopted tip: `2ea88703` carries no further schema edit, checked by hashing the blob at both. |
+| Git blob | `ed04bb39b7dc4fd599433a0003d128c3724aa05d` |
+| SHA-256 | `3a61d2c91ee1c104d70a544be90b3baf5e66863cdba930d9d77aa468841db232` |
+| Bytes | 320558 |
+| Vendored on | 2026-08-30 |
 
-**Taken from the object store at a committed revision**, `git show 55d99a68:contract/schema/bus-protocol.schema.json`, never copied out of the sibling working tree — the recipe the retired tracking box below left behind. The adoption was then checked **by content address**: `git hash-object` on the written file returns `2310ce9b…`, equal to `git rev-parse 55d99a68:contract/…`. That is the one check that cannot be talked into agreeing, and this repo has caught a doctored restore with it before.
+**Taken from the object store at a committed revision**, `git show 2ea88703:contract/schema/bus-protocol.schema.json`, never copied out of the sibling working tree — the recipe the retired tracking box below left behind. The adoption was then checked **by content address**: `git hash-object` on the written file returns `ed04bb39…`, equal to `git rev-parse 2ea88703:contract/…`. That is the one check that cannot be talked into agreeing, and this repo has caught a doctored restore with it before.
 
-**A drafting miss carried in the open, because it is upstream's and not ours.** The `a0c50a11` landing left one clause of the top-level `description` reading *"the eight BLOCKED rows print there too"* when the set had just become five. It was reported rather than patched locally — a vendored copy that is hand-corrected is a copy whose blob check is worthless — and the hub landed the fix as `55d99a68`, which is why **this** revision is the one adopted rather than `a0c50a11`. `contract/protocol.md` and `contract/schema/tests/vectors.json` are byte-identical at both.
+*(Historical, kept because it records how an upstream drafting error is handled here — it belongs to the 2026-08-26 adoption, not to the current copy.)* **A drafting miss carried in the open, because it is upstream's and not ours.** The `a0c50a11` landing left one clause of the top-level `description` reading *"the eight BLOCKED rows print there too"* when the set had just become five. It was reported rather than patched locally — a vendored copy that is hand-corrected is a copy whose blob check is worthless — and the hub landed the fix as `55d99a68`, which is why **this** revision is the one adopted rather than `a0c50a11`. `contract/protocol.md` and `contract/schema/tests/vectors.json` are byte-identical at both.
 
 > **Record the BLOB, not only the branch tip.** `origin/main` moved *twice while this re-vendor was
 > running* — `7dad1e6a` when the source was first inspected, `9b46a235` twenty minutes later when the
@@ -35,6 +35,45 @@ an explicit re-vendor commit. That commit is the auditable record of "we adopted
 *(The unmerged-branch tracking box that stood here retired itself 2026-08-21 when `callers-amendment`
 merged as `70c7bb4` — its third profiler-amendment carry, per its own recipe: copy from the object
 store, never from the checkout.)*
+
+### What this re-vendor adopted — §11.29, 63 → 64 fragments (2026-08-30)
+
+**One fragment added and one existing fragment amended, and this repo serves both in the same parcel.**
+§11.29 (CR-H) adds `emulator/screen_text` — the text a human can read on the player window, source string
+and rendered prefix both — and gives `emulator/status` an optional additive `display: boolean` so a caller
+can *ask* whether a window exists rather than probing by provoking a refusal.
+
+Every figure below is **re-derived by parsing the old copy and the new one**, never read from a commit
+message, and the diff is `89 insertions(+), 0 deletions(-)`.
+
+| | previous copy | this copy | delta |
+|---|---|---|---|
+| method fragments (`methods`, `$`-keys excluded) | 63 | **64** | **+1**: `emulator/screen_text` |
+| fragments declaring `result` | 63 | **64** | +1, the same name |
+| fragments closing `params` with `unevaluatedProperties: false` | 63 | **64** | +1, the same name |
+| `$defs` | 18 | **18** | **unmoved** — the new fragment reuses §2.4's FLAT bounded-list spelling rather than adding an envelope |
+| fragments otherwise changed | — | **1** | `emulator/status`, one optional additive `display` key |
+| top-level keys outside `methods` | — | — | **unchanged**, byte for byte |
+| `UNCOVERED_METHODS` | 0 | **0** | unmoved — the fragment and the handler land together |
+| `SCHEMATIZED_NOT_ADVERTISED` | 8 | **8** | **unmoved**, for the same reason |
+
+**Nothing else rode in.** That is worth stating because the previous re-vendor commit *appeared* to be
+three revisions behind: the `## Current copy` block above still named `55d99a68` while the vendored bytes
+had been moved forward three times since (by `2823b22`, `cfaf6c0` and `0f35ae1`, which re-vendored the
+schema without touching this file). The bytes were checked rather than the prose trusted — the vendored
+copy's sha256 was `a7a9754c…`, which is `empyrean` `ec008ec`'s blob, the commit immediately before
+§11.29 — so the adopted delta really is CR-H and the rider alone. **The lesson is the one this file already
+teaches one paragraph up: the revision row is a claim, the blob and sha256 rows are the artifact. A
+re-vendor must move both.**
+
+**`SCHEMATIZED_NOT_ADVERTISED` does not move, and that is a decision rather than an absence.** The
+adjudication attached a condition — *"the fragment is SCHEMATIZED AHEAD OF BEING SERVED; do not advertise
+the method until your vectors, derived from a real reply, land at empyrean"* — which reads like an
+instruction to park `emulator/screen_text` in that pin. It is not, and the pin's own second bullet says
+why: a name sits there because **this server does not serve it**, and a vector cannot be derived from a
+real reply without a real handler. So the handler ships on this branch, the row joins `METHODS`, the pin
+stays empty of it, and the *advertising* is held at the merge instead — where holding it costs nothing and
+proves something.
 
 ### What this re-vendor adopted — §11.25, 59 → 62 fragments (2026-08-26)
 
