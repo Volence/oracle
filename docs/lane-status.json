@@ -1,12 +1,6 @@
 {
-  "focus": "The self-check now catches what it is for; closing the second hole that testing it honestly exposed.",
-  "inFlight": [
-    {
-      "what": "removing the shared weak point the falsifier found (L-10)",
-      "where": "branch parcel/lexer-independence",
-      "agent": true
-    }
-  ],
+  "focus": "Both things you were owed tonight are done: the engine team's measurement, and the self-check that no longer lies.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "the dull sound: keep the hardware-accurate filter, default it off, or let the player remember your choice. A taste call, so it is yours rather than mine \u2014 ten seconds to hear it both ways",
@@ -14,11 +8,11 @@
       "id": "d-20"
     }
   ],
-  "nextBoundary": "When L-10 lands and is verified on the merged tree.",
+  "nextBoundary": "Now - merged, verified on the merged tree, pushed, nothing running.",
   "queue": [
     {
       "id": "F-CROSSCHECK-BLIND",
-      "title": "L-09 SHIPPED + merged (58b8ed6): --fail-on-gap now verifies rows SURVIVED, names each missing one, and fails loudly when the second derivation cannot be built. 61 tests green, gate proven load-bearing by a clean shape-correct sabotage. Building the falsifier honestly exposed a REAL residual, now ruled as L-10 and in flight.",
+      "title": "DONE - L-09 + L-10 both shipped and merged (58b8ed6, 4f6bca5). The gap check now verifies rows SURVIVED and names each missing one; building its falsifier honestly exposed a second, worse hole (a stray brace in the source silently deleted a whole command's parameters with every signal reporting clean) which is also fixed, by removing the shared weak point rather than alarming on it. 73 tests green, table byte-identical, confirmed firsthand that the old checks would have passed the same defect silently. One residual booked unruled: F-ACCEPT-TABLE-RAWSTRING (gap real, dangerous shape UNPROVEN after 4 probes).",
       "state": "open",
       "size": "S",
       "blockedBy": null,
@@ -111,7 +105,7 @@
     {
       "id": "PIN-STALE-186",
       "title": "FOUND BY THE A/B, not predicted: our own frozen fixtures/aeon pin (chain 186) is stale at checkpoints 18-26 - the same set aeon dated to fde35b2f at chain 181 - and the_standing_fixture_runs_green FAILS today but is #[ignore]d, so the default suite is green over it. The repair is already known byte-for-byte (chain 189 carries it). This is REPLAY-NET-BLIND-3 arriving as a measurement; fold it into that row's work rather than repinning blind.",
-      "state": "open",
+      "state": "next",
       "size": "S",
       "blockedBy": null,
       "project": null
@@ -126,6 +120,6 @@
     }
   ],
   "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-08-30T09:37:54Z"
+  "atBoundary": true,
+  "updatedAt": "2026-08-30T09:53:12Z"
 }
