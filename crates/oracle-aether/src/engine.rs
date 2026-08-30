@@ -570,6 +570,13 @@ pub const METHODS: &[MethodSpec] = &[
         summary: "one addressed object slot, decoded — or `active: false` when nothing lives there",
         params: &["fields", "includeBytes", "slot"],
     },
+    MethodSpec {
+        name: "emulator/object_at",
+        handler: Engine::object_at,
+        summary: "what is showing at one screen dot: the layer, the act-world point, and the object slot \
+                  that drew it — with each half naming its own unavailability",
+        params: &["x", "y"],
+    },
 ];
 
 /// The events this server actually emits. Advertised verbatim as `capabilities.events`, which
@@ -2004,6 +2011,16 @@ impl Engine {
     /// which bypasses the VDP port path and *"nothing in its docstring says so"*. Not every caller wants
     /// that caveat, though: `memory_hash` is also built on this and deliberately carries none — a
     /// fingerprint's provenance note lives in its own contract row, not in the reply envelope.
+    /// One big-endian 16-bit word through [`Engine::debug_read`], so a word read inherits that
+    /// function's region checks rather than reaching around them.
+    ///
+    /// Big-endian is not a choice here: it is how the 68000 stores, which is the rule `write_memory`'s
+    /// own wording states and the reason the Z80 rows deliberately do NOT copy it.
+    fn read_u16(&self, addr: u32) -> Result<u16, RpcError> {
+        let (bytes, _) = self.debug_read(addr, 2)?;
+        Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
+    }
+
     fn debug_read(&self, addr: u32, len: usize) -> Result<(Vec<u8>, &'static str), RpcError> {
         let end = (addr as u64) + (len as u64) - 1;
         if (WORK_RAM_LO..=WORK_RAM_HI).contains(&addr) {
@@ -3102,12 +3119,19 @@ impl Engine {
     /// happen, `transparent` misreports opaque art, `operator` means a sprite operator), and inventing one
     /// would be a contract change taken unilaterally. `minItems: 1` already admits short lists — a blanked
     /// dot yields exactly one — so the shorter list is a shape the fragment allows.
-    fn pixel_attribution(&mut self, params: &Value) -> Result<Value, RpcError> {
-        let vdp = self.sys.vdp();
-        let (width, height) = vdp.active_display();
-        // The schema bounds the *params* at 0..=511 (the widest addressable value); the ACTIVE bound is
-        // the width/height reported below, and it is enforced separately so the two failures stay
-        // distinguishable: a nonsensical coordinate is -32602, an off-display one is -32004.
+    /// Parse and bounds-check a **native-dot** `x`/`y` pair, returning the dot and the active display.
+    ///
+    /// **Factored rather than copied, and that is the point.** `object_at`'s fragment says its params are
+    /// *"`pixel_attribution`'s native-dot space with the same bounds"* — a claim that the two rows cannot
+    /// drift apart. Two copies of this arithmetic would make that claim true only until somebody edited
+    /// one of them, and the drift would be silent: both rows would still answer, about subtly different
+    /// spaces. One function makes the CR's promise structural instead of aspirational.
+    ///
+    /// The two failures stay distinguishable, which is why the bound is applied twice: the schema bounds
+    /// the *params* at `0..=511` (the widest addressable value) and a nonsensical coordinate is `-32602`,
+    /// while the ACTIVE bound is the returned width/height and an off-display dot is `-32004`.
+    fn native_dot(&mut self, params: &Value) -> Result<(u16, u16, u16, u16), RpcError> {
+        let (width, height) = self.sys.vdp().active_display();
         let coord = |field: &str| -> Result<u16, RpcError> {
             let v = params
                 .get(field)
@@ -3126,6 +3150,12 @@ impl Engine {
             )
             .with_data(json!({"width": width, "height": height})));
         }
+        Ok((x, y, width, height))
+    }
+
+    fn pixel_attribution(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let (x, y, width, height) = self.native_dot(params)?;
+        let vdp = self.sys.vdp();
 
         let attr = vdp.pixel_attribution_masked(x, y, self.layers);
         let mut out = json!({
@@ -4035,6 +4065,118 @@ impl Engine {
         // §2.4 clause (d) says a structural bound takes neither.
         let mut out = Map::new();
         out.insert("players".into(), Value::Array(players));
+        out.insert("layout".into(), layout.to_json());
+        Ok(Value::Object(out))
+    }
+
+    /// `emulator/object_at` — one click, one answer, every failure named (§6 ⚙, §11.26 / CR-F).
+    ///
+    /// Joins a screen dot to the object that drew it. A **pure read** (no `require_paused`), on the
+    /// `read`/`sprites`/`pixel_attribution`/`scanlines` footing, and a ⚙ decoder-group member: it derives
+    /// the object layout and so inherits `-32012` when no listing is loaded.
+    ///
+    /// **The two halves are independent on purpose** (M3). A build can answer the camera and not the
+    /// owner table, or the reverse; each half reports its own availability so the row answers what it can
+    /// instead of refusing both. That is why `worldSource` exists as a field rather than as an inference
+    /// from `world` being absent.
+    ///
+    /// ⚑ **Every address here is resolved BY SYMBOL, per loaded build, on every call** (§11.26 M3, and
+    /// normative). Caching one would be the defect the CR was amended to forbid: `Camera_X`/`Camera_Y`
+    /// **exist in a release build and MOVE** (`FFFFA576` vs `FFFFA604`), so a stale address yields no
+    /// fault and a plausible number — click-to-world landing silently in the wrong place. `Sprite_Owner`
+    /// is the kinder case, absent from release entirely, so its staleness at least announces itself.
+    fn object_at(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let (x, y, _width, _height) = self.native_dot(params)?;
+        let winner = self
+            .sys
+            .vdp()
+            .pixel_attribution_masked(x, y, self.layers)
+            .winner;
+        // ⚙ group membership: refuses with -32012 when no listing is loaded, exactly as the decoder rows
+        // do, rather than inventing a base address (§11.25).
+        let layout = decoders::derive(self.symbols.as_deref())?;
+
+        let mut out = Map::new();
+        out.insert("dot".into(), json!({"x": x, "y": y}));
+
+        // --- the world half -------------------------------------------------------------------
+        // UNBIASED `Camera_X`/`Camera_Y`. The biased neighbours are the plausible liar the CR names:
+        // `Camera_X_Biased` read 65504 in the same halt, which is obvious garbage unsigned and an
+        // entirely believable -32 signed, offsetting every answer by 128 and being caught by nobody.
+        let camera = self.symbols.as_deref().and_then(|t| {
+            let cx = t.address_of("Camera_X")?;
+            let cy = t.address_of("Camera_Y")?;
+            Some((cx, cy))
+        });
+        match camera {
+            Some((cx, cy)) => {
+                let rx = u32::from(self.read_u16(cx)?);
+                let ry = u32::from(self.read_u16(cy)?);
+                out.insert("worldSource".into(), json!("camera"));
+                out.insert(
+                    "world".into(),
+                    json!({"x": rx + u32::from(x), "y": ry + u32::from(y)}),
+                );
+            }
+            // `world` is OMITTED, never zeroed: the schema enforces present-iff-camera, and a zero here
+            // would be a coordinate a client would happily use.
+            None => {
+                out.insert("worldSource".into(), json!("unavailable"));
+            }
+        }
+
+        out.insert("winner".into(), layer_json(winner));
+
+        // --- the owner half -------------------------------------------------------------------
+        let mut owner = Map::new();
+        match self
+            .symbols
+            .as_deref()
+            .and_then(|t| t.address_of("Sprite_Owner"))
+        {
+            // No table in this build at all. `unavailable`, and NO `raw` — there was no word to read, and
+            // serving `0x0000` would be indistinguishable from the `none` that means the table answered.
+            None => {
+                owner.insert("kind".into(), json!("unavailable"));
+            }
+            Some(table_addr) => {
+                // Indexed by SAT slot. A non-sprite winner has no entry to read, and its answer is the
+                // same fact stated honestly: the table exists, and nothing in it owns this dot.
+                let word = match winner {
+                    Layer::Sprite(i) => self.read_u16(table_addr + 2 * u32::from(i))?,
+                    _ => 0,
+                };
+                owner.insert("raw".into(), json!(hex::u16_hex(word)));
+                match word {
+                    0x0000 => owner.insert("kind".into(), json!("none")),
+                    // ⚑ The sentinels are checked BEFORE any rebase, and that ordering is the whole
+                    // guard. `DrawRings` stamps a bare `move.w #1`, not an address; rebasing `0x0001`
+                    // would yield a garbage index and CONFIDENTLY NAME THE WRONG OBJECT. Two of the
+                    // three sprites on the first screen this was tried on were rings, so this is the
+                    // common case, not a corner.
+                    0x0001 => owner.insert("kind".into(), json!("ring")),
+                    0x0002 => owner.insert("kind".into(), json!("mask")),
+                    w => {
+                        // The word is the low 16 bits of an SST address; the base's low word is what it
+                        // is measured against, so the arithmetic never leaves that space.
+                        let base = layout.slot_addr(0) & 0xFFFF;
+                        let stride = layout.slot_bytes();
+                        let off = u32::from(w).wrapping_sub(base);
+                        let slot = off / stride;
+                        // Refuse rather than name a slot: a word that is not on a record boundary, or
+                        // points past the table, is not an object address and must not be reported as
+                        // one. `raw` is already served above, so the caller can audit exactly what we saw.
+                        if u32::from(w) < base || off % stride != 0 || slot >= layout.slot_count() {
+                            owner.insert("kind".into(), json!("none"))
+                        } else {
+                            owner.insert("slot".into(), json!(slot));
+                            owner.insert("kind".into(), json!("object"))
+                        }
+                    }
+                };
+            }
+        }
+        out.insert("owner".into(), Value::Object(owner));
         out.insert("layout".into(), layout.to_json());
         Ok(Value::Object(out))
     }
