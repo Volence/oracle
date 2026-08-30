@@ -1,6 +1,12 @@
 {
-  "focus": "The engine team's measurement is done and sent; now on the self-check fix that was ruled next.",
-  "inFlight": [],
+  "focus": "Corrected the engine team's record on their own falsifier; the self-check fix is still building.",
+  "inFlight": [
+    {
+      "what": "the gap-check row-presence fix (L-09), starting with a falsifier that may undercut the ruling itself",
+      "where": "branch parcel/gap-row-presence",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "the dull sound: keep the hardware-accurate filter, default it off, or let the player remember your choice. A taste call, so it is yours rather than mine \u2014 ten seconds to hear it both ways",
@@ -8,7 +14,7 @@
       "id": "d-20"
     }
   ],
-  "nextBoundary": "After the self-check fix lands and is verified on the merged tree.",
+  "nextBoundary": "When L-09 lands and is verified on the merged tree.",
   "queue": [
     {
       "id": "F-CROSSCHECK-BLIND",
@@ -121,5 +127,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-08-30T09:23:07Z"
+  "updatedAt": "2026-08-30T09:29:48Z"
 }
