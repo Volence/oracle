@@ -872,120 +872,17 @@ class RealSourceInvariants(RecordedFixture):
 # ---------------------------------------------------------------------------
 # Row completeness -- the expectation is re-derived from the C++, per test
 # ---------------------------------------------------------------------------
+#
+# `direct_reads_from_source` and `missing_rows` used to live here. They now
+# live in the tool, because `--fail-on-gap` asserts row presence with them
+# (ledger L-09) and a second copy here would be free to drift away from the
+# one the gate actually runs. They are imported, not re-implemented: these
+# tests must exercise the SHIPPED derivation, not a look-alike.
 
-
-VALUE_ACCESSOR_RE = r"(?:get|getInt|getU32|getBool)"
-
-
-def direct_reads_from_source(raw: str) -> dict:
-    """Re-derive, straight from the C++ text, which key each method reads.
-
-    This deliberately shares NO code path with `build_table()`. It walks the
-    raw file: `Handlers()` for handler-function -> legacy-op, `CanonicalOp()`
-    for the rename, the `push_back("..." + CanonicalOp` line for the namespace
-    prefix, then each `static std::string Op*(const JsonObj& <ident>` body for
-    literal-key reads through a value accessor on <ident>.
-
-    Nothing here reads the emitted table, and nothing here reads a list written
-    down by hand. The table's own output is not an independent source -- it is
-    the thing under test -- so an expectation copied from it would agree with
-    itself forever.
-
-    Guardedness is decided by the crudest possible rule: does this same
-    function body mention `<ident>.has("<key>")` anywhere at all. That is
-    deliberately WEAKER than the tool's block-dominance analysis and errs
-    toward calling a read guarded, so `unguarded` here is a conservative
-    SUBSET of the truly unguarded reads -- it can never invent a row the
-    table is entitled to be missing.
-
-    Returns {"pairs": {(method, key): [line, ...]},
-             "unguarded": {(method, key): [line, ...]},
-             "guarded":   {(method, key): [line, ...]},
-             "handlers": int}
-    """
-    code = lat.blank_comments(raw)
-
-    anchor = "static const std::unordered_map<std::string, Handler>& Handlers()"
-    hstart = code.index(anchor)
-    hbody = code[hstart: code.index("return h;", hstart)]
-    fn_to_op = {fn: op for op, fn
-                in re.findall(r'\{\s*"(\w+)"\s*,\s*(Op\w+)\s*\}', hbody)}
-    if len(fn_to_op) < 20:
-        raise AssertionError(
-            f"the independent extraction found only {len(fn_to_op)} handlers; it is "
-            f"measuring its own slice of the file, not the dispatch table")
-
-    cstart = re.search(r"^static std::string CanonicalOp\(", code, re.M).start()
-    cbody = code[cstart: lat.match_braces(code, code.index("{", cstart))]
-    rename = dict(re.findall(r'==\s*"(\w+)"\s*\)\s*return\s+"(\w+)"', cbody))
-    prefix = re.search(r'push_back\(\s*"([^"]*)"\s*\+\s*CanonicalOp', code).group(1)
-
-    pairs: dict = {}
-    unguarded: dict = {}
-    guarded: dict = {}
-    for m in re.finditer(r"^static std::string (Op\w+)\(const JsonObj&\s*(\w*)",
-                         code, re.M):
-        fn, ident = m.group(1), m.group(2)
-        # An unnamed parameter cannot be read from, and a function absent from
-        # Handlers() is not a method. Neither is a silent drop.
-        if fn not in fn_to_op or not ident:
-            continue
-        open_brace = code.index("{", m.end())
-        body = code[open_brace: lat.match_braces(code, open_brace)]
-        method = prefix + rename.get(fn_to_op[fn], fn_to_op[fn])
-        for r in re.finditer(re.escape(ident) + r"\s*\.\s*" + VALUE_ACCESSOR_RE
-                             + r'\s*\(\s*"(\w+)"', body):
-            key = r.group(1)
-            line = raw.count("\n", 0, open_brace + r.start()) + 1
-            pairs.setdefault((method, key), []).append(line)
-            has_here = re.search(
-                re.escape(ident) + r'\s*\.\s*has\s*\(\s*"' + re.escape(key) + r'"',
-                body)
-            (guarded if has_here else unguarded).setdefault(
-                (method, key), []).append(line)
-
-    return {"pairs": pairs, "unguarded": unguarded, "guarded": guarded,
-            "handlers": len(fn_to_op)}
-
-
-REQUIRED_RECORD_FIELDS = ("accessor", "default", "guarded_by", "accepted_shapes",
-                          "read_sites")
-
-
-def missing_rows(methods: dict, expected: dict) -> list[str]:
-    """Which expected (method, key) rows are absent or hollow in `methods`.
-
-    A row counts as present only if it is a well-formed record. `entry[key] =
-    None` leaves the key in place while destroying the row, so a bare
-    `key in row` check would pass straight through the exact defect this
-    function exists to detect.
-    """
-    out = []
-    for (method, key), lines in sorted(expected.items()):
-        row = methods.get(method)
-        if row is None:
-            out.append(f"{method}: the method itself is absent from the table "
-                       f"(expected a row for {key!r} read at line(s) {lines})")
-            continue
-        if key not in row:
-            out.append(f"{method}.{key}: row DROPPED (source reads it at "
-                       f"line(s) {lines}; the table has no such key)")
-            continue
-        rec = row[key]
-        if not isinstance(rec, dict):
-            out.append(f"{method}.{key}: row present but HOLLOW ({rec!r}); "
-                       f"source reads it at line(s) {lines}")
-            continue
-        absent = [f for f in REQUIRED_RECORD_FIELDS if f not in rec]
-        if absent:
-            out.append(f"{method}.{key}: row is missing field(s) {absent}")
-            continue
-        cited = {s["line"] for s in rec["read_sites"]}
-        if not set(lines) <= cited:
-            out.append(f"{method}.{key}: row does not cite the read site(s) the "
-                       f"source has at {sorted(set(lines) - cited)} "
-                       f"(it cites {sorted(cited)})")
-    return out
+direct_reads_from_source = lat.direct_reads_from_source
+missing_rows = lat.missing_rows
+REQUIRED_RECORD_FIELDS = lat.REQUIRED_RECORD_FIELDS
+VALUE_ACCESSOR_RE = lat.VALUE_ACCESSOR_RE
 
 
 class SourceDerivedRowCompleteness(RecordedFixture):
@@ -1158,6 +1055,60 @@ class SourceDerivedRowCompleteness(RecordedFixture):
         self.assertTrue(any("the method itself is absent" in g for g in gaps),
                         f"deleting method {victim[0]} was not reported: {gaps}")
 
+    # -- the gate `--fail-on-gap` runs (ledger L-09) ------------------------
+
+    def test_row_presence_sees_the_drop_the_cross_check_calls_agreement(self):
+        """The whole reason the gate exists, asserted against both halves.
+
+        Dropping the unguarded `addr` rows leaves `coverage.complete` TRUE --
+        that is the blindness. The row-presence report must name all four.
+        """
+        self._methods("the unguarded addr rows")
+        victims = sorted(k for k in self.expected["unguarded"] if k[1] == "addr")
+        self.assertTrue(victims, "vacuous: no unguarded addr read derived")
+        maimed = {m: dict(keys) for m, keys in self.doc["methods"].items()}
+        for method, key in victims:
+            del maimed[method][key]
+        doc = dict(self.doc, methods=maimed)
+        self.assertTrue(doc["coverage"]["complete"],
+                        "control is void: coverage already reports incomplete, so "
+                        "this proves nothing about the gap the drop leaves")
+        report = lat.row_presence_report(self.raw, doc)
+        self.assertIsNone(report["unmeasurable"])
+        for method, key in victims:
+            self.assertTrue(
+                any(g.startswith(f"{method}.{key}:") for g in report["missing"]),
+                f"{method}.{key} was dropped and the report did not name it: "
+                f"{report['missing']}")
+
+    def test_row_presence_allows_rows_the_second_derivation_never_claimed(self):
+        """The subset direction, on the real table.
+
+        The second derivation is deliberately cruder, so the table legitimately
+        holds rows it cannot see. If the assertion were equality this would
+        fail forever on a correct table.
+        """
+        methods = self._methods("the whole table")
+        table_rows = sum(len(v) for v in methods.values())
+        self.assertGreater(table_rows, len(self.expected["pairs"]),
+                           "vacuous: the table holds no row beyond the ones the "
+                           "second derivation claims, so subset and equality "
+                           "cannot be told apart here")
+        report = lat.row_presence_report(self.raw, self.doc)
+        self.assertEqual(report["missing"], [],
+                         f"the untouched table reports missing rows: "
+                         f"{report['missing']}")
+
+    def test_row_presence_that_cannot_be_derived_is_not_reported_as_clean(self):
+        """"Nothing missing" and "nothing checked" must not look alike."""
+        report = lat.row_presence_report("int main() { return 0; }",
+                                         {"methods": {}})
+        self.assertIsNotNone(
+            report["unmeasurable"],
+            "a source the second derivation cannot read produced a clean report; "
+            "an unbuildable expectation would then pass the gate silently")
+        self.assertEqual(report["checked"], 0)
+
 
 class CommandLineInterface(unittest.TestCase):
     TOOL = Path(__file__).resolve().parent / "legacy_accept_table.py"
@@ -1186,6 +1137,53 @@ class CommandLineInterface(unittest.TestCase):
         r = self._run("--fail-on-gap", "--format", "summary")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("AGREES", r.stdout)
+
+    # The gate is only worth anything end to end: the library check can be
+    # right while nothing calls it. This runs the real CLI over a copy of the
+    # tool with the exact L-09 defect planted -- rows dropped CLEANLY, not a
+    # crash, since a sabotage that makes the tool explode proves nothing.
+    DROP_ANCHOR = """            entry[key] = _record(
+                key,
+                names[0] if len(names) == 1 else names,"""
+    DROP_POISON = """            if key == "addr" and key_guard is None:
+                continue  # planted by the test: drop the unguarded addr rows
+"""
+
+    def _poisoned_tool(self, td: str) -> Path:
+        src = self.TOOL.read_text(encoding="utf-8")
+        self.assertEqual(
+            src.count(self.DROP_ANCHOR), 1,
+            "the row emitter this control patches has moved; the control is "
+            "not planting the defect it claims to plant")
+        dst = Path(td) / "legacy_accept_table.py"
+        dst.write_text(src.replace(self.DROP_ANCHOR,
+                                   self.DROP_POISON + self.DROP_ANCHOR, 1),
+                       encoding="utf-8")
+        return dst
+
+    def test_fail_on_gap_fails_and_names_rows_dropped_after_the_cross_check(self):
+        try:
+            root = lat.find_oracle_old()
+        except FileNotFoundError as exc:
+            raise unittest.SkipTest(f"oracle-old not available: {exc}")
+        with tempfile.TemporaryDirectory() as td:
+            tool = self._poisoned_tool(td)
+            r = subprocess.run(
+                [sys.executable, str(tool), "--fail-on-gap", "--format", "summary",
+                 "--source", str(root)], capture_output=True, text=True)
+        # Red for the RIGHT reason: the old gate's two signals still read clean,
+        # which is precisely why they could not catch this.
+        self.assertIn("cross-check     : AGREES", r.stdout)
+        self.assertIn("parse complete  : yes", r.stdout)
+        self.assertEqual(r.returncode, 1,
+                         f"the planted row drop did not fail the gate.\n"
+                         f"stderr:\n{r.stderr}")
+        for method in ("emulator/read_vram", "emulator/write_vram",
+                       "emulator/z80_read", "emulator/z80_write"):
+            self.assertIn(f"row missing from table: {method}.addr", r.stderr,
+                          f"{method}.addr was dropped and the gate did not name "
+                          f"it. A count or a collection error is not enough.\n"
+                          f"stderr:\n{r.stderr}")
 
     def test_unresolvable_source_is_an_error_not_an_empty_table(self):
         r = self._run("--source", "/nonexistent/oracle-old-xyz")
