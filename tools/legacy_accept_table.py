@@ -31,14 +31,26 @@ Axis B is not a restatement of axis A: it is the check that catches a read
 through a member axis A has never heard of. Any access axis B sees that no
 table entry claims is reported as a gap, loudly.
 
+Both of those axes reconcile ACCESSES, and they do it before the row is
+written -- so neither notices a row that was enumerated and then lost on the
+way into the table. `--fail-on-gap` therefore also checks ROW PRESENCE against
+a third, separate reading of the same file (`direct_reads_from_source`), which
+never looks at the emitted table. Every row that reading finds must be present
+and well-formed, by name; the reading is deliberately cruder, so it is a
+conservative subset and the table may hold rows it does not claim. What that
+check does and does not cover is measured in its own docstring -- it is NOT
+independent of the shared brace matcher, and that residual is on the record.
+
 Usage:
     python3 tools/legacy_accept_table.py [--source DIR] [--out FILE]
                                          [--format json|summary]
                                          [--fail-on-gap]
 
 Exit status:
-    0  table emitted, parse complete
-    1  table emitted, but coverage is incomplete (with --fail-on-gap)
+    0  table emitted, parse complete, every source-derived row present
+    1  table emitted, but coverage is incomplete, or a source-derived row is
+       missing from it, or row presence could not be checked at all
+       (with --fail-on-gap)
     2  could not read the source at all
 """
 
@@ -1216,6 +1228,167 @@ def reconcile(table: dict, census: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# The independent second derivation -- what `--fail-on-gap` grades against
+# ---------------------------------------------------------------------------
+#
+# Everything above this line is ONE reading of the C++ (axis A builds the
+# table, axis B cross-checks the accesses). Both live inside `build_table`'s
+# frame, and the axis-A/axis-B reconciliation appends to `_claimed_lines`
+# BEFORE the row is written -- so it witnesses that every ACCESS was claimed
+# and never that every ROW survived. Drop the four unguarded `addr` rows
+# cleanly and that cross-check still prints AGREES (ledger L-09).
+#
+# So the row-presence expectation is derived HERE, by a separate reading that
+# never looks at the emitted table. See `direct_reads_from_source` for exactly
+# which assumptions it does and does not share with the builder -- the two are
+# independent in their key extraction and their guard rule, and NOT independent
+# in the low-level lexing, which is measured and named in that docstring.
+
+
+VALUE_ACCESSOR_RE = r"(?:get|getInt|getU32|getBool)"
+
+
+def direct_reads_from_source(raw: str) -> dict:
+    """Re-derive, straight from the C++ text, which key each method reads.
+
+    It walks the raw file: `Handlers()` for handler-function -> legacy-op,
+    `CanonicalOp()` for the rename, the `push_back("..." + CanonicalOp` line
+    for the namespace prefix, then each `static std::string Op*(const JsonObj&
+    <ident>` body for literal-key reads through a value accessor on <ident>.
+
+    Nothing here reads the emitted table, and nothing here reads a list written
+    down by hand. The table's own output is not an independent source -- it is
+    the thing under test -- so an expectation copied from it would agree with
+    itself forever.
+
+    HOW INDEPENDENT, EXACTLY -- measured, not asserted
+    --------------------------------------------------
+    An earlier version of this docstring claimed it "shares NO code path with
+    `build_table()`". That was over-claimed, and the ledger's L-09 falsifier
+    was run against it on 2026-08-30. What holds and what does not:
+
+      * INDEPENDENT where the row-presence check leans on it. Method discovery,
+        key extraction and the guard rule share nothing with the builder: the
+        builder finds handlers by an any-return-type signature regex and
+        decides guardedness by block dominance; this finds them by a literal
+        `static std::string Op...` signature and decides guardedness by asking
+        whether `has("<key>")` appears anywhere in the body. MEASURED: retype
+        one handler's return value and this derivation loses its rows while
+        `build_table` keeps them -- i.e. the two disagree, in the safe
+        direction (a conservative subset never invents a row).
+
+      * NOT INDEPENDENT in the low-level lexing. `blank_comments` and
+        `match_braces` are shared, and `match_braces` does not skip character
+        literals. MEASURED: a legal `const char c = '}';` planted early in
+        `OpZ80Read` truncates that body for BOTH readings at once -- the
+        builder drops `emulator/z80_read.addr`, this derivation stops expecting
+        it, the axis-A/axis-B cross-check still reports AGREES, and the
+        row-presence gate below reports nothing missing. In that mode the gate
+        is blind, and the table reads as "z80_read takes no address".
+
+    So: the gate catches a row lost on the TABLE side with the source intact,
+    which is what it was built for and what nothing else caught. It does NOT
+    catch a source change that fools the shared brace matcher. Do not describe
+    it as an independent check in general; it is independent in the dimension
+    named above. The residual is registered under L-09.
+
+    Guardedness is decided by the crudest possible rule: does this same
+    function body mention `<ident>.has("<key>")` anywhere at all. That is
+    deliberately WEAKER than the tool's block-dominance analysis and errs
+    toward calling a read guarded, so `unguarded` here is a conservative
+    SUBSET of the truly unguarded reads -- it can never invent a row the
+    table is entitled to be missing.
+
+    Returns {"pairs": {(method, key): [line, ...]},
+             "unguarded": {(method, key): [line, ...]},
+             "guarded":   {(method, key): [line, ...]},
+             "handlers": int}
+    """
+    code = blank_comments(raw)
+
+    anchor = "static const std::unordered_map<std::string, Handler>& Handlers()"
+    hstart = code.index(anchor)
+    hbody = code[hstart: code.index("return h;", hstart)]
+    fn_to_op = {fn: op for op, fn
+                in re.findall(r'\{\s*"(\w+)"\s*,\s*(Op\w+)\s*\}', hbody)}
+    if len(fn_to_op) < 20:
+        raise AssertionError(
+            f"the independent extraction found only {len(fn_to_op)} handlers; it is "
+            f"measuring its own slice of the file, not the dispatch table")
+
+    cstart = re.search(r"^static std::string CanonicalOp\(", code, re.M).start()
+    cbody = code[cstart: match_braces(code, code.index("{", cstart))]
+    rename = dict(re.findall(r'==\s*"(\w+)"\s*\)\s*return\s+"(\w+)"', cbody))
+    prefix = re.search(r'push_back\(\s*"([^"]*)"\s*\+\s*CanonicalOp', code).group(1)
+
+    pairs: dict = {}
+    unguarded: dict = {}
+    guarded: dict = {}
+    for m in re.finditer(r"^static std::string (Op\w+)\(const JsonObj&\s*(\w*)",
+                         code, re.M):
+        fn, ident = m.group(1), m.group(2)
+        # An unnamed parameter cannot be read from, and a function absent from
+        # Handlers() is not a method. Neither is a silent drop.
+        if fn not in fn_to_op or not ident:
+            continue
+        open_brace = code.index("{", m.end())
+        body = code[open_brace: match_braces(code, open_brace)]
+        method = prefix + rename.get(fn_to_op[fn], fn_to_op[fn])
+        for r in re.finditer(re.escape(ident) + r"\s*\.\s*" + VALUE_ACCESSOR_RE
+                             + r'\s*\(\s*"(\w+)"', body):
+            key = r.group(1)
+            line = raw.count("\n", 0, open_brace + r.start()) + 1
+            pairs.setdefault((method, key), []).append(line)
+            has_here = re.search(
+                re.escape(ident) + r'\s*\.\s*has\s*\(\s*"' + re.escape(key) + r'"',
+                body)
+            (guarded if has_here else unguarded).setdefault(
+                (method, key), []).append(line)
+
+    return {"pairs": pairs, "unguarded": unguarded, "guarded": guarded,
+            "handlers": len(fn_to_op)}
+
+
+REQUIRED_RECORD_FIELDS = ("accessor", "default", "guarded_by", "accepted_shapes",
+                          "read_sites")
+
+
+def missing_rows(methods: dict, expected: dict) -> list[str]:
+    """Which expected (method, key) rows are absent or hollow in `methods`.
+
+    A row counts as present only if it is a well-formed record. `entry[key] =
+    None` leaves the key in place while destroying the row, so a bare
+    `key in row` check would pass straight through the exact defect this
+    function exists to detect.
+    """
+    out = []
+    for (method, key), lines in sorted(expected.items()):
+        row = methods.get(method)
+        if row is None:
+            out.append(f"{method}: the method itself is absent from the table "
+                       f"(expected a row for {key!r} read at line(s) {lines})")
+            continue
+        if key not in row:
+            out.append(f"{method}.{key}: row DROPPED (source reads it at "
+                       f"line(s) {lines}; the table has no such key)")
+            continue
+        rec = row[key]
+        if not isinstance(rec, dict):
+            out.append(f"{method}.{key}: row present but HOLLOW ({rec!r}); "
+                       f"source reads it at line(s) {lines}")
+            continue
+        absent = [f for f in REQUIRED_RECORD_FIELDS if f not in rec]
+        if absent:
+            out.append(f"{method}.{key}: row is missing field(s) {absent}")
+            continue
+        cited = {s["line"] for s in rec["read_sites"]}
+        if not set(lines) <= cited:
+            out.append(f"{method}.{key}: row does not cite the read site(s) the "
+                       f"source has at {sorted(set(lines) - cited)} "
+                       f"(it cites {sorted(cited)})")
+    return out
+
+# ---------------------------------------------------------------------------
 # Derived views the consumer asked about
 # ---------------------------------------------------------------------------
 
@@ -1355,6 +1528,49 @@ def summarize(doc: dict) -> str:
     return "\n".join(L)
 
 
+def row_presence_report(source_text: str, doc: dict) -> dict:
+    """Which source-derived rows are absent from `doc`, by name.
+
+    This is the check `--fail-on-gap` needs and `coverage.complete` cannot
+    give it. `coverage.complete` folds in the axis-A/axis-B reconciliation,
+    which appends to `_claimed_lines` BEFORE a row is written: it witnesses
+    that every ACCESS was claimed, never that every ROW survived. Drop the
+    four unguarded `addr` rows cleanly and it still reports AGREES.
+
+    The expectation deliberately comes from `direct_reads_from_source`, NOT
+    from `doc`. A gate whose expectation is read off the artefact under test
+    agrees with itself forever.
+
+    The assertion is a SUBSET one -- every source-derived row must be present;
+    the table may hold rows this reading never claimed. That direction is not
+    a matter of taste. The second derivation's guard rule and signature match
+    are deliberately cruder than the builder's, so it under-reports by
+    construction; demanding equality would fail on every row the builder is
+    right about and this reading cannot see.
+
+    Deliberately NOT folded into `generate()`: `generate` is run in tests over
+    fabricated one-handler sources that this derivation cannot parse at all,
+    and it must keep working there.
+
+    Returns {"checked": int, "missing": [str], "unmeasurable": str | None}.
+    An `unmeasurable` reason is a FAILURE for gate purposes, never a pass: a
+    derivation that could not be built has not shown a single row present.
+    """
+    try:
+        expected = direct_reads_from_source(source_text)["pairs"]
+    except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+        return {"checked": 0, "missing": [],
+                "unmeasurable": f"{type(exc).__name__}: {exc}"}
+    if not expected:
+        return {"checked": 0, "missing": [],
+                "unmeasurable": "the second derivation found no reads at all; a "
+                                "search that finds nothing looks exactly like a "
+                                "table with nothing missing"}
+    return {"checked": len(expected),
+            "missing": missing_rows(doc.get("methods", {}), expected),
+            "unmeasurable": None}
+
+
 def generate(source_text: str, src_meta: dict) -> dict:
     doc = build_table(source_text)
     census = crosscheck_census(source_text)
@@ -1376,7 +1592,9 @@ def main(argv=None) -> int:
     ap.add_argument("--out", help="write the output here (default: stdout)")
     ap.add_argument("--format", choices=("json", "summary"), default="json")
     ap.add_argument("--fail-on-gap", action="store_true",
-                    help="exit 1 if coverage is incomplete or the cross-check disagrees")
+                    help="exit 1 if coverage is incomplete, the cross-check "
+                         "disagrees, or a row the independent second derivation "
+                         "finds in the source is missing from the table")
     args = ap.parse_args(argv)
 
     if args.source_file:
@@ -1411,6 +1629,21 @@ def main(argv=None) -> int:
         print("warning: the two independent enumerations DISAGREE -- see "
               "crosscheck.reconciliation", file=sys.stderr)
 
+    rows = row_presence_report(text, doc)
+    if rows["unmeasurable"]:
+        print("warning: ROW PRESENCE UNVERIFIED -- the independent second "
+              f"derivation could not be built ({rows['unmeasurable']}). No row "
+              "has been shown present; do not read this table as complete.",
+              file=sys.stderr)
+    elif rows["missing"]:
+        # Named, not counted. A count passes with one row dropped and another
+        # spuriously added, and a consumer cannot act on a number.
+        print(f"warning: {len(rows['missing'])} of {rows['checked']} rows the "
+              "source itself reads are MISSING OR HOLLOW in this table:",
+              file=sys.stderr)
+        for gap in rows["missing"]:
+            print(f"  row missing from table: {gap}", file=sys.stderr)
+
     out = (json.dumps(doc, indent=2, sort_keys=False) + "\n"
            if args.format == "json" else summarize(doc) + "\n")
     if args.out:
@@ -1418,7 +1651,8 @@ def main(argv=None) -> int:
     else:
         sys.stdout.write(out)
 
-    if args.fail_on_gap and not doc["coverage"]["complete"]:
+    if args.fail_on_gap and (not doc["coverage"]["complete"]
+                             or rows["missing"] or rows["unmeasurable"]):
         return 1
     return 0
 
