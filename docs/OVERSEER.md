@@ -2604,6 +2604,12 @@ this side:** the file writes fine, `git` is happy, and the lane goes on reportin
 **The defect was not the word, it was that I ran the verification curl ONCE, at boot.** Every later write is
 unverified unless re-checked, and I made a dozen. **Re-run the boot step's curl after ANY write to
 `lane-status.json`** — it is two seconds and it is the only thing that can tell you.
+⚑ **THIS RULE IS NOW CONTRACT AND EMPYREAN GOVERNS IT** — `contract/LANE_STATUS.md` §*"Verify after EVERY
+write, not only at boot"*, at empyrean `origin/main` (verified here by content at `97c4f72`; the hub cited it
+as *"commit after 1489413"*, which is a coordinate rather than a SHA, so it was resolved by reading the
+section, not by trusting the pointer). **The text below is this repo's PRECEDENT NARRATIVE, not a second
+copy of the rule** — on any disagreement the contract wins, and the rule is not to be restated here as it
+drifts. Read it at a committed revision, never through `../empyrean/`.
 ⚑ **The skill's own boot text warned about exactly this** (*"three lanes wrote `done`, which is not in the
 vocabulary, in three days"*) and I did it anyway, which is the argument for the mechanism over the warning:
 a rule you have read does not fire, a curl does. Found by the aurora lane reading the console, not by me —
