@@ -1,5 +1,5 @@
 {
-  "focus": "The cargo lane is free, so the A/B I committed to the engine team can finally run - that is what I would pick up.",
+  "focus": "The engine team's measurement is done and sent; now on the self-check fix that was ruled next.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -8,20 +8,12 @@
       "id": "d-20"
     }
   ],
-  "nextBoundary": "Now - nothing running, tree clean, everything pushed.",
+  "nextBoundary": "After the self-check fix lands and is verified on the merged tree.",
   "queue": [
-    {
-      "id": "RESTAMP-AB",
-      "title": "COMMITMENT TO AEON, trigger fired 2026-08-30, candidate verified - and its only blocker (never two cargo runs at once) has now CLEARED. Run our frozen chain-186 fixture against sigil's e38295d2 golden and send back the moved SET verbatim, never a count and never a verdict: they stated a falsifier in advance (movers should be the early checkpoints only) and a confirming summary is exactly what would let an incomplete mechanism authorise their restamp.",
-      "state": "next",
-      "size": "M",
-      "blockedBy": null,
-      "project": null
-    },
     {
       "id": "F-CROSSCHECK-BLIND",
       "title": "RULED (L-09): the tool's quick self-check must actually verify its rows are still there, and must check against a SECOND independent reading of the source - not its own output, or it grades its own homework and keeps the exact blindness we are fixing. The second reading already exists and is proven, in the tests. Rejected the cheaper option of just documenting the limit: nobody re-reads a build check's small print.",
-      "state": "open",
+      "state": "doing",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT"
@@ -109,9 +101,25 @@
       "state": "open",
       "size": "L",
       "blockedBy": null
+    },
+    {
+      "id": "PIN-STALE-186",
+      "title": "FOUND BY THE A/B, not predicted: our own frozen fixtures/aeon pin (chain 186) is stale at checkpoints 18-26 - the same set aeon dated to fde35b2f at chain 181 - and the_standing_fixture_runs_green FAILS today but is #[ignore]d, so the default suite is green over it. The repair is already known byte-for-byte (chain 189 carries it). This is REPLAY-NET-BLIND-3 arriving as a measurement; fold it into that row's work rather than repinning blind.",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": null
+    },
+    {
+      "id": "RESTAMP-AB",
+      "title": "DONE + SENT (oracle e12845f). No moved set: chain 189 was already re-recorded, so the A/B as booked could not be taken and aeon's falsifier was NOT tested - reported to them as a null result, not as agreement. Bonus: our runner independently derived the exact 9 payloads their freeze contains.",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null,
+      "project": null
     }
   ],
-  "awaiting": "which of two to start: the A/B the engine team is booked to receive, or the self-check fix I ruled last night. The A/B is a promise to another lane and its blocker just cleared.",
-  "atBoundary": true,
-  "updatedAt": "2026-08-30T08:56:44Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-08-30T09:23:07Z"
 }
