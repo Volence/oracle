@@ -1240,12 +1240,89 @@ def reconcile(table: dict, census: dict) -> dict:
 #
 # So the row-presence expectation is derived HERE, by a separate reading that
 # never looks at the emitted table. See `direct_reads_from_source` for exactly
-# which assumptions it does and does not share with the builder -- the two are
-# independent in their key extraction and their guard rule, and NOT independent
-# in the low-level lexing, which is measured and named in that docstring.
+# which assumptions it does and does not share with the builder -- and see
+# `_col0_body` for the body-extent rule, which is deliberately NOT the
+# builder's (ledger L-10).
 
 
 VALUE_ACCESSOR_RE = r"(?:get|getInt|getU32|getBool)"
+
+#: A column-0 `static ` line. Every top-level definition in ControlSocket.cpp
+#: begins with one, so the NEXT one is a sound upper bound on the current
+#: definition's extent -- without counting a single brace.
+COL0_STATIC_RE = re.compile(r"^static ", re.M)
+
+#: A `static`-qualified definition of `CanonicalOp` or an `Op*` handler, with
+#: ANY return type, at ANY indentation. This is the CENSUS -- the thing that
+#: proves the column-0 assumption -- and so it must be looser than the
+#: extractor below in every dimension except the one it is measuring. The
+#: return type is kept on one line (`[^\n;{}()]`) so it cannot run from a
+#: `static` on one line to an `Op...(` on another and invent a definition.
+OP_DEFINITION_CENSUS_RE = re.compile(
+    r"^([ \t]*)static\s+[^\n;{}()]*?\b(CanonicalOp|Op\w+)\s*\(", re.M)
+
+
+def _col0_body(code: str, sig_start: int, boundaries: list[int]) -> str:
+    """The text of the definition whose column-0 signature starts at sig_start.
+
+    THE POINT OF THIS FUNCTION IS WHAT IT DOES NOT DO. It counts no braces.
+    `match_braces` -- which the builder uses for exactly this job -- skips
+    `"..."` and has no case for `'...'`, so one legal `const char c = '}';`
+    truncates a body. While both readings called it, that single edit dropped
+    the same row from the table AND from the expectation meant to catch the
+    drop, and every check in this tool reported clean (ledger L-09 falsifier,
+    L-10 ruling).
+
+    So this bounds a definition structurally instead: from its own column-0
+    signature to the next column-0 `static ` line. A brace anywhere -- in a
+    char literal, a raw string, a macro -- cannot move that boundary.
+
+    The one assumption is that handler definitions sit at column 0, and it is
+    not taken on trust: `_assert_definitions_are_at_column_zero` checks it on
+    every run and refuses to derive anything if it does not hold. Over-bounding
+    (swallowing a following non-`static` definition) is the failure this rule
+    can still have, and it is the safe direction: the expectation would claim
+    a row the table lacks and the gate would fire, never the reverse.
+    """
+    return code[sig_start: min((b for b in boundaries if b > sig_start),
+                               default=len(code))]
+
+
+def _assert_definitions_are_at_column_zero(code: str, fn_to_op: dict) -> None:
+    """Refuse to derive anything if the boundary walk's assumption is broken.
+
+    L-10's own `wrong if`. If a handler were ever defined indented -- inside a
+    namespace block, say -- `_col0_body` would silently mis-bound its body and
+    buy a DIFFERENT blind spot rather than none. A shrunken expectation looks
+    exactly like a complete table, so this must be loud, and it must be code
+    rather than a census someone ran once by hand.
+
+    Raising is the whole mechanism: `row_presence_report` turns any exception
+    here into `unmeasurable`, which already fails `--fail-on-gap`.
+    """
+    census = OP_DEFINITION_CENSUS_RE.findall(code)
+    indented = sorted({name for indent, name in census if indent})
+    if indented:
+        raise AssertionError(
+            f"these handler definitions are not at column 0: {indented}. The "
+            f"second derivation bounds each body from its column-0 signature to "
+            f"the next column-0 `static ` line; an indented definition would be "
+            f"mis-bounded in silence, so nothing is derived")
+
+    at_col0 = {name for _, name in census}
+    undefined = sorted(set(fn_to_op) - at_col0)
+    if undefined:
+        raise AssertionError(
+            f"{len(undefined)} dispatched handler(s) have no column-0 definition "
+            f"this derivation can bound: {undefined}")
+
+    ops_at_col0 = at_col0 - {"CanonicalOp"}
+    if len(ops_at_col0) != len(fn_to_op):
+        raise AssertionError(
+            f"the column-0 signature census counts {len(ops_at_col0)} Op* "
+            f"definitions but Handlers() dispatches {len(fn_to_op)}; they "
+            f"disagree about what a handler is. Defined but never dispatched: "
+            f"{sorted(ops_at_col0 - set(fn_to_op))}")
 
 
 def direct_reads_from_source(raw: str) -> dict:
@@ -1255,6 +1332,7 @@ def direct_reads_from_source(raw: str) -> dict:
     `CanonicalOp()` for the rename, the `push_back("..." + CanonicalOp` line
     for the namespace prefix, then each `static std::string Op*(const JsonObj&
     <ident>` body for literal-key reads through a value accessor on <ident>.
+    Bodies are bounded by `_col0_body`, NOT by brace matching -- see there.
 
     Nothing here reads the emitted table, and nothing here reads a list written
     down by hand. The table's own output is not an independent source -- it is
@@ -1263,34 +1341,54 @@ def direct_reads_from_source(raw: str) -> dict:
 
     HOW INDEPENDENT, EXACTLY -- measured, not asserted
     --------------------------------------------------
-    An earlier version of this docstring claimed it "shares NO code path with
-    `build_table()`". That was over-claimed, and the ledger's L-09 falsifier
-    was run against it on 2026-08-30. What holds and what does not:
+    The first version of this docstring claimed it "shares NO code path with
+    `build_table()`". That was over-claimed: the L-09 falsifier, run on
+    2026-08-30, showed both readings called `match_braces` and were blinded
+    together by one legal character literal. L-10 removed that dependency
+    rather than alarming on it. What holds now, and what still does not:
 
-      * INDEPENDENT where the row-presence check leans on it. Method discovery,
-        key extraction and the guard rule share nothing with the builder: the
-        builder finds handlers by an any-return-type signature regex and
+      * INDEPENDENT in method discovery, key extraction and the guard rule.
+        The builder finds handlers by an any-return-type signature regex and
         decides guardedness by block dominance; this finds them by a literal
         `static std::string Op...` signature and decides guardedness by asking
         whether `has("<key>")` appears anywhere in the body. MEASURED: retype
         one handler's return value and this derivation loses its rows while
-        `build_table` keeps them -- i.e. the two disagree, in the safe
-        direction (a conservative subset never invents a row).
+        `build_table` keeps them -- the two disagree, in the safe direction (a
+        conservative subset never invents a row).
 
-      * NOT INDEPENDENT in the low-level lexing. `blank_comments` and
-        `match_braces` are shared, and `match_braces` does not skip character
-        literals. MEASURED: a legal `const char c = '}';` planted early in
-        `OpZ80Read` truncates that body for BOTH readings at once -- the
-        builder drops `emulator/z80_read.addr`, this derivation stops expecting
-        it, the axis-A/axis-B cross-check still reports AGREES, and the
-        row-presence gate below reports nothing missing. In that mode the gate
-        is blind, and the table reads as "z80_read takes no address".
+      * INDEPENDENT in body extent, which is the L-10 fix. The builder brace-
+        matches; this walks column-0 signatures (`_col0_body`) and counts no
+        braces at all. MEASURED 2026-08-30: `const char c = '}';` planted early
+        in `OpZ80Read` -- the edit that used to blind both -- now truncates the
+        BUILDER only. The row leaves the table, this derivation still expects
+        it, and `--fail-on-gap` exits 1 naming `emulator/z80_read.addr`. The
+        column-0 assumption that buys this is not trusted: it is asserted on
+        every run and its failure is `unmeasurable`, not a smaller answer.
+
+      * STILL SHARED: `blank_comments`. It is the one `lat` helper left on this
+        path, and it is kept deliberately -- a hand-copied second lexer written
+        by the same author on the same day is not independence, it is two
+        copies of one opinion. Two things make it a narrower exposure than
+        `match_braces` was. It is not a body-extent helper: a defect in it
+        changes which TEXT is visible, and can no longer move a body's
+        boundary or attribute it to the wrong function. And it does handle
+        character literals -- the exact defect class that sank the brace
+        matcher -- which was read, not assumed.
+
+        It does NOT handle C++11 raw strings, and that gap was PROBED on
+        2026-08-30 rather than argued about. Four legal `R"(...)"` injections
+        in `OpZ80Read`: one (`R"(")"`) desynced the builder into bleeding
+        neighbouring bodies together and the cross-check FIRED; one crashed
+        `parse_handlers` with a loud `ValueError`; two were harmless. NONE
+        produced the dangerous shape -- both readings losing the same row with
+        every check clean. So the residual is real as a gap and UNPROVEN as a
+        blind spot; it is registered under L-10 rather than claimed here.
 
     So: the gate catches a row lost on the TABLE side with the source intact,
-    which is what it was built for and what nothing else caught. It does NOT
-    catch a source change that fools the shared brace matcher. Do not describe
-    it as an independent check in general; it is independent in the dimension
-    named above. The residual is registered under L-09.
+    and now also a source edit that fools the builder's brace matcher. What it
+    has not been shown to catch is an edit that fools the shared comment
+    blanker. Describe it as independent in the dimensions named above -- body
+    extent, method discovery, key extraction, guard rule -- never in general.
 
     Guardedness is decided by the crudest possible rule: does this same
     function body mention `<ident>.has("<key>")` anywhere at all. That is
@@ -1316,8 +1414,15 @@ def direct_reads_from_source(raw: str) -> dict:
             f"the independent extraction found only {len(fn_to_op)} handlers; it is "
             f"measuring its own slice of the file, not the dispatch table")
 
-    cstart = re.search(r"^static std::string CanonicalOp\(", code, re.M).start()
-    cbody = code[cstart: match_braces(code, code.index("{", cstart))]
+    _assert_definitions_are_at_column_zero(code, fn_to_op)
+    boundaries = [m.start() for m in COL0_STATIC_RE.finditer(code)]
+
+    csig = re.search(r"^static std::string CanonicalOp\(", code, re.M)
+    if csig is None:
+        raise AssertionError(
+            "CanonicalOp has no column-0 `static std::string` signature; the "
+            "rename map cannot be read and every method name would be wrong")
+    cbody = _col0_body(code, csig.start(), boundaries)
     rename = dict(re.findall(r'==\s*"(\w+)"\s*\)\s*return\s+"(\w+)"', cbody))
     prefix = re.search(r'push_back\(\s*"([^"]*)"\s*\+\s*CanonicalOp', code).group(1)
 
@@ -1331,13 +1436,13 @@ def direct_reads_from_source(raw: str) -> dict:
         # Handlers() is not a method. Neither is a silent drop.
         if fn not in fn_to_op or not ident:
             continue
-        open_brace = code.index("{", m.end())
-        body = code[open_brace: match_braces(code, open_brace)]
+        body_start = m.start()
+        body = _col0_body(code, body_start, boundaries)
         method = prefix + rename.get(fn_to_op[fn], fn_to_op[fn])
         for r in re.finditer(re.escape(ident) + r"\s*\.\s*" + VALUE_ACCESSOR_RE
                              + r'\s*\(\s*"(\w+)"', body):
             key = r.group(1)
-            line = raw.count("\n", 0, open_brace + r.start()) + 1
+            line = raw.count("\n", 0, body_start + r.start()) + 1
             pairs.setdefault((method, key), []).append(line)
             has_here = re.search(
                 re.escape(ident) + r'\s*\.\s*has\s*\(\s*"' + re.escape(key) + r'"',

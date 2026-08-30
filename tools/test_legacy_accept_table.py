@@ -41,6 +41,7 @@ Run via: tools/run_accept_table_tests.sh
 
 from __future__ import annotations
 
+import inspect
 import json
 import re
 import subprocess
@@ -879,6 +880,23 @@ class RealSourceInvariants(RecordedFixture):
 # one the gate actually runs. They are imported, not re-implemented: these
 # tests must exercise the SHIPPED derivation, not a look-alike.
 
+def _names_reachable_from(fn) -> set[str]:
+    """Every global/attribute name the compiled function can reach.
+
+    A text search of the source would be fooled by the function's own prose:
+    the docstring names `match_braces` to explain why it must not call it. The
+    bytecode cannot be fooled that way, and it follows comprehensions and
+    nested functions, which a one-line grep would miss.
+    """
+    names: set[str] = set()
+    stack = [fn.__code__]
+    while stack:
+        code = stack.pop()
+        names.update(code.co_names)
+        stack.extend(k for k in code.co_consts if hasattr(k, "co_names"))
+    return names
+
+
 direct_reads_from_source = lat.direct_reads_from_source
 missing_rows = lat.missing_rows
 REQUIRED_RECORD_FIELDS = lat.REQUIRED_RECORD_FIELDS
@@ -889,7 +907,10 @@ class SourceDerivedRowCompleteness(RecordedFixture):
     """No row may vanish from the table without a named test saying so.
 
     The expectation is rebuilt from `ControlSocket.cpp` on every test by
-    `direct_reads_from_source`, which shares no code with the table builder.
+    `direct_reads_from_source`, whose independence from the table builder is
+    exact and bounded -- see its docstring, and the L-10 tests at the foot of
+    this class that hold it. "Shares no code with the table builder" stood
+    here once and was false; it shares `blank_comments` and nothing else.
     The document under test is built INSIDE the test path, not in a shared
     fixture that can take the class down with it: if `generate()` raises, that
     becomes a named failure here that still names the rows it could not find.
@@ -1108,6 +1129,136 @@ class SourceDerivedRowCompleteness(RecordedFixture):
             "a source the second derivation cannot read produced a clean report; "
             "an unbuildable expectation would then pass the gate silently")
         self.assertEqual(report["checked"], 0)
+
+    # -- L-10: the second derivation must not share the builder's lexer -----
+    #
+    # L-09 shipped a row-presence gate whose expectation came from a second
+    # reading, and its own falsifier proved the two readings were yoked: both
+    # called `match_braces`, which skips `"..."` and has no case for `'...'`,
+    # so ONE legal character literal truncated the same body for both. The
+    # row left the table, the expectation stopped asking for it, and every
+    # check printed clean. These tests hold the fix: the second derivation
+    # bounds bodies by column-0 signatures and must survive that edit alone.
+
+    def _scratch(self, old: str, new: str) -> str:
+        """The real source with one legal edit, in memory. Never written back.
+
+        The perturbation anchor is asserted present: an edit that silently
+        matched nothing would leave these tests exercising a pristine file
+        and passing for that reason.
+        """
+        self.assertIn(old, self.raw,
+                      f"perturbation anchor {old!r} is not in the source; this "
+                      f"test would otherwise 'pass' against an unedited file")
+        return self.raw.replace(old, new, 1)
+
+    #: `const char c = '}';` planted at the top of `OpZ80Read`. Legal C++,
+    #: and invisible to a brace matcher that does not know char literals.
+    TRUNCATOR = ("static std::string OpZ80Read(const JsonObj& req, "
+                 "const Context& ctx)\n{\n")
+
+    def test_a_char_literal_brace_does_not_blind_the_second_derivation(self):
+        """L-10 acceptance. The builder truncates; the expectation must not.
+
+        The control comes first and is not decoration: unless the BUILDER
+        actually drops the row under this edit, the assertion below would be
+        satisfied by a source nothing had happened to.
+        """
+        poisoned = self._scratch(self.TRUNCATOR,
+                                 self.TRUNCATOR + "    const char c = '}'; (void)c;\n")
+        table = lat.build_table(poisoned)
+        self.assertNotIn(
+            "addr", table["methods"].get("emulator/z80_read", {}),
+            "control is void: the builder did NOT lose emulator/z80_read.addr "
+            "under the char-literal edit, so this proves nothing about whether "
+            "the second derivation is independent of it")
+
+        expected = direct_reads_from_source(poisoned)
+        self.assertIn(
+            ("emulator/z80_read", "addr"), expected["pairs"],
+            "the second derivation lost emulator/z80_read.addr to the SAME "
+            "character literal that truncated the builder -- the two readings "
+            "are still yoked to one brace matcher (ledger L-10)")
+
+        report = lat.row_presence_report(poisoned, {"methods": table["methods"]})
+        self.assertIsNone(report["unmeasurable"], report["unmeasurable"])
+        self.assertTrue(
+            any(g.startswith("emulator/z80_read.addr:") for g in report["missing"]),
+            f"the truncated table was not reported as missing the row: "
+            f"{report['missing']}")
+
+    def test_a_handler_defined_off_column_zero_is_unmeasurable_not_silent(self):
+        """The `wrong if` of L-10, asserted in code rather than by hand.
+
+        The boundary walk assumes every handler definition starts at column 0.
+        Indent one -- still legal C++ -- and the walk would mis-bound a body.
+        The derivation must refuse to run rather than quietly report fewer
+        rows, because a shrunken expectation is indistinguishable from a
+        complete table.
+        """
+        sig = "static std::string OpZ80Read(const JsonObj&"
+        moved = self._scratch("\n" + sig, "\n    " + sig)
+        with self.assertRaises(AssertionError) as caught:
+            direct_reads_from_source(moved)
+        self.assertIn("column 0", str(caught.exception).lower())
+        report = lat.row_presence_report(moved, {"methods": {}})
+        self.assertIsNotNone(
+            report["unmeasurable"],
+            "an indented handler left the derivation reporting a clean, smaller "
+            "expectation; the boundary walk's one assumption was violated in "
+            "silence")
+
+    def test_an_op_function_the_dispatch_table_never_names_is_unmeasurable(self):
+        """The census must agree with the handler count it already validates.
+
+        A column-0 `Op*` definition that `Handlers()` does not dispatch means
+        the census and the dispatch table disagree about what a handler is.
+        That is the same class of drift as an indented one and gets the same
+        answer: fail loudly, do not grade a table against a census that no
+        longer describes the file.
+        """
+        extra = ("static std::string OpNotDispatched(const JsonObj& req)\n"
+                 "{\n    return req.get(\"nowhere\");\n}\n\n")
+        added = self._scratch("static std::string OpZ80Read",
+                              extra + "static std::string OpZ80Read")
+        with self.assertRaises(AssertionError) as caught:
+            direct_reads_from_source(added)
+        self.assertIn("OpNotDispatched", str(caught.exception))
+
+    def test_the_second_derivation_never_calls_the_builders_brace_matcher(self):
+        """Structural, because behaviour alone cannot prove a negative.
+
+        The perturbation above shows the derivation survives ONE known lexer
+        defect. This shows it cannot inherit the NEXT one: the shared
+        body-extent helper is not on its code path at all. That distinction
+        is the entire ruling -- an alarm for a known bug is not independence.
+        """
+        names = _names_reachable_from(lat.direct_reads_from_source)
+        self.assertIn("blank_comments", names,
+                      "vacuous: this reads no names at all from the function, so "
+                      "it would report every helper absent")
+        for banned in ("match_braces", "match_parens"):
+            self.assertFalse(
+                banned in names,
+                f"the second derivation calls {banned}, the builder's own "
+                f"body-extent helper; a defect in it blinds both readings at "
+                f"once, which is exactly what L-10 removed")
+
+    def test_the_body_extent_helper_itself_counts_no_braces(self):
+        """The derivation delegates body extent, so the delegate is in scope.
+
+        Moving the brace matching one call deeper would satisfy the test above
+        while changing nothing, so the helper it delegates to is checked too.
+        """
+        names = _names_reachable_from(lat._col0_body)
+        for banned in ("match_braces", "match_parens"):
+            self.assertFalse(banned in names,
+                             f"_col0_body reaches {banned}; the body-extent rule "
+                             f"is still the builder's")
+        body = inspect.getsource(lat._col0_body).split('"""')[-1]
+        self.assertNotIn("{", body,
+                         "_col0_body's code mentions a brace; it is supposed to "
+                         "bound bodies without looking at one")
 
 
 class CommandLineInterface(unittest.TestCase):
