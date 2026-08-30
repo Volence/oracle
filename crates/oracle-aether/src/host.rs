@@ -316,6 +316,31 @@ impl Host {
         self.engine.set_live_pads(pads);
     }
 
+    // ---------------------------------------------------------------- the glass (§11.29, CR-H)
+
+    /// **Hand the bus the text the host's own present just put on the glass**, so `emulator/screen_text`
+    /// answers with what a human can actually read on the window.
+    ///
+    /// The same seam shape as [`set_live_pads`](Host::set_live_pads), and for the same reason it needs no
+    /// lock and no thread: hosted, the bus handlers run on the frontend's **own main thread**, synchronously,
+    /// inside [`pump`](Host::pump). The push happens at the end of iteration *N*'s present and the next
+    /// drain is at the top of *N+1*, so the served text describes the frame that is actually on the glass —
+    /// never one being composed, never one that has not been shown.
+    ///
+    /// **Deliberately NOT gated on [`has_clients`](Host::has_clients)**, unlike
+    /// [`publish_capture`](Host::publish_capture) beside it, and the difference is not an oversight. That
+    /// gate skips a whole frame's memcpy; this is a handful of short strings the frontend composed anyway.
+    /// Gating it would leave a client that connects mid-session reading `-32005 noDisplay` — *there is no
+    /// window* — until the next present, which is a false answer to the one question this method exists to
+    /// answer truthfully. The frontend does its own skipping, one level up, by not building a snapshot at
+    /// all when it is not serving a socket.
+    ///
+    /// Safe to call outside a drain window: this is engine state, not `System` state, so it never answers
+    /// for the placeholder machine.
+    pub fn set_screen_text(&mut self, surfaces: Vec<crate::engine::ScreenSurface>) {
+        self.engine.set_screen_text(surfaces);
+    }
+
     // ---------------------------------------------------------------- the instrument (conflict 4)
 
     /// **The watchpoint instrument, lent to the host's own run loop.**

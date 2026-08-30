@@ -1259,6 +1259,10 @@
           },
           "romLoading": {
             "type": "boolean"
+          },
+          "display": {
+            "type": "boolean",
+            "description": "§11.29 rider (CR-H): whether a player window exists for emulator/screen_text to read. Optional and additive; a caller asks this rather than probing screen_text by failing. A headless server serves false."
           }
         }
       }
@@ -6408,6 +6412,91 @@
             "type": "string",
             "minLength": 1,
             "description": "As emulator/object_list."
+          }
+        }
+      }
+    },
+    "emulator/screen_text": {
+      "$comment": "protocol.md §6 (window text) and §11.29 (CR-H, oracle d907fae, ADOPT WITH CHANGES). Reads the text a human can read on the PLAYER window: status line, toasts, palette/lens readouts, the window-manager title bar. Serves the SOURCE string and the RENDERED prefix both, because rendered-only reports a message's shadow and source-only is structurally blind to truncation. A pure read of a snapshot the frontend already composed for drawing (pushed once per present); never composes on demand, touches no Vdp or System, sits outside state_hash. REFUSES with -32005 and error.data.reason 'noDisplay' when no window exists: an empty list is FORBIDDEN because 'a window showing no text' is the default launch state and already means something else. NO number inside any text corresponds to a bus field: the status line's F is a UI counter, not the machine's frame (F-WINDOW-BUS-FRAME-OFFBYONE, diagnosed 2026-08-30). SCHEMATIZED AHEAD OF BEING SERVED: vectors are owed by oracle, derived from a real reply and run against this fragment before the method is advertised.",
+      "params": {
+        "type": "object",
+        "unevaluatedProperties": false,
+        "properties": {}
+      },
+      "result": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/replyFields"
+          }
+        ],
+        "$comment": "§2.4's FLAT spelling of the bounded-list rule, as checkpoint_list uses: the list is the whole result. `surfaces` is bounded by what the player draws (a policy bound: toasts can stack), so it is cursor-less but carries total/returned/truncated so a client can never mistake a partial page for the screen.",
+        "required": [
+          "surfaces",
+          "total",
+          "returned",
+          "truncated"
+        ],
+        "properties": {
+          "total": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Surfaces on the glass in total."
+          },
+          "returned": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "surfaces.length, restated."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "REQUIRED EVEN WHEN FALSE (§2.4 clause (a))."
+          },
+          "surfaces": {
+            "type": "array",
+            "description": "Stable order, back to front.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "text",
+                "rendered",
+                "truncated",
+                "unrenderable"
+              ],
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "statusLine",
+                    "toast",
+                    "palette",
+                    "lens",
+                    "titleBar"
+                  ],
+                  "description": "Which surface. `titleBar` is drawn by the window manager, not the overlay, which is why the method is not named overlay_*."
+                },
+                "text": {
+                  "type": "string",
+                  "description": "The SOURCE string the player composed."
+                },
+                "rendered": {
+                  "type": "string",
+                  "description": "What is actually on the glass after the player's fit/truncation; a prefix of `text` today. Compare to `text` for the honest reading; `truncated` is a convenience, not the guard."
+                },
+                "truncated": {
+                  "type": "boolean",
+                  "description": "rendered != text. Derived; REQUIRED even when false."
+                },
+                "unrenderable": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "description": "Characters in `text` for which the player has no glyph (it draws a hollow box). Empty array when none; REQUIRED so absence and 'none' are not the same artifact. Measured 2026-08-30: backtick and em dash have no glyph and the player's own first toast contains a backtick."
+                }
+              }
+            }
           }
         }
       }
