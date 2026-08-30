@@ -1125,6 +1125,29 @@ it** — the bar above, arriving on the verification written to enforce a neighb
 committed carrying the bad shape (only two docs mention the ledger; no scripts), so this is a habit note,
 not a repair. **Do not transcribe the contract clause itself** — read `contract/DECISIONS.md` there.
 
+**▶ F-CR28-CALLERS-DANGLING, registered 2026-08-30 — an unmerged commit in a leftover worktree, found
+while earning an `atBoundary: true` claim rather than asserting one.**
+
+Branch **`cr28-callers`** holds **one commit not on `main`** — `22d57ca` *"docs: CR-28 ruling applied —
+ADOPT WITH CHANGES, M1-M7 and S1-S4"*, a **418+/145− revision of `docs/2026-08-21-cr28-callers.md`**
+whose blob **differs from `main`'s copy of the same path**. Its own message ends *"Nothing merged,
+nothing pushed"*, which is an agent's honest close-out, not a verdict on whether the controller wanted it.
+
+**Deliberately NOT merged and NOT deleted.** Queue item 5 records CR-28 as fully done — ruling
+adjudicated, applied and served on 08-21 — so this is *probably* a superseded intermediate. **Probably is
+not knowledge**, and merging a docs revision into a closed arc on a guess is worse than leaving it.
+
+**Why it is registered rather than mentioned:** the two sibling worktrees (`parcel/gui-layers`,
+`profiler-shortrow-residual`) are genuinely merged — **zero-ahead AND ancestors of `main`, both
+conditions checked**, because zero-ahead alone is the two-valued reading bar 16(a) was written for. This
+one is neither, and a dangling branch is invisible to every reader who does not run `git worktree list`.
+
+**Revival condition:** anyone reopening CR-28, or the next session that prunes worktrees. Resolve by
+diffing `22d57ca:docs/2026-08-21-cr28-callers.md` against `main:` and deciding whether the revision was
+superseded by the applied ruling or dropped by accident — then merge it or delete the branch **with the
+reason recorded**, so the next reader is not asked the same question a third time.
+
+
 **✅ F-REPLAY-READS-AEONS-BUILD — CLOSED 2026-08-30, merged `79b4c32`, suite 60/1975/0/6 on the MERGED
 tree, fmt clean, clippy ×2 clean. The entry below is kept in full because TWO OF ITS INSTRUCTIONS WERE
 WRONG, and how they were wrong is the reusable part.**
