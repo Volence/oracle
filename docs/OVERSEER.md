@@ -1087,6 +1087,26 @@ about our own tree that is going OUT — to a peer, to the owner, into a doc —
 send time, or it is sent hedged. Not because it is likely wrong, but because *nothing downstream can
 check it*, and the more competent the receiver the more thoroughly it will be built upon.
 
+⚑ **AND THE PATTERN BEHIND THE INSTANCES, 2026-08-30 — THIS SEAT KEEPS READING A SOUND OBSERVATION AT ONE
+NOTCH TOO WIDE A SCOPE.** Three in a night is a habit, not luck, so it is booked as one entry rather than
+three slips:
+
+| observed (true) | asserted (too wide) | what settled it |
+|---|---|---|
+| no socket in `/run/user/1000` | *"the socket chain is EMPTY, no lane can reach any emulator"* | reading the resolver — one path, chosen on a directory test |
+| a grep for `xvfb-run` returned nothing | *"this repo has no xvfb-run site"* | the grep had **errored** on shell globbing; four real hits |
+| `ls /tmp/.X*-lock \| wc -l` = 0 | *"the box has zero leaked locks"* | `ls` is aliased to `eza`, which **exited**; `find` says 108 |
+| two `cargo` processes running | *"two cargo runs in THIS repo"* — the serialized-cargo hazard | `/proc/<pid>/cwd`: the other is in `.sigil-clamps`, a sigil worktree, under aeon's `refreeze --attest`. Different target dir, no lock contention, rule not engaged |
+
+**The shape is constant: the measurement is right, the SCOPE is asserted rather than measured, and the
+wider claim is the one that gets said out loud.** Each was settled by exactly one command — read the
+function, run the grep correctly, use `find`, read `/proc/<pid>/cwd`. **Two of the four are the SAME
+mechanism** (a command that failed, with its error suppressed or swallowed by an alias, counted as an
+empty world), which is bar 16(d) and which this file already carried when all three happened.
+**Operational form, and it is narrower than "be careful": before stating a scope — *no lane*, *this repo*,
+*the box*, *nowhere* — name the command that establishes THAT WORD, not the one that established the
+observation.** They are rarely the same command, and the second one is usually cheap.
+
 ⚑ **THE INSTANCE, SAME NIGHT, AND IT IS A VERIFICATION I REPORTED AS CLEAN.** aeon found a blocker with no
 decision card; this lane ran the same check over its own board and told a peer *"no missing cards here"*.
 **That emitted claim had two independent defects, and a peer found each — neither was found here.**
@@ -1104,6 +1124,61 @@ decision card; this lane ran the same check over its own board and told a peer *
 it** — the bar above, arriving on the verification written to enforce a neighbouring bar. Nothing was
 committed carrying the bad shape (only two docs mention the ledger; no scripts), so this is a habit note,
 not a repair. **Do not transcribe the contract clause itself** — read `contract/DECISIONS.md` there.
+
+**▶ F-REPLAY-READS-AEONS-BUILD, registered 2026-08-30 — OUR SUITE'S GREEN DEPENDS ON ANOTHER LANE NOT
+REBUILDING, and nothing in either repo says so.** Found by chasing a red I assumed was mine.
+
+`crates/oracle-replay/tests/replay_real_artifacts.rs:50-52` defaults to `/home/volence/sonic_hacks/aeon`
+(overridable by `ORACLE_AEON_DIR`) and reads **aeon's live build products** — `s4.debug.bin`, `s4.bin`,
+`s4.debug.lst`, `s4.lst` — pinning hashes derived from them. aeon rebuilt at **22:35:38 on 2026-08-29**
+(parallax BG V-scroll clamp, section head clamp), so four rows now fail; `the_negative_control_trips_the_gate`
+wants `490164326` and gets `221728870`.
+
+**Established as foreign rather than assumed:** the same four fail identically on a **clean checkout of our
+own `origin/main`** in a throwaway worktree containing none of the session's work.
+
+⚠ **Do NOT repin.** Goldens never regenerate silently is the standing bar, and here it is worse than usual:
+the repinned number would silently mean *"whatever aeon last built"*, a pin that cannot fail and therefore
+detects nothing — bar 9's corollary, an instrument adopted as a gate after being bent to fit. **The fix is
+ours**: either freeze our own artifact, or **skip LOUDLY** when the artifact's identity is not the one the
+tests were written against. Loudly is the operative word — a silent skip and a pass are the same artifact
+(bar 25, aeon's).
+
+**The durable form, and it generalises past this file: a claim about a peer's file has a shelf life, and
+here it arrives as a TEST DEPENDENCY rather than as prose.** The doc version of this bar is already in this
+file; the test version has no reader at all, because nothing in either repo announces the coupling and the
+red presents as local. Measured shelf life: about a day.
+⚑ **aeon's sharpening, and it is the half worth keeping** (2026-08-30, banked by them): **prose claims
+about a peer's tree get citation discipline in this suite — SHAs, `--stat`, committed revisions — and a
+file path in a test constant gets NONE**, despite being the same claim with a stronger consequence.
+
+**▶ THE FIX, shaped with aeon and NOT taken tonight (their freeze is mid-flight; anything pinned in the
+next hour is stale again).** They offered exactly the identity this needs and it is worth recording in
+full:
+- **Read sigil's frozen goldens, never aeon's working tree** — `sigil/crates/sigil-harness/golden/`
+  (`s4.bin`, `s4.debug.bin`, `demo*.bin`, …). Those are **committed artifacts**, changed only at a
+  **freeze**: a deliberate, ritualised, recorded event, not the incidental rebuild that broke us.
+- **`golden/provenance.toml` is the build identity** — 186 `[[entry]]` records, each with `name`, a full
+  `aeon_rev`, an `ab` evidence field and per-target CRC sets. So a test can assert *"this is the ROM frozen
+  at `aeon_rev` X"* rather than *"this hash"*, **and when it legitimately changes the entry says which
+  parcel changed it and why. That is a pin that can fail for the RIGHT reason**, which is the property our
+  goldens-never-repin bar exists to protect.
+- ⚠ **Their own caveat, volunteered first: the goldens still move at every freeze** — a few times a day on
+  an active night. Pinning them keeps a dependency on their lane; what it buys over the working tree is
+  that every change is **announced, attributable and dated, in the same file as the artifact.**
+
+**This seat's lean, recorded as a lean and not a ruling: freeze OUR OWN copy, and use `provenance.toml`'s
+`aeon_rev` to record which revision we froze from.** That takes both properties — a pin that moves only
+when *we* decide, plus full attribution when we do — and it is the only shape where our suite's green
+stops depending on another lane's cadence at all. aeon said explicitly they would not argue against it and
+will carry nothing either way. **Revival condition: aeon's in-flight freeze lands and they send the SHAs
+(promised, copied to us).**
+
+⚠ **Consequence for every aggregate this lane quotes from now until it is fixed:** `cargo test --workspace`
+carries **4 foreign failures**, and a run reporting `FAILED=0` after 2026-08-29 22:35 is measuring
+something other than what it claims. Report the aggregate with the foreign four named, never as a bare
+total. *(Recorded because my own earlier greens tonight were taken before that rebuild and are not
+comparable to later ones.)*
 
 **Registered 2026-08-29 by the two window checks** (`docs/2026-08-29-window-runtime-checks.md` — both
 gates discharged; the `LIVE-OBJECTS-CARD` sequencing blocker is cleared):
