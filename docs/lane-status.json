@@ -1,5 +1,5 @@
 {
-  "focus": "Measured which checkpoints the engine team's change actually moved: exactly one, and the control is what proved it.",
+  "focus": "Discharged a debt we owed the engine team, and ruled the misleading frame number on your status line.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -8,8 +8,24 @@
       "id": "d-20"
     }
   ],
-  "nextBoundary": "Now - everything merged, verified and pushed; nothing running.",
+  "nextBoundary": "Now - clean tree, nothing in flight, a fresh session would lose nothing.",
   "queue": [
+    {
+      "id": "FRAME-LABEL",
+      "title": "RULED: the player's status line should stop printing a number that looks like the machine's frame position but is really a count of how many times the window has drawn. Relabel it rather than change it - the counter is how you can see the window is alive while the machine is stopped. Wording is open; it rides whichever parcel next touches the status line.",
+      "state": "next",
+      "size": "S",
+      "blockedBy": null,
+      "project": null
+    },
+    {
+      "id": "PLAYER-POLISH",
+      "title": "Four small defects in your own player window, all registered with anchors: it has no glyph for a backtick or an em dash so its own toasts show hollow boxes at you; an error toast cuts off the reason and keeps only the path; the ROM picker's filter matches the [loaded] decoration so the open ROM survives filters that should hide it; and one doc promises behaviour the code does not do. Each is cheap and named.",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": null
+    },
     {
       "id": "REPLAY-NET-STALE-18-26",
       "title": "NEW, and it is aeon's fixture rather than our code: 9 of 27 checkpoints (18-26) are stale on BOTH chain 186 and 188, with identical values - so they predate the clamps. Nobody knew because both full-playthrough tests are ignored by default, so a stream that desyncs two thirds through reads as green on both sides. Handed to aeon; cause unchased.",
@@ -71,7 +87,7 @@
       "blockedBy": null
     }
   ],
-  "awaiting": "your ten-second listen on the dull sound (d-20). Nothing else.",
+  "awaiting": null,
   "atBoundary": true,
-  "updatedAt": "2026-08-30T06:24:53Z"
+  "updatedAt": "2026-08-30T06:41:07Z"
 }

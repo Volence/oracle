@@ -226,3 +226,50 @@ load-bearing precondition and it was resolved by the raising lane's own addendum
 ruling that comes back is one a premium reviewer would have reached differently on a **material**
 item rather than a stylistic one. The M/S split the ruling is required to produce is precisely the
 instrument for measuring that, so the audit has a cheap first cut: re-run the M items only.
+
+---
+
+## L-08 — F-WINDOW-BUS-FRAME-OFFBYONE: relabel the status line, do NOT sync the counter · `SELF-RULED`
+
+**The question, put to this seat by the aurora lane 2026-08-30:** the window's `F` and the bus's
+`frame` diverge without bound. Fix the counter so they agree, or relabel the status line so it stops
+looking like a bus field?
+
+**Verdict: RELABEL. The counter stays a counter.**
+
+**Evidence, verified firsthand at HEAD before ruling** (both anchors read, not taken from the register's
+prose): the bus field is derived from the emulated clock —
+`crates/oracle-aether/src/engine.rs:2337-2339`, `fn frame(&self) -> u64 { self.sys.scheduler().now() /
+MCLK_PER_FRAME }`. The window's is `frame += 1` per run-loop iteration,
+`crates/oracle-frontend/src/main.rs:1933`, bumped whether or not a frame completed.
+
+**What decided it, and it is not a preference.** `engine.rs:2349-2351` had ALREADY ruled this question
+from the other end, in its own comment on `frameToken`: *"Deliberately the **emulated** frame index,
+not a UI counter. The sibling's `frame_token` is a UI counter, which forced hand-rolled realignment
+three separate ways (recon §5 C2)."* The engine refused to serve a UI counter and paid to find out why.
+Syncing the window's counter to the clock is that same refusal re-litigated from the losing side.
+
+**Alternatives considered.**
+1. *Sync the counter to the clock.* Rejected. It is a behaviour change that would destroy the one
+   thing the counter is actually good for: at a breakpoint halt or a pause, a still-incrementing `F` is
+   how a person can see the render loop is alive while the machine is not. A clock-derived number
+   freezes there, which is correct for the bus and useless for the window.
+2. *Print both.* Rejected as the worst option — two adjacent numbers that usually agree and sometimes
+   do not is the join hazard made permanent and given a UI.
+3. *Relabel.* Taken. The register's actual named hazard is a reader treating `F` as `frameToken`; the
+   divergence itself is two clocks answering two questions, which is not a defect.
+
+**Scope, stated so the next session does not over-read it.** This rules the LABEL. It does not rule
+what the label should say, which is a wording call for the parcel that takes it, and it does not
+reopen `screen_text`'s disclaimer — the fragment already carries the do-not-join warning in its own
+description, so the wire side is closed and only the human-facing side is open.
+
+*Wrong if:* a consumer turns up that genuinely needs the window to report emulated frame position on
+its status line — i.e. if the number a person reads there is wanted as a machine coordinate rather
+than as a liveness signal. The cheap falsifier: ask the two lanes that read our window (aeon's
+eyeball requests, aurora's editor) which of the two questions they are asking when they look at `F`.
+Nobody has been asked. If either answers "machine coordinate", option 1 comes back.
+
+**Reviewer:** none — self-ruled by the oracle overseer, per the substitute-seat terms requiring the
+reviewer be named on the record. This is a labelling call inside one lane's own frontend and was not
+sent to the seat.
