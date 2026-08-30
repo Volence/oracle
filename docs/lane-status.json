@@ -34,7 +34,7 @@
     },
     {
       "id": "REPLAY-NET-BLIND-3",
-      "title": "NEW ASK from the engine team, scoped and in dependency order: run the two skipped playthrough tests somewhere (~9s in release, NOT the default suite at ~83s); make it visible when our frozen copy of their game falls behind theirs; and have the suite name which version it tested so a green cannot be misread. They proved the cause is ONE commit, two collision files, and that it is repairable without re-recording. Nothing of theirs blocks on it.",
+      "title": "NEW ASK from the engine team, scoped and in dependency order: run the two skipped playthrough tests somewhere (~9s in release, NOT the default suite at ~83s); make it visible when our frozen copy of their game falls behind theirs; and have the suite name which version it tested so a green cannot be misread. Item 1 alone is NOT enough - two blindfolds stack and removing either leaves the other. HOW TO SEE THE SECOND ONE: come at the fixture pin from the DATA side (sweep the recorded chains), never from the test file - from the test side the tests look correctly configured and the fixtures look correctly frozen, and nothing connects them. Their agent only found it because it was sweeping chains for another reason.",
       "state": "open",
       "size": "M",
       "blockedBy": null,
@@ -111,5 +111,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-08-30T07:34:45Z"
+  "updatedAt": "2026-08-30T07:36:37Z"
 }

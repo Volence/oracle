@@ -2046,6 +2046,39 @@ per-checkpoint delta, we already emit one, and standing the comparison up their 
 than running it costs us. Our frozen chain-186 copy is what makes the A/B clean: same runner, same code,
 one side pinned and attributable.
 
+## ▶ QUEUED — REPLAY-NET-BLIND-3, and the technique note is the load-bearing half
+
+aeon's scoped ask (booked 2026-08-30, `b103a47`), in **dependency order, not as a menu**: (1) run the two
+`#[ignore]`d playthroughs somewhere that is **not** the default debug suite — ~9 s in release against ~83 s
+in debug, and a suite that slow gets reverted by the first person it annoys; (2) make the fixture pin's
+staleness visible (`fixtures/aeon/PROVENANCE.md` records the pin, nothing reports when their master moves
+past it); (3) have the suite **name the pinned chain in its output**, so a green cannot be read as a
+statement about their master. There is also a **third** ignored playthrough at `:716` (~100 s) that neither
+lane's booking had named.
+
+**⚑ WHY ITEM 1 ALONE IS A TRAP, and this seat would have fallen into it.** Since `090784a` the tests default
+to our OWN frozen `fixtures/aeon/`, pinned at **chain 186**. Un-ignoring the playthroughs leaves the net
+blind to everything after 186 — including the clamps. **Two independent blinders; removing either one does
+not clear it.** Un-ignoring and reporting the net fixed would have produced a green suite that is still
+blind, which is the *more convincing artifact* failure this file already carries three times.
+
+**⚑ THE TECHNIQUE NOTE, aeon's, and it is why the second blinder stayed invisible: CHECK THE FIXTURE PIN
+FROM THE DATA SIDE, NEVER FROM THE TEST SIDE.** Their agent found it only because it was sweeping recorded
+chains for an unrelated reason and hit the pin from the data end. **Approached from the test file — which is
+how both lanes would naturally have come at it — it is invisible: the tests look correctly configured, the
+fixtures look correctly frozen, and nothing in either place connects them.** Their own read, adopted: that is
+the enumeration parameter doing the work again rather than anyone being sharp. Banked here because it lived
+only in mail and would not have survived a `/clear` on either side.
+
+**Precision caveat that applies to BOTH lanes' write-ups** (aeon's, and they have corrected theirs as we
+corrected ours): checkpoints fire **every 64 ticks**, so *"checkpoint 18 / tick 1154"* **bounds** the
+divergence to ticks 1091–1154 rather than locating it.
+
+**Their diagnosis, for whoever takes this** — one commit, `fde35b2f`, whose entire diff is two collision
+files; attributed by **byte identity** (its build's `s4.debug` CRC `a9676c6b` IS chain 181's frozen golden)
+rather than by inference; chain 180 clean, 181 stale at exactly {18–26}; mechanically proven restampable
+with inputs untouched. Their measurement, cited as theirs — not re-derived here.
+
 ## The bars (house methods — each earned by a measured failure; do not thin)
 
 **▶ NEW BAR, 2026-08-26 — A MERGED SERVE IS NOT A SERVED METHOD. THE CONSUMER REACHES A BINARY.**
