@@ -2327,6 +2327,36 @@ it, so the rule is that the vendor line is part of the *brief template* for any 
 alongside the base check. Related and already booked: the same class as *a merged serve is not a served
 method* — knowing a thing in the tree is not the thing reaching the process that needs it.
 
+
+**▶ NEW OPS LINE, 2026-08-30 — NEVER CITE THE TIP. CITE THE COMMIT THAT CARRIES THE ARTIFACT, EMITTED
+FROM THE PATH.** Third instance of the anchor-class family against this seat, caught by the hub.
+
+I sent the hub `d5baac7` as CR-H's anchor. **It is a `docs/lane-status.json`-only commit.** The CR is
+carried by **`d907fae`**. Both verified with `--stat` after the fact; the hub caught it before I did.
+
+**The mechanism, and it is new — the two previous instances do not describe it.** 08-24 was the *wrong*
+SHA (a lint fixup for a feature merge) and 08-27 was the *right* SHA for an unstated question. **This is
+neither: I cited the SHA I had just pushed.** I committed the CR, then committed a status update on top,
+then pushed, then quoted the push's result — so the tip was the status commit, and the *act of being
+diligent about pushing before citing* is what put the wrong object in my hand. The push-before-you-cite
+rule and the cite-the-carrying-commit rule pull in opposite directions at exactly this moment, and
+nothing warns you.
+
+**The corrective is constructive, not verifying**, because `--stat`-after-the-fact is what the existing
+bar already prescribes and it did not fire — I had no reason to doubt a hash I had watched go out:
+
+```sh
+git log -1 --format=%h -- docs/proposed/2026-08-30-cr-h-screen-text.md   # the commit that carries it
+```
+
+**Never type or paste the output of `git push` / `rev-parse HEAD` as an anchor for an artifact.** Ask the
+path which commit carries it. That form cannot produce this error, where checking can only catch it.
+
+⚠ **And the reason it was cheap: the bad anchor lived ONLY IN MAIL.** `grep -rn d5baac7 docs/` returns
+nothing — no in-tree reader could ever have met the contradiction, exactly as protocol bar 20 describes,
+and the recipient was the only party able to catch it. **They did, which is the argument for citing a SHA
+the receiver can actually resolve rather than one that merely exists.**
+
 ## Ops (each line is a paid-for lesson)
 
 **▶ NEW BAR, 2026-08-29 — VALIDATE AN ARTIFACT AGAINST THE SCHEMA IT TARGETS BEFORE CALLING IT READY.
