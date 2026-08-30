@@ -1125,6 +1125,36 @@ it** — the bar above, arriving on the verification written to enforce a neighb
 committed carrying the bad shape (only two docs mention the ledger; no scripts), so this is a habit note,
 not a repair. **Do not transcribe the contract clause itself** — read `contract/DECISIONS.md` there.
 
+**✅ F-REPLAY-READS-AEONS-BUILD — CLOSED 2026-08-30, merged `79b4c32`, suite 60/1975/0/6 on the MERGED
+tree, fmt clean, clippy ×2 clean. The entry below is kept in full because TWO OF ITS INSTRUCTIONS WERE
+WRONG, and how they were wrong is the reusable part.**
+
+* **The recipe named ONE file; the coupling was in TWO crates.** `crates/oracle-core/tests/symbols_real_lst.rs`
+  resolves the same `ORACLE_AEON_DIR` default and reads the listings, **both ROMs, and the demo pair** —
+  six artifacts, not the four booked below. A four-file freeze would have left that test **silently
+  skipping**, the exact failure this parcel existed to prevent. The replay file's own header says *"this
+  mirrors symbols_real_lst.rs exactly"*, so the pointer sat in the text the whole time. **Bar 14: the
+  consumer set is the enumeration, and prose naming one consumer is not a survey.**
+* **⚑ THE BRIEFED REVISION WOULD HAVE FROZEN THE BREAKAGE.** Everything below says freeze sigil
+  `dd371e3b` (chain 187, `aeon_rev ec6a4791`). **That ROM is byte-identical to aeon's 22:35 build — the
+  one that reddened us** (`951cf960…62707d`, verified against the golden blob *before* dispatch).
+  Measured, not argued: chain 187 gives **9 passed / 4 failed** with our code unchanged. Pinned **chain
+  186** (sigil `5af70797`, `aeon_rev def98ee5`), the last freeze whose embedded fixture is coherent —
+  **13 passed / 0 failed**. The agent tested the briefed revision before departing from it and reported
+  the departure; **deviation ratified.**
+  **The durable shape: a recipe can be perfectly specific, correctly cited, agreed by two lanes, and
+  still name an artifact that does not do what the recipe wants — because it was written from the
+  artifact's PROVENANCE (newest attested freeze) rather than from the PROPERTY it needed (a coherent
+  fixture).** Nothing about it looked wrong. It named a revision, and the revision existed.
+* **The open question is ANSWERED and is NOT ours** — aeon's stale fixture; mechanism at their
+  `replay.emp:374`; booked aeon `0b612953`; all four checks re-verified firsthand here. Detail lives in
+  `fixtures/aeon/PROVENANCE.md`, the artifact of record.
+* **⚠ THE CONSEQUENCE THAT INVERTS THE REFLEX — DO NOT PIN A SUPERSEDE.** aeon's superseding freeze does
+  **not** re-record the fixture (re-recording was unbooked until this question was asked), so a newer
+  attested freeze **will still desync us**. *Wait for the attested freeze, then pin it* would reintroduce
+  this exact red **with a fresher-looking revision attached**. The pin moves only on aeon's explicit
+  signal that a coherent fixture exists.
+
 **▶ F-REPLAY-READS-AEONS-BUILD, registered 2026-08-30 — OUR SUITE'S GREEN DEPENDS ON ANOTHER LANE NOT
 REBUILDING, and nothing in either repo says so.** Found by chasing a red I assumed was mine.
 
@@ -1210,6 +1240,11 @@ carries **4 foreign failures**, and a run reporting `FAILED=0` after 2026-08-29 
 something other than what it claims. Report the aggregate with the foreign four named, never as a bare
 total. *(Recorded because my own earlier greens tonight were taken before that rebuild and are not
 comparable to later ones.)*
+
+**RETRACTED 2026-08-30 — the freeze landed and this warning is now itself the stale claim.** The aggregate
+is **60/1975/0/6, `FAILED=0` honestly**, on the merged tree. Kept visible rather than deleted, per the
+supersession rule: it was correct for about six hours, and a reader meeting it cold needs to see that it
+**expired**, not that it never applied.
 
 **Registered 2026-08-29 by the two window checks** (`docs/2026-08-29-window-runtime-checks.md` — both
 gates discharged; the `LIVE-OBJECTS-CARD` sequencing blocker is cleared):

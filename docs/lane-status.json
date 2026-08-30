@@ -1,5 +1,5 @@
 {
-  "focus": "Everything shipped and pushed; the one open job has its trigger and a full recipe written down for a fresh session.",
+  "focus": "Our tests now use our own frozen copy of the game, so another team's rebuild can't break them.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -8,12 +8,12 @@
       "id": "d-20"
     }
   ],
-  "nextBoundary": "Now \u2014 nothing in flight, tree clean, and the next parcel is fully specified in OVERSEER.md rather than in my head.",
+  "nextBoundary": "Now \u2014 freeze merged, verified on the merged tree and pushed; nothing running.",
   "queue": [
     {
-      "id": "REPLAY-FOREIGN-PIN",
-      "title": "UNBLOCKED \u2014 the engine lane sent the trigger and I verified it. Stop our tests reading their freshly-built game: take the two ROMs as committed blobs from the frozen set, AND freeze the listing beside them (the listing is NOT frozen upstream \u2014 that is the half that will be missed). Record which of their revisions it came from, including that this one is frozen-but-unattested with a supersede expected. Full recipe, SHAs and the trap are in OVERSEER.md.",
-      "state": "next",
+      "id": "AEON-RESTAMP-AB",
+      "title": "TRIGGERED, not scheduled: when aeon sends a candidate ROM with the words 'candidate for the restamp A/B', run our replay walk and hand back the per-checkpoint moved SET (not a count) for Ojz's 27. They named their own falsifier in advance; report the set even if it refutes them. Booked in OVERSEER.md; nothing to build now.",
+      "state": "open",
       "size": "S",
       "blockedBy": null,
       "project": null
@@ -21,7 +21,7 @@
     {
       "id": "LIVE-OBJECTS-CARD",
       "title": "Select-and-inspect is BUILT and merged (emulator/object_at, \u00a711.26/CR-F): a click answers which layer, where in the level, and which object slot drew it \u2014 with the five outcomes kept distinct. Spawn half still waits on aeon's mailbox shape and is out of scope.",
-      "state": "open",
+      "state": "next",
       "size": "S",
       "blockedBy": null,
       "project": "LIVE-OBJECTS"
@@ -71,7 +71,7 @@
       "blockedBy": null
     }
   ],
-  "awaiting": "your ten-second listen on the dull sound (d-20) \u2014 the only thing waiting on you. Everything else is pushed and a fresh session can continue without asking you anything.",
+  "awaiting": "your ten-second listen on the dull sound (d-20) \u2014 still the only thing waiting on you.",
   "atBoundary": true,
-  "updatedAt": "2026-08-30T03:18:53Z"
+  "updatedAt": "2026-08-30T04:27:42Z"
 }
