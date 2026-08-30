@@ -18,6 +18,14 @@
 //! master-attribution caveat on the PSG port that the hand-rolled fc tally silently got wrong.
 //!
 //! Usage: `cargo run --release -p oracle-core --example diag_soundqueue -- [rom.bin] [frames]`
+//!   - `[rom.bin]` — ROM path (default `s4.soundtest.bin` from Aeon's live tree — **not frozen**).
+//!
+//! **The default reads an unfrozen artifact, deliberately and loudly.** `s4.soundtest.bin` is not in
+//! `fixtures/aeon/` and cannot be put there on the current recipe: sigil's committed goldens are the
+//! authority for ROM bytes and that image is not among them. So the default still points at Aeon's
+//! live working tree, which is rebuilt without warning — and the run now says so at startup, with the
+//! file's age, so a stale read announces itself rather than passing as a measurement. See
+//! `examples/common/rom_source.rs` for the rule and why it is not uniform across these examples.
 
 use oracle_core::system::System;
 use oracle_core::watchpoints::{
@@ -26,7 +34,9 @@ use oracle_core::watchpoints::{
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 
-const DEFAULT_ROM: &str = "/home/volence/sonic_hacks/aeon/s4.soundtest.bin";
+#[path = "common/rom_source.rs"]
+mod rom_source;
+
 const DEFAULT_FRAMES: u64 = 600;
 /// Hit-ring capacity. Bounding is now record-time rather than print-time, so this is the honest memory
 /// bound of the run; `dropped` reports any loss instead of it being invisible.
@@ -80,7 +90,11 @@ impl Group {
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let rom_path = args.next().unwrap_or_else(|| DEFAULT_ROM.to_string());
+    // No frozen copy of `s4.soundtest.bin` exists, so this default reads a live tree. `announce`
+    // below is the half of that bargain that keeps the dependency from being silent.
+    let rom_path = args
+        .next()
+        .unwrap_or_else(|| rom_source::live_aeon("s4.soundtest.bin"));
     let frames: u64 = args
         .next()
         .and_then(|s| s.parse().ok())
@@ -93,10 +107,8 @@ fn main() {
             std::process::exit(1);
         }
     };
-    println!(
-        "ROM {rom_path}: {} bytes, running {frames} frames",
-        rom.len()
-    );
+    rom_source::announce(&rom_path, rom.len());
+    println!("running {frames} frames");
 
     let mut sys = System::new(0x5EED);
     sys.load_rom(rom);

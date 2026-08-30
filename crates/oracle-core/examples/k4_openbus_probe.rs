@@ -42,6 +42,9 @@ use oracle_core::bus::{BusEvent, BusEventSink, BusOp, Size};
 use oracle_core::io::Pad;
 use oracle_core::system::System;
 
+#[path = "common/rom_source.rs"]
+mod rom_source;
+
 /// The classifier. Shadows the two arbiter latches from the write stream (the sink sees every write,
 /// so the reconstruction is exact — same even-byte-only latch rule as the bus).
 ///
@@ -314,24 +317,40 @@ fn main() {
 
     // 3. The differential game corpus (docs/2026-07-22-differential-rom-findings.md — user-disk paths,
     //    never downloaded, never committed, skip-if-absent).
-    let games = [
-        ("s2rev01", "/home/volence/sonic_hacks/AP Backups/Awesome Project/s2rev01.bin"),
-        ("sonic3k", "/home/volence/sonic_hacks/skdisasm/sonic3k.bin"),
-        ("aeon-s4", "/home/volence/sonic_hacks/aeon/s4.bin"),
-        ("aeon-s4-soundtest", "/home/volence/sonic_hacks/aeon/s4.soundtest.bin"),
-        ("aeon-demo", "/home/volence/sonic_hacks/aeon/demo.bin"),
-        ("thunderforce4", "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Thunder Force IV (U).bin"),
-        ("gunstar", "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Gunstar Heroes (USA).md"),
-        ("batman-robin", "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Adventures of Batman & Robin, The (USA).md"),
-        ("alien-soldier", "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Alien Soldier (Europe).md"),
-        ("vectorman", "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Vectorman (USA, Europe).md"),
-        ("ristar", "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Ristar (USA, Europe) (August 1994).md"),
+    //
+    //    The `false` flag marks a row whose bytes are NOT reproducible from this repository. For the
+    //    commercial dumps that is inherent and harmless: a dumped cartridge does not change. For an
+    //    Aeon build product it is not harmless — that tree is rebuilt without warning, so a row could
+    //    silently describe a different game than the one it names. `aeon-s4` therefore reads our own
+    //    frozen copy; `s4.soundtest.bin` has no frozen counterpart at all (it is absent from sigil's
+    //    chain-attested goldens) and `demo.bin` we chose not to add to the freeze for one survey row,
+    //    so both stay live and say so on the row rather than passing as pinned.
+    let frozen_s4 = rom_source::frozen("s4.bin");
+    let games: [(&str, &str, bool); 11] = [
+        ("s2rev01", "/home/volence/sonic_hacks/AP Backups/Awesome Project/s2rev01.bin", false),
+        ("sonic3k", "/home/volence/sonic_hacks/skdisasm/sonic3k.bin", false),
+        ("aeon-s4", &frozen_s4, true),
+        ("aeon-s4-soundtest", "/home/volence/sonic_hacks/aeon/s4.soundtest.bin", false),
+        ("aeon-demo", "/home/volence/sonic_hacks/aeon/demo.bin", false),
+        ("thunderforce4", "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Thunder Force IV (U).bin", false),
+        ("gunstar", "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Gunstar Heroes (USA).md", false),
+        ("batman-robin", "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Adventures of Batman & Robin, The (USA).md", false),
+        ("alien-soldier", "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Alien Soldier (Europe).md", false),
+        ("vectorman", "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Vectorman (USA, Europe).md", false),
+        ("ristar", "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Ristar (USA, Europe) (August 1994).md", false),
     ];
-    for (name, path) in games {
+    for (name, path, pinned) in games {
         match std::fs::read(path) {
             Ok(rom) => {
+                // An Aeon build product read from outside the freeze is the one case where the row
+                // itself can go stale under us, so mark it in the row rather than only in a comment.
+                let mark = if pinned || !path.starts_with(rom_source::LIVE_AEON_DIR) {
+                    String::new()
+                } else {
+                    " [LIVE aeon tree, NOT frozen]".to_string()
+                };
                 let (p, ran) = probe(rom, 900, None);
-                println!("{}", p.row(&format!("{name} ({ran}/900f)")));
+                println!("{}", p.row(&format!("{name} ({ran}/900f){mark}")));
                 eprint!("{}", p.ww_detail_lines(name));
             }
             Err(_) => eprintln!("SKIP: {path} not on this disk"),
