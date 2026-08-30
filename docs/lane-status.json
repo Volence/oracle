@@ -1,9 +1,9 @@
 {
-  "focus": "Retracted a wrong call against the engine team; back on the self-check fix.",
+  "focus": "The self-check now catches what it is for; closing the second hole that testing it honestly exposed.",
   "inFlight": [
     {
-      "what": "the gap-check row-presence fix (L-09), starting with a falsifier that may undercut the ruling itself",
-      "where": "branch parcel/gap-row-presence",
+      "what": "removing the shared weak point the falsifier found (L-10)",
+      "where": "branch parcel/lexer-independence",
       "agent": true
     }
   ],
@@ -14,12 +14,12 @@
       "id": "d-20"
     }
   ],
-  "nextBoundary": "When L-09 lands and is verified on the merged tree.",
+  "nextBoundary": "When L-10 lands and is verified on the merged tree.",
   "queue": [
     {
       "id": "F-CROSSCHECK-BLIND",
-      "title": "RULED (L-09): the tool's quick self-check must actually verify its rows are still there, and must check against a SECOND independent reading of the source - not its own output, or it grades its own homework and keeps the exact blindness we are fixing. The second reading already exists and is proven, in the tests. Rejected the cheaper option of just documenting the limit: nobody re-reads a build check's small print.",
-      "state": "doing",
+      "title": "L-09 SHIPPED + merged (58b8ed6): --fail-on-gap now verifies rows SURVIVED, names each missing one, and fails loudly when the second derivation cannot be built. 61 tests green, gate proven load-bearing by a clean shape-correct sabotage. Building the falsifier honestly exposed a REAL residual, now ruled as L-10 and in flight.",
+      "state": "open",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT"
@@ -127,5 +127,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-08-30T09:33:12Z"
+  "updatedAt": "2026-08-30T09:37:54Z"
 }
