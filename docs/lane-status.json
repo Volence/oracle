@@ -1,12 +1,6 @@
 {
-  "focus": "Two more emulator commands built (the sound chip's memory); waiting on a test run before landing them.",
-  "inFlight": [
-    {
-      "what": "the Z80 pair, built and committed on parcel/z80-window \u2014 waiting on the workspace aggregate before merge, rebuild and push",
-      "where": "branch parcel/z80-window (foreground; this repo's rule: runtime and serve work is never a subagent here)",
-      "agent": false
-    }
-  ],
+  "focus": "Two more commands shipped; eight left and all of them are waiting on someone else, not on us.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "the dull sound: keep the hardware-accurate filter, default it off, or let the player remember your choice. A taste call, so it is yours rather than mine \u2014 ten seconds to hear it both ways",
@@ -14,7 +8,7 @@
       "id": "d-20"
     }
   ],
-  "nextBoundary": "When the Z80 pair is merged, the release binary rebuilt so the MCP shim reaches it, and pushed.",
+  "nextBoundary": "Now \u2014 Z80 pair merged, verified through a real binary, everything pushed.",
   "queue": [
     {
       "id": "REPLAY-FOREIGN-PIN",
@@ -50,7 +44,7 @@
     {
       "id": "ACCEPT-16",
       "title": "Down to EIGHT unserved: the Z80 pair is built (CR-B adjudicated) and closes L-02. The remaining eight are still correctly waiting \u2014 three sound-capture ones whose consumer asked us not to pre-build, two needing a piece of the emulator deliberately not compiled in, one the consumer does not want, and two parked because serving them would advertise a capability that does nothing.",
-      "state": "doing",
+      "state": "open",
       "size": "L",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT"
@@ -78,6 +72,6 @@
     }
   ],
   "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-08-30T03:05:13Z"
+  "atBoundary": true,
+  "updatedAt": "2026-08-30T03:13:08Z"
 }
