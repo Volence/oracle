@@ -1067,13 +1067,38 @@ sigil-derived figures** (the §11.5 short-row work, the 180.0/154.0 hand derivat
 `ad289eae947b2dd4…`, and sigil's golden **at the PINNED revision** `7b46f075` (blob `633f5f88…`) hashes to
 the same value. A relinked binary cannot move either — **a pinned blob equals itself by construction**, which
 is the whole reason those were frozen as artifacts instead of kept as a recipe.
-⚠ **The one residue, named rather than glossed: the `.lst` REBUILD RECIPE is now unverified.** §1.3's
-pinned-toolchain recipe claims *"a rebuild that reproduces those bytes proves the listing beside it is the
-corpus listing"* — a standing claim about a binary that has just changed underneath it. Nobody needs it (the
-`.lst` is on disk and pinned, and empyrean `9b604f0` — *prefer the committed artifact to the recipe that
-recreates it*, which came out of this lane — says take the blob). **But if a future session reaches for the
-recipe and it no longer reproduces, that will present as "the corpus is wrong" rather than "the recipe
-aged."** Revival condition: anyone about to re-run the §1.3 rebuild. Take the artifact instead.
+⚠ ~~**The one residue: the `.lst` REBUILD RECIPE is now unverified.** §1.3's pinned-toolchain recipe claims
+*"a rebuild that reproduces those bytes proves the listing beside it is the corpus listing"* — a standing
+claim about a binary that has just changed underneath it. Revival condition: anyone about to re-run the §1.3
+rebuild.~~ **RETRACTED WITHIN THE HOUR — THERE IS NO RESIDUE, AND THE RETRACTION IS THE INSTRUCTIVE PART.
+Original kept visible per this repo's supersession rule.**
+
+**The recipe was ALREADY pinned by exactly the move that saved the artifacts, and I would have known that by
+opening it.** `corpus-rom-d22dda85/PROVENANCE.md` §2 builds sigil from a **worktree at `7b46f075` into a
+scratch `CARGO_TARGET_DIR` outside both repos**, then passes `SIGIL_BUILD=<scratch>/sigil-target/release/sigil`
+— **it never references the shared `sigil/target/release/sigil` at all**, so a relink of that binary cannot
+reach it. Better still, the document had already anticipated this exact class in prose: *"the **current**
+sigil refuses with `[map.undeclared-island] ROM section at 0x99F0` … and **is why sigil is pinned to
+`7b46f075` rather than to its head**."*
+
+**My error, and it is one this file has a bar for: I asserted an exposure from OVERSEER.md's own ONE-LINE
+SUMMARY of the recipe (*"the §1.3 pinned-toolchain recipe"*) without opening the recipe — which lives in
+PROVENANCE.md, not here.** *Read the artifact, not the story.* The word **pinned** was sitting in the
+summary I was reading, and I wrote a hazard notice about the thing it names being unpinned.
+
+⚑ **And the half that makes this worth keeping rather than deleting: I exported the wrong claim to sigil,
+and they reasoned soundly on it and sent back a correction that was RIGHT ON THE RULE AND WRONG ON THE
+INSTANCE** (*"the claim is now false-by-default rather than merely unverified … a recipe pinned to a
+revision degrades into a historical note; an unpinned one degrades into a wrong instruction"*). **Their rule
+is good and is adopted below. It simply does not bite here, and it could only mislead them because my
+premise was wrong.** This is the delegation corollary arriving between lanes: a confident mechanism from
+this seat overwrote a question they had no way to check, and the sound reasoning they applied to it made the
+error look corroborated rather than caught. Same shape as the 52-method circuit — *a claim of ours came back
+wearing a peer's confidence.*
+
+**ADOPTED FROM SIGIL, as a general rule this lane owes its docs:** a recipe carried in prose either **names
+the revision it was true at** or it degrades into a wrong instruction rather than a historical note. Our
+corpus recipe already satisfies it — by construction, not by intent — and that is the shape to copy.
 
 **Registered by the CR-27 serve review (2026-08-20), all contract-side or cosmetic, none blocking:**
 
