@@ -2446,6 +2446,33 @@ item is precisely *"never executed against a real window"*. **That item may not 
 recipe in this file**, and discharging it against an unvalidated recipe would put a window on his
 desktop to prove a feature about windows. Settle the discriminator first, or leave T1 open and say so.
 
+
+**▶ NEW OPS LINE, 2026-08-30 — DO NOT COMMIT WHILE A VERIFICATION RUN IS IN FLIGHT. IT INVALIDATES THE
+BUILD-ID GATE AND THE FAILURE LOOKS LIKE THE PARCEL'S.** Third instrumentation failure in one night, and
+the only one that produced a red that was entirely mine.
+
+A merged-tree run came back **61/1988/1**, failing `server_build::the_compiled_in_build_id_still_names_this_tree`
+— *"the compiled-in build id names a different commit than HEAD"*. **It was right.** The binary was
+compiled at `8e88e2b`; I then landed two `docs/OVERSEER.md`-only commits **while the suite was running**,
+so HEAD had moved by the time the assertion read it. Re-run on a stable tree: **61/1989/0/6, exit 0,
+`HEAD_AT_START == HEAD_AT_END`.**
+
+**Why this is worth a line rather than a shrug: the gate exists to catch a stale build-script product,
+and a docs commit is exactly the change a person feels safe making during a long run** — it touches no
+code, it cannot affect a test, and it is the natural way to use twelve idle minutes. The failure it
+produces names a *build-script caching defect*, which is a plausible and completely wrong diagnosis; a
+session that trusted the message would have gone looking at `cargo:rerun-if-changed` declarations.
+
+**Corrective:** a verification prints `HEAD_AT_START` and `HEAD_AT_END` and **they must be equal for the
+verdict to count**. Bank findings *after* the run, never during — the twelve minutes are not free time,
+they are part of the measurement.
+
+*Tonight's three instrumentation failures, kept together because the pattern is the point: one command
+reported **failure on success** (`grep -c` exiting 1 on the desired zero matches); one reported **success
+on a partial run** (a killed suite aggregating clean at 46 of 61 legs); one reported **a real failure
+with a misleading cause** (this). In all three the suite itself was honest and the harness around it was
+not. **The instrument that reports on the instrument is the one nobody tests.***
+
 ## Ops (each line is a paid-for lesson)
 
 **▶ NEW BAR, 2026-08-29 — VALIDATE AN ARTIFACT AGAINST THE SCHEMA IT TARGETS BEFORE CALLING IT READY.

@@ -1,12 +1,6 @@
 {
-  "focus": "Building the command that lets tools read the player's on-screen text; the contract for it is ruled and settled.",
-  "inFlight": [
-    {
-      "what": "Implement emulator/screen_text to the adjudicated fragment: the host-owned snapshot seam, the handler, the frontend push, and vectors derived from real replies. Held unmerged until the hub merges the vectors.",
-      "where": "branch parcel/screen-text (worktree .worktrees/screen-text, base 8aa8603)",
-      "agent": true
-    }
-  ],
+  "focus": "Tools can now read the player's on-screen text; holding the announcement until the hub takes the evidence.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "the dull sound: keep the hardware-accurate filter, default it off, or let the player remember your choice. A taste call, so it is yours rather than mine \u2014 ten seconds to hear it both ways",
@@ -14,14 +8,14 @@
       "id": "d-20"
     }
   ],
-  "nextBoundary": "After the vectors are handed to the hub and the serve is merged and pushed.",
+  "nextBoundary": "After the hub merges the vectors and the A/B measurement is handed to aeon.",
   "queue": [
     {
       "id": "AEON-RESTAMP-AB",
-      "title": "TRIGGER HAS FIRED and the candidate is verified (sigil e38295d2 chain 188 vs our frozen chain 186, both committed blobs). NOT started only because the replay needs cargo and the screen-text parcel holds the lane - run it the moment that frees. Hand back the per-checkpoint moved SET for Ojz with logic_tick, never a count, and never a summary that agrees with their mechanism.",
+      "title": "UNBLOCKED - the cargo lane is free. Run the replay walk against sigil e38295d2 (chain 188) versus our frozen chain 186 and hand aeon the per-checkpoint moved SET for Ojz with logic_tick. Never a count, and never a summary that agrees with their mechanism.",
       "state": "next",
       "size": "S",
-      "blockedBy": "cargo lane held by parcel/screen-text",
+      "blockedBy": null,
       "project": null
     },
     {
@@ -42,10 +36,10 @@
     },
     {
       "id": "OVERLAY-STATE",
-      "title": "CR-H ADJUDICATED (ADOPT WITH CHANGES, empyrean 98f1b60) and BUILDING. Two binding changes: the refusal carries a typed reason string not a boolean, and unrenderable/truncated are required even when empty. Condition: the method is NOT advertised until vectors, derived from real replies and run against the fragment, land at empyrean.",
-      "state": "doing",
+      "title": "BUILT, MERGED, VERIFIED (61 legs / 1989 passed / 0 failed on the merged tree, stable HEAD). Deliberately NOT ANNOUNCED: the adjudication conditions announcement on the vectors landing at empyrean, and merging is not advertising here - a consumer reaches a rebuilt binary. Open: never run against a real window, and that check waits until the owner is not logged in.",
+      "state": "open",
       "size": "M",
-      "blockedBy": null
+      "blockedBy": "hub merging the CR-H vectors"
     },
     {
       "id": "ACCEPT-16",
@@ -78,6 +72,6 @@
     }
   ],
   "awaiting": "your ten-second listen on the dull sound (d-20). Nothing else.",
-  "atBoundary": false,
-  "updatedAt": "2026-08-30T05:36:56Z"
+  "atBoundary": true,
+  "updatedAt": "2026-08-30T06:16:56Z"
 }
