@@ -1,5 +1,5 @@
 {
-  "focus": "Corrected the engine team's record on their own falsifier; the self-check fix is still building.",
+  "focus": "Retracted a wrong call against the engine team; back on the self-check fix.",
   "inFlight": [
     {
       "what": "the gap-check row-presence fix (L-09), starting with a falsifier that may undercut the ruling itself",
@@ -127,5 +127,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-08-30T09:29:48Z"
+  "updatedAt": "2026-08-30T09:33:12Z"
 }
