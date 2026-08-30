@@ -1315,9 +1315,25 @@ impl Engine {
 
     /// Install an already-parsed symbol table (the binary does this at startup from the `.lst` beside
     /// the ROM). The binding check is the caller's — see [`Engine::load_symbols`] for the wire path.
+    ///
+    /// **Absolutised here, at load, by the same [`absolutise`] as [`Engine::set_rom_path`]** — §6's
+    /// paths note as ridden by §11.30 (CR-I): "absolute paths SHOULD be reported" is a property of
+    /// *every* success-reply field whose value is a filesystem path, not of the one key a ruling
+    /// happened to name. Until 2026-08-30 this echoed the launch argument verbatim, so
+    /// `oracle-aether s4.bin --symbols fixtures/aeon/s4.lst` put an absolute `romPath` and a relative
+    /// `symbolsPath` on the wire *from one command line* — one of the two answering "which listing is
+    /// this server using?" only for a reader who already shared this process's working directory.
+    ///
+    /// Same helper and the same SHOULD as the ROM path, deliberately not a stricter rule: a second rule
+    /// is a second thing to get wrong, and the pass-through case ([`absolutise`]) is load-bearing for
+    /// both.
+    ///
+    /// Done at the boundary rather than in `status` so every route agrees: the binary
+    /// ([`crate::main`]), the hosted embedder ([`crate::host`]), [`Engine::load_symbols`] and a
+    /// checkpoint restore all arrive here or at an already-absolutised value.
     pub fn set_symbols(&mut self, table: Option<SymbolTable>, path: Option<String>) {
         self.symbols = table.map(Arc::new);
-        self.symbols_path = path;
+        self.symbols_path = path.map(|p| absolutise(&p));
     }
 
     /// One free-running frame, called by the server loop between command drains. Returns the pacing
@@ -4595,8 +4611,15 @@ impl Engine {
             )
             .with_data(json!({"path": path.display().to_string()}))
         })?;
+        // **Absolutised after the write succeeded**, by the one rule §11.30 puts on every success-reply
+        // field whose value is a filesystem path. This key *looked* compliant already, but only by the
+        // accident that its default is built from `temp_dir()` — a caller who passed `shot.png` got
+        // `shot.png` back and had no way to find the file except by sharing this process's working
+        // directory. The refusal above still quotes the caller's spelling: a refusal describes the
+        // request, a success describes the state.
+        let path = absolutise(&path.display().to_string());
         let mut out = json!({
-            "path": path.display().to_string(),
+            "path": path,
             "format": "png",
             "width": width,
             "height": ACTIVE_LINES,
@@ -5004,8 +5027,20 @@ impl Engine {
                 })
             }
         };
-        self.symbols = Some(Arc::new(table));
-        self.symbols_path = Some(path.clone());
+        // **Absolutised only after every refusal above has been passed** — the same placement, and the
+        // same reason, as `reload_rom`'s: a refusal describes the *request*, so `error.data.path` quotes
+        // the caller's own spelling back at them (§11.30's deliberate exception), while a success
+        // describes the *state*, which §6 wants absolute.
+        //
+        // **One value, used for both the stored `symbolsPath` and the reply's `path`** — §11.30 M1:
+        // "one method never reports one file under two spellings in one exchange." The store still goes
+        // through [`Engine::set_symbols`], which absolutises again; that is deliberate rather than
+        // redundant-and-tolerated. `absolutise` is idempotent on its own output (`canonicalize` of an
+        // already-canonical path is itself; a pass-through label stays a pass-through label), so the two
+        // agree by construction — and the boundary keeps holding for the routes that do NOT come through
+        // here, which is the property that made `set_rom_path` the right shape.
+        let path = absolutise(path);
+        self.set_symbols(Some(table), Some(path.clone()));
         let mut out = json!({
             "path": path,
             "symbolCount": count,
@@ -5226,6 +5261,18 @@ impl Engine {
         // half-way through — the one outcome §6.1 rules out — in service of an invariant already held.
         // The debug assertion below is that reasoning, made checkable.
         self.symbols = symbols;
+        // **`symbols_path` is restored raw, and that is not a hole in §11.30's rule.** Both path fields
+        // come back from the slot exactly as they went in, and they went in already resolved: every
+        // store of either goes through [`Engine::set_symbols`] / [`Engine::set_rom_path`] or through
+        // `reload_rom`, all of which absolutise at the load boundary — which is the whole point of
+        // resolving there rather than in `status`. Checkpoints live in this process's memory and are
+        // never written to disk, so no slot can predate the binary that made it and carry a spelling
+        // from an older rule.
+        //
+        // Re-absolutising here would also be actively wrong for the pass-through case: a label with no
+        // file behind it ("testrom") could acquire a manufactured path if something happened to create
+        // a file of that name between the capture and the restore, which would change what a restore
+        // reports about a machine it did not change.
         self.symbols_path = symbols_path;
         #[cfg(debug_assertions)]
         if let Some(t) = &self.symbols {

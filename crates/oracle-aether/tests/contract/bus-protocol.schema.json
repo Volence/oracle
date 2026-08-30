@@ -1255,7 +1255,7 @@
               "string",
               "null"
             ],
-            "description": "Path to the loaded listing, same treatment. Null when no listing is loaded."
+            "description": "Path to the loaded listing on the SERVER's filesystem, resolved to an absolute path by the same one rule as romPath at the load boundary (§6 paths note and its §11.30 rider): resolve where a file exists, pass the string through where none does. Never relative to the server's working directory, which no consumer can know. Null when no listing is loaded."
           },
           "romLoading": {
             "type": "boolean"
@@ -1295,7 +1295,8 @@
         ],
         "properties": {
           "path": {
-            "type": "string"
+            "type": "string",
+            "description": "The listing now loaded, spelled the way status.symbolsPath will spell it (absolute where a file exists; §11.30). One method never reports one file under two spellings in one exchange."
           },
           "symbolCount": {
             "type": "integer",
@@ -1737,7 +1738,8 @@
         ],
         "properties": {
           "path": {
-            "type": "string"
+            "type": "string",
+            "description": "Where the image was written, absolute where the file exists (§6 paths note, §11.30 rider), including when the caller supplied a relative path; not absolute only by the accident of the default living in temp_dir()."
           },
           "format": {
             "type": "string",

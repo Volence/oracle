@@ -14,14 +14,14 @@ an explicit re-vendor commit. That commit is the auditable record of "we adopted
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo revision | **`2ea88703e9df0510dc7ffa0bd37ad7091a26a3e6`** (2026-08-30) — `origin/main`'s **tip**, and `git merge-base --is-ancestor` was run against `origin/main` rather than assumed. `TRACKED_REVISION` is `None`. 64 fragments; all 64 declare `params`, all 64 close it with `unevaluatedProperties: false` (handshake exempt), and all 64 declare `result` — every figure **re-derived by parsing this copy**, never carried over. |
-| Last commit that touched the schema | **`98f1b6088d18ec89933a3a9e468a2cf11082febf`** — *"contract: 11.29 CR-H, emulator/screen_text (ADOPT WITH CHANGES), status.display rider; schematized ahead of being served"* (2026-08-30). It is an ancestor of the adopted tip: `2ea88703` carries no further schema edit, checked by hashing the blob at both. |
-| Git blob | `ed04bb39b7dc4fd599433a0003d128c3724aa05d` |
-| SHA-256 | `3a61d2c91ee1c104d70a544be90b3baf5e66863cdba930d9d77aa468841db232` |
-| Bytes | 320558 |
+| Contract repo revision | **`e7e94fa6a09b870ef1736804e4ee02927404479b`** (2026-08-30) — `origin/main`'s **tip**, and `git merge-base --is-ancestor e7e94fa6 origin/main` was **run**, not assumed (it exited 0). `TRACKED_REVISION` is `None`. 64 fragments; all 64 declare `params`, all 64 close it with `unevaluatedProperties: false` (handshake exempt), and all 64 declare `result`; 18 `$defs` — every figure **re-derived by parsing this copy**, never carried over from the table this replaced. |
+| Last commit that touched the schema | **`e7e94fa6a09b870ef1736804e4ee02927404479b`** — *"protocol: §11.30 CR-I adopted; §6 paths-note rider; symbolsPath/load_symbols.path/screenshot.path described as absolute by one rule"* (2026-08-30). Here it **is** the adopted revision, derived with `git log -1 -- contract/schema/bus-protocol.schema.json` rather than assumed from the tip. |
+| Git blob | `22236eabc412332de6fdf347c938e93b1b17e37e` |
+| SHA-256 | `ba11fb4058821cf5be59264a7ba952675ba9a6b5c35216647c439df21c736d7b` |
+| Bytes | 321300 |
 | Vendored on | 2026-08-30 |
 
-**Taken from the object store at a committed revision**, `git show 2ea88703:contract/schema/bus-protocol.schema.json`, never copied out of the sibling working tree — the recipe the retired tracking box below left behind. The adoption was then checked **by content address**: `git hash-object` on the written file returns `ed04bb39…`, equal to `git rev-parse 2ea88703:contract/…`. That is the one check that cannot be talked into agreeing, and this repo has caught a doctored restore with it before.
+**Taken from the object store at a committed revision**, `git show e7e94fa6:contract/schema/bus-protocol.schema.json`, never copied out of the sibling working tree — the recipe the retired tracking box below left behind, and the reason it exists is one this lane re-proved the morning before this re-vendor: a test that reads a peer's live directory answers about whatever is on disk at the moment it runs. The adoption was then checked **by content address**: `git hash-object` on the written file returns `22236eab…`, equal to `git rev-parse e7e94fa6:contract/…`. That is the one check that cannot be talked into agreeing, and this repo has caught a doctored restore with it before.
 
 *(Historical, kept because it records how an upstream drafting error is handled here — it belongs to the 2026-08-26 adoption, not to the current copy.)* **A drafting miss carried in the open, because it is upstream's and not ours.** The `a0c50a11` landing left one clause of the top-level `description` reading *"the eight BLOCKED rows print there too"* when the set had just become five. It was reported rather than patched locally — a vendored copy that is hand-corrected is a copy whose blob check is worthless — and the hub landed the fix as `55d99a68`, which is why **this** revision is the one adopted rather than `a0c50a11`. `contract/protocol.md` and `contract/schema/tests/vectors.json` are byte-identical at both.
 
@@ -35,6 +35,59 @@ an explicit re-vendor commit. That commit is the auditable record of "we adopted
 *(The unmerged-branch tracking box that stood here retired itself 2026-08-21 when `callers-amendment`
 merged as `70c7bb4` — its third profiler-amendment carry, per its own recipe: copy from the object
 store, never from the checkout.)*
+
+### What this re-vendor adopted — §11.30, **three `description` edits and nothing else** (2026-08-30)
+
+**⚑ Read this before trusting any green run that follows it.** §11.30 (CR-I, filed by this lane —
+`docs/proposed/2026-08-30-cr-i-symbolspath.md`, adopted at `e7e94fa6`) is the first re-vendor in this
+file's history whose entire schema delta is **annotation**. Three `description` strings changed. JSON
+Schema `description` has **no validation force**, so the moment these bytes landed,
+`schema_conformance.rs`'s byte-identity gate went green and every conformance vector still passed —
+against a server that was still putting a relative `symbolsPath` on the wire. **The re-vendor's green
+witnesses nothing about the behaviour it describes.** What witnesses it is
+`crates/oracle-aether/tests/symbols_path.rs`, which is behavioural, was red-first against this repo at
+`5808d8c`, and asserts the actual spellings. This box is here so the next reader does not have to
+rediscover that the gate and the subject are disjoint.
+
+Every figure below is **re-derived by parsing the old copy and the new one** (`git show
+HEAD:…/bus-protocol.schema.json` against the written file), never read from a commit message.
+
+| | previous copy | this copy | delta |
+|---|---|---|---|
+| method fragments (`methods`, `$`-keys excluded) | 64 | **64** | **unmoved** — no method added, renamed or removed |
+| fragments declaring `params` | 64 | **64** | unmoved |
+| fragments closing `params` with `unevaluatedProperties: false` | 64 | **64** | unmoved |
+| fragments declaring `result` | 64 | **64** | unmoved |
+| `$defs` | 18 | **18** | unmoved |
+| top-level keys outside `methods` | — | — | **byte-identical subtree**, checked by serializing both with sorted keys |
+| fragments otherwise changed | — | **3** | `emulator/status`, `emulator/load_symbols`, `emulator/screenshot` |
+| `UNCOVERED_METHODS` | 0 | **0** | unmoved |
+| `SCHEMATIZED_NOT_ADVERTISED` | 8 | **8** | unmoved |
+| bytes | 320558 | **321300** | +742, all of it prose |
+
+**The delta was enumerated leaf by leaf rather than eyeballed from a diff**, by walking both documents to
+their scalars and comparing every path. **Total leaf differences: 3.** In full:
+
+* `/methods/emulator/status/result/properties/symbolsPath/description`
+* `/methods/emulator/load_symbols/result/properties/path/description`
+* `/methods/emulator/screenshot/result/properties/path/description`
+
+And the complementary check, which is the one that actually rules out a shape change hiding in the
+prose: with **every** `description` in both documents stripped recursively, the two parse to the *same
+value*. So no `type`, `required`, `enum`, `$ref`, `additionalProperties` or
+`unevaluatedProperties` moved anywhere in the file.
+
+**What the three edits say.** `symbolsPath` no longer reads *"Path to the loaded listing, same
+treatment"* — the gesture at its neighbour that CR-I identified as the cause of the divergence, since it
+reads both as *same trust model* (D8) and as *same handling* (§6) and a server can satisfy one while
+violating the other. It now names the resolution outright. `load_symbols.result.path` and
+`screenshot.result.path` gain descriptions saying the same, and `load_symbols`'s carries M1 in words:
+*"One method never reports one file under two spellings in one exchange."*
+
+**A SHOULD is not a schema fact, and the ruling says so.** §11.30: *"the fragments constrain type, and a
+SHOULD is not a schema fact, so the gate stays as it was and a conformance run cannot certify this; a
+server that reports a raw path is non-conformant on §6's SHOULD, visible only by reading the reply."*
+That is upstream stating this box's point in its own adjudication.
 
 ### What this re-vendor adopted — §11.29, 63 → 64 fragments (2026-08-30)
 

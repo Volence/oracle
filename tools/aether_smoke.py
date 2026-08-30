@@ -110,10 +110,18 @@ else:
 # literal has to be hand-updated on every pin move, and the only way anyone ever updates one is by
 # copying whatever the run just printed — which is a check that cannot fail.
 #
-# Note the server reports `romPath` absolute but `symbolsPath` as it resolved it, which for the
-# auto-bound sibling listing is RELATIVE to the server's cwd. Both are resolved here from this
-# process's cwd, so run the script from where the server was launched. If that is not where you are,
-# the two checks below go red with the path they could not open — loudly, rather than skipping.
+# **Both paths are absolute as of §11.30 (CR-I), and this comment used to say otherwise.** It read:
+# "the server reports `romPath` absolute but `symbolsPath` as it resolved it, which for the auto-bound
+# sibling listing is RELATIVE to the server's cwd … so run the script from where the server was
+# launched." That asymmetry — visible in this script's own output, which is where CR-I was found — is
+# now fixed at the server's load boundary, so a consumer no longer has to share the server's working
+# directory to open the listing it names. The launch-directory caveat is retired with it.
+#
+# A relative string would still be *opened* here (this process's cwd would resolve it), so this is not
+# the gate for the rule — `crates/oracle-aether/tests/symbols_path.rs` is. What this script proves is
+# the human-legible half: a consumer in another language and another process reads both paths and both
+# are absolute. If either cannot be opened, the check below goes red with the path — loudly, rather
+# than skipping.
 lst_text = None
 if not lst_path or not os.path.isfile(lst_path):
     check("symbolsPath names a readable listing", False, lst_path)
