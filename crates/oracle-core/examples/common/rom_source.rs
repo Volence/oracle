@@ -91,8 +91,12 @@ pub fn announce(path: &str, len: usize) {
             format!("last modified {} h {} min ago", s / 3600, (s % 3600) / 60)
         })
         .unwrap_or_else(|| "last-modified time UNREADABLE".to_string());
-    println!("  ⚠ NOT FROZEN — outside fixtures/aeon/, so these bytes are whatever was on disk when");
+    println!(
+        "  ⚠ NOT FROZEN — outside fixtures/aeon/, so these bytes are whatever was on disk when"
+    );
     println!("    this run read them ({age}). If the path is in Aeon's working");
-    println!("    tree, that tree is rebuilt without warning and this run is not reproducible from");
+    println!(
+        "    tree, that tree is rebuilt without warning and this run is not reproducible from"
+    );
     println!("    the repository alone.");
 }

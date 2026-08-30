@@ -325,13 +325,17 @@ fn main() {
     //    frozen copy; `s4.soundtest.bin` has no frozen counterpart at all (it is absent from sigil's
     //    chain-attested goldens) and `demo.bin` we chose not to add to the freeze for one survey row,
     //    so both stay live and say so on the row rather than passing as pinned.
+    // Built through `rom_source` rather than spelled out, so `LIVE_AEON_DIR` is the one place the live
+    // tree is named and the row marker below cannot drift from the paths it is judging.
     let frozen_s4 = rom_source::frozen("s4.bin");
+    let live_soundtest = rom_source::live_aeon("s4.soundtest.bin");
+    let live_demo = rom_source::live_aeon("demo.bin");
     let games: [(&str, &str, bool); 11] = [
         ("s2rev01", "/home/volence/sonic_hacks/AP Backups/Awesome Project/s2rev01.bin", false),
         ("sonic3k", "/home/volence/sonic_hacks/skdisasm/sonic3k.bin", false),
         ("aeon-s4", &frozen_s4, true),
-        ("aeon-s4-soundtest", "/home/volence/sonic_hacks/aeon/s4.soundtest.bin", false),
-        ("aeon-demo", "/home/volence/sonic_hacks/aeon/demo.bin", false),
+        ("aeon-s4-soundtest", &live_soundtest, false),
+        ("aeon-demo", &live_demo, false),
         ("thunderforce4", "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Thunder Force IV (U).bin", false),
         ("gunstar", "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Gunstar Heroes (USA).md", false),
         ("batman-robin", "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Adventures of Batman & Robin, The (USA).md", false),

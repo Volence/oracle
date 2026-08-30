@@ -109,6 +109,11 @@ else:
 # The listing is the authority for the symbol figures. Read it here rather than pinning a number: a
 # literal has to be hand-updated on every pin move, and the only way anyone ever updates one is by
 # copying whatever the run just printed — which is a check that cannot fail.
+#
+# Note the server reports `romPath` absolute but `symbolsPath` as it resolved it, which for the
+# auto-bound sibling listing is RELATIVE to the server's cwd. Both are resolved here from this
+# process's cwd, so run the script from where the server was launched. If that is not where you are,
+# the two checks below go red with the path they could not open — loudly, rather than skipping.
 lst_text = None
 if not lst_path or not os.path.isfile(lst_path):
     check("symbolsPath names a readable listing", False, lst_path)
@@ -178,20 +183,20 @@ check("framebuffer hash present", h["framebuffer"].startswith("0x"), h["framebuf
 shot = "/tmp/aether-smoke.png"
 sh = c.call("emulator/screenshot", {"path": shot})["result"]
 with open(shot, "rb") as fh:
-    raw = fh.read()
-check("screenshot is a PNG", raw[:8] == b"\x89PNG\r\n\x1a\n" and sh.get("format") == "png",
-      f"format={sh.get('format')} magic={raw[:8]!r}")
-check("reported byte count matches the file", len(raw) == sh.get("bytes"),
-      f"{len(raw)} on disk, {sh.get('bytes')} reported")
+    png_bytes = fh.read()
+check("screenshot is a PNG", png_bytes[:8] == b"\x89PNG\r\n\x1a\n" and sh.get("format") == "png",
+      f"format={sh.get('format')} magic={png_bytes[:8]!r}")
+check("reported byte count matches the file", len(png_bytes) == sh.get("bytes"),
+      f"{len(png_bytes)} on disk, {sh.get('bytes')} reported")
 
 # Walk the chunks rather than assuming offsets: IHDR carries the true raster size, and the IDAT run
 # carries the pixels. (`zlib` and `struct` are stdlib — the "no library with anything" rule is about
 # not sharing code with the server, and this shares none.)
 ihdr, idat, off = None, b"", 8
-while off + 8 <= len(raw):
-    (clen,) = struct.unpack(">I", raw[off:off + 4])
-    ctype = raw[off + 4:off + 8]
-    body = raw[off + 8:off + 8 + clen]
+while off + 8 <= len(png_bytes):
+    (clen,) = struct.unpack(">I", png_bytes[off:off + 4])
+    ctype = png_bytes[off + 4:off + 8]
+    body = png_bytes[off + 8:off + 8 + clen]
     if ctype == b"IHDR":
         ihdr = struct.unpack(">IIBB", body[:10])
     elif ctype == b"IDAT":

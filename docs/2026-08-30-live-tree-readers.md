@@ -5,6 +5,13 @@
 `/home/volence/sonic_hacks/aeon` rather than our own frozen `fixtures/aeon/`, plus the stale
 expectations pinned against whatever that tree happened to hold.
 
+| commit | what |
+|---|---|
+| `254ab9e` | the four examples: `common/rom_source.rs` (new), `vgm_capture.rs`, `diag_soundqueue.rs`, `synth_render.rs`, `k4_openbus_probe.rs` |
+| `7bb7331` | `tools/aether_smoke.py` — four stale pins derived at run time, the frozen cross, and two screenshot checks that had gone red and vacuous |
+| `ee72d16` | this report |
+| `2f5d99b` | `rustfmt` on `rom_source.rs`, and `k4_openbus_probe`'s last two raw path literals routed through `LIVE_AEON_DIR` (see §5) |
+
 `fixtures/aeon/` ended that dependency for the **tests**. It did not reach the **tools**: five files
 still resolved an absolute path into another lane's working directory, and one of them pinned four
 numbers to a build of it from 2026-08-14. All four numbers were wrong by the time this parcel opened.
@@ -351,6 +358,15 @@ All four examples were **run**, not merely compiled: `vgm_capture` (frozen banne
 `diag_soundqueue` and `synth_render` (unfrozen banner with age), `k4_openbus_probe` (row markers on
 the two live rows, none on `aeon-s4`).
 
+**A miss worth writing down, because it is the shape this repo keeps catching.** `254ab9e` was
+committed **not `rustfmt`-clean**. The last `cargo fmt --all -- --check` before it ran *before* the
+final rewrite of `announce`'s output block, and the pass was carried forward as though it still
+described the tree. It does not: a green is a statement about the bytes that were checked, not about
+the file. Fixed in `2f5d99b`, which also routes `k4_openbus_probe`'s last two raw live-tree literals
+through `rom_source::live_aeon` so `LIVE_AEON_DIR` is the single place the tree is named and the row
+marker cannot drift from the paths it judges. A detail that will help the next reader: `cargo fmt`
+prints `rom_source.rs`'s diff **four times**, once per example target that includes it.
+
 **A worktree ops note that cost a full suite run.** The first `cargo test --workspace` came back with
 8 failures in `oracle-frontend`'s `save_state` — all of them
 `vendored test ROM …/vendor/TestRoms/m68k_memory_test.bin is missing`. `vendor/` is gitignored, so a
@@ -370,6 +386,13 @@ silently, which is the bar working.
   `PIN.tsv` row; `aeon_pin.rs` will refuse until the two agree.
 * **OPEN — `vgm_capture.rs`'s output constants** still name the pre-rename scratchpad directory
   `-home-volence-sonic-hacks-oracle-next`. Cosmetic, unrelated class, untouched.
+* **OBSERVED, not fixed — `emulator/status` is inconsistent about path shape.** It reports `romPath`
+  absolute but `symbolsPath` exactly as it resolved it, which for the auto-bound sibling listing is
+  *relative to the server's cwd*: this run printed
+  `romPath /home/…/fixtures/aeon/s4.bin` next to `symbolsPath fixtures/aeon/s4.lst`. Anything
+  resolving `symbolsPath` from a different working directory gets a path that does not exist. The
+  smoke script handles it by failing loudly with the path it could not open, and says so at the line;
+  making the server consistent is a contract question and not this parcel's to answer.
 * **TAGGED for foreground — nothing.** Every claim in this document was measured in this worktree.
   The Aether server and the four examples are ordinary local binaries, not the emulator MCP surface,
   which was not touched.
