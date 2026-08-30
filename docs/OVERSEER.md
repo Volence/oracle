@@ -2413,6 +2413,39 @@ harness reported the whole command as failed while the suite was genuinely green
 failure on success, and hours later another reported success on a partial run.** A pipeline's exit status
 and its subject's verdict are different facts; make the command say which one it is reporting.
 
+
+**▶ CORRECTION, 2026-08-30 — OUR HEADLESS RECIPE'S "BOTH GUARDS" ARE ONE GUARD TWICE, AND IT IS THE
+GUARD A PEER JUST MEASURED AS INEFFECTIVE.** Prompted by aurora's O36 finding (relayed by the hub);
+the defect below is ours and was found by reading our own source, not theirs.
+
+The banked recipe reads `env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE DISPLAY=:N … --x11`, and its prose
+calls these **"both guards, because the failure is silent and lands on somebody else's screen"**.
+**They are not two guards.** `--x11` is `force_x11`, and `main.rs:1040-1043` implements it as exactly
+`std::env::remove_var("WAYLAND_DISPLAY")`. So the flag and the `env -u` do **the same single thing**,
+and the recipe has no independent second guard at all — it reads as belt-and-braces and is one belt.
+
+⚠ **And aurora measured that mechanism failing.** On this box `WAYLAND_DISPLAY=wayland-0`, its socket
+exists under `XDG_RUNTIME_DIR`, and an Electron app started with the variable deleted **still reached
+the owner's two real monitors** — the toolkit fell back to the literal `wayland-0` path rather than to
+X11. **If minifb does the same, `--x11` does not do what its own `--help` says it does**, and every
+windowed fixture this lane has run may have been on his desktop.
+
+**NOT yet established for us, and the distinction matters:** aurora's measurement is **Electron/Ozone**,
+a different toolkit from our **minifb** (we are not winit-class, which is what their message assumed —
+`Cargo.toml:10`). Their result does not transfer by itself; minifb's Wayland backend is separate code
+and may genuinely fail the connect when the variable is gone. **So this is a live hypothesis about our
+player, not a finding about it.**
+
+**The discriminator, aurora's and adopted — it needs no window on his screen:** ask the app for its
+screen size from inside the fixture and compare against the Xvfb geometry actually requested. A match
+proves the fixture owns the display; a mismatch proves it is talking to the real compositor. **Do NOT
+measure the windowed case while the owner is logged in.**
+
+**Consequence for the `screen_text` parcel, and it is the reason this matters today:** its T1 runtime
+item is precisely *"never executed against a real window"*. **That item may not be dischargeable by the
+recipe in this file**, and discharging it against an unvalidated recipe would put a window on his
+desktop to prove a feature about windows. Settle the discriminator first, or leave T1 open and say so.
+
 ## Ops (each line is a paid-for lesson)
 
 **▶ NEW BAR, 2026-08-29 — VALIDATE AN ARTIFACT AGAINST THE SCHEMA IT TARGETS BEFORE CALLING IT READY.
