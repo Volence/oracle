@@ -1,0 +1,3460 @@
+(0) 1/0 :        Vectors:
+(0) 2/0 :        Z80_IdleProgram:
+(0) 3/28 :        $engine.z80_init$Z80_IdleProgram$code_end:
+(0) 4/100 :        GameHeader:
+(0) 5/18E :        Checksum:
+(0) 6/190 :        _header_tail:
+(0) 7/200 :        EntryPoint:
+(0) 8/214 :        $engine.boot$EntryPoint$wait_dma:
+(0) 9/214 :        $engine.boot$EntryPoint$warm_boot:
+(0) 10/220 :        $engine.boot$EntryPoint$cold_boot:
+(0) 11/236 :        $engine.boot$EntryPoint$no_tmss:
+(0) 12/24A :        $engine.boot$EntryPoint$vdp_loop:
+(0) 13/264 :        $engine.boot$EntryPoint$wait_z80:
+(0) 14/26A :        $engine.boot$EntryPoint$load_z80:
+(0) 15/274 :        $engine.boot$EntryPoint$ym_delay:
+(0) 16/280 :        $engine.boot$EntryPoint$clear_ram:
+(0) 17/286 :        $engine.boot$EntryPoint$wait_fill:
+(0) 18/294 :        $engine.boot$EntryPoint$silence_psg:
+(0) 19/2A2 :        $engine.boot$EntryPoint$clear_cram:
+(0) 20/2AC :        $engine.boot$EntryPoint$clear_vsram:
+(0) 21/2BA :        $engine.boot$asm1$wait_z80:
+(0) 22/2D0 :        $engine.boot$EntryPoint$keyoff_part1:
+(0) 23/2DC :        $engine.boot$EntryPoint$keyoff_part2:
+(0) 24/330 :        $engine.boot$EntryPoint$pal:
+(0) 25/336 :        $engine.boot$EntryPoint$region_done:
+(0) 26/392 :        BootData:
+(0) 27/3AC :        BootData_VDPRegs:
+(0) 28/3C8 :        Z80_Sound_End:
+(0) 29/3C8 :        Z80_Sound_Start:
+(0) 30/3C8 :        __align$engine.boot_data$0:
+(0) 31/3F8 :        BootData_PostBlob:
+(0) 32/406 :        BootData_End:
+(0) 33/408 :        VDP_Shadow_Init:
+(0) 34/412 :        $engine.vdp_init$VDP_Shadow_Init$copy:
+(0) 35/41A :        Flush_VDP_Shadow:
+(0) 36/42A :        $engine.vdp_init$Flush_VDP_Shadow$loop:
+(0) 37/438 :        Set_VDP_Reg:
+(0) 38/442 :        Init_DMA_Queue:
+(0) 39/560 :        QueueDMA_Critical:
+(0) 40/56A :        QueueDMA_Important:
+(0) 41/574 :        QueueDMA_Deferrable:
+(0) 42/57C :        QueueDMA_Deferrable.transfer:
+(0) 43/5B2 :        $engine.dma_queue$QueueDMA_Deferrable$finish_entry:
+(0) 44/5D2 :        $engine.dma_queue$QueueDMA_Deferrable$full:
+(0) 45/5DA :        $engine.dma_queue$QueueDMA_Deferrable$byte_capped:
+(0) 46/5E2 :        $engine.dma_queue$QueueDMA_Deferrable$split:
+(0) 47/62C :        $engine.dma_queue$QueueDMA_Deferrable$split_reject:
+(0) 48/63A :        Process_DMA_Critical:
+(0) 49/646 :        $engine.dma_queue$Process_DMA_Critical$jump_table:
+(0) 50/646 :        $engine.dma_queue$Process_DMA_Critical$slot_0:
+(0) 51/654 :        $engine.dma_queue$Process_DMA_Critical$slot_1:
+(0) 52/662 :        $engine.dma_queue$Process_DMA_Critical$slot_2:
+(0) 53/670 :        $engine.dma_queue$Process_DMA_Critical$slot_3:
+(0) 54/67E :        $engine.dma_queue$Process_DMA_Critical$slot_4:
+(0) 55/68C :        $engine.dma_queue$Process_DMA_Critical$slot_5:
+(0) 56/69A :        $engine.dma_queue$Process_DMA_Critical$slot_6:
+(0) 57/6A8 :        $engine.dma_queue$Process_DMA_Critical$slot_7:
+(0) 58/6B6 :        $engine.dma_queue$Process_DMA_Critical$slot_8:
+(0) 59/6C0 :        $engine.dma_queue$Process_DMA_Critical$drain_8:
+(0) 60/6C8 :        $engine.dma_queue$Process_DMA_Critical$drain_7:
+(0) 61/6D0 :        $engine.dma_queue$Process_DMA_Critical$drain_6:
+(0) 62/6D8 :        $engine.dma_queue$Process_DMA_Critical$drain_5:
+(0) 63/6E0 :        $engine.dma_queue$Process_DMA_Critical$drain_4:
+(0) 64/6E8 :        $engine.dma_queue$Process_DMA_Critical$drain_3:
+(0) 65/6F0 :        $engine.dma_queue$Process_DMA_Critical$drain_2:
+(0) 66/6F8 :        $engine.dma_queue$Process_DMA_Critical$drain_1:
+(0) 67/706 :        $engine.dma_queue$Process_DMA_Critical$done:
+(0) 68/708 :        Process_DMA_Important:
+(0) 69/71A :        $engine.dma_queue$Process_DMA_Important$done:
+(0) 70/71C :        Process_DMA_Deferrable:
+(0) 71/72E :        $engine.dma_queue$Process_DMA_Deferrable$done:
+(0) 72/730 :        Drain_Budgeted_Queue:
+(0) 73/738 :        $engine.dma_queue$Drain_Budgeted_Queue$loop:
+(0) 74/75A :        $engine.dma_queue$Drain_Budgeted_Queue$out_of_budget:
+(0) 75/75E :        $engine.dma_queue$Drain_Budgeted_Queue$compact:
+(0) 76/76C :        $engine.dma_queue$Drain_Budgeted_Queue$no_drain:
+(0) 77/770 :        Init_SpriteTable:
+(0) 78/77A :        $engine.buffers$Init_SpriteTable$loop:
+(0) 79/792 :        BuildStaticDMA:
+(0) 80/820 :        Build_DMA_Entry:
+(0) 81/834 :        PlaneMapToVRAM:
+(0) 82/844 :        $engine.buffers$PlaneMapToVRAM$row:
+(0) 83/848 :        $engine.buffers$PlaneMapToVRAM$cell:
+(0) 84/856 :        Enqueue_Dirty_Buffers:
+(0) 85/884 :        $engine.buffers$asm5$drop:
+(0) 86/888 :        $engine.buffers$asm5$done:
+(0) 87/8A8 :        $engine.buffers$Enqueue_Dirty_Buffers$skip_pal0:
+(0) 88/8CE :        $engine.buffers$asm6$drop:
+(0) 89/8D2 :        $engine.buffers$asm6$done:
+(0) 90/8F2 :        $engine.buffers$Enqueue_Dirty_Buffers$skip_pal1:
+(0) 91/918 :        $engine.buffers$asm7$drop:
+(0) 92/91C :        $engine.buffers$asm7$done:
+(0) 93/93C :        $engine.buffers$Enqueue_Dirty_Buffers$skip_pal2:
+(0) 94/962 :        $engine.buffers$asm8$drop:
+(0) 95/966 :        $engine.buffers$asm8$done:
+(0) 96/986 :        $engine.buffers$Enqueue_Dirty_Buffers$no_pal:
+(0) 97/986 :        $engine.buffers$Enqueue_Dirty_Buffers$skip_pal3:
+(0) 98/9B8 :        $engine.buffers$Enqueue_Dirty_Buffers$ship_reg:
+(0) 99/9C2 :        $engine.buffers$Enqueue_Dirty_Buffers$ship_dma:
+(0) 100/9E2 :        $engine.buffers$asm9$drop:
+(0) 101/9E6 :        $engine.buffers$Enqueue_Dirty_Buffers$no_ship:
+(0) 102/9E6 :        $engine.buffers$asm9$done:
+(0) 103/A12 :        $engine.buffers$asm10$drop:
+(0) 104/A16 :        $engine.buffers$asm10$done:
+(0) 105/A1C :        $engine.buffers$Enqueue_Dirty_Buffers$no_spr:
+(0) 106/A42 :        $engine.buffers$asm11$drop:
+(0) 107/A46 :        $engine.buffers$Enqueue_Dirty_Buffers$hs_done:
+(0) 108/A46 :        $engine.buffers$asm11$done:
+(0) 109/A50 :        VBlank_Handler:
+(0) 110/A7A :        $engine.vblank$VBlank_Handler$no_bookmark:
+(0) 111/A88 :        $engine.vblank$VBlank_Handler$lag:
+(0) 112/A8C :        $engine.vblank$VBlank_Handler$done:
+(0) 113/A98 :        VInt_Level:
+(0) 114/AA0 :        $engine.vblank$asm2$wait_z80:
+(0) 115/AD6 :        $engine.vblank$VInt_Level$charge_critical:
+(0) 116/AE8 :        $engine.vblank$VInt_Level$charged_critical:
+(0) 117/AF8 :        $engine.vblank$VInt_Level$budget_floored:
+(0) 118/B18 :        $engine.vblank$VInt_Level$staging_idle:
+(0) 119/B74 :        VInt_Lag:
+(0) 120/B7C :        $engine.vblank$asm5$wait_z80:
+(0) 121/BB2 :        VSync_Wait:
+(0) 122/BCC :        $engine.vblank$VSync_Wait$wait:
+(0) 123/BE0 :        HBlank_Install:
+(0) 124/BFC :        HBlank_Uninstall:
+(0) 125/C10 :        Read_Controllers:
+(0) 126/C18 :        $engine.controllers$asm1$wait_z80:
+(0) 127/C84 :        $engine.controllers$Read_Controllers$read_pad_6:
+(0) 128/CEC :        $engine.controllers$Read_Controllers$socd_lr_ok:
+(0) 129/CFC :        $engine.controllers$Read_Controllers$socd_ud_ok:
+(0) 130/D1A :        $engine.controllers$Read_Controllers$three_button:
+(0) 131/D20 :        GameLoop:
+(0) 132/D36 :        GameState_Idle:
+(0) 133/D3E :        Input_Tick:
+(0) 134/D4A :        $engine.replay$Input_Tick$live:
+(0) 135/D4C :        $engine.replay$Input_Tick$playback:
+(0) 136/D58 :        $engine.replay$Input_Tick$no_exit:
+(0) 137/D5E :        $engine.replay$Input_Tick$fetch:
+(0) 138/D62 :        $engine.replay$Input_Tick$fetch_a0:
+(0) 139/D78 :        $engine.replay$Input_Tick$pair:
+(0) 140/D82 :        $engine.replay$Input_Tick$hold:
+(0) 141/D8A :        $engine.replay$Input_Tick$apply:
+(0) 142/DA0 :        $engine.replay$Input_Tick$end:
+(0) 143/DAA :        $engine.replay$Input_Tick$bad_stream:
+(0) 144/DAC :        Replay_Hash:
+(0) 145/DB2 :        $engine.replay$Replay_Hash$hash_next:
+(0) 146/DBA :        $engine.replay$Replay_Hash$hash_fold:
+(0) 147/DC4 :        $engine.replay$Replay_Hash$hash_wtail:
+(0) 148/DEE :        $engine.replay$Replay_Hash$int_fold:
+(0) 149/E24 :        $engine.replay$Replay_Hash$hash_table:
+(0) 150/E90 :        S4LZ_DecompressDict:
+(0) 151/E94 :        S4LZ_Decompress:
+(0) 152/E9C :        $engine.s4lz$S4LZ_Decompress$token_loop:
+(0) 153/ED6 :        $engine.s4lz$S4LZ_Decompress$lit_end:
+(0) 154/ED6 :        $engine.s4lz$S4LZ_Decompress$no_literals:
+(0) 155/EE6 :        $engine.s4lz$S4LZ_Decompress$offmark_zero:
+(0) 156/EF0 :        $engine.s4lz$S4LZ_Decompress$have_offset:
+(0) 157/EFA :        $engine.s4lz$S4LZ_Decompress$src_in_dest:
+(0) 158/F24 :        $engine.s4lz$S4LZ_Decompress$match_end:
+(0) 159/F28 :        $engine.s4lz$S4LZ_Decompress$lit_extended:
+(0) 160/F2C :        $engine.s4lz$S4LZ_Decompress$lit_dbf_loop:
+(0) 161/F34 :        $engine.s4lz$S4LZ_Decompress$match_extended:
+(0) 162/F38 :        $engine.s4lz$S4LZ_Decompress$match_dbf_loop:
+(0) 163/F42 :        $engine.s4lz$S4LZ_Decompress$stream_done:
+(0) 164/F52 :        $engine.s4lz$S4LZ_Decompress$return:
+(0) 165/F54 :        TileDelta_Undo:
+(0) 166/F62 :        $engine.s4lz$TileDelta_Undo$tile_loop:
+(0) 167/F86 :        $engine.s4lz$TileDelta_Undo$done:
+(0) 168/F88 :        ZX0R_Decompress:
+(0) 169/F8C :        $engine.zx0_resume$ZX0R_Decompress$literals:
+(0) 170/F8E :        $engine.zx0_resume$ZX0R_Decompress$lit_elias:
+(0) 171/F96 :        $engine.zx0_resume$ZX0R_Decompress$lit_got:
+(0) 172/F9E :        $engine.zx0_resume$ZX0R_Decompress$lit_done:
+(0) 173/FA0 :        $engine.zx0_resume$ZX0R_Decompress$copy_lits:
+(0) 174/FAA :        $engine.zx0_resume$ZX0R_Decompress$rep_match:
+(0) 175/FAC :        $engine.zx0_resume$ZX0R_Decompress$rep_elias:
+(0) 176/FB4 :        $engine.zx0_resume$ZX0R_Decompress$rep_got:
+(0) 177/FBC :        $engine.zx0_resume$ZX0R_Decompress$do_copy:
+(0) 178/FBE :        $engine.zx0_resume$ZX0R_Decompress$do_copy_offs:
+(0) 179/FC2 :        $engine.zx0_resume$ZX0R_Decompress$copy_match:
+(0) 180/FCC :        $engine.zx0_resume$ZX0R_Decompress$get_offset:
+(0) 181/FCE :        $engine.zx0_resume$ZX0R_Decompress$off_elias:
+(0) 182/FD6 :        $engine.zx0_resume$ZX0R_Decompress$off_got:
+(0) 183/FDE :        $engine.zx0_resume$ZX0R_Decompress$off_done:
+(0) 184/FEE :        $engine.zx0_resume$ZX0R_Decompress$len_elias:
+(0) 185/FF2 :        $engine.zx0_resume$ZX0R_Decompress$len_loop:
+(0) 186/FFA :        $engine.zx0_resume$ZX0R_Decompress$len_got:
+(0) 187/FFE :        $engine.zx0_resume$ZX0R_Decompress$done:
+(0) 188/1000 :        GetSineCosine:
+(0) 189/1000 :        ZX0R_Decompress.__end:
+(0) 190/1018 :        Sine_Table:
+(0) 191/1298 :        GetArcTan:
+(0) 192/12B0 :        $engine.math$GetArcTan$abs_x_ok:
+(0) 193/12B6 :        $engine.math$GetArcTan$abs_y_ok:
+(0) 194/12C6 :        $engine.math$GetArcTan$fold:
+(0) 195/12D0 :        $engine.math$GetArcTan$quadrant:
+(0) 196/12DA :        $engine.math$GetArcTan$x_pos:
+(0) 197/12E4 :        $engine.math$GetArcTan$y_pos:
+(0) 198/12EA :        $engine.math$GetArcTan$zero:
+(0) 199/12F4 :        ArcTan_Table:
+(0) 200/1400 :        Perform_DPLC:
+(0) 201/141C :        $engine.objects.dplc$asm1$entry_loop:
+(0) 202/1450 :        $engine.objects.dplc$asm1$done:
+(0) 203/1452 :        Perform_DPLC_Deferrable:
+(0) 204/146E :        $engine.objects.dplc$asm3$entry_loop:
+(0) 205/14A2 :        $engine.objects.dplc$asm3$done:
+(0) 206/14A4 :        InitObjectRAM:
+(0) 207/14AE :        $engine.objects.core$InitObjectRAM$clear:
+(0) 208/14C0 :        $engine.objects.core$InitObjectRAM$push_dyn:
+(0) 209/14DC :        $engine.objects.core$InitObjectRAM$push_eff:
+(0) 210/14F6 :        AllocDynamic:
+(0) 211/1538 :        $engine.objects.core$AllocDynamic$append:
+(0) 212/1552 :        $engine.objects.core$AllocDynamic$latch_full:
+(0) 213/1556 :        $engine.objects.core$AllocDynamic$full:
+(0) 214/155A :        AllocEffect:
+(0) 215/1570 :        $engine.objects.core$AllocEffect$full:
+(0) 216/1574 :        DeleteObject:
+(0) 217/158A :        $engine.objects.core$DeleteObject$no_cascade:
+(0) 218/159E :        $engine.objects.core$DeleteObject$check_effect:
+(0) 219/15A4 :        $engine.objects.core$DeleteObject$effect_pool:
+(0) 220/15B0 :        $engine.objects.core$DeleteObject$dynamic_pool:
+(0) 221/15CE :        $engine.objects.core$DeleteObject$dyn_zero_scan:
+(0) 222/15D8 :        $engine.objects.core$DeleteObject$dyn_zero_hit:
+(0) 223/15DA :        $engine.objects.core$DeleteObject$dyn_zero_pending:
+(0) 224/15E6 :        $engine.objects.core$DeleteObject$dyn_pend_scan:
+(0) 225/15F0 :        $engine.objects.core$DeleteObject$dyn_pend_hit:
+(0) 226/15F2 :        $engine.objects.core$DeleteObject$dyn_zero_done:
+(0) 227/15F4 :        $engine.objects.core$DeleteObject$clear_slot:
+(0) 228/1622 :        CompactDynamicLive:
+(0) 229/1632 :        $engine.objects.core$CompactDynamicLive$loop:
+(0) 230/163E :        $engine.objects.core$CompactDynamicLive$next:
+(0) 231/1642 :        $engine.objects.core$CompactDynamicLive$recount:
+(0) 232/1656 :        DrainDynamicPending:
+(0) 233/166C :        $engine.objects.core$DrainDynamicPending$loop:
+(0) 234/167A :        $engine.objects.core$DrainDynamicPending$next:
+(0) 235/167E :        $engine.objects.core$DrainDynamicPending$clear:
+(0) 236/1684 :        RunObjects:
+(0) 237/16B8 :        $engine.objects.core$RunObjects$reconcile:
+(0) 238/16BE :        $engine.objects.core$RunObjects$no_reconcile:
+(0) 239/16C0 :        $engine.objects.core$RunObjects$always_loop:
+(0) 240/16C0 :        $engine.objects.core$RunObjects$run_always:
+(0) 241/16CC :        $engine.objects.core$RunObjects$always_next:
+(0) 242/16D6 :        $engine.objects.core$RunObjects$run_culled:
+(0) 243/16E2 :        $engine.objects.core$RunObjects$culled_loop:
+(0) 244/16F8 :        $engine.objects.core$asm28$abs:
+(0) 245/170A :        $engine.objects.core$asm29$abs:
+(0) 246/171E :        $engine.objects.core$RunObjects$culled_next:
+(0) 247/1722 :        $engine.objects.core$RunObjects$culled_done:
+(0) 248/1724 :        Debug_AssertObjLoop:
+(0) 249/1724 :        RunObjects_Frozen:
+(0) 250/173A :        $engine.objects.core$RunObjects_Frozen$frozen_dyn_loop:
+(0) 251/1746 :        $engine.objects.core$RunObjects_Frozen$frozen_dyn_next:
+(0) 252/174A :        $engine.objects.core$RunObjects_Frozen$frozen_dyn_done:
+(0) 253/1756 :        $engine.objects.core$RunObjects_Frozen$frozen_fixed:
+(0) 254/1756 :        $engine.objects.core$RunObjects_Frozen$frozen_fixed_loop:
+(0) 255/175C :        $engine.objects.core$RunObjects_Frozen$frozen_fixed_next:
+(0) 256/1766 :        ObjectMove:
+(0) 257/1780 :        ObjectMoveX:
+(0) 258/178E :        ObjectMoveY:
+(0) 259/17A0 :        InitSpriteSystem:
+(0) 260/17B4 :        Draw_Sprite:
+(0) 261/17C6 :        $engine.objects.sprites$Draw_Sprite$no_parent:
+(0) 262/1822 :        $engine.objects.sprites$Draw_Sprite$screen_coords:
+(0) 263/1840 :        $engine.objects.sprites$Draw_Sprite$cascade:
+(0) 264/184E :        $engine.objects.sprites$Draw_Sprite$band_has_room:
+(0) 265/1868 :        $engine.objects.sprites$Draw_Sprite$all_bands_full:
+(0) 266/186A :        $engine.objects.sprites$Draw_Sprite$offscreen:
+(0) 267/1872 :        Render_Sprites:
+(0) 268/189C :        $engine.objects.sprites$Render_Sprites$band_loop:
+(0) 269/18C6 :        $engine.objects.sprites$Render_Sprites$reverse_band:
+(0) 270/18D0 :        $engine.objects.sprites$Render_Sprites$object_loop:
+(0) 271/1926 :        $engine.objects.sprites$Render_Sprites$screen_pos:
+(0) 272/1936 :        $engine.objects.sprites$Render_Sprites$have_pos:
+(0) 273/1966 :        $engine.objects.sprites$Render_Sprites$budget_ok:
+(0) 274/197E :        $engine.objects.sprites$Render_Sprites$multi_sprite:
+(0) 275/198A :        $engine.objects.sprites$Render_Sprites$sibling_loop:
+(0) 276/19D6 :        $engine.objects.sprites$Render_Sprites$child_screen_pos:
+(0) 277/19E6 :        $engine.objects.sprites$Render_Sprites$child_have_pos:
+(0) 278/19FA :        $engine.objects.sprites$Render_Sprites$sibling_advance:
+(0) 279/1A00 :        $engine.objects.sprites$Render_Sprites$multi_done:
+(0) 280/1A02 :        $engine.objects.sprites$Render_Sprites$next_object:
+(0) 281/1A08 :        $engine.objects.sprites$Render_Sprites$next_band:
+(0) 282/1A1A :        $engine.objects.sprites$Render_Sprites$no_mask_insert:
+(0) 283/1A26 :        $engine.objects.sprites$Render_Sprites$done:
+(0) 284/1A4C :        $engine.objects.sprites$Render_Sprites$empty_table:
+(0) 285/1A6E :        $engine.objects.sprites$Render_Sprites$still_empty:
+(0) 286/1A74 :        $engine.objects.sprites$Render_Sprites$band_limit_pop:
+(0) 287/1A78 :        CellOffsets_XFlip:
+(0) 288/1A88 :        Emit_ObjectPieces:
+(0) 289/1AA0 :        $engine.objects.sprites$Emit_ObjectPieces$pieces_unflipped:
+(0) 290/1AA2 :        $engine.objects.sprites$asm4$piece_loop:
+(0) 291/1ABE :        $engine.objects.sprites$asm9$x_ok:
+(0) 292/1ACA :        $engine.objects.sprites$Emit_ObjectPieces$pieces_xflip:
+(0) 293/1ACC :        $engine.objects.sprites$asm10$piece_loop:
+(0) 294/1AFA :        $engine.objects.sprites$asm15$x_ok:
+(0) 295/1B06 :        $engine.objects.sprites$Emit_ObjectPieces$pieces_yflip:
+(0) 296/1B08 :        $engine.objects.sprites$asm16$piece_loop:
+(0) 297/1B36 :        $engine.objects.sprites$asm21$x_ok:
+(0) 298/1B42 :        $engine.objects.sprites$Emit_ObjectPieces$pieces_xyflip:
+(0) 299/1B44 :        $engine.objects.sprites$asm22$piece_loop:
+(0) 300/1B80 :        $engine.objects.sprites$asm27$x_ok:
+(0) 301/1B8C :        InsertSpriteMasks:
+(0) 302/1B96 :        $engine.objects.sprites$InsertSpriteMasks$mask_loop:
+(0) 303/1BB8 :        $engine.objects.sprites$InsertSpriteMasks$masks_done:
+(0) 304/1BBA :        AnimateSprite:
+(0) 305/1BF2 :        $engine.objects.animate$asm1$rt_static:
+(0) 306/1C0A :        $engine.objects.animate$AnimateSprite$set_frame:
+(0) 307/1C12 :        $engine.objects.animate$AnimateSprite$done:
+(0) 308/1C14 :        $engine.objects.animate$AnimateSprite$anim_changed:
+(0) 309/1C30 :        $engine.objects.animate$asm2$rt_static:
+(0) 310/1C42 :        $engine.objects.animate$AnimateSprite$control_code:
+(0) 311/1C56 :        $engine.objects.animate$AnimateSprite$cc_table:
+(0) 312/1C7A :        $engine.objects.animate$AnimateSprite$cc_end:
+(0) 313/1C8E :        $engine.objects.animate$AnimateSprite$cc_back:
+(0) 314/1CAC :        $engine.objects.animate$AnimateSprite$cc_change:
+(0) 315/1CB8 :        $engine.objects.animate$AnimateSprite$cc_routine:
+(0) 316/1CBE :        $engine.objects.animate$AnimateSprite$cc_delete:
+(0) 317/1CC2 :        $engine.objects.animate$AnimateSprite$evt_callback:
+(0) 318/1CE0 :        $engine.objects.animate$AnimateSprite$evt_cb_done:
+(0) 319/1CE6 :        $engine.objects.animate$AnimateSprite$evt_sound:
+(0) 320/1CF0 :        $engine.objects.animate$AnimateSprite$evt_collision:
+(0) 321/1CFC :        $engine.objects.animate$AnimateSprite$evt_set_field:
+(0) 322/1D0C :        $engine.objects.animate$AnimateSprite$after_event:
+(0) 323/1D22 :        RefreshSpritePieceCount:
+(0) 324/1D44 :        $engine.objects.animate$asm4$no_mappings:
+(0) 325/1D48 :        $engine.objects.animate$asm4$rpc_done:
+(0) 326/1D50 :        TouchResponse:
+(0) 327/1D5A :        $engine.objects.collision$TouchResponse$player_loop:
+(0) 328/1D80 :        $engine.objects.collision$TouchResponse$dyn_loop:
+(0) 329/1DAA :        $engine.objects.collision$asm2$aov:
+(0) 330/1DCE :        $engine.objects.collision$asm4$aov:
+(0) 331/1DF8 :        $engine.objects.collision$asm1$overlap_done:
+(0) 332/1E00 :        $engine.objects.collision$TouchResponse$dyn_next:
+(0) 333/1E04 :        $engine.objects.collision$TouchResponse$dyn_done:
+(0) 334/1E0C :        $engine.objects.collision$TouchResponse$fixed_loop:
+(0) 335/1E30 :        $engine.objects.collision$asm7$aov:
+(0) 336/1E54 :        $engine.objects.collision$asm9$aov:
+(0) 337/1E7E :        $engine.objects.collision$asm6$overlap_done:
+(0) 338/1E86 :        $engine.objects.collision$TouchResponse$fixed_next:
+(0) 339/1E8E :        $engine.objects.collision$TouchResponse$next_player:
+(0) 340/1E9A :        Touch_HandlerTable:
+(0) 341/1ECE :        Touch_Boss:
+(0) 342/1ECE :        Touch_Bubble:
+(0) 343/1ECE :        Touch_Enemy:
+(0) 344/1ECE :        Touch_Monitor:
+(0) 345/1ECE :        Touch_None:
+(0) 346/1ECE :        Touch_Projectile:
+(0) 347/1ECE :        Touch_Ring:
+(0) 348/1ECE :        Touch_SolidBreak:
+(0) 349/1ECE :        Touch_SolidHurt:
+(0) 350/1ECE :        Touch_Spring:
+(0) 351/1ECE :        Touch_Touch:
+(0) 352/1ED0 :        Touch_Hurt:
+(0) 353/1ED2 :        Touch_Solid:
+(0) 354/1EDC :        $engine.objects.collision$asm25$abs:
+(0) 355/1EE6 :        $engine.objects.collision$asm26$abs:
+(0) 356/1F0C :        $engine.objects.collision$Touch_Solid$solid_top:
+(0) 357/1F36 :        $engine.objects.collision$Touch_Solid$solid_side:
+(0) 358/1F46 :        $engine.objects.collision$Touch_Solid$solid_push_left:
+(0) 359/1F4E :        $engine.objects.collision$Touch_Solid$solid_done:
+(0) 360/1F50 :        RingBuffer_Add:
+(0) 361/1F84 :        $engine.objects.rings$RingBuffer_Add$not_record:
+(0) 362/1F8A :        $engine.objects.rings$RingBuffer_Add$full:
+(0) 363/1F94 :        RingBuffer_Remove:
+(0) 364/1FC6 :        $engine.objects.rings$RingBuffer_Remove$done:
+(0) 365/1FC8 :        RingBuffer_Clear:
+(0) 366/1FD6 :        DrawRings:
+(0) 367/1FF0 :        $engine.objects.rings$DrawRings$frame_ok:
+(0) 368/1FF4 :        $engine.objects.rings$DrawRings$no_anim_tick:
+(0) 369/2022 :        $engine.objects.rings$DrawRings$ring_loop:
+(0) 370/205C :        $engine.objects.rings$DrawRings$x_ok:
+(0) 371/205E :        $engine.objects.rings$DrawRings$skip_ring:
+(0) 372/2064 :        $engine.objects.rings$DrawRings$done:
+(0) 373/2066 :        RingCollision:
+(0) 374/206E :        $engine.objects.rings$RingCollision$player_loop:
+(0) 375/2094 :        $engine.objects.rings$RingCollision$ring_loop:
+(0) 376/20A8 :        $engine.objects.rings$asm5$aov:
+(0) 377/20C4 :        $engine.objects.rings$asm7$aov:
+(0) 378/20EA :        $engine.objects.rings$RingCollision$no_loaded_bit:
+(0) 379/20F4 :        $engine.objects.rings$RingCollision$no_hit:
+(0) 380/20FA :        $engine.objects.rings$RingCollision$next_player:
+(0) 381/2110 :        Collected_Init:
+(0) 382/2116 :        $engine.objects.entity_window$Collected_Init$loop:
+(0) 383/214C :        $engine.objects.entity_window$Collected_Init$park_loop:
+(0) 384/215E :        Collected_FindSlot:
+(0) 385/2164 :        $engine.objects.entity_window$Collected_FindSlot$scan:
+(0) 386/2174 :        $engine.objects.entity_window$Collected_FindSlot$found:
+(0) 387/2178 :        Collected_CheckRing:
+(0) 388/218E :        $engine.objects.entity_window$Collected_CheckRing$uncollected:
+(0) 389/2192 :        Collected_MarkRing:
+(0) 390/21A4 :        $engine.objects.entity_window$Collected_MarkRing$done:
+(0) 391/21A6 :        Killed_CheckObject:
+(0) 392/21BC :        $engine.objects.entity_window$Killed_CheckObject$alive:
+(0) 393/21C0 :        Killed_MarkObject:
+(0) 394/21E8 :        $engine.objects.entity_window$Killed_MarkObject$markdone:
+(0) 395/21EA :        Collected_ClaimSlot:
+(0) 396/21F6 :        $engine.objects.entity_window$Collected_ClaimSlot$find:
+(0) 397/2208 :        $engine.objects.entity_window$Collected_ClaimSlot$claim:
+(0) 398/2232 :        $engine.objects.entity_window$Collected_ClaimSlot$already_owned:
+(0) 399/2236 :        Collected_ParkSlot:
+(0) 400/225A :        $engine.objects.entity_window$Collected_ParkSlot$park:
+(0) 401/2262 :        $engine.objects.entity_window$Collected_ParkSlot$reuse_scan:
+(0) 402/227C :        $engine.objects.entity_window$Collected_ParkSlot$index_step:
+(0) 403/2284 :        $engine.objects.entity_window$Collected_ParkSlot$index_done:
+(0) 404/2294 :        $engine.objects.entity_window$Collected_ParkSlot$write:
+(0) 405/229E :        $engine.objects.entity_window$Collected_ParkSlot$copy_ring:
+(0) 406/22AC :        $engine.objects.entity_window$Collected_ParkSlot$copy_killed:
+(0) 407/22B6 :        Collected_UnparkSlot:
+(0) 408/22BC :        $engine.objects.entity_window$Collected_UnparkSlot$scan:
+(0) 409/22CA :        $engine.objects.entity_window$Collected_UnparkSlot$hit:
+(0) 410/22D6 :        $engine.objects.entity_window$Collected_UnparkSlot$copy_ring:
+(0) 411/22E4 :        $engine.objects.entity_window$Collected_UnparkSlot$copy_killed:
+(0) 412/22EE :        Collected_UpdateCenter:
+(0) 413/22FC :        $engine.objects.entity_window$Collected_UpdateCenter$div_center:
+(0) 414/2306 :        $engine.objects.entity_window$Collected_UpdateCenter$div_center_done:
+(0) 415/230C :        $engine.objects.entity_window$Collected_UpdateCenter$slot_loop:
+(0) 416/231A :        $engine.objects.entity_window$Collected_UpdateCenter$div_slot:
+(0) 417/2324 :        $engine.objects.entity_window$Collected_UpdateCenter$div_slot_done:
+(0) 418/232A :        $engine.objects.entity_window$asm12$abs:
+(0) 419/2336 :        $engine.objects.entity_window$asm13$abs:
+(0) 420/233C :        $engine.objects.entity_window$Collected_UpdateCenter$evict:
+(0) 421/2368 :        $engine.objects.entity_window$Collected_UpdateCenter$slot_next:
+(0) 422/2372 :        EntityLoaded_Test:
+(0) 423/2386 :        EntityLoaded_Set:
+(0) 424/239A :        EntityLoaded_Clear:
+(0) 425/23AE :        EntityWindow_EntryForSection:
+(0) 426/23B4 :        $engine.objects.entity_window$EntityWindow_EntryForSection$efs_loop:
+(0) 427/23C8 :        $engine.objects.entity_window$EntityWindow_EntryForSection$efs_found:
+(0) 428/23CC :        EntityWindow_InitSection:
+(0) 429/23E0 :        $engine.objects.entity_window$EntityWindow_InitSection$clear_mask:
+(0) 430/23E6 :        $engine.objects.entity_window$EntityWindow_InitSection$same_section:
+(0) 431/2418 :        EntityWindow_DeriveWindow:
+(0) 432/2428 :        $engine.objects.entity_window$EntityWindow_DeriveWindow$x0_ok:
+(0) 433/2436 :        $engine.objects.entity_window$EntityWindow_DeriveWindow$y0_ok:
+(0) 434/243C :        EntityWindow_BuildEntries:
+(0) 435/245C :        $engine.objects.entity_window$EntityWindow_BuildEntries$entry_loop:
+(0) 436/2490 :        $engine.objects.entity_window$EntityWindow_BuildEntries$x_done:
+(0) 437/249E :        $engine.objects.entity_window$EntityWindow_BuildEntries$y_done:
+(0) 438/24B2 :        $engine.objects.entity_window$EntityWindow_BuildEntries$void_entry:
+(0) 439/24BC :        $engine.objects.entity_window$EntityWindow_BuildEntries$next_entry:
+(0) 440/24CE :        EntityWindow_Init:
+(0) 441/24E0 :        $engine.objects.entity_window$EntityWindow_Init$clear_loaded:
+(0) 442/24EE :        $engine.objects.entity_window$EntityWindow_Init$clear_scan:
+(0) 443/2538 :        EntityWindow_Scan:
+(0) 444/2564 :        $engine.objects.entity_window$EntityWindow_Scan$no_rescan:
+(0) 445/2574 :        $engine.objects.entity_window$EntityWindow_Scan$slide:
+(0) 446/257C :        $engine.objects.entity_window$EntityWindow_Scan$no_slide:
+(0) 447/2586 :        $engine.objects.entity_window$EntityWindow_Scan$section_loop:
+(0) 448/2598 :        $engine.objects.entity_window$EntityWindow_Scan$skip_rings:
+(0) 449/25A4 :        $engine.objects.entity_window$EntityWindow_Scan$section_next:
+(0) 450/25A4 :        $engine.objects.entity_window$EntityWindow_Scan$skip_objs:
+(0) 451/25B0 :        $engine.objects.entity_window$EntityWindow_Scan$scan_done:
+(0) 452/25B8 :        EntityWindow_TrySpawnRing:
+(0) 453/2626 :        $engine.objects.entity_window$EntityWindow_TrySpawnRing$gated:
+(0) 454/262A :        $engine.objects.entity_window$EntityWindow_TrySpawnRing$out_of_band:
+(0) 455/262C :        EntityWindow_ScanRingsRight:
+(0) 456/2640 :        $engine.objects.entity_window$EntityWindow_ScanRingsRight$loop:
+(0) 457/2656 :        $engine.objects.entity_window$EntityWindow_ScanRingsRight$at_edge:
+(0) 458/265E :        $engine.objects.entity_window$EntityWindow_ScanRingsRight$at_terminator:
+(0) 459/2668 :        EntityWindow_PopulateSectionRings:
+(0) 460/2680 :        $engine.objects.entity_window$EntityWindow_PopulateSectionRings$pfind:
+(0) 461/2692 :        $engine.objects.entity_window$EntityWindow_PopulateSectionRings$pfound:
+(0) 462/2698 :        $engine.objects.entity_window$EntityWindow_PopulateSectionRings$ploop:
+(0) 463/26A6 :        $engine.objects.entity_window$EntityWindow_PopulateSectionRings$pdone:
+(0) 464/26A8 :        EntityWindow_TrySpawnObject:
+(0) 465/26CE :        $engine.objects.entity_window$EntityWindow_TrySpawnObject$y_ok:
+(0) 466/273A :        $engine.objects.entity_window$EntityWindow_TrySpawnObject$tag_plain:
+(0) 467/2756 :        $engine.objects.entity_window$EntityWindow_TrySpawnObject$gated:
+(0) 468/275A :        $engine.objects.entity_window$EntityWindow_TrySpawnObject$out_of_band:
+(0) 469/275C :        EntityWindow_ScanObjectsRight:
+(0) 470/2776 :        $engine.objects.entity_window$EntityWindow_ScanObjectsRight$obj_loop:
+(0) 471/278A :        $engine.objects.entity_window$EntityWindow_ScanObjectsRight$obj_at_edge:
+(0) 472/2794 :        $engine.objects.entity_window$EntityWindow_ScanObjectsRight$obj_at_terminator:
+(0) 473/27A0 :        EntityWindow_RescanY:
+(0) 474/27AC :        $engine.objects.entity_window$EntityWindow_RescanY$entry_loop:
+(0) 475/27B8 :        $engine.objects.entity_window$EntityWindow_RescanY$entry_next:
+(0) 476/27C4 :        $engine.objects.entity_window$EntityWindow_RescanY$done:
+(0) 477/27C6 :        EntityWindow_RescanRings:
+(0) 478/27D4 :        $engine.objects.entity_window$EntityWindow_RescanRings$loop:
+(0) 479/27E4 :        $engine.objects.entity_window$EntityWindow_RescanRings$done:
+(0) 480/27E6 :        EntityWindow_RescanObjects:
+(0) 481/27F6 :        $engine.objects.entity_window$EntityWindow_RescanObjects$loop:
+(0) 482/2806 :        $engine.objects.entity_window$EntityWindow_RescanObjects$done:
+(0) 483/2808 :        EntityWindow_DespawnRings:
+(0) 484/2822 :        $engine.objects.entity_window$EntityWindow_DespawnRings$loop:
+(0) 485/283A :        $engine.objects.entity_window$EntityWindow_DespawnRings$check_active:
+(0) 486/2856 :        $engine.objects.entity_window$EntityWindow_DespawnRings$check_y:
+(0) 487/286E :        $engine.objects.entity_window$EntityWindow_DespawnRings$remove:
+(0) 488/2888 :        $engine.objects.entity_window$EntityWindow_DespawnRings$clr_ring_skip:
+(0) 489/288E :        $engine.objects.entity_window$EntityWindow_DespawnRings$next:
+(0) 490/2892 :        $engine.objects.entity_window$EntityWindow_DespawnRings$done:
+(0) 491/2894 :        EntityWindow_DespawnObjects:
+(0) 492/289C :        $engine.objects.entity_window$EntityWindow_DespawnObjects$have_live:
+(0) 493/28A2 :        $engine.objects.entity_window$EntityWindow_DespawnObjects$loop:
+(0) 494/28B4 :        $engine.objects.entity_window$EntityWindow_DespawnObjects$check_active:
+(0) 495/28D0 :        $engine.objects.entity_window$EntityWindow_DespawnObjects$check_y:
+(0) 496/28EE :        $engine.objects.entity_window$EntityWindow_DespawnObjects$despawn:
+(0) 497/290C :        $engine.objects.entity_window$EntityWindow_DespawnObjects$clr_obj_skip:
+(0) 498/2918 :        $engine.objects.entity_window$EntityWindow_DespawnObjects$next:
+(0) 499/291E :        EntityWindow_MigrateMasks:
+(0) 500/2920 :        $engine.objects.entity_window$EntityWindow_MigrateMasks$new_loop:
+(0) 501/2940 :        $engine.objects.entity_window$EntityWindow_MigrateMasks$old_loop:
+(0) 502/294E :        $engine.objects.entity_window$EntityWindow_MigrateMasks$match:
+(0) 503/2962 :        $engine.objects.entity_window$EntityWindow_MigrateMasks$copy:
+(0) 504/2968 :        $engine.objects.entity_window$EntityWindow_MigrateMasks$new_next:
+(0) 505/2972 :        EntityWindow_Slide:
+(0) 506/298C :        $engine.objects.entity_window$EntityWindow_Slide$snapshot:
+(0) 507/29D0 :        $engine.objects.entity_window$EntityWindow_Slide$populate_loop:
+(0) 508/29E2 :        $engine.objects.entity_window$EntityWindow_Slide$old_id_scan:
+(0) 509/29F0 :        $engine.objects.entity_window$EntityWindow_Slide$populate_next:
+(0) 510/2A00 :        PopulateSpawnedPieceCount:
+(0) 511/2A24 :        $engine.objects.children$asm1$no_mappings:
+(0) 512/2A28 :        $engine.objects.children$asm1$rpc_done:
+(0) 513/2A2C :        CreateChild_Normal:
+(0) 514/2A38 :        $engine.objects.children$CreateChild_Normal$child_loop:
+(0) 515/2A8A :        $engine.objects.children$CreateChild_Normal$alloc_fail:
+(0) 516/2A8C :        $engine.objects.children$CreateChild_Normal$done:
+(0) 517/2A92 :        CreateChild_Complex:
+(0) 518/2A9E :        $engine.objects.children$CreateChild_Complex$child_loop:
+(0) 519/2B08 :        $engine.objects.children$CreateChild_Complex$alloc_fail:
+(0) 520/2B0A :        $engine.objects.children$CreateChild_Complex$done:
+(0) 521/2B10 :        CreateChild_FlipAware:
+(0) 522/2B1C :        $engine.objects.children$CreateChild_FlipAware$no_flip:
+(0) 523/2B28 :        $engine.objects.children$CreateChild_FlipAware$child_loop:
+(0) 524/2B96 :        $engine.objects.children$CreateChild_FlipAware$rf_no_flip:
+(0) 525/2BA6 :        $engine.objects.children$CreateChild_FlipAware$alloc_fail:
+(0) 526/2BA8 :        $engine.objects.children$CreateChild_FlipAware$done:
+(0) 527/2BAE :        CreateChild_Linked:
+(0) 528/2BC8 :        $engine.objects.children$CreateChild_Linked$spawn_loop:
+(0) 529/2C1A :        $engine.objects.children$CreateChild_Linked$first_child:
+(0) 530/2C1E :        $engine.objects.children$CreateChild_Linked$linked:
+(0) 531/2C28 :        $engine.objects.children$CreateChild_Linked$link_fail:
+(0) 532/2C36 :        $engine.objects.children$CreateChild_Linked$done:
+(0) 533/2C38 :        DeleteChildren:
+(0) 534/2C44 :        $engine.objects.children$DeleteChildren$walk_chain:
+(0) 535/2C54 :        $engine.objects.children$DeleteChildren$done:
+(0) 536/2C56 :        CreateEffect_Normal:
+(0) 537/2C5E :        $engine.objects.children$CreateEffect_Normal$effect_loop:
+(0) 538/2CA6 :        $engine.objects.children$CreateEffect_Normal$alloc_fail:
+(0) 539/2CA8 :        $engine.objects.children$CreateEffect_Normal$done:
+(0) 540/2CAA :        CreateEffect_Simple:
+(0) 541/2CBA :        $engine.objects.children$CreateEffect_Simple$spawn_loop:
+(0) 542/2CE8 :        $engine.objects.children$CreateEffect_Simple$done:
+(0) 543/2CEA :        $engine.objects.children$CreateEffect_Simple$alloc_fail:
+(0) 544/2CF0 :        Load_Object:
+(0) 545/2D58 :        $engine.objects.load_object$Load_Object$no_piece_count:
+(0) 546/2D5C :        $engine.objects.load_object$Load_Object$alloc_fail:
+(0) 547/2D64 :        $engine.objects.load_object$Load_ObjectList$loop:
+(0) 548/2D64 :        Load_ObjectList:
+(0) 549/2D76 :        $engine.objects.load_object$Load_ObjectList$done:
+(0) 550/2D78 :        Plane_Buffer_Reset:
+(0) 551/2D80 :        Draw_TileColumn:
+(0) 552/2DB6 :        $engine.plane_buffer$Draw_TileColumn$col_nowrap:
+(0) 553/2E14 :        $engine.plane_buffer$Draw_TileColumn$pA_clamp:
+(0) 554/2E20 :        $engine.plane_buffer$Draw_TileColumn$pA_zero:
+(0) 555/2E26 :        $engine.plane_buffer$Draw_TileColumn$pA_zend:
+(0) 556/2E4C :        $engine.plane_buffer$Draw_TileColumn$pB_dok:
+(0) 557/2E58 :        $engine.plane_buffer$Draw_TileColumn$pB_zfill:
+(0) 558/2E60 :        $engine.plane_buffer$Draw_TileColumn$pB_allz:
+(0) 559/2E64 :        $engine.plane_buffer$Draw_TileColumn$pB_az:
+(0) 560/2E6A :        $engine.plane_buffer$Draw_TileColumn$no_pB:
+(0) 561/2E6A :        $engine.plane_buffer$Draw_TileColumn$pB_zend:
+(0) 562/2E78 :        $engine.plane_buffer$Draw_TileColumn$sz_ok:
+(0) 563/2E80 :        $engine.plane_buffer$Draw_TileColumn$done:
+(0) 564/2E82 :        $engine.plane_buffer$Draw_TileColumn$copy_col_run:
+(0) 565/2E9C :        $engine.plane_buffer$Draw_TileColumn$ccr_drain:
+(0) 566/2EAA :        $engine.plane_buffer$Draw_TileColumn$ccr_quad:
+(0) 567/2EC0 :        $engine.plane_buffer$Draw_TileColumn$ccr_rem_entry:
+(0) 568/2EC6 :        $engine.plane_buffer$Draw_TileColumn$ccr_rem:
+(0) 569/2ED0 :        $engine.plane_buffer$Draw_TileColumn$ccr_drained:
+(0) 570/2ED2 :        $engine.plane_buffer$Draw_TileColumn$ccr_ret:
+(0) 571/2ED4 :        Draw_TileRow_FromCache:
+(0) 572/2F1C :        $engine.plane_buffer$Draw_TileRow_FromCache$row_nowrap:
+(0) 573/2F3C :        $engine.plane_buffer$Draw_TileRow_FromCache$r_clamp_ok:
+(0) 574/2F64 :        $engine.plane_buffer$Draw_TileRow_FromCache$row_emit_done:
+(0) 575/2F74 :        $engine.plane_buffer$Draw_TileRow_FromCache$done:
+(0) 576/2F76 :        $engine.plane_buffer$Draw_TileRow_FromCache$emit_row_run:
+(0) 577/2F80 :        $engine.plane_buffer$Draw_TileRow_FromCache$err_nonneg:
+(0) 578/2F8A :        $engine.plane_buffer$Draw_TileRow_FromCache$err_norm:
+(0) 579/2FA4 :        $engine.plane_buffer$Draw_TileRow_FromCache$err_run1:
+(0) 580/2FAA :        $engine.plane_buffer$Draw_TileRow_FromCache$err_run1_tail:
+(0) 581/2FB2 :        $engine.plane_buffer$Draw_TileRow_FromCache$err_run1_done:
+(0) 582/2FB4 :        $engine.plane_buffer$Draw_TileRow_FromCache$err_single:
+(0) 583/2FBC :        $engine.plane_buffer$Draw_TileRow_FromCache$err_run2:
+(0) 584/2FC2 :        $engine.plane_buffer$Draw_TileRow_FromCache$err_run2_tail:
+(0) 585/2FCA :        $engine.plane_buffer$Draw_TileRow_FromCache$err_ret:
+(0) 586/2FCC :        Draw_BG_TileColumn:
+(0) 587/2FF2 :        $engine.plane_buffer$Draw_BG_TileColumn$have_layout:
+(0) 588/300E :        $engine.plane_buffer$Draw_BG_TileColumn$copy:
+(0) 589/3024 :        $engine.plane_buffer$Draw_BG_TileColumn$done:
+(0) 590/3026 :        VInt_DrawLevel:
+(0) 591/303A :        $engine.plane_buffer$VInt_DrawLevel$next:
+(0) 592/3052 :        $engine.plane_buffer$VInt_DrawLevel$drain_row:
+(0) 593/305A :        $engine.plane_buffer$VInt_DrawLevel$col_entry:
+(0) 594/3076 :        $engine.plane_buffer$VInt_DrawLevel$drain_col:
+(0) 595/307C :        $engine.plane_buffer$VInt_DrawLevel$dc_tail:
+(0) 596/3086 :        $engine.plane_buffer$VInt_DrawLevel$done:
+(0) 597/30A0 :        Tile_Cache_GetTile:
+(0) 598/30B2 :        $engine.tile_cache$Tile_Cache_GetTile$col_nowrap:
+(0) 599/30C4 :        $engine.tile_cache$Tile_Cache_GetTile$row_nowrap:
+(0) 600/30DC :        BlockStage_PtrTable:
+(0) 601/311C :        TileCache_FindStagedBlock:
+(0) 602/3134 :        $engine.tile_cache$TileCache_FindStagedBlock$chain:
+(0) 603/314A :        $engine.tile_cache$TileCache_FindStagedBlock$miss:
+(0) 604/314E :        $engine.tile_cache$TileCache_FindStagedBlock$hit:
+(0) 605/3164 :        TileCache_InvalidateStaging:
+(0) 606/316A :        $engine.tile_cache$TileCache_InvalidateStaging$inv:
+(0) 607/3184 :        $engine.tile_cache$TileCache_InvalidateStaging$inv_maps:
+(0) 608/3194 :        $engine.tile_cache$TileCache_InvalidateStaging$inv_bucket:
+(0) 609/31A6 :        $engine.tile_cache$TileCache_InvalidateStaging$inv_chain:
+(0) 610/31D0 :        $engine.tile_cache$TileCache_InvalidateStaging$inv_spec_ring:
+(0) 611/31E4 :        TileCache_DecompressBlock:
+(0) 612/31FE :        $engine.tile_cache$TileCache_DecompressBlock$rr_ok:
+(0) 613/3224 :        $engine.tile_cache$TileCache_DecompressBlock$idx_unlink_step:
+(0) 614/323E :        $engine.tile_cache$TileCache_DecompressBlock$idx_unlink_lost:
+(0) 615/3240 :        $engine.tile_cache$TileCache_DecompressBlock$idx_unlink_found:
+(0) 616/324A :        $engine.tile_cache$TileCache_DecompressBlock$idx_link:
+(0) 617/32E6 :        $engine.tile_cache$TileCache_DecompressBlock$raw_direct:
+(0) 618/32FA :        $engine.tile_cache$TileCache_DecompressBlock$empty_block:
+(0) 619/331A :        Blank_Local_Map:
+(0) 620/331A :        __align$engine.tile_cache$0:
+(0) 621/331C :        TileCache_CopyBlockColumn:
+(0) 622/332A :        $engine.tile_cache$TileCache_CopyBlockColumn$col_nowrap:
+(0) 623/3338 :        $engine.tile_cache$TileCache_CopyBlockColumn$row_nowrap:
+(0) 624/337A :        $engine.tile_cache$TileCache_CopyBlockColumn$nt_one_run:
+(0) 625/337C :        $engine.tile_cache$TileCache_CopyBlockColumn$nt_run2:
+(0) 626/33B2 :        $engine.tile_cache$TileCache_CopyBlockColumn$coll_run1:
+(0) 627/33D4 :        $engine.tile_cache$TileCache_CopyBlockColumn$coll_one_run:
+(0) 628/33D6 :        $engine.tile_cache$TileCache_CopyBlockColumn$coll_run2:
+(0) 629/33D8 :        $engine.tile_cache$TileCache_CopyBlockColumn$coll_run2_loop:
+(0) 630/33EC :        $engine.tile_cache$TileCache_CopyBlockColumn$done_coll:
+(0) 631/33F0 :        Tile_Cache_Init:
+(0) 632/3400 :        $engine.tile_cache$Tile_Cache_Init$left_ok:
+(0) 633/3460 :        $engine.tile_cache$Tile_Cache_Init$top_ok:
+(0) 634/347C :        TileCache_FillAll:
+(0) 635/3492 :        $engine.tile_cache$TileCache_FillAll$zero_nt:
+(0) 636/34A2 :        $engine.tile_cache$TileCache_FillAll$zero_coll:
+(0) 637/34C8 :        $engine.tile_cache$TileCache_FillAll$block_row_loop:
+(0) 638/34CC :        $engine.tile_cache$TileCache_FillAll$block_col_loop:
+(0) 639/3502 :        $engine.tile_cache$TileCache_FillAll$fill_copy_col:
+(0) 640/351E :        $engine.tile_cache$TileCache_FillAll$fill_no_clip:
+(0) 641/353C :        $engine.tile_cache$TileCache_FillAll$fill_rows_ok:
+(0) 642/354E :        $engine.tile_cache$TileCache_FillAll$fill_skip_col:
+(0) 643/3576 :        TileCache_WarmupBelowRow:
+(0) 644/359C :        $engine.tile_cache$TileCache_WarmupBelowRow$scan:
+(0) 645/35E0 :        $engine.tile_cache$TileCache_WarmupBelowRow$next:
+(0) 646/35E6 :        $engine.tile_cache$TileCache_WarmupBelowRow$done:
+(0) 647/35E8 :        Tile_Cache_Fill:
+(0) 648/3606 :        $engine.tile_cache$Tile_Cache_Fill$fg_on_time:
+(0) 649/360A :        $engine.tile_cache$Tile_Cache_Fill$fg_lag_done:
+(0) 650/364A :        $engine.tile_cache$Tile_Cache_Fill$spec_rearm_test:
+(0) 651/3650 :        $engine.tile_cache$Tile_Cache_Fill$spec_down:
+(0) 652/3658 :        $engine.tile_cache$Tile_Cache_Fill$spec_rearm:
+(0) 653/365E :        $engine.tile_cache$Tile_Cache_Fill$spec_gate_done:
+(0) 654/36B0 :        $engine.tile_cache$Tile_Cache_Fill$row_pending_stale:
+(0) 655/36B6 :        $engine.tile_cache$Tile_Cache_Fill$no_row_pending:
+(0) 656/36DA :        $engine.tile_cache$Tile_Cache_Fill$pending_row_ok:
+(0) 657/36E6 :        $engine.tile_cache$Tile_Cache_Fill$pending_stale:
+(0) 658/36EC :        $engine.tile_cache$Tile_Cache_Fill$no_pending:
+(0) 659/36FE :        $engine.tile_cache$Tile_Cache_Fill$h_left_pos:
+(0) 660/3720 :        $engine.tile_cache$Tile_Cache_Fill$h_clamp_ok:
+(0) 661/3724 :        $engine.tile_cache$Tile_Cache_Fill$h_right_fill:
+(0) 662/373C :        $engine.tile_cache$Tile_Cache_Fill$h_no_evict:
+(0) 663/3754 :        $engine.tile_cache$Tile_Cache_Fill$h_right_done:
+(0) 664/375A :        $engine.tile_cache$Tile_Cache_Fill$h_left_fill:
+(0) 665/3770 :        $engine.tile_cache$Tile_Cache_Fill$h_no_evict_left:
+(0) 666/3780 :        $engine.tile_cache$Tile_Cache_Fill$h_origin_ok:
+(0) 667/3794 :        $engine.tile_cache$Tile_Cache_Fill$h_left_done:
+(0) 668/3794 :        $engine.tile_cache$Tile_Cache_Fill$v_section:
+(0) 669/37A6 :        $engine.tile_cache$Tile_Cache_Fill$v_top_pos:
+(0) 670/37CC :        $engine.tile_cache$Tile_Cache_Fill$v_clamp_ok:
+(0) 671/37D4 :        $engine.tile_cache$Tile_Cache_Fill$v_bottom_fill:
+(0) 672/37F2 :        $engine.tile_cache$Tile_Cache_Fill$v_no_evict:
+(0) 673/380C :        $engine.tile_cache$Tile_Cache_Fill$v_bottom_done:
+(0) 674/3812 :        $engine.tile_cache$Tile_Cache_Fill$v_top_fill:
+(0) 675/3838 :        $engine.tile_cache$Tile_Cache_Fill$v_no_evict_up:
+(0) 676/386A :        $engine.tile_cache$Tile_Cache_Fill$v_top_done:
+(0) 677/3880 :        $engine.tile_cache$Tile_Cache_Fill$pfx_no_recent_lag:
+(0) 678/3884 :        $engine.tile_cache$Tile_Cache_Fill$pfx_gate_ok:
+(0) 679/38D2 :        $engine.tile_cache$Tile_Cache_Fill$pfx_up:
+(0) 680/38E4 :        $engine.tile_cache$Tile_Cache_Fill$pfx_go:
+(0) 681/394A :        $engine.tile_cache$Tile_Cache_Fill$pfx_scan_begin:
+(0) 682/3954 :        $engine.tile_cache$Tile_Cache_Fill$pfx_scan:
+(0) 683/3992 :        $engine.tile_cache$Tile_Cache_Fill$pfx_next:
+(0) 684/3998 :        $engine.tile_cache$Tile_Cache_Fill$pfx_stage:
+(0) 685/39A2 :        $engine.tile_cache$Tile_Cache_Fill$pfx_record:
+(0) 686/39CA :        $engine.tile_cache$Tile_Cache_Fill$row_done:
+(0) 687/39EC :        $engine.tile_cache$Tile_Cache_Fill$cs_first_left:
+(0) 688/39EE :        $engine.tile_cache$Tile_Cache_Fill$cs_first_set:
+(0) 689/39F8 :        $engine.tile_cache$Tile_Cache_Fill$cs_have_latch:
+(0) 690/3A00 :        $engine.tile_cache$Tile_Cache_Fill$cs_opp_ready:
+(0) 691/3A0E :        $engine.tile_cache$Tile_Cache_Fill$cs_accum_ok:
+(0) 692/3A20 :        $engine.tile_cache$Tile_Cache_Fill$cs_latched:
+(0) 693/3A3A :        $engine.tile_cache$Tile_Cache_Fill$cs_left:
+(0) 694/3A4A :        $engine.tile_cache$Tile_Cache_Fill$cs_have_col:
+(0) 695/3AC4 :        $engine.tile_cache$Tile_Cache_Fill$cs_scan_begin:
+(0) 696/3ACE :        $engine.tile_cache$Tile_Cache_Fill$cs_scan:
+(0) 697/3B0C :        $engine.tile_cache$Tile_Cache_Fill$cs_next:
+(0) 698/3B12 :        $engine.tile_cache$Tile_Cache_Fill$cs_stage:
+(0) 699/3B1C :        $engine.tile_cache$Tile_Cache_Fill$cs_record:
+(0) 700/3B44 :        $engine.tile_cache$Tile_Cache_Fill$col_done:
+(0) 701/3B92 :        $engine.tile_cache$Tile_Cache_Fill$fill_return:
+(0) 702/3B94 :        TileCache_FillColumn:
+(0) 703/3BAE :        $engine.tile_cache$TileCache_FillColumn$fc_block_loop:
+(0) 704/3BAE :        $engine.tile_cache$TileCache_FillColumn$fc_from_top:
+(0) 705/3BF0 :        $engine.tile_cache$TileCache_FillColumn$fc_have_block:
+(0) 706/3C1E :        $engine.tile_cache$TileCache_FillColumn$fc_rows_ok:
+(0) 707/3C3E :        $engine.tile_cache$TileCache_FillColumn$fc_budget_out:
+(0) 708/3C6A :        $engine.tile_cache$TileCache_FillColumn$fc_no_xhold:
+(0) 709/3C6A :        $engine.tile_cache$asm17$no_hold:
+(0) 710/3C6E :        $engine.tile_cache$TileCache_FillColumn$fc_complete:
+(0) 711/3C78 :        TileCache_FillRow:
+(0) 712/3C92 :        $engine.tile_cache$TileCache_FillRow$fr_row_nowrap:
+(0) 713/3CA8 :        $engine.tile_cache$TileCache_FillRow$fr_no_coll:
+(0) 714/3CD8 :        $engine.tile_cache$TileCache_FillRow$fr_block_loop:
+(0) 715/3CD8 :        $engine.tile_cache$TileCache_FillRow$fr_from_left:
+(0) 716/3D1C :        $engine.tile_cache$TileCache_FillRow$fr_have_block:
+(0) 717/3D56 :        $engine.tile_cache$TileCache_FillRow$fr_iclo_done:
+(0) 718/3D66 :        $engine.tile_cache$TileCache_FillRow$fr_ichi_head:
+(0) 719/3D76 :        $engine.tile_cache$TileCache_FillRow$fr_ichi_done:
+(0) 720/3D9E :        $engine.tile_cache$TileCache_FillRow$fr_nt_ncalc:
+(0) 721/3DAA :        $engine.tile_cache$TileCache_FillRow$fr_nt_emit:
+(0) 722/3DCE :        $engine.tile_cache$TileCache_FillRow$fr_nt_empty:
+(0) 723/3DF2 :        $engine.tile_cache$TileCache_FillRow$fr_ci_iclo:
+(0) 724/3E02 :        $engine.tile_cache$TileCache_FillRow$fr_ci_head:
+(0) 725/3E12 :        $engine.tile_cache$TileCache_FillRow$fr_ci_ichi:
+(0) 726/3E38 :        $engine.tile_cache$TileCache_FillRow$fr_ci_ncalc:
+(0) 727/3E44 :        $engine.tile_cache$TileCache_FillRow$fr_ci_emit:
+(0) 728/3E58 :        $engine.tile_cache$TileCache_FillRow$fr_ci_run1:
+(0) 729/3E72 :        $engine.tile_cache$TileCache_FillRow$fr_ci_run2:
+(0) 730/3E7A :        $engine.tile_cache$TileCache_FillRow$fr_next_block:
+(0) 731/3E90 :        $engine.tile_cache$TileCache_FillRow$fr_budget_out:
+(0) 732/3EBE :        $engine.tile_cache$TileCache_FillRow$fr_no_yhold:
+(0) 733/3EBE :        $engine.tile_cache$asm22$no_hold:
+(0) 734/3EC2 :        $engine.tile_cache$TileCache_FillRow$fr_done:
+(0) 735/3ECE :        $engine.tile_cache$TileCache_FillRow$fr_early_out:
+(0) 736/3ED2 :        TileCache_HSlide:
+(0) 737/3EEA :        $engine.tile_cache$TileCache_HSlide$nowrap:
+(0) 738/3EEE :        $engine.tile_cache$TileCache_HSlide$done:
+(0) 739/3EF0 :        TileCache_VSlide:
+(0) 740/3F06 :        $engine.tile_cache$TileCache_VSlide$vslide_nowrap:
+(0) 741/3F0A :        $engine.tile_cache$TileCache_VSlide$vslide_done:
+(0) 742/3F0C :        TileCache_VSlideUp:
+(0) 743/3F20 :        $engine.tile_cache$TileCache_VSlideUp$vsu_nowrap:
+(0) 744/3F24 :        $engine.tile_cache$TileCache_VSlideUp$vsu_done:
+(0) 745/3F30 :        Collision_GetType:
+(0) 746/3F50 :        $engine.collision_lookup$Collision_GetType$col_nowrap:
+(0) 747/3F76 :        $engine.collision_lookup$Collision_GetType$row_nowrap:
+(0) 748/3F88 :        $engine.collision_lookup$Collision_GetType$plane_selected:
+(0) 749/3F94 :        $engine.collision_lookup$Collision_GetType$cgt_air:
+(0) 750/3F98 :        Section_Init:
+(0) 751/3FA4 :        Section_FillInitial:
+(0) 752/3FCE :        Section_FlatIDXY:
+(0) 753/3FD8 :        $engine.section$Section_FlatIDXY$fxy_mul:
+(0) 754/3FE0 :        $engine.section$Section_FlatIDXY$fxy_add_x:
+(0) 755/3FE8 :        Section_GetSecPtrXY:
+(0) 756/4018 :        $engine.section$Section_GetSecPtrXY$out_of_range:
+(0) 757/401E :        Section_RedrawPlanes:
+(0) 758/4038 :        $engine.section$asm5$wait_z80:
+(0) 759/405E :        $engine.section$Section_RedrawPlanes$pla_fill:
+(0) 760/4090 :        $engine.section$Section_RedrawPlanes$col_nowrap:
+(0) 761/40D6 :        $engine.section$Section_RedrawPlanes$pA_clamp:
+(0) 762/40DC :        $engine.section$Section_RedrawPlanes$pA_data:
+(0) 763/40EA :        $engine.section$Section_RedrawPlanes$pa_nowrap:
+(0) 764/40EE :        $engine.section$Section_RedrawPlanes$pA_dskip:
+(0) 765/40F8 :        $engine.section$Section_RedrawPlanes$pA_zero:
+(0) 766/40FE :        $engine.section$Section_RedrawPlanes$pA_zskip:
+(0) 767/412A :        $engine.section$Section_RedrawPlanes$pB_dok:
+(0) 768/412E :        $engine.section$Section_RedrawPlanes$pB_data:
+(0) 769/413C :        $engine.section$Section_RedrawPlanes$pb_nowrap:
+(0) 770/414A :        $engine.section$Section_RedrawPlanes$pB_zfill:
+(0) 771/4152 :        $engine.section$Section_RedrawPlanes$pB_allz:
+(0) 772/4158 :        $engine.section$Section_RedrawPlanes$pB_az:
+(0) 773/415E :        $engine.section$Section_RedrawPlanes$pB_skip:
+(0) 774/4160 :        $engine.section$Section_RedrawPlanes$pla_next:
+(0) 775/418C :        $engine.section$Section_RedrawPlanes$plb_use_act_layout:
+(0) 776/4196 :        $engine.section$Section_RedrawPlanes$plb_have_layout:
+(0) 777/419C :        $engine.section$Section_RedrawPlanes$plb_col:
+(0) 778/41B8 :        $engine.section$Section_RedrawPlanes$plb_word:
+(0) 779/41C6 :        $engine.section$Section_RedrawPlanes$plb_done:
+(0) 780/41DE :        $engine.section$Section_RedrawPlanes$track_left_ok:
+(0) 781/41E4 :        Section_UpdateColumns:
+(0) 782/4208 :        $engine.section$Section_UpdateColumns$not_dirty:
+(0) 783/422E :        $engine.section$Section_UpdateColumns$right_clamp_ok:
+(0) 784/4238 :        $engine.section$Section_UpdateColumns$right_cache_ok:
+(0) 785/4246 :        $engine.section$Section_UpdateColumns$right_wrap_ok:
+(0) 786/424A :        $engine.section$Section_UpdateColumns$right_loop:
+(0) 787/426A :        $engine.section$Section_UpdateColumns$right_done:
+(0) 788/427E :        $engine.section$Section_UpdateColumns$right_done_cache_ok:
+(0) 789/4288 :        $engine.section$Section_UpdateColumns$left_clamp_skip:
+(0) 790/4296 :        $engine.section$Section_UpdateColumns$left_cache_ok:
+(0) 791/42A8 :        $engine.section$Section_UpdateColumns$left_wrap_ok:
+(0) 792/42AC :        $engine.section$Section_UpdateColumns$left_loop:
+(0) 793/42CC :        $engine.section$Section_UpdateColumns$left_done:
+(0) 794/42E0 :        $engine.section$Section_UpdateColumns$left_done_cache_ok:
+(0) 795/42EA :        $engine.section$Section_UpdateColumns$right_clamp_skip2:
+(0) 796/4302 :        $engine.section$Section_UpdateColumns$bot_cache_ok:
+(0) 797/4306 :        $engine.section$Section_UpdateColumns$bot_loop:
+(0) 798/4326 :        $engine.section$Section_UpdateColumns$bot_done:
+(0) 799/433A :        $engine.section$Section_UpdateColumns$bot_done_cache_ok:
+(0) 800/4344 :        $engine.section$Section_UpdateColumns$top_row_clamp_skip:
+(0) 801/4352 :        $engine.section$Section_UpdateColumns$top_cache_ok:
+(0) 802/4356 :        $engine.section$Section_UpdateColumns$top_loop:
+(0) 803/4376 :        $engine.section$Section_UpdateColumns$top_done:
+(0) 804/438A :        $engine.section$Section_UpdateColumns$top_done_cache_ok:
+(0) 805/4394 :        $engine.section$Section_UpdateColumns$bot_row_clamp_skip:
+(0) 806/43A0 :        Camera_Init:
+(0) 807/4414 :        $engine.camera$asm2$min_ok:
+(0) 808/441E :        $engine.camera$asm2$clamp:
+(0) 809/4432 :        $engine.camera$asm4$min_ok:
+(0) 810/443C :        $engine.camera$asm4$clamp:
+(0) 811/4446 :        Camera_Update:
+(0) 812/4456 :        $engine.camera$Camera_Update$no_freeze:
+(0) 813/4492 :        $engine.camera$Camera_Update$x_scroll_right:
+(0) 814/449C :        $engine.camera$Camera_Update$apply_x:
+(0) 815/44A8 :        $engine.camera$Camera_Update$x_done:
+(0) 816/44AC :        $engine.camera$Camera_Update$x_clamp:
+(0) 817/44B4 :        $engine.camera$asm7$min_ok:
+(0) 818/44BE :        $engine.camera$asm7$clamp:
+(0) 819/44C6 :        $engine.camera$Camera_Update$y_track:
+(0) 820/44E8 :        $engine.camera$Camera_Update$no_curl_comp:
+(0) 821/4502 :        $engine.camera$Camera_Update$check_down:
+(0) 822/4502 :        $engine.camera$Camera_Update$down_ok:
+(0) 823/450A :        $engine.camera$Camera_Update$apply_y:
+(0) 824/4514 :        $engine.camera$Camera_Update$y_step_hi_ok:
+(0) 825/451E :        $engine.camera$Camera_Update$y_step_lo_ok:
+(0) 826/452A :        $engine.camera$Camera_Update$clamp_y:
+(0) 827/452E :        $engine.camera$Camera_Update$y_clamp:
+(0) 828/4536 :        $engine.camera$asm9$min_ok:
+(0) 829/4540 :        $engine.camera$asm9$clamp:
+(0) 830/4550 :        Parallax_Init:
+(0) 831/455A :        $engine.parallax$Parallax_Init$zero:
+(0) 832/457A :        Parallax_CheckBoundary:
+(0) 833/459C :        $engine.parallax$Parallax_CheckBoundary$crossed:
+(0) 834/45B4 :        $engine.parallax$Parallax_CheckBoundary$no_crossing:
+(0) 835/45B6 :        Parallax_StartTransition:
+(0) 836/45C8 :        $engine.parallax$Parallax_StartTransition$instant:
+(0) 837/45E0 :        $engine.parallax$Parallax_StartTransition$update_mode:
+(0) 838/45E2 :        $engine.parallax$Parallax_StartTransition$v_done:
+(0) 839/45E6 :        $engine.parallax$Parallax_StartTransition$no_change:
+(0) 840/45E8 :        $engine.parallax$Parallax_StartTransition$recross_current:
+(0) 841/4604 :        Parallax_Active_Config:
+(0) 842/460A :        Vscroll_Write:
+(0) 843/461C :        $engine.parallax$Vscroll_Write$whole_plane:
+(0) 844/4624 :        Parallax_Update:
+(0) 845/4642 :        $engine.parallax$Parallax_Update$use_target:
+(0) 846/4648 :        $engine.parallax$Parallax_Update$use_current:
+(0) 847/464C :        $engine.parallax$Parallax_Update$config_resolved:
+(0) 848/465E :        $engine.parallax$Parallax_Update$mode3_shadow:
+(0) 849/4680 :        $engine.parallax$asm7$wait_z80:
+(0) 850/46A0 :        $engine.parallax$Parallax_Update$mode3_reg_live:
+(0) 851/46C6 :        $engine.parallax$Parallax_Update$band_loop:
+(0) 852/46F4 :        $engine.parallax$Parallax_Update$snap_b:
+(0) 853/46F6 :        $engine.parallax$Parallax_Update$write_b:
+(0) 854/46FC :        $engine.parallax$Parallax_Update$band_disabled:
+(0) 855/4700 :        $engine.parallax$Parallax_Update$band_done:
+(0) 856/4718 :        $engine.parallax$Parallax_Update$no_config:
+(0) 857/471A :        Parallax_Step4_Fill:
+(0) 858/472E :        $engine.parallax$Parallax_Step4_Fill$find_k:
+(0) 859/4742 :        $engine.parallax$Parallax_Step4_Fill$found_k:
+(0) 860/4756 :        $engine.parallax$Parallax_Step4_Fill$copy_band:
+(0) 861/4780 :        $engine.parallax$Parallax_Step4_Fill$not_first:
+(0) 862/4788 :        $engine.parallax$Parallax_Step4_Fill$clamp_top:
+(0) 863/4792 :        $engine.parallax$Parallax_Step4_Fill$write_top:
+(0) 864/47B2 :        $engine.parallax$Parallax_Step4_Fill$no_wrap:
+(0) 865/47C2 :        $engine.parallax$Parallax_Step4_Fill$bands_ready:
+(0) 866/47DA :        Parallax_Step5_Vscroll:
+(0) 867/4800 :        $engine.parallax$Parallax_Step5_Vscroll$v_snap:
+(0) 868/4804 :        $engine.parallax$Parallax_Step5_Vscroll$v_locked:
+(0) 869/4808 :        $engine.parallax$Parallax_Step5_Vscroll$v_pack:
+(0) 870/4814 :        $engine.parallax$Parallax_Step5_Vscroll$v_done:
+(0) 871/4818 :        Decode_Factor_A:
+(0) 872/4846 :        $engine.parallax$Decode_Factor_A$a_sub:
+(0) 873/4848 :        $engine.parallax$Decode_Factor_A$a_pop_d3:
+(0) 874/484A :        $engine.parallax$Decode_Factor_A$negate:
+(0) 875/484E :        $engine.parallax$Decode_Factor_A$locked:
+(0) 876/4852 :        Decode_Factor_B:
+(0) 877/4880 :        $engine.parallax$Decode_Factor_B$b_sub:
+(0) 878/4882 :        $engine.parallax$Decode_Factor_B$b_pop_d3:
+(0) 879/4884 :        $engine.parallax$Decode_Factor_B$negate:
+(0) 880/4888 :        $engine.parallax$Decode_Factor_B$locked:
+(0) 881/488C :        Parallax_Fill_PerLine:
+(0) 882/4896 :        $engine.parallax$Parallax_Fill_PerLine$next_band:
+(0) 883/48A2 :        $engine.parallax$Parallax_Fill_PerLine$have_end:
+(0) 884/48A8 :        $engine.parallax$Parallax_Fill_PerLine$lp_flat:
+(0) 885/48BC :        $engine.parallax$Parallax_Fill_PerLine$fl_line:
+(0) 886/48D0 :        $engine.parallax$Parallax_Fill_PerLine$fl_tail:
+(0) 887/48D6 :        $engine.parallax$Parallax_Fill_PerLine$fl_rem:
+(0) 888/48DC :        $engine.parallax$Parallax_Fill_PerLine$band_done:
+(0) 889/48F0 :        Raster_Install:
+(0) 890/48F6 :        Raster_VBlank:
+(0) 891/491A :        $engine.effects.raster$Raster_VBlank$copy_program:
+(0) 892/4932 :        $engine.effects.raster$Raster_VBlank$copy:
+(0) 893/4938 :        $engine.effects.raster$Raster_VBlank$no_install:
+(0) 894/495E :        $engine.effects.raster$Raster_VBlank$done:
+(0) 895/4960 :        Raster_HInt:
+(0) 896/498C :        $engine.effects.raster$Raster_HInt$op_loop:
+(0) 897/49B0 :        $engine.effects.raster$Raster_HInt$op_reg:
+(0) 898/49B8 :        $engine.effects.raster$Raster_HInt$op_cram:
+(0) 899/49BC :        $engine.effects.raster$Raster_HInt$cram_delay:
+(0) 900/49C2 :        $engine.effects.raster$Raster_HInt$cram_loop:
+(0) 901/49D0 :        $engine.effects.raster$Raster_HInt$op_region:
+(0) 902/49D4 :        $engine.effects.raster$Raster_HInt$region_delay:
+(0) 903/49E0 :        $engine.effects.raster$Raster_HInt$region_loop:
+(0) 904/49F6 :        $engine.effects.raster$Raster_HInt$op_run_gradient:
+(0) 905/4A0A :        $engine.effects.raster$Raster_HInt$op_run_ramp:
+(0) 906/4A20 :        $engine.effects.raster$Raster_HInt$advance:
+(0) 907/4A28 :        $engine.effects.raster$Raster_HInt$priming:
+(0) 908/4A38 :        $engine.effects.raster$Raster_HInt$op_pal_restore:
+(0) 909/4A3C :        $engine.effects.raster$Raster_HInt$restore_delay:
+(0) 910/4A48 :        $engine.effects.raster$Raster_HInt$restore_loop:
+(0) 911/4A5E :        $engine.effects.raster$Raster_HInt$dense_body:
+(0) 912/4A84 :        $engine.effects.raster$Raster_HInt$ramp_body:
+(0) 913/4AA4 :        $engine.effects.raster$Raster_HInt$dense_end:
+(0) 914/4AA8 :        $engine.effects.raster$Raster_HInt$park:
+(0) 915/4AAC :        $engine.effects.raster$Raster_HInt$out:
+(0) 916/4AB2 :        Raster_Program_None:
+(0) 917/4AB8 :        Raster_InstallPatched:
+(0) 918/4ADE :        $engine.effects.raster$Raster_InstallPatched$no_ship:
+(0) 919/4AE0 :        $engine.effects.raster$Raster_InstallPatched$ship_done:
+(0) 920/4AFC :        $engine.effects.raster$Raster_InstallPatched$no_build:
+(0) 921/4B02 :        Raster_BuildShipEntry:
+(0) 922/4B3E :        Raster_BuildSchedule:
+(0) 923/4B5A :        $engine.effects.raster$Raster_BuildSchedule$dst_ready:
+(0) 924/4B72 :        $engine.effects.raster$Raster_BuildSchedule$entry:
+(0) 925/4B92 :        $engine.effects.raster$Raster_BuildSchedule$have_line:
+(0) 926/4BBC :        $engine.effects.raster$Raster_BuildSchedule$copy:
+(0) 927/4BC2 :        $engine.effects.raster$Raster_BuildSchedule$next:
+(0) 928/4BEE :        $engine.effects.raster$Raster_BuildSchedule$swap:
+(0) 929/4BF2 :        $engine.effects.raster$Raster_BuildSchedule$none:
+(0) 930/4BF4 :        $engine.effects.raster$Raster_BuildSchedule$suppress:
+(0) 931/4BF8 :        Raster_GetChannelBand:
+(0) 932/4C00 :        Effects_LatchWorldLines:
+(0) 933/4C0E :        $engine.effects.raster$Effects_LatchWorldLines$ch:
+(0) 934/4C1A :        Effects_SetWorldY:
+(0) 935/4C2A :        Palette_LoadPal:
+(0) 936/4C36 :        $engine.effects.palette$Palette_LoadPal$copy_base:
+(0) 937/4C50 :        $engine.effects.palette$Palette_LoadPal$load_target:
+(0) 938/4C5A :        $engine.effects.palette$Palette_LoadPal$copy_target:
+(0) 939/4C6E :        Palette_ArmFade:
+(0) 940/4C76 :        Palette_SetOp:
+(0) 941/4C8C :        Palette_SetVariant:
+(0) 942/4CB2 :        $engine.effects.palette$Palette_SetVariant$none:
+(0) 943/4CB4 :        Palette_LoadCycle:
+(0) 944/4CD6 :        $engine.effects.palette$Palette_LoadCycle$zero:
+(0) 945/4CDC :        $engine.effects.palette$Palette_LoadCycle$done:
+(0) 946/4CDE :        Palette_Compose:
+(0) 947/4CE6 :        $engine.effects.palette$Palette_Compose$work:
+(0) 948/4D06 :        $engine.effects.palette$Palette_Compose$base_copy:
+(0) 949/4D14 :        $engine.effects.palette$Palette_Compose$cycling:
+(0) 950/4D1E :        $engine.effects.palette$Palette_Compose$fade:
+(0) 951/4D28 :        $engine.effects.palette$Palette_Compose$operators:
+(0) 952/4D32 :        $engine.effects.palette$Palette_Compose$variants:
+(0) 953/4D4C :        $engine.effects.palette$Palette_Compose$done:
+(0) 954/4D4E :        Palette_DoCycle:
+(0) 955/4D60 :        $engine.effects.palette$Palette_DoCycle$chan:
+(0) 956/4D7C :        $engine.effects.palette$Palette_DoCycle$wait:
+(0) 957/4D80 :        $engine.effects.palette$Palette_DoCycle$next:
+(0) 958/4D86 :        $engine.effects.palette$Palette_DoCycle$ret:
+(0) 959/4D94 :        $engine.effects.palette$Palette_DoCycle$ret_quiet:
+(0) 960/4D96 :        Palette_RotateSpan:
+(0) 961/4DC4 :        $engine.effects.palette$Palette_RotateSpan$fwd:
+(0) 962/4DD0 :        $engine.effects.palette$Palette_RotateSpan$rev:
+(0) 963/4DD8 :        $engine.effects.palette$Palette_RotateSpan$rup:
+(0) 964/4DE2 :        $engine.effects.palette$Palette_RotateSpan$done:
+(0) 965/4DE4 :        Palette_DoFade:
+(0) 966/4DF8 :        $engine.effects.palette$Palette_DoFade$snap:
+(0) 967/4E18 :        $engine.effects.palette$Palette_DoFade$step_frame:
+(0) 968/4E22 :        $engine.effects.palette$Palette_DoFade$noskip:
+(0) 969/4E2E :        $engine.effects.palette$Palette_DoFade$word:
+(0) 970/4E4E :        $engine.effects.palette$asm10$st_up:
+(0) 971/4E50 :        $engine.effects.palette$asm10$st_end:
+(0) 972/4E6E :        $engine.effects.palette$asm11$st_up:
+(0) 973/4E70 :        $engine.effects.palette$asm11$st_end:
+(0) 974/4E92 :        $engine.effects.palette$asm12$st_up:
+(0) 975/4E94 :        $engine.effects.palette$asm12$st_end:
+(0) 976/4EAE :        Palette_DoOperator:
+(0) 977/4EDE :        $engine.effects.palette$Palette_DoOperator$neg_xor:
+(0) 978/4EF2 :        $engine.effects.palette$Palette_DoOperator$neg_tick:
+(0) 979/4EFE :        $engine.effects.palette$Palette_DoOperator$fade_dir:
+(0) 980/4F16 :        $engine.effects.palette$Palette_DoOperator$have_tgt:
+(0) 981/4F1E :        $engine.effects.palette$Palette_DoOperator$fw_word:
+(0) 982/4F36 :        $engine.effects.palette$asm16$st_up:
+(0) 983/4F38 :        $engine.effects.palette$asm16$st_end:
+(0) 984/4F50 :        $engine.effects.palette$asm17$st_up:
+(0) 985/4F52 :        $engine.effects.palette$asm17$st_end:
+(0) 986/4F6C :        $engine.effects.palette$asm18$st_up:
+(0) 987/4F6E :        $engine.effects.palette$asm18$st_end:
+(0) 988/4F98 :        $engine.effects.palette$Palette_DoOperator$ret:
+(0) 989/4F9A :        $engine.effects.palette$Palette_DoOperator$white_flash:
+(0) 990/4FA2 :        $engine.effects.palette$Palette_DoOperator$wf_fill:
+(0) 991/4FBC :        $engine.effects.palette$Palette_DoOperator$op_done_restore:
+(0) 992/4FDC :        Palette_DoVariants:
+(0) 993/4FEA :        $engine.effects.palette$Palette_DoVariants$slot1:
+(0) 994/4FF8 :        $engine.effects.palette$Palette_DoVariants$ret:
+(0) 995/4FFA :        Palette_DeriveVariant:
+(0) 996/5000 :        $engine.effects.palette$Palette_DeriveVariant$line:
+(0) 997/5016 :        $engine.effects.palette$Palette_DeriveVariant$entry:
+(0) 998/5036 :        $engine.effects.palette$asm23$cl_pos:
+(0) 999/503E :        $engine.effects.palette$asm23$cl_end:
+(0) 1000/5060 :        $engine.effects.palette$asm24$cl_pos:
+(0) 1001/5068 :        $engine.effects.palette$asm24$cl_end:
+(0) 1002/508C :        $engine.effects.palette$asm25$cl_pos:
+(0) 1003/5094 :        $engine.effects.palette$asm25$cl_end:
+(0) 1004/50A0 :        $engine.effects.palette$Palette_DeriveVariant$next_line:
+(0) 1005/50AC :        Pal_Cycle_None:
+(0) 1006/50AE :        Effects_ResolveParallax:
+(0) 1007/50BA :        $engine.effects.preset$Effects_ResolveParallax$no_sec_binding:
+(0) 1008/50CE :        $engine.effects.preset$Effects_ResolveParallax$act_default:
+(0) 1009/50D6 :        $engine.effects.preset$Effects_ResolveParallax$have_config:
+(0) 1010/50D8 :        Effects_InstallPreset:
+(0) 1011/50F0 :        $engine.effects.preset$Effects_InstallPreset$seed_anchor:
+(0) 1012/5104 :        $engine.effects.preset$Effects_InstallPreset$no_fade_arm:
+(0) 1013/5124 :        $engine.effects.preset$Effects_InstallPreset$variant0_same:
+(0) 1014/5136 :        $engine.effects.preset$Effects_InstallPreset$variant1_same:
+(0) 1015/5146 :        $engine.effects.preset$Effects_InstallPreset$no_patch:
+(0) 1016/5154 :        $engine.effects.preset$Effects_InstallPreset$have_raster:
+(0) 1017/5158 :        $engine.effects.preset$Effects_InstallPreset$raster_done:
+(0) 1018/5170 :        Level_LoadArt:
+(0) 1019/519C :        $engine.load_art$Level_LoadArt$streaming_pool:
+(0) 1020/51B6 :        $engine.load_art$Level_LoadArt$enq_loop:
+(0) 1021/51CA :        $engine.load_art$Level_LoadArt$enq_next:
+(0) 1022/51CE :        $engine.load_art$Level_LoadArt$drain_wait:
+(0) 1023/51F8 :        $engine.load_art$Level_LoadArt$bg:
+(0) 1024/5212 :        $engine.load_art$Level_LoadArt$direct_scan:
+(0) 1025/521C :        $engine.load_art$Level_LoadArt$direct_ok:
+(0) 1026/5220 :        $engine.load_art$Level_LoadArt$no_direct:
+(0) 1027/5228 :        PageIn_Process:
+(0) 1028/5254 :        $engine.page_in$PageIn_Process$lag_ontime:
+(0) 1029/525C :        $engine.page_in$PageIn_Process$frame_ticked:
+(0) 1030/529C :        $engine.page_in$PageIn_Process$gate_reset:
+(0) 1031/52A0 :        $engine.page_in$PageIn_Process$start:
+(0) 1032/52B2 :        $engine.page_in$PageIn_Process$page_id_ok:
+(0) 1033/530A :        $engine.page_in$PageIn_Process$raw:
+(0) 1034/532A :        $engine.page_in$PageIn_Process$raw_published:
+(0) 1035/5336 :        $engine.page_in$PageIn_Process$alloc_fail:
+(0) 1036/5342 :        $engine.page_in$PageIn_Process$idle:
+(0) 1037/5344 :        $engine.page_in$PageIn_Process$drop_degenerate:
+(0) 1038/5348 :        $engine.page_in$PageIn_Process$release_claim:
+(0) 1039/5360 :        $engine.page_in$PageIn_Process$claim_done:
+(0) 1040/5362 :        $engine.page_in$PageIn_Process$resume:
+(0) 1041/5366 :        $engine.page_in$PageIn_Process$after:
+(0) 1042/536A :        $engine.page_in$PageIn_Process$land:
+(0) 1043/538A :        $engine.page_in$PageIn_Process$land_full:
+(0) 1044/5390 :        $engine.page_in$PageIn_Process$queue_has_nonspec:
+(0) 1045/539C :        $engine.page_in$PageIn_Process$qn_scan:
+(0) 1046/53B0 :        $engine.page_in$PageIn_Process$qn_found:
+(0) 1047/53B4 :        $engine.page_in$PageIn_Process$dequeue:
+(0) 1048/53C0 :        $engine.page_in$PageIn_Process$dq_scan:
+(0) 1049/53DA :        $engine.page_in$PageIn_Process$dq_found:
+(0) 1050/53F0 :        $engine.page_in$PageIn_Process$dq_shift:
+(0) 1051/53F6 :        $engine.page_in$PageIn_Process$dq_done:
+(0) 1052/53FC :        PageIn_BankRegs:
+(0) 1053/5422 :        PageIn_Resume:
+(0) 1054/544C :        PageIn_EnqueueLanding:
+(0) 1055/547A :        $engine.page_in$PageIn_EnqueueLanding$art_deferred:
+(0) 1056/5480 :        $engine.page_in$PageIn_EnqueueLanding$dropped:
+(0) 1057/5486 :        PageIn_Enqueue:
+(0) 1058/54BE :        $engine.page_in$PageIn_Enqueue$full:
+(0) 1059/54C4 :        PageIn_Flush:
+(0) 1060/550C :        PageCache_Init:
+(0) 1061/5520 :        $engine.page_cache$PageCache_Init$clr_table:
+(0) 1062/5532 :        $engine.page_cache$PageCache_Init$clr_queued:
+(0) 1063/5544 :        $engine.page_cache$PageCache_Init$init_frames:
+(0) 1064/5570 :        PageCache_Request:
+(0) 1065/5578 :        $engine.page_cache$PageCache_Request$in_range:
+(0) 1066/55A0 :        $engine.page_cache$PageCache_Request$not_inflight:
+(0) 1067/55BA :        $engine.page_cache$PageCache_Request$done:
+(0) 1068/55BC :        PageCache_AllocFrame:
+(0) 1069/55DA :        $engine.page_cache$PageCache_AllocFrame$from_lru:
+(0) 1070/55EA :        $engine.page_cache$PageCache_AllocFrame$ev_scan:
+(0) 1071/5602 :        $engine.page_cache$PageCache_AllocFrame$ev_next:
+(0) 1072/563E :        $engine.page_cache$PageCache_AllocFrame$detach:
+(0) 1073/5658 :        $engine.page_cache$PageCache_AllocFrame$thrash:
+(0) 1074/565E :        PageCache_FreeFrame:
+(0) 1075/5678 :        PageCache_Publish:
+(0) 1076/56CA :        $engine.page_cache$PageCache_Publish$not_pinned:
+(0) 1077/56E4 :        $engine.page_cache$PageCache_Publish$done:
+(0) 1078/56E6 :        PageCache_PatchRun_Seq:
+(0) 1079/5708 :        $engine.page_cache$asm6$pw_new_blank:
+(0) 1080/5716 :        $engine.page_cache$asm6$pw_miss:
+(0) 1081/5732 :        $engine.page_cache$asm6$pw_word:
+(0) 1082/577E :        $engine.page_cache$asm6$pw_ref_done:
+(0) 1083/5784 :        $engine.page_cache$asm6$pw_unref_old:
+(0) 1084/57A4 :        $engine.page_cache$asm6$pw_next:
+(0) 1085/57B6 :        $engine.page_cache$PageCache_PatchRun_Seq$direct:
+(0) 1086/57BA :        $engine.page_cache$asm8$pd_blank:
+(0) 1087/57BE :        $engine.page_cache$asm8$pd_word:
+(0) 1088/57D8 :        $engine.page_cache$asm8$pd_next:
+(0) 1089/57EA :        PageCache_PatchRun_Col:
+(0) 1090/580C :        $engine.page_cache$asm10$pw_new_blank:
+(0) 1091/581A :        $engine.page_cache$asm10$pw_miss:
+(0) 1092/5836 :        $engine.page_cache$asm10$pw_word:
+(0) 1093/5882 :        $engine.page_cache$asm10$pw_ref_done:
+(0) 1094/5888 :        $engine.page_cache$asm10$pw_unref_old:
+(0) 1095/58A8 :        $engine.page_cache$asm10$pw_next:
+(0) 1096/58BA :        $engine.page_cache$PageCache_PatchRun_Col$direct:
+(0) 1097/58BE :        $engine.page_cache$asm12$pd_blank:
+(0) 1098/58C2 :        $engine.page_cache$asm12$pd_word:
+(0) 1099/58DC :        $engine.page_cache$asm12$pd_next:
+(0) 1100/58EE :        PageCache_Prefetch:
+(0) 1101/5930 :        $engine.page_cache$PageCache_Prefetch$row_scan:
+(0) 1102/5954 :        $engine.page_cache$PageCache_Prefetch$row_next:
+(0) 1103/595A :        $engine.page_cache$PageCache_Prefetch$col_strip:
+(0) 1104/5976 :        $engine.page_cache$PageCache_Prefetch$col_scan:
+(0) 1105/599C :        $engine.page_cache$PageCache_Prefetch$col_next:
+(0) 1106/59A2 :        $engine.page_cache$PageCache_Prefetch$strips_done:
+(0) 1107/59A6 :        $engine.page_cache$PageCache_Prefetch$ret:
+(0) 1108/59A8 :        $engine.page_cache$PageCache_Prefetch$scan_block:
+(0) 1109/59B2 :        $engine.page_cache$PageCache_Prefetch$sb_loop:
+(0) 1110/59E8 :        $engine.page_cache$PageCache_Prefetch$sb_next:
+(0) 1111/59EC :        $engine.page_cache$PageCache_Prefetch$sb_done:
+(0) 1112/59EE :        PageCache_Audit:
+(0) 1113/59EE :        PageCache_ResetRefcounts:
+(0) 1114/5A00 :        BG_Init:
+(0) 1115/5A24 :        $engine.bg$BG_Init$bg_len_ok:
+(0) 1116/5A32 :        $engine.bg$asm1$wait_z80:
+(0) 1117/5A54 :        $engine.bg$BG_Init$tile_copy:
+(0) 1118/5A62 :        $engine.bg$BG_Init$skip_tiles:
+(0) 1119/5A74 :        $engine.bg$asm3$wait_z80:
+(0) 1120/5A8E :        $engine.bg$BG_Init$nt_col:
+(0) 1121/5AAE :        $engine.bg$BG_Init$nt_row:
+(0) 1122/5ACC :        $engine.bg$BG_Init$skip_nt:
+(0) 1123/5AE0 :        BgAnim_Init:
+(0) 1124/5AEC :        BgAnim_Update:
+(0) 1125/5B00 :        $engine.bg_anim$BgAnim_Update$band_loop:
+(0) 1126/5B0E :        $engine.bg_anim$BgAnim_Update$cam_x:
+(0) 1127/5B14 :        $engine.bg_anim$BgAnim_Update$cam_y:
+(0) 1128/5B18 :        $engine.bg_anim$BgAnim_Update$have_value:
+(0) 1129/5B64 :        $engine.bg_anim$BgAnim_Update$commit:
+(0) 1130/5B68 :        $engine.bg_anim$BgAnim_Update$queue_full:
+(0) 1131/5B6C :        $engine.bg_anim$BgAnim_Update$skip_band:
+(0) 1132/5B6E :        $engine.bg_anim$BgAnim_Update$next_band:
+(0) 1133/5B78 :        $engine.bg_anim$BgAnim_Update$exit:
+(0) 1134/10000 :        ObjCodeBase:
+(0) 1135/10002 :        DemoBox_Main:
+(0) 1136/10006 :        ObjDef_DemoBox:
+(0) 1137/10020 :        Map_DemoBox:
+(0) 1138/10022 :        __offsets$games.demo.data.demo_data$Map_DemoBox$F0:
+(0) 1139/10030 :        DemoObjectList:
+(0) 1140/1003A :        DemoObjectList_Term:
+(0) 1141/1003E :        DemoArt:
+(0) 1142/100DE :        DemoPalette:
+(0) 1143/100FE :        BgAnim_Table:
+(0) 1144/10100 :        GameState_Demo_Init:
+(0) 1145/1010A :        $games.demo.demo_state$GameState_Demo_Init$copy_pal:
+(0) 1146/10158 :        GameState_Demo:
+(0) 1147/1016C :        BusError:
+(0) 1148/10184 :        AddressError:
+(0) 1149/101A0 :        IllegalInstr:
+(0) 1150/101C2 :        ZeroDivide:
+(0) 1151/101DC :        ChkInstr:
+(0) 1152/101FA :        TrapvInstr:
+(0) 1153/1021A :        PrivilegeViol:
+(0) 1154/1023C :        Trace:
+(0) 1155/10250 :        Line1010Emu:
+(0) 1156/10270 :        Line1111Emu:
+(0) 1157/10290 :        ErrorExcept:
+(0) 1158/102AE :        ErrorTrap:
+(0) 1159/102C6 :        ErrorHandlerBlob:
+(0) 1160/1121C :        EndOfRom:
+(0) 1161/FFFF0000 :        Tile_Cache_Nametable:
+(0) 1162/FFFF2580 :        Tile_Cache_Collision:
+(0) 1163/FFFF3842 :        Block_Stage_Buffers:
+(0) 1164/FFFF6842 :        Block_Stage_Bucket:
+(0) 1165/FFFF6942 :        Block_Stage_Chain:
+(0) 1166/FFFF6982 :        Cache_Spec_Gen_Ring:
+(0) 1167/FFFF6992 :        Cache_Spec_Window:
+(0) 1168/FFFF6994 :        Cache_Spec_Blocked:
+(0) 1169/FFFF6996 :        Cache_Spec_Skips:
+(0) 1170/FFFF6998 :        Pfx_Memo_Mask:
+(0) 1171/FFFF699A :        Cs_Memo_Mask:
+(0) 1172/FFFF699C :        Page_Table:
+(0) 1173/FFFF6A9C :        Page_Frames:
+(0) 1174/FFFF6B14 :        Page_Queued_Bits:
+(0) 1175/FFFF6B34 :        Art_Staging_Buffer:
+(0) 1176/FFFF7334 :        Lower_RAM_End:
+(0) 1177/FFFF8000 :        RAM_Start:
+(0) 1178/FFFF8000 :        VBlank_Flag:
+(0) 1179/FFFF8002 :        Frame_Counter:
+(0) 1180/FFFF8004 :        Logic_Tick:
+(0) 1181/FFFF8008 :        Game_State:
+(0) 1182/FFFF800C :        Game_State_ID:
+(0) 1183/FFFF800D :        Game_State_Init:
+(0) 1184/FFFF800E :        VDP_Shadow_Table:
+(0) 1185/FFFF8026 :        Hardware_Region:
+(0) 1186/FFFF8027 :        Region_Flags:
+(0) 1187/FFFF8028 :        Ctrl_1_Held:
+(0) 1188/FFFF8029 :        Ctrl_1_Press:
+(0) 1189/FFFF802A :        Ctrl_2_Held:
+(0) 1190/FFFF802B :        Ctrl_2_Press:
+(0) 1191/FFFF802C :        Ctrl_1_Press_Accum:
+(0) 1192/FFFF802D :        Ctrl_2_Press_Accum:
+(0) 1193/FFFF802E :        Ctrl_1_Ext_Held:
+(0) 1194/FFFF802F :        Ctrl_1_Ext_Press:
+(0) 1195/FFFF8030 :        Ctrl_2_Ext_Held:
+(0) 1196/FFFF8031 :        Ctrl_2_Ext_Press:
+(0) 1197/FFFF8032 :        Ctrl_1_Ext_Press_Accum:
+(0) 1198/FFFF8033 :        Ctrl_2_Ext_Press_Accum:
+(0) 1199/FFFF8034 :        Pad_1_Type:
+(0) 1200/FFFF8035 :        Pad_2_Type:
+(0) 1201/FFFF8036 :        Input_Source:
+(0) 1202/FFFF8037 :        Replay_Exit_Request:
+(0) 1203/FFFF8038 :        Replay_Done:
+(0) 1204/FFFF8039 :        Replay_Hold:
+(0) 1205/FFFF803A :        Replay_Prev:
+(0) 1206/FFFF803C :        Replay_Ptr:
+(0) 1207/FFFF8040 :        RNG_Seed:
+(0) 1208/FFFF8044 :        VInt_Ptr:
+(0) 1209/FFFF8048 :        VBlank_Ready:
+(0) 1210/FFFF804A :        DMA_Critical:
+(0) 1211/FFFF804A :        DMA_Queue:
+(0) 1212/FFFF80BA :        DMA_Critical_End:
+(0) 1213/FFFF80BA :        DMA_Important:
+(0) 1214/FFFF8162 :        DMA_Deferrable:
+(0) 1215/FFFF8162 :        DMA_Important_End:
+(0) 1216/FFFF820A :        DMA_Critical_Slot:
+(0) 1217/FFFF820A :        DMA_Deferrable_End:
+(0) 1218/FFFF820A :        DMA_Queue_End:
+(0) 1219/FFFF820C :        DMA_Important_Slot:
+(0) 1220/FFFF820E :        DMA_Deferrable_Slot:
+(0) 1221/FFFF8210 :        DMA_Budget_Default:
+(0) 1222/FFFF8212 :        DMA_Budget_Remaining:
+(0) 1223/FFFF8214 :        DMA_Enq_Bytes_Frame:
+(0) 1224/FFFF8216 :        Palette_Buffer:
+(0) 1225/FFFF8296 :        Palette_Dirty:
+(0) 1226/FFFF8298 :        Sprite_Table_Buffer:
+(0) 1227/FFFF8518 :        Sprite_Table_Dirty:
+(0) 1228/FFFF8519 :        Sprite_Emit_Active:
+(0) 1229/FFFF851A :        Hscroll_Buffer:
+(0) 1230/FFFF889C :        Vscroll_Factor:
+(0) 1231/FFFF88A0 :        Parallax_Deform_Phase_FG:
+(0) 1232/FFFF88A0 :        Parallax_State:
+(0) 1233/FFFF88A2 :        Parallax_Deform_Phase_BG:
+(0) 1234/FFFF88A4 :        Parallax_V_Deform_Phase_BG:
+(0) 1235/FFFF88A6 :        Parallax_Current_Scroll_A:
+(0) 1236/FFFF88C6 :        Parallax_Current_Scroll_B:
+(0) 1237/FFFF88E6 :        Parallax_Current_Vscroll_BG:
+(0) 1238/FFFF88E8 :        Parallax_Current_Config:
+(0) 1239/FFFF88EC :        Parallax_Target_Config:
+(0) 1240/FFFF88F0 :        Parallax_Transition_Frames:
+(0) 1241/FFFF88F1 :        Parallax_Snap_Pending:
+(0) 1242/FFFF88F2 :        Parallax_Prev_Sec_X:
+(0) 1243/FFFF88F3 :        Parallax_Prev_Sec_Y:
+(0) 1244/FFFF88F4 :        Parallax_Vscroll_Column_Buf:
+(0) 1245/FFFF8944 :        Parallax_Curve_Carry:
+(0) 1246/FFFF8944 :        Parallax_Drift_Acc:
+(0) 1247/FFFF8948 :        Parallax_Shadow_Bands:
+(0) 1248/FFFF8A88 :        Parallax_Shadow_Scroll_A:
+(0) 1249/FFFF8AA8 :        Parallax_Shadow_Scroll_B:
+(0) 1250/FFFF8AC8 :        Parallax_State_End:
+(0) 1251/FFFF8AC8 :        Raster_Program:
+(0) 1252/FFFF8AC8 :        Raster_State:
+(0) 1253/FFFF8ACC :        Raster_Cursor:
+(0) 1254/FFFF8AD0 :        Raster_Pending:
+(0) 1255/FFFF8AD4 :        Raster_Line:
+(0) 1256/FFFF8AD6 :        Raster_Buf_A:
+(0) 1257/FFFF8B56 :        Raster_Buf_B:
+(0) 1258/FFFF8BD6 :        Raster_Active_Buf:
+(0) 1259/FFFF8BDA :        Raster_Dense_Lines:
+(0) 1260/FFFF8BDC :        Raster_Dense_Cursor:
+(0) 1261/FFFF8BE0 :        Raster_Dense_Cmd:
+(0) 1262/FFFF8BE4 :        Raster_Dense_Mode:
+(0) 1263/FFFF8BE6 :        Raster_Ramp_Acc:
+(0) 1264/FFFF8BEA :        Raster_Ramp_Step:
+(0) 1265/FFFF8BEE :        Effects_World_Y:
+(0) 1266/FFFF8BF6 :        Effects_Screen_L:
+(0) 1267/FFFF8BFE :        Effects_Offscreen_Entry:
+(0) 1268/FFFF8C02 :        Raster_Patch_Tab:
+(0) 1269/FFFF8C06 :        Pal_Base:
+(0) 1270/FFFF8C06 :        Palette_State:
+(0) 1271/FFFF8C06 :        Raster_State_End:
+(0) 1272/FFFF8C66 :        Pal_Target:
+(0) 1273/FFFF8CC6 :        Pal_Variant_Stage:
+(0) 1274/FFFF8DC6 :        Pal_Variant_Ptr:
+(0) 1275/FFFF8DCE :        Pal_Cycle_Script:
+(0) 1276/FFFF8DD2 :        Pal_Cycle_Timers:
+(0) 1277/FFFF8DD6 :        Pal_Fade_Frames:
+(0) 1278/FFFF8DD7 :        Pal_Op:
+(0) 1279/FFFF8DD8 :        Pal_Op_Step:
+(0) 1280/FFFF8DD9 :        Pal_Op_Timer:
+(0) 1281/FFFF8DDA :        Pal_Active:
+(0) 1282/FFFF8DDB :        Pal_Base_Dirty:
+(0) 1283/FFFF8DDC :        Pal_Compose_Lines:
+(0) 1284/FFFF8DDD :        Pal_Fade_Request:
+(0) 1285/FFFF8DDE :        BgAnim_LastStep:
+(0) 1286/FFFF8DDE :        Palette_State_End:
+(0) 1287/FFFF8DE6 :        Static_Pal_Line0:
+(0) 1288/FFFF8DF4 :        Static_Pal_Line1:
+(0) 1289/FFFF8E02 :        Static_Pal_Line2:
+(0) 1290/FFFF8E10 :        Static_Pal_Ship:
+(0) 1291/FFFF8E1E :        Static_Pal_Line3:
+(0) 1292/FFFF8E2C :        Static_Sprite_DMA:
+(0) 1293/FFFF8E3A :        Static_Hscroll_Line:
+(0) 1294/FFFF8E48 :        Object_RAM:
+(0) 1295/FFFF8E48 :        Player_1:
+(0) 1296/FFFF8E98 :        Player_2:
+(0) 1297/FFFF8EE8 :        Dynamic_Slots:
+(0) 1298/FFFF9B68 :        System_Slots:
+(0) 1299/FFFF9DE8 :        Effect_Slots:
+(0) 1300/FFFFA2E8 :        Dynamic_Free_Stack:
+(0) 1301/FFFFA2E8 :        Object_RAM_End:
+(0) 1302/FFFFA338 :        Dynamic_Free_SP:
+(0) 1303/FFFFA33A :        Effect_Free_Stack:
+(0) 1304/FFFFA35A :        Effect_Free_SP:
+(0) 1305/FFFFA35C :        Sprite_Bands:
+(0) 1306/FFFFA55C :        Sprite_Band_Counts:
+(0) 1307/FFFFA564 :        Sprites_Rendered:
+(0) 1308/FFFFA566 :        Sprite_Cycle_Counter:
+(0) 1309/FFFFA568 :        SpriteMask_Y:
+(0) 1310/FFFFA56A :        SpriteMask_Height:
+(0) 1311/FFFFA56C :        SpriteMask_After_Band:
+(0) 1312/FFFFA56E :        Scanline_Band_Sprites:
+(0) 1313/FFFFA576 :        Camera_X:
+(0) 1314/FFFFA57A :        Camera_Y:
+(0) 1315/FFFFA57E :        Camera_X_Biased:
+(0) 1316/FFFFA580 :        Camera_Y_Biased:
+(0) 1317/FFFFA582 :        Game_Paused:
+(0) 1318/FFFFA584 :        Plane_Buffer:
+(0) 1319/FFFFAB84 :        Plane_Buffer_Ptr:
+(0) 1320/FFFFAB86 :        Pos_table:
+(0) 1321/FFFFAC86 :        H_scroll_frame_offset:
+(0) 1322/FFFFAC88 :        Camera_Deadzone_Base:
+(0) 1323/FFFFAC8A :        Camera_Lookahead:
+(0) 1324/FFFFAC8C :        Camera_Pan_Offset:
+(0) 1325/FFFFAC8E :        Camera_X_Max:
+(0) 1326/FFFFAC90 :        Camera_Y_Max:
+(0) 1327/FFFFAC92 :        Camera_Target:
+(0) 1328/FFFFAC94 :        Camera_Curl_Offset:
+(0) 1329/FFFFAC96 :        Camera_Hold_Frames:
+(0) 1330/FFFFAC97 :        Camera_Art_Hold:
+(0) 1331/FFFFAC98 :        Cache_Left_Col:
+(0) 1332/FFFFAC9A :        Cache_Head_Col:
+(0) 1333/FFFFAC9C :        Cache_Top_Row:
+(0) 1334/FFFFAC9E :        Cache_Bottom_Row:
+(0) 1335/FFFFACA0 :        Cache_Origin_Col:
+(0) 1336/FFFFACA2 :        Cache_Origin_Row:
+(0) 1337/FFFFACA4 :        Cache_Fill_Last_Frame:
+(0) 1338/FFFFACA6 :        Cache_Fill_Resume_Col:
+(0) 1339/FFFFACA8 :        Cache_Fill_Resume_Row:
+(0) 1340/FFFFACAA :        Cache_Art_Stall:
+(0) 1341/FFFFACAC :        Page_Free_Head:
+(0) 1342/FFFFACAE :        Cache_Fill_Budget:
+(0) 1343/FFFFACB0 :        Cache_Fill_RowResume_Row:
+(0) 1344/FFFFACB2 :        Cache_Fill_RowResume_Col:
+(0) 1345/FFFFACB4 :        Cache_Fill_Rows_Left:
+(0) 1346/FFFFACB6 :        Cache_Prev_Cam_Row:
+(0) 1347/FFFFACB8 :        Cache_Prev_Cam_X:
+(0) 1348/FFFFACBA :        Cache_H_Pfx_Dir:
+(0) 1349/FFFFACBC :        Cache_H_Pfx_Accum:
+(0) 1350/FFFFACBE :        Cache_Pfx_Row_Target:
+(0) 1351/FFFFACC0 :        Cache_Pfx_Col_Target:
+(0) 1352/FFFFACC2 :        Cache_Pfx_Skip_Armed:
+(0) 1353/FFFFACC4 :        Cache_Pfx_Lag_Flag:
+(0) 1354/FFFFACC6 :        Block_Stage_Keys:
+(0) 1355/FFFFAD06 :        Block_Stage_Next:
+(0) 1356/FFFFAD08 :        Section_Top_Row_Written:
+(0) 1357/FFFFAD0A :        Section_Bottom_Row_Written:
+(0) 1358/FFFFAD0C :        Section_Plane_Dirty:
+(0) 1359/FFFFAD0E :        Section_Right_Col_Written:
+(0) 1360/FFFFAD10 :        Section_Left_Col_Written:
+(0) 1361/FFFFAD12 :        Section_Fwd_Neighbor_Data:
+(0) 1362/FFFFAD16 :        Section_Bwd_Neighbor_Data:
+(0) 1363/FFFFAD1A :        Tile_Override_Table:
+(0) 1364/FFFFAD7A :        Ring_Buffer:
+(0) 1365/FFFFADDA :        Ring_Count:
+(0) 1366/FFFFADDB :        Ring_HighWater:
+(0) 1367/FFFFADDC :        Ring_Add_Dropped:
+(0) 1368/FFFFADDE :        Entity_Scan_State:
+(0) 1369/FFFFAE46 :        Ring_Counter:
+(0) 1370/FFFFAE48 :        Ring_Anim_Frame:
+(0) 1371/FFFFAE49 :        Ring_Anim_Timer:
+(0) 1372/FFFFAE4A :        Entity_Window_Active:
+(0) 1373/FFFFAE4B :        Entity_Window_Center_ID:
+(0) 1374/FFFFAE4C :        Entity_Window_Anchor:
+(0) 1375/FFFFAE4E :        Entity_Window_OriginX:
+(0) 1376/FFFFAE50 :        Entity_Window_OriginY:
+(0) 1377/FFFFAE52 :        Entity_Loaded_Masks:
+(0) 1378/FFFFAED2 :        Entity_Mask_Scratch:
+(0) 1379/FFFFAF56 :        Camera_Y_Coarse_Prev:
+(0) 1380/FFFFAF58 :        Ring_Collected_Window:
+(0) 1381/FFFFAFE2 :        Ring_Collected_Park:
+(0) 1382/FFFFB066 :        Collected_Park_Next:
+(0) 1383/FFFFB068 :        Current_Act_Ptr:
+(0) 1384/FFFFB06C :        Ring_Sfx_Speaker:
+(0) 1385/FFFFB06E :        Sfx_Ring_Buf:
+(0) 1386/FFFFB076 :        Sfx_Ring_Wr:
+(0) 1387/FFFFB077 :        Sfx_Ring_Rd:
+(0) 1388/FFFFB078 :        Sound_Dbg_Mirror:
+(0) 1389/FFFFB128 :        Dynamic_Live:
+(0) 1390/FFFFB178 :        Dynamic_Live_Count:
+(0) 1391/FFFFB17A :        Dynamic_Live_Dirty:
+(0) 1392/FFFFB17C :        Dynamic_Live_Pending:
+(0) 1393/FFFFB18C :        Dynamic_Live_Pending_Count:
+(0) 1394/FFFFB18E :        Block_Stage_Gen:
+(0) 1395/FFFFB190 :        Pfx_Memo_Row:
+(0) 1396/FFFFB192 :        Pfx_Memo_L16:
+(0) 1397/FFFFB194 :        Pfx_Memo_H16:
+(0) 1398/FFFFB196 :        Pfx_Memo_Gen:
+(0) 1399/FFFFB198 :        Cs_Memo_Col:
+(0) 1400/FFFFB19A :        Cs_Memo_T16:
+(0) 1401/FFFFB19C :        Cs_Memo_B16:
+(0) 1402/FFFFB19E :        Cs_Memo_Gen:
+(0) 1403/FFFFB1A0 :        HBlank_Vector_Slot:
+(0) 1404/FFFFB1A6 :        Block_Stage_Ptrs:
+(0) 1405/FFFFB1E6 :        Block_Stage_Maps:
+(0) 1406/FFFFB226 :        Cache_Cur_LocalMap:
+(0) 1407/FFFFB22A :        Block_Stage_ZeroPage:
+(0) 1408/FFFFB52A :        PageIn_Saved_D0:
+(0) 1409/FFFFB52E :        PageIn_Saved_D1:
+(0) 1410/FFFFB532 :        PageIn_Saved_D2:
+(0) 1411/FFFFB536 :        PageIn_Saved_A0:
+(0) 1412/FFFFB53A :        PageIn_Saved_A1:
+(0) 1413/FFFFB53E :        PageIn_Saved_A2:
+(0) 1414/FFFFB542 :        PageIn_Saved_A3:
+(0) 1415/FFFFB546 :        PageIn_Saved_PC:
+(0) 1416/FFFFB54A :        PageIn_Saved_SR:
+(0) 1417/FFFFB54C :        PageIn_InFlight:
+(0) 1418/FFFFB54D :        PageIn_Suspended:
+(0) 1419/FFFFB54E :        PageIn_Staging_Busy:
+(0) 1420/FFFFB54F :        PageIn_Land_Pending:
+(0) 1421/FFFFB550 :        PageIn_Queue_Count:
+(0) 1422/FFFFB551 :        PageIn_Cur_Flags:
+(0) 1423/FFFFB552 :        PageIn_Queue:
+(0) 1424/FFFFB572 :        PageIn_Cur_Dest:
+(0) 1425/FFFFB574 :        PageIn_Cur_Bytes:
+(0) 1426/FFFFB576 :        PageIn_Cur_Page:
+(0) 1427/FFFFB578 :        PageIn_Cur_Frame:
+(0) 1428/FFFFB579 :        PageIn_Bulk_Drain:
+(0) 1429/FFFFB57A :        PageIn_Pool_Table:
+(0) 1430/FFFFB57E :        PageIn_Pool_Pages:
+(0) 1431/FFFFB580 :        PageIn_Fully_Resident:
+(0) 1432/FFFFB581 :        PageCache_Direct_Map:
+(0) 1433/FFFFB582 :        PageIn_Last_Frame:
+(0) 1434/FFFFB584 :        PageIn_Prev_Lagged:
+(0) 1435/FFFFB586 :        PageIn_Pfx_Skip_Armed:
+(0) 1436/FFFFB588 :        Page_Pfx_Budget:
+(0) 1437/FFFFB58A :        Act_Art_Budget:
+(0) 1438/FFFFB58C :        Art_Budget_Remaining:
+(0) 1439/FFFFB58E :        Ctrl_1_Held_Raw:
+(0) 1440/FFFFB58F :        Ctrl_2_Held_Raw:
+(0) 1441/FFFFB590 :        Ctrl_1_Ext_Held_Raw:
+(0) 1442/FFFFB591 :        Ctrl_2_Ext_Held_Raw:
+(0) 1443/FFFFB592 :        Palette_Ship_Snap:
+(0) 1444/FFFFB612 :        Engine_RAM_End:
+(0) 1445/FFFFB612 :        Game_RAM_End:
+  Symbol Table (* = unused):
+  --------------------------
+
+ Vectors : 0 C |
+ Z80_IdleProgram : 0 C |
+ $engine.z80_init$Z80_IdleProgram$code_end : 28 C |
+ GameHeader : 100 C |
+ Checksum : 18E C |
+ _header_tail : 190 C |
+ EntryPoint : 200 C |
+ $engine.boot$EntryPoint$wait_dma : 214 C |
+ $engine.boot$EntryPoint$warm_boot : 214 C |
+ $engine.boot$EntryPoint$cold_boot : 220 C |
+ $engine.boot$EntryPoint$no_tmss : 236 C |
+ $engine.boot$EntryPoint$vdp_loop : 24A C |
+ $engine.boot$EntryPoint$wait_z80 : 264 C |
+ $engine.boot$EntryPoint$load_z80 : 26A C |
+ $engine.boot$EntryPoint$ym_delay : 274 C |
+ $engine.boot$EntryPoint$clear_ram : 280 C |
+ $engine.boot$EntryPoint$wait_fill : 286 C |
+ $engine.boot$EntryPoint$silence_psg : 294 C |
+ $engine.boot$EntryPoint$clear_cram : 2A2 C |
+ $engine.boot$EntryPoint$clear_vsram : 2AC C |
+ $engine.boot$asm1$wait_z80 : 2BA C |
+ $engine.boot$EntryPoint$keyoff_part1 : 2D0 C |
+ $engine.boot$EntryPoint$keyoff_part2 : 2DC C |
+ $engine.boot$EntryPoint$pal : 330 C |
+ $engine.boot$EntryPoint$region_done : 336 C |
+ BootData : 392 C |
+ BootData_VDPRegs : 3AC C |
+ Z80_Sound_End : 3C8 C |
+ Z80_Sound_Start : 3C8 C |
+ __align$engine.boot_data$0 : 3C8 C |
+ BootData_PostBlob : 3F8 C |
+ BootData_End : 406 C |
+ VDP_Shadow_Init : 408 C |
+ $engine.vdp_init$VDP_Shadow_Init$copy : 412 C |
+ Flush_VDP_Shadow : 41A C |
+ $engine.vdp_init$Flush_VDP_Shadow$loop : 42A C |
+ Set_VDP_Reg : 438 C |
+ Init_DMA_Queue : 442 C |
+ QueueDMA_Critical : 560 C |
+ QueueDMA_Important : 56A C |
+ QueueDMA_Deferrable : 574 C |
+ QueueDMA_Deferrable.transfer : 57C C |
+ $engine.dma_queue$QueueDMA_Deferrable$finish_entry : 5B2 C |
+ $engine.dma_queue$QueueDMA_Deferrable$full : 5D2 C |
+ $engine.dma_queue$QueueDMA_Deferrable$byte_capped : 5DA C |
+ $engine.dma_queue$QueueDMA_Deferrable$split : 5E2 C |
+ $engine.dma_queue$QueueDMA_Deferrable$split_reject : 62C C |
+ Process_DMA_Critical : 63A C |
+ $engine.dma_queue$Process_DMA_Critical$jump_table : 646 C |
+ $engine.dma_queue$Process_DMA_Critical$slot_0 : 646 C |
+ $engine.dma_queue$Process_DMA_Critical$slot_1 : 654 C |
+ $engine.dma_queue$Process_DMA_Critical$slot_2 : 662 C |
+ $engine.dma_queue$Process_DMA_Critical$slot_3 : 670 C |
+ $engine.dma_queue$Process_DMA_Critical$slot_4 : 67E C |
+ $engine.dma_queue$Process_DMA_Critical$slot_5 : 68C C |
+ $engine.dma_queue$Process_DMA_Critical$slot_6 : 69A C |
+ $engine.dma_queue$Process_DMA_Critical$slot_7 : 6A8 C |
+ $engine.dma_queue$Process_DMA_Critical$slot_8 : 6B6 C |
+ $engine.dma_queue$Process_DMA_Critical$drain_8 : 6C0 C |
+ $engine.dma_queue$Process_DMA_Critical$drain_7 : 6C8 C |
+ $engine.dma_queue$Process_DMA_Critical$drain_6 : 6D0 C |
+ $engine.dma_queue$Process_DMA_Critical$drain_5 : 6D8 C |
+ $engine.dma_queue$Process_DMA_Critical$drain_4 : 6E0 C |
+ $engine.dma_queue$Process_DMA_Critical$drain_3 : 6E8 C |
+ $engine.dma_queue$Process_DMA_Critical$drain_2 : 6F0 C |
+ $engine.dma_queue$Process_DMA_Critical$drain_1 : 6F8 C |
+ $engine.dma_queue$Process_DMA_Critical$done : 706 C |
+ Process_DMA_Important : 708 C |
+ $engine.dma_queue$Process_DMA_Important$done : 71A C |
+ Process_DMA_Deferrable : 71C C |
+ $engine.dma_queue$Process_DMA_Deferrable$done : 72E C |
+ Drain_Budgeted_Queue : 730 C |
+ $engine.dma_queue$Drain_Budgeted_Queue$loop : 738 C |
+ $engine.dma_queue$Drain_Budgeted_Queue$out_of_budget : 75A C |
+ $engine.dma_queue$Drain_Budgeted_Queue$compact : 75E C |
+ $engine.dma_queue$Drain_Budgeted_Queue$no_drain : 76C C |
+ Init_SpriteTable : 770 C |
+ $engine.buffers$Init_SpriteTable$loop : 77A C |
+ BuildStaticDMA : 792 C |
+ Build_DMA_Entry : 820 C |
+ PlaneMapToVRAM : 834 C |
+ $engine.buffers$PlaneMapToVRAM$row : 844 C |
+ $engine.buffers$PlaneMapToVRAM$cell : 848 C |
+ Enqueue_Dirty_Buffers : 856 C |
+ $engine.buffers$asm5$drop : 884 C |
+ $engine.buffers$asm5$done : 888 C |
+ $engine.buffers$Enqueue_Dirty_Buffers$skip_pal0 : 8A8 C |
+ $engine.buffers$asm6$drop : 8CE C |
+ $engine.buffers$asm6$done : 8D2 C |
+ $engine.buffers$Enqueue_Dirty_Buffers$skip_pal1 : 8F2 C |
+ $engine.buffers$asm7$drop : 918 C |
+ $engine.buffers$asm7$done : 91C C |
+ $engine.buffers$Enqueue_Dirty_Buffers$skip_pal2 : 93C C |
+ $engine.buffers$asm8$drop : 962 C |
+ $engine.buffers$asm8$done : 966 C |
+ $engine.buffers$Enqueue_Dirty_Buffers$no_pal : 986 C |
+ $engine.buffers$Enqueue_Dirty_Buffers$skip_pal3 : 986 C |
+ $engine.buffers$Enqueue_Dirty_Buffers$ship_reg : 9B8 C |
+ $engine.buffers$Enqueue_Dirty_Buffers$ship_dma : 9C2 C |
+ $engine.buffers$asm9$drop : 9E2 C |
+ $engine.buffers$Enqueue_Dirty_Buffers$no_ship : 9E6 C |
+ $engine.buffers$asm9$done : 9E6 C |
+ $engine.buffers$asm10$drop : A12 C |
+ $engine.buffers$asm10$done : A16 C |
+ $engine.buffers$Enqueue_Dirty_Buffers$no_spr : A1C C |
+ $engine.buffers$asm11$drop : A42 C |
+ $engine.buffers$Enqueue_Dirty_Buffers$hs_done : A46 C |
+ $engine.buffers$asm11$done : A46 C |
+ VBlank_Handler : A50 C |
+ $engine.vblank$VBlank_Handler$no_bookmark : A7A C |
+ $engine.vblank$VBlank_Handler$lag : A88 C |
+ $engine.vblank$VBlank_Handler$done : A8C C |
+ VInt_Level : A98 C |
+ $engine.vblank$asm2$wait_z80 : AA0 C |
+ $engine.vblank$VInt_Level$charge_critical : AD6 C |
+ $engine.vblank$VInt_Level$charged_critical : AE8 C |
+ $engine.vblank$VInt_Level$budget_floored : AF8 C |
+ $engine.vblank$VInt_Level$staging_idle : B18 C |
+ VInt_Lag : B74 C |
+ $engine.vblank$asm5$wait_z80 : B7C C |
+ VSync_Wait : BB2 C |
+ $engine.vblank$VSync_Wait$wait : BCC C |
+ HBlank_Install : BE0 C |
+ HBlank_Uninstall : BFC C |
+ Read_Controllers : C10 C |
+ $engine.controllers$asm1$wait_z80 : C18 C |
+ $engine.controllers$Read_Controllers$read_pad_6 : C84 C |
+ $engine.controllers$Read_Controllers$socd_lr_ok : CEC C |
+ $engine.controllers$Read_Controllers$socd_ud_ok : CFC C |
+ $engine.controllers$Read_Controllers$three_button : D1A C |
+ GameLoop : D20 C |
+ GameState_Idle : D36 C |
+ Input_Tick : D3E C |
+ $engine.replay$Input_Tick$live : D4A C |
+ $engine.replay$Input_Tick$playback : D4C C |
+ $engine.replay$Input_Tick$no_exit : D58 C |
+ $engine.replay$Input_Tick$fetch : D5E C |
+ $engine.replay$Input_Tick$fetch_a0 : D62 C |
+ $engine.replay$Input_Tick$pair : D78 C |
+ $engine.replay$Input_Tick$hold : D82 C |
+ $engine.replay$Input_Tick$apply : D8A C |
+ $engine.replay$Input_Tick$end : DA0 C |
+ $engine.replay$Input_Tick$bad_stream : DAA C |
+ Replay_Hash : DAC C |
+ $engine.replay$Replay_Hash$hash_next : DB2 C |
+ $engine.replay$Replay_Hash$hash_fold : DBA C |
+ $engine.replay$Replay_Hash$hash_wtail : DC4 C |
+ $engine.replay$Replay_Hash$int_fold : DEE C |
+ $engine.replay$Replay_Hash$hash_table : E24 C |
+ S4LZ_DecompressDict : E90 C |
+ S4LZ_Decompress : E94 C |
+ $engine.s4lz$S4LZ_Decompress$token_loop : E9C C |
+ $engine.s4lz$S4LZ_Decompress$lit_end : ED6 C |
+ $engine.s4lz$S4LZ_Decompress$no_literals : ED6 C |
+ $engine.s4lz$S4LZ_Decompress$offmark_zero : EE6 C |
+ $engine.s4lz$S4LZ_Decompress$have_offset : EF0 C |
+ $engine.s4lz$S4LZ_Decompress$src_in_dest : EFA C |
+ $engine.s4lz$S4LZ_Decompress$match_end : F24 C |
+ $engine.s4lz$S4LZ_Decompress$lit_extended : F28 C |
+ $engine.s4lz$S4LZ_Decompress$lit_dbf_loop : F2C C |
+ $engine.s4lz$S4LZ_Decompress$match_extended : F34 C |
+ $engine.s4lz$S4LZ_Decompress$match_dbf_loop : F38 C |
+ $engine.s4lz$S4LZ_Decompress$stream_done : F42 C |
+ $engine.s4lz$S4LZ_Decompress$return : F52 C |
+ TileDelta_Undo : F54 C |
+ $engine.s4lz$TileDelta_Undo$tile_loop : F62 C |
+ $engine.s4lz$TileDelta_Undo$done : F86 C |
+ ZX0R_Decompress : F88 C |
+ $engine.zx0_resume$ZX0R_Decompress$literals : F8C C |
+ $engine.zx0_resume$ZX0R_Decompress$lit_elias : F8E C |
+ $engine.zx0_resume$ZX0R_Decompress$lit_got : F96 C |
+ $engine.zx0_resume$ZX0R_Decompress$lit_done : F9E C |
+ $engine.zx0_resume$ZX0R_Decompress$copy_lits : FA0 C |
+ $engine.zx0_resume$ZX0R_Decompress$rep_match : FAA C |
+ $engine.zx0_resume$ZX0R_Decompress$rep_elias : FAC C |
+ $engine.zx0_resume$ZX0R_Decompress$rep_got : FB4 C |
+ $engine.zx0_resume$ZX0R_Decompress$do_copy : FBC C |
+ $engine.zx0_resume$ZX0R_Decompress$do_copy_offs : FBE C |
+ $engine.zx0_resume$ZX0R_Decompress$copy_match : FC2 C |
+ $engine.zx0_resume$ZX0R_Decompress$get_offset : FCC C |
+ $engine.zx0_resume$ZX0R_Decompress$off_elias : FCE C |
+ $engine.zx0_resume$ZX0R_Decompress$off_got : FD6 C |
+ $engine.zx0_resume$ZX0R_Decompress$off_done : FDE C |
+ $engine.zx0_resume$ZX0R_Decompress$len_elias : FEE C |
+ $engine.zx0_resume$ZX0R_Decompress$len_loop : FF2 C |
+ $engine.zx0_resume$ZX0R_Decompress$len_got : FFA C |
+ $engine.zx0_resume$ZX0R_Decompress$done : FFE C |
+ GetSineCosine : 1000 C |
+ ZX0R_Decompress.__end : 1000 C |
+ Sine_Table : 1018 C |
+ GetArcTan : 1298 C |
+ $engine.math$GetArcTan$abs_x_ok : 12B0 C |
+ $engine.math$GetArcTan$abs_y_ok : 12B6 C |
+ $engine.math$GetArcTan$fold : 12C6 C |
+ $engine.math$GetArcTan$quadrant : 12D0 C |
+ $engine.math$GetArcTan$x_pos : 12DA C |
+ $engine.math$GetArcTan$y_pos : 12E4 C |
+ $engine.math$GetArcTan$zero : 12EA C |
+ ArcTan_Table : 12F4 C |
+ Perform_DPLC : 1400 C |
+ $engine.objects.dplc$asm1$entry_loop : 141C C |
+ $engine.objects.dplc$asm1$done : 1450 C |
+ Perform_DPLC_Deferrable : 1452 C |
+ $engine.objects.dplc$asm3$entry_loop : 146E C |
+ $engine.objects.dplc$asm3$done : 14A2 C |
+ InitObjectRAM : 14A4 C |
+ $engine.objects.core$InitObjectRAM$clear : 14AE C |
+ $engine.objects.core$InitObjectRAM$push_dyn : 14C0 C |
+ $engine.objects.core$InitObjectRAM$push_eff : 14DC C |
+ AllocDynamic : 14F6 C |
+ $engine.objects.core$AllocDynamic$append : 1538 C |
+ $engine.objects.core$AllocDynamic$latch_full : 1552 C |
+ $engine.objects.core$AllocDynamic$full : 1556 C |
+ AllocEffect : 155A C |
+ $engine.objects.core$AllocEffect$full : 1570 C |
+ DeleteObject : 1574 C |
+ $engine.objects.core$DeleteObject$no_cascade : 158A C |
+ $engine.objects.core$DeleteObject$check_effect : 159E C |
+ $engine.objects.core$DeleteObject$effect_pool : 15A4 C |
+ $engine.objects.core$DeleteObject$dynamic_pool : 15B0 C |
+ $engine.objects.core$DeleteObject$dyn_zero_scan : 15CE C |
+ $engine.objects.core$DeleteObject$dyn_zero_hit : 15D8 C |
+ $engine.objects.core$DeleteObject$dyn_zero_pending : 15DA C |
+ $engine.objects.core$DeleteObject$dyn_pend_scan : 15E6 C |
+ $engine.objects.core$DeleteObject$dyn_pend_hit : 15F0 C |
+ $engine.objects.core$DeleteObject$dyn_zero_done : 15F2 C |
+ $engine.objects.core$DeleteObject$clear_slot : 15F4 C |
+ CompactDynamicLive : 1622 C |
+ $engine.objects.core$CompactDynamicLive$loop : 1632 C |
+ $engine.objects.core$CompactDynamicLive$next : 163E C |
+ $engine.objects.core$CompactDynamicLive$recount : 1642 C |
+ DrainDynamicPending : 1656 C |
+ $engine.objects.core$DrainDynamicPending$loop : 166C C |
+ $engine.objects.core$DrainDynamicPending$next : 167A C |
+ $engine.objects.core$DrainDynamicPending$clear : 167E C |
+ RunObjects : 1684 C |
+ $engine.objects.core$RunObjects$reconcile : 16B8 C |
+ $engine.objects.core$RunObjects$no_reconcile : 16BE C |
+ $engine.objects.core$RunObjects$always_loop : 16C0 C |
+ $engine.objects.core$RunObjects$run_always : 16C0 C |
+ $engine.objects.core$RunObjects$always_next : 16CC C |
+ $engine.objects.core$RunObjects$run_culled : 16D6 C |
+ $engine.objects.core$RunObjects$culled_loop : 16E2 C |
+ $engine.objects.core$asm28$abs : 16F8 C |
+ $engine.objects.core$asm29$abs : 170A C |
+ $engine.objects.core$RunObjects$culled_next : 171E C |
+ $engine.objects.core$RunObjects$culled_done : 1722 C |
+ Debug_AssertObjLoop : 1724 C |
+ RunObjects_Frozen : 1724 C |
+ $engine.objects.core$RunObjects_Frozen$frozen_dyn_loop : 173A C |
+ $engine.objects.core$RunObjects_Frozen$frozen_dyn_next : 1746 C |
+ $engine.objects.core$RunObjects_Frozen$frozen_dyn_done : 174A C |
+ $engine.objects.core$RunObjects_Frozen$frozen_fixed : 1756 C |
+ $engine.objects.core$RunObjects_Frozen$frozen_fixed_loop : 1756 C |
+ $engine.objects.core$RunObjects_Frozen$frozen_fixed_next : 175C C |
+ ObjectMove : 1766 C |
+ ObjectMoveX : 1780 C |
+ ObjectMoveY : 178E C |
+ InitSpriteSystem : 17A0 C |
+ Draw_Sprite : 17B4 C |
+ $engine.objects.sprites$Draw_Sprite$no_parent : 17C6 C |
+ $engine.objects.sprites$Draw_Sprite$screen_coords : 1822 C |
+ $engine.objects.sprites$Draw_Sprite$cascade : 1840 C |
+ $engine.objects.sprites$Draw_Sprite$band_has_room : 184E C |
+ $engine.objects.sprites$Draw_Sprite$all_bands_full : 1868 C |
+ $engine.objects.sprites$Draw_Sprite$offscreen : 186A C |
+ Render_Sprites : 1872 C |
+ $engine.objects.sprites$Render_Sprites$band_loop : 189C C |
+ $engine.objects.sprites$Render_Sprites$reverse_band : 18C6 C |
+ $engine.objects.sprites$Render_Sprites$object_loop : 18D0 C |
+ $engine.objects.sprites$Render_Sprites$screen_pos : 1926 C |
+ $engine.objects.sprites$Render_Sprites$have_pos : 1936 C |
+ $engine.objects.sprites$Render_Sprites$budget_ok : 1966 C |
+ $engine.objects.sprites$Render_Sprites$multi_sprite : 197E C |
+ $engine.objects.sprites$Render_Sprites$sibling_loop : 198A C |
+ $engine.objects.sprites$Render_Sprites$child_screen_pos : 19D6 C |
+ $engine.objects.sprites$Render_Sprites$child_have_pos : 19E6 C |
+ $engine.objects.sprites$Render_Sprites$sibling_advance : 19FA C |
+ $engine.objects.sprites$Render_Sprites$multi_done : 1A00 C |
+ $engine.objects.sprites$Render_Sprites$next_object : 1A02 C |
+ $engine.objects.sprites$Render_Sprites$next_band : 1A08 C |
+ $engine.objects.sprites$Render_Sprites$no_mask_insert : 1A1A C |
+ $engine.objects.sprites$Render_Sprites$done : 1A26 C |
+ $engine.objects.sprites$Render_Sprites$empty_table : 1A4C C |
+ $engine.objects.sprites$Render_Sprites$still_empty : 1A6E C |
+ $engine.objects.sprites$Render_Sprites$band_limit_pop : 1A74 C |
+ CellOffsets_XFlip : 1A78 C |
+ Emit_ObjectPieces : 1A88 C |
+ $engine.objects.sprites$Emit_ObjectPieces$pieces_unflipped : 1AA0 C |
+ $engine.objects.sprites$asm4$piece_loop : 1AA2 C |
+ $engine.objects.sprites$asm9$x_ok : 1ABE C |
+ $engine.objects.sprites$Emit_ObjectPieces$pieces_xflip : 1ACA C |
+ $engine.objects.sprites$asm10$piece_loop : 1ACC C |
+ $engine.objects.sprites$asm15$x_ok : 1AFA C |
+ $engine.objects.sprites$Emit_ObjectPieces$pieces_yflip : 1B06 C |
+ $engine.objects.sprites$asm16$piece_loop : 1B08 C |
+ $engine.objects.sprites$asm21$x_ok : 1B36 C |
+ $engine.objects.sprites$Emit_ObjectPieces$pieces_xyflip : 1B42 C |
+ $engine.objects.sprites$asm22$piece_loop : 1B44 C |
+ $engine.objects.sprites$asm27$x_ok : 1B80 C |
+ InsertSpriteMasks : 1B8C C |
+ $engine.objects.sprites$InsertSpriteMasks$mask_loop : 1B96 C |
+ $engine.objects.sprites$InsertSpriteMasks$masks_done : 1BB8 C |
+ AnimateSprite : 1BBA C |
+ $engine.objects.animate$asm1$rt_static : 1BF2 C |
+ $engine.objects.animate$AnimateSprite$set_frame : 1C0A C |
+ $engine.objects.animate$AnimateSprite$done : 1C12 C |
+ $engine.objects.animate$AnimateSprite$anim_changed : 1C14 C |
+ $engine.objects.animate$asm2$rt_static : 1C30 C |
+ $engine.objects.animate$AnimateSprite$control_code : 1C42 C |
+ $engine.objects.animate$AnimateSprite$cc_table : 1C56 C |
+ $engine.objects.animate$AnimateSprite$cc_end : 1C7A C |
+ $engine.objects.animate$AnimateSprite$cc_back : 1C8E C |
+ $engine.objects.animate$AnimateSprite$cc_change : 1CAC C |
+ $engine.objects.animate$AnimateSprite$cc_routine : 1CB8 C |
+ $engine.objects.animate$AnimateSprite$cc_delete : 1CBE C |
+ $engine.objects.animate$AnimateSprite$evt_callback : 1CC2 C |
+ $engine.objects.animate$AnimateSprite$evt_cb_done : 1CE0 C |
+ $engine.objects.animate$AnimateSprite$evt_sound : 1CE6 C |
+ $engine.objects.animate$AnimateSprite$evt_collision : 1CF0 C |
+ $engine.objects.animate$AnimateSprite$evt_set_field : 1CFC C |
+ $engine.objects.animate$AnimateSprite$after_event : 1D0C C |
+ RefreshSpritePieceCount : 1D22 C |
+ $engine.objects.animate$asm4$no_mappings : 1D44 C |
+ $engine.objects.animate$asm4$rpc_done : 1D48 C |
+ TouchResponse : 1D50 C |
+ $engine.objects.collision$TouchResponse$player_loop : 1D5A C |
+ $engine.objects.collision$TouchResponse$dyn_loop : 1D80 C |
+ $engine.objects.collision$asm2$aov : 1DAA C |
+ $engine.objects.collision$asm4$aov : 1DCE C |
+ $engine.objects.collision$asm1$overlap_done : 1DF8 C |
+ $engine.objects.collision$TouchResponse$dyn_next : 1E00 C |
+ $engine.objects.collision$TouchResponse$dyn_done : 1E04 C |
+ $engine.objects.collision$TouchResponse$fixed_loop : 1E0C C |
+ $engine.objects.collision$asm7$aov : 1E30 C |
+ $engine.objects.collision$asm9$aov : 1E54 C |
+ $engine.objects.collision$asm6$overlap_done : 1E7E C |
+ $engine.objects.collision$TouchResponse$fixed_next : 1E86 C |
+ $engine.objects.collision$TouchResponse$next_player : 1E8E C |
+ Touch_HandlerTable : 1E9A C |
+ Touch_Boss : 1ECE C |
+ Touch_Bubble : 1ECE C |
+ Touch_Enemy : 1ECE C |
+ Touch_Monitor : 1ECE C |
+ Touch_None : 1ECE C |
+ Touch_Projectile : 1ECE C |
+ Touch_Ring : 1ECE C |
+ Touch_SolidBreak : 1ECE C |
+ Touch_SolidHurt : 1ECE C |
+ Touch_Spring : 1ECE C |
+ Touch_Touch : 1ECE C |
+ Touch_Hurt : 1ED0 C |
+ Touch_Solid : 1ED2 C |
+ $engine.objects.collision$asm25$abs : 1EDC C |
+ $engine.objects.collision$asm26$abs : 1EE6 C |
+ $engine.objects.collision$Touch_Solid$solid_top : 1F0C C |
+ $engine.objects.collision$Touch_Solid$solid_side : 1F36 C |
+ $engine.objects.collision$Touch_Solid$solid_push_left : 1F46 C |
+ $engine.objects.collision$Touch_Solid$solid_done : 1F4E C |
+ RingBuffer_Add : 1F50 C |
+ $engine.objects.rings$RingBuffer_Add$not_record : 1F84 C |
+ $engine.objects.rings$RingBuffer_Add$full : 1F8A C |
+ RingBuffer_Remove : 1F94 C |
+ $engine.objects.rings$RingBuffer_Remove$done : 1FC6 C |
+ RingBuffer_Clear : 1FC8 C |
+ DrawRings : 1FD6 C |
+ $engine.objects.rings$DrawRings$frame_ok : 1FF0 C |
+ $engine.objects.rings$DrawRings$no_anim_tick : 1FF4 C |
+ $engine.objects.rings$DrawRings$ring_loop : 2022 C |
+ $engine.objects.rings$DrawRings$x_ok : 205C C |
+ $engine.objects.rings$DrawRings$skip_ring : 205E C |
+ $engine.objects.rings$DrawRings$done : 2064 C |
+ RingCollision : 2066 C |
+ $engine.objects.rings$RingCollision$player_loop : 206E C |
+ $engine.objects.rings$RingCollision$ring_loop : 2094 C |
+ $engine.objects.rings$asm5$aov : 20A8 C |
+ $engine.objects.rings$asm7$aov : 20C4 C |
+ $engine.objects.rings$RingCollision$no_loaded_bit : 20EA C |
+ $engine.objects.rings$RingCollision$no_hit : 20F4 C |
+ $engine.objects.rings$RingCollision$next_player : 20FA C |
+ Collected_Init : 2110 C |
+ $engine.objects.entity_window$Collected_Init$loop : 2116 C |
+ $engine.objects.entity_window$Collected_Init$park_loop : 214C C |
+ Collected_FindSlot : 215E C |
+ $engine.objects.entity_window$Collected_FindSlot$scan : 2164 C |
+ $engine.objects.entity_window$Collected_FindSlot$found : 2174 C |
+ Collected_CheckRing : 2178 C |
+ $engine.objects.entity_window$Collected_CheckRing$uncollected : 218E C |
+ Collected_MarkRing : 2192 C |
+ $engine.objects.entity_window$Collected_MarkRing$done : 21A4 C |
+ Killed_CheckObject : 21A6 C |
+ $engine.objects.entity_window$Killed_CheckObject$alive : 21BC C |
+ Killed_MarkObject : 21C0 C |
+ $engine.objects.entity_window$Killed_MarkObject$markdone : 21E8 C |
+ Collected_ClaimSlot : 21EA C |
+ $engine.objects.entity_window$Collected_ClaimSlot$find : 21F6 C |
+ $engine.objects.entity_window$Collected_ClaimSlot$claim : 2208 C |
+ $engine.objects.entity_window$Collected_ClaimSlot$already_owned : 2232 C |
+ Collected_ParkSlot : 2236 C |
+ $engine.objects.entity_window$Collected_ParkSlot$park : 225A C |
+ $engine.objects.entity_window$Collected_ParkSlot$reuse_scan : 2262 C |
+ $engine.objects.entity_window$Collected_ParkSlot$index_step : 227C C |
+ $engine.objects.entity_window$Collected_ParkSlot$index_done : 2284 C |
+ $engine.objects.entity_window$Collected_ParkSlot$write : 2294 C |
+ $engine.objects.entity_window$Collected_ParkSlot$copy_ring : 229E C |
+ $engine.objects.entity_window$Collected_ParkSlot$copy_killed : 22AC C |
+ Collected_UnparkSlot : 22B6 C |
+ $engine.objects.entity_window$Collected_UnparkSlot$scan : 22BC C |
+ $engine.objects.entity_window$Collected_UnparkSlot$hit : 22CA C |
+ $engine.objects.entity_window$Collected_UnparkSlot$copy_ring : 22D6 C |
+ $engine.objects.entity_window$Collected_UnparkSlot$copy_killed : 22E4 C |
+ Collected_UpdateCenter : 22EE C |
+ $engine.objects.entity_window$Collected_UpdateCenter$div_center : 22FC C |
+ $engine.objects.entity_window$Collected_UpdateCenter$div_center_done : 2306 C |
+ $engine.objects.entity_window$Collected_UpdateCenter$slot_loop : 230C C |
+ $engine.objects.entity_window$Collected_UpdateCenter$div_slot : 231A C |
+ $engine.objects.entity_window$Collected_UpdateCenter$div_slot_done : 2324 C |
+ $engine.objects.entity_window$asm12$abs : 232A C |
+ $engine.objects.entity_window$asm13$abs : 2336 C |
+ $engine.objects.entity_window$Collected_UpdateCenter$evict : 233C C |
+ $engine.objects.entity_window$Collected_UpdateCenter$slot_next : 2368 C |
+ EntityLoaded_Test : 2372 C |
+ EntityLoaded_Set : 2386 C |
+ EntityLoaded_Clear : 239A C |
+ EntityWindow_EntryForSection : 23AE C |
+ $engine.objects.entity_window$EntityWindow_EntryForSection$efs_loop : 23B4 C |
+ $engine.objects.entity_window$EntityWindow_EntryForSection$efs_found : 23C8 C |
+ EntityWindow_InitSection : 23CC C |
+ $engine.objects.entity_window$EntityWindow_InitSection$clear_mask : 23E0 C |
+ $engine.objects.entity_window$EntityWindow_InitSection$same_section : 23E6 C |
+ EntityWindow_DeriveWindow : 2418 C |
+ $engine.objects.entity_window$EntityWindow_DeriveWindow$x0_ok : 2428 C |
+ $engine.objects.entity_window$EntityWindow_DeriveWindow$y0_ok : 2436 C |
+ EntityWindow_BuildEntries : 243C C |
+ $engine.objects.entity_window$EntityWindow_BuildEntries$entry_loop : 245C C |
+ $engine.objects.entity_window$EntityWindow_BuildEntries$x_done : 2490 C |
+ $engine.objects.entity_window$EntityWindow_BuildEntries$y_done : 249E C |
+ $engine.objects.entity_window$EntityWindow_BuildEntries$void_entry : 24B2 C |
+ $engine.objects.entity_window$EntityWindow_BuildEntries$next_entry : 24BC C |
+ EntityWindow_Init : 24CE C |
+ $engine.objects.entity_window$EntityWindow_Init$clear_loaded : 24E0 C |
+ $engine.objects.entity_window$EntityWindow_Init$clear_scan : 24EE C |
+ EntityWindow_Scan : 2538 C |
+ $engine.objects.entity_window$EntityWindow_Scan$no_rescan : 2564 C |
+ $engine.objects.entity_window$EntityWindow_Scan$slide : 2574 C |
+ $engine.objects.entity_window$EntityWindow_Scan$no_slide : 257C C |
+ $engine.objects.entity_window$EntityWindow_Scan$section_loop : 2586 C |
+ $engine.objects.entity_window$EntityWindow_Scan$skip_rings : 2598 C |
+ $engine.objects.entity_window$EntityWindow_Scan$section_next : 25A4 C |
+ $engine.objects.entity_window$EntityWindow_Scan$skip_objs : 25A4 C |
+ $engine.objects.entity_window$EntityWindow_Scan$scan_done : 25B0 C |
+ EntityWindow_TrySpawnRing : 25B8 C |
+ $engine.objects.entity_window$EntityWindow_TrySpawnRing$gated : 2626 C |
+ $engine.objects.entity_window$EntityWindow_TrySpawnRing$out_of_band : 262A C |
+ EntityWindow_ScanRingsRight : 262C C |
+ $engine.objects.entity_window$EntityWindow_ScanRingsRight$loop : 2640 C |
+ $engine.objects.entity_window$EntityWindow_ScanRingsRight$at_edge : 2656 C |
+ $engine.objects.entity_window$EntityWindow_ScanRingsRight$at_terminator : 265E C |
+ EntityWindow_PopulateSectionRings : 2668 C |
+ $engine.objects.entity_window$EntityWindow_PopulateSectionRings$pfind : 2680 C |
+ $engine.objects.entity_window$EntityWindow_PopulateSectionRings$pfound : 2692 C |
+ $engine.objects.entity_window$EntityWindow_PopulateSectionRings$ploop : 2698 C |
+ $engine.objects.entity_window$EntityWindow_PopulateSectionRings$pdone : 26A6 C |
+ EntityWindow_TrySpawnObject : 26A8 C |
+ $engine.objects.entity_window$EntityWindow_TrySpawnObject$y_ok : 26CE C |
+ $engine.objects.entity_window$EntityWindow_TrySpawnObject$tag_plain : 273A C |
+ $engine.objects.entity_window$EntityWindow_TrySpawnObject$gated : 2756 C |
+ $engine.objects.entity_window$EntityWindow_TrySpawnObject$out_of_band : 275A C |
+ EntityWindow_ScanObjectsRight : 275C C |
+ $engine.objects.entity_window$EntityWindow_ScanObjectsRight$obj_loop : 2776 C |
+ $engine.objects.entity_window$EntityWindow_ScanObjectsRight$obj_at_edge : 278A C |
+ $engine.objects.entity_window$EntityWindow_ScanObjectsRight$obj_at_terminator : 2794 C |
+ EntityWindow_RescanY : 27A0 C |
+ $engine.objects.entity_window$EntityWindow_RescanY$entry_loop : 27AC C |
+ $engine.objects.entity_window$EntityWindow_RescanY$entry_next : 27B8 C |
+ $engine.objects.entity_window$EntityWindow_RescanY$done : 27C4 C |
+ EntityWindow_RescanRings : 27C6 C |
+ $engine.objects.entity_window$EntityWindow_RescanRings$loop : 27D4 C |
+ $engine.objects.entity_window$EntityWindow_RescanRings$done : 27E4 C |
+ EntityWindow_RescanObjects : 27E6 C |
+ $engine.objects.entity_window$EntityWindow_RescanObjects$loop : 27F6 C |
+ $engine.objects.entity_window$EntityWindow_RescanObjects$done : 2806 C |
+ EntityWindow_DespawnRings : 2808 C |
+ $engine.objects.entity_window$EntityWindow_DespawnRings$loop : 2822 C |
+ $engine.objects.entity_window$EntityWindow_DespawnRings$check_active : 283A C |
+ $engine.objects.entity_window$EntityWindow_DespawnRings$check_y : 2856 C |
+ $engine.objects.entity_window$EntityWindow_DespawnRings$remove : 286E C |
+ $engine.objects.entity_window$EntityWindow_DespawnRings$clr_ring_skip : 2888 C |
+ $engine.objects.entity_window$EntityWindow_DespawnRings$next : 288E C |
+ $engine.objects.entity_window$EntityWindow_DespawnRings$done : 2892 C |
+ EntityWindow_DespawnObjects : 2894 C |
+ $engine.objects.entity_window$EntityWindow_DespawnObjects$have_live : 289C C |
+ $engine.objects.entity_window$EntityWindow_DespawnObjects$loop : 28A2 C |
+ $engine.objects.entity_window$EntityWindow_DespawnObjects$check_active : 28B4 C |
+ $engine.objects.entity_window$EntityWindow_DespawnObjects$check_y : 28D0 C |
+ $engine.objects.entity_window$EntityWindow_DespawnObjects$despawn : 28EE C |
+ $engine.objects.entity_window$EntityWindow_DespawnObjects$clr_obj_skip : 290C C |
+ $engine.objects.entity_window$EntityWindow_DespawnObjects$next : 2918 C |
+ EntityWindow_MigrateMasks : 291E C |
+ $engine.objects.entity_window$EntityWindow_MigrateMasks$new_loop : 2920 C |
+ $engine.objects.entity_window$EntityWindow_MigrateMasks$old_loop : 2940 C |
+ $engine.objects.entity_window$EntityWindow_MigrateMasks$match : 294E C |
+ $engine.objects.entity_window$EntityWindow_MigrateMasks$copy : 2962 C |
+ $engine.objects.entity_window$EntityWindow_MigrateMasks$new_next : 2968 C |
+ EntityWindow_Slide : 2972 C |
+ $engine.objects.entity_window$EntityWindow_Slide$snapshot : 298C C |
+ $engine.objects.entity_window$EntityWindow_Slide$populate_loop : 29D0 C |
+ $engine.objects.entity_window$EntityWindow_Slide$old_id_scan : 29E2 C |
+ $engine.objects.entity_window$EntityWindow_Slide$populate_next : 29F0 C |
+ PopulateSpawnedPieceCount : 2A00 C |
+ $engine.objects.children$asm1$no_mappings : 2A24 C |
+ $engine.objects.children$asm1$rpc_done : 2A28 C |
+ CreateChild_Normal : 2A2C C |
+ $engine.objects.children$CreateChild_Normal$child_loop : 2A38 C |
+ $engine.objects.children$CreateChild_Normal$alloc_fail : 2A8A C |
+ $engine.objects.children$CreateChild_Normal$done : 2A8C C |
+ CreateChild_Complex : 2A92 C |
+ $engine.objects.children$CreateChild_Complex$child_loop : 2A9E C |
+ $engine.objects.children$CreateChild_Complex$alloc_fail : 2B08 C |
+ $engine.objects.children$CreateChild_Complex$done : 2B0A C |
+ CreateChild_FlipAware : 2B10 C |
+ $engine.objects.children$CreateChild_FlipAware$no_flip : 2B1C C |
+ $engine.objects.children$CreateChild_FlipAware$child_loop : 2B28 C |
+ $engine.objects.children$CreateChild_FlipAware$rf_no_flip : 2B96 C |
+ $engine.objects.children$CreateChild_FlipAware$alloc_fail : 2BA6 C |
+ $engine.objects.children$CreateChild_FlipAware$done : 2BA8 C |
+ CreateChild_Linked : 2BAE C |
+ $engine.objects.children$CreateChild_Linked$spawn_loop : 2BC8 C |
+ $engine.objects.children$CreateChild_Linked$first_child : 2C1A C |
+ $engine.objects.children$CreateChild_Linked$linked : 2C1E C |
+ $engine.objects.children$CreateChild_Linked$link_fail : 2C28 C |
+ $engine.objects.children$CreateChild_Linked$done : 2C36 C |
+ DeleteChildren : 2C38 C |
+ $engine.objects.children$DeleteChildren$walk_chain : 2C44 C |
+ $engine.objects.children$DeleteChildren$done : 2C54 C |
+ CreateEffect_Normal : 2C56 C |
+ $engine.objects.children$CreateEffect_Normal$effect_loop : 2C5E C |
+ $engine.objects.children$CreateEffect_Normal$alloc_fail : 2CA6 C |
+ $engine.objects.children$CreateEffect_Normal$done : 2CA8 C |
+ CreateEffect_Simple : 2CAA C |
+ $engine.objects.children$CreateEffect_Simple$spawn_loop : 2CBA C |
+ $engine.objects.children$CreateEffect_Simple$done : 2CE8 C |
+ $engine.objects.children$CreateEffect_Simple$alloc_fail : 2CEA C |
+ Load_Object : 2CF0 C |
+ $engine.objects.load_object$Load_Object$no_piece_count : 2D58 C |
+ $engine.objects.load_object$Load_Object$alloc_fail : 2D5C C |
+ $engine.objects.load_object$Load_ObjectList$loop : 2D64 C |
+ Load_ObjectList : 2D64 C |
+ $engine.objects.load_object$Load_ObjectList$done : 2D76 C |
+ Plane_Buffer_Reset : 2D78 C |
+ Draw_TileColumn : 2D80 C |
+ $engine.plane_buffer$Draw_TileColumn$col_nowrap : 2DB6 C |
+ $engine.plane_buffer$Draw_TileColumn$pA_clamp : 2E14 C |
+ $engine.plane_buffer$Draw_TileColumn$pA_zero : 2E20 C |
+ $engine.plane_buffer$Draw_TileColumn$pA_zend : 2E26 C |
+ $engine.plane_buffer$Draw_TileColumn$pB_dok : 2E4C C |
+ $engine.plane_buffer$Draw_TileColumn$pB_zfill : 2E58 C |
+ $engine.plane_buffer$Draw_TileColumn$pB_allz : 2E60 C |
+ $engine.plane_buffer$Draw_TileColumn$pB_az : 2E64 C |
+ $engine.plane_buffer$Draw_TileColumn$no_pB : 2E6A C |
+ $engine.plane_buffer$Draw_TileColumn$pB_zend : 2E6A C |
+ $engine.plane_buffer$Draw_TileColumn$sz_ok : 2E78 C |
+ $engine.plane_buffer$Draw_TileColumn$done : 2E80 C |
+ $engine.plane_buffer$Draw_TileColumn$copy_col_run : 2E82 C |
+ $engine.plane_buffer$Draw_TileColumn$ccr_drain : 2E9C C |
+ $engine.plane_buffer$Draw_TileColumn$ccr_quad : 2EAA C |
+ $engine.plane_buffer$Draw_TileColumn$ccr_rem_entry : 2EC0 C |
+ $engine.plane_buffer$Draw_TileColumn$ccr_rem : 2EC6 C |
+ $engine.plane_buffer$Draw_TileColumn$ccr_drained : 2ED0 C |
+ $engine.plane_buffer$Draw_TileColumn$ccr_ret : 2ED2 C |
+ Draw_TileRow_FromCache : 2ED4 C |
+ $engine.plane_buffer$Draw_TileRow_FromCache$row_nowrap : 2F1C C |
+ $engine.plane_buffer$Draw_TileRow_FromCache$r_clamp_ok : 2F3C C |
+ $engine.plane_buffer$Draw_TileRow_FromCache$row_emit_done : 2F64 C |
+ $engine.plane_buffer$Draw_TileRow_FromCache$done : 2F74 C |
+ $engine.plane_buffer$Draw_TileRow_FromCache$emit_row_run : 2F76 C |
+ $engine.plane_buffer$Draw_TileRow_FromCache$err_nonneg : 2F80 C |
+ $engine.plane_buffer$Draw_TileRow_FromCache$err_norm : 2F8A C |
+ $engine.plane_buffer$Draw_TileRow_FromCache$err_run1 : 2FA4 C |
+ $engine.plane_buffer$Draw_TileRow_FromCache$err_run1_tail : 2FAA C |
+ $engine.plane_buffer$Draw_TileRow_FromCache$err_run1_done : 2FB2 C |
+ $engine.plane_buffer$Draw_TileRow_FromCache$err_single : 2FB4 C |
+ $engine.plane_buffer$Draw_TileRow_FromCache$err_run2 : 2FBC C |
+ $engine.plane_buffer$Draw_TileRow_FromCache$err_run2_tail : 2FC2 C |
+ $engine.plane_buffer$Draw_TileRow_FromCache$err_ret : 2FCA C |
+ Draw_BG_TileColumn : 2FCC C |
+ $engine.plane_buffer$Draw_BG_TileColumn$have_layout : 2FF2 C |
+ $engine.plane_buffer$Draw_BG_TileColumn$copy : 300E C |
+ $engine.plane_buffer$Draw_BG_TileColumn$done : 3024 C |
+ VInt_DrawLevel : 3026 C |
+ $engine.plane_buffer$VInt_DrawLevel$next : 303A C |
+ $engine.plane_buffer$VInt_DrawLevel$drain_row : 3052 C |
+ $engine.plane_buffer$VInt_DrawLevel$col_entry : 305A C |
+ $engine.plane_buffer$VInt_DrawLevel$drain_col : 3076 C |
+ $engine.plane_buffer$VInt_DrawLevel$dc_tail : 307C C |
+ $engine.plane_buffer$VInt_DrawLevel$done : 3086 C |
+ Tile_Cache_GetTile : 30A0 C |
+ $engine.tile_cache$Tile_Cache_GetTile$col_nowrap : 30B2 C |
+ $engine.tile_cache$Tile_Cache_GetTile$row_nowrap : 30C4 C |
+ BlockStage_PtrTable : 30DC C |
+ TileCache_FindStagedBlock : 311C C |
+ $engine.tile_cache$TileCache_FindStagedBlock$chain : 3134 C |
+ $engine.tile_cache$TileCache_FindStagedBlock$miss : 314A C |
+ $engine.tile_cache$TileCache_FindStagedBlock$hit : 314E C |
+ TileCache_InvalidateStaging : 3164 C |
+ $engine.tile_cache$TileCache_InvalidateStaging$inv : 316A C |
+ $engine.tile_cache$TileCache_InvalidateStaging$inv_maps : 3184 C |
+ $engine.tile_cache$TileCache_InvalidateStaging$inv_bucket : 3194 C |
+ $engine.tile_cache$TileCache_InvalidateStaging$inv_chain : 31A6 C |
+ $engine.tile_cache$TileCache_InvalidateStaging$inv_spec_ring : 31D0 C |
+ TileCache_DecompressBlock : 31E4 C |
+ $engine.tile_cache$TileCache_DecompressBlock$rr_ok : 31FE C |
+ $engine.tile_cache$TileCache_DecompressBlock$idx_unlink_step : 3224 C |
+ $engine.tile_cache$TileCache_DecompressBlock$idx_unlink_lost : 323E C |
+ $engine.tile_cache$TileCache_DecompressBlock$idx_unlink_found : 3240 C |
+ $engine.tile_cache$TileCache_DecompressBlock$idx_link : 324A C |
+ $engine.tile_cache$TileCache_DecompressBlock$raw_direct : 32E6 C |
+ $engine.tile_cache$TileCache_DecompressBlock$empty_block : 32FA C |
+ Blank_Local_Map : 331A C |
+ __align$engine.tile_cache$0 : 331A C |
+ TileCache_CopyBlockColumn : 331C C |
+ $engine.tile_cache$TileCache_CopyBlockColumn$col_nowrap : 332A C |
+ $engine.tile_cache$TileCache_CopyBlockColumn$row_nowrap : 3338 C |
+ $engine.tile_cache$TileCache_CopyBlockColumn$nt_one_run : 337A C |
+ $engine.tile_cache$TileCache_CopyBlockColumn$nt_run2 : 337C C |
+ $engine.tile_cache$TileCache_CopyBlockColumn$coll_run1 : 33B2 C |
+ $engine.tile_cache$TileCache_CopyBlockColumn$coll_one_run : 33D4 C |
+ $engine.tile_cache$TileCache_CopyBlockColumn$coll_run2 : 33D6 C |
+ $engine.tile_cache$TileCache_CopyBlockColumn$coll_run2_loop : 33D8 C |
+ $engine.tile_cache$TileCache_CopyBlockColumn$done_coll : 33EC C |
+ Tile_Cache_Init : 33F0 C |
+ $engine.tile_cache$Tile_Cache_Init$left_ok : 3400 C |
+ $engine.tile_cache$Tile_Cache_Init$top_ok : 3460 C |
+ TileCache_FillAll : 347C C |
+ $engine.tile_cache$TileCache_FillAll$zero_nt : 3492 C |
+ $engine.tile_cache$TileCache_FillAll$zero_coll : 34A2 C |
+ $engine.tile_cache$TileCache_FillAll$block_row_loop : 34C8 C |
+ $engine.tile_cache$TileCache_FillAll$block_col_loop : 34CC C |
+ $engine.tile_cache$TileCache_FillAll$fill_copy_col : 3502 C |
+ $engine.tile_cache$TileCache_FillAll$fill_no_clip : 351E C |
+ $engine.tile_cache$TileCache_FillAll$fill_rows_ok : 353C C |
+ $engine.tile_cache$TileCache_FillAll$fill_skip_col : 354E C |
+ TileCache_WarmupBelowRow : 3576 C |
+ $engine.tile_cache$TileCache_WarmupBelowRow$scan : 359C C |
+ $engine.tile_cache$TileCache_WarmupBelowRow$next : 35E0 C |
+ $engine.tile_cache$TileCache_WarmupBelowRow$done : 35E6 C |
+ Tile_Cache_Fill : 35E8 C |
+ $engine.tile_cache$Tile_Cache_Fill$fg_on_time : 3606 C |
+ $engine.tile_cache$Tile_Cache_Fill$fg_lag_done : 360A C |
+ $engine.tile_cache$Tile_Cache_Fill$spec_rearm_test : 364A C |
+ $engine.tile_cache$Tile_Cache_Fill$spec_down : 3650 C |
+ $engine.tile_cache$Tile_Cache_Fill$spec_rearm : 3658 C |
+ $engine.tile_cache$Tile_Cache_Fill$spec_gate_done : 365E C |
+ $engine.tile_cache$Tile_Cache_Fill$row_pending_stale : 36B0 C |
+ $engine.tile_cache$Tile_Cache_Fill$no_row_pending : 36B6 C |
+ $engine.tile_cache$Tile_Cache_Fill$pending_row_ok : 36DA C |
+ $engine.tile_cache$Tile_Cache_Fill$pending_stale : 36E6 C |
+ $engine.tile_cache$Tile_Cache_Fill$no_pending : 36EC C |
+ $engine.tile_cache$Tile_Cache_Fill$h_left_pos : 36FE C |
+ $engine.tile_cache$Tile_Cache_Fill$h_clamp_ok : 3720 C |
+ $engine.tile_cache$Tile_Cache_Fill$h_right_fill : 3724 C |
+ $engine.tile_cache$Tile_Cache_Fill$h_no_evict : 373C C |
+ $engine.tile_cache$Tile_Cache_Fill$h_right_done : 3754 C |
+ $engine.tile_cache$Tile_Cache_Fill$h_left_fill : 375A C |
+ $engine.tile_cache$Tile_Cache_Fill$h_no_evict_left : 3770 C |
+ $engine.tile_cache$Tile_Cache_Fill$h_origin_ok : 3780 C |
+ $engine.tile_cache$Tile_Cache_Fill$h_left_done : 3794 C |
+ $engine.tile_cache$Tile_Cache_Fill$v_section : 3794 C |
+ $engine.tile_cache$Tile_Cache_Fill$v_top_pos : 37A6 C |
+ $engine.tile_cache$Tile_Cache_Fill$v_clamp_ok : 37CC C |
+ $engine.tile_cache$Tile_Cache_Fill$v_bottom_fill : 37D4 C |
+ $engine.tile_cache$Tile_Cache_Fill$v_no_evict : 37F2 C |
+ $engine.tile_cache$Tile_Cache_Fill$v_bottom_done : 380C C |
+ $engine.tile_cache$Tile_Cache_Fill$v_top_fill : 3812 C |
+ $engine.tile_cache$Tile_Cache_Fill$v_no_evict_up : 3838 C |
+ $engine.tile_cache$Tile_Cache_Fill$v_top_done : 386A C |
+ $engine.tile_cache$Tile_Cache_Fill$pfx_no_recent_lag : 3880 C |
+ $engine.tile_cache$Tile_Cache_Fill$pfx_gate_ok : 3884 C |
+ $engine.tile_cache$Tile_Cache_Fill$pfx_up : 38D2 C |
+ $engine.tile_cache$Tile_Cache_Fill$pfx_go : 38E4 C |
+ $engine.tile_cache$Tile_Cache_Fill$pfx_scan_begin : 394A C |
+ $engine.tile_cache$Tile_Cache_Fill$pfx_scan : 3954 C |
+ $engine.tile_cache$Tile_Cache_Fill$pfx_next : 3992 C |
+ $engine.tile_cache$Tile_Cache_Fill$pfx_stage : 3998 C |
+ $engine.tile_cache$Tile_Cache_Fill$pfx_record : 39A2 C |
+ $engine.tile_cache$Tile_Cache_Fill$row_done : 39CA C |
+ $engine.tile_cache$Tile_Cache_Fill$cs_first_left : 39EC C |
+ $engine.tile_cache$Tile_Cache_Fill$cs_first_set : 39EE C |
+ $engine.tile_cache$Tile_Cache_Fill$cs_have_latch : 39F8 C |
+ $engine.tile_cache$Tile_Cache_Fill$cs_opp_ready : 3A00 C |
+ $engine.tile_cache$Tile_Cache_Fill$cs_accum_ok : 3A0E C |
+ $engine.tile_cache$Tile_Cache_Fill$cs_latched : 3A20 C |
+ $engine.tile_cache$Tile_Cache_Fill$cs_left : 3A3A C |
+ $engine.tile_cache$Tile_Cache_Fill$cs_have_col : 3A4A C |
+ $engine.tile_cache$Tile_Cache_Fill$cs_scan_begin : 3AC4 C |
+ $engine.tile_cache$Tile_Cache_Fill$cs_scan : 3ACE C |
+ $engine.tile_cache$Tile_Cache_Fill$cs_next : 3B0C C |
+ $engine.tile_cache$Tile_Cache_Fill$cs_stage : 3B12 C |
+ $engine.tile_cache$Tile_Cache_Fill$cs_record : 3B1C C |
+ $engine.tile_cache$Tile_Cache_Fill$col_done : 3B44 C |
+ $engine.tile_cache$Tile_Cache_Fill$fill_return : 3B92 C |
+ TileCache_FillColumn : 3B94 C |
+ $engine.tile_cache$TileCache_FillColumn$fc_block_loop : 3BAE C |
+ $engine.tile_cache$TileCache_FillColumn$fc_from_top : 3BAE C |
+ $engine.tile_cache$TileCache_FillColumn$fc_have_block : 3BF0 C |
+ $engine.tile_cache$TileCache_FillColumn$fc_rows_ok : 3C1E C |
+ $engine.tile_cache$TileCache_FillColumn$fc_budget_out : 3C3E C |
+ $engine.tile_cache$TileCache_FillColumn$fc_no_xhold : 3C6A C |
+ $engine.tile_cache$asm17$no_hold : 3C6A C |
+ $engine.tile_cache$TileCache_FillColumn$fc_complete : 3C6E C |
+ TileCache_FillRow : 3C78 C |
+ $engine.tile_cache$TileCache_FillRow$fr_row_nowrap : 3C92 C |
+ $engine.tile_cache$TileCache_FillRow$fr_no_coll : 3CA8 C |
+ $engine.tile_cache$TileCache_FillRow$fr_block_loop : 3CD8 C |
+ $engine.tile_cache$TileCache_FillRow$fr_from_left : 3CD8 C |
+ $engine.tile_cache$TileCache_FillRow$fr_have_block : 3D1C C |
+ $engine.tile_cache$TileCache_FillRow$fr_iclo_done : 3D56 C |
+ $engine.tile_cache$TileCache_FillRow$fr_ichi_head : 3D66 C |
+ $engine.tile_cache$TileCache_FillRow$fr_ichi_done : 3D76 C |
+ $engine.tile_cache$TileCache_FillRow$fr_nt_ncalc : 3D9E C |
+ $engine.tile_cache$TileCache_FillRow$fr_nt_emit : 3DAA C |
+ $engine.tile_cache$TileCache_FillRow$fr_nt_empty : 3DCE C |
+ $engine.tile_cache$TileCache_FillRow$fr_ci_iclo : 3DF2 C |
+ $engine.tile_cache$TileCache_FillRow$fr_ci_head : 3E02 C |
+ $engine.tile_cache$TileCache_FillRow$fr_ci_ichi : 3E12 C |
+ $engine.tile_cache$TileCache_FillRow$fr_ci_ncalc : 3E38 C |
+ $engine.tile_cache$TileCache_FillRow$fr_ci_emit : 3E44 C |
+ $engine.tile_cache$TileCache_FillRow$fr_ci_run1 : 3E58 C |
+ $engine.tile_cache$TileCache_FillRow$fr_ci_run2 : 3E72 C |
+ $engine.tile_cache$TileCache_FillRow$fr_next_block : 3E7A C |
+ $engine.tile_cache$TileCache_FillRow$fr_budget_out : 3E90 C |
+ $engine.tile_cache$TileCache_FillRow$fr_no_yhold : 3EBE C |
+ $engine.tile_cache$asm22$no_hold : 3EBE C |
+ $engine.tile_cache$TileCache_FillRow$fr_done : 3EC2 C |
+ $engine.tile_cache$TileCache_FillRow$fr_early_out : 3ECE C |
+ TileCache_HSlide : 3ED2 C |
+ $engine.tile_cache$TileCache_HSlide$nowrap : 3EEA C |
+ $engine.tile_cache$TileCache_HSlide$done : 3EEE C |
+ TileCache_VSlide : 3EF0 C |
+ $engine.tile_cache$TileCache_VSlide$vslide_nowrap : 3F06 C |
+ $engine.tile_cache$TileCache_VSlide$vslide_done : 3F0A C |
+ TileCache_VSlideUp : 3F0C C |
+ $engine.tile_cache$TileCache_VSlideUp$vsu_nowrap : 3F20 C |
+ $engine.tile_cache$TileCache_VSlideUp$vsu_done : 3F24 C |
+ Collision_GetType : 3F30 C |
+ $engine.collision_lookup$Collision_GetType$col_nowrap : 3F50 C |
+ $engine.collision_lookup$Collision_GetType$row_nowrap : 3F76 C |
+ $engine.collision_lookup$Collision_GetType$plane_selected : 3F88 C |
+ $engine.collision_lookup$Collision_GetType$cgt_air : 3F94 C |
+ Section_Init : 3F98 C |
+ Section_FillInitial : 3FA4 C |
+ Section_FlatIDXY : 3FCE C |
+ $engine.section$Section_FlatIDXY$fxy_mul : 3FD8 C |
+ $engine.section$Section_FlatIDXY$fxy_add_x : 3FE0 C |
+ Section_GetSecPtrXY : 3FE8 C |
+ $engine.section$Section_GetSecPtrXY$out_of_range : 4018 C |
+ Section_RedrawPlanes : 401E C |
+ $engine.section$asm5$wait_z80 : 4038 C |
+ $engine.section$Section_RedrawPlanes$pla_fill : 405E C |
+ $engine.section$Section_RedrawPlanes$col_nowrap : 4090 C |
+ $engine.section$Section_RedrawPlanes$pA_clamp : 40D6 C |
+ $engine.section$Section_RedrawPlanes$pA_data : 40DC C |
+ $engine.section$Section_RedrawPlanes$pa_nowrap : 40EA C |
+ $engine.section$Section_RedrawPlanes$pA_dskip : 40EE C |
+ $engine.section$Section_RedrawPlanes$pA_zero : 40F8 C |
+ $engine.section$Section_RedrawPlanes$pA_zskip : 40FE C |
+ $engine.section$Section_RedrawPlanes$pB_dok : 412A C |
+ $engine.section$Section_RedrawPlanes$pB_data : 412E C |
+ $engine.section$Section_RedrawPlanes$pb_nowrap : 413C C |
+ $engine.section$Section_RedrawPlanes$pB_zfill : 414A C |
+ $engine.section$Section_RedrawPlanes$pB_allz : 4152 C |
+ $engine.section$Section_RedrawPlanes$pB_az : 4158 C |
+ $engine.section$Section_RedrawPlanes$pB_skip : 415E C |
+ $engine.section$Section_RedrawPlanes$pla_next : 4160 C |
+ $engine.section$Section_RedrawPlanes$plb_use_act_layout : 418C C |
+ $engine.section$Section_RedrawPlanes$plb_have_layout : 4196 C |
+ $engine.section$Section_RedrawPlanes$plb_col : 419C C |
+ $engine.section$Section_RedrawPlanes$plb_word : 41B8 C |
+ $engine.section$Section_RedrawPlanes$plb_done : 41C6 C |
+ $engine.section$Section_RedrawPlanes$track_left_ok : 41DE C |
+ Section_UpdateColumns : 41E4 C |
+ $engine.section$Section_UpdateColumns$not_dirty : 4208 C |
+ $engine.section$Section_UpdateColumns$right_clamp_ok : 422E C |
+ $engine.section$Section_UpdateColumns$right_cache_ok : 4238 C |
+ $engine.section$Section_UpdateColumns$right_wrap_ok : 4246 C |
+ $engine.section$Section_UpdateColumns$right_loop : 424A C |
+ $engine.section$Section_UpdateColumns$right_done : 426A C |
+ $engine.section$Section_UpdateColumns$right_done_cache_ok : 427E C |
+ $engine.section$Section_UpdateColumns$left_clamp_skip : 4288 C |
+ $engine.section$Section_UpdateColumns$left_cache_ok : 4296 C |
+ $engine.section$Section_UpdateColumns$left_wrap_ok : 42A8 C |
+ $engine.section$Section_UpdateColumns$left_loop : 42AC C |
+ $engine.section$Section_UpdateColumns$left_done : 42CC C |
+ $engine.section$Section_UpdateColumns$left_done_cache_ok : 42E0 C |
+ $engine.section$Section_UpdateColumns$right_clamp_skip2 : 42EA C |
+ $engine.section$Section_UpdateColumns$bot_cache_ok : 4302 C |
+ $engine.section$Section_UpdateColumns$bot_loop : 4306 C |
+ $engine.section$Section_UpdateColumns$bot_done : 4326 C |
+ $engine.section$Section_UpdateColumns$bot_done_cache_ok : 433A C |
+ $engine.section$Section_UpdateColumns$top_row_clamp_skip : 4344 C |
+ $engine.section$Section_UpdateColumns$top_cache_ok : 4352 C |
+ $engine.section$Section_UpdateColumns$top_loop : 4356 C |
+ $engine.section$Section_UpdateColumns$top_done : 4376 C |
+ $engine.section$Section_UpdateColumns$top_done_cache_ok : 438A C |
+ $engine.section$Section_UpdateColumns$bot_row_clamp_skip : 4394 C |
+ Camera_Init : 43A0 C |
+ $engine.camera$asm2$min_ok : 4414 C |
+ $engine.camera$asm2$clamp : 441E C |
+ $engine.camera$asm4$min_ok : 4432 C |
+ $engine.camera$asm4$clamp : 443C C |
+ Camera_Update : 4446 C |
+ $engine.camera$Camera_Update$no_freeze : 4456 C |
+ $engine.camera$Camera_Update$x_scroll_right : 4492 C |
+ $engine.camera$Camera_Update$apply_x : 449C C |
+ $engine.camera$Camera_Update$x_done : 44A8 C |
+ $engine.camera$Camera_Update$x_clamp : 44AC C |
+ $engine.camera$asm7$min_ok : 44B4 C |
+ $engine.camera$asm7$clamp : 44BE C |
+ $engine.camera$Camera_Update$y_track : 44C6 C |
+ $engine.camera$Camera_Update$no_curl_comp : 44E8 C |
+ $engine.camera$Camera_Update$check_down : 4502 C |
+ $engine.camera$Camera_Update$down_ok : 4502 C |
+ $engine.camera$Camera_Update$apply_y : 450A C |
+ $engine.camera$Camera_Update$y_step_hi_ok : 4514 C |
+ $engine.camera$Camera_Update$y_step_lo_ok : 451E C |
+ $engine.camera$Camera_Update$clamp_y : 452A C |
+ $engine.camera$Camera_Update$y_clamp : 452E C |
+ $engine.camera$asm9$min_ok : 4536 C |
+ $engine.camera$asm9$clamp : 4540 C |
+ Parallax_Init : 4550 C |
+ $engine.parallax$Parallax_Init$zero : 455A C |
+ Parallax_CheckBoundary : 457A C |
+ $engine.parallax$Parallax_CheckBoundary$crossed : 459C C |
+ $engine.parallax$Parallax_CheckBoundary$no_crossing : 45B4 C |
+ Parallax_StartTransition : 45B6 C |
+ $engine.parallax$Parallax_StartTransition$instant : 45C8 C |
+ $engine.parallax$Parallax_StartTransition$update_mode : 45E0 C |
+ $engine.parallax$Parallax_StartTransition$v_done : 45E2 C |
+ $engine.parallax$Parallax_StartTransition$no_change : 45E6 C |
+ $engine.parallax$Parallax_StartTransition$recross_current : 45E8 C |
+ Parallax_Active_Config : 4604 C |
+ Vscroll_Write : 460A C |
+ $engine.parallax$Vscroll_Write$whole_plane : 461C C |
+ Parallax_Update : 4624 C |
+ $engine.parallax$Parallax_Update$use_target : 4642 C |
+ $engine.parallax$Parallax_Update$use_current : 4648 C |
+ $engine.parallax$Parallax_Update$config_resolved : 464C C |
+ $engine.parallax$Parallax_Update$mode3_shadow : 465E C |
+ $engine.parallax$asm7$wait_z80 : 4680 C |
+ $engine.parallax$Parallax_Update$mode3_reg_live : 46A0 C |
+ $engine.parallax$Parallax_Update$band_loop : 46C6 C |
+ $engine.parallax$Parallax_Update$snap_b : 46F4 C |
+ $engine.parallax$Parallax_Update$write_b : 46F6 C |
+ $engine.parallax$Parallax_Update$band_disabled : 46FC C |
+ $engine.parallax$Parallax_Update$band_done : 4700 C |
+ $engine.parallax$Parallax_Update$no_config : 4718 C |
+ Parallax_Step4_Fill : 471A C |
+ $engine.parallax$Parallax_Step4_Fill$find_k : 472E C |
+ $engine.parallax$Parallax_Step4_Fill$found_k : 4742 C |
+ $engine.parallax$Parallax_Step4_Fill$copy_band : 4756 C |
+ $engine.parallax$Parallax_Step4_Fill$not_first : 4780 C |
+ $engine.parallax$Parallax_Step4_Fill$clamp_top : 4788 C |
+ $engine.parallax$Parallax_Step4_Fill$write_top : 4792 C |
+ $engine.parallax$Parallax_Step4_Fill$no_wrap : 47B2 C |
+ $engine.parallax$Parallax_Step4_Fill$bands_ready : 47C2 C |
+ Parallax_Step5_Vscroll : 47DA C |
+ $engine.parallax$Parallax_Step5_Vscroll$v_snap : 4800 C |
+ $engine.parallax$Parallax_Step5_Vscroll$v_locked : 4804 C |
+ $engine.parallax$Parallax_Step5_Vscroll$v_pack : 4808 C |
+ $engine.parallax$Parallax_Step5_Vscroll$v_done : 4814 C |
+ Decode_Factor_A : 4818 C |
+ $engine.parallax$Decode_Factor_A$a_sub : 4846 C |
+ $engine.parallax$Decode_Factor_A$a_pop_d3 : 4848 C |
+ $engine.parallax$Decode_Factor_A$negate : 484A C |
+ $engine.parallax$Decode_Factor_A$locked : 484E C |
+ Decode_Factor_B : 4852 C |
+ $engine.parallax$Decode_Factor_B$b_sub : 4880 C |
+ $engine.parallax$Decode_Factor_B$b_pop_d3 : 4882 C |
+ $engine.parallax$Decode_Factor_B$negate : 4884 C |
+ $engine.parallax$Decode_Factor_B$locked : 4888 C |
+ Parallax_Fill_PerLine : 488C C |
+ $engine.parallax$Parallax_Fill_PerLine$next_band : 4896 C |
+ $engine.parallax$Parallax_Fill_PerLine$have_end : 48A2 C |
+ $engine.parallax$Parallax_Fill_PerLine$lp_flat : 48A8 C |
+ $engine.parallax$Parallax_Fill_PerLine$fl_line : 48BC C |
+ $engine.parallax$Parallax_Fill_PerLine$fl_tail : 48D0 C |
+ $engine.parallax$Parallax_Fill_PerLine$fl_rem : 48D6 C |
+ $engine.parallax$Parallax_Fill_PerLine$band_done : 48DC C |
+ Raster_Install : 48F0 C |
+ Raster_VBlank : 48F6 C |
+ $engine.effects.raster$Raster_VBlank$copy_program : 491A C |
+ $engine.effects.raster$Raster_VBlank$copy : 4932 C |
+ $engine.effects.raster$Raster_VBlank$no_install : 4938 C |
+ $engine.effects.raster$Raster_VBlank$done : 495E C |
+ Raster_HInt : 4960 C |
+ $engine.effects.raster$Raster_HInt$op_loop : 498C C |
+ $engine.effects.raster$Raster_HInt$op_reg : 49B0 C |
+ $engine.effects.raster$Raster_HInt$op_cram : 49B8 C |
+ $engine.effects.raster$Raster_HInt$cram_delay : 49BC C |
+ $engine.effects.raster$Raster_HInt$cram_loop : 49C2 C |
+ $engine.effects.raster$Raster_HInt$op_region : 49D0 C |
+ $engine.effects.raster$Raster_HInt$region_delay : 49D4 C |
+ $engine.effects.raster$Raster_HInt$region_loop : 49E0 C |
+ $engine.effects.raster$Raster_HInt$op_run_gradient : 49F6 C |
+ $engine.effects.raster$Raster_HInt$op_run_ramp : 4A0A C |
+ $engine.effects.raster$Raster_HInt$advance : 4A20 C |
+ $engine.effects.raster$Raster_HInt$priming : 4A28 C |
+ $engine.effects.raster$Raster_HInt$op_pal_restore : 4A38 C |
+ $engine.effects.raster$Raster_HInt$restore_delay : 4A3C C |
+ $engine.effects.raster$Raster_HInt$restore_loop : 4A48 C |
+ $engine.effects.raster$Raster_HInt$dense_body : 4A5E C |
+ $engine.effects.raster$Raster_HInt$ramp_body : 4A84 C |
+ $engine.effects.raster$Raster_HInt$dense_end : 4AA4 C |
+ $engine.effects.raster$Raster_HInt$park : 4AA8 C |
+ $engine.effects.raster$Raster_HInt$out : 4AAC C |
+ Raster_Program_None : 4AB2 C |
+ Raster_InstallPatched : 4AB8 C |
+ $engine.effects.raster$Raster_InstallPatched$no_ship : 4ADE C |
+ $engine.effects.raster$Raster_InstallPatched$ship_done : 4AE0 C |
+ $engine.effects.raster$Raster_InstallPatched$no_build : 4AFC C |
+ Raster_BuildShipEntry : 4B02 C |
+ Raster_BuildSchedule : 4B3E C |
+ $engine.effects.raster$Raster_BuildSchedule$dst_ready : 4B5A C |
+ $engine.effects.raster$Raster_BuildSchedule$entry : 4B72 C |
+ $engine.effects.raster$Raster_BuildSchedule$have_line : 4B92 C |
+ $engine.effects.raster$Raster_BuildSchedule$copy : 4BBC C |
+ $engine.effects.raster$Raster_BuildSchedule$next : 4BC2 C |
+ $engine.effects.raster$Raster_BuildSchedule$swap : 4BEE C |
+ $engine.effects.raster$Raster_BuildSchedule$none : 4BF2 C |
+ $engine.effects.raster$Raster_BuildSchedule$suppress : 4BF4 C |
+ Raster_GetChannelBand : 4BF8 C |
+ Effects_LatchWorldLines : 4C00 C |
+ $engine.effects.raster$Effects_LatchWorldLines$ch : 4C0E C |
+ Effects_SetWorldY : 4C1A C |
+ Palette_LoadPal : 4C2A C |
+ $engine.effects.palette$Palette_LoadPal$copy_base : 4C36 C |
+ $engine.effects.palette$Palette_LoadPal$load_target : 4C50 C |
+ $engine.effects.palette$Palette_LoadPal$copy_target : 4C5A C |
+ Palette_ArmFade : 4C6E C |
+ Palette_SetOp : 4C76 C |
+ Palette_SetVariant : 4C8C C |
+ $engine.effects.palette$Palette_SetVariant$none : 4CB2 C |
+ Palette_LoadCycle : 4CB4 C |
+ $engine.effects.palette$Palette_LoadCycle$zero : 4CD6 C |
+ $engine.effects.palette$Palette_LoadCycle$done : 4CDC C |
+ Palette_Compose : 4CDE C |
+ $engine.effects.palette$Palette_Compose$work : 4CE6 C |
+ $engine.effects.palette$Palette_Compose$base_copy : 4D06 C |
+ $engine.effects.palette$Palette_Compose$cycling : 4D14 C |
+ $engine.effects.palette$Palette_Compose$fade : 4D1E C |
+ $engine.effects.palette$Palette_Compose$operators : 4D28 C |
+ $engine.effects.palette$Palette_Compose$variants : 4D32 C |
+ $engine.effects.palette$Palette_Compose$done : 4D4C C |
+ Palette_DoCycle : 4D4E C |
+ $engine.effects.palette$Palette_DoCycle$chan : 4D60 C |
+ $engine.effects.palette$Palette_DoCycle$wait : 4D7C C |
+ $engine.effects.palette$Palette_DoCycle$next : 4D80 C |
+ $engine.effects.palette$Palette_DoCycle$ret : 4D86 C |
+ $engine.effects.palette$Palette_DoCycle$ret_quiet : 4D94 C |
+ Palette_RotateSpan : 4D96 C |
+ $engine.effects.palette$Palette_RotateSpan$fwd : 4DC4 C |
+ $engine.effects.palette$Palette_RotateSpan$rev : 4DD0 C |
+ $engine.effects.palette$Palette_RotateSpan$rup : 4DD8 C |
+ $engine.effects.palette$Palette_RotateSpan$done : 4DE2 C |
+ Palette_DoFade : 4DE4 C |
+ $engine.effects.palette$Palette_DoFade$snap : 4DF8 C |
+ $engine.effects.palette$Palette_DoFade$step_frame : 4E18 C |
+ $engine.effects.palette$Palette_DoFade$noskip : 4E22 C |
+ $engine.effects.palette$Palette_DoFade$word : 4E2E C |
+ $engine.effects.palette$asm10$st_up : 4E4E C |
+ $engine.effects.palette$asm10$st_end : 4E50 C |
+ $engine.effects.palette$asm11$st_up : 4E6E C |
+ $engine.effects.palette$asm11$st_end : 4E70 C |
+ $engine.effects.palette$asm12$st_up : 4E92 C |
+ $engine.effects.palette$asm12$st_end : 4E94 C |
+ Palette_DoOperator : 4EAE C |
+ $engine.effects.palette$Palette_DoOperator$neg_xor : 4EDE C |
+ $engine.effects.palette$Palette_DoOperator$neg_tick : 4EF2 C |
+ $engine.effects.palette$Palette_DoOperator$fade_dir : 4EFE C |
+ $engine.effects.palette$Palette_DoOperator$have_tgt : 4F16 C |
+ $engine.effects.palette$Palette_DoOperator$fw_word : 4F1E C |
+ $engine.effects.palette$asm16$st_up : 4F36 C |
+ $engine.effects.palette$asm16$st_end : 4F38 C |
+ $engine.effects.palette$asm17$st_up : 4F50 C |
+ $engine.effects.palette$asm17$st_end : 4F52 C |
+ $engine.effects.palette$asm18$st_up : 4F6C C |
+ $engine.effects.palette$asm18$st_end : 4F6E C |
+ $engine.effects.palette$Palette_DoOperator$ret : 4F98 C |
+ $engine.effects.palette$Palette_DoOperator$white_flash : 4F9A C |
+ $engine.effects.palette$Palette_DoOperator$wf_fill : 4FA2 C |
+ $engine.effects.palette$Palette_DoOperator$op_done_restore : 4FBC C |
+ Palette_DoVariants : 4FDC C |
+ $engine.effects.palette$Palette_DoVariants$slot1 : 4FEA C |
+ $engine.effects.palette$Palette_DoVariants$ret : 4FF8 C |
+ Palette_DeriveVariant : 4FFA C |
+ $engine.effects.palette$Palette_DeriveVariant$line : 5000 C |
+ $engine.effects.palette$Palette_DeriveVariant$entry : 5016 C |
+ $engine.effects.palette$asm23$cl_pos : 5036 C |
+ $engine.effects.palette$asm23$cl_end : 503E C |
+ $engine.effects.palette$asm24$cl_pos : 5060 C |
+ $engine.effects.palette$asm24$cl_end : 5068 C |
+ $engine.effects.palette$asm25$cl_pos : 508C C |
+ $engine.effects.palette$asm25$cl_end : 5094 C |
+ $engine.effects.palette$Palette_DeriveVariant$next_line : 50A0 C |
+ Pal_Cycle_None : 50AC C |
+ Effects_ResolveParallax : 50AE C |
+ $engine.effects.preset$Effects_ResolveParallax$no_sec_binding : 50BA C |
+ $engine.effects.preset$Effects_ResolveParallax$act_default : 50CE C |
+ $engine.effects.preset$Effects_ResolveParallax$have_config : 50D6 C |
+ Effects_InstallPreset : 50D8 C |
+ $engine.effects.preset$Effects_InstallPreset$seed_anchor : 50F0 C |
+ $engine.effects.preset$Effects_InstallPreset$no_fade_arm : 5104 C |
+ $engine.effects.preset$Effects_InstallPreset$variant0_same : 5124 C |
+ $engine.effects.preset$Effects_InstallPreset$variant1_same : 5136 C |
+ $engine.effects.preset$Effects_InstallPreset$no_patch : 5146 C |
+ $engine.effects.preset$Effects_InstallPreset$have_raster : 5154 C |
+ $engine.effects.preset$Effects_InstallPreset$raster_done : 5158 C |
+ Level_LoadArt : 5170 C |
+ $engine.load_art$Level_LoadArt$streaming_pool : 519C C |
+ $engine.load_art$Level_LoadArt$enq_loop : 51B6 C |
+ $engine.load_art$Level_LoadArt$enq_next : 51CA C |
+ $engine.load_art$Level_LoadArt$drain_wait : 51CE C |
+ $engine.load_art$Level_LoadArt$bg : 51F8 C |
+ $engine.load_art$Level_LoadArt$direct_scan : 5212 C |
+ $engine.load_art$Level_LoadArt$direct_ok : 521C C |
+ $engine.load_art$Level_LoadArt$no_direct : 5220 C |
+ PageIn_Process : 5228 C |
+ $engine.page_in$PageIn_Process$lag_ontime : 5254 C |
+ $engine.page_in$PageIn_Process$frame_ticked : 525C C |
+ $engine.page_in$PageIn_Process$gate_reset : 529C C |
+ $engine.page_in$PageIn_Process$start : 52A0 C |
+ $engine.page_in$PageIn_Process$page_id_ok : 52B2 C |
+ $engine.page_in$PageIn_Process$raw : 530A C |
+ $engine.page_in$PageIn_Process$raw_published : 532A C |
+ $engine.page_in$PageIn_Process$alloc_fail : 5336 C |
+ $engine.page_in$PageIn_Process$idle : 5342 C |
+ $engine.page_in$PageIn_Process$drop_degenerate : 5344 C |
+ $engine.page_in$PageIn_Process$release_claim : 5348 C |
+ $engine.page_in$PageIn_Process$claim_done : 5360 C |
+ $engine.page_in$PageIn_Process$resume : 5362 C |
+ $engine.page_in$PageIn_Process$after : 5366 C |
+ $engine.page_in$PageIn_Process$land : 536A C |
+ $engine.page_in$PageIn_Process$land_full : 538A C |
+ $engine.page_in$PageIn_Process$queue_has_nonspec : 5390 C |
+ $engine.page_in$PageIn_Process$qn_scan : 539C C |
+ $engine.page_in$PageIn_Process$qn_found : 53B0 C |
+ $engine.page_in$PageIn_Process$dequeue : 53B4 C |
+ $engine.page_in$PageIn_Process$dq_scan : 53C0 C |
+ $engine.page_in$PageIn_Process$dq_found : 53DA C |
+ $engine.page_in$PageIn_Process$dq_shift : 53F0 C |
+ $engine.page_in$PageIn_Process$dq_done : 53F6 C |
+ PageIn_BankRegs : 53FC C |
+ PageIn_Resume : 5422 C |
+ PageIn_EnqueueLanding : 544C C |
+ $engine.page_in$PageIn_EnqueueLanding$art_deferred : 547A C |
+ $engine.page_in$PageIn_EnqueueLanding$dropped : 5480 C |
+ PageIn_Enqueue : 5486 C |
+ $engine.page_in$PageIn_Enqueue$full : 54BE C |
+ PageIn_Flush : 54C4 C |
+ PageCache_Init : 550C C |
+ $engine.page_cache$PageCache_Init$clr_table : 5520 C |
+ $engine.page_cache$PageCache_Init$clr_queued : 5532 C |
+ $engine.page_cache$PageCache_Init$init_frames : 5544 C |
+ PageCache_Request : 5570 C |
+ $engine.page_cache$PageCache_Request$in_range : 5578 C |
+ $engine.page_cache$PageCache_Request$not_inflight : 55A0 C |
+ $engine.page_cache$PageCache_Request$done : 55BA C |
+ PageCache_AllocFrame : 55BC C |
+ $engine.page_cache$PageCache_AllocFrame$from_lru : 55DA C |
+ $engine.page_cache$PageCache_AllocFrame$ev_scan : 55EA C |
+ $engine.page_cache$PageCache_AllocFrame$ev_next : 5602 C |
+ $engine.page_cache$PageCache_AllocFrame$detach : 563E C |
+ $engine.page_cache$PageCache_AllocFrame$thrash : 5658 C |
+ PageCache_FreeFrame : 565E C |
+ PageCache_Publish : 5678 C |
+ $engine.page_cache$PageCache_Publish$not_pinned : 56CA C |
+ $engine.page_cache$PageCache_Publish$done : 56E4 C |
+ PageCache_PatchRun_Seq : 56E6 C |
+ $engine.page_cache$asm6$pw_new_blank : 5708 C |
+ $engine.page_cache$asm6$pw_miss : 5716 C |
+ $engine.page_cache$asm6$pw_word : 5732 C |
+ $engine.page_cache$asm6$pw_ref_done : 577E C |
+ $engine.page_cache$asm6$pw_unref_old : 5784 C |
+ $engine.page_cache$asm6$pw_next : 57A4 C |
+ $engine.page_cache$PageCache_PatchRun_Seq$direct : 57B6 C |
+ $engine.page_cache$asm8$pd_blank : 57BA C |
+ $engine.page_cache$asm8$pd_word : 57BE C |
+ $engine.page_cache$asm8$pd_next : 57D8 C |
+ PageCache_PatchRun_Col : 57EA C |
+ $engine.page_cache$asm10$pw_new_blank : 580C C |
+ $engine.page_cache$asm10$pw_miss : 581A C |
+ $engine.page_cache$asm10$pw_word : 5836 C |
+ $engine.page_cache$asm10$pw_ref_done : 5882 C |
+ $engine.page_cache$asm10$pw_unref_old : 5888 C |
+ $engine.page_cache$asm10$pw_next : 58A8 C |
+ $engine.page_cache$PageCache_PatchRun_Col$direct : 58BA C |
+ $engine.page_cache$asm12$pd_blank : 58BE C |
+ $engine.page_cache$asm12$pd_word : 58C2 C |
+ $engine.page_cache$asm12$pd_next : 58DC C |
+ PageCache_Prefetch : 58EE C |
+ $engine.page_cache$PageCache_Prefetch$row_scan : 5930 C |
+ $engine.page_cache$PageCache_Prefetch$row_next : 5954 C |
+ $engine.page_cache$PageCache_Prefetch$col_strip : 595A C |
+ $engine.page_cache$PageCache_Prefetch$col_scan : 5976 C |
+ $engine.page_cache$PageCache_Prefetch$col_next : 599C C |
+ $engine.page_cache$PageCache_Prefetch$strips_done : 59A2 C |
+ $engine.page_cache$PageCache_Prefetch$ret : 59A6 C |
+ $engine.page_cache$PageCache_Prefetch$scan_block : 59A8 C |
+ $engine.page_cache$PageCache_Prefetch$sb_loop : 59B2 C |
+ $engine.page_cache$PageCache_Prefetch$sb_next : 59E8 C |
+ $engine.page_cache$PageCache_Prefetch$sb_done : 59EC C |
+ PageCache_Audit : 59EE C |
+ PageCache_ResetRefcounts : 59EE C |
+ BG_Init : 5A00 C |
+ $engine.bg$BG_Init$bg_len_ok : 5A24 C |
+ $engine.bg$asm1$wait_z80 : 5A32 C |
+ $engine.bg$BG_Init$tile_copy : 5A54 C |
+ $engine.bg$BG_Init$skip_tiles : 5A62 C |
+ $engine.bg$asm3$wait_z80 : 5A74 C |
+ $engine.bg$BG_Init$nt_col : 5A8E C |
+ $engine.bg$BG_Init$nt_row : 5AAE C |
+ $engine.bg$BG_Init$skip_nt : 5ACC C |
+ BgAnim_Init : 5AE0 C |
+ BgAnim_Update : 5AEC C |
+ $engine.bg_anim$BgAnim_Update$band_loop : 5B00 C |
+ $engine.bg_anim$BgAnim_Update$cam_x : 5B0E C |
+ $engine.bg_anim$BgAnim_Update$cam_y : 5B14 C |
+ $engine.bg_anim$BgAnim_Update$have_value : 5B18 C |
+ $engine.bg_anim$BgAnim_Update$commit : 5B64 C |
+ $engine.bg_anim$BgAnim_Update$queue_full : 5B68 C |
+ $engine.bg_anim$BgAnim_Update$skip_band : 5B6C C |
+ $engine.bg_anim$BgAnim_Update$next_band : 5B6E C |
+ $engine.bg_anim$BgAnim_Update$exit : 5B78 C |
+ ObjCodeBase : 10000 C |
+ DemoBox_Main : 10002 C |
+ ObjDef_DemoBox : 10006 C |
+ Map_DemoBox : 10020 C |
+ __offsets$games.demo.data.demo_data$Map_DemoBox$F0 : 10022 C |
+ DemoObjectList : 10030 C |
+ DemoObjectList_Term : 1003A C |
+ DemoArt : 1003E C |
+ DemoPalette : 100DE C |
+ BgAnim_Table : 100FE C |
+ GameState_Demo_Init : 10100 C |
+ $games.demo.demo_state$GameState_Demo_Init$copy_pal : 1010A C |
+ GameState_Demo : 10158 C |
+ BusError : 1016C C |
+ AddressError : 10184 C |
+ IllegalInstr : 101A0 C |
+ ZeroDivide : 101C2 C |
+ ChkInstr : 101DC C |
+ TrapvInstr : 101FA C |
+ PrivilegeViol : 1021A C |
+ Trace : 1023C C |
+ Line1010Emu : 10250 C |
+ Line1111Emu : 10270 C |
+ ErrorExcept : 10290 C |
+ ErrorTrap : 102AE C |
+ ErrorHandlerBlob : 102C6 C |
+ EndOfRom : 1121C C |
+ Tile_Cache_Nametable : FFFF0000 C |
+ Tile_Cache_Collision : FFFF2580 C |
+ Block_Stage_Buffers : FFFF3842 C |
+ Block_Stage_Bucket : FFFF6842 C |
+ Block_Stage_Chain : FFFF6942 C |
+ Cache_Spec_Gen_Ring : FFFF6982 C |
+ Cache_Spec_Window : FFFF6992 C |
+ Cache_Spec_Blocked : FFFF6994 C |
+ Cache_Spec_Skips : FFFF6996 C |
+ Pfx_Memo_Mask : FFFF6998 C |
+ Cs_Memo_Mask : FFFF699A C |
+ Page_Table : FFFF699C C |
+ Page_Frames : FFFF6A9C C |
+ Page_Queued_Bits : FFFF6B14 C |
+ Art_Staging_Buffer : FFFF6B34 C |
+ Lower_RAM_End : FFFF7334 C |
+ RAM_Start : FFFF8000 C |
+ VBlank_Flag : FFFF8000 C |
+ Frame_Counter : FFFF8002 C |
+ Logic_Tick : FFFF8004 C |
+ Game_State : FFFF8008 C |
+ Game_State_ID : FFFF800C C |
+ Game_State_Init : FFFF800D C |
+ VDP_Shadow_Table : FFFF800E C |
+ Hardware_Region : FFFF8026 C |
+ Region_Flags : FFFF8027 C |
+ Ctrl_1_Held : FFFF8028 C |
+ Ctrl_1_Press : FFFF8029 C |
+ Ctrl_2_Held : FFFF802A C |
+ Ctrl_2_Press : FFFF802B C |
+ Ctrl_1_Press_Accum : FFFF802C C |
+ Ctrl_2_Press_Accum : FFFF802D C |
+ Ctrl_1_Ext_Held : FFFF802E C |
+ Ctrl_1_Ext_Press : FFFF802F C |
+ Ctrl_2_Ext_Held : FFFF8030 C |
+ Ctrl_2_Ext_Press : FFFF8031 C |
+ Ctrl_1_Ext_Press_Accum : FFFF8032 C |
+ Ctrl_2_Ext_Press_Accum : FFFF8033 C |
+ Pad_1_Type : FFFF8034 C |
+ Pad_2_Type : FFFF8035 C |
+ Input_Source : FFFF8036 C |
+ Replay_Exit_Request : FFFF8037 C |
+ Replay_Done : FFFF8038 C |
+ Replay_Hold : FFFF8039 C |
+ Replay_Prev : FFFF803A C |
+ Replay_Ptr : FFFF803C C |
+ RNG_Seed : FFFF8040 C |
+ VInt_Ptr : FFFF8044 C |
+ VBlank_Ready : FFFF8048 C |
+ DMA_Critical : FFFF804A C |
+ DMA_Queue : FFFF804A C |
+ DMA_Critical_End : FFFF80BA C |
+ DMA_Important : FFFF80BA C |
+ DMA_Deferrable : FFFF8162 C |
+ DMA_Important_End : FFFF8162 C |
+ DMA_Critical_Slot : FFFF820A C |
+ DMA_Deferrable_End : FFFF820A C |
+ DMA_Queue_End : FFFF820A C |
+ DMA_Important_Slot : FFFF820C C |
+ DMA_Deferrable_Slot : FFFF820E C |
+ DMA_Budget_Default : FFFF8210 C |
+ DMA_Budget_Remaining : FFFF8212 C |
+ DMA_Enq_Bytes_Frame : FFFF8214 C |
+ Palette_Buffer : FFFF8216 C |
+ Palette_Dirty : FFFF8296 C |
+ Sprite_Table_Buffer : FFFF8298 C |
+ Sprite_Table_Dirty : FFFF8518 C |
+ Sprite_Emit_Active : FFFF8519 C |
+ Hscroll_Buffer : FFFF851A C |
+ Vscroll_Factor : FFFF889C C |
+ Parallax_Deform_Phase_FG : FFFF88A0 C |
+ Parallax_State : FFFF88A0 C |
+ Parallax_Deform_Phase_BG : FFFF88A2 C |
+ Parallax_V_Deform_Phase_BG : FFFF88A4 C |
+ Parallax_Current_Scroll_A : FFFF88A6 C |
+ Parallax_Current_Scroll_B : FFFF88C6 C |
+ Parallax_Current_Vscroll_BG : FFFF88E6 C |
+ Parallax_Current_Config : FFFF88E8 C |
+ Parallax_Target_Config : FFFF88EC C |
+ Parallax_Transition_Frames : FFFF88F0 C |
+ Parallax_Snap_Pending : FFFF88F1 C |
+ Parallax_Prev_Sec_X : FFFF88F2 C |
+ Parallax_Prev_Sec_Y : FFFF88F3 C |
+ Parallax_Vscroll_Column_Buf : FFFF88F4 C |
+ Parallax_Curve_Carry : FFFF8944 C |
+ Parallax_Drift_Acc : FFFF8944 C |
+ Parallax_Shadow_Bands : FFFF8948 C |
+ Parallax_Shadow_Scroll_A : FFFF8A88 C |
+ Parallax_Shadow_Scroll_B : FFFF8AA8 C |
+ Parallax_State_End : FFFF8AC8 C |
+ Raster_Program : FFFF8AC8 C |
+ Raster_State : FFFF8AC8 C |
+ Raster_Cursor : FFFF8ACC C |
+ Raster_Pending : FFFF8AD0 C |
+ Raster_Line : FFFF8AD4 C |
+ Raster_Buf_A : FFFF8AD6 C |
+ Raster_Buf_B : FFFF8B56 C |
+ Raster_Active_Buf : FFFF8BD6 C |
+ Raster_Dense_Lines : FFFF8BDA C |
+ Raster_Dense_Cursor : FFFF8BDC C |
+ Raster_Dense_Cmd : FFFF8BE0 C |
+ Raster_Dense_Mode : FFFF8BE4 C |
+ Raster_Ramp_Acc : FFFF8BE6 C |
+ Raster_Ramp_Step : FFFF8BEA C |
+ Effects_World_Y : FFFF8BEE C |
+ Effects_Screen_L : FFFF8BF6 C |
+ Effects_Offscreen_Entry : FFFF8BFE C |
+ Raster_Patch_Tab : FFFF8C02 C |
+ Pal_Base : FFFF8C06 C |
+ Palette_State : FFFF8C06 C |
+ Raster_State_End : FFFF8C06 C |
+ Pal_Target : FFFF8C66 C |
+ Pal_Variant_Stage : FFFF8CC6 C |
+ Pal_Variant_Ptr : FFFF8DC6 C |
+ Pal_Cycle_Script : FFFF8DCE C |
+ Pal_Cycle_Timers : FFFF8DD2 C |
+ Pal_Fade_Frames : FFFF8DD6 C |
+ Pal_Op : FFFF8DD7 C |
+ Pal_Op_Step : FFFF8DD8 C |
+ Pal_Op_Timer : FFFF8DD9 C |
+ Pal_Active : FFFF8DDA C |
+ Pal_Base_Dirty : FFFF8DDB C |
+ Pal_Compose_Lines : FFFF8DDC C |
+ Pal_Fade_Request : FFFF8DDD C |
+ BgAnim_LastStep : FFFF8DDE C |
+ Palette_State_End : FFFF8DDE C |
+ Static_Pal_Line0 : FFFF8DE6 C |
+ Static_Pal_Line1 : FFFF8DF4 C |
+ Static_Pal_Line2 : FFFF8E02 C |
+ Static_Pal_Ship : FFFF8E10 C |
+ Static_Pal_Line3 : FFFF8E1E C |
+ Static_Sprite_DMA : FFFF8E2C C |
+ Static_Hscroll_Line : FFFF8E3A C |
+ Object_RAM : FFFF8E48 C |
+ Player_1 : FFFF8E48 C |
+ Player_2 : FFFF8E98 C |
+ Dynamic_Slots : FFFF8EE8 C |
+ System_Slots : FFFF9B68 C |
+ Effect_Slots : FFFF9DE8 C |
+ Dynamic_Free_Stack : FFFFA2E8 C |
+ Object_RAM_End : FFFFA2E8 C |
+ Dynamic_Free_SP : FFFFA338 C |
+ Effect_Free_Stack : FFFFA33A C |
+ Effect_Free_SP : FFFFA35A C |
+ Sprite_Bands : FFFFA35C C |
+ Sprite_Band_Counts : FFFFA55C C |
+ Sprites_Rendered : FFFFA564 C |
+ Sprite_Cycle_Counter : FFFFA566 C |
+ SpriteMask_Y : FFFFA568 C |
+ SpriteMask_Height : FFFFA56A C |
+ SpriteMask_After_Band : FFFFA56C C |
+ Scanline_Band_Sprites : FFFFA56E C |
+ Camera_X : FFFFA576 C |
+ Camera_Y : FFFFA57A C |
+ Camera_X_Biased : FFFFA57E C |
+ Camera_Y_Biased : FFFFA580 C |
+ Game_Paused : FFFFA582 C |
+ Plane_Buffer : FFFFA584 C |
+ Plane_Buffer_Ptr : FFFFAB84 C |
+ Pos_table : FFFFAB86 C |
+ H_scroll_frame_offset : FFFFAC86 C |
+ Camera_Deadzone_Base : FFFFAC88 C |
+ Camera_Lookahead : FFFFAC8A C |
+ Camera_Pan_Offset : FFFFAC8C C |
+ Camera_X_Max : FFFFAC8E C |
+ Camera_Y_Max : FFFFAC90 C |
+ Camera_Target : FFFFAC92 C |
+ Camera_Curl_Offset : FFFFAC94 C |
+ Camera_Hold_Frames : FFFFAC96 C |
+ Camera_Art_Hold : FFFFAC97 C |
+ Cache_Left_Col : FFFFAC98 C |
+ Cache_Head_Col : FFFFAC9A C |
+ Cache_Top_Row : FFFFAC9C C |
+ Cache_Bottom_Row : FFFFAC9E C |
+ Cache_Origin_Col : FFFFACA0 C |
+ Cache_Origin_Row : FFFFACA2 C |
+ Cache_Fill_Last_Frame : FFFFACA4 C |
+ Cache_Fill_Resume_Col : FFFFACA6 C |
+ Cache_Fill_Resume_Row : FFFFACA8 C |
+ Cache_Art_Stall : FFFFACAA C |
+ Page_Free_Head : FFFFACAC C |
+ Cache_Fill_Budget : FFFFACAE C |
+ Cache_Fill_RowResume_Row : FFFFACB0 C |
+ Cache_Fill_RowResume_Col : FFFFACB2 C |
+ Cache_Fill_Rows_Left : FFFFACB4 C |
+ Cache_Prev_Cam_Row : FFFFACB6 C |
+ Cache_Prev_Cam_X : FFFFACB8 C |
+ Cache_H_Pfx_Dir : FFFFACBA C |
+ Cache_H_Pfx_Accum : FFFFACBC C |
+ Cache_Pfx_Row_Target : FFFFACBE C |
+ Cache_Pfx_Col_Target : FFFFACC0 C |
+ Cache_Pfx_Skip_Armed : FFFFACC2 C |
+ Cache_Pfx_Lag_Flag : FFFFACC4 C |
+ Block_Stage_Keys : FFFFACC6 C |
+ Block_Stage_Next : FFFFAD06 C |
+ Section_Top_Row_Written : FFFFAD08 C |
+ Section_Bottom_Row_Written : FFFFAD0A C |
+ Section_Plane_Dirty : FFFFAD0C C |
+ Section_Right_Col_Written : FFFFAD0E C |
+ Section_Left_Col_Written : FFFFAD10 C |
+ Section_Fwd_Neighbor_Data : FFFFAD12 C |
+ Section_Bwd_Neighbor_Data : FFFFAD16 C |
+ Tile_Override_Table : FFFFAD1A C |
+ Ring_Buffer : FFFFAD7A C |
+ Ring_Count : FFFFADDA C |
+ Ring_HighWater : FFFFADDB C |
+ Ring_Add_Dropped : FFFFADDC C |
+ Entity_Scan_State : FFFFADDE C |
+ Ring_Counter : FFFFAE46 C |
+ Ring_Anim_Frame : FFFFAE48 C |
+ Ring_Anim_Timer : FFFFAE49 C |
+ Entity_Window_Active : FFFFAE4A C |
+ Entity_Window_Center_ID : FFFFAE4B C |
+ Entity_Window_Anchor : FFFFAE4C C |
+ Entity_Window_OriginX : FFFFAE4E C |
+ Entity_Window_OriginY : FFFFAE50 C |
+ Entity_Loaded_Masks : FFFFAE52 C |
+ Entity_Mask_Scratch : FFFFAED2 C |
+ Camera_Y_Coarse_Prev : FFFFAF56 C |
+ Ring_Collected_Window : FFFFAF58 C |
+ Ring_Collected_Park : FFFFAFE2 C |
+ Collected_Park_Next : FFFFB066 C |
+ Current_Act_Ptr : FFFFB068 C |
+ Ring_Sfx_Speaker : FFFFB06C C |
+ Sfx_Ring_Buf : FFFFB06E C |
+ Sfx_Ring_Wr : FFFFB076 C |
+ Sfx_Ring_Rd : FFFFB077 C |
+ Sound_Dbg_Mirror : FFFFB078 C |
+ Dynamic_Live : FFFFB128 C |
+ Dynamic_Live_Count : FFFFB178 C |
+ Dynamic_Live_Dirty : FFFFB17A C |
+ Dynamic_Live_Pending : FFFFB17C C |
+ Dynamic_Live_Pending_Count : FFFFB18C C |
+ Block_Stage_Gen : FFFFB18E C |
+ Pfx_Memo_Row : FFFFB190 C |
+ Pfx_Memo_L16 : FFFFB192 C |
+ Pfx_Memo_H16 : FFFFB194 C |
+ Pfx_Memo_Gen : FFFFB196 C |
+ Cs_Memo_Col : FFFFB198 C |
+ Cs_Memo_T16 : FFFFB19A C |
+ Cs_Memo_B16 : FFFFB19C C |
+ Cs_Memo_Gen : FFFFB19E C |
+ HBlank_Vector_Slot : FFFFB1A0 C |
+ Block_Stage_Ptrs : FFFFB1A6 C |
+ Block_Stage_Maps : FFFFB1E6 C |
+ Cache_Cur_LocalMap : FFFFB226 C |
+ Block_Stage_ZeroPage : FFFFB22A C |
+ PageIn_Saved_D0 : FFFFB52A C |
+ PageIn_Saved_D1 : FFFFB52E C |
+ PageIn_Saved_D2 : FFFFB532 C |
+ PageIn_Saved_A0 : FFFFB536 C |
+ PageIn_Saved_A1 : FFFFB53A C |
+ PageIn_Saved_A2 : FFFFB53E C |
+ PageIn_Saved_A3 : FFFFB542 C |
+ PageIn_Saved_PC : FFFFB546 C |
+ PageIn_Saved_SR : FFFFB54A C |
+ PageIn_InFlight : FFFFB54C C |
+ PageIn_Suspended : FFFFB54D C |
+ PageIn_Staging_Busy : FFFFB54E C |
+ PageIn_Land_Pending : FFFFB54F C |
+ PageIn_Queue_Count : FFFFB550 C |
+ PageIn_Cur_Flags : FFFFB551 C |
+ PageIn_Queue : FFFFB552 C |
+ PageIn_Cur_Dest : FFFFB572 C |
+ PageIn_Cur_Bytes : FFFFB574 C |
+ PageIn_Cur_Page : FFFFB576 C |
+ PageIn_Cur_Frame : FFFFB578 C |
+ PageIn_Bulk_Drain : FFFFB579 C |
+ PageIn_Pool_Table : FFFFB57A C |
+ PageIn_Pool_Pages : FFFFB57E C |
+ PageIn_Fully_Resident : FFFFB580 C |
+ PageCache_Direct_Map : FFFFB581 C |
+ PageIn_Last_Frame : FFFFB582 C |
+ PageIn_Prev_Lagged : FFFFB584 C |
+ PageIn_Pfx_Skip_Armed : FFFFB586 C |
+ Page_Pfx_Budget : FFFFB588 C |
+ Act_Art_Budget : FFFFB58A C |
+ Art_Budget_Remaining : FFFFB58C C |
+ Ctrl_1_Held_Raw : FFFFB58E C |
+ Ctrl_2_Held_Raw : FFFFB58F C |
+ Ctrl_1_Ext_Held_Raw : FFFFB590 C |
+ Ctrl_2_Ext_Held_Raw : FFFFB591 C |
+ Palette_Ship_Snap : FFFFB592 C |
+ Engine_RAM_End : FFFFB612 C |
+ Game_RAM_End : FFFFB612 C |
+
+   1445 symbols
+    0 unused symbols
+
+  Equate Table (name = value; values, not addresses):
+  ---------------------------------------------------
+
+EQU AF_BACK = $000000FE
+EQU AF_CALLBACK = $000000FA
+EQU AF_CHANGE = $000000FD
+EQU AF_COLLISION = $000000F8
+EQU AF_DELETE = $000000FB
+EQU AF_END = $000000FF
+EQU AF_ROUTINE = $000000FC
+EQU AF_SET_FIELD = $000000F7
+EQU AF_SOUND = $000000F9
+EQU ART_HDR_SIZE = $00000004
+EQU ART_HDR_VERSION = $00000003
+EQU ART_HOLD_X_BIT = $00000000
+EQU ART_HOLD_Y_BIT = $00000001
+EQU ART_PAGE_FLAG_PINNED = $00000001
+EQU ART_PAGE_FLAG_PINNED_BIT = $00000000
+EQU ART_PAGE_FORM_RAW = $00000001
+EQU ART_PAGE_FORM_ZX0 = $00000000
+EQU ART_POOL_PAGE_BYTES = $00000800
+EQU ART_POOL_PAGE_BYTES_SHIFT = $0000000B
+EQU ART_POOL_PAGE_TILES = $00000040
+EQU ART_STAGING_BUFFER_SIZE = $00000800
+EQU ART_VER_S4LZ = $00000001
+EQU ART_VER_ZX0 = $00000002
+EQU Act_act_art_budget = $00000026
+EQU Act_act_art_pool_pages = $0000001E
+EQU Act_act_art_pool_table = $0000001A
+EQU Act_act_bg_layout = $0000000E
+EQU Act_act_bg_tiles = $00000012
+EQU Act_act_parallax_config = $00000016
+EQU Act_act_sec_local_maps = $00000022
+EQU Act_edge_mode = $00000020
+EQU Act_grid_h = $00000006
+EQU Act_grid_w = $00000004
+EQU Act_len = $00000028
+EQU Act_pad_21 = $00000021
+EQU Act_sec_grid_ptr = $00000000
+EQU Act_start_local_x = $00000008
+EQU Act_start_local_y = $0000000A
+EQU Act_start_sec_x = $0000000C
+EQU Act_start_sec_y = $0000000D
+EQU BALL_X_RADIUS = $00000007
+EQU BALL_Y_RADIUS = $0000000E
+EQU BGANIM_MAX_BANDS = $00000004
+EQU BG_TILE_BASE_SLOT = $00000400
+EQU BG_TILE_BASE_VRAM = $00008000
+EQU BG_TILE_CAPACITY = $000001C0
+EQU BLOCKS_PER_SECTION_AXIS = $00000010
+EQU BLOCKS_PER_SECTION_SHIFT = $00000004
+EQU BLOCK_COLL_COLS = $00000010
+EQU BLOCK_COLL_PLANE_SIZE = $00000080
+EQU BLOCK_COLL_ROWS = $00000008
+EQU BLOCK_COLL_SIZE = $00000100
+EQU BLOCK_DECOMP_BUDGET = $00000006
+EQU BLOCK_INDEX_ENTRIES = $00000100
+EQU BLOCK_INDEX_SIZE = $00000400
+EQU BLOCK_NT_SIZE = $00000200
+EQU BLOCK_RAW_SIZE = $00000300
+EQU BLOCK_SPEC_LEAD_TICKS = $00000008
+EQU BLOCK_SPEC_REARM = $00000008
+EQU BLOCK_STAGE_BUCKETS = $00000100
+EQU BLOCK_STAGE_SLOTS = $00000010
+EQU BLOCK_TILE_SHIFT = $00000004
+EQU BLOCK_TILE_SIZE = $00000010
+EQU BUTTON_A = $00000040
+EQU BUTTON_B = $00000010
+EQU BUTTON_B_BIT = $00000004
+EQU BUTTON_C = $00000020
+EQU BUTTON_DOWN = $00000002
+EQU BUTTON_DOWN_BIT = $00000001
+EQU BUTTON_EXT_MODE = $00000008
+EQU BUTTON_EXT_X = $00000004
+EQU BUTTON_EXT_Y = $00000002
+EQU BUTTON_EXT_Z = $00000001
+EQU BUTTON_LEFT = $00000004
+EQU BUTTON_LEFT_BIT = $00000002
+EQU BUTTON_RIGHT = $00000008
+EQU BUTTON_RIGHT_BIT = $00000003
+EQU BUTTON_START = $00000080
+EQU BUTTON_START_BIT = $00000007
+EQU BUTTON_UP = $00000001
+EQU BUTTON_UP_BIT = $00000000
+EQU CAM_LOOKAHEAD_THRESHOLD = $00000600
+EQU CAM_MAX_Y_STEP = $00000010
+EQU CAM_PAN_LIMIT = $00000040
+EQU CAM_PAN_SPEED = $00000002
+EQU CAM_SCREEN_HALF_H = $00000070
+EQU CAM_SCREEN_HALF_W = $000000A0
+EQU CLAMP_MARGIN_TILES = $00000004
+EQU COLLECTED_BITMASK_OFFSET = $00000002
+EQU COLLECTED_EMPTY_TAG = $000000FF
+EQU COLLECTED_MASK_BYTES = $00000010
+EQU COLLECTED_PARK_ENTRY_SIZE = $00000021
+EQU COLLECTED_PARK_SLOTS = $00000004
+EQU COLLECTED_SLOT_SIZE = $00000022
+EQU COLLISION_BOSS = $00000002
+EQU COLLISION_BUBBLE = $00000006
+EQU COLLISION_CELL_SHIFT = $00000004
+EQU COLLISION_ENEMY = $00000001
+EQU COLLISION_HURT = $00000003
+EQU COLLISION_MONITOR = $00000004
+EQU COLLISION_NONE = $00000000
+EQU COLLISION_PROJECTILE = $00000007
+EQU COLLISION_RING = $00000005
+EQU COLLISION_SOLID = $00000008
+EQU COLLISION_SOLID_BREAK = $00000009
+EQU COLLISION_SOLID_HURT = $0000000B
+EQU COLLISION_SPRING = $0000000A
+EQU COLLISION_TOUCH = $0000000C
+EQU CRAM = $0000002B
+EQU CTYPE_AIR = $00000000
+EQU CULL_DISTANCE_X = $00000300
+EQU CULL_DISTANCE_Y = $00000200
+EQU DEBUGGER__EXTENSIONS__BTN_A_DEBUGGER = $00011132
+EQU DEBUGGER__EXTENSIONS__BTN_B_DEBUGGER = $0001117E
+EQU DEBUGGER__EXTENSIONS__BTN_C_DEBUGGER = $00000000
+EQU DEBUGGER__EXTENSIONS__ENABLE = $00000001
+EQU DEBUGGER__SHOW_SR_USP = $00000000
+EQU DEBUGGER__STR_OFFSET_SELECTOR = $000105D2
+EQU DMA = $00000027
+EQU DMAEntry_Command = $0000000A
+EQU DMAEntry_Reg93 = $00000002
+EQU DMAEntry_Reg94 = $00000000
+EQU DMAEntry_Reg95 = $00000008
+EQU DMAEntry_Reg96 = $00000006
+EQU DMAEntry_Reg97 = $00000004
+EQU DMAEntry_SizeH = $00000001
+EQU DMAEntry_SizeL = $00000003
+EQU DMAEntry_SrcH = $00000005
+EQU DMAEntry_SrcL = $00000009
+EQU DMAEntry_SrcM = $00000007
+EQU DMAEntry_len = $0000000E
+EQU DMA_BUDGET_BLANKED_INIT = $00002000
+EQU DMA_BUDGET_NTSC = $00001800
+EQU DMA_BUDGET_PAL = $00002D80
+EQU DMA_CRITICAL_SLOTS = $00000008
+EQU DMA_DEFERRABLE_SLOTS = $0000000C
+EQU DMA_ENQ_BYTE_CAP = $00003000
+EQU DMA_IMPORTANT_SLOTS = $0000000C
+EQU DMA_TOTAL_SLOTS = $00000020
+EQU DUR_DYNAMIC = $000000FF
+EQU EDGE_CLAMP = $00000000
+EQU EDGE_KILL = $00000002
+EQU EDGE_WRAP_V = $00000001
+EQU ENTITY_DESPAWN_BUFFER = $00000200
+EQU ENTITY_DESPAWN_BUFFER_Y = $00000180
+EQU ENTITY_LOADED_OBJ_OFFSET = $00000010
+EQU ENTITY_LOADED_SLOT_SIZE = $00000020
+EQU ENTITY_LOAD_BUFFER = $00000180
+EQU ENTITY_LOAD_BUFFER_Y = $00000100
+EQU ENTITY_RESCAN_COARSE_MASK = $0000FF80
+EQU ENTITY_RESCAN_ROW_SIZE = $00000080
+EQU EntityScanState_ess_entry_idx = $00000013
+EQU EntityScanState_ess_obj_next_x = $00000018
+EQU EntityScanState_ess_obj_right_idx = $00000002
+EQU EntityScanState_ess_origin_x = $00000010
+EQU EntityScanState_ess_origin_y = $00000014
+EQU EntityScanState_ess_ring_next_x = $00000016
+EQU EntityScanState_ess_ring_right_idx = $00000000
+EQU EntityScanState_ess_rom_obj_ptr = $00000008
+EQU EntityScanState_ess_rom_ring_ptr = $00000004
+EQU EntityScanState_ess_rom_type_tbl_ptr = $0000000C
+EQU EntityScanState_ess_section_id = $00000012
+EQU EntityScanState_len = $0000001A
+EQU FRAME_BBOX_X_MAX = $00000001
+EQU FRAME_BBOX_X_MIN = $00000000
+EQU FRAME_BBOX_Y_MAX = $00000003
+EQU FRAME_BBOX_Y_MIN = $00000002
+EQU FRAME_PIECES = $00000006
+EQU FRAME_PIECE_COUNT = $00000004
+EQU GS_BOOT = $00000000
+EQU GS_DEMO = $00000002
+EQU GS_IDLE = $00000001
+EQU HASH_P1_ANIM = $FFFF8E66
+EQU HASH_P1_ANIMSUB = $FFFF8E60
+EQU HASH_P1_CUSTOM = $FFFF8E78
+EQU HASH_P1_CUSTOM_TAIL = $FFFF8E94
+EQU HASH_P1_DISPLAY = $FFFF8E5C
+EQU HASH_P1_ENTITY = $FFFF8E72
+EQU HASH_P1_INTERACT = $FFFF8E96
+EQU HASH_P1_MOTION = $FFFF8E4A
+EQU HASH_P1_RENDER = $FFFF8E56
+EQU HW_EXPANSION_CTRL = $00A1000D
+EQU HW_EXPANSION_CTRL_FULL = $00A1000C
+EQU HW_PORT_1_CTRL = $00A10009
+EQU HW_PORT_1_DATA = $00A10003
+EQU HW_PORT_2_CTRL = $00A1000B
+EQU HW_PORT_2_DATA = $00A10005
+EQU HW_PORT_A_CTRL_FULL = $00A10008
+EQU HW_PORT_EXP_DATA = $00A10007
+EQU HW_VERSION = $00A10001
+EQU H_PFX_HYST = $00000010
+EQU INPUT_LIVE = $00000000
+EQU INPUT_PLAYBACK = $00000001
+EQU INPUT_RECORD = $00000002
+EQU KILLED_BITMASK_OFFSET = $00000012
+EQU MAX_ACT_SECTIONS = $00000030
+EQU MAX_LIST_ENTRIES = $00000080
+EQU MAX_PARALLAX_BANDS = $00000010
+EQU MAX_TRACKED_SECTIONS = $00000004
+EQU MAX_VDP_SPRITES = $00000050
+EQU MDDBG__Art1bpp_Font = $00010616
+EQU MDDBG__Console_GetPosAsXY = $00010DC4
+EQU MDDBG__Console_Init = $00010D00
+EQU MDDBG__Console_InitShared = $00010D40
+EQU MDDBG__Console_Reset = $00010D3E
+EQU MDDBG__Console_SetBasePattern = $00010E18
+EQU MDDBG__Console_SetPosAsXY = $00010D90
+EQU MDDBG__Console_SetPosAsXY_Stack = $00010D8A
+EQU MDDBG__Console_SetWidth = $00010E34
+EQU MDDBG__Console_StartNewLine = $00010DEA
+EQU MDDBG__Console_Write = $00010E58
+EQU MDDBG__Console_WriteLine = $00010E54
+EQU MDDBG__Console_WriteLine_Formatted = $00010F1E
+EQU MDDBG__Console_WriteLine_WithPattern = $00010E52
+EQU MDDBG__Console_Write_Formatted = $00010F22
+EQU MDDBG__Debugger_AddressRegisters = $00011132
+EQU MDDBG__Debugger_Backtrace = $0001117E
+EQU MDDBG__Decomp1bpp = $00010F52
+EQU MDDBG__ErrorHandler = $000102C6
+EQU MDDBG__ErrorHandler_ClearConsole = $00011028
+EQU MDDBG__ErrorHandler_ConsoleConfig_Initial = $0001059E
+EQU MDDBG__ErrorHandler_ConsoleConfig_Shared = $000105A2
+EQU MDDBG__ErrorHandler_ConsoleOnly = $00011002
+EQU MDDBG__ErrorHandler_ExtraDebuggerList = $00011126
+EQU MDDBG__ErrorHandler_PagesController = $0001108C
+EQU MDDBG__ErrorHandler_PauseConsole = $00011052
+EQU MDDBG__ErrorHandler_SetupVDP = $00010516
+EQU MDDBG__ErrorHandler_VDPConfig = $0001054C
+EQU MDDBG__ErrorHandler_VDPConfig_Nametables = $00010562
+EQU MDDBG__Error_DrawOffsetLocation = $0001047E
+EQU MDDBG__Error_DrawOffsetLocation2 = $00010482
+EQU MDDBG__Error_DrawOffsetLocation__inj = $00010488
+EQU MDDBG__Error_IdleLoop = $000103EE
+EQU MDDBG__Error_InitConsole = $00010408
+EQU MDDBG__Error_MaskStackBoundaries = $00010414
+EQU MDDBG__FormatString = $00010C26
+EQU MDDBG__GetSymbolByOffset = $00010910
+EQU MDDBG__KDebug_FlushLine = $00010FC6
+EQU MDDBG__KDebug_Write = $00010FD4
+EQU MDDBG__KDebug_WriteLine = $00010FD0
+EQU MDDBG__KDebug_WriteLine_Formatted = $00010F6E
+EQU MDDBG__KDebug_Write_Formatted = $00010F72
+EQU MDDBG__Str_OffsetLocation_24bit = $000105D2
+EQU MDDBG__Str_OffsetLocation_32bit = $000105DB
+EQU MDDBG__VSync = $000110EC
+EQU NT_ATTR_MASK = $0000F800
+EQU NT_TILE_MASK = $000007FF
+EQU NUM_DYNAMIC = $00000028
+EQU NUM_DYNAMIC_PENDING = $00000008
+EQU NUM_EFFECTS = $00000010
+EQU NUM_PLAYERS = $00000002
+EQU NUM_SYSTEM = $00000008
+EQU NUM_TOTAL_SLOTS = $00000042
+EQU OBJ_CODE_BANK = $00000001
+EQU OBJ_ENTRY_SIZE = $00000006
+EQU OEF_ANY_Y = $0000000F
+EQU OEF_SUBTYPE_MASK = $000000FF
+EQU OEF_TYPE_MASK = $0000001F
+EQU OEF_TYPE_SHIFT = $00000008
+EQU OEF_XFLIP = $0000000D
+EQU OEF_YFLIP = $0000000E
+EQU PAD_3BTN = $00000000
+EQU PAD_6BTN = $00000001
+EQU PAGECACHE_AUDIT_INTERVAL = $00000080
+EQU PAGEIN_QUEUE_SLOTS = $00000008
+EQU PAGE_FRAMES = $0000000E
+EQU PAGE_FRAMES_CLAMP = $0000000E
+EQU PAGE_FRAMES_MAX = $0000000F
+EQU PAGE_FRAME_TILE_MASK = $0000003F
+EQU PAGE_FRAME_TILE_SHIFT = $00000006
+EQU PAGE_NOT_RESIDENT = $000000FF
+EQU PAGE_PREFETCH_MAX = $00000002
+EQU PAGE_TABLE_MAX = $00000100
+EQU PARALLAX_ANCHOR_NONE = $000000FF
+EQU PARALLAX_LERP_SHIFT = $00000004
+EQU PARALLAX_TRANS_DEFAULT = $00000010
+EQU PF_EVICTABLE = $00000002
+EQU PF_EVICTABLE_BIT = $00000001
+EQU PF_PINNED = $00000001
+EQU PF_PINNED_BIT = $00000000
+EQU PGRQ_BULK = $00000002
+EQU PGRQ_BULK_BIT = $00000001
+EQU PGRQ_DEMAND = $00000001
+EQU PGRQ_DEMAND_BIT = $00000000
+EQU PGRQ_PREFETCH = $00000000
+EQU PHYS_ACCEL = $0000000C
+EQU PHYS_AIR_ACCEL = $00000018
+EQU PHYS_DECEL = $00000080
+EQU PHYS_FALL_ANGLE = $00000030
+EQU PHYS_FALL_CAP = $00000F00
+EQU PHYS_FRICTION = $0000000C
+EQU PHYS_GRAVITY = $00000038
+EQU PHYS_GSP_CAP = $00001000
+EQU PHYS_JUMP_BUFFER = $00000002
+EQU PHYS_JUMP_FORCE = $00000680
+EQU PHYS_JUMP_HEADROOM = $00000006
+EQU PHYS_JUMP_RELEASE_CAP = $FFFFFC00
+EQU PHYS_JUMP_SKIP_CLEARANCE = $00000008
+EQU PHYS_KEEP_ROLL_MIN = $00000400
+EQU PHYS_MOVE_LOCK_TIME = $0000001E
+EQU PHYS_ROLL_DECEL = $00000020
+EQU PHYS_ROLL_FORCE_MIN = $00000200
+EQU PHYS_ROLL_FRICTION = $00000006
+EQU PHYS_ROLL_START_MIN = $00000100
+EQU PHYS_SKID_MIN = $00000400
+EQU PHYS_SLIP_ANGLE = $00000018
+EQU PHYS_SLIP_NUDGE = $00000080
+EQU PHYS_SLIP_SPEED = $00000280
+EQU PHYS_SLOPE_ROLL_DOWN = $00000050
+EQU PHYS_SLOPE_ROLL_UP = $00000014
+EQU PHYS_SLOPE_STAND_MIN = $0000000D
+EQU PHYS_SLOPE_WALK = $00000020
+EQU PHYS_TOP_SPEED = $00000600
+EQU PHYS_UNROLL_MAX = $00000080
+EQU PLANE_BUFFER_SIZE = $00000600
+EQU PLANE_H_CELLS = $00000040
+EQU PLANE_V_CELLS = $00000040
+EQU PLAYER_X_RADIUS = $00000009
+EQU PLAYER_Y_RADIUS = $00000013
+EQU POOL_TILE_CEILING = $00000380
+EQU PRIORITY_BANDS = $00000008
+EQU PSG_PORT = $00C00011
+EQU PUSH_RADIUS = $0000000A
+EQU READ = $0000000C
+EQU REPLAY_CHECK_MASK = $0000003F
+EQU REPLAY_ESCAPE = $000000FF
+EQU REPLAY_HEADER_LEN = $00000014
+EQU REPLAY_OP_CHECK = $00000001
+EQU REPLAY_OP_END = $00000000
+EQU REPLAY_RECORD_TICKS = $00002000
+EQU RF_COORDMODE = $00000003
+EQU RF_MULTISPRITE = $00000004
+EQU RF_ONSCREEN = $00000000
+EQU RF_PRIORITY_MASK = $000000E0
+EQU RF_PRIORITY_SHIFT = $00000005
+EQU RF_XFLIP = $00000001
+EQU RF_YFLIP = $00000002
+EQU RING_ANIM_FRAMES = $00000004
+EQU RING_ANIM_SPEED = $00000008
+EQU RING_BUFFER_ENTRY_SIZE = $00000006
+EQU RING_HEIGHT = $00000010
+EQU RING_WIDTH = $00000010
+EQU SCANLINE_BANDS = $00000007
+EQU SCANLINE_SPRITE_LIMIT = $00000018
+EQU SCREEN_HEIGHT = $000000E0
+EQU SCREEN_LAST_COL_MAX = $00000028
+EQU SCREEN_LAST_ROW_MAX = $0000001C
+EQU SCREEN_TILES_H = $0000001C
+EQU SCREEN_TILES_W = $00000028
+EQU SCREEN_WIDTH = $00000140
+EQU SECTION_H_REACH_COLS_MAX = $00000029
+EQU SECTION_H_REACH_PX = $00000147
+EQU SECTION_SIZE = $00000800
+EQU SECTION_SIZE_SHIFT = $0000000B
+EQU SECTION_V_REACH_PX = $000000E7
+EQU SECTION_V_REACH_ROWS_MAX = $0000001D
+EQU SEC_VOID = $000000FF
+EQU SLOT_TAG_LEFT = $00000000
+EQU SLOT_TAG_LOWER_L = $00000002
+EQU SLOT_TAG_LOWER_R = $00000003
+EQU SLOT_TAG_RIGHT = $00000001
+EQU SND_DMA_ACTIVE_SLOT = $00A01F04
+EQU SOLID_ALL = $00000003
+EQU SOLID_LRB = $00000002
+EQU SOLID_NONE = $00000000
+EQU SOLID_TOP = $00000001
+EQU SPRITES_PER_BAND = $00000020
+EQU SPRITE_CULL_MARGIN = $00000020
+EQU SRC_HSCROLL = $007FC28D
+EQU SRC_PAL_LINE0 = $007FC10B
+EQU SRC_PAL_LINE1 = $007FC11B
+EQU SRC_PAL_LINE2 = $007FC12B
+EQU SRC_PAL_LINE3 = $007FC13B
+EQU SRC_SPRITE_TABLE = $007FC14C
+EQU SST_CUSTOM_SIZE = $00000022
+EQU SST_TEMPLATE_SIZE = $00000018
+EQU SST_TEMPLATE_START = $0000000A
+EQU SST_angle = $0000001F
+EQU SST_anim = $00000018
+EQU SST_anim_frame = $00000021
+EQU SST_anim_table = $0000001A
+EQU SST_anim_timer = $00000022
+EQU SST_art_tile = $00000014
+EQU SST_code_addr = $00000000
+EQU SST_collision_resp = $0000000F
+EQU SST_entity_list_index = $0000002C
+EQU SST_entity_section_id = $0000002B
+EQU SST_frame_off = $0000002E
+EQU SST_height_pixels = $00000017
+EQU SST_interact = $0000004E
+EQU SST_layer = $0000002D
+EQU SST_len = $00000050
+EQU SST_mapping_frame = $00000023
+EQU SST_mappings = $00000010
+EQU SST_parent_ptr = $00000026
+EQU SST_prev_anim = $00000020
+EQU SST_prev_frame = $00000024
+EQU SST_render_flags = $0000000E
+EQU SST_sibling_ptr = $00000028
+EQU SST_slot_tag = $0000002A
+EQU SST_sprite_piece_count = $00000025
+EQU SST_sst_custom = $00000030
+EQU SST_status = $0000001E
+EQU SST_subtype = $00000019
+EQU SST_width_pixels = $00000016
+EQU SST_x_pos = $00000002
+EQU SST_x_vel = $0000000A
+EQU SST_y_pos = $00000006
+EQU SST_y_vel = $0000000C
+EQU STALL_WATCHDOG_FRAMES = $0000012C
+EQU STRESS_EVICT_FRAMES = $00000009
+EQU ST_IN_AIR = $00000003
+EQU ST_ON_OBJECT = $00000005
+EQU ST_PUSHING = $00000006
+EQU ST_ROLLING = $00000004
+EQU ST_UNDERWATER = $00000007
+EQU ST_XFLIP = $00000001
+EQU ST_YFLIP = $00000002
+EQU SYSTEM_STACK = $FFFFFF00
+EQU Sec_len = $00000042
+EQU Sec_sec_anim_blocks = $00000030
+EQU Sec_sec_bg_layout = $0000001C
+EQU Sec_sec_block_dict = $0000002C
+EQU Sec_sec_block_dict_len = $00000040
+EQU Sec_sec_block_index = $00000000
+EQU Sec_sec_camera_lookahead = $0000003D
+EQU Sec_sec_effects = $00000034
+EQU Sec_sec_flags = $00000038
+EQU Sec_sec_music = $0000003A
+EQU Sec_sec_objects = $00000004
+EQU Sec_sec_pal = $00000010
+EQU Sec_sec_pal_cycle = $00000024
+EQU Sec_sec_parallax_config = $00000014
+EQU Sec_sec_pcfg_pad_3C = $0000003C
+EQU Sec_sec_pcfg_pad_3E = $0000003E
+EQU Sec_sec_pcfg_pad_3F = $0000003F
+EQU Sec_sec_plc = $0000000C
+EQU Sec_sec_raster_table = $00000018
+EQU Sec_sec_rings = $00000008
+EQU Sec_sec_sound_bank = $00000028
+EQU Sec_sec_type_table = $00000020
+EQU TILE_CACHE_COLL_PLANES = $00000002
+EQU TILE_CACHE_COLL_ROWS = $0000001E
+EQU TILE_CACHE_COLL_SIZE = $00000960
+EQU TILE_CACHE_COLS = $00000050
+EQU TILE_CACHE_MARGIN_H = $00000014
+EQU TILE_CACHE_MARGIN_V = $00000010
+EQU TILE_CACHE_NT_SIZE = $00002580
+EQU TILE_CACHE_ROWS = $0000003C
+EQU TILE_CACHE_STRIDE = $00000050
+EQU TILE_SIZE = $00000020
+EQU TMSS_REGISTER = $00A14000
+EQU VDP_CTRL = $00C00004
+EQU VDP_DATA = $00C00000
+EQU VDP_HV_COUNTER = $00C00008
+EQU VDP_REG_0C_BOOT = $00000081
+EQU VDP_SPRITE_X_OFFSET = $00000080
+EQU VDP_SPRITE_Y_OFFSET = $00000080
+EQU VDP_Shadow_len = $00000013
+EQU VDP_Shadow_vdp_bgcolor = $00000007
+EQU VDP_Shadow_vdp_hint_rate = $0000000A
+EQU VDP_Shadow_vdp_hscroll = $0000000D
+EQU VDP_Shadow_vdp_increment = $0000000F
+EQU VDP_Shadow_vdp_mode1 = $00000000
+EQU VDP_Shadow_vdp_mode2 = $00000001
+EQU VDP_Shadow_vdp_mode3 = $0000000B
+EQU VDP_Shadow_vdp_mode4 = $0000000C
+EQU VDP_Shadow_vdp_nametable_gen = $0000000E
+EQU VDP_Shadow_vdp_plane_a = $00000002
+EQU VDP_Shadow_vdp_plane_b = $00000004
+EQU VDP_Shadow_vdp_plane_size = $00000010
+EQU VDP_Shadow_vdp_sprite = $00000005
+EQU VDP_Shadow_vdp_sprite_gen = $00000006
+EQU VDP_Shadow_vdp_unused08 = $00000008
+EQU VDP_Shadow_vdp_unused09 = $00000009
+EQU VDP_Shadow_vdp_window = $00000003
+EQU VDP_Shadow_vdp_window_h = $00000011
+EQU VDP_Shadow_vdp_window_v = $00000012
+EQU VFILL_ROWS_PER_FRAME = $00000002
+EQU VRAM = $00000021
+EQU VRAM_DEMO_OBJ = $000003E0
+EQU VRAM_HSCROLL_TABLE = $0000BC00
+EQU VRAM_PLANE_A = $0000C000
+EQU VRAM_PLANE_B = $0000E000
+EQU VRAM_PLANE_B_BYTES = $0000E000
+EQU VRAM_SPRITE_TABLE = $0000B800
+EQU VRAM_WINDOW = $0000F000
+EQU VSRAM = $00000025
+EQU WRITE = $00000007
+EQU YM2612_A0 = $00A04000
+EQU YM2612_A1 = $00A04002
+EQU YM2612_D0 = $00A04001
+EQU YM2612_D1 = $00A04003
+EQU Z80_BUS_REQUEST = $00A11100
+EQU Z80_IDLE_SIZE = $00000028
+EQU Z80_RAM = $00A00000
+EQU Z80_RAM_END = $00A02000
+EQU Z80_RESET = $00A11200
+EQU Z80_SOUND_SIZE = $00000000
+EQU __Aeon_AS_Carrier = $00000000
+EQU _eh_address_error = $00000001
+EQU _eh_align_offset = $00000080
+EQU _eh_enter_console = $00000040
+EQU _eh_hide_caller = $00000004
+EQU _eh_return = $00000020
+EQU _eh_show_sr_usp = $00000002
+EQU band_entry_band_deform_shift_a = $00000007
+EQU band_entry_band_deform_shift_b = $00000008
+EQU band_entry_band_factor_a_s1 = $00000002
+EQU band_entry_band_factor_a_s2 = $00000003
+EQU band_entry_band_factor_b_s1 = $00000004
+EQU band_entry_band_factor_b_s2 = $00000005
+EQU band_entry_band_factor_ops = $00000006
+EQU band_entry_band_phase_offset = $00000009
+EQU band_entry_band_top_plane = $00000000
+EQU band_entry_len = $0000000A
+EQU bin = $000000A0
+EQU byte = $00000000
+EQU cr = $000000E6
+EQU dec = $00000090
+EQU endl = $000000E0
+EQU forced = $00000004
+EQU hex = $00000080
+EQU long = $00000003
+EQU pal0 = $000000E8
+EQU pal1 = $000000EA
+EQU pal2 = $000000EC
+EQU pal3 = $000000EE
+EQU parallax_config_len = $0000001E
+EQU parallax_config_pcfg_anchor_ch = $0000000B
+EQU parallax_config_pcfg_anchor_dsa = $0000001A
+EQU parallax_config_pcfg_anchor_dsb = $0000001B
+EQU parallax_config_pcfg_band_count = $00000000
+EQU parallax_config_pcfg_deform_speed_bg = $0000000A
+EQU parallax_config_pcfg_deform_speed_fg = $00000009
+EQU parallax_config_pcfg_deform_table_bg = $00000010
+EQU parallax_config_pcfg_deform_table_fg = $0000000C
+EQU parallax_config_pcfg_layer_mask = $00000002
+EQU parallax_config_pcfg_pad_29 = $0000001D
+EQU parallax_config_pcfg_transition = $00000008
+EQU parallax_config_pcfg_v_center_y = $00000004
+EQU parallax_config_pcfg_v_deform_shift_bg = $00000019
+EQU parallax_config_pcfg_v_deform_speed_bg = $00000018
+EQU parallax_config_pcfg_v_deform_table_bg = $00000014
+EQU parallax_config_pcfg_v_factor_bg = $00000001
+EQU parallax_config_pcfg_v_factor_fg = $0000001C
+EQU parallax_config_pcfg_v_offset = $00000006
+EQU setoff = $000000F4
+EQU setpat = $000000F8
+EQU setw = $000000F0
+EQU setx = $000000FA
+EQU signed = $00000008
+EQU split = $00000008
+EQU str = $000000D0
+EQU sym = $000000B0
+EQU symdisp = $000000C0
+EQU weak = $00000008
+EQU word = $00000001
+
+   558 equates

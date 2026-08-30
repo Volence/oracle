@@ -1,29 +1,37 @@
 //! End-to-end check of [`oracle_core::symbols`] against the **real** artifacts Aeon's `sigil` build emits.
 //!
 //! The synthetic fixtures in the module's own unit tests encode the format as we understand it; this file
-//! is the only place that checks our understanding against the genuine 2,129-symbol `s4.lst` and the
-//! 696,836-byte `s4.bin` it describes. That makes it the only true end-to-end evidence available — and also
-//! the reason it cannot be a hard dependency.
+//! is the only place that checks our understanding against a genuine `s4.lst` and the `s4.bin` it
+//! describes — which makes it the only true end-to-end evidence available.
 //!
-//! # Why every test here skips instead of failing
+//! # Where the artifacts come from
 //!
-//! These files live in a **different git repository** (`aeon/`), are build outputs (not checked in), and
-//! are absent on CI and in any fresh clone of this repo. A test that failed when they were missing would
-//! make the suite red for everyone who has not built Aeon locally. So each test resolves its inputs first
-//! and returns early with a printed note when they are not there.
+//! From **`fixtures/aeon/`, this repo's own frozen copy** of them — committed bytes, so these tests run in
+//! a fresh clone and on CI, and so an Aeon rebuild can no longer turn our suite red. They used to be read
+//! live out of the sibling `aeon/` checkout, which made our green depend on another lane not rebuilding
+//! their game; `fixtures/aeon/PROVENANCE.md` records exactly which build is pinned, how the ROM/listing
+//! joint was verified, and how the pin moves.
 //!
-//! The path is overridable with `ORACLE_AEON_DIR` for a checkout in a different location.
+//! `ORACLE_AEON_DIR` still overrides the directory, so a developer can point these tests at a live Aeon
+//! build on purpose. Under that override the inputs may be absent, so each test resolves them first and
+//! returns early with a printed `SKIP:` note rather than failing.
 
 use oracle_core::symbols::{
     rom_declared_end, AddrSpace, BindingFault, RomBinding, SymbolTable, TableSource,
 };
 use std::path::PathBuf;
 
-/// Where Aeon's build outputs live. Defaults to the sibling checkout this project is developed against.
+/// Where the Aeon build artifacts come from.
+///
+/// The default is **this repo's own frozen copy** in `fixtures/aeon/` — see `fixtures/aeon/PROVENANCE.md`
+/// for what those bytes are and how the pin moves. `ORACLE_AEON_DIR` overrides it, so a developer can
+/// deliberately point these tests at a live Aeon build (e.g. `/home/volence/sonic_hacks/aeon`).
 fn aeon_dir() -> PathBuf {
     std::env::var("ORACLE_AEON_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/home/volence/sonic_hacks/aeon"))
+        .unwrap_or_else(|_| {
+            PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/aeon"))
+        })
 }
 
 /// Read one Aeon build artifact, or `None` (with a printed note) when it is not present.
@@ -33,7 +41,7 @@ fn artifact(name: &str) -> Option<Vec<u8>> {
         Ok(b) => Some(b),
         Err(_) => {
             println!(
-                "SKIP: {} not present (aeon build outputs are not in this repo)",
+                "SKIP: {} not present (set ORACLE_AEON_DIR, or restore the frozen copy in fixtures/aeon/)",
                 p.display()
             );
             None
