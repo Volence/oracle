@@ -2610,6 +2610,16 @@ as *"commit after 1489413"*, which is a coordinate rather than a SHA, so it was 
 section, not by trusting the pointer). **The text below is this repo's PRECEDENT NARRATIVE, not a second
 copy of the rule** — on any disagreement the contract wins, and the rule is not to be restated here as it
 drifts. Read it at a committed revision, never through `../empyrean/`.
+⚑ **n=2, AND THE SECOND INSTANCE READS SHARPER THAN A REPEAT** (aurora, verified here: contract line at
+empyrean `origin/main`, carrying commit `10c87ba` — a real contract+docs commit, `--stat`-checked, and this
+time the hub emitted the SHA from git rather than naming a neighbouring coordinate). **sigil wrote `closed`
+the same night, an hour apart, neither lane aware of the other, both having read the warning shortly
+before.** ⚑ **The part worth more than the count: we reached for TWO DIFFERENT WORDS.** That is not two
+lanes making the same slip — it is two lanes independently reaching for a terminal state **the vocabulary
+does not have**, and picking different plausible names for it. **The error is INVITED by the design, not
+merely permitted by it**: the natural word for a finished row does not exist, because the contract's answer
+is that a finished row *leaves the queue* — correct, and not what a writer's hand reaches for. A rule
+against `done` would not have caught `closed`, and a rule against both would not catch `complete`.
 ⚑ **The skill's own boot text warned about exactly this** (*"three lanes wrote `done`, which is not in the
 vocabulary, in three days"*) and I did it anyway, which is the argument for the mechanism over the warning:
 a rule you have read does not fire, a curl does. Found by the aurora lane reading the console, not by me —
