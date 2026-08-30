@@ -428,8 +428,6 @@ fn the_schema_covers_every_method_we_advertise_and_the_uncovered_list_is_pinned_
         "emulator/vgm_start",
         "emulator/vgm_status",
         "emulator/vgm_stop",
-        "emulator/z80_read",
-        "emulator/z80_write",
     ];
 
     let mut expected_schema_only = SCHEMATIZED_NOT_ADVERTISED.to_vec();
