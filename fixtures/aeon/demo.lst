@@ -777,672 +777,675 @@
 (0) 777/419C :        $engine.section$Section_RedrawPlanes$plb_col:
 (0) 778/41B8 :        $engine.section$Section_RedrawPlanes$plb_word:
 (0) 779/41C6 :        $engine.section$Section_RedrawPlanes$plb_done:
-(0) 780/41DE :        $engine.section$Section_RedrawPlanes$track_left_ok:
-(0) 781/41E4 :        Section_UpdateColumns:
-(0) 782/4208 :        $engine.section$Section_UpdateColumns$not_dirty:
-(0) 783/422E :        $engine.section$Section_UpdateColumns$right_clamp_ok:
-(0) 784/4238 :        $engine.section$Section_UpdateColumns$right_cache_ok:
-(0) 785/4246 :        $engine.section$Section_UpdateColumns$right_wrap_ok:
-(0) 786/424A :        $engine.section$Section_UpdateColumns$right_loop:
-(0) 787/426A :        $engine.section$Section_UpdateColumns$right_done:
-(0) 788/427E :        $engine.section$Section_UpdateColumns$right_done_cache_ok:
-(0) 789/4288 :        $engine.section$Section_UpdateColumns$left_clamp_skip:
-(0) 790/4296 :        $engine.section$Section_UpdateColumns$left_cache_ok:
-(0) 791/42A8 :        $engine.section$Section_UpdateColumns$left_wrap_ok:
-(0) 792/42AC :        $engine.section$Section_UpdateColumns$left_loop:
-(0) 793/42CC :        $engine.section$Section_UpdateColumns$left_done:
-(0) 794/42E0 :        $engine.section$Section_UpdateColumns$left_done_cache_ok:
-(0) 795/42EA :        $engine.section$Section_UpdateColumns$right_clamp_skip2:
-(0) 796/4302 :        $engine.section$Section_UpdateColumns$bot_cache_ok:
-(0) 797/4306 :        $engine.section$Section_UpdateColumns$bot_loop:
-(0) 798/4326 :        $engine.section$Section_UpdateColumns$bot_done:
-(0) 799/433A :        $engine.section$Section_UpdateColumns$bot_done_cache_ok:
-(0) 800/4344 :        $engine.section$Section_UpdateColumns$top_row_clamp_skip:
-(0) 801/4352 :        $engine.section$Section_UpdateColumns$top_cache_ok:
-(0) 802/4356 :        $engine.section$Section_UpdateColumns$top_loop:
-(0) 803/4376 :        $engine.section$Section_UpdateColumns$top_done:
-(0) 804/438A :        $engine.section$Section_UpdateColumns$top_done_cache_ok:
-(0) 805/4394 :        $engine.section$Section_UpdateColumns$bot_row_clamp_skip:
-(0) 806/43A0 :        Camera_Init:
-(0) 807/4414 :        $engine.camera$asm2$min_ok:
-(0) 808/441E :        $engine.camera$asm2$clamp:
-(0) 809/4432 :        $engine.camera$asm4$min_ok:
-(0) 810/443C :        $engine.camera$asm4$clamp:
-(0) 811/4446 :        Camera_Update:
-(0) 812/4456 :        $engine.camera$Camera_Update$no_freeze:
-(0) 813/4492 :        $engine.camera$Camera_Update$x_scroll_right:
-(0) 814/449C :        $engine.camera$Camera_Update$apply_x:
-(0) 815/44A8 :        $engine.camera$Camera_Update$x_done:
-(0) 816/44AC :        $engine.camera$Camera_Update$x_clamp:
-(0) 817/44B4 :        $engine.camera$asm7$min_ok:
-(0) 818/44BE :        $engine.camera$asm7$clamp:
-(0) 819/44C6 :        $engine.camera$Camera_Update$y_track:
-(0) 820/44E8 :        $engine.camera$Camera_Update$no_curl_comp:
-(0) 821/4502 :        $engine.camera$Camera_Update$check_down:
-(0) 822/4502 :        $engine.camera$Camera_Update$down_ok:
-(0) 823/450A :        $engine.camera$Camera_Update$apply_y:
-(0) 824/4514 :        $engine.camera$Camera_Update$y_step_hi_ok:
-(0) 825/451E :        $engine.camera$Camera_Update$y_step_lo_ok:
-(0) 826/452A :        $engine.camera$Camera_Update$clamp_y:
-(0) 827/452E :        $engine.camera$Camera_Update$y_clamp:
-(0) 828/4536 :        $engine.camera$asm9$min_ok:
-(0) 829/4540 :        $engine.camera$asm9$clamp:
-(0) 830/4550 :        Parallax_Init:
-(0) 831/455A :        $engine.parallax$Parallax_Init$zero:
-(0) 832/457A :        Parallax_CheckBoundary:
-(0) 833/459C :        $engine.parallax$Parallax_CheckBoundary$crossed:
-(0) 834/45B4 :        $engine.parallax$Parallax_CheckBoundary$no_crossing:
-(0) 835/45B6 :        Parallax_StartTransition:
-(0) 836/45C8 :        $engine.parallax$Parallax_StartTransition$instant:
-(0) 837/45E0 :        $engine.parallax$Parallax_StartTransition$update_mode:
-(0) 838/45E2 :        $engine.parallax$Parallax_StartTransition$v_done:
-(0) 839/45E6 :        $engine.parallax$Parallax_StartTransition$no_change:
-(0) 840/45E8 :        $engine.parallax$Parallax_StartTransition$recross_current:
-(0) 841/4604 :        Parallax_Active_Config:
-(0) 842/460A :        Vscroll_Write:
-(0) 843/461C :        $engine.parallax$Vscroll_Write$whole_plane:
-(0) 844/4624 :        Parallax_Update:
-(0) 845/4642 :        $engine.parallax$Parallax_Update$use_target:
-(0) 846/4648 :        $engine.parallax$Parallax_Update$use_current:
-(0) 847/464C :        $engine.parallax$Parallax_Update$config_resolved:
-(0) 848/465E :        $engine.parallax$Parallax_Update$mode3_shadow:
-(0) 849/4680 :        $engine.parallax$asm7$wait_z80:
-(0) 850/46A0 :        $engine.parallax$Parallax_Update$mode3_reg_live:
-(0) 851/46C6 :        $engine.parallax$Parallax_Update$band_loop:
-(0) 852/46F4 :        $engine.parallax$Parallax_Update$snap_b:
-(0) 853/46F6 :        $engine.parallax$Parallax_Update$write_b:
-(0) 854/46FC :        $engine.parallax$Parallax_Update$band_disabled:
-(0) 855/4700 :        $engine.parallax$Parallax_Update$band_done:
-(0) 856/4718 :        $engine.parallax$Parallax_Update$no_config:
-(0) 857/471A :        Parallax_Step4_Fill:
-(0) 858/472E :        $engine.parallax$Parallax_Step4_Fill$find_k:
-(0) 859/4742 :        $engine.parallax$Parallax_Step4_Fill$found_k:
-(0) 860/4756 :        $engine.parallax$Parallax_Step4_Fill$copy_band:
-(0) 861/4780 :        $engine.parallax$Parallax_Step4_Fill$not_first:
-(0) 862/4788 :        $engine.parallax$Parallax_Step4_Fill$clamp_top:
-(0) 863/4792 :        $engine.parallax$Parallax_Step4_Fill$write_top:
-(0) 864/47B2 :        $engine.parallax$Parallax_Step4_Fill$no_wrap:
-(0) 865/47C2 :        $engine.parallax$Parallax_Step4_Fill$bands_ready:
-(0) 866/47DA :        Parallax_Step5_Vscroll:
-(0) 867/4800 :        $engine.parallax$Parallax_Step5_Vscroll$v_snap:
-(0) 868/4804 :        $engine.parallax$Parallax_Step5_Vscroll$v_locked:
-(0) 869/4808 :        $engine.parallax$Parallax_Step5_Vscroll$v_pack:
-(0) 870/4814 :        $engine.parallax$Parallax_Step5_Vscroll$v_done:
-(0) 871/4818 :        Decode_Factor_A:
-(0) 872/4846 :        $engine.parallax$Decode_Factor_A$a_sub:
-(0) 873/4848 :        $engine.parallax$Decode_Factor_A$a_pop_d3:
-(0) 874/484A :        $engine.parallax$Decode_Factor_A$negate:
-(0) 875/484E :        $engine.parallax$Decode_Factor_A$locked:
-(0) 876/4852 :        Decode_Factor_B:
-(0) 877/4880 :        $engine.parallax$Decode_Factor_B$b_sub:
-(0) 878/4882 :        $engine.parallax$Decode_Factor_B$b_pop_d3:
-(0) 879/4884 :        $engine.parallax$Decode_Factor_B$negate:
-(0) 880/4888 :        $engine.parallax$Decode_Factor_B$locked:
-(0) 881/488C :        Parallax_Fill_PerLine:
-(0) 882/4896 :        $engine.parallax$Parallax_Fill_PerLine$next_band:
-(0) 883/48A2 :        $engine.parallax$Parallax_Fill_PerLine$have_end:
-(0) 884/48A8 :        $engine.parallax$Parallax_Fill_PerLine$lp_flat:
-(0) 885/48BC :        $engine.parallax$Parallax_Fill_PerLine$fl_line:
-(0) 886/48D0 :        $engine.parallax$Parallax_Fill_PerLine$fl_tail:
-(0) 887/48D6 :        $engine.parallax$Parallax_Fill_PerLine$fl_rem:
-(0) 888/48DC :        $engine.parallax$Parallax_Fill_PerLine$band_done:
-(0) 889/48F0 :        Raster_Install:
-(0) 890/48F6 :        Raster_VBlank:
-(0) 891/491A :        $engine.effects.raster$Raster_VBlank$copy_program:
-(0) 892/4932 :        $engine.effects.raster$Raster_VBlank$copy:
-(0) 893/4938 :        $engine.effects.raster$Raster_VBlank$no_install:
-(0) 894/495E :        $engine.effects.raster$Raster_VBlank$done:
-(0) 895/4960 :        Raster_HInt:
-(0) 896/498C :        $engine.effects.raster$Raster_HInt$op_loop:
-(0) 897/49B0 :        $engine.effects.raster$Raster_HInt$op_reg:
-(0) 898/49B8 :        $engine.effects.raster$Raster_HInt$op_cram:
-(0) 899/49BC :        $engine.effects.raster$Raster_HInt$cram_delay:
-(0) 900/49C2 :        $engine.effects.raster$Raster_HInt$cram_loop:
-(0) 901/49D0 :        $engine.effects.raster$Raster_HInt$op_region:
-(0) 902/49D4 :        $engine.effects.raster$Raster_HInt$region_delay:
-(0) 903/49E0 :        $engine.effects.raster$Raster_HInt$region_loop:
-(0) 904/49F6 :        $engine.effects.raster$Raster_HInt$op_run_gradient:
-(0) 905/4A0A :        $engine.effects.raster$Raster_HInt$op_run_ramp:
-(0) 906/4A20 :        $engine.effects.raster$Raster_HInt$advance:
-(0) 907/4A28 :        $engine.effects.raster$Raster_HInt$priming:
-(0) 908/4A38 :        $engine.effects.raster$Raster_HInt$op_pal_restore:
-(0) 909/4A3C :        $engine.effects.raster$Raster_HInt$restore_delay:
-(0) 910/4A48 :        $engine.effects.raster$Raster_HInt$restore_loop:
-(0) 911/4A5E :        $engine.effects.raster$Raster_HInt$dense_body:
-(0) 912/4A84 :        $engine.effects.raster$Raster_HInt$ramp_body:
-(0) 913/4AA4 :        $engine.effects.raster$Raster_HInt$dense_end:
-(0) 914/4AA8 :        $engine.effects.raster$Raster_HInt$park:
-(0) 915/4AAC :        $engine.effects.raster$Raster_HInt$out:
-(0) 916/4AB2 :        Raster_Program_None:
-(0) 917/4AB8 :        Raster_InstallPatched:
-(0) 918/4ADE :        $engine.effects.raster$Raster_InstallPatched$no_ship:
-(0) 919/4AE0 :        $engine.effects.raster$Raster_InstallPatched$ship_done:
-(0) 920/4AFC :        $engine.effects.raster$Raster_InstallPatched$no_build:
-(0) 921/4B02 :        Raster_BuildShipEntry:
-(0) 922/4B3E :        Raster_BuildSchedule:
-(0) 923/4B5A :        $engine.effects.raster$Raster_BuildSchedule$dst_ready:
-(0) 924/4B72 :        $engine.effects.raster$Raster_BuildSchedule$entry:
-(0) 925/4B92 :        $engine.effects.raster$Raster_BuildSchedule$have_line:
-(0) 926/4BBC :        $engine.effects.raster$Raster_BuildSchedule$copy:
-(0) 927/4BC2 :        $engine.effects.raster$Raster_BuildSchedule$next:
-(0) 928/4BEE :        $engine.effects.raster$Raster_BuildSchedule$swap:
-(0) 929/4BF2 :        $engine.effects.raster$Raster_BuildSchedule$none:
-(0) 930/4BF4 :        $engine.effects.raster$Raster_BuildSchedule$suppress:
-(0) 931/4BF8 :        Raster_GetChannelBand:
-(0) 932/4C00 :        Effects_LatchWorldLines:
-(0) 933/4C0E :        $engine.effects.raster$Effects_LatchWorldLines$ch:
-(0) 934/4C1A :        Effects_SetWorldY:
-(0) 935/4C2A :        Palette_LoadPal:
-(0) 936/4C36 :        $engine.effects.palette$Palette_LoadPal$copy_base:
-(0) 937/4C50 :        $engine.effects.palette$Palette_LoadPal$load_target:
-(0) 938/4C5A :        $engine.effects.palette$Palette_LoadPal$copy_target:
-(0) 939/4C6E :        Palette_ArmFade:
-(0) 940/4C76 :        Palette_SetOp:
-(0) 941/4C8C :        Palette_SetVariant:
-(0) 942/4CB2 :        $engine.effects.palette$Palette_SetVariant$none:
-(0) 943/4CB4 :        Palette_LoadCycle:
-(0) 944/4CD6 :        $engine.effects.palette$Palette_LoadCycle$zero:
-(0) 945/4CDC :        $engine.effects.palette$Palette_LoadCycle$done:
-(0) 946/4CDE :        Palette_Compose:
-(0) 947/4CE6 :        $engine.effects.palette$Palette_Compose$work:
-(0) 948/4D06 :        $engine.effects.palette$Palette_Compose$base_copy:
-(0) 949/4D14 :        $engine.effects.palette$Palette_Compose$cycling:
-(0) 950/4D1E :        $engine.effects.palette$Palette_Compose$fade:
-(0) 951/4D28 :        $engine.effects.palette$Palette_Compose$operators:
-(0) 952/4D32 :        $engine.effects.palette$Palette_Compose$variants:
-(0) 953/4D4C :        $engine.effects.palette$Palette_Compose$done:
-(0) 954/4D4E :        Palette_DoCycle:
-(0) 955/4D60 :        $engine.effects.palette$Palette_DoCycle$chan:
-(0) 956/4D7C :        $engine.effects.palette$Palette_DoCycle$wait:
-(0) 957/4D80 :        $engine.effects.palette$Palette_DoCycle$next:
-(0) 958/4D86 :        $engine.effects.palette$Palette_DoCycle$ret:
-(0) 959/4D94 :        $engine.effects.palette$Palette_DoCycle$ret_quiet:
-(0) 960/4D96 :        Palette_RotateSpan:
-(0) 961/4DC4 :        $engine.effects.palette$Palette_RotateSpan$fwd:
-(0) 962/4DD0 :        $engine.effects.palette$Palette_RotateSpan$rev:
-(0) 963/4DD8 :        $engine.effects.palette$Palette_RotateSpan$rup:
-(0) 964/4DE2 :        $engine.effects.palette$Palette_RotateSpan$done:
-(0) 965/4DE4 :        Palette_DoFade:
-(0) 966/4DF8 :        $engine.effects.palette$Palette_DoFade$snap:
-(0) 967/4E18 :        $engine.effects.palette$Palette_DoFade$step_frame:
-(0) 968/4E22 :        $engine.effects.palette$Palette_DoFade$noskip:
-(0) 969/4E2E :        $engine.effects.palette$Palette_DoFade$word:
-(0) 970/4E4E :        $engine.effects.palette$asm10$st_up:
-(0) 971/4E50 :        $engine.effects.palette$asm10$st_end:
-(0) 972/4E6E :        $engine.effects.palette$asm11$st_up:
-(0) 973/4E70 :        $engine.effects.palette$asm11$st_end:
-(0) 974/4E92 :        $engine.effects.palette$asm12$st_up:
-(0) 975/4E94 :        $engine.effects.palette$asm12$st_end:
-(0) 976/4EAE :        Palette_DoOperator:
-(0) 977/4EDE :        $engine.effects.palette$Palette_DoOperator$neg_xor:
-(0) 978/4EF2 :        $engine.effects.palette$Palette_DoOperator$neg_tick:
-(0) 979/4EFE :        $engine.effects.palette$Palette_DoOperator$fade_dir:
-(0) 980/4F16 :        $engine.effects.palette$Palette_DoOperator$have_tgt:
-(0) 981/4F1E :        $engine.effects.palette$Palette_DoOperator$fw_word:
-(0) 982/4F36 :        $engine.effects.palette$asm16$st_up:
-(0) 983/4F38 :        $engine.effects.palette$asm16$st_end:
-(0) 984/4F50 :        $engine.effects.palette$asm17$st_up:
-(0) 985/4F52 :        $engine.effects.palette$asm17$st_end:
-(0) 986/4F6C :        $engine.effects.palette$asm18$st_up:
-(0) 987/4F6E :        $engine.effects.palette$asm18$st_end:
-(0) 988/4F98 :        $engine.effects.palette$Palette_DoOperator$ret:
-(0) 989/4F9A :        $engine.effects.palette$Palette_DoOperator$white_flash:
-(0) 990/4FA2 :        $engine.effects.palette$Palette_DoOperator$wf_fill:
-(0) 991/4FBC :        $engine.effects.palette$Palette_DoOperator$op_done_restore:
-(0) 992/4FDC :        Palette_DoVariants:
-(0) 993/4FEA :        $engine.effects.palette$Palette_DoVariants$slot1:
-(0) 994/4FF8 :        $engine.effects.palette$Palette_DoVariants$ret:
-(0) 995/4FFA :        Palette_DeriveVariant:
-(0) 996/5000 :        $engine.effects.palette$Palette_DeriveVariant$line:
-(0) 997/5016 :        $engine.effects.palette$Palette_DeriveVariant$entry:
-(0) 998/5036 :        $engine.effects.palette$asm23$cl_pos:
-(0) 999/503E :        $engine.effects.palette$asm23$cl_end:
-(0) 1000/5060 :        $engine.effects.palette$asm24$cl_pos:
-(0) 1001/5068 :        $engine.effects.palette$asm24$cl_end:
-(0) 1002/508C :        $engine.effects.palette$asm25$cl_pos:
-(0) 1003/5094 :        $engine.effects.palette$asm25$cl_end:
-(0) 1004/50A0 :        $engine.effects.palette$Palette_DeriveVariant$next_line:
-(0) 1005/50AC :        Pal_Cycle_None:
-(0) 1006/50AE :        Effects_ResolveParallax:
-(0) 1007/50BA :        $engine.effects.preset$Effects_ResolveParallax$no_sec_binding:
-(0) 1008/50CE :        $engine.effects.preset$Effects_ResolveParallax$act_default:
-(0) 1009/50D6 :        $engine.effects.preset$Effects_ResolveParallax$have_config:
-(0) 1010/50D8 :        Effects_InstallPreset:
-(0) 1011/50F0 :        $engine.effects.preset$Effects_InstallPreset$seed_anchor:
-(0) 1012/5104 :        $engine.effects.preset$Effects_InstallPreset$no_fade_arm:
-(0) 1013/5124 :        $engine.effects.preset$Effects_InstallPreset$variant0_same:
-(0) 1014/5136 :        $engine.effects.preset$Effects_InstallPreset$variant1_same:
-(0) 1015/5146 :        $engine.effects.preset$Effects_InstallPreset$no_patch:
-(0) 1016/5154 :        $engine.effects.preset$Effects_InstallPreset$have_raster:
-(0) 1017/5158 :        $engine.effects.preset$Effects_InstallPreset$raster_done:
-(0) 1018/5170 :        Level_LoadArt:
-(0) 1019/519C :        $engine.load_art$Level_LoadArt$streaming_pool:
-(0) 1020/51B6 :        $engine.load_art$Level_LoadArt$enq_loop:
-(0) 1021/51CA :        $engine.load_art$Level_LoadArt$enq_next:
-(0) 1022/51CE :        $engine.load_art$Level_LoadArt$drain_wait:
-(0) 1023/51F8 :        $engine.load_art$Level_LoadArt$bg:
-(0) 1024/5212 :        $engine.load_art$Level_LoadArt$direct_scan:
-(0) 1025/521C :        $engine.load_art$Level_LoadArt$direct_ok:
-(0) 1026/5220 :        $engine.load_art$Level_LoadArt$no_direct:
-(0) 1027/5228 :        PageIn_Process:
-(0) 1028/5254 :        $engine.page_in$PageIn_Process$lag_ontime:
-(0) 1029/525C :        $engine.page_in$PageIn_Process$frame_ticked:
-(0) 1030/529C :        $engine.page_in$PageIn_Process$gate_reset:
-(0) 1031/52A0 :        $engine.page_in$PageIn_Process$start:
-(0) 1032/52B2 :        $engine.page_in$PageIn_Process$page_id_ok:
-(0) 1033/530A :        $engine.page_in$PageIn_Process$raw:
-(0) 1034/532A :        $engine.page_in$PageIn_Process$raw_published:
-(0) 1035/5336 :        $engine.page_in$PageIn_Process$alloc_fail:
-(0) 1036/5342 :        $engine.page_in$PageIn_Process$idle:
-(0) 1037/5344 :        $engine.page_in$PageIn_Process$drop_degenerate:
-(0) 1038/5348 :        $engine.page_in$PageIn_Process$release_claim:
-(0) 1039/5360 :        $engine.page_in$PageIn_Process$claim_done:
-(0) 1040/5362 :        $engine.page_in$PageIn_Process$resume:
-(0) 1041/5366 :        $engine.page_in$PageIn_Process$after:
-(0) 1042/536A :        $engine.page_in$PageIn_Process$land:
-(0) 1043/538A :        $engine.page_in$PageIn_Process$land_full:
-(0) 1044/5390 :        $engine.page_in$PageIn_Process$queue_has_nonspec:
-(0) 1045/539C :        $engine.page_in$PageIn_Process$qn_scan:
-(0) 1046/53B0 :        $engine.page_in$PageIn_Process$qn_found:
-(0) 1047/53B4 :        $engine.page_in$PageIn_Process$dequeue:
-(0) 1048/53C0 :        $engine.page_in$PageIn_Process$dq_scan:
-(0) 1049/53DA :        $engine.page_in$PageIn_Process$dq_found:
-(0) 1050/53F0 :        $engine.page_in$PageIn_Process$dq_shift:
-(0) 1051/53F6 :        $engine.page_in$PageIn_Process$dq_done:
-(0) 1052/53FC :        PageIn_BankRegs:
-(0) 1053/5422 :        PageIn_Resume:
-(0) 1054/544C :        PageIn_EnqueueLanding:
-(0) 1055/547A :        $engine.page_in$PageIn_EnqueueLanding$art_deferred:
-(0) 1056/5480 :        $engine.page_in$PageIn_EnqueueLanding$dropped:
-(0) 1057/5486 :        PageIn_Enqueue:
-(0) 1058/54BE :        $engine.page_in$PageIn_Enqueue$full:
-(0) 1059/54C4 :        PageIn_Flush:
-(0) 1060/550C :        PageCache_Init:
-(0) 1061/5520 :        $engine.page_cache$PageCache_Init$clr_table:
-(0) 1062/5532 :        $engine.page_cache$PageCache_Init$clr_queued:
-(0) 1063/5544 :        $engine.page_cache$PageCache_Init$init_frames:
-(0) 1064/5570 :        PageCache_Request:
-(0) 1065/5578 :        $engine.page_cache$PageCache_Request$in_range:
-(0) 1066/55A0 :        $engine.page_cache$PageCache_Request$not_inflight:
-(0) 1067/55BA :        $engine.page_cache$PageCache_Request$done:
-(0) 1068/55BC :        PageCache_AllocFrame:
-(0) 1069/55DA :        $engine.page_cache$PageCache_AllocFrame$from_lru:
-(0) 1070/55EA :        $engine.page_cache$PageCache_AllocFrame$ev_scan:
-(0) 1071/5602 :        $engine.page_cache$PageCache_AllocFrame$ev_next:
-(0) 1072/563E :        $engine.page_cache$PageCache_AllocFrame$detach:
-(0) 1073/5658 :        $engine.page_cache$PageCache_AllocFrame$thrash:
-(0) 1074/565E :        PageCache_FreeFrame:
-(0) 1075/5678 :        PageCache_Publish:
-(0) 1076/56CA :        $engine.page_cache$PageCache_Publish$not_pinned:
-(0) 1077/56E4 :        $engine.page_cache$PageCache_Publish$done:
-(0) 1078/56E6 :        PageCache_PatchRun_Seq:
-(0) 1079/5708 :        $engine.page_cache$asm6$pw_new_blank:
-(0) 1080/5716 :        $engine.page_cache$asm6$pw_miss:
-(0) 1081/5732 :        $engine.page_cache$asm6$pw_word:
-(0) 1082/577E :        $engine.page_cache$asm6$pw_ref_done:
-(0) 1083/5784 :        $engine.page_cache$asm6$pw_unref_old:
-(0) 1084/57A4 :        $engine.page_cache$asm6$pw_next:
-(0) 1085/57B6 :        $engine.page_cache$PageCache_PatchRun_Seq$direct:
-(0) 1086/57BA :        $engine.page_cache$asm8$pd_blank:
-(0) 1087/57BE :        $engine.page_cache$asm8$pd_word:
-(0) 1088/57D8 :        $engine.page_cache$asm8$pd_next:
-(0) 1089/57EA :        PageCache_PatchRun_Col:
-(0) 1090/580C :        $engine.page_cache$asm10$pw_new_blank:
-(0) 1091/581A :        $engine.page_cache$asm10$pw_miss:
-(0) 1092/5836 :        $engine.page_cache$asm10$pw_word:
-(0) 1093/5882 :        $engine.page_cache$asm10$pw_ref_done:
-(0) 1094/5888 :        $engine.page_cache$asm10$pw_unref_old:
-(0) 1095/58A8 :        $engine.page_cache$asm10$pw_next:
-(0) 1096/58BA :        $engine.page_cache$PageCache_PatchRun_Col$direct:
-(0) 1097/58BE :        $engine.page_cache$asm12$pd_blank:
-(0) 1098/58C2 :        $engine.page_cache$asm12$pd_word:
-(0) 1099/58DC :        $engine.page_cache$asm12$pd_next:
-(0) 1100/58EE :        PageCache_Prefetch:
-(0) 1101/5930 :        $engine.page_cache$PageCache_Prefetch$row_scan:
-(0) 1102/5954 :        $engine.page_cache$PageCache_Prefetch$row_next:
-(0) 1103/595A :        $engine.page_cache$PageCache_Prefetch$col_strip:
-(0) 1104/5976 :        $engine.page_cache$PageCache_Prefetch$col_scan:
-(0) 1105/599C :        $engine.page_cache$PageCache_Prefetch$col_next:
-(0) 1106/59A2 :        $engine.page_cache$PageCache_Prefetch$strips_done:
-(0) 1107/59A6 :        $engine.page_cache$PageCache_Prefetch$ret:
-(0) 1108/59A8 :        $engine.page_cache$PageCache_Prefetch$scan_block:
-(0) 1109/59B2 :        $engine.page_cache$PageCache_Prefetch$sb_loop:
-(0) 1110/59E8 :        $engine.page_cache$PageCache_Prefetch$sb_next:
-(0) 1111/59EC :        $engine.page_cache$PageCache_Prefetch$sb_done:
-(0) 1112/59EE :        PageCache_Audit:
-(0) 1113/59EE :        PageCache_ResetRefcounts:
-(0) 1114/5A00 :        BG_Init:
-(0) 1115/5A24 :        $engine.bg$BG_Init$bg_len_ok:
-(0) 1116/5A32 :        $engine.bg$asm1$wait_z80:
-(0) 1117/5A54 :        $engine.bg$BG_Init$tile_copy:
-(0) 1118/5A62 :        $engine.bg$BG_Init$skip_tiles:
-(0) 1119/5A74 :        $engine.bg$asm3$wait_z80:
-(0) 1120/5A8E :        $engine.bg$BG_Init$nt_col:
-(0) 1121/5AAE :        $engine.bg$BG_Init$nt_row:
-(0) 1122/5ACC :        $engine.bg$BG_Init$skip_nt:
-(0) 1123/5AE0 :        BgAnim_Init:
-(0) 1124/5AEC :        BgAnim_Update:
-(0) 1125/5B00 :        $engine.bg_anim$BgAnim_Update$band_loop:
-(0) 1126/5B0E :        $engine.bg_anim$BgAnim_Update$cam_x:
-(0) 1127/5B14 :        $engine.bg_anim$BgAnim_Update$cam_y:
-(0) 1128/5B18 :        $engine.bg_anim$BgAnim_Update$have_value:
-(0) 1129/5B64 :        $engine.bg_anim$BgAnim_Update$commit:
-(0) 1130/5B68 :        $engine.bg_anim$BgAnim_Update$queue_full:
-(0) 1131/5B6C :        $engine.bg_anim$BgAnim_Update$skip_band:
-(0) 1132/5B6E :        $engine.bg_anim$BgAnim_Update$next_band:
-(0) 1133/5B78 :        $engine.bg_anim$BgAnim_Update$exit:
-(0) 1134/10000 :        ObjCodeBase:
-(0) 1135/10002 :        DemoBox_Main:
-(0) 1136/10006 :        ObjDef_DemoBox:
-(0) 1137/10020 :        Map_DemoBox:
-(0) 1138/10022 :        __offsets$games.demo.data.demo_data$Map_DemoBox$F0:
-(0) 1139/10030 :        DemoObjectList:
-(0) 1140/1003A :        DemoObjectList_Term:
-(0) 1141/1003E :        DemoArt:
-(0) 1142/100DE :        DemoPalette:
-(0) 1143/100FE :        BgAnim_Table:
-(0) 1144/10100 :        GameState_Demo_Init:
-(0) 1145/1010A :        $games.demo.demo_state$GameState_Demo_Init$copy_pal:
-(0) 1146/10158 :        GameState_Demo:
-(0) 1147/1016C :        BusError:
-(0) 1148/10184 :        AddressError:
-(0) 1149/101A0 :        IllegalInstr:
-(0) 1150/101C2 :        ZeroDivide:
-(0) 1151/101DC :        ChkInstr:
-(0) 1152/101FA :        TrapvInstr:
-(0) 1153/1021A :        PrivilegeViol:
-(0) 1154/1023C :        Trace:
-(0) 1155/10250 :        Line1010Emu:
-(0) 1156/10270 :        Line1111Emu:
-(0) 1157/10290 :        ErrorExcept:
-(0) 1158/102AE :        ErrorTrap:
-(0) 1159/102C6 :        ErrorHandlerBlob:
-(0) 1160/1121C :        EndOfRom:
-(0) 1161/FFFF0000 :        Tile_Cache_Nametable:
-(0) 1162/FFFF2580 :        Tile_Cache_Collision:
-(0) 1163/FFFF3842 :        Block_Stage_Buffers:
-(0) 1164/FFFF6842 :        Block_Stage_Bucket:
-(0) 1165/FFFF6942 :        Block_Stage_Chain:
-(0) 1166/FFFF6982 :        Cache_Spec_Gen_Ring:
-(0) 1167/FFFF6992 :        Cache_Spec_Window:
-(0) 1168/FFFF6994 :        Cache_Spec_Blocked:
-(0) 1169/FFFF6996 :        Cache_Spec_Skips:
-(0) 1170/FFFF6998 :        Pfx_Memo_Mask:
-(0) 1171/FFFF699A :        Cs_Memo_Mask:
-(0) 1172/FFFF699C :        Page_Table:
-(0) 1173/FFFF6A9C :        Page_Frames:
-(0) 1174/FFFF6B14 :        Page_Queued_Bits:
-(0) 1175/FFFF6B34 :        Art_Staging_Buffer:
-(0) 1176/FFFF7334 :        Lower_RAM_End:
-(0) 1177/FFFF8000 :        RAM_Start:
-(0) 1178/FFFF8000 :        VBlank_Flag:
-(0) 1179/FFFF8002 :        Frame_Counter:
-(0) 1180/FFFF8004 :        Logic_Tick:
-(0) 1181/FFFF8008 :        Game_State:
-(0) 1182/FFFF800C :        Game_State_ID:
-(0) 1183/FFFF800D :        Game_State_Init:
-(0) 1184/FFFF800E :        VDP_Shadow_Table:
-(0) 1185/FFFF8026 :        Hardware_Region:
-(0) 1186/FFFF8027 :        Region_Flags:
-(0) 1187/FFFF8028 :        Ctrl_1_Held:
-(0) 1188/FFFF8029 :        Ctrl_1_Press:
-(0) 1189/FFFF802A :        Ctrl_2_Held:
-(0) 1190/FFFF802B :        Ctrl_2_Press:
-(0) 1191/FFFF802C :        Ctrl_1_Press_Accum:
-(0) 1192/FFFF802D :        Ctrl_2_Press_Accum:
-(0) 1193/FFFF802E :        Ctrl_1_Ext_Held:
-(0) 1194/FFFF802F :        Ctrl_1_Ext_Press:
-(0) 1195/FFFF8030 :        Ctrl_2_Ext_Held:
-(0) 1196/FFFF8031 :        Ctrl_2_Ext_Press:
-(0) 1197/FFFF8032 :        Ctrl_1_Ext_Press_Accum:
-(0) 1198/FFFF8033 :        Ctrl_2_Ext_Press_Accum:
-(0) 1199/FFFF8034 :        Pad_1_Type:
-(0) 1200/FFFF8035 :        Pad_2_Type:
-(0) 1201/FFFF8036 :        Input_Source:
-(0) 1202/FFFF8037 :        Replay_Exit_Request:
-(0) 1203/FFFF8038 :        Replay_Done:
-(0) 1204/FFFF8039 :        Replay_Hold:
-(0) 1205/FFFF803A :        Replay_Prev:
-(0) 1206/FFFF803C :        Replay_Ptr:
-(0) 1207/FFFF8040 :        RNG_Seed:
-(0) 1208/FFFF8044 :        VInt_Ptr:
-(0) 1209/FFFF8048 :        VBlank_Ready:
-(0) 1210/FFFF804A :        DMA_Critical:
-(0) 1211/FFFF804A :        DMA_Queue:
-(0) 1212/FFFF80BA :        DMA_Critical_End:
-(0) 1213/FFFF80BA :        DMA_Important:
-(0) 1214/FFFF8162 :        DMA_Deferrable:
-(0) 1215/FFFF8162 :        DMA_Important_End:
-(0) 1216/FFFF820A :        DMA_Critical_Slot:
-(0) 1217/FFFF820A :        DMA_Deferrable_End:
-(0) 1218/FFFF820A :        DMA_Queue_End:
-(0) 1219/FFFF820C :        DMA_Important_Slot:
-(0) 1220/FFFF820E :        DMA_Deferrable_Slot:
-(0) 1221/FFFF8210 :        DMA_Budget_Default:
-(0) 1222/FFFF8212 :        DMA_Budget_Remaining:
-(0) 1223/FFFF8214 :        DMA_Enq_Bytes_Frame:
-(0) 1224/FFFF8216 :        Palette_Buffer:
-(0) 1225/FFFF8296 :        Palette_Dirty:
-(0) 1226/FFFF8298 :        Sprite_Table_Buffer:
-(0) 1227/FFFF8518 :        Sprite_Table_Dirty:
-(0) 1228/FFFF8519 :        Sprite_Emit_Active:
-(0) 1229/FFFF851A :        Hscroll_Buffer:
-(0) 1230/FFFF889C :        Vscroll_Factor:
-(0) 1231/FFFF88A0 :        Parallax_Deform_Phase_FG:
-(0) 1232/FFFF88A0 :        Parallax_State:
-(0) 1233/FFFF88A2 :        Parallax_Deform_Phase_BG:
-(0) 1234/FFFF88A4 :        Parallax_V_Deform_Phase_BG:
-(0) 1235/FFFF88A6 :        Parallax_Current_Scroll_A:
-(0) 1236/FFFF88C6 :        Parallax_Current_Scroll_B:
-(0) 1237/FFFF88E6 :        Parallax_Current_Vscroll_BG:
-(0) 1238/FFFF88E8 :        Parallax_Current_Config:
-(0) 1239/FFFF88EC :        Parallax_Target_Config:
-(0) 1240/FFFF88F0 :        Parallax_Transition_Frames:
-(0) 1241/FFFF88F1 :        Parallax_Snap_Pending:
-(0) 1242/FFFF88F2 :        Parallax_Prev_Sec_X:
-(0) 1243/FFFF88F3 :        Parallax_Prev_Sec_Y:
-(0) 1244/FFFF88F4 :        Parallax_Vscroll_Column_Buf:
-(0) 1245/FFFF8944 :        Parallax_Curve_Carry:
-(0) 1246/FFFF8944 :        Parallax_Drift_Acc:
-(0) 1247/FFFF8948 :        Parallax_Shadow_Bands:
-(0) 1248/FFFF8A88 :        Parallax_Shadow_Scroll_A:
-(0) 1249/FFFF8AA8 :        Parallax_Shadow_Scroll_B:
-(0) 1250/FFFF8AC8 :        Parallax_State_End:
-(0) 1251/FFFF8AC8 :        Raster_Program:
-(0) 1252/FFFF8AC8 :        Raster_State:
-(0) 1253/FFFF8ACC :        Raster_Cursor:
-(0) 1254/FFFF8AD0 :        Raster_Pending:
-(0) 1255/FFFF8AD4 :        Raster_Line:
-(0) 1256/FFFF8AD6 :        Raster_Buf_A:
-(0) 1257/FFFF8B56 :        Raster_Buf_B:
-(0) 1258/FFFF8BD6 :        Raster_Active_Buf:
-(0) 1259/FFFF8BDA :        Raster_Dense_Lines:
-(0) 1260/FFFF8BDC :        Raster_Dense_Cursor:
-(0) 1261/FFFF8BE0 :        Raster_Dense_Cmd:
-(0) 1262/FFFF8BE4 :        Raster_Dense_Mode:
-(0) 1263/FFFF8BE6 :        Raster_Ramp_Acc:
-(0) 1264/FFFF8BEA :        Raster_Ramp_Step:
-(0) 1265/FFFF8BEE :        Effects_World_Y:
-(0) 1266/FFFF8BF6 :        Effects_Screen_L:
-(0) 1267/FFFF8BFE :        Effects_Offscreen_Entry:
-(0) 1268/FFFF8C02 :        Raster_Patch_Tab:
-(0) 1269/FFFF8C06 :        Pal_Base:
-(0) 1270/FFFF8C06 :        Palette_State:
-(0) 1271/FFFF8C06 :        Raster_State_End:
-(0) 1272/FFFF8C66 :        Pal_Target:
-(0) 1273/FFFF8CC6 :        Pal_Variant_Stage:
-(0) 1274/FFFF8DC6 :        Pal_Variant_Ptr:
-(0) 1275/FFFF8DCE :        Pal_Cycle_Script:
-(0) 1276/FFFF8DD2 :        Pal_Cycle_Timers:
-(0) 1277/FFFF8DD6 :        Pal_Fade_Frames:
-(0) 1278/FFFF8DD7 :        Pal_Op:
-(0) 1279/FFFF8DD8 :        Pal_Op_Step:
-(0) 1280/FFFF8DD9 :        Pal_Op_Timer:
-(0) 1281/FFFF8DDA :        Pal_Active:
-(0) 1282/FFFF8DDB :        Pal_Base_Dirty:
-(0) 1283/FFFF8DDC :        Pal_Compose_Lines:
-(0) 1284/FFFF8DDD :        Pal_Fade_Request:
-(0) 1285/FFFF8DDE :        BgAnim_LastStep:
-(0) 1286/FFFF8DDE :        Palette_State_End:
-(0) 1287/FFFF8DE6 :        Static_Pal_Line0:
-(0) 1288/FFFF8DF4 :        Static_Pal_Line1:
-(0) 1289/FFFF8E02 :        Static_Pal_Line2:
-(0) 1290/FFFF8E10 :        Static_Pal_Ship:
-(0) 1291/FFFF8E1E :        Static_Pal_Line3:
-(0) 1292/FFFF8E2C :        Static_Sprite_DMA:
-(0) 1293/FFFF8E3A :        Static_Hscroll_Line:
-(0) 1294/FFFF8E48 :        Object_RAM:
-(0) 1295/FFFF8E48 :        Player_1:
-(0) 1296/FFFF8E98 :        Player_2:
-(0) 1297/FFFF8EE8 :        Dynamic_Slots:
-(0) 1298/FFFF9B68 :        System_Slots:
-(0) 1299/FFFF9DE8 :        Effect_Slots:
-(0) 1300/FFFFA2E8 :        Dynamic_Free_Stack:
-(0) 1301/FFFFA2E8 :        Object_RAM_End:
-(0) 1302/FFFFA338 :        Dynamic_Free_SP:
-(0) 1303/FFFFA33A :        Effect_Free_Stack:
-(0) 1304/FFFFA35A :        Effect_Free_SP:
-(0) 1305/FFFFA35C :        Sprite_Bands:
-(0) 1306/FFFFA55C :        Sprite_Band_Counts:
-(0) 1307/FFFFA564 :        Sprites_Rendered:
-(0) 1308/FFFFA566 :        Sprite_Cycle_Counter:
-(0) 1309/FFFFA568 :        SpriteMask_Y:
-(0) 1310/FFFFA56A :        SpriteMask_Height:
-(0) 1311/FFFFA56C :        SpriteMask_After_Band:
-(0) 1312/FFFFA56E :        Scanline_Band_Sprites:
-(0) 1313/FFFFA576 :        Camera_X:
-(0) 1314/FFFFA57A :        Camera_Y:
-(0) 1315/FFFFA57E :        Camera_X_Biased:
-(0) 1316/FFFFA580 :        Camera_Y_Biased:
-(0) 1317/FFFFA582 :        Game_Paused:
-(0) 1318/FFFFA584 :        Plane_Buffer:
-(0) 1319/FFFFAB84 :        Plane_Buffer_Ptr:
-(0) 1320/FFFFAB86 :        Pos_table:
-(0) 1321/FFFFAC86 :        H_scroll_frame_offset:
-(0) 1322/FFFFAC88 :        Camera_Deadzone_Base:
-(0) 1323/FFFFAC8A :        Camera_Lookahead:
-(0) 1324/FFFFAC8C :        Camera_Pan_Offset:
-(0) 1325/FFFFAC8E :        Camera_X_Max:
-(0) 1326/FFFFAC90 :        Camera_Y_Max:
-(0) 1327/FFFFAC92 :        Camera_Target:
-(0) 1328/FFFFAC94 :        Camera_Curl_Offset:
-(0) 1329/FFFFAC96 :        Camera_Hold_Frames:
-(0) 1330/FFFFAC97 :        Camera_Art_Hold:
-(0) 1331/FFFFAC98 :        Cache_Left_Col:
-(0) 1332/FFFFAC9A :        Cache_Head_Col:
-(0) 1333/FFFFAC9C :        Cache_Top_Row:
-(0) 1334/FFFFAC9E :        Cache_Bottom_Row:
-(0) 1335/FFFFACA0 :        Cache_Origin_Col:
-(0) 1336/FFFFACA2 :        Cache_Origin_Row:
-(0) 1337/FFFFACA4 :        Cache_Fill_Last_Frame:
-(0) 1338/FFFFACA6 :        Cache_Fill_Resume_Col:
-(0) 1339/FFFFACA8 :        Cache_Fill_Resume_Row:
-(0) 1340/FFFFACAA :        Cache_Art_Stall:
-(0) 1341/FFFFACAC :        Page_Free_Head:
-(0) 1342/FFFFACAE :        Cache_Fill_Budget:
-(0) 1343/FFFFACB0 :        Cache_Fill_RowResume_Row:
-(0) 1344/FFFFACB2 :        Cache_Fill_RowResume_Col:
-(0) 1345/FFFFACB4 :        Cache_Fill_Rows_Left:
-(0) 1346/FFFFACB6 :        Cache_Prev_Cam_Row:
-(0) 1347/FFFFACB8 :        Cache_Prev_Cam_X:
-(0) 1348/FFFFACBA :        Cache_H_Pfx_Dir:
-(0) 1349/FFFFACBC :        Cache_H_Pfx_Accum:
-(0) 1350/FFFFACBE :        Cache_Pfx_Row_Target:
-(0) 1351/FFFFACC0 :        Cache_Pfx_Col_Target:
-(0) 1352/FFFFACC2 :        Cache_Pfx_Skip_Armed:
-(0) 1353/FFFFACC4 :        Cache_Pfx_Lag_Flag:
-(0) 1354/FFFFACC6 :        Block_Stage_Keys:
-(0) 1355/FFFFAD06 :        Block_Stage_Next:
-(0) 1356/FFFFAD08 :        Section_Top_Row_Written:
-(0) 1357/FFFFAD0A :        Section_Bottom_Row_Written:
-(0) 1358/FFFFAD0C :        Section_Plane_Dirty:
-(0) 1359/FFFFAD0E :        Section_Right_Col_Written:
-(0) 1360/FFFFAD10 :        Section_Left_Col_Written:
-(0) 1361/FFFFAD12 :        Section_Fwd_Neighbor_Data:
-(0) 1362/FFFFAD16 :        Section_Bwd_Neighbor_Data:
-(0) 1363/FFFFAD1A :        Tile_Override_Table:
-(0) 1364/FFFFAD7A :        Ring_Buffer:
-(0) 1365/FFFFADDA :        Ring_Count:
-(0) 1366/FFFFADDB :        Ring_HighWater:
-(0) 1367/FFFFADDC :        Ring_Add_Dropped:
-(0) 1368/FFFFADDE :        Entity_Scan_State:
-(0) 1369/FFFFAE46 :        Ring_Counter:
-(0) 1370/FFFFAE48 :        Ring_Anim_Frame:
-(0) 1371/FFFFAE49 :        Ring_Anim_Timer:
-(0) 1372/FFFFAE4A :        Entity_Window_Active:
-(0) 1373/FFFFAE4B :        Entity_Window_Center_ID:
-(0) 1374/FFFFAE4C :        Entity_Window_Anchor:
-(0) 1375/FFFFAE4E :        Entity_Window_OriginX:
-(0) 1376/FFFFAE50 :        Entity_Window_OriginY:
-(0) 1377/FFFFAE52 :        Entity_Loaded_Masks:
-(0) 1378/FFFFAED2 :        Entity_Mask_Scratch:
-(0) 1379/FFFFAF56 :        Camera_Y_Coarse_Prev:
-(0) 1380/FFFFAF58 :        Ring_Collected_Window:
-(0) 1381/FFFFAFE2 :        Ring_Collected_Park:
-(0) 1382/FFFFB066 :        Collected_Park_Next:
-(0) 1383/FFFFB068 :        Current_Act_Ptr:
-(0) 1384/FFFFB06C :        Ring_Sfx_Speaker:
-(0) 1385/FFFFB06E :        Sfx_Ring_Buf:
-(0) 1386/FFFFB076 :        Sfx_Ring_Wr:
-(0) 1387/FFFFB077 :        Sfx_Ring_Rd:
-(0) 1388/FFFFB078 :        Sound_Dbg_Mirror:
-(0) 1389/FFFFB128 :        Dynamic_Live:
-(0) 1390/FFFFB178 :        Dynamic_Live_Count:
-(0) 1391/FFFFB17A :        Dynamic_Live_Dirty:
-(0) 1392/FFFFB17C :        Dynamic_Live_Pending:
-(0) 1393/FFFFB18C :        Dynamic_Live_Pending_Count:
-(0) 1394/FFFFB18E :        Block_Stage_Gen:
-(0) 1395/FFFFB190 :        Pfx_Memo_Row:
-(0) 1396/FFFFB192 :        Pfx_Memo_L16:
-(0) 1397/FFFFB194 :        Pfx_Memo_H16:
-(0) 1398/FFFFB196 :        Pfx_Memo_Gen:
-(0) 1399/FFFFB198 :        Cs_Memo_Col:
-(0) 1400/FFFFB19A :        Cs_Memo_T16:
-(0) 1401/FFFFB19C :        Cs_Memo_B16:
-(0) 1402/FFFFB19E :        Cs_Memo_Gen:
-(0) 1403/FFFFB1A0 :        HBlank_Vector_Slot:
-(0) 1404/FFFFB1A6 :        Block_Stage_Ptrs:
-(0) 1405/FFFFB1E6 :        Block_Stage_Maps:
-(0) 1406/FFFFB226 :        Cache_Cur_LocalMap:
-(0) 1407/FFFFB22A :        Block_Stage_ZeroPage:
-(0) 1408/FFFFB52A :        PageIn_Saved_D0:
-(0) 1409/FFFFB52E :        PageIn_Saved_D1:
-(0) 1410/FFFFB532 :        PageIn_Saved_D2:
-(0) 1411/FFFFB536 :        PageIn_Saved_A0:
-(0) 1412/FFFFB53A :        PageIn_Saved_A1:
-(0) 1413/FFFFB53E :        PageIn_Saved_A2:
-(0) 1414/FFFFB542 :        PageIn_Saved_A3:
-(0) 1415/FFFFB546 :        PageIn_Saved_PC:
-(0) 1416/FFFFB54A :        PageIn_Saved_SR:
-(0) 1417/FFFFB54C :        PageIn_InFlight:
-(0) 1418/FFFFB54D :        PageIn_Suspended:
-(0) 1419/FFFFB54E :        PageIn_Staging_Busy:
-(0) 1420/FFFFB54F :        PageIn_Land_Pending:
-(0) 1421/FFFFB550 :        PageIn_Queue_Count:
-(0) 1422/FFFFB551 :        PageIn_Cur_Flags:
-(0) 1423/FFFFB552 :        PageIn_Queue:
-(0) 1424/FFFFB572 :        PageIn_Cur_Dest:
-(0) 1425/FFFFB574 :        PageIn_Cur_Bytes:
-(0) 1426/FFFFB576 :        PageIn_Cur_Page:
-(0) 1427/FFFFB578 :        PageIn_Cur_Frame:
-(0) 1428/FFFFB579 :        PageIn_Bulk_Drain:
-(0) 1429/FFFFB57A :        PageIn_Pool_Table:
-(0) 1430/FFFFB57E :        PageIn_Pool_Pages:
-(0) 1431/FFFFB580 :        PageIn_Fully_Resident:
-(0) 1432/FFFFB581 :        PageCache_Direct_Map:
-(0) 1433/FFFFB582 :        PageIn_Last_Frame:
-(0) 1434/FFFFB584 :        PageIn_Prev_Lagged:
-(0) 1435/FFFFB586 :        PageIn_Pfx_Skip_Armed:
-(0) 1436/FFFFB588 :        Page_Pfx_Budget:
-(0) 1437/FFFFB58A :        Act_Art_Budget:
-(0) 1438/FFFFB58C :        Art_Budget_Remaining:
-(0) 1439/FFFFB58E :        Ctrl_1_Held_Raw:
-(0) 1440/FFFFB58F :        Ctrl_2_Held_Raw:
-(0) 1441/FFFFB590 :        Ctrl_1_Ext_Held_Raw:
-(0) 1442/FFFFB591 :        Ctrl_2_Ext_Held_Raw:
-(0) 1443/FFFFB592 :        Palette_Ship_Snap:
-(0) 1444/FFFFB612 :        Engine_RAM_End:
-(0) 1445/FFFFB612 :        Game_RAM_End:
+(0) 780/41E4 :        $engine.section$Section_RedrawPlanes$track_right_ok:
+(0) 781/41EE :        $engine.section$Section_RedrawPlanes$track_left_ok:
+(0) 782/41F0 :        Section_UpdateColumns:
+(0) 783/4214 :        $engine.section$Section_UpdateColumns$not_dirty:
+(0) 784/423A :        $engine.section$Section_UpdateColumns$right_clamp_ok:
+(0) 785/4244 :        $engine.section$Section_UpdateColumns$right_cache_ok:
+(0) 786/4252 :        $engine.section$Section_UpdateColumns$right_wrap_ok:
+(0) 787/4256 :        $engine.section$Section_UpdateColumns$right_loop:
+(0) 788/4280 :        $engine.section$Section_UpdateColumns$right_done:
+(0) 789/4294 :        $engine.section$Section_UpdateColumns$right_done_cache_ok:
+(0) 790/429E :        $engine.section$Section_UpdateColumns$left_clamp_skip:
+(0) 791/42AC :        $engine.section$Section_UpdateColumns$left_cache_ok:
+(0) 792/42BE :        $engine.section$Section_UpdateColumns$left_wrap_ok:
+(0) 793/42C2 :        $engine.section$Section_UpdateColumns$left_loop:
+(0) 794/42EC :        $engine.section$Section_UpdateColumns$left_done:
+(0) 795/4300 :        $engine.section$Section_UpdateColumns$left_done_cache_ok:
+(0) 796/430A :        $engine.section$Section_UpdateColumns$right_clamp_skip2:
+(0) 797/4322 :        $engine.section$Section_UpdateColumns$bot_cache_ok:
+(0) 798/4326 :        $engine.section$Section_UpdateColumns$bot_loop:
+(0) 799/4350 :        $engine.section$Section_UpdateColumns$bot_done:
+(0) 800/4364 :        $engine.section$Section_UpdateColumns$bot_done_cache_ok:
+(0) 801/436E :        $engine.section$Section_UpdateColumns$top_row_clamp_skip:
+(0) 802/437C :        $engine.section$Section_UpdateColumns$top_cache_ok:
+(0) 803/4380 :        $engine.section$Section_UpdateColumns$top_loop:
+(0) 804/43AA :        $engine.section$Section_UpdateColumns$top_done:
+(0) 805/43BE :        $engine.section$Section_UpdateColumns$top_done_cache_ok:
+(0) 806/43C8 :        $engine.section$Section_UpdateColumns$bot_row_clamp_skip:
+(0) 807/43D0 :        Camera_Init:
+(0) 808/4444 :        $engine.camera$asm2$min_ok:
+(0) 809/444E :        $engine.camera$asm2$clamp:
+(0) 810/4462 :        $engine.camera$asm4$min_ok:
+(0) 811/446C :        $engine.camera$asm4$clamp:
+(0) 812/4476 :        Camera_Update:
+(0) 813/4486 :        $engine.camera$Camera_Update$no_freeze:
+(0) 814/44C2 :        $engine.camera$Camera_Update$x_scroll_right:
+(0) 815/44CC :        $engine.camera$Camera_Update$apply_x:
+(0) 816/44D8 :        $engine.camera$Camera_Update$x_done:
+(0) 817/44DC :        $engine.camera$Camera_Update$x_clamp:
+(0) 818/44E4 :        $engine.camera$asm7$min_ok:
+(0) 819/44EE :        $engine.camera$asm7$clamp:
+(0) 820/44F6 :        $engine.camera$Camera_Update$y_track:
+(0) 821/4518 :        $engine.camera$Camera_Update$no_curl_comp:
+(0) 822/4532 :        $engine.camera$Camera_Update$check_down:
+(0) 823/4532 :        $engine.camera$Camera_Update$down_ok:
+(0) 824/453A :        $engine.camera$Camera_Update$apply_y:
+(0) 825/4544 :        $engine.camera$Camera_Update$y_step_hi_ok:
+(0) 826/454E :        $engine.camera$Camera_Update$y_step_lo_ok:
+(0) 827/455A :        $engine.camera$Camera_Update$clamp_y:
+(0) 828/455E :        $engine.camera$Camera_Update$y_clamp:
+(0) 829/4566 :        $engine.camera$asm9$min_ok:
+(0) 830/4570 :        $engine.camera$asm9$clamp:
+(0) 831/4580 :        Parallax_Init:
+(0) 832/458A :        $engine.parallax$Parallax_Init$zero:
+(0) 833/45AA :        Parallax_CheckBoundary:
+(0) 834/45CC :        $engine.parallax$Parallax_CheckBoundary$crossed:
+(0) 835/45E4 :        $engine.parallax$Parallax_CheckBoundary$no_crossing:
+(0) 836/45E6 :        Parallax_StartTransition:
+(0) 837/45F8 :        $engine.parallax$Parallax_StartTransition$instant:
+(0) 838/4610 :        $engine.parallax$Parallax_StartTransition$update_mode:
+(0) 839/4612 :        $engine.parallax$Parallax_StartTransition$v_done:
+(0) 840/4616 :        $engine.parallax$Parallax_StartTransition$no_change:
+(0) 841/4618 :        $engine.parallax$Parallax_StartTransition$recross_current:
+(0) 842/4634 :        Parallax_Active_Config:
+(0) 843/463A :        Vscroll_Write:
+(0) 844/464C :        $engine.parallax$Vscroll_Write$whole_plane:
+(0) 845/4654 :        Parallax_Update:
+(0) 846/4672 :        $engine.parallax$Parallax_Update$use_target:
+(0) 847/4678 :        $engine.parallax$Parallax_Update$use_current:
+(0) 848/467C :        $engine.parallax$Parallax_Update$config_resolved:
+(0) 849/468E :        $engine.parallax$Parallax_Update$mode3_shadow:
+(0) 850/46B0 :        $engine.parallax$asm7$wait_z80:
+(0) 851/46D0 :        $engine.parallax$Parallax_Update$mode3_reg_live:
+(0) 852/46F6 :        $engine.parallax$Parallax_Update$band_loop:
+(0) 853/4724 :        $engine.parallax$Parallax_Update$snap_b:
+(0) 854/4726 :        $engine.parallax$Parallax_Update$write_b:
+(0) 855/472C :        $engine.parallax$Parallax_Update$band_disabled:
+(0) 856/4730 :        $engine.parallax$Parallax_Update$band_done:
+(0) 857/4748 :        $engine.parallax$Parallax_Update$no_config:
+(0) 858/474A :        Parallax_Step4_Fill:
+(0) 859/475E :        $engine.parallax$Parallax_Step4_Fill$find_k:
+(0) 860/4772 :        $engine.parallax$Parallax_Step4_Fill$found_k:
+(0) 861/4786 :        $engine.parallax$Parallax_Step4_Fill$copy_band:
+(0) 862/47B0 :        $engine.parallax$Parallax_Step4_Fill$not_first:
+(0) 863/47B8 :        $engine.parallax$Parallax_Step4_Fill$clamp_top:
+(0) 864/47C2 :        $engine.parallax$Parallax_Step4_Fill$write_top:
+(0) 865/47E2 :        $engine.parallax$Parallax_Step4_Fill$no_wrap:
+(0) 866/47F2 :        $engine.parallax$Parallax_Step4_Fill$bands_ready:
+(0) 867/480A :        Parallax_Step5_Vscroll:
+(0) 868/4830 :        $engine.parallax$Parallax_Step5_Vscroll$v_snap:
+(0) 869/4834 :        $engine.parallax$Parallax_Step5_Vscroll$v_locked:
+(0) 870/4838 :        $engine.parallax$Parallax_Step5_Vscroll$v_pack:
+(0) 871/4840 :        $engine.parallax$Parallax_Step5_Vscroll$v_clamp_hi:
+(0) 872/484A :        $engine.parallax$Parallax_Step5_Vscroll$v_pack_store:
+(0) 873/4856 :        $engine.parallax$Parallax_Step5_Vscroll$v_done:
+(0) 874/485A :        Decode_Factor_A:
+(0) 875/4888 :        $engine.parallax$Decode_Factor_A$a_sub:
+(0) 876/488A :        $engine.parallax$Decode_Factor_A$a_pop_d3:
+(0) 877/488C :        $engine.parallax$Decode_Factor_A$negate:
+(0) 878/4890 :        $engine.parallax$Decode_Factor_A$locked:
+(0) 879/4894 :        Decode_Factor_B:
+(0) 880/48C2 :        $engine.parallax$Decode_Factor_B$b_sub:
+(0) 881/48C4 :        $engine.parallax$Decode_Factor_B$b_pop_d3:
+(0) 882/48C6 :        $engine.parallax$Decode_Factor_B$negate:
+(0) 883/48CA :        $engine.parallax$Decode_Factor_B$locked:
+(0) 884/48CE :        Parallax_Fill_PerLine:
+(0) 885/48D8 :        $engine.parallax$Parallax_Fill_PerLine$next_band:
+(0) 886/48E4 :        $engine.parallax$Parallax_Fill_PerLine$have_end:
+(0) 887/48EA :        $engine.parallax$Parallax_Fill_PerLine$lp_flat:
+(0) 888/48FE :        $engine.parallax$Parallax_Fill_PerLine$fl_line:
+(0) 889/4912 :        $engine.parallax$Parallax_Fill_PerLine$fl_tail:
+(0) 890/4918 :        $engine.parallax$Parallax_Fill_PerLine$fl_rem:
+(0) 891/491E :        $engine.parallax$Parallax_Fill_PerLine$band_done:
+(0) 892/4932 :        Raster_Install:
+(0) 893/4938 :        Raster_VBlank:
+(0) 894/495C :        $engine.effects.raster$Raster_VBlank$copy_program:
+(0) 895/4974 :        $engine.effects.raster$Raster_VBlank$copy:
+(0) 896/497A :        $engine.effects.raster$Raster_VBlank$no_install:
+(0) 897/49A0 :        $engine.effects.raster$Raster_VBlank$done:
+(0) 898/49A2 :        Raster_HInt:
+(0) 899/49CE :        $engine.effects.raster$Raster_HInt$op_loop:
+(0) 900/49F2 :        $engine.effects.raster$Raster_HInt$op_reg:
+(0) 901/49FA :        $engine.effects.raster$Raster_HInt$op_cram:
+(0) 902/49FE :        $engine.effects.raster$Raster_HInt$cram_delay:
+(0) 903/4A04 :        $engine.effects.raster$Raster_HInt$cram_loop:
+(0) 904/4A12 :        $engine.effects.raster$Raster_HInt$op_region:
+(0) 905/4A16 :        $engine.effects.raster$Raster_HInt$region_delay:
+(0) 906/4A22 :        $engine.effects.raster$Raster_HInt$region_loop:
+(0) 907/4A38 :        $engine.effects.raster$Raster_HInt$op_run_gradient:
+(0) 908/4A4C :        $engine.effects.raster$Raster_HInt$op_run_ramp:
+(0) 909/4A62 :        $engine.effects.raster$Raster_HInt$advance:
+(0) 910/4A6A :        $engine.effects.raster$Raster_HInt$priming:
+(0) 911/4A7A :        $engine.effects.raster$Raster_HInt$op_pal_restore:
+(0) 912/4A7E :        $engine.effects.raster$Raster_HInt$restore_delay:
+(0) 913/4A8A :        $engine.effects.raster$Raster_HInt$restore_loop:
+(0) 914/4AA0 :        $engine.effects.raster$Raster_HInt$dense_body:
+(0) 915/4AC6 :        $engine.effects.raster$Raster_HInt$ramp_body:
+(0) 916/4AE6 :        $engine.effects.raster$Raster_HInt$dense_end:
+(0) 917/4AEA :        $engine.effects.raster$Raster_HInt$park:
+(0) 918/4AEE :        $engine.effects.raster$Raster_HInt$out:
+(0) 919/4AF4 :        Raster_Program_None:
+(0) 920/4AFA :        Raster_InstallPatched:
+(0) 921/4B20 :        $engine.effects.raster$Raster_InstallPatched$no_ship:
+(0) 922/4B22 :        $engine.effects.raster$Raster_InstallPatched$ship_done:
+(0) 923/4B3E :        $engine.effects.raster$Raster_InstallPatched$no_build:
+(0) 924/4B44 :        Raster_BuildShipEntry:
+(0) 925/4B80 :        Raster_BuildSchedule:
+(0) 926/4B9C :        $engine.effects.raster$Raster_BuildSchedule$dst_ready:
+(0) 927/4BB4 :        $engine.effects.raster$Raster_BuildSchedule$entry:
+(0) 928/4BD4 :        $engine.effects.raster$Raster_BuildSchedule$have_line:
+(0) 929/4BFE :        $engine.effects.raster$Raster_BuildSchedule$copy:
+(0) 930/4C04 :        $engine.effects.raster$Raster_BuildSchedule$next:
+(0) 931/4C30 :        $engine.effects.raster$Raster_BuildSchedule$swap:
+(0) 932/4C34 :        $engine.effects.raster$Raster_BuildSchedule$none:
+(0) 933/4C36 :        $engine.effects.raster$Raster_BuildSchedule$suppress:
+(0) 934/4C3A :        Raster_GetChannelBand:
+(0) 935/4C42 :        Effects_LatchWorldLines:
+(0) 936/4C50 :        $engine.effects.raster$Effects_LatchWorldLines$ch:
+(0) 937/4C5C :        Effects_SetWorldY:
+(0) 938/4C6C :        Palette_LoadPal:
+(0) 939/4C78 :        $engine.effects.palette$Palette_LoadPal$copy_base:
+(0) 940/4C92 :        $engine.effects.palette$Palette_LoadPal$load_target:
+(0) 941/4C9C :        $engine.effects.palette$Palette_LoadPal$copy_target:
+(0) 942/4CB0 :        Palette_ArmFade:
+(0) 943/4CB8 :        Palette_SetOp:
+(0) 944/4CCE :        Palette_SetVariant:
+(0) 945/4CF4 :        $engine.effects.palette$Palette_SetVariant$none:
+(0) 946/4CF6 :        Palette_LoadCycle:
+(0) 947/4D18 :        $engine.effects.palette$Palette_LoadCycle$zero:
+(0) 948/4D1E :        $engine.effects.palette$Palette_LoadCycle$done:
+(0) 949/4D20 :        Palette_Compose:
+(0) 950/4D28 :        $engine.effects.palette$Palette_Compose$work:
+(0) 951/4D48 :        $engine.effects.palette$Palette_Compose$base_copy:
+(0) 952/4D56 :        $engine.effects.palette$Palette_Compose$cycling:
+(0) 953/4D60 :        $engine.effects.palette$Palette_Compose$fade:
+(0) 954/4D6A :        $engine.effects.palette$Palette_Compose$operators:
+(0) 955/4D74 :        $engine.effects.palette$Palette_Compose$variants:
+(0) 956/4D8E :        $engine.effects.palette$Palette_Compose$done:
+(0) 957/4D90 :        Palette_DoCycle:
+(0) 958/4DA2 :        $engine.effects.palette$Palette_DoCycle$chan:
+(0) 959/4DBE :        $engine.effects.palette$Palette_DoCycle$wait:
+(0) 960/4DC2 :        $engine.effects.palette$Palette_DoCycle$next:
+(0) 961/4DC8 :        $engine.effects.palette$Palette_DoCycle$ret:
+(0) 962/4DD6 :        $engine.effects.palette$Palette_DoCycle$ret_quiet:
+(0) 963/4DD8 :        Palette_RotateSpan:
+(0) 964/4E06 :        $engine.effects.palette$Palette_RotateSpan$fwd:
+(0) 965/4E12 :        $engine.effects.palette$Palette_RotateSpan$rev:
+(0) 966/4E1A :        $engine.effects.palette$Palette_RotateSpan$rup:
+(0) 967/4E24 :        $engine.effects.palette$Palette_RotateSpan$done:
+(0) 968/4E26 :        Palette_DoFade:
+(0) 969/4E3A :        $engine.effects.palette$Palette_DoFade$snap:
+(0) 970/4E5A :        $engine.effects.palette$Palette_DoFade$step_frame:
+(0) 971/4E64 :        $engine.effects.palette$Palette_DoFade$noskip:
+(0) 972/4E70 :        $engine.effects.palette$Palette_DoFade$word:
+(0) 973/4E90 :        $engine.effects.palette$asm10$st_up:
+(0) 974/4E92 :        $engine.effects.palette$asm10$st_end:
+(0) 975/4EB0 :        $engine.effects.palette$asm11$st_up:
+(0) 976/4EB2 :        $engine.effects.palette$asm11$st_end:
+(0) 977/4ED4 :        $engine.effects.palette$asm12$st_up:
+(0) 978/4ED6 :        $engine.effects.palette$asm12$st_end:
+(0) 979/4EF0 :        Palette_DoOperator:
+(0) 980/4F20 :        $engine.effects.palette$Palette_DoOperator$neg_xor:
+(0) 981/4F34 :        $engine.effects.palette$Palette_DoOperator$neg_tick:
+(0) 982/4F40 :        $engine.effects.palette$Palette_DoOperator$fade_dir:
+(0) 983/4F58 :        $engine.effects.palette$Palette_DoOperator$have_tgt:
+(0) 984/4F60 :        $engine.effects.palette$Palette_DoOperator$fw_word:
+(0) 985/4F78 :        $engine.effects.palette$asm16$st_up:
+(0) 986/4F7A :        $engine.effects.palette$asm16$st_end:
+(0) 987/4F92 :        $engine.effects.palette$asm17$st_up:
+(0) 988/4F94 :        $engine.effects.palette$asm17$st_end:
+(0) 989/4FAE :        $engine.effects.palette$asm18$st_up:
+(0) 990/4FB0 :        $engine.effects.palette$asm18$st_end:
+(0) 991/4FDA :        $engine.effects.palette$Palette_DoOperator$ret:
+(0) 992/4FDC :        $engine.effects.palette$Palette_DoOperator$white_flash:
+(0) 993/4FE4 :        $engine.effects.palette$Palette_DoOperator$wf_fill:
+(0) 994/4FFE :        $engine.effects.palette$Palette_DoOperator$op_done_restore:
+(0) 995/501E :        Palette_DoVariants:
+(0) 996/502C :        $engine.effects.palette$Palette_DoVariants$slot1:
+(0) 997/503A :        $engine.effects.palette$Palette_DoVariants$ret:
+(0) 998/503C :        Palette_DeriveVariant:
+(0) 999/5042 :        $engine.effects.palette$Palette_DeriveVariant$line:
+(0) 1000/5058 :        $engine.effects.palette$Palette_DeriveVariant$entry:
+(0) 1001/5078 :        $engine.effects.palette$asm23$cl_pos:
+(0) 1002/5080 :        $engine.effects.palette$asm23$cl_end:
+(0) 1003/50A2 :        $engine.effects.palette$asm24$cl_pos:
+(0) 1004/50AA :        $engine.effects.palette$asm24$cl_end:
+(0) 1005/50CE :        $engine.effects.palette$asm25$cl_pos:
+(0) 1006/50D6 :        $engine.effects.palette$asm25$cl_end:
+(0) 1007/50E2 :        $engine.effects.palette$Palette_DeriveVariant$next_line:
+(0) 1008/50EE :        Pal_Cycle_None:
+(0) 1009/50F0 :        Effects_ResolveParallax:
+(0) 1010/50FC :        $engine.effects.preset$Effects_ResolveParallax$no_sec_binding:
+(0) 1011/5110 :        $engine.effects.preset$Effects_ResolveParallax$act_default:
+(0) 1012/5118 :        $engine.effects.preset$Effects_ResolveParallax$have_config:
+(0) 1013/511A :        Effects_InstallPreset:
+(0) 1014/5132 :        $engine.effects.preset$Effects_InstallPreset$seed_anchor:
+(0) 1015/5146 :        $engine.effects.preset$Effects_InstallPreset$no_fade_arm:
+(0) 1016/5166 :        $engine.effects.preset$Effects_InstallPreset$variant0_same:
+(0) 1017/5178 :        $engine.effects.preset$Effects_InstallPreset$variant1_same:
+(0) 1018/5188 :        $engine.effects.preset$Effects_InstallPreset$no_patch:
+(0) 1019/5196 :        $engine.effects.preset$Effects_InstallPreset$have_raster:
+(0) 1020/519A :        $engine.effects.preset$Effects_InstallPreset$raster_done:
+(0) 1021/51C0 :        Level_LoadArt:
+(0) 1022/51EC :        $engine.load_art$Level_LoadArt$streaming_pool:
+(0) 1023/5206 :        $engine.load_art$Level_LoadArt$enq_loop:
+(0) 1024/521A :        $engine.load_art$Level_LoadArt$enq_next:
+(0) 1025/521E :        $engine.load_art$Level_LoadArt$drain_wait:
+(0) 1026/5248 :        $engine.load_art$Level_LoadArt$bg:
+(0) 1027/5262 :        $engine.load_art$Level_LoadArt$direct_scan:
+(0) 1028/526C :        $engine.load_art$Level_LoadArt$direct_ok:
+(0) 1029/5270 :        $engine.load_art$Level_LoadArt$no_direct:
+(0) 1030/5278 :        PageIn_Process:
+(0) 1031/52A4 :        $engine.page_in$PageIn_Process$lag_ontime:
+(0) 1032/52AC :        $engine.page_in$PageIn_Process$frame_ticked:
+(0) 1033/52EC :        $engine.page_in$PageIn_Process$gate_reset:
+(0) 1034/52F0 :        $engine.page_in$PageIn_Process$start:
+(0) 1035/5302 :        $engine.page_in$PageIn_Process$page_id_ok:
+(0) 1036/535A :        $engine.page_in$PageIn_Process$raw:
+(0) 1037/537A :        $engine.page_in$PageIn_Process$raw_published:
+(0) 1038/5386 :        $engine.page_in$PageIn_Process$alloc_fail:
+(0) 1039/5392 :        $engine.page_in$PageIn_Process$idle:
+(0) 1040/5394 :        $engine.page_in$PageIn_Process$drop_degenerate:
+(0) 1041/5398 :        $engine.page_in$PageIn_Process$release_claim:
+(0) 1042/53B0 :        $engine.page_in$PageIn_Process$claim_done:
+(0) 1043/53B2 :        $engine.page_in$PageIn_Process$resume:
+(0) 1044/53B6 :        $engine.page_in$PageIn_Process$after:
+(0) 1045/53BA :        $engine.page_in$PageIn_Process$land:
+(0) 1046/53DA :        $engine.page_in$PageIn_Process$land_full:
+(0) 1047/53E0 :        $engine.page_in$PageIn_Process$queue_has_nonspec:
+(0) 1048/53EC :        $engine.page_in$PageIn_Process$qn_scan:
+(0) 1049/5400 :        $engine.page_in$PageIn_Process$qn_found:
+(0) 1050/5404 :        $engine.page_in$PageIn_Process$dequeue:
+(0) 1051/5410 :        $engine.page_in$PageIn_Process$dq_scan:
+(0) 1052/542A :        $engine.page_in$PageIn_Process$dq_found:
+(0) 1053/5440 :        $engine.page_in$PageIn_Process$dq_shift:
+(0) 1054/5446 :        $engine.page_in$PageIn_Process$dq_done:
+(0) 1055/544C :        PageIn_BankRegs:
+(0) 1056/5472 :        PageIn_Resume:
+(0) 1057/549C :        PageIn_EnqueueLanding:
+(0) 1058/54CA :        $engine.page_in$PageIn_EnqueueLanding$art_deferred:
+(0) 1059/54D0 :        $engine.page_in$PageIn_EnqueueLanding$dropped:
+(0) 1060/54D6 :        PageIn_Enqueue:
+(0) 1061/550E :        $engine.page_in$PageIn_Enqueue$full:
+(0) 1062/5514 :        PageIn_Flush:
+(0) 1063/555C :        PageCache_Init:
+(0) 1064/5570 :        $engine.page_cache$PageCache_Init$clr_table:
+(0) 1065/5582 :        $engine.page_cache$PageCache_Init$clr_queued:
+(0) 1066/5594 :        $engine.page_cache$PageCache_Init$init_frames:
+(0) 1067/55C0 :        PageCache_Request:
+(0) 1068/55C8 :        $engine.page_cache$PageCache_Request$in_range:
+(0) 1069/55F0 :        $engine.page_cache$PageCache_Request$not_inflight:
+(0) 1070/560A :        $engine.page_cache$PageCache_Request$done:
+(0) 1071/560C :        PageCache_AllocFrame:
+(0) 1072/562A :        $engine.page_cache$PageCache_AllocFrame$from_lru:
+(0) 1073/563A :        $engine.page_cache$PageCache_AllocFrame$ev_scan:
+(0) 1074/5652 :        $engine.page_cache$PageCache_AllocFrame$ev_next:
+(0) 1075/568E :        $engine.page_cache$PageCache_AllocFrame$detach:
+(0) 1076/56A8 :        $engine.page_cache$PageCache_AllocFrame$thrash:
+(0) 1077/56AE :        PageCache_FreeFrame:
+(0) 1078/56C8 :        PageCache_Publish:
+(0) 1079/571A :        $engine.page_cache$PageCache_Publish$not_pinned:
+(0) 1080/5734 :        $engine.page_cache$PageCache_Publish$done:
+(0) 1081/5736 :        PageCache_PatchRun_Seq:
+(0) 1082/5758 :        $engine.page_cache$asm6$pw_new_blank:
+(0) 1083/5766 :        $engine.page_cache$asm6$pw_miss:
+(0) 1084/5782 :        $engine.page_cache$asm6$pw_word:
+(0) 1085/57CE :        $engine.page_cache$asm6$pw_ref_done:
+(0) 1086/57D4 :        $engine.page_cache$asm6$pw_unref_old:
+(0) 1087/57F4 :        $engine.page_cache$asm6$pw_next:
+(0) 1088/5806 :        $engine.page_cache$PageCache_PatchRun_Seq$direct:
+(0) 1089/580A :        $engine.page_cache$asm8$pd_blank:
+(0) 1090/580E :        $engine.page_cache$asm8$pd_word:
+(0) 1091/5828 :        $engine.page_cache$asm8$pd_next:
+(0) 1092/583A :        PageCache_PatchRun_Col:
+(0) 1093/585C :        $engine.page_cache$asm10$pw_new_blank:
+(0) 1094/586A :        $engine.page_cache$asm10$pw_miss:
+(0) 1095/5886 :        $engine.page_cache$asm10$pw_word:
+(0) 1096/58D2 :        $engine.page_cache$asm10$pw_ref_done:
+(0) 1097/58D8 :        $engine.page_cache$asm10$pw_unref_old:
+(0) 1098/58F8 :        $engine.page_cache$asm10$pw_next:
+(0) 1099/590A :        $engine.page_cache$PageCache_PatchRun_Col$direct:
+(0) 1100/590E :        $engine.page_cache$asm12$pd_blank:
+(0) 1101/5912 :        $engine.page_cache$asm12$pd_word:
+(0) 1102/592C :        $engine.page_cache$asm12$pd_next:
+(0) 1103/593E :        PageCache_Prefetch:
+(0) 1104/5980 :        $engine.page_cache$PageCache_Prefetch$row_scan:
+(0) 1105/59A4 :        $engine.page_cache$PageCache_Prefetch$row_next:
+(0) 1106/59AA :        $engine.page_cache$PageCache_Prefetch$col_strip:
+(0) 1107/59C6 :        $engine.page_cache$PageCache_Prefetch$col_scan:
+(0) 1108/59EC :        $engine.page_cache$PageCache_Prefetch$col_next:
+(0) 1109/59F2 :        $engine.page_cache$PageCache_Prefetch$strips_done:
+(0) 1110/59F6 :        $engine.page_cache$PageCache_Prefetch$ret:
+(0) 1111/59F8 :        $engine.page_cache$PageCache_Prefetch$scan_block:
+(0) 1112/5A02 :        $engine.page_cache$PageCache_Prefetch$sb_loop:
+(0) 1113/5A38 :        $engine.page_cache$PageCache_Prefetch$sb_next:
+(0) 1114/5A3C :        $engine.page_cache$PageCache_Prefetch$sb_done:
+(0) 1115/5A3E :        PageCache_Audit:
+(0) 1116/5A3E :        PageCache_ResetRefcounts:
+(0) 1117/5A50 :        BG_Init:
+(0) 1118/5A74 :        $engine.bg$BG_Init$bg_len_ok:
+(0) 1119/5A82 :        $engine.bg$asm1$wait_z80:
+(0) 1120/5AA4 :        $engine.bg$BG_Init$tile_copy:
+(0) 1121/5AB2 :        $engine.bg$BG_Init$skip_tiles:
+(0) 1122/5AC4 :        $engine.bg$asm3$wait_z80:
+(0) 1123/5ADE :        $engine.bg$BG_Init$nt_col:
+(0) 1124/5AFE :        $engine.bg$BG_Init$nt_row:
+(0) 1125/5B1C :        $engine.bg$BG_Init$skip_nt:
+(0) 1126/5B30 :        BgAnim_Init:
+(0) 1127/5B3C :        BgAnim_Update:
+(0) 1128/5B50 :        $engine.bg_anim$BgAnim_Update$band_loop:
+(0) 1129/5B5E :        $engine.bg_anim$BgAnim_Update$cam_x:
+(0) 1130/5B64 :        $engine.bg_anim$BgAnim_Update$cam_y:
+(0) 1131/5B68 :        $engine.bg_anim$BgAnim_Update$have_value:
+(0) 1132/5BB4 :        $engine.bg_anim$BgAnim_Update$commit:
+(0) 1133/5BB8 :        $engine.bg_anim$BgAnim_Update$queue_full:
+(0) 1134/5BBC :        $engine.bg_anim$BgAnim_Update$skip_band:
+(0) 1135/5BBE :        $engine.bg_anim$BgAnim_Update$next_band:
+(0) 1136/5BC8 :        $engine.bg_anim$BgAnim_Update$exit:
+(0) 1137/10000 :        ObjCodeBase:
+(0) 1138/10002 :        DemoBox_Main:
+(0) 1139/10006 :        ObjDef_DemoBox:
+(0) 1140/10020 :        Map_DemoBox:
+(0) 1141/10022 :        __offsets$games.demo.data.demo_data$Map_DemoBox$F0:
+(0) 1142/10030 :        DemoObjectList:
+(0) 1143/1003A :        DemoObjectList_Term:
+(0) 1144/1003E :        DemoArt:
+(0) 1145/100DE :        DemoPalette:
+(0) 1146/100FE :        BgAnim_Table:
+(0) 1147/10100 :        GameState_Demo_Init:
+(0) 1148/1010A :        $games.demo.demo_state$GameState_Demo_Init$copy_pal:
+(0) 1149/10158 :        GameState_Demo:
+(0) 1150/1016C :        BusError:
+(0) 1151/10184 :        AddressError:
+(0) 1152/101A0 :        IllegalInstr:
+(0) 1153/101C2 :        ZeroDivide:
+(0) 1154/101DC :        ChkInstr:
+(0) 1155/101FA :        TrapvInstr:
+(0) 1156/1021A :        PrivilegeViol:
+(0) 1157/1023C :        Trace:
+(0) 1158/10250 :        Line1010Emu:
+(0) 1159/10270 :        Line1111Emu:
+(0) 1160/10290 :        ErrorExcept:
+(0) 1161/102AE :        ErrorTrap:
+(0) 1162/102C6 :        ErrorHandlerBlob:
+(0) 1163/1121C :        EndOfRom:
+(0) 1164/FFFF0000 :        Tile_Cache_Nametable:
+(0) 1165/FFFF2580 :        Tile_Cache_Collision:
+(0) 1166/FFFF3842 :        Block_Stage_Buffers:
+(0) 1167/FFFF6842 :        Block_Stage_Bucket:
+(0) 1168/FFFF6942 :        Block_Stage_Chain:
+(0) 1169/FFFF6982 :        Cache_Spec_Gen_Ring:
+(0) 1170/FFFF6992 :        Cache_Spec_Window:
+(0) 1171/FFFF6994 :        Cache_Spec_Blocked:
+(0) 1172/FFFF6996 :        Cache_Spec_Skips:
+(0) 1173/FFFF6998 :        Pfx_Memo_Mask:
+(0) 1174/FFFF699A :        Cs_Memo_Mask:
+(0) 1175/FFFF699C :        Page_Table:
+(0) 1176/FFFF6A9C :        Page_Frames:
+(0) 1177/FFFF6B14 :        Page_Queued_Bits:
+(0) 1178/FFFF6B34 :        Art_Staging_Buffer:
+(0) 1179/FFFF7334 :        Lower_RAM_End:
+(0) 1180/FFFF8000 :        RAM_Start:
+(0) 1181/FFFF8000 :        VBlank_Flag:
+(0) 1182/FFFF8002 :        Frame_Counter:
+(0) 1183/FFFF8004 :        Logic_Tick:
+(0) 1184/FFFF8008 :        Game_State:
+(0) 1185/FFFF800C :        Game_State_ID:
+(0) 1186/FFFF800D :        Game_State_Init:
+(0) 1187/FFFF800E :        VDP_Shadow_Table:
+(0) 1188/FFFF8026 :        Hardware_Region:
+(0) 1189/FFFF8027 :        Region_Flags:
+(0) 1190/FFFF8028 :        Ctrl_1_Held:
+(0) 1191/FFFF8029 :        Ctrl_1_Press:
+(0) 1192/FFFF802A :        Ctrl_2_Held:
+(0) 1193/FFFF802B :        Ctrl_2_Press:
+(0) 1194/FFFF802C :        Ctrl_1_Press_Accum:
+(0) 1195/FFFF802D :        Ctrl_2_Press_Accum:
+(0) 1196/FFFF802E :        Ctrl_1_Ext_Held:
+(0) 1197/FFFF802F :        Ctrl_1_Ext_Press:
+(0) 1198/FFFF8030 :        Ctrl_2_Ext_Held:
+(0) 1199/FFFF8031 :        Ctrl_2_Ext_Press:
+(0) 1200/FFFF8032 :        Ctrl_1_Ext_Press_Accum:
+(0) 1201/FFFF8033 :        Ctrl_2_Ext_Press_Accum:
+(0) 1202/FFFF8034 :        Pad_1_Type:
+(0) 1203/FFFF8035 :        Pad_2_Type:
+(0) 1204/FFFF8036 :        Input_Source:
+(0) 1205/FFFF8037 :        Replay_Exit_Request:
+(0) 1206/FFFF8038 :        Replay_Done:
+(0) 1207/FFFF8039 :        Replay_Hold:
+(0) 1208/FFFF803A :        Replay_Prev:
+(0) 1209/FFFF803C :        Replay_Ptr:
+(0) 1210/FFFF8040 :        RNG_Seed:
+(0) 1211/FFFF8044 :        VInt_Ptr:
+(0) 1212/FFFF8048 :        VBlank_Ready:
+(0) 1213/FFFF804A :        DMA_Critical:
+(0) 1214/FFFF804A :        DMA_Queue:
+(0) 1215/FFFF80BA :        DMA_Critical_End:
+(0) 1216/FFFF80BA :        DMA_Important:
+(0) 1217/FFFF8162 :        DMA_Deferrable:
+(0) 1218/FFFF8162 :        DMA_Important_End:
+(0) 1219/FFFF820A :        DMA_Critical_Slot:
+(0) 1220/FFFF820A :        DMA_Deferrable_End:
+(0) 1221/FFFF820A :        DMA_Queue_End:
+(0) 1222/FFFF820C :        DMA_Important_Slot:
+(0) 1223/FFFF820E :        DMA_Deferrable_Slot:
+(0) 1224/FFFF8210 :        DMA_Budget_Default:
+(0) 1225/FFFF8212 :        DMA_Budget_Remaining:
+(0) 1226/FFFF8214 :        DMA_Enq_Bytes_Frame:
+(0) 1227/FFFF8216 :        Palette_Buffer:
+(0) 1228/FFFF8296 :        Palette_Dirty:
+(0) 1229/FFFF8298 :        Sprite_Table_Buffer:
+(0) 1230/FFFF8518 :        Sprite_Table_Dirty:
+(0) 1231/FFFF8519 :        Sprite_Emit_Active:
+(0) 1232/FFFF851A :        Hscroll_Buffer:
+(0) 1233/FFFF889C :        Vscroll_Factor:
+(0) 1234/FFFF88A0 :        Parallax_Deform_Phase_FG:
+(0) 1235/FFFF88A0 :        Parallax_State:
+(0) 1236/FFFF88A2 :        Parallax_Deform_Phase_BG:
+(0) 1237/FFFF88A4 :        Parallax_V_Deform_Phase_BG:
+(0) 1238/FFFF88A6 :        Parallax_Current_Scroll_A:
+(0) 1239/FFFF88C6 :        Parallax_Current_Scroll_B:
+(0) 1240/FFFF88E6 :        Parallax_Current_Vscroll_BG:
+(0) 1241/FFFF88E8 :        Parallax_Current_Config:
+(0) 1242/FFFF88EC :        Parallax_Target_Config:
+(0) 1243/FFFF88F0 :        Parallax_Transition_Frames:
+(0) 1244/FFFF88F1 :        Parallax_Snap_Pending:
+(0) 1245/FFFF88F2 :        Parallax_Prev_Sec_X:
+(0) 1246/FFFF88F3 :        Parallax_Prev_Sec_Y:
+(0) 1247/FFFF88F4 :        Parallax_Vscroll_Column_Buf:
+(0) 1248/FFFF8944 :        Parallax_Curve_Carry:
+(0) 1249/FFFF8944 :        Parallax_Drift_Acc:
+(0) 1250/FFFF8948 :        Parallax_Shadow_Bands:
+(0) 1251/FFFF8A88 :        Parallax_Shadow_Scroll_A:
+(0) 1252/FFFF8AA8 :        Parallax_Shadow_Scroll_B:
+(0) 1253/FFFF8AC8 :        Parallax_State_End:
+(0) 1254/FFFF8AC8 :        Raster_Program:
+(0) 1255/FFFF8AC8 :        Raster_State:
+(0) 1256/FFFF8ACC :        Raster_Cursor:
+(0) 1257/FFFF8AD0 :        Raster_Pending:
+(0) 1258/FFFF8AD4 :        Raster_Line:
+(0) 1259/FFFF8AD6 :        Raster_Buf_A:
+(0) 1260/FFFF8B56 :        Raster_Buf_B:
+(0) 1261/FFFF8BD6 :        Raster_Active_Buf:
+(0) 1262/FFFF8BDA :        Raster_Dense_Lines:
+(0) 1263/FFFF8BDC :        Raster_Dense_Cursor:
+(0) 1264/FFFF8BE0 :        Raster_Dense_Cmd:
+(0) 1265/FFFF8BE4 :        Raster_Dense_Mode:
+(0) 1266/FFFF8BE6 :        Raster_Ramp_Acc:
+(0) 1267/FFFF8BEA :        Raster_Ramp_Step:
+(0) 1268/FFFF8BEE :        Effects_World_Y:
+(0) 1269/FFFF8BF6 :        Effects_Screen_L:
+(0) 1270/FFFF8BFE :        Effects_Offscreen_Entry:
+(0) 1271/FFFF8C02 :        Raster_Patch_Tab:
+(0) 1272/FFFF8C06 :        Pal_Base:
+(0) 1273/FFFF8C06 :        Palette_State:
+(0) 1274/FFFF8C06 :        Raster_State_End:
+(0) 1275/FFFF8C66 :        Pal_Target:
+(0) 1276/FFFF8CC6 :        Pal_Variant_Stage:
+(0) 1277/FFFF8DC6 :        Pal_Variant_Ptr:
+(0) 1278/FFFF8DCE :        Pal_Cycle_Script:
+(0) 1279/FFFF8DD2 :        Pal_Cycle_Timers:
+(0) 1280/FFFF8DD6 :        Pal_Fade_Frames:
+(0) 1281/FFFF8DD7 :        Pal_Op:
+(0) 1282/FFFF8DD8 :        Pal_Op_Step:
+(0) 1283/FFFF8DD9 :        Pal_Op_Timer:
+(0) 1284/FFFF8DDA :        Pal_Active:
+(0) 1285/FFFF8DDB :        Pal_Base_Dirty:
+(0) 1286/FFFF8DDC :        Pal_Compose_Lines:
+(0) 1287/FFFF8DDD :        Pal_Fade_Request:
+(0) 1288/FFFF8DDE :        BgAnim_LastStep:
+(0) 1289/FFFF8DDE :        Palette_State_End:
+(0) 1290/FFFF8DE6 :        Static_Pal_Line0:
+(0) 1291/FFFF8DF4 :        Static_Pal_Line1:
+(0) 1292/FFFF8E02 :        Static_Pal_Line2:
+(0) 1293/FFFF8E10 :        Static_Pal_Ship:
+(0) 1294/FFFF8E1E :        Static_Pal_Line3:
+(0) 1295/FFFF8E2C :        Static_Sprite_DMA:
+(0) 1296/FFFF8E3A :        Static_Hscroll_Line:
+(0) 1297/FFFF8E48 :        Object_RAM:
+(0) 1298/FFFF8E48 :        Player_1:
+(0) 1299/FFFF8E98 :        Player_2:
+(0) 1300/FFFF8EE8 :        Dynamic_Slots:
+(0) 1301/FFFF9B68 :        System_Slots:
+(0) 1302/FFFF9DE8 :        Effect_Slots:
+(0) 1303/FFFFA2E8 :        Dynamic_Free_Stack:
+(0) 1304/FFFFA2E8 :        Object_RAM_End:
+(0) 1305/FFFFA338 :        Dynamic_Free_SP:
+(0) 1306/FFFFA33A :        Effect_Free_Stack:
+(0) 1307/FFFFA35A :        Effect_Free_SP:
+(0) 1308/FFFFA35C :        Sprite_Bands:
+(0) 1309/FFFFA55C :        Sprite_Band_Counts:
+(0) 1310/FFFFA564 :        Sprites_Rendered:
+(0) 1311/FFFFA566 :        Sprite_Cycle_Counter:
+(0) 1312/FFFFA568 :        SpriteMask_Y:
+(0) 1313/FFFFA56A :        SpriteMask_Height:
+(0) 1314/FFFFA56C :        SpriteMask_After_Band:
+(0) 1315/FFFFA56E :        Scanline_Band_Sprites:
+(0) 1316/FFFFA576 :        Camera_X:
+(0) 1317/FFFFA57A :        Camera_Y:
+(0) 1318/FFFFA57E :        Camera_X_Biased:
+(0) 1319/FFFFA580 :        Camera_Y_Biased:
+(0) 1320/FFFFA582 :        Game_Paused:
+(0) 1321/FFFFA584 :        Plane_Buffer:
+(0) 1322/FFFFAB84 :        Plane_Buffer_Ptr:
+(0) 1323/FFFFAB86 :        Pos_table:
+(0) 1324/FFFFAC86 :        H_scroll_frame_offset:
+(0) 1325/FFFFAC88 :        Camera_Deadzone_Base:
+(0) 1326/FFFFAC8A :        Camera_Lookahead:
+(0) 1327/FFFFAC8C :        Camera_Pan_Offset:
+(0) 1328/FFFFAC8E :        Camera_X_Max:
+(0) 1329/FFFFAC90 :        Camera_Y_Max:
+(0) 1330/FFFFAC92 :        Camera_Target:
+(0) 1331/FFFFAC94 :        Camera_Curl_Offset:
+(0) 1332/FFFFAC96 :        Camera_Hold_Frames:
+(0) 1333/FFFFAC97 :        Camera_Art_Hold:
+(0) 1334/FFFFAC98 :        Cache_Left_Col:
+(0) 1335/FFFFAC9A :        Cache_Head_Col:
+(0) 1336/FFFFAC9C :        Cache_Top_Row:
+(0) 1337/FFFFAC9E :        Cache_Bottom_Row:
+(0) 1338/FFFFACA0 :        Cache_Origin_Col:
+(0) 1339/FFFFACA2 :        Cache_Origin_Row:
+(0) 1340/FFFFACA4 :        Cache_Fill_Last_Frame:
+(0) 1341/FFFFACA6 :        Cache_Fill_Resume_Col:
+(0) 1342/FFFFACA8 :        Cache_Fill_Resume_Row:
+(0) 1343/FFFFACAA :        Cache_Art_Stall:
+(0) 1344/FFFFACAC :        Page_Free_Head:
+(0) 1345/FFFFACAE :        Cache_Fill_Budget:
+(0) 1346/FFFFACB0 :        Cache_Fill_RowResume_Row:
+(0) 1347/FFFFACB2 :        Cache_Fill_RowResume_Col:
+(0) 1348/FFFFACB4 :        Cache_Fill_Rows_Left:
+(0) 1349/FFFFACB6 :        Cache_Prev_Cam_Row:
+(0) 1350/FFFFACB8 :        Cache_Prev_Cam_X:
+(0) 1351/FFFFACBA :        Cache_H_Pfx_Dir:
+(0) 1352/FFFFACBC :        Cache_H_Pfx_Accum:
+(0) 1353/FFFFACBE :        Cache_Pfx_Row_Target:
+(0) 1354/FFFFACC0 :        Cache_Pfx_Col_Target:
+(0) 1355/FFFFACC2 :        Cache_Pfx_Skip_Armed:
+(0) 1356/FFFFACC4 :        Cache_Pfx_Lag_Flag:
+(0) 1357/FFFFACC6 :        Block_Stage_Keys:
+(0) 1358/FFFFAD06 :        Block_Stage_Next:
+(0) 1359/FFFFAD08 :        Section_Top_Row_Written:
+(0) 1360/FFFFAD0A :        Section_Bottom_Row_Written:
+(0) 1361/FFFFAD0C :        Section_Plane_Dirty:
+(0) 1362/FFFFAD0E :        Section_Right_Col_Written:
+(0) 1363/FFFFAD10 :        Section_Left_Col_Written:
+(0) 1364/FFFFAD12 :        Section_Fwd_Neighbor_Data:
+(0) 1365/FFFFAD16 :        Section_Bwd_Neighbor_Data:
+(0) 1366/FFFFAD1A :        Tile_Override_Table:
+(0) 1367/FFFFAD7A :        Ring_Buffer:
+(0) 1368/FFFFADDA :        Ring_Count:
+(0) 1369/FFFFADDB :        Ring_HighWater:
+(0) 1370/FFFFADDC :        Ring_Add_Dropped:
+(0) 1371/FFFFADDE :        Entity_Scan_State:
+(0) 1372/FFFFAE46 :        Ring_Counter:
+(0) 1373/FFFFAE48 :        Ring_Anim_Frame:
+(0) 1374/FFFFAE49 :        Ring_Anim_Timer:
+(0) 1375/FFFFAE4A :        Entity_Window_Active:
+(0) 1376/FFFFAE4B :        Entity_Window_Center_ID:
+(0) 1377/FFFFAE4C :        Entity_Window_Anchor:
+(0) 1378/FFFFAE4E :        Entity_Window_OriginX:
+(0) 1379/FFFFAE50 :        Entity_Window_OriginY:
+(0) 1380/FFFFAE52 :        Entity_Loaded_Masks:
+(0) 1381/FFFFAED2 :        Entity_Mask_Scratch:
+(0) 1382/FFFFAF56 :        Camera_Y_Coarse_Prev:
+(0) 1383/FFFFAF58 :        Ring_Collected_Window:
+(0) 1384/FFFFAFE2 :        Ring_Collected_Park:
+(0) 1385/FFFFB066 :        Collected_Park_Next:
+(0) 1386/FFFFB068 :        Current_Act_Ptr:
+(0) 1387/FFFFB06C :        Ring_Sfx_Speaker:
+(0) 1388/FFFFB06E :        Sfx_Ring_Buf:
+(0) 1389/FFFFB076 :        Sfx_Ring_Wr:
+(0) 1390/FFFFB077 :        Sfx_Ring_Rd:
+(0) 1391/FFFFB078 :        Sound_Dbg_Mirror:
+(0) 1392/FFFFB128 :        Dynamic_Live:
+(0) 1393/FFFFB178 :        Dynamic_Live_Count:
+(0) 1394/FFFFB17A :        Dynamic_Live_Dirty:
+(0) 1395/FFFFB17C :        Dynamic_Live_Pending:
+(0) 1396/FFFFB18C :        Dynamic_Live_Pending_Count:
+(0) 1397/FFFFB18E :        Block_Stage_Gen:
+(0) 1398/FFFFB190 :        Pfx_Memo_Row:
+(0) 1399/FFFFB192 :        Pfx_Memo_L16:
+(0) 1400/FFFFB194 :        Pfx_Memo_H16:
+(0) 1401/FFFFB196 :        Pfx_Memo_Gen:
+(0) 1402/FFFFB198 :        Cs_Memo_Col:
+(0) 1403/FFFFB19A :        Cs_Memo_T16:
+(0) 1404/FFFFB19C :        Cs_Memo_B16:
+(0) 1405/FFFFB19E :        Cs_Memo_Gen:
+(0) 1406/FFFFB1A0 :        HBlank_Vector_Slot:
+(0) 1407/FFFFB1A6 :        Block_Stage_Ptrs:
+(0) 1408/FFFFB1E6 :        Block_Stage_Maps:
+(0) 1409/FFFFB226 :        Cache_Cur_LocalMap:
+(0) 1410/FFFFB22A :        Block_Stage_ZeroPage:
+(0) 1411/FFFFB52A :        PageIn_Saved_D0:
+(0) 1412/FFFFB52E :        PageIn_Saved_D1:
+(0) 1413/FFFFB532 :        PageIn_Saved_D2:
+(0) 1414/FFFFB536 :        PageIn_Saved_A0:
+(0) 1415/FFFFB53A :        PageIn_Saved_A1:
+(0) 1416/FFFFB53E :        PageIn_Saved_A2:
+(0) 1417/FFFFB542 :        PageIn_Saved_A3:
+(0) 1418/FFFFB546 :        PageIn_Saved_PC:
+(0) 1419/FFFFB54A :        PageIn_Saved_SR:
+(0) 1420/FFFFB54C :        PageIn_InFlight:
+(0) 1421/FFFFB54D :        PageIn_Suspended:
+(0) 1422/FFFFB54E :        PageIn_Staging_Busy:
+(0) 1423/FFFFB54F :        PageIn_Land_Pending:
+(0) 1424/FFFFB550 :        PageIn_Queue_Count:
+(0) 1425/FFFFB551 :        PageIn_Cur_Flags:
+(0) 1426/FFFFB552 :        PageIn_Queue:
+(0) 1427/FFFFB572 :        PageIn_Cur_Dest:
+(0) 1428/FFFFB574 :        PageIn_Cur_Bytes:
+(0) 1429/FFFFB576 :        PageIn_Cur_Page:
+(0) 1430/FFFFB578 :        PageIn_Cur_Frame:
+(0) 1431/FFFFB579 :        PageIn_Bulk_Drain:
+(0) 1432/FFFFB57A :        PageIn_Pool_Table:
+(0) 1433/FFFFB57E :        PageIn_Pool_Pages:
+(0) 1434/FFFFB580 :        PageIn_Fully_Resident:
+(0) 1435/FFFFB581 :        PageCache_Direct_Map:
+(0) 1436/FFFFB582 :        PageIn_Last_Frame:
+(0) 1437/FFFFB584 :        PageIn_Prev_Lagged:
+(0) 1438/FFFFB586 :        PageIn_Pfx_Skip_Armed:
+(0) 1439/FFFFB588 :        Page_Pfx_Budget:
+(0) 1440/FFFFB58A :        Act_Art_Budget:
+(0) 1441/FFFFB58C :        Art_Budget_Remaining:
+(0) 1442/FFFFB58E :        Ctrl_1_Held_Raw:
+(0) 1443/FFFFB58F :        Ctrl_2_Held_Raw:
+(0) 1444/FFFFB590 :        Ctrl_1_Ext_Held_Raw:
+(0) 1445/FFFFB591 :        Ctrl_2_Ext_Held_Raw:
+(0) 1446/FFFFB592 :        Palette_Ship_Snap:
+(0) 1447/FFFFB612 :        Engine_RAM_End:
+(0) 1448/FFFFB612 :        Game_RAM_End:
   Symbol Table (* = unused):
   --------------------------
 
@@ -2225,360 +2228,363 @@
  $engine.section$Section_RedrawPlanes$plb_col : 419C C |
  $engine.section$Section_RedrawPlanes$plb_word : 41B8 C |
  $engine.section$Section_RedrawPlanes$plb_done : 41C6 C |
- $engine.section$Section_RedrawPlanes$track_left_ok : 41DE C |
- Section_UpdateColumns : 41E4 C |
- $engine.section$Section_UpdateColumns$not_dirty : 4208 C |
- $engine.section$Section_UpdateColumns$right_clamp_ok : 422E C |
- $engine.section$Section_UpdateColumns$right_cache_ok : 4238 C |
- $engine.section$Section_UpdateColumns$right_wrap_ok : 4246 C |
- $engine.section$Section_UpdateColumns$right_loop : 424A C |
- $engine.section$Section_UpdateColumns$right_done : 426A C |
- $engine.section$Section_UpdateColumns$right_done_cache_ok : 427E C |
- $engine.section$Section_UpdateColumns$left_clamp_skip : 4288 C |
- $engine.section$Section_UpdateColumns$left_cache_ok : 4296 C |
- $engine.section$Section_UpdateColumns$left_wrap_ok : 42A8 C |
- $engine.section$Section_UpdateColumns$left_loop : 42AC C |
- $engine.section$Section_UpdateColumns$left_done : 42CC C |
- $engine.section$Section_UpdateColumns$left_done_cache_ok : 42E0 C |
- $engine.section$Section_UpdateColumns$right_clamp_skip2 : 42EA C |
- $engine.section$Section_UpdateColumns$bot_cache_ok : 4302 C |
- $engine.section$Section_UpdateColumns$bot_loop : 4306 C |
- $engine.section$Section_UpdateColumns$bot_done : 4326 C |
- $engine.section$Section_UpdateColumns$bot_done_cache_ok : 433A C |
- $engine.section$Section_UpdateColumns$top_row_clamp_skip : 4344 C |
- $engine.section$Section_UpdateColumns$top_cache_ok : 4352 C |
- $engine.section$Section_UpdateColumns$top_loop : 4356 C |
- $engine.section$Section_UpdateColumns$top_done : 4376 C |
- $engine.section$Section_UpdateColumns$top_done_cache_ok : 438A C |
- $engine.section$Section_UpdateColumns$bot_row_clamp_skip : 4394 C |
- Camera_Init : 43A0 C |
- $engine.camera$asm2$min_ok : 4414 C |
- $engine.camera$asm2$clamp : 441E C |
- $engine.camera$asm4$min_ok : 4432 C |
- $engine.camera$asm4$clamp : 443C C |
- Camera_Update : 4446 C |
- $engine.camera$Camera_Update$no_freeze : 4456 C |
- $engine.camera$Camera_Update$x_scroll_right : 4492 C |
- $engine.camera$Camera_Update$apply_x : 449C C |
- $engine.camera$Camera_Update$x_done : 44A8 C |
- $engine.camera$Camera_Update$x_clamp : 44AC C |
- $engine.camera$asm7$min_ok : 44B4 C |
- $engine.camera$asm7$clamp : 44BE C |
- $engine.camera$Camera_Update$y_track : 44C6 C |
- $engine.camera$Camera_Update$no_curl_comp : 44E8 C |
- $engine.camera$Camera_Update$check_down : 4502 C |
- $engine.camera$Camera_Update$down_ok : 4502 C |
- $engine.camera$Camera_Update$apply_y : 450A C |
- $engine.camera$Camera_Update$y_step_hi_ok : 4514 C |
- $engine.camera$Camera_Update$y_step_lo_ok : 451E C |
- $engine.camera$Camera_Update$clamp_y : 452A C |
- $engine.camera$Camera_Update$y_clamp : 452E C |
- $engine.camera$asm9$min_ok : 4536 C |
- $engine.camera$asm9$clamp : 4540 C |
- Parallax_Init : 4550 C |
- $engine.parallax$Parallax_Init$zero : 455A C |
- Parallax_CheckBoundary : 457A C |
- $engine.parallax$Parallax_CheckBoundary$crossed : 459C C |
- $engine.parallax$Parallax_CheckBoundary$no_crossing : 45B4 C |
- Parallax_StartTransition : 45B6 C |
- $engine.parallax$Parallax_StartTransition$instant : 45C8 C |
- $engine.parallax$Parallax_StartTransition$update_mode : 45E0 C |
- $engine.parallax$Parallax_StartTransition$v_done : 45E2 C |
- $engine.parallax$Parallax_StartTransition$no_change : 45E6 C |
- $engine.parallax$Parallax_StartTransition$recross_current : 45E8 C |
- Parallax_Active_Config : 4604 C |
- Vscroll_Write : 460A C |
- $engine.parallax$Vscroll_Write$whole_plane : 461C C |
- Parallax_Update : 4624 C |
- $engine.parallax$Parallax_Update$use_target : 4642 C |
- $engine.parallax$Parallax_Update$use_current : 4648 C |
- $engine.parallax$Parallax_Update$config_resolved : 464C C |
- $engine.parallax$Parallax_Update$mode3_shadow : 465E C |
- $engine.parallax$asm7$wait_z80 : 4680 C |
- $engine.parallax$Parallax_Update$mode3_reg_live : 46A0 C |
- $engine.parallax$Parallax_Update$band_loop : 46C6 C |
- $engine.parallax$Parallax_Update$snap_b : 46F4 C |
- $engine.parallax$Parallax_Update$write_b : 46F6 C |
- $engine.parallax$Parallax_Update$band_disabled : 46FC C |
- $engine.parallax$Parallax_Update$band_done : 4700 C |
- $engine.parallax$Parallax_Update$no_config : 4718 C |
- Parallax_Step4_Fill : 471A C |
- $engine.parallax$Parallax_Step4_Fill$find_k : 472E C |
- $engine.parallax$Parallax_Step4_Fill$found_k : 4742 C |
- $engine.parallax$Parallax_Step4_Fill$copy_band : 4756 C |
- $engine.parallax$Parallax_Step4_Fill$not_first : 4780 C |
- $engine.parallax$Parallax_Step4_Fill$clamp_top : 4788 C |
- $engine.parallax$Parallax_Step4_Fill$write_top : 4792 C |
- $engine.parallax$Parallax_Step4_Fill$no_wrap : 47B2 C |
- $engine.parallax$Parallax_Step4_Fill$bands_ready : 47C2 C |
- Parallax_Step5_Vscroll : 47DA C |
- $engine.parallax$Parallax_Step5_Vscroll$v_snap : 4800 C |
- $engine.parallax$Parallax_Step5_Vscroll$v_locked : 4804 C |
- $engine.parallax$Parallax_Step5_Vscroll$v_pack : 4808 C |
- $engine.parallax$Parallax_Step5_Vscroll$v_done : 4814 C |
- Decode_Factor_A : 4818 C |
- $engine.parallax$Decode_Factor_A$a_sub : 4846 C |
- $engine.parallax$Decode_Factor_A$a_pop_d3 : 4848 C |
- $engine.parallax$Decode_Factor_A$negate : 484A C |
- $engine.parallax$Decode_Factor_A$locked : 484E C |
- Decode_Factor_B : 4852 C |
- $engine.parallax$Decode_Factor_B$b_sub : 4880 C |
- $engine.parallax$Decode_Factor_B$b_pop_d3 : 4882 C |
- $engine.parallax$Decode_Factor_B$negate : 4884 C |
- $engine.parallax$Decode_Factor_B$locked : 4888 C |
- Parallax_Fill_PerLine : 488C C |
- $engine.parallax$Parallax_Fill_PerLine$next_band : 4896 C |
- $engine.parallax$Parallax_Fill_PerLine$have_end : 48A2 C |
- $engine.parallax$Parallax_Fill_PerLine$lp_flat : 48A8 C |
- $engine.parallax$Parallax_Fill_PerLine$fl_line : 48BC C |
- $engine.parallax$Parallax_Fill_PerLine$fl_tail : 48D0 C |
- $engine.parallax$Parallax_Fill_PerLine$fl_rem : 48D6 C |
- $engine.parallax$Parallax_Fill_PerLine$band_done : 48DC C |
- Raster_Install : 48F0 C |
- Raster_VBlank : 48F6 C |
- $engine.effects.raster$Raster_VBlank$copy_program : 491A C |
- $engine.effects.raster$Raster_VBlank$copy : 4932 C |
- $engine.effects.raster$Raster_VBlank$no_install : 4938 C |
- $engine.effects.raster$Raster_VBlank$done : 495E C |
- Raster_HInt : 4960 C |
- $engine.effects.raster$Raster_HInt$op_loop : 498C C |
- $engine.effects.raster$Raster_HInt$op_reg : 49B0 C |
- $engine.effects.raster$Raster_HInt$op_cram : 49B8 C |
- $engine.effects.raster$Raster_HInt$cram_delay : 49BC C |
- $engine.effects.raster$Raster_HInt$cram_loop : 49C2 C |
- $engine.effects.raster$Raster_HInt$op_region : 49D0 C |
- $engine.effects.raster$Raster_HInt$region_delay : 49D4 C |
- $engine.effects.raster$Raster_HInt$region_loop : 49E0 C |
- $engine.effects.raster$Raster_HInt$op_run_gradient : 49F6 C |
- $engine.effects.raster$Raster_HInt$op_run_ramp : 4A0A C |
- $engine.effects.raster$Raster_HInt$advance : 4A20 C |
- $engine.effects.raster$Raster_HInt$priming : 4A28 C |
- $engine.effects.raster$Raster_HInt$op_pal_restore : 4A38 C |
- $engine.effects.raster$Raster_HInt$restore_delay : 4A3C C |
- $engine.effects.raster$Raster_HInt$restore_loop : 4A48 C |
- $engine.effects.raster$Raster_HInt$dense_body : 4A5E C |
- $engine.effects.raster$Raster_HInt$ramp_body : 4A84 C |
- $engine.effects.raster$Raster_HInt$dense_end : 4AA4 C |
- $engine.effects.raster$Raster_HInt$park : 4AA8 C |
- $engine.effects.raster$Raster_HInt$out : 4AAC C |
- Raster_Program_None : 4AB2 C |
- Raster_InstallPatched : 4AB8 C |
- $engine.effects.raster$Raster_InstallPatched$no_ship : 4ADE C |
- $engine.effects.raster$Raster_InstallPatched$ship_done : 4AE0 C |
- $engine.effects.raster$Raster_InstallPatched$no_build : 4AFC C |
- Raster_BuildShipEntry : 4B02 C |
- Raster_BuildSchedule : 4B3E C |
- $engine.effects.raster$Raster_BuildSchedule$dst_ready : 4B5A C |
- $engine.effects.raster$Raster_BuildSchedule$entry : 4B72 C |
- $engine.effects.raster$Raster_BuildSchedule$have_line : 4B92 C |
- $engine.effects.raster$Raster_BuildSchedule$copy : 4BBC C |
- $engine.effects.raster$Raster_BuildSchedule$next : 4BC2 C |
- $engine.effects.raster$Raster_BuildSchedule$swap : 4BEE C |
- $engine.effects.raster$Raster_BuildSchedule$none : 4BF2 C |
- $engine.effects.raster$Raster_BuildSchedule$suppress : 4BF4 C |
- Raster_GetChannelBand : 4BF8 C |
- Effects_LatchWorldLines : 4C00 C |
- $engine.effects.raster$Effects_LatchWorldLines$ch : 4C0E C |
- Effects_SetWorldY : 4C1A C |
- Palette_LoadPal : 4C2A C |
- $engine.effects.palette$Palette_LoadPal$copy_base : 4C36 C |
- $engine.effects.palette$Palette_LoadPal$load_target : 4C50 C |
- $engine.effects.palette$Palette_LoadPal$copy_target : 4C5A C |
- Palette_ArmFade : 4C6E C |
- Palette_SetOp : 4C76 C |
- Palette_SetVariant : 4C8C C |
- $engine.effects.palette$Palette_SetVariant$none : 4CB2 C |
- Palette_LoadCycle : 4CB4 C |
- $engine.effects.palette$Palette_LoadCycle$zero : 4CD6 C |
- $engine.effects.palette$Palette_LoadCycle$done : 4CDC C |
- Palette_Compose : 4CDE C |
- $engine.effects.palette$Palette_Compose$work : 4CE6 C |
- $engine.effects.palette$Palette_Compose$base_copy : 4D06 C |
- $engine.effects.palette$Palette_Compose$cycling : 4D14 C |
- $engine.effects.palette$Palette_Compose$fade : 4D1E C |
- $engine.effects.palette$Palette_Compose$operators : 4D28 C |
- $engine.effects.palette$Palette_Compose$variants : 4D32 C |
- $engine.effects.palette$Palette_Compose$done : 4D4C C |
- Palette_DoCycle : 4D4E C |
- $engine.effects.palette$Palette_DoCycle$chan : 4D60 C |
- $engine.effects.palette$Palette_DoCycle$wait : 4D7C C |
- $engine.effects.palette$Palette_DoCycle$next : 4D80 C |
- $engine.effects.palette$Palette_DoCycle$ret : 4D86 C |
- $engine.effects.palette$Palette_DoCycle$ret_quiet : 4D94 C |
- Palette_RotateSpan : 4D96 C |
- $engine.effects.palette$Palette_RotateSpan$fwd : 4DC4 C |
- $engine.effects.palette$Palette_RotateSpan$rev : 4DD0 C |
- $engine.effects.palette$Palette_RotateSpan$rup : 4DD8 C |
- $engine.effects.palette$Palette_RotateSpan$done : 4DE2 C |
- Palette_DoFade : 4DE4 C |
- $engine.effects.palette$Palette_DoFade$snap : 4DF8 C |
- $engine.effects.palette$Palette_DoFade$step_frame : 4E18 C |
- $engine.effects.palette$Palette_DoFade$noskip : 4E22 C |
- $engine.effects.palette$Palette_DoFade$word : 4E2E C |
- $engine.effects.palette$asm10$st_up : 4E4E C |
- $engine.effects.palette$asm10$st_end : 4E50 C |
- $engine.effects.palette$asm11$st_up : 4E6E C |
- $engine.effects.palette$asm11$st_end : 4E70 C |
- $engine.effects.palette$asm12$st_up : 4E92 C |
- $engine.effects.palette$asm12$st_end : 4E94 C |
- Palette_DoOperator : 4EAE C |
- $engine.effects.palette$Palette_DoOperator$neg_xor : 4EDE C |
- $engine.effects.palette$Palette_DoOperator$neg_tick : 4EF2 C |
- $engine.effects.palette$Palette_DoOperator$fade_dir : 4EFE C |
- $engine.effects.palette$Palette_DoOperator$have_tgt : 4F16 C |
- $engine.effects.palette$Palette_DoOperator$fw_word : 4F1E C |
- $engine.effects.palette$asm16$st_up : 4F36 C |
- $engine.effects.palette$asm16$st_end : 4F38 C |
- $engine.effects.palette$asm17$st_up : 4F50 C |
- $engine.effects.palette$asm17$st_end : 4F52 C |
- $engine.effects.palette$asm18$st_up : 4F6C C |
- $engine.effects.palette$asm18$st_end : 4F6E C |
- $engine.effects.palette$Palette_DoOperator$ret : 4F98 C |
- $engine.effects.palette$Palette_DoOperator$white_flash : 4F9A C |
- $engine.effects.palette$Palette_DoOperator$wf_fill : 4FA2 C |
- $engine.effects.palette$Palette_DoOperator$op_done_restore : 4FBC C |
- Palette_DoVariants : 4FDC C |
- $engine.effects.palette$Palette_DoVariants$slot1 : 4FEA C |
- $engine.effects.palette$Palette_DoVariants$ret : 4FF8 C |
- Palette_DeriveVariant : 4FFA C |
- $engine.effects.palette$Palette_DeriveVariant$line : 5000 C |
- $engine.effects.palette$Palette_DeriveVariant$entry : 5016 C |
- $engine.effects.palette$asm23$cl_pos : 5036 C |
- $engine.effects.palette$asm23$cl_end : 503E C |
- $engine.effects.palette$asm24$cl_pos : 5060 C |
- $engine.effects.palette$asm24$cl_end : 5068 C |
- $engine.effects.palette$asm25$cl_pos : 508C C |
- $engine.effects.palette$asm25$cl_end : 5094 C |
- $engine.effects.palette$Palette_DeriveVariant$next_line : 50A0 C |
- Pal_Cycle_None : 50AC C |
- Effects_ResolveParallax : 50AE C |
- $engine.effects.preset$Effects_ResolveParallax$no_sec_binding : 50BA C |
- $engine.effects.preset$Effects_ResolveParallax$act_default : 50CE C |
- $engine.effects.preset$Effects_ResolveParallax$have_config : 50D6 C |
- Effects_InstallPreset : 50D8 C |
- $engine.effects.preset$Effects_InstallPreset$seed_anchor : 50F0 C |
- $engine.effects.preset$Effects_InstallPreset$no_fade_arm : 5104 C |
- $engine.effects.preset$Effects_InstallPreset$variant0_same : 5124 C |
- $engine.effects.preset$Effects_InstallPreset$variant1_same : 5136 C |
- $engine.effects.preset$Effects_InstallPreset$no_patch : 5146 C |
- $engine.effects.preset$Effects_InstallPreset$have_raster : 5154 C |
- $engine.effects.preset$Effects_InstallPreset$raster_done : 5158 C |
- Level_LoadArt : 5170 C |
- $engine.load_art$Level_LoadArt$streaming_pool : 519C C |
- $engine.load_art$Level_LoadArt$enq_loop : 51B6 C |
- $engine.load_art$Level_LoadArt$enq_next : 51CA C |
- $engine.load_art$Level_LoadArt$drain_wait : 51CE C |
- $engine.load_art$Level_LoadArt$bg : 51F8 C |
- $engine.load_art$Level_LoadArt$direct_scan : 5212 C |
- $engine.load_art$Level_LoadArt$direct_ok : 521C C |
- $engine.load_art$Level_LoadArt$no_direct : 5220 C |
- PageIn_Process : 5228 C |
- $engine.page_in$PageIn_Process$lag_ontime : 5254 C |
- $engine.page_in$PageIn_Process$frame_ticked : 525C C |
- $engine.page_in$PageIn_Process$gate_reset : 529C C |
- $engine.page_in$PageIn_Process$start : 52A0 C |
- $engine.page_in$PageIn_Process$page_id_ok : 52B2 C |
- $engine.page_in$PageIn_Process$raw : 530A C |
- $engine.page_in$PageIn_Process$raw_published : 532A C |
- $engine.page_in$PageIn_Process$alloc_fail : 5336 C |
- $engine.page_in$PageIn_Process$idle : 5342 C |
- $engine.page_in$PageIn_Process$drop_degenerate : 5344 C |
- $engine.page_in$PageIn_Process$release_claim : 5348 C |
- $engine.page_in$PageIn_Process$claim_done : 5360 C |
- $engine.page_in$PageIn_Process$resume : 5362 C |
- $engine.page_in$PageIn_Process$after : 5366 C |
- $engine.page_in$PageIn_Process$land : 536A C |
- $engine.page_in$PageIn_Process$land_full : 538A C |
- $engine.page_in$PageIn_Process$queue_has_nonspec : 5390 C |
- $engine.page_in$PageIn_Process$qn_scan : 539C C |
- $engine.page_in$PageIn_Process$qn_found : 53B0 C |
- $engine.page_in$PageIn_Process$dequeue : 53B4 C |
- $engine.page_in$PageIn_Process$dq_scan : 53C0 C |
- $engine.page_in$PageIn_Process$dq_found : 53DA C |
- $engine.page_in$PageIn_Process$dq_shift : 53F0 C |
- $engine.page_in$PageIn_Process$dq_done : 53F6 C |
- PageIn_BankRegs : 53FC C |
- PageIn_Resume : 5422 C |
- PageIn_EnqueueLanding : 544C C |
- $engine.page_in$PageIn_EnqueueLanding$art_deferred : 547A C |
- $engine.page_in$PageIn_EnqueueLanding$dropped : 5480 C |
- PageIn_Enqueue : 5486 C |
- $engine.page_in$PageIn_Enqueue$full : 54BE C |
- PageIn_Flush : 54C4 C |
- PageCache_Init : 550C C |
- $engine.page_cache$PageCache_Init$clr_table : 5520 C |
- $engine.page_cache$PageCache_Init$clr_queued : 5532 C |
- $engine.page_cache$PageCache_Init$init_frames : 5544 C |
- PageCache_Request : 5570 C |
- $engine.page_cache$PageCache_Request$in_range : 5578 C |
- $engine.page_cache$PageCache_Request$not_inflight : 55A0 C |
- $engine.page_cache$PageCache_Request$done : 55BA C |
- PageCache_AllocFrame : 55BC C |
- $engine.page_cache$PageCache_AllocFrame$from_lru : 55DA C |
- $engine.page_cache$PageCache_AllocFrame$ev_scan : 55EA C |
- $engine.page_cache$PageCache_AllocFrame$ev_next : 5602 C |
- $engine.page_cache$PageCache_AllocFrame$detach : 563E C |
- $engine.page_cache$PageCache_AllocFrame$thrash : 5658 C |
- PageCache_FreeFrame : 565E C |
- PageCache_Publish : 5678 C |
- $engine.page_cache$PageCache_Publish$not_pinned : 56CA C |
- $engine.page_cache$PageCache_Publish$done : 56E4 C |
- PageCache_PatchRun_Seq : 56E6 C |
- $engine.page_cache$asm6$pw_new_blank : 5708 C |
- $engine.page_cache$asm6$pw_miss : 5716 C |
- $engine.page_cache$asm6$pw_word : 5732 C |
- $engine.page_cache$asm6$pw_ref_done : 577E C |
- $engine.page_cache$asm6$pw_unref_old : 5784 C |
- $engine.page_cache$asm6$pw_next : 57A4 C |
- $engine.page_cache$PageCache_PatchRun_Seq$direct : 57B6 C |
- $engine.page_cache$asm8$pd_blank : 57BA C |
- $engine.page_cache$asm8$pd_word : 57BE C |
- $engine.page_cache$asm8$pd_next : 57D8 C |
- PageCache_PatchRun_Col : 57EA C |
- $engine.page_cache$asm10$pw_new_blank : 580C C |
- $engine.page_cache$asm10$pw_miss : 581A C |
- $engine.page_cache$asm10$pw_word : 5836 C |
- $engine.page_cache$asm10$pw_ref_done : 5882 C |
- $engine.page_cache$asm10$pw_unref_old : 5888 C |
- $engine.page_cache$asm10$pw_next : 58A8 C |
- $engine.page_cache$PageCache_PatchRun_Col$direct : 58BA C |
- $engine.page_cache$asm12$pd_blank : 58BE C |
- $engine.page_cache$asm12$pd_word : 58C2 C |
- $engine.page_cache$asm12$pd_next : 58DC C |
- PageCache_Prefetch : 58EE C |
- $engine.page_cache$PageCache_Prefetch$row_scan : 5930 C |
- $engine.page_cache$PageCache_Prefetch$row_next : 5954 C |
- $engine.page_cache$PageCache_Prefetch$col_strip : 595A C |
- $engine.page_cache$PageCache_Prefetch$col_scan : 5976 C |
- $engine.page_cache$PageCache_Prefetch$col_next : 599C C |
- $engine.page_cache$PageCache_Prefetch$strips_done : 59A2 C |
- $engine.page_cache$PageCache_Prefetch$ret : 59A6 C |
- $engine.page_cache$PageCache_Prefetch$scan_block : 59A8 C |
- $engine.page_cache$PageCache_Prefetch$sb_loop : 59B2 C |
- $engine.page_cache$PageCache_Prefetch$sb_next : 59E8 C |
- $engine.page_cache$PageCache_Prefetch$sb_done : 59EC C |
- PageCache_Audit : 59EE C |
- PageCache_ResetRefcounts : 59EE C |
- BG_Init : 5A00 C |
- $engine.bg$BG_Init$bg_len_ok : 5A24 C |
- $engine.bg$asm1$wait_z80 : 5A32 C |
- $engine.bg$BG_Init$tile_copy : 5A54 C |
- $engine.bg$BG_Init$skip_tiles : 5A62 C |
- $engine.bg$asm3$wait_z80 : 5A74 C |
- $engine.bg$BG_Init$nt_col : 5A8E C |
- $engine.bg$BG_Init$nt_row : 5AAE C |
- $engine.bg$BG_Init$skip_nt : 5ACC C |
- BgAnim_Init : 5AE0 C |
- BgAnim_Update : 5AEC C |
- $engine.bg_anim$BgAnim_Update$band_loop : 5B00 C |
- $engine.bg_anim$BgAnim_Update$cam_x : 5B0E C |
- $engine.bg_anim$BgAnim_Update$cam_y : 5B14 C |
- $engine.bg_anim$BgAnim_Update$have_value : 5B18 C |
- $engine.bg_anim$BgAnim_Update$commit : 5B64 C |
- $engine.bg_anim$BgAnim_Update$queue_full : 5B68 C |
- $engine.bg_anim$BgAnim_Update$skip_band : 5B6C C |
- $engine.bg_anim$BgAnim_Update$next_band : 5B6E C |
- $engine.bg_anim$BgAnim_Update$exit : 5B78 C |
+ $engine.section$Section_RedrawPlanes$track_right_ok : 41E4 C |
+ $engine.section$Section_RedrawPlanes$track_left_ok : 41EE C |
+ Section_UpdateColumns : 41F0 C |
+ $engine.section$Section_UpdateColumns$not_dirty : 4214 C |
+ $engine.section$Section_UpdateColumns$right_clamp_ok : 423A C |
+ $engine.section$Section_UpdateColumns$right_cache_ok : 4244 C |
+ $engine.section$Section_UpdateColumns$right_wrap_ok : 4252 C |
+ $engine.section$Section_UpdateColumns$right_loop : 4256 C |
+ $engine.section$Section_UpdateColumns$right_done : 4280 C |
+ $engine.section$Section_UpdateColumns$right_done_cache_ok : 4294 C |
+ $engine.section$Section_UpdateColumns$left_clamp_skip : 429E C |
+ $engine.section$Section_UpdateColumns$left_cache_ok : 42AC C |
+ $engine.section$Section_UpdateColumns$left_wrap_ok : 42BE C |
+ $engine.section$Section_UpdateColumns$left_loop : 42C2 C |
+ $engine.section$Section_UpdateColumns$left_done : 42EC C |
+ $engine.section$Section_UpdateColumns$left_done_cache_ok : 4300 C |
+ $engine.section$Section_UpdateColumns$right_clamp_skip2 : 430A C |
+ $engine.section$Section_UpdateColumns$bot_cache_ok : 4322 C |
+ $engine.section$Section_UpdateColumns$bot_loop : 4326 C |
+ $engine.section$Section_UpdateColumns$bot_done : 4350 C |
+ $engine.section$Section_UpdateColumns$bot_done_cache_ok : 4364 C |
+ $engine.section$Section_UpdateColumns$top_row_clamp_skip : 436E C |
+ $engine.section$Section_UpdateColumns$top_cache_ok : 437C C |
+ $engine.section$Section_UpdateColumns$top_loop : 4380 C |
+ $engine.section$Section_UpdateColumns$top_done : 43AA C |
+ $engine.section$Section_UpdateColumns$top_done_cache_ok : 43BE C |
+ $engine.section$Section_UpdateColumns$bot_row_clamp_skip : 43C8 C |
+ Camera_Init : 43D0 C |
+ $engine.camera$asm2$min_ok : 4444 C |
+ $engine.camera$asm2$clamp : 444E C |
+ $engine.camera$asm4$min_ok : 4462 C |
+ $engine.camera$asm4$clamp : 446C C |
+ Camera_Update : 4476 C |
+ $engine.camera$Camera_Update$no_freeze : 4486 C |
+ $engine.camera$Camera_Update$x_scroll_right : 44C2 C |
+ $engine.camera$Camera_Update$apply_x : 44CC C |
+ $engine.camera$Camera_Update$x_done : 44D8 C |
+ $engine.camera$Camera_Update$x_clamp : 44DC C |
+ $engine.camera$asm7$min_ok : 44E4 C |
+ $engine.camera$asm7$clamp : 44EE C |
+ $engine.camera$Camera_Update$y_track : 44F6 C |
+ $engine.camera$Camera_Update$no_curl_comp : 4518 C |
+ $engine.camera$Camera_Update$check_down : 4532 C |
+ $engine.camera$Camera_Update$down_ok : 4532 C |
+ $engine.camera$Camera_Update$apply_y : 453A C |
+ $engine.camera$Camera_Update$y_step_hi_ok : 4544 C |
+ $engine.camera$Camera_Update$y_step_lo_ok : 454E C |
+ $engine.camera$Camera_Update$clamp_y : 455A C |
+ $engine.camera$Camera_Update$y_clamp : 455E C |
+ $engine.camera$asm9$min_ok : 4566 C |
+ $engine.camera$asm9$clamp : 4570 C |
+ Parallax_Init : 4580 C |
+ $engine.parallax$Parallax_Init$zero : 458A C |
+ Parallax_CheckBoundary : 45AA C |
+ $engine.parallax$Parallax_CheckBoundary$crossed : 45CC C |
+ $engine.parallax$Parallax_CheckBoundary$no_crossing : 45E4 C |
+ Parallax_StartTransition : 45E6 C |
+ $engine.parallax$Parallax_StartTransition$instant : 45F8 C |
+ $engine.parallax$Parallax_StartTransition$update_mode : 4610 C |
+ $engine.parallax$Parallax_StartTransition$v_done : 4612 C |
+ $engine.parallax$Parallax_StartTransition$no_change : 4616 C |
+ $engine.parallax$Parallax_StartTransition$recross_current : 4618 C |
+ Parallax_Active_Config : 4634 C |
+ Vscroll_Write : 463A C |
+ $engine.parallax$Vscroll_Write$whole_plane : 464C C |
+ Parallax_Update : 4654 C |
+ $engine.parallax$Parallax_Update$use_target : 4672 C |
+ $engine.parallax$Parallax_Update$use_current : 4678 C |
+ $engine.parallax$Parallax_Update$config_resolved : 467C C |
+ $engine.parallax$Parallax_Update$mode3_shadow : 468E C |
+ $engine.parallax$asm7$wait_z80 : 46B0 C |
+ $engine.parallax$Parallax_Update$mode3_reg_live : 46D0 C |
+ $engine.parallax$Parallax_Update$band_loop : 46F6 C |
+ $engine.parallax$Parallax_Update$snap_b : 4724 C |
+ $engine.parallax$Parallax_Update$write_b : 4726 C |
+ $engine.parallax$Parallax_Update$band_disabled : 472C C |
+ $engine.parallax$Parallax_Update$band_done : 4730 C |
+ $engine.parallax$Parallax_Update$no_config : 4748 C |
+ Parallax_Step4_Fill : 474A C |
+ $engine.parallax$Parallax_Step4_Fill$find_k : 475E C |
+ $engine.parallax$Parallax_Step4_Fill$found_k : 4772 C |
+ $engine.parallax$Parallax_Step4_Fill$copy_band : 4786 C |
+ $engine.parallax$Parallax_Step4_Fill$not_first : 47B0 C |
+ $engine.parallax$Parallax_Step4_Fill$clamp_top : 47B8 C |
+ $engine.parallax$Parallax_Step4_Fill$write_top : 47C2 C |
+ $engine.parallax$Parallax_Step4_Fill$no_wrap : 47E2 C |
+ $engine.parallax$Parallax_Step4_Fill$bands_ready : 47F2 C |
+ Parallax_Step5_Vscroll : 480A C |
+ $engine.parallax$Parallax_Step5_Vscroll$v_snap : 4830 C |
+ $engine.parallax$Parallax_Step5_Vscroll$v_locked : 4834 C |
+ $engine.parallax$Parallax_Step5_Vscroll$v_pack : 4838 C |
+ $engine.parallax$Parallax_Step5_Vscroll$v_clamp_hi : 4840 C |
+ $engine.parallax$Parallax_Step5_Vscroll$v_pack_store : 484A C |
+ $engine.parallax$Parallax_Step5_Vscroll$v_done : 4856 C |
+ Decode_Factor_A : 485A C |
+ $engine.parallax$Decode_Factor_A$a_sub : 4888 C |
+ $engine.parallax$Decode_Factor_A$a_pop_d3 : 488A C |
+ $engine.parallax$Decode_Factor_A$negate : 488C C |
+ $engine.parallax$Decode_Factor_A$locked : 4890 C |
+ Decode_Factor_B : 4894 C |
+ $engine.parallax$Decode_Factor_B$b_sub : 48C2 C |
+ $engine.parallax$Decode_Factor_B$b_pop_d3 : 48C4 C |
+ $engine.parallax$Decode_Factor_B$negate : 48C6 C |
+ $engine.parallax$Decode_Factor_B$locked : 48CA C |
+ Parallax_Fill_PerLine : 48CE C |
+ $engine.parallax$Parallax_Fill_PerLine$next_band : 48D8 C |
+ $engine.parallax$Parallax_Fill_PerLine$have_end : 48E4 C |
+ $engine.parallax$Parallax_Fill_PerLine$lp_flat : 48EA C |
+ $engine.parallax$Parallax_Fill_PerLine$fl_line : 48FE C |
+ $engine.parallax$Parallax_Fill_PerLine$fl_tail : 4912 C |
+ $engine.parallax$Parallax_Fill_PerLine$fl_rem : 4918 C |
+ $engine.parallax$Parallax_Fill_PerLine$band_done : 491E C |
+ Raster_Install : 4932 C |
+ Raster_VBlank : 4938 C |
+ $engine.effects.raster$Raster_VBlank$copy_program : 495C C |
+ $engine.effects.raster$Raster_VBlank$copy : 4974 C |
+ $engine.effects.raster$Raster_VBlank$no_install : 497A C |
+ $engine.effects.raster$Raster_VBlank$done : 49A0 C |
+ Raster_HInt : 49A2 C |
+ $engine.effects.raster$Raster_HInt$op_loop : 49CE C |
+ $engine.effects.raster$Raster_HInt$op_reg : 49F2 C |
+ $engine.effects.raster$Raster_HInt$op_cram : 49FA C |
+ $engine.effects.raster$Raster_HInt$cram_delay : 49FE C |
+ $engine.effects.raster$Raster_HInt$cram_loop : 4A04 C |
+ $engine.effects.raster$Raster_HInt$op_region : 4A12 C |
+ $engine.effects.raster$Raster_HInt$region_delay : 4A16 C |
+ $engine.effects.raster$Raster_HInt$region_loop : 4A22 C |
+ $engine.effects.raster$Raster_HInt$op_run_gradient : 4A38 C |
+ $engine.effects.raster$Raster_HInt$op_run_ramp : 4A4C C |
+ $engine.effects.raster$Raster_HInt$advance : 4A62 C |
+ $engine.effects.raster$Raster_HInt$priming : 4A6A C |
+ $engine.effects.raster$Raster_HInt$op_pal_restore : 4A7A C |
+ $engine.effects.raster$Raster_HInt$restore_delay : 4A7E C |
+ $engine.effects.raster$Raster_HInt$restore_loop : 4A8A C |
+ $engine.effects.raster$Raster_HInt$dense_body : 4AA0 C |
+ $engine.effects.raster$Raster_HInt$ramp_body : 4AC6 C |
+ $engine.effects.raster$Raster_HInt$dense_end : 4AE6 C |
+ $engine.effects.raster$Raster_HInt$park : 4AEA C |
+ $engine.effects.raster$Raster_HInt$out : 4AEE C |
+ Raster_Program_None : 4AF4 C |
+ Raster_InstallPatched : 4AFA C |
+ $engine.effects.raster$Raster_InstallPatched$no_ship : 4B20 C |
+ $engine.effects.raster$Raster_InstallPatched$ship_done : 4B22 C |
+ $engine.effects.raster$Raster_InstallPatched$no_build : 4B3E C |
+ Raster_BuildShipEntry : 4B44 C |
+ Raster_BuildSchedule : 4B80 C |
+ $engine.effects.raster$Raster_BuildSchedule$dst_ready : 4B9C C |
+ $engine.effects.raster$Raster_BuildSchedule$entry : 4BB4 C |
+ $engine.effects.raster$Raster_BuildSchedule$have_line : 4BD4 C |
+ $engine.effects.raster$Raster_BuildSchedule$copy : 4BFE C |
+ $engine.effects.raster$Raster_BuildSchedule$next : 4C04 C |
+ $engine.effects.raster$Raster_BuildSchedule$swap : 4C30 C |
+ $engine.effects.raster$Raster_BuildSchedule$none : 4C34 C |
+ $engine.effects.raster$Raster_BuildSchedule$suppress : 4C36 C |
+ Raster_GetChannelBand : 4C3A C |
+ Effects_LatchWorldLines : 4C42 C |
+ $engine.effects.raster$Effects_LatchWorldLines$ch : 4C50 C |
+ Effects_SetWorldY : 4C5C C |
+ Palette_LoadPal : 4C6C C |
+ $engine.effects.palette$Palette_LoadPal$copy_base : 4C78 C |
+ $engine.effects.palette$Palette_LoadPal$load_target : 4C92 C |
+ $engine.effects.palette$Palette_LoadPal$copy_target : 4C9C C |
+ Palette_ArmFade : 4CB0 C |
+ Palette_SetOp : 4CB8 C |
+ Palette_SetVariant : 4CCE C |
+ $engine.effects.palette$Palette_SetVariant$none : 4CF4 C |
+ Palette_LoadCycle : 4CF6 C |
+ $engine.effects.palette$Palette_LoadCycle$zero : 4D18 C |
+ $engine.effects.palette$Palette_LoadCycle$done : 4D1E C |
+ Palette_Compose : 4D20 C |
+ $engine.effects.palette$Palette_Compose$work : 4D28 C |
+ $engine.effects.palette$Palette_Compose$base_copy : 4D48 C |
+ $engine.effects.palette$Palette_Compose$cycling : 4D56 C |
+ $engine.effects.palette$Palette_Compose$fade : 4D60 C |
+ $engine.effects.palette$Palette_Compose$operators : 4D6A C |
+ $engine.effects.palette$Palette_Compose$variants : 4D74 C |
+ $engine.effects.palette$Palette_Compose$done : 4D8E C |
+ Palette_DoCycle : 4D90 C |
+ $engine.effects.palette$Palette_DoCycle$chan : 4DA2 C |
+ $engine.effects.palette$Palette_DoCycle$wait : 4DBE C |
+ $engine.effects.palette$Palette_DoCycle$next : 4DC2 C |
+ $engine.effects.palette$Palette_DoCycle$ret : 4DC8 C |
+ $engine.effects.palette$Palette_DoCycle$ret_quiet : 4DD6 C |
+ Palette_RotateSpan : 4DD8 C |
+ $engine.effects.palette$Palette_RotateSpan$fwd : 4E06 C |
+ $engine.effects.palette$Palette_RotateSpan$rev : 4E12 C |
+ $engine.effects.palette$Palette_RotateSpan$rup : 4E1A C |
+ $engine.effects.palette$Palette_RotateSpan$done : 4E24 C |
+ Palette_DoFade : 4E26 C |
+ $engine.effects.palette$Palette_DoFade$snap : 4E3A C |
+ $engine.effects.palette$Palette_DoFade$step_frame : 4E5A C |
+ $engine.effects.palette$Palette_DoFade$noskip : 4E64 C |
+ $engine.effects.palette$Palette_DoFade$word : 4E70 C |
+ $engine.effects.palette$asm10$st_up : 4E90 C |
+ $engine.effects.palette$asm10$st_end : 4E92 C |
+ $engine.effects.palette$asm11$st_up : 4EB0 C |
+ $engine.effects.palette$asm11$st_end : 4EB2 C |
+ $engine.effects.palette$asm12$st_up : 4ED4 C |
+ $engine.effects.palette$asm12$st_end : 4ED6 C |
+ Palette_DoOperator : 4EF0 C |
+ $engine.effects.palette$Palette_DoOperator$neg_xor : 4F20 C |
+ $engine.effects.palette$Palette_DoOperator$neg_tick : 4F34 C |
+ $engine.effects.palette$Palette_DoOperator$fade_dir : 4F40 C |
+ $engine.effects.palette$Palette_DoOperator$have_tgt : 4F58 C |
+ $engine.effects.palette$Palette_DoOperator$fw_word : 4F60 C |
+ $engine.effects.palette$asm16$st_up : 4F78 C |
+ $engine.effects.palette$asm16$st_end : 4F7A C |
+ $engine.effects.palette$asm17$st_up : 4F92 C |
+ $engine.effects.palette$asm17$st_end : 4F94 C |
+ $engine.effects.palette$asm18$st_up : 4FAE C |
+ $engine.effects.palette$asm18$st_end : 4FB0 C |
+ $engine.effects.palette$Palette_DoOperator$ret : 4FDA C |
+ $engine.effects.palette$Palette_DoOperator$white_flash : 4FDC C |
+ $engine.effects.palette$Palette_DoOperator$wf_fill : 4FE4 C |
+ $engine.effects.palette$Palette_DoOperator$op_done_restore : 4FFE C |
+ Palette_DoVariants : 501E C |
+ $engine.effects.palette$Palette_DoVariants$slot1 : 502C C |
+ $engine.effects.palette$Palette_DoVariants$ret : 503A C |
+ Palette_DeriveVariant : 503C C |
+ $engine.effects.palette$Palette_DeriveVariant$line : 5042 C |
+ $engine.effects.palette$Palette_DeriveVariant$entry : 5058 C |
+ $engine.effects.palette$asm23$cl_pos : 5078 C |
+ $engine.effects.palette$asm23$cl_end : 5080 C |
+ $engine.effects.palette$asm24$cl_pos : 50A2 C |
+ $engine.effects.palette$asm24$cl_end : 50AA C |
+ $engine.effects.palette$asm25$cl_pos : 50CE C |
+ $engine.effects.palette$asm25$cl_end : 50D6 C |
+ $engine.effects.palette$Palette_DeriveVariant$next_line : 50E2 C |
+ Pal_Cycle_None : 50EE C |
+ Effects_ResolveParallax : 50F0 C |
+ $engine.effects.preset$Effects_ResolveParallax$no_sec_binding : 50FC C |
+ $engine.effects.preset$Effects_ResolveParallax$act_default : 5110 C |
+ $engine.effects.preset$Effects_ResolveParallax$have_config : 5118 C |
+ Effects_InstallPreset : 511A C |
+ $engine.effects.preset$Effects_InstallPreset$seed_anchor : 5132 C |
+ $engine.effects.preset$Effects_InstallPreset$no_fade_arm : 5146 C |
+ $engine.effects.preset$Effects_InstallPreset$variant0_same : 5166 C |
+ $engine.effects.preset$Effects_InstallPreset$variant1_same : 5178 C |
+ $engine.effects.preset$Effects_InstallPreset$no_patch : 5188 C |
+ $engine.effects.preset$Effects_InstallPreset$have_raster : 5196 C |
+ $engine.effects.preset$Effects_InstallPreset$raster_done : 519A C |
+ Level_LoadArt : 51C0 C |
+ $engine.load_art$Level_LoadArt$streaming_pool : 51EC C |
+ $engine.load_art$Level_LoadArt$enq_loop : 5206 C |
+ $engine.load_art$Level_LoadArt$enq_next : 521A C |
+ $engine.load_art$Level_LoadArt$drain_wait : 521E C |
+ $engine.load_art$Level_LoadArt$bg : 5248 C |
+ $engine.load_art$Level_LoadArt$direct_scan : 5262 C |
+ $engine.load_art$Level_LoadArt$direct_ok : 526C C |
+ $engine.load_art$Level_LoadArt$no_direct : 5270 C |
+ PageIn_Process : 5278 C |
+ $engine.page_in$PageIn_Process$lag_ontime : 52A4 C |
+ $engine.page_in$PageIn_Process$frame_ticked : 52AC C |
+ $engine.page_in$PageIn_Process$gate_reset : 52EC C |
+ $engine.page_in$PageIn_Process$start : 52F0 C |
+ $engine.page_in$PageIn_Process$page_id_ok : 5302 C |
+ $engine.page_in$PageIn_Process$raw : 535A C |
+ $engine.page_in$PageIn_Process$raw_published : 537A C |
+ $engine.page_in$PageIn_Process$alloc_fail : 5386 C |
+ $engine.page_in$PageIn_Process$idle : 5392 C |
+ $engine.page_in$PageIn_Process$drop_degenerate : 5394 C |
+ $engine.page_in$PageIn_Process$release_claim : 5398 C |
+ $engine.page_in$PageIn_Process$claim_done : 53B0 C |
+ $engine.page_in$PageIn_Process$resume : 53B2 C |
+ $engine.page_in$PageIn_Process$after : 53B6 C |
+ $engine.page_in$PageIn_Process$land : 53BA C |
+ $engine.page_in$PageIn_Process$land_full : 53DA C |
+ $engine.page_in$PageIn_Process$queue_has_nonspec : 53E0 C |
+ $engine.page_in$PageIn_Process$qn_scan : 53EC C |
+ $engine.page_in$PageIn_Process$qn_found : 5400 C |
+ $engine.page_in$PageIn_Process$dequeue : 5404 C |
+ $engine.page_in$PageIn_Process$dq_scan : 5410 C |
+ $engine.page_in$PageIn_Process$dq_found : 542A C |
+ $engine.page_in$PageIn_Process$dq_shift : 5440 C |
+ $engine.page_in$PageIn_Process$dq_done : 5446 C |
+ PageIn_BankRegs : 544C C |
+ PageIn_Resume : 5472 C |
+ PageIn_EnqueueLanding : 549C C |
+ $engine.page_in$PageIn_EnqueueLanding$art_deferred : 54CA C |
+ $engine.page_in$PageIn_EnqueueLanding$dropped : 54D0 C |
+ PageIn_Enqueue : 54D6 C |
+ $engine.page_in$PageIn_Enqueue$full : 550E C |
+ PageIn_Flush : 5514 C |
+ PageCache_Init : 555C C |
+ $engine.page_cache$PageCache_Init$clr_table : 5570 C |
+ $engine.page_cache$PageCache_Init$clr_queued : 5582 C |
+ $engine.page_cache$PageCache_Init$init_frames : 5594 C |
+ PageCache_Request : 55C0 C |
+ $engine.page_cache$PageCache_Request$in_range : 55C8 C |
+ $engine.page_cache$PageCache_Request$not_inflight : 55F0 C |
+ $engine.page_cache$PageCache_Request$done : 560A C |
+ PageCache_AllocFrame : 560C C |
+ $engine.page_cache$PageCache_AllocFrame$from_lru : 562A C |
+ $engine.page_cache$PageCache_AllocFrame$ev_scan : 563A C |
+ $engine.page_cache$PageCache_AllocFrame$ev_next : 5652 C |
+ $engine.page_cache$PageCache_AllocFrame$detach : 568E C |
+ $engine.page_cache$PageCache_AllocFrame$thrash : 56A8 C |
+ PageCache_FreeFrame : 56AE C |
+ PageCache_Publish : 56C8 C |
+ $engine.page_cache$PageCache_Publish$not_pinned : 571A C |
+ $engine.page_cache$PageCache_Publish$done : 5734 C |
+ PageCache_PatchRun_Seq : 5736 C |
+ $engine.page_cache$asm6$pw_new_blank : 5758 C |
+ $engine.page_cache$asm6$pw_miss : 5766 C |
+ $engine.page_cache$asm6$pw_word : 5782 C |
+ $engine.page_cache$asm6$pw_ref_done : 57CE C |
+ $engine.page_cache$asm6$pw_unref_old : 57D4 C |
+ $engine.page_cache$asm6$pw_next : 57F4 C |
+ $engine.page_cache$PageCache_PatchRun_Seq$direct : 5806 C |
+ $engine.page_cache$asm8$pd_blank : 580A C |
+ $engine.page_cache$asm8$pd_word : 580E C |
+ $engine.page_cache$asm8$pd_next : 5828 C |
+ PageCache_PatchRun_Col : 583A C |
+ $engine.page_cache$asm10$pw_new_blank : 585C C |
+ $engine.page_cache$asm10$pw_miss : 586A C |
+ $engine.page_cache$asm10$pw_word : 5886 C |
+ $engine.page_cache$asm10$pw_ref_done : 58D2 C |
+ $engine.page_cache$asm10$pw_unref_old : 58D8 C |
+ $engine.page_cache$asm10$pw_next : 58F8 C |
+ $engine.page_cache$PageCache_PatchRun_Col$direct : 590A C |
+ $engine.page_cache$asm12$pd_blank : 590E C |
+ $engine.page_cache$asm12$pd_word : 5912 C |
+ $engine.page_cache$asm12$pd_next : 592C C |
+ PageCache_Prefetch : 593E C |
+ $engine.page_cache$PageCache_Prefetch$row_scan : 5980 C |
+ $engine.page_cache$PageCache_Prefetch$row_next : 59A4 C |
+ $engine.page_cache$PageCache_Prefetch$col_strip : 59AA C |
+ $engine.page_cache$PageCache_Prefetch$col_scan : 59C6 C |
+ $engine.page_cache$PageCache_Prefetch$col_next : 59EC C |
+ $engine.page_cache$PageCache_Prefetch$strips_done : 59F2 C |
+ $engine.page_cache$PageCache_Prefetch$ret : 59F6 C |
+ $engine.page_cache$PageCache_Prefetch$scan_block : 59F8 C |
+ $engine.page_cache$PageCache_Prefetch$sb_loop : 5A02 C |
+ $engine.page_cache$PageCache_Prefetch$sb_next : 5A38 C |
+ $engine.page_cache$PageCache_Prefetch$sb_done : 5A3C C |
+ PageCache_Audit : 5A3E C |
+ PageCache_ResetRefcounts : 5A3E C |
+ BG_Init : 5A50 C |
+ $engine.bg$BG_Init$bg_len_ok : 5A74 C |
+ $engine.bg$asm1$wait_z80 : 5A82 C |
+ $engine.bg$BG_Init$tile_copy : 5AA4 C |
+ $engine.bg$BG_Init$skip_tiles : 5AB2 C |
+ $engine.bg$asm3$wait_z80 : 5AC4 C |
+ $engine.bg$BG_Init$nt_col : 5ADE C |
+ $engine.bg$BG_Init$nt_row : 5AFE C |
+ $engine.bg$BG_Init$skip_nt : 5B1C C |
+ BgAnim_Init : 5B30 C |
+ BgAnim_Update : 5B3C C |
+ $engine.bg_anim$BgAnim_Update$band_loop : 5B50 C |
+ $engine.bg_anim$BgAnim_Update$cam_x : 5B5E C |
+ $engine.bg_anim$BgAnim_Update$cam_y : 5B64 C |
+ $engine.bg_anim$BgAnim_Update$have_value : 5B68 C |
+ $engine.bg_anim$BgAnim_Update$commit : 5BB4 C |
+ $engine.bg_anim$BgAnim_Update$queue_full : 5BB8 C |
+ $engine.bg_anim$BgAnim_Update$skip_band : 5BBC C |
+ $engine.bg_anim$BgAnim_Update$next_band : 5BBE C |
+ $engine.bg_anim$BgAnim_Update$exit : 5BC8 C |
  ObjCodeBase : 10000 C |
  DemoBox_Main : 10002 C |
  ObjDef_DemoBox : 10006 C |
@@ -2892,7 +2898,7 @@
  Engine_RAM_End : FFFFB612 C |
  Game_RAM_End : FFFFB612 C |
 
-   1445 symbols
+   1448 symbols
     0 unused symbols
 
   Equate Table (name = value; values, not addresses):
