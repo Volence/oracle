@@ -1,5 +1,5 @@
 {
-  "focus": "Ruled how to fix the tool's self-check: it must verify against a second, independent reading of the source.",
+  "focus": "The cargo lane is free, so the A/B I committed to the engine team can finally run - that is what I would pick up.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -8,12 +8,20 @@
       "id": "d-20"
     }
   ],
-  "nextBoundary": "Now - merged, verified on the merged tree, nothing running.",
+  "nextBoundary": "Now - nothing running, tree clean, everything pushed.",
   "queue": [
+    {
+      "id": "RESTAMP-AB",
+      "title": "COMMITMENT TO AEON, trigger fired 2026-08-30, candidate verified - and its only blocker (never two cargo runs at once) has now CLEARED. Run our frozen chain-186 fixture against sigil's e38295d2 golden and send back the moved SET verbatim, never a count and never a verdict: they stated a falsifier in advance (movers should be the early checkpoints only) and a confirming summary is exactly what would let an incomplete mechanism authorise their restamp.",
+      "state": "next",
+      "size": "M",
+      "blockedBy": null,
+      "project": null
+    },
     {
       "id": "F-CROSSCHECK-BLIND",
       "title": "RULED (L-09): the tool's quick self-check must actually verify its rows are still there, and must check against a SECOND independent reading of the source - not its own output, or it grades its own homework and keeps the exact blindness we are fixing. The second reading already exists and is proven, in the tests. Rejected the cheaper option of just documenting the limit: nobody re-reads a build check's small print.",
-      "state": "next",
+      "state": "open",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT"
@@ -103,7 +111,7 @@
       "blockedBy": null
     }
   ],
-  "awaiting": null,
+  "awaiting": "which of two to start: the A/B the engine team is booked to receive, or the self-check fix I ruled last night. The A/B is a promise to another lane and its blocker just cleared.",
   "atBoundary": true,
-  "updatedAt": "2026-08-30T08:42:26Z"
+  "updatedAt": "2026-08-30T08:56:44Z"
 }

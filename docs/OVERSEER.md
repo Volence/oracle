@@ -2039,7 +2039,23 @@ until our answer does; had we waited for it, each lane would have been waiting o
   explicitly would not promise. It held.
 * **baseline** — our own `fixtures/aeon/s4.debug.bin`, sha256 `75e9f4d4…19fcf7a` (chain 186).
 
-**⚠ WHY IT IS NOT RUN YET, stated so a fresh session does not read it as forgotten:** the replay A/B needs
+**⚑ CANDIDATE SUPERSEDED 2026-08-30, AND THE BLOCKER HAS CLEARED — hub ruled (under the owner's standing
+delegation, banked at empyrean HEAD) to run this FIRST, L-09 after.** The candidate moved from chain 188 to
+**chain 189**: sigil **`39c34fd2`** (*attest: chain 189 strict-clean — 4170 passed, 0 failed, 0 skips*),
+golden sha256 **`4ee7ac79…a9a0b3`**, len **736315**; aeon rev **`3f143178`**. Both verified here firsthand as
+genuine ancestors of their lanes' `origin/master`.
+**⚠ 188 → 189 IS *NOT* BYTE-IDENTICAL, and the length is unchanged (736315 both), so a length check passes a
+different ROM.** That is bar 4 arriving on a candidate pin rather than on a build artifact: the previous hop
+(187 → 188) *was* byte-identical, which is exactly what would train a reader to skim this one.
+**The listing is the snag.** sigil's golden dir carries `s4.debug.bin` but **no `.lst`**, and our frozen
+`fixtures/aeon/s4.debug.lst` is chain 186's — wrong for this ROM. The matching listing exists only as an
+**untracked file in aeon's live working tree** (`aeon/s4.debug.lst`, mtime beside their `s4.debug.bin`),
+which is the precise dependency `fixtures/aeon/` was created to remove. **Snapshotted out of the live tree
+before dispatch** to `/home/volence/sonic_hacks/restamp-ab-chain189/` (read-only, `SHA256SUMS` beside it):
+ROM `4ee7ac79…a9a0b3` — **verified equal to sigil's committed blob, which is the authority, not the copy** —
+and listing `81a11102…845a2f`. Record the listing hash in the result: the pair is only attributable together.
+
+**⚠ WHY IT WAS NOT RUN EARLIER, kept so a fresh session does not read it as forgotten:** the replay A/B needs
 cargo, and this repo's standing rule is **never two cargo runs at once** — the `parcel/screen-text` agent
 holds the lane. **Run it when the lane frees.** aeon explicitly asked that it wait rather than be run
 tired, on their own record of five instrument errors that night; the serialization rule and their request
