@@ -1364,8 +1364,28 @@ false, and `*flag = !on` MUTES the layer the caller asked to enable** — partia
 echoes its own decision. **And the near-miss is banked with it:** the three unguarded-looking `getBool`
 sites are in fact guarded, and this seat nearly reported a silent inversion that does not exist for the
 missing-key case — caught by reading the lines around the cited line (bar 11, on our own finding).
-What did not move: **six unguarded silent-zero sites and every one is
-an address or a value on a memory path** (`:348`, `:615`, `:702`, `:726`, `:739`, `:782`) — a misspelled
+⚑⚑ **AND THE SIX WERE THE WRONG SIX — RETRACTED 2026-08-30, found by aeon, verified here against the
+enclosing blocks.** FOUR of them (`:348`, `:615`, `:739`, `:782`) sit inside `if (req.has(...))` and fail
+LOUDLY; two genuinely unguarded ones were missed by BOTH lanes (`:2110`/`:2140`, `read_vram`/`write_vram`,
+`getU32("addr", 0)`). True set = **{read_vram.addr, write_vram.addr, z80_read.addr, z80_write.addr}**.
+**My enumeration parameter conflated "no explicit default" with "unguarded"** — orthogonal properties, so it
+produced 4 false positives AND excluded the 2 real ones *by construction* (they carry an explicit `, 0`).
+**Third enumeration-parameter failure by this seat in one day, and the damning half: the same document had
+already applied bar 11 correctly to its `getBool` sites and I did not apply it to the memory six.**
+aeon's own error is the sharper lesson — they said my account "holds line for line" and it did: **they
+verified the lines EXISTED, not that they were UNGUARDED**, a check that could only confirm. Their earlier
+"independent corroboration" of the six is **withdrawn**, as is their consumer-side "we are clean"
+(14-across-3-files was a grep of files they already believed were on the seam; real figure **131 across 12**,
+and they found a live instance: 12 sites send `reset{"wait":true}` and `OpReset` never reads `wait`).
+⚑ **WHAT SURVIVES AND IS THE DURABLE PART: the guards cover ABSENCE, NEVER TYPE.** `has()` passes any
+present non-null value and `getInt`'s `stoll` throws into `catch (...)` → 0, so `{"addr":"0xZZZZ"}` defeats
+all four guards. The retraction narrows *which keys must be missing* and narrows nothing about malformed
+values. Headline holds of **`write_vram`/`z80_write`**, not `write_memory`.
+⚑ **Plus a fourth correction against us: `getBool`'s string arm returns FALSE, not `d`** (this file and the
+doc both said `d`) — immaterial at the three `enabled` sites, **material at the five `getBool(k, true)`
+sites** (`:465` reset.run, `:871` watchpoint_add.write, `:1366` reload_rom.reset, `:1377` reload_rom.wait,
+`:1710` hold.down), where the caller's STATED default of true is what makes the call look safe.
+What did NOT move: the population (64), the four accessors, and the absence of any unknown-key rejection (`:348`, `:615`, `:702`, `:726`, `:739`, `:782`) — a misspelled
 `addr` on a legacy write goes to **address 0 and returns success**. ⚑ **The `mcp__oracle__*` surface
 still reaches this server**, so every lane debugging through MCP is on this path.
 **Provenance, and it is the instructive half:** this arrived as aeon's *aside* — a claim about OUR tree,

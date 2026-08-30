@@ -57,6 +57,92 @@ server's source and pinning every send site against it.
 *Original text follows unedited, per this repo's supersession rule — a reader meeting the "34" cold
 needs to see that it was superseded, not that it was never written.*
 
+## ⚑⚑ THIRD CORRECTION, AND IT RETRACTS THIS DOCUMENT'S HEADLINE SET — the six were the wrong six
+
+**Found by aeon, verified here firsthand against every claim before banking. The headline SURVIVES but
+of DIFFERENT METHODS, and the enumeration error is mine.**
+
+### What was wrong
+
+**Four of my six are structurally GUARDED and fail loudly on a missing key** — verified by reading the
+enclosing blocks:
+
+| line | sits inside | what a misspelled key actually gets |
+|---|---|---|
+| `:348` | `if (req.has("addr"))` | falls through to `ErrorReply` — *"need addr or symbol"* |
+| `:615` | `else if (req.has("value"))` | falls through — *"need bytes or value"* |
+| `:739` | `else if (req.has("value"))` | falls through — *"need bytes or value"* |
+| `:782` | `else if (req.has("addr"))` | falls through — *"need name or addr"* |
+
+**And two genuinely unguarded sites were missed by both lanes:** `:2110` and `:2140`,
+`read_vram` / `write_vram`, `getU32("addr", 0)` with nothing above them. `write_vram` guards `bytes`
+(`if (!req.has("bytes")) return ErrorReply(...)`) and leaves `addr` open, so a misspelled `addr` with a
+correct `bytes` **writes to VRAM address 0**.
+
+**The true unguarded-on-absence set is `{read_vram.addr, write_vram.addr, z80_read.addr,
+z80_write.addr}`** — still four, an entirely different four. Only `:702` and `:726` survive from the
+original list.
+
+### The error, which is the part worth keeping
+
+**I enumerated `getInt|getU32` sites with no EXPLICIT DEFAULT and treated that as "unguarded". Those
+are orthogonal properties.** It produced errors in *both* directions from one wrong parameter:
+
+* **4 false positives** — no default parameter, but a structural `if (req.has(...))` above.
+* **2 false negatives** — `getU32("addr", 0)` *has* an explicit default, so my grep **excluded them by
+  construction**, and they are the genuinely dangerous ones.
+
+**And the damning half: this document already applied the correct check, in its own second correction,
+to the `getBool` sites — and I did not apply it to the memory-path six.** The text above literally
+reads *"reading the lines around the cited line is what caught it — protocol bar 11, on my own
+finding"*. I ran the right check on one half of my own document and not the other, in the same sitting.
+Third enumeration-parameter failure by this seat in one day.
+
+**How aeon got it wrong too, and their framing is the better one:** they told me my account *"holds
+line for line"*, and it did — they read the six lines and the lines were exactly as described. **They
+verified that the lines EXISTED, not that they were UNGUARDED**, which is the proposition the claim
+actually rested on. A check that could only ever confirm. Their agent caught it by re-deriving guards
+from enclosing blocks rather than reading the cited lines at all — a different enumeration parameter,
+which is the thing that keeps working. **So the "independent corroboration" this document previously
+claimed for the six was not corroboration at all**; that claim is withdrawn.
+
+### What SURVIVES, and it is most of it
+
+1. **The headline is true of different methods.** *"A misspelled `addr` writes to zero and reports
+   success"* holds for **`write_vram`** and **`z80_write`**, not for `write_memory`.
+2. **⚑ THE TYPE HAZARD IS UNDIMINISHED AT ALL SIX, guards included.** `has()` (`:117`) is satisfied by
+   any present non-null value; `getInt`'s string arm throws inside `stoll` and `catch (...)` returns
+   the default. So `{"addr":"0xZZZZ"}` passes every one of those four guards and resolves to **0**.
+   **The guards cover ABSENCE, never TYPE** — which means the retraction narrows *which keys must be
+   missing*, and narrows nothing about malformed values.
+3. The population (64), the four accessors, and the absence of unknown-key rejection are unchanged.
+
+### A fourth correction, aeon's, in this document's disfavour
+
+**`getBool`'s string arm returns `false`, not the caller's default.** This document said it *"falls
+through to `d` for everything else"*. It does not:
+
+```cpp
+if (v.is_string()) { const std::string s = v.get<std::string>();
+                     return (s == "true" || s == "1" || s == "yes"); }   // <- returns FALSE, not d
+return d;                                                                // <- only for array/object
+```
+
+Immaterial for the three `enabled` sites, whose default is already false. **Material — and a worse
+inversion class — at the five `getBool(k, true)` sites**, verified here: `:465` `reset.run`, `:871`
+`watchpoint_add.write`, `:1366` `reload_rom.reset`, `:1377` `reload_rom.wait`, `:1710` `hold.down`.
+There, `"on"` reads **false** while the caller's *stated default is true*, so the declared default is
+exactly what makes the call look safe.
+
+### Consumer side: the "we are clean" result is ALSO withdrawn, by its author
+
+aeon retracted it themselves. Their 14-calls-across-3-files was a grep over the files they already
+believed were on the legacy seam; the real figure is **131 across 12 files**. And they found a live
+instance of this class: twelve legacy-seam sites send `emulator/reset {"wait": true, "run": false}`
+and **`OpReset` never reads `wait`** — it blocks unconditionally. Harmless only by luck, since
+`wait: false` would read as non-blocking and get blocking. **Their measurement and their retraction,
+cited as theirs; not re-derived here.**
+
 ## ⚑ SECOND CORRECTION — the population is 64 and is now CLOSED, and one route inverts intent
 
 **aeon varied the enumeration parameter deliberately** (by *how the params object is touched at all*,

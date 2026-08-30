@@ -1,5 +1,5 @@
 {
-  "focus": "Building the engine team a tool that stops their tests trusting a hand-written list; you cleared the dispatch.",
+  "focus": "Retracted my own morning finding: the four dangerous commands I named were guarded; two I missed were not.",
   "inFlight": [
     {
       "what": "Building the engine team the tool they asked for: a machine-read list of what the old emulator actually accepts, so their tests pin against our source instead of a hand-written list that goes stale.",
@@ -111,5 +111,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-08-30T07:36:37Z"
+  "updatedAt": "2026-08-30T07:51:15Z"
 }
