@@ -18,10 +18,10 @@
   "queue": [
     {
       "id": "AEON-RESTAMP-AB",
-      "title": "TRIGGERED, not scheduled: when aeon sends a candidate ROM with the words 'candidate for the restamp A/B', run our replay walk and hand back the per-checkpoint moved SET (not a count) for Ojz's 27. They named their own falsifier in advance; report the set even if it refutes them. Booked in OVERSEER.md; nothing to build now.",
-      "state": "open",
+      "title": "TRIGGER HAS FIRED and the candidate is verified (sigil e38295d2 chain 188 vs our frozen chain 186, both committed blobs). NOT started only because the replay needs cargo and the screen-text parcel holds the lane - run it the moment that frees. Hand back the per-checkpoint moved SET for Ojz with logic_tick, never a count, and never a summary that agrees with their mechanism.",
+      "state": "next",
       "size": "S",
-      "blockedBy": null,
+      "blockedBy": "cargo lane held by parcel/screen-text",
       "project": null
     },
     {
@@ -79,5 +79,5 @@
   ],
   "awaiting": "your ten-second listen on the dull sound (d-20). Nothing else.",
   "atBoundary": false,
-  "updatedAt": "2026-08-30T04:55:04Z"
+  "updatedAt": "2026-08-30T05:36:56Z"
 }

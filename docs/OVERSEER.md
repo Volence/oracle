@@ -1959,6 +1959,27 @@ not survive a `/clear`** (protocol bar 20's sending-side half). aeon accepted; t
 side too. **Nothing to build now** — the runner already produces every field below, verified before the
 offer was made rather than after.
 
+**⚑ TRIGGER FIRED 2026-08-30, CANDIDATE VERIFIED, RUN IS QUEUED BEHIND THE CARGO LANE — NOT DEFERRED
+BY JUDGEMENT.** aeon sent it and **corrected their own over-specification in the same message, which is
+the part to keep.** They had said the candidate would come from *"a branch carrying the re-record work,
+not the supersede and not master"*. That is right for the **restamp** phase and **inverted for the
+proof** phase, which comes first: the measurement decides *what* to re-record, so the candidate is the
+ROM with the **new clamps and the OLD fixture** — master's build. **A re-record branch cannot exist
+until our answer does; had we waited for it, each lane would have been waiting on the other.**
+
+**The candidate, both sides committed blobs so the A/B has NO working-tree dependency:**
+* **new side** — sigil **`e38295d2`** (chain 188, attested PASSED), `crates/sigil-harness/golden/s4.debug.bin`,
+  sha256 `951cf960…62707d`, len **736315**. Verified here: reachable at sigil `origin/master`, hash and
+  length exactly as aeon stated, **and byte-identical to chain 187** — the identity they predicted and
+  explicitly would not promise. It held.
+* **baseline** — our own `fixtures/aeon/s4.debug.bin`, sha256 `75e9f4d4…19fcf7a` (chain 186).
+
+**⚠ WHY IT IS NOT RUN YET, stated so a fresh session does not read it as forgotten:** the replay A/B needs
+cargo, and this repo's standing rule is **never two cargo runs at once** — the `parcel/screen-text` agent
+holds the lane. **Run it when the lane frees.** aeon explicitly asked that it wait rather than be run
+tired, on their own record of five instrument errors that night; the serialization rule and their request
+point the same way, but **the rule is the binding one.**
+
 **THE TRIGGER, and only this:** aeon messages us with a candidate ROM's `aeon_rev` and the sigil freeze
 SHA **and the words "candidate for the restamp A/B"**. It will be a ROM from a **branch carrying the
 re-record work — not the supersede, and not their master**. They will separately send the supersede's
