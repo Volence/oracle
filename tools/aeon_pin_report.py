@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+"""Has aeon's build moved past our frozen pin?  A REPORTER, never a gate.
+
+WHY THIS IS NOT A TEST
+----------------------
+The obvious shape for this — a default-suite test that reads sigil's golden at ``origin/master`` and
+fails when it differs from our frozen copy — is wrong twice over:
+
+1. It reintroduces the sibling-checkout dependency that ``fixtures/aeon/`` exists to remove.  Our
+   suite would stop passing in a fresh clone, on CI, and on any machine without sigil beside us.
+2. It makes our build go red because *someone else* moved.  When a gate goes red, "the consumer is
+   broken" is a conclusion that requires work from nobody except the consumer — and the whole
+   gradient then pushes toward bending our side until it goes green.  That is precisely how a pin
+   gets moved to make a red test pass, which ``fixtures/aeon/PROVENANCE.md`` forbids in terms.
+
+So this is something you *read*.  It always exits 0.  Nothing calls it from a gate.
+
+WHICH QUESTION IT ASKS
+----------------------
+The **currency** question — *"has it moved?"* — which must be asked at **TIP**, never at the pinning
+revision.  Re-pointing a drift check at the revision the pin was taken from makes it vacuous: a
+pinned blob equals itself forever, so it would pass for the wrong reason and never once detect the
+thing it exists for.
+
+The complementary **recovery** question — *"are the bytes here the bytes we recorded?"* — is asked at
+the pinning revision, is a fact about this repository alone, and therefore IS a gate:
+``crates/oracle-replay/tests/aeon_pin.rs``.
+
+WHAT IT CANNOT ANSWER, AND SAYS SO
+----------------------------------
+sigil's golden directory carries the ROMs and **zero ``.lst`` listings at any revision checked**.  So
+for every listing row there is no upstream artifact to compare against and the currency of those rows
+is *not measurable from sigil at all*.  Those print as UNMEASURABLE.  They are never rendered as
+agreement, and never counted toward a clean result.
+
+Usage:  python3 tools/aeon_pin_report.py [--sigil DIR] [--ref REF] [--fetch]
+"""
+
+import argparse
+import datetime
+import hashlib
+import os
+import subprocess
+import sys
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PIN = os.path.join(REPO, "fixtures", "aeon", "PIN.tsv")
+GOLDEN = "crates/sigil-harness/golden"
+HEADER = ["file", "sha256", "bytes", "chain", "sigil_freeze", "aeon_rev", "authority", "upstream"]
+
+
+def read_pin(path):
+    """Parse PIN.tsv into a list of dicts.  Same file the gate reads; same 8-column contract."""
+    rows = []
+    header_seen = False
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.rstrip("\n")
+            if not line.strip() or line.startswith("#"):
+                continue
+            f = line.split("\t")
+            if len(f) != len(HEADER):
+                sys.exit("PIN.tsv: expected %d tab-separated columns, got %d in %r"
+                         % (len(HEADER), len(f), line))
+            if not header_seen:
+                if f != HEADER:
+                    sys.exit("PIN.tsv header changed: %r" % (f,))
+                header_seen = True
+                continue
+            rows.append(dict(zip(HEADER, f)))
+    if not rows:
+        sys.exit("PIN.tsv lists no artifacts")
+    return rows
+
+
+def git(sigil, *args, binary=False):
+    """Run one git command in the sigil checkout.  Returns None on failure — never raises.
+
+    Failures must surface as UNMEASURABLE, not as a crash and not as a silent empty result.  (A
+    pipeline that hashes a failed command's empty output returns e3b0c442…, the sha256 of nothing,
+    which reads as a perfectly plausible artifact hash.  Every read here is checked instead.)
+    """
+    p = subprocess.run(["git", "-C", sigil] + list(args),
+                       capture_output=True, check=False)
+    if p.returncode != 0:
+        return None
+    return p.stdout if binary else p.stdout.decode("utf-8", "replace").strip()
+
+
+def chain_number_at(sigil, rev):
+    """Derive the freeze-chain number: it is the count of ``[[entry]]`` blocks in provenance.toml.
+
+    Derived, not transcribed.  Verified at three revisions when this was written:
+    5af70797 -> 186, 39c34fd2 -> 189, origin/master 3ad7ed02 -> 189.
+    """
+    blob = git(sigil, "cat-file", "-p", "%s:%s/provenance.toml" % (rev, GOLDEN), binary=True)
+    if blob is None:
+        return None, None, None
+    text = blob.decode("utf-8", "replace")
+    n = sum(1 for line in text.splitlines() if line.rstrip() == "[[entry]]")
+    name, aeon_rev = None, None
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("name = "):
+            name = s.split("=", 1)[1].strip().strip('"')
+        elif s.startswith("aeon_rev = "):
+            aeon_rev = s.split("=", 1)[1].strip().strip('"')
+    return n, name, aeon_rev
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--sigil", default=None, help="path to the sigil checkout")
+    ap.add_argument("--ref", default="origin/master",
+                    help="the TIP ref to ask the currency question at (default origin/master)")
+    ap.add_argument("--fetch", action="store_true",
+                    help="update the local mirror of that ref first (network; off by default, "
+                         "because a reporter should not mutate anything you did not ask it to)")
+    args = ap.parse_args()
+
+    print("=" * 78)
+    print("AEON PIN CURRENCY REPORT — REPORT ONLY.  This script never fails a build; it exits 0")
+    print("whatever it finds.  It asks the CURRENCY question ('has it moved?') and therefore asks it")
+    print("at TIP.  The recovery question ('are our bytes our bytes?') is the gate in")
+    print("crates/oracle-replay/tests/aeon_pin.rs.")
+    print("=" * 78)
+
+    rows = read_pin(PIN)
+
+    print("\nOUR PIN (fixtures/aeon/PIN.tsv):")
+    for r in rows:
+        print("  %-15s chain %-4s sigil %-9s aeon_rev %s  [%s]"
+              % (r["file"], r["chain"], r["sigil_freeze"], r["aeon_rev"][:8], r["authority"]))
+    chains = sorted({r["chain"] for r in rows}, key=int)
+    if len(chains) > 1:
+        print("  ^ MIXED PIN across chains %s. Per PROVENANCE.md this is a dated gap awaiting"
+              % " and ".join(chains))
+        print("    artifacts that do not exist upstream — not a permanent property of the design.")
+
+    # ---- locate sigil ----
+    candidates = [args.sigil] if args.sigil else [
+        os.environ.get("ORACLE_SIGIL_DIR"),
+        os.path.join(os.path.dirname(REPO), "sigil"),
+        "/home/volence/sonic_hacks/sigil",
+    ]
+    sigil = None
+    for c in candidates:
+        if c and os.path.isdir(os.path.join(c, ".git")) or (c and os.path.exists(os.path.join(c, ".git"))):
+            sigil = c
+            break
+    if sigil is None:
+        print("\nUNMEASURABLE: no sigil checkout found (tried: %s)."
+              % ", ".join(str(c) for c in candidates if c))
+        print("This is NOT 'the pin is current'. Nothing was compared. Pass --sigil DIR to measure.")
+        return 0
+    print("\nsigil checkout: %s" % sigil)
+
+    if args.fetch:
+        remote = args.ref.split("/")[0] if "/" in args.ref else "origin"
+        if git(sigil, "fetch", "--quiet", remote) is None:
+            print("  (fetch failed — reading the local mirror as it stands)")
+
+    tip = git(sigil, "rev-parse", args.ref)
+    if tip is None:
+        print("\nUNMEASURABLE: %s does not resolve in that checkout. Nothing was compared." % args.ref)
+        return 0
+    when = git(sigil, "log", "-1", "--format=%cI", tip)
+    age = ""
+    if when:
+        try:
+            dt = datetime.datetime.fromisoformat(when)
+            days = (datetime.datetime.now(dt.tzinfo) - dt).total_seconds() / 86400.0
+            age = "  (%.1f days old)" % days
+        except ValueError:
+            pass
+    print("TIP  %s = %s   committed %s%s" % (args.ref, tip, when or "?", age))
+    if not args.fetch:
+        print("     ^ this is your LOCAL mirror of %s. It can itself be behind the real remote;" % args.ref)
+        print("       re-run with --fetch to update it before believing an 'agrees' below.")
+
+    tip_chain, tip_name, tip_aeon = chain_number_at(sigil, tip)
+    if tip_chain is None:
+        print("\nUNMEASURABLE: could not read %s/provenance.toml at tip. Nothing was compared." % GOLDEN)
+        return 0
+    print("TIP chain %d — %s (aeon_rev %s)"
+          % (tip_chain, tip_name or "?", (tip_aeon or "?")[:8]))
+
+    # ---- per-row currency ----
+    print("\nPER-FILE CURRENCY (each row asked independently, so this survives the pin becoming"
+          "\nun-mixed without a rewrite):")
+    agree = differ = unmeasurable = 0
+    for r in rows:
+        if r["upstream"] == "-":
+            unmeasurable += 1
+            print("  %-15s UNMEASURABLE — sigil freezes no counterpart for this artifact."
+                  % r["file"])
+            print("  %-15s              (its golden set carries zero .lst at any revision checked)"
+                  % "")
+            continue
+        blob = git(sigil, "cat-file", "-p", "%s:%s" % (tip, r["upstream"]), binary=True)
+        if blob is None:
+            unmeasurable += 1
+            print("  %-15s UNMEASURABLE — %s does not exist at tip." % (r["file"], r["upstream"]))
+            continue
+        got = hashlib.sha256(blob).hexdigest()
+        if got == r["sha256"]:
+            agree += 1
+            print("  %-15s AGREES with tip (chain %s pin, tip chain %d) — %d bytes, %s"
+                  % (r["file"], r["chain"], tip_chain, len(blob), got[:16] + "…"))
+        else:
+            differ += 1
+            print("  %-15s DIFFERS from tip." % r["file"])
+            print("  %-15s   ours (chain %s) %s  %s bytes"
+                  % ("", r["chain"], r["sha256"][:16] + "…", r["bytes"]))
+            print("  %-15s   tip  (chain %d) %s  %d bytes"
+                  % ("", tip_chain, got[:16] + "…", len(blob)))
+            if int(r["bytes"]) == len(blob):
+                print("  %-15s   ⚠ SAME LENGTH, different bytes. Byte-count-neutral is not"
+                      % "")
+                print("  %-15s     byte-identical — never compare these by size."
+                      % "")
+
+    print("\nSUMMARY: %d agree, %d differ, %d unmeasurable, over %d pinned artifacts."
+          % (agree, differ, unmeasurable, len(rows)))
+    if differ:
+        print("A DIFFER is not a defect on our side and not a reason to touch anything. It is the")
+        print("input to a deliberate decision to move the pin — PROVENANCE.md, 'Moving the pin'.")
+    if unmeasurable:
+        print("The unmeasurable rows are NOT evidence of agreement. They were not compared at all.")
+    print("\nExiting 0 — report only.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,37 @@
+# PIN.tsv — the machine-readable half of PROVENANCE.md.
+#
+# One row per frozen artifact. The pin is recorded PER FILE, not per directory, so a partial move
+# (one coherent (ROM, listing) pair ahead of the rest) is expressible rather than requiring a new
+# format. Today all six rows sit at one chain; the shape does not depend on that staying true.
+#
+# Read by:
+#   crates/oracle-replay/tests/aeon_pin.rs   — verifies every sha256 and NAMES THE CHAIN in the
+#                                              default suite's output (so a green cannot be read as
+#                                              a statement about aeon's master)
+#   crates/oracle-core/tests/symbols_real_lst.rs — prints it (does not judge it)
+#   tools/aeon_pin_report.py                 — the non-gating currency reporter (asks sigil at TIP
+#                                              whether it has moved past these rows)
+#
+# Columns, tab-separated:
+#   file          the artifact's name in this directory
+#   sha256        of the committed bytes
+#   bytes         size, recorded so a truncation is visible without hashing
+#   chain         sigil freeze-chain number == the count of `[[entry]]` blocks in that revision's
+#                 crates/sigil-harness/golden/provenance.toml (derived, not transcribed: verified at
+#                 5af70797 -> 186, 39c34fd2 -> 189, origin/master 3ad7ed02 -> 189)
+#   sigil_freeze  the sigil commit whose golden set defines that chain
+#   aeon_rev      the aeon tree state that build came from — ATTRIBUTION ONLY, nothing resolves it
+#   authority     sigil-golden-blob = taken with `git cat-file -p <rev>:crates/sigil-harness/golden/<f>`
+#                 aeon-build-tree   = copied from a clean aeon worktree at that chain's aeon_rev
+#   upstream      the path inside sigil's golden directory this row can be checked against at tip,
+#                 or `-` when sigil freezes no such artifact (every `.lst`: sigil's golden set carries
+#                 ZERO listings at any revision checked, so their currency is UNMEASURABLE from sigil
+#                 and the reporter must say so rather than render it as agreement)
+#
+file	sha256	bytes	chain	sigil_freeze	aeon_rev	authority	upstream
+s4.bin	05c2738d759a119dde2d7c799b51fceff2e2c07a89a4cd2cf87adae60e62169c	719315	189	39c34fd2	3f14317886b343a6b94e4ac93ae06c7585e53ae5	sigil-golden-blob	crates/sigil-harness/golden/s4.bin
+s4.debug.bin	4ee7ac79737f1decc16c13cef4e160ed26c3fea078b3f5b2b7c4300857a9a0b3	736315	189	39c34fd2	3f14317886b343a6b94e4ac93ae06c7585e53ae5	sigil-golden-blob	crates/sigil-harness/golden/s4.debug.bin
+s4.lst	b3e1dc424c209a643761dcf4133a9bbf7b18d602e8cdaa51a86db2517e9a48fe	280720	189	39c34fd2	3f14317886b343a6b94e4ac93ae06c7585e53ae5	aeon-build-tree	-
+s4.debug.lst	81a111020e3f28ddda374648e7a3e1425cbde00ce5b09ea5769b83eb79845a2f	330541	189	39c34fd2	3f14317886b343a6b94e4ac93ae06c7585e53ae5	aeon-build-tree	-
+demo.lst	46059a06b963ed00f4350f10eaf6ccc3ca81012a82c67c8808363f1c73d14fbb	176191	189	39c34fd2	3f14317886b343a6b94e4ac93ae06c7585e53ae5	aeon-build-tree	-
+demo.debug.lst	6e28e3014ca1c563b7177d05718181ebc588d44b854d48d1e688c3c7eae62cdb	204583	189	39c34fd2	3f14317886b343a6b94e4ac93ae06c7585e53ae5	aeon-build-tree	-
