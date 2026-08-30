@@ -798,6 +798,13 @@ fn sprite_px_res(x: usize, sp: &SpritePixel) -> PixelResolution {
 /// `Shadow` uses steps `0..=7` (Min→½Max), `Normal` uses the even steps `0,2,…,14` (Min→Max — the plain
 /// ramp), `Highlight` uses steps `7..=14` (½Max→Max). Exactly the pinned "normal Min→Max, shadow Min→½Max,
 /// highlight ½Max→Max". Exact DAC calibration is the R11 deferred remainder.
+///
+/// ⚑ **The division TRUNCATES, and that is deliberate — do not "fix" it to round.** `step * 255 / 14` is
+/// integer division, so `$0224`'s channels decode to `(72, 36, 36)` and not the `(73, 36, 36)` a
+/// `round()`-based formula gives. Documented because its absence cost a peer lane an hour: comparing our
+/// output against a rounding reference scores **correct** pixels as mismatches, and the disagreement is one
+/// unit — small enough to read as noise and large enough to fail an equality check (aeon, 2026-08-30, who
+/// hit it and explicitly did **not** ask for a behaviour change). Any external comparison must truncate too.
 fn intensity(level: u8, state: PixelState) -> u8 {
     let step = match state {
         PixelState::Shadow => level,        // 0..7   → Min..½Max

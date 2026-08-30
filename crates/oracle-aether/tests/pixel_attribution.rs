@@ -614,3 +614,59 @@ fn it_answers_a_free_running_machine_and_the_stamp_says_so() {
         "the read must not have paused the machine as a side effect"
     );
 }
+
+// ---------------------------------------------------------------------------------------------------
+// `rgb` resolves from LIVE state, and that is the contract — not a defect
+// ---------------------------------------------------------------------------------------------------
+
+/// ⚑ **THE ANTI-FIX PIN. This method MUST NOT read a framebuffer, and this row exists to stop the next
+/// person "fixing" it — because this seat tried, on 2026-08-30, and got as far as a green suite.**
+///
+/// The story is worth the words. aeon reported that `cramIndex` is right while `rgb` reports a different
+/// frame's colour on a ROM that repaints CRAM mid-frame; they lost an hour to it and it produced a
+/// confident wrong finding about their engine. It reproduces exactly — on `color_1536.bin`, 55 of 55
+/// sampled rows. A fix reading the latched raster made all 220 sampled dots agree.
+///
+/// **The contract forbids that fix in terms**, `protocol.md` §11.3: *"A server answers by resolving the
+/// scanline from live VDP state … and **MUST NOT read a framebuffer**"*, and then, about this exact
+/// disagreement: *"**This is not a defect in either method and a server MUST NOT try to paper over it**;
+/// a client that needs the two to agree needs a per-scanline capability — `emulator/scanlines`."* The
+/// divergence is a **registered follow-up, F-SCANLINE-INDEX**, not a bug.
+///
+/// So the behaviour below is correct-by-contract, and the real defect aeon hit is **discoverability**:
+/// nothing in the reply points at the reconciliation path. That is a CR against the fragment, not a
+/// server change — see `docs/2026-08-30-rgb-live-resolve.md`.
+#[test]
+fn rgb_resolves_against_live_state_and_the_row_must_not_read_a_framebuffer() {
+    let h = spawn_system("pa-rgb-live", machine_with_plane_cell(), 1024);
+    let mut c = client(&h);
+
+    // Draw a whole frame, so a latched raster EXISTS to be wrongly reachable.
+    c.ok("emulator/run_frames", json!({"frames": 1}));
+    c.ok("emulator/pause", json!({}));
+    let before = attribution(&mut c, 4, 4);
+    let index = before["cramIndex"].as_u64().expect("cramIndex");
+
+    // Repaint that entry. The picture on screen is unchanged — nothing has been drawn since.
+    c.ok(
+        "emulator/write_cram",
+        json!({"line": index / 16, "index": index % 16, "r": 7, "g": 0, "b": 7}),
+    );
+
+    let after = attribution(&mut c, 4, 4);
+    assert_eq!(
+        after["cramIndex"], before["cramIndex"],
+        "the index is a property of the resolve and does not move: {after}"
+    );
+    assert_ne!(
+        after["rgb"], before["rgb"],
+        "rgb MUST follow live CRAM. If this row ever goes green by reporting the latched raster, someone \
+         has made the method read a framebuffer — which §11.3 forbids in terms, and which silently breaks \
+         the guarantee that this method answers about the VDP's state NOW rather than about a frame"
+    );
+    assert_eq!(
+        after["rgb"],
+        json!({"r": 255, "g": 0, "b": 255}),
+        "and it is the newly painted colour, not merely a different one: {after}"
+    );
+}
