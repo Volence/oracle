@@ -273,3 +273,52 @@ Nobody has been asked. If either answers "machine coordinate", option 1 comes ba
 **Reviewer:** none — self-ruled by the oracle overseer, per the substitute-seat terms requiring the
 reviewer be named on the record. This is a labelling call inside one lane's own frontend and was not
 sent to the seat.
+
+---
+
+## L-09 — F-ACCEPT-TABLE-CROSSCHECK-BLIND: `--fail-on-gap` must verify ROW PRESENCE, from a second derivation · `SELF-RULED`
+
+**The question.** The emitter's axis-A/axis-B reconciliation appends to `claimed_lines` **before the row
+is written**, so it witnesses that every *access* was claimed and never that every *row* survived.
+Measured firsthand 2026-08-30: with the four unguarded `addr` rows dropped cleanly, `--fail-on-gap`
+prints `cross-check : AGREES`, `parse complete : yes` and **exits 0** while `UNGUARDED reads` falls
+43 → 39. Fix it, or document the limit and point consumers at the suite?
+
+**Verdict: FIX IT — `--fail-on-gap` asserts row presence against a SECOND, INDEPENDENT source
+derivation. Documenting the limit is not sufficient.**
+
+**Why not the cheaper option.** "Say what it does not witness and point at the runner" is honest and
+would not work. `--fail-on-gap` is the **one-command form**, and a consumer building a gate reaches for
+the one-command form — that is what it is for. A caveat in the output does not survive being wired into
+a build once; nobody re-reads a gate's preamble. This is the repo's own *loud-on-unmeasurable* bar: a
+check that cannot detect the failure it exists for must **fail**, not explain.
+
+**⚑ The constraint that makes this non-trivial, and it is the whole ruling.** The expectation **must
+not** be derived from `build_table`'s output, or the flag grades its own homework and inherits exactly
+the blindness being fixed. A self-consistent tool agreeing with itself is the vacuous gate this suite
+has spent the night finding. **The second derivation already exists and is proven:** the hardening
+parcel's `direct_reads_from_source()` (in `tools/test_legacy_accept_table.py`) reads `ControlSocket.cpp`
+by a path sharing no code with `build_table`, and its deliberately cruder guard rule makes its unguarded
+set a **conservative subset** — it can never invent a row the table is entitled to lack. **Promote that
+into the tool as a library function and have `--fail-on-gap` assert against it.**
+
+**Alternatives considered.**
+1. *Document the limit, gate on the runner.* Rejected above — correct and inert.
+2. *Have `--fail-on-gap` re-run the test suite.* Rejected: couples a data tool to a test framework, and a
+   consumer wanting the table should not need `unittest` to get it.
+3. *Make the cross-check count rows instead of accesses.* Rejected as insufficient — a count still
+   passes if one row is dropped and another spuriously added, and it stays inside `build_table`'s own
+   frame, which is the defect.
+
+**Scope.** Rules that the flag must verify row presence and by what means. Does **not** rule the exit
+code's granularity, the message format, or whether the conservative subset should later be tightened.
+
+*Wrong if:* the promoted derivation turns out to share a frame with `build_table` after all — e.g. if
+both ultimately depend on one brittle assumption about the file's structure (brace matching, say), in
+which case a source change could blind both at once and the "independent" second path is theatre. The
+falsifier is cheap and should be run when it is built: **change the file's shape in a way that breaks
+one derivation and confirm the other still reports.** If both fail together, this ruling has bought
+less than it claims.
+
+**Reviewer:** none — self-ruled by the oracle overseer, named on the record per the substitute-seat
+terms. Bounded to one lane's own tool; not sent to the seat.
