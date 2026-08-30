@@ -1,6 +1,12 @@
 {
-  "focus": "Closed the count on the old emulator's blind spot at 64, and found one that does the opposite of what you asked.",
-  "inFlight": [],
+  "focus": "Building the engine team a tool that stops their tests trusting a hand-written list; you cleared the dispatch.",
+  "inFlight": [
+    {
+      "what": "Building the engine team the tool they asked for: a machine-read list of what the old emulator actually accepts, so their tests pin against our source instead of a hand-written list that goes stale.",
+      "where": "branch parcel/legacy-accept-table",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "the dull sound: keep the hardware-accurate filter, default it off, or let the player remember your choice. A taste call, so it is yours rather than mine \u2014 ten seconds to hear it both ways",
@@ -8,15 +14,31 @@
       "id": "d-20"
     }
   ],
-  "nextBoundary": "Now - clean tree, nothing in flight, a fresh session would lose nothing.",
+  "nextBoundary": "When the accept-table agent lands and I have verified it on the merged tree.",
   "queue": [
     {
+      "id": "LEGACY-ACCEPT-TABLE",
+      "title": "Dispatched. Emits per-method, per-key: what the old server accepts, what it silently substitutes, and crucially whether a guard sits above the read - that last field is the whole difference between the safe sites and the six dangerous ones. Also pins the source revision so a stale copy fails loudly.",
+      "state": "doing",
+      "size": "M",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT"
+    },
+    {
       "id": "README-LEGACY-WARNING",
-      "title": "Found today, and it is the strongest reason yet to finish moving off the old emulator: the legacy C++ server checks NO parameter it is given. Misspell an address on a memory write and it writes to address zero and tells you it worked. Six such spots, all on memory paths. The MCP tools every lane debugs through still reach that server. The owner already asked that our README say the surface is legacy - it should say this instead.",
+      "title": "Rewrite the README line you asked for on the 22nd so it carries what we found today - the debugging surface reaches a server that validates nothing - rather than the vaguer 'this is legacy'.",
       "state": "next",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT"
+    },
+    {
+      "id": "REPLAY-NET-BLIND-3",
+      "title": "NEW ASK from the engine team, scoped and in dependency order: run the two skipped playthrough tests somewhere (~9s in release, NOT the default suite at ~83s); make it visible when our frozen copy of their game falls behind theirs; and have the suite name which version it tested so a green cannot be misread. They proved the cause is ONE commit, two collision files, and that it is repairable without re-recording. Nothing of theirs blocks on it.",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null,
+      "project": null
     },
     {
       "id": "FRAME-LABEL",
@@ -32,14 +54,6 @@
       "state": "open",
       "size": "S",
       "blockedBy": null,
-      "project": null
-    },
-    {
-      "id": "REPLAY-NET-STALE-18-26",
-      "title": "NEW, and it is aeon's fixture rather than our code: 9 of 27 checkpoints (18-26) are stale on BOTH chain 186 and 188, with identical values - so they predate the clamps. Nobody knew because both full-playthrough tests are ignored by default, so a stream that desyncs two thirds through reads as green on both sides. Handed to aeon; cause unchased.",
-      "state": "open",
-      "size": "S",
-      "blockedBy": "aeon's call - their fixture",
       "project": null
     },
     {
@@ -95,7 +109,7 @@
       "blockedBy": null
     }
   ],
-  "awaiting": "whether I may dispatch agents - the engine team has now formally asked us to build them a tool, and that is implementation.",
-  "atBoundary": true,
-  "updatedAt": "2026-08-30T06:50:24Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-08-30T07:34:45Z"
 }
