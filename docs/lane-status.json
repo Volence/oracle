@@ -1,12 +1,6 @@
 {
-  "focus": "Retracted my own morning finding: the four dangerous commands I named were guarded; two I missed were not.",
-  "inFlight": [
-    {
-      "what": "Building the engine team the tool they asked for: a machine-read list of what the old emulator actually accepts, so their tests pin against our source instead of a hand-written list that goes stale.",
-      "where": "branch parcel/legacy-accept-table",
-      "agent": true
-    }
-  ],
+  "focus": "The tool for the engine team is built, verified and merged - and it found two hazards nobody had all day.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "the dull sound: keep the hardware-accurate filter, default it off, or let the player remember your choice. A taste call, so it is yours rather than mine \u2014 ten seconds to hear it both ways",
@@ -14,12 +8,12 @@
       "id": "d-20"
     }
   ],
-  "nextBoundary": "When the accept-table agent lands and I have verified it on the merged tree.",
+  "nextBoundary": "Now - merged, verified on the merged tree, pushed, nothing running.",
   "queue": [
     {
       "id": "LEGACY-ACCEPT-TABLE",
-      "title": "Dispatched. Emits per-method, per-key: what the old server accepts, what it silently substitutes, and crucially whether a guard sits above the read - that last field is the whole difference between the safe sites and the six dangerous ones. Also pins the source revision so a stale copy fails loudly.",
-      "state": "doing",
+      "title": "DONE and merged. The tool reads the old server's own source and writes down what it really accepts - and it found two things nobody had all day: a number written as text with junk on the end ('12abc') is read as 12, and if the whole parameter block is malformed every single value silently becomes its default. Handed to the engine team to check before they trust it.",
+      "state": "done",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT"
@@ -110,6 +104,6 @@
     }
   ],
   "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-08-30T07:51:15Z"
+  "atBoundary": true,
+  "updatedAt": "2026-08-30T08:03:05Z"
 }

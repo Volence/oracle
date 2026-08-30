@@ -57,6 +57,42 @@ server's source and pinning every send site against it.
 *Original text follows unedited, per this repo's supersession rule — a reader meeting the "34" cold
 needs to see that it was superseded, not that it was never written.*
 
+## ⚑ SUPERSEDED BY A DERIVED INSTRUMENT — read `docs/2026-08-30-legacy-accept-table.md` first
+
+**As of 2026-08-30 this document is the narrative; the AUTHORITY is now machine-derived.**
+`tools/legacy_accept_table.py` parses `ControlSocket.cpp` and emits the whole contract per method and
+per key — accessor, default, `guarded_by` from block structure, and accepted value shapes — pinned to
+the source revision it derived from (`58b6f81`). Runner: `tools/run_accept_table_tests.sh`. 48/48,
+verified on the merged tree by the overseer, plus two independently planted poisons.
+
+**Every hand-derived count in this document has now been superseded by that tool, and the tool's
+numbers are the ones to quote:** 55 methods, 42 distinct keys, **67 parameter reads**, 15 guard sites,
+**43 unguarded reads of which 34 carry an explicit default and 9 do not**, and **27 guards that cover
+absence but not type**.
+
+**On 64 vs 67 — a scope statement, not a fourth miss.** This document's 64 counted reads *through
+`JsonObj`*, i.e. of the params object. The tool's 67 adds three **envelope** reads at `:2862-2873`
+(`jsonrpc`, `method`, `id`, `params`) which sit outside `JsonObj` — and which, notably, **are**
+type-checked (`is_object()`, `is_string()`). Both figures are correct about different populations.
+**The defect was asserting a "complete enumeration" without naming the population it was complete
+over**, which is bar 17's completeness claim wearing a number.
+
+### Two findings the tool produced that neither lane had, both verified against source by the overseer
+
+1. **`stoll` is called with a `nullptr` position out-param and full consumption is never checked**
+   (`:143-146`), so trailing garbage is not rejected: **`{"len":"12abc"}` reads `12`** — neither the
+   intended value nor the default. This is a *third* outcome class; the document above only knew about
+   "the value" and "the default".
+2. **`:2873` — a `params` that is absent or not an object becomes `{}`**, so **every key in the request
+   then reads its default**. The whole-request version of this document's whole subject: send `params`
+   as an array and the server silently defaults the entire call.
+
+Also from the tool, correcting this document a third way: **the "all on a memory path" framing was too
+narrow** — 43 reads are unguarded, and seven *non-memory* string keys (`path`×4, `buildId`, `layer`,
+`channel`) are unguarded with implicit defaults. Four of those are unguarded-**but-validated**
+downstream, which is a distinction this document never drew and which matters: a defaulted `layer`
+is rejected later, whereas a defaulted memory `addr` of `0` is a perfectly valid address.
+
 ## ⚑⚑ THIRD CORRECTION, AND IT RETRACTS THIS DOCUMENT'S HEADLINE SET — the six were the wrong six
 
 **Found by aeon, verified here firsthand against every claim before banking. The headline SURVIVES but
