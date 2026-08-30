@@ -21,7 +21,7 @@
     {
       "id": "LIVE-OBJECTS-CARD",
       "title": "Select-and-inspect is BUILT and merged (emulator/object_at, \u00a711.26/CR-F): a click answers which layer, where in the level, and which object slot drew it \u2014 with the five outcomes kept distinct. Spawn half still waits on aeon's mailbox shape and is out of scope.",
-      "state": "next",
+      "state": "open",
       "size": "S",
       "blockedBy": null,
       "project": "LIVE-OBJECTS"
@@ -37,7 +37,7 @@
     {
       "id": "OVERLAY-STATE",
       "title": "Let a tool read the player's on-screen text \u2014 your own observation, and the item that would stop aeon asking you to eyeball things",
-      "state": "open",
+      "state": "next",
       "size": "M",
       "blockedBy": null
     },
@@ -73,5 +73,5 @@
   ],
   "awaiting": "your ten-second listen on the dull sound (d-20) \u2014 still the only thing waiting on you.",
   "atBoundary": true,
-  "updatedAt": "2026-08-30T04:27:42Z"
+  "updatedAt": "2026-08-30T04:28:13Z"
 }
