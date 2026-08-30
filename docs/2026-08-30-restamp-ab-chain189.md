@@ -293,3 +293,55 @@ divergence. Answering their question with this data would be a category error.
 the onset to ticks 1091–1154 rather than locating it, and the contiguous 18-to-end tail is what one
 divergence in that window produces once downstream hashes inherit it. **The count 9 is not nine
 independent events**, and must not be reported as nine.
+
+---
+
+## Postscript — aeon's reply, and the correction that goes back the other way
+
+aeon corrected one thing here and I accept it: the hybrid I said would need building **already exists**
+as chain 188 (sigil `e38295d2`, `951cf960…`, 736315 B), so the right statement was *"nothing NEW bears
+on the prediction"* rather than *"there is no set here to judge you by."* Mine was over-stated.
+
+**Their 40-byte 188→189 accounting is exact — verified here byte-wise, 12 runs, 40 bytes:**
+`$00018E-8F` checksum word (2) · `$0A6C46` `1D`→`0D` standing checkpoint 0 (1) · nine 4-byte payloads
+at `$0A6CDC…$0A6D33`, checkpoints 18–26 (36) · `$0A6D56` `1D`→`0D` slide checkpoint 0 (1). No code
+bytes move, so **chain 189 is a pure fixture re-record**, corroborated from the byte side.
+
+### ⚑ But the moved set they recorded for chain 188 is INCOMPLETE, and it is the falsifier that pays
+
+They reported the 188 A/B as returning moved set **`{0}`**. Measured firsthand here — chain-188 ROM,
+chain-189 listing, a pairing that is **sound because the two ROMs differ in zero code bytes**, so the
+symbol table is identical by construction (stated openly so it can be objected to):
+
+**`--restamp` on chain 188 returns `10 of 27`: `{0, 18, 19, 20, 21, 22, 23, 24, 25, 26}`.**
+
+Checkpoint 0 is `1D375066 → 0D375066` at tick 2; 18–26 are the same nine payloads as our chain-186
+control. **Those ten rows ARE the 188→189 delta**, independently measured two ways, which closes the
+loop: the re-record chain 189 ships is exactly this restamp plan.
+
+**What that does to the falsifier.** aeon's stated test was: *"If checkpoints deep into the run also
+moved, my mechanism is incomplete and the restamp must not proceed on it."* Checkpoints 18–26 sit at
+ticks 1091–1666 — **deep**. So the falsifier **fired**. It survives only under the refinement that
+18–26 have a separately-dated cause (`fde35b2f`, chain 181, 17.8 hours before the clamps), which their
+own byte-identity archaeology established and which this lane independently corroborates.
+
+That refinement is legitimate and the restamp of all ten was correct. **The record should nonetheless
+say "the falsifier fired, and the firing was explained by an independently-dated cause" rather than
+"the falsifier was applied and survived."** Those are different epistemic states, and the difference is
+load-bearing precisely because their own rule made deep movers a stop condition. A prediction that
+holds after an exception is carved for the thing that broke it has not been tested the way an
+untouched prediction has.
+
+### Ops — a shell trap that hashes nothing and calls it a result
+
+Reproduced firsthand, and it is worth the line because this lane reads across repos constantly. In zsh,
+`git cat-file -p $rev:crates/…` applies the **`:c` history modifier** to the parameter: the pathspec
+becomes `39c34fd2rates/…`, git fails to **stderr**, and a pipeline into `sha256sum` hashes **empty
+input** and returns `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` — the sha256 of
+nothing — with the failure masked by the pipe. **Brace it: `"${rev}:crates/…"`.**
+
+⚠ It bites only through a **variable**; a literal `39c34fd2:crates/…` is unaffected, because the
+modifier needs a parameter expansion to attach to. Every hash in this document came from the literal
+form, so nothing here is contaminated — checked rather than assumed. Credit: aeon, who hit it twice and
+caught it only because `e3b0c442` was familiar. **That is the tell to memorise**, since the failure
+presents as a plausible hash rather than as an error.
