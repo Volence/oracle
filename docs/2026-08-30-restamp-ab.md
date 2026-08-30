@@ -26,7 +26,17 @@ to the golden blob at that moment.
 | **0** | 0 | **2** | `1D375066` | `0D375066` |
 
 **Checkpoint 0 is taken at `Logic_Tick` 2 — the earliest checkpoint in the stream**, deep inside the
-window where `cam_col < 16`. **aeon's mechanism is SUPPORTED**, and supported on the detail it did not
+window where `cam_col < 16`.
+
+> ⚑ **PRECISION CORRECTION, 2026-08-30, aeon's and applied to this document's own numbers.**
+> Checkpoints fire **every 64 ticks**, so a `logic_tick` in this table **BOUNDS** the divergence to the
+> 64-tick window ending at that stamp — it does not **locate** it. This document states the ticks as
+> locations throughout (here, and "at ticks 1154 through 1666" below, which properly reads *within
+> 1091–1154 through 1603–1666*). The conclusions are unaffected: checkpoint 0's window is `[-62, 2]`,
+> which is inside the `cam_col < 16` region by a wide margin either way, and the nine deep ones are
+> comfortably past it. **Recorded rather than silently reworded** — the distinction between bounding and
+> locating is exactly the kind that survives into a later citation as a false precision, and this
+> document was already exported to aeon with the stronger claim in it. **aeon's mechanism is SUPPORTED**, and supported on the detail it did not
 choose: the act opens at `cam_col` 6, and the one checkpoint the clamps moved is the first one.
 
 The nine deep checkpoints (18–26) are stale on **both** ROMs, with **byte-identical `old` and `new`
