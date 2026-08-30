@@ -427,6 +427,236 @@
           "description": "The whole record verbatim, slotBytes long. Present iff includeBytes. Off by default so the default reply's key set stays fully enumerated by this fragment."
         }
       }
+    },
+    "objectAtBody": {
+      "$comment": "protocol.md §11.26 (CR-F). The object_at reply body, shared verbatim by the emulator/clicked event's params (M4). Authored by the oracle lane (oracle 2c1e5de, docs/proposed/2026-08-29-cr-f-s1-fragments.json) and applied by the contract lane; every iff the ruling states is enforced as if/then/else here, not described. Known residue, recorded so a green run is not read as coverage: M2's rule that a server MUST answer 'unavailable' (never 'none') when Sprite_Owner does not resolve, and M3's re-resolve-by-symbol rule, are SERVER BEHAVIOUR a document schema cannot see; both {kind:'unavailable'} and {kind:'none', raw:'0x0000'} are valid documents. Their tests are oracle conformance rows (a release ROM click asserting 'unavailable'; a romReloaded re-resolve), which land with the serve.",
+      "type": "object",
+      "required": [
+        "dot",
+        "worldSource",
+        "winner",
+        "owner",
+        "layout"
+      ],
+      "properties": {
+        "dot": {
+          "type": "object",
+          "required": [
+            "x",
+            "y"
+          ],
+          "properties": {
+            "x": {
+              "type": "integer"
+            },
+            "y": {
+              "type": "integer"
+            }
+          },
+          "additionalProperties": false,
+          "description": "§11.26 M1: the params echoed, so a reply stands alone in a log."
+        },
+        "world": {
+          "type": "object",
+          "required": [
+            "x",
+            "y"
+          ],
+          "properties": {
+            "x": {
+              "type": "integer"
+            },
+            "y": {
+              "type": "integer"
+            }
+          },
+          "additionalProperties": false,
+          "description": "§11.26 M3: act-world = UNBIASED Camera_X + dot.x, Camera_Y + dot.y. Present iff worldSource == 'camera' (enforced below)."
+        },
+        "worldSource": {
+          "enum": [
+            "camera",
+            "unavailable"
+          ],
+          "description": "§11.26 M3: independent of the owner half, so a build that can answer one and not the other answers the one it can."
+        },
+        "winner": {
+          "type": "object",
+          "required": [
+            "layer"
+          ],
+          "properties": {
+            "layer": {
+              "enum": [
+                "backdrop",
+                "planeB",
+                "planeA",
+                "window",
+                "sprite"
+              ],
+              "description": "The displayed layer. camelCase values, matching the `runTo`/`runToScanline` stopped-reason spelling (protocol.md §3)."
+            },
+            "spriteIndex": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 79,
+              "description": "SAT slot of the winning sprite. Present if and only if `layer` is 'sprite'. A slot index — D9 category 2."
+            }
+          },
+          "additionalProperties": false
+        },
+        "owner": {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "object",
+                "ring",
+                "mask",
+                "none",
+                "unavailable"
+              ],
+              "description": "§11.26 M2: five outcomes. 'none' = the owner table exists and this entry is 0x0000; 'unavailable' = the loaded build has no owner table (Sprite_Owner does not resolve on its listing). They MUST NOT merge; a server MUST answer 'unavailable' when the symbol does not resolve."
+            },
+            "slot": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Present iff kind == 'object'."
+            },
+            "raw": {
+              "$ref": "#/$defs/hex",
+              "description": "§11.26 M5: the owner word as read, served for AUDITING ONLY; a client MUST NOT rebase it (the sentinel guard exists once, on the server). Absent iff kind == 'unavailable': no table, no word."
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "object"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              },
+              "then": {
+                "required": [
+                  "slot"
+                ]
+              },
+              "else": {
+                "not": {
+                  "required": [
+                    "slot"
+                  ]
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "unavailable"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              },
+              "then": {
+                "not": {
+                  "required": [
+                    "raw"
+                  ]
+                }
+              },
+              "else": {
+                "required": [
+                  "raw"
+                ]
+              }
+            }
+          ],
+          "additionalProperties": false
+        },
+        "layout": {
+          "$ref": "#/$defs/decoderLayout"
+        },
+        "caveat": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "§11.26 M3: world present iff worldSource == 'camera'.",
+          "if": {
+            "properties": {
+              "worldSource": {
+                "const": "camera"
+              }
+            },
+            "required": [
+              "worldSource"
+            ]
+          },
+          "then": {
+            "required": [
+              "world"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "world"
+              ]
+            }
+          }
+        },
+        {
+          "$comment": "§11.26 M1: spriteIndex present iff the winner is a sprite (mirrors pixel_attribution's winner).",
+          "if": {
+            "properties": {
+              "winner": {
+                "properties": {
+                  "layer": {
+                    "const": "sprite"
+                  }
+                },
+                "required": [
+                  "layer"
+                ]
+              }
+            },
+            "required": [
+              "winner"
+            ]
+          },
+          "then": {
+            "properties": {
+              "winner": {
+                "required": [
+                  "spriteIndex"
+                ]
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "winner": {
+                "not": {
+                  "required": [
+                    "spriteIndex"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
     }
   },
   "anyMessage": {
@@ -942,6 +1172,19 @@
             "description": "reserved for the future build manifest"
           }
         }
+      }
+    },
+    "emulator/clicked": {
+      "$comment": "protocol.md §3 / §11.26 M4: emitted ONLY for a click the person made at the window, never for a method call. params = the object_at result body for that dot, verbatim, plus the stamp.",
+      "params": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/stamp"
+          },
+          {
+            "$ref": "#/$defs/objectAtBody"
+          }
+        ]
       }
     }
   },
@@ -1663,7 +1906,7 @@
           },
           "rawAddr": {
             "$ref": "#/$defs/hex",
-            "$comment": "The listing's own unmasked spelling of `addr` where the two differ — a 68000 listing writes work RAM as 0xFFFF8CFA while the machine drives 24 address lines and puts 0x00FF8CFA on the bus. Carried so a client can round-trip a value back to the listing text. `addr` is the one to compute with."
+            "$comment": "The listing's own unmasked spelling of `addr` where the two differ — a 68000 listing writes work RAM as 0xFFFF8CFA while the machine drives 24 address lines and puts 0x00FF8CFA on the bus. Carried so a client can round-trip a value back to the listing text. `addr` is the one to compute with: passing `rawAddr` to `read_memory` is refused loudly (\"the 68000 bus is 24 bits wide\"), so a joining client that takes the wrong field pays a round trip, never gets a wrong byte (oracle, 2026-08-29, found by hitting it)."
           },
           "caveat": {
             "type": "string",
@@ -6008,6 +6251,41 @@
             "description": "As emulator/object_list."
           }
         }
+      }
+    },
+    "emulator/object_at": {
+      "$comment": "protocol.md §11.26 (CR-F, ADOPT WITH CHANGES): one click, one answer, every failure named. A ⚙ decoder-group member (inherits -32012 and layout). Pure read, no require_paused. params are pixel_attribution's native-dot space with the same bounds.",
+      "params": {
+        "type": "object",
+        "unevaluatedProperties": false,
+        "required": [
+          "x",
+          "y"
+        ],
+        "properties": {
+          "x": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 511,
+            "description": "Screen column, 0-based (D9 category 2 — a position a client counts with, not an address). Bounded here at the widest addressable value; the ACTIVE bound is the `width` this method reports, and a dot outside it is refused with -32004."
+          },
+          "y": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 511,
+            "description": "Screen line, 0-based. Same category and the same treatment as `x` — D9 names `line` among the JSON numbers, and this is that field."
+          }
+        }
+      },
+      "result": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/replyFields"
+          },
+          {
+            "$ref": "#/$defs/objectAtBody"
+          }
+        ]
       }
     },
     "emulator/object_slot": {
