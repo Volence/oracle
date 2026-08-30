@@ -2595,6 +2595,23 @@ design lands, re-read its own queue title against what was actually built.
 
 ## Ops (each line is a paid-for lesson)
 
+**▶ `lane-status.json` — THE BOOT CURL VALIDATES THE FILE YOU WROTE AT BOOT AND NOTHING AFTER IT** (2026-08-30,
+this seat, measured). I wrote `"state": "done"` on a landed row after a merge. **`done` is not in the
+vocabulary** (`doing | next | open | blocked`; a landed row LEAVES the queue and its landing goes to
+`lane-log.jsonl`). **One bad enum in one row rejects the WHOLE file**, so the owner's card for this lane went
+dark — with every true thing in it — and stayed dark for about an hour. **Nothing about it is visible from
+this side:** the file writes fine, `git` is happy, and the lane goes on reporting accurately to itself.
+**The defect was not the word, it was that I ran the verification curl ONCE, at boot.** Every later write is
+unverified unless re-checked, and I made a dozen. **Re-run the boot step's curl after ANY write to
+`lane-status.json`** — it is two seconds and it is the only thing that can tell you.
+⚑ **The skill's own boot text warned about exactly this** (*"three lanes wrote `done`, which is not in the
+vocabulary, in three days"*) and I did it anyway, which is the argument for the mechanism over the warning:
+a rule you have read does not fire, a curl does. Found by the aurora lane reading the console, not by me —
+**this lane cannot detect its own invisibility, so it depends on a peer looking.** Worth knowing when no
+peers are up: the verdict is only ever one curl away, and nothing else will surface it.
+
+
+
 **▶ NEW BAR, 2026-08-29 — VALIDATE AN ARTIFACT AGAINST THE SCHEMA IT TARGETS BEFORE CALLING IT READY.
 A "ready to merge" IS a completeness claim, and it is the one nobody thinks to check because it reads
 as a status rather than an assertion.** Earned against this seat, on the same submission where it was

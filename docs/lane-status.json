@@ -25,14 +25,6 @@
       "project": "ORACLE-DEFAULT"
     },
     {
-      "id": "LEGACY-ACCEPT-TABLE",
-      "title": "DONE and merged. The tool reads the old server's own source and writes down what it really accepts - and it found two things nobody had all day: a number written as text with junk on the end ('12abc') is read as 12, and if the whole parameter block is malformed every single value silently becomes its default. Handed to the engine team to check before they trust it.",
-      "state": "done",
-      "size": "M",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT"
-    },
-    {
       "id": "README-LEGACY-WARNING",
       "title": "Rewrite the README line you asked for on the 22nd so it carries what we found today - the debugging surface reaches a server that validates nothing - rather than the vaguer 'this is legacy'.",
       "state": "next",
@@ -119,5 +111,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-08-30T08:07:20Z"
+  "updatedAt": "2026-08-30T08:12:27Z"
 }
