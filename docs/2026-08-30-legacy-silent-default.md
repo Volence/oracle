@@ -57,6 +57,42 @@ server's source and pinning every send site against it.
 *Original text follows unedited, per this repo's supersession rule — a reader meeting the "34" cold
 needs to see that it was superseded, not that it was never written.*
 
+## ⚑ THE CANONICAL EXAMPLE WAS THE BENIGN ONE — swap it everywhere (aeon's, measured here independently)
+
+**`{"addr":"0xZZZZ"}` — quoted all day by both lanes as the dangerous case — is the SAFE end of the
+class.** It has no valid hex digit after the prefix, so `stoll` performs no conversion, throws
+`invalid_argument`, and `catch (...)` returns the default. **The dangerous shape is a VALID PREFIX
+FOLLOWED BY GARBAGE.**
+
+aeon found this by compiling the accessor's exact logic and running it rather than reasoning about
+`stoll`'s contract. **Reproduced here independently** — the string arm of `getInt` transcribed from
+`:138-149`, compiled with `g++ -std=c++17`, default sentinel `-999`:
+
+| input | result |
+|---|---|
+| `"12abc"` | **12** — partial parse |
+| `"0x12ZZ"` | **18** — partial parse |
+| `"$12ZZ"` | **18** — partial parse |
+| `"0x1F"` | 31 — correct |
+| `"0xZZZZ"` | **default** — threw |
+| `"abc"` | default — threw |
+| `"0x"` | default — threw |
+| `""` | default — empty guard |
+
+**Nothing this document previously said about `"0xZZZZ"` was false** — it does resolve to the default,
+which at the memory sites is `0`, and it does defeat the absence guards. **What was wrong was the
+emphasis: the mildest member of the class was presented as its canonical case**, and the genuinely bad
+member was not known at all.
+
+**⚑ And the partial parse is worse IN KIND, which is aeon's point and the part to carry forward.** A
+defaulted `addr` of `0` is at least a *consistent* wrong value that a person may eventually come to
+recognise as "the failure address". `0x12ZZ` yields **address 18** — plausible, arbitrary, and
+unrecognisable as a failure at all. It looks like data.
+
+**Consumer exposure for the class-4 hazard, measured by aeon and theirs to own:** 383 emulator send
+sites parsed by AST, **zero** passing a non-dict `params`. Clean today; the undecidable set (a `params`
+held in a variable) is the gap their gate already declares rather than a new one.
+
 ## ⚑ SUPERSEDED BY A DERIVED INSTRUMENT — read `docs/2026-08-30-legacy-accept-table.md` first
 
 **As of 2026-08-30 this document is the narrative; the AUTHORITY is now machine-derived.**

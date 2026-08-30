@@ -1377,6 +1377,15 @@ verified the lines EXISTED, not that they were UNGUARDED**, a check that could o
 "independent corroboration" of the six is **withdrawn**, as is their consumer-side "we are clean"
 (14-across-3-files was a grep of files they already believed were on the seam; real figure **131 across 12**,
 and they found a live instance: 12 sites send `reset{"wait":true}` and `OpReset` never reads `wait`).
+⚑⚑ **AND THE CANONICAL EXAMPLE WAS BACKWARDS — swap it in anything quoting it.** `"0xZZZZ"` is the
+**SAFE** end: no valid hex digit after the prefix, `stoll` throws, `catch (...)` returns the default.
+**The dangerous shape is a VALID PREFIX + GARBAGE** — `"0x12ZZ"` → **18**, `"12abc"` → **12**. aeon
+measured it by compiling the accessor rather than reasoning about `stoll`'s contract; **reproduced here
+independently** (transcribed string arm, `g++ -std=c++17`, sentinel default). Nothing we said about
+`"0xZZZZ"` was false — it *does* resolve to the default and *does* defeat the absence guards — **the
+defect was presenting the class's mildest member as its canonical case.** And the partial parse is worse
+**in kind**: a defaulted `0` is a consistent wrong value someone may learn to recognise; address **18**
+is plausible, arbitrary, and looks like data.
 ⚑ **WHAT SURVIVES AND IS THE DURABLE PART: the guards cover ABSENCE, NEVER TYPE.** `has()` passes any
 present non-null value and `getInt`'s `stoll` throws into `catch (...)` → 0, so `{"addr":"0xZZZZ"}` defeats
 all four guards. The retraction narrows *which keys must be missing* and narrows nothing about malformed
