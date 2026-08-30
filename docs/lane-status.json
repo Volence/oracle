@@ -1,5 +1,5 @@
 {
-  "focus": "aeon's colour bug is real and reproduces \u2014 but the fix is forbidden by the contract, so it becomes a rules change.",
+  "focus": "The ten missing commands are all correctly blocked or unwanted right now \u2014 I checked each one rather than picking one.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -8,8 +8,16 @@
       "id": "d-20"
     }
   ],
-  "nextBoundary": "Now \u2014 investigation landed, no server change, anti-fix pin and doc note in; the CR is the next piece.",
+  "nextBoundary": "Now \u2014 nothing in flight, everything pushed. The CR's test vectors are the available work.",
   "queue": [
+    {
+      "id": "CR-G-VECTORS",
+      "title": "Author the test cases for the colour-disclosure rules change, and RUN them against the schema before handing them over \u2014 the bar I earned by shipping nine that could not have passed.",
+      "state": "next",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT"
+    },
     {
       "id": "LIVE-OBJECTS-CARD",
       "title": "Select-and-inspect is BUILT and merged (emulator/object_at, \u00a711.26/CR-F): a click answers which layer, where in the level, and which object slot drew it \u2014 with the five outcomes kept distinct. Spawn half still waits on aeon's mailbox shape and is out of scope.",
@@ -35,7 +43,7 @@
     },
     {
       "id": "ACCEPT-16",
-      "title": "The acceptance delta, still 10: sound capture and channel masks (6), the Z80 pair, and two parked odds",
+      "title": "The ten unserved commands, each checked 2026-08-30 and NONE of them available work today: the Z80 pair waits on a contract ruling this session cannot run; the three sound-capture ones are buildable but their only consumer asked us not to pre-build and their trigger has not fired; the two channel ones need a piece of the emulator that is deliberately not compiled into the server, and are wanted later; the spectrum one the consumer explicitly does not want; the last two are parked because serving them would advertise a capability that does nothing.",
       "state": "open",
       "size": "L",
       "blockedBy": null,
@@ -65,5 +73,5 @@
   ],
   "awaiting": null,
   "atBoundary": true,
-  "updatedAt": "2026-08-30T02:16:35Z"
+  "updatedAt": "2026-08-30T02:37:05Z"
 }
