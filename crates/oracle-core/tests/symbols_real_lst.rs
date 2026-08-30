@@ -54,6 +54,54 @@ fn listing(name: &str) -> Option<String> {
     artifact(name).map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
+/// Name the frozen chain in this file's output, so a green here can never be read as a statement about
+/// aeon's master. It is a statement about six specific committed blobs and nothing else.
+///
+/// This **prints** `fixtures/aeon/PIN.tsv`; it does not judge it. The authority — hashing every artifact
+/// against that manifest — is `crates/oracle-replay/tests/aeon_pin.rs`, one place, not two: `oracle-core`
+/// is a no-I/O crate with a single dependency and has no business owning a provenance parser. Reproducing
+/// the check here would be a second copy that can disagree with the first.
+#[test]
+fn the_frozen_pin_this_file_reads_is_named_in_the_output() {
+    let pin = PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/aeon/PIN.tsv"
+    ));
+    let Ok(text) = std::fs::read_to_string(&pin) else {
+        // Not a failure: `PIN.tsv` describes the frozen directory, and a developer may have pointed
+        // these tests elsewhere entirely. Silence would be the bug; an unearned green claim would be
+        // worse. Say which, loudly.
+        println!(
+            "SKIP: {} unreadable — this run names no pin.",
+            pin.display()
+        );
+        return;
+    };
+    println!("\n=== FROZEN AEON PIN, as read by this file ===");
+    for line in text
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+    {
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() == 8 {
+            println!(
+                "  {:<15} chain {:<5} sigil {:<9} aeon_rev {}",
+                f[0],
+                f[3],
+                f[4],
+                &f[5][..8.min(f[5].len())]
+            );
+        }
+    }
+    let dir = aeon_dir();
+    match std::env::var("ORACLE_AEON_DIR") {
+        Ok(v) => {
+            println!("  ⚠ ORACLE_AEON_DIR={v} — this file is NOT reading the bytes named above.\n")
+        }
+        Err(_) => println!("  read from {}\n", dir.display()),
+    }
+}
+
 /// The real `s4.lst` parses completely: every line accounted for, and the count the file's own footer
 /// declares is the count we produced. A silent shortfall here would mean the format drifted.
 #[test]
