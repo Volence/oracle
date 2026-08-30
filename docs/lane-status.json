@@ -3,11 +3,6 @@
   "inFlight": [],
   "blockedOnOwner": [
     {
-      "what": "whether to close the breakpoint gap or just declare it \u2014 I recommended closing and went ahead; it shipped, so this is your review rather than a block",
-      "since": "2026-08-27",
-      "id": "d-17"
-    },
-    {
       "what": "how much to spend on drag-and-drop: your window toolkit has no file-drop support at all and your desktop is Wayland, so it is a parcel rather than a switch. I recommend the cheap middle (paste a path into the picker)",
       "since": "2026-08-28",
       "id": "d-18"
@@ -78,5 +73,5 @@
   ],
   "awaiting": null,
   "atBoundary": true,
-  "updatedAt": "2026-08-30T00:33:21Z"
+  "updatedAt": "2026-08-30T01:00:18Z"
 }
