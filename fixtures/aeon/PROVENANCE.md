@@ -125,6 +125,48 @@ re-recorded after the scroll/section-clamp change — or **ours**, an emulator i
 clamp code exposes. This freeze does not settle that, and pinning 186 must not be allowed to bury it.
 Reproduce the failing case at any time with:
 
+---
+
+### ✅ ANSWERED 2026-08-30 — IT IS AEON'S, AND OUR EMULATOR IS NOT IMPLICATED
+
+*Original question kept above per this repo's supersession rule; the answer sits over it, not in place of it.*
+
+**Verdict: (a). The fixture is stale. (b) — an emulator inaccuracy on our side — is dead.**
+Answered by the aeon lane, booked at aeon `0b612953` (*"book: the replay fixture needs a
+prove-then-restamp after the clamps"*, `docs/DEFERRED_WORK.md` +45; verified here as reachable at
+their `origin/master`, and a docs SHA carrying a docs booking, which is the right class for what it
+anchors).
+
+**The mechanism, which is a line of their source rather than anyone's prior** — all four checks below
+re-run firsthand in their tree at their tip, not transcribed:
+
+* `engine/system/replay.emp:374` is `dc.l Section_Right_Col_Written, 1 // Right + Left` — a **hashed
+  cell**, sitting in the fold table the checkpoint net is built from.
+* Their section clamp is exactly what moves that word: `Section_RedrawPlanes` used to *assign*
+  `d7 = Cache_Head_Col` and now clamps to `min(start_world_col + 63, Cache_Head_Col)`. The two differ
+  precisely when `cam_col < 16`.
+* **The act opens at camX 96 — `cam_col` 6 — which is inside that window.** That is why the desync
+  fires at ring 0 rather than partway into the run, and the ring-0 position is what makes the
+  explanation load-bearing rather than merely available.
+* **The parallax half cannot contribute, checkably**: the fold's own header (`replay.emp:277`) reads
+  *"Excludes sound RAM, `Ctrl_*` cells, VDP staging, DEBUG-only cells — gameplay state"*, and the module
+  matches `Vscroll`/`Parallax` **zero** times. A V-scroll clamp is VDP staging and is invisible to the
+  net by construction.
+
+**⚠ CONSEQUENCE FOR THIS PIN, AND IT IS THE OPPOSITE OF WHAT YOU WOULD ASSUME: KEEP PINNING 186.**
+The superseding freeze now running does **not** re-record the fixture — re-recording was not part of
+sigil's eight-failure fix and not part of aeon's freeze; it was an unbooked job until this question was
+asked. **So a supersede's ROM will still desync us.** Do not pin a newer freeze on the assumption that
+superseding fixed this. aeon will signal when a ROM exists whose fixture is coherent.
+
+**And do not expect a blanket re-stamp to be the fix.** Their ritual is **prove-then-restamp** under an
+owner ruling (their d-14): prove the clamps are the only behavioural change the net sees, then re-stamp
+only the checkpoints that legitimately moved. The fold is deliberately address-free so a behaviour-neutral
+parcel reproduces recorded hashes — *a desync therefore means real behaviour moved*, and a blanket
+re-stamp would restore green while destroying the only claim the net makes.
+
+Reproduce the historical failing case at any time with:
+
 ```sh
 ORACLE_AEON_DIR=/home/volence/sonic_hacks/aeon cargo test -p oracle-replay --test replay_real_artifacts
 ```
