@@ -2017,7 +2017,74 @@ consume this. Cheaper before the design than after.)*
    forget, and then read a masked picture as the real one.* Their canvas palette treats colour as a
    language deliberately; a toggle that fights that is worse than none.
 
-## ▶ COMMITTED TO AEON, TRIGGERED — the restamp A/B (booked 2026-08-30)
+## ▶ 2026-08-30 — THREE PARCELS LANDED, ALL PUSHED (read this first after a /clear)
+
+Everything below in the restamp and REPLAY-NET-BLIND-3 sections is **DONE**; they are kept for the
+method, not as open work. Landed in order, each verified firsthand on the merged tree before push:
+
+1. **The replay net can see again** — `857d55e` (log `e876f10a`). Pin moved aeon chain **186 → 189**
+   across all six artifacts; ROMs from sigil's committed goldens at `39c34fd2`, four listings from an
+   aeon worktree at `aeon_rev 3f143178` supplied by that lane. The three `#[ignore]`d playthroughs
+   became `#[cfg_attr(debug_assertions, ignore)]`, so **release runs them with no flag to remember**
+   (`tools/replay_playthroughs.sh` + CI job `replay-playthroughs`, 8.43 s / 16 tests). Non-gating
+   currency reporter `tools/aeon_pin_report.py` (asks at TIP, per-file rows, loud UNMEASURABLE).
+   `the_standing_fixture_runs_green`, which FAILED that morning, passes.
+   ⚑ **The release `s4.bin` carries the fixture stream too** — nine stale payloads at
+   `$0A4A2C…$0A4A80`, measured. The pairwise fallback would have shipped a stale release ROM while
+   reporting a clean debug one. **The convenient answer was false in the direction that does not
+   announce itself.**
+2. **The last live-tree readers** — `2aa1704` (log `5693e94`). Eleven executable sites, **two found
+   only by the identifier grep and not the path grep**. Rule for unfrozen artifacts: repoint where a
+   frozen copy exists, else keep the live default and **announce it at startup**. `s4.soundtest.bin`
+   BLOCKED (absent from sigil's goldens); `demo.bin` freezable, declined as a reversible judgement.
+   ⚑ **Four pinned expectations had ALL gone stale** (`symbolCount 2129→2310`, `romBytes
+   696836→719315`, `Player_1 0x00FF8CFA→0x00FF8E48`, raw `0xFFFF8CFA→0xFFFF8E48`) — the comment above
+   two of them reads *"D7: resolve, never hardcode."* They are now derived from what the server says
+   it loaded, so they cannot rot on the next pin move.
+   ⚑ **And a check that could not fail, three lines from one that failed every run.** `screenshot`
+   moved PPM→PNG; one check never followed, and its companion counted distinct bytes of a
+   **compressed** stream, so a fully black frame passed. **The permanently-red check was camouflage
+   for the vacuous one** — the tool already exited 1, so nobody looked at the second. Red-first on a
+   synthetic all-black frame: old form PASSES at 38 distinct, new form correctly FAILS at 1.
+3. **CR-I filed, adopted, served** — filed `5808d8c`, adopted by the hub as **protocol §11.30**
+   (empyrean `e7e94fa6`), served + re-vendored `d90a806` (log `c1e44cd`). `absolutise` now on the
+   symbols routes at the load boundary and on `screenshot`'s echoed path; **refusals still quote the
+   caller's spelling, and that is tested rather than merely written down.** Live proof: server spawned
+   with both paths **relative on one command line**, both returned absolute.
+   ⚑ **The re-vendor's green witnesses nothing.** The whole schema delta is three `description`
+   strings, and `description` has no validation force — the byte-identity gate went green against a
+   server still putting a relative path on the wire. The witness is `tests/symbols_path.rs`, landed
+   **before** the re-vendor and red-first at 4-of-8 failing.
+
+**Two verification defects of this seat's own, recorded because they are the transferable part.**
+
+* **Segmenting a test run changed WHAT WAS TESTED, and the suite count did not move.** Two
+  full-workspace runs were killed (unexplained; no exit code, the *wrapping shell* was taken, which
+  excludes both the kernel and a process-name kill — thread closed at empyrean `d935e1a1`), so this
+  seat segmented per package per the shared-machine rule. That produced **63 suites / 1943 passed /
+  0 failed / 6 ignored** against a true **63 / 2000 / 0 / 6**. **Suite count matched exactly. Ignored
+  matched. 57 tests had not run.** `oracle-core`'s `synth` is off in that crate but
+  `oracle-frontend`'s default `audio` enables it, so **cargo feature unification runs it under
+  `--workspace` and not under `-p`**. Found by arithmetic — summing `passed` against an
+  independently-reported figure, then diffing per suite against the pre-parcel baseline to
+  `oracle_core::src/lib.rs`, **913 vs 856**. Closed with `-p oracle-core --features synth` → 913.
+  **`-p` is not a partition of `--workspace`. When you segment, reconcile the total.**
+* **A `head`-truncated listing nearly became a finding.** Ruling this lane out of the killed-run
+  window, the worktree being looked for sorted below a `head` cut, and the next sentence would have
+  been *"it is gone, so cleanup is the cause."* Then the *replacement* probe's control returned 0 for
+  everything since midnight — impossible — so its clean answer meant nothing either. **For an
+  absence, the control IS the measurement**; the absence carries no information until the probe is
+  shown able to speak. (Banked suite-wide in this seat's words.)
+
+**Open, booked, not started:** `F-ACCEPT-TABLE-RAWSTRING`; `README-LEGACY-WARNING`; `FRAME-LABEL`;
+`PLAYER-POLISH`; `OVERLAY-STATE` (never run against a real window; waits until the owner is away);
+`ACCEPT-16`; `WIKI-SPIKE`; and **`d-20`, the dull sound — the owner's taste call, untouched.**
+Residue from parcel 2, deliberately out of scope: `tools/aether_smoke.py` and several
+`crates/oracle-core/examples/*` still read aeon's **live** tree and pin `symbolCount == 2129`
+against it — the same dependency `fixtures/aeon/` exists to remove, in the places the freeze did not
+reach.
+
+## ▶ DONE 2026-08-30 (was: COMMITTED TO AEON, TRIGGERED) — the restamp A/B (booked 2026-08-30)
 
 **This is a cross-lane COMMITMENT, and it is booked here because an offer that lives only in mail does
 not survive a `/clear`** (protocol bar 20's sending-side half). aeon accepted; they have booked it their
@@ -2091,7 +2158,7 @@ per-checkpoint delta, we already emit one, and standing the comparison up their 
 than running it costs us. Our frozen chain-186 copy is what makes the A/B clean: same runner, same code,
 one side pinned and attributable.
 
-## ▶ QUEUED — REPLAY-NET-BLIND-3, and the technique note is the load-bearing half
+## ▶ DONE 2026-08-30 (was: QUEUED) — REPLAY-NET-BLIND-3, and the technique note is the load-bearing half
 
 aeon's scoped ask (booked 2026-08-30, `b103a47`), in **dependency order, not as a menu**: (1) run the two
 `#[ignore]`d playthroughs somewhere that is **not** the default debug suite — ~9 s in release against ~83 s
