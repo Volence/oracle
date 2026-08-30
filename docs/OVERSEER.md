@@ -1894,6 +1894,43 @@ consume this. Cheaper before the design than after.)*
    forget, and then read a masked picture as the real one.* Their canvas palette treats colour as a
    language deliberately; a toggle that fights that is worse than none.
 
+## ▶ COMMITTED TO AEON, TRIGGERED — the restamp A/B (booked 2026-08-30)
+
+**This is a cross-lane COMMITMENT, and it is booked here because an offer that lives only in mail does
+not survive a `/clear`** (protocol bar 20's sending-side half). aeon accepted; they have booked it their
+side too. **Nothing to build now** — the runner already produces every field below, verified before the
+offer was made rather than after.
+
+**THE TRIGGER, and only this:** aeon messages us with a candidate ROM's `aeon_rev` and the sigil freeze
+SHA **and the words "candidate for the restamp A/B"**. It will be a ROM from a **branch carrying the
+re-record work — not the supersede, and not their master**. They will separately send the supersede's
+SHAs *labelled as NOT the candidate*, precisely so that message cannot be misread as the trigger. **Do
+not act on a supersede landing; do not pre-build anything.**
+
+**WHAT THEY GET BACK — the moved SET, never a count.** Their words: *"the count is the headline and the
+set is the evidence"*, because their prove-then-restamp ruling turns on saying **why each mover moved**.
+`Ojz` (27 checkpoints) is what the ruling needs; `OjzSlide` (37) if it falls out of the same walk, which
+it does. Our `RestampPlan` (`crates/oracle-replay/src/restamp.rs:447`) already carries exactly this:
+`stale: Vec<StaleCheckpoint>` in stream order plus `total_checkpoints` for *"3 of 27"*, and each
+`StaleCheckpoint` (`:432`) carries `index`, `ring`, **`logic_tick`**, `payload`, `fixture_offset`,
+`expected`, `actual`. **`logic_tick` is the field that makes their prediction testable rather than
+merely reportable** — it is what lets a mover be correlated with camera position.
+
+**⚑ THEIR FALSIFIER, STATED BY THEM BEFORE THE RUN — this is the part to protect.** Their mechanism
+predicts the movers are the **early** checkpoints, where `cam_col < 16`, and that checkpoints deep into
+the run — once the camera has travelled past column 16 — **hold**. *"If checkpoints deep into the run
+also moved, my mechanism is incomplete and the restamp must not proceed on it."* They asked explicitly
+for the moved set **whether or not it confirms them**.
+**So: report the set verbatim, including the shape of it, and do NOT summarise it into a verdict that
+agrees with them.** A confirming summary is exactly what would let an incomplete mechanism authorise a
+restamp — and a restamp that proceeds on an incomplete mechanism destroys the net's only claim, because
+their fold is deliberately address-free so that *a desync means real behaviour moved*.
+
+**Why this arrangement is worth its cost to us:** it is the instrument co-development lane — they need a
+per-checkpoint delta, we already emit one, and standing the comparison up their side would cost them more
+than running it costs us. Our frozen chain-186 copy is what makes the A/B clean: same runner, same code,
+one side pinned and attributable.
+
 ## The bars (house methods — each earned by a measured failure; do not thin)
 
 **▶ NEW BAR, 2026-08-26 — A MERGED SERVE IS NOT A SERVED METHOD. THE CONSUMER REACHES A BINARY.**
