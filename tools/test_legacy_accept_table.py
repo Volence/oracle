@@ -17,9 +17,24 @@ it claims, checked against the raw file. That check is what catches an
 off-by-one in body-offset arithmetic, which a self-consistent parser will
 otherwise report with total confidence.
 
+ROW-COMPLETENESS tests (SourceDerivedRowCompleteness) exist because the two
+families above could both stay green while the table quietly lost rows. They
+re-derive, from the C++ text alone, which method reads which key and which of
+those reads has no guard, then demand the table still contain each one as a
+well-formed record. The expectation never touches the emitted table: the
+table's own output is the thing under test, so an expectation read back out of
+it would agree with itself forever.
+
 Every "found nothing" assertion is paired with a POSITIVE CONTROL that plants
 the shape and proves the search reports it -- a failing search and an empty
 world otherwise produce identical output.
+
+Fixtures that call the tool go through RecordedFixture, so a fixture that
+blows up becomes a named failure on each of its tests rather than one
+`ERROR: setUpClass` that stops the whole class from running. Measured on the
+"drop every unguarded addr row" poison: before, 4 classes collapsed into 4
+collection errors and 43 of 48 tests never executed; after, 0 collection
+errors and every affected test reports by name.
 
 Run via: tools/run_accept_table_tests.sh
 """
@@ -31,6 +46,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import traceback
 import unittest
 from pathlib import Path
 
@@ -292,11 +308,60 @@ def build_fixture(text: str = FIXTURE) -> dict:
                                "revision_unavailable_reason": "fixture"})
 
 
-class FixtureAccessorSemantics(unittest.TestCase):
-    """Accessor facts must come out of the parsed text, not out of the tool."""
+# ---------------------------------------------------------------------------
+# Fixtures that call the tool must not be able to take the suite with them
+# ---------------------------------------------------------------------------
+
+
+class RecordedFixture(unittest.TestCase):
+    """Base for classes whose shared fixture calls into the tool under test.
+
+    A `setUpClass` that raises collapses its entire class into ONE
+    `ERROR: setUpClass (...)` and none of its tests run. That still exits
+    non-zero, so a defect is still "caught" -- but it is caught by a crash
+    during fixture collection rather than by any assertion that names the
+    defect, and it stops being caught the moment somebody reorders, splits or
+    re-parents the class. A poison that dropped every unguarded `addr` row was
+    caught exactly that way: 43 of 48 tests never executed, and not one of the
+    failures that did fire mentioned a missing row.
+
+    Here the exception is RECORDED and re-raised as a named FAILURE on every
+    test in the class, so the count of what broke stays the count of what
+    broke and each test says, in its own words, what it could not evaluate.
+    `SkipTest` is passed through unchanged: an absent reference checkout is a
+    skip, not a failure.
+    """
+
+    fixture_error: str | None = None
+
+    @classmethod
+    def build_shared(cls):  # pragma: no cover - overridden by every subclass
+        raise NotImplementedError
 
     @classmethod
     def setUpClass(cls):
+        cls.fixture_error = None
+        try:
+            cls.build_shared()
+        except unittest.SkipTest:
+            raise
+        except Exception:  # noqa: BLE001 - recorded, never swallowed
+            cls.fixture_error = traceback.format_exc()
+
+    def setUp(self):
+        if self.fixture_error:
+            self.fail(
+                f"{type(self).__name__}: the shared fixture could not be built, so "
+                f"this test could not be evaluated. Reported as a named FAILURE "
+                f"rather than a collection error, and never as a pass:\n"
+                f"{self.fixture_error}")
+
+
+class FixtureAccessorSemantics(RecordedFixture):
+    """Accessor facts must come out of the parsed text, not out of the tool."""
+
+    @classmethod
+    def build_shared(cls):
         cls.doc = build_fixture()
         cls.acc = cls.doc["accessors"]
 
@@ -345,9 +410,9 @@ class FixtureAccessorSemantics(unittest.TestCase):
         self.assertTrue(self.acc["has"]["rejects_null"])
 
 
-class FixtureTableShape(unittest.TestCase):
+class FixtureTableShape(RecordedFixture):
     @classmethod
-    def setUpClass(cls):
+    def build_shared(cls):
         cls.doc = build_fixture()
         cls.m = cls.doc["methods"]
 
@@ -481,11 +546,11 @@ class FixtureTableShape(unittest.TestCase):
         self.assertEqual(env["substituted_when_absent_or_wrong_shape"], {})
 
 
-class FixtureLoudness(unittest.TestCase):
+class FixtureLoudness(RecordedFixture):
     """Unparsable constructs must appear as unparsed, never be omitted."""
 
     @classmethod
-    def setUpClass(cls):
+    def build_shared(cls):
         cls.doc = build_fixture()
 
     def test_missing_handler_body_is_reported_not_dropped(self):
@@ -577,11 +642,11 @@ class FixtureLoudness(unittest.TestCase):
         self.assertIn("UNAVAILABLE", lat.summarize(doc))
 
 
-class RealSourceInvariants(unittest.TestCase):
+class RealSourceInvariants(RecordedFixture):
     """Checks against the real file, re-derived by a different route."""
 
     @classmethod
-    def setUpClass(cls):
+    def build_shared(cls):
         try:
             cls.root = lat.find_oracle_old()
         except FileNotFoundError as exc:
@@ -802,6 +867,296 @@ class RealSourceInvariants(unittest.TestCase):
                 for s in rec["read_sites"]:
                     self.assertFalse(self.lines[s["line"] - 1].lstrip().startswith("//"),
                                      f"read site {s} points at a comment line")
+
+
+# ---------------------------------------------------------------------------
+# Row completeness -- the expectation is re-derived from the C++, per test
+# ---------------------------------------------------------------------------
+
+
+VALUE_ACCESSOR_RE = r"(?:get|getInt|getU32|getBool)"
+
+
+def direct_reads_from_source(raw: str) -> dict:
+    """Re-derive, straight from the C++ text, which key each method reads.
+
+    This deliberately shares NO code path with `build_table()`. It walks the
+    raw file: `Handlers()` for handler-function -> legacy-op, `CanonicalOp()`
+    for the rename, the `push_back("..." + CanonicalOp` line for the namespace
+    prefix, then each `static std::string Op*(const JsonObj& <ident>` body for
+    literal-key reads through a value accessor on <ident>.
+
+    Nothing here reads the emitted table, and nothing here reads a list written
+    down by hand. The table's own output is not an independent source -- it is
+    the thing under test -- so an expectation copied from it would agree with
+    itself forever.
+
+    Guardedness is decided by the crudest possible rule: does this same
+    function body mention `<ident>.has("<key>")` anywhere at all. That is
+    deliberately WEAKER than the tool's block-dominance analysis and errs
+    toward calling a read guarded, so `unguarded` here is a conservative
+    SUBSET of the truly unguarded reads -- it can never invent a row the
+    table is entitled to be missing.
+
+    Returns {"pairs": {(method, key): [line, ...]},
+             "unguarded": {(method, key): [line, ...]},
+             "guarded":   {(method, key): [line, ...]},
+             "handlers": int}
+    """
+    code = lat.blank_comments(raw)
+
+    anchor = "static const std::unordered_map<std::string, Handler>& Handlers()"
+    hstart = code.index(anchor)
+    hbody = code[hstart: code.index("return h;", hstart)]
+    fn_to_op = {fn: op for op, fn
+                in re.findall(r'\{\s*"(\w+)"\s*,\s*(Op\w+)\s*\}', hbody)}
+    if len(fn_to_op) < 20:
+        raise AssertionError(
+            f"the independent extraction found only {len(fn_to_op)} handlers; it is "
+            f"measuring its own slice of the file, not the dispatch table")
+
+    cstart = re.search(r"^static std::string CanonicalOp\(", code, re.M).start()
+    cbody = code[cstart: lat.match_braces(code, code.index("{", cstart))]
+    rename = dict(re.findall(r'==\s*"(\w+)"\s*\)\s*return\s+"(\w+)"', cbody))
+    prefix = re.search(r'push_back\(\s*"([^"]*)"\s*\+\s*CanonicalOp', code).group(1)
+
+    pairs: dict = {}
+    unguarded: dict = {}
+    guarded: dict = {}
+    for m in re.finditer(r"^static std::string (Op\w+)\(const JsonObj&\s*(\w*)",
+                         code, re.M):
+        fn, ident = m.group(1), m.group(2)
+        # An unnamed parameter cannot be read from, and a function absent from
+        # Handlers() is not a method. Neither is a silent drop.
+        if fn not in fn_to_op or not ident:
+            continue
+        open_brace = code.index("{", m.end())
+        body = code[open_brace: lat.match_braces(code, open_brace)]
+        method = prefix + rename.get(fn_to_op[fn], fn_to_op[fn])
+        for r in re.finditer(re.escape(ident) + r"\s*\.\s*" + VALUE_ACCESSOR_RE
+                             + r'\s*\(\s*"(\w+)"', body):
+            key = r.group(1)
+            line = raw.count("\n", 0, open_brace + r.start()) + 1
+            pairs.setdefault((method, key), []).append(line)
+            has_here = re.search(
+                re.escape(ident) + r'\s*\.\s*has\s*\(\s*"' + re.escape(key) + r'"',
+                body)
+            (guarded if has_here else unguarded).setdefault(
+                (method, key), []).append(line)
+
+    return {"pairs": pairs, "unguarded": unguarded, "guarded": guarded,
+            "handlers": len(fn_to_op)}
+
+
+REQUIRED_RECORD_FIELDS = ("accessor", "default", "guarded_by", "accepted_shapes",
+                          "read_sites")
+
+
+def missing_rows(methods: dict, expected: dict) -> list[str]:
+    """Which expected (method, key) rows are absent or hollow in `methods`.
+
+    A row counts as present only if it is a well-formed record. `entry[key] =
+    None` leaves the key in place while destroying the row, so a bare
+    `key in row` check would pass straight through the exact defect this
+    function exists to detect.
+    """
+    out = []
+    for (method, key), lines in sorted(expected.items()):
+        row = methods.get(method)
+        if row is None:
+            out.append(f"{method}: the method itself is absent from the table "
+                       f"(expected a row for {key!r} read at line(s) {lines})")
+            continue
+        if key not in row:
+            out.append(f"{method}.{key}: row DROPPED (source reads it at "
+                       f"line(s) {lines}; the table has no such key)")
+            continue
+        rec = row[key]
+        if not isinstance(rec, dict):
+            out.append(f"{method}.{key}: row present but HOLLOW ({rec!r}); "
+                       f"source reads it at line(s) {lines}")
+            continue
+        absent = [f for f in REQUIRED_RECORD_FIELDS if f not in rec]
+        if absent:
+            out.append(f"{method}.{key}: row is missing field(s) {absent}")
+            continue
+        cited = {s["line"] for s in rec["read_sites"]}
+        if not set(lines) <= cited:
+            out.append(f"{method}.{key}: row does not cite the read site(s) the "
+                       f"source has at {sorted(set(lines) - cited)} "
+                       f"(it cites {sorted(cited)})")
+    return out
+
+
+class SourceDerivedRowCompleteness(RecordedFixture):
+    """No row may vanish from the table without a named test saying so.
+
+    The expectation is rebuilt from `ControlSocket.cpp` on every test by
+    `direct_reads_from_source`, which shares no code with the table builder.
+    The document under test is built INSIDE the test path, not in a shared
+    fixture that can take the class down with it: if `generate()` raises, that
+    becomes a named failure here that still names the rows it could not find.
+    """
+
+    @classmethod
+    def build_shared(cls):
+        try:
+            cls.root = lat.find_oracle_old()
+        except FileNotFoundError as exc:
+            raise unittest.SkipTest(f"oracle-old not available: {exc}")
+        cls.raw = (cls.root / lat.SOURCE_RELPATH).read_text(
+            encoding="utf-8", errors="surrogateescape")
+        # The expectation itself must survive a broken tool, so it is derived
+        # here and kept even when the document build below blows up.
+        cls.expected = direct_reads_from_source(cls.raw)
+        try:
+            cls.doc = lat.generate(cls.raw, lat.source_revision(cls.root))
+            cls.build_error = None
+        except Exception:  # noqa: BLE001 - surfaced per-test, never swallowed
+            cls.doc = None
+            cls.build_error = traceback.format_exc()
+
+    def _methods(self, what: str) -> dict:
+        """The table's methods, or a named failure that says what is unproven."""
+        if self.doc is None:
+            self.fail(
+                f"the accept-table could not be built at all, so {what} could not "
+                f"be shown present. An unbuildable table is reported here as a "
+                f"FAILURE naming what is unverified -- never as an empty set, a "
+                f"zero, or a pass. Build error:\n{self.build_error}")
+        return self.doc["methods"]
+
+    # -- controls on the derivation itself ---------------------------------
+
+    def test_the_independent_derivation_is_not_measuring_its_own_slice(self):
+        e = self.expected
+        self.assertGreater(e["handlers"], 20,
+                           "handler extraction found almost nothing")
+        self.assertGreater(len(e["pairs"]), 20,
+                           "the source scan found almost no parameter reads; a "
+                           "search that finds nothing looks exactly like a file "
+                           "with nothing in it")
+        self.assertTrue(e["unguarded"], "the scan classified NOTHING as unguarded")
+        self.assertTrue(e["guarded"],
+                        "the scan classified NOTHING as guarded, so its "
+                        "guardedness test is not discriminating and its "
+                        "'unguarded' list means nothing")
+
+    def test_the_derivation_separates_a_guarded_addr_from_an_unguarded_one(self):
+        """The specific discrimination the headline assertion rests on.
+
+        If this scan called every `addr` unguarded it would still 'pass' the
+        completeness check below while proving nothing about guardedness.
+        """
+        unguarded = {m for (m, k) in self.expected["unguarded"] if k == "addr"}
+        guarded = {m for (m, k) in self.expected["guarded"] if k == "addr"}
+        self.assertTrue(unguarded, "no unguarded addr read found in the source")
+        self.assertTrue(guarded,
+                        "no has()-guarded addr read found in the source, so this "
+                        "scan cannot be shown to tell the two apart")
+        self.assertEqual(unguarded & guarded, set())
+
+    # -- the headline ------------------------------------------------------
+
+    def test_unguarded_addr_rows_are_present_and_well_formed(self):
+        """The memory-path rows are the ones whose absence is dangerous.
+
+        If these rows go missing the table reads as "these commands take no
+        address", i.e. "these commands are safe" -- the exact wrong answer the
+        table exists to prevent. Asserted by name, per row, from the source.
+        """
+        expected = {k: v for k, v in self.expected["unguarded"].items()
+                    if k[1] == "addr"}
+        self.assertTrue(expected, "vacuous: no unguarded addr read derived")
+        methods = self._methods(
+            f"the unguarded addr rows {sorted(m for m, _ in expected)}")
+        gaps = missing_rows(methods, expected)
+        self.assertEqual(gaps, [], "unguarded addr row(s) missing from the "
+                                   "table:\n  " + "\n  ".join(gaps))
+        for (method, key) in sorted(expected):
+            self.assertIsNone(
+                methods[method][key]["guarded_by"],
+                f"{method}.{key} is unguarded in the source but the table claims "
+                f"a guard; a memory-path read reported as guarded is the same "
+                f"wrong answer as one reported missing")
+
+    def test_unguarded_addr_rows_reach_the_hazard_view(self):
+        """A row can survive in `methods` and still fall out of the summary."""
+        expected = {k for k in self.expected["unguarded"] if k[1] == "addr"}
+        self.assertTrue(expected, "vacuous: no unguarded addr read derived")
+        self._methods(f"the hazard-view entries for {sorted(expected)}")
+        seen = {(u["method"], u["key"])
+                for u in self.doc["hazards"]["unguarded_reads"]}
+        self.assertEqual(
+            expected - seen, set(),
+            f"unguarded addr read(s) absent from hazards.unguarded_reads: "
+            f"{sorted(expected - seen)}. The table would report them as safe.")
+
+    def test_every_key_a_handler_reads_directly_has_a_row(self):
+        """The general form: no row of any key may silently disappear."""
+        expected = self.expected["pairs"]
+        self.assertGreater(len(expected), 20, "vacuous expectation")
+        methods = self._methods(f"{len(expected)} source-derived rows")
+        gaps = missing_rows(methods, expected)
+        self.assertEqual(gaps, [],
+                         f"{len(gaps)} of {len(expected)} source-derived rows are "
+                         f"missing or hollow:\n  " + "\n  ".join(gaps))
+
+    # -- positive controls: the checker must actually see a removed row ----
+    #
+    # These build their OWN complete baseline out of the source-derived
+    # expectation, rather than maiming the tool's live table. A control that
+    # starts from the artefact under test stops being able to run at exactly
+    # the moment the artefact breaks -- which is the moment a control is for.
+    # Built this way, all four stay GREEN under a poisoned tool and keep
+    # proving the checker can still see a removed row.
+
+    def _synthetic_baseline(self) -> tuple[dict, tuple]:
+        expected = {k: v for k, v in self.expected["unguarded"].items()
+                    if k[1] == "addr"}
+        self.assertTrue(expected, "vacuous: no unguarded addr read derived")
+        methods: dict = {}
+        for (method, key), lines in expected.items():
+            methods.setdefault(method, {})[key] = {
+                "accessor": "getU32", "default": {"value": 0, "explicit": False},
+                "guarded_by": None, "accepted_shapes": {},
+                "read_sites": [{"line": ln} for ln in lines],
+            }
+        self.assertEqual(missing_rows(methods, expected), [],
+                         "the synthetic baseline is not itself complete, so "
+                         "nothing it detects afterwards means anything")
+        return methods, sorted(expected)[0]
+
+    def test_positive_control_a_dropped_row_is_reported(self):
+        methods, victim = self._synthetic_baseline()
+        del methods[victim[0]][victim[1]]
+        gaps = missing_rows(methods, {victim: [1]})
+        self.assertTrue(any("row DROPPED" in g and victim[0] in g for g in gaps),
+                        f"deleting {victim} was not reported: {gaps}")
+
+    def test_positive_control_a_hollow_row_is_reported(self):
+        """The shape the real poison took: the key stays, the record is None."""
+        methods, victim = self._synthetic_baseline()
+        methods[victim[0]][victim[1]] = None
+        gaps = missing_rows(methods, {victim: [1]})
+        self.assertTrue(any("HOLLOW" in g and victim[0] in g for g in gaps),
+                        f"hollowing {victim} was not reported: {gaps}")
+
+    def test_positive_control_a_relocated_read_site_is_reported(self):
+        methods, victim = self._synthetic_baseline()
+        rec = methods[victim[0]][victim[1]]
+        lines = self.expected["unguarded"][victim]
+        rec["read_sites"] = [{"line": ln + 1} for ln in lines]
+        gaps = missing_rows(methods, {victim: lines})
+        self.assertTrue(any("does not cite the read site" in g for g in gaps),
+                        f"shifting {victim}'s read sites was not reported: {gaps}")
+
+    def test_positive_control_a_missing_method_is_reported(self):
+        methods, victim = self._synthetic_baseline()
+        del methods[victim[0]]
+        gaps = missing_rows(methods, {victim: [1]})
+        self.assertTrue(any("the method itself is absent" in g for g in gaps),
+                        f"deleting method {victim[0]} was not reported: {gaps}")
 
 
 class CommandLineInterface(unittest.TestCase):
