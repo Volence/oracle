@@ -1,5 +1,5 @@
 {
-  "focus": "Tools can now read the player's on-screen text; holding the announcement until the hub takes the evidence.",
+  "focus": "Measured which checkpoints the engine team's change actually moved: exactly one, and the control is what proved it.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -8,14 +8,14 @@
       "id": "d-20"
     }
   ],
-  "nextBoundary": "After the hub merges the vectors and the A/B measurement is handed to aeon.",
+  "nextBoundary": "Now - everything merged, verified and pushed; nothing running.",
   "queue": [
     {
-      "id": "AEON-RESTAMP-AB",
-      "title": "UNBLOCKED - the cargo lane is free. Run the replay walk against sigil e38295d2 (chain 188) versus our frozen chain 186 and hand aeon the per-checkpoint moved SET for Ojz with logic_tick. Never a count, and never a summary that agrees with their mechanism.",
-      "state": "next",
+      "id": "REPLAY-NET-STALE-18-26",
+      "title": "NEW, and it is aeon's fixture rather than our code: 9 of 27 checkpoints (18-26) are stale on BOTH chain 186 and 188, with identical values - so they predate the clamps. Nobody knew because both full-playthrough tests are ignored by default, so a stream that desyncs two thirds through reads as green on both sides. Handed to aeon; cause unchased.",
+      "state": "open",
       "size": "S",
-      "blockedBy": null,
+      "blockedBy": "aeon's call - their fixture",
       "project": null
     },
     {
@@ -36,10 +36,10 @@
     },
     {
       "id": "OVERLAY-STATE",
-      "title": "BUILT, MERGED, VERIFIED (61 legs / 1989 passed / 0 failed on the merged tree, stable HEAD). Deliberately NOT ANNOUNCED: the adjudication conditions announcement on the vectors landing at empyrean, and merging is not advertising here - a consumer reaches a rebuilt binary. Open: never run against a real window, and that check waits until the owner is not logged in.",
+      "title": "SERVES (56 methods advertised, verified by spawning the binary and calling it). SCOPE CORRECTED by aeon: it reads the emulator's own chrome, NOT game pixels, so it does NOT end their eyeball requests - this row previously claimed it would. Open: never run against a real window; waits until the owner is away.",
       "state": "open",
       "size": "M",
-      "blockedBy": "hub merging the CR-H vectors"
+      "blockedBy": null
     },
     {
       "id": "ACCEPT-16",
@@ -73,5 +73,5 @@
   ],
   "awaiting": "your ten-second listen on the dull sound (d-20). Nothing else.",
   "atBoundary": true,
-  "updatedAt": "2026-08-30T06:16:56Z"
+  "updatedAt": "2026-08-30T06:24:53Z"
 }

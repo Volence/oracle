@@ -2473,6 +2473,31 @@ on a partial run** (a killed suite aggregating clean at 46 of 61 legs); one repo
 with a misleading cause** (this). In all three the suite itself was honest and the harness around it was
 not. **The instrument that reports on the instrument is the one nobody tests.***
 
+
+**▶ SCOPE CORRECTION, 2026-08-30 — `screen_text` DOES NOT END AEON'S EYEBALL REQUESTS, AND THIS FILE SAID
+IT WOULD.** Corrected by aeon against a claim this seat made to them, which was taken verbatim from our
+own queue row.
+
+The OVERLAY-STATE row read *"the item that would stop aeon asking you to eyeball things"*, and I repeated
+it to them as a headline. **It is wrong. `screen_text` reads the emulator's own CHROME — status line,
+toasts, palette, lens, title bar — and every eyeball request aeon has outstanding is GAME PIXELS**: the
+right-edge price of a column borrow, a background wrap, colour bands. **No `kind` in the adopted enum can
+see any of them.** Their words, and the reason they sent it: they would otherwise have planned a parcel
+around a capability the tool does not have.
+
+**Where it genuinely helps, per aeon: the booked SCENE-READOUT row** — the owner counts button presses to
+know which of twenty effects is on screen. **If that readout is drawn as debugger chrome, `screen_text`
+reads it and the row is cheap; if it is drawn as game graphics, the tool cannot see it. Which one is
+UNMEASURED**, and aeon has written it into their booking as a thing to check *before* planning around it
+rather than assuming the convenient half.
+
+**The durable shape, and it is why this is an ops line rather than a typo fix: the over-claim was in a
+QUEUE TITLE, which is the one place nobody re-derives.** It was written when the item was a sketch,
+inherited by every status file since, and finally exported across the fence with a seat's confidence
+attached — where the only reader who could refute it happened to be the party it was about. **A queue
+row's justification ages exactly like a precedent narrative and nothing re-reads it.** When an item's
+design lands, re-read its own queue title against what was actually built.
+
 ## Ops (each line is a paid-for lesson)
 
 **▶ NEW BAR, 2026-08-29 — VALIDATE AN ARTIFACT AGAINST THE SCHEMA IT TARGETS BEFORE CALLING IT READY.
