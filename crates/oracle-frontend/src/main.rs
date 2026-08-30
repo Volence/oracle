@@ -272,6 +272,10 @@ mod font;
 mod lens;
 mod overlay;
 mod palette;
+// What the window says, read back once per present so a tool can have it: `emulator/screen_text`
+// (contract §11.29, CR-H). A model over strings the surfaces above already composed for drawing — it
+// never composes any of its own.
+mod screen_text;
 // The Aether capability layer, hosted in this process (`--aether` / `--socket`). Two implementations with
 // one surface: the real one when the `aether` feature is on, a set of no-ops when it is not — so the run
 // loop below has a single shape and no `#[cfg]` of its own. See `bus.rs`'s module docs for the design and
@@ -2201,30 +2205,44 @@ fn main() {
         // Under the toasts, over the picture: drawn first so `ov.draw` still lands on top (a notification
         // must stay readable while the palette is open). Same buffer, same rect the present uses.
         palette.draw(&mut screen, win_w, win_h, present_view, &reg);
-        ov.draw(
-            &mut screen,
-            win_w,
-            win_h,
-            present_view,
-            &Status {
-                paused,
-                frame,
-                slot: state_slot,
-                occupied: slots_on_disk,
-                volume: vol,
-                filter: filt,
-                // Asked of the bus itself rather than of `args.socket`, so a launch that *asked* to serve and
-                // failed to bind reads `AETHER OFF` — which is the true and useful answer, and the one a
-                // command-line-derived flag would get wrong in exactly the case someone is debugging.
-                aether: bus.is_serving(),
-                aspect: aspect.name(),
-                native: (width, HEIGHT),
-                // The mask that drew the frame being presented, not a fresh read — the badge is a caption
-                // for the picture underneath it, and one that could describe a mask set a microsecond ago
-                // by a socket client, over a frame drawn before it, would be a caption for something else.
-                layers,
-            },
-        );
+        let status = Status {
+            paused,
+            frame,
+            slot: state_slot,
+            occupied: slots_on_disk,
+            volume: vol,
+            filter: filt,
+            // Asked of the bus itself rather than of `args.socket`, so a launch that *asked* to serve and
+            // failed to bind reads `AETHER OFF` — which is the true and useful answer, and the one a
+            // command-line-derived flag would get wrong in exactly the case someone is debugging.
+            aether: bus.is_serving(),
+            aspect: aspect.name(),
+            native: (width, HEIGHT),
+            // The mask that drew the frame being presented, not a fresh read — the badge is a caption
+            // for the picture underneath it, and one that could describe a mask set a microsecond ago
+            // by a socket client, over a frame drawn before it, would be a caption for something else.
+            layers,
+        };
+        ov.draw(&mut screen, win_w, win_h, present_view, &status);
+
+        // **What the window says, published for `emulator/screen_text`** (contract §11.29, CR-H).
+        //
+        // Here, at the bottom of the present block and after every surface has finished drawing, because
+        // that is the only moment the answer is *the frame that is on the glass* rather than one being
+        // composed. The next `bus.pump` is at the top of the following iteration, and hosted it runs on
+        // this very thread — so a client's read can never land mid-composition.
+        //
+        // Gated on `is_serving`, which is the frontend's own skip of per-frame work nobody could read: with
+        // no socket bound, no client can exist, so the snapshot is pure cost. The gate is deliberately NOT
+        // `has_clients` — that would leave a client that connects mid-session being told there is no window
+        // until the next present, which is a false answer to the one question this method answers.
+        //
+        // A snapshot with **no surfaces at all is a legitimate push**, not something to elide: F3 off, no
+        // toasts, nothing else on is the default launch, and the bus must be able to tell "the screen is
+        // blank" from "there is no screen".
+        if bus.is_serving() {
+            bus.set_screen_text(screen_text::snapshot(&title, &ov, present_view, &status));
+        }
 
         // update_with_buffer both presents and pumps the OS event queue; it honours set_target_fps. The
         // buffer is exactly the window's size, so `ScaleMode::Stretch` is a 1:1 present.
