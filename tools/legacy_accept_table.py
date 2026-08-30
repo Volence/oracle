@@ -70,9 +70,18 @@ def find_oracle_old(explicit: str | None = None) -> Path:
     We never fall back to a guess: a wrong source silently produces a wrong
     table, so an unresolvable source is an error, not a default.
     """
-    candidates: list[Path] = []
+    # An explicitly named source is authoritative: if it does not hold the
+    # target, that is an error. Searching on past it would quietly derive the
+    # table from a DIFFERENT tree than the caller named -- the same class of
+    # silent substitution this whole table exists to document.
     if explicit:
-        candidates.append(Path(explicit))
+        c = Path(explicit)
+        if (c / SOURCE_RELPATH).is_file():
+            return c.resolve()
+        raise FileNotFoundError(
+            f"--source {explicit} does not contain {SOURCE_RELPATH}")
+
+    candidates: list[Path] = []
     env = os.environ.get("ORACLE_OLD")
     if env:
         candidates.append(Path(env))
@@ -543,6 +552,7 @@ def scan_accessor_reads(fn: Function, accessors: dict, clean: str) -> tuple[list
             "default_value": (parse_cpp_literal(dflt) if explicit
                               else accessors[accessor]["implicit_default"]),
             "in_function": fn.name,
+            "offset": m.start(),   # within fn.body, for guard-dominance testing
             "line": line_of(clean, fn.body_offset + m.start()),
         })
 
@@ -550,14 +560,90 @@ def scan_accessor_reads(fn: Function, accessors: dict, clean: str) -> tuple[list
     for m in re.finditer(esc + r"\.has\s*\(\s*\"([^\"]*)\"\s*\)", fn.body):
         ls = fn.body.rfind("\n", 0, m.start()) + 1
         le = fn.body.find("\n", m.end())
+        dom, kind = guard_dominance(fn.body, m.start(), m.end(), esc)
         guards.append({
             "key": unescape_cpp(m.group(1)),
             "expr": fn.body[ls: le if le >= 0 else len(fn.body)].strip(),
-            "negated": bool(re.search(r"!\s*" + esc + r"\.has\s*\($", fn.body[:m.end()])),
+            "negated": bool(re.search(r"!\s*$", fn.body[:m.start()])),
+            "dominance": dom,          # (start, end) within fn.body, or None
+            "dominance_kind": kind,
             "in_function": fn.name,
             "line": line_of(clean, fn.body_offset + m.start()),
         })
     return reads, guards
+
+
+def match_parens(text: str, open_idx: int) -> int:
+    """Index just past the `)` matching the `(` at open_idx."""
+    depth = 0
+    for i in range(open_idx, len(text)):
+        if text[i] == "(":
+            depth += 1
+        elif text[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+    return -1
+
+
+def guard_dominance(body: str, has_start: int, has_end: int, esc: str):
+    """The region of a function a `has()` test actually protects.
+
+    This is derived from the ENCLOSING BLOCK STRUCTURE, never from whether the
+    read carries an explicit default. The two are orthogonal: a read can have an
+    explicit default and no guard (`getU32("addr", 0)` in read_vram), or no
+    explicit default and a guard (`getInt("value")` inside `if (has("value"))`).
+    Inferring either from the other produces false positives AND excludes real
+    unguarded sites by construction, so the properties are computed separately.
+
+    Returns ((start, end) within `body`, kind) or (None, reason):
+      "early_bail"    `if (!has(k)) return ...;`  -> protects everything after
+      "block"         `if (has(k)) { ... }`       -> protects that block only
+    """
+    # Walk left to the `(` that opens the condition containing this has().
+    depth = 0
+    open_paren = None
+    for i in range(has_start - 1, -1, -1):
+        c = body[i]
+        if c == ")":
+            depth += 1
+        elif c == "(":
+            if depth == 0:
+                open_paren = i
+                break
+            depth -= 1
+    if open_paren is None:
+        return None, "no enclosing condition"
+    if not re.search(r"\bif\s*$", body[:open_paren]):
+        return None, "enclosing call is not an if-condition"
+
+    cond_end = match_parens(body, open_paren)
+    if cond_end < 0:
+        return None, "unbalanced condition"
+
+    # The `!` sits BEFORE the match, so the text to inspect ends at has_start.
+    # Testing body[:has_end] can never match -- it ends with the has() call
+    # itself -- which silently classified every early-bail guard as a block
+    # guard covering only its own `return`, i.e. as guarding nothing.
+    negated = bool(re.search(r"!\s*$", body[:has_start]))
+
+    j = cond_end
+    while j < len(body) and body[j].isspace():
+        j += 1
+    if j < len(body) and body[j] == "{":
+        b_start, b_end = j, match_braces(body, j)
+    else:
+        semi = body.find(";", j)
+        b_start, b_end = j, (semi + 1 if semi >= 0 else len(body))
+    if b_end < 0:
+        return None, "unbalanced guard body"
+
+    if negated:
+        # A negated test only guards the rest of the function if it leaves.
+        if re.search(r"\breturn\b|\bthrow\b", body[b_start:b_end]):
+            return (b_end, len(body)), "early_bail"
+        return None, "negated has() that does not return; protects nothing"
+    return (b_start, b_end), "block"
 
 
 def scan_raw_reads(body: str, expr_pat: str, body_offset: int, clean: str,
@@ -662,10 +748,26 @@ def build_table(source_text: str) -> dict:
         reads, guards = scan_accessor_reads(fn, accessors, clean)
         raw_expr = r"(?:\(\s*\*\s*)?" + re.escape(fn.params_ident or "\0") + r"\s*\.\s*p\s*\)?\s*(?:->|\.)?\s*" \
             if fn.params_ident else None
+        touches_raw = bool(raw_expr and
+                           re.search(re.escape(fn.params_ident) + r"\.p\b", fn.body))
         raws = (scan_raw_reads(fn.body, raw_expr, fn.body_offset, clean, fn.name)
-                if raw_expr and re.search(re.escape(fn.params_ident) + r"\.p\b", fn.body)
-                else [])
+                if touches_raw else [])
+        # A raw params touch whose key is not a string literal cannot be
+        # attributed. Dropping it would make an unanalysable read read as
+        # "this method has no such parameter", so it is recorded as unparsed.
+        if touches_raw and not raws:
+            hit = re.search(re.escape(fn.params_ident) + r"\.p\b", fn.body)
+            raws = [{"key": None, "unparsed": True,
+                     "reason": "raw params access with no extractable string key",
+                     "kinds": [], "default_value": None, "default_explicit": False,
+                     "where": fn.name,
+                     "line": line_of(clean, fn.body_offset + hit.start()),
+                     "evidence_lines": sorted({
+                         line_of(clean, fn.body_offset + m.start()) for m in
+                         re.finditer(re.escape(fn.params_ident) + r"\.p\b", fn.body)})}]
         for r in raws:
+            if r.get("unparsed"):
+                continue
             r["element_predicates"] = [
                 PREDICATE_SHAPES.get(p, p)
                 for p in re.findall(r"\b\w+\.(is_\w+)\s*\(\s*\)", fn.body)
@@ -683,8 +785,11 @@ def build_table(source_text: str) -> dict:
             out.extend(closure(h, seen))
         return out
 
+    # Named canonically, matching the table's own keys: a consumer cross-
+    # referencing this list against `methods` must find the same string.
     unresolved_handlers = [
-        {"method": op, "handler": fn, "reason": "handler function body not found in source"}
+        {"method": prefix + canon_map.get(op, op), "legacy_op": op, "handler": fn,
+         "reason": "handler function body not found in source"}
         for op, fn in sorted(handlers.items()) if fn not in fns
     ]
 
@@ -724,17 +829,54 @@ def build_table(source_text: str) -> dict:
             guards.extend(g)
             raws.extend(w)
 
-        guard_by_key: dict[str, dict] = {}
         for g in guards:
             claimed_lines.add(g["line"])
-            guard_by_key.setdefault(g["key"], {
-                "expr": g["expr"], "line": g["line"], "in_function": g["in_function"],
-                "negated_early_bail": g["negated"],
-                "guard_checks_type": bool(accessors.get("has", {}).get("checks_type")),
-            })
+
+        checks_type = bool(accessors.get("has", {}).get("checks_type"))
+
+        def guard_for(read: dict) -> dict | None:
+            """The guard protecting THIS read, by block dominance.
+
+            Same-function guards must lexically dominate the read; a `has()`
+            sitting in an unrelated branch protects nothing. A guard in another
+            function of the call chain is recorded as transitive, since the read
+            is only reachable through the guarded path.
+            """
+            same, other = [], []
+            for g in guards:
+                if g["key"] != read["key"]:
+                    continue
+                (same if g["in_function"] == read["in_function"] else other).append(g)
+            for g in same:
+                dom = g["dominance"]
+                if dom and dom[0] <= read["offset"] < dom[1]:
+                    return {
+                        "expr": g["expr"], "line": g["line"],
+                        "in_function": g["in_function"],
+                        "kind": g["dominance_kind"],
+                        "negated_early_bail": g["negated"],
+                        # The durable point: has() is satisfied by ANY present,
+                        # non-null value. It guards against a MISSING key, never
+                        # against a malformed one.
+                        "guards_against": "absence+type" if checks_type else "absence",
+                        "guard_checks_type": checks_type,
+                    }
+            if other:
+                g = other[0]
+                return {
+                    "expr": g["expr"], "line": g["line"], "in_function": g["in_function"],
+                    "kind": "transitive",
+                    "negated_early_bail": g["negated"],
+                    "guards_against": "absence+type" if checks_type else "absence",
+                    "guard_checks_type": checks_type,
+                    "note": "the read is in a different function of the call chain, "
+                            "reachable only through the guarded path",
+                }
+            return None
 
         by_key: dict[str, list] = {}
         for r in reads:
+            r["guard"] = guard_for(r)
             by_key.setdefault(r["key"], []).append(r)
             claimed_lines.add(r["line"])
 
@@ -752,24 +894,55 @@ def build_table(source_text: str) -> dict:
                         shapes[sk] = sv
             extra = ({"multiple_readings": True}
                      if len(names) > 1 or len(defaults) > 1 else None)
+
+            # A key counts as guarded only if EVERY site is. One unguarded path
+            # is the path a caller has to plan for, and summarising a mixed key
+            # as guarded would hide exactly that path.
+            guarded = [s for s in sites if s["guard"]]
+            key_guard = guarded[0]["guard"] if len(guarded) == len(sites) else None
+            if guarded and len(guarded) != len(sites):
+                extra = dict(extra or {})
+                extra["partially_guarded"] = True
+                extra["unguarded_sites"] = [s["line"] for s in sites if not s["guard"]]
+
+            # Make the "unaccepted value does not yield the declared default"
+            # hazard explicit at the key level, where a consumer reads it.
+            d0 = sites[0]["default_value"]
+            if shapes.get("other_string_values_ignore_caller_default"):
+                shapes = dict(shapes)
+                shapes["effective_value_for_unlisted_string"] = \
+                    shapes.get("other_string_values_yield")
+                shapes["declared_default_is_not_applied_to_unlisted_strings"] = True
+                shapes["unlisted_string_inverts_declared_default"] = (d0 is True)
+
             entry[key] = _record(
                 key,
                 names[0] if len(names) == 1 else names,
-                {"value": sites[0]["default_value"],
+                {"value": d0,
                  "explicit": sites[0]["default_explicit"],
                  "source": "call_site" if sites[0]["default_explicit"]
                            else "accessor_signature"},
-                guard_by_key.get(key),
+                key_guard,
                 shapes,
                 [{"accessor": s["accessor"], "in_function": s["in_function"],
                   "line": s["line"], "default_explicit": s["default_explicit"],
-                  "default_value": s["default_value"]}
+                  "default_value": s["default_value"], "guarded_by": s["guard"]}
                  for s in sorted(sites, key=lambda s: s["line"])],
                 extra,
             )
 
         for w in raws:
             claimed_lines.update(w["evidence_lines"])
+            if w.get("unparsed"):
+                key = f"__unparsed_raw_read_line_{w['line']}__"
+                entry[key] = _record(
+                    key, "raw_json", None, None, None,
+                    [{"accessor": "raw_json", "in_function": w["where"],
+                      "line": ln} for ln in w["evidence_lines"]],
+                    {"unparsed": True, "reason": w["reason"]})
+                unparsed_entries.append({"method": canonical, "key": None,
+                                         "line": w["line"], "reason": w["reason"]})
+                continue
             entry[w["key"]] = _record(
                 w["key"], "raw_json",
                 {"value": w["default_value"] if w["default_explicit"] else [],
@@ -1036,31 +1209,62 @@ def reconcile(table: dict, census: dict) -> dict:
 
 
 def hazard_views(doc: dict) -> dict:
-    """The two classes the table exists to separate, precomputed."""
-    unguarded_implicit, coercing = [], []
+    """The classes the table exists to separate, precomputed.
+
+    GUARDEDNESS AND DEFAULT-EXPLICITNESS ARE ORTHOGONAL and are reported on
+    separate axes here. An earlier version of this view listed "unguarded reads
+    with an implicit default", which is a proxy for neither property: it
+    admitted guarded sites that merely lacked a default, and it excluded
+    genuinely unguarded sites BY CONSTRUCTION whenever they carried one
+    (`getU32("addr", 0)` in read_vram / write_vram). Filtering unguardedness by
+    anything to do with defaults reintroduces that error.
+    """
+    unguarded, coercing, absence_only = [], [], []
     for method, keys in sorted(doc["methods"].items()):
         for key, rec in sorted(keys.items()):
             d = rec.get("default") or {}
-            if rec.get("guarded_by") is None and rec.get("accessor") not in (None, "raw_json"):
-                if d.get("explicit") is False:
-                    unguarded_implicit.append({
-                        "method": method, "key": key, "accessor": rec["accessor"],
-                        "default": d.get("value"),
-                        "line": rec["read_sites"][0]["line"] if rec["read_sites"] else None,
-                    })
+            acc = rec.get("accessor")
+            if rec.get("guarded_by") is None and acc not in (None, "raw_json"):
+                unguarded.append({
+                    "method": method, "key": key, "accessor": acc,
+                    "default": d.get("value"),
+                    "default_explicit": d.get("explicit"),
+                    "partially_guarded": bool(rec.get("partially_guarded")),
+                    "line": rec["read_sites"][0]["line"] if rec["read_sites"] else None,
+                })
+            g = rec.get("guarded_by")
+            if g and g.get("guards_against") == "absence":
+                absence_only.append({
+                    "method": method, "key": key, "accessor": acc,
+                    "guard_line": g.get("line"),
+                    "malformed_value_yields": d.get("value"),
+                })
             sh = rec.get("accepted_shapes") or {}
             if sh.get("other_string_values_ignore_caller_default"):
                 coercing.append({
-                    "method": method, "key": key, "default": d.get("value"),
+                    "method": method, "key": key, "declared_default": d.get("value"),
                     "accepted_strings": sh.get("string_values_accepted"),
                     "unlisted_string_yields": sh.get("other_string_values_yield"),
-                    "inverts_default": d.get("value") is True,
+                    "inverts_declared_default": d.get("value") is True,
                 })
+
+    by_key: dict[str, list] = {}
+    for u in unguarded:
+        by_key.setdefault(u["key"], []).append(u["method"])
+
     return {
-        "unguarded_reads_with_implicit_default": unguarded_implicit,
+        "note": ("guardedness and default-explicitness are ORTHOGONAL; each list "
+                 "below filters on exactly one of them"),
+        "unguarded_reads": unguarded,
+        "unguarded_reads_by_key": {k: sorted(v) for k, v in sorted(by_key.items())},
+        "unguarded_reads_with_an_explicit_default":
+            [u for u in unguarded if u["default_explicit"]],
+        "unguarded_reads_with_an_implicit_default":
+            [u for u in unguarded if not u["default_explicit"]],
+        "guards_that_cover_absence_but_not_type": absence_only,
         "string_coercion_keys": coercing,
-        "string_coercion_keys_that_invert_their_default":
-            [c for c in coercing if c["inverts_default"]],
+        "string_coercion_keys_that_invert_their_declared_default":
+            [c for c in coercing if c["inverts_declared_default"]],
     }
 
 
@@ -1113,20 +1317,29 @@ def summarize(doc: dict) -> str:
                 if env.get("parsed") else f"UNPARSED: {env.get('reason')}"))
 
     hv = doc["hazards"]
-    ug = hv["unguarded_reads_with_implicit_default"]
-    L.append(f"\n  unguarded reads with an implicit default : {len(ug)}")
-    for u in ug:
-        L.append(f"    {u['method']:32s} {u['key']:20s} {u['accessor']:8s} "
-                 f"-> {u['default']!r}  (line {u['line']})")
+    ug = hv["unguarded_reads"]
+    L.append(f"\n  UNGUARDED reads : {len(ug)} total "
+             f"({len(hv['unguarded_reads_with_an_explicit_default'])} carry an explicit "
+             f"default, {len(hv['unguarded_reads_with_an_implicit_default'])} do not)")
+    L.append("    guardedness and default-explicitness are ORTHOGONAL; filtering one "
+             "by the other is how both false positives and")
+    L.append("    false negatives get in, so the full unguarded set is listed by key:")
+    for k, methods in hv["unguarded_reads_by_key"].items():
+        L.append(f"    {k:22s} {', '.join(m.split('/')[-1] for m in methods)}")
+
+    ao = hv["guards_that_cover_absence_but_not_type"]
+    L.append(f"\n  guards covering ABSENCE but not TYPE : {len(ao)}")
+    L.append("    has() is satisfied by any present, non-null value, so a malformed "
+             "value passes the guard and still reads the default.")
 
     sc = hv["string_coercion_keys"]
-    inv = hv["string_coercion_keys_that_invert_their_default"]
-    L.append(f"\n  string-coercion keys : {len(sc)} "
-             f"(an unlisted string yields a hard false, ignoring the caller default); "
-             f"{len(inv)} of them INVERT a true default")
+    inv = hv["string_coercion_keys_that_invert_their_declared_default"]
+    L.append(f"\n  string-coercion keys : {len(sc)} (an unlisted string returns a hard "
+             f"false -- NOT the declared default); {len(inv)} INVERT a true default")
     for s in sc:
-        flag = "  <-- INVERTS" if s["inverts_default"] else ""
-        L.append(f"    {s['method']:32s} {s['key']:20s} default={s['default']!r}{flag}")
+        flag = "  <-- INVERTS" if s["inverts_declared_default"] else ""
+        L.append(f"    {s['method']:32s} {s['key']:20s} "
+                 f"declared={s['declared_default']!r}{flag}")
     return "\n".join(L)
 
 
