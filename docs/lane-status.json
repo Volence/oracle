@@ -1,5 +1,5 @@
 {
-  "focus": "Discharged a debt we owed the engine team, and ruled the misleading frame number on your status line.",
+  "focus": "Found that the old emulator never checks the parameters it is handed - a misspelled address writes to zero and reports success.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -11,9 +11,17 @@
   "nextBoundary": "Now - clean tree, nothing in flight, a fresh session would lose nothing.",
   "queue": [
     {
-      "id": "FRAME-LABEL",
-      "title": "RULED: the player's status line should stop printing a number that looks like the machine's frame position but is really a count of how many times the window has drawn. Relabel it rather than change it - the counter is how you can see the window is alive while the machine is stopped. Wording is open; it rides whichever parcel next touches the status line.",
+      "id": "README-LEGACY-WARNING",
+      "title": "Found today, and it is the strongest reason yet to finish moving off the old emulator: the legacy C++ server checks NO parameter it is given. Misspell an address on a memory write and it writes to address zero and tells you it worked. Six such spots, all on memory paths. The MCP tools every lane debugs through still reach that server. The owner already asked that our README say the surface is legacy - it should say this instead.",
       "state": "next",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT"
+    },
+    {
+      "id": "FRAME-LABEL",
+      "title": "RULED: the player's status line should stop printing a number that looks like the machine's frame position but is really a count of how many times the window has drawn. Relabel rather than change it. Wording open; rides whichever parcel next touches the status line.",
+      "state": "open",
       "size": "S",
       "blockedBy": null,
       "project": null
@@ -89,5 +97,5 @@
   ],
   "awaiting": null,
   "atBoundary": true,
-  "updatedAt": "2026-08-30T06:41:07Z"
+  "updatedAt": "2026-08-30T06:43:22Z"
 }

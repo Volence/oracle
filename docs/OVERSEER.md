@@ -1344,6 +1344,24 @@ dependency: they are filing it, and a second lane telling the hub the same thing
 18 names. Recorded so the pointer survives if their mail did not — it lands on the hub's own live
 `PLAN-PROSE-SWEEP` item.
 
+**▶ REGISTERED 2026-08-30 — F-LEGACY-SILENT-DEFAULT, and it is the sharpest argument the cutover has.**
+`docs/2026-08-30-legacy-silent-default.md`. The legacy C++ server (`oracle-old`,
+`linux-port/gui/ControlSocket.cpp`) validates **no parameter at all**: `getInt(k, d = 0)` at `:130`
+returns the default on absent key, unparseable string (`catch (...)`) and unhandled type, and there is
+**no unknown-key rejection anywhere in the file** (verified as a genuine absence under a positive
+control, not read off empty output). 34 call sites; **six unguarded silent-zero sites and every one is
+an address or a value on a memory path** (`:348`, `:615`, `:702`, `:726`, `:739`, `:782`) — a misspelled
+`addr` on a legacy write goes to **address 0 and returns success**. ⚑ **The `mcp__oracle__*` surface
+still reaches this server**, so every lane debugging through MCP is on this path.
+**Provenance, and it is the instructive half:** this arrived as aeon's *aside* — a claim about OUR tree,
+in MAIL, which is bar 20's exact shape — while they were acknowledging an unrelated signal. It was
+verified here rather than banked, and their version **understated it**: they named one key and one site
+(`:894`, `timeout_ms`, 30000, confirmed real), where the defect is the accessor and is 34 sites wide.
+A peer's passing remark about our own code was worth more than the thing they wrote it to explain.
+**Revival condition:** the README sentence owner ruling 4 requires — it should carry this fact, not
+merely that the surface is legacy. Explicitly NOT a fix recommendation for `oracle-old`: it is
+reference-only and the cutover exists to delete it.
+
 **Registered by the CR-27 serve review (2026-08-20), all contract-side or cosmetic, none blocking:**
 
 | id | what | revival condition |
