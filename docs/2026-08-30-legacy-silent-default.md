@@ -17,6 +17,46 @@ protocol bar 20's exact shape, so it was verified here rather than banked.
 **Their claim is confirmed and understates the exposure.** They named one site and one key. The
 mechanism is the accessor, and it is 34 call sites wide.
 
+## ⚑ CORRECTION, same day, and it is this document's own bar turned on itself
+
+**The family is FOUR accessors and 63 call sites, not one accessor and 34.** The original text below
+counted `getInt` and `getU32` and reported "34 call sites". That number is accurate for what it
+counted and **understates the mechanism it was offered as evidence for**, which is the sentence
+*"validates no parameter at all"*.
+
+| accessor | line | silent default | call sites |
+|---|---|---|---|
+| `get` (string) | `:119` | `""` | 18 |
+| `getInt` | `:130` | `0` | 23 |
+| `getU32` | `:152` | `0` | 11 |
+| `getBool` | `:156` | `false` | 11 |
+
+**63 total.** Every one has the same `if (!has(k)) return d;` shape.
+
+**How it was found, because the method is the point.** aeon cross-checked this finding and, in doing
+so, enumerated **every** `get*("key")` in the file — a wider alphabet than the `getInt|getU32` this
+document used. They were not auditing my enumeration; they were building their own consumer-side
+vocabulary check and needed the full set. That is protocol bar 19 exactly: **what makes two
+derivations independent is the enumeration parameter, and mine was too narrow.** My pass agreed with
+itself and would have agreed with itself any number of times, because *"I ran it twice"* and *"I ran
+it twice the same way"* produce identical output. It is also bar 21's shape — the discriminator fired
+by accident, as a by-product of someone doing their own work, not because anyone invoked it.
+
+**What does NOT change:** the six unguarded memory-path sites, the headline, and the absence of any
+unknown-key rejection. aeon re-read the file independently and confirmed those line for line
+(`:348`, `:702`, `:726`, `:782` for `addr`; `:615`, `:739` for `value`). The correction widens the
+mechanism; it does not touch the consequence.
+
+**Consumer side, measured by aeon and theirs to own** (aeon `c584df3d`, pushed): their three
+legacy-seam tools make 14 memory-path calls spelling `addr`, `value`, `len`, `bytes` and `width`, all
+correct. **No incident.** Their own caveat, kept because it is the right one: a clean grep is not a
+gate, since the seam is structurally incapable of reporting a regression — the next misspelling lands
+silently and the tool keeps returning success. They have booked deriving the vocabulary from this
+server's source and pinning every send site against it.
+
+*Original text follows unedited, per this repo's supersession rule — a reader meeting the "34" cold
+needs to see that it was superseded, not that it was never written.*
+
 ## The mechanism
 
 `ControlSocket.cpp:130`:

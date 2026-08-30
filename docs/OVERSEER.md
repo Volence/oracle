@@ -1349,7 +1349,11 @@ dependency: they are filing it, and a second lane telling the hub the same thing
 `linux-port/gui/ControlSocket.cpp`) validates **no parameter at all**: `getInt(k, d = 0)` at `:130`
 returns the default on absent key, unparseable string (`catch (...)`) and unhandled type, and there is
 **no unknown-key rejection anywhere in the file** (verified as a genuine absence under a positive
-control, not read off empty output). 34 call sites; **six unguarded silent-zero sites and every one is
+control, not read off empty output). ⚑ **CORRECTED same day: the family is FOUR accessors and 63 call sites, not one and 34**
+(`get` str `:119`/18 sites, `getInt` `:130`/23, `getU32` `:152`/11, `getBool` `:156`/11) — the original
+count enumerated by too narrow an ALPHABET and agreed with itself, **bar 19 turned on this seat**, and it
+was aeon's wider `get*("key")` sweep, run for their own purposes, that surfaced it (bar 21: the
+discriminator fired by accident again). What did not move: **six unguarded silent-zero sites and every one is
 an address or a value on a memory path** (`:348`, `:615`, `:702`, `:726`, `:739`, `:782`) — a misspelled
 `addr` on a legacy write goes to **address 0 and returns success**. ⚑ **The `mcp__oracle__*` surface
 still reaches this server**, so every lane debugging through MCP is on this path.

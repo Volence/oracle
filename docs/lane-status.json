@@ -1,5 +1,5 @@
 {
-  "focus": "Found that the old emulator never checks the parameters it is handed - a misspelled address writes to zero and reports success.",
+  "focus": "Published a finding, had a peer widen it, and corrected my own count - the old emulator ignores 63 parameters, not 34.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -97,5 +97,5 @@
   ],
   "awaiting": null,
   "atBoundary": true,
-  "updatedAt": "2026-08-30T06:43:22Z"
+  "updatedAt": "2026-08-30T06:46:37Z"
 }
