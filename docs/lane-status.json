@@ -1,38 +1,30 @@
 {
-  "focus": "Click-to-select is unblocked and is this lane's next build; both window gates passed today.",
+  "focus": "Click-to-select's first half is built and merged: a click now names the object that drew it.",
   "inFlight": [],
   "blockedOnOwner": [
     {
-      "what": "how much to spend on drag-and-drop: your window toolkit has no file-drop support at all and your desktop is Wayland, so it is a parcel rather than a switch. I recommend the cheap middle (paste a path into the picker)",
-      "since": "2026-08-28",
-      "id": "d-18"
+      "what": "the dull sound: keep the hardware-accurate filter, default it off, or let the player remember your choice. A taste call, so it is yours rather than mine \u2014 ten seconds to hear it both ways",
+      "since": "2026-08-29",
+      "id": "d-20"
     }
   ],
-  "nextBoundary": "Now \u2014 everything banked and pushed (origin/main afcd95d), scratch rig torn down, nothing in flight. The next clean stop after this is when select-and-inspect's first slice is merged and re-verified on the merged tree.",
+  "nextBoundary": "Now \u2014 object_at merged, gates green on the merged tree, reachable through a real spawned binary.",
   "queue": [
     {
       "id": "LIVE-OBJECTS-CARD",
-      "title": "BUILD select-and-inspect. Owner's go is recorded in empyrean docs/OVERSEER.md RESUME BRIEF (origin/main 7149b39, verified reachable here) \u2014 read that anchor, not this summary; it also says explicitly not to boot into a stop and wait for a pick. Contract is APPLIED at empyrean b5b8184 (emulator/object_at fragment, emulator/clicked event, objectAtBody, 11 vectors, oracle-authored). Both gates that blocked building are DISCHARGED 2026-08-29 (docs/2026-08-29-window-runtime-checks.md); the old 'waits behind aurora's band panel' blocker is stale \u2014 aurora is on effects pricing and the brief lists this as active parallel work. Spawn half still waits on aeon's mailbox shape and is NOT in scope.",
+      "title": "Select-and-inspect is BUILT and merged (emulator/object_at, \u00a711.26/CR-F): a click answers which layer, where in the level, and which object slot drew it \u2014 with the five outcomes kept distinct. Spawn half still waits on aeon's mailbox shape and is out of scope.",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": "LIVE-OBJECTS"
+    },
+    {
+      "id": "ATTR-RGB-LATCH",
+      "title": "aeon's ask, confirmed at our source: when you click a pixel we tell you the right palette ENTRY but look its colour up as it stands now, not as it was on that scanline. On a screen where the game repaints colours mid-frame the two disagree silently \u2014 it cost them an hour and produced a confident wrong finding.",
       "state": "next",
-      "size": "S",
+      "size": "M",
       "blockedBy": null,
-      "project": "LIVE-OBJECTS"
-    },
-    {
-      "id": "OBJECT-AT-CONFORMANCE",
-      "title": "Rides WITH the select-and-inspect build, never after it: two live checks a schema structurally cannot do. On a shipped ROM a click must say 'this build has no owner table' rather than 'nothing here is an object'; and after a game swap, addresses must be looked up again rather than remembered.",
-      "state": "open",
-      "size": "XS",
-      "blockedBy": null,
-      "project": "LIVE-OBJECTS"
-    },
-    {
-      "id": "OBJ-JOIN",
-      "title": "Click-an-object picker: recon complete AND now demonstrated end-to-end on a live game (see the LIVE-OBJECTS card). Folded into that project",
-      "state": "open",
-      "size": "S",
-      "blockedBy": "folded into LIVE-OBJECTS-CARD; no separate blocker",
-      "project": "LIVE-OBJECTS"
+      "project": "ORACLE-DEFAULT"
     },
     {
       "id": "OVERLAY-STATE",
@@ -61,7 +53,7 @@
       "title": "The dull sound. The player hard-defaults to a 3.4kHz roll-off (the core does not) and the F3 line now says so in words. A/B it with no rebuild: ORACLE_CONSOLE_FILTER=off. Still your ruling, not my judgement",
       "state": "open",
       "size": "M",
-      "blockedBy": "your ruling on accuracy-pure vs. what sounds better \u2014 removing a hardware-accurate filter is the kind of taste deviation your standing rule bars"
+      "blockedBy": null
     },
     {
       "id": "WIKI-SPIKE",
@@ -73,5 +65,5 @@
   ],
   "awaiting": null,
   "atBoundary": true,
-  "updatedAt": "2026-08-30T01:00:18Z"
+  "updatedAt": "2026-08-30T01:36:58Z"
 }
