@@ -1353,7 +1353,18 @@ control, not read off empty output). ⚑ **CORRECTED same day: the family is FOU
 (`get` str `:119`/18 sites, `getInt` `:130`/23, `getU32` `:152`/11, `getBool` `:156`/11) — the original
 count enumerated by too narrow an ALPHABET and agreed with itself, **bar 19 turned on this seat**, and it
 was aeon's wider `get*("key")` sweep, run for their own purposes, that surfaced it (bar 21: the
-discriminator fired by accident again). What did not move: **six unguarded silent-zero sites and every one is
+discriminator fired by accident again). ⚑ **AND CLOSED AT 64 (2026-08-30, second pass): 63 accessor sites + `ParseButtons` `:1576`, the one
+read that type-checks — found by aeon varying the parameter ON PURPOSE (the first deliberate invocation
+this lane has seen), and the population is now COMPLETE rather than a running total** (59 `const JsonObj&`
+signatures swept; the only raw-`json` touches in the file are inside the four accessors plus `ParseButtons`,
+and `JsonObj` exposes nothing else). A misspelled `buttons` presses NOTHING and returns success.
+⚑ **Plus a type-gap of our own finding: `has()` `:117` is satisfied by any present non-null value while
+`getBool` `:156` accepts only `"true"`/`"1"`/`"yes"`, so `{"enabled":"on"}` passes the explicit guard, reads
+false, and `*flag = !on` MUTES the layer the caller asked to enable** — partially mitigated because the reply
+echoes its own decision. **And the near-miss is banked with it:** the three unguarded-looking `getBool`
+sites are in fact guarded, and this seat nearly reported a silent inversion that does not exist for the
+missing-key case — caught by reading the lines around the cited line (bar 11, on our own finding).
+What did not move: **six unguarded silent-zero sites and every one is
 an address or a value on a memory path** (`:348`, `:615`, `:702`, `:726`, `:739`, `:782`) — a misspelled
 `addr` on a legacy write goes to **address 0 and returns success**. ⚑ **The `mcp__oracle__*` surface
 still reaches this server**, so every lane debugging through MCP is on this path.

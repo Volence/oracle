@@ -57,6 +57,54 @@ server's source and pinning every send site against it.
 *Original text follows unedited, per this repo's supersession rule — a reader meeting the "34" cold
 needs to see that it was superseded, not that it was never written.*
 
+## ⚑ SECOND CORRECTION — the population is 64 and is now CLOSED, and one route inverts intent
+
+**aeon varied the enumeration parameter deliberately** (by *how the params object is touched at all*,
+rather than by accessor name) and found a 64th parameter read outside the accessor family:
+`ParseButtons`, `:1576-1583`, reading `(*req.p)["buttons"]` directly behind `contains` + `is_array` +
+per-element `is_string`. **Verified here line for line.** It is the only parameter read in the file
+that type-checks its input, and it is *not* a counterexample to the headline: a misspelled `buttons`
+fails `contains` and yields an empty vector, so a `press` with a mistyped key **presses nothing and
+returns success** — arguably the worst of the set, since it is indistinguishable from a ROM that
+ignored the input.
+
+**Their open question is now closed, and the answer is the good one.** They flagged that
+`ParseButtons` was *"presumably not the only helper of its shape"* and that they had swept only the
+params object, not helpers generally. Swept here by a third parameter — every function that receives
+the params object at all:
+
+* **59** signatures take `const JsonObj&`; **58** are helpers/handlers.
+* Every direct touch of the raw `json` in the entire file: `:117` (`has`), `:122` (`get`), `:133`
+  (`getInt`), `:159` (`getBool`) — i.e. **inside the four accessors** — plus `:1579-1580`
+  (`ParseButtons`). Nothing else.
+
+`JsonObj` exposes exactly one member (`p`) and the four accessors, so those two greps between them
+cover every route into the params object. **`ParseButtons` IS the only helper of its shape. The
+population is 63 accessor sites + 1 direct read = 64, and it is a complete enumeration rather than a
+running total.**
+
+### A correction against my own first suspicion, kept because the near-miss is the lesson
+
+Three `getBool("enabled")` sites pass no explicit default (`:1526`, `:1570`, `:1926`) and two of them
+feed `*flag = !on`. That looks like a silent **inversion**, and I was about to report it as one.
+**It is not, for the missing-key case:** all three are guarded by an explicit
+`if (!req.has("enabled")) return ErrorReply(...)` one or two lines above. Reading the lines around the
+cited line is what caught it — protocol bar 11, on my own finding.
+
+**But the guard covers absence, not type**, and that gap is real. `has()` (`:117`) is satisfied by any
+present non-null value, and `getBool` (`:156`) accepts only `"true"`, `"1"`, `"yes"` from a string and
+falls through to `d` for everything else. So:
+
+```
+{"layer":"plane_a","enabled":"on"}     -> passes the guard, reads FALSE, executes *flag = !false
+                                       -> PLANE A IS MUTED when the caller asked to enable it
+```
+
+`"True"`, `"TRUE"`, `"enabled"`, an array or an object all do the same. **Mitigation, stated so this
+is not over-claimed:** the reply echoes its own decision (`addBool("enabled", on)`), so a caller that
+reads the echo can detect it. This is the one place in the file where the server tells you what it
+decided — it is a partial mitigation, not a validation, and it only helps a caller who checks.
+
 ## The mechanism
 
 `ControlSocket.cpp:130`:
