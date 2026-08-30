@@ -367,3 +367,56 @@ terms. Bounded to one lane's own tool; not sent to the seat.
 
 **Landed:** `parcel/gap-row-presence` — `c655945` (tool + tests, 61/61 green via
 `tools/run_accept_table_tests.sh`).
+
+---
+
+## L-10 — the L-09 residual: the second derivation must STOP SHARING THE LEXER, not alarm on it · `SELF-RULED`
+
+**The question, returned BLOCKED by the implementing agent and correctly so.** L-09's falsifier fired.
+Measured, and reproduced firsthand at the merge: a brace inside a **character literal** —
+`const char c = '}';`, legal C++ — truncates `OpZ80Read`'s body for **both** derivations, because
+`match_braces` skips `"` string literals and has **no case for `'`**. The row leaves the table, the
+second derivation stops asking for it, `cross-check : AGREES`, `parse complete : yes`, **exit 0**, and
+the table then says `z80_read` takes no address. `z80_read` rows fall 11 → 5 in silence. Their proposal:
+have the second derivation refuse to run, loudly, when it sees a brace in a char literal.
+
+**Verdict: REJECTED in favour of removing the shared dependency. The second derivation must bound
+function bodies by the NEXT COLUMN-0 SIGNATURE and never call `match_braces` at all.**
+
+**Why not the alarm.** It is a patch with a bell on it. It detects the one instance we happened to find,
+leaves the shared dependency in place for the next lexer defect, and — worse — **refuses legal source**:
+the day someone writes `'{'` in that file for an honest reason, the gate stops working rather than
+working correctly. A detector for a known bug is not independence; it is a named exception to a claim
+that is still false.
+
+**Why the boundary rewrite.** Measured before ruling: **all 54** `static std::string Op*(` signatures in
+`ControlSocket.cpp` sit at **column 0** (`^`-anchored, `re.M`), and the existing code already relies on
+that anchoring for `CanonicalOp`. So each body can be bounded from its own signature to the next
+column-0 `static ` line, using **no brace matching whatever**. That is a *different structural
+assumption*, which is the entire property L-09 claimed and did not have. Under the falsifier's
+perturbation the two derivations then **disagree** — D1 truncates and drops the row, D2 still expects
+it — and the gate **fires**, which is the outcome the ruling was written to produce.
+
+**Second, separable: `match_braces` should skip `'…'` as it already skips `"…"`.** That is a plain
+correctness bug in the *primary* derivation, not an independence question, and it is worth fixing on its
+own account. ⚠ **It must not be conflated with the fix above, and it does not substitute for it** —
+patching the lexer removes today's trigger while leaving both derivations yoked to one primitive. The
+order matters: with D2 independent, a future lexer defect **fails loudly**; with only the lexer patched,
+the next one is silent again.
+
+**Scope.** Rules how the second derivation bounds bodies, and that the lexer bug is fixed alongside.
+Does **not** rule the exit code's granularity, the message format, or subset tightening — all still
+untouched from L-09.
+
+*Wrong if:* the column-0 anchoring is not actually load-bearing in the source — e.g. a handler is
+defined inside a namespace block or indented — in which case the boundary walk silently mis-bounds a
+body and buys a *different* blind spot rather than none. **The check is cheap and must be run as an
+assertion in the code, not once by hand:** if the signature census disagrees with the handler count the
+derivation already validates (`< 20 handlers` is an existing hard error), it must fail as
+`unmeasurable`, which already fails the gate.
+
+**Credit where the class was found:** the implementing agent ran three perturbations rather than the one
+the falsifier named, and the one that mattered was not the one I predicted. My own dispatch note guessed
+the independence would "probably hold in the dimension row-presence depends on" — it does, for a
+table-side row drop, and does not for a source-side truncation. **The prediction was half right and the
+failing half was the dangerous one.**
