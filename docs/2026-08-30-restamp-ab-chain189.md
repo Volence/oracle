@@ -345,3 +345,57 @@ modifier needs a parameter expansion to attach to. Every hash in this document c
 form, so nothing here is contaminated — checked rather than assumed. Credit: aeon, who hit it twice and
 caught it only because `e3b0c442` was familiar. **That is the tell to memorise**, since the failure
 presents as a plausible hash rather than as an error.
+
+---
+
+## ⚑ RETRACTION — "the falsifier fired" is WRONG, and the disproof is this document's own earlier measurement
+
+**Retracted in full:** the section above claiming aeon's falsifier fired and survives only via a
+post-hoc exception. Both halves of that are wrong. Left standing rather than deleted, because the
+error is better evidence for the lesson than the argument was.
+
+**The measurement.** Chain 186 and chain 188 compared at all eleven checkpoint sites — verified here,
+not accepted from the reply:
+
+```
+$0A6CDC $0A6CE6 $0A6CF6 $0A6CFE $0A6D08 $0A6D14 $0A6D1E $0A6D26 $0A6D30   all SAME
+$0A6C46  186=1D  188=1D  SAME          $0A6D56  186=1D  188=1D  SAME
+11 of 11 identical
+```
+
+So `stale(188) = {0, 18–26}` and `stale(186) = {18–26}`, and **the falsifier is stated over MOVED, not
+STALE**: `moved = stale(188) \ stale(186) = {0}` — checkpoint 0, `cam_col` 6, **inside** the window.
+**The prediction held. Nothing deep moved.**
+
+**I had already measured this and then argued against it.** Two sections up, in the postscript's own
+words: *"186's machine and 189's machine produce the same hashes at 18–26, so the clamps changed nothing
+observable at these nine checkpoints."* A checkpoint the clamps changed nothing at **did not move**.
+The ten I found is chain 188's **stale** set, which aeon's entry also records as ten; the differential
+is one.
+
+**And the methodological charge does not hold either.** The rule — a prediction surviving because an
+exception was carved for the thing that broke it has not been tested — is sound in general and does not
+apply here, **for a reason that is a date rather than a preference**. Candidate-versus-control was the
+**booked design**, with chain 186 named as control *before the run*. What excludes the nine is
+byte-identical actual-hashes on both ROMs, available the moment the A/B returned. The `fde35b2f` dating
+came later and explains *why* they were stale; it is **not what excludes them**. A carved exception
+would require the control to have been chosen, or the set narrowed, after seeing which checkpoints
+misbehaved. Neither happened.
+
+### The lesson, which is the part worth keeping
+
+**STALE and MOVED are different sets, and the falsifier turns on the word.** aeon's entry used "movers"
+in two senses one sentence apart; that ambiguity was real, it is what made my reading available, and
+they have separated the terms and restated the falsifier over MOVED. That catch stands.
+
+**But I then made the same conflation from the other side, holding my own correct measurement.** Their
+entry already warned that an *uncontrolled* reading of chain 188 meets the falsifier word for word, and
+named that as the exercise's lesson: **a falsifier is only as good as the control behind the measurement
+it is applied to.** This lane independently re-derived the uncontrolled reading and reached the
+predicted wrong conclusion — the documented trap, sprung on a second lane doing careful work, in writing.
+
+⚠ **The specific failure mode, for the next time:** I ran the right measurement, wrote the right bound
+(*"the clamps changed nothing observable at these nine"*), and then reasoned about a **raw count** from
+a later run instead of the **differential** I already held. The control existed, was booked, and had
+been measured — and I dropped it out of the comparison at the moment the numbers got interesting.
+**A differential is not a count, and holding the control is not the same as using it.**
