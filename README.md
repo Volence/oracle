@@ -3,34 +3,36 @@
 A **ground-up Rust Sega Genesis / Mega Drive emulation core**, plus **Aether** — a JSON-RPC 2.0
 control surface over an `AF_UNIX` socket that lets agents and tools drive and inspect the machine.
 
-It is being built to replace the legacy C++ engine (an Exodus port) that still lives in the sibling
-checkout **`../oracle-old/`**. That replacement has **not** happened yet. Read the next section
-before you assume anything about what is in production.
+It replaces the legacy C++ engine (an Exodus port) that lives in the sibling checkout
+**`../oracle-old/`**. As of 2026-08-30 this repo is the **suite default** (owner ruling: feature
+gaps become asks on this repo, not reasons to fall back); the legacy port stays beside it as the
+differential reference. Read the next section before you assume anything about what is in
+production.
 
-## ⚠ The `mcp__oracle__*` MCP tools do NOT reach this repo
+## The `mcp__oracle__*` MCP tools reach THIS repo by default
 
-The MCP server registered as `oracle` is the **legacy C++ one**. Its command is
-`/home/volence/sonic_hacks/oracle-old/linux-port/mcp/oracle-mcp` — a different repository, a
-different emulator core. Every `mcp__oracle__emulator_*` call you make lands there.
+The MCP server registered as `oracle` is still the Python shim in the legacy repo — its command is
+`/home/volence/sonic_hacks/oracle-old/linux-port/mcp/oracle-mcp` — but **by default it spawns this
+repo's `target/release/oracle-aether`** on a private socket and drives it. It attaches to an
+already-running server (for example the legacy C++ `oracle_gui`) only when `ORACLE_SOCKET` (or the
+legacy `EXODUS_SOCKET`) is set. So `mcp__oracle__emulator_*` calls exercise this core unless you
+deliberately point them elsewhere.
 
-So "the oracle MCP works" is **not** evidence that this repo's core works. Nothing in this
-repository is on the MCP surface today. The Python MCP client has never been ported onto the Rust
-server; the cross-checking test `crates/oracle-aether/tests/mcp_tool_sweep.rs` reads
-`oracle-old/linux-port/mcp/oracle_mcp.py` off disk precisely because it is a foreign artifact.
+The Python MCP client itself has never been ported into this repo; the cross-checking test
+`crates/oracle-aether/tests/mcp_tool_sweep.rs` reads `oracle-old/linux-port/mcp/oracle_mcp.py` off
+disk precisely because it is a foreign artifact.
 
 **Where the Rust server actually stands:** the shared bus contract
 (`empyrean/contract/protocol.md`, vendored here as
-`crates/oracle-aether/tests/contract/bus-protocol.schema.json`) defines **58 methods**. This
-server serves **40**. The remaining **18 are unserved**, and that list *is* the acceptance
+`crates/oracle-aether/tests/contract/bus-protocol.schema.json`) defines **64 request methods**.
+This server serves **56**. The remaining **8 are unserved** (counts as of 2026-08-30 — re-derive
+from the two lists below rather than trusting these numbers), and that list *is* the acceptance
 contract for the cutover:
 
 | Group | Unserved methods |
 |---|---|
-| Breakpoints (`capabilities.breakpoints: false`) | `breakpoint_add`, `breakpoint_clear`, `breakpoint_list`, `wait_for_break` |
 | Sound (`capabilities.vgm: false`) | `audio_spectrum`, `get_channel_states`, `set_channel_enabled`, `vgm_start`, `vgm_status`, `vgm_stop` |
-| Layer toggles | `get_layer_states`, `set_layer_enabled` |
-| Z80 (`capabilities.z80: false`) | `z80_read`, `z80_write` |
-| Other | `run_to_scanline`, `write_vram`, `log_clear`, `ping` |
+| Other | `log_clear`, `ping` |
 
 All names are `emulator/`-prefixed on the wire. The list is pinned as
 `SCHEMATIZED_NOT_ADVERTISED` in `crates/oracle-aether/tests/schema_conformance.rs`, which fails if
@@ -38,17 +40,17 @@ a method enters or leaves it without a deliberate edit. The served list is
 `engine::METHODS` in `crates/oracle-aether/src/engine.rs` — one table that is simultaneously the
 dispatch table and the `initialize` reply's advertised methods, so the two cannot drift.
 
-Two of those capability flags are about **the bus surface, not the core**, and the distinction
-matters when reading them:
+The remaining `false` capability flag is about **the bus surface, not the core**, and the
+distinction matters when reading it:
 
-- `"z80": false` — the core *has* a Z80 (`crates/oracle-core/src/z80/`) with the whole documented
-  instruction set implemented and graded against SingleStepTests/z80; only the undocumented
-  opcodes remain. What is missing is the *bus methods* to read and write it.
 - `"vgm": false` — the core *has* VGM capture (`crates/oracle-core/src/vgm.rs`, and the
   `vgm_capture` example). What is missing is the bus methods to start and stop it.
 
-`"breakpoints": false` is literal: there is no breakpoint engine. Watchpoints are a separate,
-working surface (`capabilities.watchpoints`, four served methods).
+`"z80"` and `"breakpoints"` are **served surfaces now**: the Z80 window (`z80_read`/`z80_write`)
+sits over a core Z80 (`crates/oracle-core/src/z80/`) with the whole documented instruction set
+graded against SingleStepTests/z80 (only the undocumented opcodes remain), and a real breakpoint
+engine (`crates/oracle-aether/src/breakpoints.rs`) backs the five served breakpoint methods.
+Watchpoints are a separate, working surface (`capabilities.watchpoints`, four served methods).
 
 ## Layout
 
@@ -105,10 +107,11 @@ beside the ROM is loaded if it exists, and **refused** if it does not bind to th
 - **Works:** the 68000 core (graded case-by-case against SingleStepTests/680x0 through both a
   run-to-completion and a cycle-stepped driver, including the per-cycle bus-transaction stream);
   the Z80's documented instruction set; VDP planes/sprites/scroll/DMA and a render path; FM and PSG
-  synthesis with real-time audio in the player; snapshot/restore; watchpoints; the CPU profiler;
-  and 40 of the 58 bus methods.
-- **Not done:** the 18 bus methods above; the MCP port onto this server; the undocumented Z80
-  opcodes; a breakpoint engine; six-button pads (`capabilities.sixButtonPad: false` — refused
+  synthesis with real-time audio in the player; snapshot/restore; watchpoints; breakpoints; the
+  CPU profiler; and 56 of the 64 bus methods.
+- **Not done:** the 8 bus methods above (the sound/VGM surface plus `log_clear` and `ping`); a
+  native MCP in this repo (the shim in `oracle-old/` drives this server by default); the
+  undocumented Z80 opcodes; six-button pads (`capabilities.sixButtonPad: false` — refused
   rather than silently ignored); batch requests; object decoders; PAL timing (the core is NTSC-only
   and says so in every reply's `timingBasis`).
 - **Deliberately not a pass/fail gate:** `crates/oracle-core/tests/conformance_roms.rs` boots a
