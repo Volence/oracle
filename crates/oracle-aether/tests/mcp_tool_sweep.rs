@@ -19,25 +19,240 @@
 //! revision it was run against and nothing after it; the next re-vendor, or the next tool row, is
 //! exactly when it stops being true. This file is that sweep, checked in.
 //!
+//! # It reads the peer through GIT OBJECTS at a pinned revision — never its working tree
+//!
+//! Until 2026-09-02 this file did `std::fs::read_to_string("/home/volence/sonic_hacks/oracle-old/…")`:
+//! a home literal into **another repository's live working directory**, read by a test in the default
+//! suite. Two things were wrong with that, and only the first is the obvious one.
+//!
+//! * A mid-edit save in `oracle-old` — a half-typed `TOOLS` row, a stashed experiment — turns *this*
+//!   repo red for a reason that has nothing to do with our code. That is the complaint
+//!   `F-SCHEMA-READS-LIVE-EMPYREAN` registered against `schema_conformance.rs` a week earlier, in a
+//!   second file nobody had looked at.
+//! * The half that matters more: a green here was a statement about *whatever that directory contained
+//!   at that instant*, attributable to nothing, reproducible by no one else.
+//!
+//! `empyrean` `contract/SUITE_PATHS.md` at `38f6df4` rules it suite-wide — *"A gate that proves a
+//! vendored copy of a peer's CONTENT is fresh reads the peer through git objects at a named revision,
+//! never through the peer's working tree"* — and, in the same section, names the population as **what
+//! READS a peer's tree, not what NAMES one**. So the sweep now:
+//!
+//! 1. **locates** an `oracle-old` checkout (env first, then a marker walk; never a home literal), and
+//! 2. **reads** the client out of that checkout's *object store* at the pinned blob below, which is
+//!    immutable and cannot move under a run.
+//!
+//! # Why a pinned revision here, and not a tip read
+//!
+//! This is a **recovery** read, not a currency read, and the distinction decides the mechanism.
+//! It reaches a *known artifact* — the legacy client as it stands — to sweep against our vendored
+//! fragments. `oracle-old` is a frozen reference repo (this workspace's `CLAUDE.md`: *"the legacy C++
+//! Exodus port it replaced (reference only)"*), it carries **no remote at all**, so there is no "has
+//! upstream moved" question to ask and nothing to ask it of. Pointing a currency check at a pinned blob
+//! would be vacuous; pinning a *recovery* read is exactly right.
+//!
+//! What that costs, stated rather than buried: a tool row added to `oracle-old` after [`PIN_REV`] is
+//! **not** swept until someone re-pins. That is a deliberate trade of one detection for reproducibility,
+//! and it is cheap precisely because the repo is legacy. **Re-pin recipe:** set [`PIN_REV`] to the new
+//! commit and [`PIN_BLOB`] to `git -C <oracle-old> rev-parse <rev>:linux-port/mcp/oracle_mcp.py`; the
+//! test asserts those two agree, so a half-done re-pin fails rather than sweeping the wrong bytes.
+//!
 //! # It SKIPS loudly when the sibling checkout is absent
 //!
 //! `oracle-old/` is a different repository and is not present in a fresh clone or on CI, so this test
-//! prints what it could not check and returns — the house pattern (`symbols_real_lst.rs`,
-//! `symbols_as_dialect.rs`). It never passes silently: "cannot check" must not look like "checked", the
-//! lesson a missing `vendor` symlink taught this repo when whole conformance rows skipped unnoticed.
-//! `ORACLE_MCP_PY` overrides the path.
+//! prints what it could not check — every variable consulted and every path tried — and returns; the
+//! house pattern (`symbols_real_lst.rs`, `schema_conformance.rs`). It never passes silently: "cannot
+//! check" must not look like "checked", the lesson a missing `vendor` symlink taught this repo when
+//! whole conformance rows skipped unnoticed. `ORACLE_MCP_PY` still overrides with a plain file path, and
+//! that override is announced as reading an unpinned file, because it is.
 
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-/// Where the legacy MCP client lives.
-fn mcp_py() -> PathBuf {
-    std::env::var("ORACLE_MCP_PY")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from("/home/volence/sonic_hacks/oracle-old/linux-port/mcp/oracle_mcp.py")
-        })
+/// A path to the client's source FILE. An explicit operator choice; read as-is, unpinned, and said so.
+const ENV_MCP_FILE: &str = "ORACLE_MCP_PY";
+/// A path to an `oracle-old` git CHECKOUT. Read only through its object store.
+const ENV_OLD_DIR: &str = "ORACLE_OLD_DIR";
+/// The suite root every checkout hangs off (`SUITE_PATHS.md`, "Two levels, two names").
+const ENV_SUITE_ROOT: &str = "EMPYREAN_SUITE_ROOT";
+
+/// The `oracle-old` revision this sweep reads at. See the module docs for the re-pin recipe.
+const PIN_REV: &str = "1eb09a989effad1ea42839e877a1dbf2b418b68d";
+/// The blob [`PIN_REV`] carries at [`PIN_PATH`] — the object actually fetched. Content-addressed by
+/// git itself, so no hash implementation lives here and a coincidentally similar file cannot satisfy it.
+const PIN_BLOB: &str = "11db11f639a79963fbc9cb2e6c8161e17474b06f";
+/// Used only as an argument to `git rev-parse`, never joined onto a checkout and read.
+const PIN_PATH: &str = "linux-port/mcp/oracle_mcp.py";
+/// Length of [`PIN_BLOB`]. A second, independent way for a wrong re-pin to be caught.
+const PIN_BYTES: usize = 78_856;
+
+/// The directory name `oracle-old` hangs off the suite root under.
+const OLD_REPO_DIR: &str = "oracle-old";
+
+/// One `git -C <repo> …`. `None` on any failure — never a panic, never a silent empty string, because a
+/// pipeline that treats a failed command's empty output as content is how "measured nothing" gets
+/// rendered as a result.
+fn git_in(repo: &Path, args: &[&str]) -> Option<Vec<u8>> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .ok()?;
+    out.status.success().then_some(out.stdout)
+}
+
+/// Walk up from `anchor` to the first directory that has an `oracle-old` checkout in it.
+///
+/// **Deliberately not `git rev-parse --git-common-dir`.** That command returns three different shapes
+/// (`.git`; an absolute path from a linked worktree; a *relative* `../../.git` from a main-checkout
+/// subdirectory), and normalising its answer lexically is how sigil walked onto the wrong directory —
+/// a failure invisible to agents, who run in worktrees, while the suite runs from the main checkout.
+/// This repo had zero `--git-common-dir` call sites before this change and still has zero. A marker
+/// walk needs none of it: it asks the filesystem the question it actually has.
+///
+/// The anchor is a **parameter**, not `env!("CARGO_MANIFEST_DIR")` read inside, so the walk itself is
+/// exercisable against a constructed anchor — `SUITE_PATHS.md`'s "general form, and the compiled-language
+/// reading": in a language without runtime module loading, the test parameterises the anchor. There is
+/// no cache, for the same reason.
+fn suite_root_from(anchor: &Path) -> Option<PathBuf> {
+    let mut cur = Some(anchor);
+    while let Some(dir) = cur {
+        if dir.join(OLD_REPO_DIR).join(".git").exists() {
+            return Some(dir.to_path_buf());
+        }
+        cur = dir.parent();
+    }
+    None
+}
+
+/// The client's source, and a one-line statement of where it came from.
+struct McpSource {
+    text: String,
+    origin: String,
+}
+
+/// Fetch the pinned blob out of a candidate checkout, verifying that the pin names something real there.
+///
+/// Returns `Err(reason)` rather than panicking on a directory that is not the repo we meant: a wrong
+/// guess from the walk must degrade to a named skip, not to a red on someone else's layout.
+fn read_pinned_from(repo: &Path, step: &str) -> Result<McpSource, String> {
+    let at_rev = git_in(repo, &["rev-parse", &format!("{PIN_REV}:{PIN_PATH}")])
+        .map(|b| String::from_utf8_lossy(&b).trim().to_string())
+        .ok_or_else(|| {
+            format!(
+                "{}: `git rev-parse {PIN_REV}:{PIN_PATH}` failed — not an oracle-old checkout, or the \
+                 pinned revision is absent from it",
+                repo.display()
+            )
+        })?;
+    // The pin is internally consistent: the revision really carries the blob we are about to fetch.
+    // A half-done re-pin (revision moved, blob not) dies here by name instead of sweeping stale bytes.
+    if at_rev != PIN_BLOB {
+        return Err(format!(
+            "{}: {PIN_REV}:{PIN_PATH} is blob {at_rev}, not the pinned {PIN_BLOB}. The pin in \
+             mcp_tool_sweep.rs is half-updated — see the re-pin recipe in this file's module docs.",
+            repo.display()
+        ));
+    }
+    let bytes = git_in(repo, &["cat-file", "blob", PIN_BLOB]).ok_or_else(|| {
+        format!(
+            "{}: `git cat-file blob {PIN_BLOB}` failed even though rev-parse resolved it",
+            repo.display()
+        )
+    })?;
+    if bytes.len() != PIN_BYTES {
+        return Err(format!(
+            "{}: blob {PIN_BLOB} is {} bytes, and this file pins {PIN_BYTES}",
+            repo.display(),
+            bytes.len()
+        ));
+    }
+    let text = String::from_utf8(bytes)
+        .map_err(|e| format!("{}: blob is not UTF-8: {e}", repo.display()))?;
+    Ok(McpSource {
+        text,
+        origin: format!(
+            "step={step} repo={} object-store blob {PIN_BLOB} at {PIN_REV} ({PIN_BYTES} bytes) — the \
+             peer's WORKING TREE was not read",
+            repo.display()
+        ),
+    })
+}
+
+/// Resolve the legacy client's source. `Err` carries the whole refusal text, ready to print.
+///
+/// Precedence is `SUITE_PATHS.md`'s, minus a home literal at every step: an explicit file, an explicit
+/// checkout, the suite root joined with the repo's directory name, then derivation. Step 4's derivation
+/// is safe here in a way it would not be for an unpinned read — what it derives is *where the checkout
+/// is*, and what is then read is a fixed object, so the answer cannot move under a run.
+fn mcp_source() -> Result<McpSource, String> {
+    let mut tried: Vec<String> = Vec::new();
+
+    // Step 1 — an explicit FILE. Unpinned by construction: the operator asked for this exact file.
+    if let Ok(p) = std::env::var(ENV_MCP_FILE) {
+        let path = PathBuf::from(&p);
+        return std::fs::read_to_string(&path)
+            .map(|text| McpSource {
+                text,
+                origin: format!(
+                    "step=1-env-file ${ENV_MCP_FILE}={p} — read as a plain FILE, NOT pinned: if that \
+                     path is inside a live working tree, this sweep's verdict is about whatever it \
+                     contained at this instant"
+                ),
+            })
+            .map_err(|e| format!("${ENV_MCP_FILE} points at {p}, which cannot be read: {e}"));
+    }
+    tried.push(format!(
+        "${ENV_MCP_FILE} (a path to the client's source FILE) — not set"
+    ));
+
+    // Step 2 — an explicit CHECKOUT.
+    match std::env::var(ENV_OLD_DIR) {
+        Ok(d) => match read_pinned_from(Path::new(&d), "2-env-repo") {
+            Ok(s) => return Ok(s),
+            Err(why) => tried.push(format!("${ENV_OLD_DIR}={d} -> {why}")),
+        },
+        Err(_) => tried.push(format!(
+            "${ENV_OLD_DIR} (a path to an oracle-old git CHECKOUT) — not set"
+        )),
+    }
+
+    // Step 3 — the suite root, joined with the repo's directory name.
+    match std::env::var(ENV_SUITE_ROOT) {
+        Ok(r) => {
+            let cand = Path::new(&r).join(OLD_REPO_DIR);
+            match read_pinned_from(&cand, "3-suite-root") {
+                Ok(s) => return Ok(s),
+                Err(why) => tried.push(format!("${ENV_SUITE_ROOT}={r} -> {why}")),
+            }
+        }
+        Err(_) => tried.push(format!(
+            "${ENV_SUITE_ROOT}/{OLD_REPO_DIR} — {ENV_SUITE_ROOT} not set"
+        )),
+    }
+
+    // Step 4 — derivation from this crate's own location.
+    let anchor = Path::new(env!("CARGO_MANIFEST_DIR"));
+    match suite_root_from(anchor) {
+        Some(root) => {
+            let cand = root.join(OLD_REPO_DIR);
+            match read_pinned_from(&cand, "4-derived") {
+                Ok(s) => return Ok(s),
+                Err(why) => tried.push(format!("derived suite root {} -> {why}", root.display())),
+            }
+        }
+        None => tried.push(format!(
+            "derivation: no ancestor of {} contains {OLD_REPO_DIR}/.git",
+            anchor.display()
+        )),
+    }
+
+    // Step 5 — refuse, naming what was looked for and where.
+    Err(format!(
+        "the legacy MCP client could not be reached. Consulted, in order:\n  {}",
+        tried.join("\n  ")
+    ))
 }
 
 fn vendored_schema() -> Value {
@@ -165,24 +380,33 @@ fn surplus(tool: &BTreeSet<String>, declared: &BTreeSet<String>) -> Vec<String> 
 
 #[test]
 fn every_mcp_tool_property_is_declared_by_its_contract_fragment() {
-    let path = mcp_py();
-    let Ok(src) = std::fs::read_to_string(&path) else {
-        println!(
-            "SKIP: {} not present — the legacy MCP client is a different repository and is absent on \
-             CI and in a fresh clone. Set ORACLE_MCP_PY to sweep a checkout elsewhere. This is a \
-             printed skip, never a silent pass: the sweep it performs (CR-27 ruling S1) is unrun here.",
-            path.display()
-        );
-        return;
+    let source = match mcp_source() {
+        Ok(s) => s,
+        Err(why) => {
+            println!(
+                "\n=========================================================================\n\
+                 SKIPPED: the MCP tool sweep (CR-27 ruling S1) did NOT run.\n\
+                 {why}\n\
+                 `oracle-old` is a different repository, absent on CI and in a fresh clone, so this is\n\
+                 an expected state there — but it is PRINTED, never silent: a green log and an absent\n\
+                 run are the same artifact (SUITE_PATHS.md, protocol bar 25).\n\
+                 There is no home literal and no fallback into a peer's working tree on purpose\n\
+                 (empyrean contract/SUITE_PATHS.md at 38f6df4).\n\
+                 ========================================================================="
+            );
+            return;
+        }
     };
+    println!("RESULT ok {}", source.origin);
+    let src = source.text;
 
     let tools = parse_tools(&src);
     assert!(
         tools.len() >= 60,
-        "parsed only {} MCP tools from {} — the parser has lost the table shape, and a sweep over an \
+        "parsed only {} MCP tools from [{}] — the parser has lost the table shape, and a sweep over an \
          empty set reports success while checking nothing",
         tools.len(),
-        path.display()
+        source.origin
     );
 
     // **Anti-vacuity, part one: the parser really extracts PROPERTIES, not just tool names.**
@@ -401,4 +625,78 @@ fn every_mcp_tool_property_is_declared_by_its_contract_fragment() {
              Either the registry entry is wrong or this is an undeclared param, i.e. a real client bug."
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// The resolver's own proof
+// ---------------------------------------------------------------------------------------------------
+
+/// The marker walk answers the same suite root from a **deeper, constructed anchor** as it does from the
+/// crate's own directory — so the derivation is exercised rather than merely present.
+///
+/// Why this shape. `SUITE_PATHS.md`'s step-3 clauses are written against
+/// `git rev-parse --show-toplevel` vs `--git-common-dir`, a distinction only observable from a linked
+/// worktree; [`suite_root_from`] uses **neither**, so that particular trap does not apply to it. What
+/// does apply is the general form the same section states for compiled languages: *"the test must
+/// exercise the resolver's DERIVATION against the bed's path"*, with the anchor parameterised and no
+/// cache in the way. This calls the real walk — the one production uses — with an anchor it constructed,
+/// and asserts on the RETURNED value.
+///
+/// It is invariant to where the runner stands, which is the property that matters here: this file's
+/// production anchor is `env!("CARGO_MANIFEST_DIR")`, which is the **worktree's** own crate directory
+/// when an agent runs from a linked worktree and the main checkout's when the suite runs from the main
+/// checkout. Both are descendants of the suite root, so both walk to it.
+#[test]
+fn the_marker_walk_finds_the_suite_root_from_a_deeper_anchor() {
+    let anchor = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let Some(from_crate) = suite_root_from(anchor) else {
+        println!(
+            "SKIPPED: no ancestor of {} contains {OLD_REPO_DIR}/.git, so there is no suite root to \
+             derive and this row cannot discriminate. Expected on CI and in a fresh clone; printed \
+             rather than passed, because an absent run and a green one are the same artifact.",
+            anchor.display()
+        );
+        return;
+    };
+
+    // A deeper bed inside this crate. Nothing is created on disk: the walk asks about
+    // `<dir>/oracle-old/.git` at each ancestor, and every ancestor of this path is a real directory the
+    // moment the crate exists.
+    let deep = anchor.join("tests").join("contract");
+    let from_deep = suite_root_from(&deep)
+        .unwrap_or_else(|| panic!("the walk found nothing from {}", deep.display()));
+    assert_eq!(
+        from_deep,
+        from_crate,
+        "the walk answers {} from {} but {} from {} — the derivation is anchor-sensitive in a way it \
+         must not be",
+        from_deep.display(),
+        deep.display(),
+        from_crate.display(),
+        anchor.display()
+    );
+
+    // And it is a real answer, not an artefact of the loop: the directory it named actually holds the
+    // checkout. Without this the row would pass for a walk that returned its own argument.
+    assert!(
+        from_crate.join(OLD_REPO_DIR).join(".git").exists(),
+        "the walk returned {} but {}/{OLD_REPO_DIR}/.git does not exist",
+        from_crate.display(),
+        from_crate.display()
+    );
+
+    // The refusal arm is reachable: a path with no such ancestor yields None rather than a guess. If `/`
+    // ever did hold an `oracle-old` checkout, this fails loudly rather than the row quietly ceasing to
+    // discriminate.
+    assert!(
+        suite_root_from(Path::new("/")).is_none(),
+        "/ resolved as a suite root, so this row cannot tell a found answer from a fabricated one"
+    );
+
+    println!(
+        "RESULT ok step=4-derived suite_root={} (from anchor {} and from {})",
+        from_crate.display(),
+        anchor.display(),
+        deep.display()
+    );
 }
