@@ -53,6 +53,29 @@ use oracle_core::symbols::{
 };
 use std::path::PathBuf;
 
+/// Write a line where libtest's output capture cannot swallow it.
+///
+/// **Measured, and it invalidates the house pattern's premise.** `println!`/`eprintln!` route through
+/// `std::io::_print`/`_eprint`, which libtest redirects per test thread, so a skip printed with them is
+/// invisible in a plain `cargo test` run and appears only under `--nocapture`. Run against these five
+/// rows with nothing named, they reported
+///
+/// ```text
+/// test real_sonic_lst_parses_completely ... ok
+/// test result: ok. 5 passed; 0 failed; 0 ignored
+/// ```
+///
+/// — five rows that read nothing, indistinguishable from five rows that checked everything. *"A green
+/// log and an absent run are the same artifact"* is the bar (`SUITE_PATHS.md`, protocol bar 25), and a
+/// skip that is loud only under a flag nobody passes is on the wrong side of it.
+///
+/// `std::io::stderr()` is the real handle on fd 2 and the capture does not touch it, so this reaches
+/// the terminal in a default run.
+fn loud(msg: String) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "{msg}");
+}
+
 /// A directory of s1disasm build ARTIFACTS. The name this repo already uses.
 const ENV_S1_DIR: &str = "ORACLE_S1DISASM_DIR";
 /// The suite root every checkout hangs off.
@@ -76,7 +99,7 @@ fn s1_dir() -> Option<PathBuf> {
 /// Read one `s1disasm` build artifact, or `None` (with a loud printed note) when it is not reachable.
 fn artifact(name: &str) -> Option<Vec<u8>> {
     let Some(dir) = s1_dir() else {
-        println!(
+        loud(format!(
             "SKIPPED: no s1disasm directory was named, so `{name}` was not read and this row did not \
              run. Consulted, in order:\n  \
                ${ENV_S1_DIR} (a directory of s1disasm build artifacts) — not set\n  \
@@ -85,7 +108,7 @@ fn artifact(name: &str) -> Option<Vec<u8>> {
              these rows assert exact counts against another repo's live, gitignored build output \
              (empyrean contract/SUITE_PATHS.md at 38f6df4). Re-enable with\n  \
                {ENV_S1_DIR}=/path/to/s1disasm cargo test -p oracle-core --test symbols_as_dialect"
-        );
+        ));
         return None;
     };
     let p = dir.join(name);
@@ -99,13 +122,13 @@ fn artifact(name: &str) -> Option<Vec<u8>> {
             Some(b)
         }
         Err(_) => {
-            println!(
+            loud(format!(
                 "SKIP: {} not present. Build it with `cd {} && lua build.lua` \
                  (non-destructive, ~600ms, artifacts are gitignored), or point {ENV_S1_DIR} \
                  at a checkout that has it.",
                 p.display(),
                 dir.display()
-            );
+            ));
             None
         }
     }

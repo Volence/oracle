@@ -89,6 +89,25 @@ const PIN_BYTES: usize = 78_856;
 /// The directory name `oracle-old` hangs off the suite root under.
 const OLD_REPO_DIR: &str = "oracle-old";
 
+/// Write a line where libtest's output capture cannot swallow it.
+///
+/// **Measured, and it invalidates the premise of every "loud skip" in this repo.**
+/// `println!`/`eprintln!` route through `std::io::_print`/`_eprint`, which libtest redirects per test
+/// thread, so a skip printed with them is invisible in a plain `cargo test` run and shows only under
+/// `--nocapture`. A sibling file's five skip rows were measured reporting a bare
+/// `test result: ok. 5 passed` with no trace at all — five rows that read nothing, indistinguishable
+/// from five that checked everything. *"A green log and an absent run are the same artifact"*
+/// (`SUITE_PATHS.md`, protocol bar 25), and a skip that is loud only under a flag nobody passes is on
+/// the wrong side of that line.
+///
+/// `std::io::stderr()` is the real handle on fd 2 and the capture does not touch it. Used for refusals
+/// and skips only; the `RESULT ok` announces stay on `eprintln!`, since a run that did its work is
+/// legible from its assertions and a per-test banner in every default run is noise.
+fn loud(msg: String) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "{msg}");
+}
+
 /// One `git -C <repo> …`. `None` on any failure — never a panic, never a silent empty string, because a
 /// pipeline that treats a failed command's empty output as content is how "measured nothing" gets
 /// rendered as a result.
@@ -390,7 +409,7 @@ fn every_mcp_tool_property_is_declared_by_its_contract_fragment() {
     let source = match mcp_source() {
         Ok(s) => s,
         Err(why) => {
-            println!(
+            loud(format!(
                 "\n=========================================================================\n\
                  SKIPPED: the MCP tool sweep (CR-27 ruling S1) did NOT run.\n\
                  {why}\n\
@@ -400,7 +419,7 @@ fn every_mcp_tool_property_is_declared_by_its_contract_fragment() {
                  There is no home literal and no fallback into a peer's working tree on purpose\n\
                  (empyrean contract/SUITE_PATHS.md at 38f6df4).\n\
                  ========================================================================="
-            );
+            ));
             return;
         }
     };
@@ -657,12 +676,12 @@ fn every_mcp_tool_property_is_declared_by_its_contract_fragment() {
 fn the_marker_walk_finds_the_suite_root_from_a_deeper_anchor() {
     let anchor = Path::new(env!("CARGO_MANIFEST_DIR"));
     let Some(from_crate) = suite_root_from(anchor) else {
-        println!(
+        loud(format!(
             "SKIPPED: no ancestor of {} contains {OLD_REPO_DIR}/.git, so there is no suite root to \
              derive and this row cannot discriminate. Expected on CI and in a fresh clone; printed \
              rather than passed, because an absent run and a green one are the same artifact.",
             anchor.display()
-        );
+        ));
         return;
     };
 
