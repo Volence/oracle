@@ -1,5 +1,5 @@
 {
-  "focus": "Starting the debug-window rebuild; re-measuring the speed number I withdrew, on a quiet machine.",
+  "focus": "Rebuild starting: the risky part is keeping game, sound and screen in step, and that goes first.",
   "inFlight": [
     {
       "what": "Closing the last tests and tools that read aeon's live folder instead of a frozen copy",
@@ -94,5 +94,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-02T21:21:31Z"
+  "updatedAt": "2026-09-02T21:24:58Z"
 }
