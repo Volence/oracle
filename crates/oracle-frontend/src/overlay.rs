@@ -1292,10 +1292,9 @@ mod tests {
         // 56-glyph line the `DRAWS` label produces. The five cut glyphs are the tally's, which is what the
         // field order exists to arrange; both honesty fields survive.
         //
-        // The row this replaces claimed the whole line survived here, and that claim was true only of a
-        // FOUR-digit fixture: the control below shows the old `F` label breaking the same row at six
-        // digits, which every session reaches in about seventeen minutes. It was a property of the test
-        // data, not of the player.
+        // The row this replaces claimed the whole line survived here, and that claim was true only of the
+        // fixture's FOUR-digit tally: the control below builds the OLD label's line and measures THAT
+        // against the same budget, finding the digit count at which it stops fitting.
         let dip = rendered(896);
         assert_eq!(
             dip, "VOL 7/10 AETHER OFF AUDIO VA0-VA2 4:3 320X224 DRAWS",
@@ -1305,21 +1304,39 @@ mod tests {
             dip.contains("AETHER OFF") && dip.contains("AUDIO VA0-VA2"),
             "the honesty fields outlive the tally at the dip: {dip:?}"
         );
-        let six_digits = {
-            let mut st = status();
-            st.draws = 123_456;
-            let full = status_text(&st);
-            let px = Overlay::status_font_scale(896);
-            let margin = (2 * Overlay::font_scale(896)).max(4);
-            let avail = (896 * 4 / 3usize).saturating_sub(2 * margin);
-            let text_avail = status_text_avail(avail, px).expect("the slot strip fits at 896");
-            (font::text_width(&full) * px > text_avail, full.len())
+        // **The control measures the string it names.** Measuring the `DRAWS` line here would prove
+        // nothing about the old one: `DRAWS n` is strictly the longer string, so its overflow implies
+        // nothing about `F n`, and the row would stay green at a budget where the old label comfortably
+        // fit. So the old line is *constructed* — the same five fields, then `F` and the digits — with the
+        // prefix taken from `status_text`'s own output rather than transcribed, and the digit count swept
+        // until it stops fitting.
+        let px = Overlay::status_font_scale(896);
+        let margin = (2 * Overlay::font_scale(896)).max(4);
+        let avail = (896 * 4 / 3usize).saturating_sub(2 * margin);
+        let text_avail = status_text_avail(avail, px).expect("the slot strip fits at 896");
+        let prefix = full
+            .strip_suffix(&format!("DRAWS {}", status().draws))
+            .expect("the tally is the last field, so what precedes it is the rest of the line");
+        let old_label_fits = |digits: usize| {
+            let line = format!("{prefix}F{}", "9".repeat(digits));
+            font::text_width(&line) * px <= text_avail
         };
+        // Half one: the premise of the row this replaces. With the fixture's four digits the OLD field did
+        // fit here — so that row was not wrong when it was written, it was narrow.
         assert!(
-            six_digits.0,
-            "the control: even a five-glyph field overflows 896 at six digits ({} chars) — the row this \
-             replaced was pinning the fixture's digit count, not the player's behaviour",
-            six_digits.1 - 5
+            old_label_fits(4),
+            "the replaced row's premise: the old `F` field fits 896 at the fixture's four digits"
+        );
+        // Half two: and it stops fitting one digit later, which is a duration, not a hypothetical.
+        let first_overflow = (4..=12)
+            .find(|d| !old_label_fits(*d))
+            .expect("the line cannot fit an unbounded number of digits");
+        assert_eq!(
+            first_overflow, 5,
+            "the old `F` field overflows 896 from {} draws — about {:.1} minutes at 60 fps. The row this \
+             replaced was pinning the fixture's digit count, not the player's behaviour.",
+            10u64.pow(first_overflow as u32 - 1),
+            10u64.pow(first_overflow as u32 - 1) as f64 / 60.0 / 60.0
         );
         // **The floor, asserted rather than hidden.** At the native 224px height there is no step left to
         // drop, so the line still truncates — and this row states exactly how far it gets, so that a future
