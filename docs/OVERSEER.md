@@ -34,6 +34,50 @@ ceiling** (run a visible better-approach pass on every request), and **instrumen
 with aeon** is the ratified lane (their diagnoses name gaps; we build them; the engine gets fixed
 with tools that then exist).
 
+## ▶ PARKED ON THE OWNER'S WORD — SPLITTING THIS FILE. The census is done; do not re-measure it.
+
+**Status: priced, not started. Waiting on one word from the owner** (asked 2026-09-02; the ask also
+carries the corrected cost — **it needs NO agent**, which is a correction of this seat's own earlier
+mis-pricing to him). Governing rule: `origin/main:docs/OVERSEER-PROTOCOL.md`, *"The boot read is
+bounded"* — **read it there, never this summary.**
+
+**THE CENSUS, measured here 2026-09-02 at `9407021` — banked so a fresh session executes rather than
+re-derives it.** Total **3,266 lines / 292,660 B** against ~900 lines / 100 KB.
+
+| section | bytes | note |
+|---|---|---|
+| `## The queue` | **137,382** (1,386 ln) | **47% of the file in one section; items 1–7 all closed** |
+| dated `DONE`/superseded sections | ~54,000 | cutover, socket-chain, shim, sigil-dumper, layer-mask, gui-layers, the three 08-30 parcels |
+| `## The bars` | 41,562 | live; measure-then-move applies |
+| `## Ops` | 25,807 | live |
+| `## Coordination` | 9,973 | live |
+
+**≈65% is closed history.** Moving it lands the head near **102 KB** before any bar work, so the bar
+pass is what takes it under — not a reason to trim a ruling.
+
+**The method, in the protocol's order, and step 1 is the one that bites:**
+1. **Measure before pointer-ising a bar.** Only lines a grep finds **verbatim** in
+   `origin/main:docs/OVERSEER-PROTOCOL.md` qualify. **A bar that CITED the protocol and wrote local
+   precedent under it looks identical in a listing** — same SHA, same parenthetical — and is not a
+   duplicate. aurora measured **3 verbatim lines of 125** under nine bars their own file labelled
+   "shared-protocol duplicates"; pointer-ising the rest would have **deleted the local half while
+   reporting compliance.** This file's bars are overwhelmingly of that second kind, so expect the
+   pointer-isable set here to be near zero and do not force it.
+2. **Closed history around a live rule moves to `docs/OVERSEER-LOG.md` verbatim; the rule stays** and
+   is rewritten legibly. Prove lossless by set-difference over every non-blank original line against
+   head + log (sufficient when head text was rewrapped).
+3. **Live rulings interleaved with narrative are the OWNER'S parcel.** Report residual bytes to him
+   rather than trimming a ruling to hit a number. *The bound exists to make the boot read cheap, not
+   to make rulings disappear.*
+
+⚠ **JUDGE BY BYTES.** Unwrapping a multi-kilobyte one-line bullet into prose **raises** the line count
+while cutting bytes (aurora: 1,238→1,148 lines but 121,317→108,607 B), so the line half of the bound
+can move the wrong way under a correct fix.
+
+⚠ **This seat added ~130 lines to this file on 2026-09-02 while the rule against it was landing.**
+Recorded because the direction of travel is the point: every one of those additions is load-bearing
+and belongs in the head, and the file still got worse.
+
 ## The queue (2026-08-19 end of day — reorder only with cause, record the cause)
 
 1. ~~Profiler slice 4 + merge window~~ **DONE 2026-08-19 late** — merged oracle `f7a8d54` /
