@@ -1,29 +1,16 @@
 {
-  "focus": "Rebuild starting: the risky part is keeping game, sound and screen in step, and that goes first.",
-  "inFlight": [
-    {
-      "what": "Closing the last tests and tools that read aeon's live folder instead of a frozen copy",
-      "where": "branch worktree (live-tree residue)",
-      "agent": true
-    }
-  ],
+  "focus": "Live-folder cleanup landed; starting the debug-window rebuild, pacing first and input early.",
+  "inFlight": [],
   "blockedOnOwner": [],
   "nextBoundary": "When the measurement reports back and I can tell you whether the rebuild is safe to start.",
   "queue": [
     {
       "id": "DEBUG-PANELS",
       "title": "Rebuilding the debug window on a real UI toolkit, as you picked: panels that tab together, drag to any side, and remember their layout. Measuring the game loop under it first, before anything is rebuilt around it.",
-      "state": "doing",
+      "state": "next",
       "size": "L",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI"
-    },
-    {
-      "id": "LIVE-TREE-RESIDUE",
-      "title": "Three of our tests still read another team's live folder instead of a frozen copy, so their rebuild can turn us red for no reason. The worst one closed this morning; the shape to build to is now ratified suite-wide.",
-      "state": "doing",
-      "size": "M",
-      "blockedBy": null
     },
     {
       "id": "SPAWN-MODE-CR",
@@ -42,6 +29,13 @@
     {
       "id": "ORACLE-SANITY-WEEKLY",
       "title": "A weekly check that the emulator itself has not drifted, since other teams' tests run inside it and a regression there could make one of their checks pass for no reason. Existing suites only; an afternoon at most.",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null
+    },
+    {
+      "id": "S1-DIALECT-FIXTURE",
+      "title": "Five checks on how we read symbol listings now sit out, because the file they compared against lives in another project and is not version-controlled. Freezing a small excerpt as our own would give the coverage back with no outside dependency.",
       "state": "open",
       "size": "S",
       "blockedBy": null
@@ -93,6 +87,6 @@
     }
   ],
   "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-02T21:24:58Z"
+  "atBoundary": true,
+  "updatedAt": "2026-09-02T21:38:59Z"
 }
