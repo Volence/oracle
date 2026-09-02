@@ -36,7 +36,7 @@
 
 mod common;
 
-use common::{spawn_with, Client};
+use common::{resume_and_wait_for_stop, spawn_with, Client};
 use oracle_aether::engine::{StopPrecision, StopReason};
 use oracle_aether::server::ServerHandle;
 use oracle_core::testrom::{
@@ -126,44 +126,6 @@ fn call_capturing_stop(c: &mut Client, id: i64, method: &str, params: Value) -> 
                 stopped.unwrap_or_else(|| panic!("{method} emitted no emulator/stopped")),
                 line["result"].clone(),
             );
-        }
-    }
-}
-
-/// **`resume`, then the halt it runs into — read as one operation, because the two race.**
-///
-/// A breakpoint on this fixture's seven-instruction loop fires within microseconds of the resume, and the
-/// `stopped` event is broadcast from the engine thread while the `resume` reply is written by the
-/// connection thread. Either can reach the socket first. [`Client::ok`] reads through to the reply and
-/// **discards** the events it passes, so the obvious spelling — `ok("emulator/resume")` then
-/// `next_stopped` — throws the halt away roughly half the time and then blocks forever waiting for it.
-/// Measured here at trial 4 of 8, after three clean passes; a single-shot test would have called it green.
-///
-/// So both lines are read before either is acted on. This is a property of the *harness*, not of the
-/// server: the wire carried both messages in a legitimate order.
-fn resume_and_wait_for_stop(c: &mut Client, id: i64) -> Value {
-    c.send_raw(
-        &json!({"jsonrpc":"2.0","id":id,"method":"emulator/resume","params":{}}).to_string(),
-    );
-    let mut stopped = None;
-    let mut replied = false;
-    loop {
-        let line = c.recv();
-        if line["method"] == json!("emulator/stopped") {
-            stopped = Some(line["params"].clone());
-        }
-        if line["id"] == json!(id) {
-            assert!(
-                line.get("error").is_none(),
-                "resume failed: {}",
-                line["error"]
-            );
-            replied = true;
-        }
-        if replied {
-            if let Some(p) = stopped.take() {
-                return p;
-            }
         }
     }
 }
