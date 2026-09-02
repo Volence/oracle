@@ -34,172 +34,324 @@ use oracle_aether::engine::METHODS;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
-// ---------------------------------------------------------------------------------------------------
-// 1. Freshness
-// ---------------------------------------------------------------------------------------------------
+/// The provenance sidecar, compiled in. It is the pin: the gate reads `pin.blob` out of *this* text and
+/// hashes the vendored bytes against it, so the record a human maintains and the value a machine checks
+/// are one artifact rather than two that can drift.
+const PROVENANCE: &str = include_str!("contract/PROVENANCE.md");
 
-/// Where the upstream contract schema might live. `$AETHER_CONTRACT_SCHEMA` wins; otherwise walk up from
-/// this crate and probe each ancestor for `empyrean/contract/schema/…`, which finds it both from a normal
-/// checkout and from a `.claude/worktrees/…` worktree, whose depth differs.
-fn upstream_schema_path() -> Result<PathBuf, Vec<PathBuf>> {
-    if let Ok(p) = std::env::var("AETHER_CONTRACT_SCHEMA") {
-        let p = PathBuf::from(p);
-        return if p.is_file() { Ok(p) } else { Err(vec![p]) };
-    }
-    let mut tried = Vec::new();
-    let mut dir: Option<&std::path::Path> = Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")));
-    while let Some(d) = dir {
-        let cand = d.join("empyrean/contract/schema/bus-protocol.schema.json");
-        if cand.is_file() {
-            return Ok(cand);
-        }
-        tried.push(cand);
-        dir = d.parent();
-    }
-    Err(tried)
-}
+/// The two environment variables this file will consult, named here so every refusal can print them.
+const ENV_SCHEMA_FILE: &str = "AETHER_CONTRACT_SCHEMA";
+const ENV_CONTRACT_REPO: &str = "AETHER_CONTRACT_REPO";
 
-#[test]
-fn the_vendored_schema_is_byte_identical_to_the_upstream_contract() {
-    // WHY a vendored copy at all: the tests compile against a fixed schema, so the suite is hermetic and
-    // reproducible. WHY this test: a hermetic copy is a copy that can rot silently. Byte-comparing it
-    // against the contract makes a contract edit turn this suite red, which forces an explicit re-vendor
-    // commit — and that commit is the auditable record of "we adopted contract revision X".
-    let upstream = match upstream_schema_path() {
-        Ok(p) => p,
-        Err(tried) => {
-            // NOT a silent skip. A missing `vendor` symlink once made whole conformance rows skip
-            // unnoticed in this repo; the lesson was that "cannot check" must never look like "checked".
-            // So the default is a loud failure naming every path tried, with a documented escape hatch
-            // for a checkout that genuinely has no sibling contract repo.
-            let msg = format!(
-                "CANNOT VERIFY the vendored contract schema is fresh: no upstream copy found.\n\
-                 Tried (in order):\n  {}\n\
-                 Point AETHER_CONTRACT_SCHEMA at empyrean/contract/schema/bus-protocol.schema.json, \
-                 or set AETHER_CONTRACT_OPTIONAL=1 to downgrade this to a warning.\n\
-                 This does NOT pass silently on purpose (contract §8 item 15): a freshness check that \
-                 cannot run must say so, or a stale vendored schema validates every message against \
-                 last week's contract and the suite stays green.",
-                tried
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n  ")
-            );
-            if std::env::var("AETHER_CONTRACT_OPTIONAL").is_ok() {
-                eprintln!("WARNING: {msg}");
-                return;
+/// The path of the schema inside the contract repo — used only as an argument to `git`, never joined
+/// onto a checkout and read.
+const CONTRACT_REL: &str = "contract/schema/bus-protocol.schema.json";
+
+/// One `pin.<key> = <value>` marker out of [`PROVENANCE`].
+///
+/// **Missing is loud.** A parser that returned `None` and let the caller shrug would turn "the sidecar
+/// lost its pin" into a silent pass, which is the failure this whole section exists to end.
+fn pin(key: &str) -> String {
+    let needle = format!("pin.{key}");
+    for line in PROVENANCE.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix(&needle) {
+            if let Some(v) = rest.trim_start().strip_prefix('=') {
+                let v = v.trim();
+                assert!(
+                    !v.is_empty(),
+                    "PROVENANCE.md: `{needle}` has an empty value"
+                );
+                return v.to_string();
             }
-            panic!("{msg}");
         }
-    };
-
-    let up = std::fs::read(&upstream).expect("read the upstream contract schema");
-    let vendored = common::schema::VENDORED_SCHEMA.as_bytes();
-    if up == vendored {
-        return; // The ordinary case: we track the contract's default branch and it has not moved.
     }
-    // Otherwise we may be tracking a revision that is real but not yet on the default branch. That is a
-    // legitimate state — a server implements against an adjudicated amendment while the contract repo
-    // finishes merging it — and it is NOT a licence to skip the check. See `TRACKED_REVISION`.
-    match tracked_revision_check(&upstream, vendored) {
-        Ok(note) => eprintln!("NOTE: {note}"),
-        Err(why) => panic!(
-            "the vendored schema does not match {} and is not a clean copy of the revision \
-             PROVENANCE.md pins.\n{why}\n\
-             Re-vendor it and update crates/oracle-aether/tests/contract/PROVENANCE.md — that commit is \
-             the record of adopting a contract revision.",
-            upstream.display()
-        ),
-    }
+    panic!(
+        "PROVENANCE.md carries no `{needle} = …` marker. The vendored schema's provenance sidecar IS \
+         the pin (empyrean contract/SUITE_PATHS.md, \"What a resolver owes its reader\"), so a missing \
+         marker is a gate that cannot run, not a gate that passes."
+    );
 }
 
-/// The contract revision the vendored copy tracks when it is **ahead of the contract's default branch**.
-///
-/// `None` means "we track the default branch" and the plain byte-comparison above is the whole test.
-/// `Some((rev, branch))` means the vendored copy is a verbatim copy of `rev`, which is not yet merged.
-///
-/// Why this exists rather than a skip. The profiler surface implements an adjudicated amendment that is
-/// still an unmerged draft in the contract repo, so upstream's working tree is the pre-amendment schema
-/// and a plain byte-compare would be red for a reason that is not drift. Turning the check off for that
-/// would give up the only thing that stops a vendored copy rotting silently. So instead the check gets
-/// *stricter*: it must still find an exact upstream match, just at a **named revision**, and it
-/// additionally demands that the default branch has not moved the schema since that revision branched.
-/// The second condition is what preserves the original guarantee — if the contract edits the schema on
-/// its default branch while we track a draft, this goes red exactly as it would have before.
-///
-/// It retires itself: the moment the draft merges, upstream's working tree matches the vendored bytes,
-/// the early return above fires, and none of this code runs.
-const TRACKED_REVISION: Option<(&str, &str)> = None;
+// ---------------------------------------------------------------------------------------------------
+// A git blob hash, computed here. ~60 lines of SHA-1 rather than a dependency: `oracle-aether`'s runtime
+// deps are pinned at two crates by its own Cargo.toml note, and a hash whose implementation is in this
+// file can be — and is — proven against known constants below rather than trusted.
+// ---------------------------------------------------------------------------------------------------
 
-/// Verify the vendored bytes against [`TRACKED_REVISION`] using the contract repo's own object store.
-fn tracked_revision_check(upstream: &std::path::Path, vendored: &[u8]) -> Result<String, String> {
-    let Some((rev, branch)) = TRACKED_REVISION else {
-        return Err(
-            "PROVENANCE.md pins no tracked revision, so the copy has simply drifted.".into(),
-        );
-    };
-    // `upstream` is <repo>/contract/schema/bus-protocol.schema.json; the repo root is three up, and the
-    // path within it is the same three components.
-    let repo = upstream
-        .ancestors()
-        .nth(3)
-        .ok_or("cannot locate the contract repo root above the schema path")?;
-    let rel = "contract/schema/bus-protocol.schema.json";
-    let git = |args: &[&str]| -> Result<Vec<u8>, String> {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(repo)
-            .args(args)
-            .output()
-            .map_err(|e| format!("running git in {}: {e}", repo.display()))?;
-        if !out.status.success() {
-            return Err(format!(
-                "git {:?} in {} failed: {}",
-                args,
-                repo.display(),
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
+fn sha1(data: &[u8]) -> [u8; 20] {
+    let mut h: [u32; 5] = [
+        0x6745_2301,
+        0xEFCD_AB89,
+        0x98BA_DCFE,
+        0x1032_5476,
+        0xC3D2_E1F0,
+    ];
+    let bitlen = (data.len() as u64) * 8;
+    let mut msg = data.to_vec();
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&bitlen.to_be_bytes());
+
+    for chunk in msg.as_chunks::<64>().0 {
+        let mut w = [0u32; 80];
+        for (i, word) in chunk.as_chunks::<4>().0.iter().enumerate() {
+            w[i] = u32::from_be_bytes(*word);
         }
-        Ok(out.stdout)
-    };
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+        let (mut a, mut b, mut c, mut d, mut e) = (h[0], h[1], h[2], h[3], h[4]);
+        for (i, wi) in w.iter().enumerate() {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | ((!b) & d), 0x5A82_7999u32),
+                20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
+                _ => (b ^ c ^ d, 0xCA62_C1D6),
+            };
+            let tmp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(*wi);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = tmp;
+        }
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+    }
+    let mut out = [0u8; 20];
+    for (i, v) in h.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&v.to_be_bytes());
+    }
+    out
+}
 
-    let at_rev = git(&["show", &format!("{rev}:{rel}")])?;
-    if at_rev != vendored {
-        return Err(format!(
-            "the vendored copy is {} bytes and {rev} ({branch}) is {} — it is not a verbatim copy of \
-             the revision PROVENANCE.md pins either.",
-            vendored.len(),
-            at_rev.len()
-        ));
+/// `git hash-object -t blob`, in one line of definition: SHA-1 over `"blob <len>\0"` then the content.
+fn git_blob_hash(content: &[u8]) -> String {
+    let mut framed = format!("blob {}\0", content.len()).into_bytes();
+    framed.extend_from_slice(content);
+    sha1(&framed)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
+}
+
+/// **The control on the hasher**, and it comes first because everything below is worthless without it.
+///
+/// A hand-rolled hash that is subtly wrong would make the pin check pass for the wrong reason forever —
+/// and it would pass *today*, because the pin would simply record whatever the broken function returns.
+/// So the implementation is closed against constants that come from outside this repo: git's empty blob
+/// and the SHA-1 of "abc", both of which are published values, plus git's own hash of a short literal.
+#[test]
+fn the_blob_hasher_is_git_s() {
+    assert_eq!(
+        sha1(b"abc")
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>(),
+        "a9993e364706816aba3e25717850c26c9cd0d89d",
+        "SHA-1(\"abc\"), the FIPS 180-1 test vector"
+    );
+    assert_eq!(
+        git_blob_hash(b""),
+        "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+        "git's empty blob, the most-quoted hash in the tool"
+    );
+    assert_eq!(
+        git_blob_hash(b"hello\n"),
+        "ce013625030ba8dba906f756967f9e9ca394464a",
+        "`printf 'hello\\n' | git hash-object --stdin`"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------------
+// 1. Freshness — content-addressed against the pin, then optionally confirmed against the contract repo
+// ---------------------------------------------------------------------------------------------------
+
+/// **Step 0, and it always runs.** The vendored bytes hash to the blob `PROVENANCE.md` pins.
+///
+/// This replaces a gate that walked up from `CARGO_MANIFEST_DIR` looking for
+/// `empyrean/contract/schema/bus-protocol.schema.json` and byte-compared **the peer's live working
+/// tree** — registered as `F-SCHEMA-READS-LIVE-EMPYREAN` and ruled on suite-wide in
+/// `empyrean/contract/SUITE_PATHS.md` at `38f6df4`: *"A gate that proves a vendored copy of a peer's
+/// CONTENT is fresh reads the peer through git objects at a named revision, never through the peer's
+/// working tree."* The old shape went red when the hub saved mid-edit and, the half that matters, would
+/// have gone **green against a change no other lane could see**.
+///
+/// Content-addressed rather than "equal to a path resolved at a revision", per the same ruling and
+/// aurora's `effects-preset-schema-drift` precedent: a hash cannot be satisfied by a coincidentally
+/// similar file, and it needs no peer at all, so this half of the gate is never skipped on any machine.
+#[test]
+fn the_vendored_schema_is_the_blob_provenance_pins() {
+    let vendored = common::schema::VENDORED_SCHEMA.as_bytes();
+    let want_blob = pin("blob");
+    let want_bytes: usize = pin("bytes").parse().expect("pin.bytes is a number");
+    let got_blob = git_blob_hash(vendored);
+    eprintln!(
+        "RESULT ok step=0-pin blob={got_blob} bytes={} revision={}",
+        vendored.len(),
+        pin("revision")
+    );
+    assert_eq!(
+        vendored.len(),
+        want_bytes,
+        "the vendored schema is {} bytes; PROVENANCE.md pins {want_bytes}",
+        vendored.len()
+    );
+    assert_eq!(
+        got_blob,
+        want_blob,
+        "the vendored schema hashes to {got_blob}; PROVENANCE.md pins blob {want_blob} at revision {}.\n\
+         Either the copy was edited in place — which is never allowed, a hand-corrected vendored copy is \
+         a copy whose provenance is worthless — or a re-vendor landed without updating the sidecar. \
+         PROVENANCE.md carries the recipe.",
+        pin("revision")
+    );
+}
+
+/// **Steps 1 and 2, and their loud refusal.** Confirm the pin against something outside this repo, when
+/// something outside this repo has been named.
+///
+/// There is deliberately **no walk**. `SUITE_PATHS.md`: *"An env-var override pointing at a file is
+/// legitimate; its absence is a loud skip naming the variable, not a walk."* A skip here costs nothing
+/// that matters, because the artifact's identity is already closed by
+/// [`the_vendored_schema_is_the_blob_provenance_pins`]; what a skip gives up is only the confirmation
+/// that the pin names something real and merged upstream.
+#[test]
+fn the_pin_is_confirmed_against_the_contract_repo_or_says_it_could_not() {
+    let vendored = common::schema::VENDORED_SCHEMA.as_bytes();
+    let rev = pin("revision");
+    let blob = pin("blob");
+
+    // Step 1 — an explicit file.
+    if let Ok(p) = std::env::var(ENV_SCHEMA_FILE) {
+        let path = PathBuf::from(&p);
+        eprintln!(
+            "RESULT ok step=1-env-file var={ENV_SCHEMA_FILE} path={}",
+            path.display()
+        );
+        let up = std::fs::read(&path).unwrap_or_else(|e| {
+            panic!(
+                "${ENV_SCHEMA_FILE} points at {}, which cannot be read: {e}",
+                path.display()
+            )
+        });
+        assert_eq!(
+            git_blob_hash(&up),
+            blob,
+            "${ENV_SCHEMA_FILE} = {} hashes to {}, not the pinned {blob}",
+            path.display(),
+            git_blob_hash(&up)
+        );
+        assert_eq!(
+            up, vendored,
+            "same hash, different bytes is impossible; something is very wrong"
+        );
+        return;
     }
 
-    // The guard the early return would otherwise have given us: the default branch must not have moved
-    // the schema since the tracked revision branched off it. If it has, we are behind on one line of
-    // development while being ahead on another, and that is drift however it is spelled.
-    let head = String::from_utf8(git(&["rev-parse", "HEAD"])?)
-        .map_err(|e| e.to_string())?
-        .trim()
-        .to_string();
-    let base = String::from_utf8(git(&["merge-base", &head, rev])?)
-        .map_err(|e| e.to_string())?
-        .trim()
-        .to_string();
-    let at_base = git(&["show", &format!("{base}:{rel}")])?;
-    let upstream_now = std::fs::read(upstream).map_err(|e| e.to_string())?;
-    if at_base != upstream_now {
-        return Err(format!(
-            "the contract's checked-out branch has changed the schema since {rev} ({branch}) branched \
-             from {base}. The vendored copy tracks the draft and is now ALSO stale against the branch \
-             the draft will merge into."
-        ));
+    // Step 2 — a contract CHECKOUT, read only through its object store.
+    if let Ok(repo) = std::env::var(ENV_CONTRACT_REPO) {
+        eprintln!("RESULT ok step=2-env-repo var={ENV_CONTRACT_REPO} repo={repo} rev={rev}");
+        let git = |args: &[&str]| -> Vec<u8> {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .unwrap_or_else(|e| panic!("running `git {args:?}` in {repo}: {e}"));
+            assert!(
+                out.status.success(),
+                "`git {args:?}` in {repo} failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            out.stdout
+        };
+        // The blob exists in that repo and IS the vendored bytes. `cat-file` reads the object store;
+        // the working tree is never touched, which is the whole point of the reshape.
+        //
+        // **This first check alone would be nearly vacuous, and that was observed rather than reasoned:**
+        // pointed at *this* repository it PASSES, because vendoring the schema here put the identical
+        // blob in this repo's object store too. Content-addressing says "some repo has these bytes",
+        // which every repo that vendored them does. The two checks after it are what make the step mean
+        // something — the named revision carries that blob at that path, and the revision is merged —
+        // and pointing this at `oracle` fails on the second one, naming the path it could not resolve.
+        let object = git(&["cat-file", "blob", &blob]);
+        assert_eq!(
+            object,
+            vendored,
+            "blob {blob} in {repo} is {} bytes and the vendored copy is {}",
+            object.len(),
+            vendored.len()
+        );
+        // …and the revision the sidecar names really carries that blob, and is merged.
+        let at_rev = String::from_utf8(git(&["rev-parse", &format!("{rev}:{CONTRACT_REL}")]))
+            .expect("utf8")
+            .trim()
+            .to_string();
+        assert_eq!(
+            at_rev, blob,
+            "{rev}:{CONTRACT_REL} is blob {at_rev}, not the pinned {blob}"
+        );
+        let default = ["origin/main", "main"]
+            .into_iter()
+            .find(|r| {
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&repo)
+                    .args(["rev-parse", "--verify", "--quiet", r])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "{repo} has neither `origin/main` nor `main` — cannot check the pin is merged"
+                )
+            });
+        let merged = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["merge-base", "--is-ancestor", &rev, default])
+            .status()
+            .expect("git merge-base")
+            .success();
+        assert!(
+            merged,
+            "{rev} is NOT an ancestor of {default} in {repo}: the vendored copy tracks a revision that \
+             is not on the contract's default branch. That is a legitimate state while an adjudicated \
+             amendment finishes merging — and it is not a state to be silent about."
+        );
+        return;
     }
 
-    Ok(format!(
-        "the vendored contract schema tracks {rev} ({branch}), an unmerged contract revision, and is a \
-         verbatim copy of it; the checked-out branch has not touched the schema since that revision \
-         branched. This note disappears when the revision merges."
-    ))
+    // Step 3 — nothing named. A loud line in the run's own output, because "a green log and an absent
+    // run are the same artifact" (SUITE_PATHS.md, protocol bar 25).
+    eprintln!(
+        "\n=========================================================================\n\
+         SKIPPED: the vendored schema's pin was NOT confirmed against the contract repo.\n\
+         Consulted, in order, and neither was set:\n  \
+           ${ENV_SCHEMA_FILE}  — a path to a bus-protocol.schema.json FILE\n  \
+           ${ENV_CONTRACT_REPO} — a path to a git CHECKOUT of the contract repo\n\
+         There is no filesystem walk on purpose: a gate that goes looking for a peer's working tree\n\
+         reports a verdict about whatever that tree contained when it ran\n\
+         (F-SCHEMA-READS-LIVE-EMPYREAN; empyrean contract/SUITE_PATHS.md at 38f6df4).\n\
+         What still ran: the copy's identity is closed content-addressed against PROVENANCE.md's\n\
+         pin.blob = {blob} (revision {rev}) by\n\
+         `the_vendored_schema_is_the_blob_provenance_pins`, which never skips.\n\
+         What did NOT run: confirmation that {rev} exists upstream and is merged.\n\
+         =========================================================================\n"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -642,8 +794,8 @@ fn positive_control_a_conformant_message_is_accepted() {
         .expect("a conformant reply must pass");
     check_incoming(
         &json!({"jsonrpc":"2.0","method":"emulator/stopped","params":{
-            "reason":"runFrames","pc":"0x00012A4C","frames":1,"deadlineReached":true,
-            "frame":1,"mclk":896040,"running":false}}),
+            "reason":"runFrames","pc":"0x00012A4C","stopPrecision":"exact","frames":1,
+            "deadlineReached":true,"frame":1,"mclk":896040,"running":false}}),
         None,
     )
     .expect("a conformant event must pass");
@@ -779,12 +931,12 @@ fn control_a_watchpoint_stop_that_does_not_name_its_watch_is_rejected() {
     // Unlike CR-9's `buttons`/`port`, this rule HAS a discriminator in the event, so the schema enforces
     // both halves of it: a `watchpoint` stop must name its watch, and no other stop may.
     let missing = json!({"jsonrpc":"2.0","method":"emulator/stopped","params":{
-        "reason":"watchpoint","pc":"0x000002A0","deadlineReached":false,
+        "reason":"watchpoint","pc":"0x000002A0","stopPrecision":"afterCommit","deadlineReached":false,
         "frame":1,"mclk":896040,"running":false}});
     rejects(&missing, None, "watch");
 
     let spurious = json!({"jsonrpc":"2.0","method":"emulator/stopped","params":{
-        "reason":"runFrames","pc":"0x000002A0","frames":1,"deadlineReached":true,"watch":"w0",
+        "reason":"runFrames","pc":"0x000002A0","stopPrecision":"exact","frames":1,"deadlineReached":true,"watch":"w0",
         "frame":1,"mclk":896040,"running":false}});
     rejects(&spurious, None, "watch");
 }
@@ -800,12 +952,12 @@ fn control_buttons_without_port_is_rejected_and_that_is_all_the_schema_can_do() 
     // schema as enforcing more than it does. Its behavioural half is
     // `watchpoints::press_stops_carry_buttons_and_port_and_run_frames_does_not`.
     let half = json!({"jsonrpc":"2.0","method":"emulator/stopped","params":{
-        "reason":"runFrames","pc":"0x000002A0","frames":2,"deadlineReached":true,
+        "reason":"runFrames","pc":"0x000002A0","stopPrecision":"exact","frames":2,"deadlineReached":true,
         "buttons":["start"],"frame":2,"mclk":1792080,"running":false}});
     rejects(&half, None, "port");
 
     let fabricated = json!({"jsonrpc":"2.0","method":"emulator/stopped","params":{
-        "reason":"runFrames","pc":"0x000002A0","frames":2,"deadlineReached":true,
+        "reason":"runFrames","pc":"0x000002A0","stopPrecision":"exact","frames":2,"deadlineReached":true,
         "buttons":["start"],"port":0,"frame":2,"mclk":1792080,"running":false}});
     check_incoming(&fabricated, None).expect(
         "a run_frames stop wearing buttons/port is SCHEMA-VALID — the event carries no method \
@@ -817,7 +969,7 @@ fn control_buttons_without_port_is_rejected_and_that_is_all_the_schema_can_do() 
 fn control_a_stopped_event_with_an_unknown_reason_is_rejected() {
     // §3's reason enum is closed. A server may not widen it unilaterally (§8).
     let line = json!({"jsonrpc":"2.0","method":"emulator/stopped","params":{
-        "reason":"frameAdvance","pc":"0x00012A4C","frame":1,"mclk":896040,"running":false}});
+        "reason":"frameAdvance","pc":"0x00012A4C","stopPrecision":"exact","frame":1,"mclk":896040,"running":false}});
     rejects(&line, None, "reason");
 }
 
@@ -883,7 +1035,7 @@ fn the_schema_cannot_express_section_8_item_13_and_this_test_proves_it() {
     // backstop they did not have before — which is good news, and means this test should be deleted and
     // the doc updated.
     let mislabelled = json!({"jsonrpc":"2.0","method":"emulator/stopped","params":{
-        "reason":"step","pc":"0x00012A4C","frames":8,"deadlineReached":true,
+        "reason":"step","pc":"0x00012A4C","stopPrecision":"exact","frames":8,"deadlineReached":true,
         "frame":8,"mclk":7168320,"running":false}});
     assert!(
         check_incoming(&mislabelled, None).is_ok(),
