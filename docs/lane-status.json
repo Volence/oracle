@@ -1,5 +1,5 @@
 {
-  "focus": "Ran the new-window check on your screen; the result looks wrong to me, so I am asking what you saw rather than trusting it.",
+  "focus": "The new debug window runs half again faster than it needs to on your machine; waiting on whether it LOOKED right to you.",
   "inFlight": [
     {
       "what": "Closing the last tests and tools that read aeon's live folder instead of a frozen copy",
@@ -85,7 +85,7 @@
       "blockedBy": "a live player window on your screen; runs only when none is open"
     }
   ],
-  "awaiting": "one sentence from you: did a window with Sonic in it actually appear on your desktop just now, and did it look smooth? My own numbers say it may have drawn nothing, so I would rather ask than report a figure I distrust. Also: the run was silent by design - I wrongly told you to listen for crackling, and hearing nothing was not a fault.",
+  "awaiting": "your verdict on the window that just ran: did it look as smooth as the normal player, or did you see hitching? The speed is measured and good - 93 frames a second where 60 is needed - but whether it LOOKS right is the part only you can answer, and a bad answer is more useful to me than a good one.",
   "atBoundary": false,
-  "updatedAt": "2026-09-02T20:59:20Z"
+  "updatedAt": "2026-09-02T21:10:26Z"
 }
