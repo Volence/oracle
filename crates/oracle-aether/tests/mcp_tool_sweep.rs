@@ -72,7 +72,15 @@ use std::path::{Path, PathBuf};
 /// A path to the client's source FILE. An explicit operator choice; read as-is, unpinned, and said so.
 const ENV_MCP_FILE: &str = "ORACLE_MCP_PY";
 /// A path to an `oracle-old` git CHECKOUT. Read only through its object store.
+///
+/// `<TOOL>_DIR` is the contract's ratified checkout spelling (`SUITE_PATHS.md`, "Two levels, two
+/// names"). `tools/legacy_accept_table.py` already reached the same repo under the bare `ORACLE_OLD`,
+/// so both are accepted here and that one is documented as the alias to retire — the contract's own
+/// transition rule, and the alternative is the exact defect it was written against: *"ten different
+/// environment-variable spellings for the same fact"*.
 const ENV_OLD_DIR: &str = "ORACLE_OLD_DIR";
+/// The pre-contract spelling, accepted during the transition. Consulted after [`ENV_OLD_DIR`].
+const ENV_OLD_DIR_ALIAS: &str = "ORACLE_OLD";
 /// The suite root every checkout hangs off (`SUITE_PATHS.md`, "Two levels, two names").
 const ENV_SUITE_ROOT: &str = "EMPYREAN_SUITE_ROOT";
 
@@ -233,15 +241,17 @@ fn mcp_source() -> Result<McpSource, String> {
     // step run: a wrong value is evidence of a wrong environment, and the next step would hide it."*
     // Measured, not assumed: before this arm existed, `ORACLE_OLD_DIR=<this repo>` printed
     // `RESULT ok step=4-derived` and the operator's wrong variable left no trace in the output at all.
-    match std::env::var(ENV_OLD_DIR) {
-        Ok(d) => {
-            return read_pinned_from(Path::new(&d), "2-env-repo").map_err(|why| {
-                format!("${ENV_OLD_DIR} is set to `{d}`, and it does not answer: {why}")
-            })
+    for var in [ENV_OLD_DIR, ENV_OLD_DIR_ALIAS] {
+        match std::env::var(var) {
+            Ok(d) => {
+                return read_pinned_from(Path::new(&d), "2-env-repo").map_err(|why| {
+                    format!("${var} is set to `{d}`, and it does not answer: {why}")
+                })
+            }
+            Err(_) => tried.push(format!(
+                "${var} (a path to an oracle-old git CHECKOUT) — not set"
+            )),
         }
-        Err(_) => tried.push(format!(
-            "${ENV_OLD_DIR} (a path to an oracle-old git CHECKOUT) — not set"
-        )),
     }
 
     // Step 3 — the suite root, joined with the repo's directory name. Set-but-wrong stops here too,

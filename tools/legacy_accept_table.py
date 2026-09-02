@@ -77,10 +77,20 @@ ACCESSOR_NAMES = ("get", "getInt", "getU32", "getBool")
 def find_oracle_old(explicit: str | None = None) -> Path:
     """Locate the reference `oracle-old` checkout.
 
-    Order: explicit --source, then $ORACLE_OLD, then an upward walk from this
+    Order: explicit --source, then $ORACLE_OLD_DIR (or its alias $ORACLE_OLD),
+    then an upward walk from this
     file looking for a sibling `oracle-old` that actually contains the target.
     We never fall back to a guess: a wrong source silently produces a wrong
     table, so an unresolvable source is an error, not a default.
+
+    That last sentence was true of ``--source`` and NOT of the environment
+    variable, which this docstring did not distinguish -- measured 2026-09-02:
+    ``ORACLE_OLD_DIR=/nonexistent-xyz`` printed a complete, correct-looking
+    summary derived from the walked-to tree, exit 0, with the wrong value
+    leaving no trace anywhere in the output.  A variable that is set but wrong
+    is now a hard error at its own step, the same as ``--source``: per empyrean
+    ``contract/SUITE_PATHS.md`` at ``38f6df4`` it is "evidence of a wrong
+    environment, and the next step would hide it."
     """
     # An explicitly named source is authoritative: if it does not hold the
     # target, that is an error. Searching on past it would quietly derive the
@@ -93,11 +103,24 @@ def find_oracle_old(explicit: str | None = None) -> Path:
         raise FileNotFoundError(
             f"--source {explicit} does not contain {SOURCE_RELPATH}")
 
-    candidates: list[Path] = []
-    env = os.environ.get("ORACLE_OLD")
-    if env:
-        candidates.append(Path(env))
+    # ``ORACLE_OLD_DIR`` is the contract's ratified checkout spelling (empyrean
+    # ``contract/SUITE_PATHS.md`` at ``38f6df4``, "Two levels, two names"); the bare ``ORACLE_OLD``
+    # this file shipped with is accepted as the alias to retire.  Two spellings for one fact is the
+    # defect that document was written against, so they are consulted in one place, in that order.
+    for var in ("ORACLE_OLD_DIR", "ORACLE_OLD"):
+        env = os.environ.get(var)
+        if not env:
+            continue
+        c = Path(env)
+        if (c / SOURCE_RELPATH).is_file():
+            return c.resolve()
+        raise FileNotFoundError(
+            f"${var} is set to {env}, which does not contain {SOURCE_RELPATH}. "
+            "A variable that is set but wrong is a hard error, not a reason to "
+            "keep looking -- the next step would hide it."
+        )
 
+    candidates: list[Path] = []
     here = Path(__file__).resolve()
     for parent in here.parents:
         candidates.append(parent / "oracle-old")
@@ -109,7 +132,7 @@ def find_oracle_old(explicit: str | None = None) -> Path:
 
     raise FileNotFoundError(
         "could not locate oracle-old: no candidate directory contained "
-        f"{SOURCE_RELPATH}. Pass --source DIR or set $ORACLE_OLD."
+        f"{SOURCE_RELPATH}. Pass --source DIR or set $ORACLE_OLD_DIR."
     )
 
 
