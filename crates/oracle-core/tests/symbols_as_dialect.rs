@@ -17,6 +17,35 @@
 //!
 //! The ROM is deliberately **not vendored**: it is a build of a commercial game's disassembly, it is
 //! 551,288 bytes, and reading it from the sibling checkout costs nothing this suite needs.
+//!
+//! # The directory must be NAMED — there is no default (2026-09-02)
+//!
+//! Until this change `s1_dir()` fell back to the home literal `/home/volence/sonic_hacks/s1disasm`.
+//! On the one machine that has that path, these five rows therefore ran against **another repository's
+//! live, gitignored build output** — and `real_sonic_lst_parses_completely` asserts
+//! `t.len() == 12_405` exactly. A `lua build.lua` over there, on any modified source, moves that number
+//! and reddens *this* suite for a reason that has nothing to do with our code. That is the whole
+//! complaint this campaign exists to answer, arriving in a repo nobody thinks of as a suite peer.
+//!
+//! It cannot be closed the way `mcp_tool_sweep.rs` closes it. There is no revision to pin to:
+//! `sonic.lst` and `sonic.bin` are **build outputs and gitignored**, so they exist in no object store,
+//! and at 10 MB and 551 KB they are not vendorable either. What is left is the contract's other arm —
+//! *"An env-var override pointing at a file is legitimate; its absence is a loud skip naming the
+//! variable, not a walk"* (`empyrean` `contract/SUITE_PATHS.md` at `38f6df4`) — so the dependency
+//! becomes an explicit opt-in instead of an accident of one machine's disk layout.
+//!
+//! **The cost, stated plainly: on a machine that has `s1disasm` but sets no variable, these five rows
+//! now SKIP where they used to run.** That is a real loss of coverage and it is deliberate: coverage
+//! that depends on an unattributable directory is coverage whose green means "whatever was there".
+//! Restore it in one line:
+//!
+//! ```text
+//! ORACLE_S1DISASM_DIR=/path/to/s1disasm cargo test -p oracle-core --test symbols_as_dialect
+//! ```
+//!
+//! No derivation step, on purpose. `SUITE_PATHS.md` allows a walk for answering *which checkout* and
+//! refuses it for reference-dependent measurement, "because it derives the owner's live tree whose
+//! revision moves under a run" — and reading `sonic.lst` to assert a row count is exactly that.
 
 use oracle_core::symbols::{
     rom_declared_end, AddrSpace, Indeterminate, RomBinding, SymbolKind, SymbolTable, TableSource,
@@ -24,26 +53,82 @@ use oracle_core::symbols::{
 };
 use std::path::PathBuf;
 
-/// Where the S1 disassembly's build outputs live.
-fn s1_dir() -> PathBuf {
-    std::env::var("ORACLE_S1DISASM_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/home/volence/sonic_hacks/s1disasm"))
+/// Write a line where libtest's output capture cannot swallow it.
+///
+/// **Measured, and it invalidates the house pattern's premise.** `println!`/`eprintln!` route through
+/// `std::io::_print`/`_eprint`, which libtest redirects per test thread, so a skip printed with them is
+/// invisible in a plain `cargo test` run and appears only under `--nocapture`. Run against these five
+/// rows with nothing named, they reported
+///
+/// ```text
+/// test real_sonic_lst_parses_completely ... ok
+/// test result: ok. 5 passed; 0 failed; 0 ignored
+/// ```
+///
+/// — five rows that read nothing, indistinguishable from five rows that checked everything. *"A green
+/// log and an absent run are the same artifact"* is the bar (`SUITE_PATHS.md`, protocol bar 25), and a
+/// skip that is loud only under a flag nobody passes is on the wrong side of it.
+///
+/// `std::io::stderr()` is the real handle on fd 2 and the capture does not touch it, so this reaches
+/// the terminal in a default run.
+fn loud(msg: String) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "{msg}");
 }
 
-/// Read one `s1disasm` build artifact, or `None` (with a loud printed note) when it is not present.
+/// A directory of s1disasm build ARTIFACTS. The name this repo already uses.
+const ENV_S1_DIR: &str = "ORACLE_S1DISASM_DIR";
+/// The suite root every checkout hangs off.
+const ENV_SUITE_ROOT: &str = "EMPYREAN_SUITE_ROOT";
+
+/// Where the S1 disassembly's build outputs live, or `None` when nothing named them.
+///
+/// A variable that is **set** is the answer, right or wrong: per `SUITE_PATHS.md` a set-but-wrong value
+/// is evidence of a wrong environment, so it is reported as itself rather than falling through to a
+/// step that would hide it.
+fn s1_dir() -> Option<PathBuf> {
+    if let Ok(d) = std::env::var(ENV_S1_DIR) {
+        return Some(PathBuf::from(d));
+    }
+    if let Ok(root) = std::env::var(ENV_SUITE_ROOT) {
+        return Some(PathBuf::from(root).join("s1disasm"));
+    }
+    None
+}
+
+/// Read one `s1disasm` build artifact, or `None` (with a loud printed note) when it is not reachable.
 fn artifact(name: &str) -> Option<Vec<u8>> {
-    let p = s1_dir().join(name);
+    let Some(dir) = s1_dir() else {
+        loud(format!(
+            "SKIPPED: no s1disasm directory was named, so `{name}` was not read and this row did not \
+             run. Consulted, in order:\n  \
+               ${ENV_S1_DIR} (a directory of s1disasm build artifacts) — not set\n  \
+               ${ENV_SUITE_ROOT}/s1disasm — {ENV_SUITE_ROOT} not set\n\
+             There is deliberately no default and no walk: the home literal that used to sit here made \
+             these rows assert exact counts against another repo's live, gitignored build output \
+             (empyrean contract/SUITE_PATHS.md at 38f6df4). Re-enable with\n  \
+               {ENV_S1_DIR}=/path/to/s1disasm cargo test -p oracle-core --test symbols_as_dialect"
+        ));
+        return None;
+    };
+    let p = dir.join(name);
     match std::fs::read(&p) {
-        Ok(b) => Some(b),
-        Err(_) => {
+        Ok(b) => {
             println!(
+                "read {} ({} bytes) — a LIVE build output, not frozen and not pinned",
+                p.display(),
+                b.len()
+            );
+            Some(b)
+        }
+        Err(_) => {
+            loud(format!(
                 "SKIP: {} not present. Build it with `cd {} && lua build.lua` \
-                 (non-destructive, ~600ms, artifacts are gitignored), or point ORACLE_S1DISASM_DIR \
+                 (non-destructive, ~600ms, artifacts are gitignored), or point {ENV_S1_DIR} \
                  at a checkout that has it.",
                 p.display(),
-                s1_dir().display()
-            );
+                dir.display()
+            ));
             None
         }
     }

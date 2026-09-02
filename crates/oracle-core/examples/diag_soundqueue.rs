@@ -18,14 +18,19 @@
 //! master-attribution caveat on the PSG port that the hand-rolled fc tally silently got wrong.
 //!
 //! Usage: `cargo run --release -p oracle-core --example diag_soundqueue -- [rom.bin] [frames]`
-//!   - `[rom.bin]` — ROM path (default `s4.soundtest.bin` from Aeon's live tree — **not frozen**).
+//!   - `[rom.bin]` — ROM path. With none given, `s4.soundtest.bin` is looked for in an Aeon directory
+//!     **named by the environment** (`ORACLE_AEON_DIR`, `AEON_DIR`, or `EMPYREAN_SUITE_ROOT`), and the
+//!     run **refuses** if none is set.
 //!
-//! **The default reads an unfrozen artifact, deliberately and loudly.** `s4.soundtest.bin` is not in
-//! `fixtures/aeon/` and cannot be put there on the current recipe: sigil's committed goldens are the
-//! authority for ROM bytes and that image is not among them. So the default still points at Aeon's
-//! live working tree, which is rebuilt without warning — and the run now says so at startup, with the
-//! file's age, so a stale read announces itself rather than passing as a measurement. See
-//! `examples/common/rom_source.rs` for the rule and why it is not uniform across these examples.
+//! **There is no built-in default, and that is the fix rather than a regression.** `s4.soundtest.bin`
+//! is not in `fixtures/aeon/` and cannot be put there on the current recipe: sigil's committed goldens
+//! are the authority for ROM bytes and that image is not among them. What used to fill the gap was a
+//! home literal into Aeon's live working tree — a directory rebuilt without warning, belonging to
+//! another lane, that no revision attributes. `empyrean` `contract/SUITE_PATHS.md` at `38f6df4` ends
+//! that shape: *"Never a home literal, and never a silent fallback to the live tree"*, and an
+//! env-var's absence is a loud refusal naming the variable. When a directory **is** named, the run
+//! still says at startup which file it read and how old it is, so a stale read announces itself rather
+//! than passing as a measurement. See `examples/common/rom_source.rs` for the rule and its reasoning.
 
 use oracle_core::system::System;
 use oracle_core::watchpoints::{
@@ -90,11 +95,19 @@ impl Group {
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    // No frozen copy of `s4.soundtest.bin` exists, so this default reads a live tree. `announce`
-    // below is the half of that bargain that keeps the dependency from being silent.
-    let rom_path = args
-        .next()
-        .unwrap_or_else(|| rom_source::live_aeon("s4.soundtest.bin"));
+    // No frozen copy of `s4.soundtest.bin` exists, so with no argument this must be resolved from a
+    // named environment — or refused. `announce` below is the other half of the bargain when it IS
+    // resolved: the dependency is stated, never silent.
+    let rom_path = match args.next() {
+        Some(p) => p,
+        None => match rom_source::unfrozen("s4.soundtest.bin") {
+            Ok(p) => p,
+            Err(why) => {
+                eprintln!("{why}\nOr pass a ROM path as the first argument.");
+                std::process::exit(2);
+            }
+        },
+    };
     let frames: u64 = args
         .next()
         .and_then(|s| s.parse().ok())

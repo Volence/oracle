@@ -34,16 +34,30 @@ fn aeon_dir() -> PathBuf {
         })
 }
 
+/// Write a line where libtest's output capture cannot swallow it.
+///
+/// **The house "loud skip" pattern was not loud, and it was measured rather than reasoned.**
+/// `println!` routes through `std::io::_print`, which libtest redirects per test thread, so a skip
+/// printed with it is invisible in a plain `cargo test` run and shows only under `--nocapture`. A
+/// sibling file's five skip rows were measured reporting a bare `test result: ok. 5 passed` with no
+/// trace at all. *"A green log and an absent run are the same artifact"* (`empyrean`
+/// `contract/SUITE_PATHS.md`, protocol bar 25) — so the skips go to `std::io::stderr()`, the real
+/// handle on fd 2, which the capture does not touch.
+fn loud(msg: String) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "{msg}");
+}
+
 /// Read one Aeon build artifact, or `None` (with a printed note) when it is not present.
 fn artifact(name: &str) -> Option<Vec<u8>> {
     let p = aeon_dir().join(name);
     match std::fs::read(&p) {
         Ok(b) => Some(b),
         Err(_) => {
-            println!(
+            loud(format!(
                 "SKIP: {} not present (set ORACLE_AEON_DIR, or restore the frozen copy in fixtures/aeon/)",
                 p.display()
-            );
+            ));
             None
         }
     }
@@ -71,10 +85,10 @@ fn the_frozen_pin_this_file_reads_is_named_in_the_output() {
         // Not a failure: `PIN.tsv` describes the frozen directory, and a developer may have pointed
         // these tests elsewhere entirely. Silence would be the bug; an unearned green claim would be
         // worse. Say which, loudly.
-        println!(
+        loud(format!(
             "SKIP: {} unreadable — this run names no pin.",
             pin.display()
-        );
+        ));
         return;
     };
     println!("\n=== FROZEN AEON PIN, as read by this file ===");

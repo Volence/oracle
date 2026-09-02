@@ -33,6 +33,21 @@ for every listing row there is no upstream artifact to compare against and the c
 is *not measurable from sigil at all*.  Those print as UNMEASURABLE.  They are never rendered as
 agreement, and never counted toward a clean result.
 
+HOW IT REACHES SIGIL, AND WHY IT STAYS AT TIP
+---------------------------------------------
+Every byte it compares comes out of sigil's **object store** — ``git rev-parse``/``git cat-file`` at
+``--ref`` — so sigil's *working tree* is never opened and a mid-edit save in that lane cannot move
+this report.  That mechanism was already right; what was wrong until 2026-09-02 was how the checkout
+was *located*: a home literal ``/home/volence/sonic_hacks/sigil`` closed the candidate list, and the
+sibling guess before it (``dirname(REPO)/sigil``) resolved to nothing from a linked worktree.  Both
+are replaced by the precedence in empyrean ``contract/SUITE_PATHS.md`` at ``38f6df4`` — ``--sigil``,
+``SIGIL_DIR`` (``ORACLE_SIGIL_DIR`` as a transition alias), ``EMPYREAN_SUITE_ROOT/sigil``, a marker
+walk, then a refusal naming all of them — and the resolved path prints with the step that answered.
+
+It is **not** pinned, and must not be.  Re-pointing a currency check at the revision the pin was taken
+from makes it vacuous: a pinned blob equals itself by construction, so it would pass forever while
+detecting nothing.  Fix the mechanism, keep the question.
+
 Usage:  python3 tools/aeon_pin_report.py [--sigil DIR] [--ref REF] [--fetch]
 """
 
@@ -87,6 +102,90 @@ def git(sigil, *args, binary=False):
     return p.stdout if binary else p.stdout.decode("utf-8", "replace").strip()
 
 
+def is_checkout(path):
+    """A git checkout has a `.git` — a directory in a normal clone, a *file* in a linked worktree."""
+    return bool(path) and os.path.exists(os.path.join(path, ".git"))
+
+
+def suite_root_from(anchor):
+    """Walk up from `anchor` to the first directory holding a `sigil` checkout.
+
+    Deliberately **not** ``git rev-parse --git-common-dir``.  That command returns three different
+    shapes — ``.git`` at a main checkout's root, an absolute path from a linked worktree's
+    subdirectory, and a *relative* ``../../.git`` from a MAIN-checkout subdirectory — and trimming its
+    answer lexically is how sigil walked onto the wrong directory.  That failure is invisible to
+    agents, who run in linked worktrees, while the suite runs from the main checkout: the two return
+    different shapes.  A marker walk asks the filesystem the question it actually has and needs none
+    of it.
+
+    It also replaces ``os.path.dirname(REPO)``, which had the same bug from the other side: ``REPO``
+    is this file's own two-levels-up, so from a linked worktree at ``<repo>/.claude/worktrees/<name>``
+    its parent is ``<repo>/.claude/worktrees`` and the sibling guess landed nowhere.  Every ancestor
+    is tried here instead, so the worktree case walks past ``.claude`` and finds the suite root.
+    """
+    cur = os.path.abspath(anchor)
+    while True:
+        if is_checkout(os.path.join(cur, "sigil")):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return None
+        cur = parent
+
+
+def locate_sigil(explicit):
+    """Resolve a sigil checkout.  Returns ``(path_or_None, step, tried)``.
+
+    Precedence is empyrean ``contract/SUITE_PATHS.md`` at ``38f6df4``: the explicit argument, the
+    checkout variable, the suite root joined with the repo's directory name, derivation, then refuse
+    "naming what was looked for and where.  Never a home literal, and never a silent fallback to the
+    live tree."  The home literal ``/home/volence/sonic_hacks/sigil`` that used to close this list is
+    gone; ``ORACLE_SIGIL_DIR`` is kept as a transition alias, and ``SIGIL_DIR`` is the ratified name.
+
+    A variable that is **set but wrong** is a hard error at its own step rather than a fall-through:
+    a wrong value is evidence of a wrong environment, and the next step would hide it.
+
+    Note what this resolver is for.  Locating the checkout is the only thing it does; every byte this
+    script then reads comes out of that checkout's *object store* at a ref (``git cat-file``), never
+    its working tree.  That is why a derivation step is legitimate here and is refused elsewhere in
+    this repo: what a derived path can hand you is a tree whose revision moves under a run, and this
+    script never reads a tree.
+    """
+    tried = []
+    if explicit:
+        if is_checkout(explicit):
+            return explicit, "0-argument", tried
+        tried.append("--sigil %s -> no .git there" % explicit)
+        return None, None, tried
+
+    for var in ("SIGIL_DIR", "ORACLE_SIGIL_DIR"):
+        val = os.environ.get(var)
+        if val is None:
+            tried.append("$%s (a path to the sigil checkout) — not set" % var)
+            continue
+        if is_checkout(val):
+            return val, "1-env-checkout:%s" % var, tried
+        tried.append("$%s=%s -> no .git there (set but wrong is a hard error, not a "
+                     "reason to keep looking)" % (var, val))
+        return None, None, tried
+
+    root = os.environ.get("EMPYREAN_SUITE_ROOT")
+    if root is None:
+        tried.append("$EMPYREAN_SUITE_ROOT/sigil — EMPYREAN_SUITE_ROOT not set")
+    else:
+        cand = os.path.join(root, "sigil")
+        if is_checkout(cand):
+            return cand, "2-suite-root", tried
+        tried.append("$EMPYREAN_SUITE_ROOT=%s -> %s has no .git" % (root, cand))
+        return None, None, tried
+
+    derived = suite_root_from(REPO)
+    if derived is not None:
+        return os.path.join(derived, "sigil"), "3-derived", tried
+    tried.append("derivation: no ancestor of %s contains sigil/.git" % REPO)
+    return None, None, tried
+
+
 def chain_number_at(sigil, rev):
     """Derive the freeze-chain number: it is the count of ``[[entry]]`` blocks in provenance.toml.
 
@@ -139,22 +238,16 @@ def main():
         print("    artifacts that do not exist upstream — not a permanent property of the design.")
 
     # ---- locate sigil ----
-    candidates = [args.sigil] if args.sigil else [
-        os.environ.get("ORACLE_SIGIL_DIR"),
-        os.path.join(os.path.dirname(REPO), "sigil"),
-        "/home/volence/sonic_hacks/sigil",
-    ]
-    sigil = None
-    for c in candidates:
-        if c and os.path.isdir(os.path.join(c, ".git")) or (c and os.path.exists(os.path.join(c, ".git"))):
-            sigil = c
-            break
+    sigil, step, tried = locate_sigil(args.sigil)
     if sigil is None:
-        print("\nUNMEASURABLE: no sigil checkout found (tried: %s)."
-              % ", ".join(str(c) for c in candidates if c))
+        print("\nUNMEASURABLE: no sigil checkout found. Consulted, in order:")
+        for t in tried:
+            print("    %s" % t)
         print("This is NOT 'the pin is current'. Nothing was compared. Pass --sigil DIR to measure.")
         return 0
-    print("\nsigil checkout: %s" % sigil)
+    print("\nsigil checkout: %s   [step=%s]" % (sigil, step))
+    print("Read through its OBJECT STORE only — `git rev-parse` / `git cat-file` at a ref. The working")
+    print("tree is never opened, so a mid-edit save in that lane cannot change what this reports.")
 
     if args.fetch:
         remote = args.ref.split("/")[0] if "/" in args.ref else "origin"
