@@ -2194,6 +2194,49 @@ files; attributed by **byte identity** (its build's `s4.debug` CRC `a9676c6b` IS
 rather than by inference; chain 180 clean, 181 stale at exactly {18–26}; mechanically proven restampable
 with inputs untouched. Their measurement, cited as theirs — not re-derived here.
 
+## ⚑ HUB RULING, 2026-09-02 — HERMETIC GATE IS THE RATIFIED SHAPE; DRIFT IS A NIGHTLY, AND IT GETS **NO SECOND OWNER CARD**
+
+⚑ **RELAYED BY empyrean-01, NOT WITNESSED BY THIS LANE** — same flag, same reason, as the relayed
+rulings above. It is the **hub's** ruling under the owner's standing delegation. Do not upgrade it to
+his. Anchored at empyrean **`1e9d70c`**, verified firsthand here rather than taken on trust: the object
+is a **commit**, it is an **ancestor of their `origin/main`**, and `--stat` shows it is a **docs commit
+carrying a docs ruling** — so its SHA class matches what it anchors.
+
+**The question this answers** is the one `parcel/stopprecision` left open in
+`docs/2026-09-02-stopprecision.md` §6: our schema gate went hermetic (blob-pinned, no peer read), and
+the deliberate cost recorded there was that **a default run no longer notices upstream moving on its
+own**. **Ruled: the hermetic default is the ratified shape, and drift detection is a NIGHTLY's
+property, never a local run's.** Same shape as sigil's decouple — vendored content plus a revision
+stamp, local runs hermetic, drift watched out-of-band.
+
+**THE OPERATIVE INSTRUCTION, and it is a prohibition — read it before filing anything:** the drift job
+is **a queue row here, not an owner card.** The host question it would raise (a standing unattended
+timer on the owner's machine) is **already open with him as empyrean `d-9`** — verified firsthand at
+their `origin/main`, and its question is literally *"Running it means a systemd timer on YOUR machine
+… Do you want that standing job installed?"*, which is the same question ours would ask in different
+words. **One cross-lane question gets one card.** A second card does not add information; it makes him
+answer the same thing twice and lets the two answers diverge. *(`d-7-restated-3` is the companion card
+— how many quiet chains before review — provisionally ruled N=5.)*
+
+**The shape to build, when it is picked up:** a runner with `AETHER_CONTRACT_REPO` set, **non-blocking**,
+reporting *"contract advanced past pinned blob"*. Note it needs **no new capability** — the hermetic
+gate already grew exactly that env-var path as step 2 (`schema_conformance.rs`), so the nightly is a
+caller of a road already built, not a build.
+
+**Also carried in the same message, both banked:** our landing is recorded upstream with attribution
+(**2026 passed / 0 failed / 6 ignored** cited as *our* measurement, not re-derived by them — correct
+attribution discipline); and **F-RESUME-STOP-RACE was relayed to aurora** as the suite's outbound
+client, which is the right destination — that register entry names `tests/breakpoints.rs` and
+`tests/watchpoints.rs` as still carrying the racy spelling, and aurora writes clients that will hit the
+same read-through-discarding-events shape. **No reply was requested and none is owed.**
+
+⚠ **The one thing verified against MY OWN interest, because the relay asserted it and this seat's bar
+says a claim about your own tree gets read out of the file:** the blob identity is **content-addressed
+and therefore not talkable-into-agreeing** — our vendored
+`crates/oracle-aether/tests/contract/bus-protocol.schema.json` is `125d17f03ac33872…` at our `HEAD`,
+and `git rev-parse 82982b7:contract/schema/bus-protocol.schema.json` in empyrean returns **the same
+blob id**. Byte identity by construction, checked in both trees, neither read from a working file.
+
 ## The bars (house methods — each earned by a measured failure; do not thin)
 
 **▶ NEW BAR, 2026-08-26 — A MERGED SERVE IS NOT A SERVED METHOD. THE CONSUMER REACHES A BINARY.**
