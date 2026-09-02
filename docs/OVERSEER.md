@@ -2237,6 +2237,49 @@ and therefore not talkable-into-agreeing** — our vendored
 and `git rev-parse 82982b7:contract/schema/bus-protocol.schema.json` in empyrean returns **the same
 blob id**. Byte identity by construction, checked in both trees, neither read from a working file.
 
+## ⚑ 2026-09-02 — `run_to` DOES **NOT** SHARE `resume`'S THREAD SPLIT. Measured from source, answering aurora.
+
+**The question, theirs (relayed via the hub, 2026-09-02):** their Build-&-Run boot restore awaits the
+`emulator/run_to` reply and gates on `reached`, assuming the machine is **already halted** when that
+reply lands. If `run_to` had `resume`'s split, their next call would land on a running machine. They
+correctly noted it would fail **loudly** (`write_memory` is behind `require_paused`, so it refuses by
+name) — a diagnosis cost, not a corruption risk. **Answer: their assumption holds, and structurally.**
+
+**The mechanism, read at `2a7fd82`, and it is one thread doing two things in order.** `engine_loop`
+(`server.rs`, spawned at the `engine thread` builder) handles one `EngineMsg::Call` at a time as
+`engine.dispatch(&method, &params)` **then** `reply.send(CallResult { .. })`. So:
+
+- **`run_to` blocks INSIDE `dispatch`.** It `require_paused`es, sets `self.running = true`, calls
+  `advance_until(max_frames, |pc, _| pc == target)` — which does not return until the target, the
+  bound, a breakpoint or a `stopAfter` watch ends the run — sets `self.running = false`, emits
+  `stopped`, and only then builds its result map. **`reply.send` therefore cannot execute before the
+  halt: the reply is PRODUCED BY the halt, not merely correlated with it.**
+- **`resume` does not block at all.** Its whole body is
+  `Ok(json!({"wasRunning": self.set_free_run(true)}))` — it flips a flag and returns. The halt happens
+  later, on a subsequent `free_run_step()` in the loop's `None` branch, and `emit_stopped` broadcasts
+  from the engine thread **after** the `resume` reply was already sent. That gap is the whole of
+  F-RESUME-STOP-RACE.
+
+**⚑ THE CAVEAT THEY DID NOT ASK FOR, AND IT IS THE INVERSE OF THEIR WORRY — worth more than the
+answer.** `run_to` calls `emit_stopped` **before** it builds its reply, so **on the wire the `stopped`
+event PRECEDES the `run_to` reply.** A client reading through to the reply and discarding events (what
+aurora does, and what `Client::ok` does) is correct and unaffected. **A client that consumed the reply
+and THEN waited for the halt event would block forever** — the same read-ordering hazard as
+F-RESUME-STOP-RACE with the two halves swapped. This is exactly the shape a first breakpoint consumer
+reaches for, so it is recorded before anyone writes one.
+
+⚠ **SCOPE, MEASURED RATHER THAN ASSERTED** (this seat's own booked habit of reading a sound observation
+one notch too wide): the above is the **socket/free-run driver**, which is the path aurora reaches. The
+**hosted** path — the player window through `Host::pump` — is a different driver and is already
+registered as `F-STOPPREC-HOSTED-HALT`, where the halt is *inferred* from sharing one function with the
+measured path rather than measured. Nothing here upgrades that.
+
+**Their side is clean and it is a real enumeration, not a did-not-find:** `AetherClient.onEvent` has
+exactly one non-test consumer in their tree (`bridge.ts`, which refreshes a badge and discards the
+event), nothing awaits an event anywhere, and every sequencing point gates on a **reply**. **Their
+perishable half, stated by them and adopted here: the day they build a breakpoint consumer is the day
+our server-side fix has to be in.** That is now a board row rather than a note.
+
 ## The bars (house methods — each earned by a measured failure; do not thin)
 
 **▶ NEW BAR, 2026-08-26 — A MERGED SERVE IS NOT A SERVED METHOD. THE CONSUMER REACHES A BINARY.**
