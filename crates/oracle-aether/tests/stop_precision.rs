@@ -37,22 +37,30 @@
 mod common;
 
 use common::{spawn_with, Client};
+use oracle_aether::engine::{StopPrecision, StopReason};
 use oracle_aether::server::ServerHandle;
 use oracle_core::testrom::{
     build_stop_precision, SP_BOUNDARIES, SP_BRANCH, SP_LOOP, SP_PROBE, SP_PROBE_POST_D0,
     SP_PROBE_PRE_D0, SP_STORE, SP_STORE_ADDR,
 };
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
 /// The length of `addq.w #1, D0` in bytes — where an `afterCommit` stop armed at [`SP_PROBE`] would
 /// report its `pc`. Derived from the two constants that bracket it, never written down as a number.
 const PROBE_LEN: u32 = 0x0000_0208 - SP_PROBE;
 
 fn armed(tag: &str) -> (ServerHandle, Client) {
+    let (h, c, _) = armed_with_handshake(tag);
+    (h, c)
+}
+
+/// [`armed`], keeping the `initialize` result — the message §2.1's binding rule relates the events to.
+fn armed_with_handshake(tag: &str) -> (ServerHandle, Client, Value) {
     let h = spawn_with(tag, build_stop_precision(), 1024);
     let mut c = Client::connect(&h);
-    c.handshake(true);
-    (h, c)
+    let hs = c.handshake(true);
+    (h, c, hs)
 }
 
 fn hex_u32(v: &Value) -> u32 {
@@ -122,13 +130,40 @@ fn call_capturing_stop(c: &mut Client, id: i64, method: &str, params: Value) -> 
     }
 }
 
-/// Read lines until the next `emulator/stopped` — for the halts nobody's reply announces (a breakpoint
-/// that ends a free run).
-fn next_stopped(c: &mut Client) -> Value {
+/// **`resume`, then the halt it runs into — read as one operation, because the two race.**
+///
+/// A breakpoint on this fixture's seven-instruction loop fires within microseconds of the resume, and the
+/// `stopped` event is broadcast from the engine thread while the `resume` reply is written by the
+/// connection thread. Either can reach the socket first. [`Client::ok`] reads through to the reply and
+/// **discards** the events it passes, so the obvious spelling — `ok("emulator/resume")` then
+/// `next_stopped` — throws the halt away roughly half the time and then blocks forever waiting for it.
+/// Measured here at trial 4 of 8, after three clean passes; a single-shot test would have called it green.
+///
+/// So both lines are read before either is acted on. This is a property of the *harness*, not of the
+/// server: the wire carried both messages in a legitimate order.
+fn resume_and_wait_for_stop(c: &mut Client, id: i64) -> Value {
+    c.send_raw(
+        &json!({"jsonrpc":"2.0","id":id,"method":"emulator/resume","params":{}}).to_string(),
+    );
+    let mut stopped = None;
+    let mut replied = false;
     loop {
-        let v = c.recv();
-        if v.get("method").and_then(Value::as_str) == Some("emulator/stopped") {
-            return v["params"].clone();
+        let line = c.recv();
+        if line["method"] == json!("emulator/stopped") {
+            stopped = Some(line["params"].clone());
+        }
+        if line["id"] == json!(id) {
+            assert!(
+                line.get("error").is_none(),
+                "resume failed: {}",
+                line["error"]
+            );
+            replied = true;
+        }
+        if replied {
+            if let Some(p) = stopped.take() {
+                return p;
+            }
         }
     }
 }
@@ -258,8 +293,7 @@ fn measured_breakpoint_precision() {
         json!({"addr": format!("0x{SP_PROBE:08X}")}),
     );
     for trial in 0..TRIALS {
-        c.ok("emulator/resume", json!({}));
-        let p = next_stopped(&mut c);
+        let p = resume_and_wait_for_stop(&mut c, 600 + trial as i64);
         assert_eq!(p["reason"], json!("breakpoint"), "trial {trial}");
         let s = snapshot(&mut c);
         assert_eq!(
@@ -405,46 +439,9 @@ fn measured_addressless_stop_precision() {
 #[test]
 fn the_reasons_this_server_emits_are_the_seven_it_names() {
     let (_h, mut c) = armed("sp-m-reasons");
-    let mut seen: Vec<String> = Vec::new();
-    let mut note = |p: &Value| {
-        let r = p["reason"].as_str().expect("reason").to_string();
-        if !seen.contains(&r) {
-            seen.push(r);
-        }
-    };
-
-    settle(&mut c);
-    let (p, _) = call_capturing_stop(&mut c, 740, "emulator/run_frames", json!({"frames": 1}));
-    note(&p);
-    let (p, _) = call_capturing_stop(&mut c, 741, "emulator/run_to_scanline", json!({"line": 40}));
-    note(&p);
-    let (p, _) = call_capturing_stop(
-        &mut c,
-        742,
-        "emulator/run_to",
-        json!({"addr": format!("0x{SP_LOOP:08X}")}),
-    );
-    note(&p);
-    let (p, _) = call_capturing_stop(&mut c, 743, "emulator/step", json!({}));
-    note(&p);
-    c.ok("emulator/resume", json!({}));
-    let (p, _) = call_capturing_stop(&mut c, 744, "emulator/pause", json!({}));
-    note(&p);
-    c.ok(
-        "emulator/breakpoint_add",
-        json!({"addr": format!("0x{SP_PROBE:08X}")}),
-    );
-    c.ok("emulator/resume", json!({}));
-    note(&next_stopped(&mut c));
-    c.ok("emulator/breakpoint_clear", json!({"all": true}));
-    c.ok(
-        "emulator/watchpoint_add",
-        json!({"addr": format!("0x{SP_STORE_ADDR:08X}"), "len": 2, "stopAfter": 1}),
-    );
-    let (p, _) = call_capturing_stop(&mut c, 745, "emulator/run_frames", json!({"frames": 4}));
-    note(&p);
-
-    seen.sort();
+    let swept = sweep_every_reason(&mut c);
+    let mut seen: Vec<&str> = swept.iter().map(|(r, _)| r.as_str()).collect();
+    seen.sort_unstable();
     assert_eq!(
         seen,
         vec![
@@ -459,8 +456,352 @@ fn the_reasons_this_server_emits_are_the_seven_it_names() {
         "the reasons this server can be driven to emit"
     );
     assert!(
-        !seen.iter().any(|r| r == "entry"),
+        !seen.contains(&"entry"),
         "`entry` is in §3's enum and this server has no path that emits it — so rule 1's \"no more\" \
          half forbids it from appearing in the handshake map"
+    );
+}
+
+/// Drive the surface until every reason has been seen once, returning `(reason, stopPrecision)` per
+/// distinct reason. Shared by the emitted-set control above and the key-set test below, so the two
+/// cannot disagree about what "the emitted set" means.
+fn sweep_every_reason(c: &mut Client) -> Vec<(String, String)> {
+    let mut seen: Vec<(String, String)> = Vec::new();
+    let mut note = |p: &Value| {
+        let r = p["reason"].as_str().expect("reason").to_string();
+        let v = p["stopPrecision"]
+            .as_str()
+            .unwrap_or_else(|| panic!("§3: `stopPrecision` is REQUIRED on every stopped: {p}"))
+            .to_string();
+        if !seen.iter().any(|(n, _)| *n == r) {
+            seen.push((r, v));
+        }
+    };
+    settle(c);
+    let (p, _) = call_capturing_stop(c, 850, "emulator/run_frames", json!({"frames": 1}));
+    note(&p);
+    let (p, _) = call_capturing_stop(c, 851, "emulator/run_to_scanline", json!({"line": 60}));
+    note(&p);
+    let (p, _) = call_capturing_stop(
+        c,
+        852,
+        "emulator/run_to",
+        json!({"addr": format!("0x{SP_LOOP:08X}")}),
+    );
+    note(&p);
+    let (p, _) = call_capturing_stop(c, 853, "emulator/step", json!({}));
+    note(&p);
+    c.ok("emulator/resume", json!({}));
+    let (p, _) = call_capturing_stop(c, 854, "emulator/pause", json!({}));
+    note(&p);
+    c.ok(
+        "emulator/breakpoint_add",
+        json!({"addr": format!("0x{SP_PROBE:08X}")}),
+    );
+    note(&resume_and_wait_for_stop(c, 860));
+    c.ok("emulator/breakpoint_clear", json!({"all": true}));
+    c.ok(
+        "emulator/watchpoint_add",
+        json!({"addr": format!("0x{SP_STORE_ADDR:08X}"), "len": 2, "stopAfter": 1}),
+    );
+    let (p, _) = call_capturing_stop(c, 855, "emulator/run_frames", json!({"frames": 4}));
+    note(&p);
+    seen
+}
+
+// ===================================================================================================
+// Part B — contract §8 item 24. The declaration, closed against the instrument above.
+// ===================================================================================================
+
+/// The `stopPrecision` map out of an `initialize` result, parsed through the server's own three wire
+/// spellings rather than through a fourth copy of the enum written here.
+fn declared_map(hs: &Value) -> BTreeMap<String, StopPrecision> {
+    let obj = hs
+        .get("stopPrecision")
+        .unwrap_or_else(|| {
+            panic!(
+                "no top-level `stopPrecision` in the initialize result. §2.1: it is a top-level key \
+                 like `timingBasis` and `limits`, NOT under `capabilities` and NOT under `limits`. \
+                 Keys present: {:?}",
+                hs.as_object().map(|o| o.keys().collect::<Vec<_>>())
+            )
+        })
+        .as_object()
+        .expect("`stopPrecision` is an object mapping reason -> precision");
+    obj.iter()
+        .map(|(k, v)| {
+            let s = v
+                .as_str()
+                .unwrap_or_else(|| panic!("{k}: not a string: {v}"));
+            (
+                k.clone(),
+                StopPrecision::from_wire(s)
+                    .unwrap_or_else(|| panic!("{k}: {s:?} is not one of §2.1's three values")),
+            )
+        })
+        .collect()
+}
+
+/// What the machine was doing when the stop landed, in the form the item-24 assertion needs: which
+/// instruction the stop was armed at, and the state read afterwards.
+enum Evidence {
+    /// Armed at [`SP_PROBE`] — a PC-armed stop with a single observable register effect.
+    Probe(Snap),
+    /// Armed on the access at [`SP_STORE`] — the commit is observable in memory.
+    Store(Snap),
+    /// No triggering address. Only the boundary invariant is available, and that is the whole of what
+    /// `exact` can mean for a stop with nothing to be exact *about*.
+    Addressless(Snap),
+}
+
+/// **The item-24 assertion, for one stop.**
+///
+/// Order follows the item's own wording. First the two riders — the reason has a map entry, and the
+/// event's value is not weaker than the declaration. Then the register check, run against **the value
+/// the event carried**: §2.1 rule 3 permits that to be stronger than the declaration, so it is the
+/// stronger obligation to hold the server to, and checking the declaration alone would let a server that
+/// declares `approximate` and emits `exact` past.
+fn prove_item24(
+    reason: &str,
+    event: &Value,
+    map: &BTreeMap<String, StopPrecision>,
+    ev: Evidence,
+) -> StopPrecision {
+    let declared = *map.get(reason).unwrap_or_else(|| {
+        panic!(
+            "rider 1: `{reason}` was observed on emulator/stopped and has NO entry in the handshake \
+             map — §2.1 rule 1's checkable half. Map: {:?}",
+            map.keys().collect::<Vec<_>>()
+        )
+    });
+    let on_wire = event["stopPrecision"].as_str().unwrap_or_else(|| {
+        panic!(
+            "§3: `stopPrecision` is REQUIRED on every emulator/stopped; this one has none: {event}"
+        )
+    });
+    let carried = StopPrecision::from_wire(on_wire)
+        .unwrap_or_else(|| panic!("{reason}: {on_wire:?} is not one of §2.1's three values"));
+    assert!(
+        carried.at_least_as_strong_as(declared),
+        "rider 2: `{reason}` declared {declared:?} and the event carried {carried:?}, which is WEAKER. \
+         §2.1 rule 3: a server may emit a stronger value than it declared; it may never emit a weaker \
+         one."
+    );
+
+    match (carried, ev) {
+        // "assert the PRE-trigger state for a declared `exact`"
+        (StopPrecision::Exact, Evidence::Probe(s)) => {
+            assert_eq!(
+                classify_probe_stop(s),
+                Measured::Exact,
+                "`{reason}` says `exact`: the stop must be AT the armed instruction with \
+                 `addq.w #1, D0` unexecuted — D0.w == {SP_PROBE_PRE_D0}"
+            );
+        }
+        (StopPrecision::AfterCommit, Evidence::Probe(s)) => {
+            assert_eq!(
+                classify_probe_stop(s),
+                Measured::AfterCommit,
+                "`{reason}` says `afterCommit`: the armed instruction must have COMMITTED — D0.w == \
+                 {SP_PROBE_POST_D0} at pc {:#010X}",
+                SP_PROBE + PROBE_LEN
+            );
+        }
+        (StopPrecision::Exact, Evidence::Store(s)) => {
+            assert_eq!(
+                classify_store_stop(s),
+                Measured::Exact,
+                "`{reason}` says `exact`: the store must NOT yet have committed — mem16 == D1.w - 1 at \
+                 pc {SP_STORE:#010X}"
+            );
+        }
+        // "…and the POST-trigger state for a declared `afterCommit`"
+        (StopPrecision::AfterCommit, Evidence::Store(s)) => {
+            assert_eq!(
+                classify_store_stop(s),
+                Measured::AfterCommit,
+                "`{reason}` says `afterCommit`: the triggering store must have fully committed — \
+                 mem16 == D1.w"
+            );
+        }
+        // A stop with no triggering address. `exact` still means "the instruction at pc has not
+        // executed", and that is exactly what the boundary table asserts.
+        (StopPrecision::Exact | StopPrecision::AfterCommit, Evidence::Addressless(s)) => {
+            assert_boundary_consistent(s, reason);
+        }
+        // "a declared `approximate` asserts only that the event carried the key" — which the `on_wire`
+        // read above already did. Nothing further is provable, and pretending otherwise is the vacuity
+        // this item exists to prevent.
+        (StopPrecision::Approximate, _) => {}
+    }
+    carried
+}
+
+/// **§2.1 rule 1's checkable half, three ways.**
+///
+/// The handshake map's key set, the registry the server generates it from, and the set of reasons the
+/// surface can actually be driven to emit must be one set. Two of the three come from
+/// `engine::StopReason` — the point being that a hand-written expectation here would be the second list
+/// rule 1 exists to forbid — and the third is collected at runtime, which closes the "no more"
+/// direction the type system cannot.
+#[test]
+fn item24_the_handshake_map_key_set_is_the_registry_and_the_emitted_set() {
+    let (_h, mut c, hs) = armed_with_handshake("sp-i24-keys");
+    let map = declared_map(&hs);
+
+    let mut from_map: Vec<&str> = map.keys().map(String::as_str).collect();
+    let mut from_registry: Vec<&str> = StopReason::ALL.iter().map(|r| r.wire()).collect();
+    from_map.sort_unstable();
+    from_registry.sort_unstable();
+    assert_eq!(
+        from_map, from_registry,
+        "the handshake map must be generated from StopReason::ALL — no more, no fewer"
+    );
+
+    // …and every value in it is the registry's, not a second opinion.
+    for r in StopReason::ALL {
+        assert_eq!(
+            map.get(r.wire()),
+            Some(&r.precision()),
+            "`{}`'s declared precision must come from the registry",
+            r.wire()
+        );
+    }
+
+    // The runtime half: drive the surface and check nothing outside the map comes out — and that every
+    // event carried a value at least as strong as the map's. `entry` is the case this guards: it is in
+    // §3's enum, it is NOT in our map, and it must never appear.
+    let observed = sweep_every_reason(&mut c);
+    let mut observed_names: Vec<&str> = observed.iter().map(|(r, _)| r.as_str()).collect();
+    observed_names.sort_unstable();
+    assert_eq!(
+        observed_names, from_registry,
+        "every reason the surface can be driven to emit, and nothing else"
+    );
+    for (reason, on_wire) in &observed {
+        let declared = map[reason];
+        let carried = StopPrecision::from_wire(on_wire).expect("one of §2.1's three values");
+        assert!(
+            carried.at_least_as_strong_as(declared),
+            "`{reason}` carried {carried:?}, weaker than the declared {declared:?}"
+        );
+    }
+}
+
+/// **§8 item 24 itself**: for every `reason` this server declares and can produce in the harness, arm a
+/// stop at an instruction with a single observable register effect, halt, read that register, and hold
+/// the server to the value it put on the wire.
+///
+/// **What it covers.** All seven declared reasons are produced. Four are armed at an instruction and get
+/// the full pre/post discriminator: `breakpoint`, `runTo` and `step` at the `addq.w #1, D0` probe, and
+/// `watchpoint` at the store. Three — `runFrames`, `runToScanline`, `pause` — have no triggering address
+/// (§3: *"`pause`, `entry` and `runFrames` have no triggering address, so their value is `exact` by
+/// definition"*), so what is checkable is the other half of the definition: the reported `pc` is an
+/// instruction boundary and the machine is in the state of one about to execute the instruction there.
+///
+/// **What it provably cannot cover** is written down in `docs/2026-09-02-stopprecision.md` rather than
+/// paraphrased here, so there is one copy of it.
+#[test]
+fn item24_every_declared_reason_is_proven_against_the_machine() {
+    let (_h, mut c, hs) = armed_with_handshake("sp-i24-proof");
+    let map = declared_map(&hs);
+    settle(&mut c);
+
+    let mut proven: BTreeMap<String, StopPrecision> = BTreeMap::new();
+
+    // --- breakpoint: PC-armed at the probe ------------------------------------------------------
+    c.ok(
+        "emulator/breakpoint_add",
+        json!({"addr": format!("0x{SP_PROBE:08X}")}),
+    );
+    let e = resume_and_wait_for_stop(&mut c, 799);
+    assert_eq!(e["reason"], json!("breakpoint"));
+    let v = prove_item24("breakpoint", &e, &map, Evidence::Probe(snapshot(&mut c)));
+    proven.insert("breakpoint".into(), v);
+    c.ok("emulator/breakpoint_clear", json!({"all": true}));
+
+    // --- runTo: the other PC-armed stop, at the same probe --------------------------------------
+    c.ok("emulator/step", json!({})); // step off the probe, or `run_to` answers from where we sit
+    let (e, _) = call_capturing_stop(
+        &mut c,
+        800,
+        "emulator/run_to",
+        json!({"addr": format!("0x{SP_PROBE:08X}")}),
+    );
+    assert_eq!(e["reason"], json!("runTo"));
+    let v = prove_item24("runTo", &e, &map, Evidence::Probe(snapshot(&mut c)));
+    proven.insert("runTo".into(), v);
+
+    // --- step: steered so the step LANDS on the probe -------------------------------------------
+    call_capturing_stop(
+        &mut c,
+        801,
+        "emulator/run_to",
+        json!({"addr": format!("0x{SP_LOOP:08X}")}),
+    );
+    let (e, _) = call_capturing_stop(&mut c, 802, "emulator/step", json!({}));
+    assert_eq!(e["reason"], json!("step"));
+    let s = snapshot(&mut c);
+    assert_eq!(
+        s.pc, SP_PROBE,
+        "one step from the loop head lands on the probe"
+    );
+    let v = prove_item24("step", &e, &map, Evidence::Probe(s));
+    proven.insert("step".into(), v);
+
+    // --- runFrames / runToScanline / pause: no triggering address --------------------------------
+    let (e, _) = call_capturing_stop(&mut c, 803, "emulator/run_frames", json!({"frames": 1}));
+    assert_eq!(e["reason"], json!("runFrames"));
+    let v = prove_item24(
+        "runFrames",
+        &e,
+        &map,
+        Evidence::Addressless(snapshot(&mut c)),
+    );
+    proven.insert("runFrames".into(), v);
+
+    let (e, _) = call_capturing_stop(
+        &mut c,
+        804,
+        "emulator/run_to_scanline",
+        json!({"line": 120}),
+    );
+    assert_eq!(e["reason"], json!("runToScanline"));
+    let v = prove_item24(
+        "runToScanline",
+        &e,
+        &map,
+        Evidence::Addressless(snapshot(&mut c)),
+    );
+    proven.insert("runToScanline".into(), v);
+
+    c.ok("emulator/resume", json!({}));
+    let (e, _) = call_capturing_stop(&mut c, 805, "emulator/pause", json!({}));
+    assert_eq!(e["reason"], json!("pause"));
+    let v = prove_item24("pause", &e, &map, Evidence::Addressless(snapshot(&mut c)));
+    proven.insert("pause".into(), v);
+
+    // --- watchpoint: access-armed on the store ---------------------------------------------------
+    c.ok(
+        "emulator/watchpoint_add",
+        json!({"addr": format!("0x{SP_STORE_ADDR:08X}"), "len": 2, "stopAfter": 1}),
+    );
+    let (e, _) = call_capturing_stop(&mut c, 806, "emulator/run_frames", json!({"frames": 4}));
+    assert_eq!(e["reason"], json!("watchpoint"), "the watch ended the run");
+    let v = prove_item24("watchpoint", &e, &map, Evidence::Store(snapshot(&mut c)));
+    proven.insert("watchpoint".into(), v);
+
+    // **The anti-vacuity check on this test itself.** Item 24 is "for EVERY reason it declares and can
+    // produce"; a version of it that quietly proved four of seven would be green and would be the worst
+    // outcome of this parcel. So the set proven above is closed against the declaration.
+    let mut proven_names: Vec<&str> = proven.keys().map(String::as_str).collect();
+    let mut declared_names: Vec<&str> = map.keys().map(String::as_str).collect();
+    proven_names.sort_unstable();
+    declared_names.sort_unstable();
+    assert_eq!(
+        proven_names, declared_names,
+        "every DECLARED reason must be produced and proven here, or named as unproducible in \
+         docs/2026-09-02-stopprecision.md — a declaration this test skipped is a declaration checked by \
+         nothing, which is the defect item 24 exists to close"
     );
 }
