@@ -14,15 +14,15 @@
     },
     {
       "id": "SPAWN-MODE-CR",
-      "title": "aeon has built a way for a tool to spawn, move and delete objects in a running level. Their field list is banked; our side is a change request written against the names, not the addresses. Waiting on their branch merging.",
+      "title": "aeon's way for a tool to spawn, move and delete objects in a running level has landed. Ours is a change request written against their symbol names, not addresses, so a release build refuses instead of guessing.",
       "state": "open",
       "size": "M",
-      "blockedBy": "aeon's branch reaching their master; a request written against an unmerged branch would anchor to something that can be rebased away"
+      "blockedBy": null
     },
     {
       "id": "SCHEMA-DRIFT-NIGHTLY",
       "title": "Our contract check stopped reading the contract team's live folder today; the honest cost is that an ordinary run no longer notices them moving on. Fix is a nightly that reports drift without blocking anyone. Nothing new to build.",
-      "state": "next",
+      "state": "open",
       "size": "S",
       "blockedBy": null
     },
@@ -88,5 +88,5 @@
   ],
   "awaiting": null,
   "atBoundary": true,
-  "updatedAt": "2026-09-02T21:38:59Z"
+  "updatedAt": "2026-09-02T22:12:04Z"
 }

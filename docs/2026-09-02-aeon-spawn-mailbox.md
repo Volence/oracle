@@ -1,10 +1,19 @@
 # aeon's DEBUG spawn mailbox — the field list, banked from a relay
 
-**⚠ RELAY, NOT YET ANCHORED.** Received 2026-09-02 through empyrean-01, in aeon's own words. Their
-landed shape sits on branch `parcel/live-objects-spawn`, **not yet merged to their `origin/master`**, so
-there is no citable SHA for it yet and nothing here has been verified against their tree. The hub has
-undertaken to send the merge SHA. **Re-derive against their source at that SHA before the CR is filed** —
-this file is a transcription so a `/clear` cannot lose it, not a verified anchor.
+**✅ ANCHORED 2026-09-02 — aeon `36285940` (chain 206), and the flag is REPLACED rather than deleted, per
+the rule that wrote it.** Verified firsthand here, not taken on trust: the object is an **ancestor of their
+`origin/master`**, and `--stat` shows it carries **code** — `games/sonic4/config/ram.emp` +58,
+`games/sonic4/test/ojz_scroll_test.emp` +262, `tools/test_object_mailbox_contract.py` +379 — so its SHA
+class matches what it anchors. `Obj_Req_Def` at `ram.emp:299`, `Obj_Req_Flag` at `:320`, the flag-last
+rule at `:279`, all present at that revision. The transcription below was accurate.
+
+*Original flag, kept visible: "RELAY, NOT YET ANCHORED — their branch `parcel/live-objects-spawn` is not
+merged, so there is no citable SHA and nothing here has been verified against their tree." That was the
+correct posture at the time and it cost nothing; this is what replacing it looks like.*
+
+**Still re-derive the field offsets from their source at this SHA before the CR is filed** — this file is
+a transcription of their words, and the CR must be built against the symbol names resolved live per
+build, never against the table below.
 
 This exists because of the standing rule that a cross-lane commitment living only in mail does not
 survive a session boundary.
