@@ -208,24 +208,31 @@ fn mcp_source() -> Result<McpSource, String> {
     ));
 
     // Step 2 — an explicit CHECKOUT.
+    //
+    // **Set-but-wrong stops here; it does not fall through.** `SUITE_PATHS.md`: *"A variable that is
+    // set but wrong … is a hard error at that step, the aeon semantic, not a null that lets the next
+    // step run: a wrong value is evidence of a wrong environment, and the next step would hide it."*
+    // Measured, not assumed: before this arm existed, `ORACLE_OLD_DIR=<this repo>` printed
+    // `RESULT ok step=4-derived` and the operator's wrong variable left no trace in the output at all.
     match std::env::var(ENV_OLD_DIR) {
-        Ok(d) => match read_pinned_from(Path::new(&d), "2-env-repo") {
-            Ok(s) => return Ok(s),
-            Err(why) => tried.push(format!("${ENV_OLD_DIR}={d} -> {why}")),
-        },
+        Ok(d) => {
+            return read_pinned_from(Path::new(&d), "2-env-repo").map_err(|why| {
+                format!("${ENV_OLD_DIR} is set to `{d}`, and it does not answer: {why}")
+            })
+        }
         Err(_) => tried.push(format!(
             "${ENV_OLD_DIR} (a path to an oracle-old git CHECKOUT) — not set"
         )),
     }
 
-    // Step 3 — the suite root, joined with the repo's directory name.
+    // Step 3 — the suite root, joined with the repo's directory name. Set-but-wrong stops here too,
+    // for the same reason.
     match std::env::var(ENV_SUITE_ROOT) {
         Ok(r) => {
             let cand = Path::new(&r).join(OLD_REPO_DIR);
-            match read_pinned_from(&cand, "3-suite-root") {
-                Ok(s) => return Ok(s),
-                Err(why) => tried.push(format!("${ENV_SUITE_ROOT}={r} -> {why}")),
-            }
+            return read_pinned_from(&cand, "3-suite-root").map_err(|why| {
+                format!("${ENV_SUITE_ROOT} is set to `{r}`, and {OLD_REPO_DIR} under it does not answer: {why}")
+            });
         }
         Err(_) => tried.push(format!(
             "${ENV_SUITE_ROOT}/{OLD_REPO_DIR} — {ENV_SUITE_ROOT} not set"
