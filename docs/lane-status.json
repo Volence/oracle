@@ -1,8 +1,8 @@
 {
-  "focus": "Live-folder cleanup landed; starting the debug-window rebuild, pacing first and input early.",
+  "focus": "Everything landed and pushed. Debug-window rebuild is next up, pacing first and input early.",
   "inFlight": [],
   "blockedOnOwner": [],
-  "nextBoundary": "When the measurement reports back and I can tell you whether the rebuild is safe to start.",
+  "nextBoundary": "Now - nothing running, nothing half-applied, queue current.",
   "queue": [
     {
       "id": "DEBUG-PANELS",
@@ -88,5 +88,5 @@
   ],
   "awaiting": null,
   "atBoundary": true,
-  "updatedAt": "2026-09-02T22:12:04Z"
+  "updatedAt": "2026-09-02T22:12:43Z"
 }
