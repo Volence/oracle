@@ -1,7 +1,13 @@
 {
   "focus": "Aurora's debugger fix is in, and the startup file is under the suite size limit.",
   "inFlight": [],
-  "blockedOnOwner": [],
+  "blockedOnOwner": [
+    {
+      "id": "d-25",
+      "what": "Which shape of dockable debug panels you want in the player window - side docks with tabs, the full drag-anywhere workspace, or rebuilding the window on a real UI toolkit first. The look is yours and I have not started.",
+      "since": "2026-09-02"
+    }
+  ],
   "nextBoundary": "Now - nothing running, everything pushed.",
   "queue": [
     {
@@ -17,6 +23,13 @@
       "state": "open",
       "size": "S",
       "blockedBy": null
+    },
+    {
+      "id": "DEBUG-PANELS",
+      "title": "You want oracle-old's window back: tabs, and dragging debug panels to whichever side you like. Designed and sized, not started - the player draws on a bare framebuffer, so the docking, tabs and remembered layout are all hand-built. Waiting on which shape you want.",
+      "state": "blocked",
+      "size": "L",
+      "blockedBy": "you - d-25, the look call is yours"
     },
     {
       "id": "LIVE-TREE-RESIDUE",
@@ -71,7 +84,7 @@
       "blockedBy": "a live player window on your screen; runs only when none is open"
     }
   ],
-  "awaiting": "nothing blocking. Two things stay yours whenever you want them: the live-folder cleanup (it touches your aeon folder) and whether the corner counter should read shorter than DRAWS.",
+  "awaiting": "one new question (d-25): which shape of dockable debug panels you want in the player window. It is a look call, it is yours, and I have not started. Still yours whenever: the live-folder cleanup, and whether the corner counter should read shorter than DRAWS.",
   "atBoundary": true,
-  "updatedAt": "2026-09-02T18:28:01Z"
+  "updatedAt": "2026-09-02T18:32:24Z"
 }
