@@ -26,6 +26,13 @@
       "blockedBy": null
     },
     {
+      "id": "SPAWN-MODE-CR",
+      "title": "aeon has built a way for a tool to spawn, move and delete objects in a running level. Their field list is banked; our side is a change request written against the names, not the addresses. Waiting on their branch merging.",
+      "state": "open",
+      "size": "M",
+      "blockedBy": "aeon's branch reaching their master; a request written against an unmerged branch would anchor to something that can be rebased away"
+    },
+    {
       "id": "SCHEMA-DRIFT-NIGHTLY",
       "title": "Our contract check stopped reading the contract team's live folder today; the honest cost is that an ordinary run no longer notices them moving on. Fix is a nightly that reports drift without blocking anyone. Nothing new to build.",
       "state": "next",
@@ -87,5 +94,5 @@
   ],
   "awaiting": "your verdict on the window that just ran: did it look as smooth as the normal player, or did you see hitching? The speed is measured and good - 93 frames a second where 60 is needed - but whether it LOOKS right is the part only you can answer, and a bad answer is more useful to me than a good one.",
   "atBoundary": false,
-  "updatedAt": "2026-09-02T21:10:26Z"
+  "updatedAt": "2026-09-02T21:18:50Z"
 }
