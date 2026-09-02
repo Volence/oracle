@@ -5,23 +5,73 @@ contract repo. It is vendored, not read from the sibling checkout at test time, 
 hermetic: it compiles against a fixed schema and produces the same verdict on a machine that has no
 `empyrean/` checkout at all.
 
-The copy is not allowed to rot. `tests/schema_conformance.rs` re-reads the upstream file when it can find
-it and asserts the two are **byte-identical**; a contract edit therefore turns this suite red and forces
-an explicit re-vendor commit. That commit is the auditable record of "we adopted contract revision X".
+The copy is not allowed to rot, and **since 2026-09-02 the way that is checked changed shape.** The gate
+no longer reads a file out of the sibling checkout. It **hashes the vendored bytes and compares the hash
+against the blob pinned below**, which is content-addressed, hermetic, and cannot be satisfied by a
+coincidentally-similar file. Confirming that pin against the contract repo is a second, *optional* step
+that runs only when a variable points at one, and says loudly in the run's own output when it did not.
+
+The rule is the suite's, not this lane's invention: `empyrean/contract/SUITE_PATHS.md`, *"What a resolver
+owes its reader"*, at `38f6df4` — **"A gate that proves a vendored copy of a peer's CONTENT is fresh reads
+the peer through git objects at a named revision, never through the peer's working tree"**, citing this
+repo's own finding `F-SCHEMA-READS-LIVE-EMPYREAN` by name. What this file therefore has to carry is the
+pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolves) below.
+
+<!-- The three lines below are PARSED by tests/schema_conformance.rs. Keep the exact `key = value`
+     shape; the test fails loudly (not silently) if a marker is missing or malformed. -->
+
+    pin.revision = 82982b7ff3c057f347d538fcf61b7c62b18ee813
+    pin.blob     = 125d17f03ac33872d97dac9587f01a8e708b27da
+    pin.bytes    = 324083
 
 ## Current copy
 
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo revision | **`e7e94fa6a09b870ef1736804e4ee02927404479b`** (2026-08-30) — `origin/main`'s **tip**, and `git merge-base --is-ancestor e7e94fa6 origin/main` was **run**, not assumed (it exited 0). `TRACKED_REVISION` is `None`. 64 fragments; all 64 declare `params`, all 64 close it with `unevaluatedProperties: false` (handshake exempt), and all 64 declare `result`; 18 `$defs` — every figure **re-derived by parsing this copy**, never carried over from the table this replaced. |
-| Last commit that touched the schema | **`e7e94fa6a09b870ef1736804e4ee02927404479b`** — *"protocol: §11.30 CR-I adopted; §6 paths-note rider; symbolsPath/load_symbols.path/screenshot.path described as absolute by one rule"* (2026-08-30). Here it **is** the adopted revision, derived with `git log -1 -- contract/schema/bus-protocol.schema.json` rather than assumed from the tip. |
-| Git blob | `22236eabc412332de6fdf347c938e93b1b17e37e` |
-| SHA-256 | `ba11fb4058821cf5be59264a7ba952675ba9a6b5c35216647c439df21c736d7b` |
-| Bytes | 321300 |
-| Vendored on | 2026-08-30 |
+| Contract repo revision | **`82982b7ff3c057f347d538fcf61b7c62b18ee813`** (2026-09-02) — *not* `origin/main`'s tip (`38f6df4` at adoption), and that is deliberate: it is the last commit that **touched this file**, derived with `git log -1 -- contract/schema/bus-protocol.schema.json` rather than assumed from the tip, and `git merge-base --is-ancestor 82982b7 origin/main` was **run**, not assumed (it exited 0). 64 fragments; all 64 declare `params`, all 64 close it with `unevaluatedProperties: false` (handshake exempt), and all 64 declare `result`; 19 `$defs` — every figure **re-derived by parsing this copy**, never carried over from the table this replaced. |
+| Last commit that touched the schema | **`82982b7ff3c057f347d538fcf61b7c62b18ee813`** — *"protocol §11.31: CR-E adjudicated, ADOPTED; stopPrecision (exact > afterCommit > approximate) as a per-reason handshake map, REQUIRED on every stopped …"* (2026-09-02). |
+| Git blob | `125d17f03ac33872d97dac9587f01a8e708b27da` |
+| SHA-256 | `4aa19101b2a56e9f4a7d2278277b723d0022c63dda635d8f885c64dbb8f8b972` |
+| Bytes | 324083 |
+| Vendored on | 2026-09-02 |
 
-**Taken from the object store at a committed revision**, `git show e7e94fa6:contract/schema/bus-protocol.schema.json`, never copied out of the sibling working tree — the recipe the retired tracking box below left behind, and the reason it exists is one this lane re-proved the morning before this re-vendor: a test that reads a peer's live directory answers about whatever is on disk at the moment it runs. The adoption was then checked **by content address**: `git hash-object` on the written file returns `22236eab…`, equal to `git rev-parse e7e94fa6:contract/…`. That is the one check that cannot be talked into agreeing, and this repo has caught a doctored restore with it before.
+**Taken from the object store at a committed revision**, `git show 82982b7:contract/schema/bus-protocol.schema.json`, never copied out of the sibling working tree. The adoption was then checked **by content address**: `git hash-object` on the written file returns `125d17f0…`, equal to `git rev-parse 82982b7:contract/…`. That is the one check that cannot be talked into agreeing, and this repo has caught a doctored restore with it before.
+
+## How the freshness gate resolves
+
+Three steps, in order, and **the resolver prints which one answered before anything is checked against
+it** (`SUITE_PATHS.md`: *"Say which step answered"*).
+
+| step | source | what it proves |
+|---|---|---|
+| 0 | the vendored bytes themselves, hashed as a git blob and compared to `pin.blob` above | that this copy is the artifact the pin names. **Always runs. Never skipped.** This is the substance of the gate. |
+| 1 | `$AETHER_CONTRACT_SCHEMA` — a path to a **file** | that the pinned bytes equal that file. The legitimate override, for a checkout with no peer repo, and for a nightly that wants to compare against something specific. |
+| 2 | `$AETHER_CONTRACT_REPO` — a path to a **git checkout** of the contract repo, read through `git cat-file` / `git merge-base` and **never** through its working tree | that the pinned blob exists in that repo, and that `pin.revision` is an ancestor of its committed default branch — i.e. the pin names something real and merged, not a local draft. |
+| — | neither variable set | **nothing about the peer**, said so in the run's output: the resolver prints a banner naming both variables and returns. There is no walk up the filesystem, which is precisely the shape `F-SCHEMA-READS-LIVE-EMPYREAN` registered. |
+
+**What was given up, and why that was the trade.** The old gate walked up from `CARGO_MANIFEST_DIR`,
+found `empyrean/contract/schema/bus-protocol.schema.json`, and byte-compared it — so a contract edit made
+this suite red automatically. It also went red when a teammate saved mid-edit, and — the half that
+matters — would have gone **green against a change no other lane could see**. The automatic alarm is now
+the re-vendor discipline plus step 2 under a variable, and the honest reading is that a default local run
+no longer notices upstream moving on its own. It notices a vendored copy being *edited*, which is the
+failure the pin exists for, and it never again reports a verdict about somebody's desk.
+
+**To re-vendor** (the whole recipe, and it never touches the working tree):
+
+```sh
+REPO=/path/to/empyrean
+REV=$(git -C "$REPO" log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json)
+git -C "$REPO" merge-base --is-ancestor "$REV" origin/main   # must exit 0
+git -C "$REPO" show "$REV:contract/schema/bus-protocol.schema.json" \
+  > crates/oracle-aether/tests/contract/bus-protocol.schema.json
+git hash-object crates/oracle-aether/tests/contract/bus-protocol.schema.json  # -> the new pin.blob
+git -C "$REPO" rev-parse "$REV:contract/schema/bus-protocol.schema.json"      # must be identical
+```
+
+Then update the three `pin.*` markers and the **Current copy** table above, in the same commit as the
+serve that needs the new schema.
 
 *(Historical, kept because it records how an upstream drafting error is handled here — it belongs to the 2026-08-26 adoption, not to the current copy.)* **A drafting miss carried in the open, because it is upstream's and not ours.** The `a0c50a11` landing left one clause of the top-level `description` reading *"the eight BLOCKED rows print there too"* when the set had just become five. It was reported rather than patched locally — a vendored copy that is hand-corrected is a copy whose blob check is worthless — and the hub landed the fix as `55d99a68`, which is why **this** revision is the one adopted rather than `a0c50a11`. `contract/protocol.md` and `contract/schema/tests/vectors.json` are byte-identical at both.
 
@@ -35,6 +85,32 @@ an explicit re-vendor commit. That commit is the auditable record of "we adopted
 *(The unmerged-branch tracking box that stood here retired itself 2026-08-21 when `callers-amendment`
 merged as `70c7bb4` — its third profiler-amendment carry, per its own recipe: copy from the object
 store, never from the checkout.)*
+
+### What this re-vendor adopted — §11.31, `stopPrecision` (2026-09-02)
+
+Unlike the §11.30 re-vendor below, this one **has validation force**, and it is the reason the re-vendor
+could not land before the serve: `events["emulator/stopped"].params.required` gained `stopPrecision`, so
+the moment these bytes arrived, six hand-built `stopped` fixtures in `tests/schema_conformance.rs` went
+red for exactly the right reason (`"stopPrecision" is a required property`) and so did every live event
+the server emitted until the serve landed beside it. Both halves are in one commit for that reason.
+
+Figures **re-derived by parsing the previous copy and this one**, never read from a commit message:
+
+| | previous copy (`e7e94fa6`) | this copy (`82982b7`) | delta |
+|---|---|---|---|
+| method fragments | 64 | **64** | unmoved — no method added, renamed or removed |
+| fragments declaring / closing / resulting | 64 / 64 / 64 | **64 / 64 / 64** | unmoved |
+| `$defs` | 18 | **19** | **+1**: `stopPrecision`, one enum `$ref`d twice (the handshake map and the event), *"since a copied enum is a drift source"* |
+| `handshake.initialize.result.properties` | — | **+ `stopPrecision`** | a closed object keyed by the eight `reason` values, `minProperties: 1`, **not** in `required` — presence is the amendment discriminator (§2.1 rule 2) |
+| `events["emulator/stopped"].params.required` | `["reason","pc"]` | **`["reason","pc","stopPrecision"]`** | the one shape change with teeth |
+
+**What the vendored schema still cannot check, so nobody reads its green as more than it is** (§11.31
+says this itself): the binding rule (it relates two messages), the key-set rule's over-declared half, the
+client-side absence rule, and the opt-in rule. The first and the key-set's under-declared half are held
+at runtime by `tests/stop_precision.rs` (contract §8 item 24); the other two are prose obligations a
+reviewer reads. Note in particular that `minProperties: 1` means **an under-declared handshake map is
+schema-valid** — the map could name one reason out of seven and this schema would accept it. That gap is
+why item 24's key-set assertion is not decorative.
 
 ### What this re-vendor adopted — §11.30, **three `description` edits and nothing else** (2026-08-30)
 
